@@ -52,7 +52,9 @@ test("a UnitCastingInfo-shaped binding preserves epoch milliseconds and all tupl
   vm.close();
 });
 
-test("only in-range safe integers use Lua integer formatting", () => {
+// ARC-4 A6 (12.10): named for fengari's 5.3, where only int32-range whole numbers crossed as Lua integers;
+// on 5.1 every number is a double, and the answers below are the same.
+test("a small whole number prints as \"1\" and an epoch millisecond stays exact", () => {
   const vm = new GlueLuaVm();
   vm.registerGlobal("Numbers", () => [1, CAST_START_MS]);
   const outcome = vm.execute("small, large = Numbers(); smallText = tostring(small); largeExact = (large == 1788097991493)", "@number-format-probe");

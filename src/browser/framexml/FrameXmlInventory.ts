@@ -119,8 +119,6 @@ export interface FrameXmlInventory {
     readonly failed: number;
     /** Every error raised anywhere during the load, handled or not. */
     readonly errorsRaised: number;
-    /** Chunks that only lexed under Lua 5.1's unknown-escape rule. */
-    readonly relaxed: readonly string[];
   };
   readonly widgets: {
     readonly total: number;
@@ -210,8 +208,8 @@ export interface FrameXmlInventory {
   /**
    * What the corpus needs from the VM itself, as opposed to from the C API.
    *
-   * `setfenv`/`getfenv` decide whether the glue VM's Lua 5.3 core can carry FrameXML at all, so
-   * they are counted here rather than being left to the gold list.
+   * `setfenv`/`getfenv` decided whether the glue VM's Lua 5.3 core (fengari, before ARC-4) could carry
+   * FrameXML at all, so they are counted here rather than being left to the gold list.
    */
   readonly vm: {
     readonly setfenvSites: readonly string[];

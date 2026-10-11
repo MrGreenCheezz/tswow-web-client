@@ -65,7 +65,7 @@ export const SAVED_VARIABLE_CHECKPOINT = Object.freeze({ budgetMs: 4, heavyMs: 4
 /**
  * What one saved variable may hold. Raised from 1 MiB / 10,000 nodes (9.06) — starting numbers, not
  * the measured final ones: re-check against the sizes enabled add-ons actually write (WCollections'
- * cache, 9.07) and the flush time in fengari before trusting them.
+ * cache, 9.07) and the flush time on the wasm VM (the times above are fengari's) before trusting them.
  */
 export const SAVED_VARIABLE_LIMITS = Object.freeze({ bytes: 2 * 1024 * 1024, nodes: 50_000, depth: 32 });
 const MAX_BYTES = SAVED_VARIABLE_LIMITS.bytes;

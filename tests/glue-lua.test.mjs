@@ -5,9 +5,8 @@ import {
   GLUE_UNUSED_SHIMS,
   GlueLuaRef,
   GlueLuaVm,
-  relaxLua51Escapes,
 } from "../dist/code/browser/glue/GlueLua.js";
-import { LUA51_NATIVE, lua } from "../dist/code/browser/lua/LuaVm.js";
+import { lua } from "../dist/code/browser/lua/LuaVm.js";
 
 test("host calls collect variable Lua results and preserve the caller stack", () => {
   const vm = new GlueLuaVm();
@@ -24,9 +23,9 @@ test("host calls collect variable Lua results and preserve the caller stack", ()
   } finally { vm.release(fn); vm.release(empty); vm.close(); }
 });
 
-// The shim layer is load-bearing in a very specific way: fengari is Lua 5.3 and
-// the corpus is 5.1 with Blizzard's flattened globals, so every name below is
-// one a real GlueXML file calls. The counts come from the corpus itself.
+// The shim layer is load-bearing in a very specific way: the corpus is 5.1 with
+// Blizzard's flattened globals, so every name below is one a real GlueXML file
+// calls. The counts come from the corpus itself.
 test("the measured Lua 5.1 shims answer the way the corpus expects", () => {
   const vm = new GlueLuaVm();
   const evaluate = (expression) => {
@@ -54,15 +53,15 @@ test("the measured Lua 5.1 shims answer the way the corpus expects", () => {
   assert.equal(evaluate('setglobal("BAR", 7); return BAR'), 7);
   assert.equal(evaluate("local m, e = math.frexp(8); return m .. \",\" .. e"), "0.5,4");
 
-  // 5.3 raises on an integer conversion of a float; 5.1 truncated. The corpus
-  // divides and then formats, so this has to truncate rather than error.
+  // The client's format truncates a float for an integer conversion (5.3 raised).
+  // The corpus divides and then formats, so this has to truncate rather than error.
   assert.equal(evaluate('return string.format("%d", 3.7)'), "3");
   assert.equal(evaluate('return string.format("%d items, 100%% done", 12 / 4)'), "3 items, 100% done");
-  // 5.3 renders a whole float as "3.0"; the corpus builds text out of these.
+  // 5.1 renders a whole float as "3" (5.3 said "3.0"); the corpus builds text out of these.
   assert.equal(evaluate("return tostring(6 / 2)"), "3");
 
-  // Absence is a measurement too: nothing in the corpus calls setfenv/getfenv,
-  // so the _ENV upvalue surgery 5.3 would need is deliberately not implemented.
+  // Absence is a measurement too: nothing in the glue corpus calls setfenv/getfenv,
+  // so the glue state runs without them (FrameXML's gets 5.1's back).
   for (const name of GLUE_UNUSED_SHIMS) {
     if (name === "setfenv" || name === "getfenv") {
       assert.equal(evaluate(`return type(${name})`), "nil", `${name} should not exist`);
@@ -121,29 +120,15 @@ test("a compiled handler carries the measured parameter names and a vararg", () 
   vm.close();
 });
 
-test("Lua 5.1's unknown-escape rule rescues a chunk 5.3 refuses to lex", () => {
+test("an unknown escape lexes as Lua 5.1 lexed it: the backslash dropped, the character kept", () => {
   // The real case: `Interface\SharedXML\SharedGlueStrings.lua` from the
   // server's own patch archive contains `"… пароль? \Небезопасно …"`, which
   // 5.1 lexed by dropping the backslash and 5.2+ rejects outright.
-  assert.deepEqual(relaxLua51Escapes('x = "a? \\Не b"'), { source: 'x = "a? Не b"', rewrites: 1 });
-  // Escapes 5.3 already understands are untouched, in either quote style.
-  assert.deepEqual(relaxLua51Escapes('x = "a\\nb\\\\c\\"d"'), { source: 'x = "a\\nb\\\\c\\"d"', rewrites: 0 });
-  assert.deepEqual(relaxLua51Escapes("x = 'a\\065\\x41\\z b'"), { source: "x = 'a\\065\\x41\\z b'", rewrites: 0 });
-  // Comments and long-bracket strings are copied through verbatim: a backslash
-  // there is already literal and rewriting it would change the program.
-  assert.deepEqual(relaxLua51Escapes("-- a \\Q comment\nx = 1"), { source: "-- a \\Q comment\nx = 1", rewrites: 0 });
-  assert.deepEqual(relaxLua51Escapes("x = [[a \\Q b]]"), { source: "x = [[a \\Q b]]", rewrites: 0 });
-  assert.deepEqual(relaxLua51Escapes("--[==[ \\Q ]==] y = 2"), { source: "--[==[ \\Q ]==] y = 2", rewrites: 0 });
-
   const vm = new GlueLuaVm({ onError: (message) => assert.fail(message) });
   assert.equal(vm.execute('BAD = "a? \\Не b"', "@relaxed.lua").ok, true);
   assert.equal(vm.getGlobal("BAD"), "a? Не b");
-  // ARC-4: PUC 5.1 (the wasm VM) lexes it as Wow.exe does, so nothing needs relaxing there.
-  const relaxed = LUA51_NATIVE ? [] : ["@relaxed.lua"];
-  assert.deepEqual(vm.relaxedChunks, relaxed);
-  // A chunk that is simply broken still fails; the retry is not a catch-all.
+  // A chunk that is simply broken still fails.
   assert.equal(vm.execute("function (", "@broken.lua").ok, false);
-  assert.deepEqual(vm.relaxedChunks, relaxed);
   vm.close();
 });
 
@@ -173,8 +158,8 @@ test("a JS binding marshals scalars and keeps a Lua function alive on request", 
 
 // --- The three divergences G3 found by running the corpus, not by reading it ----------------
 //
-// Each of these took a real login screen down, and each is a place where fengari is a *valid* Lua
-// and PUC-Lua 5.1 — the one the corpus was written against — is a different one.
+// Each of these took a real login screen down under fengari (Lua 5.3, the VM before ARC-4), a *valid*
+// Lua that PUC-Lua 5.1 — the one the corpus was written against, and the wasm VM's — differs from.
 
 test("pairs and next walk the array part first, ascending, the way PUC-Lua does", () => {
   const vm = new GlueLuaVm();

@@ -20,7 +20,7 @@ function setup() {
   return { vm, bridge, binder };
 }
 
-test("fengari's lua_topointer is the same object for one table and a different one for another", () => {
+test("lua_topointer is the same object for one table and a different one for another", () => {
   const vm = new GlueLuaVm();
   try {
     const L = vm.state;

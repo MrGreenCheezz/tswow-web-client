@@ -1,17 +1,17 @@
 /**
- * ARC-4: fengari's API (`lua`, `lauxlib`, `lualib`, `to_luastring`, `to_jsstring`, and fengari-interop's
- * `push`/`tojs`) over PUC Lua 5.1.5 in WebAssembly (`LuaWasm.ts`), so the glue and FrameXML runtimes
- * keep their calls. First written as the P2-12 prototype (`.runtime/perf-step23/arc4/fengari-facade.mjs`);
- * see `docs/implementation/line-ARC4.ru.md`.
+ * ARC-4: the Lua API the glue and FrameXML runtimes call (`lua`, `lauxlib`, `lualib`, `to_luastring`,
+ * `to_jsstring`, `push`/`tojs`; shapes in `LuaShapes.ts`, the names fengari's, which the runtimes were
+ * first written against) over PUC Lua 5.1.5 in WebAssembly (`LuaWasm.ts`). First written as the P2-12
+ * prototype (`.runtime/perf-step23/arc4/fengari-facade.mjs`); see `docs/implementation/line-ARC4.ru.md`.
  *
  * Representation:
  * - A `LuaState` is a JS object `{ p, l_G }` per `lua_State` pointer (one per main state, one per
  *   coroutine thread met in a host call); `l_G` is shared by a state and its threads (GlueLuaFormat keys
  *   a WeakMap with it).
- * - Lua strings are `Uint8Array`, as in fengari.
- * - `lua_topointer` answers an interned token object per address (GlueWidgets keys a WeakMap with it;
- *   fengari answers the Table itself). Unlike a JS object, an address can be reused after Lua collects
- *   the table, so the owner of a token releases it ({@link releaseLuaPointer}) when it stops caring.
+ * - Lua strings are `Uint8Array`.
+ * - `lua_topointer` answers an interned token object per address (GlueWidgets keys a WeakMap with it).
+ *   Unlike a JS object, an address can be reused after Lua collects the table, so the owner of a token
+ *   releases it ({@link releaseLuaPointer}) when it stops caring.
  * - A JS function pushed with `lua_pushjsfunction` is registered once (deduplicated by identity) and
  *   becomes a C closure of `wl_tramp` with its index as upvalue.
  * - Errors: `luaL_error`/`lua_error`/`luaL_argerror`/`luaL_check*` leave the error value on the stack and
@@ -23,7 +23,7 @@
  *   no integer subtype).
  */
 
-import type * as Fengari from "fengari";
+import type * as Shapes from "./LuaShapes.js";
 import { luaHeap, luaView, luaWasm, luaWasmLoad, setLuaHostCall } from "./LuaWasm.js";
 
 /** The exports this facade calls (tools/lua-wasm/wow_lua.c). */
@@ -78,10 +78,10 @@ const NAMES = x.wl_names();
 const NAMES_SIZE = x.wl_names_size();
 const LEN_PTR = x.wl_lenptr();
 
-/** A state as this facade represents it; handed out typed as fengari's opaque `LuaState`. */
+/** A state as this facade represents it; handed out typed as the opaque `LuaState`. */
 interface WasmState { readonly p: number; readonly l_G: { readonly universe: number } }
-type LuaState = Fengari.LuaState;
-type LuaString = Fengari.LuaString;
+type LuaState = Shapes.LuaState;
+type LuaString = Shapes.LuaString;
 const ptr = (L: LuaState): number => (L as unknown as WasmState).p;
 
 // ---------------------------------------------------------------- constants (Lua 5.1 values)
@@ -119,17 +119,17 @@ export function to_jsstring(value: LuaString, from = 0, to = value.length, repla
   try {
     return strict.decode(slice);
   } catch {
-    return fengariLossyDecode(slice);
+    return replacementDecode(slice);
   }
 }
 
 /**
- * fengari's replacement decoder (`defs.js` `to_jsstring(…, true)`), on malformed UTF-8 only: one U+FFFD
- * per bad lead byte or broken sequence, the bytes of a truncated sequence swallowed, overlongs and
- * encoded surrogates accepted as code points — so a Lua string reads as the same JS string on both VMs
- * (WHATWG's lossy TextDecoder replaces differently).
+ * The replacement decoder the interface has always read Lua strings with (fengari's `defs.js`
+ * `to_jsstring(…, true)`, kept when the VM changed), on malformed UTF-8 only: one U+FFFD per bad lead
+ * byte or broken sequence, the bytes of a truncated sequence swallowed, overlongs and encoded surrogates
+ * accepted as code points (WHATWG's lossy TextDecoder replaces differently).
  */
-function fengariLossyDecode(bytes: Uint8Array): string {
+function replacementDecode(bytes: Uint8Array): string {
   let text = "";
   const end = bytes.length;
   for (let at = 0; at < end;) {
@@ -178,7 +178,7 @@ function decodeAt(p: number, n: number): string {
     }
     if (at === n) return text;
   }
-  // As fengari's lua_tojsstring: its replacement decoder (to_jsstring above).
+  // The replacement decoder (to_jsstring above).
   return to_jsstring(memory.subarray(p, p + n), 0, n, true);
 }
 
@@ -259,8 +259,8 @@ function stateOf(p: number): LuaState {
 }
 
 // ---------------------------------------------------------------- JS functions
-const functions: Fengari.LuaJsFunction[] = [];
-const functionIndex = new Map<Fengari.LuaJsFunction, number>();
+const functions: Shapes.LuaJsFunction[] = [];
+const functionIndex = new Map<Shapes.LuaJsFunction, number>();
 
 /** Thrown by a facade call that raised a Lua error (the value is on the stack). */
 export const LUA_RAISE: object = Object.freeze({ toString: () => "Lua error raised through the wasm facade" });
@@ -298,7 +298,7 @@ setLuaHostCall((p, index) => {
   }
 });
 
-function pushFunction(L: LuaState, fn: Fengari.LuaJsFunction): void {
+function pushFunction(L: LuaState, fn: Shapes.LuaJsFunction): void {
   let index = functionIndex.get(fn);
   if (index === undefined) {
     index = functions.length;
@@ -485,9 +485,9 @@ const luaImpl = {
     pushBytes(L, text);
     return text;
   },
-  lua_pushjsfunction: (L: LuaState, fn: Fengari.LuaJsFunction) => pushFunction(L, fn),
-  lua_pushcfunction: (L: LuaState, fn: Fengari.LuaJsFunction) => pushFunction(L, fn),
-  lua_pushjsclosure(L: LuaState, fn: Fengari.LuaJsFunction, upvalues: number): void {
+  lua_pushjsfunction: (L: LuaState, fn: Shapes.LuaJsFunction) => pushFunction(L, fn),
+  lua_pushcfunction: (L: LuaState, fn: Shapes.LuaJsFunction) => pushFunction(L, fn),
+  lua_pushjsclosure(L: LuaState, fn: Shapes.LuaJsFunction, upvalues: number): void {
     if (upvalues !== 0) throw new Error("lua wasm facade: lua_pushjsclosure with upvalues is not implemented");
     pushFunction(L, fn);
   },
@@ -655,18 +655,18 @@ const lualibImpl = {
   luaL_openlibs: (L: LuaState) => x.wl_openlibs(ptr(L)),
 };
 
-/** fengari's `lua` over the wasm VM. */
-export const lua = luaImpl as unknown as typeof Fengari.lua;
-/** fengari's `lauxlib` over the wasm VM. */
-export const lauxlib = lauxlibImpl as unknown as typeof Fengari.lauxlib;
-/** fengari's `lualib` over the wasm VM. */
-export const lualib = lualibImpl as unknown as typeof Fengari.lualib;
-export const FENGARI_VERSION = "PUC Lua 5.1.5 in WebAssembly (wasi-sdk 34.0)";
+/** `lua` (LuaShapes.ts) over the wasm VM. */
+export const lua = luaImpl as unknown as typeof Shapes.lua;
+/** `lauxlib` (LuaShapes.ts) over the wasm VM. */
+export const lauxlib = lauxlibImpl as unknown as typeof Shapes.lauxlib;
+/** `lualib` (LuaShapes.ts) over the wasm VM. */
+export const lualib = lualibImpl as unknown as typeof Shapes.lualib;
+export const LUA_WASM_VERSION = "PUC Lua 5.1.5 in WebAssembly (wasi-sdk 34.0)";
 
 /**
- * fengari-interop's scalar `push`: undefined/null → nil, boolean, number (5.1: always a double), string.
- * Like fengari-interop, it calls the VM directly rather than through the `lua` object, so a caller (or a
- * test) that wraps a method on `lua` does not see interop's own pushes.
+ * The scalar `push`: undefined/null → nil, boolean, number (5.1: always a double), string. It calls the
+ * VM directly rather than through the `lua` object (as fengari-interop's did), so a caller (or a test)
+ * that wraps a method on `lua` does not see these pushes.
  */
 export function push(L: LuaState, value: unknown): void {
   switch (typeof value) {
@@ -683,7 +683,7 @@ export function push(L: LuaState, value: unknown): void {
   }
 }
 
-/** fengari-interop's scalar `tojs`: nil → undefined, booleans, numbers, strings; anything else → undefined. */
+/** The scalar `tojs`: nil → undefined, booleans, numbers, strings; anything else → undefined. */
 export function tojs(L: LuaState, index: number): unknown {
   switch (x.lua_type(ptr(L), index)) {
     case T.BOOLEAN: return x.lua_toboolean(ptr(L), index) !== 0;

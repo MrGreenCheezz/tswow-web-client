@@ -14,7 +14,7 @@
  *  - `%s`: a JS string with no NUL, or a number as its "%.14g" text (lua51NumberText) — but only
  *    when no other item reads the same argument (luaL_checklstring converts it in place);
  *  - the text at most 1365 UTF-16 units, so its UTF-8 fits the callers' 4095-byte buffer.
- * Argument strings reached the binding through fengari's decoder and the full path would encode
+ * Argument strings reached the binding through the API's lossy decoder and the full path would encode
  * them back to the same bytes, so a JS string in, a JS string out, is the same text.
  */
 import { lua51NumberText } from "./GlueLuaBase51.js";

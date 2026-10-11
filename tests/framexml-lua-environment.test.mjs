@@ -7,9 +7,6 @@ import test from "node:test";
 // secure snippet with `setfenv(def, {})` / `setfenv(def, env)` (:96, :103).
 const { FrameXmlBoot } = await import("../dist/code/browser/framexml/FrameXmlBoot.js");
 const { createFixtureProvider } = await import("../dist/code/browser/glue/GlueLoader.js");
-const { LUA51_NATIVE } = await import("../dist/code/browser/lua/LuaVm.js");
-// ARC-4: PUC 5.1's luaL_argerror names a C function called straight through pcall '?'.
-const viaPcall = (name) => (LUA51_NATIVE ? "\\?" : name);
 
 async function boot(source) {
   const instance = new FrameXmlBoot({
@@ -58,7 +55,8 @@ test("newproxy makes userdata whose metatable a proxy can share, as 5.1's base l
     assert.equal(global(instance, "SHARED"), true);
     assert.equal(global(instance, "HELLO"), "world");
     assert.equal(global(instance, "BARE"), true);
-    assert.match(String(global(instance, "BAD")), new RegExp(`bad argument #1 to '${viaPcall("newproxy")}' \\(boolean or proxy expected\\)`));
+    // ARC-4: PUC 5.1's luaL_argerror names a C function called straight through pcall '?'.
+    assert.match(String(global(instance, "BAD")), /bad argument #1 to '\?' \(boolean or proxy expected\)/);
     assert.match(String(global(instance, "FOREIGN")), /boolean or proxy expected/);
     assert.equal(global(instance, "HIDDEN"), true);
     assert.equal(global(instance, "KIND"), "handle");
@@ -104,7 +102,7 @@ test("setfenv and getfenv give one function its own globals, as RestrictedExecut
     assert.equal(global(instance, "STILL_Y"), 2);
     assert.equal(global(instance, "LEVEL1"), "7");
     assert.match(String(global(instance, "C_FUNCTION")), /'setfenv' cannot change environment of given object/);
-    assert.match(String(global(instance, "NOT_TABLE")), new RegExp(`bad argument #2 to '${viaPcall("setfenv")}' \\(table expected`));
+    assert.match(String(global(instance, "NOT_TABLE")), /bad argument #2 to '\?' \(table expected/);
   } finally {
     instance.close();
   }

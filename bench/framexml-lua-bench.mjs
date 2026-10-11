@@ -1,6 +1,6 @@
-// P1-14 step 0: the offline stand for the fengari bridge's hot spots (docs/implementation/line-P-P1.ru.md,
-// P1-14). Node only — no browser, Vite or gateway; the stock FrameXML vertical over the canned seam and
-// the client's own MPQ chain.
+// P1-14 step 0: the offline stand for the Lua bridge's hot spots (docs/implementation/line-P-P1.ru.md,
+// P1-14; written for fengari, the VM before ARC-4 — the wasm VM since). Node only — no browser, Vite or
+// gateway; the stock FrameXML vertical over the canned seam and the client's own MPQ chain.
 //
 //   node --import ./tools/register-test-sources.mjs bench/framexml-lua-bench.mjs
 //     --scenario stock|decode|format|iter|api|string|tooltip|cooldowns

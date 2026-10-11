@@ -433,7 +433,7 @@ test("main.ts chooses the front door once and loads the Lua VM only when it wins
   const source = await readFile(mainSource, "utf8");
   assert.match(source, /frontDoorMode\(frontDoorSearch, storedFrontDoorMode\(globalThis\.localStorage\)\)/);
   assert.match(source, /import\("\.\/glue\/FrontDoorHost\.js"\)/,
-    "the glue runtime is a dynamic import, so legacy mode never fetches fengari");
+    "the glue runtime is a dynamic import, so legacy mode never fetches the Lua VM");
   assert.doesNotMatch(source, /^import .*glue\/(Bootstrap|FrontDoorHost)\.js/m,
     "…which a static import would defeat");
   assert.match(source, /loginPanel\.hidden = true/);

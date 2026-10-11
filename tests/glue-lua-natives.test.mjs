@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { LUA51_NATIVE, lua } from "../dist/code/browser/lua/LuaVm.js";
+import { lua } from "../dist/code/browser/lua/LuaVm.js";
 
-// Plan item 3.27 (03.10, L5): `next` and `strsplit` as the host C functions of GlueLuaNatives.ts.
+// Plan item 3.27 (03.10, L5): `strsplit` as the host C function of GlueLuaNatives.ts, and `next` (a host
+// function for fengari's 5.3 until ARC-4 A6, 12.10; PUC 5.1's own on the wasm VM).
 const { GlueLuaVm } = await import("../dist/code/browser/glue/GlueLua.js");
 
 function run(vm, source) {
@@ -104,7 +105,7 @@ test("next walks the array run first, ascending, then the rest — without measu
     `);
     assert.equal(vm.getGlobal("__steps"), 3001);
     assert.ok(vm.getGlobal("__rawgets") < 20 * 3001, `rawget calls: ${vm.getGlobal("__rawgets")}`);
-    // …and the host side measures the run once per walk, not once per step.
+    // …and no host-side array read per step (PUC's next makes none; fengari's host next measured once per walk).
     const rawgeti = lua.lua_rawgeti;
     let reads = 0;
     lua.lua_rawgeti = (...args) => { reads += 1; return rawgeti(...args); };
@@ -126,7 +127,7 @@ test("next walks the array run first, ascending, then the rest — without measu
     `);
     assert.equal(vm.getGlobal("__secure"), "1=a,2=b");
     // ARC-4: PUC 5.1's luaL_argerror names a C function called straight through pcall '?'.
-    assert.match(String(vm.getGlobal("__bad")), LUA51_NATIVE ? /bad argument #1 to '\?' \(table expected/ : /bad argument #1 to 'next' \(table expected/);
+    assert.match(String(vm.getGlobal("__bad")), /bad argument #1 to '\?' \(table expected/);
   } finally {
     vm.close();
   }

@@ -1,506 +1,22 @@
 import {
-  LUA51_NATIVE, lauxlib, lua, lualib, push as pushInterop, to_jsstring, to_luastring, tojs as interopToJs, type LuaState,
+  lauxlib, lua, lualib, push as pushInterop, to_jsstring, to_luastring, tojs as interopToJs, type LuaState,
 } from "../lua/LuaVm.js";
 import { installGlueLuaNatives } from "./GlueLuaNatives.js"; // L5 3.27
 import { GLUE_LUA51_NATIVE_SHIMS } from "./GlueLua51NativeShims.js"; // ARC-4 A4
 import { luaStringToJs } from "./LuaStrings.js"; // P1-14b
 
-// Fengari's lua_Integer is a signed 32-bit value in the browser build. Keep the
-// integer path for ids/counts (so Lua 5.1-style tostring still says "1"), but
-// send safe integers outside that ABI range through the number interop path.
-const LUA_INTEGER_MIN = -2147483648;
-const LUA_INTEGER_MAX = 2147483647;
-
-/**
- * The Lua 5.1 compatibility preamble, measured against this client's own
- * `Interface\GlueXML` corpus rather than against a wiki list.
- *
- * fengari is Lua 5.3. The corpus is 3.3.5a Lua 5.1 with Blizzard's flattened
- * "C globals" on top, so three separate gaps have to be closed and each entry
- * below exists because a real file calls it:
- *
- *  - 5.1 aliases Blizzard flattened into globals: `strlen` (51 call sites),
- *    `format` (25), `strupper` (11), `tinsert` (10), `strsub` (8), `getglobal`
- *    (9), `unpack` (2), `strbyte`/`strchar` (AceSerializer), `strfind`, `gsub`,
- *    `gmatch`, `tremove`, `tconcat`, `getn`, `sort`.
- *  - `math`/`os` members promoted to globals: `max` (32), `time` (27), `mod`
- *    (21), `min` (16), `floor` (14), `date` (4), `random` (3), `ceil` (3),
- *    `abs` (1), plus `math.frexp`, which 5.3 removed and AceSerializer calls.
- *  - Blizzard's error/secure vocabulary: `seterrorhandler` (GlueBasicControls),
- *    `securecall` (10), `issecure`, `debuginfo`, `message`.
- *
- * Deliberately absent, and this is a measurement, not an omission:
- * `setfenv`/`getfenv` have **zero** call sites in the corpus (grep over all 70
- * files, .lua bodies and inline XML script bodies alike), so the `_ENV`
- * upvalue surgery they would need in 5.3 is not implemented. `loadstring`,
- * `wipe`, `strsplit`, `strjoin` and `strtrim` are likewise unused; the cheap
- * one-line aliases are still provided because a custom login screen is the
- * kind of file that grows one, and an alias costs nothing.
- *
- * A fourth gap is not a missing name but a different *order*: `next`/`pairs`
- * walk a table differently in fengari than in PUC-Lua, and the owner's login
- * screen depends on PUC's. See the shim itself for the measurement.
- *
- * Two 5.3-vs-5.1 divergences cannot be aliased away and are handled here:
- * `string.format("%d", 3.7)` is a hard error in 5.3 (5.1 truncated), and
- * `tostring(6/2)` is `"3.0"` in 5.3 against `"3"` in 5.1. `tostring` is
- * wrapped here; `format` is a native host function since 05.10 (3.27,
- * `GlueLuaFormat.ts`). The remaining hole: `"x"..(6/2)` still concatenates as
- * `x3.0`, because 5.3 coerces numbers to strings inside the VM where no
- * metamethod can intercept it.
- */
-const LUA51_SHIMS = `
-local _format, _tostring = string.format, tostring
-
--- The corpus runs behind the same capability boundary the rest of
--- framexml_compat maintains. Only the three os functions it actually calls
--- survive; the file, loader and package surface is removed outright, so a
--- third-party library shipped inside a patch archive (LibDeflate,
--- AceSerializer) cannot reach the host filesystem or load more code.
-local _date, _time, _clock, _traceback = os.date, os.time, os.clock, debug.traceback
-os = { date = _date, time = _time, clock = _clock }
-debug = { traceback = _traceback }
-io, package, require, dofile, loadfile = nil, nil, nil, nil, nil
-
--- 5.1 truncated a float for an integer conversion; 5.3 raises. Truncate the
--- arguments that reach an integer specifier so the corpus' arithmetic (which
--- divides, and so produces floats) formats instead of erroring. \`%%\` is
--- stepped over explicitly: it consumes no argument, and counting it would
--- shift every later specifier onto the wrong value.
--- Blizzard's own extension to \`format\`: a specifier may name which argument it
--- takes, as \`%2$s %1$d\`. Localisers need it because word order changes between
--- languages, and this client is ruRU: measured, the corpus' own
--- \`CHARACTER_SELECT_INFO\` is "%2$s %1$d-го уровня" and
--- \`CHARACTER_SELECT_INFO_GHOST\` is "%2$s %1$d-го уровня (Призрак)", against
--- the enUS "Level %d %s" with no positions at all. PUC-Lua has never had it and
--- raises "invalid option '%5' to 'format'", which is what the character list
--- died of. Rewritten here into the plain form with the arguments reordered, so
--- exactly one implementation of the rest of the shim has to exist.
-local function _positional(fmt, args)
-  local out, values, taken, index, position = {}, {}, 0, 0, 1
-  while true do
-    local start = string.find(fmt, "%%", position)
-    if not start then
-      out[#out + 1] = string.sub(fmt, position)
-      break
-    end
-    out[#out + 1] = string.sub(fmt, position, start - 1)
-    if string.sub(fmt, start + 1, start + 1) == "%" then
-      out[#out + 1] = "%%"
-      position = start + 2
-    else
-      local argnum, rest, stop = string.match(fmt, "^%%(%d+)%$([-+ #0-9.]*%a)()", start)
-      if argnum then
-        index = tonumber(argnum)
-        out[#out + 1] = "%" .. rest
-        position = stop
-      else
-        local spec, plain = string.match(fmt, "^(%%[-+ #0-9.]*%a)()", start)
-        if not spec then
-          -- Not a specifier at all; copy the character and carry on rather than
-          -- swallowing the rest of the string.
-          out[#out + 1] = string.sub(fmt, start, start)
-          position = start + 1
-        else
-          index = index + 1
-          out[#out + 1] = spec
-          position = plain
-        end
-      end
-      if position > start + 1 then
-        taken = taken + 1
-        values[taken] = args[index]
-      end
-    end
-  end
-  return table.concat(out), values, taken
-end
-
--- What one format string needs, worked out once and cached (02.10, measured: re-scanning the
--- string on every call was 60 % of a stock combat-log line). \`true\`: nothing to rewrite, the
--- arguments go straight through. Otherwise { fmt = rewritten, src = argument index per slot
--- (positional only), count = slots (positional only), ints = slots of integer specifiers }.
--- L5b 3.27: also kinds (per ints entry: 1 for d/i, 2 for o/u/x/X), chars = slots of %c and charKinds.
-local _plans, _planCount = {}, 0
-local _type, _tonumber, _floor, _mathtype, _unpack, _huge = type, tonumber, math.floor, math.type, table.unpack, math.huge
-local _identity = setmetatable({}, { __index = function(_, key) return key end })
-local function _plan(fmt)
-  local work, src, count = fmt, nil, nil
-  if string.find(fmt, "%%%d+%$") then
-    work, src, count = _positional(fmt, _identity)
-  end
-  local ints, index, position = nil, 0, 1
-  local kinds, chars, charKinds, cuts = nil, nil, nil, nil -- L5b 3.27
-  while true do
-    local start = string.find(work, "%%", position)
-    if not start then break end
-    if string.sub(work, start + 1, start + 1) == "%" then
-      position = start + 2
-    else
-      local spec, stop = string.match(work, "^%%[-+ #0-9.]*(%a)()", start)
-      position = stop or (start + 2)
-      if spec then
-        index = index + 1
-        if spec == "c" then
-          -- L5b 3.27: a %c item becomes a plain %s of the text _cast makes; its kind { padding, left }.
-          local flags, width = string.match(work, "^%%([-+ #0]*)(%d*)", start)
-          local left = string.find(flags, "-", 1, true) ~= nil
-          local pad = (not left and string.find(flags, "0", 1, true)) and "0" or " "
-          chars, charKinds, cuts = chars or {}, charKinds or {}, cuts or {}
-          chars[#chars + 1] = index
-          charKinds[#chars] = { string.rep(pad, (tonumber(width) or 1) - 1), left }
-          cuts[#cuts + 1] = start
-          cuts[#cuts + 1] = stop
-        elseif spec == "d" or spec == "i" or spec == "u" or spec == "o" -- L5b 3.27: %c above (was here)
-           or spec == "x" or spec == "X" then
-          ints = ints or {}
-          ints[#ints + 1] = index
-          -- L5b 3.27: how the client's str_format casts the slot (_cast): 1 for d/i, 2 for o/u/x/X.
-          kinds = kinds or {}
-          kinds[#ints] = (spec == "d" or spec == "i") and 1 or 2
-        end
-      end
-    end
-  end
-  if cuts ~= nil then -- L5b 3.27: the last item first, so the earlier positions hold
-    for at = #cuts - 1, 1, -2 do
-      work = string.sub(work, 1, cuts[at] - 1) .. "%s" .. string.sub(work, cuts[at + 1])
-    end
-  end
-  if src == nil and ints == nil and chars == nil then return true end -- L5b 3.27: chars
-  return { fmt = work, src = src, count = count, ints = ints, kinds = kinds, chars = chars, charKinds = charKinds } -- L5b 3.27
-end
-
--- L5b 3.27: Wow.exe's str_format (0x00853c50) reads an integer slot as a double and casts it like C:
--- %d/%i/%c through __ftol2_sse (0x0088b9c0, cvttsd2si) — toward zero, and outside the int32 range,
--- NaN and the infinities alike, -2147483648; %o/%u/%x/%X through FISTP with the chop mode — toward
--- zero into 64 bits, the low 32 kept, 0 outside the int64 range. A %c prints the int's low byte,
--- padded to its width, and luaL_addstring stops at a zero byte: only padding before it stays. The
--- shim used to floor (format("%d", -3.7) was -4) and passed what has no int32 form to fengari,
--- which raised; fengari's own %c ignored the width.
-local _ceil, _strchar, _int32, _int64, _uint32 = math.ceil, string.char, 2^31, 2^63, 2^32
-local function _cast(value, kind)
-  if value ~= value then
-    value = kind == 2 and 0 or -_int32
-  else
-    if value >= 0 then value = _floor(value) else value = _ceil(value) end
-    if kind == 2 then
-      if value >= _int64 or value < -_int64 then
-        value = 0
-      else
-        value = value % _uint32
-        if value >= _int32 then value = value - _uint32 end
-      end
-    elseif value >= _int32 or value < -_int32 then
-      value = -_int32
-    end
-  end
-  if _type(kind) == "table" then
-    value = value % 256
-    local pad, left = kind[1], kind[2]
-    if value == 0 then return left and "" or pad end
-    if left then return _strchar(value) .. pad end
-    return pad .. _strchar(value)
-  end
-  return value
-end
-
--- 05.10-3.27: replaced after this chunk by Wow.exe's str_format (GlueLuaFormat.ts, installed from
--- installGlueLuaNatives); this Lua version is no longer reachable from the VM.
-function string.format(fmt, ...)
-  local count = select("#", ...)
-  if type(fmt) ~= "string" or count == 0 then return _format(fmt, ...) end
-  local plan = _plans[fmt]
-  if plan == nil then
-    if _planCount >= 1024 then _plans, _planCount = {}, 0 end
-    plan = _plan(fmt)
-    _plans[fmt] = plan
-    _planCount = _planCount + 1
-  end
-  if plan == true then return _format(fmt, ...) end
-  local args = {...}
-  local src = plan.src
-  if src ~= nil then
-    local values = {}
-    count = plan.count
-    for slot = 1, count do values[slot] = args[src[slot]] end
-    args = values
-  end
-  local ints = plan.ints
-  if ints ~= nil then
-    for slot = 1, #ints do
-      local index = ints[slot]
-      local value = args[index]
-      -- An integer already is what the cast would make of it.
-      if _mathtype(value) ~= "integer" then
-        if _type(value) == "string" then value = _tonumber(value) end
-        if _type(value) == "number" then
-          -- L5b 3.27 (was the floor of a finite value): from 0 to 2^31 every cast is the floor.
-          if value >= 0 and value < _int32 then args[index] = _floor(value)
-          else args[index] = _cast(value, plan.kinds[slot]) end
-        end
-      end
-    end
-  end
-  local chars = plan.chars -- L5b 3.27: each %c, now a %s of _cast's text
-  if chars ~= nil then
-    local charKinds = plan.charKinds
-    for slot = 1, #chars do
-      local index = chars[slot]
-      local value = args[index]
-      if _type(value) == "string" then value = _tonumber(value) or value end
-      if _type(value) ~= "number" then
-        -- As luaL_checknumber would: the %s it became would print anything.
-        local given = src ~= nil and src[index] or index
-        error("bad argument #" .. (given + 1) .. " to 'format' (number expected, got "
-          .. (given > select("#", ...) and "no value" or _type(value)) .. ")", 2)
-      end
-      args[index] = _cast(value, charKinds[slot])
-    end
-  end
-  return _format(plan.fmt, _unpack(args, 1, count))
-end
-
--- 5.1 printed a whole float as "3"; 5.3 prints "3.0". Glue text is assembled
--- from these, so restore the 5.1 spelling for integral floats.
--- L5b 3.27: replaced after this chunk by the client's tostring (GlueLuaBase51.ts), "%.14g" for any number.
-function tostring(value)
-  if type(value) == "number" and value % 1 == 0 and value == value
-     and value ~= math.huge and value ~= -math.huge then
-    return _format("%d", value)
-  end
-  return _tostring(value)
-end
-
-string.gfind = string.gmatch
-math.mod = math.fmod
-math.pow = function(x, y) return x ^ y end
-table.getn = function(t) return #t end
-unpack = table.unpack
-
--- 5.1's \`table.insert(list, pos, value)\` did not bounds-check \`pos\`: its C body was
--- \`if (pos > e) e = pos\` and then a shift, so a position past the end simply grew the array and
--- left a hole. 5.2 added the check and turned that into a hard error.
---
--- The corpus depends on the old rule twice, both in \`lgzg.lua\`: \`Generate_M\` inserts each model
--- at its own index in \`ModelList\` (\`:187\`) and \`GetModelData\`/\`GetModel\` rebuild sparse lists
--- the same way (\`:381\`, \`:391\`, \`:406\`, \`:416\`) — the second pair genuinely skip indices, so
--- even a correctly ordered traversal lands past \`#t + 1\`. Measured: with the check in place the
--- owner's login scene raised «position out of bounds» once per frame and never lit a model.
-local _tinsert = table.insert
-function table.insert(list, ...)
-  if select("#", ...) < 2 then return _tinsert(list, ...) end
-  local pos, value = ...
-  local last = #list + 1
-  if pos > last then last = pos end
-  if pos >= 1 then
-    for index = last, pos + 1, -1 do list[index] = list[index - 1] end
-  end
-  list[pos] = value
-end
-loadstring = load
-
--- 5.3 dropped frexp; AceSerializer needs it to round-trip a double.
-function math.frexp(value)
-  if value == 0 or value ~= value or value == math.huge or value == -math.huge then return value, 0 end
-  local exponent = math.floor(math.log(math.abs(value), 2)) + 1
-  local mantissa = value / (2 ^ exponent)
-  -- log2 rounding can land one bit outside [0.5, 1); nudge it back.
-  while math.abs(mantissa) >= 1 do mantissa, exponent = mantissa / 2, exponent + 1 end
-  while math.abs(mantissa) < 0.5 do mantissa, exponent = mantissa * 2, exponent - 1 end
-  return mantissa, exponent
-end
-math.ldexp = function(mantissa, exponent) return mantissa * 2 ^ exponent end
-
-strlen, strsub, strupper, strlower = string.len, string.sub, string.upper, string.lower
-strfind, strmatch, strrep, strbyte, strchar = string.find, string.match, string.rep, string.byte, string.char
-format, gsub, gmatch, gfind = string.format, string.gsub, string.gmatch, string.gmatch
-tinsert, tremove, tconcat, sort, getn = table.insert, table.remove, table.concat, table.sort, table.getn
-abs, ceil, floor, max, min, mod, random, sqrt = math.abs, math.ceil, math.floor, math.max, math.min, math.fmod, math.random, math.sqrt
-date, time, clock = os.date, os.time, os.clock
-
-function strjoin(delimiter, ...) return table.concat({...}, delimiter) end
-function strconcat(...) return table.concat({...}) end
-function strtrim(text, chars)
-  chars = chars or " \\t\\r\\n"
-  return (tostring(text):gsub("^[" .. chars .. "]*(.-)[" .. chars .. "]*$", "%1"))
-end
-function strsplit(delimiter, text, limit)
-  local parts, start, count = {}, 1, 0
-  while true do
-    count = count + 1
-    if limit and count >= limit then break end
-    local from, to = string.find(text, delimiter, start, true)
-    if not from then break end
-    parts[#parts + 1] = string.sub(text, start, from - 1)
-    start = to + 1
-  end
-  parts[#parts + 1] = string.sub(text, start)
-  return table.unpack(parts)
-end
--- AccountLogin.lua calls this; 3.3.5 has it as a global helper, not in string.
-function strreplace(text, pattern, replacement)
-  return (string.gsub(text, pattern, replacement))
-end
-function wipe(t) for key in pairs(t) do t[key] = nil end return t end
-
--- Table traversal order.
---
--- The manual leaves \`next\`'s order unspecified, but the corpus was written
--- against PUC-Lua, which walks a table's array part in ascending order and only
--- then its hash part. fengari does neither. Measured on the exact shape
--- \`lgzg.lua\`'s \`ModelList\` has — named fields plus positional entries — the
--- traversal comes out hash-first and the array part *descending*:
--- \`loaded, blend_start_duration, max_scenes, sceneData, 3, 2, 1\`.
---
--- That is not cosmetic here. \`lgzg.lua:187\` is
--- \`table.insert(scene, num, newModel(...))\` with \`num\` taken straight from
--- \`pairs(ModelList)\`, and 5.3's \`table.insert\` rejects a position past
--- \`#t + 1\`. The first model the owner's login screen tried to build therefore
--- raised «bad argument #2 to 'insert' (position out of bounds)», \`Generate_M\`
--- died inside \`LoginScreen_OnLoad\`, and the screen ended up with no
--- background texture, no logo and none of its thirty models — measured, by
--- counting Model widgets in the live page: 85 from XML, 0 from Lua.
---
--- Restoring PUC's order is a shim of the same kind as the rest of this
--- preamble: walk the contiguous run 1..n first, then whatever else the table
--- holds, skipping the keys already handed out.
-local _next = next
-local function _isArrayKey(key, n)
-  return type(key) == "number" and key >= 1 and key <= n and key % 1 == 0
-end
-local function _arrayLength(t)
-  local n = 0
-  while rawget(t, n + 1) ~= nil do n = n + 1 end
-  return n
-end
-local function _afterArray(t, n, from)
-  local key, value = _next(t, from)
-  while key ~= nil and _isArrayKey(key, n) do key, value = _next(t, key) end
-  return key, value
-end
-function next(t, key)
-  local n = _arrayLength(t)
-  if key == nil then
-    if n > 0 then return 1, rawget(t, 1) end
-    return _afterArray(t, n, nil)
-  end
-  if _isArrayKey(key, n) then
-    if key < n then return key + 1, rawget(t, key + 1) end
-    return _afterArray(t, n, nil)
-  end
-  return _afterArray(t, n, key)
-end
--- \`pairs\` gets its own closure rather than returning \`next\`: the array length
--- is then measured once per loop instead of once per step, and a body that
--- clears the field it was just handed (the \`wipe\` idiom) cannot shrink the run
--- out from under the traversal.
--- L5b 3.27: replaced after this chunk by 5.1's pairs over the native next (GlueLuaBase51.ts).
-function pairs(t)
-  local n = _arrayLength(t)
-  -- No array run: the walk is exactly the raw one (02.10, measured on the combat log's hash-only
-  -- colour tables: the closure cost 186 instructions for four keys).
-  if n == 0 then return _next, t, nil end
-  local index, hashKey, inHash = 0, nil, false
-  return function()
-    if not inHash then
-      while index < n do
-        index = index + 1
-        local value = rawget(t, index)
-        if value ~= nil then return index, value end
-      end
-      inHash = true
-      local key, value = _afterArray(t, n, nil)
-      hashKey = key
-      return key, value
-    end
-    if hashKey == nil then return nil end
-    local key, value = _afterArray(t, n, hashKey)
-    hashKey = key
-    return key, value
-  end, t, nil
-end
-
-function getglobal(name) return _G[name] end
-function setglobal(name, value) _G[name] = value end
-
--- Taint is not modelled: this client runs the user's own interface files and
--- has no protected-function boundary to guard. securecall keeps the corpus'
--- call shape (and its error isolation), issecure answers honestly.
--- Every result, not the first one. \`OptionsFrameTemplates.lua\` wraps \`next\` in it —
--- \`local function SecureNext(elements, key) return securecall(next, elements, key) end\` — and
--- \`for i, element in SecureNext, categoryList do if ( not element.hidden )\` then indexed the
--- value \`next\` returned. Handing back only the key made that «attempt to index a nil value
--- (local 'element')» on the first iteration of every options list. The two-function shape is what
--- keeps a nil in the middle of the result list: \`{pcall(...)}\` plus \`#\` would truncate at one.
-local function __secureresults(ok, ...)
-  if not ok then geterrorhandler()((...)) return end
-  return ...
-end
-function securecall(func, ...)
-  if type(func) == "string" then func = _G[func] end
-  if type(func) ~= "function" then return end
-  return __secureresults(pcall(func, ...))
-end
-function issecure() return false end
-function debuginfo() end
-
--- fengari keeps no collector of its own and raises «lua_gc not implemented» for every
--- \`collectgarbage\` option. Client add-ons call it: MikScrollingBattleText runs
--- \`collectgarbage("collect")\` at the end of loading its profiles (MSBTProfiles.lua:2097), and the
--- raise took the rest of that function with it. The JavaScript engine owns the memory, so a
--- collection request is accepted and does nothing, and the counters answer 0 kilobytes; the tuning
--- options answer 5.1's defaults, and an unknown option still raises the way 5.1 does.
-local _gcOptions = { collect = 0, stop = 0, restart = 0, count = 0, step = true,
-  setpause = 200, setstepmul = 200, isrunning = true }
-function collectgarbage(option, argument)
-  option = option == nil and "collect" or option
-  local answer = _gcOptions[option]
-  if answer == nil then
-    error("bad argument #1 to 'collectgarbage' (invalid option '" .. tostring(option) .. "')", 2)
-  end
-  return answer
-end
-function gcinfo() return 0 end
-
--- 5.3's \`/\` always answers a float, and a numeric \`for\` whose *initial* value is one runs its
--- control variable as a float too. That is not cosmetic where the corpus builds a global's name
--- out of it: \`CharacterCreate.numClasses = select("#", ...)/3\` is \`10.0\` on this dataset, so
--- \`for i = CharacterCreate.numClasses + 1, MAX_CLASSES_PER_RACE\` starts at \`11.0\` and
--- \`_G["CharacterCreateClassButton"..i]\` looks up \`CharacterCreateClassButton11.0\`, which is nil.
--- \`CharacterCreateEnumerateClasses\` then died on \`:Hide()\` (\`CharacterCreate.lua:233\`), taking
--- the rest of \`CharacterCreate_OnShow\` with it: no class buttons, no race labels and no backdrop
--- model — measured in the live page, where the creation screen came up with its XML placeholders.
---
--- 5.1 had one number type and spelled \`11.0\` as \`11\`, so the name the corpus builds is the name
--- the widget has. The lookup is repaired rather than the arithmetic, because the arithmetic is
--- the client's own and the divergence only ever shows here: a miss whose key ends in \`.0\` is
--- retried without it. \`rawget\`, so a chain of missing globals cannot recurse.
---
--- \`__index\` runs only on a miss, and the corpus misses globals on purpose — \`ABILITY_INFO_<race>n\`
--- is walked until it runs out — so this is one pattern match on a path that was already returning
--- nil, and nothing at all on a hit.
-setmetatable(_G, {
-  __index = function(globals, key)
-    if type(key) ~= "string" then return nil end
-    local whole = string.match(key, "^(.-)%.0$")
-    if whole == nil then return nil end
-    return rawget(globals, whole)
-  end,
-})
-`;
-
 /**
  * The part of Wow.exe 3.3.5a 12340's embedded «compat.lua» (text at 0x00a44980, read-only) that the
- * shims above do not already give. FrameScript_Initialize (0x00819bb0) runs that chunk last, in every
- * Lua state it makes: at client start (0x00404130 — the glue state) and at each game-UI start
- * (0x0052a980). `sin`, `cos`, `tan` take degrees and `asin`, `acos`, `atan`, `atan2` return them;
- * `deg`, `rad`, `exp`, `log`, `log10`, `frexp`, `ldexp` are the math library's; `foreach`,
+ * preamble (GlueLua51NativeShims.ts) does not already give. FrameScript_Initialize (0x00819bb0) runs that
+ * chunk last, in every Lua state it makes: at client start (0x00404130 — the glue state) and at each
+ * game-UI start (0x0052a980). `sin`, `cos`, `tan` take degrees and `asin`, `acos`, `atan`, `atan2` return
+ * them; `deg`, `rad`, `exp`, `log`, `log10`, `frexp`, `ldexp` are the math library's; `foreach`,
  * `foreachi`, `strrev`, `PI`; `string.trim/split/join/replace` point at `strtrim`, `strsplit`,
  * `strjoin`, `strreplace`, and the chunk's `wipe = table.wipe` means the table library has `wipe`.
- * fengari is Lua 5.3, so 5.1's `math.log10`, `math.atan2` and `table.foreach(i)` are supplied the
- * way 5.1 answered them. Without these the stock MainMenuBar_GetRightABPos (`sin(fraction*90)`,
- * MainMenuBar.lua:26) raised on a nil at every loading screen's PLAYER_ENTERING_WORLD.
+ * Without these the stock MainMenuBar_GetRightABPos (`sin(fraction*90)`, MainMenuBar.lua:26) raised on
+ * a nil at every loading screen's PLAYER_ENTERING_WORLD. The four `== nil` guards for 5.1's
+ * `math.log10`, `math.atan2` and `table.foreach(i)` were written for fengari's Lua 5.3; on PUC 5.1 they
+ * never fire (12.10: kept so the chunk's line numbers, which tracebacks through it show, stay as they are).
  */
 export const WOW_COMPAT_LUA = `
 local math, table, string = math, table, string
@@ -548,104 +64,11 @@ string.replace = strreplace
 `;
 
 /**
- * `lua_checkstack`, which fengari implements and its bundled types do not declare.
- *
- * Narrow rather than a blanket cast so the missing declaration is one line and is named: a C
- * function is promised `LUA_MINSTACK` slots, and anything that means to push more has to ask.
+ * `lua_checkstack`, named in one place: a C function is promised `LUA_MINSTACK` slots, and anything that
+ * means to push more has to ask.
  */
 function checkStack(state: LuaState, slots: number): boolean {
-  const api = lua as unknown as { lua_checkstack?: (state: LuaState, slots: number) => boolean };
-  return api.lua_checkstack ? api.lua_checkstack(state, slots) : true;
-}
-
-/** Escape characters Lua 5.3 accepts after a backslash inside a short string. */
-const LUA53_ESCAPES = new Set(["a", "b", "f", "n", "r", "t", "v", "\\", '"', "'", "x", "z", "u", "\n", "\r"]);
-
-/** `[[`, `[=[`, … — returns the level, or -1 when this is not a long bracket. */
-function longBracketLevel(source: string, offset: number): number {
-  if (source[offset] !== "[") return -1;
-  let level = 0;
-  let index = offset + 1;
-  while (source[index] === "=") {
-    level += 1;
-    index += 1;
-  }
-  return source[index] === "[" ? level : -1;
-}
-
-/**
- * Apply Lua 5.1's escape rule to a chunk 5.3 refuses to lex.
- *
- * 5.1's lexer dropped the backslash of an unknown escape and kept the
- * character; 5.2 made the same input a syntax error. The corpus depends on the
- * old rule: `Interface\SharedXML\SharedGlueStrings.lua` (from the server's own
- * `patch-ruRU-F`) contains `"… пароль? \Небезопасно …"` and the same bug again
- * in its deDE line, and the real client loads that file. Under 5.3 it would
- * take the whole chunk — and with it every string the login screen localises —
- * out of the run.
- *
- * The rewrite is confined to short string literals: comments and long-bracket
- * strings are copied through untouched, and every escape 5.3 already
- * understands is preserved, so nothing that lexes today can change meaning.
- */
-export function relaxLua51Escapes(source: string): { readonly source: string; readonly rewrites: number } {
-  let out = "";
-  let index = 0;
-  let rewrites = 0;
-  const length = source.length;
-  const copyLongBracket = (start: number, level: number): number => {
-    const closing = `]${"=".repeat(level)}]`;
-    const end = source.indexOf(closing, start);
-    const stop = end < 0 ? length : end + closing.length;
-    out += source.slice(start, stop);
-    return stop;
-  };
-  while (index < length) {
-    const char = source[index]!;
-    if (char === "-" && source[index + 1] === "-") {
-      const level = longBracketLevel(source, index + 2);
-      if (level >= 0) {
-        out += "--";
-        index = copyLongBracket(index + 2, level);
-        continue;
-      }
-      const end = source.indexOf("\n", index);
-      const stop = end < 0 ? length : end;
-      out += source.slice(index, stop);
-      index = stop;
-      continue;
-    }
-    const level = longBracketLevel(source, index);
-    if (level >= 0) {
-      index = copyLongBracket(index, level);
-      continue;
-    }
-    if (char === '"' || char === "'") {
-      out += char;
-      index += 1;
-      while (index < length) {
-        const inner = source[index]!;
-        if (inner === "\\") {
-          const next = source[index + 1];
-          if (next !== undefined && (LUA53_ESCAPES.has(next) || (next >= "0" && next <= "9"))) {
-            out += inner + next;
-          } else {
-            rewrites += 1;
-            out += next ?? "";
-          }
-          index += 2;
-          continue;
-        }
-        out += inner;
-        index += 1;
-        if (inner === char || inner === "\n") break;
-      }
-      continue;
-    }
-    out += char;
-    index += 1;
-  }
-  return { source: out, rewrites };
+  return lua.lua_checkstack(state, slots);
 }
 
 export interface GlueLuaOptions {
@@ -692,9 +115,9 @@ const LUA_OK = 0;
  *
  * One VM per glue session. It owns the state, the 5.1 shim preamble, the
  * error-handler protocol the corpus installs from `GlueBasicControls.xml`, and
- * the marshalling seams the widget layer and the C-API plug into. It never
- * opens fengari-interop's `js` library, so no chunk it runs can reach `window`,
- * `document`, fetch or WebSocket except through a binding registered here.
+ * the marshalling seams the widget layer and the C-API plug into. The VM has no
+ * `js` library, so no chunk it runs can reach `window`, `document`, fetch or
+ * WebSocket except through a binding registered here.
  */
 export class GlueLuaVm {
   readonly #state: LuaState;
@@ -709,18 +132,16 @@ export class GlueLuaVm {
   #fresh: GlueLuaRef | undefined;
   /** Errors that reached no handler; kept so a loader can report them. */
   readonly errors: string[] = [];
-  /** Chunks that only lexed after Lua 5.1's unknown-escape rule was applied. */
-  readonly relaxedChunks: string[] = [];
 
   constructor(options: GlueLuaOptions = {}) {
     this.#options = options;
     this.#state = lauxlib.luaL_newstate();
     lualib.luaL_openlibs(this.#state);
     this.installErrorProtocol();
-    // ARC-4 A4: on the 5.1 VM its own library stands; the 5.3 emulations are fengari's alone.
-    const shimmed = this.execute(LUA51_NATIVE ? GLUE_LUA51_NATIVE_SHIMS : LUA51_SHIMS, "@GlueLua:shims");
+    // ARC-4: PUC 5.1's own library stands; the preamble adds Blizzard's vocabulary (GlueLua51NativeShims.ts).
+    const shimmed = this.execute(GLUE_LUA51_NATIVE_SHIMS, "@GlueLua:shims");
     if (!shimmed.ok) throw new Error(`glue Lua shims failed to load: ${shimmed.error}`);
-    installGlueLuaNatives(this.#state); // L5 3.27: `next` in O(n), Wow.exe's `strsplit` (GlueLuaNatives.ts)
+    installGlueLuaNatives(this.#state); // L5 3.27: Wow.exe's `strsplit` and `string.format` (GlueLuaNatives.ts)
     const compat = this.execute(WOW_COMPAT_LUA, "@GlueLua:compat");
     if (!compat.ok) throw new Error(`glue Lua compat failed to load: ${compat.error}`);
   }
@@ -730,7 +151,7 @@ export class GlueLuaVm {
   }
 
   get luaVersion(): string {
-    return "Lua 5.3 (fengari) with a measured 5.1 compatibility layer";
+    return "PUC Lua 5.1.5 (WebAssembly) with Blizzard's 3.3.5a globals";
   }
 
   setTableDecoder(decoder: GlueLuaTableDecoder | undefined): void {
@@ -748,9 +169,9 @@ export class GlueLuaVm {
   }
 
   /**
-   * Whether `close()` has run. fengari throws on the first touch of a closed state («Cannot set
-   * properties of null»), so host callbacks that can outlive the VM — a tooltip redraw waiting on
-   * a late item row — ask this before calling in, rather than probing with a call that throws.
+   * Whether `close()` has run. A closed state must not be touched again (its memory is freed; fengari,
+   * the VM before ARC-4, threw «Cannot set properties of null»), so host callbacks that can outlive the
+   * VM — a tooltip redraw waiting on a late item row — ask this before calling in.
    */
   get closed(): boolean {
     return this.#closed;
@@ -863,25 +284,13 @@ export class GlueLuaVm {
   }
 
   /**
-   * Load one chunk, retrying under Lua 5.1's escape rule if 5.3 refuses it.
-   *
-   * The retry is narrow on purpose: it fires only on the exact lexer error the
-   * old rule explains, and only for a chunk that would otherwise not run at
-   * all. Which chunks needed it is recorded rather than hidden, because it is a
-   * property of the corpus worth knowing.
+   * Load one chunk. 5.1's lexer drops the backslash of an unknown escape and keeps the character, as
+   * the client's does: `Interface\SharedXML\SharedGlueStrings.lua` (the server's `patch-ruRU-F`) has
+   * `"… пароль? \Небезопасно …"`. (Until ARC-4 A6, 12.10, fengari's 5.3 lexer refused it and a chunk
+   * was retried with such escapes rewritten.)
    */
   private loadBuffer(source: string, chunkName: string): number {
-    const L = this.#state;
-    const status = lauxlib.luaL_loadbuffer(L, to_luastring(source), null, to_luastring(chunkName));
-    if (status === LUA_OK) return status;
-    const message = lua.lua_tojsstring(L, -1) ?? "";
-    if (!/invalid escape sequence/i.test(message)) return status;
-    const relaxed = relaxLua51Escapes(source);
-    if (relaxed.rewrites === 0) return status;
-    lua.lua_pop(L, 1);
-    const retried = lauxlib.luaL_loadbuffer(L, to_luastring(relaxed.source), null, to_luastring(chunkName));
-    if (retried === LUA_OK) this.relaxedChunks.push(chunkName);
-    return retried;
+    return lauxlib.luaL_loadbuffer(this.#state, to_luastring(source), null, to_luastring(chunkName));
   }
 
   /** Run a chunk and send any failure through the corpus' error handler. */
@@ -1132,7 +541,7 @@ export class GlueLuaVm {
     return [...sources, ...this.#hostSources.slice().reverse()];
   }
 
-  /** Source and line only: a full traceback searches all globals for function names in Fengari. */
+  /** Source and line only, not a full traceback (fengari's searched all globals for function names). */
   callingLocation(excludedSource: string): string {
     const info = new lua.lua_Debug();
     for (let level = 0; level < 64 && lua.lua_getstack(this.#state, level, info); level += 1) {
@@ -1181,31 +590,16 @@ export class GlueLuaVm {
     return value;
   }
 
-  /** Push any host value. Scalars go through fengari-interop; the rest here. */
+  /** Push any host value. Scalars go through the API's scalar `push`; the rest here. */
   pushValue(value: unknown, state: LuaState = this.#state): void {
     const L = state;
     if (value === undefined || value === null) {
       lua.lua_pushnil(L);
       return;
     }
-    // ARC-4 A4: 5.1 (the wasm VM, Wow.exe) has one number type and prints 1 as "1" by itself; there a
-    // whole number is a plain double too, so -0 keeps its sign ("-0", as Wow.exe's "%.14g" prints it).
-    if (
-      !LUA51_NATIVE
-      && typeof value === "number"
-      && Number.isSafeInteger(value)
-      && value >= LUA_INTEGER_MIN
-      && value <= LUA_INTEGER_MAX
-    ) {
-      // A whole number crosses as a Lua *integer*, not as a float, and the difference is visible in
-      // the corpus' own text: 5.3 concatenates a float as "1.0", so `_G["CharSelectCharacterButton"
-      // ..index]` with the index this host had pushed looked up `CharSelectCharacterButton1.0` and
-      // indexed nil (`CharacterSelect.lua:305`, measured in the live page). 5.1 had one number type
-      // and printed "1". Everything the C API answers with that is conceptually a count, an index
-      // or an id is integral; `GetTime()` and the fade deltas are not, and stay floats.
-      lua.lua_pushinteger(L, value);
-      return;
-    }
+    // ARC-4 A4: 5.1 (Wow.exe's) has one number type and prints 1 as "1" by itself, so a whole number
+    // is a plain double too and -0 keeps its sign ("-0", as Wow.exe's "%.14g" prints it). (Under
+    // fengari's 5.3, until A6, a whole number was pushed as an integer so it did not print as "1.0".)
     if (typeof value === "boolean" || typeof value === "number" || typeof value === "string") {
       pushInterop(L, value);
       return;
@@ -1251,7 +645,7 @@ export class GlueLuaVm {
     const L = state;
     const type = lua.lua_type(L, index);
     if (type === lua.LUA_TNONE || type === lua.LUA_TNIL) return undefined;
-    // P1-14b: the string's bytes decoded without fengari's per-byte `+=` (LuaStrings.ts), same text.
+    // P1-14b: the string's bytes decoded without a per-byte `+=` (LuaStrings.ts), same text.
     if (type === lua.LUA_TSTRING) return luaStringToJs(lua.lua_tolstring(L, index)!);
     if (type === lua.LUA_TBOOLEAN || type === lua.LUA_TNUMBER) {
       return interopToJs(L, index);
@@ -1308,7 +702,7 @@ function TRACEBACK_HANDLER(state: LuaState): number {
 const NO_VALUES: readonly unknown[] = Object.freeze([]);
 
 /** The shim source, exported so a test can assert what is actually installed. */
-export const GLUE_LUA51_SHIM_SOURCE = LUA51_NATIVE ? GLUE_LUA51_NATIVE_SHIMS : LUA51_SHIMS;
+export const GLUE_LUA51_SHIM_SOURCE = GLUE_LUA51_NATIVE_SHIMS;
 
 /**
  * The shims this slice measured as load-bearing, with their corpus call counts.

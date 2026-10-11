@@ -29,10 +29,9 @@ HUD, книга заклинаний, чат, журнал боя, аддоны 
 - `src/browser/lua/LuaApi.ts` — фасад с именами и сигнатурами fengari (`lua`, `lauxlib`, `lualib`, `to_luastring`,
   `to_jsstring`, `push`/`tojs`), перенос `fengari-facade.mjs` в TS со строгими типами по `src/types/fengari*.d.ts`.
   `lua_topointer` — `Map<адрес, жетон>` с явным освобождением в `releaseFrame` (в прототипе жетоны не освобождались).
-- `src/browser/lua/LuaVm.ts` — выбор VM на время перехода: wasm по умолчанию, `?luavm=fengari` (и переменная для тестов)
-  — прежний путь. Девять файлов, импортирующих `fengari` (`GlueLua`, `GlueLuaBase51`, `GlueLuaFormat`, `GlueLuaNatives`,
-  `GlueWidgetFormat`, `GlueWidgets`, `FrameXmlEuropeanNumbers`, `FrameXmlLuaEnvironment`, `FrameXmlSavedVariables`),
-  импортируют его отсюда.
+- `src/browser/lua/LuaVm.ts` — точка, откуда модули glue и FrameXML берут API Lua. До A6 здесь был выбор VM
+  (`?luavm=fengari`, `WEBCLIENT_LUA_VM`); с 12.10 — только wasm. Типы API — `src/browser/lua/LuaShapes.ts`
+  (бывшие `src/types/fengari*.d.ts`).
 
 ## Этапы
 
@@ -43,7 +42,7 @@ HUD, книга заклинаний, чат, журнал боя, аддоны 
 | A3 | `LuaVm.ts`, переключение девяти файлов; fengari остаётся запасным | весь набор тестов на fengari без изменений; обязательные 14 файлов на wasm | нет |
 | A4 | Lua-тексты 5.1: `LUA51_SHIMS`, `FRAMEXML_LUA51_SHIMS`, нативные `next/pairs/tostring/fmod`, `setfenv/getfenv/newproxy`, защищённые обёртки — выбор по VM; переносимые исправления (`coroutine.running() or "main"`, `xpcall` с аргументами через замыкание) — для обеих VM | весь набор тестов на wasm; тесты JS-эмуляций 5.1 — только для пути fengari; разностный прогон всех ≈ 116 файлов корпуса | нет |
 | A5 | Браузер, Electron, стенд: ассет Vite, маршрут стенда для `.wasm`, сборка Electron и приложения игрока; замер `framexml-lua-bench` и кучи в браузере | загрузка glue и HUD в браузере и Electron без ошибок; стенд моста; снимки экрана glue/HUD до и после | нет |
-| A6 | Живая проверка → удаление fengari (`package.json`, `BROWSER_OPTIMIZED_DEPENDENCIES`, типы, запасной путь, тесты эмуляций) | живой чек-лист владельца; полный набор после удаления | **да**: живая проверка и разрешение удалить запасной путь |
+| A6 | Живая проверка → удаление fengari (`package.json`, `BROWSER_OPTIMIZED_DEPENDENCIES`, типы, запасной путь, тесты эмуляций) | живой чек-лист владельца; полный набор после удаления | **сделано 12.10** (проверка владельца 11.10, разрешение 12.10) |
 
 ## Риски и как их ловить
 
@@ -83,6 +82,19 @@ HUD, книга заклинаний, чат, журнал боя, аддоны 
 - **11.10:** владелец прошёл живую проверку в браузере (чек-лист 08.10, пункт ARC-4 — «+»; ошибок Lua нет, `bit`
   и сохранение привязок — «+»). Удаление запасного пути fengari ждёт отдельного разрешения владельца; Electron и
   приложение игрока вживую по-прежнему не проверены.
+- **12.10, A6:** по разрешению владельца fengari удалён. `LuaVm.ts` — только wasm (`LUA51_NATIVE`, `LUA_VM`, переключатель
+  и импорты fengari сняты); типы перенесены в `LuaShapes.ts`; из `GlueLua.ts` убраны 5.3-преамбула `LUA51_SHIMS`,
+  целочисленная ветка `pushValue` и повтор лексинга с правилом экранирования 5.1 (`relaxLua51Escapes`, `relaxedChunks` —
+  лексер 5.1 и так принимает неизвестное экранирование); из `FrameXmlBoot.ts` — `FRAMEXML_LUA51_SHIMS`; из
+  `GlueLuaNatives.ts`, `GlueLuaBase51.ts`, `FrameXmlLuaEnvironment.ts` — JS-эмуляции `next`, `tostring`, `ipairs`, `fmod`,
+  `setfenv`/`getfenv`/`newproxy`. Оставлено то, чем пользуется путь wasm: `lua51NumberText`, `strsplit`, родной
+  `string.format`. `package.json`/`package-lock.json` без `fengari`, `fengari-interop` и их зависимостей
+  (`readline-sync`, `sprintf-js`, `tmp`); `BROWSER_OPTIMIZED_DEPENDENCIES` = `["three"]`, без `FENGARICONF`. Тесты,
+  проверявшие только путь fengari (сравнение `bit` с fengari, бюджет инструкций и оракул `format` в `lua-shim-cost`,
+  тесты `relaxLua51Escapes`), удалены; развилки `LUA51_NATIVE` в тестах заменены ответом wasm. Боевая сборка Vite —
+  без кода fengari; `framexml.html` — 138 Lua-файлов без ошибок. Хвост: комментарий `tools/lua-wasm/wowbit.c:4`
+  ссылается на удалённый `FRAMEXML_LUA51_SHIMS` — поправить при следующей пересборке артефакта (правка исходника меняет
+  хеш в `BUILD.json`).
 
 ## Порядок работы
 

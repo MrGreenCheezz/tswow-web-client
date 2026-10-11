@@ -8,10 +8,10 @@ import { removeStampsUnder } from "./tools/source-stamp.mjs";
  * Browser dependencies are explicit so Vite never has to crawl the full application on startup.
  *
  * `optimizeDeps` runs with `noDiscovery: true`, so an undeclared CommonJS dependency is not
- * pre-bundled and the dev server serves it as raw CJS, which the browser cannot import. fengari and
- * fengari-interop are both CJS — the glue screen's Lua VM — so they have to be named here.
+ * pre-bundled and the dev server serves it as raw CJS, which the browser cannot import. (The Lua VM
+ * is `src/browser/lua/lua51.wasm`, an asset; until ARC-4 A6, 12.10, fengari's CJS packages were here.)
  */
-export const BROWSER_OPTIMIZED_DEPENDENCIES = Object.freeze(["three", "fengari", "fengari-interop"]);
+export const BROWSER_OPTIMIZED_DEPENDENCIES = Object.freeze(["three"]);
 
 /**
  * Generator inputs and local extracted caches are served/read on demand, never hot-reloaded.
@@ -204,15 +204,6 @@ export default defineConfig(({ mode }) => {
       include: [...BROWSER_OPTIMIZED_DEPENDENCIES],
       noDiscovery: true,
       holdUntilCrawlEnd: false,
-      esbuildOptions: {
-        // fengari's luaconf reads `process.env.FENGARICONF` at module top level, before any of the
-        // `typeof process === "undefined"` guards the rest of the library uses. The production
-        // build survives because rollup wraps the CJS init lazily; the dev prebundle executes it in
-        // the browser and dies with `process is not defined` before glue.html can draw a thing. The
-        // define folds the read into a literal at prebundle time, and only that read — the guarded
-        // uses stay guarded.
-        define: { "process.env.FENGARICONF": "undefined" },
-      },
     },
     server: {
       host: env.WEB_HOST || "127.0.0.1",

@@ -222,7 +222,6 @@ test("the real GlueXML corpus loads through the runtime with no Lua errors", wit
   console.log(`[glue corpus] files=${result.loaded.length} widgets=${runtime.bridge.frames.length} `
     + `templates=${result.templates.length} fonts=${runtime.bridge.fontStyles.length}`);
   console.log(`[glue corpus] skipped=${result.missing.join(", ")}`);
-  console.log(`[glue corpus] lua5.1-escape chunks=${runtime.vm.relaxedChunks.join(", ")}`);
   console.log(`[glue corpus] stub C-API=${stubs.global.join(", ")}`);
   console.log(`[glue corpus] stub methods=${stubs.method.join(", ")}`);
   assert.ok(stubs.global.length < 40, `stubbed C-API globals: ${stubs.global.length}`);

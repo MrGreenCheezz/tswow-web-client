@@ -96,8 +96,6 @@
   },
   "dependencies": {
     "@wowserhq/stormjs": "^0.4.1",
-    "fengari": "0.1.5",
-    "fengari-interop": "0.1.4",
     "pngjs": "^7.0.0",
     "three": "^0.185.1",
     "ws": "8.21.0"

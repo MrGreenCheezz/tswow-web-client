@@ -1,9 +1,9 @@
 /**
  * 3.27 (05.10): `string.format` as Wow.exe 3.3.5a (12340) has it — str_format 0x00853c50
- * (registration `format` 0x00a47900), as a host C function replacing the preamble's Lua shim
- * (GlueLua.ts, which rewrote positions and casts in Lua and handed the rest to fengari's 5.3
- * `string.format`). Notes: .runtime/re-2026-10-05/l327/f1.c, f2.txt (listing of 0x00853c50) and
- * .runtime/re-2026-10-04/l5b/h1.c.
+ * (registration `format` 0x00a47900), as a host C function in place of the VM's own (it first
+ * replaced a Lua shim that rewrote positions and casts and handed the rest to fengari's 5.3
+ * `string.format`, the VM before ARC-4). Notes: .runtime/re-2026-10-05/l327/f1.c, f2.txt (listing of
+ * 0x00853c50) and .runtime/re-2026-10-04/l5b/h1.c.
  *
  * The client's variant of 5.1's str_format, item by item:
  *  - `%%` is a percent sign; any other byte is copied.
@@ -36,7 +36,7 @@
  * a precision on an integer turns the `0` flag off; `#x` adds no prefix to a zero.
  *
  * Numbers that `%s`, `%q` and a number format string print are converted as `tostring` is
- * (lua51NumberText, "%.14g"): fengari's own conversion would write "3.0" for 6/2.
+ * (lua51NumberText, "%.14g").
  *
  * Cost: one pass over the format bytes per call, no plan cache; the result is assembled in a
  * module buffer and pushed once (lua_pushlstring copies it). Integer items and `%.Nf` (N ≤ 9) with
@@ -47,7 +47,7 @@
 import { lauxlib, lua as luaApi, to_luastring, type LuaState } from "../lua/LuaVm.js";
 import { lua51NumberText } from "./GlueLuaBase51.js";
 
-/** The C-API calls this file needs beyond src/types/fengari.d.ts; fengari implements each one. */
+/** The C-API calls this file needs beyond LuaShapes.ts; LuaApi.ts implements each one. */
 interface Lua53Calls {
   lua_tolstring(L: LuaState, index: number): Uint8Array | null;
   lua_pushlstring(L: LuaState, bytes: Uint8Array, length: number): void;

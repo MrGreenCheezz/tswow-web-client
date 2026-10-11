@@ -561,14 +561,14 @@ export interface GlueWidgetBinderOptions {
  * manufactured a method for every name would silently take the wrong branch.
  */
 export class GlueWidgetBinder implements LuaAddonRuntime {
-  readonly name = "glue-fengari";
+  readonly name = "glue-lua";
   readonly #vm: GlueLuaVm;
   readonly #bridge: FrameXmlUiBridge;
   readonly #options: GlueWidgetBinderOptions;
   readonly #refs = new Map<FrameXmlFrame, GlueLuaRef>();
   readonly #byId = new Map<number, FrameXmlFrame>();
   /**
-   * P1-14a: each bound widget's Lua table (fengari's `Table` object, as `lua_topointer` gives it) to
+   * P1-14a: each bound widget's Lua table (the token `lua_topointer` gives for it, LuaApi.ts) to
    * its frame, so decoding `self` reads no string key. `#byId` stays the fallback for a table that
    * merely carries a `__glueFrameId` (a copy of a frame's fields).
    */
@@ -1395,8 +1395,8 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
         spent = true;
         if (cancel !== undefined && state.cancelRefresh === cancel) state.cancelRefresh = undefined;
         // A redraw can outlive its HUD: `FrameXmlBoot.close` ends in `lua_close`, and the frames
-        // (a shown `ItemRefTooltip` among them) still read as visible afterwards. fengari throws on
-        // the first touch of a closed state («Cannot set properties of null», measured).
+        // (a shown `ItemRefTooltip` among them) still read as visible afterwards, and a closed state
+        // must not be touched (fengari, the VM before ARC-4, threw «Cannot set properties of null»).
         if (this.#vm.closed) return;
         const now = rows();
         if (!frame.visible || drawn.some((row, index) => now[index] !== row)) return;

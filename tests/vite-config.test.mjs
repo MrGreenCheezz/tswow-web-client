@@ -11,10 +11,9 @@ import {
 } from "../vite.config.mjs";
 
 test("development isolates dependency caches and ignores generator-scale trees", () => {
-  // fengari/fengari-interop are CommonJS and `noDiscovery: true` means an
-  // undeclared CJS dependency is never pre-bundled, so the glue screen's Lua VM
-  // has to be named here or the dev server hands the browser raw CJS.
-  assert.deepEqual(BROWSER_OPTIMIZED_DEPENDENCIES, ["three", "fengari", "fengari-interop"]);
+  // `noDiscovery: true` means an undeclared CJS dependency is never pre-bundled. The Lua VM is a wasm
+  // asset (ARC-4); fengari's CJS packages left this list with it (A6, 12.10).
+  assert.deepEqual(BROWSER_OPTIMIZED_DEPENDENCIES, ["three"]);
   for (const ignored of [
     "**/data/**",
     "**/CPPClientExample/**",

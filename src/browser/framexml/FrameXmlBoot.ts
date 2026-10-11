@@ -3,7 +3,6 @@ import { GlueLoader, type GlueFileProvider, type GlueLoadResult } from "../glue/
 import { GlueLuaVm, type GlueLuaOptions } from "../glue/GlueLua.js";
 import { createFrameXmlClock, type FrameXmlClockSource } from "./FrameXmlClock.js"; // L5 3.27
 import { FRAMEXML_LUA51_NATIVE_SHIMS } from "./FrameXmlLua51NativeShims.js"; // ARC-4 A4
-import { LUA51_NATIVE } from "../lua/LuaVm.js"; // ARC-4 A4
 import { installFrameXmlLuaEnvironment } from "./FrameXmlLuaEnvironment.js"; // L5 3.27
 import { installFrameXmlEuropeanNumbers } from "./FrameXmlEuropeanNumbers.js"; // 05.10-3.27b
 import {
@@ -195,7 +194,7 @@ export function installFrameXmlMicroButtonExerciseCompat(
  * FrameXML on the glue engine.
  *
  * Slice F1 is an inventory, not a working interface. It brings `Interface\FrameXML` up on exactly
- * the parts G2 built — the same fengari VM with the same measured Lua 5.1 shims, the same XML
+ * the parts G2 built — the same Lua VM with the same measured Lua 5.1 shims, the same XML
  * parser, the same widget bridge and the same handler environment — and answers, with numbers, what
  * the rest of the lane has to pay for. Nothing here tries to make a frame usable; everything here
  * exists to count.
@@ -235,9 +234,9 @@ const HANDLER_ENVIRONMENT: ReadonlySet<string> = new Set(HANDLER_ENVIRONMENT_NAM
  * the thing being measured. Only two things cross into the host, and both happen once per name —
  * the first-touch traceback, and the final report.
  *
- * The `_G` metatable this installs **replaces** the one `GlueLua.ts` sets up, so that module's rule
- * is carried forward explicitly rather than being lost: a global whose name was built out of 5.3
- * arithmetic is spelled `Name11.0`, and the miss is retried without the suffix.
+ * The `_G` metatable this installs keeps a rule from fengari's Lua 5.3 (the VM until ARC-4 A6, 12.10),
+ * where a global whose name was built out of arithmetic was spelled `Name11.0`: such a miss is retried
+ * without the suffix. PUC 5.1 builds no such name; the check costs a miss two byte reads.
  */
 const FRAMEXML_PRELUDE = `
 -- \`or {}\`, because the plan is seeded from the host *before* this runs and the locals below
@@ -281,9 +280,9 @@ end
 setmetatable(_G, {
   __index = function(globals, key)
     if type(key) ~= "string" then return nil end
-    -- GlueLua.ts' rule, kept: 5.3's \`/\` answers a float, so a global named out of one is
-    -- \`CharacterCreateClassButton11.0\`. rawget, so a chain of misses cannot recurse. Only a
-    -- name ending in ".0" is matched: every miss comes through here, and most are not that.
+    -- Kept from fengari's 5.3 (the VM until ARC-4 A6), whose \`/\` answered a float, so a global named
+    -- out of one was \`CharacterCreateClassButton11.0\`: retried without ".0" (rawget, so a chain of
+    -- misses cannot recurse). Only a name ending in ".0" is matched; most misses are not that.
     if byte(key, -1) == 48 and byte(key, -2) == 46 then
       local whole = match(key, "^(.-)%.0$")
       if whole ~= nil then return rawget(globals, whole) end
@@ -407,145 +406,6 @@ function __fxReport()
   local attrCalls = rawget(_G, "__fxAttrCalls")
   if attrCalls then
     for name, count in pairs(attrCalls) do __fxEmit("attr", name, count) end
-  end
-end
-`;
-
-/**
- * Lua 5.1 names the in-world corpus needs and the glue shim does not carry.
- *
- * Measured, one at a time, by the failure each one caused. They are *shims*, not stubs: the host
- * answers them honestly, so they never appear in the gold list.
- *
- * Full function-environment mutation remains absent — see `vm.setfenvSites` in the inventory.
- * The one root add-on call measured in this client is `getfenv(0)`, whose Lua 5.1 answer is exactly
- * `_G`; that safe, non-mutating form is supplied below without exposing the debug library.
- * L5 3.27 (03.10): `getfenv` and `newproxy` below are now stand-ins only — FrameXmlLuaEnvironment.ts
- * installs 5.1's `newproxy` (userdata), `setfenv` and `getfenv` over them right after this chunk.
- */
-const FRAMEXML_LUA51_SHIMS = `
--- The only environment lookup in the selected client add-ons is getfenv(0), used to capture the
--- global table before localising standard functions. Function/stack-level environment inspection
--- and setfenv remain unsupported because emulating those would require debug upvalue access.
-function getfenv(target)
-  if target == nil or target == 0 then return _G end
-  error("getfenv only supports level 0 in the browser client", 2)
-end
-
--- 3.3.5's hook protocol. Two shapes: (table, name, hook) and (name, hook) against _G. The original
--- runs the hook *after* the original and discards its results; the original's results are what the
--- caller gets back.
-function hooksecurefunc(target, name, hook)
-  if hook == nil then
-    target, name, hook = _G, target, name
-  end
-  if type(target) ~= "table" or type(hook) ~= "function" then return end
-  local original = target[name]
-  if type(original) ~= "function" then return end
-  target[name] = function(...)
-    local results = { original(...) }
-    hook(...)
-    return table.unpack(results)
-  end
-end
-
--- 5.1's newproxy, which 5.2 removed. RestrictedExecution.lua calls it at file scope
--- (\`local LOCAL_Restricted_Prototype = newproxy(true)\`), so without it that file dies on its
--- twenty-third line and takes the secure-handler layer with it. A table is not a userdata and
--- \`type()\` says so; that difference is recorded in the inventory rather than papered over.
-function newproxy(prototype)
-  local proxy = {}
-  if prototype == true then
-    setmetatable(proxy, {})
-  elseif type(prototype) == "table" then
-    setmetatable(proxy, getmetatable(prototype))
-  end
-  return proxy
-end
-
--- The taint vocabulary. This client models no taint (GlueLua.ts: \`issecure\` answers honestly),
--- so \`scrub\` is the identity it degrades to when nothing is tainted and \`forceinsecure\` is a
--- no-op. Both are named here rather than left to the stub floor because a stub returning nothing
--- would silently drop every argument \`scrub\` was given.
-function scrub(...) return ... end
-function forceinsecure() end
-function debugstack(level) return debug.traceback("", (level or 1) + 1) end
--- 3.3.5 publishes \`wipe\` twice: as a global (the glue preamble already has it)
--- and inside \`table\`. \`BuffFrame.lua:84\` calls the second spelling, and 5.3's
--- table library does not carry it, so the buff frame died on «attempt to call a
--- nil value (field 'wipe')». Same function, aliased — the vocabulary, not the API.
-table.wipe = wipe
-function debugprofilestart() end
-function debugprofilestop() return 0 end
-
--- LuaBitOp, which 3.3.5 links into its Lua 5.1 and 5.3 replaced with operators.
---
--- Measured need: \`bor\` 13, \`band\` 13, \`rshift\` 3, \`lshift\` 1 — and the first \`bor\` is
--- \`Constants.lua:286\`, ninety lines before that file defines \`PI\`, \`QuestDifficultyColors\` and
--- the rest of the constants every later file reads. Without this the corpus lost Constants.lua,
--- AutoComplete.lua and TalentFrameBase.lua outright and four more files to the cascade.
--- \`bnot\`/\`bxor\`/\`tobit\`/\`tohex\` are here because they cost four lines and a missing one would
--- be the same cascade again.
---
--- LuaBitOp normalises to a *signed* 32-bit result, which is what the corpus' own
--- \`COMBATLOG_OBJECT_NONE = 0x80000000\` comparisons expect.
---
--- fengari's integers are 32-bit, not 5.3's 64: \`0xFFFFFFFF\` reads as -1, \`1 << 31\` is negative, and a
--- number at or past 2^31 (a GUID half, a flag sum, \`3000000000\`) is a float that an integer operator
--- refuses ("number has no integer representation"). So every argument is brought into the signed
--- 32-bit range in float arithmetic first — floor, then modulo 2^32 — and only then meets \`&\`, \`|\`,
--- \`~\` or \`<<\`, which wrap the same way in fengari and in a 64-bit Lua once \`s32\` folds the result.
--- The shifts that must not sign-extend or must keep the sign are float divisions by 2^n.
-do
-  local floor, tonumber, select, tointeger = math.floor, tonumber, select, math.tointeger
-  local TWO32, TWO31 = 4294967296.0, 2147483648.0
-  local function s32(value)
-    local raw = floor(tonumber(value) or 0) % TWO32
-    if raw >= TWO31 then raw = raw - TWO32 end
-    return tointeger(raw) or 0
-  end
-  local function fold(operation, first, ...)
-    local result = s32(first)
-    for index = 1, select("#", ...) do
-      result = s32(operation(result, s32((select(index, ...)))))
-    end
-    return result
-  end
-  bit = {
-    tobit = function(value) return s32(value) end,
-    bnot = function(value) return s32(~s32(value)) end,
-    band = function(first, ...) return fold(function(a, b) return a & b end, first, ...) end,
-    bor = function(first, ...) return fold(function(a, b) return a | b end, first, ...) end,
-    bxor = function(first, ...) return fold(function(a, b) return a ~ b end, first, ...) end,
-    lshift = function(value, shift) return s32(s32(value) << (s32(shift) & 31)) end,
-    -- Logical: the unsigned value, divided down.
-    rshift = function(value, shift) return s32(floor((s32(value) % TWO32) / 2 ^ (s32(shift) & 31))) end,
-    -- Arithmetic, so a negative value keeps its sign: floor division by a power of two.
-    arshift = function(value, shift) return s32(floor(s32(value) / 2 ^ (s32(shift) & 31))) end,
-    -- Two 16-bit halves: \`%x\` of a negative integer is 8 digits in fengari but 16 in a 64-bit Lua.
-    tohex = function(value)
-      local unsigned = s32(value) % TWO32
-      return string.format("%04x%04x", floor(unsigned / 65536), unsigned % 65536)
-    end,
-  }
-end
-
--- The error census.
---
--- \`BasicControls.xml\` installs \`seterrorhandler(_ERRORMESSAGE)\` before any screen loads, and from
--- then on the invoke helper delivers every handler error *there* instead of to the VM's own sink —
--- so \`vm.errors\` sees only file-level failures. Measured on the first run of this slice: 15 in
--- \`vm.errors\` against 385 the corpus handled, which is the difference between an error census and
--- a rounding error. The corpus' handler still runs, unchanged, because what it does with an error
--- (\`LoadAddOn\`, \`IsAddOnLoaded\`, \`GetCVarBool\`) is itself part of the inventory.
-do
-  local install = seterrorhandler
-  function seterrorhandler(handler)
-    if type(handler) ~= "function" then return install(handler) end
-    return install(function(message)
-      __fxNoteError(tostring(message))
-      return handler(message)
-    end)
   end
 end
 `;
@@ -1074,9 +934,9 @@ export class FrameXmlBoot {
         throw new Error(`framexml character compat failed: ${characterCompatLoaded.error}`);
       }
     }
-    const shimsLoaded = this.vm.execute(LUA51_NATIVE ? FRAMEXML_LUA51_NATIVE_SHIMS : FRAMEXML_LUA51_SHIMS, `@${PRELUDE_CHUNK}:shims`);
+    const shimsLoaded = this.vm.execute(FRAMEXML_LUA51_NATIVE_SHIMS, `@${PRELUDE_CHUNK}:shims`);
     if (!shimsLoaded.ok) throw new Error(`framexml 5.1 shims failed: ${shimsLoaded.error}`);
-    // L5 3.27: 5.1's newproxy (userdata), setfenv and getfenv over the stand-ins above (FrameXmlLuaEnvironment.ts).
+    // L5 3.27: 5.1's newproxy, setfenv and getfenv, which the glue state lacks (FrameXmlLuaEnvironment.ts).
     installFrameXmlLuaEnvironment(this.vm.state);
     // 05.10-3.27b: SetEuropeanNumbers sets the `%F` flag of format and SetFormattedText (FrameXmlEuropeanNumbers.ts).
     installFrameXmlEuropeanNumbers(this.vm.state);
@@ -1886,8 +1746,8 @@ export class FrameXmlBoot {
     const executed = this.vm.chunkTimings;
     const errors = collectFailures(this.vm.errors, this.#handledErrors);
     // Which files name a VM-level facility at all. A whole-word text match over the corpus rather
-    // than a parse: the question is "does anything in here need it", and the answer decides whether
-    // the VM's Lua 5.3 core can carry FrameXML — a question worth over-reporting rather than under.
+    // than a parse: the question is "does anything in here need it" (under fengari's Lua 5.3, before
+    // ARC-4, it decided whether the VM could carry FrameXML) — worth over-reporting rather than under.
     const chunkSites = (name: string): string[] => {
       const pattern = new RegExp(`\\b${name}\\b`);
       const sites = new Set<string>();
@@ -1919,7 +1779,6 @@ export class FrameXmlBoot {
         executed: executed.filter((entry) => entry.ok).length,
         failed: executed.filter((entry) => !entry.ok).length,
         errorsRaised: this.vm.errors.length + this.#handledErrors.length,
-        relaxed: [...this.vm.relaxedChunks],
       },
       widgets: {
         // The probe frames are this slice's, not the corpus'.

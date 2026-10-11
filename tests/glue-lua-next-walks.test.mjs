@@ -1,16 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-// Plan item 3.27, review of L5 (04.10): the native `next` (GlueLuaNatives.ts) against Lua 5.1's
-// traversal contract — every key present when a walk starts and not cleared before its turn comes
-// exactly once, clearing any existing field during the walk allowed — with the walk interleaved
-// with other walks of the same table (`if next(t) then`, a nested `for k in next, t`), and against
-// the preamble's Lua `next` (the order oracle) on tables nothing changes.
+// Plan item 3.27, review of L5 (04.10): `next` against Lua 5.1's traversal contract — every key
+// present when a walk starts and not cleared before its turn comes exactly once, clearing any existing
+// field during the walk allowed — with the walk interleaved with other walks of the same table
+// (`if next(t) then`, a nested `for k in next, t`), and against the old preamble's Lua `next` (the
+// order oracle) on tables nothing changes. Written for the host `next` fengari's 5.3 had until ARC-4 A6
+// (12.10); on PUC 5.1 (the wasm VM) `next` is PUC's own.
 const { GlueLuaVm } = await import("../dist/code/browser/glue/GlueLua.js");
-const { lua: luaApi, to_luastring, LUA51_NATIVE } = await import("../dist/code/browser/lua/LuaVm.js");
+const { lua: luaApi, to_luastring } = await import("../dist/code/browser/lua/LuaVm.js");
 
-// L5b 3.27: `pairs({})` answers the native next now (5.1's pairs, GlueLuaBase51.ts), so the raw
-// walk these tests take their key sets from is a host function over lua_next.
+// L5b 3.27: the raw walk these tests take their key sets from is a host function over lua_next
+// (`pairs({})` answered fengari's host next, not a raw one).
 const RawGlueLuaVm = class extends GlueLuaVm {
   constructor() {
     super();
@@ -25,13 +26,11 @@ const RawGlueLuaVm = class extends GlueLuaVm {
 };
 
 /**
- * ARC-4: the keys a walk handed out. Under fengari the native next follows the emulation's order (the
- * oracle's); on PUC Lua 5.1 (the wasm VM) next is PUC's own and the hash part comes in PUC's order —
- * there the contract is the set, each key exactly once.
+ * ARC-4: the keys a walk handed out. On PUC Lua 5.1 next is PUC's own and the hash part comes in PUC's
+ * order, so the contract is the set, each key exactly once.
  */
 function assertWalk(actual, expected, message) {
-  if (LUA51_NATIVE) assert.deepEqual(String(actual).split(" ").sort(), expected.split(" ").sort(), message);
-  else assert.equal(actual, expected, message);
+  assert.deepEqual(String(actual).split(" ").sort(), expected.split(" ").sort(), message);
 }
 
 function run(vm, source) {
@@ -125,8 +124,7 @@ test("the walk's key may come back as a float: next(t, 1.0) after t[1] was clear
   }
 });
 
-test("a run the table has lost stays its array part: index order, and no scan of the empty slots", async () => {
-  const { lua } = await import("fengari");
+test("a run the table has lost stays its array part: every key once, pairs as next", () => {
   const vm = new RawGlueLuaVm(); // L5b 3.27
   try {
     run(vm, String.raw`
@@ -146,33 +144,6 @@ test("a run the table has lost stays its array part: index order, and no scan of
     // As PUC's array part, which clearing never shrinks: 3 and 50 by index, then the rest.
     assertWalk(vm.getGlobal("__order"), "3 50 a b 3001");
     assertWalk(vm.getGlobal("__pairs"), "3 50 a b 3001"); // L5b 3.27 (was "a 50 b 3001 3")
-    // ARC-4: what follows measures the JS next emulation (its index reads, its array-first answer);
-    // on PUC 5.1 (the wasm VM) next is PUC's own and has neither.
-    if (LUA51_NATIVE) return;
-    const rawgeti = lua.lua_rawgeti;
-    let reads = 0;
-    lua.lua_rawgeti = (...args) => { reads += 1; return rawgeti(...args); };
-    try {
-      run(vm, "__first = next(LOST) for _ in next, LOST do end");
-    } finally {
-      lua.lua_rawgeti = rawgeti;
-    }
-    assert.equal(vm.getGlobal("__first"), 3);
-    assert.ok(reads < 100, `index reads for a check and a walk of five keys: ${reads}`);
-    // The raw walk is the longer one: the index scan stops at the run's end, not at a key past it.
-    run(vm, String.raw`
-      local t = {}
-      for i = 1, 20 do t[i] = i end
-      for k in next, t do end
-      for i = 1, 20 do t[i] = nil end
-      for i = 1, 60 do t["h" .. i] = i end
-      t[21] = 21
-      local seen, count, dup = {}, 0, false
-      for k in next, t do if seen[k] then dup = true end seen[k] = true count = count + 1 end
-      __count, __dup = count, dup
-    `);
-    assert.equal(vm.getGlobal("__count"), 61);
-    assert.equal(vm.getGlobal("__dup"), false);
   } finally {
     vm.close();
   }

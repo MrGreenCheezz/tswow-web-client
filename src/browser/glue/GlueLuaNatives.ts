@@ -1,28 +1,5 @@
 /**
- * 3.27 (03.10, L5): two Lua globals the 5.1 preamble used to give in Lua, as host C functions.
- *
- * `next` — the preamble's `next` (GlueLua.ts) restores PUC-Lua's traversal order (the array run
- * 1..n ascending, then the rest) but measured the run again on every step: `_arrayLength` is a
- * `rawget` loop up to the first hole, so a walk with `next` was O(n²) — 2·10⁶ `rawget` calls for a
- * 2000-entry list (`SecureNext` in OptionsFrameTemplates.lua and InterfaceOptionsFrame.lua is
- * `securecall(next, …)`). Here the run is measured once per walk: `next(t, nil)` starts a walk and
- * forgets the table's length, the first step with a key measures it and remembers it in a WeakMap
- * keyed by the table (fengari has no weak tables; the map lets the table go). The order is the
- * preamble's — `pairs` measures once per loop as well, so `next` and `pairs` now agree on a table
- * changed during the walk: a cleared entry of the run is skipped rather than handed out as nil, and
- * no entry is handed out twice. The preamble's Lua `next` stays in its text as the oracle.
- *
- * L5-review (04.10): `next` has no walk of its own to remember the run in — `if next(t) then` or a
- * nested `for k in next, t` inside a walk is another walk of the same table — so the run is the
- * table's, like PUC's array part, which a cleared field never shrinks (only an insertion's rehash
- * does): it grows when a new walk that handed out `t[1]` finds entries right after it, and never
- * shrinks. Keys 1..n are then always walked by index and the rest by the raw order without 1..n,
- * so clearing any field, at any time, moves no key between the two (tests/glue-lua-next-walks: the
- * wipe that asks `next(t)` lost every key after the first, a nested walk past a cleared hole handed
- * keys out twice). A table nothing changes walks in the oracle's order; one whose run lost entries
- * since an earlier walk keeps them in index order, as PUC does. (L5b, 04.10: `pairs` is 5.1's now
- * and answers this `next` — GlueLuaBase51.ts — so a `pairs` loop walks every table as `next` does;
- * the preamble's measured its own run and walked such a table in raw order.)
+ * 3.27 (03.10, L5): Lua globals the preamble used to give in Lua, as host C functions.
  *
  * `strsplit(delimiters, text [, pieces])` — Wow.exe 3.3.5a (12340) 0x00816a60 (registration
  * 0x00a443c0; notes .runtime/re-2026-10-03/l5-runtime/g1.c): every byte of `delimiters` is a
@@ -32,163 +9,34 @@
  * strings — up to their first NUL byte. Too many pieces for the stack raise "strsplit(): Stack
  * overflow", as the client's does. The preamble's Lua version looked for the delimiter as one
  * substring and counted `pieces` one short.
+ *
+ * `string.format` / `format` — Wow.exe's str_format (GlueLuaFormat.ts).
+ *
+ * (Until ARC-4 A6, 12.10, this file also gave fengari's Lua 5.3 a host `next` in PUC's traversal order,
+ * and through GlueLuaBase51.ts 5.1's `tostring`, `pairs`, `ipairs` and `math.fmod`; PUC 5.1, the wasm
+ * VM, has its own.)
  */
-import { LUA51_NATIVE, lauxlib, lua as luaApi, to_luastring, type LuaState } from "../lua/LuaVm.js";
-import { installGlueLuaBase51 } from "./GlueLuaBase51.js"; // L5b
+import { lauxlib, lua as luaApi, to_luastring, type LuaState } from "../lua/LuaVm.js";
 import { installGlueLuaFormat } from "./GlueLuaFormat.js"; // 05.10-3.27
 
-/**
- * The C-API calls this file needs beyond src/types/fengari.d.ts, named one by one (as GlueLua's
- * `checkStack` names `lua_checkstack`); fengari implements every one of them.
- */
-interface Lua53Calls {
-  lua_isinteger(L: LuaState, index: number): boolean;
+/** The C-API calls this file needs beyond LuaShapes.ts, named one by one; LuaApi.ts implements each. */
+interface ExtraCalls {
   lua_replace(L: LuaState, index: number): void;
   lua_pushlstring(L: LuaState, bytes: Uint8Array, length: number): void;
 }
 interface AuxCalls {
-  luaL_checktype(L: LuaState, arg: number, type: number): void;
   luaL_checklstring(L: LuaState, arg: number): Uint8Array;
   luaL_checknumber(L: LuaState, arg: number): number;
 }
-const lua = luaApi as typeof luaApi & Lua53Calls;
+const lua = luaApi as typeof luaApi & ExtraCalls;
 const aux = lauxlib as typeof lauxlib & AuxCalls;
-
-/**
- * L5-review: each table's run n — keys 1..n are walked by index, the rest in raw order. It only
- * grows (see the header); `pending`: a walk began by handing out `t[1]`, and its step with key 1
- * looks for entries after the run.
- */
-const runs = new WeakMap<object, number>();
-const pending = new WeakSet<object>();
-
-/** `from`..n with no hole, n at least `from − 1`: the run the preamble's `_arrayLength` measures. */
-function arrayRun(L: LuaState, from = 1): number {
-  let n = from - 1;
-  while (lua.lua_rawgeti(L, 1, n + 1) !== lua.LUA_TNIL) {
-    lua.lua_pop(L, 1);
-    n += 1;
-  }
-  lua.lua_pop(L, 1);
-  return n;
-}
-
-/** An integer key inside 1..n — one the array phase hands out (`_isArrayKey`). */
-function runKey(L: LuaState, index: number, n: number): number {
-  if (lua.lua_type(L, index) !== lua.LUA_TNUMBER) return 0;
-  const key = lua.lua_tonumber(L, index);
-  return Number.isInteger(key) && key >= 1 && key <= n ? key : 0;
-}
-
-/** The rest of the table after the key at index 2 (nil: from the start), integers 1..n skipped. */
-function afterRun(L: LuaState, n: number): number {
-  for (;;) {
-    if (!lua.lua_next(L, 1)) {
-      lua.lua_pushnil(L);
-      return 1;
-    }
-    if (n > 0 && runKey(L, -2, n) !== 0) {
-      lua.lua_pop(L, 1);
-      continue;
-    }
-    return 2;
-  }
-}
-
-/**
- * L5-review: the smallest key of `from`..`to` the table holds, or 0. By index while the run is
- * dense; past a few holes the index scan and a raw walk of the table go in step and the first to
- * finish answers, so a long run the table has since lost costs what the table holds, not the run.
- */
-function firstInRun(L: LuaState, from: number, to: number): number {
-  let index = from;
-  for (const end = Math.min(to, from + 7); index <= end; index += 1) {
-    const held = lua.lua_rawgeti(L, 1, index) !== lua.LUA_TNIL;
-    lua.lua_pop(L, 1);
-    if (held) return index;
-  }
-  if (index > to) return 0;
-  let least = 0;
-  lua.lua_pushnil(L);
-  for (;;) {
-    if (index > to) {
-      lua.lua_pop(L, 1);
-      return 0;
-    }
-    const held = lua.lua_rawgeti(L, 1, index) !== lua.LUA_TNIL;
-    lua.lua_pop(L, 1);
-    if (held) {
-      lua.lua_pop(L, 1);
-      return index;
-    }
-    index += 1;
-    // Every key below `index` is absent, so whatever the raw walk finds is at least `index`.
-    if (!lua.lua_next(L, 1)) return least;
-    lua.lua_pop(L, 1);
-    if (lua.lua_type(L, -1) === lua.LUA_TNUMBER) {
-      const key = lua.lua_tonumber(L, -1);
-      if (Number.isInteger(key) && key >= from && key <= to && (least === 0 || key < least)) least = key;
-    }
-  }
-}
-
-/** The walk's step from `from`: the next key of the run up to n, else the rest of the table from its start. */
-function stepFrom(L: LuaState, from: number, n: number): number {
-  const index = firstInRun(L, from, n);
-  lua.lua_settop(L, 1);
-  if (index !== 0) {
-    lua.lua_pushinteger(L, index);
-    lua.lua_rawgeti(L, 1, index);
-    return 2;
-  }
-  lua.lua_pushnil(L);
-  return afterRun(L, n);
-}
-
-/** A key that is the number 1, integer or float (`next(t, k + 0.0)`), as `_isArrayKey` accepts it. */
-function isOne(L: LuaState, index: number): boolean {
-  return lua.lua_type(L, index) === lua.LUA_TNUMBER && lua.lua_tonumber(L, index) === 1;
-}
-
-function next(L: LuaState): number {
-  aux.luaL_checktype(L, 1, lua.LUA_TTABLE);
-  lua.lua_settop(L, 2);
-  const table = lua.lua_topointer(L, 1) as object;
-  if (lua.lua_isnil(L, 2)) {
-    // L5-review: a new walk. With `t[1]` it hands that out and its step with key 1 looks for growth;
-    // without, it walks the run the table has (an emptiness check inside another walk changes nothing).
-    if (lua.lua_rawgeti(L, 1, 1) !== lua.LUA_TNIL) {
-      pending.add(table);
-      lua.lua_pushinteger(L, 1);
-      lua.lua_insert(L, -2);
-      return 2;
-    }
-    lua.lua_pop(L, 1);
-    let n = runs.get(table);
-    if (n === undefined) runs.set(table, (n = 0));
-    return stepFrom(L, 2, n);
-  }
-  let n = runs.get(table);
-  if (pending.has(table) && isOne(L, 2)) {
-    // L5-review: the walk handed out 1 (the body may have cleared it — the `wipe` idiom): the run
-    // grows by what follows it, and never shrinks.
-    pending.delete(table);
-    n = arrayRun(L, Math.max(n ?? 0, 1) + 1);
-    runs.set(table, n);
-  } else if (n === undefined) {
-    // A walk resumed at a key on a table no walk has measured: the preamble's run.
-    n = arrayRun(L, 1);
-    runs.set(table, n);
-  }
-  const key = runKey(L, 2, n);
-  if (key === 0) return afterRun(L, n);
-  return stepFrom(L, key + 1, n);
-}
 
 /** Bytes of a string argument up to its first NUL, as the client's C string sees them. */
 function cString(L: LuaState, index: number): Uint8Array {
-  // 5.1 spelt a whole float without ".0"; luaL_checklstring would convert 3.0 to "3.0" in place.
-  if (lua.lua_type(L, index) === lua.LUA_TNUMBER && !lua.lua_isinteger(L, index)) {
+  // A whole number below 1e15 is spelt as JS's String spells it (written for fengari's 5.3, whose
+  // luaL_checklstring made 3.0 "3.0"); every other number by luaL_checklstring, "%.14g". The two agree
+  // except on -0 ("0" here) and 1e14 ≤ |n| < 1e15 (all digits here, "1e+014" in "%.14g").
+  if (lua.lua_type(L, index) === lua.LUA_TNUMBER) {
     const value = lua.lua_tonumber(L, index);
     if (Number.isInteger(value) && Math.abs(value) < 1e15) {
       lua.lua_pushstring(L, to_luastring(String(value)));
@@ -251,26 +99,12 @@ function raise(L: LuaState): number {
 }
 
 /**
- * Install `next` and `strsplit` as globals. GlueLuaVm calls this after its preamble and before
- * Wow.exe's compat chunk, so `string.split` (compat: `string.split = strsplit`) is this one too.
- * L5b (04.10): also 5.1's `tostring`, `pairs` (answering this `next`), `ipairs` and `math.fmod`
- * (GlueLuaBase51.ts).
+ * Install `strsplit` and Wow.exe's str_format (0x00853c50) as `string.format` and `format`
+ * (GlueLuaFormat.ts). GlueLuaVm calls this after its preamble and before Wow.exe's compat chunk, so
+ * `string.split` (compat: `string.split = strsplit`) is this one too.
  */
 export function installGlueLuaNatives(L: LuaState): void {
-  if (LUA51_NATIVE) {
-    // ARC-4 A4: PUC 5.1's own next/pairs/ipairs/tostring/math.fmod stand; Wow.exe's strsplit and
-    // str_format are host functions on both VMs.
-    lua.lua_pushjsfunction(L, strsplit);
-    lua.lua_setglobal(L, to_luastring("strsplit"));
-    installGlueLuaFormat(L);
-    return;
-  }
-  lua.lua_pushjsfunction(L, next);
-  lua.lua_setglobal(L, to_luastring("next"));
   lua.lua_pushjsfunction(L, strsplit);
   lua.lua_setglobal(L, to_luastring("strsplit"));
-  // L5b: 5.1's `tostring`, `pairs` (over this `next`), `ipairs` and `math.fmod` (GlueLuaBase51.ts).
-  installGlueLuaBase51(L, next);
-  // 05.10-3.27: Wow.exe's str_format (0x00853c50) as `string.format` and `format` (GlueLuaFormat.ts).
   installGlueLuaFormat(L);
 }

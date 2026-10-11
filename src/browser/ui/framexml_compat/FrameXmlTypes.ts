@@ -450,9 +450,10 @@ export interface FrameXmlScriptCompileRequest {
  * The compatibility layer itself ships no Lua interpreter. An adapter may
  * execute a chunk only against the capability-limited `LuaScriptContext`; it
  * must not expose `window`, `document`, fetch, WebSocket, or arbitrary host
- * objects. `src/browser/glue/GlueLua.ts` installs the real fengari-backed
- * adapter for the glue screens; without one the bridge records the limitation
- * and keeps the native HUD alive instead of partially executing Lua.
+ * objects. `src/browser/glue/GlueLua.ts` installs the real adapter (PUC Lua
+ * 5.1.5 in WebAssembly) for the glue screens; without one the bridge records
+ * the limitation and keeps the native HUD alive instead of partially executing
+ * Lua.
  */
 export interface LuaAddonRuntime {
   readonly name: string;

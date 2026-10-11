@@ -15,7 +15,7 @@ const rootPath = root.pathname.replace(/^\/([A-Za-z]:)/, "$1");
 const INTERNAL = new Set([
   "GATEWAY_SUPERVISED", "WOWCLIENT_LOCAL_ASSET_NONCE", "WEBCLIENT_SKIP_ENV", "NODE_OPTIONS",
   "NODE_ENV", "NODE_COMPILE_CACHE", "NODE_TEST_CONTEXT", "NODE_TEST_WORKER_ID", "NODE_UNIQUE_ID",
-  "PATH", "SystemRoot", "FENGARICONF",
+  "PATH", "SystemRoot",
 ]);
 
 async function sources(directory, extensions) {
