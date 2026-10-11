@@ -247,6 +247,18 @@ test("the enumerated lists are what CharacterCreate.lua unpacks in threes", () =
   assert.equal(model.isRaceClassValid(2, 3), true, "a tauren may");
 });
 
+test("11.10: the races are listed Alliance first, then Horde, each by id (Wow.exe 0x004e1c20)", () => {
+  // The ten stock rows of ChrRaces with their `Alliance` column, shuffled; buttons 1-5 are the left
+  // column of CharacterCreate.xml and 6-10 the right one.
+  const stock = [[10, 1], [2, 1], [11, 0], [1, 0], [8, 1], [3, 0], [6, 1], [4, 0], [5, 1], [7, 0], [9, 2]]
+    .map(([id, side]) => ({ ...RACES[0], id, side, name: `r${id}`, playable: id !== 9 }));
+  stock.push({ ...RACES[0], id: 30, side: 2, name: "neither", playable: true });
+  const { model } = creation({ tables: { races: stock, classes: CLASSES } });
+  assert.deepEqual(model.races.map((race) => race.id), [1, 3, 4, 7, 11, 2, 5, 6, 8, 10]);
+  assert.deepEqual(model.availableRaces().map((race) => race.name).slice(0, 5), ["r1", "r3", "r4", "r7", "r11"]);
+  assert.equal(model.races.some((race) => race.id === 30), false, "a race of neither side is in neither pass");
+});
+
 test("the file token falls back to the measured ChrRaces spelling when the gateway has none", () => {
   assert.equal(raceFileToken(RACES[0]), "Human");
   assert.equal(raceFileToken({ ...RACES[0], clientFileString: "" }), "Human");

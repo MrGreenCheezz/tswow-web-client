@@ -218,11 +218,19 @@ export class GlueCreation {
 
   /* --- The two lists ------------------------------------------------------------------------- */
 
-  /** Playable races, in id order — the order `CharacterCreateEnumerateRaces` draws buttons in. */
+  /**
+   * Playable races in the order `CharacterCreateEnumerateRaces` draws buttons in: the Alliance's,
+   * then the Horde's, each by id. 11.10: Wow.exe 0x004e1c20 builds the list in two passes over
+   * `ChrRaces` — the rows whose faction template belongs to the group named «Alliance», then to
+   * «Horde» — and `CharacterCreate.xml` stacks buttons 1–5 in the left column and 6–10 in the right
+   * one. In id order (human, orc, dwarf…) the columns mixed the factions. The side here is
+   * `ChrRaces.Alliance`, which agrees with the template's group on every stock race; a race of
+   * neither side is not listed, as the client lists it in neither pass.
+   */
   get races(): readonly CreationRace[] {
     return [...this.#options.tables().races]
-      .filter((race) => race.playable)
-      .sort((left, right) => left.id - right.id);
+      .filter((race) => race.playable && (race.side === 0 || race.side === 1))
+      .sort((left, right) => left.side - right.side || left.id - right.id);
   }
 
   /**

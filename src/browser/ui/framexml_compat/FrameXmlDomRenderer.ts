@@ -271,6 +271,10 @@ interface DeferredPlacement {
   readonly declaredHeight: number | undefined;
 }
 
+/** 12.10: a Backdrop border's sides, drawn as strips between its corners (`paintEdgeStrips`). */
+const BACKDROP_SIDES = Object.freeze(["TOP", "BOTTOM", "LEFT", "RIGHT"] as const);
+type BackdropSide = (typeof BACKDROP_SIDES)[number];
+
 interface BackdropFilters {
   readonly svg: Element;
   readonly backgroundId: string | undefined;
@@ -600,6 +604,8 @@ export class FrameXmlDomRenderer {
    */
   readonly #pictureHolders = new Map<string, Set<RenderedFrame>>();
   readonly #edgeHolders = new Map<string, Set<RenderedFrame>>();
+  /** 12.10: each backdrop edge node's four side strips, made on its first painted edge. */
+  readonly #edgeStrips = new WeakMap<HTMLElement, Readonly<Record<BackdropSide, HTMLElement>>>();
   readonly #clock: () => number;
   readonly #perf: FrameXmlRenderPerfSink | undefined;
   #fontStyleElement: HTMLStyleElement | undefined;
@@ -3584,6 +3590,9 @@ export class FrameXmlDomRenderer {
   }
 
   private clearBackdropPaint(element: HTMLElement): void {
+    // 12.10: the side strips hold the same pieces as the corners; nothing keeps a released one.
+    const strips = this.#edgeStrips.get(element);
+    if (strips) for (const side of BACKDROP_SIDES) strips[side].style.backgroundImage = "";
     element.style.display = "none";
     element.style.backgroundImage = "";
     element.style.backgroundPosition = "";
@@ -3678,6 +3687,11 @@ export class FrameXmlDomRenderer {
       this.clearBackdropPaint(backgroundPaint);
     }
 
+    // The four corners are the edge node's own background layers. 12.10: the four sides are strips
+    // between them (`paintEdgeStrips`), as the client tiles a side from one corner to the next. Drawn
+    // as layers of the same node they ran the whole length, under the corners: a corner piece is
+    // transparent outside its curve (Glue-Tooltip-Border's TOPLEFT has empty first rows and columns),
+    // so the straight sides showed through past every rounded corner — the login fields' «края».
     const layers: { image: string; position: string; size: string; repeat: string }[] = [];
     if (edges && backdrop.edgeSize > 0) {
       const edge = px(backdrop.edgeSize);
@@ -3687,11 +3701,8 @@ export class FrameXmlDomRenderer {
         { image: edges.TOPRIGHT, position: "right top", size: corner, repeat: "no-repeat" },
         { image: edges.BOTTOMLEFT, position: "left bottom", size: corner, repeat: "no-repeat" },
         { image: edges.BOTTOMRIGHT, position: "right bottom", size: corner, repeat: "no-repeat" },
-        { image: edges.TOP, position: "left top", size: corner, repeat: "repeat-x" },
-        { image: edges.BOTTOM, position: "left bottom", size: corner, repeat: "repeat-x" },
-        { image: edges.LEFT, position: "left top", size: corner, repeat: "repeat-y" },
-        { image: edges.RIGHT, position: "right top", size: corner, repeat: "repeat-y" },
       );
+      this.paintEdgeStrips(edgePaint, edges, edge);
     }
     if (layers.length === 0) {
       this.clearBackdropPaint(edgePaint);
@@ -3704,6 +3715,47 @@ export class FrameXmlDomRenderer {
       edgePaint.style.backgroundRepeat = layers.map((layer) => layer.repeat).join(", ");
       edgePaint.style.filter = filters?.edgeId ? `url(#${filters.edgeId})` : "";
       edgePaint.setAttribute("data-framexml-backdrop-source", backdrop.edgeFile ?? "");
+    }
+  }
+
+  /**
+   * 12.10: a Backdrop's four sides, each a strip from one corner to the next, tiled from its start at
+   * the edge size. Children of the edge node, so the border colour's filter covers them too.
+   */
+  private paintEdgeStrips(
+    edgePaint: HTMLElement,
+    edges: Readonly<Record<(typeof FRAME_XML_EDGE_PIECES)[number], string>>,
+    edge: string,
+  ): void {
+    let strips = this.#edgeStrips.get(edgePaint);
+    if (!strips) {
+      const document = edgePaint.ownerDocument ?? globalThis.document;
+      const made = {} as Record<BackdropSide, HTMLElement>;
+      for (const side of BACKDROP_SIDES) {
+        const strip = document.createElement("div");
+        strip.setAttribute("data-framexml-backdrop-side", side);
+        strip.style.position = "absolute";
+        strip.style.pointerEvents = "none";
+        edgePaint.append(strip);
+        made[side] = strip;
+      }
+      strips = Object.freeze(made);
+      this.#edgeStrips.set(edgePaint, strips);
+    }
+    const corner = `${edge} ${edge}`;
+    for (const side of BACKDROP_SIDES) {
+      const strip = strips[side];
+      const across = side === "TOP" || side === "BOTTOM";
+      strip.style.left = side === "RIGHT" ? "" : across ? edge : "0px";
+      strip.style.right = side === "LEFT" ? "" : across ? edge : "0px";
+      strip.style.top = side === "BOTTOM" ? "" : across ? "0px" : edge;
+      strip.style.bottom = side === "TOP" ? "" : across ? "0px" : edge;
+      strip.style.width = across ? "" : edge;
+      strip.style.height = across ? edge : "";
+      strip.style.backgroundImage = `url("${edges[side].replaceAll('"', "%22")}")`;
+      strip.style.backgroundPosition = "left top";
+      strip.style.backgroundSize = corner;
+      strip.style.backgroundRepeat = across ? "repeat-x" : "repeat-y";
     }
   }
 

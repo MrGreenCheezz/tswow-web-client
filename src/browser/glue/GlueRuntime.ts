@@ -267,6 +267,7 @@ export class GlueRuntime {
     // login policy after the complete TOC walk, before any caller can show a screen; other screen
     // trees and the account fields remain untouched because the policy requires AccountLogin ancestry.
     hideGlueLoginControls(this.bridge);
+    this.api.installAfterLoad(); // 12.10: the saved password (GlueSavedPassword.ts)
     return this.#result;
   }
 

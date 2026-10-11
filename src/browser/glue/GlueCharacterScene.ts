@@ -10,6 +10,7 @@ import {
   CHARACTER_APPEARANCE_VERSION, CREATURE_MODEL_VERSION, CharacterAtlasClient, appearanceKey,
   type CharacterAppearance,
 } from "../CharacterAtlas.js";
+import { clampGlueLighting } from "./GlueBackdropLights.js"; // 12.10
 import { EVERY_GEOSET, buildModel, characterSlots, type BuiltModel } from "../ModelBuild.js"; // 05.10-A7a-G 6.18: geosetList → figureGeosets
 import { figureGeosets } from "../FigureGeosets.js"; // 05.10-A7a-G 6.18
 import { charSelectWears, figureSheath } from "./CharSelectWorn.js"; // 05.10-A7a-G 6.18
@@ -316,6 +317,8 @@ export class GlueCharacterScene implements GlueCharacterView {
         disposeBuild(built);
         return;
       }
+      // 12.10: lit as the client lights a glue figure — the light sum clamped (GlueBackdropLights.ts).
+      for (const material of built.materials) clampGlueLighting(material);
       const rig = wvm.skeleton;
       const template = rig ? buildSkinnedTemplateFrom(built.geometry, rig, built.height) : undefined;
       const instance = template ? instantiateSkinned(template, built.materials) : undefined;
@@ -424,6 +427,7 @@ export class GlueCharacterScene implements GlueCharacterView {
           disposeBuild(built);
           return;
         }
+        for (const material of built.materials) clampGlueLighting(material); // 12.10: as the figure
         const mesh = new THREE.Mesh(built.geometry, built.materials);
         mesh.frustumCulled = false;
         mesh.position.copy(attachmentOffset(wvm, template.pivots, point));

@@ -1,5 +1,8 @@
 import * as THREE from "three";
 import {
+  GLUE_MAX_POINT_LIGHTS, applyGlueBackdropPointLight, clampGlueLighting, glueBackdropPointLights,
+} from "./GlueBackdropLights.js"; // 12.10
+import {
   M2_TO_SCENE, addSkinnedClips, applyBillboardBones, buildSkinnedTemplateFrom,
   disposeSkinnedInstance, instantiateSkinned, resolveAnimation,
   type SkinnedInstance, type SkinnedTemplate,
@@ -886,6 +889,8 @@ interface ModelView {
   readonly ambient: THREE.AmbientLight;
   /** `GLUE_MAX_DIRECTIONAL_LIGHTS` of them, made once; an unused one is left at intensity zero. */
   readonly suns: readonly THREE.DirectionalLight[];
+  /** 12.10: the model's own point lights (`GlueBackdropLights.ts`), made once like the suns. */
+  readonly points: readonly THREE.PointLight[];
   path: string;
   sourceKey: string;
   loadGeneration: number;
@@ -1399,9 +1404,16 @@ export class GlueModelStage {
       scene.add(sun);
       suns.push(sun);
     }
+    // 12.10: the model's point lights — `decay` 0, a radius window only (GlueBackdropLights.ts).
+    const points: THREE.PointLight[] = [];
+    for (let index = 0; index < GLUE_MAX_POINT_LIGHTS; index += 1) {
+      const point = new THREE.PointLight(0xffffff, 0, 1, 0);
+      scene.add(point);
+      points.push(point);
+    }
     scene.add(ambient);
     return {
-      frame, element, canvas, context, scene, ambient, suns,
+      frame, element, canvas, context, scene, ambient, suns, points,
       camera: new THREE.PerspectiveCamera(45, 1, 0.05, 500),
       path: "", sourceKey: "", loadGeneration: 0, width: 0, height: 0, sequence: frame.model.sequence ?? 0,
       animationMs: 0, loading: false, failed: false, textureGeneration: -1, masked: [],
@@ -1521,6 +1533,7 @@ export class GlueModelStage {
       });
       view.wvm = wvm;
       view.built = built;
+      for (const material of built.materials) clampGlueLighting(material); // 12.10: the client's light clamp
       const rig = wvm.skeleton;
       const template = rig ? buildSkinnedTemplateFrom(built.geometry, rig, built.height) : undefined;
       if (template) {
@@ -1693,7 +1706,7 @@ export class GlueModelStage {
       view.canvas.height = height;
     }
 
-    this.applyState(view);
+    this.applyState(view, nowMs);
     if (view.instance) {
       view.instance.mixer.update(seconds);
       if (view.action) view.animationMs = view.action.time * 1000;
@@ -1769,7 +1782,7 @@ export class GlueModelStage {
   }
 
   /** Push the widget's recorded 3D state onto the scene it owns. */
-  private applyState(view: ModelView): void {
+  private applyState(view: ModelView, nowMs = performance.now()): void {
     const state = view.frame.model;
     const root = view.root;
     if (root) {
@@ -1815,6 +1828,13 @@ export class GlueModelStage {
       // A directional light in three points from its position at the origin, so the authored
       // direction is walked backwards to put the lamp where the light comes from.
       sun.position.copy(light.direction).multiplyScalar(-10);
+    }
+    // 12.10: the race sets replace the model's directional lights only; its point lights keep
+    // lighting the scene and the figure in it (GlueBackdropLights.ts — the night elf's moonlight).
+    const points = view.wvm ? glueBackdropPointLights(view.wvm, view.animationMs, nowMs) : [];
+    if (root && points.length > 0) root.updateWorldMatrix(true, false);
+    for (const [index, point] of view.points.entries()) {
+      applyGlueBackdropPointLight(point, points[index], root, root?.scale.x ?? 1, GLUE_LIGHT_INTENSITY_SCALE);
     }
     // ModelFFX's fog is a real distance fog on the widget's own scene, not a tint over it.
     const near = state.fogNear;
@@ -1978,6 +1998,21 @@ export function glueFigureScaleCompensation(diagonalDegrees: number, aspect: num
  * 25.36. Every one is within a degree and a half of the authored frame, which no other reading of
  * `fov` comes close to.
  *
+ * 11.10: **the diagonal splits as an angle, not as a tangent** — the vertical field at 4:3 is the
+ * diagonal divided by `hypot(1, 4/3)`, i.e. 0.6 of it. The tangent split above was right for the
+ * gentle backdrops and wrong for the widest one: `UI_MainMenu_Northrend` publishes 2.0944 rad
+ * (120°; Wow.exe asserts `shared->fieldOfView > 0.0f && shared->fieldOfView < PI` when it loads a
+ * camera, 0x832ea0, so the number is radians), its scene is cards — mountains, the landing, the
+ * citadel — that end 50.2° to 53.7° either side of the aim and 37.3° below it, and the tangent
+ * split showed 54.2° by 46.1°: the sky bowl's flat teal down both sides and along the bottom of the
+ * login screen, at every aspect. The angle split gives 44.1° by 36°, inside the cards. It is also
+ * the reading behind the format notes' «multiply by 35 to get degrees» (180/π / 1.667 = 34.4) and
+ * behind the ~70° horizontal the 3.3.5 world camera is known for (its π/2 default at 16:9), and it
+ * fits the four skies better than the tangent did: `UI_Human` 80° makes 24.0° up and 30.7°
+ * sideways against 26.09 and 34.09, `UI_Dwarf` and `UI_Tauren` 65° 19.5° and 25.3°, `UI_NightElf`
+ * 60° 18.0° and 23.42° against a quad whose narrower side stops at 23.37 — its author built the sky
+ * to this frame's edge — where the tangent split ran 1.4° past it.
+ *
  * The rule for other aspects is **cover**: the visible frustum stays inside the authored 4:3 frame
  * on both axes, so the backdrop always fills the widget's box. Wider than 4:3 keeps the authored
  * horizontal angle and loses vertical; narrower keeps the vertical and loses horizontal. Anything
@@ -1985,8 +2020,8 @@ export function glueFigureScaleCompensation(diagonalDegrees: number, aspect: num
  */
 export function glueSceneVerticalFov(diagonalDegrees: number, aspect: number): number {
   const safeAspect = Number.isFinite(aspect) && aspect > 0 ? aspect : GLUE_AUTHORED_ASPECT;
-  const diagonal = Math.tan((Math.max(1, Math.min(179, diagonalDegrees)) / 2) * Math.PI / 180);
-  const authoredVertical = diagonal / Math.hypot(1, GLUE_AUTHORED_ASPECT);
+  const diagonal = Math.max(1, Math.min(179, diagonalDegrees));
+  const authoredVertical = Math.tan((diagonal / Math.hypot(1, GLUE_AUTHORED_ASPECT) / 2) * Math.PI / 180); // 11.10
   const authoredHorizontal = authoredVertical * GLUE_AUTHORED_ASPECT;
   const vertical = Math.min(authoredVertical, authoredHorizontal / safeAspect);
   return 2 * Math.atan(vertical) * 180 / Math.PI;

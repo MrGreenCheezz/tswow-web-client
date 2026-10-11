@@ -10,6 +10,7 @@ import { createHttpFileProvider } from "./GlueLoader.js";
 import { browserGlueVideo } from "./GlueVideo.js";
 import { GlueAddonList } from "./GlueAddons.js";
 import { createGlueCVarStore } from "./GlueCVarStore.js";
+import { createGlueSavedPasswordStore } from "./GlueSavedPassword.js"; // 12.10
 import { fetchFrameXmlClientAddons } from "../framexml/FrameXmlClientAddons.js";
 import { GlueBrowserAudio } from "./GlueAudio.js";
 import { GlueModelStage } from "./GlueModelStage.js";
@@ -269,7 +270,10 @@ export async function startGlue(options: StartGlueOptions): Promise<GlueHandle> 
       addons,
       // Account name, realm, last character, usesToken per gateway — never a password (10.07). Not for
       // a canned session: its realm and characters are not this gateway's.
-      ...(canned ? {} : { cvarStore: createGlueCVarStore(siteStorage, origin) }),
+      ...(canned ? {} : {
+        cvarStore: createGlueCVarStore(siteStorage, origin),
+        passwordStore: createGlueSavedPasswordStore(siteStorage, origin), // 12.10
+      }),
       // «Выход» (10.09): the Electron window closes and the app quits with it (`window-all-closed`).
       // A browser only lets a script close a tab it opened, so a tab that is still here a moment
       // later says what to do instead of leaving the button dead.

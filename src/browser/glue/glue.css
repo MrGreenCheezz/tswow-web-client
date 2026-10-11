@@ -140,13 +140,25 @@
 #glue-stage [data-framexml-type="EditBox"] {
   outline: none;
 }
+/*
+  12.10: and none of the page's own input look. On index.html the glue host shares the page with
+  style.css, whose `input` rule (a 44px touch target, 0 12px padding, 8px rounded corners) made the
+  37-unit login fields 44 tall: the text sat 3.5px below the middle of the backdrop and the field
+  overhung its border art — the owner's «текст не центрован, края полей». `padding: 0` yields to the
+  renderer's inline `<TextInsets>` padding. The world host carries the same reset
+  (FrameXmlWorldMount.ts FRAMEXML_EDIT_BOX_INPUT_CSS).
+*/
 #glue-stage input[data-framexml-input] {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
+  min-height: 0;
   margin: 0;
+  padding: 0;
   border: 0;
+  border-radius: 0;
+  box-shadow: none;
   background: none;
   color: inherit;
   font: inherit;

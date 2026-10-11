@@ -146,7 +146,7 @@ test("CustomizeExistingCharacter puts the character on the screen as it is and P
   assert.equal(model.paidRaceIndex(), 0);
   assert.equal(model.beginPaidService(orc()), true);
   await settle();
-  assert.equal(model.raceIndex, 2, "the orc's button, not the first");
+  assert.equal(model.raceIndex, 3, "the orc's button: the first of the Horde, after the two Alliance races (12.10, Wow.exe 0x004e1c20)");
   assert.equal(model.classIndex, 1);
   assert.equal(model.sex, SEX_FEMALE);
   assert.deepEqual(model.look, { skin: 3, face: 2, hairStyle: 1, hairColor: 4, facialHair: 0 },
@@ -155,7 +155,7 @@ test("CustomizeExistingCharacter puts the character on the screen as it is and P
   // The player picks another race: the current-race answers still name the character's.
   model.selectRace(4);
   await settle();
-  assert.equal(model.paidRaceIndex(), 2);
+  assert.equal(model.paidRaceIndex(), 3);
   assert.equal(model.paidClassIndex(), 1);
   assert.equal(model.paidName(), "Гаррош");
   // ResetCharCustomize (the ordinary creation screen's OnShow) forgets the paid character.
@@ -169,7 +169,7 @@ test("CreateCharacter in faction mode sends the chosen race's id and answers in 
   const { model, calls, setAnswer } = creation();
   model.beginPaidService(orc());
   await settle();
-  model.selectRace(3);
+  model.selectRace(2); // 12.10: the night elf, second of the Alliance column
   await settle();
   setAnswer({ status: "answered", answer: { result: 66, guid: 0n, name: "", appearance: undefined } });
   assert.equal(await model.createCharacter("Гаррош"), 66);
@@ -406,9 +406,9 @@ test("the stock calls reach the real paid mode, not the old constant stubs", asy
     lua("CustomizeExistingCharacter(2); return 1");
     await settle();
     assert.equal(lua("return PaidChange_GetName()"), base[1].name);
-    assert.equal(lua("return PaidChange_GetCurrentRaceIndex()"), 3, "night elf is the third race button here, not the stub's 1");
+    assert.equal(lua("return PaidChange_GetCurrentRaceIndex()"), 2, "night elf is the second race button here (Alliance first, 12.10), not the stub's 1");
     assert.equal(lua("return PaidChange_GetCurrentClassIndex()"), 3);
-    assert.equal(lua("return (GetSelectedRace())"), 3);
+    assert.equal(lua("return (GetSelectedRace())"), 2);
     lua("SEEN = {}; SetSelectedRace(4); return 1");
     await settle();
     lua(`CreateCharacter(PaidChange_GetName()); return 1`);

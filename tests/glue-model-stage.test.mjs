@@ -322,23 +322,38 @@ test("a backdrop is lit by the light set the corpus adds, not by a constant", ()
  * `opaque`, flags `UNLIT|UNFOGGED`) that covers 34.09°/34.95° left and right of the authored camera
  * and reaches 26.09° above its aim. Read as three.js' *vertical* fov, 80° drew 40° of nothing above
  * a quad that stops at 26 — the hard-edged sky rectangle this replaces. Read as a **diagonal** at
- * 4:3 it splits into 33.87° horizontal and 26.72° vertical, which is the quad, to within a degree
- * and a half on every backdrop whose sky is a plain quad (Dwarf 65° wants 27.01/20.92 and covers
- * 27.74/23.41; Tauren 65° covers 29.12/22.14; NightElf 60° wants 24.79/19.11 and covers 23.48/25.36).
+ * 4:3 it fits the quad. 11.10: split as an angle (0.6 of it vertical at 4:3), not as a tangent —
+ * 24.0° up and 30.69° sideways for UI_Human, inside every plain-quad sky (Dwarf 27.74/23.41, Tauren
+ * 29.12/22.14, NightElf 23.48/25.36 with its narrow side at 23.37), and inside the Northrend login's
+ * cards, which the tangent split overran.
  */
 const degrees = (value) => Math.round(value * 100) / 100;
 const halfTangent = (fov) => Math.tan((fov / 2) * Math.PI / 180);
 
 test("an authored glue camera is a diagonal fov, and the frame it makes covers 4:3", () => {
-  // At the authored aspect the split is exactly 0.6 vertical and 0.8 horizontal of the diagonal.
+  // 11.10: at the authored aspect the vertical angle is 0.6 of the diagonal angle (3-4-5).
   const vertical = glueSceneVerticalFov(80, GLUE_AUTHORED_ASPECT);
-  assert.equal(degrees(vertical), 53.45);
-  assert.equal(degrees(vertical / 2), 26.72, "half of it is what UI_Human's sky covers upward");
+  assert.equal(degrees(vertical), 48);
+  assert.equal(degrees(vertical / 2), 24, "half of it, inside the 26.09° UI_Human's sky covers upward");
   const horizontal = 2 * Math.atan(halfTangent(vertical) * GLUE_AUTHORED_ASPECT) * 180 / Math.PI;
-  assert.equal(degrees(horizontal / 2), 33.87, "and sideways");
+  assert.equal(degrees(horizontal / 2), 30.69, "and sideways, inside 34.09");
+  assert.ok(Math.abs(vertical - 80 * 0.6) < 1e-9);
+});
 
-  // 0.6 and 0.8 are the 3-4-5 triangle, so the identity is exact rather than approximate.
-  assert.ok(Math.abs(halfTangent(vertical) - halfTangent(80) * 0.6) < 1e-12);
+test("11.10: the Northrend login's 120° camera stays inside the cards its scene is built of", () => {
+  // UI_MainMenu_Northrend: camera 2.0944 rad (radians — Wow.exe 0x832ea0 asserts 0 < fov < PI);
+  // the mountain, landing and citadel cards end 50.2° to the left of the aim (below its horizon),
+  // 53.7° to the right and 37.3° below. Measured off the gateway's model on 11.10.
+  const side = (fov, aspect) => Math.atan(halfTangent(fov) * aspect) * 180 / Math.PI;
+  for (const aspect of [GLUE_AUTHORED_ASPECT, 16 / 9, 2133 / 1021]) {
+    const vertical = glueSceneVerticalFov(120, aspect);
+    assert.ok(side(vertical, aspect) <= 50.2, `sideways ${degrees(side(vertical, aspect))}° at ${degrees(aspect)}`);
+    assert.ok(vertical / 2 <= 37.3, `downwards ${degrees(vertical / 2)}° at ${degrees(aspect)}`);
+  }
+  assert.equal(degrees(side(glueSceneVerticalFov(120, GLUE_AUTHORED_ASPECT), GLUE_AUTHORED_ASPECT)), 44.09);
+  // The tangent split it replaces: 54.18° sideways and 46.1° down — the flat sky past both edges.
+  const tangent = 2 * Math.atan(halfTangent(120) * 0.6) * 180 / Math.PI;
+  assert.ok(side(tangent, GLUE_AUTHORED_ASPECT) > 53.7 && tangent / 2 > 37.3);
 });
 
 test("a wider viewport keeps the authored horizontal angle and loses vertical, never the reverse", () => {
@@ -348,7 +363,7 @@ test("a wider viewport keeps the authored horizontal angle and loses vertical, n
   // 16:9. The sky must still fill the box, so the frustum may not grow past the authored frame on
   // either axis: vertical shrinks and horizontal stays exactly where the author put it.
   const wide = glueSceneVerticalFov(80, 16 / 9);
-  assert.equal(degrees(wide), 41.37);
+  assert.equal(degrees(wide), 36.93);
   assert.ok(halfTangent(wide) < authored, "the vertical angle shrank");
   assert.ok(Math.abs(halfTangent(wide) * (16 / 9) - authoredHorizontal) < 1e-12,
     "the horizontal angle is the authored one, to the last bit");
@@ -374,10 +389,9 @@ test("a wider viewport keeps the authored horizontal angle and loses vertical, n
     assert.ok(half <= sky.up, `${sky.name}: vertical ${degrees(half)} vs sky ${sky.up}`);
     sideways.push(degrees(halfSide - sky.side));
   }
-  // Sideways, three of the four fit and `UI_NightElf` is 1.42° short — its author left the sky
-  // narrower than a 4:3 frame needs, so a sliver of its edge can reach a 16:9 corner. Recorded as a
-  // number rather than asserted away: it is a property of the client's art, not of this code.
-  assert.deepEqual(sideways, [-0.22, -0.73, -1.52, 1.42]);
+  // Sideways all four fit; `UI_NightElf`'s narrower side ends at this frame's edge (0.05°, a
+  // fraction of a pixel). 11.10: under the tangent split it was 1.42° short, a sliver of sky edge.
+  assert.deepEqual(sideways, [-3.4, -2.47, -3.26, 0.05]);
 });
 
 test("a nonsense aspect falls back to the authored frame rather than to NaN", () => {

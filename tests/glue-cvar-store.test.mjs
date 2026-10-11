@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { GlueRuntime } from "../dist/code/browser/glue/GlueRuntime.js";
 import { createFixtureProvider } from "../dist/code/browser/glue/GlueLoader.js";
-import { createGlueCVarStore, isPlainAccountName } from "../dist/code/browser/glue/GlueCVarStore.js";
+import { createGlueCVarStore } from "../dist/code/browser/glue/GlueCVarStore.js";
 
 /**
  * 10.07 — the glue CVars that outlive a reload: account name, realm, last character, usesToken —
@@ -31,23 +31,18 @@ test("only the listed CVars are kept, and a password never is", () => {
   assert.deepEqual(store.load(), { accountName: "TESTER", realmName: "Мир" });
 });
 
-test("a login-screen blob in the account pair is not kept, and removes what was", () => {
+test("a login-screen blob in the account pair is kept, as Config.wtf keeps it (12.10)", () => {
   // The owner's LoginScreenModule writes name and password, deflated and printable, split over the
-  // two CVars. Nothing about the account is kept then — not even a name saved earlier.
+  // two CVars. Until 12.10 it was refused; the owner's decision to keep passwords keeps it too.
   const storage = memoryStorage();
   const store = createGlueCVarStore(storage, ORIGIN);
-  store.save("accountName", new Map([["accountName", "TESTER"]]));
   const blob = "e0zAQfMP0jbQ3vN7kEdBQY1rEbT2jcBcC7dKJcS7ktxMOiqqPZm(ZIiUKQl";
-  store.save("accountName", new Map([["accountName", blob], ["accountList", ""]]));
-  assert.deepEqual(saved(storage), {});
-  store.save("accountList", new Map([["accountName", "SHORT"], ["accountList", "tail"]]));
-  assert.deepEqual(saved(storage), {}, "a second half means it is not a plain name");
-  assert.equal(isPlainAccountName("TESTER", ""), true);
-  assert.equal(isPlainAccountName("АБВГДЕЖЗИ", ""), false, "18 bytes: more than a challenge carries");
-  assert.equal(isPlainAccountName("A B", ""), false);
-  // A tampered storage with a blob in it loads without the pair.
+  store.save("accountName", new Map([["accountName", blob], ["accountList", "tail"]]));
+  assert.deepEqual(saved(storage), { accountName: blob, accountList: "tail" });
+  assert.deepEqual(store.load(), { accountName: blob, accountList: "tail" });
+  // A name outside the list still never is.
   const tampered = memoryStorage({ [KEY]: JSON.stringify({ accountName: blob, realmName: "Мир", password: "x" }) });
-  assert.deepEqual(createGlueCVarStore(tampered, ORIGIN).load(), { realmName: "Мир" });
+  assert.deepEqual(createGlueCVarStore(tampered, ORIGIN).load(), { accountName: blob, realmName: "Мир" });
 });
 
 test("a blocked or broken storage is no memory, not a broken page", () => {

@@ -98,7 +98,7 @@ test("a character offered a faction change opens the paid creation screen and se
     assert.deepEqual(luaErrors, [], "unhandled Lua errors while opening the paid creation screen");
     assert.equal(runtime.api.currentScreen, "charcreate");
     assert.equal(lua("return CharacterCreateNameEdit:GetText()"), characters[1].name);
-    assert.equal(lua("return PaidChange_GetCurrentRaceIndex()"), 4, "night elf is the fourth button");
+    assert.equal(lua("return PaidChange_GetCurrentRaceIndex()"), 3, "night elf is the third button: human, dwarf, night elf (12.10, Wow.exe 0x004e1c20)");
     // CharacterChangeFixup: the druid's class button alone, and the races of the other side that may
     // be druids (Tauren) beside the character's own.
     const enabled = (prefix, count) => {
@@ -107,11 +107,11 @@ test("a character offered a faction change opens the paid creation screen and se
       return lit;
     };
     assert.deepEqual(enabled("CharacterCreateClassButton", 10), [10]);
-    assert.deepEqual(enabled("CharacterCreateRaceButton", 10), [4, 6]);
+    assert.deepEqual(enabled("CharacterCreateRaceButton", 10), [3, 8]);
 
     // Pick the tauren, accept: CharacterCreate_Okay asks CONFIRM_PAID_SERVICE, whose OK calls
     // CreateCharacter with the edit box's name.
-    lua("CharacterCreateRaceButton6:Click(); return 1");
+    lua("CharacterCreateRaceButton8:Click(); return 1"); // 12.10: the tauren, third of the Horde column
     lua("CharacterCreate_Okay(); return 1");
     assert.equal(lua("return GlueDialog.which"), "CONFIRM_PAID_SERVICE");
     lua("GlueDialogButton1:Click(); return 1");

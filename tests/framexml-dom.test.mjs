@@ -903,7 +903,7 @@ test("a texture source supplies the pixels, and every reference is given back on
     "a destroyed renderer holds no pictures");
 });
 
-test("a Backdrop draws its edge file as eight pieces, corners over edges over the background", () => {
+test("a Backdrop draws its edge file as eight pieces: four corners, four sides between them", () => {
   const bridge = new FrameXmlUiBridge();
   const host = document.createElement("section");
   const textures = fakeTextures();
@@ -920,20 +920,38 @@ test("a Backdrop draws its edge file as eight pieces, corners over edges over th
   const background = panel.children.find((child) => child.getAttribute("data-framexml-backdrop-paint") === "background");
   const edge = panel.children.find((child) => child.getAttribute("data-framexml-backdrop-paint") === "edge");
   const images = edge.style.backgroundImage.split(", ");
-  assert.equal(images.length, 8, edge.style.backgroundImage);
-  // The four corners first, so they draw over the edges that run under them.
+  assert.equal(images.length, 4, edge.style.backgroundImage);
   assert.match(images[0], /#TOPLEFT/);
   assert.match(images[3], /#BOTTOMRIGHT/);
-  assert.match(images[4], /#TOP/);
-  assert.match(images[7], /#RIGHT/);
   assert.match(background.style.backgroundImage, /UI-Tooltip-Background\.blp/);
-  assert.deepEqual(edge.style.backgroundRepeat.split(", "), [
-    "no-repeat", "no-repeat", "no-repeat", "no-repeat", "repeat-x", "repeat-x", "repeat-y", "repeat-y",
-  ]);
-  assert.deepEqual(edge.style.backgroundPosition.split(", ").slice(0, 4),
-    ["left top", "right top", "left bottom", "right bottom"]);
+  assert.deepEqual(edge.style.backgroundRepeat.split(", "), ["no-repeat", "no-repeat", "no-repeat", "no-repeat"]);
+  assert.deepEqual(edge.style.backgroundPosition.split(", "), ["left top", "right top", "left bottom", "right bottom"]);
   // The pieces are drawn at the declared edge size, the background at its tile size.
   assert.equal(edge.style.backgroundSize.split(", ")[0], "32px 32px");
+  // 12.10: each side runs between its two corners, never under them — a corner is transparent past
+  // its curve, and a side drawn the whole length showed through it.
+  const side = (name) => edge.children.find((child) => child.getAttribute("data-framexml-backdrop-side") === name);
+  for (const name of ["TOP", "BOTTOM"]) {
+    const strip = side(name);
+    assert.match(strip.style.backgroundImage, new RegExp(`#${name}"`));
+    assert.equal(strip.style.left, "32px");
+    assert.equal(strip.style.right, "32px");
+    assert.equal(strip.style.height, "32px");
+    assert.equal(strip.style.backgroundRepeat, "repeat-x");
+    assert.equal(strip.style.backgroundSize, "32px 32px");
+  }
+  assert.equal(side("TOP").style.top, "0px");
+  assert.equal(side("BOTTOM").style.bottom, "0px");
+  for (const name of ["LEFT", "RIGHT"]) {
+    const strip = side(name);
+    assert.match(strip.style.backgroundImage, new RegExp(`#${name}"`));
+    assert.equal(strip.style.top, "32px");
+    assert.equal(strip.style.bottom, "32px");
+    assert.equal(strip.style.width, "32px");
+    assert.equal(strip.style.backgroundRepeat, "repeat-y");
+  }
+  assert.equal(side("LEFT").style.left, "0px");
+  assert.equal(side("RIGHT").style.right, "0px");
   assert.equal(background.style.backgroundSize, "16px 16px");
   assert.equal(background.style.filter ?? "", "", "an identity backdrop color needs no SVG filter");
   assert.equal(edge.style.filter ?? "", "", "an identity border color needs no SVG filter");
@@ -988,7 +1006,8 @@ test("a Backdrop owns inset/tinted paint layers without styling authored childre
   assert.equal(background.style.pointerEvents, "none");
   assert.equal(edge.style.pointerEvents, "none");
   assert.equal(background.style.backgroundImage.includes("Glue-Tooltip-Background.blp"), true);
-  assert.equal(edge.style.backgroundImage.split(", ").length, 8);
+  assert.equal(edge.style.backgroundImage.split(", ").length, 4, "the corners; the sides are strips");
+  assert.equal(edge.children.filter((child) => child.getAttribute("data-framexml-backdrop-side")).length, 4);
   assert.match(background.style.filter ?? "", /^url\(#/);
   assert.match(edge.style.filter ?? "", /^url\(#/);
   assert.equal(authored.style.filter ?? "", "", "a sibling authored region is not filtered");

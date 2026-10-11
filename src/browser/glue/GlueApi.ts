@@ -18,6 +18,9 @@ import type { GlueNameRuleOptions } from "./GlueNameRules.js";
 import { GLUE_ADDON_GLOBALS, type GlueAddonList } from "./GlueAddons.js";
 import type { GlueCVarStore } from "./GlueCVarStore.js";
 import {
+  GLUE_SAVED_PASSWORD_GLOBAL, GLUE_SAVED_PASSWORD_LUA, type GlueSavedPasswordStore,
+} from "./GlueSavedPassword.js"; // 12.10
+import {
   frameXmlLuaDeclensionSetCount, frameXmlLuaDeclineName,
 } from "../ui/framexml_compat/FrameXmlDeclension.js";
 
@@ -130,6 +133,8 @@ export interface GlueApiOptions {
    * `usesToken` — never a password (`GlueCVarStore`). Without it everything stays in memory.
    */
   readonly cvarStore?: GlueCVarStore;
+  /** 12.10: the remembered account's password (`GlueSavedPassword.ts`); without it none is kept. */
+  readonly passwordStore?: GlueSavedPasswordStore;
 }
 
 /** The CVar `GetUsesToken`/`SetUsesToken` keep (10.10). */
@@ -310,6 +315,11 @@ export class GlueApi {
   #loginStream: BinaryByteStream | undefined;
   #loginGeneration = 0;
   /**
+   * 12.10: the account `DefaultServerLogin` was last called with, and whether the stock «remember»
+   * box then saved that name — the password is kept once that login is accepted.
+   */
+  #loginAttempt: { readonly account: string; remember: boolean } | undefined;
+  /**
    * The auth connection a login opened, kept after it succeeded so `RequestRealmList` can ask the
    * authserver again (10.08). Closed by the next login, `DisconnectFromServer`, entering the world
    * and `close`.
@@ -413,6 +423,15 @@ export class GlueApi {
       hasDialogType: (type) => this.hasDialogType(type),
       dialogShown: (type) => this.dialogShown(type), // 3.35-review
     }, message, fallback);
+  }
+
+  /**
+   * 12.10: after the corpus is loaded — the login screen puts a saved password back into its field
+   * after its own OnShow empties it (`GLUE_SAVED_PASSWORD_LUA`).
+   */
+  installAfterLoad(): void {
+    const ran = this.#vm.execute(GLUE_SAVED_PASSWORD_LUA, "@GlueApi:savedPassword");
+    if (!ran.ok) this.#options.session?.onDiagnostic?.(`saved password: ${ran.error ?? ""}`);
   }
 
   install(): void {
@@ -597,8 +616,21 @@ export class GlueApi {
     // every attempt, so it is bound rather than stubbed.
     vm.registerGlobal("GetSavedAccountName", () => [this.#cvars.get("accountName") ?? ""]);
     vm.registerGlobal("SetSavedAccountName", (args) => {
-      this.setCVar("accountName", String(args[0] ?? ""));
+      const name = String(args[0] ?? "");
+      this.setCVar("accountName", name);
+      // 12.10 (GlueSavedPassword.ts): the box's answer for the login just sent; "" — the box cleared
+      // or the name edited away from the saved one — forgets the password with the name.
+      if (name === "") {
+        this.#options.passwordStore?.clear();
+        if (this.#loginAttempt) this.#loginAttempt.remember = false;
+      } else if (this.#loginAttempt?.account === name) {
+        this.#loginAttempt.remember = true;
+      }
       return [];
+    });
+    vm.registerGlobal(GLUE_SAVED_PASSWORD_GLOBAL, (args) => {
+      const saved = this.#options.passwordStore?.load();
+      return [saved !== undefined && saved.account === String(args[0] ?? "") ? saved.password : ""];
     });
     vm.registerGlobal("GetSavedAccountList", () => [this.#cvars.get("accountList") ?? ""]);
     vm.registerGlobal("SetSavedAccountList", (args) => {
@@ -713,6 +745,7 @@ export class GlueApi {
   private installLogin(): void {
     const vm = this.#vm;
     vm.registerGlobal("DefaultServerLogin", (args) => {
+      this.#loginAttempt = { account: String(args[0] ?? ""), remember: false }; // 12.10
       void this.login(String(args[0] ?? ""), String(args[1] ?? ""));
       return [];
     });
@@ -808,6 +841,9 @@ export class GlueApi {
       this.fireEvent("CLOSE_STATUS_DIALOG");
       this.#session.beginSession(session);
       this.#options.onSession?.(session);
+      // 12.10: an accepted password is the one worth remembering, when the box asked for the name.
+      const attempt = this.#loginAttempt;
+      if (attempt?.account === account && attempt.remember) this.#options.passwordStore?.save(account, password);
       this.chooseRealmAfterLogin();
 
     } catch (error) {
@@ -816,6 +852,8 @@ export class GlueApi {
       this.#loginStream = undefined;
       this.fireEvent("CLOSE_STATUS_DIALOG");
       if (error instanceof AuthProtocolError && error.code !== undefined) {
+        // 12.10: the server refused this account's login — a saved password for it is stale.
+        if (this.#options.passwordStore?.load()?.account === account) this.#options.passwordStore.clear();
         this.#options.onAuthDiagnostic?.(error.code);
       } else {
         // No result byte to name it: the player reads the client's words, the detail goes to the log.
