@@ -18,6 +18,10 @@
 // filled with `map[key] = entry` in file order (:653-654), so a later row with the same cut key wins.
 // The cut and the last-wins merge are done here, once; rows that answer nothing (area 0, flags without
 // 2/4, no name) are left out, which is the same as no row for every rule that reads the table.
+// 12.10 (7.27): the minimap reads Flags too (Wow.exe 0x007F5BA0, browser/WmoMinimapGate.ts: root 0x1 and
+// 0x18, group 0x20), so a row carrying any of those bits answers something: 5 rows of the dataset
+// (Stormwind's exterior group 24611 with 0x20, Dalaran's name sets 1 and 2 with 0x9, Trial of the
+// Crusader 5612 and 5686 with 0x1) were left out before and are kept now.
 //
 //   { version: 1, rows: [[wmoId:int16, nameSet:int8, groupId:int32, areaId, flags, name], …] }
 
@@ -41,6 +45,8 @@ const NAME_FIELD = 11;
 /** `Flags` bits the core reads (Map.cpp :2891-2894): 4 forces outdoors, 2 indoors. */
 export const WMO_AREA_FLAG_INDOORS = 0x2;
 export const WMO_AREA_FLAG_OUTDOORS = 0x4;
+/** 12.10 (7.27): `Flags` bits the client's minimap reads (Wow.exe 0x007F5BA0): 0x1, 0x8, 0x10, 0x20. */
+export const WMO_AREA_FLAGS_MINIMAP = 0x1 | 0x8 | 0x10 | 0x20;
 
 export type WmoAreaRow = [wmoId: number, nameSet: number, groupId: number, areaId: number, flags: number, name: string];
 
@@ -80,7 +86,7 @@ export function wmoAreaCatalog(rows: FixedRows, locale: DbcLocale = DEFAULT_LOCA
   const out: WmoAreaRow[] = [];
   for (const entry of byKey.values()) {
     const [, , , areaId, flags, name] = entry;
-    if (areaId === 0 && (flags & (WMO_AREA_FLAG_INDOORS | WMO_AREA_FLAG_OUTDOORS)) === 0 && name === "") continue;
+    if (areaId === 0 && (flags & (WMO_AREA_FLAG_INDOORS | WMO_AREA_FLAG_OUTDOORS | WMO_AREA_FLAGS_MINIMAP)) === 0 && name === "") continue;
     out.push(entry);
   }
   return { version: WMO_AREAS_VERSION, rows: out };

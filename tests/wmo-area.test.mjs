@@ -13,10 +13,8 @@ const { WMO_AREAS_ROUTE_PATH, WMO_AREAS_ROUTE_VERSION, wmoAreaTableFrom, wmoArea
 const {
   AREA_FLAG_INSIDE, AREA_FLAG_OUTSIDE, AreaLocator, emptyAreaLocation, indoorZoneTexts, locateArea, wmoFloorWins,
 } = await import("../dist/code/browser/AreaLocator.js");
-const {
-  drawWmoMinimap, wmoMinimapCellAffine, wmoMinimapGroupDrawn, wmoMinimapPictureFrame, wmoModelToWorld, wmoWorldToModel,
-  WMO_MINIMAP_PICTURE_READING, WMO_MINIMAP_GROUPS,
-} = await import("../dist/code/browser/WmoMinimapDraw.js");
+// 12.10 (7.27): the readings and the group choice of 05.10 are settled — tests/wmo-minimap-building.test.mjs.
+const { wmoModelToWorld, wmoWorldToModel } = await import("../dist/code/browser/WmoMinimapDraw.js");
 const { inverseTransformCollisionPoint, transformCollisionMesh } = await import("../dist/code/browser/game/Collision.js");
 const { frameXmlResolveZone } = await import("../dist/code/browser/framexml/FrameXmlZoneInfo.js");
 
@@ -67,12 +65,20 @@ test("route and client agree; the catalog cuts the key as the core does, keeps t
     [1, 70_000, 200, 5, 0, 9, "первая"],
     // Same cut key (70000 → 4464, 200 → -56): the core's `map[key] = entry` keeps the later row.
     [2, 4464, -56, 5, 4, 10, "вторая"],
-    [3, 7, 0, 1, 0, 0, ""], // area 0, no 2/4 flag, no name: no row at all
-    [4, 7, 0, 2, 1, 0, ""], // flag 1 alone is not read by anything
+    [3, 7, 0, 1, 0, 0, ""], // area 0, no flag anything reads, no name: no row at all
+    // 12.10 (7.27): the minimap reads 0x1, 0x8, 0x10 (root rows) and 0x20 (group rows), Wow.exe 0x007F5BA0.
+    [4, 7, 0, 2, 1, 0, ""],
     [5, 7, 0, 3, 2, 0, ""],
+    [6, 7, 0, 4, 0x20, 0, ""],
+    [7, 7, 0, -1, 0x10, 0, ""],
+    [8, 8, 1, -1, 0x9, 0, ""],
+    [9, 7, 0, 5, 0x40, 0, ""], // read by nothing
   ]), "ruRU");
   assert.equal(catalog.version, WMO_AREAS_VERSION);
-  assert.deepEqual(catalog.rows, [[4464, -56, 5, 10, 4, "вторая"], [7, 0, 3, 0, 2, ""]]);
+  assert.deepEqual(catalog.rows, [
+    [4464, -56, 5, 10, 4, "вторая"], [7, 0, 2, 0, 1, ""], [7, 0, 3, 0, 2, ""], [7, 0, 4, 0, 0x20, ""],
+    [7, 0, -1, 0, 0x10, ""], [8, 1, -1, 0, 0x9, ""],
+  ]);
 });
 
 test("the client table: validated shape, lookups by the cut key, the whole-building row", () => {
@@ -248,61 +254,17 @@ test("WMO minimap: the model transform is the collision mesh's, both ways", () =
   assert.ok(Math.abs(back.x - 12) < 1e-9 && Math.abs(back.y + 34) < 1e-9 && Math.abs(back.z - 5) < 1e-9);
 });
 
-test("WMO minimap: both picture readings are frames of the same 128-yard cell, and they differ", () => {
-  assert.equal(WMO_MINIMAP_PICTURE_READING, "north-up", "14.25 has not settled it: the default is recorded");
-  assert.equal(WMO_MINIMAP_GROUPS, "floor-group");
-  const north = [...wmoMinimapPictureFrame("north-up", 0, 0, new Float64Array(6))];
-  const model = [...wmoMinimapPictureFrame("model-xy", 0, 0, new Float64Array(6))];
-  assert.deepEqual(north, [128, 128, 0, -128, -128, 0], "top-left (maxX, maxY); right −Y; down −X");
-  assert.deepEqual(model, [0, 128, 128, 0, 0, -128], "top-left (minX, maxY); right +X; down −Y");
-  // An unturned placement at the origin, the character at the cell's centre, 1 screen pixel a sheet pixel.
-  const placement = { x: 0, y: 0, z: 0, rotationX: 0, rotationY: 0, rotationZ: 0, scale: 1 };
-  const box = { minX: -64, minY: -64 };
-  const k = 256 / (1600 / 3);
-  const affine = (reading) => [...wmoMinimapCellAffine(placement, box, 0, 0, 0, { x: 0, y: 0 }, 1, reading, new Float64Array(6))];
-  // vmap's frame negates x and y: model (64, 64) is world (−64, −64) — south-east, bottom-right on the sheet.
-  const n = affine("north-up");
-  assert.ok(Math.abs(n[4] - 64 * k) < 1e-9 && Math.abs(n[5] - 64 * k) < 1e-9, "north-up origin");
-  // Picture right is model −Y, which vmap's negation makes world +Y: west, leftwards on the sheet; picture
-  // down is model −X, world +X: north, upwards. The reading only says how the bake lies in model space.
-  assert.ok(Math.abs(n[0] + 128 * k) < 1e-9 && Math.abs(n[1]) < 1e-9, "north-up: picture right runs left");
-  assert.ok(Math.abs(n[2]) < 1e-9 && Math.abs(n[3] + 128 * k) < 1e-9, "north-up: picture down runs up");
-  const m = affine("model-xy");
-  assert.ok(Math.abs(m[4] - 64 * k) < 1e-9 && Math.abs(m[5] + 64 * k) < 1e-9, "model-xy origin");
-  assert.notDeepEqual(n, m);
-});
-
-test("WMO minimap: group choice, and the draw walks only the chosen group's cells", () => {
-  const box = { minX: 0, minY: 0, minZ: 0, maxX: 256, maxY: 128, maxZ: 20 };
-  assert.equal(wmoMinimapGroupDrawn("floor-group", 2, 2, box, 5), true);
-  assert.equal(wmoMinimapGroupDrawn("floor-group", 1, 2, box, 5), false);
-  assert.equal(wmoMinimapGroupDrawn("storey", 1, 2, box, 5), true);
-  assert.equal(wmoMinimapGroupDrawn("storey", 1, 2, box, 50), false);
-  const calls = [];
-  const context = {
-    save: () => calls.push("save"), restore: () => calls.push("restore"),
-    transform: (...values) => calls.push(["transform", ...values.map((value) => Math.round(value * 1000) / 1000)]),
-    drawImage: (picture) => calls.push(["draw", picture]),
-  };
-  const source = {
-    placement: { x: 0, y: 0, z: 0, rotationX: 0, rotationY: 0, rotationZ: 0, scale: 1 },
-    groups: [{ bounds: box }, { bounds: box }],
-    floorGroup: 1,
-    cells: (index) => (index === 1 ? new Map([["0-0", "a"], ["1-0", "b"], ["bad", "c"]]) : new Map([["0-0", "z"]])),
-    picture: (hash) => (hash === "b" ? undefined : `pic-${hash}`),
-  };
-  assert.equal(drawWmoMinimap(context, source, { x: 0, y: 0, z: 0 }, 1, "north-up", "floor-group"), 1);
-  assert.deepEqual(calls.filter((call) => call[0] === "draw").map((call) => call[1]), ["pic-a"],
-    "group 0 is not the floor's; a picture still on its way and a malformed cell are skipped");
-  calls.length = 0;
-  assert.equal(drawWmoMinimap(context, source, { x: 0, y: 0, z: 0 }, 1, "north-up", "storey"), 2);
-});
-
 test("dataset: WMOAreaTable rows, the Goldshire inn's whole row, Map.AreaTableID of the single-WMO dungeons", withDataset, async () => {
   const catalog = await loadWmoAreas(dbcDirectory);
   const table = wmoAreaTableFrom(JSON.parse(JSON.stringify(catalog)));
   assert.ok(table);
-  assert.equal(catalog.rows.length, 10_112, "22,550 rows less the ones that answer nothing (probe-wmoarea.out.txt)");
+  // 12.10 (7.27): + 5 rows the minimap reads (10,112 before, probe-wmoarea.out.txt).
+  assert.equal(catalog.rows.length, 10_117, "22,550 rows less the ones that answer nothing");
+  assert.equal(table.whole(61, 0)?.flags, 0x10, "Stormwind's root: the whole-building minimap");
+  assert.equal(table.lookup(61, 0, 2539)?.flags, 0x20, "the Valley of Heroes: the terrain minimap");
+  assert.equal(table.lookup(61, 0, 24611)?.flags, 0x20, "Stormwind's group 285, area 0 and no name: kept for its 0x20");
+  assert.equal(table.whole(5164, 1)?.flags, 0x9, "Dalaran's second name set");
+  assert.equal(table.whole(5612, 0)?.flags, 0x1, "Trial of the Crusader");
   const inn = table.whole(53, 2);
   assert.equal(inn?.areaId, 0);
   assert.match(inn?.name ?? "", /Гордость льва/);

@@ -27,7 +27,10 @@ export const WMO_AREA_WHOLE_GROUP = -1;
 export interface WmoAreaEntry {
   /** `AreaTableID`; 0 leaves the area to the terrain grid. */
   readonly areaId: number;
-  /** `Flags`: 4 outdoors, 2 indoors (over the group's MOGP 0x8). */
+  /**
+   * `Flags`: 4 outdoors, 2 indoors (over the group's MOGP 0x8). 12.10 (7.27): the minimap's bits too — on the
+   * whole-building row (`whole`) 0x1 and 0x18, on a group's row 0x20 (WmoMinimapGate.ts).
+   */
   readonly flags: number;
   /** `AreaName_lang` in the dataset's locale; "" when the row has none. */
   readonly name: string;

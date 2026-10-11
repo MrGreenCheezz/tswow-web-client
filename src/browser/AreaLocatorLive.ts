@@ -14,7 +14,14 @@ import type { AreaClient } from "./AreaClient.js";
 import { game } from "./game/Context.js";
 import type { EnvironmentObject } from "./Terrain.js";
 import { WmoAreaClient } from "./WmoAreaClient.js";
-import { drawWmoMinimap, type WmoMinimapDrawSource } from "./WmoMinimapDraw.js";
+import type { CollisionModelGroup } from "../world/CollisionFormat.js";
+import { wmoMinimapAlignment } from "./WmoMinimapAlign.js";
+import { drawWmoMinimap, wmoWorldToModel, type WmoMinimapPicture } from "./WmoMinimapDraw.js";
+import { wmoMinimapMode, type WmoMinimapMode } from "./WmoMinimapGate.js";
+import {
+  WmoMinimapTileList, orderWmoMinimapTiles, selectWmoMinimapTiles, wmoMinimapPictureCorners, wmoMinimapQueryBox,
+  type WmoMinimapModel,
+} from "./WmoMinimapSelect.js";
 import { WmoMinimapTileClient } from "./WmoMinimapTiles.js";
 
 interface LiveSession {
@@ -114,53 +121,109 @@ export function liveWmoMinimapRevision(): number {
   return live ? live.locator.revision * 4096 + live.tiles.revision : -1;
 }
 
-const DRAW_SOURCE: {
-  placement: WmoMinimapDrawSource["placement"]; groups: WmoMinimapDrawSource["groups"]; floorGroup: number;
-  path: string; tiles: WmoMinimapTileClient | undefined;
-} & WmoMinimapDrawSource = {
-  placement: { x: 0, y: 0, z: 0, rotationX: 0, rotationY: 0, rotationZ: 0, scale: 1 },
-  groups: [],
-  floorGroup: -1,
-  path: "",
-  tiles: undefined,
-  cells(groupIndex) {
-    return this.tiles?.groupTiles(this.path, groupIndex);
-  },
-  picture(hash) {
-    return game.minimapTiles?.picture(hash);
-  },
+/** 12.10 (7.27): the tiles of the last query and what it was asked for (0x007F5BA0 queries again only on a change). */
+const TILES = new WmoMinimapTileList();
+const QUERY = { minX: 0, minY: 0, minZ: 0, maxX: 0, maxY: 0, maxZ: 0 };
+const MODEL_AT = { x: 0, y: 0, z: 0 };
+const LAST: {
+  visual: EnvironmentObject | undefined; wmo: WmoMinimapModel | undefined;
+  placement: LocatorFloor["placement"] | undefined; collision: readonly CollisionModelGroup[] | undefined;
+  group: number; mode: WmoMinimapMode | undefined; cellX: number; cellY: number; radius: number;
+  tiles: WmoMinimapTileClient | undefined; tilesRevision: number;
+  queried: WmoMinimapModel | undefined; queriedAt: LocatorFloor["placement"] | undefined;
+  /** How many of the query's tiles have a bake. */
+  baked: number;
+} = {
+  visual: undefined, wmo: undefined, placement: undefined, collision: undefined,
+  group: -1, mode: undefined, cellX: Number.NaN, cellY: Number.NaN, radius: Number.NaN, tiles: undefined, tilesRevision: -1,
+  queried: undefined, queriedAt: undefined, baked: 0,
 };
 
+function picture(hash: string): WmoMinimapPicture | undefined {
+  return game.minimapTiles?.picture(hash);
+}
+
 /**
- * The building's bakes in the minimap circle, when the character stands on an interior group of a WMO
- * that has them; 0 when nothing was drawn (the caller then draws the ADT tiles, as before).
+ * 12.10 (7.27): the building minimap — Wow.exe's choice (`WmoMinimapGate.ts`) between it and the terrain
+ * minimap, its tiles (`WmoMinimapSelect.ts`) and their lay (`WmoMinimapDraw.ts`). True when the building
+ * minimap owns the circle (drawn on the caller's dark background, pictures still on their way included);
+ * false leaves the ADT tiles to the caller.
+ *
+ * `radius` is the circle's radius in yards — where the original uses its indoor zoom table (25…150 yards,
+ * `minimapInsideZoom`), this client keeps its one zoom for both minimaps.
+ *
+ * Kept from before, and not the original's: a building whose bakes are not known (none — most WMOs — or a
+ * gateway without `/minimap/wmo`) keeps the terrain minimap, where the original draws its empty render
+ * target (a black circle); so does a building whose visual artifact or collision model is not here yet.
+ * Until the WMOAreaTable answers (or on a tile older than visual-tile-v5, which has no root id) the choice
+ * is made without the rows, and then an empty query keeps the terrain too: Stormwind's streets lit as
+ * exterior are interiors to the MOGP flag alone, and without the root row they would go dark.
  */
 export function drawLiveWmoMinimap(
   context: CanvasRenderingContext2D,
   mapId: number,
   position: { readonly x: number; readonly y: number; readonly z?: number },
   scale: number,
-): number {
+  radius: number,
+): boolean {
   const live = session;
   const locator = live?.locator;
   const floor = locator?.floor;
   const visual = locator?.visual;
-  if (!live || !locator || locator.map !== mapId || !floor || !visual || position.z === undefined) return 0;
-  if (!locator.answersAt(mapId, position.x, position.y)) return 0; // 05.10 review A7b-4: a far-sight eye's building
-  if ((floor.groupFlags & 0x8) !== 0) return 0;
+  if (!live || !locator || locator.map !== mapId || !floor || !visual || position.z === undefined) return false;
+  if (!locator.answersAt(mapId, position.x, position.y)) return false; // 05.10 review A7b-4: a far-sight eye's building
+  // 0x007F5BA0 (via 0x007A1640): the group's row and the whole building's row.
+  const table = live.table.table();
+  const wmoId = visual.wmoId, nameSet = visual.nameSet;
+  const groupRow = wmoId !== undefined && nameSet !== undefined ? table?.lookup(wmoId, nameSet, floor.groupId) : undefined;
+  const rootRow = wmoId !== undefined && nameSet !== undefined ? table?.whole(wmoId, nameSet) : undefined;
+  const mode = wmoMinimapMode(floor.groupFlags, groupRow?.flags, rootRow?.flags);
+  if (mode === "terrain") return false;
+  const rowsKnown = table !== undefined && wmoId !== undefined && nameSet !== undefined;
   // The building's answer first: most WMOs have no bakes, and that is known after one request.
-  if (!live.tiles.hasTiles(visual.name)) return 0;
-  const groups = game.collision?.models.model(floor.placement.modelName ?? visual.name)?.groups;
-  if (!groups) return 0;
-  DRAW_SOURCE.placement = floor.placement;
-  DRAW_SOURCE.groups = groups;
-  DRAW_SOURCE.floorGroup = floor.groupIndex;
-  DRAW_SOURCE.path = visual.name;
-  DRAW_SOURCE.tiles = live.tiles;
-  DRAW_AT.x = position.x;
-  DRAW_AT.y = position.y;
-  DRAW_AT.z = position.z;
-  return drawWmoMinimap(context, DRAW_SOURCE, DRAW_AT, scale);
+  if (!live.tiles.hasTiles(visual.name)) return false;
+  // The file's groups and portals (the visual artifact) and the collision's, lined up once per building.
+  if (visual !== LAST.visual || !LAST.wmo) {
+    LAST.visual = visual;
+    LAST.wmo = game.environment?.model(visual.name)?.wmo;
+  }
+  if (floor.placement !== LAST.placement || !LAST.collision) {
+    LAST.placement = floor.placement;
+    LAST.collision = game.collision?.models.model(floor.placement.modelName ?? visual.name)?.groups;
+  }
+  const wmo = LAST.wmo, collision = LAST.collision;
+  if (!wmo || !collision) return false;
+  const alignment = wmoMinimapAlignment(wmo.groups, collision);
+  const current = alignment?.visualOfCollision[floor.groupIndex] ?? -1;
+  const group = wmo.groups[current];
+  if (!alignment || !group) return false;
+  const cellX = Math.floor(position.x / radius);
+  const cellY = Math.floor(position.y / radius);
+  if (current !== LAST.group || mode !== LAST.mode || cellX !== LAST.cellX || cellY !== LAST.cellY || radius !== LAST.radius
+    || live.tiles !== LAST.tiles || live.tiles.revision !== LAST.tilesRevision || wmo !== LAST.queried
+    || floor.placement !== LAST.queriedAt) {
+    LAST.group = current;
+    LAST.mode = mode;
+    LAST.cellX = cellX;
+    LAST.cellY = cellY;
+    LAST.radius = radius;
+    LAST.tiles = live.tiles;
+    LAST.tilesRevision = live.tiles.revision;
+    LAST.queried = wmo;
+    LAST.queriedAt = floor.placement;
+    wmoMinimapQueryBox(floor.placement, position.x, position.y, position.z, radius, group.bounds.maxZ, QUERY);
+    selectWmoMinimapTiles(TILES, wmo, mode, current, QUERY, alignment.stops);
+    wmoWorldToModel(floor.placement, position.x, position.y, position.z, MODEL_AT);
+    LAST.baked = 0;
+    for (let at = 0; at < TILES.count; at++) {
+      TILES.hashes[at] = live.tiles.groupTiles(visual.name, TILES.group[at]!)?.get(`${TILES.x[at]}-${TILES.y[at]}`);
+      if (TILES.hashes[at] !== undefined) LAST.baked++;
+      wmoMinimapPictureCorners(TILES, at, floor.placement, MODEL_AT.z);
+    }
+    orderWmoMinimapTiles(TILES, current, MODEL_AT.z);
+  }
+  if (!rowsKnown && LAST.baked === 0) return false;
+  drawWmoMinimap(context, TILES, picture, position, scale, radius);
+  return true;
 }
 
-const DRAW_AT = { x: 0, y: 0, z: 0 };

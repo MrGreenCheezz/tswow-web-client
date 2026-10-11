@@ -650,7 +650,8 @@ function drawMinimap(
   context.translate(radius, radius);
   if (settings.rotate) context.rotate(position.orientation);
   // 05.10-A7b-4 (7.14): in an interior room of a building with bakes, its pictures replace the ADT tiles.
-  if (drawLiveWmoMinimap(context, mapId, position, size / (settings.zoom / MINIMAP_YARDS_PER_PIXEL)) === 0) {
+  // 12.10 (7.27): wherever Wow.exe 0x007F5BA0 chooses the building minimap (Stormwind's streets too).
+  if (!drawLiveWmoMinimap(context, mapId, position, size / (settings.zoom / MINIMAP_YARDS_PER_PIXEL), settings.zoom / 2)) {
     drawTiles(context, size, mapId, position);
   }
   drawBlips(context, radius, position, blips, now);

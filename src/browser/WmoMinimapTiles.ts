@@ -6,8 +6,9 @@
  * the group's model X, 128 yards a tile from the group box's minimum corner. This is only the
  * lookup — which hash draws which cell of which group. The picture is the same `/texture` the ADT
  * minimap uses (`textures\Minimap\<hash>.blp`, `MinimapTiles.ts`), and drawing a group in the
- * minimap circle is slice 4 (`ui/Minimap.ts`), which still has to settle the picture's orientation
- * inside a tile against a frame.
+ * minimap circle is slice 4 (`ui/Minimap.ts`). 12.10 (7.27): a tile is 128 yards only for a group
+ * longer than 64 yards on that axis — Wow.exe sizes it `clamp(2^ceil(log2(2·extent)), 32, 256)` pixels at
+ * half a yard each, and the picture's lay is settled (`WmoMinimapSelect.ts`, `WmoMinimapDraw.ts`).
  *
  * One request per building per session. A 404 — a building without bakes, which most are, or a
  * gateway older than the route — is final; any other failure climbs the retry ladder
