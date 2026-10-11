@@ -471,6 +471,20 @@ export interface CameraWorld {
  * The search starts at the higher of the camera and the hinge, because a camera that has dived
  * under a tavern's first floor must find that floor and be brought back above it; a search that
  * began at the camera itself would find the cellar and agree with where it already was.
+ *
+ * And at that height exactly, not a clearance above it (11.10). The owner's report of the live
+ * check — inside buildings the camera jerks hard and goes into the ceiling — was this search
+ * starting `CAMERA_FLOOR_CLEARANCE` over the higher of the two. A boom the ceiling cuts leaves the
+ * camera `CAMERA_WALL_CLEARANCE` short of it *along the ray*, which at the default tilt is 0.18 of
+ * a yard under it; a horizontal triangle is a floor seen from either side (`uprightness` is
+ * absolute), so the search found the ceiling, called it the floor under the camera and the clamp
+ * swung the view up until the camera stood 0.35 *over* it. Measured on a flat room, ceiling 3
+ * yards up: the drag's -23.75 degrees drawn at -35.33 with the camera at z = 3.350, and -40 left
+ * alone at z = 2.711 — so a small drag flipped the camera through the ceiling and back. A surface
+ * above both the hinge and the camera is over the whole arm: it is a ceiling, and the boom scan
+ * (`boomLimits`) is what answers it. Wow.exe has no floor rule to compare: its arm is one sweep from
+ * the pivot out (0x00605d60 → 0x0077f310, mask 0x100171) and a near-plane sweep (0x006059e0), and
+ * nothing above the pivot can lift its camera.
  */
 export function cameraFloorHeight(
   player: WorldPosition, camera: Vector3, pivotZ: number, collision?: CollisionWorld | undefined,
@@ -478,7 +492,8 @@ export function cameraFloorHeight(
 ): number {
   const feet = player.z + CAMERA_FEET_CLEARANCE;
   const solid = collision?.floorUnder(
-    camera.x, camera.y, Math.max(camera.z, pivotZ) + CAMERA_FLOOR_CLEARANCE, camera.z - FLOOR_SEARCH_DEPTH,
+    // 11.10: was `Math.max(camera.z, pivotZ) + CAMERA_FLOOR_CLEARANCE`.
+    camera.x, camera.y, Math.max(camera.z, pivotZ), camera.z - FLOOR_SEARCH_DEPTH,
   );
   if (solid === undefined) return options.allowBelowFeet ? Number.NEGATIVE_INFINITY : feet;
   return options.allowBelowFeet ? solid + CAMERA_FLOOR_CLEARANCE : Math.max(feet, solid + CAMERA_FLOOR_CLEARANCE);

@@ -26,6 +26,7 @@ import {
   applyGlobalSequenceBones, applyStrafeYaw, buildSkinnedTemplateFrom, instantiateSkinned,
   resolveStrafeYawBones, stepStrafeYaw, strafeYawBonesFor,
   strafeYawTarget, STRAFE_YAW_DIAGONAL, STRAFE_YAW_PURE, STRAFE_YAW_RATE,
+  strafeUpperBodyTurns, STRAFE_UPPER_BODY_LIMIT, // 11.10
 } from "../dist/code/browser/AnimatedModel.js";
 import {
   UNIT_STAND_STATE_DEAD, UNIT_STAND_STATE_SIT, UNIT_STAND_STATE_SIT_LOW_CHAIR,
@@ -405,10 +406,9 @@ test("a real character keeps every moving gait under a cast overlay", withClient
     const animationId = chosen.animation;
     const gaitSource = clipById.get(animationId);
     assert.ok(gaitSource, `HumanMale should expose gait clip ${animationId}`);
+    // 11.10: a strafe requests Run, as forward does (Wow.exe 0x00717050); it was RunLeft/RunRight.
     assert.equal(poseAnimation({ ...standing({ movementFlags: flags }), spline: false }).wanted[0],
-      flags === MOVEMENT_FLAGS.forward ? ANIMATION_IDS.Run
-        : flags === MOVEMENT_FLAGS.backward ? ANIMATION_IDS.Walkbackwards
-          : flags === MOVEMENT_FLAGS.strafeLeft ? ANIMATION_IDS.RunLeft : ANIMATION_IDS.RunRight,
+      flags === MOVEMENT_FLAGS.backward ? ANIMATION_IDS.Walkbackwards : ANIMATION_IDS.Run,
       `moving flags 0x${flags.toString(16)} should request the authored gait before fallback`);
     const gait = threeClip(gaitSource, { parents, pivots }, animationId);
     const pose = (withCast) => {
@@ -807,7 +807,7 @@ test("a levitating player walks and runs on its ground clips instead of swimming
   // character swam wherever it went. The flying-tier ladder asks for Fly first, and AnimationData
   // walks Fly (135) to Swim (42) before the next rung is ever tried — the trap is still in the
   // table, which is why the unit's tier, not its hover bit, decides.
-  const { Fly, Swim, Run, Walk, Walkbackwards, ShuffleLeft, ShuffleRight, Stand } = ANIMATION_IDS;
+  const { Fly, Swim, Run, Walk, Walkbackwards, Stand } = ANIMATION_IDS;
   const clips = humanMaleBaseClips();
   assert.equal(ANIMATION_FALLBACK[Fly], Swim);
   assert.equal(resolveAnimation(clips, [Fly, Run]), Swim, "what the flying ladder draws on this rig");
@@ -820,8 +820,9 @@ test("a levitating player walks and runs on its ground clips instead of swimming
     assert.equal(on(F.forward), Run, `tier ${animationTier}: running in the air is running`);
     assert.equal(on(F.forward | F.walking), Walk);
     assert.equal(on(F.backward), Walkbackwards);
-    assert.equal(on(F.strafeLeft), ShuffleLeft);
-    assert.equal(on(F.strafeRight), ShuffleRight);
+    // 11.10: a strafe runs (Wow.exe 0x00717050); it was ShuffleLeft/ShuffleRight.
+    assert.equal(on(F.strafeLeft), Run);
+    assert.equal(on(F.strafeRight), Run);
     assert.equal(on(0), Stand, "and standing in the air is standing");
   }
   // Gravity switched off without flight is the same case.
@@ -894,8 +895,11 @@ test("the ground poses follow the direction the unit is going", () => {
   assert.equal(at(MOVEMENT_FLAGS.forward), Run);
   assert.equal(at(MOVEMENT_FLAGS.forward | MOVEMENT_FLAGS.walking), Walk);
   assert.equal(at(MOVEMENT_FLAGS.backward), Walkbackwards, "there is no run-backwards in this build");
-  assert.equal(at(MOVEMENT_FLAGS.strafeRight), RunRight);
-  assert.equal(at(MOVEMENT_FLAGS.strafeLeft | MOVEMENT_FLAGS.walking), ShuffleLeft);
+  // 11.10: a strafe is the ordinary gait even on a rig that carries the sidestep clips (0x00717050);
+  // it was RunRight and ShuffleLeft.
+  assert.equal(at(MOVEMENT_FLAGS.strafeRight), Run);
+  assert.equal(at(MOVEMENT_FLAGS.strafeLeft | MOVEMENT_FLAGS.walking), Walk);
+  assert.notEqual(at(MOVEMENT_FLAGS.strafeLeft), ShuffleLeft);
   // A diagonal is a run forward, as it is in the original client.
   assert.equal(at(MOVEMENT_FLAGS.forward | MOVEMENT_FLAGS.strafeLeft), Run);
   // Turning on the spot is not going anywhere.
@@ -914,8 +918,9 @@ test("STRAFE the eight directions and the four diagonals each have one stable an
   const { Stand, Walk, Run, Walkbackwards, ShuffleLeft, ShuffleRight } = ANIMATION_IDS;
   // The clip map a real playable rig has: measured over HumanMale, HumanFemale, OrcMale, OrcFemale,
   // NightElfFemale, TaurenMale, GnomeFemale and DruidCat in F:/CircleClean, every one carries
-  // ShuffleLeft/ShuffleRight and not one carries RunLeft/RunRight. So the run/walk inversion in the
-  // strafe ladders is a preference no shipped rig can express, and both arms land on the shuffle.
+  // ShuffleLeft/ShuffleRight and not one carries RunLeft/RunRight. 11.10: the shuffles are carried and
+  // still not played for a strafe — they are Wow.exe's turn on the spot (0x0073dab0), and its gait
+  // picker 0x00717050 has no ground strafe arm, so a strafe runs and the body turns instead.
   const rig = new Map([[Stand, {}], [Walk, {}], [Run, {}], [Walkbackwards, {}],
     [ShuffleLeft, {}], [ShuffleRight, {}]]);
   const F = MOVEMENT_FLAGS.forward, B = MOVEMENT_FLAGS.backward;
@@ -926,8 +931,8 @@ test("STRAFE the eight directions and the four diagonals each have one stable an
   assert.equal(at(0), Stand, "no direction key is not a direction");
   assert.equal(at(F), Run);
   assert.equal(at(B), Walkbackwards, "there is no run-backwards in this build");
-  assert.equal(at(L), ShuffleLeft);
-  assert.equal(at(R), ShuffleRight);
+  assert.equal(at(L), Run, "11.10: a pure strafe runs (was ShuffleLeft)");
+  assert.equal(at(R), Run, "11.10: was ShuffleRight");
   // The four diagonals. Forward wins over a strafe and backward wins over both, which is the
   // reference client's `anyStrafeLeft = strafeLeft && !strafeRight && !movingBackward` written the
   // other way round (locomotion_fsm.cpp:185-186).
@@ -942,8 +947,8 @@ test("STRAFE the eight directions and the four diagonals each have one stable an
 
   // Walking mode changes the tempo of the answer and never the direction of it.
   assert.equal(at(F | MOVEMENT_FLAGS.walking), Walk);
-  assert.equal(at(L | MOVEMENT_FLAGS.walking), ShuffleLeft);
-  assert.equal(at(R | MOVEMENT_FLAGS.walking), ShuffleRight);
+  assert.equal(at(L | MOVEMENT_FLAGS.walking), Walk, "11.10: was ShuffleLeft");
+  assert.equal(at(R | MOVEMENT_FLAGS.walking), Walk, "11.10: was ShuffleRight");
   assert.equal(at(F | L | MOVEMENT_FLAGS.walking), Walk);
 
   // Every one of the twelve answers is stable under repetition: the pick is a pure function of the
@@ -956,36 +961,38 @@ test("STRAFE the eight directions and the four diagonals each have one stable an
     }
   }
 
-  // Water keeps its own strafe arm, and it is the reference's: there the diagonal *is* a strafe,
-  // because `LocomotionFSM`'s SWIM state is the one place it branches on `anyStrafeLeft`.
+  // Water keeps its own strafe arm: there the diagonal *is* a strafe.
   const swimming = MOVEMENT_FLAGS.swimming;
   assert.equal(poseAnimation(standing({ movementFlags: swimming | L })).wanted[0], ANIMATION_IDS.SwimLeft);
   assert.equal(poseAnimation(standing({ movementFlags: swimming | F | L })).wanted[0], ANIMATION_IDS.SwimLeft);
-  assert.equal(poseAnimation(standing({ movementFlags: swimming | B | L })).wanted[0],
-    ANIMATION_IDS.SwimBackwards, "backwards outranks a strafe in the water too");
+  // 11.10: and a strafe outranks backwards in the water — 0x00717050 tests `flags & 0xc` before `& 2`
+  // (was SwimBackwards).
+  assert.equal(poseAnimation(standing({ movementFlags: swimming | B | L })).wanted[0], ANIMATION_IDS.SwimLeft);
+  assert.equal(poseAnimation(standing({ movementFlags: swimming | B | R })).wanted[0], ANIMATION_IDS.SwimRight);
+  assert.equal(poseAnimation(standing({ movementFlags: swimming | B })).wanted[0], ANIMATION_IDS.SwimBackwards);
 });
 
-test("a sidestep a rig does not carry falls back to walking, never to standing still", () => {
+test("11.10 a strafe asks for the ordinary gait and never for a sidestep", () => {
   const { Run, Walk, Stand, ShuffleLeft, ShuffleRight, RunLeft, RunRight } = ANIMATION_IDS;
-  // Neither shuffle nor run-sideways has a Fallback row in AnimationData, so the wanted list
-  // itself must carry the ordinary gait: a rig without the sidestep steps instead of gliding.
-  assert.deepEqual(
-    poseAnimation(standing({ movementFlags: MOVEMENT_FLAGS.strafeLeft })).wanted,
-    [RunLeft, ShuffleLeft, Run, Walk]);
-  assert.deepEqual(
-    poseAnimation(standing({ movementFlags: MOVEMENT_FLAGS.strafeRight })).wanted,
-    [RunRight, ShuffleRight, Run, Walk]);
-  assert.deepEqual(
-    poseAnimation(standing({ movementFlags: MOVEMENT_FLAGS.strafeLeft | MOVEMENT_FLAGS.walking })).wanted,
-    [ShuffleLeft, RunLeft, Walk]);
-  // The resolver proves the point end to end: with only Walk available the strafe still moves.
-  assert.equal(resolveAnimation(new Set([Walk, Stand]), [ShuffleLeft, RunLeft, Run, Walk]), Walk);
-  assert.equal(resolveAnimation(new Set([Stand]), [ShuffleLeft, RunLeft, Run, Walk]), undefined,
-    "no gait in the list means no gait answered; the Stand last resort belongs to chooseAnimation");
-  // Concealed strafes keep their crouch first and inherit the same walking tail.
+  // Wow.exe 0x00717050 picks a moving unit's gait with no ground strafe arm at all; the shuffles are
+  // its turn on the spot (0x0073dab0). Before 11.10 these lists were [RunLeft, ShuffleLeft, Run, Walk]
+  // and [ShuffleLeft, RunLeft, Walk] — the owner's «shuffling the feet rather than running».
+  const forward = poseAnimation(standing({ movementFlags: MOVEMENT_FLAGS.forward })).wanted;
+  const walkingForward = poseAnimation(standing({ movementFlags: MOVEMENT_FLAGS.forward | MOVEMENT_FLAGS.walking })).wanted;
+  for (const strafe of [MOVEMENT_FLAGS.strafeLeft, MOVEMENT_FLAGS.strafeRight]) {
+    assert.deepEqual(poseAnimation(standing({ movementFlags: strafe })).wanted, forward, "the run, as forward");
+    assert.deepEqual(poseAnimation(standing({ movementFlags: strafe | MOVEMENT_FLAGS.walking })).wanted, walkingForward);
+    for (const sidestep of [ShuffleLeft, ShuffleRight, RunLeft, RunRight]) {
+      assert.equal(poseAnimation(standing({ movementFlags: strafe })).wanted.includes(sidestep), false);
+    }
+  }
+  assert.deepEqual(forward, [Run, Walk]);
+  assert.equal(resolveAnimation(new Set([Walk, Stand]), forward), Walk, "a rig with only Walk still steps");
+  // Concealed strafes creep as forward does: the crouch first, the ordinary gait behind it.
   const creep = stealthGroundAnimations({ walking: true, backward: false, left: true, right: false, forward: false });
+  assert.deepEqual(creep, stealthGroundAnimations({ walking: true, backward: false, left: false, right: false, forward: true }));
   assert.equal(creep[0], ANIMATION_IDS.StealthWalk);
-  assert.ok(creep.includes(Walk), "a sneaking rig without the sidestep creeps forward, not sideways still");
+  assert.equal(creep.includes(ShuffleLeft), false);
 });
 
 test("a unit stride replays at measured travel speed, borrowing Walk/Run when the gait names none", () => {  const { Walk, Run, ShuffleLeft } = ANIMATION_IDS;
@@ -1559,26 +1566,27 @@ function modelPosition(instance, bone) {
   return instance.root.worldToLocal(at);
 }
 
-test("M1 the strafe yaw target is the reference client's travel heading, row for row", () => {
-  const moving = (flags, animation) => strafeYawTarget(standing({ movementFlags: flags }), animation);
+test("M1 the strafe yaw target is Wow.exe's body yaw, row for row", () => {
+  // 11.10: the rows are Wow.exe 0x0073dab0's (was the reference client's travel heading).
+  const moving = (flags) => strafeYawTarget(standing({ movementFlags: flags }));
   const F = MOVEMENT_FLAGS;
   assert.equal(moving(F.forward), 0, "travel is the facing");
   assert.equal(moving(0), 0);
   assert.equal(moving(F.backward), 0);
-  // The diagonal, which is the case the owner is looking at: `travelYaw_` is the atan2 of a forward
-  // plus a lateral unit contribution (`camera_controller.cpp:2555-2562`), so 45 degrees.
+  // The forward diagonal: π/4 (`_DAT_009ea28c`) toward the strafe.
   assert.equal(moving(F.forward | F.strafeLeft), STRAFE_YAW_DIAGONAL);
   assert.equal(moving(F.forward | F.strafeRight), -STRAFE_YAW_DIAGONAL);
-  // A pure strafe on a rig with no sidestep clip is the whole quarter, which is what the reference
-  // gets for every strafe because it resolves none.
+  // A pure strafe is the whole quarter (`_DAT_009e8d88`), whatever clip the rig carries (11.10: the
+  // sidestep exemption is gone — a ground strafe plays Run).
   assert.equal(moving(F.strafeLeft), STRAFE_YAW_PURE);
   assert.equal(moving(F.strafeRight), -STRAFE_YAW_PURE);
   // Both keys cancel, exactly as the movement vector does.
   assert.equal(moving(F.strafeLeft | F.strafeRight), 0);
   assert.equal(moving(F.forward | F.strafeLeft | F.strafeRight), 0);
-  // `activeStrafe` is `(left || right) && !movingBackward` (`renderer.cpp:1611-1612`).
-  assert.equal(moving(F.backward | F.strafeLeft), 0);
-  assert.equal(moving(F.backward | F.strafeRight), 0);
+  // 11.10: backward and a strafe turn the body the other way, so the backward walk heads 135° off the
+  // facing — the sign flips for `flags & 6` = 6 (was 0, after the reference's `activeStrafe`).
+  assert.equal(moving(F.backward | F.strafeLeft), -STRAFE_YAW_DIAGONAL);
+  assert.equal(moving(F.backward | F.strafeRight), STRAFE_YAW_DIAGONAL);
 
   // Ground locomotion only.
   assert.equal(moving(F.swimming | F.strafeLeft), 0);
@@ -1592,25 +1600,30 @@ test("M1 the strafe yaw target is the reference client's travel heading, row for
     assert.equal(strafeYawTarget(standing({ movementFlags: F.hover | F.strafeLeft, animationTier })), 0);
     assert.equal(strafeYawTarget(standing({ movementFlags: F.disableGravity | F.strafeLeft, animationTier })), 0);
   }
-  assert.equal(moving(F.falling | F.strafeLeft), 0);
+  // 11.10: a fall keeps the turn — 0x0073dab0 resets on 0x2200000 (water, flight), not on 0x1000 —
+  // so a strafe jump does not straighten the legs for its arc (was 0).
+  assert.equal(moving(F.falling | F.strafeLeft), STRAFE_YAW_PURE);
   assert.equal(strafeYawTarget(standing({ movementFlags: F.forward | F.strafeLeft, dead: true })), 0);
   assert.equal(
     strafeYawTarget(standing({ movementFlags: F.forward | F.strafeLeft, mounted: true })), 0,
     "a rider's legs belong to the saddle, and the mount keeps the server's own facing");
 });
 
-test("M1 an authored sidestep answers a pure strafe instead of the yaw", withAnimationData, () => {
-  const F = MOVEMENT_FLAGS;
-  const pure = standing({ movementFlags: F.strafeLeft });
-  assert.equal(strafeYawTarget(pure, ANIMATION_IDS.ShuffleLeft), 0,
-    "the shuffle already faces that way; turning the legs again would overshoot by a quarter");
-  assert.equal(strafeYawTarget(pure, ANIMATION_IDS.RunLeft), 0);
-  assert.equal(strafeYawTarget(pure, ANIMATION_IDS.Run), STRAFE_YAW_PURE,
-    "and a rig that fell back to the forward gait needs the whole turn");
-  // The diagonal is unaffected: it is answered by Walk/Run on every rig and the clip cannot help.
-  assert.equal(
-    strafeYawTarget(standing({ movementFlags: F.forward | F.strafeLeft }), ANIMATION_IDS.Run),
-    STRAFE_YAW_DIAGONAL);
+test("11.10 SpineLow and the head are turned back toward the facing by Wow.exe's shares", () => {
+  const quarter = Math.PI / 4;
+  // A pure strafe: the chest a quarter into the travel, the head on the facing — for anyone.
+  for (const activePlayer of [true, false]) {
+    assert.deepEqual(strafeUpperBodyTurns(STRAFE_YAW_PURE, activePlayer, true), { spine: quarter, head: quarter });
+    assert.deepEqual(strafeUpperBodyTurns(-STRAFE_YAW_PURE, activePlayer, true), { spine: -quarter, head: -quarter });
+  }
+  // A diagonal: the active player's SpineLow takes all of it, anyone else's half and the head the rest.
+  assert.deepEqual(strafeUpperBodyTurns(STRAFE_YAW_DIAGONAL, true, true), { spine: quarter, head: 0 });
+  assert.deepEqual(strafeUpperBodyTurns(STRAFE_YAW_DIAGONAL, false, true), { spine: quarter / 2, head: quarter / 2 });
+  // No head on the rig: SpineLow alone, still capped.
+  assert.deepEqual(strafeUpperBodyTurns(STRAFE_YAW_PURE, false, false), { spine: quarter, head: 0 });
+  assert.equal(STRAFE_UPPER_BODY_LIMIT, quarter);
+  assert.deepEqual(strafeUpperBodyTurns(0, true, true), { spine: 0, head: 0 });
+  assert.deepEqual(strafeUpperBodyTurns(Number.NaN, true, true), { spine: 0, head: 0 });
 });
 
 test("M1 the turn is bounded, so a key change never snaps the legs", () => {
@@ -1687,7 +1700,18 @@ test("M1 the yaw bones are resolved from the rig, and fail open when it cannot a
   assert.equal(none.strafeYawBones, null, "and a rig that cannot answer is asked exactly once");
 });
 
-test("M1 the yaw turns the legs about the body's axis and leaves the torso alone", () => {
+/** How far a bone is turned about the model's vertical axis, in radians (11.10). */
+function modelYaw(instance, bone) {
+  instance.root.updateWorldMatrix(true, true);
+  const turned = new THREE.Quaternion();
+  instance.skeleton.bones[bone].getWorldQuaternion(turned);
+  const root = new THREE.Quaternion();
+  instance.root.getWorldQuaternion(root);
+  const forward = new THREE.Vector3(1, 0, 0).applyQuaternion(root.invert().multiply(turned));
+  return Math.atan2(forward.y, forward.x);
+}
+
+test("M1 the yaw turns the legs about the body's axis; a torso on the axis keeps its place", () => {
   const bones = resolveStrafeYawBones(
     YAW_RIG_SPINE_UNDER_PELVIS.parents, YAW_RIG_SPINE_UNDER_PELVIS.pivots);
   const instance = yawInstance(YAW_RIG_SPINE_UNDER_PELVIS);
@@ -1702,12 +1726,83 @@ test("M1 the yaw turns the legs about the body's axis and leaves the torso alone
     `the foot swings a quarter about the pelvis axis, got ${foot.toArray().join(",")}`);
   assert.ok(spine.distanceTo(spineBefore) < 1e-6, "and the torso does not move at all");
   assert.ok(footBefore.distanceTo(foot) > 0.1);
+  // 11.10: it is turned, though — the quarter less SpineLow's share (π/4), as Wow.exe 0x0073dab0
+  // leaves the chest; it used to be turned back by the whole quarter.
+  assert.ok(Math.abs(modelYaw(instance, 6) - Math.PI / 4) < 1e-6, `torso at ${modelYaw(instance, 6)}`);
 
   // Zero is a no-op, so a unit that is not strafing pays nothing and is not nudged.
   const still = yawInstance(YAW_RIG_SPINE_UNDER_PELVIS);
   const rest = modelPosition(still, 4);
   applyStrafeYaw(still, bones, 0);
   assert.ok(modelPosition(still, 4).distanceTo(rest) < 1e-9);
+});
+
+/**
+ * 11.10: the playable rigs' own shape (HumanMale's key bones, `tools/mpq.mjs`): hips (keyBoneId 26)
+ * over SpineLow (4) and the Waist (5) the legs hang from, the head (6) up the spine, and the bone the
+ * HELM attachment hangs from under the head. Indices: 0 root, 1 hips, 2 SpineLow, 3 Waist, 4/5
+ * thighs, 6/7 shins, 8/9 feet, 10 chest, 11 head, 12 helm bone, 13/14 shoulders.
+ */
+const YAW_RIG_PLAYABLE = {
+  parents: Int16Array.from([-1, 0, 1, 1, 3, 3, 4, 5, 6, 7, 2, 10, 11, 10, 10]),
+  pivots: Float32Array.from([
+    0, 0, 0,
+    0, 0, 1.0,
+    0, 0, 1.05,
+    0, 0, 0.95,
+    0, -0.2, 0.75,
+    0, 0.2, 0.75,
+    0, -0.2, 0.4,
+    0, 0.2, 0.4,
+    0, -0.2, 0.05,
+    0, 0.2, 0.05,
+    0, 0, 1.4,
+    0, 0, 1.7,
+    0.05, 0, 1.8,
+    0, -0.25, 1.45,
+    0, 0.25, 1.45,
+  ]),
+  helm: 12,
+};
+
+test("11.10 the legs take the turn, SpineLow and the head give theirs back, as 0x0073dab0 leaves them", () => {
+  const rig = YAW_RIG_PLAYABLE;
+  const bones = resolveStrafeYawBones(rig.parents, rig.pivots, rig.helm);
+  assert.deepEqual({ ...bones, torso: [...bones.torso], spine: [...bones.spine] },
+    { pelvis: 3, torso: [], spine: [2], head: 11 }, "Waist, SpineLow beside it, the head under the helm");
+  assert.equal(resolveStrafeYawBones(rig.parents, rig.pivots).head, undefined, "no helm, no head");
+  // Resolved through the model's HELM attachment (11) when the template is first asked.
+  const template = { parents: rig.parents, pivots: rig.pivots };
+  assert.equal(strafeYawBonesFor(template, { attachments: [{ id: 1, bone: 13 }, { id: 11, bone: rig.helm }] }).head, 11);
+
+  const turned = (radians, activePlayer) => {
+    const instance = yawInstance(rig);
+    applyStrafeYaw(instance, bones, radians, activePlayer);
+    return { legs: modelYaw(instance, 8), chest: modelYaw(instance, 13), head: modelYaw(instance, 12) };
+  };
+  const near = (actual, expected, what) => assert.ok(Math.abs(actual - expected) < 1e-6, `${what}: ${actual} against ${expected}`);
+  // A pure strafe: legs a quarter into the travel, the chest half of it, the head back on the facing.
+  for (const activePlayer of [false, true]) {
+    const pure = turned(Math.PI / 2, activePlayer);
+    near(pure.legs, Math.PI / 2, "legs");
+    near(pure.chest, Math.PI / 4, "chest");
+    near(pure.head, 0, "head");
+  }
+  // A diagonal: the active player's chest is back on the facing; anyone else's an eighth into it.
+  const own = turned(Math.PI / 4, true);
+  near(own.legs, Math.PI / 4, "legs");
+  near(own.chest, 0, "own chest");
+  near(own.head, 0, "own head");
+  const other = turned(-Math.PI / 4, false);
+  near(other.legs, -Math.PI / 4, "legs");
+  near(other.chest, -Math.PI / 8, "other chest");
+  near(other.head, 0, "other head");
+  // And all of it is let go of together.
+  const instance = yawInstance(rig);
+  const rest = [8, 13, 12].map((bone) => modelPosition(instance, bone));
+  applyStrafeYaw(instance, bones, Math.PI / 2, false);
+  applyStrafeYaw(instance, bones, 0, false);
+  [8, 13, 12].forEach((bone, index) => assert.ok(modelPosition(instance, bone).distanceTo(rest[index]) < 1e-9, `bone ${bone}`));
 });
 
 test("M1 the yaw is a model-space turn even when the mixer has already posed the parents", () => {

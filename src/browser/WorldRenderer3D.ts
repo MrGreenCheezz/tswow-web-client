@@ -8,6 +8,7 @@ import { sceneYaw, toRenderAxes, type Quat } from "../world/GameObjectRotation.j
 import { gameObjectNodeYaw, gameObjectWorldRotation, placedBoxCorners, type ModelBox } from "../world/GameObjectModelFrame.js"; // 06.10-7.24
 import { modelPickBox } from "./GameObjectPickBox.js"; // 06.10-7.24
 import { passengerGameObjectTilt } from "../world/TransportPassengers.js";
+import { ShownUnitFacing, unitAutoFacing, unitFacingTurn } from "../world/UnitFacing.js"; // 11.10
 import {
   CAMERA_DEFAULT_DISTANCE, CAMERA_DEFAULT_EYE_HEIGHT, CAMERA_DEFAULT_PITCH, CAMERA_DEFAULT_PIVOT_HEIGHT,
   CAMERA_EYE_BODY_SHARE, CAMERA_FIRST_PERSON_DISTANCE, CAMERA_FOV_DEGREES, CAMERA_PIVOT_BODY_SHARE,
@@ -56,6 +57,7 @@ import { fixtureLightSource } from "./FixtureLightSources.js"; // 06.10-render-f
 import {
   GOD_RAY_STRENGTH_SCALE_MAX, godRayStrengthScale, lightingProfile, shadowMaterialEligible,
   lightingClassicLook, // 05.10-7.20
+  LIGHTING_QUALITY_COMPARISON, // 11.10
   stabiliseDirectionalShadowCenter, unitCastsEnhancedShadow, withToneShoulder, toneShoulder,
   type LightingProfile,
 } from "./LightingQuality.js";
@@ -66,6 +68,7 @@ import {
 import { ShadowCasterList, type CasterGate } from "./ShadowCasterList.js"; // P2-01a
 import {
   SCENERY_SHADOW_CAST, SCENERY_SHADOW_FAR, SCENERY_SHADOW_RECEIVE, sceneryShadowFlags, type SceneryShadowTraits,
+  sceneryShadowsWanted, // 11.10
 } from "./SceneryShadowFlags.js"; // P2-02a
 import {
   applyHorizonAerialFog, applyWorldLight, createWorldLightUniforms,
@@ -2741,6 +2744,8 @@ interface RenderedUnit extends PosedModel {
    * one set of clips, and the turn is the only part of the pose that is theirs alone.
    */
   strafeYaw: number | undefined;
+  /** 11.10: the facing this unit is drawn at, when the client does not move it itself. See `world/UnitFacing.ts`. */
+  shownFacing: ShownUnitFacing | undefined;
   /** 05.10-A7a-F1 (6.16а): private copies of the batches the file fades under Death. See `BatchDeathFade.ts`. */
   deathFade: DeathFadeState | undefined;
   /** 05.10-A7a-C 6.07: the STUNNED/LOOTING bits whose holds are in the queue. See `UnitFlagPoses.ts`. */
@@ -4774,8 +4779,21 @@ export class WorldRenderer3D {
     if (next.waterSunGlitter || next.waterSkyReflection) this.#waterDetailMaps.request();
     this.#syncCinematicLight(this.#lightSample);
     if (postChanged) this.#cinematic.settle();
-    if (before.sceneryShadows !== next.sceneryShadows) this.#syncSceneryShadows(true);
+    if (before.sceneryShadows !== next.sceneryShadows || this.#sceneryShadowsWanted() !== this.#sceneryShadowsApplied) {
+      this.#syncSceneryShadows(true);
+    }
     if (postChanged) this.#syncFullscreenGlowTargets();
+  }
+
+  /** 11.10: the world casts into the sun's map (`sceneryShadowsWanted`; the comparison level keeps the leaf). */
+  #sceneryShadowsWanted(): boolean {
+    return sceneryShadowsWanted(
+      this.#lightingProfile.quality === LIGHTING_QUALITY_COMPARISON,
+      this.#cinematicRequested?.sceneryShadows === true,
+      this.#cinematic.profile.sceneryShadows,
+      this.#lightingProfile.shadowMapSize,
+      this.#interiorLight !== undefined,
+    );
   }
 
   /**
@@ -4803,10 +4821,7 @@ export class WorldRenderer3D {
    * runs are unlit and never read the sun's map, so no roof can darken a floor lit by baked light.
    */
   #syncSceneryShadows(force: boolean): void {
-    // In an interior-only building the sun's term is suppressed for every receiver, so its casters
-    // would only cost shadow-pass draws.
-    const wanted = this.#cinematic.profile.sceneryShadows && this.#lightingProfile.shadowMapSize > 0
-      && this.#interiorLight === undefined;
+    const wanted = this.#sceneryShadowsWanted();
     if (!wanted && !this.#sceneryShadowsApplied) return;
     this.#sceneryShadowFrame++;
     // Switching on still waits for the cadence, as it always did: a camera flickering across an
@@ -12912,7 +12927,8 @@ export class WorldRenderer3D {
       drawn.add(object.guid);
       this.#drawUnit(object, state.selfGuid === object.guid, distance, now, elapsed, client, creatureModel, displayAnswered,
         mountModel,
-        this.#unitShadowCasters.decide(object.guid, rank, distance, this.#lightingProfile)); // 06.10-shadow: was unitCastsEnhancedShadow
+        this.#unitShadowCasters.decide(object.guid, rank, distance, this.#lightingProfile), // 06.10-shadow: was unitCastsEnhancedShadow
+        state); // 11.10: the unit's facing (UnitFacing.ts)
       const rendered = this.#units.get(object.guid);
       if (rendered?.applied) this.#atlasFrameActive.add(rendered.applied);
     }
@@ -13132,6 +13148,7 @@ export class WorldRenderer3D {
     displayAnswered: ((displayId: number) => boolean) | undefined,
     mountModel: ((object: WorldObjectState) => UnitModel | undefined) | undefined,
     shadowCaster: boolean,
+    world?: Pick<WorldState, "objects" | "predictedGuid">, // 11.10: for the facing (UnitFacing.ts)
   ): void {
     const detailedCapture = this.#shaderProgramTrace !== undefined;
     let unitPartAt = detailedCapture ? performance.now() : 0;
@@ -13174,6 +13191,7 @@ export class WorldRenderer3D {
         mount: undefined, opacityBorrows: undefined, warmShown: undefined, modelShown: undefined,
         fadeReturnFrames: undefined, appearancePendingSince: undefined, stealthed: undefined,
         strafeYaw: undefined, deathFade: undefined, flagPoses: undefined,
+        shownFacing: undefined, // 11.10
       };
       this.#units.set(object.guid, unit);
       this.#unitGroup.add(node);
@@ -13283,7 +13301,14 @@ export class WorldRenderer3D {
     // parents are in, and a unit still standing where it was last frame turns its cards to face
     // where the camera was relative to *that* — visible on anything that spins on the spot.
     unit.node.position.set(position.x, position.z, -position.y);
-    unit.node.rotation.y = position.orientation;
+    // 11.10: a unit the client does not move is drawn at the facing Wow.exe 0x00735f60 gives it — its
+    // target's while it stands in a fight, followed smoothly (world/UnitFacing.ts); the character and
+    // whatever it drives keep their own facing exactly. Was `position.orientation` for every unit.
+    const mover = self || (world !== undefined && world.predictedGuid === object.guid);
+    unit.node.rotation.y = mover || world === undefined ? position.orientation
+      : (unit.shownFacing ??= new ShownUnitFacing()).step(
+        unitAutoFacing(object, world.objects) ?? position.orientation, unitFacingTurn(object), elapsed);
+    if (mover) unit.shownFacing = undefined;
     const content = unitContentVisible(object, self, this.#firstPerson, unit.body !== undefined);
     // First person hides the *rider*, not what the rider is sitting on. The mount's group hangs
     // inside `unit.node` (`#attachMount`), so hiding the node as one took the horse with it and the
@@ -14268,7 +14293,7 @@ export class WorldRenderer3D {
     // The legs into the direction of travel, over the clip the mixer just wrote. Self and remote
     // alike: the flags this reads are the ones in the last packet about the unit, and the player's
     // own are written into that state as they are sent.
-    this.#applyStrafeYaw(unit, template, pose, poseElapsed);
+    this.#applyStrafeYaw(unit, template, pose, poseElapsed, self); // 11.10: `self`
     // Before the rider's billboards, because the rider hangs off one of these bones: a card turned
     // against a saddle that has not moved yet is a card turned against last frame.
     if (mount?.skinned && mount.template) {
@@ -14336,8 +14361,9 @@ export class WorldRenderer3D {
    */
   #strafeYawIdle(unit: RenderedUnit, template: SkinnedTemplate, pose: UnitPose): boolean {
     if ((unit.strafeYaw ?? 0) !== 0) return false;
-    return strafeYawBonesFor(template) === undefined
-      || strafeYawTarget(pose, unit.action ? unit.animationId : undefined) === 0;
+    // 11.10: no clip argument — a ground strafe is never a sidestep any more (`poseAnimation`).
+    return strafeYawBonesFor(template, unit.wvm) === undefined
+      || strafeYawTarget(pose) === 0;
   }
 
   /**
@@ -14354,15 +14380,15 @@ export class WorldRenderer3D {
    * still keeps its stored angle at zero.
    */
   #applyStrafeYaw(unit: RenderedUnit, template: SkinnedTemplate, pose: UnitPose,
-    elapsed: number): void {
-    const bones = strafeYawBonesFor(template);
-    // The clip that is really playing, because a rig with an authored sidestep needs no turn for a
-    // pure strafe and a rig without one needs the whole quarter.
-    const target = bones === undefined
-      ? 0 : strafeYawTarget(pose, unit.action ? unit.animationId : undefined);
+    elapsed: number, self: boolean): void {
+    // 11.10: the head is found through the model's HELM attachment (`resolveStrafeYawBones`).
+    const bones = strafeYawBonesFor(template, unit.wvm);
+    // 11.10: was `strafeYawTarget(pose, <the clip playing>)` — the sidestep exemption is gone.
+    const target = bones === undefined ? 0 : strafeYawTarget(pose);
     const yaw = stepStrafeYaw(unit.strafeYaw ?? 0, target, elapsed);
     unit.strafeYaw = yaw;
-    if (bones && unit.skinned) applyStrafeYaw(unit.skinned, bones, yaw);
+    // 11.10: `self` — the active player's SpineLow share is not halved (Wow.exe 0x0073dab0).
+    if (bones && unit.skinned) applyStrafeYaw(unit.skinned, bones, yaw, self);
   }
 
   /**

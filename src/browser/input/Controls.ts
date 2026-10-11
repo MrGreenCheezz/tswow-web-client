@@ -408,6 +408,27 @@ const DRAG_THRESHOLD = 3;
 const drag = { left: false, right: false, moved: 0, seen: 0, lockRequested: false, lockRefused: false, turned: false };
 
 /**
+ * 11.10: the buttons held down while the pointer is over the world that were pressed somewhere else.
+ *
+ * The owner's report (live check 11.10): dragging a spell from one stock action button to another
+ * jerked the camera and hid the cursor. The press lands on the button (ActionButton's OnDragStart →
+ * PickupAction, ActionBarFrame.xml), whose `mousedown` the FrameXML host takes; the canvas hears no
+ * `pointerdown`. But the pointer crosses the canvas in the gaps between the buttons, and a
+ * `pointermove` there carries `buttons` = 1 — which `syncButtons` read as the left button going down
+ * on the world: the next move turned the camera and asked for the pointer lock, and the lock took the
+ * cursor away from the drop. A press the interface took is the interface's until it comes up — the
+ * stock button sees its OnDragStart through to the OnReceiveDrag it is dropped on — and the camera's
+ * gesture is the one a press on the world starts.
+ *
+ * A move reports a press with its `button` (0, 1, 2…); a move that pressed nothing has −1. So a
+ * button already down on a move that pressed nothing, with no gesture running, went down elsewhere —
+ * or belongs to a gesture this file already abandoned — and stays out of every gesture until it comes
+ * up. A press on the world still arrives as a `pointerdown` or as a chorded move with its own
+ * `button`, and starts the gesture as before.
+ */
+let foreignButtons = 0;
+
+/**
  * 5.14: the pointer is locked to the world for the length of a drag past the click threshold, as the
  * original hides the cursor while the mouse turns the camera; it comes back where it was when the
  * last button comes up. Only past the threshold, so a click keeps its cursor. The request rides the
@@ -841,8 +862,13 @@ function clearUnitTooltip(): void {
  * is on, and where the gesture started — so no listener has to keep its own idea of it.
  */
 function syncButtons(event: PointerEvent): { releasedLeft: boolean; releasedRight: boolean } {
-  const left = (event.buttons & 1) !== 0;
-  const right = (event.buttons & 2) !== 0;
+  // 11.10: a button let go of is nobody's any more; one already held on a move that pressed nothing
+  // while no gesture runs went down somewhere else (see `foreignButtons`) and is not read below.
+  foreignButtons &= event.buttons;
+  if (!drag.left && !drag.right && !(event.button >= 0)) foreignButtons |= event.buttons & 3;
+  const held = event.buttons & ~foreignButtons; // 11.10: was `event.buttons` in the two lines below
+  const left = (held & 1) !== 0;
+  const right = (held & 2) !== 0;
   const releasedLeft = drag.left && !left;
   const releasedRight = drag.right && !right;
   // L8-review 5.09: a button's release is its Stop for whoever set the bit (Wow.exe 0x005fa450): the Lua command on

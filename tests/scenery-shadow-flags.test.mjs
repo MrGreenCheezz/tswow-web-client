@@ -7,7 +7,7 @@ import * as THREE from "three";
 import { SHADOW_CASTER_PRUNE_FRAMES, ShadowCasterList } from "../dist/code/browser/ShadowCasterList.js";
 import {
   SCENERY_FAR_SHADOW_MIN_RADIUS, SCENERY_SHADOW_CAST, SCENERY_SHADOW_FAR, SCENERY_SHADOW_MIN_RADIUS,
-  SCENERY_SHADOW_RECEIVE, sceneryShadowFlags,
+  SCENERY_SHADOW_RECEIVE, sceneryShadowFlags, sceneryShadowsWanted,
 } from "../dist/code/browser/SceneryShadowFlags.js";
 
 const CAST = SCENERY_SHADOW_CAST;
@@ -82,10 +82,29 @@ function body(name) {
   return next < 0 ? source.slice(start) : source.slice(start, start + 1 + next);
 }
 
+test("11.10: the comparison level keeps the account's world-shadow leaf; the other levels take the profile's copy", () => {
+  // The live recording of 11.10 (lighting quality 3, leaf on): the cached cascade rendered 333 times
+  // with no draw, because the classic look cleared the profile's copy of the leaf.
+  assert.equal(sceneryShadowsWanted(true, true, false, 512, false), true, "comparison level, leaf on");
+  assert.equal(sceneryShadowsWanted(true, false, false, 512, false), false, "comparison level, leaf off");
+  assert.equal(sceneryShadowsWanted(true, false, true, 512, false), false, "the cleared copy is not read there");
+  assert.equal(sceneryShadowsWanted(false, true, false, 512, false), false, "quality 0 to 2 read the profile's copy");
+  assert.equal(sceneryShadowsWanted(false, false, true, 1024, false), true);
+  assert.equal(sceneryShadowsWanted(true, true, true, 0, false), false, "no map, no casters");
+  assert.equal(sceneryShadowsWanted(false, true, true, 1024, true), false, "an interior-only room suppresses the sun");
+  assert.equal(sceneryShadowsWanted(true, true, true, 512, true), false);
+});
+
+test("11.10: a profile or quality change that flips the answer re-walks the world at once", () => {
+  assert.match(body("#applyCinematicProfile"),
+    /if \(before\.sceneryShadows !== next\.sceneryShadows \|\| this\.#sceneryShadowsWanted\(\) !== this\.#sceneryShadowsApplied\) \{\s+this\.#syncSceneryShadows\(true\);/);
+});
+
 test("the environment is walked only on a transition, not on the thirtieth light push", () => {
   const sync = body("#syncSceneryShadows");
-  // Correction 7: both lines stay as they were.
-  assert.match(sync, /const wanted = this\.#cinematic\.profile\.sceneryShadows && this\.#lightingProfile\.shadowMapSize > 0\s+&& this\.#interiorLight === undefined;/);
+  // Correction 7: both lines stay as they were (11.10: the answer moved to `#sceneryShadowsWanted`).
+  assert.match(sync, /const wanted = this\.#sceneryShadowsWanted\(\);/);
+  assert.match(body("#sceneryShadowsWanted"), /return sceneryShadowsWanted\(\s+this\.#lightingProfile\.quality === LIGHTING_QUALITY_COMPARISON,\s+this\.#cinematicRequested\?\.sceneryShadows === true,\s+this\.#cinematic\.profile\.sceneryShadows,\s+this\.#lightingProfile\.shadowMapSize,\s+this\.#interiorLight !== undefined,\s+\);/);
   assert.match(sync, /if \(!wanted && !this\.#sceneryShadowsApplied\) return;/);
   // Switching on waits for the cadence as before (a flickering room light costs one walk per thirty
   // pushes); switching off and forced syncs are immediate.

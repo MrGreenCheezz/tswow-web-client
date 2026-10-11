@@ -414,7 +414,9 @@ test("the renderer only enters the cinematic path when a post leaf is active", a
   // And not inside a building made only of rooms, where the sun's term is suppressed for every
   // receiver and its casters would only cost shadow-pass draws (`#interiorLight`, set by the room
   // the player stands in).
-  assert.match(source, /const wanted = this\.#cinematic\.profile\.sceneryShadows && this\.#lightingProfile\.shadowMapSize > 0\s+&& this\.#interiorLight === undefined;/);
+  // 11.10: the answer is `sceneryShadowsWanted` (scenery-shadow-flags covers the comparison level).
+  assert.match(source, /const wanted = this\.#sceneryShadowsWanted\(\);/);
+  assert.match(source, /this\.#cinematic\.profile\.sceneryShadows,\s+this\.#lightingProfile\.shadowMapSize,\s+this\.#interiorLight !== undefined,/);
   assert.match(source, /if \(!wanted && !this\.#sceneryShadowsApplied\) return;/);
   // Lighting quality 0 is the faithful frame: it overrides every requested cinematic leaf. Since
   // 05.10-7.20 the renderer asks `lightingClassicLook`, which also covers the comparison level 3.

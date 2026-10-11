@@ -7,6 +7,7 @@ import {
 import { SharedPose, type PoseEngine, type PoseGlobalSource } from "./PoseEngine.js";
 import type { EnvironmentModel, ModelClip, ModelSkeleton } from "../gateway/VMapModel.js";
 import {
+  ATTACHMENT_HELM, // 11.10: the strafe turn's head (strafeYawBonesFor)
   BONE_ANY_BILLBOARD, BONE_CYLINDRICAL_BILLBOARD_X, BONE_CYLINDRICAL_BILLBOARD_Y,
   BONE_CYLINDRICAL_BILLBOARD_Z, BONE_SPHERICAL_BILLBOARD,
   type WvmSkeleton, type WvmSkeletonClip, type WvmSkeletonGlobalChannel,
@@ -2012,10 +2013,13 @@ export function poseAnimation(pose: UnitPose): { wanted: number[]; loop: boolean
   // during the frame the character enters the water.
   // Every list ends with the pose on dry land: not every model can swim or fly, and one that
   // cannot should keep moving the way it does rather than stand there gliding across the lake.
+  // 11.10: a strafe before the backward key and on dry land Run, as Wow.exe 0x00717050 picks them:
+  // `flags & 0xc` gives 0x2b SwimLeft / 0x2c SwimRight whatever else is held, only then `flags & 2`
+  // gives 0x2d SwimBackwards; a ground strafe is Run (below), not ShuffleLeft/Right.
   if (has(MOVEMENT_FLAGS.swimming)) {
+    if (left && !right) return { wanted: [SwimLeft, Swim, Run], loop: true };
+    if (right && !left) return { wanted: [SwimRight, Swim, Run], loop: true };
     if (backward) return { wanted: [SwimBackwards, Swim, Walkbackwards], loop: true };
-    if (left && !right) return { wanted: [SwimLeft, Swim, ShuffleLeft], loop: true };
-    if (right && !left) return { wanted: [SwimRight, Swim, ShuffleRight], loop: true };
     // Sinking and rising are movement too: a character that stops paddling forward and dives is
     // not idling. Without this the swim idle plays all the way to the bottom of the lake.
     if (moving || has(MOVEMENT_FLAGS.ascending) || has(MOVEMENT_FLAGS.descending)) {
@@ -2079,36 +2083,23 @@ export function poseAnimation(pose: UnitPose): { wanted: number[]; loop: boolean
     return { wanted: stealthGroundAnimations({ walking, backward, left, right, forward }), loop: true };
   }
   if (backward) return { wanted: [Walkbackwards, Walk], loop: true };
-  // Strafing while also going forward is a diagonal, and the original client runs it forward. Both
-  // halves of that are now measured rather than asserted.
+  // 11.10: a strafe — pure or diagonal — is the ordinary gait, and the body is turned to the travel
+  // instead (`strafeYawTarget`). The owner's report of the live check: «side strafes still look like
+  // shuffling the feet rather than running, and they break the animations during attacks». They were
+  // ShuffleLeft/ShuffleRight, and those are Wow.exe's *turn on the spot* clips, not its strafe:
   //
-  // *The reference client.* `LocomotionFSM::resolve` has no ground strafe arm at all — its WALK and
-  // RUN states answer with plain Walk/Run and only SWIM branches on `anyStrafeLeft` — and
-  // `anim_capability_probe.cpp:80-83` says why in as many words: "strafing (pure or diagonal)
-  // reuses plain Walk/Run and the renderer's torso-bone rotation for the visual angle". Its
-  // `anyStrafeLeft` is `strafeLeft && !strafeRight && !movingBackward`, which is the same three
-  // exclusions as the three arms above: backward wins, and two strafes cancel into the forward
-  // answer. This client keeps the authored sidestep for a *pure* strafe, which the reference gave
-  // up rather than a decision it made — the clips are there and they are what the original plays.
+  // * 0x00717050 picks a moving unit's gait from its movement word (+0x7cc). Swimming or flying, the
+  //   strafe bits give SwimLeft/SwimRight; on the ground there is no strafe arm at all — backward
+  //   (`flags & 2`) is 0x0d Walkbackwards, a creeping unit 0x77 StealthWalk, faster than 11 yd/s
+  //   (0x00a34b20) 0x8f Sprint, else 5 Run or 4 Walk. 11/12 and 92/93 appear nowhere in it.
+  // * 0x0073dab0 (the unit's frame) plays 0x0b/0x0c only while the unit stands — movement word
+  //   `& 0x2e0100f` clear — and turns: MOVEMENTFLAG_LEFT 0x10 / RIGHT 0x20, or a facing that has run
+  //   more than a quarter turn ahead of the body. A 500 ms sidestep with `movingSpeed` 0 replayed at
+  //   travel speed is what read as shuffling, and its turning hips fought an attack on the upper body.
   //
-  // *The clean corpus* (`F:/CircleClean`, read through `tools/m2.mjs`). Not one playable rig
-  // carries RunLeft (93) or RunRight (92): HumanMale, HumanFemale, OrcMale, OrcFemale,
-  // NightElfFemale, TaurenMale, GnomeFemale and DruidCat all carry ShuffleLeft (11) and
-  // ShuffleRight (12) — 500 ms, `movingSpeed` 0 on every one of them — and none of the eight
-  // carries 92/93. Horse.m2 is the same: 11 and 12, no 92/93, no MountRunLeft (373). So the
-  // walk/run inversion below is a preference a custom rig could honour and a distinction this
-  // dataset never makes; every one of the four arms resolves to the same 500 ms shuffle. Neither
-  // 11 nor 12 has a `Fallback` row in AnimationData, and both are in `BASE_ANIMATIONS`, so the
-  // sidestep travels inside the model and a strafe never waits on the sidecar.
-  // Neither shuffle nor run-sideways carries a `Fallback` row in AnimationData, so a rig
-  // without the sidestep would fall all the way to Stand and glide sideways. The ordinary gait
-  // behind them is the honest answer for such a rig: legs moving beat legs still.
-  if (!forward && left && !right) {
-    return { wanted: walking ? [ShuffleLeft, RunLeft, Walk] : [RunLeft, ShuffleLeft, Run, Walk], loop: true };
-  }
-  if (!forward && right && !left) {
-    return { wanted: walking ? [ShuffleRight, RunRight, Walk] : [RunRight, ShuffleRight, Run, Walk], loop: true };
-  }
+  // The reference client agrees (`anim_capability_probe.cpp:80-83`: "strafing (pure or diagonal)
+  // reuses plain Walk/Run and the renderer's torso-bone rotation for the visual angle"). RunLeft/
+  // RunRight are not on any playable rig of the clean corpus either.
   return { wanted: walking ? [Walk, Run] : [Run, Walk], loop: true };
 }
 
@@ -2247,22 +2238,11 @@ const ANIM_TIER_HOVER = 2;
 const ANIM_TIER_FLY = 3;
 
 /**
- * The authored sidestep clips. While one of these plays the legs already travel sideways.
- *
- * The set matters because it is the difference between this client and the reference one. wowee has
- * no ground strafe clip at all — `anim_capability_probe.cpp:80-83` says so — so every strafe there
- * is plain Walk/Run plus the full turn. Here `poseAnimation` keeps the authored sidestep for a pure
- * strafe (`ShuffleLeft`/`ShuffleRight` on all eight playable rigs of the clean corpus), and turning
- * the legs a further quarter on top of a clip that already faces that way would overshoot by 90°.
+ * A diagonal: one strafe key with the forward or the backward key, so the body is 45° off the facing
+ * (Wow.exe 0x0073dab0: `_DAT_009ea28c`, π/4).
  */
-const SIDESTEP_ANIMATIONS: ReadonlySet<number> = new Set<number>(
-  [ShuffleLeft, ShuffleRight, RunLeft, RunRight, SwimLeft, SwimRight]
-    .filter((id): id is number => typeof id === "number"),
-);
-
-/** A forward diagonal: one strafe key with the forward key, so travel is 45° off the facing. */
 export const STRAFE_YAW_DIAGONAL = Math.PI / 4;
-/** A pure strafe on a rig with no sidestep clip: travel is a quarter turn off the facing. */
+/** A pure strafe: travel is a quarter turn off the facing (0x0073dab0: `_DAT_009e8d88`, π/2). */
 export const STRAFE_YAW_PURE = Math.PI / 2;
 
 /**
@@ -2277,6 +2257,9 @@ export const STRAFE_YAW_PURE = Math.PI / 2;
  * a local player drives at frame rate, and wrong for the twenty around it: a remote unit's flags
  * arrive with its movement packets, several frames apart, so an unsmoothed port would snap the legs
  * of everyone else in view. The bound is the whole of the difference.
+ *
+ * 11.10: Wow.exe springs the body yaw instead (0x00719660: a critically damped step at 20 rad/s,
+ * `_DAT_009f281c`, the body kept within ±1.570482 of the facing, `_DAT_00a34bbc`); this rate was kept.
  */
 export const STRAFE_YAW_RATE = STRAFE_YAW_PURE / (LOCOMOTION_COMMIT_WINDOW / 1000);
 
@@ -2284,50 +2267,70 @@ export const STRAFE_YAW_RATE = STRAFE_YAW_PURE / (LOCOMOTION_COMMIT_WINDOW / 100
 const STRAFE_YAW_MAX_STEP_SECONDS = 0.25;
 
 /**
- * How far the lower body should be turned off the unit's facing, in radians, positive to its left.
+ * How far the body should be turned off the unit's facing, in radians, positive to its left.
  *
- * The original turns the legs into the direction of travel and leaves the torso on the facing, and
- * the reference client is explicit about the shape: while moving and strafing it puts the *model* on
- * `getTravelYaw()` and counter-rotates the SpineLow key bone by `facingYaw - travelYaw`
- * (`renderer.cpp:1613-1653`, `character_renderer.cpp:2332-2336`). This is the same decomposition
- * seen from the other end — the model stays on the server's facing, which the name plate, the camera
- * pivot and every targeting test read, and the *lower* body is turned instead. The two produce the
- * same legs and the same torso.
+ * 11.10, by Wow.exe 0x0073dab0 (the unit's frame; notes `.runtime/re-2026-10-11/glue-1110/mov-3.txt`).
+ * While the movement word (+0x7cc) holds a strafe bit the body yaw +0xa94 — the yaw the model is drawn
+ * at (vtable+0x94 → 0x007156a0 hands it to the model) — is sprung (0x00719660) toward the facing +0xaa0
+ * plus π/2, or π/4 when forward or backward is held too, and the sign is flipped for `flags & 6` = 0
+ * (no backward, no left) or 6 (backward and left). SpineLow (key bone 4) and the head (key bone 6) are
+ * then turned back toward the facing — {@link strafeUpperBodyTurns}. So:
  *
- * The table, and where each row comes from:
+ * | keys                | target | the legs travel                                   |
+ * |---------------------|--------|---------------------------------------------------|
+ * | forward, or nothing | 0      | along the facing                                   |
+ * | forward + strafe    | ±45°   | 45° off it, playing Run                           |
+ * | strafe              | ±90°   | sideways, playing Run (0x00717050; was ShuffleLeft/Right and 0° before 11.10) |
+ * | backward + strafe   | ∓45°   | 135° off it, playing Walkbackwards (was 0° before 11.10) |
+ * | both strafes        | 0      | the movement vector cancels (Wow.exe would take the left bit) |
  *
- * | keys                    | target | why                                                        |
- * |-------------------------|--------|------------------------------------------------------------|
- * | forward, or nothing     | 0      | travel is the facing                                        |
- * | forward + strafe        | ±45°   | `travelYaw_ = atan2(forward ± right)`, `camera_controller.cpp:2562` |
- * | strafe, sidestep clip   | 0      | the authored shuffle already faces that way                  |
- * | strafe, no such clip    | ±90°   | what the reference gets for the same keys                   |
- * | backward, with or without a strafe | 0 | `activeStrafe` excludes it (`renderer.cpp:1611-1612`) |
- * | both strafes            | 0      | they cancel, and so does `travelYaw_`                        |
+ * Here the model stays on the server's facing, which the name plate, the camera pivot and every
+ * targeting test read, and the legs (the pelvis) are turned instead — the same bones end up the same
+ * way (`applyStrafeYaw`).
  *
- * Ground locomotion only. Swimming, flight, hover and a fall each have their own directional clips
- * or no ground under them, and a mounted rider is sitting: its legs are in the saddle pose and
- * belong to the seat, not to the travel. The mount itself is deliberately not turned either — the
- * reference client has a single character instance and no separate mount rig to take a ruling from,
- * and turning the animal off `unit.node`'s server orientation would move the seat the rider hangs
- * from. Whether the horse should lean into a strafe is the owner's eye to settle.
+ * Wow.exe resets the turn on death (UNIT_FIELD_HEALTH < 1), in water or flight (`flags & 0x2200000`),
+ * on certain vehicle seats and mounts, and for a rig with neither key bone; a fall is *not* among them,
+ * so a strafe jump keeps its turn (11.10: was excluded). A mounted rider sits: its legs belong to the
+ * saddle, and the mount keeps the server's own facing. A hover or fly tier keeps its own ladder.
  */
-export function strafeYawTarget(pose: UnitPose, animation: number | undefined): number {
+export function strafeYawTarget(pose: UnitPose): number {
   if (pose.dead || pose.mounted === true) return 0;
   const flags = pose.movementFlags;
   const has = (flag: number): boolean => (flags & flag) !== 0;
   if (has(MOVEMENT_FLAGS.swimming) || isUnitFlying(flags, pose.flight === true)
-    || hoversOnFlightTier(pose) || isAirborne(pose)) return 0;
+    || hoversOnFlightTier(pose)) return 0; // 11.10: `|| isAirborne(pose)` dropped, as above
   const left = has(MOVEMENT_FLAGS.strafeLeft);
   const right = has(MOVEMENT_FLAGS.strafeRight);
-  // Neither key, or both: the reference client's movement vector cancels to the forward one.
   if (left === right) return 0;
-  if (has(MOVEMENT_FLAGS.backward)) return 0;
   // M2 space is Z-up and faces +X, so +Y is the model's left and a positive turn about +Z takes
   // its forward toward that left — which is where a unit strafing left is going.
   const sign = left ? 1 : -1;
   if (has(MOVEMENT_FLAGS.forward)) return sign * STRAFE_YAW_DIAGONAL;
-  return animation !== undefined && SIDESTEP_ANIMATIONS.has(animation) ? 0 : sign * STRAFE_YAW_PURE;
+  // 11.10: walking backward the legs face away from the travel, so the turn is the mirror (was 0).
+  if (has(MOVEMENT_FLAGS.backward)) return -sign * STRAFE_YAW_DIAGONAL;
+  return sign * STRAFE_YAW_PURE; // 11.10: no sidestep exemption — a ground strafe plays Run
+}
+
+/** 11.10: the most SpineLow and the head are each turned back toward the facing (0x0073dab0, `_DAT_009ea28c`). */
+export const STRAFE_UPPER_BODY_LIMIT = Math.PI / 4;
+
+/**
+ * 11.10: how far SpineLow and the head are turned back toward the facing, for a body `radians` off it.
+ *
+ * Wow.exe 0x0073dab0 takes d = facing − body yaw. SpineLow (key bone 4, `FUN_008265e0(4, …)`) is turned
+ * by d, halved (`_DAT_009e2ec4`) unless the unit is the active player, at most π/4; the head (key bone
+ * 6) by what is left, at most π/4, when the rig has one. A pure strafe leaves the chest 45° into the
+ * travel and the head on the facing; the active player's diagonal leaves both on the facing, anyone
+ * else's the chest 22.5° into it. (Wow.exe also halves the active player's when a global at
+ * 0x00ca11f4 is 0xd, whose meaning is not settled; not modelled.)
+ */
+export function strafeUpperBodyTurns(radians: number, activePlayer: boolean, hasHead: boolean): { spine: number; head: number } {
+  if (!Number.isFinite(radians) || radians === 0) return { spine: 0, head: 0 };
+  const sign = Math.sign(radians);
+  const magnitude = Math.abs(radians);
+  const spine = Math.min(activePlayer ? magnitude : magnitude * 0.5, STRAFE_UPPER_BODY_LIMIT);
+  const head = hasHead ? Math.min(magnitude - spine, STRAFE_UPPER_BODY_LIMIT) : 0;
+  return { spine: sign * spine, head: sign * head };
 }
 
 /**
@@ -2349,8 +2352,15 @@ export function stepStrafeYaw(current: number, target: number, seconds: number):
 export interface StrafeYawBones {
   /** The bone both leg branches hang from: turning it turns the legs about the body's own axis. */
   pelvis: number;
-  /** Its children that carry no leg — the spine — turned back so the torso keeps the facing. */
+  /** Its children that carry no leg — the spine — turned back by the SpineLow share (11.10: was the whole turn). */
   torso: readonly number[];
+  /**
+   * 11.10: the pelvis's siblings that carry the upper body — SpineLow (keyBoneId 4) on the playable rigs —
+   * turned with the legs less the SpineLow share. Absent or empty: the upper body is left as the clip put it.
+   */
+  spine?: readonly number[];
+  /** 11.10: the head (keyBoneId 6), turned back by the head share; absent when the rig names none. */
+  head?: number;
 }
 
 /**
@@ -2388,9 +2398,19 @@ export interface StrafeYawBones {
  *    its own pivot, which restores its orientation exactly and its position only while both pivots
  *    are on the axis being turned about. The reference client's counter-rotation has the identical
  *    property and the identical reason it is invisible.
+ *
+ * 11.10: the upper body and the head are found as well, because Wow.exe turns them (0x0073dab0, see
+ * {@link strafeUpperBodyTurns}). Read off the clean corpus's own key bones (`tools/mpq.mjs`, the M2 bone
+ * table's keyBoneId): on HumanMale, OrcFemale, TaurenMale and GnomeFemale the pelvis this finds is bone 3
+ * (the paragraph above says bone 2; read off the M2 bone table it is 3 on all four), keyBoneId 5
+ * (Waist), and the upper body hangs from its sibling bone 2, keyBoneId 4 (SpineLow), both
+ * children of bone 1 (keyBoneId 26) — so `spine` is those siblings that reach a torso's height, on the
+ * axis (one off it leaves `spine` empty and the upper body where the clip put it, as before 11.10). The
+ * head, keyBoneId 6, is the parent of the bone the HELM attachment (11) hangs from on all four: `helmBone`
+ * names that bone, and the head is kept only when it hangs under the spine or the torso.
  */
 export function resolveStrafeYawBones(
-  parents: Int16Array, pivots: Float32Array,
+  parents: Int16Array, pivots: Float32Array, helmBone?: number,
 ): StrafeYawBones | undefined {
   const found = legBranches(parents, pivots);
   if (!found) return undefined;
@@ -2436,13 +2456,33 @@ export function resolveStrafeYawBones(
     if (!centred(child)) return undefined;
     torso.push(child);
   }
-  return { pelvis, torso };
+  // 11.10: SpineLow beside the pelvis (see above).
+  const spine: number[] = [];
+  for (const sibling of found.children[parents[pelvis]!] ?? []) {
+    if (sibling === pelvis || !reachesAbove(sibling, torsoHeight)) continue;
+    if (!centred(sibling)) {
+      spine.length = 0;
+      break;
+    }
+    spine.push(sibling);
+  }
+  const resolved: StrafeYawBones = { pelvis, torso, spine };
+  // 11.10: the head, under whichever of the two carries the upper body.
+  const head = helmBone !== undefined && helmBone >= 0 && helmBone < parents.length ? parents[helmBone]! : -1;
+  if (head >= 0 && [...torso, ...spine].some((root) => head !== root && inSubtree(root, head))) resolved.head = head;
+  return resolved;
 }
 
-/** Resolved once per rig and remembered on the template every unit of that model shares. */
-export function strafeYawBonesFor(template: SkinnedTemplate): StrafeYawBones | undefined {
+/**
+ * Resolved once per rig and remembered on the template every unit of that model shares.
+ * 11.10: `model` — the WVM whose HELM attachment names the head (see above); read only when resolving.
+ */
+export function strafeYawBonesFor(
+  template: SkinnedTemplate, model?: { readonly attachments: readonly { readonly id: number; readonly bone: number }[] },
+): StrafeYawBones | undefined {
   if (template.strafeYawBones === undefined) {
-    template.strafeYawBones = resolveStrafeYawBones(template.parents, template.pivots) ?? null;
+    const helm = model?.attachments.find((attachment) => attachment.id === ATTACHMENT_HELM)?.bone; // 11.10
+    template.strafeYawBones = resolveStrafeYawBones(template.parents, template.pivots, helm) ?? null;
   }
   return template.strafeYawBones ?? undefined;
 }
@@ -2524,37 +2564,72 @@ function turnYawedBone(bone: THREE.Object3D | undefined, local: THREE.Quaternion
  * space is not a rotation in the pelvis's parent's frame — the parent is itself being animated. So
  * the axis is carried into that frame first, `q⁻¹·R·q`, and the result pre-multiplied onto the
  * bone's local quaternion, which rotates the whole subtree about the bone's own pivot and moves the
- * pivot not at all. The torso children are turned back by the inverse, in the pelvis's frame as it
- * now stands, so the upper body ends up exactly where the clip put it.
+ * pivot not at all.
+ *
+ * 11.10: the upper body as Wow.exe 0x0073dab0 leaves it (`strafeUpperBodyTurns`). The spine beside
+ * the pelvis is turned with the legs less the SpineLow share, the torso under it turned back by that
+ * share in the pelvis's frame as it now stands, and the head back by its own share in its parent's
+ * frame as the two left it — the chest ends `radians − spine` off the facing and the head
+ * `radians − spine − head`. Before 11.10 the upper body stayed where the clip put it (the torso was
+ * turned back by the whole turn). `activePlayer` is the unit the client moves itself, whose SpineLow
+ * share is not halved.
  */
 export function applyStrafeYaw(
-  instance: SkinnedInstance, bones: StrafeYawBones, radians: number,
+  instance: SkinnedInstance, bones: StrafeYawBones, radians: number, activePlayer = false,
 ): void {
   const pelvis = instance.skeleton.bones[bones.pelvis];
   if (!pelvis) return;
+  const spine = bones.spine ?? NO_STRAFE_BONES; // 11.10
+  const head = bones.head === undefined ? undefined : instance.skeleton.bones[bones.head]; // 11.10
   // Before anything is decided, and on every call including the ones that turn nothing: a unit that
   // stops strafing has to be given its clip's own pose back.
   restoreYawedBone(pelvis);
   for (const bone of bones.torso) restoreYawedBone(instance.skeleton.bones[bone]);
+  for (const bone of spine) restoreYawedBone(instance.skeleton.bones[bone]); // 11.10
+  restoreYawedBone(head); // 11.10
   if (radians === 0 || !Number.isFinite(radians)) {
     strafeYawApplied.delete(pelvis);
     for (const bone of bones.torso) {
       const object = instance.skeleton.bones[bone];
       if (object) strafeYawApplied.delete(object);
     }
+    for (const bone of spine) { // 11.10
+      const object = instance.skeleton.bones[bone];
+      if (object) strafeYawApplied.delete(object);
+    }
+    if (head) strafeYawApplied.delete(head); // 11.10
     return;
   }
+  const upper = strafeUpperBodyTurns(radians, activePlayer, head !== undefined); // 11.10
 
   strafeYawTurn.setFromAxisAngle(STRAFE_YAW_AXIS, radians);
   const above = boneChainQuaternion(pelvis.parent ?? instance.root, instance.root, strafeYawChain);
   strafeYawLocal.copy(above).invert().multiply(strafeYawTurn).multiply(above);
   turnYawedBone(pelvis, strafeYawLocal);
-  if (bones.torso.length === 0) return;
-  // The pelvis's frame *after* its own turn, which is the frame its children live in.
-  const inside = strafeYawChain.multiply(pelvis.quaternion);
-  strafeYawLocal.copy(inside).invert().multiply(strafeYawTurn.invert()).multiply(inside);
-  for (const bone of bones.torso) turnYawedBone(instance.skeleton.bones[bone], strafeYawLocal);
+  // 11.10: the spine shares the pelvis's parent, so the same frame carries its turn.
+  if (spine.length > 0) {
+    strafeYawTurn.setFromAxisAngle(STRAFE_YAW_AXIS, radians - upper.spine);
+    strafeYawLocal.copy(above).invert().multiply(strafeYawTurn).multiply(above);
+    for (const bone of spine) turnYawedBone(instance.skeleton.bones[bone], strafeYawLocal);
+  }
+  if (bones.torso.length > 0) {
+    // The pelvis's frame *after* its own turn, which is the frame its children live in.
+    const inside = strafeYawChain.multiply(pelvis.quaternion);
+    strafeYawTurn.setFromAxisAngle(STRAFE_YAW_AXIS, -upper.spine); // 11.10: was `strafeYawTurn.invert()`, the whole turn back
+    strafeYawLocal.copy(inside).invert().multiply(strafeYawTurn).multiply(inside);
+    for (const bone of bones.torso) turnYawedBone(instance.skeleton.bones[bone], strafeYawLocal);
+  }
+  // 11.10: the head, in its parent's frame as the turns above left it.
+  if (head && upper.head !== 0) {
+    const chain = boneChainQuaternion(head.parent ?? instance.root, instance.root, strafeYawChain);
+    strafeYawTurn.setFromAxisAngle(STRAFE_YAW_AXIS, -upper.head);
+    strafeYawLocal.copy(chain).invert().multiply(strafeYawTurn).multiply(chain);
+    turnYawedBone(head, strafeYawLocal);
+  }
 }
+
+/** 11.10: what a rig with no spine beside its pelvis turns there. */
+const NO_STRAFE_BONES: readonly number[] = [];
 
 /**
  * The seat poses, and the family a seat request is not allowed to leave.
@@ -2607,29 +2682,21 @@ const STEALTH_ANIMATIONS: ReadonlySet<number> = new Set<number>(
  * their own ladders untouched, which is also what stops a stealthed swimmer from crouching
  * underwater.
  *
- * There is no StealthWalkBackwards and no crouched strafe in the table, so backwards and sideways
- * movement asks for the crouched walk and then falls through to the ordinary answer for that
- * direction. That fall-through is only reachable through {@link resolveStealthAnimation}: the plain
- * resolver would take StealthWalk to Walk by the DBC chain and a rig with no crouch would face
- * forwards while walking backwards.
+ * There is no StealthWalkBackwards in the table, so backwards movement asks for the crouched walk and
+ * then falls through to the ordinary answer for that direction. That fall-through is only reachable
+ * through {@link resolveStealthAnimation}: the plain resolver would take StealthWalk to Walk by the
+ * DBC chain and a rig with no crouch would face forwards while walking backwards. (Wow.exe 0x00717050
+ * picks 0x0d Walkbackwards before it asks about the creep at all; this ladder is older than 11.10 and
+ * was left as it is.)
  */
 export function stealthGroundAnimations(movement: {
   walking: boolean; backward: boolean; left: boolean; right: boolean; forward: boolean;
 }): number[] {
-  const { walking, backward, left, right, forward } = movement;
+  const { walking, backward } = movement;
   if (backward) return animationLadder("StealthWalk", "Walkbackwards", "Walk");
-  // The ordinary gait closes each ladder for the same reason as the unconcealed strafe arms: a
-  // rig without the sidestep must step, not glide.
-  if (!forward && left && !right) {
-    return walking
-      ? animationLadder("StealthWalk", "ShuffleLeft", "RunLeft", "Walk")
-      : animationLadder("StealthWalk", "RunLeft", "ShuffleLeft", "Run", "Walk");
-  }
-  if (!forward && right && !left) {
-    return walking
-      ? animationLadder("StealthWalk", "ShuffleRight", "RunRight", "Walk")
-      : animationLadder("StealthWalk", "RunRight", "ShuffleRight", "Run", "Walk");
-  }
+  // 11.10: a strafe creeps as the forward gait does — Wow.exe 0x00717050 has no strafe arm on the
+  // ground, a creeping unit's every gait but the backward one is 0x77 StealthWalk — and the body is
+  // turned to the travel (`strafeYawTarget`). The ShuffleLeft/Right arms that stood here are gone.
   // Both crouch gaits before either ordinary one: a rig with only StealthWalk should creep at the
   // wrong tempo rather than break into a full run while the server says the unit is sneaking.
   return walking

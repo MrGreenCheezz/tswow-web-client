@@ -258,6 +258,39 @@ test("deselectOnClick off keeps the target on a click on bare ground; mouseInver
   });
 });
 
+test("11.10: a button pressed on the interface and carried over the world is not the camera's", () => {
+  // The owner's report: dragging a spell between stock action buttons jerked the camera and hid the
+  // cursor. The press is the button's (no `pointerdown` reaches the canvas); the canvas only hears the
+  // moves in the gaps between buttons, which press nothing (`button` −1) and carry `buttons` 1.
+  const carried = (name, buttons, movementX = 0) => fireCanvas(name, {
+    pointerId: 1, clientX: 40, clientY: 40, movementX, movementY: 0, button: -1, buttons, preventDefault() {},
+  });
+  withWorld((world, sent) => {
+    const yaw = game.camera.yaw;
+    const pitch = game.camera.pitch;
+    for (let step = 0; step < 4; step++) carried("pointermove", 1, 12);
+    assert.equal(lockRequests, 0, "the cursor stays for the drop");
+    assert.equal(game.camera.yaw, yaw, "the camera does not turn");
+    assert.equal(game.camera.pitch, pitch);
+    assert.equal(canvas.classList.contains("camera-dragging"), false, "no gesture started");
+    // The drop over the world is released by the interface; the world clicks nothing.
+    fireCanvas("pointerup", { pointerId: 1, clientX: 40, clientY: 40, movementX: 0, movementY: 0, button: 0, buttons: 0, preventDefault() {} });
+    assert.deepEqual(world.selections, [], "the release is not a click on the world");
+    // A press on the world itself is the camera's again, and so is a chorded one on a carried button.
+    pointer("pointerdown", 1);
+    pointer("pointermove", 1, 6, 0);
+    assert.equal(lockRequests, 1, "a drag that began on the world still takes the pointer");
+    pointer("pointerup", 0);
+    carried("pointermove", 1, 12);
+    fireCanvas("pointermove", { pointerId: 1, clientX: 40, clientY: 40, movementX: 0, movementY: 0, button: 2, buttons: 3, preventDefault() {} });
+    assert.equal(canvas.classList.contains("camera-dragging"), true, "the right button pressed on the world drags");
+    const facing = world.mover.position.orientation;
+    carried("pointermove", 3, 12);
+    assert.notEqual(world.mover.position.orientation, facing, "the right button turns the character");
+    assert.equal(sent.includes(OPCODES.MSG_MOVE_START_FORWARD), false, "the carried left button is no half of a two-button run");
+  });
+});
+
 test("a refused lock is not asked for again on every move of the same drag", async () => {
   let asked = 0;
   const previous = canvas.requestPointerLock;

@@ -216,14 +216,18 @@ test("a stealthed unit stands, walks and runs crouched, and falls through to the
   const walking = pose({ stealth: true, movementFlags: MOVEMENT_FLAGS.forward, speed: 2.5 });
   assert.deepEqual(poseAnimation(walking).wanted, [StealthWalk, StealthRun, Walk, Run]);
 
-  // There is no StealthWalkBackwards and no crouched strafe in AnimationData, so those ladders ask
-  // for the crouched walk and keep the ordinary answer for that direction behind it.
+  // There is no StealthWalkBackwards in AnimationData, so that ladder asks for the crouched walk and
+  // keeps the ordinary answer for that direction behind it.
   assert.deepEqual(
     poseAnimation(pose({ stealth: true, movementFlags: MOVEMENT_FLAGS.backward })).wanted,
     [StealthWalk, Walkbackwards, Walk]);
+  // 11.10: a crouched strafe creeps as forward does (Wow.exe 0x00717050 has no ground strafe arm);
+  // it was [StealthWalk, ShuffleLeft, RunLeft, Walk].
   assert.deepEqual(
     poseAnimation(pose({ stealth: true, movementFlags: MOVEMENT_FLAGS.strafeLeft, speed: 2.5 })).wanted,
-    [StealthWalk, ShuffleLeft, RunLeft, Walk]);
+    [StealthWalk, StealthRun, Walk, Run]);
+  assert.equal(poseAnimation(pose({ stealth: true, movementFlags: MOVEMENT_FLAGS.strafeLeft, speed: 2.5 })).wanted
+    .some((id) => id === ShuffleLeft || id === RunLeft), false);
 
   // Ground only. Swimming, flying and the airborne arc keep their own ladders — measured, no rig
   // this client ships carries any of 348/349/452.

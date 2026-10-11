@@ -58,3 +58,24 @@ export function sceneryShadowFlags(
   return SCENERY_SHADOW_RECEIVE | SCENERY_SHADOW_CAST
     | (cascades && far >= SCENERY_FAR_SHADOW_MIN_RADIUS ? SCENERY_SHADOW_FAR : 0);
 }
+
+/**
+ * 11.10: whether the world (terrain, horizon, scenery, WMO stand-ins) casts into the sun's map at
+ * all. `requested` is the account's «тени от окружения» leaf, `effective` the cinematic profile's
+ * copy of it, which every classic-look level clears. The comparison level keeps the account's
+ * answer: it runs quality 1's shadow pass for the reference's `extShadowQuality 5` — real-time
+ * shadows from the world, not only from characters. Taking the cleared copy there left the live
+ * recording of 11.10 with the cached cascade rendered 333 times without a single draw and the near
+ * ones drawing units only. A map is needed, and no interior-only room: there the sun's term is
+ * suppressed for every receiver, so casters would only cost shadow-pass draws.
+ */
+export function sceneryShadowsWanted(
+  comparisonLevel: boolean,
+  requested: boolean,
+  effective: boolean,
+  shadowMapSize: number,
+  interior: boolean,
+): boolean {
+  // Positional: the renderer asks on every light push.
+  return (comparisonLevel ? requested : effective) && shadowMapSize > 0 && !interior;
+}
