@@ -62,6 +62,24 @@ export interface AutoRepeatRefusal {
   readonly answersRequest: boolean;
 }
 
+/** SPELL_FAILED_NOT_READY (SharedDefines.h): mostly the client's own — a global or spell cooldown. */
+export const SPELL_FAILED_NOT_READY = 67;
+/** `SPELL_ATTR3_REQ_WAND` (SharedDefines.h): the wand's Shoot, the bit 0x00808200 reads at record +0x1c (AttributesEx3). */
+export const SPELL_ATTR3_REQ_WAND = 0x400000;
+
+/**
+ * 5.05 (11.10): 0x00808200's first rule, before everything above — any refusal NOT_READY (67) or
+ * SPELL_IN_PROGRESS (105), of any spell, the realm's or the client's own, while a repeat with ATTR3_REQ_WAND runs:
+ * CMSG_CANCEL_CAST (u8 0, u32 the repeat) and 0x00807560(1). A press during the global cooldown thus stops the
+ * wand, and the next press casts. `attributes` is the repeat's eight attribute words (unknown: no rule).
+ */
+export function wandRepeatCancels(repeating: number | undefined, result: number,
+  attributes: readonly number[] | undefined): boolean {
+  if (repeating === undefined || repeating === 0) return false;
+  if (result !== SPELL_FAILED_NOT_READY && result !== SPELL_FAILED_SPELL_IN_PROGRESS) return false;
+  return ((attributes?.[3] ?? 0) & SPELL_ATTR3_REQ_WAND) !== 0;
+}
+
 /**
  * 0x00808200's repeat half: "stop" — CMSG_CANCEL_AUTO_REPEAT_SPELL and forget (0x00807560(1)); "forget" — forget
  * without a packet (the realm holds none); "keep".

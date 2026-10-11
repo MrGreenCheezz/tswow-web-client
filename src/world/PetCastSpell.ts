@@ -86,6 +86,11 @@ export function setPetSpellAttributesSource(source: PetSpellAttributesSource | u
   spellAttributes = source;
 }
 
+/** 5.05 (11.10): the same rows' attribute words for any spell (the wand rule, AutoRepeatRefusal.ts); undefined unknown. */
+export function spellAttributeWords(spellId: number): readonly number[] | undefined {
+  return spellId > 0 ? spellAttributes?.(spellId) : undefined;
+}
+
 /**
  * L13, 11.02-D: Wow.exe 0x005d4210 casts a pet-bar spell through its own cast path — CMSG_PET_CAST_SPELL from the
  * bar's unit — also when the spell has `AttributesEx4 & 0x20`, whatever the unit (an ordinary pet too). 76 rows on

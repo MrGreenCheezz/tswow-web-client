@@ -11,7 +11,7 @@ import type { SpellMetadata } from "../SpellMetadata.js";
 import {
   FRAMEXML_CREATURE_TYPE_DEMON, FRAMEXML_PET_ACTION_EVENTS, FRAMEXML_PET_ACTION_IDLE_COOLDOWN,
   FRAMEXML_PET_ACTION_SLOTS, FRAMEXML_PET_BOOK_READY_COOLDOWN,
-  frameXmlPetActionInfo, frameXmlPetAttackWord, frameXmlPetSpellWord,
+  frameXmlPetActionInfo, frameXmlPetAttackWord, frameXmlPetSpellWord, frameXmlPetWordSpell,
   type FrameXmlPetActionBar, type FrameXmlPetActionCooldown, type FrameXmlPetActionInfo,
   type FrameXmlPetBarState, type FrameXmlPetBook, type FrameXmlPetBookSpell, type FrameXmlPetCommand,
 } from "./FrameXmlPetActionBar.js";
@@ -171,8 +171,11 @@ export class FrameXmlPetActionBarLive implements FrameXmlPetActionBar {
    */
   wordCooldown(word: number): FrameXmlPetActionCooldown {
     const pump = this.#pump;
-    if (!pump || !frameXmlPetSpellWord(word)) return FRAMEXML_PET_ACTION_IDLE_COOLDOWN;
-    const stamp = this.#stamps.get(petActionOf(word));
+    // 3.37(г): the page reads its spell as 0x005a80e0 does — a vehicle's slot states 8…15 too, which
+    // the pet bar's own word test turns away (the vehicle's sweeps on 121–126 never showed).
+    const spellId = frameXmlPetWordSpell(word);
+    if (!pump || spellId === 0) return FRAMEXML_PET_ACTION_IDLE_COOLDOWN;
+    const stamp = this.#stamps.get(spellId);
     const monotonic = this.#context.monotonic();
     if (!stamp || stamp.endsAt <= monotonic) return FRAMEXML_PET_ACTION_IDLE_COOLDOWN;
     return [pump.now() - (monotonic - stamp.startedAt) / 1000, (stamp.endsAt - stamp.startedAt) / 1000, 1];

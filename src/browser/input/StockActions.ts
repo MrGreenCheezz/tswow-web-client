@@ -51,6 +51,8 @@ export const STOCK_ACTIONS = [
   { action: "assistTarget", command: "ASSISTTARGET", group: "Цель", label: "Цель цели (помощь)" },
   { action: "targetFocus", command: "TARGETFOCUS", group: "Цель", label: "Выбрать фокус" },
   { action: "targetMouseover", command: "TARGETMOUSEOVER", group: "Цель", label: "Выбрать под курсором" },
+  // 3.11: `if not InteractUnit("mouseover") then InteractUnit("target") end` (Bindings.xml); unbound in the client.
+  { action: "interactMouseover", command: "INTERACTMOUSEOVER", group: "Цель", label: "Взаимодействовать указателем мыши" },
   { action: "targetPet", command: "TARGETPET", group: "Цель", label: "Выбрать питомца" },
   { action: "targetPartyMember1", command: "TARGETPARTYMEMBER1", group: "Цель", label: "Участник группы 1" },
   { action: "targetPartyMember2", command: "TARGETPARTYMEMBER2", group: "Цель", label: "Участник группы 2" },
@@ -76,6 +78,8 @@ export const STOCK_ACTIONS = [
   { action: "toggleReputation", command: "TOGGLECHARACTER2", group: "Интерфейс", label: "Репутация" },
   { action: "toggleSocial", command: "TOGGLESOCIAL", group: "Интерфейс", label: "Общение" },
   { action: "toggleWorldStateScores", command: "TOGGLEWORLDSTATESCORES", group: "Интерфейс", label: "Счёт поля боя" },
+  // 3.11: ToggleMinimap() (Minimap.lua: Minimap:Hide()/Show()); unbound in the client.
+  { action: "toggleMinimap", command: "TOGGLEMINIMAP", group: "Интерфейс", label: "Мини-карта" },
   { action: "minimapZoomIn", command: "MINIMAPZOOMIN", group: "Интерфейс", label: "Миникарта: приблизить" },
   { action: "minimapZoomOut", command: "MINIMAPZOOMOUT", group: "Интерфейс", label: "Миникарта: отдалить" },
   { action: "toggleMinimapRotation", command: "TOGGLEMINIMAPROTATION", group: "Интерфейс", label: "Вращение миникарты" },

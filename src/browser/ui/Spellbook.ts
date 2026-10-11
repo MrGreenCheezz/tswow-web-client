@@ -15,6 +15,7 @@ import {
 } from "./Dom.js";
 import { lowerRankSpells, rankChainKey, type RankedSpell } from "./SpellRanks.js";
 import { spellModifierText } from "../../world/SpellModifiers.js";
+import { SPELL_FAILED_NOT_READY } from "../../world/AutoRepeatRefusal.js"; // 5.05 (11.10)
 import { skinnable, slotElement, slotSiblings } from "./Slots.js";
 import { actionDragPayload } from "./ActionBar.js";
 import { beginIconDrag } from "./DragGhost.js";
@@ -951,7 +952,10 @@ export function castSpell(spellId: number, explicitUnitTarget?: bigint): boolean
   // clickable while the old mount's recovery or the global cooldown is still visible locally.
   const togglingMount = typeof world.isActiveMountSpell === "function"
     && world.isActiveMountSpell(spellId);
-  if (!togglingMount && world.cooldownRemaining(spellId, performance.now()) > 0) return false;
+  if (!togglingMount && world.cooldownRemaining(spellId, performance.now()) > 0) {
+    world.spellRefusedLocally?.(spellId, SPELL_FAILED_NOT_READY); // 5.05 (11.10): the wand rule (0x00808200)
+    return false;
+  }
   const metadata = game.spells.get(spellId);
   if (!world.knownSpells.some((spell) => spell.id === spellId)) return false;
   if (!metadata) {
@@ -970,7 +974,15 @@ export function castSpell(spellId: number, explicitUnitTarget?: bigint): boolean
   }
   // The book, tracker, talent window and module actions share the same local preflight. WorldClient
   // intentionally cannot inspect DBC/UI metadata, so it must only handle the final wire request.
-  if (spellCastBlockReason(world, spellId) !== undefined) return false;
+  const blocked = spellCastBlockReason(world, spellId);
+  if (blocked !== undefined) {
+    // 5.05 (11.10): a cooldown, a hold or the global cooldown is the client's own NOT_READY, which Wow.exe hands to
+    // 0x00808200 like the realm's: a wand's repeat stops, so the next press casts.
+    if (blocked === "cooldown" || blocked === "hold" || blocked === "global-cooldown") {
+      world.spellRefusedLocally?.(spellId, SPELL_FAILED_NOT_READY);
+    }
+    return false;
+  }
   // Area spells do not take the selection: arm the reticle and let the click choose the point.
   // Every guard above has already passed, so the targeting mode never opens for a blocked cast.
   if (isGroundTargetSpell(metadata)) {

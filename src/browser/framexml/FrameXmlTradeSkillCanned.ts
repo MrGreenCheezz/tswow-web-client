@@ -191,6 +191,8 @@ export class FrameXmlCannedTradeSkillWorld {
   readonly replaceNames = new Map<bigint, readonly [string, string]>();
   /** Carried items with a refund record and time left: an enchant on one asks END_REFUND (2.10). */
   readonly refundItems = new Set<bigint>();
+  /** 2.05 (11.10): carried soulbound items still in their trade window: an enchant asks END_BOUND_TRADEABLE. */
+  readonly boundTradeableItems = new Set<bigint>();
   /** The trader's seventh-slot item's enchantment, as TRADE_REPLACE_ENCHANT names it; none by default. */
   tradeReplaceNames: readonly [string, string] | undefined;
   #token = {};
@@ -288,6 +290,7 @@ export function createCannedFrameXmlTradeSkill(): {
     carriedItem: (guid) => world.carriedItem(guid),
     enchantReplace: (_spell, guid) => world.replaceNames.get(guid),
     enchantEndsRefund: (_spell, guid) => world.refundItems.has(guid),
+    enchantEndsBoundTrade: (_spell, guid) => world.boundTradeableItems.has(guid), // 2.05 (11.10)
     tradeEnchantReplace: () => world.tradeReplaceNames,
     craft,
     token: () => world.token(),

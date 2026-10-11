@@ -1414,6 +1414,7 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     this.castEvents = new FrameXmlCastEventsLive({
       spell: (id) => context.spell(id),
       castUnit: (guid) => this.#castUnit(guid),
+      castUnits: (guid) => this.#castUnits(guid), // 3.02: every token
       book: () => (context.world()?.knownSpells ?? []).map((known) => context.spell(known.id)),
       // Test worlds stand in for parts of WorldClient; a missing table is no aura and no cast.
       auras: (guid) => context.world()?.auras?.get(guid),
@@ -2453,8 +2454,8 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
         }
       }
       this.#unsubscribe.push(world.events.on("SPELL_CAST_START", (event) => {
-        const unit = this.#castUnit(event.casterGuid);
-        if (unit === undefined) return;
+        const units = this.#castUnits(event.casterGuid); // 3.02: every token
+        if (units.length === 0) return;
         const cast = world.casts.get(event.casterGuid);
         const state: LiveCastState = {
           spellId: cast?.spellId ?? event.spellId,
@@ -2463,15 +2464,17 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
         };
         this.#castStates.set(event.casterGuid, state);
         this.castEvents.onCastStart(event.casterGuid);
-        if (state.channel) {
-          pump.fire(FRAMEXML_SEAM_EVENTS.channelStart, unit);
-        } else {
-          pump.fire(FRAMEXML_SEAM_EVENTS.castStart, unit, ...this.#castIdentity(state));
+        for (const unit of units) {
+          if (state.channel) {
+            pump.fire(FRAMEXML_SEAM_EVENTS.channelStart, unit);
+          } else {
+            pump.fire(FRAMEXML_SEAM_EVENTS.castStart, unit, ...this.#castIdentity(state));
+          }
         }
       }));
       this.#unsubscribe.push(world.events.on("SPELL_CAST_STOP", (event) => {
-        const unit = this.#castUnit(event.casterGuid);
-        if (unit === undefined) {
+        const units = this.#castUnits(event.casterGuid); // 3.02: every token
+        if (units.length === 0) {
           // A target can be deselected before its STOP packet arrives. Do not let that old
           // identity leak into a later selection, and never repaint the new target.
           if (event.casterGuid !== this.#selfGuid()) this.#castStates.delete(event.casterGuid);
@@ -2489,10 +2492,12 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
         // raises STOP only while the spell is the unit's current cast. A failure with no cast this
         // seam saw start (an instant refused, the second packet of an interrupt pair) stops nothing.
         const reason = event.reason ?? (event.interrupted ? "interrupted" : "success");
-        if (effective.channel) {
-          if (state !== undefined || reason === "success") pump.fire(FRAMEXML_SEAM_EVENTS.channelStop, unit);
-        } else if (state !== undefined || reason === "success") {
-          pump.fire(FRAMEXML_SEAM_EVENTS.castStop, unit, ...this.#castIdentity(effective));
+        for (const unit of units) {
+          if (effective.channel) {
+            if (state !== undefined || reason === "success") pump.fire(FRAMEXML_SEAM_EVENTS.channelStop, unit);
+          } else if (state !== undefined || reason === "success") {
+            pump.fire(FRAMEXML_SEAM_EVENTS.castStop, unit, ...this.#castIdentity(effective));
+          }
         }
         this.#castStates.delete(event.casterGuid);
       }));
@@ -2505,8 +2510,8 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
       this.#unsubscribe.push(world.events.on("SPELL_CAST_SENT", (event) => this.castEvents.onSent(pump, event)));
       this.#unsubscribe.push(world.events.on("SPELL_CAST_RESULT", (event) => this.castEvents.onResult(pump, event)));
       this.#unsubscribe.push(world.events.on("SPELL_CAST_DELAYED", (event) => {
-        const unit = this.#castUnit(event.casterGuid);
-        if (unit === undefined) return;
+        const units = this.#castUnits(event.casterGuid); // 3.02: every token
+        if (units.length === 0) return;
         const cast = world.casts.get(event.casterGuid);
         const state = this.#castStates.get(event.casterGuid);
         const effective: LiveCastState = state ?? {
@@ -2515,14 +2520,12 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
           castID: cast?.castCount,
         };
         // The protocol has no failure distinction here. DELAYED is the only truthful event.
-        pump.fire(FRAMEXML_SEAM_EVENTS.castDelayed, unit, ...this.#castIdentity(effective));
+        for (const unit of units) pump.fire(FRAMEXML_SEAM_EVENTS.castDelayed, unit, ...this.#castIdentity(effective));
       }));
       this.#unsubscribe.push(world.events.on("SPELL_CHANNEL_UPDATE", (event) => {
-        const unit = this.#castUnit(event.casterGuid);
-        if (unit === undefined) return;
         // WorldClient emits the zero update immediately before deleting the cast and then emits
         // SPELL_CAST_STOP. Let that STOP become CHANNEL_STOP; this event is only the update edge.
-        pump.fire(FRAMEXML_SEAM_EVENTS.channelUpdate, unit);
+        for (const unit of this.#castUnits(event.casterGuid)) pump.fire(FRAMEXML_SEAM_EVENTS.channelUpdate, unit); // 3.02
       }));
       // SpellBookFrame is deliberately driven through the packet bus instead of claiming the
       // WorldClient's single legacy onSpellsChanged/onCooldownsChanged callbacks. The poll below
@@ -3174,12 +3177,17 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
 
   #spellCooldownShapeSignature(world = this.#context.world()): string {
     if (!world) return "";
-    return [...(world.cooldownSnapshots ?? new Map()).entries()]
+    const timers = [...(world.cooldownSnapshots ?? new Map()).entries()]
       .filter(([spellId, snapshot]) => this.#context.spell(spellId) !== undefined
         && snapshot.endsAt > this.#context.monotonic())
       .sort(([left], [right]) => left - right)
       .map(([spellId, snapshot]) => `${spellId}:${snapshot.startedAt}:${snapshot.duration}:${snapshot.endsAt}`)
       .join(",");
+    // 3.37(а): the book greys a held spell too (`GetSpellCooldown` 0,0,0 with the spell refused), so
+    // a hold's release repaints it even when no timer starts.
+    const holds = world.cooldownHolds;
+    if (!holds || holds.size === 0) return timers;
+    return `${timers}|h:${[...holds.keys()].sort((left, right) => left - right).join(",")}`;
   }
 
   #spellEntry(index: number, world = this.#context.world()): { id: number; slot: number } | undefined {
@@ -3492,6 +3500,7 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
    * #reconcileItemCooldowns does not see — one with no snapshot behind it (a category timer from
    * SMSG_INITIAL_SPELLS, a bare `cooldowns` end) or one that outlasts its snapshot. `slot:end` is
    * constant while the timer runs, so a start, a reset and the natural end each change it once.
+   * 3.37: an item slot's use spell counts the same, and a held spell is `slot:h` while it is held.
    * The pair stays a pair: `actionUsable` reads the remaining time, and stock
    * `ActionButton_UpdateUsable` repaints the icon only on its event. The global cooldown has its
    * own edge in `tick` (#globalCooldownEdge, COOLDOWN only; its end is the sweep's own).
@@ -3503,11 +3512,20 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     const now = this.#context.monotonic();
     let signature = "";
     for (const button of world.actionButtons) {
-      if (button.type !== ACTION_BUTTON_SPELL) continue;
-      const remaining = world.cooldownRemaining(button.action, now);
+      // 3.37(в): an item slot runs on its use spell's timer (`#itemCooldown`), under the same rule.
+      const spellId = button.type === ACTION_BUTTON_SPELL ? button.action
+        : button.type === ACTION_BUTTON_ITEM ? itemUseSpellId(this.#itemTemplate(world, button.action)) : undefined;
+      if (spellId === undefined) continue;
+      // 3.37(а): a hold is no timer, yet its release is an edge: the icon greyed by `IsUsableAction`
+      // comes back only on ACTIONBAR_UPDATE_USABLE, and a release may start no timer at all.
+      if (button.type === ACTION_BUTTON_SPELL && world.isSpellOnHold?.(spellId)) {
+        signature += `${button.slot}:h,`;
+        continue;
+      }
+      const remaining = world.cooldownRemaining(spellId, now);
       if (remaining <= 0) continue;
       const end = now + remaining;
-      const snapshot = world.cooldownSnapshots?.get(button.action);
+      const snapshot = world.cooldownSnapshots?.get(spellId);
       // The snapshot's own start, reset and end are #reconcileItemCooldowns' signature.
       if (snapshot && snapshot.endsAt > now && Math.abs(snapshot.endsAt - end) < 1) continue;
       signature += `${button.slot}:${Math.round(end)},`;
@@ -6536,6 +6554,21 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     if (guid === this.#targetTargetGuid && this.#targetTarget()?.guid === guid) return "targettarget";
     if (guid === this.#petGuid && this.#pet()?.guid === guid) return "pet";
     return undefined;
+  }
+
+  /**
+   * 3.02: every token the caster answers to, in `#castUnit`'s order. Wow.exe raises a unit's
+   * UNIT_SPELLCAST_* for each of its tokens, so a focus that is also the target fills both cast bars
+   * (was: the first token only — the focus bar stayed empty while the target bar ran).
+   */
+  #castUnits(guid: bigint): readonly string[] {
+    const units: string[] = [];
+    if (guid === this.#selfGuid()) units.push("player");
+    if (guid === this.#targetGuid && this.#target()?.guid === guid) units.push("target");
+    if (guid === this.#focusGuid && this.#focus()?.guid === guid) units.push("focus");
+    if (guid === this.#targetTargetGuid && this.#targetTarget()?.guid === guid) units.push("targettarget");
+    if (guid === this.#petGuid && this.#pet()?.guid === guid) units.push("pet");
+    return units;
   }
 
   /**

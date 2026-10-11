@@ -17,7 +17,7 @@ import { frameXmlWorldObjects } from "./FrameXmlWorldObjects.js"; // seam-sweep
 import type { SpellMetadata } from "../SpellMetadata.js";
 import { frameXmlIsAttackSpell } from "./FrameXmlActionRepeat.js";
 import {
-  FRAMEXML_PET_ACTION_IDLE_COOLDOWN, frameXmlPetActionInfo, type FrameXmlPetActionCooldown,
+  FRAMEXML_PET_ACTION_IDLE_COOLDOWN, frameXmlPetActionInfo, frameXmlPetWordSpell, type FrameXmlPetActionCooldown,
 } from "./FrameXmlPetActionBar.js";
 
 /**
@@ -506,10 +506,7 @@ export class FrameXmlPossessModel {
 }
 
 /** 0x005a80e0: the spell of a pet bar word — state 1 or 8…0x11 — or 0. */
-function mirroredSpell(word: number): number {
-  const type = petActionTypeOf(word) & 0x3f;
-  return type === 1 || (type >= 8 && type <= 0x11) ? petActionOf(word) : 0;
-}
+const mirroredSpell = frameXmlPetWordSpell; // 3.37(г): shared with the page's cooldown
 
 // ---- the C API --------------------------------------------------------------------------------
 

@@ -14,7 +14,7 @@ import { showUnhandledOpcodes } from "../ui/Diagnostics.js";
 import { systemLine } from "../ui/Chat.js";
 import { openChatInput, replyToLastWhisper } from "../ui/ChatInputOwner.js";
 import { showTarget, unitDisplayName } from "../ui/Frames.js";
-import { interactWithTarget } from "../ui/Npc.js";
+import { interactWithGuid, interactWithTarget } from "../ui/Npc.js";
 import { toggleQuestLog } from "../ui/QuestLog.js";
 import { openCharacterWindow, toggleGameWindow } from "../ui/Windows.js";
 import { toggleAllBags, toggleKeyring } from "../ui/Bags.js";
@@ -48,8 +48,8 @@ import { frameXmlShapeshiftForms } from "../framexml/FrameXmlShapeshiftForms.js"
 import { toggleReputation } from "../ui/Reputation.js";
 import { toggleSocialPanel } from "../ui/SocialPanel.js";
 import { toggleScoreboard } from "../ui/Scoreboard.js";
-import { toggleFrameXmlBattlefieldMinimap } from "../framexml/FrameXmlBattlefieldMinimapKey.js"; // 05.10-L17t
-import { minimapSettings, setMinimapRotation, zoomMinimap } from "../ui/Minimap.js";
+import { toggleFrameXmlBattlefieldMinimap, toggleFrameXmlMinimap } from "../framexml/FrameXmlBattlefieldMinimapKey.js"; // 05.10-L17t; 3.11
+import { minimapSettings, setMinimapRotation, toggleMinimapShown, zoomMinimap } from "../ui/Minimap.js";
 import { pressPetButton } from "../ui/PetBar.js";
 import { castSpell } from "../ui/Spellbook.js";
 import { macroUnitGuid } from "../ui/CombatCommands.js";
@@ -313,6 +313,24 @@ export function runAction(action: InputAction): boolean {
     case "targetMouseover":
       return selectUnit(macroUnitGuid("mouseover"));
 
+    case "interactMouseover": {
+      // 3.11: `if not InteractUnit("mouseover") then InteractUnit("target") end`. InteractUnit (Wow.exe,
+      // .runtime/re-2026-10-03/l1102bcd r1.c) takes the mouseover guid 0xbd07a0 and interacts with it the way
+      // a right click does, which selects a unit first (Controls.ts) and never a game object.
+      const hovered = macroUnitGuid("mouseover");
+      const object = hovered === undefined ? undefined : world.state.objects.get(hovered);
+      if (hovered === undefined || object === undefined) {
+        interactWithTarget();
+        return true;
+      }
+      if (object.typeId !== 5) {
+        world.selectTarget(hovered);
+        showTarget();
+      }
+      interactWithGuid(hovered);
+      return true;
+    }
+
     case "targetPet":
       return selectUnit(macroUnitGuid("pet"));
 
@@ -400,6 +418,10 @@ export function runAction(action: InputAction): boolean {
 
     case "toggleMinimapRotation":
       setMinimapRotation(!minimapSettings().rotate);
+      return true;
+
+    case "toggleMinimap": // 3.11: the stock UI's ToggleMinimap(), else the native map
+      if (!toggleFrameXmlMinimap()) toggleMinimapShown();
       return true;
 
     case "toggleBattlefieldMinimap": // 05.10-L17t: stock UI only; the native HUD has no zone minimap

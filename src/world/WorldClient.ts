@@ -384,6 +384,8 @@ import {
 import { SpellClickRepeatGuard } from "./VehicleClick.js"; // 11.02-BCD
 import { buildPetCastSpell, petBarCastsAsUnit, petSlotCastsSpell } from "./PetCastSpell.js"; // 11.02-BCD
 import { petSpellCastsAsUnitAt } from "./PetCastSpell.js"; // L13 11.02-D; L13-review 11.02-D: + the press's unit
+import { spellAttributeWords } from "./PetCastSpell.js"; // 5.05 (11.10): the wand rule
+import { wandRepeatCancels } from "./AutoRepeatRefusal.js"; // 5.05 (11.10)
 // 11.02-E: missile trajectories — the cast's flag 2 tail, the one re-aim, the page's solver.
 import {
   MissileTrajectoryTracker, isVehicleSpellBar, missileCastPlan, missileShotSource, type MissileCastPlan,
@@ -2426,6 +2428,24 @@ export class WorldClient {
     this.onSpellStatus?.(`Автострельба ${spellId} запущена`, false);
   }
 
+  /**
+   * 5.05 (11.10): a cast this client refused itself before any packet (the book's preflight: a global or spell
+   * cooldown is NOT_READY). Wow.exe hands its own refusals to the same 0x00808200 as the realm's; only its first
+   * rule lives here — the wand's repeat ({@link #wandRepeatRule}); the caller keeps the words.
+   */
+  spellRefusedLocally(spellId: number, result: number): void {
+    if (spellId <= 0) return;
+    this.#wandRepeatRule(result);
+  }
+
+  /** 5.05 (11.10): 0x00808200's first rule (AutoRepeatRefusal `wandRepeatCancels`): CMSG_CANCEL_CAST, then 0x00807560(1). */
+  #wandRepeatRule(result: number): void {
+    const repeat = this.autoRepeatSpellId;
+    if (!wandRepeatCancels(repeat, result, repeat === undefined ? undefined : spellAttributeWords(repeat))) return;
+    if (!this.#closed) this.#connection.send(OPCODES.CMSG_CANCEL_CAST, new PacketWriter().u8(0).u32(repeat!).toUint8Array());
+    this.#stopAutoRepeat(true, false); // 0x00807560(1): CANCEL_AUTO_REPEAT alone (0x26d), no sheath
+  }
+
   #stopAutoRepeat(sendCancel: boolean, restoreSheath = sendCancel): void {
     if (this.autoRepeatSpellId === undefined) return;
     if (!this.#closed) {
@@ -2853,6 +2873,17 @@ export class WorldClient {
     this.cooldownSnapshots.delete(spellId);
     this.#locallyStartedCooldowns.delete(spellId);
     this.itemCooldowns.delete(spellId);
+  }
+
+  /**
+   * 3.37(б): the core's `SpellHistory::EraseCooldown` (SpellHistory.h:142-146), behind a reset
+   * (`SMSG_CLEAR_COOLDOWN`) and a modification past now (`SMSG_MODIFY_COOLDOWN`): the spell's entry
+   * goes, and its category's shared lockout with it, whichever spell of the category set that.
+   */
+  #eraseCooldown(spellId: number): void {
+    this.#clearCooldown(spellId);
+    const categoryId = this.spellCategories.get(spellId);
+    if (categoryId !== undefined && categoryId !== 0) this.categoryCooldowns.delete(categoryId);
   }
 
   /**
@@ -4196,6 +4227,7 @@ export class WorldClient {
     if (casterGuid === undefined) return undefined;
     const plan = missileCastPlan(missileShotSource(), this.#missiles, spellId, casterGuid, this.controlledGuid ?? this.state.selfGuid);
     if (plan !== undefined && "refused" in plan && plan.refused !== 0) {
+      this.#wandRepeatRule(plan.refused); // 5.05 (11.10): the client's own refusal takes the same first rule
       const text = spellFailureText(plan.refused, this.#castFailureNames());
       const quiet = this.#refusalQuiet.quiet(spellId, plan.refused, performance.now(), // 05.10-5.05: 0x00808200's local_14
         this.autoRanged.wantedSpellId, this.autoRanged.failureResets); // 05.10-5.05
@@ -7180,6 +7212,7 @@ export class WorldClient {
       this.cooldowns.clear();
       this.cooldownSnapshots.clear();
       this.cooldownHolds.clear();
+      this.categoryCooldowns.clear(); // 3.37(б): the packet is the whole history, shared lockouts too
       this.#pendingCasts.length = 0;
       this.#locallyStartedCooldowns.clear();
       for (const cooldown of initial.cooldowns) {
@@ -7224,6 +7257,7 @@ export class WorldClient {
       // 05.10-5.05: Wow.exe 0x00808200 (the realm's refusal, last argument 1) — the repeat's stop rules, then the
       // error frame's quiet rules against the wanted spell, both in AutoRepeatRefusal.ts (was: duplicates of the
       // repeating spell kept quiet until a GO, a start or a stop; the repeat was never stopped).
+      this.#wandRepeatRule(failure.result); // 5.05 (11.10): its first rule, before the repeat's own
       const repeat = autoRepeatRefusalAction({ // 05.10-5.05
         spellId: failure.spellId, result: failure.result, repeating: this.autoRepeatSpellId, // 05.10-5.05
         wanted: this.autoRanged.wantedSpellId, fromServer: true, answersRequest: pending !== undefined, // 05.10-5.05
@@ -7320,7 +7354,7 @@ export class WorldClient {
         this.events.emit("PET_COOLDOWNS_CHANGED", {});
       } else if (this.state.selfGuid === undefined || cleared.guid === this.state.selfGuid) {
         this.cooldownHolds.delete(cleared.spellId);
-        this.#clearCooldown(cleared.spellId);
+        this.#eraseCooldown(cleared.spellId); // 3.37(б)
         this.onCooldownsChanged?.();
       }
       return true;
@@ -8429,7 +8463,7 @@ export class WorldClient {
       const cooldown = this.cooldowns.get(change.spellId);
       if (cooldown !== undefined) {
         const end = cooldown + change.delta;
-        if (end <= performance.now()) this.#clearCooldown(change.spellId);
+        if (end <= performance.now()) this.#eraseCooldown(change.spellId); // 3.37(б): ModifyCooldown → EraseCooldown
         else {
           this.cooldowns.set(change.spellId, end);
           const snapshot = this.cooldownSnapshots.get(change.spellId);

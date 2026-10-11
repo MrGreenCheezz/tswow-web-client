@@ -666,6 +666,16 @@ export class GlueLuaRef {
   constructor(readonly key: number, readonly type: string) {}
 }
 
+/**
+ * 3.38: a Lua error a binding raises in its caller, with the message as it is — `callRaising`'s
+ * failure, or a binding's own luaL_error. Any other exception from a binding is prefixed with its name.
+ */
+export class GlueLuaRaise extends Error {
+  constructor(readonly luaMessage: string) {
+    super(luaMessage);
+  }
+}
+
 /** Decode a Lua table/function into a host object (frames, for instance). */
 export type GlueLuaTableDecoder = (L: LuaState, index: number) => unknown | undefined;
 /** Push a host object as a Lua value; return false to fall through to a table. */
@@ -966,6 +976,34 @@ export class GlueLuaVm {
     return values;
   }
 
+  /**
+   * 3.38: `call` for a binding's own work in Lua. A failure is not reported here: it comes back as a
+   * thrown `GlueLuaRaise`, which the binding lets out, so it is raised in the binding's caller — that
+   * caller's `pcall` sees it, as it sees a C function's `lua_error`. No traceback handler: the message
+   * stays the one the function raised.
+   */
+  callRaising(ref: GlueLuaRef, args: readonly unknown[], results: number): readonly unknown[] {
+    const L = this.#state;
+    const top = lua.lua_gettop(L);
+    if (!checkStack(L, args.length + 1)) throw new GlueLuaRaise(`stack overflow passing ${args.length} arguments`);
+    lua.lua_rawgeti(L, lua.LUA_REGISTRYINDEX, ref.key);
+    for (let index = 0; index < args.length; index += 1) this.pushValue(args[index]);
+    const status = lua.lua_pcall(L, args.length, results, 0);
+    if (status !== LUA_OK) {
+      const message = lua.lua_tojsstring(L, -1);
+      lua.lua_settop(L, top);
+      throw new GlueLuaRaise(String(message));
+    }
+    if (results === 0) {
+      lua.lua_settop(L, top);
+      return NO_VALUES;
+    }
+    const values: unknown[] = [];
+    for (let index = 0; index < results; index += 1) values.push(this.toValue(top + 1 + index));
+    lua.lua_settop(L, top);
+    return values;
+  }
+
   /** Keep a Lua value alive past the binding call that produced it. */
   retain(ref: GlueLuaRef): GlueLuaRef {
     const L = this.#state;
@@ -1031,7 +1069,9 @@ export class GlueLuaVm {
         results = (method !== undefined ? method(first, args) : binding!(args)) ?? NO_VALUES;
       } catch (error) {
         if (scratch !== undefined) for (const ref of scratch) this.release(ref);
-        lua.lua_pushstring(state, to_luastring(`${name}: ${String(error)}`));
+        // 3.38: a Lua error the binding passes on keeps its own words, as a C function's would.
+        const message = error instanceof GlueLuaRaise ? error.luaMessage : `${name}: ${String(error)}`;
+        lua.lua_pushstring(state, to_luastring(message));
         return lua.lua_error(state);
       }
       if (scratch !== undefined) for (const ref of scratch) this.release(ref);

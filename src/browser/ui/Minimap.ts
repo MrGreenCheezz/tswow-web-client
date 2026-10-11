@@ -439,6 +439,16 @@ export function setMinimapRotation(rotate: boolean): void {
   refreshMinimapControls();
 }
 
+/**
+ * 3.11: the TOGGLEMINIMAP key on the native HUD — the stock `ToggleMinimap()` hides and shows the map
+ * (Minimap.lua); this is the session's choice, as the stock frame's shown state is not saved either.
+ */
+let hiddenByKey = false;
+
+export function toggleMinimapShown(): void {
+  hiddenByKey = !hiddenByKey;
+}
+
 /** Called when the setting changes elsewhere, so the round button matches the checkbox. */
 export function refreshMinimapControls(): void {
   const buttons = parts?.root.querySelectorAll<HTMLButtonElement>(".minimap-button");
@@ -559,7 +569,7 @@ export const minimapWidgetAdapter: MinimapWidgetAdapter = {
 export function updateMinimap(now: number): void {
   const world = game.world;
   const self = playerOf(world?.state);
-  if (!world || !self?.position || world.mapId === undefined) {
+  if (!world || !self?.position || world.mapId === undefined || hiddenByKey) { // 3.11: hiddenByKey
     if (parts && !parts.root.hidden) parts.root.hidden = true;
     return;
   }

@@ -14,16 +14,35 @@
 import type { FrameXmlBoot } from "./FrameXmlBoot.js";
 
 let toggle: (() => void) | undefined;
+/** 3.11: the same mount's other key, TOGGLEMINIMAP — its Bindings.xml body is stock `ToggleMinimap()`. */
+let toggleMinimap: (() => void) | undefined;
 
 /** The mounted stock UI takes the key; the cleanup unpublishes only its own boot. */
 export function publishFrameXmlBattlefieldMinimapKey(boot: Pick<FrameXmlBoot, "vm">): () => void {
   const next = (): void => {
     boot.vm.executeReported("ToggleBattlefieldMinimap()", "@webclient/toggle-battlefield-minimap");
   };
+  const nextMinimap = (): void => {
+    boot.vm.executeReported("ToggleMinimap()", "@webclient/toggle-minimap"); // 3.11
+  };
   toggle = next;
+  toggleMinimap = nextMinimap;
   return () => {
     if (toggle === next) toggle = undefined;
+    if (toggleMinimap === nextMinimap) toggleMinimap = undefined;
   };
+}
+
+/** 3.11: TOGGLEMINIMAP's verb in the mounted stock UI (Minimap.lua hides or shows `Minimap`); false without it. */
+export function toggleFrameXmlMinimap(): boolean {
+  const current = toggleMinimap;
+  if (!current) return false;
+  try {
+    current();
+  } catch {
+    // A closed VM during teardown, as above.
+  }
+  return true;
 }
 
 /** The key's verb: false when no stock UI is mounted. */

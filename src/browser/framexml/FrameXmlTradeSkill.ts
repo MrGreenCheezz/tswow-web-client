@@ -52,6 +52,7 @@ import {
   enchantBindsItem, enchantEndsRefund, enchantReplaceNames, sessionEnchantFlags, sessionEnchantName, tradeEnchantReplaceNames,
   traderSlotEnchant, type ItemTargetWorld,
 } from "../game/SpellCursor.js";
+import { enchantEndsBoundTrade } from "../game/BoundTradeable.js"; // 2.05 (11.10)
 
 /** SharedDefines.h: SPELL_EFFECT_CREATE_ITEM and SPELL_EFFECT_CREATE_ITEM_2. */
 const ITEM_CREATION_EFFECTS: readonly number[] = [24, 157];
@@ -166,6 +167,8 @@ export interface FrameXmlTradeSkillSource {
   enchantBind?(spell: SpellMetadata, guid: bigint): boolean;
   /** 2.10: whether END_REFUND is asked next — a refundable purchase (0x005210d0, SpellCursor `enchantEndsRefund`). */
   enchantEndsRefund?(spell: SpellMetadata, guid: bigint): boolean;
+  /** 2.05 (11.10): whether END_BOUND_TRADEABLE "itemenchant" is asked next (BoundTradeable `enchantEndsBoundTrade`). */
+  enchantEndsBoundTrade?(spell: SpellMetadata, guid: bigint): boolean;
   /** TRADE_REPLACE_ENCHANT's two names for the trader's seventh slot (0x005198a0). */
   tradeEnchantReplace?(spell: SpellMetadata): readonly [string, string] | undefined;
   readonly craft?: FrameXmlTradeSkillCraft | undefined;
@@ -874,6 +877,14 @@ export class FrameXmlTradeSkillModel {
       this.#pump.fire("END_REFUND", 1);
       return true;
     }
+    // 2.05 (11.10): a soulbound item still in its trade window would leave it — END_BOUND_TRADEABLE
+    // "itemenchant" (0x005210d0 → 0x28d), after END_REFUND as the cursor path asks it (SpellCursor.ts);
+    // EndBoundTradeable("itemenchant") answers through BindEnchant's re-run (`bindEnchant`).
+    if (!bindConfirmed && this.#pump && this.#source.enchantEndsBoundTrade?.(spell, guid) === true) {
+      this.#promptGuid = guid;
+      this.#pump.fire("END_BOUND_TRADEABLE", "itemenchant");
+      return true;
+    }
     // An enchantment already there: the client asks first and keeps the enchant waiting (0x005210d0).
     const replace = this.#source.enchantReplace?.(spell, guid);
     if (replace && this.#pump) {
@@ -1192,6 +1203,13 @@ export function liveFrameXmlTradeSkillSource(context: FrameXmlTradeSkillLiveCont
     },
     enchantEndsRefund: (spell, guid) => enchantEndsRefund(spell,
       context.world() as Pick<ItemTargetWorld, "itemRefunds" | "playedSecondsNow"> | undefined, guid),
+    enchantEndsBoundTrade: (spell, guid) => { // 2.05 (11.10)
+      const world = context.world();
+      const slot = world ? carriedSlots(world).find((entry) => entry.guid === guid && entry.item) : undefined;
+      const played = (world as Pick<ItemTargetWorld, "playedSecondsNow"> | undefined)?.playedSecondsNow?.();
+      return enchantEndsBoundTrade(spell.effects, spell.effectMiscValue, slot?.item, played, world?.state.selfGuid,
+        context.enchantFlags ?? sessionEnchantFlags);
+    },
     tradeEnchantReplace: (spell) => tradeEnchantReplaceNames(spell,
       traderSlotEnchant(context.world() as Pick<ItemTargetWorld, "theirOffer"> | undefined),
       context.enchantName ?? sessionEnchantName),

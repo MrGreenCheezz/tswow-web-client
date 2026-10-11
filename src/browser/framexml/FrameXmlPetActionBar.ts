@@ -110,6 +110,17 @@ export function frameXmlPetSpellWord(packed: number): boolean {
   return petActionOf(packed) !== 0 && (type === ACT_PASSIVE || type === ACT_DISABLED || type === ACT_ENABLED);
 }
 
+/**
+ * 0x005a80e0: the spell a bar word names on the action bar's mirrored page — state 1 under 0x3F
+ * (ACT_PASSIVE, ACT_DISABLED, ACT_ENABLED) or 8…0x11, the vehicle bar's slot states 8…15
+ * (`VehicleSpellInitialize`) — or 0. Wider than `frameXmlPetSpellWord`, which the pet bar's own
+ * answers still use (3.37(г)).
+ */
+export function frameXmlPetWordSpell(packed: number): number {
+  const type = petActionTypeOf(packed) & 0x3f;
+  return type === 1 || (type >= 8 && type <= 0x11) ? petActionOf(packed) : 0;
+}
+
 /** Whether a word is the attack command, the one button the stock Lua flashes (`IsPetAttackAction`). */
 export function frameXmlPetAttackWord(packed: number): boolean {
   return petActionTypeOf(packed) === ACT_COMMAND && petActionOf(packed) === COMMAND_ATTACK;

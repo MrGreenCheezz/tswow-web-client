@@ -82,6 +82,18 @@ export class NpcWeaponClient {
     return "inflight";
   }
 
+  /** 6.02: when a failed entry may be asked again (undefined: it is not waiting out a failure). */
+  retryAt(entry: number): number | undefined {
+    if (this.#known.has(entry) || this.#requested.has(entry)) return undefined;
+    const after = this.#failures.get(entry)?.after;
+    return after === undefined || after === Infinity ? undefined : after;
+  }
+
+  /** The client's clock, the one `retryAt` is in. */
+  now(): number {
+    return this.#now();
+  }
+
   /** Asks for an entry unless it is known, already asked, or waiting out a failure. */
   request(entry: number): void {
     if (entry <= 0 || this.#absent || this.#known.has(entry) || this.#requested.has(entry)) return;
@@ -143,12 +155,16 @@ function isNpcWeapon(value: unknown): value is NpcWeapon {
     && (weapon.sheathe === undefined || typeof weapon.sheathe === "number"); // 05.10-A7a-G2 6.08
 }
 
-/** The held list for three entries, and whether an answer is still coming for any of them. */
+/**
+ * The held list for three entries, whether an answer is still coming for any of them, and — while
+ * one waits out a failure — the earliest moment one may be asked again (`retryAt`).
+ */
 export function heldWeapons(entries: readonly number[], client: NpcWeaponClient):
-  { held: AttachedModel[]; pending: boolean; waiting: boolean } {
+  { held: AttachedModel[]; pending: boolean; waiting: boolean; retryAt?: number } {
   const held: AttachedModel[] = [];
   let pending = false;
   let waiting = false;
+  let retryAt: number | undefined;
   for (let word = 0; word < VIRTUAL_ITEM_SLOTS.length; word++) {
     const entry = entries[word] ?? 0;
     if (entry <= 0) continue;
@@ -157,7 +173,12 @@ export function heldWeapons(entries: readonly number[], client: NpcWeaponClient)
       client.request(entry);
       const state = client.state(entry);
       if (state === "inflight") pending = true;
-      else if (state === "waiting") { pending = true; waiting = true; }
+      else if (state === "waiting") {
+        pending = true;
+        waiting = true;
+        const at = client.retryAt(entry);
+        if (at !== undefined && (retryAt === undefined || at < retryAt)) retryAt = at;
+      }
       continue;
     }
     if (weapon === null) continue;
@@ -169,7 +190,7 @@ export function heldWeapons(entries: readonly number[], client: NpcWeaponClient)
       ...(weapon.sheathe === undefined ? {} : { sheathe: weapon.sheathe }), // 05.10-A7a-G2 6.08 (SheathPoints.ts)
     });
   }
-  return { held, pending, waiting };
+  return { held, pending, waiting, ...(retryAt === undefined ? {} : { retryAt }) };
 }
 
 interface ArmedModel {
@@ -180,6 +201,8 @@ interface ArmedModel {
   readonly off: number;
   readonly ranged: number;
   readonly model: UnitModel;
+  /** 6.02: while an entry waits out a failure, the record holds until it may be asked again. */
+  readonly retryAt: number | undefined;
 }
 
 /** Tied to the world object, so a creature leaving visibility takes its memo with it. */
@@ -199,13 +222,15 @@ export function withVirtualWeapons(metadata: UnitModel, object: WorldObjectState
   const cached = armedModels.get(object);
   if (cached && cached.metadata === metadata && cached.client === client
     && cached.generation === client.generation
-    && cached.main === main && cached.off === off && cached.ranged === ranged) return cached.model;
-  const { held, pending, waiting } = heldWeapons([main, off, ranged], client);
+    && cached.main === main && cached.off === off && cached.ranged === ranged
+    && (cached.retryAt === undefined || client.now() < cached.retryAt)) return cached.model;
+  const { held, pending, waiting, retryAt } = heldWeapons([main, off, ranged], client);
   const model: UnitModel = { ...metadata, held, ...(pending ? { heldPending: true } : {}) };
-  // Not remembered while an entry waits out a failure: nothing moves the generation when the wait
-  // ends, and the next ask is what sends the retry.
-  if (waiting) armedModels.delete(object);
-  else armedModels.set(object, { metadata, client, generation: client.generation, main, off, ranged, model });
+  // 6.02: an entry waiting out a failure moves no generation when the wait ends, so the record holds
+  // until then and the first ask after it sends the retry (was: a new record every frame of the wait).
+  // A wait with no known end is not remembered.
+  if (waiting && retryAt === undefined) armedModels.delete(object);
+  else armedModels.set(object, { metadata, client, generation: client.generation, main, off, ranged, model, retryAt });
   return model;
 }
 

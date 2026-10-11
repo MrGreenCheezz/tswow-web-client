@@ -157,11 +157,15 @@ export function frameXmlInterruptibility(input: FrameXmlInterruptibilityInput): 
   return { raw: true, flag: true, shown: any };
 }
 
+const NO_UNITS: readonly string[] = Object.freeze([]);
+
 /** What the live cast events read from the seam. */
 export interface FrameXmlCastEventsDeps {
   readonly spell: (id: number) => SpellMetadata | undefined;
   /** The unit token a caster answers to, or nothing (LiveWorldSeam's cast unit). */
   readonly castUnit: (guid: bigint) => string | undefined;
+  /** 3.02: every token the caster answers to; when given, each of them hears the event (Wow.exe does). */
+  readonly castUnits?: (guid: bigint) => readonly string[];
   /** The player's book (resolved metadata), for the interrupt masks. */
   readonly book: () => Iterable<SpellMetadata | undefined>;
   /** The caster's auras (WorldClient.auras). */
@@ -270,17 +274,24 @@ export class FrameXmlCastEventsLive {
     pump.fire("UNIT_SPELLCAST_SENT", "player", spell?.name ?? `Заклинание ${event.spellId}`, spell?.rank ?? "", targetName);
   }
 
-  /** SPELL_CAST_RESULT → SUCCEEDED / FAILED_QUIET / INTERRUPTED / FAILED for the caster's token. */
+  /** The caster's tokens: all of them when the seam names them (3.02), else the first. */
+  #units(guid: bigint): readonly string[] {
+    if (this.#deps.castUnits) return this.#deps.castUnits(guid);
+    const unit = this.#deps.castUnit(guid);
+    return unit === undefined ? NO_UNITS : [unit];
+  }
+
+  /** SPELL_CAST_RESULT → SUCCEEDED / FAILED_QUIET / INTERRUPTED / FAILED for each of the caster's tokens. */
   onResult(pump: FrameXmlCastPump, event: { casterGuid: bigint; spellId: number; castCount: number; result: number }): void {
-    const unit = this.#deps.castUnit(event.casterGuid);
-    if (unit === undefined) return;
+    const units = this.#units(event.casterGuid);
+    if (units.length === 0) return;
     const spell = this.#deps.spell(event.spellId);
     const outcome = frameXmlCastOutcome(event.result);
     const name = outcome === "succeeded" ? "UNIT_SPELLCAST_SUCCEEDED"
       : outcome === "failedQuiet" ? "UNIT_SPELLCAST_FAILED_QUIET"
         : outcome === "interrupted" ? "UNIT_SPELLCAST_INTERRUPTED"
           : "UNIT_SPELLCAST_FAILED";
-    pump.fire(name, unit, spell?.name ?? `Заклинание ${event.spellId}`, spell?.rank ?? "", event.castCount);
+    for (const unit of units) pump.fire(name, unit, spell?.name ?? `Заклинание ${event.spellId}`, spell?.rank ?? "", event.castCount);
   }
 
   /** AURA_CHANGED for a unit that casts a PreventionType 1 spell: 0x0072f5d0's recompute. */
@@ -294,9 +305,9 @@ export class FrameXmlCastEventsLive {
     if (!result) return;
     this.#flags.set(guid, result.flag);
     if (shownBefore === result.raw) return;
-    const unit = this.#deps.castUnit(guid);
-    if (unit === undefined) return;
-    pump.fire(result.shown ? "UNIT_SPELLCAST_NOT_INTERRUPTIBLE" : "UNIT_SPELLCAST_INTERRUPTIBLE", unit);
+    for (const unit of this.#units(guid)) {
+      pump.fire(result.shown ? "UNIT_SPELLCAST_NOT_INTERRUPTIBLE" : "UNIT_SPELLCAST_INTERRUPTIBLE", unit);
+    }
   }
 
   reset(): void {

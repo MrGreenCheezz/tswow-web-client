@@ -2431,9 +2431,9 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
         // 05.10-3.27b: the format goes as it came — a nil one raises (luaL_checklstring), as in Wow.exe.
         // P1-14e: the white-listed formats answer in JS, the same text by construction.
         const fast = this.#options.legacyFormat ? undefined : formatWidgetTextFast(format, rest);
-        const formatted = fast ?? this.formatThroughLua(format, rest);
         // 05.10-3.27-review: a refused format (Wow.exe 0x00818070 raises before the text is set)
-        // leaves the text as it was; the error went to the handler from vm.call.
+        // leaves the text as it was. 3.38: the error is raised in the caller, whose pcall sees it.
+        const formatted = fast ?? this.formatThroughLua(format, rest);
         if (formatted !== undefined) bridge.SetText(frame, formatted);
       },
       SetTextColor: ({ frame, self, args }) => {
@@ -3324,10 +3324,9 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
       lua.lua_pushjsfunction(L, luaWidgetFormat);
       this.#widgetFormat = new GlueLuaRef(lauxlib.luaL_ref(L, lua.LUA_REGISTRYINDEX), "function");
     }
-    const answer = this.#vm.call(this.#widgetFormat, [format, ...args], 1);
-    // 05.10-3.27-review: vm.call answers nothing when format raised — undefined, the text stays.
-    if (answer.length === 0) return undefined;
-    const [result] = answer;
+    // 3.38: a refusal is thrown (GlueLuaRaise) past SetFormattedText to its Lua caller, as 0x00818070's
+    // luaL_error leaves 0x0048d800 — not handed to the error handler here (was: vm.call, which pcall never saw).
+    const [result] = this.#vm.callRaising(this.#widgetFormat, [format, ...args], 1);
     return typeof result === "string" ? result : undefined; // 05.10-3.27b: always a string
   }
 }
