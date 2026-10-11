@@ -15,6 +15,7 @@ import {
   type FrameXmlTradeSkillCraft, type FrameXmlTradeSkillLiveHost, type FrameXmlTradeSkillModel,
 } from "./FrameXmlTradeSkill.js";
 import { createLazyFrameXmlTradeSkillOwner } from "./FrameXmlTradeSkillOwner.js";
+import { sessionSpellDescriptionContext } from "../ui/SpellTextLiveContext.js"; // 12.10
 import { publishFrameXmlTradeSkill, type FrameXmlTradeSkillOwner } from "./FrameXmlTradeSkillController.js";
 
 /** The native queue as the stock window drives it. */
@@ -33,6 +34,7 @@ export function frameXmlLiveTradeSkillHost(): FrameXmlTradeSkillLiveHost {
     subclassName: createFrameXmlSubclassNames(() => game.gatewayOrigin),
     craft: FRAMEXML_LIVE_TRADESKILL_CRAFT,
     spells: () => game.spells,
+    descriptionContext: sessionSpellDescriptionContext, // 12.10
   };
 }
 

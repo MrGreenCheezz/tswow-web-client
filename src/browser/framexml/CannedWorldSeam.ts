@@ -1,4 +1,5 @@
 import { FrameXmlWorldStates } from "./FrameXmlWorldStates.js";
+import { FRAMEXML_DISPLAYED_POWER } from "./FrameXmlUnitPower.js"; // 11.10
 import { CannedFrameXmlCalendar } from "./FrameXmlCalendarCanned.js";
 import { FrameXmlHudMechanicsCanned } from "./FrameXmlHudMechanicsCanned.js";
 import { FrameXmlMap } from "./FrameXmlMap.js";
@@ -3581,13 +3582,20 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
       ?? this.pet(unit)?.healthMax ?? this.party(unit)?.healthMax ?? 0;
   }
 
-  unitPower(unit: string): number {
+  /** 11.10: a canned unit carries the one power it displays; UnitPower(unit, other) is 0 (FrameXmlUnitPower.ts). */
+  #otherPower(unit: string, powerType: number): boolean {
+    return powerType !== FRAMEXML_DISPLAYED_POWER && powerType !== this.unitPowerType(unit)?.[0];
+  }
+
+  unitPower(unit: string, powerType = FRAMEXML_DISPLAYED_POWER): number {
+    if (this.#otherPower(unit, powerType)) return 0;
     if (this.isPlayer(unit)) return this.#power;
     return this.target(unit)?.power ?? this.focus(unit)?.power ?? this.targetTarget(unit)?.power
       ?? this.pet(unit)?.power ?? this.party(unit)?.power ?? 0;
   }
 
-  unitPowerMax(unit: string): number {
+  unitPowerMax(unit: string, powerType = FRAMEXML_DISPLAYED_POWER): number {
+    if (this.#otherPower(unit, powerType)) return 0;
     if (this.isPlayer(unit)) return this.#powerMax;
     return this.target(unit)?.powerMax ?? this.focus(unit)?.powerMax ?? this.targetTarget(unit)?.powerMax
       ?? this.pet(unit)?.powerMax ?? this.party(unit)?.powerMax ?? 0;

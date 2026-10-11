@@ -45,7 +45,7 @@ import {
 import { effectiveSkill, readSkills } from "../ui/Skills.js";
 import { entryOf, playerInventory, stackCount, type ItemSlotState } from "../Inventory.js";
 import { itemChatLink } from "../ui/ChatLink.js";
-import { formatSpellDescription } from "../ui/SpellText.js";
+import { formatSpellDescription, type SpellDescriptionContext } from "../ui/SpellText.js";
 import { globalString } from "../../generated/globalStrings.js";
 import { frameXmlNativeTargeting, runFrameXmlNativeEscape } from "./FrameXmlGameMenuController.js";
 import {
@@ -1090,6 +1090,11 @@ export interface FrameXmlTradeSkillLiveHost {
   readonly craft?: FrameXmlTradeSkillCraft | undefined;
   /** Every spell row the client holds, for a description's `$12345s1` markers. */
   spells?(): ReadonlyMap<number, SpellMetadata> | undefined;
+  /**
+   * 12.10: the whole description context of the session (SpellTextLiveContext.ts: the active player
+   * Wow.exe's writer reads for `${…}`, `$?` and `$g`); without it only `spells()` is passed.
+   */
+  descriptionContext?(): SpellDescriptionContext;
 }
 
 /** The LiveWorldSeam context fields the live source reads. */
@@ -1181,7 +1186,8 @@ export function liveFrameXmlTradeSkillSource(context: FrameXmlTradeSkillLiveCont
     subclassName: (itemClass, subClass) => context.tradeSkill?.subclassName(itemClass, subClass),
     description: (spell) => {
       const spells = context.tradeSkill?.spells?.();
-      return formatSpellDescription(spell.description, spell, spells ? { spells } : {}) || undefined;
+      const described = context.tradeSkill?.descriptionContext?.() ?? (spells ? { spells } : {}); // 12.10
+      return formatSpellDescription(spell.description, spell, described) || undefined;
     },
     prefetch: (entries, onChanged) => context.prefetchQuestMetadata?.(entries, [], onChanged),
     carriedItem: (guid) => {

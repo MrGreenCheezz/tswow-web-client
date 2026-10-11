@@ -65,8 +65,9 @@ function fixture() {
   set(party1, "UNIT_FIELD_MAXHEALTH", 1000);
   set(party1, "UNIT_FIELD_LEVEL", 60);
   set(party1, "UNIT_FIELD_BYTES_0", 1 | (1 << 24));
-  party1.fields.set(UPDATE_FIELDS.UNIT_FIELD_POWER1.offset + 1, 50);
-  party1.fields.set(UPDATE_FIELDS.UNIT_FIELD_MAXPOWER1.offset + 1, 100);
+  // 11.10: rage on the wire is in tenths (a full bar is 1000); UnitPower divides by 10 (0x007fde00).
+  party1.fields.set(UPDATE_FIELDS.UNIT_FIELD_POWER1.offset + 1, 500);
+  party1.fields.set(UPDATE_FIELDS.UNIT_FIELD_MAXPOWER1.offset + 1, 1000);
   const party3 = object(partyGuids[2]);
   set(party3, "UNIT_FIELD_HEALTH", 600);
   set(party3, "UNIT_FIELD_MAXHEALTH", 900);
@@ -119,7 +120,7 @@ function fixture() {
           | GROUP_UPDATE_POWER_TYPE | GROUP_UPDATE_CUR_POWER | GROUP_UPDATE_MAX_POWER
           | GROUP_UPDATE_LEVEL | GROUP_UPDATE_AURAS,
         status: MEMBER_STATUS_ONLINE, health: 500, maxHealth: 750, powerType: 1,
-        power: 35, maxPower: 100, level: 58, auras: [partyAura],
+        power: 350, maxPower: 1000, level: 58, auras: [partyAura], // 11.10: rage in tenths, as sent
       }],
       [partyGuids[2], {
         guid: partyGuids[2], flags: GROUP_UPDATE_CUR_HP, health: 600,

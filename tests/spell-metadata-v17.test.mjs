@@ -170,7 +170,7 @@ test("served v=17 columns match Spell.dbc and SummonProperties.dbc on every row 
   assert.equal((at(33395).attributes[4] & 0x20), 0x20, "Холод: AttributesEx4 0x20 (11.02-D)");
 });
 
-test("the browser asks v=17; a batch without startRecoveryCategory is asked once more past the cache", async () => {
+test("the browser asks v=18; a batch without v=18's procCharges is asked once more past the cache", async () => {
   const { SpellMetadataClient } = await import("../dist/code/browser/SpellMetadata.js");
   const row = (extra) => ({
     id: 3599, name: "Опаляющий тотем", rank: "", description: "", iconId: 0, iconPath: "",
@@ -192,20 +192,20 @@ test("the browser asks v=17; a batch without startRecoveryCategory is asked once
   const old = new SpellMetadataClient("ws://127.0.0.1:8090/auth", fetcher);
   assert.equal((await old.load([3599])).get(3599).startRecoveryCategory, undefined, "a v=16 row still loads");
   assert.deepEqual(calls, [
-    ["http://127.0.0.1:8090/dbc/spells?ids=3599&v=17", undefined],
-    ["http://127.0.0.1:8090/dbc/spells?ids=3599&v=17", "reload"],
-  ], "the v=16 shape is an older gateway for the v=17 key");
+    ["http://127.0.0.1:8090/dbc/spells?ids=3599&v=18", undefined], // 12.10: v=18
+    ["http://127.0.0.1:8090/dbc/spells?ids=3599&v=18", "reload"],
+  ], "the v=16 shape is an older gateway for the v=18 key");
 
   calls.length = 0;
   const totem = { id: 63, control: 1, faction: 0, title: 4, slot: 1, flags: 2 };
-  rows = [row({ startRecoveryCategory: 133, effectMiscValueB: [63, 0, 0], summonProperties: [totem, null, null] })];
+  rows = [row({ startRecoveryCategory: 133, procCharges: 0, effectMiscValueB: [63, 0, 0], summonProperties: [totem, null, null] })];
   const fresh = new SpellMetadataClient("ws://127.0.0.1:8090/auth", fetcher);
   const loaded = (await fresh.load([3599])).get(3599);
   assert.equal(loaded.startRecoveryCategory, 133);
   assert.equal(loaded.summonProperties[0].title, 4);
-  assert.equal(calls.length, 1, "a v=17 answer stands");
+  assert.equal(calls.length, 1, "a v=18 answer stands");
   const refused = async (id, extra, message) => {
-    rows = [row({ id, startRecoveryCategory: 133, ...extra })];
+    rows = [row({ id, startRecoveryCategory: 133, procCharges: 0, ...extra })];
     await assert.rejects(fresh.load([id]), /invalid data/, message);
   };
   await refused(3600, { startRecoveryCategory: "133" }, "a category is a number");

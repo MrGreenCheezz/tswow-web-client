@@ -1,5 +1,5 @@
 import { MELEE_AUTO_ATTACK_SPELL_ID, WorldClient } from "../../world/WorldClient.js";
-import { POWER, POWER_DISPLAY_SCALE, attackPower, readField, unit } from "../../world/Fields.js";
+import { POWER, POWER_DISPLAY_SCALE, readField } from "../../world/Fields.js";
 import { game } from "../game/Context.js";
 import { spellButtonUsable, type SpellMetadata } from "../SpellMetadata.js";
 import { syncMountSpellIds } from "../MountSpells.js";
@@ -25,7 +25,8 @@ import {
 } from "./Widgets.js";
 import { setIconSource, spellIconUrl } from "./IconImage.js";
 import { unknownLabel } from "./Format.js";
-import { formatSpellDescription, type SpellDescriptionContext } from "./SpellText.js";
+import { formatSpellDescription, spellDescriptionRows, type SpellDescriptionContext } from "./SpellText.js";
+import { sessionSpellDescriptionContext } from "./SpellTextLiveContext.js"; // 12.10
 import { globalString } from "../../generated/globalStrings.js";
 import { fillTemplate } from "./ItemTooltip.js";
 import { notice } from "./Notices.js";
@@ -71,27 +72,14 @@ let hideLowerRanks = true;
 /** The last metadata request settled, even when the gateway omitted a requested custom row. */
 let spellMetadataSettledWorld: WorldClient | undefined;
 
-/** Formula operands the server keeps in the player's private update fields. */
+/**
+ * What a description reads from this session. 12.10: the active player itself — Wow.exe's writer
+ * reads its update fields, spellbook and auras (SpellTextLiveContext.ts) for `$AP`, `$SPH`, `$?s…`
+ * and `$g` — the rows fetched so far with whether the gateway has answered for one still missing,
+ * and the hearthstone's area for `$z`.
+ */
 export function spellDescriptionContext(): SpellDescriptionContext {
-  const world = game.world;
-  const self = world?.state.selfGuid === undefined ? undefined
-    : world.state.objects.get(world.state.selfGuid);
-  // An empty values object is intentional: it tells the formatter this is a live tooltip and an
-  // unavailable AP/SPH operand should become a readable fallback, never a raw `$MWS` formula or a
-  // fabricated zero. The spell map is still useful for `$21084d` cross-row markers.
-  if (!self) return { spells: game.spells, values: {} };
-  const attackPowerValue = attackPower(self);
-  const attackTime = readField(self, "UNIT_FIELD_BASEATTACKTIME");
-  const spellHealing = readField(self, "PLAYER_FIELD_MOD_HEALING_DONE_POS");
-  return {
-    spells: game.spells,
-    values: {
-      ...(attackPowerValue === undefined ? {} : { AP: Math.max(0, attackPowerValue) }),
-      // WoW's MWS operand is seconds; UNIT_FIELD_BASEATTACKTIME is milliseconds.
-      ...(attackTime === undefined ? {} : { MWS: Math.max(0, attackTime) / 1000 }),
-      ...(spellHealing === undefined ? {} : { SPH: Math.max(0, spellHealing) }),
-    },
-  };
+  return sessionSpellDescriptionContext();
 }
 
 /**
@@ -1028,9 +1016,10 @@ export async function loadSpellMetadata(world: WorldClient): Promise<void> {
     // context can resolve the marker instead of leaving an otherwise answerable duration visible.
     const referenced = new Set<number>();
     for (const metadata of known.values()) {
-      for (const match of metadata.description.matchAll(/\$(\d+)[a-zA-Z]\d?/g)) {
-        const id = Number(match[1]);
-        if (Number.isSafeInteger(id) && id > 0 && !game.spells.has(id)) referenced.add(id);
+      // 11.10: with the `$/10;29131o1` spelling too (SpellText.ts spellDescriptionReferences).
+      // 12.10: and the rows its SpellDescriptionVariables formulas and its aura text read.
+      for (const id of [...spellDescriptionRows(metadata), ...spellDescriptionRows(metadata, true)]) {
+        if (!game.spells.has(id)) referenced.add(id);
       }
     }
     const loadedReferences = await client.load([...referenced]);

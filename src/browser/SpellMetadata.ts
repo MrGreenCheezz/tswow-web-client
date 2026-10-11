@@ -132,15 +132,19 @@ export class SpellMetadataClient {
     // L13: v=17 adds `startRecoveryCategory` (5.30: the global cooldown's category), `effectMiscValueB` and
     // the SummonProperties rows of a summon effect (3.12). Optional: an older gateway's rows keep the one
     // global cooldown for every spell with a StartRecoveryTime and give a summoned unit no title line.
-    const url = `${this.#baseUrl}/dbc/spells?ids=${chunk.join(",")}&v=17`; // L13: was v=16
+    // 12.10: v=18 adds the rest of what the description writer reads (`procTypeMask`, `procCharges`,
+    // `stackAmount`, `maxTargetLevel`, `maxAffectedTargets`, `manaPerSecond` and four float effect
+    // columns; gateway SpellMetadata.ts). Optional: an older gateway's rows leave `$n`, `$u`, `$i`, `$v`,
+    // `$e`, `$f`, `$b` and a period-less `$t` as written (SpellText.ts) until it is restarted.
+    const url = `${this.#baseUrl}/dbc/spells?ids=${chunk.join(",")}&v=18`; // 12.10: was v=17
     let value = await this.#batch(url);
     // The key alone cannot tell a restarted gateway from the hour-long browser cache: an answer the
     // old process gave before the restart is still on disk. A batch whose every row lacks the newest
-    // field (L13: `startRecoveryCategory`, present on every v=17 row, 0 included) is asked once more past
-    // that cache; if the gateway itself still answers the old shape, this session stops asking twice.
-    if (!this.#olderGateway && value.length > 0 && value.every((row) => row.startRecoveryCategory === undefined)) { // L13
+    // field (12.10: `procCharges`, present on every v=18 row, 0 included) is asked once more past that
+    // cache; if the gateway itself still answers the old shape, this session stops asking twice.
+    if (!this.#olderGateway && value.length > 0 && value.every((row) => row.procCharges === undefined)) { // 12.10
       value = await this.#batch(url, { cache: "reload" });
-      if (value.every((row) => row.startRecoveryCategory === undefined)) this.#olderGateway = true; // L13
+      if (value.every((row) => row.procCharges === undefined)) this.#olderGateway = true; // 12.10
     }
     for (const metadata of value) this.#cache.set(metadata.id, metadata);
     // Answered, and without a row: final for this gateway process (see `#missing`).
@@ -169,8 +173,12 @@ function isSpellMetadata(value: unknown): value is SpellMetadata {
     && typeof spell.autoRepeat === "boolean"
     && typeof spell.displayInStanceBar === "boolean"
     && typeof spell.stanceBarOrder === "number"
+    // 11.10: any integer. Spell.dbc's StanceBarOrder is -1 on 66 stock rows (483 «Изучение» of every
+    // recipe, 14185 «Подготовка», 16511 «Кровоизлияние», 11129 «Возгорание»…), the same in dbc_source,
+    // and FrameXmlShapeshiftForms.ts already skips a negative order. Refusing it refused the whole
+    // batch of up to 200 ids with it: a rogue's, paladin's, mage's or death knight's talent tree drew
+    // no names and no icons for the session (SpellNames.ts keeps a failed batch's ids asked).
     && Number.isInteger(spell.stanceBarOrder)
-    && spell.stanceBarOrder >= 0
     && (spell.bonusActionBarOffset === undefined
       || (typeof spell.bonusActionBarOffset === "number"
         && Number.isInteger(spell.bonusActionBarOffset)
@@ -239,7 +247,19 @@ function isSpellMetadata(value: unknown): value is SpellMetadata {
     && optionalIntegers(spell.effectMiscValueB, 3)
     && (spell.summonProperties === undefined
       || (Array.isArray(spell.summonProperties) && spell.summonProperties.length === 3
-        && spell.summonProperties.every(isSummonPropertiesEntry)));
+        && spell.summonProperties.every(isSummonPropertiesEntry)))
+    // 12.10 (v=18): raw integer columns and three-wide float columns; absent from an older gateway.
+    && optionalInteger(spell.procTypeMask) && optionalInteger(spell.procCharges) && optionalInteger(spell.stackAmount)
+    && optionalInteger(spell.maxTargetLevel) && optionalInteger(spell.maxAffectedTargets)
+    && optionalInteger(spell.manaPerSecond)
+    && optionalNumbers(spell.effectMultipleValue, 3) && optionalNumbers(spell.effectPointsPerCombo, 3)
+    && optionalNumbers(spell.effectDamageMultiplier, 3) && optionalNumbers(spell.effectBonusMultiplier, 3);
+}
+
+/** 12.10: an optional array of `length` finite numbers. */
+function optionalNumbers(value: unknown, length: number): boolean {
+  return value === undefined || (Array.isArray(value) && value.length === length
+    && value.every((entry) => typeof entry === "number" && Number.isFinite(entry)));
 }
 
 /** L13 (v=17): a `summonProperties` entry — null, or a SummonProperties row of six integers. */

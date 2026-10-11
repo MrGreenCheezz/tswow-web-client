@@ -350,6 +350,9 @@ import {
   type FrameXmlWorldSeam,
 } from "./FrameXmlWorldSeam.js";
 import type { BattlefieldList } from "../../world/PvpProtocol.js";
+import { FRAMEXML_DISPLAYED_POWER, frameXmlObjectPower, frameXmlPartyPower } from "./FrameXmlUnitPower.js"; // 11.10
+import { formatSpellDescription } from "../ui/SpellText.js"; // 12.10
+import { sessionSpellDescriptionContext } from "../ui/SpellTextLiveContext.js"; // 12.10
 import {
   createFrameXmlTalentResolvers,
   type FrameXmlTalentMetadata,
@@ -7311,14 +7314,18 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     return (object ? unitField.maxHealth(object) : undefined) ?? this.#partyStats(unit)?.maxHealth ?? 0;
   }
 
-  unitPower(unit: string): number {
+  // 11.10: the type argument, the active player's other powers and the tenths of rage and runic
+  // power, as Wow.exe 0x0060ed40/0x0060ef40 answer them (FrameXmlUnitPower.ts).
+  unitPower(unit: string, powerType = FRAMEXML_DISPLAYED_POWER): number {
     const object = this.#unit(unit);
-    return (object ? unitField.power(object) : undefined) ?? this.#partyStats(unit)?.power ?? 0;
+    return (object ? frameXmlObjectPower(object, powerType, object.guid === this.#selfGuid(), false) : undefined)
+      ?? frameXmlPartyPower(this.#partyStats(unit), powerType, false) ?? 0;
   }
 
-  unitPowerMax(unit: string): number {
+  unitPowerMax(unit: string, powerType = FRAMEXML_DISPLAYED_POWER): number {
     const object = this.#unit(unit);
-    return (object ? unitField.maxPower(object) : undefined) ?? this.#partyStats(unit)?.maxPower ?? 0;
+    return (object ? frameXmlObjectPower(object, powerType, object.guid === this.#selfGuid(), true) : undefined)
+      ?? frameXmlPartyPower(this.#partyStats(unit), powerType, true) ?? 0;
   }
 
   unitPowerType(unit: string): readonly [number, string] | undefined {
@@ -8480,7 +8487,10 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
   }
   trainerServiceDescription(index: number): string | undefined {
     const row = this.trainerRow(index);
-    return row ? this.#context.spell(row.spellId)?.description : undefined;
+    const spell = row ? this.#context.spell(row.spellId) : undefined;
+    // 12.10: written as Wow.exe 0x005959d0 writes it — through the description writer
+    // (SpellText.ts), not as the raw Spell.dbc text with its markers.
+    return spell ? formatSpellDescription(spell.description, spell, sessionSpellDescriptionContext()) : undefined;
   }
   trainerServiceSkillLine(index: number): string | undefined {
     return frameXmlTrainerSkillLine(this.trainerRow(index), this.#trainerRequirementSource());

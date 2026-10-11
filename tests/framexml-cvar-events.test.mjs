@@ -168,3 +168,17 @@ test("the record key folds Latin case only, as the account names do", () => {
   assert.equal(frameXmlCVarStorageKey("Test"), frameXmlCVarStorageKey("TEST"));
   assert.notEqual(frameXmlCVarStorageKey("Вася"), frameXmlCVarStorageKey("вася"));
 });
+
+test("11.10: buffDurations is registered «1», as Wow.exe 0x51d9b0 does, so the buff timers show by default", () => {
+  const { vm, lua, exec } = boot(memoryStorage());
+  try {
+    assert.equal(lua(`GetCVar("buffDurations")`), "1");
+    assert.equal(lua(`__fxNeutralImpl.GetCVarDefault("BUFFDURATIONS")`), "1", "the case-folded default");
+    // What the Buffs panel's box does at login (BlizzardOptionsPanel_SetupControl): the uvar takes
+    // the CVar, and BuffFrame.lua:254 shows the time only for "1".
+    exec(`SHOW_BUFF_DURATIONS = GetCVar("buffDurations")`);
+    assert.equal(lua("SHOW_BUFF_DURATIONS"), "1");
+    exec(`SetCVar("buffDurations", "0")`);
+    assert.equal(lua(`GetCVar("buffDurations")`), "0", "still an ordinary round trip");
+  } finally { vm.close(); }
+});

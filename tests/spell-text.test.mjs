@@ -8,6 +8,7 @@ import {
 } from "../dist/code/generated/globalStrings.js";
 import { formatNpcText } from "../dist/code/browser/ui/NpcText.js";
 import { attackPower } from "../dist/code/world/Fields.js";
+import { UPDATE_FIELDS } from "../dist/code/generated/updateFields.js";
 
 // Duration formatting is part of the algorithmic spell-marker tests, so neutral builds receive
 // four small test-owned templates. The separate assertion against the client's exact words stays
@@ -89,37 +90,55 @@ test("Ж3.2 a periodic effect adds up over its own duration", () => {
 test("Ж3.2 a duration is written in the client's own words", withGlobalStrings, () => {
   assert.equal(formatDuration(0), "");
   assert.equal(formatDuration(3000), "3 сек");
-  assert.equal(formatDuration(2500), "3 сек", "the real tooltip rounds rather than truncates");
+  // 12.10: not whole in its unit, Wow.exe writes SPELL_DURATION_<unit>'s `%.2f` (0x0061aee0) — the
+  // «2.50 сек» and «1.50 мин» of the real tooltips, not a rounded «3 сек» or «90 сек».
+  assert.equal(formatDuration(2500), "2.50 сек");
   assert.equal(formatDuration(60_000), "1 мин");
-  assert.equal(formatDuration(90_000), "90 сек", "a minute and a half is not one minute");
+  assert.equal(formatDuration(90_000), "1.50 мин");
   assert.equal(formatDuration(3_600_000), "1 ч");
   assert.equal(formatDuration(86_400_000), "1 д");
 });
 
-test("Ж3.2 braces are arithmetic, and only when they hold nothing else", () => {
-  const numbers = spell({ effectBasePoints: [9, 0, 0], effectDieSides: [1, 0, 0] });
-  assert.equal(formatSpellDescription("${$s1*3}", numbers), "30");
-  assert.equal(formatSpellDescription("${$m1/2}", numbers), "5");
+/** 12.10: the active player as SpellText.ts reads it: update-field words by name (and index). */
+function player(words = {}, extra = {}) {
+  const slots = new Map();
+  for (const [key, value] of Object.entries(words)) {
+    const [name, offset = "0"] = key.split("+");
+    slots.set(UPDATE_FIELDS[name].offset + Number(offset), value);
+  }
+  return { slot: (index) => slots.get(index), knowsSpell: () => false, hasAura: () => false, ...extra };
+}
+const floatWord = (value) => {
+  const view = new DataView(new ArrayBuffer(4));
+  view.setFloat32(0, value, true);
+  return view.getUint32(0, true);
+};
 
-  // A name, a comparison or another spell's id inside the braces is left exactly as it stands: a
-  // wrong number on a tooltip is worse than a marker that is visibly a marker.
-  assert.equal(formatSpellDescription("${$42208m1*8*$<mult>}", numbers), "${$42208m1*8*$<mult>}");
-  assert.equal(formatSpellDescription("${$<AP>*0.2}", numbers), "${$<AP>*0.2}");
+test("Ж3.2 braces are arithmetic, over the names Wow.exe's table has", () => {
+  const numbers = spell({ effectBasePoints: [9, 0, 0], effectDieSides: [1, 0, 0] });
+  const live = { player: player() };
+  assert.equal(formatSpellDescription("${$m1*3}", numbers, live), "30");
+  assert.equal(formatSpellDescription("${$m1/2}", numbers, live), "5");
+  // 12.10: `s1` is not a name of 0x00ace8f8's table (only `m`/`M` are), so Wow.exe's block fails and
+  // 0x0057aaf0 writes `$` in its place; an unknown row inside a block fails it the same way.
+  assert.equal(formatSpellDescription("${$s1*3}", numbers, live), "$");
+  assert.equal(formatSpellDescription("${$42208m1*8}", numbers, live), "$");
 });
 
 test("Ж3.2 WotLK named formulas and cross-spell durations are resolved", () => {
   // Exact ruRU Spell.dbc text for Seal of Righteousness base row 21084. `$21084d` is a real
-  // self-reference here, while MWS/AP/SPH are the player's runtime operands rather than DBC effects.
-  const seal = spell({ id: 21084, duration: 1_800_000 });
-  const baseSeal = spell({ id: 21084, duration: 1_800_000 });
+  // self-reference here, while MWS/AP/SPH are the player's own update fields.
+  const seal = spell({ id: 21084, duration: 1_800_000, maxDuration: 1_800_000 });
   const text = "Наполняет паладина священным духом на $21084d. С каждой атакой ближнего боя "
     + "паладин наносит дополнительно ${$MWS*(0.022*$AP+0.044*$SPH)} ед. урона от светлой магии.\n\n"
     + "Высвободив энергию печати, вы наносите противнику ${1+0.2*$AP+0.32*$SPH} ед. урона.";
-  assert.equal(
-    formatSpellDescription(text, seal, {
-      spells: new Map([[baseSeal.id, baseSeal]]),
-      values: { MWS: 2, AP: 1000, SPH: 500 },
-    }),
+  // 12.10: MWS is UNIT_FIELD_BASEATTACKTIME in seconds, AP the attack power sum, SPH the HOLY spell
+  // damage (PLAYER_FIELD_MOD_DAMAGE_DONE_POS+1 plus _NEG+1) — 0x005782d0, not the healing bonus.
+  const paladin = player({
+    UNIT_FIELD_BASEATTACKTIME: 2000, UNIT_FIELD_ATTACK_POWER: 1000,
+    "PLAYER_FIELD_MOD_DAMAGE_DONE_POS+1": 500,
+  });
+  assert.equal(formatSpellDescription(text, seal, { player: paladin }),
     "Наполняет паладина священным духом на 30 мин. С каждой атакой ближнего боя "
       + "паладин наносит дополнительно 88 ед. урона от светлой магии.\n\n"
       + "Высвободив энергию печати, вы наносите противнику 361 ед. урона.");
@@ -127,29 +146,25 @@ test("Ж3.2 WotLK named formulas and cross-spell durations are resolved", () => 
   // marker is resolved instead of leaking into the tooltip.
   const rankSeal = spell({ id: 20154, duration: 1_800_000 });
   assert.equal(formatSpellDescription("Печать на $21084d", rankSeal, {
-    spells: new Map([[baseSeal.id, baseSeal]]),
+    spells: new Map([[seal.id, seal]]),
   }), "Печать на 30 мин");
-  assert.equal(formatSpellDescription("Урон: $1{1+0.2*$AP+0.32*$SPH}", seal, {
-    values: { AP: 1000, SPH: 500 },
-  }), "Урон: 361");
+  // 12.10: the legacy `$1{…}` spelling is a spell id followed by a `{`, which 0x00579e50 has no case
+  // for: Wow.exe writes `$`, and so does this (no more per-module rewriting).
+  assert.equal(formatSpellDescription("Урон: $1{1}", seal, { player: paladin }), "Урон: ${1}");
 });
 
 test("Ж3.2 SpellDescriptionVariables named formulas strip their authored braces", () => {
   const spell136 = spell({ id: 136, effectBasePoints: [9, 0, 0], effectDieSides: [1, 0, 0],
     descriptionVariables: "$total=${$m1*5}" });
-  assert.equal(formatSpellDescription("Урон: $<total>", spell136), "Урон: 50");
+  assert.equal(formatSpellDescription("Урон: $<total>", spell136, { player: player() }), "Урон: 50");
 });
 
-test("Ж3.2 an unavailable runtime formula gets a readable fallback in a live tooltip", () => {
-  const seal = spell({ id: 21084, duration: 1_800_000 });
-  const result = formatSpellDescription("Урон: ${$MWS*(0.022*$AP+0.044*$SPH)}", seal, {
-    values: { AP: 1000 },
-  });
-  assert.equal(result, "Урон: значение зависит от характеристик");
-  assert.doesNotMatch(result, /\$[A-Za-z]|\$\{/);
-  const named = formatSpellDescription("Урон: $<talentBonus>", seal, { values: {} });
-  assert.equal(named, "Урон: значение зависит от характеристик");
-  assert.doesNotMatch(named, /\$</);
+test("12.10 without an active player every name in a block reads 0, as 0x005782d0 has it", () => {
+  const seal = spell({ id: 21084, effectBasePoints: [9, 0, 0] });
+  const result = formatSpellDescription("Урон: ${$MWS*(0.022*$AP+0.044*$SPH)} и ${$m1+1}", seal);
+  assert.equal(result, "Урон: 0 и 1");
+  // An undefined `$<name>` is 0 inside a block (0x005774d0) and the client's `$` failure in prose.
+  assert.equal(formatSpellDescription("${$<talentBonus>+2} / $<talentBonus>", seal), "2 / $<talentBonus>");
 });
 
 test("Ж3.2 attack-power operands include signed modifiers and the float multiplier", () => {
@@ -163,45 +178,55 @@ test("Ж3.2 attack-power operands include signed modifiers and the float multipl
   assert.equal(attackPower(object), 165, "(100 - 20 + 30) * (1 + 0.5)");
 });
 
-test("Ж3.2 what the parser cannot answer, it leaves alone", () => {
+test("Ж3.2 what Wow.exe's writer cannot answer, it writes as the client does", () => {
   const plain = spell();
-  // Another spell's effect would have to be fetched before it could be read.
-  assert.equal(formatSpellDescription("$12345s1 урона", plain), "$12345s1 урона");
-  // No variable body was supplied in this isolated parser fixture.
+  // 12.10: a row the client lacks: 0x00579e50 fails after reading the id, and 0x0057aaf0 writes `$`
+  // and goes on from the letter — «$s1» is what the original tooltip shows for such a row.
+  assert.equal(formatSpellDescription("$12345s1 урона", plain), "$s1 урона");
+  // A row still on its way (the gateway has not answered) is left as written, to be redrawn.
+  assert.equal(formatSpellDescription("$12345s1 урона", plain, { answered: () => false }), "$12345s1 урона");
+  // An undefined `$<name>`: 0x00577c40 fails without moving, so the text after the `$` stands.
   assert.equal(formatSpellDescription("$<damage> урона", plain), "$<damage> урона");
-  // A conditional on an aura the client cannot see.
-  assert.equal(formatSpellDescription("$?s48165[да][нет]", plain), "$?s48165[да][нет]");
+  // Without an active player every `$?` term is false: the else branch.
+  assert.equal(formatSpellDescription("$?s48165[да][нет]", plain), "нет");
   // And with no spell at all, nothing is guessed.
   assert.equal(formatSpellDescription("$s1 урона", undefined), "$s1 урона");
 });
 
-test("Ж3.2 a block it cannot answer keeps its markers, and is not half filled in", () => {
-  // Found by running the parser over all 49,842 rows of the real table rather than over a fixture.
-  // Frostbolt: the multiplier names a variable absent from this fixture, so the block cannot be
-  // worked out — and filling in the `$m2` inside it anyway left «${18*$<mult>}» on the tooltip,
-  // which is neither the answer nor the marker the artist wrote.
-  const frostbolt = spell({ effectBasePoints: [39, 17, 0], effectDieSides: [1, 3, 0], duration: 5000 });
-  assert.equal(
-    formatSpellDescription("наносящую ${$m2*$<mult>} ед. и снижающую скорость на $s1% на $d.", frostbolt),
-    "наносящую ${$m2*$<mult>} ед. и снижающую скорость на 40% на 5 сек.");
+test("Ж3.2 a block is worked out whole, its `$<name>` included", () => {
+  // Frostbolt's `${$m2*$<mult>}`, its SpellDescriptionVariables row #167 cut down to one rank of each
+  // talent: no talent known, both factors 1.
+  const frostbolt = spell({
+    effectBasePoints: [39, 17, 0], effectDieSides: [1, 3, 0], duration: 5000, maxDuration: 5000,
+    descriptionVariables: "$arctic1=$?s31674[${1.01}][${1}]\n$piercing1=$?s11151[${1.02}][${1}]\n"
+      + "$mult=${$<arctic1>*$<piercing1>}",
+  });
+  const text = "наносящую ${$m2*$<mult>} ед. и снижающую скорость на $s1% на $d.";
+  assert.equal(formatSpellDescription(text, frostbolt, { player: player() }),
+    "наносящую 18 ед. и снижающую скорость на 40% на 5 сек.");
+  // With both talents known: `$m2` 18 × 1.01 × 1.02 = 18.54 → «%.0f» 19.
+  assert.equal(formatSpellDescription(text, frostbolt, { player: player({}, { knowsSpell: () => true }) }),
+    "наносящую 19 ед. и снижающую скорость на 40% на 5 сек.");
 });
 
-test("Ж3.2 `$b1` is not a line break, whatever `$b` is", () => {
-  // Also found against the real table. `$b` on its own is a break; `$b<n>` is the points an effect
-  // gains per combo point, which is what Eviscerate's five lines are built out of. Breaking on it
-  // put newlines inside the arithmetic and made the whole tooltip unreadable.
-  const eviscerate = spell({ effectBasePoints: [0, 0, 0], effectDieSides: [5, 0, 0] });
-  const line = "1 прием: ${$m1+(($b1*1)+$AP*0.03)*$<mult>} ед.";
-  assert.equal(formatSpellDescription(line, eviscerate), line);
-  assert.equal(formatSpellDescription("первая$bвторая", eviscerate), "первая\nвторая");
+test("Ж3.2 `$b1` is not a line break, and neither is `$b`", () => {
+  // `$b<n>` is the points an effect gains per combo point, which is what Eviscerate's five lines
+  // are built out of. 12.10: so is `$b` alone — 0x00579e50's `b` case writes EffectPointsPerCombo
+  // of the first effect, truncated; it is never a line break in a spell description.
+  const eviscerate = spell({ effectBasePoints: [0, 0, 0], effectDieSides: [5, 0, 0], effectPointsPerCombo: [6.5, 0, 0] });
+  const line = "1 прием: ${$m1+(($b1*1)+$AP*0.03)} ед.";
+  assert.equal(formatSpellDescription(line, eviscerate, { player: player({ UNIT_FIELD_ATTACK_POWER: 100 }) }),
+    "1 прием: 11 ед.");
+  assert.equal(formatSpellDescription("первая$bвторая", eviscerate), "первая6вторая");
 });
 
-test("Ж3.2 the line break and the plural", () => {
+test("Ж3.2 the plural", () => {
   const one = spell({ effectBasePoints: [0, 0, 0], effectDieSides: [1, 0, 0] });
   const many = spell({ effectBasePoints: [4, 0, 0], effectDieSides: [1, 0, 0] });
-  assert.equal(formatSpellDescription("первая$bвторая", one), "первая\nвторая");
   assert.equal(formatSpellDescription("$s1 $lсекунду:секунд;", one), "1 секунду");
-  assert.equal(formatSpellDescription("$s1 $lсекунду:секунд;", many), "5 секунд");
+  // 12.10: 5 takes the third Russian form, and a list of two has none — 0x00576ef0 copies nothing.
+  assert.equal(formatSpellDescription("$s1 $lсекунду:секунд;", many), "5 ");
+  assert.equal(formatSpellDescription("$s1 $lсекунду:секунды:секунд;", many), "5 секунд");
 });
 
 const HUNTER = {

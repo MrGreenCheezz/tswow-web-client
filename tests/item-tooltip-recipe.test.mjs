@@ -97,7 +97,7 @@ const spells = () => new Map([
 function stockContext(rows, items, extra = {}) {
   const describe = (id) => {
     const row = rows.get(id);
-    return row?.description ? formatSpellDescription(row.description, row, { spells: rows, values: {} }) || undefined : undefined;
+    return row?.description ? formatSpellDescription(row.description, row, { spells: rows }) || undefined : undefined;
   };
   return {
     layout: "stock", compare: false, playerLevel: 10,
@@ -119,7 +119,8 @@ const RECIPE_STOCK_LINES = [
   // The tail is `useCooldownText`'s reading of the row's one-second food category, as on the
   // food's own tooltip; the block reuses the same builder.
   // The food's one-second category cooldown gets no tail: the original never writes it under a meal.
-  "Использование: Восполнение 58 ед. здоровья за 21 сек. Действие эффекта прерывается, если персонаж встает с места.",
+  // 12.10: `$o1` of an aura without a period counts 5000 ms (Wow.exe 0x00579e50): 58 × 21 s / 5 s.
+  "Использование: Восполнение 243 ед. здоровья за 21 сек. Действие эффекта прерывается, если персонаж встает с места.",
   "Требуется: Сырой острозубый илистый луциан",
   "Цена продажи: 1с",
 ];

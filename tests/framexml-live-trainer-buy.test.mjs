@@ -64,3 +64,29 @@ test("live Trainer C-API binding sends the selected visible spell ID through Wor
     world.close();
   }
 });
+
+test("12.10: a trainer service's description is written through the description writer (Wow.exe 0x005959d0)", () => {
+  const world = new WorldClient({ send() {}, close() {} });
+  world.trainer = { guid: 1n, trainerType: 0, greeting: "", spells: [spell(133, 0)] }; // 0: available, shown
+  const fireball = {
+    id: 133, name: "Огненный шар", rank: "", iconPath: "",
+    description: "Наносит $s1 ед. урона от огня.",
+    effectBasePoints: [13, 0, 0], effectDieSides: [9, 1, 0], effectPeriod: [0, 0, 0],
+    effectChainTargets: [0, 0, 0], effectRadius: [0, 0, 0], duration: 0, maxDuration: 0, procChance: 100,
+  };
+  const seam = new LiveWorldSeam({
+    world: () => world,
+    store: () => undefined,
+    spell: (id) => (id === 133 ? fireball : undefined),
+    monotonic: () => 0,
+    globalCooldownUntil: () => 0,
+    castSpell: () => {},
+  });
+  try {
+    const [text] = FRAMEXML_SEAM_BINDINGS.GetTrainerServiceDescription(seam, [1]);
+    assert.ok(!text.includes("$"), text);
+    assert.match(text, /^Наносит 14\D+22 ед\. урона от огня\.$/);
+  } finally {
+    world.close();
+  }
+});

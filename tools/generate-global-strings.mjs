@@ -120,6 +120,12 @@ const EXTRA_STRINGS = [
   // 4.03 (L7): the pet's share in the stamina, intellect and ranged attack power rows (ComputePetBonus).
   "PET_BONUS_TOOLTIP_STAMINA", "PET_BONUS_TOOLTIP_INTELLECT", "PET_BONUS_TOOLTIP_RANGED_ATTACK_POWER",
   "PET_BONUS_TOOLTIP_SPELLDAMAGE",
+  // 11.10: what a description's `$d` writes for a spell with no duration (Wow.exe 0x00579e50, the
+  // key pushed at 0x0057a587), «до отмены» — src/browser/ui/SpellText.ts.
+  "SPELL_DURATION_UNTIL_CANCELLED",
+  // 12.10: a duration that is not whole in its unit, written `%.2f` (Wow.exe 0x0061aee0) — «1.50 мин» —
+  // and `$z` without a bind area (0x00579e50) — src/browser/ui/SpellTextWowRules.ts, SpellText.ts.
+  "SPELL_DURATION_SEC", "SPELL_DURATION_MIN", "SPELL_DURATION_HOURS", "SPELL_DURATION_DAYS", "HOME_INN",
 ];
 
 // `NAME = "text";` with the text on one line. Escapes are kept verbatim: the client's own strings

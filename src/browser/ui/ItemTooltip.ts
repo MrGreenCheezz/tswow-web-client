@@ -11,6 +11,7 @@ import { game } from "../game/Context.js";
 import { formatMoney, reputationRankName, unknownLabel } from "./Format.js";
 import { ensureSpellNames, spellName } from "./SpellNames.js";
 import { formatSpellDescription } from "./SpellText.js";
+import { sessionSpellDescriptionContext } from "./SpellTextLiveContext.js"; // 12.10
 import { className, raceName } from "./UnitSnapshot.js";
 import { itemDurationParts, itemDurationSeconds } from "./ItemDurationText.js"; // 5.22 (04.10, L4)
 import {
@@ -840,9 +841,8 @@ function lateRefresh(entry: number, rebuild: () => TooltipContent): TooltipRefre
 function itemSpellDescription(spellId: number): string | undefined {
   const metadata = game.spells.get(spellId);
   if (!metadata?.description) return undefined;
-  // An empty `values` is the formatter's «live tooltip» mode: an attack-power operand this module
-  // cannot read becomes readable words, never a raw `$AP` marker (`Spellbook.spellDescriptionContext`).
-  return formatSpellDescription(metadata.description, metadata, { spells: game.spells, values: {} }) || undefined;
+  // 12.10: the session's own player and rows, as Wow.exe's writer reads them (SpellTextLiveContext.ts).
+  return formatSpellDescription(metadata.description, metadata, sessionSpellDescriptionContext()) || undefined;
 }
 
 /**

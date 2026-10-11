@@ -886,6 +886,17 @@ test("Spell DBC metadata resolves localized names, icon paths and cooldowns", ()
     // the authored macro body alongside the id.
     descriptionVariablesId: 5,
     descriptionVariables: "$damage=42",
+    // 12.10 (v=18): the rest of what Wow.exe's description writer reads, raw (zero in this fixture).
+    procTypeMask: 0,
+    procCharges: 0,
+    stackAmount: 0,
+    maxTargetLevel: 0,
+    maxAffectedTargets: 0,
+    manaPerSecond: 0,
+    effectMultipleValue: [0, 0, 0],
+    effectPointsPerCombo: [0, 0, 0],
+    effectDamageMultiplier: [0, 0, 0],
+    effectBonusMultiplier: [0, 0, 0],
   });
 
   // The tracking columns reach the browser, which is the only way it can tell a tracking spell

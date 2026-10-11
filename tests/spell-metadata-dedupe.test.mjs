@@ -18,6 +18,7 @@ function row(id) {
     // The v=16 shape: a batch without `preventionType` is re-asked once past the HTTP cache (an old gateway).
     rangeMinFriendly: 0, rangeMaxFriendly: 0, dispelType: 0, preventionType: 0,
     startRecoveryCategory: 0, // L13: v=17's marker (a batch without it is the older gateway's)
+    procCharges: 0, // 12.10: v=18's
   };
 }
 

@@ -369,10 +369,37 @@ export interface SpellMetadata {
    * variable. Kept as the authored string because definitions may contain conditionals.
    */
   descriptionVariables?: string;
+  /**
+   * 12.10 (v=18): the rest of the columns Wow.exe's description writer reads (0x00579e50, 0x005782d0;
+   * src/browser/ui/SpellText.ts), raw, on every row. Absent from an older gateway, which the browser
+   * reads as «not known yet» and leaves those markers as written.
+   *
+   * * `procTypeMask` (+0x88): bit 0 makes `$t` 5000 ms. `procCharges` (+0x90): `$n`.
+   *   `stackAmount` (CumulativeAura, +0xc4): `$u`. `maxTargetLevel` (+0x23c): `$v`.
+   *   `maxAffectedTargets` (MaxTargets, +0x250): `$i`. `manaPerSecond` (+0xb0): `$p`.
+   * * Per effect, floats: `effectMultipleValue` (EffectAmplitude, +0x194): `$e`;
+   *   `effectPointsPerCombo` (+0x1dc): `$b`; `effectDamageMultiplier` (EffectChainAmplitude, +0x260):
+   *   `$f`/`$F`; `effectBonusMultiplier` (EffectBonusCoefficient, +0x294): `$bc` inside `${…}`.
+   */
+  procTypeMask?: number;
+  procCharges?: number;
+  stackAmount?: number;
+  maxTargetLevel?: number;
+  maxAffectedTargets?: number;
+  manaPerSecond?: number;
+  effectMultipleValue?: number[];
+  effectPointsPerCombo?: number[];
+  effectDamageMultiplier?: number[];
+  effectBonusMultiplier?: number[];
 }
 
 /** `MAX_SPELL_EFFECTS`: every effect column in this table is three wide. */
 const SPELL_EFFECTS = 3;
+
+/** 12.10: a float column as JSON can carry it — a NaN or infinite word would arrive as `null`. */
+function finiteFloat(value: number): number {
+  return Number.isFinite(value) ? value : 0;
+}
 
 /** The eight attribute words, in record order (+0x10 … +0x2c). */
 const SPELL_ATTRIBUTE_COLUMNS = [
@@ -601,6 +628,17 @@ export function parseSpellMetadata(
       // Left alone it would put "101%" on every tooltip that mentions a chance.
       procChance: Math.min(100, spells.int(row, "ProcChance")),
       descriptionVariablesId: spells.int(row, "DescriptionVariablesID"),
+      // 12.10 (v=18): what the description writer reads besides (SpellMetadata.procTypeMask).
+      procTypeMask: spells.int(row, "ProcTypeMask") >>> 0,
+      procCharges: spells.int(row, "ProcCharges"),
+      stackAmount: spells.int(row, "CumulativeAura"),
+      maxTargetLevel: spells.int(row, "MaxTargetLevel"),
+      maxAffectedTargets: spells.int(row, "MaxTargets"),
+      manaPerSecond: spells.int(row, "ManaPerSecond"),
+      effectMultipleValue: perEffect((effect) => finiteFloat(spells.float(row, "EffectAmplitude", effect))),
+      effectPointsPerCombo: perEffect((effect) => finiteFloat(spells.float(row, "EffectPointsPerCombo", effect))),
+      effectDamageMultiplier: perEffect((effect) => finiteFloat(spells.float(row, "EffectChainAmplitude", effect))),
+      effectBonusMultiplier: perEffect((effect) => finiteFloat(spells.float(row, "EffectBonusCoefficient", effect))),
     };
     const debuffType = debuffTypes.get(metadata.dispelType ?? 0);
     if (debuffType !== undefined) metadata.debuffType = debuffType;

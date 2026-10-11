@@ -672,6 +672,10 @@ do
     threatwarning = "3", threatshownumeric = "0",
     -- Wow.exe registers previewTalents with "0" (0x51d9b0); the talent preview reads it (3.33).
     previewtalents = "0",
+    -- 11.10: and buffDurations with "1" (the string showClock and autoSelfCast share). The Buffs
+    -- panel's box copies GetCVar into SHOW_BUFF_DURATIONS at login; unset, it copied nil and
+    -- BuffFrame.lua:254 hid the time under every buff and debuff.
+    buffdurations = "1",
     -- Inactive facilities still need typed values for their dropdown OnLoad.
     conversationmode = "inline", camerasmoothstyle = "0",
     camerasmoothtrackingstyle = "0", voicechatmode = "0", basemip = "0",

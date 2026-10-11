@@ -172,6 +172,7 @@ import { FRAMEXML_SET_CURSOR_BINDINGS } from "./FrameXmlSetCursor.js"; // 05.10-
 import { FRAMEXML_OPTIONS_BINDINGS, type FrameXmlOptionsModel } from "./FrameXmlOptions.js";
 import { FRAMEXML_PLAYER_STATUS_BINDINGS, type FrameXmlPlayerStatus } from "./FrameXmlPlayerStatus.js";
 import { FRAMEXML_UNIT_RELATION_BINDINGS, type FrameXmlUnitRelations } from "./FrameXmlUnitRelations.js";
+import { frameXmlPowerTypeArgument } from "./FrameXmlUnitPower.js"; // 11.10
 import { FRAMEXML_CONTROL_BINDINGS, type FrameXmlPlayerControl } from "./FrameXmlControl.js";
 import { FRAMEXML_GROUP_COMMAND_BINDINGS, type FrameXmlGroupCommandsModel } from "./FrameXmlGroupCommands.js";
 import { FRAMEXML_TARGETING_BINDINGS, type FrameXmlTargeting } from "./FrameXmlTargetingApi.js";
@@ -1607,8 +1608,12 @@ export interface FrameXmlWorldSeam {
   unitSex(unit: string): number | undefined;
   unitHealth(unit: string): number;
   unitHealthMax(unit: string): number;
-  unitPower(unit: string): number;
-  unitPowerMax(unit: string): number;
+  /**
+   * 11.10: `powerType` is UnitPower's second argument, 0..6 or 7 (the default) for the displayed
+   * power; out-of-range types never reach the seam (FrameXmlUnitPower.ts).
+   */
+  unitPower(unit: string, powerType?: number): number;
+  unitPowerMax(unit: string, powerType?: number): number;
   /** The power index and its token; `undefined` for a unit the seam does not know. */
   unitPowerType(unit: string): readonly [number, string] | undefined;
   unitXP(unit: string): number;
@@ -2258,6 +2263,12 @@ function optional(value: unknown): readonly unknown[] {
   return value === undefined ? NOTHING : [value];
 }
 
+/** 11.10: UnitPower's answer for its second argument — a bare 0 for a type outside 0..7 (0x0060ed40). */
+function powerAnswer(typeArgument: unknown, read: (type: number) => number): readonly unknown[] {
+  const type = frameXmlPowerTypeArgument(typeArgument);
+  return [type === undefined ? 0 : read(type)];
+}
+
 function talentGroupOf(snapshot: FrameXmlTalentSnapshot | undefined, value: unknown): number {
   const group = Number(value);
   if (Number.isInteger(group) && group > 0) return Math.trunc(group);
@@ -2445,15 +2456,18 @@ export const FRAMEXML_SEAM_BINDINGS: Readonly<Record<string, FrameXmlSeamBinding
   UnitIsConnected: (seam, args) => [seam.unitIsConnected(unitOf(args[0]))],
   UnitHealth: (seam, args) => [seam.unitHealth(unitOf(args[0]))],
   UnitHealthMax: (seam, args) => [seam.unitHealthMax(unitOf(args[0]))],
-  UnitPower: (seam, args) => [seam.unitPower(unitOf(args[0]))],
-  UnitPowerMax: (seam, args) => [seam.unitPowerMax(unitOf(args[0]))],
+  // 11.10: with the second argument, the type (FrameXmlUnitPower.ts, Wow.exe 0x0060ed40/0x0060ef40):
+  // AlternatePowerBar.lua:57-62 asks UnitPowerMax("player", 0) and drew a rogue's energy as mana.
+  UnitPower: (seam, args) => powerAnswer(args[1], (type) => seam.unitPower(unitOf(args[0]), type)),
+  UnitPowerMax: (seam, args) => powerAnswer(args[1], (type) => seam.unitPowerMax(unitOf(args[0]), type)),
   // `UnitMana`/`UnitManaMax` are 3.3.5's older spelling of the pair above: the unit's power of
   // its display type. Stock never calls them (zero call sites in all 335 files), but add-ons
   // written for 3.3.5 do. MikScrollingBattleText's UNIT_MANA handler (MSBTTriggers.lua:711)
   // divides one by the other, and the nil stub raised msbttriggers.lua:526 on a player mana
-  // change in the live-seam census.
-  UnitMana: (seam, args) => [seam.unitPower(unitOf(args[0]))],
-  UnitManaMax: (seam, args) => [seam.unitPowerMax(unitOf(args[0]))],
+  // change in the live-seam census. 11.10: Wow.exe registers them on the very same two functions
+  // (.data 0x00ad2308/0x00ad2310), the type argument included.
+  UnitMana: (seam, args) => powerAnswer(args[1], (type) => seam.unitPower(unitOf(args[0]), type)),
+  UnitManaMax: (seam, args) => powerAnswer(args[1], (type) => seam.unitPowerMax(unitOf(args[0]), type)),
   UnitPowerType: (seam, args) => seam.unitPowerType(unitOf(args[0])) ?? NOTHING,
   UnitXP: (seam, args) => [seam.unitXP(unitOf(args[0]))],
   UnitXPMax: (seam, args) => [seam.unitXPMax(unitOf(args[0]))],

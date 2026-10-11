@@ -6,7 +6,7 @@ import {
 import { game } from "../game/Context.js";
 import { unknownLabel } from "../ui/Format.js";
 import { ensureSpellNames } from "../ui/SpellNames.js";
-import { formatSpellDescription } from "../ui/SpellText.js";
+import { formatSpellDescription, spellDescriptionRows } from "../ui/SpellText.js";
 import type { TooltipContent, TooltipRefresh } from "../ui/Widgets.js";
 import type { GameTooltipWidgetAdapter } from "../glue/GlueWidgets.js";
 import type { FrameXmlActionTooltip, FrameXmlWorldSeam } from "./FrameXmlWorldSeam.js";
@@ -204,10 +204,16 @@ function spellRefresh(id: number, aura = false): TooltipRefresh {
  */
 function spellContent(id: number, aura = false): TooltipContent | undefined {
   if (!game.world || !Number.isSafeInteger(id) || id <= 0) return undefined;
-  if (!game.spells.get(id)) {
+  const row = game.spells.get(id);
+  if (!row) {
     ensureSpellNames([id], runSpellRedraws);
     return undefined;
   }
+  // 11.10: the rows its markers read (`$/10;29131o1`, `$4187s1`). Only the spellbook's own load
+  // fetched them, so a talent's, a trainer's or a linked spell's description kept the marker.
+  // 12.10: its SpellDescriptionVariables formulas' too (`$57810m1`; SpellText.ts spellDescriptionRows).
+  const missing = spellDescriptionRows(row, aura).filter((reference) => !game.spells.has(reference));
+  if (missing.length > 0) ensureSpellNames(missing, runSpellRedraws);
   if (!spellbook) {
     loadSpellbook();
     return undefined;

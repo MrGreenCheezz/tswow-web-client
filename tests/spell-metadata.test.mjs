@@ -36,7 +36,7 @@ async function loadOne(payload) {
   const client = new SpellMetadataClient("ws://127.0.0.1:8090/auth");
   const previous = globalThis.fetch;
   globalThis.fetch = async (url) => {
-    assert.match(String(url), /&v=17$/, // L13: v=17
+    assert.match(String(url), /&v=18$/, // 12.10: v=18 (L13: v=17)
       "the marker expires cached responses before the stock tooltip fields while retaining earlier fixes");
     return { ok: true, json: async () => payload };
   };
@@ -63,7 +63,10 @@ test("К1 the guard refuses a record from before the rank key existed", async ()
   await assert.rejects(loadOne([withoutAutoRepeat]), /invalid data/);
   const { displayInStanceBar, ...withoutStances } = fireball;
   await assert.rejects(loadOne([withoutStances]), /invalid data/);
-  await assert.rejects(loadOne([{ ...fireball, stanceBarOrder: -1 }]), /invalid data/);
+  await assert.rejects(loadOne([{ ...fireball, stanceBarOrder: 1.5 }]), /invalid data/);
+  // 11.10: -1 is Spell.dbc's own value on 66 stock rows (14185 «Подготовка», 16511 «Кровоизлияние»,
+  // 483 «Изучение»…). Refused, it took the whole batch with it: a rogue's talent tree had no icons.
+  assert.equal((await loadOne([{ ...fireball, stanceBarOrder: -1 }])).get(133)?.stanceBarOrder, -1);
   await assert.rejects(loadOne([{ ...fireball, bonusActionBarOffset: -1 }]), /invalid data/);
   await assert.rejects(loadOne([{ ...fireball, bonusActionBarOffset: 1.5 }]), /invalid data/);
 });
@@ -141,4 +144,23 @@ test("stance metadata preserves DBC order without mistaking the extra bar flag f
     "flagged non-shapeshift auras do not invent a form action page");
   assert.throws(() => parseSpellShapeshiftFormBonuses(new Uint8Array([87, 68, 66, 67])),
     /SpellShapeshiftForm.dbc/);
+});
+
+test("11.10 every row the dataset's Spell.dbc yields passes the browser's guard", {
+  skip: dbcDirectory ? false : "no tswow dataset on this machine",
+}, async () => {
+  // One refused row refuses its whole `/dbc/spells` batch, and SpellNames.ts never asks for those
+  // ids again: the rogue talent tree of 11.10 (Preparation 14185 and Hemorrhage 16511 carry
+  // StanceBarOrder -1) lost every name and icon that way. The guard is for an older gateway's
+  // shape, so the dataset's own rows — in JSON, as the route sends them — must all pass it.
+  const { loadSpellMetadata } = await import("../dist/code/gateway/SpellMetadata.js");
+  const spells = await loadSpellMetadata(dbcDirectory);
+  const rows = new Map([...spells].map(([id, row]) => [id, JSON.parse(JSON.stringify(row))]));
+  const client = new SpellMetadataClient("ws://127.0.0.1:8090/", async (url) => {
+    const ids = new URL(String(url)).searchParams.get("ids").split(",").map(Number);
+    return { ok: true, json: async () => ids.map((id) => rows.get(id)).filter(Boolean) };
+  });
+  const loaded = await client.load([...rows.keys()]);
+  assert.equal(loaded.size, rows.size);
+  assert.equal(loaded.get(14185)?.stanceBarOrder, -1, "Preparation keeps its DBC order");
 });
