@@ -40,6 +40,8 @@ const collisionSource = await sourceModule("../src/browser/game/CollisionSource.
   ['"../Terrain.js"', JSON.stringify(terrainUrl)],
   ['"./Collision.js"', JSON.stringify(collisionUrl)],
   ['"../GatewayGeneration.js"', JSON.stringify(gatewayGenerationUrl)],
+  // P2-09a: the frame budget sensor (off in tests; `refresh` asks it for a start time).
+  ['"../FrameBudgetProbe.js"', JSON.stringify(new URL("../dist/code/browser/FrameBudgetProbe.js", import.meta.url).href)],
 ]);
 const collisionFormat = await import(collisionFormatUrl);
 const {

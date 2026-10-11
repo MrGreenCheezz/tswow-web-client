@@ -332,3 +332,28 @@ test("the stock TradeSkillFrame's enchant asks END_REFUND(1) too; EndRefund(1) c
   assert.equal(model.bindEnchant(), true, "EndRefund(1) re-runs 0x005210d0 answered, as BindEnchant does");
   assert.deepEqual(world.calls, [{ kind: "item", spellId: 7418, guid: FRAMEXML_CANNED_BRACERS_GUID }]);
 });
+
+test("2.05: the stock TradeSkillFrame's enchant asks END_BOUND_TRADEABLE(\"itemenchant\") after END_REFUND; the answer casts", async () => {
+  const { createCannedFrameXmlTradeSkill, FRAMEXML_CANNED_ENCHANTING, FRAMEXML_CANNED_BRACERS_GUID } =
+    await import("../dist/code/browser/framexml/FrameXmlTradeSkillCanned.js");
+  const { model, world } = createCannedFrameXmlTradeSkill();
+  const events = [];
+  model.attach({ fire: (event, ...args) => { events.push([event, ...args]); return 1; }, now: () => 100 });
+  const host = { tradeSkill: model };
+  const call = (name, ...args) => FRAMEXML_SEAM_BINDINGS[name](host, args);
+  assert.equal(model.open(FRAMEXML_CANNED_ENCHANTING), true);
+  assert.equal(model.show(), true);
+  world.boundTradeableItems.add(FRAMEXML_CANNED_BRACERS_GUID);
+  world.refundItems.add(FRAMEXML_CANNED_BRACERS_GUID);
+  call("DoTradeSkill", 3, 1);
+  events.length = 0;
+  assert.equal(model.targetItem(FRAMEXML_CANNED_BRACERS_GUID), true);
+  assert.deepEqual(events, [["END_REFUND", 1]], "a refundable purchase is asked about first");
+  world.refundItems.clear();
+  events.length = 0;
+  assert.equal(model.targetItem(FRAMEXML_CANNED_BRACERS_GUID), true);
+  assert.deepEqual(events, [["END_BOUND_TRADEABLE", "itemenchant"]], "then the trade window question (0x005210d0 → 0x28d)");
+  assert.deepEqual(world.calls, [], "nothing before the answer");
+  assert.equal(model.bindEnchant(), true, "EndBoundTradeable(\"itemenchant\") is BindEnchant's answered re-run");
+  assert.deepEqual(world.calls, [{ kind: "item", spellId: 7418, guid: FRAMEXML_CANNED_BRACERS_GUID }]);
+});

@@ -94,12 +94,16 @@ test("SetFormattedText on a white-listed format sets the text without a vm.call;
       assert.equal(vm.execute('FormatProbe = CreateFrame("Frame", "FormatProbe"):CreateFontString("FormatProbeText")', "@setup").ok, true);
       const body = vm.compileFunction('FormatProbe:SetFormattedText("%d с.", 3.7) FormatProbe:SetFormattedText("%2$s %1$d", 80, "Воин")',
         "format-probe", []);
+      // 3.38 (11.10): the formatter is entered through `callRaising` (its refusal raises in the caller); count both.
       const original = vm.call;
+      const originalRaising = vm.callRaising;
       let calls = 0;
       vm.call = function (...rest) { calls += 1; return original.apply(this, rest); };
+      vm.callRaising = function (...rest) { calls += 1; return originalRaising.apply(this, rest); };
       vm.call(body);
       vm.call = original;
-      assert.equal(calls - 1, legacyFormat ? 2 : 0, `vm.call inside SetFormattedText (legacyFormat ${legacyFormat})`);
+      vm.callRaising = originalRaising;
+      assert.equal(calls - 1, legacyFormat ? 2 : 0, `Lua calls inside SetFormattedText (legacyFormat ${legacyFormat})`);
       assert.equal(bridge.getFrame("FormatProbeText").text, "Воин 80");
       vm.release(body);
     } finally { vm.close(); }

@@ -140,6 +140,44 @@ test("cast start, delayed, interrupted and stop events carry the player and cast
   ]);
 });
 
+test("3.02: a caster that is both target and focus fills both cast bars — every token hears each edge", () => {
+  const MOB = 0xf130_0000_0000_0042n;
+  const { events, world, pump, fired, selfGuid } = fixture();
+  world.state.objects = new Map([
+    [selfGuid, { guid: selfGuid, typeId: 4, fields: new Map() }],
+    [MOB, { guid: MOB, typeId: 3, fields: new Map() }],
+  ]);
+  world.targetGuid = MOB;
+  world.names = new Map();
+  world.creatureTemplates = new Map();
+  world.casts.set(MOB, { spellId: 42, startedAt: 900, duration: 2500, channel: false, castCount: 5 });
+  const seam = new LiveWorldSeam({
+    world: () => world, store: () => undefined, focusGuid: () => MOB,
+    spell: (id) => (id === 42 ? { id, name: "Test Spell", rank: "Rank 2", iconPath: "" } : undefined),
+    monotonic: () => 1000, globalCooldownUntil: () => 0, castSpell: () => {},
+  });
+  seam.attach(pump);
+  fired.length = 0;
+  const casts = () => fired.filter(([event]) => event.startsWith("UNIT_SPELLCAST_"));
+  events.emit("SPELL_CAST_START", { casterGuid: MOB, spellId: 42, castTime: 2500, channel: false });
+  assert.deepEqual(casts(), [
+    ["UNIT_SPELLCAST_START", "target", "Test Spell", "Rank 2", 5],
+    ["UNIT_SPELLCAST_START", "focus", "Test Spell", "Rank 2", 5],
+  ], "the focus frame's bar starts too (was: target only)");
+  assert.equal(seam.unitCastingInfo("focus")?.[0], "Test Spell", "and its UnitCastingInfo answers the same cast");
+  assert.equal(seam.unitCastingInfo("target")?.[0], "Test Spell");
+  fired.length = 0;
+  events.emit("SPELL_CAST_DELAYED", { casterGuid: MOB, delay: 200 });
+  events.emit("SPELL_CAST_RESULT", { casterGuid: MOB, spellId: 42, castCount: 5, result: 40 });
+  events.emit("SPELL_CAST_STOP", { casterGuid: MOB, spellId: 42, interrupted: true });
+  assert.deepEqual(casts().map(([event, unit]) => `${event}:${unit}`), [
+    "UNIT_SPELLCAST_DELAYED:target", "UNIT_SPELLCAST_DELAYED:focus",
+    "UNIT_SPELLCAST_INTERRUPTED:target", "UNIT_SPELLCAST_INTERRUPTED:focus",
+    "UNIT_SPELLCAST_STOP:target", "UNIT_SPELLCAST_STOP:focus",
+  ]);
+  seam.detach();
+});
+
 test("channel start, update and stop preserve channel state after the world deletes the cast", () => {
   const { events, world, cast, seam, pump, fired, selfGuid } = fixture({ channel: true, castCount: undefined });
   seam.attach(pump);

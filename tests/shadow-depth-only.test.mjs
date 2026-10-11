@@ -5,6 +5,7 @@ import * as THREE from "three";
 import { CascadedSunShadows, depthOnlyActive } from "../dist/code/browser/CascadedShadows.js";
 import { lightingProfile } from "../dist/code/browser/LightingQuality.js";
 import { createWorldLightUniforms } from "../dist/code/browser/WorldLighting.js";
+import { VEGETATION_WIND_MARKER, installVegetationWind } from "../dist/code/browser/VegetationWind.js";
 
 const sunTowards = new THREE.Vector3(0.19, 0.53, -0.84);
 
@@ -113,6 +114,17 @@ test("an exception inside a cascade still ends the depth-only window and restore
   assert.equal(masks.at(-1), true);
   assert.equal(renderer.shadowMap.clone.colorWrite, true, "a draw that threw still gets its colour back");
   assert.equal(renderer.shadowMap.shared.colorWrite, true);
+});
+
+test("7.26: the same hook gives an alpha-keyed wind caster's own depth clone its wind", () => {
+  setup();
+  const leaves = new THREE.MeshStandardMaterial({ alphaTest: 0.5, map: new THREE.Texture() });
+  installVegetationWind(leaves, { amplitude: 0.08, frequency: 1.7, phase: 0.25, baseZ: 0, height: 2 });
+  const tree = new THREE.Mesh(new THREE.BoxGeometry(), [new THREE.MeshStandardMaterial(), leaves]);
+  const clone = new THREE.MeshDepthMaterial();
+  tree.onBeforeShadow(null, tree, null, null, tree.geometry, clone, { start: 0, count: 3, materialIndex: 1 });
+  assert.match(clone.customProgramCacheKey(), new RegExp(`\\|${VEGETATION_WIND_MARKER}$`));
+  assert.equal(clone.colorWrite, true, "outside the cascades' window the colour flag is left alone");
 });
 
 test("the hook is installed once however many renderers the cascades meet", () => {

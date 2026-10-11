@@ -305,3 +305,75 @@ test("05.10-3.02: TOO_MANY_OF_ITEM — the limit category's sentence, never quie
   assert.deepEqual(errors, [sentence, sentence], "case 0x81 jumps past local_14");
   client.close();
 });
+
+// ---- 5.05 (11.10): 0x00808200's first rule, the wand's ------------------------------------------------
+
+const { wandRepeatCancels, SPELL_ATTR3_REQ_WAND } = await import("../dist/code/world/AutoRepeatRefusal.js");
+const { setPetSpellAttributesSource } = await import("../dist/code/world/PetCastSpell.js");
+const SHOOT = 5019;
+const WAND = [0, 0, 0, SPELL_ATTR3_REQ_WAND, 0, 0, 0, 0];
+
+test("5.05: the wand rule — NOT_READY or SPELL_IN_PROGRESS of any spell while a ATTR3_REQ_WAND repeat runs", () => {
+  assert.equal(SPELL_ATTR3_REQ_WAND, 0x400000);
+  assert.equal(wandRepeatCancels(SHOOT, R.NOT_READY, WAND), true);
+  assert.equal(wandRepeatCancels(SHOOT, R.SPELL_IN_PROGRESS, WAND), true);
+  assert.equal(wandRepeatCancels(SHOOT, R.OUT_OF_RANGE, WAND), false, "only 67 and 105");
+  assert.equal(wandRepeatCancels(AUTO_SHOT, R.NOT_READY, [0, 0, 0, 0, 0, 0, 0, 0]), false, "Auto Shot is no wand");
+  assert.equal(wandRepeatCancels(SHOOT, R.NOT_READY, undefined), false, "an unknown row: no rule");
+  assert.equal(wandRepeatCancels(undefined, R.NOT_READY, WAND), false, "no repeat");
+});
+
+async function wandUser() {
+  const made = await hunter({ controller: false });
+  made.client.knownSpells = [...made.client.knownSpells, { id: SHOOT, slot: 3 }];
+  made.client.setAutoRepeatSpellIds([AUTO_SHOT, SHOOT]);
+  made.client.selectTarget(A);
+  made.client.castSpell(SHOOT);
+  assert.equal(made.client.autoRepeatSpellId, SHOOT);
+  made.connection.sent.length = 0;
+  return made;
+}
+
+test("5.05: a realm's NOT_READY for another spell while wanding — CMSG_CANCEL_CAST(0, Shoot), then CANCEL_AUTO_REPEAT", async () => {
+  setPetSpellAttributesSource((id) => (id === SHOOT ? WAND : [0, 0, 0, 0, 0, 0, 0, 0]));
+  try {
+    const { client, connection } = await wandUser();
+    connection.push(OPCODES.SMSG_CAST_FAILED, castFailedPacket({ castCount: 5, spellId: 133, result: R.NOT_READY }));
+    await settle();
+    assert.deepEqual(connection.sent.map(({ opcode }) => opcode), [OPCODES.CMSG_CANCEL_CAST, OPCODES.CMSG_CANCEL_AUTO_REPEAT_SPELL],
+      "0x12f, then 0x00807560(1): no sheath");
+    const cancel = connection.sent[0].payload;
+    assert.deepEqual([cancel[0], new DataView(cancel.buffer, cancel.byteOffset).getUint32(1, true), cancel.length], [0, SHOOT, 5]);
+    assert.equal(client.autoRepeatSpellId, undefined);
+    client.close();
+    // The same refusal while Auto Shot repeats: nothing.
+    const hunterShooting = await hunter({ controller: false });
+    hunterShooting.client.selectTarget(A);
+    hunterShooting.client.castSpell(AUTO_SHOT);
+    hunterShooting.connection.sent.length = 0;
+    hunterShooting.connection.push(OPCODES.SMSG_CAST_FAILED, castFailedPacket({ castCount: 5, spellId: 133, result: R.NOT_READY }));
+    await settle();
+    assert.deepEqual(hunterShooting.connection.sent, []);
+    assert.equal(hunterShooting.client.autoRepeatSpellId, AUTO_SHOT);
+    hunterShooting.client.close();
+  } finally {
+    setPetSpellAttributesSource(undefined);
+  }
+});
+
+test("5.05: the client's own NOT_READY (a press during the global cooldown) stops the wand the same way", async () => {
+  setPetSpellAttributesSource((id) => (id === SHOOT ? WAND : undefined));
+  try {
+    const { client, connection } = await wandUser();
+    client.spellRefusedLocally(133, R.OUT_OF_RANGE);
+    assert.deepEqual(connection.sent, [], "another result: nothing");
+    client.spellRefusedLocally(133, R.NOT_READY);
+    assert.deepEqual(connection.sent.map(({ opcode }) => opcode), [OPCODES.CMSG_CANCEL_CAST, OPCODES.CMSG_CANCEL_AUTO_REPEAT_SPELL]);
+    assert.equal(client.autoRepeatSpellId, undefined);
+    client.spellRefusedLocally(133, R.NOT_READY);
+    assert.equal(connection.sent.length, 2, "no repeat left: once");
+    client.close();
+  } finally {
+    setPetSpellAttributesSource(undefined);
+  }
+});

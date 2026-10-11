@@ -45,7 +45,7 @@ test("the missing TARGETING rows join the table with DefaultBindings.wtf's keys"
   assert.equal(stock.isStockAction("targetLastTarget"), true);
 });
 
-async function harness({ assistAttack = false, settingOn = undefined } = {}) { // DEC-A 3.11: settingOn
+async function harness({ assistAttack = false, settingOn = undefined, modules = {}, mouseover = undefined } = {}) { // DEC-A 3.11: settingOn; 3.11 (11.10): modules, mouseover
   const calls = [];
   const self = { guid: SELF, typeId: 4, fields: new Map() };
   const enemy = { guid: ENEMY, typeId: 3, fields: new Map() };
@@ -64,6 +64,7 @@ async function harness({ assistAttack = false, settingOn = undefined } = {}) { /
   const game = { world, focusGuid: undefined, spells: new Map(), talentData: undefined };
   const settings = { assistAttack };
   const units = {
+    mouseover,
     get targettarget() {
       const target = world.targetGuid === undefined ? undefined : objects.get(world.targetGuid);
       const guid = target ? fields.unit.target(target) : undefined;
@@ -89,6 +90,7 @@ async function harness({ assistAttack = false, settingOn = undefined } = {}) { /
       targetLastUnit: (kind) => { calls.push(["last", kind]); return picks; },
     },
     "../ui/Frames.js": { showTarget: () => calls.push(["showTarget"]), unitDisplayName: () => "" },
+    ...modules,
   });
   const run = (action) => {
     calls.length = 0;
@@ -196,4 +198,50 @@ test("DEC-review 3.11: ASSISTTARGET with assistAttack swings only at a unit the 
   h.world.targetGuid = HEALER;
   assert.equal(run(h, "assistTarget"), true);
   assert.deepEqual(h.calls, [["select", ENEMY], ["showTarget"], ["startAttack", ENEMY]], "the healer's enemy: attacked");
+});
+
+// 3.11 (11.10): the two last stock rows of the TARGETING and INTERFACE sections this client lacked.
+const DOOR = 40n;
+
+test("3.11: INTERACTMOUSEOVER interacts with the unit under the pointer as a right click does, else with the target", async () => {
+  const rows = new Map(stock.STOCK_ACTIONS.map((row) => [row.command, row]));
+  assert.equal(rows.get("INTERACTMOUSEOVER")?.action, "interactMouseover");
+  assert.equal(rows.get("TOGGLEMINIMAP")?.action, "toggleMinimap");
+  bindings.resetBindings();
+  assert.deepEqual([...bindings.DEFAULT_BINDINGS.interactMouseover].filter(Boolean), [], "unbound, as in the client");
+  assert.deepEqual([...bindings.DEFAULT_BINDINGS.toggleMinimap].filter(Boolean), []);
+  const npc = (calls) => ({
+    interactWithGuid: (guid) => calls.push(["interact", guid]),
+    interactWithTarget: () => calls.push(["interactTarget"]),
+  });
+  const shared = [];
+  let h = await harness({ mouseover: ENEMY, modules: { "../ui/Npc.js": npc(shared) } });
+  assert.equal(h.run("interactMouseover"), true);
+  assert.deepEqual([...h.calls, ...shared.splice(0)], [["select", ENEMY], ["showTarget"], ["interact", ENEMY]],
+    "a unit is selected, then interacted with");
+  h = await harness({ mouseover: undefined, modules: { "../ui/Npc.js": npc(shared) } });
+  assert.equal(h.run("interactMouseover"), true);
+  assert.deepEqual([...h.calls, ...shared.splice(0)], [["interactTarget"]], "nothing under the pointer: InteractUnit(\"target\")");
+  h = await harness({ mouseover: DOOR, modules: { "../ui/Npc.js": npc(shared) } });
+  h.world.state.objects.set(DOOR, { guid: DOOR, typeId: 5, fields: new Map() });
+  assert.equal(h.run("interactMouseover"), true);
+  assert.deepEqual([...h.calls, ...shared.splice(0)], [["interact", DOOR]], "a game object is used, never selected");
+});
+
+test("3.11: TOGGLEMINIMAP runs the stock ToggleMinimap() when the stock UI is mounted, else hides the native map", async () => {
+  const calls = [];
+  let stockMounted = true;
+  const modules = {
+    "../framexml/FrameXmlBattlefieldMinimapKey.js": {
+      toggleFrameXmlBattlefieldMinimap: () => false,
+      toggleFrameXmlMinimap: () => { calls.push("stock"); return stockMounted; },
+    },
+    "../ui/Minimap.js": { toggleMinimapShown: () => calls.push("native"), minimapSettings: () => ({ rotate: false }) },
+  };
+  const h = await harness({ modules });
+  assert.equal(h.run("toggleMinimap"), true);
+  assert.deepEqual(calls.splice(0), ["stock"]);
+  stockMounted = false;
+  assert.equal(h.run("toggleMinimap"), true);
+  assert.deepEqual(calls.splice(0), ["stock", "native"]);
 });

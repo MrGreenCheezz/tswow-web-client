@@ -116,6 +116,22 @@ test("the key runs stock ToggleBattlefieldMinimap in the mounted stock UI, and n
   }
 });
 
+test("3.11: the same mount publishes TOGGLEMINIMAP's body, ToggleMinimap(), and takes it back with its cleanup", async () => {
+  const { toggleFrameXmlMinimap } = await import("../dist/code/browser/framexml/FrameXmlBattlefieldMinimapKey.js");
+  assert.equal(toggleFrameXmlMinimap(), false, "no stock UI");
+  const first = fakeBoot();
+  const cleanupFirst = publishFrameXmlBattlefieldMinimapKey(first);
+  assert.equal(toggleFrameXmlMinimap(), true);
+  assert.deepEqual(first.ran, [["ToggleMinimap()", "@webclient/toggle-minimap"]]);
+  const second = fakeBoot();
+  const cleanupSecond = publishFrameXmlBattlefieldMinimapKey(second);
+  cleanupFirst();
+  assert.equal(toggleFrameXmlMinimap(), true, "the old mount's late cleanup leaves the new one");
+  assert.equal(second.ran.length, 1);
+  cleanupSecond();
+  assert.equal(toggleFrameXmlMinimap(), false);
+});
+
 // 05.10 review: a table saved before the row existed gets Shift+M, but never over a key the player put on
 // something else — a compiled-in row or a module's (the module blob is the player's own choice too:
 // modules ship unbound, `bindKey` is the only writer).

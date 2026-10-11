@@ -129,12 +129,14 @@ test("local WMO doodad materials use the traced fixed light and never reapply ou
     clone.customProgramCacheKey = () => material.customProgramCacheKey();
     return clone;
   };
-  const api = new Function("THREE", "WORLD_LIGHT_TARGET", "cloneMaterialForPortrait", `${javascript}; return {
+  // 7.25: no wind on this material; vegetation-wind.test.mjs covers the copy's wind.
+  const copyVegetationWind = () => {};
+  const api = new Function("THREE", "WORLD_LIGHT_TARGET", "cloneMaterialForPortrait", "copyVegetationWind", `${javascript}; return {
     MODEL_PLACEMENT_LOCAL_LIGHT_ATTRIBUTE,
     MODEL_PLACEMENT_LOCAL_LIGHT_DIRECTION,
     createInstancedModelPlacementLocalLightMaterials,
     createModelPlacementLocalLightMaterials,
-  };`)(THREE, worldTarget, cloneMaterialForPortrait);
+  };`)(THREE, worldTarget, cloneMaterialForPortrait, copyVegetationWind);
 
   const material = new THREE.MeshStandardMaterial({ color: 0xffffff });
   const [local] = api.createModelPlacementLocalLightMaterials([material], [255, 168, 91, 7]);
@@ -180,12 +182,14 @@ test("M2 placement tint owns one material state per placement and never treats M
   const javascript = ts.transpileModule(source, {
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
   }).outputText;
-  const api = new Function("THREE", `${javascript}; return {
+  // 7.26: no wind here; vegetation-wind.test.mjs covers the copy's shadow wind.
+  const shareVegetationWind = () => {};
+  const api = new Function("THREE", "shareVegetationWind", `${javascript}; return {
     createModelPlacementTintMaterials,
     disposeModelPlacementTintMaterials,
     modelPlacementTintColour,
     syncModelPlacementTintMaterials,
-  };`)(THREE);
+  };`)(THREE, shareVegetationWind);
 
   const material = new THREE.MeshStandardMaterial({ color: 0x8899aa });
   const warmMaterials = api.createModelPlacementTintMaterials([material], [255, 168, 91, 7]);

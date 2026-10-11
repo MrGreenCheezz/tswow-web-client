@@ -28,7 +28,7 @@ function fixture() {
   const harness = new Harness();
   const geometry = new THREE.BoxGeometry(1, 2, 0.5);
   geometry.computeBoundingSphere();
-  Object.assign(harness, { unitBuildBudget: { take: () => true }, builtUnits: {},
+  Object.assign(harness, { unitBuildBudget: { take: () => true, done() {} }, builtUnits: {}, // P2-09a: done() ends a build
     programWarmup: { registerObject() {} },
     wvmBuild: () => ({ geometry, materials: [new THREE.MeshBasicMaterial()] }) });
   const unit = { attached: new Map(), skinned: {}, template: {} };

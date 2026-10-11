@@ -339,7 +339,12 @@ test("6.02 a failed batch is retried after its wait, not every frame", async () 
     const object = creature(1001, 0, 0);
     withVirtualWeapons(record, object, client);
     await settle();
-    assert.equal(withVirtualWeapons(record, object, client).heldPending, true, "still coming");
+    const waiting = withVirtualWeapons(record, object, client);
+    assert.equal(waiting.heldPending, true, "still coming");
+    // 6.02: the same record for every frame of the wait, not a new one each frame.
+    assert.equal(withVirtualWeapons(record, object, client), waiting);
+    now = 999;
+    assert.equal(withVirtualWeapons(record, object, client), waiting, "short of the wait's end");
     await settle();
     assert.equal(server.asked.length, 1, "waiting out the backoff");
     now = 60_000;

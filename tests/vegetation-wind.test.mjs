@@ -17,14 +17,19 @@ import {
   VEGETATION_WIND_MARKER,
   VEGETATION_WIND_TIME,
   VEGETATION_WIND_TIME_UNIFORM,
+  copyVegetationWind,
   installVegetationWind,
   isBotanicalTexturePath,
   isVegetationWindBatch,
   numberText,
   vegetationWindProfileKey,
   windFieldAmplitude,
+  windShadowDepth,
 } from "../dist/code/browser/VegetationWind.js";
-import { createModelPlacementTintMaterials } from "../dist/code/browser/ModelPlacementTint.js";
+import {
+  createInstancedModelPlacementLocalLightMaterials, createModelPlacementLocalLightMaterials, createModelPlacementTintMaterials,
+} from "../dist/code/browser/ModelPlacementTint.js";
+import { applyWorldLight, createWorldLightUniforms } from "../dist/code/browser/WorldLighting.js";
 import ts from "typescript";
 import { readFile } from "node:fs/promises";
 
@@ -412,6 +417,153 @@ test("P1-08: a placement-tint copy carries the same wind uniforms and the same p
   assert.deepEqual(windUniforms(tinted), v1Literals(PROFILE).map(Number));
   assert.equal(tinted.vertexShader, original.vertexShader);
   assert.ok(copy.customProgramCacheKey().startsWith(`${source.customProgramCacheKey()}|`));
+});
+
+function standardShader() {
+  return {
+    vertexShader: THREE.ShaderLib.standard.vertexShader,
+    fragmentShader: THREE.ShaderLib.standard.fragmentShader,
+    uniforms: {},
+    defines: {},
+  };
+}
+
+const windMarkers = (text) => text.split(`// ${VEGETATION_WIND_MARKER}`).length - 1;
+
+test("7.25: a locally lit placement copy of a world-lit wind material sways with the source's uniforms", () => {
+  // ModelBuild's order: the world light inside buildMaterial, the wind after it. The local-light copy
+  // unwraps the world light (cloneMaterialForPortrait) — and used to drop the wind with it.
+  const source = new THREE.MeshStandardMaterial();
+  applyWorldLight(source, createWorldLightUniforms(), "foliage");
+  installVegetationWind(source, PROFILE);
+  const original = standardShader();
+  source.onBeforeCompile(original, undefined);
+  const copies = [
+    ["placement", createModelPlacementLocalLightMaterials([source], [255, 168, 91, 255])[0]],
+    ["instanced", createInstancedModelPlacementLocalLightMaterials([source])[0]],
+  ];
+  for (const [name, copy] of copies) {
+    const compiled = standardShader();
+    copy.onBeforeCompile(compiled, undefined);
+    assert.equal(windMarkers(compiled.vertexShader), 1, `${name}: the wind body, once`);
+    assert.strictEqual(compiled.uniforms[VEGETATION_WIND_A_UNIFORM], original.uniforms[VEGETATION_WIND_A_UNIFORM],
+      `${name}: the source's own uniform objects`);
+    assert.strictEqual(compiled.uniforms[VEGETATION_WIND_B_UNIFORM], original.uniforms[VEGETATION_WIND_B_UNIFORM]);
+    assert.equal(compiled.uniforms[VEGETATION_WIND_TIME_UNIFORM], VEGETATION_WIND_TIME);
+    assert.equal(copy.customProgramCacheKey().split("|").filter((part) => part === VEGETATION_WIND_MARKER).length, 1,
+      `${name}: the program key names the wind once`);
+    assert.doesNotMatch(compiled.fragmentShader, /uniform vec3 wowSunDirection/, `${name}: still no outdoor light`);
+  }
+});
+
+test("7.25: an unlit copy that kept its chain is not wound twice; a material without wind gets none", () => {
+  const unlit = new THREE.MeshBasicMaterial();
+  installVegetationWind(unlit, PROFILE);
+  const [copy] = createModelPlacementLocalLightMaterials([unlit], [255, 168, 91, 255]);
+  const compiled = shader();
+  copy.onBeforeCompile(compiled, undefined);
+  assert.equal(windMarkers(compiled.vertexShader), 1);
+  const plain = new THREE.MeshStandardMaterial();
+  applyWorldLight(plain, createWorldLightUniforms(), "surface");
+  const [still] = createModelPlacementLocalLightMaterials([plain], [255, 168, 91, 255]);
+  const stillShader = standardShader();
+  still.onBeforeCompile(stillShader, undefined);
+  assert.equal(windMarkers(stillShader.vertexShader), 0);
+  assert.equal(still.customProgramCacheKey().includes(VEGETATION_WIND_MARKER), false);
+  // A material that already sways keeps its own wind: copying another onto it does nothing.
+  const other = new THREE.MeshBasicMaterial();
+  installVegetationWind(other, { ...PROFILE, phase: 1 });
+  const hook = other.onBeforeCompile;
+  copyVegetationWind(unlit, other);
+  assert.equal(other.onBeforeCompile, hook);
+});
+
+function depthShader() {
+  return {
+    vertexShader: THREE.ShaderLib.depth.vertexShader,
+    fragmentShader: THREE.ShaderLib.depth.fragmentShader,
+    uniforms: {},
+    defines: {},
+  };
+}
+
+/** Alpha-keyed foliage with wind, as ModelBuild leaves it (three clones a depth material per such source). */
+function windLeaves() {
+  const leaves = new THREE.MeshStandardMaterial({ alphaTest: 0.5, map: new THREE.Texture() });
+  installVegetationWind(leaves, PROFILE);
+  return leaves;
+}
+
+test("7.26: an alpha-keyed wind caster's own depth clone sways with the source's uniforms, once", () => {
+  const leaves = windLeaves();
+  const trunk = new THREE.MeshStandardMaterial();
+  const tree = new THREE.Mesh(new THREE.BufferGeometry(), [trunk, leaves]);
+  const original = shader();
+  leaves.onBeforeCompile(original, undefined);
+
+  const clone = new THREE.MeshDepthMaterial();
+  const version = clone.version;
+  windShadowDepth(tree, clone, { start: 0, count: 3, materialIndex: 1 });
+  const hook = clone.onBeforeCompile;
+  windShadowDepth(tree, clone, { start: 0, count: 3, materialIndex: 1 });
+  assert.equal(clone.onBeforeCompile, hook, "the second draw only reads the mark");
+  assert.ok(clone.version > version, "needsUpdate: three re-picks the program");
+  const compiled = depthShader();
+  clone.onBeforeCompile(compiled, undefined);
+  assert.equal(windMarkers(compiled.vertexShader), 1, "the depth vertex shader bends the crown");
+  assert.strictEqual(compiled.uniforms[VEGETATION_WIND_A_UNIFORM], original.uniforms[VEGETATION_WIND_A_UNIFORM]);
+  assert.strictEqual(compiled.uniforms[VEGETATION_WIND_B_UNIFORM], original.uniforms[VEGETATION_WIND_B_UNIFORM]);
+  assert.equal(compiled.uniforms[VEGETATION_WIND_TIME_UNIFORM], VEGETATION_WIND_TIME, "the same clock as the crown");
+  assert.match(clone.customProgramCacheKey(), new RegExp(`\\|${VEGETATION_WIND_MARKER}$`));
+
+  // The trunk's group draws with three's shared depth material: it never sways, and the mark sticks.
+  const shared = new THREE.MeshDepthMaterial();
+  const sharedHook = shared.onBeforeCompile;
+  windShadowDepth(tree, shared, { start: 3, count: 3, materialIndex: 0 });
+  windShadowDepth(tree, shared, { start: 0, count: 3, materialIndex: 1 });
+  assert.equal(shared.onBeforeCompile, sharedHook);
+});
+
+test("7.26: a mark on the shared depth material never reaches the clones three makes from it later", () => {
+  const tree = new THREE.Mesh(new THREE.BufferGeometry(), windLeaves());
+  const shared = new THREE.MeshDepthMaterial();
+  windShadowDepth(new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshStandardMaterial()), shared, null);
+  const later = shared.clone(); // WebGLShadowMap: `result.clone()` of its shared material
+  windShadowDepth(tree, later, null);
+  assert.match(later.customProgramCacheKey(), new RegExp(VEGETATION_WIND_MARKER), "the clone was judged on its own");
+});
+
+test("7.26: no wind on a depth material three would share, on a custom one, or without wind on the source", () => {
+  const unkeyed = new THREE.MeshStandardMaterial({ map: new THREE.Texture() });
+  installVegetationWind(unkeyed, PROFILE);
+  const plainDepth = new THREE.MeshDepthMaterial();
+  windShadowDepth(new THREE.Mesh(new THREE.BufferGeometry(), unkeyed), plainDepth, null);
+  assert.doesNotMatch(plainDepth.customProgramCacheKey(), new RegExp(VEGETATION_WIND_MARKER),
+    "not alpha-keyed: three draws it with its shared depth material, which every caster uses");
+
+  const custom = new THREE.MeshDepthMaterial();
+  const unit = new THREE.Mesh(new THREE.BufferGeometry(), windLeaves());
+  unit.customDepthMaterial = custom;
+  windShadowDepth(unit, custom, null);
+  assert.doesNotMatch(custom.customProgramCacheKey(), new RegExp(VEGETATION_WIND_MARKER), "a slot carrier's own depth shader");
+
+  const still = new THREE.MeshDepthMaterial();
+  windShadowDepth(new THREE.Mesh(new THREE.BufferGeometry(),
+    new THREE.MeshStandardMaterial({ alphaTest: 0.5, map: new THREE.Texture() })), still, null);
+  assert.doesNotMatch(still.customProgramCacheKey(), new RegExp(VEGETATION_WIND_MARKER));
+});
+
+test("7.26: a placement-tint copy's depth clone sways with the source's wind", () => {
+  const leaves = windLeaves();
+  const original = shader();
+  leaves.onBeforeCompile(original, undefined);
+  const [copy] = createModelPlacementTintMaterials([leaves], [128, 200, 64]);
+  const depth = new THREE.MeshDepthMaterial();
+  windShadowDepth(new THREE.Mesh(new THREE.BufferGeometry(), copy), depth, null);
+  const compiled = depthShader();
+  depth.onBeforeCompile(compiled, undefined);
+  assert.equal(windMarkers(compiled.vertexShader), 1);
+  assert.strictEqual(compiled.uniforms[VEGETATION_WIND_A_UNIFORM], original.uniforms[VEGETATION_WIND_A_UNIFORM]);
 });
 
 test("same material/profile is not wrapped twice, conflicting profile is rejected", () => {

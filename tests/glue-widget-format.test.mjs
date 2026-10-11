@@ -44,15 +44,18 @@ function shown(args) {
   return instance.bridge.getFrame("ProbeText")?.text;
 }
 
-/** The error the formatter reports for `args`; the text stays "old". */
+/**
+ * The error the formatter raises for `args`; the text stays "old". 3.38: raised in the calling chunk
+ * (its pcall would see it), not reported by the method itself.
+ */
 function refused(args) {
   run('ProbeText:SetText("old")');
   const before = instance.vm.errors.length;
-  run(`ProbeText:SetFormattedText(${args})`);
+  const result = instance.vm.execute(`ProbeText:SetFormattedText(${args})`, "@probe");
+  assert.equal(result.ok, false, `${args}: the call raises`);
   assert.equal(instance.bridge.getFrame("ProbeText")?.text, "old", `${args}: the text is kept`);
-  const fresh = instance.vm.errors.slice(before);
-  assert.equal(fresh.length, 1, `${args}: one error is reported`);
-  return fresh[0];
+  assert.equal(instance.vm.errors.length, before, `${args}: nothing reported behind the caller`);
+  return result.error;
 }
 
 function lua(source) {
@@ -103,8 +106,8 @@ test("argument errors name SetFormattedText and keep the text", () => {
 });
 
 test("Button:SetFormattedText formats the same way", () => {
-  run('ProbeButton:SetFormattedText("[%5c] %10$s", 66)');
   // `%10$` raises: the button keeps "old".
+  assert.equal(instance.vm.execute('ProbeButton:SetFormattedText("[%5c] %10$s", 66)', "@probe").ok, false);
   assert.equal(lua("ProbeButton:GetText()"), "old");
   run('ProbeButton:SetFormattedText("[%5c]", 66)');
   assert.equal(lua("ProbeButton:GetText()"), "[B]");

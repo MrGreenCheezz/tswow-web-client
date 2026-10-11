@@ -240,6 +240,7 @@ test("the native book and bar keep a held spell's press at home", async () => {
   const { getTip } = await import("../dist/code/browser/ui/Widgets.js");
   const { ACTION_BUTTON_SPELL } = await import("../dist/code/world/ActionBarProtocol.js");
   const sent = [];
+  const refused = [];
   const held = new Set([STEALTH]);
   const row = (id) => ({
     id, name: `spell ${id}`, rank: "", description: "", iconId: 0, iconPath: "", passive: false, hidden: false,
@@ -264,6 +265,7 @@ test("the native book and bar keep a held spell's press at home", async () => {
       isSpellOnHold: (id) => held.has(id),
       isActiveMountSpell: () => false,
       castSpell: (...args) => sent.push(args[0]),
+      spellRefusedLocally: (...args) => refused.push(args), // 5.05 (11.10)
     };
     // The book's button: disabled and said to be not ready, with no sweep to draw.
     showSpells();
@@ -273,6 +275,8 @@ test("the native book and bar keep a held spell's press at home", async () => {
     assert.equal(getTip(button(STEALTH)), `spell ${STEALTH} · Ещё не готово`);
     assert.equal(button(EVASION)?.disabled, false);
     assert.equal(castSpell(STEALTH), false, "the book");
+    // 5.05 (11.10): the refusal is the client's own NOT_READY, handed to WorldClient (0x00808200's wand rule).
+    assert.deepEqual(refused, [[STEALTH, 67]]);
     useSlot(0, 0);
     assert.deepEqual(sent, [], "neither press reached the wire");
     useSlot(1, 0);

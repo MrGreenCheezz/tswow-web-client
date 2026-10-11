@@ -76,6 +76,20 @@ test("the shadow stand-in copies exactly what three's shadow map copies onto its
   assert.equal(shadowDepthStandIn(new THREE.MeshStandardMaterial({ blending: THREE.AdditiveBlending })), undefined);
 });
 
+test("7.26: a swaying leaf's stand-in carries the wind its depth clone will (`windShadowDepth`)", async () => {
+  const { VEGETATION_WIND_MARKER, installVegetationWind, windShadowDepth } =
+    await import("../dist/code/browser/VegetationWind.js");
+  const leaf = new THREE.MeshStandardMaterial({ map: new THREE.Texture(), alphaTest: 224 / 255, side: THREE.DoubleSide });
+  installVegetationWind(leaf, { amplitude: 0.08, frequency: 1.7, phase: 0.25, baseZ: 0, height: 2 });
+  const stand = shadowDepthStandIn(leaf);
+  const clone = new THREE.MeshDepthMaterial();
+  windShadowDepth(new THREE.Mesh(new THREE.BufferGeometry(), leaf), clone, null);
+  assert.match(stand.customProgramCacheKey(), new RegExp(`\\|${VEGETATION_WIND_MARKER}$`));
+  assert.equal(stand.customProgramCacheKey(), clone.customProgramCacheKey(), "one program key: the warm program is the one drawn");
+  const still = shadowDepthStandIn(new THREE.MeshStandardMaterial({ map: new THREE.Texture(), alphaTest: 0.5 }));
+  assert.doesNotMatch(still.customProgramCacheKey(), new RegExp(VEGETATION_WIND_MARKER));
+});
+
 test("depth variants compile once, offscreen, with the world's lights and without its fog", () => {
   const renderer = fakeRenderer();
   const target = world();

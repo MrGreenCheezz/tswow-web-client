@@ -5,6 +5,7 @@ import ts from 'typescript';
 import { FrameCapture, captureScriptFile } from '../dist/code/browser/FrameCapture.js';
 import { ShaderProgramTrace } from '../dist/code/browser/ShaderProgramTrace.js';
 import { FrameExtraColumns, PhaseAccumulator, StackingProbe } from '../dist/code/browser/game/CaptureExtras.js';
+import { FRAME_BUDGET, frameBudgetProbe } from '../dist/code/browser/FrameBudgetProbe.js';
 
 // Execute the actual capture controller with browser/game dependencies replaced at the boundary.
 const source = await readFile(new URL('../src/browser/game/PerformanceCapture.ts', import.meta.url), 'utf8');
@@ -36,6 +37,7 @@ function controller(game, probes = { listener: undefined }, overrides = {}) {
   const deps = {
     game, FrameCapture, captureScriptFile, CAPTURE_DURATION_MS: 60000, CAPTURE_FRAME_LIMIT: 20000,
     FrameExtraColumns, PhaseAccumulator, StackingProbe, // P1-04: PerformanceCapture.ts imports them
+    FRAME_BUDGET, frameBudgetProbe, // P2-09a
     setCaptureProbe(listener) { probes.listener = listener; },
     world3dCanvas: { getContext: () => null }, worldPanel: { hidden: false },
     document: { hidden: false, addEventListener() {}, removeEventListener() {} },
@@ -209,6 +211,32 @@ test('without the document policy the capture still records and says why stacks 
     assert.equal(report.entrySupport.jsProfiler, 'unavailable: NotAllowedError');
     assert.equal(report.jsProfile, undefined);
   } finally { delete globalThis.Profiler; }
+});
+
+test('P2-09a: a recording runs the frame budget sensor; packets and the HUD step land in the period they fall in', () => {
+  const probes = { listener: undefined };
+  const renderer = rendererFixture();
+  const game = { world: { state: { objects: new Map() } }, renderer }, api = controller(game, probes);
+  assert.equal(frameBudgetProbe.enabled, false);
+  assert.equal(api.startPerformanceCapture(), true);
+  assert.equal(frameBudgetProbe.enabled, true, 'on for the recording');
+  probes.listener('packets', performance.now(), { opcode: 0xa9, bytes: 10, ms: 9 }); // before any frame: no period
+  api.beginPerformanceCaptureFrame();
+  frameBudgetProbe.addOutside(FRAME_BUDGET.environment, 1.5); // as the renderer's limiter would
+  api.endPerformanceCaptureFrame(performance.now() + 1, 4, false);
+  probes.listener('packets', performance.now(), { opcode: 0xa9, bytes: 10, ms: 3 });
+  probes.listener('frameXmlStepTime', performance.now(), { ms: 2 });
+  api.beginPerformanceCaptureFrame(); // closes the first period: environment 1.5 + net 3
+  api.endPerformanceCaptureFrame(performance.now() + 2, 4, false);
+  api.stopPerformanceCapture();
+  assert.equal(frameBudgetProbe.enabled, false, 'off again after it');
+  const { budgetProbe } = api.performanceCaptureReport();
+  assert.equal(budgetProbe.frames, 1, 'the second period is still open when the recording stops');
+  assert.equal(budgetProbe.twoPlusOver4Ms, 1);
+  assert.equal(budgetProbe.withStep.twoPlusOver4Ms, 1);
+  assert.equal(budgetProbe.perBudget.find((row) => row.id === 'net')?.totalMs, 3, 'the packet before the first frame is no one\'s');
+  assert.equal(budgetProbe.perBudget.find((row) => row.id === 'framexml')?.totalMs, 2);
+  assert.equal(budgetProbe.verdict, 'GO');
 });
 
 test('P1-04: the report carries every-frame draw phases, frame extras, stacking and checkpoint worker/shadow numbers', () => {

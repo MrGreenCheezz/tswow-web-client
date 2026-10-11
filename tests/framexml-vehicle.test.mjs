@@ -617,6 +617,33 @@ test("11.02-F2: the driven vehicle's spells on slots 121-126, pressed as the veh
   assert.ok(f.fired.some(([name]) => name === "UPDATE_BONUS_ACTIONBAR"));
 });
 
+test("3.37(г): the vehicle's slot words (states 8-15) sweep on 121-126, as 0x005a80e0 reads them", () => {
+  const f = fixture();
+  f.attach();
+  f.sit(SELF, ENGINE, 0);
+  f.world.controlledGuid = ENGINE;
+  f.world.petSpells = vehicleBar(ENGINE, [62345, 62346, 0, 62348]);
+  setGuid(f.player, CHARM, ENGINE);
+  setGuid(f.player, FARSIGHT, ENGINE);
+  f.poll();
+  assert.deepEqual(f.call("GetActionCooldown", 122), [0, 0, 0], "nothing cooling down yet");
+  f.fired.length = 0;
+  // SMSG_SPELL_COOLDOWN with the vehicle's guid lands in petCooldowns (SpellHistory writes its owner).
+  f.world.petCooldowns.set(62346, f.pump.now() * 1000 + 10_000);
+  f.world.events.emit("PET_COOLDOWNS_CHANGED", {});
+  const [start, duration, enable] = f.call("GetActionCooldown", 122);
+  assert.deepEqual([duration, enable], [10, 1], "the slot-1 word (state 9) has its sweep");
+  assert.ok(Math.abs(start - f.pump.now()) < 1e-9);
+  assert.deepEqual(f.call("GetActionCooldown", 121), [0, 0, 0], "its neighbour has no timer");
+  assert.deepEqual(f.call("GetActionCooldown", 123), [0, 0, 0], "an empty vehicle slot has none");
+  const count = (name) => f.fired.filter(([event]) => event === name).length;
+  assert.equal(count("ACTIONBAR_UPDATE_COOLDOWN"), 1, "the start redraws the page");
+  f.fired.length = 0;
+  for (let index = 0; index < 101; index++) f.poll();
+  assert.deepEqual(f.call("GetActionCooldown", 122), [0, 0, 0], "ten seconds later");
+  assert.equal(count("ACTIONBAR_UPDATE_COOLDOWN"), 1, "the end redraws it once");
+});
+
 test("11.02-F2: the bar stays off the main bar with VehicleAbilityDisplay 0, and without the tables until they land", () => {
   const f = fixture({ tables: NO_TABLES });
   f.attach();
