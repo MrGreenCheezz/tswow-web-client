@@ -438,6 +438,17 @@ button:not(:disabled):hover { filter: brightness(1.18); }
 .diagnostics-window article { display: grid; gap: 2px; padding: 7px; border-radius: 5px; background: #10171ed9; font-size: .78rem; }
 .diagnostics-window article span { color: #aab6c2; }
 .diagnostics-window #custom-packet-modules p, .diagnostics-window #custom-packet-warnings p { margin: 4px 12px; font-size: .78rem; }
+/* The «Отладка» pane (ui/DebugTab.ts). */
+.diagnostics-window #diagnostics-debug .debug-heading { margin: 12px 12px 4px; font-size: .82rem; color: #e6c46a; }
+.diagnostics-window #diagnostics-debug .debug-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 6px 12px; }
+.diagnostics-window #diagnostics-debug .debug-slider { flex: 1 1 160px; min-width: 120px; }
+.diagnostics-window #diagnostics-debug button[aria-pressed="true"] { outline: 1px solid #e6c46a; }
+.diagnostics-window #diagnostics-debug .debug-swatches { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: .75rem; }
+.diagnostics-window #diagnostics-debug .debug-swatch { display: inline-flex; gap: 4px; align-items: center; }
+.diagnostics-window #diagnostics-debug .debug-swatch i { width: 14px; height: 14px; border-radius: 3px; border: 1px solid #ffffff40; }
+.diagnostics-window #diagnostics-debug .debug-switch { display: flex; gap: 6px; align-items: center; font-size: .8rem; }
+.diagnostics-window #diagnostics-debug .debug-switch input { width: auto; margin: 0; flex: none; }
+.diagnostics-window #diagnostics-debug .debug-note { font-size: .75rem; }
 .custom-packet { display: grid; gap: 2px; margin: 8px 12px; padding: 7px; border-radius: 5px; background: #10171ed9; font-size: .78rem; }
 .custom-packet p { margin: 0; }
 .custom-packet-title { color: #d8e2ec; }

@@ -121,6 +121,8 @@ export const customPacketList = element<HTMLDivElement>("custom-packet-list");
 export const customPacketWarnings = element<HTMLDivElement>("custom-packet-warnings");
 /** The «Окна» pane: which module windows are live, and the two that can be tried without a module. */
 export const diagnosticsWindows = element<HTMLDivElement>("diagnostics-windows");
+/** The «Отладка» pane (DebugTab.ts): time of day, weather, light readout, render switches. */
+export const diagnosticsDebug = element<HTMLDivElement>("diagnostics-debug");
 export const moduleWindowStatus = element<HTMLElement>("module-window-status");
 export const moduleWindowExample = element<HTMLButtonElement>("module-window-example");
 export const moduleWindowStudio = element<HTMLButtonElement>("module-window-studio");

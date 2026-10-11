@@ -63,6 +63,8 @@ import { updateFpsCounter } from "../ui/FpsCounter.js";
 import { autoQualityDue, autoQualityStatus, updateAutoQuality } from "../AutoQuality.js";
 import { updateLoadingScreen, worldPhysicsReady } from "../ui/LoadingScreen.js";
 import { updateCustomPackets, updateModuleWindowList } from "../ui/Diagnostics.js";
+import { debugTime, debugWeather, recordDebugLight } from "./DebugOverrides.js";
+import { drawDebugTab } from "../ui/DebugTab.js";
 import { applyPortraitVisibility, clearPortraitTargets, syncPortraitTargets } from "../ui/Portraits.js";
 import {
   FullFrameClock, LONG_FRAME_THRESHOLD_MS, makeRenderTelemetrySnapshot, summarizeFrameHitch,
@@ -475,10 +477,11 @@ function frame(now: number): void {
     hitchQuery = performance.now();
     // The sky, the sun and the fog belong to where the camera stands and to what time it is
     // there, so they are resolved per frame from the map's own light volumes.
-    const gameTime = world.currentGameTime(now);
+    // The debug pane's forced clock, when there is one (DebugOverrides.ts): drawing only.
+    const gameTime = debugTime.apply(world.currentGameTime(now), now);
     // What the server says is falling here. Handed over every frame rather than on the event: the
     // renderer may not have existed when the packet landed.
-    game.renderer?.setWeather(world.weather);
+    game.renderer?.setWeather(debugWeather.apply(world.weather));
     // Whether the rain reaches the character, asked of the floor under their feet rather than of
     // the artwork around them: the same triangle the physics step just stood on, and the same
     // question `Map::IsOutdoors` answers on the server. Standing on terrain there is no collision
@@ -556,6 +559,7 @@ function frame(now: number): void {
         world.overrideLightFromId, underwater, ghostLight, eyeLiquidType, eyeLiquidDepth,
       );
       game.renderer?.updateLighting(lightSample, half, underwater);
+      recordDebugLight(lightSample);
     }
     // Pushed on every frame, including the ones with no game time and no light sample: a surface
     // left over from the last frame would tint a screen the camera has already climbed out of.
@@ -645,7 +649,7 @@ function frame(now: number): void {
     if (now - renderStatusShownAt > 500) {
       renderStatusShownAt = now;
       renderStatus.className = game.renderer ? "success" : "error";
-      const clock = gameTime ? ` · ${formatGameTime(gameTime)}` : "";
+      const clock = gameTime ? ` · ${formatGameTime(gameTime)}${debugTime.active ? " (отладка)" : ""}` : "";
       // The governor's effective scale, so a stepped-down frame explains itself instead of
       // reading as a broken renderer: at 40% the world is meant to look soft.
       const quality = game.renderer ? ` · ${autoQualityStatus().effective}%` : "";
@@ -655,6 +659,7 @@ function frame(now: number): void {
       if (!diagnosticsWindow.hidden) showStandIns();
       // L10 (10.18): where crowd poses run (worker or main thread) and why, beside the frame times.
       if (!diagnosticsWindow.hidden) showPoseWorkerStatus(fullFrameStatus);
+      drawDebugTab();
     }
     game.scene?.draw(
       world.state,

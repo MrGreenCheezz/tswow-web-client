@@ -8,7 +8,7 @@ import { // 05.10-A7b-9 (7.18)
 import { ENVIRONMENT_STAND_IN_MARKER_LEASE_MS } from "../EnvironmentStandInMarkers.js"; // 05.10-A7b-9
 import {
   capsuleReasons, capsuleStatus, customPacketList, customPacketModules, customPacketStatus, customPacketWarnings, diagnosticsPackets,
-  diagnosticsState, diagnosticsTabs, diagnosticsWindow, diagnosticsWindows,
+  diagnosticsDebug, diagnosticsState, diagnosticsTabs, diagnosticsWindow, diagnosticsWindows,
   modulePatchExample, moduleWindowBuilder, moduleWindowExample, moduleWindowList, moduleWindowProblems,
   moduleWindowStatus, moduleWindowStudio,
   unhandledOpcodeList, unhandledStatus,
@@ -24,6 +24,7 @@ import {
   drawWindowsTab, loadModulePatch, loadModuleWindow, windowsSignature, windowsView,
 } from "./WindowsTab.js";
 import { registerWindowBuilderAction, toggleWindowBuilder } from "./WindowBuilder.js";
+import { drawDebugTab } from "./DebugTab.js";
 
 /** The diagnostics window: which opcodes the world loop dropped, which units are still pills, and what the modules are saying. */
 
@@ -236,13 +237,16 @@ tabs.set([
   { id: "state", title: "Состояние" },
   { id: "packets", title: "Пакеты" },
   { id: "windows", title: "Окна" },
+  { id: "debug", title: "Отладка" },
 ], "state");
 tabs.onSelect = (id) => {
   diagnosticsState.hidden = id !== "state";
   diagnosticsPackets.hidden = id !== "packets";
   diagnosticsWindows.hidden = id !== "windows";
+  diagnosticsDebug.hidden = id !== "debug";
   if (id === "packets") showCustomPackets();
   if (id === "windows") showModuleWindows();
+  if (id === "debug") drawDebugTab();
 };
 diagnosticsTabs.replaceChildren(tabs.root);
 
