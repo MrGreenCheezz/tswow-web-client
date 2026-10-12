@@ -495,6 +495,11 @@ export interface LiveWorldSeamContext {
   readonly setFocus?: (guid: bigint | undefined) => void;
   /** Optional FactionTemplate resolver supplied by the host when client-side faction data is ready. */
   readonly reaction?: (left: WorldObjectState, right: WorldObjectState) => number | undefined;
+  /**
+   * 5.05 (12.10): the unit's view of the player with the reputation rules on top (`Targeting.unitReactionToPlayer`),
+   * for UnitSelectionColor (0x00521bf0). Absent: `reaction(unit, player)` — the template masks and forced reactions.
+   */
+  readonly unitReactionToPlayer?: (unit: WorldObjectState) => number | undefined;
   /** Optional resolver joining Faction.dbc metadata to the live faction map. */
   readonly reputation?: (world: WorldClient) => readonly FrameXmlFactionRow[] | undefined;
   /** Already fetched catalog linking Faction.dbc IDs to reputation-list slots. */
@@ -7622,7 +7627,12 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
 
   unitSelectionColor(unit: string): readonly [number, number, number] | undefined {
     if (!this.unitExists(unit)) return undefined;
-    const reaction = this.#reaction("player", unit);
+    // 5.05 (12.10): Wow.exe 0x0060da00 → 0x00521bf0 colours by the unit's view of the player (0x007251c0(unit,
+    // player)), not the player's view UnitReaction("player", unit) gives (was `#reaction("player", unit)`).
+    const object = this.#unit(unit);
+    const reaction = object !== undefined && this.#context.unitReactionToPlayer !== undefined
+      && object.guid !== this.#selfGuid()
+      ? this.#context.unitReactionToPlayer(object) : this.#reaction(unit, "player"); // 5.05 (12.10)
     return reaction === REACTION_HOSTILE
       ? [1, 0, 0]
       : reaction === REACTION_FRIENDLY ? [0, 1, 0] : [1, 1, 0];

@@ -246,8 +246,8 @@ test("5.05 the swing stops when its victim dies, whatever is selected", async ()
 });
 
 /*
- * Review of 5.05 (02.10) — findings in the shared WorldClient.ts, recorded as todo until its owner
- * changes it. Both are run on every test pass; a todo failure does not fail the file.
+ * Review of 5.05 (02.10) — findings in the shared WorldClient.ts, first recorded as todo; both are fixed
+ * now (the mounted 6603 rules; the facing — 12.10, below) and run as ordinary tests.
  */
 
 test("5.05 review: the action-bar Attack (6603) obeys the mounted rules of startAttack", {
@@ -268,19 +268,69 @@ test("5.05 review: the action-bar Attack (6603) obeys the mounted rules of start
   }
 });
 
-test("5.05 review: a swing carried to a new target does not turn the character", {
-  todo: "WorldClient.selectTarget → startAttack → faceTarget sends MSG_MOVE_SET_FACING on every carried target change; 0x6e2610 builds no facing packet of its own (0x736d30/0x72ed80 not decompiled)",
-}, async () => {
+/*
+ * 5.05 (12.10, owner: «да»): a fight carried to a new selection turns nobody. Wow.exe SetTarget 0x00524bf0 →
+ * StartAttack 0x006e4950 → swing 0x006e2610: the stand-up, CMSG_ATTACKSWING, the sheath setter 0x00736d30(1, 1, 0)
+ * (the visible weapon; CMSG_SETSHEATHED 0x1e0 only on a change, for the active player), 0x0072ed80 (ends a ranged
+ * cast's visual: +0xa38 bit 0x400, 0x0072afe0), 0x00807560(1), 0x0073ac30(0x40) (an animation) — no movement packet
+ * anywhere (.runtime/re-2026-10-01/a4-world/d4.c, re-2026-10-02/a9-p2/r8.c, re-2026-10-11/glue-1110/a505-3.txt).
+ * The player's own start keeps this client's one turn (L18-review), so the fixture lets movement go out.
+ */
+
+const facings = (connection) => opcodes(connection).filter((opcode) => opcode === OPCODES.MSG_MOVE_SET_FACING).length;
+
+test("5.05 review: a swing carried to a new target does not turn the character", async () => {
   const { client, connection } = await loggedIn();
+  client.movementReady = true;
   client.state.objects.get(B).position = { x: -2, y: 0, z: 0, orientation: 0 };
   client.selectTarget(A);
   client.startAttack();
+  assert.equal(facings(connection), 1, "the player's own start turns once (this client's convention), so turns can go out");
   connection.push(OPCODES.SMSG_ATTACK_START, attackStart(SELF, A));
   await settle();
   connection.sent.length = 0;
   // Tab takes units behind within 10 yards (0x524440); the swing follows, the body does not spin.
   client.selectTarget(B);
   assert.deepEqual(swingTargets(connection), [B]);
-  assert.equal(opcodes(connection).includes(OPCODES.MSG_MOVE_SET_FACING), false);
+  assert.equal(facings(connection), 0);
+  assert.equal(client.state.objects.get(SELF).position.orientation, 0);
+  client.close();
+});
+
+test("5.05 (12.10): a repeating shot re-aimed at a new target does not turn the character either", async () => {
+  const { client, connection } = await loggedIn();
+  client.movementReady = true;
+  client.state.objects.get(B).position = { x: -2, y: 0, z: 0, orientation: 0 };
+  client.setAutoRepeatSpellIds([75]);
+  client.knownSpells = [{ id: 75, slot: 0 }];
+  client.selectTarget(A);
+  client.castSpell(75);
+  connection.sent.length = 0;
+  client.selectTarget(B);
+  assert.ok(connection.sent.some(({ opcode }) => opcode === OPCODES.CMSG_CAST_SPELL), "re-aimed");
+  assert.equal(facings(connection), 0, "0x0080cce0 turns nobody");
+  assert.equal(client.state.objects.get(SELF).position.orientation, 0);
+  client.close();
+});
+
+test("5.05 (12.10): the autoRangedCombat mode carried to a new target does not turn the character", async () => {
+  const { client, connection } = await loggedIn();
+  client.movementReady = true;
+  client.state.objects.get(A).position = { x: 20, y: 0, z: 0, orientation: 0 };
+  client.state.objects.get(B).position = { x: -20, y: 0, z: 0, orientation: 0 };
+  client.knownSpells = [{ id: 75, slot: 0 }];
+  client.setAutoRepeatSpellIds([75]);
+  client.setAutoRangedCombatSpellIds([75]);
+  client.autoRangedCombat = () => true;
+  client.autoRangedLimits = () => ({ min: 5, max: 35 });
+  client.autoRanged.schedule = { start: () => 1, stop: () => {} };
+  client.selectTarget(A);
+  client.startAttack();
+  assert.equal(client.autoRanged.active, true);
+  connection.sent.length = 0;
+  client.selectTarget(B); // behind the player: 0x00524bf0 → 0x006e4950 registers the mode again
+  assert.equal(client.autoRanged.active, true, "the mode follows the selection");
+  assert.equal(facings(connection), 0);
+  assert.equal(client.state.objects.get(SELF).position.orientation, 0);
   client.close();
 });

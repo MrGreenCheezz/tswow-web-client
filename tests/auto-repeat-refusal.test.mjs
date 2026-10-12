@@ -11,6 +11,7 @@ import {
   autoRepeatRefusalAction, autoRepeatWaitsForCast, refusalLimitCategoryText,
 } from "../dist/code/world/AutoRepeatRefusal.js";
 import { castFailedPacket } from "./fixtures/world-packets.mjs";
+import * as AUTO_REPEAT_REFUSAL from "../dist/code/world/AutoRepeatRefusal.js";
 
 /*
  * 05.10-5.05 / 05.10-3.02: Wow.exe 3.3.5a (12340) 0x00808200 — what a refusal does to the auto-repeat
@@ -67,6 +68,20 @@ test("05.10-5.05: the shot waits for a cast bar, not for a channel, and not for 
   assert.equal(autoRepeatWaitsForCast(bar, 2500 + AUTO_REPEAT_CAST_GRACE_MS - 1), true, "the GO is on its way");
   assert.equal(autoRepeatWaitsForCast(bar, 2500 + AUTO_REPEAT_CAST_GRACE_MS), false, "a GO that never matched");
   assert.equal(autoRepeatWaitsForCast({ ...bar, channel: true }, 1000), false);
+});
+
+test("5.05 (12.10): a NOT_RESET_AUTO_ACTIONS bar (Steady Shot) does not hold Auto Shot — the realm's isAutoshoot exemption", () => {
+  const { AUTO_SHOT_SPELL_ID, SPELL_ATTR2_NOT_RESET_AUTO_ACTIONS } = AUTO_REPEAT_REFUSAL;
+  assert.equal(AUTO_SHOT_SPELL_ID, 75);
+  assert.equal(SPELL_ATTR2_NOT_RESET_AUTO_ACTIONS, 0x20000);
+  const bar = { channel: false, startedAt: 1000, duration: 1500 };
+  const steady = [0x410012, 0, 0x20000, 0, 0, 0, 0, 0]; // Steady Shot 56641 in the dataset's Spell.dbc
+  const scare = [0, 0, 0, 0, 0, 0, 0, 0];
+  assert.equal(autoRepeatWaitsForCast(bar, 1000, 75, steady), false, "IsNonMeleeSpellCast(…, isAutoshoot) skips it (Unit.cpp:3426)");
+  assert.equal(autoRepeatWaitsForCast(bar, 1000, 75, scare), true);
+  assert.equal(autoRepeatWaitsForCast(bar, 1000, 5019, steady), true, "only Auto Shot: Spell.cpp:3232 passes `Id == 75`");
+  assert.equal(autoRepeatWaitsForCast(bar, 1000, 75, undefined), true, "the cast's row unknown: held as before");
+  assert.equal(autoRepeatWaitsForCast(bar, 1000), true);
 });
 
 test("05.10-3.02: local_14 — the wanted spell's remembered result, 0x007fe190's resets, the 3-second rule, GO", () => {
@@ -195,6 +210,45 @@ test("05.10-5.05: the controller holds its shot while the player's cast bar runs
   assert.deepEqual(shots(connection).map(({ spellId }) => spellId), [AUTO_SHOT]);
   assert.equal(client.autoRepeatSpellId, AUTO_SHOT);
   assert.equal(client.autoRanged.failureResets, resets + 1, "the shot that goes out is 0x006e2df3's 0x007fe190");
+  client.close();
+});
+
+test("5.05 (12.10): Steady Shot's bar does not hold the controller's shot — it goes out at once, as the realm takes it", async () => {
+  const STEADY_SHOT = 56641;
+  const { setPetSpellAttributesSource } = await import("../dist/code/world/PetCastSpell.js");
+  setPetSpellAttributesSource((id) => (id === STEADY_SHOT ? [0x410012, 0, 0x20000, 0, 0, 0, 0, 0] : [0, 0, 0, 0, 0, 0, 0, 0]));
+  try {
+    const { client, connection } = await hunter();
+    client.knownSpells = [...client.knownSpells, { id: STEADY_SHOT, slot: 3 }];
+    client.selectTarget(A);
+    client.startAttack();
+    // A stun cancels the repeat on the realm's side; then the player's Steady Shot bar.
+    connection.push(OPCODES.SMSG_CANCEL_AUTO_REPEAT, Uint8Array.of(0x03, 0x34, 0x12));
+    connection.push(OPCODES.SMSG_SPELL_START, spellStart(9, STEADY_SHOT, 1500));
+    await settle();
+    assert.equal(client.autoRepeatSpellId, undefined);
+    connection.sent.length = 0;
+    client.autoRanged.tick();
+    assert.deepEqual(shots(connection).map(({ spellId }) => spellId), [AUTO_SHOT],
+      "Spell::prepare takes Auto Shot under a NOT_RESET_AUTO_ACTIONS cast (Spell.cpp:3232, Unit.cpp:3426)");
+    assert.equal(client.autoRepeatSpellId, AUTO_SHOT);
+    assert.equal(named(connection, OPCODES.CMSG_CANCEL_AUTO_REPEAT_SPELL).length, 0, "the bar keeps the repeat, too");
+    client.close();
+  } finally {
+    setPetSpellAttributesSource(undefined);
+  }
+});
+
+test("5.05 (12.10): SMSG_CANCEL_AUTO_REPEAT sends nothing — no CMSG_SET_SHEATHED (0x0072d130 → 0x00807560(0))", async () => {
+  const { client, connection } = await hunter({ controller: false });
+  client.selectTarget(A);
+  client.castSpell(AUTO_SHOT);
+  connection.sent.length = 0;
+  connection.push(OPCODES.SMSG_CANCEL_AUTO_REPEAT, Uint8Array.of(0x03, 0x34, 0x12));
+  await settle();
+  assert.equal(client.autoRepeatSpellId, undefined, "the repeat forgotten");
+  assert.deepEqual(named(connection, OPCODES.CMSG_SET_SHEATHED), [], "the bow is not put away (was CMSG_SET_SHEATHED 0)");
+  assert.deepEqual(named(connection, OPCODES.CMSG_CANCEL_AUTO_REPEAT_SPELL), [], "0x00807560(0): no cancel of its own");
   client.close();
 });
 

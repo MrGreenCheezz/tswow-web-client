@@ -931,8 +931,10 @@ export class WorldClient {
     stopAttack: () => { this.autoRanged.stop(); this.#cancelMeleeAttack(false, false); }, // L15 5.05: 0x006e1660; L18 5.05: no sheath — its one packet is 0x007559e0's CMSG_ATTACKSTOP
     shoot: (spellId, target) => { // L15 5.05: 0x0080da40; L18-review: no facing — 0x0080cce0 never turns the character
       // 05.10-5.05: held while the player's cast bar runs (AutoRepeatRefusal.ts) — the realm would refuse it with
-      // SPELL_IN_PROGRESS; false, as 0x0080da40's, when nothing went out.
-      if (autoRepeatWaitsForCast(this.state.selfGuid === undefined ? undefined : this.casts.get(this.state.selfGuid), performance.now())) return false; // 05.10-5.05
+      // SPELL_IN_PROGRESS; false, as 0x0080da40's, when nothing went out. 5.05 (12.10): not for Auto Shot during a
+      // NOT_RESET_AUTO_ACTIONS bar (Steady Shot) — the realm takes it then.
+      const cast = this.state.selfGuid === undefined ? undefined : this.casts.get(this.state.selfGuid); // 5.05 (12.10)
+      if (autoRepeatWaitsForCast(cast, performance.now(), spellId, cast === undefined ? undefined : spellAttributeWords(cast.spellId))) return false; // 05.10-5.05; 5.05 (12.10)
       this.#startAutoRepeat(spellId, 0, false, target.guid, false);
       return this.autoRepeatSpellId === spellId; // 05.10-5.05
     },
@@ -2248,10 +2250,12 @@ export class WorldClient {
     this.#connection.send(OPCODES.CMSG_SET_SELECTION, buildCombatGuid(guid ?? 0n));
     this.onCombatStatus?.(guid === undefined ? "Цель сброшена" : "Цель выбрана", false, false);
     if (!follows) return;
-    if (melee || ranged) this.startAttack(); // L15 5.05: `|| ranged`
+    // 5.05 (12.10): the carried fight turns nobody — 0x00524bf0 → 0x006e4950 → 0x006e2610 has no movement packet
+    // (the swing's 0x00736d30 and 0x0072ed80 are the sheath and a cast visual); Tab takes units behind within 10 yd.
+    if (melee || ranged) this.startAttack(false, false); // L15 5.05: `|| ranged`; 5.05 (12.10): no facing
     // A running Auto Shot is re-aimed rather than cancelled: HandleCastSpellOpcode replaces the
-    // repeat when the unit target differs (SpellHandler.cpp:384-396).
-    else if (repeat !== undefined) this.#startAutoRepeat(repeat, 0, false, guid);
+    // repeat when the unit target differs (SpellHandler.cpp:384-396). 5.05 (12.10): without turning (0x0080cce0 turns nobody).
+    else if (repeat !== undefined) this.#startAutoRepeat(repeat, 0, false, guid, false);
   }
 
   /**
@@ -2270,8 +2274,17 @@ export class WorldClient {
     this.sendMovement(OPCODES.MSG_MOVE_SET_FACING, self.movementFlags, { ...self.position, orientation });
   }
 
-  startAttack(meleeOnly = false): void { // L15 5.05: meleeOnly — the autoRangedCombat controller's own swing (0x006e2610)
-    if (!meleeOnly && this.#startAutoRanged()) return; // L15 5.05: 0x006e4950 with autoRangedCombat
+  /**
+   * `face` (5.05, 12.10): whether this attack turns the character to the unit — this client's convention for the
+   * player's own start (right click, the button, /startattack). False for the controller's swing and for a fight
+   * carried to a new selection: Wow.exe's SetTarget 0x00524bf0 → StartAttack 0x006e4950 → swing 0x006e2610 sends
+   * no movement packet — 0x006e2610's own calls are the stand-up, CMSG_ATTACKSWING, the sheath setter 0x00736d30(1,
+   * 1, 0) (the visible weapon and CMSG_SETSHEATHED on a change), 0x0072ed80 (ends a ranged cast's visual) and
+   * 0x0073ac30(0x40) (an animation) (.runtime/re-2026-10-01/a4-world/d4.c, re-2026-10-02/a9-p2/r8.c,
+   * re-2026-10-11/glue-1110/a505-3.txt).
+   */
+  startAttack(meleeOnly = false, face = !meleeOnly): void { // L15 5.05: meleeOnly — the autoRangedCombat controller's own swing (0x006e2610)
+    if (!meleeOnly && this.#startAutoRanged(face)) return; // L15 5.05: 0x006e4950 with autoRangedCombat; 5.05 (12.10): face
     if (this.#closed || this.targetGuid === undefined || this.#meleeEngaged()) return;
     const target = this.state.objects.get(this.targetGuid);
     if (!target || isWorldObjectDead(target)) {
@@ -2299,10 +2312,13 @@ export class WorldClient {
     }
     // The realm keeps melee and CURRENT_AUTOREPEAT_SPELL independently. The UI exposes them as
     // alternative combat modes, so switching must cancel the old wire state before drawing steel.
-    if (this.autoRepeatSpellId !== undefined) this.#stopAutoRepeat(true);
+    // 5.05 (12.10): 0x006e2610's 0x00807560(1) — CMSG_CANCEL_AUTO_REPEAT_SPELL alone; the one sheath packet of the
+    // shot turning into a swing is the SHEATH 1 below (0x00736d30(1, 1, 0)). Was (true): SHEATH 0 first, the bow
+    // put away and the blade drawn in two packets.
+    if (this.autoRepeatSpellId !== undefined) this.#stopAutoRepeat(true, false); // 5.05 (12.10)
     // L18-review: not the controller's own swing — 0x006e2610 never turns the character, and turning a hunter
     // who runs from a mob at his back sends him into it (tests/auto-ranged-fight-rate.test.mjs, kiting).
-    if (!meleeOnly) this.faceTarget(); // L18-review: was unconditional
+    if (face) this.faceTarget(); // L18-review: was unconditional; 5.05 (12.10): `face`, was `!meleeOnly`
     // 0x6e2610 stands a seated player up (0x6dcb40(0)) before the swing.
     if (self && !isWorldObjectDead(self) && (unitFields.standState(self) ?? 0) !== 0) this.setStandState(0);
     // Draw the weapon first. The server publishes the sheath state in UNIT_FIELD_BYTES_2 and the
@@ -2333,7 +2349,7 @@ export class WorldClient {
    * (AutoRangedCombat.ts): the mount rules read that spell's range, and the controller — not an
    * immediate swing — chooses the swing or the shot. False when it does not apply: the swing path runs.
    */
-  #startAutoRanged(): boolean { // L15 5.05
+  #startAutoRanged(face = true): boolean { // L15 5.05; 5.05 (12.10): face — false for a fight carried to a new selection
     const spell = this.#autoRangedSpell();
     if (spell === undefined || this.#closed || this.targetGuid === undefined) return false;
     const target = this.state.objects.get(this.targetGuid);
@@ -2354,11 +2370,11 @@ export class WorldClient {
       }
       this.#connection.send(OPCODES.CMSG_CANCEL_MOUNT_AURA);
     }
-    // L18-review: the player's own attack (right click, the button, /startattack, a fight carried to a new
-    // selection) turns to the unit once when it starts the mode, as this client's swing did when it started; a
-    // press while the mode runs turns nothing (the swing path's `#meleeEngaged` return), and the controller's
-    // switches never do (0x006e2610, 0x0080cce0 turn nobody).
-    if (!this.autoRanged.active && this.#autoRangedCanAttack(target)) this.faceTarget(); // L18-review
+    // L18-review: the player's own attack (right click, the button, /startattack) turns to the unit once when it
+    // starts the mode, as this client's swing did when it started; a press while the mode runs turns nothing (the
+    // swing path's `#meleeEngaged` return), and the controller's switches never do (0x006e2610, 0x0080cce0 turn
+    // nobody). 5.05 (12.10): nor does a fight carried to a new selection (0x00524bf0 → 0x006e4950: no movement packet).
+    if (face && !this.autoRanged.active && this.#autoRangedCanAttack(target)) this.faceTarget(); // L18-review; 5.05 (12.10): face
     this.autoRanged.begin(target);
     return true;
   }
@@ -2436,7 +2452,9 @@ export class WorldClient {
     }
     // L15 5.05: 0x00800a00 → 0x006d5f70 stops only the swing (was stopAttack, which now ends the
     // autoRangedCombat mode too — a shot the mode or the player starts keeps the mode).
-    this.#cancelMeleeAttack(true); // L15 5.05
+    // 5.05 (12.10): 0x006d5f70 is CMSG_ATTACKSTOP alone — the sheath packet of a swing turning into a shot is the
+    // SHEATH 2 below (was SHEATH 0 first: the blade put away, then the bow drawn).
+    this.#cancelMeleeAttack(true, false); // L15 5.05; 5.05 (12.10): no sheath
     if (this.autoRepeatSpellId !== undefined) this.#stopAutoRepeat(true);
     if (face) this.faceTarget(targetGuid); // L18-review: was unconditional
     this.#connection.send(OPCODES.CMSG_SET_SHEATHED, buildSetSheathed(SHEATH_RANGED));
@@ -8774,9 +8792,12 @@ export class WorldClient {
       // Keep that state intact and publish the stop edge for UI/state consumers. The packet's guid
       // is packed (`WorldPackets::Combat::CancelAutoRepeat`).
       const guid = parseCancelAutoRepeat(packet.payload);
-      // The server already cancelled the repeat; acknowledge only in local state and return the
-      // visible weapon pose to neutral (or melee in a defensive inconsistent-state recovery).
-      if (guid === this.state.selfGuid) this.#stopAutoRepeat(false, true);
+      // The server already cancelled the repeat; acknowledge only in local state. 5.05 (12.10): Wow.exe's handler
+      // 0x0072d130 (registered at 0x007429a4) runs 0x00807560(0) for the player — the repeat forgotten, no packet —
+      // and for any unit clears +0xa38 bit 0x200 and resets the shot's animation (0x0072afe0); it never calls the
+      // sheath setter 0x00736d30 (.runtime/re-2026-10-11/glue-1110/a505-3.txt). The CMSG_SET_SHEATHED this sent (the
+      // bow put away, then drawn again by the next shot: the flicker on a stun, a Tab, the echo of a cancel) is gone.
+      if (guid === this.state.selfGuid) this.#stopAutoRepeat(false, false); // 5.05 (12.10): was (false, true)
       this.events.emit("STOP_AUTOREPEAT_SPELL", { guid });
       return true;
     }

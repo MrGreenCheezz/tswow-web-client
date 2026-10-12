@@ -29,7 +29,7 @@ import {
   className, classPortraitPosition, hasClassIcon, raidMarkGlyph, raidMarksByUnit, threatFraction,
 } from "./UnitSnapshot.js";
 import { setIconSource, spellIconUrl } from "./IconImage.js";
-import { reactionTo } from "../game/Targeting.js";
+import { unitReactionToPlayer } from "../game/Targeting.js"; // 5.05 (12.10): was reactionTo
 import { REACTION_FRIENDLY, REACTION_HOSTILE } from "../../world/FactionRules.js";
 import { setPlayerPortrait, setTargetPortrait } from "./Portraits.js";
 import { NATIVE_LANES_REPLACED, nativeHudReplaced } from "./NativeHudReplacement.js";
@@ -605,7 +605,7 @@ export function showTarget(): void {
   // the tank's beside it.
   const marks = raidMarksByUnit(world.raidTargets);
   const targetMark = marks.get(target.guid);
-  const targetReaction = reactionTo(target);
+  const targetReaction = unitReactionToPlayer(target); // 5.05 (12.10): the selection colour is the unit's view (0x00521bf0)
   const targetThreat = threatFraction(world.threat.get(target.guid)?.entries ?? [], world.state.selfGuid ?? 0n);
   const selfGuid = world.state.selfGuid;
   const selfMark = selfGuid === undefined ? undefined : marks.get(selfGuid);

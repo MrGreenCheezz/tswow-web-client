@@ -211,12 +211,18 @@ test("live relation resolver supplies hostile and friendly colors when the host 
     cooldownState: () => undefined, cooldownRemaining: () => 0,
     isActiveMountSpell: () => false,
   };
+  // 5.05 (12.10): the two directions answer apart — the player's view of the target (`relation`) and the
+  // target's view of the player (`back`). UnitIsEnemy/UnitIsFriend/UnitCanAttack("player", "target") read the
+  // first (0x0060d330, 0x0060d3d0 → 0x00514050); UnitSelectionColor the second (0x0060da00 → 0x00521bf0 indexes
+  // its table by 0x007251c0(unit, player)).
   let relation = -1;
+  let back = -1;
   const seam = new LiveWorldSeam({
     world: () => world,
     store: () => store,
     spell: () => undefined,
-    reaction: (left, right) => left.guid === player.guid && right.guid === target.guid ? relation : 0,
+    reaction: (left, right) => left.guid === player.guid && right.guid === target.guid ? relation
+      : left.guid === target.guid && right.guid === player.guid ? back : 0,
     monotonic: () => 0,
     globalCooldownUntil: () => 0,
     castSpell: () => {},
@@ -227,14 +233,36 @@ test("live relation resolver supplies hostile and friendly colors when the host 
   assert.deepEqual(call("UnitCanAttack", "player", "target"), [true]);
   assert.deepEqual(call("UnitSelectionColor", "target"), [1, 0, 0]);
   relation = 1;
+  back = 1;
   assert.deepEqual(call("UnitIsFriend", "player", "target"), [true]);
   assert.deepEqual(call("UnitIsEnemy", "player", "target"), [false]);
   assert.deepEqual(call("UnitSelectionColor", "target"), [0, 1, 0]);
   relation = 0;
+  back = 0;
   assert.deepEqual(call("UnitIsEnemy", "player", "target"), [false]);
   assert.deepEqual(call("UnitIsFriend", "player", "target"), [false]);
   assert.deepEqual(call("UnitCanAttack", "player", "target"), [true]);
   assert.deepEqual(call("UnitSelectionColor", "target"), [1, 1, 0]);
+  // The directions apart: the player neutral to it, it hostile to the player — red; and the other way round.
+  back = -1;
+  assert.deepEqual(call("UnitIsEnemy", "player", "target"), [false], "the player's view is unchanged");
+  assert.deepEqual(call("UnitSelectionColor", "target"), [1, 0, 0], "the unit's view paints");
+  relation = -1;
+  back = 1;
+  assert.deepEqual(call("UnitIsEnemy", "player", "target"), [true]);
+  assert.deepEqual(call("UnitSelectionColor", "target"), [0, 1, 0]);
+  // A host that hands the full rule (Targeting.unitReactionToPlayer: the reputation ranks on top) is asked instead.
+  const asked = [];
+  const ranked = new LiveWorldSeam({
+    world: () => world, store: () => store, spell: () => undefined,
+    reaction: () => 0,
+    unitReactionToPlayer: (unit) => { asked.push(unit.guid); return -1; },
+    monotonic: () => 0, globalCooldownUntil: () => 0, castSpell: () => {},
+  });
+  assert.deepEqual(FRAMEXML_SEAM_BINDINGS.UnitSelectionColor(ranked, ["target"]), [1, 0, 0]);
+  assert.deepEqual(asked, [target.guid]);
+  assert.deepEqual(FRAMEXML_SEAM_BINDINGS.UnitSelectionColor(ranked, ["player"]), [0, 1, 0], "the player's own: friendly");
+  assert.deepEqual(asked, [target.guid], "not asked for the player itself");
   seam.detach();
   store.detach();
 });

@@ -98,14 +98,28 @@ export function autoRepeatRefusalAction(refusal: AutoRepeatRefusal): AutoRepeatR
  * Whether the autoRangedCombat controller holds its shot for the player's own cast: a cast bar runs (an SMSG_SPELL_START
  * with a cast time, not a channel). The realm refuses Auto Shot then with SPELL_IN_PROGRESS
  * (Spell.cpp:3232-3237, Unit::IsNonMeleeSpellCast(false, true, true, …) — channels skipped, Unit.cpp:3414-3442).
- * Its ATTR2_NOT_RESET_AUTO_ACTIONS exemption (Steady Shot) is not read: the shot then waits for the bar.
  * Not past the bar's end by more than {@link AUTO_REPEAT_CAST_GRACE_MS}: a bar whose GO never matched must not hold
  * the shot for good (a bound of this client's, not a rule of the original).
+ *
+ * 5.05 (12.10): except Auto Shot (75) during a cast with SPELL_ATTR2_NOT_RESET_AUTO_ACTIONS (Steady Shot, Aimed Shot,
+ * Slam): that bar is no cast to the realm's `isAutoshoot` test (Unit.cpp:3426, Spell.cpp:3232 passes `Id == 75`), so it
+ * takes the shot and keeps firing it through the bar (`_UpdateAutoRepeatSpell`, Unit.cpp:3246). Wow.exe holds nothing
+ * itself: the controller's 0x0080da40 goes straight to 0x0080cce0, whose SPELL_IN_PROGRESS refusals are another
+ * matter (+0x9cc, an enchant in a trade, 0x00739650's player flag; .runtime/re-2026-10-11/glue-1110/cd3939-a.txt,
+ * a505-1.txt), and its only read of the bit is the cast time (0x007fef60, a505-2.txt). The hold is this client's own
+ * stand-in for the realm's refusal, so it follows the realm's exemption: the shot goes out at once (was: at the bar's end).
+ * `shotSpellId` and `castAttributes` (the cast's eight attribute words) absent: no exemption.
  */
 export function autoRepeatWaitsForCast(cast: { readonly channel: boolean; readonly startedAt: number; readonly duration: number } | undefined,
-  now: number): boolean {
-  return cast !== undefined && !cast.channel && now - cast.startedAt < cast.duration + AUTO_REPEAT_CAST_GRACE_MS;
+  now: number, shotSpellId?: number, castAttributes?: readonly number[]): boolean {
+  if (cast === undefined || cast.channel || now - cast.startedAt >= cast.duration + AUTO_REPEAT_CAST_GRACE_MS) return false;
+  return !(shotSpellId === AUTO_SHOT_SPELL_ID && ((castAttributes?.[2] ?? 0) & SPELL_ATTR2_NOT_RESET_AUTO_ACTIONS) !== 0); // 5.05 (12.10)
 }
+
+/** 5.05 (12.10): the one repeat TrinityCore exempts from a NOT_RESET_AUTO_ACTIONS cast (`m_spellInfo->Id == 75`). */
+export const AUTO_SHOT_SPELL_ID = 75;
+/** 5.05 (12.10): `SPELL_ATTR2_NOT_RESET_AUTO_ACTIONS` (SharedDefines.h), AttributesEx2 — record +0x18 in Wow.exe. */
+export const SPELL_ATTR2_NOT_RESET_AUTO_ACTIONS = 0x0002_0000;
 
 /** How long past a cast bar's end the shot still waits for its GO. */
 export const AUTO_REPEAT_CAST_GRACE_MS = 1000;

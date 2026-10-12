@@ -7,7 +7,7 @@ import {
   type GroupMember, type GroupState,
 } from "../../world/GroupProtocol.js";
 import { openGroupMenu } from "./GroupMenu.js";
-import { reactionTo } from "../game/Targeting.js";
+import { unitReactionToPlayer } from "../game/Targeting.js"; // 5.05 (12.10): was reactionTo
 import { arenaFrames, bossFrames, focusFrame, partyFrames, petFrame, raidFrames, targetOfTargetFrame } from "./Dom.js";
 import { showTarget, unitDisplayName } from "./Frames.js";
 import { UnitFrame, UnitFrameList } from "./UnitFrame.js";
@@ -86,7 +86,7 @@ export function forgetUnitFrames(): void {
 /** The reaction to a unit, or undefined for the player's own side, where it says nothing. */
 function reactionOf(object: WorldObjectState | undefined): number | undefined {
   if (!object) return undefined;
-  return reactionTo(object);
+  return unitReactionToPlayer(object); // 5.05 (12.10): the frames' selection colour is the unit's view (0x00521bf0)
 }
 
 function snapshotOf(guid: bigint, marks: Map<bigint, number>): UnitSnapshot | undefined {

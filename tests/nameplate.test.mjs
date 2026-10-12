@@ -639,3 +639,99 @@ test("Л1 the tap pair reaches the plate from the field rather than being guesse
     game.world = previous;
   }
 });
+
+/*
+ * 5.05 (12.10, owner: «да»): Wow.exe paints a name plate (0x0098ee30) and the selection colour (0x00521bf0) by the
+ * UNIT's view of the player — `0x007251c0(unit, player)`, ECX the unit (.runtime/re-2026-10-04/d3-factions/g2.c,
+ * g3.c) — while UnitReaction/UnitIsEnemy/CanAttack keep theirs. The unit-side reputation rules ride on top: the
+ * player's rank with a faction that keeps a reputation (0x0071f770 → 0x005d0600), a forced rank.
+ */
+const { selectionRingColour } = await import("../dist/code/browser/ui/NamePlates.js");
+const FACTION_TEMPLATE = UPDATE_FIELDS.UNIT_FIELD_FACTIONTEMPLATE.offset;
+
+/** The player (human warrior, template 1) and a world that answers what the reaction rules read. */
+function reactionWorld({ forced = new Map(), rows = new Map() } = {}) {
+  const world = plateWorld();
+  const self = plateUnit(1n, { typeId: 4 });
+  self.fields.set(FACTION_TEMPLATE, 1);
+  self.fields.set(UPDATE_FIELDS.UNIT_FIELD_BYTES_0.offset, 1 | (1 << 8));
+  self.fields.set(UPDATE_FIELDS.PLAYER_FLAGS.offset, 0);
+  world.state.objects.set(1n, self);
+  world.forcedReactions = forced;
+  world.factions = rows;
+  world.targetGuid = 2n; // the target keeps its plate whatever the switches say
+  return world;
+}
+
+/** Template 600 hates by default (the unit's view hostile, the player's neutral); 120 is Booty Bay (faction 21). */
+const FACTIONS = {
+  ready: true,
+  reaction: (mine, theirs) => (mine === 600 && theirs === 1 ? REACTION_HOSTILE : REACTION_NEUTRAL),
+  factionOf: (template) => ({ 1: 1, 600: 600, 120: 21, 121: 21 })[template],
+  reputationCatalog: { version: 1, factions: { 1: { factionId: 21, raceMasks: [1791, 0, 0, 0], classMasks: [0, 0, 0, 0], bases: [500, 0, 0, 0] } } },
+};
+
+function withReactions(world, run) {
+  const previousWorld = game.world;
+  const previousFactions = game.factions;
+  game.world = world;
+  game.factions = FACTIONS;
+  try {
+    run();
+  } finally {
+    game.world = previousWorld;
+    game.factions = previousFactions;
+  }
+}
+
+function targetUnit(template) {
+  const unit = plateUnit(2n);
+  unit.fields.set(FACTION_TEMPLATE, template);
+  return unit;
+}
+
+test("5.05 (12.10): the plate and the ring take the unit's view of the player; the switch still the player's", () => {
+  withReactions(reactionWorld(), () => {
+    const unit = targetUnit(600);
+    const data = plateSource(0)(unit, 10);
+    assert.equal(data.reaction, REACTION_NEUTRAL, "the player's view decides which switch shows it");
+    assert.equal(data.colourReaction, REACTION_HOSTILE, "0x0098ee30: 0x007251c0(unit, player) < 2");
+    assert.equal(plateColour(data), "#c5423d", "red (was yellow: the player's view)");
+    assert.equal(selectionRingColour(unit), 0xdb4b45, "0x00521bf0: red (was yellow)");
+  });
+});
+
+test("5.05 (12.10): a reputation faction's plate is the player's rank with it; a forced rank wins", () => {
+  // Booty Bay: base 500 for every race (Faction.dbc), plus the wire's standing.
+  for (const [standing, colour, ring] of [[0, "#d8bb3f", 0xe0c341], [-42_000, "#c5423d", 0xdb4b45], [9000, "#3fae5a", 0x4fd06a]]) {
+    // At war or not is the player's view (CanAttack): it does not paint the plate.
+    withReactions(reactionWorld({ rows: new Map([[1, { listId: 1, flags: 0x2, standing }]]) }), () => {
+      const unit = targetUnit(120);
+      const data = plateSource(0)(unit, 10);
+      assert.equal(plateColour(data), colour, `standing ${standing}`);
+      assert.equal(selectionRingColour(unit), ring, `standing ${standing}`);
+    });
+  }
+  withReactions(reactionWorld({ forced: new Map([[21, 4]]), rows: new Map([[1, { listId: 1, flags: 0, standing: -42_000 }]]) }), () => {
+    const unit = targetUnit(120);
+    assert.equal(plateColour(plateSource(0)(unit, 10)), "#3fae5a", "a forced Friendly over a Hated rank");
+    assert.equal(selectionRingColour(unit), 0x4fd06a);
+  });
+});
+
+test("5.05 (12.10): a CONTESTED_GUARD template paints a contested player's plate red first — before a forced rank", () => {
+  const world = reactionWorld({ forced: new Map([[21, 4]]), rows: new Map([[1, { listId: 1, flags: 0, standing: 9000 }]]) });
+  world.state.objects.get(1n).fields.set(UPDATE_FIELDS.PLAYER_FLAGS.offset, 0x100); // PLAYER_FLAGS_CONTESTED_PVP
+  const previous = FACTIONS.templateFlagsOf;
+  FACTIONS.templateFlagsOf = (template) => (template === 121 ? 0x1000 : 0); // a Booty Bay Bruiser's template
+  try {
+    withReactions(world, () => {
+      const bruiser = targetUnit(121);
+      assert.equal(plateColour(plateSource(0)(bruiser, 10)), "#c5423d", "0x0071f770: CONTESTED_GUARD first");
+      assert.equal(selectionRingColour(bruiser), 0xdb4b45);
+      assert.equal(plateColour(plateSource(0)(targetUnit(120), 10)), "#3fae5a", "Krazek's template has no such flag");
+    });
+  } finally {
+    FACTIONS.templateFlagsOf = previous;
+  }
+});

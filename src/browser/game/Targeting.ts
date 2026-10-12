@@ -22,6 +22,7 @@ import { targetLast, type TargetLastKind } from "./TargetLast.js"; // L2 1.10
 import { // L15 5.05
   FACTION_FLAG_AT_WAR, interactionReactionOfRank, reputationBaseFor, reputationListIdOf, reputationRank, // L15 5.05
   setReputationBaseSource, // L15 5.05
+  reactionOfRank, // 5.05 (12.10): unitReactionToPlayer
 } from "../../world/ReputationReaction.js"; // L15 5.05
 import { actionRangeLimits } from "../framexml/FrameXmlActionRange.js"; // L15 5.05
 import { player as playerFields } from "../../world/Fields.js"; // L15-review
@@ -74,6 +75,27 @@ export function reactionTo(object: WorldObjectState): number {
   return reactionBetween(self, object, game.factions);
 }
 
+/**
+ * 5.05 (12.10): the unit's view of the player — Wow.exe 0x007251c0(unit, player) → 0x0071f770 — which is what
+ * paints a name plate (0x0098ee30: below 2 red, 0x00514050's friendly green, else yellow) and the selection colour
+ * (0x00521bf0, under UnitSelectionColor 0x0060da00 and the virtual 0x00718ac0: `0x007251c0(unit, player)` indexes
+ * its table) — not the player's view `reactionTo` gives (.runtime/re-2026-10-04/d3-factions/g2.c, g3.c: ECX is the
+ * unit, the pushed argument the player). The rules on top are the unit-side ones `rightClickInteracts` already
+ * reads, unchanged: CONTESTED_GUARD against a contested player first, a forced rank, the player's rank with a
+ * faction that keeps a reputation (0x005d0600), else the unit's template against the player's (D3); a rank reads
+ * as a forced reaction does (hostile ≤ 1, friendly ≥ 4). UnitReaction, UnitIsEnemy, UnitIsFriend and CanAttack
+ * keep their own directions. Map lookups only — asked per plate per frame.
+ */
+export function unitReactionToPlayer(object: WorldObjectState): number {
+  const self = player();
+  if (self === undefined) return REACTION_NEUTRAL;
+  if (contestedGuardOf(object, self) === true) return REACTION_HOSTILE;
+  // A forced reaction for the faction keeps `reputationListFor` out (reactionsByTemplate): `reactionBetween` reads it.
+  const list = reputationListFor(object, self);
+  if (list !== undefined) return reactionOfRank(playerRankWith(list, self));
+  return reactionBetween(object, self, game.factions);
+}
+
 /** The player's character, or nothing outside the world. */
 function player(): WorldObjectState | undefined {
   const world = game.world;
@@ -101,8 +123,8 @@ export function canAttackUnit(object: WorldObjectState): boolean {
  * L15 5.05: the player's view of a unit as CanAttack reads it (Wow.exe 0x00729740 → 0x00514050 →
  * 0x007251c0): for a faction that keeps a reputation, hostile while the player is at war with it and
  * friendly otherwise (ReputationReaction.ts) — a Friendly Sons of Hodir NPC or a Booty Bay bruiser is no
- * target — else the masks and forced reactions of `reactionTo`. Display colours keep `reactionTo`: Wow.exe
- * paints by the unit's view (the rank). Map lookups only — asked per hover.
+ * target — else the masks and forced reactions of `reactionTo`. Plates and the selection colour paint by the
+ * unit's view instead ({@link unitReactionToPlayer}, 5.05 12.10). Map lookups only — asked per hover.
  */
 export function attackReactionTo(object: WorldObjectState): number {
   const self = player();

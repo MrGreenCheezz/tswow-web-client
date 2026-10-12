@@ -11,7 +11,7 @@ import {
 import { loadFactionData } from "../dist/code/gateway/FactionMetadata.js";
 import { FactionClient } from "../dist/code/browser/FactionClient.js";
 import { game } from "../dist/code/browser/game/Context.js";
-import { canAttackUnit, reactionBetween as unitReaction, reactionTo } from "../dist/code/browser/game/Targeting.js";
+import { canAttackUnit, reactionBetween as unitReaction, reactionTo, unitReactionToPlayer } from "../dist/code/browser/game/Targeting.js";
 import { LiveWorldSeam } from "../dist/code/browser/framexml/LiveWorldSeam.js";
 import { FRAMEXML_SEAM_BINDINGS } from "../dist/code/browser/framexml/FrameXmlWorldSeam.js";
 import { UPDATE_FIELDS } from "../dist/code/generated/updateFields.js";
@@ -231,11 +231,14 @@ function inWorld(client, unitTemplate, run) {
   game.world = world;
   game.factions = client;
   try {
-    // FrameXmlWorldMount hands the seam `reactionBetween(self, target, game.factions)` the same way.
+    // FrameXmlWorldMount hands the seam `reactionBetween(self, target, game.factions)` the same way; 5.05 (12.10):
+    // and `unitReactionToPlayer` for UnitSelectionColor (the mount's line is owed — without it the seam falls back
+    // to `reaction(unit, player)`, the same masks without the reputation rules).
     const seam = new LiveWorldSeam({
       world: () => world, store: () => ({ field: () => () => {} }), spell: () => undefined,
       monotonic: () => 0, globalCooldownUntil: () => 0, castSpell: () => {},
       reaction: (left, right) => unitReaction(left, right, game.factions),
+      unitReactionToPlayer: (object) => unitReactionToPlayer(object),
     });
     const lua = (name, ...args) => FRAMEXML_SEAM_BINDINGS[name](seam, args);
     return run({ self, unit, lua });
@@ -251,7 +254,8 @@ test("D3: rule 2 through the browser — the unit's Friend list names the player
   inWorld(client, 500, ({ self, unit, lua }) => {
     assert.equal(reactionTo(unit), REACTION_FRIENDLY, "the player's view (plates, frames, Tab)");
     assert.equal(canAttackUnit(unit), false, "CanAttack refuses a friend (it was neutral and attackable)");
-    assert.deepEqual(lua("UnitSelectionColor", "target"), [0, 1, 0], "green (this client paints the player's view)");
+    // 5.05 (12.10): the selection colour is the unit's view (0x00521bf0) — its own Friend list names the player too.
+    assert.deepEqual(lua("UnitSelectionColor", "target"), [0, 1, 0], "green: the unit's view of the player");
     assert.deepEqual(lua("UnitReaction", "player", "target"), [5], "0x0060d280: rank 4 + 1");
     assert.deepEqual(lua("UnitIsFriend", "player", "target"), [true]);
     assert.deepEqual(lua("UnitIsEnemy", "player", "target"), [false]);
@@ -271,12 +275,17 @@ test("D3: rule 3 through the browser — a HOSTILE_BY_DEFAULT unit's view of the
     assert.equal(reactionTo(unit), REACTION_NEUTRAL, "the player's view reads the player's own flags");
     assert.deepEqual(lua("UnitReaction", "player", "target"), [4]);
     assert.equal(canAttackUnit(unit), true);
+    // 5.05 (12.10): plates and the selection colour read the unit's view (0x0098ee30, 0x00521bf0): red here,
+    // while UnitReaction("player", "target") stays neutral (0x0060d280 is a's view of b).
+    assert.equal(unitReactionToPlayer(unit), REACTION_HOSTILE);
+    assert.deepEqual(lua("UnitSelectionColor", "target"), [1, 0, 0], "red: the unit hates by default");
   });
   const old = await loadedClient(withoutFlags());
   assert.equal(old.templateFlagsOf(600), undefined);
   inWorld(old, 600, ({ self, unit, lua }) => {
     assert.equal(unitReaction(unit, self, old), REACTION_NEUTRAL, "a gateway before v=3: as before");
     assert.deepEqual(lua("UnitReaction", "target", "player"), [4]);
+    assert.deepEqual(lua("UnitSelectionColor", "target"), [1, 1, 0], "5.05 (12.10): yellow without the flags");
   });
 });
 
@@ -288,5 +297,8 @@ test("D3: rule 1 through the browser — the unit hates players by mask although
     assert.equal(reactionTo(unit), REACTION_FRIENDLY, "the player's view: the unit's Friend list (rule 2)");
     assert.deepEqual(lua("UnitIsFriend", "player", "target"), [true]);
     assert.equal(canAttackUnit(unit), false);
+    // 5.05 (12.10): the colours take the unit's side — red, although the player may not attack it (was green).
+    assert.equal(unitReactionToPlayer(unit), REACTION_HOSTILE);
+    assert.deepEqual(lua("UnitSelectionColor", "target"), [1, 0, 0]);
   });
 });

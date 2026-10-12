@@ -20,7 +20,7 @@ import {
 import { plateHitAt } from "./OverlayModel.js";
 import { healthRatio } from "../SimpleScene.js";
 import { game } from "../game/Context.js";
-import { reactionBetween, reactionTo } from "../game/Targeting.js";
+import { reactionBetween, reactionTo, unitReactionToPlayer } from "../game/Targeting.js"; // 5.05 (12.10): unitReactionToPlayer
 import type { FactionClient } from "../FactionClient.js";
 import { questMarkFor } from "./QuestLog.js";
 import { settingOn } from "./Settings.js";
@@ -103,6 +103,7 @@ export function plateSource(now: number): (object: WorldObjectState, distance: n
         : metadata?.name ?? `NPC ${worldObject.entry(object) ?? 0}`,
       level: unit.level(object),
       reaction,
+      colourReaction: unitReactionToPlayer(object), // 5.05 (12.10): 0x0098ee30 — the unit's view of the player
       classColour: object.typeId === 4 ? classColor(unit.classId(object)) : undefined,
       health: healthRatio(object),
       healthCurrent: unit.health(object),
@@ -124,6 +125,10 @@ export function plateSource(now: number): (object: WorldObjectState, distance: n
  *
  * The same three answers the plate gives, in the form three.js wants. Kept next to the plate
  * rather than in the renderer so a hostile ring and a hostile bar can never drift apart.
+ *
+ * 5.05 (12.10): the selection colour is the unit's view of the player — Wow.exe 0x00521bf0 indexes its table by
+ * `0x007251c0(unit, player)` — so `reactionBetween` is asked with the unit first (was the player first). This
+ * captured form reads the template masks and forced reactions; the live wrapper adds the reputation rules.
  */
 export function selectionRingColourFor(
   object: WorldObjectState | undefined,
@@ -131,14 +136,17 @@ export function selectionRingColourFor(
   factions: FactionClient | undefined,
 ): number {
   if (!object) return 0xffe36e;
-  const reaction = reactionBetween(self, object, factions);
-  if (reaction === REACTION_FRIENDLY) return 0x4fd06a;
-  return reaction === REACTION_NEUTRAL ? 0xe0c341 : 0xdb4b45;
+  return ringColourOf(self === undefined ? REACTION_NEUTRAL : reactionBetween(object, self, factions)); // 5.05 (12.10)
 }
 
 /** The live wrapper retains the current world and faction client. */
 export function selectionRingColour(object: WorldObjectState | undefined): number {
-  const world = game.world;
-  const self = world?.state.selfGuid === undefined ? undefined : world.state.objects.get(world.state.selfGuid);
-  return selectionRingColourFor(object, self, game.factions);
+  if (!object) return 0xffe36e;
+  return ringColourOf(unitReactionToPlayer(object)); // 5.05 (12.10): was the player's view (`reactionBetween(self, object)`)
+}
+
+/** 5.05 (12.10): one reaction as the ring's colour. */
+function ringColourOf(reaction: number): number {
+  if (reaction === REACTION_FRIENDLY) return 0x4fd06a;
+  return reaction === REACTION_NEUTRAL ? 0xe0c341 : 0xdb4b45;
 }

@@ -54,6 +54,12 @@ export interface PlateData {
   level: number | undefined;
   /** `REACTION_*`. Undefined while the faction table is still on its way. */
   reaction: number | undefined;
+  /**
+   * 5.05 (12.10): the unit's view of the player (`Targeting.unitReactionToPlayer`), which the colour reads — Wow.exe
+   * 0x0098ee30 paints a plate by `0x007251c0(unit, player)`. Absent: `reaction`. Which switch shows the plate
+   * (`plateVisible`) still reads `reaction`.
+   */
+  colourReaction?: number | undefined;
   /** A player's class colour: players are coloured by class, everything else by reaction. */
   classColour: string | undefined;
   /** 0 to 1, or undefined for a unit whose health the server has not sent. */
@@ -157,11 +163,12 @@ export function plateVisible(
  * case where the class colour wins, because there the question is "who is that".
  */
 export function plateColour(
-  data: Pick<PlateData, "reaction" | "classColour"> & Partial<Pick<PlateData, "tappedByOther">>,
+  data: Pick<PlateData, "reaction" | "classColour"> & Partial<Pick<PlateData, "tappedByOther" | "colourReaction">>,
 ): string {
   if (data.tappedByOther) return "#8d9298";
-  if (data.reaction === REACTION_HOSTILE) return "#c5423d";
-  if (data.reaction === REACTION_FRIENDLY) return data.classColour ?? "#3fae5a";
+  const reaction = data.colourReaction ?? data.reaction; // 5.05 (12.10): the unit's view (0x0098ee30)
+  if (reaction === REACTION_HOSTILE) return "#c5423d";
+  if (reaction === REACTION_FRIENDLY) return data.classColour ?? "#3fae5a";
   return "#d8bb3f";
 }
 

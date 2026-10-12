@@ -387,13 +387,16 @@ test("world player equipment survives metadata arrival and rebuilds all playable
 test("reactionBetween and selectionRingColourFor use captured self and factions", () => {
   const self = unit([[factionId, 11]]);
   const object = unit([[factionId, 22]]);
+  const asked = [];
   const factions = { reaction(mine, theirs) {
-    assert.equal(mine, 11);
-    assert.equal(theirs, 22);
+    asked.push([mine, theirs]);
     return 1;
   } };
   assert.equal(reactionBetween(self, object, factions), 1);
+  assert.deepEqual(asked, [[11, 22]]);
   assert.equal(selectionRingColourFor(object, self, factions), 0x4fd06a);
+  // 5.05 (12.10): the ring is the selection colour — the unit's view of the player (Wow.exe 0x00521bf0).
+  assert.deepEqual(asked, [[11, 22], [22, 11]]);
   assert.equal(selectionRingColourFor(undefined, self, factions), 0xffe36e);
 
   const previousWorld = game.world;

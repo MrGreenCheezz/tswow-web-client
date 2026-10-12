@@ -266,17 +266,17 @@ test("L18-review: an ordinary hunter fight — silence in steady states, packets
   assert.deepEqual(labels(within(log, 0, 1)), ["CMSG_SET_SELECTION", "MSG_MOVE_SET_FACING", "SHEATH 2", "CMSG_CAST_SPELL"],
     "the right click: the character faced once, as this client's attacks always have, and the shot");
   assert.deepEqual(labels(within(log, 1, 30)), [], "repeating at range: silence");
-  assert.deepEqual(labels(within(log, 30, 60)), ["CMSG_CANCEL_AUTO_REPEAT_SPELL", "SHEATH 0", "SHEATH 1", "CMSG_ATTACK_SWING"],
-    "the mob arrives: the swing cancels the shot (0x006e2610)");
+  assert.deepEqual(labels(within(log, 30, 60)), ["CMSG_CANCEL_AUTO_REPEAT_SPELL", "SHEATH 1", "CMSG_ATTACK_SWING"],
+    "the mob arrives: the swing cancels the shot (0x006e2610); 5.05 (12.10): one sheath packet, no SHEATH 0 first");
   assert.deepEqual(labels(within(log, 60, 100)), [], "swinging in reach: silence");
   assert.deepEqual(labels(within(log, 100, 130)), ["CMSG_ATTACK_STOP", "SHEATH 1", "CMSG_ATTACK_SWING"],
     "the backpedal: out of reach the swing stops (no shot on the move), the mob catches up and it swings again");
   assert.deepEqual(labels(within(log, 130, 140)), ["CMSG_ATTACK_STOP", "SHEATH 2", "CMSG_CAST_SPELL"], "Disengage: the shot");
-  assert.deepEqual(labels(within(log, 140, 300)), ["CMSG_CANCEL_AUTO_REPEAT_SPELL", "SHEATH 0", "SHEATH 1", "CMSG_ATTACK_SWING"],
+  assert.deepEqual(labels(within(log, 140, 300)), ["CMSG_CANCEL_AUTO_REPEAT_SPELL", "SHEATH 1", "CMSG_ATTACK_SWING"],
     "back in reach: the swing; the kill in reach sends nothing");
   assert.equal(count(log, OPCODES.MSG_MOVE_SET_FACING), 1, "the controller's own switches never turn the character");
   assert.ok(busiestSecond(log) <= 4, `busiest second ${busiestSecond(log)}`);
-  assert.equal(log.length, 18, "0.6 packets a second over the fight");
+  assert.equal(log.length, 16, "0.5 packets a second over the fight (5.05 12.10: 18 with the SHEATH 0 of each shot→swing)");
   assert.equal(client.autoRanged.active, true, "a unit that died in reach leaves the mode registered (Wow.exe's melee branch, too)");
   client.close();
 });
@@ -413,10 +413,11 @@ test("L18-review: a stun cancels the repeat on the realm's side; the controller 
     if (tick === 0) client.startAttack();
     if (tick === 10) server.stun(tick + 1);
   });
-  // The stun's SMSG_CANCEL_AUTO_REPEAT clears the repeat here (and the handler puts the bow away); the next tick
-  // asks again — the core keeps a refused Auto Shot (Spell.cpp:3251 `!IsAutoRepeat()`, Unit.cpp:3265-3270) — and
-  // nothing follows.
-  assert.deepEqual(labels(within(log, 1, 50)), ["SHEATH 0", "SHEATH 2", "CMSG_CAST_SPELL"]);
+  // The stun's SMSG_CANCEL_AUTO_REPEAT clears the repeat here (5.05 12.10: and leaves the bow out, as Wow.exe's
+  // 0x0072d130 does — it sent SHEATH 0 before); the next tick asks again — the core keeps a refused Auto Shot
+  // (Spell.cpp:3251 `!IsAutoRepeat()`, Unit.cpp:3265-3270) — and nothing follows. The shot's SHEATH 2 repeats the
+  // state the server already holds: this client sends it with every shot, Wow.exe's 0x00736d30 only on a change.
+  assert.deepEqual(labels(within(log, 1, 50)), ["SHEATH 2", "CMSG_CAST_SPELL"]);
   assert.deepEqual(server.repeat, { spell: AUTO_SHOT, target: A });
   client.close();
 });
@@ -434,13 +435,14 @@ test("L18-review: at the reach boundary the controller switches on each crossing
     place(client, A, inside ? 4.9 - wobble : 5.1 + wobble);
   });
   for (const { tick } of log) assert.equal(tick % 5, 0, `a packet at ${tick / 10} s, between crossings`);
-  assert.deepEqual(labels(within(log, 5, 6)), ["CMSG_CANCEL_AUTO_REPEAT_SPELL", "SHEATH 0", "SHEATH 1", "CMSG_ATTACK_SWING"]);
+  assert.deepEqual(labels(within(log, 5, 6)), ["CMSG_CANCEL_AUTO_REPEAT_SPELL", "SHEATH 1", "CMSG_ATTACK_SWING"]);
   assert.deepEqual(labels(within(log, 10, 11)), ["CMSG_ATTACK_STOP", "SHEATH 2", "CMSG_CAST_SPELL"]);
-  // A crossing each half second, the worst this boundary does: 7 packets a second (Wow.exe's own four — the
-  // swing and the cancel in, the stop and the cast out — plus this client's CMSG_SET_SHEATHED each way).
+  // A crossing each half second, the worst this boundary does: 6 packets a second — the swing and the cancel in,
+  // the stop and the cast out, and one CMSG_SET_SHEATHED each way (Wow.exe's swing sends its own through
+  // 0x00736d30 on the change; 5.05 12.10: the SHEATH 0 before the swing's SHEATH 1 is gone, was 7 and 35).
   const crossings = within(log, 10, 60);
-  assert.ok(busiestSecond(crossings) <= 7, `busiest second ${busiestSecond(crossings)}`);
-  assert.equal(crossings.length, 35);
+  assert.ok(busiestSecond(crossings) <= 6, `busiest second ${busiestSecond(crossings)}`);
+  assert.equal(crossings.length, 30);
   client.close();
 });
 

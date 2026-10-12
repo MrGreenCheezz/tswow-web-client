@@ -9,7 +9,7 @@ import { installFrameXmlQuestPoiFrame } from "./FrameXmlQuestBlobPainter.js";
 import { createHttpFileProvider } from "../glue/GlueLoader.js";
 import { game, registerWorldContextCleanup } from "../game/Context.js";
 import { globalCooldownView } from "../game/PredictedGlobalCooldown.js"; // L13-review 5.30
-import { reactionBetween, setFocusGuid } from "../game/Targeting.js";
+import { reactionBetween, setFocusGuid, unitReactionToPlayer } from "../game/Targeting.js";
 import { castSpell } from "../ui/Spellbook.js";
 import { getActionBarPage, turnActionPage, useSlot } from "../ui/ActionBar.js";
 import { ensureSpellNames } from "../ui/SpellNames.js";
@@ -3350,6 +3350,8 @@ export async function mountFrameXmlVertical(
     focusGuid: () => game.focusGuid,
     setFocus: setFocusGuid,
     reaction: (self, target) => reactionBetween(self, target, game.factions),
+    // 5.05 (12.10): UnitSelectionColor is the unit's view of the player, reputation rules on top (Wow.exe 0x00521bf0).
+    unitReactionToPlayer: (object) => unitReactionToPlayer(object),
     reputation: frameXmlLiveReputationRows,
     reputationCatalog: () => game.factions?.reputationCatalog,
     skillMetadata: () => game.talentData,

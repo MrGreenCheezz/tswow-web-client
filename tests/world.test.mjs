@@ -543,12 +543,16 @@ test("melee and ranged auto-combat switch modes with explicit wire cancellation"
   connection.sent.length = 0;
 
   client.castSpell(75);
+  // 5.05 (12.10): one sheath packet per switch, the weapon of the new mode — Wow.exe stops the swing with
+  // 0x006d5f70 (CMSG_ATTACKSTOP alone) and the repeat with 0x00807560(1) (CMSG_CANCEL_AUTO_REPEAT_SPELL alone);
+  // its sheath setter 0x00736d30 sends only the new state. Was a SHEATH 0 between them each way.
+  const sheaths = () => connection.sent.filter(({ opcode }) => opcode === OPCODES.CMSG_SET_SHEATHED).map(({ payload }) => payload[0]);
   assert.deepEqual(connection.sent.map(({ opcode }) => opcode), [
     OPCODES.CMSG_ATTACK_STOP,
     OPCODES.CMSG_SET_SHEATHED,
-    OPCODES.CMSG_SET_SHEATHED,
     OPCODES.CMSG_CAST_SPELL,
   ]);
+  assert.deepEqual(sheaths(), [2], "the bow, without the blade put away first");
   assert.equal(client.attacking, false);
   assert.equal(client.autoRepeatSpellId, 75);
 
@@ -557,9 +561,9 @@ test("melee and ranged auto-combat switch modes with explicit wire cancellation"
   assert.deepEqual(connection.sent.map(({ opcode }) => opcode), [
     OPCODES.CMSG_CANCEL_AUTO_REPEAT_SPELL,
     OPCODES.CMSG_SET_SHEATHED,
-    OPCODES.CMSG_SET_SHEATHED,
     OPCODES.CMSG_ATTACK_SWING,
   ]);
+  assert.deepEqual(sheaths(), [1], "the blade, without the bow put away first");
   assert.equal(client.autoRepeatSpellId, undefined);
   // 5.21: a request until SMSG_ATTACK_START answers it (optimistic-state.test.mjs).
   assert.equal(client.attackRequested, true);
@@ -1883,7 +1887,7 @@ test("text-emote audio edge is distinct from the animation-only SMSG_EMOTE edge"
   client.close();
 });
 
-test("SMSG_CANCEL_AUTO_REPEAT consumes a packed guid, restores sheath, and does not echo cancel", async () => {
+test("SMSG_CANCEL_AUTO_REPEAT consumes a packed guid, sends no sheath, and does not echo cancel", async () => {
   const guid = 3n;
   const login = new PacketWriter().u32(1).f32(1).f32(2).f32(3).f32(0).toUint8Array();
   const connection = {
@@ -1914,8 +1918,9 @@ test("SMSG_CANCEL_AUTO_REPEAT consumes a packed guid, restores sheath, and does 
   assert.equal(client.autoRepeatSpellId, undefined);
   assert.equal(connection.sent.some(({ opcode }) => opcode === OPCODES.CMSG_CANCEL_AUTO_REPEAT_SPELL), false,
     "the server already performed the cancellation");
-  assert.deepEqual(connection.sent.filter(({ opcode }) => opcode === OPCODES.CMSG_SET_SHEATHED).at(-1)?.payload,
-    buildSetSheathed(SHEATH_MELEE));
+  // 5.05 (12.10): Wow.exe's handler 0x0072d130 runs 0x00807560(0) and an animation reset, never the sheath setter
+  // 0x00736d30 — the bow stays where it is (was: CMSG_SET_SHEATHED back to the blade, the bow flickering).
+  assert.deepEqual(connection.sent.filter(({ opcode }) => opcode === OPCODES.CMSG_SET_SHEATHED), []);
   assert.deepEqual(errors, []);
   assert.equal(client.unhandledOpcodes.entries.has(OPCODES.SMSG_CANCEL_AUTO_REPEAT), false);
   client.close();
