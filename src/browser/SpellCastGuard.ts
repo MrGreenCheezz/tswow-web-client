@@ -5,6 +5,8 @@ import { UPDATE_FIELDS } from "../generated/updateFields.js";
 import { game } from "./game/Context.js";
 import { globalCooldownEndFor } from "./game/PredictedGlobalCooldown.js"; // L13 5.30
 import { spellButtonUsable, type SpellMetadata } from "./SpellMetadata.js";
+import { SPELL_FAILED_NOT_READY } from "../world/AutoRepeatRefusal.js"; // 3.47 (12.10)
+import { cooldownRefusalText } from "../world/CooldownRefusalWords.js"; // 3.47 (12.10)
 
 /** The local reasons a browser action can be rejected before it reaches the realm. */
 export type SpellCastBlockReason =
@@ -142,4 +144,25 @@ export function spellCastBlockReason(
 /** Used by callers that only need the allow/deny result. */
 export function spellCastAllowed(world: WorldClient, spellId: number, now = performance.now()): boolean {
   return spellCastBlockReason(world, spellId, now) === undefined;
+}
+
+/** The block reasons Wow.exe's request check 0x00739650 refuses NOT_READY: 0x00809000 answers a recovering, held or global-held spell. */
+export function spellCastRefusedNotReady(reason: SpellCastBlockReason | undefined): boolean {
+  return reason === "cooldown" || reason === "hold" || reason === "global-cooldown";
+}
+
+/**
+ * 3.47 (12.10): a spell request refused on cooldown, as Wow.exe refuses it — the request builder 0x0080cce0's
+ * check 0x00739650 asks 0x00809000 (the spell's timer, its category's, a hold or the global part) and refuses
+ * NOT_READY (`0x43`) through 0x00808200 before any targeting or packet: the error frame's words by the spell row
+ * (ERR_SPELL_COOLDOWN, ERR_ABILITY_COOLDOWN for SPELL_ATTR0_ABILITY, the potion and food rows by Category —
+ * world/CooldownRefusalWords.ts) unless the same refusal came within 3 s, the combat log's SPELL_CAST_FAILED and
+ * UNIT_SPELLCAST_FAILED (WorldClient.spellRefusedLocally). The book, the action bars and every caller of
+ * `castSpell` share it; a row the page lacks reads as a plain spell.
+ */
+export function refuseSpellOnCooldown(
+  world: Partial<Pick<WorldClient, "spellRefusedLocally">>, spellId: number,
+  row: Pick<SpellMetadata, "category" | "attributes"> | undefined = game.spells.get(spellId),
+): void {
+  world.spellRefusedLocally?.(spellId, SPELL_FAILED_NOT_READY, cooldownRefusalText(SPELL_FAILED_NOT_READY, row) ?? "");
 }

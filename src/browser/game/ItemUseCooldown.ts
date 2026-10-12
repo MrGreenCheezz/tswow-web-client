@@ -8,19 +8,20 @@
  *   the item's spell and entry, so under the item's own category for that spell when it names one — and a
  *   recovering or held answer is refused with SPELL_FAILED_ITEM_NOT_READY (45, `0x2d`) through 0x00808200, before
  *   the targeting of 0x0080c790 and without a packet. (A spell request asks 0x00809000 there and is refused
- *   NOT_READY, 67: SpellCastGuard.ts.)
+ *   NOT_READY, 67: SpellCastGuard.ts `refuseSpellOnCooldown`.)
  * - 0x00808200 shows the game error that 0x00807f10 picks for 45 by the spell row's Category (record +0x4): 4 and 9
  *   ERR_POTION_COOLDOWN, 10 and 11 ERR_FOOD_COOLDOWN, any other ERR_ITEM_COOLDOWN — rows 0x32, 0x33 and 0x31 of the
- *   message table at 0x00ac8af0, all of type 2, the error frame. Its repeat rule (`local_14`: the same spell and
- *   result again within 3 s) keeps the frame quiet; the combat log's SPELL_CAST_FAILED carries the result's own
- *   words (WorldClient.spellRefusedLocally).
+ *   message table at 0x00ac8af0, all of type 2, the error frame (3.47: world/CooldownRefusalWords.ts, shared with
+ *   the spell's and the realm's refusal). Its repeat rule (`local_14`: the same spell and result again within 3 s)
+ *   keeps the frame quiet; the combat log's SPELL_CAST_FAILED carries the result's own words, and 0x007fecc0 raises
+ *   UNIT_SPELLCAST_FAILED for the request (WorldClient.spellRefusedLocally).
  */
-import { globalString } from "../../generated/globalStrings.js";
+import { cooldownRefusalErrorName, cooldownRefusalText, SPELL_FAILED_ITEM_NOT_READY } from "../../world/CooldownRefusalWords.js";
 import { itemUseSpellCategory } from "../../world/SpellCooldownParts.js";
 import type { WorldClient } from "../../world/WorldClient.js";
 
-/** SpellCastResult SPELL_FAILED_ITEM_NOT_READY (SharedDefines.h; 0x00739650's `0x2d`). */
-export const SPELL_FAILED_ITEM_NOT_READY = 45;
+/** SpellCastResult SPELL_FAILED_ITEM_NOT_READY (SharedDefines.h; 0x00739650's `0x2d`). 3.47: world/CooldownRefusalWords.ts. */
+export { SPELL_FAILED_ITEM_NOT_READY };
 
 /** The world's answers the check reads; the page's doubles may lack any of them (nothing is then refused). */
 export type ItemUseCooldownWorld = Partial<Pick<WorldClient,
@@ -48,9 +49,7 @@ export function itemUseCooldownBlock(
 
 /** 0x00807f10, case 0x2d: the GlobalStrings name of the error frame's words, by the spell row's Category. */
 export function itemCooldownErrorName(rowCategory: number | undefined): string {
-  if (rowCategory === 4 || rowCategory === 9) return "ERR_POTION_COOLDOWN";
-  if (rowCategory === 10 || rowCategory === 11) return "ERR_FOOD_COOLDOWN";
-  return "ERR_ITEM_COOLDOWN";
+  return cooldownRefusalErrorName(SPELL_FAILED_ITEM_NOT_READY, { category: rowCategory }) ?? "ERR_ITEM_COOLDOWN";
 }
 
 /**
@@ -62,7 +61,7 @@ export function refuseItemUseOnCooldown(
   globalEnd = 0, now = performance.now(),
 ): boolean {
   if (itemUseCooldownBlock(world, template, spellId, now, globalEnd) === undefined) return false;
-  const name = itemCooldownErrorName(rowCategory);
-  world.spellRefusedLocally?.(spellId, SPELL_FAILED_ITEM_NOT_READY, globalString(name) ?? name);
+  world.spellRefusedLocally?.(spellId, SPELL_FAILED_ITEM_NOT_READY,
+    cooldownRefusalText(SPELL_FAILED_ITEM_NOT_READY, { category: rowCategory }) ?? "");
   return true;
 }

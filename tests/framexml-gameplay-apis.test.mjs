@@ -77,6 +77,12 @@ function liveFixture() {
     cooldownRemaining: (id, now) => Math.max(0,
       (world.cooldownSnapshots.get(id)?.endsAt ?? 0) - now,
       (world.categoryCooldowns.get(world.spellCategories.get(id)) ?? 0) - now),
+    // 3.47 (12.10): GetShapeshiftFormCooldown reads WorldClient.cooldownState as GetSpellCooldown does: the running
+    // snapshot (no category snapshot here: a category lockout alone sweeps from now).
+    cooldownState: (id) => {
+      const own = world.cooldownSnapshots.get(id);
+      return own !== undefined && own.endsAt > clock.monotonic ? own : undefined;
+    },
     events: { on(name, callback) {
       const set = listeners.get(name) ?? new Set();
       listeners.set(name, set);
@@ -163,7 +169,8 @@ test("bonus page waits for real metadata; shared stance category cooldown blocks
   clock.monotonic = 101_001;
   clock.lua = 501.001;
   seam.tick(clock.lua);
-  assert.deepEqual(call(seam, "GetShapeshiftFormCooldown", 2), [0, 0, 0]);
+  // 3.47 (12.10): ready, `enable` 1 — 0x0053c180 asks 0x00809000, which sets it before it looks.
+  assert.deepEqual(call(seam, "GetShapeshiftFormCooldown", 2), [0, 0, 1]);
   assert.equal(call(seam, "GetShapeshiftFormInfo", 2)[3], true);
   player.fields.set(UPDATE_FIELDS.UNIT_FIELD_BYTES_2.offset, 18 << 24);
   seam.tick(clock.lua + 0.1);

@@ -79,7 +79,8 @@ test("GetSpellCooldown and GetActionCooldown answer the global part, never a sta
     assert.deepEqual(call(seam, "GetSpellCooldown", 1, "spell"), [500, 1.5, 1]);
     assert.deepEqual(call(seam, "GetActionCooldown", 13), [500, 1.5, 1]);
     assert.deepEqual(call(seam, "GetSpellCooldown", 2, "spell"), [0, 0, 1], "a spell off the global cooldown");
-    assert.deepEqual(call(seam, "GetActionCooldown", 14), [0, 0, 0]);
+    // 3.47 (12.10): the bar's slot answers the book's 0, 0, 1 (0x005a8e40 → 0x00809000 sets `enable` 1).
+    assert.deepEqual(call(seam, "GetActionCooldown", 14), [0, 0, 1]);
     clock.monotonic += 500;
     clock.lua += 0.5;
     assert.deepEqual(call(seam, "GetSpellCooldown", 1, "spell"), [500, 1.5, 1], "the start stays put");
@@ -160,8 +161,9 @@ test("L13-review 5.30: by category — 133/0 shows the 133 entry, 0 nothing, 38 
     assert.deepEqual(edges(fired), ["ACTIONBAR_UPDATE_COOLDOWN", "SPELL_UPDATE_COOLDOWN"]);
     assert.deepEqual(action(7744), [500, 1, 1], "Воля Отрекшихся: the running 133 entry, its own length");
     assert.deepEqual(book(7744), [500, 1, 1]);
-    assert.deepEqual([action(45469), book(45469)], [[0, 0, 0], [0, 0, 1]], "category 0: not the 133 one");
-    assert.deepEqual([action(48941), book(48941)], [[0, 0, 0], [0, 0, 1]], "category 38: not the 133 one");
+    // 3.47 (12.10): the bar and the book answer alike, `enable` 1 (0x00807980), as Wow.exe's two readers do.
+    assert.deepEqual([action(45469), book(45469)], [[0, 0, 1], [0, 0, 1]], "category 0: not the 133 one");
+    assert.deepEqual([action(48941), book(48941)], [[0, 0, 1], [0, 0, 1]], "category 38: not the 133 one");
     clock.monotonic += 250;
     clock.lua += 0.25;
     fired.length = 0;

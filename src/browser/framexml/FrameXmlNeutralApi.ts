@@ -18,10 +18,11 @@
  *
  * Two things live here rather than in `FrameXmlBoot.ts`. The constant answers
  * are data, so the report, the test and the prose cannot drift apart. The
- * stateful families — CVars, which have to round-trip a write, and add-ons,
- * which have to answer for the modules this TOC actually glued into itself —
- * are Lua, because they hold state that would otherwise cost a host round trip
- * per call, and F1's counters are in Lua for exactly that reason.
+ * stateful families — CVars, which have to round-trip a write, and the empty
+ * world's add-on answers (3.46: the world's boot answers its own Interface/AddOns
+ * list; a TSWoW module glued into the TOC is no add-on in Wow.exe) — are Lua,
+ * because they hold state that would otherwise cost a host round trip per call,
+ * and F1's counters are in Lua for exactly that reason.
  */
 
 import { FRAMEXML_GETTEXT_NEUTRAL, FRAMEXML_GETTEXT_PRELUDE } from "./FrameXmlGetText.js";
@@ -555,26 +556,33 @@ const STATEFUL: readonly FrameXmlNeutralAnswer[] = [
       + "and unregistered for the same reason.",
   },
   {
-    name: "GetNumAddOns", group: "addon", answer: "the modules this TOC glued in",
-    reason: "The only add-ons this client has loaded are the server's own modules, and the TOC "
-      + "records them itself in `## tsaddon-begin:` markers. Counted from there, not guessed.",
+    name: "GetNumAddOns", group: "addon", answer: "0 here; the host answers its Interface/AddOns list",
+    reason: "3.46: Wow.exe counts the add-ons it found in Interface/AddOns (0x00511200 → 0x005f4ff0). A TSWoW "
+      + "module is glued into FrameXML.toc and is no add-on there, so it is never counted. The world's boot "
+      + "answers the installed list (FrameXmlAddonRuntime.count); this empty world has none.",
   },
   {
-    name: "IsAddOnLoaded", group: "addon", answer: "true for a glued-in module, false otherwise",
+    name: "IsAddOnLoaded", group: "addon", answer: "nil here; the host answers its add-ons",
     reason: "409 calls, all but a handful from `_ERRORMESSAGE` asking for Blizzard_DebugTools, "
-      + "which this corpus genuinely does not contain.",
+      + "which this corpus genuinely does not contain. 3.46: a TSWoW module is no add-on in Wow.exe; the "
+      + "world's boot answers the add-ons it loaded (FrameXmlAddonRuntime.status).",
   },
   {
-    name: "LoadAddOn", group: "addon", answer: 'true for a glued-in module, else false, "MISSING"',
+    name: "LoadAddOn", group: "addon", answer: 'nil, "MISSING" here; the host loads its add-ons',
     reason: "410 calls. UIParent.lua:238, 2 raises — `_G[\"ADDON_\"..reason]` concatenated a nil "
       + "reason; MISSING is the client's own code for an add-on that is not installed and "
-      + "`ADDON_MISSING` is a real GlobalString.",
+      + "`ADDON_MISSING` is a real GlobalString. 3.46: a TSWoW module's name is MISSING too.",
   },
-  { name: "GetAddOnInfo", group: "addon", answer: "name, title, notes, enabled, loadable, reason, security", reason: "MainMenuBar's memory report walks the list by index." },
+  {
+    name: "GetAddOnInfo", group: "addon",
+    answer: 'name, nil, nil, nil, nil, "MISSING", "INSECURE" for a name; an index raises (the list is empty)',
+    reason: "MainMenuBar's memory report walks the list by index. 3.46: Wow.exe's 0x00511240 over the "
+      + "Interface/AddOns list (FrameXmlAddonRuntime.info); this empty world has no entry.",
+  },
   { name: "GetAddOnMemoryUsage", group: "addon", answer: "0", reason: "This VM has no per-add-on allocator to ask." },
   { name: "UpdateAddOnMemoryUsage", group: "addon", values: NOTHING, answer: "—", reason: "Nothing to refresh." },
-  { name: "GetAddOnDependencies", group: "addon", values: NOTHING, answer: "nil", reason: "A glued-in module has no declared dependencies." },
-  { name: "IsAddOnLoadOnDemand", group: "addon", values: [false], answer: "false", reason: "Everything in this TOC is already loaded." },
+  { name: "GetAddOnDependencies", group: "addon", values: NOTHING, answer: "nil", reason: "No add-on here declares a dependency." },
+  { name: "IsAddOnLoadOnDemand", group: "addon", values: [false], answer: "false", reason: "No add-on here waits to be loaded." },
   { name: "EnableAddOn", group: "addon", values: NOTHING, answer: "—", reason: "No add-on list to enable in." },
   { name: "DisableAddOn", group: "addon", values: NOTHING, answer: "—", reason: "StaticPopup's «disable all and reload» path." },
   { name: "EnableAllAddOns", group: "addon", values: NOTHING, answer: "—", reason: "Same path." },
@@ -637,8 +645,7 @@ const MODIFIED_CLICK_LUA = `{ ${FRAMEXML_MODIFIED_CLICK_DEFAULTS
  * It writes into `__fxNeutralImpl`, which the boot prelude created and captured,
  * so the `_G` metamethod picks these up on first touch exactly like a constant
  * one — same counter, same first-touch traceback, same line in the census. The
- * host hands in only data: the module names the TOC recorded, and the held
- * modifiers through `__fxModifierState`.
+ * host hands in only data: the held modifiers through `__fxModifierState`.
  */
 export const FRAMEXML_NEUTRAL_PRELUDE = `
 do
@@ -851,41 +858,21 @@ do
   end
 
   ---------------------------------------------------------------- AddOns
-  -- The add-ons this client has are the server's own modules, and the TOC is the
-  -- record of which ones it glued into itself. Everything else is absent, which
-  -- is why LoadAddOn("Blizzard_DebugTools") answers false, "MISSING" rather than
-  -- nothing: the corpus reads the reason and looks up ADDON_MISSING by name.
-  local order = __fxAddonModules or {}
-  local byName = {}
-  for index = 1, #order do byName[lower(order[index])] = index end
-
-  local function find(key)
-    if type(key) == "number" then
-      local name = order[key]
-      if name == nil then return nil end
-      return name, key
-    end
-    if type(key) ~= "string" then return nil end
-    local index = byName[lower(key)]
-    if index == nil then return nil end
-    return order[index], index
-  end
-
-  impl.GetNumAddOns = function() return #order end
-  impl.IsAddOnLoaded = function(key)
-    if find(key) == nil then return false end
-    -- loaded, finished: a module glued into the TOC ran to completion with it.
-    return true, true
-  end
-  impl.LoadAddOn = function(key)
-    if find(key) == nil then return false, "MISSING" end
-    return true
-  end
+  -- 3.46: the empty world has no add-ons. Wow.exe's list is Interface/AddOns (0x00511200, 0x00511240); a TSWoW
+  -- module is glued into FrameXML.toc and is no add-on there, and the world's boot answers these four from the
+  -- installed list and the add-ons it loaded (FrameXmlAddonRuntime). Nothing is installed here, which is why
+  -- LoadAddOn("Blizzard_DebugTools") answers nil, "MISSING" rather than nothing: the corpus reads the reason and
+  -- looks up ADDON_MISSING by name.
+  impl.GetNumAddOns = function() return 0 end
+  impl.IsAddOnLoaded = function() return nil end
+  impl.LoadAddOn = function() return nil, "MISSING" end
   impl.GetAddOnInfo = function(key)
-    local name = find(key)
-    if name == nil then return nil end
-    -- name, title, notes, enabled, loadable, reason, security
-    return name, name, "", true, true, nil, "INSECURE"
+    if type(key) == "number" or (type(key) == "string" and tonumber(key) ~= nil) then
+      error("AddOn index must be in the range of 1 to 0", 0)
+    end
+    if type(key) ~= "string" then error('Usage: GetAddOnInfo(index or "name")', 0) end
+    -- name, title, notes, enabled, loadable, reason, security: an unknown name (0x005f7e90's reason 1).
+    return key, nil, nil, nil, nil, "MISSING", "INSECURE"
   end
   impl.GetAddOnMemoryUsage = function() return 0 end
 

@@ -57,6 +57,7 @@ import {
   frameXmlRetimeShown,
   frameXmlStampMessage,
 } from "./FrameXmlMessageFade.js";
+import { frameXmlTitleRegion, setFrameXmlTitleRegion } from "./FrameXmlTitleRegion.js"; // 3.48 (12.10)
 
 // Keep the runtime's public type spelling local until FrameXmlTypes can be
 // consumed by generated declaration users. The cast is constrained by the
@@ -1824,6 +1825,11 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
       case "HitRectInsets":
         frame.hitRectInsets = insetsOf(element);
         return true;
+      // 3.48 (12.10): Wow.exe's frame loader (0x004932c0) builds a title region for each `<TitleRegion>` and loads
+      // the element into it — its own setAllPoints, Size and Anchors (FrameXmlTitleRegion.ts).
+      case "TitleRegion":
+        this.buildTitleRegion(frame, element);
+        return true;
       case "TextInsets":
         frame.textInsets = insetsOf(element);
         return true;
@@ -2506,6 +2512,31 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
     owner.children.push(mutable);
     this.notifyMutation();
     return mutable;
+  }
+
+  /**
+   * 3.48 (12.10): `Frame:CreateTitleRegion()` (Wow.exe 0x0049e630): the frame's title region, made when it has none —
+   * shown with its frame, without points — or the one it has, its points cleared (0x0048a200). Never one of the
+   * frame's `children`: it is neither drawn nor listed (FrameXmlTitleRegion.ts).
+   */
+  createTitleRegion(frame: FrameXmlFrame): FrameXmlFrame | undefined {
+    const owner = this.own(frame);
+    if (!owner) return undefined;
+    const existing = frameXmlTitleRegion(owner);
+    if (existing) {
+      this.ClearAllPoints(existing);
+      return existing;
+    }
+    return this.buildTitleRegion(owner, { name: "TitleRegion", attributes: {}, children: [], text: "" });
+  }
+
+  /** 3.48: a title region of `owner` loaded from `element` and made the frame's — the XML loader's and CreateTitleRegion's. */
+  private buildTitleRegion(owner: MutableFrameXmlFrame, element: FrameXmlElement): FrameXmlFrame | undefined {
+    const built = this.buildElement(element, owner, undefined, "Region");
+    if (!built) return undefined;
+    setFrameXmlTitleRegion(owner, built);
+    this.notifyMutation();
+    return built;
   }
 
   /** Move a widget between containing frames, preserving its identity and authored state. */

@@ -17,6 +17,7 @@ import { frameXmlMessageAlphaReplaced, frameXmlNoteMessageLayout } from "./Frame
 import { frameXmlSimpleHtmlFontKey, frameXmlSimpleHtmlLevelFont } from "./FrameXmlSimpleHtmlFonts.js"; // L5 3.35
 import { FRAME_XML_SIMPLE_HTML_LINK_FORMAT, parseFrameXmlSimpleHtml } from "./FrameXmlSimpleHtml.js";
 import { buildFrameXmlSimpleHtml, type FrameXmlSimpleHtmlDomHooks } from "./FrameXmlSimpleHtmlDom.js";
+import { frameXmlTitleRegion, frameXmlTitleRegionHit } from "./FrameXmlTitleRegion.js"; // 3.48 (12.10)
 
 /** What one reconciliation pass had to do: see `FrameXmlDomRenderer.syncPass`. */
 export type FrameXmlSyncKind = "structural" | "layout" | "paint" | "noop";
@@ -295,6 +296,8 @@ interface FrameDrag {
   moving?: FrameXmlFrame;
   left?: number;
   top?: number;
+  /** 3.48: a press inside the frame's title region moves it, `movable` or not (FrameXmlTitleRegion.ts). */
+  readonly title?: true;
 }
 
 let nextBackdropFilterId = 0;
@@ -647,6 +650,8 @@ export class FrameXmlDomRenderer {
   #drag: FrameDrag | undefined;
   /** L1-review: the releases that ended a started drag; they click nothing (finishDrag, registeredClick). */
   readonly #dragReleases = new WeakSet<Event>();
+  /** 3.48: the release that ends a title-region drag, spent there (Wow.exe 0x004947a0): no OnMouseUp, no click. */
+  readonly #titleReleases = new WeakSet<Event>();
   #cursor: { readonly x: number; readonly y: number } | undefined;
   #cursorCleanup: (() => void) | undefined;
   /** Buttons under the pointer, for the `<HighlightFont>` their inheriting label switches to. */
@@ -2110,12 +2115,15 @@ export class FrameXmlDomRenderer {
       if (this.#layoutOnly?.(frame)) return;
       if (this.bubbledFromControl(element, event)) return;
       this.rememberCursor(event);
+      // 3.48: a press inside the frame's title region moves the frame and is spent there (Wow.exe 0x00495470).
+      if (this.startTitleDrag(frame, element, event)) return;
       this.#bridge?.fireScript(frame, "OnMouseDown", mouseButtonName(event));
       this.prepareDrag(frame, event);
     });
     element.addEventListener("mouseup", (event) => {
       if (this.#layoutOnly?.(frame)) return;
       if (this.bubbledFromControl(element, event)) return;
+      if (this.#titleReleases.has(event)) return; // 3.48: the release a title drag spent
       this.#bridge?.fireScript(frame, "OnMouseUp", mouseButtonName(event));
     });
 
@@ -2191,6 +2199,71 @@ export class FrameXmlDomRenderer {
     mouse.preventDefault?.();
   }
 
+  /**
+   * 3.48 (12.10): Wow.exe's mouse-down (0x00495470) asks the frame that took the press — the topmost one taking the
+   * mouse under the cursor — whether its shown title region holds the point (0x00489270), and if so moves that frame
+   * from the point (0x00494060, mode 2) and stops: no OnMouseDown, no drag registration, any button, `movable` or
+   * not. The move follows the pointer at once (0x004945a0 → 0x00493ce0, no dead zone) and any release ends it
+   * (0x004947a0), spent there. A press that bubbled up from a frame inside is that frame's, not this one's.
+   */
+  private startTitleDrag(frame: FrameXmlFrame, element: HTMLElement, event: Event): boolean {
+    const bridge = this.#bridge;
+    if (!bridge || this.#drag || frameXmlTitleRegion(frame) === undefined || !bridge.isVisible(frame)) return false;
+    // A frame that does not take the mouse is never the frame under it (`pressedFrame`): the chat frames' title regions
+    // (enableMouse="false") are inert.
+    if (this.pressedFrame(event) !== frame) return false;
+    const mouse = event as MouseEvent;
+    if (!Number.isFinite(mouse.clientX) || !Number.isFinite(mouse.clientY)) return false;
+    if (!frameXmlTitleRegionHit(bridge, frame, this.screenRectOf(frame))) return false;
+    const doc = this.#container.ownerDocument;
+    const rect = element.getBoundingClientRect?.();
+    if (typeof doc?.addEventListener !== "function" || !rect) return false;
+    let drag: FrameDrag;
+    const move = (next: Event): void => this.moveDrag(drag, next as MouseEvent);
+    const up = (next: Event): void => {
+      this.#titleReleases.add(next);
+      this.rememberCursor(next);
+      this.finishDrag(true, next);
+    };
+    const blur = (): void => this.finishDrag(true);
+    drag = {
+      source: frame, button: mouseButtonName(event), startX: mouse.clientX, startY: mouse.clientY,
+      registered: false, captureMouseUp: false, started: true, title: true, moving: frame, left: rect.left, top: rect.top,
+      cleanup: () => {
+        doc.removeEventListener("mousemove", move, true);
+        doc.removeEventListener("mouseup", up, true);
+        doc.defaultView?.removeEventListener("blur", blur);
+      },
+    };
+    this.#drag = drag;
+    bridge.update(frame, (mutable) => { mutable.moving = true; });
+    doc.addEventListener("mousemove", move, true);
+    doc.addEventListener("mouseup", up, true);
+    doc.defaultView?.addEventListener("blur", blur);
+    mouse.preventDefault?.();
+    event.stopPropagation?.();
+    return true;
+  }
+
+  /**
+   * The frame a press landed on, as Wow.exe's mouse focus (+0x78) has it: the nearest frame up from the element under
+   * the pointer that takes the mouse — a texture, a string or a frame that does not is passed through.
+   */
+  private pressedFrame(event: Event): FrameXmlFrame | undefined {
+    for (let node = event.target as Element | null; node && node !== this.#container; node = node.parentElement) {
+      const frame = this.#frameOfElement.get(node);
+      if (frame && frame.type !== "Texture" && frame.type !== "FontString" && this.takesMouse(frame)) return frame;
+    }
+    return undefined;
+  }
+
+  /** `enableMouse` (EnableMouse), else a control's own default — `applyFrame`'s rule for a press, the wheel aside. */
+  private takesMouse(frame: FrameXmlFrame): boolean {
+    const mouse = frame.attributes["enableMouse"] ?? frame.attributes["enablemouse"];
+    if (mouse !== undefined) return /^(?:true|1)$/i.test(mouse);
+    return frame.type === "Button" || frame.type === "CheckButton" || frame.type === "EditBox" || frame.type === "Slider";
+  }
+
   private movingAncestor(frame: FrameXmlFrame): FrameXmlFrame | undefined {
     for (let current: FrameXmlFrame | undefined = frame; current; current = current.parent) {
       if (current.moving && current.movable) return current;
@@ -2218,7 +2291,8 @@ export class FrameXmlDomRenderer {
       drag.top = rect.top;
     }
     if (!drag.moving || drag.left === undefined || drag.top === undefined) return;
-    if (!drag.moving.moving || !drag.moving.movable) { this.finishDrag(false); return; }
+    // 3.48: a title-region drag needs no `movable` (FrameXmlTitleRegion.ts).
+    if (!drag.moving.moving || (!drag.moving.movable && !drag.title)) { this.finishDrag(false); return; }
     this.placeAtClientPosition(drag.moving,
       drag.left + event.clientX - drag.startX, drag.top + event.clientY - drag.startY);
     event.preventDefault?.();
@@ -2384,6 +2458,7 @@ export class FrameXmlDomRenderer {
     if (this.#layoutOnly?.(frame)) return;
     if (frame.clickRegistrations.size === 0) return;
     if (!down && this.#dragReleases.has(event)) return; // L1-review: a drag's release clicks nothing
+    if (!down && this.#titleReleases.has(event)) return; // 3.48: nor does the release a title drag spent
     const button = mouseButtonName(event);
     const phase = down ? "DOWN" : "UP";
     if (!frame.clickRegistrations.has(`${button}${phase}`.toUpperCase()) &&

@@ -386,6 +386,7 @@ import { buildPetCastSpell, petBarCastsAsUnit, petSlotCastsSpell } from "./PetCa
 import { petSpellCastsAsUnitAt } from "./PetCastSpell.js"; // L13 11.02-D; L13-review 11.02-D: + the press's unit
 import { spellAttributeWords } from "./PetCastSpell.js"; // 5.05 (11.10): the wand rule
 import { wandRepeatCancels } from "./AutoRepeatRefusal.js"; // 5.05 (11.10)
+import { cooldownRefusalText, SPELL_FAILED_ITEM_NOT_READY } from "./CooldownRefusalWords.js"; // 3.47 (12.10)
 // 11.02-E: missile trajectories — the cast's flag 2 tail, the one re-aim, the page's solver.
 import {
   MissileTrajectoryTracker, isVehicleSpellBar, missileCastPlan, missileShotSource, type MissileCastPlan,
@@ -2475,6 +2476,12 @@ export class WorldClient {
    * 3.39 (12.10): with `errorText` (a refused item use, game/ItemUseCooldown.ts) the rest of 0x00808200's local half
    * too, as the missile refusal has it (`#missilePlan`): the error frame's words unless its repeat rule keeps them
    * quiet (`local_14`, `#refusalQuiet`), and the combat log's SPELL_CAST_FAILED with the result's own words.
+   * 3.47 (12.10): a spell's refusal on cooldown takes the same path (SpellCastGuard.ts `refuseSpellOnCooldown`). The
+   * request object 0x0080cce0 refuses is 0x00805010(1)'s, which draws the next cast count (DAT_00d397d5, +0x24)
+   * before 0x00739650 runs; 0x00808200 ends in 0x007fecc0 for its caster, the player's unit, whatever the repeat
+   * rule kept quiet — UNIT_SPELLCAST_FAILED with that count (`casterGuid`/`castCount` on the event; never the cast
+   * in progress's count, so the casting bar is left alone). This client keeps an item use's count apart
+   * (`#useCount`, CMSG_USE_ITEM): an ITEM_NOT_READY refusal draws that one.
    */
   spellRefusedLocally(spellId: number, result: number, errorText?: string): void {
     if (spellId <= 0) return;
@@ -2483,8 +2490,13 @@ export class WorldClient {
     const quiet = this.#refusalQuiet.quiet(spellId, result, performance.now(),
       this.autoRanged.wantedSpellId, this.autoRanged.failureResets);
     if (errorText && !quiet) this.onSpellStatus?.(errorText, true);
+    let castCount: number;
+    if (result === SPELL_FAILED_ITEM_NOT_READY) castCount = ++this.#useCount & 0xff;
+    else castCount = this.#castCount = (this.#castCount + 1) & 0xff;
+    const casterGuid = this.state.selfGuid;
     this.events.emit("SPELL_CAST_REFUSED_LOCAL", {
       spellId, result, ...castFailureWords({}, () => spellFailureText(result, this.#castFailureNames())),
+      ...(casterGuid === undefined ? {} : { casterGuid, castCount }),
     });
   }
 
@@ -7471,8 +7483,11 @@ export class WorldClient {
       if (limited !== undefined) { this.onSpellStatus?.(limited, true); return true; } // 05.10-3.02
       if (quiet) return true; // 05.10-5.05
       // The words are the realm's own, out of its GlobalStrings, filled from the packet's tail;
-      // `DONT_REPORT` means say nothing.
-      const text = spellFailureText(failure, this.#castFailureNames());
+      // `DONT_REPORT` means say nothing. 3.47 (12.10): NOT_READY and ITEM_NOT_READY show the row 0x00807f10 picks
+      // by the spell row's Category and Attributes (CooldownRefusalWords.ts), as the client's own refusal does.
+      const text = cooldownRefusalText(failure.result, {
+        category: this.spellCooldownRow?.(failure.spellId)?.category, attributes: spellAttributeWords(failure.spellId),
+      }) ?? spellFailureText(failure, this.#castFailureNames());
       if (text) this.onSpellStatus?.(text, true);
       return true;
     }

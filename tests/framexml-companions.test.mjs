@@ -74,7 +74,9 @@ function fixture({ ready = true, known = [] } = {}) {
     casts: new Map(), cooldownSnapshots: new Map(), itemCooldowns: new Map(), mirrorTimers: new Map(), itemTemplates: new Map(),
     actionButtons: [],
     aurasFor: (guid) => [...(world.auras.get(guid)?.values() ?? [])],
-    cooldownRemaining: () => 0, cooldownState: () => undefined, isActiveMountSpell: () => false,
+    // 3.47 (12.10): GetCompanionCooldown reads these, as GetSpellCooldown does: the snapshot's own timer.
+    cooldownRemaining: (id, now) => Math.max(0, (world.cooldownSnapshots.get(id)?.endsAt ?? 0) - now),
+    cooldownState: (id) => world.cooldownSnapshots.get(id), isActiveMountSpell: () => false,
     setActionButton(slot, action, type) {
       sent.push([slot, action, type]);
       world.actionButtons = [...world.actionButtons.filter((button) => button.slot !== slot),
@@ -230,7 +232,8 @@ test("the cooldown, the cursor and the pet page's own calls", async () => {
   seam.attach(pump);
   world.cooldownSnapshots.set(458, { startedAt: 500, duration: 3000, endsAt: 3500 });
   assert.deepEqual(call(seam, "GetCompanionCooldown", "MOUNT", 1), [99.5, 3, 1], "GetSpellCooldown's shape on GetTime's axis");
-  assert.deepEqual(call(seam, "GetCompanionCooldown", "CRITTER", 1), [0, 0, 0]);
+  // 3.47 (12.10): ready, `enable` 1 — 0x0053e490 asks 0x00809000, which sets it before it looks.
+  assert.deepEqual(call(seam, "GetCompanionCooldown", "CRITTER", 1), [0, 0, 1]);
   assert.deepEqual(call(seam, "GetCompanionCooldown", "CRITTER", 2), [], "nothing past the list");
 
   call(seam, "PickupCompanion", "MOUNT", 1);

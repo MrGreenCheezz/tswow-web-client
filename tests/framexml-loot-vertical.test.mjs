@@ -171,7 +171,8 @@ test("LootFrame.xml follows ContainerFrame.xml at its retail slot; the closure a
     const before = metric(baseline.inventory);
     const afterLoad = metric(candidate.inventory);
     const delta = Object.fromEntries(Object.keys(before).map((key) => [key, afterLoad[key] - before[key]]));
-    assert.deepEqual(delta, { files: 2, bytes: 29279, widgets: 174, errors: 0, distinct: 0, luaFailed: 0 },
+    // 3.48 (12.10): 175 — LootFrame's `<TitleRegion setAllPoints="true"/>` (LootFrame.xml:92) is a region of its own now.
+    assert.deepEqual(delta, { files: 2, bytes: 29279, widgets: 175, errors: 0, distinct: 0, luaFailed: 0 },
       `LootFrame closure delta ${JSON.stringify(delta)}`);
     assert.deepEqual(candidate.inventory.errors, []);
     assert.equal(candidate.boot.bridge.getFrame("LootFrame").visible, false);

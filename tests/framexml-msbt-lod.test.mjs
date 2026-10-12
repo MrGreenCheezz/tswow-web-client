@@ -101,11 +101,13 @@ test("/msbt loads the prefetched MSBTOptions inside LoadAddOn and opens it on th
       [true, true], "the options window is open after the first /msbt");
     assert.deepEqual(lua(boot, "return table.concat(MSBT_LOD_LOADED, ',')"), ["MSBTOptions"], "ADDON_LOADED inside the call");
     assert.deepEqual(lua(boot, "return MSBT_LOAD_ERRORS"), [0], "no Lua error while LoadAddOn ran MSBTOptions");
-    // Opening it meets one gap that is not 3.18's: Frame:CreateTitleRegion is unanswered in this client
-    // (MSBTOptionsMain.lua:160-161 indexes its nil result), so the window is built only up to there.
+    // 3.48 (12.10): Frame:CreateTitleRegion answers as Wow.exe's (MSBTOptionsMain.lua:160-163), so the window is built
+    // whole — nothing raises any more.
     const errors = boot.errors.slice(errorsBefore).map((error) => `${error.file}:${error.line} ${error.message}`);
-    assert.deepEqual(errors.filter((error) => !/msbtoptionsmain.lua:161 .*titleRegion/.test(error)), [],
-      "no other Lua error from the load or the open");
+    assert.deepEqual(errors, [], "no Lua error from the load or the open");
+    assert.deepEqual(lua(boot, `local region = MSBTMainOptionsFrame:GetTitleRegion()
+      return region:GetObjectType(), region:GetWidth(), region:GetHeight()`, 3), ["Region", 525, 20],
+    "the options window's title strip");
     t.diagnostic(`prefetch ${prefetchMs.toFixed(1)} ms, ${prefetchReads.length} files read `
       + `(${prefetchReads.reduce((sum, read) => sum + read.bytes, 0)} bytes); `
       + `LoadAddOn inside /msbt ${Number(loadMs).toFixed(1)} ms; whole first /msbt ${slashMs.toFixed(1)} ms; `

@@ -3,7 +3,7 @@ import { POWER, POWER_DISPLAY_SCALE, readField } from "../../world/Fields.js";
 import { game } from "../game/Context.js";
 import { spellButtonUsable, type SpellMetadata } from "../SpellMetadata.js";
 import { syncMountSpellIds } from "../MountSpells.js";
-import { spellCastBlockReason } from "../SpellCastGuard.js";
+import { refuseSpellOnCooldown, spellCastBlockReason, spellCastRefusedNotReady } from "../SpellCastGuard.js"; // 3.47: + the refusal
 import { GROUND_TARGET_MODE, beginGroundTarget, cancelGroundTarget, isGroundTargetSpell } from "../game/GroundTarget.js";
 import { armItemTarget, isItemTargetSpell, spellTargetsObject } from "../game/SpellCursor.js";
 import { castOnMainHandWeapon } from "../game/MainHandEnchant.js"; // 05.10-2.05
@@ -15,7 +15,6 @@ import {
 } from "./Dom.js";
 import { lowerRankSpells, rankChainKey, type RankedSpell } from "./SpellRanks.js";
 import { spellModifierText } from "../../world/SpellModifiers.js";
-import { SPELL_FAILED_NOT_READY } from "../../world/AutoRepeatRefusal.js"; // 5.05 (11.10)
 import { skinnable, slotElement, slotSiblings } from "./Slots.js";
 import { actionDragPayload } from "./ActionBar.js";
 import { beginIconDrag } from "./DragGhost.js";
@@ -941,7 +940,7 @@ export function castSpell(spellId: number, explicitUnitTarget?: bigint): boolean
   const togglingMount = typeof world.isActiveMountSpell === "function"
     && world.isActiveMountSpell(spellId);
   if (!togglingMount && world.cooldownRemaining(spellId, performance.now()) > 0) {
-    world.spellRefusedLocally?.(spellId, SPELL_FAILED_NOT_READY); // 5.05 (11.10): the wand rule (0x00808200)
+    refuseSpellOnCooldown(world, spellId); // 5.05 (11.10): the wand rule (0x00808200); 3.47 (12.10): + its words
     return false;
   }
   const metadata = game.spells.get(spellId);
@@ -965,10 +964,9 @@ export function castSpell(spellId: number, explicitUnitTarget?: bigint): boolean
   const blocked = spellCastBlockReason(world, spellId);
   if (blocked !== undefined) {
     // 5.05 (11.10): a cooldown, a hold or the global cooldown is the client's own NOT_READY, which Wow.exe hands to
-    // 0x00808200 like the realm's: a wand's repeat stops, so the next press casts.
-    if (blocked === "cooldown" || blocked === "hold" || blocked === "global-cooldown") {
-      world.spellRefusedLocally?.(spellId, SPELL_FAILED_NOT_READY);
-    }
+    // 0x00808200 like the realm's: a wand's repeat stops, so the next press casts. 3.47 (12.10): and it says so, as
+    // 0x00808200 does (SpellCastGuard.ts `refuseSpellOnCooldown`).
+    if (spellCastRefusedNotReady(blocked)) refuseSpellOnCooldown(world, spellId, metadata);
     return false;
   }
   // Area spells do not take the selection: arm the reticle and let the click choose the point.

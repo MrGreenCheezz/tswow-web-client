@@ -128,7 +128,8 @@ test("3.37(в): an item slot under a category lockout with no snapshot of its ow
   clock.monotonic = 101_001;
   clock.lua = 501.001;
   tick();
-  assert.deepEqual(call(seam, "GetActionCooldown", 1), [0, 0, 0]);
+  // 3.47 (12.10): ready, `enable` 1 as 0x00807980 sets it (was 0, 0, 0).
+  assert.deepEqual(call(seam, "GetActionCooldown", 1), [0, 0, 1]);
   assert.deepEqual(call(seam, "IsUsableAction", 1), [true, false]);
   assert.equal(count(CD), 1, "the end redraws the sweep");
   assert.equal(count(US), 1, "and the icon");

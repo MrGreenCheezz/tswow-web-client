@@ -15,6 +15,7 @@ import { createGameTooltipExtras, type GameTooltipExtras, type GameTooltipExtras
 import { tooltipContentWithoutPrice } from "./GlueTooltipPrice.js"; // 2.10 (04.10, L4)
 import { frameXmlAttribute, frameXmlNumber, frameXmlChild } from "../ui/framexml_compat/FrameXmlParser.js";
 import type { FrameXmlUiBridge, MutableFrameXmlFrame } from "../ui/framexml_compat/FrameXmlRuntime.js";
+import { frameXmlTitleRegion } from "../ui/framexml_compat/FrameXmlTitleRegion.js"; // 3.48 (12.10)
 import {
   FRAME_XML_TOOLTIP_LAYOUT,
   type FrameXmlColor,
@@ -984,6 +985,9 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
       GameTooltip: gameTooltip,
       // 3.13c: WorldMapBlobFrame's blob drawing and hit test (GlueQuestPoiFrame.ts).
       QuestPOIFrame: { ...frameLike, ...questPoiFrameMethods() },
+      // 3.48 (12.10): a title region is a plain Region in Lua (GetObjectType "Region", Wow.exe 0x004881c0): the
+      // UIObject and Region methods, no texture or text ones.
+      Region: base,
     };
     for (const [type, methods] of Object.entries(byType)) {
       this.#metatables.set(type, this.createMetatable(type, methods));
@@ -2722,6 +2726,13 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
         if (self.movable && bridge.isVisible(frame)) bridge.update(frame, (m) => { m.moving = true; });
       },
       StopMovingOrSizing: ({ frame }) => { bridge.update(frame, (m) => { m.moving = false; }); },
+      // 3.48 (12.10): Wow.exe 0x0049e630 — the frame's title region, made or (the one it has) with its points cleared —
+      // and 0x0049e5b0, it or nil. A region a press inside drags the frame by (FrameXmlTitleRegion.ts).
+      CreateTitleRegion: ({ frame }) => {
+        const region = bridge.createTitleRegion(frame);
+        return region ? [region] : [];
+      },
+      GetTitleRegion: ({ frame }) => [frameXmlTitleRegion(frame)],
       GetChildren: ({ self }) => self.children.filter((child) => child.type !== "Texture" && child.type !== "FontString"),
       GetNumChildren: ({ self }) => [self.children.filter((child) => child.type !== "Texture" && child.type !== "FontString").length],
       GetRegions: ({ self }) => self.children.filter((child) => child.type === "Texture" || child.type === "FontString"),
@@ -2834,6 +2845,19 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
       GetHighlightTexture: ({ self }) => [self.stateTextures.get("HIGHLIGHT")],
       GetDisabledTexture: ({ self }) => [self.stateTextures.get("DISABLED")],
       GetFontString: ({ self }) => [self.stateTextures.get("BUTTONTEXT")],
+      // 3.48 (12.10): a font string a script made becomes the button's text (MSBTOptionsControls.lua:863-865 builds every
+      // option button so, then sizes it by `GetFontString():GetStringWidth()`): GetFontString answers it, SetText fills
+      // it, and one with no font of its own follows the button's state fonts, as a `<ButtonText>` does.
+      SetFontString: ({ frame, args }) => {
+        const label = args[0] !== null && typeof args[0] === "object" ? bridge.resolve(args[0] as FrameXmlFrame) : undefined;
+        if (label?.type !== "FontString") return;
+        if (label.parent !== frame && !bridge.SetParent(label, frame)) return;
+        bridge.runInMutationBatch(() => {
+          bridge.update(label, (m) => { m.inheritsButtonFont = !m.fontObject; });
+          bridge.update(frame, (m) => { m.stateTextures.set("BUTTONTEXT", label); });
+          bridge.syncButtonLabelFont(frame);
+        });
+      },
       LockHighlight: ({ frame }) => { bridge.update(frame, (m) => { m.highlightLocked = true; }); },
       UnlockHighlight: ({ frame }) => { bridge.update(frame, (m) => { m.highlightLocked = false; }); },
       GetButtonState: ({ self }) => [self.buttonState],

@@ -15,6 +15,7 @@ import { cooldownEventPacket, initialSpellsPacket, settle, spellGoPacket, travel
 
 const { LiveWorldSeam } = await import("../dist/code/browser/framexml/LiveWorldSeam.js");
 const { FRAMEXML_SEAM_BINDINGS, FRAMEXML_SEAM_EVENTS } = await import("../dist/code/browser/framexml/FrameXmlWorldSeam.js");
+const { FRAMEXML_COMPANION_BINDINGS } = await import("../dist/code/browser/framexml/FrameXmlCompanions.js");
 const { ACTION_BUTTON_ITEM, ACTION_BUTTON_SPELL } = await import("../dist/code/world/ActionBarProtocol.js");
 const { globalString } = await import("../dist/code/generated/globalStrings.js");
 const { itemUseSpellCategory } = await import("../dist/code/world/SpellCooldownParts.js");
@@ -23,6 +24,7 @@ const { SPELL_FAILED_ITEM_NOT_READY, itemCooldownErrorName, itemUseCooldownBlock
 const { game } = await import("../dist/code/browser/game/Context.js");
 
 const call = (seam, name, ...args) => [...FRAMEXML_SEAM_BINDINGS[name](seam, args)];
+const companions = (seam, name, ...args) => [...FRAMEXML_COMPANION_BINDINGS[name](seam, args)];
 const words = (name) => globalString(name) ?? name;
 
 const SELF = 0x10n;
@@ -42,6 +44,20 @@ const ROWS = new Map([
 const metadata = (id) => ROWS.has(id)
   ? { id, name: `spell ${id}`, rank: "", iconPath: "", passive: false, hidden: false, startRecoveryTime: 0, ...ROWS.get(id) }
   : undefined;
+/** 3.47: two mounts sharing a category of 1.5 s (synthetic), for GetCompanionCooldown. */
+const EXTRA_ROWS = new Map([[458, row(330, 0, 1500)], [470, row(330, 0, 1500)]]);
+/** 3.47: the stances as a stance bar lists them (SPELL_AURA_MOD_SHAPESHIFT 36 and its form), and the two mounts (78). */
+const FORM_OF = new Map([[2457, 17], [71, 18], [2458, 19]]);
+const formsAndMounts = (id) => {
+  const base = metadata(id);
+  if (base !== undefined && FORM_OF.has(id)) {
+    return { ...base, iconPath: `Interface\\Icons\\stance${id}`, stanceBarOrder: FORM_OF.get(id), spellLevel: 1,
+      effectAura: [36, 0, 0], effectMiscValue: [FORM_OF.get(id), 0, 0] };
+  }
+  if (!EXTRA_ROWS.has(id)) return base;
+  return { id, name: `mount ${id}`, rank: "", iconPath: `Interface\\Icons\\mount${id}`, passive: false, hidden: false,
+    startRecoveryTime: 0, effects: [6, 0, 0], effectAura: [78, 0, 0], effectMiscValue: [284, 0, 0], ...EXTRA_ROWS.get(id) };
+};
 
 const POTION_A = 0x4000_0000_0000_0a01n;
 const POTION_B = 0x4000_0000_0000_0a02n;
@@ -61,11 +77,11 @@ const TEMPLATES = [
 ];
 
 /** The stances known, the five items in backpack slots 1-5 (wire 255/23-27), the rows registered as EnterWorld does. */
-async function world() {
+async function world(spell = metadata, spells = [71, 2457, 2458]) {
   const { client, connection } = await travelClient([
-    { opcode: OPCODES.SMSG_INITIAL_SPELLS, payload: initialSpellsPacket({ spells: [71, 2457, 2458] }) },
+    { opcode: OPCODES.SMSG_INITIAL_SPELLS, payload: initialSpellsPacket({ spells }) },
   ], SELF);
-  client.spellCooldownRow = (spellId) => ROWS.get(spellId);
+  client.spellCooldownRow = (spellId) => ROWS.get(spellId) ?? EXTRA_ROWS.get(spellId);
   const player = client.state.objects.get(SELF);
   TEMPLATES.forEach(([guid, item], index) => {
     const offset = UPDATE_FIELDS.PLAYER_FIELD_PACK_SLOT_1.offset + index * 2;
@@ -82,7 +98,7 @@ async function world() {
   const clock = { monotonic: performance.now(), lua: 500 };
   const fired = [];
   const seam = new LiveWorldSeam({
-    world: () => client, store: () => undefined, spell: metadata,
+    world: () => client, store: () => undefined, spell,
     monotonic: () => clock.monotonic, globalCooldownUntil: () => 0, castSpell: () => {},
   });
   seam.attach({ now: () => clock.lua, fire: (name, ...args) => { fired.push([name, ...args]); return 1; } });
@@ -297,4 +313,66 @@ test("the refusal's words and reasons, as 0x00807f10 and 0x00739650 choose them"
   assert.equal(itemUseCooldownBlock({ ...world, isSpellOnHold: () => true }, { spells }, 7, 1000), "hold");
   assert.equal(itemUseCooldownBlock({ ...world, itemCooldownRemaining: () => 5 }, { spells }, 7, 1000), "cooldown",
     "the item's equip cooldown");
+});
+
+// Plan item 3.47 (12.10): 0x00807980 sets `enable` 1 before it looks, so whatever a reader asks it about answers
+// 0, 0, 1 when ready: GetItemCooldown (0x00510fc0) of a carried item (0x005a86b0 → 0x008090c0) or of one whose record
+// has an on-use spell (0x00809030: spell > 0, trigger 0), GetContainerItemCooldown (0x005d7d90) of an occupied slot,
+// GetActionCooldown's spell and item slots (0x005a8e40). A reader that asks nothing keeps 0, 0, 0.
+test("3.47: a ready spell or item answers enable 1 wherever Wow.exe asks 0x00807980; an unasked one 0, 0, 0", async () => {
+  const { client, seam } = await world();
+  try {
+    // An item record not carried with an on-use spell, and one whose only spell teaches (trigger 6).
+    client.itemTemplates.set(90030, template(90030, [itemSpell(90010, -1, 0, -1)]));
+    client.itemTemplates.set(90031, template(90031, [{ ...itemSpell(90011, -1, 0, -1), trigger: 6 }]));
+    assert.deepEqual(call(seam, "GetItemCooldown", 13444), [0, 0, 1], "a carried potion");
+    assert.deepEqual(call(seam, "GetItemCooldown", 90030), [0, 0, 1], "not carried, an on-use spell in its record");
+    assert.deepEqual(call(seam, "GetItemCooldown", 90031), [0, 0, 0], "not carried, no on-use spell: nothing is asked");
+    assert.deepEqual(call(seam, "GetItemCooldown", 77777), [0, 0, 0], "an item nobody knows");
+    assert.deepEqual(call(seam, "GetContainerItemCooldown", 0, 3), [0, 0, 1], "the hearthstone's slot");
+    assert.deepEqual(call(seam, "GetContainerItemCooldown", 0, 9), [0, 0, 0], "an empty slot");
+    assert.deepEqual(call(seam, "GetActionCooldown", 1), [0, 0, 1], "a ready stance on the bar");
+    assert.deepEqual(call(seam, "GetActionCooldown", 2), [0, 0, 1], "a ready potion on the bar");
+    assert.deepEqual(call(seam, "GetActionCooldown", 3), [0, 0, 0], "an empty slot");
+  } finally {
+    seam.detach();
+    client.close();
+  }
+});
+
+// Plan item 3.47 (12.10): GetShapeshiftFormCooldown (0x0053c180) and GetCompanionCooldown (0x0053e490) ask
+// 0x00809000 like GetSpellCooldown — a sibling's category part with the part's own start, a ready spell 0, 0, 1 —
+// where they read the bare snapshot before (a sweep restarting at every call, a ready one 0, 0, 0). An index past
+// the stance bar answers 0, 0, 1; one past the mounts nothing (stock guards for it).
+test("3.47: the stance bar and the mounts read their cooldowns through cooldownState", async () => {
+  const { client, seam, clock, go } = await world(formsAndMounts, [71, 2457, 2458, 458, 470]);
+  try {
+    seam.tick(clock.lua);
+    assert.equal(call(seam, "GetNumShapeshiftForms")[0], 3, "three stances on the bar");
+    assert.deepEqual(call(seam, "GetShapeshiftFormCooldown", 1), [0, 0, 1], "ready");
+    assert.deepEqual(call(seam, "GetShapeshiftFormCooldown", 4), [0, 0, 1], "past the bar");
+    client.castSpell(71);
+    await go(71);
+    const part = client.cooldownState(2457);
+    const start = clock.lua - (clock.monotonic - part.startedAt) / 1000;
+    assertSweep(call(seam, "GetShapeshiftFormCooldown", 1), [start, 1, 1], "Боевая стойка sweeps the category part");
+    clock.monotonic += 100;
+    clock.lua += 0.1;
+    assertSweep(call(seam, "GetShapeshiftFormCooldown", 1), [start, 1, 1], "from the part's own start");
+
+    assert.equal(companions(seam, "GetNumCompanions", "MOUNT")[0], 2, "two mounts");
+    const mountIndex = (spellId) => [1, 2].find((index) => companions(seam, "GetCompanionInfo", "MOUNT", index)[2] === spellId);
+    assert.deepEqual(companions(seam, "GetCompanionCooldown", "MOUNT", mountIndex(470)), [0, 0, 1], "a ready mount");
+    client.castSpell(458);
+    await go(458);
+    const mount = client.cooldownState(470);
+    assert.equal(mount?.duration, 1500, "the sibling's category part");
+    const mountStart = clock.lua - (clock.monotonic - mount.startedAt) / 1000;
+    assertSweep(companions(seam, "GetCompanionCooldown", "MOUNT", mountIndex(470)), [mountStart, 1.5, 1],
+      "the other mount sweeps it");
+    assert.deepEqual(companions(seam, "GetCompanionCooldown", "MOUNT", 3), [], "past the list: nothing");
+  } finally {
+    seam.detach();
+    client.close();
+  }
 });

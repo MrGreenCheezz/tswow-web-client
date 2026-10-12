@@ -283,9 +283,13 @@ test("the native book and bar keep a held spell's press at home", async () => {
     assert.equal(button(EVASION)?.disabled, false);
     assert.equal(castSpell(STEALTH), false, "the book");
     // 5.05 (11.10): the refusal is the client's own NOT_READY, handed to WorldClient (0x00808200's wand rule).
-    assert.deepEqual(refused, [[STEALTH, 67]]);
+    // 3.47 (12.10): with the words 0x00807f10 picks for it — a plain spell's ERR_SPELL_COOLDOWN.
+    const { globalString } = await import("../dist/code/generated/globalStrings.js");
+    const spellCooldown = globalString("ERR_SPELL_COOLDOWN") ?? "ERR_SPELL_COOLDOWN";
+    assert.deepEqual(refused, [[STEALTH, 67, spellCooldown]]);
     useSlot(0, 0);
     assert.deepEqual(sent, [], "neither press reached the wire");
+    assert.deepEqual(refused.at(-1), [STEALTH, 67, spellCooldown], "3.47: the bar's press says so too");
     useSlot(1, 0);
     assert.deepEqual(sent, [EVASION], "the spell beside it still casts");
     held.clear();
@@ -307,6 +311,7 @@ test("the native bar greys a held slot with no sweep, and its own press stops th
   const context = await import("../dist/code/browser/game/Context.js");
   const { game } = context;
   const casts = [];
+  const refusals = [];
   // An item's use spell can be held the same way (`ItemId` in the record): a healthstone here.
   const STONE = 5512;
   const STONE_SPELL = 6262;
@@ -344,7 +349,9 @@ test("the native bar greys a held slot with no sweep, and its own press stops th
       "../game/Context.js": context,
       "../game/BonusBar.js": await import("../dist/code/browser/game/BonusBar.js"),
       "../SpellMetadata.js": await import("../dist/code/browser/SpellMetadata.js"),
-      "../SpellCastGuard.js": { spellPowerAvailable: () => true },
+      // 3.47 (12.10): the bar's refusal of a held press, and the item use's own hold question.
+      "../SpellCastGuard.js": { spellPowerAvailable: () => true, refuseSpellOnCooldown: (_world, id) => refusals.push(id) },
+      "../game/ItemUseCooldown.js": await import("../dist/code/browser/game/ItemUseCooldown.js"),
       "../../world/WorldClient.js": { MELEE_AUTO_ATTACK_SPELL_ID: 6603 },
       "./Spellbook.js": { castSpell: (id) => { casts.push(id); return true; }, highestKnownRank: (id) => id },
       "./Dom.js": { actionBar },
@@ -365,6 +372,7 @@ test("the native bar greys a held slot with no sweep, and its own press stops th
     bar.useSlot(0);
     bar.useSlot(1);
     assert.deepEqual(casts, [EVASION], "the held slot's press never left the bar");
+    assert.deepEqual(refusals, [STEALTH], "3.47: it is refused with Wow.exe's words (SpellCastGuard.refuseSpellOnCooldown)");
     held.clear();
     bar.updateActionBar(1_016);
     assert.equal(stealth.usable, true);

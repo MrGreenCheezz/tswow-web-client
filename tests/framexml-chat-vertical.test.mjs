@@ -158,7 +158,9 @@ test("MPQ ChatFrame vertical: stock concrete chat frames stay error-free", withC
         // UIMenu.xml is a real ChatMenu dependency. Its concrete menu templates add 260 stock
         // widgets to the chat delta once the missing owner is present. FriendsFrame's Chat tab
         // (ChannelFrame as tab 4) and UnitPopup's dropdown growth add 10 more, measured 1,158 -> 1,168.
-        { files: 7, bytes: 276_064, widgets: 1_168, lua: 5 },
+        // 3.48 (12.10): 1,178 — each of the ten FloatingChatFrameTemplate chat frames has its own
+        // `<TitleRegion setAllPoints="true"/>` (FloatingChatFrame.xml:516) as a region now.
+        { files: 7, bytes: 276_064, widgets: 1_178, lua: 5 },
     );
 
     assert.ok(candidate.boot.bridge.getFrame("ChatFrame1"));

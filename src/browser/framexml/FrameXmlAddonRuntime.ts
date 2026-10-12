@@ -9,7 +9,7 @@ import {
   resolveGluePath,
   normalizeGluePath,
 } from "../glue/GlueLoader.js";
-import { GlueLuaVm } from "../glue/GlueLua.js";
+import { GlueLuaRaise, GlueLuaVm } from "../glue/GlueLua.js";
 import type { FrameXmlSavedVariables } from "./FrameXmlSavedVariables.js";
 import { FrameXmlUiBridge } from "../ui/framexml_compat/FrameXmlRuntime.js";
 import { parseFrameXml } from "../ui/framexml_compat/FrameXmlParser.js";
@@ -116,6 +116,11 @@ export interface FrameXmlAddonRuntimeOptions {
   readonly bridge: FrameXmlUiBridge;
   /** Load-on-demand names accepted by the synchronous C API status binding. */
   readonly loadOnDemand?: readonly string[];
+  /**
+   * 3.46 (12.10): the client's Interface/AddOns list as Wow.exe numbers it for GetNumAddOns/GetAddOnInfo — the
+   * gateway's `/client/addons` (root folders with their own TOC, sorted by name). TSWoW modules are not in it.
+   */
+  readonly installed?: readonly string[];
   /** The XML roots a load made, with the add-on that made them (3.18: a mount draws a late one's). */
   readonly onRoots?: (roots: readonly FrameXmlFrame[], addon: string) => void;
   readonly savedVariables?: FrameXmlSavedVariables;
@@ -271,6 +276,8 @@ export class FrameXmlAddonRuntime {
   readonly #savedVariables: FrameXmlSavedVariables | undefined;
   readonly #records = new Map<string, AddonRecord>();
   readonly #loadOnDemand: ReadonlySet<string>;
+  /** 3.46 (12.10): the installed add-ons in list order (`installed`), canonical names. */
+  readonly #installed: readonly string[];
   /** 3.18 (owner, 12.10): third-party LoD add-ons read ahead of their `LoadAddOn`, by lower-case name. */
   readonly #prefetched = new Map<string, PrefetchedAddon>();
   #closed = false;
@@ -294,6 +301,47 @@ export class FrameXmlAddonRuntime {
         .map((value) => canonicalName(value)?.toLowerCase())
         .filter((value): value is string => value !== undefined),
     );
+    this.#installed = names((options.installed ?? []).join(","));
+  }
+
+  /** 3.46 (12.10): GetNumAddOns (Wow.exe 0x00511200 → 0x005f4ff0): the installed add-ons' count. */
+  count(): number {
+    return this.#installed.length;
+  }
+
+  /**
+   * 3.46 (12.10): GetAddOnInfo as the world's table answers it (Wow.exe 0x00511240; the glue's 0x004dc560 has
+   * its own eight values, GlueAddons.ts). A number — or a numeric string, `lua_isnumber` — is a 1-based index into
+   * the installed list (rounded); one outside it raises «AddOn index must be in the range of 1 to N». A string
+   * names an add-on, and is answered back as given. Then title and notes (the TOC's, else nil), enabled (1 or nil:
+   * 0x005f7d70), loadable and reason (0x005f7e90 asked with its second argument 1, which lets a load-on-demand
+   * add-on through: 1, nil for a listed add-on — the gateway lists the enabled ones only — and nil, "MISSING"
+   * (reason 1 of the table 0x00ad17b4) for a name not in the list), and security (0x005f7670: "INSECURE", entry 1
+   * of 0x00ad17d8, for any third-party add-on and an unknown name). Anything else raises the usage. TSWoW
+   * modules are not add-ons in Wow.exe: a module's name is an unknown one.
+   */
+  info(key: unknown): readonly unknown[] {
+    const index = typeof key === "number" ? key
+      : typeof key === "string" && key.trim() !== "" && Number.isFinite(Number(key)) ? Number(key) : undefined;
+    let name: string;
+    let entry: string | undefined;
+    if (index !== undefined) {
+      entry = this.#installed[Math.round(index) - 1];
+      if (entry === undefined) throw new GlueLuaRaise(`AddOn index must be in the range of 1 to ${this.#installed.length}`);
+      name = entry;
+    } else if (typeof key === "string") {
+      name = key;
+      const wanted = key.toLowerCase();
+      entry = this.#installed.find((installed) => installed.toLowerCase() === wanted);
+    } else {
+      throw new GlueLuaRaise('Usage: GetAddOnInfo(index or "name")');
+    }
+    if (entry === undefined) return [name, undefined, undefined, undefined, undefined, "MISSING", "INSECURE"];
+    const lower = entry.toLowerCase();
+    const source = this.#records.get(lower)?.toc?.source ?? this.#installedTocs.get(lower);
+    const title = source === undefined ? undefined : metadata(source, "Title");
+    const notes = source === undefined ? undefined : metadata(source, "Notes");
+    return [name, title, notes, 1, 1, undefined, "INSECURE"];
   }
 
   get closed(): boolean {

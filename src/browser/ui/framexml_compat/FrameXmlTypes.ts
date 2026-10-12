@@ -40,7 +40,10 @@ export type FrameXmlWidgetType =
   | "Minimap"
   | "ColorSelect"
   | "QuestPOIFrame"
-  | "WorldFrame";
+  | "WorldFrame"
+  // 3.48 (12.10): a frame's title region (FrameXmlTitleRegion.ts), whose GetObjectType Wow.exe answers "Region"
+  // (0x004881c0). Not an XML widget element — `<TitleRegion>` is a frame's declaration — so not in the set below.
+  | "Region";
 
 /** The bounded line record owned by a MessageFrame/ScrollingMessageFrame. */
 export interface FrameXmlMessage {

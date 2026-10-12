@@ -1370,16 +1370,10 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
       },
       cast: (spellId) => context.castSpell(spellId),
       dismissCritter: (guid) => context.world()?.dismissCritter?.(guid),
-      // GetSpellCooldown's arithmetic over the world's cooldown snapshot, by spell id: a book slot
-      // number and a spell id share one numeric argument in `spellCooldown`, and a mount's id can be
-      // a valid slot.
-      cooldown: (spellId) => {
-        const snapshot = context.world()?.cooldownSnapshots?.get(spellId);
-        const pump = this.#pump;
-        const monotonic = context.monotonic();
-        if (!snapshot || snapshot.endsAt <= monotonic || !pump) return [0, 0, 0];
-        return [pump.now() - (monotonic - snapshot.startedAt) / 1000, snapshot.duration / 1000, 1];
-      },
+      // GetSpellCooldown's answer by spell id: a book slot number and a spell id share one numeric argument in
+      // `spellCooldown`, and a mount's id can be a valid slot. 3.47 (12.10): Wow.exe 0x0053e490 asks 0x00809000
+      // like it (`#spellCooldownAnswer`), not the bare snapshot this read before.
+      cooldown: (spellId) => this.#spellCooldownAnswer(spellId),
       pickup: (spellId, type, index) => this.cursor.pickupCompanion(spellId, type, index),
       locale: () => this.locale,
     });
@@ -2523,6 +2517,14 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
       // 3.02: the request and the outcome (FrameXmlCastEvents.ts).
       this.#unsubscribe.push(world.events.on("SPELL_CAST_SENT", (event) => this.castEvents.onSent(pump, event)));
       this.#unsubscribe.push(world.events.on("SPELL_CAST_RESULT", (event) => this.castEvents.onResult(pump, event)));
+      // 3.47 (12.10): the client's own refusal of a request on cooldown ends in the same 0x007fecc0 (0x00808200's
+      // last call, for the request's caster) — UNIT_SPELLCAST_FAILED with the count the request drew.
+      this.#unsubscribe.push(world.events.on("SPELL_CAST_REFUSED_LOCAL", (event) => {
+        if (event.casterGuid === undefined || event.castCount === undefined) return;
+        this.castEvents.onResult(pump, {
+          casterGuid: event.casterGuid, spellId: event.spellId, castCount: event.castCount, result: event.result,
+        });
+      }));
       this.#unsubscribe.push(world.events.on("SPELL_CAST_DELAYED", (event) => {
         const units = this.#castUnits(event.casterGuid); // 3.02: every token
         if (units.length === 0) return;
@@ -3436,7 +3438,10 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     const world = this.#context.world();
     const now = this.#context.monotonic();
     const next = this.#shapeshiftForms().map((form) => {
-      const cooldown = world?.cooldownSnapshots?.get(form.spellId);
+      // 3.47 (12.10): the snapshot GetShapeshiftFormCooldown answers from (`cooldownState`: a category part too),
+      // and a hold, which starts and ends with no timer moving.
+      if (world?.isSpellOnHold?.(form.spellId)) return `${form.spellId}:h`;
+      const cooldown = world?.cooldownState?.(form.spellId);
       const remaining = this.#shapeshiftCooldownRemaining(form.spellId, now);
       return remaining > 0
         ? `${form.spellId}:${cooldown?.startedAt ?? ""}:${cooldown?.duration ?? ""}:${Math.round(now + remaining)}` : "";
@@ -3474,13 +3479,18 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
    * GetActionCooldown reads a spell — a sibling's category part holds the item with its own start, not a sweep that
    * restarts full each call — beside the global part of the spell's row; and a held item is `enable` 0
    * (`#heldCooldown`), which ContainerFrame_UpdateCooldown greys.
+   * 3.47 (12.10): `asked` — whether the reader asks 0x00807980 at all (each reader's rule: `#itemCooldownAsked`, an
+   * occupied bag slot, a worn item with a use spell). 0x00807980 sets `enable` 1 before it looks, so an asked item
+   * that is ready answers `0, 0, 1` — one whose spell the page does not know too (0x008090c0 asks with no spell, and
+   * 0x00807980 finds no row) — and one not asked keeps the reader's `0, 0, 0`.
    */
-  #itemCooldown(entry: number): FrameXmlContainerItemCooldown {
+  #itemCooldown(entry: number, asked: boolean): FrameXmlContainerItemCooldown {
     const world = this.#context.world();
     const pump = this.#pump;
+    if (!asked || !world || !pump) return [0, 0, 0];
     const template = this.#itemTemplate(world, entry);
     const spellId = itemUseSpellId(template);
-    if (!world || !pump || spellId === undefined) return [0, 0, 0];
+    if (spellId === undefined) return [0, 0, 1];
     const now = this.#context.monotonic();
     const category = itemUseSpellCategory(template, spellId);
     const global = frameXmlGlobalCooldownFor(this.#context, world, this.#context.spell(spellId), now, pump.now());
@@ -3492,12 +3502,25 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
       return frameXmlLaterCooldown([pump.now() - (ITEM_EQUIP_COOLDOWN_MS - equipRemaining) / 1000,
         ITEM_EQUIP_COOLDOWN_MS / 1000, 1], global);
     }
-    if (spellRemaining <= 0) return global ?? [0, 0, 0];
+    if (spellRemaining <= 0) return global ?? [0, 0, 1]; // 3.47 (12.10): `enable` 1, as 0x00807980 sets it
     const snapshot = world.cooldownState?.(spellId, category);
     if (snapshot) {
       return frameXmlLaterCooldown([pump.now() - (now - snapshot.startedAt) / 1000, snapshot.duration / 1000, 1], global);
     }
     return frameXmlLaterCooldown([pump.now(), spellRemaining / 1000, 1], global);
+  }
+
+  /**
+   * 3.47 (12.10): whether GetItemCooldown (0x00510fc0) and an item slot's GetActionCooldown (0x005a8e40) ask
+   * 0x00807980 for an item: a carried copy (0x005a86b0) is asked through its object (0x008090c0), whatever its
+   * spells; otherwise the item's record (0x00809030) is asked for its first on-use spell (a slot with a spell and
+   * trigger 0) — none, or no record, and nothing is asked.
+   */
+  #itemCooldownAsked(world: WorldClient | undefined, entry: number,
+    template = this.#itemTemplate(world, entry)): boolean {
+    if (entry <= 0) return false;
+    if (this.#actionItems(entry).length > 0) return true;
+    return template?.spells?.some((spell) => spell.spellId > 0 && spell.trigger === 0) === true;
   }
 
   /**
@@ -4161,7 +4184,9 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
   }
 
   containerItemCooldown(bagId: number, slot: number): FrameXmlContainerItemCooldown {
-    return this.#itemCooldown(entryOf(this.#liveContainerSlot(bagId, slot)?.item));
+    // 3.47 (12.10): 0x005d7d90 asks 0x008090c0 for any item in the slot (`enable` 1 when ready); an empty slot 0, 0, 0.
+    const item = this.#liveContainerSlot(bagId, slot)?.item;
+    return this.#itemCooldown(entryOf(item), item !== undefined);
   }
 
   bagName(bagId: number): string | undefined {
@@ -4613,7 +4638,9 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
   }
 
   inventoryItemCooldown(unit: string, slot: number): FrameXmlContainerItemCooldown {
-    return this.#itemCooldown(entryOf(this.#equipmentSlot(unit, slot)?.item));
+    // 3.47 (12.10): 0x005e7e60 asks 0x008090c0 only for a worn item with a use spell (0x00707c60); else 0, 0, 0.
+    const entry = entryOf(this.#equipmentSlot(unit, slot)?.item);
+    return this.#itemCooldown(entry, itemUseSpellId(this.#itemTemplate(this.#context.world(), entry)) !== undefined);
   }
 
   inventoryItemLocked(): boolean {
@@ -5128,8 +5155,10 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
   }
 
   itemCooldown(value: unknown): FrameXmlContainerItemCooldown {
-    const entry = this.#itemEntryOf(this.#context.world(), value);
-    return entry === undefined ? [0, 0, 0] : this.#itemCooldown(entry);
+    const world = this.#context.world();
+    const entry = this.#itemEntryOf(world, value);
+    // 3.47 (12.10): a ready item that is asked answers 0, 0, 1 (`#itemCooldownAsked`), not 0, 0, 0.
+    return entry === undefined ? [0, 0, 0] : this.#itemCooldown(entry, this.#itemCooldownAsked(world, entry));
   }
 
   /**
@@ -6886,25 +6915,16 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     const world = this.#context.world();
     const button = this.#button(slot);
     const pump = this.#pump;
-    if (button?.type === ACTION_BUTTON_ITEM) return this.#itemCooldown(button.action);
+    if (button?.type === ACTION_BUTTON_ITEM) {
+      // 3.47 (12.10): 0x005a8e40 asks only for an item whose record the cache has (0x0067ca30), carried
+      // (0x005a86b0 → 0x008090c0) or by its on-use spell (0x00809030).
+      const template = this.#itemTemplate(world, button.action);
+      return this.#itemCooldown(button.action, template !== undefined && this.#itemCooldownAsked(world, button.action, template));
+    }
     if (!world || !pump || !button || button.type !== ACTION_BUTTON_SPELL) return [0, 0, 0];
-    const monotonic = this.#context.monotonic();
-    // L12 5.30: the global part beside the spell's own timer; the later end wins (Wow.exe 0x00807980).
-    const global = frameXmlGlobalCooldownFor(this.#context, world, this.#metadata(slot), monotonic, pump.now()); // L13-review 5.30: by category
-    // Held until its aura ends: `enable` 0, no sweep, not even the GCD's (3.39 (12.10): Wow.exe's numbers, `#heldCooldown`).
-    if (world.isSpellOnHold?.(button.action)) return this.#heldCooldown(world, button.action, undefined, global, monotonic, pump);
-    const snapshot = world.cooldownState(button.action);
-    const remaining = world.cooldownRemaining(button.action, monotonic);
-    if (snapshot) {
-      const elapsed = (monotonic - snapshot.startedAt) / 1000;
-      return frameXmlLaterCooldown([pump.now() - elapsed, snapshot.duration / 1000, 1], global); // L12 5.30
-    }
-    if (remaining > 0) {
-      // No snapshot: the packet gave a remaining time and nothing else, so the duration is the
-      // remaining time and the sweep starts full. `ui/ActionBar.ts` takes the same fallback.
-      return frameXmlLaterCooldown([pump.now(), remaining / 1000, 1], global); // L12 5.30
-    }
-    return global ?? [0, 0, 0]; // L12 5.30
+    // 3.47 (12.10): GetSpellCooldown's answer (`#spellCooldownAnswer`) — a ready spell `0, 0, 1` as 0x00807980 sets it,
+    // not `0, 0, 0`; held, recovering and the global part (L12 5.30) as before.
+    return this.#spellCooldownAnswer(button.action);
   }
 
   actionUsable(slot: number): readonly [boolean, boolean] {
@@ -8661,18 +8681,14 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     return [form.texture, form.name, this.#shapeshiftActive(form), castable];
   }
 
+  /**
+   * 3.47 (12.10): Wow.exe 0x0053c180 — a form within the bar asks 0x00809000 for its spell (`#spellCooldownAnswer`:
+   * its category's part and the global part too, a held form `enable` 0, a ready one `0, 0, 1`); an index past the
+   * bar answers `0, 0, 1`.
+   */
   shapeshiftFormCooldown(index: number): FrameXmlSpellCooldown {
-    if (!Number.isInteger(index) || index < 1) return [0, 0, 0];
-    const form = this.#shapeshiftForms()[index - 1];
-    const cooldown = form && this.#context.world()?.cooldownSnapshots?.get(form.spellId);
-    const monotonic = this.#context.monotonic();
-    const remaining = form ? this.#shapeshiftCooldownRemaining(form.spellId, monotonic) : 0;
-    if (remaining <= 0 || !this.#pump) return [0, 0, 0];
-    if (cooldown && cooldown.endsAt - monotonic >= remaining) {
-      return [this.#pump.now() - (monotonic - cooldown.startedAt) / 1000,
-        cooldown.duration / 1000, 1];
-    }
-    return [this.#pump.now(), remaining / 1000, 1];
+    const form = Number.isInteger(index) && index >= 1 ? this.#shapeshiftForms()[index - 1] : undefined;
+    return form === undefined ? [0, 0, 1] : this.#spellCooldownAnswer(form.spellId);
   }
 
   castShapeshiftForm(index: number): void {
@@ -8748,23 +8764,29 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
 
   spellCooldown(index: number, _bookType: string | undefined): FrameXmlSpellCooldown {
     const id = this.#spellId(index);
+    return id === undefined ? [0, 0, 0] : this.#spellCooldownAnswer(id);
+  }
+
+  /**
+   * One spell's cooldown as Wow.exe's 0x00809000 → 0x00807980 answers it — GetSpellCooldown (0x00540e80),
+   * GetActionCooldown's spell slot (0x005a91c0 → 0x005a8e40), GetShapeshiftFormCooldown (0x0053c180) and
+   * GetCompanionCooldown (0x0053e490) all ask it (3.47, 12.10: the last two read the bare snapshot before).
+   * 0x00807980 sets `enable` 1 before it looks, so a ready spell answers `0, 0, 1`; `enable` is 0 only for a
+   * cooldown held back (Stealth's, WorldClient.isSpellOnHold) — SpellButton_UpdateButton (SpellBookFrame.lua:462-467)
+   * dims the icon to 0.4 for anything else. 3.39 (12.10): held, with Wow.exe's numbers (`#heldCooldown`); otherwise
+   * through `cooldownState`/`cooldownRemaining` — the spell's own timer or its category's, so a sibling's category
+   * part sweeps with the part's own start — beside the global part (L12 5.30, by the row's category), the later end
+   * winning.
+   */
+  #spellCooldownAnswer(id: number): FrameXmlSpellCooldown {
     const world = this.#context.world();
     const pump = this.#pump;
     const monotonic = this.#context.monotonic();
-    // L12 5.30: the global part beside the spell's own timer; the later end wins (Wow.exe 0x00807980).
-    const global = id === undefined || !pump ? undefined
+    const global = !pump ? undefined
       : frameXmlGlobalCooldownFor(this.#context, world, this.#context.spell(id), monotonic, pump.now()); // L13-review 5.30: by category
-    // A known spell that is ready answers `0, 0, 1`: `enable` is 0 only for a cooldown held back
-    // (Stealth's, WorldClient.isSpellOnHold), and SpellButton_UpdateButton (SpellBookFrame.lua:462-467)
-    // dims the icon to 0.4 for anything else — measured on the fixture, every ready spell in the
-    // stock book was dimmed. 3.39 (12.10): held, with Wow.exe's numbers (`#heldCooldown`).
-    if (id !== undefined && world?.isSpellOnHold?.(id)) {
+    if (world?.isSpellOnHold?.(id)) {
       return pump ? this.#heldCooldown(world, id, undefined, global, monotonic, pump) : [0, 0, 0];
     }
-    if (id === undefined) return [0, 0, 0];
-    // 3.39 (12.10): through `cooldownState`/`cooldownRemaining`, as GetActionCooldown reads them — the spell's own
-    // timer or its category's, so a sibling's category part shows its sweep in the book too (0x00540e80 →
-    // 0x00809000 → 0x00807980), with the part's own start.
     const snapshot = world?.cooldownState?.(id);
     const remaining = world?.cooldownRemaining?.(id, monotonic) ?? 0;
     if (!pump) return [0, 0, 1];

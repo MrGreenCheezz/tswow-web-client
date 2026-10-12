@@ -134,8 +134,10 @@ test("original action, bag and equipped cooldown APIs share stable realm timers 
   clock.monotonic = 160_000;
   clock.lua = 560;
   seam.tick(clock.lua);
-  assert.deepEqual(call(seam, "GetActionCooldown", 1), [0, 0, 0]);
-  assert.deepEqual(call(seam, "GetInventoryItemCooldown", "player", 13), [0, 0, 0]);
+  // 3.47 (12.10): ready, `enable` 1 — Wow.exe's 0x00807980 sets it before it looks (a carried potion, a worn
+  // trinket with a use spell); an empty bag slot is never asked and stays 0, 0, 0 (above).
+  assert.deepEqual(call(seam, "GetActionCooldown", 1), [0, 0, 1]);
+  assert.deepEqual(call(seam, "GetInventoryItemCooldown", "player", 13), [0, 0, 1]);
   assert.equal(fired.filter(([name]) => name === FRAMEXML_SEAM_EVENTS.bagUpdateCooldown).length, 1);
   seam.detach();
   fired.length = 0;

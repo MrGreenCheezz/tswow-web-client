@@ -286,7 +286,14 @@ export interface WorldPacketEvents {
    * 05.10-3.01: a cast the client refuses itself, before any packet (0x00809f80's calls to 0x00808200 at
    * 0x00809fa8, 0x0080a0e7, 0x0080a1ec: MissileCast.ts) — the combat log's SPELL_CAST_FAILED like a server's.
    */
-  SPELL_CAST_REFUSED_LOCAL: { spellId: number; result: number; text?: string };
+  SPELL_CAST_REFUSED_LOCAL: {
+    spellId: number; result: number; text?: string;
+    /**
+     * 3.47 (12.10): a refused request (WorldClient.spellRefusedLocally with words): its caster, the player, and the
+     * cast count it drew — 0x00808200 → 0x007fecc0 raises UNIT_SPELLCAST_FAILED with them. Absent: no request drawn.
+     */
+    casterGuid?: bigint; castCount?: number;
+  };
   /** 3.01: combat facts UNIT_COMBAT does not carry (world/CombatFacts.ts). */
   COMBAT_FACT: import("./CombatFacts.js").CombatFact;
   /** Pushback: damage taken while casting adds to what is left. */

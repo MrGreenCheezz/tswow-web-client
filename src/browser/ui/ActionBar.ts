@@ -19,7 +19,8 @@ import { castSpell, highestKnownRank, spellTooltip } from "./Spellbook.js";
 import { itemUseSpellId, requestInventoryItemUse } from "../game/GroundTarget.js";
 import { ITEM_EQUIP_COOLDOWN_MS } from "../../world/ItemProtocol.js";
 import { spellButtonUsable } from "../SpellMetadata.js";
-import { spellPowerAvailable } from "../SpellCastGuard.js";
+import { refuseSpellOnCooldown, spellPowerAvailable } from "../SpellCastGuard.js"; // 3.47: + the refusal
+import { itemUseCooldownBlock } from "../game/ItemUseCooldown.js"; // 3.47 (12.10)
 import { globalCooldownEndFor } from "../game/PredictedGlobalCooldown.js"; // L13 5.30
 import { globalCooldownSpanFor } from "../game/PredictedGlobalCooldown.js"; // L13-review 5.30
 import { ensureSpellNames } from "./SpellNames.js";
@@ -342,6 +343,10 @@ function contentOf(column: number, barPage = mainBarPage(column)): { action: num
   return game.world?.actionButtons.find((button) => button.slot === slot);
 }
 
+/** `slotBlockedBy`'s two cooldown reasons: recovering (its timer, its category's, the global cooldown) and held. */
+const SLOT_RECOVERING = "Восстанавливается";
+const SLOT_HELD = "Ещё не готово";
+
 /** Why a slot cannot be pressed right now, or an empty string when it can. */
 function slotBlockedBy(column: number, now = performance.now(), barPage = mainBarPage(column)): string {
   const world = game.world;
@@ -355,12 +360,11 @@ function slotBlockedBy(column: number, now = performance.now(), barPage = mainBa
       ? "" : `Набора ${content.action + 1} больше нет`;
   }
   if (content.type === ACTION_BUTTON_ITEM) {
-    const spellId = itemUseSpellId(world.itemTemplate(content.action));
-    if (spellId !== undefined && Math.max(
-      world.itemCooldownRemaining(spellId, now), world.cooldownRemaining(spellId, now),
-    ) > 0) return "Восстанавливается";
-    if (spellId !== undefined && world.isSpellOnHold?.(spellId)) return "Ещё не готово";
-    return "";
+    // 3.47 (12.10): the item's use refusal's own question (0x00739650 asks under the item's category for its spell).
+    const template = world.itemTemplate(content.action);
+    const spellId = itemUseSpellId(template);
+    const block = spellId === undefined ? undefined : itemUseCooldownBlock(world, template, spellId, now);
+    return block === "cooldown" ? SLOT_RECOVERING : block === "hold" ? SLOT_HELD : "";
   }
   if (content.type !== ACTION_BUTTON_SPELL) return "";
   // 6603 is a client combat action and is therefore intentionally absent from both learned-spell
@@ -373,12 +377,12 @@ function slotBlockedBy(column: number, now = performance.now(), barPage = mainBa
   // This press sends only CMSG_CANCEL_MOUNT_AURA. Recovery, GCD and the spell's power cost belong
   // to a new cast and must not make dismounting unavailable.
   if (togglingMount) return "";
-  if (world.cooldownRemaining(content.action, now) > 0) return "Восстанавливается";
+  if (world.cooldownRemaining(content.action, now) > 0) return SLOT_RECOVERING;
   // Held until its aura ends (Stealth after a stealthed login): the realm would answer NOT_READY.
   // Grey and refused, with nothing to sweep (WorldClient.isSpellOnHold).
-  if (world.isSpellOnHold?.(content.action)) return "Ещё не готово";
+  if (world.isSpellOnHold?.(content.action)) return SLOT_HELD;
   // L13 5.30: the guard's rule (SpellCastGuard.ts) — by StartRecoveryCategory; a row without it as before.
-  if (globalCooldownEndFor(game, metadata) > now) return "Восстанавливается";
+  if (globalCooldownEndFor(game, metadata) > now) return SLOT_RECOVERING;
   if (!spellPowerAvailable(world, metadata)) return "Не хватает ресурса";
   return "";
 }
@@ -395,7 +399,17 @@ export function useSlot(column: number, barPage = mainBarPage(column), button?: 
   if (!world || !content) return;
   // The sweep and the grey already knew this; pressing the key did not, so a slot could be drawn
   // as unusable and still send the cast.
-  if (slotBlockedBy(column, performance.now(), barPage)) return;
+  // 3.47 (12.10): but a press on a recovering or held slot is no silent one. Wow.exe's UseAction (0x005abbc0) casts
+  // the slot's spell or uses its item through the request builder 0x0080cce0, whose check 0x00739650 refuses it
+  // NOT_READY or ITEM_NOT_READY with the error frame's words, UNIT_SPELLCAST_FAILED and the combat log's line. A spell
+  // says so here (SpellCastGuard.ts `refuseSpellOnCooldown`); an item goes on to its use, which refuses it with its
+  // words before any packet (GroundTarget.requestItemUse → ItemUseCooldown.ts) — an item not carried says nothing.
+  const blocked = slotBlockedBy(column, performance.now(), barPage);
+  const cooling = blocked === SLOT_RECOVERING || blocked === SLOT_HELD;
+  if (blocked && !(cooling && content.type === ACTION_BUTTON_ITEM)) {
+    if (cooling && content.type === ACTION_BUTTON_SPELL) refuseSpellOnCooldown(world, content.action);
+    return;
+  }
   if (content.type === ACTION_BUTTON_SPELL) {
     castSpell(content.action);
     return;

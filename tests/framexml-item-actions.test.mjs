@@ -381,7 +381,8 @@ test("the item readers answer from the update fields and the cached templates, n
   assert.deepEqual(call(seam, "GetItemSpell", 6328), [], "the recipe's spell row is not cached: nil");
   assert.deepEqual(call(seam, "GetItemSpell", 2652), []);
   assert.deepEqual(call(seam, "GetItemIcon", 118), ["Interface\\Icons\\item118"]);
-  assert.deepEqual(call(seam, "GetItemCooldown", 118), [0, 0, 0]);
+  // 3.47 (12.10): a ready item Wow.exe asks about answers `enable` 1 (0x00510fc0 → 0x00807980), not 0, 0, 0.
+  assert.deepEqual(call(seam, "GetItemCooldown", 118), [0, 0, 1]);
   assert.deepEqual(call(seam, "GetContainerItemDurability", 0, 1), [], "no durability pair on the object yet");
   belt.fields.set(field("ITEM_FIELD_DURABILITY"), 10);
   belt.fields.set(field("ITEM_FIELD_MAXDURABILITY"), 40);

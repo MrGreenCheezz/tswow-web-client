@@ -773,7 +773,9 @@ export class FrameXmlBoot {
       vm: this.vm,
       bridge: this.bridge,
       savedVariables: this.#savedVariables,
-      ...(options.installedAddons === undefined ? {} : { loadOnDemand: options.installedAddons }),
+      ...(options.installedAddons === undefined ? {} : {
+        loadOnDemand: options.installedAddons, installed: options.installedAddons, // 3.46: + the list's order
+      }),
       onRoots: (roots, addon) => {
         for (const root of roots) this.#addonRootNames.add(root.name);
         this.#roots = [...this.#roots, ...roots];
@@ -1532,6 +1534,16 @@ export class FrameXmlBoot {
       recordDirectApi("GetAddOnMetadata");
       return this.#addons.metadata(args[0], args[1]);
     });
+    // 3.46 (12.10): the client's Interface/AddOns list (Wow.exe 0x00511200, 0x00511240), never the TSWoW modules
+    // FrameXML.toc glued in — those are no add-ons in Wow.exe (FrameXmlAddonRuntime.count/info).
+    vm.registerGlobal("GetNumAddOns", () => {
+      recordDirectApi("GetNumAddOns");
+      return [this.#addons.count()];
+    });
+    vm.registerGlobal("GetAddOnInfo", (args) => {
+      recordDirectApi("GetAddOnInfo");
+      return this.#addons.info(args[0]);
+    });
     // 1 from the PLAYER_LOGIN edge on, nil before it (FrameXmlLoginEdge.ts, 0x0060a450).
     vm.registerGlobal("IsLoggedIn", () => {
       recordDirectApi("IsLoggedIn");
@@ -1703,12 +1715,11 @@ export class FrameXmlBoot {
     this.vm.setGlobal("__fxMethodNames", methods);
     this.vm.setGlobal("__fxNeutral", neutral);
     this.vm.setGlobal("__fxMethodNeutral", methodNeutral);
-    // Data for the two Lua chunks that follow: which names are font objects, and
-    // which add-ons the TOC glued into itself.
+    // Data for the Lua chunk that follows: which names are font objects. (3.46: the add-ons the TOC glued into
+    // itself are no longer handed to the neutral add-on answers — a TSWoW module is no add-on in Wow.exe.)
     const fontNames: Record<string, boolean> = {};
     for (const name of scan.fontObjects) fontNames[name] = true;
     this.vm.setGlobal("__fxFontNames", fontNames);
-    this.vm.setGlobal("__fxAddonModules", [...scan.addonModules]);
   }
 
   /**
