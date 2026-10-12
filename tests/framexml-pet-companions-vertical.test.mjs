@@ -11,7 +11,7 @@ import test, { after } from "node:test";
 // The tab's own geometry is tests/framexml-custom-class-vertical.test.mjs's (B13), the C API
 // tests/framexml-companions.test.mjs's.
 //
-// Memory rule (docs/parity/handoff-2026-09-28.ru.md): no bridge frame ever reaches an assert — only
+// Memory rule (docs/archive/parity/handoff-2026-09-28.ru.md): no bridge frame ever reaches an assert — only
 // the primitives read off one (`?.enabled`, texture paths, Lua return values).
 let clientDirectory;
 try {

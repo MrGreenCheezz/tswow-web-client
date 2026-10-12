@@ -14,7 +14,7 @@
 - `electron/` — Electron-версия: `main.cjs` (окно, P-ядра, выбор страницы: `--webclient-url` → `server.json` приложения игрока → собранная страница → Vite; экраны ожидания вместо чёрного экрана; http не с loopback помечается безопасным), `static-server.cjs` (раздача собранной страницы, её же использует `tools/start-server.mjs`), `gateway.cjs` (собранная версия сама запускает gateway на 8090, если он не слушает, и останавливает свой при выходе; журнал `.runtime/logs/electron-gateway.log`), `build.mjs` (упаковка в `dist/electron/`, с `--player` — приложение игрока в `dist/player/WoWWebClient.zip`), свой `package.json` и `node_modules`, bat-файлы. `bench/run.mjs --browser electron` использует эту папку.
 - `online/` — для других игроков: `start-server.bat` (`tools/start-server.mjs`: `dist/web` на `PUBLIC_WEB_PORT`=8091 и gateway на 8090 на всех интерфейсах для `PUBLIC_HOST` из `.env`, `MODULE_UI_WRITE=0`; `tools/stop-gateway.mjs` его тоже останавливает), `build-player.bat` и `test-local.bat` (`tools/test-local.mjs`: тот же сервер только на 127.0.0.1 и приложение из `dist/player` с `--server-url`). Страница по http без TLS: вход в браузере идёт через `src/auth/Sha1.ts`, когда нет `crypto.subtle`.
 - `start-gateway.bat`, `restart-gateway.bat`, `build-assets.bat` в корне — общие для всех вариантов.
-- `docs/` — планы и отчёты: `CLIENT_PARITY_PLAN.ru.md` с матрицами в `docs/parity/`, `DISTRIBUTION_PLAN.ru.md` (раздача другим игрокам), `PERF_STATUS.md` и другие отчёты о производительности.
+- `docs/` — `WORK_PLAN.ru.md` (единый план: одна строка на пункт) и `LIVE_CHECKS.ru.md` (единственный список живых проверок владельца; проверенное убирается, пункт плана закрывается); `CLIENT_PARITY_PLAN.ru.md` (методика), `DISTRIBUTION_PLAN.ru.md` (раздача другим игрокам), `PERF_STATUS.md` (журнал замеров), `OPTIMIZATION_CATALOG.ru.md`; `implementation/` — спецификации пунктов и пробы, на которые ссылается код; `archive/` — история (полный план до 12.10, передачи, старые чек-листы и отчёты), новые файлы туда не пишутся.
 - `dist/` (`web/` — страница, `code/` — gateway, `electron/` — упакованная Electron-версия, `player/` — приложение игрока, единственное из `dist/`, что можно отправлять), локальные кеши `data/`, извлечённые ресурсы и `node_modules/` — результаты и зависимости. `CPPClientExample/` — отдельный проект для сравнения.
 
 ## Контракты
@@ -31,6 +31,7 @@
 - `npm run dev` запускает Vite; `npm run gateway` — gateway. Их pre-hooks выполняют подготовку данных/сборку.
 - `npm run build` собирает TypeScript и Vite. `npm test` сначала выполняет эту сборку, затем Node-тесты.
 - `npm run preview` раздаёт `dist/web` на `WEB_PORT`; `npm run electron:build` собирает веб-версию и упаковывает Electron-версию; `npm run server` и `npm run player:build` — раздача другим игрокам и их приложение. Запуск раздачи открывает порты наружу — это действие по просьбе владельца; для проверок привязывай её к локальному адресу через `PUBLIC_BIND`. Страницу на 5173 раздаёт что-то одно: Vite, `vite preview` или собранная Electron-версия — gateway принимает только origin из `ALLOWED_ORIGINS`.
+- Git: одна ветка `main`. Коммиты делаются в неё и пушатся в `origin/main`, когда владелец просит; отдельных рабочих веток на GitHub не заводим.
 
 ## Проверки исходников
 

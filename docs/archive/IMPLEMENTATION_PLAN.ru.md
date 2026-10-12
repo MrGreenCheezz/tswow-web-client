@@ -1,12 +1,12 @@
 # План реализации WebClient
 
-Составлен 29.09.2026. Отвечает на вопрос «как именно это делать»: [единый план работ](WORK_PLAN.ru.md) говорит, **что** сделать (247 пунктов со статусами), этот документ и папка [`implementation/`](implementation/) — **как**: подход, сверка с кодом и ядром, изменения по файлам, тесты с мутациями, приёмка, зависимости и порядок. Доказательства дефектов — в [аудите 28.09](parity/audit-2026-09-28.ru.md); методика приёмки — в [плане сопоставления](CLIENT_PARITY_PLAN.ru.md).
+Составлен 29.09.2026. Отвечает на вопрос «как именно это делать»: [единый план работ](../WORK_PLAN.ru.md) говорит, **что** сделать (247 пунктов со статусами), этот документ и папка [`implementation/`](../implementation/) — **как**: подход, сверка с кодом и ядром, изменения по файлам, тесты с мутациями, приёмка, зависимости и порядок. Доказательства дефектов — в [аудите 28.09](parity/audit-2026-09-28.ru.md); методика приёмки — в [плане сопоставления](../CLIENT_PARITY_PLAN.ru.md).
 
 Границы: звук и чат вне плана (решение владельца 29.09.2026). Всё написано по коду и данным на утро 29.09, после передачи работы параллельной сессии ([handoff ночи](parity/handoff-2026-09-28-night.ru.md)). Ничего из перечисленного здесь ещё не реализовано; ни один тест не запускался, все спецификации получены чтением кода, данных датасета и клиента `F:\Circle` и короткими пробами только на чтение.
 
 ## Как пользоваться
 
-1. Открыть пункт в [плане работ](WORK_PLAN.ru.md), найти его в **указателе** (§10) — там линия и файл спецификации.
+1. Открыть пункт в [плане работ](../WORK_PLAN.ru.md), найти его в **указателе** (§10) — там линия и файл спецификации.
 2. Спецификация пункта в `implementation/line-<линия>.ru.md` содержит: **Подход**, **Сверено** (`файл:строка` в коде и ядре TrinityCore), **Изменения** по файлам, **Тесты** (файл, что утверждает, какая мутация кода его уронит), **Офлайн-проверку**, **Живую проверку** (пункт этапа 14), **Зависимости**, **Риски и открытые вопросы**, **Размер и файлы**.
 3. Порядок и параллельность — в §4 (по вехам) и в разделе «Порядок срезов» каждой линии; общие механизмы линии — в её разделе «Общие механизмы».
 4. Работать по процессу из §2, отмечать результат в плане работ (`[x]`, дата, тест) и в [журнале](parity/parity-execution.ru.md).
@@ -15,18 +15,18 @@
 
 | Файл | Что внутри |
 |---|---|
-| [`implementation/stage-0.ru.md`](implementation/stage-0.ru.md) | Этап 0: перезапуск gateway, git, обёртка для тестов, решения владельца |
-| [`implementation/line-A1.ru.md`](implementation/line-A1.ru.md) … [`line-A10`](implementation/line-A10.ru.md) | Спецификации пунктов этапов 1–11 по линиям исполнения (§3) |
-| [`implementation/stage-12.ru.md`](implementation/stage-12.ru.md) | Этап 12: производительность (вехи по [каталогу оптимизаций](OPTIMIZATION_CATALOG.ru.md)) |
-| [`implementation/line-P.ru.md`](implementation/line-P.ru.md), [`line-P-P1`](implementation/line-P-P1.ru.md), [`line-P-P2`](implementation/line-P-P2.ru.md) | Линия P: обзор, цель кадра, протокол измерений, расписание, решения владельца и спецификации срезов волн P1–P2 этапа 12 (по формату линий A1–A9) |
-| [`implementation/stage-13.ru.md`](implementation/stage-13.ru.md) | Этап 13: документация и репозиторий |
-| [`implementation/stage-14.ru.md`](implementation/stage-14.ru.md) | Этап 14: живая приёмка, как проводить и что проверять |
-| [`implementation/owner-questions.ru.md`](implementation/owner-questions.ru.md) | Все вопросы владельцу и допущения без подтверждения, по линиям |
+| [`implementation/stage-0.ru.md`](../implementation/stage-0.ru.md) | Этап 0: перезапуск gateway, git, обёртка для тестов, решения владельца |
+| [`implementation/line-A1.ru.md`](../implementation/line-A1.ru.md) … [`line-A10`](../implementation/line-A10.ru.md) | Спецификации пунктов этапов 1–11 по линиям исполнения (§3) |
+| [`implementation/stage-12.ru.md`](../implementation/stage-12.ru.md) | Этап 12: производительность (вехи по [каталогу оптимизаций](../OPTIMIZATION_CATALOG.ru.md)) |
+| [`implementation/line-P.ru.md`](../implementation/line-P.ru.md), [`line-P-P1`](../implementation/line-P-P1.ru.md), [`line-P-P2`](../implementation/line-P-P2.ru.md) | Линия P: обзор, цель кадра, протокол измерений, расписание, решения владельца и спецификации срезов волн P1–P2 этапа 12 (по формату линий A1–A9) |
+| [`implementation/stage-13.ru.md`](../implementation/stage-13.ru.md) | Этап 13: документация и репозиторий |
+| [`implementation/stage-14.ru.md`](../implementation/stage-14.ru.md) | Этап 14: живая приёмка, как проводить и что проверять |
+| [`implementation/owner-questions.ru.md`](owner-questions.ru.md) | Все вопросы владельцу и допущения без подтверждения, по линиям |
 | `implementation/probes/<линия>/` | Пробы и их выводы, на которые ссылаются спецификации (только скрипты и числа; стоковые файлы клиента не копировались) |
 
 ## 1. Цель и вехи
 
-Цель этапа «игра выглядит и ощущается как 3.3.5a» ([план сопоставления](CLIENT_PARITY_PLAN.ru.md) §3): все P0 и P1 приняты живым сценарием, 0 открытых S0 и S1, FPS gate пройден, остаток S2 описан. Вехи идут по ценности для игрока; каждая заканчивается живой сессией (этап 14), полным прогоном тестов (один раз, под сторожем) и, если менялся `src/gateway/**`, окном перезапуска gateway (§6).
+Цель этапа «игра выглядит и ощущается как 3.3.5a» ([план сопоставления](../CLIENT_PARITY_PLAN.ru.md) §3): все P0 и P1 приняты живым сценарием, 0 открытых S0 и S1, FPS gate пройден, остаток S2 описан. Вехи идут по ценности для игрока; каждая заканчивается живой сессией (этап 14), полным прогоном тестов (один раз, под сторожем) и, если менялся `src/gateway/**`, окном перезапуска gateway (§6).
 
 | Веха | Что входит | Приёмка |
 |---|---|---|
@@ -77,7 +77,7 @@
 | **A8** | TSWoW и аддоны | 6 | `world/CustomPacketRegistry.ts`, `ui/ModuleLoader.ts`, `FrameXmlSavedVariables.ts`, `FrameXmlMechanics.ts` (классы) |
 | **A9** | Физика, камера, ввод движения; транспорт и техника (М7) | 16 | `game/Physics.ts`, `game/Movement.ts`, `game/CameraRig.ts`, `input/Controls.ts`, `game/Collision*.ts` |
 | **A10** | Дополнения параллельной сессии | 5 | `UnitActionArbiter.ts`, `tools/asset-worker.mjs`, `gateway/AssetWorker.ts`, `Gateway.ts` (по очереди дорожки G) |
-| **P** | Производительность (этап 12); детальные срезы волн P1–P2 — [line-P](implementation/line-P.ru.md) | 19 вех, ≈ 40 срезов | по ID каталога оптимизаций; в срезах — списки функций по горячим файлам |
+| **P** | Производительность (этап 12); детальные срезы волн P1–P2 — [line-P](../implementation/line-P.ru.md) | 19 вех, ≈ 40 срезов | по ID каталога оптимизаций; в срезах — списки функций по горячим файлам |
 
 **Горячие файлы** (правят сразу несколько линий): `world/WorldClient.ts` (≈8000 строк: A1, A3, A4, A6, A8, A9), `framexml/LiveWorldSeam.ts` (A1, A2, A3, A5, P), `framexml/FrameXmlWorldSeam.ts` (A1, A2), `framexml/FrameXmlWorldMount.ts` (A1, A2, A8, A9, P), `app/EnterWorld.ts` (A4, A8, A2, A5, P), `world/WorldState.ts` (A4, затем A9), `WorldRenderer3D.ts` (A7a, A7b, A9, A10, P), `gateway/Gateway.ts` (A3, A6, A7b, A10).
 
@@ -163,11 +163,11 @@ A9 срез T (`11.01`): A0 = М7-0 → A1 (корабль движется: ш�
 
 ### В5. Производительность
 
-Идёт параллельно В1–В4; каждый перф-срез по горячему файлу ждёт владельца этого файла. Порядок этапа 12: `12.03` (MEM-1 `build.target: "es2022"` первым, NET-22) → `12.01` (живой baseline; точка сравнения до и после) → `12.04` (тени) → `12.05` (окружение) → `12.06` (планировщик кадра) → `12.07`, `12.08`, `12.09` → `12.10`–`12.13` → `12.14` (прототипы переписок с критериями отказа) → `12.15`–`12.19`. Приёмка каждого — строгий A/B стенда, живая запись v2, CPU мс против границы 13,9 мс; см. [stage-12](implementation/stage-12.ru.md).
+Идёт параллельно В1–В4; каждый перф-срез по горячему файлу ждёт владельца этого файла. Порядок этапа 12: `12.03` (MEM-1 `build.target: "es2022"` первым, NET-22) → `12.01` (живой baseline; точка сравнения до и после) → `12.04` (тени) → `12.05` (окружение) → `12.06` (планировщик кадра) → `12.07`, `12.08`, `12.09` → `12.10`–`12.13` → `12.14` (прототипы переписок с критериями отказа) → `12.15`–`12.19`. Приёмка каждого — строгий A/B стенда, живая запись v2, CPU мс против границы 13,9 мс; см. [stage-12](../implementation/stage-12.ru.md).
 
 ### В6. Выпуск
 
-Оставшиеся S2 и «Долг»; этап 13 ([stage-13](implementation/stage-13.ru.md)); живая приёмка 14.25 (парный эталон оригинала) и 14.26 (FPS gate и выпускной проход).
+Оставшиеся S2 и «Долг»; этап 13 ([stage-13](../implementation/stage-13.ru.md)); живая приёмка 14.25 (парный эталон оригинала) и 14.26 (FPS gate и выпускной проход).
 
 ## 5. Договорённости между линиями (не разрывать)
 
@@ -206,7 +206,7 @@ A9 срез T (`11.01`): A0 = М7-0 → A1 (корабль движется: ш�
 
 ## 7. Решения и вопросы владельцу
 
-Полный список по линиям — в [`owner-questions.ru.md`](implementation/owner-questions.ru.md). Блокирующие старт конкретных срезов:
+Полный список по линиям — в [`owner-questions.ru.md`](owner-questions.ru.md). Блокирующие старт конкретных срезов:
 
 | Решение | Блокирует |
 |---|---|
@@ -238,7 +238,7 @@ A9 срез T (`11.01`): A0 = М7-0 → A1 (корабль движется: ш�
 | Цена новых визуальных функций | Снижение FPS: небо, снаряжение NPC, частицы у предметов, комнаты WMO | Цена в мс на кадр до и после для каждого среза; пересечения с этапом 12 решаются порядком; в Гундраке комнаты уже подняли кадр 1,1–2,0 → 1,3–4,5 мс (P-ядра) |
 | Регрессии штатного UI от новых файлов TOC | Ошибки Lua в других окнах | Перепись после каждого среза; MPQ vertical-тесты; видимый откат гейта (`3.24`) |
 | Особый класс 13 HERO | Стоковый код с 10 классами ломается | `9.05`; тесты на реальных данных персонажа «Тестовый» |
-| Допущения без подтверждения в клиенте | Расхождение с оригиналом | Записаны в [owner-questions](implementation/owner-questions.ru.md); закрываются 14.25 |
+| Допущения без подтверждения в клиенте | Расхождение с оригиналом | Записаны в [owner-questions](owner-questions.ru.md); закрываются 14.25 |
 | Публичная раздача без TLS | Подмена JS и кража пароля | `1.03` и `10.02` до любой раздачи; приложение игрока с закреплением сертификата |
 
 ## 9. Расхождения спецификаций с деревом после передачи параллельной сессии
@@ -270,17 +270,17 @@ A9 срез T (`11.01`): A0 = М7-0 → A1 (корабль движется: ш�
 
 | Линия | Пунктов | XL | L | M | S | L/S |
 |---|---|---|---|---|---|---|
-| [A1](implementation/line-A1.ru.md) — Шов FrameXML: привязки C API | 27 | — | — | 12 | 15 | — |
-| [A2](implementation/line-A2.ru.md) — Движок штатного UI и файлы TOC | 13 | 1 | — | 9 | 3 | — |
-| [A3](implementation/line-A3.ru.md) — Игровые механизмы | 15 | 1 | 1 | 5 | 8 | — |
-| [A4](implementation/line-A4.ru.md) — Протокол мира и движение по сети | 18 | — | — | 5 | 13 | — |
-| [A5](implementation/line-A5.ru.md) — Native UI и ввод | 19 | 1 | — | 5 | 12 | 1 |
-| [A6](implementation/line-A6.ru.md) — Вход, gateway, безопасность, Electron | 25 | — | 1 | 10 | 14 | — |
-| [A7a](implementation/line-A7a.ru.md) — Модели, анимации, эффекты | 22 | 1 | 3 | 12 | 6 | — |
-| [A7b](implementation/line-A7b.ru.md) — Рендер мира | 24 | 1 | — | 13 | 10 | — |
-| [A8](implementation/line-A8.ru.md) — TSWoW и аддоны | 6 | — | — | 2 | 4 | — |
-| [A9](implementation/line-A9.ru.md) — Физика, камера, ввод движения; транспорт и техника | 16 | 2 | — | 5 | 9 | — |
-| [A10](implementation/line-A10.ru.md) — Дополнения параллельной сессии | 5 | — | 2 | 2 | 1 | — |
+| [A1](../implementation/line-A1.ru.md) — Шов FrameXML: привязки C API | 27 | — | — | 12 | 15 | — |
+| [A2](../implementation/line-A2.ru.md) — Движок штатного UI и файлы TOC | 13 | 1 | — | 9 | 3 | — |
+| [A3](../implementation/line-A3.ru.md) — Игровые механизмы | 15 | 1 | 1 | 5 | 8 | — |
+| [A4](../implementation/line-A4.ru.md) — Протокол мира и движение по сети | 18 | — | — | 5 | 13 | — |
+| [A5](../implementation/line-A5.ru.md) — Native UI и ввод | 19 | 1 | — | 5 | 12 | 1 |
+| [A6](../implementation/line-A6.ru.md) — Вход, gateway, безопасность, Electron | 25 | — | 1 | 10 | 14 | — |
+| [A7a](../implementation/line-A7a.ru.md) — Модели, анимации, эффекты | 22 | 1 | 3 | 12 | 6 | — |
+| [A7b](../implementation/line-A7b.ru.md) — Рендер мира | 24 | 1 | — | 13 | 10 | — |
+| [A8](../implementation/line-A8.ru.md) — TSWoW и аддоны | 6 | — | — | 2 | 4 | — |
+| [A9](../implementation/line-A9.ru.md) — Физика, камера, ввод движения; транспорт и техника | 16 | 2 | — | 5 | 9 | — |
+| [A10](../implementation/line-A10.ru.md) — Дополнения параллельной сессии | 5 | — | 2 | 2 | 1 | — |
 | **Итого** | **190** | **7** | **7** | **80** | **95** | **1** |
 
 Плюс вехи этапов 0 и 12–14 (58 пунктов: 6 + 19 + 7 + 26) — в файлах `stage-*.ru.md`; вместе с 190 спецификациями это все 248 пунктов плана работ. Размеры: S — до ~150 строк изменений и один тест; M — несколько файлов, 2–4 теста; L — новый модуль, маршрут gateway или UI; XL — подсистема, разбита на срезы с отдельной приёмкой; L/S — зависит от решения владельца (пункт 4.09).
@@ -289,193 +289,193 @@ A9 срез T (`11.01`): A0 = М7-0 → A1 (корабль движется: ш�
 
 | Пункт | Что | Тяжесть | Размер | Линия |
 |---|---|---|---|---|
-| 1.02 | Вход в мир по http из обычного браузера (HMAC-SHA1 без Web Crypto) | S0 | S | [A6](implementation/line-A6.ru.md) |
-| 1.03 | Gateway падает от одного запроса (безопасность) | Безоп. | M | [A6](implementation/line-A6.ru.md) |
-| 1.04 | Клавиши 1–= и бонус-панель (стойки, формы, незаметность) | S0 | S | [A5](implementation/line-A5.ru.md) |
-| 1.05 | `HasFullControl` (и события потери контроля) | S0 | S | [A1](implementation/line-A1.ru.md) |
-| 1.06 | `LeaveBattlefield` | S0 | S | [A1](implementation/line-A1.ru.md) |
-| 1.07 | `SetActiveTalentGroup` и `ACTIVE_TALENT_GROUP_CHANGED` | S0 | S | [A1](implementation/line-A1.ru.md) |
-| 1.08 | сложность подземелья и рейда, `IsInInstance` | S0 | S | [A1](implementation/line-A1.ru.md) |
-| 1.09 | флаг PvP: `TogglePVP`, `SetPVP`, `GetPVPDesired`, `IsPVPTimerRunning`, `GetPVPTimer` | S0 | S | [A1](implementation/line-A1.ru.md) |
-| 1.10 | команды меню портрета и SecureTemplates, для которых пакеты уже есть | S0 | M | [A1](implementation/line-A1.ru.md) |
-| 1.12 | «Поделиться» заданием: `GetQuestLogPushable`, `QuestLogPushQuest`, результат `MSG_QUEST_PUSH_RESULT` | S1 | S | [A1](implementation/line-A1.ru.md) |
-| 1.13 | глобальный `GetText(token, gender)` | S1 | S | [A1](implementation/line-A1.ru.md) |
-| 1.14 | кнопки действий: автоповтор, `IsAttackAction`, события, `IsActionInRange` | S2 | S | [A1](implementation/line-A1.ru.md) |
-| 1.15 | `UnitHasRelicSlot("player")` по классу и `SetBagPortraitTexture` | S2 | S | [A1](implementation/line-A1.ru.md) |
-| 1.17 | Ближний телепорт не через `onWorldChanged` | S1 | S | [A4](implementation/line-A4.ru.md) |
-| 1.18 | Тексты промахов `MISS_REASONS` | S2 | S | [A4](implementation/line-A4.ru.md) |
-| 1.19 | Glue: коды отказов (таблица кодов и текстов) | S2 | M | [A6](implementation/line-A6.ru.md) |
-| 1.20 | `CMSG_MOVE_NOT_ACTIVE_MOVER` с упакованным guid | S2 | S | [A4](implementation/line-A4.ru.md) |
-| 1.21 | Аукцион: «выиграно» или «перебили» | S2 | S | [A4](implementation/line-A4.ru.md) |
-| 1.22 | Убранные ружья и арбалеты (inventoryType 26) | S2 | S | [A7a](implementation/line-A7a.ru.md) |
-| 1.23 | Классификатор растительности окружения (фонари и шипы не деревья) | S2 | S | [A7b](implementation/line-A7b.ru.md) |
-| 1.24 | Повторы запросов после сбоя: сплат, свет, горизонт | S2 | S | [A7b](implementation/line-A7b.ru.md) |
-| 1.25 | `WorldClient`: `#waitFor` и запись полей предметов мимо `WorldStore` | Долг | S | [A4](implementation/line-A4.ru.md) |
-| 1.26 | Кулдаун «на удержании» из `INITIAL_SPELLS` | S2 | S | [A4](implementation/line-A4.ru.md) |
-| 1.27 | `CAST_FAILED`: хвост и конкретный текст | S2 | S | [A4](implementation/line-A4.ru.md) |
-| 1.28 | Native: таланты и символы (сброс с ценой, снятие с подтверждением, вставка в выбранную ячейку) | S1 | M | [A5](implementation/line-A5.ru.md) |
-| 1.29 | Electron: `render-process-gone` → экран ошибки с перезагрузкой; `JSON.parse(stdout)` в try (S2) | S2 | S | [A6](implementation/line-A6.ru.md) |
-| 1.30 | `GetNetStats`: трафик сокета | S2 | S | [A4](implementation/line-A4.ru.md) |
-| 1.31 | Мелкие ошибки native: подписи качества в фильтре аукциона; лимит золота ранга гильдии | S2 | S | [A5](implementation/line-A5.ru.md) |
-| 1.32 | Сырые ID в сообщениях → имена | S2 | S | [A4](implementation/line-A4.ru.md) |
-| 2.01 | Area triggers (`CMSG_AREATRIGGER`) | S0 | L | [A3](implementation/line-A3.ru.md) |
-| 2.02 | Ремонт (`CMSG_REPAIR_ITEM`) | S0 | M | [A3](implementation/line-A3.ru.md) |
-| 2.03 | Трактирщик: «Сделать это место своим домом» (`SMSG_BINDER_CONFIRM` → `CMSG_BINDER_ACTIVATE`) | S0 | S | [A3](implementation/line-A3.ru.md) |
-| 2.04 | Сброс талантов у тренера (`MSG_TALENT_WIPE_CONFIRM`) | S0 | M | [A3](implementation/line-A3.ru.md) |
-| 2.05 | Предмет как цель (курсор-цель, `TARGET_FLAG_ITEM`/`TRADE_ITEM`, `CMSG_WRAP_ITEM`) — XL, пять срезов | S0 | XL | [A3](implementation/line-A3.ru.md) |
-| 2.06 | Снятие шкур и сбор с существ (травы, руда, инженерия) | S0 | S | [A3](implementation/line-A3.ru.md) |
-| 2.07 | Переименование персонажа (S0) | S0 | M | [A6](implementation/line-A6.ru.md) |
-| 2.08 | Смена внешности, фракции и расы (S1) | S1 | L | [A6](implementation/line-A6.ru.md) |
-| 2.09 | Привязка к подземелью (`SMSG_INSTANCE_LOCK_WARNING_QUERY` → `CMSG_INSTANCE_LOCK_RESPONSE`) | S1 | S | [A3](implementation/line-A3.ru.md) |
-| 2.10 | Возврат покупок (`CMSG_ITEM_REFUND_INFO`/`CMSG_ITEM_REFUND`, `END_REFUND`) | S2 | M | [A3](implementation/line-A3.ru.md) |
-| 3.01 | Журнал боя (`COMBAT_LOG_EVENT(_UNFILTERED)`, `PLAYER_LOGIN`, `Blizzard_CombatLog`, MSBT) | S1 | XL | [A2](implementation/line-A2.ru.md) |
-| 3.02 | `UNIT_SPELLCAST_SENT/SUCCEEDED/FAILED_QUIET/INTERRUPTIBLE/NOT_INTERRUPTIBLE` | S1 | M | [A2](implementation/line-A2.ru.md) |
-| 3.03 | Рыцарь смерти: `RuneFrame`, `GetRuneCooldown`/`GetRuneType`, `RUNE_POWER_UPDATE`/`RUNE_TYPE_UPDATE`, nil-вызов | S1 | M | [A2](implementation/line-A2.ru.md) |
-| 3.05 | `ZoneText` и `FadingFrame`: название зоны и подзоны, PvP-статус территории, «следование за» | S2 | S | [A2](implementation/line-A2.ru.md) |
-| 3.06 | `DurabilityFrame` и `UPDATE_INVENTORY_DURABILITY`/`UPDATE_INVENTORY_ALERTS` (вместе с 2.02) | S2 | S | [A2](implementation/line-A2.ru.md) |
-| 3.07 | Панель «Зов стихий» (`MultiCastActionBarFrame`) | S2 | M | [A2](implementation/line-A2.ru.md) |
-| 3.09 | Мелкие стоковые файлы: `CoinPickupFrame`, `EasyMenu.lua`, `Localization`/`LocalizationPost` (ruRU) | S2 | M | [A2](implementation/line-A2.ru.md) |
-| 3.10 | Макросы: условия `SecureCmdOptionParse`, `RunMacro`/`RunMacroText`/`StopMacro`, `/click`, общий вычислитель дл | S1 | M | [A2](implementation/line-A2.ru.md) |
-| 3.11 | Клавиши: недостающие стоковые действия и API привязок (XL, четыре среза) | S1 | XL | [A5](implementation/line-A5.ru.md) |
-| 3.12 | методы `GameTooltip`, которых нет: `SetTalent`, `SetHyperlinkCompareItem`, `SetBuybackItem`, `SetMerchantCostI | S1 | M | [A1](implementation/line-A1.ru.md) |
-| 3.13 | журнал заданий, трекер, карта | S1 | M | [A1](implementation/line-A1.ru.md) |
-| 3.14 | поле боя: таблица результатов, BG-миникарта, события | S0 | M | [A1](implementation/line-A1.ru.md) |
-| 3.15 | команды арены в `PVPFrame`: состав команды и управление | S0 | M | [A1](implementation/line-A1.ru.md) |
-| 3.16 | рамки боссов и арены в стоковом HUD | S2 | M | [A1](implementation/line-A1.ru.md) |
-| 3.18 | Жизненный цикл аддонов: `LoadAddOn` для известных LoD, `/msbt`, `InterfaceOptions_AddCategory`, `GetAddOnMetad | S2 | M | [A2](implementation/line-A2.ru.md) |
-| 3.19 | CVar: сохранение всех, `CVAR_UPDATE`, `SetModifiedClick` | S2 | M | [A1](implementation/line-A1.ru.md) |
-| 3.20 | `issecure()` для кнопок меню без глобального `true` | S2 | M | [A1](implementation/line-A1.ru.md) |
-| 3.21 | заглушки методов виджетов: `ColorSelect`, `ScrollingMessageFrame:UpdateColorByID`, `PlayerModel:SetUnit`, `:Pl | S2 | S | [A1](implementation/line-A1.ru.md) |
-| 3.22 | события, которых сток не получает (источник данных для каждого) | S2 | M | [A1](implementation/line-A1.ru.md) |
-| 3.23 | константы там, где данные есть | S2 | M | [A1](implementation/line-A1.ru.md) |
-| 3.24 | Смешанный интерфейс: первое открытие, слой над native-окнами, видимый откат, native-остатки | S2 | M | [A2](implementation/line-A2.ru.md) |
-| 3.25 | LFR и награда LFD в стоке | S2 | S | [A1](implementation/line-A1.ru.md) |
-| 3.26 | модуль `retail-talents` заменяет окно талантов, вкладка символов пропадает | S2 | S | [A1](implementation/line-A1.ru.md) |
-| 3.27 | Lua VM (fengari 5.3 + шимы 5.1): утечка ссылок `SetScript`/`HookScript`, `OnUpdate` без хуков, `next` без O(n² | Долг | M | [A2](implementation/line-A2.ru.md) |
-| 3.28 | Гейт сумок: прокси `InterfaceOptionsFrame` не должен обнулять настоящий фрейм при снятии владельца | Долг | S | [A2](implementation/line-A2.ru.md) |
-| 3.29 | тренер: заголовки групп, `Collapse/ExpandTrainerSkillLine`, тест с живым `WorldClient` | S2 | M | [A1](implementation/line-A1.ru.md) |
-| 3.30 | `UnitCharacterPoints` отвечает cp2 = 0 | S0 (латентно) | S | [A1](implementation/line-A1.ru.md) |
-| 3.31 | оставшиеся неотвеченные имена переписи: `LocalizeFrames`, `RaidGroupFrame_Update`, `CombatText_UpdateDisplayed | S2 | S | [A1](implementation/line-A1.ru.md) |
-| 3.32 | `CMSG_SET_ACTIONBAR_TOGGLES`: дополнительные панели хранятся на сервере | S2 | S | [A1](implementation/line-A1.ru.md) |
-| 3.33 | предпросмотр талантов (`CMSG_LEARN_PREVIEW_TALENTS`) | S2 | M | [A1](implementation/line-A1.ru.md) |
-| 4.01 | Всплывающие подсказки браузера `title` → единый собственный тултип | S2 | M | [A5](implementation/line-A5.ru.md) |
-| 4.02 | Значок вместо «полупрозрачной копии кнопки» при перетаскивании (`setDragImage`) | S2 | S | [A5](implementation/line-A5.ru.md) |
-| 4.03 | Окно персонажа (native): характеристики заклинаний и защиты, сила атаки с модификаторами, звания, валюты, шлем | S2 | M | [A5](implementation/line-A5.ru.md) |
-| 4.04 | Подсказка при наведении на юнит и Escape, прерывающий каст (native) | S2 | M | [A5](implementation/line-A5.ru.md) |
-| 4.05 | Перетаскивание макроса из окна на панель | S2 | S | [A5](implementation/line-A5.ru.md) |
-| 4.06 | Члены группы вне видимости на карте и миникарте; метка на миникарте обычным щелчком | S2 | S | [A5](implementation/line-A5.ru.md) |
-| 4.07 | Торговец: покупка количеством; аукцион: подтверждение ставки и выкупа | S2 | S | [A5](implementation/line-A5.ru.md) |
-| 4.08 | Рейд-сетка по подгруппам, пустые ячейки, «игнорировать ячейку» в комплектах, хартия на подпись | S2 | S | [A5](implementation/line-A5.ru.md) |
-| 4.09 | Достижения и управление рейдом в native: объём при двух исходах решения 0.4h | S2 | L/S | [A5](implementation/line-A5.ru.md) |
-| 4.10 | Строки из GlobalStrings вместо зашитого текста; подписи клавиш у микрокнопок из текущих привязок | S2 | S | [A5](implementation/line-A5.ru.md) |
-| 4.11 | Раскладка по умолчанию по стоковому набору (решение 0.4g) | S2 | S | [A5](implementation/line-A5.ru.md) |
-| 4.12 | Привязки клавиш и положение окон в данных аккаунта | S2 | M | [A5](implementation/line-A5.ru.md) |
-| 4.13 | Счётчик 20-секундного выхода в native-панели | S2 | S | [A5](implementation/line-A5.ru.md) |
-| 4.14 | LFG: предложение спрашивается дважды; ожидание всегда «0 мин»; сырые ID в подсказках | S2 | S | [A5](implementation/line-A5.ru.md) |
-| 4.15 | Ожидание NPC без тайм-аута и клик по объекту вне дальности без отклика | S2 | S | [A5](implementation/line-A5.ru.md) |
-| 5.01 | Отбрасывание | S1 | M | [A4](implementation/line-A4.ru.md) |
-| 5.02 | Сплайн create-блока | S1 | M | [A4](implementation/line-A4.ru.md) |
-| 5.03 | MONSTER_MOVE: парабола, поворот по прибытии, ярус анимации | S1 | M | [A4](implementation/line-A4.ru.md) |
-| 5.04 | Чужие игроки: экстраполяция, pitch, дуга прыжка, fallTime | S1 | M | [A4](implementation/line-A4.ru.md) |
-| 5.05 | Автоатака: ПКМ начинает бой, смена цели его не сбрасывает | S1 | S | [A9](implementation/line-A9.ru.md) |
-| 5.06 | Плавание у поверхности: ступни ниже воды, а не на её уровне | S1 | S | [A9](implementation/line-A9.ru.md) |
-| 5.07 | Пороги ходьбы: шаг 0,6 ярда, склон 50°, невысокие стены отталкивают | S2 | M | [A9](implementation/line-A9.ru.md) |
-| 5.08 | Скорости назад: runBack, swimBack, flightBack (и начальные скорости из CREATE) | S2 | S | [A9](implementation/line-A9.ru.md) |
-| 5.09 | Полёт: наклон по обзору, скорость по режиму, PITCHUP/PITCHDOWN | S2 | M | [A9](implementation/line-A9.ru.md) |
-| 5.10 | Плавание: глубину задаёт наклон персонажа, а не камеры | S2 | S | [A9](implementation/line-A9.ru.md) |
-| 5.11 | Контроль: под root нельзя прыгать, оглушение блокирует повороты и прыжки | S2 | S | [A9](implementation/line-A9.ru.md) |
-| 5.12 | Потолки: голова упирается в геометрию при движении вверх | S2 | M | [A9](implementation/line-A9.ru.md) |
-| 5.13 | Шаг физики: подшаги вместо обрезки кадра, потеря движения после копии позиции, незагруженная земля | S2 | S | [A9](implementation/line-A9.ru.md) |
-| 5.14 | Мышь и камера: Pointer Lock, поворот по ПКМ, автоследование, панели «Камера»/«Мышь», дистанции оригинала | S2 | M | [A9](implementation/line-A9.ru.md) |
-| 5.15 | Ввод: W с зажатым Ctrl/Alt; клавиша, нажатая до готовности движения, не теряется | S2 | S | [A9](implementation/line-A9.ru.md) |
-| 5.16 | Tab: цели на экране, без трупов, с правильной фракцией и принудительными реакциями; повтор загрузки таблиц | S2 | M | [A9](implementation/line-A9.ru.md) |
-| 5.17 | Курсоры по контексту: стоковые изображения вместо `pointer`/пакета-SVG | S2 | S | [A9](implementation/line-A9.ru.md) |
-| 5.18 | Следование: `FollowUnit`, клиентское автоследование, `AUTOFOLLOW_BEGIN/END` | S2 | S | [A9](implementation/line-A9.ru.md) |
-| 5.19 | Репутация на сервере: отслеживаемая, неактивная, война | S1 | M | [A3](implementation/line-A3.ru.md) |
-| 5.20 | Типы рассеивания дебаффов (`debuffType`, `isStealable`) | S1 | M | [A3](implementation/line-A3.ru.md) |
-| 5.21 | Состояние только по ответу сервера | S2 | S | [A4](implementation/line-A4.ru.md) |
-| 5.22 | Пустые обработчики с реакцией оригинала (S2 · S, шесть подпунктов; `WorldClient.ts` ~6217-6412) | S2 | S | [A3](implementation/line-A3.ru.md) |
-| 5.23 | Статус квестодателей: запрос при появлении вместо опроса каждые 5 с | S2 | S | [A3](implementation/line-A3.ru.md) |
-| 5.24 | Питомцы: запрос имён; `CMSG_STABLE_REVIVE_PET` | S2 | S | [A3](implementation/line-A3.ru.md) |
-| 5.25 | Прочие исходящие (S2 · S; девять подпунктов — по каждому решение «делать / не делать» с доказательством) | S2 | S | [A3](implementation/line-A3.ru.md) |
-| 5.26 | Ошибка разбора update: откатить блок, не оставлять полуобъект | Долг | S | [A4](implementation/line-A4.ru.md) |
-| 5.27 | Поворот игровых объектов (`UPDATEFLAG_ROTATION`, `GAMEOBJECT_PARENTROTATION`) | S2 | S | [A4](implementation/line-A4.ru.md) |
-| 5.28 | Разобранное, но непрочитанное состояние | S2 | M | [A4](implementation/line-A4.ru.md) |
-| 5.29 | Учёт намеренно игнорируемых опкодов | S2 | S | [A4](implementation/line-A4.ru.md) |
-| 6.01 | Шлем и наплечники NPC из NPCItemDisplay | S1 | M | [A7a](implementation/line-A7a.ru.md) |
-| 6.02 | Оружие NPC в руках по UNIT_VIRTUAL_ITEM_SLOT_ID; weaponPose по оружию | S1 | M | [A7a](implementation/line-A7a.ru.md) |
-| 6.03 | UNIT_NPC_EMOTESTATE → зацикленная анимация состояния | S1 | M | [A7a](implementation/line-A7a.ru.md) |
-| 6.04 | Боевая стойка Ready1H/2H/Unarmed/Bow между ударами | S1 | M | [A7a](implementation/line-A7a.ru.md) |
-| 6.05 | Труп игрока (тип 7) и область заклинания (DynamicObject, тип 6) | S1 | L | [A7a](implementation/line-A7a.ru.md) |
-| 6.06 | Бой: удар левой, реакции жертвы, варианты удара по оружию | S2 | M | [A7a](implementation/line-A7a.ru.md) |
-| 6.07 | Состояния: STUNNED, LOOTING, KneelStart/End, SleepUp, JumpLandRun, падение | S2 | S | [A7a](implementation/line-A7a.ru.md) |
-| 6.08 | Убранное оружие: точки 26–33, ориентация, два двуручника, Sheath/HipSheath | S2 | M | [A7a](implementation/line-A7a.ru.md) |
-| 6.09 | Показ шлема и плаща | S2 | M | [A7a](implementation/line-A7a.ru.md) |
-| 6.10 | Уши и глаза: заглушка 701, свечение глаз рыцаря смерти | S2 | S | [A7a](implementation/line-A7a.ru.md) |
-| 6.11 | Поля облика NPC (CreatureModelAlpha, CreatureGeosetData, ParticleColorID) и зеркальный образ | S2 | L | [A7a](implementation/line-A7a.ru.md) |
-| 6.12 | Снаряды: старт из руки, самонаведение, SpellMissile/MissileMotion, без выдуманной дуги | S2 | M | [A7a](implementation/line-A7a.ru.md) |
-| 6.13 | Цепные лучи (SpellChainEffects), тряска камеры, CharProc/CharParam кита | S2 | L | [A7a](implementation/line-A7a.ru.md) |
-| 6.14 | Свечение зачарований по ItemVisuals; эффекты оружия на клинке | S2 | M | [A7a](implementation/line-A7a.ru.md) |
-| 6.15 | Частицы и ленты: навесные предметы и маунты, twinkle, tailCell, треки по последовательности, лимиты, ленты | S2 | M | [A7a](implementation/line-A7a.ru.md) |
-| 6.16 | M2: цвет/альфа по играемой анимации, UV всех юнитов и осей, вариации и idle-фиджеты, интерполяция каналов, dep | S2 | XL | [A7a](implementation/line-A7a.ru.md) |
-| 6.17 | Свет M2 вместо эвристики по имени | S2 | M | [A7a](implementation/line-A7a.ru.md) |
-| 6.18 | Модели в окнах и лабораториях: живая модель в окне персонажа; geosets через worldCharacterGeosets | S2 | S | [A7a](implementation/line-A7a.ru.md) |
-| 6.19 | Сайдкар анимаций: первые эмоции и касты удалённых игроков теряются через 3 с | Долг | S | [A7a](implementation/line-A7a.ru.md) |
-| 6.20 | Маунты: CMSG_MOUNTSPECIAL_ANIM (поза пассажира по VehicleSeat — 11.02, отброшено) | S2 | S | [A7a](implementation/line-A7a.ru.md) |
-| 6.21 | Сверка решений 29.09 об анимациях способностей с нативным клиентом | S2 | M | [A10](implementation/line-A10.ru.md) |
-| 6.22 | Двухтекстурные шейдеры M2 по данным файла: массив операций, проход копирования | S2 | M | [A7a](implementation/line-A7a.ru.md) |
-| 7.01 | Подземелья из одного WMO: что сделано и что осталось ⚑ | S1 | M | [A7b](implementation/line-A7b.ru.md) |
-| 7.02 | Набор доодадов 0 вместе с набором размещения | S1 | M | [A7b](implementation/line-A7b.ru.md) |
-| 7.03 | Комнаты и доодады WMO дальше 60 ярдов: порталы снаружи ⚑ | S1 | M | [A7b](implementation/line-A7b.ru.md) |
-| 7.04 | Небо: светила, звёзды, облака, каналы Light (XL, пять срезов) | S1 | XL | [A7b](implementation/line-A7b.ru.md) |
-| 7.05 | Лимиты допуска: транспорт, частицы и анимации доодадов, юниты (☐ решение 0.4c) | S2 | M | [A7b](implementation/line-A7b.ru.md) |
-| 7.06 | MCSH: запечённые тени рельефа (генератор и шейдер) | S2 | M | [A7b](implementation/line-A7b.ru.md) |
-| 7.07 | Освещение рельефа: `max(N·L, 0)` плюс ambient по Light | S2 | S | [A7b](implementation/line-A7b.ru.md) |
-| 7.08 | Дальний рельеф: WDL с цветом и освещением; окно детального рельефа по farclip | S2 | M | [A7b](implementation/line-A7b.ru.md) |
-| 7.09 | Жидкости: строки LiquidType целиком, UV течения, глубина | S2 | M | [A7b](implementation/line-A7b.ru.md) |
-| 7.10 | Подводный вид в магме и слизи: `LiquidType.LightID` и затемнение по глубине | S2 | S | [A7b](implementation/line-A7b.ru.md) |
-| 7.11 | Материалы WMO (MOMT): shader, флаги, ночные окна, clamp; разбор MOSB | S2 | M | [A7b](implementation/line-A7b.ru.md) |
-| 7.12 | MFOG в помещении: доодады, юниты, частицы, вода; подводная половина записи | S2 | S | [A7b](implementation/line-A7b.ru.md) |
-| 7.13 | WMOAreaTable: имена помещений и «снаружи/внутри» по флагам | S2 | M | [A7b](implementation/line-A7b.ru.md) |
-| 7.14 | WMO-миникарты (md5translate) в подземельях, Стальгорне и Подгороде | S2 | M | [A7b](implementation/line-A7b.ru.md) |
-| 7.15 | Слот Light 4 («смерть») для призрака | S2 | S | [A7b](implementation/line-A7b.ru.md) |
-| 7.16 | Земля: слои в исходном разрешении, повтор, швы, блики | S2 | M | [A7b](implementation/line-A7b.ru.md) |
-| 7.17 | MOLT поверх MOCV: двойной свет (гипотеза): что уже разрешено и что проверить | Гип. | S | [A7b](implementation/line-A7b.ru.md) |
-| 7.18 | Стенд-ины окружения в журнале; отсутствующая модель — явный маркер | Долг | M | [A7b](implementation/line-A7b.ru.md) |
-| 7.19 | Проверка тайла по объектам, видимый предел 10 000, маршрут `/terrain-texture` | Долг | S | [A7b](implementation/line-A7b.ru.md) |
-| 7.20 | Калибровка контрольного профиля по `Config.wtf` владельца ☐ | S2 | M | [A7b](implementation/line-A7b.ru.md) |
-| 7.21 | Кинематографичный режим: живая проверка правок 28.09; ночь и луна после 7.04 | S2 | S | [A7b](implementation/line-A7b.ru.md) |
-| 7.22 | Лимит 320/48: комментарий генератора и документы | Долг | S | [A7b](implementation/line-A7b.ru.md) |
-| 7.23 | Тайлы без сплата: 404 с меткой на диске, а не 500 (краткая форма, с замером) | S2 | S | [A10](implementation/line-A10.ru.md) |
-| 8.17 | Поддержка: `CMSG_GM_REPORT_LAG`, `CMSG_BUG`, `CMSG_COMPLAIN` (почта), `CMSG_GMSURVEY_SUBMIT` (S2 · S по пакета | S2 | S | [A3](implementation/line-A3.ru.md) |
-| 9.01 | Режим «интерфейс WebClient + аддоны TSWoW» (`addonsOnly`): StaticPopup и UIErrorsFrame должны рисоваться | S0 | M | [A2](implementation/line-A2.ru.md) |
-| 9.02 | Аддоны TSWoW включены по умолчанию (после решения 0.4b) | S1 | S | [A8](implementation/line-A8.ru.md) |
-| 9.03 | Сообщения модулей при входе: очередь 0x102 до готовности потребителей | S1 | M | [A8](implementation/line-A8.ru.md) |
-| 9.05 | Классы 12 и 13 (ARCHAEOLOGIST, HERO): списки из датасета, женские формы, цвет | Долг | S | [A8](implementation/line-A8.ru.md) |
-| 9.06 | SavedVariables: ключ без адреса gateway, `PLAYER_LOGOUT` при закрытии, таблицы с метатаблицей, лимиты | Долг | M | [A8](implementation/line-A8.ru.md) |
-| 9.07 | Загружаются ли WCollections и как это проверять без клиента; сценарий `minimap-hub` | S2 | S | [A8](implementation/line-A8.ru.md) |
-| 9.08 | Окна content-studio: один экран — одно окно (JSON-окно против Lua студии) | Долг | S | [A8](implementation/line-A8.ru.md) |
-| 10.01 | Все игроки для TrinityCore приходят с 127.0.0.1 (безопасность) | Безоп. | M | [A6](implementation/line-A6.ru.md) |
-| 10.02 | TLS или обратный прокси для публичной раздачи; предупреждение при публичном запуске (безопасность) | Безоп. | M | [A6](implementation/line-A6.ru.md) |
-| 10.03 | `?gateway=`: список разрешённых адресов (безопасность) | Безоп. | S | [A6](implementation/line-A6.ru.md) |
-| 10.04 | `ALLOWED_ORIGINS=*` вместе с `MODULE_UI_WRITE=1` (безопасность) | Безоп. | S | [A6](implementation/line-A6.ru.md) |
-| 10.05 | Статус подключения к миру и очередь `AUTH_WAIT_QUEUE`: позиция и отмена (S1) | S1 | S | [A6](implementation/line-A6.ru.md) |
-| 10.06 | Локализованные ошибки мира, транспорта и удаления | S2 | S | [A6](implementation/line-A6.ru.md) |
-| 10.07 | Glue CVar: сохранять `accountName`, `realmName`, `lastCharacterIndex` без пароля; автоподключение к прошлому м | S2 | M | [A6](implementation/line-A6.ru.md) |
-| 10.08 | Список миров: обновлять население и статус; категории из `Cfg_Categories.dbc` | S2 | S | [A6](implementation/line-A6.ru.md) |
-| 10.09 | Выбор персонажа: женские названия, список модификаций, «Выход», склонения (S2, четыре независимые части) | S2 | M | [A6](implementation/line-A6.ru.md) |
-| 10.10 | TOTP/2FA в GlueXML (S0 латентно) | S0 (латентно) | S | [A6](implementation/line-A6.ru.md) |
-| 10.11 | Сборка gateway (Долг, M; четыре независимых среза) | Долг | M | [A6](implementation/line-A6.ru.md) |
-| 10.12 | HTTP-кеш: поколение в URL или ревалидация (S2, M) | S2 | M | [A6](implementation/line-A6.ru.md) |
-| 10.13 | Сервер страницы: ETag, сжатие, закрытые dev-страницы, `ALLOWED_ORIGINS` для других имён хоста (S2) | S2 | S | [A6](implementation/line-A6.ru.md) |
-| 10.14 | `bufferedAmount > 4 МБ`: пауза чтения TCP вместо разрыва сессии [гип.] (Риск) | Риск | S | [A6](implementation/line-A6.ru.md) |
-| 10.15 | Сторож gateway (перезапуск при падении); поведение 409 после сборки TSWoW при подключённых игроках (Долг) | Долг | S | [A6](implementation/line-A6.ru.md) |
-| 10.16 | `GlueLoader`: повтор при 5xx и экран «сервер недоступен» вместо запасной DOM-формы (S2) | S2 | S | [A6](implementation/line-A6.ru.md) |
-| 10.17 | Приложение игрока: подпись exe, обновление оболочки, адрес и порт из конфигурации (S2, M) | S2 | M | [A6](implementation/line-A6.ru.md) |
-| 10.18 | Игроки по http без `crossOriginIsolated` не получают воркер поз (Риск, S) | Риск | S | [A6](implementation/line-A6.ru.md) |
-| 10.19 | Мелочи: честные ответы видеоэкрана glue, `npm run doctor` проверяет auth/world, `.env.example` (Долг, три неза | Долг | S | [A6](implementation/line-A6.ru.md) |
-| 10.20 | Остальные генераторы на постоянные сборщики; общий кеш текстур WMO | S1 | L | [A10](implementation/line-A10.ru.md) |
-| 10.21 | Ответы gateway: ETag без чтения файла, скан датасета вне запроса, потолок холодных запросов, HTTP/2 | S2 | M | [A10](implementation/line-A10.ru.md) |
-| 10.22 | Предзагрузка ресурсов: модели тайла и соседей в фоне, `tools/pregenerate.mjs`, сайдкары игроков | S2 | L | [A10](implementation/line-A10.ru.md) |
-| 11.01 | Транспорт: палуба, корабль, лифт, дверь, межкартный рейс (XL, шесть срезов) | S0 | XL | [A9](implementation/line-A9.ru.md) |
-| 11.02 | Техника, подчинение, Око зверя (XL, девять срезов) | S0 | XL | [A9](implementation/line-A9.ru.md) |
+| 1.02 | Вход в мир по http из обычного браузера (HMAC-SHA1 без Web Crypto) | S0 | S | [A6](../implementation/line-A6.ru.md) |
+| 1.03 | Gateway падает от одного запроса (безопасность) | Безоп. | M | [A6](../implementation/line-A6.ru.md) |
+| 1.04 | Клавиши 1–= и бонус-панель (стойки, формы, незаметность) | S0 | S | [A5](../implementation/line-A5.ru.md) |
+| 1.05 | `HasFullControl` (и события потери контроля) | S0 | S | [A1](../implementation/line-A1.ru.md) |
+| 1.06 | `LeaveBattlefield` | S0 | S | [A1](../implementation/line-A1.ru.md) |
+| 1.07 | `SetActiveTalentGroup` и `ACTIVE_TALENT_GROUP_CHANGED` | S0 | S | [A1](../implementation/line-A1.ru.md) |
+| 1.08 | сложность подземелья и рейда, `IsInInstance` | S0 | S | [A1](../implementation/line-A1.ru.md) |
+| 1.09 | флаг PvP: `TogglePVP`, `SetPVP`, `GetPVPDesired`, `IsPVPTimerRunning`, `GetPVPTimer` | S0 | S | [A1](../implementation/line-A1.ru.md) |
+| 1.10 | команды меню портрета и SecureTemplates, для которых пакеты уже есть | S0 | M | [A1](../implementation/line-A1.ru.md) |
+| 1.12 | «Поделиться» заданием: `GetQuestLogPushable`, `QuestLogPushQuest`, результат `MSG_QUEST_PUSH_RESULT` | S1 | S | [A1](../implementation/line-A1.ru.md) |
+| 1.13 | глобальный `GetText(token, gender)` | S1 | S | [A1](../implementation/line-A1.ru.md) |
+| 1.14 | кнопки действий: автоповтор, `IsAttackAction`, события, `IsActionInRange` | S2 | S | [A1](../implementation/line-A1.ru.md) |
+| 1.15 | `UnitHasRelicSlot("player")` по классу и `SetBagPortraitTexture` | S2 | S | [A1](../implementation/line-A1.ru.md) |
+| 1.17 | Ближний телепорт не через `onWorldChanged` | S1 | S | [A4](../implementation/line-A4.ru.md) |
+| 1.18 | Тексты промахов `MISS_REASONS` | S2 | S | [A4](../implementation/line-A4.ru.md) |
+| 1.19 | Glue: коды отказов (таблица кодов и текстов) | S2 | M | [A6](../implementation/line-A6.ru.md) |
+| 1.20 | `CMSG_MOVE_NOT_ACTIVE_MOVER` с упакованным guid | S2 | S | [A4](../implementation/line-A4.ru.md) |
+| 1.21 | Аукцион: «выиграно» или «перебили» | S2 | S | [A4](../implementation/line-A4.ru.md) |
+| 1.22 | Убранные ружья и арбалеты (inventoryType 26) | S2 | S | [A7a](../implementation/line-A7a.ru.md) |
+| 1.23 | Классификатор растительности окружения (фонари и шипы не деревья) | S2 | S | [A7b](../implementation/line-A7b.ru.md) |
+| 1.24 | Повторы запросов после сбоя: сплат, свет, горизонт | S2 | S | [A7b](../implementation/line-A7b.ru.md) |
+| 1.25 | `WorldClient`: `#waitFor` и запись полей предметов мимо `WorldStore` | Долг | S | [A4](../implementation/line-A4.ru.md) |
+| 1.26 | Кулдаун «на удержании» из `INITIAL_SPELLS` | S2 | S | [A4](../implementation/line-A4.ru.md) |
+| 1.27 | `CAST_FAILED`: хвост и конкретный текст | S2 | S | [A4](../implementation/line-A4.ru.md) |
+| 1.28 | Native: таланты и символы (сброс с ценой, снятие с подтверждением, вставка в выбранную ячейку) | S1 | M | [A5](../implementation/line-A5.ru.md) |
+| 1.29 | Electron: `render-process-gone` → экран ошибки с перезагрузкой; `JSON.parse(stdout)` в try (S2) | S2 | S | [A6](../implementation/line-A6.ru.md) |
+| 1.30 | `GetNetStats`: трафик сокета | S2 | S | [A4](../implementation/line-A4.ru.md) |
+| 1.31 | Мелкие ошибки native: подписи качества в фильтре аукциона; лимит золота ранга гильдии | S2 | S | [A5](../implementation/line-A5.ru.md) |
+| 1.32 | Сырые ID в сообщениях → имена | S2 | S | [A4](../implementation/line-A4.ru.md) |
+| 2.01 | Area triggers (`CMSG_AREATRIGGER`) | S0 | L | [A3](../implementation/line-A3.ru.md) |
+| 2.02 | Ремонт (`CMSG_REPAIR_ITEM`) | S0 | M | [A3](../implementation/line-A3.ru.md) |
+| 2.03 | Трактирщик: «Сделать это место своим домом» (`SMSG_BINDER_CONFIRM` → `CMSG_BINDER_ACTIVATE`) | S0 | S | [A3](../implementation/line-A3.ru.md) |
+| 2.04 | Сброс талантов у тренера (`MSG_TALENT_WIPE_CONFIRM`) | S0 | M | [A3](../implementation/line-A3.ru.md) |
+| 2.05 | Предмет как цель (курсор-цель, `TARGET_FLAG_ITEM`/`TRADE_ITEM`, `CMSG_WRAP_ITEM`) — XL, пять срезов | S0 | XL | [A3](../implementation/line-A3.ru.md) |
+| 2.06 | Снятие шкур и сбор с существ (травы, руда, инженерия) | S0 | S | [A3](../implementation/line-A3.ru.md) |
+| 2.07 | Переименование персонажа (S0) | S0 | M | [A6](../implementation/line-A6.ru.md) |
+| 2.08 | Смена внешности, фракции и расы (S1) | S1 | L | [A6](../implementation/line-A6.ru.md) |
+| 2.09 | Привязка к подземелью (`SMSG_INSTANCE_LOCK_WARNING_QUERY` → `CMSG_INSTANCE_LOCK_RESPONSE`) | S1 | S | [A3](../implementation/line-A3.ru.md) |
+| 2.10 | Возврат покупок (`CMSG_ITEM_REFUND_INFO`/`CMSG_ITEM_REFUND`, `END_REFUND`) | S2 | M | [A3](../implementation/line-A3.ru.md) |
+| 3.01 | Журнал боя (`COMBAT_LOG_EVENT(_UNFILTERED)`, `PLAYER_LOGIN`, `Blizzard_CombatLog`, MSBT) | S1 | XL | [A2](../implementation/line-A2.ru.md) |
+| 3.02 | `UNIT_SPELLCAST_SENT/SUCCEEDED/FAILED_QUIET/INTERRUPTIBLE/NOT_INTERRUPTIBLE` | S1 | M | [A2](../implementation/line-A2.ru.md) |
+| 3.03 | Рыцарь смерти: `RuneFrame`, `GetRuneCooldown`/`GetRuneType`, `RUNE_POWER_UPDATE`/`RUNE_TYPE_UPDATE`, nil-вызов | S1 | M | [A2](../implementation/line-A2.ru.md) |
+| 3.05 | `ZoneText` и `FadingFrame`: название зоны и подзоны, PvP-статус территории, «следование за» | S2 | S | [A2](../implementation/line-A2.ru.md) |
+| 3.06 | `DurabilityFrame` и `UPDATE_INVENTORY_DURABILITY`/`UPDATE_INVENTORY_ALERTS` (вместе с 2.02) | S2 | S | [A2](../implementation/line-A2.ru.md) |
+| 3.07 | Панель «Зов стихий» (`MultiCastActionBarFrame`) | S2 | M | [A2](../implementation/line-A2.ru.md) |
+| 3.09 | Мелкие стоковые файлы: `CoinPickupFrame`, `EasyMenu.lua`, `Localization`/`LocalizationPost` (ruRU) | S2 | M | [A2](../implementation/line-A2.ru.md) |
+| 3.10 | Макросы: условия `SecureCmdOptionParse`, `RunMacro`/`RunMacroText`/`StopMacro`, `/click`, общий вычислитель дл | S1 | M | [A2](../implementation/line-A2.ru.md) |
+| 3.11 | Клавиши: недостающие стоковые действия и API привязок (XL, четыре среза) | S1 | XL | [A5](../implementation/line-A5.ru.md) |
+| 3.12 | методы `GameTooltip`, которых нет: `SetTalent`, `SetHyperlinkCompareItem`, `SetBuybackItem`, `SetMerchantCostI | S1 | M | [A1](../implementation/line-A1.ru.md) |
+| 3.13 | журнал заданий, трекер, карта | S1 | M | [A1](../implementation/line-A1.ru.md) |
+| 3.14 | поле боя: таблица результатов, BG-миникарта, события | S0 | M | [A1](../implementation/line-A1.ru.md) |
+| 3.15 | команды арены в `PVPFrame`: состав команды и управление | S0 | M | [A1](../implementation/line-A1.ru.md) |
+| 3.16 | рамки боссов и арены в стоковом HUD | S2 | M | [A1](../implementation/line-A1.ru.md) |
+| 3.18 | Жизненный цикл аддонов: `LoadAddOn` для известных LoD, `/msbt`, `InterfaceOptions_AddCategory`, `GetAddOnMetad | S2 | M | [A2](../implementation/line-A2.ru.md) |
+| 3.19 | CVar: сохранение всех, `CVAR_UPDATE`, `SetModifiedClick` | S2 | M | [A1](../implementation/line-A1.ru.md) |
+| 3.20 | `issecure()` для кнопок меню без глобального `true` | S2 | M | [A1](../implementation/line-A1.ru.md) |
+| 3.21 | заглушки методов виджетов: `ColorSelect`, `ScrollingMessageFrame:UpdateColorByID`, `PlayerModel:SetUnit`, `:Pl | S2 | S | [A1](../implementation/line-A1.ru.md) |
+| 3.22 | события, которых сток не получает (источник данных для каждого) | S2 | M | [A1](../implementation/line-A1.ru.md) |
+| 3.23 | константы там, где данные есть | S2 | M | [A1](../implementation/line-A1.ru.md) |
+| 3.24 | Смешанный интерфейс: первое открытие, слой над native-окнами, видимый откат, native-остатки | S2 | M | [A2](../implementation/line-A2.ru.md) |
+| 3.25 | LFR и награда LFD в стоке | S2 | S | [A1](../implementation/line-A1.ru.md) |
+| 3.26 | модуль `retail-talents` заменяет окно талантов, вкладка символов пропадает | S2 | S | [A1](../implementation/line-A1.ru.md) |
+| 3.27 | Lua VM (fengari 5.3 + шимы 5.1): утечка ссылок `SetScript`/`HookScript`, `OnUpdate` без хуков, `next` без O(n² | Долг | M | [A2](../implementation/line-A2.ru.md) |
+| 3.28 | Гейт сумок: прокси `InterfaceOptionsFrame` не должен обнулять настоящий фрейм при снятии владельца | Долг | S | [A2](../implementation/line-A2.ru.md) |
+| 3.29 | тренер: заголовки групп, `Collapse/ExpandTrainerSkillLine`, тест с живым `WorldClient` | S2 | M | [A1](../implementation/line-A1.ru.md) |
+| 3.30 | `UnitCharacterPoints` отвечает cp2 = 0 | S0 (латентно) | S | [A1](../implementation/line-A1.ru.md) |
+| 3.31 | оставшиеся неотвеченные имена переписи: `LocalizeFrames`, `RaidGroupFrame_Update`, `CombatText_UpdateDisplayed | S2 | S | [A1](../implementation/line-A1.ru.md) |
+| 3.32 | `CMSG_SET_ACTIONBAR_TOGGLES`: дополнительные панели хранятся на сервере | S2 | S | [A1](../implementation/line-A1.ru.md) |
+| 3.33 | предпросмотр талантов (`CMSG_LEARN_PREVIEW_TALENTS`) | S2 | M | [A1](../implementation/line-A1.ru.md) |
+| 4.01 | Всплывающие подсказки браузера `title` → единый собственный тултип | S2 | M | [A5](../implementation/line-A5.ru.md) |
+| 4.02 | Значок вместо «полупрозрачной копии кнопки» при перетаскивании (`setDragImage`) | S2 | S | [A5](../implementation/line-A5.ru.md) |
+| 4.03 | Окно персонажа (native): характеристики заклинаний и защиты, сила атаки с модификаторами, звания, валюты, шлем | S2 | M | [A5](../implementation/line-A5.ru.md) |
+| 4.04 | Подсказка при наведении на юнит и Escape, прерывающий каст (native) | S2 | M | [A5](../implementation/line-A5.ru.md) |
+| 4.05 | Перетаскивание макроса из окна на панель | S2 | S | [A5](../implementation/line-A5.ru.md) |
+| 4.06 | Члены группы вне видимости на карте и миникарте; метка на миникарте обычным щелчком | S2 | S | [A5](../implementation/line-A5.ru.md) |
+| 4.07 | Торговец: покупка количеством; аукцион: подтверждение ставки и выкупа | S2 | S | [A5](../implementation/line-A5.ru.md) |
+| 4.08 | Рейд-сетка по подгруппам, пустые ячейки, «игнорировать ячейку» в комплектах, хартия на подпись | S2 | S | [A5](../implementation/line-A5.ru.md) |
+| 4.09 | Достижения и управление рейдом в native: объём при двух исходах решения 0.4h | S2 | L/S | [A5](../implementation/line-A5.ru.md) |
+| 4.10 | Строки из GlobalStrings вместо зашитого текста; подписи клавиш у микрокнопок из текущих привязок | S2 | S | [A5](../implementation/line-A5.ru.md) |
+| 4.11 | Раскладка по умолчанию по стоковому набору (решение 0.4g) | S2 | S | [A5](../implementation/line-A5.ru.md) |
+| 4.12 | Привязки клавиш и положение окон в данных аккаунта | S2 | M | [A5](../implementation/line-A5.ru.md) |
+| 4.13 | Счётчик 20-секундного выхода в native-панели | S2 | S | [A5](../implementation/line-A5.ru.md) |
+| 4.14 | LFG: предложение спрашивается дважды; ожидание всегда «0 мин»; сырые ID в подсказках | S2 | S | [A5](../implementation/line-A5.ru.md) |
+| 4.15 | Ожидание NPC без тайм-аута и клик по объекту вне дальности без отклика | S2 | S | [A5](../implementation/line-A5.ru.md) |
+| 5.01 | Отбрасывание | S1 | M | [A4](../implementation/line-A4.ru.md) |
+| 5.02 | Сплайн create-блока | S1 | M | [A4](../implementation/line-A4.ru.md) |
+| 5.03 | MONSTER_MOVE: парабола, поворот по прибытии, ярус анимации | S1 | M | [A4](../implementation/line-A4.ru.md) |
+| 5.04 | Чужие игроки: экстраполяция, pitch, дуга прыжка, fallTime | S1 | M | [A4](../implementation/line-A4.ru.md) |
+| 5.05 | Автоатака: ПКМ начинает бой, смена цели его не сбрасывает | S1 | S | [A9](../implementation/line-A9.ru.md) |
+| 5.06 | Плавание у поверхности: ступни ниже воды, а не на её уровне | S1 | S | [A9](../implementation/line-A9.ru.md) |
+| 5.07 | Пороги ходьбы: шаг 0,6 ярда, склон 50°, невысокие стены отталкивают | S2 | M | [A9](../implementation/line-A9.ru.md) |
+| 5.08 | Скорости назад: runBack, swimBack, flightBack (и начальные скорости из CREATE) | S2 | S | [A9](../implementation/line-A9.ru.md) |
+| 5.09 | Полёт: наклон по обзору, скорость по режиму, PITCHUP/PITCHDOWN | S2 | M | [A9](../implementation/line-A9.ru.md) |
+| 5.10 | Плавание: глубину задаёт наклон персонажа, а не камеры | S2 | S | [A9](../implementation/line-A9.ru.md) |
+| 5.11 | Контроль: под root нельзя прыгать, оглушение блокирует повороты и прыжки | S2 | S | [A9](../implementation/line-A9.ru.md) |
+| 5.12 | Потолки: голова упирается в геометрию при движении вверх | S2 | M | [A9](../implementation/line-A9.ru.md) |
+| 5.13 | Шаг физики: подшаги вместо обрезки кадра, потеря движения после копии позиции, незагруженная земля | S2 | S | [A9](../implementation/line-A9.ru.md) |
+| 5.14 | Мышь и камера: Pointer Lock, поворот по ПКМ, автоследование, панели «Камера»/«Мышь», дистанции оригинала | S2 | M | [A9](../implementation/line-A9.ru.md) |
+| 5.15 | Ввод: W с зажатым Ctrl/Alt; клавиша, нажатая до готовности движения, не теряется | S2 | S | [A9](../implementation/line-A9.ru.md) |
+| 5.16 | Tab: цели на экране, без трупов, с правильной фракцией и принудительными реакциями; повтор загрузки таблиц | S2 | M | [A9](../implementation/line-A9.ru.md) |
+| 5.17 | Курсоры по контексту: стоковые изображения вместо `pointer`/пакета-SVG | S2 | S | [A9](../implementation/line-A9.ru.md) |
+| 5.18 | Следование: `FollowUnit`, клиентское автоследование, `AUTOFOLLOW_BEGIN/END` | S2 | S | [A9](../implementation/line-A9.ru.md) |
+| 5.19 | Репутация на сервере: отслеживаемая, неактивная, война | S1 | M | [A3](../implementation/line-A3.ru.md) |
+| 5.20 | Типы рассеивания дебаффов (`debuffType`, `isStealable`) | S1 | M | [A3](../implementation/line-A3.ru.md) |
+| 5.21 | Состояние только по ответу сервера | S2 | S | [A4](../implementation/line-A4.ru.md) |
+| 5.22 | Пустые обработчики с реакцией оригинала (S2 · S, шесть подпунктов; `WorldClient.ts` ~6217-6412) | S2 | S | [A3](../implementation/line-A3.ru.md) |
+| 5.23 | Статус квестодателей: запрос при появлении вместо опроса каждые 5 с | S2 | S | [A3](../implementation/line-A3.ru.md) |
+| 5.24 | Питомцы: запрос имён; `CMSG_STABLE_REVIVE_PET` | S2 | S | [A3](../implementation/line-A3.ru.md) |
+| 5.25 | Прочие исходящие (S2 · S; девять подпунктов — по каждому решение «делать / не делать» с доказательством) | S2 | S | [A3](../implementation/line-A3.ru.md) |
+| 5.26 | Ошибка разбора update: откатить блок, не оставлять полуобъект | Долг | S | [A4](../implementation/line-A4.ru.md) |
+| 5.27 | Поворот игровых объектов (`UPDATEFLAG_ROTATION`, `GAMEOBJECT_PARENTROTATION`) | S2 | S | [A4](../implementation/line-A4.ru.md) |
+| 5.28 | Разобранное, но непрочитанное состояние | S2 | M | [A4](../implementation/line-A4.ru.md) |
+| 5.29 | Учёт намеренно игнорируемых опкодов | S2 | S | [A4](../implementation/line-A4.ru.md) |
+| 6.01 | Шлем и наплечники NPC из NPCItemDisplay | S1 | M | [A7a](../implementation/line-A7a.ru.md) |
+| 6.02 | Оружие NPC в руках по UNIT_VIRTUAL_ITEM_SLOT_ID; weaponPose по оружию | S1 | M | [A7a](../implementation/line-A7a.ru.md) |
+| 6.03 | UNIT_NPC_EMOTESTATE → зацикленная анимация состояния | S1 | M | [A7a](../implementation/line-A7a.ru.md) |
+| 6.04 | Боевая стойка Ready1H/2H/Unarmed/Bow между ударами | S1 | M | [A7a](../implementation/line-A7a.ru.md) |
+| 6.05 | Труп игрока (тип 7) и область заклинания (DynamicObject, тип 6) | S1 | L | [A7a](../implementation/line-A7a.ru.md) |
+| 6.06 | Бой: удар левой, реакции жертвы, варианты удара по оружию | S2 | M | [A7a](../implementation/line-A7a.ru.md) |
+| 6.07 | Состояния: STUNNED, LOOTING, KneelStart/End, SleepUp, JumpLandRun, падение | S2 | S | [A7a](../implementation/line-A7a.ru.md) |
+| 6.08 | Убранное оружие: точки 26–33, ориентация, два двуручника, Sheath/HipSheath | S2 | M | [A7a](../implementation/line-A7a.ru.md) |
+| 6.09 | Показ шлема и плаща | S2 | M | [A7a](../implementation/line-A7a.ru.md) |
+| 6.10 | Уши и глаза: заглушка 701, свечение глаз рыцаря смерти | S2 | S | [A7a](../implementation/line-A7a.ru.md) |
+| 6.11 | Поля облика NPC (CreatureModelAlpha, CreatureGeosetData, ParticleColorID) и зеркальный образ | S2 | L | [A7a](../implementation/line-A7a.ru.md) |
+| 6.12 | Снаряды: старт из руки, самонаведение, SpellMissile/MissileMotion, без выдуманной дуги | S2 | M | [A7a](../implementation/line-A7a.ru.md) |
+| 6.13 | Цепные лучи (SpellChainEffects), тряска камеры, CharProc/CharParam кита | S2 | L | [A7a](../implementation/line-A7a.ru.md) |
+| 6.14 | Свечение зачарований по ItemVisuals; эффекты оружия на клинке | S2 | M | [A7a](../implementation/line-A7a.ru.md) |
+| 6.15 | Частицы и ленты: навесные предметы и маунты, twinkle, tailCell, треки по последовательности, лимиты, ленты | S2 | M | [A7a](../implementation/line-A7a.ru.md) |
+| 6.16 | M2: цвет/альфа по играемой анимации, UV всех юнитов и осей, вариации и idle-фиджеты, интерполяция каналов, dep | S2 | XL | [A7a](../implementation/line-A7a.ru.md) |
+| 6.17 | Свет M2 вместо эвристики по имени | S2 | M | [A7a](../implementation/line-A7a.ru.md) |
+| 6.18 | Модели в окнах и лабораториях: живая модель в окне персонажа; geosets через worldCharacterGeosets | S2 | S | [A7a](../implementation/line-A7a.ru.md) |
+| 6.19 | Сайдкар анимаций: первые эмоции и касты удалённых игроков теряются через 3 с | Долг | S | [A7a](../implementation/line-A7a.ru.md) |
+| 6.20 | Маунты: CMSG_MOUNTSPECIAL_ANIM (поза пассажира по VehicleSeat — 11.02, отброшено) | S2 | S | [A7a](../implementation/line-A7a.ru.md) |
+| 6.21 | Сверка решений 29.09 об анимациях способностей с нативным клиентом | S2 | M | [A10](../implementation/line-A10.ru.md) |
+| 6.22 | Двухтекстурные шейдеры M2 по данным файла: массив операций, проход копирования | S2 | M | [A7a](../implementation/line-A7a.ru.md) |
+| 7.01 | Подземелья из одного WMO: что сделано и что осталось ⚑ | S1 | M | [A7b](../implementation/line-A7b.ru.md) |
+| 7.02 | Набор доодадов 0 вместе с набором размещения | S1 | M | [A7b](../implementation/line-A7b.ru.md) |
+| 7.03 | Комнаты и доодады WMO дальше 60 ярдов: порталы снаружи ⚑ | S1 | M | [A7b](../implementation/line-A7b.ru.md) |
+| 7.04 | Небо: светила, звёзды, облака, каналы Light (XL, пять срезов) | S1 | XL | [A7b](../implementation/line-A7b.ru.md) |
+| 7.05 | Лимиты допуска: транспорт, частицы и анимации доодадов, юниты (☐ решение 0.4c) | S2 | M | [A7b](../implementation/line-A7b.ru.md) |
+| 7.06 | MCSH: запечённые тени рельефа (генератор и шейдер) | S2 | M | [A7b](../implementation/line-A7b.ru.md) |
+| 7.07 | Освещение рельефа: `max(N·L, 0)` плюс ambient по Light | S2 | S | [A7b](../implementation/line-A7b.ru.md) |
+| 7.08 | Дальний рельеф: WDL с цветом и освещением; окно детального рельефа по farclip | S2 | M | [A7b](../implementation/line-A7b.ru.md) |
+| 7.09 | Жидкости: строки LiquidType целиком, UV течения, глубина | S2 | M | [A7b](../implementation/line-A7b.ru.md) |
+| 7.10 | Подводный вид в магме и слизи: `LiquidType.LightID` и затемнение по глубине | S2 | S | [A7b](../implementation/line-A7b.ru.md) |
+| 7.11 | Материалы WMO (MOMT): shader, флаги, ночные окна, clamp; разбор MOSB | S2 | M | [A7b](../implementation/line-A7b.ru.md) |
+| 7.12 | MFOG в помещении: доодады, юниты, частицы, вода; подводная половина записи | S2 | S | [A7b](../implementation/line-A7b.ru.md) |
+| 7.13 | WMOAreaTable: имена помещений и «снаружи/внутри» по флагам | S2 | M | [A7b](../implementation/line-A7b.ru.md) |
+| 7.14 | WMO-миникарты (md5translate) в подземельях, Стальгорне и Подгороде | S2 | M | [A7b](../implementation/line-A7b.ru.md) |
+| 7.15 | Слот Light 4 («смерть») для призрака | S2 | S | [A7b](../implementation/line-A7b.ru.md) |
+| 7.16 | Земля: слои в исходном разрешении, повтор, швы, блики | S2 | M | [A7b](../implementation/line-A7b.ru.md) |
+| 7.17 | MOLT поверх MOCV: двойной свет (гипотеза): что уже разрешено и что проверить | Гип. | S | [A7b](../implementation/line-A7b.ru.md) |
+| 7.18 | Стенд-ины окружения в журнале; отсутствующая модель — явный маркер | Долг | M | [A7b](../implementation/line-A7b.ru.md) |
+| 7.19 | Проверка тайла по объектам, видимый предел 10 000, маршрут `/terrain-texture` | Долг | S | [A7b](../implementation/line-A7b.ru.md) |
+| 7.20 | Калибровка контрольного профиля по `Config.wtf` владельца ☐ | S2 | M | [A7b](../implementation/line-A7b.ru.md) |
+| 7.21 | Кинематографичный режим: живая проверка правок 28.09; ночь и луна после 7.04 | S2 | S | [A7b](../implementation/line-A7b.ru.md) |
+| 7.22 | Лимит 320/48: комментарий генератора и документы | Долг | S | [A7b](../implementation/line-A7b.ru.md) |
+| 7.23 | Тайлы без сплата: 404 с меткой на диске, а не 500 (краткая форма, с замером) | S2 | S | [A10](../implementation/line-A10.ru.md) |
+| 8.17 | Поддержка: `CMSG_GM_REPORT_LAG`, `CMSG_BUG`, `CMSG_COMPLAIN` (почта), `CMSG_GMSURVEY_SUBMIT` (S2 · S по пакета | S2 | S | [A3](../implementation/line-A3.ru.md) |
+| 9.01 | Режим «интерфейс WebClient + аддоны TSWoW» (`addonsOnly`): StaticPopup и UIErrorsFrame должны рисоваться | S0 | M | [A2](../implementation/line-A2.ru.md) |
+| 9.02 | Аддоны TSWoW включены по умолчанию (после решения 0.4b) | S1 | S | [A8](../implementation/line-A8.ru.md) |
+| 9.03 | Сообщения модулей при входе: очередь 0x102 до готовности потребителей | S1 | M | [A8](../implementation/line-A8.ru.md) |
+| 9.05 | Классы 12 и 13 (ARCHAEOLOGIST, HERO): списки из датасета, женские формы, цвет | Долг | S | [A8](../implementation/line-A8.ru.md) |
+| 9.06 | SavedVariables: ключ без адреса gateway, `PLAYER_LOGOUT` при закрытии, таблицы с метатаблицей, лимиты | Долг | M | [A8](../implementation/line-A8.ru.md) |
+| 9.07 | Загружаются ли WCollections и как это проверять без клиента; сценарий `minimap-hub` | S2 | S | [A8](../implementation/line-A8.ru.md) |
+| 9.08 | Окна content-studio: один экран — одно окно (JSON-окно против Lua студии) | Долг | S | [A8](../implementation/line-A8.ru.md) |
+| 10.01 | Все игроки для TrinityCore приходят с 127.0.0.1 (безопасность) | Безоп. | M | [A6](../implementation/line-A6.ru.md) |
+| 10.02 | TLS или обратный прокси для публичной раздачи; предупреждение при публичном запуске (безопасность) | Безоп. | M | [A6](../implementation/line-A6.ru.md) |
+| 10.03 | `?gateway=`: список разрешённых адресов (безопасность) | Безоп. | S | [A6](../implementation/line-A6.ru.md) |
+| 10.04 | `ALLOWED_ORIGINS=*` вместе с `MODULE_UI_WRITE=1` (безопасность) | Безоп. | S | [A6](../implementation/line-A6.ru.md) |
+| 10.05 | Статус подключения к миру и очередь `AUTH_WAIT_QUEUE`: позиция и отмена (S1) | S1 | S | [A6](../implementation/line-A6.ru.md) |
+| 10.06 | Локализованные ошибки мира, транспорта и удаления | S2 | S | [A6](../implementation/line-A6.ru.md) |
+| 10.07 | Glue CVar: сохранять `accountName`, `realmName`, `lastCharacterIndex` без пароля; автоподключение к прошлому м | S2 | M | [A6](../implementation/line-A6.ru.md) |
+| 10.08 | Список миров: обновлять население и статус; категории из `Cfg_Categories.dbc` | S2 | S | [A6](../implementation/line-A6.ru.md) |
+| 10.09 | Выбор персонажа: женские названия, список модификаций, «Выход», склонения (S2, четыре независимые части) | S2 | M | [A6](../implementation/line-A6.ru.md) |
+| 10.10 | TOTP/2FA в GlueXML (S0 латентно) | S0 (латентно) | S | [A6](../implementation/line-A6.ru.md) |
+| 10.11 | Сборка gateway (Долг, M; четыре независимых среза) | Долг | M | [A6](../implementation/line-A6.ru.md) |
+| 10.12 | HTTP-кеш: поколение в URL или ревалидация (S2, M) | S2 | M | [A6](../implementation/line-A6.ru.md) |
+| 10.13 | Сервер страницы: ETag, сжатие, закрытые dev-страницы, `ALLOWED_ORIGINS` для других имён хоста (S2) | S2 | S | [A6](../implementation/line-A6.ru.md) |
+| 10.14 | `bufferedAmount > 4 МБ`: пауза чтения TCP вместо разрыва сессии [гип.] (Риск) | Риск | S | [A6](../implementation/line-A6.ru.md) |
+| 10.15 | Сторож gateway (перезапуск при падении); поведение 409 после сборки TSWoW при подключённых игроках (Долг) | Долг | S | [A6](../implementation/line-A6.ru.md) |
+| 10.16 | `GlueLoader`: повтор при 5xx и экран «сервер недоступен» вместо запасной DOM-формы (S2) | S2 | S | [A6](../implementation/line-A6.ru.md) |
+| 10.17 | Приложение игрока: подпись exe, обновление оболочки, адрес и порт из конфигурации (S2, M) | S2 | M | [A6](../implementation/line-A6.ru.md) |
+| 10.18 | Игроки по http без `crossOriginIsolated` не получают воркер поз (Риск, S) | Риск | S | [A6](../implementation/line-A6.ru.md) |
+| 10.19 | Мелочи: честные ответы видеоэкрана glue, `npm run doctor` проверяет auth/world, `.env.example` (Долг, три неза | Долг | S | [A6](../implementation/line-A6.ru.md) |
+| 10.20 | Остальные генераторы на постоянные сборщики; общий кеш текстур WMO | S1 | L | [A10](../implementation/line-A10.ru.md) |
+| 10.21 | Ответы gateway: ETag без чтения файла, скан датасета вне запроса, потолок холодных запросов, HTTP/2 | S2 | M | [A10](../implementation/line-A10.ru.md) |
+| 10.22 | Предзагрузка ресурсов: модели тайла и соседей в фоне, `tools/pregenerate.mjs`, сайдкары игроков | S2 | L | [A10](../implementation/line-A10.ru.md) |
+| 11.01 | Транспорт: палуба, корабль, лифт, дверь, межкартный рейс (XL, шесть срезов) | S0 | XL | [A9](../implementation/line-A9.ru.md) |
+| 11.02 | Техника, подчинение, Око зверя (XL, девять срезов) | S0 | XL | [A9](../implementation/line-A9.ru.md) |

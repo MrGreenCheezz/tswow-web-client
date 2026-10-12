@@ -21,7 +21,7 @@
 | GPU query envelope | 3,104 мс | 2,275 мс |
 | Draw calls | 483 | 192 |
 
-Источник: [сохранённый полный эксперимент](../.runtime/qa-fps120-20260922/world-instanced/v2-dynamic/FINDINGS.ru.md) (локальный артефакт, не в git).
+Источник: [сохранённый полный эксперимент](../../.runtime/qa-fps120-20260922/world-instanced/v2-dynamic/FINDINGS.ru.md) (локальный артефакт, не в git).
 Небольшое различие CPU не доказывает регрессию: повторов мало и порядок последовательный.
 
 Причина ограничения видна в коде: Three делает `scene.updateMatrixWorld()` до
@@ -71,9 +71,9 @@ continuations могут выполняться между callbacks. Поэто
 которую нужно проверять по первому использованию программы.
 
 Локальные артефакты, не в git:
-[32 сырых измерения](../.runtime/root-cause-20260922/streaming-decode-results.json),
-[воспроизводимый probe](../.runtime/root-cause-20260922/streaming-decode-probe.mjs),
-[команды и ограничения](../.runtime/root-cause-20260922/streaming-checks.md).
+[32 сырых измерения](../../.runtime/root-cause-20260922/streaming-decode-results.json),
+[воспроизводимый probe](../../.runtime/root-cause-20260922/streaming-decode-probe.mjs),
+[команды и ограничения](../../.runtime/root-cause-20260922/streaming-checks.md).
 
 ## 3. Текущий стенд не описывает всю живую нагрузку
 
@@ -88,7 +88,7 @@ continuations могут выполняться между callbacks. Поэто
 Он полезен для сравнения конкретной замены, но не доказывает ускорение сцены с другим
 набором материалов/эффектов. Число NPC не является достаточным описанием нагрузки.
 
-Источник: [live-crowd-20260920.json](../bench/live-crowd-20260920.json).
+Источник: [live-crowd-20260920.json](../../bench/live-crowd-20260920.json).
 Старая запись не является baseline нынешних исходников и не доказывает текущий FPS.
 
 Особенно стоит проверить повторные обходы spell/effect rigs: `WorldRenderer3D.ts:5736`,
@@ -164,8 +164,8 @@ budget, residency и warmup. Сборка игры, автономный пак�
 Временный QA-сервер 4204 остановлен, созданная вкладка закрыта.
 
 Локальные артефакты, не в git:
-[Сводка и сравнения с обоими контролями](../.runtime/root-cause-20260922/summary.json),
-[исходные данные и запуск](../.runtime/root-cause-20260922/README.md).
+[Сводка и сравнения с обоими контролями](../../.runtime/root-cause-20260922/summary.json),
+[исходные данные и запуск](../../.runtime/root-cause-20260922/README.md).
 
 ## Реализованные исправления после аудита, 22 сентября 2026
 
@@ -227,7 +227,7 @@ benchmark повторён отдельно и прошёл. Предупреж�
 БД и установленные клиентские ресурсы не изменялись.
 
 Локальные артефакты, не в git:
-[Сводка с исходными числами](../.runtime/root-cause-fix-20260922/summary.json),
-[сырые браузерные результаты](../.runtime/root-cause-fix-20260922/results/2026-09-22T17-34-23.787Z/),
-[лог 141 теста](../.runtime/root-cause-fix-20260922/integrated-tests.log),
-[лог production-сборки](../.runtime/root-cause-fix-20260922/production-build.log).
+[Сводка с исходными числами](../../.runtime/root-cause-fix-20260922/summary.json),
+[сырые браузерные результаты](../../.runtime/root-cause-fix-20260922/results/2026-09-22T17-34-23.787Z/),
+[лог 141 теста](../../.runtime/root-cause-fix-20260922/integrated-tests.log),
+[лог production-сборки](../../.runtime/root-cause-fix-20260922/production-build.log).

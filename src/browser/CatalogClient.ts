@@ -5,7 +5,7 @@
  * failed fetch leaves the table empty until the page is reloaded — nobody calls `load()` again.
  * That is survivable for a picker; it is not for a mechanic such as the area triggers, and the
  * common failure is not a broken network but a gateway process older than the route, which
- * answers 404 until the owner restarts it (IMPLEMENTATION_PLAN §6). So the retry is scheduled here,
+ * answers 404 until the owner restarts it (docs/archive/IMPLEMENTATION_PLAN.ru.md §6). So the retry is scheduled here,
  * by the client itself:
  *
  * - success is memoised: `load()` after it does nothing, and `onLoaded` is told once;

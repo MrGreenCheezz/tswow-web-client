@@ -13,7 +13,7 @@
  *    keeps its own layout text in the same slot; that text is likewise never applied or overwritten.
  *
  * Both are off until switched on ({@link INPUT_ACCOUNT_SYNC_KEYS}): sharing slot 2 with the Unity
- * client is the owner's call (IMPLEMENTATION_PLAN §5 row 16, §7), and slot 6 is shared with
+ * client is the owner's call (docs/archive/IMPLEMENTATION_PLAN.ru.md §5 row 16, §7), and slot 6 is shared with
  * Wow.exe's own layout cache for a character played in both. Off, nothing here sends or applies
  * anything and the two tables behave exactly as before.
  *

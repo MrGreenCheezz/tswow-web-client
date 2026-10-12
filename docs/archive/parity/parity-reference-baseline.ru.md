@@ -37,7 +37,7 @@
 
 Проверка реальных путей файлов в MPQ-цепочке показала: `patch-ruRU-F.MPQ` — junction на `baja-modern-models/assets`, `patch-ruRU-G.MPQ` — junction на `LoginScreenModule/assets`, `patch-ruRU-H.MPQ` — `tswow-store`. `AccountLogin.lua` и `GlueXML.toc` берутся из `G`. Буква патча зависит от текущей установки модулей, поэтому проверка экрана входа теперь сопоставляет resolved файл с установленным `LoginScreenModule`, а не закрепляет `F`.
 
-Точный снимок выбранных внешних ресурсов и способ его повторения — в [`parity-external-resources.ru.md`](parity-external-resources.ru.md) и [`parity-external-resources.json`](parity-external-resources.json). Он включает порядок 30 источников, полные SHA-256 всех файлов DBC и свободных патчей, а также победившие источники семи выбранных виртуальных файлов. Большие MPQ, карты и vmaps не хешировались полностью; поэтому этот снимок нельзя считать полной побайтовой идентичностью сцены.
+Точный снимок выбранных внешних ресурсов и способ его повторения — в [`parity-external-resources.ru.md`](../../parity/parity-external-resources.ru.md) и [`parity-external-resources.json`](../../parity/parity-external-resources.json). Он включает порядок 30 источников, полные SHA-256 всех файлов DBC и свободных патчей, а также победившие источники семи выбранных виртуальных файлов. Большие MPQ, карты и vmaps не хешировались полностью; поэтому этот снимок нельзя считать полной побайтовой идентичностью сцены.
 
 ## Готовность записи и replay
 
