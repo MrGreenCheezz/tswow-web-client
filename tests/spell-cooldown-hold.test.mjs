@@ -203,6 +203,8 @@ test("the stock seam answers a held spell as stock does: no cooldown, not enable
     cooldownRemaining: () => 0,
     cooldownState: () => undefined,
     isSpellOnHold: (id) => held.has(id),
+    // 3.39 (12.10): WorldClient.heldCooldown for Stealth's own held entry — 1 ms, ending after its 10 s recovery.
+    heldCooldown: (id, _category, now) => (held.has(id) ? { startedAt: now, duration: 1, endsAt: now + 1 + 10_000 } : undefined),
     isActiveMountSpell: () => false,
     events: { on: () => () => {} },
   };
@@ -214,10 +216,15 @@ test("the stock seam answers a held spell as stock does: no cooldown, not enable
   });
   seam.attach({ now: () => 500, fire: () => 1 });
   try {
-    // SpellBookFrame / ActionButton_UpdateCooldown: `enable` 0 hides the sweep for a held spell.
-    assert.deepEqual(call(seam, "GetActionCooldown", 1), [0, 0, 0]);
+    // SpellBookFrame / ActionButton_UpdateCooldown: `enable` 0 hides the sweep for a held spell. 3.39 (12.10): with
+    // Wow.exe 0x00807980's numbers — started now, the held entry's 1 ms; its end (after the recovery) beats the
+    // global part's, whose branch could move the numbers but never `enable`.
+    assert.deepEqual(call(seam, "GetActionCooldown", 1), [500, 0.001, 0]);
     assert.deepEqual(call(seam, "IsUsableAction", 1), [false, false]);
-    assert.deepEqual(call(seam, "GetSpellCooldown", STEALTH), [0, 0, 0]);
+    assert.deepEqual(call(seam, "GetSpellCooldown", STEALTH), [500, 0.001, 0]);
+    // A held entry with no recovery ends before the running global part: its start and length, `enable` still 0.
+    world.heldCooldown = (id, _category, now) => (held.has(id) ? { startedAt: now, duration: 1, endsAt: now + 1 } : undefined);
+    assert.deepEqual(call(seam, "GetSpellCooldown", STEALTH), [499, 1.5, 0]);
     // The spell next to it is an ordinary one: the global cooldown, usable, enabled.
     assert.deepEqual(call(seam, "GetActionCooldown", 2), [499, 1.5, 1]);
     assert.deepEqual(call(seam, "IsUsableAction", 2), [true, false]);

@@ -185,6 +185,9 @@ const NO_TRAINER_ROWS: readonly TrainerSpell[] = Object.freeze([]);
 const TRAINER_STATE_FILTERS = ["available", "unavailable", "used"] as const;
 import { FrameXmlTalentGroupModel } from "./FrameXmlTalentGroup.js";
 import { FrameXmlGlobalCooldownEdge, frameXmlGlobalCooldownFor, frameXmlLaterCooldown } from "./FrameXmlGlobalCooldown.js"; // L12 5.30; L13-review 5.30: …For (by category) in place of …Answer + globalCooldownDurationIn
+import type { FrameXmlCooldownAnswer } from "./FrameXmlGlobalCooldown.js"; // 3.39 (12.10)
+import { itemUseSpellCategory } from "../../world/SpellCooldownParts.js"; // 3.39 (12.10)
+import { itemUseCooldownBlock } from "../game/ItemUseCooldown.js"; // 3.39 (12.10)
 import type { GlobalCooldownView } from "../game/PredictedGlobalCooldown.js"; // L13-review 5.30
 import { FrameXmlTalentPreviewModel } from "./FrameXmlTalentPreview.js";
 import { FrameXmlQuestShareModel } from "./FrameXmlQuestShare.js";
@@ -909,6 +912,8 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
   /** P1-16 review: the possess/vehicle page's mirrored timers and usability (`#currentMirroredActionSignature`). */
   #mirroredActionSignature = "";
   #itemCooldownSignature = "";
+  /** 3.39 (12.10): the holds the stock bags last heard of (#reconcileItemCooldowns). */
+  #itemHoldSignature = "";
   #actionPage = 1;
   readonly #mirrorTimerSignatures = new Map<number, string>();
   #spellSignature = "";
@@ -1834,6 +1839,7 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     this.#actionCooldownSignature = "";
     this.#mirroredActionSignature = "";
     this.#itemCooldownSignature = "";
+    this.#itemHoldSignature = ""; // 3.39 (12.10)
     this.#actionPage = this.actionBarPage();
     this.#mirrorTimerSignatures.clear();
     this.#spellSignature = "";
@@ -3456,26 +3462,53 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
       .filter((slot) => slot.item !== undefined && entryOf(slot.item) === entry);
   }
 
-  /** Item spells use the realm's retained spell timer or its fixed equip cooldown. */
+  /**
+   * Item spells use the realm's retained spell timer or its fixed equip cooldown. 3.39 (12.10): as Wow.exe asks
+   * for an item (GetItemCooldown 0x00809030, GetContainerItemCooldown 0x005d7d90 → 0x008090c0 → 0x00807980): under
+   * the item's own category for its spell (`itemUseSpellCategory`), through `cooldownState`/`cooldownRemaining` as
+   * GetActionCooldown reads a spell — a sibling's category part holds the item with its own start, not a sweep that
+   * restarts full each call — beside the global part of the spell's row; and a held item is `enable` 0
+   * (`#heldCooldown`), which ContainerFrame_UpdateCooldown greys.
+   */
   #itemCooldown(entry: number): FrameXmlContainerItemCooldown {
     const world = this.#context.world();
     const pump = this.#pump;
-    const spellId = itemUseSpellId(this.#itemTemplate(world, entry));
+    const template = this.#itemTemplate(world, entry);
+    const spellId = itemUseSpellId(template);
     if (!world || !pump || spellId === undefined) return [0, 0, 0];
     const now = this.#context.monotonic();
+    const category = itemUseSpellCategory(template, spellId);
+    const global = frameXmlGlobalCooldownFor(this.#context, world, this.#context.spell(spellId), now, pump.now());
+    if (world.isSpellOnHold?.(spellId, category)) return this.#heldCooldown(world, spellId, category, global, now, pump);
     const equipEnd = world.itemCooldowns?.get(spellId) ?? 0;
     const equipRemaining = Math.max(0, equipEnd - now);
-    const spellRemaining = world.cooldownRemaining(spellId, now);
+    const spellRemaining = world.cooldownRemaining(spellId, now, category);
     if (equipRemaining >= spellRemaining && equipRemaining > 0) {
-      return [pump.now() - (ITEM_EQUIP_COOLDOWN_MS - equipRemaining) / 1000,
-        ITEM_EQUIP_COOLDOWN_MS / 1000, 1];
+      return frameXmlLaterCooldown([pump.now() - (ITEM_EQUIP_COOLDOWN_MS - equipRemaining) / 1000,
+        ITEM_EQUIP_COOLDOWN_MS / 1000, 1], global);
     }
-    if (spellRemaining <= 0) return [0, 0, 0];
-    const snapshot = world.cooldownSnapshots?.get(spellId);
+    if (spellRemaining <= 0) return global ?? [0, 0, 0];
+    const snapshot = world.cooldownState?.(spellId, category);
     if (snapshot) {
-      return [pump.now() - (now - snapshot.startedAt) / 1000, snapshot.duration / 1000, 1];
+      return frameXmlLaterCooldown([pump.now() - (now - snapshot.startedAt) / 1000, snapshot.duration / 1000, 1], global);
     }
-    return [pump.now(), spellRemaining / 1000, 1];
+    return frameXmlLaterCooldown([pump.now(), spellRemaining / 1000, 1], global);
+  }
+
+  /**
+   * 3.39 (12.10): a held spell or item as Wow.exe 0x00807980 answers it — `enable` 0 (the held entry's +0x24 clears
+   * it), started now with the held part's length (WorldClient.heldCooldown: 1 ms for the spell's own entry, the
+   * category recovery for a held category part), or the global part's start and length when that ends later (its
+   * branch moves those, never `enable`). Stock CooldownFrame_SetTimer draws no sweep for `enable` 0, SpellBookFrame
+   * dims the icon, and ContainerFrame_UpdateCooldown greys an item answering a length with `enable` 0.
+   */
+  #heldCooldown(world: WorldClient, spellId: number, category: number | undefined,
+    global: FrameXmlCooldownAnswer | undefined, monotonic: number, pump: FrameXmlSeamPump): FrameXmlCooldownAnswer {
+    const held = world.heldCooldown?.(spellId, category, monotonic);
+    const length = held?.duration ?? 1;
+    const end = pump.now() + ((held?.endsAt ?? monotonic + 1) - monotonic) / 1000;
+    if (global && global[0] + global[1] > end) return [global[0], global[1], 0];
+    return [pump.now(), length / 1000, 0];
   }
 
   /** Announce timer start/clear/expiry once, so stock bag and paperdoll sweeps stay current. */
@@ -3491,9 +3524,17 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
       .filter(([, snapshot]) => snapshot.endsAt > now)
       .map(([id, snapshot]) => `s:${id}:${snapshot.startedAt}:${snapshot.duration}:${snapshot.endsAt}`);
     const signature = [...equip, ...spells].sort().join("|");
-    if (signature === this.#itemCooldownSignature) return;
+    // 3.39 (12.10): a hold (a potion drunk in combat) starts and ends with no timer moving, yet it greys the bag
+    // slot (`#itemCooldown`'s `enable` 0): BAG_UPDATE_COOLDOWN, so ContainerFrame asks again. The bar's pair for a
+    // hold is #reconcileActionCooldowns' (`slot:h`).
+    let holds = "";
+    for (const [id, category] of world.cooldownHolds ?? new Map<number, number>()) holds += `${id}:${category},`;
+    const timers = signature !== this.#itemCooldownSignature;
+    if (!timers && holds === this.#itemHoldSignature) return;
     this.#itemCooldownSignature = signature;
+    this.#itemHoldSignature = holds;
     pump.fire(FRAMEXML_SEAM_EVENTS.bagUpdateCooldown);
+    if (!timers) return;
     pump.fire(FRAMEXML_SEAM_EVENTS.actionCooldown);
     pump.fire(FRAMEXML_SEAM_EVENTS.actionUsable);
   }
@@ -3516,16 +3557,20 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     let signature = "";
     for (const button of world.actionButtons) {
       // 3.37(в): an item slot runs on its use spell's timer (`#itemCooldown`), under the same rule.
+      const template = button.type === ACTION_BUTTON_ITEM ? this.#itemTemplate(world, button.action) : undefined;
       const spellId = button.type === ACTION_BUTTON_SPELL ? button.action
-        : button.type === ACTION_BUTTON_ITEM ? itemUseSpellId(this.#itemTemplate(world, button.action)) : undefined;
+        : button.type === ACTION_BUTTON_ITEM ? itemUseSpellId(template) : undefined;
       if (spellId === undefined) continue;
+      // 3.39 (12.10): an item slot is asked under the item's own category (`#itemCooldown`).
+      const category = template === undefined ? undefined : itemUseSpellCategory(template, spellId);
       // 3.37(а): a hold is no timer, yet its release is an edge: the icon greyed by `IsUsableAction`
-      // comes back only on ACTIONBAR_UPDATE_USABLE, and a release may start no timer at all.
-      if (button.type === ACTION_BUTTON_SPELL && world.isSpellOnHold?.(spellId)) {
+      // comes back only on ACTIONBAR_UPDATE_USABLE, and a release may start no timer at all. 3.39 (12.10):
+      // an item slot's too (a potion drunk in combat).
+      if (world.isSpellOnHold?.(spellId, category)) {
         signature += `${button.slot}:h,`;
         continue;
       }
-      const remaining = world.cooldownRemaining(spellId, now);
+      const remaining = world.cooldownRemaining(spellId, now, category);
       if (remaining <= 0) continue;
       const end = now + remaining;
       const snapshot = world.cooldownSnapshots?.get(spellId);
@@ -6838,13 +6883,13 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     const pump = this.#pump;
     if (button?.type === ACTION_BUTTON_ITEM) return this.#itemCooldown(button.action);
     if (!world || !pump || !button || button.type !== ACTION_BUTTON_SPELL) return [0, 0, 0];
-    // Held until its aura ends: stock answers `0, 0, 0` — `enable` 0, no sweep, not even the GCD's.
-    if (world.isSpellOnHold?.(button.action)) return [0, 0, 0];
     const monotonic = this.#context.monotonic();
-    const snapshot = world.cooldownState(button.action);
-    const remaining = world.cooldownRemaining(button.action, monotonic);
     // L12 5.30: the global part beside the spell's own timer; the later end wins (Wow.exe 0x00807980).
     const global = frameXmlGlobalCooldownFor(this.#context, world, this.#metadata(slot), monotonic, pump.now()); // L13-review 5.30: by category
+    // Held until its aura ends: `enable` 0, no sweep, not even the GCD's (3.39 (12.10): Wow.exe's numbers, `#heldCooldown`).
+    if (world.isSpellOnHold?.(button.action)) return this.#heldCooldown(world, button.action, undefined, global, monotonic, pump);
+    const snapshot = world.cooldownState(button.action);
+    const remaining = world.cooldownRemaining(button.action, monotonic);
     if (snapshot) {
       const elapsed = (monotonic - snapshot.startedAt) / 1000;
       return frameXmlLaterCooldown([pump.now() - elapsed, snapshot.duration / 1000, 1], global); // L12 5.30
@@ -6861,7 +6906,14 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     const button = this.#button(slot);
     if (!button) return [false, false];
     if (button.type === ACTION_BUTTON_ITEM) {
-      return [this.#actionItems(button.action).length > 0 && this.#itemCooldown(button.action)[2] === 0, false];
+      // 3.39 (12.10): a recovering or held item is not usable, as its use is refused (game/ItemUseCooldown.ts) and a
+      // held spell's button is (below); the global part is not in the way, as it is not for a spell here.
+      const world = this.#context.world();
+      const template = this.#itemTemplate(world, button.action);
+      const spellId = itemUseSpellId(template);
+      const blocked = world !== undefined && spellId !== undefined
+        && itemUseCooldownBlock(world, template, spellId, this.#context.monotonic()) !== undefined;
+      return [this.#actionItems(button.action).length > 0 && !blocked, false];
     }
     if (button.type !== ACTION_BUTTON_SPELL) return [true, false];
     const metadata = this.#metadata(slot);
@@ -8689,18 +8741,29 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     const world = this.#context.world();
     const pump = this.#pump;
     const monotonic = this.#context.monotonic();
-    const snapshot = id === undefined ? undefined : world?.cooldownSnapshots?.get(id);
-    // A known spell that is ready answers `0, 0, 1`: `enable` is 0 only for a cooldown held back
-    // (Stealth's, WorldClient.isSpellOnHold), and SpellButton_UpdateButton (SpellBookFrame.lua:462-467)
-    // dims the icon to 0.4 for anything else — measured on the fixture, every ready spell in the
-    // stock book was dimmed.
-    if (id !== undefined && world?.isSpellOnHold?.(id)) return [0, 0, 0];
     // L12 5.30: the global part beside the spell's own timer; the later end wins (Wow.exe 0x00807980).
     const global = id === undefined || !pump ? undefined
       : frameXmlGlobalCooldownFor(this.#context, world, this.#context.spell(id), monotonic, pump.now()); // L13-review 5.30: by category
-    if (!snapshot || snapshot.endsAt <= monotonic || !pump) return id === undefined ? [0, 0, 0] : global ?? [0, 0, 1]; // L12 5.30
-    const start = pump.now() - (monotonic - snapshot.startedAt) / 1000;
-    return frameXmlLaterCooldown([start, snapshot.duration / 1000, 1], global); // L12 5.30
+    // A known spell that is ready answers `0, 0, 1`: `enable` is 0 only for a cooldown held back
+    // (Stealth's, WorldClient.isSpellOnHold), and SpellButton_UpdateButton (SpellBookFrame.lua:462-467)
+    // dims the icon to 0.4 for anything else — measured on the fixture, every ready spell in the
+    // stock book was dimmed. 3.39 (12.10): held, with Wow.exe's numbers (`#heldCooldown`).
+    if (id !== undefined && world?.isSpellOnHold?.(id)) {
+      return pump ? this.#heldCooldown(world, id, undefined, global, monotonic, pump) : [0, 0, 0];
+    }
+    if (id === undefined) return [0, 0, 0];
+    // 3.39 (12.10): through `cooldownState`/`cooldownRemaining`, as GetActionCooldown reads them — the spell's own
+    // timer or its category's, so a sibling's category part shows its sweep in the book too (0x00540e80 →
+    // 0x00809000 → 0x00807980), with the part's own start.
+    const snapshot = world?.cooldownState?.(id);
+    const remaining = world?.cooldownRemaining?.(id, monotonic) ?? 0;
+    if (!pump) return [0, 0, 1];
+    if (snapshot) {
+      return frameXmlLaterCooldown([pump.now() - (monotonic - snapshot.startedAt) / 1000, snapshot.duration / 1000, 1], global); // L12 5.30
+    }
+    // No snapshot: the remaining time is the duration and the sweep starts full (GetActionCooldown's fallback).
+    if (remaining > 0) return frameXmlLaterCooldown([pump.now(), remaining / 1000, 1], global);
+    return global ?? [0, 0, 1]; // L12 5.30
   }
 
   spellAutocast(index: number, _bookType: string | undefined): readonly [boolean, boolean] {

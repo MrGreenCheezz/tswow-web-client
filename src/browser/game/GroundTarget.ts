@@ -9,6 +9,8 @@ import { CAMERA_TERRAIN_ESCAPE_DEPTH } from "./Collision.js";
 import { armItemTarget, cancelItemTarget, isItemTargetSpell, spellTargetsObject } from "./SpellCursor.js";
 import { castOnMainHandWeapon } from "./MainHandEnchant.js"; // 05.10-2.05
 import { ITEM_USE_TRIGGERS, itemUseSpellId } from "../../world/SpellCooldownParts.js"; // 3.39/5.30: moved there
+import { refuseItemUseOnCooldown } from "./ItemUseCooldown.js"; // 3.39 (12.10)
+import { globalCooldownEndFor } from "./PredictedGlobalCooldown.js"; // 3.39 (12.10)
 
 /**
  * Ground-target (reticle) casts: Blizzard, Flamestrike and friends do not take the selection.
@@ -110,8 +112,9 @@ export function requestInventoryItemUse(slot: InventorySlotRef, send: () => void
 export function requestItemUse(
   ref: ItemUseRef,
   send: () => void,
-  templates?: { get(entry: number): { spells?: ReadonlyArray<{ spellId: number; trigger: number }> } | undefined },
-  spells?: Map<number, Pick<SpellMetadata, "requiredTargetMode" | "itemOrObject">>,
+  templates?: { get(entry: number): { spells?: ReadonlyArray<{ spellId: number; trigger: number; category?: number }> } | undefined },
+  spells?: Map<number, Pick<SpellMetadata, "requiredTargetMode" | "itemOrObject" | "category" | "startRecoveryTime"
+    | "startRecoveryCategory">>,
   waited = false,
 ): void {
   const world = game.world;
@@ -122,6 +125,16 @@ export function requestItemUse(
   const template = (templates ?? world.itemTemplates)?.get(ref.entry);
   const spellId = itemUseSpellId(template);
   const metadata = spellId === undefined ? undefined : (spells ?? game.spells).get(spellId);
+  const client = game.spellMetadataClient;
+  // The item's spell row has not been asked for yet (see the end).
+  const fetchRow = spellId !== undefined && metadata === undefined && spells === undefined && !waited && client !== undefined;
+  // 3.39 (12.10): a recovering or held item — or one whose row's global cooldown runs — is refused before any reticle,
+  // cursor or packet, as Wow.exe 0x0080cce0 → 0x00739650 refuses it (ItemUseCooldown.ts). Its words follow the row's
+  // Category, so a row on its way is awaited.
+  if (spellId !== undefined && !fetchRow && refuseItemUseOnCooldown(world, template, spellId,
+    metadata?.category ?? world.spellCooldownRow?.(spellId)?.category, globalCooldownEndFor(game, metadata))) {
+    return;
+  }
   if (spellId !== undefined && isGroundTargetSpell(metadata) && beginGroundTarget(spellId)) {
     game.groundTargetItem = { bag: ref.bag, slot: ref.slot, guid: ref.guid };
     world.onSpellStatus?.("Кликните по земле для выбора точки · правый клик или Esc — отмена", false);
@@ -140,8 +153,7 @@ export function requestItemUse(
   }
   // The item's spell row has not been asked for yet: a targetless use of a poison is a refusal the
   // player cannot act on, so the row is fetched once and the use decided after it (failing open).
-  const client = game.spellMetadataClient;
-  if (spellId !== undefined && metadata === undefined && spells === undefined && !waited && client) {
+  if (fetchRow && client) {
     const decide = (): void => {
       if (game.world !== world) return;
       requestItemUse(ref, send, templates, undefined, true);

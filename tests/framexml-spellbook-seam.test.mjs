@@ -109,6 +109,13 @@ test("Live SpellBook reads WorldClient state, converts cooldown clocks, and emit
     knownSpells: [{ id: 133, slot: 0 }],
     cooldownSnapshots: new Map(),
     cooldowns: new Map(),
+    // 3.39 (12.10): GetSpellCooldown reads WorldClient.cooldownState/cooldownRemaining (the own timer or the
+    // category part), as GetActionCooldown does; this double has the own timers alone.
+    cooldownState: (id) => {
+      const snapshot = world.cooldownSnapshots.get(id);
+      return snapshot && snapshot.endsAt > monotonic ? snapshot : undefined;
+    },
+    cooldownRemaining: (id, now) => Math.max(0, (world.cooldownSnapshots.get(id)?.endsAt ?? 0) - now),
     actionButtons: [], casts: new Map(),
     state: { selfGuid, objects: new Map() },
     events,

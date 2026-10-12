@@ -46,6 +46,23 @@ export function itemUseSpellId(
   return undefined;
 }
 
+/**
+ * 3.39 (12.10): the category an item's cooldown is asked under for `spellId` — Wow.exe 0x00807980 with an item
+ * (GetItemCooldown 0x00809030, GetContainerItemCooldown and the use's check 0x008090c0) walks the item's five spell
+ * slots and takes the category (+0x150) of the last slot naming the spell with one above 0; undefined leaves the
+ * spell row's Category (WorldClient's `askedCategory`).
+ */
+export function itemUseSpellCategory(
+  template: { spells?: ReadonlyArray<{ spellId: number; category?: number }> } | undefined,
+  spellId: number,
+): number | undefined {
+  let category: number | undefined;
+  for (const spell of template?.spells ?? []) {
+    if (spell.spellId === spellId && spell.category !== undefined && spell.category > 0) category = spell.category;
+  }
+  return category;
+}
+
 /** The cooldown columns of a Spell.dbc row the page knows (`/dbc/spells`; `category` since v=19). */
 export interface SpellCooldownRow {
   /** Spell.dbc Category; undefined from a gateway older than v=19. */

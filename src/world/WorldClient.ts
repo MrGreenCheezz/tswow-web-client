@@ -2454,10 +2454,20 @@ export class WorldClient {
    * 5.05 (11.10): a cast this client refused itself before any packet (the book's preflight: a global or spell
    * cooldown is NOT_READY). Wow.exe hands its own refusals to the same 0x00808200 as the realm's; only its first
    * rule lives here — the wand's repeat ({@link #wandRepeatRule}); the caller keeps the words.
+   * 3.39 (12.10): with `errorText` (a refused item use, game/ItemUseCooldown.ts) the rest of 0x00808200's local half
+   * too, as the missile refusal has it (`#missilePlan`): the error frame's words unless its repeat rule keeps them
+   * quiet (`local_14`, `#refusalQuiet`), and the combat log's SPELL_CAST_FAILED with the result's own words.
    */
-  spellRefusedLocally(spellId: number, result: number): void {
+  spellRefusedLocally(spellId: number, result: number, errorText?: string): void {
     if (spellId <= 0) return;
     this.#wandRepeatRule(result);
+    if (errorText === undefined) return;
+    const quiet = this.#refusalQuiet.quiet(spellId, result, performance.now(),
+      this.autoRanged.wantedSpellId, this.autoRanged.failureResets);
+    if (errorText && !quiet) this.onSpellStatus?.(errorText, true);
+    this.events.emit("SPELL_CAST_REFUSED_LOCAL", {
+      spellId, result, ...castFailureWords({}, () => spellFailureText(result, this.#castFailureNames())),
+    });
   }
 
   /** 5.05 (11.10): 0x00808200's first rule (AutoRepeatRefusal `wandRepeatCancels`): CMSG_CANCEL_CAST, then 0x00807560(1). */
@@ -2784,13 +2794,14 @@ export class WorldClient {
   /**
    * A stable cooldown snapshot for a slot that needs its own fraction or label. 3.39: the category part's when
    * it ends later than the spell's own — Wow.exe 0x00807980 hands out the start and length of whichever entry
-   * holds the spell longest, a sibling's category part too.
+   * holds the spell longest, a sibling's category part too. `askedCategory`: an item's own category for its
+   * spell (GetItemCooldown, 0x00809030; see `#askedCategory`).
    */
-  cooldownState(spellId: number): CooldownSnapshot | undefined {
+  cooldownState(spellId: number, askedCategory?: number): CooldownSnapshot | undefined {
     const now = performance.now();
     const snapshot = this.cooldownSnapshots.get(spellId);
     const own = snapshot !== undefined && snapshot.endsAt > now ? snapshot : undefined;
-    const categoryId = this.#askedCategory(spellId);
+    const categoryId = this.#askedCategory(spellId, askedCategory);
     const shared = categoryId === undefined || categoryId === 0 ? undefined : this.#categorySnapshots.get(categoryId);
     // A snapshot whose end is no longer the category's (a reset, a newer list) answers nothing.
     if (shared !== undefined && shared.endsAt > now && shared.endsAt === this.categoryCooldowns.get(categoryId!)
@@ -2802,8 +2813,11 @@ export class WorldClient {
    * 3.39: the category a spell is asked under — Wow.exe 0x00807980 compares an entry's category with the asked
    * spell's row Category (`local_c`, record +0x4). The row's when the page has it and it names one, else the one
    * the history filed the spell under (`spellCategories`). No allocation: the bars ask per slot per frame.
+   * 3.39 (12.10): an item is asked under its own category for the spell when it names one (`askedCategory` > 0:
+   * 0x00809030/0x008090c0 pass the entry, and 0x00807980 takes the item slot's category +0x150 when above 0).
    */
-  #askedCategory(spellId: number): number | undefined {
+  #askedCategory(spellId: number, askedCategory?: number): number | undefined {
+    if (askedCategory !== undefined && askedCategory > 0) return askedCategory;
     const category = this.spellCooldownRow?.(spellId)?.category;
     return category !== undefined && category > 0 ? category : this.spellCategories.get(spellId);
   }
@@ -3019,18 +3033,49 @@ export class WorldClient {
    * A hold that starts mid-session sends no packet (`SpellAuras.cpp:571-577` starts it in silence);
    * 3.39: the GO of the player's own cast files it, as Wow.exe does (`#startGoCooldown`).
    */
-  isSpellOnHold(spellId: number): boolean {
+  isSpellOnHold(spellId: number, askedCategory?: number): boolean {
     if (this.cooldownHolds.has(spellId)) return true;
-    const categoryId = this.#askedCategory(spellId);
+    const categoryId = this.#askedCategory(spellId, askedCategory);
     if (categoryId === undefined || categoryId === 0) return false;
     for (const held of this.cooldownHolds.values()) if (held === categoryId) return true;
     return false;
   }
 
+  /**
+   * 3.39 (12.10): what Wow.exe 0x00807980 hands out for a held spell — start now, `enable` 0 — as a snapshot, or
+   * undefined when nothing holds it (`isSpellOnHold`). The spell's own held entry (+0x24) reports a length of 1 ms
+   * and ends at now + 1 + its recovery; a held entry's category part, under the asked category and with a category
+   * recovery, reports that recovery and ends at now + it; the later end wins (a tie: the category part, walked
+   * second). A hold whose parts this client did not file (one the login reported) is the 1 ms of its own entry.
+   */
+  heldCooldown(spellId: number, askedCategory?: number, now = performance.now()): CooldownSnapshot | undefined {
+    if (!this.isSpellOnHold(spellId, askedCategory)) return undefined;
+    const categoryId = this.#askedCategory(spellId, askedCategory);
+    let duration = 1;
+    let endsAt = now + 1;
+    let found = false;
+    for (const [heldSpell, heldCategory] of this.cooldownHolds) {
+      const parts = this.#holdParts.get(heldSpell);
+      if (heldSpell === spellId && (!found || now + 1 + (parts?.recovery ?? 0) >= endsAt)) {
+        endsAt = now + 1 + (parts?.recovery ?? 0);
+        duration = 1;
+        found = true;
+      }
+      const length = parts?.categoryDuration ?? 0;
+      if (categoryId !== undefined && categoryId !== 0 && heldCategory === categoryId && length > 0
+        && (!found || now + length >= endsAt)) {
+        endsAt = now + length;
+        duration = length;
+        found = true;
+      }
+    }
+    return { startedAt: now, duration, endsAt };
+  }
+
   /** 3.39: the spell's own timer, or its category's (a sibling's cast holds it too, 0x00807980). */
-  cooldownRemaining(spellId: number, now = performance.now()): number {
+  cooldownRemaining(spellId: number, now = performance.now(), askedCategory?: number): number {
     const direct = (this.cooldowns.get(spellId) ?? 0) - now;
-    const categoryId = this.#askedCategory(spellId);
+    const categoryId = this.#askedCategory(spellId, askedCategory);
     const shared = categoryId === undefined || categoryId === 0 ? 0 : (this.categoryCooldowns.get(categoryId) ?? 0) - now;
     return Math.max(0, direct, shared);
   }

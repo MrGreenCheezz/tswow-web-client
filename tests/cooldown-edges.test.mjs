@@ -83,7 +83,9 @@ test("3.37(а): a held bar spell's release redraws its button and the book once,
   seam.attach(pump);
   tick();
   assert.deepEqual(call(seam, "IsUsableAction", 13), [false, false], "held: refused, grey");
-  assert.deepEqual(call(seam, "GetActionCooldown", 13), [0, 0, 0], "and nothing to sweep");
+  // 3.39 (12.10): `enable` 0, so nothing to sweep, with Wow.exe 0x00807980's numbers — started now, the held entry's
+  // 1 ms (this double files no parts: WorldClient.heldCooldown's fallback).
+  assert.deepEqual(call(seam, "GetActionCooldown", 13), [500.1, 0.001, 0], "and nothing to sweep");
   fired.length = 0;
   tick();
   assert.equal(count(CD) + count(US) + count(SPELL_CD), 0, "a hold that stays is no news");

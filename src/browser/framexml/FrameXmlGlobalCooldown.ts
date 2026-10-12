@@ -46,8 +46,10 @@ export interface FrameXmlGlobalCooldownContext {
  * L13-review 5.30: the global part of `row` for `GetSpellCooldown`/`GetActionCooldown` — 0x00807980 walks the entries
  * whose category is the row's StartRecoveryCategory and answers that entry's start and its own length. With the
  * page's model: `globalCooldownEndFor`/`globalCooldownSpanFor` (a 133 row with no time of its own shows the running
- * 133 sweep, category 0 none, 38 only its own); a length the model does not know falls back to the row's predicted
- * duration. Without one (a seam host of its own): the shared end and the row's duration, as L12 had it.
+ * 133 sweep, 38 only its own; 12.10: a category-0 row the running category-0 entry's — Wow.exe 0x00807980 has no
+ * non-zero test on the global category, so after Удар смерти (0/1500) an off-GCD 0/0 row sweeps its 1.5 s too); a
+ * length the model does not know falls back to the row's predicted duration. Without one (a seam host of its own):
+ * the shared end and the row's duration, as L12 had it.
  */
 export function frameXmlGlobalCooldownFor(
   context: FrameXmlGlobalCooldownContext, world: GlobalCooldownWorld | undefined, row: GlobalCooldownRow | undefined,
