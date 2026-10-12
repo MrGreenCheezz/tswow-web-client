@@ -22,7 +22,7 @@ import { gameObjectColliderFrame, liftCarrying, takeLiftSettled } from "../game/
 import { farSightHoldsBody, viewIsOut } from "../game/ViewSubject.js"; // 11.02-I
 import { jumpSpentByMountSpecial, mountSpecialJumpPress, mountSpecialJumpRelease } from "./MountSpecial.js"; // 05.10-A7a-G 6.20
 import {
-  beginRideFrame, endRideFrame, forgetRide, rideActive, rideCarrierMoving, rideImpulse, rideTransportBlock, rideTurned, stepRideSubstep,
+  beginRideFrame, endRideFrame, forgetRide, rideActive, rideImpulse, rideTransportBlock, rideTurned, stepRideSubstep,
   takeRideFlip, type RideFrameInput,
 } from "./MovementRide.js";
 import {
@@ -98,11 +98,40 @@ export function physicsElapsed(raw: number, fastestSpeed: number, radius: number
 
 /**
  * When the last movement packet went out. A key press starts the clock and the render loop keeps
- * it running, so it is shared rather than owned by either: the server drops a mover that goes
- * quiet, and sending on every frame would be twenty times more traffic than it needs.
+ * it running, so it is shared rather than owned by either.
+ *
+ * NET-21: Wow.exe 3.3.5a (12340) keeps one heartbeat deadline for the active mover. Every packet it
+ * sends with the mover's MovementInfo — the MSG_MOVE_* and the acknowledgements alike — goes out
+ * through 0x0071f0c0, which sets the deadline to that packet's time + 500 ms (0x006e9b70); the
+ * movement update (0x006f09f0, for each mover from 0x006f13e0) sends MSG_MOVE_HEARTBEAT when the
+ * movement clock reaches it while the flags hold {@link HEARTBEAT_FLAGS}. This layer stamps its own
+ * packets here; WorldClient stamps the acknowledgements (`moverPacketAt`); `heartbeatDue` reads both.
  */
 export const movementHeartbeat = { sentAt: 0 };
-export const MOVEMENT_HEARTBEAT_INTERVAL = 200;
+/**
+ * NET-21: Wow.exe 0x006e9b70, `deadline = packet time + 500`. The realm relays every heartbeat to
+ * everyone in range at once (`SendMessageToSet`, MovementHandler.cpp:376) and depends on the rate for
+ * nothing — fall damage, area triggers, transports and its flood limit of 200 a second
+ * (WorldSession.cpp:1618-1620) all read the packets as they come.
+ */
+export const MOVEMENT_HEARTBEAT_INTERVAL = 500;
+/**
+ * NET-21: the MovementFlags that keep the heartbeat going — FORWARD, BACKWARD, STRAFE_LEFT,
+ * STRAFE_RIGHT, FALLING, ASCENDING and DESCENDING: Wow.exe 0x006f09f0 tests the mover's flags
+ * against 0x00C0100F before each one. Turning or pitching in place, floating in water, hanging in the
+ * air on a flying mount and walk mode are not in it: their own opcodes say them once.
+ */
+export const HEARTBEAT_FLAGS = MOVEMENT_FLAGS.forward | MOVEMENT_FLAGS.backward | MOVEMENT_FLAGS.strafeLeft
+  | MOVEMENT_FLAGS.strafeRight | MOVEMENT_FLAGS.falling | MOVEMENT_FLAGS.ascending | MOVEMENT_FLAGS.descending;
+/**
+ * NET-21: the cadence while a lift carries the character — not Wow.exe's. Wow.exe takes the platform
+ * as its transport (the collision step 0x007612b0 → 0x006ec7b0 → 0x006ec400), says so once with
+ * CMSG_MOVE_CHNG_TRANSPORT (0x006eb0b0) and then sends nothing while the rider stands, because every
+ * packet carries the offset. 11.01-B sends a lift ride in world coordinates without the block, so
+ * these heartbeats are all the realm and the neighbours learn of a standing rider's climb; they keep
+ * the rate they had before NET-21, so a neighbour does not see the rider rise in half-second steps.
+ */
+export const LIFT_CARRY_HEARTBEAT_INTERVAL = 200;
 
 const held = new Set<InputAction>();
 /** Autorun and the two-button mouse run are forward asked for by something other than a key. */
@@ -235,24 +264,42 @@ export function movementBlocked(): "stun" | "server" | undefined {
 }
 
 /**
- * Whether the character is actually going somewhere.
+ * Whether the heartbeat cadence runs: the flags the mover's packets carry hold one of
+ * {@link HEARTBEAT_FLAGS} (NET-21, Wow.exe 0x006f09f0) — it goes somewhere along the ground, in the
+ * water or in the air, falls, rises or sinks. A jump on the spot falls, so its arc is followed.
  *
- * Not the same as "the flags word is non-zero": walking is a flag too, and a character standing
- * still in walk mode would otherwise send a heartbeat five times a second forever.
+ * Not the same as "the flags word is non-zero": walking is a flag too. Nor "the keys are down": a
+ * root or a stun takes the step out of the flags (`movementFlags`), and Wow.exe's root clears the
+ * direction bits outright (0x0098c4f0). A server-moved mover sends nothing (0x006f13e0 skips one on
+ * a spline; 0x004f5240 one held in a seat).
  */
 export function isMoving(): boolean {
   if (ownMovementServerControlled()) return false;
-  // 11.01-A3: standing on a sailing ship is going somewhere — the core follows a passenger only by
-  // the offsets it is sent, and a heartbeat with the block keeps the seat it holds current.
-  if (rideCarrierMoving()) return true;
-  // 11.01-B: so is standing on a moving lift; its packets carry world coordinates and no block.
+  // NET-21: a passenger standing on a sailing ship is not going anywhere it has to tell: the core
+  // moves it with the ship from the offset it last sent (Transport.cpp:724-729), the neighbours draw
+  // it from the ship's pose and that offset, and Wow.exe sends nothing then.
+  // 11.01-B: standing on a moving lift is, see LIFT_CARRY_HEARTBEAT_INTERVAL.
   if (liftCarrying()) return true;
-  // Being in the air or in the water counts. A character that jumped on the spot presses no key
-  // at all, and without a packet on the way down the server never follows the arc — everyone else
-  // would see it standing still and then appearing where it landed.
-  const rooted = game.world !== undefined && moverState(game.world).rooted;
-  return motion.mode !== "ground" || (!rooted && (forwardAxis() !== 0 || strafeAxis() !== 0))
-    || turnAxis() !== 0 || pitchAxis() !== 0;
+  return (movementFlags() & HEARTBEAT_FLAGS) !== 0;
+}
+
+/**
+ * NET-21: whether MSG_MOVE_HEARTBEAT is due at `now` (the render loop's clock): the cadence runs
+ * ({@link isMoving}) and {@link MOVEMENT_HEARTBEAT_INTERVAL} has passed since the mover's last packet,
+ * this layer's own or an acknowledgement WorldClient sent (Wow.exe 0x0071f0c0 → 0x006e9b70 for both).
+ * A deadline that passed while nothing was due is due at once: a fall that starts from standing is
+ * told on its first frame, as 0x006f09f0 tells it on the first step.
+ *
+ * Asked once a frame after the physics, so the packet carries that frame's position and time, and the
+ * next deadline counts from it. Wow.exe cuts its movement step at the deadline itself (0x006f09f0
+ * sizes each step to end there), so its heartbeats are 500 ms apart to the millisecond and these by
+ * up to a frame more.
+ */
+export function heartbeatDue(now: number): boolean {
+  if (!isMoving()) return false;
+  const interval = liftCarrying() ? LIFT_CARRY_HEARTBEAT_INTERVAL : MOVEMENT_HEARTBEAT_INTERVAL;
+  const last = Math.max(movementHeartbeat.sentAt, game.world?.moverPacketAt ?? 0);
+  return now - last >= interval;
 }
 
 /**
@@ -717,6 +764,9 @@ export function advancePhysics(elapsed: number): void {
   // 11.02-A: the driver sits where the vehicle is now, not where it was when the frame began.
   else carrySeatedCharacter(world.state.objects, character, self);
   // Boarded or stepped off: the server hears it now, with the block or without it.
+  // NET-21: Wow.exe says this with CMSG_MOVE_CHNG_TRANSPORT (0x006eb0b0 → 0x0071f0c0), which the core
+  // handles as it does a heartbeat (Opcodes.cpp:1040) but relays under that opcode, which this
+  // client's observers do not read yet (WorldClient's MOVEMENT_OPCODES); kept a heartbeat until they do.
   if (takeRideFlip()) sendMovement(OPCODES.MSG_MOVE_HEARTBEAT);
   // 11.01-B: a lift ride ended: where the character came to rest, in world coordinates.
   if (takeLiftSettled()) sendMovement(OPCODES.MSG_MOVE_HEARTBEAT);
@@ -922,10 +972,12 @@ function reportPhysicsEvent(event: PhysicsEvent): void {
   }
   if (event === "startFall") {
     // There is no "started falling" opcode: the fall announces itself by the flag appearing in the
-    // next packet, and `Player::UpdateFallInformationIfNeed` takes that packet's z as where the
-    // fall began. Sending one now rather than waiting for the heartbeat is what makes the height
-    // the server charges damage on the edge that was actually walked off.
-    sendMovement(OPCODES.MSG_MOVE_HEARTBEAT);
+    // next packet. NET-21: and nothing goes out now. Wow.exe's ground step starts the fall in place
+    // (0x007620f0 → 0x00988370), and what it reports after a step is a landing, a change of
+    // transport or of the direction bits (0x006eb0b0), never the fall; FALLING reaches the realm
+    // with the next heartbeat (`heartbeatDue`: 500 ms after the last packet, at once if that is
+    // older). `Player::UpdateFallInformationIfNeed` (Player.cpp:26098-26102) keeps the z of the last
+    // packet before the fall as where it began, as it does for the stock client.
     return;
   }
   if (event === "land") {

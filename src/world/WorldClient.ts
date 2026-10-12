@@ -818,6 +818,13 @@ export class WorldClient {
   onMovementStatus: ((ready: boolean, sentPackets: number) => void) | undefined;
   movementReady = false;
   movementPacketsSent = 0;
+  /**
+   * NET-21: when the last packet carrying the active mover's MovementInfo went out
+   * (`performance.now()`) — a movement packet or any acknowledgement. Wow.exe sends them all through
+   * 0x0071f0c0 (SPLINE_DONE through 0x0071f210), and each puts the mover's next MSG_MOVE_HEARTBEAT
+   * 500 ms after it (0x006e9b70); browser/input/Movement.ts `heartbeatDue` reads it.
+   */
+  moverPacketAt = 0;
   mapId: number | undefined;
   /** The rates the server has forced on this player, by name. */
   readonly speeds = new Map<ForcedSpeedName, number>();
@@ -1689,7 +1696,13 @@ export class WorldClient {
       // maps. A stopped or teleported spline never reaches this callback.
       this.#connection.send(OPCODES.CMSG_MOVE_SPLINE_DONE,
         buildSplineDone(guid, this.#currentMovement(), splineId));
+      this.#moverPacketSent(guid); // NET-21
     };
+  }
+
+  /** NET-21: stamps {@link moverPacketAt} for a packet with the MovementInfo of `guid`, when it is the active mover. */
+  #moverPacketSent(guid: bigint | undefined): void {
+    if (guid !== undefined && guid === (this.controlledGuid ?? this.state.selfGuid)) this.moverPacketAt = performance.now();
   }
 
   /**
@@ -1990,8 +2003,11 @@ export class WorldClient {
       // HandleMoveTeleportAck reads only `packedGuid, u32 counter, u32 time` (MovementHandler.cpp
       // :213-266, neither checked), and until it arrives HandleMovementOpcodes drops every movement
       // packet (:285-290) — so nothing sent after this can land at the old point.
-      const reply = () => this.#connection.send(OPCODES.MSG_MOVE_TELEPORT_ACK,
-        buildTeleportAck(request.guid, request.counter, Math.trunc(performance.now()) >>> 0));
+      const reply = () => {
+        this.#connection.send(OPCODES.MSG_MOVE_TELEPORT_ACK,
+          buildTeleportAck(request.guid, request.counter, Math.trunc(performance.now()) >>> 0));
+        this.#moverPacketSent(request.guid); // NET-21: Wow.exe 0x007413f0 case 199 → 0x0071f0c0
+      };
       if (this.state.selfGuid !== undefined && request.guid === this.state.selfGuid) this.#selfTeleported(request.movement, reply);
       else {
         // A client-moved creature (a vehicle, a charmed mob): Unit::NearTeleportTo has already
@@ -2040,6 +2056,7 @@ export class WorldClient {
       // the character was in a moment before.
       const after = knockBackMovement(knockBack, this.#currentMovement(knockBack.guid));
       this.#connection.send(OPCODES.CMSG_MOVE_KNOCK_BACK_ACK, buildKnockBackAck(knockBack, after));
+      this.#moverPacketSent(knockBack.guid); // NET-21: the heartbeats of the arc start 500 ms after it
       if (knockBack.guid === this.state.selfGuid) {
         // Echoed by every acknowledgement until the physics reports its own fall.
         this.#movementExtra = { fallTime: 0, jump: after.jump };
@@ -2062,6 +2079,7 @@ export class WorldClient {
         this.#connection.send(toggle.ackOpcode, buildMovementToggleAck(
           { guid: move.guid, counter: move.counter, name: toggle.name, value: undefined, ackOpcode: toggle.ackOpcode },
           this.#currentMovement(move.guid)));
+        this.#moverPacketSent(move.guid); // NET-21
         applyMovementToggle(this.movementStateOf(move.guid), toggle.name, undefined);
       }
       return true;
@@ -2109,6 +2127,7 @@ export class WorldClient {
     if (isForcedSpeed(packet.opcode)) {
       const speed = parseForcedSpeed(packet.opcode, packet.payload);
       this.#connection.send(ackOpcodeForSpeed(speed.name), buildForcedSpeedAck(speed, this.#currentMovement(speed.guid)));
+      this.#moverPacketSent(speed.guid); // NET-21
       // M7-0: the rate belongs to the unit the packet names (the character's map is `speeds`).
       this.speedsOf(speed.guid).set(speed.name, speed.speed);
       if (speed.guid === this.state.selfGuid) {
@@ -2124,6 +2143,7 @@ export class WorldClient {
     if (isMovementToggle(packet.opcode)) {
       const toggle = parseMovementToggle(packet.opcode, packet.payload);
       this.#connection.send(toggle.ackOpcode, buildMovementToggleAck(toggle, this.#currentMovement(toggle.guid)));
+      this.#moverPacketSent(toggle.guid); // NET-21
       // Acknowledged and then remembered. Acknowledging alone is what the client used to do, and
       // it is why a levitate, a water-walking buff and a root were all agreed to and then walked
       // straight through. M7-0: remembered for the unit named, the character's own being `movementState`.
@@ -2168,6 +2188,7 @@ export class WorldClient {
       opcode,
       buildMovementPacket(this.state.selfGuid, flags, position, Math.trunc(performance.now()) >>> 0, extra),
     );
+    this.#moverPacketSent(this.state.selfGuid); // NET-21
     this.state.move(this.state.selfGuid, movement);
     this.movementPacketsSent++;
     this.onMovementStatus?.(true, this.movementPacketsSent);
@@ -2191,6 +2212,7 @@ export class WorldClient {
     // the seat its base places it from (MovementHandler.cpp:378, Vehicle.cpp:633-636) — as for the character.
     if (unitSeat(this.state.objects, this.state.objects.get(guid))) return;
     this.#connection.send(opcode, buildMovementPacket(guid, flags, position, Math.trunc(performance.now()) >>> 0, extra));
+    this.#moverPacketSent(guid); // NET-21
     this.state.move(guid, extra.transport ? { flags, position, transport: extra.transport } : { flags, position });
     this.movementPacketsSent++;
     this.onMovementStatus?.(true, this.movementPacketsSent);
@@ -2215,6 +2237,7 @@ export class WorldClient {
     if (seat === undefined || block === undefined || (info.flags & MOVEMENT_FLAGS.onTransport) === 0
       || block.guid !== seat.guid || block.seat !== seat.seat) return false;
     this.#connection.send(opcode, writeMovementInfo(new PacketWriter(), guid, info).toUint8Array());
+    this.#moverPacketSent(guid); // NET-21
     this.movementPacketsSent++;
     this.onMovementStatus?.(true, this.movementPacketsSent);
     return true;
@@ -4734,6 +4757,7 @@ export class WorldClient {
     const vehicle = drivenVehicle(this.state.objects, this.state.selfGuid, this.controlledGuid);
     if (vehicle === undefined) return false;
     this.#connection.send(opcode, build(vehicle, this.#currentMovement(vehicle)));
+    this.#moverPacketSent(vehicle); // NET-21
     return true;
   }
 

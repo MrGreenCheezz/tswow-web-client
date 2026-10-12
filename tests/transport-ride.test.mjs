@@ -18,8 +18,8 @@ import { WorldClient } from "../dist/code/world/WorldClient.js";
 import { decodeCollisionModel, encodeCollisionModel } from "../dist/code/world/CollisionFormat.js";
 import { game } from "../dist/code/browser/game/Context.js";
 import {
-  advancePhysics, applyKnockback, beginHeld, endHeld, forgetMovementState, isMoving, releaseAllInput, sendMovement,
-  turnCharacterBy,
+  advancePhysics, applyKnockback, beginHeld, endHeld, forgetMovementState, heartbeatDue, isMoving, releaseAllInput,
+  sendMovement, turnCharacterBy,
 } from "../dist/code/browser/input/Movement.js";
 import { currentRide, setRideCarriers } from "../dist/code/browser/input/MovementRide.js";
 import { TransportCollision } from "../dist/code/browser/game/TransportCollision.js";
@@ -245,9 +245,12 @@ test("riding with no input: the character goes where the ship goes, heartbeats c
     assert.ok(near(at.x, expected.x) && near(at.y, expected.y) && near(at.z, expected.z),
       `on the same spot of the deck: ${JSON.stringify(at)} vs ${JSON.stringify(expected)}`);
     assert.ok(near(at.orientation, 0.5), "facing turns with the ship");
-    assert.equal(isMoving(), true, "a sailing ship keeps the heartbeat going without a key");
+    // NET-21: standing on a sailing deck keeps no heartbeat going — the core moves the passenger with
+    // the ship from its offset (Transport.cpp:724-729), and Wow.exe's mask (0x006f09f0) has no bit for it.
+    assert.equal(isMoving(), false, "a passenger standing on a sailing ship has nothing to repeat");
+    assert.equal(heartbeatDue(performance.now() + 10_000), false, "and no heartbeat falls due");
 
-    // The heartbeat Loop.ts sends while isMoving().
+    // A heartbeat sent there (a key, a fall on the deck) carries the block and the world position.
     sendMovement(OPCODES.MSG_MOVE_HEARTBEAT);
     const packet = parseMovementPacket(sentOf(env.connection, OPCODES.MSG_MOVE_HEARTBEAT).at(-1).payload);
     assert.equal(packet.flags & MOVEMENT_FLAGS.onTransport, MOVEMENT_FLAGS.onTransport);

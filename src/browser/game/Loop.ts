@@ -13,7 +13,7 @@ import { GhostLightFade } from "../LightStateFade.js"; // 05.10-A7b-5 (7.15)
 import { isPlayerGhost } from "../../world/Fields.js"; // 05.10-A7b-5 (7.15)
 import { mountModel, unitModel } from "../ui/Frames.js";
 import {
-  MOVEMENT_HEARTBEAT_INTERVAL, advancePhysics, isMoving, movementHeartbeat, sendMovement,
+  advancePhysics, heartbeatDue, sendMovement,
 } from "../input/Movement.js";
 import {
   EYE_LIQUID_SAMPLE_BAND, FLOOR_SEARCH_DEPTH, STEP_HEIGHT, eyeLiquidSurface, eyeUnderwater,
@@ -463,9 +463,10 @@ function frame(now: number): void {
     // so it is asked about where the camera is going rather than about where it has been.
     advanceCameraView(position, world.mapId, elapsed, subject);
 
-    // Only while the character is going somewhere: the server drops a mover that goes quiet, but
-    // a character standing still has nothing to report. A fall counts as going somewhere.
-    if (worldPhysicsReady() && isMoving() && now - movementHeartbeat.sentAt >= MOVEMENT_HEARTBEAT_INTERVAL) {
+    // Only while the character is going somewhere: a character standing still has nothing to
+    // report. A fall counts as going somewhere. NET-21: 500 ms after the mover's last packet, as
+    // Wow.exe 0x006f09f0 sends it (Movement.ts `heartbeatDue`).
+    if (worldPhysicsReady() && heartbeatDue(now)) {
       sendMovement(OPCODES.MSG_MOVE_HEARTBEAT);
     }
     hitchCamera = performance.now();

@@ -18,7 +18,10 @@ import { WorldClient } from "../dist/code/world/WorldClient.js";
 import { WorldState } from "../dist/code/world/WorldState.js";
 import { decodeCollisionModel, encodeCollisionModel } from "../dist/code/world/CollisionFormat.js";
 import { game } from "../dist/code/browser/game/Context.js";
-import { advancePhysics, forgetMovementState, isGrounded, isMoving, releaseAllInput, sendMovement } from "../dist/code/browser/input/Movement.js";
+import {
+  LIFT_CARRY_HEARTBEAT_INTERVAL, advancePhysics, forgetMovementState, heartbeatDue, isGrounded, isMoving, movementHeartbeat,
+  releaseAllInput, sendMovement,
+} from "../dist/code/browser/input/Movement.js";
 import { TransportCollision } from "../dist/code/browser/game/TransportCollision.js";
 import {
   GO_STATE_READY, GO_TYPE_TRANSPORT, GameObjectColliders, LIFT_CARRY_MAX_STEP, setGameObjectColliders,
@@ -252,6 +255,33 @@ test("standing on the lift: carried up and down without falling, packets in worl
       assert.equal(moved.flags & (MOVEMENT_FLAGS.falling | MOVEMENT_FLAGS.onTransport), 0, "no fall, no flag");
       assert.equal(moved.transport, undefined);
     }
+  } finally {
+    env.teardown();
+  }
+});
+
+test("NET-21: while the lift carries a standing rider the heartbeat comes every 200 ms, and stops with the ride", async () => {
+  const env = await liftWorld();
+  movementHeartbeat.sentAt = 0;
+  try {
+    assert.equal(LIFT_CARRY_HEARTBEAT_INTERVAL, 200);
+    const times = [];
+    // Two seconds of the climb, the frames as Loop.ts runs them: the physics, then the heartbeat when it is due.
+    for (let index = 0; index < 120; index++) {
+      env.frame();
+      if (heartbeatDue(env.clock.now)) {
+        sendMovement(OPCODES.MSG_MOVE_HEARTBEAT);
+        times.push(env.clock.now);
+      }
+    }
+    assert.ok(times.length >= 9, `about ten in two seconds: ${times.length}`);
+    for (let index = 1; index < times.length; index++) {
+      const gap = times[index] - times[index - 1];
+      assert.ok(gap >= 200 && gap < 200 + 17, `gap ${index}: ${gap} ms`);
+    }
+    // The top: once the platform waits there is nothing to repeat.
+    for (let index = 0; index < 150; index++) env.frame();
+    assert.equal(heartbeatDue(env.clock.now + 10_000), false, "a rider on a waiting lift is standing");
   } finally {
     env.teardown();
   }

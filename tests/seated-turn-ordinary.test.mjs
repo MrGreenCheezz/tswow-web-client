@@ -210,7 +210,7 @@ async function session(movement, { setup, play, terrain = FLAT, ship = false }) 
       clock.now += seconds * 1000;
       env.client.state.updateMotions(clock.now);
       movement.advancePhysics(seconds);
-      if (movement.isMoving() && clock.now - movement.movementHeartbeat.sentAt >= movement.MOVEMENT_HEARTBEAT_INTERVAL) {
+      if (movement.heartbeatDue(clock.now)) { // NET-21: Loop.ts's own test
         movement.sendMovement(OPCODES.MSG_MOVE_HEARTBEAT);
       }
     }
