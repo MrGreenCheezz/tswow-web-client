@@ -7,8 +7,10 @@ import test from "node:test";
 
 const { frameXmlTrainerDisplay, frameXmlTrainerDefaultSelection, FrameXmlTrainerList } =
   await import("../dist/code/browser/framexml/FrameXmlTrainerGroups.js");
-const { frameXmlTrainerServiceGroup, frameXmlTrainerSkillLine } =
-  await import("../dist/code/browser/framexml/FrameXmlTrainerRequirements.js");
+const {
+  frameXmlTrainerServiceGroup, frameXmlTrainerSkillLine, frameXmlTradeskillServiceGroup, TRADESKILL_SERVICE_GROUP_NAMES,
+} = await import("../dist/code/browser/framexml/FrameXmlTrainerRequirements.js");
+const { globalString, GLOBAL_STRING_DATA_AVAILABLE } = await import("../dist/code/generated/globalStrings.js");
 const { LiveWorldSeam } = await import("../dist/code/browser/framexml/LiveWorldSeam.js");
 const { FRAMEXML_SEAM_BINDINGS, FRAMEXML_SEAM_EVENTS } = await import("../dist/code/browser/framexml/FrameXmlWorldSeam.js");
 const { WorldClient } = await import("../dist/code/world/WorldClient.js");
@@ -281,6 +283,90 @@ test("the live seam repaints an open trainer when the learn-effect table lands (
     assert.equal(fired.filter(([event]) => event === FRAMEXML_SEAM_EVENTS.trainerUpdate).length, 1, "once");
   } finally {
     seam.detach();
+    world.close();
+  }
+});
+
+// 3.24 (12.10): a profession trainer's groups — Wow.exe 0x596450 for a type-2 trainer: passive 3, SKILL_STEP 1,
+// else 2 (a spell Spell.dbc lacks too); headers named by the GlobalStrings row at 0x00a13e08 + group * 0x40.
+test("a trade skill trainer files a service by kind: passive 3, SKILL_STEP 1, anything else 2", () => {
+  const source = {
+    ...requirementSource(),
+    spell: (id) => ({ 2018: { name: "Кузнечное дело", rank: "" }, 2660: { name: "Грубый точильный камень", rank: "" },
+      9998: { name: "Знаток", rank: "", passive: true }, 5000: { name: "Ученик", rank: "" } })[id],
+  };
+  assert.equal(frameXmlTradeskillServiceGroup(2018, source), 1, "SKILL_STEP (44) in an effect");
+  assert.equal(frameXmlTradeskillServiceGroup(2660, source), 2, "a recipe: neither effect");
+  assert.equal(frameXmlTradeskillServiceGroup(5000, source), 2, "a learning spell (LEARN_SPELL) is not a step");
+  assert.equal(frameXmlTradeskillServiceGroup(9998, source), 3, "passive before the effects");
+  assert.equal(frameXmlTradeskillServiceGroup(424242, source), 2, "a spell with no row: 2, as Wow.exe");
+  assert.equal(frameXmlTradeskillServiceGroup(2660, { ...source, learnEffects: () => undefined }), undefined,
+    "no table and no effects on the row: not known yet");
+  assert.deepEqual(TRADESKILL_SERVICE_GROUP_NAMES,
+    ["", "TRADESKILL_SERVICE_STEP", "TRADESKILL_SERVICE_LEARN", "TRADESKILL_SERVICE_PASSIVE"]);
+  // Groups by number; services by required skill rank, then name (0x593ce0, 0x5949a0) — not by level.
+  const rows = [row(2660, 0, 30, { requiredSkillRank: 1 }), row(9998, 0), row(2018, 1, 1, { requiredSkillRank: 50 }),
+    row(5000, 0, 40)];
+  const names = { 2018: "Кузнечное дело", 2660: "Грубый точильный камень", 9998: "Знаток", 5000: "Ученик" };
+  const display = frameXmlTrainerDisplay(rows, {
+    tradeskill: true, state: (r) => STATES[r.usable], group: (r) => frameXmlTradeskillServiceGroup(r.spellId, source),
+    groupName: (id) => ["", "Развитие", "Рецепты", "Пассивная"][id], name: (r) => names[r.spellId], rank: () => "",
+    shown: () => true,
+  }, new Set());
+  assert.deepEqual(describe(display), ["[Развитие]", "2018", "[Рецепты]", "5000", "2660", "[Пассивная]", "9998"],
+    "5000 (level 40, rank 0) before 2660 (level 30, rank 1)");
+});
+
+test("the live seam lists a profession trainer under the TRADESKILL_SERVICE headers", () => {
+  const world = new WorldClient({ send() {}, close() {} });
+  const selfGuid = 0x10n;
+  world.state.selfGuid = selfGuid;
+  world.state.objects.set(selfGuid, { guid: selfGuid, typeId: 4, fields: new Map([
+    [UPDATE_FIELDS.UNIT_FIELD_BYTES_0.offset, 1 | (1 << 8)], [UPDATE_FIELDS.UNIT_FIELD_LEVEL.offset, 20],
+  ]) });
+  world.trainer = {
+    guid: 0x701n, trainerType: 2, greeting: "Кузня",
+    spells: [row(2660, 0, 1, { requiredSkillRank: 5 }), row(9998, 0), row(2018, 0, 1, { pointCost: [0, 1] })],
+  };
+  const spells = {
+    2018: { name: "Кузнечное дело", rank: "Ученик", passive: false },
+    2660: { name: "Грубый точильный камень", rank: "", passive: false },
+    9998: { name: "Знаток", rank: "", passive: true },
+    133: { name: "Огненный шар", rank: "Уровень 1", passive: false },
+  };
+  const source = requirementSource();
+  const seam = new LiveWorldSeam({
+    world: () => world, store: () => undefined,
+    spell: (id) => (spells[id] ? { id, ...spells[id], description: "", iconPath: "" } : undefined),
+    monotonic: () => 0, globalCooldownUntil: () => 0, castSpell: () => {},
+    // No SkillLine metadata: a trade skill trainer's headers are GlobalStrings, its groups need only the effects.
+    spellAbilities: (id) => source.spellAbilities(id),
+    spellLearnEffects: () => EFFECTS,
+  });
+  const call = (name, ...args) => [...FRAMEXML_SEAM_BINDINGS[name](seam, args)];
+  try {
+    seam.trainerChanged("show");
+    assert.deepEqual(call("IsTradeskillTrainer"), [true]);
+    assert.deepEqual(call("GetNumTrainerServices"), [6]);
+    const header = (name) => (GLOBAL_STRING_DATA_AVAILABLE ? globalString(name) : undefined) ?? "";
+    assert.deepEqual([1, 2, 3, 4, 5, 6].map((index) => call("GetTrainerServiceInfo", index).slice(0, 3)), [
+      [header("TRADESKILL_SERVICE_STEP"), "", "header"], ["Кузнечное дело", "Ученик", "available"],
+      [header("TRADESKILL_SERVICE_LEARN"), "", "header"], ["Грубый точильный камень", "", "available"],
+      [header("TRADESKILL_SERVICE_PASSIVE"), "", "header"], ["Знаток", "", "available"],
+    ]);
+    assert.deepEqual(call("GetTrainerSelectionIndex"), [2], "the first available service: the step");
+    assert.deepEqual(call("GetTrainerServiceCost", 2), [100, 0, 1]);
+    if (GLOBAL_STRING_DATA_AVAILABLE) {
+      assert.deepEqual([1, 3, 5].map((index) => call("GetTrainerServiceInfo", index)[0]),
+        ["Развитие навыков", "Рецепты", "Пассивная"], "the client's own words (GlobalStrings.lua)");
+    }
+    // A class trainer next on the same seam needs SkillLine for its groups: without it, the flat list.
+    world.trainer = { guid: 0x702n, trainerType: 0, greeting: "", spells: [row(133, 0, 1)] };
+    seam.trainerChanged("show");
+    assert.deepEqual(call("IsTradeskillTrainer"), [false]);
+    assert.deepEqual(call("GetNumTrainerServices"), [1]);
+    assert.deepEqual(call("GetTrainerServiceInfo", 1), ["Огненный шар", "Уровень 1", "available", true], "no header row");
+  } finally {
     world.close();
   }
 });

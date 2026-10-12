@@ -57,16 +57,35 @@ test("Canned Trainer projects packet rows and routes one available purchase", ()
   seam.detach();
 });
 
-test("trainer type 2 stays native and exposes no stock rows", () => {
-  const tradeskill = { ...CANNED_TRAINER, trainerType: 2 };
+test("3.24: trainer type 2 is the stock profession trainer — its rows, IsTradeskillTrainer and the free slots", () => {
+  const tradeskill = { ...CANNED_TRAINER, trainerType: 2, freeProfessions: 1 };
   const seam = new CannedWorldSeam(undefined, undefined, undefined, undefined, undefined, undefined,
     undefined, undefined, undefined, undefined, undefined, tradeskill);
   seam.attach(pump());
-  seam.trainerChanged("show");
-  assert.equal(seam.trainerType(), undefined);
-  assert.equal(seam.isTradeskillTrainer(), false);
+  assert.equal(seam.openTrainer(), 1);
+  assert.equal(seam.trainerType(), 2);
+  assert.equal(seam.isTradeskillTrainer(), true);
+  assert.deepEqual(api(seam, "IsTradeskillTrainer"), [true]);
+  assert.deepEqual(api(seam, "GetNumTrainerServices"), [2]);
+  assert.deepEqual(api(seam, "GetTrainerGreetingText"), [CANNED_TRAINER.greeting]);
+  assert.deepEqual(api(seam, "UnitCharacterPoints", "player"), [0, 1], "the second word: free profession slots");
+  assert.deepEqual(api(seam, "UnitCharacterPoints", "target"), [0, 0]);
+  seam.closeTrainer();
   assert.deepEqual(api(seam, "GetNumTrainerServices"), [0]);
   seam.detach();
+
+  const unknown = new CannedWorldSeam(undefined, undefined, undefined, undefined, undefined, undefined,
+    undefined, undefined, undefined, undefined, undefined, { ...CANNED_TRAINER, trainerType: 7 });
+  unknown.attach(pump());
+  assert.equal(unknown.openTrainer(), 0, "a type SMSG_TRAINER_LIST never carries stays native");
+  assert.deepEqual(api(unknown, "GetNumTrainerServices"), [0]);
+  unknown.detach();
+});
+
+test("3.24: stock ClassTrainerFrame answers every type SMSG_TRAINER_LIST carries — the profession trainer too", async () => {
+  const { frameXmlStockTrainerType } = await import("../dist/code/browser/framexml/FrameXmlTrainerController.js");
+  assert.deepEqual([0, 1, 2, 3].map(frameXmlStockTrainerType), [true, true, true, true]);
+  assert.deepEqual([undefined, -1, 4, 7].map(frameXmlStockTrainerType), [false, false, false, false]);
 });
 
 test("trainer ownership controller is identity-safe and closes the published owner", async () => {
@@ -436,8 +455,22 @@ test("trainer owner retargets stale world/list completions and never shows stale
   list.dispose();
 });
 
-test("trainer type 2 remains native and supported-to-type2 transition does not close it", async () => {
-  const inert = await trainerOwnerFixture({ type: 2 });
+test("3.24: a profession trainer (type 2) loads stock ClassTrainerFrame and hands off after the gate", async () => {
+  const profession = await trainerOwnerFixture({ type: 2 });
+  profession.owner.show();
+  assert.equal(profession.loadCalls, 1, "the profession trainer asks for Blizzard_TrainerUI");
+  assert.equal(profession.nativeCalls, 1, "native stays the fallback while the add-on loads");
+  profession.resolve();
+  await flushTrainerOwner();
+  assert.equal(profession.root.visible, true);
+  assert.equal(profession.trainerWindow.hidden, true, "native steps aside only after the gate");
+  assert.equal(profession.owner.close(), true);
+  assert.equal(profession.root.visible, false);
+  profession.dispose();
+});
+
+test("a trainer type SMSG_TRAINER_LIST never carries stays native, and a transition to it does not close it", async () => {
+  const inert = await trainerOwnerFixture({ type: 7 });
   inert.owner.show();
   assert.equal(inert.loadCalls, 0);
   assert.equal(inert.owner.close(), false);
@@ -448,7 +481,7 @@ test("trainer type 2 remains native and supported-to-type2 transition does not c
   fixture.resolve();
   await flushTrainerOwner();
   assert.equal(fixture.root.visible, true);
-  fixture.setType(2);
+  fixture.setType(7);
   fixture.owner.refresh("update");
   assert.equal(fixture.root.visible, false);
   assert.equal(fixture.closeCalls, 0);
@@ -471,7 +504,7 @@ test("trainer ability prerequisites remain neutral when only raw ids are present
   seam.detach();
 });
 
-test("live trainer keeps raw ability prerequisites neutral and never closes type 2", () => {
+test("live trainer keeps raw ability prerequisites neutral and closes a profession trainer (3.24)", () => {
   let closeCalls = 0;
   const world = {
     trainer: {
@@ -485,13 +518,21 @@ test("live trainer keeps raw ability prerequisites neutral and never closes type
   const seam = new LiveWorldSeam({
     world: () => world,
     store: () => undefined,
-    spell: () => ({ name: "Truthful spell", hidden: false }),
+    // Only the service's own spell is known; the required 12345 has no row.
+    spell: (id) => (id === 100 ? { name: "Truthful spell", hidden: false } : undefined),
     monotonic: () => 1,
     globalCooldownUntil: () => 0,
     castSpell: () => {},
   });
-  assert.equal(seam.trainerServiceNumAbilityReq(1), 0);
-  assert.equal(seam.trainerServiceAbilityReq(1, 1), undefined);
+  // 3.24: the profession trainer's rows are stock's now (before the learn-effect table, the flat list).
+  assert.equal(seam.trainerServiceCount(), 1);
+  assert.equal(seam.trainerServiceNumAbilityReq(1), 1, "0x5945b0 counts the set slots");
+  assert.equal(seam.trainerServiceAbilityReq(1, 1), undefined, "an unknown required spell is nil and nil (0x5955e0)");
+  assert.equal(seam.isTradeskillTrainer(), true);
+  assert.equal(seam.trainerGreeting(), "profession", "stock reads a profession trainer's greeting too");
   seam.closeTrainer();
-  assert.equal(closeCalls, 0);
+  assert.equal(closeCalls, 1, "stock ClassTrainerFrame's OnHide closes a profession trainer as any other");
+  world.trainer = { ...world.trainer, trainerType: 7 };
+  seam.closeTrainer();
+  assert.equal(closeCalls, 1, "a type the list never carries is left to the native window");
 });

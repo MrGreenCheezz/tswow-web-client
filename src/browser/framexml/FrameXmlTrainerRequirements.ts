@@ -20,6 +20,8 @@
  * - The class trainer's group (3.29, 0x594ae0 → 0x71a700): the skill line of the spell — or of the spell
  *   its first LEARN_SPELL effect not aimed at the pet teaches — for the player's race and class; no
  *   SKILL_STEP case. `frameXmlTrainerServiceGroup`, 0 for none.
+ * - The trade skill trainer's group (3.24, 12.10): 0x596450's own branch for a trainer of type 2 —
+ *   `frameXmlTradeskillServiceGroup` and `TRADESKILL_SERVICE_GROUP_NAMES`.
  */
 
 import type { SpellMetadata } from "../SpellMetadata.js";
@@ -41,6 +43,8 @@ export interface FrameXmlTrainerRequirementSource {
   /** The player's skill slots: line id and current value. */
   readonly playerSkills: () => ReadonlyArray<{ readonly skillId: number; readonly value: number }>;
   readonly spell: (id: number) => Pick<SpellMetadata, "name" | "rank"> & {
+    /** SPELL_ATTR0_PASSIVE (Attributes 0x40); read only for a trade skill trainer's group. */
+    readonly passive?: boolean | undefined;
     readonly effects?: readonly number[] | undefined;
     readonly effectMiscValue?: readonly number[] | undefined;
     readonly effectImplicitTargetA?: readonly number[] | undefined;
@@ -169,4 +173,33 @@ export function frameXmlTrainerServiceGroup(spellId: number, source: FrameXmlTra
   if (learn && learn.triggerSpell === undefined) return undefined;
   const taught = learn?.triggerSpell ?? spellId;
   return abilityFor(taught, source)?.skillLine ?? 0;
+}
+
+/** The trade skill trainer's three groups (`frameXmlTradeskillServiceGroup`). */
+export const TRADESKILL_GROUP_STEP = 1;
+export const TRADESKILL_GROUP_LEARN = 2;
+export const TRADESKILL_GROUP_PASSIVE = 3;
+
+/**
+ * 3.24 (12.10): the GlobalStrings a trade skill trainer's header row is named by, at its group's index —
+ * Wow.exe 0x594e80 (`GetTrainerServiceInfo`'s name) for a type-2 header looks up the 64-byte row
+ * 0x00a13e08 + group * 0x40 through 0x819d40; the 12340 image holds "", TRADESKILL_SERVICE_STEP,
+ * TRADESKILL_SERVICE_LEARN and TRADESKILL_SERVICE_PASSIVE there (read from the file 12.10).
+ */
+export const TRADESKILL_SERVICE_GROUP_NAMES: readonly string[] = Object.freeze([
+  "", "TRADESKILL_SERVICE_STEP", "TRADESKILL_SERVICE_LEARN", "TRADESKILL_SERVICE_PASSIVE",
+]);
+
+/**
+ * 3.24 (12.10): the trade skill trainer's group of a service — 0x596450's branch for a trainer of type 2
+ * (DAT_00c0e498 == 2, read in .runtime/re-2026-10-01/a1-w4/d2.c): 3 when the Spell.dbc row has
+ * SPELL_ATTR0_PASSIVE (Attributes 0x40, the row's byte at +0x10), else 1 when one of its three effects
+ * (+0x11c) is SKILL_STEP (44), else 2 — 2 also for a spell Spell.dbc does not hold. Every service has a
+ * group here, unlike a class trainer's. Undefined while neither the row's flag nor its effects are known.
+ */
+export function frameXmlTradeskillServiceGroup(spellId: number, source: FrameXmlTrainerRequirementSource): number | undefined {
+  if (source.spell(spellId)?.passive === true) return TRADESKILL_GROUP_PASSIVE;
+  const effects = effectsOf(spellId, source);
+  if (!effects) return undefined;
+  return effects.some((effect) => effect.effect === SPELL_EFFECT_SKILL_STEP) ? TRADESKILL_GROUP_STEP : TRADESKILL_GROUP_LEARN;
 }

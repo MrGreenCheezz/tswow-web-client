@@ -2,6 +2,17 @@
 
 export type FrameXmlTrainerEvent = "show" | "update" | "closed";
 
+/**
+ * Whether stock ClassTrainerFrame answers a trainer of this SMSG_TRAINER_LIST type — every type the list
+ * carries (Trainer.h TrainerType: class 0, mounts 1, trade skills 2, pets 3), as in Wow.exe, whose one
+ * window serves them all (IsTradeskillTrainer switching the profession layout and question,
+ * Blizzard_TrainerUI.lua:98, :397). 3.24 (12.10): type 2 joined, over UnitCharacterPoints' free
+ * profession slots (3.30). Any other number stays with the native window.
+ */
+export function frameXmlStockTrainerType(type: number | undefined): boolean {
+  return type === 0 || type === 1 || type === 2 || type === 3;
+}
+
 export interface FrameXmlTrainerOwner {
   isOpen(): boolean;
   show(): void;

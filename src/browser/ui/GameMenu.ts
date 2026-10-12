@@ -9,6 +9,8 @@ import { toggleProfessionList } from "./Professions.js";
 import { toggleLfgWindow } from "./Social.js";
 import { toggleScoreboard } from "./Scoreboard.js";
 import { toggleArenaWindow } from "./ArenaWindow.js";
+import { toggleFrameXmlScoreboard } from "../framexml/FrameXmlScoreboardController.js"; // 3.24
+import { toggleFrameXmlPvp } from "../framexml/FrameXmlPvpController.js"; // 3.24
 import { toggleSettingsWindow } from "./Settings.js";
 import { toggleMacroWindow } from "./Macros.js";
 import { toggleGmTickets } from "./GmTickets.js";
@@ -305,8 +307,9 @@ function build(): Panel {
     menuButton("Друзья и поиск", () => { panel.hide(); toggleSocialPanel(); }),
     menuButton("Профессии", () => { panel.hide(); toggleProfessionList(); }),
     menuButton("Поиск подземелий", () => { panel.hide(); toggleLfgWindow(); }),
-    menuButton("Таблица боя", () => { panel.hide(); toggleScoreboard(); }),
-    menuButton("Арена", () => { panel.hide(); toggleArenaWindow(); }),
+    // 3.24: the stock board and PVPFrame's teams when the stock interface published them.
+    menuButton("Таблица боя", () => { panel.hide(); if (!toggleFrameXmlScoreboard()) toggleScoreboard(); }),
+    menuButton("Арена", () => { panel.hide(); if (!toggleFrameXmlPvp()) toggleArenaWindow(); }),
     // 4.11: a developer's window, listed only with the developer flag (DeveloperMode.ts).
     ...developerMode() ? [menuButton("Диагностика", () => {
       panel.hide();

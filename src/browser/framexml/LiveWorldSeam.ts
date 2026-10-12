@@ -172,11 +172,14 @@ import {
 import {
   frameXmlTrainerAbilityReq, frameXmlTrainerNumAbilityReq, frameXmlTrainerSkillLine, frameXmlTrainerSkillReq,
   frameXmlTrainerServiceGroup, type FrameXmlTrainerRequirementSource,
+  frameXmlTradeskillServiceGroup, TRADESKILL_SERVICE_GROUP_NAMES, // 3.24
 } from "./FrameXmlTrainerRequirements.js";
 import {
   FrameXmlTrainerList, TRAINER_STATE_AVAILABLE, TRAINER_STATE_UNAVAILABLE, TRAINER_STATE_USED,
+  type FrameXmlTrainerListSource, // 3.24
 } from "./FrameXmlTrainerGroups.js";
 import { frameXmlTrainerBuyAll, frameXmlTrainerSkillLineModel } from "./FrameXmlTrainerSkillLines.js"; // L12 3.29
+import { frameXmlStockTrainerType } from "./FrameXmlTrainerController.js"; // 3.24
 import type { TrainerSpell } from "../../world/TrainerProtocol.js";
 import type { SpellLearnEffectsTable } from "../SpellLearnEffectsClient.js";
 
@@ -938,20 +941,7 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     ["available", true], ["unavailable", true], ["used", false],
   ]);
   /** 3.29: the trainer window's headers, collapsing, order and selection (FrameXmlTrainerGroups.ts). */
-  readonly #trainerList = new FrameXmlTrainerList<TrainerSpell>({
-    rows: () => (this.trainerSupported() ? this.#context.world()?.trainer?.spells : undefined) ?? NO_TRAINER_ROWS,
-    describable: (row) => { const spell = this.#context.spell(row.spellId); return spell !== undefined && spell.hidden !== true; },
-    // Trade skill trainers stay native (trainerSupported); a skill line groups everything else.
-    grouped: () => this.#context.skillMetadata?.() !== undefined && this.#context.spellLearnEffects?.() !== undefined,
-    tradeskill: false,
-    state: (row) => row.usable === TRAINER_SPELL_AVAILABLE ? TRAINER_STATE_AVAILABLE
-      : row.usable === TRAINER_SPELL_KNOWN ? TRAINER_STATE_USED : TRAINER_STATE_UNAVAILABLE,
-    group: (row) => frameXmlTrainerServiceGroup(row.spellId, this.#trainerRequirementSource()) ?? 0,
-    groupName: (group) => this.#context.skillMetadata?.()?.skillLine(group)?.name,
-    name: (row) => this.#context.spell(row.spellId)?.name ?? "",
-    rank: (row) => this.#context.spell(row.spellId)?.rank,
-    shown: (state) => this.#trainerFilters.get(TRAINER_STATE_FILTERS[state]) !== false,
-  });
+  readonly #trainerList = new FrameXmlTrainerList<TrainerSpell>(this.#trainerListSource());
   /** L12 3.29: GetTrainerSkillLines and the skill-line filter over that list (FrameXmlTrainerSkillLines.ts). */
   readonly trainerSkillLines = frameXmlTrainerSkillLineModel(this.#trainerList,
     () => this.#pump?.fire(FRAMEXML_SEAM_EVENTS.trainerUpdate));
@@ -8516,9 +8506,36 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
 
   // ---- trainer ----------------------------------------------------------
 
+  /** 3.24 (12.10): a trade skill trainer too (FrameXmlTrainerController.ts `frameXmlStockTrainerType`). */
   private trainerSupported(): boolean {
-    const type = this.#context.world()?.trainer?.trainerType;
-    return type === 0 || type === 1 || type === 3;
+    return frameXmlStockTrainerType(this.#context.world()?.trainer?.trainerType);
+  }
+
+  /**
+   * The list's view of the open trainer (3.29). A trade skill trainer (3.24) groups by kind of service,
+   * named by GlobalStrings (FrameXmlTrainerRequirements.ts `frameXmlTradeskillServiceGroup`), and needs only
+   * the learn-effect table for it; any other trainer groups by skill line and needs SkillLine as well.
+   */
+  #trainerListSource(): FrameXmlTrainerListSource<TrainerSpell> {
+    const seam = this; // the `tradeskill` getter below has a `this` of its own
+    return {
+      rows: () => (this.trainerSupported() ? this.#context.world()?.trainer?.spells : undefined) ?? NO_TRAINER_ROWS,
+      describable: (row) => { const spell = this.#context.spell(row.spellId); return spell !== undefined && spell.hidden !== true; },
+      grouped: () => this.#context.spellLearnEffects?.() !== undefined
+        && (this.isTradeskillTrainer() || this.#context.skillMetadata?.() !== undefined),
+      get tradeskill() { return seam.isTradeskillTrainer(); },
+      state: (row) => row.usable === TRAINER_SPELL_AVAILABLE ? TRAINER_STATE_AVAILABLE
+        : row.usable === TRAINER_SPELL_KNOWN ? TRAINER_STATE_USED : TRAINER_STATE_UNAVAILABLE,
+      group: (row) => (this.isTradeskillTrainer()
+        ? frameXmlTradeskillServiceGroup(row.spellId, this.#trainerRequirementSource())
+        : frameXmlTrainerServiceGroup(row.spellId, this.#trainerRequirementSource())) ?? 0,
+      groupName: (group) => this.isTradeskillTrainer()
+        ? globalString(TRADESKILL_SERVICE_GROUP_NAMES[group] ?? "")
+        : this.#context.skillMetadata?.()?.skillLine(group)?.name,
+      name: (row) => this.#context.spell(row.spellId)?.name ?? "",
+      rank: (row) => this.#context.spell(row.spellId)?.rank,
+      shown: (state) => this.#trainerFilters.get(TRAINER_STATE_FILTERS[state]) !== false,
+    };
   }
 
   private trainerRow(index: number): TrainerSpell | undefined {

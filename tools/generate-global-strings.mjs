@@ -126,6 +126,9 @@ const EXTRA_STRINGS = [
   // 12.10: a duration that is not whole in its unit, written `%.2f` (Wow.exe 0x0061aee0) — «1.50 мин» —
   // and `$z` without a bind area (0x00579e50) — src/browser/ui/SpellTextWowRules.ts, SpellText.ts.
   "SPELL_DURATION_SEC", "SPELL_DURATION_MIN", "SPELL_DURATION_HOURS", "SPELL_DURATION_DAYS", "HOME_INN",
+  // 3.24 (12.10): a profession trainer's three header rows, as Wow.exe 0x594e80 names a type-2 group
+  // (the row table at 0x00a13e08) — src/browser/framexml/FrameXmlTrainerRequirements.ts.
+  "TRADESKILL_SERVICE_STEP", "TRADESKILL_SERVICE_LEARN", "TRADESKILL_SERVICE_PASSIVE",
 ];
 
 // `NAME = "text";` with the text on one line. Escapes are kept verbatim: the client's own strings

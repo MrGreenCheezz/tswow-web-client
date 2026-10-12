@@ -52,6 +52,7 @@ import { frameXmlCharterPublished, notifyFrameXmlCharters } from "../framexml/Fr
 import { notifyFrameXmlStable } from "../framexml/FrameXmlStableController.js";
 import { frameXmlLootPublished } from "../framexml/FrameXmlLootController.js";
 import { frameXmlPopupsPublished } from "../framexml/FrameXmlPopupsController.js";
+import { frameXmlPvpArenaPublished } from "../framexml/FrameXmlPvpController.js"; // 3.24
 import { clickVehicle } from "../../world/VehicleClick.js"; // 11.02-BCD
 import { seatClickRefused } from "../game/SeatClick.js"; // 11.02-input
 
@@ -466,6 +467,14 @@ function drawBattlegroundList(
 ): void {
   if (game.world !== world || world.battlefieldList !== list) return;
   if (list.bgTypeId === BATTLEGROUND_AA) {
+    // 3.24: stock ArenaFrame answers an arena battlemaster's list itself (BATTLEFIELDS_SHOW,
+    // ArenaFrame.lua:10-12) once the PvP owner holds it; the native size dialog is only its fallback,
+    // and the «waiting» card steps aside rather than stand beside the stock window.
+    if (frameXmlPvpArenaPublished()) {
+      cancelPendingNpcTimeout();
+      if (gossipText.textContent === PENDING_NPC_TEXT) gossipWindow.hidden = true;
+      return;
+    }
     const sizes = [2, 3, 5] as const;
     const inGroup = (world.group?.members.length ?? 0) > 0;
     const controls = sizes.map((size, arenaSlot) => serviceButton(`Арена ${size}×${size}`, () => {

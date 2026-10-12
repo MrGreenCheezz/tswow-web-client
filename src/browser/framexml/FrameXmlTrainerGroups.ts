@@ -54,7 +54,10 @@ export interface FrameXmlTrainerGroupRow {
 }
 
 export interface FrameXmlTrainerGroupSource<Row extends FrameXmlTrainerGroupRow> {
-  /** Trade skill trainers group by kind of service rather than by skill line. */
+  /**
+   * Trade skill trainers group by kind of service rather than by skill line. A live source may answer
+   * it per open trainer (a getter); the list rebuilds when it changes.
+   */
   readonly tradeskill: boolean;
   readonly state: (row: Row) => FrameXmlTrainerState;
   /** The row's group: a skill line, or 1..3 for a trade skill trainer; 0 leaves the row out. */
@@ -216,7 +219,8 @@ export class FrameXmlTrainerList<Row extends FrameXmlTrainerGroupRow> {
     let describable = 0;
     for (const row of rows) if (source.describable(row)) describable += 1;
     const key = `${grouped ? 1 : 0}${source.shown(0) ? 1 : 0}${source.shown(1) ? 1 : 0}${source.shown(2) ? 1 : 0}:${describable}:${this.#revision}`
-      + `:${this.#lineFilter.mask}`; // L12 3.29
+      + `:${this.#lineFilter.mask}` // L12 3.29
+      + `:${source.tradeskill ? 1 : 0}`; // 3.24: a live source answers per open trainer
     if (rows === this.#rows && key === this.#key) return this.#entries;
     this.#rows = rows;
     this.#key = key;

@@ -173,6 +173,7 @@ import {
   type FrameXmlMerchantOwner,
 } from "./FrameXmlMerchantController.js";
 import {
+  frameXmlStockTrainerType,
   publishFrameXmlTrainer,
   type FrameXmlTrainerOwner,
 } from "./FrameXmlTrainerController.js";
@@ -210,6 +211,9 @@ import {
   frameXmlLfdGate,
   installFrameXmlLfdToggle,
 } from "./FrameXmlLfdOwner.js";
+import { publishFrameXmlScoreboard, type FrameXmlScoreboardOwner } from "./FrameXmlScoreboardController.js"; // 3.24
+import { createFrameXmlScoreboardOwner, frameXmlScoreboardGate } from "./FrameXmlScoreboardOwner.js"; // 3.24
+import { closeScoreboard } from "../ui/Scoreboard.js"; // 3.24
 import type { FrameXmlLootOwner } from "./FrameXmlLootController.js";
 import {
   createFrameXmlLootOwner, frameXmlLootGate, installFrameXmlLootAdapters, publishFrameXmlLootMount,
@@ -1467,12 +1471,12 @@ export function createLazyFrameXmlTrainerOwner(
   let ownerSignature = "";
   let stockOwned = false;
   let nativeShown = false;
-  const supported = (): boolean => {
-    const type = typeof seam.trainerType === "function"
-      ? seam.trainerType()
-      : seam.isTradeskillTrainer() ? 2 : 0;
-    return type === 0 || type === 1 || type === 3;
-  };
+  // 3.24 (12.10): every trainer type SMSG_TRAINER_LIST carries — class 0, mounts 1, trade skills 2, pets 3 —
+  // opens stock ClassTrainerFrame, as in Wow.exe; the profession trainer's layout and its «first or second
+  // profession?» question are the stock Lua's (Blizzard_TrainerUI.lua:98, :397), over UnitCharacterPoints (3.30).
+  const supported = (): boolean => frameXmlStockTrainerType(typeof seam.trainerType === "function"
+    ? seam.trainerType()
+    : seam.isTradeskillTrainer() ? 2 : 0);
   const signature = (): string => {
     if (typeof seam.trainerContextSignature === "function") return seam.trainerContextSignature();
     const rows: string[] = [];
@@ -2642,6 +2646,9 @@ interface FrameXmlMountResources {
   microButtonNativeReplacementActive?: boolean;
   pvpOwner?: FrameXmlPvpOwner;
   pvpOwnerCleanup?: () => void;
+  /** 3.24: stock WorldStateScoreFrame (FrameXmlScoreboardOwner.ts). */
+  scoreboardOwner?: FrameXmlScoreboardOwner;
+  scoreboardOwnerCleanup?: () => void;
   gameMenuOwner?: FrameXmlGameMenuOwner;
   gameMenuOwnerCleanup?: () => void;
   lfdOwner?: FrameXmlLfdOwner;
@@ -2898,6 +2905,9 @@ function cleanupPublishedMount(record: FrameXmlMountResources): void {
   // owner and is intentionally not touched here.
   bestEffortCleanup(() => record.pvpOwnerCleanup?.());
   if (!record.pvpOwnerCleanup) bestEffortCleanup(() => record.pvpOwner?.hide());
+  // 3.24: the native #scoreboard-window becomes the scoreboard's route again.
+  bestEffortCleanup(() => record.scoreboardOwnerCleanup?.());
+  if (!record.scoreboardOwnerCleanup) bestEffortCleanup(() => record.scoreboardOwner?.hide());
   // Unpublish the stock game menu and dungeon finder before their VM goes; the native Panel and
   // #lfg-window become the routes again, and the native prompts take the LFG popups back.
   bestEffortCleanup(() => record.gameMenuOwnerCleanup?.());
@@ -4125,6 +4135,12 @@ export async function mountFrameXmlVertical(
       }
       resources.pvpOwner = pvpOwner;
     }
+    // 3.24: WorldStateScoreFrame answers TOGGLEWORLDSTATESCORES, /score and the native menu once its tree,
+    // the scoreboard model and BattlefieldFrame's queue status are there — the last only after the PvP gate
+    // above kept UPDATE_BATTLEFIELD_STATUS for the complete battleground page (FrameXmlScoreboardOwner.ts).
+    const stockScoreboard = frameXmlScoreboardGate(seam, boot, renderer);
+    if (stockScoreboard) resources.scoreboardOwner = createFrameXmlScoreboardOwner(boot, stockScoreboard.frame);
+    else if (!options.seam) fallbacks.report("scoreboard", "WorldStateScoreFrame не прошёл проверку");
 
     // GameMenuFrame becomes the game menu once its stock buttons, the adapters and extras
     // (installed after load) and one silent Show/Hide pass; the native Panel stays the fallback.
@@ -4430,6 +4446,11 @@ export async function mountFrameXmlVertical(
     resources.guildBankCleanup = mountFrameXmlGuildBank(seam, boot, renderer);
     if (resources.pvpOwner) {
       resources.pvpOwnerCleanup = publishFrameXmlPvp(resources.pvpOwner);
+    }
+    if (resources.scoreboardOwner) {
+      // A native board opened while the corpus loaded closes first: one scoreboard at a time.
+      closeScoreboard();
+      resources.scoreboardOwnerCleanup = publishFrameXmlScoreboard(resources.scoreboardOwner);
     }
     if (resources.gameMenuOwner) {
       // A native menu opened while the corpus loaded closes first: one menu owner at a time.

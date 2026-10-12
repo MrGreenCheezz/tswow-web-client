@@ -36,6 +36,14 @@ export function publishFrameXmlPvp(next: FrameXmlPvpOwner): () => void {
   };
 }
 
+/**
+ * 3.24: whether the published owner holds stock ArenaFrame — an arena battlemaster's list is then
+ * stock's (BATTLEFIELDS_SHOW, ArenaFrame.lua:10-12) and the native size dialog steps aside (Npc.ts).
+ */
+export function frameXmlPvpArenaPublished(): boolean {
+  return typeof owner?.showArena === "function";
+}
+
 export function frameXmlPvpOpen(): boolean {
   const current = owner;
   if (!current) return false;

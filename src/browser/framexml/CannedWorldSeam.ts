@@ -22,6 +22,7 @@ import { FrameXmlBattlefieldScoreModel } from "./FrameXmlScoreboard.js";
 import { FrameXmlDifficultyModel } from "./FrameXmlDifficulty.js";
 import { FrameXmlTalentGroupModel, type FrameXmlTalentGroupState } from "./FrameXmlTalentGroup.js";
 import { frameXmlCannedTrainerGroups, type FrameXmlCannedTrainerGroups } from "./FrameXmlTrainerCanned.js"; // L12 3.29
+import { frameXmlStockTrainerType } from "./FrameXmlTrainerController.js"; // 3.24
 import { frameXmlTrainerBuyAll, type FrameXmlTrainerSkillLineModel } from "./FrameXmlTrainerSkillLines.js"; // L12 3.29
 import { FrameXmlQuestShareModel, QUEST_FLAG_SHARABLE } from "./FrameXmlQuestShare.js";
 import { FRAMEXML_RELIC_CLASS_TOKENS } from "./FrameXmlRelicSlot.js";
@@ -276,6 +277,8 @@ export interface CannedTrainerService extends TrainerSpell {
   readonly description?: string;
   /** L12 3.29: the service's skill line, for a trainer with `skillLines`. */
   readonly skillLine?: number;
+  /** 3.24: the skill line its spell teaches — GetTrainerServiceSkillLine, the profession question's name. */
+  readonly teaches?: string;
 }
 
 export interface CannedTrainer extends Omit<TrainerList, "spells"> {
@@ -284,9 +287,15 @@ export interface CannedTrainer extends Omit<TrainerList, "spells"> {
   /**
    * L12 3.29: the skill lines' names by id. With them the trainer lists header rows, collapses, filters
    * lines and buys «everything» as the live seam does (FrameXmlTrainerCanned.ts); without, a flat list.
+   * A profession trainer's (type 2) are its three kinds of service (FrameXmlTrainerRequirements.ts).
    */
   readonly skillLines?: Readonly<Record<number, string>>;
+  /** 3.24: the player's free profession slots — UnitCharacterPoints' second word (3.30); 0 when absent. */
+  readonly freeProfessions?: number;
 }
+
+/** 3.24: every type SMSG_TRAINER_LIST carries is stock (FrameXmlTrainerController.ts). */
+const cannedTrainerTypeKnown = frameXmlStockTrainerType;
 
 export const CANNED_TRAINER: CannedTrainer = Object.freeze({
   guid: 0x700n,
@@ -1843,6 +1852,7 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
     this.#trainerGroups = trainer?.skillLines ? frameXmlCannedTrainerGroups(
       () => (this.trainerSupported() ? trainer.services : []), trainer.skillLines,
       (type) => this.#trainerFilters.get(type) !== false, () => this.#pump?.fire(FRAMEXML_SEAM_EVENTS.trainerUpdate),
+      trainer.trainerType === 2, // 3.24: a profession trainer sorts as Wow.exe's type-2 list does
     ) : undefined;
     this.trainerSkillLines = this.#trainerGroups?.skillLines; // L12 3.29
     this.#settingsCVar = settingsCVar;
@@ -3672,8 +3682,7 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
   // ---- trainer ----------------------------------------------------------
 
   private trainerSupported(): boolean {
-    const type = this.#trainer?.trainerType;
-    return this.#trainerOpen && (type === 0 || type === 1 || type === 3);
+    return this.#trainerOpen && cannedTrainerTypeKnown(this.#trainer?.trainerType);
   }
 
   private trainerRows(): readonly CannedTrainerService[] {
@@ -3743,7 +3752,7 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
 
   trainerServiceIcon(index: number): string | undefined { return this.trainerRow(index)?.iconPath; }
   trainerServiceDescription(index: number): string | undefined { return this.trainerRow(index)?.description; }
-  trainerServiceSkillLine(_index: number): string | undefined { return undefined; }
+  trainerServiceSkillLine(index: number): string | undefined { return this.trainerRow(index)?.teaches; }
   trainerServiceItemLink(_index: number): string | undefined { return undefined; }
   trainerGreeting(): string | undefined { return this.trainerSupported() ? this.#trainer?.greeting : undefined; }
   trainerType(): number | undefined { return this.#trainerOpen ? this.#trainer?.trainerType : undefined; }
@@ -3783,8 +3792,7 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
   }
   trainerChanged(event: "show" | "update" | "closed"): void {
     if (event === "closed") { this.closeTrainer(); return; }
-    if (!this.#trainer || (this.#trainer.trainerType !== 0 && this.#trainer.trainerType !== 1
-      && this.#trainer.trainerType !== 3)) return;
+    if (!this.#trainer || !cannedTrainerTypeKnown(this.#trainer.trainerType)) return;
     this.#trainerOpen = true;
     this.normalizeTrainerSelection();
     if (event === "show") this.#trainerGroups?.list.listChanged(); else this.#trainerGroups?.list.reselect(); // L12 3.29
@@ -3808,11 +3816,14 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
     if (this.#trainerGroups && !this.#trainerGroups.list.setExpanded(index, true)) return;
     this.#pump?.fire(FRAMEXML_SEAM_EVENTS.trainerUpdate);
   }
-  characterPoints(_unit: string): readonly [number, number] { return [0, 0]; }
+  /** No talent points; a canned profession trainer's free profession slots (3.24) for the player. */
+  characterPoints(unit: string): readonly [number, number] {
+    return [0, typeof unit === "string" && unit.toLowerCase() === "player" ? this.#trainer?.freeProfessions ?? 0 : 0];
+  }
 
-  /** Open the canned class/mount/pet-style trainer without manufacturing a profession dialog. */
+  /** Open the canned trainer (3.24: a profession trainer too, its question over `freeProfessions`). */
   openTrainer(): number {
-    if (!this.#trainer || this.#trainer.trainerType === 2 || this.#trainerOpen) return 0;
+    if (!this.#trainer || !cannedTrainerTypeKnown(this.#trainer.trainerType) || this.#trainerOpen) return 0;
     this.trainerChanged("show");
     return this.#pump ? 1 : 0;
   }

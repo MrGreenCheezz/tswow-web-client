@@ -26,6 +26,8 @@ import { openGuildBank } from "./GuildBank.js";
 import { startReadyCheck } from "./ReadyCheck.js";
 import { toggleScoreboard } from "./Scoreboard.js";
 import { toggleArenaWindow } from "./ArenaWindow.js";
+import { toggleFrameXmlScoreboard } from "../framexml/FrameXmlScoreboardController.js"; // 3.24
+import { toggleFrameXmlPvp } from "../framexml/FrameXmlPvpController.js"; // 3.24
 import { openSocialPanel } from "./SocialPanel.js";
 import { toggleMacroWindow } from "./Macros.js";
 import { toggleSettingsWindow } from "./Settings.js";
@@ -299,13 +301,15 @@ const COMMANDS: readonly SlashCommand[] = [
     names: ["score", "bg"],
     usage: "/score",
     help: "таблица боя",
-    run() { toggleScoreboard(); },
+    // 3.24: stock WorldStateScoreFrame's own toggle while it is published (FrameXmlScoreboardController.ts).
+    run() { if (!toggleFrameXmlScoreboard()) toggleScoreboard(); },
   },
   {
     names: ["arena"],
     usage: "/arena",
     help: "команды арены",
-    run() { toggleArenaWindow(); },
+    // 3.24: the teams are stock PVPFrame's (PVPTeam1-3) while the PvP owner is published, as H opens them.
+    run() { if (!toggleFrameXmlPvp()) toggleArenaWindow(); },
   },
   {
     names: ["gbank"],

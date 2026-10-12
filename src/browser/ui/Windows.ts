@@ -87,6 +87,7 @@ import {
   closeFrameXmlPvp,
   frameXmlPvpOpen,
 } from "../framexml/FrameXmlPvpController.js";
+import { closeFrameXmlScoreboard, frameXmlScoreboardOpen } from "../framexml/FrameXmlScoreboardController.js"; // 3.24
 import { closeFrameXmlLfd, frameXmlLfdOpen } from "../framexml/FrameXmlLfdController.js";
 import { closeFrameXmlFriends, frameXmlFriendsOpen } from "../framexml/FrameXmlFriendsController.js";
 import { closeFrameXmlLoot, frameXmlLootOpen } from "../framexml/FrameXmlLootController.js";
@@ -200,6 +201,9 @@ const ESCAPABLE: EscapableWindow[] = [
   // PvP's stock summary is distinct from the native arena invite surface. Keep one stable
   // entry so the first Escape closes PVPParentFrame before the game menu gets a chance to open.
   { isOpen: frameXmlPvpOpen, close: closeFrameXmlPvp },
+  // 3.24: stock WorldStateScoreFrame once published (a center UIPanel CloseWindows takes); inert otherwise,
+  // when the native board's entry above owns the route.
+  { isOpen: frameXmlScoreboardOpen, close: closeFrameXmlScoreboard },
   // The stock dungeon finder (LFDParentFrame) once published; inert while the native #lfg-window
   // (the entry above) owns the route.
   { isOpen: frameXmlLfdOpen, close: closeFrameXmlLfd },
@@ -268,7 +272,7 @@ export function closeGameWindows(): void {
   if (!tradeWindow.hidden) game.world?.cancelTrade();
   // A pending supported trainer is still owned by the stock controller even though its native
   // fallback is visible. Let that owner cancel the request and call CloseTrainer exactly once;
-  // only an inert/type-2 owner falls through to the native world close path.
+  // only an inert owner (no stock interface, or a demoted one) falls through to the native world close path.
   if (frameXmlTrainerOpen()) closeFrameXmlTrainer();
   else if (!trainerWindow.hidden) game.world?.closeTrainer();
   game.world?.closeBank();

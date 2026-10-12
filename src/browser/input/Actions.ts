@@ -48,6 +48,7 @@ import { frameXmlShapeshiftForms } from "../framexml/FrameXmlShapeshiftForms.js"
 import { toggleReputation } from "../ui/Reputation.js";
 import { toggleSocialPanel } from "../ui/SocialPanel.js";
 import { toggleScoreboard } from "../ui/Scoreboard.js";
+import { toggleFrameXmlScoreboard } from "../framexml/FrameXmlScoreboardController.js"; // 3.24
 import { toggleFrameXmlBattlefieldMinimap, toggleFrameXmlMinimap } from "../framexml/FrameXmlBattlefieldMinimapKey.js"; // 05.10-L17t; 3.11
 import { minimapSettings, setMinimapRotation, toggleMinimapShown, zoomMinimap } from "../ui/Minimap.js";
 import { pressPetButton } from "../ui/PetBar.js";
@@ -409,7 +410,8 @@ export function runAction(action: InputAction): boolean {
       return true;
 
     case "toggleWorldStateScores":
-      toggleScoreboard();
+      // 3.24: stock ToggleWorldStateScoreFrame while WorldStateScoreFrame is published, else #scoreboard-window.
+      if (!toggleFrameXmlScoreboard()) toggleScoreboard();
       return true;
 
     case "minimapZoomIn":

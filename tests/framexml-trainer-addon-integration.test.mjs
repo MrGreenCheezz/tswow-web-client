@@ -155,6 +155,13 @@ const { FrameXmlDomRenderer } = await import(
 const { createLazyFrameXmlTrainerOwner } = await import(
   "../dist/code/browser/framexml/FrameXmlWorldMount.js",
 );
+const { LiveWorldSeam } = await import("../dist/code/browser/framexml/LiveWorldSeam.js");
+const { WorldClient } = await import("../dist/code/world/WorldClient.js");
+const { WorldStore } = await import("../dist/code/world/WorldStore.js");
+const { UPDATE_FIELDS } = await import("../dist/code/generated/updateFields.js");
+const { OPCODES } = await import("../dist/code/generated/opcodes.js");
+const { PacketReader } = await import("../dist/code/protocol/PacketReader.js");
+const { spellLearnEffectsFrom } = await import("../dist/code/browser/SpellLearnEffectsClient.js");
 
 const decoder = new TextDecoder("utf-8");
 const normalize = (path) => path.replaceAll("\\", "/").toLowerCase();
@@ -451,5 +458,226 @@ test("real Blizzard_TrainerUI loads asynchronously with exact stock closure", {
     seam.detach();
     boot.close();
     chain.close();
+  }
+});
+
+// 3.24 (12.10) and 3.30: a profession trainer (SMSG_TRAINER_LIST type 2) through the same lazy owner, gate and
+// real Blizzard_TrainerUI as a class trainer, over LiveWorldSeam and a real WorldClient. Wow.exe files a type-2
+// service by kind — 0x596450: passive 3, SKILL_STEP 1, else 2 — under the TRADESKILL_SERVICE_* headers
+// (0x594e80); the stock Lua takes the trade skill layout (Blizzard_TrainerUI.lua:98, :445) and asks
+// CONFIRM_PROFESSION before the first rank of a primary profession (PointCost[1] = 1, Trainer.cpp:100), its words
+// chosen by UnitCharacterPoints' second value, the free profession slots (:27-34, :361-365, :396-405).
+const PROFESSION_TRAINER = 0xf130_0000_0d4f_0001n;
+const PROFESSION_PLAYER = 0x10n;
+/** 2275 is the learning spell the realm sells (LEARN_SPELL → 2259); 3101 a SKILL_STEP; 2330 a recipe; 9998 passive. */
+const PROFESSION_SPELLS = {
+  2275: { name: "Алхимия", rank: "Ученик", passive: false },
+  3101: { name: "Алхимия", rank: "Подмастерье", passive: false },
+  2330: { name: "Слабое лечебное зелье", rank: "", passive: false },
+  9998: { name: "Знаток трав", rank: "", passive: true },
+};
+
+function professionRow(spellId, usable, extra = {}) {
+  return {
+    spellId, usable, moneyCost: 10, pointCost: [0, 0], requiredLevel: 5,
+    requiredSkillLine: 0, requiredSkillRank: 0, requiredAbilities: [0, 0, 0], ...extra,
+  };
+}
+
+function professionWorld() {
+  const sent = [];
+  const world = new WorldClient({
+    send(opcode, payload = new Uint8Array()) { sent.push({ opcode, payload }); },
+    close() {},
+  });
+  const offset = (name) => UPDATE_FIELDS[name].offset;
+  const fields = new Map([
+    [offset("UNIT_FIELD_BYTES_0"), 1 | (1 << 8)], [offset("UNIT_FIELD_LEVEL"), 20],
+    [offset("UNIT_FIELD_HEALTH"), 400], [offset("UNIT_FIELD_MAXHEALTH"), 500],
+    [offset("PLAYER_FIELD_COINAGE"), 1_000_000], [offset("PLAYER_CHARACTER_POINTS2"), 2],
+  ]);
+  world.state.objects.set(PROFESSION_PLAYER, {
+    guid: PROFESSION_PLAYER, typeId: 4, position: undefined, movementFlags: 0, updateFlags: 0, targetGuid: undefined,
+    runSpeed: undefined, turnRate: undefined, motion: undefined, glide: undefined, transport: undefined,
+    speeds: undefined, transportTime: undefined, fields,
+  });
+  world.state.selfGuid = PROFESSION_PLAYER;
+  world.mapId = 0;
+  world.selfName = "Флик";
+  world.knownSpells = [{ id: 1, slot: 0 }];
+  const realmTime = { minuteOfDay: 9 * 60 + 30, minutesPerSecond: 1 / 60, weekday: 4, date: { year: 2024, month: 2, day: 29 } };
+  world.currentGameTime = () => realmTime;
+  world.calendarPending = 0;
+  const store = new WorldStore(world.state);
+  const effects = spellLearnEffectsFrom({
+    version: 2,
+    skillRaceClass: [[171, 0, 0]],
+    spells: [
+      [2275, [[36, 1, 0, 2259], [0, 0, 0, 0], [0, 0, 0, 0]]],
+      [3101, [[44, 1, 171, 0], [0, 0, 0, 0], [0, 0, 0, 0]]],
+    ],
+  });
+  const seam = new LiveWorldSeam({
+    world: () => world,
+    store: () => store,
+    spell: (id) => (PROFESSION_SPELLS[id]
+      ? { id, ...PROFESSION_SPELLS[id], hidden: false, description: "", iconPath: "Interface\\Icons\\Trade_Alchemy" }
+      : undefined),
+    monotonic: () => 1000,
+    globalCooldownUntil: () => 0,
+    castSpell: () => {},
+    skillMetadata: () => ({
+      ready: true, revision: 1,
+      skillLine: (id) => (id === 171 ? { id: 171, name: "Алхимия", categoryId: 11 } : undefined),
+      skillCategory: () => undefined,
+      skillCategories: () => [],
+    }),
+    spellAbilities: (id) => (id === 2259 ? [{ skillLine: 171, raceMask: 0, classMask: 0 }] : []),
+    spellLearnEffects: () => effects,
+  });
+  return { world, seam, sent, fields, offset };
+}
+
+test("3.24: a profession trainer is stock ClassTrainerFrame — headers by kind, and CONFIRM_PROFESSION over the free slots (3.30)", {
+  skip: clientDirectory ? false : "no 3.3.5a client on this machine",
+}, async () => {
+  // A chain of its own: the test above closes the shared one (`clientArchives` caches per directory).
+  const { openClientArchives } = await import("../tools/mpq.mjs");
+  const chain = await openClientArchives(clientDirectory);
+  const { world, seam, sent, fields, offset } = professionWorld();
+  const boot = new FrameXmlBoot({
+    provider: {
+      async read(path) {
+        const data = await chain.read(path);
+        return data ? decoder.decode(data) : undefined;
+      },
+    },
+    locale: "ruRU",
+    subset: FRAMEXML_VERTICAL_TOC,
+    seam,
+    exercise: false,
+    screen: () => ({ width: 1024, height: 768 }),
+  });
+  const host = document.createElement("section");
+  const renderer = new FrameXmlDomRenderer(host, { bridge: boot.bridge });
+  const trainerWindow = document.getElementById("trainer-window");
+  const lua = (code, results = 1) => {
+    const fn = boot.vm.compileFunction(code, "profession-trainer", []);
+    assert.ok(fn, `compiles: ${code.slice(0, 60)}`);
+    try { return boot.vm.call(fn, [], results); } finally { boot.vm.release(fn); }
+  };
+  /** Rows 1..11 as the stock buttons show them: text, and + / - for a header. */
+  const shown = () => lua(`
+    local out = {}
+    for i = 1, 11 do
+      local button = _G["ClassTrainerSkill" .. i]
+      if button:IsShown() then
+        local texture = button:GetNormalTexture() and button:GetNormalTexture():GetTexture() or ""
+        local mark = string.find(texture, "PlusButton") and "+" or (string.find(texture, "MinusButton") and "-" or "")
+        out[#out + 1] = mark .. (button:GetText() or "")
+      end
+    end
+    return table.concat(out, ";")
+  `)[0];
+  const popup = () => lua(`
+    local name = StaticPopup_Visible("CONFIRM_PROFESSION")
+    if not name then return nil end
+    return name, _G[name .. "Text"]:GetText()
+  `, 2);
+  const buys = () => sent.filter(({ opcode }) => opcode === OPCODES.CMSG_TRAINER_BUY_SPELL).map(({ payload }) => {
+    const reader = new PacketReader(payload);
+    const guid = reader.u64();
+    const spell = reader.i32();
+    reader.assertFinished();
+    return `${guid.toString(16)}:${spell}`;
+  });
+  const bought = (spellId) => `${PROFESSION_TRAINER.toString(16)}:${spellId}`;
+  const click = (name) => boot.bridge.Click(boot.bridge.getFrame(name), "LeftButton", false);
+  let owner;
+  try {
+    await boot.load();
+    renderer.mount(boot.roots);
+    world.trainer = {
+      guid: PROFESSION_TRAINER, trainerType: 2, greeting: "Алхимия — наука точная.",
+      spells: [
+        professionRow(2330, 0, { requiredSkillRank: 1 }),
+        professionRow(2275, 0, { pointCost: [0, 1] }),
+        professionRow(3101, 1, { requiredSkillLine: 171, requiredSkillRank: 50, requiredLevel: 10 }),
+        professionRow(9998, 0),
+      ],
+    };
+    seam.trainerChanged("show");
+    trainerWindow.hidden = false;
+    const errorsBefore = boot.errorCount;
+    const diagnosticsBefore = boot.bridge.diagnostics.length;
+    let nativeCalls = 0;
+    let failures = 0;
+    owner = createLazyFrameXmlTrainerOwner(seam, boot, renderer, () => { failures += 1; }, () => world,
+      () => { nativeCalls += 1; trainerWindow.hidden = false; });
+    owner.show();
+    const root = () => boot.bridge.getFrame("ClassTrainerFrame");
+    for (let i = 0; i < 40 && !root()?.visible; i += 1) await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(failures, 0, "the gate passes for a profession trainer");
+    assert.equal(root()?.visible, true, "stock ClassTrainerFrame is the profession trainer");
+    assert.equal(trainerWindow.hidden, true, "the native window stepped aside after the gate");
+    assert.equal(nativeCalls, 1, "native was the fallback only while the add-on loaded");
+    assert.equal(owner.isOpen(), true);
+
+    assert.deepEqual(lua("return IsTradeskillTrainer() and 1 or 0, CLASS_TRAINER_SKILLS_DISPLAYED, ClassTrainerSkill11:IsShown() and 1 or 0", 3),
+      [1, 10, 0], "the trade skill layout: ten rows (ClassTrainer_SetToTradeSkillTrainer)");
+    assert.equal(lua("return ClassTrainerGreetingText:GetText()")[0], "Алхимия — наука точная.");
+    assert.equal(shown(),
+      "-Развитие навыков;  Алхимия;-Рецепты;  Алхимия;  Слабое лечебное зелье;-Пассивная;  Знаток трав",
+      "Wow.exe's groups 1..3 in order; services by required skill rank, then name");
+    assert.deepEqual(lua("return GetTrainerSelectionIndex(), ClassTrainerFrame.selectedService", 2), [4, 4],
+      "the first available service: the first rank of Алхимия");
+    assert.deepEqual(lua("return GetTrainerServiceCost(4)", 3), [10, 0, 1]);
+    assert.deepEqual(lua("return GetTrainerServiceSkillLine(4)"), ["Алхимия"], "the profession the learning spell teaches");
+
+    // Two free slots: the first profession (PROFESSION_CONFIRMATION1); nothing is bought before Accept.
+    assert.equal(lua("return ClassTrainerTrainButton:IsEnabled()")[0], 1);
+    assert.equal(click("ClassTrainerTrainButton"), true);
+    const [dialog, first] = popup();
+    assert.equal(typeof dialog, "string", "Train asks CONFIRM_PROFESSION first");
+    assert.equal(first, lua('return format(PROFESSION_CONFIRMATION1, "Алхимия")')[0]);
+    assert.deepEqual(buys(), []);
+    assert.equal(click(`${dialog}Button1`), true);
+    assert.deepEqual(buys(), [bought(2275)], "Accept buys the selected service");
+    assert.equal(popup()[0], undefined);
+
+    // One free slot: the second profession (PROFESSION_CONFIRMATION2); Cancel buys nothing.
+    fields.set(offset("PLAYER_CHARACTER_POINTS2"), 1);
+    assert.equal(click("ClassTrainerSkill4"), true);
+    assert.equal(click("ClassTrainerTrainButton"), true);
+    const [again, second] = popup();
+    assert.equal(second, lua('return format(PROFESSION_CONFIRMATION2, "Алхимия")')[0]);
+    assert.equal(click(`${again}Button2`), true);
+    assert.deepEqual(buys(), [bought(2275)]);
+
+    // No free slot: the first rank is unavailable and Train stays disabled (Blizzard_TrainerUI.lua:361-365).
+    fields.set(offset("PLAYER_CHARACTER_POINTS2"), 0);
+    assert.equal(click("ClassTrainerSkill4"), true);
+    assert.equal(lua("return ClassTrainerTrainButton:IsEnabled()")[0], 0);
+    assert.equal(click("ClassTrainerTrainButton"), false);
+
+    // A recipe has no point cost: Train buys it at once, with no question.
+    assert.equal(click("ClassTrainerSkill5"), true);
+    assert.equal(click("ClassTrainerTrainButton"), true);
+    assert.equal(popup()[0], undefined);
+    assert.deepEqual(buys(), [bought(2275), bought(2330)]);
+
+    assert.equal(boot.errorCount, errorsBefore, `no Lua error: ${boot.vm.errors.join(" | ")}`);
+    assert.equal(boot.bridge.diagnostics.length, diagnosticsBefore, "no bridge diagnostics");
+
+    // Closing the stock window closes the interaction (ClassTrainerFrame OnHide → CloseTrainer).
+    assert.equal(owner.close(), true);
+    assert.equal(root().visible, false);
+    assert.equal(world.trainer, undefined, "CloseTrainer reached the world");
+  } finally {
+    owner?.dispose();
+    seam.detach();
+    boot.close();
+    chain.close();
+    world.close();
   }
 });

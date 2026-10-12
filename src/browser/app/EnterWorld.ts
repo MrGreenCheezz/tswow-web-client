@@ -146,7 +146,7 @@ import { frameXmlFlagEnabled } from "../framexml/FrameXmlWorldPolicy.js";
 import { FrameXmlModeController } from "../framexml/FrameXmlModeController.js";
 import { installNativeWowUiSkin } from "../ui/NativeUiSkin.js";
 import { frameXmlMerchantOpen, notifyFrameXmlMerchant } from "../framexml/FrameXmlMerchantController.js";
-import { frameXmlTrainerOpen, notifyFrameXmlTrainer } from "../framexml/FrameXmlTrainerController.js";
+import { frameXmlStockTrainerType, frameXmlTrainerOpen, notifyFrameXmlTrainer } from "../framexml/FrameXmlTrainerController.js";
 import { frameXmlStablePublished } from "../framexml/FrameXmlStableController.js";
 import {
   notifyFrameXmlQuestGiver, notifyFrameXmlQuestGiverItemUpdate,
@@ -1023,16 +1023,17 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
   redrawChatLog();
   const refreshTrainerUi = (): void => {
     const trainer = world.trainer;
-    // Both stock and native trainer rows need the same cached names/icons. A tradeskill trainer
-    // stays native, but skipping this request left every packet row filtered out by showTrainer.
+    // Both stock and native trainer rows need the same cached names/icons; skipping this request
+    // left every packet row filtered out by showTrainer.
     const ids = [...new Set((trainer?.spells ?? []).map((spell) => spell.spellId).filter((id) => id > 0))];
     ensureSpellNames(ids, () => {
       // Metadata belongs to the world/list currently on screen, not to the object captured when
       // the request was coalesced. WorldClient may replace an equivalent TrainerList instance.
       if (game.world === world && world.trainer !== undefined) refreshTrainerUi();
     });
-    const supported = trainer !== undefined
-      && (trainer.trainerType === 0 || trainer.trainerType === 1 || trainer.trainerType === 3);
+    // 3.24 (12.10): a profession trainer (type 2) is stock ClassTrainerFrame as well (the stock owner,
+    // FrameXmlWorldMount.ts createLazyFrameXmlTrainerOwner); only a type SMSG_TRAINER_LIST never carries stays native.
+    const supported = trainer !== undefined && frameXmlStockTrainerType(trainer.trainerType);
     if (!supported) {
       notifyFrameXmlTrainer("closed");
       showTrainer();

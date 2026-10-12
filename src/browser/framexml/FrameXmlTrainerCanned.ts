@@ -32,12 +32,12 @@ export interface FrameXmlCannedTrainerGroups<Row extends FrameXmlCannedTrainerRo
  */
 export function frameXmlCannedTrainerGroups<Row extends FrameXmlCannedTrainerRow>(
   rows: () => readonly Row[], lines: Readonly<Record<number, string>>, shown: (type: string) => boolean,
-  changed: () => void,
+  changed: () => void, tradeskill = false,
 ): FrameXmlCannedTrainerGroups<Row> {
   const state = (row: Row): FrameXmlTrainerState => row.usable === TRAINER_SPELL_AVAILABLE ? TRAINER_STATE_AVAILABLE
     : row.usable === TRAINER_SPELL_KNOWN ? TRAINER_STATE_USED : TRAINER_STATE_UNAVAILABLE;
   const list = new FrameXmlTrainerList<Row>({
-    rows, describable: () => true, grouped: () => true, tradeskill: false, state,
+    rows, describable: () => true, grouped: () => true, tradeskill, state,
     group: (row) => row.skillLine ?? 0,
     groupName: (group) => lines[group],
     name: (row) => row.name,
