@@ -1958,23 +1958,29 @@ const UP = new THREE.Vector3(0, 1, 0);
  */
 export const GLUE_AUTHORED_ASPECT = 4 / 3;
 
-/** Past this aspect the figure compensation holds its 16:9 value; ultrawide is out of scope. */
-export const GLUE_FIGURE_COMPENSATION_MAX_ASPECT = 16 / 9;
+/**
+ * Past this aspect the figure compensation holds its value; wider than 21:9 is out of scope.
+ * 12.10 10.23: was 16:9, which left a browser window on a 16:9 screen (its tabs and bars make it
+ * ≈2:1) with a figure 13 % taller than the authored frame — the owner's «можно чуть уменьшить».
+ */
+export const GLUE_FIGURE_COMPENSATION_MAX_ASPECT = 21 / 9;
 
 /**
  * How much smaller a standing figure draws past 4:3, so it keeps its authored size.
  *
  * The backdrop camera's cover rule narrows the vertical field as the viewport widens, and a
- * figure on its authored mark grows with it: a human fills ~60% of the frame at 4:3 and ~78%
- * at 16:9. Scaling the actor by the current-to-authored vertical ratio holds the angular size
- * while the sky stays fully covered — feet planted on the mark, nothing reframed. 4:3 and
- * narrower read exactly 1, because the cover rule does not narrow there either.
+ * figure on its authored mark grows with it: a human fills ~60% of the frame at 4:3 and ~80%
+ * at 16:9. Scaling the actor by the current-to-authored ratio of the half-angle tangents holds
+ * its share of the frame's height while the sky stays fully covered — feet planted on the mark,
+ * nothing reframed. 4:3 and narrower read exactly 1, because the cover rule does not narrow there
+ * either. 12.10 10.23: the tangents, not the angles — a projected height goes as `1/tan(fov/2)`,
+ * and the ratio of the angles left the figure 2.5 % too tall at 16:9.
  */
 export function glueFigureScaleCompensation(diagonalDegrees: number, aspect: number): number {
   if (!Number.isFinite(diagonalDegrees) || !Number.isFinite(aspect) || aspect <= 0) return 1;
   const framed = Math.min(Math.max(aspect, GLUE_AUTHORED_ASPECT), GLUE_FIGURE_COMPENSATION_MAX_ASPECT);
-  const authored = glueSceneVerticalFov(diagonalDegrees, GLUE_AUTHORED_ASPECT);
-  const current = glueSceneVerticalFov(diagonalDegrees, framed);
+  const authored = Math.tan(glueSceneVerticalFov(diagonalDegrees, GLUE_AUTHORED_ASPECT) * Math.PI / 360);
+  const current = Math.tan(glueSceneVerticalFov(diagonalDegrees, framed) * Math.PI / 360);
   if (!(authored > 0) || !(current > 0)) return 1;
   return current / authored;
 }

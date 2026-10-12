@@ -406,22 +406,27 @@ test("the standing figure keeps its authored size past 4:3 instead of growing wi
   // 4:3 and narrower are the identity: the cover rule does not narrow there either.
   assert.equal(glueFigureScaleCompensation(80, GLUE_AUTHORED_ASPECT), 1);
   assert.equal(glueFigureScaleCompensation(80, 1), 1);
-  // 16:9. A human on its authored mark fills ~60% of the frame at 4:3 and ~78% in the covered
-  // 16:9 shot; the current-to-authored vertical ratio is the shrink that holds the angular size.
+  // 16:9. A human on its authored mark fills ~60% of the frame at 4:3 and ~80% in the covered
+  // 16:9 shot. A projected height goes as 1/tan(fov/2), so the shrink that holds its share of the
+  // frame is the ratio of the half-angle tangents — under the cover rule exactly 4:3 over the
+  // aspect (10.23: the ratio of the angles left it 2.5 % taller).
+  const halfTan = (aspect) => Math.tan(glueSceneVerticalFov(80, aspect) * Math.PI / 360);
   const wide = glueFigureScaleCompensation(80, 16 / 9);
-  const expected = glueSceneVerticalFov(80, 16 / 9) / glueSceneVerticalFov(80, GLUE_AUTHORED_ASPECT);
-  assert.ok(Math.abs(wide - expected) < 1e-12);
-  assert.ok(wide > 0.7 && wide < 0.85, `16:9 compensation is ${wide}, not a guess`);
-  // Past 16:9 the 16:9 value holds: ultrawide staging stretches anyway, and shrinking further
-  // would detach the feet from a medallion nobody can see at that width.
-  assert.equal(glueFigureScaleCompensation(80, 32 / 9), wide);
-  assert.equal(glueFigureScaleCompensation(80, 100), wide);
+  assert.ok(Math.abs(wide - halfTan(16 / 9) / halfTan(GLUE_AUTHORED_ASPECT)) < 1e-12);
+  assert.ok(Math.abs(wide - 0.75) < 1e-9, `16:9 compensation is ${wide}`);
+  // 10.23: a browser window on a 16:9 screen is about 2:1 — it is held at its authored size too.
+  assert.ok(Math.abs(glueFigureScaleCompensation(80, 2) - GLUE_AUTHORED_ASPECT / 2) < 1e-9);
+  // Past 21:9 the 21:9 value holds: ultrawide staging is out of scope.
+  const ultra = glueFigureScaleCompensation(80, 21 / 9);
+  assert.ok(Math.abs(ultra - GLUE_AUTHORED_ASPECT / (21 / 9)) < 1e-9);
+  assert.equal(glueFigureScaleCompensation(80, 32 / 9), ultra);
+  assert.equal(glueFigureScaleCompensation(80, 100), ultra);
   // Garbage in, identity out — a sizeless host must not shrink the figure to nothing.
   assert.equal(glueFigureScaleCompensation(80, 0), 1);
   assert.equal(glueFigureScaleCompensation(80, -1), 1);
   assert.equal(glueFigureScaleCompensation(80, Number.NaN), 1);
   assert.equal(glueFigureScaleCompensation(Number.NaN, 16 / 9), 1);
-  assert.equal(GLUE_FIGURE_COMPENSATION_MAX_ASPECT, 16 / 9);
+  assert.equal(GLUE_FIGURE_COMPENSATION_MAX_ASPECT, 21 / 9);
 });
 
 // The render budget. Two classes, because one number for all of them is what the owner was looking
