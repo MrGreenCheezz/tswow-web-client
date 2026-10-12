@@ -108,7 +108,7 @@ const FAMILIES = [
   {
     name: "visual-models",
     directory: cacheDirectory("VISUAL_MODEL_DIR", "data/visual-models"),
-    // sha1(`visual-v23\0<path>`) for M2 or `visual-wmo-v22` for WMO, same as the gateway — and the (05.10-A7a-F2)
+    // sha1(`visual-v24\0<path>`) for M2 (12.10 6.24) or `visual-wmo-v22` for WMO, same as the gateway — and the (05.10-A7a-F2)
     // stamp names every file the model's own publish read: .skin, external .anim or WMO groups.
     inputs: (name) => (/\.bin$/i.test(name) ? undefined : null),
   },

@@ -135,8 +135,13 @@ const MAX_BRIDGED_SOCKETS_PER_ADDRESS = 8;
 // tables of sets past 0 change, invisibly in the bytes' layout, so the name turns over. 24 is skipped
 // on purpose: line A7a has it planned for the next M2 bump (visual-v24). The generator writes the
 // effective tables only for a hash of this namespace, so a gateway on visual-wmo-v22 keeps its bytes.
-export function visualModelCacheNamespace(modelPath: string): "visual-v23" | "visual-wmo-v25" {
-  return modelPath.toLowerCase().endsWith(".wmo") ? "visual-wmo-v25" : "visual-v23";
+// 12.10 6.24: visual-v24 (the number A7a kept for the next M2 bump) is the same WVM9 whose WVE1 block
+// carries the rig's key bone table in its once-reserved u16 at +10 — the ids Wow.exe closes a hand by
+// (0x004e7700 → `CM2Model::SetBoneSequence` 0x00832ab0 on key bones 8–17). A v23 artifact decodes
+// with no table, which is indistinguishable from a rig without one, so the name turns over; WMOs keep
+// visual-wmo-v25.
+export function visualModelCacheNamespace(modelPath: string): "visual-v24" | "visual-wmo-v25" {
+  return modelPath.toLowerCase().endsWith(".wmo") ? "visual-wmo-v25" : "visual-v24";
 }
 
 /** The artifact name of a `/visual/model` path, as the route computes it (10.22: the preloader's key). */
@@ -176,6 +181,7 @@ function isClientVisualProfileRoute(method: string | undefined, pathname: string
     || pathname === "/texture"
     || pathname === "/visual/model"
     || pathname === "/visual/animations"
+    || pathname === "/visual/doodads" // 12.10 6.25
     || /^\/visual\/texture\/[0-9a-f]{40}(?:-\d{1,3})?\.png$/.test(pathname)
     || pathname === "/dbc/creature-models"
     || pathname === "/dbc/character-options"
@@ -1107,14 +1113,18 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
     // The model and its held-back animations are one artifact in two files, so they share a key
     // and a generator: whichever is asked for first builds both.
     const visualModel = pathname === "/visual/model";
-    if (request.method === "GET" && (visualModel || pathname === "/visual/animations") && options.visualModelsDirectory) {
+    // 12.10 6.25: a WMO's doodad set 0 as JSON (`tools/wmo-doodad-list.mjs`), the third file of the
+    // same artifact — what a game object's WMO (a ship's sails, a zeppelin's propellers) hangs.
+    const visualDoodads = pathname === "/visual/doodads";
+    if (request.method === "GET" && (visualModel || visualDoodads || pathname === "/visual/animations")
+      && options.visualModelsDirectory) {
       const origin = request.headers.origin;
       if (!originAllowed(origin, options.allowedOrigins)) {
         response.writeHead(403).end();
         return;
       }
       const modelPath = (url.searchParams.get("path") ?? "").replaceAll("/", "\\");
-      if (!validVisualModelPath(modelPath)) {
+      if (!validVisualModelPath(modelPath) || (visualDoodads && !modelPath.toLowerCase().endsWith(".wmo"))) {
         respondError(response, 400, origin);
         return;
       }
@@ -1183,7 +1193,9 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
       const namespace = visualModelCacheNamespace(modelPath);
       const hash = createHash("sha1").update(`${namespace}\0${modelPath.toLowerCase()}`).digest("hex");
       const suffix = group !== null ? `.g${group.padStart(3, "0")}` : visualModel ? "" : ".anim";
-      const filename = join(options.visualModelsDirectory, `${hash}${suffix}.bin`);
+      // 12.10 6.25: the doodad list is JSON beside the artifact; an artifact published before it
+      // existed lacks it, and the missing file rebuilds the whole model like any other part.
+      const filename = join(options.visualModelsDirectory, visualDoodads ? `${hash}.doodads.json` : `${hash}${suffix}.bin`);
       try {
         const rebuild = () => generateOnce(visualModelLane, hash, () => options.generateVisualModel!(modelPath, hash),
           visualModelPriority(modelPath));
@@ -1192,7 +1204,8 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
         // made before a coordinated HD pack was installed must be regenerated on its first request.
         if (options.generateVisualModel) await fingerprint.ensureCurrent(filename, { requireStamp: true });
         await respondFile(request, response, filename, {
-          origin, contentType: "application/octet-stream", rebuild: options.generateVisualModel ? rebuild : undefined,
+          origin, contentType: visualDoodads ? "application/json" : "application/octet-stream", // 12.10 6.25
+          rebuild: options.generateVisualModel ? rebuild : undefined,
         });
       } catch (error) {
         // The twin of the split `/texture` was given in Т6, and the one this route was left

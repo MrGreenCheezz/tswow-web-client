@@ -269,6 +269,18 @@ export class RigSkeleton extends THREE.Skeleton implements RenderBoneRig {
     }
   }
 
+  /**
+   * 12.10 6.24: bone objects were put back outside the mixer's bookkeeping (`releaseClosedHands`).
+   * Each flat pose reads them again on its next step, and Three's next `mixer.update` writes every
+   * bound property instead of skipping the ones whose value did not change since the last step.
+   */
+  reposeBones(mixer: THREE.AnimationMixer): void {
+    this.#fast?.rereadBones();
+    this.#shared?.rereadBones();
+    invalidateMixerApply(mixer);
+    this.#paletteReady = false;
+  }
+
   writeFastBoneWorld(index: number, target: THREE.Matrix4, refreshRoot: boolean): boolean {
     const fast = this.#flat;
     if (!this.#fastActive || !fast) return false;
@@ -1395,6 +1407,12 @@ export function instantiateSkinned(template: SkinnedTemplate, material: THREE.Ma
   return { root, mesh, mixer: new THREE.AnimationMixer(root), skeleton };
 }
 
+/**
+ * 12.10 6.24: what the global-channel appliers read of a template. A template is one; so is the
+ * closed-hand source `HandsClosed.closedHandsFor` builds over it, its own channels plus the fingers'.
+ */
+export type GlobalChannelSource = Pick<SkinnedTemplate, "parents" | "pivots" | "globalChannels">;
+
 const _globalBoneQuaternionA = new THREE.Quaternion();
 const _globalBoneQuaternionB = new THREE.Quaternion();
 /** One sampled global channel: x, y, z (and w for a rotation), written by `sampleGlobalChannel`. */
@@ -1410,7 +1428,7 @@ let _globalMix = 0;
  * the channel has no keys.
  */
 function sampleGlobalChannel(
-  template: SkinnedTemplate,
+  template: GlobalChannelSource, // 12.10 6.24: a template, or one with the closed hands' channels (HandsClosed.ts)
   channel: SkinnedTemplate["globalChannels"][number],
   globalSequences: Uint32Array,
   worldMs: number,
@@ -1458,7 +1476,7 @@ function sampleGlobalChannel(
  * Called between `FastPoseState.advance` and `compose`, where the bone objects' turn would be.
  */
 export function writeGlobalSequenceLocals(
-  template: SkinnedTemplate,
+  template: GlobalChannelSource, // 12.10 6.24
   globalSequences: Uint32Array,
   worldMs: number,
   fast: FastPoseState,
@@ -1483,7 +1501,7 @@ export function writeGlobalSequenceLocals(
  */
 export function applyGlobalSequenceBones(
   instance: SkinnedInstance,
-  template: SkinnedTemplate,
+  template: GlobalChannelSource, // 12.10 6.24
   globalSequences: Uint32Array,
   worldMs: number,
 ): void {

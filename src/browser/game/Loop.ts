@@ -7,6 +7,8 @@ import { diagnosticsWindow, fullFrameStatus, renderStatus, worldPanel } from "..
 import { showStandIns } from "../ui/Diagnostics.js";
 import { showPoseWorkerStatus } from "../ui/PoseWorkerStatus.js"; // L10 (10.18)
 import { OPCODES } from "../../generated/opcodes.js";
+import { UPDATE_FIELDS } from "../../generated/updateFields.js"; // 12.10 7.33
+import { GO_TYPE_DUNGEON_DIFFICULTY, dungeonDifficultyObjectShown } from "../../world/DungeonDifficultyObject.js"; // 12.10 7.33
 import { formatGameTime, halfMinuteOfDay } from "../../world/GameTimeProtocol.js";
 import { lightOverrideWeight } from "../LightClient.js";
 import { GhostLightFade } from "../LightStateFade.js"; // 05.10-A7b-5 (7.15)
@@ -89,6 +91,26 @@ import {
  */
 function loopGameObjectDisplay(displayId: number): ReturnType<NonNullable<typeof game.gameObjectMetadata>["get"]> | undefined {
   return game.gameObjectMetadata?.get(displayId);
+}
+
+/**
+ * 12.10 7.33: whether a game object is drawn — a dungeon-difficulty portal only in its own difficulty
+ * (`world/DungeonDifficultyObject.ts`, Wow.exe 0x00710a50). Its template is asked for here, as the
+ * click path asks; the dungeon difficulty is the group's while grouped, else the player's (0x005138d0).
+ */
+function loopGameObjectShown(object: WorldObjectState): boolean {
+  const type = ((object.fields.get(UPDATE_FIELDS.GAMEOBJECT_BYTES_1.offset) ?? 0) >>> 8) & 0xff;
+  if (type !== GO_TYPE_DUNGEON_DIFFICULTY) return true;
+  const world = game.world;
+  if (!world) return true;
+  const entry = object.fields.get(UPDATE_FIELDS.OBJECT_FIELD_ENTRY.offset) ?? 0;
+  const template = entry === 0 ? undefined : world.gameObjectTemplate(entry, object.guid);
+  return dungeonDifficultyObjectShown(type, template, loopMapInstanceType,
+    world.group?.dungeonDifficulty ?? world.dungeonDifficulty);
+}
+
+function loopMapInstanceType(mapId: number): number | undefined {
+  return game.areas?.map(mapId)?.instanceType;
 }
 
 function loopCreatureDisplayAnswered(displayId: number): boolean {
@@ -603,6 +625,7 @@ function frame(now: number): void {
       ? (object: WorldObjectState, slot: number, displayId?: number) =>
         attachedGlow(object, slot, enchantClient, displayId) // 05.10-A7a-E (6.14); 05.10-A7a-E2: the display's glow
       : undefined);
+    game.renderer?.setGameObjectShown(loopGameObjectShown); // 12.10 7.33: one portal per difficulty
     hitchLight = performance.now();
     const renderer = game.renderer;
     if (renderer) {

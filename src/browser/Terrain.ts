@@ -760,7 +760,10 @@ export class TerrainClient {
     const gridX = terrainGridAxis(x);
     const gridY = terrainGridAxis(y);
     if (gridX < 0 || gridY < 0) return undefined;
-    return this.#tileByGrid(map, gridX, gridY)?.liquidAt(x, y);
+    const liquid = this.#tileByGrid(map, gridX, gridY)?.liquidAt(x, y);
+    // 12.10 7.31: Outland's old-format magma is Green Lava in Wow.exe (`world/TerrainLiquidType.ts`).
+    if (liquid) liquid.entry = terrainLiquidEntry(map, liquid.entry);
+    return liquid;
   }
 
   async #load(map: number, grid: TerrainGrid, key: string): Promise<void> {
@@ -2913,6 +2916,7 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 }
 
 import type { EnvironmentBounds, EnvironmentObject } from "../gateway/VMapProtocol.js";
+import { terrainLiquidEntry } from "../world/TerrainLiquidType.js"; // 12.10 7.31
 import {
   EnvironmentTileDecodeClient, VISUAL_TILE_ROUTE_VERSION, environmentTileLosses, // 05.10-A7b-1
 } from "./EnvironmentTileDecode.js";

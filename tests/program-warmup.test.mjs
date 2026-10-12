@@ -409,7 +409,8 @@ test("renderer detach paths cancel queued borrowers while shared builds remain c
   const parsed = ts.createSourceFile("WorldRenderer3D.ts", source, ts.ScriptTarget.ES2022, true);
   const declaration = parsed.statements.find(n => ts.isClassDeclaration(n) && n.name?.text === "WorldRenderer3D");
   const names = ["#disposeEnvironment", "#disposeGameObject", "#clearUnitNode", "#clearWmoGroups",
-    "#disposeAttachedGlow", "#detachAll", "#dropMount"];
+    "#disposeAttachedGlow", "#detachAll", "#dropMount",
+    "#disposeGameObjectDoodads"]; // 12.10 6.25: a ship's sails go with the ship
   const methods = names.map(name => declaration.members.find(m => m.name?.getText(parsed) === name)
     .getText(parsed).replaceAll("#", ""));
   const js = ts.transpileModule(`class Harness { ${methods.join("\n")} }`, {
@@ -418,7 +419,7 @@ test("renderer detach paths cancel queued borrowers while shared builds remain c
   const Harness = Function("disposeSkinnedInstance", "disposeModelPlacementTintMaterials", "dropDeathFade", "detachGlowAnchors", js + "; return Harness;")(
     disposeSkinnedInstance, disposeModelPlacementTintMaterials, dropDeathFade, detachGlowAnchors);
 
-  for (const path of ["environment", "gameObject", "unit", "wmo", "attachments", "mount"]) {
+  for (const path of ["environment", "gameObject", "gameObjectDoodad", "unit", "wmo", "attachments", "mount"]) {
     const renderer = fakeRenderer(), warmup = new ProgramWarmup(renderer, targetScene());
     const geometry = new THREE.BufferGeometry(), material = new THREE.MeshBasicMaterial();
     const mesh = new THREE.Mesh(geometry, material), node = new THREE.Group().add(mesh);
@@ -432,6 +433,14 @@ test("renderer detach paths cancel queued borrowers while shared builds remain c
       forgetSceneryFar() {}, releaseWmoRoomShadow() {} }); // P2-02b: shadow bookkeeping, not under test here
     if (path === "environment") harness.disposeEnvironment({ node });
     if (path === "gameObject") harness.disposeGameObject({ node });
+    // 12.10 6.25: the doodad hangs under the object's node and is let go with the object.
+    if (path === "gameObjectDoodad") {
+      const object = { node: new THREE.Group(), doodads: { entries: [{ node }], pending: 0 } };
+      object.node.add(node);
+      harness.disposeGameObject(object);
+      assert.equal(node.parent, null, "the doodad leaves the object's node");
+      assert.equal(object.doodads, undefined, "and the object forgets its doodads");
+    }
     if (path === "unit") harness.clearUnitNode({ node, attached: new Map() });
     // P1-12b: a leaving room touches its geometry entry in the built-model cache.
     if (path === "wmo") {

@@ -8,7 +8,7 @@ import test from "node:test";
 import * as THREE from "three";
 import { PacketWriter } from "../dist/code/protocol/PacketWriter.js";
 import { WorldState } from "../dist/code/world/WorldState.js";
-import { sceneYaw, toRenderAxes, unpackRotation } from "../dist/code/world/GameObjectRotation.js";
+import { packRotation, sceneYaw, toRenderAxes, unpackRotation } from "../dist/code/world/GameObjectRotation.js";
 import { passengerGameObjectTilt } from "../dist/code/world/TransportPassengers.js";
 import {
   gameObjectNodeYaw, gameObjectWorldRotation, placedBoxCorners,
@@ -72,6 +72,22 @@ test("a stock chair's model faces where the core seats the player (Rz(o), not Rz
     close(back, toScene([CHAIR_BOX.minX * Math.cos(o), CHAIR_BOX.minX * Math.sin(o), CHAIR_BOX.maxZ]), 1e-4,
       `chair ${chair.guid} back`);
   }
+});
+
+// 12.10 7.24 (owner: «модель стула повернута, где-то 90° влево»): the realm's `gameobject_addon` row of
+// every Goldshire chair carries parent_rotation = the chair's own quaternion, and the model was drawn
+// at parent ⊗ local — twice its yaw. Wow.exe turns the model by the local rotation alone (0x004f45b0,
+// 0x0070c700); here is chair 26259 as the realm sends it, parent fields and all.
+test("7.24: a chair whose parent rotation repeats its own faces o, where the core seats the player", () => {
+  const o = -1.67552;
+  const packed = packRotation({ x: 0, y: 0, z: -0.743145, w: 0.669131 });
+  const object = created(o, packed);
+  const bits = (value) => { const view = new DataView(new ArrayBuffer(4)); view.setFloat32(0, value, true); return view.getUint32(0, true); };
+  object.fields.set(10 + 2, bits(-0.743145)); // GAMEOBJECT_PARENTROTATION.z
+  object.fields.set(10 + 3, bits(0.669131)); // .w
+  close(rendered(object, o, [1, 0, 0]), toScene([Math.cos(o), Math.sin(o), 0]), 1e-4, "seat front along o");
+  const world = gameObjectWorldRotation(object, o, { x: 0, y: 0, z: 0, w: 1 });
+  close([2 * Math.atan2(world.z, world.w)], [o], 1e-4, "the pick box turns by o too");
 });
 
 test("a tilted object is drawn with its whole quaternion, the same one the pick box turns by", () => {

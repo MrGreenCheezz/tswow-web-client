@@ -56,30 +56,30 @@ export function packRotation(q: Quat): bigint {
   return BigInt.asIntN(64, z | (y << 21n) | (x << 42n));
 }
 
-const FLOAT_SCRATCH = new DataView(new ArrayBuffer(4));
-const PARENT = UPDATE_FIELDS.GAMEOBJECT_PARENTROTATION.offset;
 const BYTES_1 = UPDATE_FIELDS.GAMEOBJECT_BYTES_1.offset;
 /** `GAMEOBJECT_TYPE_MO_TRANSPORT`, byte 1 of `GAMEOBJECT_BYTES_1` (`GameObject::SetGoType`). */
 const GO_TYPE_MO_TRANSPORT = 15;
 const NO_TILT = 1e-4;
-
-function fieldFloat(fields: ReadonlyMap<number, number>, index: number): number {
-  const raw = fields.get(index);
-  if (raw === undefined) return 0;
-  FLOAT_SCRATCH.setUint32(0, raw >>> 0, true);
-  const value = FLOAT_SCRATCH.getFloat32(0, true);
-  return Number.isFinite(value) ? value : 0;
-}
 
 /**
  * The rotation this object carries beyond the yaw of `orientation` (its position's), in WoW world axes,
  * written into `out`; false when there is none to speak of (a level object, or one with no
  * rotation in its create block), so the caller does nothing.
  *
- * The world rotation is `GAMEOBJECT_PARENTROTATION ⊗ local` — the parent is `(0, 0, 0, 1)` except on
- * the transports `gameobject_addon` gives one (GameObject.cpp:336-342). The tilt is that times the
- * inverse of the orientation's yaw, so applying the tilt after the yaw the renderer already applies
- * gives the whole rotation back. Allocates nothing: it runs per object per frame.
+ * The world rotation is the local one alone. 12.10 7.24: it was `GAMEOBJECT_PARENTROTATION ⊗ local`,
+ * on the reading that the parent is `(0, 0, 0, 1)` except on a few transports — but the realm's
+ * `gameobject_addon` fills `parent_rotation` with the object's own quaternion for nearly every spawn
+ * (the Goldshire inn's chairs 26246…26807: parent = rotation, from the sniffs the TDB is built of),
+ * so the product turned every such object by its yaw twice: a chair at o = −96° drawn at −192°, a
+ * quarter turn and more off the hero the core seats on it facing o (GameObject.cpp:1808). Wow.exe never
+ * composes the two for a model: its rotation getter (vtable +0xc4 → 0x00712e20 → 0x004f45b0) unpacks
+ * the movement's packed word (+0x20, 0x00982340) and multiplies in only the *transport's* rotation
+ * when the object rides one (0x0074b510); the model matrix (0x0070c700) is position · that · scale.
+ * PARENTROTATION is read by the animated transport's path alone (0x0070dc10, from 0x007106d0 /
+ * 0x00711f20: the TransportRotation key slerp ⊗ parent, packed back as the object's rotation), which
+ * the lift code here does not replay. The tilt is the local rotation times the inverse of the
+ * orientation's yaw, so applying it after the yaw the renderer already applies gives the whole
+ * rotation back. Allocates nothing: it runs per object per frame.
  */
 export function gameObjectTilt(object: Pick<WorldObjectState, "rotation" | "fields">, orientation: number, out: Quat): boolean {
   const local = object.rotation;
@@ -87,23 +87,7 @@ export function gameObjectTilt(object: Pick<WorldObjectState, "rotation" | "fiel
   // A ship or a zeppelin is given the identity for both rotations (Transport.cpp:102-103) and
   // faces along its path by its orientation (TransportMgr.cpp:396); its quaternion says nothing.
   if (gameObjectType(object) === GO_TYPE_MO_TRANSPORT) return false;
-  // A create block leaves out every zero field (Object.cpp:490), so an identity parent arrives as
-  // its `w` alone and an absent one as nothing: both are the identity.
-  const fields = object.fields;
-  let px = fieldFloat(fields, PARENT);
-  let py = fieldFloat(fields, PARENT + 1);
-  let pz = fieldFloat(fields, PARENT + 2);
-  let pw = fieldFloat(fields, PARENT + 3);
-  if (px === 0 && py === 0 && pz === 0 && pw === 0) pw = 1;
-  else {
-    const length = Math.hypot(px, py, pz, pw);
-    px /= length; py /= length; pz /= length; pw /= length;
-  }
-  // q = parent ⊗ local (Hamilton product).
-  const qw = pw * local.w - px * local.x - py * local.y - pz * local.z;
-  const qx = pw * local.x + px * local.w + py * local.z - pz * local.y;
-  const qy = pw * local.y - px * local.z + py * local.w + pz * local.x;
-  const qz = pw * local.z + px * local.y - py * local.x + pz * local.w;
+  const qw = local.w, qx = local.x, qy = local.y, qz = local.z; // 12.10 7.24: no parent (see above)
   // tilt = q ⊗ conj(yaw), yaw = (0, 0, sin(o/2), cos(o/2)).
   const s = -Math.sin(orientation / 2);
   const c = Math.cos(orientation / 2);

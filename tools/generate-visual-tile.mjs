@@ -371,7 +371,9 @@ async function ownTileRecords(objects, doodadParents, mapName, gridX, gridY, arc
   return kept;
 }
 
-function worldDoodad(placement, doodad, doodadIndex, v5 = false) {
+// Exported for 12.10 6.25: a game object's WMO doodads (`src/browser/GameObjectDoodads.ts`) must land
+// where this puts a placed WMO's.
+export function worldDoodad(placement, doodad, doodadIndex, v5 = false) {
   const parentRotation = mappedRotation(placement.rotationX, placement.rotationY, placement.rotationZ);
   const position = new THREE.Vector3(-doodad.x, doodad.z, doodad.y)
     .multiplyScalar(placement.scale)

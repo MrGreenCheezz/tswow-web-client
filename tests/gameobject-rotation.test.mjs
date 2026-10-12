@@ -116,16 +116,34 @@ test("a rotation whose yaw disagrees with the orientation is drawn by the rotati
   close(rotate(qmul(tilt, yaw(1.2)), [1, 0, 0]), [1, 0, 0], 1e-5, "back to the identity");
 });
 
-test("the parent rotation turns the whole object", () => {
+// 12.10 7.24: Wow.exe draws a game object by its packed local rotation (⊗ its transport's, 0x004f45b0;
+// model matrix 0x0070c700) and reads GAMEOBJECT_PARENTROTATION only on an animated transport's path
+// (0x0070dc10). The realm's `gameobject_addon` copies the local quaternion into `parent_rotation` for
+// nearly every spawn — the Goldshire chair 26259 below — and composing the two drew it at twice its yaw.
+test("7.24: the parent rotation does not turn the model, even when the realm copies the rotation into it", () => {
+  const o = -1.67552; // `gameobject` 26259 «Wooden Chair», and its addon row: parent = rotation
+  const chair = created({
+    orientation: o, rotation: { x: 0, y: 0, z: -0.743145, w: 0.669131 },
+    fields: new Map([[PARENT + 2, f32bits(-0.743145)], [PARENT + 3, f32bits(0.669131)]]),
+  });
+  const tilt = { x: 1, y: 1, z: 1, w: 1 };
+  assert.equal(gameObjectTilt(chair, o, tilt), false, "the chair is its own yaw, not twice it");
+  // A parent that names a different turn is no more the model's.
   const fields = new Map([
     [PARENT + 2, f32bits(Math.sin(Math.PI / 4))],
     [PARENT + 3, f32bits(Math.cos(Math.PI / 4))],
   ]);
-  const level = created({ orientation: Math.PI / 2, rotation: { x: 0, y: 0, z: 0, w: 1 }, fields });
-  assert.equal(gameObjectTilt(level, Math.PI / 2, { x: 0, y: 0, z: 0, w: 1 }), false, "a 90° parent is the 90° yaw");
+  const level = created({ orientation: 0, rotation: { x: 0, y: 0, z: 0, w: 1 }, fields });
+  assert.equal(gameObjectTilt(level, 0, { x: 0, y: 0, z: 0, w: 1 }), false, "a 90° parent turns nothing");
   // An identity parent arrives as its w alone (zero fields are left out of a create block).
   const identity = created({ orientation: 0.3, rotation: yaw(0.3), fields: new Map([[PARENT + 3, f32bits(1)]]) });
   assert.equal(gameObjectTilt(identity, 0.3, { x: 0, y: 0, z: 0, w: 1 }), false);
+  // A lean is still the local rotation's, parent or no parent.
+  const lean = axisAngle(1, 0, 0, Math.PI / 9);
+  const leaning = created({ orientation: o, rotation: qmul(lean, yaw(o)), fields: new Map([[PARENT + 2, f32bits(-0.743145)], [PARENT + 3, f32bits(0.669131)]]) });
+  const leanOut = { x: 0, y: 0, z: 0, w: 1 };
+  assert.equal(gameObjectTilt(leaning, o, leanOut), true);
+  close(rotate(qmul(leanOut, yaw(o)), [1, 2, 3]), rotate(qmul(lean, yaw(o)), [1, 2, 3]), 1e-5, "tilt ⊗ yaw = local rotation");
 });
 
 test("POSITION keeps the transport and its offset; ROTATION is read as 64 bits", () => {

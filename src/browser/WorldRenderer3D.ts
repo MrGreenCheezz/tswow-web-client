@@ -107,6 +107,7 @@ import {
   weaponPose, isBaseIdle, // 05.10-A7a-C: isBaseIdle
   applyStrafeYaw, stepStrafeYaw, strafeYawBonesFor, strafeYawTarget,
   fastPoseProgramFor, writeGlobalSequenceLocals,
+  type GlobalChannelSource, // 12.10 6.24
   type RigSkeleton, type SkinnedInstance, type SkinnedTemplate, type UnitAction, type UnitPose,
 } from "./AnimatedModel.js";
 import {
@@ -164,6 +165,12 @@ import {
   attachmentHeight, attachmentOffset, attachmentRotation, boneOf, mountNesting, mountSeatOffset,
 } from "./Attachment.js";
 import { sheatheOf, worldAttachmentPoint } from "./SheathPoints.js"; // 05.10-A7a-G2 6.08
+import {
+  HANDS_CLOSED_ANIMATION, closedHandsFor, handOfPoint, releaseClosedHands, type ClosedHands,
+} from "./HandsClosed.js"; // 12.10 6.24
+import { particleOnlyModel } from "./ParticleOnlyModel.js"; // 12.10 7.33
+import { WmoDoodadClient } from "./WmoDoodadClient.js"; // 12.10 6.25
+import { gameObjectDoodadsFor, placeWmoDoodad, type GameObjectDoodads } from "./GameObjectDoodads.js"; // 12.10 6.25
 import { extendSidecarWait, poseExitClips, sidecarClaims } from "./SidecarWait.js"; // 05.10-A7a-G2 6.19
 import { corpseUnitView } from "./CorpseModel.js"; // 05.10-A7a-G2 6.05
 import {
@@ -2486,6 +2493,8 @@ interface RenderedGameObject extends PosedModel {
   /** How far into its cycle it was at `phaseAt`, so the rest is counted locally. */
   phaseMs: number | undefined;
   phaseAt: number | undefined;
+  /** 12.10 6.25: its WMO's doodad set 0 (a ship's sails), once the list has arrived. `GameObjectDoodads.ts`. */
+  doodads: GameObjectDoodads | undefined;
 }
 
 interface RenderedTerrain {
@@ -2750,6 +2759,11 @@ interface RenderedUnit extends PosedModel {
   deathFade: DeathFadeState | undefined;
   /** 05.10-A7a-C 6.07: the STUNNED/LOOTING bits whose holds are in the queue. See `UnitFlagPoses.ts`. */
   flagPoses: number | undefined;
+  /**
+   * 12.10 6.24: the hands the last pose step closed round what they hold, on which rig — so a hand
+   * that lets go (sheathed, unequipped) is handed back to its clip. See `HandsClosed.ts`.
+   */
+  closedHands: { readonly instance: SkinnedInstance; readonly hands: ClosedHands } | undefined;
 }
 
 /**
@@ -3422,6 +3436,16 @@ const EFFECT_BUDGET = 32;
 const EFFECT_BUILD_BUDGET = 6;
 /** And a separate allowance for what the spells are doing, so the two do not evict each other. */
 const VISUAL_EFFECT_BUDGET = 24;
+/**
+ * 12.10 7.33: and one for the models that are nothing but their emitters (`ParticleOnlyModel.ts`):
+ * dropped, they vanish whole. Ranked by distance within the leash their placement is admitted at.
+ * Measured over the continents' doodads (`.runtime/re-2026-10-12/p733/particleonly.mjs`): 3,937 such
+ * placements — crack smoke, fel firewalls, chimney smoke, steam, the instance portals — up to 212 in one
+ * 400-yard circle (Netherstorm); from 89 yards off a portal, at most 17 of them stand nearer than it
+ * (Stratholme's gate), 12 at Zul'Aman, 9 or fewer elsewhere. Twenty keeps every portal with margin; the
+ * worst case simulates twenty sets more than the shared budget alone did.
+ */
+export const PARTICLE_ONLY_EFFECT_BUDGET = 20;
 /** A malformed/very long effect clip must not turn a finite packet visual into a permanent node. */
 const MODEL_VFX_MAX_MS = 5_000;
 /** Time to keep a finite model-backed one-shot alive while its WVM is still loading. */
@@ -3741,6 +3765,10 @@ export class WorldRenderer3D {
   #duelRing: DuelRing | undefined;
   #duelRingMesh: RenderedSelectionRing | undefined;
   #enchantGlow: ((object: WorldObjectState, slot: number, displayId?: number) => EnchantGlow | undefined) | undefined; // 05.10-A7a-E2: displayId
+  /** 12.10 7.33: whether a game object is drawn at all (`setGameObjectShown`); absent draws every one. */
+  #gameObjectShown: ((object: WorldObjectState) => boolean) | undefined;
+  /** 12.10 6.25: the doodad lists of game objects' WMOs, made for the environment client's base URL. */
+  #wmoDoodadClient: WmoDoodadClient | undefined;
   /**
    * The ghost of a placing spell's game object, and the borrowed build it was made from.
    *
@@ -6827,6 +6855,15 @@ export class WorldRenderer3D {
     this.#enchantGlow = resolve;
   }
 
+  /**
+   * 12.10 7.33: which game objects are drawn at all — the dungeon-difficulty portals show only the
+   * one for the current difficulty (`world/DungeonDifficultyObject.ts`, Wow.exe 0x00710a50). Pushed
+   * like the enchant glow; one the predicate refuses is kept resident but neither drawn nor pinned.
+   */
+  setGameObjectShown(shown: ((object: WorldObjectState) => boolean) | undefined): void {
+    this.#gameObjectShown = shown;
+  }
+
   /** The placing spell's ghost model; `undefined` removes it immediately. */
   setGameObjectPreview(preview: GameObjectPreview | undefined): void {
     this.#gameObjectPreview = preview;
@@ -8945,6 +8982,9 @@ export class WorldRenderer3D {
       return dx * dx + dy * dy + dz * dz;
     };
 
+    // 12.10 7.33: a model that is nothing but its emitters — an instance portal's swirl — is ranked
+    // apart (`ParticleOnlyModel.ts`): within its own placement's leash, under its own allowance.
+    const particleOnly: typeof wanted = [];
     // `forEach`, and a key built once per record: this walks every retained placement, game
     // object and unit on every frame, and iterator results plus a fresh key string for each
     // emitter-bearing one were a measurable share of the frame's garbage.
@@ -8953,10 +8993,12 @@ export class WorldRenderer3D {
         || rendered.wvm.particleEmitters.length + rendered.wvm.ribbonEmitters.length === 0) return;
       const at = rendered.node.position;
       const distance = nearSquared(at.x, -at.z, at.y);
-      if (distance > EFFECT_RANGE_SQUARED) return;
+      // 12.10 7.33: admitted is already within its draw leash; the 90 yards are a torch's flame's.
+      const only = particleOnlyModel(rendered.wvm);
+      if (!only && distance > EFFECT_RANGE_SQUARED) return;
       const entry: (typeof wanted)[number] = { key: rendered.effectKey ??= `env:${id}`, wvm: rendered.wvm, distance };
       if (rendered.visual) entry.visual = rendered.visual;
-      wanted.push(entry);
+      (only ? particleOnly : wanted).push(entry);
     });
     if (this.#skyboxModel && this.#skyboxVisual
       && this.#skyboxModel.particleEmitters.length + this.#skyboxModel.ribbonEmitters.length > 0) {
@@ -8973,12 +9015,14 @@ export class WorldRenderer3D {
       if (!rendered.skinned && !rendered.visual) return;
       const at = rendered.node.position;
       const distance = nearSquared(at.x, -at.z, at.y);
-      if (distance > EFFECT_RANGE_SQUARED) return;
+      // 12.10 7.33: drawn is already within GAMEOBJECT_RANGE; a particle-only object keeps it.
+      const only = particleOnlyModel(rendered.wvm);
+      if (!only && distance > EFFECT_RANGE_SQUARED) return;
       const entry: (typeof wanted)[number] = {
         key: rendered.effectKey ??= `obj:${guid}`, wvm: rendered.wvm, distance, posed: rendered,
       };
       if (rendered.visual) entry.visual = rendered.visual;
-      wanted.push(entry);
+      (only ? particleOnly : wanted).push(entry);
     });
     this.#units.forEach((unit, guid) => {
       if (!unit.wvm || unit.wvm.particleEmitters.length + unit.wvm.ribbonEmitters.length === 0) return;
@@ -9165,8 +9209,13 @@ export class WorldRenderer3D {
     }
 
     wanted.sort((left, right) => left.distance - right.distance);
-    this.#effectsDropped = budgeted.droppedGroups + Math.max(0, wanted.length - EFFECT_BUDGET);
+    // 12.10 7.33: and the particle-only ones in their own allowance, nearest first.
+    particleOnly.sort((left, right) => left.distance - right.distance);
+    this.#effectsDropped = budgeted.droppedGroups + Math.max(0, wanted.length - EFFECT_BUDGET)
+      + Math.max(0, particleOnly.length - PARTICLE_ONLY_EFFECT_BUDGET);
     if (wanted.length > EFFECT_BUDGET) wanted.length = EFFECT_BUDGET;
+    if (particleOnly.length > PARTICLE_ONLY_EFFECT_BUDGET) particleOnly.length = PARTICLE_ONLY_EFFECT_BUDGET;
+    for (let index = 0; index < particleOnly.length; index++) wanted.push(particleOnly[index]!);
     wanted.push(...selectedVisuals);
 
     const live = new Set<string>();
@@ -12351,16 +12400,19 @@ export class WorldRenderer3D {
       // 05.10-7.05: a moving transport (ship, zeppelin, lift) has the far range and its own quota.
       const transport = gameObjectWireIsMovingTransport(object);
       if (!gameObjectWithinAdmissionRange(distance, transport, GAMEOBJECT_RANGE)) continue;
-      const isPinned = pinned.has(object.guid);
+      // 12.10 7.33: an object Wow.exe hides (a portal of the other difficulty) stays resident,
+      // unpinned and not visible, exactly like one outside the view.
+      const shown = this.#gameObjectShown?.(object) ?? true;
+      const isPinned = shown && pinned.has(object.guid);
       const radius = this.#gameObjectVisibilityRadius(object, this.#gameObjects.get(object.guid));
-      const visible = isPinned || radius === undefined || unitSphereVisibleInFrustum(
+      const visible = shown && (isPinned || radius === undefined || unitSphereVisibleInFrustum(
         object.position.x,
         object.position.z,
         -object.position.y,
         radius,
         this.#frustum.planes,
         GAMEOBJECT_FRUSTUM_MARGIN,
-      );
+      ));
       candidates.push({
         value: object,
         distance: Number.isFinite(distance) ? distance : Number.MAX_VALUE,
@@ -12451,6 +12503,7 @@ export class WorldRenderer3D {
           // 05.10-7.05-review: its hull is drawn as far as it is admitted, whatever its size or build yaw.
           this.#updateWmoGroups(rendered.wmo, viewer, rendered.node, client, false,
             transportShell ? GAMEOBJECT_TRANSPORT_SHELL_RANGE : undefined);
+          this.#updateGameObjectDoodads(rendered, client, elapsed); // 12.10 6.25: its sails
         } else if (!replacementDeferred) {
           this.#clearWmoGroups(rendered.wmo, rendered.node);
         }
@@ -12538,7 +12591,95 @@ export class WorldRenderer3D {
     rendered.template = undefined;
     rendered.action = undefined;
     if (rendered.wmo) this.#clearWmoGroups(rendered.wmo, rendered.node);
+    this.#disposeGameObjectDoodads(rendered); // 12.10 6.25
     this.#gameObjectGroup.remove(rendered.node);
+  }
+
+  /**
+   * 12.10 6.25: hangs the doodads of a game object's WMO (a ship's sails, a zeppelin's propellers)
+   * under its node as their models arrive, and plays Stand on the animated ones. `GameObjectDoodads.ts`.
+   */
+  #updateGameObjectDoodads(rendered: RenderedGameObject, client: EnvironmentClient | undefined, elapsed: number): void {
+    const path = rendered.model;
+    if (!rendered.wmo || !path || !client) return;
+    let state = rendered.doodads;
+    if (!state) {
+      const doodadClient = this.#wmoDoodadClient?.baseUrl === client.baseUrl
+        ? this.#wmoDoodadClient : (this.#wmoDoodadClient = new WmoDoodadClient(client.baseUrl));
+      const list = doodadClient.doodads(path);
+      if (list === undefined) return;
+      state = rendered.doodads = gameObjectDoodadsFor(list);
+    }
+    if (state.pending > 0) {
+      for (const entry of state.entries) {
+        if (entry.node) continue;
+        const name = entry.placement.name;
+        const model = client.model(name, "normal");
+        if (!model?.wvm) continue;
+        if (!this.#gameObjectBuildBudget.take()) break;
+        const wrapper = placeWmoDoodad(entry.placement, new THREE.Group());
+        const object: EnvironmentObject = {
+          id: 0, kind: "m2", name, x: 0, y: 0, z: 0, rotationX: 0, rotationY: 0, rotationZ: 0, scale: 1,
+          ...(entry.placement.localLight ? { localLight: [...entry.placement.localLight] as [number, number, number, number] } : {}),
+        };
+        // The same two builds a placed doodad gets: a rig when the model animates, else the static mesh.
+        const rig = animatesAsDoodad(model.wvm.skeleton) ? this.#doodadRig(object, model, 0) : undefined;
+        const node = rig?.node ?? this.#wvmNode(name, model.wvm, undefined, object.localLight);
+        if (rig) {
+          entry.instance = rig.instance;
+          entry.template = rig.template;
+        }
+        const built = node.userData["builtModel"];
+        if (built) entry.built = built as BuiltModel;
+        const tint = node.userData["modelPlacementTintMaterials"];
+        if (Array.isArray(tint)) entry.tintMaterials = tint as readonly THREE.Material[];
+        entry.wvm = model.wvm;
+        wrapper.add(node);
+        rendered.node.add(wrapper);
+        entry.node = wrapper;
+        state.pending--;
+        this.#gameObjectBuildBudget.done();
+      }
+    }
+    // Posed every frame the object is drawn, near or far: a ship carries at most a few rigs (one sail
+    // model, a paddle wheel, a propeller), and a sail left in its bind pose stands metres off the mast.
+    for (const entry of state.entries) {
+      const instance = entry.instance, template = entry.template;
+      if (!instance || !template) continue;
+      if (!template.merged && !template.clips.has(ANIMATION_IDS.Stand)) {
+        // As `#poseDoodads`: what the model did not ship with is in its sidecar.
+        const clips = client.animations(entry.placement.name, template.parents.length, "background");
+        if (clips) {
+          addSkinnedClips(template, clips);
+          template.merged = true;
+        }
+      }
+      const clip = template.clips.get(ANIMATION_IDS.Stand);
+      if (clip && instance.mixer.existingAction(clip) === null) {
+        const action = instance.mixer.clipAction(clip);
+        action.setLoop(THREE.LoopRepeat, Infinity);
+        action.play();
+      }
+      instance.mixer.update(elapsed);
+      if (entry.wvm) applyGlobalSequenceBones(instance, template, entry.wvm.globalSequences,
+        this.#waterShaderUniforms.time.value * 1000);
+      applyBillboardBones(instance, template, this.#camera);
+    }
+  }
+
+  /**
+   * 12.10 6.25: lets go of a game object's doodads: rigs, placement tints, the wrappers. Their queued
+   * warm-up borrows went with the object's node, which `#disposeGameObject` unregisters first.
+   */
+  #disposeGameObjectDoodads(rendered: RenderedGameObject): void {
+    const state = rendered.doodads;
+    if (!state) return;
+    for (const entry of state.entries) {
+      entry.node?.removeFromParent();
+      disposeSkinnedInstance(entry.instance);
+      disposeModelPlacementTintMaterials(entry.tintMaterials);
+    }
+    rendered.doodads = undefined;
   }
 
   /** One game object's node, rigged when the model has something a door could play. */
@@ -12587,6 +12728,7 @@ export class WorldRenderer3D {
       base: { x: placement.x, y: placement.y, z: placement.z, orientation: THREE.MathUtils.degToRad(placement.rotationY) },
       phaseMs: undefined,
       phaseAt: undefined,
+      doodads: undefined, // 12.10 6.25
     };
     if (modelName) rendered.model = modelName;
     if (model && model.wvm === undefined && model.wmo === undefined) {
@@ -13068,6 +13210,8 @@ export class WorldRenderer3D {
       }
       for (const rendered of this.#gameObjects.values()) {
         if (rendered.built) modelPins.add(rendered.built);
+        // 12.10 6.25: a ship's sails borrow their builds like placed doodads do.
+        if (rendered.doodads) for (const doodad of rendered.doodads.entries) if (doodad.built) modelPins.add(doodad.built);
       }
       for (const entry of this.#instances.values()) modelPins.add(entry.built);
       for (const entry of this.#groundCoverMeshes.values()) modelPins.add(entry.built);
@@ -13192,6 +13336,7 @@ export class WorldRenderer3D {
         fadeReturnFrames: undefined, appearancePendingSince: undefined, stealthed: undefined,
         strafeYaw: undefined, deathFade: undefined, flagPoses: undefined,
         shownFacing: undefined, // 11.10
+        closedHands: undefined, // 12.10 6.24
       };
       this.#units.set(object.guid, unit);
       this.#unitGroup.add(node);
@@ -13829,6 +13974,8 @@ export class WorldRenderer3D {
       mesh.frustumCulled = true;
       mesh.userData["build"] = key;
       mesh.userData["builtModel"] = built;
+      // 12.10 6.24: which point it hangs on — points 1 and 2 close their hand round it (0x004eaa70).
+      mesh.userData["point"] = item.point;
       if (glowClones !== undefined) mesh.userData["glowClones"] = glowClones;
       if (glowPlacements.length > 0) attachGlowAnchors(mesh, itemModel, glowPlacements, `unit:${object.guid}:glow:${where}`); // 05.10-A7a-E
       mesh.position.copy(attachmentOffset(wvm, template.pivots, item.point));
@@ -14257,10 +14404,13 @@ export class WorldRenderer3D {
       return;
     }
     this.#unitAnimationFull++;
+    // 12.10 6.24: the global channels this step poses with — the template's own, or with the held
+    // hands closed over them — and a hand that let go since the last step handed back to its clip.
+    const channels = this.#closedHandChannels(unit, template, skinned, client, metadata);
     // The flat pose when this frame allows one: the same mixer clock and blend, for only the bones
     // something draws or reads, with none of the per-bone scene-graph writes. See `FastPoseState`.
     const flat = !portraitNeedsPose && this.#strafeYawIdle(unit, template, pose)
-      ? this.#flatPose(unit, unit.wvm, mount?.skinned === undefined) : undefined;
+      ? this.#flatPose(unit, unit.wvm, mount?.skinned === undefined, channels) : undefined;
     const mountFlat = flat === undefined || !mount?.skinned ? undefined : this.#flatPose(mount, mount.wvm, false);
     if (flat !== undefined && (mount?.skinned === undefined || mountFlat !== undefined)) {
       this.#unitAnimationFlat++;
@@ -14276,8 +14426,8 @@ export class WorldRenderer3D {
       flat.advance(skinned.mixer, poseElapsed);
       // The worker's pose applies the global sequences inside its step; this one right here.
       if (unit.wvm) {
-        if (flat instanceof SharedPose) flat.globalSequences(template, unit.wvm.globalSequences, now);
-        else writeGlobalSequenceLocals(template, unit.wvm.globalSequences, now, flat);
+        if (flat instanceof SharedPose) flat.globalSequences(channels, unit.wvm.globalSequences, now); // 12.10 6.24
+        else writeGlobalSequenceLocals(channels, unit.wvm.globalSequences, now, flat); // 12.10 6.24
       }
       // The worker's compose publishes the step; the rig's first reader completes it.
       flat.compose(skinned.root, this.#camera);
@@ -14289,7 +14439,7 @@ export class WorldRenderer3D {
     if (mount?.skinned) mount.skinned.skeleton.setFastPoseActive(false, mount.skinned.mixer);
     skinned.skeleton.setPoseFrozen(false);
     skinned.mixer.update(poseElapsed);
-    if (unit.wvm) applyGlobalSequenceBones(skinned, template, unit.wvm.globalSequences, now);
+    if (unit.wvm) applyGlobalSequenceBones(skinned, channels, unit.wvm.globalSequences, now); // 12.10 6.24
     // The legs into the direction of travel, over the clip the mixer just wrote. Self and remote
     // alike: the flags this reads are the ones in the last packet about the unit, and the player's
     // own are written into that state as they are sent.
@@ -14317,7 +14467,8 @@ export class WorldRenderer3D {
    * particle and ribbon emitters — with their ancestors. A reader that still asks for a bone
    * outside it sends the rig back to Three's path for good; additive layers go back per frame.
    */
-  #flatPose(model: PosedModel, wvm: WvmModel | undefined, shareable: boolean): FastPoseState | SharedPose | undefined {
+  #flatPose(model: PosedModel, wvm: WvmModel | undefined, shareable: boolean,
+    globals?: GlobalChannelSource): FastPoseState | SharedPose | undefined { // 12.10 6.24: `globals`
     const skinned = model.skinned, template = model.template;
     if (!skinned || !template) return undefined;
     const skeleton = skinned.skeleton;
@@ -14338,10 +14489,35 @@ export class WorldRenderer3D {
     // The pose worker when there is one and this rig can be posed there this step; see `SharedPose`.
     const engine = this.#poseEngine;
     if (shareable && engine?.usable) {
-      const shared = skeleton.sharedPose(program, engine, skinned.mixer, template, wvm?.globalSequences);
+      // 12.10 6.24: the source the step will apply, so the worker's table for it is the one checked.
+      const shared = skeleton.sharedPose(program, engine, skinned.mixer, globals ?? template, wvm?.globalSequences);
       if (shared) return shared;
     }
     return skeleton.fastPose(program);
+  }
+
+  /**
+   * 12.10 6.24: the global channels a unit's pose step applies — the template's own, or with each
+   * hand holding something on attachment 1 or 2 closed round it (`HandsClosed.ts`, Wow.exe
+   * 0x004eaa70 → 0x004e7700). A hand that let go since the last step on the same rig is handed back
+   * to its clip first (0x004e79a0 / 0x004e7750), before the mixer runs.
+   */
+  #closedHandChannels(unit: RenderedUnit, template: SkinnedTemplate, skinned: SkinnedInstance,
+    client: EnvironmentClient | undefined, metadata: UnitModel | undefined): GlobalChannelSource {
+    let mask = 0;
+    for (const node of unit.attached.values()) mask |= handOfPoint(node.userData["point"]);
+    const keyBones = unit.wvm?.keyBones;
+    // HandsClosed travels in the sidecar; a held weapon is reason enough to ask for it now.
+    if (mask !== 0 && keyBones && !template.clips.has(HANDS_CLOSED_ANIMATION)) {
+      this.#requestAnimations(template, [HANDS_CLOSED_ANIMATION], client, metadata);
+    }
+    const hands = closedHandsFor(template, keyBones, mask);
+    const previous = unit.closedHands;
+    if (previous && previous.hands !== hands && previous.instance === skinned) {
+      releaseClosedHands(skinned, template, previous.hands.bones);
+    }
+    unit.closedHands = hands ? { instance: skinned, hands } : undefined;
+    return hands?.source ?? template;
   }
 
   /** The pose worker's counters since the last reset, or undefined when there is no worker. */

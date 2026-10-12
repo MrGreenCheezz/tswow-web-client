@@ -121,7 +121,8 @@ export const WVM9_CAMERA_SIZE = 36;
 /**
  * 05.10-A7a-F2 (6.22, 6.16б, 6.17): the artifact carries the "WVE1" block — see `encodeExtensions`.
  *
- * Set only on artifacts published under the `visual-v23` namespace. With it the batch record's
+ * Set only on artifacts published under the current M2 namespace (`visual-v23`, since 12.10 `visual-v24`,
+ * whose WVE1 adds the key bone table). With it the batch record's
  * `shaderId` is the id Wow.exe resolves at load (tools/m2-combiners.mjs), not the raw u16 of the
  * skin; without it the record is byte-for-byte what WVM9 always wrote, which is what keeps a
  * gateway that is still running the `visual-v21` namespace serving its old readers unchanged.
@@ -188,7 +189,8 @@ export const GLOBAL_BONE_CHANNEL_HEADER_SIZE = 12;
  */
 export function encodeWvm9(model, skeleton, animations = undefined, effects = undefined, options = {}) {
   // 05.10-A7a-F2: `options.extensions` — write the WVE1 block and the resolved shader ids.
-  const extensions = options.extensions === true ? encodeExtensions(model) : undefined;
+  // 12.10 6.24: and the rig's key bone table in it (`visual-v24`).
+  const extensions = options.extensions === true ? encodeExtensions(model, skeleton?.keyBones) : undefined;
   const vertexCount = model.positions.length / 3;
   // Zero is allowed: a pure-emitter model has no geometry and is still a model. See tools/m2.mjs.
   if (!Number.isInteger(vertexCount)) throw new Error("WVM9 vertex count is not a whole number");
@@ -390,14 +392,16 @@ export function encodeWvm9(model, skeleton, animations = undefined, effects = un
  *   4  u16   batch record size (4 today; a reader steps by this)
  *   6  u16   batch record count, always the header's batch count
  *   8  u16   light count
- *  10  u16   reserved
+ *  10  u16   key bone count (12.10 6.24, `visual-v24`; was a reserved zero under `visual-v23`)
  *  12  batch records: i16 second-unit `textureTransform` (−1 none, 6.16б), u16 reserved
  *      then the lights (6.17), each led by its own byte length like an emitter:
  *      u16 size, u16 type, i16 bone, u16 reserved, f32 position[3], then seven tracks — ambient
  *      colour (3), ambient intensity, diffuse colour (3), diffuse intensity, attenuation start,
  *      attenuation end, visibility.
+ *      then (6.24) the key bone table: i16 bone per key bone id, −1 for none (tools/m2.mjs
+ *      `readKeyBones`) — what Wow.exe's `CM2Model::SetBoneSequence` (0x00832ab0) names bones by.
  */
-function encodeExtensions(model) {
+function encodeExtensions(model, keyBones = undefined) {
   const batches = model.batches;
   const lights = (model.lights ?? []).slice(0, 255).map((light) => {
     const tracks = LIGHT_TRACKS.map(([name, components]) => encodeTrack(light[name], components));
@@ -415,13 +419,15 @@ function encodeExtensions(model) {
     }
     return record;
   });
+  const keys = keyBones === undefined ? 0 : Math.min(keyBones.length, 0xffff); // 12.10 6.24
   const size = WVE1_HEADER_SIZE + batches.length * WVE1_BATCH_RECORD_SIZE
-    + lights.reduce((total, record) => total + record.length, 0);
+    + lights.reduce((total, record) => total + record.length, 0) + keys * 2;
   const block = Buffer.alloc(size);
   block.write(WVE1_MAGIC, 0, "ascii");
   block.writeUInt16LE(WVE1_BATCH_RECORD_SIZE, 4);
   block.writeUInt16LE(batches.length, 6);
   block.writeUInt16LE(lights.length, 8);
+  block.writeUInt16LE(keys, 10); // 12.10 6.24
   let offset = WVE1_HEADER_SIZE;
   for (const batch of batches) {
     block.writeInt16LE(Math.max(-1, Math.min(32_767, batch.textureTransform2 ?? -1)), offset);
@@ -430,6 +436,10 @@ function encodeExtensions(model) {
   for (const record of lights) {
     block.set(record, offset);
     offset += record.length;
+  }
+  for (let index = 0; index < keys; index++, offset += 2) { // 12.10 6.24
+    const bone = keyBones[index];
+    block.writeInt16LE(Number.isInteger(bone) && bone >= 0 && bone <= 0x7fff ? bone : -1, offset);
   }
   return block;
 }

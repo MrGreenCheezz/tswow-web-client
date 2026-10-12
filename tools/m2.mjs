@@ -23,6 +23,7 @@ const HEADER = {
   globalLoops: 0x14,
   sequences: 0x1c,
   bones: 0x2c,
+  keyBoneLookup: 0x34, // 12.10 6.24: key bone id → bone index, the table Wow.exe's 0x00832ab0 reads
   vertices: 0x3c,
   colors: 0x48,
   textures: 0x50,
@@ -906,7 +907,30 @@ export function parseM2Skeleton(model, options = {}) {
     /** Animations whose `.anim` the caller did not hand over. Zero on a complete client. */
     missingAnimations: missing,
     attachments: readAttachments(model, bones.count),
+    keyBones: readKeyBones(model, bones.count), // 12.10 6.24
   };
+}
+
+/**
+ * 12.10 6.24: the key bone lookup (header 0x34), `keyBones[keyBoneId]` = the bone, −1 for none.
+ *
+ * Wow.exe names bones by these ids, never by index: `CM2Model::SetBoneSequence` (0x00832ab0, and its
+ * clear 0x00832840) maps the id through this table (`+0x34` count, `+0x38` array of the shared
+ * model) and does nothing for an id past its end or a 0xffff entry. The hand closing round a held
+ * item is the case that needs it here: 0x004e7700 sets HandsClosed on ids 8–12 (right fingers and
+ * thumb) or 13–17 (left), and on the playable rigs those are not the descendants of the bone the
+ * hand attachment hangs from (NightElfMale: point 1 on bone 131, under 119; the fingers under 48).
+ * An entry naming a bone past the rig is dropped to −1 rather than trusted.
+ */
+function readKeyBones(model, boneCount) {
+  const block = array(model, HEADER.keyBoneLookup);
+  if (block.count === 0 || block.count > 1024 || !fits(model, block, 2)) return new Int16Array(0);
+  const result = new Int16Array(block.count);
+  for (let index = 0; index < block.count; index++) {
+    const bone = model.readInt16LE(block.offset + index * 2);
+    result[index] = bone >= 0 && bone < boneCount ? bone : -1;
+  }
+  return result;
 }
 
 /**

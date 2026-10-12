@@ -156,7 +156,8 @@ test("renderer gates game-object requests on visibility admission and keeps reje
     "a target/focus pin must not bypass the game-object resident range");
   assert.match(candidatePass, /this\.#gameObjectVisibilityRadius\(object, this\.#gameObjects\.get\(object\.guid\)\)/,
     "candidate classification reads only retained measurements after wire fields");
-  assert.match(candidatePass, /const visible = isPinned \|\| radius === undefined \|\|/,
+  // 12.10 7.33: behind `shown` — an object Wow.exe hides (a portal of the other difficulty).
+  assert.match(candidatePass, /const visible = shown && \(isPinned \|\| radius === undefined \|\|/,
     "unknown silhouettes fail open while trusted static bounds participate in visibility");
   assert.doesNotMatch(candidatePass, /(?:metadata|client|paths)\b|image\(|#placeGameObject\(|#disposeGameObject\(/,
     "candidate classification cannot resolve visual resources or mutate a resident");
@@ -337,7 +338,8 @@ test("game-object effects skip warm-hidden residents before emitter admission", 
   const hiddenAt = objects.indexOf("!rendered.node.visible");
   const emitterAt = objects.indexOf("rendered.wvm.particleEmitters");
   const distanceAt = objects.indexOf("const distance");
-  const pushAt = objects.indexOf("wanted.push");
+  // 12.10 7.33: a particle-only object (an instance portal) goes to its own list, `particleOnly`.
+  const pushAt = objects.indexOf(".push(entry)");
   assert.ok(hiddenAt >= 0, "game-object effects read the final node visibility");
   assert.ok(hiddenAt < emitterAt && hiddenAt < distanceAt && hiddenAt < pushAt,
     "warm-hidden residents are rejected before emitter, distance, or wanted-list work");

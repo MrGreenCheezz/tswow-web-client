@@ -25,6 +25,7 @@ import { encodeWvaAnimations, encodeWvm9 } from "./wvm.mjs";
 import { readGlobalSequences, readParticleEmitters, readRibbonEmitters } from "./m2-particles.mjs";
 import { baseAnimationIds, loadAnimationCatalog } from "./animations.mjs";
 import { parseWmoVisual, wmoDependencies, wmoGroupMeshes } from "./wmo-visual.mjs";
+import { encodeWmoDoodadList } from "./wmo-doodad-list.mjs"; // 12.10 6.25
 import { WWM_TRIANGLE_BUDGET, encodeWwm, encodeWwmGroup } from "./wwm.mjs";
 import { writeBlpAsPng } from "./blp-png.mjs";
 import { publishTexture, SourceMissing, SOURCE_MISSING_EXIT, validTexturePath } from "./generate-texture.mjs";
@@ -185,8 +186,12 @@ export async function publishVisualModel(requestedPath, hash, archives) {
     // has no WMO parser and should not grow one to answer a fetch.
     const split = triangles > WWM_TRIANGLE_BUDGET;
     await writeFileAtomic(join(destination, `${hash}.bin`), encodeWwm(parsed, textureUrls, split ? new Set() : undefined));
+    // 12.10 6.25: the doodad set a game object's WMO draws (a ship's sails, a zeppelin's propellers),
+    // served at `/visual/doodads`; see `wmo-doodad-list.mjs`.
+    await writeFileAtomic(join(destination, `${hash}.doodads.json`), encodeWmoDoodadList(rootWmo, groups));
     const stamp = await sourceStamp(archives, { paths: read });
     await writeSourceStamp(join(destination, `${hash}.bin`), stamp);
+    await writeSourceStamp(join(destination, `${hash}.doodads.json`), stamp); // 12.10 6.25
     if (split) {
       for (const [index, group] of parsed.groups.entries()) {
         const file = join(destination, `${hash}.g${String(index).padStart(3, "0")}.bin`);

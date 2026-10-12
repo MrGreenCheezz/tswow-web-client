@@ -27,6 +27,7 @@
 //
 // 05.10-A7a-F2: the optional WVE1 block (flag 0x08, `visual-v23`) — resolved shader ids, the second
 // unit's transform, M2 lights — and stepped bone channels decoded as steps (`WvaChannelKeys.ts`).
+// 12.10 6.24: `visual-v24` adds the key bone table to WVE1 (`WvmModel.keyBones`).
 
 import { readChannelKeys, steppedKeyCount } from "./WvaChannelKeys.js"; // 05.10-A7a-F2
 
@@ -432,6 +433,12 @@ export interface WvmModel {
   shaderIdsResolved?: boolean;
   /** 05.10-A7a-F2 (6.17): the model's `M2Light` records; absent on an older artifact. */
   lights?: WvmLight[];
+  /**
+   * 12.10 6.24: the M2 key bone lookup — `keyBones[keyBoneId]` is the bone, −1 for none — which
+   * Wow.exe names bones by (`CM2Model::SetBoneSequence`, 0x00832ab0). Absent on an artifact from
+   * before `visual-v24` and on a model whose WVE1 block carried no table.
+   */
+  keyBones?: Int16Array;
 }
 
 const HEADER_SIZE = 72;
@@ -1058,6 +1065,7 @@ function preflightExtensions(view: DataView, at: number, limit: number, batchCou
   const recordSize = view.getUint16(at + 4, true);
   const records = view.getUint16(at + 6, true);
   const lights = view.getUint16(at + 8, true);
+  const keyBones = view.getUint16(at + 10, true); // 12.10 6.24: a reserved zero before `visual-v24`
   if (recordSize < 2) throw new Error("WVM9 extension batch record is too small");
   if (records !== batchCount) throw new Error("WVM9 extension batch count disagrees with the batches");
   let offset = checkedCountEnd(at + WVE1_HEADER_SIZE, records, recordSize, limit, "WVM9 extension batches");
@@ -1070,7 +1078,7 @@ function preflightExtensions(view: DataView, at: number, limit: number, batchCou
     for (const components of WVE1_LIGHT_TRACK_COMPONENTS) track = preflightTrack(view, track, end, components);
     offset = end;
   }
-  return offset;
+  return checkedCountEnd(offset, keyBones, 2, limit, "WVM9 key bones"); // 12.10 6.24
 }
 
 /** 05.10-A7a-F2: pours the WVE1 block onto the decoded model; `preflightExtensions` checked it. */
@@ -1109,6 +1117,13 @@ function readExtensions(view: DataView, at: number, model: WvmModel): void {
   }
   model.shaderIdsResolved = true;
   model.lights = lights;
+  // 12.10 6.24: the key bone table after the lights; `preflightExtensions` checked its length.
+  const keyBoneCount = view.getUint16(at + 10, true);
+  if (keyBoneCount > 0) {
+    const keyBones = new Int16Array(keyBoneCount);
+    for (let index = 0; index < keyBoneCount; index++) keyBones[index] = view.getInt16(offset + index * 2, true);
+    model.keyBones = keyBones;
+  }
 }
 
 function preflightRamp(view: DataView, at: number, limit: number, expectedComponents: number): number {
