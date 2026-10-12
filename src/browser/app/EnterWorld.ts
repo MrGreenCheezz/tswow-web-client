@@ -244,9 +244,6 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
     legacyRealm: JSON.stringify([new URL(gatewayInput.value.replace(/^ws/, "http")).origin, world.realmName]),
     character: character.guid.toString(),
   } : undefined;
-  // Session-scoped: changing this switch takes effect on the next world entry, before either
-  // custom UI loader starts. Both loaders stay idle by default for addon-free comparison runs.
-  const tswowAddonsEnabled = settingOn("tswowAddons");
   const generation = entryLifecycle.begin();
   // Session-scoped subscribes: identical to `world.events.on` / `game.store?.events.on`, except
   // each unsubscribe is recorded for world exit or the next character. Function
@@ -1073,7 +1070,7 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
   try {
     // 9.03: module messages (0x102) are held from here until the JSON windows and the TSWoW Lua
     // have subscribed, then released in arrival order (`CustomPacketRegistry.beginBacklog`).
-    if (tswowAddonsEnabled) world.customPackets.beginBacklog({ expect: ["modules", "lua"] });
+    world.customPackets.beginBacklog({ expect: ["modules", "lua"] });
     const location = await world.loginCharacter(character.guid);
     // A logout or a new realm can retire this attempt while its login reply is in flight. Do not
     // rebuild asset clients into the context that now belongs to another world.
@@ -1348,29 +1345,27 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
     // Loaded here rather than at start-up because a window is only useful once there is a session
     // behind it, and because the packet registry it fills belongs to this world client and goes
     // with it.
-    if (tswowAddonsEnabled) {
-      const modules = createModuleLoader(gatewayInput.value, world.customPackets);
-      game.modules = modules;
-      modules.onStatus = (message, error) => {
-        // Only a problem, and only ever in grey — the same shape as `soundProblem` below, for the
-        // same two reasons. A module file that will not load is worth a status line and nothing
-        // louder: every built-in window works without one, and the whole list is in the diagnostics
-        // window's «Окна» and «Пакеты» tabs with the file that carried each problem. And this line
-        // belongs to `showWorldState`, which repaints its *text* once a frame and never its class —
-        // so a colour left here outlives the sentence that justified it and leaves «Объектов в
-        // памяти: N» red for the rest of the session. Announcing the ordinary answer (today, on this
-        // machine, «модули: файлов для клиента нет») did exactly that on every login, in grey.
-        if (game.modules !== modules || !error) return;
-        notice(message);
-        worldStatus.className = "muted";
-        worldStatus.textContent = message;
-      };
-      modules.onLoaded = () => {
-        if (game.modules !== modules) return;
-        showUnhandledOpcodes();
-      };
-      void modules.load().finally(() => world.customPackets.consumerReady("modules"));
-    }
+    const modules = createModuleLoader(gatewayInput.value, world.customPackets);
+    game.modules = modules;
+    modules.onStatus = (message, error) => {
+      // Only a problem, and only ever in grey — the same shape as `soundProblem` below, for the
+      // same two reasons. A module file that will not load is worth a status line and nothing
+      // louder: every built-in window works without one, and the whole list is in the diagnostics
+      // window's «Окна» and «Пакеты» tabs with the file that carried each problem. And this line
+      // belongs to `showWorldState`, which repaints its *text* once a frame and never its class —
+      // so a colour left here outlives the sentence that justified it and leaves «Объектов в
+      // памяти: N» red for the rest of the session. Announcing the ordinary answer (today, on this
+      // machine, «модули: файлов для клиента нет») did exactly that on every login, in grey.
+      if (game.modules !== modules || !error) return;
+      notice(message);
+      worldStatus.className = "muted";
+      worldStatus.textContent = message;
+    };
+    modules.onLoaded = () => {
+      if (game.modules !== modules) return;
+      showUnhandledOpcodes();
+    };
+    void modules.load().finally(() => world.customPackets.consumerReady("modules"));
     // Sound. Three opcodes have carried a `SoundEntries` id into an event since the packet slice
     // and nothing has ever listened; seven sound tables are vendored; the archives hold 19,786
     // `.wav` and 1,194 `.mp3` and no `.ogg` at all, so a browser plays every one without a
@@ -1475,9 +1470,10 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
     });
     showWorldState(world.state);
     // Switching UI retires the previous VM and its borrowed canvases, without reconnecting.
-    // The module remains lazy when both original UI and TSWoW addons are disabled.
-    if (!tswowAddonsEnabled) systemLine("Аддоны TSWoW отключены. Включить: Настройки → Интерфейс → Аддоны TSWoW.");
-    const uiMode = new FrameXmlModeController(tswowAddonsEnabled, async () => {
+    // Owner, 12.10: the TSWoW modules' interface is part of the client's, as interface patches are in
+    // Wow.exe — present exactly when a module brings it, with no switch of its own; so the WebClient
+    // interface mounts a VM for the modules' addons too.
+    const uiMode = new FrameXmlModeController(true, async () => {
       const module = await import("../framexml/FrameXmlWorldMount.js");
       return {
         unmount: module.unmountFrameXmlVertical,
@@ -1486,7 +1482,7 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
           try {
             return await module.mountFrameXmlVertical({
               addonsOnly: !frameXmlEnabled,
-              includeActiveTsAddons: tswowAddonsEnabled,
+              includeActiveTsAddons: true,
               ...(savedVariablesScope ? { savedVariablesScope } : {}),
               // 9.06: a variable that will not save is said once, in grey, like a module file.
               onSavedVariableProblem: (problem) => {

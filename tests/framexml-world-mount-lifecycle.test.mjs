@@ -426,24 +426,22 @@ test("EnterWorld watches the saved UI preference and scopes runtime switching to
   assert.match(source, /uiMode\.select\(frameXmlFlagEnabled\(window\.location\.search, settingOn\("originalFrameXml"\)\)\)/);
   assert.match(source, /installNativeWowUiSkin\(game\.gatewayOrigin\);\s*mountNativeCharacterPortrait/,
     "both modes retain a complete custom fallback");
-  assert.match(source, /const tswowAddonsEnabled = settingOn\("tswowAddons"\);/,
-    "both loaders use the preference captured for this world entry");
-  assert.match(source, /if \(tswowAddonsEnabled\) \{\s*const modules = createModuleLoader/,
-    "disabled modules cannot start their requests and reload polling");
-  assert.match(source, /new FrameXmlModeController\(tswowAddonsEnabled, async \(\) => \{\s*const module = await import/);
+  // Owner, 12.10: the modules' interface is part of the client's, as patches are in Wow.exe — no switch.
+  assert.doesNotMatch(source, /settingOn\("tswowAddons"\)|tswowAddonsEnabled/, "the modules' interface has no switch");
+  assert.match(source, /\n    const modules = createModuleLoader\(/, "the modules' windows load on every world entry");
+  assert.match(source, /new FrameXmlModeController\(true, async \(\) => \{\s*const module = await import/);
   assert.match(source, /entryLifecycle\.track\(\(\) => uiMode\.dispose\(\)\)/);
   assert.match(source, /entryLifecycle\.track\(watchSettingsApplied\(syncUiMode\)\)/);
   assert.match(source, /mountFrameXmlVertical\(\{\s*addonsOnly: !frameXmlEnabled\s*[,}]/,
     "the same policy selects an addon overlay for ordinary entry and the full HUD only for diagnostics");
-  assert.match(source, /includeActiveTsAddons: tswowAddonsEnabled/,
-    "opting into stock FrameXML does not implicitly opt back into TSWoW addons");
+  assert.match(source, /includeActiveTsAddons: true,/, "the modules' addons run in both interfaces");
   assert.doesNotMatch(source, /new URLSearchParams\(window\.location\.search\)\.get\("framexml"\) === "1"/,
     "the old query opt-in must not remain on the ordinary route");
 });
 
 test("EnterWorld holds module messages from login until the JSON windows and the Lua are subscribed (9.03)", async () => {
   const source = await readFile(new URL("../src/browser/app/EnterWorld.ts", import.meta.url), "utf8");
-  const begin = source.search(/if \(tswowAddonsEnabled\) world\.customPackets\.beginBacklog\(\{ expect: \["modules", "lua"\] \}\);/);
+  const begin = source.search(/\n    world\.customPackets\.beginBacklog\(\{ expect: \["modules", "lua"\] \}\);/);
   const login = source.indexOf("await world.loginCharacter(");
   assert.ok(begin > 0 && begin < login, "the backlog starts before the login packets can arrive");
   assert.match(source, /void modules\.load\(\)\.finally\(\(\) => world\.customPackets\.consumerReady\("modules"\)\);/,

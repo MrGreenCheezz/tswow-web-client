@@ -316,12 +316,6 @@ export const SETTING_DEFINITIONS: readonly SettingDefinition[] = [
     hint: "Включено — оригинальные окна и панели WoW 3.3.5a. Выключено — экспериментальный интерфейс WebClient. Переключается в игре, выбор сохраняется.",
   },
   {
-    // Owner, 12.10 (decision 0.4b, 9.02): the addons are the installed TSWoW modules' own, as in the
-    // TSWoW client — on, and present exactly when a module brings one.
-    id: "tswowAddons", label: "Аддоны TSWoW", group: "Интерфейс", kind: "boolean", fallback: true,
-    hint: "Lua-аддоны и окна модулей TSWoW, как в клиенте TSWoW: есть ровно те, что приносят модули установки. После изменения заново войдите в мир или обновите страницу.",
-  },
-  {
     id: "showFps", label: "Показывать FPS", group: "Интерфейс", kind: "boolean", fallback: false,
     hint: "Счётчик сверху: средний FPS, среднее и максимальное время кадра за последние 120 кадров. Горячую клавишу можно изменить в управлении.",
   },

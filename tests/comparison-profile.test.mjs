@@ -19,7 +19,6 @@ test("comparison profile fixes optional graphics without resetting player prefer
     uiScale: 115,
     cameraDistancePercent: 200,
     chatTimestamps: true,
-    tswowAddons: true,
   };
   const profile = comparisonGraphicsSettings(original);
   assert.equal(profile.renderScale, 100);
@@ -38,7 +37,7 @@ test("comparison profile fixes optional graphics without resetting player prefer
     assert.ok(SETTING_DEFINITIONS.some((definition) => definition.id === id), `${id} is a real setting`);
     assert.equal(profile[id], value, id);
   }
-  for (const id of ["volumeMaster", "uiScale", "cameraDistancePercent", "chatTimestamps", "tswowAddons"]) {
+  for (const id of ["volumeMaster", "uiScale", "cameraDistancePercent", "chatTimestamps"]) {
     assert.equal(profile[id], original[id], `${id} remains the player's choice`);
   }
   assert.equal(original.renderScale, 65, "preparing a profile does not mutate the saved source object");

@@ -129,7 +129,7 @@ test("every other browser setting is a webclient_ CVar, once, and the spellbook'
 test("the two mode switches have no default, and switching the interface off waits for the calling Lua", async () => {
   const { adapter, writes, values } = fakeSettings();
   assert.equal(adapter.getDefault("webclient_originalFrameXml"), undefined, "«По умолчанию» leaves the interface alone");
-  assert.equal(adapter.getDefault("webclient_tswowAddons"), undefined);
+  assert.equal(adapter.get("webclient_tswowAddons"), undefined, "the modules' interface has no switch (owner, 12.10)");
   assert.equal(adapter.get("webclient_originalFrameXml"), "1", "owner, 12.10: the stock interface by default");
   assert.equal(adapter.set("webclient_originalFrameXml", "0"), true);
   assert.deepEqual(writes, [], "the write that unmounts this VM is not made inside its Okay handler");

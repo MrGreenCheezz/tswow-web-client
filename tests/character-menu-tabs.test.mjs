@@ -76,8 +76,8 @@ test("character/spellbook routes share gated original owners and keep native fal
   assert.match(productionMount, /publishFrameXmlCharacter\s*\(/);
   assert.match(productionMount, /includeActiveTsAddons:\s*options\.includeActiveTsAddons\s*\?\?\s*true/,
     "direct mounts retain generated blocks from the winning FrameXML TOC by default");
-  assert.match(entry, /new FrameXmlModeController\(tswowAddonsEnabled[\s\S]*?mountFrameXmlVertical\(\{[\s\S]*?includeActiveTsAddons:\s*tswowAddonsEnabled/,
-    "world entry passes the addon preference, including the stock-only FrameXML diagnostic");
+  assert.match(entry, /new FrameXmlModeController\(true[\s\S]*?mountFrameXmlVertical\(\{[\s\S]*?includeActiveTsAddons:\s*true/,
+    "world entry runs the modules' addons in either interface (owner, 12.10: no switch)");
   assert.match(productionMount, /resources\.talentOwner\s*=\s*patchedTalentOwner\s*\?\?\s*createLazyFrameXmlTalentOwner/);
   assert.match(productionMount, /hideTalentsWindow\(\);\s*resources\.talentOwnerCleanup\s*=\s*publishFrameXmlTalent\(resources\.talentOwner\)/,
     "patched acquisition closes native before publishing the one N owner");

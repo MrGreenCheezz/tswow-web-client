@@ -133,10 +133,12 @@ export function frameXmlWebClientCVar(setting: string): string {
   return `webclient_${setting}`;
 }
 
-/** Switches whose write rebuilds the interface; see `noDefault` and `deferred`. */
+/**
+ * The switch whose write rebuilds the interface; see `noDefault` and `deferred`. The TSWoW modules'
+ * addons have no switch since 12.10 (owner): they are part of the interface, as patches are in Wow.exe.
+ */
 const WEBCLIENT_MODE_SWITCHES: Readonly<Record<string, Pick<FrameXmlSettingsCVarDefinition, "noDefault" | "deferred">>> = {
   originalFrameXml: { noDefault: true, deferred: true },
-  tswowAddons: { noDefault: true },
 };
 
 /**

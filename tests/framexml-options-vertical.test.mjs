@@ -292,7 +292,7 @@ test("the WebClient category: every control a live stock control, Cancel reverts
   assert.equal(values().renderScale, 100);
   assert.equal(values().autoQuality, false, "off by default (owner, 12.10), and Cancel restores it");
   lua(boot, `ShowUIPanel(InterfaceOptionsFrame) InterfaceOptionsFrame_OpenToCategory(InterfaceOptionsWebClientInterfacePanel)
-    InterfaceOptionsWebClientInterfacePanel1:Click() InterfaceOptionsWebClientInterfacePanel3:Click()`, 0);
+    InterfaceOptionsWebClientInterfacePanel1:Click() InterfaceOptionsWebClientInterfacePanel2:Click()`, 0);
   await Promise.resolve();
   assert.equal(values().originalFrameXml, false, "the interface switch (on by default) lands after the Lua call");
   assert.equal(values().showFps, true);

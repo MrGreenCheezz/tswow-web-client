@@ -30,11 +30,10 @@ function bootFor(files, library = [], includeActiveTsAddons = true) {
 
 const root = "interface/framexml/tsaddons/author-new-module/addon/";
 
-test("TSWoW addons are on by default; disabled, they execute neither the shared library nor module scripts", async () => {
-  assert.equal(defaultSettings().tswowAddons, true, "owner, 12.10: the modules' addons load as in the TSWoW client");
-  assert.equal(parseSettings('{"showFps":true}').tswowAddons, true,
-    "a pre-existing settings blob without the key starts with the modules' addons on");
-  assert.equal(parseSettings('{"tswowAddons":false}').tswowAddons, false, "a saved «off» stays off");
+test("the modules' addons have no switch; a boot without them executes neither the shared library nor module scripts", async () => {
+  // Owner, 12.10: a module's interface is part of the client's, as patches are in Wow.exe.
+  assert.equal("tswowAddons" in defaultSettings(), false, "no setting");
+  assert.equal(parseSettings('{"tswowAddons":false}').tswowAddons, undefined, "a saved «off» from before is dropped");
   const files = {
     "interface/framexml/tsaddons/lib/probe.lua": "AddonLibraryStarted = true",
     [root + "addon.xml"]: '<Ui><Script file="addon.lua"/></Ui>',
