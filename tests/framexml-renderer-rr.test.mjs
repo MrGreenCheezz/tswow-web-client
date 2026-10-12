@@ -610,7 +610,7 @@ test("Blizzard_RaidUI loads on demand with no Lua error, and the Raid tab's Load
     // Blizzard_RaidUI.xml ends with an inline `RaidGroupFrame_OnLoad();` that takes over RaidFrame.
     assert.deepEqual(lua("return RaidFrame:GetScript('OnEvent') == RaidGroupFrame_OnEvent and 1 or 0"), [1]);
     // LoadAddOn now answers loaded, so FrameXmlFriendsOwner's RaidFrame_LoadUI runs the stock body.
-    assert.deepEqual(lua("return LoadAddOn('Blizzard_RaidUI')", 2), [true, undefined]);
+    assert.deepEqual(lua("return LoadAddOn('Blizzard_RaidUI')", 2), [1, undefined]); // 3.18: 1, as Wow.exe
     lua("RaidFrame_LoadUI()", 0);
     assert.deepEqual(loaded.errors.slice(errors).map((error) => error.message), []);
   } finally {

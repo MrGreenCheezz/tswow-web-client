@@ -52,7 +52,7 @@ test("the modules' addons have no switch; a boot without them executes neither t
       assert.equal(boot.vm.getGlobal("AddonLibraryStarted") === true, enabled);
       assert.equal(boot.vm.getGlobal("AddonModuleStarted") === true, enabled);
       assert.equal(boot.bridge.getFrame("AddonProbeFrame") !== undefined, enabled);
-      assert.equal(boot.isAddonLoaded("author-new-module"), enabled);
+      assert.equal(boot.isModuleLoaded("author-new-module"), enabled); // 3.46
       entrypoints = discoverFrameXmlAddonEntrypoints(boot);
       assert.equal(entrypoints.commands.some(command => command.name === "addonprobe"), enabled);
       assert.deepEqual(boot.errors, []);
@@ -113,8 +113,9 @@ test("a new TSWoW module is discovered without a name whitelist and finishes bef
   });
   try {
     await boot.load();
-    assert.equal(boot.vm.getGlobal("LoadedWhileExecuting"), false);
-    assert.equal(boot.isAddonLoaded("AUTHOR-NEW-MODULE"), true);
+    // 3.46: a module is no add-on in Wow.exe, while it runs or after; the host knows it finished.
+    assert.equal(boot.vm.getGlobal("LoadedWhileExecuting"), undefined);
+    assert.equal(boot.isModuleLoaded("AUTHOR-NEW-MODULE"), true); // 3.46: the host's record
     assert.equal(boot.tsAddonResults[0].ok, true);
     assert.deepEqual(boot.tsAddonResults[0].loaded, [root + "addon.xml", root + "addon.lua"]);
     boot.pump.fire("PLAYER_ENTERING_WORLD");
@@ -203,7 +204,7 @@ test("a module in the generated block raises its own stock dialog and error line
   let surfaces;
   try {
     await boot.load();
-    assert.equal(boot.isAddonLoaded("contract-dialogs"), true);
+    assert.equal(boot.isModuleLoaded("contract-dialogs"), true); // 3.46
     assert.deepEqual(boot.tsAddonResults.map((result) => [result.module, result.ok]), [["contract-dialogs", true]]);
     const presentation = new FrameXmlTsAddonPresentation(boot);
     surfaces = mountFrameXmlAddonsOnlySurfaces(boot, seam, {});
@@ -251,7 +252,7 @@ for (const [name, files, library] of [
     const boot = bootFor(files, library);
     try {
       await boot.load();
-      assert.equal(boot.isAddonLoaded("author-new-module"), false);
+      assert.equal(boot.isModuleLoaded("author-new-module"), false); // 3.46
       assert.equal(boot.tsAddonResults[0].ok, false);
       assert.ok(boot.tsAddonResults[0].errors.length > 0);
       assert.equal((await boot.loadAddon("author-new-module")).ok, false);

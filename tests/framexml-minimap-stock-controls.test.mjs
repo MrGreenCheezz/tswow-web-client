@@ -96,7 +96,7 @@ test("MPQ minimap world-map button and stock clock go through the host owners", 
     assert.equal(worldMap.visible, false, "the click did not show WorldMapFrame by itself");
 
     // Blizzard_TimeManager: the host LoD path, then TimeManagerClockButton_Show() for showClock.
-    assert.equal(luaString(boot, 'IsAddOnLoaded("Blizzard_TimeManager")'), "false");
+    assert.equal(luaString(boot, 'IsAddOnLoaded("Blizzard_TimeManager")'), "nil"); // 3.46: nil, as Wow.exe
     assert.equal(boot.bridge.getFrame("TimeManagerClockButton")?.name, undefined, "no clock before the load");
     const errorsBefore = boot.errorCount;
     assert.equal(await loadFrameXmlStockClock(boot), true);

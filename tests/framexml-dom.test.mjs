@@ -115,7 +115,7 @@ test("TSWoW projection paints XML and lazy Lua UI over native anchors without pa
   let renderer;
   try {
     await boot.load();
-    assert.equal(boot.isAddonLoaded("future-ui"), true);
+    assert.equal(boot.isModuleLoaded("future-ui"), true); // 3.46
     assert.equal(boot.tsAddonOwner(boot.bridge.getFrame("FutureCharacterStats")), "future-ui");
     const presentation = new FrameXmlTsAddonPresentation(boot);
     const host = document.createElement("section");

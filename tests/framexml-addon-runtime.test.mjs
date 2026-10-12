@@ -48,7 +48,11 @@ async function bootWith(sourceFiles) {
   return boot;
 }
 
-test("hyphenated TSWoW marker names are reported as already-loaded modules", async () => {
+// 3.46: a TSWoW module is glued into FrameXML.toc — in Wow.exe an interface patch, not an add-on — so
+// the Lua C API answers its name as any name absent from Interface/AddOns: IsAddOnLoaded nil, LoadAddOn
+// MISSING (GetAddOnMetadata already nil, tests/framexml-addon-metadata.test.mjs). The host still knows
+// the module ran (isModuleLoaded), and an add-on's answers are untouched.
+test("hyphenated TSWoW marker names are modules the host knows, and no add-ons to Lua", async () => {
   const boot = new FrameXmlBoot({
     provider: createFixtureProvider({
       "interface/framexml/framexml.toc": [
@@ -68,9 +72,21 @@ test("hyphenated TSWoW marker names are reported as already-loaded modules", asy
   });
   try {
     await boot.load();
-    assert.equal(boot.isAddonLoaded("retail-talents"), true);
-    assert.equal(boot.isAddonLoaded("RETAIL-TALENTS"), true);
+    assert.equal(boot.isModuleLoaded("retail-talents"), true);
+    assert.equal(boot.isModuleLoaded("RETAIL-TALENTS"), true);
+    assert.equal(boot.isModuleLoaded("no-such-module"), false);
     assert.equal(boot.vm.getGlobal("RetailTalentsMarkerExecuted"), true);
+    const call = (code, results) => {
+      const fn = boot.vm.compileFunction(code, "module-not-addon", []);
+      try { return boot.vm.call(fn, [], results); } finally { boot.vm.release(fn); }
+    };
+    assert.deepEqual(call("return IsAddOnLoaded('retail-talents')", 2), [undefined, undefined], "IsAddOnLoaded: nil");
+    assert.deepEqual(call("return IsAddOnLoaded('RETAIL-TALENTS') == nil", 1), [true]);
+    assert.deepEqual(call("return LoadAddOn('retail-talents')", 2), [false, "MISSING"], "LoadAddOn: MISSING");
+    assert.deepEqual(call("return LoadAddOn('NoSuchAddOn')", 2), [false, "MISSING"], "as an unknown name");
+    assert.equal(boot.isAddonLoaded("retail-talents"), false, "the add-on view agrees with Lua");
+    assert.equal((await boot.loadAddon("retail-talents")).status, "missing", "no add-on of that name to load");
+    assert.equal(boot.isModuleLoaded("retail-talents"), true, "the host's record is unchanged");
   } finally {
     boot.close();
   }
@@ -96,7 +112,7 @@ test("load-on-demand add-on shares the boot VM and registry, and is idempotent",
     const loaded = boot.vm.globalFunction("LoadAddOn");
     const status = boot.vm.call(loaded, ["Blizzard_TalentUI"], 1);
     boot.vm.release(loaded);
-    assert.deepEqual(status, [true]);
+    assert.deepEqual(status, [1], "3.18: LoadAddOn answers 1, as Wow.exe");
 
     const second = await boot.loadAddon("BLIZZARD_TALENTUI");
     assert.equal(second.ok, true);

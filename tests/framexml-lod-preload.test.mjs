@@ -86,3 +86,30 @@ test("the mount's list: the trainer first, then the client's LoD add-ons outside
   // DEC-A 3.24: the owner decided 04.10 — preload both: the auction and guild-bank add-ons follow.
   ]), ["Blizzard_TrainerUI", "Blizzard_TradeSkillUI", "Blizzard_AuctionUI", "Blizzard_GuildBankUI", "MSBTOptions"]);
 });
+
+test("3.18 (owner, 12.10): the owners' add-ons are loaded as decided 04.10; third-party ones are only prefetched", async () => {
+  const { frameXmlLodPrefetchNames, FRAMEXML_PRELOADED_OWNER_ADDONS } = await import("../dist/code/browser/framexml/FrameXmlLodPreload.js");
+  // DEC-A 3.24, unchanged: these four are loaded and run in the loading window.
+  assert.deepEqual([...FRAMEXML_PRELOADED_OWNER_ADDONS],
+    ["Blizzard_TrainerUI", "Blizzard_TradeSkillUI", "Blizzard_AuctionUI", "Blizzard_GuildBankUI"]);
+  // The mount prefetches exactly these (FrameXmlBoot.prefetchAddon) and loads the rest of its list.
+  assert.deepEqual(frameXmlLodPrefetchNames([
+    { name: "MikScrollingBattleText", loadOnDemand: false },
+    { name: "MSBTOptions", loadOnDemand: true },
+    { name: "Blizzard_TrainerUI", loadOnDemand: true },
+    { name: "blizzard_combatlog", loadOnDemand: true },
+    { name: "SomeOptions", loadOnDemand: true },
+  ]), ["MSBTOptions", "SomeOptions"]);
+
+  // The mount's step per name (FrameXmlOwnerPreload.ts frameXmlLodPreloadStep): prefetch or load.
+  const { frameXmlLodPreloadStep } = await import("../dist/code/browser/framexml/FrameXmlOwnerPreload.js");
+  const calls = [];
+  const boot = {
+    vm: undefined,
+    loadAddon: async (name) => { calls.push(["load", name]); return { ok: true }; },
+    prefetchAddon: async (name) => { calls.push(["prefetch", name]); return { ok: true }; },
+  };
+  const step = frameXmlLodPreloadStep(boot, ["MSBTOptions"]);
+  for (const name of ["Blizzard_TrainerUI", "msbtoptions", "Blizzard_TradeSkillUI"]) assert.deepEqual(await step(name), { ok: true });
+  assert.deepEqual(calls, [["load", "Blizzard_TrainerUI"], ["prefetch", "msbtoptions"], ["load", "Blizzard_TradeSkillUI"]]);
+});

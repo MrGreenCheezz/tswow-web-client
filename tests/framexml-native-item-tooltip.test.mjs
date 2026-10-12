@@ -116,7 +116,7 @@ test("native inventory hover executes generated custom-stats requests and render
   const activeChanges = [];
   try {
     await boot.load();
-    assert.equal(boot.isAddonLoaded("custom-stats"), true);
+    assert.equal(boot.isModuleLoaded("custom-stats"), true); // 3.46
     cleanup = installFrameXmlNativeItemTooltip(boot, (active) => activeChanges.push(active));
     const equipmentNode = itemSlot(slot(255, 0, 99001, 2n));
     equipmentNode.dispatch("pointerenter");

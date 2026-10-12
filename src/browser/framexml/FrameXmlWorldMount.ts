@@ -79,8 +79,10 @@ import { resolveFrameXmlReputationRows } from "./FrameXmlReputationResolver.js";
 import { FrameXmlBoot, FRAMEXML_VERTICAL_EXERCISE_EVENTS } from "./FrameXmlBoot.js";
 import { loadFrameXmlCharacterStats } from "./FrameXmlCharacterStats.js";
 import { fetchFrameXmlClientAddons } from "./FrameXmlClientAddons.js";
-import { frameXmlLodPreloadNames, frameXmlPreloadServerDown, startFrameXmlLodPreload } from "./FrameXmlLodPreload.js"; // L5c 3.24: the stop
-import { frameXmlPreloadOwnerAddon } from "./FrameXmlOwnerPreload.js"; // L5c 3.24
+import {
+  frameXmlLodPrefetchNames, frameXmlLodPreloadNames, frameXmlPreloadServerDown, startFrameXmlLodPreload,
+} from "./FrameXmlLodPreload.js"; // L5c 3.24: the stop; 3.18 (owner, 12.10): the prefetched names
+import { frameXmlLodPreloadStep } from "./FrameXmlOwnerPreload.js"; // L5c 3.24; 3.18 (owner, 12.10)
 import { frameXmlCombatLogOwned, loadFrameXmlCombatLog } from "./FrameXmlCombatLogOwner.js";
 import { createFrameXmlFallbackNotices } from "./FrameXmlFallbackNotices.js";
 import { frameXmlGlobalSelfCallHint } from "./FrameXmlTsAddonLint.js";
@@ -3671,17 +3673,20 @@ export async function mountFrameXmlVertical(
       // 3.01: the stock combat log, in this loading window like the clock (FrameXmlCombatLogOwner.ts).
       if (epoch === mountEpoch) await loadFrameXmlCombatLog(boot);
     }
-    // 3.18/3.24: the load-on-demand add-ons whose first use would otherwise miss them — the trainer
-    // (its first open then skips the native window) and the client's own LoD add-ons outside
-    // FRAMEXML_LOD_POLICY (MSBTOptions for /msbt) — in this loading window, like the clock above,
-    // never after the reveal: a Lua file runs as one block (Blizzard_TrainerUI.lua 11-18 ms,
-    // MSBTOptionsPopups.lua 24 ms measured in Node), which no idle slice of a 144 Hz frame fits.
+    // 3.18/3.24: the load-on-demand add-ons whose first use would otherwise miss them, in this loading
+    // window like the clock above, never after the reveal: a Lua file runs as one block
+    // (Blizzard_TrainerUI.lua 11-18 ms, MSBTOptionsPopups.lua 24 ms measured in Node), which no idle
+    // slice of a 144 Hz frame fits. The owners' add-ons (the trainer: its first open then skips the
+    // native window) are loaded; 3.18 (owner, 12.10): the client's own LoD add-ons outside
+    // FRAMEXML_LOD_POLICY (MSBTOptions for /msbt) are only read, and their LoadAddOn runs them inside
+    // the call, as Wow.exe does (FrameXmlLodPreload.ts).
     if (epoch === mountEpoch) {
       let lodPreload: ReturnType<typeof startFrameXmlLodPreload> | undefined;
       lodPreload = startFrameXmlLodPreload({
         names: frameXmlLodPreloadNames(clientAddons),
         // L5c 3.24: the auction and guild-bank add-ons need their owners' host preparation first.
-        load: (name) => frameXmlPreloadOwnerAddon(boot, name),
+        // 3.18 (owner, 12.10): the third-party names are prefetched instead (FrameXmlOwnerPreload.ts).
+        load: frameXmlLodPreloadStep(boot, frameXmlLodPrefetchNames(clientAddons)),
         idle: async () => { if (epoch !== mountEpoch) lodPreload?.cancel(); },
         onResult: (result) => {
           if (!result.ok) console.warn(`[FrameXML] ${result.name} was not preloaded: ${result.message ?? "failed"}`);

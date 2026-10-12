@@ -1853,7 +1853,7 @@ test("addon overlay preserves native HUD and releases commands, menu actions and
       const unsubscribe = subscribe(callback);
       return () => { record.renderSubscriptions -= 1; unsubscribe(); };
     };
-    this.isAddonLoaded = (name) => name === "lifecycle-addon";
+    this.isModuleLoaded = (name) => name === "lifecycle-addon"; // 3.46: the host asks this of a module
     this.bridge.CreateFrame("Frame", "UIParent");
     const menu = this.bridge.CreateFrame("Frame", "GameMenuFrame");
     this.bridge.CreateFrame("Button", "LifecycleMenuButton", menu);
@@ -1973,7 +1973,7 @@ function installAddonDialogsLoad({ hideOnPress = false } = {}) {
     const generation = boots.length;
     boots.push(this);
     seams.push({ seam: this.seam, closed: false });
-    this.isAddonLoaded = () => false;
+    this.isModuleLoaded = () => false; // 3.46
     this.bridge.CreateFrame("Frame", "UIParent");
     this.bridge.CreateFrame("Frame", "GameMenuFrame");
     this.bridge.CreateFrame("Frame", "LifecycleStaticPopup");

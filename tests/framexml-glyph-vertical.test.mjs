@@ -286,7 +286,7 @@ async function mountedBesideAddon() {
 test("beside an add-on's ToggleTalentFrame, TOGGLEINSCRIPTION opens stock PlayerTalentFrame on its glyph tab and N the add-on's window", withClient, async () => {
   const { boot, owners, cleanup, failures } = await mountedBesideAddon();
   try {
-    assert.equal(boot.isAddonLoaded(SIDE_MODULE), true);
+    assert.equal(boot.isModuleLoaded(SIDE_MODULE), true); // 3.46
     assert.ok(owners.glyphTalent, "the glyph key keeps a stock talent frame of its own");
     const errors = boot.errors.length;
     const sideWindow = () => boot.bridge.getFrame("GlyphSideTalentWindow");

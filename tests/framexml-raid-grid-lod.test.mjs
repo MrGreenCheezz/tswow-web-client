@@ -277,7 +277,7 @@ test("Blizzard_RaidUI: nothing outside a raid, then the first raid roster loads 
       [`${ADDON_PREFIX}localization.lua`, 51],
     ]);
     assert.equal(boot.bridge.frames.length - widgets, 794, "the add-on's widget tree, measured");
-    assert.deepEqual(lua(boot, "return LoadAddOn('Blizzard_RaidUI')", 2), [true, undefined]);
+    assert.deepEqual(lua(boot, "return LoadAddOn('Blizzard_RaidUI')", 2), [1, undefined]); // 3.18: 1, as Wow.exe
     assert.deepEqual(lua(boot, "return RaidFrame:GetScript('OnEvent') == RaidGroupFrame_OnEvent", 1), [true]);
     // The gate's RaidFrame_Update filled group 1 with the canned five, the player last.
     assert.equal(shownButtons(boot), "1=Альфа,2=Бета,3=Гамма,4=Дельта,5=Игрок");

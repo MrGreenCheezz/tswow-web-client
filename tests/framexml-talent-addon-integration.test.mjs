@@ -269,7 +269,7 @@ test("production subset executes the active retail-talents hook as the only tale
 
   try {
     const inventory = await boot.load();
-    assert.equal(boot.isAddonLoaded("retail-talents"), true,
+    assert.equal(boot.isModuleLoaded("retail-talents"), true, // 3.46
       "the marker and generated Lua block survive the production subset");
     assert.ok(inventory.files.addon > 0);
     assert.equal(boot.bridge.getFrame("PlayerTalentFrame")?.name, undefined,

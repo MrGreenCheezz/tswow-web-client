@@ -145,7 +145,7 @@ test("an add-on's ToggleTalentFrame owns N and its window, under any module or f
     let failures = 0;
     let cleanup;
     try {
-      assert.equal(h.boot.isAddonLoaded(module), true);
+      assert.equal(h.boot.isModuleLoaded(module), true); // 3.46: the host's record, not IsAddOnLoaded
       assert.equal(frameXmlEntryPointReplaced(h.boot, "ToggleTalentFrame"), true, "the add-on's function, by identity");
       assert.equal(frameXmlEntryPointReplaced(h.boot, "ToggleGlyphFrame"), false);
       assert.equal(frameXmlEntryPointReplaced(h.boot, "OpenGlyphFrame"), false);

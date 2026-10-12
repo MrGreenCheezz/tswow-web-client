@@ -79,6 +79,7 @@ import {
   FrameXmlAddonRuntime,
   frameXmlAddonNotReadyText,
   type FrameXmlAddonRuntimeResult,
+  type FrameXmlAddonPrefetchResult,
 } from "./FrameXmlAddonRuntime.js";
 import {
   FrameXmlClientNetworkBridge,
@@ -1003,9 +1004,9 @@ export class FrameXmlBoot {
         ]);
         unhandled = this.vm.errors.length;
         handled = this.#handledErrors.length;
+        // 3.46: the host's own record of the modules (isModuleLoaded); Lua's add-on C API does not
+        // see them, as Wow.exe's does not.
         this.#tsAddonResults = tsAddons.results;
-        this.#addons.setInitialModules(this.#tsAddonResults.filter((addon) => addon.ok)
-          .map((addon) => addon.module));
       },
       maxFiles: 1024,
     });
@@ -1391,9 +1392,34 @@ export class FrameXmlBoot {
     return await this.#addons.loadAddon(name);
   }
 
-  /** Synchronous status view used by the FrameXML IsAddOnLoaded C API. */
+  /**
+   * 3.18 (owner, 12.10): read a third-party LoD add-on's files (and its dependencies') into memory
+   * without running anything, so a later Lua `LoadAddOn` runs it inside the call as Wow.exe does
+   * (FrameXmlAddonRuntime.prefetch). The mount calls it in its loading window (FrameXmlLodPreload.ts).
+   */
+  async prefetchAddon(name: string): Promise<FrameXmlAddonPrefetchResult> {
+    return await this.#addons.prefetch(name);
+  }
+
+  /**
+   * Whether an add-on (a client add-on or a Blizzard LoD one) is loaded — what the FrameXML
+   * IsAddOnLoaded C API answers. 3.46: a TSWoW module is no add-on here, as in Wow.exe; ask
+   * `isModuleLoaded` for one.
+   */
   isAddonLoaded(name: unknown): boolean {
     return this.#addons.isLoaded(name);
+  }
+
+  /**
+   * 3.46: host-only — a TSWoW module glued into FrameXML.toc ran to completion without an error
+   * (`tsAddonResults`). The modules' windows, entry points and presentation ask this; Lua's
+   * `IsAddOnLoaded`/`LoadAddOn` answer a module nil/MISSING, as Wow.exe does.
+   */
+  isModuleLoaded(name: unknown): boolean {
+    if (typeof name !== "string") return false;
+    const wanted = name.trim().toLowerCase();
+    return wanted.length > 0
+      && this.#tsAddonResults.some((addon) => addon.ok && addon.module.toLowerCase() === wanted);
   }
 
   /**
@@ -1478,7 +1504,8 @@ export class FrameXmlBoot {
     vm.registerGlobal("GetCursorPosition", () => [...this.bridge.mousePosition]);
     // File IO is asynchronous in the browser. LoadAddOn therefore reports the current
     // synchronous state; the host calls loadAddon() and only then exposes a loaded LoD module to
-    // Lua. Unknown names retain the stock false, "MISSING" contract.
+    // Lua — except an add-on whose files were prefetched, which LoadAddOn runs inside the call as
+    // Wow.exe does (3.18). Unknown names, and since 3.46 TSWoW modules, keep the stock "MISSING".
     vm.registerGlobal("IsAddOnLoaded", (args) => {
       recordDirectApi("IsAddOnLoaded");
       return this.#addons.status(args[0]);

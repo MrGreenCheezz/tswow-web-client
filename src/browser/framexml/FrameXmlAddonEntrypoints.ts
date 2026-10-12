@@ -21,7 +21,7 @@ export function discoverFrameXmlAddonEntrypoints(boot: FrameXmlBoot): {
   });
   vm.registerGlobal("__fxPublishTsEntrypoint", (args) => {
     const [kind, module, name, key] = args.map(String);
-    if (!module || !name || !boot.isAddonLoaded(module)) return [];
+    if (!module || !name || !boot.isModuleLoaded(module)) return []; // 3.46: host knowledge, not Lua's
     if (kind === "command" && /^\/[^\s/]+$/.test(name) && dispatch) {
       commands.push({ module, name: name.slice(1).toLowerCase(), run(rest) {
         // Lazy addon windows often create hundreds of widgets. Publish their completed tree once;

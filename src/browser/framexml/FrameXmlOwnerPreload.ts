@@ -21,6 +21,21 @@ import type { FrameXmlAddonRuntimeResult } from "./FrameXmlAddonRuntime.js";
 import { FRAMEXML_AUCTION_ADDON, installFrameXmlAuctionPreload } from "./FrameXmlAuctionOwner.js";
 import { FRAMEXML_GUILDBANK_ADDON, installFrameXmlGuildBankPreload } from "./FrameXmlGuildBankOwner.js";
 
+/**
+ * 3.18 (owner, 12.10): the mount preloader's step for one name. A third-party add-on (one of
+ * `prefetchNames`, FrameXmlLodPreload.ts frameXmlLodPrefetchNames) is only read — its LoadAddOn runs it
+ * inside the call later, as Wow.exe does; every other name is an owner's add-on, loaded as before.
+ */
+export function frameXmlLodPreloadStep(
+  boot: Pick<FrameXmlBoot, "vm" | "loadAddon" | "prefetchAddon">,
+  prefetchNames: readonly string[],
+): (name: string) => Promise<Pick<FrameXmlAddonRuntimeResult, "ok" | "message">> {
+  const prefetched = new Set(prefetchNames.map((name) => name.toLowerCase()));
+  return (name) => prefetched.has(name.toLowerCase())
+    ? boot.prefetchAddon(name)
+    : frameXmlPreloadOwnerAddon(boot, name);
+}
+
 export async function frameXmlPreloadOwnerAddon(
   boot: Pick<FrameXmlBoot, "vm" | "loadAddon">,
   name: string,

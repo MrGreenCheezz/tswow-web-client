@@ -21,7 +21,7 @@ export function createFrameXmlTsAddonWindows(boot: FrameXmlBoot): {
       .filter((frame): frame is FrameXmlFrame => {
       if (!frame) return false;
       const owner = boot.tsAddonOwner(frame);
-      return (frame.name === "ItemSocketingFrame" || !!owner && boot.isAddonLoaded(owner))
+      return (frame.name === "ItemSocketingFrame" || !!owner && boot.isModuleLoaded(owner)) // 3.46
         && boot.bridge.isVisible(frame);
     });
   };

@@ -195,6 +195,27 @@ const DEFAULT_MAX_FILES = 512;
 const DEFAULT_MAX_DEPTH = 16;
 
 /**
+ * One request the loader's walk makes of whoever drives it (3.18): a file to read, or a place where
+ * an asynchronous load yields (its checkpoint). `load()` answers both asynchronously, as it always
+ * did; `loadSync()` answers the reads from memory and has nowhere to yield. A failed read is thrown
+ * back into the walk at that request, so both drivers report it the same way.
+ */
+export type GlueLoadStep =
+  | { readonly kind: "read"; readonly path: string }
+  | { readonly kind: "checkpoint" };
+
+/** Files already in memory, for `GlueLoader.loadSync` (3.18). `undefined` means absent, as for a provider. */
+export interface GlueSyncFileSource {
+  read(path: string): string | undefined;
+}
+
+const CHECKPOINT: GlueLoadStep = Object.freeze({ kind: "checkpoint" });
+
+function* readStep(path: string): Generator<GlueLoadStep, string | undefined, unknown> {
+  return (yield { kind: "read", path }) as string | undefined;
+}
+
+/**
  * Walk a GlueXML TOC and bring the screens up.
  *
  * Order is the whole point. The corpus depends on it in three ways at once:
@@ -232,9 +253,53 @@ export class GlueLoader {
   }
 
   async load(tocPath = "interface/gluexml/gluexml.toc"): Promise<GlueLoadResult> {
+    const steps = this.walk(tocPath);
+    let next = steps.next();
+    while (!next.done) {
+      const step = next.value;
+      let answer: unknown;
+      try {
+        answer = step.kind === "read" ? await this.#provider.read(step.path) : await this.#checkpoint?.();
+      } catch (error) {
+        next = steps.throw(error);
+        continue;
+      }
+      next = steps.next(answer);
+    }
+    return next.value;
+  }
+
+  /**
+   * 3.18 (owner, 12.10): the same walk inside the caller's stack, from files already in memory — for
+   * `LoadAddOn` of an add-on whose files were prefetched, which Wow.exe runs synchronously
+   * (0x00528920). Nothing yields, so the checkpoints are skipped; a read the source throws on is
+   * reported as `load()` reports a provider failure. The provider is not asked.
+   */
+  loadSync(tocPath: string, source: GlueSyncFileSource): GlueLoadResult {
+    const steps = this.walk(tocPath);
+    let next = steps.next();
+    while (!next.done) {
+      const step = next.value;
+      if (step.kind === "checkpoint") {
+        next = steps.next();
+        continue;
+      }
+      let answer: string | undefined;
+      try {
+        answer = source.read(step.path);
+      } catch (error) {
+        next = steps.throw(error);
+        continue;
+      }
+      next = steps.next(answer);
+    }
+    return next.value;
+  }
+
+  private *walk(tocPath: string): Generator<GlueLoadStep, GlueLoadResult, unknown> {
     const path = normalizeGluePath(tocPath);
     const directory = path.slice(0, path.lastIndexOf("/") + 1);
-    const source = await this.readFile(path, "toc");
+    const source = yield* this.readFile(path, "toc");
     if (source === undefined) {
       return {
         tocEntries: [], loaded: [], missing: [...this.#missing], roots: [], templates: [],
@@ -246,8 +311,8 @@ export class GlueLoader {
       const loaded = this.#loaded.length;
       const missing = this.#missing.length;
       const diagnostics = this.#diagnostics.length;
-      if (entry.kind === "lua") await this.loadLua(entry.path);
-      else await this.loadXml(entry.path, 0);
+      if (entry.kind === "lua") yield* this.loadLua(entry.path);
+      else yield* this.loadXml(entry.path, 0);
       this.#afterTocEntry?.(entry, {
         loaded: this.#loaded.slice(loaded),
         missing: this.#missing.slice(missing),
@@ -256,7 +321,7 @@ export class GlueLoader {
     }
     // Font objects flatten their inherits chain against the finished registry,
     // so this runs once the whole TOC has declared them.
-    await this.#checkpoint?.();
+    yield CHECKPOINT;
     this.#bridge.registerFontObjects();
     return {
       tocEntries: entries,
@@ -268,14 +333,16 @@ export class GlueLoader {
     };
   }
 
-  private async readFile(path: string, scope: GlueLoadDiagnostic["scope"]): Promise<string | undefined> {
+  private *readFile(
+    path: string, scope: GlueLoadDiagnostic["scope"],
+  ): Generator<GlueLoadStep, string | undefined, unknown> {
     if (this.#loaded.length >= this.#maxFiles) {
       this.#diagnostics.push({ file: path, scope, message: `file budget of ${this.#maxFiles} exhausted` });
       return undefined;
     }
     let source: string | undefined;
     try {
-      source = await this.#provider.read(path);
+      source = yield* readStep(path);
     } catch (error) {
       // The gateway is gone (10.16): every later file would fail the same way and the screen would
       // come up half-built with no explanation. Stop, and let the page say «server unavailable».
@@ -283,7 +350,7 @@ export class GlueLoader {
       this.#diagnostics.push({ file: path, scope: "provider", message: String(error) });
       return undefined;
     }
-    await this.#checkpoint?.();
+    yield CHECKPOINT;
     if (source === undefined || source === "") {
       // A zero-byte file is how this corpus retires a screen (OptionsFrame.xml,
       // RaceSelect.xml and SoundOptionsFrame.xml are all 0 bytes); treat it the
@@ -295,8 +362,8 @@ export class GlueLoader {
     return source;
   }
 
-  private async loadLua(path: string): Promise<void> {
-    const source = await this.readFile(path, "lua");
+  private *loadLua(path: string): Generator<GlueLoadStep, void, unknown> {
+    const source = yield* this.readFile(path, "lua");
     if (source === undefined) return;
     const before = this.#vm.errors.length;
     this.#vm.executeReported(source, `@${path}`, this.#luaArguments);
@@ -306,14 +373,14 @@ export class GlueLoader {
     this.#afterLuaFile?.(path);
   }
 
-  private async loadXml(path: string, depth: number): Promise<void> {
+  private *loadXml(path: string, depth: number): Generator<GlueLoadStep, void, unknown> {
     if (depth > this.#maxDepth) {
       this.#diagnostics.push({ file: path, scope: "xml", message: `Include depth exceeds ${this.#maxDepth}` });
       return;
     }
     if (this.#seenXml.has(path)) return;
     this.#seenXml.add(path);
-    const source = await this.readFile(path, "xml");
+    const source = yield* this.readFile(path, "xml");
     if (source === undefined) return;
     const parsed = parseFrameXml(source);
     if (!parsed.root) {
@@ -327,21 +394,21 @@ export class GlueLoader {
     }
     const directory = path.slice(0, path.lastIndexOf("/") + 1);
     const children = parsed.root.name === "Ui" ? parsed.root.children : [parsed.root];
-    for (const child of children) await this.applyDeclaration(child, path, directory, depth);
+    for (const child of children) yield* this.applyDeclaration(child, path, directory, depth);
   }
 
-  private async applyDeclaration(
+  private *applyDeclaration(
     element: FrameXmlElement,
     path: string,
     directory: string,
     depth: number,
-  ): Promise<void> {
-    await this.#checkpoint?.();
+  ): Generator<GlueLoadStep, void, unknown> {
+    yield CHECKPOINT;
     if (element.name === "Script") {
       const file = frameXmlAttribute(element, "file");
       if (file) {
         const resolved = resolveGluePath(directory, file);
-        if (resolved) await this.loadLua(resolved);
+        if (resolved) yield* this.loadLua(resolved);
         else this.#diagnostics.push({ file: path, scope: "xml", message: `Script file "${file}" escapes the interface tree` });
         return;
       }
@@ -358,7 +425,7 @@ export class GlueLoader {
     if (element.name === "Include") {
       const file = frameXmlAttribute(element, "file");
       const resolved = file ? resolveGluePath(directory, file) : undefined;
-      if (resolved) await this.loadXml(resolved, depth + 1);
+      if (resolved) yield* this.loadXml(resolved, depth + 1);
       else this.#diagnostics.push({ file: path, scope: "xml", message: `Include file "${file ?? ""}" is unusable` });
       return;
     }

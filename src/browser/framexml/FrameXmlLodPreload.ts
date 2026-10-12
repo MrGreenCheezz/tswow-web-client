@@ -1,15 +1,30 @@
 /**
- * Load-on-demand add-ons loaded before their first use (plan items 3.18 and 3.24).
+ * Load-on-demand add-ons made ready before their first use (plan items 3.18 and 3.24).
  *
- * The client's `LoadAddOn` is synchronous; this one is not (FrameXmlAddonRuntime.loadStatus), so an
- * add-on that a slash command or a window's first open loads «and uses on the next line» — MSBT's
- * `/msbt` over MSBTOptions (MSBTProfiles.lua:1554-1566), the trainer's first open — would miss its
- * first use. The world mount loads the ones worth having one after another in its own loading window,
- * before the HUD is shown (FrameXmlWorldMount.ts, next to the stock clock's add-on). Not in idle time
- * after the reveal: each load yields between its steps, but a Lua file runs as one block — measured in
- * Node on the real corpus, Blizzard_TrainerUI.lua 11-18 ms and MSBTOptionsPopups.lua 24 ms (the whole
- * add-ons 30 ms / +0.7 MB and 126 ms / +8.2 MB) — and no idle slice of a 144 Hz frame (13.9 ms) fits
- * that. A failed load does not stop the rest; `cancel()` stops before the next one.
+ * The client's `LoadAddOn` is synchronous: it reads the add-on's files and runs them inside the call.
+ * Here files arrive over the network, so an add-on that a slash command or a window's first open loads
+ * «and uses on the next line» — MSBT's `/msbt` over MSBTOptions (MSBTProfiles.lua:1554-1566), the
+ * trainer's first open — would miss its first use. The world mount readies them one after another in
+ * its own loading window, before the HUD is shown (FrameXmlWorldMount.ts, next to the stock clock's
+ * add-on), in one of two ways:
+ *
+ * * the owners' add-ons (`FRAMEXML_PRELOADED_OWNER_ADDONS`) are loaded and run there, as decided below;
+ * * 3.18 (owner, 12.10): third-party add-ons — the client's LoD add-ons outside FRAMEXML_LOD_POLICY,
+ *   `frameXmlLodPrefetchNames` — are only read (FrameXmlBoot.prefetchAddon): their TOC and every file
+ *   it and its XML pull in, kept in memory with nothing run, so `IsAddOnLoaded` stays nil as in
+ *   Wow.exe until the add-on's own `LoadAddOn`, which then runs it inside the call and answers 1
+ *   (FrameXmlAddonRuntime.loadStatus). Before this they were loaded and run here too — MSBTOptions
+ *   126-139 ms and +8.2 MB in every session (measured for 3.24), loaded long before Wow.exe would load
+ *   it. Measured 12.10 in Node off the client's files (tests/framexml-msbt-lod.test.mjs, three runs):
+ *   the prefetch 15.5-25.9 ms here (12 files, 752 249 bytes of text, nothing run), and the LoadAddOn
+ *   inside the first `/msbt` 14.0-15.3 ms, where Wow.exe pays its own load too; the same boot's
+ *   asynchronous load of it took 26.7-28.2 ms. One whose read did not finish or failed is loaded by
+ *   its LoadAddOn the asynchronous way (`NOT_READY`, then 1).
+ *
+ * Not in idle time after the reveal: a load yields between its steps, but a Lua file runs as one
+ * block — measured in Node on the real corpus, Blizzard_TrainerUI.lua 11-18 ms and
+ * MSBTOptionsPopups.lua 24 ms — and no idle slice of a 144 Hz frame (13.9 ms) fits that. A failed
+ * load or read does not stop the rest; `cancel()` stops before the next one.
  */
 
 import { FRAMEXML_LOD_POLICY } from "./FrameXmlAddonRuntime.js";
@@ -49,13 +64,21 @@ export const FRAMEXML_PRELOADED_OWNER_ADDONS: readonly string[] = Object.freeze(
   "Blizzard_AuctionUI", "Blizzard_GuildBankUI", // DEC-A 3.24: owner decided 04.10: preload both
 ]);
 
-/** What the world mount preloads: the owners' list, then the client's own LoD add-ons outside the policy. */
-export function frameXmlLodPreloadNames(clientAddons: readonly FrameXmlClientAddon[]): readonly string[] {
+/**
+ * 3.18 (owner, 12.10): the third-party load-on-demand add-ons — the client's LoD add-ons outside
+ * FRAMEXML_LOD_POLICY (MSBTOptions) — which the mount prefetches (reads, runs nothing).
+ */
+export function frameXmlLodPrefetchNames(clientAddons: readonly FrameXmlClientAddon[]): readonly string[] {
   const policy = new Set(Object.keys(FRAMEXML_LOD_POLICY).map((name) => name.toLowerCase()));
-  return [
-    ...FRAMEXML_PRELOADED_OWNER_ADDONS,
-    ...clientAddons.filter((addon) => addon.loadOnDemand && !policy.has(addon.name.toLowerCase())).map((addon) => addon.name),
-  ];
+  return clientAddons.filter((addon) => addon.loadOnDemand && !policy.has(addon.name.toLowerCase())).map((addon) => addon.name);
+}
+
+/**
+ * What the world mount readies, in order: the owners' list (loaded), then the third-party add-ons
+ * (`frameXmlLodPrefetchNames`, prefetched only — the mount tells them apart by that list).
+ */
+export function frameXmlLodPreloadNames(clientAddons: readonly FrameXmlClientAddon[]): readonly string[] {
+  return [...FRAMEXML_PRELOADED_OWNER_ADDONS, ...frameXmlLodPrefetchNames(clientAddons)];
 }
 
 export interface FrameXmlLodPreloadResult {
@@ -67,7 +90,10 @@ export interface FrameXmlLodPreloadResult {
 export interface FrameXmlLodPreloadOptions {
   /** The names, in order. */
   readonly names: readonly string[];
-  /** One load; resolves with its outcome (FrameXmlBoot.loadAddon, or an owner's own preload). */
+  /**
+   * One load; resolves with its outcome (FrameXmlBoot.loadAddon, an owner's own preload, or for a
+   * third-party add-on FrameXmlBoot.prefetchAddon, 3.18).
+   */
   readonly load: (name: string) => Promise<{ readonly ok: boolean; readonly message?: string }>;
   /** Awaited before each load (the mount checks there whether it was cancelled). */
   readonly idle?: () => Promise<void>;

@@ -2,6 +2,9 @@ import type { GlueLoadCheckpoint } from "../glue/GlueLoadScheduler.js";
 import {
   GlueLoader,
   type GlueFileProvider,
+  type GlueLoadResult,
+  type GlueSyncFileSource,
+  type GlueTocEntry,
   parseGlueToc,
   resolveGluePath,
   normalizeGluePath,
@@ -18,6 +21,7 @@ import {
 import { frameXmlHandlerScripts } from "./FrameXmlCorpus.js";
 import {
   frameXmlInlineScripts,
+  frameXmlStubPlan,
   frameXmlStubPlanAsync,
   type FrameXmlLuaChunk,
   type FrameXmlStubPlan,
@@ -95,13 +99,21 @@ export interface FrameXmlAddonRuntimeResult {
   readonly roots: readonly FrameXmlFrame[];
 }
 
+/**
+ * 3.18 (owner, 12.10): what one prefetch came to, for the mount's preloader (FrameXmlLodPreload.ts).
+ * `ok: false` with the provider's error in `message` when a file could not be read — the preloader
+ * stops at a gateway that is down by that text — or with the reason the load itself will give.
+ */
+export interface FrameXmlAddonPrefetchResult {
+  readonly ok: boolean;
+  readonly message?: string;
+}
+
 export interface FrameXmlAddonRuntimeOptions {
   readonly checkpoint?: GlueLoadCheckpoint;
   readonly provider: GlueFileProvider;
   readonly vm: GlueLuaVm;
   readonly bridge: FrameXmlUiBridge;
-  /** Existing glued modules, which must remain loaded and visible to legacy add-on queries. */
-  readonly initialModules?: readonly string[];
   /** Load-on-demand names accepted by the synchronous C API status binding. */
   readonly loadOnDemand?: readonly string[];
   readonly onRoots?: (roots: readonly FrameXmlFrame[]) => void;
@@ -127,12 +139,46 @@ interface AddonRecord {
   toc?: AddonToc;
 }
 
+/**
+ * 3.18 (owner, 12.10): one add-on's files read ahead of its `LoadAddOn` (`prefetch`) — every path its
+ * load reads, normalized, an absent file as `undefined` — and the stub plan of their text. `complete`
+ * once every read answered; a read that threw leaves it `incomplete`, and that add-on takes the
+ * asynchronous path. Nothing of it has run.
+ */
+interface PrefetchedAddon {
+  state: "pending" | "complete" | "incomplete";
+  readonly files: Map<string, string | undefined>;
+  dependencies: readonly string[];
+  plan?: FrameXmlStubPlan;
+  done?: Promise<FrameXmlAddonPrefetchResult>;
+}
+
+/**
+ * One request an add-on load makes of whoever drives it (3.18): a file, a dependency's load, the stub
+ * plan of its text, the run of its TOC. `loadAddon` answers them asynchronously, as it always did;
+ * `LoadAddOn` of a prefetched add-on answers them from memory inside the call; `prefetch` drives the
+ * reading part of the same walk, so the files it keeps are the files the load asks for.
+ */
+type AddonLoadStep =
+  | { readonly kind: "read"; readonly path: string }
+  | { readonly kind: "dependency"; readonly name: string; readonly ancestry: readonly string[] }
+  | { readonly kind: "plan"; readonly chunks: readonly FrameXmlLuaChunk[] }
+  | { readonly kind: "run"; readonly loader: GlueLoader; readonly path: string };
+
+type AddonLoadSteps<T> = Generator<AddonLoadStep, T, unknown>;
+
+function* readAddonFile(path: string): AddonLoadSteps<string | undefined> {
+  return (yield { kind: "read", path }) as string | undefined;
+}
+
 const DEFAULT_LOAD_ON_DEMAND = Object.freeze([FRAME_XML_TALENT_ADDON, FRAME_XML_TRAINER_ADDON]);
 // Blizzard LoD folders commonly use underscores; TSWoW's generated marker names commonly use
 // hyphens (`retail-talents`, `tswow-store`). Both are single safe path segments.
 // `!BugGrabber`-style loader folders are a longstanding WoW convention. Keep the name to one safe
 // path segment while accepting the punctuation and leading digits the native add-on loader does.
 const ADDON_NAME = /^[!A-Za-z0-9_][!A-Za-z0-9_-]*$/;
+/** Reads a prefetch keeps in flight at once, as FrameXmlCorpus.prefetch does. */
+const PREFETCH_CONCURRENCY = 8;
 
 function canonicalName(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
@@ -142,7 +188,7 @@ function canonicalName(value: unknown): string | undefined {
 
 function metadata(source: string, key: string): string | undefined {
   const wanted = key.toLowerCase();
-  for (const raw of source.replace(/^\uFEFF/, "").split(/\r?\n/)) {
+  for (const raw of source.replace(/^﻿/, "").split(/\r?\n/)) {
     const line = raw.trim();
     if (!line.startsWith("##") || line.startsWith("###")) continue;
     const separator = line.indexOf(":", 2);
@@ -172,6 +218,37 @@ function addonDirectory(path: string): string {
   return path.slice(0, path.lastIndexOf("/") + 1);
 }
 
+/** `LoadAddOn`'s reason for a load that ended without the add-on (the async path's next answer too). */
+function loadAddOnFailure(result: FrameXmlAddonRuntimeResult): readonly unknown[] {
+  if (result.status === "missing") return [false, "MISSING"];
+  if (result.status === "closed") return [false, "CLOSED"];
+  return [false, "FAILED"];
+}
+
+function warnLoadAddOnFailure(name: string, result: FrameXmlAddonRuntimeResult): void {
+  if (!result.ok && result.status !== "closed") {
+    console.warn(`FrameXML LoadAddOn(${name}) did not load: ${result.message ?? result.status}`);
+  }
+}
+
+/** Every `<Include file>`/`<Script file>` an XML file names, at any depth: the prefetch's read-ahead. */
+function xmlFileReferences(source: string, path: string): readonly string[] {
+  const parsed = parseFrameXml(source);
+  if (!parsed.root) return [];
+  const directory = path.slice(0, path.lastIndexOf("/") + 1);
+  const references: string[] = [];
+  const visit = (element: FrameXmlElement): void => {
+    if (element.name === "Include" || element.name === "Script") {
+      const reference = element.attributes.file?.trim();
+      const target = reference ? resolveGluePath(directory, reference) : undefined;
+      if (target) references.push(target);
+    }
+    for (const child of element.children) visit(child);
+  };
+  visit(parsed.root);
+  return references;
+}
+
 /**
  * Loads a load-on-demand add-on into an already booted FrameXML VM.
  *
@@ -179,6 +256,10 @@ function addonDirectory(path: string): string {
  * the Lua `IsAddOnLoaded` binding is only a status view. This prevents a synchronous Lua call from
  * claiming success while network/file IO is still in flight. Every successful load uses the boot's
  * existing `GlueLoader`, `FrameXmlUiBridge`, and template registry.
+ *
+ * 3.18 (owner, 12.10): the one synchronous load is `LoadAddOn` of a third-party add-on whose files
+ * the mount's loading window already read (`prefetch`): the same steps (`loadSteps`), answered from
+ * memory inside the call — Wow.exe's `LoadAddOn` reads and runs the add-on before it returns.
  */
 export class FrameXmlAddonRuntime {
   readonly #checkpoint: GlueLoadCheckpoint | undefined;
@@ -187,10 +268,18 @@ export class FrameXmlAddonRuntime {
   readonly #bridge: FrameXmlUiBridge;
   readonly #onRoots: ((roots: readonly FrameXmlFrame[]) => void) | undefined;
   readonly #savedVariables: FrameXmlSavedVariables | undefined;
-  readonly #initialModules = new Map<string, string>();
   readonly #records = new Map<string, AddonRecord>();
   readonly #loadOnDemand: ReadonlySet<string>;
+  /** 3.18 (owner, 12.10): third-party LoD add-ons read ahead of their `LoadAddOn`, by lower-case name. */
+  readonly #prefetched = new Map<string, PrefetchedAddon>();
   #closed = false;
+
+  /** The boot's checkpoint, refusing to go on once the VM is closed (the stub plan's and the loader's). */
+  readonly #cancellable: GlueLoadCheckpoint = async () => {
+    if (this.#closed) throw new Error("FrameXML add-on load cancelled");
+    await this.#checkpoint?.();
+    if (this.#closed) throw new Error("FrameXML add-on load cancelled");
+  };
 
   constructor(options: FrameXmlAddonRuntimeOptions) {
     this.#checkpoint = options.checkpoint;
@@ -199,10 +288,6 @@ export class FrameXmlAddonRuntime {
     this.#bridge = options.bridge;
     this.#onRoots = options.onRoots;
     this.#savedVariables = options.savedVariables;
-    for (const value of options.initialModules ?? []) {
-      const name = canonicalName(value);
-      if (name) this.#initialModules.set(name.toLowerCase(), name);
-    }
     this.#loadOnDemand = new Set(
       [...DEFAULT_LOAD_ON_DEMAND, ...(options.loadOnDemand ?? [])]
         .map((value) => canonicalName(value)?.toLowerCase())
@@ -214,68 +299,74 @@ export class FrameXmlAddonRuntime {
     return this.#closed;
   }
 
-  /** Install the modules that the already-booted FrameXML TOC glued in. */
-  setInitialModules(names: readonly string[]): void {
-    if (this.#closed) return;
-    this.#initialModules.clear();
-    for (const value of names) {
-      const name = canonicalName(value);
-      if (name) this.#initialModules.set(name.toLowerCase(), name);
-    }
-  }
-
+  /**
+   * An add-on the client has: installed in its AddOns list, or one of FRAMEXML_LOD_POLICY's owners.
+   * 3.46: a TSWoW module is not — Wow.exe glues it into FrameXML.toc, where nothing makes it an
+   * add-on (FrameXmlBoot.isModuleLoaded is the host's own knowledge of the modules).
+   */
   isKnown(name: unknown): boolean {
     const canonical = canonicalName(name);
     if (!canonical) return false;
     const lower = canonical.toLowerCase();
-    return this.#initialModules.has(lower) || this.#loadOnDemand.has(lower) || this.#records.has(lower)
+    return this.#loadOnDemand.has(lower) || this.#records.has(lower)
       || LOD_POLICY_BY_LOWER.get(lower) === "owner";
   }
 
   isLoaded(name: unknown): boolean {
     const canonical = canonicalName(name);
     if (!canonical) return false;
-    const lower = canonical.toLowerCase();
-    return this.#initialModules.has(lower) || this.#records.get(lower)?.state === "loaded";
-  }
-
-  /** Synchronous C API view: it never reports a pending module as loaded. */
-  status(name: unknown): readonly unknown[] {
-    if (this.#closed) return [false, "CLOSED"];
-    if (this.isLoaded(name)) return [true, true];
-    return [false];
+    return this.#records.get(canonical.toLowerCase())?.state === "loaded";
   }
 
   /**
-   * `LoadAddOn(name)`. The client's is synchronous (0x00528920: it loads and answers 1, or nil and
-   * the reason); files here arrive over the network, so a known add-on that is not in yet — one of
-   * the client's add-ons, MSBTOptions for `/msbt` say — starts loading (the same idempotent
-   * `loadAddon` the owners use) and answers `false, "NOT_READY"`; the next call after the load
-   * answers `true`. An `owner` add-on (FRAMEXML_LOD_POLICY) answers `NOT_READY` and is left to its
-   * owner; a `disabled` one answers `false, "DISABLED"` without reading a file.
+   * `IsAddOnLoaded(name)`: loaded, finished — never a pending add-on — or nil for any name not loaded,
+   * as Wow.exe answers it. 3.46: a TSWoW module's name too; it is no add-on in Wow.exe.
+   */
+  status(name: unknown): readonly unknown[] {
+    if (this.#closed) return [false, "CLOSED"];
+    if (this.isLoaded(name)) return [true, true];
+    return [undefined];
+  }
+
+  /**
+   * `LoadAddOn(name)`. The client's is synchronous (0x00528920: it reads the add-on's files, runs
+   * them and answers 1, or nil and the reason).
+   *
+   * 3.18 (owner, 12.10): a third-party add-on whose files the mount's loading window read
+   * (`prefetch`) — it and every dependency not in yet — runs the same way, inside this call: its
+   * dependencies first, its SavedVariables before its ADDON_LOADED, ADDON_LOADED before the answer,
+   * which is 1 — so `/msbt`'s next line finds MSBTOptions (MSBTProfiles.lua:1554-1566).
+   *
+   * Any other known add-on not in yet — its prefetch unfinished or incomplete, one of the client's
+   * add-ons never prefetched — starts loading over the network (the same idempotent `loadAddon` the
+   * owners use) and answers `false, "NOT_READY"`; the next call after the load answers 1. An `owner`
+   * add-on (FRAMEXML_LOD_POLICY) answers `NOT_READY` and is left to its owner; a `disabled` one
+   * answers `false, "DISABLED"` without reading a file. 3.46: a TSWoW module's name is `MISSING`.
    */
   loadStatus(name: unknown): readonly unknown[] {
     if (this.#closed) return [false, "CLOSED"];
-    if (this.isLoaded(name)) return [true];
+    if (this.isLoaded(name)) return [1];
     const canonical = canonicalName(name);
     const lower = canonical?.toLowerCase();
-    if (lower !== undefined && LOD_POLICY_BY_LOWER.get(lower) === "disabled"
-      && !this.#initialModules.has(lower) && !this.#records.has(lower)) return [false, "DISABLED"];
+    if (lower !== undefined && LOD_POLICY_BY_LOWER.get(lower) === "disabled" && !this.#records.has(lower)) {
+      return [false, "DISABLED"];
+    }
     const previous = lower !== undefined ? this.#records.get(lower)?.result : undefined;
-    if (previous?.status === "missing") return [false, "MISSING"];
-    if (previous?.status === "failed") return [false, "FAILED"];
-    if (previous?.status === "closed") return [false, "CLOSED"];
+    if (previous !== undefined && !previous.ok) return loadAddOnFailure(previous);
     // Unknown modules preserve the old FrameXML `MISSING` contract.
-    if (!canonical || !this.isKnown(canonical)) return [false, "MISSING"];
+    if (!canonical || lower === undefined || !this.isKnown(canonical)) return [false, "MISSING"];
     // An owner's add-on is loaded by its owner, which prepares the host side first (a bare Talent
     // UI load raised in the trainer test); the call only reports that it is not in yet.
-    if (LOD_POLICY_BY_LOWER.get(canonical.toLowerCase()) === "owner") return [false, "NOT_READY"];
-    if (this.#records.get(canonical.toLowerCase())?.state !== "loading") {
-      void this.loadAddon(canonical).then((result) => {
-        if (!result.ok && result.status !== "closed") {
-          console.warn(`FrameXML LoadAddOn(${canonical}) did not load: ${result.message ?? result.status}`);
-        }
-      });
+    if (LOD_POLICY_BY_LOWER.get(lower) === "owner") return [false, "NOT_READY"];
+    if (this.#records.get(lower)?.state !== "loading" && this.syncReady(canonical)) {
+      const result = this.loadAddonNow(canonical);
+      if (result !== undefined) {
+        warnLoadAddOnFailure(canonical, result);
+        return result.ok ? [1] : loadAddOnFailure(result);
+      }
+    }
+    if (this.#records.get(lower)?.state !== "loading") {
+      void this.loadAddon(canonical).then((result) => warnLoadAddOnFailure(canonical, result));
     }
     return [false, "NOT_READY"];
   }
@@ -311,7 +402,7 @@ export class FrameXmlAddonRuntime {
     for (const value of names) {
       const canonical = canonicalName(value);
       const lower = canonical?.toLowerCase();
-      if (!canonical || !lower || this.#initialModules.has(lower) || this.#installedTocs.has(lower)) continue;
+      if (!canonical || !lower || this.#installedTocs.has(lower)) continue;
       wanted.set(lower, canonical);
     }
     await Promise.all([...wanted].map(async ([lower, canonical]) => {
@@ -322,6 +413,155 @@ export class FrameXmlAddonRuntime {
     }));
   }
 
+  /**
+   * 3.18 (owner, 12.10): read a third-party load-on-demand add-on's files into memory, ahead of its
+   * `LoadAddOn` — its TOC, every file the TOC names and every file their XML pulls in through
+   * `<Include file>`/`<Script file>`, recursively — by driving the reading part of `loadSteps` (the
+   * TOC, the XML preflight, the stub plan's walk), so what is kept is exactly what the load will ask
+   * for; the stub plan is derived here too. Then its dependencies not in yet, the same way. Nothing
+   * runs: `IsAddOnLoaded` stays nil until a `LoadAddOn` runs it inside the call (`loadStatus`).
+   *
+   * The reads go through the boot's cached corpus, a level of files at a time (`warm`): over HTTP each
+   * is a round trip. One that throws leaves the add-on to the asynchronous path, and its error in the
+   * answer (the preloader stops at a gateway that is down). An add-on already loading, loaded or
+   * failed needs nothing.
+   */
+  async prefetch(name: string): Promise<FrameXmlAddonPrefetchResult> {
+    const canonical = canonicalName(name);
+    if (!canonical) return { ok: false, message: "invalid add-on name" };
+    if (this.#closed) return { ok: false, message: "FrameXML VM is closed" };
+    const lower = canonical.toLowerCase();
+    if (this.#records.has(lower)) return { ok: true };
+    const existing = this.#prefetched.get(lower);
+    if (existing?.done) return await existing.done;
+    const entry: PrefetchedAddon = { state: "pending", files: new Map(), dependencies: [] };
+    this.#prefetched.set(lower, entry);
+    entry.done = this.prefetchInto(entry, canonical).then(({ complete, result }) => {
+      entry.state = complete && !this.#closed ? "complete" : "incomplete";
+      // Its load began meanwhile (an early LoadAddOn, an owner): these files are no longer wanted.
+      if (this.#records.has(lower) && this.#prefetched.get(lower) === entry) this.#prefetched.delete(lower);
+      return result;
+    });
+    return await entry.done;
+  }
+
+  private async prefetchInto(
+    entry: PrefetchedAddon, name: string,
+  ): Promise<{ readonly complete: boolean; readonly result: FrameXmlAddonPrefetchResult }> {
+    let failure: { readonly error: unknown } | undefined;
+    const read = async (path: string): Promise<string | undefined> => {
+      const key = normalizeGluePath(path);
+      if (entry.files.has(key)) return entry.files.get(key);
+      try {
+        const source = await this.#provider.read(key);
+        entry.files.set(key, source);
+        return source;
+      } catch (error) {
+        failure ??= { error };
+        throw error;
+      }
+    };
+    const drive = async <T>(steps: AddonLoadSteps<T>): Promise<T> => {
+      let next = steps.next();
+      while (!next.done) {
+        const step = next.value;
+        let answer: unknown;
+        try {
+          if (step.kind === "read") answer = await read(step.path);
+          else if (step.kind === "plan") answer = entry.plan = await frameXmlStubPlanAsync(step.chunks, this.#cancellable);
+          else throw new Error(`a prefetch does not ${step.kind}`); // the reading walks ask nothing else
+        } catch (error) {
+          next = steps.throw(error);
+          continue;
+        }
+        next = steps.next(answer);
+      }
+      return next.value;
+    };
+    const unread = (): { readonly complete: false; readonly result: FrameXmlAddonPrefetchResult } => ({
+      complete: false, result: { ok: false, message: `${name}: a file could not be read: ${String(failure?.error)}` },
+    });
+    try {
+      const toc = await drive(this.readTocSteps(name));
+      if (failure) return unread();
+      // Not installed: LoadAddOn answers MISSING from these reads, as the asynchronous load would.
+      if ("ok" in toc) return { complete: true, result: { ok: false, ...(toc.message ? { message: toc.message } : {}) } };
+      entry.dependencies = toc.dependencies;
+      await this.warm(toc.entries, read);
+      if (failure) return unread();
+      const preflight = await drive(this.preflightSteps(toc.entries
+        .filter((tocEntry) => tocEntry.kind === "xml").map((tocEntry) => tocEntry.path)));
+      if (failure) return unread();
+      let result: FrameXmlAddonPrefetchResult = { ok: true };
+      if (preflight !== undefined) {
+        result = { ok: false, message: preflight }; // the load stops there too, before any Lua
+      } else {
+        const plan = await drive(this.stubPlanSteps(toc.entries));
+        if (failure) return unread();
+        if ("error" in plan) result = { ok: false, message: plan.error };
+      }
+      // The dependencies' own entries; whether they are complete is asked at the LoadAddOn
+      // (`syncReady`). One already read or being read is not awaited: a cycle would wait on itself.
+      for (const dependency of toc.dependencies) {
+        if (this.#closed) break;
+        const key = dependency.toLowerCase();
+        if (this.#records.has(key) || this.#prefetched.has(key)) continue;
+        const prefetched = await this.prefetch(dependency);
+        if (!prefetched.ok && result.ok) {
+          result = { ok: false, message: `dependency ${dependency}: ${prefetched.message ?? "not read"}` };
+        }
+      }
+      return { complete: true, result };
+    } catch (error) {
+      return { complete: false, result: { ok: false, message: `${name}: prefetch failed: ${String(error)}` } };
+    }
+  }
+
+  /**
+   * Read ahead, a few at a time, what the walk then asks for one by one: the TOC's files, then what
+   * their XML names, a level at a time — the walk only learns an XML file's references once it has
+   * it. A superset is harmless; the walk after it decides what is kept. Stops at the first failure.
+   */
+  private async warm(
+    entries: readonly GlueTocEntry[], read: (path: string) => Promise<string | undefined>,
+  ): Promise<void> {
+    const seen = new Set<string>();
+    let level = entries.map((entry) => entry.path);
+    while (level.length > 0 && !this.#closed) {
+      const batch = [...new Set(level.map(normalizeGluePath))].filter((path) => !seen.has(path));
+      for (const path of batch) seen.add(path);
+      const sources = new Map<string, string | undefined>();
+      let next = 0;
+      let failed = false;
+      const worker = async (): Promise<void> => {
+        while (!failed && next < batch.length) {
+          const path = batch[next++];
+          if (path === undefined) return;
+          try {
+            sources.set(path, await read(path));
+          } catch {
+            failed = true; // `read` kept the error
+          }
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(PREFETCH_CONCURRENCY, batch.length) }, worker));
+      if (failed) return;
+      level = [...sources].flatMap(([path, source]) =>
+        path.endsWith(".xml") && source ? xmlFileReferences(source, path) : []);
+    }
+  }
+
+  /** 3.18: whether `loadAddonNow` can run it now — it and every dependency not in yet prefetched. */
+  private syncReady(name: string, seen = new Set<string>()): boolean {
+    const lower = name.toLowerCase();
+    if (seen.has(lower)) return true; // a cycle: the load answers it as the asynchronous one does
+    seen.add(lower);
+    const record = this.#records.get(lower);
+    if (record !== undefined) return record.state !== "loading";
+    const entry = this.#prefetched.get(lower);
+    return entry?.state === "complete" && entry.dependencies.every((dependency) => this.syncReady(dependency, seen));
+  }
+
   async loadAddon(name: string, ancestry: readonly string[] = []): Promise<FrameXmlAddonRuntimeResult> {
     const canonical = canonicalName(name);
     if (!canonical) return this.failure(String(name), "missing", "invalid add-on name");
@@ -329,9 +569,6 @@ export class FrameXmlAddonRuntime {
     const lower = canonical.toLowerCase();
     if (ancestry.includes(lower)) {
       return this.failure(canonical, "failed", `add-on dependency cycle: ${[...ancestry, lower].join(" -> ")}`);
-    }
-    if (this.#initialModules.has(lower)) {
-      return this.success(canonical, "already-loaded", [], [], []);
     }
     const existing = this.#records.get(lower);
     if (existing?.state === "loaded") {
@@ -341,35 +578,54 @@ export class FrameXmlAddonRuntime {
     if (existing?.state === "loading" && existing.promise) return await existing.promise;
     if (existing?.state === "failed" && existing.result) return existing.result;
 
-    const record: AddonRecord = { name: canonical, lower, state: "loading" };
-    this.#records.set(lower, record);
-    let resolvePending!: (result: FrameXmlAddonRuntimeResult) => void;
-    const promise = new Promise<FrameXmlAddonRuntimeResult>((resolve) => {
-      resolvePending = resolve;
-    });
-    record.promise = promise;
-    record.cancel = () => {
-      if (record.settled) return;
-      record.settled = true;
-      record.state = "failed";
-      const result = this.failure(record.name, "closed", "FrameXML VM closed during add-on load");
-      record.result = result;
-      resolvePending(result);
-    };
-    void this.loadRecord(record, [...ancestry, lower]).then((result) => {
-      if (record.settled) return;
-      record.settled = true;
-      resolvePending(result);
-    }).catch((error) => {
-      if (record.settled) return;
-      record.settled = true;
-      record.state = "failed";
-      const result = this.failure(record.name, this.#closed ? "closed" : "failed",
-        `add-on execution failed: ${String(error)}`);
-      record.result = result;
-      resolvePending(result);
-    });
-    return await promise;
+    const pending = this.beginRecord(canonical, lower);
+    void this.loadRecord(pending.record, [...ancestry, lower]).then(pending.settle).catch(pending.fail);
+    return await pending.promise;
+  }
+
+  /**
+   * 3.18 (owner, 12.10): `loadAddon` inside the caller's stack, for a prefetched add-on — the same
+   * `loadSteps`, answered from its prefetched files; a dependency not in yet runs the same way first.
+   * `undefined` when it cannot: not prefetched, or not completely, or a load of it already on its way.
+   *
+   * A step the prefetch does not answer — impossible while the prefetch walks these same steps, and
+   * met, if ever, before any Lua of the add-on: the TOC, the XML preflight and the stub plan's walk
+   * read every file the run will — hands the started load to the asynchronous path (`undefined`, the
+   * record loading), never a half-executed add-on.
+   */
+  private loadAddonNow(name: string, ancestry: readonly string[] = []): FrameXmlAddonRuntimeResult | undefined {
+    const canonical = canonicalName(name);
+    if (!canonical) return this.failure(String(name), "missing", "invalid add-on name");
+    if (this.#closed) return this.failure(canonical, "closed", "FrameXML VM is closed");
+    const lower = canonical.toLowerCase();
+    if (ancestry.includes(lower)) {
+      return this.failure(canonical, "failed", `add-on dependency cycle: ${[...ancestry, lower].join(" -> ")}`);
+    }
+    const existing = this.#records.get(lower);
+    if (existing?.state === "loaded") {
+      const prior = existing.result;
+      return this.success(canonical, "already-loaded", prior?.dependencies ?? [], prior?.loaded ?? [], prior?.roots ?? []);
+    }
+    if (existing?.state === "loading") return undefined;
+    if (existing?.state === "failed" && existing.result) return existing.result;
+    const prefetched = this.#prefetched.get(lower);
+    if (prefetched?.state !== "complete") return undefined;
+
+    const pending = this.beginRecord(canonical, lower);
+    const chain = [...ancestry, lower];
+    let result: FrameXmlAddonRuntimeResult | undefined;
+    try {
+      result = this.driveSync(this.loadSteps(pending.record, chain), prefetched);
+    } catch (error) {
+      pending.fail(error);
+      return pending.record.result;
+    }
+    if (result === undefined) {
+      void this.loadRecord(pending.record, chain).then(pending.settle).catch(pending.fail);
+      return undefined;
+    }
+    pending.settle(result);
+    return result;
   }
 
   /** `FrameXmlBoot.close()` calls this before destroying the shared VM. */
@@ -378,6 +634,50 @@ export class FrameXmlAddonRuntime {
     for (const record of this.#records.values()) {
       if (record.state === "loading") record.cancel?.();
     }
+    this.#prefetched.clear();
+  }
+
+  /** A new record, loading, with the promise every later `loadAddon` of it awaits. */
+  private beginRecord(canonical: string, lower: string): {
+    readonly record: AddonRecord;
+    readonly promise: Promise<FrameXmlAddonRuntimeResult>;
+    readonly settle: (result: FrameXmlAddonRuntimeResult) => void;
+    readonly fail: (error: unknown) => void;
+  } {
+    const record: AddonRecord = { name: canonical, lower, state: "loading" };
+    this.#records.set(lower, record);
+    let resolvePending!: (result: FrameXmlAddonRuntimeResult) => void;
+    const promise = new Promise<FrameXmlAddonRuntimeResult>((resolve) => {
+      resolvePending = resolve;
+    });
+    record.promise = promise;
+    const finish = (result: FrameXmlAddonRuntimeResult): void => {
+      record.settled = true;
+      this.#prefetched.delete(lower); // loaded or failed: LoadAddOn answers it without the files
+      resolvePending(result);
+    };
+    record.cancel = () => {
+      if (record.settled) return;
+      record.state = "failed";
+      const result = this.failure(record.name, "closed", "FrameXML VM closed during add-on load");
+      record.result = result;
+      finish(result);
+    };
+    return {
+      record,
+      promise,
+      settle: (result) => {
+        if (!record.settled) finish(result);
+      },
+      fail: (error) => {
+        if (record.settled) return;
+        record.state = "failed";
+        const result = this.failure(record.name, this.#closed ? "closed" : "failed",
+          `add-on execution failed: ${String(error)}`);
+        record.result = result;
+        finish(result);
+      },
+    };
   }
 
   private success(
@@ -411,11 +711,80 @@ export class FrameXmlAddonRuntime {
     });
   }
 
-  private async readToc(name: string): Promise<AddonToc | FrameXmlAddonRuntimeResult> {
+  /** The asynchronous driver: every step awaited, as the load always ran. */
+  private async loadRecord(record: AddonRecord, ancestry: readonly string[]): Promise<FrameXmlAddonRuntimeResult> {
+    const steps = this.loadSteps(record, ancestry);
+    let next = steps.next();
+    while (!next.done) {
+      const step = next.value;
+      let answer: unknown;
+      try {
+        if (step.kind === "read") answer = await this.#provider.read(step.path);
+        else if (step.kind === "dependency") answer = await this.loadAddon(step.name, step.ancestry);
+        else if (step.kind === "plan") answer = await frameXmlStubPlanAsync(step.chunks, this.#cancellable);
+        else answer = await step.loader.load(step.path);
+      } catch (error) {
+        next = steps.throw(error);
+        continue;
+      }
+      next = steps.next(answer);
+    }
+    return next.value;
+  }
+
+  /**
+   * 3.18 (owner, 12.10): the synchronous driver, from one add-on's prefetched files. The run reads
+   * through a source that throws for a file not prefetched (reported as a provider failure, as the
+   * asynchronous run reports one) — unreachable, the steps before it read every file it reads.
+   * `undefined`: a read or a dependency it cannot answer, before any Lua of this add-on ran.
+   */
+  private driveSync<T>(steps: AddonLoadSteps<T>, prefetched: PrefetchedAddon): T | undefined {
+    const files = prefetched.files;
+    const source: GlueSyncFileSource = {
+      read(path: string): string | undefined {
+        const key = normalizeGluePath(path);
+        if (!files.has(key)) throw new Error(`${key} was not prefetched`);
+        return files.get(key);
+      },
+    };
+    let next = steps.next();
+    while (!next.done) {
+      const step = next.value;
+      let answer: unknown;
+      if (step.kind === "read") {
+        const key = normalizeGluePath(step.path);
+        if (!files.has(key)) {
+          steps.return(undefined as T);
+          return undefined;
+        }
+        answer = files.get(key);
+      } else if (step.kind === "dependency") {
+        answer = this.loadAddonNow(step.name, step.ancestry);
+        if (answer === undefined) {
+          steps.return(undefined as T);
+          return undefined;
+        }
+      } else if (step.kind === "plan") {
+        // Derived from these same files by the prefetch; a pure function of their text.
+        answer = prefetched.plan ?? frameXmlStubPlan(step.chunks);
+      } else {
+        try {
+          answer = step.loader.loadSync(step.path, source);
+        } catch (error) {
+          next = steps.throw(error);
+          continue;
+        }
+      }
+      next = steps.next(answer);
+    }
+    return next.value;
+  }
+
+  private *readTocSteps(name: string): AddonLoadSteps<AddonToc | FrameXmlAddonRuntimeResult> {
     const path = tocPath(name);
     let source: string | undefined;
     try {
-      source = await this.#provider.read(path);
+      source = yield* readAddonFile(path);
     } catch (error) {
       return this.failure(name, "failed", `failed to read ${path}: ${String(error)}`);
     }
@@ -429,8 +798,12 @@ export class FrameXmlAddonRuntime {
     };
   }
 
-  private async loadRecord(record: AddonRecord, ancestry: readonly string[]): Promise<FrameXmlAddonRuntimeResult> {
-    const toc = await this.readToc(record.name);
+  /**
+   * One add-on load, as steps (3.18): its drivers answer them asynchronously (`loadRecord`) or from
+   * prefetched files inside `LoadAddOn` (`driveSync`); the order and every rule are the same.
+   */
+  private *loadSteps(record: AddonRecord, ancestry: readonly string[]): AddonLoadSteps<FrameXmlAddonRuntimeResult> {
+    const toc = yield* this.readTocSteps(record.name);
     if ("ok" in toc) {
       record.state = "failed";
       record.result = toc;
@@ -440,7 +813,7 @@ export class FrameXmlAddonRuntime {
 
     const dependencies: string[] = [];
     for (const dependency of toc.dependencies) {
-      const result = await this.loadAddon(dependency, ancestry);
+      const result = (yield { kind: "dependency", name: dependency, ancestry }) as FrameXmlAddonRuntimeResult;
       dependencies.push(dependency);
       if (!result.ok) {
         const failed = this.failure(record.name, "failed", `dependency ${dependency}: ${result.message ?? result.status}`,
@@ -454,9 +827,9 @@ export class FrameXmlAddonRuntime {
     // Preflight the complete XML graph before GlueLoader can mutate the shared bridge. GlueLoader
     // intentionally ignores unsupported roots, which is useful for the historical FrameXML
     // corpus but would make a failed LoD add-on look loaded. This graph walk is still lazy: it only
-    // runs after this add-on's LoadAddOn host operation starts, and the provider/cache coalesces
-    // the reads that GlueLoader performs immediately afterwards.
-    const preflight = await this.preflightXml(toc.entries
+    // runs after this add-on's LoadAddOn host operation starts (or in its prefetch, which reads and
+    // keeps the same files), and the provider/cache coalesces the reads GlueLoader performs afterwards.
+    const preflight = yield* this.preflightSteps(toc.entries
       .filter((entry) => entry.kind === "xml")
       .map((entry) => entry.path));
     if (preflight !== undefined) {
@@ -471,7 +844,7 @@ export class FrameXmlAddonRuntime {
     // extend the already-installed tables before its first chunk executes. This keeps the add-on
     // in the shared VM/registry while still refusing to invent any typed Talent API: unresolved
     // calls get the existing neutral recorder, exactly as they do for the base corpus.
-    const addonPlan = await this.stubPlan(toc.entries);
+    const addonPlan = yield* this.stubPlanSteps(toc.entries);
     if ("error" in addonPlan) {
       const failed = this.failure(record.name, "failed", addonPlan.error, dependencies);
       record.state = "failed";
@@ -516,18 +889,14 @@ export class FrameXmlAddonRuntime {
       vm: this.#vm,
       bridge: this.#bridge,
       provider: this.#provider,
-      checkpoint: async () => {
-        if (this.#closed) throw new Error("FrameXML add-on load cancelled");
-        await this.#checkpoint?.();
-        if (this.#closed) throw new Error("FrameXML add-on load cancelled");
-      },
+      checkpoint: this.#cancellable,
       luaArguments: [record.name, namespace],
       maxFiles: 1024,
       maxDepth: 32,
     });
-    let loaded: Awaited<ReturnType<GlueLoader["load"]>>;
+    let loaded: GlueLoadResult;
     try {
-      loaded = await loader.load(toc.path);
+      loaded = (yield { kind: "run", loader, path: toc.path }) as GlueLoadResult;
     } catch (error) {
       const failed = this.failure(record.name, this.#closed ? "closed" : "failed",
         `add-on execution failed: ${String(error)}`, dependencies);
@@ -566,15 +935,15 @@ export class FrameXmlAddonRuntime {
     return result;
   }
 
-  private async preflightXml(paths: readonly string[]): Promise<string | undefined> {
+  private *preflightSteps(paths: readonly string[]): AddonLoadSteps<string | undefined> {
     const seen = new Set<string>();
-    const walk = async (path: string): Promise<string | undefined> => {
+    function* walk(path: string): AddonLoadSteps<string | undefined> {
       const normalized = normalizeGluePath(path);
       if (seen.has(normalized)) return undefined;
       seen.add(normalized);
       let source: string | undefined;
       try {
-        source = await this.#provider.read(normalized);
+        source = yield* readAddonFile(normalized);
       } catch (error) {
         return `${normalized} could not be read: ${String(error)}`;
       }
@@ -598,13 +967,13 @@ export class FrameXmlAddonRuntime {
       visit(parsed.root);
       for (const include of includes) {
         if (include.endsWith("/<invalid-include>")) return `${normalized} has an invalid Include path`;
-        const failure = await walk(include);
+        const failure = yield* walk(include);
         if (failure !== undefined) return failure;
       }
       return undefined;
-    };
+    }
     for (const path of paths) {
-      const failure = await walk(path);
+      const failure = yield* walk(path);
       if (failure !== undefined) return failure;
     }
     return undefined;
@@ -616,33 +985,33 @@ export class FrameXmlAddonRuntime {
    * execution order and widget creation. Includes/scripts are walked with the same path rules as
    * the preflight, so an unsupported or missing source cannot silently shrink the plan.
    */
-  private async stubPlan(
+  private *stubPlanSteps(
     entries: ReturnType<typeof parseGlueToc>,
-  ): Promise<{ readonly plan: FrameXmlStubPlan } | { readonly error: string }> {
+  ): AddonLoadSteps<{ readonly plan: FrameXmlStubPlan } | { readonly error: string }> {
     const chunks: FrameXmlLuaChunk[] = [];
     const seen = new Set<string>();
-    const read = async (path: string): Promise<string | undefined | Error> => {
+    function* read(path: string): AddonLoadSteps<string | undefined | Error> {
       try {
-        return await this.#provider.read(normalizeGluePath(path));
+        return yield* readAddonFile(normalizeGluePath(path));
       } catch (error) {
         return error instanceof Error ? error : new Error(String(error));
       }
-    };
-    const visitLua = async (path: string): Promise<string | undefined> => {
+    }
+    function* visitLua(path: string): AddonLoadSteps<string | undefined> {
       const normalized = normalizeGluePath(path);
       if (seen.has(normalized)) return undefined;
       seen.add(normalized);
-      const source = await read(normalized);
+      const source = yield* read(normalized);
       if (source instanceof Error) return `${normalized} could not be read: ${source.message}`;
       if (source === undefined || source.trim().length === 0) return `${normalized} is missing`;
       chunks.push({ file: normalized, source });
       return undefined;
-    };
-    const visitXml = async (path: string): Promise<string | undefined> => {
+    }
+    function* visitXml(path: string): AddonLoadSteps<string | undefined> {
       const normalized = normalizeGluePath(path);
       if (seen.has(normalized)) return undefined;
       seen.add(normalized);
-      const source = await read(normalized);
+      const source = yield* read(normalized);
       if (source instanceof Error) return `${normalized} could not be read: ${source.message}`;
       if (source === undefined || source.trim().length === 0) return `${normalized} is missing`;
       const parsed = parseFrameXml(source);
@@ -658,7 +1027,7 @@ export class FrameXmlAddonRuntime {
           const reference = child.attributes.file?.trim() ?? "";
           const target = reference ? resolveGluePath(directory, reference) : undefined;
           if (!target) return `${normalized} has an invalid Include path`;
-          const failure = await visitXml(target);
+          const failure = yield* visitXml(target);
           if (failure) return failure;
         } else if (child.name === "Script") {
           // A `<Script>` with no `file` is an inline body — `Blizzard_RaidUI.xml:1220` closes the
@@ -668,23 +1037,21 @@ export class FrameXmlAddonRuntime {
           const reference = child.attributes.file.trim();
           const target = reference ? resolveGluePath(directory, reference) : undefined;
           if (!target) return `${normalized} has an invalid Script path`;
-          const failure = await visitLua(target);
+          const failure = yield* visitLua(target);
           if (failure) return failure;
         }
       }
       return undefined;
-    };
+    }
     for (const entry of entries) {
       const failure = entry.kind === "lua"
-        ? await visitLua(entry.path)
-        : await visitXml(entry.path);
+        ? yield* visitLua(entry.path)
+        : yield* visitXml(entry.path);
       if (failure) return { error: failure };
     }
-    return { plan: await frameXmlStubPlanAsync(chunks, async () => {
-      if (this.#closed) throw new Error("FrameXML add-on load cancelled");
-      await this.#checkpoint?.();
-      if (this.#closed) throw new Error("FrameXML add-on load cancelled");
-    }) };
+    // The drivers derive it: asynchronously with the boot's checkpoints, or from the prefetch's plan.
+    const plan = (yield { kind: "plan", chunks }) as FrameXmlStubPlan;
+    return { plan };
   }
 
   /** Add per-addon names to the prelude's live tables without replacing the shared VM state. */

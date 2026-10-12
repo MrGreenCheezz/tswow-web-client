@@ -90,7 +90,7 @@ export class FrameXmlTsAddonPresentation {
       for (const child of frame.children) visit(child);
     };
     for (const [frame, owner] of boot.tsAddonFrames) {
-      if (!boot.isAddonLoaded(owner)) continue;
+      if (!boot.isModuleLoaded(owner)) continue; // 3.46: the host's record, not IsAddOnLoaded
       // Game-menu entries are published through the native menu adapter.
       let inMenu = false;
       for (let parent = frame.parent; parent; parent = parent.parent) {
