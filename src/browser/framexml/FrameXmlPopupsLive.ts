@@ -11,7 +11,7 @@ import { game } from "../game/Context.js";
 import { dungeonEncounterClient } from "../DungeonEncounterClient.js";
 import type { FrameXmlDungeonEncounter, FrameXmlPopupsContext, FrameXmlPopupsCursorItem } from "./FrameXmlPopups.js";
 import { frameXmlPopupsTalentUiLoaded, frameXmlQuitIntent } from "./FrameXmlPopupsController.js";
-import { frameXmlTalentOpen, toggleFrameXmlTalent } from "./FrameXmlTalentController.js";
+import { openFrameXmlStockTalent } from "./FrameXmlTalentController.js";
 import { liveAreaIdAt } from "../AreaLocatorLive.js"; // 05.10-A7b-4
 
 /** Stock unit tokens a group member can hold: four party slots, forty raid slots. */
@@ -104,13 +104,14 @@ export function frameXmlPopupsLiveContext(host: FrameXmlPopupsLiveHost): FrameXm
       const areaId = liveAreaIdAt(world.mapId, position.x, position.y); // 05.10-A7b-4
       return areaId > 0 ? game.areas?.area(areaId)?.name : undefined;
     },
-    // CONFIRM_TALENT_WIPE waits for Blizzard_TalentUI in the published VM; its load is the published
-    // talent owner's own (the N key's path), which also opens the tree the question is about.
+    // CONFIRM_TALENT_WIPE waits for Blizzard_TalentUI in the published VM; its load is the stock talent
+    // frame's own, which also opens the tree the question is about — 3.45: the stock one even beside an
+    // add-on's N, as Wow.exe's TalentFrame_LoadUI path opens PlayerTalentFrame (openFrameXmlStockTalent).
     talentUi: () => {
       const loaded = frameXmlPopupsTalentUiLoaded();
       return loaded === undefined ? undefined : loaded ? "ready" : "idle";
     },
-    loadTalentUi: () => { if (!frameXmlTalentOpen()) toggleFrameXmlTalent(); },
+    loadTalentUi: () => { openFrameXmlStockTalent(); },
     // GameMenu.ts's Quit intent, registered with the popup controller (absent: CAMP, as before).
     quitting: () => frameXmlQuitIntent()?.quitting() === true,
     forceQuit: () => frameXmlQuitIntent()?.forceQuit(),

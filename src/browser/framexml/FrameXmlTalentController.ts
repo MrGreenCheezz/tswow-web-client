@@ -75,3 +75,33 @@ export function closeFrameXmlTalent(): boolean {
   if (!current) return false;
   return invoke(current, () => current.hide());
 }
+
+/**
+ * 3.45: beside an add-on's N (3.26) the stock PlayerTalentFrame still exists, hosting the glyph tab
+ * (FrameXmlWorldMount `createFrameXmlTalentOwners`). What asks for *the stock* talent frame — the
+ * talent-wipe question, whose stock path is TalentFrame_LoadUI and PlayerTalentFrame, never an add-on's
+ * window — opens that one. Without an add-on's N there is none, and the published owner is the stock one.
+ */
+let stockBeside: FrameXmlTalentOwner | undefined;
+
+/** Publish the stock talent frame kept beside an add-on's N; returns an identity-safe cleanup. */
+export function publishFrameXmlStockTalentBeside(next: FrameXmlTalentOwner): () => void {
+  stockBeside = next;
+  return (): void => {
+    if (stockBeside === next) stockBeside = undefined;
+  };
+}
+
+/**
+ * Open the stock talent frame (3.45): the one beside an add-on's N when there is one, else the
+ * published owner, which is then the stock one. A failure of the frame beside is its own: it is not
+ * the N owner, so nothing is demoted here.
+ */
+export function openFrameXmlStockTalent(): void {
+  const beside = stockBeside;
+  if (beside) {
+    try { if (!beside.isOpen()) beside.show(); } catch { /* the native question remains */ }
+    return;
+  }
+  if (!frameXmlTalentOpen()) toggleFrameXmlTalent();
+}

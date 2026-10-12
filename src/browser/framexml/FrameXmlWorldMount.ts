@@ -30,6 +30,7 @@ import {
   toggleFrameXmlSpellBook, publishFrameXmlSpellBook,
 } from "./FrameXmlSpellBookController.js";
 import {
+  publishFrameXmlStockTalentBeside,
   publishFrameXmlTalent,
   toggleFrameXmlTalent,
   type FrameXmlTalentOwner,
@@ -4524,10 +4525,13 @@ export async function mountFrameXmlVertical(
     if (glyphTalent) {
       // PlayerTalentFrame is a UIPanel the client's CloseWindows takes on Escape; the controller's
       // entry is N's owner here, so the glyph tab's frame gets an entry of its own.
-      resources.glyphTalentEscapeCleanup = registerEscapable({
+      const escape = registerEscapable({
         isOpen: () => glyphTalent.isOpen(),
         close: () => { glyphTalent.hide(); },
       });
+      // 3.45: and it is the stock talent frame the talent-wipe question opens (FrameXmlPopupsLive).
+      const beside = publishFrameXmlStockTalentBeside(glyphTalent);
+      resources.glyphTalentEscapeCleanup = () => { beside(); escape(); };
     }
     if (resources.questOwner) {
       // The native browser panel is borrowed only after the stock tree has mounted and passed its
