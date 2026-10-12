@@ -7,8 +7,12 @@ import { join } from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
 
-import { patchChangeMessage, superviseGateway } from "../dist/code/gateway/SupervisedGateway.js";
-import { GatewaySupervisor, SUPERVISOR_DEFAULTS, restartDecision, supervisorOptionsFromEnv } from "../tools/gateway-supervisor.mjs";
+import {
+  GATEWAY_RESTART_CLOSE, GATEWAY_RESTART_CLOSE_REASON, patchChangeMessage, superviseGateway,
+} from "../dist/code/gateway/SupervisedGateway.js";
+import {
+  DEFAULT_RESTART_DEADLINE_MIN, GatewaySupervisor, SUPERVISOR_DEFAULTS, restartDecision, supervisorOptionsFromEnv,
+} from "../tools/gateway-supervisor.mjs";
 import { repositoryRoot } from "../tools/paths.mjs";
 
 test("the restart decision waits for a quiet chain, a finished build and an empty world", () => {
@@ -307,22 +311,33 @@ test("10.15: GATEWAY_SUPERVISE alone restarts crashes and leaves a patch change 
 });
 
 test("10.15: the supervisor options come from the environment, and a bad deadline is refused", () => {
-  assert.deepEqual(supervisorOptionsFromEnv({}), { restartOnPatch: false });
-  assert.deepEqual(supervisorOptionsFromEnv({ GATEWAY_RESTART_ON_PATCH: "1" }), { restartOnPatch: true });
+  const fiveMinutes = 5 * 60_000;
+  assert.deepEqual(supervisorOptionsFromEnv({}), { restartOnPatch: false, playerDeadlineMs: fiveMinutes });
+  assert.deepEqual(supervisorOptionsFromEnv({ GATEWAY_RESTART_ON_PATCH: "1" }), { restartOnPatch: true, playerDeadlineMs: fiveMinutes },
+    "10.15 (C): unset is the owner's short deadline, not for ever");
   assert.deepEqual(supervisorOptionsFromEnv({ GATEWAY_RESTART_ON_PATCH: "1", GATEWAY_RESTART_DEADLINE_MIN: "15" }),
     { restartOnPatch: true, playerDeadlineMs: 15 * 60_000 });
-  assert.deepEqual(supervisorOptionsFromEnv({ GATEWAY_RESTART_DEADLINE_MIN: "" }), { restartOnPatch: false });
-  for (const bad of ["-1", "1.5", "soon", "100000"]) {
-    assert.throws(() => supervisorOptionsFromEnv({ GATEWAY_RESTART_DEADLINE_MIN: bad }), /GATEWAY_RESTART_DEADLINE_MIN/);
+  assert.deepEqual(supervisorOptionsFromEnv({ GATEWAY_RESTART_DEADLINE_MIN: "" }), { restartOnPatch: false, playerDeadlineMs: fiveMinutes },
+    "an empty line in .env is unset");
+  assert.deepEqual(supervisorOptionsFromEnv({ GATEWAY_RESTART_DEADLINE_MIN: "0" }), { restartOnPatch: false, playerDeadlineMs: 0 },
+    "0 keeps waiting for the players for ever");
+  assert.deepEqual(supervisorOptionsFromEnv({ GATEWAY_RESTART_DEADLINE_MIN: "1440" }), { restartOnPatch: false, playerDeadlineMs: 1440 * 60_000 });
+  for (const bad of ["-1", "1.5", "soon", "100000", "1441"]) {
+    assert.throws(() => supervisorOptionsFromEnv({ GATEWAY_RESTART_DEADLINE_MIN: bad }), /GATEWAY_RESTART_DEADLINE_MIN.*0 = wait/);
   }
-  assert.equal(SUPERVISOR_DEFAULTS.playerDeadlineMs, 0, "by default players hold a restart back for ever");
+  assert.equal(DEFAULT_RESTART_DEADLINE_MIN, 5);
+  assert.equal(SUPERVISOR_DEFAULTS.playerDeadlineMs, fiveMinutes, "by default players hold a restart back five minutes");
 });
 
 test("10.15 (B): past the owner's deadline players no longer hold the restart back", () => {
   const base = { latchAt: 100_000, lastChangeAt: 100_000, childStartedAt: 50_000, markerFinishedAt: 104_000 };
   const players = { auth: 0, world: 2 };
-  assert.deepEqual(restartDecision({ ...base, now: 200_000, clients: players, settledAt: 105_000 }),
-    { action: "wait", reason: "players" }, "no deadline: wait for ever");
+  assert.deepEqual(restartDecision({ ...base, now: 10_000_000, clients: players, settledAt: 105_000, playerDeadlineMs: 0 }),
+    { action: "wait", reason: "players" }, "a deadline of 0: wait for ever");
+  assert.deepEqual(restartDecision({ ...base, now: 404_999, clients: players, settledAt: 105_000 }),
+    { action: "wait", reason: "players" }, "the default deadline: not yet");
+  assert.deepEqual(restartDecision({ ...base, now: 405_000, clients: players, settledAt: 105_000 }),
+    { action: "restart", reason: "deadline", force: true }, "the default deadline: five minutes after the build settled");
   assert.deepEqual(restartDecision({ ...base, now: 704_999, clients: players, settledAt: 105_000, playerDeadlineMs: 600_000 }),
     { action: "wait", reason: "players" });
   assert.deepEqual(restartDecision({ ...base, now: 705_000, clients: players, settledAt: 105_000, playerDeadlineMs: 600_000 }),
@@ -420,10 +435,19 @@ function supervisedGateways(h) {
       pending: false,
       walks: 0,
       shutdowns: [],
+      /** 10.15 (C): what the supervisor said about the forced restart, and the sessions it closed. */
+      restartAts: [],
+      /** Every scheduleRestart, closeSessions and shutdown, in order. */
+      events: [],
       patchSummary() { return this.summary; },
       async checkPatchChain() { this.walks++; this.pending = false; return this.summary; },
       get patchEventsPending() { return this.pending; },
       connections() { return { ...(this.sessions.length > 1 ? this.sessions.shift() : this.sessions[0]) }; },
+      scheduleRestart(at) { this.restartAts.push(at); this.events.push(["restart-at", at]); },
+      async closeSessions(code, reason) {
+        this.events.push(["close", code, reason]);
+        await Promise.resolve();
+      },
     };
     let toChild;
     const channel = {
@@ -442,6 +466,7 @@ function supervisedGateways(h) {
     gateway.handle = superviseGateway(gateway, channel, {
       shutdown: (code) => {
         gateway.shutdowns.push(code);
+        gateway.events.push(["shutdown", code]);
         queueMicrotask(() => child.exit(code));
       },
       now: () => h.now,
@@ -513,6 +538,137 @@ test("the gateway's own half: ready, the idle walk, status, a declined restart, 
   assert.deepEqual(lone.shutdowns, [0], "no supervisor: nothing may keep the port");
   lone.disconnect();
   assert.deepEqual(lone.shutdowns, [0], "once");
+});
+
+test("10.15 (C): by default players get five minutes, told to the gateway once, then 4001 and the restart", async () => {
+  const h = harness();
+  const gateways = supervisedGateways(h);
+  // No deadline passed: the default the environment also gives.
+  const supervisor = new GatewaySupervisor(h.deps, { buildTimeoutMs: 0, quietMs: 0 });
+  supervisor.start();
+  await flush();
+  const [first] = gateways;
+  first.sessions = [{ auth: 0, world: 1 }];
+  first.channel.send(patchChangeMessage({ at: new Date(h.now).toISOString(), first: true, epoch: 1, changes: 1 }));
+  await flush();
+  await h.advance(1_000);
+  await flush();
+  const settledAt = 1_000;
+  const deadline = settledAt + 5 * 60_000;
+  assert.deepEqual(first.restartAts, [deadline], "the build settled with a player in the world: the gateway is told when");
+  assert.deepEqual(h.children[0].sent.filter((message) => message.type === "restart-at"), [{ type: "restart-at", at: deadline }]);
+  assert.ok(h.logs.some((line) => /players are told the gateway restarts in 300 s/.test(line)), h.logs.join("\n"));
+
+  await h.advance(60_000);
+  await flush();
+  assert.deepEqual(first.restartAts, [deadline], "said once, not on every count");
+  assert.deepEqual(first.shutdowns, []);
+
+  await h.advance(deadline - h.now - 1);
+  await flush();
+  assert.deepEqual(first.shutdowns, [], "a millisecond before the deadline the player keeps the gateway");
+  await h.advance(1_000);
+  await flush();
+  assert.deepEqual(h.children[0].sent.at(-1), { type: "shutdown", reason: "restart", force: true });
+  // The sessions are closed with the restart code before the gateway leaves, never after.
+  assert.deepEqual(first.events.filter(([kind]) => kind !== "restart-at"),
+    [["close", GATEWAY_RESTART_CLOSE, GATEWAY_RESTART_CLOSE_REASON], ["shutdown", 0]]);
+  assert.equal(GATEWAY_RESTART_CLOSE, 4001);
+  assert.ok(Buffer.byteLength(GATEWAY_RESTART_CLOSE_REASON) <= 123, "fits a close frame");
+  await flush();
+  assert.equal(h.children.length, 2, "forked again");
+  await flush();
+  assert.deepEqual(gateways[1].restartAts, [], "the new gateway has nothing scheduled");
+});
+
+test("10.15 (C): nobody connected restarts at once, with no countdown and no 4001", async () => {
+  const h = harness();
+  const gateways = supervisedGateways(h);
+  new GatewaySupervisor(h.deps, { buildTimeoutMs: 0, quietMs: 0 }).start();
+  await flush();
+  const [first] = gateways;
+  first.channel.send(patchChangeMessage({ at: new Date(h.now).toISOString(), first: true, epoch: 1, changes: 1 }));
+  await flush();
+  await h.advance(1_000);
+  await flush();
+  assert.deepEqual(first.shutdowns, [0], "restarted on the first count");
+  assert.deepEqual(first.restartAts, []);
+  assert.ok(!first.events.some(([kind]) => kind === "close"), "a plain restart closes nothing first");
+  assert.deepEqual(h.children[0].sent.at(-1), { type: "shutdown", reason: "restart" });
+});
+
+test("10.15 (C): a new build withdraws the countdown; a deadline of 0 never starts one", async () => {
+  const h = harness();
+  const gateways = supervisedGateways(h);
+  new GatewaySupervisor(h.deps, { buildTimeoutMs: 0, quietMs: 0, playerDeadlineMs: 60_000 }).start();
+  await flush();
+  const [first] = gateways;
+  first.sessions = [{ auth: 1, world: 0 }];
+  first.channel.send(patchChangeMessage({ at: new Date(h.now).toISOString(), first: true, epoch: 1, changes: 1 }));
+  await flush();
+  await h.advance(1_000);
+  await flush();
+  assert.deepEqual(first.restartAts, [61_000]);
+  // Another build writes before the deadline: it settles anew, and so does its deadline.
+  first.channel.send(patchChangeMessage({ at: new Date(h.now).toISOString(), first: false, epoch: 2, changes: 2 }));
+  await flush();
+  assert.deepEqual(first.restartAts, [61_000, undefined], "withdrawn the moment the chain moves again");
+  assert.deepEqual(h.children[0].sent.filter((message) => message.type === "restart-at").at(-1), { type: "restart-at", at: null });
+  await h.advance(1_000);
+  await flush();
+  assert.deepEqual(first.restartAts, [61_000, undefined, 62_000], "counted from the second settle");
+
+  const patient = harness();
+  const lones = supervisedGateways(patient);
+  new GatewaySupervisor(patient.deps, { buildTimeoutMs: 0, quietMs: 0, playerDeadlineMs: 0 }).start();
+  await flush();
+  const [lone] = lones;
+  lone.sessions = [{ auth: 0, world: 1 }];
+  lone.channel.send(patchChangeMessage({ at: new Date(patient.now).toISOString(), first: true, epoch: 1, changes: 1 }));
+  await flush();
+  await patient.advance(60 * 60_000);
+  await flush();
+  assert.deepEqual(lone.restartAts, [], "0: players hold it for ever, so there is nothing to count down");
+  assert.deepEqual(lone.shutdowns, []);
+});
+
+test("10.15 (C): the gateway's half passes restart-at on and ignores a malformed one", async () => {
+  const h = harness();
+  const gateways = supervisedGateways(h);
+  new GatewaySupervisor(h.deps).start();
+  await flush();
+  const [gateway] = gateways;
+  for (const message of [
+    { type: "restart-at", at: 123_456 }, { type: "restart-at", at: null }, { type: "restart-at", at: "soon" },
+    { type: "restart-at", at: Number.NaN },
+  ]) h.children[0].send(message);
+  await flush();
+  assert.deepEqual(gateway.restartAts, [123_456, undefined, undefined, undefined]);
+  // A stub gateway without the 10.15 (C) methods still speaks the protocol and leaves on a forced restart.
+  const stub = harness();
+  stub.deps.fork = () => {
+    const child = new FakeChild();
+    stub.children.push(child);
+    const shutdowns = [];
+    child.shutdowns = shutdowns;
+    let toChild;
+    superviseGateway({
+      patchSummary: () => ({ generation: "g", stale: false, lastChangeAt: null }),
+      checkPatchChain: async () => ({ generation: "g", stale: false, lastChangeAt: null }),
+      patchEventsPending: false,
+      connections: () => ({ auth: 0, world: 1 }),
+    }, { send: () => {}, onMessage: (listener) => { toChild = listener; }, onDisconnect: () => {} }, {
+      shutdown: (code) => shutdowns.push(code), now: () => stub.now, setInterval: stub.deps.setInterval, clearInterval: stub.deps.clearInterval,
+    });
+    child.deliver = (message) => toChild(message);
+    return child;
+  };
+  new GatewaySupervisor(stub.deps).start();
+  const child = stub.children[0];
+  child.deliver({ type: "restart-at", at: 1 });
+  child.deliver({ type: "shutdown", reason: "restart", force: true });
+  await flush();
+  assert.deepEqual(child.shutdowns, [0]);
 });
 
 test("the gateway's status answer carries what the supervisor reads", async () => {

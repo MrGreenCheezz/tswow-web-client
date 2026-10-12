@@ -418,6 +418,8 @@ export async function inspectLocalGateway({ port, origin, generation, timeoutMs 
       supervised: status.body.supervised === true,
       startedAt: status.body.startedAt,
       changedAt: status.body.changedAt,
+      // 10.15 (C): the supervisor's forced restart, when connected players hold the build back.
+      restartAt: typeof status.body.restartAt === "number" ? status.body.restartAt : null,
     };
   }
   if (status.status === 403) {
@@ -557,7 +559,11 @@ export function formatPatchStatusReport(report) {
   if (gateway) {
     let state;
     if (!gateway.running) state = `${gateway.error ?? "not running"}`;
-    else if (gateway.stale) state = `STALE — restart the gateway and reload the page${gateway.supervised ? " (its supervisor will restart it once the build settles and nobody is in the world)" : ""}`;
+    else if (gateway.stale) {
+      state = `STALE — restart the gateway and reload the page${!gateway.supervised ? ""
+        : gateway.restartAt ? ` (its supervisor restarts it at ${shortTime(gateway.restartAt)} whoever is connected)`
+          : " (its supervisor will restart it once the build settles and nobody is in the world)"}`;
+    }
     else if (gateway.supported) state = gateway.current === null ? "running (generation not compared)" : "current";
     else state = "running, not latched";
     lines.push(`Gateway ${gateway.url}: ${state}${gateway.error && gateway.running ? ` · ${gateway.error}` : ""}`);

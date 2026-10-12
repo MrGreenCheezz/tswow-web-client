@@ -450,6 +450,53 @@ export interface RunningGateway {
   readonly patchEventsPending: boolean;
   /** Bridged sockets now. The supervisor restarts the process only when both are zero. */
   connections(): { auth: number; world: number };
+  /**
+   * 10.15 (C): when the supervisor restarts this process whoever is connected (epoch ms), or
+   * `undefined` to withdraw it; `/client/patch-status` reports it as `restartAt` for the page.
+   */
+  scheduleRestart(at: number | undefined): void;
+  /**
+   * 10.15 (C): closes every bridged /auth and /world socket with `code` and `reason` and resolves
+   * once they have closed — after `timeoutMs` at most, when whatever is left is terminated.
+   */
+  closeSessions(code: number, reason: string, timeoutMs?: number): Promise<void>;
+}
+
+/** How long a forced restart waits for the browsers to answer its close frames. */
+const SESSION_CLOSE_TIMEOUT_MS = 2_000;
+
+/**
+ * Closes `sockets` with a close frame and waits for the closing handshakes, at most `timeoutMs`;
+ * whatever has not closed by then is terminated. A socket the bridge paused cannot read the
+ * browser's answering close frame, so each is resumed first, as `bridge()` does for its own closes.
+ */
+export async function closeWebSockets(
+  sockets: Iterable<WebSocket>, code: number, reason: string, timeoutMs = SESSION_CLOSE_TIMEOUT_MS,
+): Promise<void> {
+  const open = [...sockets].filter((socket) => socket.readyState !== WebSocket.CLOSED);
+  if (open.length === 0) return;
+  await new Promise<void>((resolveAll) => {
+    let left = open.length;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const done = (): void => {
+      if (timer !== undefined) clearTimeout(timer);
+      timer = undefined;
+      resolveAll();
+    };
+    timer = setTimeout(done, timeoutMs);
+    for (const socket of open) {
+      socket.once("close", () => { if (--left === 0) done(); });
+      try {
+        socket.resume();
+        socket.close(code, reason);
+      } catch {
+        socket.terminate();
+      }
+    }
+  });
+  for (const socket of open) {
+    if (socket.readyState !== WebSocket.CLOSED) socket.terminate();
+  }
 }
 
 function rawDataToBuffer(data: RawData): Buffer {
@@ -727,6 +774,7 @@ export interface GatewayAssetHandler {
   patchStatus(): Promise<PatchStatus>;
   checkPatchChain(): Promise<PatchStatusSummary>;
   readonly patchEventsPending: boolean;
+  scheduleRestart(at: number | undefined): void;
 }
 
 /** Shared resource implementation. Creating it opens no listening or gameplay sockets. */
@@ -3568,6 +3616,7 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
       return patches.summary();
     },
     get patchEventsPending() { return fingerprint.archiveEventsPending; },
+    scheduleRestart: (at) => patches.scheduleRestart(at),
   };
 }
 
@@ -3700,6 +3749,9 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
     checkPatchChain: () => assets.checkPatchChain(),
     get patchEventsPending() { return assets.patchEventsPending; },
     connections: () => ({ auth: authServer.clients.size, world: worldServer.clients.size }),
+    scheduleRestart: (at) => assets.scheduleRestart(at),
+    closeSessions: (code, reason, timeoutMs) => closeWebSockets(
+      [...authServer.clients, ...worldServer.clients], code, reason, timeoutMs),
   };
 }
 

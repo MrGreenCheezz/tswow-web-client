@@ -9,10 +9,21 @@
 //   child → { type: "ready", generation, pid } · { type: "patch-chain-changed", at, first, epoch, changes }
 //         · { type: "status", auth, world, stale, lastChangeAt, declined? }
 //   parent → { type: "status?" } · { type: "shutdown", reason: "restart" | "stop", force? }
+//          · { type: "restart-at", at: number | null }
 
 import type { ClientPatchChange, PatchStatusSummary } from "./PatchStatus.js";
 
 export type SupervisorMessage = Readonly<Record<string, unknown>>;
+
+/**
+ * 10.15 (C): the close code of every bridged socket a forced restart drops — the restart after a
+ * TSWoW build that connected players held back past GATEWAY_RESTART_DEADLINE_MIN. The page reads the
+ * code, not the reason (`describeFailure` in src/browser/glue/GlueMessages.ts), and says that the
+ * server is restarting after an update rather than that the connection was lost.
+ */
+export const GATEWAY_RESTART_CLOSE = 4001;
+/** The close frame's reason beside it, for logs; well inside the frame's 123 bytes. */
+export const GATEWAY_RESTART_CLOSE_REASON = "Gateway restarting after an update";
 
 /** What of a running gateway the protocol needs; `RunningGateway` has all of it. */
 export interface SupervisedGateway {
@@ -20,6 +31,17 @@ export interface SupervisedGateway {
   checkPatchChain(): Promise<PatchStatusSummary>;
   readonly patchEventsPending: boolean;
   connections(): { auth: number; world: number };
+  /**
+   * 10.15 (C): when the supervisor will restart this process although players are connected (epoch
+   * ms), or `undefined` once that is withdrawn; `/client/patch-status` reports it as `restartAt`.
+   * Optional so that a stub gateway without it still speaks the protocol.
+   */
+  scheduleRestart?(at: number | undefined): void;
+  /**
+   * 10.15 (C): closes every bridged socket with `code` before a forced restart and resolves once
+   * they have closed, or after a bound; absent, `shutdown` terminates them as it always did.
+   */
+  closeSessions?(code: number, reason: string): Promise<void>;
 }
 
 export interface SupervisorChannel {
@@ -93,21 +115,34 @@ export function superviseGateway(
     stopped = true;
     cancel(idle);
   };
-  const leave = (): void => {
+  const leave = (forcedRestart = false): void => {
     if (stopped) return;
     stop();
-    options.shutdown(0);
+    const closeSessions = forcedRestart ? gateway.closeSessions?.bind(gateway) : undefined;
+    if (!closeSessions) {
+      options.shutdown(0);
+      return;
+    }
+    // 10.15 (C): the players this restart drops are told why — a close frame with 4001 — before
+    // `shutdown` terminates whatever has not closed by then. Bounded by `closeSessions` itself.
+    void closeSessions(GATEWAY_RESTART_CLOSE, GATEWAY_RESTART_CLOSE_REASON)
+      .catch(() => undefined)
+      .finally(() => options.shutdown(0));
   };
   channel.onMessage((message) => {
     if (stopped || typeof message !== "object" || message === null) return;
-    const { type, reason, force } = message as { type?: unknown; reason?: unknown; force?: unknown };
+    const { type, reason, force, at } = message as { type?: unknown; reason?: unknown; force?: unknown; at?: unknown };
     if (type === "status?") {
       status();
+    } else if (type === "restart-at") {
+      // 10.15 (C): the page counts the forced restart down from the summary; null withdraws it.
+      gateway.scheduleRestart?.(typeof at === "number" && Number.isFinite(at) ? at : undefined);
     } else if (type === "shutdown") {
       // The supervisor counted the sessions a moment ago; one may have connected since, and
       // `close()` terminates every bridged socket. A restart is declined rather than drop a player
       // in the middle of the world; the supervisor waits for them again. A stop always leaves, and
-      // so does a restart past the owner's deadline (`force`, 10.15 B, GATEWAY_RESTART_DEADLINE_MIN).
+      // so does a restart past the owner's deadline (`force`, 10.15 B, GATEWAY_RESTART_DEADLINE_MIN),
+      // which closes the sessions with GATEWAY_RESTART_CLOSE first.
       if (reason === "restart" && force !== true) {
         const sessions = gateway.connections();
         if (sessions.auth + sessions.world > 0) {
@@ -115,7 +150,7 @@ export function superviseGateway(
           return;
         }
       }
-      leave();
+      leave(reason === "restart" && force === true);
     }
   });
   // A supervisor that died must not leave an orphan holding the port.

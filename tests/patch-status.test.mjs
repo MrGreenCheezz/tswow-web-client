@@ -3,9 +3,11 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
+import { createServer as createTcpServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import WebSocket from "ws";
 
 import { fingerprintArchives } from "../dist/code/gateway/DatasetFingerprint.js";
 import { startGateway } from "../dist/code/gateway/Gateway.js";
@@ -13,6 +15,11 @@ import {
   PatchStatusTracker, formatPatchStatusLine, patchGeneration as gatewayPatchGeneration, readPatchStatusChild,
   redactPatchReport,
 } from "../dist/code/gateway/PatchStatus.js";
+import { GATEWAY_RESTART_CLOSE, GATEWAY_RESTART_CLOSE_REASON } from "../dist/code/gateway/SupervisedGateway.js";
+import {
+  GATEWAY_RESTART_CLOSE as PAGE_GATEWAY_RESTART_CLOSE, describeFailure,
+} from "../dist/code/browser/glue/GlueMessages.js";
+import { TransportClosedError } from "../dist/code/transport/WebSocketByteStream.js";
 import {
   PATCH_STATUS_EXIT, formatPatchStatusReport, formatPatchSummaryLine, inspectLocalGateway, inspectPatchStatus,
   letteredPatches, patchGeneration, patchStatusExitCode, playersState, readBuildMarker, readPublication, tsAddonBlocks,
@@ -188,6 +195,100 @@ test("/client/patch-status answers through the latch, origin-checked and uncache
     await gateway.close();
     await rm(client, { recursive: true, force: true });
   }
+});
+
+test("10.15 (C): the summary carries the supervisor's forced restart, as a time and as time left", () => {
+  let now = 1_000_000;
+  const tracker = new PatchStatusTracker({ archivesHash: "h", chain: "c", addons: [], now: () => now });
+  assert.deepEqual([tracker.summary().restartAt, tracker.summary().restartInMs], [null, null], "nothing scheduled");
+  tracker.scheduleRestart(now + 300_000);
+  assert.deepEqual([tracker.summary().restartAt, tracker.summary().restartInMs], [1_300_000, 300_000]);
+  now += 100_000;
+  assert.deepEqual([tracker.summary().restartAt, tracker.summary().restartInMs], [1_300_000, 200_000],
+    "the time left is counted on the gateway's clock at each answer");
+  now += 500_000;
+  assert.equal(tracker.summary().restartInMs, 0, "never negative");
+  tracker.scheduleRestart(Number.NaN);
+  assert.deepEqual([tracker.summary().restartAt, tracker.summary().restartInMs], [null, null]);
+  tracker.scheduleRestart(now + 5);
+  tracker.scheduleRestart(undefined);
+  assert.equal(tracker.summary().restartAt, null, "withdrawn");
+});
+
+/** A worldserver stand-in that accepts and holds every connection, and says nothing. */
+async function silentBackend() {
+  const sockets = new Set();
+  const server = createTcpServer((socket) => {
+    sockets.add(socket);
+    socket.on("error", () => {});
+    socket.once("close", () => sockets.delete(socket));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  return {
+    port: server.address().port,
+    get connected() { return sockets.size; },
+    async close() {
+      for (const socket of sockets) socket.destroy();
+      await new Promise((resolve) => server.close(resolve));
+    },
+  };
+}
+
+test("10.15 (C): a forced restart's countdown in /client/patch-status, and its 4001 close of a bridged session", async () => {
+  const { client } = await clientFixture();
+  const backend = await silentBackend();
+  const gateway = await startGateway({
+    host: "127.0.0.1", port: 0,
+    auth: { host: "127.0.0.1", port: backend.port }, world: { host: "127.0.0.1", port: backend.port },
+    allowedOrigins: [ORIGIN], clientDirectory: client, datasetPollMs: 60_000, supervised: true,
+  });
+  const socket = new WebSocket(`ws://127.0.0.1:${gateway.port}/world`, { origin: ORIGIN });
+  const closed = new Promise((resolve) => socket.once("close", (code, reason) => resolve({ code, reason: reason.toString() })));
+  try {
+    await new Promise((resolve, reject) => { socket.once("open", resolve); socket.once("error", reject); });
+    await until(() => backend.connected === 1, "the bridge to the worldserver");
+    assert.deepEqual(gateway.connections(), { auth: 0, world: 1 });
+    assert.equal((await getJson(gateway.port, "/client/patch-status?summary=1")).body.restartAt, null);
+
+    const at = Date.now() + 120_000;
+    gateway.scheduleRestart(at);
+    const summary = (await getJson(gateway.port, "/client/patch-status?summary=1")).body;
+    assert.equal(summary.restartAt, at);
+    assert.ok(summary.restartInMs > 110_000 && summary.restartInMs <= 120_000, String(summary.restartInMs));
+    assert.equal((await getJson(gateway.port, "/client/patch-status")).body.restartAt, at, "the full answer too");
+
+    await gateway.closeSessions(GATEWAY_RESTART_CLOSE, GATEWAY_RESTART_CLOSE_REASON);
+    const close = await closed;
+    assert.deepEqual(close, { code: 4001, reason: "Gateway restarting after an update" }, "a close frame, not a dropped socket");
+    assert.deepEqual(gateway.connections(), { auth: 0, world: 0 }, "settled before closeSessions resolved");
+    await until(() => backend.connected === 0, "the worldserver side let go");
+    // What the page makes of it: the restart, not a lost connection.
+    assert.equal(PAGE_GATEWAY_RESTART_CLOSE, GATEWAY_RESTART_CLOSE, "the page reads the code the gateway sends");
+    const shown = describeFailure(new TransportClosedError(close.code, close.reason, true), "world");
+    assert.equal(shown.text, "Сервер перезапускается после обновления");
+    await gateway.closeSessions(GATEWAY_RESTART_CLOSE, GATEWAY_RESTART_CLOSE_REASON);
+  } finally {
+    socket.terminate();
+    await gateway.close();
+    await backend.close();
+    await rm(client, { recursive: true, force: true });
+  }
+});
+
+test("10.15 (C): a session that never answers the close frame is terminated after the bound", async () => {
+  const { closeWebSockets } = await import("../dist/code/gateway/Gateway.js");
+  const events = [];
+  const silent = Object.assign(new (await import("node:events")).EventEmitter(), {
+    readyState: WebSocket.OPEN,
+    resume() { events.push("resume"); },
+    close(code, reason) { events.push(`close ${code} ${reason}`); this.readyState = WebSocket.CLOSING; },
+    terminate() { events.push("terminate"); this.readyState = WebSocket.CLOSED; },
+  });
+  const started = Date.now();
+  await closeWebSockets([silent], 4001, "bye", 50);
+  assert.ok(Date.now() - started >= 40, "it waited for the answer");
+  assert.deepEqual(events, ["resume", "close 4001 bye", "terminate"]);
+  await closeWebSockets([], 4001, "bye", 10_000);
 });
 
 test("an idle gateway latches a publish through checkPatchChain, with no request", async () => {

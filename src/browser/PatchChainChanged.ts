@@ -23,11 +23,20 @@
 // meets a 409 at all — the opt-in supervisor then restarts the gateway under it, and the next asset
 // comes from a generation the page did not boot with. So the page also asks when the tab comes back
 // and, at most every ten seconds, while it keeps loading from the gateway, and compares generations.
+//
+// 10.15 (C): connected players hold the supervisor's restart back for GATEWAY_RESTART_DEADLINE_MIN
+// at most (5 minutes by default); then it restarts the gateway under them. While that is scheduled
+// the summary carries `restartAt` / `restartInMs`, and the banner counts it down every second
+// («Сервер перезапустится через M:SS — данные обновлены»), then says the server is restarting until
+// the new gateway answers. A player standing still loads nothing, so a visible page with no other
+// reason to ask also asks every thirty seconds — one summary read, which costs the gateway no child.
 
 import { beginGatewayCacheBypass, noteGatewayCacheGeneration, resetGatewayGeneration } from "./GatewayGeneration.js";
 
 export const PATCH_CHAIN_CHANGED = "client_patch_chain_changed";
 export const PATCH_CHAIN_CHANGED_MESSAGE = "Патчи TSWoW обновились — перезапустите шлюз и обновите страницу";
+/** 10.15 (C): what a player is told once the forced restart after an update is under way. */
+export const GATEWAY_RESTARTING_MESSAGE = "Сервер перезапускается после обновления";
 
 /** Thrown by a gateway reader that got the latch; `route` is the path that answered it. */
 export class PatchChainChangedError extends Error {
@@ -86,6 +95,13 @@ export interface PatchStatusSummaryLike {
   readonly clientError?: string;
   /** 10.12: what tile URLs carry in `g=` (GatewayGeneration.ts); absent from a gateway built before it. */
   readonly cacheGeneration?: string;
+  /**
+   * 10.15 (C): when the supervisor restarts the gateway whoever is connected, epoch ms on the
+   * gateway's clock; null or absent while none is scheduled (and from a gateway built before it).
+   */
+  readonly restartAt?: number | null;
+  /** The same moment as milliseconds from the answer: what the page counts down, whatever its own clock says. */
+  readonly restartInMs?: number | null;
 }
 
 export type PatchStatusRead =
@@ -104,6 +120,23 @@ export interface PatchStateDescription {
 
 const shortGeneration = (generation: string): string => generation.slice(0, 8);
 
+/** `M:SS` of what is left, rounded up: the last second still reads 0:01, never 0:00 before the end. */
+export function formatRestartCountdown(ms: number): string {
+  const seconds = Math.max(0, Math.ceil(ms / 1000));
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
+/**
+ * How long until the gateway's forced restart (10.15 C), from one answer: its `restartInMs` when it
+ * sends one — a page on another machine need not share the gateway's clock — else `restartAt`
+ * against `now`; undefined when none is scheduled.
+ */
+export function restartRemainingMs(status: PatchStatusSummaryLike, now: number): number | undefined {
+  if (typeof status.restartInMs === "number" && Number.isFinite(status.restartInMs)) return Math.max(0, status.restartInMs);
+  if (typeof status.restartAt === "number" && Number.isFinite(status.restartAt)) return Math.max(0, status.restartAt - now);
+  return undefined;
+}
+
 function clockTime(iso: string | null | undefined): string {
   if (!iso) return "";
   const date = new Date(iso);
@@ -118,14 +151,26 @@ function clockTime(iso: string | null | undefined): string {
  * `null` = that gateway could not say). `pageLatched` is whether this page has met the 409 itself:
  * a gateway that answered it and now says it is not stale can only be a restarted one, even when
  * the old one was too old to report a generation to compare. Pure, so every case is a test.
+ *
+ * 10.15 (C): a latched gateway that will be restarted under its players says when, as a countdown.
+ * `restartInMs` is what the banner's own clock says is left (it ticks between reads); without it the
+ * answer's own `restartInMs`/`restartAt` is read against `now`. `restarting` — a restart was
+ * scheduled — makes a gateway that stopped answering the restart itself rather than a guess.
  */
 export function describePatchState(
   boot: string | null | undefined,
   read: PatchStatusRead,
-  options: { readonly pageLatched?: boolean } = {},
+  options: {
+    readonly pageLatched?: boolean;
+    readonly restartInMs?: number | undefined;
+    readonly restarting?: boolean;
+    readonly now?: number;
+  } = {},
 ): PatchStateDescription {
   if (read.kind === "unreachable") {
-    return { tone: "warning", text: "Шлюз не отвечает — вероятно, перезапускается.", reload: false };
+    return options.restarting
+      ? { tone: "error", text: `${GATEWAY_RESTARTING_MESSAGE}.`, reload: false }
+      : { tone: "warning", text: "Шлюз не отвечает — вероятно, перезапускается.", reload: false };
   }
   if (read.kind === "unsupported") {
     return {
@@ -136,6 +181,12 @@ export function describePatchState(
   }
   const status = read.status;
   if (status.stale) {
+    const remaining = options.restartInMs ?? restartRemainingMs(status, options.now ?? Date.now());
+    if (remaining !== undefined) {
+      return remaining > 0
+        ? { tone: "error", text: `Сервер перезапустится через ${formatRestartCountdown(remaining)} — данные обновлены.`, reload: false }
+        : { tone: "error", text: `${GATEWAY_RESTARTING_MESSAGE}.`, reload: false };
+    }
     const when = clockTime(status.changedAt);
     return status.supervised
       ? {
@@ -176,6 +227,7 @@ interface BannerElements {
   root: HTMLElement;
   detail: HTMLElement;
   reload: HTMLButtonElement;
+  pill: HTMLButtonElement;
 }
 
 interface WatchState {
@@ -185,6 +237,12 @@ interface WatchState {
   reported: boolean;
   banner: BannerElements | undefined;
   poll: ReturnType<typeof setInterval> | undefined;
+  /** The banner poll's last answer, drawn again every second while a restart counts down. */
+  lastRead: PatchStatusRead | undefined;
+  /** 10.15 (C): when the gateway's forced restart comes, on `now`'s clock; undefined: none scheduled. */
+  restartDeadline: number | undefined;
+  /** The one-second redraw of the countdown, only while `restartDeadline` is set. */
+  countdown: ReturnType<typeof setInterval> | undefined;
   fetch: typeof globalThis.fetch | undefined;
   now: () => number;
   /** When the gateway was last asked about itself outside the banner's own poll. */
@@ -195,14 +253,28 @@ interface WatchState {
 }
 
 const state: WatchState = {
-  origin: undefined, bootGeneration: undefined, reported: false, banner: undefined, poll: undefined, fetch: undefined,
+  origin: undefined, bootGeneration: undefined, reported: false, banner: undefined, poll: undefined,
+  lastRead: undefined, restartDeadline: undefined, countdown: undefined, fetch: undefined,
   now: Date.now, lastProbeAt: Number.NEGATIVE_INFINITY, probing: undefined, detach: [],
 };
 
 /** How often the banner asks the gateway where it is, while it is up. The summary costs no child. */
 const BANNER_POLL_MS = 3_000;
+/** The countdown's redraw, between the banner's reads (10.15 C). */
+const COUNTDOWN_MS = 1_000;
+/**
+ * A re-read deadline this close to the one already counted is the same deadline seen through a
+ * different round trip: keeping the first stops the seconds from stepping back.
+ */
+const DEADLINE_JITTER_MS = 2_000;
 /** While the page keeps loading from the gateway, it asks where the gateway stands at most this often. */
 const ACTIVITY_PROBE_MS = 10_000;
+/**
+ * A visible page that loaded nothing from the gateway asks this often anyway (10.15 C): a player
+ * standing still must still hear about a forced restart well inside its five-minute deadline.
+ */
+const IDLE_PROBE_MS = 30_000;
+const PILL_TEXT = "Патчи обновились";
 /** A failed load, a 409 an <img> met, or the tab coming back asks sooner — once per burst. */
 const SUSPECT_PROBE_MS = 2_000;
 const STATUS_ROUTE = "/client/patch-status";
@@ -316,27 +388,71 @@ function renderBanner(route: string, initial?: PatchStateDescription): void {
   const pill = document.createElement("button");
   pill.type = "button";
   pill.className = "patch-chain-banner-pill";
-  pill.textContent = "Патчи обновились";
+  pill.textContent = PILL_TEXT;
   pill.title = PATCH_CHAIN_CHANGED_MESSAGE;
   pill.addEventListener("click", () => setBannerCollapsed(false));
   root.append(title, reload, detail, collapse, pill);
   root.dataset["collapsed"] = "false";
   document.body.append(root);
-  state.banner = { root, detail, reload };
+  state.banner = { root, detail, reload, pill };
 }
 
-async function refreshBanner(): Promise<void> {
-  const origin = state.origin?.();
+function stopCountdown(): void {
+  if (state.countdown !== undefined) clearInterval(state.countdown);
+  state.countdown = undefined;
+}
+
+/**
+ * 10.15 (C): what an answer says about the forced restart. A scheduled one is anchored on this
+ * page's clock and counted down every second; an answer without one (a new gateway, or a new build
+ * that withdrew it) ends the countdown. An unreachable gateway changes nothing: after a countdown,
+ * that is the restart itself.
+ */
+function noteRestartSchedule(read: PatchStatusRead): void {
+  if (read.kind !== "ok") return;
+  const remaining = read.status.stale ? restartRemainingMs(read.status, Date.now()) : undefined;
+  if (remaining === undefined) {
+    state.restartDeadline = undefined;
+    stopCountdown();
+    return;
+  }
+  const deadline = state.now() + remaining;
+  const known = state.restartDeadline;
+  if (known === undefined || Math.abs(deadline - known) > DEADLINE_JITTER_MS) state.restartDeadline = deadline;
+  // A player who folded the banner away is shown it again once, when the countdown starts.
+  if (known === undefined) setBannerCollapsed(false);
+  state.countdown ??= setInterval(renderBannerState, COUNTDOWN_MS);
+}
+
+/** Draws the banner from its last read and, while a restart is scheduled, from the time left. */
+function renderBannerState(): void {
   const banner = state.banner;
-  if (!origin || !banner) return;
-  const description = describePatchState(
-    state.bootGeneration, await readPatchStatus(origin, { summary: true }), { pageLatched: true },
-  );
+  const read = state.lastRead;
+  if (!banner || !read) return;
+  const deadline = state.restartDeadline;
+  const left = deadline === undefined ? undefined : Math.max(0, deadline - state.now());
+  const description = describePatchState(state.bootGeneration, read, {
+    pageLatched: true,
+    ...(left === undefined ? {} : { restartInMs: left, restarting: true }),
+  });
   banner.detail.textContent = description.text;
   banner.detail.dataset["tone"] = description.tone;
   // The moment a reload would help is the one moment a collapsed banner must be seen again.
   if (description.reload && banner.reload.dataset["ready"] !== "true") setBannerCollapsed(false);
   banner.reload.dataset["ready"] = String(description.reload);
+  // Folded, the tab itself counts down — and says so once the restart is under way.
+  banner.pill.textContent = left === undefined ? PILL_TEXT
+    : left > 0 && read.kind === "ok" ? `Перезапуск через ${formatRestartCountdown(left)}` : "Сервер перезапускается";
+}
+
+async function refreshBanner(): Promise<void> {
+  const origin = state.origin?.();
+  if (!origin || !state.banner) return;
+  const read = await readPatchStatus(origin, { summary: true });
+  if (!state.banner) return;
+  state.lastRead = read;
+  noteRestartSchedule(read);
+  renderBannerState();
 }
 
 /** sessionStorage key: the banner's reload asks the next page to bypass cached tiles (10.12). */
@@ -511,6 +627,21 @@ function probeOnReturn(): void {
 }
 
 /**
+ * 10.15 (C): a visible page asks every thirty seconds even when it loads nothing — a player standing
+ * still in the world is the one a forced restart would drop unwarned. Any other read inside that
+ * time (activity, a failed load, the tab coming back) makes this one unnecessary, and is counted.
+ */
+function probeWhileIdle(): void {
+  const idle = setInterval(() => {
+    if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+    void probePatchChain(STATUS_ROUTE, IDLE_PROBE_MS);
+  }, IDLE_PROBE_MS);
+  // Node keeps a process alive for an interval; a browser has no such thing to undo.
+  (idle as { unref?: () => void }).unref?.();
+  state.detach.push(() => clearInterval(idle));
+}
+
+/**
  * Called once by the page (main.ts): wrap `fetch` so every gateway path is covered, and remember
  * which generation the gateway served when the page started, for the Diagnostics comparison and
  * for noticing a gateway restarted under the page.
@@ -548,6 +679,7 @@ export function installPatchChainWatch(
   globalThis.fetch = watched as typeof globalThis.fetch;
   observeResources();
   probeOnReturn();
+  probeWhileIdle();
   const gateway = origin();
   if (gateway && takeReloadBypass(Date.now())) {
     beginGatewayCacheBypass(gateway, `r${Date.now().toString(36)}${Math.floor(Math.random() * 0xffffff).toString(36)}`);
@@ -566,6 +698,7 @@ export function installPatchChainWatch(
 /** For tests: forget the latch, the banner, the boot generation and the listeners. */
 export function resetPatchChainWatch(): void {
   if (state.poll !== undefined) clearInterval(state.poll);
+  stopCountdown();
   state.banner?.root.remove();
   for (const detach of state.detach.splice(0)) detach();
   state.origin = undefined;
@@ -573,6 +706,8 @@ export function resetPatchChainWatch(): void {
   state.reported = false;
   state.banner = undefined;
   state.poll = undefined;
+  state.lastRead = undefined;
+  state.restartDeadline = undefined;
   state.fetch = undefined;
   state.now = Date.now;
   state.lastProbeAt = Number.NEGATIVE_INFINITY;

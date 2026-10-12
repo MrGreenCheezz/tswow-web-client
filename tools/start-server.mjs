@@ -11,7 +11,9 @@
 //   ASSET_PRELOAD=0      background model preloading is for the owner's own play, not the served
 //                        gateway (owner, 12.10)
 //   GATEWAY_RESTART_ON_PATCH=1 (unless .env says 0) after a TSWoW build the gateway restarts by
-//                        itself once nobody is connected, keeping this environment
+//                        itself once nobody is connected — or, counted down on the players' pages,
+//                        GATEWAY_RESTART_DEADLINE_MIN (default 5) minutes after the build settled —
+//                        keeping this environment
 //   GATEWAY_SUPERVISE=1  (unless .env says 0) a crashed gateway is started again by itself
 // The page server answers index.html and its assets only (10.13), compressed and revalidated.
 // The page server lives in this process too, so stopping it (Ctrl+C, restart-gateway.bat) stops both.

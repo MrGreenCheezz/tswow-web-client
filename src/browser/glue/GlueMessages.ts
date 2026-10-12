@@ -277,6 +277,25 @@ export type GlueFailureContext = "auth" | "world" | "create";
 
 /** `4290` — the gateway's refusal of a login storm (item 10.01); a close code, not a byte. */
 const TOO_MANY_ATTEMPTS_CLOSE = 4290;
+/**
+ * `4001` — the gateway closing every bridged socket because its supervisor restarts it after a
+ * TSWoW build that connected players held back past the deadline (item 10.15; `GATEWAY_RESTART_CLOSE`
+ * in src/gateway/SupervisedGateway.ts, which tests pin to this one).
+ */
+export const GATEWAY_RESTART_CLOSE = 4001;
+
+/**
+ * What that close is shown as. The client has no words for it, so the key is one no corpus defines
+ * and the dialog prints `text` (`messageFor` falls through to it); the patch banner says the same.
+ */
+export const GATEWAY_RESTARTING: GlueAuthMessage = {
+  key: "WEBCLIENT_GATEWAY_RESTARTING", dialog: "OKAY", text: "Сервер перезапускается после обновления",
+};
+
+/** Whether `error` is the gateway's close for its restart after an update (10.15). */
+export function isGatewayRestartClose(error: unknown): boolean {
+  return error instanceof TransportClosedError && error.code === GATEWAY_RESTART_CLOSE;
+}
 
 /**
  * The world-auth refusals FUN_004dab40 opens in OKAY_WITH_URL, and the global its HELP button
@@ -302,6 +321,14 @@ const withText = (message: GlueAuthMessage, text: string): GlueAuthMessage => ({
 export const WORLD_CONNECTION_LOST: GlueAuthMessage = okay("DISCONNECTED", "Соединение с сервером разорвано");
 
 /**
+ * The world's read loop failed under a character in play, as the player is told: the gateway's
+ * restart after an update (close 4001, 10.15) in its own words, anything else DISCONNECTED.
+ */
+export function worldConnectionLost(error: unknown): GlueAuthMessage {
+  return isGatewayRestartClose(error) ? GATEWAY_RESTARTING : WORLD_CONNECTION_LOST;
+}
+
+/**
  * An exception as the client's words for it, on the connection it happened on: the key, the stock
  * dialog and a Russian text for a host with no corpus. The exception's own message is English for
  * the log and never reaches a player.
@@ -312,8 +339,9 @@ export const WORLD_CONNECTION_LOST: GlueAuthMessage = okay("DISCONNECTED", "Со
  *   client's OKAY_WITH_URL (see `WORLD_AUTH_URLS`).
  * - The gateway closes 1011 with a reason that starts «Backend» when the server behind it is gone
  *   (Gateway.ts `bridge()`): the authserver's LOGIN_SERVER_DOWN, or the realm's CHAR_LOGIN_NO_WORLD.
- *   4290 is item 10.01's login-storm refusal, for which the corpus has LOGIN_TOO_FAST. Any other
- *   close is DISCONNECTED; a socket that never opened is RESPONSE_FAILED_TO_CONNECT.
+ *   4290 is item 10.01's login-storm refusal, for which the corpus has LOGIN_TOO_FAST; 4001 is the
+ *   gateway restarting after an update (10.15), said in the page's own words. Any other close is
+ *   DISCONNECTED; a socket that never opened is RESPONSE_FAILED_TO_CONNECT.
  * - Anything else is the connection's own «it failed»: the login's LOGIN_FAILED with its help
  *   button, the realm's CHAR_LOGIN_FAILED.
  */
@@ -332,6 +360,7 @@ export function describeFailure(error: unknown, context: GlueFailureContext): Gl
     if (error.code === TOO_MANY_ATTEMPTS_CLOSE) {
       return okay("LOGIN_TOO_FAST", "Слишком много попыток подключиться к серверу. Попробуйте еще раз через несколько минут.");
     }
+    if (error.code === GATEWAY_RESTART_CLOSE) return GATEWAY_RESTARTING;
     if (error.code === 1011 && error.reason.startsWith("Backend")) {
       return context === "auth"
         ? okay("LOGIN_SERVER_DOWN", "Сервер входа недоступен")

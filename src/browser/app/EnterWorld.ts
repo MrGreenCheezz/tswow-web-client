@@ -3,7 +3,7 @@
 // ever called from a world event, long after both modules have finished evaluating — and it is the
 // right side of the cycle, because the way out ends in `connectRealm`, which lives there.
 import { leaveWorld } from "./Login.js";
-import { describeFailure, WORLD_CONNECTION_LOST } from "../glue/GlueMessages.js";
+import { describeFailure, worldConnectionLost } from "../glue/GlueMessages.js";
 import { enterWorldRefusal } from "../glue/GlueEnterGate.js";
 import { formatMoney } from "../ui/Format.js";
 import { EMOTE_ANIMATIONS } from "../../generated/animations.js";
@@ -383,8 +383,9 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
   world.onWorldError = (error) => {
     if (game.world !== world) return;
     clearHeldKeys();
-    // A failed read in the world is DISCONNECTED, whatever broke it; the exception goes to the log.
-    const lost = WORLD_CONNECTION_LOST;
+    // A failed read in the world is DISCONNECTED, whatever broke it — 10.15: but the gateway's own close
+    // for its restart after an update (4001) says so; the exception goes to the log.
+    const lost = worldConnectionLost(error);
     console.warn("[world] connection lost:", error.message);
     worldStatus.className = "error";
     worldStatus.textContent = lost.text ?? "";

@@ -18,14 +18,26 @@
 //   child → { type: "ready", generation } · { type: "patch-chain-changed", at, first, epoch }
 //         · { type: "status", auth, world, stale, declined? }
 //   parent → { type: "status?" } · { type: "shutdown", reason: "restart" | "stop", force? }
+//          · { type: "restart-at", at: number | null }
 // A child that counts a session when a restart's `shutdown` arrives stays up and answers a
 // `status` with `declined: true` instead: the players were counted a moment earlier, and one may
 // have connected since. A `stop` (Ctrl+C) is never declined.
+//
+// 10.15 (C): players hold a restart back for `playerDeadlineMs` at most (GATEWAY_RESTART_DEADLINE_MIN,
+// 5 minutes by default, 0 = for ever). While they do, `restart-at` tells the child when the forced
+// restart will come, and its `/client/patch-status` summary carries it as `restartAt` for the page's
+// countdown; a forced `shutdown` closes the bridged sockets with 4001 before the child leaves.
 
 import { fork } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+
+/**
+ * 10.15 (C): minutes players may hold a settled build's restart back when GATEWAY_RESTART_DEADLINE_MIN
+ * is unset — the owner wants the update soon (12.10), and the page counts these down for them.
+ */
+export const DEFAULT_RESTART_DEADLINE_MIN = 5;
 
 export const SUPERVISOR_DEFAULTS = Object.freeze({
   /** No fingerprint change for this long: the build has stopped writing. */
@@ -56,10 +68,11 @@ export const SUPERVISOR_DEFAULTS = Object.freeze({
   /** Restart after a settled TSWoW build (GATEWAY_RESTART_ON_PATCH=1); off, only crashes are handled. */
   restartOnPatch: true,
   /**
-   * 10.15 (B): how long players may hold a settled build back before the restart goes ahead anyway.
-   * 0 (the default, GATEWAY_RESTART_DEADLINE_MIN unset) waits for them for ever, as before.
+   * 10.15 (B, C): how long players may hold a settled build back before the restart goes ahead
+   * anyway, counted from when the build settled. 0 (GATEWAY_RESTART_DEADLINE_MIN=0) waits for them
+   * for ever, as before 12.10.
    */
-  playerDeadlineMs: 0,
+  playerDeadlineMs: DEFAULT_RESTART_DEADLINE_MIN * 60_000,
 });
 
 /**
@@ -109,6 +122,8 @@ export class GatewaySupervisor {
   #crashes = [];
   /** When the build was first seen settled (asking for or waiting on players), for the deadline (10.15 B). */
   #settledAt;
+  /** The forced restart's time the child was last told (`restart-at`), for the page's countdown (10.15 C). */
+  #announcedRestartAt;
   #childStartedAt;
   #latchAt;
   #lastChangeAt;
@@ -154,6 +169,7 @@ export class GatewaySupervisor {
     this.#lastChangeAt = undefined;
     this.#clients = undefined;
     this.#settledAt = undefined;
+    this.#announcedRestartAt = undefined;
     this.#asked = false;
     this.#reasked = false;
     this.#waitingFor = undefined;
@@ -185,13 +201,17 @@ export class GatewaySupervisor {
       }
       if (this.#latchAt === undefined) {
         this.#latchAt = now;
-        this.#deps.log("client patches changed; the gateway restarts once the build settles and nobody is in the world");
+        const deadline = this.#options.playerDeadlineMs;
+        this.#deps.log("client patches changed; the gateway restarts once the build settles and nobody is in the world"
+          + (deadline > 0 ? ` (or ${Math.round(deadline / 60_000)} min after it settles, whoever is connected)` : ""));
       }
       this.#lastChangeAt = now;
       // A change after the players were counted is a new build: count again when it settles.
       this.#clients = undefined;
       this.#settledAt = undefined;
       this.#asked = false;
+      // Its deadline counts from when it settles too: the countdown the players see is withdrawn.
+      this.#announceRestart(undefined);
     } else if (message.type === "status") {
       this.#clients = { auth: Number(message.auth) || 0, world: Number(message.world) || 0 };
       this.#asked = false;
@@ -271,6 +291,11 @@ export class GatewaySupervisor {
           this.#deps.log(`waiting for ${count} connected session(s) to leave before restarting`);
         }
       }
+      // 10.15 (C): players are what holds the restart back, and the deadline will not wait for them:
+      // the child says when, so their pages can count it down.
+      if (decision.reason === "players" && this.#options.playerDeadlineMs > 0 && this.#settledAt !== undefined) {
+        this.#announceRestart(this.#settledAt + this.#options.playerDeadlineMs);
+      }
       return;
     }
     this.#deps.log(decision.reason === "build-finished"
@@ -280,6 +305,17 @@ export class GatewaySupervisor {
         : `no build marker after ${Math.round(this.#options.buildTimeoutMs / 1000)} s and nobody is connected: restarting the gateway`);
     this.#phase = "restarting";
     this.#shutdownChild("restart", decision.force === true);
+  }
+
+  /** Tells the child when the forced restart comes (`undefined`: none), once per change (10.15 C). */
+  #announceRestart(at) {
+    if (at === this.#announcedRestartAt || !this.#child) return;
+    this.#announcedRestartAt = at;
+    this.#send(this.#child, { type: "restart-at", at: at ?? null });
+    if (at !== undefined) {
+      this.#deps.log(`players are told the gateway restarts in ${Math.round(Math.max(0, at - this.#deps.now()) / 1000)} s, `
+        + "whoever is still connected then");
+    }
   }
 
   #shutdownChild(reason, force = false) {
@@ -370,19 +406,24 @@ export class GatewaySupervisor {
 /**
  * The supervisor options `tools/start-gateway.mjs` reads from the environment (10.15):
  * GATEWAY_RESTART_ON_PATCH=1 adds the restart after a settled build to the crash restart, and
- * GATEWAY_RESTART_DEADLINE_MIN (whole minutes, default unset = wait for players for ever) bounds how
- * long connected players may hold that restart back. A malformed deadline is refused, not guessed.
+ * GATEWAY_RESTART_DEADLINE_MIN bounds how long connected players may hold that restart back, in
+ * whole minutes from when the build settled: unset or empty is DEFAULT_RESTART_DEADLINE_MIN (5),
+ * 0 waits for the players for ever (the behaviour before 12.10), 1-1440 is that many minutes.
+ * A malformed deadline is refused, not guessed.
  */
 export function supervisorOptionsFromEnv(env) {
   const options = { restartOnPatch: env.GATEWAY_RESTART_ON_PATCH === "1" };
   const deadline = env.GATEWAY_RESTART_DEADLINE_MIN;
-  if (deadline !== undefined && deadline !== "") {
-    const minutes = Number(deadline);
-    if (!Number.isInteger(minutes) || minutes < 0 || minutes > 24 * 60) {
-      throw new Error(`GATEWAY_RESTART_DEADLINE_MIN must be a whole number of minutes from 0 to 1440, not "${deadline}"`);
-    }
-    options.playerDeadlineMs = minutes * 60_000;
+  if (deadline === undefined || deadline.trim() === "") {
+    options.playerDeadlineMs = DEFAULT_RESTART_DEADLINE_MIN * 60_000;
+    return options;
   }
+  const minutes = Number(deadline);
+  if (!Number.isInteger(minutes) || minutes < 0 || minutes > 24 * 60) {
+    throw new Error(`GATEWAY_RESTART_DEADLINE_MIN must be a whole number of minutes from 0 to 1440 `
+      + `(0 = wait for the players for ever), not "${deadline}"`);
+  }
+  options.playerDeadlineMs = minutes * 60_000;
   return options;
 }
 
@@ -408,8 +449,12 @@ export async function runGatewaySupervisor({ entry, options = {} }) {
     exit: (code) => process.exit(code),
   }, options);
   const restartOnPatch = options.restartOnPatch ?? SUPERVISOR_DEFAULTS.restartOnPatch;
+  const deadlineMs = options.playerDeadlineMs ?? SUPERVISOR_DEFAULTS.playerDeadlineMs;
   console.log(restartOnPatch
     ? "[gateway supervisor] GATEWAY_RESTART_ON_PATCH=1: the gateway restarts itself after a crash and after a settled TSWoW build"
+      + (deadlineMs > 0
+        ? ` (connected players hold it back for ${Math.round(deadlineMs / 60_000)} min at most, GATEWAY_RESTART_DEADLINE_MIN)`
+        : " (connected players hold it back for as long as they stay, GATEWAY_RESTART_DEADLINE_MIN=0)")
     : "[gateway supervisor] GATEWAY_SUPERVISE=1: the gateway restarts itself after a crash");
   for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => supervisor.stop());
   supervisor.start();

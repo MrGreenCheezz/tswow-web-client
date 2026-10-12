@@ -45,6 +45,17 @@ export interface PatchStatusSummary {
   readonly changes: number;
   /** Started by `tools/start-gateway.mjs` with GATEWAY_RESTART_ON_PATCH=1: it restarts itself. */
   readonly supervised: boolean;
+  /**
+   * 10.15 (C): when the supervisor restarts this process although players are connected — past
+   * GATEWAY_RESTART_DEADLINE_MIN after a settled build — as epoch ms on this machine's clock; null
+   * while no such restart is scheduled. The page's patch banner counts it down.
+   */
+  readonly restartAt: number | null;
+  /**
+   * The same moment as milliseconds from this answer (never negative), so that a page on a machine
+   * whose clock disagrees with this one still counts down the right time; null beside a null `restartAt`.
+   */
+  readonly restartInMs: number | null;
   /** The root Interface/AddOns list `/client/addons` serves, frozen at startup. */
   readonly rootAddons: readonly PatchStatusAddon[];
 }
@@ -123,6 +134,8 @@ export class PatchStatusTracker {
   #changedAt: number | undefined;
   #lastChangeAt: number | undefined;
   #changes = 0;
+  /** 10.15 (C): the supervisor's forced restart, epoch ms (`scheduleRestart`). */
+  #restartAt: number | undefined;
   /** The last fingerprint epoch counted; every request waiting on one walk reports the same one. */
   #lastEpoch = Number.NEGATIVE_INFINITY;
   #details: DetailsEntry | undefined;
@@ -163,8 +176,17 @@ export class PatchStatusTracker {
     }
   }
 
+  /**
+   * 10.15 (C): the supervisor said when it restarts this process whoever is connected (`restart-at`
+   * over IPC, SupervisedGateway.ts); `undefined` withdraws it. Reported in every summary from now on.
+   */
+  scheduleRestart(at: number | undefined): void {
+    this.#restartAt = at !== undefined && Number.isFinite(at) ? at : undefined;
+  }
+
   summary(): PatchStatusSummary {
     const iso = (value: number | undefined): string | null => value === undefined ? null : new Date(value).toISOString();
+    const restartAt = this.#restartAt;
     return {
       schema: 1,
       generation: this.generation,
@@ -174,6 +196,8 @@ export class PatchStatusTracker {
       lastChangeAt: iso(this.#lastChangeAt),
       changes: this.#changes,
       supervised: this.#supervised,
+      restartAt: restartAt ?? null,
+      restartInMs: restartAt === undefined ? null : Math.max(0, restartAt - this.#now()),
       rootAddons: this.#addons,
     };
   }

@@ -272,6 +272,10 @@ test("describeFailure names each failure the way the client does on the connecti
     [new TransportClosedError(1006, "", false), "auth", "DISCONNECTED", "OKAY"],
     // Item 10.01's refusal of a login storm; the corpus has the words for it already.
     [new TransportClosedError(4290, "Too many login attempts", true), "auth", "LOGIN_TOO_FAST", "OKAY"],
+    // Item 10.15: the gateway restarting after an update, on whichever connection it closed.
+    [new TransportClosedError(4001, "Gateway restarting after an update", true), "world", "WEBCLIENT_GATEWAY_RESTARTING", "OKAY"],
+    [new TransportClosedError(4001, "", true), "auth", "WEBCLIENT_GATEWAY_RESTARTING", "OKAY"],
+    [new TransportClosedError(4001, "", true), "create", "WEBCLIENT_GATEWAY_RESTARTING", "OKAY"],
     [new TransportConnectError("ws://gateway.test/auth"), "auth", "RESPONSE_FAILED_TO_CONNECT", "OKAY"],
     [new TransportConnectError("ws://gateway.test/world"), "world", "RESPONSE_FAILED_TO_CONNECT", "OKAY"],
     [new Error("anything"), "auth", "LOGIN_FAILED", "CONNECTION_HELP"],
@@ -285,6 +289,21 @@ test("describeFailure names each failure the way the client does on the connecti
     // Something to print on a host with no corpus at all (the world half of the page), in Russian.
     assert.match(failure.text ?? "", /[А-Яа-яЁё]/, label);
   }
+});
+
+test("10.15: the gateway's restart close reads as the restart in a corpus, which has no words for it", () => {
+  const events = [];
+  const fire = (...args) => events.push(args.map(String).join(" / "));
+  // A corpus with every stock string the other closes use: none of them may answer for this one.
+  const corpus = { DISCONNECTED: "Отключено", CHAR_LOGIN_NO_WORLD: "Мир недоступен", LOGIN_SERVER_DOWN: "Сервер входа недоступен" };
+  const failure = describeFailure(new TransportClosedError(4001, "Gateway restarting after an update", true), "world");
+  assert.equal(failure.text, "Сервер перезапускается после обновления");
+  showStatusMessage({ fire, glueString: (key) => corpus[key], hasDialogType: () => true }, failure);
+  assert.deepEqual(events, [
+    "OPEN_STATUS_DIALOG / OKAY / Сервер перезапускается после обновления",
+    "UPDATE_STATUS_DIALOG / Сервер перезапускается после обновления",
+  ]);
+  assert.equal(describeFailure(new TransportClosedError(4002, "", true), "world").key, "DISCONNECTED", "only 4001");
 });
 
 test("formatGlueString fills %s and %d the way the corpus strings expect", () => {

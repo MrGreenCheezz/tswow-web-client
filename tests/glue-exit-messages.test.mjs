@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { describeFailure, WORLD_CONNECTION_LOST } from "../dist/code/browser/glue/GlueMessages.js";
+import {
+  GATEWAY_RESTARTING, describeFailure, WORLD_CONNECTION_LOST, worldConnectionLost,
+} from "../dist/code/browser/glue/GlueMessages.js";
+import { GATEWAY_RESTARTING_MESSAGE } from "../dist/code/browser/PatchChainChanged.js";
 import { enterWorldRefusal } from "../dist/code/browser/glue/GlueEnterGate.js";
 import { TransportClosedError } from "../dist/code/transport/WebSocketByteStream.js";
 
@@ -21,6 +24,17 @@ test("a read that failed in the world is DISCONNECTED, whatever broke it", () =>
   // What describeFailure says for a connection phase is not what the world loop says: a stream
   // error there is a login that failed, here it is a dropped connection.
   assert.equal(describeFailure(new Error("stream error"), "world").key, "CHAR_LOGIN_FAILED");
+});
+
+test("10.15: a world lost to the gateway's restart after an update says so; any other loss is DISCONNECTED", () => {
+  const restart = worldConnectionLost(new TransportClosedError(4001, "Gateway restarting after an update", true));
+  assert.equal(restart, GATEWAY_RESTARTING);
+  assert.deepEqual([restart.dialog, restart.text], ["OKAY", "Сервер перезапускается после обновления"]);
+  assert.equal(restart.text, GATEWAY_RESTARTING_MESSAGE, "the dialog and the patch banner say the same words");
+  for (const other of [new TransportClosedError(1006, "", false), new TransportClosedError(1011, "Backend unavailable", true),
+    new Error("stream error"), "not an Error", undefined]) {
+    assert.equal(worldConnectionLost(other), WORLD_CONNECTION_LOST);
+  }
 });
 
 test("a failed enter is coded: a dropped socket is DISCONNECTED, anything else CHAR_LOGIN_FAILED", () => {
@@ -52,7 +66,7 @@ test("the DOM entry is guarded before anything is sent, and says why on the card
 
 test("the world's two ways out carry coded messages, never error.message", async () => {
   const source = await readFile(enterWorldSource, "utf8");
-  assert.match(source, /world\.onWorldError = \(error\) => \{[\s\S]{0,700}?const lost = WORLD_CONNECTION_LOST;[\s\S]{0,700}?leaveWorld\("connection-lost", lost\);/);
+  assert.match(source, /world\.onWorldError = \(error\) => \{[\s\S]{0,700}?const lost = worldConnectionLost\(error\);[\s\S]{0,700}?leaveWorld\("connection-lost", lost\);/);
   assert.match(source, /const message = describeFailure\(error, "world"\);[\s\S]{0,900}?leaveWorld\("enter-failed", message\);/);
   assert.doesNotMatch(source, /characterStatus\.textContent = message;/, "no raw exception text on the panel");
   assert.doesNotMatch(source, /const message = error instanceof Error \? error\.message/);
