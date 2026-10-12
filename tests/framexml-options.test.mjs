@@ -89,10 +89,9 @@ test("a stock control is unavailable, session-only or fixed — never two of the
     assert.match(name, /^(?:Video|Audio|Interface)Options/, name);
     assert.ok(reason.length > 10, `${name} says why`);
   }
-  // 5.14: «WebClient → Игра» keeps only the extended zoom; the camera's and the mouse's stock controls
-  // are CVars now, and what has no consumer says so.
-  const game = frameXmlOptionsWebClientGroups().find((group) => group.key === "Game");
-  assert.deepEqual(game.controls.map((control) => control.setting), ["cameraExtendedZoom"]);
+  // 5.14: «WebClient → Игра» is gone — its last control, the extended zoom, went with the owner's ruling
+  // of 12.10; the camera's and the mouse's stock controls are CVars, and what has no consumer says so.
+  assert.equal(frameXmlOptionsWebClientGroups().find((group) => group.key === "Game"), undefined);
   for (const name of ["InterfaceOptionsCameraPanelStyleDropDown", "InterfaceOptionsCameraPanelFollowSpeedSlider",
     "InterfaceOptionsCameraPanelMaxDistanceSlider", "InterfaceOptionsMousePanelInvertMouse",
     "InterfaceOptionsMousePanelMouseSensitivitySlider", "InterfaceOptionsMousePanelMouseLookSpeedSlider",
@@ -118,7 +117,7 @@ test("the WebClient category carries every browser setting without a stock contr
     const where = definition.ownWindow ? "own" : stock.has(definition.id) ? "stock" : carried.includes(definition.id) ? "webclient" : "lost";
     assert.notEqual(where, "lost", `${definition.id} has a home`);
   }
-  assert.deepEqual(groups.map((group) => group.key), ["Game", "Graphics", "Effects", "Interface", "Chat"]);
+  assert.deepEqual(groups.map((group) => group.key), ["Graphics", "Effects", "Interface", "Chat"], "«Игра» has nothing left without a stock control");
   // The chat group alone configures the native dock (ChatDock.ts, #chat-log), which the stock chat hides.
   assert.deepEqual(groups.filter((group) => group.nativeChatOnly).map((group) => group.key), ["Chat"]);
   const graphics = groups.find((group) => group.key === "Graphics");

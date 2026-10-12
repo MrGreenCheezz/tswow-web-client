@@ -283,7 +283,7 @@ test("the WebClient category: every control a live stock control, Cancel reverts
     for _, button in ipairs(InterfaceOptionsFrameCategories.buttons) do
       if button:IsShown() and button.element and button.element.parent == "WebClient" then names[#names + 1] = button.element.name end
     end
-    return table.concat(names, "|")`), ["Игра|Графика|Эффекты|Интерфейс|Чат"], "opening a section expands the category, in the window's order");
+    return table.concat(names, "|")`), ["Графика|Эффекты|Интерфейс|Чат"], "opening a section expands the category, in the window's order");
   boot.bridge.SetValue(boot.bridge.getFrame("InterfaceOptionsWebClientGraphicsPanel1"), 72, true);
   lua(boot, "InterfaceOptionsWebClientGraphicsPanel2:Click()", 0);
   assert.deepEqual(writes.slice(from), [["renderScale", 70], ["autoQuality", true]], "live, snapped to the setting's step");

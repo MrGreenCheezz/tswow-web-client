@@ -18,7 +18,7 @@ import {
   zoomedDistance,
 } from "../dist/code/browser/game/CameraRig.js";
 import {
-  CAMERA_DISTANCE_MAX_BASE, CAMERA_EXTENDED_ZOOM_DISTANCE, cameraCeilingYards, coerceSetting, defaultSettings,
+  CAMERA_DISTANCE_MAX_BASE, cameraCeilingYards, coerceSetting, defaultSettings,
   parseSettings, settingDefinition,
 } from "../dist/code/browser/ui/SettingsModel.js";
 import { ATTACHMENT_HELM, ATTACHMENT_SHOULDER_RIGHT } from "../dist/code/browser/Wvm.js";
@@ -948,19 +948,19 @@ test("К2 the wheel stops where the player's own ceiling says, not where the con
   assert.equal(definition.fallback, 100);
   assert.deepEqual([definition.min, definition.max, definition.step], [100, 200, 10]);
   assert.equal(CAMERA_DISTANCE_MAX_BASE, 15);
-  assert.equal(CAMERA_EXTENDED_ZOOM_DISTANCE, CAMERA_MAX_DISTANCE, "the extended zoom is the rig's hard limit");
   const values = defaultSettings();
   assert.equal(cameraCeilingYards(values), 15, "by default the wheel stops where the original's does");
   assert.equal(cameraCeilingYards({ ...values, cameraDistancePercent: 150 }), 22.5);
   assert.equal(cameraCeilingYards({ ...values, cameraDistancePercent: 200 }), 30);
-  assert.equal(cameraCeilingYards({ ...values, cameraExtendedZoom: true }), CAMERA_MAX_DISTANCE);
+  assert.equal(settingDefinition("cameraExtendedZoom"), undefined, "owner, 12.10: no extended zoom, the original's ceiling only");
+  assert.equal(cameraCeilingYards({ ...values, cameraExtendedZoom: true }), 15, "a stray key changes nothing");
   assert.ok(15 > CAMERA_MIN_DISTANCE, "and the tightest ceiling is still an orbit");
   // A blob from before 5.14 carries the yard ceiling: it becomes the factor that covers it.
   assert.equal(parseSettings(JSON.stringify({ cameraMaxDistance: 30 })).cameraDistancePercent, 200);
-  assert.equal(parseSettings(JSON.stringify({ cameraMaxDistance: 30 })).cameraExtendedZoom, false);
   assert.equal(parseSettings(JSON.stringify({ cameraMaxDistance: 20 })).cameraDistancePercent, 130);
-  assert.equal(parseSettings(JSON.stringify({ cameraMaxDistance: 45 })).cameraExtendedZoom, true,
-    "past 30 yards only the extended zoom reaches as far as the player had it");
+  assert.equal(parseSettings(JSON.stringify({ cameraMaxDistance: 45 })).cameraDistancePercent, 200,
+    "past 30 yards: the original's own farthest");
+  assert.equal(parseSettings(JSON.stringify({ cameraExtendedZoom: true })).cameraExtendedZoom, undefined, "a saved switch is dropped");
   assert.equal(parseSettings(JSON.stringify({ cameraMaxDistance: 45, cameraDistancePercent: 120 })).cameraDistancePercent, 120,
     "a blob that already has the factor keeps it");
 

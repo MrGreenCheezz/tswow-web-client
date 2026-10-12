@@ -268,12 +268,6 @@ export const SETTING_DEFINITIONS: readonly SettingDefinition[] = [
     hint: "Как далеко колесо отпускает камеру: 100 — 15 ярдов, как в оригинале, 200 — 30 ярдов.",
   },
   {
-    // 5.14: not the original's; the 55-yard ceiling this client had before it took the original's
-    // 15 × factor. Off by default, as the plan's open question to the owner has it.
-    id: "cameraExtendedZoom", label: "Расширенный зум камеры", group: "Игра", kind: "boolean", fallback: false,
-    hint: "Колесо отпускает камеру до 55 ярдов, а не до 15–30, как в оригинальном клиенте.",
-  },
-  {
     // 5.14: the client's cameraSmoothStyle (InterfaceOptionsCameraPanelStyleDropDown): 0 never, 1
     // horizontal while moving, 2 always, 4 while moving (the default).
     id: "cameraSmoothStyle", label: "Выравнивание камеры", group: "Игра", kind: "number", fallback: 4,
@@ -556,28 +550,28 @@ export function parseSettings(text: string): SettingValues | undefined {
   return values;
 }
 
-/** 5.14: the client's `cameraDistanceMax`, which `cameraDistanceMaxFactor` multiplies (line-A9 5.14). */
+/** 5.14: the client's `cameraDistanceMax` ("15.0", 0x5fe191), which `cameraDistanceMaxFactor` ("1.0") multiplies. */
 export const CAMERA_DISTANCE_MAX_BASE = 15;
-/** 5.14: the extended zoom's ceiling — this client's old 55 yards, `SimpleScene.CAMERA_MAX_DISTANCE`. */
-export const CAMERA_EXTENDED_ZOOM_DISTANCE = 55;
 
-/** 5.14: how far the wheel lets the camera out, in yards: 15 × factor, or the extended 55. */
+/**
+ * 5.14: how far the wheel lets the camera out, in yards: 15 × factor, as the original's. The extended
+ * 55-yard zoom this client had is gone (owner, 12.10: the camera keeps to the original); a saved
+ * `cameraExtendedZoom` is an unknown key now and is dropped on parse.
+ */
 export function cameraCeilingYards(values: SettingValues): number {
-  if (settingBoolean(values, "cameraExtendedZoom")) return CAMERA_EXTENDED_ZOOM_DISTANCE;
   return CAMERA_DISTANCE_MAX_BASE * settingNumber(values, "cameraDistancePercent") / 100;
 }
 
 /**
  * 5.14: a blob written before the camera ceiling became the original's factor carries
  * `cameraMaxDistance` in yards (15–55); it becomes the factor that covers it — yards / 15, to the
- * tenth, inside 1–2 — and, past 30 yards, the extended zoom that alone reaches that far.
+ * tenth, inside 1–2, so anything past 30 yards becomes the original's own farthest, 30.
  */
 function migrateCameraDistance(raw: Record<string, unknown>, values: SettingValues): void {
   const yards = Number(raw.cameraMaxDistance);
   if (!Number.isFinite(yards) || raw.cameraDistancePercent !== undefined) return;
   const percent = settingDefinition("cameraDistancePercent");
   if (percent) values.cameraDistancePercent = coerceSetting(percent, Math.round(yards / 15 * 10) * 10);
-  if (yards > 30 && raw.cameraExtendedZoom === undefined) values.cameraExtendedZoom = true;
 }
 
 /** Only what differs from the defaults, so the blob does not grow with every option added. */

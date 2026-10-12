@@ -40,6 +40,7 @@ import { ViewSubjectTracker, viewIsOut, viewSubject } from "./ViewSubject.js"; /
 import { FarSightLink } from "../../world/FarSight.js"; // 11.02-I
 import { vehicleCamera } from "./VehicleCamera.js"; // 11.02-GF3
 import { cameraViews } from "./CameraViews.js"; // DEC-B 3.11
+import { cameraSaved } from "./CameraSaved.js"; // 5.14
 import { vehicleCatalog } from "../VehicleClient.js"; // 11.02-GF3
 import { attachedGlow, itemEnchantments } from "../ItemEnchantments.js"; // 05.10-A7a-E: attachedGlow (slots + tint)
 import { updateCastBars } from "../ui/CastBar.js";
@@ -451,6 +452,9 @@ function frame(now: number): void {
     vehicleCamera.update(world.state, vehicleCatalog(), game.camera, now);
     // DEC-B 3.11: a camera view's glide (CameraViews.ts); a new world is a new camera there.
     cameraViews.frame(game.camera, now, world, game.session?.username);
+    // 5.14: the character's own camera (CameraSaved.ts): view 2's 5.55 yards and 10° until it has one.
+    cameraSaved.frame(game.camera, now, world, game.session?.username, world.realmName, world.state.selfGuid,
+      vehicleCamera.vehicleMode);
     // 5.14: the camera's own way back behind the character (cameraSmoothStyle), before the boom.
     // 11.02-I: not behind a facing that is not the player's to change (Wow.exe 0x005fa6b0).
     // DEC-B 3.11: nor while a view glides there (`&& !cameraViews.gliding`).
