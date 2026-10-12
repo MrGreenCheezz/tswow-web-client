@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   CEILING_MARGIN, DEFAULT_COLLISION_HEIGHT, GRAVITY, JUMP_VELOCITY, LIQUID_RECALL_YARDS, LIQUID_UNKNOWN,
-  LOAD_WAIT_MAX, MAX_WALKABLE_SLOPE_DEGREES, STEP_DOWN, STEP_HEIGHT, SWIM_SETTLE_SPEED, TERMINAL_VELOCITY,
+  LOAD_WAIT_MAX, MAX_WALKABLE_SLOPE_DEGREES, STEP_DOWN, STEP_HEIGHT, SWIM_JUMP_VELOCITY, SWIM_SETTLE_SPEED,
+  TERMINAL_VELOCITY,
   newCharacterMotion, stepCharacter, swimSurfaceOffset,
 } from "../dist/code/browser/game/Physics.js";
 
@@ -171,20 +172,72 @@ test("deep enough water is swum in, shallow water is waded through", () => {
   assert.equal(waderMotion.mode, "ground");
 });
 
-test("a swimmer floats at the surface and cannot rise out of it", () => {
+test("a swimmer pitched up floats at the surface and cannot rise out of it", () => {
   const lake = world({ ground: () => -10, liquid: () => ({ height: 0, type: 1 }) });
   const position = at(0, 0, -5);
   const motion = newCharacterMotion();
   stepCharacter(position, motion, input(), lake, 1 / 60);
   assert.equal(motion.mode, "swim");
 
-  const events = simulate(position, motion, input({ ascend: true }), lake, 3);
+  // 5.34: forward and pitched up, with no rise held (no ASCENDING), the body slides along the
+  // liquid's faces in Wow.exe's swim sweep (0x00760b40): the surface is a ceiling.
+  const events = simulate(position, motion, input({ forward: 1, pitch: 1.2 }), lake, 3);
+  assert.equal(motion.mode, "swim");
   // 5.06: the float line is under the surface — feet at it would be "walking on water" to the server.
   assert.ok(Math.abs(position.z + swimSurfaceOffset(DEFAULT_COLLISION_HEIGHT)) < 0.005,
-    `the surface is a ceiling, not a launch pad: ${position.z}`);
+    `the surface is a ceiling for the pitch: ${position.z}`);
   assert.ok(Math.abs(swimSurfaceOffset(DEFAULT_COLLISION_HEIGHT) - 1.45) < 0.005);
-  // Rising is its own opcode, and it is sent once rather than every frame.
-  assert.equal(events.filter((event) => event === "startAscend").length, 1);
+  assert.ok(!events.includes("jump"), events.join());
+});
+
+test("5.34: the rise held at the surface hops out of the water, and back in", () => {
+  const lake = world({ ground: () => -10, liquid: () => ({ height: 0, type: 1 }) });
+  const position = at(0, 0, -5);
+  const motion = newCharacterMotion();
+  stepCharacter(position, motion, input(), lake, 1 / 60);
+  assert.equal(motion.mode, "swim");
+  // Wow.exe's jump with SWIMMING in the flags takes 0x00aa33e0, -9.096748; positive up here.
+  assert.equal(SWIM_JUMP_VELOCITY, 9.096748);
+
+  const step = 1 / 240;
+  const floatZ = -swimSurfaceOffset(DEFAULT_COLLISION_HEIGHT);
+  const events = [];
+  let top = -Infinity;
+  let launched = false;
+  // 0.75 s up to the float line, then ≈0.9 s out and back in.
+  for (let elapsed = 0; elapsed < 2.2; elapsed += step) {
+    const now = stepCharacter(position, motion, input({ ascend: true }), lake, step);
+    if (!launched && now.includes("jump")) {
+      launched = true;
+      // 0x00988370 clears SWIMMING and ASCENDING for FALLING; the jump packet carries them.
+      assert.equal(motion.mode, "air");
+      assert.equal(motion.vertical, 0);
+      assert.equal(motion.jump?.velocity, SWIM_JUMP_VELOCITY);
+      assert.ok(Math.abs(position.z - floatZ) < 1e-9, `launched from the float line: ${position.z}`);
+    }
+    events.push(...now);
+    if (launched) top = Math.max(top, position.z);
+  }
+  assert.ok(launched, events.join());
+  // Rising is its own opcode, sent once before the hop rather than every frame.
+  assert.equal(events.slice(0, events.indexOf("jump")).filter((event) => event === "startAscend").length, 1);
+  // The apex is the impulse's, from the float line: the feet clear the surface by about 0.7 yard.
+  const apex = floatZ + SWIM_JUMP_VELOCITY ** 2 / (2 * GRAVITY);
+  assert.ok(Math.abs(top - apex) < 0.05, `apex ${top}, expected ${apex}`);
+  assert.ok(top > 0.6, `the feet cleared the surface by only ${top}`);
+  // It comes down into the water and swims again; nothing says "stop swimming" on the way out.
+  assert.ok(events.indexOf("startSwim") > events.indexOf("jump"), events.join());
+  assert.ok(!events.includes("stopSwim") && !events.includes("land"), events.join());
+});
+
+test("5.34: a gravity-free swimmer is still held at the float line", () => {
+  const lake = world({ ground: () => -10, liquid: () => ({ height: 0, type: 1 }) });
+  const position = at(0, 0, -5);
+  const motion = newCharacterMotion();
+  stepCharacter(position, motion, input(), lake, 1 / 60);
+  const events = simulate(position, motion, input({ ascend: true, gravityDisabled: true }), lake, 2);
+  assert.ok(!events.includes("jump"), events.join());
+  assert.ok(Math.abs(position.z + swimSurfaceOffset(DEFAULT_COLLISION_HEIGHT)) < 0.005, `${position.z}`);
 });
 
 test("a swimmer sinks to the bottom and no further", () => {
@@ -269,7 +322,8 @@ test("an unknown liquid answer keeps a swimmer swimming at the surface it last k
   stepCharacter(position, motion, input(), lake, 1 / 60);
   assert.equal(motion.mode, "swim");
   known = false;
-  const events = simulate(position, motion, input({ ascend: true }), lake, 2);
+  // Pitched up, not the held rise (5.34: that hops out): about 2.6 yards on, inside LIQUID_RECALL_YARDS.
+  const events = simulate(position, motion, input({ forward: 1, pitch: 1.2 }), lake, 1.5);
   assert.equal(motion.mode, "swim");
   assert.ok(!events.includes("stopSwim") && !events.includes("startFall"), events.join());
   assert.ok(Math.abs(position.z + swimSurfaceOffset(DEFAULT_COLLISION_HEIGHT)) < 0.005,
@@ -568,7 +622,8 @@ test("5.06: the float line stays IN_WATER for any height", () => {
     const position = at(0, 0, -6);
     const motion = newCharacterMotion();
     stepCharacter(position, motion, input({ collisionHeight: height }), lake, 1 / 60);
-    simulate(position, motion, input({ collisionHeight: height, ascend: true }), lake, 3);
+    // Risen by the pitch: the held rise hops out at the float line (5.34).
+    simulate(position, motion, input({ collisionHeight: height, forward: 1, pitch: 1.2 }), lake, 3);
     const delta = 0 - position.z;
     assert.ok(delta > 0 && delta < height, `height ${height}: surface - feet ${delta}`);
   }

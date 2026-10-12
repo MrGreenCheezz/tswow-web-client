@@ -29,9 +29,16 @@ export const SAFE_FALL_TERMINAL_VELOCITY = 7;
  * The client's own and in no server table. Wow.exe's jump (0x009883f0) launches with the float at
  * 0x00aa33dc, -7.955547 — negative because the client's fall speed is positive downwards; here
  * vertical speed is positive up. Against the gravity above: an apex of v²/2g = 1.64 yards.
- * (Swimming, the same function takes 0x00aa33e0, -9.096748.)
+ * (Swimming, the same function takes 0x00aa33e0, -9.096748: {@link SWIM_JUMP_VELOCITY}.)
  */
 export const JUMP_VELOCITY = 7.955547;
+
+/**
+ * 5.34: the hop out of the water — 0x009883f0's impulse with SWIMMING in the flags (0x00aa33e0,
+ * -9.096748), positive up here: an apex of 2.14 yards, so feet on the float line clear the surface
+ * by about 0.7 of a yard, enough for a jetty or a shore ledge.
+ */
+export const SWIM_JUMP_VELOCITY = 9.096748;
 
 /** `DEFAULT_COLLISION_HEIGHT`, `Object.h:73`: "most common value in dbc", used when none is known. */
 export const DEFAULT_COLLISION_HEIGHT = 2.03128;
@@ -860,8 +867,9 @@ function stepAirborne(
   const liquid = feetLiquid(probe, motion, position.x, position.y, position.z);
   const submerged = liquid === undefined ? undefined : liquid.height - position.z;
   // Water breaks a fall before the ground does, and the server agrees: it is the liquid level that
-  // decides, not the lake bed.
-  if (submerged !== undefined && submerged > swimDepth && !input.waterWalking) {
+  // decides, not the lake bed. 5.34: a fall — a body still rising (the hop out of the water, a knock
+  // back that ended the swim) is leaving the water, and would otherwise swim again a frame after it.
+  if (submerged !== undefined && submerged > swimDepth && motion.velocityZ <= 0 && !input.waterWalking) {
     beginSwim(motion, events);
     return;
   }
@@ -912,6 +920,20 @@ function stepSwimming(
   // water" to the server. A swimmer above it (entering waist deep, falling in) sinks to it at
   // SWIM_SETTLE_SPEED rather than in one frame; one rising is held at it at once.
   const floatZ = surface - swimSurfaceOffset(collisionHeight);
+  // 5.34: rising into the surface with the rise held is the hop out of the water. Wow.exe's swim
+  // sweep 0x00760b40 has the liquid's own faces as a second set, turned to face down and built only
+  // for a swimmer (0x0075ff90: mask 0x20000, planes negated); when the body meets one with
+  // ASCENDING in the flags it calls the jump 0x009883f0(1), which with SWIMMING launches at
+  // SWIM_JUMP_VELOCITY, and 0x00988370 clears SWIMMING, ASCENDING and DESCENDING for FALLING —
+  // no packet of their own, the MSG_MOVE_JUMP carries them. Rising by the pitch alone (no
+  // ASCENDING) meets the same face and slides along it: the float line below stays a ceiling. With
+  // gravity disabled 0x006e9ad0 answers 1 and the faces are never swept; kept at the ceiling here.
+  if (rise > 0 && position.z > floatZ && !input.gravityDisabled) {
+    position.z = floatZ;
+    motion.vertical = 0;
+    beginFall(motion, SWIM_JUMP_VELOCITY, position.orientation, horizontalSpeed, events, "jump");
+    return;
+  }
   if (position.z > floatZ) {
     position.z = rise > 0 || zBefore <= floatZ ? floatZ
       : Math.max(floatZ, Math.min(position.z, zBefore - SWIM_SETTLE_SPEED * elapsed));
