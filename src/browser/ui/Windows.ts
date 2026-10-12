@@ -148,9 +148,10 @@ export function keepCharacterWindowOverStock(): void {
  * binding opens reputation directly.
  */
 export function openCharacterWindow(tab: CharacterTab): void {
-  characterWindow.removeAttribute(CHARACTER_WINDOW_OVER_STOCK); // 3.49: a player route, not the stable's fallback
   if (tab === "sheet" && toggleFrameXmlCharacter()) return;
   if (tab === "skills" && (toggleFrameXmlCharacterTab("SkillFrame") || toggleFrameXmlSpellBook())) return;
+  // 3.49: a player's route into the native window itself, not the stable's fallback.
+  characterWindow.removeAttribute(CHARACTER_WINDOW_OVER_STOCK);
   if (!characterWindow.hidden && selectedCharacterTab() === tab) {
     toggleGameWindow(characterWindow);
     return;

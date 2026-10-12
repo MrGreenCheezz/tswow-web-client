@@ -104,8 +104,8 @@ test("a service-only stable master uses the existing visible stable interface", 
     "the stock CharacterFrame's hide rule skips the window the stable's fallback marked");
   assert.match(enterWorld, /showCharacterWindow\(["']collections["']\);[\s\S]{0,200}?keepCharacterWindowOverStock\(\)/,
     "the stable's fallback marks the window it opens");
-  assert.match(windows, /export function openCharacterWindow\(tab: CharacterTab\): void \{\s*characterWindow\.removeAttribute\(CHARACTER_WINDOW_OVER_STOCK\)/,
-    "a player route into the window drops the mark");
+  assert.match(windows, /export function openCharacterWindow\(tab: CharacterTab\): void \{[^}]*?toggleFrameXmlSpellBook\(\)\)\) return;\s*\/\/[^\n]*\n\s*characterWindow\.removeAttribute\(CHARACTER_WINDOW_OVER_STOCK\)/,
+    "a player route into the native window drops the mark (the stock owner's C and J never reach it)");
   assert.match(windows, /if \(window\.hidden\) window\.removeAttribute\(CHARACTER_WINDOW_OVER_STOCK\)/,
     "and closing the window drops it");
 });
