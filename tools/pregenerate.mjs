@@ -33,7 +33,7 @@ import { visualModelHash } from "./visual-model-key.mjs";
 
 export const PREGENERATE_FAMILIES = Object.freeze(["splat", "tile", "models", "players"]);
 /** The visual tile generation the gateway requires (`/visual/environment`). */
-const VISUAL_TILE_GENERATION = "visual-tile-v6"; // 05.10-A7b-1; P2-04x: v6
+const VISUAL_TILE_GENERATION = "visual-tile-v7"; // 05.10-A7b-1; P2-04x: v6; 12.10 6.25: v7
 /** The terrain splat generation the gateway requires (`/terrain-splat`). */
 const TERRAIN_SPLAT_GENERATION = "terrain-splat-v2"; // 05.10-A7b-7
 

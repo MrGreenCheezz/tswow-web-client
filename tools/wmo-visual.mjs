@@ -647,15 +647,49 @@ function wmoLocallyLitDoodads(groups) {
   return locallyLit;
 }
 
-function wmoDoodadTable(root, groups, effective = false) {
+/**
+ * 12.10 6.25: the MODD records some group without `WMO_GROUP_INDOOR` names in its MODR.
+ *
+ * Under `exteriorWins` such a record is sky-lit whatever indoor rooms also name it. A ship's sails
+ * (transportship.wmo MODD[133]) are named by its three indoor groups and by its outdoor deck with a
+ * MODD colour of (0, 0, 0, 255), the zeppelin's propellers likewise, Booty Bay's entrance arch
+ * (BootyBay.wmo MODD[3]) by interior group 22 and exterior group 42: lit by that colour each is a
+ * black silhouette, where the original client shows them in daylight. The reading is the vanilla
+ * client's: one doodad def per MODD record and placement, never re-marked interior once an exterior
+ * group has named it (benilla `wmo.rs` `resolve_doodad_bases`, 1.12 Wow.exe 0x694e90 / 0x695aa0).
+ * The 3.3.5 routine is not located: 'MODR' and 'MODD' appear nowhere in the image as 32-bit
+ * constants (its reader takes chunks in order), and the RTTI of `CMapObjDef` / `CMapObjDefGroup`
+ * leads to no vftable to walk from.
+ */
+export function wmoExteriorNamedDoodads(groups) {
+  const named = new Set();
+  if (!Array.isArray(groups)) return named;
+  for (const group of groups) {
+    try {
+      const mogp = chunkMap(group).get("MOGP");
+      if (!mogp || mogp.length < 68 || (mogp.readUInt32LE(MOGP_FLAGS) & WMO_GROUP_INDOOR) !== 0) continue;
+      const references = chunkMap(mogp.subarray(68)).get("MODR");
+      if (!references) continue;
+      for (let at = 0; at + 2 <= references.length; at += 2) named.add(references.readUInt16LE(at));
+    } catch {
+      // A malformed group names nothing; its doodads keep whatever light the other groups give them.
+    }
+  }
+  return named;
+}
+
+function wmoDoodadTable(root, groups, effective = false, exteriorWins = false) {
   const chunks = chunkMap(root);
   const sets = chunks.get("MODS");
   const names = chunks.get("MODN");
   const placements = chunks.get("MODD");
   if (!sets || !names || !placements) return undefined;
   if (sets.length % 32 !== 0 || placements.length % 40 !== 0) throw new Error("WMO doodad tables are misaligned");
+  const locallyLit = wmoLocallyLitDoodads(groups);
+  // 12.10 6.25: an exterior group's word is final (`wmoExteriorNamedDoodads`).
+  if (exteriorWins) for (const index of wmoExteriorNamedDoodads(groups)) locallyLit.delete(index);
   return {
-    sets, names, placements, locallyLit: wmoLocallyLitDoodads(groups),
+    sets, names, placements, locallyLit,
     // 05.10-A7b-1 (7.03 slice 1): only the effective form says which doodads only outdoor groups own.
     ...(effective ? { outdoorOnly: wmoOutdoorOnlyDoodads(groups) } : {}),
   };
@@ -849,10 +883,13 @@ export function parseWmoDoodads(root, requestedSet = 0, groups = []) {
  * 05.10-A7b-1: `{ effective: true }` (the `visual-tile-v5` generation) answers each set as the
  * placement draws it — set 0 plus the set's own records (7.02) — with each record's MODD `index`
  * and `outdoor: true` for a record only outdoor groups own (7.03 slice 1). Without it the old form.
+ * 12.10 6.25: `{ exteriorWins: true }` (`visual-tile-v7`, the game-object doodad list) leaves the room
+ * light off a record any exterior group names (`wmoExteriorNamedDoodads`); every other record is the
+ * same either way.
  */
 export function parseWmoDoodadSets(root, groups = [], options = {}) {
   const effective = options?.effective === true;
-  const table = wmoDoodadTable(root, groups, effective);
+  const table = wmoDoodadTable(root, groups, effective, options?.exteriorWins === true);
   if (!table) return [];
   return Array.from({ length: table.sets.length / 32 }, (_, set) => parseWmoDoodadSet(table, set, effective));
 }

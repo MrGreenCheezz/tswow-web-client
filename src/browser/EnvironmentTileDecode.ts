@@ -20,8 +20,10 @@ export type EnvironmentTileDecodeResponse =
  * gateway restart. The client reads both: v5 adds only optional fields and `interior: false` doodads.
  * P2-04x: `visual-tile-v6` writes each non-WMO record into its own tile only; the client's merge by id
  * is the same over any mix of v4–v6 tiles.
+ * 12.10 6.25: `visual-tile-v7` only drops `localLight` from WMO doodads an exterior group names; the
+ * client reads it as it reads v6.
  */
-export const VISUAL_TILE_ROUTE_VERSION = 6;
+export const VISUAL_TILE_ROUTE_VERSION = 7;
 
 /**
  * 05.10-A7b-1 (7.19): a diagnostics line for what one tile could not carry — objects the check left

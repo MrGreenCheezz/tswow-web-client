@@ -14,8 +14,11 @@ import { readFile } from "node:fs/promises";
  * v6 (P2-04x) is v5 with one placement in one tile: a non-WMO record lives only in the tile of its
  * point when that tile carries it (see `tools/generate-visual-tile.mjs`); WMO placements stay in
  * every tile that lists them.
+ *
+ * v7 (12.10 6.25) is v6 with no room light (`localLight`) on a WMO doodad any exterior group names —
+ * a ship's sails, Booty Bay's entrance arch — which the black MODD colour they carry turned black.
  */
-export const VISUAL_TILE_GENERATION = "visual-tile-v6";
+export const VISUAL_TILE_GENERATION = "visual-tile-v7";
 
 /**
  * How many WMO doodads the generator had to leave out of a tile for the object cap (7.19), from the

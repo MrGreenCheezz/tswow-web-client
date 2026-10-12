@@ -40,11 +40,23 @@ const WMO_DOODAD_CACHE_VERSION = 1;
 // the 86 321 records of its 14-tile footprint). A v5 gateway still gets v5 bytes; a client mixing
 // v5 and v6 tiles keeps every record (a v6 tile drops only what the record's own tile carries in
 // either generation).
-export const VISUAL_TILE_GENERATION = "visual-tile-v6";
+//
+// 12.10 6.25: `visual-tile-v7` is v6 with the room light (`localLight`, the MODD colour) left off a WMO
+// doodad any exterior group names (`wmo-visual.mjs` `wmoExteriorNamedDoodads`, the vanilla client's
+// reading). An ADT-placed transportship.wmo (tile 0/47-29) lit its sails by their MODD colour
+// (0, 0, 0, 255), which the local-light shader (`ModelPlacementTint.ts`) turns black; Booty Bay's
+// entrance arch is the same case. Nothing else in a tile changes: every
+// record keeps its id, place, owner class and every other field, and one indoor groups alone name keeps
+// its light. Its doodad sets have their own cache file (`wmo-doodad-light-v3`), so a v6 run never
+// reads a v7 answer, and a gateway that still names v6 keeps receiving the v6 bytes.
+export const VISUAL_TILE_GENERATION = "visual-tile-v7";
+export const VISUAL_TILE_GENERATION_V6 = "visual-tile-v6";
 export const VISUAL_TILE_GENERATION_V5 = "visual-tile-v5";
 export const LEGACY_VISUAL_TILE_GENERATION = "visual-tile-v4";
-/** The doodad-set cache of the v5 generation: effective sets with MODD index and owner class. */
+/** The doodad-set cache of the v5 and v6 generations: effective sets with MODD index and owner class. */
 const WMO_DOODAD_CACHE_V2 = Object.freeze({ key: "wmo-doodad-light-v2", version: 2 });
+/** 12.10 6.25: v7's, the same sets with no room light on a record an exterior group names. */
+const WMO_DOODAD_CACHE_V3 = Object.freeze({ key: "wmo-doodad-light-v3", version: 3 });
 /** The visual tile's hard cap, shared with the browser's decoder (`EnvironmentTileDecode.ts`). */
 const VISUAL_TILE_OBJECT_LIMIT = 10_000;
 
@@ -67,11 +79,13 @@ export async function publishVisualTile(mapId, gridX, gridY, archives, options =
   // 05.10-A7b-1: which generation to write; none named is the v4 a running older gateway expects.
   const generation = options?.generation ?? LEGACY_VISUAL_TILE_GENERATION;
   if (generation !== LEGACY_VISUAL_TILE_GENERATION && generation !== VISUAL_TILE_GENERATION_V5
-    && generation !== VISUAL_TILE_GENERATION) {
+    && generation !== VISUAL_TILE_GENERATION_V6 && generation !== VISUAL_TILE_GENERATION) {
     throw new Error(`Unknown visual tile generation ${String(generation)}`);
   }
+  // v7 is v6 with an exterior group's word final on room light (12.10 6.25).
+  const v7 = generation === VISUAL_TILE_GENERATION;
   // v6 is v5 plus one placement in one tile (P2-04x).
-  const v6 = generation === VISUAL_TILE_GENERATION;
+  const v6 = v7 || generation === VISUAL_TILE_GENERATION_V6;
   const v5 = v6 || generation === VISUAL_TILE_GENERATION_V5;
   const placementOptions = v5 ? { nameSet: true } : undefined;
   const destination = resolve(root, process.env.VISUAL_TILE_DIR ?? "data/visual-tiles", String(mapId), `${gridX}-${gridY}.json`);
@@ -127,7 +141,7 @@ export async function publishVisualTile(mapId, gridX, gridY, archives, options =
       for (const groupPath of groupPaths) wmoSourcePaths.add(groupPath);
       const wmoId = v5 ? wmoRootId(data) : undefined;
       roots.set(path.toLowerCase(), {
-        doodadSets: await cachedWmoDoodadSets(data, path, groupPaths, archives, wmoDoodadCacheDirectory, v5),
+        doodadSets: await cachedWmoDoodadSets(data, path, groupPaths, archives, wmoDoodadCacheDirectory, v5, v7),
         ...(wmoId !== undefined ? { wmoId } : {}),
       });
     }
@@ -222,7 +236,7 @@ export async function publishVisualTile(mapId, gridX, gridY, archives, options =
 }
 
 // Run directly: node tools/generate-visual-tile.mjs <map> <grid-x> <grid-y> [generation]
-// (the gateway passes `visual-tile-v6`; without it the v4 tile an older gateway expects.)
+// (the gateway passes `visual-tile-v7`; without it the v4 tile an older gateway expects.)
 if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) {
   const mapId = Number.parseInt(process.argv[2] ?? "", 10);
   const gridX = Number.parseInt(process.argv[3] ?? "", 10);
@@ -246,9 +260,10 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import
  * generation, so this source-stamped, normalized-root-path cache turns the other fifteen runs into
  * one small JSON read while still invalidating when the root, any group, or archive chain changes.
  */
-async function cachedWmoDoodadSets(rootData, rootPath, groupPaths, archives, wmoDoodadCacheDirectory, effective = false) {
+async function cachedWmoDoodadSets(rootData, rootPath, groupPaths, archives, wmoDoodadCacheDirectory, effective = false,
+  exteriorWins = false) {
   if (effective) {
-    return cachedEffectiveWmoDoodadSets(rootData, rootPath, groupPaths, archives, wmoDoodadCacheDirectory);
+    return cachedEffectiveWmoDoodadSets(rootData, rootPath, groupPaths, archives, wmoDoodadCacheDirectory, exteriorWins);
   }
   const hash = createHash("sha1")
     .update(`wmo-doodad-light-v1\0${rootPath.toLowerCase()}`)
@@ -292,10 +307,12 @@ async function cachedWmoDoodadSets(rootData, rootPath, groupPaths, archives, wmo
 /**
  * 05.10-A7b-1: the v5 twin of the cache above, under its own key so neither generation ever reads or
  * overwrites the other's file: effective sets (7.02) with each record's MODD index and owner class
- * (7.03 slice 1). A running v4 gateway keeps its v1 entries untouched.
+ * (7.03 slice 1). A running v4 gateway keeps its v1 entries untouched. 12.10 6.25: v7's sets
+ * (`exteriorWins`) live under `wmo-doodad-light-v3`, beside v6's.
  */
-async function cachedEffectiveWmoDoodadSets(rootData, rootPath, groupPaths, archives, wmoDoodadCacheDirectory) {
-  const { key, version } = WMO_DOODAD_CACHE_V2;
+async function cachedEffectiveWmoDoodadSets(rootData, rootPath, groupPaths, archives, wmoDoodadCacheDirectory,
+  exteriorWins = false) {
+  const { key, version } = exteriorWins ? WMO_DOODAD_CACHE_V3 : WMO_DOODAD_CACHE_V2;
   const hash = createHash("sha1").update(`${key}\0${rootPath.toLowerCase()}`).digest("hex");
   const destination = join(wmoDoodadCacheDirectory, `${hash}.json`);
   const inputs = { generation: key, paths: [rootPath, ...groupPaths] };
@@ -312,7 +329,7 @@ async function cachedEffectiveWmoDoodadSets(rootData, rootPath, groupPaths, arch
     const group = await archives.read(groupPath);
     if (group) groups.push(group);
   }
-  const sets = parseWmoDoodadSets(rootData, groups, { effective: true });
+  const sets = parseWmoDoodadSets(rootData, groups, { effective: true, ...(exteriorWins ? { exteriorWins } : {}) });
   const temporary = `${destination}.${process.pid}-${randomUUID()}.tmp`;
   try {
     await mkdir(dirname(destination), { recursive: true });

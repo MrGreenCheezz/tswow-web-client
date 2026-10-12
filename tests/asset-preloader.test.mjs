@@ -313,7 +313,7 @@ test("gateway: a model list stamped by an older visual-tile generation is not tr
   await mkdir(dbc, { recursive: true });
   const stamp = (generation) => JSON.stringify({ generation, chain: "", sources: [], files: [] });
   await writeFile(join(tiles, "0", "32-32.json"), "[]");
-  await writeFile(join(tiles, "0", "32-32.json.src"), stamp("visual-tile-v6")); // 05.10-A7b-1; P2-04x: v6
+  await writeFile(join(tiles, "0", "32-32.json.src"), stamp("visual-tile-v7")); // 05.10-A7b-1; P2-04x: v6; 12.10 6.25: v7
   await writeFile(join(tiles, "0", "32-32.models.json"), JSON.stringify(["World\\Old.m2"]));
   await writeFile(join(tiles, "0", "32-32.models.json.src"), stamp("visual-tile-v3"));
   const calls = [];
@@ -354,7 +354,7 @@ test("gateway: the archives changing under a running preload drops its plan (rec
   const archives = await openClientArchives(client);
   let stamp;
   try {
-    stamp = JSON.stringify(await sourceStamp(archives, { generation: "visual-tile-v6" })); // 05.10-A7b-1; P2-04x: v6
+    stamp = JSON.stringify(await sourceStamp(archives, { generation: "visual-tile-v7" })); // 05.10-A7b-1; P2-04x: v6; 12.10 6.25: v7
   } finally {
     archives.close();
   }
