@@ -70,6 +70,10 @@ import {
 } from "./ModuleIndex.js";
 import { isLoopbackOrigin, moduleWriteRefusal } from "./ModuleWritePolicy.js";
 import { BRIDGE_FLOW_DEFAULTS, BridgeStats, bridgeFlowLimits, type BridgeFlowLimits } from "./BridgeStats.js";
+import {
+  LOGIN_REFUSED_CLOSE, LoginAttemptLimiter, loginAttemptKey, loginRefusalReason, watchLoginAttempt,
+  type LoginAttemptLimits,
+} from "./LoginAttemptLimiter.js"; // 10.01
 import { respondFile } from "./FileResponse.js";
 import {
   generateOnce, generationLane, recentlyFailed, sourceMissing, texturePriority, visualModelPriority,
@@ -379,7 +383,8 @@ export interface GatewayOptions {
    */
   moduleWrite?: boolean;
   /**
-   * Where the peer's address comes from, for the one route that writes to disk.
+   * Where the peer's address comes from, for the one route that writes to disk and for the count of
+   * failed logins (10.01, `LoginAttemptLimiter.ts`).
    *
    * The client never passes it: {@link socketPeerAddress} reads the socket, which is the whole
    * point of the check — a header is written by whoever is asking, and a socket's address is not.
@@ -402,6 +407,11 @@ export interface GatewayOptions {
   bridgeFlow?: Partial<BridgeFlowLimits>;
   /** One line per closed bridge with its queue peaks and pauses (`GATEWAY_LOG_BACKPRESSURE=1`). */
   logBackpressure?: boolean;
+  /**
+   * 10.01: failed logins per player address before `/auth` is refused (`LoginAttemptLimiter.ts`).
+   * Absent means `LOGIN_ATTEMPT_DEFAULTS`; `false` switches the limit off (`GATEWAY_LOGIN_MAX_FAILURES=0`).
+   */
+  loginAttempts?: Partial<LoginAttemptLimits> | false;
   /**
    * 10.22: publish the models of the served visual tile and its eight neighbours in the background
    * (`AssetPreloader.ts`). Off when absent; needs `generateVisualTile` and `generateVisualModel`.
@@ -3580,7 +3590,9 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
     }
     : undefined;
 
-  const track = (webSocket: WebSocket, address: string, target: GatewayTarget): void => {
+  // A socket counts against both caps for as long as it is open — a refused `/auth` one too, until
+  // its close completes, so refusals cannot be stacked past the per-address cap either.
+  const hold = (webSocket: WebSocket, address: string): void => {
     bridged++;
     bridgedPerAddress.set(address, (bridgedPerAddress.get(address) ?? 0) + 1);
     webSocket.once("close", () => {
@@ -3589,11 +3601,39 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
       if (remaining > 0) bridgedPerAddress.set(address, remaining);
       else bridgedPerAddress.delete(address);
     });
-    bridge(webSocket, target, flow, logBridge?.(target === options.world ? "world" : "auth"));
+  };
+  const track = (webSocket: WebSocket, address: string, target: GatewayTarget): Socket => {
+    hold(webSocket, address);
+    return bridge(webSocket, target, flow, logBridge?.(target === options.world ? "world" : "auth"));
   };
 
-  authServer.on("connection", (socket, request) => track(socket, peerAddress(request), options.auth));
-  worldServer.on("connection", (socket, request) => track(socket, peerAddress(request), options.world));
+  // 10.01: the authserver sees every player as this process, so failed logins are counted here, per
+  // player address (LoginAttemptLimiter.ts). The address is the socket's; no header is trusted.
+  const minutes = (ms: number) => String(Math.round(ms / 6_000) / 10);
+  const logins = options.loginAttempts === false ? undefined : new LoginAttemptLimiter({
+    limits: options.loginAttempts ?? {},
+    // The address and the counts only: the gateway never reads the account name, and never has the password.
+    onLockout: ({ key, failures, windowMs, lockoutMs }) => console.warn(
+      `Gateway: ${key} failed ${String(failures)} logins within ${minutes(windowMs)} min; `
+      + `its /auth connections are refused for ${minutes(lockoutMs)} min`),
+  });
+  const loginAddress = options.peerAddress ?? socketPeerAddress;
+
+  authServer.on("connection", (socket, request) => {
+    const address = peerAddress(request);
+    const admission = logins?.admit(loginAttemptKey(loginAddress(request)));
+    if (admission === undefined || admission.ok) {
+      const tcp = track(socket, address, options.auth);
+      if (admission) watchLoginAttempt(tcp, socket, admission.attempt);
+      return;
+    }
+    // Accepted and closed at once, never relayed: the close code is what the page can read
+    // (LOGIN_REFUSED_CLOSE), where a refused handshake would only say "cannot connect".
+    hold(socket, address);
+    socket.on("error", () => socket.terminate());
+    socket.close(LOGIN_REFUSED_CLOSE, loginRefusalReason(admission.retryAfterMs));
+  });
+  worldServer.on("connection", (socket, request) => { track(socket, peerAddress(request), options.world); });
 
   // Nothing in here may throw or leave an `error` unheard: Node has already taken its own handling
   // off the socket, so either one would end the process (see UpgradeGuard.ts). Refusals go only

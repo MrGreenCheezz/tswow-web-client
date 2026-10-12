@@ -1714,6 +1714,9 @@ test("the gateway caps how many sockets one caller may bridge", async () => {
     auth: { host: "127.0.0.1", port: backendPort },
     world: { host: "127.0.0.1", port: backendPort },
     allowedOrigins: ["http://localhost:5173"],
+    // This test is about the socket cap. Its eight `/auth` sockets are never answered, and 10.01 lets
+    // one address hold only five unanswered logins (tests/login-attempt-limiter.test.mjs).
+    loginAttempts: false,
   });
   const sockets = [];
   try {

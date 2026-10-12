@@ -8,6 +8,7 @@ import { selectClientMediaOverlay } from "./ClientMediaOverlay.js";
 import { discoverClientAddons } from "./ClientAddons.js";
 import { readPatchStatusChild } from "./PatchStatus.js";
 import { assertModuleWritePolicy } from "./ModuleWritePolicy.js";
+import { parseLoginAttemptEnv } from "./LoginAttemptLimiter.js";
 import { VISUAL_TILE_GENERATION } from "./VisualTileGeneration.js"; // 05.10-A7b-1
 import { TERRAIN_SPLAT_GENERATION } from "./TerrainSplatGeneration.js"; // 05.10-A7b-7
 import { resolve } from "node:path";
@@ -84,6 +85,9 @@ export async function createGatewayConfiguration(): Promise<{ options: GatewayOp
 
   // 10.04: writing module files is for a loopback-only gateway; anything else refuses to start.
   assertModuleWritePolicy({ moduleWrite: process.env["MODULE_UI_WRITE"] === "1", host, allowedOrigins });
+  // 10.01: failed logins per player address before `/auth` is refused for a while; a bad value
+  // stops the start here rather than running without the limit.
+  const loginAttempts = parseLoginAttemptEnv(process.env);
 
   if (host !== "127.0.0.1" && host !== "localhost" && allowedOrigins.includes("*")) {
     console.warn(
@@ -327,6 +331,7 @@ export async function createGatewayConfiguration(): Promise<{ options: GatewayOp
     moduleWrite: process.env["MODULE_UI_WRITE"] === "1",
     // 10.14: one line per closed bridge with its queue peaks and pauses, to measure a remote line.
     logBackpressure: process.env["GATEWAY_LOG_BACKPRESSURE"] === "1",
+    loginAttempts,
     ...(preloadOn ? {
       preload,
       // The tile worker reads the published tile and answers its model list (`tools/tile-models.mjs`).
