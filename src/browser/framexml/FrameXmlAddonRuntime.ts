@@ -116,7 +116,8 @@ export interface FrameXmlAddonRuntimeOptions {
   readonly bridge: FrameXmlUiBridge;
   /** Load-on-demand names accepted by the synchronous C API status binding. */
   readonly loadOnDemand?: readonly string[];
-  readonly onRoots?: (roots: readonly FrameXmlFrame[]) => void;
+  /** The XML roots a load made, with the add-on that made them (3.18: a mount draws a late one's). */
+  readonly onRoots?: (roots: readonly FrameXmlFrame[], addon: string) => void;
   readonly savedVariables?: FrameXmlSavedVariables;
 }
 
@@ -266,7 +267,7 @@ export class FrameXmlAddonRuntime {
   readonly #provider: GlueFileProvider;
   readonly #vm: GlueLuaVm;
   readonly #bridge: FrameXmlUiBridge;
-  readonly #onRoots: ((roots: readonly FrameXmlFrame[]) => void) | undefined;
+  readonly #onRoots: ((roots: readonly FrameXmlFrame[], addon: string) => void) | undefined;
   readonly #savedVariables: FrameXmlSavedVariables | undefined;
   readonly #records = new Map<string, AddonRecord>();
   readonly #loadOnDemand: ReadonlySet<string>;
@@ -928,7 +929,7 @@ export class FrameXmlAddonRuntime {
     record.state = "loaded";
     const result = this.success(record.name, "loaded", dependencies, loaded.loaded, loaded.roots);
     record.result = result;
-    this.#onRoots?.(loaded.roots);
+    this.#onRoots?.(loaded.roots, record.name);
     this.#savedVariables?.finishModule(record.name);
     // Match the client lifecycle: a LoD module is observable only once all of its files ran.
     this.#bridge.dispatchEvent("ADDON_LOADED", record.name);
@@ -1083,4 +1084,9 @@ export class FrameXmlAddonRuntime {
 export function addonRuntimeTocPath(name: string): string | undefined {
   const canonical = canonicalName(name);
   return canonical ? normalizeGluePath(tocPath(canonical)) : undefined;
+}
+
+/** 3.18: whether the host loads `name` itself and publishes its frames after its own gate (an owner add-on). */
+export function frameXmlOwnerAddon(name: string): boolean {
+  return LOD_POLICY_BY_LOWER.get(name.toLowerCase()) === "owner";
 }

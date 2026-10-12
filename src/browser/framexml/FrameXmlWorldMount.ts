@@ -79,6 +79,7 @@ import { resolveFrameXmlReputationRows } from "./FrameXmlReputationResolver.js";
 import { FrameXmlBoot, FRAMEXML_VERTICAL_EXERCISE_EVENTS } from "./FrameXmlBoot.js";
 import { loadFrameXmlCharacterStats } from "./FrameXmlCharacterStats.js";
 import { fetchFrameXmlClientAddons } from "./FrameXmlClientAddons.js";
+import { frameXmlOwnerAddon } from "./FrameXmlAddonRuntime.js"; // 3.18
 import {
   frameXmlLodPrefetchNames, frameXmlLodPreloadNames, frameXmlPreloadServerDown, startFrameXmlLodPreload,
 } from "./FrameXmlLodPreload.js"; // L5c 3.24: the stop; 3.18 (owner, 12.10): the prefetched names
@@ -2584,6 +2585,8 @@ export interface FrameXmlWorldMountResult {
 
 interface FrameXmlMountResources {
   settingsCleanup?: () => void;
+  /** 3.18: the listener that draws a late LoD add-on's XML roots (FrameXmlBoot.onAddonRoots). */
+  addonRootsCleanup?: () => void;
   mirrorTimersCleanup?: () => void;
   readonly addonsOnly?: boolean;
   diagnosticCleanup?: () => void;
@@ -2818,6 +2821,7 @@ function cleanupPendingMount(record: NonNullable<typeof pendingMount>): void {
 
 function cleanupPublishedMount(record: FrameXmlMountResources): void {
   bestEffortCleanup(() => record.settingsCleanup?.());
+  bestEffortCleanup(() => record.addonRootsCleanup?.());
   bestEffortCleanup(() => record.mirrorTimersCleanup?.());
   bestEffortCleanup(() => record.models?.dispose());
   bestEffortCleanup(() => record.addonLayerCleanup?.());
@@ -3814,6 +3818,14 @@ export async function mountFrameXmlVertical(
     if (!options.addonsOnly) hideIdleQuestRequiredMoneyFrame(boot);
     renderer.mount(options.addonsOnly ? boot.roots.filter((frame) => !frame.parent)
       : selectFrameXmlWorldRoots(boot.roots, boot.addonRootNames));
+    // 3.18: a LoD add-on that Lua loads after this (LoadAddOn runs it inside the call) has its parentless
+    // XML roots drawn, as the mount above draws those of the add-ons loaded before it; parented ones draw
+    // through their parent. The client's own LoD add-ons are left to their owners, which publish their
+    // frames only after their gates (an owner adding a root again changes nothing: addRoots is idempotent).
+    resources.addonRootsCleanup = boot.onAddonRoots((roots, addon) => {
+      if (resources.renderer !== renderer || frameXmlOwnerAddon(addon)) return;
+      renderer.addRoots(roots.filter((root) => !root.parent));
+    });
     // The ruRU declension dictionary (`|3-6(Огонь)` → «урона от огня»), once per page and after the
     // HUD is up; until it lands, or from a gateway without /dbc/declined-words, rules alone decline.
     if (!options.seam) {

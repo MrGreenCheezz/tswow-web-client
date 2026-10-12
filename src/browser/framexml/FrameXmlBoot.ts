@@ -686,6 +686,7 @@ export class FrameXmlBoot {
   #inventory: FrameXmlInventory | undefined;
   #roots: readonly FrameXmlFrame[] = [];
   readonly #addonRootNames = new Set<string>();
+  readonly #addonRootListeners = new Set<(roots: readonly FrameXmlFrame[], addon: string) => void>();
   #tsAddonResults: readonly FrameXmlTsAddonStatus[] = [];
   #tsAddonHints: readonly FrameXmlGlobalSelfCall[] = [];
   readonly #tsAddonFrames = new Map<FrameXmlFrame, string>();
@@ -773,9 +774,12 @@ export class FrameXmlBoot {
       bridge: this.bridge,
       savedVariables: this.#savedVariables,
       ...(options.installedAddons === undefined ? {} : { loadOnDemand: options.installedAddons }),
-      onRoots: (roots) => {
+      onRoots: (roots, addon) => {
         for (const root of roots) this.#addonRootNames.add(root.name);
         this.#roots = [...this.#roots, ...roots];
+        for (const listener of [...this.#addonRootListeners]) {
+          try { listener(roots, addon); } catch (error) { console.warn(`[FrameXML] add-on roots listener: ${String(error)}`); }
+        }
       },
     });
   }
@@ -1399,6 +1403,16 @@ export class FrameXmlBoot {
    */
   async prefetchAddon(name: string): Promise<FrameXmlAddonPrefetchResult> {
     return await this.#addons.prefetch(name);
+  }
+
+  /**
+   * 3.18: told of the XML roots each add-on load makes, with the add-on's name — a LoD add-on that Lua
+   * loads after the HUD is up (LoadAddOn, run inside the call since 3.18) has its frames drawn by the
+   * mount that listens here (FrameXmlWorldMount), as the ones loaded before the mount are. Returns the unsubscribe.
+   */
+  onAddonRoots(listener: (roots: readonly FrameXmlFrame[], addon: string) => void): () => void {
+    this.#addonRootListeners.add(listener);
+    return () => { this.#addonRootListeners.delete(listener); };
   }
 
   /**
