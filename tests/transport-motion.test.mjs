@@ -3,7 +3,8 @@ import test from "node:test";
 
 // 11.01 slice A1, the browser half (browser/TransportMotion.ts) and M7-3: the transport clock is the
 // create block's PathProgress (Object.cpp:442-454) plus the time since, modulo GAMEOBJECT_LEVEL
-// (Transport.cpp:95), corrected by the GAMEOBJECT_DYNAMIC phase word (GameObject.cpp:2866-2873);
+// (Transport.cpp:95), and nothing else — 11.01: Wow.exe never reads a later GAMEOBJECT_DYNAMIC phase
+// word for a transport (0x0070cb60 → handler vt+0x2c = 0x005eeb70, a bare `ret`);
 // the gateway's baked track is used only when its period is the server's; and the ship is moved
 // through WorldState.poseProvider before passengers are carried, so a passenger stands on the deck
 // where the deck is this frame. Nothing here talks to a gateway: fetch and timers are fakes.
@@ -68,7 +69,7 @@ test("shipPoseAt interpolates between samples, holds across a cut, and wraps the
   assert.ok(Math.abs(out.orientation - expected) < 1e-9, `${out.orientation} vs ${expected}`);
 });
 
-test("the clock runs from PathProgress, and a dynamic phase word corrects it only when it is far off", () => {
+test("the clock runs from PathProgress and the time since; the phase word is only a fallback anchor", () => {
   const object = {};
   const period = 130_000;
   // PathProgress is never reduced by the server; 3 cycles and 1 234 ms in.
@@ -76,26 +77,9 @@ test("the clock runs from PathProgress, and a dynamic phase word corrects it onl
   assert.equal(motion.shipClockPhase(clock, 10_000, period), 1234);
   assert.equal(motion.shipClockPhase(clock, 10_500, period), 1734);
   assert.equal(motion.shipClockPhase(clock, 10_000 + period, period), 1234);
-  // The create block's own word is not news.
-  assert.equal(motion.correctShipClock(clock, (1000 << 16) >>> 0, period, 10_000), false);
-
-  // A word whose window holds the running phase: kept as it is.
-  const now = 20_000;
-  const running = motion.shipClockPhase(clock, now, period);
-  const word = Math.floor((running / period) * 65535);
-  assert.equal(motion.correctShipClock(clock, (word << 16) >>> 0, period, now), false);
-  assert.equal(motion.shipClockPhase(clock, now, period), running);
-  // A word 200 ms away: inside the slack, kept.
-  const near = Math.floor(((running + 200) / period) * 65535);
-  assert.equal(motion.correctShipClock(clock, (near << 16) >>> 0, period, now), false);
-  // A word 30 s away (a stopped transport, a sleeping tab): the window's middle wins.
-  const far = Math.floor(((running + 30_000) / period) * 65535);
-  assert.equal(motion.correctShipClock(clock, ((far << 16) | 0x0001) >>> 0, period, now), true);
-  const corrected = motion.shipClockPhase(clock, now, period);
-  assert.ok(Math.abs(corrected - (running + 30_000)) <= period / 65535, `${corrected}`);
-  assert.equal(clock.corrections, 1);
-  // −1 (no period on the server) says nothing.
-  assert.equal(motion.correctShipClock(clock, 0xffff0000, period, now), false);
+  // 11.01: nothing to correct it with — Wow.exe's phase-word callback for a transport is a bare `ret`.
+  assert.equal(motion.correctShipClock, undefined);
+  // −1 (no period on the server) is no phase.
   assert.equal(motion.dynamicPhaseWord(0xffff0000), undefined);
 
   // No PathProgress (never the case for a ship, but the word is a phase): its window's middle.
@@ -191,7 +175,7 @@ test("a ship stays where its create block put it without a track, on a wrong per
   }
 });
 
-test("a new create block re-anchors the clock; a values update with a far phase corrects it", () => {
+test("a new create block re-anchors the clock; a values update's phase word does not", () => {
   const { state, ship } = harness();
   state.objects.set(SHIP, shipObject({ transportTime: 5_000 }));
   state.revision++;
@@ -203,12 +187,13 @@ test("a new create block re-anchors the clock; a values update with a far phase 
   const expected = motion.shipPoseAt(TRACK, 70_000, pose());
   assert.equal(state.objects.get(SHIP).position.x, expected.x);
   assert.equal(ship.clock(SHIP).progressMs, 70_000);
-  // A values update whose phase is 20 s ahead: re-anchored to it.
+  // 11.01: a values update whose phase is 20 s ahead moves nothing (0x0070cb60 → vt+0x2c = 0x005eeb70, `ret`).
   const word = Math.floor((90_000 / TRACK.period) * 65535);
   state.objects.get(SHIP).fields.set(DYNAMIC, (word << 16) >>> 0);
   state.revision++;
   state.updateMotions(2_000);
-  assert.ok(Math.abs(motion.shipClockPhase(ship.clock(SHIP), 2_000, TRACK.period) - 90_000) <= 2);
+  assert.equal(motion.shipClockPhase(ship.clock(SHIP), 2_000, TRACK.period), 70_000);
+  assert.equal(state.objects.get(SHIP).position.x, expected.x);
   // Out of range: forgotten.
   state.objects.delete(SHIP);
   state.revision++;
@@ -238,6 +223,41 @@ test("review: the clock counts from when the create block was read, not from the
   const expected = motion.shipPoseAt(TRACK, 35_000, pose());
   const ship = state.objects.get(0x2an).position;
   assert.deepEqual([ship.x, ship.y, ship.z], [expected.x, expected.y, expected.z]);
+});
+
+test("11.01: a values update read behind a hidden page does not put the ship back by the time it was hidden", () => {
+  const u32 = (value) => { const buffer = Buffer.alloc(4); buffer.writeUInt32LE(value >>> 0, 0); return buffer; };
+  const f32 = (value) => { const buffer = Buffer.alloc(4); buffer.writeFloatLE(value, 0); return buffer; };
+  const block = (values) => {
+    const mask = values.reduce((bits, [index]) => bits | (1 << index), 0);
+    return [Buffer.from([1]), u32(mask), ...values.map(([, value]) => u32(value))];
+  };
+  const create = Buffer.concat([
+    u32(1), Buffer.from([2]), Buffer.from([0x01, 0x2a]), Buffer.from([5]),
+    Buffer.from([0x42, 0x00]), f32(1), f32(2), f32(3), f32(0), u32(5_000),
+    ...block([[ENTRY, 20808], [DYNAMIC, 0], [LEVEL, TRACK.period], [BYTES_1, 15 << 8]]),
+  ]);
+  // Half a second later the server writes the transport again (a flag, a state): its phase word as
+  // of then, 5 500 ms. The page is hidden; the first frame after it comes 30 s on.
+  const word = Math.floor((5_500 / TRACK.period) * 65535);
+  const values = Buffer.concat([u32(1), Buffer.from([0]), Buffer.from([0x01, 0x2a]), ...block([[DYNAMIC, (word << 16) >>> 0]])]);
+  const { state } = harness();
+  state.applyUpdate(create, 1_000);
+  state.applyUpdate(values, 1_500);
+  state.updateMotions(31_000);
+  const expected = motion.shipPoseAt(TRACK, 35_000, pose());
+  const ship = state.objects.get(0x2an).position;
+  assert.deepEqual([ship.x, ship.y, ship.z], [expected.x, expected.y, expected.z], "on PathProgress + 30 s, not on the old word");
+});
+
+test("11.01: a world mount wires the packet-time state hook with the pose provider; a leave takes both off", () => {
+  const state = new WorldState();
+  motion.startShipMotion("ws://127.0.0.1:8090", { state, mapId: 0, gameObjectTemplate: () => undefined });
+  assert.equal(typeof state.poseProvider, "function");
+  assert.equal(typeof state.gameObjectChanged, "function", "Wow.exe's field callback runs as the block is read");
+  motion.stopShipMotion();
+  assert.equal(state.poseProvider, undefined);
+  assert.equal(state.gameObjectChanged, undefined);
 });
 
 test("review: a world mount restarts a track request the last world leave cut short", async () => {

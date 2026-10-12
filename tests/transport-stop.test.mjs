@@ -191,9 +191,11 @@ test("L16-review: a stop's wait ends at a cut — the cycle's end or a teleport 
   assert.equal(motion.shipHoldPhase(track, 650), 700, "the wait after the jump, once there");
 });
 
-// L16-review: a page gets no frames while hidden (Loop.ts runs `updateMotions` per animation frame),
-// but its WorldClient keeps reading packets, so the state can flip and flip back between two looks.
-// The core's `GAMEOBJECT_DYNAMIC` word (GameObject.cpp:2866-2873) still says where its timer was.
+// A page gets no frames while hidden (Loop.ts runs `updateMotions` per animation frame), but its
+// WorldClient keeps reading packets, so the state can flip and flip back between two looks. 11.01:
+// Wow.exe acts on each state as its block is applied (the field callback 0x00711050 → 0x007101c0), and
+// so does the page now (`ShipMotion.noteChanged`, wired to `WorldState.gameObjectChanged`); the phase
+// word, which Wow.exe never reads after creation, plays no part.
 /** The high half of `GAMEOBJECT_DYNAMIC` for a timer, as the core writes it (int16 of timer/period×65535). */
 const dynamicAt = (timer) => ((Math.trunc((timer / TRACK.period) * 65535) & 0xffff) << 16) >>> 0;
 
@@ -209,43 +211,81 @@ function heldAtFirstStop() {
     env.state.objects.get(SHIP).fields.set(DYNAMIC, value);
     env.state.revision++;
   };
-  return { ...env, setDynamic };
+  /** A values block with this state, read at `at` (`WorldState.gameObjectChanged`). */
+  const notify = (value, at) => {
+    env.setState(value);
+    env.ship.noteChanged(env.state.objects.get(SHIP), at);
+  };
+  return { ...env, setDynamic, notify };
 }
 
-test("L16-review: ACTIVE and the next READY both missed behind a hidden page: the ship is at the stop the server holds it at", () => {
-  const [, second] = STOPS;
+test("11.01: ACTIVE and the next READY behind a hidden page act as they are read: the ship is at the stop the server holds it at", () => {
+  const [first, second] = STOPS;
   const env = heldAtFirstStop();
-  // Hidden: EnableMovement(true), the departure (ACTIVE), the next stop's arrival (READY, PathProgress
-  // snapped to its ArriveTime). Only the last of it is in the fields when the frames come back.
-  env.setState(ACTIVE);
-  env.setState(READY);
-  env.setDynamic(dynamicAt(second.arrive));
+  // Hidden from 60 s: EnableMovement(true) — the core's timer runs out the wait and the state goes
+  // ACTIVE at the departure — then the next stop's arrival (READY). Each block is read as it comes.
+  const departs = 61_000;
+  env.notify(ACTIVE, departs);
+  env.notify(READY, departs + (second.arrive - first.departure));
   env.state.updateMotions(150_000);
   assert.ok(Math.abs(env.at().x - second.x) < 0.05, `at the second stop: ${env.at().x.toFixed(2)} vs ${second.x}`);
   for (let now = 151_000; now <= 200_000; now += 1_000) env.state.updateMotions(now);
   const hold = motion.shipHoldPhase(TRACK, second.arrive);
   assertAt(env.at(), pose(hold), "held at the second stop's departure");
   // EnableMovement(true) once more: it leaves from there.
-  env.setState(ACTIVE);
-  env.setDynamic(dynamicAt(second.departure));
-  env.state.updateMotions(201_000);
+  env.notify(ACTIVE, 201_000);
   env.state.updateMotions(202_000);
   assert.ok(env.at().x > second.x + 0.1 && env.at().x < second.x + 20, `sailing on from the second stop: ${env.at().x.toFixed(2)}`);
 });
 
-test("L16-review: a hold the server has long since sailed past is not where a missed departure resumes from", () => {
-  const [, second] = STOPS;
+test("11.01: ACTIVE, READY and ACTIVE again behind a hidden page: the ship is past the second stop with the server", () => {
+  const [first, second] = STOPS;
   const env = heldAtFirstStop();
-  // Hidden through ACTIVE, the next READY and its ACTIVE: the server left the second stop as well.
-  env.setState(ACTIVE);
-  env.setState(READY);
-  env.setState(ACTIVE);
-  const timer = second.departure + 2_000;
-  env.setDynamic(dynamicAt(timer));
+  const departs = 61_000;
+  const arrives = departs + (second.arrive - first.departure);
+  const leaves = arrives + (second.departure - second.arrive);
+  env.notify(ACTIVE, departs);
+  env.notify(READY, arrives);
+  env.notify(ACTIVE, leaves);
+  // A phase word with it changes nothing (Wow.exe 0x0070cb60 → vt+0x2c = 0x005eeb70).
+  env.setDynamic(dynamicAt(first.arrive));
   env.state.updateMotions(150_000);
+  const timer = second.departure + (150_000 - leaves);
   assert.ok(Math.abs(env.at().x - pose(timer).x) < 2, `past the second stop with the server: ${env.at().x.toFixed(2)} vs ${pose(timer).x.toFixed(2)}`);
   env.state.updateMotions(151_000);
   assert.ok(Math.abs(env.at().x - pose(timer + 1_000).x) < 2, `and on its timetable: ${env.at().x.toFixed(2)}`);
+});
+
+test("11.01: the state is acted on when WorldState reads the block, not at the next frame", () => {
+  const [first] = STOPS;
+  const hold = motion.shipHoldPhase(TRACK, 6_000);
+  const u32 = (value) => { const buffer = Buffer.alloc(4); buffer.writeUInt32LE(value >>> 0, 0); return buffer; };
+  const f32 = (value) => { const buffer = Buffer.alloc(4); buffer.writeFloatLE(value, 0); return buffer; };
+  const block = (values) => {
+    const mask = values.reduce((bits, [index]) => bits | (1 << index), 0);
+    return [Buffer.from([1]), u32(mask), ...values.map(([, value]) => u32(value))];
+  };
+  assert.ok([ENTRY, LEVEL, DYNAMIC, BYTES_1].every((index) => index < 32));
+  // A stoppable ship two seconds short of the hold point, sailing (ACTIVE).
+  const create = Buffer.concat([
+    u32(1), Buffer.from([2]), Buffer.from([0x01, 0x2a]), Buffer.from([5]),
+    Buffer.from([0x42, 0x00]), f32(1), f32(2), f32(3), f32(0), u32(hold - 2_000),
+    ...block([[ENTRY, 20808], [DYNAMIC, 0], [LEVEL, TRACK.period], [BYTES_1, (15 << 8) | ACTIVE]]),
+  ]);
+  const values = (state) => Buffer.concat([u32(1), Buffer.from([0]), Buffer.from([0x01, 0x2a]),
+    ...block([[BYTES_1, (15 << 8) | state]])]);
+  const { state, ship } = harness(STOPPABLE, shipObject({ transportTime: 0 }));
+  state.objects.delete(SHIP);
+  state.gameObjectChanged = (object, now) => ship.noteChanged(object, now);
+  state.applyUpdate(create, 1_000);
+  state.updateMotions(1_000);
+  // Hidden: READY at 1.2 s (the server is asked to stop it), held at the stop, released (ACTIVE) at 30 s.
+  state.applyUpdate(values(READY), 1_200);
+  state.applyUpdate(values(ACTIVE), 30_000);
+  state.updateMotions(31_000);
+  const ship2a = state.objects.get(0x2an).position;
+  assertAt(ship2a, pose(hold + 1_000), "a second out of the stop, released when the ACTIVE was read");
+  assert.ok(Math.abs(ship2a.x - first.x) < 15, `near the first stop: ${ship2a.x.toFixed(2)}`);
 });
 
 test("L16-review: the usual departure still resumes from the hold point when its word moved too", () => {

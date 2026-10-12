@@ -8,8 +8,9 @@ import {
   animatesAsGameObject, customGameObjectAnimation, gameObjectPose,
 } from "../dist/code/browser/GameObjectAnimation.js";
 import {
-  TRANSPORT_CUT_SPEED, placeOnTransportPath, sampleTransportPath, transportPhaseMs,
+  TRANSPORT_CUT_SPEED, placeOnTransportPath, sampleTransportPath,
 } from "../dist/code/browser/TransportPath.js";
+import { liftPhaseMs } from "../dist/code/browser/LiftClock.js";
 import { parseTransportPaths } from "../dist/code/gateway/TransportPaths.js";
 import { WorldState } from "../dist/code/world/WorldState.js";
 import { UPDATE_FIELDS } from "../dist/code/generated/updateFields.js";
@@ -155,15 +156,21 @@ test("a path is turned by the object's own facing before it is added to its spaw
 });
 
 test("a lift's phase comes from the server, not from when the player looked at it", () => {
-  // The high half of GAMEOBJECT_DYNAMIC is the phase as a fraction of 65535, which is how the core
-  // writes it: uint16(timer / period * 65535).
-  assert.equal(transportPhaseMs(0x8000_0000 >>> 0, undefined, 20_000), 20_000 * (0x8000 / 65535));
+  // 11.01: the create block's transport word (the worldserver's uptime for a lift) from the moment it
+  // was read, modulo the period — what Wow.exe runs a lift on (0x00714250, 0x007139e0, 0x00710640).
+  const DYNAMIC = UPDATE_FIELDS.GAMEOBJECT_DYNAMIC.offset;
+  const lift = { transportTime: 25_000, transportTimeAt: 1000, fields: new Map([[DYNAMIC, 0x8000_0000 >>> 0]]) };
+  assert.equal(liftPhaseMs(lift, 20_000, 1000), 5000, "the create block's clock, modulo the period");
+  assert.equal(liftPhaseMs(lift, 20_000, 3000), 7000, "and the time since it was read");
+  // Only a block without the word (never from this core) falls back on the dynamic phase word:
+  // uint16(timer / period * 65535), its window's middle.
+  const wordless = { transportTime: undefined, transportTimeAt: undefined, fields: new Map([[DYNAMIC, 0x8000_0000 >>> 0]]) };
+  assert.ok(Math.abs(liftPhaseMs(wordless, 20_000, 0) - 20_000 * (0x8000 + 0.5) / 65535) < 1e-9);
   // 0xFFFF is the "not a transport" value — the field is written as int16 and is −1 for every
   // chest and door — so it must not read as 99.998% of the cycle.
-  assert.equal(transportPhaseMs(0xffff_0000, 7000, 20_000), 7000);
-  assert.equal(transportPhaseMs(undefined, 25_000, 20_000), 5000, "the create block's clock, modulo the period");
-  assert.equal(transportPhaseMs(undefined, undefined, 20_000), 0);
-  assert.equal(transportPhaseMs(0x1234_0000, 500, 0), 0, "a model that does not move has no phase");
+  const none = { transportTime: undefined, transportTimeAt: undefined, fields: new Map([[DYNAMIC, 0xffff_0000]]) };
+  assert.equal(liftPhaseMs(none, 20_000, 0), 0);
+  assert.equal(liftPhaseMs(lift, 0, 1000), 0, "a model that does not move has no phase");
 });
 
 test("the create block's transport clock is kept rather than read past", () => {

@@ -193,10 +193,60 @@ test("observer: the packet that takes a passenger off the ship ends the carry an
   }
 });
 
+// 11.01: a creature walking on a sailing ship. SMSG_MONSTER_MOVE_TRANSPORT's points are in the ship's
+// frame; Wow.exe sets the mover's transport first and runs them as its local position (0x0073f590 →
+// 0x0073c8e0 → 0x006f0c70), which the ship's matrix places every frame (0x00704cc0). A path put into
+// the world once at its start slid the walker off a moving deck and jumped it back on arrival.
+test("11.01: a creature's path aboard runs in the ship's frame — on the deck every frame while it sails and turns, no jump on arrival", () => {
+  const NPC = 0xf130_0000_0000_0099n;
+  const state = new WorldState();
+  const at = (now) => shipPoseAt((now - 1000) / 1000);
+  state.move(SHIP, { flags: 0, position: at(1000) }, 1000);
+  const ship = state.objects.get(SHIP);
+  ship.typeId = 5;
+  ship.fields.set(UPDATE_FIELDS.GAMEOBJECT_BYTES_1.offset, 15 << 8);
+  state.poseProvider = (s, now) => Object.assign(s.objects.get(SHIP).position, at(now));
+  state.move(NPC, { flags: 0, position: compose(at(1000), { x: 0, y: 0, z: 2, orientation: 0 }) }, 1000);
+  state.objects.get(NPC).typeId = 3;
+  // Six yards along the keel, four across, in two seconds; facing 1 rad on the deck at the end.
+  const path = [{ x: 0, y: 0, z: 2 }, { x: 6, y: 0, z: 2 }, { x: 6, y: 4, z: 2 }];
+  state.startSpline({
+    guid: NPC, transportGuid: SHIP, transportSeat: -1, splineId: 7, points: path, duration: 2000, cyclic: false,
+    finalOrientation: 1, facing: { kind: "angle", angle: 1 }, flags: 0,
+  }, 1000);
+  const npc = () => state.objects.get(NPC);
+  /** The path's own point `ms` into it, on the deck. */
+  const onDeck = (ms) => {
+    const d = Math.min(ms, 2000) / 2000 * 10;
+    if (ms >= 2000) return { x: 6, y: 4, z: 2, orientation: 1 };
+    return d < 6 ? { x: d, y: 0, z: 2, orientation: 0 } : { x: 6, y: d - 6, z: 2, orientation: Math.PI / 2 };
+  };
+  for (let now = 1000; now <= 4000; now += 50) {
+    state.updateMotions(now);
+    assertAt(npc().position, compose(at(now), onDeck(now - 1000)), `${now} ms`);
+  }
+  assert.equal(npc().motion, undefined, "arrived");
+  // Arrived: the seat is where the path ended, facing as it ended; the carry holds it there.
+  assert.deepEqual([npc().transport.x, npc().transport.y, npc().transport.z], [6, 4, 2]);
+  assert.ok(angleGap(npc().transport.orientation, 1) < 1e-9);
+  state.updateMotions(6000);
+  assertAt(npc().position, compose(at(6000), onDeck(2000)), "carried after arrival");
+
+  // Without a facing it arrives facing its last stretch (across the deck), and keeps facing so on the deck.
+  state.startSpline({
+    guid: NPC, transportGuid: SHIP, transportSeat: -1, splineId: 8, points: [{ x: 6, y: 4, z: 2 }, { x: 6, y: 8, z: 2 }],
+    duration: 800, cyclic: false, finalOrientation: undefined, flags: 0,
+  }, 6000);
+  for (let now = 6000; now <= 9000; now += 50) state.updateMotions(now);
+  assert.ok(angleGap(npc().transport.orientation, Math.PI / 2) < 1e-9, `the seat faces the last stretch (${npc().transport.orientation})`);
+  assertAt(npc().position, compose(at(9000), { x: 6, y: 8, z: 2, orientation: Math.PI / 2 }), "carried, facing as it arrived");
+});
+
 // Review C/D/E: the ship's-frame glide is for ships only. A lift (type 11) keeps no server-side
-// passengers, yet the core relays a stock client's `ONTRANSPORT` on one (MovementHandler.cpp:340-345)
-// with an offset this client cannot place (the lift's state position is its spawn, not the car); a
-// vehicle seat is 11.02's. Both glide between the packet's world points exactly as before 11.01-E.
+// passengers, yet the core relays a stock client's `ONTRANSPORT` on one (MovementHandler.cpp:340-345);
+// a vehicle seat is 11.02's. Without the browser's pose of the lift's car (11.01:
+// `WorldState.carrierPoseProvider`, tests/lift-carry) the state cannot place an offset on a lift, and
+// both glide between the packet's world points exactly as before 11.01-E.
 test("observer: a relayed packet on a lift or in a vehicle seat glides between world points as before", () => {
   const cases = [
     { name: "lift", guid: 0xf110_0000_0000_00aan, typeId: 5, bytes1: 11 << 8 },

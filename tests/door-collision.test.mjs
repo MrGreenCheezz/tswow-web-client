@@ -195,7 +195,8 @@ test("a door that closes on the character does not hold it inside; once clear of
     stepCharacter(self.position, motion, input({ forward: 1 }), used, step);
   }
   assert.ok(self.position.x > 101.3, `walked out of the gate it stood in (${self.position.x})`);
-  assert.equal(colliders.active, 1, "and the closed gate is a collider again");
+  // 11.01: ten yards on it is out of reach (`COLLIDER_REACH`) and not asked; back at it, a collider again.
+  assert.equal(colliders.active, 0, "out of reach");
   // Back towards it from the far side: stopped at its face like any closed door.
   self.position.orientation = Math.PI;
   for (let frame = 0; frame < 90; frame++, now += 16) {
@@ -203,13 +204,15 @@ test("a door that closes on the character does not hold it inside; once clear of
     stepCharacter(self.position, motion, input({ forward: 1 }), used, step);
   }
   assert.ok(self.position.x > 101.3 && self.position.x < 101.5, `held at the far face (${self.position.x})`);
+  assert.equal(colliders.active, 1, "and the closed gate is a collider again");
 });
 
 test("an unknown state, an unknown type or a missing model makes no collider, exactly as before", () => {
   const cases = [
     ["no GAMEOBJECT_BYTES_1 yet", gameObject(DOOR, { position: DOOR_POSE, bytes: null }), "door"],
     ["a state byte the core never writes", gameObject(DOOR, { position: DOOR_POSE, bytes: (GO_TYPE_DOOR << 8) | 3 }), "door"],
-    ["a chest, not a door", gameObject(DOOR, { type: 3, position: DOOR_POSE }), "door"],
+    // 11.01: a chest is no longer here — Wow.exe makes it solid like every other game object
+    // (tests/gameobject-solidity.test.mjs).
     ["no .dtree row (the core has no collision for it)", gameObject(DOOR, { position: DOOR_POSE }), "none"],
     ["the model still loading (an old gateway answers 404)", gameObject(DOOR, { position: DOOR_POSE }), "loading"],
     ["the template not answered yet", gameObject(DOOR, { position: DOOR_POSE, entry: UNKNOWN_ENTRY }), "door"],

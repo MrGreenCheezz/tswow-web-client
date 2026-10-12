@@ -1,6 +1,6 @@
 import type { CameraRig } from "./game/CameraRig.js";
 import { MOVEMENT_MASK_MOVING } from "../world/MovementProtocol.js";
-import { composePassengerPosition, type TransportSeat } from "../world/TransportMath.js";
+import { composePassengerPosition, normalizeOrientation, type TransportSeat } from "../world/TransportMath.js";
 import { sampleCarrierGlide, type CarrierGlide } from "../world/TransportPassengers.js"; // L16 (11.01-E)
 import { sampleSpline, type SplineSample } from "../world/SplineModel.js";
 import { advanceDrift, type DriftSample } from "../world/MovementExtrapolation.js";
@@ -653,6 +653,7 @@ function cloneLiveObject(source: WorldObjectState): WorldObjectState {
       finalOrientation: source.motion.finalOrientation,
       // The description and paths never change; the lap clock does, and must stay the live one's.
       ...(source.motion.track === undefined ? {} : { track: { ...source.motion.track } }),
+      carrier: source.motion.carrier, // 11.01: the frame the path is in
     },
     glide: source.glide === undefined ? undefined : { ...source.glide },
     transport: source.transport === undefined ? undefined : { ...source.transport },
@@ -713,8 +714,29 @@ function materializeCaptureWorld(world: WorldState, now: number,
     if (!object.position) return;
     const track = motion.track;
     if (track) {
+      // 11.01: a path aboard is in its carrier's frame (`SplineMotion.carrier`), put on the carrier as
+      // this capture has materialized it; with the carrier gone the unit stands, as the live frame has it.
+      const carrier = motion.carrier === undefined ? undefined : world.objects.get(motion.carrier)?.position;
+      if (motion.carrier !== undefined && carrier === undefined) return;
       // The same evaluation as `WorldState.updateMotions`: parabola, fall, facing, cycles.
-      const done = sampleSpline(track, now - motion.startedAt, object.position.orientation, SPLINE_SAMPLE);
+      const done = sampleSpline(track, now - motion.startedAt, carrier === undefined ? object.position.orientation
+        : normalizeOrientation(object.position.orientation - carrier.orientation), SPLINE_SAMPLE);
+      if (carrier !== undefined) {
+        const seat = object.transport;
+        if (done && seat !== undefined && seat.guid === motion.carrier) {
+          seat.x = SPLINE_SAMPLE.x;
+          seat.y = SPLINE_SAMPLE.y;
+          seat.z = SPLINE_SAMPLE.z;
+          seat.orientation = normalizeOrientation(SPLINE_SAMPLE.orientation);
+        }
+        const placed = composePassengerPosition(carrier, {
+          guid: motion.carrier!, x: SPLINE_SAMPLE.x, y: SPLINE_SAMPLE.y, z: SPLINE_SAMPLE.z, orientation: SPLINE_SAMPLE.orientation, seat: 0,
+        });
+        SPLINE_SAMPLE.x = placed.x;
+        SPLINE_SAMPLE.y = placed.y;
+        SPLINE_SAMPLE.z = placed.z;
+        SPLINE_SAMPLE.orientation = placed.orientation;
+      }
       object.position.x = SPLINE_SAMPLE.x;
       object.position.y = SPLINE_SAMPLE.y;
       object.position.z = SPLINE_SAMPLE.z;

@@ -13,7 +13,9 @@ import test from "node:test";
 // root's MCVP chunk, read by 0x007d7470 only as the chunk right after MFOG, 16 bytes a plane
 // (size >> 4). The gateway serves them as GET /vmap/gobject-volumes?v=1&ids=…; without it (an older
 // gateway) the ride keeps the wowee rule of RIDE_LEAVE_FRAMES frames.
-import { WMO_CONVEX_VOLUME_EXTENSION, wmoConvexVolume } from "../tools/convex-volumes.mjs";
+import {
+  M2_CONVEX_VOLUME_EXTENSION, M2_TOP_MARGIN, WMO_CONVEX_VOLUME_EXTENSION, m2ConvexVolume, validConvexVolumePath, wmoConvexVolume,
+} from "../tools/convex-volumes.mjs";
 import {
   GAME_OBJECT_VOLUMES_PATHNAME, GAME_OBJECT_VOLUMES_VERSION, serveGameObjectVolumesRoute,
 } from "../dist/code/gateway/GameObjectVolumes.js";
@@ -117,6 +119,67 @@ test("the client's ship and zeppelin roots carry their volumes (one child, as th
   assert.equal(insideConvexVolume(planes, -2.23, 2.55, 1.1), false, "a ship passenger 5 yd lower, under the volume");
 });
 
+// 11.01: an M2 transport (model flag 0x40). 0x0077ffb0 reads six floats at +0xbc of the loaded model's
+// file data — the M2 header's collision box, min then max — and tests six planes it builds from them:
+// x, y beyond the box, z over max z + 1.6404123 + 1/72 (0x00a3e6f0, 0x00a3e6ec), and under min z.
+function m2Header({ magic = "MD20", version = 264, box = [-2, -3, -1, 4, 5, 6] } = {}) {
+  const bytes = Buffer.alloc(0x130);
+  bytes.write(magic, 0, "latin1");
+  bytes.writeUInt32LE(version, 4);
+  // The bounding box (0xa0) differs: only the collision box counts.
+  [-9, -9, -9, 9, 9, 9].forEach((value, index) => bytes.writeFloatLE(value, 0xa0 + index * 4));
+  box.forEach((value, index) => bytes.writeFloatLE(value, 0xbc + index * 4));
+  return bytes;
+}
+
+test("11.01: m2ConvexVolume — the header's collision box as 0x0077ffb0's six planes, the top raised", () => {
+  assert.equal(M2_CONVEX_VOLUME_EXTENSION, ".m2");
+  assert.deepEqual(M2_TOP_MARGIN.map((value) => Math.fround(value)), M2_TOP_MARGIN, "single-precision constants");
+  assert.ok(Math.abs(M2_TOP_MARGIN[0] - 1.6404123) < 1e-6 && Math.abs(M2_TOP_MARGIN[1] - 1 / 72) < 1e-9);
+  const planes = m2ConvexVolume(m2Header());
+  assert.equal(planes.length, 24);
+  const volume = Float64Array.from(planes);
+  const top = 6 + M2_TOP_MARGIN[0] + M2_TOP_MARGIN[1];
+  assert.equal(insideConvexVolume(volume, 0, 0, 0), true);
+  assert.equal(insideConvexVolume(volume, 3.99, 4.99, 5.99), true, "inside the box");
+  assert.equal(insideConvexVolume(volume, 4.01, 0, 0), false, "past max x");
+  assert.equal(insideConvexVolume(volume, -2.01, 0, 0), false, "past min x");
+  assert.equal(insideConvexVolume(volume, 0, 5.01, 0), false, "past max y");
+  assert.equal(insideConvexVolume(volume, 0, -3.01, 0), false, "past min y");
+  assert.equal(insideConvexVolume(volume, 0, 0, -1.01), false, "under min z");
+  assert.equal(insideConvexVolume(volume, 0, 0, top - 0.01), true, "a jump over the top is still inside");
+  assert.equal(insideConvexVolume(volume, 0, 0, top + 0.01), false, "above the raised top");
+  assert.equal(insideConvexVolume(volume, 0, 0, 8.5), false, "the bounding box (9) is not the volume");
+  assert.equal(m2ConvexVolume(m2Header({ magic: "MD21" })), null, "not a 3.3.5 M2");
+  assert.equal(m2ConvexVolume(m2Header({ version: 263 })), null, "another header layout");
+  assert.equal(m2ConvexVolume(m2Header({ box: [0, 0, Number.NaN, 1, 1, 1] })), null, "a broken box");
+  assert.equal(m2ConvexVolume(Buffer.from("MD20")), null, "too short");
+  assert.equal(validConvexVolumePath("World\\Generic\\elevatorcar.m2"), true);
+  assert.equal(validConvexVolumePath("World\\Generic\\..\\x.m2"), false);
+  assert.equal(validConvexVolumePath("World\\Generic\\elevatorcar.mdx"), false);
+});
+
+test("11.01: the client's M2 lift cars carry their collision box as a volume (one child, as the gateway runs it)", {
+  skip: clientChain ? false : "no client on this machine",
+}, () => {
+  const car = "WORLD\\KALIMDOR\\MULGORE\\PASSIVEDOODADS\\THUNDERBLUFFELEVATOR\\ELEVATORCAR.m2";
+  const result = spawnSync(process.execPath, ["tools/convex-volumes.mjs", car, "World\\Generic\\nothing.m2"], {
+    env: { ...process.env, CLIENT_DIR: clientChain, CLIENT_PACK_DIR: "" }, encoding: "utf8", windowsHide: true,
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const answer = JSON.parse(result.stderr);
+  assert.equal(answer["World\\Generic\\nothing.m2"], null, "absent from the chain");
+  // The header's collision box of the Thunder Bluff car (measured 12.10 over the client: min −5.14,
+  // −5.37, −2.65; max 5.05, 5.10, 13.11), not its bounding box (max z 12.44).
+  const planes = answer[car];
+  assert.equal(planes.length, 24);
+  assert.ok(Math.abs(planes[3] + 5.0489) < 1e-3 && Math.abs(planes[15] + 5.1365) < 1e-3, JSON.stringify(planes));
+  const volume = Float64Array.from(planes);
+  assert.equal(insideConvexVolume(volume, 0, 0, 0), true, "on the car's floor");
+  assert.equal(insideConvexVolume(volume, 0, 0, 14), true, "over the collision top, under the margin");
+  assert.equal(insideConvexVolume(volume, 6, 0, 0), false, "beside the car");
+});
+
 // ---------------------------------------------------------------------------------------------
 // The gateway route.
 
@@ -149,7 +212,8 @@ test("GET /vmap/gobject-volumes: Origin, version, ids, one child per new root, m
     readConvexVolumes: async (paths) => {
       asked.push([...paths]);
       if (fail) throw new Error("child died");
-      return Object.fromEntries(paths.map((path) => [path, path.includes("gone") ? null : path.includes("ship") ? BOX : []]));
+      return Object.fromEntries(paths.map((path) => [path,
+        path.includes("gone") ? null : path.includes("ship") || path.endsWith(".m2") ? BOX : []]));
     },
   };
   const cache = new Map();
@@ -170,9 +234,12 @@ test("GET /vmap/gobject-volumes: Origin, version, ids, one child per new root, m
   assert.equal(ok.headers["access-control-allow-origin"], ORIGIN);
   const answer = JSON.parse(ok.body);
   assert.equal(answer.version, GAME_OBJECT_VOLUMES_VERSION);
-  // An M2, a root not in the chain and an unknown display carry no row: the browser keeps its old rule.
-  assert.deepEqual(answer.volumes, [{ displayId: 3015, planes: BOX }, { displayId: 3031, planes: [] }]);
-  assert.deepEqual(asked, [[DISPLAYS.get(3015).model, DISPLAYS.get(3031).model, DISPLAYS.get(77).model]], "M2s never go to the child");
+  // 11.01: an M2 goes to the child too (its collision box). A root not in the chain and an unknown
+  // display carry no row: the browser keeps its old rule.
+  assert.deepEqual(answer.volumes, [
+    { displayId: 3015, planes: BOX }, { displayId: 3031, planes: [] }, { displayId: 360, planes: BOX },
+  ]);
+  assert.deepEqual(asked, [[DISPLAYS.get(3015).model, DISPLAYS.get(3031).model, DISPLAYS.get(360).model, DISPLAYS.get(77).model]]);
 
   // Memoised per root: a second request with one root already read asks for nothing.
   assert.equal((await serve("/vmap/gobject-volumes?v=1&ids=3031,3015")).status, 200);

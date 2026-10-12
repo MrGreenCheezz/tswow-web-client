@@ -6,9 +6,10 @@ import test from "node:test";
 // GameObject.cpp:520-554) and never makes a player its passenger (`GetTransport` is null for type
 // 11, MovementHandler.cpp:340-345). The client moves the platform along its TransportAnimation path
 // and the character standing on it with it; packets stay in world coordinates without
-// MOVEMENTFLAG_ONTRANSPORT. The phase: the high half of GAMEOBJECT_DYNAMIC is
-// `int16(PathProgress % period / period × 65535)` (GameObject.cpp:2866-2873); the create block's
-// transport word is the server's uptime for a lift (Object.cpp:442-454).
+// MOVEMENTFLAG_ONTRANSPORT. The phase: the create block's transport word is the server's uptime for
+// a lift (Object.cpp:442-454), and 11.01 it is what Wow.exe runs the lift on (0x00714250, 0x007139e0,
+// 0x00710640); the high half of GAMEOBJECT_DYNAMIC, `int16(PathProgress % period / period × 65535)`
+// (GameObject.cpp:2866-2873), is not read (0x0070cb60 → 0x005eeb70).
 import { PacketWriter } from "../dist/code/protocol/index.js";
 import { OPCODES } from "../dist/code/generated/opcodes.js";
 import { UPDATE_FIELDS } from "../dist/code/generated/updateFields.js";
@@ -22,7 +23,7 @@ import { TransportCollision } from "../dist/code/browser/game/TransportCollision
 import {
   GO_STATE_READY, GO_TYPE_TRANSPORT, GameObjectColliders, LIFT_CARRY_MAX_STEP, setGameObjectColliders,
 } from "../dist/code/browser/game/GameObjectColliders.js";
-import { liftClock, liftPoseAt } from "../dist/code/browser/LiftClock.js";
+import { liftCarrierPose, liftClock, liftPoseAt } from "../dist/code/browser/LiftClock.js";
 
 const SELF = 0x1234n;
 const LIFT = 0xf110_0000_0000_00aan;
@@ -54,11 +55,16 @@ function liftCollision() {
   return new TransportCollision({ revision: 0, model: (id) => (id === LIFT_DISPLAY ? model : null), requestGroups() {} });
 }
 
+/** 11.01: a worldserver uptime that is a whole number of the lift's periods — the word for a phase is UPTIME + phase. */
+const UPTIME = 12 * PATH.period;
+
 /**
  * A lift's create block as the core sends it: UPDATEFLAG_TRANSPORT | UPDATEFLAG_STATIONARY_POSITION
- * (GameObject.cpp:320-321), the transport word, and the values the colliders read.
+ * (GameObject.cpp:320-321), the transport word (the uptime: `phase` into the cycle), and the values the
+ * colliders read. The dynamic word, unless given, says another phase: Wow.exe does not read it.
  */
-function liftCreate({ dynamic, transportTime = 123_456, base = BASE }) {
+function liftCreate({ phase = 0, dynamic = dynamicFor((phase + 3000) % PATH.period), transportTime = UPTIME + phase,
+  base = BASE, word = true } = {}) {
   const values = new Map([
     [UPDATE_FIELDS.OBJECT_FIELD_ENTRY.offset, LIFT_ENTRY],
     [UPDATE_FIELDS.GAMEOBJECT_DISPLAYID.offset, LIFT_DISPLAY],
@@ -68,8 +74,10 @@ function liftCreate({ dynamic, transportTime = 123_456, base = BASE }) {
   const blocks = Math.ceil((Math.max(...values.keys()) + 1) / 32);
   const masks = new Array(blocks).fill(0);
   for (const index of values.keys()) masks[index >> 5] |= 1 << (index & 31);
-  const writer = new PacketWriter().u32(1).u8(2).packedGuid(LIFT).u8(5).u16(0x42)
-    .f32(base.x).f32(base.y).f32(base.z).f32(base.orientation).u32(transportTime).u8(blocks);
+  const writer = new PacketWriter().u32(1).u8(2).packedGuid(LIFT).u8(5).u16(word ? 0x42 : 0x40)
+    .f32(base.x).f32(base.y).f32(base.z).f32(base.orientation);
+  if (word) writer.u32(transportTime);
+  writer.u8(blocks);
   for (const mask of masks) writer.u32(mask >>> 0);
   for (const index of [...values.keys()].sort((a, b) => a - b)) writer.u32(values.get(index));
   return writer.toUint8Array();
@@ -77,58 +85,59 @@ function liftCreate({ dynamic, transportTime = 123_456, base = BASE }) {
 
 const pose = (object, now) => liftPoseAt(object, PATH, now, { x: 0, y: 0, z: 0, orientation: 0 });
 
-test("the phase comes from GAMEOBJECT_DYNAMIC, anchored when the create block was read", () => {
+// 11.01: Wow.exe runs a lift on the create block's word — `GO+0x200` = word − read time (0x00714250),
+// the path time `now + GO+0x200` modulo the last keyframe (0x007139e0, 0x00710640) — and never on the
+// phase word: its callback (0x0070cb60) calls the lift handler's vt+0x2c, a bare `ret` (0x005eeb70).
+test("the phase is the create block's word (the uptime), anchored when the block was read; the dynamic word is not read", () => {
   const state = new WorldState();
-  state.applyUpdate(liftCreate({ dynamic: dynamicFor(1000) }), 1000);
+  state.applyUpdate(liftCreate({ phase: 1000, dynamic: dynamicFor(6000) }), 1000);
   const lift = state.objects.get(LIFT);
-  assert.equal(lift.transportTime, 123_456, "the uptime word is there and loses to the dynamic phase");
+  assert.equal(lift.transportTime, UPTIME + 1000);
   // First looked at two seconds after the block arrived (a hidden page): already 3 s into the cycle.
   const at = pose(lift, 3000);
   assert.ok(near(at.z, BASE.z + 30, 0.01), `at the read + 2 s: ${at.z}`);
   assert.ok(near(at.x, BASE.x) && near(at.y, BASE.y) && near(at.orientation, BASE.orientation));
 
-  // No phase in the dynamic word (−1): the uptime modulo the period.
+  // A block without the word (never from this core): the dynamic phase, from the read.
   const fallback = new WorldState();
-  fallback.applyUpdate(liftCreate({ dynamic: 0xffff_0000, transportTime: 21_000 }), 0);
-  assert.ok(near(pose(fallback.objects.get(LIFT), 0).z, BASE.z + 10, 0.01), "1000 ms into the cycle");
+  fallback.applyUpdate(liftCreate({ word: false, dynamic: dynamicFor(1000) }), 0);
+  assert.equal(fallback.objects.get(LIFT).transportTime, undefined);
+  assert.ok(near(pose(fallback.objects.get(LIFT), 0).z, BASE.z + 10, 0.02), "1000 ms into the cycle");
 });
 
 test("a horizontal path is turned by the spawn's yaw before it is added", () => {
   const state = new WorldState();
-  state.applyUpdate(liftCreate({ dynamic: dynamicFor(0) }), 0);
+  state.applyUpdate(liftCreate({ phase: 0 }), 0);
   const tram = { entry: LIFT_ENTRY, period: 2000, frames: [{ time: 0, x: 0, y: 0, z: 0 }, { time: 1000, x: 10, y: 0, z: 0 }] };
   const at = liftPoseAt(state.objects.get(LIFT), tram, 1000, { x: 0, y: 0, z: 0, orientation: 0 });
   assert.ok(near(at.x, BASE.x + 10 * Math.cos(BASE.orientation)) && near(at.y, BASE.y + 10 * Math.sin(BASE.orientation)));
 });
 
-test("a re-CREATE of the same lift resyncs its phase and keeps its mesh; a far DYNAMIC corrects it", () => {
+test("a re-CREATE of the same lift resyncs its phase and keeps its mesh; a values update's phase word moves nothing", () => {
   const state = new WorldState();
-  state.applyUpdate(liftCreate({ dynamic: dynamicFor(1000) }), 1000);
+  state.applyUpdate(liftCreate({ phase: 1000 }), 1000);
   const first = state.objects.get(LIFT);
   const collision = liftCollision();
   const mesh = collision.forObject(first);
   assert.ok(mesh, "the platform's mesh");
   assert.ok(near(pose(first, 5000).z, BASE.z + 40, 0.01), "the first clock: 5000 ms in, at the top");
 
-  // The core sends the create block again on every visibility pass, with a fresh phase.
-  state.applyUpdate(liftCreate({ dynamic: dynamicFor(7000) }), 5000);
+  // The core sends the create block again on every visibility pass, with the uptime of that moment.
+  state.applyUpdate(liftCreate({ phase: 7000 }), 5000);
   const second = state.objects.get(LIFT);
   assert.notEqual(second, first);
   assert.ok(near(pose(second, 5000).z, BASE.z + 20, 0.01), `resynced to 7000 ms: ${pose(second, 5000).z}`);
   assert.equal(collision.forObject(second), mesh, "the same mesh: the model is not rebuilt");
 
-  // A values update whose phase is far from the running clock re-anchors it; one inside the window does not.
-  second.fields.set(UPDATE_FIELDS.GAMEOBJECT_DYNAMIC.offset, dynamicFor(7100));
-  assert.ok(near(pose(second, 5100).z, BASE.z + 19, 0.05), "within the slack: the clock stands");
-  second.fields.set(UPDATE_FIELDS.GAMEOBJECT_DYNAMIC.offset, dynamicFor(2000));
-  assert.ok(near(pose(second, 5100).z, BASE.z + 20, 0.05), "far off: the word wins");
-  assert.equal(liftClock(second, PATH.period, 5100).corrections, 1);
-  // Another period (the entry, and so the path, changed): a clock of its own, from the word as it is.
+  // 11.01: a values update's phase word, near or far, is not read (0x0070cb60 → 0x005eeb70).
+  for (const word of [7100, 2000]) {
+    second.fields.set(UPDATE_FIELDS.GAMEOBJECT_DYNAMIC.offset, dynamicFor(word));
+    assert.ok(near(pose(second, 5100).z, BASE.z + 19, 0.05), `a word for ${word} ms: the clock runs on (${pose(second, 5100).z})`);
+  }
+  // Another period (the entry, and so the path, changed): a clock of its own, on the same word and read.
   const other = liftClock(second, 20_000, 5100);
-  assert.equal(other.corrections, 0);
-  assert.ok(near(other.progressMs, (Math.trunc((2000 / PATH.period) * 65535) / 65535) * 20_000, 1e-6));
-  // Review: that word is the values update's, not the create block's: it counts from now, not from the read.
-  assert.equal(other.at, 5100, "a re-anchored clock starts now");
+  assert.equal(other.progressMs, UPTIME + 7000);
+  assert.equal(other.at, 5000, "counted from the block's read");
 });
 
 // ---------------------------------------------------------------------------------------------
@@ -161,7 +170,7 @@ async function liftWorld({ phase = 0, offset = { x: 1, y: 0.5 } } = {}) {
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(client.movementReady, true);
 
-  client.state.applyUpdate(liftCreate({ dynamic: dynamicFor(phase) }), clock.now);
+  client.state.applyUpdate(liftCreate({ phase }), clock.now);
   const lift = () => client.state.objects.get(LIFT);
   const start = pose(lift(), clock.now);
   const cos = Math.cos(start.orientation);
@@ -277,7 +286,7 @@ test("off the platform the lift carries nothing; a landing flush with it is the 
 test("a jump of the platform beyond a frame's reach (a cut, a stale frame) is not carried", () => {
   const colliders = new GameObjectColliders(liftCollision(), PATHS);
   const state = new WorldState();
-  state.applyUpdate(liftCreate({ dynamic: dynamicFor(0) }), 0);
+  state.applyUpdate(liftCreate({ phase: 0 }), 0);
   const lift = state.objects.get(LIFT);
   const self = { guid: SELF, typeId: 4, position: { x: BASE.x, y: BASE.y, z: BASE.z, orientation: 0 }, fields: new Map() };
   const base = { ground: () => GROUND, liquid: () => undefined, hole: () => false };
@@ -290,4 +299,75 @@ test("a jump of the platform beyond a frame's reach (a cut, a stale frame) is no
   colliders.frame(state.objects, self, base, motion, 100 + jump);
   assert.equal(self.position.z, z, "a jump past the limit leaves the character where it was");
   assert.equal(colliders.carrying, false);
+});
+
+// ---------------------------------------------------------------------------------------------
+// 11.01: somebody else on the lift. A stock client riding a lift sends ONTRANSPORT with the lift's
+// guid and its offset on the car, which the core relays (MovementHandler.cpp:340-345); Wow.exe draws
+// a passenger at its offset times the carrier's matrix (0x00704cc0 → vt+0xc4), and a lift's is moved
+// along its path every frame (0x007139e0) — the car, not the spawn the state holds.
+
+const RIDER = 0x0000_0000_0000_0777n;
+
+function liftRiderWorld(provide = true) {
+  const state = new WorldState();
+  if (provide) state.carrierPoseProvider = liftCarrierPose(PATHS);
+  state.applyUpdate(liftCreate({ phase: 0 }), 0);
+  return state;
+}
+
+/** Where an offset on the car is in the world at `now` (the car by `liftPoseAt`). */
+function onCar(state, offset, now) {
+  const car = pose(state.objects.get(LIFT), now);
+  const cos = Math.cos(car.orientation);
+  const sin = Math.sin(car.orientation);
+  return { x: car.x + offset.x * cos - offset.y * sin, y: car.y + offset.x * sin + offset.y * cos, z: car.z + offset.z };
+}
+
+test("11.01: a stock client's rider on a lift is drawn on the car, going up with it", () => {
+  const state = liftRiderWorld();
+  const offset = { x: 1.5, y: -0.5, z: 0 };
+  const world = onCar(state, offset, 1000);
+  state.move(RIDER, {
+    flags: MOVEMENT_FLAGS.onTransport,
+    position: { ...world, orientation: BASE.orientation },
+    transport: { guid: LIFT, ...offset, orientation: 0, seat: 0 },
+  }, 1000);
+  for (const now of [1000, 2000, 3500]) {
+    state.updateMotions(now);
+    const at = state.objects.get(RIDER).position;
+    const expected = onCar(state, offset, now);
+    assert.ok(near(at.x, expected.x) && near(at.y, expected.y) && near(at.z, expected.z),
+      `${now} ms: on the car (${at.z.toFixed(2)} vs ${expected.z.toFixed(2)})`);
+  }
+  assert.ok(state.objects.get(RIDER).position.z > BASE.z + 30, "up the shaft, not at the spawn");
+  // Without the provider (the state alone): the spawn, as before.
+  const bare = liftRiderWorld(false);
+  bare.move(RIDER, { flags: MOVEMENT_FLAGS.onTransport, position: { ...world, orientation: 0 },
+    transport: { guid: LIFT, ...offset, orientation: 0, seat: 0 } }, 1000);
+  bare.updateMotions(3500);
+  assert.ok(near(bare.objects.get(RIDER).position.z, BASE.z), "the state's own pose of a lift is its spawn");
+});
+
+test("11.01: the rider's next packet glides on the car, not between two world points the car has left", () => {
+  const state = liftRiderWorld();
+  const first = { x: 1, y: 0, z: 0 };
+  state.move(RIDER, { flags: MOVEMENT_FLAGS.onTransport, position: { ...onCar(state, first, 1000), orientation: 0 },
+    transport: { guid: LIFT, ...first, orientation: 0, seat: 0 } }, 1000);
+  state.updateMotions(1500);
+  // Half a yard further along the car, in a packet written at 1500.
+  const second = { x: 1.5, y: 0, z: 0 };
+  state.move(RIDER, { flags: MOVEMENT_FLAGS.onTransport, position: { ...onCar(state, second, 1500), orientation: 0 },
+    transport: { guid: LIFT, ...second, orientation: 0, seat: 0 } }, 1500);
+  // Through the glide the car keeps rising; the rider stays on it, between the two offsets.
+  for (const now of [1550, 1600, 1680]) {
+    state.updateMotions(now);
+    const at = state.objects.get(RIDER).position;
+    const car = pose(state.objects.get(LIFT), now);
+    assert.ok(near(at.z, car.z, 1e-6), `${now} ms: at the car's height (${at.z.toFixed(3)} vs ${car.z.toFixed(3)})`);
+  }
+  state.updateMotions(2000);
+  const end = onCar(state, second, 2000);
+  const at = state.objects.get(RIDER).position;
+  assert.ok(near(at.x, end.x) && near(at.y, end.y) && near(at.z, end.z), "arrived on the new offset");
 });

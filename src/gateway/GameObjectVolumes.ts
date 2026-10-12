@@ -6,10 +6,12 @@
 // child (GatewayConfiguration.ts), once per root per dataset memo. The display id → root path comes
 // from the dataset's GameObjectDisplayInfo.dbc, the table the extractor and the renderer use.
 //
-// Only WMO roots are answered. An M2 transport's volume in Wow.exe is the model's box with a margin
-// over the top (0x0077ffb0, flag 0x40; +1.6404 + 1/72 yd on max z, floats at 0x00a3e6f0/0x00a3e6ec),
-// from a box field of the loaded model not established here — so an M2, an id without a row and a
-// root the chain does not hold carry no row, and the browser keeps its older rule for them.
+// 11.01: an M2 is answered too. Its volume in Wow.exe is the M2 header's collision box (the six
+// floats at +0xbc of the model's file data) with a margin over the top (0x0077ffb0, flag 0x40;
+// 1.6404123 + 1/72 yd on max z, floats at 0x00a3e6f0/0x00a3e6ec), which the child turns into the six
+// planes 0x0077ffb0 builds (`m2ConvexVolume`) — the same rows as a root's, so the browser needs no
+// change. An id without a row and a model the chain does not hold carry no row, and the browser
+// keeps its older rule for them. The answer's shape is unchanged, so the version stays 1.
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { CatalogCache } from "./CatalogRoutes.js";
@@ -20,7 +22,7 @@ import { originAllowed } from "./UpgradeGuard.js";
 export const GAME_OBJECT_VOLUMES_VERSION = 1;
 export const GAME_OBJECT_VOLUMES_PATHNAME = "/vmap/gobject-volumes";
 
-/** Root path → flat planes (a, b, c, d …), `[]` for a root without MCVP, null when the chain has no such root. */
+/** Model path → flat planes (a, b, c, d …), `[]` for a root without MCVP, null when the chain has no such model. */
 export type ConvexVolumeReader = (paths: readonly string[]) => Promise<Readonly<Record<string, readonly number[] | null>>>;
 
 export interface GameObjectVolumeRouteOptions {
@@ -85,7 +87,8 @@ export async function serveGameObjectVolumesRoute(
     const fresh: string[] = [];
     for (const id of ids) {
       const model = table.get(id)?.model;
-      if (!model || !model.toLowerCase().endsWith(".wmo")) continue;
+      // 11.01: a WMO root or an M2 (the DBC's .mdx/.mdl are already .m2 in the display table).
+      if (!model || !/\.(wmo|m2)$/i.test(model)) continue;
       const key = model.toLowerCase();
       rows.push({ displayId: id, key });
       if (!memo.roots.has(key) && !fresh.some((path) => path.toLowerCase() === key)) fresh.push(model);

@@ -12,6 +12,7 @@ import {
 } from "../game/TransportRide.js";
 import { forgetRideObjects, noteRideObjects, resumableSeat } from "./RideResume.js";
 import { CarrierVolumes, insideConvexVolume } from "../game/CarrierVolumes.js"; // 05.10-11.01
+import { rideColliderProbe } from "../game/GameObjectColliders.js"; // 11.01
 
 /**
  * 11.01 slice A3, the page's half: which ship the character stands on, kept between frames for
@@ -68,6 +69,11 @@ let near = new Set<bigint>();
 let nearNext = new Set<bigint>();
 
 const PROBE = new CarrierProbe();
+/**
+ * 11.01: what this frame's step runs against — the deck, or the deck with the game objects aboard
+ * at their seats (`GameObjectColliders.rideProbe`); the leave rule still reads the deck alone.
+ */
+let stepProbe: TerrainProbe = PROBE;
 /** The offset being stepped this frame; `self.transport` is written from it every substep. */
 const LOCAL: WorldPosition = { x: 0, y: 0, z: 0, orientation: 0 };
 const FEET = { x: 0, y: 0, z: 0 };
@@ -140,6 +146,7 @@ export function forgetRide(): void {
   near.clear();
   nearNext.clear();
   PROBE.deck = undefined;
+  stepProbe = PROBE; // 11.01
 }
 
 /** The ride in progress, for the movement layer and the tests. */
@@ -312,7 +319,8 @@ export function beginRideFrame(frame: RideFrameInput): TerrainProbe | undefined 
     // The world facing is the newer word: the turn keys and following turned it this frame.
     LOCAL.orientation = normalizeOrientation(position.orientation - pose.orientation);
     seat.orientation = LOCAL.orientation;
-    return PROBE;
+    stepProbe = rideColliderProbe(seat.guid, PROBE); // 11.01
+    return stepProbe;
   }
 
   keepNear(objects, position, undefined);
@@ -350,7 +358,9 @@ export function beginRideFrame(frame: RideFrameInput): TerrainProbe | undefined 
   self.transport = { guid: boarded, x: LOCAL.x, y: LOCAL.y, z: LOCAL.z, orientation: LOCAL.orientation, seat: SHIP_SEAT };
   PROBE.deck = deck;
   flipped = true;
-  return PROBE;
+  // 11.01: what is aboard joins from the next frame, when the colliders know the seat.
+  stepProbe = rideColliderProbe(boarded, PROBE);
+  return stepProbe;
 }
 
 /**
@@ -363,7 +373,7 @@ export function stepRideSubstep(frame: RideFrameInput, motion: CharacterMotion, 
   const position = frame.self.position;
   if (events.length !== 0) events.length = 0;
   if (!pose || !position) return events;
-  stepRide(pose, LOCAL, motion, input, PROBE, elapsed, position, events);
+  stepRide(pose, LOCAL, motion, input, stepProbe, elapsed, position, events); // 11.01: was PROBE
   writeSeat(frame.self);
   return events;
 }
@@ -414,6 +424,7 @@ function leave(self: WorldObjectState, motion: CharacterMotion): void {
   ride = undefined;
   self.transport = undefined;
   PROBE.deck = undefined;
+  stepProbe = PROBE; // 11.01
   flipped = true;
 }
 

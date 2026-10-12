@@ -3,7 +3,8 @@ import type { WorldObjectState } from "../../world/WorldState.js";
 import { RetryingCatalogClient, type RetryingCatalogOptions } from "../CatalogClient.js";
 
 /**
- * 05.10-11.01: a transport model's convex volume — the WMO root's MCVP planes — by display id.
+ * 05.10-11.01: a transport model's convex volume — the WMO root's MCVP planes, or (11.01) an M2's
+ * collision box with its raised top as six planes (0x0077ffb0, flag 0x40) — by display id.
  *
  * Wow.exe takes a falling passenger off its transport on the first falling step outside this volume
  * (0x007618b0 → 0x006ec7b0, refused while 0x0074b5e0 → GO vt+0xf0 → 0x0070b360 → 0x0077ffb0 answers
@@ -11,8 +12,9 @@ import { RetryingCatalogClient, type RetryingCatalogOptions } from "../CatalogCl
  * The planes come from the gateway (`GET /vmap/gobject-volumes`, gateway/GameObjectVolumes.ts).
  *
  * A gateway older than the route answers 404: every volume stays undefined, and the ride keeps the
- * wowee rule (`RIDE_LEAVE_FRAMES`) it had before. A display without a row (an M2, no root) is null —
- * the same older rule, for good.
+ * wowee rule (`RIDE_LEAVE_FRAMES`) it had before. A display without a row (no model the client
+ * chain holds) is null — the same older rule, for good. A gateway from before 11.01 has no rows for
+ * M2 transports: the older rule for them too.
  */
 
 export const CARRIER_VOLUMES_ROUTE_VERSION = 1;

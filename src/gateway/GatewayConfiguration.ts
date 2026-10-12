@@ -376,9 +376,10 @@ export async function createGatewayConfiguration(): Promise<{ options: GatewayOp
   }
 
   /**
-   * 05.10-11.01: `tools/convex-volumes.mjs <root>…` out of a child — the MCVP planes of WMO roots,
-   * one JSON object on stderr (StormLib owns stdout), as `listCharacterTextures` reads its answer.
-   * A few roots per dataset (ships and zeppelins in view), memoised by the route.
+   * 05.10-11.01: `tools/convex-volumes.mjs <model>…` out of a child — the MCVP planes of WMO roots
+   * (11.01: and an M2's collision box as six planes), one JSON object on stderr (StormLib owns
+   * stdout), as `listCharacterTextures` reads its answer. A few models per dataset (transports in
+   * view), memoised by the route.
    */
   function readConvexVolumes(paths: readonly string[]): Promise<Readonly<Record<string, readonly number[] | null>>> {
     if (closed) return Promise.reject(new Error("Resource provider is closed"));

@@ -80,30 +80,8 @@ export function placeOnTransportPath(
   };
 }
 
-/** A transport's dynamic word carries no phase for anything that is not one, written as −1. */
-const NO_PHASE = 0xffff;
-
-/**
- * How far into its cycle a lift was when the client last heard about it.
- *
- * Two sources, and they are not interchangeable. The high half of `GAMEOBJECT_DYNAMIC` is the
- * phase as a fraction of the period — the core computes it as `uint16(timer / period * 65535)`
- * where `timer` is the path progress it keeps for itself — and is exactly what is wanted. The
- * create block's transport word is a fallback and means something different again: for a lift the
- * core writes `GameTime::GetGameTimeMS()` into it, the worldserver's uptime, because a type 11
- * object is not a `Transport` as far as `ToTransport()` is concerned. Taken modulo the period it
- * is still a shared phase, which is all that is needed for two clients to agree.
- *
- * The alternative — starting every lift from zero on the frame it comes into view — is what makes
- * one player watch a platform arrive while another watches it leave.
- */
-export function transportPhaseMs(dynamic: number | undefined, transportTime: number | undefined, period: number): number {
-  if (period <= 0) return 0;
-  const phase = dynamic === undefined ? NO_PHASE : (dynamic >>> 16) & 0xffff;
-  if (phase !== NO_PHASE) return (phase / 65535) * period;
-  if (transportTime !== undefined) return transportTime % period;
-  return 0;
-}
+// 11.01: where a lift is in its cycle is LiftClock.ts's — the create block's transport word, as
+// Wow.exe reads it; the phase word this file once preferred is never read by Wow.exe after creation.
 
 /**
  * The paths of the lifts the player is standing near, by game object template entry.

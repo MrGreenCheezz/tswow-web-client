@@ -104,6 +104,7 @@ import { VendorCostClient } from "../VendorCostClient.js";
 import { AreaClient } from "../AreaClient.js";
 import { startAreaTriggers, stopAreaTriggers } from "../AreaTriggerClient.js";
 import { startShipMotion, stopShipMotion } from "../TransportMotion.js";
+import { startLiftCarriers } from "../LiftClock.js"; // 11.01
 import { startVehicleData, stopVehicleData } from "../VehicleClient.js"; // 11.02-F1
 import { rideCollisionModels, startTransportRide, stopTransportRide } from "../input/MovementRide.js";
 import { startGameObjectColliders, stopGameObjectColliders } from "../game/GameObjectColliders.js";
@@ -1312,6 +1313,8 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
     // lands, or against a gateway without the route, they stay where their create block put them.
     startShipMotion(gatewayInput.value, world);
     entryLifecycle.track(stopShipMotion);
+    // 11.01: somebody riding a lift is carried on its car, where Wow.exe draws it (LiftClock.ts).
+    entryLifecycle.track(startLiftCarriers(world.state, game.transportPaths));
     // 11.02-F1: the vehicle tables for the seat model (VehicleClient.ts); retried, never fatal.
     startVehicleData(gatewayInput.value);
     entryLifecycle.track(stopVehicleData);

@@ -139,8 +139,8 @@ export interface RideFooting {
   /** In the air with flight or levitation: the character steers its own altitude. */
   flying: boolean;
   /**
-   * 05.10-11.01: whether the offset is inside the carrier model's convex volume (WMO MCVP,
-   * `CarrierVolumes.insideConvexVolume`); undefined while unknown (an older gateway, an M2).
+   * 05.10-11.01: whether the offset is inside the carrier model's convex volume (WMO MCVP or, 11.01,
+   * an M2's collision box, `CarrierVolumes.insideConvexVolume`); undefined while unknown (an older gateway).
    */
   inside?: boolean | undefined;
 }

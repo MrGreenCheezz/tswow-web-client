@@ -6,7 +6,7 @@ import { UPDATE_FIELDS } from "../generated/updateFields.js";
 // not a cycle: the compiled `Fields.js` imports `updateFields.js` and nothing else.
 import { UNIT_DYNFLAG_DEAD, UNIT_DYNFLAG_LOOTABLE } from "./Fields.js";
 import type { MonsterMove, SplinePoint } from "./MonsterMoveProtocol.js";
-import { composePassengerPosition, type TransportSeat } from "./TransportMath.js";
+import { composePassengerPosition, normalizeOrientation, type TransportSeat } from "./TransportMath.js";
 import type { SplineSpeedName } from "./SplineStateProtocol.js";
 import {
   buildTrack, describeMonsterMove, isRunnableSpline, readCreateSpline, resyncTrack, sampleSpline, trackAnimationTier,
@@ -43,6 +43,9 @@ const MOVE_SPLINE_ENABLED = 0x08000000;
 
 const TYPEID_UNIT = 3;
 const TYPEID_PLAYER = 4;
+const TYPEID_GAMEOBJECT = 5;
+/** 11.01: the game object's state and type bytes, whose change Wow.exe acts on as the block is read. */
+const GO_BYTES_1 = UPDATE_FIELDS.GAMEOBJECT_BYTES_1.offset;
 const NO_RETIRED_OBJECTS: readonly bigint[] = [];
 /** `UNIT_FLAG_ON_TAXI`, set by FlightPathMovementGenerator while the server owns the rider. */
 const UNIT_FLAG_ON_TAXI = 0x00100000;
@@ -206,6 +209,16 @@ interface SplineMotion {
    * `updateMotions` then rebuilds an equivalent polyline from them.
    */
   track?: SplineTrack;
+  /**
+   * 11.01: the transport whose frame `points` and `track` are in (`SMSG_MONSTER_MOVE_TRANSPORT`, a
+   * create block's spline aboard); undefined for a path in the world's frame. Wow.exe sets the
+   * mover's transport before it reads the path (0x0073f590 → 0x0073c8e0 → 0x006f0c70) and runs the
+   * raw points as the mover's own, local position, which the transport's matrix places every frame
+   * (0x00704cc0): so the path is sampled here in the carrier's frame and composed on its pose of
+   * each frame — a path put into the world once at its start leaves a walker behind a sailing ship
+   * and jumps it onto the deck when the path ends.
+   */
+  carrier?: bigint | undefined;
 }
 
 interface MovementUpdate {
@@ -278,6 +291,22 @@ export class WorldState {
   poseProvider: ((state: WorldState, now: number) => void) | undefined;
 
   /**
+   * 11.01: where a carrier the state does not move itself stands this frame, written into `out` —
+   * a lift (`GAMEOBJECT_TYPE_TRANSPORT`, 11), whose state position is its spawn while Wow.exe draws
+   * and carries the car along its path (`browser/LiftClock.ts`). Undefined for anything it does
+   * not place, which is then read from `position` as before. Set by the browser.
+   */
+  carrierPoseProvider: ((carrier: WorldObjectState, now: number, out: WorldPosition) => WorldPosition | undefined) | undefined;
+
+  /**
+   * 11.01: a game object's create block, or a values block that changed its `GAMEOBJECT_BYTES_1`,
+   * at the moment it is read. Wow.exe runs its field callbacks there and then — the state byte's is
+   * 0x00711050 (registered by 0x007140a0), which a stoppable transport's hold acts on — while a
+   * frame may be minutes away in a hidden page (`browser/TransportMotion.ts`). Set by the browser.
+   */
+  gameObjectChanged: ((object: WorldObjectState, now: number) => void) | undefined;
+
+  /**
    * 11.02-A: a unit other than the character that this client moves (a vehicle it drives, a creature
    * it possesses), set by `WorldClient` from `SMSG_CLIENT_CONTROL_UPDATE`. Its own packets put it
    * where they say, as the character's do — gliding or extrapolating it would fight the physics.
@@ -295,6 +324,8 @@ export class WorldState {
   #spareDrift: Drift | undefined;
   /** 11.01-E: passengers gliding to their packet in the carrier's frame (TransportPassengers.ts). */
   readonly #carrierGlides = new Map<bigint, CarrierGlide>();
+  /** 11.01: the scratch `carrierPoseProvider` writes a lift's pose into; read at once, never kept. */
+  readonly #carrierScratch: WorldPosition = { x: 0, y: 0, z: 0, orientation: 0 };
 
   /** The controlled character. It arrives with the first update that carries the self flag. */
   get selfGuid(): bigint | undefined {
@@ -337,8 +368,13 @@ export class WorldState {
           guid = reader.packedGuid();
           const slots = readValues(reader);
           if (this.failedCreates.has(guid)) continue;
-          const changed = commitValues(this.#get(guid).fields, slots);
+          const target = this.#get(guid);
+          const changed = commitValues(target.fields, slots);
           this.observer?.fieldsChanged(guid, changed);
+          // 11.01: Wow.exe's GO field callback runs as the block is applied (0x00711050).
+          if (this.gameObjectChanged !== undefined && target.typeId === TYPEID_GAMEOBJECT && changed.includes(GO_BYTES_1)) {
+            this.gameObjectChanged(target, now);
+          }
         } else if (updateType === UPDATE_MOVEMENT) {
           guid = reader.packedGuid();
           const movement = readMovement(reader);
@@ -383,6 +419,8 @@ export class WorldState {
           this.observer?.objectMoved(guid);
           const created = commitValues(object.fields, slots);
           this.observer?.fieldsChanged(guid, created);
+          // 11.01: a transport's creation step runs with its block (0x00714250 → 0x007100d0).
+          if (this.gameObjectChanged !== undefined && typeId === TYPEID_GAMEOBJECT) this.gameObjectChanged(object, now);
         } else if (updateType === UPDATE_OUT_OF_RANGE) {
           const count = reader.u32();
           if (count > reader.remaining) throw new RangeError(`Invalid out-of-range object count ${count}`);
@@ -566,8 +604,10 @@ export class WorldState {
     this.#carrierGlides.delete(guid);
     // 11.01-E: somebody aboard glides on the deck, not between two world points the ship has left.
     const carrierObject = self || object.transport === undefined ? undefined : this.objects.get(object.transport.guid);
-    // Review C/D/E: a ship only — a lift or a vehicle seat glides between world points as before.
-    const carrier = isShipCarrier(carrierObject) ? carrierObject!.position : undefined;
+    // Review C/D/E: a ship, or (11.01) a lift whose car the browser places — a vehicle seat, or a
+    // lift without its path, glides between world points as before.
+    const carrier = isShipCarrier(carrierObject) ? carrierObject!.position
+      : carrierObject === undefined ? undefined : this.carrierPoseProvider?.(carrierObject, now, this.#carrierScratch);
     if (carrier) {
       object.glide = undefined;
       object.position = { ...target };
@@ -689,7 +729,7 @@ export class WorldState {
       orientation: move.finalOrientation ?? (previousSeat?.guid === move.transportGuid ? previousSeat.orientation : 0),
       seat: move.transportSeat ?? 0,
     };
-    const transport = move.transportGuid === undefined ? undefined : this.objects.get(move.transportGuid)?.position;
+    const transport = move.transportGuid === undefined ? undefined : this.#carrierPose(this.objects.get(move.transportGuid), now);
     if (move.transportGuid !== undefined && !transport) {
       // It has boarded something not in view, so whatever path it was on is over whether or not
       // this one can be plotted. Dropping it matters most for a cyclic spline, which nothing else
@@ -705,14 +745,28 @@ export class WorldState {
     // A spline launched on a transport is in the transport's own frame, and the packet says so
     // only by its opcode. Adding the transport's position without turning it is right exactly
     // while the ship faces zero: the error grows with every degree it turns, which is why it
-    // reads as a pathfinding problem rather than a coordinate one.
-    const desc = inWorldFrame(describeMonsterMove(move), transport);
+    // reads as a pathfinding problem rather than a coordinate one. 11.01: it stays in that frame
+    // (`SplineMotion.carrier`), its facing angle and spot included (MoveSplineInit::SetFacing
+    // subtracts the transport's orientation, MoveSplineInit.cpp), and is composed every frame.
+    const desc = describeMonsterMove(move);
     const points = desc.points;
     if (points.length === 0) return;
     object.glide = undefined;
-    object.position = { ...points[0]!, orientation: object.position?.orientation ?? 0 };
     if (move.duration === 0 || points.length === 1) {
-      if (desc.facing) object.position.orientation = this.#facingFrom(object.position, desc.facing);
+      if (transport) {
+        const local = { x: points[0]!.x, y: points[0]!.y, z: points[0]!.z,
+          orientation: normalizeOrientation((object.position?.orientation ?? 0) - transport.orientation) };
+        if (desc.facing && desc.facing.kind !== "target") local.orientation = this.#facingFrom(local, desc.facing);
+        if (object.transport) object.transport.orientation = local.orientation;
+        object.position = composePassengerPosition(transport, { guid: move.transportGuid!, ...local, seat: 0 });
+        if (desc.facing?.kind === "target") {
+          object.position.orientation = this.#facingFrom(object.position, desc.facing);
+          if (object.transport) object.transport.orientation = normalizeOrientation(object.position.orientation - transport.orientation);
+        }
+      } else {
+        object.position = { ...points[0]!, orientation: object.position?.orientation ?? 0 };
+        if (desc.facing) object.position.orientation = this.#facingFrom(object.position, desc.facing);
+      }
       object.motion = undefined;
       // This is `MoveSplineInit::Stop`, and there the removal and the packet are one act:
       // `MoveSplineInit.cpp:178` takes `FORWARD|SPLINE_ENABLED` off and `:192` broadcasts the
@@ -723,17 +777,21 @@ export class WorldState {
       this.observer?.objectMoved(move.guid);
       return;
     }
-    this.#beginMotion(object, desc, now);
+    this.#beginMotion(object, desc, now, move.transportGuid, transport);
     this.revision++;
     this.observer?.objectMoved(move.guid);
   }
 
   /**
-   * Puts a unit on a path already in world coordinates, `timePassedMs` into it (a create block's
-   * spline is caught part-way; a MONSTER_MOVE starts at zero). Shared by 5.02 and 5.03.
+   * Puts a unit on a path, `timePassedMs` into it (a create block's spline is caught part-way; a
+   * MONSTER_MOVE starts at zero). Shared by 5.02 and 5.03. 11.01: with a carrier the path is in the
+   * carrier's frame (`SplineMotion.carrier`) and `carrierPose` is where the carrier stands now.
    */
-  #beginMotion(object: WorldObjectState, desc: SplineDescription, now: number): void {
-    const orientation = object.position?.orientation ?? 0;
+  #beginMotion(object: WorldObjectState, desc: SplineDescription, now: number,
+    carrier?: bigint, carrierPose?: WorldPosition): void {
+    const world = object.position?.orientation ?? 0;
+    const local = carrier !== undefined && carrierPose !== undefined;
+    const orientation = local ? normalizeOrientation(world - carrierPose!.orientation) : world;
     const track = buildTrack(desc, orientation);
     const first = track.first;
     object.glide = undefined;
@@ -749,8 +807,10 @@ export class WorldState {
       flying: desc.flying,
       finalOrientation: desc.facing?.kind === "angle" ? desc.facing.angle : undefined,
       track,
+      carrier: local ? carrier : undefined,
     };
     sampleSpline(track, desc.timePassedMs, orientation, SPLINE_SAMPLE);
+    if (local) composeSample(carrierPose!, SPLINE_SAMPLE);
     object.position = { x: SPLINE_SAMPLE.x, y: SPLINE_SAMPLE.y, z: SPLINE_SAMPLE.z, orientation: SPLINE_SAMPLE.orientation };
   }
 
@@ -769,7 +829,7 @@ export class WorldState {
     for (const object of this.objects.values()) {
       // A passenger first: whatever its own motion does next is relative to a deck that may have
       // moved since the last packet, and no packet will ever say so.
-      this.#carryPassenger(object);
+      this.#carryPassenger(object, now);
       if (this.#carrierGlides.size !== 0) this.#advanceCarrierGlide(object, now);
       this.#advanceGlide(object, now);
       if (object.drift !== undefined) this.#advanceDrift(object, object.drift, now);
@@ -786,7 +846,23 @@ export class WorldState {
       if (animation !== undefined && elapsed >= animation.startMs && latch?.track !== track) {
         object.splineTier = { tier: animation.tier, fieldTier: fieldAnimationTier(object), track };
       }
-      const done = sampleSpline(track, elapsed, object.position.orientation, SPLINE_SAMPLE);
+      // 11.01: a path aboard is sampled in its carrier's frame and put on this frame's deck; with
+      // the carrier gone from view the unit stands where it was last drawn until a packet says more.
+      const carrierPose = motion.carrier === undefined ? undefined : this.#carrierPose(this.objects.get(motion.carrier), now);
+      if (motion.carrier !== undefined && carrierPose === undefined) continue;
+      const done = sampleSpline(track, elapsed, carrierPose === undefined ? object.position.orientation
+        : normalizeOrientation(object.position.orientation - carrierPose.orientation), SPLINE_SAMPLE);
+      if (carrierPose !== undefined) {
+        // Arrived, the seat is where the path ended, facing as it ended: `#carryPassenger` holds it there.
+        const seat = object.transport;
+        if (done && seat !== undefined && seat.guid === motion.carrier) {
+          seat.x = SPLINE_SAMPLE.x;
+          seat.y = SPLINE_SAMPLE.y;
+          seat.z = SPLINE_SAMPLE.z;
+          seat.orientation = normalizeOrientation(SPLINE_SAMPLE.orientation);
+        }
+        composeSample(carrierPose, SPLINE_SAMPLE);
+      }
       object.position.x = SPLINE_SAMPLE.x;
       object.position.y = SPLINE_SAMPLE.y;
       object.position.z = SPLINE_SAMPLE.z;
@@ -796,6 +872,10 @@ export class WorldState {
         // turns to the target itself, which is only possible while the target is in view.
         if (track.desc.facing?.kind === "target") {
           object.position.orientation = this.#facingFrom(object.position, track.desc.facing);
+          const seat = object.transport;
+          if (carrierPose !== undefined && seat !== undefined && seat.guid === motion.carrier) {
+            seat.orientation = normalizeOrientation(object.position.orientation - carrierPose.orientation);
+          }
         }
         object.motion = undefined;
         // Arrival is the one the server keeps to itself: `Unit::UpdateSplineMovement` calls
@@ -827,14 +907,19 @@ export class WorldState {
    *
    * The offset is the only durable fact: the world position in the packet was composed when the
    * packet was written and is stale the moment the ship moves on. Nothing is done for an object
-   * whose transport is not in view — its own last position is the best answer there is — and
-   * nothing is done for an elevator, because the server keeps no offset for one: it says so twice
-   * in `MoveSplineInit.cpp:63` and `:198`, and a rider on a lift reports plain world positions.
+   * whose transport is not in view — its own last position is the best answer there is.
+   *
+   * 11.01: a lift is no exception. The core keeps no offset for one (`MoveSplineInit.cpp:63`,
+   * `:198`), but a stock client riding it sends its offset on the car with `ONTRANSPORT`, which the
+   * core relays (MovementHandler.cpp:340-345), and Wow.exe composes it on the car where it draws it:
+   * a passenger's matrix is its offset times the carrier's (0x00704cc0 → carrier vt+0xc4), and a
+   * lift's is moved along its path every frame (0x007139e0). So the carrier's pose is the car's
+   * (`carrierPoseProvider`), not the spawn the state holds for it.
    */
-  #carryPassenger(object: WorldObjectState): void {
+  #carryPassenger(object: WorldObjectState, now: number): void {
     const seat = object.transport;
     if (!seat || !object.position) return;
-    const transport = this.objects.get(seat.guid)?.position;
+    const transport = this.#carrierPose(this.objects.get(seat.guid), now);
     if (!transport) return;
     const world = composePassengerPosition(transport, seat);
     object.position.x = world.x;
@@ -843,11 +928,17 @@ export class WorldState {
     object.position.orientation = world.orientation;
   }
 
+  /** 11.01: where a carrier stands this frame — a lift's car (`carrierPoseProvider`), else its state position. */
+  #carrierPose(carrier: WorldObjectState | undefined, now: number): WorldPosition | undefined {
+    if (carrier === undefined) return undefined;
+    return this.carrierPoseProvider?.(carrier, now, this.#carrierScratch) ?? carrier.position;
+  }
+
   /** 11.01-E: the rest of a passenger's glide, on this frame's deck; over when the seat or the carrier changed. */
   #advanceCarrierGlide(object: WorldObjectState, now: number): void {
     const glide = this.#carrierGlides.get(object.guid);
     if (glide === undefined) return;
-    const carrier = object.transport?.guid === glide.carrier ? this.objects.get(glide.carrier)?.position : undefined;
+    const carrier = object.transport?.guid === glide.carrier ? this.#carrierPose(this.objects.get(glide.carrier), now) : undefined;
     if (!carrier || !object.position || !sampleCarrierGlide(glide, carrier, now, object.position)) {
       this.#carrierGlides.delete(object.guid);
     }
@@ -1054,8 +1145,9 @@ export class WorldState {
     if (movement.spline && isRunnableSpline(movement.spline)) {
       // Points of a spline launched aboard are in the transport's frame (`TransportPathTransform`);
       // with that transport out of view there is no frame to put them in, and the unit stands.
-      const transport = movement.transport ? this.objects.get(movement.transport.guid)?.position : undefined;
-      if (!movement.transport || transport) this.#beginMotion(object, inWorldFrame(movement.spline, transport), now);
+      // 11.01: they stay in it, composed every frame (`SplineMotion.carrier`).
+      const transport = movement.transport ? this.#carrierPose(this.objects.get(movement.transport.guid), now) : undefined;
+      if (!movement.transport || transport) this.#beginMotion(object, movement.spline, now, movement.transport?.guid, transport);
     }
     // A unit whose spline is finished, stopped or unplaceable is drawn standing where the block put
     // it — and its flags have to agree, or it runs on the spot from the first frame it is seen.
@@ -1334,18 +1426,18 @@ function readPosition(reader: PacketReader): WorldPosition {
 }
 
 /**
- * A description whose points (and facing spot) are in a transport's frame, put into the world's.
- * Composed once, at the start, as `startSpline` always has: the path is then followed in world
- * space while `#carryPassenger` keeps the seat.
+ * 11.01: a sample taken in a carrier's frame put on its pose, in place — `composePassengerPosition`
+ * without the allocation (`pos + Rz(o) · local`, facing `o + local`).
  */
-function inWorldFrame(desc: SplineDescription, transport: WorldPosition | undefined): SplineDescription {
-  if (!transport) return desc;
-  const toWorld = (point: SplinePoint): SplinePoint => {
-    const world = composePassengerPosition(transport, { guid: 0n, ...point, orientation: 0, seat: 0 });
-    return { x: world.x, y: world.y, z: world.z };
-  };
-  const facing = desc.facing?.kind === "spot" ? { kind: "spot" as const, ...toWorld(desc.facing) } : desc.facing;
-  return { ...desc, points: desc.points.map(toWorld), facing };
+function composeSample(carrier: WorldPosition, sample: SplineSample): void {
+  const cos = Math.cos(carrier.orientation);
+  const sin = Math.sin(carrier.orientation);
+  const x = sample.x;
+  const y = sample.y;
+  sample.x = carrier.x + x * cos - y * sin;
+  sample.y = carrier.y + x * sin + y * cos;
+  sample.z = carrier.z + sample.z;
+  sample.orientation = normalizeOrientation(carrier.orientation + sample.orientation);
 }
 
 /**

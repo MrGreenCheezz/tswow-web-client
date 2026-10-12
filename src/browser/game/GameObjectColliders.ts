@@ -21,34 +21,67 @@ import { worldFloorUnder } from "./TransportRide.js";
  * model sits at `pos + scale · Rz(o) · v` (GameObjectModel.cpp:124-137): yaw only, so a tilted
  * object's collision is still level, and that frame is the one used here (`TransportCollision`).
  *
- * What this mirrors, conservatively: doors (`GAMEOBJECT_TYPE_DOOR`, 0) solid exactly while their
- * state byte (`GAMEOBJECT_BYTES_1` byte 0, `SetGoState`) reads READY (1, closed) and open at ACTIVE
- * (0) and DESTROYED (2, the 3.3.5 name of ACTIVE_ALTERNATIVE — `SwitchDoorOrButton(…, alternative)`,
- * GameObject.cpp:1650), and only doors whose template is known and not `startOpen` (`doorSolid`);
- * lifts (`GAMEOBJECT_TYPE_TRANSPORT`, 11) always solid, as the core keeps
- * them, but where the client draws them on their path (LiftClock.ts) rather than at the spawn the
- * core never moves them from. Other types the core also makes solid (chests, buttons, goobers,
- * generic props) are left out on purpose: the owner plays dungeons daily, and a misplaced prop in a
- * corridor costs more than one missing (06.10-7.24-review: the renderer now draws every game object,
- * M2 or WMO, in this same `Rz(o)` frame — world/GameObjectModelFrame.ts). A state that never came, a model the gateway has no row for, a gateway
- * without `/vmap/gobject-models` (404): no collider, exactly as before this slice.
+ * What Wow.exe makes solid (11.01, owner's decision of 12.10; Ghidra notes
+ * .runtime/re-2026-10-11/glue-1110/t1101-*.txt). Every game object's model becomes a world entity
+ * when the object is set up (0x00711a10 → 0x007110b0 → 0x00783500): a WMO a map object definition, an
+ * M2 a doodad definition, each carrying the object's guid as the owner of its triangles (+0x148 /
+ * +0xb8). The movement collision query (0x0075f0a0 → 0x00783910 → 0x007a5f20, flags 0x0075e3d0)
+ * gathers both — the dynamic WMOs from their list (0x007a55e0), a game object's doodad from the
+ * chunks and groups it stands in (0x007a50c0, under query flag 0x100000, which every movement query
+ * has) — unless the entity's +0xc bit 0x100 is set. That bit is set only by a destructible building
+ * for the models of its other states and while it is hidden (0x00710be0, 0x0070dfa0, 0x0070e750,
+ * 0x0070b6a0/0x0070b6e0), and by 0x00710460 (GO vt+0x140, which also drops a transport's passengers).
+ * No game object's state or type turns it off otherwise — the door's state handler 0x0070d690 only
+ * picks the animation.
+ *
+ * So here: every game object near the character whose display id has a collision model is solid at
+ * `pos + scale · Rz(o) · v` (`gameObjectSolid`), whatever its type and state, with three exceptions:
+ * - doors (`GAMEOBJECT_TYPE_DOOR`, 0) keep slice B's state rule — solid exactly while their state
+ *   byte (`GAMEOBJECT_BYTES_1` byte 0, `SetGoState`) reads READY (1, closed), open at ACTIVE (0) and
+ *   DESTROYED (2, the 3.3.5 name of ACTIVE_ALTERNATIVE — `SwitchDoorOrButton(…, alternative)`,
+ *   GameObject.cpp:1650), and only doors whose template is known and not `startOpen` (`doorSolid`).
+ *   Wow.exe leaves a door's entity solid and plays its open animation; how an open door then lets a
+ *   body through — whether a GO doodad's triangles follow its animation (0x007a50c0 → 0x007a4af0 →
+ *   0x0082ec30, not decompiled) — is not established, and a static mesh cannot follow it anyway, so
+ *   the state stands in for the animation, as the core's own `EnableCollision` does;
+ * - lifts (`GAMEOBJECT_TYPE_TRANSPORT`, 11) solid where the client draws them on their path
+ *   (LiftClock.ts) rather than at the spawn the core never moves them from, and carrying;
+ * - ships and zeppelins (`GAMEOBJECT_TYPE_MO_TRANSPORT`, 15) are the ride's (input/MovementRide.ts):
+ *   the ridden one's deck in its own frame. A hull not ridden is not a wall here — boarding reads the
+ *   world's floor as the pier, and a deck in it would always tie with itself (recorded, not done).
+ * A destructible building (33) is solid by its current display id, which the core switches with the
+ * state (`SetDestructibleState` → `SetDisplayId`), as Wow.exe swaps the active model. A game object
+ * aboard the ship the character rides is solid in that ship's frame, at its seat (`rideColliderProbe`),
+ * so a crate on the deck stands on the deck the step runs on. A model the gateway has no row for, a
+ * gateway without `/vmap/gobject-models` (404): no collider, exactly as before slice B.
  *
  * Lifts are client-only rides (spec 11.01, mechanism 5): the character standing on a lift's floor is
  * moved by the platform's own move each frame, and its packets stay in world coordinates without
  * `MOVEMENTFLAG_ONTRANSPORT` — the core would keep the flag for a type 11 guid but never make the
- * player a passenger (MovementHandler.cpp:340-345), and observers would add the offset to the lift's
- * static spawn.
+ * player a passenger (MovementHandler.cpp:340-345). Recorded, not changed (11.01): Wow.exe does ride a
+ * lift as a transport — on the ground its transport is the owner of the floor triangle under the feet
+ * (0x007620f0 → 0x006ec7b0), and a game object's triangles carry its guid (0x007a4af0) — so a stock
+ * client sends the flag and its offset on the car, which observers here now place on the car
+ * (`WorldState.carrierPoseProvider`); sending it from here too is for a live capture to settle.
  */
 
 export const GO_TYPE_DOOR = 0;
 export const GO_TYPE_TRANSPORT = 11;
+/** 11.01: ships and zeppelins — the ride's, not a collider here. */
+export const GO_TYPE_MO_TRANSPORT = 15;
 /** `GOState` (SharedDefines.h:1655-1660). */
 export const GO_STATE_ACTIVE = 0;
 export const GO_STATE_READY = 1;
 export const GO_STATE_DESTROYED = 2;
 
-/** 2D yards from the character within which a door or a lift is asked and its model kept. */
+/** 2D yards from the character within which a game object is asked and its model kept. */
 export const COLLIDER_RANGE = 60;
+/**
+ * 11.01: a collider joins a frame's probe only while the character is within this many yards of its
+ * model's footprint (in the model's frame) and not further below its bottom — the step of a frame
+ * is a fraction of it, and a city's worth of benches is not asked on every query.
+ */
+export const COLLIDER_REACH = 8;
 /** Feet within this of a lift's floor (at last frame's pose) stand on it. */
 export const LIFT_STAND_TOLERANCE = 0.25;
 /** A platform that moved further in one frame jumped (a path's cut, a stale frame): no carry. */
@@ -100,6 +133,19 @@ export function doorSolid(object: WorldObjectState, template: DoorTemplate | und
   return template.data[0] === 0 ? true : undefined;
 }
 
+/**
+ * 11.01: whether a game object's model is solid here — true for every type Wow.exe leaves its entity
+ * collidable for (all but a destructible building's other states, which the display id already
+ * leaves out), a door by `doorSolid`, false for a ship (the ride's). Undefined when the type is not
+ * known yet. A lift is solid too; `GameObjectColliders` places it on its path.
+ */
+export function gameObjectSolid(object: WorldObjectState, template: DoorTemplate | undefined): boolean | undefined {
+  const type = gameObjectType(object);
+  if (type === undefined) return undefined;
+  if (type === GO_TYPE_DOOR) return doorSolid(object, template);
+  return type !== GO_TYPE_MO_TRANSPORT;
+}
+
 /** The template source: `WorldClient.gameObjectTemplate` in the page (asks once per entry). */
 export type DoorTemplates = (entry: number, guid: bigint) => DoorTemplate | undefined;
 
@@ -121,6 +167,10 @@ interface ColliderRecord extends DynamicCollider {
    * clear of it. Undefined until decided (a new record, or a new mesh for it).
    */
   passable: boolean | undefined;
+  /** 11.01: the model's box in its own frame (all meshes so far), for `COLLIDER_REACH`; rebuilt as groups arrive. */
+  readonly box: { minX: number; minY: number; minZ: number; maxX: number; maxY: number; maxZ: number };
+  /** 11.01: `world.size` when `box` was built. */
+  boxSize: number;
 }
 
 const FEET = { x: 0, y: 0, z: 0 };
@@ -129,6 +179,10 @@ export class GameObjectColliders {
   readonly #models: ColliderModels;
   readonly #paths: LiftPaths | undefined;
   readonly #probe = new DynamicColliderProbe({ ground: () => undefined, liquid: () => undefined, hole: () => false });
+  /** 11.01: the game objects aboard the ship the character rides, in that ship's frame (`rideProbe`). */
+  readonly #aboardProbe = new DynamicColliderProbe({ ground: () => undefined, liquid: () => undefined, hole: () => false });
+  /** 11.01: the ship those are aboard; undefined when the character rides none. */
+  #aboardCarrier: bigint | undefined;
   readonly #records = new Map<bigint, ColliderRecord>();
   readonly #candidates = new Set<bigint>();
   #scannedAt = Number.NEGATIVE_INFINITY;
@@ -164,30 +218,55 @@ export class GameObjectColliders {
     return this.#probe.count;
   }
 
+  /** 11.01: how many game objects aboard the ridden ship the last frame put in its frame (diagnostics, tests). */
+  get aboard(): number {
+    return this.#aboardProbe.count;
+  }
+
   /**
-   * Frame start, before the step: picks the doors and lifts near the character, carries a character
+   * 11.01: the probe for a step on `carrier`'s deck — `deck` itself (the ride's `CarrierProbe`), with
+   * the game objects aboard that ship at their seats when the last frame found any.
+   */
+  rideProbe(carrier: bigint, deck: TerrainProbe): TerrainProbe {
+    const probe = this.#aboardProbe;
+    if (this.#aboardCarrier !== carrier || probe.count === 0) return deck;
+    probe.base = deck;
+    return probe;
+  }
+
+  /**
+   * Frame start, before the step: picks the game objects near the character, carries a character
    * standing on a lift by the lift's move, and returns the probe to step against — `base` itself
-   * when nothing is near, so a frame without doors or lifts asks the world exactly as before.
+   * when nothing is near, so a frame without them asks the world exactly as before. 11.01: the game
+   * objects aboard the ship the character rides go to that ship's frame instead (`rideProbe`).
    */
   frame(objects: ReadonlyMap<bigint, WorldObjectState>, self: WorldObjectState, base: TerrainProbe,
     motion: Readonly<CharacterMotion>, now: number): TerrainProbe {
     const probe = this.#probe;
     probe.base = base;
     probe.count = 0;
+    this.#aboardProbe.count = 0;
     const position = self.position;
     if (!position) {
       this.#endCarry(false);
       return base;
     }
     this.#rescan(objects, now);
+    // 11.01: the ship the character stands on, if any (its seat is the ride's offset).
+    const seat = self.transport;
+    const carrier = seat === undefined ? undefined : objects.get(seat.guid);
+    this.#aboardCarrier = carrier !== undefined && gameObjectType(carrier) === GO_TYPE_MO_TRANSPORT ? seat!.guid : undefined;
     const near = this.#nearNext;
     near.clear();
     for (const guid of this.#candidates) {
       const object = objects.get(guid);
       if (!object?.position) continue;
       const type = gameObjectType(object);
-      if (type === GO_TYPE_DOOR) this.#door(object, position, near);
-      else if (type === GO_TYPE_TRANSPORT) this.#lift(object, position, near, now);
+      if (type === GO_TYPE_TRANSPORT) this.#lift(object, position, near, now);
+      else if (type === GO_TYPE_MO_TRANSPORT || type === undefined) continue;
+      else if (this.#aboardCarrier !== undefined && object.transport?.guid === this.#aboardCarrier) {
+        this.#aboard(object, seat!, position, near);
+      } else this.#solid(object, position, near);
     }
     for (const guid of this.#records.keys()) if (!near.has(guid)) this.#records.delete(guid);
     let changed = near.size !== this.#near.size;
@@ -221,19 +300,23 @@ export class GameObjectColliders {
     this.#scannedSize = -1;
     this.#scannedAt = Number.NEGATIVE_INFINITY;
     this.#probe.count = 0;
+    this.#aboardProbe.count = 0;
+    this.#aboardCarrier = undefined;
     this.#carrying = false;
     this.#settled = false;
     this.#models.clear();
   }
 
-  #door(object: WorldObjectState, position: WorldPosition, near: Set<bigint>): void {
+  /** 11.01: any game object but a lift and a ship, at its world pose (a door by its state). */
+  #solid(object: WorldObjectState, position: WorldPosition, near: Set<bigint>): void {
     const pose = object.position!;
     if (!within(pose, position)) return;
     near.add(object.guid);
-    // Asked while open too, so the model is there by the time the door closes.
+    // Asked while open too, so the model is there by the time a door closes.
     const world = this.#models.forObject(object);
-    const template = this.#templates?.(object.fields.get(ENTRY) ?? 0, object.guid);
-    if (doorSolid(object, template) !== true || !world) {
+    const door = gameObjectType(object) === GO_TYPE_DOOR;
+    const template = door ? this.#templates?.(object.fields.get(ENTRY) ?? 0, object.guid) : undefined;
+    if (gameObjectSolid(object, template) !== true || !world) {
       this.#records.delete(object.guid);
       return;
     }
@@ -242,14 +325,44 @@ export class GameObjectColliders {
     record.pose.y = pose.y;
     record.pose.z = pose.z;
     record.pose.orientation = pose.orientation;
-    // Review 11.01-B: a door closing on the character (a boss door shutting on someone in the
-    // doorway) must not hold it. The wall push is two-sided, so a body inside a slab thicker than
-    // itself is only ever pushed back inwards — trapped until the door opens again. Such a door
-    // stays passable to the character until its body is clear of the box, then is solid as usual.
-    if (record.passable === undefined) record.passable = insideBox(record, position);
-    else if (record.passable && !insideBox(record, position)) record.passable = false;
-    if (record.passable) return;
+    if (door) {
+      // Review 11.01-B: a door closing on the character (a boss door shutting on someone in the
+      // doorway) must not hold it. The wall push is two-sided, so a body inside a slab thicker than
+      // itself is only ever pushed back inwards — trapped until the door opens again. Such a door
+      // stays passable to the character until its body is clear of the box, then is solid as usual.
+      // 11.01: doors only — the box of a bridge or a building holds the character standing on it.
+      if (record.passable === undefined) record.passable = insideBox(record, position);
+      else if (record.passable && !insideBox(record, position)) record.passable = false;
+      if (record.passable) return;
+    }
+    if (!withinReach(record, position.x, position.y, position.z)) return;
     this.#push(record);
+  }
+
+  /**
+   * 11.01: a game object aboard the ship the character rides: its model at its seat in the ship's
+   * frame (`positionPassengerSeat`: offset, facing relative to the ship), where the ride's step runs.
+   */
+  #aboard(object: WorldObjectState, seat: { x: number; y: number; z: number }, position: WorldPosition,
+    near: Set<bigint>): void {
+    const local = object.transport!;
+    if (!within(object.position!, position)) return;
+    near.add(object.guid);
+    const world = this.#models.forObject(object);
+    const door = gameObjectType(object) === GO_TYPE_DOOR;
+    const template = door ? this.#templates?.(object.fields.get(ENTRY) ?? 0, object.guid) : undefined;
+    if (gameObjectSolid(object, template) !== true || !world) {
+      this.#records.delete(object.guid);
+      return;
+    }
+    const record = this.#record(object.guid, world, false);
+    record.pose.x = local.x;
+    record.pose.y = local.y;
+    record.pose.z = local.z;
+    record.pose.orientation = local.orientation;
+    if (!withinReach(record, seat.x, seat.y, seat.z)) return;
+    const probe = this.#aboardProbe;
+    probe.colliders[probe.count++] = record;
   }
 
   #lift(object: WorldObjectState, position: WorldPosition, near: Set<bigint>, now: number): void {
@@ -282,6 +395,7 @@ export class GameObjectColliders {
       record = {
         guid, world, lift, pose: { x: 0, y: 0, z: 0, orientation: 0 }, prev: { x: 0, y: 0, z: 0, orientation: 0 },
         prevValid: false, passable: undefined,
+        box: { minX: 0, minY: 0, minZ: 0, maxX: 0, maxY: 0, maxZ: 0 }, boxSize: -1, // 11.01
       };
       this.#records.set(guid, record);
     }
@@ -290,6 +404,7 @@ export class GameObjectColliders {
       record.world = world;
       record.prevValid = false;
       record.passable = undefined;
+      record.boxSize = -1; // 11.01
     }
     return record;
   }
@@ -364,8 +479,9 @@ export class GameObjectColliders {
     this.#scannedAt = now;
     this.#candidates.clear();
     for (const object of objects.values()) {
+      // 11.01: every game object but a ship (the ride's); a type still unknown is looked at again.
       const type = gameObjectType(object);
-      if (type === GO_TYPE_DOOR || type === GO_TYPE_TRANSPORT) this.#candidates.add(object.guid);
+      if (type !== undefined && type !== GO_TYPE_MO_TRANSPORT) this.#candidates.add(object.guid);
     }
   }
 }
@@ -376,6 +492,41 @@ function within(pose: CarrierPose, position: WorldPosition): boolean {
   const dx = pose.x - position.x;
   const dy = pose.y - position.y;
   return dx * dx + dy * dy <= COLLIDER_RANGE * COLLIDER_RANGE;
+}
+
+/**
+ * 11.01: whether a point (the character, in the frame `record.pose` stands in) is within
+ * `COLLIDER_REACH` of the model's footprint and not further than that below it — anywhere above it
+ * counts, a fall can land on it. The box is the union of the meshes built so far, kept per record.
+ */
+function withinReach(record: ColliderRecord, x: number, y: number, z: number): boolean {
+  const world = record.world;
+  const box = record.box;
+  if (record.boxSize !== world.size) {
+    record.boxSize = world.size;
+    box.minX = box.minY = box.minZ = Number.POSITIVE_INFINITY;
+    box.maxX = box.maxY = box.maxZ = Number.NEGATIVE_INFINITY;
+    for (const id of world.ids()) {
+      const bounds = world.get(id)?.bounds;
+      if (!bounds) continue;
+      if (bounds.minX < box.minX) box.minX = bounds.minX;
+      if (bounds.minY < box.minY) box.minY = bounds.minY;
+      if (bounds.minZ < box.minZ) box.minZ = bounds.minZ;
+      if (bounds.maxX > box.maxX) box.maxX = bounds.maxX;
+      if (bounds.maxY > box.maxY) box.maxY = bounds.maxY;
+      if (bounds.maxZ > box.maxZ) box.maxZ = bounds.maxZ;
+    }
+  }
+  const pose = record.pose;
+  const cos = Math.cos(pose.orientation);
+  const sin = Math.sin(pose.orientation);
+  const dx = x - pose.x;
+  const dy = y - pose.y;
+  const localX = dx * cos + dy * sin;
+  const localY = dy * cos - dx * sin;
+  return localX >= box.minX - COLLIDER_REACH && localX <= box.maxX + COLLIDER_REACH
+    && localY >= box.minY - COLLIDER_REACH && localY <= box.maxY + COLLIDER_REACH
+    && z - pose.z >= box.minZ - COLLIDER_REACH;
 }
 
 /**
@@ -442,4 +593,12 @@ export function liftCarrying(): boolean {
 /** A carry just ended: one heartbeat says where the character came to rest. */
 export function takeLiftSettled(): boolean {
   return colliders?.takeSettled() === true;
+}
+
+/**
+ * 11.01: the probe a step on `carrier`'s deck runs against (MovementRide): the deck with the game
+ * objects aboard at their seats, or the deck alone.
+ */
+export function rideColliderProbe(carrier: bigint, deck: TerrainProbe): TerrainProbe {
+  return colliders ? colliders.rideProbe(carrier, deck) : deck;
 }

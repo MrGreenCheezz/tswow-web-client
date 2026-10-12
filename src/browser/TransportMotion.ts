@@ -11,6 +11,14 @@
 // has no network output), so this file keeps the clock and asks the gateway for the path the core
 // runs it on (`gateway/TransportShipPaths.ts`, `GET /dbc/ship-paths`).
 //
+// The clock is Wow.exe's: the create block's word minus the moment it was read (`GO+0x200`, written
+// only by the GO constructor 0x00714250), plus the time since. Nothing re-anchors it but a new create
+// block. 11.01: a later phase word is not read — the callback Wow.exe registers on the high half of
+// GAMEOBJECT_DYNAMIC (0x007140a0: `FUN_004d5ba0(5, 0x22, 2, 0x0070cb60)`) calls the type's handler
+// vt+0x2c, which for an MO transport (vtable 0x00a348c0) and a lift (0x00a34808) is 0x005eeb70, a
+// bare `ret`; and `MSG_MOVE_TELEPORT_ACK` does not touch it either (L16, 0x006ecf80). A clock the
+// word corrected at the next frame put a ship back by however long the page had been hidden.
+//
 // The clock starts when the create block was read (`WorldObjectState.transportTimeAt`), not at the
 // first frame after it, which may come much later in a hidden page.
 //
@@ -22,6 +30,9 @@
 // L16: a transport that can be stopped (template data8, `canBeStopped`: the gunships) is held at a
 // stop while its GO state is READY, as Wow.exe's path clock holds it (`ShipMotion.#holdPhase`); the
 // state of any other transport means nothing to its clock (the core keeps it READY for good).
+// 11.01: a state change is acted on when its block is read (`ShipMotion.noteChanged`, through
+// `WorldState.gameObjectChanged`), as Wow.exe's field callback 0x00711050 is — not at the next
+// frame, which a hidden page may not draw before the state has flipped and flipped back.
 
 import { RetryingCatalogClient, type CatalogState, type RetryingCatalogOptions } from "./CatalogClient.js";
 import { UPDATE_FIELDS } from "../generated/updateFields.js";
@@ -41,11 +52,6 @@ export const GO_TYPE_MO_TRANSPORT = 15;
  * anything more is another path or another speed, and the ship then stays still.
  */
 export const SHIP_PERIOD_TOLERANCE_MS = 2;
-/**
- * A `GAMEOBJECT_DYNAMIC` phase this far outside the running clock re-anchors it. Below it the clock
- * is trusted: the word is quantised to period / 65535 and is as late as the packet.
- */
-export const SHIP_CLOCK_SLACK_MS = 250;
 /** A transport's dynamic word carries −1 when it has no period (GameObject.cpp:2849). */
 const NO_PHASE = 0xffff;
 /**
@@ -180,13 +186,6 @@ export function shipHoldPhase(track: ShipTrack, phaseMs: number): number | undef
   return undefined;
 }
 
-/** L16-review: the distance between two phases of a cycle of `period`, either way round. */
-function circularDistance(a: number, b: number, period: number): number {
-  let distance = Math.abs(a - b) % period;
-  if (distance > period / 2) distance = period - distance;
-  return distance;
-}
-
 /** Whether the gateway's timetable is the server's: `pathTime` against `GAMEOBJECT_LEVEL`. */
 export function shipPeriodAgrees(trackPeriod: number, level: number): boolean {
   return level > 0 && Math.abs(trackPeriod - level) <= SHIP_PERIOD_TOLERANCE_MS;
@@ -202,21 +201,19 @@ export function dynamicPhaseWord(dynamic: number | undefined): number | undefine
 /**
  * The transport clock as this client keeps it: `progressMs` was the server's `PathProgress` at `at`
  * (the client's frame clock). Owned per create block — a new one replaces the object in the state,
- * and the clock with it.
+ * and the clock with it. Wow.exe keeps the same pair as one offset, `GO+0x200` (0x00714250).
  */
 export interface ShipClock {
   /** The `WorldObjectState` this clock was anchored to; a re-CREATE is a different object. */
   readonly object: object;
   progressMs: number;
   at: number;
-  /** The last dynamic phase word seen, so only a changed one counts as news. */
-  dynamic: number | undefined;
-  corrections: number;
 }
 
 /**
  * Anchors a clock on a create block: `PathProgress` when the block carried one, else the dynamic
- * word's phase (quantised, but a phase), else zero.
+ * word's phase (quantised, but a phase), else zero. Wow.exe has only the first (a block without the
+ * word leaves `GO+0x200` at zero); the core always sends it for a ship and a lift.
  */
 export function anchorShipClock(
   object: object, transportTime: number | undefined, dynamic: number | undefined, period: number, now: number,
@@ -225,7 +222,7 @@ export function anchorShipClock(
   let progressMs = 0;
   if (transportTime !== undefined && Number.isFinite(transportTime)) progressMs = transportTime;
   else if (word !== undefined && period > 0) progressMs = ((word + 0.5) / 65535) * period;
-  return { object, progressMs, at: now, dynamic: word, corrections: 0 };
+  return { object, progressMs, at: now };
 }
 
 /** Where in its cycle the transport is at `now`, in [0, period). */
@@ -233,32 +230,6 @@ export function shipClockPhase(clock: ShipClock, now: number, period: number): n
   if (!(period > 0)) return 0;
   const phase = (clock.progressMs + (now - clock.at)) % period;
   return phase < 0 ? phase + period : phase;
-}
-
-/**
- * Checks the clock against a fresh `GAMEOBJECT_DYNAMIC`; true when it was re-anchored.
- *
- * The word `q` says the server's timer was in [q, q + 1) × period / 65535 when it wrote the packet.
- * A clock inside that window, or within `SHIP_CLOCK_SLACK_MS` of it, is left alone — it is the more
- * precise of the two. Further out (a transport a script stopped, a client that slept) the window's
- * middle wins.
- */
-export function correctShipClock(clock: ShipClock, dynamic: number | undefined, period: number, now: number): boolean {
-  const word = dynamicPhaseWord(dynamic);
-  if (word === clock.dynamic) return false;
-  clock.dynamic = word;
-  if (word === undefined || !(period > 0)) return false;
-  const lo = (word / 65535) * period;
-  const hi = ((word + 1) / 65535) * period;
-  const phase = shipClockPhase(clock, now, period);
-  let distance = 0;
-  if (phase < lo) distance = Math.min(lo - phase, phase + period - hi);
-  else if (phase >= hi) distance = Math.min(phase - hi, lo + period - phase);
-  if (distance <= SHIP_CLOCK_SLACK_MS) return false;
-  clock.progressMs = (lo + hi) / 2;
-  clock.at = now;
-  clock.corrections++;
-  return true;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -346,18 +317,9 @@ interface ShipEntry {
   held: boolean;
   /** L16: where it holds (`shipHoldPhase`); NaN for a path without a stop. */
   holdPhase: number;
-  /** L16: the frame clock of the last look, the window a crossing of the hold point is caught in. */
+  /** L16: the clock of the last look (a frame or a block), the window a crossing of the hold point is caught in. */
   lastSeen: number;
-  /** L16-review: the dynamic phase word when the hold was asked for; the core's timer stands still under it. */
-  holdWord: number | undefined;
 }
-
-/**
- * L16-review: how far from its hold point a released ship's word-corrected clock may be and still be
- * the departure from that stop (a server tick, the clock slack and a sample are far less); further,
- * states were missed between two frames and the word is the server's.
- */
-export const SHIP_HOLD_STALE_MS = 1000;
 
 /**
  * 11.01-C: how long the clock may disagree with the server about the map before it is logged. A
@@ -367,6 +329,19 @@ export const SHIP_HOLD_STALE_MS = 1000;
 export const SHIP_OFF_MAP_WARN_MS = 2000;
 
 const POSE: ShipPoseSample = { map: 0, x: 0, y: 0, z: 0, orientation: 0, stop: false };
+
+/** A game object of type `GAMEOBJECT_TYPE_MO_TRANSPORT` (byte 1 of `GAMEOBJECT_BYTES_1`). */
+function isMoTransport(object: WorldObjectState): boolean {
+  return object.typeId === 5 && ((object.fields.get(BYTES_1) ?? 0) >>> 8 & 0xff) === GO_TYPE_MO_TRANSPORT;
+}
+
+function newShipEntry(guid: bigint): ShipEntry {
+  return {
+    guid, clock: undefined, warned: undefined, track: undefined, trackFor: undefined, offMapSince: undefined,
+    // L16: the hold of a stoppable transport.
+    stoppable: false, holdFor: undefined, goState: -1, holdRequested: false, held: false, holdPhase: Number.NaN, lastSeen: 0,
+  };
+}
 
 /** Every MO transport in view, moved to this frame's pose: `WorldState.poseProvider`. */
 export class ShipMotion {
@@ -397,17 +372,65 @@ export class ShipMotion {
     }
   }
 
+  /**
+   * 11.01: a game object's create block, or a change of its `GAMEOBJECT_BYTES_1`, at the moment the
+   * block was read (`WorldState.gameObjectChanged`). Wow.exe acts on a stoppable transport's state
+   * in its field callback (0x00711050 → 0x007101c0) and on its creation in the GO's setup
+   * (0x00711b50 → 0x007100d0), both as the packet is applied; a page acting at its next frame lost
+   * every state that flipped back before it (a READY and the ACTIVE after it behind a hidden tab).
+   * The hold is asked for and released here, at the block's own moment; frames only move the ship.
+   * Until the template and the track have come, the next frame that has them acts instead.
+   */
+  noteChanged(object: WorldObjectState, now: number): void {
+    if (!isMoTransport(object)) return;
+    let ship = this.#ships.get(object.guid);
+    if (ship === undefined) {
+      ship = newShipEntry(object.guid);
+      this.#ships.set(object.guid, ship);
+    }
+    const level = object.fields.get(LEVEL) ?? 0;
+    if (!object.position || !(level > 0)) return;
+    const dynamic = object.fields.get(DYNAMIC);
+    this.#anchor(ship, object, dynamic, level, now);
+    const track = this.#resolveTrack(ship, object);
+    if (!track || !ship.stoppable || !shipPeriodAgrees(track.period, level)) return;
+    this.#holdPhase(ship, object, track, level, dynamic, now);
+  }
+
   #rescan(objects: ReadonlyMap<bigint, WorldObjectState>): void {
     for (const guid of this.#ships.keys()) if (!objects.has(guid)) this.#ships.delete(guid);
     for (const object of objects.values()) {
-      if (object.typeId !== 5 || ((object.fields.get(BYTES_1) ?? 0) >>> 8 & 0xff) !== GO_TYPE_MO_TRANSPORT) continue;
-      if (!this.#ships.has(object.guid)) this.#ships.set(object.guid, {
-        guid: object.guid, clock: undefined, warned: undefined, track: undefined, trackFor: undefined, offMapSince: undefined,
-        // L16: the hold of a stoppable transport.
-        stoppable: false, holdFor: undefined, goState: -1, holdRequested: false, held: false, holdPhase: Number.NaN, lastSeen: 0,
-        holdWord: undefined, // L16-review
-      });
+      if (!isMoTransport(object)) continue;
+      if (!this.#ships.has(object.guid)) this.#ships.set(object.guid, newShipEntry(object.guid));
     }
+  }
+
+  /**
+   * The clock first and always, so it starts with the create block rather than whenever the
+   * template and the track arrive — and at the moment the block was read, not at a frame: a page
+   * hidden through a loading screen gets no frames, and the ship would otherwise run late by the
+   * whole wait. Nothing later re-anchors it (see the file's head).
+   */
+  #anchor(ship: ShipEntry, object: WorldObjectState, dynamic: number | undefined, level: number, now: number): void {
+    if (ship.clock?.object === object) return;
+    const at = object.transportTime !== undefined && object.transportTimeAt !== undefined ? object.transportTimeAt : now;
+    ship.clock = anchorShipClock(object, object.transportTime, dynamic, level, at);
+  }
+
+  /** The track of this create block: undefined until the template and the gateway answer, null when it cannot be built. */
+  #resolveTrack(ship: ShipEntry, object: WorldObjectState): ShipTrack | null | undefined {
+    if (ship.trackFor !== object) {
+      ship.track = undefined;
+      const template = this.#options.template(object.fields.get(ENTRY) ?? 0, object.guid);
+      if (!template || template.type !== GO_TYPE_MO_TRANSPORT) return undefined;
+      // L16: Wow.exe's state handler 0x007101c0 acts only when data8 is set.
+      ship.stoppable = (template.data[TEMPLATE_CAN_BE_STOPPED] ?? 0) !== 0;
+      // `moTransport`: taxiPathId, moveSpeed, accelRate (GameObjectData.h).
+      ship.track = this.#options.paths.track(template.data[0] ?? 0, template.data[1] ?? 0, template.data[2] ?? 0);
+      if (ship.track === undefined) return undefined;
+      ship.trackFor = object;
+    }
+    return ship.track;
   }
 
   #move(ship: ShipEntry, object: WorldObjectState, now: number): void {
@@ -415,29 +438,10 @@ export class ShipMotion {
     const level = object.fields.get(LEVEL) ?? 0;
     if (!position || !(level > 0)) return;
     const dynamic = object.fields.get(DYNAMIC);
-    // The clock first and always, so it starts at the frame the create block landed in rather than
-    // whenever the template and the track arrive.
-    // Anchored at the moment the create block was read, not at this frame: a page hidden through a
-    // loading screen gets no frames, and the ship would otherwise run late by the whole wait.
-    if (ship.clock?.object !== object) {
-      const at = object.transportTime !== undefined && object.transportTimeAt !== undefined ? object.transportTimeAt : now;
-      ship.clock = anchorShipClock(object, object.transportTime, dynamic, level, at);
-    }
-    else correctShipClock(ship.clock, dynamic, level, now);
+    this.#anchor(ship, object, dynamic, level, now);
 
     const entry = object.fields.get(ENTRY) ?? 0;
-    if (ship.trackFor !== object) {
-      ship.track = undefined;
-      const template = this.#options.template(entry, object.guid);
-      if (!template || template.type !== GO_TYPE_MO_TRANSPORT) return;
-      // L16: Wow.exe's state handler 0x007101c0 acts only when data8 is set.
-      ship.stoppable = (template.data[TEMPLATE_CAN_BE_STOPPED] ?? 0) !== 0;
-      // `moTransport`: taxiPathId, moveSpeed, accelRate (GameObjectData.h).
-      ship.track = this.#options.paths.track(template.data[0] ?? 0, template.data[1] ?? 0, template.data[2] ?? 0);
-      if (ship.track === undefined) return;
-      ship.trackFor = object;
-    }
-    const track = ship.track;
+    const track = this.#resolveTrack(ship, object);
     if (track === undefined) return;
     if (track === null) {
       this.#warn(ship, object, `transport ${entry}: the gateway cannot build its path; it stays where it was created`);
@@ -450,7 +454,7 @@ export class ShipMotion {
     }
     // L16: a stoppable transport's phase goes through its hold; any other's is the clock's, as before.
     shipPoseAt(track, ship.stoppable ? this.#holdPhase(ship, object, track, level, dynamic, now)
-      : shipClockPhase(ship.clock, now, level), POSE);
+      : shipClockPhase(ship.clock!, now, level), POSE);
     const map = this.#options.mapId();
     if (map !== undefined && POSE.map !== map) {
       // 11.01-C: the server only shows a client the transports of its own map, so the clock is wrong.
@@ -477,6 +481,12 @@ export class ShipMotion {
    * (0x007100d0), and one whose GAMEOBJECT_DYNAMIC carries GO_DYNFLAG_LO_STOPPED holds at once at the
    * stop around its phase (0x007f80a0) — the core never sends that flag for a transport. The clock
    * underneath runs on through a hold; allocates nothing.
+   *
+   * 11.01: called at frames and, through `noteChanged`, at the moment a block is read, so `now` is
+   * whichever came; a crossing since the last look is caught first (Wow.exe's clock would have held
+   * the ship in a frame of its own before a later state could move it), then the state acts. The
+   * phase word plays no part: Wow.exe reads it only at creation (0x007f8120), and so does the clock
+   * here (`anchorShipClock`, from PathProgress — the finer of the two).
    */
   #holdPhase(ship: ShipEntry, object: WorldObjectState, track: ShipTrack, level: number, dynamic: number | undefined,
     now: number): number {
@@ -496,15 +506,15 @@ export class ShipMotion {
           ship.held = true;
           // The state the block came with is where this hold starts; its later changes act.
           ship.goState = (object.fields.get(BYTES_1) ?? 0) & 0xff;
-          ship.holdWord = dynamicPhaseWord(dynamic); // L16-review
         }
       }
     }
+    if (ship.holdRequested && !ship.held && ship.holdPhase === ship.holdPhase) {
+      let past = (shipClockPhase(clock, now, level) - ship.holdPhase) % level;
+      if (past < 0) past += level;
+      if (past <= now - ship.lastSeen) ship.held = true;
+    }
     const state = (object.fields.get(BYTES_1) ?? 0) & 0xff;
-    // L16-review: the core's timer stands still while it holds a transport (Transport.cpp:133), so a
-    // phase word that moves under a hold we keep means a departure and an arrival went by between two
-    // frames (a hidden page gets none, its packets still land) — Wow.exe sees every state as it comes.
-    const word = dynamicPhaseWord(dynamic);
     if (state !== ship.goState) {
       ship.goState = state;
       const stop = state === GO_STATE_READY;
@@ -512,30 +522,15 @@ export class ShipMotion {
         ship.holdPhase = shipHoldPhase(track, shipClockPhase(clock, now, level)) ?? Number.NaN;
         ship.holdRequested = true;
         ship.held = false;
-        ship.lastSeen = now;
-        ship.holdWord = word; // L16-review
       } else if (!stop && ship.holdRequested) {
-        // L16-review: from the hold point (0x007f78c0) — unless the word just put the clock a stop or more away.
-        if (ship.held && !(word !== ship.holdWord
-          && circularDistance(shipClockPhase(clock, now, level), ship.holdPhase, level) > SHIP_HOLD_STALE_MS)) {
+        // From the hold point, at this moment (0x007f78c0); a hold not yet reached is simply dropped.
+        if (ship.held) {
           clock.progressMs = ship.holdPhase;
           clock.at = now;
         }
         ship.holdRequested = false;
         ship.held = false;
       }
-    } else if (ship.holdRequested && word !== ship.holdWord) {
-      // L16-review: still READY, but at another stop by the word: the hold is asked for again from the
-      // clock `correctShipClock` has just put there.
-      ship.holdWord = word;
-      ship.holdPhase = shipHoldPhase(track, shipClockPhase(clock, now, level)) ?? Number.NaN;
-      ship.held = false;
-      ship.lastSeen = now;
-    }
-    if (ship.holdRequested && !ship.held && ship.holdPhase === ship.holdPhase) {
-      let past = (shipClockPhase(clock, now, level) - ship.holdPhase) % level;
-      if (past < 0) past += level;
-      if (past <= now - ship.lastSeen) ship.held = true;
     }
     ship.lastSeen = now;
     return ship.held ? ship.holdPhase : shipClockPhase(clock, now, level);
@@ -575,6 +570,8 @@ export function startShipMotion(gatewayUrl: string, world: ShipMotionWorld, opti
     log: (message) => console.warn(`Transport: ${message}`),
   });
   world.state.poseProvider = (state, now) => motion.update(state, now);
+  // 11.01: a transport's state acts when its block is read, as Wow.exe's field callback does.
+  world.state.gameObjectChanged = (object, now) => motion.noteChanged(object, now);
   currentWorld = world;
   return motion;
 }
@@ -582,6 +579,9 @@ export function startShipMotion(gatewayUrl: string, world: ShipMotionWorld, opti
 /** The world session is retired: no retry asks behind the character screen. */
 export function stopShipMotion(): void {
   currentPaths?.stop();
-  if (currentWorld) currentWorld.state.poseProvider = undefined;
+  if (currentWorld) {
+    currentWorld.state.poseProvider = undefined;
+    currentWorld.state.gameObjectChanged = undefined; // 11.01
+  }
   currentWorld = undefined;
 }
