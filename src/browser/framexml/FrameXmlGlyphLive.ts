@@ -2,8 +2,8 @@
  * The live glyph model's host: the player's three glyph update fields, WorldClient's last
  * `SMSG_TALENTS_INFO`, the carried bag slots, `CMSG_USE_ITEM`'s glyph field and `CMSG_REMOVE_GLYPH`,
  * and the gateway's `/dbc/glyphs` catalog (gateway/GlyphCatalog.ts), fetched once by `prepare` when
- * the stock talent frame takes the glyph tab (FrameXmlGlyphOwner.ts) — never under the retail-talents
- * replacement, which has no glyph tab. A C-API read never fetches.
+ * the stock talent frame takes the glyph tab (FrameXmlGlyphOwner.ts) — also beside an add-on that
+ * replaced N's talent window, whose glyph key still opens the stock tab (3.26). A C-API read never fetches.
  */
 import { UPDATE_FIELDS } from "../../generated/updateFields.js";
 import type { WorldClient } from "../../world/WorldClient.js";

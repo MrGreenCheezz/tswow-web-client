@@ -188,7 +188,13 @@ import { installFrameXmlBattlefieldMinimapApi } from "./FrameXmlBattlefieldMinim
 import { publishFrameXmlBattlefieldMinimapKey } from "./FrameXmlBattlefieldMinimapKey.js"; // 05.10-L17t
 import { frameXmlBattlefieldMapSource, frameXmlGuidValue } from "./FrameXmlBattlefieldMapSource.js";
 import { vehicleCatalog as frameXmlVehicleCatalog } from "../VehicleClient.js"; // L17 3.14
-import { createFrameXmlGlyphExtension, type FrameXmlTalentLodExtension } from "./FrameXmlGlyphOwner.js";
+import {
+  createFrameXmlGlyphExtension, FRAMEXML_GLYPH_ENTRY_POINTS, type FrameXmlGlyphTalentHost, type FrameXmlTalentLodExtension,
+} from "./FrameXmlGlyphOwner.js";
+// 9.10: N over an add-on's ToggleTalentFrame, keyed to no module or frame name.
+import { createPatchedFrameXmlTalentOwner } from "./FrameXmlAddonTalentOwner.js";
+import { frameXmlEntryPointReplaced } from "./FrameXmlStockEntryPoints.js";
+export { createPatchedFrameXmlTalentOwner };
 import { mountFrameXmlToken } from "./FrameXmlTokenOwner.js";
 import { publishFrameXmlGameMenu, type FrameXmlGameMenuOwner } from "./FrameXmlGameMenuController.js";
 import {
@@ -1710,108 +1716,6 @@ function frameXmlTalentGate(
   }
 }
 
-const TSWOW_TALENT_MODULE = "retail-talents";
-const TSWOW_TALENT_ROOT = "UniversalTalentFrame";
-
-/** Structural proof for the eager TSWoW module that replaces the stock talent toggle. */
-function frameXmlPatchedTalentGate(
-  boot: FrameXmlBoot,
-  renderer: FrameXmlDomRenderer,
-): TalentGate | undefined {
-  try {
-    const root = boot.bridge.getFrame(TSWOW_TALENT_ROOT);
-    const element = root ? renderer.elementFor(root) : undefined;
-    if (!root || root.type !== "Frame"
-      || !renderedFrameElement(element, TSWOW_TALENT_ROOT, "Frame")) return undefined;
-    if (!boot.bridge.hasScript(root, "OnShow") || !boot.bridge.hasScript(root, "OnHide")) {
-      return undefined;
-    }
-    return { frame: root, element };
-  } catch {
-    return undefined;
-  }
-}
-
-/**
- * Capture the standard talent toggle after the winning TOC's eager TSAddon blocks have run.
- *
- * `retail-talents` deliberately assigns both ToggleTalentFrame and PlayerTalentFrame_Toggle to its
- * own programmatic `UniversalTalentFrame`.  Calling the captured standard hook respects that patch
- * without loading Blizzard_TalentUI, while the exact root gate prevents a neutral/stale global from
- * taking the native fallback away.  The first failed invocation throws through the controller,
- * which hides any partial custom frame, demotes this owner, and lets the same N press fall back.
- */
-export function createPatchedFrameXmlTalentOwner(
-  boot: FrameXmlBoot,
-  renderer: FrameXmlDomRenderer,
-  onAcquire?: () => void,
-  onFailure?: () => void,
-): FrameXmlTalentOwner | undefined {
-  if (!boot.isAddonLoaded(TSWOW_TALENT_MODULE)) return undefined;
-  const toggle = boot.vm.globalFunction("ToggleTalentFrame");
-  if (!toggle) return undefined;
-  let frame: FrameXmlFrame | undefined;
-  let disposed = false;
-  let released = false;
-
-  const locate = (): TalentGate | undefined => frameXmlPatchedTalentGate(boot, renderer);
-  const callToggle = (): void => {
-    // Native N/micro-button entry bypasses Lua script dispatch, unlike the slash command.
-    // Publish the completed window once, rather than repainting it after every Lua setter.
-    boot.bridge.runInMutationBatch(() => { boot.vm.call(toggle, [], 0); });
-  };
-  const release = (): void => {
-    if (released) return;
-    released = true;
-    boot.vm.release(toggle);
-  };
-
-  return {
-    isOpen: () => {
-      if (disposed) return false;
-      const gate = locate();
-      if (gate) frame = gate.frame;
-      return !!gate && boot.bridge.isVisible(gate.frame);
-    },
-    show: () => {
-      if (disposed) throw new Error("patched talent owner is disposed");
-      // Close the native fallback before the patched Show path; a failed gate is demoted
-      // synchronously and the caller then opens native again from the same key/button press.
-      onAcquire?.();
-      const existing = locate();
-      if (existing && boot.bridge.isVisible(existing.frame)) {
-        frame = existing.frame;
-        return;
-      }
-      callToggle();
-      const gate = locate();
-      if (!gate || !boot.bridge.isVisible(gate.frame)) {
-        const partial = boot.bridge.getFrame(TSWOW_TALENT_ROOT);
-        if (partial) {
-          try { boot.bridge.Hide(partial); } catch { /* controller demotion continues */ }
-        }
-        throw new Error("patched ToggleTalentFrame did not publish UniversalTalentFrame");
-      }
-      frame = gate.frame;
-    },
-    hide: () => {
-      const gate = locate();
-      if (gate) frame = gate.frame;
-      if (frame) boot.bridge.Hide(frame);
-    },
-    dispose: () => {
-      if (disposed) return;
-      disposed = true;
-      if (frame) {
-        try { boot.bridge.Hide(frame); } catch { /* VM teardown continues */ }
-      }
-      frame = undefined;
-      release();
-    },
-    ...(onFailure ? { onFailure } : {}),
-  };
-}
-
 /**
  * Own the load-on-demand talent window without disturbing the already-rendered world HUD.
  *
@@ -1959,6 +1863,83 @@ export function createLazyFrameXmlTalentOwner(
     },
     onFailure: fail,
   };
+}
+
+export interface FrameXmlTalentOwners {
+  /** N's owner: the TOGGLETALENTS key, the HUD button, TalentMicroButton and Escape (the controller). */
+  readonly talent: FrameXmlTalentOwner;
+  /**
+   * Only beside an add-on's ToggleTalentFrame: the stock talent frame the stock glyph entry points
+   * still open. Never published to the controller; the mount closes it on Escape and disposes it.
+   */
+  readonly glyphTalent?: FrameXmlTalentOwner;
+}
+
+export interface FrameXmlTalentOwnersOptions {
+  /** Closes the native talent window before an add-on's window opens. */
+  readonly onAcquire?: () => void;
+  /** N's owner failed; the controller has already removed it. */
+  readonly onFailure?: () => void;
+  /** The glyph tab, or the stock talent frame kept for it, gave up for good. */
+  readonly onGlyphFailure?: (reason: string) => void;
+}
+
+/**
+ * The talent owners of the original interface (9.10/3.26). N is the add-on's when an add-on — any, a
+ * TSWoW module is one — replaced UIParent's `ToggleTalentFrame` (FrameXmlAddonTalentOwner.ts), else the
+ * lazy stock owner's, which hosts the glyph tab. The glyph entry points do not follow N: in Wow.exe an
+ * add-on that replaced only the talent toggle leaves `ToggleGlyphFrame`/`OpenGlyphFrame` stock, and
+ * they load Blizzard_TalentUI and open PlayerTalentFrame on its glyph tab. So beside an add-on's N the
+ * glyph tab gets a stock talent owner of its own, unless the add-on replaced both glyph entry points
+ * as well; an entry point an add-on replaced is never hooked (FrameXmlGlyphOwner.ts).
+ */
+export function createFrameXmlTalentOwners(
+  seam: FrameXmlWorldSeam,
+  boot: FrameXmlBoot,
+  renderer: FrameXmlDomRenderer,
+  options: FrameXmlTalentOwnersOptions = {},
+): FrameXmlTalentOwners {
+  // Before the glyph extension hooks them: its hooks are not UIParent's functions either.
+  const addonEntryPoints = FRAMEXML_GLYPH_ENTRY_POINTS.filter((name) => frameXmlEntryPointReplaced(boot, name));
+  const glyphOptions = {
+    seam, boot, renderer, addonEntryPoints,
+    ...(options.onGlyphFailure ? { onFailure: options.onGlyphFailure } : {}),
+  };
+  const addonTalent = createPatchedFrameXmlTalentOwner(boot, renderer, options.onAcquire, options.onFailure);
+  if (!addonTalent) {
+    return {
+      talent: createLazyFrameXmlTalentOwner(seam, boot, renderer, options.onFailure,
+        createFrameXmlGlyphExtension(glyphOptions)),
+    };
+  }
+  if (addonEntryPoints.length === FRAMEXML_GLYPH_ENTRY_POINTS.length) return { talent: addonTalent };
+
+  let glyphTalent: FrameXmlTalentOwner | undefined;
+  let retired = false;
+  // The controller's demotion, for an owner the controller never sees: close it, dispose it (which
+  // gives the glyph entry points back to UIParent, as a failed stock N owner does) and say why.
+  const retire = (reason: string): void => {
+    if (retired) return;
+    retired = true;
+    const owner = glyphTalent;
+    glyphTalent = undefined;
+    try { owner?.hide(); } catch { /* disposal continues */ }
+    try { owner?.dispose?.(); } catch { /* disposal continues */ }
+    try { options.onGlyphFailure?.(reason); } catch { /* reporting only */ }
+  };
+  const host: FrameXmlGlyphTalentHost = {
+    isOpen: () => {
+      try { return glyphTalent?.isOpen() ?? false; } catch { return false; }
+    },
+    open: () => {
+      try { glyphTalent?.show(); } catch (error) { retire(`PlayerTalentFrame did not open: ${String(error)}`); }
+    },
+  };
+  const extension = createFrameXmlGlyphExtension({ ...glyphOptions, talent: host });
+  if (!extension) return { talent: addonTalent };
+  glyphTalent = createLazyFrameXmlTalentOwner(seam, boot, renderer,
+    () => retire("Blizzard_TalentUI did not load or pass its gate"), extension);
+  return { talent: addonTalent, glyphTalent };
 }
 
 /**
@@ -2639,6 +2620,9 @@ interface FrameXmlMountResources {
   talentOwner?: FrameXmlTalentOwner;
   talentOwnerCleanup?: () => void;
   talentOwnerDemoted?: boolean;
+  /** 3.26: beside an add-on's N, the stock talent frame of the stock glyph entry points (createFrameXmlTalentOwners). */
+  glyphTalentOwner?: FrameXmlTalentOwner;
+  glyphTalentEscapeCleanup?: () => void;
   bagOwner?: FrameXmlBagOwner;
   bagOwnerCleanup?: () => void;
   nativeInventoryWasHidden?: boolean;
@@ -3049,6 +3033,11 @@ function cleanupPublishedMount(record: FrameXmlMountResources): void {
   bestEffortCleanup(() => record.talentOwnerCleanup?.());
   if (!record.talentOwnerCleanup) bestEffortCleanup(() => record.talentOwner?.hide());
   bestEffortCleanup(() => record.talentOwner?.dispose?.());
+  // The glyph tab's own stock talent frame is just as lazy; its dispose also gives the glyph entry
+  // points back. N's demotion leaves it alone: the stock glyph path does not depend on N's owner.
+  bestEffortCleanup(() => record.glyphTalentEscapeCleanup?.());
+  bestEffortCleanup(() => record.glyphTalentOwner?.hide());
+  bestEffortCleanup(() => record.glyphTalentOwner?.dispose?.());
   bestEffortCleanup(() => record.petPortraitCleanup?.());
   for (const cleanup of record.partyPortraitCleanups ?? []) bestEffortCleanup(cleanup);
   bestEffortCleanup(() => record.renderer?.destroy());
@@ -3971,6 +3960,7 @@ export async function mountFrameXmlVertical(
       });
       const failed = boot.tsAddonResults.filter((addon) => !addon.ok);
       for (const addon of failed) console.error(`[TSWoW ${addon.module}]`, addon.errors);
+      // N opens an add-on's window when an add-on replaced ToggleTalentFrame; the native one otherwise.
       const talent = createPatchedFrameXmlTalentOwner(boot, renderer, hideTalentsWindow);
       if (talent) resources.talentOwnerCleanup = publishFrameXmlTalent(talent);
       const current = Object.assign(resources, { renderer, frame: 0 });
@@ -4068,18 +4058,16 @@ export async function mountFrameXmlVertical(
         boot, character.character, () => demotePublishedCharacter(resources),
       );
     }
-    // Respect a TSWoW replacement when enabled; otherwise load the original Blizzard talent UI.
-    const patchedTalentOwner = createPatchedFrameXmlTalentOwner(
-      boot, renderer, hideTalentsWindow, () => demotePublishedTalent(resources),
-    );
-    resources.talentOwner = patchedTalentOwner ?? createLazyFrameXmlTalentOwner(
-      seam, boot, renderer, () => demotePublishedTalent(resources),
-      // The stock talent frame hosts the stock glyph tab (Blizzard_GlyphUI, FrameXmlGlyphOwner.ts).
-      createFrameXmlGlyphExtension({
-        seam, boot, renderer,
-        onFailure: (reason) => console.warn(`[FrameXML glyphs] ${reason}; the talent frame keeps no glyph tab`),
-      }),
-    );
+    // N runs an add-on's ToggleTalentFrame when one replaced it, else loads the original Blizzard
+    // talent UI, whose frame hosts the stock glyph tab (Blizzard_GlyphUI, FrameXmlGlyphOwner.ts); beside
+    // an add-on's N the glyph tab keeps a stock talent frame of its own (createFrameXmlTalentOwners).
+    const talentOwners = createFrameXmlTalentOwners(seam, boot, renderer, {
+      onAcquire: hideTalentsWindow,
+      onFailure: () => demotePublishedTalent(resources),
+      onGlyphFailure: (reason) => console.warn(`[FrameXML glyphs] ${reason}; the talent frame keeps no glyph tab`),
+    });
+    resources.talentOwner = talentOwners.talent;
+    if (talentOwners.glyphTalent) resources.glyphTalentOwner = talentOwners.glyphTalent;
 
     // Blizzard_TrainerUI is LoD. Keep its native browser panel as the fallback while the
     // asynchronous add-on load and exact tree gate are in flight.
@@ -4531,6 +4519,15 @@ export async function mountFrameXmlVertical(
       // then publish exactly one owner for N, the HUD button, FrameXML microbutton, and Escape.
       hideTalentsWindow();
       resources.talentOwnerCleanup = publishFrameXmlTalent(resources.talentOwner);
+    }
+    const glyphTalent = resources.glyphTalentOwner;
+    if (glyphTalent) {
+      // PlayerTalentFrame is a UIPanel the client's CloseWindows takes on Escape; the controller's
+      // entry is N's owner here, so the glyph tab's frame gets an entry of its own.
+      resources.glyphTalentEscapeCleanup = registerEscapable({
+        isOpen: () => glyphTalent.isOpen(),
+        close: () => { glyphTalent.hide(); },
+      });
     }
     if (resources.questOwner) {
       // The native browser panel is borrowed only after the stock tree has mounted and passed its

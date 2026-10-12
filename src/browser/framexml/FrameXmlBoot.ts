@@ -50,6 +50,7 @@ import {
   captureFrameXmlStockCombatLogLoadUi, frameXmlDefinesCombatLogLoadUi, FrameXmlLoginState,
   refuseFrameXmlCombatLogLoadUi,
 } from "./FrameXmlLoginEdge.js";
+import { captureFrameXmlStockEntryPoints, frameXmlDefinesStockEntryPoints } from "./FrameXmlStockEntryPoints.js";
 import {
   FrameXmlCVarStore, frameXmlCVarStorageKey, installFrameXmlCVarPersistence,
 } from "./FrameXmlCVarPersistence.js";
@@ -987,6 +988,9 @@ export class FrameXmlBoot {
         this.#clientNetwork?.activateCallbacks();
         socketing.afterLuaFile(path);
         if (frameXmlDefinesCombatLogLoadUi(path)) captureFrameXmlStockCombatLogLoadUi(this.vm);
+        // 9.10: UIParent's own ToggleTalentFrame/ToggleGlyphFrame/OpenGlyphFrame, before any TSAddon
+        // block can replace them; the world mount asks which an add-on took over.
+        if (frameXmlDefinesStockEntryPoints(path)) captureFrameXmlStockEntryPoints(this.vm);
       },
       afterTocEntry: (entry, result) => {
         const owner = entry.path.replaceAll("\\", "/").match(/(?:^|\/)tsaddons\/([^/]+)\//i)?.[1]?.toLowerCase();

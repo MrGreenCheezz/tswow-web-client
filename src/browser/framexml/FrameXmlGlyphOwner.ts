@@ -16,8 +16,15 @@
  * * `GlyphFrame_LoadUI` stays stock once the add-on is loaded and is silent before;
  * * `ToggleGlyphFrame` (the TOGGLEINSCRIPTION binding, Bindings.xml) and `OpenGlyphFrame` (USE_GLYPH,
  *   UIParent.lua:1053-1054) keep the stock level check (UIParent.lua:370-390) and then ask the host,
- *   which shows the talent frame through the talent controller — loading both add-ons on the first
- *   request — and runs stock `GlyphFrame_Toggle`/`GlyphFrame_Open` (Blizzard_GlyphUI.lua:33-45).
+ *   which shows the stock talent frame — loading both add-ons on the first request — and runs stock
+ *   `GlyphFrame_Toggle`/`GlyphFrame_Open` (Blizzard_GlyphUI.lua:33-45).
+ *
+ * The stock talent frame is the talent controller's owner unless an add-on replaced N's
+ * `ToggleTalentFrame`: in Wow.exe such an add-on leaves these two entry points stock, so the glyph key
+ * still loads Blizzard_TalentUI and opens PlayerTalentFrame on its glyph tab while N opens the add-on's
+ * window. The mount then gives the tab a stock talent owner of its own (`talent`, FrameXmlWorldMount.ts
+ * `createFrameXmlTalentOwners`). An entry point an add-on replaced itself is its own and is not hooked
+ * (`addonEntryPoints`, FrameXmlStockEntryPoints.ts) — 9.10/3.26.
  *
  * Two stock FrameXML files the add-ons expect and the bounded vertical does not carry are run before
  * Blizzard_TalentUI, each only when nothing has defined it: TalentFrameBase.lua/TalentFrameTemplates.xml
@@ -74,12 +81,33 @@ export interface FrameXmlGlyphExtension extends FrameXmlTalentLodExtension {
   request(intent: FrameXmlGlyphIntent): void;
 }
 
+/** The UIParent entry points the glyph tab takes over. */
+export const FRAMEXML_GLYPH_ENTRY_POINTS = Object.freeze(["ToggleGlyphFrame", "OpenGlyphFrame"] as const);
+export type FrameXmlGlyphEntryPoint = typeof FRAMEXML_GLYPH_ENTRY_POINTS[number];
+
+/** The stock talent frame the glyph tab lives in. */
+export interface FrameXmlGlyphTalentHost {
+  isOpen(): boolean;
+  /** Open it — on the first call, through the load of Blizzard_TalentUI (and then Blizzard_GlyphUI). */
+  open(): void;
+}
+
+/** The talent controller's published owner: the stock one whenever no add-on replaced N. */
+const CONTROLLER_TALENT: FrameXmlGlyphTalentHost = {
+  isOpen: frameXmlTalentOpen,
+  open: () => { toggleFrameXmlTalent(); },
+};
+
 export interface FrameXmlGlyphExtensionOptions {
   readonly seam: { readonly glyphs?: FrameXmlGlyphModel | undefined };
   readonly boot: GlyphBoot;
   readonly renderer: GlyphRenderer;
   /** Told once, with the reason, when the glyph tab is demoted. */
   readonly onFailure?: (reason: string) => void;
+  /** Where the tab is shown; the talent controller's owner when absent. */
+  readonly talent?: FrameXmlGlyphTalentHost;
+  /** Entry points an add-on replaced (FrameXmlStockEntryPoints.ts): left as the add-on set them. */
+  readonly addonEntryPoints?: readonly FrameXmlGlyphEntryPoint[];
 }
 
 function hasGlobalFunction(boot: Pick<FrameXmlBoot, "vm">, name: string): boolean {
@@ -220,12 +248,14 @@ export function installFrameXmlGlyphTooltip(boot: Pick<FrameXmlBoot, "vm">): boo
 
 /**
  * The glyph tab's lazy extension of the stock talent owner (module doc). Undefined when the seam has
- * no glyph model or the UIParent entry points are not there to take over.
+ * no glyph model or the UIParent entry points it is to take over are not there.
  */
 export function createFrameXmlGlyphExtension(options: FrameXmlGlyphExtensionOptions): FrameXmlGlyphExtension | undefined {
   const { seam, boot, renderer } = options;
   const model = seam.glyphs;
   if (!model) return undefined;
+  const talent = options.talent ?? CONTROLLER_TALENT;
+  const addonEntryPoints = new Set<string>(options.addonEntryPoints ?? []);
   let state: FrameXmlGlyphState = "idle";
   let wanted: FrameXmlGlyphIntent | undefined;
 
@@ -251,11 +281,11 @@ export function createFrameXmlGlyphExtension(options: FrameXmlGlyphExtensionOpti
     `, 0);
     try { options.onFailure?.(reason); } catch { /* reporting only */ }
   };
-  // Whatever the tab or a hook asked for, once both add-ons are here: the talent frame through its
-  // controller (the stock toggle, FrameXmlWorldMount.ts), then the stock glyph entry on top of it.
+  // Whatever the tab or a hook asked for, once both add-ons are here: the stock talent frame through
+  // its owner (the stock toggle, FrameXmlWorldMount.ts), then the stock glyph entry on top of it.
   const show = (intent: FrameXmlGlyphIntent): void => {
-    if (!frameXmlTalentOpen()) toggleFrameXmlTalent();
-    if (!frameXmlTalentOpen()) return;
+    if (!talent.isOpen()) talent.open();
+    if (!talent.isOpen()) return;
     run(intent === "open" ? "GlyphFrame_Open" : "GlyphFrame_Toggle");
   };
 
@@ -267,23 +297,34 @@ export function createFrameXmlGlyphExtension(options: FrameXmlGlyphExtensionOpti
     });
     return [];
   });
+  // An add-on's own ToggleGlyphFrame/OpenGlyphFrame is what its key runs, as in the client: not hooked.
+  const hookToggle = !addonEntryPoints.has("ToggleGlyphFrame");
+  const hookOpen = !addonEntryPoints.has("OpenGlyphFrame");
   const hooked = frameXmlSilentProbe(boot, "webclient/glyph-hooks", `
-    if type(ToggleGlyphFrame) ~= "function" or type(OpenGlyphFrame) ~= "function"
+    local hookToggle, hookOpen = ${hookToggle ? "true" : "false"}, ${hookOpen ? "true" : "false"}
+    if (hookToggle and type(ToggleGlyphFrame) ~= "function") or (hookOpen and type(OpenGlyphFrame) ~= "function")
       or type(GlyphFrame_LoadUI) ~= "function" then return 0 end
     local request = ${REQUEST_GLOBAL}
     local load = GlyphFrame_LoadUI
-    ${SAVED_GLOBAL} = { toggle = ToggleGlyphFrame, open = OpenGlyphFrame, load = load }
+    local saved = { load = load }
     GlyphFrame_LoadUI = function(...)
       if IsAddOnLoaded("${FRAMEXML_GLYPH_ADDON}") and rawget(_G, "GlyphFrame") then return load(...) end
     end
-    ToggleGlyphFrame = function()
-      if UnitLevel("player") < SHOW_INSCRIPTION_LEVEL then return end
-      request("toggle")
+    if hookToggle then
+      saved.toggle = ToggleGlyphFrame
+      ToggleGlyphFrame = function()
+        if UnitLevel("player") < SHOW_INSCRIPTION_LEVEL then return end
+        request("toggle")
+      end
     end
-    OpenGlyphFrame = function()
-      if UnitLevel("player") < SHOW_INSCRIPTION_LEVEL then return end
-      request("open")
+    if hookOpen then
+      saved.open = OpenGlyphFrame
+      OpenGlyphFrame = function()
+        if UnitLevel("player") < SHOW_INSCRIPTION_LEVEL then return end
+        request("open")
+      end
     end
+    ${SAVED_GLOBAL} = saved
     return 1
   `, 1);
   if (Number(hooked?.[0]) !== 1) return undefined;
@@ -331,9 +372,9 @@ export function createFrameXmlGlyphExtension(options: FrameXmlGlyphExtensionOpti
       if (state === "ready") { show(intent); return; }
       if (state !== "idle" && state !== "loading") return;
       // The first request loads Blizzard_TalentUI (and, after its gate, this add-on) through the
-      // talent owner; its first show then runs the wanted glyph entry (afterShow).
+      // stock talent owner; its first show then runs the wanted glyph entry (afterShow).
       wanted = intent;
-      if (!frameXmlTalentOpen()) toggleFrameXmlTalent();
+      if (!talent.isOpen()) talent.open();
     },
     dispose: () => {
       if (state === "disposed") return;
@@ -342,10 +383,13 @@ export function createFrameXmlGlyphExtension(options: FrameXmlGlyphExtensionOpti
       model.owned = false;
       model.cancelTargeting();
       model.onCatalog = undefined;
+      // Only what was hooked: an entry point left to an add-on stays the add-on's.
       frameXmlSilentProbe(boot, "webclient/glyph-restore", `
         local saved = ${SAVED_GLOBAL}
         if type(saved) ~= "table" then return end
-        ToggleGlyphFrame, OpenGlyphFrame, GlyphFrame_LoadUI = saved.toggle, saved.open, saved.load
+        if saved.toggle then ToggleGlyphFrame = saved.toggle end
+        if saved.open then OpenGlyphFrame = saved.open end
+        if saved.load then GlyphFrame_LoadUI = saved.load end
         ${SAVED_GLOBAL} = nil
       `, 0);
     },

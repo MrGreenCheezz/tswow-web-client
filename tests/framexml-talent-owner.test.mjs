@@ -130,53 +130,55 @@ async function settle() {
   await Promise.resolve();
 }
 
-function patchedHarness({ rendered = true } = {}) {
-  const root = {
-    type: "Frame",
-    name: "UniversalTalentFrame",
-    named: true,
-    parent: undefined,
-    children: [],
-    attributes: {},
-    points: [],
-    scriptSources: new Map(),
-    registeredEvents: new Set(),
-    scripts: new Map([["OnShow", () => {}], ["OnHide", () => {}]]),
-    visible: false,
-  };
-  const toggleRef = { kind: "patched-toggle" };
+// 9.10: the add-on owner knows no module or frame name. Its window is whatever drawable frame the
+// add-on's ToggleTalentFrame showed (FrameXmlAddonTalentOwner.ts); «replaced» is the Lua identity probe
+// (FrameXmlStockEntryPoints.ts), answered here by the fake VM.
+function patchedHarness({ rendered = true, replaced = true } = {}) {
+  const windowName = "AnyAddonWindow";
+  const frame = (name, parent, extra = {}) => ({
+    type: "Frame", name, named: true, parent, children: [], attributes: {}, points: [],
+    scriptSources: new Map(), registeredEvents: new Set(), scripts: new Map(), visible: true, ...extra,
+  });
+  const uiParent = frame("UIParent", undefined);
+  const root = frame(windowName, uiParent, { points: [{ point: "CENTER" }], visible: false });
+  const toggleRef = { kind: "addon-toggle" };
+  const probeRef = { kind: "replaced-probe" };
   let created = false;
   let toggleCalls = 0;
   let releases = 0;
   const element = {
     getAttribute(name) {
-      return name === "data-framexml-name" ? "UniversalTalentFrame"
+      return name === "data-framexml-name" ? windowName
         : name === "data-framexml-type" ? "Frame" : null;
     },
   };
   const boot = {
-    isAddonLoaded(name) { return name === "retail-talents"; },
+    errorCount: 0,
     bridge: {
+      get frames() { return created ? [uiParent, root] : [uiParent]; },
       runInMutationBatch(callback) { return callback(); },
-      getFrame(name) { return created && name === "UniversalTalentFrame" ? root : undefined; },
-      isVisible(frame) { return frame.visible; },
-      Hide(frame) { frame.visible = false; },
-      hasScript(frame, name) { return frame === root && frame.scripts.has(name); },
+      isVisible(target) {
+        for (let current = target; current; current = current.parent) if (!current.visible) return false;
+        return true;
+      },
+      Hide(target) { target.visible = false; },
     },
     vm: {
+      compileFunction() { return probeRef; },
       globalFunction(name) { return name === "ToggleTalentFrame" ? toggleRef : undefined; },
-      call(ref) {
+      call(ref, args) {
+        if (ref === probeRef) return [replaced && args[0] === "ToggleTalentFrame"];
         assert.equal(ref, toggleRef);
         toggleCalls += 1;
         created = true;
         root.visible = !root.visible;
         return [];
       },
-      release(ref) { assert.equal(ref, toggleRef); releases += 1; },
+      release(ref) { if (ref === toggleRef) releases += 1; },
     },
   };
   const renderer = {
-    elementFor(frame) { return rendered && frame === root ? element : undefined; },
+    elementFor(target) { return rendered && target === root ? element : undefined; },
   };
   return {
     boot, renderer, root,
@@ -185,7 +187,7 @@ function patchedHarness({ rendered = true } = {}) {
   };
 }
 
-test("patched talent owner captures ToggleTalentFrame and never opens the stock root", () => {
+test("an add-on's ToggleTalentFrame owns N and opens the window it showed, never the stock root", () => {
   const h = patchedHarness();
   let nativeOpen = true;
   const owner = createPatchedFrameXmlTalentOwner(
@@ -197,7 +199,7 @@ test("patched talent owner captures ToggleTalentFrame and never opens the stock 
     assert.equal(toggleFrameXmlTalent(), true);
     assert.equal(nativeOpen, false, "native fallback closes before the patched Show path");
     assert.equal(h.root.visible, true);
-    assert.equal(h.boot.bridge.getFrame("PlayerTalentFrame")?.name, undefined);
+    assert.equal(owner.isOpen(), true, "the shown window is learned without its name");
     assert.equal(h.toggleCalls, 1);
 
     assert.equal(toggleFrameXmlTalent(), true);
@@ -212,6 +214,12 @@ test("patched talent owner captures ToggleTalentFrame and never opens the stock 
   }
   assert.equal(h.root.visible, false);
   assert.equal(h.releases, 1, "the captured Lua function is released with the mount owner");
+});
+
+test("a ToggleTalentFrame that is still UIParent's own gives N no add-on owner", () => {
+  const h = patchedHarness({ replaced: false });
+  assert.equal(createPatchedFrameXmlTalentOwner(h.boot, h.renderer), undefined);
+  assert.equal(h.toggleCalls, 0, "the probe alone decides; the stock toggle is never called for it");
 });
 
 test("a malformed patched talent root is hidden and demoted for native fallback", () => {

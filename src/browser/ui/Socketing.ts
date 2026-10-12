@@ -324,7 +324,8 @@ function renderSocketing(): void {
   const selectedAny = active.selected.some((guid) => guid !== 0n);
   const replacing = active.selected.some((guid, socket) => guid !== 0n && (enchantments[socket + 2] ?? 0) > 0);
   if (selectedAny) body.push(text("p", replacing
-    ? "При установке новые камни расходуются, а заменяемые уничтожаются — так работает и обычный клиент 3.3.5. Сохранить камни можно кнопкой «Извлечь камни» в окне /socket модуля gem-abilities, если он загружен."
+    // 9.10 (owner, 12.10): no advice naming a module; a module that extracts gems says so in its own window.
+    ? "При установке новые камни расходуются, а заменяемые уничтожаются — так работает и обычный клиент 3.3.5."
     : "При установке выбранные камни расходуются и закрепляются в предмете.", "socketing-warning"));
   actions.append(button("Сбросить выбор", () => {
     active.selected = [0n, 0n, 0n]; active.stackChoice = undefined; active.confirming = false; renderSocketing();

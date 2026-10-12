@@ -70,7 +70,7 @@ test("character/spellbook routes share gated original owners and keep native fal
   const productionMount = mount.slice(mountStart, mountEnd);
 
   assert.match(productionMount, /spellBookGate\s*\(/);
-  assert.match(productionMount, /createLazyFrameXmlTalentOwner\s*\(/);
+  assert.match(productionMount, /createFrameXmlTalentOwners\s*\(/);
   assert.match(productionMount, /frameXmlCharacterModelGate\s*\(/);
   assert.match(productionMount, /publishFrameXmlSpellBook\s*\(/);
   assert.match(productionMount, /publishFrameXmlCharacter\s*\(/);
@@ -78,7 +78,13 @@ test("character/spellbook routes share gated original owners and keep native fal
     "direct mounts retain generated blocks from the winning FrameXML TOC by default");
   assert.match(entry, /new FrameXmlModeController\(true[\s\S]*?mountFrameXmlVertical\(\{[\s\S]*?includeActiveTsAddons:\s*true/,
     "world entry runs the modules' addons in either interface (owner, 12.10: no switch)");
-  assert.match(productionMount, /resources\.talentOwner\s*=\s*patchedTalentOwner\s*\?\?\s*createLazyFrameXmlTalentOwner/);
+  // 9.10: N is an add-on's owner when an add-on replaced ToggleTalentFrame, else the lazy stock one.
+  assert.match(productionMount, /resources\.talentOwner\s*=\s*talentOwners\.talent;/);
+  const ownersStart = mount.indexOf("export function createFrameXmlTalentOwners");
+  assert.notEqual(ownersStart, -1);
+  const owners = mount.slice(ownersStart, mount.indexOf("\n}\n", ownersStart));
+  assert.match(owners, /createPatchedFrameXmlTalentOwner\s*\(/);
+  assert.match(owners, /createLazyFrameXmlTalentOwner\s*\(/);
   assert.match(productionMount, /hideTalentsWindow\(\);\s*resources\.talentOwnerCleanup\s*=\s*publishFrameXmlTalent\(resources\.talentOwner\)/,
     "patched acquisition closes native before publishing the one N owner");
   assert.match(productionMount, /if \(resources\.characterOwner\)[\s\S]*?characterWindow\.hidden\s*=\s*true/);

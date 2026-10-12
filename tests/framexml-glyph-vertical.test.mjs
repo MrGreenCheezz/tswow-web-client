@@ -51,9 +51,11 @@ after(() => chain?.close());
 const { FrameXmlBoot } = await import("../dist/code/browser/framexml/FrameXmlBoot.js");
 const { CannedWorldSeam } = await import("../dist/code/browser/framexml/CannedWorldSeam.js");
 const { FRAMEXML_VERTICAL_TOC } = await import("../dist/code/browser/framexml/FrameXmlCorpus.js");
-const { createLazyFrameXmlTalentOwner } = await import("../dist/code/browser/framexml/FrameXmlWorldMount.js");
+const { createLazyFrameXmlTalentOwner, createFrameXmlTalentOwners } = await import(
+  "../dist/code/browser/framexml/FrameXmlWorldMount.js");
 const { createFrameXmlGlyphExtension } = await import("../dist/code/browser/framexml/FrameXmlGlyphOwner.js");
-const { publishFrameXmlTalent, frameXmlTalentOpen } = await import(
+const { frameXmlEntryPointReplaced } = await import("../dist/code/browser/framexml/FrameXmlStockEntryPoints.js");
+const { publishFrameXmlTalent, frameXmlTalentOpen, toggleFrameXmlTalent } = await import(
   "../dist/code/browser/framexml/FrameXmlTalentController.js");
 const decoder = new TextDecoder("utf-8");
 
@@ -101,6 +103,10 @@ async function mounted() {
     locale: "ruRU", subset: FRAMEXML_VERTICAL_TOC, seam, exercise: true, screen: () => ({ width: 1365, height: 768 }),
   });
   await boot.load();
+  // 9.10: the stock vertical leaves UIParent.lua's three entry points as they are — N keeps the stock owner.
+  for (const name of ["ToggleTalentFrame", "ToggleGlyphFrame", "OpenGlyphFrame"]) {
+    assert.equal(frameXmlEntryPointReplaced(boot, name), false, name);
+  }
   const view = renderer();
   const failures = [];
   const extension = createFrameXmlGlyphExtension({ seam, boot, renderer: view, onFailure: (reason) => failures.push(reason) });
@@ -216,6 +222,100 @@ test("a glyph item: USE_GLYPH opens the tab, the cursor matches its kind, the cl
     assert.deepEqual(glyphErrors(boot, errors), []);
   } finally {
     cleanup();
+    boot.close();
+  }
+});
+
+// 3.26: a synthetic TSAddon block (no real module needed) whose ToggleTalentFrame shows its own window,
+// as a talent-tree module does. In Wow.exe it leaves ToggleGlyphFrame stock: the glyph key loads both
+// Blizzard add-ons and opens PlayerTalentFrame on its glyph tab while N opens the module's window.
+const SIDE_MODULE = "glyph-side-talents";
+const SIDE_DIRECTORY = `interface/framexml/tsaddons/${SIDE_MODULE}/addon/`;
+const SIDE_FILES = {
+  [`${SIDE_DIRECTORY}addon.xml`]: '<Ui><Script file="addon.lua"/></Ui>',
+  [`${SIDE_DIRECTORY}addon.lua`]: `
+    local window
+    function ToggleTalentFrame()
+      if not window then
+        window = CreateFrame("Frame", "GlyphSideTalentWindow", UIParent)
+        window:SetWidth(400)
+        window:SetHeight(300)
+        window:SetPoint("CENTER", UIParent, "CENTER")
+        window:Hide()
+      end
+      if window:IsShown() then window:Hide() else window:Show() end
+    end
+  `,
+};
+
+async function mountedBesideAddon() {
+  const seam = new CannedWorldSeam();
+  const boot = new FrameXmlBoot({
+    provider: {
+      async read(path) {
+        const key = path.toLowerCase().replaceAll("\\", "/");
+        if (key in SIDE_FILES) return SIDE_FILES[key];
+        const data = await chain.read(path);
+        if (!data) return undefined;
+        const source = decoder.decode(data);
+        if (key !== "interface/framexml/framexml.toc") return source;
+        // The installed modules' generated blocks out, this fixture's block in.
+        let inside = false;
+        const stock = source.split(/\r?\n/).filter((line) => {
+          if (/^\s*##\s*tsaddon-begin(?:-lib|\s*:)/i.test(line)) { inside = true; return false; }
+          if (/^\s*##\s*tsaddon-end(?:-lib|\s*:)/i.test(line)) { inside = false; return false; }
+          return !inside;
+        });
+        return [...stock, `## tsaddon-begin: ${SIDE_MODULE}`, `TSAddons/${SIDE_MODULE}/addon/addon.xml`,
+          `## tsaddon-end: ${SIDE_MODULE}`].join("\n");
+      },
+    },
+    locale: "ruRU", subset: FRAMEXML_VERTICAL_TOC, seam, includeActiveTsAddons: true, exercise: true,
+    screen: () => ({ width: 1365, height: 768 }),
+  });
+  await boot.load();
+  const failures = [];
+  const owners = createFrameXmlTalentOwners(seam, boot, renderer(), {
+    onFailure: () => failures.push("talent"),
+    onGlyphFailure: (reason) => failures.push(reason),
+  });
+  const cleanup = publishFrameXmlTalent(owners.talent);
+  return { seam, boot, owners, cleanup, failures };
+}
+
+test("beside an add-on's ToggleTalentFrame, TOGGLEINSCRIPTION opens stock PlayerTalentFrame on its glyph tab and N the add-on's window", withClient, async () => {
+  const { boot, owners, cleanup, failures } = await mountedBesideAddon();
+  try {
+    assert.equal(boot.isAddonLoaded(SIDE_MODULE), true);
+    assert.ok(owners.glyphTalent, "the glyph key keeps a stock talent frame of its own");
+    const errors = boot.errors.length;
+    const sideWindow = () => boot.bridge.getFrame("GlyphSideTalentWindow");
+    if (sideWindow()?.visible) boot.bridge.Hide(sideWindow());
+    lua(boot, "ToggleGlyphFrame()", 0);
+    await settle();
+    assert.deepEqual(failures, []);
+    const talent = boot.bridge.getFrame("PlayerTalentFrame");
+    const glyphFrame = boot.bridge.getFrame("GlyphFrame");
+    assert.equal(talent?.visible, true, "Blizzard_TalentUI loaded and PlayerTalentFrame is shown");
+    assert.equal(glyphFrame?.parent, talent);
+    assert.equal(glyphFrame.visible, true, "on its glyph tab");
+    assert.equal(lua(boot, "return PanelTemplates_GetSelectedTab(PlayerTalentFrame)")[0], 4, "GLYPH_TALENT_TAB");
+    assert.equal(owners.glyphTalent.isOpen(), true);
+    assert.equal(frameXmlTalentOpen(), false, "N's owner is the add-on's and was not opened");
+    assert.notEqual(sideWindow()?.visible, true);
+
+    assert.equal(toggleFrameXmlTalent(), true, "N");
+    assert.equal(sideWindow()?.visible, true, "N opens the add-on's window, not the stock frame");
+    assert.equal(talent.visible, true, "the stock frame stays as it was");
+
+    lua(boot, "ToggleGlyphFrame()", 0);
+    await settle();
+    assert.equal(talent.visible, false, "a second glyph key on the glyph tab closes the stock frame");
+    assert.equal(sideWindow()?.visible, true);
+    assert.deepEqual(glyphErrors(boot, errors), []);
+  } finally {
+    cleanup();
+    owners.glyphTalent?.dispose?.();
     boot.close();
   }
 });
