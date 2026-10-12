@@ -2,14 +2,23 @@
  * Plan item 5.30 (L12, 04.10): the global cooldown from the moment a cast request leaves, not from the
  * realm's answer.
  *
- * Wow.exe 3.3.5a 12340 (read-only Ghidra, 2026-10-04), in this file's words:
+ * Wow.exe 3.3.5a 12340 (read-only Ghidra, 2026-10-04; the history functions read again 2026-10-12), in this
+ * file's words:
  * - The request builder 0x0080ac90 sends CMSG_CAST_SPELL (or the pet's/an item's request), raises
  *   UNIT_SPELLCAST_SENT and then calls 0x00805d70, which writes an entry into the player's spell history
  *   (0x00805230): this spell, started now, with the spell's StartRecoveryCategory and its
- *   StartRecoveryTime as the global part — when either is set and the duration is not 0. Before writing
- *   it the duration takes SPELLMOD_GLOBAL_COOLDOWN, and for category 133 at exactly 1500 ms (not a melee
- *   or ranged damage class, not REQ_AMMO or ABILITY) the caster's cast speed, kept within 1000..1500 ms.
- *   It then raises ACTIONBAR_UPDATE_COOLDOWN (0x005a7cc0) and SPELL_UPDATE_COOLDOWN (0x0053bac0).
+ *   StartRecoveryTime as the global part (entry +0x28, +0x2c) — when either is set and the duration is not 0.
+ *   Before writing it the duration takes SPELLMOD_GLOBAL_COOLDOWN, and for category 133 at exactly 1500 ms
+ *   (not a melee or ranged damage class, not REQ_AMMO or ABILITY) the caster's cast speed, kept within
+ *   1000..1500 ms. It then raises ACTIONBAR_UPDATE_COOLDOWN (0x005a7cc0) and SPELL_UPDATE_COOLDOWN (0x0053bac0).
+ * - 12.10: an item use goes through the same builder. Its item branch writes CMSG_USE_ITEM (0xab: bag, slot,
+ *   count, the item's spell, the item's guid, the glyph index) and joins the cast branch at 0x0080b349, so the
+ *   item's request raises the same UNIT_SPELLCAST_SENT and calls 0x00805d70 with the row of the spell it names:
+ *   the item's use spell. WorldClient raises `SPELL_CAST_SENT` for its item uses since 12.10, and the prediction
+ *   below follows from it with the item spell's row. A stance or a form is no other path: CastShapeshiftForm
+ *   (0x0053c0f0) casts the bar's spell through 0x0080da80 like CastSpellByName, and this client's form bar casts
+ *   it through `castSpell` — it was predicted all along. The pet's own requests (0x005d4210, the pet branches of
+ *   CastSpellByID 0x0053e060 and CastSpellByName 0x00540310) write the pet's history, not the player's.
  * - The next request (0x0080cce0) asks the history first (0x00809000 → 0x00807980): a spell whose
  *   StartRecoveryCategory equals an entry's global category is refused locally, without a packet, while
  *   that entry's start + global duration is ahead. So the second /cast of a macro never leaves.
@@ -20,33 +29,45 @@
  *   locally, before anything is sent, what this client leaves to the realm (range, sight, facing,
  *   targets, reagents…); the realm (TrinityCore Spell::prepare) never starts its own global cooldown for
  *   a refused cast. Here a refusal therefore takes back the prediction it answers (the plan's «откат
- *   при отказе»), so the client never holds a spell the realm would accept.
- * - SMSG_SPELL_GO of the player's own request does not touch the global part (0x0080e1b0 writes history
- *   on a GO only for the player's pet or charm). L12-review: so the realm's acceptance (SPELL_CAST_ACCEPTED)
- *   only confirms the request's end, it no longer re-anchors it at the answer. The realm starts its own in
- *   Spell::prepare, one way after the request; a request sent at send + duration reaches it one way after
- *   that, at its end — the earlier rule (from before 5.30) refused such casts for a whole round trip.
- * - L12-review: the duration is the realm's, or shorter, never longer (game/GlobalCooldownDuration.ts):
+ *   при отказе»), so the client never holds a spell the realm would accept (12.10: category 0 aside, below).
+ * - SMSG_SPELL_GO of the player's own request does not touch the global part: 0x0080e1b0 files the cast's
+ *   recovery and category part with the global part 0 (0x0080f8a0…0x0080fc37; 3.39, world/SpellCooldownParts.ts)
+ *   and writes a global part on a GO only for the player's pet or charm. L12-review: so the realm's acceptance
+ *   (SPELL_CAST_ACCEPTED) only confirms the request's end, it no longer re-anchors it at the answer. The realm
+ *   starts its own in Spell::prepare, one way after the request; a request sent at send + duration reaches it
+ *   one way after that, at its end — the earlier rule (from before 5.30) refused such casts for a whole round trip.
+ * - L12-review: the duration is the realm's, or shorter (game/GlobalCooldownDuration.ts; 12.10: category 0 aside):
  *   StartRecoveryTime with SPELLMOD_GLOBAL_COOLDOWN's reductions and the cast-speed rule — a hasted caster's
  *   1.5 s is 1.0-1.5 s at the realm, and the 1.5 s held here before cost every global cooldown the
- *   difference. An interrupt keeps the end, as in Wow.exe (the realm's Spell::cancel clears its own, but
- *   Wow.exe's handlers 0x00809af0/0x00809c70 do not — the only callers of the entry remover 0x00802970 are
- *   the cooldown packets, the DISABLED_WHILE_ACTIVE refusal and 0x00807f10).
+ *   difference.
+ * - An interrupted cast keeps the end, as in Wow.exe (the owner's decision of 12.10: as Wow.exe, though the realm's
+ *   Spell::cancel → CancelGlobalCooldown clears its own, Spell.cpp:8725-8738): Wow.exe's interrupt handlers
+ *   0x00809c70 (SMSG_SPELL_FAILURE) and 0x00806ad0 (SMSG_SPELL_FAILED_OTHER) leave the history alone — the only
+ *   callers of the entry remover 0x00802970 are the cooldown packets (0x00804010 → 0x00802ba0: COOLDOWN_EVENT,
+ *   CLEAR_COOLDOWN), the DISABLED_WHILE_ACTIVE refusal and 0x00807f10. So only SMSG_CAST_FAILED takes a
+ *   prediction back here; an accepted cast interrupted later keeps its end.
  *
  * L13 (04.10): the category. Rows from `/dbc/spells?v=17` carry StartRecoveryCategory, and the predictions are
- * kept per category as the realm keys its own (SpellHistory.cpp:585-594) and 0x00807980 matches an entry's
- * global category (+0x28) with the asked spell's: a category-0 row starts none (Spell.cpp:8698), a row of
- * category C is held only by a running global cooldown of C (`globalCooldownEndFor`) — so Death Strike 45469,
- * Spirit Strike 61193-61198 or the rockets 71342/75973 (0/1500) hold nothing, Devotion Aura 48941 (38) holds
- * only category 38, and Will of the Forsaken 7744, Stoneform 20594, Gift of the Naaru 59547 (133/0) wait for
- * the running 133 one. `globalCooldownUntil` keeps the end the ordinary spells share — category 133 — for the
- * bars and sweeps that read it (L13-review: the sweeps — native bar, book, stock seam — now ask per row too:
- * `globalCooldownEndFor` and `globalCooldownSpanFor`, the holding entry's own length; the stock redraw edge follows
- * `globalCooldownRevision`). Deviation: Wow.exe itself writes an entry for a category-0 row with a time and
- * then, comparing 0 with 0, holds every category-0 spell for it (0x00805d70 tests only "category or time
- * set", 0x00807980 has no non-zero test on +0x28, unlike the Category branch); the realm takes those casts,
- * and the client here never refuses what the realm takes. Rows from an older gateway (no category) keep the
- * rule from before L13: one global cooldown for every spell with a StartRecoveryTime.
+ * kept per category as 0x00807980 matches an entry's global category (+0x28) with the asked spell's
+ * StartRecoveryCategory (`local_20`, record +0x234): a row of category C is held only by a running global
+ * cooldown of C (`globalCooldownEndFor`) — Devotion Aura 48941 (38) holds only category 38, and Will of the
+ * Forsaken 7744, Stoneform 20594, Gift of the Naaru 59547 (133/0) wait for the running 133 one.
+ * `globalCooldownUntil` keeps the end the ordinary spells share — category 133 — for the bars and sweeps that
+ * read it (L13-review: the sweeps — native bar, book, stock seam — now ask per row too: `globalCooldownEndFor`
+ * and `globalCooldownSpanFor`, the holding entry's own length; the stock redraw edge follows
+ * `globalCooldownRevision`).
+ * 12.10 — category 0 exactly as Wow.exe (the owner's decision; L13 deviated here): 0x00805d70 tests only
+ * «category or time set» (`param_1[0x8d] != 0 || param_1[0x8e] != 0`) and writes the entry whenever the duration
+ * is not 0, its global category 0 included; 0x00807980's global branch tests `+0x28 == local_20` and `+0x2c != 0`
+ * and nothing else — no non-zero test on the category, unlike its Category branch (`iVar3 != 0 && iVar3 ==
+ * local_c`). So a category-0 row with a time — Death Strike 45469, Spirit Strike 61193-61198, the rockets
+ * 71342/75973 (0/1500), 235 non-passive rows of the dataset — starts a global part of category 0, and while it
+ * runs every category-0 spell is held: the off-GCD ones too (Counterspell 2139, Mind Freeze 47528, Kick 1766,
+ * 0/0). The realm keeps no global cooldown for category 0 (Spell.cpp:8698) and would take those casts; Wow.exe
+ * refuses them locally, and so does this client now. Rows from an older gateway (no category) keep the rule from
+ * before L13: one global cooldown for every spell with a StartRecoveryTime; such an entry, and a value written
+ * from outside, still hold no category-0 row (the shorter side: 7,045 non-passive rows are of category 133, only
+ * 235 of category 0 with a time).
  *
  * A prediction can never stick: it ends by itself at send + its duration, and a refusal or the
  * acceptance only replaces it. Nothing here runs per frame.
@@ -75,7 +96,7 @@ interface Prediction {
   readonly spellId: number;
   readonly castCount: number;
   readonly until: number;
-  /** L13: StartRecoveryCategory, or UNKNOWN_CATEGORY. Never 0: category 0 predicts nothing. */
+  /** L13: StartRecoveryCategory, or UNKNOWN_CATEGORY. 12.10: 0 too — a category-0 row with a time (0x00805d70). */
   readonly category: number;
   /** L13-review 5.30: the predicted length (`until` − send), what a sweep of this entry runs (0x00807980). */
   readonly duration: number;
@@ -91,7 +112,7 @@ export class PredictedGlobalCooldown {
   readonly #caster: () => GlobalCooldownWorld | undefined;
   /** The requests sent and not answered yet whose spell has a global cooldown. */
   readonly #predictions: Prediction[] = [];
-  /** L13: a value someone else wrote (a test, the world's reset): it holds every category but 0. */
+  /** L13: a value someone else wrote (a test, the world's reset): it holds every category but 0 (12.10: still). */
   #base: number;
   /** The accepted casts' ends; L13: by category (UNKNOWN_CATEGORY for a row without one). */
   readonly #confirmed = new Map<number, number>();
@@ -122,10 +143,11 @@ export class PredictedGlobalCooldown {
     models.set(sink, this); // L13
   }
 
-  /** The request left (`SPELL_CAST_SENT`, 0x0080ac90 → 0x00805d70). */
+  /** The request left (`SPELL_CAST_SENT`, 0x0080ac90 → 0x00805d70) — a cast's, or since 12.10 an item use's. */
   sent(spellId: number, castCount: number, at: number): void {
     const row = this.#spells()?.get(spellId);
-    // L12-review: the realm's duration or shorter (cast speed, SPELLMOD_GLOBAL_COOLDOWN); L13: 0 for category 0.
+    // L12-review: the realm's duration or shorter (cast speed, SPELLMOD_GLOBAL_COOLDOWN); 12.10: category 0 is timed
+    // as Wow.exe times it (L13 gave it 0).
     const gcd = globalCooldownDurationIn(this.#caster(), row);
     if (gcd <= 0) return;
     this.#adopt();
@@ -140,10 +162,10 @@ export class PredictedGlobalCooldown {
   /**
    * L13: the end a spell of `category` is held to — 0x00807980's match of the entries' global category with
    * the asked spell's: this category's predictions and confirmed ends, those of unknown category, and a value
-   * written by someone else. Category 0 is never held (the realm keeps none). No allocation.
+   * written by someone else. 12.10: category 0 as Wow.exe — held by the category-0 entries alone (L13 held it by
+   * nothing; an unknown category and an outside value stay the 133 side's). No allocation.
    */
   endFor(category: number): number {
-    if (category === 0) return 0;
     this.#hold(category); // L13-review 5.30: shared with `spanFor`, remembered until the state changes
     return this.#heldUntil;
   }
@@ -151,10 +173,9 @@ export class PredictedGlobalCooldown {
   /**
    * L13-review 5.30: the length of the entry whose end `endFor(category)` answers — the global part a sweep runs
    * (0x00807980 hands out the entry's start and its own length); 0 when none of this model's entries is that end
-   * (nothing running, or a value written by someone else). No allocation.
+   * (nothing running, or a value written by someone else). 12.10: category 0 too. No allocation.
    */
   spanFor(category: number): number {
-    if (category === 0) return 0;
     this.#hold(category);
     return this.#heldSpan;
   }
@@ -169,13 +190,15 @@ export class PredictedGlobalCooldown {
    * L13-review 5.30: the end and the length for `category` into `#heldUntil`/`#heldSpan` — the base (no known length),
    * this category's and the unknown category's confirmed ends and predictions; the latest end wins, an equal end
    * with a known length over one without. Index loops and a one-category memo: the native bars ask per slot per frame.
+   * 12.10: category 0 counts its own entries only — the base and an unknown category are the 133 side's.
    */
   #hold(category: number): void {
     this.#adopt();
     if (category === this.#memoCategory && this.#version === this.#memoVersion) return;
-    let until = this.#base;
+    const own = category === 0; // 12.10
+    let until = own ? 0 : this.#base;
     let span = 0;
-    for (let pass = 0; pass < 2; pass++) {
+    for (let pass = 0; pass < (own ? 1 : 2); pass++) {
       const key = pass === 0 ? category : UNKNOWN_CATEGORY;
       const confirmed = this.#confirmed.get(key);
       if (confirmed !== undefined && (confirmed > until || (confirmed === until && span === 0))) {
@@ -186,7 +209,7 @@ export class PredictedGlobalCooldown {
     const predictions = this.#predictions;
     for (let index = 0; index < predictions.length; index++) {
       const prediction = predictions[index]!;
-      if (prediction.category !== category && prediction.category !== UNKNOWN_CATEGORY) continue;
+      if (prediction.category !== category && (own || prediction.category !== UNKNOWN_CATEGORY)) continue;
       if (prediction.until > until || (prediction.until === until && prediction.duration > span)) {
         until = prediction.until;
         span = prediction.duration;
@@ -267,30 +290,32 @@ export class PredictedGlobalCooldown {
 
 /**
  * L13 (5.30): when the global cooldown holding a spell row ends — what the cast guard (SpellCastGuard.ts) asks.
- * A row with StartRecoveryCategory: 0 for category 0, else the end of its own category (`endFor`) — or the
- * sink's value when no model writes it. A row without it (an older gateway): the sink's value for a row with a
- * StartRecoveryTime and 0 for one without, the rule from before L13.
+ * A row with StartRecoveryCategory: the end of its own category (`endFor`; 12.10: category 0's too, as Wow.exe —
+ * a category-0 entry holds every category-0 row, an off-GCD one included) — or, when no model writes the sink,
+ * the sink's value for every category but 0. A row without it (an older gateway): the sink's value for a row with
+ * a StartRecoveryTime and 0 for one without, the rule from before L13.
  */
 export function globalCooldownEndFor(sink: PredictedGlobalCooldownSink, row: GlobalCooldownRow | undefined): number {
   if (!row) return 0;
   const category = row.startRecoveryCategory;
   if (category === undefined) return row.startRecoveryTime > 0 ? sink.globalCooldownUntil : 0;
-  if (category === 0) return 0;
   const model = models.get(sink);
-  return model ? model.endFor(category) : sink.globalCooldownUntil;
+  if (model) return model.endFor(category); // 12.10: was 0 for category 0
+  return category === 0 ? 0 : sink.globalCooldownUntil;
 }
 
 /**
  * L13-review 5.30: the length of the global cooldown that `globalCooldownEndFor` holds this row to — what a sweep runs
  * (Wow.exe 0x00807980 answers the holding entry's start and its own length): the 1000-ms 133 entry for a 1500-ms or a
- * timeless 133 row, its own 38 entry for Аура благочестия. A row without StartRecoveryCategory reads the shared (133)
- * entry its end comes from. 0 — not held, or no length known (no model, a value written by someone else): the caller
- * falls back to the row's own duration. No allocation.
+ * timeless 133 row, its own 38 entry for Аура благочестия, 12.10 the 1500-ms category-0 entry for a 0/0 row under
+ * Удар смерти. A row without StartRecoveryCategory reads the shared (133) entry its end comes from. 0 — not held, or
+ * no length known (no model, a value written by someone else): the caller falls back to the row's own duration.
+ * No allocation.
  */
 export function globalCooldownSpanFor(sink: PredictedGlobalCooldownSink, row: GlobalCooldownRow | undefined): number {
   if (!row) return 0;
   const category = row.startRecoveryCategory;
-  if (category === 0 || (category === undefined && !(row.startRecoveryTime > 0))) return 0;
+  if (category === undefined && !(row.startRecoveryTime > 0)) return 0; // 12.10: category 0 asks its entries
   return models.get(sink)?.spanFor(category ?? SHARED_CATEGORY) ?? 0;
 }
 

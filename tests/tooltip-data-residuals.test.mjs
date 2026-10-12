@@ -172,8 +172,8 @@ test("v=14 spell rows: the new fields are optional, and an old-shape batch is as
   const first = await client.load([78]);
   assert.equal(first.get(78).name, "Удар героя", "an old gateway's rows are still the book");
   assert.deepEqual(calls, [
-    ["http://127.0.0.1:8090/dbc/spells?ids=78&v=18", undefined], // 12.10: v=18 (L13: v=17)
-    ["http://127.0.0.1:8090/dbc/spells?ids=78&v=18", "reload"],
+    ["http://127.0.0.1:8090/dbc/spells?ids=78&v=19", undefined], // 3.39: v=19 (12.10: v=18; L13: v=17)
+    ["http://127.0.0.1:8090/dbc/spells?ids=78&v=19", "reload"],
   ], "the old shape, once more past the browser cache");
   await client.load([79]);
   assert.equal(calls.length, 3, "the gateway itself answered the old shape: no more second asks");
@@ -181,7 +181,7 @@ test("v=14 spell rows: the new fields are optional, and an old-shape batch is as
   const fresh = new SpellMetadataClient("ws://127.0.0.1:8090/auth", fetcher);
   calls.length = 0;
   rows = [{ ...base, id: 80, auraDescription: "", onNextSwing: true, channeled: false, rangeMaxFriendly: 5, dispelType: 0, preventionType: 0,
-    startRecoveryCategory: 0, procCharges: 0 }]; // L13: the v=17 marker; 12.10: v=18's
+    startRecoveryCategory: 0, procCharges: 0, category: 0 }]; // L13: the v=17 marker; 12.10: v=18's; 3.39: v=19's
   assert.equal((await fresh.load([80])).get(80).onNextSwing, true);
   assert.equal(calls.length, 1, "a v=17 answer is taken as it is");
   // A v=13 gateway (aura text, no friendly range) is still an older gateway for the v=17 key.

@@ -101,6 +101,7 @@ test("the browser refuses a v=16 field that is not what it says", async () => {
     dispelType: 0, dmgClass: 1, preventionType: 1, interruptFlags: 15, channelInterruptFlags: 0, totemSlotMask: 1,
     startRecoveryCategory: 133, // L13: the v=17 marker, so the answer stands
     procCharges: 0, // 12.10: and v=18's
+    category: 0, // 3.39: and v=19's
     ...extra,
   });
   let rows = [row({})];
@@ -111,7 +112,7 @@ test("the browser refuses a v=16 field that is not what it says", async () => {
   };
   const client = new SpellMetadataClient("ws://127.0.0.1:8090/auth", fetcher);
   assert.equal((await client.load([3599])).get(3599).totemSlotMask, 1);
-  assert.deepEqual(calls, [["http://127.0.0.1:8090/dbc/spells?ids=3599&v=18", undefined]], "a v=18 answer stands"); // 12.10 (L13: v=17)
+  assert.deepEqual(calls, [["http://127.0.0.1:8090/dbc/spells?ids=3599&v=19", undefined]], "a v=19 answer stands"); // 3.39 (12.10: v=18; L13: v=17)
   rows = [row({ id: 3600, totemSlotMask: 16 })];
   await assert.rejects(client.load([3600]), /invalid data/, "four slots, four bits");
   rows = [row({ id: 3601, preventionType: "1" })];

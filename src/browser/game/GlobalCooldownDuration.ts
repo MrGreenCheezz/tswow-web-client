@@ -1,18 +1,23 @@
 /**
  * L12-review (04.10), plan item 5.30: how long the global cooldown a cast request starts is predicted to
  * run — a bound the realm's own global cooldown never undercuts, so a prediction built on it never makes the
- * client refuse a cast the realm would take.
+ * client refuse a cast the realm would take; 12.10: except category 0, below.
  *
  * The realm (TrinityCore Spell::TriggerGlobalCooldown, Spell.cpp:8693-8723) and Wow.exe 3.3.5a 12340
- * (0x00805d70, read-only Ghidra 2026-10-04) compute it the same way:
+ * (0x00805d70, read-only Ghidra 2026-10-04, again 2026-10-12) compute it the same way:
  * 1. StartRecoveryTime with SPELLMOD_GLOBAL_COOLDOWN (21) applied: (time + flat) × (100 + pct) / 100;
  * 2. then, for StartRecoveryCategory 133 at exactly 1500 ms and a spell that is not melee or ranged
  *    (DmgClass 2, 3) and has neither SPELL_ATTR0_REQ_AMMO (0x2) nor SPELL_ATTR0_ABILITY (0x10): times the
  *    caster's UNIT_MOD_CAST_SPEED, truncated and kept within 1000..1500 ms.
  * The realm keys the result by StartRecoveryCategory and starts none for category 0.
  *
- * L13 (04.10): rows from `/dbc/spells?v=17` carry StartRecoveryCategory, and with it the realm's rule holds
- * exactly: category 0 starts no global cooldown at all (Spell.cpp:8698), and only category 133 is hasted.
+ * L13 (04.10): rows from `/dbc/spells?v=17` carry StartRecoveryCategory; only category 133 is hasted.
+ * 12.10 (the owner's decision: category 0 as Wow.exe): Wow.exe's 0x00805d70 tests only «category or time
+ * set» (`param_1[0x8d] != 0 || param_1[0x8e] != 0`) and writes the entry whenever the duration is not 0 — a
+ * category-0 row with a time (Удар смерти 45469, 0/1500; 235 non-passive rows of the dataset) starts a global
+ * part of category 0, which 0x00807980 then matches with every category-0 spell (PredictedGlobalCooldown.ts).
+ * The duration here follows: the time and its SPELLMOD_GLOBAL_COOLDOWN, not hasted. The realm starts none for
+ * those rows (Spell.cpp:8698), so for them the prediction is longer than the realm's — as Wow.exe's own is.
  *
  * What the client knows here is less, and every gap is taken on the shorter side:
  * - Rows from an older gateway carry no StartRecoveryCategory: a 1500-ms row is hasted as if it were 133 (true
@@ -88,7 +93,7 @@ export function predictedGlobalCooldownDuration(
   const base = row?.startRecoveryTime ?? 0;
   if (!row || !Number.isFinite(base) || base <= 0) return 0;
   const category = row.startRecoveryCategory; // L13
-  if (category === 0) return 0; // L13: `if (!m_spellInfo->StartRecoveryCategory) return;` (Spell.cpp:8698)
+  // 12.10: no early 0 for category 0 any more (L13 had the realm's Spell.cpp:8698) — Wow.exe 0x00805d70 times it.
   let duration = base;
   if (modifiers) {
     let flat = 0;

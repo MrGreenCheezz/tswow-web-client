@@ -892,6 +892,9 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
   weaponAnimClient(game.gatewayOrigin)?.load(); // 05.10-A7a-D
   world.castFailureLimitCategory = (id) => itemLimitCategoryClient(game.gatewayOrigin)?.category(id); // 05.10-3.02
   world.onCooldownsChanged = () => updateSpellCooldowns(performance.now());
+  // 3.39: the rows' Category and recoveries (`/dbc/spells?v=19`) for what a GO and a cooldown event file — the
+  // category part that holds a sibling (the second potion), the hold of a stealth or a potion until its event.
+  world.spellCooldownRow = (spellId) => game.spells.get(spellId); // 3.39
   world.onCooldownEvent = (spellId) => {
     const metadata = game.spells.get(spellId);
     if (metadata) world.startLocalCooldown(spellId, Math.max(metadata.recoveryTime, metadata.categoryRecoveryTime));

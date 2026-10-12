@@ -160,7 +160,7 @@ test("L13-review 5.30: by category — 133/0 shows the 133 entry, 0 nothing, 38 
     assert.deepEqual(edges(fired), ["ACTIONBAR_UPDATE_COOLDOWN", "SPELL_UPDATE_COOLDOWN"]);
     assert.deepEqual(action(7744), [500, 1, 1], "Воля Отрекшихся: the running 133 entry, its own length");
     assert.deepEqual(book(7744), [500, 1, 1]);
-    assert.deepEqual([action(45469), book(45469)], [[0, 0, 0], [0, 0, 1]], "category 0: none");
+    assert.deepEqual([action(45469), book(45469)], [[0, 0, 0], [0, 0, 1]], "category 0: not the 133 one");
     assert.deepEqual([action(48941), book(48941)], [[0, 0, 0], [0, 0, 1]], "category 38: not the 133 one");
     clock.monotonic += 250;
     clock.lua += 0.25;
@@ -175,6 +175,15 @@ test("L13-review 5.30: by category — 133/0 shows the 133 entry, 0 nothing, 38 
     model.accepted(48941, 2);
     seam.tick(clock.lua);
     assert.deepEqual(edges(fired), [], "the acceptance moves no end: no redraw");
+    // 12.10: Удар смерти's own request writes a category-0 entry (0x00805d70), which 0x00807980 answers for the
+    // category-0 rows — a redraw, and its own 1.5 s sweep; the 133 and 38 rows keep theirs.
+    model.sent(45469, 3, clock.monotonic);
+    assert.equal(sink.globalCooldownUntil, 101_000, "the shared end did not move");
+    seam.tick(clock.lua);
+    assert.deepEqual(edges(fired), ["ACTIONBAR_UPDATE_COOLDOWN", "SPELL_UPDATE_COOLDOWN"]);
+    assert.deepEqual([action(45469), book(45469)], [[clock.lua, 1.5, 1], [clock.lua, 1.5, 1]]);
+    assert.deepEqual(action(1752), [500, 1, 1]);
+    assert.deepEqual(action(48941), [clock.lua, 1.5, 1]);
   } finally {
     seam.detach();
   }

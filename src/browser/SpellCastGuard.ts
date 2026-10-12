@@ -130,7 +130,9 @@ export function spellCastBlockReason(
   if (self && (self.fields.get(UPDATE_FIELDS.UNIT_FIELD_HEALTH.offset) ?? 1) <= 0) return "dead";
   if (world.cooldownRemaining(spellId, now) > 0) return "cooldown";
   if (world.isSpellOnHold?.(spellId)) return "hold";
-  // L13 5.30: by StartRecoveryCategory (a row without it: StartRecoveryTime > 0 and the shared end, as before).
+  // L13 5.30: by StartRecoveryCategory (a row without it: StartRecoveryTime > 0 and the shared end, as before);
+  // 12.10: category 0 as Wow.exe 0x00807980 — a running category-0 entry holds every category-0 spell, 0/0 too.
+  // 3.39: a sibling's category part is `cooldownRemaining`'s (WorldClient, the row's Category) — "cooldown" above.
   if (globalCooldownEndFor(game, metadata) > now) return "global-cooldown";
 
   if (!spellPowerAvailable(world, metadata)) return "power";

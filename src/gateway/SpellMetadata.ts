@@ -228,6 +228,15 @@ export interface SpellMetadata {
    * since `v=17`, 0 included — the browser tells an older gateway by its absence.
    */
   startRecoveryCategory?: number;
+  /**
+   * 3.39 (v=19): `Category` (record +0x4 in the client's copy), raw: the shared cooldown category. Wow.exe's GO
+   * handler 0x0080e1b0 files the player's own cast under it with CategoryRecoveryTime (an item cast: the item's own
+   * category when above 0, 0x0080fa69…0x0080fc37), and 0x00807980 holds every spell whose Category is an entry's
+   * while that entry's category part runs; the realm keys `_categoryCooldowns` by the same column
+   * (SpellHistory::GetCooldownDurations, SpellHistory.cpp:641-681; HasCooldown :473-487). Present on every row
+   * since `v=19`, 0 included — the browser tells an older gateway by its absence.
+   */
+  category?: number;
   /** L13 (v=17, 3.12): `EffectMiscValueB[3]`, raw (for SPELL_EFFECT_SUMMON, a SummonProperties id). */
   effectMiscValueB?: number[];
   /**
@@ -613,6 +622,7 @@ export function parseSpellMetadata(
       totemSlotMask: spellTotemSlotMask(spells.int(row, "AttributesExG"),
         [0, 1].map((index) => spells.int(row, "RequiredTotemCategoryID", index))),
       startRecoveryCategory: spells.int(row, "StartRecoveryCategory"), // L13 (v=17)
+      category: spells.int(row, "Category"), // 3.39 (v=19)
       effectMiscValueB: perEffect((effect) => spells.int(row, "EffectMiscValueB", effect)), // L13 (v=17)
       castTime: castTimes.get(spells.int(row, "CastingTimeIndex")) ?? 0,
       effectAura: perEffect((effect) => spells.int(row, "EffectAura", effect)),

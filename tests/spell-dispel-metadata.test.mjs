@@ -84,12 +84,12 @@ test("the browser asks v=17 (L13; v=16 before), and a v=15 batch is asked once m
   const old = new SpellMetadataClient("ws://127.0.0.1:8090/auth", fetcher);
   assert.equal((await old.load([172])).get(172).debuffType, undefined);
   assert.deepEqual(calls, [
-    ["http://127.0.0.1:8090/dbc/spells?ids=172&v=18", undefined], // 12.10: v=18 (L13: v=17)
-    ["http://127.0.0.1:8090/dbc/spells?ids=172&v=18", "reload"],
-  ], "the v=15 shape is an older gateway for the v=18 key");
+    ["http://127.0.0.1:8090/dbc/spells?ids=172&v=19", undefined], // 3.39: v=19 (12.10: v=18; L13: v=17)
+    ["http://127.0.0.1:8090/dbc/spells?ids=172&v=19", "reload"],
+  ], "the v=15 shape is an older gateway for the v=19 key");
 
   calls.length = 0;
-  rows = [row({ dispelType: 1, debuffType: "Magic", preventionType: 1, startRecoveryCategory: 0, procCharges: 0 })]; // 12.10: the v=18 marker
+  rows = [row({ dispelType: 1, debuffType: "Magic", preventionType: 1, startRecoveryCategory: 0, procCharges: 0, category: 0 })]; // 3.39: the v=19 marker
   const fresh = new SpellMetadataClient("ws://127.0.0.1:8090/auth", fetcher);
   assert.equal((await fresh.load([172])).get(172).debuffType, "Magic");
   assert.equal(calls.length, 1, "a v=17 answer stands");

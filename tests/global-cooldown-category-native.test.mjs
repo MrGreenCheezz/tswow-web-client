@@ -6,10 +6,11 @@ import { installFakeUiDocument } from "./fixtures/fake-ui-document.mjs";
 installFakeUiDocument();
 
 // L13 (04.10), plan item 5.30: the native action bar's own press gate (ui/ActionBar.ts) and the shared cast guard
-// (SpellCastGuard.ts) hold a spell by its StartRecoveryCategory (`/dbc/spells?v=17`), as the realm keys its global
-// cooldowns (SpellHistory.cpp:585-594, none for category 0 — Spell.cpp:8698): with a global cooldown running,
-// Удар смерти 45469 (0/1500) still goes out, Ледяная стрела 116 (133/1500) and Воля Отрекшихся 7744 (133/0) do
-// not. A row from an older gateway (no category) keeps the rule from before: StartRecoveryTime > 0 waits.
+// (SpellCastGuard.ts) hold a spell by its StartRecoveryCategory (`/dbc/spells?v=17`), as Wow.exe 0x00807980 matches
+// an entry's global category: with a 133 global cooldown running, Удар смерти 45469 (0/1500) still goes out,
+// Ледяная стрела 116 (133/1500) and Воля Отрекшихся 7744 (133/0) do not. 12.10: a category-0 entry of its own
+// (Удар смерти's request) holds the category-0 rows, as Wow.exe does. A row from an older gateway (no category)
+// keeps the rule from before: StartRecoveryTime > 0 waits.
 
 const SELF = 0x10n;
 
@@ -50,11 +51,12 @@ test("L13 5.30: the native bar and the guard hold by category; an older gateway'
       isActiveMountSpell: () => false,
       castSpell: (...args) => sent.push(args[0]),
     };
-    // A global cooldown nobody predicted here (no model writes this sink): every category but 0 waits for it.
+    // A global cooldown nobody predicted here (no model writes this sink): every category but 0 waits for it —
+    // 12.10: an outside value is the 133 side's; only a category-0 entry holds category 0.
     game.globalCooldownUntil = performance.now() + 60_000;
     rows.forEach((_, slot) => useSlot(slot, 0));
     assert.deepEqual(sent, [45469, 2139, 90002],
-      "category 0 goes out (the realm keeps no global cooldown for it); 133 with or without a time, 38 and an old row with a time wait");
+      "category 0 goes out (no category-0 entry runs); 133 with or without a time, 38 and an old row with a time wait");
     sent.length = 0;
     game.globalCooldownUntil = 0;
     rows.forEach((_, slot) => useSlot(slot, 0));
@@ -146,6 +148,13 @@ test("L13-review 5.30: the native sweeps and the book's buttons follow the categ
     updateSpellCooldowns(now + 1000);
     assert.deepEqual([116, 7744, 48941].map(degrees), ["0deg", "0deg", "240deg"], "the 133 entry ran out");
     assert.deepEqual([116, 48941].map((id) => bookButton(id)?.disabled), [false, true]);
+    // 12.10: Удар смерти's own request writes a category-0 entry (0x00805d70) — its row sweeps it and its book
+    // button waits, as in Wow.exe; the 133 rows do not.
+    sent(45469, 3, now + 1000);
+    updateActionBar(now + 1375);
+    updateSpellCooldowns(now + 1375);
+    assert.deepEqual([45469, 116, 7744].map(degrees), ["270deg", "0deg", "0deg"], "three quarters of its 1500 ms left");
+    assert.deepEqual([45469, 116].map((id) => bookButton(id)?.disabled), [true, false]);
   } finally {
     for (const off of offs) off();
     spellbookWindow.hidden = true;

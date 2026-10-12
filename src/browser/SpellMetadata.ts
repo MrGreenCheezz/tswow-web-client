@@ -136,15 +136,17 @@ export class SpellMetadataClient {
     // `stackAmount`, `maxTargetLevel`, `maxAffectedTargets`, `manaPerSecond` and four float effect
     // columns; gateway SpellMetadata.ts). Optional: an older gateway's rows leave `$n`, `$u`, `$i`, `$v`,
     // `$e`, `$f`, `$b` and a period-less `$t` as written (SpellText.ts) until it is restarted.
-    const url = `${this.#baseUrl}/dbc/spells?ids=${chunk.join(",")}&v=18`; // 12.10: was v=17
+    // 3.39: v=19 adds `category`, Spell.dbc Category — the shared cooldown a cast files (WorldClient.spellCooldownRow).
+    // Optional: an older gateway's rows leave a category timer started mid-session unknown, as before 3.39.
+    const url = `${this.#baseUrl}/dbc/spells?ids=${chunk.join(",")}&v=19`; // 3.39: was v=18
     let value = await this.#batch(url);
     // The key alone cannot tell a restarted gateway from the hour-long browser cache: an answer the
     // old process gave before the restart is still on disk. A batch whose every row lacks the newest
-    // field (12.10: `procCharges`, present on every v=18 row, 0 included) is asked once more past that
+    // field (3.39: `category`, present on every v=19 row, 0 included) is asked once more past that
     // cache; if the gateway itself still answers the old shape, this session stops asking twice.
-    if (!this.#olderGateway && value.length > 0 && value.every((row) => row.procCharges === undefined)) { // 12.10
+    if (!this.#olderGateway && value.length > 0 && value.every((row) => row.category === undefined)) { // 3.39
       value = await this.#batch(url, { cache: "reload" });
-      if (value.every((row) => row.procCharges === undefined)) this.#olderGateway = true; // 12.10
+      if (value.every((row) => row.category === undefined)) this.#olderGateway = true; // 3.39
     }
     for (const metadata of value) this.#cache.set(metadata.id, metadata);
     // Answered, and without a row: final for this gateway process (see `#missing`).
@@ -253,7 +255,10 @@ function isSpellMetadata(value: unknown): value is SpellMetadata {
     && optionalInteger(spell.maxTargetLevel) && optionalInteger(spell.maxAffectedTargets)
     && optionalInteger(spell.manaPerSecond)
     && optionalNumbers(spell.effectMultipleValue, 3) && optionalNumbers(spell.effectPointsPerCombo, 3)
-    && optionalNumbers(spell.effectDamageMultiplier, 3) && optionalNumbers(spell.effectBonusMultiplier, 3);
+    && optionalNumbers(spell.effectDamageMultiplier, 3) && optionalNumbers(spell.effectBonusMultiplier, 3)
+    // 3.39 (v=19): a cooldown category is a non-negative id, like StartRecoveryCategory.
+    && (spell.category === undefined
+      || (Number.isSafeInteger(spell.category) && (spell.category as number) >= 0));
 }
 
 /** 12.10: an optional array of `length` finite numbers. */

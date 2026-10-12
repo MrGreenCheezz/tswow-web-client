@@ -191,10 +191,12 @@ test("on a WorldClient: the request moves the end at once, SMSG_CAST_FAILED take
   }
 });
 
-// L13 (04.10): with `/dbc/spells?v=17`'s StartRecoveryCategory the prediction is kept per category, as the realm
-// keys its own (SpellHistory.cpp:585-594) and Wow.exe 0x00807980 matches the entry's global category with the
-// asked spell's: a category-0 row starts none (Spell.cpp:8698), a row of category C is held only by a global
-// cooldown of C, and a category-133 row without a time (Воля Отрекшихся) is held by the running 133 one.
+// L13 (04.10): with `/dbc/spells?v=17`'s StartRecoveryCategory the prediction is kept per category, as Wow.exe
+// 0x00807980 matches the entry's global category with the asked spell's: a row of category C is held only by a
+// global cooldown of C, and a category-133 row without a time (Воля Отрекшихся) is held by the running 133 one.
+// 12.10 (the owner's decision: category 0 as Wow.exe): 0x00805d70 writes an entry for a category-0 row with a time
+// too, and 0x00807980 compares 0 with 0 — so it holds every category-0 spell, an off-GCD one (0/0) included. L13
+// gave category 0 nothing, as the realm does (Spell.cpp:8698).
 // `game.globalCooldownUntil` keeps the end the ordinary (133) spells share; the guard asks per row.
 const { globalCooldownEndFor } = await import("../dist/code/browser/game/PredictedGlobalCooldown.js");
 // Dataset Spell.dbc (StartRecoveryCategory/StartRecoveryTime), read 2026-10-04.
@@ -208,26 +210,30 @@ const CATEGORY_ROWS = new Map([
   [2139, { startRecoveryCategory: 0, startRecoveryTime: 0 }], // Антимагия
 ]);
 
-test("L13: per category — 0 starts none, 38 holds only 38, 133 holds 133 rows with or without a time", () => {
+test("L13 + 12.10: per category — 0 holds 0 (as Wow.exe), 38 holds only 38, 133 holds 133 rows with or without a time", () => {
   const sink = { globalCooldownUntil: 0 };
   const gcd = new PredictedGlobalCooldown(sink, () => CATEGORY_ROWS);
   const end = (id) => globalCooldownEndFor(sink, CATEGORY_ROWS.get(id));
   gcd.sent(45469, 1, 1000);
-  assert.equal(sink.globalCooldownUntil, 0, "category 0: the realm starts no global cooldown");
-  assert.deepEqual([133, 7744, 61193, 2139].map(end), [0, 0, 0, 0], "and nothing is held after it");
+  assert.equal(sink.globalCooldownUntil, 0, "category 0: the shared (133) end does not move");
+  assert.deepEqual([133, 7744, 116, 48941].map(end), [0, 0, 0, 0], "and no spell of another category is held");
+  assert.deepEqual([45469, 61193, 2139].map(end), [2500, 2500, 2500],
+    "12.10: every category-0 spell is held to send + 1500 — Антимагия (0/0) too (0x00807980 compares 0 with 0)");
   gcd.sent(48941, 2, 1000);
   assert.equal(sink.globalCooldownUntil, 0, "the shared (133) end does not move for category 38");
   assert.equal(end(48941), 2500, "but a category-38 spell is held by it");
-  assert.deepEqual([133, 7744, 45469].map(end), [0, 0, 0]);
+  assert.deepEqual([133, 7744, 45469].map(end), [0, 0, 2500]);
   gcd.sent(133, 3, 1200);
   assert.equal(sink.globalCooldownUntil, 2700);
-  assert.deepEqual([116, 7744, 48941, 45469, 61193, 2139].map(end), [2700, 2700, 2500, 0, 0, 0],
-    "133 holds 133 rows, the timeless Воля Отрекшихся too; 38 keeps its own end; category 0 is never held");
+  assert.deepEqual([116, 7744, 48941, 45469, 61193, 2139].map(end), [2700, 2700, 2500, 2500, 2500, 2500],
+    "133 holds 133 rows, the timeless Воля Отрекшихся too; 38 and 0 keep their own ends");
   // The acceptance confirms per category; a refusal takes back only its own.
   gcd.accepted(48941, 2);
   gcd.refused(133, 3);
   assert.equal(sink.globalCooldownUntil, 0);
   assert.deepEqual([116, 7744, 48941].map(end), [0, 0, 2500]);
+  gcd.refused(45469, 1);
+  assert.deepEqual([45469, 2139].map(end), [0, 0], "the category-0 request's refusal takes its entry back");
   // A row without the column (an older gateway) asks the shared end, as before L13.
   assert.equal(globalCooldownEndFor(sink, { startRecoveryTime: 1500 }), 0);
   gcd.sent(116, 4, 3000);
@@ -243,7 +249,8 @@ test("L13: an older gateway's rows (no category) keep one end for every spell wi
   assert.equal(sink.globalCooldownUntil, 2000, "an unknown category is the shared end");
   assert.equal(globalCooldownEndFor(sink, SPELLS.get(133)), 2000);
   assert.equal(globalCooldownEndFor(sink, SPELLS.get(12472)), 0, "no time: never held, as before");
-  // A known-category row is held by a prediction of unknown category unless it is category 0.
+  // A known-category row is held by a prediction of unknown category unless it is category 0 (12.10: an unknown
+  // category is the 133 side's — 7,045 non-passive rows are of category 133, only 235 of category 0 with a time).
   assert.equal(globalCooldownEndFor(sink, CATEGORY_ROWS.get(48941)), 2000);
   assert.equal(globalCooldownEndFor(sink, CATEGORY_ROWS.get(45469)), 0);
 });
@@ -263,7 +270,7 @@ test("L13: a value written by someone else holds every category but 0; a reset c
   assert.deepEqual([133, 48941, 45469].map((id) => globalCooldownEndFor(bare, CATEGORY_ROWS.get(id))), [7000, 7000, 0]);
 });
 
-test("L13: the guard over a live prediction — category 0 and 38 do not hold 133 spells; 133 holds Воля Отрекшихся", async () => {
+test("L13 + 12.10: the guard over a live prediction — 0 and 38 do not hold 133 spells; 133 holds Воля Отрекшихся; 0 holds 0", async () => {
   const { game } = await import("../dist/code/browser/game/Context.js");
   const { spellCastBlockReason } = await import("../dist/code/browser/SpellCastGuard.js");
   const SELF = 0x10n;
@@ -284,7 +291,7 @@ test("L13: the guard over a live prediction — category 0 and 38 do not hold 13
   const reason = (id, at) => spellCastBlockReason(client, id, at);
   try {
     client.castSpell(45469);
-    assert.equal(game.globalCooldownUntil, 0, "Удар смерти (0/1500) starts no global cooldown");
+    assert.equal(game.globalCooldownUntil, 0, "Удар смерти (0/1500) moves no shared (133) end");
     assert.equal(reason(133, 10_001), undefined, "so a fireball right after it goes out (the realm takes it)");
     client.castSpell(48941);
     assert.equal(reason(133, 10_002), undefined, "Аура благочестия (38) does not hold a 133 spell");
@@ -292,9 +299,12 @@ test("L13: the guard over a live prediction — category 0 and 38 do not hold 13
     client.castSpell(133);
     assert.equal(reason(7744, 10_003), "global-cooldown", "Воля Отрекшихся (133/0) waits for the 133 one");
     assert.equal(reason(116, 10_003), "global-cooldown");
-    assert.equal(reason(61193, 10_003), undefined, "category 0 is never held");
-    assert.equal(reason(2139, 10_003), undefined);
+    // 12.10: as Wow.exe — Удар смерти's category-0 entry holds every category-0 spell, the off-GCD Антимагия too,
+    // though the realm would take them (Spell.cpp:8698 starts it no global cooldown).
+    assert.equal(reason(61193, 10_003), "global-cooldown", "category 0 is held by the category-0 entry");
+    assert.equal(reason(2139, 10_003), "global-cooldown", "Антимагия (0/0) too");
     assert.equal(reason(7744, 11_500), undefined, "free when it ends");
+    assert.equal(reason(2139, 11_500), undefined, "and so is category 0");
   } finally {
     for (const off of offs) off();
     game.world = saved.world;
@@ -350,6 +360,10 @@ test("L13-review 5.30: the span is the holding global cooldown's own length, by 
   assert.equal(globalCooldownSpanFor(sink, { startRecoveryTime: 1500 }), 1500);
   assert.equal(globalCooldownSpanFor(sink, { startRecoveryTime: 0 }), 0);
   assert.equal(globalCooldownSpanFor(sink, undefined), 0);
+  // 12.10: a category-0 entry is its rows' sweep — Удар смерти's 1500 ms on Антимагия (0/0) too, none on a 133 row.
+  gcd.sent(45469, 4, 1600);
+  assert.deepEqual([45469, 2139, 61193].map(span), [1500, 1500, 1500]);
+  assert.equal(span(7744), 1500, "the 133 side keeps its own entry (Ледяная стрела's)");
   // A value written by someone else has no known length.
   sink.globalCooldownUntil = 9000;
   assert.equal(globalCooldownEndFor(sink, rows.get(7744)), 9000);
@@ -361,11 +375,15 @@ test("L13-review 5.30: the revision moves with any category's end — a 38 reque
   const sink = { globalCooldownUntil: 0 };
   const gcd = new PredictedGlobalCooldown(sink, () => CATEGORY_ROWS);
   const first = globalCooldownRevision(sink);
+  gcd.sent(2139, 1, 1000);
+  assert.equal(globalCooldownRevision(sink), first, "a row with neither a category nor a time predicts nothing");
   gcd.sent(45469, 1, 1000);
-  assert.equal(globalCooldownRevision(sink), first, "category 0 predicts nothing");
+  const afterStrike = globalCooldownRevision(sink);
+  assert.notEqual(afterStrike, first, "12.10: a category-0 row with a time writes its entry (0x00805d70): an edge");
+  assert.equal(sink.globalCooldownUntil, 0, "though the shared end did not move");
   gcd.sent(48941, 2, 1000);
   const afterAura = globalCooldownRevision(sink);
-  assert.notEqual(afterAura, first, "a 38 request moved its category's end (the shared end did not)");
+  assert.notEqual(afterAura, afterStrike, "a 38 request moved its category's end (the shared end did not)");
   assert.equal(sink.globalCooldownUntil, 0);
   gcd.accepted(48941, 2);
   assert.equal(globalCooldownRevision(sink), afterAura, "the acceptance changes no end");

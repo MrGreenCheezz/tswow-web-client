@@ -640,6 +640,7 @@ import {
 } from "./NpcProtocol.js";
 import { parseMountResult, parseSpellModifier, parseTotemCreated, parseAddRunePower, parseChannelStart, parseChannelUpdate, parseConvertRune, parseItemCooldown, parseModifyCooldown, parseProjectilePosition, parseResyncRunes, parseSpellDelayed, parseSpellFailure } from "./SpellProtocol.js";
 import { parseCancelAutoRepeat, parsePowerUpdate } from "./UnitEventProtocol.js";
+import { itemUseSpellId, spellCooldownParts, type SpellCooldownParts, type SpellCooldownRow } from "./SpellCooldownParts.js"; // 3.39, 5.30
 
 const encoder = new TextEncoder();
 /** Account blobs are stored as C strings, so what comes back has to be decoded, not sliced. */
@@ -727,8 +728,13 @@ interface PendingSpellCast {
   cooldownAuthoritative?: boolean;
   /** Filled by the UI when it has DBC recovery data; never starts a timer by itself. */
   cooldownDuration?: number;
-  /** DBC/core marks this spell as starting recovery from a later cooldown event. */
+  /**
+   * DBC/core marks this spell as starting recovery from a later cooldown event. 3.39: its GO holds it and its
+   * category until that event (Wow.exe 0x0080e1b0 writes the entry held, 0x00801220).
+   */
   cooldownStartedOnEvent?: boolean;
+  /** 5.30: the request was an item use (`CMSG_USE_ITEM`) of this entry; 3.39: its GO files the item's numbers. */
+  itemEntry?: number;
 }
 
 export interface CooldownSnapshot {
@@ -1087,6 +1093,9 @@ export class WorldClient {
    * Cooldowns on hold — spell id to its category — from `SMSG_INITIAL_SPELLS`' special pair
    * (`isCooldownOnHold`): the aura that holds them is up and the timer has not started. Not a timer
    * and not in `cooldowns`; `SMSG_COOLDOWN_EVENT` or `SMSG_CLEAR_COOLDOWN` lets go of one.
+   * 3.39: and from the GO of the player's own cast whose cooldown starts on an event (a stealth, a potion —
+   * Wow.exe 0x0080e1b0 files that entry held), which the realm starts in silence (SpellAuras.cpp:571-577,
+   * Player::UpdatePotionCooldown).
    */
   readonly cooldownHolds = new Map<number, number>();
   onCooldownsChanged: (() => void) | undefined;
@@ -1383,8 +1392,21 @@ export class WorldClient {
   petAttackVictim: bigint | undefined;
   /** Category shared cooldowns: categoryId -> endsAt. Spells in one category share the timer. */
   readonly categoryCooldowns = new Map<number, number>();
-  /** Which category each spell belongs to (from `SMSG_INITIAL_SPELLS`), for shared timers. */
+  /**
+   * Which category each spell's entry was filed under, for shared timers: from `SMSG_INITIAL_SPELLS` and, 3.39,
+   * from the entries this client files itself (a GO, a cooldown event). A spell is asked under its row's Category
+   * first (`spellCooldownRow`), as Wow.exe 0x00807980 asks; this map answers for a spell whose row is not known.
+   */
   readonly spellCategories = new Map<number, number>();
+  /**
+   * 3.39: the page's Spell.dbc rows, for the parts a GO files (SpellCooldownParts.ts) and the category a spell is
+   * asked under. Undefined, or no row: nothing is filed beyond what the callers' durations say, as before 3.39.
+   */
+  spellCooldownRow: ((spellId: number) => SpellCooldownRow | undefined) | undefined;
+  /** 3.39: when and for how long each category part in `categoryCooldowns` was started (its sweep). */
+  readonly #categorySnapshots = new Map<number, CooldownSnapshot>();
+  /** 3.39: the parts a held entry was filed with at its GO; its cooldown event starts them (0x00802970). */
+  readonly #holdParts = new Map<number, SpellCooldownParts>();
   /** Item equip cooldowns by spellId; Player::ApplyEquipCooldown sends this fixed 30-second edge. */
   readonly itemCooldowns = new Map<number, number>();
   /** Active spell modifiers by `${effectIndex}:${op}:${flat|pct}`, from SET_FLAT/PCT_MODIFIER. */
@@ -2688,6 +2710,7 @@ export class WorldClient {
     if (!payload) return false;
     this.#useCount += 1;
     this.#connection.send(OPCODES.CMSG_USE_ITEM, payload);
+    this.#trackItemUse(spellId, this.#useCount & 0xff, this.#carriedEntry(bag, slot, itemGuid), objectGuid); // 5.30
     return true;
   }
 
@@ -2709,7 +2732,31 @@ export class WorldClient {
     if (!payload) return false;
     this.#useCount += 1;
     this.#connection.send(OPCODES.CMSG_USE_ITEM, payload);
+    this.#trackItemUse(spellId, this.#useCount & 0xff, this.#carriedEntry(bag, slot, itemGuid)); // 5.30
     return true;
+  }
+
+  /** 5.30: the entry of the item standing at `bag`/`slot` when it is `itemGuid`, else undefined. */
+  #carriedEntry(bag: number, slot: number, itemGuid: bigint): number | undefined {
+    const inventory = playerInventory(this.state);
+    const carried = inventory ? slotAt(inventory, bag, slot) : undefined;
+    if (carried?.guid !== itemGuid || carried.item === undefined) return undefined;
+    const entry = carried.item.fields.get(UPDATE_FIELDS.OBJECT_FIELD_ENTRY.offset) ?? 0;
+    return entry > 0 ? entry : undefined;
+  }
+
+  /**
+   * 5.30: an item use is a request like a cast. Wow.exe's builder 0x0080ac90 writes CMSG_USE_ITEM (0xab) in its item
+   * branch and joins the cast branch at 0x0080b349: the same UNIT_SPELLCAST_SENT (0x143, `SPELL_CAST_SENT` here),
+   * then 0x00805d70 with the row of the spell the request names (`in_EAX[8]`, the item's) — the global cooldown is
+   * predicted from the press (PredictedGlobalCooldown.ts), and the GO answers the request as it answers a cast:
+   * the acceptance, and 3.39 the item's own cooldown entry (`#startGoCooldown`). The wire is unchanged: the realm
+   * picks the item's spells itself (`HandleUseItemOpcode` reads the spell id and leaves it). An item with no use
+   * spell (a quest starter) or one whose template is not here is no spell request: nothing is tracked.
+   */
+  #trackItemUse(spellId: number | undefined, castCount: number, itemEntry: number | undefined, targetGuid?: bigint): void {
+    if (spellId === undefined || !Number.isSafeInteger(spellId) || spellId <= 0) return;
+    this.#trackPendingCast(spellId, castCount, 0, false, targetGuid, itemEntry);
   }
 
   cancelSpellCast(): void {
@@ -2734,11 +2781,83 @@ export class WorldClient {
     this.#applyCooldown(spellId, duration, this.#handlingServerCooldownEvent ? "server" : "cast");
   }
 
-  /** A stable cooldown snapshot for a slot that needs its own fraction or label. */
+  /**
+   * A stable cooldown snapshot for a slot that needs its own fraction or label. 3.39: the category part's when
+   * it ends later than the spell's own — Wow.exe 0x00807980 hands out the start and length of whichever entry
+   * holds the spell longest, a sibling's category part too.
+   */
   cooldownState(spellId: number): CooldownSnapshot | undefined {
+    const now = performance.now();
     const snapshot = this.cooldownSnapshots.get(spellId);
-    if (!snapshot || snapshot.endsAt <= performance.now()) return undefined;
-    return snapshot;
+    const own = snapshot !== undefined && snapshot.endsAt > now ? snapshot : undefined;
+    const categoryId = this.#askedCategory(spellId);
+    const shared = categoryId === undefined || categoryId === 0 ? undefined : this.#categorySnapshots.get(categoryId);
+    // A snapshot whose end is no longer the category's (a reset, a newer list) answers nothing.
+    if (shared !== undefined && shared.endsAt > now && shared.endsAt === this.categoryCooldowns.get(categoryId!)
+      && (own === undefined || shared.endsAt > own.endsAt)) return shared;
+    return own;
+  }
+
+  /**
+   * 3.39: the category a spell is asked under — Wow.exe 0x00807980 compares an entry's category with the asked
+   * spell's row Category (`local_c`, record +0x4). The row's when the page has it and it names one, else the one
+   * the history filed the spell under (`spellCategories`). No allocation: the bars ask per slot per frame.
+   */
+  #askedCategory(spellId: number): number | undefined {
+    const category = this.spellCooldownRow?.(spellId)?.category;
+    return category !== undefined && category > 0 ? category : this.spellCategories.get(spellId);
+  }
+
+  /** 3.39: the parts a GO of `spellId` files (SpellCooldownParts.ts); an item use's from the item's template. */
+  #cooldownParts(spellId: number, itemEntry?: number): SpellCooldownParts | undefined {
+    const itemSpell = itemEntry === undefined ? undefined
+      : this.itemTemplates.get(itemEntry)?.spells?.find((spell) => spell.spellId === spellId);
+    return spellCooldownParts(this.spellCooldownRow?.(spellId), itemSpell, this.spellCategories.get(spellId) ?? 0);
+  }
+
+  /**
+   * 3.39: files a cast's category part — every spell asked under `parts.category` is held to `startedAt` +
+   * its length (0x00807980; the realm's `_categoryCooldowns`, SpellHistory.cpp:405-406, :473-487). The later end
+   * of a category stands. True when an end moved. The spell's entry is filed under the category (`spellCategories`)
+   * either way, so a reset of it takes the lockout with it (`#eraseCooldown`).
+   */
+  #startCategoryCooldown(spellId: number, parts: SpellCooldownParts, startedAt: number): boolean {
+    if (!(parts.category > 0)) return false;
+    this.spellCategories.set(spellId, parts.category);
+    if (!(parts.categoryDuration > 0)) return false;
+    const end = startedAt + parts.categoryDuration;
+    if ((this.categoryCooldowns.get(parts.category) ?? 0) >= end) return false;
+    this.categoryCooldowns.set(parts.category, end);
+    this.#categorySnapshots.set(parts.category, { startedAt, duration: parts.categoryDuration, endsAt: end });
+    return true;
+  }
+
+  /**
+   * 3.39: what the GO of the player's own request files, as Wow.exe 0x0080e1b0 does (SpellCooldownParts.ts): a
+   * spell whose cooldown starts on an event is held — its category with it — until SMSG_COOLDOWN_EVENT; any other
+   * starts its category part from the row (an item use: the item's numbers) and its own timer from the caller's
+   * duration (an item use: the item's). Before 3.39 the GO started the caller's duration alone.
+   */
+  #startGoCooldown(pending: PendingSpellCast): void {
+    const { spellId } = pending;
+    const now = performance.now();
+    const parts = this.#cooldownParts(spellId, pending.itemEntry);
+    if (pending.cooldownStartedOnEvent === true || parts?.onEvent === true) {
+      // The event came first (the realm sends it after the GO; a reordered one already started the timer).
+      if (pending.cooldownAuthoritative === true || (this.cooldowns.get(spellId) ?? 0) > now
+        || this.cooldownHolds.has(spellId)) return;
+      this.cooldownHolds.set(spellId, parts?.category ?? this.spellCategories.get(spellId) ?? 0);
+      if (parts !== undefined) this.#holdParts.set(spellId, parts);
+      this.onCooldownsChanged?.();
+      return;
+    }
+    // The category part first, so the own timer's notice already finds it.
+    const shared = parts !== undefined && this.#startCategoryCooldown(spellId, parts, now);
+    const duration = pending.cooldownDuration ?? (pending.itemEntry !== undefined && parts !== undefined
+      ? Math.max(parts.recovery, parts.categoryDuration) : undefined);
+    const own = pending.cooldownAuthoritative !== true && duration !== undefined
+      && this.#applyCooldown(spellId, duration, "cast", false, now);
+    if (shared && !own) this.onCooldownsChanged?.();
   }
 
   #trackPendingCast(
@@ -2747,6 +2866,7 @@ export class WorldClient {
     cooldownDuration = 0,
     cooldownStartedOnEvent = false,
     targetGuid?: bigint,
+    itemEntry?: number, // 5.30
   ): void {
     // 3.02: Wow.exe 0x0080ac90 raises UNIT_SPELLCAST_SENT right after it builds the request.
     this.events.emit("SPELL_CAST_SENT", targetGuid === undefined || targetGuid === 0n
@@ -2758,6 +2878,7 @@ export class WorldClient {
       sentAt: performance.now(),
       ...(cooldownDuration > 0 ? { cooldownDuration } : {}),
       ...(cooldownStartedOnEvent ? { cooldownStartedOnEvent: true } : {}),
+      ...(itemEntry !== undefined ? { itemEntry } : {}), // 5.30
     });
   }
 
@@ -2844,9 +2965,7 @@ export class WorldClient {
       // remove it now; a later request with the same wrapped cast count is a new identity.
       this.#emitCastAccepted(pending, "go");
     }
-    if (!pending || pending.cooldownAuthoritative || pending.cooldownStartedOnEvent
-      || pending.cooldownDuration === undefined) return;
-    this.#applyCooldown(spellId, pending.cooldownDuration, "cast");
+    if (pending) this.#startGoCooldown(pending); // 3.39: was the caller's duration alone, never a hold or a category
   }
 
   #applyCooldown(
@@ -2883,7 +3002,10 @@ export class WorldClient {
   #eraseCooldown(spellId: number): void {
     this.#clearCooldown(spellId);
     const categoryId = this.spellCategories.get(spellId);
-    if (categoryId !== undefined && categoryId !== 0) this.categoryCooldowns.delete(categoryId);
+    if (categoryId !== undefined && categoryId !== 0) {
+      this.categoryCooldowns.delete(categoryId);
+      this.#categorySnapshots.delete(categoryId); // 3.39
+    }
   }
 
   /**
@@ -2891,23 +3013,25 @@ export class WorldClient {
    * refuses it (SPELL_FAILED_NOT_READY) with nothing to count down — stock `GetSpellCooldown`
    * answers `enable = 0`. A hold holds its category too: `SpellHistory::AddCooldown` files the entry
    * under it (SpellHistory.cpp:405-406) and `HasCooldown` refuses every spell of a category with an
-   * entry (:473-487). A spell's category is known here only from `SMSG_INITIAL_SPELLS`.
+   * entry (:473-487). 3.39: the spell is asked under its row's Category (`#askedCategory`), the history's
+   * when the row is not known.
    *
-   * A hold that starts mid-session sends no packet (`SpellAuras.cpp:571-577` starts it in silence),
-   * so only the holds a login reports are known.
+   * A hold that starts mid-session sends no packet (`SpellAuras.cpp:571-577` starts it in silence);
+   * 3.39: the GO of the player's own cast files it, as Wow.exe does (`#startGoCooldown`).
    */
   isSpellOnHold(spellId: number): boolean {
     if (this.cooldownHolds.has(spellId)) return true;
-    const categoryId = this.spellCategories.get(spellId);
+    const categoryId = this.#askedCategory(spellId);
     if (categoryId === undefined || categoryId === 0) return false;
     for (const held of this.cooldownHolds.values()) if (held === categoryId) return true;
     return false;
   }
 
+  /** 3.39: the spell's own timer, or its category's (a sibling's cast holds it too, 0x00807980). */
   cooldownRemaining(spellId: number, now = performance.now()): number {
     const direct = (this.cooldowns.get(spellId) ?? 0) - now;
-    const categoryId = this.spellCategories.get(spellId);
-    const shared = categoryId === undefined ? 0 : (this.categoryCooldowns.get(categoryId) ?? 0) - now;
+    const categoryId = this.#askedCategory(spellId);
+    const shared = categoryId === undefined || categoryId === 0 ? 0 : (this.categoryCooldowns.get(categoryId) ?? 0) - now;
     return Math.max(0, direct, shared);
   }
 
@@ -3478,7 +3602,15 @@ export class WorldClient {
     }
     this.#pendingItemUses.delete(itemGuid);
     // The realm chooses the item's spell; zero is the logged spell id, with a no-target cast.
-    this.#connection.send(OPCODES.CMSG_USE_ITEM, buildUseItem(bag, slot, ++this.#useCount & 0xff, 0, itemGuid));
+    const castCount = ++this.#useCount & 0xff;
+    this.#connection.send(OPCODES.CMSG_USE_ITEM, buildUseItem(bag, slot, castCount, 0, itemGuid));
+    this.#trackCarriedItemUse(bag, slot, itemGuid, castCount); // 5.30
+  }
+
+  /** 5.30: `#trackItemUse` for the item at `bag`/`slot`, its use spell read off its template. */
+  #trackCarriedItemUse(bag: number, slot: number, itemGuid: bigint, castCount: number): void {
+    const entry = this.#carriedEntry(bag, slot, itemGuid);
+    if (entry !== undefined) this.#trackItemUse(itemUseSpellId(this.itemTemplates.get(entry)), castCount, entry);
   }
 
   /**
@@ -3494,8 +3626,9 @@ export class WorldClient {
     if (!Number.isFinite(destination.x) || !Number.isFinite(destination.y) || !Number.isFinite(destination.z)) {
       return;
     }
-    this.#connection.send(OPCODES.CMSG_USE_ITEM,
-      buildUseItem(bag, slot, ++this.#useCount & 0xff, 0, itemGuid, destination));
+    const castCount = ++this.#useCount & 0xff;
+    this.#connection.send(OPCODES.CMSG_USE_ITEM, buildUseItem(bag, slot, castCount, 0, itemGuid, destination));
+    this.#trackCarriedItemUse(bag, slot, itemGuid, castCount); // 5.30
   }
 
   /**
@@ -3505,8 +3638,9 @@ export class WorldClient {
    */
   useGlyphItem(bag: number, slot: number, itemGuid: bigint, glyphIndex: number): void {
     if (this.#closed || !Number.isInteger(glyphIndex) || glyphIndex < 0 || glyphIndex >= MAX_GLYPH_SLOTS) return;
-    this.#connection.send(OPCODES.CMSG_USE_ITEM,
-      buildUseItem(bag, slot, ++this.#useCount & 0xff, 0, itemGuid, undefined, glyphIndex));
+    const castCount = ++this.#useCount & 0xff;
+    this.#connection.send(OPCODES.CMSG_USE_ITEM, buildUseItem(bag, slot, castCount, 0, itemGuid, undefined, glyphIndex));
+    this.#trackCarriedItemUse(bag, slot, itemGuid, castCount); // 5.30
   }
 
   /** A count of zero destroys the whole stack, which is what the original client sends. */
@@ -7213,6 +7347,8 @@ export class WorldClient {
       this.cooldownSnapshots.clear();
       this.cooldownHolds.clear();
       this.categoryCooldowns.clear(); // 3.37(б): the packet is the whole history, shared lockouts too
+      this.#categorySnapshots.clear(); // 3.39
+      this.#holdParts.clear(); // 3.39
       this.#pendingCasts.length = 0;
       this.#locallyStartedCooldowns.clear();
       for (const cooldown of initial.cooldowns) {
@@ -7234,6 +7370,8 @@ export class WorldClient {
             const end = now + cooldown.categoryCooldown;
             if ((this.categoryCooldowns.get(cooldown.categoryId) ?? 0) < end) {
               this.categoryCooldowns.set(cooldown.categoryId, end);
+              // 3.39: a sibling's sweep (`cooldownState`) runs what is left from the login on.
+              this.#categorySnapshots.set(cooldown.categoryId, { startedAt: now, duration: cooldown.categoryCooldown, endsAt: end });
             }
           }
         }
@@ -7293,6 +7431,7 @@ export class WorldClient {
           // A duration-bearing packet is the server's complete answer. It also settles a pending
           // local request, so a rejected cast can never leave the book's speculative timer behind.
           this.#markPendingCooldownAuthoritative(cooldown.spellId);
+          // 3.39: no category part — Wow.exe 0x00806dd0 files one only for a duration of 0 (the row's).
           if (cooldown.duration > 0) this.#applyCooldown(cooldown.spellId, cooldown.duration, "server", true);
           else this.#clearCooldown(cooldown.spellId);
         }
@@ -7314,6 +7453,10 @@ export class WorldClient {
         // so the duplicate check below must not see it. The buttons hear of it once: from the
         // timer below when one starts (`#applyCooldown`), otherwise from here.
         const released = this.cooldownHolds.delete(event.spellId);
+        // 3.39: the parts this client's GO held (Wow.exe 0x00802970: a held entry's recovery and category part
+        // start at the event, with the numbers its GO filed — an item's own for an item cast).
+        const held = this.#holdParts.get(event.spellId);
+        this.#holdParts.delete(event.spellId);
         const endBefore = this.cooldowns.get(event.spellId);
         // A duplicate event can arrive after GO (or while the pending request is still waiting
         // for GO). Once an authoritative timer is live, do not move its end forward by packet
@@ -7327,23 +7470,35 @@ export class WorldClient {
         // If GO already armed the known local duration, this packet is its confirmation. Do not
         // restart the timer a few milliseconds later and make every cast last packet-latency longer.
         const locallyStarted = this.#locallyStartedCooldowns.get(event.spellId);
+        let shared = false; // 3.39
         if (locallyStarted !== undefined && locallyStarted > performance.now()) {
           this.#locallyStartedCooldowns.delete(event.spellId);
-        } else if (pending?.cooldownDuration !== undefined) {
-          pending.cooldownAuthoritative = true;
-          this.#applyCooldown(event.spellId, pending.cooldownDuration, "server");
         } else {
-          // Keep the request pending for the exact START/GO, but prevent a later GO from
-          // falling back to a speculative duration if the callback has no metadata.
-          if (pending) pending.cooldownAuthoritative = true;
-          this.#handlingServerCooldownEvent = true;
-          try {
-            this.onCooldownEvent?.(event.spellId);
-          } finally {
-            this.#handlingServerCooldownEvent = false;
+          // 3.39: the timer starts here, and with it the category part the realm files with it
+          // (SendCooldownEvent → StartCooldown → AddCooldown, SpellHistory.cpp:390-406) — before the own
+          // timer, so its notice already finds the category.
+          const now = performance.now();
+          const parts = held ?? this.#cooldownParts(event.spellId);
+          shared = parts !== undefined && this.#startCategoryCooldown(event.spellId, parts, now);
+          if (held !== undefined) {
+            if (pending) pending.cooldownAuthoritative = true;
+            this.#applyCooldown(event.spellId, Math.max(held.recovery, held.categoryDuration), "server", false, now);
+          } else if (pending?.cooldownDuration !== undefined) {
+            pending.cooldownAuthoritative = true;
+            this.#applyCooldown(event.spellId, pending.cooldownDuration, "server");
+          } else {
+            // Keep the request pending for the exact START/GO, but prevent a later GO from
+            // falling back to a speculative duration if the callback has no metadata.
+            if (pending) pending.cooldownAuthoritative = true;
+            this.#handlingServerCooldownEvent = true;
+            try {
+              this.onCooldownEvent?.(event.spellId);
+            } finally {
+              this.#handlingServerCooldownEvent = false;
+            }
           }
         }
-        if (released && this.cooldowns.get(event.spellId) === endBefore) this.onCooldownsChanged?.();
+        if ((released || shared) && this.cooldowns.get(event.spellId) === endBefore) this.onCooldownsChanged?.();
       }
       return true;
     }
@@ -7354,6 +7509,7 @@ export class WorldClient {
         this.events.emit("PET_COOLDOWNS_CHANGED", {});
       } else if (this.state.selfGuid === undefined || cleared.guid === this.state.selfGuid) {
         this.cooldownHolds.delete(cleared.spellId);
+        this.#holdParts.delete(cleared.spellId); // 3.39: 0x00802970 removes every entry of the spell, a held one too
         this.#eraseCooldown(cleared.spellId); // 3.37(б)
         this.onCooldownsChanged?.();
       }

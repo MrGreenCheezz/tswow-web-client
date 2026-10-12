@@ -8,6 +8,7 @@ import type { WorldObjectState, WorldPosition } from "../../world/WorldState.js"
 import { CAMERA_TERRAIN_ESCAPE_DEPTH } from "./Collision.js";
 import { armItemTarget, cancelItemTarget, isItemTargetSpell, spellTargetsObject } from "./SpellCursor.js";
 import { castOnMainHandWeapon } from "./MainHandEnchant.js"; // 05.10-2.05
+import { ITEM_USE_TRIGGERS, itemUseSpellId } from "../../world/SpellCooldownParts.js"; // 3.39/5.30: moved there
 
 /**
  * Ground-target (reticle) casts: Blizzard, Flamestrike and friends do not take the selection.
@@ -67,26 +68,8 @@ export function cancelGroundTarget(): void {
   game.renderer?.setGameObjectPreview(undefined);
 }
 
-/**
- * `ItemSpelltriggerType` values that spend the item on use (0), as a soulstone (4), on use
- * without delay (5) or by teaching (6) — the same family the tooltip calls «при использовании».
- * Equip (1) and proc (2) triggers never pass through `CMSG_USE_ITEM`.
- */
-export const ITEM_USE_TRIGGERS: ReadonlySet<number> = new Set([0, 4, 5, 6]);
-
-/** What using the item would cast: the first use-trigger spell, if any. */
-export function itemUseSpellId(
-  template: { spells?: ReadonlyArray<{ spellId: number; trigger: number }> } | undefined,
-): number | undefined {
-  const spells = template?.spells;
-  if (!spells) return undefined;
-  for (const spell of spells) {
-    if (ITEM_USE_TRIGGERS.has(spell.trigger) && Number.isSafeInteger(spell.spellId) && spell.spellId > 0) {
-      return spell.spellId;
-    }
-  }
-  return undefined;
-}
+// 3.39/5.30: the rule lives beside the world's item-use request (WorldClient tracks the spell it names).
+export { ITEM_USE_TRIGGERS, itemUseSpellId };
 
 export interface ItemUseRef {
   readonly bag: number;

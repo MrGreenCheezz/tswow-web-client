@@ -36,7 +36,7 @@ async function loadOne(payload) {
   const client = new SpellMetadataClient("ws://127.0.0.1:8090/auth");
   const previous = globalThis.fetch;
   globalThis.fetch = async (url) => {
-    assert.match(String(url), /&v=18$/, // 12.10: v=18 (L13: v=17)
+    assert.match(String(url), /&v=19$/, // 3.39: v=19 (12.10: v=18; L13: v=17)
       "the marker expires cached responses before the stock tooltip fields while retaining earlier fixes");
     return { ok: true, json: async () => payload };
   };

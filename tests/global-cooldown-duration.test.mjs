@@ -89,16 +89,18 @@ test("SPELLMOD_GLOBAL_COOLDOWN: only reductions, on a bit of the spell's family 
   assert.equal(predictedGlobalCooldownDuration(plagueStrike, 1, [{ ...unholy, value: -2000 }]), 0);
 });
 
-// L13 (04.10): `/dbc/spells?v=17` carries StartRecoveryCategory, and the realm's own rule takes over where the
-// row has it: no global cooldown for category 0 (Spell.cpp:8698, `if (!StartRecoveryCategory) return;`), the
-// cast-speed rule only for category 133 (:8711; Wow.exe 0x00805d70 compares the category with 0x85).
-test("L13: with StartRecoveryCategory — 0 starts none, only 133 is hasted, 133 without a time none", () => {
+// L13 (04.10): `/dbc/spells?v=17` carries StartRecoveryCategory: the cast-speed rule only for category 133
+// (Spell.cpp:8711; Wow.exe 0x00805d70 compares the category with 0x85). 12.10 (the owner's decision: category 0 as
+// Wow.exe): 0x00805d70 times a category-0 row with a time like any other (it tests only «category or time set»),
+// not hasted; L13 gave it 0 as the realm does (Spell.cpp:8698, `if (!StartRecoveryCategory) return;`).
+test("L13 + 12.10: with StartRecoveryCategory — 0 is timed (as Wow.exe), only 133 is hasted, 133 without a time none", () => {
   const cat = (category, startRecoveryTime, dmgClass, attr0, mask) =>
     ({ ...row(startRecoveryTime, dmgClass, attr0, mask), startRecoveryCategory: category });
   const L13_TABLE = [
-    ["Удар смерти 45469 (0/1500)", cat(0, 1500, 0, 0x50000), [0, 0, 0, 0]],
-    ["Духовный удар 61193 (0/1500, magic)", cat(0, 1500, 1, 0x10000), [0, 0, 0, 0]],
-    ["Большая ракета любви 71342 (0/1500)", cat(0, 1500, 0, 0x10118110), [0, 0, 0, 0]],
+    ["Удар смерти 45469 (0/1500)", cat(0, 1500, 0, 0x50000), [1500, 1500, 1500, 1500]],
+    ["Духовный удар 61193 (0/1500, magic: not 133, not hasted)", cat(0, 1500, 1, 0x10000), [1500, 1500, 1500, 1500]],
+    ["Большая ракета любви 71342 (0/1500)", cat(0, 1500, 0, 0x10118110), [1500, 1500, 1500, 1500]],
+    ["Антимагия 2139 (0/0)", cat(0, 0, 1, 0x0), [0, 0, 0, 0]],
     ["Аура благочестия 48941 (38/1500, magic: not 133, not hasted)", cat(38, 1500, 1, 0x9040000), [1500, 1500, 1500, 1500]],
     ["Огненный шар 133 (133/1500, magic)", cat(133, 1500, 1, 0x0), [1500, 1200, 1000, 1500]],
     ["Смертельный удар 47486 (133/1500, melee)", cat(133, 1500, 2, 0x40010), [1500, 1500, 1500, 1500]],
@@ -109,11 +111,13 @@ test("L13: with StartRecoveryCategory — 0 starts none, only 133 is hasted, 133
   }
   // Without the column (an older gateway) the same 48941 row is hasted as if it were 133: the shorter answer.
   assert.equal(predictedGlobalCooldownDuration(row(1500, 1, 0x9040000), 0.8, []), 1200);
-  // SPELLMOD_GLOBAL_COOLDOWN still applies to another category (Spell.cpp:8707), and category 0 stays none.
+  // SPELLMOD_GLOBAL_COOLDOWN still applies to another category (Spell.cpp:8707), and 12.10 to category 0 as well
+  // (0x00805d70 takes 0x007fd970(…, 0x15) before it looks at the category).
   const reduce = { effectIndex: 6, op: 21, value: -500, pct: false }; // bit 6: 48941's family mask 0x40
   assert.equal(predictedGlobalCooldownDuration(cat(38, 1500, 1, 0x9040000, [0x40, 0, 0]), 1, [reduce]), 1000);
-  assert.equal(predictedGlobalCooldownDuration(cat(0, 1500, 1, 0x10000, [0x40, 0, 0]), 1, [reduce]), 0);
-  assert.equal(globalCooldownDurationIn(undefined, cat(0, 1500, 0, 0)), 0);
+  assert.equal(predictedGlobalCooldownDuration(cat(0, 1500, 1, 0x10000, [0x40, 0, 0]), 1, [reduce]), 1000);
+  assert.equal(globalCooldownDurationIn(undefined, cat(0, 1500, 0, 0)), 1500);
+  assert.equal(globalCooldownDurationIn(undefined, cat(0, 0, 0, 0)), 0, "neither a category nor a time: no entry");
 });
 
 test("the world's part: the player's UNIT_MOD_CAST_SPEED and SPELLMOD entries", () => {
