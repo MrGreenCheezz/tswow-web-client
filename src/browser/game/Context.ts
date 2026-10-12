@@ -238,6 +238,16 @@ export const game: GameContext = {
  * awkward close shot, not silently behind their own eyes.
  */
 export function cameraPivotHeight(): number {
+  // 5.33: the hinge a ceiling has pushed down this frame (CameraRig.advanceCameraHinge), when it has run.
+  return game.camera.distance <= CAMERA_FIRST_PERSON_DISTANCE ? game.camera.eyeHeight
+    : game.camera.viewPivotHeight ?? game.camera.pivotHeight;
+}
+
+/**
+ * 5.33: the model's own height for the hinge (or the eye) — what the frame's camera step starts from, before a
+ * ceiling has had its say (`cameraPivotHeight` is what it settled on).
+ */
+export function cameraModelPivotHeight(): number {
   return game.camera.distance <= CAMERA_FIRST_PERSON_DISTANCE ? game.camera.eyeHeight : game.camera.pivotHeight;
 }
 
@@ -321,6 +331,12 @@ export function clearWorldContext(): void {
   game.camera.zoom = game.camera.distance;
   game.camera.wallView = Number.POSITIVE_INFINITY;
   game.camera.terrainView = Number.POSITIVE_INFINITY;
+  // 5.33: nor the two restarted eases, nor the hinge a ceiling there pushed down (CameraClip.ts).
+  game.camera.wallFrom = undefined;
+  game.camera.wallSeconds = undefined;
+  game.camera.pivotFrom = undefined;
+  game.camera.pivotSeconds = undefined;
+  game.camera.viewPivotHeight = undefined;
   // Nor does the tilt the floor granted: the floor it was measured against is in the old zone too.
   game.camera.viewPitch = game.camera.pitch;
   // Nor does the body it was hanging off. The renderer that measured the last character's shoulder

@@ -451,6 +451,57 @@ export class CollisionMesh {
     return best === undefined ? undefined : { t: best, triangle: bestTriangle };
   }
 
+  /**
+   * 5.33: every triangle filed in a grid cell the segment's xy line crosses, each cell once (a triangle
+   * spanning two cells is offered twice) — `firstHit`'s walk without its early stop, for a caller that
+   * tests a volume around the line itself (CameraClip.ts, the near-plane sweep). Every triangle
+   * without a grid. A line beside the mesh is walked along its edge cells (the cells clamp), not
+   * refused: the volume around it may still reach a mesh thinner than the volume; the caller tests the
+   * volume's own bounds against the mesh's.
+   */
+  forEachAlong(from: Vector3, to: Vector3, visit: (triangle: number) => void): void {
+    const bounds = this.bounds;
+    const offsets = this.#offsets;
+    const items = this.#items;
+    if (!offsets || !items) {
+      const count = this.triangleCount;
+      for (let triangle = 0; triangle < count; triangle++) visit(triangle);
+      return;
+    }
+    const dx = to.x - from.x;
+    const dy = to.y - from.y;
+    let cellX = this.#cellX(from.x);
+    let cellY = this.#cellY(from.y);
+    const lastX = this.#cellX(to.x);
+    const lastY = this.#cellY(to.y);
+    const stepX = dx > 0 ? 1 : -1;
+    const stepY = dy > 0 ? 1 : -1;
+    const perCellX = dx === 0 ? Infinity : Math.abs(CELL_YARDS / dx);
+    const perCellY = dy === 0 ? Infinity : Math.abs(CELL_YARDS / dy);
+    let nextX = dx === 0 ? Infinity
+      : (bounds.minX + (cellX + (stepX > 0 ? 1 : 0)) * CELL_YARDS - from.x) / dx;
+    let nextY = dy === 0 ? Infinity
+      : (bounds.minY + (cellY + (stepY > 0 ? 1 : 0)) * CELL_YARDS - from.y) / dy;
+    if (nextX < 0) nextX = 0;
+    if (nextY < 0) nextY = 0;
+    for (;;) {
+      const cell = cellY * this.#cellsX + cellX;
+      const end = offsets[cell + 1]!;
+      for (let entry = offsets[cell]!; entry < end; entry++) visit(items[entry]!);
+      if (cellX === lastX && cellY === lastY) return;
+      if (Math.min(nextX, nextY) > 1) return;
+      if (nextX <= nextY) {
+        if (cellX === lastX) return;
+        cellX += stepX;
+        nextX += perCellX;
+      } else {
+        if (cellY === lastY) return;
+        cellY += stepY;
+        nextY += perCellY;
+      }
+    }
+  }
+
   /** The group run a triangle came from, or undefined when the mesh carries no run table. */
   runAt(triangle: number): CollisionRun | undefined {
     const runs = this.runs;
@@ -1124,6 +1175,10 @@ function wallNormal(triangles: Float32Array, triangle: number): Vector3 {
  * It has to clear the near plane, which `buildWorldCamera` sets at 0.25: park the camera any
  * closer to the stone than that and the wall is clipped away and the room behind it is on screen —
  * the exact thing the clamp exists to prevent, arrived at from the other side.
+ *
+ * 5.33: the camera's walls no longer use it — they are Wow.exe's segment, near-plane sweep and 1/9
+ * (CameraClip.ts, `CameraRig.advanceCameraFrame`); it remains `boomLimits`' default and the
+ * heightfield's clearance there.
  */
 export const CAMERA_WALL_CLEARANCE = 0.45;
 

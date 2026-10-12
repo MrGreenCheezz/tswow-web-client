@@ -47,3 +47,13 @@ export const EMOTE_ANIMATIONS: Readonly<Record<number, { animation: number; stat
 export const ANIMATION_BODY_FLAGS: Readonly<Record<number, number>> =
   (implementation as { readonly ANIMATION_BODY_FLAGS?: Readonly<Record<number, number>> })
     .ANIMATION_BODY_FLAGS ?? {};
+/**
+ * 5.32: Emotes.dbc `EmoteFlags` by row and CreatureMovementInfo.dbc `SmoothFacingChaseRate` by row (world/
+ * UnitFacing.ts). Widened like the body flags: the neutral stub and older implementations do not carry them, and
+ * an empty table means «no row known» — an emote state forbids no turn, a creature springs at the default rate.
+ */
+export const EMOTE_FLAGS: Readonly<Record<number, number>> =
+  (implementation as { readonly EMOTE_FLAGS?: Readonly<Record<number, number>> }).EMOTE_FLAGS ?? {};
+export const CREATURE_MOVEMENT_CHASE_RATES: Readonly<Record<number, number>> =
+  (implementation as { readonly CREATURE_MOVEMENT_CHASE_RATES?: Readonly<Record<number, number>> })
+    .CREATURE_MOVEMENT_CHASE_RATES ?? {};

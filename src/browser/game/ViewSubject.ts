@@ -104,6 +104,11 @@ export function farSightHoldsBody(world: ViewSubjectWorld | undefined): boolean 
 export interface SubjectEasing {
   wallView: number;
   terrainView: number;
+  /** 5.33: the walls' and the hinge's restarted eases (CameraClip.ts), forgotten with the old subject. */
+  wallFrom?: number | undefined;
+  wallSeconds?: number | undefined;
+  pivotFrom?: number | undefined;
+  pivotSeconds?: number | undefined;
 }
 
 /**
@@ -132,6 +137,9 @@ export class ViewSubjectTracker {
     if (first) return false;
     rig.wallView = Number.POSITIVE_INFINITY;
     rig.terrainView = Number.POSITIVE_INFINITY;
+    // 5.33: the restarted eases, where there are any.
+    if (rig.wallFrom !== undefined || rig.wallSeconds !== undefined) rig.wallFrom = rig.wallSeconds = undefined;
+    if (rig.pivotFrom !== undefined || rig.pivotSeconds !== undefined) rig.pivotFrom = rig.pivotSeconds = undefined;
     return true;
   }
 

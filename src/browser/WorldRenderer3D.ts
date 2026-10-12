@@ -8,11 +8,12 @@ import { sceneYaw, toRenderAxes, type Quat } from "../world/GameObjectRotation.j
 import { gameObjectNodeYaw, gameObjectWorldRotation, placedBoxCorners, type ModelBox } from "../world/GameObjectModelFrame.js"; // 06.10-7.24
 import { modelPickBox } from "./GameObjectPickBox.js"; // 06.10-7.24
 import { passengerGameObjectTilt } from "../world/TransportPassengers.js";
-import { ShownUnitFacing, unitAutoFacing, unitFacingTurn } from "../world/UnitFacing.js"; // 11.10
+import { ShownUnitFacing, unitAutoFacing, unitFacingTurn, unitSeatFacing } from "../world/UnitFacing.js"; // 11.10; 5.32: + unitSeatFacing
 import {
   CAMERA_DEFAULT_DISTANCE, CAMERA_DEFAULT_EYE_HEIGHT, CAMERA_DEFAULT_PITCH, CAMERA_DEFAULT_PIVOT_HEIGHT,
   CAMERA_EYE_BODY_SHARE, CAMERA_FIRST_PERSON_DISTANCE, CAMERA_FOV_DEGREES, CAMERA_PIVOT_BODY_SHARE,
   cameraBodyHeight, createCamera, type HeightSampler,
+  CAMERA_NEAR_PLANE, // 5.33
 } from "./SimpleScene.js";
 import { ENVIRONMENT_FAR_RANGE, ENVIRONMENT_RANGE, ENVIRONMENT_RESIDENT_HYSTERESIS, ENVIRONMENT_STREAM_RANGE, TERRAIN_GRID_SIZE, modelKey, terrainGrid, terrainGridIndex, type EnvironmentClient, type EnvironmentModel, type EnvironmentObject, type TerrainClient } from "./Terrain.js";
 import { terrainGeometryData, terrainGeometrySteps, type TerrainGeometryData } from "./TerrainGeometry.js";
@@ -183,6 +184,7 @@ import {
   type StaticWmoFloor, type StaticWmoPlacementIdentity,
 } from "./game/CollisionSource.js";
 import { viewSubjectIn } from "./game/ViewSubject.js"; // 11.02-I
+import { cameraSubjectOpacity } from "./game/CameraClip.js"; // 5.33
 import { VehiclePassengerPoser } from "./VehiclePassengerPose.js"; // 11.02-H
 import { vehicleCatalog } from "./VehicleClient.js"; // 11.02-H
 import { drawnUnitPosition } from "./VehiclePassengerOverlay.js"; // 11.02-tails
@@ -2062,7 +2064,7 @@ export function buildWorldCamera(): THREE.PerspectiveCamera {
 }
 
 /** Named because the underwater crossing is measured in it and not only compiled into a camera. */
-export const WORLD_CAMERA_NEAR_PLANE = 0.25;
+export const WORLD_CAMERA_NEAR_PLANE = CAMERA_NEAR_PLANE; // 5.33: was 0.25, the same number (SimpleScene.ts)
 
 /**
  * The crossing band of the world camera, for the callers that have to sample liquid before the
@@ -2755,6 +2757,8 @@ interface RenderedUnit extends PosedModel {
   strafeYaw: number | undefined;
   /** 11.10: the facing this unit is drawn at, when the client does not move it itself. See `world/UnitFacing.ts`. */
   shownFacing: ShownUnitFacing | undefined;
+  /** 5.32: a seated passenger's drawn facing in its seat (VehiclePassengerPose.ts reads it); undefined off a seat. */
+  seatFacing?: number | undefined;
   /** 05.10-A7a-F1 (6.16а): private copies of the batches the file fades under Death. See `BatchDeathFade.ts`. */
   deathFade: DeathFadeState | undefined;
   /** 05.10-A7a-C 6.07: the STUNNED/LOOTING bits whose holds are in the queue. See `UnitFlagPoses.ts`. */
@@ -3738,6 +3742,29 @@ export class WorldRenderer3D {
   readonly #units = new Map<bigint, RenderedUnit>();
   /** 11.02-H: vehicle passengers' seat poses and their place on the vehicle (VehiclePassengerPose.ts). */
   readonly #vehiclePassengers = new VehiclePassengerPoser();
+  /**
+   * 5.32: a vehicle's drawn world facing, as Wow.exe 0x00717e50 sums the drawn facings (+0xaa0) up the chain of
+   * vehicles: a seated vehicle's is its own vehicle's plus its seat facing, a turned one's its shown facing, any
+   * other its movement facing. The units as last drawn (a vehicle drawn after its passenger answers last frame's).
+   */
+  readonly #drawnVehicleFacing = (vehicle: WorldObjectState): number => {
+    let facing = 0;
+    let current: WorldObjectState | undefined = vehicle;
+    for (let depth = 0; current !== undefined && depth < 4; depth++) {
+      const unit = this.#units.get(current.guid);
+      const transport: WorldObjectState["transport"] = current.transport;
+      if (unit?.seatFacing !== undefined && transport !== undefined) {
+        facing += unit.seatFacing;
+        current = this.#objectsForFacing?.get(transport.guid);
+        continue;
+      }
+      const shown = unit?.shownFacing?.angle;
+      return facing + (shown !== undefined && Number.isFinite(shown) ? shown : current.position?.orientation ?? 0);
+    }
+    return facing;
+  };
+  /** 5.32: the objects `#drawnVehicleFacing` walks up, this frame's. */
+  #objectsForFacing: ReadonlyMap<bigint, WorldObjectState> | undefined;
   /** 11.02-tails: scratch for a marked passenger's drawn place, read at once by `#updateSelectionRings`. */
   readonly #ringSeatDrawn = { x: 0, y: 0, z: 0 };
   /** Mount-special packets can arrive before the rider or mount has been admitted and built. */
@@ -3810,6 +3837,9 @@ export class WorldRenderer3D {
   readonly #actions = new Map<bigint, UnitActionQueue<UnitActionPayload, ShownUnitAction>>();
   /** Whether the camera is inside the player, which is the one unit that then must not be drawn. */
   #firstPerson = false;
+  /** 5.33: the camera's subject and how opaque the eye's closeness leaves it this frame (CameraClip.cameraSubjectOpacity). */
+  #subjectFadeGuid: bigint | undefined;
+  #subjectFade = 1;
   /** null marks a model that has downloaded but carries no usable skeleton. */
   readonly #skinnedTemplates = new Map<string, SkinnedTemplate | null>();
   /** Geometry and materials for one doodad model, shared by every placement of it. */
@@ -5924,6 +5954,11 @@ export class WorldRenderer3D {
     return true;
   }
 
+  /** 5.33: the world camera's width over height, which sizes the near-plane quad the camera sweeps (CameraClip.ts). */
+  get cameraAspect(): number {
+    return this.#camera.aspect;
+  }
+
   /** Where the camera orbits this unit: the shoulder of the body actually standing there. */
   unitPivotHeight(guid: bigint): number {
     return this.#bodyHeight(guid, ATTACHMENT_SHOULDER_RIGHT, CAMERA_PIVOT_BODY_SHARE, CAMERA_DEFAULT_PIVOT_HEIGHT);
@@ -7860,6 +7895,10 @@ export class WorldRenderer3D {
     // Zero orbit distance puts the camera inside the character's own head, where its body fills
     // the screen. Hidden rather than dropped, so leaving first person costs no rebuild.
     this.#firstPerson = cameraAnchorDistance <= CAMERA_FIRST_PERSON_DISTANCE;
+    // 5.33: in third person a wall can now bring the eye all the way in (CameraRig.CAMERA_MIN_WALL_DISTANCE 0);
+    // the subject fades as it does in Wow.exe (0x00606f90 → 0x004f8660, CameraClip.ts).
+    this.#subjectFadeGuid = player.guid;
+    this.#subjectFade = this.#firstPerson ? 1 : cameraSubjectOpacity(cameraDistance, cameraPitch, cameraPivotHeight);
     // Phase marks are plain numbers beside the phase calls: nine pairs of `performance.now()`
     // cost about a microsecond and tell a JS-side build burst apart from driver-side submission.
     let drawPhaseAt = performance.now();
@@ -13039,6 +13078,7 @@ export class WorldRenderer3D {
     this.#atlasFrameDemands.clear();
     this.#atlasFrameActive.clear();
     this.#vehiclePassengers.begin(state.objects, vehicleCatalog()); // 11.02-H
+    this.#objectsForFacing = state.objects; // 5.32
     // The frustum is composed before admission so invisible neighbours do not consume the same
     // budget as the units on screen. Numeric sphere tests below allocate nothing per candidate.
     this.#frustumMatrix.multiplyMatrices(this.#camera.projectionMatrix, this.#camera.matrixWorldInverse);
@@ -13317,7 +13357,7 @@ export class WorldRenderer3D {
     displayAnswered: ((displayId: number) => boolean) | undefined,
     mountModel: ((object: WorldObjectState) => UnitModel | undefined) | undefined,
     shadowCaster: boolean,
-    world?: Pick<WorldState, "objects" | "predictedGuid">, // 11.10: for the facing (UnitFacing.ts)
+    world?: Pick<WorldState, "objects" | "predictedGuid" | "selfGuid">, // 11.10: for the facing (UnitFacing.ts); 5.32: + selfGuid
   ): void {
     const detailedCapture = this.#shaderProgramTrace !== undefined;
     let unitPartAt = detailedCapture ? performance.now() : 0;
@@ -13381,7 +13421,10 @@ export class WorldRenderer3D {
 
     const metadata = creatureModel?.(object);
     unit.particleColours = metadata?.particleColors; // 05.10-A7a-H 6.11а
-    const displayOpacity = appearance.opacity * creatureDisplayAlpha(metadata); // 05.10-A7a-H 6.11а: CreatureModelAlpha multiplies
+    const displayOpacity = appearance.opacity * creatureDisplayAlpha(metadata) // 05.10-A7a-H 6.11а: CreatureModelAlpha multiplies
+      // 5.33: the camera's subject fades as the eye closes in on it (Wow.exe 0x00606f90, CameraClip.ts); folded in here
+      // so the warm hold knows it will be drawn translucent.
+      * (object.guid === this.#subjectFadeGuid ? this.#subjectFade : 1);
     let currentWvm = false;
     let currentObjectScale = 1;
     // Rebuilt whenever the model or the look changes, rather than once and never again. The key
@@ -13475,9 +13518,27 @@ export class WorldRenderer3D {
     // target's while it stands in a fight, followed smoothly (world/UnitFacing.ts); the character and
     // whatever it drives keep their own facing exactly. Was `position.orientation` for every unit.
     const mover = self || (world !== undefined && world.predictedGuid === object.guid);
-    unit.node.rotation.y = mover || world === undefined ? position.orientation
-      : (unit.shownFacing ??= new ShownUnitFacing()).step(
-        unitAutoFacing(object, world.objects) ?? position.orientation, unitFacingTurn(object), elapsed);
+    // 5.32: a vehicle seat's passenger is turned in its seat (+0xaa0 local to the vehicle, world/UnitFacing.ts
+    // `unitSeatFacing`): its seat facing goes to the passenger poser, its world facing is the vehicle's plus it.
+    const seat = mover || world === undefined || object.transport === undefined
+      ? undefined : this.#vehiclePassengers.seatOf(object);
+    // A seat's facing is local and the ground's is not: boarding or leaving starts the smoothing afresh.
+    if ((unit.seatFacing !== undefined) !== (seat !== undefined)) unit.shownFacing = undefined;
+    unit.seatFacing = undefined;
+    if (seat !== undefined && world !== undefined) {
+      const own = object.transport!.orientation;
+      const local = (unit.shownFacing ??= new ShownUnitFacing()).step(
+        unitSeatFacing(object, world.objects, seat.flags, this.#drawnVehicleFacing, world.selfGuid) ?? own,
+        unitFacingTurn(object), elapsed);
+      unit.seatFacing = local;
+      unit.node.rotation.y = position.orientation + local - own;
+    } else {
+      // 5.32: `world.selfGuid` — a unit with no target faces the player whose interaction window is open on it.
+      unit.node.rotation.y = mover || world === undefined ? position.orientation
+        : (unit.shownFacing ??= new ShownUnitFacing()).step(
+          unitAutoFacing(object, world.objects, undefined, world.selfGuid) ?? position.orientation,
+          unitFacingTurn(object), elapsed);
+    }
     if (mover) unit.shownFacing = undefined;
     const content = unitContentVisible(object, self, this.#firstPerson, unit.body !== undefined);
     // First person hides the *rider*, not what the rider is sitting on. The mount's group hangs

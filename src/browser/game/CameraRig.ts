@@ -7,6 +7,10 @@ import { FLOOR_SEARCH_DEPTH } from "./Physics.js";
 import { MOVEMENT_FLAGS } from "../../world/MovementProtocol.js";
 import type { WorldPosition } from "../../world/WorldState.js";
 import { cameraWaterArm, cameraWaterFloor } from "./CameraWater.js"; // L8 5.14
+import {
+  CAMERA_CLIP_MARGIN, CAMERA_CLIP_REARM, CAMERA_CLIP_RECOVERY_SECONDS, cameraArmClip, cameraClipEase,
+  cameraPivotUnderCeiling,
+} from "./CameraClip.js"; // 5.33
 
 /**
  * What the camera does between the player's hands and the geometry: the wheel, the easing, and
@@ -69,6 +73,10 @@ export interface CameraRig {
    * every zoom out into the slowest of the three easings. Measured with the release taken back
    * out: a single 2.5572-yard notch lands inside a hundredth of a yard after 2.500 seconds
    * against 0.383, and moves 0.0930 yards on its biggest frame against 0.5657.
+   *
+   * 5.33: since Wow.exe's recovery (CameraClip.ts) a wall's hold is the limit plus 0.1111 eased back to the
+   * wheel's distance over two seconds (`wallFrom`, `wallSeconds`), and the drawn arm is the smaller of it and
+   * this frame's scan; it reads `Infinity` again once those two seconds are up.
    */
   wallView: number;
   /** The same for the ground, eased on its own and slower. Yards, or `Infinity` for clear. */
@@ -80,6 +88,20 @@ export interface CameraRig {
    * follow and the steer, which work on the rest. Absent or 0 without a flip.
    */
   flipYaw?: number | undefined;
+  /**
+   * 5.33: the walls' restarted ease (Wow.exe 0x00603d30 on +0x118, CameraClip.ts) — where `wallView` set out
+   * from and how many seconds ago; absent while nothing is being let go of.
+   */
+  wallFrom?: number | undefined;
+  wallSeconds?: number | undefined;
+  /** 5.33: the same for the hinge's height a ceiling pushed down (+0x128); absent while it stands at the model's. */
+  pivotFrom?: number | undefined;
+  pivotSeconds?: number | undefined;
+  /**
+   * 5.33: the hinge's height this frame once a ceiling has had its say — what every camera of the frame is
+   * built around (`Context.cameraPivotHeight`); absent in first person and before the first frame.
+   */
+  viewPivotHeight?: number | undefined;
 }
 
 /** How fast the mouse turns the camera, in radians a pixel. wowee's 0.2 deg/px (`hpp:342`). */
@@ -183,18 +205,18 @@ export function cameraAllowsUpwardOrbit(
 export const CAMERA_ZOOM_TAU = 1 / 15;
 
 /**
- * How fast the camera comes back out once whatever was in the way is not, in seconds.
+ * How the camera comes back out once whatever was in the way is not.
  *
  * The way in is instant and has to be: a camera that eased into a wall would show the room behind
  * it for the frames it took to arrive. The way out is not, and that asymmetry is the whole of it —
  * walking past a fence post pulls the camera to two yards for one frame, and without this it would
  * snap back to twenty-one on the next, once per post, all the way along the fence.
  *
- * An exponential rather than the flat 14 yards a second this replaces (wowee `cpp:1788`): a linear
- * ramp takes the same time to cross the last tenth of a yard as the first, so the end of every
- * recovery was a visible crawl and a long one was a visible slide.
+ * 5.33: Wow.exe's own rule (CameraClip.ts): from 0.1111 past where the wall held it, back to the wheel's
+ * distance over `CAMERA_CLIP_RECOVERY_SECONDS` (2) on a half cosine, restarted on every frame the wall still
+ * holds it. Was an exponential of τ 0.4 s (`CAMERA_RECOVERY_TAU`), this client's own.
  */
-export const CAMERA_RECOVERY_TAU = 0.4;
+export const CAMERA_RECOVERY_SECONDS = CAMERA_CLIP_RECOVERY_SECONDS;
 
 /**
  * The ground's own limit is eased separately from the walls', and slower, in seconds.
@@ -214,8 +236,14 @@ export const CAMERA_TERRAIN_TAU_OUT = 0.45;
  * recognised, and it hides the character's own body and drops it out of the hit list. A corner
  * tight enough to reach zero must leave the player in an awkward close shot, not silently in a
  * different camera mode.
+ *
+ * 5.33: Wow.exe's own floor, nothing (0x00605d60: never under 0), now that the subject fades out as the eye
+ * closes in on it, as it does there (`CameraClip.cameraSubjectOpacity`). First person is still the wheel's
+ * `distance` alone, so a squeeze to zero is that close shot with the body faded, not first person. Was 0.75 —
+ * which held the camera 0.75 out along the arm whatever the clip said, and so in the ceiling of a room the
+ * hinge stands close under (a mount indoors), the near plane's sweep notwithstanding.
  */
-export const CAMERA_MIN_WALL_DISTANCE = 0.75;
+export const CAMERA_MIN_WALL_DISTANCE = 0;
 
 /**
  * How far above the character's own feet the camera is kept by the normal ground-mode clamp, in
@@ -379,6 +407,8 @@ export function advanceCameraRig(rig: CameraRig, limits: CameraLimits, elapsed: 
     // Nothing was scanned this frame either: the boom has no length to obstruct.
     rig.zoom = rig.distance;
     rig.wallView = Number.POSITIVE_INFINITY;
+    rig.wallFrom = undefined; // 5.33
+    rig.wallSeconds = undefined; // 5.33
     rig.terrainView = Number.POSITIVE_INFINITY;
     rig.view = rig.distance;
     // Keep first person behind the same finite pitch guard as the orbit path. Controls normally
@@ -395,12 +425,29 @@ export function advanceCameraRig(rig: CameraRig, limits: CameraLimits, elapsed: 
   rig.zoom = rig.zoom <= CAMERA_FIRST_PERSON_DISTANCE
     ? rig.distance
     : approachCamera(rig.zoom, rig.distance, CAMERA_ZOOM_TAU, elapsed);
-  // Walls come in at once and go out on an exponential. Nearer than the limit standing is what a
+  // Walls come in at once and go out over two seconds. Nearer than the limit standing is what a
   // wall the camera has just backed into looks like, and there is nothing to ease about it: the
   // frames it took to arrive would be frames spent looking at the inside of the stone.
-  rig.wallView = limits.wall <= rig.wallView
-    ? limits.wall
-    : approachCamera(rig.wallView, limits.wall, CAMERA_RECOVERY_TAU, elapsed);
+  // 5.33: Wow.exe 0x00606f90 (CameraClip.ts) — first 0x00603d30 moves the restarted ease on toward the wheel's
+  // distance, then the scan caps the arm, then an answer more than 1/9 under where the camera stood restarts
+  // the ease from 0.1111 past it. Was `limits.wall <= wallView ? limits.wall : approachCamera(wallView,
+  // limits.wall, CAMERA_RECOVERY_TAU, elapsed)`, with `wallView` itself drawn.
+  if (rig.wallFrom !== undefined) {
+    const seconds = (rig.wallSeconds ?? 0) + (elapsed > 0 ? elapsed : 0);
+    if (seconds >= CAMERA_CLIP_RECOVERY_SECONDS) {
+      rig.wallFrom = undefined;
+      rig.wallSeconds = undefined;
+      rig.wallView = Number.POSITIVE_INFINITY;
+    } else {
+      rig.wallSeconds = seconds;
+      rig.wallView = cameraClipEase(rig.wallFrom, rig.distance, seconds);
+    }
+  }
+  if (Math.min(rig.zoom, rig.wallView) - limits.wall > CAMERA_CLIP_MARGIN) {
+    rig.wallFrom = limits.wall + CAMERA_CLIP_REARM;
+    rig.wallSeconds = 0;
+    rig.wallView = rig.wallFrom;
+  }
   // The ground is eased both ways, and slower coming in than a wall — the difference between a
   // slope and a series of nudges. Easing *from* «nothing in the way» has to start somewhere, and
   // the whole arm is where: that is where the camera is standing when the hillside first appears.
@@ -420,9 +467,11 @@ export function advanceCameraRig(rig: CameraRig, limits: CameraLimits, elapsed: 
   // on the very next frame, a 6.7861-yard step *outward* and six frames — a tenth of a second —
   // spent behind the stone; a pillar granting 5 drew 17.3704 and nine frames. Against the arm,
   // both hold at what the scan granted until the eased camera comes inside it.
-  if (rig.wallView >= arm) rig.wallView = Number.POSITIVE_INFINITY;
+  // 5.33: a restarted wall ease is a state until its two seconds are up (above), whatever it has reached.
+  if (rig.wallFrom === undefined && rig.wallView >= arm) rig.wallView = Number.POSITIVE_INFINITY;
   if (rig.terrainView >= arm) rig.terrainView = Number.POSITIVE_INFINITY;
-  rig.view = drawnArm(rig.zoom, rig.wallView, rig.terrainView);
+  // 5.33: the walls' answer this frame caps the arm as well as the ease does (`Math.min(limits.wall, …)`).
+  rig.view = drawnArm(rig.zoom, Math.min(limits.wall, rig.wallView), rig.terrainView);
   // Against the arm the camera actually got rather than the one it asked for: a boom squeezed to
   // three yards by a doorway dips three yards' worth for a given tilt, and clamping it as though
   // it were still twenty-one would hold the view level for no reason the player can see.
@@ -452,6 +501,10 @@ export interface CameraWorld {
   allowUpwardOrbit?: boolean | undefined;
   /** L8 5.14: the water surface the boom stops at (cameraWaterCollision, CameraWater.ts); none without it. */
   waterZ?: number | undefined;
+  /** 5.33: the subject's drawn height, mount included — the hinge is never pushed under 3/4 of it (CameraClip.ts). */
+  bodyHeight?: number | undefined;
+  /** 5.33: the drawn camera's width over height, which sizes the near-plane quad (16/9 without it). */
+  aspect?: number | undefined;
 }
 
 /**
@@ -552,8 +605,13 @@ export function cameraFloorHeight(
 export function advanceCameraFrame(
   rig: CameraRig, player: WorldPosition, pivotHeight: number, world: CameraWorld, elapsed: number,
 ): void {
-  const options = { pivotHeight };
-  const pivotZ = player.z + pivotHeight;
+  // 5.33: the hinge a ceiling has pushed down (Wow.exe 0x00605d60 → 0x00606f90, CameraClip.ts) — the model's
+  // height (`pivotHeight`, the eased number's target) less what the plumb line over the feet allows, eased back
+  // over two seconds once let go. Every camera below hangs from it, and so does every camera the frame draws
+  // (`viewPivotHeight` → Context.cameraPivotHeight). First person keeps its eye. Was `pivotHeight` throughout.
+  const hinge = advanceCameraHinge(rig, player, pivotHeight, world, elapsed);
+  const options = { pivotHeight: hinge };
+  const pivotZ = player.z + hinge;
   const feetZ = player.z + CAMERA_FEET_CLEARANCE;
   const orbitOptions: CameraOrbitOptions = { allowBelowFeet: world.allowUpwardOrbit === true };
   // L8 5.14: over water the surface is one more floor (CameraWater.ts); -Infinity without it.
@@ -574,20 +632,72 @@ export function advanceCameraFrame(
   // it was handed, which is this boom to the last digit — the hinge is the camera walked `wanted`
   // forwards along its own axis. The number that matters is the spacing, and it lives with the
   // scan (`boomTerrainSamples`).
-  const reach = boomLimits(boomAnchor(camera, wanted), camera.position, {
-    world: world.collision, heightAt: world.heightAt,
-  });
-  // L8 5.14: was `wanted * reach.wall` — under water the surface stops the boom as a wall does (CameraWater.ts).
-  const wall = Math.min(wanted * reach.wall, cameraWaterArm(pivotZ, pitch, world.waterZ));
+  const anchor = boomAnchor(camera, wanted);
+  // 5.33: the ground alone here (`world` left out); the walls are Wow.exe's segment and near-plane sweep below.
+  const reach = boomLimits(anchor, camera.position, { heightAt: world.heightAt });
+  // 5.33: was `wanted * reach.wall`, the segment stopped CAMERA_WALL_CLEARANCE (0.45) short of the stone —
+  // which kept the eye out of a wall but not the near plane's edges: looking up at a ceiling the plane's upper
+  // edge stood in it. Now the quad itself is swept clear and 1/9 more is given back (CameraClip.ts).
+  const clipped = cameraArmClip(world.collision, anchor, camera, wanted, world.aspect ?? 16 / 9);
+  // L8 5.14: under water the surface stops the boom as a wall does (CameraWater.ts).
+  const wall = Math.min(clipped, cameraWaterArm(pivotZ, pitch, world.waterZ));
   const terrain = wanted * reach.terrain;
   // Where the camera is about to stand: the same three numbers `view` is the smallest of, taken
   // before the two limits are eased. `zoom` is the one the rig has not moved yet this frame, and
   // it is `distance` on the frame after first person, where the rig snaps it rather than easing it.
   const eased = rig.zoom <= CAMERA_FIRST_PERSON_DISTANCE ? rig.distance : rig.zoom;
-  const standing = createCamera(player, rig.yaw, pitch, drawnArm(eased, wall, terrain), options);
+  // 5.33: and the walls' ease still letting the camera out (`Math.min(wall, rig.wallView)`, was `wall`).
+  const standing = createCamera(player, rig.yaw, pitch, drawnArm(eased, Math.min(wall, rig.wallView), terrain), options);
   advanceCameraRig(rig, {
     wall, terrain, pivotZ,
     // L8 5.14: `Math.max(…, waterFloor)` around the old value.
     floorZ: Math.max(cameraFloorHeight(player, standing.position, pivotZ, world.collision, orbitOptions), waterFloor),
   }, elapsed);
+  // 5.33: the walls were asked along the tilt the floor allows the whole arm (`pitch`), and the arm they granted
+  // is drawn along the tilt the floor allows that shorter arm — looking up, the drag's own, a line nobody asked
+  // about (measured in the Goldshire inn: 26 of 960 views looking up 10° had the near plane's quad in a bench or
+  // a floor). Asked again along the drawn line, and only ever shortened: at one tilt a shorter arm stands no
+  // lower. Wow.exe has no floor tilt to disagree with (its one sweep is the line it draws).
+  if (rig.viewPitch !== pitch && rig.view > 0) {
+    const drawn = createCamera(player, rig.yaw, rig.viewPitch, rig.view, options);
+    const again = cameraArmClip(world.collision, anchor, drawn, rig.view, world.aspect ?? 16 / 9);
+    if (again < rig.view) rig.view = again;
+  }
+}
+
+/**
+ * 5.33: one frame of the hinge's height (Wow.exe 0x00606f90, CameraClip.ts): 0x00603d30 moves a restarted ease
+ * on toward the model's `pivotHeight`, 0x00605d60's plumb line lowers it under a ceiling (3/4 of
+ * `world.bodyHeight` the least), and an answer more than 1/9 under the eased height restarts the ease from
+ * 0.1111 past it. Writes `viewPivotHeight`, `pivotFrom`, `pivotSeconds`; returns the height drawn. First person
+ * keeps the eye exactly where it is and forgets the ease.
+ */
+export function advanceCameraHinge(
+  rig: CameraRig, player: WorldPosition, pivotHeight: number, world: CameraWorld, elapsed: number,
+): number {
+  if (rig.distance <= CAMERA_FIRST_PERSON_DISTANCE) {
+    rig.pivotFrom = undefined;
+    rig.pivotSeconds = undefined;
+    rig.viewPivotHeight = undefined;
+    return pivotHeight;
+  }
+  let current = pivotHeight;
+  if (rig.pivotFrom !== undefined) {
+    const seconds = (rig.pivotSeconds ?? 0) + (elapsed > 0 ? elapsed : 0);
+    if (seconds >= CAMERA_CLIP_RECOVERY_SECONDS) {
+      rig.pivotFrom = undefined;
+      rig.pivotSeconds = undefined;
+    } else {
+      rig.pivotSeconds = seconds;
+      current = cameraClipEase(rig.pivotFrom, pivotHeight, seconds);
+    }
+  }
+  const hinge = cameraPivotUnderCeiling(world.collision, player.x, player.y, player.z,
+    Math.max(pivotHeight, current), current, world.bodyHeight);
+  if (current - hinge > CAMERA_CLIP_MARGIN) {
+    rig.pivotFrom = hinge + CAMERA_CLIP_REARM;
+    rig.pivotSeconds = 0;
+  }
+  rig.viewPivotHeight = hinge;
+  return hinge;
 }

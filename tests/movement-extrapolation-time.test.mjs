@@ -7,9 +7,11 @@ import test from "node:test";
 import { WorldState } from "../dist/code/world/WorldState.js";
 import { MOVEMENT_FLAGS as F } from "../dist/code/world/MovementProtocol.js";
 import {
-  CORRECTION_MS, PACKET_CLOCK_RELAX, PACKET_LATE_WINDOW_MS, PacketClock, REMOTE_PITCH_LIMIT, advanceDrift, driftPitch,
-  emptyDrift, kinematicsFor, realignDrift,
+  CORRECTION_MS, REMOTE_PITCH_LIMIT, advanceDrift, driftPitch, emptyDrift, kinematicsFor, realignDrift,
 } from "../dist/code/world/MovementExtrapolation.js";
+import {
+  MOVE_SCHEDULE_EARLY_MS, MOVE_SCHEDULE_LATE_MS, MOVE_SMOOTHING_SAMPLES, MoverClock,
+} from "../dist/code/world/MovementSchedule.js";
 
 const SELF = 1n;
 const OTHER = 2n;
@@ -84,27 +86,81 @@ test("without the pitch keys the closed form is untouched", () => {
   assert.equal(flier.pitchTurn, 0);
 });
 
-test("the packet clock takes the fastest delivery as on time and the excess as lateness", () => {
-  const clock = new PacketClock();
-  assert.equal(clock.lateness(undefined, 100), 0, "no stamp, no lateness");
-  assert.equal(clock.lateness(5_000, 1_000), 0, "the first packet sets the clock");
-  assert.equal(clock.lateness(5_100, 1_100), 0, "on time");
-  near(clock.lateness(5_300, 1_500), 200 - 400 * PACKET_CLOCK_RELAX, 1e-9, "two hundred late");
-  // L8-review 5.04: was «past the window: taken at arrival» (0). Wow.exe clamps the catch-up to its window instead
-  // (0x006EB730: application − arrival held in −500…+1000 ms, late is the negative side).
-  assert.equal(PACKET_LATE_WINDOW_MS, 500);
-  assert.equal(clock.lateness(5_400, 2_500), PACKET_LATE_WINDOW_MS, "past the window: caught up by the window, no more");
-  // A faster delivery than any before is the new on time.
-  assert.equal(clock.lateness(6_000, 1_950), 0);
-  // Arrivals earlier than the latest seen do not relax it.
-  near(clock.lateness(6_100, 2_100), 50, 1e-9);
-  // The best is forgotten slowly: ten seconds later a delivery 20 ms slower than it is on time again.
-  const forgetting = new PacketClock();
-  forgetting.lateness(0, 0);
-  assert.equal(forgetting.lateness(10_000, 10_000 + 1_000 * 10_000 * PACKET_CLOCK_RELAX / 1_000), 0);
+// 5.04: a relayed packet takes effect at its unit's own schedule, Wow.exe 0x006EB730 → 0x006E97D0 (MovementSchedule.ts):
+// the last packet's moment plus the stamps' difference, held in −500…+1000 ms of its arrival; a standing unit's
+// schedule takes up the worst of its last 32 deliveries; a packet whose moment is ahead is held (0x006EC950) and
+// applied by the frame that reaches it (0x006EF860). Was the L8 `PacketClock` (the fastest delivery as on time).
+test("5.04 the schedule: the sender's spacing from the first packet, held in −500…+1000 ms of the arrival", () => {
+  const clock = new MoverClock();
+  assert.equal(clock.schedule(10_000, 1_000, false), 1_000, "the first packet is on time");
+  assert.equal(clock.schedule(10_400, 1_700, false), 1_400, "300 late: taken at the sender's spacing, run on from there");
+  assert.equal(clock.schedule(10_900, 1_600, false), 1_900, "early: its moment is ahead of its arrival");
+  assert.equal(clock.schedule(11_000, 3_000, false), 3_000 - MOVE_SCHEDULE_LATE_MS, "a backlog is caught up by 500 at most");
+  assert.equal(clock.schedule(15_000, 2_600, false), 2_600 + MOVE_SCHEDULE_EARLY_MS, "and nothing is held over a second");
+  assert.equal(MOVE_SCHEDULE_LATE_MS, 500);
+  assert.equal(MOVE_SCHEDULE_EARLY_MS, 1_000);
+  // A stamp that goes back counts as no time at all (0x006EB730: `< 1` is 0, the last stamp kept).
+  const back = new MoverClock();
+  back.schedule(5_000, 100, false);
+  assert.equal(back.schedule(4_000, 150, false), 100, "0 ms after the last, which stood at 100");
+  // A unit on a server spline takes its packet as it comes, and its schedule runs on unclamped (param_6).
+  const spline = new MoverClock();
+  spline.schedule(1_000, 100, false);
+  assert.equal(spline.schedule(4_000, 200, false, true), 200, "early by 2 900, applied at once");
+  assert.equal(spline.schedule(4_100, 2_600, false), 3_200, "from 3 100 + 100, not from a clamped 1 200");
 });
 
-test("a late packet is carried forward from its sender's moment, and the picture stays where it was", () => {
+test("5.04 0x006E97D0: the worst of the last 32 deliveries, taken up only by a unit standing still", () => {
+  // One sender, a packet every 500 ms, its deliveries 100, 200, 100 ms: standing, the schedule settles on the
+  // worst — the third packet waits 100 ms for it; moving, it keeps the first one's and catches the late one up.
+  const standing = new MoverClock();
+  assert.equal(standing.schedule(0, 100, true), 100);
+  assert.equal(standing.schedule(500, 700, true), 700, "the 100 late one sets the smoothing to 100");
+  assert.equal(standing.smoothing, 100);
+  assert.equal(standing.schedule(1_000, 1_100, true), 1_200, "and the next is held 100 ms: sent + 200, the worst");
+  const moving = new MoverClock();
+  moving.schedule(0, 100, false);
+  assert.equal(moving.schedule(500, 700, false), 600, "moving, the late one is run on from 600");
+  assert.equal(moving.schedule(1_000, 1_100, false), 1_100);
+  assert.equal(moving.smoothing, 100, "the ring is fed all the same");
+  // The window holds 32 deliveries: the 200 is forgotten 32 packets on.
+  const forgetting = new MoverClock();
+  forgetting.schedule(0, 100, true);
+  forgetting.schedule(500, 700, true);
+  for (let index = 2; index < 33; index++) forgetting.schedule(index * 500, 100 + index * 500, true);
+  assert.equal(forgetting.smoothing, 100, "31 on, still remembered");
+  forgetting.schedule(33 * 500, 100 + 33 * 500, true);
+  assert.equal(forgetting.smoothing, 0, "32 on, gone");
+  // Never before the packet applied last, when the smoothing falls.
+  assert.ok(MOVE_SMOOTHING_SAMPLES === 32);
+});
+
+test("5.04 a packet whose moment is ahead is held, the unit runs on its last one, and the frame applies it", () => {
+  const state = world();
+  state.move(OTHER, { flags: 0, position: at(), time: 0 }, 100);
+  state.move(OTHER, { flags: F.forward, position: at(), time: 500 }, 700);
+  const object = state.objects.get(OTHER);
+  assert.equal(object.drift.at, 700, "standing, taken at its arrival");
+  // Running now: the next one arrives 100 ms sooner than the sender's spacing puts it — held to 1 200.
+  state.move(OTHER, { flags: F.forward | F.turnLeft, position: at(3.5, 0, 0, 0), time: 1_000 }, 1_000);
+  assert.equal(object.movementFlags, F.forward, "not yet");
+  state.setSpeed(OTHER, "run", 14, 1_000);
+  assert.equal(object.speeds?.get("run"), undefined, "the speed that came behind it waits with it");
+  state.updateMotions(1_150);
+  near(object.position.x, 7 * 0.45, 1e-9, "still running on the last packet");
+  state.updateMotions(1_200);
+  assert.equal(object.movementFlags, F.forward | F.turnLeft, "applied at its moment");
+  assert.equal(object.drift.at, 1_200);
+  assert.equal(object.speeds?.get("run"), 14, "and the speed with it");
+  // Held ones go with a blink or with the unit.
+  state.move(OTHER, { flags: F.forward, position: at(9), time: 2_400 }, 1_300);
+  state.teleport(OTHER, { flags: 0, position: at(30) }, 1_300);
+  state.updateMotions(3_000);
+  assert.equal(object.movementFlags, 0, "the blink is the last word");
+  assert.equal(object.position.x, 30);
+});
+
+test("a late packet is carried forward from its moment, and the picture stays where it was", () => {
   const state = world();
   state.move(OTHER, { flags: F.forward, position: at(), time: 10_000 }, 1_000);
   state.updateMotions(1_400);
@@ -112,14 +168,14 @@ test("a late packet is carried forward from its sender's moment, and the picture
   // Sent 400 ms after the first one but arriving 300 ms late, from 2.8 yards on (7 yd/s · 0.4 s).
   state.move(OTHER, { flags: F.forward, position: at(2.8), time: 10_400 }, 1_700);
   const object = state.objects.get(OTHER);
-  near(object.drift.at, 1_700 - (300 - 700 * PACKET_CLOCK_RELAX), 1e-9);
+  assert.equal(object.drift.at, 1_400, "its moment: the first one's plus the 400 between them");
   assert.equal(object.drift.fadeAt, 1_700);
   state.updateMotions(1_700);
   near(object.position.x, drawn.x, 1e-9, "continuous at the arrival");
-  // Once the correction has faded the unit is where its packet and its lateness put it.
+  // Once the correction has faded the unit is where its packet and its moment put it.
   const later = 1_700 + CORRECTION_MS + 20;
   state.updateMotions(later);
-  near(object.position.x, 2.8 + 7 * (later - object.drift.at) / 1000, 1e-9);
+  near(object.position.x, 2.8 + 7 * (later - 1_400) / 1000, 1e-9);
   // Without a stamp nothing changes: the packet is taken at its arrival, as before.
   const plain = world();
   plain.move(OTHER, { flags: F.forward, position: at() }, 1_000);
@@ -127,21 +183,17 @@ test("a late packet is carried forward from its sender's moment, and the picture
   assert.equal(plain.objects.get(OTHER).drift.at, 1_700);
 });
 
-test("realignDrift keys its clock by the world state, and a pitching drift's pitch runs from the sender's moment", () => {
-  const owner = {};
-  const first = drifting(F.flying | F.forward | F.pitchUp, { pitch: 0 });
-  first.at = 1_000;
-  realignDrift(owner, first, 20_000, 1_000);
-  const second = drifting(F.flying | F.forward | F.pitchUp, { pitch: 0 });
-  second.at = 1_500;
-  realignDrift(owner, second, 20_400, 1_500);
-  near(second.at, 1_400 + 500 * PACKET_CLOCK_RELAX, 1e-9, "100 ms late on the owner's clock");
-  near(driftPitch(second, 1_500), RATE * (100 - 500 * PACKET_CLOCK_RELAX) / 1000, 1e-9);
-  // Another owner has its own clock: its first packet is on time.
-  const other = drifting(F.flying | F.forward, { pitch: 0 });
-  other.at = 1_500;
-  realignDrift({}, other, 20_400, 1_500);
-  assert.equal(other.at, 1_500);
+test("realignDrift runs a drift on from its packet's moment, and a pitching drift's pitch with it", () => {
+  const drift = drifting(F.flying | F.forward | F.pitchUp, { pitch: 0 });
+  drift.at = 1_500;
+  realignDrift(drift, 1_400, 1_500);
+  assert.equal(drift.at, 1_400);
+  assert.equal(drift.fadeAt, 1_500);
+  near(driftPitch(drift, 1_500), RATE * 0.1, 1e-9);
+  const onTime = drifting(F.flying | F.forward, { pitch: 0 });
+  onTime.at = 1_500;
+  realignDrift(onTime, 1_500, 1_500);
+  assert.equal(onTime.at, 1_500);
 });
 
 // L8-review 5.04: a speed change (SMSG_SPLINE_SET_RUN_SPEED: a sprint, a mount) re-bases the drift where it is drawn.
@@ -154,7 +206,7 @@ test("a speed change soon after a late packet keeps the picture where it was", (
   // Sent 100 ms after the first, arriving 300 ms late, from 2.0 yards on: drawn ahead of it.
   state.move(OTHER, { flags: F.forward, position: at(2.0), time: 10_100 }, 1_400);
   const object = state.objects.get(OTHER);
-  assert.ok(object.drift.fadeAt > object.drift.at, "taken at its sender's moment");
+  assert.ok(object.drift.fadeAt > object.drift.at, "taken at its moment");
   state.updateMotions(1_450);
   const drawn = { ...object.position };
   state.setSpeed(OTHER, "run", 14, 1_450);
@@ -180,12 +232,9 @@ test("a speed change keeps the pitch a remote flier's pitch keys have turned", (
   near(driftPitch(object.drift, 1_400), RATE * 0.4, 1e-9, "and turning on");
 });
 
-// L8-review 5.04: Wow.exe keeps the time relation per unit (0x006EB730: mover+0xc0 the local moment a packet was
-// applied, +0xc4 its stamp, set from the unit's first packet; each next one is applied at the last plus its stamps'
-// difference), so a sender's own steady latency is never caught up — only a packet later than that sender's usual is.
-// One clock for every sender took the fastest of them as on time and drew the slower ones ahead of their packets by
-// their extra latency, which their STOP then pulled back at every stop.
-test("each unit keeps its own packet clock: a steady slower sender is on time, its STOP pulls nothing back", () => {
+// Wow.exe keeps the time relation per unit (0x006EB730: mover+0xc0, +0xc4, set from the unit's first packet), so a
+// sender's own steady latency is never caught up — only a packet later than that sender's usual is.
+test("each unit keeps its own schedule: a steady slower sender is on time, its STOP pulls nothing back", () => {
   const state = world();
   const FAST = 3n;
   const SLOW = 4n;
@@ -206,11 +255,4 @@ test("each unit keeps its own packet clock: a steady slower sender is on time, i
   state.move(SLOW, { flags: 0, position: at(10.5 + 2.1, 20), time: 11_800 }, stopArrival);
   state.updateMotions(stopArrival + 200);
   near(slow.position.x, 12.6, 1e-9);
-});
-
-test("a packet later than its sender's usual is caught up by at most the window (Wow.exe clamps at 500 ms)", () => {
-  const clock = new PacketClock();
-  clock.lateness(1_000, 100);
-  near(clock.lateness(1_100, 600), 400 - 500 * PACKET_CLOCK_RELAX, 1e-9, "inside the window");
-  assert.equal(clock.lateness(1_200, 2_000), PACKET_LATE_WINDOW_MS, "a hitch's backlog: the window, no more");
 });

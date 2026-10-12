@@ -6,7 +6,10 @@
 // and ignored by Git. `--check` reports drift against the user's configured dataset.
 
 import { readFile, writeFile } from "node:fs/promises";
-import { BASE_ANIMATION_NAMES, baseAnimationIds, loadAnimationCatalog, loadEmoteAnimations } from "./animations.mjs";
+import {
+  BASE_ANIMATION_NAMES, baseAnimationIds, loadAnimationCatalog, loadCreatureMovementChaseRates, loadEmoteAnimations,
+  loadEmoteFlags,
+} from "./animations.mjs";
 import { clientDataImplementationPath, ensureClientDataDirectory } from "./client-data.mjs";
 
 const destination = clientDataImplementationPath("animations");
@@ -15,6 +18,8 @@ const check = process.argv.includes("--check");
 const catalog = await loadAnimationCatalog();
 const base = baseAnimationIds(catalog);
 const emotes = await loadEmoteAnimations();
+const emoteFlags = await loadEmoteFlags(); // 5.32
+const chaseRates = await loadCreatureMovementChaseRates(); // 5.32
 
 const names = [...catalog.nameById.entries()]
   .filter(([, name]) => name)
@@ -80,6 +85,17 @@ lines.push(" * holds until it moves — which is why /dance keeps dancing and /w
 lines.push(" */");
 lines.push("export const EMOTE_ANIMATIONS: Readonly<Record<number, { animation: number; state: boolean }>> = {");
 for (const emote of emotes) lines.push(`  ${emote.id}: { animation: ${emote.animation}, state: ${emote.state} },`);
+lines.push("};");
+lines.push("");
+// 5.32: the two tables the drawn facing of a unit reads (world/UnitFacing.ts, Wow.exe 0x00735f60).
+lines.push("/** Emotes.dbc `EmoteFlags` of every row (0x2000: a unit holding that emote state may still turn). */");
+lines.push("export const EMOTE_FLAGS: Readonly<Record<number, number>> = {");
+for (const { id, flags } of emoteFlags) lines.push(`  ${id}: 0x${flags.toString(16)},`);
+lines.push("};");
+lines.push("");
+lines.push("/** CreatureMovementInfo.dbc `SmoothFacingChaseRate` of the rows that set one, radians a second. */");
+lines.push("export const CREATURE_MOVEMENT_CHASE_RATES: Readonly<Record<number, number>> = {");
+for (const { id, rate } of chaseRates) lines.push(`  ${id}: ${rate},`);
 lines.push("};");
 lines.push("");
 const generated = lines.join("\n") + "\n";

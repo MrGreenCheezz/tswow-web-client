@@ -1,4 +1,4 @@
-import { cameraPivotHeight, game } from "./Context.js";
+import { cameraModelPivotHeight, cameraPivotHeight, game } from "./Context.js"; // 5.33: + cameraModelPivotHeight
 import { drainWorldState } from "../ui/WorldView.js";
 import { updateDeathReclaimCountdown } from "../ui/Npc.js";
 import { updateSpellCooldowns } from "../ui/Spellbook.js";
@@ -293,13 +293,17 @@ function advanceCameraView(player: WorldPosition, map: number | undefined, elaps
   const toggles = world === undefined || self === undefined || self.guid !== moverGuid(world)
     ? (self !== undefined && self.guid === world?.state.selfGuid ? world.movementState : undefined)
     : moverState(world);
-  advanceCameraFrame(game.camera, player, cameraPivotHeight(), {
+  // 5.33: from the model's own hinge (`cameraModelPivotHeight`, was `cameraPivotHeight()`): the step lowers it.
+  advanceCameraFrame(game.camera, player, cameraModelPivotHeight(), {
     collision: game.collision?.world,
     heightAt: terrain && map !== undefined ? (x, y) => terrain.heightAt(map, x, y) : undefined,
     // A flying mover is not standing on its own feet. Let the camera use the full upward orbit;
     // actual roofs/floors are still enforced by CollisionWorld in cameraFloorHeight.
     allowUpwardOrbit: cameraAllowsUpwardOrbit(self?.movementFlags ?? 0, toggles),
     waterZ: cameraWaterSurfaceOf(world, self, player), // L8 5.14
+    // 5.33: the subject's drawn height (the hinge stays over 3/4 of it) and the quad's aspect (CameraClip.ts).
+    bodyHeight: self === undefined ? undefined : game.renderer?.unitHeight(self.guid),
+    aspect: game.renderer?.cameraAspect,
   }, elapsed);
 }
 

@@ -360,78 +360,24 @@ export function anchorDrift(drift: Drift, flags: number, ground: GroundProbe | u
   if (grounded && Math.abs(offset) <= ON_TERRAIN_TOLERANCE) drift.groundOffset = offset;
 }
 
-/**
- * L8 5.04: the sender's moment of a relayed packet, on this client's clock.
- *
- * The core stamps every relayed `MSG_MOVE_*` with the server's time of the move — the sender's own time plus
- * its clock delta from CMSG_TIME_SYNC_RESP (MovementHandler.cpp:362-372, 939-990) — and Wow.exe applies a
- * remote packet at that moment rather than at its arrival, catching up packets that arrive late and holding
- * early ones (0x006EB730: a window of −500…+1000 ms, early packets queued by 0x006EC8B0). This client has no
- * estimate of the server's clock of its own, so it takes the fastest delivery it has seen as on time: the
- * smallest (arrival − stamp) is the clock offset plus the shortest trip, every later excess is the packet's
- * lateness. The smallest is relaxed upwards slowly ({@link PACKET_CLOCK_RELAX}), so a server or a sender
- * whose clock steps does not leave a stale best behind; a lateness over {@link PACKET_LATE_WINDOW_MS} is
- * not trusted and the packet is taken at its arrival. Early packets are not held: by construction none is.
- *
- * L8-review 5.04: two corrections from 0x006EB730 itself (.runtime/re-2026-10-02/a4-67-review/r2.c). The time
- * relation is the unit's own — mover+0xc0 (the local moment its last packet was applied) and +0xc4 (that
- * packet's stamp), set from its first packet; each next one is applied at the last plus the stamps' difference
- * — so `WorldState.move` keys the clock by the unit, not the world: a sender's steady latency is never caught
- * up, only a packet later than that sender's usual (one clock for all took the fastest sender as on time and
- * drew every slower one ahead of its packets, pulled back at each of its stops). And application − arrival is
- * clamped into −500…+1000 ms (late is the negative side): a packet later than 500 ms is caught up by 500, not
- * taken at its arrival.
- */
-export const PACKET_LATE_WINDOW_MS = 500; // L8-review 5.04: was 1000
-/** How fast the best delivery is forgotten: milliseconds of offset a second of arrivals. */
-export const PACKET_CLOCK_RELAX = 0.002;
+// 5.04: the moment a relayed packet takes effect is its unit's schedule's (MovementSchedule.ts, Wow.exe 0x006EB730 →
+// 0x006E97D0, held until then by `WorldState`). Was the L8 `PacketClock`: the fastest delivery seen taken as on time,
+// the excess as lateness, relaxed by 2 ms a second (L8-review: per unit, caught up by at most 500 ms) — this client's
+// own, where Wow.exe delays every packet of a unit by the worst of its last 32 deliveries and holds the early ones.
 
-export class PacketClock {
-  #offset = Number.NaN;
-  #lastArrival = Number.NaN;
-
-  /** How late a packet stamped `stamp` (server ms) that arrived at `arrival` (local ms) is; 0 for none. */
-  lateness(stamp: number | undefined, arrival: number): number {
-    if (stamp === undefined || !Number.isFinite(stamp) || !Number.isFinite(arrival)) return 0;
-    const sample = arrival - stamp;
-    if (this.#offset !== this.#offset) {
-      this.#offset = sample;
-      this.#lastArrival = arrival;
-      return 0;
-    }
-    if (arrival > this.#lastArrival) {
-      this.#offset += (arrival - this.#lastArrival) * PACKET_CLOCK_RELAX;
-      this.#lastArrival = arrival;
-    }
-    if (sample <= this.#offset) {
-      this.#offset = sample;
-      return 0;
-    }
-    const late = sample - this.#offset;
-    return late > PACKET_LATE_WINDOW_MS ? PACKET_LATE_WINDOW_MS : late; // L8-review 5.04: was `? 0 : late`
-  }
-}
-
-/** One clock per owner — the unit (L8-review 5.04; was the world state) — without a field on it. */
-const PACKET_CLOCKS = new WeakMap<object, PacketClock>();
 /** The sample `realignDrift` measures with, refilled per packet. */
 const REALIGN_SAMPLE: DriftSample = { x: 0, y: 0, z: 0, orientation: 0 };
 
 /**
  * L8 5.04: puts a drift `WorldState.move` has just filled (base, motion, `at` = arrival, errors = drawn −
- * packet) at its sender's moment: `at` moves back by the packet's lateness, the correction starts fading at the
- * arrival (`fadeAt`) and is re-measured against where the motion has carried the unit by now, so the picture
- * stays continuous while what is true becomes `packet + v·(now − sent)`. `owner` keys the clock (the unit —
- * L8-review 5.04; was the world state). Allocates nothing once the owner's clock exists.
+ * packet) at the moment its packet took effect, `appliedAt` (5.04: its schedule's, MovementSchedule.ts; was a
+ * lateness measured by an owner-keyed `PacketClock`): `at` moves back to it, the correction starts fading now
+ * (`fadeAt`) and is re-measured against where the motion has carried the unit by now — Wow.exe 0x006EA550 runs a
+ * packet applied late on from its moment — so the picture stays continuous while what is true becomes
+ * `packet + v·(now − appliedAt)`. Allocates nothing.
  */
-export function realignDrift(owner: object, drift: Drift, stamp: number | undefined, now: number,
-  ground?: GroundProbe): void {
-  let clock = PACKET_CLOCKS.get(owner);
-  if (clock === undefined) {
-    clock = new PacketClock();
-    PACKET_CLOCKS.set(owner, clock);
-  }
-  const late = clock.lateness(stamp, now);
+export function realignDrift(drift: Drift, appliedAt: number, now: number, ground?: GroundProbe): void {
+  const late = appliedAt < now ? now - appliedAt : 0;
   drift.fadeAt = now;
   drift.pitchAt = now - late;
   if (!(late > 0)) return;

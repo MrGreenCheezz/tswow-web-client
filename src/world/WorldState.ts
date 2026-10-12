@@ -17,6 +17,7 @@ import {
   type Drift, type DriftSample, type GroundProbe,
 } from "./MovementExtrapolation.js";
 import { realignDrift } from "./MovementExtrapolation.js"; // L8 5.04
+import { MOVE_SCHEDULE_UNSETTLED, holdMove, moverClock, type HeldMove } from "./MovementSchedule.js"; // 5.04
 import { driftPitch } from "./MovementExtrapolation.js"; // L8-review 5.04
 import { unpackRotation, type Quat } from "./GameObjectRotation.js";
 import { isShipCarrier, positionPassengerSeat, sampleCarrierGlide, startCarrierGlide, type CarrierGlide } from "./TransportPassengers.js";
@@ -261,6 +262,9 @@ export interface StateObserver {
   selfChanged(guid: bigint | undefined): void;
 }
 
+/** What `WorldState.move` is handed: a movement packet's info (5.04: kept whole while it is held). */
+export type MoveInput = Pick<MovementInfo, "flags" | "position" | "transport"> & Partial<MovementInfo>;
+
 export class WorldState {
   readonly objects = new Map<bigint, WorldObjectState>();
   revision = 0;
@@ -324,6 +328,8 @@ export class WorldState {
   #spareDrift: Drift | undefined;
   /** 11.01-E: passengers gliding to their packet in the carrier's frame (TransportPassengers.ts). */
   readonly #carrierGlides = new Map<bigint, CarrierGlide>();
+  /** 5.04: packets held until their moment, per unit, in order (Wow.exe mover+0x140, MovementSchedule.ts). */
+  readonly #held = new Map<bigint, Array<HeldMove<MoveInput>>>();
   /** 11.01: the scratch `carrierPoseProvider` writes a lift's pose into; read at once, never kept. */
   readonly #carrierScratch: WorldPosition = { x: 0, y: 0, z: 0, orientation: 0 };
 
@@ -546,8 +552,47 @@ export class WorldState {
    * A packet that says the unit is standing glides it the last stretch exactly as before. The
    * controlled character is put where its own packet says — it is predicted locally.
    */
-  move(guid: bigint, movement: Pick<MovementInfo, "flags" | "position" | "transport"> & Partial<MovementInfo>,
-    now = performance.now()): void {
+  move(guid: bigint, movement: MoveInput, now = performance.now()): void {
+    // 5.04: somebody else's stamped packet takes effect at its moment on that unit's own schedule, Wow.exe
+    // 0x006EB730 → 0x006E97D0 (MovementSchedule.ts) — held while that moment is ahead (0x006EC950), and drained
+    // by `updateMotions` when it comes (0x006EF860). Was: applied at its arrival, `at` moved back by a lateness
+    // measured against the fastest delivery seen (`PacketClock`).
+    if (movement.time !== undefined && guid !== this.selfGuid && guid !== this.predictedGuid) {
+      const object = this.#get(guid);
+      const held = this.#held.get(guid);
+      const settled = (object.movementFlags & MOVE_SCHEDULE_UNSETTLED) === 0 && held === undefined;
+      const at = moverClock(object).schedule(movement.time, now, settled, object.motion !== undefined);
+      if (at > now) {
+        const queue = held ?? [];
+        holdMove(queue, { movement, at, speeds: undefined });
+        if (held === undefined) this.#held.set(guid, queue);
+        return;
+      }
+      this.#applyMove(guid, movement, now, at);
+      return;
+    }
+    this.#applyMove(guid, movement, now, now);
+  }
+
+  /**
+   * 5.04: a held packet's moment has come (Wow.exe 0x006EF860, every one that is due, in order), and the speed
+   * changes that arrived behind it with it.
+   */
+  #releaseHeld(now: number): void {
+    for (const [guid, queue] of this.#held) {
+      while (queue.length > 0 && queue[0]!.at <= now) {
+        const entry = queue.shift()!;
+        if (queue.length === 0) this.#held.delete(guid);
+        this.#applyMove(guid, entry.movement, now, entry.at);
+        if (entry.speeds !== undefined) {
+          for (const speed of entry.speeds) this.setSpeed(guid, speed.name as SplineSpeedName, speed.value, now);
+        }
+      }
+    }
+  }
+
+  /** The packet itself, applied at `now` as of `appliedAt` (its moment; `now` when it carries no stamp). */
+  #applyMove(guid: bigint, movement: MoveInput, now: number, appliedAt: number): void {
     const object = this.#get(guid);
     const previous = object.position;
     object.movementFlags = movement.flags;
@@ -589,8 +634,9 @@ export class WorldState {
       record.orientation = target.orientation;
       record.at = now;
       anchorDrift(record, movement.flags, this.groundProbe);
-      // L8-review 5.04: the unit's own clock (`object`; was `this`), as Wow.exe's 0x006EB730 keeps it per mover.
-      realignDrift(object, record, movement.time, now, this.groundProbe); // L8 5.04: at the sender's moment
+      // 5.04: run on from the moment its schedule gave it (MovementSchedule.ts), Wow.exe 0x006EA550; was a lateness
+      // the per-unit `PacketClock` measured (`realignDrift(object, record, movement.time, now, …)`).
+      realignDrift(record, appliedAt, now, this.groundProbe);
       // The drawn position stays where it was drawn; `updateMotions` moves it from this frame on.
       if (snap) object.position = { ...target };
       this.revision++;
@@ -646,6 +692,8 @@ export class WorldState {
   teleport(guid: bigint, movement: Pick<MovementInfo, "flags" | "position" | "transport"> & Partial<MovementInfo>,
     now = performance.now()): void {
     const object = this.#get(guid);
+    // 5.04: what was held behind the blink is older than it.
+    this.#held.delete(guid);
     object.movementFlags = movement.flags;
     object.pitch = movement.pitch;
     object.motion = undefined;
@@ -824,6 +872,8 @@ export class WorldState {
   }
 
   updateMotions(now: number): void {
+    // 5.04: held packets whose moment has come, before anything is moved (Wow.exe 0x006EF860).
+    if (this.#held.size !== 0) this.#releaseHeld(now);
     // Carriers before anyone is carried: every passenger below composes on this frame's deck.
     this.poseProvider?.(this, now);
     for (const object of this.objects.values()) {
@@ -995,6 +1045,14 @@ export class WorldState {
   setSpeed(guid: bigint, name: SplineSpeedName, value: number, now = performance.now()): void {
     const object = this.objects.get(guid);
     if (!object || !Number.isFinite(value) || value < 0) return;
+    // 5.04: a relayed speed packet carries its own movement (`move` first); held, the speed waits with it, as
+    // Wow.exe queues the speed events among the moves (0x006EF860 cases 0x17…0x1f).
+    const held = this.#held.get(guid);
+    if (held !== undefined) {
+      const last = held[held.length - 1]!;
+      (last.speeds ??= []).push({ name, value });
+      return;
+    }
     // A rider who mounts mid-run: the motion being extrapolated speeds up from here, not from the
     // packet before (which would put them retroactively further along).
     const drift = object.drift !== undefined && !object.drift.ballistic
@@ -1170,6 +1228,7 @@ export class WorldState {
   #remove(guid: bigint): boolean {
     if (!this.objects.delete(guid)) return false;
     this.#carrierGlides.delete(guid);
+    this.#held.delete(guid); // 5.04
     if (this.selfGuid === guid) this.selfGuid = undefined;
     this.observer?.objectDestroyed(guid);
     return true;

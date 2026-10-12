@@ -172,6 +172,12 @@ export interface SeatRigUnit extends SeatRigModel {
   readonly visual?: THREE.Object3D | undefined;
   /** The mount under it: for a player vehicle (a mammoth) the model the seats are on. */
   readonly mount?: SeatRigModel | undefined;
+  /**
+   * 5.32: the passenger's drawn facing in its seat (+0xaa0, Wow.exe 0x00735f60 turns it toward its target on a
+   * VEHICLE_SEAT_FLAG_ALLOW_TURNING seat — world/UnitFacing.ts `unitSeatFacing`), the transport block's
+   * orientation when absent.
+   */
+  readonly seatFacing?: number | undefined;
 }
 
 /**
@@ -378,7 +384,8 @@ export class VehiclePassengerPoser {
       const ownX = drawn.x;
       const ownHeight = drawn.y;
       const ownZ = drawn.z;
-      placeOnSeatAttachment(_attachmentWorld, seat, transport.orientation, unit.scale, own?.position,
+      // 5.32: the seat facing the renderer turned (`unit.seatFacing`); was `transport.orientation`.
+      placeOnSeatAttachment(_attachmentWorld, seat, unit.seatFacing ?? transport.orientation, unit.scale, own?.position,
         unit.node.position, unit.node.quaternion);
       this.#lifts.set(unit.node, unit.node.position.y - ownHeight);
       // 11.02-tails: the step in world axes (scene x, y, z = world x, z, −y) for the overlays.
@@ -391,7 +398,8 @@ export class VehiclePassengerPoser {
     this.#lifts.delete(unit.node);
     // No such point on the model: the server's place, the seat's turn — nothing to change without one.
     if (finite(seat.passengerYaw) === 0 && finite(seat.passengerPitch) === 0 && finite(seat.passengerRoll) === 0) return;
-    seatRotationWithoutAttachment(vehicle.node.quaternion, transport.orientation, seat, unit.node.quaternion);
+    // 5.32: the turned seat facing (`unit.seatFacing`); was `transport.orientation`.
+    seatRotationWithoutAttachment(vehicle.node.quaternion, unit.seatFacing ?? transport.orientation, seat, unit.node.quaternion);
     this.#placed.add(unit.node);
   }
 

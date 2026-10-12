@@ -105,3 +105,28 @@ export async function loadEmoteAnimations(directory = dbcDirectory()) {
   }
   return result.sort((left, right) => left.id - right.id);
 }
+
+/**
+ * 5.32: every Emotes.dbc row's `EmoteFlags`, zero included — Wow.exe 0x00735f60 turns no unit whose
+ * UNIT_NPC_EMOTESTATE names a row without 0x2000, and a row that is not there forbids nothing.
+ */
+export async function loadEmoteFlags(directory = dbcDirectory()) {
+  const dbc = await openDbcFile(directory, "Emotes");
+  const result = [];
+  for (const row of dbc.rows()) result.push({ id: dbc.id(row), flags: dbc.int(row, "EmoteFlags") >>> 0 });
+  return result.sort((left, right) => left.id - right.id);
+}
+
+/**
+ * 5.32: CreatureMovementInfo.dbc's `SmoothFacingChaseRate` for the rows that set one — the spring rate
+ * (rad/s) Wow.exe 0x00735f60 turns a creature at whose SMSG_CREATURE_QUERY_RESPONSE names the row.
+ */
+export async function loadCreatureMovementChaseRates(directory = dbcDirectory()) {
+  const dbc = await openDbcFile(directory, "CreatureMovementInfo");
+  const result = [];
+  for (const row of dbc.rows()) {
+    const rate = dbc.float(row, "SmoothFacingChaseRate");
+    if (rate !== 0 && Number.isFinite(rate)) result.push({ id: dbc.id(row), rate });
+  }
+  return result.sort((left, right) => left.id - right.id);
+}

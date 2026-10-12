@@ -711,3 +711,28 @@ test("11.02-H: the dataset — siege engine, mammoth, chopper and mechano-hog se
   assert.equal(seated, 588, "seats with a ride loop (115 have neither flag, 17 a flag and no loop)");
   assert.equal(started, 34, "seats with a start one-shot (96→97, 131→132, 0→17…)");
 });
+
+// 5.32: a seat that lets its passenger turn (VEHICLE_SEAT_FLAG_ALLOW_TURNING) — Wow.exe 0x00735f60 turns the
+// passenger's +0xaa0 in the seat toward its target; the renderer hands that facing to the poser (`seatFacing`),
+// which uses it where it used the transport block's orientation, on the point and off it.
+test("5.32 the poser turns a passenger by the seat facing the renderer gave it", () => {
+  const engineObject = object(ENGINE, { typeId: 3, vehicleId: ENGINE_VEHICLE });
+  const self = object(SELF, { carrier: ENGINE, seat: 0, orientation: 0.25 });
+  const objects = new Map([[ENGINE, engineObject], [SELF, self]]);
+  const engine = rig({ at: [100, 3, -50], facing: 0.6, attachments: [{ id: 39, bone: 0, position: [1.5, 0.2, 2.5] }] });
+  const passenger = { ...passengerRig([100, 3, -50]), seatFacing: 1.0 };
+  const units = new Map([[ENGINE, engine], [SELF, passenger]]);
+  const poser = new VehiclePassengerPoser();
+  poser.begin(objects, catalog);
+  placeDrawn(poser, objects, [SELF, ENGINE], units);
+  sameRotation(passenger.node.quaternion, yawScene(0.6 + 1.0), "the vehicle's facing and the turned seat facing");
+  // Off the point (AttachmentID −1): the vehicle's turn, then the seat's with the turned facing.
+  const aside = object(FRIEND, { carrier: ENGINE, seat: 3, orientation: 0.25 });
+  const seated = { ...passengerRig(), seatFacing: -0.5 };
+  const offPoint = new Map([[ENGINE, engineObject], [FRIEND, aside]]);
+  const units2 = new Map([[ENGINE, engine], [FRIEND, seated]]);
+  poser.begin(offPoint, catalog);
+  placeDrawn(poser, offPoint, [FRIEND, ENGINE], units2);
+  const expected = seatRotationWithoutAttachment(engine.node.quaternion, -0.5, catalog.seat(NO_POINT_SEAT), new THREE.Quaternion());
+  sameRotation(seated.node.quaternion, expected, "seatRotationWithoutAttachment with the turned facing");
+});

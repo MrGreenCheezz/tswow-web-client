@@ -12,7 +12,7 @@ import {
 } from "../dist/code/browser/SimpleScene.js";
 import {
   CAMERA_FEET_CLEARANCE, CAMERA_FLOOR_CLEARANCE, CAMERA_LOOK_SENSITIVITY, CAMERA_PITCH_LIMIT,
-  CAMERA_RECOVERY_TAU, CAMERA_TERRAIN_TAU_IN, CAMERA_TERRAIN_TAU_OUT, CAMERA_ZOOM_TAU,
+  CAMERA_RECOVERY_SECONDS, CAMERA_TERRAIN_TAU_IN, CAMERA_TERRAIN_TAU_OUT, CAMERA_ZOOM_TAU,
   advanceCameraFrame, advanceCameraRig, approachCamera, boomLength, cameraAllowsUpwardOrbit,
   cameraFloorHeight, cameraFloorPitch,
   zoomedDistance,
@@ -674,24 +674,53 @@ test("К2 the crossing into first person is the one thing the wheel still does a
   assert.equal(state.view, CAMERA_MIN_DISTANCE, "and the way back out is not eased either");
 });
 
-test("К2 a wall takes the camera in at once and lets it back out on an exponential", () => {
+test("К2 a wall takes the camera in at once and lets it back out on Wow.exe's two-second cosine", () => {
   const state = rig();
   const squeezed = { ...clear(state), wall: 5 };
   advanceCameraRig(state, squeezed, FRAME);
   assert.equal(state.view, 5, "eased inwards, those frames would be spent inside the stone");
 
-  // And out. The time to close all but 1/e of the gap is the time constant, by definition.
-  const gap = CAMERA_DEFAULT_DISTANCE - 5;
-  const mark = 5 + gap * (1 - Math.exp(-1));
-  let frames = 0;
-  while (state.view < mark && frames < 600) {
+  // 5.33: and out, as Wow.exe 0x00603d30 eases its distance once 0x00606f90 has restarted it: from 0.1111121
+  // past the wall (0x00a1ea80), to the wheel's number over two seconds (0x00a4040c), on 0x008ca080's half
+  // cosine — slow, fast, slow. Was an exponential of τ 0.4 s.
+  assert.equal(CAMERA_RECOVERY_SECONDS, 2);
+  const from = 5 + 0.1111120656132698;
+  const gap = CAMERA_DEFAULT_DISTANCE - from;
+  let previousStep = 0;
+  let fastest = 0;
+  for (let frame = 1; frame <= 119; frame++) {
+    const before = state.view;
     advanceCameraRig(state, clear(state), FRAME);
-    frames++;
+    const seconds = frame * FRAME;
+    const expected = from + gap * (1 - Math.cos((seconds / 2) * Math.PI)) / 2;
+    assert.ok(Math.abs(state.view - expected) < 1e-9, `${seconds.toFixed(3)} s: ${state.view} against ${expected}`);
+    const step = state.view - before;
+    // (The first frame's step also carries the 0.1111 the ease starts past the wall.)
+    if (frame > 2 && frame < 60) assert.ok(step > previousStep, `speeding up to the middle, frame ${frame}`);
+    fastest = Math.max(fastest, step);
+    previousStep = step;
   }
-  assert.ok(Math.abs(frames * FRAME - CAMERA_RECOVERY_TAU) < 2 * FRAME,
-    `${(frames * FRAME).toFixed(3)} s to close 1-1/e of the gap, against a time constant of ${CAMERA_RECOVERY_TAU}`);
-  // The flat 14 yards a second this replaces would have covered the same gap in a straight line.
-  assert.ok(frames * FRAME < gap / 14, `an exponential has to beat 14 yd/s over the first 1-1/e of ${gap} yards`);
+  assert.ok(Math.abs(fastest - gap * (Math.PI / 4) * FRAME) < 1e-3, `the fastest frame ${fastest}`);
+  advanceCameraRig(state, clear(state), FRAME);
+  advanceCameraRig(state, clear(state), FRAME);
+  assert.equal(state.view, CAMERA_DEFAULT_DISTANCE, "two seconds after the wall let go it is the wheel's number");
+  assert.equal(state.wallView, Number.POSITIVE_INFINITY);
+});
+
+test("5.33 a wall still holding the camera keeps restarting the ease, every frame", () => {
+  // Wow.exe re-arms 0.1111121 past the answer when the eased distance stands more than 1/9 over it: a hair
+  // over, so a camera the wall keeps holding is restarted on every frame and never creeps out of it.
+  const state = rig();
+  for (let frame = 0; frame < 300; frame++) {
+    advanceCameraRig(state, { ...clear(state), wall: 5 }, FRAME);
+    assert.equal(state.view, 5);
+    assert.equal(state.wallSeconds, 0, `frame ${frame}`);
+    assert.equal(state.wallView, 5 + 0.1111120656132698);
+  }
+  // Within 1/9 of the eased number an answer does not restart it: a wall moving out by a hair is followed.
+  advanceCameraRig(state, { ...clear(state), wall: 5.05 }, FRAME);
+  assert.equal(state.wallSeconds, FRAME, "5.05 against 5.1111 is no new hold");
+  assert.equal(state.view, 5.05);
 });
 
 test("К2 «nothing in the way» is a state, not a number that happens to equal the arm", () => {
@@ -704,7 +733,9 @@ test("К2 «nothing in the way» is a state, not a number that happens to equal 
   assert.equal(state.terrainView, Number.POSITIVE_INFINITY);
 
   advanceCameraRig(state, { ...clear(state), wall: 5 }, FRAME);
-  assert.equal(state.wallView, 5, "a wall makes it a number again");
+  // 5.33: the number is where Wow.exe restarts its ease, 0.1111121 past the wall (0x00a1ea80); was 5.
+  assert.equal(state.wallView, 5 + 0.1111120656132698, "a wall makes it a number again");
+  assert.equal(state.view, 5);
 
   let frames = 0;
   while (Number.isFinite(state.wallView) && frames < 600) {
@@ -712,6 +743,7 @@ test("К2 «nothing in the way» is a state, not a number that happens to equal 
     frames++;
   }
   assert.ok(frames < 600, "the recovery has to end rather than approach the arm for ever");
+  assert.ok(Math.abs(frames * FRAME - CAMERA_RECOVERY_SECONDS) <= FRAME + 1e-9, `${frames} frames`);
   assert.equal(state.view, CAMERA_DEFAULT_DISTANCE, "and the camera is back where the wheel put it");
 });
 
@@ -725,7 +757,8 @@ test("К2 the ground is eased on a clock of its own, and coming in it is not a w
   assert.equal(CAMERA_TERRAIN_TAU_IN, 0.18);
   assert.equal(CAMERA_TERRAIN_TAU_OUT, 0.45);
   assert.ok(CAMERA_TERRAIN_TAU_IN < CAMERA_TERRAIN_TAU_OUT, "the ground comes in faster than it goes out");
-  assert.ok(CAMERA_TERRAIN_TAU_IN < CAMERA_RECOVERY_TAU && CAMERA_TERRAIN_TAU_OUT > CAMERA_RECOVERY_TAU,
+  // 5.33: the wall's clock is Wow.exe's two-second cosine now (was τ 0.4 s, between the ground's two).
+  assert.ok(CAMERA_TERRAIN_TAU_IN < CAMERA_RECOVERY_SECONDS && CAMERA_TERRAIN_TAU_OUT < CAMERA_RECOVERY_SECONDS,
     "and neither of them is the wall's clock, which is the whole reason for two of them");
 
   const hill = rig();
@@ -1107,7 +1140,7 @@ test("К2 a floor no tilt can reach is left alone rather than answered with a fl
 
 test("К2 the floor is asked about under the camera the frame draws, not under the arm it asked for", () => {
   // A character in a street with a building four yards behind them and its first floor four yards
-  // up. The wall cuts the arm to 3.920 yards, so the camera is drawn at (-3.59, 0, 3.18) — outside
+  // up. The wall cuts the arm to 4.259 yards (3.920 before 5.33), so the camera is drawn at (-3.90, 0, 3.32) — outside
   // the building, with nothing under it at all. Asked under a camera built at the *full* arm, the
   // question is put 19.51 yards away and inside the building instead, `floorUnder` answers 4, and
   // the clamp turns a -23.75-degree view into a -44.55-degree one. With that first floor at eight
@@ -1128,10 +1161,12 @@ test("К2 the floor is asked about under the camera the frame draws, not under t
   assert.equal(cameraFloorHeight(player, full.position, pivotZ, world), 4 + CAMERA_FLOOR_CLEARANCE);
 
   advanceCameraFrame(state, player, CAMERA_DEFAULT_PIVOT_HEIGHT, { collision: world }, FRAME);
-  assert.ok(Math.abs(state.view - 3.920) < 0.01, `the wall grants ${state.view} yards of arm`);
+  // 5.33: Wow.exe's arm (CameraClip.ts) — the segment meets the wall at 4.370, the near plane's quad clears
+  // it there, and 1/9 is given back: 4.259 (was 3.920, the segment less a 0.45 clearance).
+  assert.ok(Math.abs(state.view - (4 / Math.cos(CAMERA_DEFAULT_PITCH) - 1 / 9)) < 1e-3, `the wall grants ${state.view} yards of arm`);
   assert.equal(state.viewPitch, state.pitch, "and the tilt is the drag's own, not a floor overhead");
   const drawn = createCamera(player, state.yaw, state.viewPitch, state.view, options);
-  assert.ok(Math.abs(drawn.position.x + 3.59) < 0.01 && Math.abs(drawn.position.z - 3.18) < 0.01,
+  assert.ok(Math.abs(drawn.position.x + 3.898) < 0.01 && Math.abs(drawn.position.z - 3.315) < 0.01,
     `drawn at ${drawn.position.x}, ${drawn.position.z}`);
   assert.equal(cameraFloorHeight(player, drawn.position, pivotZ, world), player.z + CAMERA_FEET_CLEARANCE,
     "there is no floor under where the camera actually stands, only the character's own feet");

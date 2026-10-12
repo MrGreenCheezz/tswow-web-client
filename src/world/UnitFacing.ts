@@ -10,30 +10,34 @@
  * client's own turning (UnitDefines.h:199). The turning is the client's.
  *
  * Wow.exe 3.3.5a 12340 (Ghidra read-only, `.runtime/re-2026-10-11/glue-1110/mov-4.txt`, `mov-5.txt`,
- * `mov-6.txt`): 0x00735f60 decides the drawn facing (+0xaa0) of every unit that is not the active
- * player, every frame. While the unit
+ * `mov-6.txt`, `s533-1.txt`, `s504-1.txt`): 0x00735f60 decides the drawn facing (+0xaa0) of every unit that
+ * is not the active player, every frame. While the unit
  *
  * * moves on none of its own axes — movement word (+0x7cc) `& 0xf` clear; a spline sets forward;
  * * stands — vtable+0x138 is 0x0071a380, byte 0 of UNIT_FIELD_BYTES_1, the stand state;
- * * is in no emote state that forbids it (UNIT_NPC_EMOTESTATE's Emotes.dbc row without flag 0x2000;
- *   the ready stances 25/26/27 carry it) — not modelled here: the client's emote table has no flags,
- *   and `Unit::Attack` clears a creature's emote state anyway (Unit.cpp:6011-6014);
+ * * holds no emote state whose Emotes.dbc row (0x00ad3774 table) lacks EmoteFlags 0x2000 — 5.32: read
+ *   (generated `EMOTE_FLAGS`; a row not there forbids nothing; the ready stances 26/27/333 carry 0x2000);
  * * is not UNIT_FLAG_STUNNED (0x40000), UNIT_FLAG_POSSESSED (0x1000000) nor UNIT_FLAG2_CANNOT_TURN
  *   (0x8000), and is no player at all (the object's type mask carries PLAYER);
- * * casts nothing with SPELL_ATTR5_DONT_TURN_DURING_CAST (0x00722640) — not read here: the core has
- *   already emptied UNIT_FIELD_TARGET for that very spell;
- * * rides no vehicle seat, or one with VEHICLE_SEAT_FLAG_ALLOW_TURNING (0x400; 0x0074b8b0) — a seat
- *   is not turned here at all,
+ * * casts nothing with SPELL_ATTR5_DONT_TURN_DURING_CAST (0x00722640: the spell at +0xa60, AttributesEx5
+ *   0x80000) — 5.32: read from the casts this client tracks (`UnitFacingSources.casting`);
+ * * rides no vehicle seat, or one whose VehicleSeat.dbc row has VEHICLE_SEAT_FLAG_ALLOW_TURNING (0x400;
+ *   0x0074b8b0, 0x005d3340) — 5.32: such a seat turns its passenger, in the seat ({@link unitSeatFacing}),
  *
  * it faces UNIT_FIELD_CHANNEL_OBJECT while channelling a spell with SPELL_ATTR1_CHANNEL_TRACK_TARGET
  * (0x4000, the flag 0x0072bc70 sets in +0xa30 when UNIT_CHANNEL_SPELL changes), and UNIT_FIELD_TARGET
- * otherwise — when that unit is in view. (With no target it also faces the active player while that
- * player has its gossip, vendor or trainer window open on it, the global 0x00bd07a8 — not modelled:
- * this client keeps no single «npc» unit.) Everything else draws the unit at its own movement facing.
+ * otherwise — when that unit is in view. With neither, it faces the active player while that player has its
+ * gossip, quest, vendor, trainer, bank… window open on it (the global 0x00bd07a8: set by 0x0051fce0 from the
+ * frames — QuestFrame.cpp, TradeFrame.cpp, ItemTextFrame.cpp among them — cleared by 0x00512e60) — 5.32:
+ * `UnitFacingSources.interactionNpc`. Everything else draws the unit at its own movement facing.
  *
  * The drawn facing then follows the chosen one smoothly ({@link ShownUnitFacing}).
+ *
+ * Not modelled: a vehicle's own aim target (+0xf5c +0x160, before the unit's target), +0xa30 bit 0's fixed
+ * facing (+0xab8).
  */
 
+import { CREATURE_MOVEMENT_CHASE_RATES, EMOTE_FLAGS } from "../generated/animations.js"; // 5.32
 import { UPDATE_FIELDS } from "../generated/updateFields.js";
 import { guidFromWords } from "../protocol/Guid.js";
 import { MOVEMENT_FLAGS } from "./MovementProtocol.js";
@@ -49,10 +53,19 @@ const UNIT_FLAG_POSSESSED = 0x0100_0000;
 const UNIT_FLAG2_CANNOT_TURN = 0x0000_8000;
 /** `SPELL_ATTR1_CHANNEL_TRACK_TARGET` (SharedDefines.h:458), Spell.dbc AttributesEx. */
 export const SPELL_ATTR1_CHANNEL_TRACK_TARGET = 0x0000_4000;
+/** 5.32: `SPELL_ATTR5_DONT_TURN_DURING_CAST` (SharedDefines.h), Spell.dbc AttributesEx5 — 0x00722640's test. */
+export const SPELL_ATTR5_DONT_TURN_DURING_CAST = 0x0008_0000;
+/** 5.32: Emotes.dbc EmoteFlags bit 0x00735f60 needs on a held emote state's row for the unit to turn. */
+export const EMOTE_FLAG_TURNS = 0x2000;
+/** 5.32: `VEHICLE_SEAT_FLAG_ALLOW_TURNING` (DBCEnums.h), VehicleSeat.dbc Flags — the seat 0x00735f60 turns. */
+export const VEHICLE_SEAT_FLAG_ALLOW_TURNING = 0x0000_0400;
+/** 5.32: `_DAT_009ea558`: a SmoothFacingChaseRate this small is none. */
+export const CHASE_RATE_MINIMUM = 1e-5;
 /** Forward, backward and the two strafes: what 0x00735f60 calls moving (`& 0xf`). */
 const OWN_AXES = MOVEMENT_FLAGS.forward | MOVEMENT_FLAGS.backward | MOVEMENT_FLAGS.strafeLeft | MOVEMENT_FLAGS.strafeRight;
 const TYPEID_UNIT = 3;
 const TYPEID_PLAYER = 4;
+const TYPEID_GAMEOBJECT = 5;
 
 const TARGET = UPDATE_FIELDS.UNIT_FIELD_TARGET.offset;
 const CHANNEL_OBJECT = UPDATE_FIELDS.UNIT_FIELD_CHANNEL_OBJECT.offset;
@@ -60,6 +73,27 @@ const CHANNEL_SPELL = UPDATE_FIELDS.UNIT_CHANNEL_SPELL.offset;
 const FLAGS = UPDATE_FIELDS.UNIT_FIELD_FLAGS.offset;
 const FLAGS_2 = UPDATE_FIELDS.UNIT_FIELD_FLAGS_2.offset;
 const BYTES_1 = UPDATE_FIELDS.UNIT_FIELD_BYTES_1.offset;
+const EMOTE_STATE = UPDATE_FIELDS.UNIT_NPC_EMOTESTATE.offset;
+
+/**
+ * 5.32: what 0x00735f60 reads that is not on the unit's own fields, registered by the page (app/EnterWorld.ts)
+ * from the world client; each absent answer reads as Wow.exe's «nothing there».
+ */
+export interface UnitFacingSources {
+  /** The spell a unit is casting now, not channelling (+0xa60, SMSG_SPELL_START until it ends), or undefined. */
+  casting?(guid: bigint): number | undefined;
+  /** The unit the player's interaction window is open on (0x00bd07a8), or undefined. */
+  interactionNpc?(): bigint | undefined;
+  /** A creature's CreatureMovementInfo id (SMSG_CREATURE_QUERY_RESPONSE `movementId`; +0x964 +0x58), or undefined. */
+  movementId?(object: WorldObjectState): number | undefined;
+}
+
+let sources: UnitFacingSources = {};
+
+/** 5.32: the page's answers (`undefined` forgets them, as on leaving the world). */
+export function setUnitFacingSources(next: UnitFacingSources | undefined): void {
+  sources = next ?? {};
+}
 
 /** A guid held in two slots, or undefined for an empty one — no bigint is made for the empty case. */
 function guidIn(object: WorldObjectState, index: number): bigint | undefined {
@@ -75,46 +109,105 @@ export function spellChannelTracksTarget(spellId: number): boolean | undefined {
 }
 
 /**
+ * The unit 0x00735f60 turns `object` toward, or undefined when it keeps its own facing — every test but the
+ * seat's ({@link unitAutoFacing} and {@link unitSeatFacing} add those). `selfGuid` is the active player.
+ */
+function facingTarget(
+  object: WorldObjectState,
+  objects: ReadonlyMap<bigint, WorldObjectState>,
+  channelTracksTarget: (spellId: number) => boolean | undefined,
+  selfGuid: bigint | undefined,
+): WorldObjectState | undefined {
+  if (object.typeId !== TYPEID_UNIT) return undefined;
+  if (!object.position || (object.movementFlags & OWN_AXES) !== 0 || object.motion !== undefined) return undefined;
+  // 5.32: an emote state whose row does not carry 0x2000 (0x00735f60's first test).
+  const emote = object.fields.get(EMOTE_STATE) ?? 0;
+  if (emote !== 0) {
+    const emoteFlags = EMOTE_FLAGS[emote];
+    if (emoteFlags !== undefined && (emoteFlags & EMOTE_FLAG_TURNS) === 0) return undefined;
+  }
+  if (((object.fields.get(BYTES_1) ?? 0) & 0xff) !== 0) return undefined;
+  const flags = object.fields.get(FLAGS) ?? 0;
+  if ((flags & (UNIT_FLAG_STUNNED | UNIT_FLAG_POSSESSED)) !== 0) return undefined;
+  if (((object.fields.get(FLAGS_2) ?? 0) & UNIT_FLAG2_CANNOT_TURN) !== 0) return undefined;
+  // 5.32: 0x00722640 — not while casting a spell that must not turn its caster.
+  const casting = sources.casting?.(object.guid);
+  if (casting !== undefined && ((spellAttributeWords(casting)?.[5] ?? 0) & SPELL_ATTR5_DONT_TURN_DURING_CAST) !== 0) {
+    return undefined;
+  }
+  const channel = object.fields.get(CHANNEL_SPELL) ?? 0;
+  let guid = channel !== 0 && channelTracksTarget(channel) === true
+    ? guidIn(object, CHANNEL_OBJECT) : guidIn(object, TARGET);
+  // 5.32: no target — the active player, while its interaction window is open on this unit.
+  if (guid === undefined && selfGuid !== undefined && sources.interactionNpc?.() === object.guid) guid = selfGuid;
+  if (guid === undefined || guid === object.guid) return undefined;
+  const target = objects.get(guid);
+  if (!target?.position || (target.typeId !== TYPEID_UNIT && target.typeId !== TYPEID_PLAYER)) return undefined;
+  const dx = target.position.x - object.position.x;
+  const dy = target.position.y - object.position.y;
+  return dx === 0 && dy === 0 ? undefined : target;
+}
+
+/**
  * The world facing (radians, the orientation's own convention) Wow.exe 0x00735f60 turns `object` to,
  * or undefined when it keeps its own. `objects` finds the target; `channelTracksTarget` answers
  * whether a spell carries SPELL_ATTR1_CHANNEL_TRACK_TARGET (undefined: its row is not known, which
  * reads as no — UNIT_FIELD_TARGET, which the core points at the channel's target for such a spell
- * anyway, `Spell::SendChannelStart` → `SetSpellFocus`, Spell.cpp:4879-4885).
+ * anyway, `Spell::SendChannelStart` → `SetSpellFocus`, Spell.cpp:4879-4885). A passenger of a vehicle
+ * seat is turned in its seat instead ({@link unitSeatFacing}); a ship's passenger is turned here.
  */
 export function unitAutoFacing(
   object: WorldObjectState,
   objects: ReadonlyMap<bigint, WorldObjectState>,
   channelTracksTarget: (spellId: number) => boolean | undefined = spellChannelTracksTarget,
+  selfGuid?: bigint,
 ): number | undefined {
-  if (object.typeId !== TYPEID_UNIT) return undefined;
-  const position = object.position;
-  if (!position || (object.movementFlags & OWN_AXES) !== 0 || object.motion !== undefined) return undefined;
-  if (((object.fields.get(BYTES_1) ?? 0) & 0xff) !== 0) return undefined;
-  const flags = object.fields.get(FLAGS) ?? 0;
-  if ((flags & (UNIT_FLAG_STUNNED | UNIT_FLAG_POSSESSED)) !== 0) return undefined;
-  if (((object.fields.get(FLAGS_2) ?? 0) & UNIT_FLAG2_CANNOT_TURN) !== 0) return undefined;
-  if (object.transport !== undefined && objects.get(object.transport.guid)?.typeId !== 5) return undefined;
-  const channel = object.fields.get(CHANNEL_SPELL) ?? 0;
-  const guid = channel !== 0 && channelTracksTarget(channel) === true
-    ? guidIn(object, CHANNEL_OBJECT) : guidIn(object, TARGET);
-  if (guid === undefined || guid === object.guid) return undefined;
-  const target = objects.get(guid);
-  if (!target?.position || (target.typeId !== TYPEID_UNIT && target.typeId !== TYPEID_PLAYER)) return undefined;
-  const dx = target.position.x - position.x;
-  const dy = target.position.y - position.y;
-  if (dx === 0 && dy === 0) return undefined;
-  return Math.atan2(dy, dx);
+  if (object.transport !== undefined && objects.get(object.transport.guid)?.typeId !== TYPEID_GAMEOBJECT) return undefined;
+  const target = facingTarget(object, objects, channelTracksTarget, selfGuid);
+  if (target === undefined) return undefined;
+  return Math.atan2(target.position!.y - object.position!.y, target.position!.x - object.position!.x);
 }
 
 /**
- * How the drawn facing follows the chosen one in 0x00735f60: `"average"` — half of the last four
- * frames' differences a frame — for a unit that is not UNIT_FLAG_PLAYER_CONTROLLED and for a player;
- * a critically damped spring (0x007160b0) of 20 rad/s (`_DAT_009f281c`) for a player's pet or charm,
- * 30 (`_DAT_00a19cdc`) while UNIT_FLAG_PET_IN_COMBAT is up (0x0071afb0). (A creature whose
- * CreatureMovementInfo row names a SmoothFacingChaseRate springs at that rate instead; this client
- * does not keep the creature's movement id.)
+ * 5.32: a vehicle seat's passenger (`object.transport` names the vehicle, `seatFlags` its VehicleSeat.dbc row's
+ * Flags, undefined while the row is not known — which Wow.exe reads as no row, and turns): the facing in the seat
+ * 0x00735f60 turns it to, `angle to the target − the vehicle's drawn facing` (0x00717e50 sums the drawn facings
+ * up the chain of vehicles; `vehicleFacing` answers it), or undefined when it keeps its seat's own — no target,
+ * a seat without VEHICLE_SEAT_FLAG_ALLOW_TURNING, or the vehicle not in view.
+ */
+export function unitSeatFacing(
+  object: WorldObjectState,
+  objects: ReadonlyMap<bigint, WorldObjectState>,
+  seatFlags: number | undefined,
+  vehicleFacing: (vehicle: WorldObjectState) => number,
+  selfGuid?: bigint,
+  channelTracksTarget: (spellId: number) => boolean | undefined = spellChannelTracksTarget,
+): number | undefined {
+  const transport = object.transport;
+  if (transport === undefined) return undefined;
+  if (seatFlags !== undefined && (seatFlags & VEHICLE_SEAT_FLAG_ALLOW_TURNING) === 0) return undefined;
+  const vehicle = objects.get(transport.guid);
+  if (vehicle === undefined) return undefined;
+  const target = facingTarget(object, objects, channelTracksTarget, selfGuid);
+  if (target === undefined) return undefined;
+  const world = Math.atan2(target.position!.y - object.position!.y, target.position!.x - object.position!.x);
+  return wrap(world - vehicleFacing(vehicle));
+}
+
+/**
+ * How the drawn facing follows the chosen one in 0x00735f60: a creature whose CreatureMovementInfo row
+ * (SMSG_CREATURE_QUERY_RESPONSE `movementId`) names a SmoothFacingChaseRate over 1e-5 springs at that rate
+ * (0x007160b0) — 5.32: read (`UnitFacingSources.movementId`, generated `CREATURE_MOVEMENT_CHASE_RATES`);
+ * otherwise `"average"` — half of the last four frames' differences a frame — for a unit that is not
+ * UNIT_FLAG_PLAYER_CONTROLLED and for a player; a critically damped spring of 20 rad/s (`_DAT_009f281c`)
+ * for a player's pet or charm, 30 (`_DAT_00a19cdc`) while UNIT_FLAG_PET_IN_COMBAT is up (0x0071afb0).
  */
 export function unitFacingTurn(object: WorldObjectState): "average" | number {
+  const movement = object.typeId === TYPEID_UNIT ? sources.movementId?.(object) : undefined;
+  if (movement !== undefined && movement !== 0) {
+    const rate = CREATURE_MOVEMENT_CHASE_RATES[movement];
+    if (rate !== undefined && rate > CHASE_RATE_MINIMUM) return rate;
+  }
   const flags = object.fields.get(FLAGS) ?? 0;
   if (object.typeId === TYPEID_PLAYER || (flags & UNIT_FLAG_PLAYER_CONTROLLED) === 0) return "average";
   return (flags & UNIT_FLAG_PET_IN_COMBAT) !== 0 ? 30 : 20;

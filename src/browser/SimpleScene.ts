@@ -37,6 +37,12 @@ export type HeightSampler = (x: number, y: number) => number | undefined;
  */
 export const CAMERA_FOV_DEGREES = 52;
 /**
+ * 5.33: the world camera's near plane, in yards (`WorldRenderer3D.WORLD_CAMERA_NEAR_PLANE` is this), where
+ * the camera's code can read it without importing the renderer. Wow.exe's is 0.1 and its camera is placed
+ * with that one (game/CameraClip.ts `CAMERA_CLIP_NEAR`), which says what this one costs.
+ */
+export const CAMERA_NEAR_PLANE = 0.25;
+/**
  * How far the camera orbits by default, in yards.
  *
  * 21.31 rather than the 27.313 the old rig asked for, because the old rig never stood that far
