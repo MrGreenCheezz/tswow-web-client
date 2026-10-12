@@ -15,6 +15,14 @@
  * where the eye is, and the rim is out among the mid-distance streaks where nothing is read one
  * splash at a time.
  *
+ * 12.10-7.21: and a splash stays where it landed. Each slot's place used to be an offset from the
+ * character, so every ring on the ground slid along with a running character (owner, 12.10: «дождь
+ * буквально следует за персонажем, а не оставляет капли на земле»). It is now a point of a lattice
+ * laid over the world with the period of the field's window (`splashWindowOffset`), drawn at the
+ * copy nearest the character: moving shifts the window, not the splash, and a slot only reappears
+ * on the far side where the window's edge crosses it — where the rim fade has it at zero alpha.
+ * The denser middle is a second, smaller window over its own share of the slots.
+ *
  * The ground the splashes stand on is the terrain height grid, sampled bilinearly so a splash on
  * a slope sits on it rather than on a step. A character on a WMO floor (a city street, a bridge,
  * a dock) is detected by their own height disagreeing with the terrain under them, and the field
@@ -33,6 +41,27 @@ export const RAIN_SPLASH_GRID = 48;
 export const RAIN_SPLASH_CELL = 2;
 /** Splashes land within this many yards of the character (the grid reaches 6 yards further). */
 export const RAIN_SPLASH_RADIUS = 42;
+/**
+ * 12.10-7.21: the inner window's half-width and the share of slots in it. A fifth of the slots in a
+ * 32-yard window under the character keeps the middle as dense as the former field's (~0.44 a
+ * square yard within ten yards of the feet) now that the outer window's slots are spread evenly.
+ */
+export const RAIN_SPLASH_INNER_RADIUS = 16;
+export const RAIN_SPLASH_INNER_SHARE = 0.2;
+
+/**
+ * 12.10-7.21: where a slot's splash stands relative to the window's centre, for one axis: the
+ * slot's lattice point `seed · 2·half` (`seed` in 0..1, re-rolled per cycle) has one copy every
+ * `2·half` yards over the world, and the one inside [-half, half) of `centre` is drawn. The GLSL
+ * `mod( seed * 2.0 * reach - centre + reach, 2.0 * reach ) - reach` is this function (`half` is a
+ * reserved word in GLSL ES); tested.
+ */
+export function splashWindowOffset(seed: number, centre: number, half: number): number {
+  const period = 2 * half;
+  if (!(period > 0) || !Number.isFinite(seed) || !Number.isFinite(centre)) return 0;
+  const value = seed * period - centre + half;
+  return value - period * Math.floor(value / period) - half;
+}
 /** Rebuild the height grid once the character is this far from its centre. */
 export const RAIN_SPLASH_REGRID_YARDS = 5;
 /** Grid rows sampled per frame while a rebuild is under way (384 height queries a frame). */
@@ -96,6 +125,8 @@ const VERTEX_SHADER = `
   uniform float uTime;
   uniform float uRate;
   uniform float uRadius;
+  uniform float uInnerRadius;
+  uniform float uInnerShare;
   uniform float uSize;
   uniform vec2 uCentre;
   uniform vec2 uGridOrigin;
@@ -117,11 +148,13 @@ const VERTEX_SHADER = `
     float a = splashHash( vec2( position.x * 91.7 + index * 0.731, position.y * 17.3 ) );
     float b = splashHash( vec2( position.y * 53.1 - index * 1.371, position.x * 7.9 + index * 0.113 ) );
     float c = splashHash( vec2( a * 13.7 + index, b * 29.3 ) );
-    float angle = a * 6.2831853;
-    // sqrt(b) would spread the slots evenly; a smaller power leans them towards the character, so
-    // the field is densest where it is looked at and thins towards a rim it never quite reaches.
-    float radius = pow( b, 0.62 ) * uRadius;
-    vec2 xz = uCentre + vec2( cos( angle ), sin( angle ) ) * radius;
+    // 12.10-7.21: a lattice point over the world, not an offset from the character
+    // (splashWindowOffset): the window follows the feet, the splash stays where it landed. A fifth
+    // of the slots (their own fixed seed) fill a smaller window, so the middle stays the densest.
+    float reach = mix( uRadius, uInnerRadius, step( position.y, uInnerShare ) );
+    vec2 offset = mod( vec2( a, b ) * 2.0 * reach - uCentre + reach, 2.0 * reach ) - reach;
+    vec2 xz = uCentre + offset;
+    float radius = length( offset );
     // Bilinear over the four surrounding samples: on a slope the splash sits on the ground, not on
     // a two-yard step of it.
     vec2 grid = clamp( ( xz - uGridOrigin ) / uCell - 0.5, vec2( 0.0 ), vec2( uGridSize - 1.001 ) );
@@ -144,9 +177,10 @@ const VERTEX_SHADER = `
     // Row 0 of the atlas is the top of the image (flipY is off, as for every client texture).
     vUv = vec2( ( frame + corner.x + 0.5 ) / 4.0, ( variant + 0.5 - corner.y ) / 4.0 );
     // The rim thins over its outer forty percent, and the far ones fade with distance from the eye
-    // — by then they are a few pixels among the mid-distance streaks, and never a boundary.
+    // — by then they are a few pixels among the mid-distance streaks, and never a boundary. Zero
+    // from the inscribed circle out, so a slot crossing the window's edge is never seen to jump.
     float depth = -view.z;
-    float edge = ( 1.0 - smoothstep( 0.6, 1.0, radius / uRadius ) ) * ( 1.0 - smoothstep( 32.0, 64.0, depth ) );
+    float edge = ( 1.0 - smoothstep( 0.6, 1.0, radius / reach ) ) * ( 1.0 - smoothstep( 32.0, 64.0, depth ) );
     // A splash right at the lens would be a blurred disc across the frame; fade the closest out.
     vAlpha = smoothstep( 0.0, 0.06, life ) * ( 1.0 - smoothstep( 0.55, 1.0, life ) ) * edge
       * smoothstep( 1.2, 3.0, depth );
@@ -241,6 +275,8 @@ export class RainSplashes {
       uTime: { value: 0 },
       uRate: { value: 2.8 },
       uRadius: { value: RAIN_SPLASH_RADIUS },
+      uInnerRadius: { value: RAIN_SPLASH_INNER_RADIUS },
+      uInnerShare: { value: RAIN_SPLASH_INNER_SHARE },
       uSize: { value: 0.46 },
       uCentre: { value: new THREE.Vector2() },
       uGridOrigin: { value: new THREE.Vector2() },

@@ -424,8 +424,10 @@ test("the splash field is wide, thins towards its rim and rebuilds its ground a 
     "the grid outreaches the field by the regrid slack");
   const splashes = new RainSplashes();
   const shader = splashes.material.vertexShader;
-  assert.ok(shader.includes("pow( b, 0.62 )"), "denser under the character than at the rim");
-  assert.ok(shader.includes("smoothstep( 0.6, 1.0, radius / uRadius )"), "a soft rim, not an edge");
+  // 12.10-7.21: the denser middle is a smaller world-anchored window (tests/rain-splash-anchor.test.mjs).
+  assert.ok(shader.includes("mix( uRadius, uInnerRadius, step( position.y, uInnerShare ) )"),
+    "denser under the character than at the rim");
+  assert.ok(shader.includes("smoothstep( 0.6, 1.0, radius / reach )"), "a soft rim, not an edge");
   assert.ok(shader.includes("smoothstep( 32.0, 64.0, depth )"), "and a fade with distance from the eye");
   const asked = [];
   const slope = (x, y) => { asked.push([x, y]); return 10 + x * 0.01; };

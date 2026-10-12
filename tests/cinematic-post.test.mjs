@@ -143,7 +143,7 @@ test("profiles normalise, and only post leaves select the composited path", () =
 
 test("the post chain builds without a context and keeps its shaders self-consistent", () => {
   const post = new CinematicPost();
-  assert.equal(post.materials.length, 8);
+  assert.equal(post.materials.length, 9); // 12.10-7.30: + the volumetric march
   assert.equal(post.active, false);
   assert.equal(post.setProfile({ bloom: true }), true);
   assert.equal(post.active, true);
@@ -227,7 +227,8 @@ test("daytime grade lifts shadows and stays lighter in contrast than golden hour
   const noon = cinematicGrade({ ...ELWYNN_DUSK, diffuse: { r: 1, g: 0.95, b: 0.85 }, sunElevation: 0.95, storm: 0, underwater: false });
   const golden = cinematicGrade({ ...ELWYNN_DUSK, sunElevation: 0.1, storm: 0, underwater: false });
   const night = cinematicGrade({ ...ELWYNN_DUSK, sunElevation: -0.6, storm: 0, underwater: false });
-  assert.ok(noon.lift > 0.1 && noon.lift < 0.2, `noon lift ${noon.lift}`);
+  // 12.10-7.21: 0.14 → 0.09, the deeper midday shade of the reference (WoW Forever's cool shade).
+  assert.ok(noon.lift > 0.05 && noon.lift < 0.12, `noon lift ${noon.lift}`);
   assert.ok(noon.exposure > 1, "midday is not darkened by the grade");
   assert.equal(night.lift, 0);
   assert.ok(golden.contrast > noon.contrast);

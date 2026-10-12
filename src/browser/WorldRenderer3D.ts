@@ -4226,6 +4226,8 @@ export class WorldRenderer3D {
     diffuse: { r: 1, g: 1, b: 1 }, ambient: { r: 1, g: 1, b: 1 }, fog: { r: 1, g: 1, b: 1 },
     fogFar: 640, sun: { x: 0, y: 1, z: 0 }, storm: 0, underwater: false, indoors: false,
     glow: undefined as number | undefined,
+    /** 12.10 7.30: Light int band 9, the colour Wow.exe draws the sun body with (0x7f3230). */
+    sunBand: undefined as number | undefined,
   };
   /** The account's cinematic leaves; the effective profile is empty while lighting quality is 0. */
   #cinematicRequested: Readonly<Partial<CinematicProfile>> | undefined;
@@ -4760,6 +4762,7 @@ export class WorldRenderer3D {
       light.fog.r = colours.fog.r; light.fog.g = colours.fog.g; light.fog.b = colours.fog.b;
       light.fogFar = Math.max(sample.fogStart + 1, sample.fogEnd);
       light.glow = sample.glow;
+      light.sunBand = sample.skyChannels ? sample.sunColour : undefined; // 12.10 7.30
     }
     light.sun.x = sun.x; light.sun.y = sun.y; light.sun.z = sun.z;
     light.storm = this.#weatherFade.storm;
@@ -8235,6 +8238,8 @@ export class WorldRenderer3D {
         rays: raysTexture,
         rayStrength,
         shafts: cinematicShafts,
+        // 12.10 7.30: the volumetric shafts walk the view rays through the sun's own cascades.
+        sunShadows: this.#sunCascades.active ? this.#sunCascades.lights : undefined,
         camera: this.#camera,
         width: targets.width,
         height: targets.height,

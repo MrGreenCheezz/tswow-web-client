@@ -5,7 +5,9 @@ import {
   BLEND_ADD, BLEND_BLEND_ADD, BLEND_NO_ALPHA_ADD, MATERIAL_UNLIT,
   type WvmBatch, type WvmLight, type WvmModel, type WvmParticleEmitter, // 05.10-A7a-F2
 } from "./Wvm.js";
-import { WORLD_LOCAL_LIGHT_LIMIT, type WorldLightUniforms } from "./WorldLighting.js";
+import {
+  M2_LIGHT_ATTENUATION, M2_LIGHT_FALLOFF_CAP, WORLD_LOCAL_LIGHT_LIMIT, type WorldLightUniforms,
+} from "./WorldLighting.js";
 
 /** Enhanced fixture light is an artistic addition, not a fabricated M2 light record. */
 export interface FixtureLight {
@@ -32,9 +34,9 @@ function m2PointLights(model: WvmModel): FixtureLight[] {
   const lights: FixtureLight[] = [];
   for (const light of model.lights ?? []) {
     if (light.type !== M2_LIGHT_POINT || !light.position.every(Number.isFinite)) continue;
-    const radius = sampleTrack(light.attenuationEnd, 0, 0, model.globalSequences, 0);
+    // 12.10-6.17: the client's reach, not the file's attenuation end (`m2LightFalloff`).
     lights.push({
-      position: light.position, bone: light.bone, radius: Number.isFinite(radius) && radius > 0 ? radius : 8,
+      position: light.position, bone: light.bone, radius: M2_LIGHT_REACH,
       intensity: 1, colour: [1, 1, 1], light,
     });
     if (lights.length === WORLD_LOCAL_LIGHT_LIMIT) break;
@@ -136,6 +138,39 @@ export interface LocalLightSample {
   readonly colour: THREE.Vector3;
   radius: number;
   intensity: number;
+  /**
+   * 12.10-6.17: lit with the client's own falloff (`m2LightFalloff`) rather than the heuristic
+   * fixture's soft pool. Set by every `sampleFixtureLight`; absent reads as the heuristic.
+   */
+  client?: boolean;
+}
+
+/**
+ * 12.10-6.17: how Wow.exe attenuates an M2 point light. The lit M2 vertex programs
+ * (`Shaders\Vertex\arbvp1\Diffuse_T1.bls` #3/#5/#7/#9, one to four lights) add, per light,
+ * `colour · max(N·L, 0) / (c[25] + c[26]·d + c[27]·d²)` to the sun and ambient terms before the
+ * `MIN …, 1`, with no range test; the terrain chunk program takes up to three of the same lights
+ * (0x7d0050 fills position, colour and those three coefficients per light from 0x8349e0). The
+ * coefficients are the `CM2Light`'s at +0x54/+0x58/+0x5c, which its constructor (0x834a40) sets to
+ * (0, 0.7, 0.03) — `0x9e2ec0` and `0x9f23c8` — and no other writer of them was found; the file's
+ * attenuation start and end (1.89 yd on `humanguardtower.m2`, 0.97 on `undeadcampfire.m2`) are not
+ * what reaches the shader. A light also lights whatever is in the grid cells its model's bounds
+ * touch (0x81e400, four nearest per model in 0x834f60), not only within those few yards.
+ * The coefficients are `M2_LIGHT_ATTENUATION` and the cap `M2_LIGHT_FALLOFF_CAP` (WorldLighting.ts).
+ */
+export const M2_LIGHT_REACH = 20;
+
+/**
+ * 12.10-6.17: CPU twin of the shader's client falloff for a light `distance` yards away: the
+ * client's curve, capped at the source, faded out over the last quarter of `radius` (by
+ * `M2_LIGHT_REACH` = 20 yd it has fallen to 0.038 of the light's colour; the client has no end).
+ */
+export function m2LightFalloff(distance: number, radius = M2_LIGHT_REACH): number {
+  if (!Number.isFinite(distance) || distance < 0 || !(radius > 0)) return 0;
+  const [constant, linear, quadratic] = M2_LIGHT_ATTENUATION;
+  const curve = Math.min(M2_LIGHT_FALLOFF_CAP, 1 / Math.max(constant + linear * distance + quadratic * distance * distance, 1e-3));
+  const t = Math.max(0, Math.min(1, (distance - 0.75 * radius) / (0.25 * radius)));
+  return curve * (1 - t * t * (3 - 2 * t));
 }
 
 const flameColour = [1, 1, 1];
@@ -154,6 +189,7 @@ export function sampleFixtureLight(
     sampleTrack(track, animationMs, worldMs, model.globalSequences, fallback, component);
   let opacity = 1;
   result.colour.set(...fixture.colour);
+  result.client = false; // 12.10-6.17
   if (fixture.light) return sampleM2Light(fixture, fixture.light, sample, matrix, result); // 05.10-A7a-F2
   if (fixture.batch) {
     const batch = fixture.batch;
@@ -192,10 +228,12 @@ export function sampleFixtureLight(
 }
 
 /**
- * 05.10-A7a-F2 (6.17): one `M2Light` at a moment — diffuse colour × diffuse intensity, reach =
- * attenuation end, off while visibility is 0. No synthetic flicker: the file animates its own.
- * The radius is the file's number times the placement scale, under the heuristic's 12-yard cap;
- * whether `attenuationEnd` is in yards is the open point the tower check (14.24) settles.
+ * 05.10-A7a-F2 (6.17): one `M2Light` at a moment — diffuse colour × diffuse intensity, off while
+ * visibility is 0. No synthetic flicker: the file animates its own.
+ * 12.10-6.17: lit with the client's falloff (`m2LightFalloff`, `client`), out to `M2_LIGHT_REACH`
+ * yards times the placement scale. The reach used to be the file's `attenuationEnd` — 1.89 yd on
+ * the guard tower's lanterns, 0.97 on a campfire — which the client does not use as one, so the
+ * pools were a yard or two across (owner, 12.10: «свет заметен, но слабоват»).
  */
 function sampleM2Light(
   fixture: FixtureLight,
@@ -206,16 +244,16 @@ function sampleM2Light(
 ): boolean {
   if (sample(light.visibility, 1) <= 0) return false;
   const intensity = sample(light.diffuseIntensity, 1);
-  const radius = sample(light.attenuationEnd, fixture.radius);
-  if (!(intensity > 0.001) || !(radius > 0)) return false;
+  if (!(intensity > 0.001)) return false;
   result.colour.set(sample(light.diffuseColor, 1, 0), sample(light.diffuseColor, 1, 1), sample(light.diffuseColor, 1, 2));
   result.position.set(...fixture.position).applyMatrix4(matrix);
   const e = matrix.elements;
   const scale = Math.max(Math.hypot(e[0]!, e[1]!, e[2]!), Math.hypot(e[4]!, e[5]!, e[6]!),
     Math.hypot(e[8]!, e[9]!, e[10]!));
-  result.radius = Math.min(12, radius * scale);
-  // Capped at twice the heuristic's 1.1-ish scale until the 14.24 frames say what the file's number means.
+  result.radius = Math.min(24, M2_LIGHT_REACH * scale);
+  // Capped at twice the heuristic's 1.1-ish scale: a hand-edited or broken track stays bounded.
   result.intensity = Math.min(2, intensity);
+  result.client = true;
   return Number.isFinite(result.radius) && result.radius > 0 && Number.isFinite(result.intensity)
     && Number.isFinite(result.colour.x) && Number.isFinite(result.colour.y) && Number.isFinite(result.colour.z)
     && Number.isFinite(result.position.x) && Number.isFinite(result.position.y) && Number.isFinite(result.position.z);
@@ -232,6 +270,7 @@ export function localLightFalloff(distance: number, radius: number): number {
 export class LocalLightSelection {
   readonly #entries = Array.from({ length: WORLD_LOCAL_LIGHT_LIMIT }, () => ({
     position: new THREE.Vector3(), colour: new THREE.Vector3(), radius: 0, intensity: 0, distance: Infinity,
+    client: false,
   }));
   #count = 0;
   #limit = 0;
@@ -255,6 +294,7 @@ export class LocalLightSelection {
     reusable.colour.copy(sample.colour);
     reusable.radius = sample.radius;
     reusable.intensity = sample.intensity;
+    reusable.client = sample.client === true;
     reusable.distance = distance;
     this.#count = Math.min(this.#count + 1, this.#limit);
   }
@@ -265,7 +305,8 @@ export class LocalLightSelection {
       const entry = this.#entries[index]!;
       const position = uniforms.wowLocalLightPosition.value[index]!;
       position.set(entry.position.x, entry.position.y, entry.position.z, 1).applyMatrix4(viewMatrix);
-      position.w = entry.radius;
+      // 12.10-6.17: a negative reach tells the shader to use the client's falloff (m2LightFalloff).
+      position.w = entry.client ? -entry.radius : entry.radius;
       uniforms.wowLocalLightColour.value[index]!.set(entry.colour.x, entry.colour.y, entry.colour.z, entry.intensity);
     }
     return this.#count;

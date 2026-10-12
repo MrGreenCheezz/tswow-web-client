@@ -15,6 +15,15 @@ export interface WorldLightPair {
 /** Fixed shader budget; quality settings change the active count without compiling a new program. */
 export const WORLD_LOCAL_LIGHT_LIMIT = 8;
 
+/**
+ * 12.10-6.17: the constant, linear and quadratic attenuation Wow.exe's M2 point lights reach the
+ * lit M2 and terrain vertex programs with (`CM2Light` +0x54/+0x58/+0x5c, set to these by its
+ * constructor 0x834a40). See `LocalLighting.ts` `m2LightFalloff` for the shader term.
+ */
+export const M2_LIGHT_ATTENUATION: readonly [number, number, number] = Object.freeze([0, 0.7, 0.03]);
+/** 12.10-6.17: the curve is capped here, where it would run to infinity at the source. */
+export const M2_LIGHT_FALLOFF_CAP = 4;
+
 /** Shared by every authored outdoor material; changing a value updates all compiled programs. */
 export interface WorldLightUniforms {
   wowSunDirection: { value: THREE.Vector3 };
@@ -34,6 +43,14 @@ export interface WorldLightUniforms {
   wowAerialWarmth: { value: number };
   /** Optional low-sun rim/back light on lit models; zero leaves the equation unchanged. */
   wowRimStrength: { value: number };
+  /**
+   * 12.10-7.29: x — how high the sun is for the enhanced key (`highSunKeyWeight`: 0 at dawn, dusk
+   * and night, 1 from ~27 degrees up), which takes most of the diffuse band's chroma out of the key
+   * in the enhanced grade; y — the authored pair's peak sum (the inverse of its `applyLightHeadroom`
+   * scale, 1 when it did not clip), so that grade can rebuild the pair before its own headroom. Read
+   * only inside the immersive branch: lighting quality 0 and the comparison level never evaluate it.
+   */
+  wowHighSunKey: { value: THREE.Vector2 };
   /**
    * Reach of the cascaded sun shadow: x is the camera distance its fade starts at, y the distance
    * it is gone by, z the share of a cascade's map, from its edge inwards, handed over to the next
@@ -124,10 +141,67 @@ export function createWorldLightUniforms(
     wowAerialStrength: { value: 0 },
     wowAerialWarmth: { value: 0 },
     wowRimStrength: { value: 0 },
+    wowHighSunKey: { value: new THREE.Vector2(0, 1) },
     wowShadowFade: { value: new THREE.Vector3() },
   };
   setWorldLightUniforms(uniforms, ambient, diffuse);
   return uniforms;
+}
+
+/**
+ * 12.10-7.29: how high the sun stands for the enhanced key, 0..1 from its physical elevation: 0
+ * under ~9 degrees (dawn, dusk, night), 1 from ~27 degrees (08:00 on the enhanced arc) up.
+ *
+ * Light.dbc's diffuse band is a deep orange at every hour — Elwynn and Stormwind hold rgb(255,103,0)
+ * at 06:00, (255,114,0) at 08:00 and (255,136,0) at noon over an ambient of about (100,128,155).
+ * Kept through the pair's headroom, sunlit ground at noon was lit (244,183,109) and the sunlit half
+ * of every morning and noon frame turned orange (owner, 12.10: «утро и полдень будто сильно желтым
+ * цветом отдают»). The client itself saturates the sum per channel (`terrain.bls`: `ADD c[25]` →
+ * `MIN …, 1`), (255,255,154) at an Elwynn noon, which in the lookdev stills reads lime on grey
+ * cobbles under the enhanced arc's high sun. What the enhanced grade does with the weight is
+ * `HIGH_SUN_KEY_NEUTRAL`; the dawn and the night the owner liked keep the authored pair.
+ */
+export function highSunKeyWeight(elevation: number): number {
+  if (!Number.isFinite(elevation)) return 0;
+  const t = Math.max(0, Math.min(1, (elevation - 0.15) / 0.3));
+  return t * t * (3 - 2 * t);
+}
+
+/**
+ * 12.10-7.29: share of the diffuse band's chroma the enhanced key gives up at a high sun, toward
+ * `DAYLIGHT_KEY_WHITE` at the band's own luminance. Elwynn noon: the key (255,136,0) becomes
+ * (199,145,79) and, with the ambient and the pair's headroom, sunlit ground (245,224,192) against a
+ * (87,109,130) shade — the warm key and cool shade of the reference, not an orange frame.
+ */
+export const HIGH_SUN_KEY_NEUTRAL = 0.6;
+/** 12.10-7.29: a slightly warm daylight white at unit luminance (Rec. 709 weights). */
+export const DAYLIGHT_KEY_WHITE: readonly [number, number, number] = Object.freeze([1.065, 0.994, 0.864]);
+
+/**
+ * 12.10-7.29: CPU twin of the enhanced grade's key pair (the `wowHighSun` block of
+ * `WORLD_LIGHT_BODY`): the authored pair with `HIGH_SUN_KEY_NEUTRAL · weight` of the diffuse band's
+ * chroma traded for `DAYLIGHT_KEY_WHITE` at the band's luminance, then the pair's own headroom.
+ * Weight 0 is `applyLightHeadroom` exactly.
+ */
+export function highSunKeyPair(
+  ambient: Readonly<WorldLightColour>,
+  diffuse: Readonly<WorldLightColour>,
+  weight: number,
+): WorldLightPair {
+  const w = Number.isFinite(weight) ? Math.max(0, Math.min(1, weight)) : 0;
+  if (!(w > 0.0001)) return applyLightHeadroom(ambient, diffuse);
+  const luma = diffuse.r * 0.2126 + diffuse.g * 0.7152 + diffuse.b * 0.0722;
+  const share = HIGH_SUN_KEY_NEUTRAL * w;
+  const [wr, wg, wb] = DAYLIGHT_KEY_WHITE;
+  return applyLightHeadroom(ambient, {
+    r: diffuse.r + (luma * wr - diffuse.r) * share,
+    g: diffuse.g + (luma * wg - diffuse.g) * share,
+    b: diffuse.b + (luma * wb - diffuse.b) * share,
+  });
+}
+
+function glslVec3(value: readonly [number, number, number]): string {
+  return value.map((component) => component.toFixed(4)).join(", ");
 }
 
 /** Update the shared grade without recompiling any material program. */
@@ -155,10 +229,15 @@ export function setWorldLightRim(uniforms: WorldLightUniforms, enabled: boolean,
   return uniforms.wowRimStrength.value;
 }
 
-/** Street lamps stay visible at dusk/night while daytime keeps the authored sunlight dominant. */
+/**
+ * Street lamps stay visible at dusk/night while daytime keeps the authored sunlight dominant.
+ * 12.10-7.29: the same physical elevation also sets the enhanced key's high-sun weight
+ * (`highSunKeyWeight`); the renderer pushes it with every light sample.
+ */
 export function setWorldLightDaylight(uniforms: WorldLightUniforms, sunElevation: number): number {
   const t = Number.isFinite(sunElevation) ? Math.max(0, Math.min(1, (sunElevation + 0.10) / 0.32)) : 1;
   uniforms.wowDaylight.value = t * t * (3 - 2 * t);
+  uniforms.wowHighSunKey.value.x = highSunKeyWeight(sunElevation);
   return uniforms.wowDaylight.value;
 }
 
@@ -202,6 +281,10 @@ export function setWorldLightUniforms(
   diffuse: Readonly<WorldLightColour>,
 ): WorldLightPair {
   const scaled = applyLightHeadroom(ambient, diffuse);
+  // 12.10-7.29: the inverse of the scale just applied (1 when the pair did not clip), so the
+  // enhanced grade can rebuild the authored pair (wowHighSunKey).
+  const peak = Math.max(ambient.r + diffuse.r, ambient.g + diffuse.g, ambient.b + diffuse.b);
+  uniforms.wowHighSunKey.value.y = peak > 1 && Number.isFinite(peak) ? peak : 1;
   // These are display-space multipliers. Marking the inputs as linear is how Color.setRGB keeps
   // their numeric values intact; the shader converts the final multiplier with pow(..., 2.2).
   uniforms.wowAmbient.value.setRGB(
@@ -252,6 +335,8 @@ export function setWorldLightIndoor(
   uniforms.wowDiffuse.value.setRGB(pair.diffuse.r, pair.diffuse.g, pair.diffuse.b, THREE.LinearSRGBColorSpace);
   uniforms.wowSunDirection.value.set(direction[0], direction[1], direction[2]).normalize();
   uniforms.wowRimStrength.value = 0;
+  // 12.10-7.29: a room's pair has no headroom and no sun; its grade stays the peak-normalised one.
+  uniforms.wowHighSunKey.value.set(0, 1);
   return pair;
 }
 
@@ -286,6 +371,7 @@ uniform vec3 wowAmbient;
 uniform float wowImmersiveStrength;
 uniform float wowDaylight;
 uniform float wowRimStrength;
+uniform vec2 wowHighSunKey;
 uniform int wowLocalLightCount;
 uniform vec4 wowLocalLightPosition[ ${WORLD_LOCAL_LIGHT_LIMIT} ];
 uniform vec4 wowLocalLightColour[ ${WORLD_LOCAL_LIGHT_LIMIT} ];
@@ -382,21 +468,46 @@ vec3 wowAuthoredLight = max( wowAmbient + wowDiffuse * ( wowNL * wowShadow ), ve
 // Dark profiles get more fill relative to their key, so the effect remains visible at night.
 vec3 wowLight = wowAuthoredLight;
 if ( wowImmersiveStrength > 0.0001 ) {
+  // 12.10-7.29: with the sun up, the key keeps its luminance but loses most of its chroma
+  // (highSunKeyWeight). Light.dbc's diffuse band is a deep orange at every hour, and the authored
+  // pair through its headroom lit sunlit ground (244,183,109) at an Elwynn noon. The pair is then
+  // brought under one again as a whole, so the hue the grade starts from is warm white in the sun
+  // against the authored cool ambient in the shade. A low sun (dawn, dusk) and the night are the
+  // authored pair exactly: the branch is skipped and nothing below changes for them.
+  float wowHighSun = wowHighSunKey.x;
+  vec3 wowKeyAmbient = wowAmbient;
+  vec3 wowKeyDiffuse = wowDiffuse;
+  vec3 wowGradeBase = wowGradeAuthored;
+  if ( wowHighSun > 0.0001 ) {
+    vec3 wowRawAmbient = wowAmbient * wowHighSunKey.y;
+    vec3 wowRawDiffuse = wowDiffuse * wowHighSunKey.y;
+    float wowKeyLuma = dot( wowRawDiffuse, vec3( 0.2126, 0.7152, 0.0722 ) );
+    wowRawDiffuse = mix( wowRawDiffuse, wowKeyLuma * vec3( ${glslVec3(DAYLIGHT_KEY_WHITE)} ),
+      ${HIGH_SUN_KEY_NEUTRAL.toFixed(3)} * wowHighSun );
+    vec3 wowPairSum = wowRawAmbient + wowRawDiffuse;
+    float wowPairPeak = max( 1.0, max( max( wowPairSum.r, wowPairSum.g ), wowPairSum.b ) );
+    wowKeyAmbient = wowRawAmbient / wowPairPeak;
+    wowKeyDiffuse = wowRawDiffuse / wowPairPeak;
+    wowGradeBase = max( wowKeyAmbient + wowKeyDiffuse * ( wowGradeNL * wowShadow ), vec3( 0.0 ) );
+  }
   float wowWrappedKey = clamp( ( wowGradeNL + 0.35 ) / 1.35, 0.0, 1.0 );
-  float wowAmbientLuma = dot( wowAmbient, vec3( 0.2126, 0.7152, 0.0722 ) );
+  float wowAmbientLuma = dot( wowKeyAmbient, vec3( 0.2126, 0.7152, 0.0722 ) );
   float wowDarkness = 1.0 - smoothstep( 0.18, 0.55, wowAmbientLuma );
   float wowViewFacing = clamp( dot( normalize( normal ), normalize( vViewPosition ) ), 0.0, 1.0 );
   float wowRim = pow( 1.0 - wowViewFacing, 3.0 );
-  vec3 wowSoftFill = wowAmbient * vec3( 1.10, 1.045, 0.98 )
+  // The warm push on fill and key belongs to a low sun too; with the sun up it is neutral at the
+  // same luminance.
+  vec3 wowSoftFill = wowKeyAmbient * mix( vec3( 1.10, 1.045, 0.98 ), vec3( 1.052 ), wowHighSun )
     * ( 1.04 + 0.18 * wowDarkness + 0.10 * ( 1.0 - wowGradeNL ) );
   // Shade leans a little towards the sky: the sun's warmth is in the key, and what a surface the
   // sun does not reach is lit by is the cool light from overhead. Warm sunlit ground against
   // blue-grey shadow is how the reference stills read; a warm fill in the shade had flattened it.
   float wowSunlit = clamp( wowGradeNL * wowShadow * 1.6, 0.0, 1.0 );
   wowSoftFill *= mix( vec3( 0.93, 0.97, 1.05 ), vec3( 1.0 ), wowSunlit );
-  vec3 wowWarmKey = wowDiffuse * vec3( 1.08, 1.025, 0.94 ) * ( wowWrappedKey * wowShadow );
+  vec3 wowWarmKey = wowKeyDiffuse * mix( vec3( 1.08, 1.025, 0.94 ), vec3( 1.031 ), wowHighSun )
+    * ( wowWrappedKey * wowShadow );
   vec3 wowImmersiveLight = wowSoftFill + wowWarmKey
-    + wowAmbient * 0.10 * wowRim * ( 1.0 - wowGradeNL * wowShadow );
+    + wowKeyAmbient * 0.10 * wowRim * ( 1.0 - wowGradeNL * wowShadow );
   // The authored pair's own headroom (applyLightHeadroom): the brightest channel stops at one and the
   // whole colour scales with it, so the hue holds. A per-channel ceiling of 1.15 used to let sunlit
   // sand, snow and white stone reach 1.36x their texture after the gamma step and clip flat.
@@ -405,9 +516,9 @@ if ( wowImmersiveStrength > 0.0001 ) {
   // Lift the shade, keep the sun: the nearer the authored light already is to its peak, the less the
   // fill and warm key add on top. Full sun keeps a quarter of it — sunlit sand 230 -> 233, not 246,
   // which also kept it under the classic glow's knee instead of glowing on its own.
-  float wowAuthoredPeak = max( max( wowGradeAuthored.r, wowGradeAuthored.g ), wowGradeAuthored.b );
-  wowImmersiveLit = mix( wowGradeAuthored, wowImmersiveLit, 1.0 - 0.75 * smoothstep( 0.7, 1.0, wowAuthoredPeak ) );
-  wowLight = mix( wowGradeAuthored, wowImmersiveLit, wowImmersiveStrength );
+  float wowAuthoredPeak = max( max( wowGradeBase.r, wowGradeBase.g ), wowGradeBase.b );
+  wowImmersiveLit = mix( wowGradeBase, wowImmersiveLit, 1.0 - 0.75 * smoothstep( 0.7, 1.0, wowAuthoredPeak ) );
+  wowLight = mix( wowGradeBase, wowImmersiveLit, wowImmersiveStrength );
 #if !defined( WOW_LIGHT_TERRAIN )
   if ( wowRimStrength > 0.0001 ) {
     // Low sun behind the subject: a warm sun-coloured edge on silhouettes (characters, leaves,
@@ -426,14 +537,27 @@ if ( wowImmersiveStrength > 0.0001 ) {
     vec4 wowLamp = wowLocalLightPosition[ wowLightIndex ];
     vec3 wowToLamp = wowLamp.xyz + vViewPosition;
     float wowLampDistance = length( wowToLamp );
-    if ( wowLampDistance < wowLamp.w ) {
-      float wowFalloff = 1.0 - smoothstep( 0.0, wowLamp.w, wowLampDistance );
+    float wowLampReach = abs( wowLamp.w );
+    if ( wowLampDistance < wowLampReach ) {
       float wowLampFacing = dot( normalize( normal ), wowToLamp / max( wowLampDistance, 0.001 ) );
-      float wowLampDiffuse = 0.22 + 0.78 * max( wowLampFacing, 0.0 );
       vec4 wowLampColour = wowLocalLightColour[ wowLightIndex ];
-      wowLight += wowLampColour.rgb * wowLampColour.w * wowFalloff * wowLampDiffuse
-        * ( 0.35 + 0.65 * ( 1.0 - wowDaylight ) )
-        * ( 0.70 + 0.30 * wowDarkness ) * min( 1.0, wowImmersiveStrength / 0.65 );
+      if ( wowLamp.w < 0.0 ) {
+        // 12.10-6.17: a model's own M2Light, as Wow.exe's lit M2 and terrain programs add it:
+        // colour · max(N·L, 0) / (k0 + k1·d + k2·d²) under the same ceiling of one, by day as by
+        // night (m2LightFalloff, M2_LIGHT_ATTENUATION), windowed to nothing at the reach.
+        float wowClientFalloff = min( ${M2_LIGHT_FALLOFF_CAP.toFixed(1)}, 1.0 / max( ${M2_LIGHT_ATTENUATION[0].toFixed(3)}
+          + ${M2_LIGHT_ATTENUATION[1].toFixed(3)} * wowLampDistance
+          + ${M2_LIGHT_ATTENUATION[2].toFixed(3)} * wowLampDistance * wowLampDistance, 0.001 ) );
+        wowLight += wowLampColour.rgb * wowLampColour.w * max( wowLampFacing, 0.0 ) * wowClientFalloff
+          * ( 1.0 - smoothstep( 0.75 * wowLampReach, wowLampReach, wowLampDistance ) )
+          * min( 1.0, wowImmersiveStrength / 0.65 );
+      } else {
+        float wowFalloff = 1.0 - smoothstep( 0.0, wowLampReach, wowLampDistance );
+        float wowLampDiffuse = 0.22 + 0.78 * max( wowLampFacing, 0.0 );
+        wowLight += wowLampColour.rgb * wowLampColour.w * wowFalloff * wowLampDiffuse
+          * ( 0.35 + 0.65 * ( 1.0 - wowDaylight ) )
+          * ( 0.70 + 0.30 * wowDarkness ) * min( 1.0, wowImmersiveStrength / 0.65 );
+      }
     }
   }
   // Rim and fixture light fill toward the same ceiling rather than past it: on a surface the sun
@@ -456,7 +580,7 @@ interface WorldLightBinding {
 }
 
 const WORLD_LIGHT_BINDINGS = new WeakMap<THREE.Material, WorldLightBinding>();
-const WORLD_LIGHT_KEY = "world-light-r185-v6"; // 05.10-A7b-0 7.07: terrain N.L
+const WORLD_LIGHT_KEY = "world-light-r185-v7"; // 05.10-A7b-0 7.07: terrain N.L; 12.10: 7.29 high-sun key, 6.17 M2 falloff
 
 /**
  * The scene's Light.dbc fog is the floor of this effect. At strength zero the shader below is the
@@ -618,6 +742,7 @@ export function applyWorldLight(
     shader.uniforms.wowImmersiveStrength = binding.uniforms.wowImmersiveStrength;
     shader.uniforms.wowDaylight = binding.uniforms.wowDaylight;
     shader.uniforms.wowRimStrength = binding.uniforms.wowRimStrength;
+    shader.uniforms.wowHighSunKey = binding.uniforms.wowHighSunKey;
     shader.uniforms.wowLocalLightCount = binding.uniforms.wowLocalLightCount;
     shader.uniforms.wowLocalLightPosition = binding.uniforms.wowLocalLightPosition;
     shader.uniforms.wowLocalLightColour = binding.uniforms.wowLocalLightColour;

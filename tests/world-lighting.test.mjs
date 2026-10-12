@@ -166,7 +166,9 @@ test("7.07 classic terrain is max(N.L, 0); the enhanced grade alone keeps abs(N.
   assert.ok(grade.length > 0);
   assert.doesNotMatch(grade, /\bwowNL\b/, "the grade reads its own N.L");
   assert.doesNotMatch(grade, /\bwowAuthoredLight\b/, "the grade mixes against its own authored light");
-  assert.match(grade, /wowLight = mix\( wowGradeAuthored, wowImmersiveLit, wowImmersiveStrength \);/);
+  // 12.10-7.29: from the high-sun key pair (wowGradeBase is wowGradeAuthored while the sun is low).
+  assert.match(grade, /vec3 wowGradeBase = wowGradeAuthored;/);
+  assert.match(grade, /wowLight = mix\( wowGradeBase, wowImmersiveLit, wowImmersiveStrength \);/);
   // Every surface other than terrain grades exactly as before: the two names are the same values.
   assert.match(WORLD_LIGHT_BODY, /#if !defined\( WOW_LIGHT_TERRAIN \)\s+float wowGradeNL = wowNL;/);
   assert.match(WORLD_LIGHT_BODY, /#else\s+vec3 wowGradeAuthored = wowAuthoredLight;/);
@@ -199,7 +201,7 @@ test("applyWorldLight preserves an existing hook and key and removes three's BRD
   assert.equal(shader.fragmentShader.includes("#include <lights_fragment_begin>"), false);
   assert.equal((shader.fragmentShader.match(/getShadow\(/g) ?? []).length, 1,
     "the stock lookup is removed before the authored lookup is inserted");
-  assert.equal(material.customProgramCacheKey(), "previous-key|world-light-r185-v6:surface");
+  assert.equal(material.customProgramCacheKey(), "previous-key|world-light-r185-v7:surface");
 });
 
 test("portrait clone removes only the world wrapper and keeps the pre-world hook and key", () => {
@@ -317,7 +319,7 @@ test("the terrain mode survives the splat hook that arrives after the base mater
   assert.match(shader.fragmentShader, /uniform sampler2DArray splatLayers/);
   assert.equal(shader.fragmentShader.includes("#include <lights_fragment_begin>"), false);
   // 05.10-A7b-7: the splat program is v2 (baked MCSH shadow, per-chunk alpha clamp).
-  assert.equal(material.customProgramCacheKey(), "world-light-r185-v6:terrain|terrain-splat-v2");
+  assert.equal(material.customProgramCacheKey(), "world-light-r185-v7:terrain|terrain-splat-v2");
 });
 
 test("renderer material policy hooks every lit world path and leaves authored flat paths alone", async () => {

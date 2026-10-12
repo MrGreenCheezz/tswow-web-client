@@ -327,10 +327,24 @@ export class CascadedSunShadows {
     return this.#cascades.length > 0;
   }
 
-  /** Every shadow-casting light this owns while active, nearest cascade first. */
+  /**
+   * Every shadow-casting light this owns while active, nearest cascade first. 12.10 7.30: read every
+   * frame by the volumetric shafts (CinematicPost), so one list kept in step with the cascades
+   * instead of a new array per call; it changes in place when the cascades are rebuilt.
+   */
   get lights(): readonly THREE.DirectionalLight[] {
-    return this.#cascades.map((cascade) => cascade.light);
+    const list = this.#lightList;
+    const cascades = this.#cascades;
+    let same = list.length === cascades.length;
+    for (let index = 0; same && index < cascades.length; index++) same = list[index] === cascades[index]!.light;
+    if (!same) {
+      list.length = 0;
+      for (const cascade of cascades) list.push(cascade.light);
+    }
+    return list;
   }
+
+  readonly #lightList: THREE.DirectionalLight[] = [];
 
   get stats(): ShadowCascadeSnapshot {
     return Object.freeze({

@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import * as THREE from "three";
-import { modelFixtureLights, sampleFixtureLight } from "../dist/code/browser/LocalLighting.js";
+import { M2_LIGHT_REACH, modelFixtureLights, sampleFixtureLight } from "../dist/code/browser/LocalLighting.js";
 import { resetRenderSwitches, setRenderSwitches } from "../dist/code/browser/RenderSwitches.js";
 
 const constant = (components, ...values) => ({ interpolation: 0, globalSequence: -1, components,
@@ -49,7 +49,8 @@ test("6.17 a declared point light is a fixture whatever the model is called", (t
   const fixtures = modelFixtureLights(withLight, "World\\Generic\\Human\\Passive Doodads\\Towers\\HumanGuardTower.m2");
   assert.equal(fixtures.length, 1, "the point light, and not the directional one");
   assert.equal(fixtures[0].light, withLight.lights[0]);
-  assert.equal(fixtures[0].radius, 6, "reach is attenuation end");
+  // 12.10-6.17: the client's reach, not the file's attenuation end (tests/m2-light-falloff.test.mjs).
+  assert.equal(fixtures[0].radius, M2_LIGHT_REACH, "reach is the client falloff's window");
   assert.equal(modelFixtureLights(withLight, "Creature\\Anything.m2")[0]?.light, withLight.lights[0],
     "no name gate for a light the file declares");
 });
@@ -65,7 +66,8 @@ test("6.17 sampling reads the light's own colour, intensity, reach and visibilit
   assert.deepEqual([result.position.x, result.position.y, result.position.z], [10, 0, 4]);
   assert.deepEqual([result.colour.x, result.colour.y, result.colour.z], [1, 0.5, 0.25]);
   assert.equal(result.intensity, 1.5, "no synthetic flicker on a light the file animates itself");
-  assert.equal(result.radius, 6);
+  assert.equal(result.radius, M2_LIGHT_REACH);
+  assert.equal(result.client, true, "lit with the client's falloff");
   const dark = model([light({ visibility: constant(1, 0) })]);
   assert.equal(sampleFixtureLight(modelFixtureLights(dark, "World\\Lamp.m2")[0], dark, matrix, 0, 1000, sample()), false,
     "visibility 0 puts it out");

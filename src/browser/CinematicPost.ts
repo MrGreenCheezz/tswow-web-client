@@ -30,6 +30,7 @@
 import * as THREE from "three";
 
 import { GOD_RAY_STRENGTH_SCALE_MAX } from "./LightingQuality.js";
+import { highSunKeyWeight } from "./WorldLighting.js";
 
 export interface CinematicProfile {
   /** Filmic curve, Light.dbc-driven split toning, saturation/contrast, vignette, exposure adaptation. */
@@ -150,6 +151,11 @@ export const FILMIC_KNEE = 0.85;
 export const FILMIC_WHITE = 2.4;
 /** Mid-grey pivot for the log-space contrast. */
 export const FILMIC_PIVOT = 0.18;
+/**
+ * 12.10-7.30: share of the grade's departures from neutral (contrast, lift, split toning,
+ * saturation) a sky texel takes; the sky dome and its clouds are drawn from Light.dbc's bands.
+ */
+export const SKY_GRADE_SHARE = 0.2;
 
 /**
  * Identity below the knee, then an extended-Reinhard shoulder that is C1-continuous at the knee and
@@ -258,6 +264,61 @@ const scratchHue: GradeColour = { r: 1, g: 1, b: 1 };
 const scratchCool: GradeColour = { r: 1, g: 1, b: 1 };
 
 /**
+ * 12.10-7.29: 0 for a sun under ~9 degrees (and the night), 1 from ~27 degrees up — the enhanced
+ * world light's high-sun weight (`highSunKeyWeight`, which neutralises its key), reused here so the
+ * post's warmth fades on the same clock as the material's.
+ */
+export function highSunWeight(elevation: number): number {
+  return highSunKeyWeight(elevation);
+}
+
+function channel(value: number): number {
+  return Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0;
+}
+
+/**
+ * 12.10-7.29/7.30: the colour the post's sun takes — the disc, its glare and wide halo, the haze
+ * leaning toward it and the shafts — in display space with its brightest channel at one.
+ *
+ * It used to be the diffuse band alone. That band is a deep orange at every hour of this dataset
+ * (Elwynn rgb(255,103,0) at 06:00, (255,136,0) at noon), so the noon sun was an orange disc in an
+ * orange glare and every sunward view of the sky and the haze leaned orange as the camera turned.
+ * A low sun keeps it: the deep hue is the dawn and dusk the owner liked. With the sun up, the
+ * colour is the one the sky itself names for the sun — Light int band 9, `sunBand`, the colour
+ * Wow.exe draws the sun body with (0x7f3230; Elwynn noon rgb(255,247,222)) — when the light push
+ * carries it, and otherwise the client's own sunlit sum, `MIN(ambient + diffuse, 1)` per channel as
+ * `terrain.bls` saturates it, taken halfway to white (Elwynn noon rgb(255,255,205)).
+ */
+export function cinematicSunColour(
+  diffuse: Readonly<GradeColour>,
+  ambient: Readonly<GradeColour>,
+  elevation: number,
+  sunBand: number | undefined,
+  target: GradeColour = { r: 1, g: 1, b: 1 },
+): GradeColour {
+  const dr = channel(diffuse.r), dg = channel(diffuse.g), db = channel(diffuse.b);
+  const lowPeak = Math.max(dr, dg, db);
+  // The low sun's colour: the diffuse band's own hue (white when the band is black).
+  const lr = lowPeak > 1e-4 ? dr / lowPeak : 1;
+  const lg = lowPeak > 1e-4 ? dg / lowPeak : 1;
+  const lb = lowPeak > 1e-4 ? db / lowPeak : 1;
+  let hr: number, hg: number, hb: number;
+  if (sunBand !== undefined && Number.isFinite(sunBand) && (sunBand & 0xffffff) !== 0) {
+    hr = ((sunBand >> 16) & 0xff) / 255; hg = ((sunBand >> 8) & 0xff) / 255; hb = (sunBand & 0xff) / 255;
+  } else {
+    hr = 0.5 + 0.5 * Math.min(1, channel(ambient.r) + dr);
+    hg = 0.5 + 0.5 * Math.min(1, channel(ambient.g) + dg);
+    hb = 0.5 + 0.5 * Math.min(1, channel(ambient.b) + db);
+  }
+  const highPeak = Math.max(hr, hg, hb, 1e-4);
+  const w = highSunWeight(elevation);
+  target.r = lr + (hr / highPeak - lr) * w;
+  target.g = lg + (hg / highPeak - lg) * w;
+  target.b = lb + (hb / highPeak - lb) * w;
+  return target;
+}
+
+/**
  * The grade for one frame, from the zone's own light. No allocation when `target` is passed.
  *
  * - Golden hour (low sun, day): highlights take the sun band's hue strongly, contrast and
@@ -279,6 +340,10 @@ export function cinematicGrade(input: Readonly<CinematicGradeInput>, target?: Ci
   const daylight = smooth(-0.06, 0.1, elevation);
   const golden = smooth(-0.04, 0.08, elevation) * (1 - smooth(0.2, 0.5, elevation));
   const night = 1 - smooth(-0.12, 0.04, elevation);
+  // 12.10-7.29: how low the sun is, the complement of `highSunKeyWeight`: the warm
+  // highlight tint's base share and the sun colour's deep hue belong to a low sun (dawn, dusk) and
+  // to the night, not to a sun 27 degrees and more up.
+  const lowSun = 1 - highSunWeight(elevation);
   const calm = (1 - 0.7 * storm) * (input.underwater ? 0.35 : 1);
   // Full day, away from the golden band: where the lift and the lighter contrast belong.
   const midday = daylight * (1 - golden) * (1 - storm);
@@ -290,27 +355,35 @@ export function cinematicGrade(input: Readonly<CinematicGradeInput>, target?: Ci
   // Small on purpose: the capture is display-referred, so every step of exposure pushes the brightest
   // authored texels (snow, sand, white stone) straight into the shoulder. The lift does the shade.
   out.exposure = 1 + amount * (0.03 * golden + 0.03 * midday - 0.02 * night);
-  out.contrast = 1 + amount * (0.04 + 0.1 * golden + 0.02 * night) * calm;
+  // 12.10-7.21: +0.04 at midday, now that the sky takes a fifth of it (SKY_GRADE_SHARE) and the
+  // key is daylight rather than orange: the ground's shade against its key, as the reference reads.
+  out.contrast = 1 + amount * (0.04 + 0.04 * midday + 0.1 * golden + 0.02 * night) * calm;
   out.saturation = 1 + amount * ((0.07 + 0.06 * golden - 0.14 * night) * calm - 0.12 * storm);
   out.vignette = amount * (0.12 + 0.12 * golden + 0.06 * night);
   // Half what it was: with the shadow maps now taking most of the key light out of a shadow, the
   // lift is what keeps a canopy floor readable, not what keeps every shadow pale.
-  out.lift = amount * (0.14 * midday + 0.05 * golden * daylight);
+  // 12.10-7.21: 0.14 → 0.09 at midday, for a deeper shade (owner: «ещё кинематографичнее»).
+  out.lift = amount * (0.09 * midday + 0.05 * golden * daylight);
 
   // The golden-hour highlight tint was 0.16 + 0.52: at Booty Bay's sunset band it multiplied red by
   // ~1.36 in every highlight, so any texel above ~0.74 clipped into a flat orange sheet.
+  // 12.10-7.29: the 0.16 base only while the sun is low. Light.dbc's diffuse band is a deep orange
+  // at every hour (Elwynn noon rgb(255,136,0)), so a base share at noon multiplied every highlight by
+  // (1.11, 0.98, 0.84): the yellow cast the owner saw over morning and noon frames.
   unitLuminanceHue(input.diffuse, scratchHue);
   mixTint(out.highlightTint, scratchHue,
-    Math.min(1, amount * (0.16 + 0.36 * golden) * (1 - 0.8 * night) * calm));
+    Math.min(1, amount * (0.16 * lowSun + 0.36 * golden) * (1 - 0.8 * night) * calm));
 
   unitLuminanceHue(input.ambient, scratchHue);
   mixTint(scratchCool, COOL_SHADOW, 1);
   // Shadow hue: the authored ambient, leaned toward a cool sky fill — more so at night.
-  const cool = 0.25 + 0.35 * night;
+  // 12.10-7.21: and a little more at midday, a cool shade against the warm-white key; dawn and the
+  // night (the owner's favourites) keep their shares.
+  const cool = 0.25 + 0.35 * night + 0.15 * midday;
   scratchHue.r = scratchHue.r * (1 - cool) + scratchCool.r * cool;
   scratchHue.g = scratchHue.g * (1 - cool) + scratchCool.g * cool;
   scratchHue.b = scratchHue.b * (1 - cool) + scratchCool.b * cool;
-  mixTint(out.shadowTint, scratchHue, Math.min(1, amount * (0.3 + 0.25 * golden + 0.1 * night) * calm));
+  mixTint(out.shadowTint, scratchHue, Math.min(1, amount * (0.3 + 0.25 * golden + 0.1 * night + 0.06 * midday) * calm));
   return out;
 }
 
@@ -367,6 +440,49 @@ export const SHAFT_SOURCE_LIMIT = 3;
  * silhouettes as bands of light across it at full weight.
  */
 export const SHAFT_AIR_YARDS = 80;
+
+/**
+ * 12.10-7.30: volumetric sun light from the sun's own shadow cascades. The radial passes above can
+ * only spread light from sky that is on screen, so with the camera level and the sun overhead or to
+ * one side — a canopy filling the top of the frame — they had nothing to march and the beams were
+ * gone (owner, 12.10: «god rays видны только если непосредственно смотреть на солнце»). This pass
+ * walks each view ray through the air instead and asks the cascades whether each step is in sun:
+ * the lit stretches between the shadows of leaves and roofs are the beams, from any view direction.
+ * Steps per ray at half resolution, jittered per pixel; the composite's cross blur takes the noise.
+ */
+export const VOLUME_STEPS = 20;
+/** 12.10-7.30: yards of air each ray walks at most; a shorter ray (the ground nearby) carries less. */
+export const VOLUME_REACH_YARDS = 40;
+/**
+ * 12.10-7.30: yards over which the air's own light fades to 1/e along the ray, so the beams between
+ * the camera and the trunks nearby read over the even glow of distant lit air (which the haze leaf
+ * already draws).
+ */
+export const VOLUME_FADE_YARDS = 22;
+/** 12.10-7.30: cascades the march reads, nearest first (the near, mid and cached far maps). */
+export const VOLUME_CASCADES = 3;
+
+/**
+ * 12.10-7.30: half-resolution texels out to the four taps the composite reads the shade around a
+ * ray from (`volumeScatter`'s `around`).
+ */
+export const VOLUME_CONTEXT_TEXELS = 16;
+
+/**
+ * 12.10-7.30: how much of the sun the composite's volume term adds for one ray, before its gain:
+ * the ray's lit share `s` against the shade around it, `s · (1 − min(s̄, s))` with `s̄` the lit share
+ * `around` it — nothing in open sunlit air, which the haze leaf already draws, nothing in full
+ * shade, all of a lit ray among shaded ones (a beam through a canopy) — times the share of a whole
+ * reach of air the ray has (`air`), and the sun's angle to the ray: a tenth side-on or away from it,
+ * all of it toward the sun (the haze leaf's Henyey-Greenstein lobe). A quarter side-on laid a milky
+ * veil over a Stormwind street at noon (+17 luma), where the houses' shadows cross every ray; a
+ * `4·s·(1−s)` shape drew a bright seam along every large shadow's edge. CPU twin of the GLSL.
+ */
+export function volumeScatter(litShare: number, around: number, air: number, forwardLobe: number): number {
+  const unit = (value: number): number => Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0;
+  const s = unit(litShare);
+  return Math.sqrt(s) * (1 - Math.min(unit(around), s)) * unit(air) * (0.1 + 0.9 * unit(forwardLobe));
+}
 
 /**
  * A frame's shaft ceiling as the march multiplies it in: absent, non-finite or negative is off;
@@ -612,6 +728,64 @@ void main() {
   gl_FragColor = vec4(sum / max(total, 1e-4), 1.0);
 }`;
 
+/**
+ * 12.10-7.30: the volumetric march (VOLUME_STEPS): each half-resolution pixel's view ray, out to the
+ * depth or VOLUME_REACH_YARDS, sampled against the sun's cascades nearest first — the same
+ * `sampler2DShadow` maps and `shadow.matrix` the world material reads (three's PCF depth texture,
+ * compare on), each step weighted by VOLUME_FADE_YARDS of air before it.
+ */
+const VOLUME_MARCH = /* glsl */ `
+uniform highp sampler2DShadow sunShadowMap0;
+uniform highp sampler2DShadow sunShadowMap1;
+uniform highp sampler2DShadow sunShadowMap2;
+uniform mat4 sunShadowMatrix0;
+uniform mat4 sunShadowMatrix1;
+uniform mat4 sunShadowMatrix2;
+uniform vec4 volume; // x cascades in use, y reach (yards), z 1 / fade yards
+uniform mat4 cameraWorld;
+varying vec2 vUV;
+${VIEW_PARS}
+float volumeInside(vec3 c) {
+  return step(0.0, c.x) * step(c.x, 1.0) * step(0.0, c.y) * step(c.y, 1.0) * step(c.z, 1.0);
+}
+float volumeLit(vec3 world) {
+  vec4 c = sunShadowMatrix0 * vec4(world, 1.0);
+  c.xyz /= c.w;
+  if (volumeInside(c.xyz) > 0.5) return texture(sunShadowMap0, c.xyz);
+  if (volume.x > 1.5) {
+    c = sunShadowMatrix1 * vec4(world, 1.0);
+    c.xyz /= c.w;
+    if (volumeInside(c.xyz) > 0.5) return texture(sunShadowMap1, c.xyz);
+  }
+  if (volume.x > 2.5) {
+    c = sunShadowMatrix2 * vec4(world, 1.0);
+    c.xyz /= c.w;
+    if (volumeInside(c.xyz) > 0.5) return texture(sunShadowMap2, c.xyz);
+  }
+  return 1.0;
+}
+void main() {
+  float depth = texture2D(depthTexture, vUV).r;
+  vec3 view = cinematicViewPosition(vUV, min(depth, 1.0));
+  float reach = depth >= 1.0 ? volume.y : min(length(view), volume.y);
+  vec3 direction = normalize(mat3(cameraWorld) * view);
+  vec3 origin = cameraWorld[3].xyz;
+  float stepLength = reach / float(${VOLUME_STEPS});
+  float jitter = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+  float lit = 0.0;
+  float air = 0.0;
+  for (int i = 0; i < ${VOLUME_STEPS}; i++) {
+    float t = (float(i) + jitter) * stepLength;
+    float weight = exp(-t * volume.z);
+    lit += volumeLit(origin + direction * t) * weight;
+    air += weight;
+  }
+  // Red: the lit share of this ray's air. Green: how much air the ray has against a whole reach
+  // (the ground a few yards off carries little).
+  float full = (1.0 - exp(-volume.y * volume.z)) / volume.z;
+  gl_FragColor = vec4(lit / max(air, 1e-4), min(1.0, air * stepLength / full), 0.0, 1.0);
+}`;
+
 /** 13-tap downsample between HDR mips. */
 const DOWNSAMPLE = /* glsl */ `
 uniform sampler2D source;
@@ -737,6 +911,8 @@ uniform sampler2D rays;
 uniform sampler2D bloomTexture;
 uniform sampler2D occlusionTexture;
 uniform sampler2D shaftTexture;
+uniform sampler2D volumeTexture;
+uniform vec4 volumeLight; // x strength (0: off), zw the march target's texel
 uniform float glowStrength;
 uniform float rayStrength;
 uniform float shaftStrength;
@@ -851,6 +1027,26 @@ void main() {
     colour += mix(sunColour, vec3(1.0), 0.1) * shaft * shaftStrength * shaftPath * (sky ? 0.45 : 0.55);
   }
 
+  if (volumeLight.x > 0.0) {
+    // 12.10-7.30: the volumetric march — lit air between the shadows of leaves and roofs — from any
+    // view direction. A cross of five half-resolution taps takes the march's jitter; the sun's
+    // angle to the ray weights it (volumeScatter): a tenth side-on, all of it toward the sun.
+    vec2 vt = volumeLight.zw;
+    vec2 march = texture2D(volumeTexture, vUV).rg * 0.4
+      + (texture2D(volumeTexture, vUV + vec2(vt.x, 0.0)).rg + texture2D(volumeTexture, vUV - vec2(vt.x, 0.0)).rg
+        + texture2D(volumeTexture, vUV + vec2(0.0, vt.y)).rg + texture2D(volumeTexture, vUV - vec2(0.0, vt.y)).rg) * 0.15;
+    float volumeLobe = sqrt(clamp((phaseHG(facing, ${SCATTERING_G.toFixed(3)}) - ${scatteringPhase(0, SCATTERING_G).toFixed(5)})
+      / ${(scatteringPhase(1, SCATTERING_G) - scatteringPhase(0, SCATTERING_G)).toFixed(5)}, 0.0, 1.0));
+    // Beams are lit air among shadow: the ray's lit share s against the shade around it, 1 − s̄ over
+    // a wide cross of taps — nothing in open sunlit air (the haze leaf's), nothing in full shade,
+    // and a lit ray among shaded ones the whole of it (volumeScatter).
+    vec2 vw = vt * ${VOLUME_CONTEXT_TEXELS.toFixed(1)};
+    float around = 0.25 * (texture2D(volumeTexture, vUV + vec2(vw.x, 0.0)).r + texture2D(volumeTexture, vUV - vec2(vw.x, 0.0)).r
+      + texture2D(volumeTexture, vUV + vec2(0.0, vw.y)).r + texture2D(volumeTexture, vUV - vec2(0.0, vw.y)).r);
+    float beam = sqrt(march.r) * (1.0 - min(around, march.r)) * march.g;
+    colour += mix(sunColour, vec3(1.0), 0.15) * beam * (0.1 + 0.9 * volumeLobe) * volumeLight.x;
+  }
+
   if (leaves.y > 0.5) {
     // Energy-conserving for what the frame already holds: the texel's own share above the knee is
     // what the blur spreads, so it is taken out as its blurred neighbourhood goes back in. A uniformly
@@ -867,17 +1063,22 @@ void main() {
   }
 
   if (leaves.x > 0.5) {
+    // 12.10-7.30: the sky and its clouds are Light.dbc's own bands; they keep only a fifth of the
+    // grade's departures (contrast, lift, split toning, saturation). Graded like the ground, a sunset
+    // sky took the highlight tint toward the orange diffuse band (red x1.4, blue x0.5 at golden
+    // hour) and the contrast pushed its glare past white: the whole sky went orange and burnt.
+    float tone = sky ? ${SKY_GRADE_SHARE.toFixed(3)} : 1.0;
     colour *= grade.x;
-    colour = ${FILMIC_PIVOT.toFixed(3)} * pow(max(colour, vec3(1e-6)) / ${FILMIC_PIVOT.toFixed(3)}, vec3(grade.y));
+    colour = ${FILMIC_PIVOT.toFixed(3)} * pow(max(colour, vec3(1e-6)) / ${FILMIC_PIVOT.toFixed(3)}, vec3(mix(1.0, grade.y, tone)));
     float luma = dot(colour, vec3(0.2126, 0.7152, 0.0722));
     // Daylight shadow lift after the contrast: canopy shade stays readable (monotonic for lift < 4).
-    colour *= 1.0 + gradeLift * (1.0 - smoothstep(0.0, 0.22, luma));
+    colour *= 1.0 + gradeLift * tone * (1.0 - smoothstep(0.0, 0.22, luma));
     luma = dot(colour, vec3(0.2126, 0.7152, 0.0722));
-    float highlight = smoothstep(0.05, 0.75, luma);
-    float shade = 1.0 - smoothstep(0.0, 0.3, luma);
+    float highlight = smoothstep(0.05, 0.75, luma) * tone;
+    float shade = (1.0 - smoothstep(0.0, 0.3, luma)) * tone;
     colour *= mix(vec3(1.0), highlightTint, highlight) * mix(vec3(1.0), shadowTint, shade);
     luma = dot(colour, vec3(0.2126, 0.7152, 0.0722));
-    colour = max(mix(vec3(luma), colour, grade.z), vec3(0.0));
+    colour = max(mix(vec3(luma), colour, mix(1.0, grade.z, tone)), vec3(0.0));
     // Film burns toward white rather than toward a saturated primary: energy above display white
     // (sun, bloom core, sunlit haze) loses chroma before the shoulder rolls it off.
     float peak = max(colour.r, max(colour.g, colour.b));
@@ -916,6 +1117,11 @@ export interface CinematicLightInput {
   readonly indoors: boolean;
   /** `LightParams.Glow` here; drives `cinematicZoneAtmosphere`. Absent reads as the middle. */
   readonly glow?: number | undefined;
+  /**
+   * 12.10-7.30: Light int band 9 (`LightSample.sunColour`, packed 0xRRGGBB), the sun body's own
+   * colour. Absent (or 0: a v4 body) the high sun's colour is derived (`cinematicSunColour`).
+   */
+  readonly sunBand?: number | undefined;
 }
 
 export interface CinematicFrame {
@@ -931,6 +1137,11 @@ export interface CinematicFrame {
    * account's «Сила солнечных лучей» otherwise (1 at the slider's 100 %). Needs `depth`.
    */
   readonly shafts?: number | undefined;
+  /**
+   * 12.10-7.30: the sun's shadow cascades, nearest first (`CascadedSunShadows.lights`), for the
+   * volumetric march (VOLUME_MARCH). Absent or empty: no march, the radial shafts alone.
+   */
+  readonly sunShadows?: readonly THREE.DirectionalLight[] | undefined;
   readonly camera: THREE.PerspectiveCamera;
   readonly width: number;
   readonly height: number;
@@ -955,6 +1166,14 @@ interface ShaftTargets {
   readonly contextGeneration: number;
   readonly a: THREE.WebGLRenderTarget;
   readonly b: THREE.WebGLRenderTarget;
+}
+
+/** 12.10-7.30: the half-resolution volumetric march buffer; allocated on its first frame. */
+interface VolumeTarget {
+  readonly width: number;
+  readonly height: number;
+  readonly contextGeneration: number;
+  readonly target: THREE.WebGLRenderTarget;
 }
 
 const DEFAULT_LIGHT: CinematicLightInput = Object.freeze({
@@ -1015,6 +1234,13 @@ export const CINEMATIC_TUNING = Object.freeze({
   /** Wide, sun-coloured halo across the sky around a low sun, on top of the narrow white glare. */
   glareWide: 0.15,
   glareWideExponent: 14,
+  /**
+   * 12.10-7.30: the volumetric march's light (linear: a lit ray of the whole reach among shaded ones,
+   * looking into the sun; `volumeScatter`) and the extra at golden hour; scaled by the shafts'
+   * ceiling like the radial passes, so «Сила солнечных лучей» and the lighting quality govern both.
+   */
+  volume: 0.35,
+  volumeGolden: 0.1,
 });
 
 /**
@@ -1036,6 +1262,9 @@ export class CinematicPost {
   #profile: Readonly<CinematicProfile> = DEFAULT_CINEMATIC_PROFILE;
   #targets: CinematicTargets | undefined;
   #shaftTargets: ShaftTargets | undefined;
+  #volumeTarget: VolumeTarget | undefined;
+  /** 12.10-7.30: the volumetric march's gain before the frame's ceiling; set with the light. */
+  #volumeGain = 0;
   #halfFloat: boolean | undefined;
   readonly #grade: CinematicGrade = cinematicGrade({
     diffuse: DEFAULT_LIGHT.diffuse, ambient: DEFAULT_LIGHT.ambient, fog: DEFAULT_LIGHT.fog,
@@ -1046,7 +1275,10 @@ export class CinematicPost {
     diffuse: { r: 1, g: 0.94, b: 0.81 }, ambient: { r: 0.79, g: 0.89, b: 0.96 }, fog: { r: 0.6, g: 0.7, b: 0.8 },
     fogFar: 640, sun: { x: 0, y: 1, z: 0 }, storm: 0, underwater: false, indoors: false,
     glow: undefined as number | undefined,
+    sunBand: undefined as number | undefined,
   };
+  /** 12.10-7.29: the post's sun colour (`cinematicSunColour`), display space. */
+  readonly #sunColour: GradeColour = { r: 1, g: 1, b: 1 };
   #strength = CINEMATIC_STRENGTH_DEFAULT;
   /** Smoothed indoor/outdoor exposure multiplier. */
   #adaptation = 1;
@@ -1098,7 +1330,24 @@ export class CinematicPost {
     shaftLobe: { value: new THREE.Vector4(1, 8, 1, -1) },
     shaftSource: { value: new THREE.Vector4(0.5, 0.5, 1, 0.96) },
     shaftMarch: { value: new THREE.Vector4(SHAFT_MARCH_FRACTION, SHAFT_MARCH_MAX, 1, 1 / SHAFT_AIR_YARDS) },
+    // 12.10-7.30: the volumetric march.
+    sunShadowMap0: { value: null as THREE.Texture | null },
+    sunShadowMap1: { value: null as THREE.Texture | null },
+    sunShadowMap2: { value: null as THREE.Texture | null },
+    sunShadowMatrix0: { value: new THREE.Matrix4() },
+    sunShadowMatrix1: { value: new THREE.Matrix4() },
+    sunShadowMatrix2: { value: new THREE.Matrix4() },
+    volume: { value: new THREE.Vector4(0, VOLUME_REACH_YARDS, 0, 0) },
+    volumeTexture: { value: null as THREE.Texture | null },
+    volumeLight: { value: new THREE.Vector4() },
   };
+  /** 12.10-7.30: the march's cascade slots, nearest first; no array is made per frame. */
+  readonly #volumeMaps: readonly { value: THREE.Texture | null }[] = [
+    this.uniforms.sunShadowMap0, this.uniforms.sunShadowMap1, this.uniforms.sunShadowMap2,
+  ];
+  readonly #volumeMatrices: readonly { value: THREE.Matrix4 }[] = [
+    this.uniforms.sunShadowMatrix0, this.uniforms.sunShadowMatrix1, this.uniforms.sunShadowMatrix2,
+  ];
   readonly prefilter: THREE.ShaderMaterial;
   readonly downsample: THREE.ShaderMaterial;
   readonly upsample: THREE.ShaderMaterial;
@@ -1106,6 +1355,7 @@ export class CinematicPost {
   readonly occlusionBlur: THREE.ShaderMaterial;
   readonly shaftMask: THREE.ShaderMaterial;
   readonly shaftBlur: THREE.ShaderMaterial;
+  readonly volumeMarch: THREE.ShaderMaterial;
   readonly composite: THREE.ShaderMaterial;
 
   constructor() {
@@ -1127,6 +1377,7 @@ export class CinematicPost {
     this.occlusionBlur = pass(OCCLUSION_BLUR);
     this.shaftMask = pass(SHAFT_MASK);
     this.shaftBlur = pass(SHAFT_BLUR);
+    this.volumeMarch = pass(VOLUME_MARCH);
     this.composite = pass(COMPOSITE);
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute("position", new THREE.Float32BufferAttribute([-1, -1, 0, 3, -1, 0, -1, 3, 0], 3));
@@ -1137,7 +1388,7 @@ export class CinematicPost {
 
   get materials(): readonly THREE.ShaderMaterial[] {
     return [this.prefilter, this.downsample, this.upsample, this.ambientOcclusion, this.occlusionBlur,
-      this.shaftMask, this.shaftBlur, this.composite];
+      this.shaftMask, this.shaftBlur, this.volumeMarch, this.composite];
   }
 
   get profile(): Readonly<CinematicProfile> {
@@ -1148,9 +1399,11 @@ export class CinematicPost {
   get renderTargets(): readonly THREE.WebGLRenderTarget[] {
     const targets = this.#targets;
     const shafts = this.#shaftTargets;
+    const volume = this.#volumeTarget;
     return [
       ...(targets ? [...targets.bloom, targets.occlusion, targets.occlusionBlur] : []),
       ...(shafts ? [shafts.a, shafts.b] : []),
+      ...(volume ? [volume.target] : []),
     ];
   }
 
@@ -1206,6 +1459,7 @@ export class CinematicPost {
     stored.underwater = input.underwater;
     stored.indoors = input.indoors;
     stored.glow = input.glow;
+    stored.sunBand = input.sunBand;
     this.#adaptationTarget = input.indoors ? 1.1 : 1;
     this.#applyLight();
   }
@@ -1233,8 +1487,8 @@ export class CinematicPost {
       amount: strength * (0.7 + 0.3 * atmosphere) * (1 - 0.35 * this.#shelter),
     }, this.#grade);
     // Light.dbc bands are display-space; the composite works in linear.
-    const peak = Math.max(input.diffuse.r, input.diffuse.g, input.diffuse.b, 1e-4);
-    u.sunColour.value.setRGB(input.diffuse.r / peak, input.diffuse.g / peak, input.diffuse.b / peak, THREE.SRGBColorSpace);
+    const sunColour = cinematicSunColour(input.diffuse, input.ambient, sun.y, input.sunBand, this.#sunColour);
+    u.sunColour.value.setRGB(sunColour.r, sunColour.g, sunColour.b, THREE.SRGBColorSpace);
     u.fogColour.value.setRGB(input.fog.r, input.fog.g, input.fog.b, THREE.SRGBColorSpace);
     const outdoors = input.underwater ? 0 : open;
     const t = CINEMATIC_TUNING;
@@ -1244,11 +1498,13 @@ export class CinematicPost {
     const fogFar = Number.isFinite(input.fogFar) && input.fogFar > 1 ? input.fogFar : 640;
     const warmth = Math.min(1, (0.35 + 0.65 * grade.golden) * grade.daylight);
     const storm = Number.isFinite(input.storm) ? Math.max(0, Math.min(1, input.storm)) : 0;
+    // 12.10-7.21: a quarter more aerial depth by full day (1.6 → 2.0 fog distances), so the ridges
+    // behind a noon field layer; golden hour keeps its 3.2 and the night its 1.6.
     u.haze.value.set(
       Math.min(0.9, (t.haze + t.hazeGolden * grade.golden + t.hazeNight * grade.night) * (1 - 0.4 * storm)
         * atmosphere * outdoors * strength),
       warmth,
-      (1.6 + 1.6 * grade.golden) / fogFar,
+      (1.6 + 0.4 * grade.daylight * (1 - grade.golden) + 1.6 * grade.golden) / fogFar,
       1 / 140,
     );
     u.hazeGlare.value = (t.hazeGlare + t.hazeGlareGolden * grade.golden) * grade.daylight * atmosphere
@@ -1259,6 +1515,8 @@ export class CinematicPost {
     // Shafts: from sunrise, longer and stronger toward golden hour, gone in a storm or under a roof.
     const sunUp = smooth(0.0, 0.1, sun.y);
     this.#shaftGain = (t.shafts + t.shaftsGolden * grade.golden) * sunUp * (1 - storm) * outdoors * strength;
+    // 12.10-7.30: the volumetric march under the same day, weather and roof weighting.
+    this.#volumeGain = (t.volume + t.volumeGolden * grade.golden) * sunUp * (1 - storm) * outdoors * strength;
     u.shaftSource.value.w = t.shaftDecayNoon + (t.shaftDecayGolden - t.shaftDecayNoon) * grade.golden;
     // A high sun lights shafts across a wide part of the sky; a low one from a tighter lobe.
     const high = smooth(0.3, 0.8, sun.y);
@@ -1374,6 +1632,40 @@ export class CinematicPost {
       }
     }
 
+    // 12.10-7.30: the volumetric march through the sun's cascades, when the frame hands them over.
+    let volumeStrength = 0;
+    const cascades = frame.sunShadows;
+    const volumeWanted = this.#volumeGain * ceiling;
+    if (useDepth && volumeWanted > 1e-3 && cascades && cascades.length > 0) {
+      let count = 0;
+      for (const light of cascades) {
+        if (count >= VOLUME_CASCADES) break;
+        const map = light.shadow.map?.depthTexture;
+        // A cascade not rendered yet ends the run: the march reads them nearest first.
+        if (!map) break;
+        this.#volumeMaps[count]!.value = map;
+        this.#volumeMatrices[count]!.value.copy(light.shadow.matrix);
+        count++;
+      }
+      // An unused slot still has to hold a depth texture with compare on: left null, three binds its
+      // 1x1 stand-in and ANGLE refused the whole draw (INVALID_OPERATION) at lighting quality 1,
+      // which has two cascades. The shader never samples a slot past `volume.x`.
+      for (let index = count; index < VOLUME_CASCADES; index++) {
+        this.#volumeMaps[index]!.value = this.#volumeMaps[0]!.value;
+      }
+      const volume = count > 0 ? this.#syncVolume(renderer, frame) : undefined;
+      if (volume) {
+        volumeStrength = volumeWanted;
+        u.volume.value.set(count, VOLUME_REACH_YARDS, 1 / VOLUME_FADE_YARDS, 0);
+        quad.material = this.volumeMarch;
+        renderer.setRenderTarget(volume.target);
+        renderer.render(this.scene, this.camera);
+        u.volumeLight.value.set(volumeStrength, 0, 1 / volume.target.width, 1 / volume.target.height);
+      }
+    }
+    if (volumeStrength === 0) u.volumeLight.value.set(0, 0, 0, 0);
+    u.volumeTexture.value = volumeStrength > 0 ? this.#volumeTarget!.target.texture : frame.scene;
+
     const grade = this.#grade;
     u.grade.value.set(grade.exposure * this.#adaptation, grade.contrast, grade.saturation, grade.vignette);
     u.leaves.value.set(
@@ -1408,14 +1700,22 @@ export class CinematicPost {
     u.bloomTexture.value = null;
     u.occlusionTexture.value = null;
     u.shaftTexture.value = null;
+    // 12.10-7.30: the cascades' maps belong to their lights; the march only borrows them a frame.
+    u.volumeTexture.value = null;
+    u.sunShadowMap0.value = null;
+    u.sunShadowMap1.value = null;
+    u.sunShadowMap2.value = null;
   }
 
   dispose(): void {
     const targets = this.#targets;
     const shafts = this.#shaftTargets;
+    const volume = this.#volumeTarget;
     this.#targets = undefined;
     this.#shaftTargets = undefined;
+    this.#volumeTarget = undefined;
     this.release();
+    volume?.target.dispose();
     if (shafts) {
       shafts.a.dispose();
       shafts.b.dispose();
@@ -1471,6 +1771,31 @@ export class CinematicPost {
       for (const target of made) {
         try { target.dispose(); } catch { /* best effort */ }
       }
+      return undefined;
+    }
+  }
+
+  /** 12.10-7.30: the march's half-resolution buffer, re-made when the frame's size or context changes. */
+  #syncVolume(renderer: THREE.WebGLRenderer, frame: Readonly<CinematicFrame>): VolumeTarget | undefined {
+    const current = this.#volumeTarget;
+    if (current && current.width === frame.width && current.height === frame.height
+      && current.contextGeneration === frame.contextGeneration) return current;
+    this.#volumeTarget = undefined;
+    current?.target.dispose();
+    this.#probeHalfFloat(renderer, frame.contextGeneration, current?.contextGeneration);
+    try {
+      const target = new THREE.WebGLRenderTarget(
+        Math.max(1, Math.floor(frame.width / 2)), Math.max(1, Math.floor(frame.height / 2)), {
+          type: this.#halfFloat ? THREE.HalfFloatType : THREE.UnsignedByteType,
+          depthBuffer: false,
+          stencilBuffer: false,
+        });
+      target.texture.name = "cinematic-volume";
+      this.#volumeTarget = Object.freeze({
+        width: frame.width, height: frame.height, contextGeneration: frame.contextGeneration, target,
+      });
+      return this.#volumeTarget;
+    } catch {
       return undefined;
     }
   }
