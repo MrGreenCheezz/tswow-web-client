@@ -753,7 +753,10 @@ const NATIVE_TOT_HIDE_SELECTOR = `body.${NATIVE_TOT_REPLACEMENT_CLASS} #tot-fram
 const NATIVE_BAGS_HIDE_SELECTOR = ["#inventory-window", "#bag-bar", ".bag-window"]
   .map((selector) => `body.${NATIVE_BAGS_REPLACEMENT_CLASS} ${selector}`)
   .join(",\n");
-const NATIVE_CHARACTER_HIDE_SELECTOR = `body.${NATIVE_CHARACTER_REPLACEMENT_CLASS} #character-window`;
+// 3.49: except the stable's fallback, which shows its rows in the native window — Windows.ts'
+// CHARACTER_WINDOW_OVER_STOCK, spelled out because this is read while the modules load.
+const NATIVE_CHARACTER_HIDE_SELECTOR =
+  `body.${NATIVE_CHARACTER_REPLACEMENT_CLASS} #character-window:not([data-over-stock])`;
 /** The native circular C/B/P/N/J/gear row remains visible until the complete stock row owns it. */
 const NATIVE_MICROBUTTONS_HIDE_SELECTOR = `body.${NATIVE_MICROBUTTONS_REPLACEMENT_CLASS} #game-buttons`;
 

@@ -96,6 +96,18 @@ test("a service-only stable master uses the existing visible stable interface", 
     "a server response needs an idempotent open operation, not a toggle that may close the pane");
   assert.match(enterWorld, /STABLE_CHANGED[\s\S]{0,350}?showCharacterWindow\(["']collections["']\)/,
     "the stable response must make the pet collection visible when the character window was closed");
+  // 3.49: and visible over a published stock CharacterFrame, whose hide rule took the whole window.
+  const mount = await read("src/browser/framexml/FrameXmlWorldMount.ts");
+  const attribute = windows.match(/CHARACTER_WINDOW_OVER_STOCK = "([^"]+)"/)?.[1];
+  assert.equal(attribute, "data-over-stock");
+  assert.match(mount, new RegExp(`#character-window:not\\(\\[${attribute}\\]\\)`),
+    "the stock CharacterFrame's hide rule skips the window the stable's fallback marked");
+  assert.match(enterWorld, /showCharacterWindow\(["']collections["']\);[\s\S]{0,200}?keepCharacterWindowOverStock\(\)/,
+    "the stable's fallback marks the window it opens");
+  assert.match(windows, /export function openCharacterWindow\(tab: CharacterTab\): void \{\s*characterWindow\.removeAttribute\(CHARACTER_WINDOW_OVER_STOCK\)/,
+    "a player route into the window drops the mark");
+  assert.match(windows, /if \(window\.hidden\) window\.removeAttribute\(CHARACTER_WINDOW_OVER_STOCK\)/,
+    "and closing the window drops it");
 });
 
 test("flight, battlemaster and tabard service responses open visible native controls", async () => {

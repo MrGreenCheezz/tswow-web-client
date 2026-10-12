@@ -106,6 +106,7 @@ import { closeFrameXmlTradeSkill, frameXmlTradeSkillOpen } from "../framexml/Fra
 export function toggleGameWindow(window: HTMLElement): void {
   if (window === spellbookWindow && toggleFrameXmlSpellBook()) return;
   window.hidden = !window.hidden;
+  if (window.hidden) window.removeAttribute(CHARACTER_WINDOW_OVER_STOCK); // 3.49
   // The one place every markup window is opened and shut, so the one place that has to know a
   // window makes a noise. `igMainMenuOpen` and its closing pair are the client's own.
   playUiSound(window.hidden ? "windowClose" : "windowOpen");
@@ -125,6 +126,19 @@ export function showCharacterWindow(tab: CharacterTab): void {
 }
 
 /**
+ * 3.49: the attribute that lets the native character window show over a published stock
+ * CharacterFrame, whose hide rule (FrameXmlWorldMount) skips a window carrying it. Only the stable's
+ * fallback sets it — the native rows (StableControls.ts) when the stock PetStableFrame did not pass
+ * its gate, which otherwise opened inside an invisible window — and the window closing or any player
+ * route into it ({@link openCharacterWindow}) drops it, so C and the rest stay with the stock owner.
+ */
+export const CHARACTER_WINDOW_OVER_STOCK = "data-over-stock";
+
+export function keepCharacterWindowOverStock(): void {
+  characterWindow.setAttribute(CHARACTER_WINDOW_OVER_STOCK, "");
+}
+
+/**
  * Opens a page in the one native character window; repeating the same shortcut closes it.
  *
  * A published stock CharacterFrame owns its own pages through stock ToggleCharacter, with the
@@ -134,6 +148,7 @@ export function showCharacterWindow(tab: CharacterTab): void {
  * binding opens reputation directly.
  */
 export function openCharacterWindow(tab: CharacterTab): void {
+  characterWindow.removeAttribute(CHARACTER_WINDOW_OVER_STOCK); // 3.49: a player route, not the stable's fallback
   if (tab === "sheet" && toggleFrameXmlCharacter()) return;
   if (tab === "skills" && (toggleFrameXmlCharacterTab("SkillFrame") || toggleFrameXmlSpellBook())) return;
   if (!characterWindow.hidden && selectedCharacterTab() === tab) {

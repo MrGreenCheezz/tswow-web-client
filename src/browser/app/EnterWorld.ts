@@ -141,7 +141,7 @@ import {
 } from "../ui/QuestLog.js";
 import { showCharacterCollections, showCharacterSheet } from "../ui/CharacterSheet.js";
 import { clearReputation, showReputation } from "../ui/Reputation.js";
-import { showCharacterWindow } from "../ui/Windows.js";
+import { keepCharacterWindowOverStock, showCharacterWindow } from "../ui/Windows.js";
 import { frameXmlFlagEnabled } from "../framexml/FrameXmlWorldPolicy.js";
 import { FrameXmlModeController } from "../framexml/FrameXmlModeController.js";
 import { installNativeWowUiSkin } from "../ui/NativeUiSkin.js";
@@ -704,6 +704,8 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
     if (frameXmlStablePublished()) return;
     if (world.stableMessage) notice(world.stableMessage.text, world.stableMessage.error ? "error" : "info");
     showCharacterWindow("collections");
+    // 3.49: over a published stock CharacterFrame too, whose hide rule would swallow these rows.
+    keepCharacterWindowOverStock();
     showCharacterCollections();
   });
   onWorldEvent("PETITION_CHANGED", () => {
