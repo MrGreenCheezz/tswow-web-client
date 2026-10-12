@@ -7,6 +7,8 @@ import { PacketWriter } from "../dist/code/protocol/PacketWriter.js";
 import { OPCODES } from "../dist/code/generated/opcodes.js";
 import * as actionProtocol from "../dist/code/world/ActionBarProtocol.js";
 import { cooldownDuration, cooldownLabel, cooldownView } from "../dist/code/browser/ui/Widgets.js";
+// 3.47 (12.10): the bar asks the shared item-use rule — the equip lockout among its reasons.
+import * as itemUseCooldown from "../dist/code/browser/game/ItemUseCooldown.js";
 
 function connection() {
   const queue = [];
@@ -64,9 +66,16 @@ async function actionBarFor(world) {
     "../Inventory.js": { playerInventory: () => ({ backpack: [slot], bags: [], keyring: [] }), stackCount: () => 1 },
     "../game/GroundTarget.js": {
       itemUseSpellId: (template) => template?.spells?.find((spell) => [0, 4, 5, 6].includes(spell.trigger))?.spellId,
-      requestInventoryItemUse: (_slot, send) => send(),
+      // 3.47 (12.10): the bar hands a cooling item on to its use, whose guard refuses it before any packet
+      // (GroundTarget.requestItemUse → ItemUseCooldown.refuseItemUseOnCooldown); this stub keeps that guard.
+      requestInventoryItemUse: (slot, send) => {
+        const template = world.itemTemplate(slot.item.entry);
+        const spellId = template?.spells?.find((spell) => [0, 4, 5, 6].includes(spell.trigger))?.spellId;
+        if (spellId === undefined || itemUseCooldown.itemUseCooldownBlock(world, template, spellId) === undefined) send();
+      },
     },
     "../../world/ItemProtocol.js": { ITEM_EQUIP_COOLDOWN_MS: 30_000 },
+    "../game/ItemUseCooldown.js": itemUseCooldown,
     "../../world/Fields.js": { worldObject: { entry: (item) => item.entry } },
     "../../world/WorldClient.js": { MELEE_AUTO_ATTACK_SPELL_ID: 6603 },
     "./Dom.js": { actionBar },

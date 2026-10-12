@@ -504,14 +504,19 @@ test("checkpoint: a variable over the node limit stops costing a full abort ever
   saves.length = 0;
   try {
     assert.equal(vm.execute(`Small = 1; Huge = {}; for i = 1, ${SAVED_VARIABLE_LIMITS.nodes} do Huge[i] = i end`, "@t").ok, true);
+    const abortStarted = performance.now();
     saved.checkpoint();
+    // The full abort's own cost on this machine, now: a tick that repeated it would cost about as much. Relative,
+    // so a loaded machine (the full suite, a GC pause) does not fail a tick that only saved Small (12.10).
+    const abortMs = performance.now() - abortStarted;
     assert.deepEqual(saves, ["Small"], "Huge never reaches storage: its walk aborts");
     assert.equal(problems.length, 1);
     for (let tick = 1; tick <= 3; tick += 1) {
       offset += 30_000;
       const before = performance.now();
       saved.checkpoint();
-      assert.ok(performance.now() - before < 4, `tick ${tick}: no second abort inside the heavy interval`);
+      const tickMs = performance.now() - before;
+      assert.ok(tickMs < Math.max(4, abortMs / 2), `tick ${tick}: no second abort inside the heavy interval (${tickMs.toFixed(1)} ms, the abort ${abortMs.toFixed(1)} ms)`);
     }
     assert.deepEqual(saves, ["Small", "Small", "Small", "Small"]);
   } finally { vm.close(); }
