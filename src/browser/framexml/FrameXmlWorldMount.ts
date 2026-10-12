@@ -26,6 +26,7 @@ import {
   type QuestLogNativeState,
 } from "../ui/QuestLog.js";
 import { GlueLuaRef } from "../glue/GlueLua.js";
+import { scaleFrameXmlStage } from "./FrameXmlStageScale.js"; // 3.52
 import {
   toggleFrameXmlSpellBook, publishFrameXmlSpellBook,
 } from "./FrameXmlSpellBookController.js";
@@ -2521,7 +2522,7 @@ ${NATIVE_TARGET_PANEL_SELECTOR} {
    measured on the rich route, BuffButton1's recalc 20 µs after a GC and 645 µs a minute later, the
    idle frame 2.5 ms -> 11 ms over 100 s after a mount. Without them the recalc stays flat. */
 #${HOST_ID}, #${HOST_ID} * { transition-property: none !important; }
-#${STAGE_ID} { position: absolute; top: 0; left: 0; transform-origin: top left; }
+#${STAGE_ID} { position: absolute; top: 0; left: 0; isolation: isolate; }
 #${STAGE_ID} [data-framexml-type] {
   position: absolute;
   margin: 0;
@@ -3201,7 +3202,8 @@ export async function mountFrameXmlVertical(
     const logical = frameXmlViewport(width, height, settingNumber(settings(), "uiScale"));
     stage.style.width = `${logical.width}px`;
     stage.style.height = `${logical.height}px`;
-    stage.style.transform = `scale(${logical.scale})`;
+    // 3.52: zoom, not a scale transform — the seams between adjoining pictures (FrameXmlStageScale.ts).
+    scaleFrameXmlStage(stage, logical.scale);
     // A refit can move or rescale the stage without a resize the renderer hears (a transform-only
     // change, a UI-scale change before its observer runs): it measures the container again.
     fitRenderer?.invalidateContainerBox();

@@ -31,6 +31,22 @@ export interface FrameXmlQuestGiverWorld {
 export interface FrameXmlQuestGiverReadContext {
   readonly menuFacts?: FrameXmlQuestMenuFacts;
   readonly rewardMetadata: FrameXmlQuestRewardMetadata;
+  /** 3.53: Wow.exe's quest text parser for this reader (FrameXmlQuestText.ts); verbatim without it. */
+  readonly formatText?: (text: string) => string;
+}
+
+/**
+ * 3.53: the getters whose text Wow.exe keeps parsed (0x0058c5a0 for the four pages, 0x0058c720 for
+ * the objectives); GetTitleText is kept as the packet has it.
+ */
+const PARSED_TEXT: ReadonlySet<string> = new Set([
+  "GetGreetingText", "GetQuestText", "GetObjectiveText", "GetProgressText", "GetRewardText",
+]);
+
+function parsedText(name: string, values: readonly unknown[], context: FrameXmlQuestGiverReadContext): readonly unknown[] {
+  const format = context.formatText;
+  if (!format || !PARSED_TEXT.has(name) || typeof values[0] !== "string") return values;
+  return [format(values[0]), ...values.slice(1)];
 }
 
 export type FrameXmlQuestGiverPendingCommand =
@@ -56,10 +72,10 @@ export function frameXmlQuestGiverRead(
 ): readonly unknown[] | undefined {
   if (world.questList && world.questDialog) return NOTHING;
   const menu = (FRAMEXML_QUEST_MENU_DATA_BINDINGS as Partial<Record<string, FrameXmlQuestMenuBinding>>)[name];
-  if (menu) return menu(world.questList, args[0] as number | undefined, context.menuFacts);
+  if (menu) return parsedText(name, menu(world.questList, args[0] as number | undefined, context.menuFacts), context);
   const giver = (FRAMEXML_QUEST_GIVER_DATA_BINDINGS as Partial<Record<string,
     (dialog: QuestDialog | undefined) => readonly unknown[]>>)[name];
-  if (giver) return giver(world.questDialog);
+  if (giver) return parsedText(name, giver(world.questDialog), context);
   const reward = (FRAMEXML_QUEST_REWARD_DATA_BINDINGS as Partial<Record<string,
     (dialog: QuestDialog | undefined, args: readonly unknown[],
       metadata: FrameXmlQuestRewardMetadata) => readonly unknown[]>>)[name];

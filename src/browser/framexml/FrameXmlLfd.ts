@@ -217,6 +217,13 @@ export interface FrameXmlLfdContext {
   /** The current map is a dungeon instance (Map.InstanceType 1). */
   inDungeonInstance(): boolean;
   item?(entry: number): FrameXmlLfdItem | undefined;
+  /**
+   * 3.55: the picture of an item display id (`ItemDisplayInfo.InventoryIcon`, the gateway's
+   * `/item-icon/<displayId>`), which needs no item cache — the reward packet carries the display id.
+   */
+  displayIcon?(displayId: number): string | undefined;
+  /** 3.55: ask for items the cache lacks; `onChanged` once some of them have arrived. Never inside a C-API read. */
+  prefetchItems?(itemIds: readonly number[], onChanged: () => void): void;
   /** Monotonic milliseconds on the clock `lfgBootExpiresAt` uses (performance.now in WorldClient). */
   monotonic?(): number;
   /**
@@ -525,11 +532,39 @@ export class FrameXmlLfdModel {
       : [false, 0, 0, 0, 0, 0];
   }
 
+  /**
+   * `GetLFGDungeonRewardInfo(dungeonID, i)` (0x00557be0): the item's name from the item cache — an
+   * empty string while it is not there — and its picture from the reward's own display id
+   * (`Interface\Icons\` + ItemDisplayInfo's icon, 0x0070a910), which needs no cache at all; then the
+   * count. 3.55: the picture was taken from the item cache too, so a reward the cache had not seen
+   * yet drew an empty slot with no name — the random dungeon's reward simply was not shown.
+   */
   rewardInfo(id: number, index: number): readonly [name: string, texture: string | undefined, count: number] | undefined {
     const item = this.#reward(id)?.items[index - 1];
     if (!item) return undefined;
     const known = this.#context.item?.(item.itemId);
-    return [known?.name ?? "", known?.texture, item.count];
+    const texture = (item.displayId > 0 ? this.#context.displayIcon?.(item.displayId) : undefined) ?? known?.texture;
+    return [known?.name ?? "", texture, item.count];
+  }
+
+  /**
+   * 3.55: Wow.exe asks the item cache for each reward item with a callback (0x00552950) that raises
+   * LFG_UPDATE_RANDOM_INFO (event 0x202) once the item is there, so LFDQueueFrameRandom_UpdateFrame
+   * fills in the names that were empty. The asking happens here, on the player-info edge, rather
+   * than inside the C-API read.
+   */
+  #prefetchRewardItems(): void {
+    const prefetch = this.#context.prefetchItems;
+    const info = this.#context.world()?.lfgPlayerInfo;
+    if (!prefetch || !info) return;
+    const missing = new Set<number>();
+    for (const dungeon of info.dungeons) {
+      for (const item of dungeon.reward?.items ?? []) {
+        if (item.itemId > 0 && !this.#context.item?.(item.itemId)?.name) missing.add(item.itemId);
+      }
+    }
+    if (missing.size === 0) return;
+    prefetch([...missing].sort((left, right) => left - right), () => this.#pump?.fire("LFG_UPDATE_RANDOM_INFO"));
   }
 
   rewardLink(id: number, index: number): string | undefined {
@@ -965,6 +1000,7 @@ export class FrameXmlLfdModel {
         if (this.#popupsOwned) pump.fire("LFG_BOOT_PROPOSAL_UPDATE");
         return;
       case "playerInfo":
+        this.#prefetchRewardItems();
         pump.fire("LFG_UPDATE_RANDOM_INFO");
         pump.fire("LFG_LOCK_INFO_RECEIVED");
         return;

@@ -141,6 +141,30 @@ function fixture() {
   };
 }
 
+// 3.50: PlayerFrame repaints its PvP badge only on UNIT_FACTION("player") (PlayerFrame.lua:133-136).
+test("the player's PvP bits in UNIT_FIELD_BYTES_2 and the faction template raise UNIT_FACTION(\"player\")", () => {
+  const { seam, self, store, fired, pump, call } = fixture();
+  seam.attach(pump);
+  const faction = () => fired.filter(([event]) => event === FRAMEXML_SEAM_EVENTS.faction);
+  fired.length = 0;
+  setField(self, "UNIT_FIELD_BYTES_2", 0x01 << 8);
+  store.emit("UNIT_FIELD_BYTES_2", self, SELF_GUID);
+  assert.deepEqual(faction(), [[FRAMEXML_SEAM_EVENTS.faction, "player"]], "flagged: the badge's edge");
+  assert.deepEqual(call("UnitIsPVP", "player"), [true]);
+  fired.length = 0;
+  setField(self, "UNIT_FIELD_BYTES_2", (0x01 << 8) | 1);
+  store.emit("UNIT_FIELD_BYTES_2", self, SELF_GUID);
+  assert.deepEqual(faction(), [], "the sheath byte moving is not a faction change");
+  setField(self, "UNIT_FIELD_BYTES_2", (0x05 << 8) | 1);
+  store.emit("UNIT_FIELD_BYTES_2", self, SELF_GUID);
+  assert.deepEqual(faction(), [[FRAMEXML_SEAM_EVENTS.faction, "player"]], "free-for-all is the same edge");
+  assert.deepEqual(call("UnitIsPVPFreeForAll", "player"), [true]);
+  fired.length = 0;
+  store.emit("UNIT_FIELD_FACTIONTEMPLATE", self, SELF_GUID);
+  assert.deepEqual(faction(), [[FRAMEXML_SEAM_EVENTS.faction, "player"]]);
+  seam.detach();
+});
+
 test("IsResting is the inn bit of PLAYER_FLAGS, and each bit family fires its own stock event", () => {
   const { seam, self, store, fired, pump, call } = fixture();
   seam.attach(pump);

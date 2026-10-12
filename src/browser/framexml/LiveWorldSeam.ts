@@ -386,6 +386,7 @@ import {
   performFrameXmlQuestGiverCommand,
   resolveFrameXmlQuestGiverCommand,
 } from "./FrameXmlQuestGiverAdapter.js";
+import { frameXmlQuestText } from "./FrameXmlQuestText.js"; // 3.53
 import { cachedQuestRewardSpellInfo } from "./FrameXmlQuestRewardData.js";
 import { publishFrameXmlNativeBankCursor } from "./FrameXmlItemCursorBridge.js";
 import { frameXmlLootMethod, FRAMEXML_LOOT_METHODS, type FrameXmlLootMethod } from "./FrameXmlGroupLoot.js";
@@ -1120,6 +1121,9 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
           ? { name: metadata.name, texture: context.itemTexture?.(entry) ?? metadata.texture, quality: metadata.quality }
           : undefined;
       },
+      // 3.55: the reward's picture by its display id, and the cache request for its name (FrameXmlLfd.ts).
+      displayIcon: (displayId) => context.lootHost?.displayIcon?.(displayId),
+      prefetchItems: (itemIds, onChanged) => context.prefetchQuestMetadata?.(itemIds, [], onChanged),
       monotonic: () => context.monotonic(),
       // The 2.09 boss table: GetLFGProposal's encounter counts and GetLFGProposalEncounter.
       dungeonEncounters: frameXmlLiveDungeonEncounters,
@@ -1997,9 +2001,24 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
       }));
       // The form byte is written by Unit::SetShapeshiftForm. Publish the action-page edge as
       // soon as that authoritative field arrives; the 60 ms poll also catches metadata arrival.
+      // 3.50: the same word's byte 1 is the PvP flags (UNIT_BYTE2_FLAG_PVP 0x01, FFA 0x04), and the stock
+      // PlayerFrame repaints its PvP badge only on UNIT_FACTION("player") (PlayerFrame.lua:133-136 →
+      // PlayerFrame_UpdatePvPStatus): flagging for PvP showed the timer (PLAYER_FLAGS_CHANGED) and
+      // never the faction badge. A change of the PvP bits — not of the sheath or the form — is that edge.
+      let selfPvpFlags = this.#selfPvpFlags();
       this.#unsubscribe.push(store.field(SELF, "UNIT_FIELD_BYTES_2", () => {
         this.#reconcileShapeshiftActive();
         this.#reconcileBonusActionBar();
+        const pvpFlags = this.#selfPvpFlags();
+        if (pvpFlags !== selfPvpFlags) {
+          selfPvpFlags = pvpFlags;
+          pump.fire(FRAMEXML_SEAM_EVENTS.faction, "player");
+        }
+      }));
+      // And the faction template itself, the event's own field (Wow.exe maps UNIT_FIELD_FACTIONTEMPLATE
+      // to UNIT_FACTION in its field-event table, 0x00608880).
+      this.#unsubscribe.push(store.field(SELF, "UNIT_FIELD_FACTIONTEMPLATE", () => {
+        pump.fire(FRAMEXML_SEAM_EVENTS.faction, "player");
       }));
       this.#unsubscribe.push(store.field(SELF, "PLAYER_XP", () => {
         pump.fire(FRAMEXML_SEAM_EVENTS.experience);
@@ -5222,6 +5241,7 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     } : undefined;
     return frameXmlQuestGiverRead(name, args, world, {
       ...(menuFacts ? { menuFacts } : {}),
+      formatText: (text) => this.#questText(text),
       rewardMetadata: {
         item: (itemId) => {
           const cached = this.#questItemInfo({ itemId, count: 1 });
@@ -5239,6 +5259,17 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
         },
       },
     }) ?? [];
+  }
+
+  /** 3.53: a quest text as Wow.exe hands it to Lua — `$N`, `$C`, `$R`, `$G…;`, `$B` read for the player. */
+  #questText(text: string): string {
+    if (!text.includes("$")) return text;
+    return frameXmlQuestText(text, {
+      name: this.unitName("player"),
+      className: this.unitClass("player")?.[0],
+      raceName: this.unitRace("player")?.[0],
+      female: this.unitSex("player") === 3,
+    });
   }
 
   /** The browser log is the compact, header-free order present in the player's update fields. */
@@ -5648,7 +5679,8 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
 
   questLogQuestText(index?: number): readonly [string, string] | undefined {
     const template = this.#questTemplate(this.#questAt(index));
-    return template ? [template.details, template.objectivesText] : undefined;
+    // 3.53: both strings through the quest text parser, as Wow.exe's GetQuestLogQuestText (0x005e0340).
+    return template ? [this.#questText(template.details), this.#questText(template.objectivesText)] : undefined;
   }
 
   questLogLeaderBoardCount(index?: number): number {
@@ -6423,6 +6455,12 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     const objects = world?.state.objects;
     return world && guid !== undefined && typeof objects?.get === "function"
       ? objects.get(guid) : undefined;
+  }
+
+  /** 3.50: the player's UNIT_FIELD_BYTES_2 byte 1 (the PvP flags), 0 while the player is not in sight. */
+  #selfPvpFlags(): number {
+    const self = this.#self();
+    return self ? unitField.pvpFlags(self) ?? 0 : 0;
   }
 
   /** Resolve only the four classic party slots; raid roster aliases are intentionally absent. */

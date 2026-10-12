@@ -1776,10 +1776,12 @@ test("original ANCHOR_CURSOR tooltips use the pointer, scale and viewport and re
       offsetWidth: { get: () => Number(tooltip.attributes.width) || 0 },
       offsetHeight: { get: () => Number(tooltip.attributes.height) || 0 },
     });
+    // 3.52: the tooltip's SetScale is its zoom, so its own lengths (left, top, the clamp's translate)
+    // are in its own units and drawn at its scale times the stage's 0.5.
     element.getBoundingClientRect = () => {
       const shift = (element.style.translate ?? "0px 0px").split(" ").map(parseFloat);
-      const left = viewport.left + ((parseFloat(element.style.left) || 0) + (shift[0] || 0)) * 0.5;
-      const top = viewport.top + ((parseFloat(element.style.top) || 0) + (shift[1] || 0)) * 0.5;
+      const left = viewport.left + ((parseFloat(element.style.left) || 0) + (shift[0] || 0)) * tooltip.scale * 0.5;
+      const top = viewport.top + ((parseFloat(element.style.top) || 0) + (shift[1] || 0)) * tooltip.scale * 0.5;
       const width = element.offsetWidth * tooltip.scale * 0.5;
       const height = element.offsetHeight * tooltip.scale * 0.5;
       return { left, top, width, height, right: left + width, bottom: top + height };

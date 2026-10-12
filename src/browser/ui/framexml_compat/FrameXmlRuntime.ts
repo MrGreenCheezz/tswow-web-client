@@ -1657,8 +1657,16 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
             // both are meant to cover the 36x36 button. Without this the icon was laid out at the
             // picture's own 64x64, sixteen pixels below the button it belongs to, and every slot on
             // the bar showed its art hanging out of the bottom of its border.
-            if (mutable.points.length === 0 && mutable.attributes["width"] === undefined
-              && mutable.attributes["height"] === undefined) {
+            //
+            // 3.51: for a Texture whatever size it declares. Wow.exe's XML texture factory
+            // (0x00815f40, every layer and state texture) ends in 0x004830e0, which gives a texture
+            // with none of its nine points set `SetAllPoints(parent)`; the size is never consulted.
+            // `CoinPickupFrame` (and `StackSplitFrame`) is the case: its background declares
+            // `<Size x="256" y="32"/>`, no anchors, and TexCoords cropping exactly 172x96 of
+            // `UI-MoneyFrame` — the frame's own size — and drawn at 256x32 that crop came out
+            // squashed into a strip along the top of the window.
+            if (mutable.points.length === 0 && (mutable.type === "Texture"
+              || (mutable.attributes["width"] === undefined && mutable.attributes["height"] === undefined))) {
               mutable.setAllPoints = true;
               mutable.points = [
                 { point: "TOPLEFT", relativeTo: frame, relativePoint: "TOPLEFT", x: 0, y: 0 },
@@ -1701,8 +1709,10 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
           // what makes a button *look* like its art rather than like the file's own dimensions.
           // Measured: `GlueButtonTemplate`'s `<NormalTexture file="…Glues-BigButton-Up"/>` drew at
           // 747x219, the size of the picture, over three quarters of the login screen.
-          if (mutable.points.length === 0 && mutable.attributes["width"] === undefined
-            && mutable.attributes["height"] === undefined) {
+          // 3.51: whatever size it declares (Wow.exe 0x00815f40 → 0x004830e0, see the layer branch);
+          // a slider's thumb is the slider's to place (`applySlider`), so it keeps its own size.
+          if (mutable.points.length === 0 && (state !== "THUMB"
+            || (mutable.attributes["width"] === undefined && mutable.attributes["height"] === undefined))) {
             mutable.setAllPoints = true;
             mutable.points = [
               { point: "TOPLEFT", relativeTo: frame, relativePoint: "TOPLEFT", x: 0, y: 0 },
@@ -2505,6 +2515,16 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
     const built = this.buildElement({ name: type, attributes, children: [], text: "" }, owner, name);
     const mutable = this.own(built);
     if (!mutable) return undefined;
+    // 3.51: `CreateTexture(name, layer, template)` (0x004a2010) loads the template and then runs the
+    // XML factory's 0x004830e0 — a texture the template left without points fills its parent. A
+    // plain `CreateTexture()` does not, and stays unanchored until Lua anchors it.
+    if (type === "Texture" && inherits && mutable.points.length === 0) {
+      mutable.setAllPoints = true;
+      mutable.points = [
+        { point: "TOPLEFT", relativeTo: owner, relativePoint: "TOPLEFT", x: 0, y: 0 },
+        { point: "BOTTOMRIGHT", relativeTo: owner, relativePoint: "BOTTOMRIGHT", x: 0, y: 0 },
+      ];
+    }
     this.#createdFrames.add(mutable);
     const level = layer?.trim().toUpperCase() ?? "ARTWORK";
     mutable.drawLayer = FRAME_XML_DRAW_LAYERS.includes(level) ? level : "ARTWORK";

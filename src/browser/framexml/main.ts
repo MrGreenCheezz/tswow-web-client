@@ -2,6 +2,7 @@ import "../glue/glue.css";
 import { gatewayOrigin as defaultGatewayOrigin, clientLocale } from "../Environment.js";
 import { createHttpFileProvider } from "../glue/GlueLoader.js";
 import { GLUE_LOGICAL_HEIGHT, glueViewportMetrics } from "../glue/GlueRuntime.js";
+import { scaleFrameXmlStage } from "./FrameXmlStageScale.js";
 import { FrameXmlDomRenderer } from "../ui/framexml_compat/FrameXmlDomRenderer.js";
 import { FrameXmlFontLoader } from "../ui/framexml_compat/FrameXmlFonts.js";
 import { FrameXmlTextureCache } from "../ui/framexml_compat/FrameXmlTextures.js";
@@ -172,7 +173,8 @@ async function main(): Promise<void> {
   const tradeMode = (parameters.get("trade") ?? "").trim().toLowerCase();
   const tradeRequested = tradeMode !== "" && !/^(?:0|false|no|off)$/.test(tradeMode);
 
-  // The stage is laid out in UI units and scaled uniformly, exactly as `Bootstrap.ts` does it.
+  // The stage is laid out in UI units and scaled uniformly — by `zoom`, as the world mount does it
+  // (3.52, FrameXmlStageScale.ts: a scale transform drew a line at every join of two pictures).
   const fit = (): void => {
     const metrics = glueViewportMetrics(
       host.clientWidth || window.innerWidth,
@@ -180,8 +182,7 @@ async function main(): Promise<void> {
     );
     stage.style.width = `${metrics.virtualWidth}px`;
     stage.style.height = `${GLUE_LOGICAL_HEIGHT}px`;
-    stage.style.transform = `scale(${metrics.scale})`;
-    stage.style.transformOrigin = "top left";
+    scaleFrameXmlStage(stage, metrics.scale);
   };
   fit();
   window.addEventListener("resize", fit);

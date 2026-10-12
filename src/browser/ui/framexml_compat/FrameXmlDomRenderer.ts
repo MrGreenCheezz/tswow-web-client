@@ -1465,9 +1465,10 @@ export class FrameXmlDomRenderer {
    * How big one widget actually came out, in UI units.
    *
    * `offsetWidth`/`offsetHeight` rather than `getBoundingClientRect`, and that is the whole point:
-   * the stage is laid out in UI units and only *visually* scaled by a transform, so the offset
-   * pair is already in the corpus' own coordinate system while the client rect would be in device
-   * pixels and would have to be divided by a scale this layer does not know.
+   * the stage is scaled to the window (a zoom since 3.52, a transform before; Chrome's offset pair
+   * stays in the element's own units under both), so the offset pair is already in the corpus' own
+   * coordinate system while the client rect would be in device pixels and would have to be divided
+   * by a scale this layer does not know.
    */
   measure(frame: FrameXmlFrame): { width: number; height: number } | undefined {
     // The bridge settles before it asks (`sizeOf`); a host asking directly gets the same page.
@@ -1791,20 +1792,22 @@ export class FrameXmlDomRenderer {
     const height = owner.element.offsetHeight;
     let box: string;
     if (at && typeof width === "number" && typeof height === "number") {
-      const left = at.left - (1 - at.scale) * width / 2;
-      const top = at.top - (1 - at.scale) * height / 2;
+      // The owner's own units, zoomed by its cumulative scale as the owner itself is (3.52: zoom, not
+      // a `scale()` transform, so the escaped children's pictures snap to device pixels too).
+      const left = at.left / at.scale;
+      const top = at.top / at.scale;
       box = `${left} ${top} ${width} ${height} ${at.scale} ${alpha}`;
       if (box === layer.box) return;
       Object.assign(element.style, {
         left: px(left), top: px(top), width: px(width), height: px(height),
-        transform: at.scale === 1 ? "" : `scale(${at.scale})`,
+        zoom: at.scale === 1 ? "" : String(at.scale), transform: "",
       });
     } else {
       // A host with no layout (the tests' DOM stub): the whole container, which is the box of a
       // root owner and harmless for any other.
       box = `stage ${alpha}`;
       if (box === layer.box) return;
-      Object.assign(element.style, { left: "0px", top: "0px", width: "100%", height: "100%", transform: "" });
+      Object.assign(element.style, { left: "0px", top: "0px", width: "100%", height: "100%", zoom: "", transform: "" });
     }
     element.style.opacity = alpha === 1 ? "" : String(alpha);
     layer.box = box;
@@ -4163,8 +4166,10 @@ export class FrameXmlDomRenderer {
     const parentRect = parentBox ?? parent.getBoundingClientRect?.();
     const parentWidth = parentBox ? parentBox.offsetWidth : parent.offsetWidth;
     const parentHeight = parentBox ? parentBox.offsetHeight : parent.offsetHeight;
-    const scaleX = parentRect && parentWidth > 0 ? parentRect.width / parentWidth : 1;
-    const scaleY = parentRect && parentHeight > 0 ? parentRect.height / parentHeight : 1;
+    // Client pixels per unit of the frame's own: the parent's, times its own `SetScale` zoom (3.52).
+    const ownScale = Number.isFinite(frame.scale) && frame.scale > 0 ? frame.scale : 1;
+    const scaleX = (parentRect && parentWidth > 0 ? parentRect.width / parentWidth : 1) * ownScale;
+    const scaleY = (parentRect && parentHeight > 0 ? parentRect.height / parentHeight : 1) * ownScale;
     if (!(scaleX > 0 && scaleY > 0)) return;
     if (left !== rect.left || top !== rect.top) {
       element.style.translate = `${(left - rect.left) / scaleX}px ${(top - rect.top) / scaleY}px`;
@@ -4295,9 +4300,10 @@ export class FrameXmlDomRenderer {
     if (!(scaleX > 0 && scaleY > 0)) return;
     const ownScale = Number.isFinite(frame.scale) && frame.scale > 0 ? frame.scale : 1;
     const height = element.offsetHeight || numberValue(frame.attributes["height"]) || 0;
-    // ANCHOR_CURSOR uses the pointer itself; the gap keeps the tooltip clear of its hotspot.
-    element.style.left = px((cursor.x - rect.left) / scaleX + (16 + anchor.x) * ownScale);
-    element.style.top = px((cursor.y - rect.top) / scaleY - (height + 16 + anchor.y) * ownScale);
+    // ANCHOR_CURSOR uses the pointer itself; the gap keeps the tooltip clear of its hotspot. Written
+    // in the tooltip's own units, which its `SetScale` zoom multiplies (3.52).
+    element.style.left = px((cursor.x - rect.left) / scaleX / ownScale + 16 + anchor.x);
+    element.style.top = px((cursor.y - rect.top) / scaleY / ownScale - (height + 16 + anchor.y));
     element.style.removeProperty("right");
     element.style.removeProperty("bottom");
   }
@@ -4463,7 +4469,7 @@ export class FrameXmlDomRenderer {
   ): boolean {
     this.indexAnchorTargets(frame);
     if (element.style.position !== "absolute") element.style.position = "absolute";
-    const geometry: Partial<Record<"left" | "right" | "top" | "bottom" | "transform" | "width" | "height", string>> = {};
+    const geometry: Partial<Record<"left" | "right" | "top" | "bottom" | "transform" | "width" | "height" | "zoom", string>> = {};
     const rawWidth = declaredWidth ?? numberValue(frame.attributes["width"]);
     // Stock tab labels use SetWidth(0) to restore their intrinsic width after clipping.
     const width = frame.type === "FontString" && rawWidth === 0 ? undefined : rawWidth;
@@ -4478,7 +4484,7 @@ export class FrameXmlDomRenderer {
     if (autoHeight && element.style.height) element.style.removeProperty("height");
     const commit = (): boolean => {
       let changed = false;
-      for (const property of ["left", "right", "top", "bottom", "transform", "width", "height"] as const) {
+      for (const property of ["left", "right", "top", "bottom", "transform", "width", "height", "zoom"] as const) {
         const value = geometry[property];
         if (value === undefined) {
           if (element.style[property]) {
@@ -4493,14 +4499,19 @@ export class FrameXmlDomRenderer {
       return changed;
     };
     const scale = Number.isFinite(frame.scale) && frame.scale > 0 ? frame.scale : 1;
-    // Keep texture rotation/mirroring about the centre. The scale translation below keeps the
-    // authored anchor fixed while leaving layout dimensions in the frame's own Lua units.
+    // Keep texture rotation/mirroring about the centre.
     if (element.style.transformOrigin !== "50% 50%") element.style.transformOrigin = "50% 50%";
-    const scaleTransform = (x: number, y: number): string[] => scale === 1 ? [] : [
-      ...(x === 0.5 ? [] : [`translateX(${(x - 0.5) * (1 - scale) * 100}%)`]),
-      ...(y === 0.5 ? [] : [`translateY(${(y - 0.5) * (1 - scale) * 100}%)`]),
-      `scale(${scale})`,
-    ];
+    // 3.52: `SetScale` is CSS `zoom`, not a `scale()` transform. Zoom multiplies every pixel length
+    // the element and its subtree are given — its own size, its anchor offsets, its children — and
+    // leaves a percentage of the containing block alone, which is exactly SetScale: the frame's own
+    // units scaled, its anchor points on the parent unscaled. So everything below is written in the
+    // frame's own units: a parent anchor's offset as authored, a measured sibling edge (parent units)
+    // divided by the scale. A transform instead scaled the subtree *after* Chrome had snapped its
+    // pictures to whole pixels, so the edge two adjoining pictures share fell between device pixels
+    // and drew as a line: the world map's twelve tiles (`WorldMapDetailFrame:SetScale(0.691)` with the
+    // quest list, 0.573 windowed) showed seams in 12 of 18 stage/scale combinations measured in
+    // headless Chrome, and in none with zoom. `offsetWithin` reads the zoom back (`zoomOf`).
+    if (scale !== 1) geometry.zoom = String(scale);
 
     // `SetRotation` turns the picture about its own centre, counter-clockwise, which is the
     // opposite sense to CSS's positive angle. It rides on the same transform as the centring
@@ -4528,8 +4539,7 @@ export class FrameXmlDomRenderer {
       if (width !== undefined) geometry.width = px(width);
       if (height !== undefined && !autoHeight) geometry.height = px(height);
       else if (autoHeight) delete geometry.height;
-      const transform = [...scaleTransform(0, 0), animated, ...textureMirrors, rotation, turned]
-        .filter(Boolean).join(" ");
+      const transform = [animated, ...textureMirrors, rotation, turned].filter(Boolean).join(" ");
       if (transform) geometry.transform = transform;
       const changed = commit();
       this.clampToScreen(element, frame);
@@ -4559,9 +4569,10 @@ export class FrameXmlDomRenderer {
     let lastY: "TOP" | "BOTTOM" | "CENTER" = "TOP";
     for (const point of points) {
       const own = anchorRoles(point.point);
-      const offsetX = (point.x ?? 0) * scale;
+      // In the frame's own units: the zoom scales them (see `geometry.zoom` above).
+      const offsetX = point.x ?? 0;
       // FrameXML's positive Y points upward; CSS's positive Y points downward.
-      const offsetY = -(point.y ?? 0) * scale;
+      const offsetY = -(point.y ?? 0);
       const sibling = point.relativeTo && point.relativeTo !== frame.parent
         ? this.measureSibling(element, point.relativeTo)
         : undefined;
@@ -4571,9 +4582,10 @@ export class FrameXmlDomRenderer {
         // A sibling anchor is positioned from measured rectangles (layout pixels, for the same
         // reason `offsetWithin` uses them: a client rectangle is in device pixels and the stage is
         // scaled), not from percentages of the containing block.
+        // The measured edges are in the containing block's units; a zoomed frame's own are 1/scale.
         const target = anchorRoles(point.relativePoint ?? point.point);
-        xEdges[own.x] = sibling.x[target.x] + offsetX;
-        yEdges[own.y] = sibling.y[target.y] + offsetY;
+        xEdges[own.x] = sibling.x[target.x] / scale + offsetX;
+        yEdges[own.y] = sibling.y[target.y] / scale + offsetY;
         continue;
       }
       // Without measurable geometry a cross-frame anchor degrades to the
@@ -4643,23 +4655,15 @@ export class FrameXmlDomRenderer {
     // its `object-view-box` crop is exactly 0.7295 x 0.8555 of that — an ADD-blended gold plate five
     // times the button, anchored at its top-left corner. Its `$parentRays` twin is the same
     // declaration and appears on hover.
-    if (frame.type === "Texture" || scale !== 1) {
-      if (pinnedLeft && pinnedRight) {
-        const span = `100% - (${geometry.left}) - (${geometry.right})`;
-        geometry.width = scale === 1 ? `calc(${span})` : `calc((${span}) / ${scale})`;
-      }
-      if (pinnedTop && pinnedBottom) {
-        const span = `100% - (${geometry.top}) - (${geometry.bottom})`;
-        geometry.height = scale === 1 ? `calc(${span})` : `calc((${span}) / ${scale})`;
-      }
+    // A zoomed frame needs no division here: the percentage is the containing block's, and the pixel
+    // edges inside the `calc` are zoomed exactly as the `left`/`right` they repeat (3.52).
+    if (frame.type === "Texture") {
+      if (pinnedLeft && pinnedRight) geometry.width = `calc(100% - (${geometry.left}) - (${geometry.right}))`;
+      if (pinnedTop && pinnedBottom) geometry.height = `calc(100% - (${geometry.top}) - (${geometry.bottom}))`;
     }
-    const anchor = anchorRoles(primary.point);
-    const scaleX = pinnedLeft && pinnedRight ? 0 : anchor.x === "LEFT" ? 0 : anchor.x === "RIGHT" ? 1 : 0.5;
-    const scaleY = pinnedTop && pinnedBottom ? 0 : anchor.y === "TOP" ? 0 : anchor.y === "BOTTOM" ? 1 : 0.5;
     geometry.transform = [
       ...(translateX ? ["translateX(-50%)"] : []),
       ...(translateY ? ["translateY(-50%)"] : []),
-      ...scaleTransform(scaleX, scaleY),
       animated,
       ...textureMirrors,
       rotation,
@@ -5003,13 +5007,40 @@ function offsetWithin(
   for (let depth = 0; node && node !== ancestor && depth < 64; depth += 1) {
     const geometry = offsetMetrics(node);
     if (!geometry) return undefined;
-    const shift = centringShift(node, geometry.width, geometry.height);
-    left = geometry.left + shift.left + shift.scale * left;
-    top = geometry.top + shift.top + shift.scale * top;
-    scale *= shift.scale;
+    const step = parentStep(node, geometry);
+    left = step.left + step.scale * left;
+    top = step.top + step.scale * top;
+    scale *= step.scale;
     node = geometry.parent;
   }
   return node === ancestor ? { left, top, scale } : undefined;
+}
+
+/**
+ * One step of the offset walk: where a node's painted box starts in its offset parent's units, and
+ * how big one of its own units is there.
+ *
+ * 3.52: a frame's `SetScale` is its CSS `zoom` (`placeFrame`), and Chrome reports a zoomed element's
+ * `offset*` — like the lengths it was given — in its own units: measured, a `zoom: 0.5` box written
+ * `left: 100px` inside a zoomed stage reads `offsetLeft` 100 and sits 50 parent units in. So the
+ * node's whole step, centring translate included, is multiplied by its zoom.
+ */
+function parentStep(node: HTMLElement, geometry: OffsetMetrics): ScaledOffset {
+  const zoom = zoomOf(node);
+  const shift = centringShift(node, geometry.width, geometry.height);
+  return {
+    left: zoom * (geometry.left + shift.left),
+    top: zoom * (geometry.top + shift.top),
+    scale: zoom * shift.scale,
+  };
+}
+
+/** The `zoom` the renderer wrote on an element (`SetScale`, a strata layer's owner scale), else 1. */
+function zoomOf(node: HTMLElement): number {
+  const value = node.style?.zoom;
+  if (typeof value !== "string" || value === "") return 1;
+  const zoom = Number(value);
+  return Number.isFinite(zoom) && zoom > 0 ? zoom : 1;
 }
 
 /** Every offset ancestor of one element and how far inside it that element sits, nearest first. */
@@ -5022,10 +5053,10 @@ function offsetChain(element: HTMLElement): Map<HTMLElement, ScaledOffset> {
   for (let depth = 0; node && depth < 64; depth += 1) {
     const geometry = offsetMetrics(node);
     if (!geometry) break;
-    const shift = centringShift(node, geometry.width, geometry.height);
-    left = geometry.left + shift.left + shift.scale * left;
-    top = geometry.top + shift.top + shift.scale * top;
-    scale *= shift.scale;
+    const step = parentStep(node, geometry);
+    left = step.left + step.scale * left;
+    top = step.top + step.scale * top;
+    scale *= step.scale;
     node = geometry.parent;
     if (node && !chain.has(node)) chain.set(node, { left, top, scale });
   }
@@ -5062,8 +5093,11 @@ function offsetMetrics(node: HTMLElement): OffsetMetrics | undefined {
   // they fell back to the browser's zero. Measured on the LFD list: every row's check box is centred
   // on its hidden lock icon (LEFT, x = 25, i.e. `left: 25px; top: 50%`), and it came out at
   // `top: -10px`, half a row above its dungeon.
-  const parentWidth = hidden && parent ? blockSize(parent, "width") : undefined;
-  const parentHeight = hidden && parent ? blockSize(parent, "height") : undefined;
+  // In the node's own units, as a laid-out node's `offset*` are: a zoomed node's pixel lengths are
+  // its own, its percentages are of the parent's box — so the parent's size is divided by the zoom.
+  const zoom = hidden ? zoomOf(node) : 1;
+  const parentWidth = hidden && parent ? ownUnits(blockSize(parent, "width"), zoom) : undefined;
+  const parentHeight = hidden && parent ? ownUnits(blockSize(parent, "height"), zoom) : undefined;
   const width = hidden ? inlineLength(node.style?.width, parentWidth) ?? node.offsetWidth : node.offsetWidth;
   const height = hidden ? inlineLength(node.style?.height, parentHeight) ?? node.offsetHeight : node.offsetHeight;
   const right = hidden ? inlineLength(node.style?.right, parentWidth) : undefined;
@@ -5115,7 +5149,12 @@ function blockSize(node: HTMLElement, axis: "width" | "height", depth = 0): numb
   if (typeof measured === "number" && measured > 0) return measured;
   const parent = node.parentElement;
   if (!parent || depth >= 64) return undefined;
-  return inlineLength(inline, blockSize(parent, axis, depth + 1));
+  return inlineLength(inline, ownUnits(blockSize(parent, axis, depth + 1), zoomOf(node)));
+}
+
+/** A length in a parent's units, in the units of a child zoomed by `zoom` (3.52). */
+function ownUnits(length: number | undefined, zoom: number): number | undefined {
+  return length === undefined ? undefined : length / zoom;
 }
 
 /**
@@ -5250,7 +5289,8 @@ function centringShift(node: HTMLElement, width = node.offsetWidth, height = nod
     if (match[1] === "X") left += Number(match[2]) * measuredWidth / 100;
     else top += Number(match[2]) * measuredHeight / 100;
   }
-  // Screen clamping uses the individual translate property, which is already in parent units.
+  // Screen clamping uses the individual translate property, in the node's own units like the rest
+  // (`clampToScreen`); `parentStep` multiplies the whole shift by the zoom.
   const translate = typeof node.style?.translate === "string" ? node.style.translate.trim().split(/\s+/) : [];
   return {
     left: left + (inlinePixel(translate[0]) ?? 0),

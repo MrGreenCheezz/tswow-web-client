@@ -70,8 +70,10 @@ test("ordered Translation moves the painted region after its first order, withou
     const owner = fx.frame("Owner");
     const painted = fx.element("Owner");
     const authoredPoints = [...owner.points];
-    assert.equal(painted.style.left, "10px");
-    assert.equal(painted.style.top, "5px");
+    // 3.52: SetScale is the element's zoom, so the anchor offset is written in the frame's own units.
+    assert.equal(painted.style.zoom, "0.5");
+    assert.equal(painted.style.left, "20px");
+    assert.equal(painted.style.top, "10px");
     let geometryWrites = 0;
     for (const key of ["left", "top", "width", "height"]) {
       let value = painted.style[key];
@@ -88,12 +90,13 @@ test("ordered Translation moves the painted region after its first order, withou
     assert.deepEqual(translation(painted.style.transform), [20, 5]);
     assert.equal(owner.scale, .5);
     assert.deepEqual(owner.points, authoredPoints);
-    assert.equal(painted.style.left, "10px");
-    assert.equal(painted.style.top, "5px");
+    assert.equal(painted.style.left, "20px");
+    assert.equal(painted.style.top, "10px");
     assert.equal(geometryWrites, 0, "animation ticks only change the transform");
     fx.tick(1);
     assert.equal(owner.animationTransform, undefined, "the completed group restores authored geometry");
-    assert.equal(painted.style.transform, "translateX(-25%) translateY(-25%) scale(0.5)");
+    assert.ok(!painted.style.transform, "no scale transform: the zoom scales the frame");
+    assert.equal(painted.style.zoom, "0.5");
   } finally { fx.close(); }
 });
 
