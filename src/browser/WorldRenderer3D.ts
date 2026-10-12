@@ -9531,7 +9531,19 @@ export class WorldRenderer3D {
       // work, and a hole underfoot for even a frame reads worse than any ring pop-in.
       const isCenterTile = grid.x === center.x && grid.y === center.y;
       const rendered = this.#terrains.get(key);
+      // 12.10 7.32: ground is drawn from the tile's own answer and nothing else. A tile still on the
+      // wire, or one with no map file (404 — every cell of a dungeon that is one WMO), used to be
+      // built anyway: `terrainGeometryData` stands every unsampled vertex at the player's height, and
+      // the unsplatted material is the bare 0x426b45 — one flat green floor through the whole of
+      // Ragefire Chasm after the Dungeon Finder's teleport. Wow.exe makes an area only for a WDT
+      // MAIN cell with bit 0x1 and loads its ADT (0x007b5950 → 0x007d9a20); any other cell has no
+      // ground at all, and a guessed height is none either. The centre sample asks for the tile
+      // (`heightAt` starts the load) and reads it in one: undefined is "not here yet" (ownRevision
+      // 0) or "none" (answered null). Asked only where a build or a repair is due, so a settled
+      // ring pays nothing for it.
       if (!rendered) {
+        if (terrainClient && terrainClient.heightAt(map, (31.5 - grid.x) * TERRAIN_GRID_SIZE,
+          (31.5 - grid.y) * TERRAIN_GRID_SIZE) === undefined) continue;
         if (!isCenterTile && terrainBuilds >= TERRAIN_BUILD_BUDGET) continue;
         if (this.#terrainPreparation?.key === key) this.#cancelTerrainPreparation();
         const builtAt = this.#budgetProbe?.begin() ?? 0; // P2-09a
@@ -9540,6 +9552,14 @@ export class WorldRenderer3D {
         terrainBuilds++;
       } else if (rendered.ownRevision !== ownRevision || rendered.revision !== revision
         || rendered.liquidGeneration !== (this.#liquidTextures?.generation ?? 0)) {
+        // 7.32: nothing to repair from. Answered with no ground (a failed re-fetch) is taken down
+        // rather than flattened at the player's height; evicted and on the wire again keeps the
+        // ground it was built from until the answer is back.
+        if (terrainClient && terrainClient.heightAt(map, (31.5 - grid.x) * TERRAIN_GRID_SIZE,
+          (31.5 - grid.y) * TERRAIN_GRID_SIZE) === undefined) {
+          if (ownRevision > 0) this.#removeTerrain(key, rendered);
+          continue;
+        }
         this.#terrainRepairsPending++;
         if (!this.#terrainRepair) {
           this.#cancelTerrainPreparation();

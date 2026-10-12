@@ -770,8 +770,14 @@ export class TerrainClient {
     try {
       const response = await fetch(withGeneration(`${this.#baseUrl}/terrain/${map}/${grid.x}/${grid.y}`));
       if (response.status === 404) {
+        // 12.10 7.32: no map file is the WDT's own answer, not a failed load. Wow.exe asks for an ADT
+        // only where the WDT's MAIN entry has bit 0x1 (CMap::LoadWdt 0x007bf8b0 reads MAIN into
+        // 0x00ce88d0; the area walk 0x007b5950 → 0x007d9a20 skips every other cell), and a dungeon
+        // that is one WMO (MPHD 0x1: Ragefire Chasm, Wailing Caverns, Molten Core…) has none at all.
+        // This used to raise the red «Terrain tile 389/31/32 не найден» notice with its failure
+        // sound for every cell around the arrival. Said like the VMAP tile's own 404, as status.
         this.#resolve(key, null);
-        this.onStatus?.(`Terrain tile ${key} не найден`, true);
+        this.onStatus?.(`Terrain tile ${key} не найден`, false);
         return;
       }
       if (!response.ok) throw new Error(`Terrain gateway returned ${response.status}`);
