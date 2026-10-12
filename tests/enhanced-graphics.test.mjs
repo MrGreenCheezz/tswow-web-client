@@ -7,7 +7,7 @@ import { LIGHTING_QUALITY_COMPARISON, lightingClassicLook } from "../dist/code/b
 
 test("enhanced lighting can be enabled and saved without resetting player preferences", () => {
   const current = { ...defaultSettings(), renderScale: 75, autoQuality: false, uiScale: 110,
-    volumeMaster: 25, autoLoot: true, grassRadius: 40 };
+    volumeMaster: 25, autoLoot: true, grassRadius: 40, lightingQuality: 1 };
   const enhanced = enhancedGraphicsSettings(current);
   for (const [id, value] of Object.entries(ENHANCED_GRAPHICS_OVERRIDES)) {
     assert.ok(settingDefinition(id), `${id} is a supported setting`);

@@ -88,16 +88,16 @@ test("7.20 the renderer's classic branches read the classic look, not quality 0"
     "the comparison level never takes the cinematic grade");
 });
 
-test("7.20 lighting quality setting offers the comparison level without changing the default", () => {
+test("7.20 lighting quality setting offers the comparison level; the default is the highest quality", () => {
   const definition = settingDefinition("lightingQuality");
   assert.ok(definition);
   assert.equal(definition.min, 0);
   assert.equal(definition.max, 3);
-  assert.equal(definition.fallback, 1);
+  assert.equal(definition.fallback, 2, "owner, 12.10: the highest quality by default");
   assert.match(definition.hint ?? "", /3 — сравнение/);
-  assert.equal(defaultSettings().lightingQuality, 1);
+  assert.equal(defaultSettings().lightingQuality, 2);
   assert.equal(parseSettings('{"lightingQuality":3}')?.lightingQuality, 3);
-  assert.equal(parseSettings('{"lightingQuality":2}')?.lightingQuality, 2, "a saved 2 stays 2");
+  assert.equal(parseSettings('{"lightingQuality":1}')?.lightingQuality, 1, "a saved 1 stays 1");
 });
 
 // 05.10 review 7.20: the client's terrain fragment programs (Shaders/Pixel/arbfp1/terrain2.bls and

@@ -266,7 +266,7 @@ test("the interface panels: bars switch the stock multibars at once, FCT keeps i
   assert.deepEqual(lua(boot, "return MultiBarBottomRight:IsShown() and 1 or 0, InterfaceOptionsFrame:IsShown() and 1 or 0", 2), [0, 0]);
 });
 
-test("the WebClient category: every control a live stock control, Cancel reverts, Defaults leaves the interface on", withClient, async () => {
+test("the WebClient category: every control a live stock control, Cancel reverts, Defaults leaves the interface switch alone", withClient, async () => {
   const { boot, writes, values } = await loaded();
   const from = writes.length;
   const [panel, graphics] = lua(boot, `ShowUIPanel(InterfaceOptionsFrame)
@@ -277,7 +277,7 @@ test("the WebClient category: every control a live stock control, Cancel reverts
     end
     return InterfaceOptionsFramePanelContainer.displayedPanel:GetName(), table.concat(out, "|")`, 2);
   assert.equal(panel, "InterfaceOptionsWebClientGraphicsPanel");
-  assert.equal(graphics, "Масштаб отрисовки, %: 100|Автокачество графики|Качество освещения: 1|Скрывать невидимые помещения"
+  assert.equal(graphics, "Масштаб отрисовки, %: 100|Автокачество графики|Качество освещения: 2|Скрывать невидимые помещения"
     + "|Чёткость текстур персонажей|Густая трава|Густота травы: 2");
   assert.deepEqual(lua(boot, `local names = {}
     for _, button in ipairs(InterfaceOptionsFrameCategories.buttons) do
@@ -286,20 +286,20 @@ test("the WebClient category: every control a live stock control, Cancel reverts
     return table.concat(names, "|")`), ["Игра|Графика|Эффекты|Интерфейс|Чат"], "opening a section expands the category, in the window's order");
   boot.bridge.SetValue(boot.bridge.getFrame("InterfaceOptionsWebClientGraphicsPanel1"), 72, true);
   lua(boot, "InterfaceOptionsWebClientGraphicsPanel2:Click()", 0);
-  assert.deepEqual(writes.slice(from), [["renderScale", 70], ["autoQuality", false]], "live, snapped to the setting's step");
+  assert.deepEqual(writes.slice(from), [["renderScale", 70], ["autoQuality", true]], "live, snapped to the setting's step");
   assert.deepEqual(lua(boot, "return InterfaceOptionsWebClientGraphicsPanel1Text:GetText()"), ["Масштаб отрисовки, %: 70"]);
   lua(boot, "InterfaceOptionsFrameCancel:Click()", 0);
   assert.equal(values().renderScale, 100);
-  assert.equal(values().autoQuality, true);
+  assert.equal(values().autoQuality, false, "off by default (owner, 12.10), and Cancel restores it");
   lua(boot, `ShowUIPanel(InterfaceOptionsFrame) InterfaceOptionsFrame_OpenToCategory(InterfaceOptionsWebClientInterfacePanel)
     InterfaceOptionsWebClientInterfacePanel1:Click() InterfaceOptionsWebClientInterfacePanel3:Click()`, 0);
   await Promise.resolve();
-  assert.equal(values().originalFrameXml, true, "the interface switch lands after the Lua call");
+  assert.equal(values().originalFrameXml, false, "the interface switch (on by default) lands after the Lua call");
   assert.equal(values().showFps, true);
   lua(boot, "InterfaceOptionsFrame_SetAllToDefaults()", 0);
   await Promise.resolve();
   assert.equal(values().showFps, false, "Defaults resets the category");
-  assert.equal(values().originalFrameXml, true, "…but not the interface it is drawn in");
+  assert.equal(values().originalFrameXml, false, "…but not the interface it is drawn in, whose default is on");
   lua(boot, "InterfaceOptionsFrameOkay:Click()", 0);
 });
 

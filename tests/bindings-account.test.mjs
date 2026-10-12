@@ -86,7 +86,25 @@ test("off by default: nothing is asked for, applied or written", () => {
   bindings.bindKey("jump", 0, "KeyZ");
   timers.runAll();
   assert.deepEqual(world.saves, []);
-  assert.equal(sync.accountSyncEnabled(sync.INPUT_ACCOUNT_SYNC_KEYS.bindings), false, "no switch set: off");
+});
+
+test("the switches are on unless set to off (owner, 12.10)", () => {
+  const saved = globalThis.localStorage;
+  const values = new Map();
+  globalThis.localStorage = { getItem: (key) => values.get(key) ?? null, setItem: (key, value) => values.set(key, String(value)) };
+  try {
+    const key = sync.INPUT_ACCOUNT_SYNC_KEYS.bindings;
+    assert.equal(sync.accountSyncEnabled(key), true, "no switch set: on");
+    values.set(key, "on");
+    assert.equal(sync.accountSyncEnabled(key), true);
+    values.set(key, "off");
+    assert.equal(sync.accountSyncEnabled(key), false, "«off» turns it off");
+    assert.equal(sync.accountSyncEnabled(sync.INPUT_ACCOUNT_SYNC_KEYS.layout), true, "each slot has its own switch");
+    delete globalThis.localStorage;
+    assert.equal(sync.accountSyncEnabled(key), false, "no store at all: off, nothing to merge the server's copy into");
+  } finally {
+    if (saved === undefined) delete globalThis.localStorage; else globalThis.localStorage = saved;
+  }
 });
 
 test("switched on: the server copy is applied, the Unity rows survive a rebinding, the write is the envelope", async () => {

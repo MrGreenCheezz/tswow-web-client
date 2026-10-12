@@ -30,13 +30,13 @@ function model(lights) {
 
 const sample = () => ({ position: new THREE.Vector3(), colour: new THREE.Vector3(), radius: 0, intensity: 0 });
 
-test("6.17 the switch is off by default: a declared light changes nothing until frames accept it", () => {
+test("6.17 the switch is on by default (owner, 12.10): a declared light is used, off gives the heuristic", () => {
   resetRenderSwitches();
   const withLight = model([light()]);
-  assert.equal(modelFixtureLights(withLight, "Creature\\Anything.m2").length, 0, "the heuristic, which finds no lamp here");
-  setRenderSwitches({ m2Lights: true });
+  assert.equal(modelFixtureLights(withLight, "Creature\\Anything.m2").length, 1, "the model's own light by default");
+  setRenderSwitches({ m2Lights: false });
   try {
-    assert.equal(modelFixtureLights(withLight, "Creature\\Anything.m2").length, 1, "and the switch takes effect on a cached model");
+    assert.equal(modelFixtureLights(withLight, "Creature\\Anything.m2").length, 0, "off: the heuristic, which finds no lamp here, even on a cached model");
   } finally {
     resetRenderSwitches();
   }

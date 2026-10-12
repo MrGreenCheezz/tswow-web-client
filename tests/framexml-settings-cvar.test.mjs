@@ -130,12 +130,12 @@ test("the two mode switches have no default, and switching the interface off wai
   const { adapter, writes, values } = fakeSettings();
   assert.equal(adapter.getDefault("webclient_originalFrameXml"), undefined, "«По умолчанию» leaves the interface alone");
   assert.equal(adapter.getDefault("webclient_tswowAddons"), undefined);
-  assert.equal(adapter.get("webclient_originalFrameXml"), "0");
-  assert.equal(adapter.set("webclient_originalFrameXml", "1"), true);
+  assert.equal(adapter.get("webclient_originalFrameXml"), "1", "owner, 12.10: the stock interface by default");
+  assert.equal(adapter.set("webclient_originalFrameXml", "0"), true);
   assert.deepEqual(writes, [], "the write that unmounts this VM is not made inside its Okay handler");
   await Promise.resolve();
-  assert.deepEqual(writes, [{ id: "originalFrameXml", value: true }]);
-  assert.equal(values().originalFrameXml, true);
+  assert.deepEqual(writes, [{ id: "originalFrameXml", value: false }]);
+  assert.equal(values().originalFrameXml, false);
   assert.equal(adapter.getDefault("webclient_showFps"), "0", "an ordinary switch keeps its default");
 });
 

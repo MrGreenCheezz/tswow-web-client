@@ -112,10 +112,10 @@ test("the shadow material gate excludes unlit, blended, transparent and depthles
 test("lighting quality is an account setting with off, balanced and high values", () => {
   const definition = settingDefinition("lightingQuality");
   assert.ok(definition);
-  assert.equal(definition.fallback, 1);
+  assert.equal(definition.fallback, 2); // owner, 12.10
   assert.equal(definition.min, 0);
   assert.equal(definition.max, 3); // 05.10-7.20
-  assert.equal(defaultSettings().lightingQuality, 1);
+  assert.equal(defaultSettings().lightingQuality, 2);
   assert.equal(parseSettings('{"lightingQuality":0}')?.lightingQuality, 0);
   assert.equal(parseSettings('{"lightingQuality":99}')?.lightingQuality, 3); // 05.10-7.20
 });

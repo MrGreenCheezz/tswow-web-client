@@ -346,15 +346,14 @@ export class AssetPreloader {
 /**
  * `ASSET_PRELOAD` and its two knobs, for `GatewayConfiguration.ts`.
  *
- * Off unless `ASSET_PRELOAD=1`: the owner plays on the machine that runs the gateway, and the
- * preloader's first live measurement (14.24) decides whether it may be on by default (owner
- * question 4 of line A10). `ASSET_PRELOAD_PER_MINUTE` (120) and `ASSET_PRELOAD_PACE` (1) bound it.
- * A value that does not parse is an error at startup, not a silent default.
+ * On unless `ASSET_PRELOAD=0` (owner, 12.10: yes, but not on the gateway served to other players —
+ * `tools/start-server.mjs` sets 0). `ASSET_PRELOAD_PER_MINUTE` (120) and `ASSET_PRELOAD_PACE` (1)
+ * bound it. A value that does not parse is an error at startup, not a silent default.
  */
 export function parsePreloadEnv(env: NodeJS.ProcessEnv): { perMinute: number; pace: number } | undefined {
   const enabled = (env["ASSET_PRELOAD"] ?? "").trim();
-  if (enabled === "" || enabled === "0") return undefined;
-  if (enabled !== "1") throw new Error(`ASSET_PRELOAD: expected 0 or 1, got "${enabled}"`);
+  if (enabled === "0") return undefined;
+  if (enabled !== "" && enabled !== "1") throw new Error(`ASSET_PRELOAD: expected 0 or 1, got "${enabled}"`);
   const number = (name: string, fallback: number, minimum: number, maximum: number): number => {
     const text = (env[name] ?? "").trim();
     if (text === "") return fallback;

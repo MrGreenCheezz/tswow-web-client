@@ -1,7 +1,7 @@
 /**
  * The two account-data stores of 4.12 (`InputAccount.ts`) over this page's binding table and window
  * manager, with the three calls the world's lifecycle makes (`app/EnterWorld.ts`, `app/Login.ts`).
- * While the switches are off (the default, see `INPUT_ACCOUNT_SYNC_KEYS`) every call is a no-op.
+ * Both switches are on by default (`INPUT_ACCOUNT_SYNC_KEYS`); while one is off its calls are no-ops.
  */
 
 import type { WorldClient } from "../../world/WorldClient.js";

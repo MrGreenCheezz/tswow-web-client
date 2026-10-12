@@ -64,13 +64,14 @@ export const SETTING_DEFINITIONS: readonly SettingDefinition[] = [
     hint: "Мир рисуется в этой доле от размера окна и растягивается. Ниже 100 — быстрее и мягче.",
   },
   {
-    id: "autoQuality", label: "Автокачество графики", group: "Графика", kind: "boolean", fallback: true,
+    // 12.15 (owner, 12.10, decision 0.4d): useful, but off until the player turns it on.
+    id: "autoQuality", label: "Автокачество графики", group: "Графика", kind: "boolean", fallback: false,
     hint: "При долгой просадке кадров клиент сам опускает масштаб отрисовки не ниже 40% и возвращает его, когда запас держится. Ручной масштаб выше — потолок, а не приказ.",
   },
   {
     // 05.10-7.20: 3 is «сравнение» (LightingQuality.ts LIGHTING_QUALITY_COMPARISON) — after 2 so a saved
-    // 0, 1 or 2 keeps its meaning; the default stays 1.
-    id: "lightingQuality", label: "Качество освещения", group: "Графика", kind: "number", fallback: 1,
+    // 0, 1 or 2 keeps its meaning. The default is the highest quality, 2 (owner, 12.10, decision 0.4e).
+    id: "lightingQuality", label: "Качество освещения", group: "Графика", kind: "number", fallback: 2,
     min: 0, max: 3, step: 1,
     hint: "0 — исходное освещение, 1 — мягкий тёплый свет и фонари, 2 — больше источников света и детальные тени, 3 — сравнение: исходное освещение и тени, как в оригинале с тенями.",
   },
@@ -315,12 +316,16 @@ export const SETTING_DEFINITIONS: readonly SettingDefinition[] = [
     hint: "Камера остаётся над водой, пока персонаж на поверхности, и под водой, когда он ныряет.",
   },
   {
-    id: "originalFrameXml", label: "Оригинальный интерфейс WoW", group: "Интерфейс", kind: "boolean", fallback: false,
-    hint: "Включено — оригинальные окна и панели WoW 3.3.5a. Выключено — интерфейс WebClient. Переключается в игре, выбор сохраняется.",
+    // Owner, 12.10 (decisions 0.4a, 0.4h): the stock interface for every player; the WebClient one
+    // stays as the experimental fallback.
+    id: "originalFrameXml", label: "Оригинальный интерфейс WoW", group: "Интерфейс", kind: "boolean", fallback: true,
+    hint: "Включено — оригинальные окна и панели WoW 3.3.5a. Выключено — экспериментальный интерфейс WebClient. Переключается в игре, выбор сохраняется.",
   },
   {
-    id: "tswowAddons", label: "Аддоны TSWoW", group: "Интерфейс", kind: "boolean", fallback: false,
-    hint: "Lua-аддоны и пользовательские окна TSWoW. После изменения заново войдите в мир или обновите страницу.",
+    // Owner, 12.10 (decision 0.4b, 9.02): the addons are the installed TSWoW modules' own, as in the
+    // TSWoW client — on, and present exactly when a module brings one.
+    id: "tswowAddons", label: "Аддоны TSWoW", group: "Интерфейс", kind: "boolean", fallback: true,
+    hint: "Lua-аддоны и окна модулей TSWoW, как в клиенте TSWoW: есть ровно те, что приносят модули установки. После изменения заново войдите в мир или обновите страницу.",
   },
   {
     id: "showFps", label: "Показывать FPS", group: "Интерфейс", kind: "boolean", fallback: false,

@@ -29,6 +29,24 @@ globalThis.location = { origin: "http://127.0.0.1:5173", protocol: "http:", host
 globalThis.window = { innerWidth: 1280, innerHeight: 720, addEventListener() {}, removeEventListener() {} };
 
 const quality = await import("../dist/code/browser/AutoQuality.js");
+// Off by default since the owner's ruling of 12.10 (decision 0.4d); these tests drive the governor.
+const { settingsStore } = await import("../dist/code/browser/ui/Settings.js");
+settingsStore.set({ ...settingsStore.value, autoQuality: true });
+
+test("the governor is off by default and holds the slider's scale", () => {
+  settingsStore.set({ ...settingsStore.value, autoQuality: false });
+  try {
+    quality.resetAutoQuality();
+    quality.setAutoQualityCeiling(100);
+    quality.updateAutoQuality(5000, () => bad);
+    quality.updateAutoQuality(10000, () => bad);
+    assert.equal(quality.autoQualityStatus().enabled, false);
+    assert.equal(quality.autoQualityStatus().effective, 100, "two bad windows move nothing while it is off");
+  } finally {
+    quality.resetAutoQuality();
+    settingsStore.set({ ...settingsStore.value, autoQuality: true });
+  }
+});
 
 const bad = { average: 30, p50: 30, p95: 30, p99: 35, count: 120 };
 const good = { average: 10, p50: 10, p95: 10, p99: 12, count: 120 };

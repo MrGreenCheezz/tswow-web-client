@@ -29,7 +29,9 @@ test('original UI preference persists, with explicit URL override', () => {
   assert.equal(frameXmlFlagEnabled('', value.originalFrameXml), true);
   assert.equal(frameXmlFlagEnabled('?framexml=0', true), false);
   assert.equal(frameXmlFlagEnabled('?framexml=1', false), true);
-  assert.equal(frameXmlFlagEnabled('', defaultSettings().originalFrameXml), false);
+  assert.equal(frameXmlFlagEnabled('', defaultSettings().originalFrameXml), true, 'owner, 12.10: the stock interface by default');
+  assert.equal(frameXmlFlagEnabled('', parseSettings(serialiseSettings({ ...defaultSettings(), originalFrameXml: false })).originalFrameXml), false,
+    'a saved choice of the WebClient interface stays');
 });
 test('custom mode remains lazy; switching to original and back retires its VM', async () => {
   const calls = [];

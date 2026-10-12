@@ -12,10 +12,10 @@
  *    `{"format":"wowclient-layout","version":1,"windows":{id:{left,top}}}`. The original client
  *    keeps its own layout text in the same slot; that text is likewise never applied or overwritten.
  *
- * Both are off until switched on ({@link INPUT_ACCOUNT_SYNC_KEYS}): sharing slot 2 with the Unity
- * client is the owner's call (docs/archive/IMPLEMENTATION_PLAN.ru.md §5 row 16, §7), and slot 6 is shared with
- * Wow.exe's own layout cache for a character played in both. Off, nothing here sends or applies
- * anything and the two tables behave exactly as before.
+ * Both are on unless switched off ({@link INPUT_ACCOUNT_SYNC_KEYS}): the owner ruled for them on 12.10
+ * (WORK_PLAN 4.12), knowing that slot 2 is shared with the Unity client and slot 6 with Wow.exe's own
+ * layout cache for a character played in both — which is why foreign text is never touched. Off,
+ * nothing here sends or applies anything and the two tables stay this browser's own.
  *
  * World-free in its logic: the world, the table and the window layout are handed in.
  */
@@ -32,8 +32,8 @@ export const LAYOUT_ACCOUNT_SLOT = 6;
 export const ACCOUNT_SAVE_DELAY_MS = 1_500;
 
 /**
- * The switches, read from `localStorage` (`"on"` enables): one per slot, both off by default
- * until the owner rules (see the module comment).
+ * The switches, read from `localStorage` (`"off"` disables): one per slot, both on by default since
+ * the owner's ruling of 12.10 (see the module comment).
  */
 export const INPUT_ACCOUNT_SYNC_KEYS = {
   bindings: "webclient.account-sync.bindings",
@@ -76,10 +76,14 @@ const DEFAULT_TIMERS: AccountTimers = {
   clear: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
 };
 
-/** Whether a slot's switch is on (`localStorage[key] === "on"`); a blocked store answers off. */
+/**
+ * Whether a slot's switch is on: anything but `localStorage[key] === "off"`. A blocked store answers
+ * off — without a local mirror there is nothing to merge the server's copy into.
+ */
 export function accountSyncEnabled(key: string): boolean {
   try {
-    return globalThis.localStorage?.getItem(key) === "on";
+    const storage = globalThis.localStorage;
+    return storage !== undefined && storage.getItem(key) !== "off";
   } catch {
     return false;
   }

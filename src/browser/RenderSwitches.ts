@@ -15,10 +15,10 @@
  * * `particleTwinkle` (6.15) — the per-frame size flicker and draw gate of `twinkleScale`/
  *   `twinklePercent` (`ParticleTwinkle.ts`). Off (today): every particle at ramp size.
  * * `m2Lights` (6.17, 05.10-A7a-F2) — whether a model that declares `M2Light` records is lit by them
- *   (`LocalLighting.ts`) instead of the file-name heuristic. Off (today): the heuristic for every
- *   model. The census values argue for frames first: the Elwynn guard tower's four torches end their
- *   attenuation at 1.89 yards and the undead campfire at 0.97, where the heuristic pools reach 7–8 —
- *   read as yards they light the fixture itself, not the ground around it.
+ *   (`LocalLighting.ts`) instead of the file-name heuristic. On by default since the owner's ruling of
+ *   12.10; off gives the heuristic for every model. Worth a frame still: the Elwynn guard tower's four
+ *   torches end their attenuation at 1.89 yards and the undead campfire at 0.97, where the heuristic
+ *   pools reach 7–8 — read as yards they light the fixture itself, not the ground around it.
  * * `wmoRoomFogOnScene` (7.12, 05.10-A7b-2) — while the camera stands in a WMO room with MFOG, its
  *   fog is the frame's fog for everything (doodads, units, particles, water, the street through the
  *   doorway), the client's one-fog-per-frame. Off by default like the others, keeping today's frame
@@ -40,7 +40,7 @@ export interface RenderSwitches {
 }
 
 const DEFAULTS: Readonly<RenderSwitches> = Object.freeze({
-  m2AlphaDepthWrite: true, particleTwinkle: false, m2Lights: false, // 05.10-A7a-F2: m2Lights
+  m2AlphaDepthWrite: true, particleTwinkle: false, m2Lights: true, // 6.17: on by the owner's ruling of 12.10
   // 05.10 (orchestrator): off until the 14.25 tavern-door frame — on, it reverses the 04.09 fix that
   // kept Goldshire's peach 83-yard MFOG off the street seen through the door.
   wmoRoomFogOnScene: false, // 05.10-A7b-2 (7.12)

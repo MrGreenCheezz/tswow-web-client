@@ -38,13 +38,15 @@ export async function createGatewayConfiguration(): Promise<{ options: GatewayOp
     return worker ? worker.then(() => undefined) : runAssetGenerator(script, args);
   }
   /**
-   * 10.22: background publication of the neighbourhood's models (`AssetPreloader.ts`), only with
-   * `ASSET_PRELOAD=1` and only when tiles and models run on workers — at one process per miss a
+   * 10.22: background publication of the neighbourhood's models (`AssetPreloader.ts`), on unless
+   * `ASSET_PRELOAD=0` and only when tiles and models run on workers — at one process per miss a
    * background job costs ~0.4 s of process start each, too dear for work nobody asked for yet.
    */
   const preload = parsePreloadEnv(process.env);
   const preloadOn = preload !== undefined && assetWorkers.handles("visual-model") && assetWorkers.handles("visual-tile");
-  if (preload !== undefined && !preloadOn) console.warn("ASSET_PRELOAD=1 ignored: needs the model and tile workers (ASSET_WORKERS)");
+  if (process.env["ASSET_PRELOAD"]?.trim() === "1" && !preloadOn) {
+    console.warn("ASSET_PRELOAD=1 ignored: needs the model and tile workers (ASSET_WORKERS)");
+  }
   function close(): void {
     closed = true;
     assetWorkers.close();

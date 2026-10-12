@@ -8,6 +8,8 @@
 //   GATEWAY_HOST         PUBLIC_BIND, default 0.0.0.0 (every interface)
 //   ALLOWED_ORIGINS      .env's origins plus the public page origin and its loopback twins
 //   MODULE_UI_WRITE=0    a forwarded connection can look local, and the write guard trusts that
+//   ASSET_PRELOAD=0      background model preloading is for the owner's own play, not the served
+//                        gateway (owner, 12.10)
 //   GATEWAY_RESTART_ON_PATCH=1 (unless .env says 0) after a TSWoW build the gateway restarts by
 //                        itself once nobody is connected, keeping this environment
 //   GATEWAY_SUPERVISE=1  (unless .env says 0) a crashed gateway is started again by itself
@@ -51,6 +53,7 @@ for (const host of [publicHost, "127.0.0.1", "localhost"]) origins.add(withPort(
 process.env.ALLOWED_ORIGINS = [...origins].join(",");
 process.env.GATEWAY_HOST = bind;
 process.env.MODULE_UI_WRITE = "0";
+process.env.ASSET_PRELOAD = "0";
 process.env.GATEWAY_RESTART_ON_PATCH ??= "1";
 // 10.15: whatever .env says about restarts after a build, a crashed gateway comes back by itself
 // (tools/gateway-supervisor.mjs; a sixth crash in ten minutes still stops it).

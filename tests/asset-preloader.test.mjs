@@ -239,7 +239,8 @@ test("a background run that failed for this minute's reasons does not refuse the
 });
 
 test("ASSET_PRELOAD is off unless 1; the knobs parse or fail loudly", () => {
-  assert.equal(parsePreloadEnv({}), undefined);
+  assert.deepEqual(parsePreloadEnv({}), { perMinute: 120, pace: 1 }, "on by default (owner, 12.10)");
+  assert.deepEqual(parsePreloadEnv({ ASSET_PRELOAD: " " }), { perMinute: 120, pace: 1 }, "blank is the default");
   assert.equal(parsePreloadEnv({ ASSET_PRELOAD: "0" }), undefined);
   assert.deepEqual(parsePreloadEnv({ ASSET_PRELOAD: "1" }), { perMinute: 120, pace: 1 });
   assert.deepEqual(parsePreloadEnv({ ASSET_PRELOAD: "1", ASSET_PRELOAD_PER_MINUTE: "30", ASSET_PRELOAD_PACE: "2.5" }), { perMinute: 30, pace: 2.5 });
