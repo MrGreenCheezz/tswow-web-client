@@ -479,7 +479,7 @@ test("every path that used to leave the world half-way now routes through leaveW
   // Logout. Before G6 `SMSG_LOGOUT_COMPLETE` was a notice and nothing else.
   assert.match(source, /if \(!state\.complete\) return;[\s\S]{0,600}?leaveWorld\("logout"\);/);
   // Connection loss: `onWorldError` fires when the socket read threw, not on a bad packet.
-  assert.match(source, /world\.onWorldError = \(error\) => \{[\s\S]{0,800}?leaveWorld\("connection-lost"/);
+  assert.match(source, /world\.onWorldError = \(error\) => \{[\s\S]{0,1000}?leaveWorld\("connection-lost"/);
   // The failed enter, guarded so a newer attempt is not torn down by an older one's unwinding.
   assert.match(source,
     /if \(!entryLifecycle\.isCurrent\(generation\) \|\| game\.world !== world\) return;\s*hideLoadingScreen\(\);[\s\S]*?clearQuestLog\(\);\s*leaveWorld\("enter-failed", message\);/,

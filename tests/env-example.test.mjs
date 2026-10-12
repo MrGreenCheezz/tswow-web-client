@@ -16,6 +16,8 @@ const INTERNAL = new Set([
   "GATEWAY_SUPERVISED", "WOWCLIENT_LOCAL_ASSET_NONCE", "WEBCLIENT_SKIP_ENV", "NODE_OPTIONS",
   "NODE_ENV", "NODE_COMPILE_CACHE", "NODE_TEST_CONTEXT", "NODE_TEST_WORKER_ID", "NODE_UNIQUE_ID",
   "PATH", "SystemRoot",
+  // 10.17: the player app's updater finds cmd.exe through it (electron/player-update.cjs).
+  "ComSpec",
 ]);
 
 async function sources(directory, extensions) {
