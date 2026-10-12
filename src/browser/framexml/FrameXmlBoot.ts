@@ -1013,9 +1013,9 @@ export class FrameXmlBoot {
     const result = await loader.load(single?.toc ?? tocPath);
     await this.checkpoint();
     this.#savedVariables.finishBaseModules(this.#tsAddonResults.filter((addon) => addon.ok).map((addon) => addon.module));
-    for (const addon of this.#tsAddonResults) {
-      if (addon.ok) this.bridge.dispatchEvent("ADDON_LOADED", addon.module);
-    }
+    // 3.18 (owner, 12.10): no ADDON_LOADED for a TSWoW module. Its blocks are glued into FrameXML.toc,
+    // which raises none in Wow.exe (0x005f80b0 raises it per Interface/AddOns entry only), and a module
+    // is an interface patch there, not an add-on; its saved variables are restored just above all the same.
     const loadMs = now() - loadStarted;
     this.#roots = result.roots;
     // L5c 3.18: GetAddOnMetadata answers every installed add-on from its TOC, loaded or not (0x00511430).

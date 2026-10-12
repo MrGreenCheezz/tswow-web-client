@@ -155,7 +155,7 @@ test("XML load handlers attribute legacy saved globals and widget stubs to their
   second.close();
 });
 
-test("TSWoW TOC declarations restore before module load and session events", async () => {
+test("TSWoW TOC declarations restore before the session events; a module raises no ADDON_LOADED of its own", async () => {
   const store = storage();
   async function create() {
     const host = new FrameXmlBoot({
@@ -180,8 +180,9 @@ test("TSWoW TOC declarations restore before module load and session events", asy
   }
   (await create()).close();
   const second = await create();
-  assert.equal(second.vm.getGlobal("SeenModule"), 1);
-  assert.equal(second.vm.getGlobal("SeenSession"), 1);
+  // 3.18 (owner, 12.10): glued into FrameXML.toc, as in Wow.exe, which raises no ADDON_LOADED for it.
+  assert.equal(second.vm.getGlobal("SeenModule"), undefined, "no ADDON_LOADED(<module>)");
+  assert.equal(second.vm.getGlobal("SeenSession"), 1, "restored before VARIABLES_LOADED");
   second.close();
 });
 
