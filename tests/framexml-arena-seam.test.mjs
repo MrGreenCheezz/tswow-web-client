@@ -138,8 +138,10 @@ test("Canned Arena context transitions are authoritative and deduplicated", () =
   // only a stale 1-based arena-shaped call is rejected.
   api(seam, "RequestBattlegroundInstanceInfo", 7);
   api(seam, "JoinBattlefield", 0, true);
+  // 3.24: Wow.exe's join (0x0054cc70) carries the battlemaster guid it still holds (0x00bea568, cleared
+  // only by CloseBattlefield), with the requested type and «first available».
   assert.deepEqual(seam.battlegroundJoins.at(-1), {
-    bgTypeId: 32, instanceId: 0, asGroup: true,
+    bgTypeId: 32, instanceId: 0, asGroup: true, guid: 0x1234n,
   });
   seam.setBattlefieldList({ ...fresh, fromWhere: 1 });
   const staleArenaJoinCount = seam.arenaJoins.length;

@@ -53,6 +53,7 @@ import { notifyFrameXmlStable } from "../framexml/FrameXmlStableController.js";
 import { frameXmlLootPublished } from "../framexml/FrameXmlLootController.js";
 import { frameXmlPopupsPublished } from "../framexml/FrameXmlPopupsController.js";
 import { frameXmlPvpArenaPublished } from "../framexml/FrameXmlPvpController.js"; // 3.24
+import { frameXmlBattlemasterPublished, notifyFrameXmlBattlemaster } from "../framexml/FrameXmlBattlemasterController.js"; // 3.24
 import { clickVehicle } from "../../world/VehicleClick.js"; // 11.02-BCD
 import { seatClickRefused } from "../game/SeatClick.js"; // 11.02-input
 
@@ -434,6 +435,8 @@ export function closeNpcServiceWindow(): void {
   notifyFrameXmlCharters();
   // …and the stable master (closeNpcServices zeroes it): PetStableFrame closes.
   notifyFrameXmlStable();
+  // …and the battlemaster's list (3.24): BattlefieldFrame closes.
+  notifyFrameXmlBattlemaster();
   gossipWindow.hidden = true;
 }
 
@@ -491,6 +494,14 @@ function drawBattlegroundList(
     return;
   }
 
+  // 3.24: stock BattlefieldFrame answers a battlemaster's battleground list itself (BATTLEFIELDS_SHOW,
+  // BattlefieldFrame.lua:40-53), a random battlemaster's opens PVPParentFrame (NPC_PVPQUEUE_ANYWHERE),
+  // once the battlemaster owner is published (FrameXmlBattlemasterController.ts); the native dialog steps aside.
+  if (frameXmlBattlemasterPublished()) {
+    cancelPendingNpcTimeout();
+    if (gossipText.textContent === PENDING_NPC_TEXT) gossipWindow.hidden = true;
+    return;
+  }
   const metadata = catalog?.find((row) => row.bgTypeId === list.bgTypeId);
   const name = metadata?.name || `Поле боя ${list.bgTypeId}`;
   const reward = list.winHonor > 0 || list.lossHonor > 0

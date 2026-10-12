@@ -145,7 +145,9 @@ import {
   requestQuitToLogin, resetWindowLayout, toggleGameMenu,
 } from "../ui/GameMenu.js";
 import { addModuleCommand, beginModuleCommandLoad, removeModuleCommands, systemLine } from "../ui/Chat.js";
-import { toggleGmTickets } from "../ui/GmTickets.js";
+import { closeGmTickets, toggleGmTickets } from "../ui/GmTickets.js";
+import { publishFrameXmlHelp, toggleFrameXmlHelp, type FrameXmlHelpOwner } from "./FrameXmlHelpController.js"; // 3.24
+import { createFrameXmlHelpOwner, frameXmlHelpGate } from "./FrameXmlHelpOwner.js"; // 3.24
 import { discoverFrameXmlAddonEntrypoints } from "./FrameXmlAddonEntrypoints.js";
 import { FrameXmlTsAddonPresentation, markFrameXmlNativeHud } from "./FrameXmlTsAddonPresentation.js";
 import { mountFrameXmlAddonsOnlySurfaces, watchFrameXmlDialogLayer } from "./FrameXmlAddonsOnlyMessages.js";
@@ -215,6 +217,11 @@ import {
 import { publishFrameXmlScoreboard, type FrameXmlScoreboardOwner } from "./FrameXmlScoreboardController.js"; // 3.24
 import { createFrameXmlScoreboardOwner, frameXmlScoreboardGate } from "./FrameXmlScoreboardOwner.js"; // 3.24
 import { closeScoreboard } from "../ui/Scoreboard.js"; // 3.24
+import { publishFrameXmlBattlemaster, type FrameXmlBattlemasterOwner } from "./FrameXmlBattlemasterController.js"; // 3.24
+import { mountFrameXmlBattlemaster } from "./FrameXmlBattlemasterOwner.js"; // 3.24
+import { mountFrameXmlQueueEye } from "./FrameXmlQueueEyeOwner.js"; // 3.24
+import { activeGossipPoi } from "../GossipPoi.js"; // 3.13
+import { publishFrameXmlQueueEye } from "./FrameXmlQueueEyeController.js"; // 3.24
 import type { FrameXmlLootOwner } from "./FrameXmlLootController.js";
 import {
   createFrameXmlLootOwner, frameXmlLootGate, installFrameXmlLootAdapters, publishFrameXmlLootMount,
@@ -2653,6 +2660,15 @@ interface FrameXmlMountResources {
   /** 3.24: stock WorldStateScoreFrame (FrameXmlScoreboardOwner.ts). */
   scoreboardOwner?: FrameXmlScoreboardOwner;
   scoreboardOwnerCleanup?: () => void;
+  /** 3.24: stock BattlefieldFrame, the battlemaster's list (FrameXmlBattlemasterOwner.ts). */
+  battlemasterOwner?: FrameXmlBattlemasterOwner;
+  battlemasterCleanup?: () => void;
+  /** 3.24: the stock queue eye (FrameXmlQueueEyeOwner.ts). */
+  queueEyeReady?: boolean;
+  queueEyeCleanup?: () => void;
+  /** 3.24: stock HelpFrame (FrameXmlHelpOwner.ts). */
+  helpOwner?: FrameXmlHelpOwner;
+  helpCleanup?: () => void;
   gameMenuOwner?: FrameXmlGameMenuOwner;
   gameMenuOwnerCleanup?: () => void;
   lfdOwner?: FrameXmlLfdOwner;
@@ -2912,6 +2928,10 @@ function cleanupPublishedMount(record: FrameXmlMountResources): void {
   // 3.24: the native #scoreboard-window becomes the scoreboard's route again.
   bestEffortCleanup(() => record.scoreboardOwnerCleanup?.());
   if (!record.scoreboardOwnerCleanup) bestEffortCleanup(() => record.scoreboardOwner?.hide());
+  // 3.24: the native battlemaster dialog becomes the list's route again.
+  bestEffortCleanup(() => record.battlemasterCleanup?.());
+  bestEffortCleanup(() => record.queueEyeCleanup?.());
+  bestEffortCleanup(() => record.helpCleanup?.());
   // Unpublish the stock game menu and dungeon finder before their VM goes; the native Panel and
   // #lfg-window become the routes again, and the native prompts take the LFG popups back.
   bestEffortCleanup(() => record.gameMenuOwnerCleanup?.());
@@ -3349,6 +3369,8 @@ export async function mountFrameXmlVertical(
         const explored = self ? exploredZones(self) : undefined;
         return explored && bit !== undefined && bit > 0 ? isAreaExplored(explored, bit) : undefined;
       },
+      // 3.13: the guard's POI as one more landmark while it lives (GossipPoi.ts; Wow.exe 0x00546310).
+      gossipPoi: () => activeGossipPoi(game.world, performance.now()),
       // L17 3.14: team, flag and vehicle pins, the battlefield map's icon scale and the party/raid pins.
       ...frameXmlBattlefieldMapSource({
         world: () => game.world,
@@ -3497,6 +3519,9 @@ export async function mountFrameXmlVertical(
         indoorTexts: liveIndoorZoneTexts, // 05.10-A7b-4 (7.13): a WMO room's names
       });
     },
+    // 3.24: AreaTable rows and the terrain's area for the Wintergrasp queue (FrameXmlWorldPvpQueue.ts).
+    areaRecord: (areaId) => game.areas?.area(areaId),
+    currentAreaId: () => currentAreaId(),
     // The loading curtain: no zone edge while it is up, the settled one after it (LiveWorldSeam).
     worldLoading: () => game.worldLoading,
     // ZONE_CHANGED_INDOORS instead of ZONE_CHANGED: the per-frame answer the loop already hands the
@@ -3598,9 +3623,9 @@ export async function mountFrameXmlVertical(
         pvp: toggleFrameXmlPvp,
         lfd: toggleLfgWindow,
         gameMenu: toggleGameMenu,
-        // Stock HelpFrame is not in this vertical; the native GM ticket window is the help owner.
+        // 3.24: stock HelpFrame once published (FrameXmlHelpController.ts), the native GM ticket window before.
         // Printing the native /help list here put big-font command lines into the stock chat.
-        help: toggleGmTickets,
+        help: () => { if (!toggleFrameXmlHelp()) toggleGmTickets(); },
         // Blizzard_AchievementUI (LoD) through its lazy owner once published; disabled until then.
         achievement: () => toggleFrameXmlAchievement(),
       }) !== undefined;
@@ -4146,6 +4171,18 @@ export async function mountFrameXmlVertical(
     const stockScoreboard = frameXmlScoreboardGate(seam, boot, renderer);
     if (stockScoreboard) resources.scoreboardOwner = createFrameXmlScoreboardOwner(boot, stockScoreboard.frame);
     else if (!options.seam) fallbacks.report("scoreboard", "WorldStateScoreFrame не прошёл проверку");
+    // 3.24: the battlemaster's list — stock BattlefieldFrame over the seam's list, only beside the complete
+    // battleground page (a random battlemaster opens that page); the native dialog stays otherwise.
+    const stockBattlemaster = pvp?.battleground ? mountFrameXmlBattlemaster(seam, boot, renderer) : undefined;
+    if (stockBattlemaster) resources.battlemasterOwner = stockBattlemaster;
+    else if (!options.seam) fallbacks.report("battlemaster", "BattlefieldFrame не прошёл проверку");
+    // 3.24: the queue eye's dropdown and the Wintergrasp queue (FrameXmlQueueEyeOwner.ts), beside the same page.
+    resources.queueEyeReady = pvp?.battleground ? mountFrameXmlQueueEye(seam, boot, renderer) : false;
+    if (!resources.queueEyeReady && !options.seam) fallbacks.report("queueEye", "MiniMapBattlefieldFrame не прошёл проверку");
+    // 3.24: the help window — stock HelpFrame over the GM ticket C API (FrameXmlHelpOwner.ts); the native one otherwise.
+    const stockHelp = frameXmlHelpGate(seam, boot, renderer);
+    if (stockHelp) resources.helpOwner = createFrameXmlHelpOwner(boot, stockHelp.frame);
+    else if (!options.seam) fallbacks.report("help", "HelpFrame не прошёл проверку");
 
     // GameMenuFrame becomes the game menu once its stock buttons, the adapters and extras
     // (installed after load) and one silent Show/Hide pass; the native Panel stays the fallback.
@@ -4456,6 +4493,15 @@ export async function mountFrameXmlVertical(
       // A native board opened while the corpus loaded closes first: one scoreboard at a time.
       closeScoreboard();
       resources.scoreboardOwnerCleanup = publishFrameXmlScoreboard(resources.scoreboardOwner);
+    }
+    // 3.24: from here a battlemaster's battleground list is stock BattlefieldFrame's (Npc.ts steps aside).
+    if (resources.battlemasterOwner) resources.battlemasterCleanup = publishFrameXmlBattlemaster(resources.battlemasterOwner);
+    // 3.24: and the queues are the stock eye's (InteractionPrompts.ts drops its queue rows).
+    if (resources.queueEyeReady) resources.queueEyeCleanup = publishFrameXmlQueueEye();
+    if (resources.helpOwner) {
+      // A native GM window opened while the corpus loaded closes first: one help window at a time.
+      closeGmTickets();
+      resources.helpCleanup = publishFrameXmlHelp(resources.helpOwner);
     }
     if (resources.gameMenuOwner) {
       // A native menu opened while the corpus loaded closes first: one menu owner at a time.

@@ -1,4 +1,16 @@
 import { type BattlegroundCatalog } from "../BattlegroundMetadata.js";
+import type { BattlefieldList } from "../../world/PvpProtocol.js";
+
+/**
+ * 3.24: a battlemaster's SMSG_BATTLEFIELD_LIST for the canned preview (`?battlemaster=1`): Warsong Gulch
+ * with three running instances, as BuildBattlegroundListPacket writes it (fromWhere 0, the NPC's guid).
+ */
+export const FRAMEXML_CANNED_BATTLEMASTER_LIST: BattlefieldList = Object.freeze({
+  battlemasterGuid: 0xF1300000E3000777n, fromWhere: 0, bgTypeId: 2,
+  hasWin: false, winHonor: 300, winArena: 0, lossHonor: 100,
+  random: false, randomHasWin: false, randomWinHonor: 0, randomWinArena: 0, randomLossHonor: 0,
+  instances: Object.freeze([12, 15, 21]) as number[],
+});
 
 // Compatibility names for the FrameXML seam. Catalog loading and validation live in the shared
 // browser module so the native HUD does not depend on the optional FrameXML implementation.

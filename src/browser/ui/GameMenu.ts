@@ -14,6 +14,7 @@ import { toggleFrameXmlPvp } from "../framexml/FrameXmlPvpController.js"; // 3.2
 import { toggleSettingsWindow } from "./Settings.js";
 import { toggleMacroWindow } from "./Macros.js";
 import { toggleGmTickets } from "./GmTickets.js";
+import { toggleFrameXmlHelp } from "../framexml/FrameXmlHelpController.js"; // 3.24
 import { game } from "../game/Context.js";
 import { confirmPanel } from "./Widgets.js";
 import { showUnhandledOpcodes } from "./Diagnostics.js";
@@ -317,7 +318,7 @@ function build(): Panel {
     })] : [],
     menuButton("Настройки", () => { panel.hide(); toggleSettingsWindow(); }),
     menuButton("Макросы", () => { panel.hide(); toggleMacroWindow(); }),
-    menuButton("Помощь игрового мастера", () => { panel.hide(); toggleGmTickets(); }),
+    menuButton("Помощь игрового мастера", () => { panel.hide(); if (!toggleFrameXmlHelp()) toggleGmTickets(); }), // 3.24
     menuButton("Сбросить раскладку окон", () => resetWindowLayout()),
     // Leaving the world properly rather than by closing the tab. The server takes twenty seconds
     // over it out of combat and refuses outright in it, which is what the answer packet says.

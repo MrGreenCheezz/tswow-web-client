@@ -72,6 +72,7 @@ export interface AuctionStateChange {
 }
 
 import type { SpellGo } from "./SpellProtocol.js";
+import type { BattlefieldMgrEdge } from "./BattlefieldProtocol.js"; // 3.24
 import type { UnitCombatEvent } from "./UnitCombat.js";
 import type { ActiveAura } from "./AuraProtocol.js";
 import type { ChatMessage, TextEmote } from "./ChatProtocol.js";
@@ -601,7 +602,8 @@ export interface WorldPacketEvents {
   /** Somebody's talents and equipped enchantments came back from `CMSG_INSPECT` (`WorldClient.inspections`). */
   INSPECT_TALENT_READY: { guid: bigint };
   /** The outdoor battlefield — Wintergrasp — invited, admitted or ejected the player. */
-  BATTLEFIELD_CHANGED: { battleId: number };
+  /** 3.24: `edge` says what an SMSG_BATTLEFIELD_MGR_* packet said (the stock BATTLEFIELD_MGR_* events). */
+  BATTLEFIELD_CHANGED: { battleId: number; edge?: BattlefieldMgrEdge };
   /**
    * Something the session itself said: the message of the day, a flashed notification, a shutdown
    * announcement. Not the world talking — that is `WORLD_MESSAGE` — but the server.
@@ -634,7 +636,12 @@ export interface WorldPacketEvents {
   /** SMSG_ITEM_TEXT_QUERY_RESPONSE (5.28): an item's text (a mail copy) arrived; `itemText(guid)` holds it. */
   ITEM_TEXT_RECEIVED: { guid: bigint };
   /** The player's ticket, a game master's answer to it, or whether tickets are taken at all. */
-  GM_TICKET_CHANGED: { kind?: "snapshot" | "result" | "system" | "response" | "resolved" };
+  /** 3.24: `request` and `status` say which ticket answer came and its word (the stock help frame's events). */
+  GM_TICKET_CHANGED: {
+    kind?: "snapshot" | "result" | "system" | "response" | "resolved";
+    request?: "create" | "update" | "delete";
+    status?: number;
+  };
   /** A rename, a customise, a faction change, or a haircut paid for. */
   CHARACTER_SERVICE: { kind: "rename" | "customize" | "factionChange" | "barber"; result: number };
   /** A barber's chair opened or closed its window. */

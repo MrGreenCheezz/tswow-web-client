@@ -161,7 +161,11 @@ export interface TicketRequest {
   message: string;
   needResponse: boolean;
   needMoreHelp: boolean;
-  /** Unix seconds, one per chat-log line. The count of these gates whether the log is read at all. */
+  /**
+   * How many seconds ago each chat-log line was said, one per line — what Wow.exe 0x005ac8f0 writes (`now - line
+   * time`) and TrinityCore prints as a duration (SetChatLog → secsToTimeString). The count of these gates whether
+   * the log is read at all.
+   */
   chatTimes?: readonly number[];
   /** The recent chat window, sent so a GM can see the context. */
   chatLog?: string;
@@ -177,10 +181,13 @@ export interface TicketRequest {
  */
 export async function buildTicketCreate(request: TicketRequest): Promise<Uint8Array> {
   const times = request.chatTimes ?? [];
+  // 3.24: the need-response word is a u32, 17 or 1 — Wow.exe 0x005ac8f0 writes `(needResponse ? 0x10 : 0) + 1`,
+  // HandleGMTicketCreateOpcode reads `uint32 needResponse` and SetGmAction takes 17 as true (TicketMgr.cpp:247);
+  // the two single bytes sent before shifted every field after them.
   const writer = new PacketWriter()
     .u32(request.mapId).f32(request.x).f32(request.y).f32(request.z)
     .cString(request.message)
-    .u8(request.needResponse ? 1 : 0)
+    .u32(request.needResponse ? 17 : 1)
     .u8(request.needMoreHelp ? 1 : 0)
     .u32(times.length);
   for (const time of times) writer.u32(time);

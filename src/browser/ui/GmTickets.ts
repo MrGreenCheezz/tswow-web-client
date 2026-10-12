@@ -124,7 +124,9 @@ async function submit(): Promise<void> {
       // timestamps gate the server reading the log at all (`count && decompressedSize`).
       const lines = world.chatLog.slice(-20);
       const chatLog = lines.map((line) => line.text).join("\n").slice(0, 4000);
-      const chatTimes = lines.map((line) => Math.floor((line.at ?? Date.now()) / 1000));
+      // 3.24: seconds ago, as Wow.exe 0x005ac8f0 sends them and TrinityCore prints them (TicketProtocol.ts).
+      const sent = Date.now();
+      const chatTimes = lines.map((line) => Math.max(0, Math.floor((sent - (line.at ?? sent)) / 1000)));
       await world.createTicket({ mapId: world.mapId!, ...position!, message: text,
         needResponse: true, needMoreHelp: parts?.needMoreBox.checked ?? true,
         ...(chatTimes.length > 0 && chatLog ? { chatTimes, chatLog } : {}) });

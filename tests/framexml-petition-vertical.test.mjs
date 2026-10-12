@@ -97,7 +97,8 @@ test("the charter frames sit at their retail TOC slots; the closure adds eight f
   assert.equal(toc[toc.indexOf("arenaframe.xml") + 1], "arenaregistrarframe.xml", "retail 129, after ArenaFrame");
   const vertical = FRAMEXML_VERTICAL_TOC.map(normalize);
   const at = vertical.indexOf("comboframe.xml");
-  assert.deepEqual(vertical.slice(at + 1, at + 5), [...CHARTER_FILES.slice(0, 3), "colorpickerframe.xml"]);
+  // 3.24: HelpFrame.xml (retail 115) follows them since the help window joined the vertical.
+  assert.deepEqual(vertical.slice(at + 1, at + 5), [...CHARTER_FILES.slice(0, 3), "helpframe.xml"]);
   assert.equal(vertical[vertical.indexOf("arenaframe.xml") + 1], "arenaregistrarframe.xml");
   let baseline;
   let candidate;

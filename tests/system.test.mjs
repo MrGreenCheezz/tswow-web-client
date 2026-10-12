@@ -337,8 +337,14 @@ test("no ticket is four bytes, and a GM's answer arrives in four fixed chunks", 
   // A chat log with no timestamps is never read by the server, so it is not sent either.
   const bare = await buildTicketCreate({ mapId: 0, x: 1, y: 2, z: 3, message: "тест", needResponse: false, needMoreHelp: false, chatLog: "что-то" });
   assert.equal(bare.at(-1), 0, "the size word is zero and no compressed body follows");
-  // mapId, three floats, the message with its terminator, two flags, a zero count and a zero size.
-  assert.equal(bare.length, 4 + 12 + (encoder.encode("тест").length + 1) + 1 + 1 + 4 + 4);
+  // mapId, three floats, the message with its terminator, the need-response word (3.24: u32 17/1, Wow.exe
+  // 0x005ac8f0), the need-more-help byte, a zero count and a zero size.
+  assert.equal(bare.length, 4 + 12 + (encoder.encode("тест").length + 1) + 4 + 1 + 4 + 4);
+  const body = 4 + 12 + encoder.encode("тест").length + 1;
+  assert.equal(new DataView(bare.buffer, bare.byteOffset).getUint32(body, true), 1, "no response wanted: 1");
+  const wanted = await buildTicketCreate({ mapId: 0, x: 1, y: 2, z: 3, message: "тест", needResponse: true, needMoreHelp: true });
+  assert.deepEqual([new DataView(wanted.buffer, wanted.byteOffset).getUint32(body, true), wanted[body + 4]], [17, 1],
+    "a response wanted is 17 (TicketMgr.cpp:247), then the need-more-help byte");
 
   const withLog = await buildTicketCreate({
     mapId: 0, x: 1, y: 2, z: 3, message: "тест", needResponse: true, needMoreHelp: false,

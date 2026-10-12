@@ -17,6 +17,10 @@ import { toggleTrackingMenu, trackingMatcher } from "./Tracking.js";
 import { toggleWorldMap } from "./WorldMap.js";
 import { setTip } from "./Widgets.js";
 import { partyBlipMembers } from "../game/PartyPositions.js";
+import { activeGossipPoi, type GossipPoiMark } from "../GossipPoi.js"; // 3.13
+import {
+  drawGossipPoi, gossipPoiPlacement, MINIMAP_GUIDE_ARROW_TEXTURE, MINIMAP_POI_ICONS_TEXTURE,
+} from "./MinimapGossipPoi.js"; // 3.13
 // 05.10-A7b-4 (7.13/7.14): the located area (WMO room → grid → map) and the building's own minimap.
 import { drawLiveWmoMinimap, liveAreaIdAt, liveIndoorZoneTexts, liveWmoMinimapRevision } from "../AreaLocatorLive.js";
 
@@ -583,10 +587,14 @@ export function updateMinimap(now: number): void {
   // the wheel, the zone's tiles, the state itself — asks for the frame immediately. A live ping is
   // the one thing that animates on its own, so it redraws at the frame rate it always did.
   const animating = pings.length > 0;
+  // 3.13: the guard's POI while it lives (GossipPoi.ts: 480 s, or until the player is within 10 yards).
+  const poi = activeGossipPoi(world, now, self.position);
+  const poiOnMap = poi && poi.mapId === world.mapId ? poi : undefined;
   const key = `${world.mapId}|${Math.round(self.position.x * 8)}|${Math.round(self.position.y * 8)}`
     + `|${Math.round(self.position.orientation * 256)}|${size}`
     + `|${game.minimapTiles?.revision ?? -1}|${settings.zoom}|${settings.rotate ? 1 : 0}`
-    + `|${liveWmoMinimapRevision()}`; // 05.10-A7b-4 (7.14): the floor's building and its answer
+    + `|${liveWmoMinimapRevision()}` // 05.10-A7b-4 (7.14): the floor's building and its answer
+    + `|${poiOnMap ? `${poiOnMap.x},${poiOnMap.y},${poiOnMap.icon},${poiOnMap.flags}|${game.mapArt?.revision ?? -1}` : "-"}`;
   // The state is what the blips are made of, and it used to be in the key as its revision — which
   // every packet about anybody moves, so in a crowd the whole circle was repainted every frame for
   // neighbours far outside it. When the revision has moved, the blips are collected (one walk of
@@ -613,7 +621,7 @@ export function updateMinimap(now: number): void {
     signature = blipSignature(blips);
   }
   lastBlipSignature = signature;
-  drawMinimap(parts.context, size, world.mapId, self.position, blips, now);
+  drawMinimap(parts.context, size, world.mapId, self.position, blips, now, poiOnMap);
   updateLabels(parts, world, self.position, now);
 }
 
@@ -637,6 +645,7 @@ function drawMinimap(
   position: { x: number; y: number; z?: number; orientation: number },
   blips: MinimapBlips,
   now: number,
+  poi?: GossipPoiMark,
 ): void {
   const radius = size / 2;
   context.clearRect(0, 0, size, size);
@@ -656,6 +665,16 @@ function drawMinimap(
   }
   drawBlips(context, radius, position, blips, now);
   context.restore();
+
+  // 3.13: the guard's POI — its POIIcons cell near, a guide arrow on the rim farther (MinimapGossipPoi.ts).
+  if (poi) {
+    const placement = gossipPoiPlacement(poi, position, settings.zoom / 2, settings.zoom / size,
+      settings.rotate ? position.orientation : undefined);
+    drawGossipPoi(context, radius, placement, {
+      icons: game.mapArt?.bitmap(MINIMAP_POI_ICONS_TEXTURE),
+      arrow: placement?.kind === "arrow" ? game.mapArt?.bitmap(MINIMAP_GUIDE_ARROW_TEXTURE) : undefined,
+    }, poi);
+  }
 
   drawPlayerArrow(context, radius, position.orientation);
 

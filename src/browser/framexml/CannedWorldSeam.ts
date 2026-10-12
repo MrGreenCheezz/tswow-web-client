@@ -128,6 +128,12 @@ import {
 import type { ChatMessage } from "../../world/ChatProtocol.js";
 import { QUEST_STATE_COMPLETE, QUEST_STATE_FAIL } from "../../world/QuestProtocol.js";
 import type { BattlefieldList } from "../../world/PvpProtocol.js";
+import { FrameXmlBattlefieldListState } from "./FrameXmlBattlefieldList.js"; // 3.24
+import { FrameXmlWorldPvpModel } from "./FrameXmlWorldPvpQueue.js"; // 3.24
+import { FrameXmlCannedWorldPvp } from "./FrameXmlWorldPvpCanned.js"; // 3.24
+import { FrameXmlHelpModel } from "./FrameXmlHelp.js"; // 3.24
+import { FrameXmlCannedHelpWorld } from "./FrameXmlHelpCanned.js"; // 3.24
+import { globalString } from "../../generated/globalStrings.js"; // 3.24: JoinBattlefield's UI errors
 import {
   TRAINER_SPELL_AVAILABLE,
   TRAINER_SPELL_UNAVAILABLE,
@@ -1410,7 +1416,7 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
   readonly abandonedQuests: { slot: number; questId: number }[] = [];
   /** The stock quest log's abandon flow over the canned rows (FrameXmlQuestAbandon.ts). */
   readonly questAbandon = new FrameXmlQuestAbandonModel({
-    selection: () => this.#questSelection,
+    selection: () => this.#questSelectionIndex(),
     entry: (index) => {
       const quest = this.#questAt(index);
       // 3.13 (L6): the quest's own slot, which is the displayed row only without headers.
@@ -1432,7 +1438,7 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
     abandon: (entry) => {
       this.abandonedQuests.push(entry);
       this.#quests.delete(entry.questId);
-      if (this.#questSelection > this.#displayRows().length) this.#questSelection = 0; // 3.13 (L6)
+      if (!this.#quests.has(this.#questSelectionId)) this.#questSelectionId = 0; // 3.13: the selection is the quest
       this.#pump?.fire(FRAMEXML_SEAM_EVENTS.questLogUpdate);
     },
   });
@@ -1475,13 +1481,20 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
   /** Quests QuestLogPushQuest sent; every canned quest is sharable and the canned party is there to take it. */
   readonly sharedQuests: number[] = [];
   readonly questShare = new FrameXmlQuestShareModel({
-    questIdAt: (index) => this.#questAt(index === 0 ? this.#questSelection : index)?.questId,
+    questIdAt: (index) => this.#questAt(index === 0 ? this.#questSelectionIndex() : index)?.questId,
     questFlags: () => QUEST_FLAG_SHARABLE,
     hasPlayer: () => true,
     partyMemberCount: () => this.partyMemberCount(),
     raidMemberCount: () => this.raidMemberCount(),
     share: (questId) => { this.sharedQuests.push(questId); },
     cachedName: () => undefined,
+  });
+  /** 3.24: the canned GM ticket world and the help C API over it (FrameXmlHelpCanned.ts, FrameXmlHelp.ts). */
+  readonly helpWorld = new FrameXmlCannedHelpWorld();
+  readonly help = new FrameXmlHelpModel({
+    world: () => this.helpWorld,
+    uiError: (key) => { this.#pump?.fire("UI_ERROR_MESSAGE", globalString(key) ?? key); },
+    now: () => 0,
   });
   readonly arenaRoster = new FrameXmlArenaRosterModel({
     world: () => this.pvpWorld, self: () => this.pvpWorld.self, now: () => (this.#pump?.now() ?? 0) * 1000,
@@ -1677,7 +1690,16 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
   #selectedBattleground = 1;
   /** Calls made by the stock queue page; useful to assert exact C-API routing in tests. */
   readonly battlegroundListRequests: { bgTypeId: number; fromWhere: number }[] = [];
-  readonly battlegroundJoins: { bgTypeId: number; instanceId: number; asGroup: boolean }[] = [];
+  readonly battlegroundJoins: { bgTypeId: number; instanceId: number; asGroup: boolean; guid?: bigint }[] = [];
+  /** 3.24: the client's one battlefield list (FrameXmlBattlefieldList.ts). */
+  readonly battlefieldListState = new FrameXmlBattlefieldListState();
+  /** 3.24: the canned queue slots and Wintergrasp world behind the stock queue eye. */
+  readonly worldPvpWorld = new FrameXmlCannedWorldPvp();
+  readonly worldPvp = new FrameXmlWorldPvpModel({
+    world: () => this.worldPvpWorld,
+    area: (id) => this.worldPvpWorld.area(id),
+    currentAreaId: () => this.worldPvpWorld.areaId,
+  });
   /** Exact arena join tuples emitted by the stock `ArenaFrame` bridge. */
   readonly arenaJoins: {
     battlemasterGuid: bigint;
@@ -1761,7 +1783,11 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
   #attackSpeed: readonly [number, number | undefined] = CANNED_PLAYER.attackSpeed;
   #damage: FrameXmlUnitDamage = CANNED_PLAYER.damage;
   #rangedDamage: FrameXmlUnitRangedDamage = CANNED_PLAYER.rangedDamage;
-  #questSelection = 0;
+  /**
+   * 3.13: the selected quest's id, as the live seam and Wow.exe keep it (0x5dffa0); GetQuestLogSelection answers its
+   * displayed row, so a collapse above it moves the row, not the quest. 0 is none.
+   */
+  #questSelectionId = 0;
   /** When the last health drift was published, in `GetTime()` seconds. */
   #healthAt = 0;
   #startedAt = 0;
@@ -1941,6 +1967,7 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
     this.talentGroup.attach(pump);
     this.questShare.attach(pump);
     this.arenaRoster.attach(pump);
+    this.help.attach(pump); // 3.24
     this.worldStates.attach(pump);
     this.map.attach(pump);
     this.lfd.attach(pump);
@@ -1988,9 +2015,11 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
     this.#attackSpeed = CANNED_PLAYER.attackSpeed;
     this.#damage = CANNED_PLAYER.damage;
     this.#rangedDamage = CANNED_PLAYER.rangedDamage;
-    this.#questSelection = 0;
+    this.#questSelectionId = 0;
     this.#selectedFactionId = undefined;
     this.#selectedBattleground = 1;
+    this.battlefieldListState.reset();
+    this.worldPvpWorld.reset();
     this.battlefieldList = undefined;
     this.#battlefieldListFresh = false;
     this.#arenaSeason = 0;
@@ -2148,6 +2177,7 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
     this.talentGroup.detach();
     this.questShare.detach();
     this.arenaRoster.detach();
+    this.help.detach(); // 3.24
     this.#pump = undefined;
     this.#merchantOpen = false;
     this.#cooldowns.clear();
@@ -2155,7 +2185,7 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
     this.#target = undefined;
     this.#focus = undefined;
     this.#targetTarget = undefined;
-    this.#questSelection = 0;
+    this.#questSelectionId = 0;
     this.#selectedFactionId = undefined;
     this.#watchedFactionId = undefined;
     this.#collapsedFactionIds.clear();
@@ -2809,7 +2839,7 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
   }
 
   #questIndex(index: number | undefined): number {
-    return index === undefined ? this.#questSelection : index;
+    return index === undefined ? this.#questSelectionIndex() : index;
   }
 
   questLogEntryCount(): readonly [number, number] {
@@ -2842,17 +2872,22 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
 
   selectQuestLogEntry(index: number): void {
     if (index === 0) {
-      this.#questSelection = 0;
+      this.#questSelectionId = 0;
       return;
     }
-    // 3.13 (L6): a header row leaves the selection as it was (Wow.exe 0x5dffa0). The canned seam keeps
-    // the selection as a row index, so a collapse above it shifts what it names (the client keeps the id).
+    // 3.13 (L6): a header row leaves the selection as it was (Wow.exe 0x5dffa0); a quest row selects that quest.
     if (this.questLog?.rowAt(index)?.header) return;
-    this.#questSelection = this.#questAt(index) ? index : 0;
+    this.#questSelectionId = this.#questAt(index)?.questId ?? 0;
+  }
+
+  /** 3.13: the selected quest's displayed row, 0 when none is selected or its zone is collapsed. */
+  #questSelectionIndex(): number {
+    if (this.#questSelectionId === 0) return 0;
+    return this.#displayRows().findIndex((quest) => quest?.questId === this.#questSelectionId) + 1;
   }
 
   questLogSelection(): number {
-    return this.#questSelection;
+    return this.#questSelectionIndex();
   }
 
   questLogQuestText(index?: number): readonly [string, string] | undefined {
@@ -2971,7 +3006,7 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
   }
 
   questLogCurrentFailed(): boolean {
-    const state = this.#questAt(this.#questSelection)?.state ?? 0;
+    const state = this.#questAt(this.#questSelectionIndex())?.state ?? 0;
     return (state & QUEST_STATE_FAIL) !== 0;
   }
 
@@ -3435,7 +3470,10 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
 
   /** `"mouseover"` is only ever an alias of a fixture token. */
   #alias(unit: string): string {
-    return unit === "mouseover" ? this.#mouseoverAlias ?? "" : unit;
+    if (unit === "mouseover") return this.#mouseoverAlias ?? "";
+    // 3.24: the player's own raid token, last in the canned raid (raidMemberCount), is the player.
+    const raid = /^raid([1-9]\d?)$/.exec(unit);
+    return raid && Number(raid[1]) === this.raidMemberCount() ? "player" : unit;
   }
 
   /** The target frame has the player and one selected target in this fixture. */
@@ -3460,9 +3498,32 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
   }
 
   private party(unit: string): CannedPartyMember | undefined {
-    const match = /^party([1-4])$/.exec(this.#alias(unit));
-    if (!match) return undefined;
+    const alias = this.#alias(unit);
+    const match = /^party([1-4])$/.exec(alias);
+    if (!match) return this.#raidUnit(alias);
     return CANNED_PARTY_MEMBERS[Number(match[1]) - 1];
+  }
+
+  /**
+   * 3.24: `raidN` in the canned raid (FrameXmlRaidLodCanned.ts), as Wow.exe answers a raid unit for the raid
+   * pullouts (Blizzard_RaidUI.lua:897-918): the canned party member of that name, else the roster row's level,
+   * class and online state with a full bar — explicit demo data for the four guildmates the fixture adds.
+   */
+  #raidUnit(alias: string): CannedPartyMember | undefined {
+    const raid = /^raid([1-9]\d?)$/.exec(alias);
+    if (!raid) return undefined;
+    const row = this.friends.raid.rosterInfo(Number(raid[1]));
+    if (!row || typeof row[0] !== "string") return undefined;
+    const name = row[0];
+    const known = CANNED_PARTY_MEMBERS.find((member) => member.name === name);
+    if (known) return known;
+    const online = row[7] === true || row[7] === 1;
+    return {
+      name, level: Number(row[3]) || 80, className: String(row[4] ?? ""), classToken: String(row[5] ?? ""),
+      raceName: "", raceToken: "", sex: 2, health: online ? 5000 : 0, healthMax: online ? 5000 : 0,
+      power: online ? 4000 : 0, powerMax: online ? 4000 : 0, powerType: 0,
+      connected: online, visible: false, dead: false, ghost: false,
+    };
   }
 
   /** `UnitGUID` for every unit the fixture can name, `mouseover` through its alias. */
@@ -3858,7 +3919,11 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
     if (wasArena && !CannedWorldSeam.isArenaList(list)) this.#pump?.fire(FRAMEXML_SEAM_EVENTS.arenaClose);
     this.battlefieldList = list;
     this.#battlefieldListFresh = list !== undefined;
-    this.#pump?.fire(FRAMEXML_SEAM_EVENTS.battlefieldList);
+    // 3.24: a battleground list raises Wow.exe's own edge (FrameXmlBattlefieldList.ts); an arena-typed one
+    // keeps the published arena route.
+    const edges = this.battlefieldListState.receive(list);
+    if (list?.bgTypeId === 6) this.#pump?.fire(FRAMEXML_SEAM_EVENTS.battlefieldList);
+    else for (const edge of edges) this.#pump?.fire(edge);
     if (this.isBattlefieldArena() && !wasArena) this.#pump?.fire(FRAMEXML_SEAM_EVENTS.arenaShow);
   }
 
@@ -4112,22 +4177,49 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
     return [row.name, level >= row.minLevel && level <= row.maxLevel, false, row.random, row.bgTypeId];
   }
 
-  battlefieldInfo(): readonly [string, string, number] | undefined {
-    const row = this.#battlegroundCatalog[this.#selectedBattleground - 1];
+  /** 3.24: the current list type's row (FrameXmlBattlefieldList.ts), else the PvP tab's selected one. */
+  #currentBattlegroundRow(): FrameXmlBattlegroundCatalog[number] | undefined {
+    const type = this.battlefieldListState.type;
+    return (type === undefined ? undefined : this.#battlegroundCatalog.find((row) => row.bgTypeId === type))
+      ?? this.#battlegroundCatalog[this.#selectedBattleground - 1];
+  }
+
+  battlefieldInfo(): readonly [string, string, number, ...unknown[]] | undefined {
+    const row = this.#currentBattlegroundRow();
     if (!row) return undefined;
     const map = row.maps[0];
-    return [map?.name ?? row.name, map?.description1 ?? map?.description0 ?? "", row.maxGroupSize];
+    const level = this.unitLevel("player") ?? 0;
+    return [row.name, map?.description1 ?? map?.description0 ?? "", row.maxGroupSize,
+      level >= row.minLevel && level <= row.maxLevel, false, row.random];
+  }
+
+  /** 3.24: JoinBattlefield's battleground branch over the list; the canned world is never in a battleground. */
+  joinBattlefield(index: number, asGroup: boolean): void {
+    const state = this.battlefieldListState;
+    if (state.type === undefined || state.type === 6) return;
+    const join = state.join(index, asGroup, {
+      maxGroupSize: this.#battlegroundCatalog.find((row) => row.bgTypeId === state.type)?.maxGroupSize,
+      partyMembers: this.partyMemberCount(),
+      raidMembers: this.raidMemberCount(),
+      inBattleground: false,
+    });
+    if (join.kind === "refused") this.#pump?.fire("UI_ERROR_MESSAGE", globalString(join.error) ?? join.error);
+    else if (join.kind === "join") {
+      this.battlegroundJoins.push({ bgTypeId: join.bgTypeId, instanceId: join.instanceId, asGroup: join.asGroup,
+        ...(join.guid !== 0n ? { guid: join.guid } : {}) });
+    }
   }
 
   battlefieldStatus(index: number): readonly [string, string | undefined, number, number, number, number, boolean] {
-    if (!Number.isInteger(index) || index < 1 || index > 2) return ["none", undefined, 0, 0, 0, 0, false];
-    return ["none", undefined, 0, 0, 0, 0, false];
+    // 3.24: the canned queue slots (FrameXmlWorldPvpCanned.ts), empty unless a preview or test fills them.
+    return this.worldPvpWorld.battlefieldStatus(index);
   }
 
   requestBattlegroundInstanceInfo(index: number): void {
     const row = this.#battlegroundCatalog[index - 1];
     if (row) {
       this.#selectedBattleground = index;
+      this.battlefieldListState.request(row.bgTypeId); // 3.24: 0x0054e5b0
       this.battlegroundListRequests.push({ bgTypeId: row.bgTypeId, fromWhere: 1 });
     }
   }
@@ -4145,6 +4237,9 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
     // PVPBattleground's close remains packet-free, but ArenaFrame's OnHide invalidates the
     // battlemaster context so a late status edge cannot reopen a stale owner.
     this.#battlefieldListFresh = false;
+    // 3.24: CloseBattlefield (0x00549b40) forgets the battlemaster and raises BATTLEFIELDS_CLOSED.
+    this.battlefieldListState.close();
+    this.#pump?.fire(FRAMEXML_SEAM_EVENTS.battlefieldClose);
   }
 
   isBattlefieldArena(): boolean {
@@ -4164,7 +4259,10 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
   }
 
   canJoinBattlefieldAsGroup(): boolean {
-    return this.isBattlefieldArena();
+    if (this.isBattlefieldArena()) return true;
+    // 3.24: 0x0054c6e0 — the current type's BattlemasterList.GroupsAllowed.
+    const type = this.battlefieldListState.type;
+    return (this.#battlegroundCatalog.find((row) => row.bgTypeId === type)?.groupsAllowed ?? 0) !== 0;
   }
 
   joinArena(arenaSlot: number, asGroup: boolean, rated: boolean): void {

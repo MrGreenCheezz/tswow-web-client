@@ -378,7 +378,8 @@ test("a war invitation expires at an absolute server moment, not after a duratio
   assert.equal(invite.expiresAt, 1_755_000_020, "GameTime::GetGameTime() + acceptTime, in server seconds");
 
   const entered = parseBattlefieldEntered(bytes(u32(1), u8(1), u8(1), u8(1)));
-  assert.deepEqual(entered, { battleId: 1, clearedAfk: true });
+  // 3.24: the two constant bytes are kept as Wow.exe's BATTLEFIELD_MGR_ENTERED flags (0x005498c0).
+  assert.deepEqual(entered, { battleId: 1, clearedAfk: true, flag1: true, flag2: true });
 
   const ejected = parseBattlefieldEjected(bytes(u32(1), u8(BF_LEAVE_REASON_CLOSE), u8(2), u8(0)));
   assert.equal(ejected.reason, BF_LEAVE_REASON_CLOSE);

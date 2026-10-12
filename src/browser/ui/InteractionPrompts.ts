@@ -9,6 +9,7 @@ import { dungeonEncounterClient, encounterKilled } from "../DungeonEncounterClie
 import { formatMoney } from "./Format.js";
 import { Panel } from "./Widgets.js";
 import { frameXmlLfdPublished } from "../framexml/FrameXmlLfdController.js";
+import { frameXmlQueueEyePublished } from "../framexml/FrameXmlQueueEyeController.js"; // 3.24
 import { frameXmlSharedQuestAskedByStock } from "../framexml/FrameXmlServerPrompts.js";
 import { liveAreaIdAt } from "../AreaLocatorLive.js"; // 05.10-A7b-4
 import {
@@ -165,7 +166,11 @@ export function showInteractionPrompts(now = performance.now()): void {
   const sharedAsked = stockPopups && frameXmlSharedQuestAskedByStock(sharedQuest);
   const shared = sharedAsked ? undefined : sharedQuest;
   const allQueues = [...world.battlefieldQueues.values()];
-  const queues = stockEntry ? allQueues.filter((queued) => queued.status !== STATUS_WAIT_JOIN) : allQueues;
+  // 3.24: the stock queue eye (FrameXmlQueueEyeController.ts) holds the queued and running rows — its dropdown
+  // leaves a queue (AcceptBattlefieldPort, answered only while the stock popups are published) or the
+  // battleground; the invitation stays here until stock's entry dialog owns it too.
+  const stockEye = frameXmlQueueEyePublished();
+  const queues = allQueues.filter((queued) => (queued.status === STATUS_WAIT_JOIN ? !stockEntry : !(stockEye && stockPopups)));
   // Stock LFDDungeonReadyPopup, LFDRoleCheckPopup and the VOTE_BOOT_PLAYER/LFG_OFFER_CONTINUE
   // StaticPopups answer these four while the stock finder is published; two prompts for one server
   // question would let the player answer twice. The reward keeps its native line (no stock owner).
@@ -180,10 +185,13 @@ export function showInteractionPrompts(now = performance.now()): void {
   const proposal = stockLfg || inWindow ? undefined : proposalSeen;
   const reward = world.lfgReward;
   const offerContinue = stockLfg ? undefined : world.lfgOfferContinue;
-  const outdoorQueue = world.battlefieldQueueInvite;
-  const outdoorWar = world.battlefieldWarInvite;
-  const outdoorQueuedId = world.battlefieldQueuedId;
-  const outdoorBattleId = world.battlefieldBattleId;
+  // 3.24: Wintergrasp's four rows are stock's with the eye and the popups published: the BFMGR_* dialogs ask
+  // the two invitations, the eye's dropdown leaves the queue and (CanHearthAndResurrectFromArea) the zone.
+  const stockOutdoor = stockEye && stockPopups;
+  const outdoorQueue = stockOutdoor ? undefined : world.battlefieldQueueInvite;
+  const outdoorWar = stockOutdoor ? undefined : world.battlefieldWarInvite;
+  const outdoorQueuedId = stockOutdoor ? 0 : world.battlefieldQueuedId;
+  const outdoorBattleId = stockOutdoor ? 0 : world.battlefieldBattleId;
   // Stock CONFIRM_BINDER, CONFIRM_TALENT_WIPE and INSTANCE_LOCK answer these while published — except
   // a question the stock model left here (Blizzard_TalentUI not loaded for UIParent's
   // TalentFrame_LoadUI; no DungeonEncounter table for the lock's boss line), which this panel keeps.
@@ -199,7 +207,7 @@ export function showInteractionPrompts(now = performance.now()): void {
   const lockLeftHere = leftHere(lockQuestion);
   const lock = stockPopups && !lockLeftHere ? undefined : lockQuestion;
   requestsUnchanged = () => game.world === world && frameXmlPopupsPublished() === stockPopups
-    && frameXmlPopupsOwnBattlefieldEntry() === stockEntry
+    && frameXmlPopupsOwnBattlefieldEntry() === stockEntry && frameXmlQueueEyePublished() === stockEye
     && (stockPopups || world.binderConfirm === binder) && (!binder || playerAlive(world.state) === alive)
     && world.talentWipeConfirm === talentQuote && leftHere(talentQuote) === talentLeftHere
     && world.instanceLock === lockQuestion && leftHere(lockQuestion) === lockLeftHere
@@ -212,8 +220,8 @@ export function showInteractionPrompts(now = performance.now()): void {
     && (stockLfg || (world.lfgProposal === proposalSeen && lfgWindowAsksProposal() === inWindow))
     && world.lfgReward === reward
     && (stockLfg || world.lfgOfferContinue === offerContinue)
-    && world.battlefieldQueueInvite === outdoorQueue && world.battlefieldWarInvite === outdoorWar
-    && world.battlefieldQueuedId === outdoorQueuedId && world.battlefieldBattleId === outdoorBattleId
+    && (stockOutdoor || (world.battlefieldQueueInvite === outdoorQueue && world.battlefieldWarInvite === outdoorWar
+      && world.battlefieldQueuedId === outdoorQueuedId && world.battlefieldBattleId === outdoorBattleId))
     && world.battlefieldQueues.size === allQueues.length
     && allQueues.every((queued) => world.battlefieldQueues.get(queued.queueSlot) === queued);
   countdowns = [];

@@ -46,7 +46,22 @@ export interface FrameXmlMapSource {
   readonly battlefieldVehicles?: () => readonly FrameXmlBattlefieldVehicle[] | undefined;
   /** L17 3.14: Map.dbc MinimapIconScale of the running battlefield's map (0x00bea564), when known. */
   readonly battlefieldMapIconScale?: () => number | undefined;
+  /** 3.13: the live gossip POI (GossipPoi.ts), one more landmark on its map. */
+  readonly gossipPoi?: () => FrameXmlGossipLandmark | undefined;
 }
+
+/** 3.13: what GetMapLandmarkInfo answers for the gossip POI (Wow.exe 0x00545a30 over record 0x00d394e8). */
+export interface FrameXmlGossipLandmark {
+  readonly mapId: number | undefined;
+  readonly x: number;
+  readonly y: number;
+  readonly icon: number;
+  readonly name: string;
+}
+
+type FrameXmlLandmark =
+  | { readonly poi: AreaPoiInfo; readonly gossip?: undefined; readonly u: number; readonly v: number }
+  | { readonly poi?: undefined; readonly gossip: FrameXmlGossipLandmark; readonly u: number; readonly v: number };
 
 /** L17 3.14: one in-sight vehicle as GetBattlefieldVehicleInfo (0x0054c4d0) reads it. */
 export interface FrameXmlBattlefieldVehicle {
@@ -406,7 +421,11 @@ export class FrameXmlMap {
 
   getMapLandmarkInfo(index: number): MapValues {
     const marker = this.#landmarks()[index - 1];
-    return marker
+    if (marker?.gossip) {
+      // 3.13: the gossip POI's row (0x00545a30, entry [4] = 1): its name, no description, its icon, no map link.
+      return [marker.gossip.name, undefined, marker.gossip.icon, marker.u, marker.v, undefined];
+    }
+    return marker?.poi
       ? [marker.poi.name, marker.poi.description, marker.poi.icons[0], marker.u, marker.v, marker.poi.worldMapLink]
       : NOTHING;
   }
@@ -677,13 +696,13 @@ export class FrameXmlMap {
     return this.#isBattlegroundMap() ? undefined : NOTHING;
   }
 
-  #landmarks(): readonly { poi: AreaPoiInfo; u: number; v: number }[] {
+  #landmarks(): readonly FrameXmlLandmark[] {
     const node = this.#node();
     if (node?.kind !== "area") return NOTHING;
     const selected = node.mapArea;
     const rows = this.#poisByMap.get(selected.mapId) ?? NOTHING;
     const continent = selected.areaId === 0;
-    const output: { poi: AreaPoiInfo; u: number; v: number }[] = [];
+    const output: FrameXmlLandmark[] = [];
     for (const poi of rows) {
       // World-state and faction-gated markers require their own live condition answers. These
       // unconditionally visible rows can be read straight from the DBC without inventing state.
@@ -692,6 +711,13 @@ export class FrameXmlMap {
       const point = this.#pointOnMap(selected, { mapId: poi.mapId, areaId: poi.areaId, x: poi.x, y: poi.y });
       if (!point || point.u < 0 || point.u > 1 || point.v < 0 || point.v > 1) continue;
       output.push({ poi, ...point });
+    }
+    // 3.13: the gossip POI after the AreaPOI rows (0x00546310), projected from the map it arrived on (0x00544140).
+    const gossip = this.#source.gossipPoi?.();
+    if (gossip && gossip.mapId !== undefined) {
+      const point = this.#pointOnMap(selected, { mapId: gossip.mapId, areaId: 0, x: gossip.x, y: gossip.y });
+      if (point && point.u >= 0 && point.u <= 1 && point.v >= 0 && point.v <= 1
+        && (point.u !== 0 || point.v !== 0)) output.push({ gossip, ...point });
     }
     return output;
   }

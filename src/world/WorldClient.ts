@@ -1492,6 +1492,8 @@ export class WorldClient {
   battlefieldQueueInvite: BattlefieldQueueInvite | undefined;
   battlefieldWarInvite: BattlefieldWarInvite | undefined;
   battlefieldQueuedId = 0;
+  /** 3.24: the zone of the queue answer that queued the player (GetWorldPVPQueueStatus's name). */
+  battlefieldQueuedZoneId = 0;
   battlefieldBattleId = 0;
   /** When each of the eight saved blobs last changed, as the server last reported. */
   accountDataTimes: AccountDataTimes | undefined;
@@ -6002,6 +6004,7 @@ export class WorldClient {
     this.battlefieldQueueInvite = undefined;
     this.battlefieldWarInvite = undefined;
     this.battlefieldQueuedId = 0;
+    this.battlefieldQueuedZoneId = 0;
     this.battlefieldBattleId = 0;
     this.lfgRoleCheck = undefined;
     this.lfgBoot = undefined;
@@ -9215,24 +9218,28 @@ export class WorldClient {
 
     if (packet.opcode === OPCODES.SMSG_BATTLEFIELD_MGR_QUEUE_INVITE) {
       this.battlefieldQueueInvite = parseBattlefieldQueueInvite(packet.payload);
-      this.events.emit("BATTLEFIELD_CHANGED", { battleId: this.battlefieldQueueInvite.battleId });
+      this.events.emit("BATTLEFIELD_CHANGED", { battleId: this.battlefieldQueueInvite.battleId,
+        edge: { kind: "queueInvite", warmup: this.battlefieldQueueInvite.warmup } }); // 3.24
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_BATTLEFIELD_MGR_QUEUE_REQUEST_RESPONSE) {
       const response = parseBattlefieldQueueResponse(packet.payload);
       this.battlefieldQueuedId = response.queued ? response.battleId : 0;
+      this.battlefieldQueuedZoneId = response.queued ? response.zoneId : 0; // 3.24
       if (response.queued) this.battlefieldQueueInvite = undefined;
       this.#recordPvpMessage(
         response.queued ? "Вы в очереди на битву" : response.hasRoom ? "В очередь встать не удалось" : "Битва заполнена",
         !response.queued,
       );
-      this.events.emit("BATTLEFIELD_CHANGED", { battleId: response.battleId });
+      this.events.emit("BATTLEFIELD_CHANGED", { battleId: response.battleId, edge: { kind: "queueResponse", // 3.24
+        queued: response.queued, loggingIn: response.hasRoom, warmup: response.warmup, zoneId: response.zoneId } });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_BATTLEFIELD_MGR_ENTRY_INVITE) {
       this.battlefieldWarInvite = parseBattlefieldEntryInvite(packet.payload);
       this.requestWorldStateTime();
-      this.events.emit("BATTLEFIELD_CHANGED", { battleId: this.battlefieldWarInvite.battleId });
+      this.events.emit("BATTLEFIELD_CHANGED", { battleId: this.battlefieldWarInvite.battleId,
+        edge: { kind: "entryInvite", zoneId: this.battlefieldWarInvite.zoneId } }); // 3.24
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_BATTLEFIELD_MGR_ENTERED) {
@@ -9241,7 +9248,8 @@ export class WorldClient {
       this.battlefieldQueuedId = 0;
       this.battlefieldWarInvite = undefined;
       this.battlefieldQueueInvite = undefined;
-      this.events.emit("BATTLEFIELD_CHANGED", { battleId: entered.battleId });
+      this.events.emit("BATTLEFIELD_CHANGED", { battleId: entered.battleId,
+        edge: { kind: "entered", flag1: entered.flag1 === true, flag2: entered.flag2 === true } }); // 3.24
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_BATTLEFIELD_MGR_EJECTED) {
@@ -9251,7 +9259,8 @@ export class WorldClient {
       this.battlefieldWarInvite = undefined;
       this.battlefieldQueueInvite = undefined;
       this.#recordPvpMessage(battlefieldLeaveReasonText(ejected.reason), true);
-      this.events.emit("BATTLEFIELD_CHANGED", { battleId: ejected.battleId });
+      this.events.emit("BATTLEFIELD_CHANGED", { battleId: ejected.battleId, edge: { kind: "ejected", // 3.24
+        reason: ejected.reason, battleStatus: ejected.battleStatus, relocated: ejected.relocated } });
       return true;
     }
     return false;
@@ -9436,7 +9445,8 @@ export class WorldClient {
     if (packet.opcode === OPCODES.SMSG_GMTICKET_GETTICKET) {
       const ticket = parseGmTicket(packet.payload);
       this.gmTicket = ticket.status === GMTICKET_STATUS_HASTEXT ? ticket : undefined;
-      this.events.emit("GM_TICKET_CHANGED", { kind: "snapshot" });
+      // 3.24: the status word too — the stock help frame's UPDATE_TICKET tells 0 (an error) from «none».
+      this.events.emit("GM_TICKET_CHANGED", { kind: "snapshot", status: ticket.status });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_GMTICKET_CREATE
@@ -9445,12 +9455,16 @@ export class WorldClient {
       const response = parseTicketResponse(packet.payload);
       this.ticketMessage = { text: ticketResponseText(response), error: !isTicketSuccess(response) };
       if (packet.opcode === OPCODES.SMSG_GMTICKET_DELETETICKET && isTicketSuccess(response)) this.gmTicket = undefined;
-      this.events.emit("GM_TICKET_CHANGED", { kind: "result" });
+      // 3.24: which answer and its code, for the stock help frame (Wow.exe 0x005ad240).
+      const request = packet.opcode === OPCODES.SMSG_GMTICKET_CREATE ? "create"
+        : packet.opcode === OPCODES.SMSG_GMTICKET_UPDATETEXT ? "update" : "delete";
+      this.events.emit("GM_TICKET_CHANGED", { kind: "result", request, status: response });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_GMTICKET_SYSTEMSTATUS) {
-      this.ticketsEnabled = parseTicketSystemStatus(packet.payload) === GMTICKET_QUEUE_STATUS_ENABLED;
-      this.events.emit("GM_TICKET_CHANGED", { kind: "system" });
+      const status = parseTicketSystemStatus(packet.payload);
+      this.ticketsEnabled = status === GMTICKET_QUEUE_STATUS_ENABLED;
+      this.events.emit("GM_TICKET_CHANGED", { kind: "system", status });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_GMRESPONSE_RECEIVED) {
@@ -9461,6 +9475,8 @@ export class WorldClient {
     if (packet.opcode === OPCODES.SMSG_GMRESPONSE_STATUS_UPDATE) {
       this.ticketSurveyPending = parseGmResponseStatusUpdate(packet.payload);
       this.gmResponse = undefined;
+      // 3.24: Wow.exe (0x005ad240) forgets the ticket with the response, then asks the survey or says «none».
+      this.gmTicket = undefined;
       this.events.emit("GM_TICKET_CHANGED", { kind: "resolved" });
       return true;
     }

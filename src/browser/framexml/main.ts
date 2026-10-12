@@ -40,6 +40,12 @@ import { openFrameXmlCalendar, toggleFrameXmlCalendar } from "./FrameXmlCalendar
 import { isolateFrameXmlPreviewBindings } from "./FrameXmlBinding.js";
 import { frameXmlOptionsPreview, openFrameXmlOptionsPreview } from "./FrameXmlOptionsPreview.js";
 import { mountFrameXmlRaidGrid } from "./FrameXmlRaidLod.js";
+import { mountFrameXmlBattlemaster } from "./FrameXmlBattlemasterOwner.js"; // 3.24
+import { mountFrameXmlQueueEye } from "./FrameXmlQueueEyeOwner.js"; // 3.24
+import { createFrameXmlHelpOwner, frameXmlHelpGate } from "./FrameXmlHelpOwner.js"; // 3.24
+import { publishFrameXmlHelp } from "./FrameXmlHelpController.js"; // 3.24
+import { publishFrameXmlBattlemaster } from "./FrameXmlBattlemasterController.js"; // 3.24
+import { FRAMEXML_CANNED_BATTLEMASTER_LIST } from "./FrameXmlBattlegrounds.js"; // 3.24
 import { frameXmlCannedRaid } from "./FrameXmlRaidLodCanned.js";
 
 /**
@@ -95,6 +101,11 @@ import { frameXmlCannedRaid } from "./FrameXmlRaidLodCanned.js";
  *                         guild master's TabardFrame, `guildregistrar`/`arenaregistrar` the charter
  *                         vendors, `banner` PVPBannerFrame for a carried 2v2 charter, `petition` a charter,
  *                         `stable` the stable master's PetStableFrame (`stablebuy` also its purchase dialog)
+ *   `?battlemaster=1`     3.24: the battlemaster's BattlefieldFrame over a canned Warsong Gulch list, gated
+ *                         and published as the world mount does; `?battlemaster=queue` the minimap queue eye
+ *                         over a queued Warsong Gulch and a queued Lake Wintergrasp (right-click: its menu)
+ *   `?help=1`            3.24: the stock HelpFrame on the knowledge base; `?help=ticket` the open ticket's editor,
+ *                         `?help=response` a GM's answer (FrameXmlHelpCanned.ts)
  *   `?auction=1`          the stock AuctionFrame, Blizzard_AuctionUI loaded on demand by the world mount's
  *                         lazy owner, over the canned house after a search; `?auction=bids` the Bids tab,
  *                         `auctions` the Auctions tab, `sell` a linen stack in the sell slot, `multisell`
@@ -447,6 +458,45 @@ async function main(): Promise<void> {
     if (npcMode === "stablebuy") boot.vm.executeReported("PetStablePurchaseButton:Click()", "@framexml-preview/npc");
     renderer.sync();
   }
+  // 3.24: the battlemaster's list — stock BattlefieldFrame gated and published as the world mount does, over a
+  // canned Warsong Gulch battlemaster with three running instances (FRAMEXML_CANNED_BATTLEMASTER_LIST).
+  const battlemasterMode = (parameters.get("battlemaster") ?? "").trim().toLowerCase();
+  if (battlemasterMode && !/^(?:0|false|no|off)$/.test(battlemasterMode) && seam && renderer) {
+    const owner = mountFrameXmlBattlemaster(seam, boot, renderer);
+    console.info("[framexml battlemaster] gate", owner ? "passed" : "refused");
+    if (owner) publishFrameXmlBattlemaster(owner);
+    if (battlemasterMode === "queue") {
+      // The queue eye instead (FrameXmlQueueEyeOwner.ts): Warsong Gulch queued in slot 1 and Lake Wintergrasp
+      // queued; the eye's dropdown answers through the published popups, as in the world once gated.
+      seam.popups.popupsOwned = true;
+      seam.worldPvpWorld.queues[0] = ["queued", "Warsong Gulch", 0, 10, 19, 0, false];
+      seam.popupsWorld.battlefieldQueues.set(0, { status: 1, isArena: false, rated: false, cleared: false });
+      seam.worldPvpWorld.queueForWintergrasp(1);
+      console.info("[framexml battlemaster] queue eye", mountFrameXmlQueueEye(seam, boot, renderer) ? "passed" : "refused");
+      boot.bridge.dispatchEvent("UPDATE_BATTLEFIELD_STATUS", 1);
+    } else {
+      seam.setBattlefieldList(FRAMEXML_CANNED_BATTLEMASTER_LIST);
+    }
+    renderer.sync();
+  }
+  // 3.24: the help window — stock HelpFrame gated and published as the world mount does (FrameXmlHelpOwner.ts), over the
+  // canned ticket world: `?help=1` the knowledge base (its load failing), `ticket` the open ticket's editor, `response`
+  // a GM's answer.
+  const helpMode = (parameters.get("help") ?? "").trim().toLowerCase();
+  if (helpMode && !/^(?:0|false|no|off)$/.test(helpMode) && seam && renderer) {
+    const gate = frameXmlHelpGate(seam, boot, renderer);
+    console.info("[framexml help] gate", gate ? "passed" : "refused");
+    if (gate) {
+      const owner = createFrameXmlHelpOwner(boot, gate.frame);
+      publishFrameXmlHelp(owner);
+      if (helpMode === "ticket" || helpMode === "response") seam.helpWorld.answerTicket();
+      if (helpMode === "response") seam.helpWorld.answerResponse();
+      owner.toggle();
+      if (helpMode === "ticket") boot.vm.executeReported("HelpFrame_ShowFrame('OpenTicket')", "@framexml-preview/help");
+      if (helpMode === "response") boot.vm.executeReported("HelpFrame_ShowFrame('GMResponse')", "@framexml-preview/help");
+    }
+    renderer.sync();
+  }
   // The stock auction house (AUC lane): the add-on loads on the canned hello exactly as the world mount's owner loads it.
   const auctionMode = (parameters.get("auction") ?? "").trim().toLowerCase();
   if (auctionMode && !/^(?:0|false|no|off)$/.test(auctionMode) && seam && renderer) {
@@ -796,6 +846,12 @@ async function main(): Promise<void> {
           .map((index) => `StaticPopup${index}: ${boot.bridge.getFrame(`StaticPopup${index}Text`)?.text ?? ""}`),
         readyCheckVisible: boot.bridge.getFrame("ReadyCheckFrame")?.visible === true,
         popupCalls: seam ? seam.popupsWorld.calls.map((call) => call.kind) : [],
+        // 3.24: what `?battlemaster=1`'s Join sent (CMSG_BATTLEMASTER_JOIN's guid, type, instance, group).
+        battlegroundJoins: seam ? seam.battlegroundJoins.map((join) => ({ ...join, guid: join.guid?.toString(16) })) : [],
+        // …and what `?battlemaster=queue`'s eye menu answered (CMSG_BATTLEFIELD_PORT, the BattlefieldMgr requests).
+        queueCalls: seam ? [...seam.popupsWorld.calls.filter((call) => call.kind === "battlefield"), ...seam.worldPvpWorld.calls] : [],
+        // …and the help window's ticket requests (`?help=`).
+        helpCalls: seam ? seam.helpWorld.calls.map((call) => ({ ...call })) : [],
       },
     }),
   });

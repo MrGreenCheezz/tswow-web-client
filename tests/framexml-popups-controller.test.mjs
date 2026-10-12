@@ -316,6 +316,48 @@ test("a shared quest steps aside only once stock QUEST_ACCEPT_CONFIRM asked it (
   }
 });
 
+test("3.24: the queue and Wintergrasp rows step aside while the stock queue eye is published", async () => {
+  const eye = await import("../dist/code/browser/framexml/FrameXmlQueueEyeController.js");
+  const world = pendingWorld();
+  world.battlefieldQueueInvite = { battleId: 1, warmup: true };
+  world.battlefieldQueuedId = 1;
+  game.world = world;
+  // A panel with nothing to ask hides and keeps its last rows: read it only while shown.
+  const text = () => {
+    prompts.showInteractionPrompts(0);
+    const node = panel("interaction-prompts");
+    return node.hidden ? "" : allText(node);
+  };
+  let releasePopups = () => {};
+  let releaseEye = () => {};
+  try {
+    releasePopups = controller.publishFrameXmlPopups(owner());
+    let shown = text();
+    assert.match(shown, /Поле боя 1 · в очереди/, "without the eye the queue keeps its native row");
+    assert.match(shown, /Приглашение в очередь на битву/);
+    assert.match(shown, /Вы в очереди на битву в открытом мире/);
+    releaseEye = eye.publishFrameXmlQueueEye();
+    shown = text();
+    assert.doesNotMatch(shown, /в очереди/, "the eye's dropdown leaves the queue");
+    assert.doesNotMatch(shown, /Войти в бой/, "CONFIRM_BATTLEFIELD_ENTRY asks the invitation");
+    assert.doesNotMatch(shown, /битву в открытом мире/, "BFMGR_INVITED_TO_QUEUE and the dropdown take Wintergrasp");
+    // Without the stock popups the invitation and Wintergrasp's dialogs have no stock surface: native again.
+    releasePopups();
+    shown = text();
+    assert.match(shown, /Войти в бой/);
+    assert.match(shown, /Приглашение в очередь на битву/);
+    assert.match(shown, /Поле боя 1 · в очереди/, "and the queued row: the eye's Leave Queue is AcceptBattlefieldPort, a popups answer");
+    releaseEye();
+    assert.match(text(), /Поле боя 1 · в очереди/, "unpublished: every row is native again");
+    assert.deepEqual(world.calls, [], "nothing answered on the way");
+  } finally {
+    releaseEye();
+    releasePopups();
+    prompts.resetInteractionPrompts();
+    game.world = undefined;
+  }
+});
+
 test("the battleground entry stays native when the gate did not verify BattlefieldFrame", () => {
   const world = pendingWorld();
   game.world = world;

@@ -576,6 +576,13 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
   #measure: ((frame: FrameXmlFrame) => { width: number; height: number } | undefined) | undefined;
   #measureText: ((frame: FrameXmlFrame, text: string) => number | undefined) | undefined;
   #screenRectSource: ((frame: FrameXmlFrame) => FrameXmlRect | undefined) | undefined;
+  /**
+   * 3.24 (12.10): the points a frame had when `ClearAllPoints` emptied them. Wow.exe keeps a cleared frame's last
+   * rectangle until it is anchored again, and stock relies on it — Blizzard_RaidUI's RaidPulloutStopMoving
+   * (Blizzard_RaidUI.lua:1161-1177) calls ClearAllPoints, then reads GetCenter/GetTop to re-anchor the dropped
+   * pullout there. Read only while the frame has no points of its own (`screenRect`).
+   */
+  readonly #clearedPoints = new WeakMap<FrameXmlFrame, FrameXmlFrame["points"]>();
   #mousePosition: readonly [number, number] = [0, 0];
   readonly #fontStyles = new Map<string, FrameXmlFontStyle>();
   /** `fontObjectStyle`'s cache; a superset of `#fontStyles`, filled on demand. */
@@ -850,7 +857,9 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
       const parent = current.parent ? resolve(current.parent, visiting) : screenBox;
       const x: Partial<Record<"LEFT" | "RIGHT" | "CENTER", number>> = {};
       const y: Partial<Record<"TOP" | "BOTTOM" | "CENTER", number>> = {};
-      for (const point of current.points) {
+      // 3.24: a frame ClearAllPoints emptied keeps the place its last points gave it (`#clearedPoints`).
+      const points = current.points.length > 0 ? current.points : this.#clearedPoints.get(current) ?? current.points;
+      for (const point of points) {
         const relative = point.relativeTo ? resolve(point.relativeTo, visiting) : parent;
         const anchor = anchorRoles(point.point);
         const target = anchorRoles(point.relativePoint ?? point.point);
@@ -2967,6 +2976,7 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
     const mutable = this.own(frame);
     if (!mutable) return false;
     if (mutable.points.length === 0) return true;
+    this.#clearedPoints.set(mutable, mutable.points);
     mutable.points = [];
     this.notifyMutation(mutable);
     return true;

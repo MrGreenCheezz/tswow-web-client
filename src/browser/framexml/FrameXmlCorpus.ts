@@ -635,6 +635,14 @@ export const FRAMEXML_VERTICAL_TOC: readonly string[] = Object.freeze([
   "TabardFrame.xml",
   "GuildRegistrarFrame.xml",
   "PetitionFrame.xml",
+  // 3.24 (12.10): stock TOC lines 115-116, the help window — HelpFrame (its GM ticket, «stuck», lag-report and GM
+  // response pages, TicketStatusFrame under the minimap) and KnowledgeBaseFrame, its start page (HELPFRAME_START_PAGE
+  // "KBase"). Not load-on-demand in 3.3.5: Wow.exe has them from login, the ticket status included
+  // (HelpFrame_OnEvent's PLAYER_ENTERING_WORLD asks GetGMTicket). Their C API is FrameXmlHelp.ts. Measured over
+  // the canned seam (Node, 3 alternating runs): +4 files, +98,455 B, +517 widgets, 0 Lua errors, the boot within
+  // its own noise (2.60-3.60 s without, 2.54-2.77 s with).
+  "HelpFrame.xml",
+  "KnowledgeBaseFrame.xml",
   "ColorPickerFrame.xml",
   // Stock TOC line 118: GossipFrame, the NPC conversation (FrameXmlGossip.ts/FrameXmlGossipOwner.ts);
   // its confirm/code dialogs are StaticPopup.xml's. Hidden root. Measured over the canned seam:

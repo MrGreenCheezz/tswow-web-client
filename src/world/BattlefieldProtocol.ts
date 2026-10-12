@@ -85,7 +85,22 @@ export interface BattlefieldEntered {
   battleId: number;
   /** Whether the server cleared the player's away flag on the way in. */
   clearedAfk: boolean;
+  /** 3.24: the two constant bytes, which Wow.exe passes on as BATTLEFIELD_MGR_ENTERED's flags (0x005498c0). */
+  flag1?: boolean;
+  flag2?: boolean;
 }
+
+/**
+ * 3.24: what one SMSG_BATTLEFIELD_MGR_* packet said, for the stock interface's BATTLEFIELD_MGR_* events
+ * (FrameXmlWorldPvpQueue.ts). The queue answer's second byte is what Wow.exe reads as «logging in»
+ * (0x0054b680; the core's `full ? 0 : 1`).
+ */
+export type BattlefieldMgrEdge =
+  | { readonly kind: "queueInvite"; readonly warmup: boolean }
+  | { readonly kind: "queueResponse"; readonly queued: boolean; readonly loggingIn: boolean; readonly warmup: boolean; readonly zoneId: number }
+  | { readonly kind: "entryInvite"; readonly zoneId: number }
+  | { readonly kind: "entered"; readonly flag1: boolean; readonly flag2: boolean }
+  | { readonly kind: "ejected"; readonly reason: number; readonly battleStatus: number; readonly relocated: boolean };
 
 /**
  * The player is in the battle now.
@@ -96,11 +111,11 @@ export interface BattlefieldEntered {
 export function parseBattlefieldEntered(payload: Uint8Array): BattlefieldEntered {
   const reader = new PacketReader(payload);
   const battleId = reader.u32();
-  reader.u8();
-  reader.u8();
+  const flag1 = reader.u8() !== 0;
+  const flag2 = reader.u8() !== 0;
   const clearedAfk = reader.u8() !== 0;
   reader.assertFinished();
-  return { battleId, clearedAfk };
+  return { battleId, clearedAfk, flag1, flag2 };
 }
 
 export interface BattlefieldEjected {

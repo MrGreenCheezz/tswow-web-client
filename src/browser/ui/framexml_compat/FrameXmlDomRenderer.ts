@@ -296,6 +296,9 @@ interface FrameDrag {
   moving?: FrameXmlFrame;
   left?: number;
   top?: number;
+  /** 3.24: the cursor the move counts from when OnDragStart placed and started another frame (else start). */
+  originX?: number;
+  originY?: number;
   /** 3.48: a press inside the frame's title region moves it, `movable` or not (FrameXmlTitleRegion.ts). */
   readonly title?: true;
 }
@@ -2274,6 +2277,16 @@ export class FrameXmlDomRenderer {
     return undefined;
   }
 
+  /** 3.24: the shown movable frame a drag start's StartMoving set moving (once per drag, not per move). */
+  private startedMovingFrame(): FrameXmlFrame | undefined {
+    const bridge = this.#bridge;
+    if (!bridge) return undefined;
+    for (const frame of bridge.frames) {
+      if (frame.moving && frame.movable && bridge.isVisible(frame)) return frame;
+    }
+    return undefined;
+  }
+
   private moveDrag(drag: FrameDrag, event: MouseEvent): void {
     if (this.#drag !== drag || !this.#bridge?.isVisible(drag.source)) return;
     if (!Number.isFinite(event.clientX) || !Number.isFinite(event.clientY)) return;
@@ -2285,7 +2298,18 @@ export class FrameXmlDomRenderer {
       drag.started = true;
       if (drag.registered) this.#bridge.fireScript(drag.source, "OnDragStart", drag.button);
       if (this.#drag !== drag) return;
-      const moving = this.movingAncestor(drag.source);
+      // 3.24: StartMoving moves the frame it was called on, whichever it is — Blizzard_RaidUI's pullout
+      // is a new window that the dragged group label starts moving (RaidPulloutButton_OnDragStart,
+      // Blizzard_RaidUI.lua:1148-1159), not an ancestor of the label.
+      const ancestor = this.movingAncestor(drag.source);
+      const moving = ancestor ?? this.startedMovingFrame();
+      if (moving && !ancestor) {
+        // Placed by OnDragStart itself (the pullout opens under the cursor): its box is read once that
+        // placement has settled, and the move counts from the cursor as it is now — the offset StartMoving found.
+        this.#bridge.settleDeferredLayout();
+        drag.originX = event.clientX;
+        drag.originY = event.clientY;
+      }
       const element = moving && this.#rendered.get(moving)?.element;
       if (!moving || !element?.getBoundingClientRect) return;
       const rect = element.getBoundingClientRect();
@@ -2296,8 +2320,8 @@ export class FrameXmlDomRenderer {
     if (!drag.moving || drag.left === undefined || drag.top === undefined) return;
     // 3.48: a title-region drag needs no `movable` (FrameXmlTitleRegion.ts).
     if (!drag.moving.moving || (!drag.moving.movable && !drag.title)) { this.finishDrag(false); return; }
-    this.placeAtClientPosition(drag.moving,
-      drag.left + event.clientX - drag.startX, drag.top + event.clientY - drag.startY);
+    this.placeAtClientPosition(drag.moving, drag.left + event.clientX - (drag.originX ?? drag.startX),
+      drag.top + event.clientY - (drag.originY ?? drag.startY));
     event.preventDefault?.();
     event.stopPropagation?.();
   }

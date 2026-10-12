@@ -75,11 +75,11 @@ test("Canned battleground seam preserves seven-row order and selected-row reques
   // Enumerating rows must not move the selection used by GetBattlefieldInfo.
   for (let index = 1; index <= 7; index += 1) api(seam, "GetBattlegroundInfo", index);
   assert.deepEqual(api(seam, "GetBattlefieldInfo"), [
-    "Alterac Valley", "Fight for the Stormpike clan.", 40,
+    "Alterac Valley", "Fight for the Stormpike clan.", 40, true, false, false,
   ]);
   api(seam, "RequestBattlegroundInstanceInfo", 2);
   assert.deepEqual(api(seam, "GetBattlefieldInfo"), [
-    "Warsong Gulch", "Capture the enemy flag.", 5,
+    "Warsong Gulch", "Capture the enemy flag.", 5, true, false, false,
   ]);
   api(seam, "JoinBattlefield", 0, true);
   assert.deepEqual(seam.battlegroundListRequests, [{ bgTypeId: 2, fromWhere: 1 }]);
@@ -100,17 +100,17 @@ test("live battleground seam maps race faction, descriptions, status tuple and p
   player.fields.set(UPDATE_FIELDS.UNIT_FIELD_BYTES_0.offset, 4);
   assert.deepEqual(api(seam, "UnitFactionGroup", "target"), []);
   assert.deepEqual(api(seam, "GetBattlefieldInfo"), [
-    "Alterac Valley", "Fight for the Stormpike clan.", 40,
+    "Alterac Valley", "Fight for the Stormpike clan.", 40, true, false, false,
   ]);
 
   player.fields.set(UPDATE_FIELDS.UNIT_FIELD_BYTES_0.offset, 2);
   assert.equal(api(seam, "UnitFactionGroup", "player")[0], "Horde");
   assert.deepEqual(api(seam, "GetBattlefieldInfo"), [
-    "Alterac Valley", "Fight for the Frostwolf clan.", 40,
+    "Alterac Valley", "Fight for the Frostwolf clan.", 40, true, false, false,
   ]);
   player.fields.set(UPDATE_FIELDS.UNIT_FIELD_BYTES_0.offset, 0);
   assert.deepEqual(api(seam, "UnitFactionGroup", "player"), []);
-  assert.deepEqual(api(seam, "GetBattlefieldInfo"), ["Alterac Valley", "", 40],
+  assert.deepEqual(api(seam, "GetBattlefieldInfo"), ["Alterac Valley", "", 40, true, false, false],
     "an unresolved faction does not choose a side-specific description");
 
   api(seam, "RequestBattlegroundInstanceInfo", 2);

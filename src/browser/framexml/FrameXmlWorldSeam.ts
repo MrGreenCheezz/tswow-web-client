@@ -136,6 +136,9 @@ import { FRAMEXML_ARENA_BINDINGS } from "./FrameXmlArenaApi.js";
 import type { FrameXmlArenaOpponents } from "./FrameXmlArena.js";
 import { FRAMEXML_PVP_FLAG_BINDINGS, type FrameXmlPvpFlagModel } from "./FrameXmlPvpFlag.js";
 import { FRAMEXML_SCOREBOARD_BINDINGS, type FrameXmlBattlefieldScoreModel } from "./FrameXmlScoreboard.js";
+import { FRAMEXML_BATTLEFIELD_LIST_BINDINGS, type FrameXmlBattlefieldListState } from "./FrameXmlBattlefieldList.js"; // 3.24
+import { FRAMEXML_WORLD_PVP_BINDINGS, type FrameXmlWorldPvpModel } from "./FrameXmlWorldPvpQueue.js"; // 3.24
+import { FRAMEXML_HELP_BINDINGS, type FrameXmlHelpModel } from "./FrameXmlHelp.js"; // 3.24
 import { FRAMEXML_AREA_SPIRIT_HEALER_BINDINGS, type FrameXmlAreaSpiritHealerModel } from "./FrameXmlAreaSpiritHealer.js"; // L3 5.25
 import { FRAMEXML_DIFFICULTY_BINDINGS, type FrameXmlDifficultyModel } from "./FrameXmlDifficulty.js";
 import { FRAMEXML_TALENT_GROUP_BINDINGS, type FrameXmlTalentGroupModel } from "./FrameXmlTalentGroup.js";
@@ -1861,8 +1864,22 @@ export interface FrameXmlWorldSeam {
   battlegroundTypeCount(): number;
   /** `GetBattlegroundInfo`'s five-value tuple for a 1-based type index. */
   battlegroundInfo(index: number): readonly [string, boolean, boolean, boolean, number] | undefined;
-  /** `GetBattlefieldInfo` for the currently selected stock row. */
-  battlefieldInfo(): readonly [string, string, number] | undefined;
+  /**
+   * `GetBattlefieldInfo` for the current list type (3.24: Wow.exe 0x0054d770 — name, description, maxGroup,
+   * then canEnter, isHoliday, isRandom; a seam may answer the first three only).
+   */
+  battlefieldInfo(): readonly [string, string, number, ...unknown[]] | undefined;
+  /** 3.24: the client's one battlefield list (FrameXmlBattlefieldList.ts), for the four list bindings. */
+  readonly battlefieldListState?: FrameXmlBattlefieldListState | undefined;
+  /** 3.24: the Wintergrasp queue and its BattlefieldMgr answers (FrameXmlWorldPvpQueue.ts). */
+  readonly worldPvp?: FrameXmlWorldPvpModel | undefined;
+  /** 3.24: the GM ticket C API behind stock HelpFrame (FrameXmlHelp.ts); absent, the neutral answers. */
+  readonly help?: FrameXmlHelpModel | undefined;
+  /**
+   * 3.24: JoinBattlefield's battleground branch (0x0054cc70) for a 1-based list row, 0 = first available —
+   * the battlemaster's guid and instance, or the UI error. Absent, row 0 joins through `joinBattleground`.
+   */
+  joinBattlefield?(index: number, asGroup: boolean): void;
   /** The queue slot tuple consumed by PVPBattlegroundFrame's status repaint. */
   battlefieldStatus(index: number): readonly [string, string | undefined, number, number, number, number, boolean];
   /**
@@ -2748,10 +2765,15 @@ export const FRAMEXML_SEAM_BINDINGS: Readonly<Record<string, FrameXmlSeamBinding
     // call shape so a fresh arena list cannot steal the existing battleground route,
     // while a stale arena-shaped call remains a neutral no-op.
     const selection = slotOf(args[0]);
-    if (selection >= 1 && selection <= 3) {
-      if (seam.isBattlefieldArena()) {
-        seam.joinArena(selection - 1, boolOf(args[1]), boolOf(args[2]));
-      }
+    if (selection >= 1 && selection <= 3 && seam.isBattlefieldArena()) {
+      seam.joinArena(selection - 1, boolOf(args[1]), boolOf(args[2]));
+      return NOTHING;
+    }
+    // 3.24: a battleground list's rows (BattlefieldFrame's JoinBattlefield(GetSelectedBattlefield()),
+    // BattlefieldFrame.lua:578-580) join their instance through the seam's list (0x0054cc70); the seam
+    // keeps a stale arena-typed list neutral.
+    if (seam.joinBattlefield) {
+      seam.joinBattlefield(selection, boolOf(args[1]));
       return NOTHING;
     }
     if (selection !== 0) return NOTHING;
@@ -3095,6 +3117,12 @@ export const FRAMEXML_SEAM_BINDINGS: Readonly<Record<string, FrameXmlSeamBinding
   ...FRAMEXML_COMBAT_LOG_BINDINGS,
   // L12 3.29: the trainer's skill-line filter, and BuyTrainerService over the base one (FrameXmlTrainerSkillLines.ts).
   ...FRAMEXML_TRAINER_SKILL_LINE_BINDINGS,
+  // 3.24: the battlefield list's rows and selection, over the neutral GetNumBattlefields (FrameXmlBattlefieldList.ts).
+  ...FRAMEXML_BATTLEFIELD_LIST_BINDINGS,
+  // 3.24: the Wintergrasp queue, over the neutral GetWorldPVPQueueStatus/CanHearthAndResurrectFromArea.
+  ...FRAMEXML_WORLD_PVP_BINDINGS,
+  // 3.24: the GM ticket C API and the knowledge base's answers (FrameXmlHelp.ts).
+  ...FRAMEXML_HELP_BINDINGS,
   // Last: the one cursor answers the cursor C API over every holder above (FrameXmlCursor.ts).
   ...FRAMEXML_CURSOR_BINDINGS,
   // L5c 3.09: money on that cursor, over the trade's inert PickupTradeMoney/AddTradeMoney and the neutral 0.

@@ -88,6 +88,8 @@ import {
   frameXmlPvpOpen,
 } from "../framexml/FrameXmlPvpController.js";
 import { closeFrameXmlScoreboard, frameXmlScoreboardOpen } from "../framexml/FrameXmlScoreboardController.js"; // 3.24
+import { closeFrameXmlBattlemaster, frameXmlBattlemasterOpen } from "../framexml/FrameXmlBattlemasterController.js"; // 3.24
+import { closeFrameXmlHelp, frameXmlHelpOpen } from "../framexml/FrameXmlHelpController.js"; // 3.24
 import { closeFrameXmlLfd, frameXmlLfdOpen } from "../framexml/FrameXmlLfdController.js";
 import { closeFrameXmlFriends, frameXmlFriendsOpen } from "../framexml/FrameXmlFriendsController.js";
 import { closeFrameXmlLoot, frameXmlLootOpen } from "../framexml/FrameXmlLootController.js";
@@ -220,6 +222,10 @@ const ESCAPABLE: EscapableWindow[] = [
   // 3.24: stock WorldStateScoreFrame once published (a center UIPanel CloseWindows takes); inert otherwise,
   // when the native board's entry above owns the route.
   { isOpen: frameXmlScoreboardOpen, close: closeFrameXmlScoreboard },
+  // 3.24: stock BattlefieldFrame (the battlemaster's list), a `left` UIPanel; inert until published.
+  { isOpen: frameXmlBattlemasterOpen, close: closeFrameXmlBattlemaster },
+  // 3.24: stock HelpFrame (a center UIPanel); inert until published, when the native GM window's entry owns it.
+  { isOpen: frameXmlHelpOpen, close: closeFrameXmlHelp },
   // The stock dungeon finder (LFDParentFrame) once published; inert while the native #lfg-window
   // (the entry above) owns the route.
   { isOpen: frameXmlLfdOpen, close: closeFrameXmlLfd },

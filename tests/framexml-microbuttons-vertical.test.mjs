@@ -164,9 +164,11 @@ test("the stock Help micro button opens the native GM ticket window instead of p
   const source = await readFile(new URL("../src/browser/framexml/FrameXmlWorldMount.ts", import.meta.url), "utf8");
   const adapters = source.slice(source.indexOf("installFrameXmlMicroButtonAdapters(loadedBoot, {"));
   const actionMap = adapters.slice(0, adapters.indexOf("}) !== undefined;"));
-  assert.match(actionMap, /\n\s*help: toggleGmTickets,\n/, "HelpMicroButton reaches the GM ticket window");
+  // 3.24: stock HelpFrame first while it is published, the native GM ticket window otherwise.
+  assert.match(actionMap, /\n\s*help: \(\) => \{ if \(!toggleFrameXmlHelp\(\)\) toggleGmTickets\(\); \},\n/,
+    "HelpMicroButton reaches the help window");
   assert.doesNotMatch(source, /\bhelpLines\b/, "the mount no longer dumps the native command list");
-  assert.match(source, /import \{ toggleGmTickets \} from "\.\.\/ui\/GmTickets\.js";/);
+  assert.match(source, /import \{ closeGmTickets, toggleGmTickets \} from "\.\.\/ui\/GmTickets\.js";/);
 });
 
 test("MainMenuMicroButton and LFDMicroButton open the stock GameMenuFrame and LFDParentFrame through their owners", withClient, async () => {

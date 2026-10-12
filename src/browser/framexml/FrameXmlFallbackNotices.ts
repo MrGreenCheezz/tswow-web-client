@@ -26,6 +26,9 @@ export const FRAMEXML_FALLBACK_LABELS: Readonly<Record<string, string>> = Object
   mail: "Почта",
   trade: "Обмен",
   scoreboard: "Таблица боя", // 3.24 (12.10)
+  battlemaster: "Распорядитель боя", // 3.24 (12.10)
+  queueEye: "Очередь на поле боя", // 3.24 (12.10)
+  help: "Помощь", // 3.24 (12.10)
 });
 
 export function frameXmlFallbackText(kind: string, reason: string): string {

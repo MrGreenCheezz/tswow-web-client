@@ -38,8 +38,14 @@ test("canned quests with zones: the client's headers, counts, watch indices and 
   assert.ok(fired.includes("QUEST_LOG_UPDATE"));
   assert.deepEqual(call(seam, "GetNumQuestLogEntries"), [4, 3]);
   assert.deepEqual(titles(), ["#Западный Край", "#Элвиннский лес", "Кабаны", "Волки", "Бандиты"], "the collapsed tail");
+  // 3.13: the selection is the quest (Кабаны, 104), as the live seam and Wow.exe keep it: its row moved up.
+  assert.deepEqual(call(seam, "GetQuestLogSelection"), [3], "the selected quest's new row");
+  assert.equal(call(seam, "GetQuestLogTitle", call(seam, "GetQuestLogSelection")[0])[8], 104);
   call(seam, "ExpandQuestHeader", 0);
   assert.deepEqual(call(seam, "GetNumQuestLogEntries"), [5, 3]);
+  assert.deepEqual(call(seam, "GetQuestLogSelection"), [4], "and back with the expand");
+  call(seam, "SelectQuestLogEntry", 9);
+  assert.deepEqual(call(seam, "GetQuestLogSelection"), [0], "a row past the list clears it");
   seam.detach();
 });
 

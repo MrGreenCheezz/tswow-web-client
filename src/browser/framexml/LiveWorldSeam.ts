@@ -396,10 +396,15 @@ import type {
 } from "./FrameXmlBattlegrounds.js";
 import { FRAMEXML_BATTLEGROUND_TYPE_IDS } from "./FrameXmlBattlegrounds.js";
 import {
+  BATTLEGROUND_AA,
   STATUS_IN_PROGRESS,
   STATUS_WAIT_JOIN,
   STATUS_WAIT_QUEUE,
 } from "../../world/PvpProtocol.js";
+import { FrameXmlBattlefieldListState } from "./FrameXmlBattlefieldList.js"; // 3.24
+import { FrameXmlWorldPvpModel, type FrameXmlWorldPvpArea } from "./FrameXmlWorldPvpQueue.js"; // 3.24
+import { FrameXmlHelpModel } from "./FrameXmlHelp.js"; // 3.24
+import { activeGossipPoi, type GossipPoiMark } from "../GossipPoi.js"; // 3.13
 
 const ALLIANCE_RACE_IDS = new Set([1, 3, 4, 7, 11]);
 const HORDE_RACE_IDS = new Set([2, 5, 6, 8, 10]);
@@ -584,6 +589,9 @@ export interface LiveWorldSeamContext {
     zoneId: number | undefined,
     areaId: number | undefined,
   ) => FrameXmlMinimapZone | undefined;
+  /** 3.24: AreaTable rows (name, parent, flags) and the player's current area, for the world-PvP queue. */
+  readonly areaRecord?: (areaId: number) => FrameXmlWorldPvpArea | undefined;
+  readonly currentAreaId?: () => number;
   /**
    * Whether the loading curtain is up (`game.worldLoading`). The client takes its zone edges from
    * the world it has finished loading: under the curtain the map id has already moved while the
@@ -999,6 +1007,24 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
   #selectedFactionId: number | undefined;
   /** Last type index passed through GetBattlegroundInfo; stock calls this before GetBattlefieldInfo. */
   #selectedBattleground = 1;
+  /** 3.24: the client's one battlefield list — type, battlemaster, instances, selection (FrameXmlBattlefieldList.ts). */
+  readonly battlefieldListState = new FrameXmlBattlefieldListState();
+  /** 3.13: the gossip POI last seen alive (GossipPoi.ts), so its end is one WORLD_MAP_UPDATE. */
+  #gossipPoi: GossipPoiMark | undefined;
+  /** 3.24: the GM ticket C API and events behind stock HelpFrame (FrameXmlHelp.ts). */
+  readonly help = new FrameXmlHelpModel({
+    world: () => this.#context.world(),
+    uiError: (key) => { this.#pump?.fire("UI_ERROR_MESSAGE", globalString(key) ?? key); },
+  });
+  /** 3.24: the Wintergrasp queue behind the stock queue eye (FrameXmlWorldPvpQueue.ts). */
+  readonly worldPvp = new FrameXmlWorldPvpModel({
+    world: () => this.#context.world(),
+    area: (id) => (id > 0 ? this.#context.areaRecord?.(id) : undefined),
+    currentAreaId: () => {
+      const area = this.#context.currentAreaId?.() ?? 0;
+      return area > 0 ? area : this.#context.world()?.worldStateContext?.areaId ?? 0;
+    },
+  });
   /** A battlemaster list is valid only for the world/session that delivered it. */
   #arenaListWorld: WorldClient | undefined;
   #arenaListReference: BattlefieldList | undefined;
@@ -1767,6 +1793,7 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     this.mail.attach(pump);
     this.trade.attach(pump);
     this.currency.attach(pump);
+    this.help.attach(pump); // 3.24
     this.arena.attach(pump);
     this.auction.attach(pump);
     this.socket.attach(pump);
@@ -2422,6 +2449,11 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
       this.#unsubscribe.push(world.events.on("BATTLEFIELD_QUEUE_CHANGED", () => {
         pump.fire(FRAMEXML_SEAM_EVENTS.battlefieldStatus);
       }));
+      // 3.24: each SMSG_BATTLEFIELD_MGR_* packet raises Wow.exe's BATTLEFIELD_MGR_* event (FrameXmlWorldPvpQueue.ts);
+      // the world's own answers (no edge) raise nothing, as Wow.exe's sends raise nothing.
+      this.#unsubscribe.push(world.events.on("BATTLEFIELD_CHANGED", ({ battleId, edge }) => {
+        if (edge) pump.fire(...this.worldPvp.edgeEvent(battleId, edge));
+      }));
       this.#unsubscribe.push(world.events.on("BATTLEFIELD_LIST_CHANGED", () => {
         const previousArena = this.#arenaWasPublished;
         const list = world.battlefieldList;
@@ -2439,7 +2471,12 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
         this.#arenaListFresh = list !== undefined;
         const currentArena = nextArena;
         this.#arenaWasPublished = currentArena;
-        pump.fire(FRAMEXML_SEAM_EVENTS.battlefieldList);
+        // 3.24: Wow.exe's own edges for a battleground list (0x0054e390): BATTLEFIELDS_SHOW for a
+        // battlemaster's (stock BattlefieldFrame), NPC_PVPQUEUE_ANYWHERE for a random battlemaster's,
+        // PVPQUEUE_ANYWHERE_SHOW for the PvP tab's. An arena-typed list keeps its published route below.
+        const edges = this.battlefieldListState.receive(list);
+        if (list?.bgTypeId === BATTLEGROUND_AA) pump.fire(FRAMEXML_SEAM_EVENTS.battlefieldList);
+        else for (const edge of edges) pump.fire(edge);
         if (currentArena && !previousArena) pump.fire(FRAMEXML_SEAM_EVENTS.arenaShow);
       }));
       this.#unsubscribe.push(world.events.on("QUEST_PROGRESS", (event) => {
@@ -2746,6 +2783,7 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     this.mail.detach();
     this.trade.detach();
     this.currency.detach();
+    this.help.detach(); // 3.24
     this.arena.detach();
     this.auction.detach();
     this.socket.detach();
@@ -3913,6 +3951,13 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     this.#unitAnswers.tick(); // 3.12 (04.10, L4): a unit tooltip's guild or loot owner name came
     // KNOWN_CURRENCY_TYPES_UPDATE / CURRENCY_DISPLAY_UPDATE edges, once Blizzard_TokenUI took them.
     this.currency.tick();
+    this.help.tick(); // 3.24: the GM ticket's world (FrameXmlHelp.ts)
+    // 3.13: the gossip POI's end — its 480 s or the player within 10 yards — rebuilds the map's landmarks, and
+    // Wow.exe's rebuild raises WORLD_MAP_UPDATE (0x00546310 → 0x0081b530(0x163)): the open world map drops the flag.
+    // No POI, no player read: the render tick stays free of object scans (framexml-quest-seam's read count).
+    const poi = world?.gossipPoi ? activeGossipPoi(world, performance.now(), this.#self()?.position) : undefined;
+    if (this.#gossipPoi !== undefined && poi !== this.#gossipPoi) pump.fire(FRAMEXML_SEAM_EVENTS.worldMapUpdate);
+    this.#gossipPoi = poi;
     // ARENA_OPPONENT_UPDATE, UNIT_PET and the enemy frames' UNIT_* edges (outside an arena: two queue slots).
     this.arena.tick();
     this.auction.tick();
@@ -6477,8 +6522,40 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
 
   #partyMember(unit: string): GroupMember | undefined {
     const slot = this.#partySlot(unit);
-    if (slot === undefined) return undefined;
+    if (slot === undefined) return this.#raidMember(unit);
     return this.#context.world()?.group?.members[slot - 1];
+  }
+
+  /**
+   * 3.24: `raidN` as a unit, as Wow.exe answers it for the raid pullouts' rows (Blizzard_RaidUI.lua:897-1018:
+   * UnitName, UnitHealth, UnitPower, UnitIsConnected over `"raid"..id`): the listed member, with the stats
+   * SMSG_PARTY_MEMBER_STATS carries for every raid member, and its object while in view. The player's own row is
+   * `#unit`'s (`#raidSelf`). Its UNIT_* edges are `#publishPartyStats`'.
+   */
+  #raidMember(unit: string): GroupMember | undefined {
+    const raid = /^raid([1-9]\d?)$/.exec(unit);
+    if (!raid) return undefined;
+    const world = this.#context.world();
+    const group = world?.group;
+    if (!group || (group.groupType & GROUPTYPE_RAID) === 0) return undefined;
+    const index = Number(raid[1]);
+    return index === this.#raidSelfIndex(world) ? undefined : group.members[index - 1];
+  }
+
+  /** 3.24: the player's own `raidN` (the row after the listed members, `raidMemberCount`). */
+  #raidSelf(unit: string): boolean {
+    const raid = /^raid([1-9]\d?)$/.exec(unit);
+    const world = this.#context.world();
+    return !!raid && world?.group !== undefined && (world.group.groupType & GROUPTYPE_RAID) !== 0
+      && Number(raid[1]) === this.#raidSelfIndex(world);
+  }
+
+  /** 3.24: the `raidN` naming a member, for its UNIT_* edges. */
+  #raidUnitForGuid(guid: bigint): string | undefined {
+    const group = this.#context.world()?.group;
+    if (!group || (group.groupType & GROUPTYPE_RAID) === 0) return undefined;
+    const index = group.members.findIndex((member) => member.guid === guid);
+    return index < 0 ? undefined : `raid${index + 1}`;
   }
 
   #partyStats(unit: string): PartyMemberStats | undefined {
@@ -6577,6 +6654,7 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
       const guid = this.encounters.bossGuid(frameXmlBossTokenIndex(unit) ?? 0);
       return guid === undefined ? undefined : this.#context.world()?.state.objects.get(guid);
     }
+    if (this.#raidSelf(unit)) return this.#self(); // 3.24
     return this.#partyObject(unit);
   }
 
@@ -6837,7 +6915,8 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
   /** Translate one authoritative party-stats packet into the stock unit edge family. */
   #publishPartyStats(guid: bigint): void {
     const pump = this.#pump;
-    const unit = this.#partyUnitForGuid(guid);
+    // 3.24: in a raid the member's `raidN` (the raid pullouts' rows listen for it); in a party its `partyN`.
+    const unit = this.#partyUnitForGuid(guid) ?? this.#raidUnitForGuid(guid);
     const world = this.#context.world();
     const stats = world?.partyStats.get(guid);
     if (!pump || !unit || !stats) return;
@@ -8410,9 +8489,16 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     return [row.name, canEnter, false, row.random, row.bgTypeId];
   }
 
-  battlefieldInfo(): readonly [string, string, number] | undefined {
+  /** 3.24: the current list type's catalog row (0x00bea53c), else the PvP tab's selected one. */
+  #currentBattlegroundRow(): FrameXmlBattlegroundCatalog[number] | undefined {
     const catalog = this.#battlegroundCatalog();
-    const row = catalog?.[this.#selectedBattleground - 1];
+    const type = this.battlefieldListState.type;
+    return (type === undefined ? undefined : catalog?.find((row) => row.bgTypeId === type))
+      ?? catalog?.[this.#selectedBattleground - 1];
+  }
+
+  battlefieldInfo(): readonly [string, string, number, ...unknown[]] | undefined {
+    const row = this.#currentBattlegroundRow();
     if (!row) return undefined;
     const map = row.maps[0];
     // Battleground map descriptions follow the Map.dbc faction convention: description0 is Horde,
@@ -8426,7 +8512,31 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
         : map?.description0 !== undefined && map.description0 === map.description1
           ? map.description0
           : undefined;
-    return [map?.name ?? row.name, description ?? "", row.maxGroupSize];
+    // 0x0054d770: the BattlemasterList name (the queue status names a slot by it too, so stock's
+    // `queueMapName.." "..queueInstanceID == button.title` matches, BattlefieldFrame.lua:431), MaxGroupSize,
+    // then canEnter (the catalog's level range, as GetBattlegroundInfo answers it), isHoliday (no holiday
+    // resolver: false) and isRandom (id 32).
+    const level = this.unitLevel("player") ?? 0;
+    return [row.name, description ?? "", row.maxGroupSize,
+      level >= row.minLevel && level <= row.maxLevel, false, row.random];
+  }
+
+  /** 3.24: JoinBattlefield's battleground branch (0x0054cc70) over the list (FrameXmlBattlefieldList.ts). */
+  joinBattlefield(index: number, asGroup: boolean): void {
+    const world = this.#context.world();
+    const state = this.battlefieldListState;
+    // A stale arena-typed list stays neutral: arena joins go only through a fresh battlemaster list.
+    if (!world || state.type === undefined || state.type === BATTLEGROUND_AA) return;
+    const row = this.#battlegroundCatalog()?.find((candidate) => candidate.bgTypeId === state.type);
+    const map = this.#context.mapSource?.metadata()?.maps.find((candidate) => candidate.id === world.mapId);
+    const join = state.join(index, asGroup, {
+      maxGroupSize: row?.maxGroupSize,
+      partyMembers: this.partyMemberCount(),
+      raidMembers: this.raidMemberCount(),
+      inBattleground: map?.instanceType === 3,
+    });
+    if (join.kind === "refused") this.#pump?.fire("UI_ERROR_MESSAGE", globalString(join.error) ?? join.error);
+    else if (join.kind === "join") world.joinBattleground(join.guid, join.bgTypeId, join.instanceId, join.asGroup);
   }
 
   battlefieldStatus(index: number): readonly [string, string | undefined, number, number, number, number, boolean] {
@@ -8490,6 +8600,8 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     const row = this.#battlegroundCatalog()?.[index - 1];
     if (!row) return;
     this.#selectedBattleground = index;
+    // 3.24: 0x0054e5b0 makes the type current at once, before the answer.
+    this.battlefieldListState.request(row.bgTypeId);
     this.#context.world()?.requestBattlefieldList(row.bgTypeId, 1);
   }
 
@@ -8510,6 +8622,10 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     // reopen a stale window; PVPBattleground's own protocol behavior remains packet-free.
     this.#arenaListFresh = false;
     this.#arenaWasPublished = false;
+    // 3.24: CloseBattlefield (0x00549b40) raises BATTLEFIELDS_CLOSED and forgets the battlemaster —
+    // stock BattlefieldFrame's OnHide calls it (BattlefieldFrame.xml:644-646), as the PvP pages do.
+    this.battlefieldListState.close();
+    this.#pump?.fire(FRAMEXML_SEAM_EVENTS.battlefieldClose);
   }
 
   isBattlefieldArena(): boolean {
@@ -8528,7 +8644,11 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
   }
 
   canJoinBattlefieldAsGroup(): boolean {
-    return this.isBattlefieldArena();
+    if (this.isBattlefieldArena()) return true;
+    // 3.24: 0x0054c6e0 — the current list type's BattlemasterList.GroupsAllowed (record +0x28).
+    const type = this.battlefieldListState.type;
+    const row = type === undefined ? undefined : this.#battlegroundCatalog()?.find((candidate) => candidate.bgTypeId === type);
+    return (row?.groupsAllowed ?? 0) !== 0;
   }
 
   joinArena(arenaSlot: number, asGroup: boolean, rated: boolean): void {
