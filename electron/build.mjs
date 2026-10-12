@@ -13,6 +13,12 @@
 //     No page and no gateway inside: server.json points the shell at the page another machine
 //     serves (tools/start-server.mjs), by default http://PUBLIC_HOST:PUBLIC_WEB_PORT/ from .env.
 //     Nothing in it comes from a WoW client, so it is the one to send to other players.
+//     10.17 (updates): every player build gets the next version (package.json's major.minor.patch
+//     plus a build counter) and writes, beside the zip, latest.json and its Ed25519 signature
+//     latest.json.sig; the players' server serves them under /player/, and apps built earlier
+//     offer the new version themselves. The signing key is created on the first player build in
+//     .runtime/player-update-key/ (git-ignored) and never leaves this machine; its public half
+//     goes into the app as resources/app/update.json (electron/player-release.mjs).
 
 import "../tools/env.mjs";
 
@@ -22,14 +28,23 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module"; // L10 (10.17)
 
+import {
+  loadOrCreateSigningKey, nextRelease, readPublishedVersion, readReleaseState, removePublishedManifest, updateConfig,
+  writeReleaseState, writeSignedManifest,
+} from "./player-release.mjs"; // 10.17 (updates)
+
 const { parseGatewaySettings, playerServerConfig } = createRequire(import.meta.url)("./gateway-target.cjs"); // L10 (10.17)
+const { PLAYER_EXE, PLAYER_FOLDER, PLAYER_ZIP, UPDATE_CONFIG_FILE } = createRequire(import.meta.url)("./player-update.cjs"); // 10.17 (updates)
 const shell = dirname(fileURLToPath(import.meta.url));
 const root = resolve(shell, "..");
 const runtime = join(shell, "node_modules", "electron", "dist");
 const web = join(root, "dist", "web");
-const executable = "WoWWebClient.exe";
+const executable = PLAYER_EXE; // the updater (player-update.cjs) restarts the player app by this name
+/** 10.17 (updates): the signing key and the build counter; .runtime is git-ignored, the key stays here. */
+const updateKeyDir = join(root, ".runtime", "player-update-key");
 /** What the shell needs at run time; everything else in this folder is for building it. */
-const APP_FILES = ["main.cjs", "static-server.cjs", "gateway.cjs", "recovery.cjs", "server-config.cjs", "gateway-target.cjs", "cpu-policy.ps1"]; // L10: gateway-target.cjs (10.17)
+const APP_FILES = ["main.cjs", "static-server.cjs", "gateway.cjs", "recovery.cjs", "server-config.cjs", "gateway-target.cjs", "cpu-policy.ps1",
+  "player-update.cjs", "update-notice.cjs"]; // L10: gateway-target.cjs (10.17); 10.17 (updates): player-update.cjs, update-notice.cjs
 
 const player = process.argv.includes("--player");
 
@@ -108,16 +123,30 @@ if (!player) {
   const url = playerUrl();
   const gateway = playerGateway(); // L10 (10.17): checked before anything is packed
   const folder = join(root, "dist", "player");
-  const output = join(folder, "WoWWebClient");
-  const zip = join(folder, "WoWWebClient.zip");
+  const output = join(folder, PLAYER_FOLDER);
+  const zip = join(folder, PLAYER_ZIP);
+  // 10.17 (updates): the key and the next version, before anything is packed.
+  const key = loadOrCreateSigningKey(updateKeyDir);
+  if (key.created) {
+    console.log(`Created the player app update key ${join(updateKeyDir, "private.pem")} (fingerprint ${key.fingerprint}).`);
+    console.log("  Keep that folder and never share private.pem: apps built from now on accept only updates signed");
+    console.log("  with this key, and without it every player has to reinstall by hand once.");
+  }
+  const shellPackage = JSON.parse(await readFile(join(shell, "package.json"), "utf8"));
+  const release = nextRelease({
+    baseVersion: shellPackage.version, state: readReleaseState(updateKeyDir), publishedVersion: readPublishedVersion(folder),
+  });
   const app = await packRuntime(output);
   // Its own profile: on the owner's machine a test run never mixes with the development shell's.
   await writeManifest(app, "wow-webclient-player");
   // No CPU pinning by default: on a stranger's machine an unsigned exe running PowerShell with
   // -ExecutionPolicy Bypass is what antivirus heuristics flag. --cpu-class=fastest still turns it on.
   await writeFile(join(app, "server.json"), `${JSON.stringify(playerServerConfig(url, gateway), null, 2)}\n`); // L10 (10.17)
+  // 10.17 (updates): only this build carries update.json, so only the player app checks for updates.
+  await writeFile(join(app, UPDATE_CONFIG_FILE),
+    `${JSON.stringify(updateConfig({ version: release.version, publicKeyDer: key.publicKeyDer }), null, 2)}\n`);
   await writeFile(join(output, "README.txt"), `\uFEFF${[
-    "WoW WebClient",
+    `WoW WebClient ${release.version}`,
     "",
     "1. Распакуйте архив целиком в любую папку.",
     "2. Запустите WoWWebClient.exe.",
@@ -130,14 +159,26 @@ if (!player) {
     "Если сервер выключен, окно скажет «Нет связи с сервером» и подключится само, когда он заработает.",
     "F11 — полный экран, Ctrl+R — перезагрузить страницу.",
     "",
+    "Обновления приложение находит само: при запуске оно предложит новую версию, если она есть на сервере.",
+    "Папка приложения должна быть доступна для записи (например, не в Program Files) — иначе новую",
+    "версию придётся скачать в браузере и распаковать вместо старой. Ваш server.json при обновлении",
+    "сохраняется.",
+    "",
   ].join("\r\n")}`);
+  // 10.17 (updates): no manifest may point at a zip that is being rewritten; players are offered
+  // nothing until the new one is signed below.
+  removePublishedManifest(folder);
   await rm(zip, { force: true });
   // Windows' own bsdtar writes zip archives (-a picks the format from the extension).
   execFileSync(join(process.env.SystemRoot ?? "C:\\Windows", "System32", "tar.exe"),
-    ["-a", "-c", "-f", zip, "-C", folder, "WoWWebClient"], { stdio: "inherit" });
-  console.log(`Player app packed for ${url}`);
+    ["-a", "-c", "-f", zip, "-C", folder, PLAYER_FOLDER], { stdio: "inherit" });
+  const published = await writeSignedManifest({ folder, zip, file: PLAYER_ZIP, version: release.version, privateKey: key.privateKey });
+  writeReleaseState(updateKeyDir, release);
+  console.log(`Player app ${release.version} packed for ${url}`);
   const written = playerServerConfig(url, gateway); // L10 (10.17)
   if (written.gatewayUrl ?? written.gatewayPort) console.log(`  gateway: ${written.gatewayUrl ?? `port ${written.gatewayPort}`}`);
   console.log(`  folder: ${output}`);
   console.log(`  send:   ${zip}`);
+  console.log(`  update: ${published.manifestFile} (+ .sig, key ${key.fingerprint}): online\\start-server.bat offers it`);
+  console.log("          to apps already installed, at /player/latest.json.");
 }

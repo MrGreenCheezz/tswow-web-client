@@ -29,6 +29,9 @@ const MIME_TYPES = {
   ".woff": "font/woff",
   ".woff2": "font/woff2",
   ".ttf": "font/ttf",
+  // 10.17 (updates): the player app's files under /player/ (`files` below).
+  ".zip": "application/zip",
+  ".sig": "text/plain; charset=utf-8",
 };
 
 const ISOLATION_HEADERS = {
@@ -116,15 +119,20 @@ function compress(encoding, data, callback) {
   }
 }
 
-/** The file a request path names under `root`, or undefined when it would leave the root. */
-function resolveInside(root, requestUrl) {
-  let pathname;
+/** A request's decoded path, or undefined when it cannot be read. */
+function requestPath(requestUrl) {
   try {
-    pathname = decodeURIComponent(new URL(requestUrl ?? "/", "http://127.0.0.1").pathname);
+    const pathname = decodeURIComponent(new URL(requestUrl ?? "/", "http://127.0.0.1").pathname);
+    return pathname.includes("\0") ? undefined : pathname;
   } catch {
     return undefined;
   }
-  if (pathname.includes("\0")) return undefined;
+}
+
+/** The file a request path names under `root`, or undefined when it would leave the root. */
+function resolveInside(root, requestUrl) {
+  const pathname = requestPath(requestUrl);
+  if (pathname === undefined) return undefined;
   const file = path.resolve(root, `.${pathname}`);
   return file === root || file.startsWith(root + path.sep) ? file : undefined;
 }
@@ -156,8 +164,11 @@ function publicFileAllowed(realBase, realFile, publicPages) {
  * `assets/…-<hash>.*` are `immutable`, pages stay `no-cache`. `compress` (default off) — brotli or
  * gzip for text, JSON, SVG and wasm up to 16 MB, cached in memory by mtime (64 MB at most), with
  * `Vary: Accept-Encoding`. `publicPages` (default none) — only these pages are served as HTML.
+ * 10.17 (updates): `files` (default none) — exact URL paths mapped to files outside the root, such
+ * as the player app's `/player/latest.json` in dist/player (player-update.cjs `playerUpdateFiles`):
+ * read-only, nothing else under those folders, revalidated like the pages.
  */
-function staticHandler(root, { isolation = true, jsProfiling = true, etag = true, compress: compressBodies = false, publicPages } = {}) {
+function staticHandler(root, { isolation = true, jsProfiling = true, etag = true, compress: compressBodies = false, publicPages, files } = {}) {
   const base = path.resolve(root);
   let realBase;
   const cache = compressedCache();
@@ -165,9 +176,8 @@ function staticHandler(root, { isolation = true, jsProfiling = true, etag = true
   const stats = { compressions: 0 };
   /** Compressions in progress: key → the responses waiting for it. */
   const inFlight = new Map();
-  const send =(request, response, file, fileStats) => {
+  const send =(request, response, file, fileStats, urlPath = `/${path.relative(base, file).split(path.sep).join("/")}`) => {
     const contentType = MIME_TYPES[path.extname(file).toLowerCase()] ?? "application/octet-stream";
-    const urlPath = `/${path.relative(base, file).split(path.sep).join("/")}`;
     const compressible = compressBodies && COMPRESSIBLE.test(contentType) && fileStats.size <= MAX_COMPRESSED_SOURCE_BYTES;
     const tag = etag ? weakEtag(fileStats) : undefined;
     const headers = {
@@ -231,6 +241,15 @@ function staticHandler(root, { isolation = true, jsProfiling = true, etag = true
   const handler = (request, response) => {
     if (request.method !== "GET" && request.method !== "HEAD") {
       response.writeHead(405, { Allow: "GET, HEAD" }).end();
+      return;
+    }
+    const mappedPath = files === undefined ? undefined : requestPath(request.url);
+    if (mappedPath !== undefined && Object.hasOwn(files, mappedPath)) {
+      const mapped = files[mappedPath];
+      fs.stat(mapped, (error, stats) => {
+        if (error || !stats.isFile()) response.writeHead(404).end();
+        else send(request, response, mapped, stats, mappedPath);
+      });
       return;
     }
     const target = resolveInside(base, request.url);

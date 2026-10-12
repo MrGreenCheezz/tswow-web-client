@@ -25,6 +25,10 @@
 // L10 (10.17): the gateway is the page host's 8090 unless server.json (`gatewayPort`, `gatewayUrl`)
 // or --gateway-port/--gateway-url say otherwise; the page then gets it as `?gateway=`
 // (electron/gateway-target.cjs).
+// 10.17 (updates): the player build alone carries update.json (its version and the key its updates
+// are signed with); opening a players' server, it asks that server once for a newer signed version
+// and offers it in a small panel (electron/update-notice.cjs, electron/player-update.cjs). The
+// local build and development have no update.json and never check.
 //
 // Options (command line, `electron . --cpu-class=fastest`):
 //   --webclient-url=<url>     page to open instead of any other
@@ -56,6 +60,8 @@ const { createRenderRecovery, parsePolicyOutput } = require("./recovery.cjs");
 const { parseServerConfig } = require("./server-config.cjs");
 const { gatewayBuildState } = require("./gateway.cjs"); // L10 (10.11)
 const { chooseGatewaySettings, gatewayTarget, insecureOriginsToTrust, parseGatewaySettings } = require("./gateway-target.cjs"); // L10 (10.17)
+const { readUpdateConfig } = require("./player-update.cjs"); // 10.17 (updates)
+const { startPlayerUpdates } = require("./update-notice.cjs"); // 10.17 (updates)
 
 function option(name, fallback) {
   const prefix = `--${name}=`;
@@ -112,6 +118,8 @@ if (serverUrlOption !== undefined && !/^https?:\/\//.test(serverUrlOption)) thro
 const remoteUrl = commandLineUrl === undefined ? serverUrlOption ?? serverConfig?.url : undefined;
 const explicitUrl = commandLineUrl ?? remoteUrl;
 const gatewaySettings = readGatewaySettings(serverConfig); // L10 (10.17)
+/** 10.17 (updates): update.json of the player build; checked only against a players' server. */
+const updateConfig = remoteUrl === undefined ? undefined : readUpdateConfig(__dirname);
 /** L10 (10.11): start the checkout's gateway even when its dist/code is older than its sources. */
 const allowStaleGateway = process.argv.includes("--allow-stale");
 const bundledWeb = path.join(__dirname, "web");
@@ -395,6 +403,10 @@ app.whenReady().then(async () => {
       setTimeout(() => { if (!window.isDestroyed()) window.loadURL(pageUrl); }, decision.delayMs);
     }
   });
+  // 10.17 (updates): before the first load, so the check can wait for the game page to come up.
+  if (updateConfig !== undefined) {
+    startPlayerUpdates({ window, serverUrl: remoteUrl, config: updateConfig, appDir: __dirname, relaunchServerUrl: serverUrlOption });
+  }
   if (commandLineUrl !== undefined) window.loadURL(pageUrl);
   else openWhenGatewayListens(window, pageUrl).catch((error) => console.error(`[electron] ${error.stack}`));
 

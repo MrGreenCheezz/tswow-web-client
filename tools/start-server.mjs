@@ -16,16 +16,20 @@
 //                        keeping this environment
 //   GATEWAY_SUPERVISE=1  (unless .env says 0) a crashed gateway is started again by itself
 // The page server answers index.html and its assets only (10.13), compressed and revalidated.
+// 10.17 (updates): it also serves the player app's update from dist/player (online\build-player.bat):
+// /player/latest.json, /player/latest.json.sig and /player/WoWWebClient.zip, read-only — installed
+// apps check the first two at start and offer the zip when it is newer and correctly signed.
 // The page server lives in this process too, so stopping it (Ctrl+C, restart-gateway.bat) stops both.
 
 import "./env.mjs";
 
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
 // The same loopback-safe static server the Electron version serves its built page with.
 const { serveStatic } = createRequire(import.meta.url)("../electron/static-server.cjs");
+const { MANIFEST_FILE, parseManifest, playerUpdateFiles } = createRequire(import.meta.url)("../electron/player-update.cjs"); // 10.17 (updates)
 
 function port(name, fallback) {
   const value = Number.parseInt(process.env[name] ?? String(fallback), 10);
@@ -46,6 +50,8 @@ if (gatewayPort !== 8090 && !process.env.VITE_GATEWAY_ORIGIN) {
 }
 const webRoot = fileURLToPath(new URL("../dist/web", import.meta.url));
 if (!existsSync(`${webRoot}/index.html`)) throw new Error("dist/web is not built: run web\\build.bat first.");
+// 10.17 (updates): read per request, so a player build made while this runs is offered at once.
+const playerRoot = fileURLToPath(new URL("../dist/player", import.meta.url));
 
 const withPort = (host) => `http://${host}${webPort === 80 ? "" : `:${webPort}`}`;
 const publicUrl = `${withPort(publicHost)}/`;
@@ -65,7 +71,9 @@ try {
   // 10.13: players get index.html and its assets only — glue.html, framexml.html and
   // character-lab.html are the owner's benches, and the local-only notice is not for them —
   // compressed, with validators, and the hashed bundles cached for good.
-  await serveStatic(webRoot, { host: bind, port: webPort, compress: true, publicPages: ["/", "/index.html"] });
+  await serveStatic(webRoot, {
+    host: bind, port: webPort, compress: true, publicPages: ["/", "/index.html"], files: playerUpdateFiles(playerRoot),
+  });
 } catch (error) {
   throw new Error(error.code === "EADDRINUSE"
     ? `Port ${webPort} is taken; free it or set PUBLIC_WEB_PORT in .env.` : error.message, { cause: error });
@@ -73,5 +81,15 @@ try {
 console.log(`Page for players: ${publicUrl} (dist/web on ${bind}:${webPort})`);
 console.log(`Gateway for players: http://${publicHost}:${gatewayPort}/ (on ${bind}:${gatewayPort})`);
 console.log(`Players need TCP ${webPort} and ${gatewayPort} forwarded to this machine.`);
+let offered;
+try {
+  const verdict = parseManifest(readFileSync(`${playerRoot}/${MANIFEST_FILE}`));
+  offered = verdict.ok ? verdict.manifest.version : undefined;
+} catch {
+  offered = undefined;
+}
+console.log(offered === undefined
+  ? "Player app update: none in dist/player (online\\build-player.bat builds and signs one)."
+  : `Player app update: ${offered} offered at ${publicUrl}player/latest.json`);
 
 await import("./start-gateway.mjs");
