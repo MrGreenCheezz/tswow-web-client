@@ -127,7 +127,7 @@ export function showCharacterWindow(tab: CharacterTab): void {
  * Opens a page in the one native character window; repeating the same shortcut closes it.
  *
  * A published stock CharacterFrame owns its own pages through stock ToggleCharacter, with the
- * stock bindings' open/switch/close behaviour: «sheet» (C) is the paper doll, «skills» (J) is
+ * stock bindings' open/switch/close behaviour: «sheet» (C) is the paper doll, «skills» (K) is
  * SkillFrame on tab 4. Without that owner, skills keep the stock spellbook's skill-line tabs and
  * then the native pane. Stock ReputationFrame (tab 3) is reached through its tab only: no native
  * binding opens reputation directly.

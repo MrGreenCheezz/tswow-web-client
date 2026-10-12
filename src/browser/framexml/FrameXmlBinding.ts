@@ -49,6 +49,8 @@ import { STOCK_ACTIONS, withStockRows } from "../input/StockActions.js";
 import { HELD_ACTIONS } from "../input/Bindings.js"; // L8 5.09
 import { movementCommandInput, type MovementCommandInput } from "../input/MovementCommands.js"; // L8 5.09
 import { FRAMEXML_MOVEMENT_BINDINGS } from "./FrameXmlMovementApi.js"; // L8 5.09
+import { actionOffered } from "../input/Bindings.js"; // 4.11
+import { developerMode } from "../DeveloperMode.js"; // 4.11
 
 /** `DEFAULT_BINDINGS`, `ACCOUNT_BINDINGS`, `CHARACTER_BINDINGS` in Blizzard_BindingUI.lua. */
 export const FRAMEXML_DEFAULT_BINDINGS = 0;
@@ -408,16 +410,20 @@ export class FrameXmlBindingModel {
   #indexed(): BindingIndex {
     const modules = moduleActions().filter((entry) => entry.module !== FRAMEXML_CLICK_BINDING_MODULE
       && entry.module !== FRAMEXML_COMMAND_BINDING_MODULE);
-    const signature = modules.map((entry) => entry.action).join("\u0001");
+    // 4.11: a developer's row (Bindings.DEVELOPER_ACTIONS) is listed only with the developer flag; its
+    // command still resolves, so RunBinding and a saved key keep meaning the same action.
+    const developer = developerMode();
+    const own = FRAMEXML_WEBCLIENT_BINDING_ROWS.filter(([, action]) => actionOffered(action, developer));
+    const signature = `${developer ? 1 : 0}\u0002${modules.map((entry) => entry.action).join("\u0001")}`;
     if (this.#index?.signature === signature) return this.#index;
     const rows: (readonly [command: string, action?: string])[] = [];
     for (const section of FRAMEXML_STOCK_BINDING_SECTIONS) {
       rows.push([`HEADER_${section.header}`]);
       for (const [command, action] of section.rows) rows.push([command, action]);
     }
-    if (FRAMEXML_WEBCLIENT_BINDING_ROWS.length > 0) {
+    if (own.length > 0) {
       rows.push([FRAMEXML_WEBCLIENT_HEADER]);
-      for (const [command, action] of FRAMEXML_WEBCLIENT_BINDING_ROWS) rows.push([command, action]);
+      for (const [command, action] of own) rows.push([command, action]);
     }
     const byAlias = new Map<string, ModuleAction>();
     const aliasOf = new Map<string, string>();

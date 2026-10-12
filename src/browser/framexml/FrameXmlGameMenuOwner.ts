@@ -21,6 +21,7 @@ import {
 } from "./FrameXmlGameMenuController.js";
 import { FRAMEXML_SEAM_NAMES } from "./FrameXmlWorldSeam.js";
 import { openFrameXmlOptions, type FrameXmlOptionsWindow } from "./FrameXmlOptionsController.js";
+import { developerMode } from "../DeveloperMode.js";
 
 /** The eight buttons the stock menu shows on a non-Mac client (GameMenuFrame.xml), top to bottom. */
 export const FRAMEXML_GAME_MENU_STOCK_BUTTONS = Object.freeze([
@@ -62,13 +63,29 @@ const STOCK_OPTIONS: Partial<Record<FrameXmlGameMenuAction, FrameXmlOptionsWindo
   video: "video", sound: "audio", interface: "interface",
 };
 
-/** WebClient's own entries, stock GameMenuButtonTemplate buttons between Quit and Continue. */
-export const FRAMEXML_GAME_MENU_EXTRAS: readonly {
-  readonly name: string; readonly text: string; readonly action: FrameXmlGameMenuAction;
-}[] = Object.freeze([
+export interface FrameXmlGameMenuExtra {
+  readonly name: string;
+  readonly text: string;
+  readonly action: FrameXmlGameMenuAction;
+}
+
+/**
+ * WebClient's own entries, stock GameMenuButtonTemplate buttons between Quit and Continue — all of
+ * them; {@link frameXmlGameMenuExtras} is the list a page shows.
+ */
+export const FRAMEXML_GAME_MENU_EXTRAS: readonly FrameXmlGameMenuExtra[] = Object.freeze([
   Object.freeze({ name: "GameMenuButtonWebClientDiagnostics", text: "Диагностика", action: "diagnostics" as const }),
   Object.freeze({ name: "GameMenuButtonWebClientResetLayout", text: "Сбросить раскладку окон", action: "resetLayout" as const }),
 ]);
+
+/**
+ * The extras this page shows: «Диагностика» only with the developer flag (WORK_PLAN 4.11,
+ * DeveloperMode.ts) — without it the button is never created, so the menu keeps the stock height plus
+ * the one extra. The install and the gate read the same list.
+ */
+export function frameXmlGameMenuExtras(developer: boolean = developerMode()): readonly FrameXmlGameMenuExtra[] {
+  return developer ? FRAMEXML_GAME_MENU_EXTRAS : FRAMEXML_GAME_MENU_EXTRAS.filter((extra) => extra.action !== "diagnostics");
+}
 
 const HOST_GLOBAL = "__fxWebClientGameMenu";
 const ESCAPE_GLOBAL = "__fxWebClientEscape";
@@ -207,7 +224,7 @@ export function installFrameXmlGameMenuButtons(
   if (!reserved.has(TARGETING_C_API)) boot.vm.registerGlobal(TARGETING_C_API, () => frameXmlNativeTargeting() ? [1] : []);
   const adapted = ADAPTED_BUTTONS
     .map(([button, action]) => `adapt(${button}, ${JSON.stringify(action)})`).join("\n  ");
-  const extras = FRAMEXML_GAME_MENU_EXTRAS
+  const extras = frameXmlGameMenuExtras()
     .map((extra) => `{ ${JSON.stringify(extra.name)}, ${JSON.stringify(extra.text)}, ${JSON.stringify(extra.action)} }`)
     .join(", ");
   const result = boot.vm.execute(`
@@ -335,7 +352,7 @@ export function frameXmlGameMenuGate(
     const frameElement = renderer.elementFor(frame);
     if (!renderedFrameElement(frameElement, frame)
       || !boot.bridge.hasScript(frame, "OnShow") || !boot.bridge.hasScript(frame, "OnHide")) return undefined;
-    for (const name of [...FRAMEXML_GAME_MENU_STOCK_BUTTONS, ...FRAMEXML_GAME_MENU_EXTRAS.map((extra) => extra.name)]) {
+    for (const name of [...FRAMEXML_GAME_MENU_STOCK_BUTTONS, ...frameXmlGameMenuExtras().map((extra) => extra.name)]) {
       const button = boot.bridge.getFrame(name);
       const element = button ? renderer.elementFor(button) : undefined;
       if (!button || button.type !== "Button" || !frameDescendsFrom(button, frame)

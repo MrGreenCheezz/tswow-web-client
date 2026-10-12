@@ -65,5 +65,6 @@ test("a walk key the player chose stays theirs", () => {
   }));
   assert.deepEqual([...bindingsOf("toggleWalkRun")], ["KeyZ", "Slash"]);
   assert.equal(actionFor("Slash"), "toggleWalkRun", "a pair that is not exactly the old default is kept whole");
-  assert.deepEqual([...bindingsOf("openChatSlash")], ["", ""], "and the newer chat key yields its `/` to it");
+  assert.deepEqual([...bindingsOf("openChatSlash")], ["", "Period"],
+    "and the newer chat key yields its `/` to it, keeping its other stock key `.` (4.11)");
 });

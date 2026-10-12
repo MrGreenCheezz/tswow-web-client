@@ -11,6 +11,7 @@
  */
 
 import { STOCK_ACTIONS, stockDefaultBindings } from "./StockActions.js";
+import { developerMode } from "../DeveloperMode.js";
 
 /**
  * The actions this table was built with. The stock commands added since (3.11) are in
@@ -139,12 +140,19 @@ type CoreInputAction = (typeof CORE_INPUT_ACTIONS)[number]["action"];
 export type BindingPair = readonly [string, string];
 
 /**
- * What a fresh installation gets. These are the 3.3.5 client's own defaults wherever it has one,
- * which is the point of the slice: the keys a player already knows have to be the keys.
+ * What a fresh installation gets: the stock layout (WORK_PLAN 4.11, the owner's decision 0.4g of
+ * 12.10). An action that answers a Bindings.xml command (FrameXmlBinding.FRAMEXML_STOCK_BINDING_SECTIONS)
+ * ships the keys the client's DefaultBindings.wtf gives that command (`generated/stockBindings.ts`,
+ * less the mouse, which this table does not hold), and a command the file gives no key ships unbound,
+ * as in the original. `tests/default-bindings-stock.test.mjs` holds every row to that file.
  *
- * Two are not. The quest log keeps `L`, and looting moved onto the interact action, because the
- * original client has no loot key at all — it loots by clicking the corpse, which this client now
- * does too. Diagnostics and the bindings window are this client's own and have no original.
+ * One extra key stays: `NumpadEnter` beside Enter, which the client cannot tell apart from Enter
+ * anyway. This client's own two actions ship unbound: the bindings window opens from the game menu
+ * («Назначение клавиш», as in the original), and diagnostics is a developer's (DeveloperMode.ts).
+ *
+ * Until 4.11 six of these held stock keys for this client's own ideas (F focus, G interact, B every
+ * bag, Shift+B keyring, K bindings window, O diagnostics) and the stock rows that wanted them shipped
+ * unbound; a table saved then is read by {@link PRE_STOCK_DEFAULTS}.
  */
 const CORE_DEFAULT_BINDINGS: Readonly<Record<CoreInputAction, BindingPair>> = {
   moveForward: ["KeyW", "ArrowUp"],
@@ -153,7 +161,8 @@ const CORE_DEFAULT_BINDINGS: Readonly<Record<CoreInputAction, BindingPair>> = {
   turnRight: ["KeyD", "ArrowRight"],
   strafeLeft: ["KeyQ", ""],
   strafeRight: ["KeyE", ""],
-  jump: ["Space", ""],
+  // JUMP: SPACE and NUMPAD0.
+  jump: ["Space", "Numpad0"],
   toggleAutoRun: ["NumLock", ""],
   // The 3.3.5 pair: `/` opens the chat with the slash already typed (OPENCHATSLASH) and walking is
   // on the keypad's `/` (TOGGLERUN). Walking used to sit on `/`, so typing `/dance` without Enter
@@ -165,37 +174,45 @@ const CORE_DEFAULT_BINDINGS: Readonly<Record<CoreInputAction, BindingPair>> = {
   targetNearestEnemy: ["Tab", ""],
   targetPreviousEnemy: ["Shift+Tab", ""],
   targetSelf: ["F1", ""],
-  setFocus: ["KeyF", ""],
-  interact: ["KeyG", ""],
-  // `V` is the original client's key for enemy name plates, and it is free here.
+  // FOCUSTARGET and INTERACTTARGET have no key in DefaultBindings.wtf: the focus is set from the stock
+  // target frame's menu or `/focus` (FocusUnit), and a unit is spoken to, looted or used with the right
+  // button; both rows can be given a key in the bindings window.
+  // F is ASSISTTARGET's and G TARGETLASTHOSTILE's (input/StockActions.ts).
+  setFocus: ["", ""],
+  interact: ["", ""],
+  // `V` is the original client's key for enemy name plates.
   toggleNamePlates: ["KeyV", ""],
   attackTarget: ["KeyT", ""],
   // The original client's own pair: `T` swings the character, `Shift+T` sends the pet.
   petAttack: ["Shift+KeyT", ""],
 
   toggleCharacter: ["KeyC", ""],
-  toggleBags: ["KeyB", ""],
-  // The original client has no key for the keyring at all — it is a button beside the bag bar.
-  // `Shift+B` is what it uses for "open every bag", and the bag key here already does that.
-  toggleKeyring: ["Shift+KeyB", ""],
+  // This action opens every bag, which is OPENALLBAGS (Shift+B); B is TOGGLEBACKPACK, the backpack
+  // alone (input/StockActions.ts).
+  toggleBags: ["Shift+KeyB", ""],
+  // TOGGLEKEYRING has no key in the client: the keyring is the button beside the bag bar.
+  toggleKeyring: ["", ""],
   toggleSpellbook: ["KeyP", ""],
   // This is the stock TOGGLECHARACTER4 route (H); FrameXML owns the PvP summary when mounted.
   togglePvp: ["KeyH", ""],
-  // TOGGLELFGPARENT is `I` in the 3.3.5 client, and nothing here held it.
+  // TOGGLELFGPARENT is `I` in the 3.3.5 client.
   toggleLfd: ["KeyI", ""],
-  // `N` is the original client's talent key. Skills have none there at all — they are a tab of
-  // the character window — and `K` is already this client's bindings window, so the skills window
-  // takes the nearest free key rather than shipping unreachable, which the bindings test forbids.
   toggleTalents: ["KeyN", ""],
-  toggleProfessions: ["KeyJ", ""],
+  // TOGGLECHARACTER1, ToggleCharacter("SkillFrame") (Bindings.xml:656): K.
+  toggleProfessions: ["KeyK", ""],
   toggleQuestLog: ["KeyL", ""],
   toggleWorldMap: ["KeyM", ""],
-  toggleDiagnostics: ["KeyO", ""],
-  toggleFps: ["Ctrl+Shift+KeyF", ""],
-  toggleKeyBindings: ["KeyK", ""],
+  // A developer's window ({@link DEVELOPER_ACTIONS}): no key, so O stays TOGGLESOCIAL's.
+  toggleDiagnostics: ["", ""],
+  // TOGGLEFPS (ToggleFramerate) is CTRL-R; NativeAppShell keeps the browser's reload off it, and the
+  // settings window's «Показывать FPS» is the same switch.
+  toggleFps: ["Ctrl+KeyR", ""],
+  // The bindings window has no key in the client either: the game menu's «Назначение клавиш».
+  toggleKeyBindings: ["", ""],
   openChat: ["Enter", "NumpadEnter"],
-  openChatSlash: ["Slash", ""],
-  // REPLY is `R` in the original client; nothing here held it.
+  // OPENCHATSLASH: `/` and `.` in DefaultBindings.wtf.
+  openChatSlash: ["Slash", "Period"],
+  // REPLY is `R` in the original client.
   replyWhisper: ["KeyR", ""],
 
   action1: ["Digit1", ""],
@@ -273,12 +290,61 @@ const CORE_DEFAULT_BINDINGS: Readonly<Record<CoreInputAction, BindingPair>> = {
 /**
  * Every action's default: the core table above, then the stock rows' keys from the client's
  * DefaultBindings.wtf (`StockActions.stockDefaultBindings`), which never take a chord the core
- * table ships on.
+ * table ships on — and since 4.11 the core table ships on none of theirs, so none is held back
+ * (`StockActions.STOCK_DEFAULTS_HELD` is empty).
  */
 export const DEFAULT_BINDINGS: Readonly<Record<InputAction, BindingPair>> = {
   ...CORE_DEFAULT_BINDINGS,
   ...stockDefaultBindings(new Set(Object.values(CORE_DEFAULT_BINDINGS).flat().filter((chord) => chord !== ""))),
 };
+
+/**
+ * Actions only a developer of this client is offered (4.11, DeveloperMode.ts): without the flag the
+ * bindings windows do not list them and the verb does nothing (`Actions.runAction`). They ship
+ * unbound either way. The module window editor is the other one; being a module-table action, it is
+ * simply not registered without the flag (ui/Diagnostics.ts).
+ */
+export const DEVELOPER_ACTIONS: ReadonlySet<InputAction> = new Set<InputAction>(["toggleDiagnostics"]);
+
+/**
+ * Whether the bindings windows offer an action: every one but a {@link DEVELOPER_ACTIONS} row while
+ * the developer flag is off. A saved key on a hidden row is kept, not stripped — the flag shows it again.
+ */
+export function actionOffered(action: string, developer: boolean = developerMode()): boolean {
+  return developer || !DEVELOPER_ACTIONS.has(action as InputAction);
+}
+
+/**
+ * The defaults that 4.11 moved, as they were: what a table saved before it holds on a row the player
+ * never touched, since `persist` writes every row. Read by {@link forgetPreStockDefaults}.
+ */
+const PRE_STOCK_DEFAULTS: Readonly<Partial<Record<InputAction, BindingPair>>> = {
+  jump: ["Space", ""],
+  openChatSlash: ["Slash", ""],
+  setFocus: ["KeyF", ""],
+  interact: ["KeyG", ""],
+  toggleBags: ["KeyB", ""],
+  toggleKeyring: ["Shift+KeyB", ""],
+  toggleProfessions: ["KeyJ", ""],
+  toggleDiagnostics: ["KeyO", ""],
+  toggleFps: ["Ctrl+Shift+KeyF", ""],
+  toggleKeyBindings: ["KeyK", ""],
+  // The stock rows whose key a core action held (STOCK_DEFAULTS_HELD) shipped unbound.
+  toggleBackpack: ["", ""],
+  assistTarget: ["", ""],
+  toggleSocial: ["", ""],
+  targetLastHostile: ["", ""],
+};
+
+/**
+ * The row a saved core table carries to say which default layout it was written under (4.11). A row
+ * of the table rather than a key of its own, so it travels wherever the table does: the localStorage
+ * mirror and the account copy (4.12), whose envelope takes any row of two strings and carries a row it
+ * does not know untouched (BindingsAccount.ts). No action is called this — `readTables` reads only
+ * the names in {@link INPUT_ACTIONS}, so older code ignores it.
+ */
+const LAYOUT_ROW = "$layout";
+const STOCK_LAYOUT = "stock";
 
 /**
  * The bar's slots and pages in order, so the bar can ask what key a slot wears without spelling
@@ -470,7 +536,8 @@ function reindex(): void {
  * guarded too: an action the saved table does not mention is newer than the table, and its default
  * never takes a key the table gives to something else. `persist` writes every action, so a real
  * saved table mentions all the actions that existed when it was written; without this, `R` bound
- * to an action-bar slot went to the newer `replyWhisper`, which `reindex` lists first.
+ * to an action-bar slot went to the newer `replyWhisper`, which `reindex` lists first. A table saved
+ * before the stock layout (4.11) has its untouched rows read the same way ({@link forgetPreStockDefaults}).
  */
 export function loadBindings(): void {
   readTables(readStored(STORAGE_KEY), readStored(MODULE_STORAGE_KEY));
@@ -488,6 +555,7 @@ function readTables(saved: Record<string, unknown> | undefined, savedModules: Re
       mentioned.add(action);
     }
     migrateWalkOffSlash(mentioned);
+    forgetPreStockDefaults(saved, mentioned);
     const taken = new Set<string>();
     for (const action of mentioned) for (const chord of bindings[action]) if (chord) taken.add(chord);
     // 05.10 L17t-review: a module row's key is the player's too (modules ship unbound; only bindKey writes it),
@@ -532,6 +600,40 @@ function migrateWalkOffSlash(mentioned: ReadonlySet<InputAction>): void {
   bindings.toggleWalkRun = [held.has(newFirst) ? "" : newFirst, held.has(newSecond) ? "" : newSecond];
 }
 
+/**
+ * 4.11: the stock layout reaches a player who saved a table before it, on the rows they left alone.
+ *
+ * The choice, and why: `persist` writes every row, so a saved table cannot say which rows the player
+ * set and which were only the defaults of the day. Kept verbatim, a table saved before 4.11 would keep
+ * the old layout for good — the owner's own included — with O bound to a window that no longer answers
+ * without the developer flag and TOGGLESOCIAL still unbound. So a table without the {@link LAYOUT_ROW}
+ * mark is read as written before 4.11, and a row of it still exactly on its old default
+ * ({@link PRE_STOCK_DEFAULTS}) as untouched: it is forgotten here and takes the new default the way a
+ * row newer than the table does — less any key a row the player did change holds, and less a module
+ * row's key. A row that differs in either slot is the player's and is kept whole (bound elsewhere,
+ * unbound by a steal, or moved to the other slot alike).
+ *
+ * Nothing is written back: the result is a function of the stored table, so reading it again gives the
+ * same keys. The next save writes the mark with the table, and from then on a row is read as it stands
+ * — so a player who later puts the focus back on F keeps it rather than losing it at the next load.
+ */
+function forgetPreStockDefaults(saved: Readonly<Record<string, unknown>>, mentioned: Set<InputAction>): void {
+  const mark = saved[LAYOUT_ROW];
+  if (Array.isArray(mark) && mark[0] === STOCK_LAYOUT) return;
+  for (const [action, old] of Object.entries(PRE_STOCK_DEFAULTS) as [InputAction, BindingPair][]) {
+    if (!mentioned.has(action)) continue;
+    const [first, second] = bindings[action];
+    if (first !== old[0] || second !== old[1]) continue;
+    mentioned.delete(action);
+    bindings[action] = DEFAULT_BINDINGS[action];
+  }
+}
+
+/** The core table as it is saved and sent: every row, and the layout it was written under. */
+function savedCoreTable(): Record<string, BindingPair> {
+  return { [LAYOUT_ROW]: [STOCK_LAYOUT, ""], ...bindings };
+}
+
 function readStored(key: string): Record<string, unknown> | undefined {
   try {
     const raw = storage?.getItem(key);
@@ -544,7 +646,7 @@ function readStored(key: string): Record<string, unknown> | undefined {
 
 function persist(): void {
   try {
-    storage?.setItem(STORAGE_KEY, JSON.stringify(bindings));
+    storage?.setItem(STORAGE_KEY, JSON.stringify(savedCoreTable()));
     storage?.setItem(MODULE_STORAGE_KEY, JSON.stringify(moduleBindings));
   } catch {
     // A full or refused store loses the change on the next reload and nothing else: the session
@@ -571,9 +673,12 @@ export function onBindingsChanged(listener: () => void): () => void {
   return () => { changeListeners.delete(listener); };
 }
 
-/** Both tables as plain objects, for the account copy (4.12): action → [first, second]. */
+/**
+ * Both tables as plain objects, for the account copy (4.12): action → [first, second], the core one
+ * with its {@link LAYOUT_ROW} mark so a copy read back elsewhere is read as written under 4.11.
+ */
 export function bindingTables(): { core: Record<string, BindingPair>; modules: Record<string, BindingPair> } {
-  return { core: { ...bindings }, modules: { ...moduleBindings } };
+  return { core: savedCoreTable(), modules: { ...moduleBindings } };
 }
 
 /**

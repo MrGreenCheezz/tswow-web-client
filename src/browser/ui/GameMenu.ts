@@ -24,6 +24,7 @@ import {
 } from "../framexml/FrameXmlGameMenuController.js";
 import { frameXmlPopupsPublished, registerFrameXmlQuitIntent } from "../framexml/FrameXmlPopupsController.js";
 import { logoutCountdownText, logoutRemaining } from "./LogoutCountdown.js";
+import { developerMode } from "../DeveloperMode.js";
 
 /**
  * What Escape opens when nothing else is open.
@@ -306,10 +307,11 @@ function build(): Panel {
     menuButton("Поиск подземелий", () => { panel.hide(); toggleLfgWindow(); }),
     menuButton("Таблица боя", () => { panel.hide(); toggleScoreboard(); }),
     menuButton("Арена", () => { panel.hide(); toggleArenaWindow(); }),
-    menuButton("Диагностика", () => {
+    // 4.11: a developer's window, listed only with the developer flag (DeveloperMode.ts).
+    ...developerMode() ? [menuButton("Диагностика", () => {
       panel.hide();
       openDiagnosticsWindow();
-    }),
+    })] : [],
     menuButton("Настройки", () => { panel.hide(); toggleSettingsWindow(); }),
     menuButton("Макросы", () => { panel.hide(); toggleMacroWindow(); }),
     menuButton("Помощь игрового мастера", () => { panel.hide(); toggleGmTickets(); }),

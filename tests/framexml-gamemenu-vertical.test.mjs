@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import test, { after } from "node:test";
 
 // MPQ-backed: stock GameMenuFrame as the game menu. StackSplitFrame.xml joins the vertical at its
-// stock slot so the bag owner no longer borrows the menu as an alias; the host adapters and the two
-// WebClient extras run on the real GameMenuFrame.xml.
+// stock slot so the bag owner no longer borrows the menu as an alias; the host adapters and the
+// WebClient extras (diagnostics only with the developer flag, 4.11) run on the real GameMenuFrame.xml.
 let clientDirectory;
 try {
   const paths = await import("../tools/paths.mjs");
@@ -39,8 +39,10 @@ const { FrameXmlBoot } = await import("../dist/code/browser/framexml/FrameXmlBoo
 const { CannedWorldSeam } = await import("../dist/code/browser/framexml/CannedWorldSeam.js");
 const { FRAMEXML_VERTICAL_TOC, FRAMEXML_TOC_PATH } = await import("../dist/code/browser/framexml/FrameXmlCorpus.js");
 const {
-  FRAMEXML_GAME_MENU_EXTRAS, createFrameXmlGameMenuOwner, frameXmlGameMenuGate, installFrameXmlGameMenuButtons,
+  FRAMEXML_GAME_MENU_EXTRAS, createFrameXmlGameMenuOwner, frameXmlGameMenuExtras, frameXmlGameMenuGate, installFrameXmlGameMenuButtons,
 } = await import("../dist/code/browser/framexml/FrameXmlGameMenuOwner.js");
+const { useDeveloperMode } = await import("../dist/code/browser/DeveloperMode.js");
+useDeveloperMode(false);
 const { frameXmlBagGate } = await import("../dist/code/browser/framexml/FrameXmlWorldMount.js");
 const { parseGlueToc } = await import("../dist/code/browser/glue/GlueLoader.js");
 const decoder = new TextDecoder("utf-8");
@@ -133,8 +135,38 @@ test("the stock menu shows and hides cleanly with its ruRU labels; Mac options s
   }
 });
 
+test("4.11: «Диагностика» is an extra only with the developer flag; «Сбросить раскладку окон» always", () => {
+  assert.deepEqual(frameXmlGameMenuExtras(false).map((extra) => extra.name), ["GameMenuButtonWebClientResetLayout"]);
+  assert.deepEqual(frameXmlGameMenuExtras(true).map((extra) => extra.name),
+    ["GameMenuButtonWebClientDiagnostics", "GameMenuButtonWebClientResetLayout"]);
+  assert.deepEqual(frameXmlGameMenuExtras().map((extra) => extra.name), ["GameMenuButtonWebClientResetLayout"],
+    "a page without the flag (this test's) asks for the one");
+});
+
+test("without the developer flag the menu gets the one extra under Quit and no diagnostics button", withClient, async () => {
+  const { boot } = await load();
+  try {
+    const errors = boot.errorCount;
+    const { calls, actions } = recorder();
+    assert.equal(installFrameXmlGameMenuButtons(boot, actions), true);
+    assert.deepEqual(lua(boot, "return GameMenuFrame:GetHeight()"), [240 + 22]);
+    assert.equal(boot.bridge.getFrame("GameMenuButtonWebClientDiagnostics"), undefined, "never created");
+    const reset = boot.bridge.getFrame("GameMenuButtonWebClientResetLayout").points[0];
+    assert.equal(relativeName(reset), "GameMenuButtonQuit");
+    lua(boot, "ShowUIPanel(GameMenuFrame)", 0);
+    boot.bridge.Click(boot.bridge.getFrame("GameMenuButtonWebClientResetLayout"));
+    assert.deepEqual(calls, ["resetLayout"]);
+    assert.ok(frameXmlGameMenuGate(boot, treeRenderer()), "the gate proves the buttons this page shows");
+    assert.equal(boot.errorCount, errors, JSON.stringify(boot.errors.slice(errors).map((e) => e.message)));
+  } finally {
+    boot.close();
+  }
+});
+
 test("adapters reach the native owners, the extras sit between Quit and Continue, and the menu grows by their step", withClient, async () => {
   const { boot } = await load();
+  // Both extras: the developer flag (4.11) is what shows «Диагностика».
+  useDeveloperMode(true);
   try {
     const errors = boot.errorCount;
     const { calls, actions } = recorder();
@@ -166,6 +198,7 @@ test("adapters reach the native owners, the extras sit between Quit and Continue
     assert.equal(calls.at(-1), "toggle", "stock ToggleGameMenu (add-ons) reaches the host toggle, not UIParent's HelpFrame branch");
     assert.equal(boot.errorCount, errors, JSON.stringify(boot.errors.slice(errors).map((e) => e.message)));
   } finally {
+    useDeveloperMode(false);
     boot.close();
   }
 });
@@ -179,7 +212,7 @@ test("the gate proves the menu silently and ends hidden; the owner disables Logo
     seam.playSound = (name) => { sounds.push(name); playSound(name); };
     const errors = boot.errorCount;
     const gate = frameXmlGameMenuGate(boot, treeRenderer());
-    assert.ok(gate, "the stock menu, its eight buttons and both extras pass");
+    assert.ok(gate, "the stock menu, its eight buttons and the extras this page shows pass");
     assert.equal(gate.frame.visible, false);
     assert.deepEqual(sounds, [], "the probe plays no sound");
     assert.equal(frameXmlGameMenuGate(boot, { elementFor: () => undefined }), undefined, "an unrendered menu fails");

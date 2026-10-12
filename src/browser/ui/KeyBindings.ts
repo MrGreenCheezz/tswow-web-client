@@ -1,5 +1,5 @@
 import {
-  INPUT_ACTIONS, bindKey, describeChord, chordOf, keysOf, moduleActions, onBindingsChanged, resetBindings,
+  INPUT_ACTIONS, actionOffered, bindKey, describeChord, chordOf, keysOf, moduleActions, onBindingsChanged, resetBindings,
 } from "../input/Bindings.js";
 import { frameXmlBindingCommand } from "../framexml/FrameXmlBinding.js";
 import { nativeString } from "./Strings.js";
@@ -125,8 +125,9 @@ function draw(): void {
   // player has one keyboard. The module rows are the ones that ship unbound — see `ModuleAction`.
   const listed = groupedRows([
     // A stock command is named as KeyBindingFrame names it (BINDING_NAME_*, 4.10); this client's own
-    // rows and the modules' keep their words.
-    ...INPUT_ACTIONS.map((entry) => ({ action: entry.action, group: entry.group, label: stockLabel(entry.action, entry.label) })),
+    // rows and the modules' keep their words. A developer's row only with the developer flag (4.11).
+    ...INPUT_ACTIONS.filter((entry) => actionOffered(entry.action))
+      .map((entry) => ({ action: entry.action, group: entry.group, label: stockLabel(entry.action, entry.label) })),
     ...moduleActions().map((entry) => ({ action: entry.action, group: entry.group, label: entry.label })),
   ]);
   for (const entry of listed) {
@@ -178,7 +179,8 @@ function build(): Panel {
 
 /**
  * The window entry points ask the stock KeyBindingFrame's route first (FrameXmlBindingController.ts):
- * once the world mount has published it, `K` and the game menu's «Назначение клавиш» open the stock
+ * once the world mount has published it, the game menu's «Назначение клавиш» and the bindings action
+ * (unbound by default since 4.11, as the client has no key for it) open the stock
  * window over the same table, and this Panel is the fallback before that or after a failed load.
  */
 export function toggleKeyBindingsWindow(): void {

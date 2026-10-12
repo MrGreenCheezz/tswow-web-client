@@ -69,6 +69,7 @@ import { liveCameraViews, useCameraViewMotion } from "../game/CameraViewsLive.js
 import { VEHICLE_ZOOM_DISTANCE } from "../game/VehicleCamera.js"; // DEC-B 3.11
 import { settings } from "../ui/Settings.js"; // DEC-B 3.11
 import { settingNumber } from "../ui/SettingsModel.js"; // DEC-B 3.11
+import { developerMode } from "../DeveloperMode.js"; // 4.11
 
 // DEC-B 3.11: a view switch's speeds and ceiling (game/CameraViews.ts) — cameraYawSmoothSpeed, the pitch at a
 // quarter of it (the stock slider's cameraPitchSmoothSpeed), the wheel's ceiling of the moment (the vehicle's
@@ -229,6 +230,9 @@ export function runAction(action: InputAction): boolean {
       return true;
 
     case "toggleDiagnostics":
+      // 4.11: a developer's window. Without the flag a key a player saved on it before (the row is
+      // not offered now) does nothing and stays the browser's, rather than opening it.
+      if (!developerMode()) return false;
       toggleGameWindow(diagnosticsWindow);
       if (!diagnosticsWindow.hidden) showUnhandledOpcodes();
       return true;

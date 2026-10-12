@@ -25,6 +25,7 @@ import {
 } from "./WindowsTab.js";
 import { registerWindowBuilderAction, toggleWindowBuilder } from "./WindowBuilder.js";
 import { drawDebugTab } from "./DebugTab.js";
+import { developerMode } from "../DeveloperMode.js";
 
 /** The diagnostics window: which opcodes the world loop dropped, which units are still pills, and what the modules are saying. */
 
@@ -333,8 +334,10 @@ moduleWindowBuilder.addEventListener("click", () => { toggleWindowBuilder(); });
 // Offered from here rather than from the editor's own module scope, so that «есть такая команда»
 // does not depend on somebody having pressed the button: this file is loaded by the render loop on
 // every session, and the editor's panel is still built only on the first press. The action ships
-// unbound — the player gives it a key in the bindings window if they want one.
-registerWindowBuilderAction();
+// unbound — the player gives it a key in the bindings window if they want one. 4.11: a developer's
+// tool, offered only with the developer flag (DeveloperMode.ts); a key saved on it stays in the module
+// blob and answers again with the flag.
+if (developerMode()) registerWindowBuilderAction();
 
 /** What the pane last drew, so a live window's counters do not rebuild it sixty times a second. */
 let drawnWindows = "";

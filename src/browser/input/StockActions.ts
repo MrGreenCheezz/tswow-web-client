@@ -11,9 +11,10 @@
  * left off when this client cannot hold it or must not take it:
  *  - mouse buttons and the wheel (`BUTTON*`, `MOUSEWHEEL*`): the table holds keyboard chords only;
  *  - `F12`: the browser's developer tools (NativeAppShell keeps it the developer's way out);
- *  - a chord a core action already ships on (`G`, `F`, `K`, `O`, `B`, `Shift+B`): moving those is
- *    the default-layout decision 0.4g (WORK_PLAN 4.11), not this item's — until the owner rules,
- *    the core action keeps the key and the stock row ships unbound ({@link STOCK_DEFAULTS_HELD}).
+ *  - a chord a core action already ships on: the core action keeps it and the stock row ships
+ *    unbound ({@link STOCK_DEFAULTS_HELD}). Since the stock layout (WORK_PLAN 4.11, decision 0.4g)
+ *    the core table ships stock keys only, so this guard holds nothing back: B is TOGGLEBACKPACK's,
+ *    F ASSISTTARGET's, O TOGGLESOCIAL's and G TARGETLASTHOSTILE's, as in the client.
  *
  * DOM-free and import-free beyond the generated table, so Bindings.ts can build on it.
  */
@@ -39,7 +40,7 @@ export const STOCK_ACTIONS = [
 
   // L2 3.11: the TargetNearest* family's other modes and the history keys (game/Targeting.ts,
   // game/TargetLast.ts). Ctrl+Tab and Ctrl+Shift+Tab belong to the browser's tab switch in Chrome and
-  // reach the game only in Electron; TARGETLASTHOSTILE's G is the interact key here until 0.4g.
+  // reach the game only in Electron. TARGETLASTHOSTILE has its stock G since 4.11 (interact ships unbound).
   { action: "targetNearestFriend", command: "TARGETNEARESTFRIEND", group: "Цель", label: "Ближайший союзник" }, // L2 3.11
   { action: "targetPreviousFriend", command: "TARGETPREVIOUSFRIEND", group: "Цель", label: "Предыдущий союзник" }, // L2 3.11
   { action: "targetNearestEnemyPlayer", command: "TARGETNEARESTENEMYPLAYER", group: "Цель", label: "Ближайший игрок-противник" }, // L2 3.11
@@ -166,8 +167,9 @@ export const STOCK_KEYS_LEFT_OFF: Readonly<Record<string, string>> = {
 };
 
 /**
- * The stock defaults a core action holds until decision 0.4g (WORK_PLAN 4.11): command → the key
- * the core action keeps. Filled by {@link stockDefaultBindings}, read by the tests and the plan.
+ * The stock defaults a core action holds: command → the key the core action keeps. Filled by
+ * {@link stockDefaultBindings}, read by the tests. Empty since the stock layout (WORK_PLAN 4.11):
+ * a key here again means a core default took a stock row's key.
  */
 export const STOCK_DEFAULTS_HELD = new Map<string, string>();
 

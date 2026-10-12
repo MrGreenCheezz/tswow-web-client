@@ -4585,11 +4585,12 @@ export async function mountFrameXmlVertical(
         bags: !!resources.bagOwner,
         spellbook: !!resources.spellbookFrame,
         talents: !!resources.talentOwner,
-        // The native J action opens stock SkillFrame (CharacterFrame tab 4) through the character
+        // The native skills action (K, TOGGLECHARACTER1) opens stock SkillFrame (CharacterFrame tab 4) through the character
         // owner, or else the stock SpellBookFrame's skill-line tabs; no handcrafted panel is added.
         professions: !!resources.characterOwner || !!resources.spellbookFrame,
         // Diagnostics is an entry of whichever menu MainMenuMicroButton opens: the stock
-        // GameMenuFrame's «Диагностика» extra when published, the native menu's otherwise.
+        // GameMenuFrame's «Диагностика» extra when published, the native menu's otherwise — with
+        // the developer flag (4.11, DeveloperMode.ts); without it neither menu offers it.
         diagnostics: true,
       },
       adaptersInstalled: microButtonAdaptersInstalled,

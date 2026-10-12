@@ -45,10 +45,11 @@ test("each micro button says its name and its bound key, in the tooltip, never i
     assert.equal(getTip(character), "Информация о персонаже (C)", "MicroButtonTooltipText: the name, the key in brackets");
     assert.equal(character.getAttribute("aria-keyshortcuts"), "C");
     assert.equal(character.getAttribute("aria-label"), "Информация о персонаже");
-    assert.equal(getTip(elements.get("inventory-toggle")), "Инвентарь (B)", "no stock name: the native word");
+    // 4.11: every bag is OPENALLBAGS, Shift+B; B is the backpack alone (TOGGLEBACKPACK).
+    assert.equal(getTip(elements.get("inventory-toggle")), "Инвентарь (Shift+B)", "no stock name: the native word");
     assert.equal(getTip(elements.get("calendar-toggle")), "Календарь", "no key: no brackets");
     assert.equal(elements.get("calendar-toggle").getAttribute("aria-keyshortcuts"), null);
-    assert.equal(getTip(elements.get("social-toggle")), "Общение", "TOGGLESOCIAL ships unbound here (O is held, 0.4g)");
+    assert.equal(getTip(elements.get("social-toggle")), "Общение (O)", "TOGGLESOCIAL has its stock O since 4.11");
     assert.equal(getTip(elements.get("game-menu-toggle")), "Главное меню (Esc)");
     assert.equal(elements.get("game-menu-toggle").getAttribute("aria-keyshortcuts"), "Escape");
   } finally {

@@ -25,6 +25,15 @@ function fakeStorage(seed) {
 
 const STORAGE_KEY = "webclient.keybindings.v1";
 
+/** The core actions that ship unbound on purpose (4.11), and where each is reached instead. */
+const UNBOUND_BY_DESIGN = {
+  setFocus: "FOCUSTARGET has no stock key; the target frame's menu and /focus set it",
+  interact: "INTERACTTARGET has no stock key; the right button speaks to a unit",
+  toggleKeyring: "TOGGLEKEYRING has no stock key; the keyring is the button beside the bag bar",
+  toggleKeyBindings: "the client has no key for its bindings window; the game menu opens it",
+  toggleDiagnostics: "a developer's window, behind the developer flag",
+};
+
 test.beforeEach(() => {
   useBindingStorage(fakeStorage());
 });
@@ -57,7 +66,7 @@ test("every action ships with a key, and no two ship with the same one", () => {
     // of its 275 bindings, so it settles nothing on its own; what settles it is that these keys
     // are conventionally the player's to choose.
     // The stock rows of 3.11 ship exactly the keys DefaultBindings.wtf gives their command, less a
-    // mouse button, a key left off on purpose and a chord a core action ships on (decision 0.4g);
+    // mouse button, a key left off on purpose and a chord a core action ships on (none since 4.11);
     // a stock command the file gives no key ships unbound, as it does in the original.
     const stock = STOCK_ROWS.get(action);
     if (stock) {
@@ -75,6 +84,13 @@ test("every action ships with a key, and no two ship with the same one", () => {
     }
     if (group.startsWith("Панель: ")) {
       assert.equal(pair[0], "", `${label} is on an optional bar and should ship unbound`);
+      continue;
+    }
+    // 4.11, the stock layout: a command DefaultBindings.wtf gives no key ships unbound, as it does in
+    // the client, and is reached where the client reaches it (tests/default-bindings-stock.test.mjs
+    // holds every key to the file).
+    if (UNBOUND_BY_DESIGN[action] !== undefined) {
+      assert.deepEqual([...pair], ["", ""], `${action}: ${UNBOUND_BY_DESIGN[action]}`);
       continue;
     }
     assert.ok(pair[0], `${label} ships unbound, so a new player cannot reach it`);
@@ -104,7 +120,7 @@ test("binding a key takes it off whatever held it", () => {
   assert.equal(actionFor("KeyW"), "jump");
   assert.deepEqual([...bindingsOf("moveForward")], ["", "ArrowUp"],
     "the key was stolen, so moving forward is left with only its second key");
-  assert.deepEqual([...bindingsOf("jump")], ["KeyW", ""]);
+  assert.deepEqual([...bindingsOf("jump")], ["KeyW", "Numpad0"], "the first slot changed, JUMP's second stock key stayed");
 });
 
 test("a binding can be taken away, and the action keeps its other key", () => {
@@ -255,12 +271,13 @@ test("a module action can be bound, answers its key, and gives it back when the 
     // would resolve to whichever was indexed first, and the bindings window would print it twice.
     bindKey("module:shop:Лавка", 0, "KeyB");
     assert.equal(moduleActionFor("KeyB")?.module, "shop");
-    assert.deepEqual([...bindingsOf("toggleBags")], ["", ""], "the bag key was taken off the bags");
+    // B is TOGGLEBACKPACK's in the stock layout (4.11).
+    assert.deepEqual([...bindingsOf("toggleBackpack")], ["", ""], "the bag key was taken off the backpack");
     assert.equal(moduleActionFor("KeyZ"), undefined);
 
     // The other direction: binding a compiled-in action to the module's key takes it back.
-    bindAction("toggleBags", 0, "KeyB");
-    assert.equal(actionFor("KeyB"), "toggleBags");
+    bindAction("toggleBackpack", 0, "KeyB");
+    assert.equal(actionFor("KeyB"), "toggleBackpack");
     assert.equal(moduleActionFor("KeyB"), undefined);
     assert.deepEqual([...keysOf("module:shop:Лавка")], ["", ""]);
   } finally {

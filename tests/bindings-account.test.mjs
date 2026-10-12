@@ -115,7 +115,10 @@ test("switched on: the server copy is applied, the Unity rows survive a rebindin
   store.attach(world);
   assert.deepEqual(world.requested, [2]);
   assert.equal(store.accept(2), true);
-  assert.equal(bindings.actionFor("KeyB"), "toggleBags");
+  // The sample has no layout row, so it reads as saved before the stock layout (4.11): its toggleBags
+  // on the old default B is an untouched row and takes OPENALLBAGS's Shift+B; B is TOGGLEBACKPACK's.
+  assert.equal(bindings.actionFor("Shift+KeyB"), "toggleBags");
+  assert.equal(bindings.actionFor("KeyB"), "toggleBackpack");
   bindings.bindKey("jump", 0, "KeyZ");
   timers.runAll();
   await settle();
@@ -123,7 +126,11 @@ test("switched on: the server copy is applied, the Unity rows survive a rebindin
   assert.equal(slot, 2);
   const written = account.parseBindingsEnvelope(text);
   assert.ok(written, "what is written is the envelope the Unity client reads");
-  assert.deepEqual(written.core.jump, ["KeyZ", ""]);
+  // The sample's jump was on the old default, so it had JUMP's second stock key (NUMPAD0) before the rebinding.
+  assert.deepEqual(written.core.jump, ["KeyZ", "Numpad0"]);
+  // 4.11: the copy goes back with the stock layout and its mark, so it is read as it stands next time.
+  assert.deepEqual(written.core.toggleBags, ["Shift+KeyB", ""]);
+  assert.deepEqual(written.core.$layout, ["stock", ""]);
   for (const name of UNITY_ONLY) assert.ok(written.core[name], `${name} kept`);
   assert.deepEqual(written.core.actionPagePrevious, ["Shift+ArrowUp", ""]);
   assert.deepEqual(written.modules["module:shop:Лавка"], ["KeyY", ""]);
@@ -135,7 +142,7 @@ test("switched on: the server copy is applied, the Unity rows survive a rebindin
   bindings.bindKey("jump", 0, "KeyO");
   late.accountData.set(2, { text: SAMPLE });
   assert.equal(lateStore.accept(2), true);
-  assert.deepEqual([...bindings.keysOf("jump")], ["KeyO", ""], "the local change won");
+  assert.deepEqual([...bindings.keysOf("jump")], ["KeyO", "Numpad0"], "the local change won");
 });
 
 test("a slot holding another client's text is neither applied nor overwritten, and says so once", async () => {

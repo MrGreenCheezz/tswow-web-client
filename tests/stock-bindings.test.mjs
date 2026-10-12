@@ -104,13 +104,11 @@ test("the stock rows ship the stock keys, never a core key, never F12, never a k
   assert.deepEqual(keys("bonusAction10"), ["Ctrl+Digit0"]);
   assert.deepEqual(keys("shapeshift1"), ["Ctrl+F1"]);
   assert.deepEqual(keys("toggleWorldStateScores"), ["Shift+Space"]);
-  // Held by a core action until decision 0.4g (WORK_PLAN 4.11): the core action keeps the key.
-  assert.deepEqual(keys("toggleBackpack"), [], "B is the all-bags key here, F12 the developer tools'");
-  assert.equal(STOCK_DEFAULTS_HELD.get("TOGGLEBACKPACK"), "KeyB");
-  assert.equal(STOCK_DEFAULTS_HELD.get("ASSISTTARGET"), "KeyF");
-  assert.equal(STOCK_DEFAULTS_HELD.get("TOGGLESOCIAL"), "KeyO");
-  assert.deepEqual(keys("assistTarget"), []);
-  assert.deepEqual(keys("toggleSocial"), []);
+  // 4.11 (decision 0.4g): the stock layout — no core action holds a stock row's key any more.
+  assert.deepEqual(keys("toggleBackpack"), ["KeyB"], "B is TOGGLEBACKPACK's; F12 stays the developer tools'");
+  assert.deepEqual(keys("assistTarget"), ["KeyF"]);
+  assert.deepEqual(keys("toggleSocial"), ["KeyO"]);
+  assert.deepEqual([...STOCK_DEFAULTS_HELD], [], "no stock default is held back by a core action");
   // Unbound in the client too.
   assert.deepEqual(keys("stopCasting"), []);
   assert.deepEqual(keys("targetFocus"), []);

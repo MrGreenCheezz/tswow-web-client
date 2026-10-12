@@ -6,6 +6,8 @@ import test from "node:test";
 // command list, SetBinding's key1/key2 semantics, the Save/Cancel snapshot, CLICK bindings, RunBinding
 // and UPDATE_BINDINGS. The table is the real one, on an in-memory store.
 const bindings = await import("../dist/code/browser/input/Bindings.js");
+const developer = await import("../dist/code/browser/DeveloperMode.js");
+developer.useDeveloperMode(false);
 const {
   FrameXmlBindingModel, FRAMEXML_BINDING_BINDINGS, FRAMEXML_STOCK_BINDING_SECTIONS, FRAMEXML_WEBCLIENT_BINDING_ROWS,
   frameXmlKeyName, frameXmlKeyToChord, frameXmlChordToKey, frameXmlBindingCommand, FRAMEXML_BINDING_PRELUDE,
@@ -89,11 +91,23 @@ test("GetBinding lists Bindings.xml's sections in order, then every WebClient-on
   assert.deepEqual(model.binding(commands.indexOf("TOGGLERUN") + 1), ["TOGGLERUN", "NUMPADDIVIDE"]);
   assert.deepEqual(model.binding(commands.indexOf("MULTIACTIONBAR1BUTTON1") + 1), ["MULTIACTIONBAR1BUTTON1"],
     "the extra bars ship unbound, as in the client");
-  // Every compiled-in action is reachable exactly once, WebClient-only ones included.
+  // Every compiled-in action is reachable exactly once, WebClient-only ones included — but a
+  // developer's (4.11: diagnostics) only with the developer flag, which a test page does not have.
   const listed = rows.filter((row) => !row[0].startsWith("HEADER_")).map((row) => row[0]);
   assert.equal(new Set(listed).size, listed.length);
-  assert.equal(listed.length, bindings.INPUT_ACTIONS.length);
-  for (const entry of bindings.INPUT_ACTIONS) assert.ok(listed.includes(frameXmlBindingCommand(entry.action)), entry.action);
+  const offered = bindings.INPUT_ACTIONS.filter((entry) => !bindings.DEVELOPER_ACTIONS.has(entry.action));
+  assert.equal(listed.length, offered.length);
+  for (const entry of offered) assert.ok(listed.includes(frameXmlBindingCommand(entry.action)), entry.action);
+  assert.equal(listed.includes("WEBCLIENT_TOGGLEDIAGNOSTICS"), false, "no developer flag: not listed");
+  developer.useDeveloperMode(true);
+  try {
+    const all = Array.from({ length: model.count() }, (_, index) => model.binding(index + 1)[0])
+      .filter((command) => !command.startsWith("HEADER_"));
+    assert.equal(all.length, bindings.INPUT_ACTIONS.length, "with the flag every action is listed");
+    assert.ok(all.includes("WEBCLIENT_TOGGLEDIAGNOSTICS"));
+  } finally {
+    developer.useDeveloperMode(false);
+  }
   assert.deepEqual(FRAMEXML_WEBCLIENT_BINDING_ROWS.map(([command]) => command),
     ["WEBCLIENT_TOGGLEDIAGNOSTICS", "WEBCLIENT_TOGGLEKEYBINDINGS"]);
   assert.equal(model.label("WEBCLIENT_TOGGLEKEYBINDINGS"), "Привязки клавиш");
@@ -191,7 +205,7 @@ test("LoadBindings(ACCOUNT) takes back every change since the last Save; DEFAULT
   assert.equal(storage.values.get("webclient.keybindings.v1"), saved, "Cancel leaves the saved blob as it was");
   // Default then Cancel: back again. Default then Save: defaults stay.
   model.load(0);
-  assert.deepEqual(bindings.keysOf("toggleBags"), ["KeyB", ""]);
+  assert.deepEqual(bindings.keysOf("toggleBags"), ["Shift+KeyB", ""], "OPENALLBAGS's stock key (4.11)");
   model.load(1);
   assert.deepEqual(bindings.keysOf("toggleBags"), ["KeyY", ""]);
   model.setBinding("F9", "TOGGLEQUESTLOG");
@@ -332,7 +346,7 @@ test("the seam bindings answer the neutral empty table without a model, and the 
   assert.deepEqual(FRAMEXML_BINDING_BINDINGS.GetCurrentBindingSet(empty, []), [1]);
   const { model } = fresh();
   const seam = { keyBindings: model };
-  assert.deepEqual(FRAMEXML_BINDING_BINDINGS.GetBindingKey(seam, ["JUMP"]), ["SPACE"]);
+  assert.deepEqual(FRAMEXML_BINDING_BINDINGS.GetBindingKey(seam, ["JUMP"]), ["SPACE", "NUMPAD0"], "both stock keys (4.11)");
   assert.deepEqual(FRAMEXML_BINDING_BINDINGS.GetBindingByKey(seam, ["SPACE"]), ["JUMP"]);
   assert.deepEqual(FRAMEXML_BINDING_BINDINGS.GetBindingByKey(seam, ["F11"]), ["TOGGLEBAG4"]);
   assert.deepEqual(FRAMEXML_BINDING_BINDINGS.GetBindingByKey(seam, ["F12"]), []);

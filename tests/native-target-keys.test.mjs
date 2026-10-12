@@ -36,8 +36,8 @@ test("the missing TARGETING rows join the table with DefaultBindings.wtf's keys"
   const keys = (action) => [...bindings.DEFAULT_BINDINGS[action]].filter(Boolean);
   assert.deepEqual(keys("targetNearestFriend"), ["Ctrl+Tab"]);
   assert.deepEqual(keys("targetPreviousFriend"), ["Ctrl+Shift+Tab"]);
-  assert.deepEqual(keys("targetLastHostile"), [], "G is the interact key here until decision 0.4g");
-  assert.equal(stock.STOCK_DEFAULTS_HELD.get("TARGETLASTHOSTILE"), "KeyG");
+  assert.deepEqual(keys("targetLastHostile"), ["KeyG"], "the stock G since 4.11 (decision 0.4g); interact ships unbound");
+  assert.equal(stock.STOCK_DEFAULTS_HELD.has("TARGETLASTHOSTILE"), false);
   for (const action of ["targetLastTarget", "targetNearestEnemyPlayer", "targetPreviousFriendPlayer"]) {
     assert.deepEqual(keys(action), [], `${action} ships unbound, as in the client`);
   }
