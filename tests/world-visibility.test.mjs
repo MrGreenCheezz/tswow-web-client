@@ -114,11 +114,13 @@ test("A2 the mount is posed from the rider's travel alone, with its own jumps an
     "every exit from the method leaves the remembered pose current");
 
   // (3) The gait, scaled after the play call because #playAnimation resets the rate to 1.
-  assert.match(body, /this\.#playAnimation\(mount, chosen\.animation, chosen\.loop, now\);\s*\n(\s*\/\/[^\n]*\n)*\s*this\.#applyMountGait\(/,
+  // 12.10 6.03/6.07: the play call also carries the gait's playback mode in its trailing arguments.
+  assert.match(body, /this\.#playAnimation\(mount, chosen\.animation, chosen\.loop, now(?:, [^;\n]*)?\);\s*\n(\s*\/\/[^\n]*\n)*\s*this\.#applyMountGait\(/,
     "the stride is scaled only after the action has been started");
   const gait = /\n  #applyMountGait\(mount: RenderedMount[\s\S]*?\n  \}\n/.exec(renderer)?.[0];
   assert.ok(gait, "#applyMountGait must be findable");
-  assert.match(gait, /if \(!action \|\| !loop\) return;/,
+  // 12.10 6.03/6.07: a gait held on one frame keeps its zero rate as well.
+  assert.match(gait, /if \(!action \|\| !loop(?: \|\| playbackHolds\(mount\.animationMode\))?\) return;/,
     "a one-shot — the special, a takeoff, a landing — keeps its authored timing");
   assert.match(gait, /mountGaitTimeScale\(speed, clipMovingSpeed\(mount\.template\?\.clips\.get\(animation\)\)\)/,
     "the authored stride speed comes off the clip the artifact carried it on");
@@ -444,7 +446,8 @@ test("V4 spell unit clips run once for their full duration and lead into held pr
     "lead-in timing is armed once and cannot move every frame");
   assert.match(source, /const primary = animation\.followUp \?\? animation;/,
     "a precast lead-in retains ownership of the held primary");
-  assert.match(source, /if \(unit\.action\.loop === wantedLoop && unit\.action\.isRunning\(\)\) return;/,
+  // 12.10 6.03/6.07: a clip held on a frame (speed 0, so never «running») is not restarted either.
+  assert.match(source, /if \((?:held \|\| )?\(?unit\.action\.loop === wantedLoop && unit\.action\.isRunning\(\)\)?\) return;/,
     "same-id lead-ins avoid restarting a running action");
   assert.match(source, /unit\.action\.setLoop\(wantedLoop, Infinity\)/,
     "same-id lead-ins still switch LoopOnce to LoopRepeat for the primary");

@@ -101,7 +101,9 @@ test("where the SheatheType comes from: the item, else the unit's worn table", (
 
 test("the renderer hangs through worldAttachmentPoint and the corpse/item plumbing carries the type", () => {
   const renderer = readFileSync(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
-  assert.match(renderer, /worldAttachmentPoint\(item, sheath, sheatheOf\(item, metadata\)\)/);
+  // 12.10 6.08: the sheath state is the unit's, or the own draw/sheathe ceremony's while it runs.
+  assert.match(renderer,
+    /worldAttachmentPoint\(item, (?:sheath|ceremony \? ceremonySheath\(ceremony, item\.slot, now\) : sheath),\s*sheatheOf\(item, metadata\)\)/);
   const frames = readFileSync(new URL("../src/browser/ui/Frames.ts", import.meta.url), "utf8");
   assert.match(frames, /wornSheathes\(equipment\)/);
   const metadata = readFileSync(new URL("../src/browser/ItemMetadata.ts", import.meta.url), "utf8");

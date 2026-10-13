@@ -127,8 +127,10 @@ test("flight, battlemaster and tabard service responses open visible native cont
   assert.match(world, /SMSG_NEW_TAXI_PATH[\s\S]{0,700}?CMSG_TAXIQUERYAVAILABLENODES/,
     "discovering a node must retry the omitted taxi map exactly once");
 
-  assert.match(npc, /function drawBattlegroundList\([\s\S]{0,2400}?joinBattleground\(/,
-    "a battlemaster response needs a native queue control");
+  // 3.24: stock BattlefieldFrame answers the list once the battlemaster owner is published; the
+  // native queue control stays as the fallback for every other case (no FrameXML, owner not up).
+  assert.match(npc, /function drawBattlegroundList\([\s\S]{0,2800}?if \(frameXmlBattlemasterPublished\(\)\) \{[^}]{0,200}?return;\s*\}[\s\S]{0,1200}?world\.joinBattleground\(/,
+    "a battlemaster response needs a native queue control whenever stock BattlefieldFrame does not hold it");
   assert.match(npc, /export function showBattlegroundList\(\)[\s\S]{0,600}?drawBattlegroundList\(/,
     "the exported battlemaster response handler must render the native queue controls");
   assert.match(enterWorld, /(?:events\.on|onWorldEvent)\(["']BATTLEFIELD_LIST_CHANGED["'][\s\S]{0,160}?showBattlegroundList\(\)/,

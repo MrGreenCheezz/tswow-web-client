@@ -2775,7 +2775,7 @@ interface RenderedUnit extends PosedModel {
   /** 11.10: the facing this unit is drawn at, when the client does not move it itself. See `world/UnitFacing.ts`. */
   shownFacing: ShownUnitFacing | undefined;
   /** 5.32: a seated passenger's drawn facing in its seat (VehiclePassengerPose.ts reads it); undefined off a seat. */
-  seatFacing?: number | undefined;
+  seatFacing: number | undefined;
   /** 05.10-A7a-F1 (6.16а): private copies of the batches the file fades under Death. See `BatchDeathFade.ts`. */
   deathFade: DeathFadeState | undefined;
   /** 05.10-A7a-C 6.07: the STUNNED/LOOTING bits whose holds are in the queue. See `UnitFlagPoses.ts`. */
@@ -13431,6 +13431,7 @@ export class WorldRenderer3D {
         fadeReturnFrames: undefined, appearancePendingSince: undefined, stealthed: undefined,
         strafeYaw: undefined, deathFade: undefined, flagPoses: undefined,
         shownFacing: undefined, // 11.10
+        seatFacing: undefined, // 5.32
         closedHands: undefined, // 12.10 6.24
         sheathCeremony: undefined, sheathArms: undefined, // 12.10 6.08
         transitionMoving: undefined, pendingTransition: undefined, // 12.10 6.07
