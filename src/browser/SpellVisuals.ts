@@ -25,6 +25,10 @@ import type {
 import type { VisualBeam } from "./ChainBeam.js"; // 05.10-A7a-E
 import type { UnitActionLayer } from "./UnitActionArbiter.js";
 import type { MissileFlightPlan } from "./MissileFlight.js"; // 05.10-A7a-E
+import {
+  MISSILE_DEFAULT_GRAVITY, followGroundOf, missileDestinationAttachment, visualOffset,
+} from "./SpellVisualAttach.js"; // 13.10 (6.12)
+import { beamAnchors, planChainBeams } from "./ChainBeamPlan.js"; // 13.10 (6.13)
 import { kitWoundBehavior } from "./game/AnimationSplit.js"; // 05.10-6.21
 export type { SpellVisualEffectTransform };
 
@@ -196,6 +200,21 @@ export interface SpellCast {
   /** Present for cast-start planning; existing GO callers need not provide it. */
   castTime?: number;
   channel?: boolean;
+  /**
+   * 13.10 (6.12): SPELL_GO's CAST_FLAG_ADJUST_MISSILE words — the elevation (radians) and the flight's delay
+   * (ms); the missile to the destination flies the trajectory (MissileFlight.ts) from `source` (the cast's
+   * source location, else the caster) and lands after `delayMs`.
+   */
+  trajectory?: { elevation: number; delayMs: number; source?: Point };
+}
+
+/**
+ * 13.10 (6.12): the spell's SpellMissile Gravity for a trajectory missile (the page registers the
+ * /dbc/spell-missiles catalog); undefined — no row — is Wow.exe's 19.2911 (0x00a32f74).
+ */
+let missileGravitySource: ((spellId: number) => number | undefined) | undefined;
+export function setMissileGravitySource(source: ((spellId: number) => number | undefined) | undefined): void {
+  missileGravitySource = source;
 }
 
 export interface SpellVisualPlanOptions {
@@ -278,37 +297,27 @@ export interface SpellVisualPlan {
   shakes?: VisualShake[];
 }
 
-/** 05.10-A7a-E (6.13): beam ends — the caster's spell hand for a cast, its chest for a channel, the target's chest. */
+/** 05.10-A7a-E (6.13): the old fixed beam ends, kept as names (13.10: the ends come from the visual, ChainBeamPlan.ts). */
 export const BEAM_CAST_ATTACHMENT = 22;
 export const BEAM_CHEST_ATTACHMENT = 34;
 
 /**
- * 05.10-A7a-E (6.13): a caster-side kit's beams to the cast's targets, in the order the packet lists them,
- * each target the start of the next segment (Chain Lightning's jumps; a hypothesis for the multi-target
- * case). A static target (guid 0) ends the band at its point.
+ * 13.10 (6.13): a caster-side kit's beams — Wow.exe's segments (ChainBeamPlan.ts): the targets in reverse
+ * packet order, each segment in its own SegDelay/SegDuration/DelayBetweenEffects window, Combo rows drawn with
+ * their row, persistent ones until `endsAt`.
  */
 function addBeams(
   plan: SpellVisualPlan,
   kit: SpellVisualKit | undefined,
+  visual: SpellVisualMetadata,
   caster: bigint,
   casterPoint: Point,
   targets: readonly { guid: bigint; point: Point }[],
   startedAt: number,
   endsAt: number,
 ): void {
-  if (!kit?.chains || kit.chains.length === 0 || caster === 0n || targets.length === 0) return;
-  const beams = (plan.beams ??= []);
-  for (const chain of kit.chains) {
-    let from: VisualBeam["from"] = { guid: caster, attachment: BEAM_CAST_ATTACHMENT, point: { ...casterPoint } };
-    for (const target of targets) {
-      const to = target.guid !== 0n
-        ? { guid: target.guid, attachment: BEAM_CHEST_ATTACHMENT, point: { ...target.point } }
-        : { attachment: BEAM_CHEST_ATTACHMENT, point: { ...target.point } };
-      beams.push({ effect: chain.effect, from, to, startedAt, endsAt });
-      if (target.guid === 0n) break;
-      from = { guid: target.guid, attachment: BEAM_CHEST_ATTACHMENT, point: { ...target.point } };
-    }
-  }
+  const beams = planChainBeams(kit, beamAnchors(visual.beamEnds), caster, casterPoint, targets, startedAt, endsAt);
+  if (beams.length > 0) (plan.beams ??= []).push(...beams);
 }
 
 /** Seconds a missile spends covering `distance` yards at `speed` yards a second. */
@@ -454,8 +463,10 @@ function areaPoint(cast: SpellCast): Point {
   return { ...(cast.areaPoint ?? cast.destination ?? cast.targets[0]?.point ?? cast.casterPoint) };
 }
 
-function arrivalAt(visual: SpellVisualMetadata, cast: SpellCast, target: { point: Point }, now: number): number {
+function arrivalAt(visual: SpellVisualMetadata, cast: SpellCast, target: { guid?: bigint; point: Point }, now: number): number {
   if (!visual.missile) return now;
+  // 13.10 (6.12): a trajectory lands when the packet says (Missile_C +0x134 = launch + delay, 0x00732ff0).
+  if (cast.trajectory && target.guid === 0n && cast.trajectory.delayMs > 0) return now + cast.trajectory.delayMs;
   const distance = Math.hypot(
     target.point.x - cast.casterPoint.x,
     target.point.y - cast.casterPoint.y,
@@ -550,17 +561,29 @@ export function planSpellVisual(
         // the motion script; MissileCount missiles per target, each with its own index.
         const missile = visual.missile;
         const count = Math.min(MISSILE_COUNT_MAX, Math.max(1, missile.motion?.count ?? 1));
+        // 13.10 (6.12): MissileDestinationAttachment through 0x00adaa20 (chest without one), MissileImpactOffset
+        // (x, −y, z), MissileFollowGround in yards, and a trajectory for the packet's destination.
+        const aimAttachment = missile.dest === undefined ? MISSILE_TARGET_ATTACHMENT
+          : missileDestinationAttachment(missile.dest, missile.destRaw === true);
+        const impactOffset = visualOffset(missile.impactOffset);
+        const followGround = followGroundOf(missile.followGround);
+        const trajectory = cast.trajectory && target.guid === 0n ? cast.trajectory : undefined;
         for (let missileIndex = 0; missileIndex < count; missileIndex++) {
           plan.instances.push({
             path: missile.path,
             scale: missile.scale,
             attachment: missile.attachment,
             flight: {
-              from: { ...cast.casterPoint },
+              from: { ...(trajectory?.source ?? cast.casterPoint) },
               to: { ...target.point },
-              ...(cast.caster !== 0n ? { launch: { guid: cast.caster, attachment: missile.attachment } } : {}),
-              ...(target.guid !== 0n ? { target: { guid: target.guid, attachment: MISSILE_TARGET_ATTACHMENT } } : {}),
+              ...(cast.caster !== 0n && !trajectory?.source ? { launch: { guid: cast.caster, attachment: missile.attachment } } : {}),
+              ...(target.guid !== 0n ? { target: { guid: target.guid, attachment: aimAttachment } } : {}),
               ...(missile.motion ? { motion: missile.motion } : {}),
+              ...(impactOffset ? { impactOffset } : {}),
+              ...(followGround ? { followGround } : {}),
+              ...(trajectory ? {
+                trajectory: { elevation: trajectory.elevation, gravity: missileGravitySource?.(visual.id) ?? MISSILE_DEFAULT_GRAVITY },
+              } : {}),
               missileIndex,
               missileCount: count,
               spellId: visual.id,
@@ -583,11 +606,11 @@ export function planSpellVisual(
 
   // 05.10-A7a-E (6.13): beams of the cast kit (Chain Lightning 321 → 743) over the flourish, and of the
   // impact kits from the caster to each target over its impact window.
-  addBeams(plan, visual.cast, cast.caster, cast.casterPoint, cast.targets, now, now + CAST_KIT_MS);
+  addBeams(plan, visual.cast, visual, cast.caster, cast.casterPoint, cast.targets, now, now + CAST_KIT_MS);
   cast.targets.forEach((target, index) => {
     const arrival = arrivals[index]!;
     for (const kit of [visual.impact, visual.targetImpact]) {
-      addBeams(plan, kit, cast.caster, cast.casterPoint, [target], arrival, arrival + IMPACT_KIT_MS);
+      addBeams(plan, kit, visual, cast.caster, cast.casterPoint, [target], arrival, arrival + IMPACT_KIT_MS);
     }
   });
 
@@ -629,16 +652,10 @@ export function planSpellCastStart(visual: SpellVisualMetadata, cast: SpellCast,
   // 05.10-A7a-E (6.13): a channel kit's beams (Drain Life 11762 → 719, Mind Flay 11744 → 750, Drain Mana
   // 430 → 744, Drain Soul 950 → 723) run from the caster's chest to its channel object, read every frame.
   if (cast.channel && cast.caster !== 0n && kit?.chains) {
-    const beams = (plan.beams ??= []);
-    for (const chain of kit.chains) {
-      beams.push({
-        effect: chain.effect,
-        from: { guid: cast.caster, attachment: BEAM_CHEST_ATTACHMENT, point: { ...cast.casterPoint } },
-        to: { channelOf: cast.caster, attachment: BEAM_CHEST_ATTACHMENT },
-        startedAt: now,
-        endsAt: now + duration,
-      });
-    }
+    // 13.10: the channel's target list is its UNIT_FIELD_CHANNEL_OBJECT (0x007265c0), read every frame.
+    const beams = planChainBeams(kit, beamAnchors(visual.beamEnds), cast.caster, cast.casterPoint,
+      [{ guid: 0n, channelOf: cast.caster }], now, now + duration);
+    if (beams.length > 0) (plan.beams ??= []).push(...beams);
   }
   if (cast.channel && cast.caster !== 0n && !kitPoses(visual.channel) && visual.cast && kitPoses(visual.cast)) {
     // The pose only: the cast kit's models and sound already played with SPELL_GO.

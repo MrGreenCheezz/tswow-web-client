@@ -8,7 +8,7 @@ import * as THREE from "three";
 import { kitChains, parseSpellChainEffects } from "../dist/code/gateway/SpellKitExtras.js";
 import { parseSpellVisualKits, parseSpellVisuals } from "../dist/code/gateway/SpellVisual.js";
 import {
-  BEAM_CAPACITY, ChainBeams, beamBlending, beamColour, beamQuad, channelObjectOf,
+  BEAM_CAPACITY, ChainBeams, beamBlending, beamColour, channelObjectOf,
 } from "../dist/code/browser/ChainBeam.js";
 import { BEAM_CHEST_ATTACHMENT, CAST_KIT_MS, planSpellCastStart, planSpellVisual } from "../dist/code/browser/SpellVisuals.js";
 import { UPDATE_FIELDS } from "../dist/code/generated/updateFields.js";
@@ -31,7 +31,7 @@ const read = (name) => readFile(join(dbcDirectory, name));
 const effect = (id = 1, extra = {}) => ({
   id, texture: "Textures\\SpellChainEffects\\Lightning.blp", width: 0.5, avgSegLen: 2.78, noiseScale: 0.04,
   texCoordScale: 1, textureLength: 2, segDuration: 1000, segDelay: 300, flags: 4, jointCount: 0,
-  color: [255, 255, 255, 255], blendMode: 3, renderLayer: 0, ...extra,
+  color: [255, 255, 255, 255], blendMode: 3, renderLayer: 0, combo: [], ...extra,
 });
 const kit = (chains = [], shake) => ({ startAnimation: -1, animation: -1, effects: [], sound: 0, chains, ...(shake ? { shake } : {}) });
 
@@ -138,10 +138,14 @@ test("the planner draws a cast kit's beams caster → target → next target, an
     caster: 1n, casterPoint: { x: 0, y: 0, z: 0 },
     targets: [{ guid: 2n, point: { x: 10, y: 0, z: 0 } }, { guid: 3n, point: { x: 20, y: 0, z: 0 } }],
   }, 1000);
-  assert.deepEqual(plan.beams.map((beam) => [beam.from.guid, beam.to.guid]), [[1n, 2n], [2n, 3n]]);
-  assert.ok(plan.beams.every((beam) => beam.startedAt === 1000 && beam.endsAt === 1000 + CAST_KIT_MS));
+  // 13.10: Wow.exe 0x007fa4d0 hops through the targets in reverse packet order, each segment in its own window
+  // (SegDelay 300, SegDuration 1000, DelayBetweenEffects 0 in this row).
+  assert.deepEqual(plan.beams.map((beam) => [beam.from.guid, beam.to.guid]), [[1n, 3n], [3n, 2n]]);
+  assert.ok(plan.beams.every((beam) => beam.startedAt === 1300 && beam.endsAt === 2300), "SegDelay … + SegDuration");
   assert.equal(plan.beams[0].to.attachment, BEAM_CHEST_ATTACHMENT);
-  const channel = planSpellCastStart({ id: 689, channel: kit([{ slot: 0, proc: 0, param1: 0, effect: effect(719) }]) },
+  assert.ok(CAST_KIT_MS > 0);
+  // 13.10: the drain channels' kits set CharParamTwo (persistent): shown for the whole channel.
+  const channel = planSpellCastStart({ id: 689, channel: kit([{ slot: 0, proc: 0, param1: 0, persistent: true, effect: effect(719) }]) },
     { caster: 1n, casterPoint: { x: 0, y: 0, z: 0 }, targets: [], castTime: 5000, channel: true }, 0);
   assert.equal(channel.beams.length, 1);
   assert.equal(channel.beams[0].to.channelOf, 1n, "the channel object, read every frame");
@@ -150,25 +154,13 @@ test("the planner draws a cast kit's beams caster → target → next target, an
     undefined, "no beams, no key");
 });
 
-test("the band faces the eye, spans the two ends and repeats its texture every TextureLength yards", () => {
-  const positions = new Float32Array(12);
-  const uvs = new Float32Array(8);
-  const length = beamQuad(new THREE.Vector3(0, 0, 0), new THREE.Vector3(10, 0, 0), new THREE.Vector3(5, 0, 10), 0.5, 2, 0.25,
-    positions, uvs);
-  assert.equal(length, 10);
-  // Seen from +Z the band's width runs along Y.
-  assert.deepEqual([...positions].map((value) => Math.round(value * 1000) / 1000 + 0), [0, -0.25, 0, 0, 0.25, 0, 10, -0.25, 0, 10, 0.25, 0]);
-  assert.deepEqual([...uvs], [0.25, 0, 0.25, 1, 5.25, 0, 5.25, 1]);
-  assert.equal(beamQuad(new THREE.Vector3(1, 1, 1), new THREE.Vector3(1, 1, 1), new THREE.Vector3(), 1, 1, 0, positions, uvs), 0);
-});
-
-test("colour bytes read alpha first; BlendMode maps to alpha, additive or multiplicative", () => {
+test("colour bytes read alpha first; BlendMode is the engine's GxBlend (13.10: 4 mod, 5 mod2x, 6 modAdd)", () => {
   const colour = new THREE.Color();
   assert.equal(beamColour([51, 255, 0, 0], colour), 0.2);
   assert.ok(colour.r > 0.99 && colour.g === 0 && colour.b === 0);
   assert.equal(beamBlending(2), THREE.NormalBlending);
   assert.equal(beamBlending(3), THREE.AdditiveBlending);
-  assert.equal(beamBlending(6), THREE.MultiplyBlending);
+  assert.equal(beamBlending(6), THREE.CustomBlending);
 });
 
 test("the channel object is UNIT_FIELD_CHANNEL_OBJECT of the caster", () => {

@@ -35,6 +35,7 @@ import {
   createCombatLogEntry, type CombatLogEntry,
 } from "../../world/CombatEventModel.js";
 import type { FrameXmlSeamBinding } from "./FrameXmlWorldSeam.js";
+import { combatTextUnitGuid } from "./FrameXmlCombatText.js"; // 13.10 (3.01)
 
 /** The entries kept at most, besides the retention time. */
 export const FRAMEXML_COMBAT_LOG_CAPACITY = 4096;
@@ -316,6 +317,8 @@ export class FrameXmlCombatLogBuffer {
 /** What the seam's `combatLog` member answers. */
 export interface FrameXmlCombatLogModel {
   readonly buffer: FrameXmlCombatLogBuffer;
+  /** 13.10 (3.01): `CombatTextSetActiveUnit`'s unit (0x00ca1380; FrameXmlCombatText.ts), 0n for nobody. */
+  setCombatTextUnit?(guid: bigint): void;
 }
 
 const NOTHING: readonly unknown[] = Object.freeze([]);
@@ -363,6 +366,11 @@ export const FRAMEXML_COMBAT_LOG_BINDINGS: Readonly<Record<string, FrameXmlSeamB
   CombatLogSetRetentionTime: (seam, args) => {
     const seconds = integer(args[0], "Usage: CombatLogSetRetentionTime(seconds)");
     if (seam.combatLog) seam.combatLog.buffer.retention = seconds;
+    return NOTHING;
+  },
+  // 13.10 (3.01): 0x0074d580 — the unit whose casts raise COMBAT_TEXT_UPDATE("SPELL_CAST") (FrameXmlCombatText.ts).
+  CombatTextSetActiveUnit: (seam, args) => {
+    seam.combatLog?.setCombatTextUnit?.(combatTextUnitGuid(seam.unitGuid?.(typeof args[0] === "string" ? args[0].toLowerCase() : "")));
     return NOTHING;
   },
   CombatLog_Object_IsA: (_seam, args) =>

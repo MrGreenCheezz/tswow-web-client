@@ -6,15 +6,16 @@
 //   start time; the row's Amplitude is stored multiplied by 1/36 (0x00a3f854).
 // - 0x00606970, every frame: t = (now − start) / 1000 + Phase; at t ≥ Duration the shake is dropped.
 //   The source is tested against a point (0x006004b0): beyond 80 yards (6,400 squared) it does nothing,
-//   within 9 yards (81) it is at full amplitude, in between the amplitude is scaled by a falloff
-//   (0x0088d0c0, arguments on the FPU stack, not read). Of the live shakes only the strongest
-//   (attenuated amplitude) per Direction 0/1/2 is applied.
+//   within 9 yards (81) it is at full amplitude, in between the amplitude is scaled by 0.7^((d − 9) / 9)
+//   (13.10: 0x006004b0's bytes — fsqrt, (d − 9) / 9, fld 0.7 (0x00a1e8d8), fxch, then 0x0088d0c0, the CRT's
+//   _CIpow, ST1 ^ ST0). Of the live shakes only the strongest (attenuated amplitude) per Direction 0/1/2 is
+//   applied — compared signed (`best < amplitude`, from 0), so a negative amplitude never wins.
 // - 0x005fe6c0 applies one: v = sin(2π · Frequency · t) · amplitude, times exp(−t · Coefficient) when
 //   ShakeType is 1; Direction 0 moves along the facing (cos yaw, sin yaw), 1 along facing + 90°, 2 up.
 //   The facing is that of the unit the camera follows (0x00717e50).
 //
-// Kept as hypotheses (listed in the plan): the falloff between 9 and 80 yards is linear here; the point the
-// distance is measured from is the camera's subject; the offset moves the whole camera (position and aim).
+// Kept as hypotheses (listed in the plan): the point the distance is measured from is the camera's subject (the
+// caller of 0x00606970, 0x00606f90, was not read); the offset moves the whole camera (position and aim).
 // The stock interface has no camera-shake option in this build (no "cameraShake" string in Wow.exe).
 //
 // Cost: at most a few dozen live shakes; `offset` walks them once and allocates nothing.
@@ -46,11 +47,14 @@ interface LiveShake {
   startedAt: number;
 }
 
-/** Linear falloff between SHAKE_FULL_RANGE and SHAKE_MAX_RANGE (hypothesis; see the header). */
+/** 13.10: 0x00a1e8d8, the falloff's base. */
+export const SHAKE_FALLOFF_BASE = 0.699999988079071;
+
+/** 0x006004b0: full within SHAKE_FULL_RANGE, nothing past SHAKE_MAX_RANGE, 0.7^((d − 9) / 9) between. */
 export function shakeAttenuation(distance: number): number {
   if (!(distance > SHAKE_FULL_RANGE)) return 1;
-  if (distance >= SHAKE_MAX_RANGE) return 0;
-  return (SHAKE_MAX_RANGE - distance) / (SHAKE_MAX_RANGE - SHAKE_FULL_RANGE);
+  if (distance > SHAKE_MAX_RANGE) return 0;
+  return SHAKE_FALLOFF_BASE ** ((distance - SHAKE_FULL_RANGE) / SHAKE_FULL_RANGE);
 }
 
 /** One shake's displacement along its direction at `t` seconds of its own clock (0x005fe6c0). */
@@ -109,7 +113,8 @@ export class CameraShakeBank {
       if (channel !== 0 && channel !== 1 && channel !== 2) continue;
       const distance = Math.hypot(shake.x - listener.x, shake.y - listener.y, shake.z - listener.z);
       const amplitude = shake.def.amplitude * SHAKE_AMPLITUDE_SCALE * shakeAttenuation(distance);
-      if (amplitude === 0 || Math.abs(amplitude) <= Math.abs(best[channel]!)) continue;
+      // 13.10: 0x00606970 keeps the larger signed amplitude (`local_20[dir] < local_8`, from 0).
+      if (!(best[channel]! < amplitude)) continue;
       best[channel] = amplitude;
       bestT[channel] = t;
       bestShake[channel] = shake;

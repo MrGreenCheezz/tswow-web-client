@@ -138,15 +138,17 @@ export class SpellMetadataClient {
     // `$e`, `$f`, `$b` and a period-less `$t` as written (SpellText.ts) until it is restarted.
     // 3.39: v=19 adds `category`, Spell.dbc Category — the shared cooldown a cast files (WorldClient.spellCooldownRow).
     // Optional: an older gateway's rows leave a category timer started mid-session unknown, as before 3.39.
-    const url = `${this.#baseUrl}/dbc/spells?ids=${chunk.join(",")}&v=19`; // 3.39: was v=18
+    // 13.10: v=20 adds `speed`, Spell.Speed — a missile's misses are logged on its arrival (3.01, world/MissileMissLog.ts).
+    // Optional: an older gateway's rows log every miss at once, as before.
+    const url = `${this.#baseUrl}/dbc/spells?ids=${chunk.join(",")}&v=20`; // 13.10: was v=19
     let value = await this.#batch(url);
     // The key alone cannot tell a restarted gateway from the hour-long browser cache: an answer the
     // old process gave before the restart is still on disk. A batch whose every row lacks the newest
-    // field (3.39: `category`, present on every v=19 row, 0 included) is asked once more past that
+    // field (13.10: `speed`, present on every v=20 row, 0 included) is asked once more past that
     // cache; if the gateway itself still answers the old shape, this session stops asking twice.
-    if (!this.#olderGateway && value.length > 0 && value.every((row) => row.category === undefined)) { // 3.39
+    if (!this.#olderGateway && value.length > 0 && value.every((row) => row.speed === undefined)) { // 13.10
       value = await this.#batch(url, { cache: "reload" });
-      if (value.every((row) => row.category === undefined)) this.#olderGateway = true; // 3.39
+      if (value.every((row) => row.speed === undefined)) this.#olderGateway = true; // 13.10
     }
     for (const metadata of value) this.#cache.set(metadata.id, metadata);
     // Answered, and without a row: final for this gateway process (see `#missing`).
@@ -258,7 +260,9 @@ function isSpellMetadata(value: unknown): value is SpellMetadata {
     && optionalNumbers(spell.effectDamageMultiplier, 3) && optionalNumbers(spell.effectBonusMultiplier, 3)
     // 3.39 (v=19): a cooldown category is a non-negative id, like StartRecoveryCategory.
     && (spell.category === undefined
-      || (Number.isSafeInteger(spell.category) && (spell.category as number) >= 0));
+      || (Number.isSafeInteger(spell.category) && (spell.category as number) >= 0))
+    // 13.10 (v=20): Spell.Speed, yards a second, 0 for none.
+    && (spell.speed === undefined || (typeof spell.speed === "number" && Number.isFinite(spell.speed) && spell.speed >= 0));
 }
 
 /** 12.10: an optional array of `length` finite numbers. */

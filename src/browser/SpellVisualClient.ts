@@ -165,7 +165,11 @@ export class SpellVisualClient extends BatchedMetadataClient<SpellVisualMetadata
     // validator still accepts: the new keys are optional and the page flies/draws as before without them.
     // Keeping the cache marker here prevents an older "no visual" response from turning
     // Auto Shot back into a generic cast after the gateway has been upgraded.
-    return `${this.baseUrl}/dbc/spell-visuals?v=8&ids=${ids.join(",")}`;
+    // v=9 (13.10, 6.12/6.13): the whole SpellChainEffects row and its Combo rows on a kit's chains, with their
+    // persistent/fan flags; `beamEnds` on a visual with beams; `destRaw`; `followGround` whenever any of its
+    // four columns says something. An older gateway answers v=8's shape: the new keys are optional, a chain row
+    // without them is filled with zeros (a straight band, as before) and a missile keeps its chest aim.
+    return `${this.baseUrl}/dbc/spell-visuals?v=9&ids=${ids.join(",")}`;
   }
 
   protected override accept(value: unknown): value is SpellVisualMetadata {
@@ -186,7 +190,8 @@ export class SpellVisualClient extends BatchedMetadataClient<SpellVisualMetadata
  */
 export class SpellVisualKitClient extends BatchedMetadataClient<SpellVisualKitRecord> {
   protected override url(ids: readonly number[]): string {
-    return `${this.baseUrl}/dbc/spell-visual-kits?v=1&ids=${ids.join(",")}`;
+    // v=2 (13.10, 6.13): the same chain fields as `/dbc/spell-visuals?v=9`.
+    return `${this.baseUrl}/dbc/spell-visual-kits?v=2&ids=${ids.join(",")}`;
   }
 
   protected override accept(value: unknown): value is SpellVisualKitRecord {
@@ -239,16 +244,48 @@ function isKitExtras(shape: Record<string, unknown>): boolean {
       if (!chain || typeof chain !== "object") return false;
       const slot = chain as Record<string, unknown>;
       if (!finite(slot["slot"]) || !finite(slot["proc"]) || !finite(slot["param1"])) return false;
-      const effect = slot["effect"];
-      if (!effect || typeof effect !== "object") return false;
-      const fields = effect as Record<string, unknown>;
-      if (typeof fields["texture"] !== "string") return false;
-      if (!["id", "width", "avgSegLen", "noiseScale", "texCoordScale", "textureLength", "segDuration", "segDelay",
-        "flags", "jointCount", "blendMode", "renderLayer"].every((field) => finite(fields[field]))) return false;
-      const color = fields["color"];
-      if (!Array.isArray(color) || color.length !== 4 || !color.every(finite)) return false;
+      for (const flag of ["persistent", "fan"]) if (slot[flag] !== undefined && typeof slot[flag] !== "boolean") return false; // 13.10
+      if (!isChainEffect(slot["effect"])) return false;
+      const combos = slot["combos"]; // 13.10
+      if (combos !== undefined && (!Array.isArray(combos) || !combos.every(isChainEffect))) return false;
     }
   }
+  return true;
+}
+
+/** 13.10 (6.13): the SpellChainEffects columns of v=9 (LightningBeam.ts reads all of them). */
+const CHAIN_V9_FIELDS = [
+  "jointOffsetRadius", "jointsPerMinorJoint", "minorJointsPerMajorJoint", "minorJointScale", "majorJointScale",
+  "jointMoveSpeed", "jointSmoothness", "minDurationBetweenJoints", "maxDurationBetweenJoints", "waveHeight", "waveFreq",
+  "waveSpeed", "minWaveAngle", "maxWaveAngle", "minWaveSpin", "maxWaveSpin", "arcHeight", "minArcAngle", "maxArcAngle",
+  "minArcSpin", "maxArcSpin", "delayBetweenEffects", "minFlickerOnDuration", "maxFlickerOnDuration",
+  "minFlickerOffDuration", "maxFlickerOffDuration", "pulseSpeed", "pulseOnLength", "pulseFadeLength", "wavePhase",
+] as const;
+
+/**
+ * One chain row. A v=8 row (an older gateway) lacks the v=9 columns: they are filled with 0 here, which draws
+ * the straight band of before (no joints off the line, no wave, arc, flicker or pulse); a present one must be finite.
+ */
+function isChainEffect(effect: unknown): boolean {
+  if (!effect || typeof effect !== "object") return false;
+  const fields = effect as Record<string, unknown>;
+  if (typeof fields["texture"] !== "string") return false;
+  if (!["id", "width", "avgSegLen", "noiseScale", "texCoordScale", "textureLength", "segDuration", "segDelay",
+    "flags", "jointCount", "blendMode", "renderLayer"].every((field) => finite(fields[field]))) return false;
+  const color = fields["color"];
+  if (!Array.isArray(color) || color.length !== 4 || !color.every(finite)) return false;
+  let filled = false;
+  for (const field of CHAIN_V9_FIELDS) {
+    if (fields[field] === undefined) {
+      fields[field] = 0;
+      filled = true;
+    } else if (!finite(fields[field])) return false;
+  }
+  // A v=8 row has no flicker or pulse times: its Flags 0x10/0x20 would blink it every frame or hide it whole.
+  if (filled) fields["flags"] = (fields["flags"] as number) & ~0x30;
+  const combo = fields["combo"];
+  if (combo === undefined) fields["combo"] = [];
+  else if (!Array.isArray(combo) || !combo.every(finite)) return false;
   return true;
 }
 
@@ -277,6 +314,14 @@ function isSpellVisual(value: unknown): value is SpellVisualMetadata {
       && (typeof shape["sound"] !== "number" || !Number.isFinite(shape["sound"]))) return false;
     if (!isMissileExtras(shape)) return false; // 05.10-A7a-E
   }
+  const ends = visual["beamEnds"]; // 13.10 (6.13)
+  if (ends !== undefined) {
+    if (!ends || typeof ends !== "object") return false;
+    const shape = ends as Record<string, unknown>;
+    if (!finite(shape["attachment"]) || !finite(shape["dest"])) return false;
+    if (shape["destRaw"] !== undefined && shape["destRaw"] !== true) return false;
+    for (const field of ["castOffset", "impactOffset"]) if (shape[field] !== undefined && !finiteTriple(shape[field])) return false;
+  }
   for (const field of ["missileSound", "animEventSound", "durationMs"]) {
     if (visual[field] !== undefined
       && (typeof visual[field] !== "number" || !Number.isFinite(visual[field]))) return false;
@@ -297,6 +342,7 @@ function isMissileExtras(shape: Record<string, unknown>): boolean {
       || !Number.isInteger(row["count"]) || (row["count"] as number) < 1) return false;
   }
   for (const field of ["dest", "pathType"]) if (shape[field] !== undefined && !finite(shape[field])) return false;
+  if (shape["destRaw"] !== undefined && shape["destRaw"] !== true) return false; // 13.10
   for (const field of ["castOffset", "impactOffset"]) if (shape[field] !== undefined && !finiteTriple(shape[field])) return false;
   const ground = shape["followGround"];
   if (ground !== undefined) {

@@ -385,6 +385,7 @@ import { SpellClickRepeatGuard } from "./VehicleClick.js"; // 11.02-BCD
 import { buildPetCastSpell, petBarCastsAsUnit, petSlotCastsSpell } from "./PetCastSpell.js"; // 11.02-BCD
 import { petSpellCastsAsUnitAt } from "./PetCastSpell.js"; // L13 11.02-D; L13-review 11.02-D: + the press's unit
 import { spellAttributeWords } from "./PetCastSpell.js"; // 5.05 (11.10): the wand rule
+import { MissileMissSchedule, missileMissTiming, type MissileMissSpell } from "./MissileMissLog.js"; // 13.10 (3.01)
 import { wandRepeatCancels } from "./AutoRepeatRefusal.js"; // 5.05 (11.10)
 import { cooldownRefusalText, SPELL_FAILED_ITEM_NOT_READY } from "./CooldownRefusalWords.js"; // 3.47 (12.10)
 // 11.02-E: missile trajectories — the cast's flag 2 tail, the one re-aim, the page's solver.
@@ -1413,6 +1414,13 @@ export class WorldClient {
    * asked under. Undefined, or no row: nothing is filed beyond what the callers' durations say, as before 3.39.
    */
   spellCooldownRow: ((spellId: number) => SpellCooldownRow | undefined) | undefined;
+  /**
+   * 13.10 (3.01): the page's Spell.dbc rows' Speed and attribute words (`/dbc/spells?v=20`), for when a GO's misses
+   * are told (MissileMissLog.ts). Undefined, or no row: every miss is told at once, as before.
+   */
+  spellMissileRow: ((spellId: number) => MissileMissSpell | undefined) | undefined;
+  /** 13.10 (3.01): the misses waiting for their missile to land. */
+  readonly #missileMisses = new MissileMissSchedule();
   /** 3.39: when and for how long each category part in `categoryCooldowns` was started (its sweep). */
   readonly #categorySnapshots = new Map<number, CooldownSnapshot>();
   /** 3.39: the parts a held entry was filed with at its GO; its cooldown event starts them (0x00802970). */
@@ -6004,6 +6012,7 @@ export class WorldClient {
     // The entry backlog's timer and held messages (9.03) go with the session.
     this.customPackets.dispose();
     this.#pendingItemUses.clear();
+    this.#missileMisses.clear(); // 13.10 (3.01): misses still in flight go with the session
     this.summonRequest = undefined;
     this.binderConfirm = undefined;
     this.talentWipeConfirm = undefined;
@@ -7418,7 +7427,14 @@ export class WorldClient {
       // Resist, dodge, parry, deflect, absorb, reflect and immunity are rolled when the spell goes
       // off and written only here (Spell::UpdateSpellCastDataTargets, Spell.cpp:4677-4708); the miss
       // log below carries only what is decided on landing (:2467-2471). Told the same way.
-      for (const miss of cast.misses) this.#reportSpellMiss(cast.casterUnit, miss.guid, cast.spellId, miss.reason);
+      // 13.10 (3.01): Wow.exe 0x0080e1b0 tells a GO's misses itself only for a spell without speed (and none with
+      // AttributesEx2 0x80); a missile's are told when it lands (0x00700e20) — MissileMissLog.ts.
+      const missRow = this.spellMissileRow?.(cast.spellId); // 13.10 (3.01)
+      const missFrom = this.state.objects.get(cast.casterUnit)?.position; // 13.10 (3.01)
+      for (const miss of cast.misses) {
+        const timing = missileMissTiming(missRow, missFrom, this.state.objects.get(miss.guid)?.position); // 13.10 (3.01)
+        this.#missileMisses.tell(timing, () => this.#reportSpellMiss(cast.casterUnit, miss.guid, cast.spellId, miss.reason));
+      }
       // 3.01-go-order: the GO's SPELL_CAST_RESULT (187) moved above SPELL_GO.
       // A successful non-channel GO is the authoritative end of its cast bar. Channels remain in
       // `casts` until MSG_CHANNEL_UPDATE says zero, because their GO can arrive while the channel

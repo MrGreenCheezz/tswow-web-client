@@ -88,10 +88,13 @@ test("direction 0 runs along the facing, 1 across it; only the strongest shake p
   near(out.x, -1, "and the cross shake with it");
 });
 
-test("distance: full within 9 yards, nothing beyond 80, a falloff between", () => {
+test("distance: full within 9 yards, nothing beyond 80, 0.7^((d − 9) / 9) between (13.10: 0x006004b0 → _CIpow)", () => {
   assert.equal(shakeAttenuation(5), 1);
-  assert.equal(shakeAttenuation(80), 0);
-  assert.ok(shakeAttenuation(40) > 0 && shakeAttenuation(40) < 1);
+  assert.equal(shakeAttenuation(9), 1);
+  near(shakeAttenuation(18), 0.7, "one 9-yard step: × 0.7", 1e-6);
+  near(shakeAttenuation(36), 0.7 ** 3, "three steps", 1e-6);
+  near(shakeAttenuation(80), 0.7 ** (71 / 9), "80 itself still shakes a little", 1e-6);
+  assert.equal(shakeAttenuation(80.01), 0);
   const bank = new CameraShakeBank();
   const out = { x: 0, y: 0, z: 0 };
   bank.add([sine()], { x: 100, y: 0, z: 0 }, 0);
@@ -117,4 +120,14 @@ test("the planner carries a kit's shakes with where its unit stood and when", ()
   }, 1000);
   assert.deepEqual(plan.shakes.map((one) => [one.point.x, one.at]), [[0, 1000], [20, 2000]]);
   assert.equal(plan.shakes[0].shakes, shake);
+});
+
+test("13.10: the strongest per direction is the larger signed amplitude (0x00606970), so a negative one never shakes", () => {
+  const bank = new CameraShakeBank();
+  const out = { x: 0, y: 0, z: 0 };
+  bank.add([sine({ direction: 2, amplitude: -72 })], { x: 0, y: 0, z: 0 }, 0);
+  assert.equal(bank.offset(250, { x: 0, y: 0, z: 0 }, 0, out), false, "−72 never beats the 0 it starts from");
+  bank.add([sine({ direction: 2, amplitude: 36 })], { x: 0, y: 0, z: 0 }, 0);
+  assert.equal(bank.offset(250, { x: 0, y: 0, z: 0 }, 0, out), true);
+  near(out.z, 1, "the positive one alone");
 });

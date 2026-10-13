@@ -237,6 +237,13 @@ export interface SpellMetadata {
    * since `v=19`, 0 included — the browser tells an older gateway by its absence.
    */
   category?: number;
+  /**
+   * 13.10 (v=20, 3.01): `Speed` (record +0xbc in the client's copy), yards a second. Wow.exe's GO handler 0x0080e1b0
+   * writes the misses of a spell whose speed is 0 at once (and not at all with AttributesEx2 0x80); a missile's
+   * misses are written when it arrives (0x00700e20). Present on every row since `v=20`, 0 included — the browser
+   * tells an older gateway by its absence.
+   */
+  speed?: number;
   /** L13 (v=17, 3.12): `EffectMiscValueB[3]`, raw (for SPELL_EFFECT_SUMMON, a SummonProperties id). */
   effectMiscValueB?: number[];
   /**
@@ -433,6 +440,11 @@ export function opensLockOnItemOrObject(effects: readonly number[], implicitTarg
 const SPELL_ATTR7_SUMMON_PLAYER_TOTEM = 0x20;
 
 /** Wow.exe 0x005a7b50: a TotemCategory id → the multi-cast slot bits it serves. */
+/** 13.10 (3.01): Spell.Speed as the row carries it — a non-finite or negative float reads as 0 (no missile). */
+export function spellSpeed(value: number): number {
+  return Number.isFinite(value) && value > 0 ? value : 0;
+}
+
 export function totemCategorySlotMask(category: number): number {
   switch (category) {
     case 2: return 0x2;
@@ -623,6 +635,7 @@ export function parseSpellMetadata(
         [0, 1].map((index) => spells.int(row, "RequiredTotemCategoryID", index))),
       startRecoveryCategory: spells.int(row, "StartRecoveryCategory"), // L13 (v=17)
       category: spells.int(row, "Category"), // 3.39 (v=19)
+      speed: spellSpeed(spells.float(row, "Speed")), // 13.10 (v=20, 3.01)
       effectMiscValueB: perEffect((effect) => spells.int(row, "EffectMiscValueB", effect)), // L13 (v=17)
       castTime: castTimes.get(spells.int(row, "CastingTimeIndex")) ?? 0,
       effectAura: perEffect((effect) => spells.int(row, "EffectAura", effect)),

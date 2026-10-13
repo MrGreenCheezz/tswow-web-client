@@ -32,8 +32,8 @@ test("SpellVisualClient batches same-turn ids once and permanently remembers suc
     assert.equal(client.get(11).precast.sound, 7);
     assert.equal(client.get(12), undefined);
     assert.equal(urls.length, 1, "one JavaScript turn becomes one metadata batch");
-    // 05.10-A7a-E: v=8 is slice E's one bump (missile motion/columns, kit shakes and chains).
-    assert.equal(new URL(urls[0]).searchParams.get("v"), "8",
+    // 05.10-A7a-E: v=8 was slice E's one bump; 13.10: v=9 (whole chain rows, combos, beam ends, destRaw).
+    assert.equal(new URL(urls[0]).searchParams.get("v"), "9",
       "non-cacheable visual metadata rolls the old client cache contract");
     assert.equal(new URL(urls[0]).searchParams.get("ids"), ids.join(","));
     client.get(12);
@@ -175,7 +175,7 @@ test("S3: kit ids batch onto their own route and remember an empty answer", asyn
     const asked = new URL(urls[0]);
     assert.equal(asked.pathname, "/dbc/spell-visual-kits", "a kit id is not a spell id");
     assert.equal(asked.protocol, "http:", "the websocket URL becomes the gateway origin");
-    assert.equal(asked.searchParams.get("v"), "1");
+    assert.equal(asked.searchParams.get("v"), "2", "13.10: the kit route's chains changed shape");
     assert.deepEqual(asked.searchParams.get("ids"), "406,999999");
     assert.deepEqual(loaded, [406, 999999]);
     assert.equal(client.get(406).kit.sound, 45);
@@ -249,6 +249,38 @@ test("05.10-A7a-E: the v=8 missile columns are accepted, malformed ones refused,
     client.get(4);
     await tick(); await tick();
     assert.equal(client.get(4), undefined, "an offset that is not three numbers is refused");
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("13.10: a v=8 chain row (an older gateway) is filled with zeros, without its flicker and pulse bits; v=9 keys are checked", async () => {
+  const original = globalThis.fetch;
+  const v8 = {
+    id: 723, texture: "T.blp", width: 0.3, avgSegLen: 0.1, noiseScale: 0, texCoordScale: -1, textureLength: 10,
+    segDuration: 1000, segDelay: 300, flags: 0x168, jointCount: 27, color: [255, 255, 255, 255], blendMode: 3, renderLayer: 0,
+  };
+  const answers = {
+    1: { id: 1, channel: { ...kit(), chains: [{ slot: 0, proc: 0, param1: 1, effect: { ...v8 } }] } },
+    2: { id: 2, channel: { ...kit(), chains: [{ slot: 0, proc: 0, param1: 1, persistent: "yes", effect: { ...v8 } }] } },
+  };
+  globalThis.fetch = async (url) => {
+    const id = Number(new URL(String(url)).searchParams.get("ids"));
+    return { ok: true, async json() { return [answers[id]]; } };
+  };
+  try {
+    const client = new SpellVisualClient("http://localhost:8090/ws");
+    client.get(1);
+    await tick();
+    await tick();
+    const effect = client.get(1).channel.chains[0].effect;
+    assert.equal(effect.pulseSpeed, 0);
+    assert.deepEqual(effect.combo, []);
+    assert.equal(effect.flags, 0x148, "0x20 (pulse) and 0x10 (flicker) dropped without their times");
+    client.get(2);
+    await tick();
+    await tick();
+    assert.equal(client.get(2), undefined, "a malformed persistent flag is refused");
   } finally {
     globalThis.fetch = original;
   }

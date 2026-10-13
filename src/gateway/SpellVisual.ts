@@ -173,15 +173,37 @@ export interface SpellVisualMissile {
   /** SpellVisual.MissileMotion → SpellMissileMotion row (script verbatim, MissileCount ≥ 1). */
   motion?: SpellMissileMotionRow;
   /**
-   * SpellVisual.MissileDestinationAttachment, raw (1 ×6,738, 0 ×2,055, 2 ×658 …). Carried, not read: what
-   * it selects is not settled (see the note on `attachment`); the page aims at the target's chest.
+   * SpellVisual.MissileDestinationAttachment, raw. 13.10: settled (Wow.exe 0x00732ff0, 0x007fabf0) — an index
+   * into the 16-entry table 0x00adaa20 (0 head, 1 chest, 2 ground, 3/4 spell hands, 5 breath, …;
+   * browser/SpellVisualAttach.ts), or the attachment id itself when SpellVisual.Flags has 0x200 (`destRaw`).
    */
   dest?: number;
+  /** 13.10: SpellVisual.Flags & 0x200 — `dest` (and a beam's MissileAttachment) is an attachment id, not an index. */
+  destRaw?: true;
   /** SpellVisual.MissilePathType when not 0 (1 ×25, 2 ×81); meaning not settled, carried only. */
   pathType?: number;
-  /** MissileFollowGround{Height, DropSpeed, Approach, Flags} when Height ≠ 0 (≈226 visuals); not applied yet. */
+  /**
+   * MissileFollowGround{Height, DropSpeed, Approach, Flags}, raw thousandths, when any is not 0. 13.10: was only
+   * when Height ≠ 0, which dropped 93 rows that set Flags bit 2 with Height 0 (Wow.exe 0x00732ff0 reads all four
+   * always and clamps the height to 0.25 yards).
+   */
   followGround?: { height: number; dropSpeed: number; approach: number; flags: number };
-  /** SpellVisual.MissileCastOffset / MissileImpactOffset when not all zero (71 rows); frame not settled, carried only. */
+  /** SpellVisual.MissileCastOffset / MissileImpactOffset when not all zero, as stored (Wow.exe negates y on read). */
+  castOffset?: [number, number, number];
+  impactOffset?: [number, number, number];
+}
+
+/**
+ * 13.10 (6.13): where a visual's beams end — the same SpellVisual columns a missile reads, which Wow.exe's beam
+ * builder 0x007fc5f0 takes from the spell's visual whether or not it has a missile model. Carried on a visual
+ * whose kits draw a beam.
+ */
+export interface SpellVisualBeamEnds {
+  /** MissileAttachment, raw (−1: none). */
+  attachment: number;
+  /** MissileDestinationAttachment, raw (see `SpellVisualMissile.dest`). */
+  dest: number;
+  destRaw?: true;
   castOffset?: [number, number, number];
   impactOffset?: [number, number, number];
 }
@@ -209,6 +231,8 @@ export interface SpellVisualMetadata {
   impactArea?: SpellVisualKit;
   persistentArea?: SpellVisualKit;
   missile?: SpellVisualMissile;
+  /** 13.10 (6.13): the beam ends of a visual whose kits draw a beam. */
+  beamEnds?: SpellVisualBeamEnds;
   /** SoundEntries ids authored directly on SpellVisual rather than on a kit. */
   missileSound?: number;
   animEventSound?: number;
@@ -303,26 +327,50 @@ function missileExtras(
   const motion = motions.get(visuals.int(row, "MissileMotion"));
   if (motion) extras.motion = motion;
   extras.dest = visuals.int(row, "MissileDestinationAttachment");
+  if ((visuals.int(row, "Flags") & SPELL_VISUAL_FLAG_RAW_ATTACHMENTS) !== 0) extras.destRaw = true; // 13.10
   const pathType = visuals.int(row, "MissilePathType");
   if (pathType !== 0) extras.pathType = pathType;
-  const height = visuals.int(row, "MissileFollowGroundHeight");
-  if (height !== 0) {
-    extras.followGround = {
-      height,
-      dropSpeed: visuals.int(row, "MissileFollowGroundDropSpeed"),
-      approach: visuals.int(row, "MissileFollowGroundApproach"),
-      flags: visuals.int(row, "MissileFollowGroundFlags"),
-    };
-  }
-  const vector = (field: "MissileCastOffset" | "MissileImpactOffset"): [number, number, number] | undefined => {
-    const value: [number, number, number] = [visuals.float(row, field, 0), visuals.float(row, field, 1), visuals.float(row, field, 2)];
-    return value.every(Number.isFinite) && value.some((component) => component !== 0) ? value : undefined;
+  // 13.10: all four whenever any says something (0x00732ff0 reads them unconditionally).
+  const followGround = {
+    height: visuals.int(row, "MissileFollowGroundHeight"),
+    dropSpeed: visuals.int(row, "MissileFollowGroundDropSpeed"),
+    approach: visuals.int(row, "MissileFollowGroundApproach"),
+    flags: visuals.int(row, "MissileFollowGroundFlags"),
   };
-  const castOffset = vector("MissileCastOffset");
+  if (followGround.height !== 0 || followGround.dropSpeed !== 0 || followGround.approach !== 0 || followGround.flags !== 0) {
+    extras.followGround = followGround;
+  }
+  const castOffset = offsetColumn(visuals, row, "MissileCastOffset");
   if (castOffset) extras.castOffset = castOffset;
-  const impactOffset = vector("MissileImpactOffset");
+  const impactOffset = offsetColumn(visuals, row, "MissileImpactOffset");
   if (impactOffset) extras.impactOffset = impactOffset;
   return extras;
+}
+
+/** 13.10: SpellVisual.Flags 0x200 — MissileAttachment/MissileDestinationAttachment are attachment ids (0x007fc5f0, 0x00732ff0). */
+const SPELL_VISUAL_FLAG_RAW_ATTACHMENTS = 0x200;
+
+function offsetColumn(
+  visuals: Dbc<"SpellVisual">,
+  row: number,
+  field: "MissileCastOffset" | "MissileImpactOffset",
+): [number, number, number] | undefined {
+  const value: [number, number, number] = [visuals.float(row, field, 0), visuals.float(row, field, 1), visuals.float(row, field, 2)];
+  return value.every(Number.isFinite) && value.some((component) => component !== 0) ? value : undefined;
+}
+
+/** 13.10 (6.13): a visual's beam ends (SpellVisualBeamEnds). */
+function beamEnds(visuals: Dbc<"SpellVisual">, row: number): SpellVisualBeamEnds {
+  const ends: SpellVisualBeamEnds = {
+    attachment: visuals.int(row, "MissileAttachment"),
+    dest: visuals.int(row, "MissileDestinationAttachment"),
+  };
+  if ((visuals.int(row, "Flags") & SPELL_VISUAL_FLAG_RAW_ATTACHMENTS) !== 0) ends.destRaw = true;
+  const castOffset = offsetColumn(visuals, row, "MissileCastOffset");
+  if (castOffset) ends.castOffset = castOffset;
+  const impactOffset = offsetColumn(visuals, row, "MissileImpactOffset");
+  if (impactOffset) ends.impactOffset = impactOffset;
+  return ends;
 }
 
 /** 05.10-A7a-E (6.13): the shake and chain tables a kit resolves through; empty when the files are absent. */
@@ -355,6 +403,8 @@ function readKits(
       procs: [0, 1, 2, 3].map((slot) => kits.int(row, "CharProc", slot)),
       param0: [0, 1, 2, 3].map((slot) => kits.float(row, "CharParamZero", slot)),
       param1: [0, 1, 2, 3].map((slot) => kits.float(row, "CharParamOne", slot)),
+      param2: [0, 1, 2, 3].map((slot) => kits.float(row, "CharParamTwo", slot)), // 13.10 (6.13)
+      param3: [0, 1, 2, 3].map((slot) => kits.float(row, "CharParamThree", slot)), // 13.10 (6.13)
     }, extras.chains);
     // A kit that shows nothing, asks for no pose, makes no noise, shakes nothing and draws no beam is not a kit.
     if (effects.length === 0 && startAnimation < 0 && animation < 0 && sound === 0 && !shake && chains.length === 0) continue;
@@ -496,6 +546,10 @@ export function parseSpellVisuals(
         speed: 0,
         ...missileExtras(visuals, row, motions), // 05.10-A7a-E
       };
+    }
+    // 13.10 (6.13): a visual whose kits draw a beam carries its beam ends.
+    if (VISUAL_KITS.some(([, phase]) => (record[phase] as SpellVisualKit | undefined)?.chains !== undefined)) {
+      record.beamEnds = beamEnds(visuals, row);
     }
     const missileSound = Math.max(0, visuals.int(row, "MissileSound"));
     const animEventSound = Math.max(0, visuals.int(row, "AnimEventSoundID"));

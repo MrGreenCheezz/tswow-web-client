@@ -87,7 +87,8 @@ import { LightClient } from "../LightClient.js";
 import { LiquidTextureClient } from "../Water.js";
 import { SpellMetadataClient } from "../SpellMetadata.js";
 import { SpellVisualClient, SpellVisualKitClient } from "../SpellVisualClient.js";
-import { spellVisualKitPaths } from "../SpellVisuals.js";
+import { setMissileGravitySource, spellVisualKitPaths } from "../SpellVisuals.js"; // 13.10 (6.12): gravity
+import { spellMissiles } from "../SpellMissileClient.js"; // 13.10 (6.12)
 import { SpellVisualCoordinator } from "../SpellVisualLifecycle.js";
 import { CreatureMetadataClient } from "../CreatureMetadata.js";
 import { GameObjectMetadataClient } from "../GameObjectMetadata.js";
@@ -901,6 +902,10 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
   // 3.39: the rows' Category and recoveries (`/dbc/spells?v=19`) for what a GO and a cooldown event file — the
   // category part that holds a sibling (the second potion), the hold of a stealth or a potion until its event.
   world.spellCooldownRow = (spellId) => game.spells.get(spellId); // 3.39
+  // 13.10 (3.01): Speed and AttributesEx2 decide when a GO's misses are told (world/MissileMissLog.ts).
+  world.spellMissileRow = (spellId) => game.spells.get(spellId);
+  // 13.10 (6.12): a trajectory missile falls under its spell's SpellMissile Gravity (Wow.exe 0x00700880).
+  setMissileGravitySource((spellId) => spellMissiles(game.gatewayOrigin)?.missileOfSpell(spellId)?.gravity);
   world.onCooldownEvent = (spellId) => {
     const metadata = game.spells.get(spellId);
     if (metadata) world.startLocalCooldown(spellId, Math.max(metadata.recoveryTime, metadata.categoryRecoveryTime));

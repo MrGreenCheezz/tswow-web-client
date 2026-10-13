@@ -90,7 +90,19 @@ export interface SpellGo extends SpellCastHeader {
   misses: { guid: bigint; reason: number }[];
   /** The optional target block; absent when a legacy/private packet ended after the miss list. */
   targets?: SpellCastTargets;
+  /**
+   * 13.10 (6.12): `CAST_FLAG_ADJUST_MISSILE`'s words — the trajectory's elevation (radians) and its delay
+   * (ms; Spell::SendSpellGo writes m_targets.GetElevation() and m_delayMoment; Wow.exe 0x0080e1b0 reads them
+   * after the power and rune words). Absent without the flag or when the tail does not read cleanly.
+   */
+  adjustMissile?: { elevation: number; delayMs: number };
 }
+
+/** 13.10: `CAST_FLAG_RUNE_LIST` and `CAST_FLAG_ADJUST_MISSILE` (Spell.h). */
+const CAST_FLAG_RUNE_LIST = 0x200000;
+export const CAST_FLAG_ADJUST_MISSILE = 0x20000;
+/** A delay past this is a misread tail, not a flight. */
+const ADJUST_MISSILE_MAX_DELAY_MS = 60_000;
 
 export interface SpellCooldownPacket {
   guid: bigint;
@@ -472,7 +484,29 @@ export function parseSpellGo(payload: Uint8Array): SpellGo {
     misses.push({ guid, reason });
   }
   const targets = parseSpellCastTargets(reader);
-  return targets === undefined ? { ...header, hits, misses } : { ...header, hits, misses, targets };
+  const go: SpellGo = targets === undefined ? { ...header, hits, misses } : { ...header, hits, misses, targets };
+  // 13.10 (6.12): the tail up to the trajectory words, in Wow.exe 0x0080e1b0's order.
+  if ((header.castFlags & CAST_FLAG_ADJUST_MISSILE) !== 0 && targets !== undefined) {
+    try {
+      if ((header.castFlags & CAST_FLAG_POWER_LEFT_SELF) !== 0) reader.u32();
+      if ((header.castFlags & CAST_FLAG_RUNE_LIST) !== 0) {
+        const before = reader.u8();
+        const after = reader.u8();
+        for (let rune = 0; rune < 6; rune++) {
+          const bit = 1 << rune;
+          if ((before & bit) !== 0 && (after & bit) === 0) reader.u8();
+        }
+      }
+      const elevation = reader.f32();
+      const delayMs = reader.u32();
+      if (Number.isFinite(elevation) && Math.abs(elevation) <= 2 * Math.PI && delayMs <= ADJUST_MISSILE_MAX_DELAY_MS) {
+        go.adjustMissile = { elevation, delayMs };
+      }
+    } catch {
+      // A short tail: no trajectory; the missile flies its straight line.
+    }
+  }
+  return go;
 }
 
 export function parseSpellCooldown(payload: Uint8Array): SpellCooldownPacket {

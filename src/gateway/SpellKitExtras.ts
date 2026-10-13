@@ -19,6 +19,16 @@
 // Drain Mana 430 → 744, Drain Soul 950 → 723, Chain Lightning's cast kit 321 → 743; probe-charproc-beam.mjs).
 // `CharProc` 0 is also the value of an unused slot, so a slot is a beam only when its parameter names a row.
 // The other procedures (1, 8, 11, 13, 14, …) are not read.
+//
+// 13.10 (6.13), Wow.exe 3.3.5a 12340 read-only (.runtime/re-2026-10-11/glue-1110/1013-m4…m8.txt): the kit
+// procedure switch 0x007265c0 sends CharProc 0 and 12 alike to 0x007fc950 → 0x007fc5f0 with two flags,
+// CharParamTwo ≠ 0 («persistent»: record +0x50 bit 1 — the beam shows for as long as the kit, ignoring its
+// time window) and CharParamThree ≠ 0 («fan»: 0x007fa4d0 starts every segment at the caster instead of at
+// the previous target). 0x007fc5f0 then builds one beam record for the row and one more for every id of
+// the row's Combo string (4 bytes per id, decoded by 0x009a8ce0; at most 12, the walk stops at an id that
+// names no row). The whole SpellChainEffects row is carried (Lightning.cpp reads all of it, browser/
+// LightningBeam.ts); the client's in-memory row is the file's with the unaligned tail realigned (Combo at
+// +0xa4, RenderLayer +0xa8, TextureLength +0xac, WavePhase +0xb0).
 
 import { DbcError } from "./Dbc.js";
 import { parseFixed, type FixedLayout } from "./DbcFixed.js";
@@ -45,7 +55,7 @@ export interface SpellVisualShake {
   coefficient: number;
 }
 
-/** What a straight beam needs of one SpellChainEffects row (joints, waves and pulses are not drawn yet). */
+/** One SpellChainEffects row, every column Lightning.cpp reads (browser/LightningBeam.ts has the arithmetic). */
 export interface SpellChainEffect {
   id: number;
   /** MPQ path, e.g. `Textures\SpellChainEffects\Lightning.blp`. */
@@ -59,10 +69,44 @@ export interface SpellChainEffect {
   segDelay: number;
   flags: number;
   jointCount: number;
-  /** Bytes 156–159 in file order; the first is never 0 and 255 on 761 rows (alpha, by hypothesis). */
+  /** Bytes 156–159 in file order: alpha, red, green, blue (0x009a9900 stores them as one ARGB word). */
   color: [number, number, number, number];
+  /** The engine's GxBlend (0x009aa210: render state 6, alpha reference from the table 0x00ad8b7c). */
   blendMode: number;
   renderLayer: number;
+  // 13.10 (6.13): the rest of the row, dwords 10–38 and the realigned WavePhase.
+  jointOffsetRadius: number;
+  jointsPerMinorJoint: number;
+  minorJointsPerMajorJoint: number;
+  minorJointScale: number;
+  majorJointScale: number;
+  jointMoveSpeed: number;
+  jointSmoothness: number;
+  minDurationBetweenJoints: number;
+  maxDurationBetweenJoints: number;
+  waveHeight: number;
+  waveFreq: number;
+  waveSpeed: number;
+  minWaveAngle: number;
+  maxWaveAngle: number;
+  minWaveSpin: number;
+  maxWaveSpin: number;
+  arcHeight: number;
+  minArcAngle: number;
+  maxArcAngle: number;
+  minArcSpin: number;
+  maxArcSpin: number;
+  delayBetweenEffects: number;
+  minFlickerOnDuration: number;
+  maxFlickerOnDuration: number;
+  minFlickerOffDuration: number;
+  maxFlickerOffDuration: number;
+  pulseSpeed: number;
+  pulseOnLength: number;
+  pulseFadeLength: number;
+  wavePhase: number;
+  /** The Combo string's ids (0x009a8ce0), in order; empty when it names none. */
+  combo: number[];
 }
 
 /** One beam slot of a kit. */
@@ -71,9 +115,41 @@ export interface SpellVisualChain {
   slot: number;
   /** CharProc: 0 or 12. */
   proc: number;
-  /** CharParamOne[slot] (0 or 1 on most rows; meaning not settled). */
+  /** CharParamOne[slot] (0 or 1 on most rows; 0x007265c0 does not read it for CharProc 0/12). */
   param1: number;
   effect: SpellChainEffect;
+  /** 13.10: CharParamTwo ≠ 0 — shown for as long as the kit, whatever the segment times (record +0x50 bit 1). */
+  persistent?: boolean;
+  /** 13.10: CharParamThree ≠ 0 — every segment from the caster (0x007fa4d0 `param_5`), not a chain. */
+  fan?: boolean;
+  /** 13.10: the rows the effect's Combo names, drawn with it as beams of their own (0x007fc5f0). */
+  combos?: SpellChainEffect[];
+}
+
+/** 0x007fc5f0: a beam builds at most this many records (its row and its combos). */
+export const CHAIN_COMBO_LIMIT = 12;
+
+/**
+ * 0x009a8ce0: one Combo id from four bytes of the string (read as a little-endian word). The client
+ * packs 7 bits a byte; this is its bit shuffle, verbatim.
+ */
+export function decodeChainComboId(word: number): number {
+  const p = word >>> 0;
+  const u = (p & 0xfefefefe) >>> 0;
+  const high = ((((((((u >>> 7) & 0x200000) | (p & 0x20000000)) >>> 3) | (p & 0x2000000)) >>> 4) | (p & 0x40000000)) >>> 3
+    | (p & 0x4000000)) >>> 11;
+  return (high | ((((u >>> 4) & 0xff800000) | u) & 0xffffff)) >>> 0;
+}
+
+/** The ids of a Combo string, four bytes at a time, up to the first that decodes to 0. */
+export function chainComboIds(bytes: Uint8Array): number[] {
+  const ids: number[] = [];
+  for (let at = 0; at + 4 <= bytes.length && ids.length < CHAIN_COMBO_LIMIT; at += 4) {
+    const id = decodeChainComboId(bytes[at]! | (bytes[at + 1]! << 8) | (bytes[at + 2]! << 16) | (bytes[at + 3]! << 24));
+    if (id === 0) break;
+    ids.push(id);
+  }
+  return ids;
 }
 
 /** ShakeID → its (up to three) CameraShakes rows. */
@@ -123,12 +199,13 @@ export function parseSpellChainEffects(payload: Uint8Array): Map<number, SpellCh
     throw new DbcError(`SpellChainEffects: ${fields} fields of ${recordSize} bytes, expected `
       + `${SPELL_CHAIN_EFFECTS_FIELDS} of ${SPELL_CHAIN_EFFECTS_RECORD}`);
   }
-  const string = (offset: number): string => {
-    if (offset === 0 || offset >= stringsSize) return "";
+  const bytesAt = (offset: number): Buffer => {
+    if (offset === 0 || offset >= stringsSize) return data.subarray(0, 0);
     const start = stringsOffset + offset;
     const end = data.indexOf(0, start);
-    return end < start ? "" : data.subarray(start, end).toString("utf8");
+    return end < start ? data.subarray(0, 0) : data.subarray(start, end);
   };
+  const string = (offset: number): string => bytesAt(offset).toString("utf8");
   const result = new Map<number, SpellChainEffect>();
   for (let row = 0; row < records; row++) {
     const base = 20 + row * recordSize;
@@ -149,8 +226,46 @@ export function parseSpellChainEffects(payload: Uint8Array): Map<number, SpellCh
       color: [data[base + 156]!, data[base + 157]!, data[base + 158]!, data[base + 159]!],
       blendMode: data[base + 160]!,
       renderLayer: data.readInt32LE(base + 165),
+      // 13.10 (6.13)
+      jointOffsetRadius: float(10),
+      jointsPerMinorJoint: dword(11),
+      minorJointsPerMajorJoint: dword(12),
+      minorJointScale: float(13),
+      majorJointScale: float(14),
+      jointMoveSpeed: float(15),
+      jointSmoothness: float(16),
+      minDurationBetweenJoints: float(17),
+      maxDurationBetweenJoints: float(18),
+      waveHeight: float(19),
+      waveFreq: float(20),
+      waveSpeed: float(21),
+      minWaveAngle: float(22),
+      maxWaveAngle: float(23),
+      minWaveSpin: float(24),
+      maxWaveSpin: float(25),
+      arcHeight: float(26),
+      minArcAngle: float(27),
+      maxArcAngle: float(28),
+      minArcSpin: float(29),
+      maxArcSpin: float(30),
+      delayBetweenEffects: float(31),
+      minFlickerOnDuration: float(32),
+      maxFlickerOnDuration: float(33),
+      minFlickerOffDuration: float(34),
+      maxFlickerOffDuration: float(35),
+      pulseSpeed: float(36),
+      pulseOnLength: float(37),
+      pulseFadeLength: float(38),
+      wavePhase: data.readFloatLE(base + 173),
+      combo: chainComboIds(bytesAt(data.readUInt32LE(base + 161))),
     };
-    const numbers = [effect.width, effect.avgSegLen, effect.noiseScale, effect.texCoordScale, effect.textureLength];
+    const numbers = [effect.width, effect.avgSegLen, effect.noiseScale, effect.texCoordScale, effect.textureLength,
+      effect.jointOffsetRadius, effect.minorJointScale, effect.majorJointScale, effect.jointMoveSpeed, effect.jointSmoothness,
+      effect.minDurationBetweenJoints, effect.maxDurationBetweenJoints, effect.waveHeight, effect.waveFreq, effect.waveSpeed,
+      effect.minWaveAngle, effect.maxWaveAngle, effect.minWaveSpin, effect.maxWaveSpin, effect.arcHeight, effect.minArcAngle,
+      effect.maxArcAngle, effect.minArcSpin, effect.maxArcSpin, effect.delayBetweenEffects, effect.minFlickerOnDuration,
+      effect.maxFlickerOnDuration, effect.minFlickerOffDuration, effect.maxFlickerOffDuration, effect.pulseSpeed,
+      effect.pulseOnLength, effect.pulseFadeLength, effect.wavePhase];
     if (effect.id > 0 && effect.texture !== "" && numbers.every(Number.isFinite)) result.set(effect.id, effect);
   }
   return result;
@@ -161,6 +276,9 @@ export interface KitProcedures {
   procs: readonly number[];
   param0: readonly number[];
   param1: readonly number[];
+  /** 13.10: CharParamTwo / CharParamThree (absent: both 0). */
+  param2?: readonly number[];
+  param3?: readonly number[];
 }
 
 /** The beams of one kit: slots whose CharProc is 0 or 12 and whose CharParamZero names a chain row. */
@@ -172,7 +290,21 @@ export function kitChains(kit: KitProcedures, chains: ReadonlyMap<number, SpellC
     const id = kit.param0[slot]!;
     if (!Number.isInteger(id) || id <= 0) continue;
     const effect = chains.get(id);
-    if (effect) result.push({ slot, proc, param1: kit.param1[slot] ?? 0, effect });
+    if (!effect) continue;
+    const chain: SpellVisualChain = { slot, proc, param1: kit.param1[slot] ?? 0, effect };
+    // 13.10: 0x007265c0 passes (CharParamTwo ≠ 0, CharParamThree ≠ 0); 0x007fc5f0 walks the first row's Combo
+    // while each id names a row (row and combos together at most CHAIN_COMBO_LIMIT records).
+    if ((kit.param2?.[slot] ?? 0) !== 0) chain.persistent = true;
+    if ((kit.param3?.[slot] ?? 0) !== 0) chain.fan = true;
+    const combos: SpellChainEffect[] = [];
+    for (const comboId of effect.combo) {
+      if (combos.length + 1 >= CHAIN_COMBO_LIMIT) break;
+      const row = chains.get(comboId);
+      if (!row) break;
+      combos.push(row);
+    }
+    if (combos.length > 0) chain.combos = combos;
+    result.push(chain);
   }
   return result;
 }

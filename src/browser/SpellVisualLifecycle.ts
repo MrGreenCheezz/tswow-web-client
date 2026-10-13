@@ -769,11 +769,16 @@ export class SpellVisualCoordinator {
         }
       }
     }
+    // 13.10 (6.12): a trajectory (CAST_FLAG_ADJUST_MISSILE) flies from the source location to the destination.
+    const source = copyPoint(cast.targets?.source);
     return {
       caster: casterGuid,
       casterPoint,
       targets,
       ...(destination ? { destination, areaPoint: destination } : {}),
+      ...(cast.adjustMissile && destination ? {
+        trajectory: { elevation: cast.adjustMissile.elevation, delayMs: cast.adjustMissile.delayMs, ...(source ? { source } : {}) },
+      } : {}),
     };
   }
 

@@ -859,6 +859,8 @@ test("Spell DBC metadata resolves localized names, icon paths and cooldowns", ()
     startRecoveryCategory: 0,
     // 3.39 (v=19): Spell.dbc Category, raw — the shared cooldown's; this row's is 2 (the flagged SpellCategory).
     category: 2,
+    // 13.10 (v=20, 3.01): Spell.Speed, yards a second — a bolt's.
+    speed: 24,
     effectMiscValueB: [0, 0, 0],
     castTime: 1500,
     effects: [0, 0, 0],

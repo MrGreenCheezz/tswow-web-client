@@ -48,6 +48,7 @@ import {
 import { FrameXmlCombatLogBuffer, type FrameXmlCombatLogModel } from "./FrameXmlCombatLog.js";
 import type { SpellGo, SpellStart } from "../../world/SpellProtocol.js"; // 3.01-castlog
 import { FrameXmlCombatLogCastRules } from "./FrameXmlCombatLogCasts.js"; // 3.01-castlog
+import { COMBAT_TEXT_SPELL_CAST, combatTextSpellCast } from "./FrameXmlCombatText.js"; // 13.10 (3.01)
 import { combatLogLimitCategoryText, type CombatLogLimitCategory } from "./FrameXmlCombatLogFailed.js"; // 05.10-3.01
 import { formatGlobalStringByName } from "../../world/GlobalStringFormat.js"; // 05.10-3.01
 import { itemLimitCategoryClient } from "../ItemLimitCategoryClient.js"; // 05.10-3.01
@@ -133,6 +134,8 @@ export class FrameXmlCombatLogLive implements FrameXmlCombatLogModel, CombatEntr
   readonly #removed = new Map<bigint, Map<number, number>>();
   /** 3.01-castlog: which START/SUCCESS/FAILED entries Wow.exe writes (FrameXmlCombatLogCasts.ts). */
   readonly #castRules = new FrameXmlCombatLogCastRules();
+  /** 13.10 (3.01): CombatTextSetActiveUnit's unit (0x00ca1380), 0n until it names one. */
+  #combatTextUnit = 0n;
 
   constructor(deps: FrameXmlCombatLogLiveDeps) {
     this.#deps = deps;
@@ -419,6 +422,18 @@ export class FrameXmlCombatLogLive implements FrameXmlCombatLogModel, CombatEntr
     const write = this.#castRules.success(view, this.#spellRow(go.spellId)); // 3.01-review
     const dest = go.targets?.unitTarget ?? go.targets?.gameObjectTarget ?? 0n;
     if (write) spellOnlyEntry(CL.SPELL_CAST_SUCCESS, go.casterUnit, dest, go.spellId, this);
+    // 13.10 (3.01): then COMBAT_TEXT_UPDATE("SPELL_CAST", name) for the combat-text unit (0x007519e0 / 0x0074d700).
+    if (this.#combatTextUnit !== 0n) {
+      const name = combatTextSpellCast({
+        casterGuid: go.casterGuid, casterUnit: go.casterUnit, castFlags: go.castFlags, casterIsUnit: view.casterIsUnit,
+      }, this.#spellRow(go.spellId), this.#combatTextUnit);
+      if (name !== undefined) this.#pump?.fire("COMBAT_TEXT_UPDATE", COMBAT_TEXT_SPELL_CAST, name);
+    }
+  }
+
+  /** 13.10 (3.01): CombatTextSetActiveUnit (0x0074d580). */
+  setCombatTextUnit(guid: bigint): void {
+    this.#combatTextUnit = guid;
   }
 
   /** The player's SMSG_CAST_FAILED → SPELL_CAST_FAILED (0x00809af0 → 0x00808200 → 0x00751ad0). */

@@ -259,6 +259,7 @@ import {
 } from "./SpellVisuals.js";
 import type { SpellVisualEffectTransform } from "../gateway/SpellVisual.js";
 import { flyMissileInstance, missileQuaternion, missileSample, type MissilePoints } from "./MissileFlight.js"; // 05.10-A7a-E
+import { addModelFrameOffset, missileGroundHit } from "./MissileGround.js"; // 13.10 (6.12)
 import { ChainBeams } from "./ChainBeam.js"; // 05.10-A7a-E
 import { CameraShakeBank } from "./CameraShake.js"; // 05.10-A7a-E
 import {
@@ -3705,6 +3706,8 @@ export class WorldRenderer3D {
   readonly #visualGroup = new THREE.Group();
   // 05.10-A7a-E (6.13): chain beams (made on first use, under #visualGroup) and camera shakes.
   #chainBeams: ChainBeams | undefined;
+  /** 13.10 (6.12): this frame's terrain height, for ground-following missiles (MissileGround.ts). */
+  #missileHeightAt: HeightSampler | undefined;
   readonly #cameraShakes = new CameraShakeBank();
   readonly #beamTextureOwner = Object.freeze({ owner: "chain-beam" });
   readonly #unitGroup = new THREE.Group();
@@ -7774,21 +7777,36 @@ export class WorldRenderer3D {
    * fallback Wow.exe 0x006ff6d0 uses without an attachment. False when the unit is not here.
    */
   readonly #missilePoints: MissilePoints = {
-    point: (guid, attachment, out) => {
+    point: (guid, attachment, out, offset) => {
       const unit = this.#units.get(guid);
       if (!unit) return false;
-      const bone = this.#attachmentBone(guid, attachment);
+      const bone = attachment < 0 ? undefined : this.#attachmentBone(guid, attachment); // 13.10: −1 is none
       if (bone && unit.wvm && unit.template) {
-        _missilePoint.copy(missileAttachmentOffset(unit.wvm, unit.template.pivots, attachment)).applyMatrix4(bone.matrixWorld);
+        _missilePoint.copy(missileAttachmentOffset(unit.wvm, unit.template.pivots, attachment));
+        // 13.10 (6.12, 6.13): MissileImpact/CastOffset in the attachment's (M2) frame (0x0071a860).
+        if (offset) _missilePoint.set(_missilePoint.x + offset[0], _missilePoint.y + offset[1], _missilePoint.z + offset[2]);
+        _missilePoint.applyMatrix4(bone.matrixWorld);
       } else {
         unit.node.getWorldPosition(_missilePoint);
         _missilePoint.y += unit.height * 0.75;
+        if (offset) addModelFrameOffset(unit.node, offset, _missilePoint); // 13.10: in the model frame (0x006ff6d0)
       }
       out.x = _missilePoint.x;
       out.y = -_missilePoint.z;
       out.z = _missilePoint.y;
       return true;
     },
+    // 13.10 (6.12): the unit's feet (the carry and the lead) and the terrain test (ground following).
+    origin: (guid, out) => {
+      const unit = this.#units.get(guid);
+      if (!unit) return false;
+      unit.node.getWorldPosition(_missilePoint);
+      out.x = _missilePoint.x;
+      out.y = -_missilePoint.z;
+      out.z = _missilePoint.y;
+      return true;
+    },
+    ground: (from, to, hit) => missileGroundHit(this.#missileHeightAt, from, to, hit),
   };
 
   /** 05.10-A7a-E (6.13): the beam set, made on first use; textures are leases on the spell texture cache. */
@@ -8011,6 +8029,7 @@ export class WorldRenderer3D {
     // P1-04: detailed clocks run only during an explicit capture; they overlap their parent phases.
     const detailedCapture = this.#shaderProgramTrace !== undefined;
     let visualPartAt = detailedCapture ? performance.now() : 0;
+    this.#missileHeightAt = heightAt; // 13.10 (6.12)
     this.#updateVisuals(now, elapsed, environmentClient);
     if (detailedCapture) this.#drawPhaseMs["visuals.rigs"] = performance.now() - visualPartAt;
     this.#chainBeams?.update(now, this.#missilePoints, state, this.#camera.position); // 05.10-A7a-E (6.13)
