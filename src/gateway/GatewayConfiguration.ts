@@ -64,7 +64,7 @@ export async function createGatewayConfiguration(): Promise<{ options: GatewayOp
    * tools/paths.mjs and the gateway borrows it rather than keeping a second copy that can drift —
    * which is exactly what happened before: DBC_DIR moved the gateway's reads and left every
    * generator on the old dataset. The gateway already resolves all its other defaults against the
-   * working directory, and start-gateway.bat cds here first.
+   * working directory, and every launcher in bat\ cds here first.
    */
   interface MachinePaths {
     clientDirectory(): string;
@@ -231,7 +231,7 @@ export async function createGatewayConfiguration(): Promise<{ options: GatewayOp
     // Interface art: priority 0 in its worker's queue, as `texturePriority` ranks `interface\`.
     generateItemIcon: (displayId) => publish(
       { kind: "item-icon", displayId }, 0, "generate-item-icon.mjs", [String(displayId)]),
-    // `public/`, not `data/`: these two were filled by `build-assets.bat` and served beside the page
+    // `public/`, not `data/`: these two were filled by `bat\22` (assets) and served beside the page
     // long before there was a route for them, and the whole point of the route is that what is
     // already published costs nothing. The env names match the generator's own.
     spellIconsDirectory: process.env.SPELL_ICON_DIR ?? resolve(process.cwd(), "public/icons"),

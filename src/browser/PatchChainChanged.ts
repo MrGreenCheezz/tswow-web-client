@@ -175,7 +175,7 @@ export function describePatchState(
   if (read.kind === "unsupported") {
     return {
       tone: "muted",
-      text: "Шлюз собран до /client/patch-status: поколение патчей неизвестно; после сборки TSWoW перезапустите его (restart-gateway.bat).",
+      text: "Шлюз собран до /client/patch-status: поколение патчей неизвестно; после сборки TSWoW перезапустите его (bat\\11 Шлюз - перезапустить.bat).",
       reload: false,
     };
   }
@@ -196,7 +196,7 @@ export function describePatchState(
       }
       : {
         tone: "error",
-        text: `Шлюз увидел новые патчи${when}: перезапустите шлюз (restart-gateway.bat), затем обновите страницу.`,
+        text: `Шлюз увидел новые патчи${when}: перезапустите шлюз (bat\\11 Шлюз - перезапустить.bat), затем обновите страницу.`,
         reload: false,
       };
   }

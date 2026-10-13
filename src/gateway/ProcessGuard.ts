@@ -2,7 +2,7 @@
  * The gateway's last line against an exception nothing else caught, and its one way out (1.03).
  *
  * Without it one error that escaped a listener ended the process, and with it every player's session
- * and — under `online/start-server.bat` — the page they play from. Two kinds of escape are told apart:
+ * and — under `bat\32` (serving players) — the page they play from. Two kinds of escape are told apart:
  *
  * - **Socket noise** ({@link SOCKET_NOISE_CODES}): the network being the network. One journal line,
  *   and the process goes on — unless more of it arrives than `burst` allows, which is a loop and not

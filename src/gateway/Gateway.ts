@@ -283,7 +283,7 @@ export interface GatewayOptions {
    * keyed on `CreatureFamily.id`.
    *
    * These two directories are `public/icons` and `public/creature-icons`, which the page is also
-   * served out of — `build-assets.bat` fills them and the browser used to ask the page for them
+   * served out of — `bat\22 Сборка - ресурсы.bat` fills them and the browser used to ask the page for them
    * directly. They stay exactly where they were, as a warm cache this route reads first; what is
    * new is that a row the bulk pass never saw is extracted on demand instead of showing nothing
    * until an operator remembers to rerun the generator.
@@ -3238,7 +3238,7 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
     // A spell's picture, and the one a hunter pet family shows on its tab. Modelled on
     // `/item-icon` down to the failure memory, and here for the same reason: `SpellIcon` is a
     // table a module writes rows into, and until this route existed the only thing that turned a
-    // row into a picture was an operator rerunning `build-assets.bat`. The published directories
+    // row into a picture was an operator rerunning `bat\22` (assets). The published directories
     // are the warm cache and are checked first, so nothing that was already there costs an
     // extraction.
     const spellIcon = pathname.match(/^\/spell-icon\/(\d{1,8})$/);

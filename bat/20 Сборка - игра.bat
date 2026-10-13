@@ -4,8 +4,7 @@ title TSWoW WebClient - web build
 cd /d "%~dp0.."
 
 rem Builds the web version (npm run build): dist\web is the page as static files, dist\code the
-rem gateway that start-gateway.bat and restart-gateway.bat run. web\start-built.bat serves
-rem dist\web without the dev server.
+rem gateway that scripts 10 and 11 run. Script 23 serves dist\web without the dev server.
 
 set "WEBCLIENT_RUNTIME=%WEBCLIENT_NODE_DIR%"
 if not defined WEBCLIENT_RUNTIME set "WEBCLIENT_RUNTIME=%~dp0..\.runtime\node"

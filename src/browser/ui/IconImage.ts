@@ -48,7 +48,7 @@ export function needsFetch(url: string, pageOrigin: string): boolean {
  * the aura strips, the talent tree and the glyph row beside it, the action bar, the pet bar, the
  * tracking menu, an item that carries its own `iconId`, the nameplate's pet-family and creature-
  * type glyphs, and the question mark the target frame falls back to. Every one of them was asking
- * the page for a file that `build-assets.bat` had put there. That is fine for the 3,204 rows the
+ * the page for a file that `bat\22` (assets) had put there. That is fine for the 3,204 rows the
  * bulk pass published and silent for every row a module adds after it: the page has no such file,
  * the `<img>` fails, the element is dropped, and nothing says why.
  *

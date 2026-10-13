@@ -1,10 +1,13 @@
 @echo off
 setlocal
 title TSWoW WebClient Gateway
-cd /d "%~dp0"
+cd /d "%~dp0.."
+
+rem Builds the gateway when needed and runs it here (npm run gateway:dev). Scripts 01 and 02
+rem start it themselves when it is not running.
 
 set "WEBCLIENT_RUNTIME=%WEBCLIENT_NODE_DIR%"
-if not defined WEBCLIENT_RUNTIME set "WEBCLIENT_RUNTIME=%~dp0.runtime\node"
+if not defined WEBCLIENT_RUNTIME set "WEBCLIENT_RUNTIME=%~dp0..\.runtime\node"
 if exist "%WEBCLIENT_RUNTIME%\node.exe" set "PATH=%WEBCLIENT_RUNTIME%;%PATH%"
 
 if not exist "node_modules\" (

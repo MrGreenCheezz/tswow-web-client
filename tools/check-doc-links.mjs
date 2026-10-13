@@ -2,8 +2,7 @@
 //
 //   node tools/check-doc-links.mjs [--anchors] [--json <out.json>] [--root <dir>]
 //
-// Scans docs/**/*.md, README.md, AGENTS.md, electron/README.md, web/README.md, online/README.md and
-// bench/README.md. A link is `[text](target)` (or an image `![alt](target)`) outside fenced and inline
+// Scans docs/**/*.md, README.md, AGENTS.md, bat/README.md, electron/README.md and bench/README.md. A link is `[text](target)` (or an image `![alt](target)`) outside fenced and inline
 // code; a target with a scheme (http:, https:, mailto:, file:, ...) is not checked. A relative target
 // is resolved against the folder of the file that links it and must exist on disk.
 //
@@ -22,7 +21,7 @@ const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export const DOC_LINK_FOLDERS = Object.freeze(["docs"]);
 /** Single documents outside those folders. */
 export const DOC_LINK_FILES = Object.freeze([
-  "README.md", "AGENTS.md", "electron/README.md", "web/README.md", "online/README.md", "bench/README.md",
+  "README.md", "AGENTS.md", "bat/README.md", "electron/README.md", "bench/README.md",
 ]);
 /** The git-ignored folder of local artefacts (see .gitignore). */
 export const LOCAL_ARTIFACT_FOLDER = ".runtime";

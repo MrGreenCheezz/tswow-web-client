@@ -1,8 +1,8 @@
 // The page needs the WebClient gateway in the Electron window just as in a browser; without it the
 // login screen gets none of its files and stays black. The built Electron version therefore starts
 // the gateway itself when nothing listens on its port: the same `node tools/start-gateway.mjs` that
-// restart-gateway.bat runs, from the WebClient checkout the build came from, on the dist/code that
-// electron\build.bat built alongside the page. The shell stops that gateway again when it exits; a
+// bat\11 (gateway restart) runs, from the WebClient checkout the build came from, on the dist/code
+// that bat\21 (app build) built alongside the page. The shell stops that gateway again when it exits; a
 // gateway somebody else started is used as it is and left alone.
 
 "use strict";

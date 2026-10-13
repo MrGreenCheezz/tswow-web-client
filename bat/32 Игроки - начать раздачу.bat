@@ -6,11 +6,11 @@ cd /d "%~dp0.."
 rem Serves the game to other players from this machine (tools\start-server.mjs): the built page on
 rem PUBLIC_WEB_PORT (8091) and the gateway on 8090, on every network interface, for PUBLIC_HOST
 rem from .env. Players open http://PUBLIC_HOST:8091/ in a browser or run the player app
-rem (build-player.bat). This machine's own development keeps working through the same gateway.
+rem (script 30). This machine's own development keeps working through the same gateway.
 rem A gateway running only for this machine is stopped first; the build is refreshed when src\ is
 rem newer than it.
-rem   start-server.bat build    always rebuild first
-rem Close this window (or Ctrl+C) to stop serving.
+rem   32 ... build    always rebuild first
+rem Close this window (or Ctrl+C, or script 12) to stop serving.
 
 set "WEBCLIENT_RUNTIME=%WEBCLIENT_NODE_DIR%"
 if not defined WEBCLIENT_RUNTIME set "WEBCLIENT_RUNTIME=%~dp0..\.runtime\node"

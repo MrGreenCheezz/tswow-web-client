@@ -28,7 +28,7 @@ test("only this client's gateway or its supervisor may be stopped", () => {
   assert.equal(isGatewayProcess(node("node --enable-source-maps tools\\start-gateway.mjs")), true);
   assert.equal(isGatewayProcess(node('"F:\\tswowRoot\\WebClient\\.runtime\\node\\node.exe" '
     + '"F:\\tswowRoot\\WebClient\\dist\\code\\gateway\\main.js"')), true);
-  // online\start-server.bat: the gateway and the page for other players in one process.
+  // bat\32 (serving players): the gateway and the page for other players in one process.
   assert.equal(isGatewayProcess(node("node --enable-source-maps tools\\start-server.mjs")), true);
   assert.equal(isGatewayProcess(node("node tools/start-servers.mjs")), false);
   // Neighbours on the same machine: Vite, the TSWoW console, a WebClient test run.

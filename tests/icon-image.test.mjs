@@ -30,7 +30,7 @@ test("an icon id becomes a gateway route, and the answer is fetched rather than 
 
   // The whole point of the slice: the seven places that draw a spell icon ask the gateway for it,
   // so a `SpellIcon` row a module added is extracted on demand instead of showing nothing until
-  // somebody reruns `build-assets.bat`.
+  // somebody reruns `bat\22` (assets).
   assert.equal(spellIconUrl(136, gateway), `${gateway}/spell-icon/136`);
   assert.equal(creatureFamilyIconUrl(1, gateway), `${gateway}/creature-icon/1`);
   assert.equal(needsFetch(spellIconUrl(136, gateway), page), true,

@@ -279,7 +279,7 @@ class GmConsole {
     try {
       const response = await fetch(url, { signal: abort.signal });
       if (response.status === 404) {
-        this.#status.textContent = "Шлюз не знает поиска: он запущен до этой версии — перезапустите шлюз (restart-gateway.bat).";
+        this.#status.textContent = "Шлюз не знает поиска: он запущен до этой версии — перезапустите шлюз (bat\\11 Шлюз - перезапустить.bat).";
         return;
       }
       if (!response.ok) {

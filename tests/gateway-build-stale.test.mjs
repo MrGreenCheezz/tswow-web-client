@@ -1,4 +1,4 @@
-// L10-review (10.11) — tools/gateway-build-stale.mjs is what online\start-server.bat asks before it
+// L10-review (10.11) — tools/gateway-build-stale.mjs is what bat\32 (serving players) asks before it
 // serves dist/web to players ("rebuild when src\ is newer than the build"). It judged the whole build
 // by dist/code alone, which was right while only `npm run build` wrote dist/code. Since
 // tools/build-gateway.mjs (10.11) also writes dist/code — the gateway and every file it imports,

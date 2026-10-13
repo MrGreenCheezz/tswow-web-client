@@ -43,7 +43,7 @@ test("the gateway's /health is 0, another HTTP server is 2, a closed port is 1",
 });
 
 // Review 02.10: the owner's gateway can hold its one thread for over a second (a DBC index being
-// built). Silence is not a stranger's answer: start-dev.bat must not refuse to start for it.
+// built). Silence is not a stranger's answer: bat\01 (web dev) must not refuse to start for it.
 test("a gateway that answers /health late is still the gateway, not a stranger", async () => {
   const sockets = new Set();
   const busy = createServer((request, response) => {

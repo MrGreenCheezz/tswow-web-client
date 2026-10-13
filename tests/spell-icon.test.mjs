@@ -250,7 +250,7 @@ test("a stamped picture is handed over untouched and costs no extraction", async
 test("the warm cache is answered at once and stamped in one pass, not one process a picture", async () => {
   const dataset = await customDataset();
   try {
-    // What `build-assets.bat` left on this machine: 3,204 pictures and not one sidecar. Д0 asked
+    // What `bat\22` (assets) left on this machine: 3,204 pictures and not one sidecar. Д0 asked
     // for an entry with no stamp to be rebuilt once so that it gains one, and taken literally here
     // that is 3,204 child processes on the one lane both icon routes share — measured against the
     // real dataset, sixteen already-published icons asked for at once took 5,921 ms and sixteen

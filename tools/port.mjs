@@ -1,4 +1,4 @@
-// Port checks for the .bat launchers, so they start only what is missing and open the page only
+// Port checks for the .bat launchers in bat\, so they start only what is missing and open the page only
 // once it can work.
 //
 //   node tools/port.mjs check <port>                 exit 0 when something listens on 127.0.0.1:<port>
@@ -16,7 +16,7 @@ const HEALTH_TIMEOUT_MS = 5000;
 
 /**
  * 10.11: whether the gateway — not just anything — holds the port. A bare TCP connect took any
- * process on 8090 for the gateway, so start-dev.bat started no gateway and the page then failed
+ * process on 8090 for the gateway, so the web dev launcher (bat\01) started no gateway and the page then failed
  * against a stranger. `/health` answers `{"status":"ok"…}` (Gateway.ts) and nothing else here.
  * "gateway", "other" (an answer that is not ours), "silent" (accepted, no answer in time — a busy
  * gateway, as before 10.11) or "none" (the connection failed).

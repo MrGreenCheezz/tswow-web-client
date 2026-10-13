@@ -2,14 +2,15 @@
 // node_modules/electron/dist with this shell as resources/app: the manual packaging Electron
 // documents ("Application Packaging", with prebuilt binaries), so no packager dependency.
 //
-//   node electron/build.mjs            local version → dist/electron (electron\build.bat)
+//   node electron/build.mjs            local version → dist/electron (bat\21 Сборка - приложение.bat)
 //     Bundles the built web page (dist/web) as resources/app/web, which main.cjs serves itself,
 //     and starts the gateway from this WebClient checkout when none runs. Build the page first
-//     (`npm run build`); electron\build.bat does both. Local only: the page embeds data generated
+//     (`npm run build`); bat\21 does both. Local only: the page embeds data generated
 //     from this machine's client.
 //
 //   node electron/build.mjs --player [--url=http://host:port/]
-//                                      player app → dist/player/WoWWebClient.zip (online\build-player.bat)
+//                                      player app → dist/player/WoWWebClient.zip (bat\30 Игроки - собрать
+//                                      набор.bat, which then assembles the kit: tools/player-kit.mjs)
 //     No page and no gateway inside: server.json points the shell at the page another machine
 //     serves (tools/start-server.mjs), by default http://PUBLIC_HOST:PUBLIC_WEB_PORT/ from .env.
 //     Nothing in it comes from a WoW client, so it is the one to send to other players.
@@ -179,6 +180,6 @@ if (!player) {
   if (written.gatewayUrl ?? written.gatewayPort) console.log(`  gateway: ${written.gatewayUrl ?? `port ${written.gatewayPort}`}`);
   console.log(`  folder: ${output}`);
   console.log(`  send:   ${zip}`);
-  console.log(`  update: ${published.manifestFile} (+ .sig, key ${key.fingerprint}): online\\start-server.bat offers it`);
+  console.log(`  update: ${published.manifestFile} (+ .sig, key ${key.fingerprint}): bat\\32 Игроки - начать раздачу.bat offers it`);
   console.log("          to apps already installed, at /player/latest.json.");
 }

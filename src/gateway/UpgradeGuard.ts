@@ -10,7 +10,7 @@ import type { Duplex } from "node:stream";
  * …)` throws ERR_INVALID_URL, one request's worth of attack — and so is an `error` event with nobody
  * listening: a peer's RST that beats a refusal's own write (`write ECONNRESET`), or that arrives on a
  * refused socket left half-open by `socket.end()` alone (`read ECONNRESET`). Either one ended the
- * gateway, and under `online/start-server.bat` the page the players load with it.
+ * gateway, and under `bat\32` (serving players) the page the players load with it.
  *
  * So `routeUpgrade` returns every refusal as data rather than throwing, and `refuseUpgrade` is the one
  * way a refusal is written: an `error` listener before the first byte, the answer, then `destroy`, so

@@ -1,7 +1,7 @@
-// Serves the game to other players from this machine (online\start-server.bat): the built page
+// Serves the game to other players from this machine (bat\32 Игроки - начать раздачу.bat): the built page
 // (dist/web) on PUBLIC_WEB_PORT and the gateway on GATEWAY_PORT, both on every interface, for the
 // public address PUBLIC_HOST from .env. Players open http://<PUBLIC_HOST>:<PUBLIC_WEB_PORT>/ in a
-// browser or start the player app (online\build-player.bat), which opens the same page; the page
+// browser or start the player app (bat\30 Игроки - собрать набор.bat), which opens the same page; the page
 // finds the gateway on the same host, port 8090.
 //
 // Only this process's environment changes; .env keeps local development as it is:
@@ -16,10 +16,11 @@
 //                        keeping this environment
 //   GATEWAY_SUPERVISE=1  (unless .env says 0) a crashed gateway is started again by itself
 // The page server answers index.html and its assets only (10.13), compressed and revalidated.
-// 10.17 (updates): it also serves the player app's update from dist/player (online\build-player.bat):
+// 10.17 (updates): it also serves the player app's update from dist/player (bat\30):
 // /player/latest.json, /player/latest.json.sig and /player/WoWWebClient.zip, read-only — installed
 // apps check the first two at start and offer the zip when it is newer and correctly signed.
-// The page server lives in this process too, so stopping it (Ctrl+C, restart-gateway.bat) stops both.
+// The page server lives in this process too, so stopping it (Ctrl+C, bat\11 or bat\12 — the gateway
+// restart or stop) stops both.
 
 import "./env.mjs";
 
@@ -49,7 +50,7 @@ if (gatewayPort !== 8090 && !process.env.VITE_GATEWAY_ORIGIN) {
   console.warn(`WARNING: the page looks for the gateway on port 8090, but GATEWAY_PORT is ${gatewayPort}.`);
 }
 const webRoot = fileURLToPath(new URL("../dist/web", import.meta.url));
-if (!existsSync(`${webRoot}/index.html`)) throw new Error("dist/web is not built: run web\\build.bat first.");
+if (!existsSync(`${webRoot}/index.html`)) throw new Error("dist/web is not built: run bat\\20 Сборка - игра.bat first.");
 // 10.17 (updates): read per request, so a player build made while this runs is offered at once.
 const playerRoot = fileURLToPath(new URL("../dist/player", import.meta.url));
 
@@ -89,7 +90,7 @@ try {
   offered = undefined;
 }
 console.log(offered === undefined
-  ? "Player app update: none in dist/player (online\\build-player.bat builds and signs one)."
+  ? "Player app update: none in dist/player (bat\\30 Игроки - собрать набор.bat builds and signs one)."
   : `Player app update: ${offered} offered at ${publicUrl}player/latest.json`);
 
 await import("./start-gateway.mjs");

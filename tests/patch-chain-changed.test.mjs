@@ -138,7 +138,7 @@ test("the page-wide watch sees a latched 409 on any fetch and leaves the body to
     // The banner then asks the gateway where it stands: latched, and nothing restarts it by itself.
     await new Promise((resolve) => setImmediate(resolve));
     const detail = banners(document)[0].children[2];
-    assert.match(detail.textContent, /перезапустите шлюз \(restart-gateway\.bat\), затем обновите страницу/);
+    assert.match(detail.textContent, /перезапустите шлюз \(bat\\11 Шлюз - перезапустить\.bat\), затем обновите страницу/);
     assert.equal(detail.dataset.tone, "error");
   } finally {
     globalThis.fetch = previousFetch;
@@ -166,7 +166,7 @@ test("the status sentence covers stale, supervised, restarted, current, old and 
   });
   const stale = describePatchState(boot, status({ stale: true, changedAt: "2026-09-25T10:04:00.000Z" }));
   assert.equal(stale.tone, "error");
-  assert.match(stale.text, /перезапустите шлюз \(restart-gateway\.bat\), затем обновите страницу/);
+  assert.match(stale.text, /перезапустите шлюз \(bat\\11 Шлюз - перезапустить\.bat\), затем обновите страницу/);
   const supervised = describePatchState(boot, status({ stale: true, supervised: true }));
   assert.equal(supervised.tone, "warning");
   assert.match(supervised.text, /перезапустится сам/);
@@ -328,7 +328,7 @@ test("an <img> texture or <audio> that met the latch raises the banner through i
     await settle();
     assert.equal(patchChainChanged(), true);
     assert.equal(banners(document).length, 1);
-    assert.match(banners(document)[0].children[2].textContent, /перезапустите шлюз \(restart-gateway\.bat\)/);
+    assert.match(banners(document)[0].children[2].textContent, /перезапустите шлюз \(bat\\11 Шлюз - перезапустить\.bat\)/);
 
     // The glue screen's <audio> goes through the same door.
     resetPatchChainWatch();

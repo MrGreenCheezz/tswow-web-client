@@ -1,6 +1,6 @@
 // The picture beside a spell's name, and the one a hunter pet family shows on its tab.
 //
-// Three modes. `--all` is the operator's bulk pass out of `build-assets.bat`: every row of both
+// Three modes. `--all` is the operator's bulk pass out of `bat\22 Сборка - ресурсы.bat`: every row of both
 // tables, an index beside them, and anything left over from an older dataset swept away. A run
 // named with ids is what the gateway spawns on a cache miss, the same way `/item-icon` spawns
 // `generate-item-icon.mjs` — because a module that adds a `SpellIcon` row used to show nothing at
@@ -334,7 +334,7 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import
       // gateway spawns at startup, and it is the only one whose report an operator ever sees:
       // `main.ts` relays the child's stderr and throws its stdout away, because StormLib's
       // WebAssembly build writes its banner and every heap resize onto stdout. `tools/restamp.mjs`
-      // reports on stderr for the same reason; `--all` is run by hand from `build-assets.bat` and
+      // reports on stderr for the same reason; `--all` is run by hand from `bat\22` (assets) and
       // keeps its report where a person running it will see it.
       process.stderr.write(`Stamped ${spells.stamped + families.stamped} published icon(s) that carried no stamp\n`);
       const dropped = spells.dropped + families.dropped;

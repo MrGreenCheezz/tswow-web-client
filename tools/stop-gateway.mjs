@@ -6,13 +6,14 @@ import { pathToFileURL } from "node:url";
 /**
  * Stops the WebClient gateway that listens on GATEWAY_PORT, and nothing else.
  *
- * `restart-gateway.bat` calls this before it starts the gateway again: a TSWoW `build addon` or
+ * `bat\12 Шлюз - остановить.bat` runs it on its own, and `bat\11 Шлюз - перезапустить.bat` (and
+ * `bat\32`, before serving players) calls it before it starts the gateway again: a TSWoW `build addon` or
  * `build data` rewrites the client patch chain, after which the running gateway answers 409
  * `client_patch_chain_changed` until it is restarted. The listener is found with `netstat -ano`,
  * and its command line is read from Win32_Process (a plain process query; no module of another
  * process is ever opened). Only a node process running `tools/start-gateway.mjs`,
  * `dist/code/gateway/main.js` or `tools/start-server.mjs` (the gateway and page for other players,
- * online\start-server.bat) is stopped; when the listener is the child of the opt-in supervisor,
+ * bat\32 Игроки - начать раздачу.bat) is stopped; when the listener is the child of the opt-in supervisor,
  * the supervisor is stopped too, otherwise it would fork the gateway straight back.
  *
  *   node tools/stop-gateway.mjs [--dry-run]

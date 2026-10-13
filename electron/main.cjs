@@ -16,7 +16,7 @@
 //   3. A built page served here: --web-dir, or the web/ directory build.mjs bundles next to this
 //      file in dist/electron, at http://127.0.0.1:<port>/, the origin the gateway's default
 //      ALLOWED_ORIGINS admits. When no gateway listens it starts one itself (gateway.cjs).
-//   4. The Vite dev server at http://127.0.0.1:5173/ (web/start-dev.bat); the window waits for the
+//   4. The Vite dev server at http://127.0.0.1:5173/ (bat\01 or bat\02); the window waits for the
 //      gateway the developer starts.
 // A plain-http page on a non-loopback address (a player's server) is not a secure context, so the
 // shell asks Chromium to treat that origin as secure: cross-origin isolation (the crowd pose
@@ -111,7 +111,7 @@ const serverConfig = readServerConfig();
 const commandLineUrl = option("webclient-url", process.env.WEBCLIENT_URL || undefined);
 /**
  * The page of a players' server (player app), unless the command line names a page:
- * --server-url, else server.json. online\test-local.bat points the sent app at 127.0.0.1 this way.
+ * --server-url, else server.json. bat\31 (tools/test-local.mjs) points the sent app at 127.0.0.1 this way.
  */
 const serverUrlOption = option("server-url", undefined);
 if (serverUrlOption !== undefined && !/^https?:\/\//.test(serverUrlOption)) throw new Error(`--server-url: ${serverUrlOption}`);
@@ -224,7 +224,7 @@ async function resolvePageUrl() {
     return `${await serveStatic(webDir, { port: webPort, isolation: isolated, jsProfiling })}/`;
   } catch (error) {
     dialog.showErrorBox("WoW WebClient", error.code === "EADDRINUSE"
-      ? `Порт ${webPort} уже занят — скорее всего, запущен Vite dev-сервер (web\\start-dev.bat).\n`
+      ? `Порт ${webPort} уже занят — скорее всего, запущен Vite dev-сервер (bat\\01 Играть - браузер.bat).\n`
         + "Закройте его или запустите с --port=<порт>, добавив http://127.0.0.1:<порт> в ALLOWED_ORIGINS шлюза."
       : `Не удалось открыть собранную страницу ${webDir}: ${error.message}`);
     return undefined;
@@ -264,7 +264,7 @@ async function openWhenGatewayListens(window, pageUrl) {
   } else if (!(await listening(gateway.port))) {
     const root = webDir === undefined ? undefined
       : findWebClientRoot([path.resolve(__dirname, ".."), path.resolve(path.dirname(process.execPath), "..", "..")]);
-    const manual = "Запустите start-gateway.bat в папке WebClient — окно продолжит само.";
+    const manual = "Запустите «10 Шлюз - запустить.bat» в папке WebClient\\bat — окно продолжит само.";
     if (root === undefined) {
       window.loadURL(statusPage("Шлюз не запущен", `На 127.0.0.1:${gateway.port} никто не отвечает.\n${manual}`));
     } else if (!allowStaleGateway && (await showStaleGatewayBuild(window, root))) {
@@ -299,8 +299,8 @@ async function showStaleGatewayBuild(window, root) {
   if (!build.stale) return false;
   console.warn(`[electron] not starting a stale gateway: ${build.text}`);
   window.loadURL(statusPage("Шлюз собран из старых исходников", `${build.text}\n\n`
-    + "Запустите start-gateway.bat в папке WebClient: он пересоберёт шлюз и запустит его — окно продолжит само.\n"
-    + "Запустить прежнюю сборку как есть: WoWWebClient.exe --allow-stale (или start-built.bat --allow-stale)."));
+    + "Запустите «10 Шлюз - запустить.bat» в папке WebClient\\bat: он пересоберёт шлюз и запустит его — окно продолжит само.\n"
+    + "Запустить прежнюю сборку как есть: WoWWebClient.exe --allow-stale (или «03 Играть - приложение (собранное).bat» --allow-stale)."));
   return true;
 }
 
@@ -386,8 +386,8 @@ app.whenReady().then(async () => {
     const target = new URL(url);
     window.loadURL(remoteUrl !== undefined || !LOOPBACK_HOSTS.has(target.hostname)
       ? serverStatusPage(`${url} не отвечает.`)
-      : statusPage("Страница не отвечает", `${url} не отвечает. Запустите web\\start-dev.bat (Vite) `
-        + "или соберите Electron-версию: electron\\build.bat. Окно продолжит само."));
+      : statusPage("Страница не отвечает", `${url} не отвечает. Запустите bat\\01 Играть - браузер.bat (Vite) `
+        + "или соберите Electron-версию: bat\\21 Сборка - приложение.bat. Окно продолжит само."));
     const port = Number(target.port) || (target.protocol === "https:" ? 443 : 80);
     waitUntilListening(port, target.hostname).then(() => { if (!window.isDestroyed()) window.loadURL(url); });
   });

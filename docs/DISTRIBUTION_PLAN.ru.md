@@ -6,25 +6,27 @@
 ## Сделано
 
 Первая рабочая форма вариантов 1 и 2а — по обычному http, без TLS. Как пользоваться — в
-[`../online/README.md`](../online/README.md).
+[`../bat/README.md`](../bat/README.md#для-других-игроков).
 
-- **Раздача с этой машины.** `online/start-server.bat` → `tools/start-server.mjs`: `dist/web` на
+- **Раздача с этой машины.** `bat/32 Игроки - начать раздачу.bat` → `tools/start-server.mjs`: `dist/web` на
   `PUBLIC_WEB_PORT` (8091) и gateway на 8090 на всех интерфейсах. `ALLOWED_ORIGINS` дополняется
   адресом `PUBLIC_HOST`, `MODULE_UI_WRITE=0`, после сборки TSWoW gateway перезапускается сам.
   Страница и шлюз на разных портах, поэтому пункт 6 ниже не мешает.
-- **Приложение игрока (2а).** `online/build-player.bat` → `dist/player/WoWWebClient.zip`: Electron
-  с оболочкой и `server.json`, без страницы и данных клиента. Адрес сервера помечается безопасным
-  (`unsafely-treat-insecure-origin-as-secure`), нет связи — окно ждёт сервер, PowerShell и
-  закрепление за ядрами выключены.
+- **Приложение игрока (2а).** `bat/30 Игроки - собрать набор.bat` → `dist/player/WoWWebClient.zip`:
+  Electron с оболочкой и `server.json`, без страницы и данных клиента. Адрес сервера помечается
+  безопасным (`unsafely-treat-insecure-origin-as-secure`), нет связи — окно ждёт сервер, PowerShell
+  и закрепление за ядрами выключены. Затем `tools/player-kit.mjs` собирает набор для тестеров
+  `dist/Для игроков/` (приложение, «Как начать.txt» со ссылкой из `.env`, «Плейтест.txt» из
+  [`PLAYTEST.ru.md`](PLAYTEST.ru.md)) и `dist/Для игроков.zip`.
 - **Вход в браузере по http.** Без `crypto.subtle` SRP6 считает SHA-1 через `src/auth/Sha1.ts`
   (`tests/sha1-fallback.test.mjs`).
-- **Обновление приложения игрока (10.17, 12.10).** `build-player.bat` даёт каждой сборке версию
+- **Обновление приложения игрока (10.17, 12.10).** Сборка приложения игрока (`bat/30`) даёт каждой сборке версию
   `<package.json>.<N>` и подписывает `dist/player/latest.json` ключом Ed25519 из
-  `.runtime/player-update-key/`. `start-server.bat` раздаёт `/player/latest.json`, подпись и архив.
+  `.runtime/player-update-key/`. Раздача (`bat/32`) отдаёт `/player/latest.json`, подпись и архив.
   Приложение при запуске проверяет подпись встроенным ключом и предлагает новую версию. Архив оно
   скачивает и сверяет с подписанным размером и SHA-256, а `update.cmd` ставит его поверх папки,
   сохраняя `server.json`. Если папка закрыта для записи, приложение предлагает скачать архив в
-  браузере. Подробно — в [`../online/README.md`](../online/README.md#обновление-приложения).
+  браузере. Подробно — в [`../bat/README.md`](../bat/README.md#обновление-приложения).
   Проверено тестами без Electron: сборка в песочнице, проверка, загрузка, распаковка, настоящий
   `update.cmd` на путях с пробелами и кириллицей. Окошко в окне Electron и перезапуск настоящего
   exe не проверялись.

@@ -5,7 +5,7 @@ cd /d "%~dp0.."
 
 rem Builds the Electron version: first the web version (npm run build: dist\web and dist\code),
 rem then packs Electron with that page into dist\electron (electron\build.mjs).
-rem Result: dist\electron\WoWWebClient.exe, started by electron\start-built.bat.
+rem Result: dist\electron\WoWWebClient.exe, started by script 03.
 
 set "WEBCLIENT_RUNTIME=%WEBCLIENT_NODE_DIR%"
 if not defined WEBCLIENT_RUNTIME set "WEBCLIENT_RUNTIME=%~dp0..\.runtime\node"

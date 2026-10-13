@@ -4,7 +4,7 @@
 
 ### 0.1 — Перезапуск gateway
 - **Подход.** Действие владельца. Агент gateway не перезапускает: правило владельца 25.09, классификатор отказывал в `Stop-Process`. Нужно просить перед вехой, в которой менялся `src/gateway/**` (М2, 10.x), и после работы параллельной сессии над глобальными WMO.
-- **Шаги владельца.** `restart-gateway.bat`: с 26.09 он сам пересобирает `dist/code`, если `tools/gateway-build-stale.mjs` видит устаревшую сборку.
+- **Шаги владельца.** `bat\11 Шлюз - перезапустить.bat`: с 26.09 он сам пересобирает `dist/code`, если `tools/gateway-build-stale.mjs` видит устаревшую сборку.
 - **Проверка.**
   - `curl -s -o NUL -w "%{http_code}" -H "Origin: http://127.0.0.1:5173" http://127.0.0.1:8090/dbc/char-titles` → 200.
   - `.runtime/node/node.exe tools/gateway-build-stale.mjs` не пишет «stale».

@@ -21,7 +21,7 @@ import { AuthAnswerWatch } from "./AuthLoginVerdict.js";
  * The address is the socket's (`socketPeerAddress` in Gateway.ts), never a header: `X-Forwarded-For`
  * is written by whoever is calling, and trusting it would let a guesser name a new address for every
  * try. Behind a reverse proxy every player is the proxy's address and shares one budget — the
- * gateway is meant to face players directly (online/start-server.bat). Loopback is limited like any
+ * gateway is meant to face players directly (bat\32, serving players). Loopback is limited like any
  * other address; the gateway opens no `/auth` connections of its own, so nothing internal can be
  * locked out. The table is bounded: entries that hold nothing are dropped as they empty or when the
  * table is full, and past `maxEntries` the least recently used address is forgotten.

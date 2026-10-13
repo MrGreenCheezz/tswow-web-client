@@ -215,7 +215,7 @@ export default defineConfig(({ mode }) => {
       ...(allowedHosts.length > 0 ? { allowedHosts } : {}),
       headers: isolation,
     },
-    // `vite preview` (web/start-built.bat) serves dist/web on the dev server's origin, the one
+    // `vite preview` (bat/23, the built page) serves dist/web on the dev server's origin, the one
     // the gateway's ALLOWED_ORIGINS admits, rather than Vite's own default port 4173.
     preview: {
       host: env.WEB_HOST || "127.0.0.1",

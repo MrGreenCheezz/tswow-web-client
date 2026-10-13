@@ -2,7 +2,7 @@
 //
 // The gateway runs dist/code/gateway/main.js, loaded once at start, so restarting it without a
 // rebuild keeps serving yesterday's code: a route added to src/gateway since the last build answers
-// 404 and the browser reports the feature as unavailable. restart-gateway.bat asks this script and
+// 404 and the browser reports the feature as unavailable. bat\11 (gateway restart) asks this script and
 // rebuilds only when some src/**/*.ts has no compiled .js next to its dist path or is newer than it.
 //
 // Exit 0: stale (rebuild), printing the first stale source. Exit 1: dist/code is current.
@@ -16,7 +16,7 @@ const sourceRoot = join(root, "src");
 const outRoot = join(root, "dist", "code");
 // L10-review (10.11): tools/build-gateway.mjs writes dist/code too — the gateway and what it imports,
 // src/world and src/protocol included, which the page bundles as well — so dist/code alone no longer
-// says the page is current. online\start-server.bat serves dist/web; `vite build` writes its
+// says the page is current. bat\32 (serving players) serves dist/web; `vite build` writes its
 // index.html, so a source newer than that file is stale as well. No built page: dist/code alone.
 let pageBuiltAt;
 try {

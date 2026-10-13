@@ -1,7 +1,7 @@
 // Tries the setup for other players on this machine alone, before anything is sent
-// (online\test-local.bat): the server of online\start-server.bat, but listening on 127.0.0.1 only,
-// so nothing is reachable from outside, and the very player app from dist\player (or the browser)
-// pointed at it. A players' server that already runs is used as it is.
+// (bat\31 Игроки - проверить у себя.bat): the server of bat\32 Игроки - начать раздачу.bat, but
+// listening on 127.0.0.1 only, so nothing is reachable from outside, and the very player app from
+// dist\player (or the browser) pointed at it. A players' server that already runs is used as it is.
 //
 //   node tools/test-local.mjs            the player app
 //   node tools/test-local.mjs browser    the page in the default browser
@@ -26,6 +26,8 @@ if (process.env.NODE_TEST_CONTEXT) {
 }
 
 const root = fileURLToPath(new URL("..", import.meta.url));
+/** The players' server launcher; Node starts it by its full name (cmd could not read it from a .bat). */
+const serverScript = `${root}bat\\32 Игроки - начать раздачу.bat`;
 const webPort = Number.parseInt(process.env.PUBLIC_WEB_PORT ?? "8091", 10);
 const gatewayPort = Number.parseInt(process.env.GATEWAY_PORT ?? "8090", 10);
 const pageUrl = `http://127.0.0.1:${webPort}/`;
@@ -45,15 +47,15 @@ function listening(port) {
 }
 
 if (!browser && !existsSync(app)) {
-  console.error("The player app is not built yet: run online\\build-player.bat first.");
+  console.error("The player app is not built yet: run bat\\30 Игроки - собрать набор.bat first.");
   process.exit(1);
 }
 
 if (await listening(webPort)) {
   console.log(`A players' server already answers on ${pageUrl}; using it.`);
 } else {
-  // Its own window, as online\start-server.bat always runs; loopback only, whatever .env says.
-  spawn("cmd.exe", ["/c", "start", "TSWoW WebClient - server for players (local test)", `${root}online\\start-server.bat`], {
+  // Its own window, as bat\32 always runs; loopback only, whatever .env says.
+  spawn("cmd.exe", ["/c", "start", "TSWoW WebClient - server for players (local test)", serverScript], {
     env: { ...process.env, PUBLIC_BIND: "127.0.0.1", PUBLIC_HOST: "127.0.0.1" },
     detached: true,
     stdio: "ignore",
