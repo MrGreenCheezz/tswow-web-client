@@ -11,6 +11,7 @@ import {
 } from "../glue/GlueLoader.js";
 import { GlueLuaRaise, GlueLuaVm } from "../glue/GlueLua.js";
 import type { FrameXmlSavedVariables } from "./FrameXmlSavedVariables.js";
+import { frameXmlAddonLoadReason } from "./FrameXmlAddonStates.js"; // 3.46 (13.10)
 import { FrameXmlUiBridge } from "../ui/framexml_compat/FrameXmlRuntime.js";
 import { parseFrameXml } from "../ui/framexml_compat/FrameXmlParser.js";
 import {
@@ -121,6 +122,13 @@ export interface FrameXmlAddonRuntimeOptions {
    * gateway's `/client/addons` (root folders with their own TOC, sorted by name). TSWoW modules are not in it.
    */
   readonly installed?: readonly string[];
+  /**
+   * 3.46 (13.10): installed add-ons that are not enabled — switched off by the profile (AddOns.txt) or by
+   * DisableAllAddOns — and the `checkAddonVersion` CVar (default on): GetAddOnInfo's «enabled», loadable and reason
+   * and LoadAddOn's refusal (FrameXmlAddonStates.ts).
+   */
+  readonly disabled?: readonly string[];
+  readonly checkAddonVersion?: boolean;
   /** The XML roots a load made, with the add-on that made them (3.18: a mount draws a late one's). */
   readonly onRoots?: (roots: readonly FrameXmlFrame[], addon: string) => void;
   readonly savedVariables?: FrameXmlSavedVariables;
@@ -302,6 +310,27 @@ export class FrameXmlAddonRuntime {
         .filter((value): value is string => value !== undefined),
     );
     this.#installed = names((options.installed ?? []).join(","));
+    this.#disabled = new Set((options.disabled ?? []).map((name) => name.toLowerCase())); // 3.46 (13.10)
+    this.#checkAddonVersion = options.checkAddonVersion ?? true; // 3.46 (13.10)
+  }
+
+  /** 3.46 (13.10): installed add-ons not enabled (lower-case), and the out-of-date switch. */
+  readonly #disabled: ReadonlySet<string>;
+  readonly #checkAddonVersion: boolean;
+
+  /**
+   * 3.46 (13.10): why an installed add-on cannot load — 0x005f7e90 with load-on-demand allowed (FrameXmlAddonStates.ts) —
+   * or undefined when it can. Its TOC is the one read so far (`primeMetadata`, a load).
+   */
+  loadReason(name: string): string | undefined {
+    const installed = new Set(this.#installed.map((entry) => entry.toLowerCase()));
+    return frameXmlAddonLoadReason({
+      installed: (lower) => installed.has(lower),
+      disabled: (lower) => this.#disabled.has(lower),
+      loaded: (lower) => this.#records.get(lower)?.state === "loaded",
+      toc: (lower) => this.#records.get(lower)?.toc?.source ?? this.#installedTocs.get(lower),
+      checkAddonVersion: this.#checkAddonVersion,
+    }, name);
   }
 
   /** 3.46 (12.10): GetNumAddOns (Wow.exe 0x00511200 → 0x005f4ff0): the installed add-ons' count. */
@@ -315,8 +344,9 @@ export class FrameXmlAddonRuntime {
    * the installed list (rounded); one outside it raises «AddOn index must be in the range of 1 to N». A string
    * names an add-on, and is answered back as given. Then title and notes (the TOC's, else nil), enabled (1 or nil:
    * 0x005f7d70), loadable and reason (0x005f7e90 asked with its second argument 1, which lets a load-on-demand
-   * add-on through: 1, nil for a listed add-on — the gateway lists the enabled ones only — and nil, "MISSING"
-   * (reason 1 of the table 0x00ad17b4) for a name not in the list), and security (0x005f7670: "INSECURE", entry 1
+   * add-on through; 13.10: the whole installed list, the profile's switched-off add-ons as DISABLED, out-of-date
+   * and incompatible ones and failed dependencies as FrameXmlAddonStates.ts has them, a loaded one 1 and nil — and
+   * nil, "MISSING" (reason 1 of the table 0x00ad17b4) for a name not in the list), and security (0x005f7670: "INSECURE", entry 1
    * of 0x00ad17d8, for any third-party add-on and an unknown name). Anything else raises the usage. TSWoW
    * modules are not add-ons in Wow.exe: a module's name is an unknown one.
    */
@@ -341,7 +371,11 @@ export class FrameXmlAddonRuntime {
     const source = this.#records.get(lower)?.toc?.source ?? this.#installedTocs.get(lower);
     const title = source === undefined ? undefined : metadata(source, "Title");
     const notes = source === undefined ? undefined : metadata(source, "Notes");
-    return [name, title, notes, 1, 1, undefined, "INSECURE"];
+    // 3.46 (13.10): «enabled» for the profile (0x005f7d70); a loaded add-on is loadable with no reason (0x005f7650),
+    // any other gets 0x005f7e90's (FrameXmlAddonStates.ts) — DISABLED, INTERFACE_VERSION, INCOMPATIBLE, DEP_….
+    const enabled = this.#disabled.has(lower) ? undefined : 1;
+    const reason = this.isLoaded(entry) ? undefined : this.loadReason(entry);
+    return [name, title, notes, enabled, reason === undefined ? 1 : undefined, reason, "INSECURE"];
   }
 
   get closed(): boolean {
@@ -399,6 +433,11 @@ export class FrameXmlAddonRuntime {
     const lower = canonical?.toLowerCase();
     if (lower !== undefined && LOD_POLICY_BY_LOWER.get(lower) === "disabled" && !this.#records.has(lower)) {
       return [false, "DISABLED"];
+    }
+    // 3.46 (13.10): an installed add-on that cannot load says why (0x005f7e90): DISABLED, INTERFACE_VERSION, ….
+    if (lower !== undefined && this.#installed.some((entry) => entry.toLowerCase() === lower)) {
+      const reason = this.loadReason(lower);
+      if (reason !== undefined) return [false, reason];
     }
     const previous = lower !== undefined ? this.#records.get(lower)?.result : undefined;
     if (previous !== undefined && !previous.ok) return loadAddOnFailure(previous);

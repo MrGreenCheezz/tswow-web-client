@@ -98,13 +98,17 @@
 //   4  u32   indexCount
 //   8  u16   runCount
 //  10  u8    bytes per index, 2 or 4
-//  11  u8    stream flags: bit 0 means a float3 authored normal stream follows colours
+//  11  u8    stream flags: bit 0 means a float3 authored normal stream follows colours; bit 1
+//            (13.10 7.11, `visual-wmo-v26`) means the Composite streams follow that
+
 //  12  u16   which group this is, so a stale cache cannot pass one room off as another
 //  14  u16   lightRefCount: how many of the model's lamps hang in this group
 //  16  f32[3] × vertexCount positions, in model space
 //  ..  f32[2] × vertexCount texture coordinates
 //  ..  u8[4]  × vertexCount baked colours, RGBA; white where the group has none
 //  ..  f32[3] × vertexCount authored normals when block flag bit 0 is set
+//  ..  f32[2] × vertexCount second texture coordinates, then u8 × vertexCount blend factors padded
+//      to four, when block flag bit 1 is set (a group drawing a Composite record)
 //  ..  the index list, numbered from this group's own first vertex, padded to a multiple of four
 //  ..  the runs, 16 bytes each: u32 start, u32 count, u16 material, u8 blendMode,
 //      u8 materialFlags, u8 lighting, u8 reserved, u16 MOMT record + 1 (05.10-A7b-3: zero —
@@ -127,6 +131,12 @@ export const WWM1_MAGIC = "WWM1";
 export const WWM2_MAGIC = "WWM2";
 /** Bit 0 of a group block's byte 11: one finite float3 normal per vertex follows the legacy streams. */
 export const WWM_AUTHORED_NORMALS = 0x01;
+/**
+ * 13.10 7.11, bit 1 (`visual-wmo-v26` only): the Composite streams follow the normals (or the colours)
+ * — f32[2] × vertexCount second texture coordinates, then u8 × vertexCount blend factors (the second
+ * MOCV's alpha), padded to four (`wmo-composite.mjs`).
+ */
+export const WWM_COMPOSITE_STREAMS = 0x02;
 export const WWM1_HEADER_SIZE = 24;
 export const WWM1_GROUP_SIZE = 40;
 export const WWM1_BLOCK_HEADER_SIZE = 16;
@@ -206,18 +216,27 @@ export function encodeWwmGroup(group, index) {
       if (!Number.isFinite(Math.fround(value))) throw new Error("WWM2 group normal stream is not Float32-representable");
     }
   }
+  // 13.10 7.11: the Composite streams (`visual-wmo-v26`), only on a group that draws one.
+  const hasComposite = group.secondUvs !== undefined && group.blendAlpha !== undefined;
+  if (hasComposite) {
+    if (group.secondUvs.length !== vertexCount * 2 || group.blendAlpha.length !== vertexCount) {
+      throw new Error("WWM2 group composite streams disagree with the vertex count");
+    }
+    assertFloat32Stream(group.secondUvs, "second UV");
+  }
   const wide = vertexCount > 65_536;
   const indexBytes = wide ? 4 : 2;
   const indexLength = align4(indexCount * indexBytes);
   const runLength = group.runs.length * WWM1_RUN_SIZE;
   const vertexStride = 24 + (hasNormals ? 12 : 0);
-  const indexOffset = WWM1_BLOCK_HEADER_SIZE + vertexCount * vertexStride;
+  const compositeLength = hasComposite ? vertexCount * 8 + align4(vertexCount) : 0;
+  const indexOffset = WWM1_BLOCK_HEADER_SIZE + vertexCount * vertexStride + compositeLength;
   const data = Buffer.alloc(indexOffset + indexLength + runLength + align4(lightRefs.length * 2));
   data.writeUInt32LE(vertexCount, 0);
   data.writeUInt32LE(indexCount, 4);
   data.writeUInt16LE(group.runs.length, 8);
   data.writeUInt8(indexBytes, 10);
-  data.writeUInt8(hasNormals ? WWM_AUTHORED_NORMALS : 0, 11);
+  data.writeUInt8((hasNormals ? WWM_AUTHORED_NORMALS : 0) | (hasComposite ? WWM_COMPOSITE_STREAMS : 0), 11);
   data.writeUInt16LE(index, 12);
   data.writeUInt16LE(lightRefs.length, 14);
   let offset = WWM1_BLOCK_HEADER_SIZE;
@@ -227,6 +246,11 @@ export function encodeWwmGroup(group, index) {
   offset += vertexCount * 4;
   if (hasNormals) {
     for (const value of group.normals) data.writeFloatLE(value, offset), offset += 4;
+  }
+  if (hasComposite) {
+    for (const value of group.secondUvs) data.writeFloatLE(value, offset), offset += 4;
+    data.set(group.blendAlpha, offset);
+    offset += align4(vertexCount);
   }
   for (const value of group.indices) {
     if (value >= vertexCount) throw new Error("WWM1 group index is out of range");

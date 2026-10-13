@@ -401,23 +401,24 @@ test("the first open loads Blizzard_BindingUI; keys pressed while it is shown bi
   // `:focus-visible` rule, not an inline style on this one window.
   assert.equal(labelOf("KeyBindingFrameDefaultButton").style.zIndex, "400");
   assert.equal(renderer.elementFor(frame("KeyBindingFrame")).style.outline ?? "", "");
-  // The rows are Bindings.xml's: a header, then MOVEFORWARD with W and ↑.
+  // The rows are Bindings.xml's: a header, MOVEANDSTEER (Bindings.xml:3, in the table since 5.09), then MOVEFORWARD with W and ↑.
   assert.equal(text("KeyBindingFrameBinding1Header"), "Перемещение");
-  assert.equal(text("KeyBindingFrameBinding2Description"), "Движение вперед");
-  assert.equal(text("KeyBindingFrameBinding2Key1Button"), "W");
-  assert.equal(text("KeyBindingFrameBinding2Key2Button"), "Стрелка вверх");
+  assert.equal(text("KeyBindingFrameBinding2Description"), "Передвижение и управление");
+  assert.equal(text("KeyBindingFrameBinding3Description"), "Движение вперед");
+  assert.equal(text("KeyBindingFrameBinding3Key1Button"), "W");
+  assert.equal(text("KeyBindingFrameBinding3Key2Button"), "Стрелка вверх");
   // A key press while the frame is up never reaches the world.
   const idle = press("KeyW");
   assert.equal(idle.prevented && idle.stopped, true);
   assert.deepEqual(bindings.keysOf("moveForward"), ["KeyW", "ArrowUp"], "nothing selected: nothing bound");
   // Select MOVEFORWARD's key 1, press Shift+Z.
-  click("KeyBindingFrameBinding2Key1Button");
+  click("KeyBindingFrameBinding3Key1Button");
   assert.equal(lua("return KeyBindingFrame.selected")[0], "MOVEFORWARD");
   press("ShiftLeft", { shift: true });
   assert.equal(lua("return KeyBindingFrame.selected")[0], "MOVEFORWARD", "a bare modifier does not end the capture");
   press("KeyZ", { shift: true });
   assert.deepEqual(bindings.keysOf("moveForward"), ["Shift+KeyZ", "ArrowUp"]);
-  assert.equal(text("KeyBindingFrameBinding2Key1Button"), "SHIFT-Z");
+  assert.equal(text("KeyBindingFrameBinding3Key1Button"), "SHIFT-Z");
   assert.equal(text("KeyBindingFrameOutputText"), lua("return KEY_BOUND")[0]);
   // Cancel takes it back and returns to the game menu, as in the client.
   click("KeyBindingFrameCancelButton");
@@ -430,7 +431,7 @@ test("the first open loads Blizzard_BindingUI; keys pressed while it is shown bi
   // Okay keeps it, in the saved blob the native window reads.
   bindingRoute.openFrameXmlKeyBindings();
   await until(() => shown("KeyBindingFrame"), "reopened");
-  click("KeyBindingFrameBinding2Key2Button");
+  click("KeyBindingFrameBinding3Key2Button");
   press("F8");
   assert.deepEqual(bindings.keysOf("moveForward"), ["KeyW", "F8"]);
   click("KeyBindingFrameOkayButton");
@@ -440,10 +441,10 @@ test("the first open loads Blizzard_BindingUI; keys pressed while it is shown bi
   // Unbind, then Escape: with a slot selected Escape only deselects; without, it cancels and closes.
   bindingRoute.openFrameXmlKeyBindings();
   await until(() => shown("KeyBindingFrame"), "reopened");
-  click("KeyBindingFrameBinding2Key2Button");
+  click("KeyBindingFrameBinding3Key2Button");
   click("KeyBindingFrameUnbindButton");
   assert.deepEqual(bindings.keysOf("moveForward"), ["KeyW", ""]);
-  click("KeyBindingFrameBinding2Key1Button");
+  click("KeyBindingFrameBinding3Key1Button");
   press("Escape");
   assert.equal(lua("return KeyBindingFrame.selected")[0], undefined);
   assert.equal(shown("KeyBindingFrame"), true);
@@ -457,7 +458,7 @@ test("the first open loads Blizzard_BindingUI; keys pressed while it is shown bi
   // The host's own close (K again, a reset) cancels without bringing the menu back.
   bindingRoute.openFrameXmlKeyBindings();
   await until(() => shown("KeyBindingFrame"), "reopened");
-  click("KeyBindingFrameBinding2Key2Button");
+  click("KeyBindingFrameBinding3Key2Button");
   press("F9");
   assert.equal(bindingRoute.toggleFrameXmlKeyBindings(), true);
   assert.equal(shown("KeyBindingFrame"), false);
@@ -467,7 +468,7 @@ test("the first open loads Blizzard_BindingUI; keys pressed while it is shown bi
   // yet (its window listener can run after this one): a Shift from the previous press must not leak.
   bindingRoute.openFrameXmlKeyBindings();
   await until(() => shown("KeyBindingFrame"), "reopened");
-  click("KeyBindingFrameBinding2Key2Button");
+  click("KeyBindingFrameBinding3Key2Button");
   press("ShiftLeft", { shift: true });
   press("KeyU", {}, { reversed: true });
   assert.deepEqual(bindings.keysOf("moveForward"), ["KeyW", "KeyU"]);
@@ -477,10 +478,10 @@ test("the first open loads Blizzard_BindingUI; keys pressed while it is shown bi
   // A key the client has no KEY_ name for — the ISO key beside the left Shift — binds and shows.
   bindingRoute.openFrameXmlKeyBindings();
   await until(() => shown("KeyBindingFrame"), "reopened");
-  click("KeyBindingFrameBinding2Key2Button");
+  click("KeyBindingFrameBinding3Key2Button");
   press("IntlBackslash", { shift: true });
   assert.deepEqual(bindings.keysOf("moveForward"), ["KeyW", "Shift+IntlBackslash"]);
-  assert.equal(text("KeyBindingFrameBinding2Key2Button"), "SHIFT-\\ (ISO)");
+  assert.equal(text("KeyBindingFrameBinding3Key2Button"), "SHIFT-\\ (ISO)");
   click("KeyBindingFrameCancelButton");
   lua("HideUIPanel(GameMenuFrame)", 0);
   assert.deepEqual(bindings.keysOf("moveForward"), ["KeyW", "F8"]);

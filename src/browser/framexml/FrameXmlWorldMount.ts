@@ -81,7 +81,7 @@ import type { FrameXmlTalentMetadata } from "./FrameXmlTalentResolver.js";
 import { resolveFrameXmlReputationRows } from "./FrameXmlReputationResolver.js";
 import { FrameXmlBoot, FRAMEXML_VERTICAL_EXERCISE_EVENTS } from "./FrameXmlBoot.js";
 import { loadFrameXmlCharacterStats } from "./FrameXmlCharacterStats.js";
-import { fetchFrameXmlClientAddons } from "./FrameXmlClientAddons.js";
+import { fetchFrameXmlClientAddonList } from "./FrameXmlClientAddons.js"; // 3.46 (13.10): with the whole list
 import { frameXmlOwnerAddon } from "./FrameXmlAddonRuntime.js"; // 3.18
 import {
   frameXmlLodPrefetchNames, frameXmlLodPreloadNames, frameXmlPreloadServerDown, startFrameXmlLodPreload,
@@ -3163,13 +3163,19 @@ export async function mountFrameXmlVertical(
   // A missing list is still no reason to take the interface down; the patch latch is — every file
   // the boot would read next answers the same 409, and "no add-ons" would hide why.
   let patchChainChanged: PatchChainChangedError | undefined;
-  const clientAddons = (options.seam || options.addonsOnly
-    ? []
-    : await fetchFrameXmlClientAddons(origin).catch((error) => {
+  const clientAddonList = options.seam || options.addonsOnly
+    ? undefined
+    : await fetchFrameXmlClientAddonList(origin).catch((error) => {
       if (isPatchChainChangedError(error)) patchChainChanged = error;
       else console.warn(`Client add-on list is unavailable: ${String(error)}`);
-      return [];
-    })).filter((addon) => frameXmlClientAddonEnabled(addon.name));
+      return undefined;
+    });
+  const clientAddons = (clientAddonList?.addons ?? []).filter((addon) => frameXmlClientAddonEnabled(addon.name));
+  // 3.46 (13.10): GetNumAddOns/GetAddOnInfo list every installed add-on, the switched-off ones as DISABLED (Wow.exe
+  // 0x00511240); the mount loads from the enabled list above.
+  const installedClientAddons = clientAddonList?.installed ?? [];
+  const disabledClientAddons = installedClientAddons
+    .filter((addon) => !addon.enabled || !frameXmlClientAddonEnabled(addon.name)).map((addon) => addon.name);
   if (patchChainChanged) return { ok: false, message: patchChainChanged.message };
   if (epoch !== mountEpoch) return { ok: false, message: "FrameXML монтаж отменён" };
 
@@ -3585,8 +3591,9 @@ export async function mountFrameXmlVertical(
     } } : {}),
     provider: createHttpFileProvider({ gatewayOrigin: origin }),
     locale: clientLocale(),
-    installedAddons: clientAddons.map((addon) => addon.name),
+    installedAddons: installedClientAddons.map((addon) => addon.name), // 3.46 (13.10): was the enabled ones alone
     eagerAddons: clientAddons.filter((addon) => !addon.loadOnDemand).map((addon) => addon.name),
+    addonStates: { disabled: disabledClientAddons, checkAddonVersion: clientAddonList?.checkAddonVersion ?? true }, // 3.46 (13.10)
     subset: FRAMEXML_VERTICAL_TOC,
     // Ordinary entry passes its explicit addon preference; direct addon-runtime callers retain
     // the existing opt-in mount API. A stock-only diagnostic never reads the generated TS blocks.

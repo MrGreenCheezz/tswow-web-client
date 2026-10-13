@@ -92,9 +92,13 @@ export function frameXmlBindingGate(
       local shown = KeyBindingFrame:IsShown() and 1 or 0
       local header = KeyBindingFrameBinding1Header:GetText()
       local label = KeyBindingFrameBinding2Description:GetText()
+      -- 13.10: the second row is the table's second command — MOVEANDSTEER since 5.09 put it first, as Bindings.xml:3
+      -- has it — not a fixed MOVEFORWARD, which made this gate refuse the stock window.
+      local second = GetBinding(2, 1)
       KeyBindingFrame:Hide()
       return shown, KeyBindingFrame:IsShown() and 1 or 0,
-        header == BINDING_HEADER_MOVEMENT and 1 or 0, label == BINDING_NAME_MOVEFORWARD and 1 or 0
+        header == BINDING_HEADER_MOVEMENT and 1 or 0,
+        (type(second) == "string" and label == _G["BINDING_NAME_" .. second]) and 1 or 0
     `, 4);
     if (!probe || probe[0] !== 1 || probe[1] !== 0 || probe[2] !== 1 || probe[3] !== 1) return undefined;
     return boot.bridge.isVisible(root) ? undefined : root;

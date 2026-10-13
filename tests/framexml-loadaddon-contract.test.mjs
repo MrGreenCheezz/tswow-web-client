@@ -41,7 +41,7 @@ async function booted() {
       frame:RegisterEvent("ADDON_LOADED")
       frame:SetScript("OnEvent", function(self, event, name) LOADED[#LOADED + 1] = name end)
     `,
-    "interface/addons/lodone/lodone.toc": "## LoadOnDemand: 1\nLodOne.lua",
+    "interface/addons/lodone/lodone.toc": "## Interface: 30300\n## LoadOnDemand: 1\nLodOne.lua",
     "interface/addons/lodone/lodone.lua": "LOD_ONE_RAN = (LOD_ONE_RAN or 0) + 1",
   });
   const boot = new FrameXmlBoot({ provider, installedAddons: ["LodOne"], exercise: false });
@@ -121,7 +121,7 @@ const OPTS_FILES = {
     frame:RegisterEvent("ADDON_LOADED")
     frame:SetScript("OnEvent", function(self, event, name) LOADED[#LOADED + 1] = name end)
   `,
-  "interface/addons/parent/parent.toc": "Parent.lua",
+  "interface/addons/parent/parent.toc": "## Interface: 30300\nParent.lua",
   "interface/addons/parent/parent.lua": `
     SLASH_PARENTOPTS1 = "/parentopts"
     SlashCmdList.PARENTOPTS = function()
@@ -132,10 +132,10 @@ const OPTS_FILES = {
       if IsAddOnLoaded("Opts") then OptsMain.Show(); OPENED = true end
     end
   `,
-  "interface/addons/optslib/optslib.toc": "## LoadOnDemand: 1\nOptsLib.lua",
+  "interface/addons/optslib/optslib.toc": "## Interface: 30300\n## LoadOnDemand: 1\nOptsLib.lua",
   "interface/addons/optslib/optslib.lua": "OPTS_LIB = { before = OptsMain == nil }",
   "interface/addons/opts/opts.toc":
-    "## LoadOnDemand: 1\n## Dependencies: OptsLib\n## SavedVariables: OptsDB\nOpts.xml\nOptsMain.lua",
+    "## Interface: 30300\n## LoadOnDemand: 1\n## Dependencies: OptsLib\n## SavedVariables: OptsDB\nOpts.xml\nOptsMain.lua",
   "interface/addons/opts/opts.xml": '<Ui><Script file="Localization.lua"/><Include file="Panels\\Panels.xml"/></Ui>',
   "interface/addons/opts/localization.lua": "OPTS_L = { title = 'Opts' }",
   "interface/addons/opts/panels/panels.xml": '<Ui><Frame name="OptsPanel" hidden="true"/><Script file="Panels.lua"/></Ui>',

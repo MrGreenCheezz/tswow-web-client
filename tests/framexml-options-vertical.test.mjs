@@ -175,7 +175,8 @@ test("the audio panel is the browser's sound: sliders and switches read the sett
     return AudioOptionsSoundPanelMasterVolume:GetValue(), AudioOptionsSoundPanelMusicVolume:GetValue(),
       AudioOptionsSoundPanelAmbienceVolume:GetValue(), AudioOptionsSoundPanelEnableSound:GetChecked() and 1 or 0,
       AudioOptionsSoundPanelMasterVolume:IsEnabled(), AudioOptionsSoundPanelReverb:IsEnabled()`, 6),
-  [0.7, 0.6, 0.6, 1, 1, 0]);
+  // 3.27 (13.10): a Slider keeps 32-bit floats (Wow.exe +0x2a8): 0.7 reads 0.699999988079071.
+  [Math.fround(0.7), Math.fround(0.6), Math.fround(0.6), 1, 1, 0]);
   const master = boot.bridge.getFrame("AudioOptionsSoundPanelMasterVolume");
   boot.bridge.SetValue(master, 0.36, true);
   lua(boot, "AudioOptionsSoundPanelEnableSound:Click()", 0);

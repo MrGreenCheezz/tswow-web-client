@@ -209,6 +209,27 @@ test("a pet's preview signals the pet event and three points per tier", () => {
   assert.equal(world.learned[0][0], true);
 });
 
+// 3.33 (13.10): the previewTalents CVar's callback (0x005127d0) — every talent group's preview counted
+// (0x005c5be0) and cleared (0x005c70d0), then the character's event and the pet's, always.
+test("the previewTalents callback clears every group's preview and signals both events with -points", () => {
+  const one = snapshot();
+  const base = { ...one, numTalentGroups: 2, groups: [one.groups[0], { ...one.groups[0], group: 2, active: false }] };
+  const fired = [];
+  const model = new FrameXmlTalentPreviewModel({ snapshot: (pet) => (pet ? undefined : base), packet: () => base, learn: () => {} });
+  model.attach({ fire: (event, ...args) => { fired.push([event, ...args]); return 1; } });
+  model.add(1, 1, 1, false, 1);
+  model.add(1, 2, 1, false, 2);
+  model.add(1, 2, 1, false, 2);
+  assert.deepEqual([model.groupSpent(false, 1), model.groupSpent(false, 2)], [1, 2]);
+  fired.length = 0;
+  model.cvarChanged();
+  assert.deepEqual(fired, [[PREVIEW_TALENT_POINTS_CHANGED, 0, 0, 0, -3], [PREVIEW_PET_TALENT_POINTS_CHANGED, 0, 0, 0, 0]]);
+  assert.ok(!Object.is(fired[1][4], -0), "no pet points: 0, not -0");
+  assert.deepEqual([model.groupSpent(false, 1), model.groupSpent(false, 2)], [0, 0]);
+  model.cvarChanged();
+  assert.equal(fired.length, 4, "nothing previewed: both events still fire");
+});
+
 test("CMSG_LEARN_PREVIEW_TALENTS: u32 count, then u32 id and zero-based u32 rank per talent", () => {
   const bytes = [...buildLearnPreviewTalents([{ talentId: 101, rank: 2 }, { talentId: 0x1234, rank: 1 }])];
   assert.deepEqual(bytes, [2, 0, 0, 0, 101, 0, 0, 0, 1, 0, 0, 0, 0x34, 0x12, 0, 0, 0, 0, 0, 0]);

@@ -28,7 +28,7 @@ async function boot() {
           <Slider name="Ranged" inherits="SeenSliderTemplate" minValue="0" maxValue="10"/>
           <Slider name="Defaulted" inherits="SeenSliderTemplate" minValue="0" maxValue="10" defaultValue="4"/>
           <Slider name="Early" inherits="SeenSliderTemplate"/>
-          <Slider name="RangedValue" inherits="SeenSliderTemplate" minValue="0" maxValue="10"/>
+          <Slider name="RangedValue" inherits="SeenSliderTemplate" minValue="0" maxValue="10" valueStep="1"/>
         </Frames></Frame>
       </Ui>`,
     }),
@@ -59,6 +59,7 @@ test("a slider whose value was never set takes a range silently and keeps 0 unti
     assert.equal(value(instance, "Fresh"), 200);
     // An XML range without defaultValue sets no value either; defaultValue does.
     assert.equal(run(instance, "Ranged:SetMinMaxValues(5, 8)"), "");
+    // 3.27 (13.10): step 1 here — the loader's default 0.001 would put 7 on 7000 × 0.001f (framexml-slider-rules).
     assert.equal(run(instance, "RangedValue:SetValue(7) RangedValue:SetMinMaxValues(0, 5)"), "RangedValue=7 RangedValue=5",
       "a SetValue on the XML range is a value");
     assert.equal(run(instance, "Defaulted:SetMinMaxValues(5, 8)"), "Defaulted=5");

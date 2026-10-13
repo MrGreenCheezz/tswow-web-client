@@ -21,7 +21,8 @@
  *   the header first, then services by required level, required skill rank, name and rank (a trade
  *   skill trainer: required skill rank and name). The selection becomes the first visible available
  *   service, else the second row when it is a service, else none (it is a spell id, kept until the
- *   next rebuild).
+ *   next rebuild). 3.29 (13.10): the hidden rows stay in the array after the visible ones, every index
+ *   function reaches them, and a rebuild sorts the array as it stands — FrameXmlTrainerSort.ts.
  * - `GetTrainerServiceInfo(i)` (0x595090): name, rank and type ("header", "available", "unavailable",
  *   "used"); a header's name is its group's and its rank "". The fourth value is nil only for a
  *   collapsed header and 1 for everything else.
@@ -35,8 +36,8 @@
  * pair CharBaseInfo does not list.
  */
 
-import { frameXmlQuestLogCompare } from "./FrameXmlQuestLog.js";
 import { FrameXmlTrainerLineFilter } from "./FrameXmlTrainerSkillLines.js"; // L12 3.29
+import { frameXmlTrainerSort, frameXmlTrainerSortedSelection, type FrameXmlTrainerSorted } from "./FrameXmlTrainerSort.js"; // 3.29 (13.10)
 
 export const TRAINER_STATE_AVAILABLE = 0;
 export const TRAINER_STATE_UNAVAILABLE = 1;
@@ -73,13 +74,6 @@ export type FrameXmlTrainerEntry<Row> =
   | { readonly header: true; readonly group: number; readonly name: string | undefined; readonly expanded: boolean }
   | { readonly header: false; readonly group: number; readonly row: Row; readonly state: FrameXmlTrainerState };
 
-interface Group {
-  readonly id: number;
-  readonly counts: [number, number, number];
-  allPointCost: boolean;
-  name: string | undefined;
-}
-
 /** A sorted line: its number (a skill line, or 1..3 for a trade skill trainer) and name. */
 export interface FrameXmlTrainerLine {
   readonly id: number;
@@ -96,62 +90,19 @@ export interface FrameXmlTrainerLineView {
   ordered(lines: readonly FrameXmlTrainerLine[]): void;
 }
 
-/** The visible rows, in the client's order, for one list, filter and collapse state. */
+/**
+ * The visible rows, in the client's order, for one new list, filter and collapse state. 3.29 (13.10): the
+ * whole array, hidden rows included, is FrameXmlTrainerSort.ts; this is its visible part.
+ */
 export function frameXmlTrainerDisplay<Row extends FrameXmlTrainerGroupRow>(
   rows: readonly Row[], source: FrameXmlTrainerGroupSource<Row>, collapsed: ReadonlySet<number>,
   lines?: FrameXmlTrainerLineView, // L12 3.29
 ): FrameXmlTrainerEntry<Row>[] {
-  const groups = new Map<number, Group>();
-  const services: { row: Row; group: number; state: FrameXmlTrainerState }[] = [];
-  for (const row of rows) {
-    const id = source.group(row);
-    if (!(id > 0)) continue;
-    const state = source.state(row);
-    const pointCost = row.pointCost[0] !== 0 || row.pointCost[1] !== 0;
-    let group = groups.get(id);
-    if (!group) {
-      group = { id, counts: [0, 0, 0], allPointCost: pointCost, name: source.groupName(id) };
-      groups.set(id, group);
-    } else if (group.allPointCost) {
-      group.allPointCost = pointCost;
-    }
-    group.counts[state] += 1;
-    services.push({ row, group: id, state });
-  }
-  const ordered = [...groups.values()].sort(source.tradeskill
-    ? (a, b) => a.id - b.id
-    : (a, b) => a.allPointCost !== b.allPointCost ? (a.allPointCost ? 1 : -1)
-      : frameXmlQuestLogCompare(a.name ?? "", b.name ?? ""));
-  const position = new Map(ordered.map((group, index) => [group.id, index]));
-  lines?.ordered(ordered); // L12 3.29
-  const showsGroup = (group: Group, at: number): boolean => (lines?.shown(at) ?? true) && // L12 3.29: the line filter
-    group.counts.some((count, state) => count > 0 && source.shown(state as FrameXmlTrainerState));
-  const shownGroups = new Set(ordered.filter(showsGroup).map((group) => group.id));
-  const visible: FrameXmlTrainerEntry<Row>[] = [];
-  for (const group of ordered) {
-    if (shownGroups.has(group.id)) {
-      visible.push({ header: true, group: group.id, name: group.name, expanded: !collapsed.has(group.id) });
-    }
-  }
-  for (const service of services) {
-    if (source.shown(service.state) && shownGroups.has(service.group) && !collapsed.has(service.group)) {
-      visible.push({ header: false, group: service.group, row: service.row, state: service.state });
-    }
-  }
-  const compareRows = (a: Row, b: Row): number => {
-    if (!source.tradeskill && a.requiredLevel !== b.requiredLevel) return a.requiredLevel < b.requiredLevel ? -1 : 1;
-    if (a.requiredSkillRank !== b.requiredSkillRank) return a.requiredSkillRank < b.requiredSkillRank ? -1 : 1;
-    const byName = frameXmlQuestLogCompare(source.name(a), source.name(b));
-    return byName !== 0 || source.tradeskill ? byName : frameXmlQuestLogCompare(source.rank(a) ?? "", source.rank(b) ?? "");
-  };
-  return visible.sort((a, b) => {
-    if (a.group !== b.group) return (position.get(a.group) ?? 0) - (position.get(b.group) ?? 0);
-    if (a.header !== b.header) return a.header ? -1 : 1;
-    return a.header || b.header ? 0 : compareRows(a.row, b.row);
-  });
+  const sorted = frameXmlTrainerSort(rows, source, collapsed, lines); // 3.29 (13.10)
+  return sorted.entries.slice(0, sorted.visible);
 }
 
-/** The spell id the client selects after a rebuild (0x594ba0's tail); 0 for none. */
+/** The spell id the client selects after a rebuild (0x594ba0's tail) over visible rows alone; 0 for none. */
 export function frameXmlTrainerDefaultSelection<Row extends FrameXmlTrainerGroupRow>(
   entries: readonly FrameXmlTrainerEntry<Row>[],
 ): number {
@@ -196,6 +147,12 @@ export class FrameXmlTrainerList<Row extends FrameXmlTrainerGroupRow> {
   /** Whether the last build had the groups; compared by `groupingChanged`. */
   #builtGrouped = false;
   #entries: FrameXmlTrainerEntry<Row>[] = [];
+  /**
+   * 3.29 (13.10): the whole array (DAT_00c0e4bc) — `#entries` is its visible part — and whether the next
+   * build lays a new list out (0x00596450) rather than sorting this one again (FrameXmlTrainerSort.ts).
+   */
+  #sorted: FrameXmlTrainerSorted<Row> = { entries: [], visible: 0 };
+  #fresh = true;
   #groups: readonly number[] = [];
   /** DAT_00c0e49c: the selected service's spell id; 0 for none. */
   #selected = 0;
@@ -222,24 +179,35 @@ export class FrameXmlTrainerList<Row extends FrameXmlTrainerGroupRow> {
       + `:${this.#lineFilter.mask}` // L12 3.29
       + `:${source.tradeskill ? 1 : 0}`; // 3.24: a live source answers per open trainer
     if (rows === this.#rows && key === this.#key) return this.#entries;
+    // 3.29 (13.10): a new list, or the first build with the groups, lays the array out afresh; any other
+    // rebuild sorts the array as it stands (0x00594ba0 over DAT_00c0e4bc).
+    const previous = this.#fresh || grouped !== this.#builtGrouped ? undefined : this.#sorted.entries;
+    this.#fresh = false;
     this.#rows = rows;
     this.#key = key;
     this.#builtGrouped = grouped;
     const known = rows.filter(source.describable);
     this.#lines = []; // L12 3.29: the flat list has no lines; a grouped build tells them below
     if (grouped) {
-      this.#entries = frameXmlTrainerDisplay(known, source, this.#collapsed, this.#lineView); // L12 3.29
+      this.#sorted = frameXmlTrainerSort(known, source, this.#collapsed, this.#lineView, previous); // 3.29 (13.10)
       const groups = new Set<number>();
       for (const row of known) { const group = source.group(row); if (group > 0) groups.add(group); }
       this.#groups = [...groups];
     } else {
-      this.#entries = known.flatMap((row) => {
-        const state = source.state(row);
-        return source.shown(state) ? [{ header: false as const, group: 0, row, state }] : [];
-      });
+      // Before the tables land: the services in packet order, the type filter's hidden ones after them.
+      const all = known.map((row) => ({ header: false as const, group: 0, row, state: source.state(row) }));
+      const shown = all.filter((entry) => source.shown(entry.state));
+      this.#sorted = { entries: [...shown, ...all.filter((entry) => !source.shown(entry.state))], visible: shown.length };
       this.#groups = [];
     }
+    this.#entries = this.#sorted.entries.slice(0, this.#sorted.visible);
     return this.#entries;
+  }
+
+  /** 3.29 (13.10): every row of the array, the hidden ones after the visible (`entries`). */
+  allEntries(): readonly FrameXmlTrainerEntry<Row>[] {
+    this.entries();
+    return this.#sorted.entries;
   }
 
   /**
@@ -259,11 +227,15 @@ export class FrameXmlTrainerList<Row extends FrameXmlTrainerGroupRow> {
     return this.entries().length;
   }
 
+  /**
+   * The row at an index. 3.29 (13.10): bounded by the whole array, as every index function of Wow.exe is
+   * (DAT_00c0e4a0): an index past the visible rows reaches a hidden one.
+   */
   entry(index: number): FrameXmlTrainerEntry<Row> | undefined {
-    return Number.isInteger(index) && index > 0 ? this.entries()[index - 1] : undefined;
+    return Number.isInteger(index) && index > 0 ? this.allEntries()[index - 1] : undefined;
   }
 
-  /** The service row at a visible index; undefined for a header or past the end. */
+  /** The service row at an index; undefined for a header or past the end. */
   service(index: number): Row | undefined {
     const entry = this.entry(index);
     return entry && !entry.header ? entry.row : undefined;
@@ -274,10 +246,10 @@ export class FrameXmlTrainerList<Row extends FrameXmlTrainerGroupRow> {
     return entry ? frameXmlTrainerEntryInfo(entry, this.#source) : undefined;
   }
 
-  /** `GetTrainerSelectionIndex`: the selected spell's visible row (0x594430 → 0x594170). */
+  /** `GetTrainerSelectionIndex`: the selected spell's row (0x594430 → 0x594170). */
   selectionIndex(): number | undefined {
     if (this.#selected <= 0) return undefined;
-    const index = this.entries().findIndex((entry) => !entry.header && entry.row.spellId === this.#selected);
+    const index = this.allEntries().findIndex((entry) => !entry.header && entry.row.spellId === this.#selected);
     return index >= 0 ? index + 1 : undefined;
   }
 
@@ -289,16 +261,29 @@ export class FrameXmlTrainerList<Row extends FrameXmlTrainerGroupRow> {
 
   /** The selection 0x594ba0 leaves after a rebuild (a list, filter or collapse change). */
   reselect(): void {
-    this.#selected = frameXmlTrainerDefaultSelection(this.entries());
+    this.entries();
+    this.#selected = frameXmlTrainerSortedSelection(this.#sorted); // 3.29 (13.10): over the whole array
   }
 
-  /** A new list (0x596450): every group expanded again, and the default selection. */
+  /**
+   * A new list (0x596450): every group expanded again, every line on, the array laid out afresh, and the
+   * default selection. 3.29 (13.10): only a new list — a state change keeps all three (`stateChanged`).
+   */
   listChanged(): void {
-    if (this.#collapsed.size > 0) {
-      this.#collapsed.clear();
-      this.#revision += 1;
-    }
+    this.#collapsed.clear();
+    this.#fresh = true;
+    this.#revision += 1;
     this.#lineFilter.reset(); // L12 3.29: and every line on again
+    this.reselect();
+  }
+
+  /**
+   * 3.29 (13.10): the services' states changed — a learned spell (0x00596b00, from the player's field
+   * update): the states counted again and the array sorted as it stands (0x00594ba0), the collapse and the
+   * line filter kept, then the default selection.
+   */
+  stateChanged(): void {
+    this.#revision += 1;
     this.reselect();
   }
 
@@ -338,7 +323,7 @@ export class FrameXmlTrainerList<Row extends FrameXmlTrainerGroupRow> {
    */
   setExpanded(index: number, expanded: boolean): boolean {
     if (!Number.isInteger(index)) return false;
-    const entries = this.entries();
+    const entries = this.allEntries(); // 3.29 (13.10): 0x005942b0 is bounded by the whole array
     if (index <= 0) {
       if (expanded) this.#collapsed.clear();
       else for (const group of this.#groups) this.#collapsed.add(group);

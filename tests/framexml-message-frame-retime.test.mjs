@@ -238,24 +238,26 @@ test("a scroll at the bottom brings back only the lines in view; ScrollUp with e
     for (let i = 0; i < 60; i += 1) bridge.tick(0.25);
     renderer.tickMessageFades();
     const shown = () => layer.children.map((line) => line.style.visibility ?? "");
-    assert.ok(shown().every((value) => value === "hidden"));
+    // 3.34 (13.10): 0x00969fa0 lays 6 lines of 16 px into 100 px; only they count (0x00969e60) — the 14 above
+    // keep their countdowns, frozen (drawn nowhere: out of the layer's view).
+    const hidden = shown().map((value) => value === "hidden");
+    assert.deepEqual(hidden, [...new Array(14).fill(false), ...new Array(6).fill(true)], "the slots' lines faded, the rest froze");
     lua(`Chat:ScrollDown()`);
     renderer.tickMessageFades();
-    // 0x00969410 revives the client's visible slots, not the history: ceil(100 / 16) + 1 lines here.
-    const visible = shown().map((value) => value === "");
-    assert.deepEqual(visible.slice(0, 12), new Array(12).fill(false), "out of view: left hidden");
-    assert.deepEqual(visible.slice(12), new Array(8).fill(true), "in view: back");
+    // 0x00969410 revives the client's slots, not the history.
+    assert.ok(shown().every((value) => value === ""), "the slots' lines back; the frozen ones never faded");
     for (let i = 0; i < 60; i += 1) bridge.tick(0.25);
     assert.equal(renderer.tickMessageFades(), 1);
-    // A burst, then a scroll at the bottom: the lines out of view stop counting (they would only fade
-    // out of sight, a style write a frame each); the ones in view start again.
+    // A burst, then a scroll at the bottom: the lines out of the slots stop counting where they were (they
+    // freeze); the ones in the slots start again.
     lua(`for i = 1, 20 do Chat:AddMessage("burst " .. i) end`);
     bridge.tick(1);
     lua(`Chat:ScrollDown()`);
     renderer.tickMessageFades();
     const lines = bridge.getFrame("Chat").messageFrame.messages;
     const clock = bridge.getFrame("Chat").messageFrame.fadeClock;
-    assert.equal(lines.filter((line) => clock < line.fadeUntil).length, 8, "only the lines in view still count");
+    assert.equal(lines.filter((line) => clock < line.fadeUntil && line.fadeUntil !== Infinity).length, 6,
+      "only the lines in the slots still count");
     assert.equal(layer.children.at(-1).style.visibility ?? "", "");
     // Everything in view: the client's ScrollUp is at its top (0x0096a8a0, +0x2d0) and only revives.
     layer.scrollHeight = 100;

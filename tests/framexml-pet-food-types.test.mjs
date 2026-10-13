@@ -189,4 +189,17 @@ test("GetStablePetFoodTypes: the slot pet's family diet, 0 the pet that is out; 
   world.uncached.delete(681);
   holder.table = undefined;
   assert.deepEqual(call(1), [""], "a gateway older than the route: an empty list");
+  // 3.27 (13.10): 0x005a16a0 reads its index with FISTP — to nearest, ties to even — and raises the client's own
+  // text (it names GetStablePetInfo) for anything `lua_isnumber` refuses, stable or no stable.
+  holder.table = petFoodTableFrom(SAMPLE);
+  assert.deepEqual(call(0.5), ["Мясо", "Рыба", "Хлеб"], "0.5 → 0: the pet that is out");
+  assert.deepEqual(call(1.5), [], "1.5 → 2, the spider");
+  assert.deepEqual(call(1.4), ["Рыба"]);
+  assert.deepEqual(call(2.5), [], "2.5 → 2");
+  assert.deepEqual(call(0.6), ["Рыба"], "0.6 → 1");
+  assert.deepEqual(call("1"), ["Рыба"], "a numeric string is a number");
+  for (const bad of [undefined, "x", {}]) {
+    assert.throws(() => call(bad), /^Error: Usage: GetStablePetInfo\(index\)$/);
+    assert.throws(() => [...FRAMEXML_STABLE_BINDINGS.GetStablePetFoodTypes({}, [bad])], /Usage: GetStablePetInfo/);
+  }
 });

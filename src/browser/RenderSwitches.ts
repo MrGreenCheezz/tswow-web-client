@@ -25,11 +25,11 @@
  *   (only the room's interior runs take it); a paired frame of the original (14.25, a tavern door)
  *   decides whether it is turned on.
  * * `terrainSpecular` (7.16 Г, 05.10-A7b-7Г) — the ground's specular glint from the `_s.blp` masks
- *   (`TerrainSplat.ts`), on the classic path only. Off by default: the masks and the client's
- *   per-vertex form are settled, and the exponent `c[27].w` = 20 (05.10 review 7.16 Б/Г: 0x00A3FFF0),
- *   but its colour (`c[27].rgb`, the scene light's specular colour) is not read from Wow.exe —
- *   the program uses the sun's diffuse colour until a frame of the original (14.25)
- *   or a Ghidra reading says otherwise. Read when a tile's splat loads (masks are fetched only then).
+ *   (`TerrainSplat.ts`), drawn on the classic path only (the presets' strength is 0). The masks, the
+ *   client's per-vertex form and the exponent `c[27].w` = 20 (05.10 review 7.16 Б/Г: 0x00A3FFF0) were
+ *   settled; 13.10 7.16 read the colour `c[27].rgb` too — the world light's specular, Light band 9
+ *   (0x007816F0) — so it is on by default, as Wow.exe draws it under the owner's `specular 1`.
+ *   Read when a tile's splat loads (masks are fetched only then; an older gateway names none).
  */
 export interface RenderSwitches {
   m2AlphaDepthWrite: boolean;
@@ -44,7 +44,7 @@ const DEFAULTS: Readonly<RenderSwitches> = Object.freeze({
   // 05.10 (orchestrator): off until the 14.25 tavern-door frame — on, it reverses the 04.09 fix that
   // kept Goldshire's peach 83-yard MFOG off the street seen through the door.
   wmoRoomFogOnScene: false, // 05.10-A7b-2 (7.12)
-  terrainSpecular: false, // 05.10-A7b-7Г (7.16 Г): c[27] unsettled
+  terrainSpecular: true, // 05.10-A7b-7Г (7.16 Г); 13.10 7.16: c[27].rgb read (band 9) — on
 });
 
 function initial(): RenderSwitches {

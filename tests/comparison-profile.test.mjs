@@ -95,5 +95,6 @@ test("7.20 Config.wtf values map to settings faithfully", () => {
   }
   assert.match(COMPARISON_CONFIG_WTF_MAPPING.farclip, /7\.08/);
   assert.match(COMPARISON_CONFIG_WTF_MAPPING.specular, /terrainSpecular/);
-  assert.equal(renderSwitches.terrainSpecular, false, "specular 1 is recorded, the switch is not silently enabled");
+  // 13.10 7.16: c[27].rgb read (band 9) — the switch is on by default, as `specular 1` asks.
+  assert.equal(renderSwitches.terrainSpecular, true, "specular 1: the glint is drawn");
 });

@@ -198,6 +198,7 @@ import {
   type FrameXmlTrainerListSource, // 3.24
 } from "./FrameXmlTrainerGroups.js";
 import { frameXmlTrainerBuyAll, frameXmlTrainerSkillLineModel } from "./FrameXmlTrainerSkillLines.js"; // L12 3.29
+import { FrameXmlTrainerListChanges } from "./FrameXmlTrainerListChange.js"; // 3.29 (13.10)
 import { frameXmlStockTrainerType } from "./FrameXmlTrainerController.js"; // 3.24
 import type { TrainerSpell } from "../../world/TrainerProtocol.js";
 import type { SpellLearnEffectsTable } from "../SpellLearnEffectsClient.js";
@@ -974,6 +975,8 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
   ]);
   /** 3.29: the trainer window's headers, collapsing, order and selection (FrameXmlTrainerGroups.ts). */
   readonly #trainerList = new FrameXmlTrainerList<TrainerSpell>(this.#trainerListSource());
+  /** 3.29 (13.10): which WorldClient trainer callbacks are new lists (FrameXmlTrainerListChange.ts). */
+  readonly #trainerChanges = new FrameXmlTrainerListChanges();
   /** L12 3.29: GetTrainerSkillLines and the skill-line filter over that list (FrameXmlTrainerSkillLines.ts). */
   readonly trainerSkillLines = frameXmlTrainerSkillLineModel(this.#trainerList,
     () => this.#pump?.fire(FRAMEXML_SEAM_EVENTS.trainerUpdate));
@@ -2402,9 +2405,14 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
       });
       const previousTrainerCallback = world.onTrainerChanged;
       const trainerCallback = () => {
+        // 3.29 (13.10): only a new list resets the collapse and the line filter; a purchase's answer changes
+        // no list and its refresh is a state change (FrameXmlTrainerListChange.ts). Told to the list before
+        // the owner repaints, so its TRAINER_UPDATE reads the list as it now is.
+        const change = this.#trainerChanges.classify(world);
+        if (change === "list") this.#trainerList.listChanged();
+        else if (change === "state") this.#trainerList.stateChanged();
         try { previousTrainerCallback?.(); }
         finally {
-          this.#trainerList.listChanged();
           // EnterWorld's single owner routes this callback to either stock or native UI. A direct
           // seam mount has no such callback, so only that standalone path emits the stock edge.
           if (!previousTrainerCallback) pump.fire(FRAMEXML_SEAM_EVENTS.trainerUpdate);

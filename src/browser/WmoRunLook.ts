@@ -21,13 +21,25 @@
  *     `1 − wowDaylight` (`setWorldLightDaylight`, the sun's elevation), as the spec asks.
  * Composite needs the second UV set and second vertex colour (MOTV/MOCV 2), which the artifact
  * does not carry: it stays drawn as Diffuse.
+ * 13.10 7.11: a `visual-wmo-v26` artifact carries both for the groups that draw a Composite record
+ * (`tools/wmo-composite.mjs`); such a run samples its second texture at the second UV set and blends
+ * the two by the second MOCV's alpha, `mix(tex1, tex0, blend)` — the ps_3_0 `MapObjComposite` #0
+ * `lrp r2, v1.w, r0, r1`, alpha included (× primary alpha, as Diffuse). An older artifact, or a group
+ * without the streams, keeps drawing it as Diffuse.
+ * 13.10 7.11: Specular and Metal draw no highlight in Wow.exe. Their vertex program
+ * (`MapObjSpecular_T1`, lit variants) does compute `pow(max(N·H, 0), c[13].w) · c[13].rgb` into the
+ * secondary colour, but no MapObj pixel program of any profile reads it: in ps_1_1, ps_2_0, arbfp1,
+ * nvfp2 and nvts `mapobjspecular.bls`, `mapobjmetal.bls` and `mapobjopaque.bls` are the same bytes,
+ * and in ps_3_0 Metal differs from Opaque only by constant-register numbering; none declares color1
+ * (only `mapobjcomposite.bls` does, for the blend) — `.runtime/re-2026-10-13/7.11/ps_3_0-*.txt`. So
+ * both stay Opaque here (`primaryAlpha`), which is what the client shows.
  */
 
 import * as THREE from "three";
 
 import {
-  WMO_MATERIAL_SIDN, WMO_SHADER_ENV, WMO_SHADER_ENV_METAL, WMO_SHADER_METAL, WMO_SHADER_OPAQUE,
-  WMO_SHADER_SPECULAR, type WmoMaterial,
+  WMO_MATERIAL_SIDN, WMO_SHADER_COMPOSITE, WMO_SHADER_ENV, WMO_SHADER_ENV_METAL, WMO_SHADER_METAL,
+  WMO_SHADER_OPAQUE, WMO_SHADER_SPECULAR, type WmoMaterial,
 } from "./WmoMaterials.js";
 
 export interface WmoRunLook {
@@ -37,17 +49,21 @@ export interface WmoRunLook {
   readonly sidn?: readonly [number, number, number];
   /** The environment map's URL and whether it is tinted by the base texture (EnvMetal). */
   readonly env?: { readonly url: string; readonly metal: boolean };
+  /** 13.10 7.11: Composite — the second layer's URL, blended by the group's second-MOCV alpha. */
+  readonly composite?: { readonly url: string };
 }
 
 /**
  * The look of one run, or undefined when its record (if any) asks for nothing beyond what the run's
  * texture, blend mode and flags already give. `interior` is `wmoRunIsInterior`: an interior run is
- * drawn by the unlit path, which has no emissive term.
+ * drawn by the unlit path, which has no emissive term. `compositeStreams`: the run's group carries
+ * the second UV set and blend factors (`WmoGroupMesh.secondUvs`/`blendAlpha`, `visual-wmo-v26`).
  */
 export function wmoRunLook(
   material: WmoMaterial | undefined,
   interior: boolean,
   environmentUrl: string | undefined,
+  compositeStreams = false,
 ): WmoRunLook | undefined {
   if (!material) return undefined;
   const shader = material.shader;
@@ -60,14 +76,22 @@ export function wmoRunLook(
   const env = (shader === WMO_SHADER_ENV || shader === WMO_SHADER_ENV_METAL) && environmentUrl
     ? { url: environmentUrl, metal: shader === WMO_SHADER_ENV_METAL }
     : undefined;
-  if (!primaryAlpha && !sidn && !env) return undefined;
-  return { primaryAlpha, ...(sidn ? { sidn } : {}), ...(env ? { env } : {}) };
+  const composite = shader === WMO_SHADER_COMPOSITE && compositeStreams && environmentUrl
+    ? { url: environmentUrl }
+    : undefined;
+  if (!primaryAlpha && !sidn && !env && !composite) return undefined;
+  return { primaryAlpha, ...(sidn ? { sidn } : {}), ...(env ? { env } : {}), ...(composite ? { composite } : {}) };
 }
 
 /** The program variant a look compiles to: the part of the cache key it adds. */
 export function wmoRunLookKey(look: WmoRunLook): string {
-  return `wmo-look-v1:${look.primaryAlpha ? "a" : ""}${look.sidn ? "s" : ""}${look.env ? (look.env.metal ? "m" : "e") : ""}`;
+  return `wmo-look-v1:${look.primaryAlpha ? "a" : ""}${look.sidn ? "s" : ""}${look.env ? (look.env.metal ? "m" : "e") : ""}`
+    + `${look.composite ? "c" : ""}`;
 }
+
+/** 13.10 7.11: the geometry attributes a Composite run reads (`WmoGeometry.ts` sets them). */
+export const WMO_COMPOSITE_UV_ATTRIBUTE = "wowWmoUv2";
+export const WMO_COMPOSITE_BLEND_ATTRIBUTE = "wowWmoBlend";
 
 export interface WmoRunLookUniforms {
   /** The world light's own `wowDaylight` uniform object (one write a frame, shared by every program). */
@@ -89,17 +113,34 @@ uniform vec3 wowWmoSidn;
 uniform sampler2D wowWmoEnvMap;
 varying vec2 vWowWmoEnvUv;
 #endif
+#ifdef WOW_WMO_COMPOSITE
+uniform sampler2D wowWmoLayer;
+varying vec2 vWowWmoUv2;
+varying float vWowWmoBlend;
+#endif
 `,
   vertexPars: /* glsl */ `
 #ifdef WOW_WMO_ENV
 varying vec2 vWowWmoEnvUv;
 #endif
+#ifdef WOW_WMO_COMPOSITE
+attribute vec2 ${WMO_COMPOSITE_UV_ATTRIBUTE};
+attribute float ${WMO_COMPOSITE_BLEND_ATTRIBUTE};
+varying vec2 vWowWmoUv2;
+varying float vWowWmoBlend;
+#endif
 `,
+  // 13.10 7.11: Composite replaces the base sample with the blend of both layers (`lrp v1.w`).
   map: /* glsl */ `
 #ifdef WOW_WMO_PRIMARY_ALPHA
   float wowWmoAlpha = diffuseColor.a;
 #endif
+#if defined( WOW_WMO_COMPOSITE ) && defined( USE_MAP )
+  vec4 sampledDiffuseColor = mix( texture2D( wowWmoLayer, vWowWmoUv2 ), texture2D( map, vMapUv ), vWowWmoBlend );
+  diffuseColor *= sampledDiffuseColor;
+#else
 ${MAP_MARKER}
+#endif
 #ifdef WOW_WMO_PRIMARY_ALPHA
   diffuseColor.a = wowWmoAlpha;
 #endif
@@ -132,12 +173,17 @@ ${FOG_VERTEX_MARKER}
   vec3 wowWmoNormal = normalize( normalMatrix * normal );
   vWowWmoEnvUv = wowWmoEye.xy - 2.0 * wowWmoNormal.xy * dot( wowWmoNormal, wowWmoEye );
 #endif
+#ifdef WOW_WMO_COMPOSITE
+  vWowWmoUv2 = ${WMO_COMPOSITE_UV_ATTRIBUTE};
+  vWowWmoBlend = ${WMO_COMPOSITE_BLEND_ATTRIBUTE};
+#endif
 `,
 });
 
 /**
  * Adds a run's look to its material, after every hook already installed. A look on an unlit run
- * (MeshBasicMaterial) never carries `sidn`; `env` needs the environment texture to sample.
+ * (MeshBasicMaterial) never carries `sidn`; `env` needs the environment texture to sample, and
+ * `composite` (13.10 7.11) its second layer — the same record's texture 2, passed the same way.
  */
 export function applyWmoRunLook(
   material: THREE.MeshBasicMaterial | THREE.MeshStandardMaterial,
@@ -148,11 +194,13 @@ export function applyWmoRunLook(
   const lit = material instanceof THREE.MeshStandardMaterial;
   const sidn = lit && look.sidn !== undefined;
   const env = look.env !== undefined && environment !== undefined;
+  const composite = look.composite !== undefined && environment !== undefined;
   const defines = [
     look.primaryAlpha ? "#define WOW_WMO_PRIMARY_ALPHA\n" : "",
     sidn ? "#define WOW_WMO_SIDN\n" : "",
     env ? "#define WOW_WMO_ENV\n" : "",
     env && look.env!.metal ? "#define WOW_WMO_ENV_METAL\n" : "",
+    composite ? "#define WOW_WMO_COMPOSITE\n" : "",
   ].join("");
   if (defines.length === 0) return;
   const sidnUniform = { value: new THREE.Vector3(...(look.sidn ?? [0, 0, 0])) };
@@ -171,6 +219,7 @@ export function applyWmoRunLook(
       shader.uniforms.wowDaylight ??= uniforms.daylight;
     }
     if (env) shader.uniforms.wowWmoEnvMap = envUniform;
+    if (composite) shader.uniforms.wowWmoLayer = envUniform;
     let fragment = `${defines}${WMO_RUN_LOOK_GLSL.fragmentPars}\n${shader.fragmentShader}`
       .replace(MAP_MARKER, WMO_RUN_LOOK_GLSL.map)
       .replace(OPAQUE_MARKER, WMO_RUN_LOOK_GLSL.opaque);
@@ -183,6 +232,7 @@ export function applyWmoRunLook(
     primaryAlpha: look.primaryAlpha,
     ...(sidn ? { sidn: look.sidn! } : {}),
     ...(env ? { env: look.env! } : {}),
+    ...(composite ? { composite: look.composite! } : {}),
   })}`;
   material.needsUpdate = true;
 }

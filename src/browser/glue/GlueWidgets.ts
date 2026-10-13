@@ -4,6 +4,7 @@ import { glueCallingAddon } from "./GlueAddonIdentity.js";
 import { GLUE_ANIMATION_PRELUDE } from "./GlueAnimations.js";
 import { colorSelectMethods, messageColorMethods } from "./GlueWidgetMethodExtras.js";
 import { fontStringGradientMethods, frameDepthMethods } from "./GlueWidgetMethodFills.js"; // 05.10-3.21
+import { sliderValueMethods } from "./GlueSliderMethods.js"; // 3.27 (13.10)
 import { questPoiFrameMethods } from "./GlueQuestPoiFrame.js";
 import { glueBoundsRect } from "./GlueBoundsRect.js"; // 3.35-bounds
 import { GlueScriptRefs } from "./GlueScriptRefs.js"; // L5 3.27
@@ -954,7 +955,8 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
     const button = { ...frameLike, ...this.textMethods(), ...this.buttonMethods() };
     const checkButton = { ...button, ...this.checkButtonMethods() };
     const editBox = { ...frameLike, ...this.textMethods(), ...this.editBoxMethods() };
-    const slider = { ...frameLike, ...this.valueMethods(), ...this.sliderMethods() };
+    const slider = { ...frameLike, ...this.valueMethods(), ...this.sliderMethods(),
+      ...sliderValueMethods(this.#bridge) }; // 3.27 (13.10): the Slider's own range, step and value rules
     const statusBar = { ...frameLike, ...this.valueMethods(), ...this.statusBarMethods() };
     const scrollFrame = { ...frameLike, ...this.scrollMethods() };
     const messageFrame = { ...frameLike, ...this.textMethods(), ...this.messageMethods() };
@@ -2660,7 +2662,9 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
         bridge.update(frame, (m) => { m.frameStrata = str(args[0]).toUpperCase() || m.frameStrata; });
       },
       GetFrameStrata: ({ self }) => [self.frameStrata],
-      Raise: ({ frame }) => { bridge.update(frame, (m) => { m.frameLevel += 1; }); },
+      // 3.48 (13.10): 0x0049fef0 → 0x0048e9a0, the press's own raise: the frame's toplevel self or ancestor, to the
+      // top of its strata when something overlaps it (FrameXmlRuntime.RaiseFrame) — not one level per call.
+      Raise: ({ frame }) => { bridge.RaiseFrame(frame); },
       Lower: ({ frame }) => { bridge.update(frame, (m) => { m.frameLevel = Math.max(0, m.frameLevel - 1); }); },
       EnableMouse: ({ frame, args }) => {
         bridge.update(frame, (m) => m.setAttribute("enableMouse", args[0] === false ? "false" : "true"));
@@ -3045,13 +3049,7 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
             }, frame.type === "StatusBar" ? "paint" : "layout");
           }
           const state = frame.type === "StatusBar" ? frame.statusBar : frame.slider;
-          if (frame.type === "Slider") {
-            // L5b-review: Wow.exe's Slider re-applies only a value that was set (CSimpleSlider
-            // 0x0096c470 via 0x00971df0): a fresh one takes the range, keeps its 0 and fires nothing.
-            // The stock options sliders' OnValueChanged wrote SetCVar(min) here (options vertical).
-            state.rangeSet = true;
-            if (!state.valueSet) return;
-          }
+          // 3.27 (13.10): a Slider's SetMinMaxValues is GlueSliderMethods.ts (0x00971df0 → 0x0096c470).
           bridge.SetValue(frame, state.value);
         });
       },

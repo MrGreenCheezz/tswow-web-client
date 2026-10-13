@@ -24,7 +24,9 @@
  *   (`ScrollUp`/`ScrollDown`/`PageUp`/`PageDown`/`ScrollToBottom`, at a boundary too) gives the lines
  *   it shows full alpha and fresh countdowns again (0x00969410, 0x00969370): scrolling the chat brings
  *   faded lines back. Faded lines stay in its history; a MessageFrame's are gone. Only the lines in
- *   view are revived (`frameXmlReviveMessageFades`, with the renderer's measure of the layer).
+ *   view are revived (`frameXmlReviveMessageFades`, with the renderer's measure of the layer). 3.34 (13.10):
+ *   only the lines in the slots count down at all; one pushed out of them keeps its countdowns frozen until a
+ *   layout puts it back (`frameXmlFreezeMessagesOutOfView`; the slots: FrameXmlMessageSlots.ts).
  *
  * Here the countdowns are deadlines on one clock per frame (`fadeClock`), advanced by the bridge's
  * frame tick only while the frame counts, so a paused or hidden frame costs nothing and a line's
@@ -32,6 +34,7 @@
  * renderer only turns the clock into line opacity, and only for frames with a line still changing.
  */
 import type { FrameXmlFrame, FrameXmlMessage, FrameXmlMessageFrameState } from "./FrameXmlTypes.js";
+import { frameXmlMeasuredMessageSlots } from "./FrameXmlMessageSlots.js"; // 3.34 (13.10)
 
 /** `timeVisible` of a message frame whose XML names none (Wow.exe 0x00a9fef0). */
 export const FRAME_XML_MESSAGE_TIME_VISIBLE = 10;
@@ -58,9 +61,65 @@ function heldAlpha(message: FrameXmlMessage): number | undefined {
   return anyHeld ? heldAlphas.get(message) : undefined;
 }
 
+/**
+ * 3.34 (13.10): a ScrollingMessageFrame's line pushed out of the slots keeps its countdowns where they were
+ * (0x00969e60 counts only the lines in slots) until a layout puts it in a slot again: frozen, its deadlines at
+ * Infinity (no tick, no due), what was left of each countdown here, and the alpha it had held while it faded.
+ */
+const frozenLines = new WeakMap<FrameXmlMessage, { readonly shown: number; readonly fading: number }>();
+let anyFrozen = false;
+
+function isFrozen(message: FrameXmlMessage): boolean {
+  return anyFrozen && frozenLines.has(message);
+}
+
+function freeze(state: FrameXmlMessageFrameState, message: FrameXmlMessage): boolean {
+  const shown = message.visibleUntil ?? Infinity;
+  const end = message.fadeUntil ?? Infinity;
+  const clock = state.fadeClock;
+  // Never counting (both countdowns 0, or frozen already), or cleared: nothing to keep.
+  if (shown === Infinity || !(clock < end)) return false;
+  if (clock < shown) {
+    frozenLines.set(message, { shown: shown - clock, fading: end - shown });
+  } else {
+    frozenLines.set(message, { shown: 0, fading: end - clock });
+    hold(message, frameXmlMessageAlpha(state, message));
+  }
+  anyFrozen = true;
+  message.visibleUntil = Infinity;
+  message.fadeUntil = Infinity;
+  return true;
+}
+
+function thaw(state: FrameXmlMessageFrameState, message: FrameXmlMessage): boolean {
+  const left = anyFrozen ? frozenLines.get(message) : undefined;
+  if (left === undefined) return false;
+  frozenLines.delete(message);
+  if (anyHeld) heldAlphas.delete(message);
+  message.visibleUntil = state.fadeClock + left.shown;
+  message.fadeUntil = message.visibleUntil + left.fading;
+  return true;
+}
+
+/**
+ * 3.34 (13.10): at the bottom, the lines older than the first one in a slot (`first`, 0-based) frozen and the
+ * ones in slots counting again where they stopped (0x00969fa0 lays a line back without reviving it when the
+ * frame stays at the bottom: 0x00969370 with its flag clear). True when a line changed.
+ */
+export function frameXmlFreezeMessagesOutOfView(state: FrameXmlMessageFrameState, first: number): boolean {
+  let changed = false;
+  const messages = state.messages;
+  for (let index = 0; index < messages.length; index += 1) {
+    if (index < first ? freeze(state, messages[index]!) : thaw(state, messages[index]!)) changed = true;
+  }
+  if (changed) state.fadeRevision += 1;
+  return changed;
+}
+
 /** Start a line's two countdowns at the frame's clock, as adding it (or a scroll's reset) does. */
 export function frameXmlStampMessage(state: FrameXmlMessageFrameState, message: FrameXmlMessage): void {
   if (anyHeld) heldAlphas.delete(message);
+  if (anyFrozen) frozenLines.delete(message); // 3.34 (13.10)
   setCountdowns(state, message, state.displayDuration, state.fadeDuration);
 }
 
@@ -101,6 +160,7 @@ export function frameXmlMessageCleared(state: FrameXmlMessageFrameState, message
 export function frameXmlRetimeShown(state: FrameXmlMessageFrameState, seconds: number, scrolling = false): void {
   const clock = state.fadeClock;
   for (const message of state.messages) {
+    if (isFrozen(message)) continue; // 3.34 (13.10): 0x00969280 writes only the lines in slots
     const shown = message.visibleUntil ?? Infinity;
     if (!scrolling) {
       if (!(clock < shown) || shown === Infinity) continue;
@@ -136,6 +196,7 @@ export function frameXmlRetimeShown(state: FrameXmlMessageFrameState, seconds: n
 export function frameXmlRetimeFading(state: FrameXmlMessageFrameState, seconds: number, scrolling = false): void {
   const clock = state.fadeClock;
   for (const message of state.messages) {
+    if (isFrozen(message)) continue; // 3.34 (13.10): 0x009692c0 writes only the lines in slots
     const shown = message.visibleUntil ?? Infinity;
     const end = message.fadeUntil ?? Infinity;
     if (!(clock < end)) continue;
@@ -202,11 +263,13 @@ export function frameXmlMessageLayout(state: FrameXmlMessageFrameState): FrameXm
  * A scroll call that ends with line `current` at the edge (3.34, L5). The client revives the lines
  * in its visible slots only (0x00969410; 0x00969fa0 → 0x00969370) and leaves the rest of the history
  * as it was, never drawn. Scrolled up, nothing counts down, so every line is revived as before; at
- * the bottom only the lines that can be in view are, and a line out of view that is still counting
- * is cleared — out of sight it would only fade, a style write a frame for every one of them.
+ * the bottom only the lines in slots are, and a line out of them keeps its countdowns frozen (13.10;
+ * it used to be cleared at once).
  */
 export function frameXmlReviveMessageFades(state: FrameXmlMessageFrameState, current: number, atBottom: boolean): void {
-  const lines = layouts.get(state)?.lines;
+  // 3.34 (13.10): the slots themselves when the renderer lent its layer (FrameXmlMessageSlots.ts), else its
+  // upper bound; a line out of them is frozen, as the client leaves it, no longer cleared.
+  const lines = frameXmlMeasuredMessageSlots(state, current)?.displayed ?? layouts.get(state)?.lines;
   const count = state.messages.length;
   if (!atBottom || lines === undefined || !(lines < count)) {
     frameXmlResetMessageFades(state);
@@ -214,17 +277,26 @@ export function frameXmlReviveMessageFades(state: FrameXmlMessageFrameState, cur
   }
   const to = Math.min(count, Math.max(0, Math.trunc(current) + 1));
   const from = Math.max(0, to - lines);
-  const clock = state.fadeClock;
   for (let index = 0; index < count; index += 1) {
     const message = state.messages[index]!;
     if (index >= from && index < to) {
       frameXmlStampMessage(state, message);
-    } else if ((message.visibleUntil ?? Infinity) !== Infinity && clock < (message.fadeUntil ?? Infinity)) {
-      message.visibleUntil = clock;
-      message.fadeUntil = clock;
+    } else {
+      freeze(state, message); // 3.34 (13.10): was cleared at once
     }
   }
   state.fadeRevision += 1;
+}
+
+/**
+ * 3.34 (13.10): after a paint at the bottom, the slots' lines count and the older ones stay frozen
+ * (`frameXmlFreezeMessagesOutOfView` with the slot walk). Nothing without a lent layer or with no slots laid.
+ */
+export function frameXmlNoteMessageView(state: FrameXmlMessageFrameState, current: number, atBottom: boolean): boolean {
+  if (!atBottom) return false;
+  const displayed = frameXmlMeasuredMessageSlots(state, current)?.displayed;
+  if (displayed === undefined || displayed === 0) return false;
+  return frameXmlFreezeMessagesOutOfView(state, Math.min(state.messages.length, Math.trunc(current) + 1) - displayed);
 }
 
 /** `insertMode` as the loader and `SetInsertMode` read it. */

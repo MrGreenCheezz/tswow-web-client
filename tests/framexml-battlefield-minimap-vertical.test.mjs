@@ -135,7 +135,10 @@ test("Blizzard_BattlefieldMinimap loads through its owner in Warsong Gulch, show
     assert.equal(String(boot.bridge.getFrame("BattlefieldMinimap1").texture).toLowerCase(), "interface\\worldmap\\warsonggulch\\warsonggulch1");
     assert.deepEqual(lua(boot, `
       return type(BattlefieldMinimapOptions) == "table", BattlefieldMinimapOptions.opacity, BattlefieldMinimapOptions.locked,
-        BattlefieldMinimapOptions.showPlayers`, 4), [true, 0.7, true, true]);
+        BattlefieldMinimapOptions.showPlayers`, 4),
+    // 3.27 (13.10): read back through OpacityFrameSlider (Blizzard_BattlefieldMinimap.lua:87-88, :529) — a slider
+    // keeps 32-bit floats (Wow.exe +0x2a8), so 0.7 comes back as 0.699999988079071.
+    [true, Math.fround(0.7), true, true]);
 
     // ---- one stock frame: the arrow, the party member and the flag carrier ----
     lua(boot, "BattlefieldMinimap_OnUpdate(BattlefieldMinimap, 0.02)", 0);

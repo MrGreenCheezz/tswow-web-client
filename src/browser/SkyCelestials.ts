@@ -31,12 +31,22 @@
 //
 // What is NOT from the client (calibrations, recorded in WORK_PLAN 7.04 and the line): the clouds'
 // noise shape, drift speed and alpha ramp (the client builds its alpha table at run time), and the
-// day number the second moon's cycle counts from. The glare sprites (`sunGlare.blp`,
-// `moonGlare.blp`, their day curves at 0x7ee150/0x7ee230) are not drawn: their draw routine was not
-// located, so their size and strength would be guesses.
+// day number the second moon's cycle counts from.
+// 13.10 7.04: the glare sprites are drawn (`SkyGlare.ts`: update 0x7ef6e0, draw 0x9ac400).
+// 13.10 7.04, the second moon's colour: the body objects keep their colour at +0xc (0x007edbe0 copies
+// it into every vertex) — the sun's 0x00d38e34 and the moon's 0x00d38e54 are rewritten each frame from
+// band 9 by 0x007f3230, but the second moon's 0x00d38e74 only by the static initializer 0x009d0760
+// (`mov [0x00d38e74], eax` with eax = 0) and its alpha byte 0x00d38e77 only while a storm blends in
+// (0x007f3800: round((1 − storm) × 255)). So it is black and transparent until the first storm of a
+// session, and a black disc of that last alpha after it. 0x007edee0 replaces (does not scale) the
+// alpha of every vertex within 0.4 units above the horizon with the fade, for all three bodies.
 
 import * as THREE from "three";
 
+import {
+  MOON_GLARE, SUN_GLARE, cloudAlphaAt, glareAlpha, glareFacing, glareSize, glareStep, glareTarget,
+  moonGlareCloudTerm, sunGlareCloudTerm, type GlareSpec,
+} from "./SkyGlare.js"; // 13.10 7.04
 import type { ModelTextureStatus } from "./TextureLoad.js";
 import { textureUrl } from "./Wvm.js";
 
@@ -291,7 +301,25 @@ void main() {
   float height = normalize(vCelestialDirection).y * celestialHorizon;
   if (height <= 0.0) discard;
   vec4 texel = texture2D(celestialMap, vCelestialUv);
-  float alpha = texel.a * celestialOpacity * clamp(height, 0.0, 1.0);
+  // 13.10 7.04: 0x7edee0 replaces the body's alpha with the fade near the horizon.
+  float alpha = texel.a * (height < 1.0 ? height : celestialOpacity);
+  if (alpha <= 0.0) discard;
+  gl_FragColor = vec4(texel.rgb * celestialColour, alpha);
+  #include <tonemapping_fragment>
+  #include <colorspace_fragment>
+}`;
+
+/** 13.10 7.04: a glare quad (0x9ac400) — no horizon clip, alpha from the update; blended additively. */
+export const GLARE_FRAGMENT_SHADER = `
+uniform sampler2D celestialMap;
+uniform vec3 celestialColour;
+uniform float celestialOpacity;
+uniform float celestialHorizon;
+varying vec2 vCelestialUv;
+varying vec3 vCelestialDirection;
+void main() {
+  vec4 texel = texture2D(celestialMap, vCelestialUv);
+  float alpha = texel.a * celestialOpacity;
   if (alpha <= 0.0) discard;
   gl_FragColor = vec4(texel.rgb * celestialColour, alpha);
   #include <tonemapping_fragment>
@@ -378,13 +406,33 @@ export interface SkyCelestialInput {
   postSun: boolean;
   /** Seconds, for the clouds' drift. */
   seconds: number;
+  /** 13.10 7.04: the camera's unit view direction in scene space (the glare's facing term). */
+  viewX: number;
+  viewY: number;
+  viewZ: number;
+  /**
+   * 13.10 7.04: a LightSkybox model is drawn (overlay or not). The glare is scaled by 1 − its
+   * weight (0x7ef6e0 reads 0x00d38b60 / 0x00d38b70…78); the renderer has no weights, so a drawn
+   * skybox counts as weight 1 — exact away from the edges of light volumes.
+   */
+  skyboxPresent: boolean;
 }
 
 export function createSkyCelestialInput(): SkyCelestialInput {
   return {
     enabled: false, time: 0, day: 0, sunColour: 0, sunHalo: 0, cloudA: 0, cloudB: 0,
-    cloudDensity: 0, storm: 0, postSun: false, seconds: 0,
+    cloudDensity: 0, storm: 0, postSun: false, seconds: 0, viewX: 0, viewY: 0, viewZ: -1, skyboxPresent: false,
   };
+}
+
+/** 13.10 7.04: one glare's mesh and the state 0x7ef6e0 keeps between frames (`current`, +0x30). */
+interface GlareMesh {
+  readonly spec: GlareSpec;
+  readonly mesh: THREE.Mesh;
+  readonly uniforms: BodyMesh["uniforms"];
+  readonly path: string;
+  texture: THREE.Texture | undefined;
+  current: number;
 }
 
 /** Texture fetch and its readiness, supplied by the renderer (a failed fetch must draw nothing). */
@@ -417,6 +465,15 @@ interface BodyMesh {
   texture: THREE.Texture | undefined;
 }
 
+/**
+ * 13.10 7.04: the second moon's colour alpha (0x00d38e77): 0 from the start of the session, then
+ * round((1 − storm) × 255) / 255 each frame a storm blends in, kept when it ends.
+ */
+export function moon2Alpha(previous: number, storm: number): number {
+  const s = Number.isFinite(storm) ? Math.max(0, Math.min(1, storm)) : 0;
+  return s !== 0 ? Math.round((1 - s) * 255) / 255 : previous;
+}
+
 /** Drift of the cloud field per second (calibration; the client's own wind term is not traced). */
 const CLOUD_DRIFT_X = 0.006;
 const CLOUD_DRIFT_Y = 0.0025;
@@ -445,6 +502,17 @@ export class SkyCelestials {
   #starMaterials: readonly THREE.Material[] = [];
   #starBaseOpacity: readonly number[] = [];
   #source: SkyTextureSource | undefined;
+  /** 13.10 7.04: the sun's and the moon's glare (`SkyGlare.ts`). */
+  readonly #glares: GlareMesh[];
+  /** 13.10 7.04: the second moon's sticky colour alpha (`moon2Alpha`). */
+  #moon2Alpha = 0;
+  /** 13.10 7.04: the previous update's `seconds`, for the glare's frame time (0x00d38b48). */
+  #lastSeconds: number | undefined;
+  /**
+   * 13.10 7.04 (the clearStars defect): told before a stars node leaves the group, so its owner can
+   * take it off the program warm-up it registered it with (`ProgramWarmup.unregisterObject`).
+   */
+  onStarsRemoved: ((node: THREE.Object3D) => void) | undefined;
 
   constructor() {
     this.group.name = "skyCelestials";
@@ -493,6 +561,37 @@ export class SkyCelestials {
     this.#cloud.renderOrder = -0.75;
     this.#cloud.visible = false;
     this.group.add(this.#cloud);
+    // 13.10 7.04: the glare, after the clouds (0x7f0870 runs after the sky's own draws), additive.
+    this.#glares = [SUN_GLARE, MOON_GLARE].map((spec, index) => {
+      const uniforms = {
+        celestialMap: { value: null as THREE.Texture | null },
+        celestialColour: { value: new THREE.Color(1, 1, 1) },
+        celestialOpacity: { value: 0 },
+        celestialSize: { value: 1 },
+        celestialHorizon: { value: SKY_CELESTIAL_DISTANCE / SKY_HORIZON_FADE },
+      };
+      const material = new THREE.ShaderMaterial({
+        uniforms,
+        vertexShader: CELESTIAL_VERTEX_SHADER,
+        fragmentShader: GLARE_FRAGMENT_SHADER,
+        transparent: true,
+        depthTest: false,
+        depthWrite: false,
+        fog: false,
+        side: THREE.DoubleSide,
+        blending: THREE.CustomBlending,
+        blendSrc: THREE.SrcAlphaFactor,
+        blendDst: THREE.OneFactor,
+        blendEquation: THREE.AddEquation,
+      });
+      const mesh = new THREE.Mesh(this.#quad, material);
+      mesh.name = index === 0 ? "skySunGlare" : "skyMoonGlare";
+      mesh.frustumCulled = false;
+      mesh.renderOrder = -0.7 + index * 0.01;
+      mesh.visible = false;
+      this.group.add(mesh);
+      return { spec, mesh, uniforms, path: spec.texture, texture: undefined, current: 0 };
+    });
   }
 
   /** Where the textures come from; set once the gateway is known. */
@@ -527,6 +626,7 @@ export class SkyCelestials {
   clearStars(): void {
     const node = this.#stars;
     if (!node) return;
+    this.onStarsRemoved?.(node); // 13.10 7.04: before its materials are disposed
     this.group.remove(node);
     for (const material of this.#starMaterials) material.dispose();
     this.#stars = undefined;
@@ -536,15 +636,22 @@ export class SkyCelestials {
 
   /** One frame. `camera` is the world camera position in scene space. */
   update(input: SkyCelestialInput, camera: THREE.Vector3): void {
+    // 13.10 7.04: the glare's frame time, and the second moon's sticky alpha, follow the session
+    // even while the layer is off (the client updates them whatever is drawn).
+    const seconds = Number.isFinite(input.seconds) ? input.seconds : 0;
+    const frameSeconds = this.#lastSeconds === undefined ? 0 : Math.max(0, Math.min(1, seconds - this.#lastSeconds));
+    this.#lastSeconds = seconds;
+    const storm = Math.max(0, Math.min(1, Number.isFinite(input.storm) ? input.storm : 0));
+    this.#moon2Alpha = moon2Alpha(this.#moon2Alpha, storm);
     if (!input.enabled) {
       this.group.visible = false;
+      for (const glare of this.#glares) glare.current = 0;
       return;
     }
     this.group.visible = true;
     this.group.position.copy(camera);
     const fraction = skyDayFraction(input.time);
     const frame = computeCelestialFrame(fraction, input.day, this.frame);
-    const storm = Math.max(0, Math.min(1, Number.isFinite(input.storm) ? input.storm : 0));
     const bodies = this.#bodies;
     for (let index = 0; index < bodies.length; index++) {
       const body = bodies[index]!;
@@ -557,6 +664,12 @@ export class SkyCelestials {
       if (!shown) continue;
       body.mesh.position.set(at.x * SKY_LAYER_RADIUS, at.y * SKY_LAYER_RADIUS, at.z * SKY_LAYER_RADIUS);
       body.uniforms.celestialSize.value = at.scale * SKY_LAYER_RADIUS / SKY_CELESTIAL_DISTANCE;
+      if (index === 2) {
+        // 13.10 7.04: the second moon's own colour — black, and see `moon2Alpha`.
+        body.uniforms.celestialColour.value.setRGB(0, 0, 0);
+        body.uniforms.celestialOpacity.value = this.#moon2Alpha;
+        continue;
+      }
       body.uniforms.celestialColour.value.setHex(input.sunColour & 0xffffff, THREE.SRGBColorSpace);
       body.uniforms.celestialOpacity.value = 1 - storm;
     }
@@ -571,6 +684,43 @@ export class SkyCelestials {
       }
     }
     this.#updateClouds(input, fraction, storm);
+    this.#updateGlare(input, fraction, storm, frameSeconds);
+  }
+
+  /** 13.10 7.04: 0x7ef6e0 and 0x9ac400 for the sun's and the moon's glare. */
+  #updateGlare(input: SkyCelestialInput, fraction: number, storm: number, frameSeconds: number): void {
+    const u = this.#cloudUniforms;
+    for (let index = 0; index < this.#glares.length; index++) {
+      const glare = this.#glares[index]!;
+      const at = index === 0 ? this.frame.sun : this.frame.moon;
+      const cover = this.#cloud.visible
+        ? cloudAlphaAt(at.x, at.y, at.z, u.cloudThreshold.value, u.cloudOffset.value.x, u.cloudOffset.value.y)
+        : 0;
+      const cloudTerm = index === 0 ? sunGlareCloudTerm(cover) : moonGlareCloudTerm(cover);
+      const target = glareTarget(glare.spec, cloudTerm, input.skyboxPresent ? 1 : 0, fraction);
+      glare.current = glareStep(glare.current, target, glare.spec, frameSeconds);
+      const facing = glareFacing(glare.spec, input.viewX * at.x + input.viewY * at.y + input.viewZ * at.z);
+      // The body's colour alpha: 0xff, or (1 − storm) while a storm blends in (0x7f3230).
+      const alpha = glareAlpha(glare.spec, storm !== 0 ? 1 - storm : 1, facing, glare.current);
+      const texture = this.#glareTexture(glare);
+      // One sun: the glare gives way with the quad when another pass draws the disc.
+      const shown = alpha > 0 && texture !== undefined && !(index === 0 && input.postSun);
+      glare.mesh.visible = shown;
+      if (!shown) continue;
+      glare.mesh.position.set(at.x * SKY_LAYER_RADIUS, at.y * SKY_LAYER_RADIUS, at.z * SKY_LAYER_RADIUS);
+      glare.uniforms.celestialSize.value = glareSize(glare.spec, facing) * SKY_LAYER_RADIUS / SKY_CELESTIAL_DISTANCE;
+      glare.uniforms.celestialColour.value.setHex(input.sunColour & 0xffffff, THREE.SRGBColorSpace);
+      glare.uniforms.celestialOpacity.value = alpha;
+    }
+  }
+
+  #glareTexture(glare: GlareMesh): THREE.Texture | undefined {
+    if (!glare.texture) {
+      if (!this.#source) return undefined;
+      glare.texture = this.#source.load(glare.path);
+      glare.uniforms.celestialMap.value = glare.texture;
+    }
+    return this.#source?.ready(glare.texture) ? glare.texture : undefined;
   }
 
   #updateClouds(input: SkyCelestialInput, fraction: number, storm: number): void {
@@ -603,7 +753,8 @@ export class SkyCelestials {
 
   /** Every material the group can draw, for program warm-up. */
   materials(): THREE.Material[] {
-    return [...this.#bodies.map((body) => body.mesh.material as THREE.Material), this.#cloud.material as THREE.Material];
+    return [...this.#bodies.map((body) => body.mesh.material as THREE.Material), this.#cloud.material as THREE.Material,
+      ...this.#glares.map((glare) => glare.mesh.material as THREE.Material)]; // 13.10 7.04
   }
 
   dispose(): void {
@@ -612,6 +763,10 @@ export class SkyCelestials {
       (body.mesh.material as THREE.Material).dispose();
       // The textures belong to the loader that made them (`SkyTextureSource`).
       body.texture = undefined;
+    }
+    for (const glare of this.#glares) { // 13.10 7.04
+      (glare.mesh.material as THREE.Material).dispose();
+      glare.texture = undefined;
     }
     this.#quad.dispose();
     this.#cloud.geometry.dispose();

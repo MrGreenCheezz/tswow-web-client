@@ -56,8 +56,14 @@ import {
   frameXmlRetimeFading,
   frameXmlRetimeShown,
   frameXmlStampMessage,
+  frameXmlNoteMessageView, // 3.34 (13.10)
 } from "./FrameXmlMessageFade.js";
+import { frameXmlMessageLineCount, frameXmlMessagePage, frameXmlMessageSlots } from "./FrameXmlMessageSlots.js"; // 3.34 (13.10)
+import {
+  frameXmlSliderLoadedStep, frameXmlSliderSetRange, frameXmlSliderSetStep, frameXmlSliderValue, markFrameXmlBareCreate,
+} from "./FrameXmlSlider.js"; // 3.27 (13.10)
 import { frameXmlTitleRegion, setFrameXmlTitleRegion } from "./FrameXmlTitleRegion.js"; // 3.48 (12.10)
+import { frameXmlRaiseLevel, frameXmlRaiseTarget } from "./FrameXmlRaise.js"; // 3.48 (13.10)
 
 // Keep the runtime's public type spelling local until FrameXmlTypes can be
 // consumed by generated declaration users. The cast is constrained by the
@@ -1597,21 +1603,38 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
         }
       }
     }
-    if (frame.type === "Slider" || frame.type === "StatusBar") {
-      const state = frame.type === "Slider" ? frame.slider : frame.statusBar;
-      state.orientation = frameXmlAttribute(element, "orientation")?.trim().toUpperCase()
-        ?? (frame.type === "StatusBar" ? "HORIZONTAL" : "VERTICAL");
+    if (frame.type === "Slider") {
+      // 3.27 (13.10): the client's loader (0x0096c500) as FrameXmlSlider.ts has it — the step (0.001 when
+      // absent), a range only from minValue with maxValue, a value only from defaultValue through SetValue's
+      // rules; without one the constructor's 0. Floats throughout. (L5b-review set the range flags.)
+      const state = frame.slider;
+      state.orientation = frameXmlAttribute(element, "orientation")?.trim().toUpperCase() ?? "VERTICAL";
+      state.valueStep = frameXmlSliderLoadedStep(element, frameXmlNumber(element, "valueStep"));
+      const min = frameXmlNumber(element, "minValue");
+      const max = frameXmlNumber(element, "maxValue");
+      state.rangeSet = false;
+      state.valueSet = false;
+      state.value = 0;
+      if (min !== undefined && max !== undefined) {
+        frameXmlSliderSetRange(state, min, max);
+        const value = frameXmlNumber(element, "defaultValue");
+        const next = value === undefined ? undefined : frameXmlSliderValue(state, value);
+        if (next !== undefined) {
+          state.value = next;
+          state.valueSet = true;
+        }
+      } else {
+        state.min = 0;
+        state.max = 0;
+      }
+    }
+    if (frame.type === "StatusBar") {
+      const state = frame.statusBar;
+      state.orientation = frameXmlAttribute(element, "orientation")?.trim().toUpperCase() ?? "HORIZONTAL";
       state.min = frameXmlNumber(element, "minValue") ?? 0;
       state.max = frameXmlNumber(element, "maxValue") ?? 0;
       state.value = frameXmlNumber(element, "defaultValue") ?? state.min;
       state.valueStep = frameXmlNumber(element, "valueStep") ?? 0;
-      if (frame.type === "Slider") {
-        // L5b-review: the client's loader (0x0096c500) sets a range only from minValue with maxValue,
-        // and a value only from defaultValue on top of that range.
-        const ranged = frameXmlNumber(element, "minValue") !== undefined && frameXmlNumber(element, "maxValue") !== undefined;
-        state.rangeSet = ranged;
-        state.valueSet = ranged && frameXmlNumber(element, "defaultValue") !== undefined;
-      }
     }
   }
 
@@ -1632,7 +1655,8 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
     const inherits = frameXmlAttribute(child, "inherits")?.trim();
     if (inherits) frame.fontObject = inherits.split(",")[0]?.trim() ?? frame.fontObject;
     // 3.35-bounds: the page font's line spacing, which also parts its paragraphs (0x0096cc90, +0x2cc).
-    const htmlSpacing = frame.type === "SimpleHTML" ? frameXmlNumber(child, "spacing") : undefined;
+    // 3.34 (13.10): a MessageFrame's too — its slots are font height plus spacing (0x00968790).
+    const htmlSpacing = frame.type === "SimpleHTML" || frame.type === "MessageFrame" ? frameXmlNumber(child, "spacing") : undefined;
     if (htmlSpacing !== undefined) frame.setAttribute("spacing", String(htmlSpacing)); // 3.35-bounds
     const justifyH = frameXmlAttribute(child, "justifyH")?.trim().toUpperCase();
     const justifyV = frameXmlAttribute(child, "justifyV")?.trim().toUpperCase();
@@ -2485,6 +2509,8 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
       children: [],
       text: "",
     };
+    // 3.27 (13.10): without a template the client's XML loader never runs (a Slider keeps step 0).
+    if (!inherits) markFrameXmlBareCreate(element);
     const frame = this.buildElement(element, resolvedParent, name);
     const mutable = this.own(frame);
     if (mutable) this.#createdFrames.add(mutable);
@@ -2630,20 +2656,58 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
   /** User input and Lua share the same range clamp and change-only dispatch. */
   SetValue(frame: FrameXmlFrame, value: number, snapToStep = false): boolean {
     const mutable = this.own(frame);
-    if (!mutable || !Number.isFinite(value)) return false;
-    if (mutable.type !== "Slider" && mutable.type !== "StatusBar") return false;
-    const state = mutable.type === "StatusBar" ? mutable.statusBar : mutable.slider;
+    // 3.27 (13.10): a Slider's — Lua's and the thumb's alike (0x00971f00, 0x0096c320 → 0x0096c090) — takes
+    // FrameXmlSlider.ts's rules: nothing before a range, the step always, floats, the first write signals.
+    if (mutable?.type === "Slider") {
+      const next = frameXmlSliderValue(mutable.slider, value);
+      if (next === undefined) return false;
+      return this.runInMutationBatch(() => {
+        mutable.slider.value = next;
+        mutable.slider.valueSet = true;
+        this.notifyMutation(mutable, "paint");
+        this.dispatchScript(mutable, "OnValueChanged", [next]);
+        return true;
+      });
+    }
+    if (!mutable || !Number.isFinite(value) || mutable.type !== "StatusBar") return false;
+    const state = mutable.statusBar;
     const { min, max, valueStep } = state;
     const wanted = snapToStep && valueStep > 0
       ? min + Math.round((value - min) / valueStep) * valueStep : value;
     const clamped = Math.max(min, Math.min(Math.max(min, max), wanted));
-    // L5b-review: a slider's value counts as set once SetValue runs with a range (0x0096c090).
-    if (mutable.type === "Slider" && state.rangeSet) state.valueSet = true;
     if (clamped === state.value) return false;
     return this.runInMutationBatch(() => {
       state.value = clamped;
       this.notifyMutation(this.own(frame), "paint");
       this.dispatchScript(mutable, "OnValueChanged", [clamped]);
+      return true;
+    });
+  }
+
+  /**
+   * 3.27 (13.10): `Slider:SetMinMaxValues` past its argument check (0x0096c470, FrameXmlSlider.ts): a new range
+   * runs OnMinMaxChanged(self, min, max) (0x0096bbb0), then a value already set goes through SetValue again.
+   */
+  SetSliderMinMax(frame: FrameXmlFrame, min: number, max: number): boolean {
+    const mutable = this.own(frame);
+    if (mutable?.type !== "Slider") return false;
+    return this.runInMutationBatch(() => {
+      if (!frameXmlSliderSetRange(mutable.slider, min, max)) return false;
+      this.notifyMutation(mutable, "layout");
+      this.dispatchScript(mutable, "OnMinMaxChanged", [mutable.slider.min, mutable.slider.max]);
+      if (mutable.slider.valueSet) this.SetValue(mutable, mutable.slider.value);
+      return true;
+    });
+  }
+
+  /** 3.27 (13.10): `Slider:SetValueStep` past its argument check (0x0096c1b0): a new step re-applies a set value. */
+  SetSliderStep(frame: FrameXmlFrame, step: number): boolean {
+    const mutable = this.own(frame);
+    if (mutable?.type !== "Slider") return false;
+    return this.runInMutationBatch(() => {
+      if (!frameXmlSliderSetStep(mutable.slider, step)) return false;
+      this.notifyMutation(mutable, "paint");
+      if (mutable.slider.valueSet) this.SetValue(mutable, mutable.slider.value);
       return true;
     });
   }
@@ -2890,6 +2954,26 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
    * Only within the strata, and only on a frame that is not already the top one, so repeatedly
    * switching screens does not walk the level upwards without bound.
    */
+  /**
+   * 3.48 (13.10): Wow.exe's raise (0x0048e9a0 → CSimpleTop 0x004951a0(frame, 1)), which the UI root's mouse-down runs
+   * on the frame that took the press before anything else (0x00495470: before the title region and OnMouseDown) and
+   * `Frame:Raise()` runs too (0x0049fef0): the frame's toplevel self or ancestor to the top of its strata when
+   * something overlaps it (FrameXmlRaise.ts). Hidden frames are not in the strata's lists here. True when a level
+   * changed.
+   */
+  RaiseFrame(frame: FrameXmlFrame): boolean {
+    const target = this.own(frameXmlRaiseTarget(this.own(frame)));
+    if (!target) return false;
+    const screen = this.logicalScreen();
+    const level = frameXmlRaiseLevel({
+      frames: this.#frames, isVisible: (other) => this.isVisible(other), rect: (other) => this.screenRect(other, screen),
+    }, target, TOPLEVEL_MAX_FRAME_LEVEL);
+    if (level === undefined) return false;
+    target.frameLevel = level;
+    this.notifyMutation(target);
+    return true;
+  }
+
   private raiseToplevel(frame: MutableFrameXmlFrame): void {
     if (!frame.toplevel) return;
     let highest = frame.frameLevel;
@@ -3147,7 +3231,9 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
    * puts the newest at the insert edge), and holds no more lines than the frame's height does: the
    * client lays its lines into `floor(height / line height)` slots (0x00968790) and a new line
    * pushes the last slot's out (0x00968210). The height is the declared one, so adding a line never
-   * measures the page; a frame without one keeps `maxLines`.
+   * measures the page; a frame without one keeps `maxLines`. 3.34 (13.10): the line height is the font's
+   * plus the FontString's spacing, and the floor is the client's truncation with its exactness guard
+   * (FrameXmlMessageSlots.ts `frameXmlMessageLineCount`; not a rounding, as the L5 notes had it).
    */
   private addFadingMessage(
     frame: MutableFrameXmlFrame, text: unknown, r: unknown, g: unknown, b: unknown, alpha: unknown,
@@ -3170,7 +3256,9 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
     const usable = height - (insets ? insets.top + insets.bottom : 0);
     const style = frame.fontObject ? this.fontObjectStyle(frame.fontObject) : undefined;
     const line = Number(frame.attributes["fontHeight"] ?? style?.height);
-    const keep = usable > 0 && line > 0 ? Math.min(state.maxLines, Math.floor(usable / line + 1e-4)) : state.maxLines;
+    const spacing = Number(frame.attributes["spacing"] ?? style?.spacing ?? 0); // 3.34 (13.10)
+    const slots = frameXmlMessageLineCount(usable, line + (Number.isFinite(spacing) ? spacing : 0)); // 3.34 (13.10)
+    const keep = slots === undefined ? state.maxLines : Math.min(state.maxLines, slots);
     if (state.messages.length > keep) state.messages.splice(0, state.messages.length - keep);
     this.#messageFades.track(frame, message);
     state.revision += 1;
@@ -3303,12 +3391,49 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
     return this.SetVerticalScroll(frame, this.GetVerticalScroll(frame) + 1);
   }
 
+  /**
+   * 3.34 (13.10): `PageUp`/`PageDown` (0x0096ab50/0x0096abd0) walk the slots' count of lines and come one line
+   * back (FrameXmlMessageSlots.ts `frameXmlMessagePage`); a MessageFrame has neither (its table, 0x00b2d1a0,
+   * lists no scroll calls) — kept as the old 10-line step for it.
+   */
   PageUp(frame: FrameXmlFrame): boolean {
+    if (frame.type === "ScrollingMessageFrame") {
+      return this.SetVerticalScroll(frame, frameXmlMessagePage(frame.messageFrame, this.GetVerticalScroll(frame), true));
+    }
     return this.SetVerticalScroll(frame, this.GetVerticalScroll(frame) - 10);
   }
 
   PageDown(frame: FrameXmlFrame): boolean {
+    if (frame.type === "ScrollingMessageFrame") {
+      return this.SetVerticalScroll(frame, frameXmlMessagePage(frame.messageFrame, this.GetVerticalScroll(frame), false));
+    }
     return this.SetVerticalScroll(frame, this.GetVerticalScroll(frame) + 10);
+  }
+
+  /** 3.34 (13.10): `AtTop` (0x009734d0): every line from the oldest to the current one is in a slot. */
+  AtTop(frame: FrameXmlFrame): boolean {
+    return frame.type === "ScrollingMessageFrame"
+      && frameXmlMessageSlots(frame.messageFrame, frame.scroll.verticalScroll).atTop;
+  }
+
+  /** 3.34 (13.10): `GetNumLinesDisplayed` (0x009736a0): the lines in slots. */
+  GetNumLinesDisplayed(frame: FrameXmlFrame): number {
+    return frame.type === "ScrollingMessageFrame"
+      ? frameXmlMessageSlots(frame.messageFrame, frame.scroll.verticalScroll).displayed : 0;
+  }
+
+  /**
+   * 3.34 (13.10): the renderer painted the frame's layer — at the bottom the lines in slots count again and the
+   * older ones stay frozen (FrameXmlMessageFade.ts `frameXmlNoteMessageView`); the fade clock runs on if one does.
+   * The renderer repaints the alphas itself (the frame's `fadeRevision` moved). True when a line changed.
+   */
+  NoteMessageView(frame: FrameXmlFrame): boolean {
+    const mutable = this.own(frame);
+    if (!mutable || mutable.type !== "ScrollingMessageFrame") return false;
+    const atBottom = mutable.scroll.verticalScroll >= mutable.scroll.verticalScrollRange;
+    if (!frameXmlNoteMessageView(mutable.messageFrame, mutable.scroll.verticalScroll, atBottom)) return false;
+    this.#messageFades.track(mutable);
+    return true;
   }
 
   ScrollToBottom(frame: FrameXmlFrame): boolean {

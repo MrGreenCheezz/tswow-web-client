@@ -1,3 +1,5 @@
+import { wmoCompositeRecords, wmoCompositeStreams } from "./wmo-composite.mjs"; // 13.10 7.11
+
 /** A MOPY triangle whose material is this belongs to the collision hull and is never drawn. */
 const MOPY_MATERIAL_COLLISION_ONLY = 0xff;
 
@@ -279,6 +281,8 @@ export function parseWmoVisual(root, groups, rootPath, options = {}) {
   const groupRecords = [];
   const colours = [];
   const rootChunks = chunkMap(root);
+  // 13.10 7.11: the Composite records, only for a `visual-wmo-v26` job (`options.composite`).
+  const compositeRecords = options?.composite === true ? wmoCompositeRecords(rootChunks.get("MOMT")) : undefined;
   /** MODD record → the artifact groups whose MODR names it, in group order. */
   const doodadOwners = new Map();
   for (const group of groups) {
@@ -397,6 +401,9 @@ export function parseWmoVisual(root, groups, rootPath, options = {}) {
 
     const lightRefs = [];
     if (lightData) for (let at = 0; at + 2 <= lightData.length; at += 2) lightRefs.push(lightData.readUInt16LE(at));
+    // 13.10 7.11: a group drawing a Composite record carries its second MOTV and MOCV alpha.
+    const composite = compositeRecords === undefined
+      ? undefined : wmoCompositeStreams(mogp.subarray(68), vertexCount, batchData, compositeRecords);
 
     groupRecords.push({
       flags: groupFlags,
@@ -419,6 +426,7 @@ export function parseWmoVisual(root, groups, rootPath, options = {}) {
       // than record 0 in slot 0.
       fogIds: [0, 1, 2, 3].map((slot) => mogp[MOGP_FOG_IDS + slot]),
       ...(groupNormals ? { normals: groupNormals } : {}),
+      ...(composite ? { composite } : {}), // 13.10 7.11
     });
   }
   if (vertices.length === 0 || indices.length === 0 || vertices.length / 3 > 1_000_000 || indices.length > 6_000_000) throw new Error("WMO visual geometry is empty or too large");
@@ -605,6 +613,10 @@ export function wmoGroupMeshes(model, options = undefined) {
       positions, uvs, colours, indices, runs,
       ...(record.normals && record.normals.length === vertexCount * 3
         ? { normals: new Float32Array(record.normals) }
+        : {}),
+      // 13.10 7.11 (`visual-wmo-v26`): the Composite streams, `wmo-composite.mjs`.
+      ...(record.composite && record.composite.blend.length === vertexCount
+        ? { secondUvs: record.composite.uvs, blendAlpha: record.composite.blend }
         : {}),
     });
   }

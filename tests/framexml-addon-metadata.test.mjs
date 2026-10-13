@@ -27,10 +27,10 @@ async function booted() {
       ].join("\n"),
       "interface/framexml/main.lua": "MAIN_RAN = true",
       "interface/framexml/tsaddons/retail-talents/addon/addon.lua": "MODULE_RAN = true",
-      "interface/addons/eager/eager.toc": "## Title: Eager\n## Version: 1.2\nEager.lua",
+      "interface/addons/eager/eager.toc": "## Interface: 30300\n## Title: Eager\n## Version: 1.2\nEager.lua",
       // Runs at boot, before the LoD one loads: the client answers from its start-up scan.
       "interface/addons/eager/eager.lua": "EAGER_SAW = GetAddOnMetadata('LodOne', 'Version')",
-      "interface/addons/lodone/lodone.toc": "## LoadOnDemand: 1\n## Version: 7.0\n## X-Website: example.invalid\nLodOne.lua",
+      "interface/addons/lodone/lodone.toc": "## Interface: 30300\n## LoadOnDemand: 1\n## Version: 7.0\n## X-Website: example.invalid\nLodOne.lua",
       "interface/addons/lodone/lodone.lua": "LOD_ONE_RAN = true",
     }),
     installedAddons: ["Eager", "LodOne", "NoToc"],

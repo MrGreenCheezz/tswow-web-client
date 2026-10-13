@@ -72,7 +72,7 @@ test("enabled loose add-ons execute in the boot VM before the world exercise", a
   const provider = createFixtureProvider({
     "interface/framexml/framexml.toc": "GlobalStrings.lua\n",
     "interface/framexml/globalstrings.lua": "ADDON_MISSING = 'missing'",
-    "interface/addons/!loader/!loader.toc": "Loader.xml\nLoader.lua\n",
+    "interface/addons/!loader/!loader.toc": "## Interface: 30300\nLoader.xml\nLoader.lua\n",
     "interface/addons/!loader/loader.xml": "<Ui><Frame name=\"LooseAddonRoot\"/></Ui>",
     "interface/addons/!loader/loader.lua": "LooseAddonLoaded = true",
   });
@@ -98,9 +98,9 @@ test("metadata-only loader add-ons load their dependency and then report success
   const provider = createFixtureProvider({
     "interface/framexml/framexml.toc": "GlobalStrings.lua\n",
     "interface/framexml/globalstrings.lua": "ADDON_MISSING = 'missing'",
-    "interface/addons/library/library.toc": "Library.lua\n",
+    "interface/addons/library/library.toc": "## Interface: 30300\nLibrary.lua\n",
     "interface/addons/library/library.lua": "LibraryLoaded = true",
-    "interface/addons/!loader/!loader.toc": "## Dependencies: Library\n",
+    "interface/addons/!loader/!loader.toc": "## Interface: 30300\n## Dependencies: Library\n",
   });
   const boot = new FrameXmlBoot({ provider, installedAddons: ["Library", "!Loader"], exercise: false });
   try {
@@ -119,7 +119,7 @@ test("an add-on exported through a string-keyed _G assignment is not preempted b
   const provider = createFixtureProvider({
     "interface/framexml/framexml.toc": "GlobalStrings.lua\n",
     "interface/framexml/globalstrings.lua": "ADDON_MISSING = 'missing'",
-    "interface/addons/library/library.toc": "LibStub.lua\nConsumer.lua\n",
+    "interface/addons/library/library.toc": "## Interface: 30300\nLibStub.lua\nConsumer.lua\n",
     "interface/addons/library/libstub.lua": [
       "local LIBRARY_MAJOR = 'LibraryEntry'",
       "local library = _G[LIBRARY_MAJOR]",
@@ -146,7 +146,7 @@ test("legacy add-ons can capture the Lua 5.1 level-zero global environment", asy
   const provider = createFixtureProvider({
     "interface/framexml/framexml.toc": "GlobalStrings.lua\n",
     "interface/framexml/globalstrings.lua": "ADDON_MISSING = 'missing'",
-    "interface/addons/media/media.toc": "## Version: wowi:revision 5.4.1\nMedia.lua\n",
+    "interface/addons/media/media.toc": "## Interface: 30300\n## Version: wowi:revision 5.4.1\nMedia.lua\n",
     "interface/addons/media/media.lua": [
       "local environment = getfenv(0)",
       "CapturedPairs = environment.pairs == pairs",
@@ -169,7 +169,7 @@ test("every add-on Lua chunk receives its native name and stable private namespa
   const provider = createFixtureProvider({
     "interface/framexml/framexml.toc": "GlobalStrings.lua\n",
     "interface/framexml/globalstrings.lua": "ADDON_MISSING = 'missing'",
-    "interface/addons/namespaced/namespaced.toc": "First.lua\nSecond.lua\n",
+    "interface/addons/namespaced/namespaced.toc": "## Interface: 30300\nFirst.lua\nSecond.lua\n",
     "interface/addons/namespaced/first.lua": "local name, private = ...; private.owner = name",
     "interface/addons/namespaced/second.lua": "local name, private = ...; NamespaceResult = name .. ':' .. private.owner",
   });
@@ -188,7 +188,7 @@ test("a failed add-on is not executed a second time against its partially mutate
   const provider = createFixtureProvider({
     "interface/framexml/framexml.toc": "GlobalStrings.lua\n",
     "interface/framexml/globalstrings.lua": "ADDON_MISSING = 'missing'",
-    "interface/addons/broken/broken.toc": "Broken.lua\n",
+    "interface/addons/broken/broken.toc": "## Interface: 30300\nBroken.lua\n",
     "interface/addons/broken/broken.lua": "BrokenRuns = (BrokenRuns or 0) + 1; error('broken')",
   });
   const boot = new FrameXmlBoot({ provider, installedAddons: ["Broken"], exercise: false });

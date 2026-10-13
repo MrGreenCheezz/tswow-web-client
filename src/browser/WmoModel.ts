@@ -20,6 +20,7 @@ const RUN_SIZE = 16;
 const LIGHT_SIZE = 28;
 const COMPLETE = 0x01;
 const AUTHORED_NORMALS = 0x01;
+const COMPOSITE_STREAMS = 0x02; // 13.10 7.11: `tools/wwm.mjs` WWM_COMPOSITE_STREAMS
 const LEGACY_METADATA_MAGIC = "WME1";
 const LEGACY_METADATA_HEADER_SIZE = 8;
 const METADATA_MAGIC = "WME2";
@@ -279,6 +280,10 @@ export interface WmoGroupMesh {
   colours: Uint8Array;
   /** Optional authored MONR normals in model space, one finite float3 per vertex. */
   normals?: Float32Array;
+  /** 13.10 7.11 (`visual-wmo-v26`): a Composite group's second MOTV, float2 per vertex. */
+  secondUvs?: Float32Array;
+  /** 13.10 7.11: and its second MOCV's alpha, the Composite blend factor (255: the first texture). */
+  blendAlpha?: Uint8Array;
   indices: Uint16Array | Uint32Array;
   runs: WmoRun[];
   /** Which of the model's lamps hang in this group, by index into its light table. */
@@ -1186,12 +1191,14 @@ export function decodeWwmGroup(data: ArrayBuffer): { index: number; mesh: WmoGro
   const index = view.getUint16(12, true);
   const lightRefCount = view.getUint16(14, true);
   if (vertexCount === 0 || vertexCount > 1_000_000 || indexCount % 3 !== 0 || indexCount > 6_000_000
-    || (indexBytes !== 2 && indexBytes !== 4) || (streamFlags & ~AUTHORED_NORMALS) !== 0) {
+    || (indexBytes !== 2 && indexBytes !== 4) || (streamFlags & ~(AUTHORED_NORMALS | COMPOSITE_STREAMS)) !== 0) {
     throw new Error("WMO group has invalid counts or stream flags");
   }
   const hasNormals = (streamFlags & AUTHORED_NORMALS) !== 0;
+  const hasComposite = (streamFlags & COMPOSITE_STREAMS) !== 0; // 13.10 7.11 (visual-wmo-v26)
   const vertexStride = 24 + (hasNormals ? 12 : 0);
-  const indexOffset = BLOCK_HEADER_SIZE + vertexCount * vertexStride;
+  const compositeOffset = BLOCK_HEADER_SIZE + vertexCount * vertexStride;
+  const indexOffset = compositeOffset + (hasComposite ? vertexCount * 8 + ((vertexCount + 3) & ~3) : 0);
   const runOffset = indexOffset + ((indexCount * indexBytes + 3) & ~3);
   const lightOffset = runOffset + runCount * RUN_SIZE;
   const expectedLength = lightOffset + ((lightRefCount * 2 + 3) & ~3);
@@ -1203,11 +1210,21 @@ export function decodeWwmGroup(data: ArrayBuffer): { index: number; mesh: WmoGro
   for (const value of positions) if (!Number.isFinite(value)) throw new Error("WMO group position stream is not finite");
   for (const value of uvs) if (!Number.isFinite(value)) throw new Error("WMO group UV stream is not finite");
   const normals = hasNormals
-    ? new Float32Array(data.slice(BLOCK_HEADER_SIZE + vertexCount * 24, indexOffset))
+    ? new Float32Array(data.slice(BLOCK_HEADER_SIZE + vertexCount * 24, compositeOffset))
     : undefined;
   if (normals) {
     for (const value of normals) if (!Number.isFinite(value)) throw new Error("WMO group normal stream is not finite");
   }
+  // 13.10 7.11: a Composite group's second MOTV and second-MOCV alpha (`tools/wmo-composite.mjs`).
+  const secondUvs = hasComposite
+    ? new Float32Array(data.slice(compositeOffset, compositeOffset + vertexCount * 8))
+    : undefined;
+  if (secondUvs) {
+    for (const value of secondUvs) if (!Number.isFinite(value)) throw new Error("WMO group second UV stream is not finite");
+  }
+  const blendAlpha = hasComposite
+    ? new Uint8Array(data.slice(compositeOffset + vertexCount * 8, compositeOffset + vertexCount * 9))
+    : undefined;
   const indices = indexBytes === 2
     ? new Uint16Array(data.slice(indexOffset, indexOffset + indexCount * 2))
     : new Uint32Array(data.slice(indexOffset, indexOffset + indexCount * 4));
@@ -1231,5 +1248,11 @@ export function decodeWwmGroup(data: ArrayBuffer): { index: number; mesh: WmoGro
     runs.push(entry);
   }
   const lightRefs = new Uint16Array(data.slice(lightOffset, lightOffset + lightRefCount * 2));
-  return { index, mesh: { positions, uvs, colours, indices, runs, lightRefs, ...(normals ? { normals } : {}) } };
+  return {
+    index,
+    mesh: {
+      positions, uvs, colours, indices, runs, lightRefs, ...(normals ? { normals } : {}),
+      ...(secondUvs && blendAlpha ? { secondUvs, blendAlpha } : {}), // 13.10 7.11
+    },
+  };
 }

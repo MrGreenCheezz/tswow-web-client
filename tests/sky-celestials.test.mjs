@@ -10,6 +10,7 @@ import * as THREE from "three";
 
 import {
   CELESTIAL_FRAGMENT_SHADER, CELESTIAL_VERTEX_SHADER, CLOUD_FRAGMENT_SHADER, CLOUD_VERTEX_SHADER,
+  GLARE_FRAGMENT_SHADER, // 13.10 7.04
   MOON_AZIMUTH, MOON_POLAR, MOON_SCALE, STAR_ALPHA, SUN_AZIMUTH, SUN_POLAR, SUN_SCALE,
   SkyCelestials, celestialDirection, cloudCoverThreshold, cloudLightIsSun, computeCelestialFrame,
   createCelestialFrame, createSkyCelestialInput, moon2Fraction, skyBasicMaterials, skyDayFraction,
@@ -166,7 +167,9 @@ test("7.04 renderer layer: off without v5 channels; bodies only once their textu
   sky.update(input, camera);
   assert.equal(sky.group.visible, true);
   assert.equal(visible(sky, "skySun"), false, "a texture still loading draws nothing");
-  assert.deepEqual([...source.loaded].sort(), ["Textures\\moon.blp", "Textures\\moon02.blp", "Textures\\sunCenter.blp"]);
+  // 13.10 7.04: and the two glare sprites.
+  assert.deepEqual([...source.loaded].sort(), ["Textures\\moon.blp", "Textures\\moon02.blp", "Textures\\moonGlare.blp",
+    "Textures\\sunCenter.blp", "Textures\\sunGlare.blp"]);
   ready.value = true;
   sky.update(input, camera);
   assert.equal(visible(sky, "skySun"), true);
@@ -177,7 +180,7 @@ test("7.04 renderer layer: off without v5 channels; bodies only once their textu
   const colour = sun.material.uniforms.celestialColour.value;
   const expected = new THREE.Color().setHex(0xfff7de, THREE.SRGBColorSpace);
   assert.ok(near(colour.r, expected.r) && near(colour.b, expected.b), "band 9 tints the bodies");
-  assert.equal(source.loaded.length, 3, "textures are requested once");
+  assert.equal(source.loaded.length, 5, "textures are requested once");
   input.postSun = true;
   sky.update(input, camera);
   assert.equal(visible(sky, "skySun"), false, "the cinematic post owns the sun disc");
@@ -352,9 +355,11 @@ function checkProgram(label, vertex, fragment, uniforms) {
 test("7.04 GLSL: the celestial and cloud programs pass the static checks", () => {
   const sky = new SkyCelestials();
   const [sun] = sky.materials();
-  const clouds = sky.materials().at(-1);
+  const clouds = sky.materials()[3]; // 13.10 7.04: the glare follows the clouds
+  const glare = sky.materials()[4];
   checkProgram("celestial", CELESTIAL_VERTEX_SHADER, CELESTIAL_FRAGMENT_SHADER, sun.uniforms);
   checkProgram("clouds", CLOUD_VERTEX_SHADER, CLOUD_FRAGMENT_SHADER, clouds.uniforms);
+  checkProgram("glare", CELESTIAL_VERTEX_SHADER, GLARE_FRAGMENT_SHADER, glare.uniforms); // 13.10 7.04
   // One program for the three bodies: same source text, uniforms only differ.
   const bodies = sky.materials().slice(0, 3);
   assert.equal(new Set(bodies.map((material) => material.fragmentShader)).size, 1);
@@ -365,7 +370,7 @@ test("7.04 GLSL: the celestial and cloud programs pass the static checks", () =>
 test("7.04 GLSL check catches the faults that cost a white frame (self-test)", () => {
   const uniforms = { celestialMap: {}, celestialColour: {}, celestialOpacity: {}, celestialHorizon: {}, celestialSize: {} };
   assert.throws(() => checkProgram("m", CELESTIAL_VERTEX_SHADER, CELESTIAL_FRAGMENT_SHADER.replace("0.0)", "0)"), uniforms));
-  assert.throws(() => checkProgram("m", CELESTIAL_VERTEX_SHADER, CELESTIAL_FRAGMENT_SHADER.replace("celestialOpacity *", "celestialAlpha *"), uniforms));
+  assert.throws(() => checkProgram("m", CELESTIAL_VERTEX_SHADER, CELESTIAL_FRAGMENT_SHADER.replace(": celestialOpacity)", ": celestialAlpha)"), uniforms));
   const { celestialHorizon: _, ...missing } = uniforms;
   assert.throws(() => checkProgram("m", CELESTIAL_VERTEX_SHADER, CELESTIAL_FRAGMENT_SHADER, missing));
   assert.throws(() => checkProgram("m", CELESTIAL_VERTEX_SHADER.replace("varying vec3 vCelestialDirection;", "varying vec2 vCelestialDirection;"), CELESTIAL_FRAGMENT_SHADER, uniforms));

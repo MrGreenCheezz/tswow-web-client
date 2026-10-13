@@ -2622,6 +2622,9 @@ export const FRAMEXML_SEAM_BINDINGS: Readonly<Record<string, FrameXmlSeamBinding
   ),
   SetCVar: (seam, args) => {
     const name = typeof args[0] === "string" ? args[0] : "";
+    // 3.33 (13.10): previewTalents' callback (0x005127d0) clears both talent previews on every SetCVar of it,
+    // before the value is written (0x007668c0) — FrameXmlTalentPreview.ts `cvarChanged`.
+    if (name.toLowerCase() === "previewtalents") seam.talentPreview?.cvarChanged();
     if (seam.setCVarValue) {
       const handled = seam.setCVarValue(name, args[1]);
       return handled === undefined ? NOTHING : [handled];

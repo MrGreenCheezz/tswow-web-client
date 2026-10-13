@@ -227,7 +227,9 @@ test("renderer WMO cache wiring detaches before teardown and replaces the late-c
   );
   assert.match(runMaterial, /this\.#wmoModelKey\(model\)/);
   assert.match(runMaterial, /kind:\s*"wmo-run"/);
-  assert.doesNotMatch(runMaterial, /createPrivateView/);
+  // 13.10 7.11: only a clamped run (MOMT 0x40/0x80) owns a private sampler view of the shared base.
+  assert.match(runMaterial, /\.\.\.\(url && clamped \? \{\r?\n\s+createPrivateView:/);
+  assert.equal(runMaterial.match(/createPrivateView/g)?.length, 1);
   assert.doesNotMatch(runMaterial, /#loadWorldTexture/);
 
   assert.match(source,

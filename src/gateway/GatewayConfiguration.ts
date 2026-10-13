@@ -5,7 +5,7 @@ import { parsePreloadEnv } from "./AssetPreloader.js";
 import { PRELOAD_PRIORITY, texturePriority, visualModelPriority } from "./GenerationLane.js";
 import { parseCharacterTextures } from "./CharacterTextures.js";
 import { selectClientMediaOverlay } from "./ClientMediaOverlay.js";
-import { discoverClientAddons } from "./ClientAddons.js";
+import { clientAddonVersionCheck, discoverClientAddons, listClientAddons } from "./ClientAddons.js";
 import { readPatchStatusChild } from "./PatchStatus.js";
 import { assertModuleWritePolicy } from "./ModuleWritePolicy.js";
 import { parseLoginAttemptEnv } from "./LoginAttemptLimiter.js";
@@ -112,6 +112,10 @@ export async function createGatewayConfiguration(): Promise<{ options: GatewayOp
   if (clientAddons.length > 0) {
     console.log(`Client add-ons: ${clientAddons.map((addon) => addon.name).join(", ")}`);
   }
+  // 3.46 (13.10): the whole list (the profile's switched-off add-ons too) and Config.wtf's checkAddonVersion.
+  const addonsFile = process.env.CLIENT_ADDONS_FILE ? { addonsFile: process.env.CLIENT_ADDONS_FILE } : {};
+  const clientAddonListing = clientDirectory === undefined ? undefined : await listClientAddons(clientDirectory, addonsFile);
+  const clientAddonVersionCheckValue = clientDirectory === undefined ? undefined : await clientAddonVersionCheck(clientDirectory);
 
   // A patched model served from one TSWoW tree and gameplay DBC metadata read from another is a
   // valid-looking but internally impossible client. Catch that before the port opens. The full
@@ -214,6 +218,8 @@ export async function createGatewayConfiguration(): Promise<{ options: GatewayOp
     ...(coordinatedVisuals === undefined ? {} : { coordinatedVisuals }),
     ...(clientDirectory === undefined ? {} : { clientDirectory }),
     clientAddons,
+    ...(clientAddonListing === undefined ? {} : { clientAddonListing }), // 3.46 (13.10)
+    ...(clientAddonVersionCheckValue === undefined ? {} : { clientAddonVersionCheck: clientAddonVersionCheckValue }),
     readPatchDetails,
     // Set by tools/start-gateway.mjs for the child it forks (GATEWAY_RESTART_ON_PATCH=1); a gateway
     // without the IPC channel cannot be the supervised one, whatever the environment says.

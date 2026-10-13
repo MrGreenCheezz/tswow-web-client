@@ -3,8 +3,8 @@
  * bank log scrolls its `GuildBankMessageFrame` (insertMode TOP) with `SetScrollOffset` from a
  * FauxScrollFrame (Blizzard_GuildBankUI.lua:635). Wow.exe 3.3.5a (12340) method table 0x00b2cf98…
  * 0x00b2cfd8; behaviour in FrameXmlRuntime (`SetMessageScrollOffset`, `GetMessageCurrentScroll`,
- * `ScrollToTop`). `AtTop` and `GetNumLinesDisplayed` answer from the client's slot layout, which this
- * renderer does not keep line by line; they stay unanswered.
+ * `ScrollToTop`). 3.34 (13.10): `AtTop` (0x009734d0: 1 or nil) and `GetNumLinesDisplayed` (0x009736a0)
+ * answer from the slot layout over the renderer's lent line heights (FrameXmlMessageSlots.ts).
  */
 import type { FrameXmlUiBridge } from "../ui/framexml_compat/FrameXmlRuntime.js";
 import type { WidgetMethod } from "./GlueWidgets.js";
@@ -18,5 +18,7 @@ export function messageScrollMethods(bridge: FrameXmlUiBridge): Record<string, W
     },
     GetCurrentScroll: ({ frame }) => [bridge.GetMessageCurrentScroll(frame)],
     ScrollToTop: ({ frame }) => { bridge.ScrollToTop(frame); },
+    AtTop: ({ frame }) => [bridge.AtTop(frame) ? 1 : undefined], // 3.34 (13.10)
+    GetNumLinesDisplayed: ({ frame }) => [bridge.GetNumLinesDisplayed(frame)], // 3.34 (13.10)
   };
 }

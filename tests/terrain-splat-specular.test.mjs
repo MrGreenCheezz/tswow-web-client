@@ -4,7 +4,7 @@
 // `terrain-splat-v2` generation publishes that alpha as a separate grey mask per layer (the layer
 // pictures stay as they were: a canvas decode of a layer whose alpha is mostly near 0 would lose
 // its colour to premultiplication), `splat.json` names the masks, and the browser — only while the
-// `terrainSpecular` render switch is on (off by default: c[27] is not settled by Wow.exe) — writes
+// `terrainSpecular` render switch is on (on by default since 13.10: c[27].rgb is Light band 9) — writes
 // each mask into its layer's alpha and adds the term on the classic path.
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
@@ -311,8 +311,9 @@ async function loadTile(switchOn) {
   }
 }
 
-test("TerrainSplatClient: switch off (default) asks for no mask and the layers keep alpha as published", async () => {
-  assert.equal(renderSwitches.terrainSpecular, false, "off by default");
+test("TerrainSplatClient: switch off asks for no mask and the layers keep alpha as published", async () => {
+  // 13.10 7.16: on by default since c[27].rgb was read (band 9); off is still a clean path.
+  assert.equal(renderSwitches.terrainSpecular, true, "on by default");
   const off = await loadTile(false);
   assert.ok(!off.asked.includes(`/terrain-layer/${layerId("c")}.png`));
   assert.equal(off.specular, undefined);
@@ -419,6 +420,10 @@ test("7.16 Г program: per-vertex pow(N·H, 20), mask blended like the colour, a
     assert.match(text, /float splatSpecWeight = vSplatSpecular \* splatSpecMask \* splatBakedLit \* wowShadow \* splatSpecularStrength;/);
     assert.ok(text.indexOf("float splatSpecWeight") > text.indexOf("vec3 wowAuthoredLight"), "after the world light");
     assert.equal(fBefore.split("uniform float splatSpecularStrength;").length - 1, 1);
+    // 13.10 7.16: the colour is c[27].rgb (Light band 9), not the sun's diffuse.
+    assert.equal(fBefore.split("uniform vec3 splatSpecularColour;").length - 1, 1);
+    assert.match(text, /\+ splatSpecularColour \* splatSpecWeight, vec3\( 2\.2 \) \)/);
+    assert.doesNotMatch(text, /wowDiffuse \* splatSpecWeight/);
     assert.equal(fBefore.split("varying float vSplatSpecular;").length - 1, 1);
   }
 });

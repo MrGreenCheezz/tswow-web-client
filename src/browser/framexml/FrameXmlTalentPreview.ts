@@ -29,8 +29,9 @@
  *
  * Deviations: the pairs go out ordered by tab, tier and column, a previewed prerequisite before its
  * dependant (the client walks its own hash order; the core learns each pair in turn and refuses a
- * talent whose tier or prerequisite is not yet met, so this is the order it accepts); the
- * `previewTalents` CVar callback that resets both previews (0x5127d0) is not wired.
+ * talent whose tier or prerequisite is not yet met, so this is the order it accepts). 3.33 (13.10): the
+ * `previewTalents` CVar callback that clears both previews (0x5127d0) is `cvarChanged`, run by the seam's
+ * SetCVar (FrameXmlWorldSeam.ts) before the value is written.
  */
 
 import type {
@@ -191,6 +192,29 @@ export class FrameXmlTalentPreviewModel {
     if (after !== before) {
       this.#pump?.fire(pet ? PREVIEW_PET_TALENT_POINTS_CHANGED : PREVIEW_TALENT_POINTS_CHANGED,
         0, tabIndex ?? 0, groupIndex, after - before);
+    }
+  }
+
+  /**
+   * 3.33 (13.10): the `previewTalents` CVar's callback (0x005127d0, registered with the CVar by 0x0051d9b0),
+   * which Wow.exe runs on every SetCVar of it — the same value too — before the value is written (CVar set
+   * 0x007668c0, from SetCVar 0x00514c10): the character's previewed points of every talent group counted
+   * (0x005c5be0(0)) and cleared (0x005c70d0(0) → 0x005c6fb0 per group), then
+   * PREVIEW_TALENT_POINTS_CHANGED(0, 0, 0, -points); the same for the pet (0x005c5be0(1), 0x005c70d0(1); none
+   * without a pet's tree) and PREVIEW_PET_TALENT_POINTS_CHANGED(0, 0, 0, -points). Both events always fire,
+   * with 0 when nothing was previewed ("%d%d%d%d" of -0 is 0).
+   */
+  cvarChanged(): void {
+    for (const pet of [false, true]) {
+      const snapshot = this.apply(pet, this.#context.snapshot(pet));
+      let spent = 0;
+      if (snapshot) for (const group of snapshot.groups) spent += groupSpent(group);
+      const state = this.#state(pet);
+      if (state.groups.size > 0) {
+        state.groups.clear();
+        state.revision += 1;
+      }
+      this.#pump?.fire(pet ? PREVIEW_PET_TALENT_POINTS_CHANGED : PREVIEW_TALENT_POINTS_CHANGED, 0, 0, 0, 0 - spent);
     }
   }
 

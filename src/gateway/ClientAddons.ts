@@ -87,6 +87,37 @@ async function profileText(clientRoot: string, selectedFile: string | undefined)
   return first?.toString("utf8");
 }
 
+/**
+ * 3.46 (13.10): every installed add-on with whether the profile enables it — what Wow.exe's GetNumAddOns/GetAddOnInfo
+ * list (0x00511200/0x00511240), the switched-off ones as DISABLED — in the same order as `discoverClientAddons`.
+ */
+export async function listClientAddons(
+  clientRoot: string,
+  options: Pick<ClientAddonDiscoveryOptions, "addonsFile"> = {},
+): Promise<readonly (ClientAddonDescriptor & { readonly enabled: boolean })[]> {
+  const disabled = disabledClientAddons(await profileText(clientRoot, options.addonsFile) ?? "");
+  return (await installedClientAddons(clientRoot))
+    .map((addon) => ({ ...addon, enabled: !disabled.has(addon.name.toLowerCase()) }));
+}
+
+/**
+ * 3.46 (13.10): the client's `checkAddonVersion` CVar from WTF/Config.wtf (`SET checkAddonVersion "0"` is the
+ * glue's «Load out of date AddOns»); Wow.exe registers it on («1»), so a missing file or line keeps it on.
+ */
+export async function clientAddonVersionCheck(clientRoot: string): Promise<boolean> {
+  let text: string;
+  try { text = await readFile(join(clientRoot, "WTF", "Config.wtf"), "utf8"); } catch { return true; }
+  let value: string | undefined;
+  for (const line of text.split(/\r?\n/)) {
+    const match = /^\s*SET\s+checkAddonVersion\s+"([^"]*)"\s*$/i.exec(line);
+    if (match) value = match[1];
+  }
+  if (value === undefined) return true;
+  // An integer CVar: atoi, so anything without leading digits is 0.
+  const number = Number.parseInt(value.trim(), 10);
+  return Number.isFinite(number) && number !== 0;
+}
+
 /** Discover native root-level AddOns, honoring only an unambiguous selected profile. */
 export async function discoverClientAddons(
   clientRoot: string,

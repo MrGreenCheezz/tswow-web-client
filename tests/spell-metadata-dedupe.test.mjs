@@ -20,6 +20,7 @@ function row(id) {
     startRecoveryCategory: 0, // L13: v=17's marker (a batch without it is the older gateway's)
     procCharges: 0, // 12.10: v=18's
     category: 0, // 3.39: v=19's
+    speed: 0, // 3.01 (13.10): v=20's
   };
 }
 

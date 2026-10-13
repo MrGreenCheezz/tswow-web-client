@@ -73,7 +73,8 @@ test("a run with no look keeps the exact cache key it always had; a look makes i
 test("the renderer applies a look only when the run names a record that has one", async () => {
   const source = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
   const body = source.slice(source.indexOf("  #wmoRunMaterial("), source.indexOf("  #wmoEnvTexture("));
-  assert.match(body, /const look = record === undefined\r?\n\s+\? undefined\r?\n\s+: wmoRunLook\(wmoRunMaterial\(model, run\), interior, model\.materialTextureUrls\?\.\[record\]\);/);
+  // 13.10 7.11: an F_UNLIT run asks for its look as an unlit one does (no night glow).
+  assert.match(body, /const look = record === undefined\r?\n\s+\? undefined\r?\n\s+: wmoRunLook\(wmoRunMaterial\(model, run\), interior \|\| state\.unlit, model\.materialTextureUrls\?\.\[record\],\r?\n\s+group\.mesh\?\.secondUvs !== undefined\);/);
   assert.match(body, /look === undefined \? undefined : \{ record: record!, key: wmoRunLookKey\(look\) \}/);
   assert.match(body, /if \(look\) \{ \/\/ 05\.10-A7b-2 \(7\.11 P1\)\r?\n\s+applyWmoRunLook\(value, look, \{ daylight: this\.#worldLight\.wowDaylight \},/);
   // Before the world light and the room fog wrap it: their hooks run first, the look's after.
@@ -202,14 +203,14 @@ const environment = new THREE.Texture();
 
 function litRun(look) {
   const value = new THREE.MeshStandardMaterial({ map: new THREE.Texture() });
-  applyWmoRunLook(value, look, { daylight }, look.env ? environment : undefined);
+  applyWmoRunLook(value, look, { daylight }, look.env || look.composite ? environment : undefined);
   applyWorldLight(value, createWorldLightUniforms(), "surface");
   return composed(value, THREE.ShaderLib.standard);
 }
 
 function roomRun(look) {
   const value = new THREE.MeshBasicMaterial({ map: new THREE.Texture(), vertexColors: true });
-  applyWmoRunLook(value, look, { daylight }, look.env ? environment : undefined);
+  applyWmoRunLook(value, look, { daylight }, look.env || look.composite ? environment : undefined);
   applyWmoInteriorFog(value, { colour: { value: new THREE.Color() }, near: { value: 1 }, far: { value: 2 } });
   return composed(value, THREE.ShaderLib.basic);
 }
@@ -220,6 +221,8 @@ const LOOKS = [
   { primaryAlpha: true, env: { url: "u", metal: false } },
   { primaryAlpha: true, env: { url: "u", metal: true } },
   { primaryAlpha: true, sidn: [1, 1, 1], env: { url: "u", metal: true } },
+  { primaryAlpha: false, composite: { url: "u" } }, // 13.10 7.11
+  { primaryAlpha: false, sidn: [1, 1, 1], composite: { url: "u" } }, // 13.10 7.11
 ];
 
 test("look GLSL over the lit (standard + world light) template: names declared before use", () => {
@@ -239,7 +242,15 @@ test("look GLSL over the lit (standard + world light) template: names declared b
       const vertex = preprocess(resolveIncludes(VERTEX_PREFIX + shader.vertexShader), { USE_FOG: "", USE_MAP: "" });
       const vertexLines = checkLookLines(vertex, `lit vertex ${wmoRunLookKey(look)}`);
       if (look.env) assert.ok(vertexLines.some((line) => line.startsWith("vWowWmoEnvUv =")));
+      // 13.10 7.11: Composite blends both layers in place of the base sample and passes its streams.
+      if (look.composite) {
+        assert.ok(lines.some((line) => line.includes("mix( texture2D( wowWmoLayer, vWowWmoUv2 ), texture2D( map, vMapUv ), vWowWmoBlend )")));
+        assert.ok(!fragment.some((line) => /sampledDiffuseColor = texture2D\( map, vMapUv \)/.test(line)), "one base sample");
+        assert.ok(vertexLines.some((line) => line.startsWith("vWowWmoUv2 = wowWmoUv2;")));
+        assert.ok(vertexLines.some((line) => line.startsWith("vWowWmoBlend = wowWmoBlend;")));
+      }
     }
+    if (look.composite) assert.equal(shader.uniforms.wowWmoLayer.value === environment, true);
     if (look.sidn) {
       // The glow's uniforms reach the program: its own colour and the world light's daylight.
       assert.ok(shader.uniforms.wowWmoSidn.value.equals(new THREE.Vector3(...look.sidn)));
@@ -257,7 +268,11 @@ test("look GLSL over the room (basic + room fog) template: names declared before
     const lines = checkLookLines(fragment, `room ${wmoRunLookKey(look)}`);
     assert.ok(!lines.some((line) => line.includes("wowWmoGlow")), "an unlit run never glows");
     const vertex = preprocess(resolveIncludes(VERTEX_PREFIX + shader.vertexShader), { USE_FOG: "", USE_MAP: "" });
-    checkLookLines(vertex, `room vertex ${wmoRunLookKey(look)}`);
+    const vertexLines = checkLookLines(vertex, `room vertex ${wmoRunLookKey(look)}`);
+    if (look.composite) { // 13.10 7.11
+      assert.ok(lines.some((line) => line.includes("vWowWmoBlend )")));
+      assert.ok(vertexLines.some((line) => line.startsWith("vWowWmoUv2 = wowWmoUv2;")));
+    }
   }
 });
 
@@ -275,6 +290,12 @@ test("the look's statements are typed as GLSL ES allows", () => {
     /vec3 wowWmoEye = normalize\( mvPosition\.xyz \);/,
     /vec3 wowWmoNormal = normalize\( normalMatrix \* normal \);/,
     /vWowWmoEnvUv = wowWmoEye\.xy - 2\.0 \* wowWmoNormal\.xy \* dot\( wowWmoNormal, wowWmoEye \);/,
+    // 13.10 7.11: vec4 = mix(vec4, vec4, float); vec2 / float varyings from their attributes.
+    /vec4 sampledDiffuseColor = mix\( texture2D\( wowWmoLayer, vWowWmoUv2 \), texture2D\( map, vMapUv \), vWowWmoBlend \);/,
+    /attribute vec2 wowWmoUv2;/,
+    /attribute float wowWmoBlend;/,
+    /vWowWmoUv2 = wowWmoUv2;/,
+    /vWowWmoBlend = wowWmoBlend;/,
   ]) assert.match(glsl, pattern);
   // No int literal where a float is needed (the commonest driver-only failure).
   for (const line of glsl.split("\n")) {

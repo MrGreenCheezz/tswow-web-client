@@ -37,7 +37,7 @@ export const COMPARISON_CONFIG_WTF_MAPPING: Readonly<Record<string, string>> = O
   extShadowQuality: "lightingQuality: > 0 → 3 «сравнение» (classic light + quality 1's shadow pass), 0 → 0",
   farclip: "no setting yet: the detail window by farclip is 7.08 slice B («Дальность рельефа»); until then the fixed 3×3 window and Light.dbc fog",
   weatherDensity: "identity: weather draws its full rate, which is the client's top level 3 (benilla reads 1.12's table as {0.1, 0.33, 0.66, 1.0}); no scale for 0–2 exists here",
-  specular: "recorded, not applied: the terrainSpecular render switch stays off until Wow.exe's c[27] colour is read (7.16 Г); the comparison level already gives the term full strength",
+  specular: "applied by default: the terrainSpecular render switch is on since Wow.exe's c[27] colour was read (13.10 7.16: Light band 9); the comparison level gives the term full strength",
   groundEffectDensity: "not mapped: doodads per chunk against grassDensity's multiplier over the table (FrameXmlSettingsCVar.ts); grassDensity stays 1",
   projectedTextures: "not mapped: the blob shadow under units with the shadow pass off is not implemented (7.20 step 3); the comparison level has the pass on",
   textureFilteringMode: "not mapped: no texture-filtering setting; the renderer's own anisotropy applies",

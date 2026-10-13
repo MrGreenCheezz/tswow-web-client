@@ -2,6 +2,8 @@ import * as THREE from "three";
 import {
   WMO_GEOMETRY_STEP_VERTICES, WMO_GROUP_HAS_COLOURS, wmoRunIsInterior, wmoVertexLightSteps, type WmoModel,
 } from "./WmoModel.js";
+import { WMO_UNLIT_MOCV_ATTRIBUTE, wmoGroupNeedsUnlitMocv, wmoUnlitMocv } from "./WmoMaterialFlags.js"; // 13.10 7.11
+import { WMO_COMPOSITE_BLEND_ATTRIBUTE, WMO_COMPOSITE_UV_ATTRIBUTE } from "./WmoRunLook.js"; // 13.10 7.11
 
 /** Builds one decoded room without calculating vertex light that none of its runs will read. */
 export function buildWmoGroupGeometry(model: WmoModel, index: number): THREE.BufferGeometry | undefined {
@@ -69,6 +71,17 @@ export function* buildWmoGroupGeometrySteps(
           model.vertexLight ?? "unified", (group.flags & WMO_GROUP_HAS_COLOURS) !== 0,
           model.vertexAlphaFixed !== false), 3,
       ));
+    }
+    // 13.10 7.11: an F_UNLIT exterior run of a group with MOCV is drawn MOCV × texture
+    // (`WmoMaterialFlags.ts`); the interior `color` above is another formula, so it gets its own.
+    if (wmoGroupNeedsUnlitMocv(model, group, source.runs)) {
+      geometry.setAttribute(WMO_UNLIT_MOCV_ATTRIBUTE, new THREE.BufferAttribute(wmoUnlitMocv(source.colours), 3));
+      yield;
+    }
+    // 13.10 7.11: a Composite group's second UV set and blend factor (`WmoRunLook.ts`).
+    if (source.secondUvs && source.blendAlpha) {
+      geometry.setAttribute(WMO_COMPOSITE_UV_ATTRIBUTE, new THREE.BufferAttribute(source.secondUvs, 2));
+      geometry.setAttribute(WMO_COMPOSITE_BLEND_ATTRIBUTE, new THREE.BufferAttribute(source.blendAlpha, 1, true));
     }
     for (const [ordinal, run] of source.runs.entries()) {
       geometry.addGroup(run.start, run.count, ordinal);

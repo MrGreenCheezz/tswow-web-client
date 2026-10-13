@@ -37,7 +37,7 @@ import {
   applyTerrainSplat, setTerrainSplatMicroNormals, type TerrainSplatClient,
 } from "./TerrainSplat.js";
 import { setTerrainBakedShadowStrength, terrainBakedShadowStrength } from "./TerrainSplat.js"; // 05.10-A7b-7
-import { setTerrainSpecularStrength, terrainSpecularStrength } from "./TerrainSplat.js"; // 05.10-A7b-7Г
+import { setTerrainSpecularColour, setTerrainSpecularStrength, terrainSpecularStrength } from "./TerrainSplat.js"; // 05.10-A7b-7Г; 13.10 7.16
 import {
   GROUND_COVER_BUDGET, GROUND_COVER_MARGIN, GROUND_COVER_MAX_RADIUS, createGroundCoverCellCache,
   groundCoverRecipeSource, hypot2, scatterGroundCover, writeGroundCoverInstanceMatrices,
@@ -50,7 +50,12 @@ import {
   SKY_STARS_MODEL, SkyCelestials, createSkyCelestialInput, skyBasicMaterials, skyTextureSource, skyboxClipTimeMs,
   skyboxCoversSky,
   skyPostDrawsSun, // 05.10-A7b-6-review
+  skyDayFraction, // 13.10 7.04
 } from "./SkyCelestials.js"; // 05.10-A7b-6
+import {
+  CLASSIC_DOME_VERTICES, buildClassicDome, classicDomeColours, highlightStrength, packDisplayColour,
+  writeClassicDomeColours, type ClassicDomeBands,
+} from "./SkyDome.js"; // 13.10 7.04
 import type { LightSample, ResolvedColour } from "./LightTypes.js";
 import { lightDarkensByDepth, liquidLightTint, type UnderwaterLight } from "./UnderwaterLiquidLight.js"; // 05.10-A7b-5 review
 import { LocalLightSelection, modelFixtureLights, sampleFixtureLight } from "./LocalLighting.js";
@@ -122,6 +127,7 @@ import { FastPoseState, type FastPoseProgram } from "./FastPose.js";
 import { SharedPose, pagePoseEngine, type PoseEngine, type PoseEngineStats } from "./PoseEngine.js";
 import {
   EVERY_GEOSET, UNIT_SLOT_FOLD, applyBlendMode, buildModel, characterSlots, cloneMaterialFaded, fadeMaterial,
+  privateTextureView, // 13.10 7.11: a clamped WMO run's own sampler view
   setBuiltModelFantasyGlow,
   unitGeosets, updateBatchColours, worldCharacterGeosets,
   type AnimatedBatch, type BuiltModel, type GeosetChoice, type TextureSlots,
@@ -208,6 +214,9 @@ import {
 } from "./WmoOpenAir.js"; // 05.10-A7b-2 (7.03 slice 3)
 import { wmoRunMaterial } from "./WmoMaterials.js"; // 05.10-A7b-2 (7.11 P1)
 import { applyWmoRunLook, wmoRunLook, wmoRunLookKey } from "./WmoRunLook.js"; // 05.10-A7b-2 (7.11 P1)
+import {
+  applyWmoRunClamp, applyWmoUnlitMocv, wmoGroupNeedsUnlitMocv, wmoRunDrawState, wmoRunDrawStateKey,
+} from "./WmoMaterialFlags.js"; // 13.10 7.11
 import { createWmoRoomFog, wmoRoomFogFor } from "./WmoRoomFog.js"; // 05.10-A7b-2 (7.12)
 import { renderSwitches } from "./RenderSwitches.js"; // 05.10-A7b-2 (7.12)
 import {
@@ -603,16 +612,21 @@ export function wmoRunMaterialCacheKey(
   materialFlags: number,
   interior: boolean,
   look?: { readonly record: number; readonly key: string }, // 05.10-A7b-2 (7.11 P1)
+  drawState = "", // 13.10 7.11: `wmoRunDrawStateKey`, "" for a run its flags change nothing about
 ): string {
   // 05.10-A7b-2: a run whose MOMT record has a look is its own material; every other run keeps the
   // exact key it always had (an older artifact, a plain Diffuse record).
+  // 13.10 7.11: the same for F_UNLIT/F_UNFOGGED — they depend on the group and the batch class, which
+  // the flag byte already in the key does not name. (Clamp is the flag byte alone.)
+  const tail = drawState === "" ? [] : [drawState];
   if (look !== undefined) {
     return JSON.stringify([
       parentToken, "wmo-run", materialIndex, textureUrl, blendMode, materialFlags, interior, look.record, look.key,
+      ...tail,
     ]);
   }
   return JSON.stringify([
-    parentToken, "wmo-run", materialIndex, textureUrl, blendMode, materialFlags, interior,
+    parentToken, "wmo-run", materialIndex, textureUrl, blendMode, materialFlags, interior, ...tail,
   ]);
 }
 
@@ -4247,6 +4261,13 @@ export class WorldRenderer3D {
     skyFog: { value: new THREE.Color(SKY_COLOR) },
   };
   readonly #sky = buildSky(this.#skyUniforms);
+  /** 13.10 7.04: Wow.exe's own dome and HighlightSky (`SkyDome.ts`), drawn on the classic look only. */
+  readonly #classicDome = buildClassicDome();
+  readonly #classicDomeColours = new Uint32Array(CLASSIC_DOME_VERTICES);
+  readonly #classicDomeBands: ClassicDomeBands = { top: 0, upper: 0, middle: 0, lower: 0, horizon: 0, fog: 0 };
+  /** The inputs the dome's colours were last written for (bands, then h), so a still sky costs nothing. */
+  readonly #classicDomeKey = new Float64Array(7).fill(Number.NaN);
+  readonly #skyViewDirection = new THREE.Vector3(); // 13.10 7.04: the glare's facing term
   /**
    * The underwater pass, held ready and drawn on the frames that ask for it.
    *
@@ -4647,6 +4668,8 @@ export class WorldRenderer3D {
     this.#scene.background = null;
     this.#skyboxGroup.renderOrder = 0;
     this.#skyScene.add(this.#sky, this.#skyboxGroup);
+    // 13.10 7.04: a child of the dome — the same centre, scale and visibility; shown on the classic look.
+    this.#sky.add(this.#classicDome);
     this.#skyScene.add(this.#skyCelestials.group); // 05.10-A7b-6
     // Its own scene, so nothing in the world pass can sort against it and nothing here can be
     // drawn by accident: this scene is submitted only by `#drawUnderwaterOverlay`, and only on the
@@ -4685,6 +4708,8 @@ export class WorldRenderer3D {
     this.#glowWarmup = new ProgramWarmup(this.#renderer, this.#glowPasses.scene);
     this.#skyWarmup.registerObject(this.#sky);
     this.#skyWarmup.registerObject(this.#skyCelestials.group); // 05.10-A7b-6
+    // 13.10 7.04 (clearStars defect): a stars node leaves the warm-up with the group.
+    this.#skyCelestials.onStarsRemoved = (node) => this.#skyWarmup.unregisterObject(node);
     this.#overlayWarmup.registerObject(this.#underwaterOverlay);
     // The glow chain swaps one quad's material between four passes, so the materials are parked
     // rather than the node: the setting can be switched on at any moment, and the first frame it
@@ -4775,6 +4800,8 @@ export class WorldRenderer3D {
     // values, scales both together for headroom, and performs their one gamma conversion only at
     // the final multiplication in the shader.
     setWorldLightUniforms(this.#worldLight, colours.ambient, colours.diffuse);
+    // 13.10 7.16: the terrain glint's c[27].rgb is the world light's specular — Light band 9 (0x007816F0).
+    setTerrainSpecularColour(sample.skyChannels ? sample.sunColour : undefined, colours.diffuse);
     this.#waterShaderUniforms.sunColour.value.copy(this.#worldLight.wowDiffuse.value);
     this.#waterShaderUniforms.sunDirection.value.copy(this.#worldLight.wowSunDirection.value);
     this.#waterShaderUniforms.skyColour.value.copy(this.#zoneFogColour);
@@ -6661,6 +6688,33 @@ export class WorldRenderer3D {
   }
 
   /**
+   * 13.10 7.04: on the classic look the dome is Wow.exe's own (`SkyDome.ts`: 0x7f2470 mesh, 0x7f0530
+   * colours, HighlightSky); the band shader's surface steps aside and stays the dome's node (centre,
+   * scale, visibility, the celestials' gate). Every other look — the enhanced preset — is unchanged.
+   */
+  #updateClassicDome(sample: LightSample | undefined): void {
+    const classic = sample !== undefined && lightingClassicLook(this.#lightingProfile.quality);
+    (this.#sky.material as THREE.Material).visible = !classic;
+    this.#classicDome.visible = classic;
+    if (!classic) return;
+    const colours = sample.colours;
+    const bands = this.#classicDomeBands;
+    bands.top = packDisplayColour(colours.skyTop);
+    bands.upper = packDisplayColour(colours.skyUpper);
+    bands.middle = packDisplayColour(colours.skyMiddle);
+    bands.lower = packDisplayColour(colours.skyLower);
+    bands.horizon = packDisplayColour(colours.skyHorizon);
+    bands.fog = packDisplayColour(colours.fog);
+    const h = highlightStrength(skyDayFraction(this.#lightTime), sample.highlightSky);
+    const key = this.#classicDomeKey;
+    if (key[0] === bands.top && key[1] === bands.upper && key[2] === bands.middle && key[3] === bands.lower
+      && key[4] === bands.horizon && key[5] === bands.fog && key[6] === h) return;
+    key[0] = bands.top; key[1] = bands.upper; key[2] = bands.middle; key[3] = bands.lower;
+    key[4] = bands.horizon; key[5] = bands.fog; key[6] = h;
+    writeClassicDomeColours(this.#classicDome.geometry, classicDomeColours(bands, h, this.#classicDomeColours));
+  }
+
+  /**
    * 05.10-A7b-6 (7.04 slices 1–3): the procedural sky's sun, moons, stars and clouds. Everything is
    * in `SkyCelestials.ts`; this only gathers the frame's inputs. Off — exactly today's sky — when
    * the light body has no v5 channels (an old gateway), the dome is hidden (interior-only room),
@@ -6668,6 +6722,7 @@ export class WorldRenderer3D {
    */
   #updateSkyCelestials(client: EnvironmentClient | undefined): void {
     const sample = this.#lightSample;
+    this.#updateClassicDome(sample); // 13.10 7.04
     const input = this.#skyCelestialInput;
     input.enabled = sample !== undefined && sample.skyChannels && this.#sky.visible && !this.#indoors
       && !this.#underwater && !skyboxCoversSky(this.#skyboxGroup.children.length > 0, sample.skyboxFlags);
@@ -6689,6 +6744,12 @@ export class WorldRenderer3D {
       input.postSun = skyPostDrawsSun(this.#cinematic.active, this.#cinematic.profile.bloom,
         this.#cinematic.strength, this.#godRaysActive(), this.#godRayStrengthScale);
       input.seconds = performance.now() / 1000;
+      // 13.10 7.04: the glare's facing term and its LightSkybox weight.
+      this.#camera.getWorldDirection(this.#skyViewDirection);
+      input.viewX = this.#skyViewDirection.x;
+      input.viewY = this.#skyViewDirection.y;
+      input.viewZ = this.#skyViewDirection.z;
+      input.skyboxPresent = this.#skyboxGroup.children.length > 0;
     }
     this.#skyCelestials.update(input, this.#camera.position);
     if (!input.enabled || !client) return;
@@ -7271,12 +7332,13 @@ export class WorldRenderer3D {
     this.#environmentStandInMarkers.dispose(); // 05.10-A7b-9 7.18
     for (const geometry of [
       this.#unitBodyGeometry, this.#unitFacingGeometry, this.#foliageGeometry, this.#trunkGeometry,
-      this.#sky.geometry, this.#underwaterOverlay.geometry, this.#glowPasses.quad.geometry,
+      this.#sky.geometry, this.#classicDome.geometry /* 13.10 7.04 */, this.#underwaterOverlay.geometry, this.#glowPasses.quad.geometry,
     ]) geometry.dispose();
     for (const material of [
       this.#horizonMaterial, this.#wmoMaterial, this.#m2Material, this.#stoneMaterial,
       this.#woodMaterial, this.#metalMaterial, this.#foliageMaterial,
       ...(Array.isArray(this.#sky.material) ? this.#sky.material : [this.#sky.material]),
+      this.#classicDome.material as THREE.Material, // 13.10 7.04
       ...(Array.isArray(this.#underwaterOverlay.material)
         ? this.#underwaterOverlay.material : [this.#underwaterOverlay.material]),
       // All four by name, not the one the quad happens to be wearing: the pass materials are
@@ -12275,11 +12337,18 @@ export class WorldRenderer3D {
   ): WorldMaterialEntry {
     const interior = wmoRunIsInterior(group, run);
     const url = model.textureUrls[run.material] ?? "";
+    // 13.10 7.11: F_UNLIT / F_UNFOGGED / clamp where Wow.exe honours them (`WmoMaterialFlags.ts`).
+    const state = wmoRunDrawState(model, group, run);
+    const clamped = state.clampS || state.clampT;
+    // An unlit exterior run is drawn as Wow.exe's unlit vertex program draws it: MOCV, no sun.
+    const mocv = state.unlit && wmoGroupNeedsUnlitMocv(model, group, [run]);
     // 05.10-A7b-2 (7.11 P1): the run's MOMT record (v25), and what it changes; undefined otherwise.
+    // 13.10 7.11: an unlit run asks for no night glow — the unlit program has no `+ c[29]`.
     const record = run.materialIndex;
     const look = record === undefined
       ? undefined
-      : wmoRunLook(wmoRunMaterial(model, run), interior, model.materialTextureUrls?.[record]);
+      : wmoRunLook(wmoRunMaterial(model, run), interior || state.unlit, model.materialTextureUrls?.[record],
+        group.mesh?.secondUvs !== undefined); // 13.10 7.11: Composite streams (visual-wmo-v26)
     const key = wmoRunMaterialCacheKey(
       this.#wmoModelKey(model),
       run.material,
@@ -12288,22 +12357,32 @@ export class WorldRenderer3D {
       run.materialFlags,
       interior,
       look === undefined ? undefined : { record: record!, key: wmoRunLookKey(look) }, // 05.10-A7b-2
+      wmoRunDrawStateKey(state), // 13.10 7.11
     );
     return this.#worldMaterials.getOrCreate({
       key,
       kind: "wmo-run",
       ...(url ? { textureUrl: url } : {}),
+      // 13.10 7.11: 0x40/0x80 clamp the run's own view of the shared base (0x00681450 per batch).
+      ...(url && clamped ? {
+        createPrivateView: (base: THREE.Texture) => {
+          configureWmoCanonicalTexture(base, this.#anisotropy());
+          const view = privateTextureView(base);
+          applyWmoRunClamp(view, state);
+          return view;
+        },
+      } : {}),
       createMaterial: (texture) => {
-        if (texture) {
+        if (texture && !clamped) {
           configureWmoCanonicalTexture(
             texture,
             this.#anisotropy(),
           );
         }
-        const value = interior
+        const value = interior || state.unlit
           ? new THREE.MeshBasicMaterial({
             color: url ? 0xffffff : 0x71845e,
-            vertexColors: true,
+            vertexColors: interior,
             ...(texture ? { map: texture } : {}),
           })
           : new THREE.MeshStandardMaterial({
@@ -12315,12 +12394,16 @@ export class WorldRenderer3D {
           ? THREE.DoubleSide
           : THREE.FrontSide;
         applyBlendMode(value, run.blendMode);
+        if (state.unfogged) value.fog = false; // 13.10 7.11: F_UNFOGGED (0x007a8440 with 0)
+        if (mocv && value instanceof THREE.MeshBasicMaterial) applyWmoUnlitMocv(value); // 13.10 7.11
         if (look) { // 05.10-A7b-2 (7.11 P1)
           applyWmoRunLook(value, look, { daylight: this.#worldLight.wowDaylight },
-            look.env ? this.#wmoEnvTexture(look.env.url) : undefined);
+            look.env ? this.#wmoEnvTexture(look.env.url)
+              : look.composite ? this.#wmoEnvTexture(look.composite.url) : undefined); // 13.10 7.11
         }
         if (value instanceof THREE.MeshBasicMaterial) {
-          applyWmoInteriorFog(value, this.#wmoInteriorFog);
+          // An unlit exterior run stands in the sky's fog, not a room's.
+          if (interior) applyWmoInteriorFog(value, this.#wmoInteriorFog);
         } else if (value instanceof THREE.MeshStandardMaterial) {
           applyWorldLight(value, this.#worldLight, "surface");
           trackWmoWetSurface(value);

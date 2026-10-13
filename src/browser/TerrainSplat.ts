@@ -70,9 +70,42 @@ const TERRAIN_SPECULAR = { value: 1 };
  * 05.10-A7b-7Г: the exponent — benilla's reading of 1.12 (`terrain.wgsl`). 05.10 review 7.16 Б/Г:
  * Wow.exe's `c[27].w` is the same 20.0 (the float at 0x00A3FFF0, stored at 0x007CFE5C); `c[27].rgb`
  * is the scene light's accumulated specular colour (0x008355D0, from the source light's +0x48 in
- * 0x00834F60), zero without a light — which colour the sun gives there is still unread.
+ * 0x00834F60), zero without a light.
+ * 13.10 7.16: and the world light's specular is Light band 9 — 0x007816F0, every frame, writes the
+ * world light (`*0x00CE04A8`) from the sky state at 0x00D38B00 (0x007ECEF0): ambient +0x88 from
+ * +0x1AC (band 1), diffuse +0x94 from +0x1A8 (band 0), specular +0xA0 from +0xF8 = 0x00D38BF8, the
+ * sampled block's band 9 (the bodies' colour), each byte × 1/255; the terrain constants (0x007CFBE0)
+ * accumulate that light (sub-object +0x58: specular at its +0x48 = +0xA0) into c[27].
  */
 export const TERRAIN_SPECULAR_EXPONENT = 20;
+
+/** 13.10 7.16: `c[27].rgb`, display space 0–1, shared by every terrain program with the glint. */
+const TERRAIN_SPECULAR_COLOUR = { value: new THREE.Color(1, 1, 1) };
+
+/**
+ * 13.10 7.16: sets `c[27].rgb` from the light sample's band 9 (packed 0xRRGGBB); without the v5
+ * channels (an older gateway) the sun's diffuse band stands in, as before. Numbers, not a colour to
+ * decode: the program adds them in display space, as the client's framebuffer does.
+ */
+export function setTerrainSpecularColour(band9: number | undefined, fallback: { r: number; g: number; b: number }): void {
+  const colour = TERRAIN_SPECULAR_COLOUR.value;
+  if (band9 !== undefined && Number.isFinite(band9)) {
+    const value = band9 & 0xffffff;
+    colour.r = ((value >> 16) & 0xff) / 255;
+    colour.g = ((value >> 8) & 0xff) / 255;
+    colour.b = (value & 0xff) / 255;
+    return;
+  }
+  colour.r = Number.isFinite(fallback.r) ? fallback.r : 0;
+  colour.g = Number.isFinite(fallback.g) ? fallback.g : 0;
+  colour.b = Number.isFinite(fallback.b) ? fallback.b : 0;
+}
+
+/** 13.10 7.16: the current `c[27].rgb` (tests and diagnostics). */
+export function terrainSpecularColourValue(): readonly [number, number, number] {
+  const colour = TERRAIN_SPECULAR_COLOUR.value;
+  return [colour.r, colour.g, colour.b];
+}
 
 /** 05.10-A7b-7Г: full on the classic path, none on the presets. */
 export function terrainSpecularStrength(lightingQuality: number): number {
@@ -610,7 +643,10 @@ export function applyTerrainSplat(
     if (splat.colours) shader.uniforms.splatColours = { value: splat.colours };
     // 05.10-A7b-7Г: the term needs the world light's sun (it ran first, as the outer hook).
     const glint = specular && terrainSpecularTargetsPresent(shader);
-    if (glint) shader.uniforms.splatSpecularStrength = TERRAIN_SPECULAR;
+    if (glint) {
+      shader.uniforms.splatSpecularStrength = TERRAIN_SPECULAR;
+      shader.uniforms.splatSpecularColour = TERRAIN_SPECULAR_COLOUR; // 13.10 7.16: c[27].rgb
+    }
     shader.vertexShader = `varying vec2 vSplatUv;\n${shader.vertexShader}`
       .replace("#include <begin_vertex>", "vSplatUv = uv;\n#include <begin_vertex>");
     shader.fragmentShader = `
@@ -621,7 +657,7 @@ export function applyTerrainSplat(
       uniform float splatRepeat;
       uniform float splatBakedShadow;
       varying vec2 vSplatUv;
-      ${painted ? "uniform sampler2D splatColours;" : ""}${glint ? "\n      uniform float splatSpecularStrength;\n      varying float vSplatSpecular;" : "" /* 05.10-A7b-7Г */}
+      ${painted ? "uniform sampler2D splatColours;" : ""}${glint ? "\n      uniform float splatSpecularStrength;\n      uniform vec3 splatSpecularColour;\n      varying float vSplatSpecular;" : "" /* 05.10-A7b-7Г; 13.10 7.16 */}
 
       vec3 splatLayer(float slot, vec2 detail, vec3 fallback) {
         return slot < 0.0 ? fallback : texture(splatLayers, vec3(detail, slot)).rgb;
@@ -695,10 +731,10 @@ function terrainSpecularTargetsPresent(shader: TerrainShaderSource): boolean {
  * 05.10-A7b-7Г (7.16 Г): the client's terrain specular. `Shaders/Vertex/arbvp1/terrain.bls` in its
  * specular permutations computes, per vertex, `pow(max(N·H, 0), c[27].w) · c[27].rgb` with H the
  * half vector of the light and the eye; the fragment programs add it times the layer's alpha and
- * the baked shadow after the diffuse modulate. Here: per vertex as there, the colour the sun's
- * diffuse (`wowDiffuse`) until `c[27].rgb` is read from Wow.exe and the exponent 20 (benilla; Wow.exe
- * agrees, 05.10 review 7.16 Б/Г), added in
- * display space (the client's framebuffer), scaled by the shared classic-path strength.
+ * the baked shadow after the diffuse modulate. Here: per vertex as there, the exponent 20 (benilla;
+ * Wow.exe agrees, 05.10 review 7.16 Б/Г), the colour `c[27].rgb` = Light band 9 (13.10 7.16,
+ * `setTerrainSpecularColour`), added in display space (the client's framebuffer), scaled by the
+ * shared classic-path strength.
  */
 function injectTerrainSpecular(shader: TerrainShaderSource): void {
   shader.vertexShader = `uniform vec3 wowSunDirection;\nvarying float vSplatSpecular;\n${shader.vertexShader}`
@@ -711,7 +747,7 @@ function injectTerrainSpecular(shader: TerrainShaderSource): void {
   shader.fragmentShader = shader.fragmentShader.replace(TERRAIN_SPECULAR_FRAGMENT_MARKER, `${TERRAIN_SPECULAR_FRAGMENT_MARKER}
 float splatSpecWeight = vSplatSpecular * splatSpecMask * splatBakedLit * wowShadow * splatSpecularStrength;
 if ( splatSpecWeight > 0.0 ) {
-  reflectedLight.directDiffuse = pow( pow( reflectedLight.directDiffuse, vec3( 1.0 / 2.2 ) ) + wowDiffuse * splatSpecWeight, vec3( 2.2 ) );
+  reflectedLight.directDiffuse = pow( pow( reflectedLight.directDiffuse, vec3( 1.0 / 2.2 ) ) + splatSpecularColour * splatSpecWeight, vec3( 2.2 ) );
 }`);
 }
 

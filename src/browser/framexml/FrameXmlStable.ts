@@ -44,6 +44,7 @@
 import { readByte } from "../../world/Fields.js";
 import type { WorldObjectState } from "../../world/WorldState.js";
 import { frameXmlFamilyFoodNames, type FrameXmlPetFoodNames } from "./FrameXmlPetFood.js"; // 05.10-petfood
+import { frameXmlLuaNumber, frameXmlRoundToInt } from "./FrameXmlPvpFlag.js"; // 3.27 (13.10)
 import {
   MAX_PET_STABLES, STABLED_PET_ACTIVE, STABLED_PET_STABLED, STABLE_ERR_EXOTIC, STABLE_ERR_MONEY,
   STABLE_ERR_STABLE, STABLE_SUCCESS_BUY_SLOT, STABLE_SUCCESS_STABLE, STABLE_SUCCESS_UNSTABLE,
@@ -506,7 +507,15 @@ export const FRAMEXML_STABLE_BINDINGS: Readonly<Record<string, FrameXmlStableBin
     (host.stable?.answering ? host.stable.nextSlotCost() : host.services?.nextStableSlotCost()) ?? 0],
   GetNumStablePets: (host) => [host.stable?.numPets() ?? 0],
   GetStablePetInfo: withStable((stable, args) => stable.petInfo(slotArg(args[0])) ?? NOTHING),
-  GetStablePetFoodTypes: withStable((stable, args) => stable.petFoodTypes(slotArg(args[0]))), // 05.10-petfood
+  // 05.10-petfood; 3.27 (13.10): 0x005a16a0 takes a `lua_isnumber` argument or raises the client's own «Usage:
+  // GetStablePetInfo(index)» — stable shown or not — and reads it with FISTP (to nearest, ties to even), where
+  // GetStablePetInfo here truncates (slotArg).
+  GetStablePetFoodTypes: (host, args) => {
+    const number = typeof args[0] === "number" ? args[0] : frameXmlLuaNumber(args[0]);
+    if (number === undefined) throw new Error("Usage: GetStablePetInfo(index)");
+    // FISTP of NaN or an infinity is the integer indefinite: no pet.
+    return host.stable ? host.stable.petFoodTypes(Number.isFinite(number) ? frameXmlRoundToInt(number) : -2) : NOTHING;
+  },
   GetSelectedStablePet: (host) => [host.stable?.selected() ?? -1],
   ClickStablePet: withStable((stable, args) => stable.click(slotArg(args[0])) ? [true] : NOTHING),
   PickupStablePet: withStable((stable, args) => { stable.pickup(slotArg(args[0])); return NOTHING; }),

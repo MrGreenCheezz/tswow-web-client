@@ -22,8 +22,9 @@
  *   byte is never written by the list builder, so here a header buys nothing (the realm would refuse its
  *   spell id of -1 anyway). Stock calls it only with ClassTrainerFrame.selectedService, a row the Train
  *   button was enabled for (Blizzard_TrainerUI.lua:21, :400); 0 is an add-on's or a macro's «everything».
- *   Wow.exe also takes an index past the visible rows, reaching the hidden ones its sort keeps after them;
- *   this list keeps only the visible rows, so such an index buys nothing.
+ *   An index past the visible rows reaches the hidden ones the sort keeps after them (0x00594da0 is
+ *   bounded by the whole array, DAT_00c0e4a0) — 3.29 (13.10), FrameXmlTrainerSort.ts; «everything» stops
+ *   at the visible ones (0x00594e50 counts to DAT_00c0e4a8).
  *
  * Numbers are taken as Lua's `lua_isnumber` does (a numeric string counts) and truncated toward zero
  * (0x0088b9c0 = cvttsd2si).
@@ -71,7 +72,10 @@ export class FrameXmlTrainerLineFilter {
   }
 }
 
-/** 0x00594e50: the spell of every visible row that is "available", in row order (headers have none). */
+/**
+ * 0x00594e50: the spell of every visible row that is "available", in row order (headers have none). `entries`
+ * is the visible part (FrameXmlTrainerList.entries), never the hidden rows after it.
+ */
 export function frameXmlTrainerBuyAll<Row extends FrameXmlTrainerGroupRow>(
   entries: readonly FrameXmlTrainerEntry<Row>[], buy: (spellId: number) => void,
 ): void {

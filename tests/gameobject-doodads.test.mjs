@@ -186,7 +186,7 @@ test("6.25: the list is asked for once; a 404 is final, a failure retries on the
 test("6.25: the gateway serves the list beside the WMO artifact and refuses it for an M2", async () => {
   const directory = await mkdtemp(join(tmpdir(), "webclient-doodads-"));
   const path = "World\\wmo\\transports\\transport_ship\\transportship.wmo";
-  const hash = createHash("sha1").update(`visual-wmo-v25\0${path.toLowerCase()}`).digest("hex");
+  const hash = createHash("sha1").update(`visual-wmo-v26\0${path.toLowerCase()}`).digest("hex");
   let generated = 0;
   const gateway = await startGateway({
     host: "127.0.0.1",

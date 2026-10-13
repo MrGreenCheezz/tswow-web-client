@@ -32,7 +32,7 @@ import { publishTexture, SourceMissing, SOURCE_MISSING_EXIT, validTexturePath } 
 import { clientArchives } from "./mpq.mjs";
 import { clientDirectory } from "./paths.mjs";
 import { sourceStamp, stampIsCurrent, writeFileAtomic, writeSourceStamp } from "./source-stamp.mjs";
-import { visualModelHash } from "./visual-model-key.mjs"; // 05.10-A7a-F2
+import { visualModelHash, visualModelHashIn } from "./visual-model-key.mjs"; // 05.10-A7a-F2; 13.10 7.11
 // Out of the build, not copied: see the note over the same import in `generate-texture.mjs`.
 import { validAssetPath } from "../dist/code/gateway/AssetPath.js";
 
@@ -159,11 +159,17 @@ export async function publishVisualModel(requestedPath, hash, archives) {
     // 05.10-A7b-1 (7.02): WME4 room tables over the effective doodad sets (set 0 plus the placement's)
     // only for a `visual-wmo-v25` hash — the numbering of a `visual-tile-v5` tile. A gateway still on
     // `visual-wmo-v22` asks for its own hash and keeps receiving the exact v22 bytes.
-    const effectiveDoodadSets = hash === visualModelHash(requestedPath) || hash === visualModelHash(modelPath);
+    // 13.10 7.11: `visual-wmo-v26` adds the Composite streams; a gateway started before it still asks
+    // for its `visual-wmo-v25` hash and gets exactly the v25 bytes (WME4/WME5, no streams).
+    const composite = hash === visualModelHash(requestedPath) || hash === visualModelHash(modelPath);
+    const v25 = hash === visualModelHashIn("visual-wmo-v25", requestedPath)
+      || hash === visualModelHashIn("visual-wmo-v25", modelPath);
+    const effectiveDoodadSets = composite || v25;
     // 05.10-A7b-3 (7.11 P2/P4): the MOMT table and MOSB (WME5, runs keyed by record) under the same
     // `visual-wmo-v25` gate — not one byte more for a `visual-wmo-v22` job.
     const materialTable = effectiveDoodadSets;
-    const parsed = wmoGroupMeshes(parseWmoVisual(rootWmo, groups, modelPath, { effectiveDoodadSets, materialTable }),
+    const parsed = wmoGroupMeshes(
+      parseWmoVisual(rootWmo, groups, modelPath, { effectiveDoodadSets, materialTable, composite }),
       { materialTable });
 
     const textureUrls = new Array(parsed.textures.length).fill("");

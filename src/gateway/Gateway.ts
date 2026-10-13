@@ -140,8 +140,12 @@ const MAX_BRIDGED_SOCKETS_PER_ADDRESS = 8;
 // (0x004e7700 → `CM2Model::SetBoneSequence` 0x00832ab0 on key bones 8–17). A v23 artifact decodes
 // with no table, which is indistinguishable from a rig without one, so the name turns over; WMOs keep
 // visual-wmo-v25.
-export function visualModelCacheNamespace(modelPath: string): "visual-v24" | "visual-wmo-v25" {
-  return modelPath.toLowerCase().endsWith(".wmo") ? "visual-wmo-v25" : "visual-v24";
+// 13.10 7.11: visual-wmo-v26 is the same WWM2 whose group blocks may set stream bit 1, the Composite
+// streams (second MOTV, second MOCV alpha) of a group drawing MOMT shader 6 — the Icecrown roots only.
+// A v25 artifact decodes with none, indistinguishable from a building without Composite, so the name
+// turns over. The tools still answer a v25 hash with the exact v25 bytes (`generate-visual-model.mjs`).
+export function visualModelCacheNamespace(modelPath: string): "visual-v24" | "visual-wmo-v26" {
+  return modelPath.toLowerCase().endsWith(".wmo") ? "visual-wmo-v26" : "visual-v24";
 }
 
 /** The artifact name of a `/visual/model` path, as the route computes it (10.22: the preloader's key). */
@@ -232,6 +236,12 @@ export interface GatewayOptions {
   clientDirectory?: string;
   /** Root-level Interface/AddOns discovered at startup and offered to the FrameXML boot. */
   clientAddons?: readonly { readonly name: string; readonly loadOnDemand: boolean }[];
+  /**
+   * 3.46 (13.10): every installed add-on, the profile's switched-off ones too, and the client's `checkAddonVersion`
+   * CVar — `/client/addons`' `installed` and `checkAddonVersion` (GetAddOnInfo's states, ClientAddons.ts).
+   */
+  clientAddonListing?: readonly { readonly name: string; readonly loadOnDemand: boolean; readonly enabled: boolean }[];
+  clientAddonVersionCheck?: boolean;
   /**
    * `tools/patch-status.mjs --json --no-gateway`, run in a child: the lettered patches, the winning
    * FrameXML.toc's TSAddon blocks, the TSWoW build marker and the native publication. A child
@@ -1053,7 +1063,13 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
         "cache-control": "no-store",
         "content-type": "application/json; charset=utf-8",
       });
-      response.end(JSON.stringify({ addons: options.clientAddons ?? [] }));
+      response.end(JSON.stringify({
+        addons: options.clientAddons ?? [],
+        // 3.46 (13.10): the whole list and the out-of-date switch (absent from an older gateway: the browser keeps
+        // the enabled list and the switch's default).
+        ...(options.clientAddonListing === undefined ? {} : { installed: options.clientAddonListing }),
+        ...(options.clientAddonVersionCheck === undefined ? {} : { checkAddonVersion: options.clientAddonVersionCheck }),
+      }));
       return;
     }
 

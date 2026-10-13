@@ -619,6 +619,12 @@ export interface FrameXmlBootOptions {
   /** Enabled non-LoD add-ons executed before the first world event. */
   readonly eagerAddons?: readonly string[];
   /**
+   * 3.46 (13.10): which of `installedAddons` are not enabled (the profile's AddOns.txt, DisableAllAddOns) and the
+   * `checkAddonVersion` CVar — GetAddOnInfo's states and reasons, LoadAddOn's refusals, and the eager add-ons that
+   * do not load (FrameXmlAddonStates.ts). Absent: all enabled, the switch on.
+   */
+  readonly addonStates?: { readonly disabled: readonly string[]; readonly checkAddonVersion: boolean };
+  /**
    * Host publication seam that runs after the corpus has loaded and before the synthetic session
    * exercise dispatches its events.  World UI uses this narrow window to replace handlers on a
    * stock row and hide it before PLAYER_ENTERING_WORLD can paint it; callers that do not need a
@@ -775,6 +781,9 @@ export class FrameXmlBoot {
       savedVariables: this.#savedVariables,
       ...(options.installedAddons === undefined ? {} : {
         loadOnDemand: options.installedAddons, installed: options.installedAddons, // 3.46: + the list's order
+      }),
+      ...(options.addonStates === undefined ? {} : { // 3.46 (13.10)
+        disabled: options.addonStates.disabled, checkAddonVersion: options.addonStates.checkAddonVersion,
       }),
       onRoots: (roots, addon) => {
         for (const root of roots) this.#addonRootNames.add(root.name);
@@ -1028,6 +1037,13 @@ export class FrameXmlBoot {
     // L5c 3.18: GetAddOnMetadata answers every installed add-on from its TOC, loaded or not (0x00511430).
     await this.#addons.primeMetadata(this.#options.installedAddons ?? []);
     for (const name of this.#options.eagerAddons ?? []) {
+      // 3.46 (13.10): Wow.exe loads at login only what 0x005f7e90 lets through — not an out-of-date or incompatible
+      // add-on, nor one whose dependency cannot load (FrameXmlAddonStates.ts).
+      const refused = this.#addons.loadReason(name);
+      if (refused !== undefined) {
+        console.warn(`FrameXML add-on ${name} is not loaded: ${refused}`);
+        continue;
+      }
       const addon = await this.#addons.loadAddon(name);
       this.#addonResults.push(addon);
       if (!addon.ok) console.warn(`FrameXML add-on ${name} did not load: ${addon.message ?? addon.status}`);

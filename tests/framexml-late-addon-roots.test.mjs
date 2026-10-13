@@ -20,7 +20,7 @@ async function booted() {
     provider: createFixtureProvider({
       "interface/framexml/framexml.toc": "Main.lua",
       "interface/framexml/main.lua": "UIParent = CreateFrame('Frame', 'UIParent')",
-      "interface/addons/lateui/lateui.toc": "## LoadOnDemand: 1\nLateUI.xml",
+      "interface/addons/lateui/lateui.toc": "## Interface: 30300\n## LoadOnDemand: 1\nLateUI.xml",
       "interface/addons/lateui/lateui.xml":
         '<Ui><Frame name="LateUIWindow" hidden="true"/><Frame name="LateUIChild" parent="UIParent"/></Ui>',
     }),

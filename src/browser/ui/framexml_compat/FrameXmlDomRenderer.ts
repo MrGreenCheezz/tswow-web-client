@@ -14,6 +14,7 @@ import { paintFrameXmlAlphaGradient } from "./FrameXmlAlphaGradient.js"; // 05.1
 import { FrameXmlAccessibility, frameXmlAccessibilityCares } from "./FrameXmlAccessibility.js";
 import { frameXmlPaintLineFade, frameXmlPaintLineFades } from "./FrameXmlMessageFade.js";
 import { frameXmlMessageAlphaReplaced, frameXmlNoteMessageLayout } from "./FrameXmlMessageFade.js"; // L5 3.34
+import { lendMessageLayer, noteMessageLineElement } from "./FrameXmlMessageLayerGeometry.js"; // 3.34 (13.10)
 import { frameXmlSimpleHtmlFontKey, frameXmlSimpleHtmlLevelFont } from "./FrameXmlSimpleHtmlFonts.js"; // L5 3.35
 import { FRAME_XML_SIMPLE_HTML_LINK_FORMAT, parseFrameXmlSimpleHtml } from "./FrameXmlSimpleHtml.js";
 import { buildFrameXmlSimpleHtml, type FrameXmlSimpleHtmlDomHooks } from "./FrameXmlSimpleHtmlDom.js";
@@ -1926,6 +1927,7 @@ export class FrameXmlDomRenderer {
         this.#bridge?.Click(frame, mouseButtonName(event), false);
       });
       element.addEventListener("mousedown", (event) => {
+        this.raiseOnPress(event); // 3.48 (13.10)
         this.notePress(frame, event); // 1.10
         this.registeredClick(frame, event, true);
       });
@@ -2083,6 +2085,8 @@ export class FrameXmlDomRenderer {
       layer.style.pointerEvents = "none";
       element.append(layer);
       messageLayer = layer;
+      // 3.34 (13.10): the slot layout reads this layer's heights when asked (FrameXmlMessageSlots.ts).
+      if (frame.type === "ScrollingMessageFrame") lendMessageLayer(frame.messageFrame, layer);
     }
 
     // Pointer and mouse enter/leave are equivalent hover transitions for the
@@ -2132,6 +2136,7 @@ export class FrameXmlDomRenderer {
     // event whose target is an interactive widget is dropped rather than forwarded.
     element.addEventListener("mousedown", (event) => {
       if (this.#layoutOnly?.(frame)) return;
+      this.raiseOnPress(event); // 3.48 (13.10): first, as 0x00495470 does
       if (this.bubbledFromControl(element, event)) return;
       this.rememberCursor(event);
       // 3.48: a press inside the frame's title region moves the frame and is spent there (Wow.exe 0x00495470).
@@ -2502,6 +2507,21 @@ export class FrameXmlDomRenderer {
    * frame taking the mouse under the pointer, `pressedFrame`); a page without one (a bare test DOM) resolves it here,
    * with the element the press was dispatched on standing for the frame under the pointer.
    */
+  /** 3.48 (13.10): presses already raised; a press reaches the listeners of every element on its path. */
+  readonly #raisedPresses = new WeakSet<Event>();
+
+  /**
+   * 3.48 (13.10): the UI root's mouse-down first raises the frame that took the press — the topmost one taking the
+   * mouse under it (0x00495470 → 0x0048e9a0; FrameXmlRuntime.RaiseFrame) — once per press, before its title region
+   * and OnMouseDown; a press on nothing that takes the mouse raises nothing.
+   */
+  private raiseOnPress(event: Event): void {
+    if (this.#raisedPresses.has(event)) return;
+    this.#raisedPresses.add(event);
+    const pressed = this.pressedFrame(event);
+    if (pressed) this.#bridge?.RaiseFrame?.(pressed);
+  }
+
   private notePress(frame: FrameXmlFrame, event: Event): void {
     this.#mouseCapture.press(event, () => this.pressedFrame(event) ?? frame);
   }
@@ -3033,6 +3053,9 @@ export class FrameXmlDomRenderer {
     if (frame.type === "ScrollingMessageFrame" && Number.isFinite(scrollHeight) && clientHeight > 0) {
       const fontPx = Number.parseFloat(layer.style.fontSize);
       frameXmlNoteMessageLayout(frame.messageFrame, fontPx > 0 ? Math.ceil(clientHeight / fontPx) + 1 : undefined, pixelRange < 1);
+      // 3.34 (13.10): at the bottom, the lines in slots count again and the older ones freeze (0x00969e60);
+      // read now, while the layer's layout is fresh from the heights above.
+      if (this.#bridge?.NoteMessageView?.(frame) === true) this.trackMessageFades(rendered);
     }
   }
 
@@ -3049,6 +3072,7 @@ export class FrameXmlDomRenderer {
     index: number,
   ): HTMLElement {
     const line = layer.ownerDocument?.createElement("div") ?? document.createElement("div");
+    noteMessageLineElement(message, line); // 3.34 (13.10): the slot layout's line heights
     line.setAttribute("data-framexml-message-index", String(index));
     if (message.accessID !== undefined) line.setAttribute("data-framexml-access-id", String(message.accessID));
     if (message.lineID !== undefined) line.setAttribute("data-framexml-line-id", String(message.lineID));
