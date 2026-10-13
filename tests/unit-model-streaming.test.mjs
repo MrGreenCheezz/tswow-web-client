@@ -36,6 +36,7 @@ function bodyHarness(budget = new FrameBuildBudget(2, 2, () => 0)) {
     TEXTURE_TYPE_BODY: 1, M2_TO_SCENE: new THREE.Quaternion(),
     modelKey: (model, textures) => model,
     mountInstanceMatches: (current, wanted) => current === wanted,
+    mountBuildKey: (base) => base, // 13.10 6.11: the mount's geoset word is not this test's subject
   });
   const harness = new Harness();
   Object.assign(harness, {
@@ -170,6 +171,7 @@ test("equipment requests continue but ready attachment builds share the body and
     attachmentPoint: item => item.point, boneOf: () => bone,
     worldAttachmentPoint: item => item.point, sheatheOf: () => undefined, // 05.10-A7a-G2 6.08
     glowSlotsKey: () => "", glowPlacement: () => [], attachGlowAnchors() {}, resolveGlowModels() {}, mountGlowBodies: () => 0, glowAnchorsOf: () => [], // 05.10-A7a-G2: 6.14 helpers the harness lacked
+    rememberItemModel() {}, // 13.10 6.15: the item's emitters (AttachedEmitters.ts)
     attachmentOffset: () => new THREE.Vector3(), attachmentRotation: () => undefined,
     TEXTURE_TYPE_OBJECT_SKIN: 11, EVERY_GEOSET: "all",
     attachedOf: (metadata) => metadata?.appearance?.attached, // 05.10-A7a-B 6.02

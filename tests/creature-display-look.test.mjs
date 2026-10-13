@@ -80,7 +80,11 @@ test("6.11а particle colours: slots 11..13 take start/mid/end of their set, RGB
   assert.equal(twelve.opacity, wvm.particleEmitters[2].opacity, "alpha stays the emitter's own");
   const eleven = coloured.particleEmitters[1];
   assert.ok(near([...eleven.color.values].slice(0, 3), [0x10 / 255, 0x20 / 255, 0x30 / 255]));
-  assert.deepEqual([...coloured.particleEmitters[3].color.times], [0, 0.5, 1], "a ramp of another shape gets start/mid/end");
+  // 13.10 6.11: Wow.exe places the colours on the emitter's own keys when it builds no three-segment table
+  // (0x009795d0) — a two-key ramp runs start → middle; was start/middle/end at 0, ½, 1 (particle-colour-wow.test.mjs).
+  assert.deepEqual([...coloured.particleEmitters[3].color.times], [0, 1], "a two-key ramp keeps its own times");
+  assert.ok(near([...coloured.particleEmitters[3].color.values], [0x70 / 255, 0x80 / 255, 0x90 / 255, 0x01 / 255, 0x02 / 255, 0x03 / 255]),
+    "and runs start → middle");
   assert.equal(particleColouredWvm(wvm, COLOURS), coloured, "memoised per model and row");
   assert.equal(particleColouredWvm(wvm, undefined), wvm);
   const plain = { particleEmitters: [emitter(0)], ribbonEmitters: [] };

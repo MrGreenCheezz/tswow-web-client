@@ -647,6 +647,8 @@ test("a ribbon lays edges down where the bone was and retires them by age", () =
 test("a ribbon's texture runs by age, so it does not crawl while the trail is filling", () => {
   // Indexing the strip instead — u = i / (n - 1) — renormalises every frame, and the pattern
   // visibly slides backwards along a ribbon that is still growing.
+  // 13.10 6.15: and it runs the way Wow.exe runs it — u = cell start + age / lifetime (0x00980090), 0 at the
+  // bone and growing towards the tail; the old reading ran it the other way (1 − age / lifetime).
   const trail = createRibbonSystem(ribbon({ edgesPerSecond: 20, edgeLifetime: 1, heightAbove: track([1], [0]), heightBelow: track([1], [0]) }), new Uint32Array(0));
   const buffers = createQuadBuffers(64);
   const sample = () => {
@@ -658,7 +660,7 @@ test("a ribbon's texture runs by age, so it does not crawl while the trail is fi
   for (let frame = 0; frame < 6; frame++) stepRibbon(trail, 1 / 30, { matrix: IDENTITY, animationMs: 0, worldMs: 0 });
   const later = sample();
   assert.ok(early !== undefined && later !== undefined, "the strip has quads at both moments");
-  assert.ok(later < early, `the oldest edge's u fell from ${early} to ${later} as it aged`);
+  assert.ok(later > early, `the oldest edge's u rose from ${early} to ${later} as it aged`);
 });
 
 test("a ribbon's material travels as a blend mode, because the table it came from does not", () => {

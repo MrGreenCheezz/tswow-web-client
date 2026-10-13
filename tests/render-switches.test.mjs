@@ -52,10 +52,11 @@ test('6.15 twinkle: the noise table, its index and the phase hash', () => {
   assert.ok(TWINKLE_NOISE.every((v) => v >= 0 && v < 1));
   const mean = TWINKLE_NOISE.reduce((a, b) => a + b, 0) / 128;
   assert.ok(mean > 0.4 && mean < 0.6, `uniform-ish, mean ${mean}`);
-  // floor(clamp(speed · age, 0, 255)) + phase, wrapped to 128.
-  assert.equal(twinkleNoise(10, 0.55, 3), TWINKLE_NOISE[8]);
-  assert.equal(twinkleNoise(10, 100, 0), TWINKLE_NOISE[255 & 0x7f], 'the step is clamped at 255');
-  assert.equal(twinkleNoise(10, -1, 5), TWINKLE_NOISE[5]);
+  // 13.10 6.15: round(speed · age) + phase, wrapped to 128, unclamped — Wow.exe 0x0097be80 (was floor and a
+  // 0..255 clamp, benilla's 1.12.1 reading).
+  assert.equal(twinkleNoise(10, 0.55, 3), TWINKLE_NOISE[9]);
+  assert.equal(twinkleNoise(10, 100, 0), TWINKLE_NOISE[1000 & 0x7f], 'the step is not clamped');
+  assert.equal(twinkleNoise(10, -1, 5), TWINKLE_NOISE[-5 & 0x7f]);
   const phases = new Set(Array.from({ length: 64 }, (_, i) => twinklePhase(i + 1)));
   assert.ok(phases.size > 32, 'consecutive spawns land on different phases');
   assert.ok([...phases].every((p) => p >= 0 && p < 128));
@@ -66,8 +67,9 @@ test('6.15 twinkle: size multiplier and percent gate, only behind the switch', (
     resetRenderSwitches();
     assert.equal(twinkleSize(emitter(0, 1, 0.2), 0.5, 7), 1, 'switch off: ramp size');
     setRenderSwitches({ particleTwinkle: true });
-    // A degenerate range burns steady at ramp size — the {0,0} kobold candle.
-    assert.equal(twinkleSize(emitter(0, 0), 0.5, 7), 1);
+    // 13.10 6.15: a degenerate range multiplies by its own value — Wow.exe 0x0097be80 applies min + noise · 0
+    // whatever the range, so the {0,0} kobold candle draws nothing and {1,1} the ramp size (was 1 for both).
+    assert.equal(twinkleSize(emitter(0, 0), 0.5, 7), 0);
     assert.equal(twinkleSize(emitter(1, 1), 0.5, 7), 1);
     const noise = twinkleNoise(30, 0.5, 7);
     assert.ok(Math.abs(twinkleSize(emitter(0.5, 1.5), 0.5, 7) - (0.5 + noise)) < 1e-6);

@@ -10,6 +10,13 @@
  * The 3.3.5a client's own writer has not been opened for this (Wow.exe, stage 14.25 frames decide),
  * which is why it rides the `particleTwinkle` switch (`RenderSwitches.ts`), off by default.
  *
+ * 13.10 6.15: the 3.3.5a writer is opened — CParticleEmitter2's quad writer 0x0097be80 (and the model-particle
+ * one 0x0097a670): index ((particle address >> 5) + round(twinkleSpeed · age)) & 0x7f into the 128-float table
+ * 0x00dce690, no clamp; below a twinklePercent of 1 a sample above it skips the particle; and the size is
+ * multiplied by min + noise · (max − min) (+0x144, +0x148 from 0x0097ac00) *always* — a {0, 0} range draws
+ * nothing, a {1, 1} range nothing different. The reading below now follows it exactly; the switch stays off by
+ * default until the frames of 14.25 settle turning it on.
+ *
  * Census (`probes/A7a/probe-emitters.mjs`, 25,520 emitters of `F:/Circle`): a visible effect — speed
  * above zero and a partial percent or a scale range other than 1..1 — on 3,414 emitters (`world`
  * 1,477, `item` 652, `spells` 639, `creature` 618); the common ranges are 1..1.25, 0..1, 0.5..1.5.
@@ -40,7 +47,8 @@ export function twinklePhase(serial: number): number {
 
 /** The table sample for one particle at `ageSeconds`. */
 export function twinkleNoise(speed: number, ageSeconds: number, phase: number): number {
-  const step = Math.floor(Math.min(255, Math.max(0, speed * ageSeconds)));
+  // 13.10 6.15: rounded and unclamped, as 0x0097be80 (FISTP of twinkleSpeed · age, then & 0x7f).
+  const step = Math.round(speed * ageSeconds);
   return TWINKLE_NOISE[(step + phase) & 0x7f]!;
 }
 
@@ -57,6 +65,6 @@ export function twinkleSize(
   const noise = twinkleNoise(emitter.twinkleSpeed, ageSeconds, phase);
   if (emitter.twinklePercent < 1 && noise > emitter.twinklePercent) return 0;
   const range = emitter.twinkleScaleMax - emitter.twinkleScaleMin;
-  if (Math.abs(range) < 1e-6) return 1;
+  // 13.10 6.15: applied whatever the range (0x0097be80) — a degenerate one multiplies by its own value.
   return Math.max(0, emitter.twinkleScaleMin + noise * range);
 }

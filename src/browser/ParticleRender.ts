@@ -14,7 +14,7 @@
 import * as THREE from "three";
 import { applyBlendMode, applyFogMode, privateTextureView } from "./ModelBuild.js";
 import {
-  EMITTER_CAPACITY, RIBBON_CAPACITY,
+  ribbonCapacity,
   createParticleSystem, createQuadBuffers, createRibbonSystem,
   primeParticleSystem, stepParticles, stepParticlesCatchUp,
   resetParticleSystem, resetRibbonSystem, stepRibbon, stepRibbonCatchUp,
@@ -37,6 +37,12 @@ interface DrawnEmitter {
   readonly seedOffset: number;
   readonly particles?: ParticleSystem;
   readonly ribbon?: RibbonSystem;
+  /**
+   * 13.10 6.15: a further texture of a ribbon. Wow.exe's CRibbonEmitter render (0x00980b70) draws the one strip
+   * once per material/texture pair; this entry shares the leader's geometry and buffers, has its own material,
+   * and only follows the leader's draw range — it owns no simulation and does not free the shared geometry.
+   */
+  readonly follows?: DrawnEmitter;
 }
 
 interface ParticleFantasyGlowBinding {
@@ -113,6 +119,8 @@ export interface EffectFrame {
   /** Start clocks for explicit async catch-up; omitted on ordinary render frames. */
   animationStartMs?: number;
   worldStartMs?: number;
+  /** 13.10 6.15: the sequence-table slot the model plays; per-sequence emitter tracks read it (Wow.exe 0x0082d2f0). */
+  sequence?: number | undefined;
 }
 
 export interface EffectUpdateOptions {
@@ -187,41 +195,61 @@ export function buildModelEffects(
   model.particleEmitters.forEach((emitter, index) => {
     const map = texture(emitter.texture);
     if (!map) return;
-    const buffers = createQuadBuffers(EMITTER_CAPACITY);
+    const seedOffset = Math.imul(index, 0x9e3779b1) >>> 0;
+    const particles = createParticleSystem(emitter, model.globalSequences, (seed + seedOffset) >>> 0);
+    // 13.10 6.15: room for the pool Wow.exe would give this emitter (`particleCapacity`), not a flat 256.
+    const buffers = createQuadBuffers(particles.capacity);
     // An emitter record carries no material flags of its own — only a blend type — so its fog and
     // its sidedness follow from that alone.
     const drawn = buildDrawn(buffers, map, emitter.blendType, 0, options.fantasyGlow);
-    const seedOffset = Math.imul(index, 0x9e3779b1) >>> 0;
     emitters.push({
       ...drawn,
       buffers,
       bone: emitter.bone,
       seedOffset,
-      particles: createParticleSystem(emitter, model.globalSequences, (seed + seedOffset) >>> 0),
+      particles,
     });
     group.add(drawn.mesh);
   });
 
   model.ribbonEmitters.forEach((ribbon) => {
-    const map = texture(ribbon.textures[0] ?? -1);
-    if (!map) return;
-    const buffers = createQuadBuffers(RIBBON_CAPACITY);
-    const material = ribbon.materials[0];
-    // The flags, not only the blend mode. A ribbon *does* have a material — `tools/m2.mjs`
-    // resolves it and WVM7 carries both halves — and only half of it was arriving here: of the 854
-    // ribbons under `spells\`, **827 carry `MATERIAL_UNFOGGED`** and every one of them was being
-    // fogged, because `MeshBasicMaterial.fog` defaults to `true` and nothing said otherwise.
-    const drawn = buildDrawn(
-      buffers, map, material?.blendMode ?? 2, material?.flags ?? 0, options.fantasyGlow,
-    );
-    emitters.push({
-      ...drawn,
-      buffers,
-      bone: ribbon.bone,
-      seedOffset: 0,
-      ribbon: createRibbonSystem(ribbon, model.globalSequences),
+    // 13.10 6.15: every texture of the ribbon with its own material, as 0x00980b70 draws them, in record order;
+    // the first resolvable one carries the simulation.
+    let leader: DrawnEmitter | undefined;
+    let buffers: (QuadBuffers & { indices: Uint16Array }) | undefined;
+    let geometry: THREE.BufferGeometry | undefined;
+    ribbon.textures.forEach((slot, pass) => {
+      const map = texture(slot);
+      if (!map) return;
+      const material = ribbon.materials[pass] ?? ribbon.materials[0];
+      // The flags, not only the blend mode. A ribbon *does* have a material — `tools/m2.mjs`
+      // resolves it and WVM7 carries both halves — and only half of it was arriving here: of the 854
+      // ribbons under `spells\`, **827 carry `MATERIAL_UNFOGGED`** and every one of them was being
+      // fogged, because `MeshBasicMaterial.fog` defaults to `true` and nothing said otherwise.
+      if (!leader) {
+        // 13.10 6.15: the ring of 0x009808a0 — ceil(lifetime · ceil(rate)) + 2 edges — less one: quads join edges.
+        buffers = createQuadBuffers(Math.max(1, ribbonCapacity(ribbon) - 1));
+        const drawn = buildDrawn(
+          buffers, map, material?.blendMode ?? 2, material?.flags ?? 0, options.fantasyGlow,
+        );
+        geometry = drawn.geometry;
+        leader = {
+          ...drawn,
+          buffers,
+          bone: ribbon.bone,
+          seedOffset: 0,
+          ribbon: createRibbonSystem(ribbon, model.globalSequences),
+        };
+        emitters.push(leader);
+        group.add(drawn.mesh);
+        return;
+      }
+      const drawn = buildDrawn(
+        buffers!, map, material?.blendMode ?? 2, material?.flags ?? 0, options.fantasyGlow, geometry,
+      );
+      emitters.push({ ...drawn, buffers: buffers!, bone: ribbon.bone, seedOffset: 0, follows: leader });
+      group.add(drawn.mesh);
     });
-    group.add(drawn.mesh);
   });
 
   if (emitters.length === 0) {
@@ -239,19 +267,22 @@ function buildDrawn(
   blendMode: number,
   materialFlags: number,
   fantasyGlow: boolean | undefined,
+  shared?: THREE.BufferGeometry, // 13.10 6.15: a further ribbon texture draws the leader's strip again
 ): { mesh: THREE.Mesh; geometry: THREE.BufferGeometry; material: THREE.Material } {
-  const geometry = new THREE.BufferGeometry();
-  const position = new THREE.BufferAttribute(buffers.positions, 3);
-  const uv = new THREE.BufferAttribute(buffers.uvs, 2);
-  const color = new THREE.BufferAttribute(buffers.colors, 4);
-  position.setUsage(THREE.DynamicDrawUsage);
-  uv.setUsage(THREE.DynamicDrawUsage);
-  color.setUsage(THREE.DynamicDrawUsage);
-  geometry.setAttribute("position", position);
-  geometry.setAttribute("uv", uv);
-  geometry.setAttribute("color", color);
-  geometry.setIndex(new THREE.BufferAttribute(buffers.indices, 1));
-  geometry.setDrawRange(0, 0);
+  const geometry = shared ?? new THREE.BufferGeometry();
+  if (!shared) {
+    const position = new THREE.BufferAttribute(buffers.positions, 3);
+    const uv = new THREE.BufferAttribute(buffers.uvs, 2);
+    const color = new THREE.BufferAttribute(buffers.colors, 4);
+    position.setUsage(THREE.DynamicDrawUsage);
+    uv.setUsage(THREE.DynamicDrawUsage);
+    color.setUsage(THREE.DynamicDrawUsage);
+    geometry.setAttribute("position", position);
+    geometry.setAttribute("uv", uv);
+    geometry.setAttribute("color", color);
+    geometry.setIndex(new THREE.BufferAttribute(buffers.indices, 1));
+    geometry.setDrawRange(0, 0);
+  }
 
   // Unlit, and not because a flag said so. The two bits that would decide it are named "lit" and
   // "unlightning" and 52% of the client's emitters set both, so neither can be read; what settles
@@ -326,7 +357,7 @@ function buildDrawn(
 }
 
 const EMITTER_FRAME: EmitterFrame = {
-  matrix: [], animationMs: 0, worldMs: 0, animationStartMs: undefined, worldStartMs: undefined,
+  matrix: [], animationMs: 0, worldMs: 0, animationStartMs: undefined, worldStartMs: undefined, sequence: undefined,
 };
 
 /**
@@ -345,6 +376,11 @@ export function updateModelEffects(
   options: EffectUpdateOptions = {},
 ): void {
   for (const drawn of effects.emitters) {
+    if (drawn.follows) {
+      // 13.10 6.15: a further texture of a ribbon draws whatever its leader wrote this frame (listed after it).
+      drawn.mesh.visible = drawn.follows.mesh.visible;
+      continue;
+    }
     // One object refilled per emitter: the steps below only read it (a fresh object with the
     // optional clocks spread in was two or three allocations per emitter per frame).
     const emitterFrame = EMITTER_FRAME;
@@ -353,6 +389,7 @@ export function updateModelEffects(
     emitterFrame.worldMs = frame.worldMs;
     emitterFrame.animationStartMs = frame.animationStartMs;
     emitterFrame.worldStartMs = frame.worldStartMs;
+    emitterFrame.sequence = frame.sequence; // 13.10 6.15
     let quads = 0;
     if (drawn.particles) {
       if (options.firstBurst) {
@@ -465,6 +502,7 @@ export function resetModelEffects(effects: ModelEffects, seed: number): void {
     throw new RangeError("model-effects seed must be a uint32");
   }
   for (const drawn of effects.emitters) {
+    if (drawn.follows) continue; // 13.10 6.15: the leader rewinds the shared strip
     if (drawn.particles) resetParticleSystem(drawn.particles, (seed + drawn.seedOffset) >>> 0);
     if (drawn.ribbon) resetRibbonSystem(drawn.ribbon);
     drawn.buffers.positions.fill(0);
@@ -486,7 +524,7 @@ function markUpdated(attribute: THREE.BufferAttribute, vertices: number): void {
 export function disposeModelEffects(effects: ModelEffects): void {
   effects.group.removeFromParent();
   for (const drawn of effects.emitters) {
-    drawn.geometry.dispose();
+    if (!drawn.follows) drawn.geometry.dispose(); // 13.10 6.15: a further ribbon texture borrows its leader's
     drawn.material.dispose();
   }
   if (effects.disposeTextures) {

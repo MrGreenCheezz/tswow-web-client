@@ -7,6 +7,11 @@
 // (filled 53/60/63/72/64 of 80 rows). Slot i ↔ attachment i is the strong hypothesis the spec records
 // (5 = 5), still to be confirmed by a frame of the original (14.25). A slot whose attachment the weapon
 // model lacks gets no effect; a weapon with none keeps the tint (ItemEnchantments.ts `enchantGlowTint`).
+// 13.10 6.14: confirmed in Wow.exe — 0x004ea8f0 (ItemVisuals of an item model) loads slot i's model and calls
+// CM2Model::AttachToParent 0x00831630(itemModel, attachment i, 0, force 0); with the parent's attachment lookup
+// at 0xffff and no force it returns without attaching (and 0x00832ea0 detaches an early child the same way). So
+// slot i ↔ attachment i, and a weapon without the attachment shows nothing for that slot — no tint either
+// (`noGlowTint`); the tint is kept only for a gateway that sends no slots.
 //
 // The effect models are rigid children of the weapon mesh at the attachment's point in the item's model
 // space; their emitters ride the renderer's ordinary emitter list (`#updateEffects`, anchored like a
@@ -28,6 +33,16 @@ export interface GlowPlacement {
 
 /** ItemVisuals has five slots; slot i goes on the weapon model's attachment i. */
 export const ITEM_VISUAL_SLOTS = 5;
+
+/**
+ * 13.10 6.14: whether the emissive tint stand-in is off for this glow. Wow.exe has no tint at all: an enchant
+ * is its ItemVisuals models on the weapon's attachments (0x004ea8f0 → 0x00831630), and a weapon lacking them
+ * shows nothing. When the gateway sent the slots they are the whole answer; only a gateway that sends none keeps
+ * the old tint, since then it is the only signal there is.
+ */
+export function noGlowTint(glow: { readonly slots?: readonly (string | null)[] | undefined }): boolean {
+  return glow.slots !== undefined;
+}
 
 /** The placements a weapon with these attachment ids gets from these five slots (null = empty slot). */
 export function glowPlacement(

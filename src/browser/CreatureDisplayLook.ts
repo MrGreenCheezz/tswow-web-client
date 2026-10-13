@@ -20,7 +20,7 @@
  * colours' red, green and blue bytes as that emitter's colour override (flag 0x10). The alpha byte is
  * not read: the emitter's own opacity ramp stays. Where on the particle's life the middle colour sits
  * was not traced; an authored three-key colour ramp keeps its own times, any other shape gets
- * 0, ½, 1.
+ * 0, ½, 1. 13.10 6.11: traced — `particleColourOverride` (0x0097d370, 0x0097aff0, 0x00979d60, 0x009795d0).
  *
  * Alpha — `CreatureModelAlpha / 255` multiplies the unit's existing opacity (spawn fade, stealth,
  * ghost); where Wow.exe applies the column was not traced in this slice.
@@ -84,6 +84,63 @@ export function particleColourRamp(colours: readonly number[], set: number, auth
   return { components: 3, times, values };
 }
 
+/**
+ * 13.10 6.11: the middle time of Wow.exe's three-segment particle table, or undefined when the emitter does not
+ * get one. 0x0097d370 builds the table (emitter +0x11c, flag 0x1000000) only when colour, opacity and scale have
+ * one to three keys, the cell ramps at most four (four only with equal second and third times), lifespanVary is
+ * zero, the scale is uniform with no scale vary, and not a random cell with an empty head ramp; its middle
+ * (+0x118) is the second key time of the first three-key ramp of colour, opacity, scale, head cell (more than two
+ * keys), tail cell, which every other such ramp must share — 0 when none has three.
+ */
+export function particleTableMiddle(emitter: WvmParticleEmitter): number | undefined {
+  const count = (ramp: WvmRamp | undefined): number => ramp?.times.length ?? 0;
+  const colour = count(emitter.color);
+  const opacity = count(emitter.opacity);
+  const scale = count(emitter.scale);
+  const head = count(emitter.headCell);
+  const tail = count(emitter.tailCell);
+  if (colour < 1 || colour > 3 || opacity < 1 || opacity > 3 || scale < 1 || scale > 3) return undefined;
+  for (const [ramp, keys] of [[emitter.headCell, head], [emitter.tailCell, tail]] as const) {
+    if (keys > 4 || (keys === 4 && ramp!.times[1] !== ramp!.times[2])) return undefined;
+  }
+  if (emitter.lifespanVary !== 0) return undefined;
+  const cells = Math.max(1, emitter.textureRows) * Math.max(1, emitter.textureColumns);
+  if (head === 0 && (emitter.flags & 0x10000) !== 0 && cells > 1) return undefined; // 0x00978e30's random cell
+  if ((emitter.scaleVary?.[0] ?? 0) !== 0 || (emitter.scaleVary?.[1] ?? 0) !== 0) return undefined;
+  const scaleValues = emitter.scale!.values;
+  if ((emitter.scale!.components ?? 1) >= 2) {
+    for (let key = 0; key + 1 < scaleValues.length; key += 2) if (scaleValues[key] !== scaleValues[key + 1]) return undefined;
+  }
+  const middleOf = (ramp: WvmRamp | undefined): number => ramp!.times[1]!;
+  const middle = colour === 3 ? middleOf(emitter.color) : opacity === 3 ? middleOf(emitter.opacity)
+    : scale === 3 ? middleOf(emitter.scale) : head > 2 ? middleOf(emitter.headCell)
+      : tail > 2 ? middleOf(emitter.tailCell) : 0;
+  if (opacity === 3 && middleOf(emitter.opacity) !== middle) return undefined;
+  if (scale === 3 && middleOf(emitter.scale) !== middle) return undefined;
+  if (head > 2 && middleOf(emitter.headCell) !== middle) return undefined;
+  if (tail > 2 && middleOf(emitter.tailCell) !== middle) return undefined;
+  return middle;
+}
+
+/**
+ * 13.10 6.11: an emitter's colour ramp with the display's three colours, placed where Wow.exe places them.
+ * With the table (`particleTableMiddle`, sampled by 0x00979d60): start at 0, middle at the table's middle, end
+ * at 1 (0x0097aff0 fills it from the override 0x0097a990 stored). Without it (0x00979e90 → 0x009795d0): the
+ * emitter's own key times, key k taking colour k — start, middle, end, and the end for any key past the third —
+ * and a one-key ramp keeps its own colour, as 0x009795d0 never reaches the override for it.
+ */
+export function particleColourOverride(colours: readonly number[], set: number, emitter: WvmParticleEmitter): WvmRamp {
+  const three = particleColourRamp(colours, set, undefined).values;
+  const middle = particleTableMiddle(emitter);
+  if (middle !== undefined) return { components: 3, times: Float32Array.from([0, middle, 1]), values: three };
+  const authored = emitter.color;
+  const keys = authored?.times.length ?? 0;
+  if (!authored || keys <= 1) return authored ?? particleColourRamp(colours, set, undefined);
+  const values = new Float32Array(keys * 3);
+  for (let key = 0; key < keys; key++) values.set(three.subarray(Math.min(key, 2) * 3, Math.min(key, 2) * 3 + 3), key * 3);
+  return { components: 3, times: authored.times, values };
+}
+
 const coloured = new WeakMap<object, Map<readonly number[], object>>();
 
 /**
@@ -102,7 +159,7 @@ export function particleColouredWvm<T extends Pick<WvmModel, "particleEmitters">
     const set = emitter.particleColorIndex - FIRST_PARTICLE_COLOUR_SLOT;
     if (set < 0 || set >= PARTICLE_COLOUR_SETS) return emitter;
     changed = true;
-    return { ...emitter, color: particleColourRamp(colours, set, emitter.color) };
+    return { ...emitter, color: particleColourOverride(colours, set, emitter) }; // 13.10 6.11: Wow.exe's placement
   });
   const result = changed ? { ...wvm, particleEmitters: emitters } : wvm;
   if (!byRow) coloured.set(wvm, byRow = new Map());

@@ -43,7 +43,9 @@ test("6.11б the eleven words become worn items; BACK is word 9 and TABARD word 
   ]);
 });
 
-test("6.11б asked once per guid and display, again after the wait, at most three times", () => {
+// 13.10 6.11: Wow.exe asks once (0x00730100 → 0x00716f10, bit 0x20000 at CGUnit_C +0xa30) and never again
+// until answered — no timed retries; this was three tries five seconds apart.
+test("6.11б asked once per guid and display, and not again however long the answer takes", () => {
   const sent = [];
   let now = 0;
   const images = new MirrorImages((guid) => sent.push(guid), () => now);
@@ -59,7 +61,8 @@ test("6.11б asked once per guid and display, again after the wait, at most thre
   images.get(guid, 49, UNIT_FLAG2_MIRROR_IMAGE);
   now += MIRROR_IMAGE_RETRY_MS;
   images.get(guid, 49, UNIT_FLAG2_MIRROR_IMAGE);
-  assert.equal(sent.length, 3, "three tries, then silence");
+  assert.equal(sent.length, 1, "one question, then silence");
+  assert.equal(images.awaiting(guid, 49), false, "and after the wait the plain display is shown");
   const generation = images.generation;
   images.receive(parseMirrorImageData(reply({ guid, displayId: 49 })));
   assert.ok(images.generation > generation);

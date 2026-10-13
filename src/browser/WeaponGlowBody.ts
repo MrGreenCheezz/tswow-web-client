@@ -20,9 +20,13 @@
 // they follow the animated bones; emitter-only glows (the colour glows, 72 of the 89 models) get no
 // body and stay at the anchor's frame as slice E left them.
 
+// 13.10 6.14: an emitter-only glow now gets a body too — its rig and nothing to draw (`glowRigOnly`) — so its
+// emitters ride the effect model's animated bones as Wow.exe animates every attached CM2Model (0x00828a00 runs
+// the emitters of the effect model hung by 0x004ea8f0 like any other), instead of standing at the rest frame.
+
 import * as THREE from "three";
 import {
-  applyBillboardBones, applyGlobalSequenceBones, disposeSkinnedInstance, instantiateSkinned,
+  applyBillboardBones, applyGlobalSequenceBones, buildSkinnedTemplateFrom, disposeSkinnedInstance, instantiateSkinned,
   type SkinnedInstance, type SkinnedTemplate,
 } from "./AnimatedModel.js";
 import type { WvmModel } from "./Wvm.js";
@@ -76,6 +80,22 @@ export function makeGlowBody(built: GlowBuild, template: SkinnedTemplate | undef
   const mesh = new THREE.Mesh(built.geometry, built.materials);
   mesh.frustumCulled = true;
   return { object: mesh, built, skinned: undefined, template: undefined, action: undefined };
+}
+
+/**
+ * 13.10 6.14: the body of an emitter-only effect model — its skeleton, posed by its own Stand and global loops
+ * (`poseGlowBodies`), and an empty, hidden mesh: there is nothing to draw, the rig is for the emitters
+ * (`glowEmitterEntries` hands a body with a rig to the effects pass). null when the model draws geometry (a
+ * real body is built for it) or has no bones that move.
+ */
+export function glowRigOnly(wvm: Pick<WvmModel, "indices" | "batches" | "skeleton">): GlowBody | null {
+  if (glowHasMesh(wvm) || !wvm.skeleton) return null;
+  const template = buildSkinnedTemplateFrom(new THREE.BufferGeometry(), wvm.skeleton, 0);
+  if (!template) return null;
+  const skinned = instantiateSkinned(template, []);
+  skinned.root.quaternion.identity();
+  skinned.mesh.visible = false;
+  return { object: skinned.root, built: template, skinned, template, action: undefined };
 }
 
 /** Builds the bodies of anchors whose model has landed; returns how many were hung this call. */

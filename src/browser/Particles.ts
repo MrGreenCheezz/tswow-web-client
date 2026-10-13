@@ -36,7 +36,7 @@
 //     campfire's flames rise from. Reading the sphere the plane's way puts every one of the
 //     bonfire's particles on a single point above the fire.
 
-import type { WvmParticleEmitter, WvmRamp, WvmRibbonEmitter, WvmTrack } from "./Wvm.js";
+import type { WvmParticleEmitter, WvmRamp, WvmTrack } from "./Wvm.js";
 import { twinklePhase, twinkleSize } from "./ParticleTwinkle.js"; // 05.10-A7a-F1
 
 /**
@@ -68,8 +68,18 @@ export const PARTICLE_FLAG_OUTWARD = 0x00020000;
 export const PARTICLE_FLAG_INWARD = 0x00040000;
 /** ScaleVary works on x and y separately; without it, x varies both and y is unused. */
 export const PARTICLE_FLAG_SCALE_VARY_INDEPENDENT = 0x00080000;
-/** Never set on any of the client's emitters, and kept because a private patch may still set it. */
-export const PARTICLE_FLAG_RANDOM_FLIPBOOK = 0x00200000;
+/**
+ * 13.10 6.15: a random flip-book cell per particle. Wow.exe maps record flag 0x10000 to emitter flag 0x100000
+ * (0x00833xxx → 0x00978e30, only when the grid has more than one cell) and 0x00979e90 draws the cell from the
+ * particle's own seed when the head-cell ramp has no keys. The bit kept here before (0x200000) is the record's
+ * 0x4, which Wow.exe reads as something else entirely.
+ */
+export const PARTICLE_FLAG_RANDOM_FLIPBOOK = 0x00010000;
+/**
+ * 13.10 6.15: record flag 0x200 → emitter 0x10000: half the particles spin the other way (0x0097be80 negates the
+ * angle when bit 5 of the particle's address is set; here a bit of the spawn serial stands in for the address).
+ */
+export const PARTICLE_FLAG_SPIN_EITHER_WAY = 0x00000200;
 
 /** `M2Particle.emitterType`. */
 export const EMITTER_PLANE = 1;
@@ -79,16 +89,71 @@ export const EMITTER_BONE = 4;
 
 
 /**
- * How many particles one emitter is allowed to hold at once.
+ * The most particles one emitter can draw at once: Wow.exe's own limit, not a guess.
  *
- * An emitter's steady-state population is its peak emission rate times its peak lifespan. Across
- * the client's 25,201 emitters that product has a median of 18 and a ninetieth percentile of 120;
- * 9.5% of emitters want more than 128 and 3.8% more than 256. The tail is very long — the
- * greediest asks for 30,000, which is a number for a cinematic and not for a frame — so the cap
- * is set where it holds 96% of emitters whole and truncates the rest rather than letting one file
- * decide how long a frame takes.
+ * 13.10 6.15: there is no fixed 256 in Wow.exe. An emitter's pool (0x0097edf0 → 0x0097e480 → 0x0097e3f0) is
+ * round((rate + rateVary) · (lifespan + lifespanVary) · 1.15) particles (0x009f23cc = 1.15) rounded up to a power
+ * of two, regrown whenever those values rise, and spawning stops while the pool has no free slot (0x0097d8c0).
+ * What does cap it is the draw (0x0097e730): at most 0x4000 vertices a call, four a quad — 4,096 particles.
+ * Census 05.10: 1,069 of 25,520 emitters (4.2 %) want more than the 256 this used to be.
  */
-export const EMITTER_CAPACITY = 256;
+export const EMITTER_CAPACITY = 4096;
+
+/** 0x009f23cc: the headroom Wow.exe gives an emitter's pool over rate × lifespan. */
+const POOL_HEADROOM = 1.15;
+
+/** The largest value a track reaches anywhere — the pool must hold the busiest moment of the emitter's life. */
+function trackMaximum(track: WvmTrack | undefined, fallback: number): number {
+  let maximum = -Infinity;
+  for (const sub of track?.tracks ?? []) {
+    for (let index = 0; index < sub.values.length; index++) maximum = Math.max(maximum, sub.values[index]!);
+  }
+  return Number.isFinite(maximum) ? maximum : fallback;
+}
+
+/**
+ * 13.10 6.15: how many particles this emitter's pool holds, as 0x0097edf0 sizes it: the next power of two of
+ * round((rate + rateVary) · (lifespan + lifespanVary) · 1.15), here over the busiest key of each track (Wow.exe
+ * regrows the pool as the values rise, never shrinks it), capped by the draw limit. The burst multiplier this
+ * simulation applies to bursting emitters is counted in, so they keep the room they emit into.
+ */
+export function particleCapacity(emitter: WvmParticleEmitter): number {
+  let rate = Math.max(0, trackMaximum(emitter.emissionRate, 0)) + Math.max(0, emitter.emissionRateVary);
+  if ((emitter.flags & PARTICLE_FLAG_BURST) !== 0 && emitter.burstMultiplier > 0) rate *= emitter.burstMultiplier;
+  const life = Math.max(0, trackMaximum(emitter.lifespan, 1)) + Math.max(0, emitter.lifespanVary);
+  if (!(rate > 0) || !Number.isFinite(rate * life)) return 0;
+  // Wow.exe rounds to nearest, so a pool under half a particle would be empty and the emitter never seen; at
+  // least one is kept, which is what this simulation always gave such an emitter (a spell's first burst).
+  const wanted = Math.max(1, Math.round(rate * life * POOL_HEADROOM));
+  let pool = 1;
+  while (pool < wanted && pool < EMITTER_CAPACITY) pool *= 2;
+  return Math.min(pool, EMITTER_CAPACITY);
+}
+
+/**
+ * 13.10 6.15: which per-sequence sub-track an emitter reads while `sequence` plays.
+ *
+ * Wow.exe samples every emitter track on the sequence its bone is playing (0x0082d2f0 → 0x0082b340): the
+ * sub-array of that slot, sub-array 0 when the slot is past the track's sub-array count, and the default (0;
+ * 1 for enabledIn, 0x0082b270) when that slot's sub-array is empty. The artifact keeps only the non-empty
+ * sub-arrays with their slots, so the count is not known: a track whose only keys are sequence 0 is read as a
+ * one-sub-array track — constant on every sequence, the common case — and anything else by the playing slot.
+ * No sequence (a doodad, nothing playing) keeps the first sub-track, as before. A global-sequence track ignores it.
+ */
+export function emitterTrackSequence(track: WvmTrack | undefined, sequence: number | undefined): number | undefined {
+  if (sequence === undefined || !track || track.globalSequence >= 0) return undefined;
+  const tracks = track.tracks;
+  if (tracks.length === 0 || (tracks.length === 1 && tracks[0]!.sequence === 0)) return undefined;
+  return sequence;
+}
+
+/** One emitter track at this frame, on the playing sequence (`emitterTrackSequence`). */
+function emitterTrack(
+  value: WvmTrack, animationMs: number, worldMs: number, globalSequences: Uint32Array,
+  fallback: number, sequence: number | undefined,
+): number {
+  return sampleTrack(value, animationMs, worldMs, globalSequences, fallback, 0, emitterTrackSequence(value, sequence));
+}
 
 /**
  * A pseudo-random source that can be replayed.
@@ -256,6 +321,8 @@ export interface EmitterFrame {
   /** Optional start clocks used only by an explicit async catch-up. */
   animationStartMs?: number | undefined;
   worldStartMs?: number | undefined;
+  /** 13.10 6.15: the sequence-table slot the model is playing, for per-sequence tracks (`emitterTrackSequence`). */
+  sequence?: number | undefined;
 }
 
 export interface ParticleSystem {
@@ -275,6 +342,8 @@ export interface ParticleSystem {
   readonly modelSpace: boolean;
   /** 05.10-A7a-F1 (6.15): spawns so far, hashed into each particle's twinkle phase; no random draw. */
   twinkleSerial?: number;
+  /** 13.10 6.15: the pool Wow.exe would give this emitter (`particleCapacity`); spawning stops when it is full. */
+  readonly capacity: number;
 }
 
 const IDENTITY = new Float64Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
@@ -294,6 +363,7 @@ export function createParticleSystem(
     placed: false,
     matrix: Float64Array.from(IDENTITY),
     modelSpace: (emitter.flags & PARTICLE_FLAG_MODEL_SPACE) !== 0,
+    capacity: particleCapacity(emitter), // 13.10 6.15
   };
 }
 
@@ -384,10 +454,11 @@ function spawnLocal(
   worldMs: number,
   position: number[],
   direction: number[],
+  sequence: number | undefined, // 13.10 6.15
 ): void {
   const { emitter, globalSequences, random } = system;
   const track = (value: WvmTrack, fallback: number): number =>
-    sampleTrack(value, animationMs, worldMs, globalSequences, fallback);
+    emitterTrack(value, animationMs, worldMs, globalSequences, fallback, sequence);
 
   const vertical = track(emitter.verticalRange, 0);
   const horizontal = track(emitter.horizontalRange, 0);
@@ -496,12 +567,12 @@ export function stepParticles(system: ParticleSystem, seconds: number, frame: Em
  * short enabled window or let a short-lived particle die before its first visible frame.
  */
 export function primeParticleSystem(system: ParticleSystem, frame: EmitterFrame): boolean {
-  if (system.particles.length > 0) return false;
+  if (system.particles.length > 0 || system.capacity <= 0) return false; // 13.10 6.15: an empty pool spawns nothing
   const { emitter, globalSequences } = system;
-  const enabled = sampleTrack(emitter.enabledIn, frame.animationMs, frame.worldMs,
-    globalSequences, 1);
-  const rate = sampleTrack(emitter.emissionRate, frame.animationMs, frame.worldMs,
-    globalSequences, 0);
+  const enabled = emitterTrack(emitter.enabledIn, frame.animationMs, frame.worldMs,
+    globalSequences, 1, frame.sequence);
+  const rate = emitterTrack(emitter.emissionRate, frame.animationMs, frame.worldMs,
+    globalSequences, 0, frame.sequence);
   if (enabled <= 0.5 || rate <= 0) return false;
   // Set the transform/origin exactly as a zero-time ordinary step would before spawning in the
   // emitter's current frame. No pending debt or particle age is fabricated.
@@ -540,9 +611,9 @@ export function stepParticlesCatchUp(system: ParticleSystem, seconds: number, fr
 
 function stepParticlesOnce(system: ParticleSystem, seconds: number, frame: EmitterFrame): void {
   const { emitter, globalSequences, particles, random } = system;
-  const { matrix, animationMs, worldMs } = frame;
+  const { matrix, animationMs, worldMs, sequence } = frame;
   const track = (value: WvmTrack, fallback: number): number =>
-    sampleTrack(value, animationMs, worldMs, globalSequences, fallback);
+    emitterTrack(value, animationMs, worldMs, globalSequences, fallback, sequence); // 13.10 6.15
 
   for (let index = 0; index < 16; index++) system.matrix[index] = matrix[index]!;
 
@@ -661,7 +732,7 @@ function stepParticlesOnce(system: ParticleSystem, seconds: number, frame: Emitt
 
   // Off for this stretch of the animation, and that is a real state rather than an absence: four
   // of the twenty-six local emitters key `enabledIn`, and all four switch off partway through.
-  const enabled = sampleTrack(emitter.enabledIn, animationMs, worldMs, globalSequences, 1);
+  const enabled = track(emitter.enabledIn, 1);
   const base = enabled > 0.5 ? track(emitter.emissionRate, 0) : 0;
   if (base <= 0) {
     // Stopped, not merely quiet: an emitter that has been switched off owes nothing when it
@@ -686,23 +757,25 @@ function stepParticlesOnce(system: ParticleSystem, seconds: number, frame: Emitt
 
   system.pending += varied * step;
   // A tab that was in the background does not owe a thousand particles on the frame it returns.
-  if (system.pending > EMITTER_CAPACITY) system.pending = EMITTER_CAPACITY;
-  while (system.pending >= 1 && particles.length < EMITTER_CAPACITY) {
+  // 13.10 6.15: the pool is the emitter's own (`particleCapacity`, Wow.exe 0x0097edf0), not a flat 256.
+  const capacity = system.capacity;
+  if (system.pending > capacity) system.pending = capacity;
+  while (system.pending >= 1 && particles.length < capacity) {
     system.pending -= 1;
     particles.push(spawn(system, frame));
   }
-  if (particles.length >= EMITTER_CAPACITY) system.pending = 0;
+  if (particles.length >= capacity) system.pending = 0;
 }
 
 function spawn(system: ParticleSystem, frame: EmitterFrame): Particle {
   const { emitter, globalSequences, random } = system;
-  const { matrix, animationMs, worldMs } = frame;
+  const { matrix, animationMs, worldMs, sequence } = frame;
   const track = (value: WvmTrack, fallback: number): number =>
-    sampleTrack(value, animationMs, worldMs, globalSequences, fallback);
+    emitterTrack(value, animationMs, worldMs, globalSequences, fallback, sequence); // 13.10 6.15
 
   const local: number[] = [0, 0, 0];
   const direction: number[] = [0, 0, 1];
-  spawnLocal(system, animationMs, worldMs, local, direction);
+  spawnLocal(system, animationMs, worldMs, local, direction, sequence);
 
   let speed = track(emitter.emissionSpeed, 0);
   const variation = track(emitter.speedVariation, 0);
@@ -744,23 +817,47 @@ function spawn(system: ParticleSystem, frame: EmitterFrame): Particle {
   const varyX = emitter.scaleVary[0];
   const varyY = independent ? emitter.scaleVary[1] : emitter.scaleVary[0];
   const cells = Math.max(1, emitter.textureRows) * Math.max(1, emitter.textureColumns);
+  const scaleX = Math.max(0, 1 + varyX * spread(random));
+  const scaleY = Math.max(0, 1 + varyY * spread(random));
+  // `baseSpin` is zero on every one of the 8,575 emitters in the client, so what this really
+  // reads is a random starting angle from `baseSpinVary` — which is 2π wherever it is set, and
+  // 2π is exactly "anywhere".
+  let spin = emitter.baseSpin + emitter.baseSpinVary * spread(random);
+  let spinRate = emitter.spin + emitter.spinVary * spread(random);
+  // 13.10 6.15: Wow.exe's random cell (0x00979e90) only when the head-cell ramp is empty and there is a grid.
+  const randomCell = (emitter.flags & PARTICLE_FLAG_RANDOM_FLIPBOOK) !== 0 && cells > 1
+    && (emitter.headCell?.times.length ?? 0) === 0;
+  const cellOffset = randomCell ? Math.floor(random() * cells) : 0;
+  // 05.10-A7a-F1 (6.15): from the spawn serial, so the random stream above is unchanged.
+  const serial = system.twinkleSerial = ((system.twinkleSerial ?? 0) + 1) >>> 0;
+  const phase = twinklePhase(serial);
+  // 13.10 6.15: record flag 0x200 turns every other particle the other way (0x0097be80 negates the angle).
+  if ((emitter.flags & PARTICLE_FLAG_SPIN_EITHER_WAY) !== 0 && (phase & 1) === 1) {
+    spin = -spin;
+    spinRate = -spinRate;
+  }
 
   return {
     x, y, z, vx, vy, vz,
     bx: x, by: y, bz: z,
     age: 0,
     life,
-    scaleX: Math.max(0, 1 + varyX * spread(random)),
-    scaleY: Math.max(0, 1 + varyY * spread(random)),
-    // `baseSpin` is zero on every one of the 8,575 emitters in the client, so what this really
-    // reads is a random starting angle from `baseSpinVary` — which is 2π wherever it is set, and
-    // 2π is exactly "anywhere".
-    spin: emitter.baseSpin + emitter.baseSpinVary * spread(random),
-    spinRate: emitter.spin + emitter.spinVary * spread(random),
-    cellOffset: (emitter.flags & PARTICLE_FLAG_RANDOM_FLIPBOOK) !== 0 ? Math.floor(random() * cells) : 0,
-    // 05.10-A7a-F1 (6.15): from the spawn serial, so the random stream above is unchanged.
-    phase: twinklePhase(system.twinkleSerial = ((system.twinkleSerial ?? 0) + 1) >>> 0),
+    scaleX,
+    scaleY,
+    spin,
+    spinRate,
+    cellOffset,
+    phase,
   };
+}
+
+/**
+ * 13.10 6.15: whether this emitter's quads turn at all. Wow.exe's quad writer (0x0097be80) draws the plain corner
+ * table when spin (+0xc8) and spinVary (+0xcc) are both zero — the base angle (0x0097a130: baseSpin + vary) is then
+ * never applied, however wide `baseSpinVary` is — and otherwise turns the quad by base + age · rate.
+ */
+export function particleSpins(emitter: Pick<WvmParticleEmitter, "spin" | "spinVary">): boolean {
+  return emitter.spin !== 0 || emitter.spinVary !== 0;
 }
 
 /** What one particle looks like right now, before it is turned into corners. */
@@ -865,6 +962,7 @@ export function writeParticleQuads(
   const pinned = (emitter.flags & PARTICLE_FLAG_PINNED) !== 0
     && (emitter.flags & PARTICLE_FLAG_DO_NOT_TRAIL) === 0;
   const xyQuad = (emitter.flags & PARTICLE_FLAG_XY_QUAD) !== 0;
+  const spins = particleSpins(emitter); // 13.10 6.15
   const capacity = Math.floor(buffers.positions.length / 12);
 
   let quads = 0;
@@ -1021,7 +1119,7 @@ export function writeParticleQuads(
           centreZ = z - alongZ * halfHeight;
         }
       }
-    } else if (particle.spin !== 0) {
+    } else if (spins && particle.spin !== 0) { // 13.10 6.15: no spin rate, no turn (Wow.exe 0x0097be80)
       const cos = Math.cos(particle.spin);
       const sin = Math.sin(particle.spin);
       const baseAxisX = axisX;
@@ -1080,189 +1178,18 @@ export function writeParticleQuads(
 }
 
 /* --- Ribbons --------------------------------------------------------------------------------
-   A ribbon is not a cloud of independent points but one strip that remembers where its bone has
-   been. Everything about it is therefore the opposite of a particle: edges are added at one end
-   and retired from the other, and the geometry is rebuilt from the whole list every frame. */
+   13.10 6.15: a ribbon is not a cloud of independent points but one strip that remembers where its bone has
+   been. It now runs as Wow.exe's CRibbonEmitter does, in `RibbonEmitter.ts`; the names stay exported here
+   for the callers that have always found them in this file. */
 
-export interface RibbonEdge {
-  x: number; y: number; z: number;
-  /** The bone's own up axis when this edge was laid down, which is the direction it has width in. */
-  upX: number; upY: number; upZ: number;
-  above: number;
-  below: number;
-  red: number; green: number; blue: number; alpha: number;
-  age: number;
-}
-
-export interface RibbonSystem {
-  readonly ribbon: WvmRibbonEmitter;
-  readonly globalSequences: Uint32Array;
-  readonly edges: RibbonEdge[];
-  pending: number;
-}
+export {
+  RIBBON_MIN_LIFETIME, createRibbonSystem, resetRibbonSystem, ribbonCapacity, ribbonLifetime, ribbonRate,
+  stepRibbon, stepRibbonCatchUp, writeRibbonStrip, type RibbonEdge, type RibbonSystem,
+} from "./RibbonEmitter.js";
 
 /**
- * How many edges one ribbon keeps.
- *
- * `edgesPerSecond * edgeLifetime` is the steady-state length. Across the client's 1,502 ribbon
- * emitters that product has a median of 30, a ninetieth percentile of 120 and a ninety-ninth of
- * 200, so this holds all but the last percent; the longest asks for 2,500. `edgesPerSecond` never
- * exceeds 100 and `edgeLifetime` runs from 0.1 to 25 seconds.
+ * The longest strip a ribbon can need: 0x009808a0 sizes the ring ceil(lifetime · ceil(rate)) + 2, and the
+ * client's records reach edgesPerSecond 100 and edgeLifetime 25 — so 2,502 edges. Only a bound for callers that
+ * want one number; each ribbon's buffers are sized by its own `ribbonCapacity`.
  */
-export const RIBBON_CAPACITY = 256;
-
-export function createRibbonSystem(ribbon: WvmRibbonEmitter, globalSequences: Uint32Array): RibbonSystem {
-  return { ribbon, globalSequences, edges: [], pending: 0 };
-}
-
-/** Rewinds one trail while retaining its authored tracks and array identity. */
-export function resetRibbonSystem(system: RibbonSystem): void {
-  system.edges.length = 0;
-  system.pending = 0;
-}
-
-/**
- * Advances one ribbon: ages what it has, drops what has expired, lays down what it owes.
- *
- * An edge's place is fixed in the world the moment it is laid down. That is the whole point of a
- * trail — the sword moves on and the streak stays behind — and it is why the edge stores the
- * bone's up axis rather than looking it up again later.
- */
-/** Advances one ordinary ribbon frame; a hitch is deliberately capped at 100 ms. */
-export function stepRibbon(system: RibbonSystem, seconds: number, frame: EmitterFrame): void {
-  stepRibbonOnce(system, seconds > 0 && Number.isFinite(seconds) ? Math.min(seconds, 0.1) : 0, frame);
-}
-
-/** Explicit, bounded async catch-up for a newly resolved ribbon system. */
-export function stepRibbonCatchUp(system: RibbonSystem, seconds: number, frame: EmitterFrame): void {
-  const duration = Math.min(EFFECT_CATCHUP_MAX_SECONDS,
-    Math.max(0, Number.isFinite(seconds) ? seconds : 0));
-  if (duration <= 0) {
-    stepRibbonOnce(system, 0, frame);
-    return;
-  }
-  const startAnimation = frame.animationStartMs ?? frame.animationMs;
-  const startWorld = frame.worldStartMs ?? frame.worldMs;
-  const steps = Math.ceil(duration / 0.1);
-  for (let index = 0; index < steps; index++) {
-    const elapsed = Math.min(0.1, duration - index * 0.1);
-    if (elapsed <= 0) break;
-    const fraction = (index * 0.1 + elapsed) / duration;
-    stepRibbonOnce(system, elapsed, {
-      ...frame,
-      animationMs: startAnimation + (frame.animationMs - startAnimation) * fraction,
-      worldMs: startWorld + (frame.worldMs - startWorld) * fraction,
-    });
-  }
-}
-
-function stepRibbonOnce(system: RibbonSystem, seconds: number, frame: EmitterFrame): void {
-  const { ribbon, globalSequences, edges } = system;
-  const { matrix, animationMs, worldMs } = frame;
-  const track = (value: WvmTrack, fallback: number, component = 0): number =>
-    sampleTrack(value, animationMs, worldMs, globalSequences, fallback, component);
-
-  const step = seconds > 0 ? Math.min(seconds, 0.1) : 0;
-  const lifetime = ribbon.edgeLifetime > 0 ? ribbon.edgeLifetime : 0.5;
-  for (const edge of edges) {
-    edge.age += step;
-    if (ribbon.gravity !== 0) {
-      // The drop over this step of a fall that started when the edge was laid down. Adding a flat
-      // half-g-dt-squared every frame instead — which is the obvious thing to write — makes the
-      // sag depend on the frame rate rather than on the age.
-      edge.y -= ribbon.gravity * step * (edge.age - step * 0.5);
-    }
-  }
-  while (edges.length > 0 && edges[0]!.age >= lifetime) edges.shift();
-
-  if (step <= 0) return;
-  // A `uint8` track: a ribbon is on or off, and the byte it is stored in is why the artifact had
-  // to learn key widths at all.
-  if (track(ribbon.visibility, 1) <= 0.5) {
-    system.pending = 0;
-    return;
-  }
-
-  const rate = ribbon.edgesPerSecond > 0 ? ribbon.edgesPerSecond : 0;
-  if (rate <= 0) return;
-  system.pending += rate * step;
-  if (system.pending > RIBBON_CAPACITY) system.pending = RIBBON_CAPACITY;
-
-  transformPoint(matrix, ribbon.position[0], ribbon.position[1], ribbon.position[2], scratchA);
-  transformVector(matrix, 0, 0, 1, scratchB);
-  normalise(scratchB);
-  while (system.pending >= 1) {
-    system.pending -= 1;
-    edges.push({
-      x: scratchA[0]!, y: scratchA[1]!, z: scratchA[2]!,
-      upX: scratchB[0]!, upY: scratchB[1]!, upZ: scratchB[2]!,
-      above: track(ribbon.heightAbove, 0.5),
-      below: track(ribbon.heightBelow, 0.5),
-      red: track(ribbon.color, 1, 0),
-      green: track(ribbon.color, 1, 1),
-      blue: track(ribbon.color, 1, 2),
-      alpha: track(ribbon.alpha, 1),
-      age: 0,
-    });
-    if (edges.length > RIBBON_CAPACITY) edges.shift();
-  }
-}
-
-/**
- * Writes the strip's triangles and says how many quads it wrote.
- *
- * The length coordinate is the edge's own age rather than its index, so the texture stays put on
- * the trail while the strip fills and empties. Indexing it — which is the obvious thing to write —
- * renormalises every frame, and the pattern visibly crawls backwards along a ribbon that is still
- * growing.
- */
-export function writeRibbonStrip(system: RibbonSystem, buffers: QuadBuffers): number {
-  const { ribbon, edges } = system;
-  const capacity = Math.floor(buffers.positions.length / 12);
-  const lifetime = ribbon.edgeLifetime > 0 ? ribbon.edgeLifetime : 0.5;
-  let quads = 0;
-  for (let index = 0; index + 1 < edges.length && quads < capacity; index++) {
-    const near = edges[index]!;
-    const far = edges[index + 1]!;
-    const at = quads * 12;
-    const positions = buffers.positions;
-    positions[at] = near.x - near.upX * near.below;
-    positions[at + 1] = near.y - near.upY * near.below;
-    positions[at + 2] = near.z - near.upZ * near.below;
-    positions[at + 3] = far.x - far.upX * far.below;
-    positions[at + 4] = far.y - far.upY * far.below;
-    positions[at + 5] = far.z - far.upZ * far.below;
-    positions[at + 6] = far.x + far.upX * far.above;
-    positions[at + 7] = far.y + far.upY * far.above;
-    positions[at + 8] = far.z + far.upZ * far.above;
-    positions[at + 9] = near.x + near.upX * near.above;
-    positions[at + 10] = near.y + near.upY * near.above;
-    positions[at + 11] = near.z + near.upZ * near.above;
-
-    const uNear = Math.min(1, Math.max(0, 1 - near.age / lifetime));
-    const uFar = Math.min(1, Math.max(0, 1 - far.age / lifetime));
-    const uvAt = quads * 8;
-    const uvs = buffers.uvs;
-    uvs[uvAt] = uNear; uvs[uvAt + 1] = 0; uvs[uvAt + 2] = uFar; uvs[uvAt + 3] = 0;
-    uvs[uvAt + 4] = uFar; uvs[uvAt + 5] = 1; uvs[uvAt + 6] = uNear; uvs[uvAt + 7] = 1;
-
-    // An edge fades out over its own life, so the trail thins towards its tail rather than ending
-    // at a hard edge the moment it is retired.
-    const fadeNear = near.alpha * (1 - near.age / lifetime);
-    const fadeFar = far.alpha * (1 - far.age / lifetime);
-    const colorAt = quads * 16;
-    const write = (corner: number, edge: RibbonEdge, alpha: number): void => {
-      const to = colorAt + corner * 4;
-      buffers.colors[to] = edge.red;
-      buffers.colors[to + 1] = edge.green;
-      buffers.colors[to + 2] = edge.blue;
-      buffers.colors[to + 3] = Math.min(1, Math.max(0, alpha));
-    };
-    write(0, near, fadeNear);
-    write(1, far, fadeFar);
-    write(2, far, fadeFar);
-    write(3, near, fadeNear);
-    quads++;
-  }
-  return quads;
-}
+export const RIBBON_CAPACITY = 2502;

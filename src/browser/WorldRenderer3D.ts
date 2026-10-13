@@ -274,10 +274,16 @@ import { CameraShakeBank } from "./CameraShake.js"; // 05.10-A7a-E
 import {
   attachGlowAnchors, detachGlowAnchors, glowEmitterEntries, glowPlacement, glowSlotsKey, resolveGlowModels,
   glowAnchorsOf, // 05.10-A7a-E2
+  noGlowTint, // 13.10 6.14
 } from "./WeaponGlow.js"; // 05.10-A7a-E (6.14)
+import { emittingItemModel, itemEffectKey, modelEmits, playingSequence, rememberItemModel } from "./AttachedEmitters.js"; // 13.10 6.15
+import { mountBuildKey, mountGeosets } from "./MountDisplayLook.js"; // 13.10 6.11
+// 13.10 6.15: re-exported so the source-pattern harnesses that run `#updateEffects`/`#updateAttachments` find them.
+export { emittingItemModel, itemEffectKey, modelEmits, playingSequence, rememberItemModel, mountBuildKey, mountGeosets };
 import {
   glowHasMesh, makeGlowBody, mountGlowBodies, pinGlowBuilds, poseGlowBodies, type GlowBody,
   fadeGlowEmitters, glowBodyMeshes, glowShown, // 05.10: ревью E2 — glows follow the unit's opacity and visibility
+  glowRigOnly, // 13.10 6.14
 } from "./WeaponGlowBody.js"; // 05.10-A7a-E2 (6.14): the effect models' meshes
 import {
   isPlayerGhost, isUnitCreeping, unitAppearance, unit as unitFields,
@@ -9196,12 +9202,28 @@ export class WorldRenderer3D {
       wanted.push(entry);
     });
     // 05.10-A7a-E (6.14): enchantment glow effects on worn weapons, ranked with everything else.
-    this.#units.forEach((unit) => {
+    this.#units.forEach((unit, guid) => {
+      // 13.10 6.15: the mount's own emitters, on its rig (AttachedEmitters.ts).
+      const mount = unit.mount;
+      if (mount?.skinned && modelEmits(mount.wvm) && glowShown(mount.skinned.root)) {
+        const at = unit.node.position;
+        const distance = nearSquared(at.x, -at.z, at.y);
+        if (distance <= EFFECT_RANGE_SQUARED) {
+          wanted.push({ key: itemEffectKey(mount.node, String(guid), "mount"),
+            wvm: particleColouredWvm(mount.wvm, mount.metadata.particleColors), // 13.10 6.11: 0x0073d5d0 → 0x004f20c0
+            distance, posed: mount, fade: unit.unitOpacity });
+        }
+      }
       if (unit.attached.size === 0 || !unit.skinned) return;
       const at = unit.node.position;
       const distance = nearSquared(at.x, -at.z, at.y);
       if (distance > EFFECT_RANGE_SQUARED) return;
-      for (const node of unit.attached.values()) {
+      for (const [where, node] of unit.attached) {
+        // 13.10 6.15: the worn piece's own emitters, in the piece's frame (AttachedEmitters.ts); hidden, none.
+        const itemWvm = emittingItemModel(node);
+        if (itemWvm && glowShown(node)) {
+          wanted.push({ key: itemEffectKey(node, String(guid), where), wvm: itemWvm, distance, visual: node, fade: unit.unitOpacity });
+        }
         if (!glowAnchorsOf(node) || !glowShown(node)) continue; // 05.10: ревью E2 — a hidden blade (unit turned away, held, first-person rider) emits nothing
         poseGlowBodies(glowAnchorsOf(node), elapsed, now, this.#camera); // 05.10-A7a-E2: before its emitters read the bones
         glowEmitterEntries(node, distance, glowEntry, wanted, unit.unitOpacity); // 05.10: ревью E2 — faded with the unit
@@ -9477,6 +9499,8 @@ export class WorldRenderer3D {
           ? (entry.spell.action ? entry.spell.action.time * 1000 : spellAgeMs!)
           : (posed?.action ? posed.action.time * 1000 : now),
         worldMs: now,
+        // 13.10 6.15: per-sequence tracks on the playing clip's slot, as Wow.exe samples them (0x0082d2f0).
+        sequence: playingSequence(entry.spell ? entry.spell.action : posed?.action),
         ...(newEffects && entry.spell ? {
           // The catch-up integrator samples keyed tracks along the local interval instead of
           // repeating the final clock value at each 100 ms substep.
@@ -13950,7 +13974,8 @@ export class WorldRenderer3D {
     // on every argument below it, so the horse under the player and the horse next to it are one
     // build. Where it does carry one — every `Character\` display does — `#unitKey` appends a
     // digest, so the unit's own key is a different string and the two cannot poison each other.
-    const key = modelKey(metadata.model, metadata.textures);
+    // 13.10 6.11: + the display's CreatureGeosetData, which Wow.exe applies to the mount too (mountGeosets).
+    const key = mountBuildKey(modelKey(metadata.model, metadata.textures), metadata.geosetData);
     if (!mountInstanceMatches(unit.mount?.metadata, metadata)) {
       const wvm = client?.model(metadata.model, "critical")?.wvm;
       // Still downloading. Whatever is under the rider now stays there: on a first mount that is
@@ -13974,7 +13999,8 @@ export class WorldRenderer3D {
     // its tail and its barding in submeshes, and the bare-character set would take it apart.
     const { built, rigged } = this.#buildRigged(key, metadata.model, wvm,
       characterSlots(metadata.textures, undefined),
-      unitGeosets(undefined, wvm.textures.some((slot) => slot.type === TEXTURE_TYPE_BODY)),
+      mountGeosets(wvm, unitGeosets(undefined, wvm.textures.some((slot) => slot.type === TEXTURE_TYPE_BODY)),
+        metadata.geosetData), // 13.10 6.11: Wow.exe 0x0073d5d0 → 0x004e7790 on the mount model
       undefined, client);
     const node = new THREE.Group();
     let skinned: SkinnedInstance | undefined;
@@ -14178,11 +14204,12 @@ export class WorldRenderer3D {
       // shared material — a glow card is already light, not a surface to light.
       let materials: THREE.Material[] = built.materials;
       let glowClones: THREE.Material[] | undefined;
-      // 05.10-A7a-E (6.14): ItemVisuals slots on the weapon's own attachments 0…4 (WeaponGlow.ts); the tint
-      // stays only for a weapon with no such attachment or a glow with no slots.
+      // 05.10-A7a-E (6.14): ItemVisuals slots on the weapon's own attachments 0…4 (WeaponGlow.ts).
+      // 13.10 6.14: a slot whose attachment the weapon lacks shows nothing, as in Wow.exe (`noGlowTint`); the tint
+      // stays only for a gateway that sends no slots at all.
       const glowPlacements = item.glow?.slots
         ? glowPlacement(itemModel.attachments.map((attachment) => attachment.id), item.glow.slots) : [];
-      if (item.glow && glowPlacements.length === 0 && item.glow.intensity > 0) {
+      if (item.glow && !noGlowTint(item.glow) && item.glow.intensity > 0) {
         glowClones = [];
         materials = built.materials.map((material) => {
           if (!(material instanceof THREE.MeshStandardMaterial)) return material;
@@ -14204,6 +14231,7 @@ export class WorldRenderer3D {
       mesh.userData["point"] = item.point;
       if (glowClones !== undefined) mesh.userData["glowClones"] = glowClones;
       if (glowPlacements.length > 0) attachGlowAnchors(mesh, itemModel, glowPlacements, `unit:${object.guid}:glow:${where}`); // 05.10-A7a-E
+      rememberItemModel(mesh, itemModel); // 13.10 6.15: the item's own emitters (AttachedEmitters.ts)
       mesh.position.copy(attachmentOffset(wvm, template.pivots, item.point));
       // Hip-sheathed blades point down the leg rather than forward from the grip.
       const hang = attachmentRotation(item.point);
@@ -14229,7 +14257,7 @@ export class WorldRenderer3D {
    * null: the model draws no geometry (its emitters are all there is); undefined: no build budget this frame.
    */
   #glowBody(path: string, wvm: WvmModel): GlowBody | null | undefined {
-    if (!glowHasMesh(wvm)) return null;
+    if (!glowHasMesh(wvm)) return glowRigOnly(wvm); // 13.10 6.14: an emitter-only glow rides its own animated rig
     if (!this.#unitBuildBudget.take()) return undefined;
     const { built, rigged } = this.#buildRigged(`glow|${path}`, path, wvm, NO_GLOW_SLOTS, EVERY_GEOSET);
     const body = makeGlowBody(built, rigged ?? undefined);

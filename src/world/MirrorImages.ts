@@ -18,6 +18,18 @@
  * nothing for a unit that is neither an outfit, a bot nor a clone, SpellHandler.cpp:722-728).
  * When and how often Wow.exe asks was not traced.
  *
+ * 13.10 6.11: traced. Wow.exe asks from 0x00730100 — the unit's model has finished loading and
+ * UNIT_FIELD_FLAGS_2 has 0x10 — through 0x00716f10, which sets CGUnit_C +0xa30 bit 0x20000 and sends
+ * 0x401; while that bit is up no second question goes out, and nothing times it out. The answer's handler
+ * 0x007324b0 → 0x00730290 clears the bit, drops the reply unless the model is loaded and its display id is
+ * the unit's current one (UNIT_FIELD_DISPLAYID), and dresses the model directly: race 0 takes the unit's own
+ * CreatureDisplayInfoExtra and baked NPC texture, any other race the reply's customisation and its eleven
+ * items. Nothing is kept: the next model build (another display, a new unit object) asks again. So one
+ * question per display — `MIRROR_IMAGE_TRIES` is 1 — and no reply store beyond the unit's life (`forget`).
+ * Kept apart from Wow.exe: a unit whose question is never answered shows its plain display after
+ * MIRROR_IMAGE_RETRY_MS (Wow.exe leaves it waiting, +0xa30 bit 0x400000), and a reply is worn on a character
+ * display only (`MirrorImageModel.ts`; Wow.exe dresses whatever model the unit has).
+ *
  * Per-frame cost: `get` is one flag test for an ordinary unit; for a flagged one, two map lookups.
  */
 import type { EquippedItem } from "../gateway/CharacterAppearance.js";
@@ -25,8 +37,10 @@ import { PacketWriter } from "../protocol/PacketWriter.js";
 import type { MirrorImageData } from "./SpellLogProtocol.js";
 
 export const UNIT_FLAG2_MIRROR_IMAGE = 0x10;
+/** How long the plain display waits for an answer before it is shown anyway (not Wow.exe's; see above). */
 export const MIRROR_IMAGE_RETRY_MS = 5_000;
-export const MIRROR_IMAGE_TRIES = 3;
+/** 13.10 6.11: one question per display, as 0x00716f10 asks once and never again until answered. */
+export const MIRROR_IMAGE_TRIES = 1;
 
 export function buildGetMirrorImageData(guid: bigint): Uint8Array {
   return new PacketWriter().u64(guid).toUint8Array();

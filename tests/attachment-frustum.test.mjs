@@ -21,6 +21,7 @@ function fixture() {
   const deps = { THREE, UPDATE_FIELDS, applySlotDepth: () => {}, attachmentPoint: () => 1, boneOf: () => bone,
     worldAttachmentPoint: () => 1, sheatheOf: () => undefined, // 05.10-A7a-G2 6.08
     glowSlotsKey: () => "", glowPlacement: () => [], attachGlowAnchors() {}, resolveGlowModels() {}, mountGlowBodies: () => 0, glowAnchorsOf: () => [], // 05.10-A7a-G2: 6.14 helpers the harness lacked
+    rememberItemModel() {}, // 13.10 6.15: the item's emitters (AttachedEmitters.ts)
     attachmentOffset: () => new THREE.Vector3(), attachmentRotation: () => undefined,
     TEXTURE_TYPE_OBJECT_SKIN: 2, EVERY_GEOSET: 'all',
     attachedOf: (metadata) => metadata?.appearance?.attached }; // 05.10-A7a-B 6.02
