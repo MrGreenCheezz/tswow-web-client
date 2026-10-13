@@ -12,6 +12,7 @@ const {
   FrameXmlBindingModel, FRAMEXML_BINDING_BINDINGS, FRAMEXML_STOCK_BINDING_SECTIONS, FRAMEXML_WEBCLIENT_BINDING_ROWS,
   frameXmlKeyName, frameXmlKeyToChord, frameXmlChordToKey, frameXmlBindingCommand, FRAMEXML_BINDING_PRELUDE,
 } = await import("../dist/code/browser/framexml/FrameXmlBinding.js");
+const clickEdges = await import("../dist/code/browser/framexml/FrameXmlBindingClick.js"); // 13.10
 
 function memoryStorage() {
   const values = new Map();
@@ -417,6 +418,75 @@ test("3.11 D: an override takes the key over the table until its owner clears it
   assert.doesNotMatch(saved, /JUMP|Рывок|ActionButton3/, "overrides are never written to the table's store");
   model.detach();
   assert.equal(bindings.overrideFor("F9"), undefined, "the VM going away takes its overrides with it");
+});
+
+test("13.10: a direct SPELL/ITEM/MACRO binding acts on its key's release, CLICK on both edges (Wow.exe 0x00563150)", () => {
+  const { model } = fresh();
+  const seam = { keyBindings: model };
+  const ran = [];
+  model.setCommandRunner((kind, value) => ran.push([kind, value]));
+  model.setClicker((button, mouse, down) => ran.push(["CLICK", button, mouse, down]));
+  model.setBindingCommand("SPELL", "F7", "Огненный шар");
+  model.setBindingCommand("ITEM", "SHIFT-F7", "Камень возвращения");
+  model.setBindingCommand("MACRO", "CTRL-F7", 3);
+  model.setBindingClick("F6", "MultiBarBottomLeftButton3");
+  for (const chord of ["F7", "Shift+F7", "Ctrl+F7"]) bindings.moduleActionFor(chord).edge(true);
+  assert.deepEqual(ran, [], "the press casts, uses and runs nothing (keystate down: param_4 = 1)");
+  for (const chord of ["F7", "Shift+F7", "Ctrl+F7"]) bindings.moduleActionFor(chord).edge(false);
+  assert.deepEqual(ran, [["SPELL", "Огненный шар"], ["ITEM", "Камень возвращения"], ["MACRO", "3"]], "the release does");
+  ran.length = 0;
+  bindings.moduleActionFor("F6").edge(true);
+  bindings.moduleActionFor("F6").edge(false);
+  assert.deepEqual(ran, [["CLICK", "MultiBarBottomLeftButton3", "LeftButton", true],
+    ["CLICK", "MultiBarBottomLeftButton3", "LeftButton", false]], "CLICK: the button's mouse-down, then its mouse-up");
+  ran.length = 0;
+  // The overrides alike; an override of a stock command keeps its press (no edge).
+  FRAMEXML_BINDING_BINDINGS.SetOverrideBindingSpell(seam, ["table: 0x2", false, "F9", "Рывок"]);
+  FRAMEXML_BINDING_BINDINGS.SetOverrideBindingClick(seam, ["table: 0x2", false, "F10", "ActionButton3", "RightButton"]);
+  FRAMEXML_BINDING_BINDINGS.SetOverrideBinding(seam, ["table: 0x2", false, "F11", "ITEM Камень"]);
+  FRAMEXML_BINDING_BINDINGS.SetOverrideBinding(seam, ["table: 0x2", false, "F12", "SITORSTAND"]);
+  bindings.overrideFor("F9").edge(true);
+  bindings.overrideFor("F11").edge(true);
+  assert.deepEqual(ran, []);
+  bindings.overrideFor("F9").edge(false);
+  bindings.overrideFor("F11").edge(false);
+  bindings.overrideFor("F10").edge(true);
+  bindings.overrideFor("F10").edge(false);
+  assert.deepEqual(ran, [["SPELL", "Рывок"], ["ITEM", "Камень"], ["CLICK", "ActionButton3", "RightButton", true],
+    ["CLICK", "ActionButton3", "RightButton", false]]);
+  assert.equal(bindings.overrideFor("F12").edge, undefined, "an ordinary command runs as declared");
+  model.detach();
+});
+
+test("13.10: a CLICK binding's edges are the Button's mouse-down and mouse-up (0x0096fa80, 0x0096fb60)", () => {
+  const { bindingClickRegistered, frameXmlBindingClickEdge } = clickEdges;
+  assert.equal(bindingClickRegistered(new Set(), false), true, "unregistered: 3.3.5's LeftButtonUp");
+  assert.equal(bindingClickRegistered(new Set(), true), false);
+  assert.equal(bindingClickRegistered(new Set(["RIGHTBUTTONDOWN"]), true), true, "any down flag (mask 0x7fffffff)");
+  assert.equal(bindingClickRegistered(new Set(["ANYUP"]), true), false);
+  assert.equal(bindingClickRegistered(new Set(["ANYUP"]), false), true);
+  assert.equal(bindingClickRegistered(new Set(["BUTTON31UP"]), false), true);
+  assert.equal(bindingClickRegistered(new Set(["NOSUCHUP"]), false), false, "a name 0x0096e9c0 does not know sets no flag");
+  const clicks = [];
+  const button = { type: "Button", enabled: true, buttonState: "NORMAL", clickRegistrations: new Set() };
+  const bridge = {
+    resolve: (frame) => frame,
+    Click: (frame, mouse, down) => { clicks.push([mouse, down]); return true; },
+    update: (frame, mutate) => { mutate(frame); return true; },
+  };
+  frameXmlBindingClickEdge(bridge, button, "LeftButton", true);
+  assert.deepEqual([clicks, button.buttonState], [[], "PUSHED"], "the press pushes; LeftButtonUp clicks nothing yet");
+  frameXmlBindingClickEdge(bridge, button, "LeftButton", false);
+  assert.deepEqual([clicks, button.buttonState], [[["LeftButton", false]], "NORMAL"], "the release clicks (button, false)");
+  frameXmlBindingClickEdge(bridge, button, "LeftButton", false);
+  assert.equal(clicks.length, 1, "a release with no push clicks nothing (state & 0xf != 2)");
+  button.clickRegistrations = new Set(["ANYDOWN"]);
+  frameXmlBindingClickEdge(bridge, button, "RightButton", true);
+  frameXmlBindingClickEdge(bridge, button, "RightButton", false);
+  assert.deepEqual(clicks.slice(1), [["RightButton", true]], "AnyDown: the press clicks (button, true), the release does not");
+  button.enabled = false;
+  frameXmlBindingClickEdge(bridge, button, "LeftButton", true);
+  assert.deepEqual([clicks.length, button.buttonState], [2, "NORMAL"], "a disabled button takes neither");
 });
 
 test("3.11 D: the prelude hands an override's owner over as its identity string", () => {

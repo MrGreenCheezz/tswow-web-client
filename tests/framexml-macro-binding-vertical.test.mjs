@@ -574,3 +574,30 @@ test("a macro on a secure action button runs the clause its conditions pick, wit
     release?.();
   }
 });
+
+test("13.10: a CLICK binding's key edges reach the named button as its mouse-down and mouse-up (Wow.exe 0x00563150)", withClient, async () => {
+  await ready();
+  const errors = boot.errorCount;
+  lua(`
+    WebClientBindingClicks = {}
+    local probe = CreateFrame("Button", "WebClientBindingClickProbe", UIParent)
+    probe:SetScript("OnClick", function(self, button, down) table.insert(WebClientBindingClicks, button .. ":" .. tostring(down)) end)`, 0);
+  try {
+    assert.equal(seam.keyBindings.setBindingClick("F6", "WebClientBindingClickProbe"), true);
+    const action = bindings.moduleActionFor("F6");
+    action.edge(true);
+    assert.deepEqual(lua("return #WebClientBindingClicks, WebClientBindingClickProbe:GetButtonState()", 2), [0, "PUSHED"],
+      "the press pushes the button; its default LeftButtonUp clicks nothing yet (0x0096fa80)");
+    action.edge(false);
+    assert.deepEqual(lua("return WebClientBindingClicks[1], WebClientBindingClickProbe:GetButtonState()", 2),
+      ["LeftButton:false", "NORMAL"], "the release clicks (0x0096fb60)");
+    lua('WebClientBindingClickProbe:RegisterForClicks("AnyDown")', 0);
+    action.edge(true);
+    action.edge(false);
+    assert.deepEqual(lua("return #WebClientBindingClicks, WebClientBindingClicks[2]", 2), [2, "LeftButton:true"],
+      "registered for AnyDown, the press clicks and the release does not");
+    assert.equal(boot.errorCount, errors, boot.vm.errors.slice(errors).join(" | "));
+  } finally {
+    seam.keyBindings.setBinding("F6", null);
+  }
+});

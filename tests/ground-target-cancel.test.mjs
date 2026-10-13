@@ -44,7 +44,8 @@ test("Escape backs out of the reticle before windows, target or menu", async () 
 test("right-click cancels an armed reticle instead of interacting", async () => {
   const source = await readFile(new URL("../src/browser/input/Controls.ts", import.meta.url), "utf8");
   // 5.09: the click is worldClick(point, left, right) (was `releasedRight && clicked(2)) {` inline in releaseButtons).
-  assert.match(source, /worldClick\(event, releasedLeft && clicked\(1\), releasedRight && clicked\(2\)\);/);
+  // 13.10: by the commands' click, Wow.exe 0x005f9600 (was `releasedLeft && clicked(1), releasedRight && clicked(2)`).
+  assert.match(source, /worldClick\(event, click === MOUSE_CLICK_SELECT, click === MOUSE_CLICK_INTERACT\);/);
   assert.match(source, /if \(right\) \{\s+cancelGroundTarget\(\);/,
     "an unmoved right press while armed cancels");
 });

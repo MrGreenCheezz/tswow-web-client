@@ -19,6 +19,7 @@ import { createLazyFrameXmlMacroOwner } from "./FrameXmlMacroOwner.js";
 import { createLazyFrameXmlBindingOwner, installFrameXmlKeyBindingKeyboard } from "./FrameXmlBindingOwner.js";
 import { publishFrameXmlMacro } from "./FrameXmlMacroController.js";
 import { publishFrameXmlKeyBindings } from "./FrameXmlBindingController.js";
+import { frameXmlBindingClickEdge } from "./FrameXmlBindingClick.js"; // 13.10
 
 export interface FrameXmlMacroBindingHost {
   /** Open the macro window (stock when published, native otherwise): `Macros.openMacroWindow`. */
@@ -45,7 +46,13 @@ export function mountFrameXmlMacroBindingWindows(
       boot.vm.executeReported(`ShowMacroFrame = ${SHOW_MACRO_FRAME}`, "@webclient/macro-route");
       const keyboardCleanup = installFrameXmlKeyBindingKeyboard(boot);
       // A CLICK binding presses the stock button it names, in this VM.
-      seam.keyBindings?.setClicker((button, mouseButton) => {
+      // 13.10: a key's edge hands the named button its mouse-down or mouse-up (Wow.exe 0x00563150, FrameXmlBindingClick.ts);
+      // without one (RunBinding's run) it is Button:Click, as before.
+      seam.keyBindings?.setClicker((button, mouseButton, down) => {
+        if (down !== undefined) {
+          frameXmlBindingClickEdge(boot.bridge, boot.bridge.getFrame(button), mouseButton, down);
+          return;
+        }
         boot.vm.executeReported(
           "local button, mouse = ...\nlocal frame = _G[button]\nif type(frame) == 'table' and frame.Click then frame:Click(mouse) end",
           "@webclient/binding-click", [button, mouseButton]);

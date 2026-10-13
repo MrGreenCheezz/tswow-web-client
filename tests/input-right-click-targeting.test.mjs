@@ -125,10 +125,12 @@ function rightClick() {
   pointer("pointerup", { ...base, button: 2, buttons: 0 });
 }
 
+// 13.10: a drag by Wow.exe's rule (0x005f9600) — moved 8 or more and held 200 ms or more; a 12 px flick let go at once
+// is a click now (was: no timeStamps, a drag past 3 px).
 function rightDrag() {
-  pointer("pointerdown", { ...base, button: 2, buttons: 2 });
-  pointer("pointermove", { ...base, movementX: 12, buttons: 2 });
-  pointer("pointerup", { ...base, button: 2, buttons: 0 });
+  pointer("pointerdown", { ...base, button: 2, buttons: 2, timeStamp: 1000 });
+  pointer("pointermove", { ...base, movementX: 12, buttons: 2, timeStamp: 1100 });
+  pointer("pointerup", { ...base, button: 2, buttons: 0, timeStamp: 1250 });
 }
 
 /** A published stock trade skill owner whose enchant waits while `armed` holds. */

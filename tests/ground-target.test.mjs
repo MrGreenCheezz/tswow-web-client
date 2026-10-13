@@ -262,8 +262,9 @@ test("ground spells arm the reticle, clicks resolve it, Esc and right-click rele
     "a click that resolves nowhere says so instead of dying silently");
   // 5.09: the click is Controls.worldClick(point, left, right), which the Lua mouse commands' release runs too; was
   // `confirmGroundTargetAt(event, …)` and `releasedRight && clicked(2)) {` inline in releaseButtons.
-  assert.match(controls, /worldClick\(event, releasedLeft && clicked\(1\), releasedRight && clicked\(2\)\);/,
-    "the page's release clicks only an unmoved press");
+  // 13.10: by the commands' click, Wow.exe 0x005f9600 (was `releasedLeft && clicked(1), releasedRight && clicked(2)`).
+  assert.match(controls, /worldClick\(event, click === MOUSE_CLICK_SELECT, click === MOUSE_CLICK_INTERACT\);/,
+    "the page's release clicks only what Wow.exe calls a click");
   assert.match(controls, /confirmGroundTargetAt\(point, world, pendingSpell\)/,
     "a clean left click resolves the landing point");
   assert.match(controls, /if \(right\) \{\s*\n?\s*cancelGroundTarget\(\)/,

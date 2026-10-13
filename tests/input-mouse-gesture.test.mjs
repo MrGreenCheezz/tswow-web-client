@@ -101,6 +101,7 @@ const controls = await import("../dist/code/browser/input/Controls.js");
 const movement = await import("../dist/code/browser/input/Movement.js");
 const settingsModule = await import("../dist/code/browser/ui/Settings.js");
 const { OPCODES } = await import("../dist/code/generated/opcodes.js");
+const commands = await import("../dist/code/browser/input/MovementCommands.js");
 usePanelHost({ viewport: document.body, attach() {} });
 controls.wireControls();
 
@@ -288,6 +289,75 @@ test("11.10: a button pressed on the interface and carried over the world is not
     carried("pointermove", 3, 12);
     assert.notEqual(world.mover.position.orientation, facing, "the right button turns the character");
     assert.equal(sent.includes(OPCODES.MSG_MOVE_START_FORWARD), false, "the carried left button is no half of a two-button run");
+  });
+});
+
+test("13.10: the page's buttons click by Wow.exe's rule (0x005f9600), not by a 3 px slop", () => {
+  // BUTTON1/BUTTON2 are CameraOrSelectOrMove/TurnOrAction, so their release clicks as the commands' does: a drag once
+  // held 800 ms, or moved 8 on an axis and held 200 ms (MouseCommandClick.ts). The left button's click is the select,
+  // which on bare ground drops the target (world.selections gets `undefined`).
+  const at = (name, buttons, timeStamp, movementX = 0, movementY = 0) => fireCanvas(name, {
+    pointerId: 1, clientX: 40, clientY: 40, movementX, movementY, button: buttons & 2 ? 2 : 0, buttons, timeStamp,
+    preventDefault() {},
+  });
+  withWorld((world) => {
+    at("pointerdown", 1, 1000);
+    at("pointerup", 0, 1900);
+    assert.deepEqual(world.selections, [], "held still 900 ms is a drag (was a click: it never moved)");
+    at("pointerdown", 1, 2000);
+    at("pointermove", 1, 2050, 20, 0);
+    at("pointermove", 1, 2100, 10, 0);
+    at("pointerup", 0, 2150);
+    assert.deepEqual(world.selections, [undefined], "30 px in 150 ms is a click (was a drag past 3 px)");
+    at("pointerdown", 1, 3000);
+    at("pointermove", 1, 3100, 7, 7);
+    at("pointerup", 0, 3300);
+    assert.deepEqual(world.selections, [undefined, undefined], "7 px on each axis held 300 ms is a click (was 14 px, a drag)");
+    at("pointerdown", 1, 4000);
+    at("pointermove", 1, 4100, 0, -9);
+    at("pointerup", 0, 4300);
+    assert.equal(world.selections.length, 2, "9 px up and held 300 ms is a drag");
+    // Two commands together are no click (0x005fa170 clears the mode), whichever comes up last.
+    at("pointerdown", 1, 5000);
+    at("pointermove", 3, 5010);
+    at("pointermove", 1, 5020);
+    at("pointerup", 0, 5030);
+    assert.equal(world.selections.length, 2, "the left press shared with the right one clicks nothing");
+    at("pointerdown", 2, 5100);
+    at("pointermove", 3, 5110);
+    at("pointermove", 2, 5120);
+    at("pointerup", 0, 5130);
+    assert.equal(world.selections.length, 2, "nor does a left press added to the right one");
+  });
+  withWorld((world, sent) => {
+    // Any move under the right button turned the character, so its release reports the facing (was: only past 3 px).
+    at("pointerdown", 2, 6000);
+    at("pointermove", 2, 6010, 2, 0);
+    const before = sent.length;
+    at("pointerup", 0, 6020);
+    assert.deepEqual(sent.slice(before), [OPCODES.MSG_MOVE_SET_FACING], "a 2 px turn's facing reaches the server");
+  });
+});
+
+test("13.10: the page's buttons and the Lua mouse commands share one click (input+0x18)", () => {
+  const at = (name, buttons, timeStamp) => fireCanvas(name, {
+    pointerId: 1, clientX: 40, clientY: 40, movementX: 0, movementY: 0, button: buttons & 2 ? 2 : 0, buttons, timeStamp,
+    preventDefault() {},
+  });
+  withWorld((world) => {
+    // One click over the two command bits whoever sets them (input+0x18): CameraOrSelectOrMoveStart from Lua, then the
+    // right button pressed and let go — two commands, so CameraOrSelectOrMoveStop selects nothing.
+    const { movementCommandInput } = commands;
+    fireCanvas("pointermove", { pointerId: 1, clientX: 40, clientY: 40, movementX: 0, movementY: 0, button: -1, buttons: 0, preventDefault() {} });
+    movementCommandInput().button(2, true);
+    movementCommandInput().button(2, false);
+    assert.equal(world.selections.length, 1, "the Lua command alone selects on its quick release");
+    movementCommandInput().button(2, true);
+    at("pointerdown", 2, performance.now());
+    at("pointerup", 0, performance.now());
+    movementCommandInput().button(2, false);
+    assert.equal(world.selections.length, 1, "with the right button between its press and release it does not");
+    document.pointerLockElement = null;
   });
 });
 

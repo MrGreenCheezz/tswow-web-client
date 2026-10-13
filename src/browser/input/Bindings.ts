@@ -507,7 +507,20 @@ export interface ModuleAction {
   readonly group: string;
   readonly label: string;
   run(): void;
+  /** 13.10: a direct SPELL/ITEM/MACRO/CLICK binding's key edges (see {@link DirectBindingEdge}); `Controls` calls it instead of `run`. */
+  readonly edge?: DirectBindingEdge | undefined;
 }
+
+/**
+ * 13.10: a key bound directly to `SPELL x`, `ITEM x`, `MACRO x` or `CLICK b:m` acts on its key's edges as Wow.exe
+ * 0x00563150 runs it (keystate `param_4`: 1 down, 0 up — 0x004f6ae0 the key's press, 0x004f6b70 its release): SPELL
+ * casts (0x0053bc40), ITEM uses (0x00708c20) and MACRO runs (0x00564db0 "LeftButton") on the release only, nothing on the
+ * press; CLICK hands the button its mouse-down on the press (vtable +0xac) and its mouse-up on the release (+0xb0).
+ * Every other command goes to 0x0055f860 with the keystate, as before. `Controls` keeps the binding the press found,
+ * by key, and runs that one's release — 0x004f6ae0 stores the press's command in the key's slot and 0x004f6b70 runs the
+ * slot, so a modifier let go first or a binding changed under the held key does not change what the release runs.
+ */
+export type DirectBindingEdge = (down: boolean) => void;
 
 const CORE_ACTIONS: ReadonlySet<string> = new Set<string>(INPUT_ACTIONS.map((entry) => entry.action));
 const moduleTable = new Map<string, ModuleAction>();
@@ -834,6 +847,8 @@ export interface OverrideBinding {
    */
   readonly action?: InputAction | undefined;
   run(): void;
+  /** 13.10: a direct SPELL/ITEM/MACRO/CLICK override's key edges ({@link DirectBindingEdge}); `Controls` calls it instead of `run`. */
+  readonly edge?: DirectBindingEdge | undefined;
 }
 
 const overrides = new Map<string, OverrideBinding[]>();

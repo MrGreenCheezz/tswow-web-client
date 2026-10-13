@@ -51,6 +51,7 @@ import { isStockAction } from "./StockActions.js";
 import {
   HELD_ACTIONS, actionFor, chordOf, moduleActionFor, overrideFor, strafeInsteadOfTurn, type InputAction,
 } from "./Bindings.js";
+import type { DirectBindingEdge } from "./Bindings.js"; // 13.10
 import {
   beginHeld, endHeld, flushFacing, normalizeAngle, releaseAllInput, resetCharacterMotion,
   setMouseRun, setSteering, turnCharacterBy,
@@ -331,7 +332,7 @@ function onKeyDown(event: KeyboardEvent): void {
   // table's own key — the client runs such a runOnUp binding with keystate "down" and "up".
   const overrideHeld = override?.action !== undefined && HELD_ACTIONS.has(override.action) ? override.action : undefined;
   if (override && overrideHeld === undefined) { // L2 3.11: `&& overrideHeld === undefined`
-    if (!event.repeat) override.run();
+    if (!event.repeat && !pressDirect(event.code, override)) override.run(); // 13.10: `!pressDirect(…) &&`
     event.preventDefault();
     return;
   }
@@ -353,7 +354,7 @@ function onKeyDown(event: KeyboardEvent): void {
     // a module can never answer for a key that already means something else.
     const fromModule = moduleActionFor(chordOf(event));
     if (!fromModule) return;
-    if (!event.repeat) fromModule.run();
+    if (!event.repeat && !pressDirect(event.code, fromModule)) fromModule.run(); // 13.10: `!pressDirect(…) &&`
     event.preventDefault();
     return;
   }
@@ -398,6 +399,15 @@ function onKeyUp(event: KeyboardEvent): void {
     event.preventDefault();
     return;
   }
+  // 13.10: a direct SPELL/ITEM/MACRO/CLICK binding's release — the one its press found (Wow.exe 0x004f6b70).
+  const direct = directByCode.get(event.code);
+  if (direct) {
+    directByCode.delete(event.code);
+    // An edit box that has the keyboard takes the release (0x004f6b70 asks the frames first, 0x0048fbf0).
+    if (!typingInto(event.target)) direct(false);
+    event.preventDefault();
+    return;
+  }
   const entry = heldByCode.get(event.code);
   if (!entry) {
     releaseUnrecordedKey(event); // 5.09
@@ -413,11 +423,34 @@ function onKeyUp(event: KeyboardEvent): void {
 const moveAndSteerKeys = new Set<string>();
 
 /**
+ * 13.10: the keys down on a direct SPELL/ITEM/MACRO/CLICK binding, by `event.code`, with the binding their press found
+ * (Bindings.DirectBindingEdge): Wow.exe's key press (0x004f6ae0) keeps the command in the key's slot and its release
+ * (0x004f6b70) runs that slot with keystate up, so a modifier let go first does not change what the release runs.
+ */
+const directByCode = new Map<string, DirectBindingEdge>();
+
+/**
+ * 13.10: a key's press on a direct binding: its down edge now (nothing for SPELL, ITEM, MACRO; the button's mouse-down
+ * for CLICK), its release kept for the key's keyup. False for any other binding, which runs on the press as before.
+ * The autorepeat never reaches here (the callers skip `event.repeat`): a held key is one press, one release.
+ */
+function pressDirect(code: string, binding: { readonly edge?: DirectBindingEdge | undefined }): boolean {
+  const edge = binding.edge;
+  if (!edge) return false;
+  directByCode.set(code, edge);
+  edge(true);
+  return true;
+}
+
+/**
  * 5.09: a key let go whose press this table never saw (pressed in an edit box, before the world, before its binding
  * changed). Wow.exe's key-up (0x004f6b70) runs the key's binding as it stands now when no press was recorded for it
  * (0x0055e2c0 → 0x00563150 with keystate "up"), so a held command's Stop still lands: MoveForwardStop clears the bit
  * whoever set it — a RunBinding or MoveForwardStart from Lua included (0x005fa450). Not while an edit box has the
  * keyboard. Was: nothing.
+ * 13.10: a direct SPELL/ITEM/MACRO/CLICK binding's release is not run from here, though 0x004f6b70 would run it: the
+ * stock frames that take the keyboard here (CoinPickupFrame, KeyBindingFrame) take a key's press but not its release,
+ * which Wow.exe's frames take as well (0x0048fbf0), so a digit typed into the money box would cast on its release.
  */
 function releaseUnrecordedKey(event: KeyboardEvent): void {
   if (!game.world || typingInto(event.target)) return;
@@ -443,8 +476,11 @@ function dropLuaHolds(action: InputAction): void {
   }
 }
 
-/** How far the pointer may travel before a press stops being a click and becomes a drag. */
-const DRAG_THRESHOLD = 3;
+/**
+ * How far the pointer may travel before the drag takes the pointer lock (5.14). 13.10: only the lock's — whether the
+ * release clicks is Wow.exe's rule (0x005f9600, MouseCommandClick.ts; was `drag.moved <= DRAG_THRESHOLD`, 3 px).
+ */
+const LOCK_THRESHOLD = 3;
 
 /**
  * The gesture in progress.
@@ -455,10 +491,10 @@ const DRAG_THRESHOLD = 3;
  * between arrives as `pointermove`. Counting presses would mean the right button never registers
  * while the left is held, which is exactly the gesture that has to run forward.
  *
- * `seen` is every button the gesture has used, so a press that was part of a two-button run does
- * not also count as a click when it comes up alone.
+ * 13.10: a press that was part of a two-button run is no click when it comes up alone — the commands' click mode says
+ * so (MouseCommandClick.ts; was `seen`, every button the gesture had used).
  */
-const drag = { left: false, right: false, moved: 0, seen: 0, lockRequested: false, lockRefused: false, turned: false };
+const drag = { left: false, right: false, moved: 0, lockRequested: false, lockRefused: false, turned: false };
 
 /**
  * 11.10: the buttons held down while the pointer is over the world that were pressed somewhere else.
@@ -914,7 +950,8 @@ function clearUnitTooltip(): void {
  * Everything about a gesture is derived here — which buttons are down, whether the two-button run
  * is on, and where the gesture started — so no listener has to keep its own idea of it.
  */
-function syncButtons(event: PointerEvent): { releasedLeft: boolean; releasedRight: boolean } {
+function syncButtons(event: PointerEvent): { releasedLeft: boolean; releasedRight: boolean; click: number } {
+  const bitsBefore = cameraButtonBits(); // 13.10
   // 11.10: a button let go of is nobody's any more; one already held on a move that pressed nothing
   // while no gesture runs went down somewhere else (see `foreignButtons`) and is not read below.
   foreignButtons &= event.buttons;
@@ -935,11 +972,9 @@ function syncButtons(event: PointerEvent): { releasedLeft: boolean; releasedRigh
   // drag that picked up a second button on the way is still one gesture.
   if (!drag.left && !drag.right && (left || right)) {
     drag.moved = 0;
-    drag.seen = 0;
     drag.turned = false;
     drag.lockRefused = false;
   }
-  drag.seen |= (left ? 1 : 0) | (right ? 2 : 0);
   const wasDragging = drag.left || drag.right;
   const wasRight = drag.right;
   // 5.14: the right button going down turns the character to where the camera looks, and the
@@ -953,6 +988,7 @@ function syncButtons(event: PointerEvent): { releasedLeft: boolean; releasedRigh
   }
   drag.left = left;
   drag.right = right;
+  const click = pageButtonEdges(bitsBefore, cameraButtonBits(), eventTime(event)); // 13.10
   // 3.11: the last mouse command let go (game/CameraFollow.ts): the left with CameraOrSelectOrMoveStop(
   // IsModifiedClick("STICKYCAMERA")) — Ctrl by default (Bindings.xml) — the right with TurnOrActionStop(), never sticky.
   if (wasDragging && !left && !right && luaButtons === 0) cameraButtonsLetGo = releasedLeft && event.ctrlKey === true;
@@ -967,23 +1003,62 @@ function syncButtons(event: PointerEvent): { releasedLeft: boolean; releasedRigh
   // Written only when it changes: this runs on every mouse move over the canvas, and a class
   // written per move is a style recalculation per move.
   if (wasDragging !== (left || right)) worldCanvas.classList.toggle("camera-dragging", left || right);
-  return { releasedLeft, releasedRight };
+  return { releasedLeft, releasedRight, click };
 }
 
-/** A press that never moved and never shared the gesture with the other button is a click. */
-function clicked(button: 1 | 2): boolean {
-  return drag.moved <= DRAG_THRESHOLD && drag.seen === button;
+/** 13.10: the two command bits in the order an event's edges are taken — TurnOrAction (1), CameraOrSelectOrMove (2). */
+const COMMAND_BITS = [TURN_OR_ACTION, CAMERA_OR_SELECT_OR_MOVE] as const;
+
+/**
+ * 13.10: the page's own buttons through the commands' click (MouseCommandClick.ts), as Wow.exe has one rule for both.
+ * The left and right buttons are BUTTON1 and BUTTON2, whose stock bindings are CameraOrSelectOrMove and TurnOrAction
+ * (Bindings.xml); the world's mouse-button press and release (0x004f6c10, 0x004f6c90) run them through 0x00563150 as
+ * any key's binding, so their bits are set and cleared by 0x005fa170 and 0x005fa450 and the release clicks by
+ * 0x005f9600 — a press is a drag once held 800 ms, or moved 8 on an axis and held 200 ms. `before` and `after` are
+ * {@link cameraButtonBits} around the event (a Lua command on the same bit counted: its bit already set is no new
+ * press, 0x005fa170 returns early); the releases are taken before the presses. Answers the click a release made, or
+ * none. Was: a click for a press that moved at most 3 px (`drag.moved`, both axes summed) and never shared the gesture
+ * with the other button (`drag.seen`), however long it was held.
+ */
+function pageButtonEdges(before: number, after: number, now: number): number {
+  if (before === after) return MOUSE_CLICK_NONE;
+  let bits = before;
+  let click = MOUSE_CLICK_NONE;
+  for (const bit of COMMAND_BITS) {
+    if ((before & bit) === 0 || (after & bit) !== 0) continue;
+    const made = mouseClick.up(bits, bits & ~bit, now, false);
+    bits &= ~bit;
+    if (made !== MOUSE_CLICK_NONE) click = made;
+  }
+  for (const bit of COMMAND_BITS) {
+    if ((before & bit) !== 0 || (after & bit) === 0) continue;
+    mouseClick.down(bit, bits, bits | bit, now, false);
+    bits |= bit;
+  }
+  return click;
+}
+
+/**
+ * 13.10: when an input event happened, on the clock the Lua commands' edges read (`performance.now()`): the event's own
+ * stamp where it has one (Wow.exe 0x005fa450 is handed the event's time, `param_3`).
+ */
+function eventTime(event: { timeStamp?: number }): number {
+  const stamp = event.timeStamp;
+  return typeof stamp === "number" && Number.isFinite(stamp) && stamp > 0 ? stamp : performance.now();
 }
 
 function releaseButtons(event: PointerEvent): void {
-  const { releasedLeft, releasedRight } = syncButtons(event);
+  const { releasedLeft, releasedRight, click } = syncButtons(event);
   if (!releasedLeft && !releasedRight) return;
   // The camera has stopped; tell the server where the character ended up facing, since a turn on
   // the spot sends nothing else.
-  if (releasedRight && (drag.moved > DRAG_THRESHOLD || drag.turned)) flushFacing();
+  // 13.10: any move under the right button turned the character (`drag.moved > 0`, was `> DRAG_THRESHOLD`, 3 px).
+  if (releasedRight && (drag.moved > 0 || drag.turned)) flushFacing();
   // 5.09: the click itself is `worldClick`, which the Lua mouse commands' release runs too (was inline here, with
   // `releasedLeft && clicked(1)` and `releasedRight && clicked(2)` where it reads `left` and `right`).
-  worldClick(event, releasedLeft && clicked(1), releasedRight && clicked(2));
+  // 13.10: the commands' click (pageButtonEdges): CameraOrSelectOrMove's selects, TurnOrAction's interacts (was
+  // `releasedLeft && clicked(1), releasedRight && clicked(2)`).
+  worldClick(event, click === MOUSE_CLICK_SELECT, click === MOUSE_CLICK_INTERACT);
 }
 
 /**
@@ -1073,7 +1148,8 @@ function abandonGesture(): void {
   const wasRight = drag.right;
   drag.left = false;
   drag.right = false;
-  drag.seen = 0;
+  // 13.10: the buttons went without a release, so nothing clicks (was `drag.seen = 0`).
+  mouseClick.reset();
   // L8 5.09: what Lua still holds stays held (was `false`, `false`).
   setMouseRun(luaButtons === (TURN_OR_ACTION | CAMERA_OR_SELECT_OR_MOVE));
   setSteering((luaButtons & TURN_OR_ACTION) !== 0);
@@ -1125,14 +1201,16 @@ function wireMouse(): void {
     // release's click (MouseCommandClick.ts); no hover while it does.
     const luaLook = luaButtons !== 0 && !drag.left && !drag.right;
     if (luaLook) {
-      luaClick.moved(event.movementX, event.movementY);
+      mouseClick.moved(event.movementX, event.movementY);
       clearHoverCursor();
     } else {
       updateHoverCursor(event);
       if (!wasDragging || (!drag.left && !drag.right)) return;
       drag.moved += Math.abs(event.movementX) + Math.abs(event.movementY);
-      // 5.14: past the click threshold the drag hides the cursor and keeps the pointer.
-      if (drag.moved > DRAG_THRESHOLD) requestDragPointerLock();
+      // 13.10: the buttons' moves count for their release's click as the Lua commands' do (0x005fba60: |dx|, |dy|).
+      mouseClick.moved(event.movementX, event.movementY);
+      // 5.14: past the lock threshold the drag hides the cursor and keeps the pointer.
+      if (drag.moved > LOCK_THRESHOLD) requestDragPointerLock(); // 13.10: LOCK_THRESHOLD (was DRAG_THRESHOLD)
     }
     // 5.09: the right button, or the Lua right command without a page button (was `drag.right` below).
     const steer = drag.right || (luaLook && (luaButtons & TURN_OR_ACTION) !== 0);
@@ -1289,7 +1367,7 @@ function holdButton(bit: number, down: boolean, how?: MouseCommandHow): void { /
   const after = down ? before | bit : before & ~bit;
   if (after === before || (down && !game.world)) {
     // 5.09: MouselookStart/Stop set the click mode to none whether or not the bit moves (0x005fcc10, 0x005fc890).
-    if (how?.mouselook) luaClick.reset();
+    if (how?.mouselook) mouseClick.reset();
     return;
   }
   // 5.09: the click bookkeeping over the two command bits, the page's own buttons counted (MouseCommandClick.ts).
@@ -1297,7 +1375,7 @@ function holdButton(bit: number, down: boolean, how?: MouseCommandHow): void { /
   luaButtons = after;
   const bitsAfter = cameraButtonBits();
   const now = performance.now();
-  if (down) luaClick.down(bit, bitsBefore, bitsAfter, now, how?.mouselook === true);
+  if (down) mouseClick.down(bit, bitsBefore, bitsAfter, now, how?.mouselook === true);
   // 3.11: the last mouse command let go: CameraOrSelectOrMoveStop's argument (0x005fc730 → 0x005fa450 → 0x00604850).
   if (!down && after === 0 && !drag.left && !drag.right) cameraButtonsLetGo = bit === CAMERA_OR_SELECT_OR_MOVE && how?.sticky === true;
   // 5.09: the mouse turns the camera under a Lua command without a button (Wow.exe 0x005fba60 reads the input word, not
@@ -1321,13 +1399,17 @@ function holdButton(bit: number, down: boolean, how?: MouseCommandHow): void { /
   }
   // 5.09: the release's click (0x005fa450 → 0x005f9600 → 0x004f7880): select or interact under the cursor.
   if (!down) {
-    const click = luaClick.up(bitsBefore, bitsAfter, now, how?.mouselook === true);
+    const click = mouseClick.up(bitsBefore, bitsAfter, now, how?.mouselook === true);
     if (click !== MOUSE_CLICK_NONE && lastPointer) worldClick(lastPointer, click === MOUSE_CLICK_SELECT, click === MOUSE_CLICK_INTERACT);
   }
 }
 
-/** 5.09: MouseCommandClick.ts over the Lua mouse commands. */
-const luaClick = new MouseCommandClick();
+/**
+ * 5.09: MouseCommandClick.ts over the Lua mouse commands. 13.10: and over the page's own buttons (pageButtonEdges) — one
+ * click over the two command bits whoever sets them, as Wow.exe keeps one at input+0x18 (was `luaClick`, the Lua
+ * commands' alone).
+ */
+const mouseClick = new MouseCommandClick();
 /** 5.09: where the pointer last was over the world, for the Lua commands' click (the cursor stays put under the lock). */
 let lastPointer: { clientX: number; clientY: number } | undefined;
 /** 5.09: the pointer lock a Lua command asked for. */
@@ -1361,7 +1443,7 @@ function forgetLuaButtons(): void {
   if ((luaButtons & TURN_OR_ACTION) !== 0) setSteering(drag.right);
   luaButtons = 0;
   luaTurned = false;
-  luaClick.reset(); // 5.09
+  mouseClick.reset(); // 5.09 (13.10: was luaClick)
   releaseLuaPointerLock(); // 5.09
   moveAndSteerKeys.clear(); // 5.09
 }
@@ -1414,6 +1496,7 @@ export function wireControls(): void {
     // A key held while alt-tabbing never gets its release, and a character that never hears about
     // it runs off a cliff.
     heldByCode.clear();
+    directByCode.clear(); // 13.10: a release that never came casts nothing
     shiftHeld = false;
     forgetLuaButtons(); // L8 5.09
     abandonGesture();
@@ -1431,6 +1514,7 @@ export function wireControls(): void {
  */
 export function clearHeldKeys(): void {
   heldByCode.clear();
+  directByCode.clear(); // 13.10
   // L8 5.09: the Lua mouse commands go too; the buttons still physically down keep steering.
   if (luaButtons !== 0) {
     forgetLuaButtons();

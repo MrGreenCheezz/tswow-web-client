@@ -302,6 +302,20 @@ interface BindingIndex {
 /** How often, in seam seconds, `tick` looks for a key changed outside this API. */
 const OUTSIDE_CHANGE_SECONDS = 0.25;
 
+/**
+ * The stock button press behind a CLICK binding. 13.10: `down` is the key's edge (Wow.exe 0x00563150 hands the button
+ * its mouse-down on the press, its mouse-up on the release — FrameXmlBindingClick.ts); undefined is `Button:Click`, once.
+ */
+export type FrameXmlBindingClicker = (button: string, mouseButton: string, down?: boolean) => void;
+
+/**
+ * 13.10: a direct binding's edges (Bindings.DirectBindingEdge): SPELL, ITEM and MACRO run on the release alone (Wow.exe
+ * 0x00563150 acts only for keystate up); was `run` on the press.
+ */
+function onRelease(run: () => void): (down: boolean) => void {
+  return (down) => { if (!down) run(); };
+}
+
 /** A SetBindingClick action's command: the client's own `CLICK <button>:<mouse button>`. */
 function clickCommand(button: string, mouseButton: string): string {
   return `CLICK ${button}:${mouseButton}`;
@@ -319,7 +333,7 @@ export class FrameXmlBindingModel {
   readonly #host: FrameXmlBindingHost;
   #pump: FrameXmlSeamPump | undefined;
   #snapshot: Snapshot | undefined;
-  #click: ((button: string, mouseButton: string) => void) | undefined;
+  #click: FrameXmlBindingClicker | undefined; // 13.10: was `(button, mouseButton) => void`
   #runCommand: ((kind: FrameXmlBindingCommandKind, value: string) => void) | undefined;
   #updateQueued = false;
   #seen: readonly BindingPair[] = [];
@@ -361,7 +375,7 @@ export class FrameXmlBindingModel {
   }
 
   /** The stock button press behind a CLICK binding; the mount supplies it once the VM exists. */
-  setClicker(click: ((button: string, mouseButton: string) => void) | undefined): void {
+  setClicker(click: FrameXmlBindingClicker | undefined): void { // 13.10: FrameXmlBindingClicker
     this.#click = click;
   }
 
@@ -578,6 +592,7 @@ export class FrameXmlBindingModel {
         group: "FrameXML",
         label: `${button} (${mouse})`,
         run: () => this.#click?.(button, mouse),
+        edge: (down) => this.#click?.(button, mouse, down), // 13.10: the key's press and release
       });
     }
     return this.setBinding(key, command);
@@ -599,6 +614,7 @@ export class FrameXmlBindingModel {
         group: "FrameXML",
         label: name,
         run: () => this.#runCommand?.(kind, name),
+        edge: onRelease(() => this.#runCommand?.(kind, name)), // 13.10: on the key's release
       });
     }
     return this.setBinding(key, command);
@@ -638,6 +654,7 @@ export class FrameXmlBindingModel {
     if (typeof owner !== "string" || !chord || !name) return false;
     setOverrideBinding(owner, chord, {
       owner, priority: luaTrue(priority), command: `${kind} ${name}`, run: () => this.#runCommand?.(kind, name),
+      edge: onRelease(() => this.#runCommand?.(kind, name)), // 13.10: on the key's release
     });
     this.#changed();
     return true;
@@ -650,6 +667,7 @@ export class FrameXmlBindingModel {
     const mouse = typeof mouseButton === "string" && mouseButton ? mouseButton : "LeftButton";
     setOverrideBinding(owner, chord, {
       owner, priority: luaTrue(priority), command: clickCommand(button, mouse), run: () => this.#click?.(button, mouse),
+      edge: (down) => this.#click?.(button, mouse, down), // 13.10: the key's press and release
     });
     this.#changed();
     return true;
