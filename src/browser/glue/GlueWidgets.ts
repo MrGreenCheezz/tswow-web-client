@@ -28,6 +28,10 @@ import {
   type LuaScriptContext,
 } from "../ui/framexml_compat/FrameXmlTypes.js";
 import type { TooltipContent, TooltipLine, TooltipTone } from "../ui/Widgets.js";
+import { // 4.04 (13.10)
+  glueUnitLevelSlotsFromLua, glueUnitLevelText, glueUnitRowsAfterSkin, glueUnitRowsBeforeSkin, glueUnitThreatRow,
+  type GameTooltipUnitFacts, type GlueUnitTooltipHost,
+} from "./GlueUnitTooltip.js";
 
 /**
  * The legacy implicit environment 3.3.5 glue code still relies on.
@@ -384,6 +388,11 @@ export interface GameTooltipWidgetAdapter extends GameTooltipExtrasAdapter {
    * wait. Undefined when nothing is pending.
    */
   readonly watchUnitAnswers?: (unit: string, redraw: () => void) => (() => void) | undefined;
+  /**
+   * 4.04 (13.10): the world's answers for SetUnit's level line, faction, PvP, RESURRECTABLE, beast lore, racial
+   * leader and quest rows (glue/GlueUnitTooltip.ts); undefined chooses the level line from the Lua C API.
+   */
+  readonly unitTooltipFacts?: (unit: string) => GameTooltipUnitFacts | undefined;
 }
 
 /** A tooltip setter's repair price: a whole copper count, anything else 0 (the client's uint). */
@@ -1470,6 +1479,15 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
    * templates, and the PvP flag — then `OnTooltipSetUnit`, which is where the corpus and add-ons
    * extend it.
    */
+  /** 4.04 (13.10): what glue/GlueUnitTooltip.ts reads of this Lua state. */
+  #unitTooltipHost(): GlueUnitTooltipHost {
+    return {
+      callGlobal: (name, args, results) => this.callGlobal(name, args, results),
+      globalString: (key) => this.#vm.globalString(key),
+      format: (template, ...values) => formatClientTemplate(template, ...values),
+    };
+  }
+
   private setGameTooltipUnit(frame: FrameXmlFrame, unit: string): boolean {
     const exists = this.callGlobal("UnitExists", [unit], 1)[0];
     const name = this.callGlobal("UnitName", [unit], 1)[0];
@@ -1511,30 +1529,16 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
       const owner = summon.ownerName ?? this.#vm.globalString("UNKNOWNOBJECT") ?? "UKNOWNOBJECT";
       this.setGameTooltipLine(frame, formatClientTemplate(summonTemplate, owner), "Left", TOOLTIP_WHITE);
     }
-    const level = num(this.callGlobal("UnitLevel", [unit], 1)[0], 0);
-    const levelText = level > 0 ? String(level) : "??";
     const global = (key: string): string | undefined => this.#vm.globalString(key);
-    let levelLine: string | undefined;
-    if (player) {
-      const race = this.callGlobal("UnitRace", [unit], 1)[0];
-      const className = this.callGlobal("UnitClass", [unit], 1)[0];
-      const template = global("TOOLTIP_UNIT_LEVEL_RACE_CLASS");
-      if (template && typeof race === "string" && typeof className === "string") {
-        levelLine = formatClientTemplate(template, levelText, race, className);
-      }
-    } else {
-      const type = this.callGlobal("UnitCreatureType", [unit], 1)[0];
-      const template = typeof type === "string" && type.length > 0
-        ? global("TOOLTIP_UNIT_LEVEL_TYPE") : global("TOOLTIP_UNIT_LEVEL");
-      if (template) levelLine = formatClientTemplate(template, levelText, type);
-      const classification = this.callGlobal("UnitClassification", [unit], 1)[0];
-      const rank = classification === "worldboss" ? global("BOSS")
-        : classification === "elite" || classification === "rareelite" ? global("ELITE") : undefined;
-      if (levelLine && rank) levelLine = `${levelLine} (${rank})`;
-    }
+    // 4.04 (13.10): the level line in the template Wow.exe picks for its three slots, then the faction, PvP,
+    // RESURRECTABLE and beast lore rows (glue/GlueUnitTooltip.ts) — from the world's facts where the seam has
+    // them, else the level slots from the Lua C API by the same rules.
+    const unitHost = this.#unitTooltipHost();
+    const facts = this.#options.gameTooltipAdapter?.unitTooltipFacts?.(unit);
+    const levelLine = glueUnitLevelText(unitHost, facts?.level ?? glueUnitLevelSlotsFromLua(unitHost, unit));
     if (levelLine) this.setGameTooltipLine(frame, levelLine, "Left", TOOLTIP_WHITE);
-    if (this.callGlobal("UnitIsPVP", [unit], 1)[0] === true) {
-      this.setGameTooltipLine(frame, global("PVP") ?? "PvP", "Left", TOOLTIP_WHITE);
+    for (const row of glueUnitRowsBeforeSkin(unitHost, facts, () => this.callGlobal("UnitIsPVP", [unit], 1)[0] === true)) {
+      this.setGameTooltipLine(frame, row.text, "Left", row.color);
     }
     // The `colorblindMode` CVar, read per SetUnit as the client does (Wow.exe 0x00620EE0): the
     // composed GetCVarBool, so the stock options panel's SetCVar reaches it; unset is off.
@@ -1544,6 +1548,8 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
     if (skin && skinText) {
       this.setGameTooltipLine(frame, skin.prefix + skinText, "Left", { ...skin.color, a: 1 });
     }
+    // 4.04 (13.10): the racial leader and the quest objectives (glue/GlueUnitTooltip.ts).
+    for (const row of glueUnitRowsAfterSkin(unitHost, facts)) this.setGameTooltipLine(frame, row.text, "Left", row.color);
     // 5.28 (04.10, L4 for L6): a corpse's loot owners, white, after the lines above (Wow.exe
     // 0x0062220c writes them only for a dead unit): «MASTER_LOOTER: name», «LOOT: name».
     const looters = this.#options.gameTooltipAdapter?.unitLootOwners;
@@ -1552,6 +1558,9 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
         this.setGameTooltipLine(frame, `${global(owner.globalName) ?? owner.globalName}: ${owner.name}`, "Left", TOOLTIP_WHITE);
       }
     }
+    // 4.04 (13.10): the player's threat on the unit, last (0x00622317).
+    const threat = glueUnitThreatRow(unitHost, unit);
+    if (threat) this.setGameTooltipLine(frame, threat.text, "Left", threat.color);
     this.gameTooltipState(frame).unit = unit;
     // 3.12 (04.10, L4): a guild or a name still on its way draws this unit again when it comes (0x0061ddd0);
     // clearing the lines or hiding withdraws it, like a content redraw.

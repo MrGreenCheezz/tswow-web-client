@@ -145,6 +145,21 @@ export class FrameXmlTalentPreviewModel {
     }
   }
 
+  /**
+   * 3.12 (13.10): 0x005c76e0(talent, points) as `GameTooltip:SetTalent(…, isPreview)` asks it (0x00622800) —
+   * whether `AddPreviewTalentPoints` would move a point of this talent of the group's tab (the 0x5c73d0 rules
+   * above), without moving it. `talentId` names the cell; `groupIndex` undefined is the active group.
+   */
+  wouldChange(pet: boolean, groupIndex: number | undefined, tabIndex: number, talentId: number, points: number): boolean {
+    const snapshot = this.apply(pet, this.#context.snapshot(pet));
+    if (!snapshot) return false;
+    const group = snapshot.groups[(groupIndex ?? snapshot.activeTalentGroup) - 1];
+    const tab = group?.tabs[tabIndex - 1];
+    const cell = tab?.talents.find((talent) => talent.id === talentId);
+    if (!group || !tab || !cell) return false;
+    return allowedChange(group, tab, cell, points, pet ? PET_POINTS_PER_TIER : PLAYER_POINTS_PER_TIER) !== 0;
+  }
+
   /** `GetGroupPreviewTalentPointsSpent(isPet, group)`. */
   groupSpent(pet: boolean, groupArg?: unknown): number {
     const snapshot = this.apply(pet, this.#context.snapshot(pet));

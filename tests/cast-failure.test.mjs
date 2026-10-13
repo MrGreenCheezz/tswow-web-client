@@ -95,15 +95,15 @@ test("without a name the text says a word, never the id", () => {
   assert.equal(quiet(R.TOTEM_CATEGORY, [21]), "Требуется: инструмент.");
   assert.equal(quiet(R.PREVENTED_BY_MECHANIC, [12]), "Действие невозможно. Причина: эффект.");
   quiet(R.NEED_EXOTIC_AMMO, [8]);
-  // Three custom errors live under a suffixed name in GlobalStrings.lua.
-  assert.equal(quiet(R.CUSTOM_ERROR, [14]), globalString("SPELL_FAILED_CUSTOM_ERROR_14_NONE"));
-  assert.equal(quiet(R.CUSTOM_ERROR, [63]), globalString("SPELL_FAILED_CUSTOM_ERROR_63_NONE"));
-  assert.equal(quiet(R.CUSTOM_ERROR, [64]), globalString("SPELL_FAILED_CUSTOM_ERROR_64_NONE"));
-  assert.notEqual(globalString("SPELL_FAILED_CUSTOM_ERROR_63_NONE"), globalString("SPELL_FAILED_UNKNOWN"));
-  // An unknown or empty custom error is a general refusal, not its number.
-  assert.equal(quiet(R.CUSTOM_ERROR, [68]), globalString("SPELL_FAILED_UNKNOWN"));
-  assert.equal(quiet(R.CUSTOM_ERROR, [4000]), globalString("SPELL_FAILED_UNKNOWN"));
-  assert.equal(quiet(R.CUSTOM_ERROR, []), globalString("SPELL_FAILED_UNKNOWN"));
+  // 3.02 (13.10): Wow.exe 0x007fef10 asks only for SPELL_FAILED_CUSTOM_ERROR_<n> (0x00819d40, "" when undefined):
+  // the three custom errors GlobalStrings.lua keeps under a _NONE-suffixed name only, an unknown and an empty
+  // one say nothing (cast-failed-custom-error.test.mjs; was: the _NONE string, else SPELL_FAILED_UNKNOWN).
+  assert.equal(text(R.CUSTOM_ERROR, [14]), undefined);
+  assert.equal(text(R.CUSTOM_ERROR, [63]), undefined);
+  assert.equal(text(R.CUSTOM_ERROR, [64]), undefined);
+  assert.equal(text(R.CUSTOM_ERROR, [68]), undefined);
+  assert.equal(text(R.CUSTOM_ERROR, [4000]), undefined);
+  assert.equal(text(R.CUSTOM_ERROR, []), undefined);
   // A code the enum does not know still says which one it was (system-windows.test.mjs).
   assert.match(spellFailureText(250), /250/);
 });

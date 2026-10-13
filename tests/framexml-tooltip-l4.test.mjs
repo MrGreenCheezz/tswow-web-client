@@ -211,7 +211,9 @@ test("3.12: a quest link's objectives text is written for the player ($N, $C, $R
     names: { declined: () => undefined },
   };
   const adapter = frameXmlTooltipExtrasAdapter(seam, () => ({ world, talentData }), () => undefined);
-  assert.equal(adapter.quest(5).objectivesText, "Иди, Аэлинда, моя сестра, Жрица.");
+  // 3.12 (13.10): Wow.exe's own parser (FrameXmlQuestText.ts): `$c` lowered as `_strlwr` does — ASCII only, so
+  // «Жрица» keeps its capital — and the declension left for the FontString that draws it.
+  assert.equal(adapter.quest(5).objectivesText, "Иди, Аэлинда, моя сестра, |3-1(Жрица).");
   assert.equal(adapter.quest(6).objectivesText, "Просто текст.");
 });
 

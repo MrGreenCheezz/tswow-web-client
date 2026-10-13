@@ -160,6 +160,8 @@ export class FrameXmlGlyphModel {
   readonly #host: FrameXmlGlyphHost;
   #pump: GlyphPump | undefined;
   #pending: FrameXmlGlyphItem | undefined;
+  /** 2.05 (13.10): who hears the glyph cursor go up and come down (see `observeTargeting`). */
+  readonly #targetingObservers = new Set<(armed: boolean) => void>();
   /** The active group's six glyph ids as last seen, compared (not rebuilt) every tick. */
   #seen: (number | undefined)[] | undefined;
   #session: unknown;
@@ -184,8 +186,30 @@ export class FrameXmlGlyphModel {
 
   detach(): void {
     this.#pump = undefined;
-    this.#pending = undefined;
+    this.#setPending(undefined);
     this.#seen = undefined;
+  }
+
+  /**
+   * 2.05 (13.10): the glyph cursor is Wow.exe's one pending spell (DAT_00d3f4e4, the glyph item's
+   * SPELL_EFFECT_APPLY_GLYPH spell): every arming raises 0x0053b480 (0x0080cce0) and a drop does too
+   * (SpellStopTargeting 0x00809e30 → 0x00806200 → 0x008054f0), so the stock seam raises ACTIONBAR_UPDATE_STATE +
+   * CURRENT_SPELL_CAST_CHANGED on each (FrameXmlBoundTradeable.ts `frameXmlObservePendingSpells`). A placed glyph
+   * goes out as an item use, whose request raises the pair itself (FrameXmlOwnCastChanges.ts).
+   */
+  observeTargeting(observer: (armed: boolean) => void): () => void {
+    this.#targetingObservers.add(observer);
+    return () => { this.#targetingObservers.delete(observer); };
+  }
+
+  /** The cursor's item; an arming always notifies, a drop only when one was up, a placement never. */
+  #setPending(next: FrameXmlGlyphItem | undefined, notify = true): void {
+    const was = this.#pending !== undefined;
+    this.#pending = next;
+    if (!notify || (next === undefined && !was)) return;
+    for (const observer of [...this.#targetingObservers]) {
+      try { observer(next !== undefined); } catch { /* a cursor is presentation; the model goes on */ }
+    }
   }
 
   /** Ask the host for its tables; the owner calls it once it hosts the glyph tab. Never rejects. */
@@ -231,8 +255,10 @@ export class FrameXmlGlyphModel {
     const socket = socketOf(socketArg);
     const pending = this.#pending;
     if (socket === undefined || !pending) return;
-    this.#pending = undefined;
-    if (this.#host.holds(pending)) this.#host.place(pending, socket - 1);
+    // 2.05 (13.10): sent, the request's own pair stands for the drop (0x0080ac90 → 0x00805330); not sent, a drop.
+    const held = this.#host.holds(pending);
+    this.#setPending(undefined, !held);
+    if (held) this.#host.place(pending, socket - 1);
   }
 
   /** `RemoveGlyphFromSocket(socket)`: CMSG_REMOVE_GLYPH; the core ignores an empty socket. */
@@ -264,7 +290,7 @@ export class FrameXmlGlyphModel {
     if (!this.owned || !this.#pump || item.spellId === undefined) return false;
     const glyphId = this.#host.catalog()?.glyphForSpell(item.spellId);
     if (glyphId === undefined) return false;
-    this.#pending = Object.freeze({ guid: item.guid, bag: item.bag, slot: item.slot, glyphId });
+    this.#setPending(Object.freeze({ guid: item.guid, bag: item.bag, slot: item.slot, glyphId })); // 2.05 (13.10)
     this.#pump.fire(FRAMEXML_GLYPH_EVENTS.use);
     return true;
   }
@@ -272,7 +298,7 @@ export class FrameXmlGlyphModel {
   /** SpellStopTargeting for the glyph cursor; true when there was one. */
   cancelTargeting(): boolean {
     if (!this.#pending) return false;
-    this.#pending = undefined;
+    this.#setPending(undefined); // 2.05 (13.10)
     return true;
   }
 
@@ -280,7 +306,7 @@ export class FrameXmlGlyphModel {
   tick(): void {
     const pump = this.#pump;
     if (!pump) return;
-    if (this.#pending && !this.#host.holds(this.#pending)) this.#pending = undefined;
+    if (this.#pending && !this.#host.holds(this.#pending)) this.#setPending(undefined); // 2.05 (13.10)
     const catalog = this.#host.catalog();
     if (catalog !== this.#catalog) {
       this.#catalog = catalog;

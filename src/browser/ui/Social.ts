@@ -19,6 +19,8 @@ import { firstFreeTradeSlot } from "../../world/TradeProtocol.js";
 import { game } from "../game/Context.js";
 import { showUnitFrames } from "./UnitFrames.js";
 import { ITEM_DRAG_FORMAT, readItemDrag } from "./ItemSlots.js";
+import { playerInventory, slotAt } from "../Inventory.js"; // 2.05 (13.10)
+import { nativePaperLocked } from "./NativeItemLocks.js"; // 2.05 (13.10)
 import { clickTradeEnchantSlot } from "./ItemTargetClick.js";
 import { setTip, attachTooltip, confirmPanel } from "./Widgets.js";
 import { nativeString } from "./Strings.js";
@@ -1253,6 +1255,10 @@ function wireTradeDrop(): void {
     const drag = readItemDrag(event.dataTransfer);
     if (!drag || !world?.tradeOpen) return;
     event.preventDefault();
+    // 2.05 (13.10): the waiting wrapping paper is locked (NativeItemLocks.ts) — never picked up, never offered.
+    const inventory = playerInventory(world.state);
+    const dragged = inventory ? slotAt(inventory, drag.bag, drag.slot) : undefined;
+    if (dragged && nativePaperLocked(dragged.guid, world)) return;
     // Equipped and banked items are offered from their own menu entries; the server is the
     // authority that refuses them, and a silent refusal here would eat the gesture.
     const free = firstFreeTradeSlot(world.ownTradeOffer().items.map((item) => item.slot));

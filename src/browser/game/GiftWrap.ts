@@ -17,6 +17,12 @@ import { UPDATE_FIELDS } from "../../generated/updateFields.js";
  * - Any cursor reset (0x00519280: ClearCursor, a right click in the world 0x0051fb00, Escape
  *   0x0051fa50) lets the paper go too.
  *
+ * - 2.05 (13.10): a map change keeps it. DAT_00c9ead0 is written only by 0x006d67e0, 0x006cef80 and
+ *   ClientInitializeGame's 0x006e45d0 (a world entry); the active player's removal (0x006e6020 → 0x00528c30) resets
+ *   no cursor, and the re-created player's 0x00520f70 resets it only when that player has no health — not
+ *   modelled (this client keeps the player object through SMSG_NEW_WORLD). Bound to the world client, the paper
+ *   waits through a transfer and goes with a new login (tests/gift-wrap-map-change.test.mjs).
+ *
  * DOM-free; one pending paper per client, bound to the world it was armed in.
  */
 

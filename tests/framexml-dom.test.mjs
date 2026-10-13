@@ -1556,6 +1556,8 @@ test("layout-only stock ancestors never receive addon click or hover input", () 
 
     layoutOnly = false;
     bridge.touch();
+    // 1.10: a release clicks only the frame that took the press (Wow.exe 0x004947a0 → +0x7c).
+    stockElement.dispatchEvent({ type: "mousedown", target: stockElement, button: 0 });
     stockElement.dispatchEvent({ type: "mouseup", target: stockElement, button: 0 });
     assert.ok(calls.includes("stock:OnClick"), "The ordinary painted renderer retains registered clicks");
   } finally { renderer.destroy(); }

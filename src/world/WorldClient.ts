@@ -601,7 +601,7 @@ import {
   buildAutoRepeatCastSpell, buildCastSpell, buildCastSpellOnGameObject, buildCastSpellOnItem,
   buildCastSpellOnUnit,
   parseCastFailure,
-  spellFailureText,
+  spellFailureText, SPELL_FAILED_CUSTOM_ERROR, // 3.02 (13.10): SPELL_FAILED_CUSTOM_ERROR
   parseClearCooldown,
   parseCooldownEvent,
   parseInitialSpells,
@@ -5515,6 +5515,16 @@ export class WorldClient {
     if (!this.#closed && this.tradeOpen) this.#connection.send(OPCODES.CMSG_UNACCEPT_TRADE);
   }
 
+  /**
+   * 2.05 (13.10): the item stands in this side's trade window — the client's lock on it (item+0x394 bit 0, which a
+   * trade slot sets): native gift wrapping refuses it (ui/NativeItemLocks.ts).
+   */
+  tradeOffersItem(guid: bigint): boolean {
+    if (!this.tradeOpen || guid === 0n) return false;
+    for (const offered of this.#localTradeSlots.values()) if (offered !== null && offered.guid === guid) return true;
+    return false;
+  }
+
   /** Own view plus locally sent changes; the core sends those changes only to the partner. */
   ownTradeOffer(): { money: number; spellId: number; items: Array<{ slot: number; itemId: number; count: number }> } {
     const items = new Map((this.myOffer?.items ?? []).map(({ slot, itemId, count }) => [slot, { slot, itemId, count }]));
@@ -7508,6 +7518,14 @@ export class WorldClient {
       // 05.10-3.02: case 0x81 — a known limit category's ERR_ITEM_MAX_LIMIT_CATEGORY_COUNT_EXCEEDED_IS, past local_14.
       const limited = refusalLimitCategoryText(failure.result, failure.extra, this.castFailureLimitCategory); // 05.10-3.02
       if (limited !== undefined) { this.onSpellStatus?.(limited, true); return true; } // 05.10-3.02
+      // 3.02 (13.10): case 0xac — 0x007fef10 says SPELL_FAILED_CUSTOM_ERROR_<n> through ERR_SPELL_FAILED_S ("%s",
+      // 0x005216f0(0x30): UIErrorsFrame) before `local_14` is read, and sets it, so the general line never follows:
+      // never quiet by the 3 s or wanted-spell rule, and nothing at all for a custom error without a string.
+      if (failure.result === SPELL_FAILED_CUSTOM_ERROR) { // 3.02 (13.10)
+        const custom = spellFailureText(failure, this.#castFailureNames()); // 3.02 (13.10)
+        if (custom) this.onSpellStatus?.(custom, true); // 3.02 (13.10)
+        return true; // 3.02 (13.10)
+      } // 3.02 (13.10)
       if (quiet) return true; // 05.10-5.05
       // The words are the realm's own, out of its GlobalStrings, filled from the packet's tail;
       // `DONT_REPORT` means say nothing. 3.47 (12.10): NOT_READY and ITEM_NOT_READY show the row 0x00807f10 picks

@@ -16,9 +16,18 @@
  *   "none"; a known one answers 1 (not `true`) when its InstanceType is non-zero, nil when it is 0,
  *   and the type's word from {"none", "party", "raid", "pvp", "arena"}, "none" past the table.
  * * `GetDungeonDifficulty` (0x515790) answers two values, both 1-based: the group's difficulty while
- *   the player is in a group (the SMSG_GROUP_LIST word), the player's own otherwise; then the
- *   player's own. `GetRaidDifficulty` (0x515810) answers the player's own twice. (Both read one more
- *   client flag, at 0xbeb608, whose meaning was not settled here; it is taken as clear.)
+ *   the player is in a party that is not a raid (the SMSG_GROUP_LIST word), the player's own otherwise;
+ *   then the player's own. `GetRaidDifficulty` (0x515810) answers the group's raid difficulty while the
+ *   player is in a raid, the player's own otherwise; then the player's own.
+ *   1.08 (13.10): the flag both read, 0x00beb608, is the raid roster's member count (RaidInfo.cpp —
+ *   .runtime/re-2026-10-11/glue-1110/a108-1…4.txt): the list 0x00beb568 of 40 member records filled by the raid
+ *   roster update 0x00574f10 (ERR_RAID_MEMBER_ADDED_S 0x1b7 per newcomer), zeroed by 0x00572f90 on leaving the raid
+ *   (0x1b6) and by the init 0x005756c0, and read by every raid question (0x005726f0: is this guid in the raid
+ *   roster). Non-zero is «in a raid group»: here `group.groupType & GROUPTYPE_RAID`. Before this the flag was taken
+ *   as clear — in a raid GetDungeonDifficulty answered the group's word and GetRaidDifficulty the player's own,
+ *   where the client answers the player's own and the group's. The party test is 0x00bd1948 (the first party slot);
+ *   the same pair of tests picks the value the difficulty answers (0x00525530, 0x005255a0) and the setters'
+ *   leader rule (0x00526050, 0x005261a0: in a party or a raid).
  * * `SetDungeonDifficulty(n)` (0x526050) rounds n - 1 and accepts 0 and 1 only — normal and heroic;
  *   `SetRaidDifficulty(n)` (0x5261a0) accepts 0..3. In a group, a player who is not its leader gets
  *   ERR_NOT_LEADER as a chat line (error table entry 0x54, shown through the chat add at 0x509dd0) and
@@ -32,6 +41,8 @@ import { frameXmlLuaNumber, frameXmlRoundToInt } from "./FrameXmlPvpFlag.js";
 
 /** Map.InstanceType's words, as IsInInstance answers them (0x5156a0's table). */
 export const FRAMEXML_INSTANCE_TYPES: readonly string[] = Object.freeze(["none", "party", "raid", "pvp", "arena"]);
+/** `GROUPTYPE_RAID` (Group.h): the raid roster exists, 0x00beb608 ≠ 0 (1.08). */
+const GROUPTYPE_RAID = 0x02;
 /** SetDungeonDifficulty accepts normal and heroic; SetRaidDifficulty the four raid modes. */
 const DUNGEON_DIFFICULTIES = 2;
 const RAID_DIFFICULTIES = 4;
@@ -42,6 +53,9 @@ export interface FrameXmlDifficultyWorld {
   readonly group?: {
     readonly leaderGuid: bigint;
     readonly dungeonDifficulty: number;
+    /** 1.08 (13.10): the SMSG_GROUP_LIST raid word and type (GROUPTYPE_RAID = 0x02, Group.h). */
+    readonly raidDifficulty?: number | undefined;
+    readonly groupType?: number | undefined;
   } | undefined;
   readonly state: { readonly selfGuid?: bigint | undefined };
   setDifficulty?(difficulty: number, raid: boolean): void;
@@ -87,14 +101,19 @@ export class FrameXmlDifficultyModel {
   dungeon(): readonly [number, number] {
     const world = this.#context.world();
     const own = world?.dungeonDifficulty ?? 0;
-    const inForce = world?.group !== undefined ? world.group.dungeonDifficulty : own;
+    // 0x00515790: the group's word in a party, the own one alone or in a raid (0x00beb608 ≠ 0).
+    const group = world?.group;
+    const inForce = group !== undefined && !inRaid(group) ? group.dungeonDifficulty : own;
     return [inForce + 1, own + 1];
   }
 
-  /** `GetRaidDifficulty()`. */
+  /** `GetRaidDifficulty()`: 0x00515810 — the group's raid word in a raid, else the own one; then the own. */
   raid(): readonly [number, number] {
-    const own = this.#context.world()?.raidDifficulty ?? 0;
-    return [own + 1, own + 1];
+    const world = this.#context.world();
+    const own = world?.raidDifficulty ?? 0;
+    const group = world?.group;
+    const inForce = group !== undefined && inRaid(group) ? group.raidDifficulty ?? own : own;
+    return [inForce + 1, own + 1];
   }
 
   /** `SetDungeonDifficulty(n)` / `SetRaidDifficulty(n)`. */
@@ -118,6 +137,11 @@ export class FrameXmlDifficultyModel {
     if (type === undefined) return [undefined, "none"];
     return [type !== 0 ? 1 : undefined, FRAMEXML_INSTANCE_TYPES[type] ?? "none"];
   }
+}
+
+/** 1.08 (13.10): 0x00beb608 ≠ 0 — the player's group is a raid (its roster is the raid roster). */
+function inRaid(group: { readonly groupType?: number | undefined }): boolean {
+  return ((group.groupType ?? 0) & GROUPTYPE_RAID) !== 0;
 }
 
 /** The part of the world seam the bindings read. */

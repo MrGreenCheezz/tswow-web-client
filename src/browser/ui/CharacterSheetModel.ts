@@ -22,6 +22,7 @@ import { characterCombatRatingBonus, type CharacterStatCatalog } from "../../wor
 import { UPDATE_FIELDS } from "../../generated/updateFields.js";
 import type { WorldObjectState } from "../../world/WorldState.js";
 import { nativeString } from "./Strings.js";
+import { maxHealthModifierOf, spellCritFromIntellectOf } from "../../world/StatTooltipValues.js"; // 4.03 (13.10)
 
 export type SheetTone = "buff" | "debuff";
 
@@ -54,6 +55,9 @@ export interface SheetContext {
 
 /** `ATTACK_POWER_MAGIC_NUMBER` (PaperDollFrame.lua): attack power per point of DPS. */
 export const ATTACK_POWER_MAGIC_NUMBER = 14;
+/** 4.03 (13.10): `HEALTH_PER_STAMINA` and `MANA_PER_INTELLECT` (PaperDollFrame.lua:37-39). */
+const HEALTH_PER_STAMINA = 10;
+const MANA_PER_INTELLECT = 15;
 
 /** `RESILIENCE_CRIT_CHANCE_TO_DAMAGE_REDUCTION_MULTIPLIER` and `…_TO_CONSTANT_…` (PaperDollFrame.lua:42-43). */
 const RESILIENCE_TO_CRIT_DAMAGE = 2.2;
@@ -172,15 +176,27 @@ export function characterStatSections(object: WorldObjectState, context: SheetCo
     const stat = unitStat(object, index)!;
     const name = S(`SPELL_STAT${index}_NAME`, statNames[index - 1]!);
     // UnitStat's first value is the total less the buffs (PaperDollFrame_SetStat subtracts them).
-    // L7 4.03: the pet's share of stamina and intellect (PaperDollFrame_SetStat :281-306). The stock line
-    // above it (DEFAULT_STAT3/4_TOOLTIP) needs GetUnitMaxHealthModifier and the intellect crit table,
-    // which this sheet does not have, so only the pet's line is written.
+    // L7 4.03: the pet's share of stamina and intellect (PaperDollFrame_SetStat :281-306), under the stock
+    // line (DEFAULT_STAT3/4_TOOLTIP, written since 13.10 — below).
     const petKey = index === 3 ? "PET_BONUS_STAM" : index === 4 ? "PET_BONUS_INT" : undefined;
     const pet = petKey ? petBonus(context.classId, petKey, stat.effective) : 0;
     const petLine = pet <= 0 ? undefined : index === 3
       ? S("PET_BONUS_TOOLTIP_STAMINA", "Увеличивает выносливость питомца на %d.", pet)
       : S("PET_BONUS_TOOLTIP_INTELLECT", "Увеличивает интеллект питомца на %d.", pet);
-    base.push(formattedStat(name, name, stat.effective - stat.positive - stat.negative, stat.positive, stat.negative, petLine));
+    // 4.03 (13.10): the stock first line (PaperDollFrame.lua:277-299) with Wow.exe's answers (world/StatTooltipValues.ts):
+    // stamina (min(20, s) + rest · HEALTH_PER_STAMINA) · GetUnitMaxHealthModifier; intellect, with mana only,
+    // min(20, i) + rest · MANA_PER_INTELLECT and GetSpellCritChanceFromIntellect.
+    const first = Math.min(20, stat.effective);
+    const statLine = index === 3
+      ? S("DEFAULT_STAT3_TOOLTIP", "Максимальный уровень здоровья увеличен на %d.",
+        (first + (stat.effective - first) * HEALTH_PER_STAMINA) * maxHealthModifierOf(object, object.guid))
+      : index === 4 && context.hasMana
+        ? S("DEFAULT_STAT4_TOOLTIP",
+          "Запас маны увеличен на %d.\nВероятность нанести критический удар заклинанием повышена на %.2f%%.",
+          first + (stat.effective - first) * MANA_PER_INTELLECT, spellCritFromIntellectOf(object, object.guid, context.catalog))
+        : undefined;
+    const extra = [statLine, petLine].filter((line) => line !== undefined).join("\n") || undefined;
+    base.push(formattedStat(name, name, stat.effective - stat.positive - stat.negative, stat.positive, stat.negative, extra));
   }
 
   // ---- melee ------------------------------------------------------------------------------------

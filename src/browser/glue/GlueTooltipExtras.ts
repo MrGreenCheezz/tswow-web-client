@@ -66,6 +66,12 @@ export interface GameTooltipTalent {
   readonly requirements?: readonly GameTooltipTalentRequirement[];
   /** 3.12 (04.10, L4): TOOLTIP_TALENT_LEARN is written last (Wow.exe 0x00622800's conditions). */
   readonly learnable?: boolean;
+  /**
+   * 3.12 (13.10): with isPreview, 0x00622800's hints instead — TALENT_TOOLTIP_ADDPREVIEWPOINT (green) when a
+   * preview point could be placed, TALENT_TOOLTIP_REMOVEPREVIEWPOINT (red) when one could be taken back.
+   */
+  readonly previewAdd?: boolean;
+  readonly previewRemove?: boolean;
 }
 
 /** What a `quest:` link draws. */
@@ -78,7 +84,8 @@ export interface GameTooltipQuest {
 
 /** The world facts these setters need beyond the Lua C API; GameTooltipWidgetAdapter carries them. */
 export interface GameTooltipExtrasAdapter {
-  readonly talent?: (tab: number, index: number, inspect: boolean, pet: boolean, group: number | undefined) => GameTooltipTalent | undefined;
+  readonly talent?: (tab: number, index: number, inspect: boolean, pet: boolean, group: number | undefined,
+    preview?: boolean) => GameTooltipTalent | undefined; // 3.12 (13.10): + isPreview
   readonly talentById?: (talentId: number, rank: number | undefined) => GameTooltipTalent | undefined;
   readonly quest?: (questId: number) => GameTooltipQuest | undefined;
   readonly questLogRewardSpell?: () => number | undefined;
@@ -93,6 +100,8 @@ export interface GameTooltipExtrasAdapter {
   readonly itemStats?: (entry: number) => (GameTooltipStatSource & { readonly scalingStatValue: number }) | undefined;
   /** 3.12 (04.10, L4): a merchant window is open (the merchant guid at 0x00bfa3e8 is set). */
   readonly merchantOpen?: () => boolean;
+  /** 3.12 (13.10): the active player is a druid (class 11, UNIT_FIELD_BYTES_0 byte 1) — the feral attack power. */
+  readonly playerIsDruid?: () => boolean;
 }
 
 export interface GameTooltipExtras {
@@ -203,8 +212,7 @@ function itemEntry(link: unknown): number | undefined {
 
 /** `EQUIPMENT_SET_*` location values GetEquipmentSetLocations answers (EquipmentManager.lua). */
 const LOCATION_IGNORED = 1;
-const LOCATION_MISSING = -1;
-/** INVSLOT name keys for ITEM_MISSING, 1-based slot order (the client's slot names, 0x005d9f00). */
+const LOCATION_MISSING = -1;/** INVSLOT name keys for ITEM_MISSING, 1-based slot order (the client's slot names, 0x005d9f00). */
 const SLOT_NAMES: readonly string[] = [
   "HEADSLOT", "NECKSLOT", "SHOULDERSLOT", "SHIRTSLOT", "CHESTSLOT", "WAISTSLOT", "LEGSSLOT", "FEETSLOT",
   "WRISTSLOT", "HANDSSLOT", "FINGER0SLOT", "FINGER1SLOT", "TRINKET0SLOT", "TRINKET1SLOT", "BACKSLOT",
@@ -254,6 +262,11 @@ export function createGameTooltipExtras(host: GameTooltipExtrasHost): GameToolti
     // 3.12 (04.10, L4): 0x00622800, last and green (0x00ad2d40).
     const learn = talent.learnable && learnHint ? g("TOOLTIP_TALENT_LEARN") : undefined;
     if (learn) rows.push({ text: learn, color: C.green });
+    // 3.12 (13.10): the preview hints, green (0x00ad2d40) then red (0x00ad2d34).
+    const add = talent.previewAdd ? g("TALENT_TOOLTIP_ADDPREVIEWPOINT") : undefined;
+    if (add) rows.push({ text: add, color: C.green });
+    const remove = talent.previewRemove ? g("TALENT_TOOLTIP_REMOVEPREVIEWPOINT") : undefined;
+    if (remove) rows.push({ text: remove, color: C.red });
     return host.rows(frame, rows);
   };
 
@@ -354,7 +367,10 @@ export function createGameTooltipExtras(host: GameTooltipExtrasHost): GameToolti
     if (!hovered || !worn) return;
     // L4-review: a heirloom or a random property is built from data not served here — no difference.
     if (!gameTooltipStatTableKnown(hovered, hoveredLink) || !gameTooltipStatTableKnown(worn, wornLink)) return;
-    for (const row of gameTooltipStatDeltaRows(gameTooltipStatDelta(gameTooltipItemStats(hovered), gameTooltipItemStats(worn)), g)) {
+    // 3.12 (13.10): a druid's feral attack power (0x0061f410 reads the active player's class).
+    const druid = adapter?.playerIsDruid?.() === true;
+    for (const row of gameTooltipStatDeltaRows(gameTooltipStatDelta(gameTooltipItemStats(hovered, druid),
+      gameTooltipItemStats(worn, druid)), g)) {
       rows.push(row);
     }
   };
@@ -498,7 +514,8 @@ export function createGameTooltipExtras(host: GameTooltipExtrasHost): GameToolti
       if (tab === undefined || index === undefined) { host.hide(frame); return NOTHING; }
       const group = whole(args[4]);
       // 3.12 (04.10, L4): with `isPreview` 0x00622800 writes the preview hints, never TOOLTIP_TALENT_LEARN.
-      drawTalent(frame, host.adapter()?.talent?.(tab, index, truthy(args[2]), truthy(args[3]), group), !truthy(args[5]));
+      drawTalent(frame, host.adapter()?.talent?.(tab, index, truthy(args[2]), truthy(args[3]), group, truthy(args[5])), // 3.12 (13.10)
+        !truthy(args[5]));
       return NOTHING;
     },
     SetQuestLogSpecialItem: ({ frame, args }) => {

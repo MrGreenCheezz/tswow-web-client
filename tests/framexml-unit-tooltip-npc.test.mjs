@@ -44,6 +44,9 @@ GameTooltip = CreateFrame("GameTooltip", "GameTooltip", UIParent)
 TOOLTIP_UNIT_LEVEL = "Уровень %s"
 TOOLTIP_UNIT_LEVEL_TYPE = "Уровень %s (%s)"
 TOOLTIP_UNIT_LEVEL_RACE_CLASS = "Уровень %s %s %s"
+-- 4.04 (13.10): a player's type slot is PLAYER (0x00621070).
+TOOLTIP_UNIT_LEVEL_RACE_CLASS_TYPE = "Уровень %s %s %s (%s)"
+PLAYER = "игрок"
 function UnitExists(unit) return unit == "target" or unit == "player" end
 function UnitName(unit) if unit == "target" then return "Архимаг Мэлин" end if unit == "player" then return "Тест" end end
 function UnitIsPlayer(unit) return unit == "player" end
@@ -83,10 +86,11 @@ test("SetUnit writes the sub-name right under a creature's name, before the leve
     assert.deepEqual(run(`return GameTooltip:NumLines()`, 1), [3]);
     assert.equal(text(1), "Архимаг Мэлин");
     assert.equal(text(2), "Тренер магов");
-    assert.equal(text(3), "Уровень 80 (Гуманоид)");
+    // 4.04 (13.10): no UnitReaction here, so no creature type word (Wow.exe writes it only below friendly).
+    assert.equal(text(3), "Уровень 80");
     assert.deepEqual(run(`return GameTooltip:SetUnit("player")`, 1), [true]);
     assert.equal(text(2), "Щит", "a player: the guild as it is (0x0061fec0 adds no brackets), no sub-name");
-    assert.equal(text(3), "Уровень 80 Человек Маг");
+    assert.equal(text(3), "Уровень 80 Человек Маг (игрок)");
     assert.deepEqual(asked, ["target"], "the adapter is not asked for a player");
     assert.deepEqual(boot.errors, []);
   } finally { boot.close(); }
@@ -98,6 +102,6 @@ test("without an adapter answer the creature's tooltip keeps its two lines", asy
     run(`GameTooltip:SetOwner(UIParent, "ANCHOR_NONE")`);
     run(`GameTooltip:SetUnit("target")`);
     assert.deepEqual(run(`return GameTooltip:NumLines()`, 1), [2]);
-    assert.equal(text(2), "Уровень 80 (Гуманоид)");
+    assert.equal(text(2), "Уровень 80"); // 4.04 (13.10): see above
   } finally { boot.close(); }
 });

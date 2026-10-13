@@ -19,8 +19,12 @@
  * effect names (`summonProperties`, gateway/SummonPropertiesMetadata.ts); with no `summonPropertiesTitle` of the
  * caller's own the title comes from the page's spell rows (`game.spells`, the map LiveWorldSeam's `spell`
  * reads — FrameXmlWorldMount). Still no line, not a guess: a row from an older gateway, a dataset without
- * SummonProperties.dbc, a spell row not loaded yet. A shapeshift form's creature type (0x0071f300 reads
- * SpellShapeshiftForm.CreatureType first) is not known here.
+ * SummonProperties.dbc.
+ *
+ * 3.12 (13.10): a spell row not loaded yet (a stranger's summon) is asked for (`requestSpell`) and the tooltip is
+ * drawn again when it lands (`frameXmlSummonSpellWait` in LiveWorldSeam.watchUnitAnswers) — Wow.exe reads Spell.dbc
+ * from disk and never waits. The default's creature type is 0x0071f300's (`creatureTypeId`: a shapeshift form's
+ * SpellShapeshiftForm.CreatureType first, FrameXmlCreatureType.ts), the cache's type until the type table lands.
  */
 import { readField } from "../../world/Fields.js";
 import type { WorldObjectState } from "../../world/WorldState.js";
@@ -66,14 +70,30 @@ export function frameXmlUnitGuildName(world: FrameXmlUnitTooltipWorld, object: W
 export function frameXmlUnitPendingAnswers(
   world: FrameXmlUnitTooltipWorld, object: WorldObjectState | undefined,
   lootOwners: { readonly masterLooterGuid: bigint; readonly allowedLooterGuid: bigint } | undefined,
+  waits: readonly (() => boolean)[] = NO_WAITS, // 3.12 (13.10): a summon's spell row, the 4.04 lines' cache answers
 ): (() => boolean) | undefined {
   const guildId = object?.typeId === TYPEID_PLAYER ? readField(object, "PLAYER_GUILDID") ?? 0 : 0;
   const guild = guildId > 0 && world.guildNames?.name(guildId) === undefined ? guildId : 0;
   const master = lootOwners && !named(world, lootOwners.masterLooterGuid) ? lootOwners.masterLooterGuid : 0n;
   const allowed = lootOwners && !named(world, lootOwners.allowedLooterGuid) ? lootOwners.allowedLooterGuid : 0n;
-  if (guild === 0 && master === 0n && allowed === 0n) return undefined;
+  if (guild === 0 && master === 0n && allowed === 0n && waits.length === 0) return undefined;
   return () => (guild !== 0 && world.guildNames?.name(guild) !== undefined)
-    || (master !== 0n && named(world, master)) || (allowed !== 0n && named(world, allowed));
+    || (master !== 0n && named(world, master)) || (allowed !== 0n && named(world, allowed))
+    || waits.some((ready) => ready());
+}
+const NO_WAITS: readonly (() => boolean)[] = Object.freeze([]);
+
+/**
+ * 3.12 (13.10): the wait for the row of the spell that created `object` (UNIT_CREATED_BY_SPELL), which the
+ * UNITNAME_SUMMON_TITLE line needs; undefined when there is none or the row is here.
+ */
+export function frameXmlSummonSpellWait(
+  object: WorldObjectState | undefined, loaded: (spellId: number) => boolean,
+): (() => boolean) | undefined {
+  if (!object || (object.typeId !== TYPEID_UNIT && object.typeId !== TYPEID_PLAYER) || ownerOf(object) === 0n) return undefined;
+  const spellId = readField(object, "UNIT_CREATED_BY_SPELL") ?? 0;
+  if (spellId <= 0 || loaded(spellId)) return undefined;
+  return () => loaded(spellId);
 }
 
 /** The loot lines' own lookup (LiveWorldSeam.unitLootOwners): the name cache, then the group list. */
@@ -130,6 +150,18 @@ export interface FrameXmlSummonTitleSources {
   /** The effect types of a spell row; undefined while the row is not loaded. */
   readonly spellEffects: (spellId: number) => readonly number[] | undefined;
   /**
+   * 3.12 (13.10): asks for a spell row that is not loaded. Wow.exe reads Spell.dbc from disk and always has
+   * the row; here a stranger's summon (a warlock's imp, another hunter's wolf) names a spell this page never
+   * loaded, so the line waits for the row and the tooltip is drawn again when it lands
+   * (`frameXmlSummonSpellWait`, LiveWorldSeam.watchUnitAnswers).
+   */
+  readonly requestSpell?: (spellId: number) => void;
+  /**
+   * 3.12 (13.10): 0x0071f300 for the summoned unit — a shapeshift form's SpellShapeshiftForm.CreatureType first
+   * (FrameXmlCreatureType.ts `frameXmlCreatureTypeId`); undefined falls back to the creature cache's type.
+   */
+  readonly creatureTypeId?: (object: WorldObjectState) => number | undefined;
+  /**
    * SummonProperties.Title for the spell's `effect`-th effect (by its EffectMiscValueB): a number, -1
    * for the default rule; undefined while unknown (not served yet).
    */
@@ -173,7 +205,10 @@ export function frameXmlUnitSummonTitle(
   const spellId = readField(object, "UNIT_CREATED_BY_SPELL") ?? 0;
   if (spellId > 0) {
     const effects = sources.spellEffects(spellId);
-    if (effects === undefined) return undefined;
+    if (effects === undefined) {
+      sources.requestSpell?.(spellId); // 3.12 (13.10): the line comes with the row
+      return undefined;
+    }
     const summon = effects.slice(0, 3).indexOf(SPELL_EFFECT_SUMMON);
     if (summon >= 0) {
       const row = (sources.summonPropertiesTitle ?? pageSummonPropertiesTitle)(spellId, summon); // L13: + the page's rows
@@ -185,7 +220,9 @@ export function frameXmlUnitSummonTitle(
   if (title === undefined) {
     const entry = object.typeId === TYPEID_UNIT ? readField(object, "OBJECT_FIELD_ENTRY") ?? 0 : 0;
     const template = entry > 0 ? world.creatureTemplates.get(entry) : undefined;
-    title = template?.found && template.creatureType === CREATURE_TYPE_BEAST ? 1 : 3;
+    // 3.12 (13.10): 0x0071f300 — a form's creature type before the cache's.
+    const type = sources.creatureTypeId?.(object) ?? (template?.found ? template.creatureType : undefined);
+    title = type === CREATURE_TYPE_BEAST ? 1 : 3;
   }
   return { globalName: `UNITNAME_SUMMON_TITLE${title}`, ownerName: nameOf(world, owner) };
 }

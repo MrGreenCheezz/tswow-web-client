@@ -15,7 +15,7 @@ import { reactionsByTemplate } from "../../world/UnitInteractGate.js"; // 11.02-
 import { isPlayerGhost } from "../../world/Fields.js"; // 11.02-tails-review
 import { isTabIgnoredCreatureType } from "../../world/TargetSearch.js"; // L2 1.10
 import { GROUPTYPE_RAID } from "../../world/GroupProtocol.js"; // L2 1.10
-import { setTargetHistoryJudge, type TargetHistoryKind } from "../../world/TargetHistory.js"; // L2 1.10
+import { setTargetHistoryFocus, setTargetHistoryJudge, type TargetHistoryKind } from "../../world/TargetHistory.js"; // L2 1.10; 1.10 (12.10): focus
 import { actionRangeCanAssist, type ActionRangeHost } from "../framexml/FrameXmlActionRange.js"; // L2 1.10
 import { NEAREST_ENEMY, nearestModeAccepts, type NearestMode, type NearestModeHost } from "./TargetNearestModes.js"; // L2 1.10
 import { targetLast, type TargetLastKind } from "./TargetLast.js"; // L2 1.10
@@ -394,10 +394,23 @@ export function targetNearestUnit(mode: NearestMode, reverse: boolean): boolean 
   return true;
 }
 
+/**
+ * 1.10 (12.10): drop the Tab list — 0x00bd08cc, its build time, zeroed, so the next Tab or
+ * TargetNearest* builds afresh (0x524fc0). A clear of the selection does it through
+ * `WorldClient.selectionClears`; TargetLastTarget with nothing remembered (0x525d70) and ClearTarget
+ * (0x525fc0: Escape, /cleartarget) zero it before they look at the selection, so with nothing
+ * selected they drop the list and nothing else — no packet, no history.
+ */
+export function dropTabList(): void {
+  tabCycle.invalidate();
+}
+
 /** L2 1.10: `TargetLastTarget`/`TargetLastEnemy`/`TargetLastFriend` (game/TargetLast.ts) on the world. */
 export function targetLastUnit(kind: TargetLastKind): boolean {
   const world = game.world;
-  return world !== undefined && targetLast(world, kind);
+  if (world === undefined) return false;
+  if (kind === "target" && world.targetHistory.lastTarget === undefined) dropTabList(); // 1.10 (12.10): 0x525d70
+  return targetLast(world, kind);
 }
 
 // ---- L2 1.10: who the player can help, and how a new selection is remembered ----
@@ -514,6 +527,10 @@ export function focusUnit(): WorldObjectState | undefined {
 export function clearFocusOn(guid: bigint): void {
   if (game.focusGuid === guid) game.focusGuid = undefined;
 }
+
+// 1.10 (12.10): 0x524350 lets go of the focus with the unit — out of sight, SMSG_BREAK_TARGET, a new map — unless it
+// is the player's group's (world/TargetHistory.ts `unitLeft`). That is the only way the focus goes on its own now.
+setTargetHistoryFocus({ guid: () => game.focusGuid, clear: clearFocusOn });
 
 /**
  * How far short of a body the sight line stops, in yards.

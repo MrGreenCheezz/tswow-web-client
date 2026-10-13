@@ -22,6 +22,7 @@ import {
 } from "../macro/MacroRunner.js";
 import { submitChat } from "./Chat.js";
 import { nativeMacroContext } from "./CombatCommands.js";
+import { runNativeTargetCommand } from "./NativeTargetCommands.js"; // 1.10 (12.10)
 import { notice } from "./Notices.js";
 import {
   MACRO_BODY_LIMIT, MACRO_NAME_LIMIT, MACROS_PER_ROW, evaluateMacroOptions, findMacro, installMacroOptionErrorSink,
@@ -113,6 +114,8 @@ const STOP_MACRO = /^\/stopmacro(?:\s+([\s\S]*))?$/i;
 function runNativeMacroLine(line: string): void {
   const stop = STOP_MACRO.exec(line);
   if (!stop) {
+    // 1.10 (12.10): /targetenemy and the rest of the stock secure targeting commands (NativeTargetCommands.ts).
+    if (runNativeTargetCommand(line)) return;
     submitChat(line);
     return;
   }

@@ -534,6 +534,9 @@ test("a mouse release on a day's second row opens that row, not the day's first 
   const row = target.renderer.elementFor(frame(target, rowName));
   const day = target.renderer.elementFor(frame(target, dayName));
   assert.ok(row && day, "both rows are drawn");
+  // 1.10: a release clicks only the frame that took the press (Wow.exe 0x004947a0 → +0x7c): the row.
+  const press = { type: "mousedown", button: 0, buttons: 1, detail: 1, target: row, preventDefault() {}, stopPropagation() {} };
+  for (const element of [row, day]) element.dispatchEvent(press);
   const release = { type: "mouseup", button: 0, detail: 1, target: row, preventDefault() {}, stopPropagation() {} };
   for (const element of [row, day]) element.dispatchEvent(release);
   await settle();
@@ -543,6 +546,7 @@ test("a mouse release on a day's second row opens that row, not the day's first 
   // A release on the day itself still reaches the day (its first row).
   await new Promise((resolve) => setTimeout(resolve, 5));
   lua(target, "CalendarFrame_CloseEvent()", 0);
+  day.dispatchEvent({ ...press, target: day });
   day.dispatchEvent({ ...release, target: day });
   await settle();
   assert.equal(shown(target, "CalendarViewHolidayFrame"), true);

@@ -120,6 +120,8 @@ const EXTRA_STRINGS = [
   // 4.03 (L7): the pet's share in the stamina, intellect and ranged attack power rows (ComputePetBonus).
   "PET_BONUS_TOOLTIP_STAMINA", "PET_BONUS_TOOLTIP_INTELLECT", "PET_BONUS_TOOLTIP_RANGED_ATTACK_POWER",
   "PET_BONUS_TOOLTIP_SPELLDAMAGE",
+  // 4.03 (13.10): the stamina and intellect tooltips' first line (PaperDollFrame.lua:280, :296).
+  "DEFAULT_STAT3_TOOLTIP", "DEFAULT_STAT4_TOOLTIP",
   // 11.10: what a description's `$d` writes for a spell with no duration (Wow.exe 0x00579e50, the
   // key pushed at 0x0057a587), «до отмены» — src/browser/ui/SpellText.ts.
   "SPELL_DURATION_UNTIL_CANCELLED",

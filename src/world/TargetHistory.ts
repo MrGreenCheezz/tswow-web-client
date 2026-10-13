@@ -25,6 +25,10 @@ import type { WorldObjectState } from "./WorldState.js";
  *   or pet (0x512a30 = 0x52d310 || 0x573200) — is kept, unless it is dueling the player (0x71f5c0).
  * * Leaving the world (0x528c30: SMSG_NEW_WORLD, logout) clears all three.
  *
+ * 1.10 (12.10): 0x524350 also lets go of the focus (0x00bd07d0 → 0x51ff20 with guid 0) under the same rule — a
+ * focused stranger who walks out of sight does not come back as the focus — through the focus the browser
+ * registers ({@link setTargetHistoryFocus}); before, only SMSG_BREAK_TARGET dropped it, and with no group rule.
+ *
  * Not modelled: the dueling exception to the group rule for a unit leaving the client (its fields
  * are gone when this client retires it, so it is kept); the NOT_SELECTABLE edge (no field-change
  * hook in the world client). L2-review: SMSG_BREAK_TARGET names a unit still in sight, and there the
@@ -46,6 +50,23 @@ let registeredJudge: TargetHistoryJudge | undefined;
 /** Installs (or, with undefined, removes) the browser's judge. */
 export function setTargetHistoryJudge(judge: TargetHistoryJudge | undefined): void {
   registeredJudge = judge;
+}
+
+/**
+ * 1.10 (12.10): the focus, 0x00bd07d0, which 0x524350 lets go of too (0x51ff20 with guid 0, PLAYER_FOCUS_CHANGED)
+ * under the same group rule as the three slots. The focus is the interface's (game/Targeting.ts), so the browser
+ * registers where it lives; without it only the three slots are forgotten.
+ */
+export interface TargetHistoryFocus {
+  guid(): bigint | undefined;
+  clear(guid: bigint): void;
+}
+
+let registeredFocus: TargetHistoryFocus | undefined;
+
+/** Installs (or, with undefined, removes) the browser's focus. */
+export function setTargetHistoryFocus(focus: TargetHistoryFocus | undefined): void {
+  registeredFocus = focus;
 }
 
 /** The kind of a new selection: the registered judge's answer, else `canAttack`'s. */
@@ -171,12 +192,15 @@ export class TargetHistory {
 
   /**
    * 0x524350 for a unit that left the client or broke its targeting (SMSG_BREAK_TARGET): forgotten
-   * in every slot, unless it belongs to the player's group. Three comparisons for any other guid.
+   * in every slot and let go of as the focus (1.10, 12.10: 0x00bd07d0 → 0x51ff20(0)), unless it
+   * belongs to the player's group. Four comparisons for any other guid.
    */
   unitLeft(guid: bigint, world: TargetHistoryWorld): void {
-    if (guid !== this.lastTarget && guid !== this.lastEnemy && guid !== this.lastFriend) return;
+    const focus = registeredFocus?.guid(); // 1.10 (12.10)
+    if (guid !== this.lastTarget && guid !== this.lastEnemy && guid !== this.lastFriend && guid !== focus) return;
     if (isOwnGroupGuid(world, guid) && !duelsPlayer(world, guid)) return; // L2-review: `&& !duelsPlayer`
     this.forget(guid);
+    if (guid === focus) registeredFocus?.clear(guid); // 1.10 (12.10)
   }
 
   /** The guid in no slot any more. */

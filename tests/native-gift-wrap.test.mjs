@@ -109,3 +109,48 @@ test("with paper waiting a container click wraps once; the paper itself and worn
   assert.equal(wrap.pendingGiftWrap(world), undefined, "the paper is let go");
   assert.equal(native.wrapNativeSlot(watch, world), false, "the next click is ordinary");
 });
+
+// 2.05 (13.10): the native mail draft and this side's trade window lock their items as Wow.exe's item+0x394 bit 0
+// does — a locked item is not wrapped, the click is eaten and the paper keeps waiting (0x006dcf20); the waiting paper
+// is locked for the mail picker, the trade and the auction (NativeItemLocks.ts).
+const locks = await import("../dist/code/browser/ui/NativeItemLocks.js");
+
+test("an item attached to the native mail draft or offered in the trade is locked: no wrap, the paper waits", () => {
+  const { world, inventory, sent } = fixture();
+  const [paper, watch] = inventory.backpack;
+  let draft = [WATCH];
+  locks.setNativeMailDraftSource(() => draft);
+  try {
+    native.armNativeGiftWrap(paper, world);
+    assert.equal(locks.nativeItemLocked(WATCH, world), true, "the draft's attachment");
+    assert.equal(native.wrapNativeSlot(watch, world), true, "the click is the wrap's");
+    assert.deepEqual(sent, [], "nothing sent");
+    assert.equal(wrap.pendingGiftWrap(world)?.guid, PAPER, "the paper keeps waiting");
+    draft = [];
+    world.tradeOpen = true;
+    world.offerTradeItem(0, 255, 24);
+    sent.length = 0;
+    assert.equal(world.tradeOffersItem(WATCH), true, "this side's trade slot");
+    assert.equal(native.wrapNativeSlot(watch, world), true);
+    assert.deepEqual(sent, [], "a traded item is not wrapped either");
+    world.tradeOpen = false;
+    assert.equal(world.tradeOffersItem(WATCH), false, "no trade window: no lock");
+    assert.equal(native.wrapNativeSlot(watch, world), true);
+    assert.deepEqual(sent.map(({ opcode }) => opcode), [OPCODES.CMSG_WRAP_ITEM], "unlocked: wrapped");
+  } finally {
+    locks.setNativeMailDraftSource(() => []);
+    wrap.cancelGiftWrap();
+  }
+});
+
+test("the waiting paper is locked: no letter, trade or auction takes it; other items are free", () => {
+  const { world, inventory } = fixture();
+  const [paper] = inventory.backpack;
+  assert.equal(locks.nativePaperLocked(PAPER, world), false, "not waiting: an ordinary item");
+  native.armNativeGiftWrap(paper, world);
+  assert.equal(locks.nativePaperLocked(PAPER, world), true);
+  assert.equal(locks.nativePaperLocked(WATCH, world), false);
+  assert.equal(locks.nativeItemLocked(WATCH, world), false);
+  wrap.cancelGiftWrap();
+  assert.equal(locks.nativePaperLocked(PAPER, world), false, "let go: free again");
+});

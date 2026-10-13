@@ -18,6 +18,7 @@ import { frameXmlSimpleHtmlFontKey, frameXmlSimpleHtmlLevelFont } from "./FrameX
 import { FRAME_XML_SIMPLE_HTML_LINK_FORMAT, parseFrameXmlSimpleHtml } from "./FrameXmlSimpleHtml.js";
 import { buildFrameXmlSimpleHtml, type FrameXmlSimpleHtmlDomHooks } from "./FrameXmlSimpleHtmlDom.js";
 import { frameXmlTitleRegion, frameXmlTitleRegionHit } from "./FrameXmlTitleRegion.js"; // 3.48 (12.10)
+import { FrameXmlMouseCapture } from "./FrameXmlMouseCapture.js"; // 1.10 (12.10)
 
 /** What one reconciliation pass had to do: see `FrameXmlDomRenderer.syncPass`. */
 export type FrameXmlSyncKind = "structural" | "layout" | "paint" | "noop";
@@ -655,6 +656,9 @@ export class FrameXmlDomRenderer {
   readonly #dragReleases = new WeakSet<Event>();
   /** 3.48: the release that ends a title-region drag, spent there (Wow.exe 0x004947a0): no OnMouseUp, no click. */
   readonly #titleReleases = new WeakSet<Event>();
+  /** 1.10 (12.10): the frame holding the press (Wow.exe +0x7c); a release is only its click and OnMouseUp. */
+  readonly #mouseCapture = new FrameXmlMouseCapture<FrameXmlFrame>();
+  #mouseCaptureCleanup: (() => void) | undefined;
   #cursor: { readonly x: number; readonly y: number } | undefined;
   #cursorCleanup: (() => void) | undefined;
   /** Buttons under the pointer, for the `<HighlightFont>` their inheriting label switches to. */
@@ -709,6 +713,9 @@ export class FrameXmlDomRenderer {
     options.bridge?.setScreenRectSource((frame) => this.screenRectOf(frame));
     this.trackPointer();
     this.watchContainer();
+    // 1.10: every press on the page, the world's included, before any element listener (0x00495470).
+    this.#mouseCaptureCleanup = this.#mouseCapture.listen(container.ownerDocument?.defaultView,
+      (event) => this.pressedFrame(event));
   }
 
   /**
@@ -1293,6 +1300,9 @@ export class FrameXmlDomRenderer {
     this.#bridge?.setScreenRectSource(undefined);
     this.#textMeasureContext = undefined;
     this.finishDrag(false);
+    this.#mouseCaptureCleanup?.();
+    this.#mouseCaptureCleanup = undefined;
+    this.#mouseCapture.reset();
     this.setCursorPicture(undefined);
     this.#cursorCleanup?.();
     this.#cursorCleanup = undefined;
@@ -1915,7 +1925,10 @@ export class FrameXmlDomRenderer {
         }
         this.#bridge?.Click(frame, mouseButtonName(event), false);
       });
-      element.addEventListener("mousedown", (event) => this.registeredClick(frame, event, true));
+      element.addEventListener("mousedown", (event) => {
+        this.notePress(frame, event); // 1.10
+        this.registeredClick(frame, event, true);
+      });
       element.addEventListener("mouseup", (event) => this.registeredClick(frame, event, false));
     }
     let input: (HTMLElement & { value?: string; disabled?: boolean }) | undefined;
@@ -2123,6 +2136,8 @@ export class FrameXmlDomRenderer {
       this.rememberCursor(event);
       // 3.48: a press inside the frame's title region moves the frame and is spent there (Wow.exe 0x00495470).
       if (this.startTitleDrag(frame, element, event)) return;
+      this.notePress(frame, event); // 1.10
+      this.#mouseCapture.received(event, frame);
       this.#bridge?.fireScript(frame, "OnMouseDown", mouseButtonName(event));
       this.prepareDrag(frame, event);
     });
@@ -2130,6 +2145,8 @@ export class FrameXmlDomRenderer {
       if (this.#layoutOnly?.(frame)) return;
       if (this.bubbledFromControl(element, event)) return;
       if (this.#titleReleases.has(event)) return; // 3.48: the release a title drag spent
+      // 1.10: the release goes to the frame that took the press (0x004947a0 → +0x7c), not to whatever is under it.
+      if (!this.#mouseCapture.release(event).received.has(frame)) return;
       this.#bridge?.fireScript(frame, "OnMouseUp", mouseButtonName(event));
     });
 
@@ -2480,12 +2497,25 @@ export class FrameXmlDomRenderer {
     return type === "Button" || type === "CheckButton" || type === "EditBox" || type === "Slider";
   }
 
+  /**
+   * 1.10: a press reached `frame`'s element. The window's capture listener has normally resolved it already (the
+   * frame taking the mouse under the pointer, `pressedFrame`); a page without one (a bare test DOM) resolves it here,
+   * with the element the press was dispatched on standing for the frame under the pointer.
+   */
+  private notePress(frame: FrameXmlFrame, event: Event): void {
+    this.#mouseCapture.press(event, () => this.pressedFrame(event) ?? frame);
+  }
+
   /** Raise OnClick for a press or a release the frame actually registered for. */
   private registeredClick(frame: FrameXmlFrame, event: Event, down: boolean): void {
     if (this.#layoutOnly?.(frame)) return;
     if (frame.clickRegistrations.size === 0) return;
     if (!down && this.#dragReleases.has(event)) return; // L1-review: a drag's release clicks nothing
     if (!down && this.#titleReleases.has(event)) return; // 3.48: nor does the release a title drag spent
+    // 1.10: nor a release over a frame that did not take the press (Wow.exe 0x004947a0 hands it to +0x7c alone) — a
+    // press on the world or a bar, released over a unit portrait, is not the portrait's click (DropItemOnUnit). A
+    // keyboard activation (a click event, no press) is not a release.
+    if (!down && event.type === "mouseup" && this.#mouseCapture.release(event).owner !== frame) return;
     const button = mouseButtonName(event);
     const phase = down ? "DOWN" : "UP";
     if (!frame.clickRegistrations.has(`${button}${phase}`.toUpperCase()) &&

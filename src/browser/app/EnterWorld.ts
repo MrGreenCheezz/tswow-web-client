@@ -11,7 +11,7 @@ import { CharacterSummary } from "../../world/CharacterProtocol.js";
 import type { WorldEvents, WorldPacketEvents } from "../../world/EventBus.js";
 import { unit } from "../../world/Fields.js";
 import { game } from "../game/Context.js";
-import { canAttackUnit, clearFocusOn } from "../game/Targeting.js";
+import { canAttackUnit } from "../game/Targeting.js"; // 1.10 (12.10): the focus registers itself there
 import {
   characterModel, characterStatus, characterWindowTitle, combatStatus, creatureStatus, environmentStatus, gatewayInput,
   modelStatus, movementStatus, playerHudName, spellStatus, terrainStatus, worldPanel, worldStatus,
@@ -868,11 +868,11 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
     // 2 is `AI_REACTION_HOSTILE`, the moment a creature decides it has seen you.
     if (reaction.reaction === 2) playCreatureSound(reaction.guid, "aggro");
   });
-  // The focus is the interface's own and the world client has never heard of it, so this is where
-  // `SMSG_BREAK_TARGET` lands; the selection is its sibling's business, `SMSG_CLEAR_TARGET`, which
-  // the same fear sends three lines later. Without this line half of SPELL_EFFECT_FORCE_DESELECT
-  // would land.
-  onWorldEvent("TARGET_BROKEN", (broken) => clearFocusOn(broken.guid));
+  // `SMSG_BREAK_TARGET` lets go of the focus (half of SPELL_EFFECT_FORCE_DESELECT; the selection is its sibling's
+  // business, `SMSG_CLEAR_TARGET`, which the same fear sends three lines later) inside the world client now: 1.10
+  // (12.10) — 0x526530 case 0x152 → 0x524350 with the group rule, through the focus game/Targeting.ts registers
+  // with world/TargetHistory.ts. A unit of the player's own group that is not dueling keeps the focus, as a
+  // party member boarding a vehicle (`Unit::SendClearTarget`, Vehicle.cpp:933) does in Wow.exe.
   onWorldEvent("PARTY_KILL", (kill) => {
     playCreatureSound(kill.victimGuid, "death");
     // The victim's GUID was in the payload all along and the line said «цель убита» regardless,

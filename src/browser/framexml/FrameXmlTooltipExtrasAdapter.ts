@@ -14,7 +14,7 @@
  *   requirement was unmet, the group has free points (0x005c5f70), not inspect, not a link, and the
  *   talent is below its last rank.
  * * A quest link's objectives text goes through the quest text parser (0x00622960 → 0x00579590 with
- *   the player's guid): `$N`, `$R`, `$C`, `$G…;`, `$B` (ui/NpcText.ts formatNpcText).
+ *   the player's guid): `$N`, `$R`, `$C`, `$G…;`, `$B` — since 13.10 Wow.exe's own parser (FrameXmlQuestText.ts).
  * * The shopping tooltips' item records (0x00630c70 reads the cache without asking) and whether a
  *   merchant is open.
  */
@@ -22,8 +22,8 @@ import type { TooltipContent } from "../ui/Widgets.js";
 import type {
   GameTooltipExtrasAdapter, GameTooltipQuest, GameTooltipTalent, GameTooltipTalentRequirement,
 } from "../glue/GlueTooltipExtras.js";
-import type { GameTooltipStatSource } from "../glue/GlueTooltipStatDelta.js"; // 3.12 (04.10, L4)
-import { formatNpcText } from "../ui/NpcText.js"; // 3.12 (04.10, L4)
+import type { GameTooltipItemAura, GameTooltipStatSource } from "../glue/GlueTooltipStatDelta.js"; // 3.12 (04.10, L4)
+import { frameXmlQuestText } from "./FrameXmlQuestText.js"; // 3.12 (13.10): was ui/NpcText.ts formatNpcText
 import type { FrameXmlWorldSeam } from "./FrameXmlWorldSeam.js";
 import type { FrameXmlTalentCellSnapshot, FrameXmlTalentSnapshot } from "./FrameXmlTalentResolver.js";
 
@@ -43,6 +43,7 @@ export interface FrameXmlTooltipExtrasWorld {
     /** 3.12 (04.10, L4): the item cache, read without asking. */
     readonly itemTemplates?: ReadonlyMap<number, GameTooltipStatSource & {
       readonly found: boolean; readonly scalingStatValue: number;
+      readonly spells?: readonly { readonly spellId: number }[]; // 3.12 (13.10)
     }>;
     /** 3.12 (04.10, L4): the open merchant's list (SMSG_LIST_INVENTORY), undefined once closed. */
     readonly vendor?: unknown;
@@ -54,6 +55,13 @@ export interface FrameXmlTooltipExtrasWorld {
     talentsIn(tabId: number): readonly { readonly id: number; readonly ranks: readonly number[] }[];
     glyph(id: number): { readonly spellId: number; readonly flags: number } | undefined;
   } | undefined;
+  /** 3.12 (13.10): the page's spell rows (`game.spells`), for the item auras of the stat difference. */
+  readonly spells?: ReadonlyMap<number, FrameXmlItemAuraSpellRow>;
+}
+
+/** 3.12 (13.10): a tab's learned and previewed points, as 0x006224f0 adds them (0x005c5b30's +4 and +8). */
+function tabPoints(tab: { readonly pointsSpent: number; readonly previewPointsSpent?: number }): number {
+  return tab.pointsSpent + (tab.previewPointsSpent ?? 0);
 }
 
 function cellOf(snapshot: FrameXmlTalentSnapshot | undefined, tab: number, index: number, group: number | undefined) {
@@ -64,24 +72,72 @@ function cellOf(snapshot: FrameXmlTalentSnapshot | undefined, tab: number, index
   return groupSnapshot && tabSnapshot && cell ? { group: groupSnapshot, tab: tabSnapshot, cell } : undefined;
 }
 
+/** 3.12 (13.10): the spell columns 0x0061b5e0 reads from an item spell's row. */
+export interface FrameXmlItemAuraSpellRow {
+  readonly passive: boolean;
+  readonly effects?: readonly number[];
+  readonly effectAura?: readonly number[];
+  readonly effectMiscValue?: readonly number[];
+  readonly effectBasePoints?: readonly number[];
+}
+
+/** SPELL_EFFECT_APPLY_AURA, the only effect 0x0061b5e0 reads. */
+const SPELL_EFFECT_APPLY_AURA = 6;
+
+/**
+ * 3.12 (13.10): 0x0061f350 — every spell of an item record (all five, whatever the trigger) whose row is passive
+ * (SPELL_ATTR0_PASSIVE) gives its APPLY_AURA effects to the stat table. `null` while a row is not loaded (the
+ * missing ids go to `request`), and for a row without the aura columns (an older gateway).
+ */
+export function frameXmlItemSpellAuras(
+  spells: readonly { readonly spellId: number }[] | undefined,
+  row: (id: number) => FrameXmlItemAuraSpellRow | undefined,
+  request?: (ids: readonly number[]) => void,
+): GameTooltipItemAura[] | null {
+  const auras: GameTooltipItemAura[] = [];
+  const missing: number[] = [];
+  for (const { spellId } of spells ?? []) {
+    if (!(spellId > 0)) continue;
+    const metadata = row(spellId);
+    if (!metadata) { missing.push(spellId); continue; }
+    if (!metadata.passive) continue;
+    if (!metadata.effects || !metadata.effectAura || !metadata.effectMiscValue || !metadata.effectBasePoints) return null;
+    for (let effect = 0; effect < 3; effect += 1) {
+      if (metadata.effects[effect] !== SPELL_EFFECT_APPLY_AURA) continue;
+      auras.push({
+        aura: metadata.effectAura[effect] ?? 0, misc: metadata.effectMiscValue[effect] ?? 0,
+        basePoints: metadata.effectBasePoints[effect] ?? 0,
+      });
+    }
+  }
+  if (missing.length === 0) return auras;
+  request?.(missing);
+  return null;
+}
+
 export function frameXmlTooltipExtrasAdapter(
   seam: FrameXmlWorldSeam,
   context: () => FrameXmlTooltipExtrasWorld,
   spell: (id: number) => TooltipContent | undefined,
+  requestSpells?: (ids: readonly number[]) => void, // 3.12 (13.10): the item auras' rows
 ): GameTooltipExtrasAdapter {
   const ranksOf = (tabId: number, talentId: number): readonly number[] | undefined =>
     context().talentData?.talentsIn(tabId).find((row) => row.id === talentId)?.ranks;
-  const describe = (tab: { id: number; name: string | undefined; pointsSpent: number; talents: readonly FrameXmlTalentCellSnapshot[] },
-    cell: FrameXmlTalentCellSnapshot, rank: number, pet: boolean, own: boolean): GameTooltipTalent | undefined => {
+  const describe = (tab: {
+    id: number; name: string | undefined; pointsSpent: number; previewPointsSpent?: number;
+    talents: readonly FrameXmlTalentCellSnapshot[];
+  }, cell: FrameXmlTalentCellSnapshot, rank: number, pet: boolean, own: boolean, preview = false): GameTooltipTalent | undefined => {
     const ranks = ranksOf(tab.id, cell.id);
     if (!ranks || ranks.length === 0) return undefined;
     const requirements: GameTooltipTalentRequirement[] = [];
     // 3.12 (04.10, L4): only an unlearned talent lists them (0x00626e20 → 0x006224f0).
     if (own && rank === 0) {
       const points = (cell.tier - 1) * (pet ? PET_POINTS_PER_TIER : CLASS_POINTS_PER_TIER);
-      if (tab.pointsSpent < points && tab.name) requirements.push({ kind: "tier", points, tabName: tab.name });
+      // 3.12 (13.10): 0x006224f0 counts the tab's learned and previewed points (0x005c5b30: +4 + +8) either way.
+      if (tabPoints(tab) < points && tab.name) requirements.push({ kind: "tier", points, tabName: tab.name });
       for (const prerequisite of cell.prerequisites) {
-        if (prerequisite.meetsPrereq !== false) continue;
+        // 3.12 (13.10): with isPreview the prerequisite's preview rank (+0x20) decides, else its learned one (+0x1c).
+        if ((preview ? prerequisite.meetsPreviewPrereq : prerequisite.meetsPrereq) !== false) continue;
         const first = ranksOf(tab.id, prerequisite.talentId)?.[0];
         const name = first === undefined ? undefined : spell(first)?.title;
         if (name) requirements.push({ kind: "talent", rank: prerequisite.requiredRank, name });
@@ -90,19 +146,33 @@ export function frameXmlTooltipExtrasAdapter(
     return { ranks, rank, requirements };
   };
   return {
-    talent: (tab, index, inspect, pet, group) => {
+    talent: (tab, index, inspect, pet, group, preview = false) => {
       // 3.12 (04.10, L4): the inspected trees (FrameXmlInspect.ts), requirements by their ranks, no learn hint.
       const snapshot = inspect ? seam.inspect?.talentSnapshot?.() : seam.talentSnapshot(pet);
       const found = cellOf(snapshot, tab, index, group);
       if (!found) return undefined;
-      const described = describe(found.tab, found.cell, found.cell.rank, pet, true);
+      // 3.12 (13.10): with isPreview 0x00626e20 shows the preview rank (+0x20, learned + previewed), else the learned one.
+      const rank = preview ? found.cell.previewRank ?? found.cell.rank : found.cell.rank;
+      const described = describe(found.tab, found.cell, rank, pet, true, preview);
       if (!described || inspect) return described;
       // 3.12 (04.10, L4): 0x00622800's TOOLTIP_TALENT_LEARN.
       // L4-review: met as 0x006224f0 answers it — an unmet one counts even when its line has no name to write.
       const tierPoints = (found.cell.tier - 1) * (pet ? PET_POINTS_PER_TIER : CLASS_POINTS_PER_TIER);
-      const unmet = found.cell.rank === 0 && (found.tab.pointsSpent < tierPoints
-        || found.cell.prerequisites.some((prerequisite) => prerequisite.meetsPrereq === false));
-      const learnable = found.group.group === snapshot?.activeTalentGroup && (snapshot.unspentPoints ?? 0) > 0
+      const unmet = rank === 0 && (tabPoints(found.tab) < tierPoints
+        || found.cell.prerequisites.some((prerequisite) =>
+          (preview ? prerequisite.meetsPreviewPrereq : prerequisite.meetsPrereq) === false));
+      const active = found.group.group === snapshot?.activeTalentGroup;
+      if (preview) {
+        // 3.12 (13.10): 0x00622800 with isPreview — the tooltip's group active, every requirement met: the green
+        // TALENT_TOOLTIP_ADDPREVIEWPOINT when a point could be placed (0x005c76e0(+1)), then the red
+        // TALENT_TOOLTIP_REMOVEPREVIEWPOINT when one could be taken back (0x005c76e0(-1)); never TOOLTIP_TALENT_LEARN.
+        const model = seam.talentPreview;
+        if (!active || unmet || !model) return described;
+        const previewAdd = model.wouldChange(pet, found.group.group, found.tab.index, found.cell.id, 1);
+        const previewRemove = model.wouldChange(pet, found.group.group, found.tab.index, found.cell.id, -1);
+        return previewAdd || previewRemove ? { ...described, previewAdd, previewRemove } : described;
+      }
+      const learnable = active && (snapshot.unspentPoints ?? 0) > 0
         && described.rank < described.ranks.length && (described.requirements?.length ?? 0) === 0 && !unmet; // L4-review: && !unmet
       return learnable ? { ...described, learnable } : described;
     },
@@ -133,13 +203,13 @@ export function frameXmlTooltipExtrasAdapter(
         for (const objective of template.objectives) if (objective.text) requirements.push(objective.text);
       }
       // 3.12 (04.10, L4): the objectives text through the quest text parser (0x00579590), for the player.
-      const self = world?.state?.selfGuid;
-      const objectivesText = template.objectivesText.includes("$") ? formatNpcText(template.objectivesText, {
-        name: seam.unitName("player") ?? "",
-        className: seam.unitClass("player")?.[0] ?? "",
-        raceName: seam.unitRace("player")?.[0] ?? "",
-        gender: seam.unitSex("player") === 3 ? 1 : 0,
-        declined: self === undefined ? undefined : world?.names?.declined(self),
+      // 3.12 (13.10): that parser itself (FrameXmlQuestText.ts, 0x00578f20): `$c`/`$r` lowered by `_strlwr`, ASCII
+      // only, so a ruRU class keeps its capital; `$G a:b:C;`'s third part never printed; an unknown marker stays.
+      const objectivesText = template.objectivesText.includes("$") ? frameXmlQuestText(template.objectivesText, {
+        name: seam.unitName("player"),
+        className: seam.unitClass("player")?.[0],
+        raceName: seam.unitRace("player")?.[0],
+        female: seam.unitSex("player") === 3,
       }) : template.objectivesText;
       return { title: template.title, objectivesText, active: index !== undefined, requirements };
     },
@@ -161,8 +231,13 @@ export function frameXmlTooltipExtrasAdapter(
     // 3.12 (04.10, L4): cached records only, as 0x00630c70 reads them.
     itemStats: (entry) => {
       const template = context().world?.itemTemplates?.get(entry);
-      return template?.found === true ? template : undefined;
+      if (template?.found !== true) return undefined;
+      // 3.12 (13.10): the passive spells' auras (0x0061f350); a row not here yet is asked for, and the
+      // table stays unknown (`spellAuras: null` — no difference) until it lands.
+      const spellAuras = frameXmlItemSpellAuras(template.spells, (id) => context().spells?.get(id), requestSpells);
+      return { ...template, spellAuras };
     },
+    playerIsDruid: () => seam.unitClass("player")?.[1] === "DRUID", // 3.12 (13.10): ChrClasses 11
     merchantOpen: () => context().world?.vendor !== undefined && context().world?.vendor !== null,
   };
 }

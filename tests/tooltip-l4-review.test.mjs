@@ -31,6 +31,9 @@ ITEM_MOD_POWER_REGEN0_SHORT = "маны в 5 сек."
 TOOLTIP_UNIT_LEVEL = "Уровень %s"
 TOOLTIP_UNIT_LEVEL_TYPE = "Уровень %s (%s)"
 TOOLTIP_UNIT_LEVEL_RACE_CLASS = "Уровень %s %s %s"
+-- 4.04 (13.10): a player's type slot is PLAYER (0x00621070).
+TOOLTIP_UNIT_LEVEL_RACE_CLASS_TYPE = "Уровень %s %s %s (%s)"
+PLAYER = "игрок"
 FACTION_STANDING_LABEL5 = "Дружелюбие"
 UNITNAME_SUMMON_TITLE1 = "Питомец |3-1(%s)"
 MASTER_LOOTER = "Ответственный за добычу"
@@ -270,9 +273,9 @@ test("L4-review: where nothing new applies, units, items and comparisons draw as
   });
   try {
     const table = [
-      [`GameTooltip:SetUnit("target")`, ["Волк", "Уровень 80 (Животное)"], "an NPC: no summon title, no standing, no loot lines"],
-      [`GameTooltip:SetUnit("mouseover")`, ["Чужак", "Уровень 80 Человек Воин"], "a player without a guild"],
-      [`Guild = "Щит" GameTooltip:SetUnit("mouseover")`, ["Чужак", "Щит", "Уровень 80 Человек Воин"], "the own guild through GetGuildInfo"],
+      [`GameTooltip:SetUnit("target")`, ["Волк", "Уровень 80"], "an NPC: no summon title, no standing, no loot lines (friendly: no type word, 4.04)"],
+      [`GameTooltip:SetUnit("mouseover")`, ["Чужак", "Уровень 80 Человек Воин (игрок)"], "a player without a guild"],
+      [`Guild = "Щит" GameTooltip:SetUnit("mouseover")`, ["Чужак", "Щит", "Уровень 80 Человек Воин (игрок)"], "the own guild through GetGuildInfo"],
       [`Money = nil GameTooltip:SetBagItem(0, 1)`, ["Новый шлем", "Голова"], "a bag item without a refund"],
       [`Money = nil GameTooltip:SetInventoryItem("player", 1)`, ["Шлем", "Голова"], "a worn item without a refund"],
     ];

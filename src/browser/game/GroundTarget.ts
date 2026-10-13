@@ -50,6 +50,24 @@ export function pendingGroundTargetItem(): { bag: number; slot: number; guid: bi
   return game.groundTargetItem;
 }
 
+/**
+ * 2.05 (13.10): who hears the reticle go up (true, every arming — Wow.exe 0x0080cce0 raises 0x0053b480 on each) and
+ * come down (false, only when one was up — SpellStopTargeting 0x00809e30 → 0x00806200 → 0x008054f0). The stock seam
+ * turns both into ACTIONBAR_UPDATE_STATE + CURRENT_SPELL_CAST_CHANGED (FrameXmlBoundTradeable.ts).
+ */
+const groundTargetObservers = new Set<(armed: boolean) => void>();
+
+export function observeGroundTarget(observer: (armed: boolean) => void): () => void {
+  groundTargetObservers.add(observer);
+  return () => { groundTargetObservers.delete(observer); };
+}
+
+function groundTargetChanged(armed: boolean): void {
+  for (const observer of [...groundTargetObservers]) {
+    try { observer(armed); } catch (error) { console.error("[ground target] observer failed", error); }
+  }
+}
+
 export function beginGroundTarget(spellId: number): boolean {
   if (!game.world) return false;
   // One pending spell at a time: the reticle replaces a cursor waiting for an item (SpellCursor.ts).
@@ -58,16 +76,19 @@ export function beginGroundTarget(spellId: number): boolean {
   // A fresh arming owns no item: the click below must not inherit a previous item reticle's
   // bag and slot. The item flow sets `groundTargetItem` itself right after this returns.
   game.groundTargetItem = undefined;
+  groundTargetChanged(true); // 2.05 (13.10)
   return true;
 }
 
 export function cancelGroundTarget(): void {
+  const armed = game.groundTarget !== undefined; // 2.05 (13.10)
   game.groundTarget = undefined;
   game.groundTargetItem = undefined;
   // The reticle's rings and any placing ghost are indication, not state: drop them with the arming
   // rather than on the next drawn frame, which a hidden world panel may not reach.
   game.renderer?.setGroundTargetPreview(undefined);
   game.renderer?.setGameObjectPreview(undefined);
+  if (armed) groundTargetChanged(false); // 2.05 (13.10)
 }
 
 // 3.39/5.30: the rule lives beside the world's item-use request (WorldClient tracks the spell it names).

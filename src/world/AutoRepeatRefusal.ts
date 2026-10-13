@@ -142,7 +142,17 @@ export function refusalLimitCategoryText(result: number, extra: readonly number[
     "You can only have %d %s at a time");
 }
 
-/** 0x00808200's `local_14` and the state behind it, for the error frame. */
+/**
+ * 0x00808200's `local_14` and the state behind it, for the error frame.
+ *
+ * 3.02 (13.10), where Wow.exe lets the state go (read-only Ghidra, .runtime/re-2026-10-11/glue-1110/a302-5…8.txt):
+ * 0x00d397c4 (the last refused spell) is written only by 0x00808200, by the GO 0x0080e1b0 ({@link spellGo}) and by
+ * the spell system's init 0x008100e0, which also sets the wanted spell 0x00d397cc to 0 and its result 0x00d397c8 to
+ * 187; 0x00d397c0 and 0x00d397bc are written by 0x00808200 alone. 0x008100e0 runs from ClientInitializeGame
+ * (0x00405540 → 0x00742220), the handler 0x004dab40 of entering the world — every SMSG_LOGIN_VERIFY_WORLD, not a
+ * map change and not a UI reload. Here the rules live on the WorldClient, one per world entry (Login.ts
+ * `WorldClient.connect`, cleared with `clearWorldContext`): the same reset point.
+ */
 export class RefusalQuietRules {
   /** 0x00d397c8: the wanted spell's last result; undefined is 0x007fe190's 187, which no refusal carries. */
   #wantedResult: number | undefined;

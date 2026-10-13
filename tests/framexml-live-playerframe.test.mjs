@@ -9,7 +9,8 @@ const CAST_SUBSCRIBERS = 2;
 // 0x00805330 → 0x006fbe50 → 0x00751920; WORK_PLAN 3.01, «03.10, линия stock-small (`3.01-castlog`)»), so
 // SPELL_CAST_START has the two bar subscribers and SPELL_START the combat log's one.
 const CAST_START_SUBSCRIBERS = CAST_SUBSCRIBERS;
-const SPELL_START_SUBSCRIBERS = 1;
+// 2.05 (13.10): and the own cast's ACTIONBAR_UPDATE_STATE + CURRENT_SPELL_CAST_CHANGED (FrameXmlOwnCastChanges.ts).
+const SPELL_START_SUBSCRIBERS = 2;
 
 const { LiveWorldSeam } = await import("../dist/code/browser/framexml/LiveWorldSeam.js");
 const {

@@ -11,7 +11,7 @@ import { CAMERA_PITCH_LIMIT, advanceCameraFollow, cameraLookPerPixel, zoomedDist
 import { cameraYawOffFlip } from "../game/CameraViews.js"; // DEC-B 3.11
 import { cameraMaxDistance, settingOn, settings } from "../ui/Settings.js";
 import { settingNumber } from "../ui/SettingsModel.js";
-import { canAttackUnit, inSightFromCamera, reactionTo } from "../game/Targeting.js";
+import { canAttackUnit, dropTabList, inSightFromCamera, reactionTo } from "../game/Targeting.js"; // 1.10: dropTabList
 import { setHoveredTarget } from "../game/HoverTarget.js";
 import { gatherPlan } from "../game/CreatureGather.js";
 import { cancelGiftWrap, giftWrapPending, observeGiftWrap } from "../game/GiftWrap.js"; // L1-review: cancelGiftWrap
@@ -183,7 +183,12 @@ const NATIVE_ESCAPE: FrameXmlNativeEscape = {
   },
   clearTarget: () => {
     const world = game.world;
-    if (world?.targetGuid === undefined) return false;
+    if (world?.targetGuid === undefined) {
+      // 1.10 (12.10): ClearTarget 0x525fc0 zeroes the Tab list's mark (0x00bd08cc) first, with or
+      // without a selection, and answers nil without one: the clear of nothing drops the list only.
+      dropTabList();
+      return false;
+    }
     world.selectTarget(undefined);
     // The target is gone and this press is spent whatever the native frame's repaint does; a throw
     // here must not read as "nothing cleared" and let the same press open the menu.

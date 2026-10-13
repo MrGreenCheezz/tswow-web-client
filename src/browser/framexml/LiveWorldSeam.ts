@@ -48,6 +48,8 @@ import {
 } from "../game/SpellCursor.js";
 import { END_BOUND_TRADEABLE_ITEM_ENCHANT } from "../game/BoundTradeable.js"; // L1 (2.05/3.22)
 import { frameXmlObservePendingSpells } from "./FrameXmlBoundTradeable.js"; // L1 (2.05)
+import { frameXmlObserveOwnCastChanges } from "./FrameXmlOwnCastChanges.js"; // 2.05 (13.10)
+import { observeGroundTarget } from "../game/GroundTarget.js"; // 2.05 (13.10)
 import { observeSpellEnchantQuestion } from "../game/MainHandEnchant.js"; // 05.10-2.05
 import { frameXmlResetCursor } from "./FrameXmlSetCursor.js"; // 05.10-5.17 review
 import { currencyTokenSlots } from "../CarriedItems.js"; // L1 (2.05)
@@ -82,8 +84,25 @@ import { frameXmlInstanceIsDynamic, frameXmlInstancePlayerDifficulty } from "./F
 import { frameXmlLootOwnerLines, type FrameXmlLootOwnerLine } from "./FrameXmlLootOwnerTooltip.js"; // 5.28 (L6)
 import {
   FrameXmlUnitTooltipRefresh, frameXmlUnitGuildName, frameXmlUnitPendingAnswers, frameXmlUnitSummonTitle,
+  frameXmlSummonSpellWait, // 3.12 (13.10)
 } from "./FrameXmlUnitTooltipExtras.js"; // 3.12 (04.10, L4)
-import { characterCombatRatingBonus, spellCritFromIntellect, type CharacterStatCatalog } from "../../world/CharacterStatData.js";
+import { frameXmlCreatureTypeId } from "./FrameXmlCreatureType.js"; // 3.12 (13.10)
+import { frameXmlUnitTooltipFacts, type FrameXmlUnitFactionRow } from "./FrameXmlUnitTooltipFacts.js"; // 4.04 (13.10)
+import type { GameTooltipUnitFacts } from "../glue/GlueUnitTooltip.js"; // 4.04 (13.10)
+
+/** 4.04 (13.10): the unit tooltip's world judgements the mount hands the seam (FrameXmlWorldMount.ts). */
+export interface FrameXmlUnitTooltipHooks {
+  /** 0x007251c0(player, unit) as a ReputationRank: the creature type word is written below friendly (4). */
+  playerRank(unit: WorldObjectState): number | undefined;
+  /** CanAttack 0x00729740: a drunk player sees such a unit lower (0x004f7290). */
+  canAttack(unit: WorldObjectState): boolean;
+  /** 0x007293d0: RESURRECTABLE under a dead player the player can assist. */
+  canAssist(unit: WorldObjectState): boolean;
+  /** The faction line's Faction.dbc row (with a reputation) and its name. */
+  faction(unit: WorldObjectState): { readonly row: FrameXmlUnitFactionRow; readonly name: string | undefined } | undefined;
+}
+import { characterCombatRatingBonus, type CharacterStatCatalog } from "../../world/CharacterStatData.js";
+import { maxHealthModifierOf, spellCritFromIntellectOf } from "../../world/StatTooltipValues.js"; // 4.03 (13.10)
 import {
   MIRROR_TIMER_BREATH, MIRROR_TIMER_FATIGUE, MIRROR_TIMER_NAMES, mirrorTimerRemaining,
 } from "../../world/MirrorTimerProtocol.js";
@@ -504,6 +523,10 @@ export interface LiveWorldSeamContext {
   readonly setFocus?: (guid: bigint | undefined) => void;
   /** Optional FactionTemplate resolver supplied by the host when client-side faction data is ready. */
   readonly reaction?: (left: WorldObjectState, right: WorldObjectState) => number | undefined;
+  /** 3.12 (13.10): 0x007251c0(unit, player) as a ReputationRank 0..7 (game/UnitStandingRank.ts); UnitReaction(unit, "player"). */
+  readonly unitRankToPlayer?: (unit: WorldObjectState) => number | undefined;
+  /** 4.04 (13.10): the unit tooltip's world judgements (Targeting.ts, game/UnitStandingRank.ts); absent, those rows stay out. */
+  readonly unitTooltip?: FrameXmlUnitTooltipHooks;
   /**
    * 5.05 (12.10): the unit's view of the player with the reputation rules on top (`Targeting.unitReactionToPlayer`),
    * for UnitSelectionColor (0x00521bf0). Absent: `reaction(unit, player)` — the template masks and forced reactions.
@@ -1816,8 +1839,10 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
       if (armed) cancelItemTarget();
     });
     // L1 (2.05): every arm and drop of either raises ACTIONBAR_UPDATE_STATE + CURRENT_SPELL_CAST_CHANGED (0x0053b480).
+    // 2.05 (13.10): the reticle and the glyph cursor are pending spells too (0x0080cce0, 0x00806200).
     const stopPendingSpellEvents = frameXmlObservePendingSpells(() => this.#pump,
-      [observeItemTarget, (observer) => this.tradeSkill.observeTargeting(observer)]);
+      [observeItemTarget, (observer) => this.tradeSkill.observeTargeting(observer),
+        observeGroundTarget, (observer) => this.glyphs.observeTargeting(observer)]); // 2.05 (13.10)
     // 05.10-2.05: the weapon pick's question, 0x0081b530(0x28d, "%s", "spellenchant") (game/MainHandEnchant.ts).
     const stopSpellEnchant = observeSpellEnchantQuestion(() => { this.#pump?.fire("END_BOUND_TRADEABLE", "spellenchant"); });
     this.#unobserveSpellCursors = () => {
@@ -2571,6 +2596,8 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
           casterGuid: event.casterGuid, spellId: event.spellId, castCount: event.castCount, result: event.result,
         });
       }));
+      // 2.05 (13.10): the own cast's ACTIONBAR_UPDATE_STATE + CURRENT_SPELL_CAST_CHANGED, after the events above.
+      this.#unsubscribe.push(frameXmlObserveOwnCastChanges(world, () => this.#pump));
       this.#unsubscribe.push(world.events.on("SPELL_CAST_DELAYED", (event) => {
         const units = this.#castUnits(event.casterGuid); // 3.02: every token
         if (units.length === 0) return;
@@ -6213,17 +6240,17 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     return frameXmlCritChanceFromAgility(this.#context.characterRegen?.(), this.#regenUnit(unit));
   }
 
+  /**
+   * 4.03 (13.10): Wow.exe 0x0060e1b0 → 0x0071bb70 (world/StatTooltipValues.ts) — the active player or a pet (the pet
+   * paper doll asks "pet"), the class ratio times the intellect plus the base, 0 for a zero ratio or any other unit.
+   */
   spellCritChanceFromIntellect(unit: string): number | undefined {
-    const object = this.#unitObject(unit);
-    if (!object || unit !== "player") return undefined;
-    // Update masks omit zero-valued fields; STAT3 is the effective value, not POSSTAT3 added again.
-    const intellect = this.#signed(this.#fieldAtOffset(object, "UNIT_FIELD_STAT0", 3));
-    return spellCritFromIntellect(this.#context.characterStats?.(), unitField.classId(object) ?? 0,
-      unitField.level(object) ?? 0, intellect);
+    return spellCritFromIntellectOf(this.#unitObject(unit), this.#context.world()?.state.selfGuid, this.#context.characterStats?.());
   }
 
-  unitMaxHealthModifier(): number {
-    return 1;
+  /** 4.03 (13.10): Wow.exe 0x00612870 — UNIT_FIELD_MAXHEALTHMODIFIER + 1 for the player or a pet, else 0. */
+  unitMaxHealthModifier(unit = "player"): number {
+    return maxHealthModifierOf(this.#unitObject(unit), this.#context.world()?.state.selfGuid);
   }
 
   unitHealthRegenRateFromSpirit(unit: string): number {
@@ -6720,6 +6747,13 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
 
   /** `UnitReaction`'s stock index from the FactionTemplate relation this seam already resolves. */
   unitReaction(left: string, right: string): number | undefined {
+    // 3.12 (13.10): a unit's view of the player is its ReputationRank + 1 (0x0060d280 → 0x007251c0), so a
+    // reputation faction reads «Уважение»… in the colour-blind line, not only 2/4/5 (game/UnitStandingRank.ts).
+    const viewer = this.#context.unitRankToPlayer ? this.#unit(left) : undefined;
+    if (viewer && viewer.guid !== this.#selfGuid() && this.#unit(right)?.guid === this.#selfGuid()) {
+      const rank = this.#context.unitRankToPlayer!(viewer);
+      if (rank !== undefined) return rank + 1;
+    }
     const reaction = this.#reaction(left, right);
     return reaction === REACTION_HOSTILE ? 2
       : reaction === REACTION_NEUTRAL ? 4
@@ -7560,9 +7594,77 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     const world = this.#context.world();
     const object = this.#unit(unit);
     if (!world || !object) return undefined;
+    // 3.12 (13.10): also a summon's spell row on its way, and what the 4.04 lines asked the caches for.
+    const waits: (() => boolean)[] = [];
+    const spellWait = frameXmlSummonSpellWait(object, (id) => this.#context.spell(id) !== undefined);
+    if (spellWait) waits.push(spellWait);
+    const factsWait = this.#unitFactsWait?.guid === object.guid ? this.#unitFactsWait.ready : undefined;
+    if (factsWait) waits.push(factsWait);
     const ready = frameXmlUnitPendingAnswers(world, object,
-      this.unitIsDead(unit) ? world.lootOwnersByUnit?.get(object.guid) : undefined);
+      this.unitIsDead(unit) ? world.lootOwnersByUnit?.get(object.guid) : undefined, waits);
     return ready ? this.#unitAnswers.watch(ready, redraw) : undefined;
+  }
+
+  /** 4.04 (13.10): what the last `unitTooltipFacts` still waits for from the caches (watchUnitAnswers adds it). */
+  #unitFactsWait: { readonly guid: bigint; readonly ready: () => boolean } | undefined;
+
+  /**
+   * 4.04 (13.10): the world's answers for GameTooltip:SetUnit's level line, faction, PvP, RESURRECTABLE, beast lore,
+   * racial leader and quest rows (FrameXmlUnitTooltipFacts.ts → glue/GlueUnitTooltip.ts). A creature, item or
+   * quest record not cached yet is asked for, and the tooltip is drawn again when it comes (0x0061ddd0).
+   */
+  unitTooltipFacts(unit: string): GameTooltipUnitFacts | undefined {
+    const world = this.#context.world();
+    const object = this.#unit(unit);
+    this.#unitFactsWait = undefined;
+    if (!world || !object || (object.typeId !== TYPEID_UNIT && object.typeId !== TYPEID_PLAYER)) return undefined;
+    const hooks = this.#context.unitTooltip;
+    const entry = frameXmlCreatureEntry(object);
+    const record = entry === undefined ? undefined : world.creatureTemplates.get(entry);
+    const names = this.#context.creatureTypes?.table();
+    const missingCreatures: number[] = [];
+    const missingItems: number[] = [];
+    const creatureName = (id: number): string | undefined => {
+      const name = this.#context.creatureInfo?.(id)?.name ?? world.creatureTemplate?.(id)?.name;
+      if (!name) missingCreatures.push(id);
+      return name || undefined;
+    };
+    const itemName = (id: number): string | undefined => {
+      const name = this.#context.itemInfo?.(id)?.name ?? (world.itemTemplate?.(id) ?? this.#itemTemplate(world, id))?.name;
+      if (!name) missingItems.push(id);
+      return name || undefined;
+    };
+    const rows: { entry: QuestLogEntry; template: QuestTemplate }[] = [];
+    for (const row of this.questLog.list().rows) {
+      const template = row.header ? undefined : world.questTemplates.get(row.entry.questId);
+      if (!row.header && template) rows.push({ entry: row.entry, template });
+    }
+    const faction = hooks?.faction(object);
+    const facts = frameXmlUnitTooltipFacts({
+      object, self: this.#self(), record,
+      level: {
+        creatureTypeId: names ? frameXmlCreatureTypeId(object, record, names) : record?.found ? record.creatureType : undefined,
+        creatureTypeName: names ? (id) => names.typeName(id) : undefined,
+        playerRank: hooks?.playerRank(object),
+        unitRank: this.#context.unitRankToPlayer?.(object),
+        canAttack: hooks?.canAttack(object) ?? false,
+        raceName: object.typeId === TYPEID_PLAYER ? this.unitRace(unit)?.[0] : undefined,
+        className: object.typeId === TYPEID_PLAYER ? this.unitClass(unit)?.[0] : undefined,
+      },
+      factionRow: faction?.row, factionName: faction?.name,
+      canAssist: hooks?.canAssist(object) ?? false,
+      foods: this.#context.petFoods?.table(),
+      quests: { rows, creatureName, itemName, itemCount: (id) => this.itemCount(id, false) },
+    });
+    if (missingCreatures.length > 0 || missingItems.length > 0) {
+      const guid = object.guid;
+      this.#unitFactsWait = {
+        guid,
+        ready: () => missingCreatures.some((id) => world.creatureTemplates.get(id)?.name)
+          || missingItems.some((id) => this.#itemTemplate(world, id)?.name || this.#context.itemInfo?.(id)?.name),
+      };
+    }
+    return facts;
   }
 
   /** 3.12 (04.10, L4): any player's guild line from the guild cache (FrameXmlUnitTooltipExtras.ts). */
@@ -7576,6 +7678,15 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     const world = this.#context.world();
     return world ? frameXmlUnitSummonTitle(world, this.#unit(unit), {
       spellEffects: (id) => this.#context.spell(id)?.effects,
+      // 3.12 (13.10): a stranger's summon names a row this page never loaded — ask for it (watchUnitAnswers redraws).
+      requestSpell: (id) => this.#context.prefetchQuestMetadata?.([], [id], () => undefined),
+      // 3.12 (13.10): 0x0071f300 with the form's creature type first, once the type table has landed.
+      creatureTypeId: (object) => {
+        const names = this.#context.creatureTypes?.table();
+        const entry = frameXmlCreatureEntry(object);
+        return names ? frameXmlCreatureTypeId(object, entry === undefined ? undefined : world.creatureTemplates.get(entry), names)
+          : undefined;
+      },
     }) : undefined;
   }
 

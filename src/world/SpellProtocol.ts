@@ -321,7 +321,8 @@ const SPELL_FAILED_TOTEM_CATEGORY = 130;
 const SPELL_FAILED_TOTEMS = 131;
 const SPELL_FAILED_PREVENTED_BY_MECHANIC = 147;
 const SPELL_FAILED_MIN_SKILL = 150;
-const SPELL_FAILED_CUSTOM_ERROR = 172;
+/** 3.02 (13.10): exported for the error frame's own path (WorldClient SMSG_CAST_FAILED, Wow.exe 0x00808200 case 0xac). */
+export const SPELL_FAILED_CUSTOM_ERROR = 172;
 const SPELL_FAILED_FISHING_TOO_LOW = 181;
 /** `ITEM_CLASS_WEAPON`: the class an exotic-ammo refusal's subclass mask belongs to. */
 const ITEM_CLASS_WEAPON = 2;
@@ -718,7 +719,7 @@ const CAST_FAILURE_WORDS = {
  * declension marker, Lua escapes) with the names `names` can give: a zone, an item, a weapon class.
  * Without one, a word stands in, or — where the template needs the name to make sense — the stock
  * sentence that needs none (INCORRECT_AREA, EQUIPPED_ITEM). A custom error is its own string, and a
- * custom error without one is the general SPELL_FAILED_UNKNOWN.
+ * custom error without one says nothing (3.02, 13.10: Wow.exe 0x00808200 case 0xac).
  *
  * `SPELL_FAILED_DONT_REPORT` is the server saying "show nothing"; it is the one answer that must
  * produce no message at all. A bare result number is still accepted, as it was.
@@ -732,8 +733,9 @@ export function spellFailureText(failure: CastFailure | number, names: WorldName
   const unknown = `Заклинание отклонено (код ${cast.result})`;
   if (name === undefined) return unknown;
   if (cast.result === SPELL_FAILED_CUSTOM_ERROR) {
+    // 3.02 (13.10): Wow.exe 0x007fef10 — the custom error's own string or nothing (was: SPELL_FAILED_UNKNOWN).
     const custom = cast.extra === undefined ? undefined : customErrorTemplate(cast.extra[0]);
-    return custom !== undefined ? formatGlobalString(custom) : formatGlobalStringByName("SPELL_FAILED_UNKNOWN", [], "Причина неизвестна.");
+    return custom !== undefined ? formatGlobalString(custom) : undefined;
   }
   const template = globalString(`SPELL_FAILED_${name}`);
   return template === undefined ? unknown : fillCastFailure(template, cast, names);
@@ -792,16 +794,16 @@ function fillCastFailure(template: string, cast: CastFailure, names: WorldNameSo
 }
 
 /**
- * A `SpellCustomErrors` value's own sentence. Three of them (14, 63, 64) stand in GlobalStrings.lua
- * under a `_NONE`-suffixed name only; an empty string is no sentence.
+ * A `SpellCustomErrors` value's own sentence, as Wow.exe 0x007fef10 finds it: `format("%s_%d",
+ * "SPELL_FAILED_CUSTOM_ERROR", n)` through 0x00819d40, which tries that name with the plural and
+ * gender suffixes and answers "" when none is defined. 3.02 (13.10): the `_NONE`-suffixed names that
+ * alone carry 14, 63 and 64 in GlobalStrings.lua are never asked for, so those three say nothing in
+ * the client (was: looked up here too). An empty string is no sentence.
  */
 function customErrorTemplate(customError: number | undefined): string | undefined {
   if (customError === undefined) return undefined;
-  for (const name of [`SPELL_FAILED_CUSTOM_ERROR_${customError}`, `SPELL_FAILED_CUSTOM_ERROR_${customError}_NONE`]) {
-    const template = globalString(name);
-    if (template !== undefined && template.trim() !== "") return template;
-  }
-  return undefined;
+  const template = globalString(`SPELL_FAILED_CUSTOM_ERROR_${customError}`);
+  return template !== undefined && template.trim() !== "" ? template : undefined;
 }
 
 /** A name a lookup actually gave: an empty or blank answer is none. */

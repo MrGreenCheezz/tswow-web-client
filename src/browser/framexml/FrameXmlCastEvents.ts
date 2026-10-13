@@ -4,8 +4,10 @@
  *
  * Wow.exe 3.3.5a 12340 (read-only Ghidra, .runtime/re-2026-10-02/a2-m8/):
  * - SENT (event 0x143): 0x0080ac90 raises it right after building CMSG_CAST_SPELL / CMSG_USE_ITEM /
- *   the pet cast — always for "player", with the spell's name and rank and the name of the request's
- *   target (0x0074d750: a known name, else the UNKNOWNOBJECT string; "" without a target).
+ *   CMSG_PET_CAST_SPELL — always for "player", with the spell's name and rank and the name of the request's
+ *   target (0x0074d750: a known name, else the UNKNOWNOBJECT string; "" without a target) — and only when the
+ *   caster is the active player (0x004cee50, 13.10): a pet's, a vehicle's or a possessed unit's cast through the
+ *   same builder raises none, nor does the pet bar's CMSG_PET_ACTION (tests/cast-sent-caster.test.mjs).
  * - The outcome (0x007fecc0, given a SpellCastResult): 187 — the client's own «success», from an
  *   SMSG_SPELL_GO without CAST_FLAG_PENDING (0x0080e1b0) — raises SUCCEEDED (0x14a); 24, 27 and 105
  *   (CHARMED, DONT_REPORT, SPELL_IN_PROGRESS) raise FAILED_QUIET (0x147); 40 and 41 (INTERRUPTED,

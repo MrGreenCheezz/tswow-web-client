@@ -156,6 +156,11 @@ GameTooltip = CreateFrame("GameTooltip", "GameTooltip", UIParent)
 TOOLTIP_UNIT_LEVEL = "Уровень %s"
 TOOLTIP_UNIT_LEVEL_TYPE = "Уровень %s (%s)"
 TOOLTIP_UNIT_LEVEL_RACE_CLASS = "Уровень %s %s %s"
+-- 4.04 (13.10): the slots Wow.exe fills (0x00621070): a player's type PLAYER, a creature's type word in the class slot.
+TOOLTIP_UNIT_LEVEL_RACE_CLASS_TYPE = "Уровень %s %s %s (%s)"
+TOOLTIP_UNIT_LEVEL_CLASS = "%2$s %1$s-го уровня"
+PLAYER = "игрок"
+CORPSE = "Труп существа"
 FACTION_STANDING_LABEL2 = "Враждебность"
 FACTION_STANDING_LABEL5 = "Дружелюбие"
 FACTION_STANDING_LABEL5_FEMALE = "Дружелюбие (ж)"
@@ -176,7 +181,10 @@ function UnitClass() return "Воин" end
 function UnitLevel() return 80 end
 function UnitCreatureType(unit) if unit == "target" then return "Животное" end end
 function UnitIsPVP() return false end
-function UnitReaction(unit, other) if other == "player" then return unit == "target" and 2 or 5 end end
+function UnitReaction(unit, other)
+  if other == "player" then return unit == "target" and 2 or 5 end
+  if unit == "player" then return other == "target" and 2 or 5 end -- 4.04 (13.10): the player's view
+end
 Dead = false
 function UnitIsDead(unit) return Dead end
 function GetGuildInfo(unit) return nil end
@@ -215,17 +223,17 @@ test("SetUnit: guild from the cache, standing label only in colour-blind mode, s
   try {
     run(`GameTooltip:SetOwner(UIParent, "ANCHOR_NONE")`);
     run(`GameTooltip:SetUnit("mouseover")`);
-    assert.deepEqual(lines(), ["Чужак", "Чужая гильдия", "Уровень 80 Человек Воин"], "another player's guild line");
+    assert.deepEqual(lines(), ["Чужак", "Чужая гильдия", "Уровень 80 Человек Воин (игрок)"], "another player's guild line");
     run(`GameTooltip:SetUnit("target")`);
-    assert.deepEqual(lines(), ["Волк", "Питомец-волк", "Питомец |3-1(Неизвестно)", "Уровень 80 (Животное)"],
+    assert.deepEqual(lines(), ["Волк", "Питомец-волк", "Питомец |3-1(Неизвестно)", "Животное 80-го уровня"],
       "UNKNOWNOBJECT while the owner's name is on its way");
     assert.deepEqual(asked, ["mouseover"], "no guild asked for a creature");
     run(`CVars.colorblindMode = true`);
     run(`GameTooltip:SetUnit("target")`);
-    assert.deepEqual(lines(), ["Волк", "Враждебность", "Питомец-волк", "Питомец |3-1(Неизвестно)", "Уровень 80 (Животное)"],
+    assert.deepEqual(lines(), ["Волк", "Враждебность", "Питомец-волк", "Питомец |3-1(Неизвестно)", "Животное 80-го уровня"],
       "the standing (UnitReaction(unit, \"player\")) right after the name, before the sub-name");
     run(`Sex = 3 GameTooltip:SetUnit("mouseover")`);
-    assert.deepEqual(lines(), ["Чужак", "Чужая гильдия", "Дружелюбие (ж)", "Уровень 80 Человек Воин"],
+    assert.deepEqual(lines(), ["Чужак", "Чужая гильдия", "Дружелюбие (ж)", "Уровень 80 Человек Воин (игрок)"],
       "after the guild, in the player's gender (_FEMALE)");
     assert.deepEqual(boot.errors, []);
   } finally { boot.close(); }
@@ -239,9 +247,9 @@ test("SetUnit: a corpse's loot owners close the tooltip, only while the unit is 
   try {
     run(`GameTooltip:SetOwner(UIParent, "ANCHOR_NONE")`);
     run(`GameTooltip:SetUnit("target")`);
-    assert.deepEqual(lines(), ["Волк", "Уровень 80 (Животное)", "Можно снять шкуру"], "alive: no loot lines");
+    assert.deepEqual(lines(), ["Волк", "Животное 80-го уровня", "Можно снять шкуру"], "alive: no loot lines");
     run(`Dead = true GameTooltip:SetUnit("target")`);
-    assert.deepEqual(lines(), ["Волк", "Уровень 80 (Животное)", "Можно снять шкуру",
+    assert.deepEqual(lines(), ["Волк", "Труп существа 80-го уровня", "Можно снять шкуру",
       "Ответственный за добычу: Лидер", "Добыча: Вор"]);
     const color = boot.bridge.getFrame("GameTooltipTextLeft4")?.textColor;
     assert.deepEqual([color.r, color.g, color.b], [1, 1, 1], "white (0x00ad2d30)");
@@ -266,10 +274,10 @@ test("SetUnit waits for a pending guild and draws the unit again when it comes; 
   try {
     run(`OnSet = 0 GameTooltip:SetScript("OnTooltipSetUnit", function() OnSet = OnSet + 1 end)`);
     run(`GameTooltip:SetOwner(UIParent, "ANCHOR_NONE") GameTooltip:SetUnit("mouseover")`);
-    assert.deepEqual(lines(), ["Чужак", "Уровень 80 Человек Воин"]);
+    assert.deepEqual(lines(), ["Чужак", "Уровень 80 Человек Воин (игрок)"]);
     guild = "Чужая гильдия";
     redraw();
-    assert.deepEqual(lines(), ["Чужак", "Чужая гильдия", "Уровень 80 Человек Воин"], "drawn again with the guild");
+    assert.deepEqual(lines(), ["Чужак", "Чужая гильдия", "Уровень 80 Человек Воин (игрок)"], "drawn again with the guild");
     assert.equal(boot.vm.getGlobal("OnSet"), 2, "OnTooltipSetUnit again, as a fresh SetUnit");
     guild = undefined;
     run(`GameTooltip:SetUnit("mouseover")`);

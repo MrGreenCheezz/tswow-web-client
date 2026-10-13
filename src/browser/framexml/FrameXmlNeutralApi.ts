@@ -677,6 +677,9 @@ do
     -- rows, InterfaceOptionsPanels.lua:690), no numeric percentage. Both are real options here:
     -- IsThreatWarningEnabled (FrameXmlThreat.ts) and UnitFrame.lua's ShowNumericThreat read them.
     threatwarning = "3", threatshownumeric = "0",
+    -- 4.04 (13.10): Wow.exe registers showQuestTrackingTooltips with "1" (0x0051dedc); GameTooltip:SetUnit writes a
+    -- creature's quest objectives while it is on (0x00621e66, glue/GlueUnitTooltip.ts).
+    showquesttrackingtooltips = "1",
     -- Wow.exe registers previewTalents with "0" (0x51d9b0); the talent preview reads it (3.33).
     previewtalents = "0",
     -- 11.10: and buffDurations with "1" (the string showClock and autoSelfCast share). The Buffs

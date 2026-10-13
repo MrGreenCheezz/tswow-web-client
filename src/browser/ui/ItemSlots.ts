@@ -26,6 +26,7 @@ import { setIconSource } from "./IconImage.js";
 import { clickRepairSlot, repairTooltipLine } from "./VendorRepair.js";
 import { clickItemTargetSlot } from "./ItemTargetClick.js";
 import { armNativeGiftWrap, wrapNativeSlot } from "./NativeGiftWrap.js"; // L1 (2.05 E)
+import { nativePaperLocked } from "./NativeItemLocks.js"; // 2.05 (13.10)
 
 /**
  * One item slot, and everything the player can do to what is in it.
@@ -107,14 +108,16 @@ function showItemMenu(anchor: HTMLElement, slot: ItemSlotState, name: string): v
     actions.push(["Вставить камни", () => openSocketing(slot)]);
   }
   if (world.vendor && !banked) actions.push(["Продать", () => world.sellToVendor(slot.guid)]);
-  if (world.tradeOpen && !equipped && !banked) {
+  // 2.05 (13.10): the waiting wrapping paper is locked — no trade, no auction (NativeItemLocks.ts).
+  const paperLocked = nativePaperLocked(slot.guid, world);
+  if (world.tradeOpen && !equipped && !banked && !paperLocked) {
     actions.push(["Предложить в обмен", () => {
       const free = firstFreeTradeSlot(world.ownTradeOffer().items.map((item) => item.slot));
       if (free === undefined) systemLine("Свободных слотов обмена нет");
       else world.offerTradeItem(free, slot.bag, slot.slot);
     }]);
   }
-  if (world.auctioneerGuid !== 0n && !equipped && !banked) {
+  if (world.auctioneerGuid !== 0n && !equipped && !banked && !paperLocked) {
     actions.push(["Выставить на аукцион", () => showAuctionPrompt(anchor, slot, name, count)]);
   }
   if (equipped) actions.push(["Снять", () => world.storeItemInBag(slot.bag, slot.slot, INVENTORY_SLOT_BAG_0)]);

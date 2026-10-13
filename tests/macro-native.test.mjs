@@ -211,6 +211,8 @@ async function nativeMacros(commands, chat, notices) {
     "../macro/MacroRunner.js": runner,
     "./Chat.js": { submitChat: chat },
     "./CombatCommands.js": commands,
+    // 1.10 (12.10): the targeting commands (native-target-commands.test.mjs); none of these lines is one.
+    "./NativeTargetCommands.js": { runNativeTargetCommand: () => false },
     "./Notices.js": { notice: (text) => notices.push(text) },
     "./MacroModel.js": macroModel,
     "./Widgets.js": { Panel: class {}, Tabs: class {}, confirmPanel() {} },

@@ -12,6 +12,7 @@ import type { GameTooltipWidgetAdapter } from "../glue/GlueWidgets.js";
 import type { FrameXmlActionTooltip, FrameXmlWorldSeam } from "./FrameXmlWorldSeam.js";
 import type { FrameXmlSkinnableLine } from "./FrameXmlSkinnableTooltip.js";
 import type { FrameXmlLootOwnerLine } from "./FrameXmlLootOwnerTooltip.js"; // 5.28 (L6)
+import type { GameTooltipUnitFacts } from "../glue/GlueUnitTooltip.js"; // 4.04 (13.10)
 import { frameXmlTooltipExtrasAdapter, type FrameXmlTooltipExtrasWorld } from "./FrameXmlTooltipExtrasAdapter.js";
 
 /**
@@ -54,6 +55,8 @@ export interface FrameXmlInventoryTooltipSeam {
   readonly unitGuildName?: (unit: string) => string | undefined;
   readonly unitSummonTitle?: (unit: string) => { readonly globalName: string; readonly ownerName: string | undefined } | undefined;
   readonly watchUnitAnswers?: (unit: string, redraw: () => void) => (() => void) | undefined;
+  /** 4.04 (13.10): the world's answers for SetUnit's rows (FrameXmlUnitTooltipFacts.ts); live seams only. */
+  readonly unitTooltipFacts?: (unit: string) => GameTooltipUnitFacts | undefined;
   /** The item's repair price for SetInventoryItem/SetBagItem (FrameXmlRepair.ts); live seams only. */
   readonly inventoryItemRepairCost?: (unit: string, slot: number) => number;
   readonly containerItemRepairCost?: (bag: number, slot: number) => number;
@@ -334,11 +337,13 @@ export function createFrameXmlCharacterTooltipAdapter(
     unitGuildName: (unit) => source.unitGuildName?.(unit), // 3.12 (04.10, L4)
     unitSummonTitle: (unit) => source.unitSummonTitle?.(unit), // 3.12 (04.10, L4)
     watchUnitAnswers: (unit, redraw) => source.watchUnitAnswers?.(unit, redraw), // 3.12 (04.10, L4)
+    unitTooltipFacts: (unit) => source.unitTooltipFacts?.(unit), // 4.04 (13.10)
     inventoryItemRepairCost: (unit, slot) => source.inventoryItemRepairCost?.(unit, slot) ?? 0,
     containerItemRepairCost: (bag, slot) => source.containerItemRepairCost?.(bag, slot) ?? 0,
     containerItemRefundSeconds: (bag, slot) => source.containerItemRefundSeconds?.(bag, slot),
     inventoryItemRefundSeconds: (unit, slot) => source.inventoryItemRefundSeconds?.(unit, slot),
     // Plan item 3.12: talents, quest/glyph links and the reward spells (FrameXmlTooltipExtrasAdapter.ts).
-    ...frameXmlTooltipExtrasAdapter(source, (): FrameXmlTooltipExtrasWorld => game, (id) => linkedSpellContent(id)),
+    ...frameXmlTooltipExtrasAdapter(source, (): FrameXmlTooltipExtrasWorld => game, (id) => linkedSpellContent(id),
+      (ids) => { if (game.world) ensureSpellNames(ids); }), // 3.12 (13.10): the item auras' rows
   };
 }

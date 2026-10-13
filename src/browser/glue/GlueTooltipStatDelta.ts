@@ -27,9 +27,25 @@
  *   ATTACK_POWER_SHORT, ITEM_MOD_BLOCK_VALUE_SHORT, ITEM_MOD_POWER_REGEN<n>_SHORT,
  *   ITEM_MOD_HEALTH_REGEN_SHORT, EMPTY_SOCKET_<COLOUR>.
  *
- * Not here, for want of data: the stat auras of the item's spells (0x0061f350 → 0x0061b5e0), a
- * random property or suffix (0x0061fa20), heirloom scaling (0x0061f550) and a druid's feral attack
- * power (0x0061a8f0): the table is the item template's own stats.
+ * Not here, for want of data: a random property or suffix (0x0061fa20) and heirloom scaling
+ * (0x0061f550) — such an item gets no difference (`gameTooltipStatTableKnown`).
+ *
+ * 3.12 (13.10), read-only Ghidra on Wow.exe (`.runtime/re-2026-10-11/glue-1110/t1013-e.txt`, `-f`, `-g`):
+ * * The item's spell auras (0x0061f350 → 0x0061b5e0), added after the stats: each of the five spells of the
+ *   record (+0x100, whatever its trigger) whose row has SPELL_ATTR0_PASSIVE (0x40); each of its effects that
+ *   is APPLY_AURA (6) adds BasePoints + 1 (the die is not rolled) by its aura: 13 MOD_DAMAGE_DONE → spell
+ *   damage (53), 22 MOD_RESISTANCE → armour and resistances 0-6 by the school mask, 85 MOD_POWER_REGEN →
+ *   POWER_REGEN<misc> (61 + misc), 99 MOD_ATTACK_POWER → melee (8), 124 MOD_RANGED_ATTACK_POWER → ranged (9),
+ *   123 MOD_TARGET_RESISTANCE → spell penetration (58) as −(BasePoints + 1), 135 MOD_HEALING_DONE → 52,
+ *   150 → 26 (BLOCK_RATING's slot, as the client has it), 158 MOD_SHIELD_BLOCKVALUE → block value (60),
+ *   161 MOD_HEALTH_REGEN_IN_COMBAT → 68, 189 MOD_RATING → each rating of the mask through the table at
+ *   0x00ad2dc8 (rating i → stat type 11 + i for 0-19, none for 20-22, 37 expertise, 44 armour penetration).
+ *   A row this page has not loaded leaves the table unknown — no difference — and is asked for.
+ * * A druid's feral attack power (0x0061f410 → 0x0061a8f0, the active player's class 11 only): a weapon
+ *   (class 2) whose inventory type's equip mask (0x00a2d288) has the main-hand bit 0x8000 — types 13, 17,
+ *   21, 22 — and whose DPS (both damage halves over delay · 0.001, float) is above 54.81 gives
+ *   floor((DPS − 54.81) · 14 + 0.5); the feral slot (10) gets that plus the melee slot (8), and the merge
+ *   then clears it when the two are equal.
  */
 import type { FrameXmlColor } from "../ui/framexml_compat/FrameXmlTypes.js";
 
@@ -41,6 +57,67 @@ export interface GameTooltipStatSource {
   readonly damage: readonly { readonly min: number; readonly max: number }[];
   readonly delay: number;
   readonly sockets: readonly { readonly color: number }[];
+  /** 3.12 (13.10): the record's class and inventory type, for a druid's feral attack power (0x0061a8f0). */
+  readonly itemClass?: number;
+  readonly inventoryType?: number;
+  /**
+   * 3.12 (13.10): the APPLY_AURA effects of the record's passive spells (0x0061f350 → 0x0061b5e0); absent
+   * reads as none, `null` as not known yet (a row not loaded: `gameTooltipStatTableKnown` is false).
+   */
+  readonly spellAuras?: readonly GameTooltipItemAura[] | null;
+}
+
+/** 3.12 (13.10): one APPLY_AURA effect of a passive item spell: SpellEffect aura, MiscValue, BasePoints. */
+export interface GameTooltipItemAura {
+  readonly aura: number;
+  readonly misc: number;
+  readonly basePoints: number;
+}
+
+/** 3.12 (13.10): 0x00ad2dc8 — combat rating i → the stat type its MOD_RATING aura adds to; -1 none. */
+const RATING_STAT_TYPES: readonly number[] = [
+  11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, -1, -1, -1, 37, 44,
+];
+
+/** 3.12 (13.10): 0x0061b5e0 — one aura into the table (slot = 1 + index). */
+function addAura(table: number[], { aura, misc, basePoints }: GameTooltipItemAura): void {
+  const amount = basePoints + 1;
+  const add = (index: number, value: number): void => { table[1 + index] = table[1 + index]! + value; };
+  switch (aura) {
+    case 13: add(53, amount); break; // MOD_DAMAGE_DONE → +0xd8
+    case 22: for (let school = 0; school < 7; school += 1) if ((misc & (1 << school)) !== 0) add(school, amount); break;
+    case 85: if (misc >= 0 && 61 + misc < GAME_TOOLTIP_STAT_SLOTS - 1) add(61 + misc, amount); break; // +0xf8 + misc·4
+    case 99: add(MELEE_ATTACK_POWER, amount); break;
+    case 123: add(58, -1 - basePoints); break; // MOD_TARGET_RESISTANCE: −(BasePoints + 1)
+    case 124: add(RANGED_ATTACK_POWER, amount); break;
+    case 135: add(52, amount); break;
+    case 150: add(26, amount); break;
+    case 158: add(BLOCK_VALUE, amount); break;
+    case 161: add(68, amount); break;
+    case 189:
+      for (let rating = 0; rating < RATING_STAT_TYPES.length; rating += 1) {
+        const type = RATING_STAT_TYPES[rating]!;
+        if ((misc & (1 << rating)) !== 0 && type !== -1) add(STAT_TYPE_BASE + type, amount);
+      }
+      break;
+    default: break;
+  }
+}
+
+/** 3.12 (13.10): 0x00a2d288's inventory types whose equip mask has the main-hand bit 0x8000. */
+const FERAL_INVENTORY_TYPES = new Set([13, 17, 21, 22]);
+const ITEM_CLASS_WEAPON = 2;
+/** 0x00a246f4 (54.81f) and 0x00a246f8 (14.0f). */
+const FERAL_DPS_FLOOR = Math.fround(54.81);
+const FERAL_PER_DPS = 14;
+
+/** 3.12 (13.10): 0x0061a8f0 — the feral attack power of a weapon whose damage halves sum to `halves`. */
+export function gameTooltipFeralAttackPower(item: GameTooltipStatSource, halves: number): number {
+  if (item.itemClass !== ITEM_CLASS_WEAPON || !FERAL_INVENTORY_TYPES.has(item.inventoryType ?? -1) || !(item.delay > 0)) return 0;
+  const f = Math.fround;
+  const dps = f(halves / f(f(item.delay) * f(0.001)));
+  if (!(dps > FERAL_DPS_FLOOR)) return 0;
+  return Math.trunc(Math.floor((dps - FERAL_DPS_FLOOR) * FERAL_PER_DPS + 0.5));
 }
 
 /** Slot 0 the DPS, slot 1 + i stat index i, the last slot the client's flag word (always 0 here). */
@@ -117,8 +194,11 @@ function merge(table: number[]): void {
   for (const [combined, parts] of MERGES) spread(table, combined, parts);
 }
 
-/** One item's table (0x0061f4c0 without the spell auras, then 0x0061ba90). */
-export function gameTooltipItemStats(item: GameTooltipStatSource): number[] {
+/**
+ * One item's table (0x0061f4c0, then 0x0061ba90). 3.12 (13.10): with the spell auras (0x0061f350) and, for a
+ * druid (`druid`: the active player's class is 11), the feral attack power (0x0061f410 → 0x0061a8f0).
+ */
+export function gameTooltipItemStats(item: GameTooltipStatSource, druid = false): number[] {
   const table = new Array<number>(GAME_TOOLTIP_STAT_SLOTS).fill(0);
   for (const { type, value } of item.stats) {
     if (!Number.isInteger(type) || type < 0 || type > MAX_STAT_TYPE) continue;
@@ -128,6 +208,7 @@ export function gameTooltipItemStats(item: GameTooltipStatSource): number[] {
       table[1 + RANGED_ATTACK_POWER] = table[1 + RANGED_ATTACK_POWER]! + value;
     }
   }
+  for (const aura of item.spellAuras ?? []) addAura(table, aura); // 3.12 (13.10): 0x0061f350 after 0x0061b990
   for (let school = 0; school < 7; school += 1) table[1 + school] = table[1 + school]! + (item.resistances[school] ?? 0);
   for (const socket of item.sockets.slice(0, 3)) {
     for (let bit = 0; bit < 4; bit += 1) {
@@ -139,8 +220,15 @@ export function gameTooltipItemStats(item: GameTooltipStatSource): number[] {
   const f = Math.fround;
   const seconds = f(f(item.delay) * f(0.001));
   let dps = 0;
-  for (const damage of item.damage.slice(0, 2)) dps = f(f(f(f(damage.max) + f(damage.min)) * 0.5) / seconds + dps);
+  let halves = 0;
+  for (const damage of item.damage.slice(0, 2)) {
+    const half = f(f(f(damage.max) + f(damage.min)) * 0.5);
+    halves = f(halves + half);
+    dps = f(half / seconds + dps);
+  }
   table[0] = dps;
+  // 3.12 (13.10): 0x0061f410 — the feral slot gets the weapon's feral power plus the melee slot.
+  if (druid) table[1 + FERAL_ATTACK_POWER] = table[1 + FERAL_ATTACK_POWER]! + gameTooltipFeralAttackPower(item, halves) + table[1 + MELEE_ATTACK_POWER]!;
   merge(table);
   return table;
 }
@@ -163,8 +251,11 @@ export function gameTooltipLinkRandomProperty(link: string | undefined): number 
  * a random property or suffix adds that property's enchantments (→ 0x0061fa20). Neither is served
  * here, so such an item gets no difference rather than a wrong one from its bare template.
  */
-export function gameTooltipStatTableKnown(item: { readonly scalingStatValue?: number }, link: string | undefined): boolean {
-  return (item.scalingStatValue ?? 0) === 0 && gameTooltipLinkRandomProperty(link) === 0;
+export function gameTooltipStatTableKnown(
+  item: { readonly scalingStatValue?: number; readonly spellAuras?: readonly GameTooltipItemAura[] | null }, link: string | undefined,
+): boolean {
+  // 3.12 (13.10): + a spell row not loaded yet (`spellAuras: null`).
+  return (item.scalingStatValue ?? 0) === 0 && gameTooltipLinkRandomProperty(link) === 0 && item.spellAuras !== null;
 }
 
 /** 0x0061dbc0: hovered − equipped, merged again. */

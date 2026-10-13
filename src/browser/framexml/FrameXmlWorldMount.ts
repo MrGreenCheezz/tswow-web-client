@@ -10,6 +10,8 @@ import { createHttpFileProvider } from "../glue/GlueLoader.js";
 import { game, registerWorldContextCleanup } from "../game/Context.js";
 import { globalCooldownView } from "../game/PredictedGlobalCooldown.js"; // L13-review 5.30
 import { reactionBetween, setFocusGuid, unitReactionToPlayer } from "../game/Targeting.js";
+import { rankOfReaction, unitRankTowardsPlayer, unitReputationFaction } from "../game/UnitStandingRank.js"; // 3.12, 4.04 (13.10)
+import { attackReactionTo, canAssistUnit, canAttackUnit } from "../game/Targeting.js"; // 4.04 (13.10)
 import { castSpell } from "../ui/Spellbook.js";
 import { getActionBarPage, turnActionPage, useSlot } from "../ui/ActionBar.js";
 import { ensureSpellNames } from "../ui/SpellNames.js";
@@ -3389,6 +3391,16 @@ export async function mountFrameXmlVertical(
     reaction: (self, target) => reactionBetween(self, target, game.factions),
     // 5.05 (12.10): UnitSelectionColor is the unit's view of the player, reputation rules on top (Wow.exe 0x00521bf0).
     unitReactionToPlayer: (object) => unitReactionToPlayer(object),
+    // 3.12 (13.10): UnitReaction(unit, "player") as the ReputationRank + 1 (0x007251c0; game/UnitStandingRank.ts).
+    unitRankToPlayer: (object) => unitRankTowardsPlayer(object, game),
+    // 4.04 (13.10): GameTooltip:SetUnit's world judgements (LiveWorldSeam.unitTooltipFacts): the player's view of the
+    // unit as CanAttack reads it (0x007251c0(player, unit)), CanAttack, CanAssist, the faction line's Faction row.
+    unitTooltip: {
+      playerRank: (object) => (game.factions?.ready === true ? rankOfReaction(attackReactionTo(object)) : undefined),
+      canAttack: (object) => canAttackUnit(object),
+      canAssist: (object) => canAssistUnit(object),
+      faction: (object) => unitReputationFaction(object, game),
+    },
     reputation: frameXmlLiveReputationRows,
     reputationCatalog: () => game.factions?.reputationCatalog,
     skillMetadata: () => game.talentData,

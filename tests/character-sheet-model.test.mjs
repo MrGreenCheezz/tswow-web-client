@@ -139,16 +139,17 @@ test("L7 4.03: a hunter's and a warlock's pet shares in the stamina, intellect a
   ]);
   const lines = (sections, key, label) => rowOf(sections, key, label).tip?.split("\n") ?? [];
   const hunter = characterStatSections(object, context({ classId: 3 }));
-  assert.deepEqual(lines(hunter, "base", "Выносливость").slice(1), ["Увеличивает выносливость питомца на 30."]);
-  assert.deepEqual(lines(hunter, "base", "Интеллект").slice(1), [], "a hunter's table has PET_BONUS_INT 0");
+  // 4.03 (13.10): under the stock first line (DEFAULT_STAT3/4_TOOLTIP; no catalog here, so 0.00 %).
+  assert.deepEqual(lines(hunter, "base", "Выносливость").slice(1), ["Максимальный уровень здоровья увеличен на 820.", "Увеличивает выносливость питомца на 30."]);
+  assert.deepEqual(lines(hunter, "base", "Интеллект").slice(1), ["Запас маны увеличен на 2720.", "Вероятность нанести критический удар заклинанием повышена на 0.00%."], "a hunter's table has PET_BONUS_INT 0");
   assert.deepEqual(lines(hunter, "ranged", "Сила атаки").slice(1), [
     "Увеличивает урон от оружия дальнего боя на 150.0 ед. урона в секунду.",
     "Увеличивает силу атаки питомца на 462.",
     "Увеличивает урон от заклинаний питомца на 270.",
   ], "2100 × 0.22 = 462, 2100 × 0.1287 = 270.27 → %d 270");
   const warlock = characterStatSections(object, context({ classId: 9 }));
-  assert.deepEqual(lines(warlock, "base", "Выносливость").slice(1), ["Увеличивает выносливость питомца на 30."]);
-  assert.deepEqual(lines(warlock, "base", "Интеллект").slice(1), ["Увеличивает интеллект питомца на 60."]);
+  assert.deepEqual(lines(warlock, "base", "Выносливость").slice(1), ["Максимальный уровень здоровья увеличен на 820.", "Увеличивает выносливость питомца на 30."]);
+  assert.deepEqual(lines(warlock, "base", "Интеллект").slice(1), ["Запас маны увеличен на 2720.", "Вероятность нанести критический удар заклинанием повышена на 0.00%.", "Увеличивает интеллект питомца на 60."]);
   assert.equal(lines(warlock, "ranged", "Сила атаки").length, 2, "a warlock's RAP shares are 0: the stock line alone");
   const paladin = characterStatSections(object, context());
   assert.equal(rowOf(paladin, "base", "Выносливость").tip.includes("питомца"), false);

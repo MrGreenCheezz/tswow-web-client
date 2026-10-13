@@ -10,6 +10,7 @@ import { itemTooltipFor } from "./ItemTooltip.js";
 import { nativeUiTextureUrl } from "./NativeUiSkin.js";
 import { setTip, Panel, attachTooltip, confirmPanel } from "./Widgets.js";
 import { frameXmlMailPublished } from "../framexml/FrameXmlMailController.js";
+import { nativePaperLocked, setNativeMailDraftSource } from "./NativeItemLocks.js"; // 2.05 (13.10)
 
 const PAGE_SIZE = 7;
 // Stock MailFrame.lua: MAX_COD_AMOUNT = 10000 and the check rejects only amounts above that.
@@ -46,6 +47,8 @@ export function mailDraftAttachments(): readonly bigint[] {
   const world = game.world;
   return world && world === owner && mailbox !== 0n && mailbox === world.mailboxGuid ? [...attachments] : [];
 }
+
+setNativeMailDraftSource(mailDraftAttachments); // 2.05 (13.10): the draft's attachments are locked (NativeItemLocks.ts)
 
 function button(text: string, run: () => void): HTMLButtonElement {
   const node = document.createElement("button");
@@ -338,6 +341,7 @@ function showComposer(world: WorldClient): void {
   picker.replaceChildren(placeholder);
   for (const slot of slots) {
     if (attachments.includes(slot.guid)) continue;
+    if (nativePaperLocked(slot.guid, world)) continue; // 2.05 (13.10): the waiting wrapping paper is locked
     const option = document.createElement("option"); option.value = String(slot.guid);
     option.textContent = `${world.itemTemplate(entryOf(slot.item))?.name || game.itemMetadata?.get(entryOf(slot.item))?.name || "Предмет"} ×${stackCount(slot)}`;
     picker.append(option);

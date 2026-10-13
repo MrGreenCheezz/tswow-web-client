@@ -53,10 +53,38 @@ export type FrameXmlPendingSpellSource = (observer: (armed: boolean) => void) =>
 export function frameXmlObservePendingSpells(
   pump: () => PendingSpellPump | undefined, sources: readonly FrameXmlPendingSpellSource[],
 ): () => void {
-  const stops = sources.map((source) => source(() => {
+  const stops = sources.map((source) => source((armed) => {
+    // 2.05 (13.10): a drop that is the send's own (the request raised the pair this turn) raises nothing more.
+    if (!armed && !frameXmlPendingSpellEdge("drop")) return;
     const target = pump();
     if (!target) return;
     for (const event of FRAMEXML_PENDING_SPELL_EVENTS) target.fire(event);
   }));
   return () => { for (const stop of stops) stop(); };
+}
+
+/**
+ * 2.05 (13.10): Wow.exe's request builder 0x0080ac90 clears the pending spell (`DAT_00d3f4e4 = 0`, no event) and
+ * raises one 0x0053b480 (→ 0x00805330) for the send. Here a cursor's drop and the request (SPELL_CAST_SENT,
+ * FrameXmlOwnCastChanges.ts) are two edges, in either order — the item cursor sends and then goes down, the reticle
+ * goes down and then sends — so within one synchronous turn the second of the two raises nothing. Answers whether
+ * this edge raises the pair.
+ */
+let dropThisTurn = false;
+let sentThisTurn = false;
+let resetQueued = false;
+
+export function frameXmlPendingSpellEdge(kind: "drop" | "sent"): boolean {
+  if (!resetQueued) {
+    resetQueued = true;
+    queueMicrotask(() => { dropThisTurn = false; sentThisTurn = false; resetQueued = false; });
+  }
+  if (kind === "drop") {
+    if (sentThisTurn) { sentThisTurn = false; return false; }
+    dropThisTurn = true;
+    return true;
+  }
+  if (dropThisTurn) { dropThisTurn = false; return false; }
+  sentThisTurn = true;
+  return true;
 }

@@ -46,7 +46,8 @@ export function targetLast(world: TargetLastWorld, kind: TargetLastKind): boolea
   if (history.lastTarget !== undefined) return selectKnown(world, history.lastTarget);
   if (world.targetGuid === undefined) return false;
   // 0x525d70 with nothing remembered: the selection becomes the last target and is let go — the
-  // world client's clear records it (TargetHistory.selected with no next unit).
+  // world client's clear records it (TargetHistory.selected with no next unit). With nothing
+  // selected it still drops the Tab list (0x00bd08cc = 0): Targeting.ts `targetLastUnit` (1.10).
   world.selectTarget(undefined);
   return true;
 }

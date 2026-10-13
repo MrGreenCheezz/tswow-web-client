@@ -1,6 +1,7 @@
 import { UPDATE_FIELDS } from "../../generated/updateFields.js";
 import { game } from "../game/Context.js";
-import { armGiftWrap, giftWrapLocks, isWrappingPaper, pendingGiftWrap, wrapWithPendingPaper, type GiftWrapWorld } from "../game/GiftWrap.js";
+import { armGiftWrap, isWrappingPaper, pendingGiftWrap, wrapWithPendingPaper, type GiftWrapWorld } from "../game/GiftWrap.js";
+import { nativeItemLocked } from "./NativeItemLocks.js"; // 2.05 (13.10)
 import {
   INVENTORY_SLOT_BAG_0, INVENTORY_SLOT_BAG_START, INVENTORY_SLOT_ITEM_START, KEYRING_SLOT_START, KEYRING_SLOTS,
   type ItemSlotState,
@@ -15,7 +16,8 @@ import {
  *   unless the item is a wrapped gift, which opens.
  * - With paper waiting, a plain click on a container item — the backpack, a carried bag's contents,
  *   the keyring: the places `PickupContainerItem` (0x005d7ff0) answers for — wraps it
- *   (0x006dcf20 → CMSG_WRAP_ITEM). A locked item — here the paper itself — eats the click and the
+ *   (0x006dcf20 → CMSG_WRAP_ITEM). A locked item — the paper itself, an attachment of the native mail
+ *   draft, an item in this side's trade window (NativeItemLocks.ts, 2.05 13.10) — eats the click and the
  *   paper keeps waiting. Worn items, the bag bar and the bank are not containers' clicks:
  *   `PickupInventoryItem` does not look at the paper.
  */
@@ -40,5 +42,6 @@ export function armNativeGiftWrap(slot: ItemSlotState, world: NativeWrapWorld | 
 /** A native click on a container item while paper waits: the wrap's (sent, or eaten when locked). */
 export function wrapNativeSlot(slot: ItemSlotState, world: NativeWrapWorld | undefined = game.world): boolean {
   if (!world || !slot.item || slot.guid === 0n || !nativeWrapPlace(slot) || !pendingGiftWrap(world)) return false;
-  return wrapWithPendingPaper(world, { bag: slot.bag, slot: slot.slot, guid: slot.guid }, giftWrapLocks(world, slot.guid));
+  // 2.05 (13.10): every lock eats the click — the paper, the mail draft's attachment, the trade window's item.
+  return wrapWithPendingPaper(world, { bag: slot.bag, slot: slot.slot, guid: slot.guid }, nativeItemLocked(slot.guid, world));
 }
