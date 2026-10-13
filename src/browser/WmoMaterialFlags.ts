@@ -19,7 +19,7 @@
  *         0x20, else 1; interior ones run unlit anyway), F_UNFOGGED is honoured on every batch;
  *       - unified (0x007a9380): the transition batches honour both; an exterior group (MOGP 0x48)
  *         honours F_UNLIT and keeps its fog on; an interior group ignores both (light 3 or 2).
- * Corpus (`F:/Circle`, `.runtime/re-2026-10-13/7.11/unlit.out.txt`): F_UNLIT reaches a drawn batch
+ * Corpus (the client's own WMOs, `.runtime/re-2026-10-13/7.11/unlit.out.txt`): F_UNLIT reaches a drawn batch
  * 338 times without MOCV (exterior windows: `MM_ELWYNN_WND_EXT__01`, `MM_WINDOWS_16`…) and 165 times
  * in unified exterior groups (lava, Azjol-Nerub's windows); 620 + 48 classic-with-MOCV batches carry
  * the bit and are drawn lit. F_UNFOGGED: 9 batches. Clamp: 1,356 batches.

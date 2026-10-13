@@ -1,7 +1,7 @@
 // 13.10 (7.11): the second texture coordinates and the blend factor a Composite (MOMT shader 6)
 // material reads — published only under `visual-wmo-v26`, only for the groups that draw one.
 //
-// The client's programs (F:/Circle; `.runtime/re-2026-10-13/7.11/`): the vertex program
+// The client's programs (its shader archives; `.runtime/re-2026-10-13/7.11/`): the vertex program
 // `MapObjUDiffuse_Comp` (the only Composite one; `mapobjdiffuse_comp.bls` is empty in every profile)
 // passes `result.color.secondary = vertex.attrib[5]` and `result.texcoord[1] = vertex.attrib[7]`;
 // the pixel program `MapObjComposite` (ps_3_0 #0) is
