@@ -612,6 +612,22 @@ test("gateway serves validated local terrain tiles to allowed origins", async ()
     });
     assert.equal(items.status, 200);
     assert.deepEqual(await items.json(), [{ entry: 25, name: "Потрёпанный меч", displayId: 220, quality: 1, inventoryType: 13, stackable: 1, iconId: 7 }]);
+    // The GM console's search (GmSearch.ts) over the same dumps and Spell.dbc.
+    const gmSearch = (query) => fetch(`http://127.0.0.1:${gateway.port}/data/gm-search?${query}`, {
+      headers: { origin: "http://127.0.0.1:5173" },
+    });
+    const foundItems = await gmSearch("kind=item&q=%D0%BC%D0%B5%D1%87");
+    assert.equal(foundItems.status, 200);
+    assert.equal(foundItems.headers.get("cache-control"), "no-store");
+    assert.deepEqual(await foundItems.json(), { kind: "item", total: 1, rows: [
+      { id: 25, name: "Потрёпанный меч", quality: 1, iconId: 7, displayId: 220, inventoryType: 13, stackable: 1 }] });
+    assert.deepEqual((await (await gmSearch("kind=creature&q=123")).json()).rows.map((row) => row.name), ["Лесной волк"]);
+    assert.equal((await (await gmSearch("kind=spell&q=133")).json()).rows[0]?.id, 133);
+    assert.deepEqual(await (await gmSearch("kind=quest&q=x")).json(), { kind: "quest", total: 0, rows: [], missing: true },
+      "no gm-catalog.json: the console says so rather than «nothing found»");
+    assert.equal((await gmSearch("kind=nope&q=x")).status, 400);
+    assert.equal((await gmSearch("kind=item&q=x&limit=101")).status, 400);
+    assert.equal((await fetch(`http://127.0.0.1:${gateway.port}/data/gm-search?kind=item&q=x`)).status, 403);
     const itemIcon = await fetch(`http://127.0.0.1:${gateway.port}/item-icon/220`, {
       headers: { origin: "http://127.0.0.1:5173" },
     });

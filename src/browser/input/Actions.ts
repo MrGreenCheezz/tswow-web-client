@@ -11,6 +11,7 @@ import type { TargetLastKind } from "../game/TargetLast.js"; // L2 3.11
 import { turnActionPage, useSlot } from "../ui/ActionBar.js";
 import { chatInput, diagnosticsWindow, spellbookWindow } from "../ui/Dom.js";
 import { showUnhandledOpcodes } from "../ui/Diagnostics.js";
+import { toggleGmConsole } from "../ui/GmConsole.js";
 import { systemLine } from "../ui/Chat.js";
 import { openChatInput, replyToLastWhisper } from "../ui/ChatInputOwner.js";
 import { showTarget, unitDisplayName } from "../ui/Frames.js";
@@ -237,6 +238,11 @@ export function runAction(action: InputAction): boolean {
       if (!developerMode()) return false;
       toggleGameWindow(diagnosticsWindow);
       if (!diagnosticsWindow.hidden) showUnhandledOpcodes();
+      return true;
+
+    case "toggleGmConsole":
+      if (!developerMode()) return false;
+      toggleGmConsole();
       return true;
 
     case "toggleNamePlates":

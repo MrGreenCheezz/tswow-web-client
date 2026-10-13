@@ -226,6 +226,7 @@ export async function createGatewayConfiguration(): Promise<{ options: GatewayOp
     supervised: process.env.GATEWAY_SUPERVISED === "1" && typeof process.send === "function",
     creatureMetadataFile: process.env.CREATURE_METADATA_FILE ?? resolve(process.cwd(), "data/creatures.json"),
     itemMetadataFile: process.env.ITEM_METADATA_FILE ?? resolve(process.cwd(), "data/items.json"),
+    gmCatalogFile: process.env.GM_CATALOG_FILE ?? resolve(process.cwd(), "data/gm-catalog.json"),
     itemIconsDirectory: process.env.ITEM_ICON_DIR ?? resolve(process.cwd(), "data/item-icons"),
     // Interface art: priority 0 in its worker's queue, as `texturePriority` ranks `interface\`.
     generateItemIcon: (displayId) => publish(

@@ -49,6 +49,7 @@ const CORE_INPUT_ACTIONS = [
   { action: "toggleQuestLog", group: "Интерфейс", label: "Журнал заданий" },
   { action: "toggleWorldMap", group: "Интерфейс", label: "Карта мира" },
   { action: "toggleDiagnostics", group: "Интерфейс", label: "Диагностика" },
+  { action: "toggleGmConsole", group: "Интерфейс", label: "GM-консоль" },
   { action: "toggleFps", group: "Интерфейс", label: "Показать / скрыть FPS" },
   { action: "toggleKeyBindings", group: "Интерфейс", label: "Привязки клавиш" },
   { action: "openChat", group: "Интерфейс", label: "Чат" },
@@ -204,6 +205,8 @@ const CORE_DEFAULT_BINDINGS: Readonly<Record<CoreInputAction, BindingPair>> = {
   toggleWorldMap: ["KeyM", ""],
   // A developer's window ({@link DEVELOPER_ACTIONS}): no key, so O stays TOGGLESOCIAL's.
   toggleDiagnostics: ["", ""],
+  // The GM console (ui/GmConsole.ts), the other developer's window: unbound for the same reason.
+  toggleGmConsole: ["", ""],
   // TOGGLEFPS (ToggleFramerate) is CTRL-R; NativeAppShell keeps the browser's reload off it, and the
   // settings window's «Показывать FPS» is the same switch.
   toggleFps: ["Ctrl+KeyR", ""],
@@ -304,7 +307,7 @@ export const DEFAULT_BINDINGS: Readonly<Record<InputAction, BindingPair>> = {
  * unbound either way. The module window editor is the other one; being a module-table action, it is
  * simply not registered without the flag (ui/Diagnostics.ts).
  */
-export const DEVELOPER_ACTIONS: ReadonlySet<InputAction> = new Set<InputAction>(["toggleDiagnostics"]);
+export const DEVELOPER_ACTIONS: ReadonlySet<InputAction> = new Set<InputAction>(["toggleDiagnostics", "toggleGmConsole"]);
 
 /**
  * Whether the bindings windows offer an action: every one but a {@link DEVELOPER_ACTIONS} row while

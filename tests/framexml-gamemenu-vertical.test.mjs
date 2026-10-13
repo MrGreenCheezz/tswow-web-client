@@ -83,7 +83,7 @@ const relativeName = (point) => typeof point.relativeTo === "string" ? point.rel
 
 function recorder() {
   const calls = [];
-  const actions = Object.fromEntries(["video", "sound", "interface", "keybindings", "macros", "diagnostics", "resetLayout", "toggle"]
+  const actions = Object.fromEntries(["video", "sound", "interface", "keybindings", "macros", "diagnostics", "gmConsole", "resetLayout", "toggle"]
     .map((name) => [name, () => calls.push(name)]));
   return { calls, actions };
 }
@@ -135,10 +135,10 @@ test("the stock menu shows and hides cleanly with its ruRU labels; Mac options s
   }
 });
 
-test("4.11: «Диагностика» is an extra only with the developer flag; «Сбросить раскладку окон» always", () => {
+test("4.11: «Диагностика» and «GM-консоль» are extras only with the developer flag; «Сбросить раскладку окон» always", () => {
   assert.deepEqual(frameXmlGameMenuExtras(false).map((extra) => extra.name), ["GameMenuButtonWebClientResetLayout"]);
   assert.deepEqual(frameXmlGameMenuExtras(true).map((extra) => extra.name),
-    ["GameMenuButtonWebClientDiagnostics", "GameMenuButtonWebClientResetLayout"]);
+    ["GameMenuButtonWebClientDiagnostics", "GameMenuButtonWebClientGmConsole", "GameMenuButtonWebClientResetLayout"]);
   assert.deepEqual(frameXmlGameMenuExtras().map((extra) => extra.name), ["GameMenuButtonWebClientResetLayout"],
     "a page without the flag (this test's) asks for the one");
 });
@@ -151,6 +151,7 @@ test("without the developer flag the menu gets the one extra under Quit and no d
     assert.equal(installFrameXmlGameMenuButtons(boot, actions), true);
     assert.deepEqual(lua(boot, "return GameMenuFrame:GetHeight()"), [240 + 22]);
     assert.equal(boot.bridge.getFrame("GameMenuButtonWebClientDiagnostics"), undefined, "never created");
+    assert.equal(boot.bridge.getFrame("GameMenuButtonWebClientGmConsole"), undefined, "never created");
     const reset = boot.bridge.getFrame("GameMenuButtonWebClientResetLayout").points[0];
     assert.equal(relativeName(reset), "GameMenuButtonQuit");
     lua(boot, "ShowUIPanel(GameMenuFrame)", 0);
@@ -165,14 +166,14 @@ test("without the developer flag the menu gets the one extra under Quit and no d
 
 test("adapters reach the native owners, the extras sit between Quit and Continue, and the menu grows by their step", withClient, async () => {
   const { boot } = await load();
-  // Both extras: the developer flag (4.11) is what shows «Диагностика».
+  // All three extras: the developer flag (4.11) is what shows «Диагностика» and «GM-консоль».
   useDeveloperMode(true);
   try {
     const errors = boot.errorCount;
     const { calls, actions } = recorder();
     assert.equal(installFrameXmlGameMenuButtons(boot, actions), true);
     // No TSWoW store in this subset: the stock 1 px gap, 22 px per 21 px button.
-    assert.deepEqual(lua(boot, "return GameMenuFrame:GetHeight()"), [240 + 2 * 22]);
+    assert.deepEqual(lua(boot, "return GameMenuFrame:GetHeight()"), [240 + 3 * 22]);
     for (const [index, extra] of FRAMEXML_GAME_MENU_EXTRAS.entries()) {
       const button = boot.bridge.getFrame(extra.name);
       assert.equal(button?.type, "Button", extra.name);
@@ -188,7 +189,8 @@ test("adapters reach the native owners, the extras sit between Quit and Continue
       "the long label falls back to the template's small font");
     for (const [button, action] of [["GameMenuButtonOptions", "video"], ["GameMenuButtonSoundOptions", "sound"],
       ["GameMenuButtonUIOptions", "interface"], ["GameMenuButtonKeybindings", "keybindings"], ["GameMenuButtonMacros", "macros"],
-      ["GameMenuButtonWebClientDiagnostics", "diagnostics"], ["GameMenuButtonWebClientResetLayout", "resetLayout"]]) {
+      ["GameMenuButtonWebClientDiagnostics", "diagnostics"], ["GameMenuButtonWebClientGmConsole", "gmConsole"],
+      ["GameMenuButtonWebClientResetLayout", "resetLayout"]]) {
       lua(boot, "ShowUIPanel(GameMenuFrame)", 0);
       boot.bridge.Click(boot.bridge.getFrame(button));
       assert.equal(calls.at(-1), action, `${button} → ${action}`);

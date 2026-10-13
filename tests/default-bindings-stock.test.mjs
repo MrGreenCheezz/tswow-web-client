@@ -148,7 +148,7 @@ test("the developer flag: the address first, both ways, then the browser's remem
   assert.equal(developerModeFrom("", "0"), false);
   assert.equal(developerModeFrom("?dev=maybe", "yes"), true, "an unreadable flag leaves it to the remembered value");
   assert.equal(developerModeFrom("?framexml=1"), false);
-  assert.deepEqual([...bindings.DEVELOPER_ACTIONS], ["toggleDiagnostics"]);
+  assert.deepEqual([...bindings.DEVELOPER_ACTIONS], ["toggleDiagnostics", "toggleGmConsole"]);
   assert.equal(bindings.actionOffered("toggleDiagnostics", false), false);
   assert.equal(bindings.actionOffered("toggleDiagnostics", true), true);
   assert.equal(bindings.actionOffered("toggleKeyBindings", false), true);
@@ -170,14 +170,18 @@ test("the diagnostics verb answers only with the developer flag; without it the 
     "../ui/Dom.js": { diagnosticsWindow, chatInput: {}, spellbookWindow: {} },
     "../ui/Windows.js": { toggleGameWindow: (window) => { window.hidden = !window.hidden; calls.push("toggle"); } },
     "../ui/Diagnostics.js": { showUnhandledOpcodes: () => calls.push("refresh") },
+    "../ui/GmConsole.js": { toggleGmConsole: () => calls.push("gm") },
   });
   assert.equal(actions.runAction("toggleDiagnostics"), false, "unanswered, so Controls leaves the press alone");
+  assert.equal(actions.runAction("toggleGmConsole"), false, "the GM console is behind the same flag");
   assert.equal(diagnosticsWindow.hidden, true);
   assert.deepEqual(calls, []);
   flag = true;
   assert.equal(actions.runAction("toggleDiagnostics"), true);
   assert.equal(diagnosticsWindow.hidden, false, "with the flag it opens as before");
   assert.deepEqual(calls, ["toggle", "refresh"]);
+  assert.equal(actions.runAction("toggleGmConsole"), true);
+  assert.deepEqual(calls, ["toggle", "refresh", "gm"]);
 });
 
 test("a table saved before 4.11 takes the stock layout on every row the player left alone, writing nothing", () => {

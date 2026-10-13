@@ -69,6 +69,9 @@ data/horizon/
 # 6,136 MB of .wav and .mp3 sit in the archives. The cache holds only what was asked for,
 # and it must never hold anything git is looking at.
 data/sound/
+# The GM console's catalog (tools/generate-gm-catalog.mjs): quests, teleports and game objects read
+# from the realm's world database — the server operator's data, never part of the repository.
+data/gm-catalog.json
 # The interface's own Lua, XML, TOC and TTF, copied out of the archives verbatim by
 # tools/generate-client-file.mjs. Blizzard's source and the server operator's, neither ours.
 data/client-files/

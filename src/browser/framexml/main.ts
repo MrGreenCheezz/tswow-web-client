@@ -237,6 +237,7 @@ async function main(): Promise<void> {
       keybindings: () => console.info("[framexml gamemenu] keybindings"),
       macros: () => console.info("[framexml gamemenu] macros"),
       diagnostics: () => console.info("[framexml gamemenu] diagnostics"),
+      gmConsole: () => console.info("[framexml gamemenu] gmConsole"),
       resetLayout: () => console.info("[framexml gamemenu] resetLayout"),
       toggle: () => console.info("[framexml gamemenu] toggle"),
     });

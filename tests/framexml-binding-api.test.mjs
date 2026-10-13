@@ -101,17 +101,20 @@ test("GetBinding lists Bindings.xml's sections in order, then every WebClient-on
   assert.equal(listed.length, offered.length);
   for (const entry of offered) assert.ok(listed.includes(frameXmlBindingCommand(entry.action)), entry.action);
   assert.equal(listed.includes("WEBCLIENT_TOGGLEDIAGNOSTICS"), false, "no developer flag: not listed");
+  assert.equal(listed.includes("WEBCLIENT_TOGGLEGMCONSOLE"), false, "nor the GM console");
   developer.useDeveloperMode(true);
   try {
     const all = Array.from({ length: model.count() }, (_, index) => model.binding(index + 1)[0])
       .filter((command) => !command.startsWith("HEADER_"));
     assert.equal(all.length, bindings.INPUT_ACTIONS.length, "with the flag every action is listed");
     assert.ok(all.includes("WEBCLIENT_TOGGLEDIAGNOSTICS"));
+    assert.ok(all.includes("WEBCLIENT_TOGGLEGMCONSOLE"));
   } finally {
     developer.useDeveloperMode(false);
   }
   assert.deepEqual(FRAMEXML_WEBCLIENT_BINDING_ROWS.map(([command]) => command),
-    ["WEBCLIENT_TOGGLEDIAGNOSTICS", "WEBCLIENT_TOGGLEKEYBINDINGS"]);
+    ["WEBCLIENT_TOGGLEDIAGNOSTICS", "WEBCLIENT_TOGGLEGMCONSOLE", "WEBCLIENT_TOGGLEKEYBINDINGS"]);
+  assert.equal(model.label("WEBCLIENT_TOGGLEGMCONSOLE"), "GM-консоль");
   assert.equal(model.label("WEBCLIENT_TOGGLEKEYBINDINGS"), "Привязки клавиш");
   assert.equal(model.binding(0).length, 0);
   assert.equal(model.binding(model.count() + 1).length, 0);

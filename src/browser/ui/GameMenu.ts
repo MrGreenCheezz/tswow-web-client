@@ -1,3 +1,4 @@
+import { gmConsoleOpen, toggleGmConsole } from "./GmConsole.js";
 import { diagnosticsWindow, gameMenuToggle, gameWindows } from "./Dom.js";
 import { Panel } from "./Widgets.js";
 import { toggleKeyBindingsWindow } from "./KeyBindings.js";
@@ -315,6 +316,9 @@ function build(): Panel {
     ...developerMode() ? [menuButton("Диагностика", () => {
       panel.hide();
       openDiagnosticsWindow();
+    }), menuButton("GM-консоль", () => {
+      panel.hide();
+      if (!gmConsoleOpen()) toggleGmConsole();
     })] : [],
     menuButton("Настройки", () => { panel.hide(); toggleSettingsWindow(); }),
     menuButton("Макросы", () => { panel.hide(); toggleMacroWindow(); }),

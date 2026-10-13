@@ -32,6 +32,7 @@ const UNBOUND_BY_DESIGN = {
   toggleKeyring: "TOGGLEKEYRING has no stock key; the keyring is the button beside the bag bar",
   toggleKeyBindings: "the client has no key for its bindings window; the game menu opens it",
   toggleDiagnostics: "a developer's window, behind the developer flag",
+  toggleGmConsole: "the GM console, a developer's window behind the same flag",
 };
 
 test.beforeEach(() => {

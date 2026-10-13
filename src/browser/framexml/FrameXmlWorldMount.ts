@@ -149,6 +149,7 @@ import {
   cancelLogoutRequest, closeGameMenu, logoutPending, openDiagnosticsWindow, registerGameMenuAddonButton,
   requestQuitToLogin, resetWindowLayout, toggleGameMenu,
 } from "../ui/GameMenu.js";
+import { gmConsoleOpen, toggleGmConsole } from "../ui/GmConsole.js";
 import { addModuleCommand, beginModuleCommandLoad, removeModuleCommands, systemLine } from "../ui/Chat.js";
 import { closeGmTickets, toggleGmTickets } from "../ui/GmTickets.js";
 import { publishFrameXmlHelp, toggleFrameXmlHelp, type FrameXmlHelpOwner } from "./FrameXmlHelpController.js"; // 3.24
@@ -3725,6 +3726,7 @@ export async function mountFrameXmlVertical(
         keybindings: () => { if (!keyBindingsOpen()) toggleKeyBindingsWindow(); },
         macros: () => { if (!macroWindowOpen()) toggleMacroWindow(); },
         diagnostics: openDiagnosticsWindow,
+        gmConsole: () => { if (!gmConsoleOpen()) toggleGmConsole(); },
         resetLayout: resetWindowLayout,
         toggle: toggleGameMenu,
       });

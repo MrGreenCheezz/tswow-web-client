@@ -207,7 +207,7 @@ test("MainMenuMicroButton and LFDMicroButton open the stock GameMenuFrame and LF
     };
     const noop = () => {};
     menuOwner.installFrameXmlGameMenuButtons(boot, { video: noop, sound: noop, interface: noop, keybindings: noop,
-      macros: noop, diagnostics: noop, resetLayout: noop, toggle: noop });
+      macros: noop, diagnostics: noop, gmConsole: noop, resetLayout: noop, toggle: noop });
     const menu = menuOwner.frameXmlGameMenuGate(boot, { elementFor });
     const lfd = lfdOwner.frameXmlLfdGate(seam, boot, { elementFor });
     assert.ok(menu && lfd, "both stock owners pass their gates");

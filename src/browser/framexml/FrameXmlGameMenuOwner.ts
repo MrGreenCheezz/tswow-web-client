@@ -32,7 +32,7 @@ export const FRAMEXML_GAME_MENU_STOCK_BUTTONS = Object.freeze([
 
 /** What the re-scripted and extra buttons do; each is a native owner of this client. */
 export type FrameXmlGameMenuAction =
-  | "video" | "sound" | "interface" | "keybindings" | "macros" | "diagnostics" | "resetLayout"
+  | "video" | "sound" | "interface" | "keybindings" | "macros" | "diagnostics" | "gmConsole" | "resetLayout"
   /** The two menu branches of stock ToggleGameMenu (below); the host toggle decides stock or native. */
   | "toggle";
 
@@ -75,16 +75,18 @@ export interface FrameXmlGameMenuExtra {
  */
 export const FRAMEXML_GAME_MENU_EXTRAS: readonly FrameXmlGameMenuExtra[] = Object.freeze([
   Object.freeze({ name: "GameMenuButtonWebClientDiagnostics", text: "Диагностика", action: "diagnostics" as const }),
+  Object.freeze({ name: "GameMenuButtonWebClientGmConsole", text: "GM-консоль", action: "gmConsole" as const }),
   Object.freeze({ name: "GameMenuButtonWebClientResetLayout", text: "Сбросить раскладку окон", action: "resetLayout" as const }),
 ]);
 
 /**
- * The extras this page shows: «Диагностика» only with the developer flag (WORK_PLAN 4.11,
+ * The extras this page shows: «Диагностика» and «GM-консоль» only with the developer flag (WORK_PLAN 4.11,
  * DeveloperMode.ts) — without it the button is never created, so the menu keeps the stock height plus
  * the one extra. The install and the gate read the same list.
  */
 export function frameXmlGameMenuExtras(developer: boolean = developerMode()): readonly FrameXmlGameMenuExtra[] {
-  return developer ? FRAMEXML_GAME_MENU_EXTRAS : FRAMEXML_GAME_MENU_EXTRAS.filter((extra) => extra.action !== "diagnostics");
+  return developer ? FRAMEXML_GAME_MENU_EXTRAS
+    : FRAMEXML_GAME_MENU_EXTRAS.filter((extra) => extra.action !== "diagnostics" && extra.action !== "gmConsole");
 }
 
 const HOST_GLOBAL = "__fxWebClientGameMenu";

@@ -52,6 +52,7 @@
     "assets:restamp": "node tools/restamp.mjs",
     "assets:creatures": "node tools/generate-creature-metadata.mjs",
     "assets:items": "node tools/generate-item-metadata.mjs",
+    "assets:gm-catalog": "node tools/generate-gm-catalog.mjs",
     "assets:item-icons": "node tools/generate-item-icon.mjs --all",
     "assets:terrain": "node tools/generate-terrain-tile.mjs",
     "assets:minimap": "node tools/generate-minimap-index.mjs --all",

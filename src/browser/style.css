@@ -3953,3 +3953,39 @@ body.native-wow-ui .socketing-window .socketing-gem { display: grid; grid-templa
 .socketing-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 7px; margin-top: 12px; }
 body.native-wow-ui .socketing-actions button { height: auto; min-height: 30px; padding: 5px 10px; white-space: normal; background: linear-gradient(#63372c, #392019); }
 .socketing-status { color: #efcf82; line-height: 1.4; font-size: 12px; }
+
+/* GM console (ui/GmConsole.ts): a developer's window, behind the developer flag. */
+.gm-console-window { right: 18px; width: min(640px, calc(100vw - 32px)); max-height: min(82vh, var(--game-window-max-height, 82vh)); }
+.gm-console-window .ui-panel-body { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px 10px; }
+.gm-pane { display: flex; flex-direction: column; gap: 6px; }
+.gm-pane[hidden] { display: none; }
+.gm-button { min-height: 22px; padding: 1px 7px; color: #f0d890; font-size: 12px; white-space: nowrap; border: 1px solid #6b5630; border-radius: 4px; background: #2d2119; }
+.gm-button:hover { color: #fff3c4; border-color: #b0904f; background: #3d2d1f; }
+.gm-button.is-active { color: #1b1408; border-color: #e0c56f; background: #e0c56f; }
+.gm-kinds, .gm-button-grid { display: flex; flex-wrap: wrap; gap: 4px; }
+.gm-search-bar, .gm-command-row { display: flex; gap: 4px; }
+.gm-query, .gm-line { flex: 1; min-width: 0; }
+.gm-count { width: 64px; }
+.gm-count[hidden] { display: none; }
+.gm-status { margin: 0; font-size: 12px; }
+.gm-results, .gm-auras { display: flex; flex-direction: column; gap: 2px; max-height: 42vh; overflow-y: auto; }
+.gm-row { display: flex; align-items: center; gap: 6px; padding: 3px 4px; border-radius: 4px; background: #0006; }
+.gm-row:hover { background: #ffffff12; }
+.gm-icon { flex: none; width: 28px; height: 28px; border: 1px solid #0008; border-radius: 3px; }
+.gm-row-text { flex: 1; min-width: 0; }
+.gm-row-title { display: flex; gap: 6px; align-items: baseline; }
+.gm-row-name { overflow: hidden; color: #f2e6c4; text-overflow: ellipsis; white-space: nowrap; }
+.gm-row-id { flex: none; color: #8fb5d8; font-size: 11px; cursor: copy; }
+.gm-row-detail { overflow: hidden; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.gm-row-actions { display: flex; flex: 0 1 auto; flex-wrap: wrap; justify-content: flex-end; gap: 3px; max-width: 62%; }
+.gm-toggle { display: inline-flex; align-items: center; gap: 2px; padding: 1px 2px 1px 7px; border: 1px solid #4a3c25; border-radius: 4px; background: #0006; }
+.gm-toggle-label { margin-right: 3px; color: #e8dcb8; font-size: 12px; white-space: nowrap; }
+.gm-star { min-width: 24px; padding: 1px 4px; color: #f0c24a; border-color: transparent; background: transparent; }
+.gm-heading { margin: 6px 0 2px; color: #e6ce7b; font-size: 13px; }
+.gm-target-info p { margin: 1px 0; font-size: 12px; }
+.gm-target-name { color: #f4df92; font-size: 14px; }
+.gm-log { max-height: 18vh; min-height: 42px; overflow-y: auto; padding: 4px 6px; border: 1px solid #625433; border-radius: 4px; background: #0008; font-family: Consolas, monospace; font-size: 12px; }
+.gm-log p { margin: 0; white-space: pre-wrap; user-select: text; }
+.gm-log-sent { color: #9fd1ff; cursor: pointer; }
+.gm-log-answer { color: #ffef9e; }
+.gm-log-error { color: #ff8d8d; }
