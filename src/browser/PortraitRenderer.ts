@@ -67,6 +67,21 @@ export function portraitTextureOutput(slot: PortraitSlot): boolean {
 }
 
 /**
+ * 13.10: the dataset mark of a HUD row's canvas that a stock unit frame borrowed (ui/Portraits.ts
+ * `adoptPortraitCanvas`: PlayerPortrait, TargetFramePortrait, FocusFramePortrait, PetPortrait, the
+ * party and ToT rows). Stock UnitFrame_Update paints those with SetPortraitTexture too, so they are
+ * the same picture — black ground in the circle — and their frame art has the same transparent hole
+ * under the Texture: with the HUD's transparent ground the owner saw the world through the ring
+ * around the head. The native frames keep the transparent ground their styled backgrounds need.
+ */
+export const PORTRAIT_STOCK_GROUND = "portraitStockGround";
+
+/** Whether this slot's picture, on this canvas, is the stock one: opaque black ground, circle. */
+export function portraitOpaqueGround(slot: PortraitSlot, canvas: HTMLCanvasElement | undefined): boolean {
+  return portraitTextureOutput(slot) || canvas?.dataset[PORTRAIT_STOCK_GROUND] === "true";
+}
+
+/**
  * A stock window's canvas whose unit is named but not painted yet — its model still loading, its
  * first readback in flight, its backing store just resized — shows the picture's black ground cut
  * to the circle, not a transparent canvas: underneath is the host's «portrait not available» art,
@@ -390,6 +405,8 @@ interface PortraitSurface {
   width: number;
   height: number;
   dirty: boolean;
+  /** 13.10: the ground the last paint used ({@link portraitOpaqueGround}); a change repaints. */
+  opaqueGround: boolean;
   /** A portrait is deliberately a single posed snapshot, not a second animated unit. */
   staticPoseCaptured: boolean;
   /** The target GUID matters even when two units share the same appearance/build key. */
@@ -774,6 +791,13 @@ export class PortraitRenderer {
       surface.readbackVersion++;
     }
     surface.output = target.canvas;
+    // 13.10: a canvas a stock unit frame borrowed (or gave back) after its last paint.
+    const opaqueGround = portraitOpaqueGround(slot, target.canvas);
+    if (surface.opaqueGround !== opaqueGround) {
+      surface.opaqueGround = opaqueGround;
+      surface.dirty = true;
+      surface.readbackVersion++;
+    }
     if (!surface.dirty || this.#pendingReadbacks.has(slot)) return 0;
     // Capture the current world pose once. The independent portrait rig is intentionally not
     // advanced by a mixer and must not keep following the animated world unit on later calls.
@@ -828,7 +852,8 @@ export class PortraitRenderer {
         sourceKey: undefined, output: canvas,
         pixels: new Uint8Array(width * height * 4),
         flipped: new Uint8ClampedArray(width * height * 4),
-        width, height, dirty: true, staticPoseCaptured: false, sourceGuid: undefined, paintedGuid: undefined,
+        width, height, dirty: true, opaqueGround: portraitOpaqueGround(slot, canvas),
+        staticPoseCaptured: false, sourceGuid: undefined, paintedGuid: undefined,
         readbackVersion: 0,
       };
       this.#surfaces.set(slot, surface);
@@ -1069,7 +1094,7 @@ export class PortraitRenderer {
       this.#renderer.setScissorTest(false);
       // A stock SetPortraitTexture picture has a black ground (see portraitTextureOutput); the
       // HUD's own canvases keep their transparent one for the native frames' styled backgrounds.
-      this.#renderer.setClearColor(0x000000, portraitTextureOutput(slot) ? 1 : 0);
+      this.#renderer.setClearColor(0x000000, surface.opaqueGround ? 1 : 0);
       this.#renderer.autoClear = true;
       this.#renderer.clear(true, true, true);
       this.#renderer.render(this.#scene, this.#camera);
@@ -1135,7 +1160,7 @@ export class PortraitRenderer {
       const rowBytes = width * 4;
       // The stock picture is opaque inside its circle; the rendered alpha there is always 1 over
       // the black clear, so the mask alone is the output coverage.
-      const circle = portraitTextureOutput(slot) ? portraitCircleMask(width, height) : undefined;
+      const circle = surface.opaqueGround ? portraitCircleMask(width, height) : undefined;
       for (let y = 0; y < height; y++) {
         const from = (height - y - 1) * rowBytes;
         const to = y * rowBytes;

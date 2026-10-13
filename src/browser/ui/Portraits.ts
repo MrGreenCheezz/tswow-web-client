@@ -1,6 +1,6 @@
 import {
   CHARACTER_PORTRAIT_SLOT, FOCUS_TARGET_PORTRAIT_SLOT, PAPERDOLL_PORTRAIT_SLOT, PARTY_PORTRAIT_SLOTS,
-  QUEST_GIVER_PORTRAIT_SLOT,
+  PORTRAIT_STOCK_GROUND, QUEST_GIVER_PORTRAIT_SLOT,
   type PortraitSlot, type PortraitTarget,
 } from "../PortraitRenderer.js";
 import {
@@ -565,12 +565,15 @@ function adoptPortraitCanvas(
     writeStyle(canvas.style, "pointerEvents", "none");
     if (slot === "target") {
       // The native target canvas is styled by `.unit-frame > canvas`, but adoption moves it into
-      // FrameXML's TargetFrame. Keep that portrait round and transparent without changing any
-      // authored anchor/size; the adoption record restores the original native styles on cleanup.
+      // FrameXML's TargetFrame. Keep that portrait round without changing any authored anchor/size
+      // (its ground is the picture's own, below); the adoption record restores the native styles.
       writeStyle(canvas.style, "borderRadius", "50%");
       writeStyle(canvas.style, "backgroundColor", "transparent");
       writeStyle(canvas.style, "overflow", "hidden");
     }
+    // 13.10: in a stock unit frame the picture is SetPortraitTexture's — black ground in the circle
+    // (PortraitRenderer `portraitOpaqueGround`); the dataset is restored with the adoption record.
+    canvas.dataset[PORTRAIT_STOCK_GROUND] = "true";
     // The authored Texture can be hidden independently (notably when no target exists). The live
     // canvas must remain visible in its slot and rely on a hidden FrameXML ancestor for effective
     // visibility; its prior native hidden state is still restored by the adoption record.

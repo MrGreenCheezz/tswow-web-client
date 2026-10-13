@@ -7,7 +7,8 @@ import * as THREE from "three";
 // (PortraitRenderer.ts), the host that claims a Texture and lays a canvas over it
 // (framexml/FrameXmlPortraits.ts) and the unit-token resolution behind it.
 const {
-  PortraitRenderer, StockPortraitTargets, portraitCircleMask, portraitTextureOutput,
+  PORTRAIT_STOCK_GROUND, PortraitRenderer, StockPortraitTargets, portraitCircleMask, portraitOpaqueGround,
+  portraitTextureOutput,
 } = await import("../dist/code/browser/PortraitRenderer.js");
 const {
   createFrameXmlStockPortraits, frameXmlPortraitUnitGuid, frameXmlInteractionNpcGuid,
@@ -177,6 +178,30 @@ test("the stock picture is opaque black inside the portrait circle and transpare
   const mask = portraitCircleMask(60, 60);
   const covered = mask.reduce((sum, value) => sum + value, 0) / 255;
   assert.ok(Math.abs(covered - Math.PI * 30 * 30) < 1, `mask coverage is the disc's area (${covered})`);
+  view.dispose();
+});
+
+test("13.10: a HUD row a stock unit frame borrowed paints the stock picture, and repaints when given back", async () => {
+  const { renderer, state } = fakeRenderer();
+  const view = new PortraitRenderer(renderer, () => source());
+  const target = canvas(60, 60);
+  // ui/Portraits.ts adoptPortraitCanvas marks the canvas it moves into TargetFramePortrait.
+  target.dataset[PORTRAIT_STOCK_GROUND] = "true";
+  assert.equal(portraitOpaqueGround("target", target), true);
+  view.setTargets(new Map([["target", { guid: 7n, canvas: target }]]));
+  assert.equal(view.render(0), 1);
+  await settle();
+  assert.deepEqual(state.clearAlphas, [1], "black ground under the head, as UnitFrame_Update's SetPortraitTexture");
+  const alpha = (x, y) => target.image.data[(y * 60 + x) * 4 + 3];
+  assert.equal(alpha(0, 0), 0, "cut to the circle");
+  assert.equal(alpha(30, 30), 255);
+  assert.equal(view.render(1), 0, "an unchanged borrowed row costs nothing");
+  // The adoption's cleanup restores the native dataset: the next frame repaints the HUD ground.
+  delete target.dataset[PORTRAIT_STOCK_GROUND];
+  assert.equal(view.render(2), 1);
+  await settle();
+  assert.deepEqual(state.clearAlphas, [1, 0]);
+  assert.equal(alpha(0, 0), 255, "the native frame keeps the rendered alpha");
   view.dispose();
 });
 
