@@ -48,6 +48,7 @@ import type { FrameXmlSeamBinding, FrameXmlSeamPump } from "./FrameXmlWorldSeam.
 import { STOCK_ACTIONS, withStockRows } from "../input/StockActions.js";
 import { HELD_ACTIONS } from "../input/Bindings.js"; // L8 5.09
 import { movementCommandInput, type MovementCommandInput } from "../input/MovementCommands.js"; // L8 5.09
+import type { MouseCommandHow } from "../input/MovementCommands.js"; // 3.11/5.09
 import { FRAMEXML_MOVEMENT_BINDINGS } from "./FrameXmlMovementApi.js"; // L8 5.09
 import { actionOffered } from "../input/Bindings.js"; // 4.11
 import { developerMode } from "../DeveloperMode.js"; // 4.11
@@ -306,6 +307,9 @@ function clickCommand(button: string, mouseButton: string): string {
   return `CLICK ${button}:${mouseButton}`;
 }
 
+/** 5.09: the owner the Mouselook override list is set under — the input control's own, no frame's. */
+const MOUSELOOK_OVERRIDE_OWNER = "__webclient_mouselook";
+
 /**
  * The binding half of the world seam. Reads are answered from the live table on every call (the
  * native window, a module load or a reset may have changed it); writes go through `bindKey` and
@@ -322,6 +326,8 @@ export class FrameXmlBindingModel {
   #seenModules = "";
   #checkedAt = Number.NEGATIVE_INFINITY;
   #index: BindingIndex | undefined;
+  /** 5.09: SetMouselookOverrideBinding's list (0x005fd440), in the order it was given. */
+  readonly #mouselookOverrides = new Map<string, string>();
 
   constructor(host: FrameXmlBindingHost = {}) {
     this.#host = host;
@@ -708,6 +714,18 @@ export class FrameXmlBindingModel {
    * CoinPickupFrame pass the keys they do not use through this pair.
    */
   run(command: unknown, keystate: unknown): void {
+    // 5.09: MOVEANDSTEER's body — MoveAndSteerStart on "down", MoveAndSteerStop otherwise (0x005fc780, 0x005fc830).
+    if (command === "MOVEANDSTEER") {
+      const down = keystate !== "up";
+      if (down) {
+        this.mouseButton(2, true);
+        this.mouseButton(1, true);
+      } else {
+        this.mouseButton(2, false);
+        this.mouseButton(1, false);
+      }
+      return;
+    }
     // L8 5.09: a held command, both ways.
     const held = typeof command === "string" ? ACTION_OF_COMMAND.get(command) : undefined;
     if (held !== undefined && HELD_ACTIONS.has(held)) {
@@ -735,8 +753,32 @@ export class FrameXmlBindingModel {
   }
 
   /** L8 5.09: TurnOrAction (1) or CameraOrSelectOrMove (2) down or up (input/MovementCommands.ts). */
-  mouseButton(bit: number, down: boolean): void {
-    this.#movement()?.button(bit, down);
+  mouseButton(bit: number, down: boolean, how?: MouseCommandHow): void { // 3.11/5.09: `how`
+    this.#movement()?.button(bit, down, how);
+  }
+
+  /**
+   * 5.09: `SetMouselookOverrideBinding(key, binding or nil)` (0x005fd550 → 0x005fd440): a key → command list the input
+   * control keeps; nil takes the key off it. Applied as the control's own override bindings while Mouselook holds
+   * (MouselookStart → 0x005fcb20, priority) and taken off when it stops (MouselookStop → 0x005604f0). Its usual keys are
+   * mouse buttons (BUTTON1, BUTTON2), which this table does not hold: those are kept and never run.
+   */
+  setMouselookOverride(key: string, command: unknown): void {
+    if (command === undefined || command === null) {
+      this.#mouselookOverrides.delete(key);
+      return;
+    }
+    if (typeof command === "string" || typeof command === "number") this.#mouselookOverrides.set(key, String(command));
+  }
+
+  /** 5.09: MouselookStart (0x005fcc10) / MouselookStop (0x005fc890): the right button's bit, then the override list. */
+  mouselook(down: boolean): void {
+    this.mouseButton(1, down, { mouselook: true });
+    if (!down) {
+      this.clearOverrides(MOUSELOOK_OVERRIDE_OWNER);
+      return;
+    }
+    for (const [key, command] of this.#mouselookOverrides) this.setOverride(MOUSELOOK_OVERRIDE_OWNER, true, key, command);
   }
 
   /** L8 5.09: IsMouselooking. */

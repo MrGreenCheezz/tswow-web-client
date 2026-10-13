@@ -176,6 +176,17 @@ export function isAutoRunning(): boolean {
   return autoRunning;
 }
 
+/**
+ * 3.11: the held movement keys as bits of Wow.exe's input word (0x005fa170; game/CameraFollow.ts): forward 0x10,
+ * back 0x20, strafes 0x40/0x80, turns 0x100/0x200, autorun 0x1000. A turn key under the right button is held here as
+ * its strafe (refreshStrafeModifier), which 0x00602760 reads the same way.
+ */
+export function movementInputWord(): number {
+  return (held.has("moveForward") ? 0x10 : 0) | (held.has("moveBackward") ? 0x20 : 0)
+    | (held.has("strafeLeft") ? 0x40 : 0) | (held.has("strafeRight") ? 0x80 : 0)
+    | (held.has("turnLeft") ? 0x100 : 0) | (held.has("turnRight") ? 0x200 : 0) | (autoRunning ? 0x1000 : 0);
+}
+
 export function isWalking(): boolean {
   return walking;
 }

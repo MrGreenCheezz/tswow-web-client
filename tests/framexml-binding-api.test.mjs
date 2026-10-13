@@ -86,7 +86,9 @@ test("GetBinding lists Bindings.xml's sections in order, then every WebClient-on
     "HEADER_WEBCLIENT",
   ]);
   assert.deepEqual(rows[0], ["HEADER_MOVEMENT"], "a header row has no keys");
-  assert.deepEqual(rows[1], ["MOVEFORWARD", "W", "UP"]);
+  // 5.09: MOVEANDSTEER is Bindings.xml's first row, unbound here (its BUTTON3 is a mouse button); was rows[1] MOVEFORWARD.
+  assert.deepEqual(rows[1], ["MOVEANDSTEER"]);
+  assert.deepEqual(rows[2], ["MOVEFORWARD", "W", "UP"]);
   assert.deepEqual(model.binding(commands.indexOf("ACTIONPAGE1") + 1), ["ACTIONPAGE1", "SHIFT-1"]);
   assert.deepEqual(model.binding(commands.indexOf("TOGGLERUN") + 1), ["TOGGLERUN", "NUMPADDIVIDE"]);
   assert.deepEqual(model.binding(commands.indexOf("MULTIACTIONBAR1BUTTON1") + 1), ["MULTIACTIONBAR1BUTTON1"],

@@ -107,8 +107,8 @@ const { usePanelHost } = await import("../dist/code/browser/ui/Widgets.js");
 const dom = await import("../dist/code/browser/ui/Dom.js");
 const movement = await import("../dist/code/browser/input/Movement.js");
 const commands = await import("../dist/code/browser/input/MovementCommands.js");
-const rigModule = await import("../dist/code/browser/game/CameraRig.js");
-const { CameraViews } = await import("../dist/code/browser/game/CameraViews.js");
+// 3.11: the real CameraRig module was read only by the follow arithmetic test, gone with advanceCameraFollow.
+const { CameraViews, cameraViews } = await import("../dist/code/browser/game/CameraViews.js"); // 3.11: cameraViews
 const { CAMERA_DEFAULT_DISTANCE, CAMERA_DEFAULT_PITCH } = await import("../dist/code/browser/SimpleScene.js");
 const { OPCODES } = await import("../dist/code/generated/opcodes.js");
 usePanelHost({ viewport: document.body, attach() {} });
@@ -127,8 +127,8 @@ const RIG_HOOKS = [
     + "   * follow and the steer, which work on the rest. Absent or 0 without a flip.\n"
     + "   */\n"
     + "  flipYaw?: number | undefined;\n", ""],
-  ["  rig.yaw = stepAngle(rig.yaw, rig.flipYaw ?? 0, yawStep); // DEC-B 3.11: home is the flip (was 0)\n",
-    "  rig.yaw = stepAngle(rig.yaw, 0, yawStep);\n"],
+  // 3.11: the follow's hook (`stepAngle(rig.yaw, rig.flipYaw ?? 0, …)`) went with CameraRig.advanceCameraFollow; the
+  // follow is CameraFollow.ts now, the same module under both copies of Controls.
 ];
 
 /** Each DEC-B 3.11 hook of Controls.ts, and what stood in its place before (git HEAD d25bc8f). */
@@ -164,7 +164,7 @@ function baseline(sourceUrl, distUrl, hooks, overrides = {}) {
 }
 
 const RIG_BEFORE_URL = baseline(RIG_TS, RIG_DIST, RIG_HOOKS);
-const rigBefore = await import(RIG_BEFORE_URL);
+
 
 // ---- the fake world and the session ----------------------------------------------------------------------------
 
@@ -210,6 +210,11 @@ function session(controls, flip, start) {
   Object.assign(camera, { yaw: 0, pitch: CAMERA_DEFAULT_PITCH, distance: CAMERA_DEFAULT_DISTANCE });
   if (flip === "absent") delete camera.flipYaw;
   else camera.flipYaw = flip;
+  // 3.11: one camera for the session's views (a new world object is a new camera), and the follow's word taken as it
+  // stands, with no subject (nothing glides), so each session starts from the same edge.
+  const viewWorld = {};
+  cameraViews.frame(camera, clock.now, viewWorld, undefined);
+  controls.advanceCameraAutoFollow(clock.now, undefined);
   const steps = [];
   const snap = (step) => {
     steps.push([step, camera.yaw, camera.pitch, camera.distance, world.mover.position.orientation, sent.length, ...sent.flat()]);
@@ -240,7 +245,9 @@ function session(controls, flip, start) {
     key("keydown", "KeyW");
     for (let frame = 0; frame < 8; frame += 1) {
       tick(16);
-      controls.advanceCameraAutoFollow(0.016);
+      // 3.11: the follow on the input word's edges, then the views' glide (Loop.ts), was `advanceCameraAutoFollow(0.016)`.
+      controls.advanceCameraAutoFollow(clock.now, world.mover);
+      cameraViews.frame(camera, clock.now, viewWorld, undefined);
       snap(`follow ${frame}`);
     }
     key("keyup", "KeyW");
@@ -256,7 +263,8 @@ function session(controls, flip, start) {
     snap("mouse run");
     // The follow standing still: style 4 waits for movement.
     camera.yaw = 0.4;
-    controls.advanceCameraAutoFollow(0.016);
+    controls.advanceCameraAutoFollow(clock.now, world.mover); // 3.11: was `(0.016)`
+    cameraViews.frame(camera, clock.now, viewWorld, undefined); // 3.11
     snap("follow still");
     // The wheel, in and out, to first person and back.
     wheel(300);
@@ -330,27 +338,8 @@ test("the ordinary camera with the DEC-B hooks is exactly the camera before them
   assert.ok(steps.get("lua right down")[5] > 0, "TurnOrAction turned the character");
 });
 
-test("the follow's arithmetic without a flip is the baseline's, bit for bit", () => {
-  let seed = 7;
-  const random = () => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648; };
-  const styles = [0, 1, 2, 3, 4, 5];
-  for (let sample = 0; sample < 4000; sample += 1) {
-    const yaw = (random() - 0.5) * 4 * Math.PI;
-    const pitch = (random() - 0.5) * 3;
-    const style = styles[Math.floor(random() * styles.length)];
-    const speed = [0, 90, 180, 270, -5, Number.NaN][Math.floor(random() * 6)];
-    const moving = random() < 0.5;
-    const held = random() < 0.2;
-    const elapsed = [0, 0.004, 0.016, 0.1, 1, -1][Math.floor(random() * 6)];
-    const flip = sample % 3 === 0 ? {} : sample % 3 === 1 ? { flipYaw: 0 } : { flipYaw: undefined };
-    const now = { yaw, pitch, ...flip };
-    const then = { yaw, pitch };
-    rigModule.advanceCameraFollow(now, style, speed, moving, held, elapsed);
-    rigBefore.advanceCameraFollow(then, style, speed, moving, held, elapsed);
-    assert.ok(Object.is(now.yaw, then.yaw) && Object.is(now.pitch, then.pitch),
-      `sample ${sample}: ${JSON.stringify([yaw, pitch, style, speed, moving, held, elapsed, flip])}`);
-  }
-});
+// 3.11: "the follow's arithmetic without a flip is the baseline's, bit for bit" compared CameraRig.advanceCameraFollow
+// with its DEC-B-free copy; that function is gone (the follow is CameraFollow.ts, tests/camera-follow.test.mjs).
 
 test("the loop's idle view frame writes nothing on the camera and never holds the follow back", () => {
   const writes = [];
@@ -364,6 +353,6 @@ test("the loop's idle view frame writes nothing on the camera and never holds th
   views.frame(rig, 916, worldB, undefined);
   for (let frame = 0; frame < 50; frame += 1) views.frame(rig, 1000 + frame * 16, worldB, undefined);
   assert.deepEqual(writes, [], "no switch, no flip: the rig is not touched, a new world included");
-  assert.equal(views.gliding, false, "so Loop.ts runs advanceCameraAutoFollow every frame, as before");
+  assert.equal(views.gliding, false, "and nothing glides"); // 3.11: was "so Loop.ts runs advanceCameraAutoFollow every frame, as before"
   assert.deepEqual([camera.yaw, camera.pitch, camera.distance], [0.3, -0.4, 21.31]);
 });

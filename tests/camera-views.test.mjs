@@ -4,7 +4,7 @@ import {
   CAMERA_DISTANCE_SMOOTH_SPEED, CAMERA_SMOOTH_TIME_MAX, CAMERA_SMOOTH_TIME_MIN, CAMERA_VIEW_DEFAULTS, CameraViews,
   cameraViewCVar, cameraViewStorageKey, cameraYawOffFlip,
 } from "../dist/code/browser/game/CameraViews.js";
-import { CAMERA_SMOOTH_WHEN_MOVING, advanceCameraFollow } from "../dist/code/browser/game/CameraRig.js";
+import { CAMERA_INPUT_FORWARD, CameraFollow } from "../dist/code/browser/game/CameraFollow.js"; // 3.11
 import { CAMERA_DEFAULT_PITCH } from "../dist/code/browser/SimpleScene.js";
 
 /*
@@ -238,12 +238,53 @@ test("FlipCameraYaw turns a yaw of its own that views, SaveView and a new camera
 });
 
 test("the follow brings the camera home to the flip, not through it", () => {
-  const rig = { yaw: Math.PI - 0.5, pitch: CAMERA_DEFAULT_PITCH, flipYaw: Math.PI };
-  advanceCameraFollow(rig, CAMERA_SMOOTH_WHEN_MOVING, 180, true, false, 1);
-  near(wrap(rig.yaw - Math.PI), 0, "flipped camera stays flipped while running");
-  const plain = { yaw: 0.5, pitch: CAMERA_DEFAULT_PITCH };
-  advanceCameraFollow(plain, CAMERA_SMOOTH_WHEN_MOVING, 180, true, false, 1);
-  assert.equal(plain.yaw, 0, "without a flip, behind the character as ever");
+  // 3.11: the follow is CameraFollow.ts (Wow.exe 0x00602760) on the views' own glide (was CameraRig.advanceCameraFollow).
+  const host = { style: 4, yawSpeed: 180, pitchSpeed: 45, subject: { typeId: 4, movementFlags: 0 } };
+  for (const [yaw, flip] of [[Math.PI - 0.5, Math.PI], [0.5, undefined]]) {
+    const instance = new CameraViews(null);
+    const rig = { yaw, pitch: CAMERA_DEFAULT_PITCH, distance: 5.55 };
+    instance.frame(rig, 0, WORLD, undefined);
+    if (flip !== undefined) rig.flipYaw = flip; // after the new camera, which starts without one
+    new CameraFollow().input(CAMERA_INPUT_FORWARD, undefined, rig, 0, instance, host);
+    instance.frame(rig, 5000, WORLD, undefined);
+    if (flip === undefined) assert.equal(rig.yaw, 0, "without a flip, behind the character as ever");
+    else near(wrap(rig.yaw - Math.PI), 0, "flipped camera stays flipped while running");
+  }
+});
+
+test("3.11: GetCVar/SetCVar of a view CVar reach the account's record, and the camera at its next creation", () => {
+  const { instance, rig, storage, key } = views();
+  assert.equal(instance.cvar("cameraDistanceB"), "5.55", "the default string (0xad1ba8)");
+  assert.equal(instance.cvarDefault("CAMERAVIEW"), "2");
+  assert.equal(instance.cvar("cameraFoo"), undefined, "another name is not the camera's");
+  assert.equal(instance.setCVar("cameraDistanceB", 60), false, "over 50 yards the validator refuses (0x5fd680)");
+  assert.equal(instance.setCVar("cameraDistanceB", "8"), true);
+  assert.equal(saved(storage, key).cameraDistanceB, "8", "kept for the account");
+  assert.equal(instance.view(2).distance, 5.55, "not in this camera");
+  instance.frame(rig, 100, { next: true }, "Tester");
+  assert.equal(instance.view(2).distance, 8, "the next camera reads it (0x5fe510)");
+  instance.nextView(rig, 200, MOTION);
+  assert.equal(instance.cvar("cameraView"), "3", "a switch writes cameraView \"%d\"");
+  assert.equal(instance.setCVar("cameraView", 9), false, "0–7 (0x5fd630)");
+});
+
+test("3.11: a mouse press stops a view's glide; under the button the yaw does not move (0x601ff0, 0x603d30)", () => {
+  const { instance, rig } = views();
+  rig.yaw = 1;
+  instance.setView(3, rig, 0, MOTION);
+  instance.freelook(true, false);
+  instance.saveView(5, rig);
+  near(instance.view(5).yaw, 1 / DEG, "SaveView under the button keeps where the yaw is: its glide stopped (+0x260)");
+  instance.frame(rig, 5000, WORLD, "Tester");
+  assert.equal(rig.yaw, 1, "pressed: every glide but the distance's stopped");
+  near(rig.distance, 5.55, "the distance glide went on to view 3's");
+  instance.setView(4, rig, 5000, MOTION);
+  instance.frame(rig, 9000, WORLD, "Tester");
+  assert.equal(rig.yaw, 1, "a switch under the button leaves the yaw");
+  near(rig.distance, 13.88, "its distance arrives");
+  instance.freelook(false, false);
+  instance.frame(rig, 9100, WORLD, "Tester");
+  assert.equal(instance.gliding, false);
 });
 
 test("the ceiling holds a view's distance; a pitch past this rig's limit is held to it", () => {

@@ -18,10 +18,22 @@ import type { InputAction } from "./Bindings.js";
 export interface MovementCommandInput {
   /** A held command (`Bindings.HELD_ACTIONS`) going down or up, as its key would. */
   hold(action: InputAction, down: boolean): void;
-  /** One of the two mouse commands ({@link TURN_OR_ACTION}, {@link CAMERA_OR_SELECT_OR_MOVE}) going down or up. */
-  button(bit: number, down: boolean): void;
+  /**
+   * One of the two mouse commands ({@link TURN_OR_ACTION}, {@link CAMERA_OR_SELECT_OR_MOVE}) going down or up.
+   * 3.11/5.09: `how` — CameraOrSelectOrMoveStop's sticky argument (the camera stays where it is let go, 0x00604850),
+   * and Mouselook rather than TurnOrAction (no click on release, 0x005fcc10/0x005fc890).
+   */
+  button(bit: number, down: boolean, how?: MouseCommandHow): void;
   /** IsMouselooking: the right button, or TurnOrAction/Mouselook held from Lua. */
   mouselooking(): boolean;
+}
+
+/** 3.11/5.09: how a mouse command goes down or up. */
+export interface MouseCommandHow {
+  /** CameraOrSelectOrMoveStop(true): the sticky release. */
+  readonly sticky?: boolean;
+  /** MouselookStart/Stop rather than TurnOrActionStart/Stop. */
+  readonly mouselook?: boolean;
 }
 
 /** TurnOrActionStart/Stop, MouselookStart/Stop: bit 0x1 of the input word. */

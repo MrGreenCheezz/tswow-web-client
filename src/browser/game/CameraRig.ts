@@ -1,5 +1,5 @@
 import {
-  CAMERA_DEFAULT_PITCH, CAMERA_FIRST_PERSON_DISTANCE, CAMERA_MAX_DISTANCE, CAMERA_MIN_DISTANCE,
+  CAMERA_FIRST_PERSON_DISTANCE, CAMERA_MAX_DISTANCE, CAMERA_MIN_DISTANCE, // 3.11: CAMERA_DEFAULT_PITCH was the old follow's
   boomAnchor, createCamera, type Vector3,
 } from "../SimpleScene.js";
 import { boomLimits, type CollisionWorld } from "./Collision.js";
@@ -120,42 +120,8 @@ export function cameraLookPerPixel(mouseSpeedPercent: number, lookSpeedDegrees: 
   return CAMERA_LOOK_SENSITIVITY * speed * look;
 }
 
-/** 5.14: the stock `cameraSmoothStyle` values (InterfaceOptionsCameraPanelStyleDropDown_Initialize). */
-export const CAMERA_SMOOTH_NEVER = 0;
-export const CAMERA_SMOOTH_HORIZONTAL_WHEN_MOVING = 1;
-export const CAMERA_SMOOTH_ALWAYS = 2;
-export const CAMERA_SMOOTH_WHEN_MOVING = 4;
-
-/** Moves an angle towards another by at most `step`, the short way round. */
-function stepAngle(current: number, target: number, step: number): number {
-  let delta = target - current;
-  delta = ((delta + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
-  if (Math.abs(delta) <= step) return target;
-  return current + Math.sign(delta) * step;
-}
-
-/**
- * 5.14: the camera bringing itself back behind the character, per the stock `cameraSmoothStyle`
- * (GlobalStrings OPTION_TOOLTIP_CAMERA1–4): 0 never; 1 only the horizontal, only while the character
- * moves; 4 both axes while it moves; 2 both axes always. The yaw offset goes to zero at
- * `cameraYawSmoothSpeed` degrees a second, the tilt to the default at a quarter of that (the stock
- * slider's SetCVar("cameraPitchSmoothSpeed", value/4)). Nothing while a mouse button holds the camera.
- * Writes `yaw` and `pitch` — the player's numbers — because this is the original's own hand on them.
- */
-export function advanceCameraFollow(
-  rig: CameraRig, style: number, yawSpeedDegrees: number, moving: boolean, mouseHeld: boolean, elapsed: number,
-): void {
-  if (mouseHeld || !(elapsed > 0) || !(yawSpeedDegrees > 0)) return;
-  if (style !== CAMERA_SMOOTH_HORIZONTAL_WHEN_MOVING && style !== CAMERA_SMOOTH_WHEN_MOVING
-    && style !== CAMERA_SMOOTH_ALWAYS) return;
-  if (style !== CAMERA_SMOOTH_ALWAYS && !moving) return;
-  const yawStep = yawSpeedDegrees * Math.PI / 180 * elapsed;
-  rig.yaw = stepAngle(rig.yaw, rig.flipYaw ?? 0, yawStep); // DEC-B 3.11: home is the flip (was 0)
-  if (style === CAMERA_SMOOTH_HORIZONTAL_WHEN_MOVING) return;
-  const pitchStep = yawStep / 4;
-  const gap = CAMERA_DEFAULT_PITCH - rig.pitch;
-  rig.pitch = Math.abs(gap) <= pitchStep ? CAMERA_DEFAULT_PITCH : rig.pitch + Math.sign(gap) * pitchStep;
-}
+// 3.11: the camera's way back behind the character (5.14's `advanceCameraFollow` and its CAMERA_SMOOTH_* values,
+// a pull every frame read from the option tooltips) is Wow.exe's own now: game/CameraFollow.ts.
 
 /**
  * How far the camera may be tilted either way, in radians. wowee clamps at 88 degrees

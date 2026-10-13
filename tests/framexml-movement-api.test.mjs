@@ -99,6 +99,9 @@ const { FrameXmlBindingModel, FRAMEXML_BINDING_BINDINGS } = await import("../dis
 const { FRAMEXML_MOVEMENT_NAMES } = await import("../dist/code/browser/framexml/FrameXmlMovementApi.js");
 const { FRAMEXML_SEAM_BINDINGS, FRAMEXML_SEAM_NAMES } = await import("../dist/code/browser/framexml/FrameXmlWorldSeam.js");
 const { OPCODES } = await import("../dist/code/generated/opcodes.js");
+const { cameraViews } = await import("../dist/code/browser/game/CameraViews.js"); // 3.11
+/** 3.11: the one world the views' frame sees, so it is one camera throughout. */
+const cameraWorld = {};
 usePanelHost({ viewport: document.body, attach() {} });
 controls.wireControls();
 
@@ -176,7 +179,9 @@ test("the names are Wow.exe's 3.3.5a registration table, every one a seam answer
     "TurnRightStart", "TurnRightStop", "StrafeLeftStart", "StrafeLeftStop", "StrafeRightStart", "StrafeRightStop",
     "PitchUpStart", "PitchUpStop", "PitchDownStart", "PitchDownStop", "VehicleAimUpStart", "VehicleAimUpStop",
     "VehicleAimDownStart", "VehicleAimDownStop", "TurnOrActionStart", "TurnOrActionStop", "CameraOrSelectOrMoveStart",
-    "CameraOrSelectOrMoveStop", "MoveAndSteerStart", "MoveAndSteerStop", "MouselookStart", "MouselookStop",
+    // 5.09: SetMouselookOverrideBinding (0x005fd550) sits here in the registration table (it was left to the neutral API).
+    "CameraOrSelectOrMoveStop", "MoveAndSteerStart", "MoveAndSteerStop", "SetMouselookOverrideBinding", "MouselookStart",
+    "MouselookStop",
     "IsMouselooking",
   ];
   assert.deepEqual([...FRAMEXML_MOVEMENT_NAMES], table);
@@ -427,17 +432,54 @@ test("Mouselook steers a swimmer's pitch as the right button does, and holds the
       movement.advancePhysics(1 / 60);
       assert.ok(Math.abs(movement.characterPitchNow() + 0.3) < 1e-9, `pitch ${movement.characterPitchNow()}`);
       // While it is held the camera does not swing back behind the character (5.14 auto-follow).
+      // 3.11: the follow is Wow.exe 0x00602760 on the input word's edges (CameraFollow.ts) and the glide is the views'
+      // frame (CameraViews.ts): `advanceCameraAutoFollow(now, subject)` then `cameraViews.frame` (was `(0.1)` alone).
       game.camera.yaw = 0.5;
       lua("MoveForwardStart");
-      controls.advanceCameraAutoFollow(0.1);
+      controls.advanceCameraAutoFollow(1000, mover);
+      cameraViews.frame(game.camera, 1100, cameraWorld, undefined);
       assert.equal(game.camera.yaw, 0.5);
       lua("MouselookStop");
-      controls.advanceCameraAutoFollow(0.1);
+      controls.advanceCameraAutoFollow(1100, mover);
+      cameraViews.frame(game.camera, 1200, cameraWorld, undefined);
       assert.ok(game.camera.yaw < 0.5, `follows again: ${game.camera.yaw}`);
       lua("MoveForwardStop");
+      controls.advanceCameraAutoFollow(1200, mover);
     } finally {
       game.camera.pitch = pitch;
     }
+  });
+});
+
+test("3.11: CameraOrSelectOrMoveStop(true) is the sticky release — the follow stays off until a plain one", () => {
+  inWorld(({ lua, mover }) => {
+    const world = { sticky: true };
+    let now = 50_000;
+    const step = () => {
+      controls.advanceCameraAutoFollow(now, mover);
+      cameraViews.frame(game.camera, now, world, undefined);
+      now += 3000;
+    };
+    step();
+    game.camera.yaw = 0.5;
+    lua("CameraOrSelectOrMoveStart");
+    step();
+    lua("CameraOrSelectOrMoveStop", true);
+    lua("MoveForwardStart");
+    step();
+    step();
+    assert.equal(game.camera.yaw, 0.5, "sticky (Bindings.xml passes IsModifiedClick(\"STICKYCAMERA\"))");
+    lua("MoveForwardStop");
+    step();
+    lua("CameraOrSelectOrMoveStart");
+    step();
+    lua("CameraOrSelectOrMoveStop", false);
+    lua("MoveForwardStart");
+    step();
+    step();
+    assert.equal(game.camera.yaw, 0, "a plain release lets the camera come home");
+    lua("MoveForwardStop");
+    step();
   });
 });
 
@@ -565,5 +607,123 @@ test("a physical button's release clears the Lua command on its bit; the other b
     lua("TurnOrActionStop");
     assert.deepEqual(opcodes.filter((name) => name !== "MSG_MOVE_SET_FACING"),
       ["MSG_MOVE_START_FORWARD", "MSG_MOVE_STOP", "MSG_MOVE_START_FORWARD", "MSG_MOVE_STOP"]);
+  });
+});
+
+// ---- 5.09 (13.10) ---------------------------------------------------------------------------------------------------
+
+/** A move over the world with no page button, `dx`, `dy` in pixels. */
+function glide(dx, dy = 0) {
+  for (const handler of worldCanvas.listeners.get("pointermove") ?? []) {
+    handler({ button: -1, buttons: 0, pointerId: 1, clientX: 40, clientY: 40, movementX: dx, movementY: dy, preventDefault() {} });
+  }
+}
+
+/** Runs `body` with performance.now pinned to a clock it moves. */
+function withClock(body) {
+  const real = performance.now;
+  const clock = { now: 10_000 };
+  performance.now = () => clock.now;
+  try {
+    body(clock);
+  } finally {
+    performance.now = real;
+  }
+}
+
+test("5.09: a quick still release of CameraOrSelectOrMove clicks the world (0x005fa450 → 0x004f7880(1)); a drag does not", () => {
+  inWorld(({ lua }) => withClock((clock) => {
+    const selected = [];
+    game.world.selectTarget = (guid) => selected.push(guid);
+    glide(0);
+    lua("CameraOrSelectOrMoveStart");
+    clock.now += 100;
+    lua("CameraOrSelectOrMoveStop");
+    assert.deepEqual(selected, [undefined], "bare ground: the target dropped (deselectOnClick)");
+    lua("CameraOrSelectOrMoveStart");
+    clock.now += 900;
+    lua("CameraOrSelectOrMoveStop");
+    assert.equal(selected.length, 1, "held 900 ms: a drag");
+    lua("CameraOrSelectOrMoveStart");
+    glide(12);
+    clock.now += 300;
+    lua("CameraOrSelectOrMoveStop");
+    assert.equal(selected.length, 1, "moved and held: a drag");
+    lua("MouselookStart");
+    clock.now += 50;
+    lua("MouselookStop");
+    assert.equal(selected.length, 1, "Mouselook clicks nothing");
+    lua("MoveAndSteerStart");
+    clock.now += 50;
+    lua("MoveAndSteerStop");
+    assert.equal(selected.length, 1, "two commands are no click");
+  }));
+});
+
+test("5.09: under a Lua mouse command the mouse turns the camera without a button (0x005fba60)", () => {
+  inWorld(({ lua, mover }) => {
+    game.camera.yaw = 0;
+    lua("CameraOrSelectOrMoveStart");
+    glide(-50);
+    assert.ok(game.camera.yaw > 0, `the left command looks around: ${game.camera.yaw}`);
+    assert.equal(mover.position.orientation, 0, "the character does not turn");
+    lua("CameraOrSelectOrMoveStop");
+    game.camera.yaw = 0;
+    lua("MouselookStart");
+    glide(-50);
+    const turned = mover.position.orientation;
+    lua("MouselookStop");
+    glide(-50);
+    assert.equal(game.camera.yaw, 0, "nothing held: the mouse is the cursor's");
+    assert.notEqual(turned, 0, "Mouselook turned the character");
+  });
+});
+
+test("5.09: SetMouselookOverrideBinding keys override their bindings while Mouselook holds", () => {
+  inWorld(({ lua, model }) => {
+    const table = model.bindingAction("Q", true);
+    assert.notEqual(table, "JUMP");
+    lua("SetMouselookOverrideBinding", "Q", "JUMP");
+    assert.equal(model.bindingAction("Q", true), table, "nothing until Mouselook starts");
+    lua("MouselookStart");
+    assert.equal(model.bindingAction("Q", true), "JUMP");
+    lua("MouselookStop");
+    assert.equal(model.bindingAction("Q", true), table, "taken off when it stops (0x005604f0)");
+    lua("SetMouselookOverrideBinding", "Q", null);
+    lua("MouselookStart");
+    assert.equal(model.bindingAction("Q", true), table, "nil took the key off the list");
+    lua("MouselookStop");
+    assert.throws(() => lua("SetMouselookOverrideBinding"), /Usage: SetMouselookOverrideBinding\("key", "binding" or nil\)/);
+  });
+});
+
+test("5.09: a key let go with no press seen runs its binding's up — MoveForwardStop of a Lua hold (0x004f6b70)", () => {
+  inWorld(({ lua }) => {
+    lua("MoveForwardStart");
+    assert.equal(movement.forwardAxis(), 1);
+    key("keyup", "KeyW");
+    assert.equal(movement.forwardAxis(), 0, "the W key's release stopped what Lua held");
+    lua("MoveForwardStart");
+    key("keyup", "KeyW", { target: new globalThis.HTMLInputElement() });
+    assert.equal(movement.forwardAxis(), 1, "not from an edit box");
+    lua("MoveForwardStop");
+  });
+});
+
+test("5.09: MOVEANDSTEER is a key binding row: MoveAndSteerStart on the press, Stop on the release", () => {
+  inWorld(({ model }) => {
+    assert.equal(model.setBinding("M", "MOVEANDSTEER"), true);
+    try {
+      key("keydown", "KeyM");
+      assert.equal(movement.forwardAxis(), 1, "both commands: the run");
+      key("keyup", "KeyM");
+      assert.equal(movement.forwardAxis(), 0);
+      model.run("MOVEANDSTEER", "down");
+      assert.equal(movement.forwardAxis(), 1, "RunBinding with a keystate");
+      model.run("MOVEANDSTEER", "up");
+      assert.equal(movement.forwardAxis(), 0);
+    } finally {
+      bindings.resetBindings();
+    }
   });
 });

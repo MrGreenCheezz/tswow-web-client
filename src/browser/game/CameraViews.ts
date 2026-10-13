@@ -1,4 +1,8 @@
 import { CAMERA_PITCH_LIMIT } from "./CameraRig.js";
+import {
+  CAMERA_CVAR_DISTANCE_MAX, CAMERA_CVAR_PITCH_MAX, CAMERA_CVAR_YAW_MAX, cameraCVarAccepts,
+  cameraCVarDefinition, cameraCVarFloat, cameraViewCVar,
+} from "./CameraCVars.js"; // 3.11
 
 /**
  * DEC-B 3.11 (04.10): the stock camera views — SetView, SaveView, ResetView, NextView, PrevView and
@@ -42,10 +46,23 @@ import { CAMERA_PITCH_LIMIT } from "./CameraRig.js";
  *   own camera moves (0x600590, 0x5ffb70) are the zoom's, not these glides. The caller passes the
  *   wheel's ceiling of the moment (the vehicle's 50 yards in vehicle mode).
  * - A new camera (world entry, 0x606b30) takes its view index from cameraView; its distance there is
- *   the per-character cameraSavedDistance/Pitch (0x5ff3e0; default view 2's 5.55 yd and 10°). This
- *   client keeps its own starting camera — only the index is taken.
+ *   the per-character cameraSavedDistance/Pitch (0x5ff3e0; default view 2's 5.55 yd and 10°) — CameraSaved.ts
+ *   since 5.14 (12.10); here only the index is taken.
  *
  * Once a frame `frame` compares numbers and, while a glide runs, writes three; nothing is allocated.
+ *
+ * 3.11 (13.10): the glides are the camera's own three slots, one per axis, shared with the follow
+ * (CameraFollow.ts, 0x00602760) as Wow.exe shares them: each has its target, start, time, delay and factor
+ * (distance +0x1e8/+0x1e0/+0x1e4, pitch +0x230/+0x228/+0x22c/+0x23c/+0x238, yaw +0x260/+0x258/+0x25c/
+ * +0x26c/+0x268); a start in the future is a delay (0x00603d30 moves an axis only once now − start ≥ 0). The
+ * mouse's hold on the camera — "Camera FREELOOK", camera+0x98 bit 1, set when the first of the two mouse commands
+ * goes down (0x006047e0 → 0x00601ff0) and cleared when the last comes up (0x00604850 → 0x00601f70) — stops the
+ * pitch and yaw glides where they are, both on the press (0x00601ff0 sets their targets to the camera) and on the
+ * release (0x00604850 does the same); in between 0x00603d30 does not move the yaw at all, so a switch made while a
+ * button is held glides the distance and the pitch, and its yaw never happens. The release with the sticky
+ * argument (CameraOrSelectOrMoveStop(IsModifiedClick("STICKYCAMERA")), Bindings.xml) leaves camera+0x98 bit 0x20
+ * set, which keeps the follow off until a release without it (0x005fff40). Was one shared glide, and a yaw glide
+ * that went on under a held button.
  */
 
 /** The eight views the camera keeps (camera+0xb8). */
@@ -76,25 +93,24 @@ export const CAMERA_SMOOTH_TIME_MAX = 2;
 
 const CVAR_VIEW = "cameraView";
 const CVAR_BLEND = "cameraViewBlendStyle";
-/** The suffixes of the view CVars (0xad1b54). */
-const SUFFIXES = ["", "A", "B", "C", "D", "E", "Com", "Barber Shop"] as const;
-/** The validators' ranges: 0x5fd680 (50, 0x00a1e2fc), 0x5fd6d0 (±1.5533 rad in degrees), 0x5fd7b0 (360). */
-const DISTANCE_MAX = 50;
-const PITCH_MAX = 1.5533430576324463 * 57.295780181884766;
-const YAW_MAX = 360;
+/** 3.11: 0x005fff40 — the follow runs in a view moved off its defaults only with this on ("0"). */
+const CVAR_CUSTOM_SMOOTHING = "cameraCustomViewSmoothing";
+/** 3.11: what 0x00603330 holds a switch's time to (cameraSmoothTimeMin/Max, CameraCVars.ts). */
+const CVAR_TIME_MIN = "cameraSmoothTimeMin";
+const CVAR_TIME_MAX = "cameraSmoothTimeMax";
 /** Two numbers closer than this are the same (0x00a1e34c). */
 const SAME = 1e-3;
 const DEG = Math.PI / 180;
 const TAU = Math.PI * 2;
 
-const AXIS_DISTANCE = 1;
-const AXIS_PITCH = 2;
-const AXIS_YAW = 4;
+/** 3.11: the camera's three glide slots (distance +0x118, pitch +0x120, yaw +0x11c). */
+export const CAMERA_AXIS_DISTANCE = 0;
+export const CAMERA_AXIS_PITCH = 1;
+export const CAMERA_AXIS_YAW = 2;
+const AXES = 3;
 
-/** A view CVar's name: `cameraViewCVar("Distance", 1)` is `cameraDistanceA`. */
-export function cameraViewCVar(axis: "Distance" | "Pitch" | "Yaw", view: number): string {
-  return `camera${axis}${SUFFIXES[view] ?? ""}`;
-}
+// 3.11: the names now live with the other camera CVars (CameraCVars.ts); still exported from here.
+export { cameraViewCVar };
 
 /** Where an account's views are kept; Latin letters fold, as the account name does (FrameXmlCVarPersistence). */
 export function cameraViewStorageKey(account: string): string {
@@ -146,8 +162,9 @@ function ranged(text: string | undefined, low: number, high: number): number | u
   return Number.isFinite(value) && value >= low && value <= high ? value : undefined;
 }
 
-function glideSeconds(delta: number, speed: number): number {
-  return speed > 0 ? delta / speed : CAMERA_SMOOTH_TIME_MAX;
+/** |Δ| over a speed in radians a second, times the factor; no speed is the longest glide. */
+function glideSeconds(delta: number, speed: number, factor: number): number {
+  return speed > 0 && Number.isFinite(speed) ? (delta / speed) * factor : CAMERA_SMOOTH_TIME_MAX;
 }
 
 function pageStorage(): CameraViewStorage | undefined {
@@ -156,6 +173,11 @@ function pageStorage(): CameraViewStorage | undefined {
   } catch {
     return undefined;
   }
+}
+
+/** An axis's number on the rig: the yaw is the drawn one. */
+function axisValue(rig: CameraViewRig, axis: number): number {
+  return axis === CAMERA_AXIS_DISTANCE ? rig.distance : axis === CAMERA_AXIS_PITCH ? rig.pitch : rig.yaw;
 }
 
 export class CameraViews {
@@ -175,15 +197,23 @@ export class CameraViews {
   #aimD = 0;
   #aimP = 0;
   #aimY = 0;
-  #axes = 0;
-  #start = 0;
-  #ms = 0;
-  #fromD = 0;
-  #fromP = 0;
-  #fromY = 0;
-  #wroteD = 0;
-  #wroteP = 0;
-  #wroteY = 0;
+  /**
+   * 3.11: the three glide slots (was one glide over a mask of axes). Rig units; the yaw's from/to are without the
+   * flip. `#start` may lie ahead of now — the follow's delay; `#delay`/`#factor` are what 0x00601190 and 0x00601410
+   * compare a new request with; `#wrote` is the number last written, so a hand on the axis shows.
+   */
+  readonly #active = new Uint8Array(AXES);
+  readonly #from = new Float64Array(AXES);
+  readonly #to = new Float64Array(AXES);
+  readonly #start = new Float64Array(AXES);
+  readonly #ms = new Float64Array(AXES);
+  readonly #delay = new Float64Array(AXES);
+  readonly #factor = new Float64Array(AXES);
+  readonly #wrote = new Float64Array(AXES);
+  /** 3.11: camera+0x98 bit 1, "Camera FREELOOK": a mouse command holds the camera (0x00601ff0 … 0x00601f70). */
+  #freelook = false;
+  /** 3.11: camera+0x98 bit 0x20, the sticky release (0x00604850). */
+  #sticky = false;
   #world: unknown;
   #bound = false;
 
@@ -198,19 +228,31 @@ export class CameraViews {
     return this.#current;
   }
 
-  /** Whether a switch is still gliding the camera. */
+  /** Whether a glide is under way on any axis, a delayed one included. */
   get gliding(): boolean {
-    return this.#axes !== 0;
+    return this.#active[0] !== 0 || this.#active[1] !== 0 || this.#active[2] !== 0;
   }
 
-  /** The glide's time, seconds (tests). */
+  /** The longest running glide's time, seconds (tests). */
   get glideSeconds(): number {
-    return this.#ms / 1000;
+    let ms = 0;
+    for (let axis = 0; axis < AXES; axis += 1) if (this.#active[axis] !== 0) ms = Math.max(ms, this.#ms[axis]!);
+    return ms / 1000;
+  }
+
+  /** 3.11: whether a mouse command holds the camera (camera+0x98 bit 1). */
+  get freelooking(): boolean {
+    return this.#freelook;
   }
 
   /** A view as the camera keeps it: yards, degrees (positive pitch looks down), yaw 0–360 (tests, diagnostics). */
   view(index: number): { distance: number; pitch: number; yaw: number } {
     return { distance: this.#distance[index] ?? 0, pitch: this.#pitch[index] ?? 0, yaw: this.#yaw[index] ?? 0 };
+  }
+
+  /** 3.11: a view's yaw in radians, from the facing (camera+0xc0 + view·0xc). */
+  viewYaw(index: number): number {
+    return (this.#yaw[index] ?? 0) * DEG;
   }
 
   /**
@@ -219,7 +261,7 @@ export class CameraViews {
    */
   frame(rig: CameraViewRig, now: number, world: unknown, account: string | undefined): void {
     if (world !== this.#world) this.#newCamera(rig, world, account);
-    if (this.#axes !== 0) this.#advance(rig, now);
+    if (this.gliding) this.#advance(rig, now);
   }
 
   /** `SetView(index)`: views 1–5. Whether it switched. */
@@ -241,17 +283,18 @@ export class CameraViews {
   /** `SaveView(index)`: views 1–5 take where the camera is going; the CVars keep what their ranges allow. */
   saveView(index: number, rig: CameraViewRig): boolean {
     if (!(index >= CAMERA_VIEW_LOWEST && index <= CAMERA_VIEW_HIGHEST)) return false;
-    const distance = (this.#axes & AXIS_DISTANCE) !== 0 ? this.#aimD : rig.distance;
-    const pitch = (this.#axes & AXIS_PITCH) !== 0 ? this.#aimP : rig.pitch;
-    const yaw = (this.#axes & AXIS_YAW) !== 0 ? this.#aimY : cameraYawOffFlip(rig);
+    // 3.11: the targets of the running glides (camera+0x1e8, +0x230, +0x260), per slot (was the last switch's aims).
+    const distance = this.#active[CAMERA_AXIS_DISTANCE] !== 0 ? this.#to[CAMERA_AXIS_DISTANCE]! : rig.distance;
+    const pitch = this.#active[CAMERA_AXIS_PITCH] !== 0 ? this.#to[CAMERA_AXIS_PITCH]! : rig.pitch;
+    const yaw = this.#active[CAMERA_AXIS_YAW] !== 0 ? this.#to[CAMERA_AXIS_YAW]! : cameraYawOffFlip(rig);
     const turn = ((yaw % TAU) + TAU) % TAU;
     this.#distance[index] = distance;
     this.#pitch[index] = (0 - pitch) / DEG;
     this.#yaw[index] = turn / DEG;
     // 0x5fe440: each CVar through its validator; one it refuses keeps the value it had.
-    this.#writeCVar(cameraViewCVar("Distance", index), this.#distance[index]!, 0, DISTANCE_MAX);
-    this.#writeCVar(cameraViewCVar("Pitch", index), this.#pitch[index]!, -PITCH_MAX, PITCH_MAX);
-    this.#writeCVar(cameraViewCVar("Yaw", index), this.#yaw[index]!, 0, YAW_MAX);
+    this.#writeCVar(cameraViewCVar("Distance", index), this.#distance[index]!, 0, CAMERA_CVAR_DISTANCE_MAX);
+    this.#writeCVar(cameraViewCVar("Pitch", index), this.#pitch[index]!, -CAMERA_CVAR_PITCH_MAX, CAMERA_CVAR_PITCH_MAX);
+    this.#writeCVar(cameraViewCVar("Yaw", index), this.#yaw[index]!, 0, CAMERA_CVAR_YAW_MAX);
     this.#persist();
     return true;
   }
@@ -274,7 +317,106 @@ export class CameraViews {
     const turn = degrees * DEG;
     rig.flipYaw = wrap((rig.flipYaw ?? 0) + turn);
     rig.yaw = wrap(rig.yaw + turn);
-    if ((this.#axes & AXIS_YAW) !== 0) this.#wroteY = rig.yaw;
+    if (this.#active[CAMERA_AXIS_YAW] !== 0) this.#wrote[CAMERA_AXIS_YAW] = rig.yaw;
+  }
+
+  // ---- 3.11: the follow's hand on the slots (CameraFollow.ts) and the mouse's hold -------------------------------
+
+  /**
+   * 3.11: the first mouse command down (`down`, 0x006047e0 → 0x00601ff0) or the last one up (0x00604850 →
+   * 0x00601f70, `sticky` its argument). Both stop the pitch and yaw glides where they are; the distance's goes on.
+   */
+  freelook(down: boolean, sticky: boolean): void {
+    if (down) {
+      if (this.#freelook) return;
+      this.#freelook = true;
+    } else {
+      this.#freelook = false;
+      this.#sticky = sticky;
+    }
+    this.stopAxis(CAMERA_AXIS_PITCH);
+    this.stopAxis(CAMERA_AXIS_YAW);
+  }
+
+  /**
+   * 3.11: 0x005fff40 — whether the follow may move this camera: not after a sticky release, and in a view moved off
+   * its defaults (0x005ff8e0, SaveView's doing) only with cameraCustomViewSmoothing on.
+   */
+  followAllowed(): boolean {
+    if (this.#sticky) return false;
+    return Math.trunc(this.cvarNumber(CVAR_CUSTOM_SMOOTHING)) !== 0 || this.#atDefaults(this.#current);
+  }
+
+  /**
+   * 3.11: 0x00601190 (pitch) and 0x00601410 (yaw): a glide of `axis` to `target` (rig units; the yaw without the
+   * flip) after `delay` seconds over |Δ| / `speed` (rig units a second) × `factor` seconds. The same glide already under way
+   * (target, delay and factor within a thousandth) is kept; a camera already there starts none (and leaves any other
+   * glide of the axis alone). The answer is the glide's time in seconds, or −1 for none; the follow then holds every
+   * glide it asked for to one shared time (`setAxisSeconds`).
+   */
+  glideAxis(axis: number, target: number, delay: number, factor: number, speed: number, now: number, rig: CameraViewRig): number {
+    const own = axis === CAMERA_AXIS_YAW ? cameraYawOffFlip(rig) : axisValue(rig, axis);
+    // 0x005fd5c0: the current value is taken within half a turn of the target.
+    const from = axis === CAMERA_AXIS_DISTANCE ? own : target + wrap(own - target);
+    if (this.#active[axis] !== 0 && Math.abs(this.#to[axis]! - target) < SAME
+      && Math.abs(this.#delay[axis]! - delay) < SAME && Math.abs(this.#factor[axis]! - factor) < SAME) {
+      return this.#ms[axis]! / 1000;
+    }
+    if (!(Math.abs(from - target) >= SAME)) return -1;
+    const seconds = glideSeconds(Math.abs(target - from), speed, factor);
+    this.#active[axis] = 1;
+    this.#from[axis] = from;
+    this.#to[axis] = target;
+    this.#start[axis] = now + delay * 1000;
+    this.#ms[axis] = seconds * 1000;
+    this.#delay[axis] = delay;
+    this.#factor[axis] = factor;
+    this.#wrote[axis] = axisValue(rig, axis);
+    return seconds;
+  }
+
+  /** 3.11: a running glide's time (the follow's shared one), seconds. */
+  setAxisSeconds(axis: number, seconds: number): void {
+    if (this.#active[axis] !== 0) this.#ms[axis] = seconds * 1000;
+  }
+
+  /** 3.11: 0x005feee0 (pitch), 0x005fef40 (yaw): the glide stops, its target where the camera is. */
+  stopAxis(axis: number): void {
+    this.#active[axis] = 0;
+  }
+
+  // ---- 3.11: the account's camera CVars (CameraCVars.ts) for GetCVar/SetCVar ---------------------------------------
+
+  /** A camera CVar's string — what was written, else its default — or undefined for another name. */
+  cvar(name: string): string | undefined {
+    const definition = cameraCVarDefinition(name);
+    if (!definition) return undefined;
+    return this.#cvars.get(definition.name) ?? definition.defaultValue;
+  }
+
+  /** A camera CVar's default string, or undefined for another name. */
+  cvarDefault(name: string): string | undefined {
+    return cameraCVarDefinition(name)?.defaultValue;
+  }
+
+  /**
+   * `SetCVar` of a camera CVar: kept for the account when its validator takes it (false when it refuses), undefined
+   * for another name. As in the client, the CVars of the views reach the camera at its next creation (0x005fe510 from
+   * 0x00606b30), and cameraView is only the index a new camera starts in.
+   */
+  setCVar(name: string, value: unknown): boolean | undefined {
+    const definition = cameraCVarDefinition(name);
+    if (!definition) return undefined;
+    const text = typeof value === "string" ? value : typeof value === "number" ? String(value) : undefined;
+    if (text === undefined || text.length > 64 || !cameraCVarAccepts(definition, text)) return false;
+    this.#cvars.set(definition.name, text);
+    this.#persist();
+    return true;
+  }
+
+  /** A camera CVar's number: atof of its string (the client's +0x2c). */
+  cvarNumber(name: string): number {
+    return cameraCVarFloat(this.cvar(name));
   }
 
   /** 0x606b30 for the camera of a new world; the account's record when the account changed. */
@@ -298,8 +440,9 @@ export class CameraViews {
     }
     const index = ranged(this.#cvars.get(CVAR_VIEW), 0, CAMERA_VIEW_SLOTS - 1);
     this.#current = index === undefined ? CAMERA_VIEW_DEFAULT : Math.trunc(index);
-    this.#axes = 0;
+    this.#active.fill(0);
     this.#moved = true;
+    this.#sticky = false; // 3.11: a new camera's flags are clear
   }
 
   /** 0x603330: the switch to view `index`. */
@@ -313,9 +456,10 @@ export class CameraViews {
       this.#cvars.set(CVAR_VIEW, String(index));
       this.#persist();
     }
-    this.#axes = 0;
+    // Every glide stops where it is.
+    this.#active.fill(0);
     this.#moved = false;
-    const ceiling = Number.isFinite(motion.ceiling) && motion.ceiling >= 0 ? motion.ceiling : DISTANCE_MAX;
+    const ceiling = Number.isFinite(motion.ceiling) && motion.ceiling >= 0 ? motion.ceiling : CAMERA_CVAR_DISTANCE_MAX;
     const toD = Math.min(this.#distance[index]!, ceiling);
     const toP = Math.max(-CAMERA_PITCH_LIMIT, Math.min(CAMERA_PITCH_LIMIT, (0 - this.#pitch[index]!) * DEG));
     const toY = wrap(this.#yaw[index]! * DEG);
@@ -329,76 +473,74 @@ export class CameraViews {
       return true;
     }
     if (style !== CAMERA_VIEW_BLEND_SMOOTH) return true;
-    // The short way round (0x601410 unwraps the yaw against its target first).
-    const fromY = toY + wrap(cameraYawOffFlip(rig) - toY);
-    let axes = 0;
-    let longest = 0;
-    if (Math.abs(rig.distance - toD) >= SAME) {
-      axes |= AXIS_DISTANCE;
-      longest = Math.max(longest, glideSeconds(Math.abs(rig.distance - toD), CAMERA_DISTANCE_SMOOTH_SPEED));
-    }
-    if (Math.abs(rig.pitch - toP) >= SAME) {
-      axes |= AXIS_PITCH;
-      longest = Math.max(longest, glideSeconds(Math.abs(rig.pitch - toP), motion.pitchSpeed * DEG));
-    }
-    if (Math.abs(fromY - toY) >= SAME) {
-      axes |= AXIS_YAW;
-      longest = Math.max(longest, glideSeconds(Math.abs(fromY - toY), motion.yawSpeed * DEG));
-    }
-    if (axes === 0) return true;
-    const seconds = Math.min(CAMERA_SMOOTH_TIME_MAX, Math.max(CAMERA_SMOOTH_TIME_MIN, longest));
-    this.#start = now;
-    this.#ms = seconds * 1000;
-    this.#fromD = rig.distance;
-    this.#fromP = rig.pitch;
-    this.#fromY = fromY;
-    this.#wroteD = rig.distance;
-    this.#wroteP = rig.pitch;
-    this.#wroteY = rig.yaw;
-    this.#axes = axes;
+    // Each axis at factor 1 and no delay (0x00600e00, 0x00601190, 0x00601410 with 0, 1.0), then the longest time,
+    // held to cameraSmoothTimeMin/Max, for all of them. The distance's speed has no setting here (8.33).
+    const seconds = [
+      this.glideAxis(CAMERA_AXIS_DISTANCE, toD, 0, 1, CAMERA_DISTANCE_SMOOTH_SPEED, now, rig),
+      this.glideAxis(CAMERA_AXIS_PITCH, toP, 0, 1, motion.pitchSpeed * DEG, now, rig),
+      this.glideAxis(CAMERA_AXIS_YAW, toY, 0, 1, motion.yawSpeed * DEG, now, rig),
+    ];
+    if (!this.gliding) return true;
+    const longest = Math.max(0, seconds[0]!, seconds[1]!, seconds[2]!);
+    const shared = Math.min(this.#timeMax(), Math.max(this.#timeMin(), longest));
+    for (let axis = 0; axis < AXES; axis += 1) this.setAxisSeconds(axis, shared);
     return true;
+  }
+
+  #timeMin(): number {
+    return this.cvarNumber(CVAR_TIME_MIN);
+  }
+
+  #timeMax(): number {
+    return this.cvarNumber(CVAR_TIME_MAX);
+  }
+
+  /** 0x005ff8e0: a view still holding its defaults (each number within a thousandth, angles in radians). */
+  #atDefaults(index: number): boolean {
+    const row = CAMERA_VIEW_DEFAULTS[index];
+    if (!row) return true;
+    return Math.abs(this.#distance[index]! - row[0]) < SAME && Math.abs((this.#pitch[index]! - row[1]) * DEG) < SAME
+      && Math.abs((this.#yaw[index]! - row[2]) * DEG) < SAME;
   }
 
   /** camera+0x98 bit 0x40: moved by hand since the last switch, or a new camera never switched. */
   #movedSince(rig: CameraViewRig, flip: number): boolean {
     if (this.#moved) return true;
-    if (this.#axes !== 0) return false;
+    if (this.gliding) return false;
     return Math.abs(rig.distance - this.#aimD) >= SAME || Math.abs(rig.pitch - this.#aimP) >= SAME
       || Math.abs(wrap(rig.yaw - flip - this.#aimY)) >= SAME;
   }
 
-  /** 0x603d30: one frame of the glide; an axis someone else moved since the last frame is theirs. */
+  /**
+   * 0x603d30: one frame of each glide; an axis someone else moved since the last frame is theirs. A glide whose start
+   * is still ahead waits; the yaw does not move while the mouse holds the camera (3.11).
+   */
   #advance(rig: CameraViewRig, now: number): void {
-    let axes = this.#axes;
-    if ((axes & AXIS_DISTANCE) !== 0 && rig.distance !== this.#wroteD) axes &= ~AXIS_DISTANCE;
-    if ((axes & AXIS_PITCH) !== 0 && rig.pitch !== this.#wroteP) axes &= ~AXIS_PITCH;
-    if ((axes & AXIS_YAW) !== 0 && rig.yaw !== this.#wroteY) axes &= ~AXIS_YAW;
-    if (axes !== this.#axes) this.#moved = true;
-    if (axes === 0) {
-      this.#axes = 0;
-      return;
+    for (let axis = 0; axis < AXES; axis += 1) {
+      if (this.#active[axis] === 0) continue;
+      if (axisValue(rig, axis) !== this.#wrote[axis]) {
+        this.#active[axis] = 0;
+        this.#moved = true;
+        continue;
+      }
+      if (axis === CAMERA_AXIS_YAW && this.#freelook) continue;
+      const elapsed = now - this.#start[axis]!;
+      if (elapsed < 0) continue;
+      const ms = this.#ms[axis]!;
+      const t = ms > 0 ? elapsed / ms : 1;
+      const done = t >= 1;
+      // 0x8ca080: from + (to − from)·0.5·(1 − cos πt).
+      const own = done ? this.#to[axis]! : this.#from[axis]! + (this.#to[axis]! - this.#from[axis]!) * 0.5 * (1 - Math.cos(Math.PI * t));
+      let value = own;
+      if (axis === CAMERA_AXIS_DISTANCE) rig.distance = value;
+      else if (axis === CAMERA_AXIS_PITCH) rig.pitch = value;
+      else {
+        value = wrap(own + (rig.flipYaw ?? 0));
+        rig.yaw = value;
+      }
+      this.#wrote[axis] = value;
+      if (done) this.#active[axis] = 0;
     }
-    const t = this.#ms > 0 ? (now - this.#start) / this.#ms : 1;
-    const done = t >= 1;
-    // 0x8ca080: from + (to − from)·0.5·(1 − cos πt).
-    const k = done ? 1 : 0.5 * (1 - Math.cos(Math.PI * Math.max(0, t)));
-    if ((axes & AXIS_DISTANCE) !== 0) {
-      const value = done ? this.#aimD : this.#fromD + (this.#aimD - this.#fromD) * k;
-      rig.distance = value;
-      this.#wroteD = value;
-    }
-    if ((axes & AXIS_PITCH) !== 0) {
-      const value = done ? this.#aimP : this.#fromP + (this.#aimP - this.#fromP) * k;
-      rig.pitch = value;
-      this.#wroteP = value;
-    }
-    if ((axes & AXIS_YAW) !== 0) {
-      const own = done ? this.#aimY : this.#fromY + (this.#aimY - this.#fromY) * k;
-      const value = wrap(own + (rig.flipYaw ?? 0));
-      rig.yaw = value;
-      this.#wroteY = value;
-    }
-    this.#axes = done ? 0 : axes;
   }
 
   #blendStyle(): number {
@@ -410,9 +552,9 @@ export class CameraViews {
   #readTable(): void {
     for (let view = 0; view < CAMERA_VIEW_SLOTS; view += 1) {
       const row = CAMERA_VIEW_DEFAULTS[view]!;
-      this.#distance[view] = ranged(this.#cvars.get(cameraViewCVar("Distance", view)), 0, DISTANCE_MAX) ?? row[0];
-      this.#pitch[view] = ranged(this.#cvars.get(cameraViewCVar("Pitch", view)), -PITCH_MAX, PITCH_MAX) ?? row[1];
-      this.#yaw[view] = ranged(this.#cvars.get(cameraViewCVar("Yaw", view)), 0, YAW_MAX) ?? row[2];
+      this.#distance[view] = ranged(this.#cvars.get(cameraViewCVar("Distance", view)), 0, CAMERA_CVAR_DISTANCE_MAX) ?? row[0];
+      this.#pitch[view] = ranged(this.#cvars.get(cameraViewCVar("Pitch", view)), -CAMERA_CVAR_PITCH_MAX, CAMERA_CVAR_PITCH_MAX) ?? row[1];
+      this.#yaw[view] = ranged(this.#cvars.get(cameraViewCVar("Yaw", view)), 0, CAMERA_CVAR_YAW_MAX) ?? row[2];
     }
   }
 

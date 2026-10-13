@@ -31,15 +31,19 @@ import type { FrameXmlSeamBinding } from "./FrameXmlWorldSeam.js";
  *   the character steer. Here they count as those buttons for exactly that (`Controls`, `mouseButton`).
  *   IsMouselooking answers 1 while the right button or its Lua bit is down (0x005f9dd0: bits 0x2000001).
  *
+ * 5.09 (13.10), since done (input/Controls.ts, input/MouseCommandClick.ts, FrameXmlBinding.ts): the click on release —
+ * TurnOrActionStop/CameraOrSelectOrMoveStop of a press held under 800 ms that did not move 8 px (or held under 200 ms)
+ * interact with or select what is under the cursor (0x005fa450 → 0x005f9600 → 0x004f7880(4/1)), Mouselook never;
+ * CameraOrSelectOrMoveStop's sticky argument (0x00604850, game/CameraFollow.ts); the mouse turning the camera and the
+ * character while a command is held without a button (0x005fba60 reads the input word), under the pointer lock when
+ * the page may take it; SetMouselookOverrideBinding's list, applied while Mouselook holds (0x005fd440, 0x005fcb20,
+ * 0x005604f0) — its usual keys are mouse buttons, which the table does not hold, so those never run.
+ *
  * Not modelled (open, WORK_PLAN 5.09): every one of these is a protected function in Wow.exe — 0x005191c0(0)
- * refuses it (0x00513530, ADDON_ACTION_BLOCKED) when the caller is tainted; this client models no taint, so an
- * add-on's call runs as a key binding's would. The click on release — TurnOrActionStop/CameraOrSelectOrMoveStop
- * with an unmoved mouse interact with or select what is under the cursor (0x005fa450 → 0x004f7880(4/1));
- * CameraOrSelectOrMoveStop's sticky argument (0x00604850); mouse movement turning the character while
- * TurnOrAction/Mouselook is held without a button (it needs the pointer lock a page cannot take outside a
- * gesture); SetMouselookOverrideBinding (its usual keys are mouse buttons, which the table does not hold) — not
- * answered. The movement keys also cancel a channel that breaks on moving (0x005faa40); the native keys do not
- * either, the server cancels it.
+ * refuses it (0x00513530, ADDON_ACTION_BLOCKED) when the running Lua is tainted (_DAT_00d4139c, which RunBinding
+ * also hands to the binding it runs, 0x0055fad0); this client's VM keeps no taint, so an add-on's call runs as a key
+ * binding's would. The movement keys also cancel a channel that breaks on moving (0x005faa40); the native keys do
+ * not either, the server cancels it.
  */
 
 const NOTHING: readonly unknown[] = Object.freeze([]);
@@ -100,11 +104,30 @@ export const FRAMEXML_MOVEMENT_BINDINGS: Readonly<Record<string, FrameXmlSeamBin
   TurnOrActionStart: buttons(true, TURN_OR_ACTION),
   TurnOrActionStop: buttons(false, TURN_OR_ACTION),
   CameraOrSelectOrMoveStart: buttons(true, CAMERA_OR_SELECT_OR_MOVE),
-  CameraOrSelectOrMoveStop: buttons(false, CAMERA_OR_SELECT_OR_MOVE),
+  // 3.11: the sticky argument (0x005fc730: lua_toboolean of the first) — Bindings.xml passes IsModifiedClick("STICKYCAMERA").
+  CameraOrSelectOrMoveStop: (seam, args) => {
+    seam.keyBindings?.mouseButton(CAMERA_OR_SELECT_OR_MOVE, false,
+      { sticky: args[0] !== undefined && args[0] !== null && args[0] !== false });
+    return NOTHING;
+  },
   MoveAndSteerStart: buttons(true, CAMERA_OR_SELECT_OR_MOVE, TURN_OR_ACTION),
   MoveAndSteerStop: buttons(false, CAMERA_OR_SELECT_OR_MOVE, TURN_OR_ACTION),
-  MouselookStart: buttons(true, TURN_OR_ACTION),
-  MouselookStop: buttons(false, TURN_OR_ACTION),
+  // 5.09: 0x005fd550 — a string key (lua_isstring), the binding lua_tostring or nil; FrameXmlBindingModel keeps the list.
+  SetMouselookOverrideBinding: (seam, args) => {
+    const key = args[0];
+    if (typeof key !== "string" && typeof key !== "number") throw new Error("Usage: SetMouselookOverrideBinding(\"key\", \"binding\" or nil)");
+    seam.keyBindings?.setMouselookOverride(String(key), args[1]);
+    return NOTHING;
+  },
+  // 5.09: the right button's bit without a click on release, and the override list on and off (0x005fcc10, 0x005fc890).
+  MouselookStart: (seam) => {
+    seam.keyBindings?.mouselook(true);
+    return NOTHING;
+  },
+  MouselookStop: (seam) => {
+    seam.keyBindings?.mouselook(false);
+    return NOTHING;
+  },
   IsMouselooking: (seam) => (seam.keyBindings?.mouselooking() === true ? [1] : NOTHING),
 });
 

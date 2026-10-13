@@ -7,8 +7,10 @@ import { chatInput, worldCanvas } from "../ui/Dom.js";
 import { anyGameWindowOpen, closeGameWindows } from "../ui/Windows.js";
 import { showTarget } from "../ui/Frames.js";
 import { interactWithGuid } from "../ui/Npc.js";
-import { CAMERA_PITCH_LIMIT, advanceCameraFollow, cameraLookPerPixel, zoomedDistance } from "../game/CameraRig.js";
+import { CAMERA_PITCH_LIMIT, cameraLookPerPixel, zoomedDistance } from "../game/CameraRig.js"; // 3.11: was also advanceCameraFollow
 import { cameraYawOffFlip } from "../game/CameraViews.js"; // DEC-B 3.11
+import { cameraViews } from "../game/CameraViews.js"; // 3.11
+import { cameraFollow, type CameraFollowHost } from "../game/CameraFollow.js"; // 3.11
 import { cameraMaxDistance, settingOn, settings } from "../ui/Settings.js";
 import { settingNumber } from "../ui/SettingsModel.js";
 import { canAttackUnit, dropTabList, inSightFromCamera, reactionTo } from "../game/Targeting.js"; // 1.10: dropTabList
@@ -50,13 +52,16 @@ import {
   HELD_ACTIONS, actionFor, chordOf, moduleActionFor, overrideFor, strafeInsteadOfTurn, type InputAction,
 } from "./Bindings.js";
 import {
-  beginHeld, endHeld, flushFacing, forwardAxis, normalizeAngle, releaseAllInput, resetCharacterMotion,
-  setMouseRun, setSteering, strafeAxis, turnCharacterBy,
-} from "./Movement.js";
+  beginHeld, endHeld, flushFacing, normalizeAngle, releaseAllInput, resetCharacterMotion,
+  setMouseRun, setSteering, turnCharacterBy,
+} from "./Movement.js"; // 3.11: forwardAxis and strafeAxis were the old follow's
+import { movementInputWord } from "./Movement.js"; // 3.11
 import { aimMoverPitchBy, moverRefusesStrafe } from "./Movement.js"; // 11.02-GF3
 import { vehicleCamera } from "../game/VehicleCamera.js"; // 11.02-GF3
 import { heldMovementAction } from "./Bindings.js"; // L8 5.09
 import { CAMERA_OR_SELECT_OR_MOVE, TURN_OR_ACTION, registerMovementCommandInput } from "./MovementCommands.js"; // L8 5.09
+import type { MouseCommandHow } from "./MovementCommands.js"; // 3.11/5.09
+import { MOUSE_CLICK_INTERACT, MOUSE_CLICK_NONE, MOUSE_CLICK_SELECT, MouseCommandClick } from "./MouseCommandClick.js"; // 5.09
 
 /**
  * Keyboard, mouse and camera.
@@ -332,6 +337,16 @@ function onKeyDown(event: KeyboardEvent): void {
   }
 
   const action = overrideHeld ?? resolveKeyAction(event); // L2 3.11: `overrideHeld ??`
+  // 5.09: MOVEANDSTEER — MoveAndSteerStart on the press, MoveAndSteerStop on the release (Bindings.xml, runOnUp).
+  if (action === "moveAndSteer") {
+    if (!event.repeat && game.world && !moveAndSteerKeys.has(event.code)) {
+      moveAndSteerKeys.add(event.code);
+      holdButton(CAMERA_OR_SELECT_OR_MOVE, true);
+      holdButton(TURN_OR_ACTION, true);
+    }
+    event.preventDefault();
+    return;
+  }
   if (action === undefined) {
     // A module's own action, which lives in a separate dynamic table and is never held: a
     // definition file offers a verb, and a verb is pressed. Asked after the compiled-in table, so
@@ -376,12 +391,45 @@ function onKeyUp(event: KeyboardEvent): void {
     refreshStrafeModifier();
     return;
   }
+  // 5.09: MoveAndSteerStop (0x005fc830): the left command, then the right.
+  if (moveAndSteerKeys.delete(event.code)) {
+    holdButton(CAMERA_OR_SELECT_OR_MOVE, false);
+    holdButton(TURN_OR_ACTION, false);
+    event.preventDefault();
+    return;
+  }
   const entry = heldByCode.get(event.code);
-  if (!entry) return;
+  if (!entry) {
+    releaseUnrecordedKey(event); // 5.09
+    return;
+  }
   heldByCode.delete(event.code);
   endHeld(entry.current);
   if (heldByCode.size !== 0) dropLuaHolds(entry.base); // L8-review 5.09
   event.preventDefault();
+}
+
+/** 5.09: the keys holding MOVEANDSTEER, by `event.code`. */
+const moveAndSteerKeys = new Set<string>();
+
+/**
+ * 5.09: a key let go whose press this table never saw (pressed in an edit box, before the world, before its binding
+ * changed). Wow.exe's key-up (0x004f6b70) runs the key's binding as it stands now when no press was recorded for it
+ * (0x0055e2c0 → 0x00563150 with keystate "up"), so a held command's Stop still lands: MoveForwardStop clears the bit
+ * whoever set it — a RunBinding or MoveForwardStart from Lua included (0x005fa450). Not while an edit box has the
+ * keyboard. Was: nothing.
+ */
+function releaseUnrecordedKey(event: KeyboardEvent): void {
+  if (!game.world || typingInto(event.target)) return;
+  const override = overrideFor(chordOf(event));
+  const action = override?.action ?? resolveKeyAction(event);
+  if (action === "moveAndSteer") {
+    holdButton(CAMERA_OR_SELECT_OR_MOVE, false);
+    holdButton(TURN_OR_ACTION, false);
+    return;
+  }
+  if (action === undefined || !HELD_ACTIONS.has(action)) return;
+  holdCommand(action, false);
 }
 
 /**
@@ -516,7 +564,7 @@ function pickAt(point: { clientX: number; clientY: number }): bigint | undefined
  * owns the verdict and may refuse a point this client accepted.
  */
 function confirmGroundTargetAt(
-  event: PointerEvent, world: NonNullable<typeof game.world>, spellId: number,
+  event: { clientX: number; clientY: number }, world: NonNullable<typeof game.world>, spellId: number, // 5.09: was PointerEvent
 ): void {
   const metadata = game.spells.get(spellId);
   const bounds = worldCanvas.getBoundingClientRect();
@@ -905,6 +953,9 @@ function syncButtons(event: PointerEvent): { releasedLeft: boolean; releasedRigh
   }
   drag.left = left;
   drag.right = right;
+  // 3.11: the last mouse command let go (game/CameraFollow.ts): the left with CameraOrSelectOrMoveStop(
+  // IsModifiedClick("STICKYCAMERA")) — Ctrl by default (Bindings.xml) — the right with TurnOrActionStop(), never sticky.
+  if (wasDragging && !left && !right && luaButtons === 0) cameraButtonsLetGo = releasedLeft && event.ctrlKey === true;
   // L8 5.09: a mouse command held from Lua counts as its button (was `left && right`, `right`).
   setMouseRun((left || (luaButtons & CAMERA_OR_SELECT_OR_MOVE) !== 0) && (right || (luaButtons & TURN_OR_ACTION) !== 0));
   // 5.10: the right button (alone or with the left) steers — the character's pitch is the camera's.
@@ -927,17 +978,28 @@ function clicked(button: 1 | 2): boolean {
 function releaseButtons(event: PointerEvent): void {
   const { releasedLeft, releasedRight } = syncButtons(event);
   if (!releasedLeft && !releasedRight) return;
-  const world = game.world;
   // The camera has stopped; tell the server where the character ended up facing, since a turn on
   // the spot sends nothing else.
   if (releasedRight && (drag.moved > DRAG_THRESHOLD || drag.turned)) flushFacing();
+  // 5.09: the click itself is `worldClick`, which the Lua mouse commands' release runs too (was inline here, with
+  // `releasedLeft && clicked(1)` and `releasedRight && clicked(2)` where it reads `left` and `right`).
+  worldClick(event, releasedLeft && clicked(1), releasedRight && clicked(2));
+}
+
+/**
+ * A click on the world at `point`: `left` selects or drops the target, `right` selects and interacts — the world click
+ * Wow.exe 0x004f7880(1) and (4) is, for the page's own buttons and (5.09) the Lua mouse commands' release.
+ */
+function worldClick(point: { clientX: number; clientY: number }, left: boolean, right: boolean): void {
+  if (!left && !right) return;
+  const world = game.world;
   // A right click on the world is SpellStopTargeting, as in the client: a waiting enchant (stock
   // TradeSkillFrame's DoTradeSkill cursor) is dropped and the click selects and opens nothing.
   // Asked before the reticle below, in the seam's SpellStopTargeting order; drags stay the camera's.
-  if (releasedRight && clicked(2) && stopFrameXmlTradeSkillTargeting()) return;
+  if (right && stopFrameXmlTradeSkillTargeting()) return;
   // L1-review (2.05 E): … and waiting wrapping paper goes too (0x0051fb00 → 0x00519280), the click
   // selecting nothing, as the item cursor's right click below.
-  if (releasedRight && clicked(2) && cancelGiftWrap()) return;
+  if (right && cancelGiftWrap()) return;
   if (!world) return;
 
   // A spell or item waiting for an item (SpellCursor.ts): a right click drops it. A left click on a
@@ -947,13 +1009,13 @@ function releaseButtons(event: PointerEvent): void {
   // ITEM-only mask) and drops the target as it always does here; the cursor stays. Drags stay the
   // camera's.
   if (pendingItemTarget(world) !== undefined) {
-    if (releasedRight && clicked(2)) {
+    if (right) {
       cancelItemTarget();
       clearHoverCursor();
       return;
     }
-    if (releasedLeft && clicked(1)) {
-      const picked = pickAt(event);
+    if (left) {
+      const picked = pickAt(point);
       // «Взлом замка» and the keys (TARGET_FLAG_GAMEOBJECT_ITEM in the mask) take a chest: the spell
       // goes at it and the cursor comes down (0x0080bc80); any other cursor ignores the object.
       if (picked !== undefined && targetGameObjectWithCursor(picked, world).kind === "sent") {
@@ -968,32 +1030,32 @@ function releaseButtons(event: PointerEvent): void {
   // cancels. Drags still belong to the camera, so only unmoved presses divert here.
   const pendingSpell = pendingGroundTarget();
   if (pendingSpell !== undefined) {
-    if (releasedRight && clicked(2)) {
+    if (right) {
       cancelGroundTarget();
       clearHoverCursor();
       return;
     }
-    if (releasedLeft && clicked(1)) {
-      confirmGroundTargetAt(event, world, pendingSpell);
+    if (left) {
+      confirmGroundTargetAt(point, world, pendingSpell);
       return;
     }
   }
 
   // The left button picks a target or drops it; the right one picks and then interacts, which is
   // the gesture the original client leans on hardest.
-  if (releasedLeft && clicked(1)) {
+  if (left) {
     // An item on the stock bag cursor dropped on the world asks DELETE_ITEM_CONFIRM, as the client
     // does for an item let go outside every frame; that click selects nothing.
     if (frameXmlPopupsDropCursorItem()) return;
-    const picked = pickAt(event);
+    const picked = pickAt(point);
     // 5.14: deselectOnClick off («Фиксация на цели»): bare ground keeps the target.
     if (picked === undefined && !settingOn("deselectOnClick")) return;
     world.selectTarget(picked);
     showTarget();
     return;
   }
-  if (releasedRight && clicked(2)) {
-    const guid = pickAt(event);
+  if (right) {
+    const guid = pickAt(point);
     if (guid === undefined) return;
     const object = world.state.objects.get(guid);
     if (object?.typeId !== 5) {
@@ -1049,14 +1111,31 @@ function wireMouse(): void {
 
   worldCanvas.addEventListener("pointermove", (event) => {
     recordGroundTargetPointer(event.clientX, event.clientY);
+    // 5.09: where the pointer is for a Lua command's click, unless a lock holds it (the cursor stays where it was).
+    if (typeof document === "undefined" || document.pointerLockElement !== worldCanvas) {
+      lastPointer ??= { clientX: 0, clientY: 0 };
+      lastPointer.clientX = event.clientX;
+      lastPointer.clientY = event.clientY;
+    }
     // A chorded press or release arrives as a move, so the buttons are re-read on every one.
     const wasDragging = drag.left || drag.right;
     releaseButtons(event);
-    updateHoverCursor(event);
-    if (!wasDragging || (!drag.left && !drag.right)) return;
-    drag.moved += Math.abs(event.movementX) + Math.abs(event.movementY);
-    // 5.14: past the click threshold the drag hides the cursor and keeps the pointer.
-    if (drag.moved > DRAG_THRESHOLD) requestDragPointerLock();
+    // 5.09: a Lua mouse command (TurnOrAction, Mouselook, CameraOrSelectOrMove) with no page button down: the mouse
+    // turns the camera as under the button (Wow.exe 0x005fba60 asks the input word, not the buttons) and counts for the
+    // release's click (MouseCommandClick.ts); no hover while it does.
+    const luaLook = luaButtons !== 0 && !drag.left && !drag.right;
+    if (luaLook) {
+      luaClick.moved(event.movementX, event.movementY);
+      clearHoverCursor();
+    } else {
+      updateHoverCursor(event);
+      if (!wasDragging || (!drag.left && !drag.right)) return;
+      drag.moved += Math.abs(event.movementX) + Math.abs(event.movementY);
+      // 5.14: past the click threshold the drag hides the cursor and keeps the pointer.
+      if (drag.moved > DRAG_THRESHOLD) requestDragPointerLock();
+    }
+    // 5.09: the right button, or the Lua right command without a page button (was `drag.right` below).
+    const steer = drag.right || (luaLook && (luaButtons & TURN_OR_ACTION) !== 0);
     const camera = game.camera;
     // One sensitivity for both axes, as the reference client has (`camera_controller.hpp:342`),
     // scaled by the stock mouseSpeed and cameraYawMoveSpeed (5.14, CameraRig.cameraLookPerPixel);
@@ -1066,15 +1145,16 @@ function wireMouse(): void {
     const vertical = settingOn("mouseInvertPitch") ? -event.movementY : event.movementY;
     // 11.02-GF3: a vehicle that aims with the steering drag takes its vertical as its own pitch and the
     // camera keeps its tilt (Movement.aimMoverPitchBy, Wow.exe 0x005fba60); everything else as before.
-    if (!(drag.right && aimMoverPitchBy(-vertical * perPixel))) {
+    if (!(steer && aimMoverPitchBy(-vertical * perPixel))) {
       camera.pitch = Math.max(-CAMERA_PITCH_LIMIT,
         Math.min(CAMERA_PITCH_LIMIT, camera.pitch - vertical * perPixel));
     }
-    if (drag.right) {
+    if (steer) {
       // The right button turns the character and the camera comes home behind it, so the offset
       // goes back to zero rather than being carried around at the player's back.
       // 5.11: under a stun the facing is held, so the drag turns the camera as the left one does.
       if (turnCharacterBy(-event.movementX * perPixel)) {
+        if (luaLook) luaTurned = true; // 5.09: the Lua command's release reports the facing (holdButton)
         camera.yaw = camera.flipYaw ?? 0; // DEC-B 3.11: home is the flip (was 0)
         return;
       }
@@ -1087,7 +1167,12 @@ function wireMouse(): void {
   // A pointer that has left the canvas is over the interface, which owns its own cursor: leaving
   // the bag written on the canvas would put it back the moment the pointer returned, over
   // whatever now happens to be there.
-  worldCanvas.addEventListener("pointerleave", clearHoverCursor);
+  worldCanvas.addEventListener("pointerleave", () => {
+    clearHoverCursor();
+    // 5.09: over the interface nothing in the world is under the cursor for a Lua command's click (was clearHoverCursor
+    // alone as the listener).
+    if (luaButtons === 0) lastPointer = undefined;
+  });
   for (const name of ["pointercancel", "lostpointercapture"] as const) {
     // Neither means the player let go of anything, so the gesture is abandoned rather than
     // finished: no target is picked and no facing is sent. `lostpointercapture` also arrives
@@ -1118,15 +1203,36 @@ function wireMouse(): void {
 }
 
 /**
- * 5.14: the camera bringing itself back behind the character (the stock cameraSmoothStyle and
- * cameraYawSmoothSpeed), once a frame from the render loop, before the boom is scanned. "Moving" is
- * the character going somewhere on its own axes, not turning on the spot; a held mouse button holds
- * the camera.
+ * 3.11: the last mouse command let go since the frame's follow ran, with CameraOrSelectOrMoveStop's sticky argument
+ * (game/CameraFollow.ts); undefined while none was.
  */
-export function advanceCameraAutoFollow(elapsed: number): void {
-  const values = settings();
-  advanceCameraFollow(game.camera, settingNumber(values, "cameraSmoothStyle"), settingNumber(values, "cameraYawSmoothSpeed"),
-    forwardAxis() !== 0 || strafeAxis() !== 0, drag.left || drag.right || luaButtons !== 0, elapsed); // L8 5.09: `|| luaButtons !== 0`
+let cameraButtonsLetGo: boolean | undefined;
+
+/** 3.11: the right button (or TurnOrAction/Mouselook) and the left (CameraOrSelectOrMove) as input word bits 1 and 2. */
+function cameraButtonBits(): number {
+  return (drag.right || (luaButtons & TURN_OR_ACTION) !== 0 ? 1 : 0)
+    | (drag.left || (luaButtons & CAMERA_OR_SELECT_OR_MOVE) !== 0 ? 2 : 0);
+}
+
+/**
+ * 3.11: the camera coming back behind the character (cameraSmoothStyle) as Wow.exe 0x00602760 does it — on the edges
+ * of the input word, not as a pull every frame (game/CameraFollow.ts) — once a frame from the render loop, before the
+ * views' glide. `subject` undefined: a view that is not the player's to turn; the edges are taken, nothing glides.
+ * Was (5.14) `advanceCameraAutoFollow(elapsed)`, a pull at cameraYawSmoothSpeed while the character moved.
+ */
+export function advanceCameraAutoFollow(now: number, subject: CameraFollowHost["subject"]): void {
+  const word = movementInputWord() | cameraButtonBits();
+  const letGo = cameraButtonsLetGo;
+  if (!cameraFollow.pending(word, letGo)) return;
+  cameraButtonsLetGo = undefined;
+  let host: CameraFollowHost | undefined;
+  if (subject !== undefined) {
+    const values = settings();
+    const yaw = settingNumber(values, "cameraYawSmoothSpeed");
+    // cameraPitchSmoothSpeed is the stock slider's quarter of the yaw's (InterfaceOptionsPanels.xml), as the views take it.
+    host = { style: settingNumber(values, "cameraSmoothStyle"), yawSpeed: yaw, pitchSpeed: yaw / 4, subject };
+  }
+  cameraFollow.input(word, letGo, game.camera, now, cameraViews, host);
 }
 
 /**
@@ -1177,12 +1283,27 @@ function holdCommand(action: InputAction, down: boolean): void {
  * what the buttons do to movement (Wow.exe 0x005fae70, 0x005fafb0): both run forward, the right one steers, turns the
  * turn keys into strafes and, going down, turns the character to the camera as the button's press does (syncButtons).
  */
-function holdButton(bit: number, down: boolean): void {
+function holdButton(bit: number, down: boolean, how?: MouseCommandHow): void { // 3.11/5.09: `how`
   if (bit !== TURN_OR_ACTION && bit !== CAMERA_OR_SELECT_OR_MOVE) return;
   const before = luaButtons;
   const after = down ? before | bit : before & ~bit;
-  if (after === before || (down && !game.world)) return;
+  if (after === before || (down && !game.world)) {
+    // 5.09: MouselookStart/Stop set the click mode to none whether or not the bit moves (0x005fcc10, 0x005fc890).
+    if (how?.mouselook) luaClick.reset();
+    return;
+  }
+  // 5.09: the click bookkeeping over the two command bits, the page's own buttons counted (MouseCommandClick.ts).
+  const bitsBefore = cameraButtonBits();
   luaButtons = after;
+  const bitsAfter = cameraButtonBits();
+  const now = performance.now();
+  if (down) luaClick.down(bit, bitsBefore, bitsAfter, now, how?.mouselook === true);
+  // 3.11: the last mouse command let go: CameraOrSelectOrMoveStop's argument (0x005fc730 → 0x005fa450 → 0x00604850).
+  if (!down && after === 0 && !drag.left && !drag.right) cameraButtonsLetGo = bit === CAMERA_OR_SELECT_OR_MOVE && how?.sticky === true;
+  // 5.09: the mouse turns the camera under a Lua command without a button (Wow.exe 0x005fba60 reads the input word, not
+  // the buttons); the cursor is held as the drag holds it, if the page lets it (a key's press is a user activation).
+  if (before === 0 && !drag.left && !drag.right) requestLuaPointerLock();
+  if (after === 0) releaseLuaPointerLock();
   const rightBefore = drag.right || (before & TURN_OR_ACTION) !== 0;
   const right = drag.right || (after & TURN_OR_ACTION) !== 0;
   // DEC-B 3.11: without FlipCameraYaw's part, as the button's press (syncButtons).
@@ -1198,6 +1319,40 @@ function holdButton(bit: number, down: boolean): void {
     luaTurned = false;
     flushFacing();
   }
+  // 5.09: the release's click (0x005fa450 → 0x005f9600 → 0x004f7880): select or interact under the cursor.
+  if (!down) {
+    const click = luaClick.up(bitsBefore, bitsAfter, now, how?.mouselook === true);
+    if (click !== MOUSE_CLICK_NONE && lastPointer) worldClick(lastPointer, click === MOUSE_CLICK_SELECT, click === MOUSE_CLICK_INTERACT);
+  }
+}
+
+/** 5.09: MouseCommandClick.ts over the Lua mouse commands. */
+const luaClick = new MouseCommandClick();
+/** 5.09: where the pointer last was over the world, for the Lua commands' click (the cursor stays put under the lock). */
+let lastPointer: { clientX: number; clientY: number } | undefined;
+/** 5.09: the pointer lock a Lua command asked for. */
+let luaLockRequested = false;
+
+/** 5.09: the pointer held for a Lua mouse command, as requestDragPointerLock holds it for the drag; a refusal is kept. */
+function requestLuaPointerLock(): void {
+  const lock = (worldCanvas as { requestPointerLock?: () => unknown }).requestPointerLock;
+  if (typeof lock !== "function" || luaLockRequested) return;
+  luaLockRequested = true;
+  try {
+    const pending = lock.call(worldCanvas);
+    if (pending && typeof (pending as Promise<unknown>).catch === "function") {
+      (pending as Promise<unknown>).catch(() => { luaLockRequested = false; });
+    }
+  } catch {
+    luaLockRequested = false;
+  }
+}
+
+function releaseLuaPointerLock(): void {
+  if (!luaLockRequested) return;
+  luaLockRequested = false;
+  if (drag.left || drag.right || typeof document === "undefined" || document.pointerLockElement !== worldCanvas) return;
+  try { document.exitPointerLock?.(); } catch { /* already gone */ }
 }
 
 /** L8 5.09: the Lua commands go back to nothing (focus lost, the world changed). */
@@ -1206,6 +1361,9 @@ function forgetLuaButtons(): void {
   if ((luaButtons & TURN_OR_ACTION) !== 0) setSteering(drag.right);
   luaButtons = 0;
   luaTurned = false;
+  luaClick.reset(); // 5.09
+  releaseLuaPointerLock(); // 5.09
+  moveAndSteerKeys.clear(); // 5.09
 }
 
 /** L8 5.09: the live input the stock movement C API reaches (input/MovementCommands.ts), registered by wireControls. */

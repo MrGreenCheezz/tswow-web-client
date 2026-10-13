@@ -476,15 +476,15 @@ function frame(now: number): void {
     viewTracker.settle(game.camera, subject.guid, world, game.worldLoading);
     // 11.02-GF3: the vehicle seat's camera (VehicleCamera.ts): the vehicle distance, a seat's zoom.
     vehicleCamera.update(world.state, vehicleCatalog(), game.camera, now);
+    // 3.11: the camera's way back behind the character (cameraSmoothStyle) as Wow.exe 0x00602760 — on the input
+    // word's edges, before the frame's glide (CameraFollow.ts); not behind a facing that is not the player's to change
+    // (11.02-I, Wow.exe 0x005fa6b0). Was a pull every frame after the views, held back while a view glided.
+    advanceCameraAutoFollow(now, viewIsOut(world) ? undefined : subject);
     // DEC-B 3.11: a camera view's glide (CameraViews.ts); a new world is a new camera there.
     cameraViews.frame(game.camera, now, world, game.session?.username);
     // 5.14: the character's own camera (CameraSaved.ts): view 2's 5.55 yards and 10° until it has one.
     cameraSaved.frame(game.camera, now, world, game.session?.username, world.realmName, world.state.selfGuid,
       vehicleCamera.vehicleMode);
-    // 5.14: the camera's own way back behind the character (cameraSmoothStyle), before the boom.
-    // 11.02-I: not behind a facing that is not the player's to change (Wow.exe 0x005fa6b0).
-    // DEC-B 3.11: nor while a view glides there (`&& !cameraViews.gliding`).
-    if (!viewIsOut(world) && !cameraViews.gliding) advanceCameraAutoFollow(elapsed);
     // One ray a frame, and after the collision world has been stocked and the character has moved,
     // so it is asked about where the camera is going rather than about where it has been.
     advanceCameraView(position, world.mapId, elapsed, subject);

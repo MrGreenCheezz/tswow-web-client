@@ -136,6 +136,9 @@ import { installFrameXmlCoinPickupKeyboard } from "./FrameXmlCoinPickupKeyboard.
 import { frameXmlLfdCompletionAlert } from "./FrameXmlLfdCompletion.js"; // L5c 3.25
 import { createFrameXmlTooltipLift, watchFrameXmlTooltipLayer } from "./FrameXmlTooltipLayer.js"; // L5c 3.24
 import { createFrameXmlSettingsCVar } from "./FrameXmlSettingsCVar.js";
+import { withCameraCVars } from "./FrameXmlCameraCVars.js"; // 3.11
+import { cameraViews } from "../game/CameraViews.js"; // 3.11
+import { cameraSaved } from "../game/CameraSaved.js"; // 3.11
 import { toggleSocialPanel } from "../ui/SocialPanel.js";
 import { closeSocialPanel, openSocialTab, toggleSocialTab } from "../ui/SocialPanel.js";
 import { closeGuildWindow, guildWindowOpen } from "../ui/Guild.js";
@@ -3454,10 +3457,11 @@ export async function mountFrameXmlVertical(
         spellIsLowerRank: resolvers.spellIsLowerRank,
       };
     })(),
-    settingsCVar: createFrameXmlSettingsCVar({
+    // 3.11: the camera's own CVars answered by the camera (FrameXmlCameraCVars.ts), the rest by the settings.
+    settingsCVar: withCameraCVars(createFrameXmlSettingsCVar({
       getSettings: settings,
       setSetting,
-    }),
+    }), [cameraViews, cameraSaved]),
     // The language stock's menu chose, already resolved from its name by the seam; the world
     // falls back to the racial default when there is none (`WorldClient.sendChat`).
     sendChatMessage: (text, type, language, target) => game.world?.sendChat(type, text, target, language),

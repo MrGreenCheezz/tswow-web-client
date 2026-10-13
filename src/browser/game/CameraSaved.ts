@@ -65,6 +65,17 @@ export function parseCameraSaved(text: string | null | undefined): { distance: n
   return Number.isFinite(distance) && Number.isFinite(pitch) ? { distance, pitch } : undefined;
 }
 
+/** 3.11: which of the pair a CVar name is (names are case-blind). */
+function savedCVar(name: string): "distance" | "pitch" | undefined {
+  const lower = typeof name === "string" ? name.toLowerCase() : "";
+  return lower === "camerasaveddistance" ? "distance" : lower === "camerasavedpitch" ? "pitch" : undefined;
+}
+
+/** 3.11: the pair's default strings (0x5fd910: view 2's row of 0xad1ba8). */
+export function cameraSavedCVarDefault(which: "distance" | "pitch"): string {
+  return which === "distance" ? "5.55" : "10.0";
+}
+
 function pageStorage(): CameraSavedStorage | undefined {
   try {
     return typeof localStorage === "undefined" ? undefined : localStorage;
@@ -121,6 +132,48 @@ export class CameraSaved {
     if (now < this.#nextSave) return;
     this.#nextSave = now + CAMERA_SAVE_INTERVAL_MS;
     if (!vehicleMode) this.#save(rig);
+  }
+
+  /**
+   * 3.11: GetCVar of `cameraSavedDistance`/`cameraSavedPitch` — what storage holds for the character on screen ("%f",
+   * as 0x5ff320 writes it), else the default string (view 2's "5.55" and "10.0"); undefined for another name.
+   */
+  cvar(name: string): string | undefined {
+    const which = savedCVar(name);
+    if (which === undefined) return undefined;
+    const value = which === "distance" ? this.#storedDistance : this.#storedPitch;
+    return Number.isFinite(value) ? value.toFixed(6) : cameraSavedCVarDefault(which);
+  }
+
+  /** 3.11: GetCVarDefault of the pair; undefined for another name. */
+  cvarDefault(name: string): string | undefined {
+    const which = savedCVar(name);
+    return which === undefined ? undefined : cameraSavedCVarDefault(which);
+  }
+
+  /**
+   * 3.11: SetCVar of the pair (registered without a validator, 0x5fd910): kept for the character on screen, read by its
+   * next load (0x5ff3e0); the camera saves over it as the client does at its next config write. Undefined for another
+   * name; nothing is kept before the character is known.
+   */
+  setCVar(name: string, value: unknown): boolean | undefined {
+    const which = savedCVar(name);
+    if (which === undefined) return undefined;
+    const number = typeof value === "number" ? value : typeof value === "string" ? Number.parseFloat(value) : Number.NaN;
+    const key = this.#key;
+    if (key === undefined) return true;
+    const parsed = Number.isFinite(number) ? number : 0;
+    const distance = which === "distance" ? parsed
+      : Number.isFinite(this.#storedDistance) ? this.#storedDistance : CAMERA_SAVED_DISTANCE_DEFAULT;
+    const pitch = which === "pitch" ? parsed : Number.isFinite(this.#storedPitch) ? this.#storedPitch : CAMERA_SAVED_PITCH_DEFAULT;
+    try {
+      this.#storage()?.setItem(key, `${distance.toFixed(3)},${pitch.toFixed(3)}`);
+    } catch {
+      return true;
+    }
+    this.#storedDistance = distance;
+    this.#storedPitch = pitch;
+    return true;
   }
 
   /** 0x5ff3e0: the saved pair, or view 2's, into the camera without a glide. */

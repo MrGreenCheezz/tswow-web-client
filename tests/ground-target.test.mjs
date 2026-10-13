@@ -260,9 +260,13 @@ test("ground spells arm the reticle, clicks resolve it, Esc and right-click rele
     "an item reticle sends the landing point instead of a bare use");
   assert.match(controls, /Не удалось выбрать точку/,
     "a click that resolves nowhere says so instead of dying silently");
-  assert.match(controls, /confirmGroundTargetAt\(event, world, pendingSpell\)/,
+  // 5.09: the click is Controls.worldClick(point, left, right), which the Lua mouse commands' release runs too; was
+  // `confirmGroundTargetAt(event, …)` and `releasedRight && clicked(2)) {` inline in releaseButtons.
+  assert.match(controls, /worldClick\(event, releasedLeft && clicked\(1\), releasedRight && clicked\(2\)\);/,
+    "the page's release clicks only an unmoved press");
+  assert.match(controls, /confirmGroundTargetAt\(point, world, pendingSpell\)/,
     "a clean left click resolves the landing point");
-  assert.match(controls, /releasedRight && clicked\(2\)\) \{\s*\n?\s*cancelGroundTarget\(\)/,
+  assert.match(controls, /if \(right\) \{\s*\n?\s*cancelGroundTarget\(\)/,
     "a right click cancels targeting instead of interacting");
   const book = await readFile(new URL("../src/browser/ui/Spellbook.ts", import.meta.url), "utf8");
   assert.match(book, /isGroundTargetSpell\(metadata\)/,

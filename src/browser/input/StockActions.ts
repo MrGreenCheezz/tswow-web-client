@@ -31,6 +31,9 @@ export interface StockActionRow {
 
 /** Every stock row, in the order the native window lists them within their groups. */
 export const STOCK_ACTIONS = [
+  // 5.09: MoveAndSteerStart/Stop (runOnUp, Bindings.xml's first row) — both mouse commands from a key, held by
+  // Controls.ts while it is down. DefaultBindings.wtf ships it on BUTTON3, a mouse button the table cannot hold.
+  { action: "moveAndSteer", command: "MOVEANDSTEER", group: "Движение", label: "Передвижение и управление" },
   { action: "toggleSheath", command: "TOGGLESHEATH", group: "Движение", label: "Достать / убрать оружие" },
   // 5.09: held, not pressed — Movement.ts integrates them in water and in flight (HELD_ACTIONS).
   { action: "pitchUp", command: "PITCHUP", group: "Движение", label: "Наклон вверх" },
