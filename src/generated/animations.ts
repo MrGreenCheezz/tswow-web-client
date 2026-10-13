@@ -48,6 +48,14 @@ export const ANIMATION_BODY_FLAGS: Readonly<Record<number, number>> =
   (implementation as { readonly ANIMATION_BODY_FLAGS?: Readonly<Record<number, number>> })
     .ANIMATION_BODY_FLAGS ?? {};
 /**
+ * 12.10 6.03/6.07: AnimationData.Flags & 0x30 by id, non-zero rows only — what Wow.exe 0x00826350 reads on
+ * a row it falls back from (0x10: the fallback plays backwards; 0x20: it holds). Widened like the body
+ * flags: an implementation generated before the column was published plays every fallback forwards.
+ */
+export const ANIMATION_PLAYBACK_FLAGS: Readonly<Record<number, number>> =
+  (implementation as { readonly ANIMATION_PLAYBACK_FLAGS?: Readonly<Record<number, number>> })
+    .ANIMATION_PLAYBACK_FLAGS ?? {};
+/**
  * 5.32: Emotes.dbc `EmoteFlags` by row and CreatureMovementInfo.dbc `SmoothFacingChaseRate` by row (world/
  * UnitFacing.ts). Widened like the body flags: the neutral stub and older implementations do not carry them, and
  * an empty table means «no row known» — an emote state forbids no turn, a creature springs at the default rate.

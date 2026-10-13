@@ -66,13 +66,6 @@ export function syncFlagPoses(
   previous: number, next: number, terminal: boolean, now: number,
   queue: UnitActionQueue<UnitActionPayload, unknown> | undefined,
   submit: (request: UnitActionRequest<UnitActionPayload>) => void,
-  /**
-   * 05.10 review C: the animations the unit's model claims (`SkinnedTemplate.animations`), when
-   * known. No playable rig carries LootUp, and its AnimationData fallback is Loot — the way *down*
-   * (HumanMale ends 0.56 yd lower than it starts) — so on those rigs getting up is the blend back to
-   * the stance, not a second dip.
-   */
-  claims?: { has(animation: number): boolean },
 ): void {
   const raised = next & ~previous;
   const fallen = previous & ~next;
@@ -84,9 +77,12 @@ export function syncFlagPoses(
   const lootHold = ANIMATION_IDS["LootHold"];
   if ((raised & UNIT_FLAG_LOOTING) !== 0) submit(hold(FLAG_POSE_LOOT, "emote", now, loot, lootHold));
   const lootUp = ANIMATION_IDS["LootUp"];
-  if ((fallen & UNIT_FLAG_LOOTING) !== 0 && !terminal && lootUp !== undefined && (claims?.has(lootUp) ?? true)) {
+  if ((fallen & UNIT_FLAG_LOOTING) !== 0 && !terminal && lootUp !== undefined) {
     // The emote layer and not `state`: getting up is not held by the server, so a looter who walks
     // off as the window closes is not dragged along in it (a whole-body one-shot gives way).
+    // 12.10 6.07: on every rig, as Wow.exe asks for 0xbd (0x00724280: the flag gone and LootHold on show). No
+    // playable rig carries LootUp; its fallback is Loot, the way down, and LootUp's Flags 0x10 has 0x00826350
+    // play that backwards — getting up. (05.10 review C left it out on those rigs: forwards it was a second dip.)
     submit({ layer: "emote", held: false, until: now + SIDECAR_WAIT, payload: payload(now, lootUp) });
   }
 }

@@ -60,6 +60,7 @@ export async function loadAnimationCatalog(directory = dbcDirectory()) {
   const nameById = new Map();
   const fallback = new Map();
   const bodyFlags = new Map();
+  const playbackFlags = new Map(); // 12.10 6.03/6.07
   for (const row of dbc.rows()) {
     const id = dbc.id(row);
     const name = dbc.string(row, "Name");
@@ -70,8 +71,12 @@ export async function loadAnimationCatalog(directory = dbcDirectory()) {
     if (next !== 0 && next !== id) fallback.set(id, next);
     const flags = dbc.int(row, "Bodyflags") >>> 0;
     if (flags !== 0) bodyFlags.set(id, flags);
+    // 12.10 6.03/6.07: `Flags` 0x10 and 0x20, the two bits Wow.exe 0x00826350 reads on a row it falls back
+    // from — the fallback plays backwards, or holds (src/browser/AnimationPlayback.ts).
+    const playback = (dbc.int(row, "Flags") >>> 0) & 0x30;
+    if (playback !== 0) playbackFlags.set(id, playback);
   }
-  return { idByName, nameById, fallback, bodyFlags };
+  return { idByName, nameById, fallback, bodyFlags, playbackFlags };
 }
 
 /** The ids of {@link BASE_ANIMATION_NAMES}, dropping any name this build's table does not carry. */

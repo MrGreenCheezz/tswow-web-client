@@ -15,6 +15,7 @@ import {
 import { markWvaClipSetConsumed, wvaClipSetSpan } from "./WvaAnimationDecode.js";
 import { seatPoseFamily, seatPoseWanted, vehicleSeatTransition, type VehiclePassengerSeatPose } from "./VehicleSeatPose.js"; // 11.02-H
 import { standingAnimations } from "./UnitStandingPose.js"; // 05.10-A7a-C 6.03/6.04
+import { PLAYBACK_FORWARD, wantedPlayback, type PlaybackMode } from "./AnimationPlayback.js"; // 12.10 6.03/6.07
 import { ANIMATION_FALLBACK, ANIMATION_IDS } from "../generated/animations.js";
 import { MOVEMENT_FLAGS } from "../world/MovementProtocol.js";
 import {
@@ -1763,6 +1764,42 @@ export interface UnitPose {
   emoteState?: number;
   /** 05.10-A7a-C 6.04: the combat stance ladder while `UNIT_FLAG_IN_COMBAT` is up. */
   ready?: readonly number[];
+  /**
+   * 12.10 6.07: whether the fall began with a jump (`WorldObjectState.fallJumped`, Wow.exe's mover +0xb8); undefined
+   * when not known, which is read as a jump (as every fall was before).
+   */
+  fallJumped?: boolean;
+  /**
+   * 12.10 6.07: the jump or fall clip the unit's base is already in ({@link isJumpAnimation}), null when it is in none —
+   * Wow.exe keeps such a clip through a fall and otherwise plays Fall (0x00724200 → 0x0071dc20) — or undefined when
+   * the caller does not know, which keeps the pre-12.10 ladders (Jump for a fall, Fall for a far one).
+   */
+  airborneBase?: number | null;
+}
+
+/**
+ * 12.10 6.07: the rows Wow.exe 0x0071dc20 calls a jump: BehaviorID 37–40 — JumpStart, Jump, JumpEnd, Fall — or 0x1d3,
+ * DeathLoop's; a Fly twin carries its ground row's behaviour. (JumpLandRun, behaviour 0xbb, is not one.)
+ */
+const JUMP_ANIMATIONS: ReadonlySet<number> = new Set<number>(
+  ["JumpStart", "Jump", "JumpEnd", "Fall", "DeathLoop", "FlyJumpStart", "FlyJump", "FlyJumpEnd", "FlyFall", "FlyDeathLoop"]
+    .map((name) => ANIMATION_IDS[name])
+    .filter((id): id is number => typeof id === "number"),
+);
+
+export function isJumpAnimation(animation: number | undefined): boolean {
+  return animation !== undefined && JUMP_ANIMATIONS.has(animation);
+}
+
+/**
+ * 12.10 6.07: whether a fall is one Wow.exe animates as a fall (0x00723350): FALLING with FALLING_FAR, or with a jump
+ * velocity. A walk-off not yet far (FALLING alone, no jump) is not: its base stays the ground's — the gait or the
+ * stand — until FALLING_FAR comes 500 ms in (`Physics.fallsFar`).
+ */
+export function isReallyFalling(pose: Pick<UnitPose, "movementFlags" | "fallJumped">): boolean {
+  const flags = pose.movementFlags;
+  if ((flags & MOVEMENT_FLAGS.fallingFar) !== 0) return true;
+  return (flags & MOVEMENT_FLAGS.falling) !== 0 && pose.fallJumped !== false;
 }
 
 /** Whether a pose is terminal and must take precedence over transient unit actions. */
@@ -2056,9 +2093,15 @@ export function poseAnimation(pose: UnitPose): { wanted: number[]; loop: boolean
   // Airborne. The arc's own pose loops until something lands; JumpStart and JumpEnd are played by
   // the transition, not by the state, because they are over in under a second either way.
   // 05.10-A7a-C 6.07: a far fall is Fall; the arc of a jump stays Jump.
-  if (has(MOVEMENT_FLAGS.fallingFar)) return { wanted: [Fall, Jump], loop: true };
-  if (has(MOVEMENT_FLAGS.falling)) {
-    return { wanted: [Jump, Fall], loop: true };
+  // 12.10 6.07: as Wow.exe 0x00724200 picks it — a unit really falling (0x00723350: FALLING_FAR, or FALLING with a jump
+  // velocity) keeps the jump clip it is in (0x0071dc20: JumpStart hands over to its loop) and otherwise falls (0x28);
+  // a walk-off not yet far goes on to the ground's rungs below, the gait or the stand, as the chain does.
+  if (isReallyFalling(pose)) {
+    if (pose.airborneBase === undefined) {
+      return has(MOVEMENT_FLAGS.fallingFar) ? { wanted: [Fall, Jump], loop: true } : { wanted: [Jump, Fall], loop: true };
+    }
+    return pose.airborneBase === null || pose.airborneBase === Fall
+      ? { wanted: [Fall, Jump], loop: true } : { wanted: [Jump, Fall], loop: true };
   }
 
   if (!moving) {
@@ -2131,7 +2174,8 @@ export function poseAnimation(pose: UnitPose): { wanted: number[]; loop: boolean
 export function isBaseIdle(pose: UnitPose): boolean {
   if (pose.dead || seatPoseWanted(pose.vehicleSeat) !== undefined || pose.mounted) return false;
   const flags = pose.movementFlags;
-  if ((flags & (MOVEMENT_FLAGS.swimming | MOVEMENT_FLAGS.falling | MOVEMENT_FLAGS.fallingFar)) !== 0) return false;
+  // 12.10 6.07: a walk-off not yet far stands on the ground's rungs in `poseAnimation`, so here too.
+  if ((flags & MOVEMENT_FLAGS.swimming) !== 0 || isReallyFalling(pose)) return false;
   if (isUnitFlying(flags, pose.flight === true) || hoversOnFlightTier(pose)) return false;
   if (pose.spline || (flags & (MOVEMENT_FLAGS.forward | MOVEMENT_FLAGS.backward
     | MOVEMENT_FLAGS.strafeLeft | MOVEMENT_FLAGS.strafeRight)) !== 0) return false;
@@ -2846,6 +2890,8 @@ export function mountPose(rider: UnitPose, available?: ReadonlySet<number> | Map
     stealth: false,
     standState: UNIT_STAND_STATE_STAND,
   };
+  // 12.10 6.07: the clip the *rider* is in says nothing of the animal's; the mount keeps the plain airborne ladders.
+  delete pose.airborneBase;
   if (!isAirborne(pose) || !available) return pose;
   if (resolveAnimation(available, poseAnimation(pose).wanted) !== undefined) return pose;
   return { ...pose, movementFlags: pose.movementFlags & ~(MOVEMENT_FLAGS.falling | MOVEMENT_FLAGS.fallingFar) };
@@ -2973,7 +3019,12 @@ export function poseTransition(previous: UnitPose | undefined, next: UnitPose): 
   // there the mount does the moving, so the airborne test below would have a rider leap off their
   // horse every time it went over a rise.
   if (previous.mounted === true || next.mounted === true) return undefined;
-  if (!airborne(previous) && airborne(next)) return JumpStart;
+  // 12.10 6.07: the jump's own start only for a fall with a jump in it — a walk-off has none, and keeps the ground's
+  // pose until FALLING_FAR, then falls (`poseAnimation`); the landing only after a fall Wow.exe animated as one.
+  if (!isReallyFalling(previous) && isReallyFalling(next)) {
+    return next.fallJumped === false || airborne(previous) ? undefined : JumpStart;
+  }
+  if (airborne(previous) && !airborne(next) && !isReallyFalling(previous)) return undefined;
   // 05.10-A7a-C 6.07: landing at a run is JumpLandRun (AnimationData falls back to Run), standing JumpEnd.
   if (airborne(previous) && !airborne(next)) {
     return (next.movementFlags & MOVEMENT_FLAGS.forward) !== 0 && ANIMATION_IDS["JumpLandRun"] !== undefined
@@ -3254,8 +3305,13 @@ export function spellVisualAnimationCandidates(wanted: Iterable<number>): number
   return candidates;
 }
 
-/** The animation to play, out of what the model actually carries. */
-export function chooseAnimation(clips: Map<number, THREE.AnimationClip>, pose: UnitPose): { animation: number; loop: boolean } | undefined {
+/**
+ * The animation to play, out of what the model actually carries, and (12.10 6.03/6.07) how: the mode
+ * Wow.exe 0x00826350 plays a fallback in (`AnimationPlayback.ts`) — Walkbackwards resolved to Walk plays
+ * it backwards, LootHold resolved to Loot or KneelLoop to KneelStart holds its last frame.
+ */
+export function chooseAnimation(clips: Map<number, THREE.AnimationClip>, pose: UnitPose):
+  { animation: number; loop: boolean; mode?: PlaybackMode } | undefined { // 12.10: `mode` only when not forwards
   const { wanted, loop } = poseAnimation(pose);
   // A seat request stays in the seat family and a crouch request in the crouch family until its
   // own rows are exhausted; everything else walks the DBC chain as it always has. Drawing and
@@ -3267,9 +3323,14 @@ export function chooseAnimation(clips: Map<number, THREE.AnimationClip>, pose: U
       : resolveAnimation(clips, wanted);
   // Dying is the one pose that is reached by falling back onto an action. A model with a corpse
   // pose holds it; one without has only the death itself, and looping that would have the body
-  // die over and over, so it is played once and clamped on its last frame.
+  // die over and over, so it is played once and clamped on its last frame. 12.10: Wow.exe holds Dead's
+  // fallback on that frame at once (Dead's Flags 0x20) and plays the dying from the death itself, which
+  // this base does not model apart — so the death is still played through here, not jumped to its end.
   if (animation === Death) return { animation, loop: false };
-  if (animation !== undefined) return { animation, loop };
+  if (animation !== undefined) {
+    const mode = wantedPlayback(wanted, animation); // 12.10 6.03/6.07
+    return mode === PLAYBACK_FORWARD ? { animation, loop } : { animation, loop, mode };
+  }
   // Rather than freeze, stand; and rather than freeze without a stand clip, play anything at all.
   const fallback = clips.has(Stand) ? Stand : clips.keys().next().value;
   return fallback === undefined ? undefined : { animation: fallback, loop: true };

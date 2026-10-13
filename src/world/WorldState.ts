@@ -144,6 +144,13 @@ export interface WorldObjectState {
   /** The pitch of the last movement packet: swimming, flying, or explicitly allowed to pitch. */
   pitch?: number | undefined;
   /**
+   * 12.10 6.07: whether the fall the unit is in began with a jump (a non-zero jump velocity, Wow.exe's mover +0xb8):
+   * from the jump block of a remote unit's packets, from the physics for the character this client moves
+   * (`input/Movement.ts`); undefined when not falling or not known. Wow.exe's base animation reads it (0x00723350):
+   * a fall without one plays the ground's pose until FALLING_FAR.
+   */
+  fallJumped?: boolean | undefined;
+  /**
    * A game object's local rotation from the create block's `UPDATEFLAG_ROTATION` (5.27), unpacked
    * from `GameObject::UpdatePackedRotation`'s 64 bits. Its yaw normally agrees with
    * `position.orientation`; anything beyond that is what `GameObjectRotation.gameObjectTilt` returns.
@@ -597,6 +604,10 @@ export class WorldState {
     const previous = object.position;
     object.movementFlags = movement.flags;
     object.pitch = movement.pitch;
+    // 12.10 6.07: a packet's jump block says whether the fall began with a jump; one without it (the character's
+    // own, written as sent) leaves what the physics said. Not falling, there is no fall to describe.
+    if ((movement.flags & MOVEMENT_FLAGS.falling) === 0) object.fallJumped = undefined;
+    else if (movement.jump !== undefined) object.fallJumped = movement.jump.velocity !== 0;
     object.motion = undefined;
     // Where it is riding, if it is. The position in the same packet is already composed, so this
     // is only for the frames afterwards, when the transport has moved and nothing was sent.

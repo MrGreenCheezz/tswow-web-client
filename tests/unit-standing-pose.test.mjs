@@ -15,9 +15,13 @@ const {
   isBaseIdle, poseAnimation, poseTransition,
 } = await import("../dist/code/browser/AnimatedModel.js");
 const {
-  READY_UNARMED, applyStandingPose, emoteStandState, emoteStateAnimation, emoteStateOneShot, readyStance,
+  EMOTE_FLAG_STOPS_FOR_INTERACTION, READY_UNARMED, applyStandingPose, emoteStateAnimation, readyStance,
   standingAnimations,
 } = await import("../dist/code/browser/UnitStandingPose.js");
+const { EMOTE_FLAGS } = await import("../dist/code/generated/animations.js"); // 12.10 6.03
+const {
+  PLAYBACK_BACKWARD, PLAYBACK_FORWARD, PLAYBACK_HOLD_LAST, wantedPlayback,
+} = await import("../dist/code/browser/AnimationPlayback.js"); // 12.10 6.07
 const {
   FLAG_POSE_LOOT, FLAG_POSE_STUN, UNIT_FLAG_LOOTING, UNIT_FLAG_STUNNED, flagPoseBits, poseTransitionClip, syncFlagPoses,
 } = await import("../dist/code/browser/UnitFlagPoses.js");
@@ -59,18 +63,25 @@ test("the combat stance follows ItemSubClass.WeaponReadySeq of the drawn weapon"
   assert.equal(readyStance([weapon(15, 13, 7)], 1), readyStance([weapon(15, 13, 0)], 1));
 });
 
-test("emote states: held rows are poses, SpecProc-1 rows are stand states, one-shots play once", withData, () => {
+// 12.10 6.03: Wow.exe 0x007171c0 plays the Emotes.dbc row's AnimID (+8) whatever its EmoteSpecProc, and is the only
+// reader of the field that makes a pose (0x0073f4b0 only re-picks; 0x00746ad0 plays SpecProc 2's sound).
+test("0x007171c0: every emote-state row is a held pose — one-shot rows too, AnimID-0 rows Stand", withData, () => {
   assert.equal(emoteStateAnimation(173), 136);
   assert.equal(emoteStateAnimation(10), A.EmoteDance);
-  assert.equal(emoteStateAnimation(1), undefined, "a one-shot is not a stance");
-  assert.equal(emoteStateAnimation(65), undefined, "STATE_DEAD has no AnimID");
-  assert.equal(emoteStateOneShot(1), 60);
-  assert.equal(emoteStateOneShot(173), undefined);
-  assert.equal(emoteStandState(65), 7);
-  assert.equal(emoteStandState(68), 8);
-  assert.equal(emoteStandState(12), 3);
-  assert.equal(emoteStandState(13), 1);
-  assert.equal(emoteStandState(26), undefined, "STATE_STAND changes nothing");
+  assert.equal(emoteStateAnimation(1), 60, "ONESHOT_TALK is held and looped: the NPC keeps talking");
+  assert.equal(emoteStateAnimation(36), A.Attack1H, "ONESHOT_ATTACK1H: the soldier at the training dummy");
+  assert.equal(emoteStateAnimation(428), ANIMATION_IDS.LootHold, "STATE_LOOT");
+  for (const row of [12, 13, 65, 68, 313]) {
+    assert.equal(emoteStateAnimation(row), A.Stand, `row ${row}: AnimID 0 is Stand, not the stand state its param names`);
+  }
+  assert.equal(emoteStateAnimation(999_999), undefined, "a value the table does not know is no stance");
+  // The unit the player talks to sets aside a row with EmoteFlags 0x2000 (and turns to face the player).
+  assert.equal(EMOTE_FLAG_STOPS_FOR_INTERACTION, 0x2000);
+  assert.ok((EMOTE_FLAGS[233] & 0x2000) !== 0, "STATE_WORK_MINING carries 0x2000");
+  assert.equal(emoteStateAnimation(233, true), undefined, "the miner stops for the player");
+  assert.equal(emoteStateAnimation(233, false), 136);
+  assert.equal((EMOTE_FLAGS[1] & 0x2000), 0);
+  assert.equal(emoteStateAnimation(1, true), 60, "a row without 0x2000 goes on talking");
 });
 
 test("the standing ladder: crouch, then emote stance, then combat stance, then Stand", withData, () => {
@@ -86,6 +97,8 @@ test("the standing ladder: crouch, then emote stance, then combat stance, then S
   assert.equal(poseAnimation(standing({ ready, movementFlags: MOVEMENT_FLAGS.forward })).wanted[0], A.Run);
   assert.equal(poseAnimation(standing({ ready, emoteState: 136 })).wanted[0], 136, "a scripted stance outlasts the flag");
   assert.equal(poseAnimation(standing({ ready, stealth: true })).wanted[0], ANIMATION_IDS.StealthStand);
+  // 12.10 6.03: the emote state before the crouch, as 0x007171c0 before 0x0071e340's StealthStand.
+  assert.equal(poseAnimation(standing({ emoteState: 136, stealth: true })).wanted[0], 136);
   assert.deepEqual(poseAnimation(standing()).wanted, [A.Stand]);
   assert.equal(standingAnimations(standing()), standingAnimations(standing()), "Stand is not rebuilt per frame");
   assert.equal(standingAnimations(work), standingAnimations(standing({ emoteState: 136 })));
@@ -118,30 +131,35 @@ test("applyStandingPose reads field 83, the combat flag and the sheath byte", wi
   const BYTES2 = UPDATE_FIELDS.UNIT_FIELD_BYTES_2.offset;
   assert.equal(EMOTE, 83);
   const worker = standing();
-  assert.equal(applyStandingPose(worker, fields([[EMOTE, 173]]), undefined, undefined), undefined);
+  applyStandingPose(worker, fields([[EMOTE, 173]]), undefined);
   assert.equal(worker.emoteState, 136);
   assert.equal(worker.ready, undefined, "out of combat there is no stance");
+  // 12.10 6.03: STATE_DEAD with the stand byte at 0 stands (0x007171c0: AnimID 0); the byte lays a corpse down.
   const corpse = standing();
-  applyStandingPose(corpse, fields([[EMOTE, 65]]), undefined, undefined);
-  assert.equal(corpse.standState, 7, "STATE_DEAD lies down");
+  applyStandingPose(corpse, fields([[EMOTE, 65]]), undefined);
+  assert.equal(corpse.standState, 0, "the emote state does not write the stand state");
+  assert.equal(corpse.emoteState, A.Stand);
   const sitter = standing({ standState: 1 });
-  applyStandingPose(sitter, fields([[EMOTE, 65]]), undefined, undefined);
-  assert.equal(sitter.standState, 1, "the stand-state byte outranks the emote");
+  applyStandingPose(sitter, fields([[EMOTE, 65]]), undefined);
+  assert.equal(sitter.standState, 1, "the stand-state byte stays");
+  assert.equal(poseAnimation(sitter).wanted[0], A.SitGround, "and outranks the emote (0x0071e1f0 before 0x007171c0)");
+  const miner = standing();
+  applyStandingPose(miner, fields([[EMOTE, 233]]), undefined, true);
+  assert.equal(miner.emoteState, undefined, "the miner the player talks to stands");
   const guard = standing();
-  applyStandingPose(guard, fields([[FLAGS, IN_COMBAT], [BYTES2, 0x0101]]), [weapon(15, 17, 8)], undefined);
+  applyStandingPose(guard, fields([[FLAGS, IN_COMBAT], [BYTES2, 0x0101]]), [weapon(15, 17, 8)]);
   assert.equal(guard.ready[0], A.Ready2H);
   const hunter = standing();
-  applyStandingPose(hunter, fields([[FLAGS, IN_COMBAT], [BYTES2, 2]]), [weapon(15, 13, 7), weapon(17, 15, 2)], undefined);
+  applyStandingPose(hunter, fields([[FLAGS, IN_COMBAT], [BYTES2, 2]]), [weapon(15, 13, 7), weapon(17, 15, 2)]);
   assert.equal(hunter.ready[0], A.ReadyBow);
   const caster = standing();
-  applyStandingPose(caster, fields([[FLAGS, IN_COMBAT], [BYTES2, 0]]), [weapon(15, 17, 10)], undefined);
+  applyStandingPose(caster, fields([[FLAGS, IN_COMBAT], [BYTES2, 0]]), [weapon(15, 17, 10)]);
   assert.equal(caster.ready, undefined, "weapons away: no stance");
-  // A one-shot value plays when it changes, not on first sight.
-  const first = standing();
-  assert.equal(applyStandingPose(first, fields([[EMOTE, 1]]), undefined, undefined), undefined);
-  assert.equal(applyStandingPose(standing(), fields([[EMOTE, 1]]), undefined, first), undefined, "unchanged");
-  assert.equal(applyStandingPose(standing(), fields([[EMOTE, 1]]), undefined, standing()), 60, "changed: once");
-  assert.equal(applyStandingPose(standing(), fields([[EMOTE, 173]]), undefined, standing()), undefined, "a stance is not a one-shot");
+  // 12.10 6.03: a one-shot value is a held base like any other, on first sight as on a change.
+  const talker = standing();
+  assert.equal(applyStandingPose(talker, fields([[EMOTE, 1]]), undefined), undefined, "nothing to play once");
+  assert.equal(talker.emoteState, 60);
+  assert.deepEqual(poseAnimation(talker), { wanted: [60, A.Stand], loop: true });
 });
 
 test("kneel, sleep and landing have their own one-shots; a far fall is Fall", withData, () => {
@@ -207,17 +225,20 @@ test("STUNNED and LOOTING are held state entries that leave with their flag", wi
 // probe-lootshape.mjs): every playable rig carries Loot (500 ms) and JumpLandRun, none carries
 // LootHold or LootUp — both fall back to Loot in AnimationData — and HumanMale's Loot is a one-way
 // motion that ends 0.56 yd lower than it starts.
-test("review C: a rig without LootUp does not dip again on closing, and a held Loot stays down", withData, () => {
+// 12.10 6.07: Wow.exe asks for LootUp (0xbd) whatever the rig (0x00724280), and 0x00826350 plays its fallback Loot
+// backwards — LootUp's Flags carry 0x10 — so the way down becomes the way up; LootHold (Flags 0x20) holds Loot's
+// last frame. (05.10 review C left LootUp out on a rig without it, because forwards it was a second dip.)
+test("12.10: LootUp on every rig, as Loot backwards; LootHold as Loot held down", withData, () => {
   const { heldClipPlaysOnce } = UnitArbiter;
   assert.equal(heldClipPlaysOnce(A.Loot), true, "LootHold resolved to Loot holds the last frame instead of bobbing");
   assert.equal(heldClipPlaysOnce(ANIMATION_IDS.LootHold), false, "a rig with its own LootHold (DruidBear) loops it");
   const queue = new UnitActionQueue();
   const submit = (request) => queue.submit(request, 0);
-  const character = new Set([A.Stand, A.Run, A.Loot]);
-  syncFlagPoses(UNIT_FLAG_LOOTING, 0, false, 2_000, queue, submit, character);
-  assert.equal(queue.size, 0, "no LootUp on a rig that lacks it: Loot would play the way down once more");
-  syncFlagPoses(UNIT_FLAG_LOOTING, 0, false, 2_000, queue, submit, new Set([A.Loot, ANIMATION_IDS.LootUp]));
-  assert.deepEqual(queue.top()?.payload.wanted, [ANIMATION_IDS.LootUp], "a rig that has it gets up with it");
+  syncFlagPoses(UNIT_FLAG_LOOTING, 0, false, 2_000, queue, submit);
+  assert.deepEqual(queue.top()?.payload.wanted, [ANIMATION_IDS.LootUp], "getting up is asked for on every rig");
+  assert.equal(wantedPlayback([ANIMATION_IDS.LootUp], A.Loot), PLAYBACK_BACKWARD, "a rig without LootUp plays Loot backwards");
+  assert.equal(wantedPlayback([ANIMATION_IDS.LootUp], ANIMATION_IDS.LootUp), PLAYBACK_FORWARD, "one with it plays its own");
+  assert.equal(wantedPlayback([ANIMATION_IDS.LootHold], A.Loot), PLAYBACK_HOLD_LAST, "and LootHold is Loot's last frame");
 });
 
 test("review C: a landing that resolves to the gait itself plays no one-shot", withData, () => {

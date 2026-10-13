@@ -1,6 +1,6 @@
 // What a unit does standing still when no packet pose owns it: 6.03 and 6.04 (line A7a, slice C).
 //
-// The original client keeps three things here that the renderer used to flatten to `Stand`:
+// The original client keeps two things here that the renderer used to flatten to `Stand`:
 // * `UNIT_NPC_EMOTESTATE` (field 83, `Unit::SetEmoteState`, `Unit.h:970-971`): a stance the unit
 //   holds — the blacksmith hammering, the miner, the dancer. It replaces Stand; the unit still walks
 //   and runs, and the stance is back the moment it stops. That is why it is a *base*, not a queue
@@ -8,18 +8,24 @@
 //   again, so there would be nothing to bring it back.
 // * `UNIT_FLAG_IN_COMBAT` (0x00080000, `UnitDefines.h:154`): the combat stance between swings,
 //   Ready1H/2H/2HL/Bow/Rifle/Thrown/Unarmed by what the unit holds.
-// * The stance rows of `Emotes.dbc` with `EmoteSpecProc` 1 and no AnimID are not poses at all but
-//   stand states (`EmoteSpecProcParam`): STATE_SLEEP 12 → 3, STATE_SIT 13 → 1, STATE_DEAD 65 → 7,
-//   STATE_KNEEL 68 → 8 — the creature_addon «мёртвый» corpses and kneeling NPCs.
+//
+// 12.10 6.03, read in Wow.exe 3.3.5a 12340: the field's callback (0x0073f4b0, registered for unit offset 0x134 by
+// 0x00741d00) only re-picks the unit's animation (0x0073ac30(0, −1)), and the one reader that turns the value into
+// a pose is 0x007171c0, a rung of the base-animation chain 0x00724500 — after movement, the stand state (0x0071e1f0)
+// and the attack stance (0x0071e0d0), before the swim idle, the crouch and Stand (0x0071e340). It plays the
+// Emotes.dbc row's AnimID (+8) **whatever its EmoteSpecProc**: a SpecProc-0 row — ONESHOT_TALK 1 (85 creature_addon
+// rows of the TDB dump), ONESHOT_READYBOW 48 (64), ONESHOT_SPELLPRECAST 50 (41), ONESHOT_ATTACK1H 36 (15, the
+// soldiers at their training dummies) — is held and looped like any stance (05.10 played it once, on a change),
+// and a row with AnimID 0 — STATE_SLEEP 12, STATE_SIT 13, STATE_DEAD 65, STATE_KNEEL 68, STATE_AT_EASE 313 — is
+// Stand, not the stand state its EmoteSpecProcParam names (05.10 mapped 12/13/65/68 to stand states; nothing in
+// Wow.exe reads SpecProc for the field but the sound of 0x00746ad0, SpecProc 2 only). The one exception: the unit
+// the player's interaction window is open on (0x00bd07a8) sets aside a row with EmoteFlags 0x2000 — the miner
+// stops and looks at the player, whom 0x00735f60 turns it to face (world/UnitFacing.ts).
 //
 // Everything here is pure and allocation-free per frame: the ladders are built once per value and
 // shared, so a city of 500 units pays a field read and a comparison each.
 
-import { ANIMATION_IDS, EMOTE_ANIMATIONS } from "../generated/animations.js";
-import {
-  UNIT_STAND_STATE_DEAD, UNIT_STAND_STATE_KNEEL, UNIT_STAND_STATE_SIT, UNIT_STAND_STATE_SLEEP,
-  UNIT_STAND_STATE_STAND,
-} from "../world/CharacterProgressProtocol.js";
+import { ANIMATION_IDS, EMOTE_ANIMATIONS, EMOTE_FLAGS } from "../generated/animations.js";
 import { UPDATE_FIELDS } from "../generated/updateFields.js";
 import { weaponAnimTable } from "./WeaponAnimations.js"; // 05.10-A7a-D 6.06: /dbc/weapon-anims
 
@@ -127,26 +133,22 @@ export function readyStance(attached: readonly HeldItem[] | undefined, sheath: n
   return READY_UNARMED;
 }
 
-/** The stand state a `EmoteSpecProc` 1 row means (`EmoteSpecProcParam`), for the rows with no pose. */
-const EMOTE_STAND_STATES: ReadonlyMap<number, number> = new Map([
-  [12, UNIT_STAND_STATE_SLEEP], [13, UNIT_STAND_STATE_SIT], [65, UNIT_STAND_STATE_DEAD], [68, UNIT_STAND_STATE_KNEEL],
-]);
+/** 12.10 6.03: Emotes.dbc EmoteFlags 0x2000 — the row 0x007171c0 sets aside on the unit the player is talking to. */
+export const EMOTE_FLAG_STOPS_FOR_INTERACTION = 0x2000;
 
-/** The stand state a held emote state puts the unit in, if it is one of those rows. */
-export function emoteStandState(emote: number): number | undefined {
-  return EMOTE_STAND_STATES.get(emote);
-}
-
-/** The looping pose an emote state holds (`EmoteSpecProc` ≠ 0 with an AnimID), or undefined. */
-export function emoteStateAnimation(emote: number): number | undefined {
+/**
+ * 12.10 6.03: the pose an emote state holds (0x007171c0): the Emotes.dbc row's AnimID whatever its
+ * EmoteSpecProc, Stand for a row whose AnimID is 0, undefined for no row (a value the table does not
+ * know is no stance at all). `interacting`: the unit is the one the player's interaction window is open
+ * on, which sets aside a row with EmoteFlags 0x2000.
+ */
+export function emoteStateAnimation(emote: number, interacting = false): number | undefined {
+  const flags = EMOTE_FLAGS[emote];
+  if (interacting && flags !== undefined && (flags & EMOTE_FLAG_STOPS_FOR_INTERACTION) !== 0) return undefined;
   const row = EMOTE_ANIMATIONS[emote];
-  return row !== undefined && row.state ? row.animation : undefined;
-}
-
-/** A one-shot row (`EmoteSpecProc` 0) written into the field: played once when the value changes. */
-export function emoteStateOneShot(emote: number): number | undefined {
-  const row = EMOTE_ANIMATIONS[emote];
-  return row !== undefined && !row.state ? row.animation : undefined;
+  if (row !== undefined) return row.animation;
+  // The generated table drops the AnimID-0 rows; EMOTE_FLAGS keeps every row, so it says the row is there.
+  return flags !== undefined ? ANIMATION_IDS.Stand : undefined;
 }
 
 const stanceLadders = new Map<number, readonly number[]>();
@@ -166,15 +168,16 @@ export interface StandingPose {
 }
 
 /**
- * The ladder for a unit standing still on its feet: crouch, then the emote stance, then the combat
- * stance, then Stand. A sneaking unit keeps the crouch (`animationLadder("StealthStand", "Stand")`
- * as before). The emote stance outranks the combat stance: the core clears the field when a
- * creature engages (`Unit::Attack`, `Unit.cpp:6014`) and when it dies (`Unit.cpp:9324`), so a stance
- * that survives into combat is one a script set on purpose (a channel, a stun). Shared arrays —
+ * The ladder for a unit standing still on its feet: the emote stance, then the crouch, then the combat
+ * stance, then Stand. 12.10 6.03: the emote before the crouch, as 0x007171c0 comes before 0x0071e340's
+ * StealthStand in Wow.exe's chain (05.10 had the crouch first). The emote stance outranks the combat
+ * stance: the core clears the field when a creature engages (`Unit::Attack`, `Unit.cpp:6014`) and when
+ * it dies (`Unit.cpp:9324`), so a stance that survives into combat is one a script set on purpose (a
+ * channel, a stun) — Wow.exe's own attack stance comes first (0x0071e0d0), but it keys on a melee target
+ * of the unit's own, not on UNIT_FLAG_IN_COMBAT, which is what `ready` here follows. Shared arrays —
  * nothing calls `push` on a `wanted` list.
  */
 export function standingAnimations(pose: StandingPose): readonly number[] {
-  if (pose.stealth === true) return stealthLadder ??= ladder("StealthStand", "Stand");
   if (pose.emoteState !== undefined) {
     let stance = stanceLadders.get(pose.emoteState);
     if (stance === undefined) {
@@ -183,6 +186,7 @@ export function standingAnimations(pose: StandingPose): readonly number[] {
     }
     return stance;
   }
+  if (pose.stealth === true) return stealthLadder ??= ladder("StealthStand", "Stand");
   if (pose.ready !== undefined && pose.ready.length > 0) return pose.ready;
   return standLadder ??= [ANIMATION_IDS.Stand];
 }
@@ -192,33 +196,27 @@ const FIELD_FLAGS = UPDATE_FIELDS.UNIT_FIELD_FLAGS.offset;
 const FIELD_BYTES_2 = UPDATE_FIELDS.UNIT_FIELD_BYTES_2.offset;
 
 /**
- * Fills the standing half of a freshly built pose from the unit's fields, and returns the emote to
- * play once when a one-shot value was just written into the field (undefined otherwise).
- *
- * `previous` is the pose of the last frame (`RenderedUnit.pose`); a unit seen for the first time —
- * or rebuilt — does not replay a one-shot it was already in, or every NPC of a city would bow at
- * once on arrival. Only an engaged unit scans its weapons, so the crowd pays two `Map.get`s.
+ * Fills the standing half of a freshly built pose from the unit's fields. 12.10 6.03: every value is a
+ * held pose now (0x007171c0) — nothing is played once on a change any more, so nothing is returned and
+ * the last frame's pose is not needed. `interacting`: the player's interaction window is open on this
+ * unit (`world/UnitFacing.interactionNpcGuid`). Only an engaged unit scans its weapons, so the crowd
+ * pays two `Map.get`s.
  */
 export function applyStandingPose(
   pose: StandingPose,
   fields: ReadonlyMap<number, number>,
   attached: readonly HeldItem[] | undefined,
-  previous: StandingPose | undefined,
-): number | undefined {
+  interacting = false,
+): void {
   const emote = fields.get(NPC_EMOTESTATE) ?? 0;
   if (emote !== 0) {
     pose.npcEmote = emote;
-    const held = emoteStateAnimation(emote);
+    const held = emoteStateAnimation(emote, interacting); // 12.10 6.03: any row, AnimID 0 as Stand
     if (held !== undefined) pose.emoteState = held;
-    // Only over plain standing: a sitting or dead byte already says more than the emote.
-    const standState = emoteStandState(emote);
-    if (standState !== undefined && pose.standState === UNIT_STAND_STATE_STAND) pose.standState = standState;
   }
   if (((fields.get(FIELD_FLAGS) ?? 0) & UNIT_FLAG_IN_COMBAT) !== 0) {
     const bytes2 = fields.get(FIELD_BYTES_2);
     const ready = readyStance(attached, bytes2 === undefined ? undefined : bytes2 & 0xff);
     if (ready !== undefined) pose.ready = ready;
   }
-  if (previous === undefined || emote === 0 || (previous.npcEmote ?? 0) === emote) return undefined;
-  return emoteStateOneShot(emote);
 }

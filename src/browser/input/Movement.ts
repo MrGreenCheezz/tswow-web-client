@@ -340,6 +340,9 @@ export function movementFlags(): number {
   const flying = state?.canFly === true || state?.gravityDisabled === true;
   if (motion.mode === "swim") flags |= MOVEMENT_FLAGS.swimming;
   else if (motion.mode === "air") flags |= flying ? MOVEMENT_FLAGS.flying : MOVEMENT_FLAGS.falling;
+  // 12.10 6.07: and FALLING_FAR once the physics raised it (Physics.fallsFar, Wow.exe 0x007617f0) — a walk-off after
+  // 500 ms, a jump once below where it began. The own pose reads it (Fall), and so do the other clients.
+  if (motion.mode === "air" && !flying && motion.fallingFar) flags |= MOVEMENT_FLAGS.fallingFar;
   if (motion.vertical > 0) flags |= MOVEMENT_FLAGS.ascending;
   else if (motion.vertical < 0) flags |= MOVEMENT_FLAGS.descending;
   // `MOVEMENTFLAG_ROOT` must not be set alongside anything in `MOVEMENTFLAG_MASK_MOVING`, and
@@ -406,6 +409,9 @@ export function applyKnockback(impulse: KnockbackImpulse): void {
   // 11.01-A3: on a deck the arc runs in the ship's frame.
   const objects = game.world?.state.objects;
   applyImpulse(motion, objects ? rideImpulse(selfObject(), impulse, objects) : impulse);
+  // 12.10 6.07: a knock back is a fall with a jump velocity in it (the jump block it writes, `knockbackJump`).
+  const self = selfObject();
+  if (self) self.fallJumped = impulse.upSpeed !== 0;
 }
 
 /** How fast the character covers ground right now, in yards a second. */
@@ -966,6 +972,12 @@ function moverSnapshot(guid: bigint): MovementInfo | undefined {
 
 /** One state change, one packet. The server is not watching the position for any of these. */
 function reportPhysicsEvent(event: PhysicsEvent): void {
+  // 12.10 6.07: whether this fall began with a jump (Wow.exe's mover +0xb8), for the own pose (0x00723350): the
+  // packets this client writes into its own state carry no jump block (`WorldState.fallJumped`).
+  if (event === "jump" || event === "startFall") {
+    const self = selfObject();
+    if (self) self.fallJumped = event === "jump";
+  }
   if (event === "jump") {
     sendMovement(OPCODES.MSG_MOVE_JUMP);
     return;

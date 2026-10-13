@@ -8,7 +8,7 @@ import { sceneYaw, toRenderAxes, type Quat } from "../world/GameObjectRotation.j
 import { gameObjectNodeYaw, gameObjectWorldRotation, placedBoxCorners, type ModelBox } from "../world/GameObjectModelFrame.js"; // 06.10-7.24
 import { modelPickBox } from "./GameObjectPickBox.js"; // 06.10-7.24
 import { passengerGameObjectTilt } from "../world/TransportPassengers.js";
-import { ShownUnitFacing, unitAutoFacing, unitFacingTurn, unitSeatFacing } from "../world/UnitFacing.js"; // 11.10; 5.32: + unitSeatFacing
+import { ShownUnitFacing, interactionNpcGuid, unitAutoFacing, unitFacingTurn, unitSeatFacing } from "../world/UnitFacing.js"; // 11.10; 5.32: + unitSeatFacing; 12.10 6.03: + interactionNpcGuid
 import {
   CAMERA_DEFAULT_DISTANCE, CAMERA_DEFAULT_EYE_HEIGHT, CAMERA_DEFAULT_PITCH, CAMERA_DEFAULT_PIVOT_HEIGHT,
   CAMERA_EYE_BODY_SHARE, CAMERA_FIRST_PERSON_DISTANCE, CAMERA_FOV_DEGREES, CAMERA_PIVOT_BODY_SHARE,
@@ -106,6 +106,7 @@ import {
   clipMovingSpeed, mountGaitTimeScale, mountPose, mountPoseTransition, unitTravelSpeed,
   isLocomotionGait, locomotionAuthoredSpeed, measuredTravelSpeed, unitGaitTimeScale, spawnFadeFactor,
   weaponPose, isBaseIdle, // 05.10-A7a-C: isBaseIdle
+  isJumpAnimation, // 12.10 6.07
   applyStrafeYaw, stepStrafeYaw, strafeYawBonesFor, strafeYawTarget,
   fastPoseProgramFor, writeGlobalSequenceLocals,
   type GlobalChannelSource, // 12.10 6.24
@@ -166,6 +167,15 @@ import {
   attachmentHeight, attachmentOffset, attachmentRotation, boneOf, mountNesting, mountSeatOffset,
 } from "./Attachment.js";
 import { sheatheOf, worldAttachmentPoint } from "./SheathPoints.js"; // 05.10-A7a-G2 6.08
+import { settleTransition, type PendingTransition } from "./PendingTransition.js"; // 12.10 6.07
+import { SHEATH_ANIMATIONS, ceremonySheath, stepOwnSheath, type SheathCeremony } from "./SheathCeremony.js"; // 12.10 6.08
+import {
+  PLAYBACK_BACKWARD, PLAYBACK_FORWARD, PLAYBACK_HOLD_LAST, applyPlayback, fallbackPlayback, playbackHolds,
+  wantedPlayback, type PlaybackMode,
+} from "./AnimationPlayback.js"; // 12.10 6.03/6.07
+import {
+  keyBoneSubtree, poseSheathArm, resetArmBones, sheathArmPlaying, sheathArmWeight,
+} from "./SheathArms.js"; // 12.10 6.08
 import {
   HANDS_CLOSED_ANIMATION, closedHandsFor, handOfPoint, releaseClosedHands, type ClosedHands,
 } from "./HandsClosed.js"; // 12.10 6.24
@@ -2586,6 +2596,13 @@ interface PosedModel {
   /** The template `flatPoseProgram` was resolved for; see `#flatPose`. */
   flatPoseTemplate: SkinnedTemplate | undefined;
   flatPoseProgram: FastPoseProgram | undefined;
+  /**
+   * 12.10 6.03/6.07: how `action` / `overlayAction` play their clip — forwards, backwards or held on a frame,
+   * as Wow.exe 0x00826350 plays a fallback (`AnimationPlayback.ts`). Part of the clip's identity: Walk is
+   * not the same pose as Walk backwards.
+   */
+  animationMode: PlaybackMode;
+  overlayAnimationMode: PlaybackMode;
 }
 
 /** Which unit wears a ring and what colour it is, as the interface works it out. */
@@ -2768,6 +2785,17 @@ interface RenderedUnit extends PosedModel {
    * that lets go (sheathed, unequipped) is handed back to its clip. See `HandsClosed.ts`.
    */
   closedHands: { readonly instance: SkinnedInstance; readonly hands: ClosedHands } | undefined;
+  /** 12.10 6.08: the active player's own draw or sheathe, while it lives. See `SheathCeremony.ts`. */
+  sheathCeremony: SheathCeremony | undefined;
+  /** 12.10 6.08: the arm bones the last pose step played Sheath/HipSheath on, on which rig. See `SheathArms.ts`. */
+  sheathArms: { readonly instance: SkinnedInstance; readonly bones: readonly number[] } | undefined;
+  /**
+   * 12.10 6.07: whether the unit was moving when its pose transition (a landing, a kneel) began; undefined when none
+   * plays. A change of it ends the transition at once, as Wow.exe re-picks the base on a movement change (0x0073ee14).
+   */
+  transitionMoving: boolean | undefined;
+  /** 12.10 6.07: a pose transition waiting for its clip from the sidecar. See `PendingTransition.ts`. */
+  pendingTransition: PendingTransition | undefined;
 }
 
 /**
@@ -12770,6 +12798,7 @@ export class WorldRenderer3D {
       gaitCommittedUntil: undefined,
       flatPoseTemplate: undefined,
       flatPoseProgram: undefined,
+      animationMode: PLAYBACK_FORWARD, overlayAnimationMode: PLAYBACK_FORWARD, // 12.10 6.03/6.07
       effectKey: undefined,
       built: undefined,
       decodedModel: undefined,
@@ -13393,6 +13422,7 @@ export class WorldRenderer3D {
         actionKind: undefined, overlayAction: undefined, overlayAnimationId: undefined,
         overlayActionKind: undefined, overlayPreservesLocomotion: undefined, overlayFadeUntil: undefined,
         gaitCommittedUntil: undefined, flatPoseTemplate: undefined, flatPoseProgram: undefined,
+        animationMode: PLAYBACK_FORWARD, overlayAnimationMode: PLAYBACK_FORWARD, // 12.10 6.03/6.07
         effectKey: undefined, decodedModel: undefined, legacyGeometry: undefined, materialEntries: undefined,
         admittedAt: undefined, animationClock: undefined, animationClockRig: undefined,
         animationClockMountRig: undefined, admissionDisplayId: undefined, admissionObjectScale: undefined,
@@ -13402,6 +13432,8 @@ export class WorldRenderer3D {
         strafeYaw: undefined, deathFade: undefined, flagPoses: undefined,
         shownFacing: undefined, // 11.10
         closedHands: undefined, // 12.10 6.24
+        sheathCeremony: undefined, sheathArms: undefined, // 12.10 6.08
+        transitionMoving: undefined, pendingTransition: undefined, // 12.10 6.07
       };
       this.#units.set(object.guid, unit);
       this.#unitGroup.add(node);
@@ -13452,7 +13484,8 @@ export class WorldRenderer3D {
       }
       if (unit.applied === key) {
         if (unit.template) this.#unitAnimationPrefetch.set(unit.template, metadata.model);
-        this.#updateAttachments(unit, metadata, object, client, decodedModel);
+        if (self) this.#ownSheath(unit, metadata, object, now); // 12.10 6.08: before the pieces are hung by it
+        this.#updateAttachments(unit, metadata, object, client, decodedModel, now);
         // How big, now that the model standing there is the one this record describes. The display
         // record's own scale is only half of the answer and `unitObjectScale` is the other; the
         // product is recomputed rather than multiplied into what is already applied, so a scale
@@ -13862,6 +13895,7 @@ export class WorldRenderer3D {
       actionKind: undefined, overlayAction: undefined, overlayAnimationId: undefined,
       overlayActionKind: undefined, overlayPreservesLocomotion: undefined, overlayFadeUntil: undefined,
       gaitCommittedUntil: undefined, flatPoseTemplate: undefined, flatPoseProgram: undefined,
+      animationMode: PLAYBACK_FORWARD, overlayAnimationMode: PLAYBACK_FORWARD, // 12.10 6.03/6.07
       scale: metadata.scale,
       seat: mountSeatOffset(wvm, metadata.mountHeight, metadata.scale),
       pose: undefined,
@@ -13980,7 +14014,7 @@ export class WorldRenderer3D {
    * and are not affected.
    */
   #updateAttachments(unit: RenderedUnit, metadata: UnitModel, object: WorldObjectState,
-    client: EnvironmentClient | undefined, decodedModel: EnvironmentModel | undefined): void {
+    client: EnvironmentClient | undefined, decodedModel: EnvironmentModel | undefined, now: number): void { // 12.10 6.08: `now`
     const attached = attachedOf(metadata); // 05.10-A7a-B 6.02: worn pieces and a creature's held weapons
     const instance = unit.skinned;
     const template = unit.template;
@@ -13993,9 +14027,12 @@ export class WorldRenderer3D {
     // UNIT_FIELD_BYTES_2 byte 0 is the sheath state, and it names which weapon is out rather than
     // whether one is: 0 everything put away, 1 the melee weapons drawn, 2 the ranged one drawn.
     const sheath = (object.fields.get(UPDATE_FIELDS.UNIT_FIELD_BYTES_2.offset) ?? 0) & 0xff;
+    // 12.10 6.08: the active player's own draw or sheathe hangs each piece by its arm's event, not by the field.
+    const ceremony = unit.sheathCeremony;
     const wanted = new Map<string, { point: number; model: string; texture: string; build: string; glow: EnchantGlow | undefined }>();
     for (const item of attached ?? []) {
-      const point = worldAttachmentPoint(item, sheath, sheatheOf(item, metadata)); // 05.10-A7a-G2 6.08: Wow.exe sheath points
+      const point = worldAttachmentPoint(item, ceremony ? ceremonySheath(ceremony, item.slot, now) : sheath,
+        sheatheOf(item, metadata)); // 05.10-A7a-G2 6.08: Wow.exe sheath points
       if (point === undefined) continue;
       const glow = this.#enchantGlow?.(object, item.slot, item.displayId); // 05.10-A7a-E2: the display's own glow
       const glowKey = glow === undefined ? "0"
@@ -14378,6 +14415,10 @@ export class WorldRenderer3D {
     // 11.02-H: the vehicle seat this unit sits in, when the tables know it; absent otherwise.
     const vehicleSeat = unit.mount === undefined ? this.#vehiclePassengers.seatPose(object) : undefined;
     if (vehicleSeat !== undefined) pose.vehicleSeat = vehicleSeat;
+    // 12.10 6.07: whether this fall began with a jump, and the jump clip the base is already in (Wow.exe 0x00723350,
+    // 0x00724200 → 0x0071dc20): a jump keeps Jump to the ground, a walk-off runs on until FALLING_FAR and then falls.
+    if (object.fallJumped !== undefined) pose.fallJumped = object.fallJumped;
+    pose.airborneBase = isJumpAnimation(unit.animationId) ? unit.animationId : null;
     // Stride tempo before anything poses: the gait scaler below reads it, and the node already
     // stands where this frame drew it.
     unit.strideSpeed = this.#strideSpeed(unit, unit.node.position, elapsed);
@@ -14394,12 +14435,13 @@ export class WorldRenderer3D {
       unitTravelSpeed(pose, object.speeds, object.runSpeed));
     // 05.10-A7a-C 6.03/6.04: the standing base (emote state, combat stance) — after the mount's pose,
     // which is the horse's and holds neither; 6.07: the STUNNED/LOOTING holds, on an edge only.
-    const oneShotEmote = applyStandingPose(pose, object.fields, attachedOf(metadata), unit.pose);
-    if (oneShotEmote !== undefined) this.playUnitEmote(object.guid, oneShotEmote);
+    // 12.10 6.03: every emote-state value is a held base (Wow.exe 0x007171c0) — none is played once on a change —
+    // and the unit the player is talking to sets aside a row with EmoteFlags 0x2000.
+    applyStandingPose(pose, object.fields, attachedOf(metadata), interactionNpcGuid() === object.guid);
     const flagPoses = flagPoseBits(object.fields.get(UPDATE_FIELDS.UNIT_FIELD_FLAGS.offset), isTerminalUnitPose(pose));
     if (flagPoses !== (unit.flagPoses ?? 0)) {
       syncFlagPoses(unit.flagPoses ?? 0, flagPoses, isTerminalUnitPose(pose), now, this.#actions.get(object.guid),
-        (request) => this.#submitUnitAction(object.guid, request, now), template.animations); // 05.10-A7a-C-review: claims
+        (request) => this.#submitUnitAction(object.guid, request, now)); // 12.10 6.07: LootUp on every rig (Loot backwards)
       unit.flagPoses = flagPoses;
     }
 
@@ -14424,7 +14466,12 @@ export class WorldRenderer3D {
     const terminalDeath = terminalPose && !deathTransition
       && terminalAnimationId === ANIMATION_IDS.Death
       && terminalAction?.clampWhenFinished === true;
-    if (deathTransition || unit.overlayPreservesLocomotion === true
+    // 12.10 6.07: a pose transition (JumpLandRun, KneelStart…) gives way the moment the unit starts or stops moving —
+    // Wow.exe re-picks the base on a movement change (0x0073ee14: +0x44 & 0xc0100f → 0x0073ac30) — instead of holding
+    // the unit to the clip's end (833 ms of JumpLandRun slid along under a unit that had stopped).
+    const transitionCut = unit.transitionMoving !== undefined
+      && unit.transitionMoving !== isUnitMoving(pose.movementFlags, pose.spline);
+    if (deathTransition || unit.overlayPreservesLocomotion === true || transitionCut
       || (now >= unit.overlayUntil && !terminalDeath)) {
       this.#poseUnit(unit, object.guid, pose, now, client, metadata);
     }
@@ -14493,9 +14540,13 @@ export class WorldRenderer3D {
     // 12.10 6.24: the global channels this step poses with — the template's own, or with the held
     // hands closed over them — and a hand that let go since the last step handed back to its clip.
     const channels = this.#closedHandChannels(unit, template, skinned, client, metadata);
+    // 12.10 6.08: Sheath and HipSheath travel in the sidecar; the active player asks for them before a toggle needs them.
+    if (self && sidecarClaims(template, SHEATH_ANIMATIONS)) this.#requestAnimations(template, SHEATH_ANIMATIONS, client, metadata, "any", true);
+    // 12.10 6.08: an arm drawing or putting away a weapon is posed on Three's bones after the mixer, like a strafe turn.
+    const sheathArms = this.#sheathArmsStep(unit, template, skinned, now);
     // The flat pose when this frame allows one: the same mixer clock and blend, for only the bones
     // something draws or reads, with none of the per-bone scene-graph writes. See `FastPoseState`.
-    const flat = !portraitNeedsPose && this.#strafeYawIdle(unit, template, pose)
+    const flat = !portraitNeedsPose && sheathArms === undefined && this.#strafeYawIdle(unit, template, pose)
       ? this.#flatPose(unit, unit.wvm, mount?.skinned === undefined, channels) : undefined;
     const mountFlat = flat === undefined || !mount?.skinned ? undefined : this.#flatPose(mount, mount.wvm, false);
     if (flat !== undefined && (mount?.skinned === undefined || mountFlat !== undefined)) {
@@ -14526,6 +14577,13 @@ export class WorldRenderer3D {
     skinned.skeleton.setPoseFrozen(false);
     skinned.mixer.update(poseElapsed);
     if (unit.wvm) applyGlobalSequenceBones(skinned, channels, unit.wvm.globalSequences, now); // 12.10 6.24
+    // 12.10 6.08: the arms over the clip and the closed hands, which keep their own sequence (0x00832ab0).
+    if (sheathArms) {
+      for (const { arm, clip, bones } of sheathArms) {
+        poseSheathArm(skinned, template, clip, bones, (now - arm.startAt) / 1000, sheathArmWeight(arm, now),
+          unit.closedHands?.hands.bones);
+      }
+    }
     // The legs into the direction of travel, over the clip the mixer just wrote. Self and remote
     // alike: the flags this reads are the ones in the last packet about the unit, and the player's
     // own are written into that state as they are sent.
@@ -14604,6 +14662,59 @@ export class WorldRenderer3D {
     }
     unit.closedHands = hands ? { instance: skinned, hands } : undefined;
     return hands?.source ?? template;
+  }
+
+  /**
+   * 12.10 6.08: the active player's own draw or sheathe (`SheathCeremony.ts`). A ToggleSheath since the last
+   * frame starts its arms' clips from the state on show (0x00736d30(next, 0, 0) → 0x00736b60), the field's
+   * echo or a state the server forced settles them, and the rig's guards go out for the next ToggleSheath
+   * (0x006e23a0). Every other unit hangs its pieces by the field at once, as 0x00737aa0 has Wow.exe do.
+   */
+  #ownSheath(unit: RenderedUnit, metadata: UnitModel, object: WorldObjectState, now: number): void {
+    const template = unit.template;
+    if (!template) {
+      unit.sheathCeremony = undefined;
+      return;
+    }
+    const field = (object.fields.get(UPDATE_FIELDS.UNIT_FIELD_BYTES_2.offset) ?? 0) & 0xff;
+    unit.sheathCeremony = stepOwnSheath(unit.sheathCeremony, field, now,
+      () => (attachedOf(metadata) ?? []).map((item) => ({
+        item, slot: item.slot, inventoryType: item.inventoryType, sheathe: sheatheOf(item, metadata),
+      })),
+      (piece, sheath) => worldAttachmentPoint(piece.item, sheath, piece.sheathe), {
+        model: metadata.model, animations: template.animations, keyBones: unit.wvm?.keyBones,
+        clip: (animation) => {
+          const clip = template.clips.get(animation);
+          return clip === undefined ? undefined
+            : { duration: clip.duration, blend: animationBlend(false, false, clipBlendTime(clip)).duration };
+        },
+      });
+  }
+
+  /**
+   * 12.10 6.08: the arms playing Sheath/HipSheath this step (`SheathArms.ts`), each with its clip and bones, or
+   * undefined for none. Before the mixer runs, the bones of last step's arms and this step's go back to their
+   * rest and every bound property is written again, so an arm that has finished is handed back to the clip and
+   * one still playing is blended over this step's pose, not last step's.
+   */
+  #sheathArmsStep(unit: RenderedUnit, template: SkinnedTemplate, skinned: SkinnedInstance, now: number):
+    { readonly arm: SheathCeremony["arms"][number]; readonly clip: THREE.AnimationClip; readonly bones: readonly number[] }[] | undefined {
+    let active: { arm: SheathCeremony["arms"][number]; clip: THREE.AnimationClip; bones: readonly number[] }[] | undefined;
+    for (const arm of unit.sheathCeremony?.arms ?? []) {
+      if (!sheathArmPlaying(arm, now)) continue;
+      const clip = template.clips.get(arm.animation);
+      const bones = keyBoneSubtree(template.parents, unit.wvm?.keyBones, arm.keyBone);
+      if (!clip || bones.length === 0) continue;
+      (active ??= []).push({ arm, clip, bones });
+    }
+    const previous = unit.sheathArms;
+    if (previous && previous.instance === skinned) resetArmBones(skinned, template, previous.bones);
+    unit.sheathArms = undefined;
+    if (!active) return undefined;
+    const bones = active.length === 1 ? active[0]!.bones : active.flatMap((entry) => entry.bones);
+    if (!previous || previous.instance !== skinned) resetArmBones(skinned, template, bones);
+    unit.sheathArms = { instance: skinned, bones };
+    return active;
   }
 
   /** The pose worker's counters since the last reset, or undefined when there is no worker. */
@@ -14739,7 +14850,9 @@ export class WorldRenderer3D {
       ? undefined
       : { animation: this.#commitGait(mount, wanted.animation, now), loop: wanted.loop };
     if (chosen) {
-      this.#playAnimation(mount, chosen.animation, chosen.loop, now);
+      // 12.10 6.03/6.07: the fallback's playback mode (a held gait keeps the mode it was playing in).
+      const mode = chosen.animation === wanted!.animation ? wanted!.mode ?? PLAYBACK_FORWARD : mount.animationMode;
+      this.#playAnimation(mount, chosen.animation, chosen.loop, now, false, false, undefined, undefined, mode);
       // After the play call and never before it: `#playAnimation` puts every action it starts or
       // restarts back on the authored rate, so a gait scaled first would be flattened again.
       this.#applyMountGait(mount, chosen.animation, chosen.loop, speed);
@@ -14763,8 +14876,9 @@ export class WorldRenderer3D {
    */
   #applyMountGait(mount: RenderedMount, animation: number, loop: boolean, speed: number | undefined): void {
     const action = mount.action;
-    if (!action || !loop) return;
-    const scale = mountGaitTimeScale(speed, clipMovingSpeed(mount.template?.clips.get(animation)));
+    if (!action || !loop || playbackHolds(mount.animationMode)) return; // 12.10 6.03/6.07: a held frame stays held
+    const scale = mountGaitTimeScale(speed, clipMovingSpeed(mount.template?.clips.get(animation)))
+      * (mount.animationMode === PLAYBACK_BACKWARD ? -1 : 1); // 12.10 6.03/6.07: a backwards fallback stays backwards
     if (Math.abs(action.getEffectiveTimeScale() - scale) > 1e-6) action.setEffectiveTimeScale(scale);
   }
 
@@ -14800,9 +14914,10 @@ export class WorldRenderer3D {
    */
   #applyUnitGait(unit: RenderedUnit, animation: number, loop: boolean): void {
     const action = unit.action;
-    if (!action || !loop || !isLocomotionGait(animation)) return;
+    if (!action || !loop || !isLocomotionGait(animation) || playbackHolds(unit.animationMode)) return; // 12.10 6.03/6.07
     const scale = unitGaitTimeScale(
-      unit.strideSpeed, locomotionAuthoredSpeed(unit.template?.clips, animation, unit.strideSpeed));
+      unit.strideSpeed, locomotionAuthoredSpeed(unit.template?.clips, animation, unit.strideSpeed))
+      * (unit.animationMode === PLAYBACK_BACKWARD ? -1 : 1); // 12.10 6.03/6.07: Walkbackwards as Walk backwards
     if (Math.abs(action.getEffectiveTimeScale() - scale) > 1e-6) action.setEffectiveTimeScale(scale);
   }
 
@@ -14817,6 +14932,7 @@ export class WorldRenderer3D {
    */
   #poseUnit(unit: RenderedUnit, guid: bigint, pose: UnitPose, now: number,
     client: EnvironmentClient | undefined, metadata: UnitModel | undefined): void {
+    unit.transitionMoving = undefined; // 12.10 6.07: set again below only while a transition plays
     const display = this.#showUnitAction(unit, guid, pose, now, client, metadata);
     if (display === "full") return;
     if (display === "upper") {
@@ -14826,10 +14942,20 @@ export class WorldRenderer3D {
     // Nothing of the packets' on show: an overlay left behind by anything is faded, not kept.
     if (unit.overlayPreservesLocomotion === true) this.#clearOverlay(unit);
 
-    const transition = poseTransition(unit.pose, pose);
-    const overlay = poseTransitionClip(unit.template!.clips, transition); // 05.10-A7a-C-review: no gait one-shot
+    // 12.10 6.07: an edge whose clip is still in the sidecar waits for it (PendingTransition.ts), and asks for it.
+    const template = unit.template!;
+    const moving = isUnitMoving(pose.movementFlags, pose.spline);
+    const choice = settleTransition(poseTransition(unit.pose, pose), unit.pendingTransition, { standState: pose.standState, moving }, now,
+      (id) => poseTransitionClip(template.clips, id) !== undefined, (id) => sidecarClaims(template, [id]));
+    unit.pendingTransition = choice.pending;
+    if (choice.pending) this.#requestAnimations(template, [choice.pending.animation], client, metadata, "any", true);
+    const transition = choice.play;
+    const overlay = poseTransitionClip(template.clips, transition); // 05.10-A7a-C-review: no gait one-shot
     if (overlay !== undefined) {
-      this.#playAnimation(unit, overlay, false, now);
+      // 12.10 6.03/6.07: KneelEnd/SleepUp/SitGroundUp resolved to their way down play it backwards (0x00826350).
+      this.#playAnimation(unit, overlay, false, now, false, false, undefined, undefined,
+        fallbackPlayback(transition!, overlay));
+      unit.transitionMoving = moving; // 12.10 6.07: a change of it ends the transition (#animateUnit)
       return;
     }
     this.#poseBase(unit, pose, now, client, metadata);
@@ -14995,22 +15121,30 @@ export class WorldRenderer3D {
     const pending = entry.payload;
     // A lead-in plays once whatever follows it; a hold loops unless it is a one-way motion.
     const loop = pending.stage === "main" && entry.held && !heldClipPlaysOnce(animation);
+    // 12.10 6.03/6.07: how a fallback plays (0x00826350) — a flag's or a kit's LootHold resolved to Loot holds its
+    // last frame, LootUp resolved to Loot plays it backwards. A unit action's own ladders play forwards.
+    const mode: PlaybackMode = pending.action === undefined ? wantedPlayback(pending.wanted, animation) : PLAYBACK_FORWARD;
     const shown = queue.shown;
-    if (shown?.entry === entry && shown.animation === animation && shown.slot === display) return;
+    const shownMode = shown?.slot === "upper" ? unit.overlayAnimationMode : unit.animationMode; // 12.10 6.03/6.07
+    // 12.10 6.03/6.07: and in the same mode — a lead-in Loot handing its entry to LootHold is Loot held from then on.
+    if (shown?.entry === entry && shown.animation === animation && shown.slot === display && shownMode === mode) return;
     const running = shown !== undefined && shown.animation === animation && shown.action.isRunning();
-    if (running && shown.slot === display && entry.held) {
-      // The same clip, now held: change how it ends, not where it is.
+    if (running && shown.slot === display && entry.held && (shownMode === mode || mode === PLAYBACK_HOLD_LAST)) {
+      // The same clip, now held: change how it ends, not where it is. 12.10: held on its last frame, a clip
+      // already playing forwards runs out and clamps there — the lead-in Loot handing over to LootHold.
       shown.action.setLoop(loop ? THREE.LoopRepeat : THREE.LoopOnce, Infinity);
       shown.action.clampWhenFinished = !loop;
+      if (display === "upper") unit.overlayAnimationMode = mode;
+      else unit.animationMode = mode;
       queue.shown = { ...shown, entry };
     } else if (running && shown.slot !== display && shown.entry === entry) {
       // The unit started or stopped moving under this pose: move it to the other layer at its phase.
       const phase = shown.action.time;
       if (display === "upper") {
-        this.#playAnimation(unit, animation, loop, now, true, true, pending.action);
+        this.#playAnimation(unit, animation, loop, now, true, true, pending.action, undefined, mode);
         if (unit.overlayAction) unit.overlayAction.time = phase;
       } else {
-        this.#playAnimation(unit, animation, loop, now, true, false, pending.action);
+        this.#playAnimation(unit, animation, loop, now, true, false, pending.action, undefined, mode);
         if (unit.action) unit.action.time = phase;
         this.#clearOverlay(unit);
       }
@@ -15024,8 +15158,11 @@ export class WorldRenderer3D {
         shown.action.setLoop(loop ? THREE.LoopRepeat : THREE.LoopOnce, Infinity);
         shown.action.clampWhenFinished = !loop;
         shown.action.play();
+        applyPlayback(shown.action, mode, loop); // 12.10 6.03/6.07
+        if (display === "upper") unit.overlayAnimationMode = mode;
+        else unit.animationMode = mode;
       } else {
-        this.#playAnimation(unit, animation, loop, now, true, display === "upper", pending.action);
+        this.#playAnimation(unit, animation, loop, now, true, display === "upper", pending.action, undefined, mode);
       }
       queue.shown = this.#shownAs(unit, entry, animation, display);
     }
@@ -15101,8 +15238,10 @@ export class WorldRenderer3D {
     if (chosen) {
       const gait = this.#commitGait(unit, chosen.animation, now);
       const full = overlay === undefined ? undefined : unit.template!.clips.get(gait);
+      // 12.10 6.03/6.07: the fallback's playback mode (0x00826350); a gait the commit window holds keeps its own.
+      const mode = gait === chosen.animation ? chosen.mode ?? PLAYBACK_FORWARD : unit.animationMode;
       this.#playAnimation(unit, gait, chosen.loop, now, false, false, undefined,
-        full === undefined || overlay === undefined ? undefined : locomotionUnderlayClip(full, overlay));
+        full === undefined || overlay === undefined ? undefined : locomotionUnderlayClip(full, overlay), mode);
       this.#applyUnitGait(unit, gait, chosen.loop);
     }
     // What the pose asked for that this model has but has not downloaded yet. Asking is cheap and
@@ -15125,6 +15264,12 @@ export class WorldRenderer3D {
     actionKind?: UnitAction,
     /** The base in another cut than the model's own — the gait under an upper-body pose. */
     baseClip?: THREE.AnimationClip,
+    /**
+     * 12.10 6.03/6.07: how the clip plays when it stands in for a missing one (Wow.exe 0x00826350 →
+     * 0x00826b00): forwards, backwards from its end, or held on its first or last frame. Part of the
+     * pose's identity — Walk forwards and Walk for Walkbackwards are two poses of one clip.
+     */
+    mode: PlaybackMode = PLAYBACK_FORWARD,
   ): void {
     const template = unit.template!;
     const clip = preserveLocomotion
@@ -15134,10 +15279,12 @@ export class WorldRenderer3D {
     // would be marked as switched and stay frozen in whatever it was doing before.
     if (!clip) return;
     const wantedLoop = loop ? THREE.LoopRepeat : THREE.LoopOnce;
+    // 12.10 6.03/6.07: a held frame is not «running» to the mixer (its speed is 0) and is not to be restarted.
+    const held = playbackHolds(mode);
     if (preserveLocomotion) {
       const current = unit.overlayAction;
-      if (animation === unit.overlayAnimationId && current) {
-        if (current.loop === wantedLoop && current.isRunning()) return;
+      if (animation === unit.overlayAnimationId && current && unit.overlayAnimationMode === mode) {
+        if (held || (current.loop === wantedLoop && current.isRunning())) return;
         current.reset();
         // An action can be reused after a caller changed its local time scale. Reset it here so
         // authored clip timing is always the baseline; cross-fade must not inherit a fast cast.
@@ -15145,6 +15292,7 @@ export class WorldRenderer3D {
         current.setLoop(wantedLoop, Infinity);
         current.clampWhenFinished = !loop;
         current.play();
+        applyPlayback(current, mode, loop); // 12.10 6.03/6.07
         unit.overlayActionKind = actionKind;
         unit.overlayFadeUntil = undefined;
         const fade = animationFadeWindow(clip.duration, fullDuration);
@@ -15159,6 +15307,7 @@ export class WorldRenderer3D {
       next.clampWhenFinished = !loop;
       next.setEffectiveWeight(1);
       next.play();
+      applyPlayback(next, mode, loop); // 12.10 6.03/6.07
       if (previous && previous !== next) {
         const blend = animationBlend(previous.loop === THREE.LoopRepeat, loop, clipBlendTime(clip));
         const transition = animationTransition(previous.isRunning(), true);
@@ -15175,6 +15324,7 @@ export class WorldRenderer3D {
       }
       unit.overlayAction = next;
       unit.overlayAnimationId = animation;
+      unit.overlayAnimationMode = mode; // 12.10 6.03/6.07
       unit.overlayActionKind = actionKind;
       unit.overlayPreservesLocomotion = true;
       unit.overlayFadeUntil = undefined;
@@ -15184,7 +15334,7 @@ export class WorldRenderer3D {
     }
 
     if (animation === unit.animationId && unit.action && unit.action.getClip() !== clip
-      && unit.action.isRunning() && unit.action.loop === wantedLoop) {
+      && unit.action.isRunning() && unit.action.loop === wantedLoop && unit.animationMode === mode) { // 12.10: same mode
       // The same pose in another cut — the gait with or without the tracks an upper-body pose owns.
       // Swapped at the same phase and rate and cross-faded, so the legs see no seam (both cuts key
       // them identically) and the upper body hands over between the layers across the blend.
@@ -15201,12 +15351,13 @@ export class WorldRenderer3D {
       unit.action = next;
       return;
     }
-    if (animation === unit.animationId && unit.action && unit.action.getClip() === clip) {
+    if (animation === unit.animationId && unit.action && unit.action.getClip() === clip
+      && unit.animationMode === mode) { // 12.10 6.03/6.07: Walk is not Walk backwards
       // A startAnimation and its primary animation may intentionally resolve to the same clip.
       // The phase still has to change LoopOnce -> LoopRepeat for a held precast.
       // A mixer can stop a one-shot when it reaches its end. Re-start a stopped action even when
       // its loop mode matches, otherwise the unit can remain on its final frame forever.
-      if (unit.action.loop === wantedLoop && unit.action.isRunning()) return;
+      if (held || (unit.action.loop === wantedLoop && unit.action.isRunning())) return; // 12.10: a held frame stays
       unit.action.reset();
       // Reused actions retain their local timeScale across clips; animation data is authored in
       // seconds, so make the default playback rate explicit before every restart.
@@ -15214,6 +15365,7 @@ export class WorldRenderer3D {
       unit.action.setLoop(wantedLoop, Infinity);
       unit.action.clampWhenFinished = !loop;
       unit.action.play();
+      applyPlayback(unit.action, mode, loop); // 12.10 6.03/6.07
       unit.actionKind = actionKind;
       // Restarting the same clip ends the same way it would have if it were a different one, so
       // it leaves the same blend window free. See the tail comment at the bottom of this method.
@@ -15229,6 +15381,7 @@ export class WorldRenderer3D {
     next.clampWhenFinished = !loop;
     next.setEffectiveWeight(1);
     next.play();
+    applyPlayback(next, mode, loop); // 12.10 6.03/6.07
     if (previous && previous !== next) {
       const blend = animationBlend(previous.loop === THREE.LoopRepeat, loop, clipBlendTime(clip));
       const transition = animationTransition(previous.isRunning(), true);
@@ -15245,6 +15398,7 @@ export class WorldRenderer3D {
     }
     unit.action = next;
     unit.animationId = animation;
+    unit.animationMode = mode; // 12.10 6.03/6.07
     unit.actionKind = actionKind;
     // A one-shot holds the unit for its own length, less the blend that takes it away again — and
     // that subtraction is not optional. `fullDuration` (a spell visual's own animation) used to

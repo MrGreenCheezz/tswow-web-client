@@ -193,13 +193,39 @@ export interface CharacterMotion {
    * steer; it ends on landing, in water, or when flight takes over.
    */
   drift: { vx: number; vy: number } | undefined;
+  /**
+   * 12.10 6.07: where the fall began (Wow.exe's mover +0x84), NaN until the first airborne step of a fall
+   * takes it from the height it starts at — the jump, the edge, the knock back.
+   */
+  fallStartZ: number;
+  /** 12.10 6.07: MOVEMENTFLAG_FALLING_FAR (0x2000), raised by {@link fallsFar} and kept until the fall ends. */
+  fallingFar: boolean;
 }
 
 export function newCharacterMotion(): CharacterMotion {
   return {
     mode: "ground", velocityZ: 0, fallTime: 0, jump: undefined, pitch: 0, vertical: 0, liquid: undefined,
     loadWait: 0, airFlight: false, drift: undefined,
+    fallStartZ: Number.NaN, fallingFar: false, // 12.10 6.07
   };
+}
+
+/** 12.10 6.07: a fall without a jump in it is far after this long (Wow.exe 0x00761819: `499 < fallTime`). */
+export const FALLING_FAR_MS = 500;
+/** 12.10 6.07: a jump is a far fall once this far below where it began (0x00a1ea9c, 1/9 yard). */
+export const FALLING_FAR_DROP = 1 / 9;
+
+/**
+ * 12.10 6.07: whether a fall is MOVEMENTFLAG_FALLING_FAR now, as the mover's airborne step raises it (Wow.exe
+ * 0x007618b0 at 0x007617f0–0x0076182b, the same test as 0x0075cf80): with FALLING up and FALLING_FAR not yet,
+ * a fall whose jump velocity (+0xb8) is 0 — walked off an edge — is far once its clock (+0x80) passes 499 ms;
+ * a jump (or a knock back) once the mover (+0x18) is at or below where it began (+0x84) less 1/9 yard. The flag
+ * stays until the fall ends. This is what the base animation reads (0x00723350, 0x00724200): a walk-off plays
+ * Fall only from then on, and other clients see the same flag in this client's packets.
+ */
+export function fallsFar(motion: Pick<CharacterMotion, "jump" | "fallTime" | "fallStartZ">, z: number): boolean {
+  if ((motion.jump?.velocity ?? 0) === 0) return motion.fallTime > FALLING_FAR_MS - 1;
+  return Number.isFinite(motion.fallStartZ) && z <= motion.fallStartZ - FALLING_FAR_DROP;
 }
 
 /** A liquid surface: its world height, and the kind id its source carries. */
@@ -701,6 +727,7 @@ function beginSwim(motion: CharacterMotion, events: PhysicsEvent[]): void {
   motion.fallTime = 0;
   motion.jump = undefined;
   motion.airFlight = false;
+  motion.fallingFar = false; // 12.10 6.07
   events.push("startSwim");
 }
 
@@ -728,6 +755,8 @@ function beginFall(motion: CharacterMotion, velocityZ: number, orientation: numb
   motion.velocityZ = velocityZ;
   motion.fallTime = 0;
   motion.airFlight = false;
+  motion.fallStartZ = Number.NaN; // 12.10 6.07: taken by the first airborne step
+  motion.fallingFar = false;
   // The direction is the one the character left the ground in; the server echoes it back to
   // everyone watching, and it is what makes a jump land where it was aimed.
   setJump(motion, velocityZ, orientation, speed);
@@ -852,15 +881,20 @@ function stepAirborne(
     motion.fallTime = 0;
     setJump(motion, 0, position.orientation, input.runSpeed);
     clearVertical(motion, events);
+    motion.fallStartZ = Number.NaN; // 12.10 6.07: a new fall, from here
+    motion.fallingFar = false;
   }
   // 5.13: over ground that has not arrived, the fall waits rather than running up a fall clock.
   if (floor === undefined && awaitingGround(probe, motion, position.x, position.y, elapsed)) return;
 
+  if (Number.isNaN(motion.fallStartZ)) motion.fallStartZ = zBefore; // 12.10 6.07: the mover's +0x84
   const terminal = input.featherFall ? SAFE_FALL_TERMINAL_VELOCITY : TERMINAL_VELOCITY;
   motion.velocityZ = Math.max(-terminal, motion.velocityZ - GRAVITY * elapsed);
   position.z += motion.velocityZ * elapsed;
   motion.fallTime += elapsed * 1000;
   clampToCeiling(position, motion, probe, zBefore, collisionHeight, input.radius);
+  // 12.10 6.07: FALLING_FAR, as Wow.exe's airborne step raises it after moving the mover (0x007617f0).
+  if (!motion.fallingFar) motion.fallingFar = fallsFar(motion, position.z);
 
   // Measured again after the drop rather than before it: at terminal velocity a frame is a yard,
   // and a yard is the difference between hitting the water and hitting the bottom of the lake.
@@ -883,6 +917,7 @@ function land(position: WorldPosition, motion: CharacterMotion, floor: number, e
   motion.jump = undefined;
   motion.airFlight = false;
   motion.drift = undefined;
+  motion.fallingFar = false; // 12.10 6.07: the landing packet carries neither FALLING nor FALLING_FAR
   clearVertical(motion, events);
   // `fallTime` is left standing until the landing packet is built: it is the whole of what the
   // server needs to charge the fall, and clearing it here would send a fall of zero milliseconds.
@@ -901,6 +936,8 @@ function stepSwimming(
     motion.mode = "air";
     motion.velocityZ = 0;
     motion.fallTime = 0;
+    motion.fallStartZ = Number.NaN; // 12.10 6.07
+    motion.fallingFar = false;
     setJump(motion, 0, position.orientation, input.swimSpeed);
     events.push("stopSwim", "startFall");
     return;
@@ -968,6 +1005,8 @@ export function applyImpulse(motion: CharacterMotion, impulse: KnockbackImpulse)
   motion.fallTime = 0;
   motion.airFlight = false;
   motion.vertical = 0;
+  motion.fallStartZ = Number.NaN; // 12.10 6.07: a knock back is a fall with a jump velocity, from here
+  motion.fallingFar = false;
   const jump = motion.jump;
   if (jump) {
     jump.velocity = impulse.upSpeed;

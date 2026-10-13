@@ -27,6 +27,9 @@ import { isBaseIdle } from "../dist/code/browser/AnimatedModel.js"; // 05.10-A7a
 import { UNIT_FLAG_STUNNED, syncFlagPoses } from "../dist/code/browser/UnitFlagPoses.js"; // 05.10-A7a-C 6.07
 import { extendSidecarWait, poseExitClips, sidecarClaims } from "../dist/code/browser/SidecarWait.js"; // 05.10-A7a-G2 6.19
 import { poseTakesWholeBody, wholeBodyOutlivesBase } from "../dist/code/browser/game/ActionOverBase.js"; // 05.10-6.21b; ревью 6.21b
+import { // 12.10 6.03/6.07: the renderer's playback modes
+  PLAYBACK_BACKWARD, PLAYBACK_FORWARD, PLAYBACK_HOLD_LAST, applyPlayback, fallbackPlayback, playbackHolds, wantedPlayback,
+} from "../dist/code/browser/AnimationPlayback.js";
 
 const arbiter = await import(process.env.UNIT_ACTION_ARBITER_MODULE
   ?? new URL("../dist/code/browser/UnitActionArbiter.js", import.meta.url).href);
@@ -340,6 +343,8 @@ function executor({ moving = false, overrides = {}, legless = false } = {}) {
     poseAnimationFamily: () => "any", commitLocomotion,
     animationBlend, animationTransition, clipBlendTime, animationFadeWindow,
     ACTION_ANIMATION_BLEND, ANIMATION_BLEND: LOOP_ANIMATION_BLEND, ACTION_CLIP_WAIT: 900, ACTION_SIDECAR_WAIT: 3_000,
+    // 12.10 6.03/6.07: the playback modes #startUnitAction / #playAnimation / #poseBase read.
+    PLAYBACK_BACKWARD, PLAYBACK_FORWARD, PLAYBACK_HOLD_LAST, applyPlayback, fallbackPlayback, playbackHolds, wantedPlayback,
     ...overrides,
   });
   const h = new Harness();
@@ -370,6 +375,7 @@ function executor({ moving = false, overrides = {}, legless = false } = {}) {
     skinned: { mixer: new THREE.AnimationMixer(root) },
     template: { clips, overlayClips, animations: new Set(clips.keys()), parents: [-1, 0, 0] },
     action: undefined, animationId: -1, overlayUntil: 0,
+    animationMode: PLAYBACK_FORWARD, overlayAnimationMode: PLAYBACK_FORWARD, // 12.10 6.03/6.07
   };
   const queue = new UnitActionQueue();
   const payload = (animation) => ({
@@ -635,6 +641,78 @@ test("executor: a whole-body swing over a combat stance plays on the whole body 
   const handBack = queue.top().until;
   assert.equal(frame(handBack, stancePose()), undefined);
   assert.equal(unit.animationId, READY, "and the stance returns after it");
+});
+
+// 12.10 6.07: Wow.exe plays a missing LootHold as Loot held on its last frame and a missing LootUp as Loot backwards
+// (0x00826350, AnimationData Flags 0x20 / 0x10) — the rig here carries Loot alone, as every playable rig does.
+test("executor: LOOTING goes down with Loot, stays down for LootHold, and gets up with Loot played backwards", { skip: ANIMATION_DATA_AVAILABLE ? false : "no animation data" }, async () => {
+  const { resolveSpellVisualAnimation } = await import("../dist/code/browser/AnimatedModel.js");
+  const { UNIT_FLAG_LOOTING } = await import("../dist/code/browser/UnitFlagPoses.js");
+  const LOOT = ANIMATION_IDS.Loot;
+  const run = executor({ overrides: { resolveSpellVisualAnimation } });
+  const { unit, queue, frame, bones } = run;
+  const loot = new THREE.AnimationClip("loot", 0.5, [swing(1, 0, 1, 0.5), swing(2, 0, 1, 0.5)]);
+  run.clips.set(LOOT, loot);
+  unit.template.overlayClips.set(LOOT, locomotionOverlayClip(loot, lowerBody));
+  unit.template.animations.add(LOOT);
+  const submitAt = (now) => (request) => queue.submit(request, now);
+  const bent = () => 2 * Math.atan2(bones[2].quaternion.x, bones[2].quaternion.w);
+  let now = 0;
+  const step = (ms) => {
+    now += ms;
+    frame(now, {});
+    unit.skinned.mixer.update(ms / 1000);
+  };
+  syncFlagPoses(0, UNIT_FLAG_LOOTING, false, 0, queue, submitAt(0));
+  assert.equal(frame(0, {}), "full");
+  assert.equal(unit.animationId, LOOT, "the lead-in: the way down");
+  for (let i = 0; i < 30; i++) step(50);
+  assert.equal(unit.animationId, LOOT, "LootHold resolved to Loot");
+  assert.equal(unit.animationMode, PLAYBACK_HOLD_LAST, "held on its last frame");
+  assert.ok(Math.abs(bent() - 1) < 1e-3, `down at the corpse: ${bent()}`);
+  for (let i = 0; i < 20; i++) {
+    step(50);
+    assert.ok(Math.abs(bent() - 1) < 1e-3, `and stays down, no bobbing: ${bent()}`);
+  }
+  syncFlagPoses(UNIT_FLAG_LOOTING, 0, false, now, queue, submitAt(now));
+  step(0);
+  assert.equal(unit.animationId, LOOT, "LootUp resolved to Loot");
+  assert.equal(unit.animationMode, PLAYBACK_BACKWARD, "played backwards: getting up");
+  step(10);
+  assert.ok(bent() > 0.9, `from the bottom, not from the top: ${bent()}`);
+  step(240);
+  assert.ok(bent() > 0.3 && bent() < 0.7, `half way up: ${bent()}`);
+  step(240);
+  assert.ok(bent() < 0.1, `up: ${bent()}`);
+});
+
+// 12.10 6.03: STATE_LOOT 428's LootHold on a rig without it is Loot held on its last frame as the *base* — the frame
+// fades in like any base, and a held frame (speed 0, so never «running» to the mixer) is not restarted every frame.
+test("executor: a held base fades in once and is not restarted frame after frame", { skip: ANIMATION_DATA_AVAILABLE ? false : "no animation data" }, () => {
+  const LOOT = ANIMATION_IDS.Loot;
+  const state = { held: false };
+  const run = executor({
+    overrides: {
+      chooseAnimation: () => (state.held ? { animation: LOOT, loop: true, mode: PLAYBACK_HOLD_LAST } : { animation: 0, loop: true }),
+    },
+  });
+  const { unit, frame, bones } = run;
+  run.clips.set(LOOT, new THREE.AnimationClip("loot", 0.5, [swing(1, 0, 1, 0.5), swing(2, 0, 1, 0.5)]));
+  frame(0, {});
+  unit.skinned.mixer.update(0.5);
+  state.held = true;
+  frame(500, {});
+  const held = unit.action;
+  assert.equal(unit.animationMode, PLAYBACK_HOLD_LAST);
+  unit.skinned.mixer.update(0.05);
+  for (let now = 550; now < 650; now += 20) {
+    frame(now, {});
+    assert.equal(unit.action, held);
+    unit.skinned.mixer.update(0.02);
+    if (now < 600) assert.ok(held.getEffectiveWeight() < 0.99, `still fading in at ${now}: ${held.getEffectiveWeight()}`);
+  }
+  assert.ok(Math.abs(held.time - 0.5) < 1e-9, "on its last frame");
+  assert.ok(2 * Math.atan2(bones[2].quaternion.x, bones[2].quaternion.w) > 0.5, "the pose is the held frame");
 });
 
 test("executor: a STUNNED hold survives a flinch and walking, and leaves with the flag", () => {

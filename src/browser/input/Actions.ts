@@ -64,6 +64,7 @@ import {
 import { // 11.02-input
   VEHICLE_CAMERA_KEY_YARDS, vehicleAimStepKey, vehicleExitKey, vehicleSeatKey,
 } from "./VehicleVerbs.js";
+import { ownSheathRefused, requestOwnSheath } from "../SheathCeremony.js"; // 12.10 6.08
 import { vehicleCamera } from "../game/VehicleCamera.js"; // 11.02-input
 import { cameraMaxDistance } from "../ui/Settings.js"; // 11.02-input
 import { liveCameraViews, useCameraViewMotion } from "../game/CameraViewsLive.js"; // DEC-B 3.11
@@ -537,12 +538,18 @@ function toggleSheath(): boolean {
   if (!world || !self) return false;
   if (sheathBlocked(unit.health(self), unit.flags(self),
     self.fields.get(UPDATE_FIELDS.UNIT_CHANNEL_SPELL.offset))) return true;
+  // 12.10 6.08: 0x006e23a0 does nothing while an arm still plays Sheath/HipSheath or on a rig that has neither.
+  const now = performance.now();
+  if (ownSheathRefused(now)) return true;
   const equipment = playerInventory(world.state)?.equipment ?? [];
   const melee = equipment[EQUIPMENT_SLOT_MAINHAND]?.item !== undefined
     || equipment[EQUIPMENT_SLOT_OFFHAND]?.item !== undefined;
   const ranged = equipment[EQUIPMENT_SLOT_RANGED]?.item !== undefined && !frameXmlClassHasRelicSlot(unit.classId(self));
   const next = nextSheathState(unit.sheathState(self), melee, ranged);
-  if (next !== undefined) world.setSheathed(next);
+  if (next !== undefined) {
+    world.setSheathed(next);
+    requestOwnSheath(next, now); // 12.10 6.08: 0x00736d30(next, 0, 0) — the arms' clips start now, not at the echo
+  }
   return true;
 }
 

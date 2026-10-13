@@ -95,6 +95,14 @@ export function setUnitFacingSources(next: UnitFacingSources | undefined): void 
   sources = next ?? {};
 }
 
+/**
+ * 12.10 6.03: the unit the player's interaction window is open on (the global 0x00bd07a8), or undefined — also
+ * what 0x007171c0 reads to set aside an emote state whose row carries 0x2000 (browser/UnitStandingPose.ts).
+ */
+export function interactionNpcGuid(): bigint | undefined {
+  return sources.interactionNpc?.();
+}
+
 /** A guid held in two slots, or undefined for an empty one — no bigint is made for the empty case. */
 function guidIn(object: WorldObjectState, index: number): bigint | undefined {
   const low = object.fields.get(index) ?? 0;
