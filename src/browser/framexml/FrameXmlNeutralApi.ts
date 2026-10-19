@@ -682,6 +682,11 @@ do
     showquesttrackingtooltips = "1",
     -- Wow.exe registers previewTalents with "0" (0x51d9b0); the talent preview reads it (3.33).
     previewtalents = "0",
+    -- 19.10: and the tracker's four in the same table (0x0051de99…0x0051e0fd): trackerFilter "7" (achievements,
+    -- completed quests, other zones), trackerSorting "0", watchFrameWidth "0", autoQuestWatch and autoQuestProgress
+    -- "1". WatchFrame copies trackerFilter at VARIABLES_LOADED; unset, its filter kept no REMOTE_ZONES bit and the
+    -- tracker listed only quests whose POI the current map placed — on most maps none.
+    trackerfilter = "7", trackersorting = "0", watchframewidth = "0", autoquestwatch = "1", autoquestprogress = "1",
     -- 11.10: and buffDurations with "1" (the string showClock and autoSelfCast share). The Buffs
     -- panel's box copies GetCVar into SHOW_BUFF_DURATIONS at login; unset, it copied nil and
     -- BuffFrame.lua:254 hid the time under every buff and debuff.
