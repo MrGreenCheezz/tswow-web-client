@@ -140,6 +140,10 @@ export class SpellMetadataClient {
     // Optional: an older gateway's rows leave a category timer started mid-session unknown, as before 3.39.
     // 13.10: v=20 adds `speed`, Spell.Speed — a missile's misses are logged on its arrival (3.01, world/MissileMissLog.ts).
     // Optional: an older gateway's rows log every miss at once, as before.
+    // 19.10: the v=20 rows also carry what IsUsableAction's per-slot check reads (FrameXmlActionUsable.ts): the shapeshift
+    // masks, the aura states and aura spells, AuraInterruptFlags, the mechanics, the effects' class masks and a form's
+    // Flags. Not a new key: all are optional, and a row without them (an older gateway, or its hour of cache after a
+    // restart) leaves those gates open rather than grey.
     const url = `${this.#baseUrl}/dbc/spells?ids=${chunk.join(",")}&v=20`; // 13.10: was v=19
     let value = await this.#batch(url);
     // The key alone cannot tell a restarted gateway from the hour-long browser cache: an answer the
@@ -262,7 +266,17 @@ function isSpellMetadata(value: unknown): value is SpellMetadata {
     && (spell.category === undefined
       || (Number.isSafeInteger(spell.category) && (spell.category as number) >= 0))
     // 13.10 (v=20): Spell.Speed, yards a second, 0 for none.
-    && (spell.speed === undefined || (typeof spell.speed === "number" && Number.isFinite(spell.speed) && spell.speed >= 0));
+    && (spell.speed === undefined || (typeof spell.speed === "number" && Number.isFinite(spell.speed) && spell.speed >= 0))
+    // 19.10: the usability check's raw columns (gateway SpellMetadata.shapeshiftMask); absent from an older gateway.
+    && optionalIntegers(spell.shapeshiftMask, 2) && optionalIntegers(spell.shapeshiftExclude, 2)
+    && optionalInteger(spell.casterAuraState) && optionalInteger(spell.targetAuraState)
+    && optionalInteger(spell.excludeCasterAuraState) && optionalInteger(spell.excludeTargetAuraState)
+    && optionalInteger(spell.casterAuraSpell) && optionalInteger(spell.targetAuraSpell)
+    && optionalInteger(spell.excludeCasterAuraSpell) && optionalInteger(spell.excludeTargetAuraSpell)
+    && optionalInteger(spell.auraInterruptFlags) && optionalInteger(spell.mechanic)
+    && optionalIntegers(spell.effectMechanic, 3) && optionalInteger(spell.shapeshiftFormFlags)
+    && (spell.effectSpellClassMask === undefined || (Array.isArray(spell.effectSpellClassMask)
+      && spell.effectSpellClassMask.length === 3 && spell.effectSpellClassMask.every((words) => optionalIntegers(words, 3) && words !== undefined)));
 }
 
 /** 12.10: an optional array of `length` finite numbers. */

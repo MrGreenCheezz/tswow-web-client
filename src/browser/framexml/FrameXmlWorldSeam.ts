@@ -1789,6 +1789,8 @@ export interface FrameXmlWorldSeam {
   spellCooldown(index: number, bookType: string | undefined): FrameXmlSpellCooldown;
   spellAutocast(index: number, bookType: string | undefined): readonly [boolean, boolean];
   spellIsPassive(index: number, bookType: string | undefined): boolean | undefined;
+  /** 19.10: `IsUsableSpell(spell [, bookType])`'s `isUsable, notEnoughMana` (Wow.exe 0x00541680); absent → nil, nil. */
+  spellUsable?(value: number | string, bookType: string | undefined): readonly [boolean, boolean];
   /** The rank-normalized slot; nil when the requested slot does not exist. */
   knownSlotFromHighestRankSlot(index: number, bookType: string | undefined): number | undefined;
   spellIsSelected(index: number, bookType: string | undefined): boolean;
@@ -2594,6 +2596,13 @@ export const FRAMEXML_SEAM_BINDINGS: Readonly<Record<string, FrameXmlSeamBinding
   GetSpellCooldown: (seam, args) => [...seam.spellCooldown(slotOf(args[0]), filterOf(args[1]))],
   GetSpellAutocast: (seam, args) => [...seam.spellAutocast(slotOf(args[0]), filterOf(args[1]))],
   IsPassiveSpell: (seam, args) => optional(seam.spellIsPassive(slotOf(args[0]), filterOf(args[1]))),
+  // 19.10: a book slot (with its book) or a spell name; the pair as IsUsableAction's, `1`/nil each.
+  IsUsableSpell: (seam, args) => {
+    const value = args[0];
+    const pair = typeof value === "number" || typeof value === "string"
+      ? seam.spellUsable?.(value, filterOf(args[1])) : undefined;
+    return pair ? [pair[0] ? 1 : undefined, pair[1] ? 1 : undefined] : [undefined, undefined];
+  },
   GetKnownSlotFromHighestRankSlot: (seam, args) => optional(
     seam.knownSlotFromHighestRankSlot(slotOf(args[0]), filterOf(args[1])),
   ),

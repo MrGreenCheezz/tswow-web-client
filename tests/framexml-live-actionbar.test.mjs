@@ -170,7 +170,8 @@ test("P1-16: a 60 s snapshot cooldown fires one pair at its start and one at its
   fired.length = 0;
   for (let index = 0; index < 19; index++) step(f, 3_000);
   assert.deepEqual(cooldownEvents(fired), [], "57 s of countdown are reads, not events");
-  assert.equal(call(seam, "IsUsableAction", 13)[0], false);
+  // 19.10: a recovering spell stays usable — CGActionBar::UpdateUsableAction (0x005a9e20) has no cooldown gate.
+  assert.deepEqual(call(seam, "IsUsableAction", 13), [true, false]);
   step(f, 3_000);
   assert.deepEqual(cooldownEvents(fired), PAIR, "the natural end");
   assert.deepEqual(call(seam, "IsUsableAction", 13), [true, false]);

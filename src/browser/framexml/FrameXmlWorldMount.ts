@@ -3553,6 +3553,8 @@ export async function mountFrameXmlVertical(
     // 05.10 review A7b-4: since A7b-4 the renderer's flag is the server's outdoors (WMOAreaTable 4/2,
     // AreaTable INSIDE); the client's event keeps the MOGP test, asked of the locator's floor.
     playerIndoors: () => liveWmoInterior() ?? game.renderer?.indoors === true,
+    // 19.10: the usability check's World::QueryOutdoors — the renderer's flag, which is the server's outdoors.
+    playerOutdoors: () => (game.renderer ? game.renderer.indoors !== true : undefined),
   });
   // L17 3.14: the live seam answers the number itself; a seam handed in answers the text form.
   const unitGuidValue = (seam as { unitGuidValue?: (unit: string) => bigint | undefined }).unitGuidValue?.bind(seam);

@@ -67,7 +67,9 @@ function fixture() {
   };
   const seam = new LiveWorldSeam({
     world: () => world, store: () => undefined,
-    spell: (id) => (id === STEALTH ? { id, name: "Незаметность", rank: "", iconPath: "", passive: false } : undefined),
+    // 19.10: Spell.dbc 1784's attribute words: SPELL_ATTR0_DISABLED_WHILE_ACTIVE (0x2000000) is the gate a hold greys by.
+    spell: (id) => (id === STEALTH
+      ? { id, name: "Незаметность", rank: "", iconPath: "", passive: false, attributes: [0x1a150010, 0x10, 0x200000, 0x4000000, 0, 0, 0, 0] } : undefined),
     monotonic: () => clock.monotonic, globalCooldownUntil: () => 0, castSpell: () => {},
   });
   const pump = { now: () => clock.lua, fire: (name, ...args) => { fired.push([name, ...args]); return 1; } };
@@ -119,7 +121,8 @@ test("3.37(в): an item slot under a category lockout with no snapshot of its ow
   const [, duration, enable] = call(seam, "GetActionCooldown", 1);
   assert.equal(enable, 1);
   assert.ok(duration > 0, "the slot sweeps the shared lockout");
-  assert.deepEqual(call(seam, "IsUsableAction", 1), [false, false]);
+  // 19.10: and stays usable under it — UpdateUsableAction (0x005a9e20) greys an item for a hold only (0x0080ac10).
+  assert.deepEqual(call(seam, "IsUsableAction", 1), [true, false]);
   fired.length = 0;
   clock.monotonic = 100_500;
   clock.lua = 500.5;

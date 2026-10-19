@@ -303,6 +303,10 @@ import { QUALITY_LINK_COLORS, itemChatLink, spellChatLink } from "../ui/ChatLink
 import { className, classFileName, classSpellFamily, raceBaseLanguage, raceFileName, raceName } from "../ui/UnitSnapshot.js";
 import { femaleOf } from "../ui/UnitSnapshot.js"; // L3-review
 import { frameXmlActionInRange, type ActionRangeHost } from "./FrameXmlActionRange.js";
+import { // 19.10
+  frameXmlSpellCastable, frameXmlSpellHasPower, frameXmlSpellUsable, frameXmlTotemCategorySlotMask as totemCategorySlotMask,
+  type ActionUsableHost,
+} from "./FrameXmlActionUsable.js";
 import { settledHoveredUnitGuid } from "../game/HoverTarget.js";
 import { clientLocale } from "../Environment.js";
 import {
@@ -475,6 +479,8 @@ const HORDE_RACE_IDS = new Set([2, 5, 6, 8, 10]);
 
 /** How often the seam re-reads the world; 60 ms is four world ticks and under a rendered frame. */
 const LIVE_POLL_SECONDS = 0.06;
+/** 19.10: how often the action slots' IsUsableAction pairs are re-taken (#reconcileActionUsable). */
+const ACTION_USABLE_POLL_MS = 100;
 const EMPTY_SPELL_TABS: readonly FrameXmlSpellTabInfo[] = Object.freeze([]);
 const NO_SPELL_MODIFIERS: readonly never[] = Object.freeze([]);
 
@@ -630,6 +636,8 @@ export interface LiveWorldSeamContext {
    * outdoors.
    */
   readonly playerIndoors?: () => boolean;
+  /** 19.10: `World::QueryOutdoors` for the usability check (SPELL_ATTR0_OUTDOORS_ONLY); undefined while unknown. */
+  readonly playerOutdoors?: () => boolean | undefined;
   /** Cached `/dbc/battlegrounds` rows; C-API reads never start a fetch. */
   readonly battlegroundCatalog?: () => FrameXmlBattlegroundCatalog | undefined;
   /**
@@ -950,6 +958,9 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
   #barSignature = "";
   /** P1-16: spell-slot timers without a snapshot, as `slot:end` (constant while they run). */
   #actionCooldownSignature = "";
+  /** 19.10: the last ACTIONBAR_UPDATE_USABLE pairs (#reconcileActionUsable) and when they were taken. */
+  #actionUsableSignatureValue = "";
+  #actionUsableCheckedAt = Number.NEGATIVE_INFINITY;
   /** P1-16 review: the possess/vehicle page's mirrored timers and usability (`#currentMirroredActionSignature`). */
   #mirroredActionSignature = "";
   #itemCooldownSignature = "";
@@ -1885,6 +1896,8 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     this.#pendingLevelUp = undefined;
     this.#barSignature = "";
     this.#actionCooldownSignature = "";
+    this.#actionUsableSignatureValue = ""; // 19.10
+    this.#actionUsableCheckedAt = Number.NEGATIVE_INFINITY;
     this.#mirroredActionSignature = "";
     this.#itemCooldownSignature = "";
     this.#itemHoldSignature = ""; // 3.39 (12.10)
@@ -2657,7 +2670,7 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
         if (this.possess.mirrorIndex(POSSESS_FIRST_SLOT) === undefined) return;
         this.#mirroredActionSignature = this.#currentMirroredActionSignature();
         pump.fire(FRAMEXML_SEAM_EVENTS.actionCooldown);
-        pump.fire(FRAMEXML_SEAM_EVENTS.actionUsable);
+        this.#fireActionUsable(pump); // 19.10
       }));
       this.#unsubscribe.push(world.events.on("QUERY_CACHE_CHANGED", (event) => {
         if (event.kind === "cleared") {
@@ -3646,7 +3659,7 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     pump.fire(FRAMEXML_SEAM_EVENTS.bagUpdateCooldown);
     if (!timers) return;
     pump.fire(FRAMEXML_SEAM_EVENTS.actionCooldown);
-    pump.fire(FRAMEXML_SEAM_EVENTS.actionUsable);
+    this.#fireActionUsable(pump); // 19.10
   }
 
   /**
@@ -3691,7 +3704,7 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     if (signature === this.#actionCooldownSignature) return;
     this.#actionCooldownSignature = signature;
     pump.fire(FRAMEXML_SEAM_EVENTS.actionCooldown);
-    pump.fire(FRAMEXML_SEAM_EVENTS.actionUsable);
+    this.#fireActionUsable(pump); // 19.10
   }
 
   /**
@@ -3722,7 +3735,7 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     this.#mirroredActionSignature = next;
     const timers = (signature: string): string => signature.replace(/:[01],/g, ",");
     if (timers(next) !== timers(previous)) pump.fire(FRAMEXML_SEAM_EVENTS.actionCooldown);
-    pump.fire(FRAMEXML_SEAM_EVENTS.actionUsable);
+    this.#fireActionUsable(pump); // 19.10
   }
 
   // ---- merchant ---------------------------------------------------------
@@ -4171,7 +4184,9 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
 
     const bar = world.actionButtons
       .map((button) => `${button.slot}:${button.type}:${button.action}:${this.actionTexture(button.slot + 1) ?? ""}`
-        + (button.type === ACTION_BUTTON_ITEM ? `:${this.actionCount(button.slot + 1)}:${this.isEquippedAction(button.slot + 1)}` : ""))
+        + (button.type === ACTION_BUTTON_ITEM ? `:${this.actionCount(button.slot + 1)}:${this.isEquippedAction(button.slot + 1)}`
+          // 19.10: a reagent spell's count (0x005aa5c0 raises ACTIONBAR_SLOT_CHANGED for the slots of a bag change).
+          : this.isConsumableAction(button.slot + 1) ? `:${this.actionCount(button.slot + 1)}` : ""))
       .join(",");
     if (bar !== this.#barSignature) {
       this.#barSignature = bar;
@@ -4181,6 +4196,7 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     // pair four times a second per recovering slot). Snapshot timers are #reconcileItemCooldowns'.
     this.#reconcileActionCooldowns();
     this.#reconcileMirroredActions(); // P1-16 review: the possess/vehicle page
+    this.#reconcileActionUsable(); // 19.10: power, auras, forms, combo points, reagents, target
     // Power has no `SELF` field of its own — the index depends on the power type — so it is polled
     // beside the two above rather than subscribed like health.
     const player = this.#self();
@@ -7048,6 +7064,7 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
 
   actionCount(slot: number): number {
     const button = this.#button(slot);
+    if (button?.type === ACTION_BUTTON_SPELL) return this.#reagentCasts(this.#metadata(slot)); // 19.10 (0x007ffa30)
     return button?.type === ACTION_BUTTON_ITEM
       ? this.#actionItems(button.action).reduce((count, item) => count + stackCount(item), 0) : 0;
   }
@@ -7076,34 +7093,178 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     return this.#spellCooldownAnswer(button.action);
   }
 
+  /**
+   * 19.10: `IsUsableAction` as CGActionBar::UpdateUsableAction (Wow.exe 0x005a9e20) fills a slot: an item needs a
+   * carried copy and no hold on its use spell (Spell_C_NeedsCooldownEvent 0x0080ac10 asks the hold, not the timer);
+   * a spell — an item's use spell too — passes Spell_C_IsUsableAction (0x0080b5d0) and is then short of power or
+   * not (0x008017e0), FrameXmlActionUsable.ts. A recovering spell or item stays usable: its sweep says the rest
+   * (before 19.10 a timer greyed it, after ui/ActionBar.ts rather than the client). Other kinds need control.
+   */
   actionUsable(slot: number): readonly [boolean, boolean] {
     const button = this.#button(slot);
     if (!button) return [false, false];
+    const world = this.#context.world();
+    const self = this.#self();
     if (button.type === ACTION_BUTTON_ITEM) {
-      // 3.39 (12.10): a recovering or held item is not usable, as its use is refused (game/ItemUseCooldown.ts) and a
-      // held spell's button is (below); the global part is not in the way, as it is not for a spell here.
-      const world = this.#context.world();
       const template = this.#itemTemplate(world, button.action);
       const spellId = itemUseSpellId(template);
-      const blocked = world !== undefined && spellId !== undefined
-        && itemUseCooldownBlock(world, template, spellId, this.#context.monotonic()) !== undefined;
-      return [this.#actionItems(button.action).length > 0 && !blocked, false];
+      if (this.#actionItems(button.action).length === 0) return [false, false];
+      if (world !== undefined && spellId !== undefined
+        && itemUseCooldownBlock(world, template, spellId, this.#context.monotonic()) === "hold") return [false, false];
+      const metadata = spellId === undefined ? undefined : this.#context.spell(spellId);
+      if (!metadata || !self) return [true, false];
+      const flags = template?.found ? template.flags : undefined;
+      if (!frameXmlSpellCastable(self, metadata, this.#target(), this.#usableHost, flags)) return [false, false];
+      return frameXmlSpellHasPower(self, metadata) ? [true, false] : [false, true];
     }
-    if (button.type !== ACTION_BUTTON_SPELL) return [true, false];
+    if (button.type !== ACTION_BUTTON_SPELL) return [this.#usableHost.hasControl(), false];
     const metadata = this.#metadata(slot);
+    // A row or a character not cached yet: a doubt does not grey the button; a hold the world knows of does.
     if (!metadata) return [true, false];
-    if (metadata.passive) return [false, false];
-    const world = this.#context.world();
-    if (world && world.cooldownRemaining(button.action, this.#context.monotonic()) > 0) {
-      return [false, false];
+    if (!self) {
+      const held = ((metadata.attributes?.[0] ?? 0) & 0x2000000) !== 0 && this.#usableHost.onHold(metadata.id);
+      return [!metadata.passive && !held, false];
     }
-    // A held spell is refused as NOT_READY until its aura ends (WorldClient.isSpellOnHold).
-    if (world?.isSpellOnHold?.(button.action)) return [false, false];
-    return [true, false];
+    return frameXmlSpellUsable(self, metadata, this.#target(), this.#usableHost);
   }
 
+  /** 19.10: `IsUsableSpell(spell [, bookType])` (0x00541680): a book slot or a known spell's name, the same pair. */
+  spellUsable(value: number | string, bookType: string | undefined): readonly [boolean, boolean] {
+    const world = this.#context.world();
+    let id: number | undefined;
+    if (typeof value === "number") id = bookType === "pet" ? undefined : this.#spellId(value);
+    else if (world && value.length > 0) {
+      let level = -1;
+      for (const known of world.knownSpells) {
+        const spell = this.#context.spell(known.id);
+        if (spell?.name === value && spell.spellLevel > level) { id = spell.id; level = spell.spellLevel; }
+      }
+    }
+    const metadata = id === undefined ? undefined : this.#context.spell(id);
+    const self = this.#self();
+    return metadata && self ? frameXmlSpellUsable(self, metadata, this.#target(), this.#usableHost) : [false, false];
+  }
+
+  /** 19.10: what the usability check reads of the world (FrameXmlActionUsable.ts); cache-only reads. */
+  readonly #usableHost: ActionUsableHost = ((): ActionUsableHost => {
+    const seam = this;
+    return {
+      get range() { return seam.#actionRangeHost; },
+      spell: (id) => seam.#context.spell(id),
+      auras: (guid) => seam.#context.world()?.aurasFor(guid) ?? [],
+      itemCount: (entry) => seam.itemCount(entry, false),
+      hasTotemCategory: (category) => seam.#carriesTotemCategory(category),
+      equipped: (slot) => seam.#equippedForSpell(slot),
+      comboPoints: (target) => {
+        const combo = seam.#context.world()?.comboPoints;
+        return combo !== undefined && combo.guid === target ? combo.points : 0;
+      },
+      // CGGameUI::m_hasControl: the last SMSG_CLIENT_CONTROL_UPDATE did not take the character away (a fear).
+      hasControl: () => {
+        const world = seam.#context.world();
+        return world === undefined || world.controlRefusedGuid === undefined || world.controlRefusedGuid !== world.state.selfGuid;
+      },
+      onHold: (spellId) => seam.#context.world()?.isSpellOnHold?.(spellId) === true,
+      instanceType: () => {
+        const mapId = seam.#context.world()?.mapId;
+        return mapId === undefined ? undefined
+          : seam.#context.mapSource?.metadata()?.maps.find((row) => row.id === mapId)?.instanceType;
+      },
+      outdoors: () => seam.#context.playerOutdoors?.(),
+      // The three CVars' defaults: autoSelfCast 1, autoUnshift 1, autoDismountFlying 0.
+      cvar: (name) => seam.getCVarBool(name) ?? name !== "autoDismountFlying",
+    };
+  })();
+
+  /** `m_bag.FindTotemCategory(category, 0)`: a carried item of that TotemCategory, or one whose slots cover it. */
+  #carriesTotemCategory(category: number): boolean {
+    const world = this.#context.world();
+    const inventory = this.#inventoryOf(world);
+    if (!world || !inventory) return true;
+    const wanted = totemCategorySlotMask(category);
+    const carried = [...inventory.backpack, ...inventory.keyring, ...inventory.bags.flatMap((bag) => bag.slots)];
+    for (const slot of carried) {
+      if (!slot.item) continue;
+      const template = this.#itemTemplate(world, entryOf(slot.item));
+      if (!template?.found) continue;
+      if (template.totemCategory === category) return true;
+      // TotemCategory.dbc's masks are not served: the four elements and the Master Totem (21) by 0x005a7b50's map.
+      if (wanted !== 0 && (totemCategorySlotMask(template.totemCategory) & wanted) === wanted) return true;
+    }
+    return false;
+  }
+
+  /** An equipment slot's item as EquippedItemMeetSpellRequirements reads it; undefined when empty or not cached. */
+  #equippedForSpell(slot: number): { itemClass: number; subClass: number; usable: boolean; ammoType: number } | undefined {
+    const world = this.#context.world();
+    const item = this.#inventoryOf(world)?.equipment[slot]?.item;
+    if (!world || !item) return undefined;
+    const template = this.#itemTemplate(world, entryOf(item));
+    if (!template?.found) return undefined;
+    const durability = item.fields.get(UPDATE_FIELDS.ITEM_FIELD_DURABILITY.offset) ?? 0;
+    const maxDurability = item.fields.get(UPDATE_FIELDS.ITEM_FIELD_MAXDURABILITY.offset) ?? 0;
+    return {
+      itemClass: template.itemClass, subClass: template.subClass,
+      usable: maxDurability === 0 || durability > 0, ammoType: template.ammoType,
+    };
+  }
+
+  /** 19.10: every slot's IsUsableAction pair, `slot` + u/m/- — ACTIONBAR_UPDATE_USABLE when it moves (0x005aa470). */
+  #actionUsableSignature(): string {
+    const world = this.#context.world();
+    if (!world) return "";
+    let signature = "";
+    for (const button of world.actionButtons) {
+      const [usable, noMana] = this.actionUsable(button.slot + 1);
+      signature += `${button.slot}${usable ? "u" : noMana ? "m" : "-"},`;
+    }
+    return signature;
+  }
+
+  /**
+   * 19.10: Wow.exe recomputes the pairs on the edges that move them (UpdateUsable 0x005aa470 from 14 callers,
+   * UpdateUsablePower 0x005a8d30 on a power update) and raises the event only on a change; here a poll every
+   * ACTION_USABLE_POLL_MS over the same pairs, so power, auras, forms, combo points, reagents and the target all count.
+   */
+  /**
+   * 19.10: ACTIONBAR_UPDATE_USABLE from another edge (a timer, a hold, the mirrored bar): the pairs the buttons
+   * repaint from are taken now, so the poll below does not raise the same news a second time.
+   */
+  #fireActionUsable(pump: FrameXmlSeamPump): void {
+    pump.fire(FRAMEXML_SEAM_EVENTS.actionUsable);
+    this.#actionUsableSignatureValue = this.#actionUsableSignature();
+  }
+
+  #reconcileActionUsable(): void {
+    const pump = this.#pump;
+    if (!pump) return;
+    const now = this.#context.monotonic();
+    if (now - this.#actionUsableCheckedAt < ACTION_USABLE_POLL_MS) return;
+    this.#actionUsableCheckedAt = now;
+    const signature = this.#actionUsableSignature();
+    const previous = this.#actionUsableSignatureValue;
+    if (signature === previous) return;
+    this.#actionUsableSignatureValue = signature;
+    // The first poll after an attach only takes the pairs: the buttons paint them on their own Update.
+    if (previous !== "") pump.fire(FRAMEXML_SEAM_EVENTS.actionUsable);
+  }
+
+  /**
+   * 19.10: CGActionBar::IsConsumableAction (0x005a9360): an item slot as before, and a spell with a reagent —
+   * whose GetActionCount is then how many casts the bags hold (0x007ffa30, the smallest count / need).
+   */
   isConsumableAction(slot: number): boolean {
-    return this.#button(slot)?.type === ACTION_BUTTON_ITEM;
+    const button = this.#button(slot);
+    if (button?.type === ACTION_BUTTON_ITEM) return true;
+    return button?.type === ACTION_BUTTON_SPELL && (this.#metadata(slot)?.reagents?.length ?? 0) > 0;
+  }
+
+  #reagentCasts(metadata: SpellMetadata | undefined): number {
+    let casts = Number.MAX_SAFE_INTEGER;
+    for (const reagent of metadata?.reagents ?? []) {
+      casts = Math.min(casts, Math.trunc(this.itemCount(reagent.itemId, false) / reagent.count));
+    }
+    return casts === Number.MAX_SAFE_INTEGER ? 0 : casts;
   }
 
   isStackableAction(slot: number): boolean {
@@ -7356,6 +7517,11 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     }
     if (button.type !== ACTION_BUTTON_ITEM || !this.actionUsable(slot)[0]) return;
     const world = this.#context.world();
+    // 19.10: a recovering item is usable (white under its sweep) yet its use is refused before a packet
+    // (game/ItemUseCooldown.ts, 0x0080cce0's history check), as before.
+    const template = this.#itemTemplate(world, button.action);
+    const spellId = itemUseSpellId(template);
+    if (world && spellId !== undefined && itemUseCooldownBlock(world, template, spellId, this.#context.monotonic()) !== undefined) return;
     const held = this.#actionItems(button.action)[0];
     if (world && held) requestInventoryItemUse(held, () => world.useItem(held.bag, held.slot, held.guid));
   }

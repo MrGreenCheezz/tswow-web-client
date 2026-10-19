@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { explicitUnitTargetContract } from "./ExplicitUnitTargetContract.js";
 import { explicitSpellTargetContract } from "./ExplicitSpellTargetContract.js";
 import { openDbc, type Dbc } from "./Dbc.js";
-import { parseSpellShapeshiftFormBonuses } from "./SpellShapeshiftForms.js";
+import { parseSpellShapeshiftFormBonuses, parseSpellShapeshiftFormFlags } from "./SpellShapeshiftForms.js";
 import { parseSummonProperties, spellSummonProperties, type SummonPropertiesRow } from "./SummonPropertiesMetadata.js"; // L13
 
 /**
@@ -397,6 +397,30 @@ export interface SpellMetadata {
    *   `effectPointsPerCombo` (+0x1dc): `$b`; `effectDamageMultiplier` (EffectChainAmplitude, +0x260):
    *   `$f`/`$F`; `effectBonusMultiplier` (EffectBonusCoefficient, +0x294): `$bc` inside `${…}`.
    */
+  /**
+   * 19.10: what IsUsableAction's per-slot check reads besides the attributes, power and reagents
+   * (wowdecomp Spell_C_IsUsableAction 0x0080B5D0, CGUnit_C::CheckShapeshiftRules 0x0072BAC0;
+   * src/browser/framexml/FrameXmlActionUsable.ts), raw: `ShapeshiftMask`/`ShapeshiftExclude` (two words each, bit
+   * form-1), the four aura states and the four aura spells, `AuraInterruptFlags`, `Mechanic` and `EffectMechanic`
+   * (SpellCancelsAura 0x007FDFA0), and per effect the three words of `EffectSpellClassMaskA/B/C` (SpellRec::IsAffectedBy
+   * 0x007FDEC0). `shapeshiftFormFlags`: the SpellShapeshiftForm.dbc `Flags` of a MOD_SHAPESHIFT effect's form.
+   * Optional (no new key): an older gateway's rows leave those gates open.
+   */
+  shapeshiftMask?: number[];
+  shapeshiftExclude?: number[];
+  casterAuraState?: number;
+  targetAuraState?: number;
+  excludeCasterAuraState?: number;
+  excludeTargetAuraState?: number;
+  casterAuraSpell?: number;
+  targetAuraSpell?: number;
+  excludeCasterAuraSpell?: number;
+  excludeTargetAuraSpell?: number;
+  auraInterruptFlags?: number;
+  mechanic?: number;
+  effectMechanic?: number[];
+  effectSpellClassMask?: number[][];
+  shapeshiftFormFlags?: number;
   procTypeMask?: number;
   procCharges?: number;
   stackAmount?: number;
@@ -483,6 +507,8 @@ export function parseSpellMetadata(
   const icons = openDbc(view(iconPayload), "SpellIcon");
   const formBonuses = shapeshiftFormPayload
     ? parseSpellShapeshiftFormBonuses(shapeshiftFormPayload) : new Map<number, number>();
+  const formFlags = shapeshiftFormPayload // 19.10
+    ? parseSpellShapeshiftFormFlags(shapeshiftFormPayload) : new Map<number, number>();
   const debuffTypes = dispelTypePayload ? parseDebuffTypeNames(dispelTypePayload) : new Map<number, string>();
   const dispelNames = dispelTypePayload
     ? parseDispelTypeNames(dispelTypePayload, process.env["CLIENT_LOCALE"] ?? "ruRU") : new Map<number, string>();
@@ -651,6 +677,23 @@ export function parseSpellMetadata(
       // Left alone it would put "101%" on every tooltip that mentions a chance.
       procChance: Math.min(100, spells.int(row, "ProcChance")),
       descriptionVariablesId: spells.int(row, "DescriptionVariablesID"),
+      // 19.10: the usability check's columns (SpellMetadata.shapeshiftMask).
+      shapeshiftMask: [0, 1].map((word) => spells.int(row, "ShapeshiftMask", word) >>> 0),
+      shapeshiftExclude: [0, 1].map((word) => spells.int(row, "ShapeshiftExclude", word) >>> 0),
+      casterAuraState: spells.int(row, "CasterAuraState"),
+      targetAuraState: spells.int(row, "TargetAuraState"),
+      excludeCasterAuraState: spells.int(row, "ExcludeCasterAuraState"),
+      excludeTargetAuraState: spells.int(row, "ExcludeTargetAuraState"),
+      casterAuraSpell: spells.int(row, "CasterAuraSpell"),
+      targetAuraSpell: spells.int(row, "TargetAuraSpell"),
+      excludeCasterAuraSpell: spells.int(row, "ExcludeCasterAuraSpell"),
+      excludeTargetAuraSpell: spells.int(row, "ExcludeTargetAuraSpell"),
+      auraInterruptFlags: spells.int(row, "AuraInterruptFlags") >>> 0,
+      mechanic: spells.int(row, "Mechanic"),
+      effectMechanic: perEffect((effect) => spells.int(row, "EffectMechanic", effect)),
+      effectSpellClassMask: Array.from({ length: SPELL_EFFECTS }, (_, effect) =>
+        (["EffectSpellClassMaskA", "EffectSpellClassMaskB", "EffectSpellClassMaskC"] as const)
+          .map((column) => spells.int(row, column, effect) >>> 0)),
       // 12.10 (v=18): what the description writer reads besides (SpellMetadata.procTypeMask).
       procTypeMask: spells.int(row, "ProcTypeMask") >>> 0,
       procCharges: spells.int(row, "ProcCharges"),
@@ -677,6 +720,8 @@ export function parseSpellMetadata(
     if (formEffect >= 0) {
       const bonus = formBonuses.get(metadata.effectMiscValue[formEffect]!);
       if (bonus !== undefined) metadata.bonusActionBarOffset = bonus;
+      const flags = formFlags.get(metadata.effectMiscValue[formEffect]!); // 19.10
+      if (flags !== undefined) metadata.shapeshiftFormFlags = flags;
     }
     result.set(id, metadata);
   }

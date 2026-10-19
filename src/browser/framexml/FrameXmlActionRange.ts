@@ -297,6 +297,13 @@ export function actionRangeCanAttack(caster: WorldObjectState, target: WorldObje
   return !friendlyReaction(caster, target, host);
 }
 
+/** 19.10: `sameGroup` for the usability check's party/raid implicit targets (FrameXmlActionUsable.ts). */
+export function actionRangeSameGroup(
+  caster: WorldObjectState, target: WorldObjectState, raid: boolean, host: ActionRangeHost,
+): boolean {
+  return sameGroup(caster, target, raid, host);
+}
+
 /** 0x00718ca0 / 0x00718d70: the unit's player is in the caster's party (subgroup) or raid. */
 function sameGroup(caster: WorldObjectState, target: WorldObjectState, raid: boolean, host: ActionRangeHost): boolean {
   if (caster === target) return true;

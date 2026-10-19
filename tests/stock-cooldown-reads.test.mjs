@@ -180,7 +180,8 @@ test("a potion drunk in combat: both potions answer held (enable 0, the category
     clock.monotonic += 250;
     clock.lua += 0.25;
     assertSweep(call(seam, "GetContainerItemCooldown", 0, 2), [start, 60, 1], "the same start a moment later");
-    assert.deepEqual(call(seam, "IsUsableAction", 2), [false, false], "recovering");
+    // 19.10: recovering is not held: white under the sweep (UpdateUsableAction 0x005a9e20 asks the hold only, 0x0080ac10).
+    assert.deepEqual(call(seam, "IsUsableAction", 2), [true, false], "recovering");
   } finally {
     seam.detach();
     client.close();

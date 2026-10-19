@@ -31,3 +31,22 @@ export function parseSpellShapeshiftFormBonuses(payload: Uint8Array): Map<number
   }
   return bonuses;
 }
+
+/**
+ * 19.10: form ID -> `Flags` (column 19, after ID, BonusActionBar and the 17 name words;
+ * TrinityCore DBCStructure.h SpellShapeshiftFormEntry::flags1). The client's usability check reads
+ * three bits of the current form's row (wowdecomp CGUnit_C::IsShapeShifted 0x00721CA0 bit 0x1,
+ * CanAutoUnshift 0x0071B130 bit 0x100, CheckShapeshiftRules 0x0072BAC0 bit 0x400).
+ */
+export function parseSpellShapeshiftFormFlags(payload: Uint8Array): Map<number, number> {
+  parseSpellShapeshiftFormBonuses(payload); // the same shape checks
+  const data = Buffer.from(payload.buffer, payload.byteOffset, payload.byteLength);
+  const rows = data.readUInt32LE(4);
+  const flags = new Map<number, number>();
+  for (let row = 0; row < rows; row++) {
+    const at = 20 + row * RECORD_BYTES;
+    const id = data.readUInt32LE(at);
+    if (id !== 0) flags.set(id, data.readUInt32LE(at + 19 * 4));
+  }
+  return flags;
+}

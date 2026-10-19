@@ -208,7 +208,9 @@ test("the stock seam answers a held spell as stock does: no cooldown, not enable
     isActiveMountSpell: () => false,
     events: { on: () => () => {} },
   };
-  const spell = (id) => ({ id, name: `spell ${id}`, rank: "", iconPath: "", passive: false, startRecoveryTime: 1_500 });
+  // 19.10: Stealth's real attribute words (SPELL_ATTR0_DISABLED_WHILE_ACTIVE greys it while held, 0x0080b5d0).
+  const spell = (id) => ({ id, name: `spell ${id}`, rank: "", iconPath: "", passive: false, startRecoveryTime: 1_500,
+    ...(id === STEALTH ? { attributes: [0x1a150010, 0x10, 0x200000, 0x4000000, 0, 0, 0, 0] } : {}) });
   const seam = new LiveWorldSeam({
     world: () => world, store: () => undefined, spell, monotonic: () => 100_000,
     // A global cooldown is running: a held spell still shows no sweep.
