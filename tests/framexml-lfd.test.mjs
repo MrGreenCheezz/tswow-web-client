@@ -1,0 +1,573 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+// Merged 2026-10-20 from 3 files; each block below is one former file,
+// kept in its own scope so its helpers and module loads stay as they were.
+
+// ── framexml-lfd-completion.test.mjs
+{
+// Plan item 3.25 (L5c, 04.10): the dungeon finder's completion reward in the stock UI. Wow.exe 3.3.5a
+// 12340 (read-only Ghidra, .runtime/re-2026-10-04/l5c/b6.txt): SMSG_LFG_PLAYER_REWARD (0x0055bdc0)
+// keeps random and run dungeon, first-of-the-day, strangers, base money and experience, their
+// per-stranger parts and the items, then raises LFG_COMPLETION_REWARD (event 0x205);
+// GetLFGCompletionReward (0x00557e40) answers the run dungeon's name, TypeID and TextureFilename and
+// the six numbers and the item count; GetLFGCompletionRewardItem (0x00557f70) the icon and quantity.
+// AlertFrames.lua's DungeonCompletionAlertFrame is the stock owner; the native prompt keeps the
+// reward whenever the stock alert cannot take it. MPQ-free.
+const { FRAMEXML_LFD_BINDINGS, FrameXmlLfdModel } = await import("../dist/code/browser/framexml/FrameXmlLfd.js");
+const {
+  FRAMEXML_CANNED_LFD_CATALOG, FrameXmlCannedLfdWorld,
+} = await import("../dist/code/browser/framexml/FrameXmlLfdCanned.js");
+const { parseLfgPlayerReward } = await import("../dist/code/world/LfgProtocol.js");
+const { PacketWriter } = await import("../dist/code/protocol/PacketWriter.js");
+const { frameXmlLfdCompletionAlert } = await import("../dist/code/browser/framexml/FrameXmlLfdCompletion.js");
+
+// TrinityCore's SendLfgPlayerReward (LFGHandler.cpp:488-509): random 258|6<<24, run 40|1<<24, done,
+// literal 1, money, experience, two literal zeros, one item 13444 ×2.
+const REWARD_PACKET = new PacketWriter().u32(258 | (6 << 24)).u32(40 | (1 << 24)).u8(1).u32(1).u32(4500).u32(12000)
+  .u32(0).u32(0).u8(1).u32(13444).u32(5000).u32(2).toUint8Array();
+
+function harness({ alert = async () => true, owned = true } = {}) {
+  const world = new FrameXmlCannedLfdWorld();
+  let dismissed = 0;
+  world.lfgReward = undefined;
+  world.dismissLfgReward = () => { dismissed += 1; world.lfgReward = undefined; };
+  const model = new FrameXmlLfdModel({
+    world: () => world, catalog: () => FRAMEXML_CANNED_LFD_CATALOG, playerLevel: () => 60, playerClassId: () => 1,
+    playerName: () => "Игрок", playerGuid: () => 1n, playerFaction: () => "Alliance", partyMemberCount: () => 4,
+    raidMemberCount: () => 0, isPartyLeader: () => false, inDungeonInstance: () => true, monotonic: () => 0,
+    item: (entry) => (entry === 13444 ? { name: "Большой флакон маны", texture: "Interface\\Icons\\INV_Potion_76", quality: 1 } : undefined),
+  });
+  const fired = [];
+  model.attach({ fire: (event, ...args) => { fired.push([event, ...args]); return 1; }, now: () => 0 });
+  model.popupsOwned = owned;
+  model.completionAlert = alert;
+  const reward = () => {
+    world.lfgReward = parseLfgPlayerReward(REWARD_PACKET);
+    world.emit({ kind: "reward" });
+  };
+  const call = (name, ...args) => FRAMEXML_LFD_BINDINGS[name]({ lfd: model }, args);
+  const settle = async () => { for (let index = 0; index < 4; index += 1) await Promise.resolve(); };
+  return { world, model, fired, reward, call, settle, dismissed: () => dismissed };
+}
+
+test("the reward packet keeps strangers and the per-stranger money and experience", () => {
+  const reward = parseLfgPlayerReward(REWARD_PACKET);
+  assert.equal(reward.strangers, 1);
+  assert.equal(reward.moneyVar, 0);
+  assert.equal(reward.experienceVar, 0);
+  assert.equal(reward.reward.money, 4500);
+  assert.deepEqual(reward.reward.items, [{ itemId: 13444, displayId: 5000, count: 2 }]);
+});
+
+test("with the stock LFD: the alert owns the reward, then the native prompt lets it go", async () => {
+  const { fired, reward, call, settle, dismissed, world } = harness();
+  assert.deepEqual([...call("GetLFGCompletionReward")], [], "nothing before a reward");
+  reward();
+  await settle();
+  assert.deepEqual(fired.map(([event]) => event), ["LFG_COMPLETION_REWARD"]);
+  assert.equal(dismissed(), 1);
+  assert.equal(world.lfgReward, undefined);
+  assert.deepEqual([...call("GetLFGCompletionReward")],
+    ["Стратхольм - Главные врата", 1, "STRATHOLME", 4500, 0, 12000, 0, 1, 1], "kept after the prompt let go");
+  assert.deepEqual([...call("GetLFGCompletionRewardItem", 1)], ["Interface\\Icons\\INV_Potion_76", 2]);
+  assert.deepEqual([...call("GetLFGCompletionRewardItem", 2)], []);
+  assert.match(call("WebClientLFGCompletionRewardLink", 1)[0], /\|Hitem:13444:.*\[Большой флакон маны\]/);
+});
+
+test("without the stock LFD, or when AlertFrames.xml does not load, the native prompt keeps it", async () => {
+  let asked = 0;
+  const native = harness({ owned: false, alert: async () => { asked += 1; return true; } });
+  native.reward();
+  await native.settle();
+  assert.deepEqual(native.fired, []);
+  assert.equal(native.dismissed(), 0);
+  assert.equal(asked, 0, "AlertFrames.xml is not even loaded for a reward the native prompt owns");
+  assert.equal(native.call("GetLFGCompletionReward")[0], "Стратхольм - Главные врата", "answered anyway, as the client does");
+  const failed = harness({ alert: async () => false });
+  failed.reward();
+  await failed.settle();
+  assert.deepEqual(failed.fired, []);
+  assert.equal(failed.dismissed(), 0);
+  const thrown = harness({ alert: async () => { throw new Error("no file"); } });
+  thrown.reward();
+  await thrown.settle();
+  assert.deepEqual(thrown.fired, []);
+  assert.equal(thrown.dismissed(), 0);
+});
+
+test("the alert loader loads AlertFrames once and answers by DungeonCompletionAlertFrame1", async () => {
+  let loads = 0;
+  const frames = new Map();
+  const boot = { bridge: { getFrame: (name) => frames.get(name) } };
+  const added = [];
+  const renderer = { addRoots: (roots) => added.push(...roots), sync() {} };
+  const alert = frameXmlLfdCompletionAlert(boot, renderer, async () => {
+    loads += 1;
+    frames.set("DungeonCompletionAlertFrame1", { name: "DungeonCompletionAlertFrame1" });
+    return { ok: true, roots: [{ name: "AlertFrame" }], loaded: ["AlertFrames.xml"] };
+  });
+  assert.equal(await alert(), true);
+  assert.equal(await alert(), true);
+  assert.equal(loads, 1);
+  assert.deepEqual(added.map((root) => root.name), ["AlertFrame"]);
+  const missing = frameXmlLfdCompletionAlert({ bridge: { getFrame: () => undefined } }, renderer,
+    async () => ({ ok: true, roots: [], loaded: [] }));
+  const warn = console.warn;
+  console.warn = () => {};
+  try { assert.equal(await missing(), false); } finally { console.warn = warn; }
+});
+}
+
+// ── framexml-lfd-reward-items.test.mjs
+{
+// 3.55: the random dungeon's reward items. Wow.exe's GetLFGDungeonRewardInfo (0x00557be0) takes the
+// picture from the reward's own display id (ItemDisplayInfo's icon, 0x0070a910) and the name from
+// the item cache — empty until the item is there — and asks the cache with a callback (0x00552950)
+// that raises LFG_UPDATE_RANDOM_INFO (event 0x202) when it arrives. The model took both from the
+// cache, so an item the cache had not seen yet came out as an empty slot with no name.
+const { FrameXmlLfdModel, FRAMEXML_LFD_BINDINGS } = await import("../dist/code/browser/framexml/FrameXmlLfd.js");
+const {
+  FRAMEXML_CANNED_LFD_CATALOG, FRAMEXML_CANNED_LFD_PLAYER_GUID, FrameXmlCannedLfdWorld,
+} = await import("../dist/code/browser/framexml/FrameXmlLfdCanned.js");
+
+const RANDOM = 6 << 24;
+
+test("a reward item shows its display picture at once and its name once the cache has it", () => {
+  const world = new FrameXmlCannedLfdWorld();
+  world.lfgPlayerInfo = {
+    dungeons: [{ entry: 259 | RANDOM, reward: { done: false, money: 1234, experience: 5000,
+      items: [{ itemId: 49426, displayId: 64062, count: 2 }] } }],
+    locks: [],
+  };
+  const cache = new Map();
+  const prefetched = [];
+  let arrived;
+  const model = new FrameXmlLfdModel({
+    world: () => world, catalog: () => FRAMEXML_CANNED_LFD_CATALOG, playerLevel: () => 60, playerClassId: () => 4,
+    playerName: () => "Игрок", playerGuid: () => FRAMEXML_CANNED_LFD_PLAYER_GUID, playerFaction: () => "Alliance",
+    partyMemberCount: () => 0, raidMemberCount: () => 0, isPartyLeader: () => false, inDungeonInstance: () => false,
+    item: (entry) => cache.get(entry),
+    displayIcon: (displayId) => `icon:${displayId}`,
+    prefetchItems: (ids, onChanged) => { prefetched.push([...ids]); arrived = onChanged; },
+  });
+  const fired = [];
+  model.attach({ fire(event, ...args) { fired.push([event, ...args]); return 1; }, now: () => 0 });
+  const call = (name, ...args) => FRAMEXML_LFD_BINDINGS[name]({ lfd: model }, args);
+
+  world.emit({ kind: "playerInfo" });
+  assert.deepEqual(prefetched, [[49426]], "the player-info edge asks the cache for the reward item");
+  assert.deepEqual(call("GetLFGDungeonRewards", 259), [false, 1234, 0, 5000, 0, 1]);
+  assert.deepEqual(call("GetLFGDungeonRewardInfo", 259, 1), ["", "icon:64062", 2],
+    "the display id's picture, an empty name while the cache is cold");
+
+  fired.length = 0;
+  cache.set(49426, { name: "Эмблема льда", texture: "cached-icon", quality: 4 });
+  arrived();
+  assert.deepEqual(fired.map(([event]) => event), ["LFG_UPDATE_RANDOM_INFO"], "the item's arrival repaints the reward");
+  assert.deepEqual(call("GetLFGDungeonRewardInfo", 259, 1), ["Эмблема льда", "icon:64062", 2]);
+
+  prefetched.length = 0;
+  world.emit({ kind: "playerInfo" });
+  assert.deepEqual(prefetched, [], "a cached item is not asked for again");
+});
+}
+
+// ── framexml-lfd-seam.test.mjs
+{
+// The stock dungeon finder's C API over the canned world: the choice list's number contract, the
+// command mapping onto WorldClient's LFG methods, and the LFG_* event pump. MPQ-free; the stock Lua
+// that consumes all of this runs in framexml-lfd-vertical.test.mjs.
+const {
+  FRAMEXML_LFD_BINDINGS, FRAMEXML_LFD_PRELUDE, FrameXmlLfdModel, frameXmlLfdChoiceOrder, frameXmlLfgAvailableRoles,
+} = await import("../dist/code/browser/framexml/FrameXmlLfd.js");
+const {
+  FRAMEXML_CANNED_LFD_CATALOG, FRAMEXML_CANNED_LFD_PLAYER_GUID, createCannedFrameXmlLfd,
+} = await import("../dist/code/browser/framexml/FrameXmlLfdCanned.js");
+const { FRAMEXML_SEAM_BINDINGS, FRAMEXML_SEAM_PRELUDE } = await import("../dist/code/browser/framexml/FrameXmlWorldSeam.js");
+
+const DUNGEON = 1 << 24;
+const RANDOM = 6 << 24;
+
+function fixture({ level = 60, classId = 11, faction = "Alliance", leader = false, party = 0 } = {}) {
+  const { model, world } = createCannedFrameXmlLfd({
+    playerLevel: () => level,
+    playerClassId: () => classId,
+    playerName: () => "Игрок",
+    playerGuid: () => FRAMEXML_CANNED_LFD_PLAYER_GUID,
+    playerFaction: () => faction,
+    partyMemberCount: () => party,
+    raidMemberCount: () => 0,
+    isPartyLeader: () => leader,
+  });
+  const fired = [];
+  let now = 1000;
+  const pump = { fire(event, ...args) { fired.push([event, ...args]); return 1; }, now: () => now };
+  model.attach(pump);
+  const call = (name, ...args) => FRAMEXML_LFD_BINDINGS[name]({ lfd: model }, args);
+  return { model, world, fired, pump, call, advance(seconds) { now += seconds; } };
+}
+
+const names = (fired) => fired.map(([event]) => event);
+
+test("choice order: negative headers by LFGDungeonGroup order, children by level, each child's groupID is its header", () => {
+  const { call } = fixture();
+  const order = frameXmlLfdChoiceOrder(FRAMEXML_CANNED_LFD_CATALOG, "Alliance");
+  // Group 2 (Burning Crusade, Order_index 4) before group 1 (classic, 5); rows by Target_level.
+  assert.deepEqual(order, [-2, 136, 137, -1, 12, 276, 34, 32, 2, 40, 274]);
+  let header;
+  for (const id of order) {
+    const info = call("GetLFGDungeonInfo", id);
+    if (id < 0) {
+      header = id;
+      assert.equal(info[8], 0, "a header has no group of its own");
+      continue;
+    }
+    assert.equal(info[8], header, `dungeon ${id} files under the header just before it`);
+    assert.ok(info[1] === 1 || info[1] === 5, "only normal and heroic rows are choices");
+  }
+  // Randoms are the server's list, not choices; the other faction's own dungeon is not shown.
+  assert.ok(!order.includes(258) && !order.includes(259));
+  assert.ok(!order.includes(4), "Ragefire Chasm is Horde-only");
+  assert.ok(frameXmlLfdChoiceOrder(FRAMEXML_CANNED_LFD_CATALOG, "Horde").includes(4));
+  assert.ok(!frameXmlLfdChoiceOrder(FRAMEXML_CANNED_LFD_CATALOG, "Horde").includes(12), "the Stockade is Alliance-only");
+});
+
+test("GetLFGDungeonInfo answers the fourteen LFG_RETURN_VALUES fields for rows and headers", () => {
+  const { call } = fixture();
+  assert.deepEqual(call("GetLFGDungeonInfo", 40), [
+    "Стратхольм - Главные врата", 1, 55, 65, 60, 0, 0, 0, -1, "STRATHOLME", 0, 5, "", false,
+  ]);
+  assert.deepEqual(call("GetLFGDungeonInfo", -1), [
+    "Классические подземелья", 1, 0, 0, 0, 0, 0, 0, 0, "", 0, 0, "", false,
+  ]);
+  assert.deepEqual(call("GetLFGDungeonInfo", 258).slice(0, 2), ["Случайное подземелье классической игры", 6],
+    "a random row is answered too: the type dropdown asks GetLFGDungeonInfo for it");
+  assert.deepEqual(call("GetLFGDungeonInfo", 999), []);
+  assert.deepEqual(call("GetLFGDungeonInfo", "x"), []);
+});
+
+test("without a version-2 catalog every list is empty and nothing is ready", () => {
+  const model = new FrameXmlLfdModel({
+    world: () => undefined, catalog: () => undefined, playerLevel: () => 80, playerClassId: () => 1,
+    playerName: () => "x", playerGuid: () => 1n, playerFaction: () => "Horde", partyMemberCount: () => 0,
+    raidMemberCount: () => 0, isPartyLeader: () => false, inDungeonInstance: () => false,
+  });
+  assert.equal(model.ready(), false);
+  assert.deepEqual(model.choiceIds(), []);
+  assert.deepEqual(FRAMEXML_LFD_BINDINGS.GetLFGDungeonInfo({ lfd: model }, [2]), []);
+  assert.deepEqual(FRAMEXML_LFD_BINDINGS.GetNumRandomDungeons({ lfd: model }, []), [0]);
+  assert.deepEqual(FRAMEXML_LFD_BINDINGS.GetLFGDungeonInfo({}, [2]), [], "a seam without the model answers nothing");
+});
+
+test("randoms, locks and rewards come from SMSG_LFG_PLAYER_INFO and the party lock list", () => {
+  const { call, world } = fixture();
+  assert.deepEqual(call("GetNumRandomDungeons"), [2]);
+  assert.deepEqual(call("GetLFGRandomDungeonInfo", 1), [258, "Случайное подземелье классической игры"]);
+  assert.deepEqual(call("GetLFGRandomDungeonInfo", 2), [259, "Случайное подземелье Burning Crusade"]);
+  assert.deepEqual(call("GetRandomDungeonBestChoice"), [259], "the classic random ends at 58; at 60 it is Burning Crusade's");
+  assert.deepEqual(call("GetLFGDungeonRewards", 259), [false, 1234, 0, 5000, 0, 0]);
+  assert.deepEqual(call("GetLFGDungeonRewards", 258), [true, 0, 0, 0, 0, 0]);
+  assert.deepEqual(call("GetLFGDungeonRewards", 40), [false, 0, 0, 0, 0, 0], "a specific dungeon has no reward row");
+  assert.deepEqual(call("IsLFGDungeonJoinable", 274), [false], "the canned quest lock");
+  assert.deepEqual(call("IsLFGDungeonJoinable", 40), [true]);
+  assert.deepEqual(call("GetLFDLockPlayerCount"), [1]);
+  assert.deepEqual(call("GetLFDLockInfo", 274, 1), ["Игрок", 1022]);
+  world.lfgPartyInfo = [{ guid: 0x77n, dungeons: [{ dungeonId: 40 | DUNGEON, reason: 2 }] }];
+  world.names.set(0x77n, "Бета");
+  assert.deepEqual(call("GetLFDLockPlayerCount"), [2]);
+  assert.deepEqual(call("GetLFDLockInfo", 40, 2), ["Бета", 2]);
+  assert.deepEqual(call("IsLFGDungeonJoinable", 40), [false], "a party member's lock blocks the group");
+  assert.deepEqual(call("WebClientLfdLockedIds").sort((a, b) => a - b), [40, 274]);
+});
+
+test("JoinLFG sends the SetLFGDungeon selection as typed wire entries with the checked roles", () => {
+  const { call, world } = fixture();
+  call("SetLFGRoles", 1, 1, undefined, 1);
+  assert.deepEqual(call("GetLFGRoles"), [true, true, false, true]);
+  call("ClearAllLFGDungeons");
+  call("SetLFGDungeon", 40);
+  call("SetLFGDungeon", 2);
+  call("JoinLFG");
+  // Solo: the leader flag rides along (0x01) with tank (0x02) and damage (0x08).
+  assert.deepEqual(world.calls.at(-1), { kind: "join", roles: 0x0b, dungeons: [2 | DUNGEON, 40 | DUNGEON], comment: "" });
+  call("ClearAllLFGDungeons");
+  call("SetLFGDungeon", 258);
+  call("JoinLFG");
+  assert.deepEqual(world.calls.at(-1).dungeons, [258 | RANDOM], "a random keeps type 6 in its top byte");
+  call("LeaveLFG");
+  call("AcceptProposal");
+  call("RejectProposal");
+  assert.deepEqual(world.calls.slice(-3), [{ kind: "leave" }, { kind: "proposal", accept: true }, { kind: "proposal", accept: false }]);
+});
+
+test("a non-leader in a party sends no leader flag; classes offer their stock roles", () => {
+  const { call, world } = fixture({ party: 2, leader: false, classId: 8 });
+  assert.deepEqual(call("GetAvailableRoles"), [false, false, true], "a mage is damage only");
+  call("SetLFGRoles", 1, 1, 1, 1);
+  assert.deepEqual(call("GetLFGRoles"), [true, false, false, true], "roles the class cannot take are not kept");
+  assert.equal(call("CompleteLFGRoleCheck", true)[0], true);
+  assert.deepEqual(world.calls.at(-1), { kind: "roles", roles: 0x08 });
+  assert.deepEqual(frameXmlLfgAvailableRoles(13), [true, true, true],
+    "a TSWoW class is offered every role; the server's player_class_roles strips the rest");
+});
+
+test("CompleteLFGRoleCheck refuses no role, sends the chosen roles, and declines with none", () => {
+  const { call, world } = fixture();
+  assert.deepEqual(call("CompleteLFGRoleCheck", true), [false], "the stock popup stays open without a combat role");
+  assert.equal(world.calls.length, 0);
+  call("SetLFGRoles", undefined, undefined, 1, undefined);
+  assert.deepEqual(call("CompleteLFGRoleCheck", true), [true]);
+  assert.deepEqual(world.calls.at(-1), { kind: "roles", roles: 0x04 });
+  assert.deepEqual(call("CompleteLFGRoleCheck", false), [true]);
+  assert.deepEqual(world.calls.at(-1), { kind: "roles", roles: 0 },
+    "TrinityCore's UpdateRoleCheck turns no role into LFG_ROLECHECK_NO_ROLE");
+});
+
+test("a muted model (the mount's gate probe) sends no packet", () => {
+  const { call, model, world } = fixture();
+  call("SetLFGDungeon", 40);
+  model.muted(() => {
+    call("RequestLFDPlayerLockInfo");
+    call("JoinLFG");
+    call("LeaveLFG");
+  });
+  assert.deepEqual(world.calls, []);
+  call("RequestLFDPlayerLockInfo");
+  call("RequestLFDPartyLockInfo");
+  assert.deepEqual(world.calls, [{ kind: "requestLocks" }], "the party request rides on the one lock request");
+});
+
+test("queue state answers GetLFGInfoServer, GetLFGQueuedList and GetLFGQueueStats on the GetTime clock", () => {
+  const { call, world, fired, advance } = fixture();
+  assert.deepEqual(call("GetLFGInfoServer"), [false, false, false, false, false, "", 0]);
+  assert.deepEqual(call("GetLFGQueueStats"), [false]);
+  world.queue([40 | DUNGEON], 95);
+  assert.deepEqual(names(fired), ["LFG_UPDATE", "LFG_QUEUE_STATUS_UPDATE"]);
+  assert.deepEqual(call("GetLFGInfoServer"), [false, true, true, false, false, "", 1]);
+  assert.deepEqual(call("WebClientLfdQueuedIds"), [40]);
+  advance(10);
+  // Stamped at delivery (1000) minus the 95 seconds the server says were already waited.
+  assert.deepEqual(call("GetLFGQueueStats"), [true, 0, 1, 0, 2, 1, "Стратхольм - Главные врата", 300, 60, 120, 600, 240, 905]);
+  world.unqueue();
+  assert.deepEqual(call("WebClientLfdQueuedIds"), []);
+  assert.equal(names(fired).at(-1), "LFG_UPDATE");
+});
+
+test("proposal events: SHOW once per proposal and only while stock owns the popup; FAILED and SUCCEEDED follow the state", () => {
+  const { call, model, world, fired } = fixture();
+  world.propose(40 | DUNGEON, 7);
+  assert.deepEqual(names(fired), ["LFG_PROPOSAL_UPDATE", "LFG_UPDATE"], "the native prompt owns an unpublished proposal");
+  assert.deepEqual(call("GetLFGProposal"), [true, 1, 40, "Стратхольм - Главные врата", "STRATHOLME", "TANK", false, 0, 0, 5, false, false]);
+  assert.deepEqual(call("GetLFGProposalMember", 5), [true, "DAMAGER", 0, false, false, "", undefined]);
+  fired.length = 0;
+  model.popupsOwned = true;
+  assert.deepEqual(names(fired), ["LFG_PROPOSAL_SHOW", "LFG_PROPOSAL_UPDATE"],
+    "publication hands the still-open proposal 7 to the stock popup (the native prompt steps aside)");
+  fired.length = 0;
+  world.propose(40 | DUNGEON, 7);
+  assert.deepEqual(names(fired), ["LFG_PROPOSAL_UPDATE", "LFG_UPDATE"], "a same-id re-send is an update, not a second SHOW");
+  fired.length = 0;
+  world.propose(40 | DUNGEON, 8);
+  world.propose(40 | DUNGEON, 8, 0, true);
+  assert.deepEqual(names(fired), ["LFG_PROPOSAL_SHOW", "LFG_PROPOSAL_UPDATE", "LFG_UPDATE", "LFG_PROPOSAL_UPDATE", "LFG_UPDATE"]);
+  assert.equal(call("GetLFGProposal")[6], true, "the answered update shows the ready states");
+  fired.length = 0;
+  world.propose(40 | DUNGEON, 8, 1);
+  assert.deepEqual(names(fired), ["LFG_PROPOSAL_FAILED", "LFG_UPDATE"]);
+  assert.deepEqual(call("GetLFGProposal"), [false], "a failed proposal is over");
+  fired.length = 0;
+  world.propose(40 | DUNGEON, 9, 2);
+  assert.deepEqual(names(fired), ["LFG_PROPOSAL_SUCCEEDED", "LFG_UPDATE"]);
+});
+
+test("proposal encounters: the dungeon row's map and difficulty counted over the DungeonEncounter table (Wow.exe 0x00554170, 0x00554380)", () => {
+  const table = new Map([
+    ["329/0", [{ bit: 0, name: "Мясник" }, { bit: 3, name: "Барон" }, { bit: 1, name: "Бальназзар" }]],
+    ["0/0", [{ bit: 0, name: "Никогда" }]],
+  ]);
+  const holiday = { ...FRAMEXML_CANNED_LFD_CATALOG.dungeons.find((row) => row.id === 40), id: 285, flags: 3 | 4 };
+  const catalog = { ...FRAMEXML_CANNED_LFD_CATALOG, dungeons: [...FRAMEXML_CANNED_LFD_CATALOG.dungeons, holiday] };
+  const build = (dungeonEncounters) => {
+    const { model, world } = createCannedFrameXmlLfd({
+      playerLevel: () => 60, playerClassId: () => 11, playerName: () => "Игрок",
+      playerGuid: () => FRAMEXML_CANNED_LFD_PLAYER_GUID, playerFaction: () => "Alliance", dungeonEncounters,
+    }, undefined, catalog);
+    const call = (name, ...args) => FRAMEXML_LFD_BINDINGS[name]({ lfd: model }, args);
+    return { world, call };
+  };
+  const { world, call } = build((mapId, difficulty) => table.get(`${mapId}/${difficulty}`) ?? []);
+  assert.deepEqual(call("GetLFGProposalEncounter", 1), [], "no proposal");
+  world.propose(40 | DUNGEON, 7, 0, false, 0b1010);
+  assert.deepEqual(call("GetLFGProposal").slice(7, 9), [3, 2], "Stratholme (map 329): three rows, bits 1 and 3 killed");
+  assert.deepEqual([1, 2, 3, 4].map((index) => call("GetLFGProposalEncounter", index)), [
+    ["Мясник", undefined, false], ["Барон", undefined, true], ["Бальназзар", undefined, true], [],
+  ], "the i-th row of the map in file order, killed by its own bit");
+  assert.deepEqual(call("GetLFGProposalEncounter", 0), []);
+  // A random row (TypeID 6): no boss list, completed says only whether anything is killed.
+  world.propose(258 | RANDOM, 8, 0, false, 0b110);
+  assert.deepEqual(call("GetLFGProposal").slice(7, 9), [0, 1]);
+  world.propose(258 | RANDOM, 9, 0, false, 0);
+  assert.deepEqual(call("GetLFGProposal").slice(7, 9), [0, 0]);
+  // A holiday row (Flags & 4): one boss, killed if the mask has anything.
+  world.propose(285 | DUNGEON, 10, 0, false, 0b100);
+  assert.deepEqual(call("GetLFGProposal").slice(7, 9), [1, 1]);
+  // Without the table nothing is invented: no total, the mask's own count, no boss asked for.
+  const bare = build(() => undefined);
+  bare.world.propose(40 | DUNGEON, 7, 0, false, 0b1010);
+  assert.deepEqual(bare.call("GetLFGProposal").slice(7, 9), [0, 2]);
+  assert.deepEqual(bare.call("GetLFGProposalEncounter", 1), []);
+});
+
+test("publication hands every prompt still open to the stock popups, once per ownership edge", () => {
+  const { model, world } = createCannedFrameXmlLfd({
+    playerLevel: () => 60, playerClassId: () => 11, playerName: () => "Игрок",
+    playerGuid: () => FRAMEXML_CANNED_LFD_PLAYER_GUID, playerFaction: () => "Alliance",
+  });
+  // Packets that landed before the seam attached: a ReloadUI remount or a relogin into a queue.
+  world.propose(40 | DUNGEON, 11);
+  world.startRoleCheck(FRAMEXML_CANNED_LFD_PLAYER_GUID, [258 | RANDOM]);
+  world.lfgBoot = {
+    inProgress: true, voted: false, votedYes: false, victimGuid: 0x77n, votes: 1, agree: 1,
+    secondsLeft: 0, votesNeeded: 3, reason: "AFK",
+  };
+  world.lfgOfferContinue = 40;
+  const fired = [];
+  model.attach({ fire(event, ...args) { fired.push([event, ...args]); return 1; }, now: () => 1000 });
+  assert.deepEqual(fired, [], "attaching shows nothing: the native prompts still own these");
+  // And one that lands between attach and publication (the corpus-load window).
+  world.propose(40 | DUNGEON, 12);
+  assert.deepEqual(names(fired), ["LFG_PROPOSAL_UPDATE", "LFG_UPDATE"]);
+  fired.length = 0;
+  model.popupsOwned = true;
+  assert.deepEqual(fired, [
+    ["LFG_PROPOSAL_SHOW"], ["LFG_PROPOSAL_UPDATE"], ["LFG_ROLE_CHECK_SHOW"], ["LFG_ROLE_CHECK_UPDATE"],
+    ["LFG_BOOT_PROPOSAL_UPDATE"], ["LFG_OFFER_CONTINUE", "Стратхольм - Главные врата", 40, 1],
+  ], "the native prompts stepped aside at this moment, so each open one appears in stock");
+  fired.length = 0;
+  model.popupsOwned = true;
+  assert.deepEqual(fired, [], "ownership is an edge: a repeated publication replays nothing");
+  world.propose(40 | DUNGEON, 12);
+  world.startRoleCheck(FRAMEXML_CANNED_LFD_PLAYER_GUID, [258 | RANDOM]);
+  assert.deepEqual(names(fired), ["LFG_PROPOSAL_UPDATE", "LFG_UPDATE", "LFG_ROLE_CHECK_UPDATE", "LFG_UPDATE"],
+    "the server's same-id re-sends update the popups already shown");
+  // Unpublished (the VM goes) and published again: the new owner is handed the same prompts. A
+  // member who already chose (the leader, whose roles rode on the join) is not asked again.
+  model.popupsOwned = false;
+  world.lfgRoleCheck = { ...world.lfgRoleCheck, members: world.lfgRoleCheck.members.map((member) => ({ ...member, ready: true })) };
+  world.lfgBoot = undefined;
+  world.lfgOfferContinue = undefined;
+  fired.length = 0;
+  model.popupsOwned = true;
+  assert.deepEqual(names(fired), ["LFG_PROPOSAL_SHOW", "LFG_PROPOSAL_UPDATE"]);
+});
+
+test("role check: SHOW for a member who has not chosen, UPDATE per answer, HIDE when it ends", () => {
+  const { call, model, world, fired } = fixture();
+  model.popupsOwned = true;
+  world.names.set(0x99n, "Альфа");
+  world.startRoleCheck(FRAMEXML_CANNED_LFD_PLAYER_GUID, [258 | RANDOM]);
+  assert.deepEqual(names(fired), ["LFG_ROLE_CHECK_SHOW", "LFG_ROLE_CHECK_UPDATE", "LFG_UPDATE"]);
+  assert.deepEqual(call("GetLFGRoleUpdate"), [true, 1, 2]);
+  assert.deepEqual(call("GetLFGRoleUpdateSlot", 1), [6, 258]);
+  fired.length = 0;
+  world.emit({ kind: "roleChosen", guid: 0x99n, roles: 0x0c });
+  assert.deepEqual(fired, [["LFG_ROLE_CHECK_ROLE_CHOSEN", "Альфа", false, true, true], ["LFG_ROLE_CHECK_UPDATE"]]);
+  fired.length = 0;
+  world.endRoleCheck(1);
+  assert.deepEqual(names(fired), ["LFG_ROLE_CHECK_HIDE", "LFG_ROLE_CHECK_UPDATE", "LFG_UPDATE"]);
+  assert.deepEqual(call("GetLFGRoleUpdate"), [false, 1, 2]);
+});
+
+test("lock, random, boot, continue and refusal packets map onto their stock events", () => {
+  const { model, world, fired } = fixture();
+  world.emit({ kind: "playerInfo" });
+  world.emit({ kind: "partyInfo" });
+  world.emit({ kind: "joinResult", result: 5, message: "Вы не подходите под выбранные подземелья" });
+  world.emit({ kind: "teleportDenied", message: "Нельзя телепортироваться мёртвым" });
+  world.emit({ kind: "boot" });
+  world.lfgOfferContinue = 40;
+  world.emit({ kind: "offerContinue", entry: 40 | DUNGEON });
+  world.emit({ kind: "reward" });
+  assert.deepEqual(fired, [
+    ["LFG_UPDATE_RANDOM_INFO"], ["LFG_LOCK_INFO_RECEIVED"], ["LFG_LOCK_INFO_RECEIVED"],
+    ["UI_ERROR_MESSAGE", "Вы не подходите под выбранные подземелья"], ["LFG_UPDATE"],
+    ["UI_ERROR_MESSAGE", "Нельзя телепортироваться мёртвым"],
+  ], "boot and continue popups stay native until stock owns them; the reward has no stock owner");
+  fired.length = 0;
+  model.popupsOwned = true;
+  assert.deepEqual(fired, [["LFG_OFFER_CONTINUE", "Стратхольм - Главные врата", 40, 1]],
+    "the unanswered continue offer is handed over at publication; no boot vote is running");
+  fired.length = 0;
+  world.emit({ kind: "boot" });
+  world.emit({ kind: "offerContinue", entry: 40 | DUNGEON });
+  assert.deepEqual(fired, [["LFG_BOOT_PROPOSAL_UPDATE"], ["LFG_OFFER_CONTINUE", "Стратхольм - Главные врата", 40, 1]]);
+  model.detach();
+  fired.length = 0;
+  world.emit({ kind: "update" });
+  assert.deepEqual(fired, [], "a detached model hears nothing");
+  assert.equal(model.popupsOwned, false, "detaching hands the prompts back");
+});
+
+test("the seam binds every finder name, and the Lua shim fills tables the host cannot push", () => {
+  for (const name of Object.keys(FRAMEXML_LFD_BINDINGS)) {
+    assert.equal(FRAMEXML_SEAM_BINDINGS[name] !== undefined, true, `${name} is a seam binding`);
+  }
+  assert.ok(FRAMEXML_SEAM_PRELUDE.includes(FRAMEXML_LFD_PRELUDE), "the shim rides the seam prelude");
+  for (const name of ["GetLFDChoiceOrder", "GetLFDChoiceInfo", "GetLFDChoiceEnabledState",
+    "GetLFDChoiceCollapseState", "GetLFDChoiceLockedState", "GetLFGQueuedList", "GetLFRChoiceOrder"]) {
+    assert.match(FRAMEXML_LFD_PRELUDE, new RegExp(`impl\\.${name} = function`), `${name} is a Lua table filler`);
+    assert.equal(FRAMEXML_LFD_BINDINGS[name], undefined, `${name} is not a flat JS binding`);
+  }
+});
+
+test("3.25 raid browser: SearchLFGJoin/Leave keep the joined entry, send the packed id and signal UPDATE_LFG_LIST (Wow.exe 0x558ed0/0x558f90)", () => {
+  const { call, world, fired } = fixture();
+  assert.deepEqual(call("SearchLFGGetJoinedID"), []);
+  call("SearchLFGJoin", 2, 999);
+  call("SearchLFGJoin", 7, 40);
+  assert.equal(world.calls.length, 0, "an unknown row or a type past 6 is nothing");
+  call("SearchLFGJoin", 2, 40);
+  assert.deepEqual(world.calls.at(-1), { kind: "search", join: true, entry: 40 | (2 << 24) });
+  assert.deepEqual(call("SearchLFGGetJoinedID"), [40]);
+  assert.deepEqual(names(fired).at(-1), "UPDATE_LFG_LIST");
+  const sends = world.calls.length;
+  call("SearchLFGJoin", 2, 40);
+  assert.equal(world.calls.length, sends, "the same entry again sends nothing");
+  call("RefreshLFGList");
+  assert.equal(world.calls.length, sends, "refresh is local");
+  call("SearchLFGLeave");
+  assert.deepEqual(world.calls.at(-1), { kind: "search", join: false, entry: 40 | (2 << 24) });
+  assert.deepEqual(call("SearchLFGGetJoinedID"), []);
+  call("SearchLFGLeave");
+  assert.equal(world.calls.length, sends + 1, "leaving twice sends once");
+  assert.deepEqual(call("SearchLFGGetNumResults"), [0, 0], "this core lists nobody");
+});
+
+test("3.25 SetLFGComment: kept for JoinLFG; sent while joined, held back past three within two seconds (Wow.exe 0x5539a0)", async () => {
+  const { FrameXmlCannedLfdWorld } = await import("../dist/code/browser/framexml/FrameXmlLfdCanned.js");
+  const world = new FrameXmlCannedLfdWorld();
+  let ms = 50_000;
+  const model = new FrameXmlLfdModel({
+    world: () => world, catalog: () => FRAMEXML_CANNED_LFD_CATALOG, playerLevel: () => 60, playerClassId: () => 11,
+    playerName: () => "x", playerGuid: () => FRAMEXML_CANNED_LFD_PLAYER_GUID, playerFaction: () => "Alliance",
+    partyMemberCount: () => 0, raidMemberCount: () => 0, isPartyLeader: () => false, inDungeonInstance: () => false,
+    monotonic: () => ms,
+  });
+  const call = (name, ...args) => FRAMEXML_LFD_BINDINGS[name]({ lfd: model }, args);
+  call("SetLFGComment", "танк ищет");
+  assert.equal(world.calls.length, 0, "not joined: nothing sent");
+  call("SetLFGDungeon", 40);
+  call("JoinLFG");
+  assert.equal(world.calls.at(-1).comment, "танк ищет");
+  world.queue([40 | DUNGEON], 0);
+  const before = world.calls.length;
+  for (let i = 0; i < 7; i += 1) call("SetLFGComment", `c${i}`);
+  // Two, then the third opens a new window (the last was long ago) and resets the count: three
+  // more go out, and the next within two seconds of that window is held back.
+  assert.deepEqual(world.calls.slice(before).map((c) => c.comment), ["c0", "c1", "c2", "c3", "c4"]);
+  ms += 2_500;
+  call("SetLFGComment", "later");
+  assert.deepEqual(world.calls.at(-1), { kind: "comment", comment: "later" });
+});
+}

@@ -1,3 +1,18 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import test from "node:test";
+import { buildSkinnedTemplateFrom } from "../dist/code/browser/AnimatedModel.js";
+import { ATLAS_FAILURE_LIMIT, CharacterAtlasClient, IMAGE_RETRY_BACKOFF_MS, configureCharacterAtlasTexture, layerPaths, CHARACTER_ATLAS_PAINTS_PER_FRAME, CHARACTER_ATLAS_PARTIAL_PAINT_MS, CHARACTER_ATLAS_KNOWN_LOGICAL_TEXTURE_BYTE_LIMIT, decodedCharacterAtlasImagePixels } from "../dist/code/browser/CharacterAtlas.js";
+import { CreatureModelClient } from "../dist/code/browser/CreatureModelClient.js";
+import { StandInLedger } from "../dist/code/browser/StandIn.js";
+import { isCoordinatedVisualTexturePath, TEXTURE_ROUTE_VERSION, textureUrl, VISUAL_MODEL_ROUTE_VERSION, visualAnimationsUrl, visualModelUrl } from "../dist/code/browser/Wvm.js";
+import * as THREE from "three";
+
+// Merged 2026-10-20 from 6 files; each block below is one former file,
+// kept in its own scope so its helpers and module loads stay as they were.
+
+// ── character-atlas.test.mjs
+{
 // Т6: an atlas that cannot be painted is remembered, and a request that failed is made again.
 //
 // The three permanent failures the capsule ledger was built to tell apart. Before this, a look that
@@ -6,21 +21,6 @@
 // not answer was dead for the life of the tab. All three are driven here against an injected clock,
 // so forty seconds of backoff costs nothing.
 
-import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
-import test from "node:test";
-import {
-  ATLAS_FAILURE_LIMIT, CharacterAtlasClient, IMAGE_RETRY_BACKOFF_MS, configureCharacterAtlasTexture,
-  layerPaths,
-} from "../dist/code/browser/CharacterAtlas.js";
-import {
-  isCoordinatedVisualTexturePath, TEXTURE_ROUTE_VERSION, textureUrl,
-  VISUAL_MODEL_ROUTE_VERSION, visualAnimationsUrl, visualModelUrl,
-} from "../dist/code/browser/Wvm.js";
-import { CreatureModelClient } from "../dist/code/browser/CreatureModelClient.js";
-import { StandInLedger } from "../dist/code/browser/StandIn.js";
-import { buildSkinnedTemplateFrom } from "../dist/code/browser/AnimatedModel.js";
-import * as THREE from "three";
 
 /**
  * The three globals the atlas reaches for in a page, counted rather than faked away.
@@ -611,3 +611,1344 @@ test("a successful partial creature-model batch records omitted ids as terminal"
     globalThis.fetch = originalFetch;
   }
 });
+}
+
+// ── character-atlas-lifecycle.test.mjs
+{
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+function installPage({ fetch, createImageBitmap }) {
+  const canvases = [];
+  const original = {
+    fetch: globalThis.fetch,
+    document: globalThis.document,
+    createImageBitmap: globalThis.createImageBitmap,
+  };
+  globalThis.fetch = fetch;
+  globalThis.createImageBitmap = createImageBitmap;
+  globalThis.document = {
+    createElement(tag) {
+      assert.equal(tag, "canvas");
+      const canvas = {
+        width: 0,
+        height: 0,
+        drawn: [],
+        getContext: () => ({ drawImage: (...args) => canvas.drawn.push(args) }),
+      };
+      canvases.push(canvas);
+      return canvas;
+    },
+  };
+  return {
+    canvases,
+    restore() {
+      globalThis.fetch = original.fetch;
+      globalThis.document = original.document;
+      globalThis.createImageBitmap = original.createImageBitmap;
+    },
+  };
+}
+
+const found = { ok: true, status: 200, blob: async () => ({}) };
+const layer = (path) => [{ path }];
+const turn = () => new Promise((resolve) => setImmediate(resolve));
+
+for (const stage of ["fetch", "blob", "decode"]) {
+  test(`dispose rejects a late ${stage} result without resurrecting atlas state`, async () => {
+    const gate = deferred();
+    let closes = 0;
+    const bitmap = { width: 256, height: 128, close: () => { closes++; } };
+    let blobCalls = 0;
+    let decodeCalls = 0;
+    const response = {
+      ok: true,
+      status: 200,
+      blob: async () => {
+        blobCalls++;
+        return stage === "blob" ? gate.promise : {};
+      },
+    };
+    const page = installPage({
+      fetch: () => stage === "fetch" ? gate.promise : Promise.resolve(response),
+      createImageBitmap: async () => {
+        decodeCalls++;
+        return stage === "decode" ? gate.promise : bitmap;
+      },
+    });
+    try {
+      const atlas = new CharacterAtlasClient("http://lifecycle.test");
+      const composing = atlas.compose("late", layer("late.blp"));
+      if (stage !== "fetch") await turn();
+      assert.deepEqual([blobCalls, decodeCalls], stage === "fetch" ? [0, 0]
+        : stage === "blob" ? [1, 0] : [1, 1],
+      `the request is paused at the ${stage} gate before disposal`);
+
+      atlas.dispose();
+      atlas.dispose();
+      assert.deepEqual(atlas.stats, { pending: 0, success: 0, error: 0, generation: 0 });
+
+      if (stage === "fetch") gate.resolve(response);
+      else if (stage === "blob") gate.resolve({});
+      else gate.resolve(bitmap);
+      assert.equal(await composing, undefined);
+      await turn();
+
+      assert.equal(closes, stage === "decode" ? 1 : 0,
+        "work already inside decode closes its late bitmap; earlier aborts never allocate one");
+      assert.equal(page.canvases.length, 0, "a stale compose never allocates an atlas canvas");
+      assert.equal(atlas.get("late"), undefined);
+      assert.equal(atlas.generation("late"), 0);
+      assert.equal(atlas.failures, 0);
+      assert.deepEqual(atlas.stats, { pending: 0, success: 0, error: 0, generation: 0 },
+        "late settlement cannot change disposed readiness state");
+    } finally {
+      page.restore();
+    }
+  });
+}
+
+test("a late transport failure after dispose cannot recreate retry ownership", async () => {
+  const gate = deferred();
+  const page = installPage({
+    fetch: () => gate.promise,
+    createImageBitmap: async () => ({ width: 1, height: 1, close() {} }),
+  });
+  try {
+    const atlas = new CharacterAtlasClient("http://lifecycle.test");
+    const composing = atlas.compose("failed-late", layer("failed-late.blp"));
+    atlas.dispose();
+    gate.reject(new Error("late network failure"));
+    assert.equal(await composing, undefined);
+    assert.equal(atlas.failures, 0);
+    assert.deepEqual(atlas.stats, { pending: 0, success: 0, error: 0, generation: 0 });
+  } finally {
+    page.restore();
+  }
+});
+
+test("an owned canvas failure resolves empty instead of rejecting a fire-and-forget compose", async () => {
+  const page = installPage({
+    fetch: async () => found,
+    createImageBitmap: async () => ({ width: 256, height: 128, close() {} }),
+  });
+  try {
+    globalThis.document.createElement = () => { throw new Error("canvas exploded"); };
+    const atlas = new CharacterAtlasClient("http://lifecycle.test");
+
+    await assert.doesNotReject(async () => {
+      assert.equal(await atlas.compose("canvas-error", layer("canvas-error.blp")), undefined);
+    }, "renderer callers use void compose, so an owned build failure must not reject");
+    assert.deepEqual(atlas.stats, { pending: 0, success: 1, error: 1, generation: 2 });
+
+    assert.equal(await atlas.compose("canvas-error", layer("canvas-error.blp")), undefined,
+      "the terminal look is not rebuilt on the next renderer frame");
+    assert.equal(page.canvases.length, 0);
+    atlas.dispose();
+  } finally {
+    page.restore();
+  }
+});
+
+test("release cancels exact compose publication and old finally preserves its replacement", async () => {
+  const responses = new Map();
+  const bitmaps = new Map();
+  let closes = 0;
+  const page = installPage({
+    fetch: (url) => {
+      const path = decodeURIComponent(String(url).replace(/^.*\?path=/, ""));
+      let gate = responses.get(path);
+      if (!gate) {
+        gate = deferred();
+        responses.set(path, gate);
+      }
+      return gate.promise;
+    },
+    createImageBitmap: async (blob) => {
+      const bitmap = { width: 256, height: 128, path: blob.path, close: () => { closes++; } };
+      bitmaps.set(blob.path, bitmap);
+      return bitmap;
+    },
+  });
+  try {
+    const atlas = new CharacterAtlasClient("http://lifecycle.test");
+    const oldCompose = atlas.compose("look", layer("old.blp"));
+    atlas.release("look");
+    const replacement = atlas.compose("look", layer("new.blp"));
+
+    responses.get("old.blp").resolve({
+      ok: true, status: 200, blob: async () => ({ path: "old.blp" }),
+    });
+    assert.equal(await oldCompose, undefined);
+    assert.equal(page.canvases.length, 0, "the released request cannot publish an atlas");
+    assert.equal(atlas.failures, 0);
+    assert.equal(atlas.stats.generation, 0,
+      "the released source is stale and cannot change global readiness generation");
+    assert.equal(atlas.stats.pending, 2,
+      "old finally leaves the replacement compose and its image request registered");
+
+    responses.get("new.blp").resolve({
+      ok: true, status: 200, blob: async () => ({ path: "new.blp" }),
+    });
+    const texture = await replacement;
+    assert.ok(texture);
+    assert.equal(atlas.get("look"), texture);
+    assert.equal(page.canvases.length, 1);
+    assert.equal(closes, 0, "release keeps source images available to other looks");
+
+    atlas.dispose();
+    assert.equal(closes, 1, "the aborted old source is never decoded; the replacement closes once");
+  } finally {
+    page.restore();
+  }
+});
+
+test("a released cached-source build is inert and may be replaced under the same key", async () => {
+  let closes = 0;
+  let fetches = 0;
+  const bitmap = { width: 256, height: 128, close: () => { closes++; } };
+  const page = installPage({
+    fetch: async () => { fetches++; return found; },
+    createImageBitmap: async () => bitmap,
+  });
+  try {
+    const atlas = new CharacterAtlasClient("http://lifecycle.test");
+    assert.ok(await atlas.compose("seed", layer("shared.blp")));
+    const canvases = page.canvases.length;
+    const generation = atlas.stats.generation;
+
+    const stale = atlas.compose("look", layer("shared.blp"));
+    atlas.release("look");
+    assert.equal(await stale, undefined);
+    assert.equal(atlas.stats.generation, generation,
+      "the released compose does not settle readiness or failure state");
+    assert.equal(page.canvases.length, canvases,
+      "the stale cached-source continuation does not allocate a canvas");
+
+    const replacement = atlas.compose("look", layer("shared.blp"));
+    assert.ok(await replacement);
+    assert.equal(fetches, 1, "release does not discard the session source cache");
+    assert.equal(page.canvases.length, canvases + 1);
+    assert.equal(closes, 0);
+    atlas.dispose();
+    assert.equal(closes, 1);
+  } finally {
+    page.restore();
+  }
+});
+
+test("release removes ownership before a dispose listener composes the same key", async () => {
+  let closes = 0;
+  const page = installPage({
+    fetch: async () => found,
+    createImageBitmap: async () => ({ width: 256, height: 128, close: () => { closes++; } }),
+  });
+  try {
+    const atlas = new CharacterAtlasClient("http://lifecycle.test");
+    const old = await atlas.compose("reentrant", layer("old-reentrant.blp"));
+    assert.ok(old);
+    let oldDisposals = 0;
+    let replacementPromise;
+    old.addEventListener("dispose", () => {
+      oldDisposals++;
+      replacementPromise = atlas.compose("reentrant", layer("new-reentrant.blp"));
+    });
+
+    atlas.release("reentrant");
+    assert.equal(oldDisposals, 1);
+    assert.ok(replacementPromise, "the synchronous listener started replacement ownership");
+    const replacement = await replacementPromise;
+    assert.ok(replacement);
+    assert.notEqual(replacement, old, "the disposed atlas is never returned as the replacement");
+    assert.equal(atlas.get("reentrant"), replacement,
+      "the outer release cannot delete a replacement created by its dispose listener");
+
+    atlas.dispose();
+    assert.equal(oldDisposals, 1, "the released texture is disposed exactly once");
+    assert.equal(closes, 2, "both source identities remain shared until client disposal");
+  } finally {
+    page.restore();
+  }
+});
+
+test("inactive no-atlas work is pruned independently of successful texture-cache size", async () => {
+  const page = installPage({
+    fetch: async (url) => String(url).includes("terminal")
+      ? { ok: false, status: 404 }
+      : { ok: false, status: 500 },
+    createImageBitmap: async () => { throw new Error("failed responses are never decoded"); },
+  });
+  try {
+    const atlas = new CharacterAtlasClient("http://lifecycle.test", () => 0);
+    assert.equal(await atlas.compose("kept-retry", layer("retry.blp")), undefined);
+    assert.equal(await atlas.compose("gone-terminal", layer("terminal.blp")), undefined);
+    assert.equal(atlas.size, 0, "no-paint ownership is invisible to the composed texture count");
+    assert.equal(atlas.stats.pending, 1);
+    assert.equal(atlas.stats.error, 1);
+
+    atlas.pruneInactiveWork(new Set(["kept-retry"]));
+    assert.equal(atlas.stats.pending, 1, "the prospective current-frame look remains owned");
+    assert.equal(atlas.stats.error, 0, "the invisible terminal look no longer blocks readiness");
+
+    atlas.pruneInactiveWork(new Set());
+    assert.equal(atlas.stats.pending, 0, "an invisible finite retry is cancelled under the count cap");
+    assert.equal(atlas.failures, 0);
+    atlas.dispose();
+  } finally {
+    page.restore();
+  }
+});
+
+test("pruning the last no-atlas owner aborts its exact source and ignores a late transport answer", async () => {
+  const transport = deferred();
+  let signal;
+  let aborts = 0;
+  let decodes = 0;
+  let closes = 0;
+  const bitmap = { width: 256, height: 128, close: () => { closes++; } };
+  const page = installPage({
+    fetch: (_url, options) => {
+      signal = options?.signal;
+      signal?.addEventListener("abort", () => { aborts++; });
+      return transport.promise;
+    },
+    createImageBitmap: async () => {
+      decodes++;
+      return bitmap;
+    },
+  });
+  try {
+    const atlas = new CharacterAtlasClient("http://lifecycle.test");
+    const composing = atlas.compose("gone", layer("gone.blp"));
+    await turn();
+    assert.equal(atlas.stats.pending, 2, "one source read and its compose are both visible initially");
+    const generation = atlas.stats.generation;
+
+    atlas.commitPins(new Set(), new Set());
+    atlas.pruneInactiveWork(new Set());
+    assert.equal(signal?.aborted, true);
+    assert.equal(aborts, 1);
+    assert.equal(atlas.residencyStats.sources.count, 0);
+    assert.equal(atlas.residencyStats.sources.activeLeases, 0);
+    assert.equal(atlas.stats.pending, 0);
+
+    // The test transport deliberately ignores AbortSignal and still resolves. Exact request
+    // identity must suppress it before decode/admission/generation changes.
+    transport.resolve(found);
+    assert.equal(await composing, undefined);
+    await turn();
+    assert.equal(decodes, 0);
+    assert.equal(closes, 0);
+    assert.equal(atlas.stats.generation, generation);
+    assert.equal(atlas.residencyStats.sources.count, 0);
+  } finally {
+    page.restore();
+  }
+});
+
+test("a released candidate chain cannot acquire an alternate source after its primary aborts", async () => {
+  const primary = deferred();
+  const fetched = [];
+  const page = installPage({
+    fetch: (url) => {
+      const path = new URL(url).searchParams.get("path");
+      fetched.push(path);
+      if (path === "primary.blp") return primary.promise;
+      return Promise.resolve(found);
+    },
+    createImageBitmap: async () => ({ width: 256, height: 128, close() {} }),
+  });
+  try {
+    const atlas = new CharacterAtlasClient("http://lifecycle.test");
+    const composing = atlas.compose("gone-chain", [{
+      path: "primary.blp",
+      candidates: ["primary.blp", "alternate.blp"],
+    }]);
+    await turn();
+    atlas.release("gone-chain");
+    primary.resolve(found);
+    assert.equal(await composing, undefined);
+    await turn();
+    assert.deepEqual(fetched, ["primary.blp"],
+      "the stale continuation cannot create ownership that release never had a chance to visit");
+    assert.equal(atlas.residencyStats.sources.count, 0);
+    assert.equal(atlas.stats.generation, 0);
+  } finally {
+    page.restore();
+  }
+});
+
+test("retain cancels only unretained compose publication and preserves the kept look", async () => {
+  let closes = 0;
+  const bitmap = { width: 256, height: 128, close: () => { closes++; } };
+  const page = installPage({
+    fetch: async () => found,
+    createImageBitmap: async () => bitmap,
+  });
+  try {
+    const atlas = new CharacterAtlasClient("http://lifecycle.test");
+    assert.ok(await atlas.compose("seed", layer("shared.blp")));
+    const generation = atlas.stats.generation;
+    const kept = atlas.compose("kept", layer("shared.blp"));
+    const dropped = atlas.compose("dropped", layer("shared.blp"));
+
+    atlas.retain(new Set(["seed", "kept"]));
+    assert.equal(await dropped, undefined);
+    assert.ok(await kept);
+    assert.equal(atlas.get("dropped"), undefined);
+    assert.ok(atlas.get("kept"));
+    assert.equal(atlas.stats.generation, generation + 1,
+      "only the retained composition settles readiness");
+    assert.equal(page.canvases.length, 2, "the unretained continuation never allocates a canvas");
+    assert.equal(closes, 0, "retain/release do not own the shared source cache");
+    atlas.dispose();
+    assert.equal(closes, 1);
+  } finally {
+    page.restore();
+  }
+});
+
+test("dispose closes aliased ready bitmaps once and leaves every public operation inert", async () => {
+  let closes = 0;
+  let fetches = 0;
+  const sharedBitmap = { width: 256, height: 128, close: () => { closes++; } };
+  const page = installPage({
+    fetch: async () => { fetches++; return found; },
+    createImageBitmap: async () => sharedBitmap,
+  });
+  try {
+    const atlas = new CharacterAtlasClient("http://lifecycle.test");
+    const first = await atlas.compose("first", layer("first.blp"));
+    const second = await atlas.compose("second", layer("second.blp"));
+    assert.ok(first && second);
+    let textureDisposals = 0;
+    first.addEventListener("dispose", () => { textureDisposals++; });
+    second.addEventListener("dispose", () => { textureDisposals++; });
+
+    atlas.dispose();
+    atlas.dispose();
+    assert.equal(closes, 1, "one decoder identity is closed once even when two paths returned it");
+    assert.equal(textureDisposals, 2);
+    assert.deepEqual(atlas.stats, { pending: 0, success: 0, error: 0, generation: 0 });
+
+    assert.equal(atlas.get("first"), undefined);
+    assert.equal(atlas.generation("first"), 0);
+    assert.equal(await atlas.compose("after", layer("after.blp")), undefined);
+    atlas.refresh();
+    atlas.retain(new Set(["first"]));
+    atlas.pruneInactiveWork(new Set(["first"]));
+    atlas.release("first");
+    atlas.setAnisotropy(8);
+    assert.equal(fetches, 2, "post-dispose operations cannot start new work");
+    assert.equal(page.canvases.length, 2);
+    assert.equal(closes, 1);
+  } finally {
+    page.restore();
+  }
+});
+
+test("dispose publishes empty state before listeners and continues after a listener throws", async () => {
+  let closes = 0;
+  const page = installPage({
+    fetch: async () => found,
+    createImageBitmap: async () => ({ width: 256, height: 128, close: () => { closes++; } }),
+  });
+  try {
+    const atlas = new CharacterAtlasClient("http://lifecycle.test");
+    const first = await atlas.compose("throwing-first", layer("throwing-first.blp"));
+    const second = await atlas.compose("throwing-second", layer("throwing-second.blp"));
+    assert.ok(first && second);
+    let secondDisposals = 0;
+    let observedSize;
+    let observedStats;
+    first.addEventListener("dispose", () => {
+      observedSize = atlas.size;
+      observedStats = atlas.stats;
+      throw new Error("listener exploded");
+    });
+    second.addEventListener("dispose", () => { secondDisposals++; });
+
+    assert.doesNotThrow(() => atlas.dispose());
+    assert.equal(observedSize, 0, "a synchronous listener observes the closed ownership boundary");
+    assert.deepEqual(observedStats, { pending: 0, success: 0, error: 0, generation: 0 });
+    assert.equal(secondDisposals, 1, "one bad listener cannot strand later textures");
+    assert.equal(closes, 2, "ready source images are still released after the throwing listener");
+  } finally {
+    page.restore();
+  }
+});
+}
+
+// ── character-atlas-paint-budget.test.mjs
+{
+function installPage() {
+  const previous = {
+    fetch: globalThis.fetch,
+    createImageBitmap: globalThis.createImageBitmap,
+    document: globalThis.document,
+    requestAnimationFrame: globalThis.requestAnimationFrame,
+    cancelAnimationFrame: globalThis.cancelAnimationFrame,
+  };
+  const callbacks = new Map();
+  const canvases = [];
+  let nextFrameId = 0;
+  globalThis.fetch = async () => ({ ok: true, status: 200, blob: async () => ({}) });
+  globalThis.createImageBitmap = async () => ({ width: 256, height: 128, close() {} });
+  globalThis.document = {
+    createElement(tag) {
+      assert.equal(tag, "canvas");
+      const canvas = {
+        width: 0, height: 0, drawn: 0,
+        getContext: () => ({ drawImage: () => { canvas.drawn++; } }),
+      };
+      canvases.push(canvas);
+      return canvas;
+    },
+  };
+  globalThis.requestAnimationFrame = (callback) => {
+    const id = ++nextFrameId;
+    callbacks.set(id, callback);
+    return id;
+  };
+  globalThis.cancelAnimationFrame = (id) => { callbacks.delete(id); };
+  return {
+    callbacks,
+    canvases,
+    async frame() {
+      assert.equal(callbacks.size, 1, "one shared paint callback is scheduled");
+      const callback = callbacks.values().next().value;
+      callback(0);
+      await new Promise((resolve) => setImmediate(resolve));
+    },
+    restore() {
+      Object.assign(globalThis, previous);
+    },
+  };
+}
+
+const settle = () => new Promise((resolve) => setImmediate(resolve));
+const layer = (index) => [{ path: `Body${index}.blp` }];
+
+test("completed character looks paint at most two atlases per animation frame", async () => {
+  const page = installPage();
+  const atlas = new CharacterAtlasClient("http://atlas.test");
+  try {
+    const pending = Array.from({ length: 5 }, (_, index) => atlas.compose(`look-${index}`, layer(index)));
+    await settle();
+    assert.equal(page.canvases.length, 0, "download completion does not paint a whole crowd at once");
+    assert.equal(page.callbacks.size, 1);
+
+    await page.frame();
+    assert.equal(page.canvases.length, CHARACTER_ATLAS_PAINTS_PER_FRAME);
+    await page.frame();
+    assert.equal(page.canvases.length, CHARACTER_ATLAS_PAINTS_PER_FRAME * 2);
+    await page.frame();
+    assert.equal(page.canvases.length, 5);
+    assert.equal((await Promise.all(pending)).filter(Boolean).length, 5);
+    assert.equal(atlas.size, 5);
+  } finally {
+    atlas.dispose();
+    page.restore();
+  }
+});
+
+test("release and dispose settle paint waiters without publishing stale canvases", async () => {
+  const page = installPage();
+  const atlas = new CharacterAtlasClient("http://atlas.test");
+  try {
+    const released = atlas.compose("released", layer(1));
+    await settle();
+    atlas.release("released");
+    assert.equal(await released, undefined);
+    assert.equal(page.callbacks.size, 0);
+    assert.equal(page.canvases.length, 0);
+
+    const disposed = atlas.compose("disposed", layer(2));
+    await settle();
+    atlas.dispose();
+    assert.equal(await disposed, undefined);
+    assert.equal(page.callbacks.size, 0);
+    assert.equal(page.canvases.length, 0);
+  } finally {
+    atlas.dispose();
+    page.restore();
+  }
+});
+
+test("a hidden tab finishes a queued atlas without waiting for a paused animation frame", async () => {
+  const page = installPage();
+  globalThis.document.hidden = true;
+  const atlas = new CharacterAtlasClient("http://atlas.test");
+  try {
+    const painted = atlas.compose("hidden", layer(3));
+    await settle();
+    assert.equal(page.callbacks.size, 1);
+    let timeout;
+    const completed = await Promise.race([
+      painted.then((texture) => texture !== undefined),
+      new Promise((resolve) => { timeout = setTimeout(() => resolve(false), 1_000); }),
+    ]);
+    clearTimeout(timeout);
+    assert.equal(completed, true);
+    assert.equal(page.canvases.length, 1);
+    assert.equal(page.callbacks.size, 0);
+  } finally {
+    atlas.dispose();
+    page.restore();
+  }
+});
+}
+
+// ── character-atlas-partial-paint.test.mjs
+{
+/**
+ * A page with no frame clock (paint turns are immediate, as in every page-free test) whose `/texture`
+ * answers are held per path until the test lets them go.
+ */
+function installPage() {
+  const previous = {
+    fetch: globalThis.fetch,
+    createImageBitmap: globalThis.createImageBitmap,
+    document: globalThis.document,
+    requestAnimationFrame: globalThis.requestAnimationFrame,
+  };
+  const held = new Map();
+  const canvases = [];
+  globalThis.requestAnimationFrame = undefined;
+  globalThis.fetch = async (url) => {
+    const path = new URL(String(url)).searchParams.get("path") ?? String(url);
+    const gate = held.get(path);
+    if (gate) await gate.promise;
+    return { ok: true, status: 200, blob: async () => ({}) };
+  };
+  globalThis.createImageBitmap = async () => ({ width: 256, height: 128, close() {} });
+  globalThis.document = {
+    createElement() {
+      const canvas = {
+        width: 0, height: 0, drawn: 0,
+        getContext: () => ({ drawImage: () => { canvas.drawn++; } }),
+      };
+      canvases.push(canvas);
+      return canvas;
+    },
+  };
+  return {
+    canvases,
+    hold(path) {
+      let release;
+      const promise = new Promise((resolve) => { release = resolve; });
+      held.set(path, { promise, release });
+    },
+    release(path) { held.get(path)?.release(); },
+    restore() { Object.assign(globalThis, previous); },
+  };
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const LOOK = [
+  { path: "Character\\Human\\Male\\HumanMaleSkin00_00.blp" },
+  { path: "Character\\Human\\Male\\HumanMaleFaceLower00_00.blp", section: "faceLower" },
+  { path: "Item\\TextureComponents\\LegUpperTexture\\Slow_Pants_LU_M.blp", section: "legUpper" },
+];
+
+test("a first body is painted from its base skin while a slow layer is still on its way", async () => {
+  // The unit stays a capsule until `get` answers. Measured on the owner's session of 2026-09-28,
+  // cold textures were published one every ~412 ms, and one of a character's up-to-24 layers
+  // arriving last held the whole body back.
+  const page = installPage();
+  const atlas = new CharacterAtlasClient("http://atlas.test");
+  try {
+    page.hold(LOOK[2].path);
+    const composed = atlas.compose("look", LOOK);
+    await sleep(CHARACTER_ATLAS_PARTIAL_PAINT_MS + 150);
+    const early = atlas.get("look");
+    assert.ok(early, "the body is out before its trousers");
+    assert.equal(atlas.generation("look"), 1);
+    assert.equal(page.canvases.length, 1);
+    assert.equal(page.canvases[0].drawn, 2, "skin and face, the two layers that had arrived");
+
+    page.release(LOOK[2].path);
+    assert.equal(await composed, early, "the full body lands in the same texture the unit already holds");
+    assert.equal(atlas.get("look"), early);
+    assert.equal(atlas.generation("look"), 2, "and says it repainted, so portraits follow");
+    assert.equal(page.canvases.length, 1, "into the same canvas");
+    assert.equal(page.canvases[0].drawn, 2 + 3);
+    assert.equal(atlas.failures, 0, "nothing is left owed");
+  } finally {
+    atlas.dispose();
+    page.restore();
+  }
+});
+
+test("a body whose layers all arrive inside the grace is painted once, never bare", async () => {
+  const page = installPage();
+  const atlas = new CharacterAtlasClient("http://atlas.test");
+  try {
+    page.hold(LOOK[2].path);
+    const composed = atlas.compose("look", LOOK);
+    await sleep(Math.floor(CHARACTER_ATLAS_PARTIAL_PAINT_MS / 3));
+    assert.equal(atlas.get("look"), undefined);
+    page.release(LOOK[2].path);
+    assert.ok(await composed);
+    assert.equal(atlas.generation("look"), 1);
+    assert.equal(page.canvases.length, 1);
+    assert.equal(page.canvases[0].drawn, 3);
+  } finally {
+    atlas.dispose();
+    page.restore();
+  }
+});
+
+test("a body abandoned after its first paint is recomposed, not handed out as finished", async () => {
+  const page = installPage();
+  const atlas = new CharacterAtlasClient("http://atlas.test");
+  try {
+    page.hold(LOOK[2].path);
+    void atlas.compose("look", LOOK);
+    await sleep(CHARACTER_ATLAS_PARTIAL_PAINT_MS + 150);
+    assert.ok(atlas.get("look"));
+    assert.equal(atlas.failures, 1, "the partial body is remembered as owing a layer");
+  } finally {
+    page.release(LOOK[2].path);
+    atlas.dispose();
+    page.restore();
+  }
+});
+}
+
+// ── character-atlas-residency.test.mjs
+{
+function layer(path, section) {
+  return [{ path, ...(section ? { section } : {}) }];
+}
+
+function installPage({ bitmapFor = (path) => ({ path, width: 8, height: 8, close() {} }), fetchHook } = {}) {
+  const original = {
+    fetch: globalThis.fetch,
+    document: globalThis.document,
+    createImageBitmap: globalThis.createImageBitmap,
+  };
+  const fetches = [];
+  const canvases = [];
+  globalThis.fetch = async (url) => {
+    const path = new URL(url).searchParams.get("path");
+    fetches.push(path);
+    if (fetchHook) return fetchHook(path, url);
+    return { ok: true, status: 200, blob: async () => ({ size: 1, path }) };
+  };
+  globalThis.createImageBitmap = async (blob) => bitmapFor(blob.path);
+  globalThis.document = {
+    createElement() {
+      const canvas = { width: 0, height: 0, getContext: () => ({ drawImage() {} }) };
+      canvases.push(canvas);
+      return canvas;
+    },
+  };
+  return {
+    fetches,
+    canvases,
+    restore() {
+      globalThis.fetch = original.fetch;
+      globalThis.document = original.document;
+      globalThis.createImageBitmap = original.createImageBitmap;
+    },
+  };
+}
+
+function limits(overrides = {}) {
+  return {
+    limits: {
+      atlasCount: 32,
+      atlasKnownLogicalTextureBytes: CHARACTER_ATLAS_KNOWN_LOGICAL_TEXTURE_BYTE_LIMIT,
+      sourceCount: 32,
+      sourceDecodedPixels: 1_000_000,
+      sourceResponseBytes: 1024,
+      sourceEntryPixels: 1_000_000,
+      ...overrides,
+    },
+  };
+}
+
+test("atlas true LRU touches hits, plateaus, and rebuilds an evicted appearance", async () => {
+  const page = installPage();
+  try {
+    const atlas = new CharacterAtlasClient("http://residency.test", Date.now, limits({ atlasCount: 2 }));
+    const first = await atlas.compose("first", layer("first.blp"));
+    const second = await atlas.compose("second", layer("second.blp"));
+    assert.ok(first && second);
+    let firstDisposals = 0;
+    let secondDisposals = 0;
+    first.addEventListener("dispose", () => { firstDisposals++; });
+    second.addEventListener("dispose", () => { secondDisposals++; });
+
+    assert.equal(atlas.get("first"), first, "a cache hit promotes first to newest");
+    assert.ok(await atlas.compose("third", layer("third.blp")));
+    assert.equal(atlas.get("second"), undefined, "the untouched oldest entry is evicted");
+    assert.equal(secondDisposals, 1);
+    assert.equal(firstDisposals, 0);
+    assert.equal(atlas.residencyStats.atlases.count, 2);
+
+    const rebuilt = await atlas.compose("second", layer("second.blp"));
+    assert.ok(rebuilt && rebuilt !== second);
+    assert.equal(page.fetches.filter((path) => path === "second.blp").length, 1,
+      "atlas re-entry can reuse an independently resident decoded source");
+    assert.equal(atlas.residencyStats.atlases.count, 2);
+  } finally {
+    page.restore();
+  }
+});
+
+test("active atlas pins may overflow both soft policy and converge after the footprint changes", async () => {
+  const page = installPage();
+  try {
+    const atlas = new CharacterAtlasClient("http://pins.test", Date.now, limits({
+      atlasCount: 1,
+      atlasKnownLogicalTextureBytes: 1_398_100,
+    }));
+    atlas.commitPins(new Set(["one", "two"]));
+    assert.ok(await atlas.compose("one", layer("one.blp")));
+    assert.ok(await atlas.compose("two", layer("two.blp")));
+    assert.deepEqual(atlas.residencyStats.atlases, {
+      count: 2,
+      knownLogicalTextureBytes: 2_796_200,
+      unknownLogicalTextureCount: 0,
+      pinnedCount: 2,
+      overflowCount: 1,
+      overflowKnownLogicalTextureBytes: 1_398_100,
+    });
+
+    atlas.commitPins(new Set(["two"]));
+    assert.equal(atlas.get("one"), undefined);
+    assert.ok(atlas.get("two"));
+    assert.equal(atlas.residencyStats.atlases.overflowCount, 0);
+  } finally {
+    page.restore();
+  }
+});
+
+test("source pixel pressure evicts by exact decoded surface area independently of source count", async () => {
+  const page = installPage({
+    bitmapFor: (path) => ({ path, width: 8, height: 8, close() {} }),
+  });
+  try {
+    const atlas = new CharacterAtlasClient("http://pixels.test", Date.now, limits({
+      sourceCount: 8,
+      sourceDecodedPixels: 64,
+    }));
+    assert.ok(await atlas.compose("one", layer("one.blp")));
+    assert.ok(await atlas.compose("two", layer("two.blp")));
+    assert.equal(atlas.residencyStats.sources.count, 1);
+    assert.equal(atlas.residencyStats.sources.decodedPixels, 64);
+    assert.equal(atlas.residencyStats.atlases.count, 2);
+    assert.ok(await atlas.compose("one-reentry", layer("one.blp")));
+    assert.equal(page.fetches.filter((path) => path === "one.blp").length, 2);
+  } finally {
+    page.restore();
+  }
+});
+
+test("pending source pins may overflow count and converge immediately after their leases settle", async () => {
+  const resolvers = new Map();
+  const page = installPage({
+    fetchHook: (path) => new Promise((resolve) => { resolvers.set(path, resolve); }),
+  });
+  try {
+    const atlas = new CharacterAtlasClient("http://source-pins.test", Date.now, limits({ sourceCount: 1 }));
+    const one = atlas.compose("one", layer("one.blp"));
+    const two = atlas.compose("two", layer("two.blp"));
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual({
+      count: atlas.residencyStats.sources.count,
+      activeLeases: atlas.residencyStats.sources.activeLeases,
+      pinnedCount: atlas.residencyStats.sources.pinnedCount,
+      overflowCount: atlas.residencyStats.sources.overflowCount,
+    }, { count: 2, activeLeases: 2, pinnedCount: 2, overflowCount: 1 });
+
+    resolvers.get("one.blp")({ ok: true, status: 200, blob: async () => ({ size: 1, path: "one.blp" }) });
+    resolvers.get("two.blp")({ ok: true, status: 200, blob: async () => ({ size: 1, path: "two.blp" }) });
+    assert.ok(await one);
+    assert.ok(await two);
+    assert.equal(atlas.residencyStats.sources.count, 1);
+    assert.equal(atlas.residencyStats.sources.overflowCount, 0);
+  } finally {
+    page.restore();
+  }
+});
+
+test("source cache hits touch true LRU order", async () => {
+  const page = installPage();
+  try {
+    const atlas = new CharacterAtlasClient("http://source-lru.test", Date.now, limits({ sourceCount: 2 }));
+    assert.ok(await atlas.compose("one", layer("one.blp")));
+    assert.ok(await atlas.compose("two", layer("two.blp")));
+    assert.ok(await atlas.compose("one-touch", layer("one.blp")));
+    assert.ok(await atlas.compose("three", layer("three.blp")));
+    assert.ok(await atlas.compose("one-still-resident", layer("one.blp")));
+    assert.equal(page.fetches.filter((path) => path === "one.blp").length, 1);
+    assert.ok(await atlas.compose("two-reentry", layer("two.blp")));
+    assert.equal(page.fetches.filter((path) => path === "two.blp").length, 2,
+      "the untouched oldest source was evicted after one was promoted");
+  } finally {
+    page.restore();
+  }
+});
+
+test("atlas and source budgets are independent and source re-entry fetches after exact eviction", async () => {
+  const page = installPage();
+  try {
+    const atlas = new CharacterAtlasClient("http://independent.test", Date.now, limits({
+      atlasCount: 8,
+      sourceCount: 1,
+    }));
+    assert.ok(await atlas.compose("one", layer("one.blp")));
+    assert.ok(await atlas.compose("two", layer("two.blp")));
+    assert.equal(atlas.residencyStats.atlases.count, 2);
+    assert.equal(atlas.residencyStats.sources.count, 1);
+
+    assert.ok(await atlas.compose("one-again", layer("one.blp")));
+    assert.equal(page.fetches.filter((path) => path === "one.blp").length, 2);
+    assert.equal(atlas.residencyStats.atlases.count, 3,
+      "source eviction does not evict composed atlas textures");
+    assert.equal(atlas.residencyStats.sources.count, 1);
+  } finally {
+    page.restore();
+  }
+});
+
+test("aliased decoder identities count pixels once and close only after the last source owner leaves", async () => {
+  let closes = 0;
+  const shared = { width: 8, height: 8, close: () => { closes++; } };
+  const page = installPage({ bitmapFor: () => shared });
+  try {
+    const atlas = new CharacterAtlasClient("http://alias.test", Date.now, limits({ sourceCount: 1 }));
+    assert.ok(await atlas.compose("one", layer("one.blp")));
+    assert.ok(await atlas.compose("two", layer("two.blp")));
+    assert.equal(atlas.residencyStats.sources.count, 1);
+    assert.equal(atlas.residencyStats.sources.uniqueReadyBitmaps, 1);
+    assert.equal(atlas.residencyStats.sources.decodedPixels, 64);
+    assert.equal(closes, 0, "evicting one aliased path preserves the remaining owner");
+
+    globalThis.createImageBitmap = async (blob) => ({ path: blob.path, width: 8, height: 8, close() {} });
+    assert.ok(await atlas.compose("three", layer("three.blp")));
+    assert.equal(closes, 1, "the shared identity closes exactly when its final path is evicted");
+  } finally {
+    page.restore();
+  }
+});
+
+test("pixel-only eviction skips non-reducing aliases for the oldest ownership that frees pixels", async () => {
+  let sharedCloses = 0;
+  const shared = { width: 8, height: 8, close: () => { sharedCloses++; } };
+  const page = installPage({
+    bitmapFor: (path) => path === "one.blp" || path === "two.blp"
+      ? shared
+      : { path, width: 8, height: 8, close() {} },
+  });
+  try {
+    const atlas = new CharacterAtlasClient("http://alias-pixels.test", Date.now, limits({
+      sourceCount: 10,
+      sourceDecodedPixels: 128,
+    }));
+    assert.ok(await atlas.compose("one", layer("one.blp")));
+    assert.ok(await atlas.compose("two", layer("two.blp")));
+    assert.ok(await atlas.compose("three", layer("three.blp")));
+    assert.ok(await atlas.compose("four", layer("four.blp")));
+
+    assert.equal(sharedCloses, 0, "removing one alias path would not improve pixel pressure");
+    assert.equal(atlas.residencyStats.sources.count, 3,
+      "both alias paths remain while the oldest unique owner is evicted");
+    assert.equal(atlas.residencyStats.sources.decodedPixels, 128);
+    assert.ok(await atlas.compose("three-reentry", layer("three.blp")));
+    assert.equal(page.fetches.filter((path) => path === "three.blp").length, 2);
+  } finally {
+    page.restore();
+  }
+});
+
+test("an entirely aliased unpinned ownership group is evicted together to converge pixel overflow", async () => {
+  let closes = 0;
+  const shared = { width: 8, height: 8, close: () => { closes++; } };
+  const page = installPage({ bitmapFor: () => shared });
+  try {
+    const atlas = new CharacterAtlasClient("http://alias-group.test", Date.now, limits({
+      sourceCount: 10,
+      sourceDecodedPixels: 32,
+      sourceEntryPixels: 64,
+    }));
+    const one = atlas.compose("one", layer("one.blp"));
+    const two = atlas.compose("two", layer("two.blp"));
+    assert.ok(await one);
+    assert.ok(await two);
+    assert.equal(atlas.residencyStats.sources.count, 0);
+    assert.equal(atlas.residencyStats.sources.decodedPixels, 0);
+    assert.equal(atlas.residencyStats.sources.overflowDecodedPixels, 0);
+    assert.equal(closes, 1);
+  } finally {
+    page.restore();
+  }
+});
+
+test("pixel group fallback stops after the first aliased ownership restores the budget", async () => {
+  let firstCloses = 0;
+  let secondCloses = 0;
+  const first = { width: 8, height: 8, close: () => { firstCloses++; } };
+  const second = { width: 8, height: 8, close: () => { secondCloses++; } };
+  const page = installPage({
+    bitmapFor: (path) => path.startsWith("first-") ? first : second,
+  });
+  try {
+    const atlas = new CharacterAtlasClient("http://alias-groups.test", Date.now, limits({
+      sourceCount: 10,
+      sourceDecodedPixels: 64,
+    }));
+    assert.ok(await atlas.compose("all", [
+      { path: "first-one.blp" },
+      { path: "first-two.blp" },
+      { path: "second-one.blp" },
+      { path: "second-two.blp" },
+    ]));
+
+    assert.equal(firstCloses, 1, "the oldest complete alias group is evicted");
+    assert.equal(secondCloses, 0, "eviction stops as soon as decoded pixels converge");
+    assert.equal(atlas.residencyStats.sources.count, 2);
+    assert.equal(atlas.residencyStats.sources.uniqueReadyBitmaps, 1);
+    assert.equal(atlas.residencyStats.sources.decodedPixels, 64);
+    assert.equal(atlas.residencyStats.sources.overflowDecodedPixels, 0);
+    assert.ok(await atlas.compose("second-still-resident", layer("second-one.blp")));
+    assert.equal(page.fetches.filter((path) => path === "second-one.blp").length, 1);
+  } finally {
+    page.restore();
+  }
+});
+
+test("touching any alias promotes its shared bitmap for resource-level pixel LRU", async () => {
+  let firstCloses = 0;
+  let secondCloses = 0;
+  let newestCloses = 0;
+  const first = { width: 8, height: 8, close: () => { firstCloses++; } };
+  const second = { width: 8, height: 8, close: () => { secondCloses++; } };
+  const secondReplacement = { width: 8, height: 8, close() {} };
+  const newest = { width: 8, height: 8, close: () => { newestCloses++; } };
+  const page = installPage({
+    bitmapFor: (path) => path.startsWith("first-") ? first
+      : path.startsWith("second-") ? (secondCloses === 0 ? second : secondReplacement) : newest,
+  });
+  try {
+    const atlas = new CharacterAtlasClient("http://alias-resource-lru.test", Date.now, limits({
+      sourceCount: 10,
+      sourceDecodedPixels: 128,
+    }));
+    assert.ok(await atlas.compose("seed", [
+      { path: "first-one.blp" }, { path: "first-two.blp" },
+      { path: "second-one.blp" }, { path: "second-two.blp" },
+    ]));
+    assert.ok(await atlas.compose("touch-first", layer("first-one.blp")));
+    assert.ok(await atlas.compose("admit-newest", layer("newest.blp")));
+
+    assert.equal(firstCloses, 0, "a hit through one alias promotes the shared decoded surface");
+    assert.equal(secondCloses, 1, "pixel pressure evicts the least-recently used bitmap identity");
+    assert.equal(newestCloses, 0);
+    assert.equal(atlas.residencyStats.sources.decodedPixels, 128);
+    assert.ok(await atlas.compose("second-reentry", layer("second-one.blp")));
+    assert.equal(page.fetches.filter((path) => path === "second-one.blp").length, 2);
+  } finally {
+    page.restore();
+  }
+});
+
+test("compose-owned source leases pin one shared pending request and release after stale/success paths", async () => {
+  let resolveFetch;
+  const fetchAnswer = new Promise((resolve) => { resolveFetch = resolve; });
+  let closes = 0;
+  const bitmap = { width: 8, height: 8, close: () => { closes++; } };
+  const page = installPage({
+    bitmapFor: () => bitmap,
+    fetchHook: async () => fetchAnswer,
+  });
+  try {
+    const atlas = new CharacterAtlasClient("http://leases.test", Date.now, limits({ sourceCount: 1 }));
+    const dropped = atlas.compose("dropped", layer("shared.blp"));
+    const kept = atlas.compose("kept", layer("shared.blp"));
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(page.fetches.length, 1);
+    assert.equal(atlas.residencyStats.sources.activeLeases, 2);
+    assert.equal(atlas.residencyStats.sources.pinnedCount, 1);
+
+    atlas.release("dropped");
+    resolveFetch({ ok: true, status: 200, blob: async () => ({ size: 1, path: "shared.blp" }) });
+    assert.equal(await dropped, undefined);
+    assert.ok(await kept);
+    assert.equal(atlas.residencyStats.sources.activeLeases, 0);
+    assert.equal(closes, 0, "release of one look does not close the shared source cache");
+    atlas.dispose();
+    assert.equal(closes, 1);
+  } finally {
+    page.restore();
+  }
+});
+
+test("formal readiness scopes dormant cached partial failures to committed active raw keys", async () => {
+  const missing = new Set(["missing-a.blp", "missing-b.blp"]);
+  const page = installPage({
+    fetchHook: async (path) => missing.has(path)
+      ? { ok: false, status: 404 }
+      : { ok: true, status: 200, blob: async () => ({ size: 1, path }) },
+  });
+  try {
+    const atlas = new CharacterAtlasClient("http://readiness-scope.test", Date.now, limits());
+    assert.ok(await atlas.compose("partial-a", [
+      { path: "base-a.blp" }, { path: "missing-a.blp", section: "legUpper" },
+    ]));
+    assert.ok(await atlas.compose("partial-b", [
+      { path: "base-b.blp" }, { path: "missing-b.blp", section: "legUpper" },
+    ]));
+    assert.equal(atlas.stats.error, 2, "standalone/pre-first-commit behavior remains fail-closed");
+
+    const resident = new Set(["partial-a", "partial-b"]);
+    atlas.commitPins(resident, new Set(["partial-a"]));
+    assert.equal(atlas.stats.error, 1);
+    atlas.commitPins(resident, new Set());
+    assert.equal(atlas.stats.error, 0, "dormant built-cache-only failures do not block formal readiness");
+    assert.equal(atlas.residencyStats.atlases.count, 2);
+    atlas.commitPins(resident, new Set(["partial-b"]));
+    assert.equal(atlas.stats.error, 1, "an active failure remains fail-closed on re-entry");
+  } finally {
+    page.restore();
+  }
+});
+
+test("refresh retries only submitted partial atlases and resumes a dormant retry on re-entry", async () => {
+  let now = 0;
+  const attempts = new Map();
+  const retryPaths = new Set(["active-missing.blp", "dormant-missing.blp"]);
+  const page = installPage({
+    fetchHook: async (path) => {
+      const attempt = (attempts.get(path) ?? 0) + 1;
+      attempts.set(path, attempt);
+      if (retryPaths.has(path) && attempt === 1) return { ok: false, status: 500 };
+      return { ok: true, status: 200, blob: async () => ({ size: 1, path }) };
+    },
+  });
+  try {
+    const atlas = new CharacterAtlasClient("http://refresh-scope.test", () => now, limits());
+    assert.ok(await atlas.compose("active", [
+      { path: "active-base.blp" }, { path: "active-missing.blp", section: "legUpper" },
+    ]));
+    assert.ok(await atlas.compose("dormant", [
+      { path: "dormant-base.blp" }, { path: "dormant-missing.blp", section: "legUpper" },
+    ]));
+
+    const resident = new Set(["active", "dormant"]);
+    atlas.commitPins(resident, new Set(["active"]));
+    now = 2_000;
+    atlas.refresh();
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(attempts.get("active-missing.blp"), 2);
+    assert.equal(attempts.get("dormant-missing.blp"), 1,
+      "a residency-only atlas cannot inject background work into the submitted frame");
+
+    atlas.commitPins(resident, new Set(["dormant"]));
+    atlas.refresh();
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(attempts.get("dormant-missing.blp"), 2,
+      "commitPins re-arms an already-due retry when its raw appearance becomes submitted again");
+  } finally {
+    page.restore();
+  }
+});
+
+test("residency snapshots are deeply frozen and dispose resets every exact total", async () => {
+  const page = installPage();
+  try {
+    const atlas = new CharacterAtlasClient("http://stats.test", Date.now, limits());
+    assert.ok(await atlas.compose("one", layer("one.blp")));
+    const before = atlas.residencyStats;
+    assert.equal(Object.isFrozen(before), true);
+    assert.equal(Object.isFrozen(before.atlases), true);
+    assert.equal(Object.isFrozen(before.sources), true);
+    atlas.dispose();
+    assert.deepEqual(atlas.residencyStats, {
+      atlases: {
+        count: 0, knownLogicalTextureBytes: 0, unknownLogicalTextureCount: 0,
+        pinnedCount: 0, overflowCount: 0, overflowKnownLogicalTextureBytes: 0,
+      },
+      sources: {
+        count: 0, uniqueReadyBitmaps: 0, decodedPixels: 0,
+        decodedByteSizeUnsupportedCount: 0, activeLeases: 0, pinnedCount: 0,
+        terminalCount: 0, overflowCount: 0, overflowDecodedPixels: 0,
+      },
+    });
+  } finally {
+    page.restore();
+  }
+});
+
+test("constructor preserves old callers and rejects non-positive or unsafe optional limits", () => {
+  assert.doesNotThrow(() => new CharacterAtlasClient("http://compat.test"));
+  assert.doesNotThrow(() => new CharacterAtlasClient("http://compat.test", () => 0));
+  for (const value of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+    assert.throws(() => new CharacterAtlasClient(
+      "http://compat.test", Date.now, { limits: { sourceCount: value } },
+    ), RangeError);
+  }
+});
+}
+
+// ── character-atlas-response-limits.test.mjs
+{
+const layer = (path) => [{ path }];
+
+function installPage(fetchImpl, bitmapImpl = async () => ({ width: 2, height: 2, close() {} })) {
+  const original = {
+    fetch: globalThis.fetch,
+    document: globalThis.document,
+    createImageBitmap: globalThis.createImageBitmap,
+  };
+  let decodes = 0;
+  globalThis.fetch = fetchImpl;
+  globalThis.createImageBitmap = async (blob) => {
+    decodes++;
+    return bitmapImpl(blob);
+  };
+  globalThis.document = {
+    createElement: () => ({ width: 0, height: 0, getContext: () => ({ drawImage() {} }) }),
+  };
+  return {
+    get decodes() { return decodes; },
+    restore() {
+      globalThis.fetch = original.fetch;
+      globalThis.document = original.document;
+      globalThis.createImageBitmap = original.createImageBitmap;
+    },
+  };
+}
+
+const options = {
+  limits: {
+    sourceResponseBytes: 4,
+    sourceEntryPixels: 16,
+  },
+};
+
+test("declared encoded overflow cancels before blob/decode and is terminal for the source identity", async () => {
+  let fetches = 0;
+  let cancels = 0;
+  let blobs = 0;
+  const page = installPage(async () => {
+    fetches++;
+    return {
+      ok: true,
+      status: 200,
+      headers: { get: (name) => name === "content-length" ? "5" : undefined },
+      body: { cancel: async () => { cancels++; } },
+      blob: async () => { blobs++; return { size: 1 }; },
+    };
+  });
+  try {
+    const atlas = new CharacterAtlasClient("http://limits.test", Date.now, options);
+    assert.equal(await atlas.compose("one", layer("oversize.blp")), undefined);
+    assert.equal(await atlas.compose("two", layer("oversize.blp")), undefined);
+    assert.equal(fetches, 1, "a deterministic terminal source does not create a retry storm");
+    assert.equal(cancels, 1);
+    assert.equal(blobs, 0);
+    assert.equal(page.decodes, 0);
+    assert.equal(atlas.residencyStats.sources.terminalCount, 1);
+  } finally {
+    page.restore();
+  }
+});
+
+test("a lying or missing content-length cannot bypass bounded streaming", async () => {
+  let cancels = 0;
+  let releases = 0;
+  let blobs = 0;
+  const chunks = [new Uint8Array([1, 2, 3]), new Uint8Array([4, 5])];
+  const page = installPage(async () => ({
+    ok: true,
+    status: 200,
+    headers: { get: () => undefined },
+    body: {
+      getReader() {
+        return {
+          async read() { return chunks.length > 0 ? { done: false, value: chunks.shift() } : { done: true }; },
+          async cancel() { cancels++; },
+          releaseLock() { releases++; },
+        };
+      },
+    },
+    blob: async () => { blobs++; return { size: 1 }; },
+  }));
+  try {
+    const atlas = new CharacterAtlasClient("http://stream.test", Date.now, options);
+    assert.equal(await atlas.compose("one", layer("stream.blp")), undefined);
+    assert.equal(cancels, 1);
+    assert.equal(releases, 1);
+    assert.equal(blobs, 0);
+    assert.equal(page.decodes, 0);
+  } finally {
+    page.restore();
+  }
+});
+
+test("minimal blob-only Response fallback checks size before decode", async () => {
+  let blobs = 0;
+  const page = installPage(async () => ({
+    ok: true,
+    status: 200,
+    blob: async () => { blobs++; return { size: 5 }; },
+  }));
+  try {
+    const atlas = new CharacterAtlasClient("http://fallback.test", Date.now, options);
+    assert.equal(await atlas.compose("one", layer("fallback.blp")), undefined);
+    assert.equal(blobs, 1);
+    assert.equal(page.decodes, 0);
+  } finally {
+    page.restore();
+  }
+});
+
+test("decoded oversize and invalid dimensions close exact-once and stay terminal", async () => {
+  for (const bitmap of [
+    { width: 5, height: 4 },
+    { width: Number.MAX_SAFE_INTEGER, height: 2 },
+    { width: 1.5, height: 1 },
+    { width: 0, height: 1 },
+  ]) {
+    let fetches = 0;
+    let closes = 0;
+    const image = { ...bitmap, close: () => { closes++; } };
+    const page = installPage(async () => {
+      fetches++;
+      return { ok: true, status: 200, blob: async () => ({ size: 1 }) };
+    }, async () => image);
+    try {
+      const atlas = new CharacterAtlasClient("http://decoded.test", Date.now, options);
+      assert.equal(await atlas.compose("one", layer("bad.blp")), undefined);
+      assert.equal(await atlas.compose("two", layer("bad.blp")), undefined);
+      assert.equal(fetches, 1);
+      assert.equal(closes, 1);
+      assert.equal(atlas.residencyStats.sources.decodedPixels, 0);
+      assert.equal(atlas.residencyStats.sources.terminalCount, 1);
+    } finally {
+      page.restore();
+    }
+  }
+});
+
+test("decoded pixel arithmetic validates dimensions before multiplication", () => {
+  assert.equal(decodedCharacterAtlasImagePixels({ width: 3, height: 4 }, 12), 12);
+  assert.equal(decodedCharacterAtlasImagePixels({ width: 4, height: 4 }, 15), undefined);
+  assert.equal(decodedCharacterAtlasImagePixels({ width: Number.MAX_SAFE_INTEGER, height: 2 },
+    Number.MAX_SAFE_INTEGER), undefined);
+  assert.equal(decodedCharacterAtlasImagePixels({ width: 1, height: Number.POSITIVE_INFINITY }), undefined);
+});
+}

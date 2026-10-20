@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 // seam-sweep (03.10): the live seam has always attached over a sparse fake world — `state: { selfGuid }` with
-// no `state.objects`, no `events`, no `petSpells` or `controlledGuid` (tests/framexml-live-castbar.test.mjs and
+// no `state.objects`, no `events`, no `petSpells` or `controlledGuid` (tests/framexml-castbar.test.mjs and
 // others build one) — and read it as holding no objects (LiveWorldSeam's `typeof world.state.objects?.get`
 // idiom). The possess (11.02-IF), vehicle (11.02-F2) and vehicle-aim (11.02-E) models attached inside
 // `LiveWorldSeam.attach` and its poll follow the same rule through browser/framexml/FrameXmlWorldObjects.ts:
@@ -27,7 +27,7 @@ const MODEL_EVENTS = new Set([
 ]);
 
 function sparseSeam(tables) {
-  // The shape tests/framexml-live-castbar.test.mjs attached over before 03.10: the seam has needed a bus
+  // The shape tests/framexml-castbar.test.mjs attached over before 03.10: the seam has needed a bus
   // (FrameXmlCalendarLive subscribes on attach) and the cast table since earlier slices; nothing else.
   const world = { state: { selfGuid: SELF }, casts: new Map(), events: { on: () => () => {} } };
   const fired = [];

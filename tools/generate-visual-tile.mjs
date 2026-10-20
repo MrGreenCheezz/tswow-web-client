@@ -27,7 +27,7 @@ const WMO_DOODAD_CACHE_VERSION = 1;
 // truncation sidecar (7.19). The gateway names the generation it serves in the job
 // (`src/gateway/VisualTileGeneration.ts`); a gateway that names none is one still running
 // `visual-tile-v4`, whose asset worker loads this file fresh from disk, and it keeps receiving the
-// exact v4 bytes (and the v1 doodad cache) — `tests/visual-tile-v5.test.mjs` compares them.
+// exact v4 bytes (and the v1 doodad cache) — `tests/visual-tile.test.mjs` compares them.
 //
 // P2-04x: `visual-tile-v6` is v5 with one placement in one tile. On a map with ADTs a non-WMO record
 // (an M2 placement or a WMO doodad) is written only into the tile its point lies in, unless that

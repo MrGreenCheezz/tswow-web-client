@@ -8,7 +8,7 @@ import { RetryingCatalogClient, type CatalogState, type RetryingCatalogOptions }
  * retries on its own schedule (CatalogClient.ts).
  */
 
-/** gateway/PetFoodMetadata.ts `PET_FOODS_VERSION`; tests/framexml-pet-food-types.test.mjs pins the two together. */
+/** gateway/PetFoodMetadata.ts `PET_FOODS_VERSION`; tests/framexml-pet.test.mjs pins the two together. */
 export const PET_FOODS_ROUTE_VERSION = 1;
 export const PET_FOODS_ROUTE_PATH = `/dbc/pet-foods?v=${PET_FOODS_ROUTE_VERSION}`;
 

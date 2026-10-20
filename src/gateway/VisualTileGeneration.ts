@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 /**
  * 05.10-A7b-1 (M-A7b-1): the generation of `/visual/environment` tiles this gateway serves and asks
  * `tools/generate-visual-tile.mjs` to write (`VISUAL_TILE_GENERATION` there; the two are kept equal
- * by `tests/visual-tile-v5.test.mjs`).
+ * by `tests/visual-tile.test.mjs`).
  *
  * v5 is slice 1 of line A7b: a WMO placement's doodads are set 0 plus its own set (7.02, numbered as
  * the `visual-wmo-v25` WME4 room tables number them), a doodad only outdoor groups own is outdoor

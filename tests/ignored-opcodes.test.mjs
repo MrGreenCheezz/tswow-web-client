@@ -64,7 +64,7 @@ test("05.10-A7a-H 6.11б a mirror image reply is kept for the unit, not counted 
   const { client, connection } = await loggedIn();
   const mirror = new PacketWriter().u64(0xf130000000000001n).u32(49).u8(1).u8(0).u8(8).u8(0).u8(0).u8(0).u8(0).u8(0)
     .u32(0).toUint8Array();
-  // 05.10 review H: a reply is kept only for a unit the client still knows (mirror-image-review.test.mjs).
+  // 05.10 review H: a reply is kept only for a unit the client still knows (mirror-image.test.mjs).
   client.state.move(0xf130000000000001n, { flags: 0, position: { x: 1, y: 0, z: 0, orientation: 0 } });
   connection.push(OPCODES.SMSG_MIRRORIMAGE_DATA, mirror);
   await settle();

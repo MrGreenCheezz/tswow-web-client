@@ -101,7 +101,7 @@ test("Goldshire inn furniture cannot be evicted by the interior draw quota while
 });
 
 test("legacy visual tiles are invalidated once so indoor MODR lighting reaches every map", () => {
-  // 05.10-A7b-1: v5 (tests/visual-tile-v5.test.mjs); v4 remains the generation of a job that names none.
+  // 05.10-A7b-1: v5 (tests/visual-tile.test.mjs); v4 remains the generation of a job that names none.
   assert.match(visualTileGenerator, /LEGACY_VISUAL_TILE_GENERATION = ["']visual-tile-v4["']/,
     "new visual-tile stamps need an explicit generator generation");
   assert.match(visualTileGenerator, /sourceStamp\(archives, \{\s*generation,/);

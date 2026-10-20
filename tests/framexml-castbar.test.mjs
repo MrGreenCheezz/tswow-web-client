@@ -1,0 +1,517 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+// Merged 2026-10-20 from 2 files; each block below is one former file,
+// kept in its own scope so its helpers and module loads stay as they were.
+
+// ── framexml-castbar-seam.test.mjs
+{
+const {
+  FRAMEXML_SEAM_BINDINGS,
+  FRAMEXML_SEAM_EVENTS,
+} = await import("../dist/code/browser/framexml/FrameXmlWorldSeam.js");
+const {
+  CannedWorldSeam,
+} = await import("../dist/code/browser/framexml/CannedWorldSeam.js");
+
+const castEventNames = {
+  castStart: "UNIT_SPELLCAST_START",
+  castStop: "UNIT_SPELLCAST_STOP",
+  castFailed: "UNIT_SPELLCAST_FAILED",
+  castInterrupted: "UNIT_SPELLCAST_INTERRUPTED",
+  castDelayed: "UNIT_SPELLCAST_DELAYED",
+  channelStart: "UNIT_SPELLCAST_CHANNEL_START",
+  channelUpdate: "UNIT_SPELLCAST_CHANNEL_UPDATE",
+  channelStop: "UNIT_SPELLCAST_CHANNEL_STOP",
+  interruptible: "UNIT_SPELLCAST_INTERRUPTIBLE",
+  notInterruptible: "UNIT_SPELLCAST_NOT_INTERRUPTIBLE",
+};
+
+test("cast seam exposes the exact FrameXML API and event spellings", () => {
+  for (const [key, value] of Object.entries(castEventNames)) {
+    assert.equal(FRAMEXML_SEAM_EVENTS[key], value, `${key} event`);
+  }
+  assert.equal(typeof FRAMEXML_SEAM_BINDINGS.UnitCastingInfo, "function");
+  assert.equal(typeof FRAMEXML_SEAM_BINDINGS.UnitChannelInfo, "function");
+});
+
+test("canned cast transitions are exact, player-only, and do not repeat", () => {
+  const seam = new CannedWorldSeam();
+  let now = 1000;
+  const events = [];
+  seam.attach({
+    now: () => now,
+    fire: (event, ...args) => {
+      events.push([event, ...args]);
+      return 1;
+    },
+  });
+  events.length = 0;
+
+  const call = (name, unit) => FRAMEXML_SEAM_BINDINGS[name](seam, [unit]);
+  const castEvents = () => events.filter(([event]) => event.startsWith("UNIT_SPELLCAST_"));
+  assert.deepEqual(call("UnitCastingInfo", "player"), [], "no cast before the first tick");
+  assert.deepEqual(call("UnitCastingInfo", "target"), [], "unknown unit is nil");
+  assert.deepEqual(call("UnitChannelInfo", "player"), [], "no channel before the first tick");
+
+  seam.tick(now);
+  assert.deepEqual(call("UnitCastingInfo", "player"), [
+    "Огненный шар", "Уровень 1", "Огненный шар", "Interface\\Icons\\Spell_Fire_FlameBolt",
+    1000000, 1001500, false, 42, false,
+  ]);
+  assert.deepEqual(events, [["UNIT_SPELLCAST_START", "player", "Огненный шар", "Уровень 1", 42]]);
+
+  seam.tick(now);
+  assert.deepEqual(castEvents(), [["UNIT_SPELLCAST_START", "player", "Огненный шар", "Уровень 1", 42]],
+    "an unchanged tick does not repeat START");
+
+  now = 1000.5;
+  seam.tick(now);
+  assert.deepEqual(call("UnitCastingInfo", "player"), [
+    "Огненный шар", "Уровень 1", "Огненный шар", "Interface\\Icons\\Spell_Fire_FlameBolt",
+    1000000, 1001750, false, 42, false,
+  ]);
+  assert.deepEqual(castEvents(), [
+    ["UNIT_SPELLCAST_START", "player", "Огненный шар", "Уровень 1", 42],
+    ["UNIT_SPELLCAST_DELAYED", "player", "Огненный шар", "Уровень 1", 42],
+  ]);
+
+  now = 1001.75;
+  seam.tick(now);
+  assert.deepEqual(call("UnitCastingInfo", "player"), [], "the cast ended");
+  assert.deepEqual(call("UnitChannelInfo", "player"), [
+    "Похищение жизни", "Уровень 1", "Похищение жизни", "Interface\\Icons\\Spell_Shadow_LifeDrain02",
+    1001750, 1006750, false, false,
+  ]);
+  assert.deepEqual(castEvents(), [
+    ["UNIT_SPELLCAST_START", "player", "Огненный шар", "Уровень 1", 42],
+    ["UNIT_SPELLCAST_DELAYED", "player", "Огненный шар", "Уровень 1", 42],
+    ["UNIT_SPELLCAST_STOP", "player", "Огненный шар", "Уровень 1", 42],
+    ["UNIT_SPELLCAST_CHANNEL_START", "player"],
+  ]);
+
+  now = 1002.25;
+  seam.tick(now);
+  assert.deepEqual(call("UnitChannelInfo", "player"), [
+    "Похищение жизни", "Уровень 1", "Похищение жизни", "Interface\\Icons\\Spell_Shadow_LifeDrain02",
+    1001750, 1007000, false, false,
+  ]);
+  assert.deepEqual(castEvents().at(-1), ["UNIT_SPELLCAST_CHANNEL_UPDATE", "player"]);
+
+  seam.tick(now);
+  assert.deepEqual(castEvents().at(-1), ["UNIT_SPELLCAST_CHANNEL_UPDATE", "player"],
+    "an unchanged channel tick does not repeat UPDATE");
+
+  now = 1007;
+  seam.tick(now);
+  assert.deepEqual(call("UnitChannelInfo", "player"), []);
+  assert.deepEqual(castEvents().at(-1), ["UNIT_SPELLCAST_CHANNEL_STOP", "player"]);
+  seam.detach();
+});
+
+test("the first tick anchors the canned timeline after a slow mount", () => {
+  const seam = new CannedWorldSeam();
+  let now = 1000;
+  const events = [];
+  seam.attach({
+    now: () => now,
+    fire: (event, ...args) => {
+      events.push([event, ...args]);
+      return 1;
+    },
+  });
+  events.length = 0;
+  now = 1010;
+  seam.tick(now);
+
+  const castEvents = () => events.filter(([event]) => event.startsWith("UNIT_SPELLCAST_"));
+  assert.deepEqual(castEvents(), [["UNIT_SPELLCAST_START", "player", "Огненный шар", "Уровень 1", 42]]);
+  assert.deepEqual(FRAMEXML_SEAM_BINDINGS.UnitCastingInfo(seam, ["player"]), [
+    "Огненный шар", "Уровень 1", "Огненный шар", "Interface\\Icons\\Spell_Fire_FlameBolt",
+    1010000, 1011500, false, 42, false,
+  ]);
+  assert.deepEqual(FRAMEXML_SEAM_BINDINGS.UnitChannelInfo(seam, ["player"]), []);
+
+  seam.tick(now);
+  assert.deepEqual(castEvents(), [["UNIT_SPELLCAST_START", "player", "Огненный шар", "Уровень 1", 42]],
+    "a repeated first tick does not duplicate START");
+  seam.detach();
+});
+}
+
+// ── framexml-live-castbar.test.mjs
+{
+// World cast events have two subscribers per attach: the player cast bar and the arena opponents' cast
+// bars (FrameXmlArena.ts). The checks below are about duplicates on re-attach and a clean detach.
+const CAST_SUBSCRIBERS = 2;
+// seam-sweep: the combat log's SPELL_CAST_START entries no longer hear the bar's SPELL_CAST_START — since
+// 3.01-castlog they come from the bus event SPELL_START (the whole SMSG_SPELL_START, Wow.exe 0x00806700 →
+// 0x00805330 → 0x006fbe50 → 0x00751920; WORK_PLAN 3.01, «03.10, линия stock-small (`3.01-castlog`)»), so
+// SPELL_CAST_START has the two bar subscribers and SPELL_START the combat log's one.
+const CAST_START_SUBSCRIBERS = CAST_SUBSCRIBERS;
+// 2.05 (13.10): and the own cast's ACTIONBAR_UPDATE_STATE + CURRENT_SPELL_CAST_CHANGED (FrameXmlOwnCastChanges.ts).
+const SPELL_START_SUBSCRIBERS = 2;
+
+const { LiveWorldSeam } = await import("../dist/code/browser/framexml/LiveWorldSeam.js");
+const { WorldClient } = await import("../dist/code/world/WorldClient.js");
+const { OPCODES } = await import("../dist/code/generated/opcodes.js");
+const { PacketWriter } = await import("../dist/code/protocol/index.js");
+
+class FakePacketEvents {
+  #listeners = new Map();
+  subscriptions = [];
+
+  on(name, listener) {
+    let listeners = this.#listeners.get(name);
+    if (!listeners) {
+      listeners = new Set();
+      this.#listeners.set(name, listeners);
+    }
+    listeners.add(listener);
+    const unsubscribe = () => {
+      listeners.delete(listener);
+      if (listeners.size === 0) this.#listeners.delete(name);
+    };
+    this.subscriptions.push({ name, unsubscribe });
+    return unsubscribe;
+  }
+
+  emit(name, payload) {
+    for (const listener of [...(this.#listeners.get(name) ?? [])]) listener(payload);
+  }
+
+  listenerCount(name) {
+    return this.#listeners.get(name)?.size ?? 0;
+  }
+}
+
+function fixture({ channel = false, castCount = 17, metadata = true } = {}) {
+  const selfGuid = 0x10n;
+  const events = new FakePacketEvents();
+  const cast = {
+    spellId: 42,
+    startedAt: 900,
+    duration: channel ? 4000 : 2500,
+    channel,
+    castCount,
+  };
+  const world = {
+    state: { selfGuid },
+    casts: new Map([[selfGuid, cast]]),
+    events,
+  };
+  const fired = [];
+  let pumpNow = 123.456;
+  const pump = {
+    fire: (event, ...args) => {
+      // The combat log (3.01) hears the same cast edges; nobody here listens to it.
+      if (event.startsWith("COMBAT_LOG_EVENT")) return 0;
+      fired.push([event, ...args]);
+      return 1;
+    },
+    now: () => pumpNow,
+  };
+  const seam = new LiveWorldSeam({
+    world: () => world,
+    store: () => undefined,
+    spell: (id) => metadata && id === 42 ? {
+      id,
+      name: "Test Spell",
+      rank: "Rank 2",
+      iconPath: "Interface\\Icons\\Spell_Test",
+    } : undefined,
+    monotonic: () => 1000,
+    globalCooldownUntil: () => 0,
+    castSpell: () => {},
+  });
+  return { events, world, cast, seam, pump, fired, selfGuid, setPumpNow: (value) => { pumpNow = value; } };
+}
+
+test("partial world money reads as zero without publishing a fabricated change", () => {
+  const { seam, pump, fired } = fixture();
+
+  assert.doesNotThrow(() => seam.attach(pump));
+  assert.equal(seam.money(), 0);
+  assert.deepEqual(fired.filter(([event]) => event === "PLAYER_MONEY"), []);
+});
+
+test("player cast tuple uses pump time axis and the expected metadata shape", () => {
+  const { seam, pump } = fixture();
+  seam.attach(pump);
+
+  assert.deepEqual(seam.unitCastingInfo("player"), [
+    "Test Spell", "Rank 2", "Test Spell", "Interface\\Icons\\Spell_Test",
+    123356, 125856, false, 17, false,
+  ]);
+  assert.equal(seam.unitChannelInfo("player"), undefined);
+  assert.equal(seam.unitCastingInfo("target"), undefined);
+});
+
+test("cast start, delayed, interrupted and stop events carry the player and cast identity", () => {
+  const { events, world, cast, seam, pump, fired, selfGuid } = fixture();
+  seam.attach(pump);
+  fired.length = 0;
+
+  events.emit("SPELL_CAST_START", { casterGuid: selfGuid, spellId: 42, castTime: 2500, channel: false });
+  assert.deepEqual(fired, [["UNIT_SPELLCAST_START", "player", "Test Spell", "Rank 2", 17]]);
+
+  fired.length = 0;
+  events.emit("SPELL_CAST_DELAYED", { casterGuid: selfGuid, delay: 125 });
+  assert.deepEqual(fired, [["UNIT_SPELLCAST_DELAYED", "player", "Test Spell", "Rank 2", 17]]);
+
+  // 3.02: the outcome comes first (Wow.exe 0x007fecc0: INTERRUPTED), then STOP for the current cast.
+  fired.length = 0;
+  events.emit("SPELL_CAST_RESULT", { casterGuid: selfGuid, spellId: 42, castCount: 17, result: 40 });
+  events.emit("SPELL_CAST_STOP", { casterGuid: selfGuid, spellId: 42, interrupted: true });
+  assert.deepEqual(fired, [
+    ["UNIT_SPELLCAST_INTERRUPTED", "player", "Test Spell", "Rank 2", 17],
+    ["UNIT_SPELLCAST_STOP", "player", "Test Spell", "Rank 2", 17],
+  ]);
+  world.casts.delete(selfGuid);
+  assert.equal(seam.unitCastingInfo("player"), undefined);
+
+  // A clean stop after a new start must use STOP, not the stale interrupted event.
+  world.casts.set(selfGuid, cast);
+  fired.length = 0;
+  events.emit("SPELL_CAST_START", { casterGuid: selfGuid, spellId: 42, castTime: 2500, channel: false });
+  events.emit("SPELL_CAST_STOP", { casterGuid: selfGuid, spellId: 42, interrupted: false });
+  assert.deepEqual(fired, [
+    ["UNIT_SPELLCAST_START", "player", "Test Spell", "Rank 2", 17],
+    ["UNIT_SPELLCAST_STOP", "player", "Test Spell", "Rank 2", 17],
+  ]);
+});
+
+test("3.02: a caster that is both target and focus fills both cast bars — every token hears each edge", () => {
+  const MOB = 0xf130_0000_0000_0042n;
+  const { events, world, pump, fired, selfGuid } = fixture();
+  world.state.objects = new Map([
+    [selfGuid, { guid: selfGuid, typeId: 4, fields: new Map() }],
+    [MOB, { guid: MOB, typeId: 3, fields: new Map() }],
+  ]);
+  world.targetGuid = MOB;
+  world.names = new Map();
+  world.creatureTemplates = new Map();
+  world.casts.set(MOB, { spellId: 42, startedAt: 900, duration: 2500, channel: false, castCount: 5 });
+  const seam = new LiveWorldSeam({
+    world: () => world, store: () => undefined, focusGuid: () => MOB,
+    spell: (id) => (id === 42 ? { id, name: "Test Spell", rank: "Rank 2", iconPath: "" } : undefined),
+    monotonic: () => 1000, globalCooldownUntil: () => 0, castSpell: () => {},
+  });
+  seam.attach(pump);
+  fired.length = 0;
+  const casts = () => fired.filter(([event]) => event.startsWith("UNIT_SPELLCAST_"));
+  events.emit("SPELL_CAST_START", { casterGuid: MOB, spellId: 42, castTime: 2500, channel: false });
+  assert.deepEqual(casts(), [
+    ["UNIT_SPELLCAST_START", "target", "Test Spell", "Rank 2", 5],
+    ["UNIT_SPELLCAST_START", "focus", "Test Spell", "Rank 2", 5],
+  ], "the focus frame's bar starts too (was: target only)");
+  assert.equal(seam.unitCastingInfo("focus")?.[0], "Test Spell", "and its UnitCastingInfo answers the same cast");
+  assert.equal(seam.unitCastingInfo("target")?.[0], "Test Spell");
+  fired.length = 0;
+  events.emit("SPELL_CAST_DELAYED", { casterGuid: MOB, delay: 200 });
+  events.emit("SPELL_CAST_RESULT", { casterGuid: MOB, spellId: 42, castCount: 5, result: 40 });
+  events.emit("SPELL_CAST_STOP", { casterGuid: MOB, spellId: 42, interrupted: true });
+  assert.deepEqual(casts().map(([event, unit]) => `${event}:${unit}`), [
+    "UNIT_SPELLCAST_DELAYED:target", "UNIT_SPELLCAST_DELAYED:focus",
+    "UNIT_SPELLCAST_INTERRUPTED:target", "UNIT_SPELLCAST_INTERRUPTED:focus",
+    "UNIT_SPELLCAST_STOP:target", "UNIT_SPELLCAST_STOP:focus",
+  ]);
+  seam.detach();
+});
+
+test("channel start, update and stop preserve channel state after the world deletes the cast", () => {
+  const { events, world, cast, seam, pump, fired, selfGuid } = fixture({ channel: true, castCount: undefined });
+  seam.attach(pump);
+  fired.length = 0;
+
+  events.emit("SPELL_CAST_START", { casterGuid: selfGuid, spellId: 42, castTime: 4000, channel: true });
+  assert.equal(seam.unitCastingInfo("player"), undefined);
+  assert.deepEqual(seam.unitChannelInfo("player"), [
+    "Test Spell", "Rank 2", "Test Spell", "Interface\\Icons\\Spell_Test",
+    123356, 127356, false, false,
+  ]);
+  assert.deepEqual(fired, [["UNIT_SPELLCAST_CHANNEL_START", "player"]]);
+
+  fired.length = 0;
+  events.emit("SPELL_CHANNEL_UPDATE", { casterGuid: selfGuid, spellId: 42, remaining: 2100 });
+  assert.deepEqual(fired, [["UNIT_SPELLCAST_CHANNEL_UPDATE", "player"]]);
+
+  fired.length = 0;
+  world.casts.delete(selfGuid);
+  events.emit("SPELL_CAST_STOP", { casterGuid: selfGuid, spellId: 42, interrupted: false });
+  assert.deepEqual(fired, [["UNIT_SPELLCAST_CHANNEL_STOP", "player"]]);
+  assert.equal(seam.unitChannelInfo("player"), undefined);
+  void cast;
+});
+
+test("attach seeds an active ordinary cast before its world stop edge", () => {
+  const { events, world, seam, pump, fired, selfGuid } = fixture({ castCount: 31 });
+  seam.attach(pump);
+  fired.length = 0;
+  world.casts.delete(selfGuid);
+  events.emit("SPELL_CAST_STOP", { casterGuid: selfGuid, spellId: 42, interrupted: false });
+  assert.deepEqual(fired, [["UNIT_SPELLCAST_STOP", "player", "Test Spell", "Rank 2", 31]]);
+
+  // Reattaching reseeds the new active cast and still installs exactly one listener per event.
+  world.casts.set(selfGuid, {
+    spellId: 42, startedAt: 900, duration: 2500, channel: false, castCount: 32,
+  });
+  seam.attach(pump);
+  assert.equal(events.listenerCount("SPELL_CAST_START"), CAST_START_SUBSCRIBERS);
+  fired.length = 0;
+  world.casts.delete(selfGuid);
+  events.emit("SPELL_CAST_RESULT", { casterGuid: selfGuid, spellId: 42, castCount: 32, result: 40 });
+  events.emit("SPELL_CAST_STOP", { casterGuid: selfGuid, spellId: 42, interrupted: true });
+  assert.deepEqual(fired, [
+    ["UNIT_SPELLCAST_INTERRUPTED", "player", "Test Spell", "Rank 2", 32],
+    ["UNIT_SPELLCAST_STOP", "player", "Test Spell", "Rank 2", 32],
+  ]);
+  seam.detach();
+});
+
+test("attach seeds an active channel so its deleted-world stop remains CHANNEL_STOP", () => {
+  const { events, world, seam, pump, fired, selfGuid } = fixture({ channel: true });
+  seam.attach(pump);
+  fired.length = 0;
+  assert.deepEqual(seam.unitChannelInfo("player"), [
+    "Test Spell", "Rank 2", "Test Spell", "Interface\\Icons\\Spell_Test",
+    123356, 127356, false, false,
+  ]);
+  world.casts.delete(selfGuid);
+  events.emit("SPELL_CAST_STOP", { casterGuid: selfGuid, spellId: 42, interrupted: false });
+  assert.deepEqual(fired, [["UNIT_SPELLCAST_CHANNEL_STOP", "player"]]);
+  seam.detach();
+});
+
+test("3.02: the cast result raises FAILED/INTERRUPTED/SUCCEEDED before STOP, as Wow.exe 0x007fecc0", () => {
+  const { events, world, seam, pump, fired, selfGuid } = fixture({ castCount: 41 });
+  seam.attach(pump);
+  fired.length = 0;
+
+  events.emit("SPELL_CAST_START", { casterGuid: selfGuid, spellId: 42, castTime: 2500, channel: false });
+  fired.length = 0;
+  world.casts.delete(selfGuid);
+  events.emit("SPELL_CAST_RESULT", { casterGuid: selfGuid, spellId: 42, castCount: 41, result: 12 });
+  events.emit("SPELL_CAST_STOP", {
+    casterGuid: selfGuid, spellId: 42, interrupted: true, reason: "failed",
+  });
+  assert.deepEqual(fired, [
+    ["UNIT_SPELLCAST_FAILED", "player", "Test Spell", "Rank 2", 41],
+    ["UNIT_SPELLCAST_STOP", "player", "Test Spell", "Rank 2", 41],
+  ]);
+  // The core's second packet of the pair: the outcome again, but no cast is current — no STOP.
+  fired.length = 0;
+  events.emit("SPELL_CAST_RESULT", { casterGuid: selfGuid, spellId: 42, castCount: 41, result: 12 });
+  events.emit("SPELL_CAST_STOP", {
+    casterGuid: selfGuid, spellId: 42, interrupted: true, reason: "failed",
+  });
+  assert.deepEqual(fired, [["UNIT_SPELLCAST_FAILED", "player", "Test Spell", "Rank 2", 41]]);
+
+  world.casts.set(selfGuid, {
+    spellId: 42, startedAt: 900, duration: 2500, channel: false, castCount: 42,
+  });
+  events.emit("SPELL_CAST_START", { casterGuid: selfGuid, spellId: 42, castTime: 2500, channel: false });
+  fired.length = 0;
+  world.casts.delete(selfGuid);
+  events.emit("SPELL_CAST_RESULT", { casterGuid: selfGuid, spellId: 42, castCount: 42, result: 41 });
+  events.emit("SPELL_CAST_STOP", {
+    casterGuid: selfGuid, spellId: 42, interrupted: true, reason: "interrupted",
+  });
+  assert.deepEqual(fired, [
+    ["UNIT_SPELLCAST_INTERRUPTED", "player", "Test Spell", "Rank 2", 42],
+    ["UNIT_SPELLCAST_STOP", "player", "Test Spell", "Rank 2", 42],
+  ]);
+
+  world.casts.set(selfGuid, {
+    spellId: 42, startedAt: 900, duration: 2500, channel: false, castCount: 43,
+  });
+  events.emit("SPELL_CAST_START", { casterGuid: selfGuid, spellId: 42, castTime: 2500, channel: false });
+  fired.length = 0;
+  world.casts.delete(selfGuid);
+  events.emit("SPELL_CAST_RESULT", { casterGuid: selfGuid, spellId: 42, castCount: 43, result: 187 });
+  events.emit("SPELL_CAST_STOP", {
+    casterGuid: selfGuid, spellId: 42, interrupted: false, reason: "success",
+  });
+  assert.deepEqual(fired, [
+    ["UNIT_SPELLCAST_SUCCEEDED", "player", "Test Spell", "Rank 2", 43],
+    ["UNIT_SPELLCAST_STOP", "player", "Test Spell", "Rank 2", 43],
+  ]);
+});
+
+test("active cast uses a stable synchronous fallback when spell metadata is unavailable", () => {
+  const { seam, pump } = fixture({ metadata: false, castCount: 51 });
+  seam.attach(pump);
+  assert.deepEqual(seam.unitCastingInfo("player"), [
+    "Заклинание 42", "", "Заклинание 42", "",
+    123356, 125856, false, 51, false,
+  ]);
+});
+
+test("WorldClient packet edges preserve failure versus successful stop reason", async () => {
+  const guid = 0x10n;
+  const login = new PacketWriter().u32(1).f32(1).f32(2).f32(3).f32(0).toUint8Array();
+  const spellStart = new PacketWriter()
+    .packedGuid(guid).packedGuid(guid).u8(61).u32(42).u32(0).u32(2500)
+    .toUint8Array();
+  const spellFailure = new PacketWriter()
+    .packedGuid(guid).u8(61).u32(42).u8(50)
+    .toUint8Array();
+  const interruptedFailure = new PacketWriter()
+    .packedGuid(guid).u8(62).u32(42).u8(40)
+    .toUint8Array();
+  const spellGo = new PacketWriter()
+    .packedGuid(guid).packedGuid(guid).u8(63).u32(42).u32(0).u32(100).u8(0).u8(0)
+    .toUint8Array();
+  const connection = {
+    packets: [
+      { opcode: OPCODES.SMSG_LOGIN_VERIFY_WORLD, payload: login },
+      { opcode: OPCODES.SMSG_SPELL_START, payload: spellStart },
+      { opcode: OPCODES.SMSG_SPELL_FAILURE, payload: spellFailure },
+      { opcode: OPCODES.SMSG_SPELL_START, payload: new PacketWriter()
+        .packedGuid(guid).packedGuid(guid).u8(62).u32(42).u32(0).u32(2500).toUint8Array() },
+      { opcode: OPCODES.SMSG_SPELL_FAILURE, payload: interruptedFailure },
+      { opcode: OPCODES.SMSG_SPELL_START, payload: new PacketWriter()
+        .packedGuid(guid).packedGuid(guid).u8(63).u32(42).u32(0).u32(2500).toUint8Array() },
+      { opcode: OPCODES.SMSG_SPELL_GO, payload: spellGo },
+    ],
+    send() {},
+    read() { return this.packets.length ? Promise.resolve(this.packets.shift()) : new Promise(() => {}); },
+    close() {},
+  };
+  const client = new WorldClient(connection);
+  const stops = [];
+  client.events.on("SPELL_CAST_STOP", (event) => stops.push(event));
+  await client.loginCharacter(guid);
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(stops.map(({ spellId, interrupted, reason }) => ({ spellId, interrupted, reason })), [
+    { spellId: 42, interrupted: true, reason: "failed" },
+    { spellId: 42, interrupted: true, reason: "interrupted" },
+    { spellId: 42, interrupted: false, reason: "success" },
+  ]);
+  client.close();
+});
+
+test("non-self casts are ignored and detach removes every cast subscription", () => {
+  const { events, seam, pump, fired, selfGuid } = fixture();
+  seam.attach(pump);
+  fired.length = 0;
+  events.emit("SPELL_CAST_START", { casterGuid: 0x99n, spellId: 42, castTime: 2500, channel: false });
+  events.emit("SPELL_CAST_STOP", { casterGuid: 0x99n, spellId: 42, interrupted: false });
+  assert.deepEqual(fired, []);
+  assert.equal(events.listenerCount("SPELL_CAST_START"), CAST_START_SUBSCRIBERS);
+  assert.equal(events.listenerCount("SPELL_START"), SPELL_START_SUBSCRIBERS); // seam-sweep
+  assert.equal(events.listenerCount("SPELL_CAST_STOP"), CAST_SUBSCRIBERS);
+  assert.equal(events.listenerCount("SPELL_CAST_DELAYED"), CAST_SUBSCRIBERS);
+  assert.equal(events.listenerCount("SPELL_CHANNEL_UPDATE"), CAST_SUBSCRIBERS);
+
+  seam.detach();
+  assert.equal(events.listenerCount("SPELL_CAST_START"), 0);
+  assert.equal(events.listenerCount("SPELL_START"), 0); // seam-sweep
+  assert.equal(events.listenerCount("SPELL_CAST_STOP"), 0);
+  assert.equal(events.listenerCount("SPELL_CAST_DELAYED"), 0);
+  assert.equal(events.listenerCount("SPELL_CHANNEL_UPDATE"), 0);
+  events.emit("SPELL_CAST_START", { casterGuid: selfGuid, spellId: 42, castTime: 2500, channel: false });
+  assert.deepEqual(fired, []);
+});
+}

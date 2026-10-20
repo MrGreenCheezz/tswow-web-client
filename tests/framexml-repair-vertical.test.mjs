@@ -68,7 +68,7 @@ function worldFixture() {
     entry, found: true, name, quality: 1, itemClass, subClass, flags: 0, inventoryType: 1, bonding: 0,
     stackable: 1, bagFamily: 0, spells: [], itemLevel: 10, requiredLevel: 1, containerSlots: 0,
     maxDurability: 100, pageText: 0, startQuest: 0,
-    // What the stock item tooltip reads (ItemTooltip.ts), as tests/framexml-tooltip-content.test.mjs spells it.
+    // What the stock item tooltip reads (ItemTooltip.ts), as tests/framexml-tooltip.test.mjs spells it.
     maxCount: 0, block: 0, damage: [{ min: 0, max: 0, type: 0 }], delay: 0, resistances: [0, 0, 0, 0, 0, 0, 0],
     stats: [], requiredSkill: 0, requiredSkillRank: 0, requiredReputationFaction: 0, requiredReputationRank: 0,
     allowableClass: 0, allowableRace: 0, sockets: [], socketBonus: 0, gemProperties: 0, description: "", sellPrice: 0,

@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {
-  GLUE_MEASURED_SHIMS,
-  GLUE_UNUSED_SHIMS,
-  GlueLuaRef,
-  GlueLuaVm,
-} from "../dist/code/browser/glue/GlueLua.js";
-import { lua } from "../dist/code/browser/lua/LuaVm.js";
+import { GLUE_MEASURED_SHIMS, GLUE_UNUSED_SHIMS, GlueLuaRef, GlueLuaVm } from "../dist/code/browser/glue/GlueLua.js";
+import { lua, to_jsstring, to_luastring } from "../dist/code/browser/lua/LuaVm.js";
 
+// Merged 2026-10-20 from 4 files; each block below is one former file,
+// kept in its own scope so its helpers and module loads stay as they were.
+
+// ── glue-lua.test.mjs
+{
 test("host calls collect variable Lua results and preserve the caller stack", () => {
   const vm = new GlueLuaVm();
   const fn = vm.compileFunction('return "first", nil, "third"', "@multi-results", []);
@@ -247,3 +247,184 @@ test("host calls share one traceback handler and keep the traceback on errors", 
   vm.release(fail);
   vm.close();
 });
+}
+
+// ── glue-lua-large-number.test.mjs
+{
+const CAST_START_MS = 1788097991493;
+const CAST_END_MS = 1788097992993;
+
+test("a UnitCastingInfo-shaped binding preserves epoch milliseconds and all tuple slots", () => {
+  const vm = new GlueLuaVm();
+  vm.registerGlobal("UnitCastingInfo", () => [
+    "Огненный шар",
+    "Уровень 1",
+    "Огненный шар",
+    "Interface\\Icons\\Spell_Fire_FlameBolt",
+    CAST_START_MS,
+    CAST_END_MS,
+    false,
+    42,
+    true,
+  ]);
+
+  const outcome = vm.execute(`
+    local name, rank, displayName, texture, startTime, endTime, isTradeSkill, castID, notInterruptible = UnitCastingInfo("player")
+    captureName = name
+    captureRank = rank
+    captureDisplayName = displayName
+    captureTexture = texture
+    captureStart = startTime
+    captureEnd = endTime
+    captureTradeSkill = isTradeSkill
+    captureCastID = castID
+    captureNotInterruptible = notInterruptible
+    captureStartExact = (startTime == 1788097991493)
+    captureEndExact = (endTime == 1788097992993)
+    captureSmallText = tostring(castID - 41)
+  `, "@large-number-probe");
+
+  assert.equal(outcome.ok, true, outcome.error ?? "UnitCastingInfo binding failed");
+  assert.equal(vm.getGlobal("captureName"), "Огненный шар");
+  assert.equal(vm.getGlobal("captureRank"), "Уровень 1");
+  assert.equal(vm.getGlobal("captureDisplayName"), "Огненный шар");
+  assert.equal(vm.getGlobal("captureTexture"), "Interface\\Icons\\Spell_Fire_FlameBolt");
+  assert.equal(vm.getGlobal("captureStart"), CAST_START_MS);
+  assert.equal(vm.getGlobal("captureEnd"), CAST_END_MS);
+  assert.equal(vm.getGlobal("captureTradeSkill"), false);
+  assert.equal(vm.getGlobal("captureCastID"), 42);
+  assert.equal(vm.getGlobal("captureNotInterruptible"), true);
+  assert.equal(vm.getGlobal("captureStartExact"), true);
+  assert.equal(vm.getGlobal("captureEndExact"), true);
+  assert.equal(vm.getGlobal("captureSmallText"), "1");
+  assert.deepEqual(vm.errors, []);
+  vm.close();
+});
+
+// ARC-4 A6 (12.10): named for fengari's 5.3, where only int32-range whole numbers crossed as Lua integers;
+// on 5.1 every number is a double, and the answers below are the same.
+test("a small whole number prints as \"1\" and an epoch millisecond stays exact", () => {
+  const vm = new GlueLuaVm();
+  vm.registerGlobal("Numbers", () => [1, CAST_START_MS]);
+  const outcome = vm.execute("small, large = Numbers(); smallText = tostring(small); largeExact = (large == 1788097991493)", "@number-format-probe");
+
+  assert.equal(outcome.ok, true, outcome.error ?? "number binding failed");
+  assert.equal(vm.getGlobal("small"), 1);
+  assert.equal(vm.getGlobal("smallText"), "1");
+  assert.equal(vm.getGlobal("large"), CAST_START_MS);
+  assert.equal(vm.getGlobal("largeExact"), true);
+  assert.deepEqual(vm.errors, []);
+  vm.close();
+});
+}
+
+// ── glue-lua-stack.test.mjs
+{
+// A host call starts with LUA_MINSTACK (20) free slots. A 3.3.5 COMBAT_LOG_EVENT_UNFILTERED carries
+// the event name and nineteen payload values, and `__glueInvoke` adds fn/self/isEvent in front.
+test("a host call with more arguments than LUA_MINSTACK reaches Lua instead of throwing", () => {
+  const args = Array.from({ length: 25 }, (_, index) => index + 1);
+  // Each path on a fresh state: a successful grow on one would leave room for the other.
+  const errors = [];
+  const vm = new GlueLuaVm({ onError: (message) => errors.push(message) });
+  const count = vm.compileFunction("return select('#', ...), (select(25, ...))", "@many-args", []);
+  try {
+    const top = lua.lua_gettop(vm.state);
+    assert.deepEqual(vm.call(count, args, 2), [25, 25]);
+    assert.equal(lua.lua_gettop(vm.state), top, "the caller's stack is left as it was");
+    assert.deepEqual(errors, []);
+  } finally { vm.release(count); vm.close(); }
+  const chunkVm = new GlueLuaVm();
+  try {
+    const result = chunkVm.execute("ManyArgs = select('#', ...)", "@many-args-chunk", args);
+    assert.equal(result.ok, true, result.error);
+    assert.equal(chunkVm.getGlobal("ManyArgs"), 25);
+  } finally { chunkVm.close(); }
+});
+
+test("collectgarbage answers every 5.1 option without raising, and still rejects an unknown one", () => {
+  const vm = new GlueLuaVm();
+  try {
+    const run = (source) => {
+      const result = vm.execute(`Out = { pcall(function() ${source} end) }`, "@gc");
+      assert.equal(result.ok, true, result.error);
+      const out = vm.execute("OutOk, OutValue = Out[1], Out[2]", "@gc-read");
+      assert.equal(out.ok, true);
+      return [vm.getGlobal("OutOk"), vm.getGlobal("OutValue")];
+    };
+    // MSBTProfiles.lua:2097, measured raising «lua_gc not implemented» at boot.
+    assert.deepEqual(run(`return collectgarbage("collect")`), [true, 0]);
+    assert.deepEqual(run(`return collectgarbage()`), [true, 0]);
+    assert.deepEqual(run(`return type(collectgarbage("count"))`), [true, "number"]);
+    assert.deepEqual(run(`return collectgarbage("step")`), [true, true]);
+    assert.deepEqual(run(`return type(gcinfo())`), [true, "number"]);
+    const [ok, message] = run(`return collectgarbage("nonsense")`);
+    assert.equal(ok, false);
+    assert.match(String(message), /invalid option 'nonsense'/);
+  } finally { vm.close(); }
+});
+}
+
+// ── glue-lua-strings.test.mjs
+{
+// P1-14b: Lua strings reach a binding through luaStringToJs (LuaStrings.ts), which must give the
+// exact text the API's lossy decoder gives — `to_jsstring(bytes, 0, n, true)`, fengari's decoder
+// kept in LuaApi.ts — for any bytes.
+const { luaStringToJs } = await import("../dist/code/browser/glue/LuaStrings.js");
+const { GlueLuaVm } = await import("../dist/code/browser/glue/GlueLua.js");
+
+function random(seed) {
+  return () => {
+    seed = (seed + 0x6d2b79f5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+const PIECES = [
+  [0x61], [0x7a, 0x30, 0x20], [0x00], [0x7f],
+  [...to_luastring("Восстановление")], [...to_luastring("€")], [...to_luastring("😀")],
+  [0xef, 0xbb, 0xbf], // BOM
+  [0xd0], [0xe2, 0x82], [0xf0, 0x9f, 0x98], // cut sequences
+  [0xc0, 0x80], [0xc1, 0xbf], [0xe0, 0x80, 0x80], [0xf0, 0x80, 0x80, 0x80], // overlongs
+  [0xed, 0xa0, 0x80], [0xed, 0xbf, 0xbf], // surrogates
+  [0xf4, 0x90, 0x80, 0x80], [0xf5, 0x80, 0x80, 0x80], [0xff], [0x80], [0xbf, 0x61],
+];
+
+test("luaStringToJs equals the API's lossy decoder on generated bytes", () => {
+  const next = random(1405);
+  for (let index = 0; index < 50000; index += 1) {
+    const bytes = [];
+    const count = Math.floor(next() * 8);
+    for (let piece = 0; piece < count; piece += 1) {
+      if (next() < 0.15) bytes.push(Math.floor(next() * 256));
+      else bytes.push(...PIECES[Math.floor(next() * PIECES.length)]);
+    }
+    const u8 = Uint8Array.from(bytes);
+    assert.equal(luaStringToJs(u8), to_jsstring(u8, 0, u8.length, true), `bytes ${bytes.join(",")}`);
+  }
+  // The short ASCII path, the long path and the boundary between them.
+  for (const length of [0, 1, 15, 16, 17, 30, 200]) {
+    const u8 = Uint8Array.from({ length }, (_, at) => 0x41 + (at % 26));
+    assert.equal(luaStringToJs(u8), to_jsstring(u8, 0, length, true));
+  }
+  // A leading BOM survives, as the lossy decoder keeps it.
+  assert.equal(luaStringToJs(Uint8Array.from([0xef, 0xbb, 0xbf, 0x61])), "﻿a");
+});
+
+test("a 30-byte ASCII argument crosses into a binding without a String.fromCharCode per byte", () => {
+  const vm = new GlueLuaVm();
+  const seen = [];
+  vm.registerGlobal("StringProbe", (args) => { seen.push(args[0], args[1]); return []; });
+  const fn = vm.compileFunction('StringProbe("abcdefghijklmnopqrstuvwxyz0123", "Восстановление сил")', "string-probe", []);
+  const original = String.fromCharCode;
+  let calls = 0;
+  String.fromCharCode = function (...codes) { calls += 1; return original.apply(this, codes); };
+  try { vm.call(fn); } finally { String.fromCharCode = original; }
+  assert.deepEqual(seen, ["abcdefghijklmnopqrstuvwxyz0123", "Восстановление сил"]);
+  assert.ok(calls <= 1, `String.fromCharCode called ${calls} times`);
+  vm.release(fn);
+  vm.close();
+});
+}

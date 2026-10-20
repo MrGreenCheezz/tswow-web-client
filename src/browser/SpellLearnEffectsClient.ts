@@ -10,7 +10,7 @@ import { RetryingCatalogClient, type CatalogState, type RetryingCatalogOptions }
  * of services with no headers, as before 3.29, and `GetTrainerServiceSkillLine` answers nil.
  */
 
-/** gateway/SpellLearnEffectsMetadata.ts `SPELL_LEARN_EFFECTS_VERSION`; tests/framexml-trainer-groups.test.mjs pins the two together. */
+/** gateway/SpellLearnEffectsMetadata.ts `SPELL_LEARN_EFFECTS_VERSION`; tests/framexml-trainer.test.mjs pins the two together. */
 export const SPELL_LEARN_EFFECTS_ROUTE_VERSION = 2;
 export const SPELL_LEARN_EFFECTS_ROUTE_PATH = `/dbc/spell-learn-effects?v=${SPELL_LEARN_EFFECTS_ROUTE_VERSION}`;
 

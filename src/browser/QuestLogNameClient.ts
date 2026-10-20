@@ -11,7 +11,7 @@ import { RetryingCatalogClient, type CatalogState, type RetryingCatalogOptions }
  * 405-409) and a quest has no questTag, as for a type without a QuestInfo row.
  */
 
-/** gateway/QuestLogNameMetadata.ts `QUEST_LOG_NAMES_VERSION`; tests/framexml-quest-log-groups.test.mjs pins the two together. */
+/** gateway/QuestLogNameMetadata.ts `QUEST_LOG_NAMES_VERSION`; tests/framexml-quest-log.test.mjs pins the two together. */
 export const QUEST_LOG_NAMES_ROUTE_VERSION = 1;
 export const QUEST_LOG_NAMES_ROUTE_PATH = `/dbc/quest-log-names?v=${QUEST_LOG_NAMES_ROUTE_VERSION}`;
 
