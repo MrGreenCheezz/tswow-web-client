@@ -300,7 +300,7 @@ export function clearWorldContext(): void {
   game.collision?.dispose();
   game.collision = undefined;
   game.worldLoading = false;
-  game.renderer?.setCollisionModels(undefined);
+  game.renderer?.setRenderLookups(undefined); // 22.10 ARC-2 S2b: the collision models (and display rows) go with the realm
   game.renderer?.clearPortraits();
   // And the ground cover with it, for the same reason: the recipes belong to the realm being left,
   // and a meadow still standing while the next world loads is a meadow from the wrong zone.

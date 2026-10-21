@@ -273,6 +273,10 @@ class FakeRenderer {
   endReplayEpoch() { this.replayEpochActive = false; }
   beginRenderFrame() { this.beginCount++; this.order.push("begin"); }
   endRenderFrame() { this.order.push("end"); return 0.25; }
+  // 22.10 ARC-2 S2b: the pushed caches and the collision misses the main thread drains after a draw.
+  lookupsCalls = [];
+  setRenderLookups(lookups) { this.lookupsCalls.push(lookups); }
+  collisionModelWants() { return new Set(); }
   draw(...args) {
     this.order.push("draw");
     this.drawCalls.push(args);
@@ -380,6 +384,7 @@ function makeHarness(options = {}) {
     host,
     renderer,
     context,
+    bindings, // 22.10 ARC-2 S2b
     setPendingGpu(value) {
       pendingGpu = value;
       renderer.gpuQueriesPending = value;
@@ -476,7 +481,7 @@ test("prewarm traverses every fixed frame without GPU begin, then render wraps t
   try {
     assert.ok(harness.renderer.drawCalls.length >= 3, "every prewarm camera frame submits the real scene path");
     assert.deepEqual(
-      harness.renderer.drawCalls.slice(0, 3).map((draw) => draw[7]),
+      harness.renderer.drawCalls.slice(0, 3).map((draw) => draw[6]), // 22.10 ARC-2 S2b: no metadata function before it
       replay.frames.map((item) => item.yaw),
       "the initial traversal preserves the complete deterministic camera order",
     );
@@ -495,8 +500,13 @@ test("prewarm traverses every fixed frame without GPU begin, then render wraps t
     assert.equal(receipt.suiteNonce, identity.suiteNonce);
     assert.equal(receipt.epochNonce, identity.epochNonce);
     const draw = harness.renderer.drawCalls.at(-1);
-    assert.strictEqual(draw.at(-2), ticket, "renderer receives the exact fixed ticket object");
-    assert.equal(draw.at(-1), 0, "formal rendering supplies the matching game-object metadata revision");
+    assert.strictEqual(draw.at(-1), ticket, "renderer receives the exact fixed ticket object");
+    // 22.10 ARC-2 S2b: the revision rides the pushed lookups, set before the draw and not inside the GPU envelope.
+    assert.equal(harness.renderer.lookupsCalls.at(-1).gameObjectDisplayRevision, 0,
+      "formal rendering supplies the matching game-object metadata revision");
+    assert.deepEqual(draw.flatMap((argument, index) => (typeof argument === "function" ? [index] : [])), [2, 9],
+      "the replay's draw takes no lookup function but the terrain sampler and the unit model");
+    assert.strictEqual(draw[9], harness.bindings.unitModel);
     assert.equal(harness.renderer.beginCount, 1);
     assert.deepEqual(harness.renderer.order, ["begin", "draw", "end"],
       "the renderer/GPU timing envelope contains only the world submission");

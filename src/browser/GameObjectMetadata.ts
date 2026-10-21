@@ -51,6 +51,11 @@ export class GameObjectMetadataClient {
     return this.#cache.get(id);
   }
 
+  /** 22.10 ARC-2 S2b: the cache `get` reads, for the renderer's pushed lookups (RenderLookups.ts); read-only. */
+  get displays(): ReadonlyMap<number, GameObjectDisplayMetadata> {
+    return this.#cache;
+  }
+
   async load(ids: readonly number[]): Promise<boolean> {
     const now = this.#now();
     const missing = [...new Set(ids)].filter((id) => id > 0 && !this.#requested.has(id)

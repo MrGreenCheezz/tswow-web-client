@@ -154,7 +154,7 @@ test("renderer admission is lookup-free, current-only, and keeps culled resident
   const passAt = update.indexOf("for (const candidate of state.objects.values())");
   assert.ok(passAt >= 0 && passAt < admissionAt, "the candidate pass precedes admission");
   const candidatePass = update.slice(passAt, admissionAt);
-  for (const forbidden of ["creatureModel?.(", "mountModel?.(", "client?.model", "#drawUnit(", "image("]) {
+  for (const forbidden of ["creatureModel?.(", "mountModel?.(", "mountDisplayModel(", "client?.model", "#drawUnit(", "image("]) {
     assert.equal(candidatePass.includes(forbidden), false, `admission must not call ${forbidden}`);
   }
   assert.match(candidatePass, /this\.#units\.get\(object\.guid\)/,

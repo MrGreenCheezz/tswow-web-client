@@ -1031,7 +1031,7 @@ test("environment update admits candidates before resource lookup and keeps warm
   assert.ok(modelAt > admissionAt, "model lookup begins only after admission");
 
   const preResource = update.slice(candidateAt, modelAt);
-  for (const forbidden of ["requestModel", "#collisionModels", "#buildWmoLiquid", "#updateWmoGroups", "image("]) {
+  for (const forbidden of ["requestModel", "#collisionModel(", "#buildWmoLiquid", "#updateWmoGroups", "image("]) {
     assert.equal(preResource.includes(forbidden), false, `candidate pass must not call ${forbidden}`);
   }
 
@@ -1046,7 +1046,7 @@ test("environment update admits candidates before resource lookup and keeps warm
     "retained static spheres must be borrowed only from the exact placement entry");
   assert.match(retainedContext, /#environmentVisibilitySpheres\.get\(object\)/,
     "a measured sphere survives warm-node eviction without rebuilding the hidden M2");
-  assert.doesNotMatch(retainedContext, /client\?\.model|#collisionModels|requestModel|image\(/,
+  assert.doesNotMatch(retainedContext, /client\?\.model|#collisionModel\(|requestModel|image\(/, // 22.10 ARC-2 S2b
     "retained-sphere admission cannot perform a resource lookup");
   assert.match(source,
     /WeakMap<EnvironmentObject, EnvironmentVisibilitySphere>/,

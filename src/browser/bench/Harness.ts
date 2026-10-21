@@ -251,13 +251,14 @@ if (movement) {
       try {
         const crowdClock = worldCrowd || city;
         const view = config.view;
+        // 22.10 ARC-2 S2b: no game-object rows, display-answered test or mount lookup to push (setRenderLookups):
+        // the bench has no game objects or mounts, and every unit's record is answered by `modelOf`.
         worldRenderer.draw(state, map, heightAt, terrain, scenery, environment,
-          undefined,
           view ? view.yaw : city ? angle : worldCrowd ? angle : Math.sin(lastFraction * Math.PI * 2) * .4,
           view ? view.pitch : city ? config.city.pitch : worldCrowd ? -.4 : -.22,
           view ? view.orbit : city ? config.city.orbit : worldCrowd ? 42 : 24,
-          modelOf, splat, liquids, undefined, horizon, 24, () => true, 1.6,
-          undefined, undefined, { nowMs: (crowdClock
+          modelOf, splat, liquids, undefined, horizon, 24, 1.6,
+          undefined, { nowMs: (crowdClock
             ? preparingWorldCrowd ? 0 : config.warmupSeconds + seconds
             : seconds) * 1000, elapsedSeconds: elapsed, frameIndex: frame });
       } finally { worldRenderer.endRenderFrame(); }

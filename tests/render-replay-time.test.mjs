@@ -69,7 +69,8 @@ test("draw routes supplied evolution time without replacing wall-clock telemetry
   const drawEnd = source.indexOf("\n  #resetFrameCounters(): void {", drawStart);
   const draw = source.slice(drawStart, drawEnd);
   assert.ok(drawStart >= 0 && drawEnd > drawStart, "draw source boundary must exist");
-  assert.match(draw, /wmoFloor\?: StaticWmoFloor,\s*frameTime\?: RenderFrameTime,[\s\S]*?gameObjectMetadataRevision\?: number,\s*\): WorldSubmissionReceipt \| undefined/);
+  // 22.10 ARC-2 S2b: the game-object metadata revision is pushed (setRenderLookups); frameTime is the last argument.
+  assert.match(draw, /wmoFloor\?: StaticWmoFloor,\s*frameTime\?: RenderFrameTime,\s*\): WorldSubmissionReceipt \| undefined/);
   assert.match(draw, /frameTime === undefined\s*\? undefined\s*: cloneRenderFrameTime\(frameTime\)/);
 
   const liveStart = draw.indexOf("if (evolutionTime === undefined) {");
@@ -90,7 +91,7 @@ test("draw routes supplied evolution time without replacing wall-clock telemetry
 
   for (const call of [
     "this.#updateEnvironment(player.position, objects, environmentClient, elapsed);",
-    "this.#updateGameObjects(state, player.position, environmentClient, gameObjectMetadata,\n      gameObjectMetadataRevision, transportPaths, now, elapsed);",
+    "this.#updateGameObjects(state, player.position, environmentClient, this.#lookups.gameObjectDisplays,\n      this.#lookups.gameObjectDisplayRevision, transportPaths, now, elapsed);",
     "this.#updateVisuals(now, elapsed, environmentClient);",
     "this.#updateEffects(player.position, now, elapsed);",
     "this.#updateBatchColours(now);",

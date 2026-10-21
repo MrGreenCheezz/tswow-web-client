@@ -105,6 +105,16 @@ export class CollisionClient {
     return undefined;
   }
 
+  /**
+   * 22.10 ARC-2 S2b: what `model` would answer right now, without asking for anything — no download, no
+   * spelling noted, no fold into the cache. The renderer's pushed lookups are filled from it
+   * (game/RenderLookupsBuilder.ts); a miss is asked for with `model` once the renderer says it wanted it.
+   */
+  peek(name: string): CollisionModel | undefined {
+    const spelling = this.#spelling(name);
+    return this.#models.get(spelling) ?? this.#shared(spelling);
+  }
+
   /** Whether the gateway has answered this model, including a 204/no-collision answer. */
   isResolved(name: string): boolean {
     const spelling = this.#spelling(name);

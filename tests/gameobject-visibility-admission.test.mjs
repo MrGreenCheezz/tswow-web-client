@@ -142,7 +142,7 @@ test("renderer gates game-object requests on visibility admission and keeps reje
 
   const candidatePass = update.slice(update.indexOf("for (const object of state.objects.values())"), admissionAt);
   for (const forbidden of [
-    "metadata?.(", "client?.model", "paths?.path", "#buildGameObject(", "#updateWmoGroups(",
+    "metadata?.(", "metadata?.get(", "client?.model", // 22.10 ARC-2 S2b: the pushed rows are a map "paths?.path", "#buildGameObject(", "#updateWmoGroups(",
     "#poseGameObject(", "#requestGameObjectPoses(", "image(",
   ]) {
     assert.equal(candidatePass.includes(forbidden), false, `admission must not call ${forbidden}`);
@@ -292,7 +292,7 @@ test("game-object admission stamps only the current model identity and resets tr
   const refresh = source.slice(refreshStart, refreshEnd);
   assert.match(refresh, /metadataRevision/,
     "trust refresh is driven by the metadata cache revision");
-  assert.match(refresh, /metadata\?\.\(rendered\.admissionDisplayId\)\?\.model/,
+  assert.match(refresh, /metadata\?\.get\(rendered\.admissionDisplayId\)\?\.model/, // 22.10 ARC-2 S2b: pushed map
     "a changed cache revision revalidates each stamped display mapping");
   assert.match(refresh, /#clearGameObjectAdmissionTrust\(rendered\)/,
     "an unresolved or remapped display clears its stale bounds before candidate admission");
@@ -306,9 +306,13 @@ test("game-object admission stamps only the current model identity and resets tr
   const formalHostSource = await readFile(
     new URL("../src/browser/LiveFormalRenderBenchmarkHost.ts", import.meta.url), "utf8",
   );
-  assert.match(loopSource, /game\.gameObjectMetadata\?\.revision/,
+  // 22.10 ARC-2 S2b: both paths push the client to one lookups builder, which reads the rows and the revision.
+  const lookupsSource = await readFile(new URL("../src/browser/game/RenderLookupsBuilder.ts", import.meta.url), "utf8");
+  assert.match(lookupsSource, /gameObjectDisplayRevision = sources\.gameObjectMetadata\?\.revision/,
+    "the pushed lookups carry the metadata revision beside the rows");
+  assert.match(loopSource, /gameObjectMetadata: game\.gameObjectMetadata/,
     "the live draw path supplies the metadata revision");
-  assert.match(formalHostSource, /resources\.gameObjectMetadata\.revision/,
+  assert.match(formalHostSource, /gameObjectMetadata: resources\.gameObjectMetadata/,
     "the formal replay draw path supplies the same metadata revision contract");
 
   // OBJECT_FIELD_ENTRY keys transport paths. A changed entry must not reuse the old phase clock,

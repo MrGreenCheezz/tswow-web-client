@@ -186,20 +186,6 @@ const BUBBLE_TYPES: ReadonlySet<number> = new Set([
 ]);
 
 /**
- * The archive path a visual placement carries, reduced to the file the collision route serves.
- *
- * Case is not this function's business any more. The extractor writes `Stormwind.wmo.vmo` and the
- * placement says `STORMWIND.WMO`; `CollisionClient.model` folds the second onto the first — the
- * spelling the `.vmtile` uses, which is the file's own — so the renderer's water probe and the
- * collision source share one download of the city rather than making two, and the probe no longer
- * depends on the gateway's disk ignoring case.
- */
-function collisionModelName(name: string): string {
-  const cut = Math.max(name.lastIndexOf("\\"), name.lastIndexOf("/"));
-  return cut >= 0 ? name.slice(cut + 1) : name;
-}
-
-/**
  * A combat line with the spell's real name in it.
  *
  * `WorldClient` writes «заклинание 133» because the spell table is a browser-side fetch and the
@@ -1458,7 +1444,8 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
     // Asked for every building in view, however far: its water is visible from the far end of a
     // city, which the collision range is not. What keeps that from costing the collision world
     // anything is on the other side — a landing it was not waiting for no longer rebuilds it.
-    game.renderer?.setCollisionModels((name) => collision.models.model(collisionModelName(name)));
+    // 22.10 ARC-2 S2b: handed over by the frame loop from `game.collision` (game/RenderLookupsBuilder.ts) — the
+    // landed models as data before `draw`, the misses asked for right after it — no longer as a function here.
     characterStatus.className = "success";
     characterStatus.textContent = `World login подтверждён: map ${location.map}, ${location.x.toFixed(2)}, ${location.y.toFixed(2)}, ${location.z.toFixed(2)}.`;
     worldStatus.className = "success";

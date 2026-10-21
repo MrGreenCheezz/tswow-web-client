@@ -6,6 +6,7 @@ import {
 import { gameObjectPlacementEntry, gameObjectPreviewModel } from "./GameObjectPreview.js";
 import type { SpellMetadata } from "../../gateway/SpellMetadata.js";
 import type { WorldPosition } from "../../world/WorldState.js";
+import { sampleGroundTargetRings, type GroundTargetRingHeights } from "../SelectionRingHeights.js"; // 22.10 ARC-2 S2b
 
 /**
  * The live ground reticle: where the click would land, how wide the spell's area is, and what a
@@ -59,6 +60,17 @@ function canvasRect(): { left: number; top: number; width: number; height: numbe
 function groundRingSampler(player: WorldPosition, point: GroundPoint): (x: number, y: number) => number | undefined {
   const sources = liveGroundSources(player);
   return (x, y) => groundColumnHeight(x, y, point.z, sources);
+}
+
+/**
+ * 22.10 ARC-2 S2b: the rings' ground as numbers — sampled here, at the vertices the renderer lays the two rings
+ * on and in its order, instead of handing it the sampler (SelectionRingHeights.ts).
+ */
+export function groundRingHeights(
+  player: WorldPosition, point: GroundPoint, radius: number,
+  sampler: (x: number, y: number) => number | undefined = groundRingSampler(player, point),
+): GroundTargetRingHeights {
+  return sampleGroundTargetRings(point, radius, sampler);
 }
 
 /**
@@ -127,13 +139,18 @@ export function updateGroundTargetPreview(): void {
   );
   const inRange = point !== undefined && groundPointInRange(point, position, range);
   reticleInRange = inRange;
-  renderer.setGroundTargetPreview(point ? {
-    x: point.x, y: point.y, z: point.z,
-    radius: spellEffectRadius(metadata),
-    inRange,
-    ground: groundRingSampler(position, point),
-  } : undefined);
+  const radius = spellEffectRadius(metadata);
+  // 22.10 ARC-2 S2b: the sources are taken first and sampled last, as before — the sampler was built here and
+  // read by the draw that follows, after the ghost's template and display were asked for.
+  const sampler = point ? groundRingSampler(position, point) : undefined;
   // A point the click would refuse gets no ghost: the model is a promise about what is placed,
   // and the red rings beside it already say why the promise is not being made.
-  renderer.setGameObjectPreview(point && inRange ? gameObjectGhost(metadata, position, point) : undefined);
+  const ghost = point && inRange ? gameObjectGhost(metadata, position, point) : undefined;
+  renderer.setGroundTargetPreview(point ? {
+    x: point.x, y: point.y, z: point.z,
+    radius,
+    inRange,
+    ground: groundRingHeights(position, point, radius, sampler), // 22.10 ARC-2 S2b: heights, not a sampler
+  } : undefined);
+  renderer.setGameObjectPreview(ghost);
 }

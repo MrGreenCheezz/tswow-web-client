@@ -207,6 +207,13 @@ import { cameraSubjectOpacity } from "./game/CameraClip.js"; // 5.33
 import { VehiclePassengerPoser } from "./VehiclePassengerPose.js"; // 11.02-H
 import { vehicleCatalogOfRows, type VehicleCatalog, type VehicleCatalogRows } from "../world/VehicleDbc.js"; // 11.02-H; 22.10 ARC-2 S2a: built from pushed rows
 import { NO_RENDER_INPUTS, type RenderInputs } from "./RenderInputs.js"; // 22.10 ARC-2 S2a
+import {
+  NO_RENDER_LOOKUPS, creatureDisplayAnswered, mountDisplayModel, type RenderLookups,
+} from "./RenderLookups.js"; // 22.10 ARC-2 S2b
+import {
+  GROUND_TARGET_POINT_RING, SELECTION_RING_BANDS, SELECTION_RING_SEGMENTS, groundTargetAreaRing,
+  type GroundTargetRingHeights, type SelectionRingHeights,
+} from "./SelectionRingHeights.js"; // 22.10 ARC-2 S2b
 import { drawnUnitPosition } from "./VehiclePassengerOverlay.js"; // 11.02-tails
 import { selectWmoPortalGroups } from "./WmoOcclusion.js";
 import { WmoRangeTable, sameWmoSelection, type WmoRangeTotals } from "./WmoGroupRange.js"; // P1-12a/b
@@ -2107,14 +2114,8 @@ export const WORLD_CAMERA_NEAR_PLANE = CAMERA_NEAR_PLANE; // 5.33: was 0.25, the
  */
 export const UNDERWATER_CROSSING_BAND = underwaterCrossingBand(WORLD_CAMERA_NEAR_PLANE, CAMERA_FOV_DEGREES);
 
-/**
- * How many segments a selection ring is drawn with.
- *
- * Forty-eight is where a ring of one to two yards stops looking like a polygon at the distance a
- * player actually stands from its target. The cost is ninety-six vertices rewritten per frame per
- * ring, of which there are at most two.
- */
-export const SELECTION_RING_SEGMENTS = 48;
+// 22.10 ARC-2 S2b: SELECTION_RING_SEGMENTS moved to SelectionRingHeights.ts with the ring's sample points.
+export { SELECTION_RING_SEGMENTS };
 /** How far up or down the ring is allowed to follow the ground before it stops trying. */
 export const SELECTION_RING_RELIEF = 1.5;
 
@@ -2162,24 +2163,29 @@ export function buildSelectionRingGeometry(segments = SELECTION_RING_SEGMENTS): 
  * below — so the ring hangs off the unit's own feet and only borrows the slope. On open ground the
  * two are the same number. The relief is clamped, because a unit standing on the lip of a cliff
  * would otherwise wear a ring with one side of it forty yards down.
+ *
+ * 22.10 ARC-2 S2b: `ground` may also be the heights already sampled at these vertices
+ * (SelectionRingHeights.ts) — the ground reticle's, pushed by the main thread.
  */
 export function updateSelectionRing(
   geometry: THREE.BufferGeometry,
   centre: { x: number; y: number; z: number },
   radius: number,
-  ground: HeightSampler | undefined,
+  ground: HeightSampler | SelectionRingHeights | undefined,
   segments = SELECTION_RING_SEGMENTS,
 ): void {
   const position = geometry.getAttribute("position") as THREE.BufferAttribute;
-  const radii = [radius * 0.82, radius * 0.93, radius];
-  const middle = ground?.(centre.x, centre.y);
-  for (let ring = 0; ring < radii.length; ring++) {
-    const reach = radii[ring] ?? radius;
+  const sampled = typeof ground === "function" ? undefined : ground; // 22.10 ARC-2 S2b
+  const sampler = typeof ground === "function" ? ground : undefined;
+  const middle = sampled ? sampled.middle : sampler?.(centre.x, centre.y);
+  for (let ring = 0; ring < SELECTION_RING_BANDS.length; ring++) {
+    const reach = radius * SELECTION_RING_BANDS[ring]!;
     for (let step = 0; step <= segments; step++) {
       const angle = (step / segments) * Math.PI * 2;
       const x = centre.x + Math.cos(angle) * reach;
       const y = centre.y + Math.sin(angle) * reach;
-      const here = middle === undefined ? undefined : ground?.(x, y);
+      const here = middle === undefined ? undefined
+        : sampled ? sampled.around[ring * (segments + 1) + step] : sampler?.(x, y);
       const relief = here === undefined || middle === undefined
         ? 0
         : Math.max(-SELECTION_RING_RELIEF, Math.min(SELECTION_RING_RELIEF, here - middle));
@@ -2653,7 +2659,11 @@ export interface GroundTargetPreview {
   radius: number;
   /** False when the point is beyond the spell's own range: the rings warn instead of promising. */
   inRange: boolean;
-  ground?: HeightSampler | undefined;
+  /**
+   * 22.10 ARC-2 S2b: the surfaces under both rings, sampled by the main thread at the rings' vertices
+   * (SelectionRingHeights.ts) — was a sampler over the terrain and the collision world. Absent: flat rings.
+   */
+  ground?: GroundTargetRingHeights | undefined;
 }
 
 /**
@@ -4653,7 +4663,11 @@ export class WorldRenderer3D {
    * extractor already copies that grid into the `.vmo` the collision route serves. It was being
    * read and thrown away in two lines; now it travels, and this is the client that has it.
    */
-  #collisionModels: ((name: string) => CollisionModel | undefined) | undefined;
+  // 22.10 ARC-2 S2b: read from `#lookups.collisionModels`; was a main-thread function (`setCollisionModels`).
+  /** 22.10 ARC-2 S2b: the WMO placement names whose collision model this frame's `draw` missed (`collisionModelWants`). */
+  readonly #collisionWants = new Set<string>();
+  /** 22.10 ARC-2 S2b: the main thread's caches, pushed as data (`setRenderLookups`, RenderLookups.ts). */
+  #lookups: RenderLookups = NO_RENDER_LOOKUPS;
 
   /**
    * 21.10 ARC-2 S1: `host` is where the renderer learns its pixel ratio, canvas size and query flags
@@ -6854,9 +6868,33 @@ export class WorldRenderer3D {
     return this.#indoors;
   }
 
-  /** Where to find a model's own liquid. Told once, like everything else the frame hands over. */
-  setCollisionModels(models: ((name: string) => CollisionModel | undefined) | undefined): void {
-    this.#collisionModels = models;
+  /**
+   * 22.10 ARC-2 S2b: the main thread's caches this frame reads by key (RenderLookups.ts, game/RenderLookupsBuilder.ts)
+   * — the game-object display rows and their revision, the creature display rows (a mount's record, the stand-in
+   * ledger's "answered"), and the collision models a building's own water comes from. Replaces the lookup
+   * functions `draw` took and `setCollisionModels`; `undefined` (leaving a world) drops them at once.
+   */
+  setRenderLookups(lookups: RenderLookups | undefined): void {
+    this.#lookups = lookups ?? NO_RENDER_LOOKUPS;
+  }
+
+  /**
+   * 22.10 ARC-2 S2b: the WMO placement names whose collision model the last `draw` wanted and the pushed lookups
+   * did not have. The main thread asks the collision client for them right after `draw`, which is where the
+   * download used to start from — inside `draw`, through the function `setCollisionModels` took. Emptied by the
+   * next `draw`; a worker slice posts it back with the frame.
+   */
+  collisionModelWants(): ReadonlySet<string> {
+    return this.#collisionWants;
+  }
+
+  /** 22.10 ARC-2 S2b: a placement's collision model from the pushed lookups; a miss is noted for the main thread. */
+  #collisionModel(name: string): CollisionModel | undefined {
+    const models = this.#lookups.collisionModels;
+    if (models === undefined) return undefined;
+    const model = models.get(name);
+    if (model === undefined) this.#collisionWants.add(name);
+    return model;
   }
 
   /**
@@ -6922,7 +6960,7 @@ export class WorldRenderer3D {
    * measurement to take, not a look to guess at.
    */
   #buildWmoLiquid(object: EnvironmentObject): THREE.Mesh[] | undefined {
-    const model = this.#collisionModels?.(object.name);
+    const model = this.#collisionModel(object.name); // 22.10 ARC-2 S2b
     if (!model) return undefined;
     const frame = placeEnvironmentNode(new THREE.Object3D(), object);
     frame.updateMatrix();
@@ -7330,7 +7368,8 @@ export class WorldRenderer3D {
     this.#groundCoverCellsKey = undefined;
     this.#environmentReselectedSerial = -1;
     this.#liquidTextures = undefined;
-    this.#collisionModels = undefined;
+    this.#lookups = NO_RENDER_LOOKUPS; // 22.10 ARC-2 S2b: and the collision models with them, as before
+    this.#collisionWants.clear();
     this.#lightSample = undefined;
     this.#lightTime = 0;
     this.#skyboxPath = undefined;
@@ -7482,11 +7521,12 @@ export class WorldRenderer3D {
       return;
     }
     const wanted: Array<{ kind: "point" | "radius"; radius: number; colour: number; opacity: number }> = [
-      { kind: "point", radius: 0.75, colour: preview.inRange ? 0xfff2c0 : 0xff8a7a, opacity: 0.95 },
+      { kind: "point", radius: GROUND_TARGET_POINT_RING, colour: preview.inRange ? 0xfff2c0 : 0xff8a7a, opacity: 0.95 },
     ];
-    if (preview.radius >= 1) {
+    const area = groundTargetAreaRing(preview.radius); // 22.10 ARC-2 S2b: one rule with the sampled heights
+    if (area !== undefined) {
       wanted.push({
-        kind: "radius", radius: preview.radius,
+        kind: "radius", radius: area,
         colour: preview.inRange ? 0x63d6a0 : 0xff5f4a, opacity: 0.55,
       });
     }
@@ -7511,7 +7551,7 @@ export class WorldRenderer3D {
       }
       ring.material.color.setHex(entry.colour);
       ring.material.opacity = entry.opacity;
-      updateSelectionRing(ring.mesh.geometry, preview, entry.radius, preview.ground);
+      updateSelectionRing(ring.mesh.geometry, preview, entry.radius, preview.ground?.[entry.kind]); // 22.10 ARC-2 S2b
     }
     const kinds = new Set(wanted.map((entry) => entry.kind));
     for (const [kind, ring] of [...this.#groundTargetRings]) {
@@ -7975,7 +8015,8 @@ export class WorldRenderer3D {
     terrainClient: TerrainClient | undefined,
     objects: readonly EnvironmentObject[],
     environmentClient: EnvironmentClient | undefined,
-    gameObjectMetadata: ((displayId: number) => GameObjectDisplayMetadata | undefined) | undefined,
+    // 22.10 ARC-2 S2b: the game-object display rows and their revision, the display-answered test and the mount
+    // lookup are pushed data now (`setRenderLookups`); they were function arguments here.
     cameraYaw = 0,
     cameraPitch = CAMERA_DEFAULT_PITCH,
     cameraDistance = CAMERA_DEFAULT_DISTANCE,
@@ -7987,33 +8028,18 @@ export class WorldRenderer3D {
     /** How far the camera wanted to be, where `cameraDistance` is how far a wall let it. */
     cameraAnchorDistance = cameraDistance,
     /**
-     * Whether a display id has been answered, which is the only thing that tells the two waiting
-     * stand-ins apart: `creatureModel` returns undefined both when the display record has not come
-     * back and when it has but the player's appearance has not. Diagnostics only — nothing is drawn
-     * differently for the answer.
-     */
-    displayAnswered?: (displayId: number) => boolean,
-    /**
      * How high on the character the camera hangs this frame — its shoulder in third person, its
      * eye in first. Worked out once a frame by the loop and handed to every camera the frame
      * builds, so the world, the plates and the bubbles agree on where the arm is hinged.
      */
     cameraPivotHeight = CAMERA_DEFAULT_PIVOT_HEIGHT,
-    /**
-     * The display record of whatever this unit is riding, resolved the same way its own is.
-     *
-     * Its own argument rather than something read off `creatureModel`, because it answers a
-     * different field — `UNIT_FIELD_MOUNTDISPLAYID`, which until now had exactly one reader in the
-     * whole repository (`WindowBindings.ts:331`, a boolean for module windows).
-     */
-    mountModel?: (object: WorldObjectState) => UnitModel | undefined,
     /** Exact static WMO floor under this frame's camera, from the server's collision geometry. */
     wmoFloor?: StaticWmoFloor,
     frameTime?: RenderFrameTime,
-    /** Monotonic revision of the cache behind `gameObjectMetadata`; absent means fail-open. */
-    gameObjectMetadataRevision?: number,
   ): WorldSubmissionReceipt | undefined {
     validateRenderEvolutionMode(this.#replaySeed !== undefined, frameTime !== undefined);
+    // 22.10 ARC-2 S2b: this frame's collision misses only; the main thread drained the last frame's.
+    this.#collisionWants.clear();
     const evolutionTime = frameTime === undefined
       ? undefined
       : cloneRenderFrameTime(frameTime);
@@ -8126,12 +8152,11 @@ export class WorldRenderer3D {
     this.#updateGroundCover(player.position, map, heightAt, terrainClient, environmentClient);
     this.#drawPhaseMs.ground = performance.now() - drawPhaseAt;
     drawPhaseAt = performance.now();
-    this.#updateGameObjects(state, player.position, environmentClient, gameObjectMetadata,
-      gameObjectMetadataRevision, transportPaths, now, elapsed);
+    this.#updateGameObjects(state, player.position, environmentClient, this.#lookups.gameObjectDisplays,
+      this.#lookups.gameObjectDisplayRevision, transportPaths, now, elapsed); // 22.10 ARC-2 S2b: pushed rows
     this.#drawPhaseMs.objects = performance.now() - drawPhaseAt;
     drawPhaseAt = performance.now();
-    this.#updateUnits(state, player.position, now, elapsed, environmentClient, creatureModel, displayAnswered,
-      mountModel);
+    this.#updateUnits(state, player.position, now, elapsed, environmentClient, creatureModel);
     // After the units, because a ring is sized from the body the pass above measured.
     this.#updateSelectionRings(state, heightAt);
     // The aiming reticle and the placing spell's ghost, after the model passes above have stocked
@@ -10707,7 +10732,7 @@ export class WorldRenderer3D {
         // `liquidGeneration` is set as soon as the model has been *seen*, whether or not it had
         // any water in it, so a dry building is asked once rather than every frame for as long as
         // the player stands near it. Of 53 placed models on this dataset, three carry liquid.
-        if (rendered.liquidGeneration !== generation && this.#collisionModels?.(object.name)) {
+        if (rendered.liquidGeneration !== generation && this.#collisionModel(object.name)) { // 22.10 ARC-2 S2b
           this.#dropWmoLiquid(rendered);
           rendered.liquidGeneration = generation;
           const sheets = this.#buildWmoLiquid(object);
@@ -12534,7 +12559,7 @@ export class WorldRenderer3D {
    * revision changes, outside the candidate pass, and never asks the model scheduler for work.
    */
   #refreshGameObjectAdmissionTrust(
-    metadata: ((displayId: number) => GameObjectDisplayMetadata | undefined) | undefined,
+    metadata: ReadonlyMap<number, GameObjectDisplayMetadata> | undefined, // 22.10 ARC-2 S2b: was a lookup function
     metadataRevision: number | undefined,
   ): void {
     const revision = typeof metadataRevision === "number"
@@ -12552,7 +12577,7 @@ export class WorldRenderer3D {
     for (const rendered of this.#gameObjects.values()) {
       const modelName = rendered.admissionDisplayId === undefined
         ? undefined
-        : metadata?.(rendered.admissionDisplayId)?.model;
+        : metadata?.get(rendered.admissionDisplayId)?.model;
       if (modelName !== undefined && modelName === rendered.model) {
         rendered.admissionMetadataRevision = revision;
       } else {
@@ -12629,7 +12654,7 @@ export class WorldRenderer3D {
     state: WorldState,
     player: WorldPosition,
     client: EnvironmentClient | undefined,
-    metadata: ((displayId: number) => GameObjectDisplayMetadata | undefined) | undefined,
+    metadata: ReadonlyMap<number, GameObjectDisplayMetadata> | undefined, // 22.10 ARC-2 S2b: was a lookup function
     metadataRevision: number | undefined,
     paths: TransportPathClient | undefined,
     now: number,
@@ -12693,7 +12718,7 @@ export class WorldRenderer3D {
       drawn.add(object.guid);
       const position = object.position!;
       const displayId = object.fields.get(UPDATE_FIELDS.GAMEOBJECT_DISPLAYID.offset) ?? 0;
-      const modelName = metadata?.(displayId)?.model;
+      const modelName = metadata?.get(displayId)?.model;
       const model = modelName ? client?.model(modelName, "normal") : undefined;
       let rendered = this.#gameObjects.get(object.guid);
       const replacesWmo = rendered !== undefined && model !== undefined
@@ -13261,8 +13286,6 @@ export class WorldRenderer3D {
     elapsed: number,
     client: EnvironmentClient | undefined,
     creatureModel: ((object: WorldObjectState) => UnitModel | undefined) | undefined,
-    displayAnswered: ((displayId: number) => boolean) | undefined,
-    mountModel: ((object: WorldObjectState) => UnitModel | undefined) | undefined,
   ): void {
     // The question is always "what is a capsule now", so the ledger starts empty every frame.
     this.#standIns.begin();
@@ -13328,8 +13351,7 @@ export class WorldRenderer3D {
     this.#unitShadowCasters.begin(); // 06.10-shadow
     for (const [rank, { value: object, distance }] of admission.admitted.entries()) {
       drawn.add(object.guid);
-      this.#drawUnit(object, state.selfGuid === object.guid, distance, now, elapsed, client, creatureModel, displayAnswered,
-        mountModel,
+      this.#drawUnit(object, state.selfGuid === object.guid, distance, now, elapsed, client, creatureModel,
         this.#unitShadowCasters.decide(object.guid, rank, distance, this.#lightingProfile), // 06.10-shadow: was unitCastsEnhancedShadow
         state); // 11.10: the unit's facing (UnitFacing.ts)
       const rendered = this.#units.get(object.guid);
@@ -13550,8 +13572,6 @@ export class WorldRenderer3D {
     elapsed: number,
     client: EnvironmentClient | undefined,
     creatureModel: ((object: WorldObjectState) => UnitModel | undefined) | undefined,
-    displayAnswered: ((displayId: number) => boolean) | undefined,
-    mountModel: ((object: WorldObjectState) => UnitModel | undefined) | undefined,
     shadowCaster: boolean,
     world?: Pick<WorldState, "objects" | "predictedGuid" | "selfGuid">, // 11.10: for the facing (UnitFacing.ts); 5.32: + selfGuid
   ): void {
@@ -13677,7 +13697,8 @@ export class WorldRenderer3D {
     } else {
       // A display id of zero is a display that will never be answered, which is the same wait as
       // one that has not been answered yet and is counted with it.
-      standIn = displayAnswered?.(displayId) ? "appearance" : "display";
+      // 22.10 ARC-2 S2b: answered = the pushed creature display rows hold it (was Loop.ts `loopCreatureDisplayAnswered`).
+      standIn = creatureDisplayAnswered(displayId, this.#lookups.creatureDisplays) ? "appearance" : "display";
     }
     // `body` is the capsule itself, and `#clearUnitNode` drops it the moment a real model goes in —
     // the same test `#shapeCapsule` makes before it bothers to shape anything. So `capsule` counts
@@ -13691,7 +13712,7 @@ export class WorldRenderer3D {
     if (standIn && shown) this.#standIns.note(object.guid, displayId, standIn, metadata?.model, wearing);
     // After the unit's own scale is settled and before it is posed: the seat is measured against
     // `unit.scale`, and the pose the rider takes depends on whether the mount is really there.
-    this.#updateMount(unit, mountModel?.(object), client);
+    this.#updateMount(unit, mountDisplayModel(object, this.#lookups.creatureDisplays), client); // 22.10 ARC-2 S2b
     if (unit.mount?.template) {
       this.#unitAnimationPrefetch.set(unit.mount.template, unit.mount.metadata.model);
     }

@@ -48,6 +48,7 @@ import { ENVIRONMENT_FAR_RANGE, type EnvironmentObject } from "./Terrain.js";
 import type { UnitModel } from "./CreatureModelClient.js";
 import type { WorldObjectState } from "../world/WorldState.js";
 import { createCamera } from "./SimpleScene.js";
+import { RenderLookupsBuilder } from "./game/RenderLookupsBuilder.js"; // 22.10 ARC-2 S2b
 import { collisionLiquidEyeSubmerged, collisionModelLiquidAtEye } from "./game/CollisionLiquid.js";
 import {
   EYE_LIQUID_SAMPLE_BAND, FLOOR_SEARCH_DEPTH, STEP_HEIGHT, eyeLiquidSurface, eyeUnderwater,
@@ -82,7 +83,7 @@ const RENDERER_MUTATORS = [
   "updateLighting", "setUnderwaterSurface",
   "observeFrame", "resetFrameCadence", "resetRenderEvolutionClock", "resetReplayEpoch", "endReplayEpoch",
   "playSpellVisual", "clearSpellVisuals", "cancelSpellVisual", "retimeSpellVisual", "setStateVisuals",
-  "setWeather", "setIndoors", "setCollisionModels", "setGroundCover", "invalidateGroundCover", "setSelection",
+  "setWeather", "setIndoors", "setRenderLookups", "setGroundCover", "invalidateGroundCover", "setSelection",
   "setGroundTargetPreview", "setGameObjectPreview",
   "setPortraitTargets", "renderPortraits", "clearPortraits",
   "markFrameNotRendered", "beginRenderFrame", "endRenderFrame", "resetGpuTimingEpoch", "draw",
@@ -183,7 +184,6 @@ interface LiveHostBindings {
   readonly captureClientReadiness: () => Readonly<BenchmarkClientReadinessInput> | undefined;
   readonly captureUserGraphics: () => Readonly<UserGraphicsSettings>;
   readonly unitModel: (object: WorldObjectState) => UnitModel | undefined;
-  readonly mountModel: (object: WorldObjectState) => UnitModel | undefined;
   readonly selectionRingColour: (
     object: WorldObjectState | undefined,
     self: WorldObjectState | undefined,
@@ -550,6 +550,8 @@ function validateEpochIdentity(value: unknown): asserts value is Readonly<Formal
 /** Live adapter from the formal runner contract to the one renderer and its fixed replay world. */
 export class LiveFormalRenderBenchmarkHost implements FormalRenderBenchmarkHost {
   readonly #captureEnvironment: CaptureEnvironment;
+  /** 22.10 ARC-2 S2b: the replay frames' pushed caches, refilled in place (game/RenderLookupsBuilder.ts). */
+  readonly #renderLookups = new RenderLookupsBuilder();
   readonly #context: GameContext;
   readonly #now: () => number;
   readonly #requestFrame: (callback: FrameRequestCallback) => number;
@@ -1155,7 +1157,7 @@ export class LiveFormalRenderBenchmarkHost implements FormalRenderBenchmarkHost 
     const resources = this.#requireResources();
     const needLoop = supplied.captureTelemetry === undefined || supplied.captureClientReadiness === undefined;
     const needSettings = supplied.captureUserGraphics === undefined;
-    const needModels = supplied.unitModel === undefined || supplied.mountModel === undefined;
+    const needModels = supplied.unitModel === undefined;
     const needSelection = supplied.selectionRingColour === undefined;
     const [loop, settingsModule, settingsModel, frames, names] = await Promise.all([
       needLoop ? import("./game/Loop.js") : undefined,
@@ -1194,8 +1196,6 @@ export class LiveFormalRenderBenchmarkHost implements FormalRenderBenchmarkHost 
         ?? ((object: WorldObjectState) => frames!.unitModelFor(
           object, resources.creatureModels, resources.itemMetadata,
         )),
-      mountModel: supplied.mountModel
-        ?? ((object: WorldObjectState) => frames!.mountModelFor(object, resources.creatureModels)),
       selectionRingColour: supplied.selectionRingColour
         ?? ((object: WorldObjectState | undefined, self: WorldObjectState | undefined) =>
           names!.selectionRingColourFor(object, self, resources.factions)),
@@ -1312,6 +1312,14 @@ export class LiveFormalRenderBenchmarkHost implements FormalRenderBenchmarkHost 
            : { guid: focusGuid, colour: bindings.selectionRingColour(replay.state.objects.get(focusGuid), player) },
       );
     });
+    // 22.10 ARC-2 S2b: the caches the replay's draw reads by key, from the live clients it used to close over —
+    // the display rows and the collision models of this environment list (was the live `setCollisionModels`).
+    this.#withRendererMutationAuthorization("setRenderLookups", () => {
+      resources.renderer.setRenderLookups(this.#renderLookups.build({
+        gameObjectMetadata: resources.gameObjectMetadata, creatureModels: resources.creatureModels,
+        collision: resources.collision.models, environment,
+      }));
+    });
     const observation = deepFreeze({
       indoors,
       underwater,
@@ -1320,15 +1328,15 @@ export class LiveFormalRenderBenchmarkHost implements FormalRenderBenchmarkHost 
     validateWorldReplayObservation(snapshot, observation);
     this.#lastObservation = observation;
 
-    const submitWorld = (): Readonly<WorldSubmissionReceipt> | undefined =>
-      this.#withRendererMutationAuthorization("draw", () => resources.renderer.draw(
+    const submitWorld = (): Readonly<WorldSubmissionReceipt> | undefined => {
+      try {
+        return this.#withRendererMutationAuthorization("draw", () => resources.renderer.draw(
           replay.state,
           replay.mapId,
           heightAt,
           resources.terrain,
           environment,
           resources.environment,
-          (displayId) => resources.gameObjectMetadata.get(displayId),
           frame.yaw,
           frame.viewPitch,
           frame.view,
@@ -1338,13 +1346,15 @@ export class LiveFormalRenderBenchmarkHost implements FormalRenderBenchmarkHost 
           resources.transportPaths,
           resources.horizon,
           frame.distance,
-          (displayId) => resources.creatureModels.get(displayId) !== undefined,
           frame.pivotHeight,
-          bindings.mountModel,
           cameraWmoFloor,
           frameTime,
-          resources.gameObjectMetadata.revision,
         ));
+      } finally {
+        // 22.10 ARC-2 S2b: the collision models the draw missed, asked for as the draw itself used to ask.
+        this.#renderLookups.requestCollisionModels(resources.collision.models, resources.renderer.collisionModelWants());
+      }
+    };
     const receipt = submit
       ? (submissionEnvelope === undefined ? submitWorld() : submissionEnvelope(submitWorld))
       : undefined;

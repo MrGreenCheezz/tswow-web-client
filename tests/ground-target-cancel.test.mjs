@@ -54,7 +54,8 @@ test("the live reticle draws the SpellRadius ring and reddens it out of range", 
   assert.equal(spellEffectRadius({ effectRadius: [0, 10, 6] }), 10, "the widest effect wins");
   assert.equal(spellEffectRadius(undefined), 0, "no row means a point marker, not a fabricated ring");
   const preview = await readFile(new URL("../src/browser/game/GroundTargetPreview.ts", import.meta.url), "utf8");
-  assert.match(preview, /radius: spellEffectRadius\(metadata\)/, "the ring is the DBC radius");
+  // 22.10 ARC-2 S2b: read once, for the pushed radius and the rings' sampled heights alike.
+  assert.match(preview, /const radius = spellEffectRadius\(metadata\);[\s\S]*?\n    radius,\n/, "the ring is the DBC radius");
   const renderer = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
   assert.match(renderer, /preview\.inRange \? 0x63d6a0 : 0xff5f4a/, "out of range is red");
 });

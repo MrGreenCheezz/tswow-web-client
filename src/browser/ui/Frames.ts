@@ -12,6 +12,7 @@ import { withVirtualWeapons } from "../NpcWeapons.js"; // 05.10-A7a-B 6.02
 import { wornSheathes } from "../SheathPoints.js"; // 05.10-A7a-G2 6.08
 import { corpseModelFor } from "../CorpseModel.js"; // 05.10-A7a-G2 6.05
 import { mirrorImageModelFor } from "../MirrorImageModel.js"; // 05.10-A7a-H 6.11б
+import { mountDisplayModel } from "../RenderLookups.js"; // 22.10 ARC-2 S2b
 import { UNIT_FLAG2_MIRROR_IMAGE, type MirrorImages } from "../../world/MirrorImages.js"; // 05.10-A7a-H 6.11б
 import { game } from "../game/Context.js";
 import { setTip, Bar } from "./Widgets.js";
@@ -239,11 +240,10 @@ export function mountModelFor(
   object: WorldObjectState,
   creatureModels: CreatureModelClient | undefined,
 ): UnitModel | undefined {
-  const displayId = unit.mountDisplayId(object) ?? 0;
-  if (displayId <= 0 || !creatureModels) return undefined;
   // Requests are owned by the once-per-world-update pass in `ui/WorldView.ts`; this lookup stays
   // read-only so portrait/replay callers do not start network work merely by asking for a mount.
-  return creatureModels.get(displayId);
+  // 22.10 ARC-2 S2b: one rule with the renderer's read of the pushed display map (RenderLookups.ts).
+  return mountDisplayModel(object, creatureModels);
 }
 
 /** The live wrapper retains the UI's current creature-model client. */

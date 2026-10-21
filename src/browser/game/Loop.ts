@@ -13,7 +13,7 @@ import { formatGameTime, halfMinuteOfDay } from "../../world/GameTimeProtocol.js
 import { lightOverrideWeight } from "../LightClient.js";
 import { GhostLightFade } from "../LightStateFade.js"; // 05.10-A7b-5 (7.15)
 import { isPlayerGhost } from "../../world/Fields.js"; // 05.10-A7b-5 (7.15)
-import { mountModel, unitModel } from "../ui/Frames.js";
+import { unitModel } from "../ui/Frames.js";
 import {
   advancePhysics, heartbeatDue, sendMovement,
 } from "../input/Movement.js";
@@ -46,6 +46,7 @@ import { cameraSaved } from "./CameraSaved.js"; // 5.14
 import { vehicleCatalog } from "../VehicleClient.js"; // 11.02-GF3
 import { itemEnchantments } from "../ItemEnchantments.js";
 import { RenderInputsBuilder } from "./RenderInputsBuilder.js"; // 22.10 ARC-2 S2a
+import { RenderLookupsBuilder } from "./RenderLookupsBuilder.js"; // 22.10 ARC-2 S2b
 import { updateCastBars } from "../ui/CastBar.js";
 import { updateActionBar } from "../ui/ActionBar.js";
 import { updateMirrorTimers } from "../ui/MirrorTimers.js";
@@ -88,11 +89,9 @@ import {
  *
  * Each one only reads the live `game` singleton, so a shared function answers exactly what the
  * inline arrow it replaces answered — without allocating a closure sixty times a second. The
- * renderer/2D-scene calls below take them by identity every frame.
+ * renderer/2D-scene calls below take them by identity every frame. 22.10 ARC-2 S2b: the world renderer's
+ * game-object display and display-answered resolvers became pushed data (game/RenderLookupsBuilder.ts).
  */
-function loopGameObjectDisplay(displayId: number): ReturnType<NonNullable<typeof game.gameObjectMetadata>["get"]> | undefined {
-  return game.gameObjectMetadata?.get(displayId);
-}
 
 /**
  * 12.10 7.33: whether a game object is drawn — a dungeon-difficulty portal only in its own difficulty
@@ -114,10 +113,6 @@ function loopMapInstanceType(mapId: number): number | undefined {
   return game.areas?.map(mapId)?.instanceType;
 }
 
-function loopCreatureDisplayAnswered(displayId: number): boolean {
-  return game.creatureModels?.get(displayId) !== undefined;
-}
-
 function loopCreatureMetadata(entry: number): ReturnType<NonNullable<typeof game.creatureMetadata>["get"]> | undefined {
   return game.creatureMetadata?.get(entry);
 }
@@ -133,6 +128,8 @@ function loopGameObjectCorners(object: WorldObjectState, out: Float64Array): boo
 
 /** 22.10 ARC-2 S2a: the frame's pushed renderer inputs, refilled in place each frame. */
 const renderInputs = new RenderInputsBuilder();
+/** 22.10 ARC-2 S2b: the frame's pushed caches (display rows, collision models), refilled in place each frame. */
+const renderLookups = new RenderLookupsBuilder();
 
 let lastFrame = performance.now();
 let renderStatusShownAt = 0;
@@ -636,6 +633,12 @@ function frame(now: number): void {
         world, spells: game.spells, enchantments: enchantClient, vehicles: vehicleCatalog(),
         gameObjectShown: loopGameObjectShown,
       }));
+      // 22.10 ARC-2 S2b: the caches draw read through functions — game-object and creature display rows, and the
+      // collision models of this environment list's buildings (was `setCollisionModels`, EnterWorld.ts).
+      game.renderer.setRenderLookups(renderLookups.build({
+        gameObjectMetadata: game.gameObjectMetadata, creatureModels: game.creatureModels,
+        collision: game.collision?.models, environment,
+      }));
     }
     hitchLight = performance.now();
     const renderer = game.renderer;
@@ -645,35 +648,34 @@ function frame(now: number): void {
       // either draw path throws; endRenderFrame itself is deliberately non-throwing.
       renderer.beginRenderFrame();
       try {
-        renderer.draw(
-          world.state,
-          world.mapId,
-          heightAt,
-          game.terrain,
-          environment,
-          game.environment,
-          loopGameObjectDisplay,
-          game.camera.yaw,
-          // The granted tilt and the granted distance, never the two the player's hands asked for:
-          // `viewPitch` is `pitch` with the floor's say in it, exactly as `view` is `distance` with
-          // the walls'. Every camera this frame builds has to be built out of the same pair.
-          game.camera.viewPitch,
-          game.camera.view,
-          unitModel,
-          game.terrainSplat,
-          game.liquids,
-          game.transportPaths,
-          game.horizon,
-          game.camera.distance,
-          // Diagnostics only: `unitModel` returns undefined both while the display record is on its way
-          // and while a player's appearance is, and the capsule counter has to tell those two apart.
-          loopCreatureDisplayAnswered,
-          cameraPivotHeight(),
-          mountModel,
-          cameraWmoFloor,
-          undefined,
-          game.gameObjectMetadata?.revision,
-        );
+        try {
+          renderer.draw(
+            world.state,
+            world.mapId,
+            heightAt,
+            game.terrain,
+            environment,
+            game.environment,
+            game.camera.yaw,
+            // The granted tilt and the granted distance, never the two the player's hands asked for:
+            // `viewPitch` is `pitch` with the floor's say in it, exactly as `view` is `distance` with
+            // the walls'. Every camera this frame builds has to be built out of the same pair.
+            game.camera.viewPitch,
+            game.camera.view,
+            unitModel,
+            game.terrainSplat,
+            game.liquids,
+            game.transportPaths,
+            game.horizon,
+            game.camera.distance,
+            cameraPivotHeight(),
+            cameraWmoFloor,
+            undefined,
+          );
+        } finally {
+          // 22.10 ARC-2 S2b: the collision models draw missed are asked for now, as draw itself used to ask.
+          renderLookups.requestCollisionModels(game.collision?.models, renderer.collisionModelWants());
+        }
         const hitchPortraitsAt = performance.now();
         renderer.renderPortraits(now);
         hitchPortraitsMs = performance.now() - hitchPortraitsAt;

@@ -97,6 +97,11 @@ export class CreatureModelClient {
     return this.#cache.get(displayId);
   }
 
+  /** 22.10 ARC-2 S2b: the cache `get` reads, for the renderer's pushed lookups (RenderLookups.ts); read-only. */
+  get displays(): ReadonlyMap<number, CreatureModelMetadata> {
+    return this.#cache;
+  }
+
   /**
    * A player's look, from the appearance bytes the server publishes: the textures to paint its
    * body from, the hair texture, and which geosets to draw. Returns undefined until the answer

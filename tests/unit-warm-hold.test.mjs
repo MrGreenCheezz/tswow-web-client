@@ -665,7 +665,7 @@ test("the renderer holds and releases units in the order the harness above assum
     "this.#applyUnitShadow(unit, shadowCaster);",
   ].map(line => draw.indexOf(line));
   assert.ok(order.every((at, index) => at >= 0 && (index === 0 || at > order[index - 1])), JSON.stringify(order));
-  assert.ok(draw.indexOf("this.#updateMount(unit, mountModel?.(object), client);") < order[1],
+  assert.ok(draw.indexOf("this.#updateMount(unit, mountDisplayModel(object, this.#lookups.creatureDisplays), client);") /* 22.10 ARC-2 S2b */ < order[1],
     "every mesh the frame hangs — body, equipment, mount — is tracked on the frame it is hung");
   const frameSource = source.slice(source.indexOf("  draw(\n"), source.indexOf("\n  #resetFrameCounters(): void {"));
   const tick = frameSource.indexOf("this.#programWarmup.tick(this.#camera);");
