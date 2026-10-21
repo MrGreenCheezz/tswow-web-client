@@ -16,9 +16,10 @@ export function updateWeatherSound(now: number): void {
   const sound = game.sound;
   const kits = game.soundKits;
   if (!sound || !kits) return;
-  const renderer = game.renderer;
-  const enabled = renderer?.atmosphereProfile.weatherSounds === true;
-  driver.update(now, enabled ? renderer?.atmosphere?.audio : undefined, enabled, sound, kits);
+  // 22.10 ARC-2 S3a: the profile and a copy of the audio snapshot from the renderer's record (RenderResults.ts).
+  const results = game.renderer?.results;
+  const enabled = results?.atmosphereProfile.weatherSounds === true;
+  driver.update(now, enabled ? results?.atmosphereAudio : undefined, enabled, sound, kits);
 }
 
 /** The driver's recent claps (diagnostics). */

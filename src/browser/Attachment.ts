@@ -148,7 +148,14 @@ export function attachmentRefusal(item: AttachedModel, sheath: number): string |
  * M2 space, so `z` is up and the model's origin sits between its feet.
  */
 export function attachmentHeight(wvm: WvmModel, point: number): number | undefined {
-  return wvm.attachments.find((candidate) => candidate.id === point)?.position[2];
+  // 22.10 ARC-2 S3a: a loop, not `find` with a closure — the renderer now asks it twice per held unit per frame
+  // (RenderResults.ts pivot and eye rows). The first match, as before.
+  const attachments = wvm.attachments;
+  for (let index = 0; index < attachments.length; index++) {
+    const candidate = attachments[index]!;
+    if (candidate.id === point) return candidate.position[2];
+  }
+  return undefined;
 }
 
 /**

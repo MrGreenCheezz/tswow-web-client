@@ -47,6 +47,10 @@ import { vehicleCatalog } from "../VehicleClient.js"; // 11.02-GF3
 import { itemEnchantments } from "../ItemEnchantments.js";
 import { RenderInputsBuilder } from "./RenderInputsBuilder.js"; // 22.10 ARC-2 S2a
 import { RenderLookupsBuilder } from "./RenderLookupsBuilder.js"; // 22.10 ARC-2 S2b
+import {
+  resultGameObjectCorners, resultUnitEyeHeight, resultUnitHeight, resultUnitPivotHeight,
+} from "../RenderResults.js"; // 22.10 ARC-2 S3a
+import { acceptSeatResults } from "../VehiclePassengerOverlay.js"; // 22.10 ARC-2 S3a
 import { updateCastBars } from "../ui/CastBar.js";
 import { updateActionBar } from "../ui/ActionBar.js";
 import { updateMirrorTimers } from "../ui/MirrorTimers.js";
@@ -122,13 +126,14 @@ function loopUnitModelPeek(object: WorldObjectState): ReturnType<typeof unitMode
   return unitModelPeek(object, game.creatureModels, game.itemMetadata, game.world?.mirrorImages);
 }
 
+/** 22.10 ARC-2 S3a: from the renderer's record (RenderResults.ts), filled by this frame's draw. */
 function loopUnitHeight(guid: bigint): number | undefined {
-  return game.renderer?.unitHeight(guid);
+  return resultUnitHeight(game.renderer?.results, guid);
 }
 
-/** 06.10-7.24: a game object's drawn model box, for its click box. */
+/** 06.10-7.24: a game object's drawn model box, for its click box. 22.10 ARC-2 S3a: from the record too. */
 function loopGameObjectCorners(object: WorldObjectState, out: Float64Array): boolean {
-  return game.renderer?.gameObjectPickCorners(object, out) ?? false;
+  return resultGameObjectCorners(game.renderer?.results, object.guid, out);
 }
 
 /** 22.10 ARC-2 S2a: the frame's pushed renderer inputs, refilled in place each frame. */
@@ -308,8 +313,9 @@ function advanceCameraView(player: WorldPosition, map: number | undefined, elaps
     allowUpwardOrbit: cameraAllowsUpwardOrbit(self?.movementFlags ?? 0, toggles),
     waterZ: cameraWaterSurfaceOf(world, self, player), // L8 5.14
     // 5.33: the subject's drawn height (the hinge stays over 3/4 of it) and the quad's aspect (CameraClip.ts).
-    bodyHeight: self === undefined ? undefined : game.renderer?.unitHeight(self.guid),
-    aspect: game.renderer?.cameraAspect,
+    // 22.10 ARC-2 S3a: read before draw, from the record the last draw left (RenderResults.ts).
+    bodyHeight: self === undefined ? undefined : resultUnitHeight(game.renderer?.results, self.guid),
+    aspect: game.renderer?.results.cameraAspect,
   }, elapsed);
 }
 
@@ -476,8 +482,9 @@ function frame(now: number): void {
     // instant rather than eased — the camera is recomputed every frame anyway, and the step is at
     // most a few tenths of a yard.
     // 11.02-I: the subject's model (a far sight DynamicObject has none: the constants).
-    game.camera.pivotHeight = game.renderer?.unitPivotHeight(subject.guid) ?? CAMERA_DEFAULT_PIVOT_HEIGHT;
-    game.camera.eyeHeight = game.renderer?.unitEyeHeight(subject.guid) ?? CAMERA_DEFAULT_EYE_HEIGHT;
+    // 22.10 ARC-2 S3a: before draw, so from the record the last draw left — the state these getters read then.
+    game.camera.pivotHeight = resultUnitPivotHeight(game.renderer?.results, subject.guid) ?? CAMERA_DEFAULT_PIVOT_HEIGHT;
+    game.camera.eyeHeight = resultUnitEyeHeight(game.renderer?.results, subject.guid) ?? CAMERA_DEFAULT_EYE_HEIGHT;
     // 11.02-I: a new subject starts with nothing in the boom's way.
     viewTracker.settle(game.camera, subject.guid, world, game.worldLoading);
     // 11.02-GF3: the vehicle seat's camera (VehicleCamera.ts): the vehicle distance, a seat's zoom.
@@ -549,7 +556,7 @@ function frame(now: number): void {
       // The storm weight is the renderer's, because the fade between two skies is a rendering
       // clock rather than a fact the server states — `Light.dbc` has a clear set and a storm set
       // and nothing in between, so the crossfade has to be made somewhere.
-      const storm = game.renderer?.weatherStorm ?? 0;
+      const storm = game.renderer?.results.weatherStorm ?? 0; // 22.10 ARC-2 S3a: the last draw's
       const lightOverride = world.overrideLight;
       const overrideWeight = lightOverride
         ? lightOverrideWeight(now, world.overrideLightReceivedAt, lightOverride.milliseconds)
@@ -633,10 +640,12 @@ function frame(now: number): void {
     if (enchantClient && !enchantClient.ready) void enchantClient.load().catch(() => {});
     // 22.10 ARC-2 S2a: the answers the renderer called back for, as data — the enchant tables (05.10-A7a-E),
     // the portals of the other difficulty (12.10 7.33), the unit facing's sources (5.32), the vehicle rows.
+    // 22.10 ARC-2 S3a: the status line's half-second tick, decided before draw so `endRenderFrame` writes the line.
+    const statusDue = now - renderStatusShownAt > 500;
     if (game.renderer) {
       game.renderer.setRenderInputs(renderInputs.build({
         world, spells: game.spells, enchantments: enchantClient, vehicles: vehicleCatalog(),
-        gameObjectShown: loopGameObjectShown,
+        gameObjectShown: loopGameObjectShown, publishStatus: statusDue,
       }));
       // 22.10 ARC-2 S2b: the caches draw read through functions — game-object and creature display rows, and the
       // collision models of this environment list's buildings (was `setCollisionModels`, EnterWorld.ts).
@@ -686,6 +695,8 @@ function frame(now: number): void {
           // 22.10 ARC-2 S2c: then the asking path for the units it admitted, in its order — after the collision asks,
           // as the unit pass followed the environment pass inside draw.
           renderLookups.requestUnitModels(world.state.objects, renderer.unitModelWants(), unitModel);
+          // 22.10 ARC-2 S3a: the seat pass onto the objects drawn, before the plates, boxes and bubbles read it.
+          acceptSeatResults(renderer.results, world.state.objects);
         }
         const hitchPortraitsAt = performance.now();
         renderer.renderPortraits(now);
@@ -698,14 +709,14 @@ function frame(now: number): void {
     hitchRender = performance.now();
     applyPortraitVisibility();
     // Writing the status line every frame forces a layout pass for text nobody reads that often.
-    if (now - renderStatusShownAt > 500) {
+    if (statusDue) {
       renderStatusShownAt = now;
       renderStatus.className = game.renderer ? "success" : "error";
       const clock = gameTime ? ` · ${formatGameTime(gameTime)}${debugTime.active ? " (отладка)" : ""}` : "";
       // The governor's effective scale, so a stepped-down frame explains itself instead of
       // reading as a broken renderer: at 40% the world is meant to look soft.
       const quality = game.renderer ? ` · ${autoQualityStatus().effective}%` : "";
-      renderStatus.textContent = game.renderer ? `Render: ${game.renderer.status}${quality}${clock}` : "Render: WebGL недоступен, включён Canvas fallback";
+      renderStatus.textContent = game.renderer ? `Render: ${game.renderer.results.status}${quality}${clock}` : "Render: WebGL недоступен, включён Canvas fallback";
       // The capsule counter is about what is on the screen right now, so it rides the same
       // half-second tick rather than going stale from the moment the window was opened.
       if (!diagnosticsWindow.hidden) showStandIns();

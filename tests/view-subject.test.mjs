@@ -519,8 +519,9 @@ test("11.02-I: the frame, the reticle and the overlay build their cameras from t
   assert.match(loop, /const subject = viewSubject\(world\) \?\? player;/);
   assert.match(loop, /const position = subject\.position \?\? player\.position \?\?/,
     "everything built around the camera reads the subject's position");
-  assert.match(loop, /unitPivotHeight\(subject\.guid\)/);
-  assert.match(loop, /unitEyeHeight\(subject\.guid\)/);
+  // 22.10 ARC-2 S3a: from the renderer's record (RenderResults.ts), not its getters.
+  assert.match(loop, /resultUnitPivotHeight\(game\.renderer\?\.results, subject\.guid\)/);
+  assert.match(loop, /resultUnitEyeHeight\(game\.renderer\?\.results, subject\.guid\)/);
   assert.match(loop, /viewTracker\.settle\(game\.camera, subject\.guid, world, game\.worldLoading\);/);
   // DEC-review 3.11: DEC-B added `&& !cameraViews.gliding` (the follow waits for a camera view's glide); the
   // 11.02-I half — no follow while the view is out — is the same (was `/if \(!viewIsOut\(world\)\) advance…/`).

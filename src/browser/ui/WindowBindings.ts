@@ -718,7 +718,7 @@ export function liveWindowSnapshot(options: LiveSnapshotOptions = {}): Expressio
     // `Map.InstanceType` is where the original client's `IsInInstance()` comes from. A map this
     // client has no row for reads `false`, which is the same answer it gives outside a world.
     inInstance: (areas?.map(world?.mapId ?? 0)?.instanceType ?? 0) !== 0,
-    fps: game.renderer?.fps ?? 0,
+    fps: game.renderer?.results.fps ?? 0, // 22.10 ARC-2 S3a: the renderer's record
     focus: () => (game.focusGuid === undefined ? undefined
       : unitView(world?.state.objects.get(game.focusGuid), world?.displayName(game.focusGuid) ?? "")),
     pet: () => {

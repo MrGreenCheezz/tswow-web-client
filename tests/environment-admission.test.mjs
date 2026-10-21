@@ -1173,7 +1173,8 @@ test("a camera snap suppresses grow-ins while sustained sweeps keep them", async
     "a single-frame snap past seventeen degrees masks an instant appearance");
   assert.match(source, /const CAMERA_FAST_TURN_RATE = 3\.0;/,
     "a sustained sweep keeps suppression alive without another snap");
-  const drawStart = source.indexOf("  draw(");
+  // 22.10 ARC-2 S3a: `draw` publishes the record around `#drawFrame`, the frame body.
+  const drawStart = source.indexOf("  #drawFrame(");
   const drawEnd = source.indexOf("\n  #", drawStart + 10);
   const draw = source.slice(drawStart, drawEnd);
   assert.match(draw, /cameraAngleDelta\(this\.#lastCameraYaw, cameraYaw\)/,

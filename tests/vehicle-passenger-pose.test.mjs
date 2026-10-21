@@ -656,7 +656,7 @@ test("11.02-H: the renderer's hooks are in place and marked", () => {
   assert.ok(renderer.lastIndexOf("11.02-H", place) > place - 200, "marked");
   const pose = renderer.indexOf("const vehicleSeat = unit.mount === undefined ? this.#vehiclePassengers.seatPose(object) : undefined;");
   assert.ok(pose > 0 && renderer.indexOf("if (vehicleSeat !== undefined) pose.vehicleSeat = vehicleSeat;", pose) > pose);
-  const body = renderer.indexOf("#bodyHeight(guid: bigint, point: number, share: number, fallback: number): number {");
+  const body = renderer.indexOf("#bodyHeight(unit: RenderedUnit | undefined, vehicleSeatLift: number, point: number, share: number,"); // 22.10 ARC-2 S3a
   assert.ok(renderer.indexOf("body, share, fallback) + seat + vehicleSeatLift; // 11.02-H", body) > body, "the camera's pivot and eye");
   const animated = readFileSync(new URL("../src/browser/AnimatedModel.ts", import.meta.url), "utf8");
   assert.equal(animated.match(/11\.02-H/g)?.length, 6, "the AnimatedModel hooks");

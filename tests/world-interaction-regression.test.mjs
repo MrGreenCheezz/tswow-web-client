@@ -268,11 +268,14 @@ test("the GO name tooltip stays a compact label under the native skin", async ()
 
 test("technical game objects never enter the pick stack ahead of an interactive object", async () => {
   const scene = await read("src/browser/SimpleScene.ts");
+  // 22.10 ARC-2 S3a: `clickableGameObject` moved to GameObjectClickable.ts, shared with the renderer's published boxes.
+  const clickable = await read("src/browser/GameObjectClickable.ts");
+  assert.match(scene, /import \{[^}]*clickableGameObject[^}]*\} from "\.\/GameObjectClickable\.js";/);
 
-  assert.match(scene, /interactiveGameObjectType/,
+  assert.match(clickable, /interactiveGameObjectType/,
     "the scene must know which GO types have a client interaction path");
   // 06.10-7.24-review: the test moved into `clickableGameObject`, which guards the hit push.
-  assert.match(scene,
+  assert.match(clickable,
     /function clickableGameObject\([^)]*\)[^{]*\{[\s\S]{0,200}?interactiveGameObjectType\(gameObjectType\(object\)\)\s*&&\s*\(flags\s*&\s*GO_FLAG_NOT_SELECTABLE\)\s*===\s*0/,
     "a GO is clickable only when its type has an interaction path and it is selectable");
   assert.match(scene,

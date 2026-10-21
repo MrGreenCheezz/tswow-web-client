@@ -7,6 +7,13 @@ import {
 import { sceneYaw, toRenderAxes, type Quat } from "../world/GameObjectRotation.js";
 import { gameObjectNodeYaw, gameObjectWorldRotation, placedBoxCorners, type ModelBox } from "../world/GameObjectModelFrame.js"; // 06.10-7.24
 import { modelPickBox } from "./GameObjectPickBox.js"; // 06.10-7.24
+import { OVERLAY_OBJECT_RANGE, clickableGameObject, overlaySquaredDistance } from "./GameObjectClickable.js"; // 22.10 ARC-2 S3a
+import {
+  PICK_RESULT_STAMP, UNIT_RESULT_EYE, UNIT_RESULT_PIVOT, createRenderResults, dropStaleRows, type RenderResults,
+} from "./RenderResults.js"; // 22.10 ARC-2 S3a
+import {
+  PickResultRows, UnitResultRows, type PickRowCompute, type PickRowKey, type UnitRowCompute, type UnitRowKey,
+} from "./RenderResultRows.js"; // 22.10 ARC-2 S3a-review: rows recomputed only when their inputs move
 import { passengerGameObjectTilt } from "../world/TransportPassengers.js";
 import { ShownUnitFacing, unitAutoFacing, unitFacingTurn, unitSeatFacing } from "../world/UnitFacing.js"; // 11.10; 5.32: + unitSeatFacing; 22.10 ARC-2 S2a: the interaction NPC is an input
 import {
@@ -214,7 +221,6 @@ import {
   GROUND_TARGET_POINT_RING, SELECTION_RING_BANDS, SELECTION_RING_SEGMENTS, groundTargetAreaRing,
   type GroundTargetRingHeights, type SelectionRingHeights,
 } from "./SelectionRingHeights.js"; // 22.10 ARC-2 S2b
-import { drawnUnitPosition } from "./VehiclePassengerOverlay.js"; // 11.02-tails
 import { selectWmoPortalGroups } from "./WmoOcclusion.js";
 import { WmoRangeTable, sameWmoSelection, type WmoRangeTotals } from "./WmoGroupRange.js"; // P1-12a/b
 import { createWmoPortalMemo, wmoPortalMemoAnswer, wmoPortalMemoNote, type WmoPortalMemo } from "./WmoPortalMemo.js"; // P1-12c
@@ -254,7 +260,7 @@ import { VEGETATION_WIND_CULL_PADDING, VEGETATION_WIND_TIME } from "./Vegetation
 import {
   AtmosphereEffects, DEFAULT_ATMOSPHERE_PROFILE, applyPrecipitationHaze, atmosphereProfileActive, atmosphereQuality,
   isThunderState, normaliseAtmosphereProfile,
-  type AtmosphereFrame, type AtmosphereProfile,
+  type AtmosphereAudioState, type AtmosphereFrame, type AtmosphereProfile,
 } from "./AtmosphereEffects.js";
 import { setTerrainWetness, setWaterRainRipples, setWmoWetness, trackWmoWetSurface } from "./WetSurfaces.js";
 import {
@@ -2531,6 +2537,8 @@ interface RenderedGameObject extends PosedModel {
   entry: number;
   /** 06.10-7.24: the model box clicks land in (model axes); null when the model has none. */
   pickBox: ModelBox | null | undefined;
+  /** 22.10 ARC-2 S3a-review: what its published box was derived from (RenderResultRows.ts). */
+  pickKey: PickRowKey | undefined;
   /** Where it stands when it is not travelling — a lift's path is an offset from this. */
   base: WorldPosition;
   /** How far into its cycle it was at `phaseAt`, so the rest is counted locally. */
@@ -2768,6 +2776,8 @@ interface RenderedUnit extends PosedModel {
    * rest of the object's life.
    */
   bodyHeight: number | undefined;
+  /** 22.10 ARC-2 S3a-review: what its published row was derived from (RenderResultRows.ts). */
+  resultKey: UnitRowKey | undefined;
   /** The file the emitters come from, kept so the effects pass does not re-resolve the model. */
   wvm: WvmModel | undefined;
   /** For an unrigged model, the mesh that carries the model-space rotation. */
@@ -3809,6 +3819,20 @@ export class WorldRenderer3D {
   readonly #units = new Map<bigint, RenderedUnit>();
   /** 11.02-H: vehicle passengers' seat poses and their place on the vehicle (VehiclePassengerPose.ts). */
   readonly #vehiclePassengers = new VehiclePassengerPoser();
+  /** 22.10 ARC-2 S3a: what the main thread reads back (RenderResults.ts), refilled in place. */
+  readonly #results: RenderResults = createRenderResults(DEFAULT_ATMOSPHERE_PROFILE);
+  /** 22.10 ARC-2 S3a: the published copy of the atmosphere's audio snapshot, made once. */
+  #atmosphereAudioCopy: AtmosphereAudioState | undefined;
+  /** 22.10 ARC-2 S3a-review: the rows, recomputed only when their inputs move (RenderResultRows.ts). */
+  readonly #unitRows = new UnitResultRows();
+  readonly #pickRows = new PickResultRows();
+  readonly #unitRowCompute: UnitRowCompute = (unit, lift, row) => {
+    const rendered = unit as RenderedUnit;
+    row[UNIT_RESULT_PIVOT] = this.#bodyHeight(rendered, lift, ATTACHMENT_SHOULDER_RIGHT, CAMERA_PIVOT_BODY_SHARE, CAMERA_DEFAULT_PIVOT_HEIGHT);
+    row[UNIT_RESULT_EYE] = this.#bodyHeight(rendered, lift, ATTACHMENT_HELM, CAMERA_EYE_BODY_SHARE, CAMERA_DEFAULT_EYE_HEIGHT);
+  };
+  readonly #pickRowCompute: PickRowCompute = (object, rendered, out) =>
+    this.#gameObjectPickCorners(object, rendered as RenderedGameObject, out);
   /**
    * 5.32: a vehicle's drawn world facing, as Wow.exe 0x00717e50 sums the drawn facings (+0xaa0) up the chain of
    * vehicles: a seated vehicle's is its own vehicle's plus its seat facing, a turned one's its shown facing, any
@@ -4769,6 +4793,7 @@ export class WorldRenderer3D {
     console.info("[webclient] прогрев шейдеров: KHR_parallel_shader_compile "
       + (this.#programWarmup.parallelCompile ? "есть" : "нет"));
     this.setLightingQuality(1);
+    this.#publishScalars(); // 22.10 ARC-2 S3a: the starting aspect and cadence
   }
 
   /** Shader-program warm-up state, for the hitch detail line and the diagnostics panel. */
@@ -5837,9 +5862,12 @@ export class WorldRenderer3D {
       + ` · GPU тек ${telemetry.textureCount} гео ${telemetry.geometryCount}`;
   }
 
-  /** Actual requestAnimationFrame cadence published for diagnostics and `world.fps` bindings. */
-  get fps(): number {
-    return this.#cadence.fps;
+  /**
+   * 22.10 ARC-2 S3a: the record the main thread reads back instead of calling getters (RenderResults.ts) — one
+   * object for the renderer's life, refilled in place. The RAF cadence (`fps`, was a getter) rides in it.
+   */
+  get results(): RenderResults {
+    return this.#results;
   }
 
   /** Reads the renderer's current ratio without changing any renderer state. */
@@ -5925,12 +5953,15 @@ export class WorldRenderer3D {
 
   /** Observes RAF cadence without changing animation elapsed or renderer CPU measurement. */
   observeFrame(timestamp: number): number | undefined {
-    return this.#cadence.observe(timestamp);
+    const interval = this.#cadence.observe(timestamp);
+    this.#results.fps = this.#cadence.fps; // 22.10 ARC-2 S3a
+    return interval;
   }
 
   /** Starts the next observed RAF interval at the next callback, without crossing a run boundary. */
   resetFrameCadence(): void {
     this.#cadence.reset();
+    this.#results.fps = this.#cadence.fps; // 22.10 ARC-2 S3a
   }
 
   /** Rebase the clamped live animation clock before leaving or returning from deterministic replay. */
@@ -6045,6 +6076,7 @@ export class WorldRenderer3D {
         resetModelEffects(held.effects, modelEffectSeed(key, seed));
       }
     }
+    this.#publishScalars(); // 22.10 ARC-2 S3a: the cadence and the weather start over
   }
 
   /** Leaves deterministic evolution and rebases live wall clocks without touching warmed state. */
@@ -6055,21 +6087,17 @@ export class WorldRenderer3D {
     this.#replaySeed = undefined;
     this.#lastFrame = performance.now();
     this.#cadence.reset();
-  }
-
-  /** Height of the drawn body, so the 2D overlay can put a name plate right above it. */
-  unitHeight(guid: bigint): number | undefined {
-    return this.#units.get(guid)?.height;
+    this.#results.fps = this.#cadence.fps; // 22.10 ARC-2 S3a
   }
 
   /**
    * 06.10-7.24: the eight world corners of a game object's model box as it is drawn this frame —
    * the drawn position (a lift's included), the object's whole rotation and its scale — for the
    * overlay's click box (GameObjectPickBox.ts). False until a model with a box is drawn.
+   * 22.10 ARC-2 S3a: was the public `gameObjectPickCorners`; `#publishResults` writes it into the record.
    */
-  gameObjectPickCorners(object: WorldObjectState, out: Float64Array): boolean {
-    const rendered = this.#gameObjects.get(object.guid);
-    if (!rendered || !rendered.actual || !rendered.node.visible) return false;
+  #gameObjectPickCorners(object: WorldObjectState, rendered: RenderedGameObject, out: Float64Array): boolean {
+    if (!rendered.actual || !rendered.node.visible) return false;
     if (rendered.pickBox === undefined) rendered.pickBox = modelPickBox(rendered) ?? null;
     if (!rendered.pickBox) return false;
     const at = rendered.node.position;
@@ -6081,19 +6109,57 @@ export class WorldRenderer3D {
     return true;
   }
 
-  /** 5.33: the world camera's width over height, which sizes the near-plane quad the camera sweeps (CameraClip.ts). */
-  get cameraAspect(): number {
-    return this.#camera.aspect;
+  /**
+   * 22.10 ARC-2 S3a: the record the main thread reads (RenderResults.ts), from the state the old getters read —
+   * at the end of every `draw` and after `clearWorldResources`. `state` is the one drawn (undefined: no boxes).
+   *
+   * * A row per unit the renderer holds: `unit.height` (was `unitHeight`), the camera's pivot and eye on it (were
+   *   `unitPivotHeight`/`unitEyeHeight`, which the loop reads before the next draw — from this same state).
+   * * A box per game object the overlay can ask for (was `gameObjectPickCorners`, asked only for clickable game
+   *   objects within its 100 yards of the view subject — SimpleScene.ts); the same test here, so a city's
+   *   collision hulls cost nothing.
+   * * The seat pass (VehiclePassengerPose.ts) and the scalars.
+   */
+  #publishResults(state: WorldState | undefined): void {
+    const results = this.#results;
+    const stamp = ++results.frame;
+    // 22.10 ARC-2 S3a-review: a unit's row is recomputed only when what `#bodyHeight` reads moved.
+    this.#unitRows.fill(results.units, this.#units, this.#vehiclePassengers, stamp, this.#unitRowCompute);
+    const boxes = results.gameObjectCorners;
+    const subject = state === undefined ? undefined : viewSubjectIn(state)?.position;
+    let boxed = 0;
+    if (state !== undefined && subject !== undefined) {
+      const reach = OVERLAY_OBJECT_RANGE * OVERLAY_OBJECT_RANGE;
+      for (const [guid, rendered] of this.#gameObjects) {
+        if (!rendered.actual || !rendered.node.visible) continue; // the cheap half of the box test, before a lookup
+        const object = state.objects.get(guid);
+        const position = object?.position;
+        if (object === undefined || position === undefined || object.typeId !== 5) continue;
+        if (!(overlaySquaredDistance(position, subject) < reach) || !clickableGameObject(object)) continue;
+        // 22.10 ARC-2 S3a-review: the corners only when the node, the box or the rotation's inputs moved.
+        if (this.#pickRows.publish(boxes, guid, object, rendered, stamp, this.#pickRowCompute)) boxed++;
+      }
+    }
+    if (boxes.size !== boxed) dropStaleRows(boxes, PICK_RESULT_STAMP, stamp);
+    this.#vehiclePassengers.publishSeats(results);
+    this.#publishScalars();
   }
 
-  /** Where the camera orbits this unit: the shoulder of the body actually standing there. */
-  unitPivotHeight(guid: bigint): number {
-    return this.#bodyHeight(guid, ATTACHMENT_SHOULDER_RIGHT, CAMERA_PIVOT_BODY_SHARE, CAMERA_DEFAULT_PIVOT_HEIGHT);
-  }
-
-  /** And where its eye is, for first person: the point a helmet hangs from. */
-  unitEyeHeight(guid: bigint): number {
-    return this.#bodyHeight(guid, ATTACHMENT_HELM, CAMERA_EYE_BODY_SHARE, CAMERA_DEFAULT_EYE_HEIGHT);
+  /**
+   * 22.10 ARC-2 S3a: the record's single values — the camera's aspect (was `cameraAspect`), the storm weight (was
+   * `weatherStorm`), the atmosphere's profile and audio (were `atmosphereProfile`, `atmosphere.audio`), the cadence
+   * (was `fps`) and `setIndoors`'s answer (was `indoors`). Cheap, so every place that changes one calls it.
+   */
+  #publishScalars(): void {
+    const results = this.#results;
+    results.cameraAspect = this.#camera.aspect;
+    results.weatherStorm = this.#weatherFade.storm;
+    results.atmosphereProfile = this.#atmosphereProfile;
+    const audio = this.#atmosphere?.audio;
+    if (audio === undefined) results.atmosphereAudio = undefined;
+    else results.atmosphereAudio = Object.assign(this.#atmosphereAudioCopy ??= { ...audio }, audio);
+    results.fps = this.#cadence.fps;
+    results.indoors = this.#indoors;
   }
 
   /**
@@ -6135,15 +6201,15 @@ export class WorldRenderer3D {
    * Without this the slice made the player's own view worse than before it: the camera stayed on
    * the ground while the character went up, which in first person is a camera inside the horse.
    */
-  #bodyHeight(guid: bigint, point: number, share: number, fallback: number): number {
-    const unit = this.#units.get(guid);
+  #bodyHeight(unit: RenderedUnit | undefined, vehicleSeatLift: number, point: number, share: number,
+    fallback: number): number { // 22.10 ARC-2 S3a: the unit and its seat lift (RenderResultRows.ts reads it)
     const attachment = unit?.wvm ? attachmentHeight(unit.wvm, point) : undefined;
     // `#seatRider` writes the saddle into `unit.height` too, so it is taken back out before the
     // body share is measured against it and put back once, not twice.
     const seat = unit?.mount?.seat ?? 0;
     const body = unit && !unit.body && unit.height - seat > 0 ? unit.height - seat : undefined;
-    // 11.02-H: a passenger drawn on its vehicle's seat point is that much higher than its own place.
-    const vehicleSeatLift = unit === undefined ? 0 : this.#vehiclePassengers.seatLift(unit.node);
+    // 11.02-H: a passenger drawn on its vehicle's seat point is that much higher than its own place
+    // (`vehicleSeatLift`, the poser's `seatLift(unit.node)`).
     return cameraBodyHeight(
       attachment === undefined ? undefined : attachment * (unit?.scale ?? 1),
       body, share, fallback) + seat + vehicleSeatLift; // 11.02-H: + vehicleSeatLift
@@ -6445,6 +6511,14 @@ export class WorldRenderer3D {
    * profile and teardown — creates nothing and wraps no material.
    */
   setAtmosphereEffects(profile: Readonly<Partial<AtmosphereProfile>> | undefined): void {
+    try {
+      this.#applyAtmosphereEffects(profile);
+    } finally {
+      this.#publishScalars(); // 22.10 ARC-2 S3a: the profile, and the audio of a controller made just now
+    }
+  }
+
+  #applyAtmosphereEffects(profile: Readonly<Partial<AtmosphereProfile>> | undefined): void {
     // All OFF (the comparison profile, a fresh account) never even builds the controller.
     if (!this.#atmosphere && !atmosphereProfileActive(normaliseAtmosphereProfile(profile))) return;
     this.#atmosphere ??= new AtmosphereEffects(this.#scene, (path) => this.#loadAtmosphereTexture(path));
@@ -6465,10 +6539,6 @@ export class WorldRenderer3D {
         if (liquidClass === "water" || liquidClass === "ocean") setWaterRainRipples(material, next.rainSplashes);
       }
     }
-  }
-
-  get atmosphereProfile(): Readonly<AtmosphereProfile> {
-    return this.#atmosphereProfile;
   }
 
   /** Diagnostics and local testing: the live atmosphere controller, if any leaf was ever enabled. */
@@ -6860,14 +6930,9 @@ export class WorldRenderer3D {
    */
   setIndoors(indoors: boolean): void {
     this.#indoors = indoors;
-  }
-
-  /**
-   * The last `setIndoors` answer — the floor under the character is a WMO group without MOGP 0x8.
-   * Read, not recomputed, by the stock UI's ZONE_CHANGED_INDOORS test (`playerIndoors`).
-   */
-  get indoors(): boolean {
-    return this.#indoors;
+    // 22.10 ARC-2 S3a: was the `indoors` getter — the floor under the character is a WMO group without MOGP 0x8,
+    // read, not recomputed, by the stock UI's ZONE_CHANGED_INDOORS test (`playerIndoors`).
+    this.#results.indoors = indoors;
   }
 
   /**
@@ -7157,6 +7222,13 @@ export class WorldRenderer3D {
    * if WebGL context loss makes query finalization or counter reads fail.
    */
   endRenderFrame(): number | undefined {
+    const elapsed = this.#closeRenderFrame();
+    // 22.10 ARC-2 S3a: the status line the loop shows on its 2 Hz tick (was the `status` getter, read right after).
+    if (this.#inputs.publishStatus && this.#renderFrameDepth === 0) this.#results.status = this.status;
+    return elapsed;
+  }
+
+  #closeRenderFrame(): number | undefined {
     if (this.#renderFrameDepth === 0) return undefined;
     this.#renderFrameDepth--;
     if (this.#renderFrameDepth !== 0) return undefined;
@@ -7418,6 +7490,7 @@ export class WorldRenderer3D {
     this.#sun.shadow.dispose();
     this.#sunCascades.disposeMaps();
     this.#resetFrameCounters();
+    this.#publishResults(undefined); // 22.10 ARC-2 S3a: no units, no boxes, the scalars reset
   }
 
   dispose(): void {
@@ -7476,7 +7549,7 @@ export class WorldRenderer3D {
     for (const kind of ["target", "focus"] as const) {
       const wanted = this.#selection[kind];
       const object = wanted === undefined ? undefined : state.objects.get(wanted.guid);
-      const position = object === undefined ? undefined : drawnUnitPosition(object, this.#ringSeatDrawn); // 11.02-tails: on the seat
+      const position = object === undefined ? undefined : this.#vehiclePassengers.drawnUnitPosition(object, this.#ringSeatDrawn); // 11.02-tails: on the seat; 22.10 ARC-2 S3a: the poser's records
       // A corpse keeps no ring: the renderer lays a dead body down at its full length, so a ring
       // round its feet would sit at one end of it and read as a ring round nothing.
       if (!wanted || !object || !position || isWorldObjectDead(object)) {
@@ -8021,7 +8094,39 @@ export class WorldRenderer3D {
     return visual.boneOffset;
   }
 
+  /**
+   * 22.10 ARC-2 S3a: one world frame (`#drawFrame`), then the record the main thread reads back — in `finally`, so
+   * an early return or a throw leaves the record saying what the renderer's state says, as the getters did.
+   */
   draw(
+    state: WorldState,
+    map: number | undefined,
+    heightAt: HeightSampler | undefined,
+    terrainClient: TerrainClient | undefined,
+    objects: readonly EnvironmentObject[],
+    environmentClient: EnvironmentClient | undefined,
+    cameraYaw = 0,
+    cameraPitch = CAMERA_DEFAULT_PITCH,
+    cameraDistance = CAMERA_DEFAULT_DISTANCE,
+    splatClient?: TerrainSplatClient,
+    liquidTextures?: LiquidTextureClient,
+    transportPaths?: TransportPathClient,
+    horizonClient?: HorizonClient,
+    cameraAnchorDistance = cameraDistance,
+    cameraPivotHeight = CAMERA_DEFAULT_PIVOT_HEIGHT,
+    wmoFloor?: StaticWmoFloor,
+    frameTime?: RenderFrameTime,
+  ): WorldSubmissionReceipt | undefined {
+    try {
+      return this.#drawFrame(state, map, heightAt, terrainClient, objects, environmentClient, cameraYaw, cameraPitch,
+        cameraDistance, splatClient, liquidTextures, transportPaths, horizonClient, cameraAnchorDistance, cameraPivotHeight,
+        wmoFloor, frameTime);
+    } finally {
+      this.#publishResults(state);
+    }
+  }
+
+  #drawFrame(
     state: WorldState,
     map: number | undefined,
     heightAt: HeightSampler | undefined,
@@ -13024,6 +13129,7 @@ export class WorldRenderer3D {
       admissionMetadataRevision: undefined,
       entry: object.fields.get(UPDATE_FIELDS.OBJECT_FIELD_ENTRY.offset) ?? 0,
       pickBox: undefined,
+      pickKey: undefined, // 22.10 ARC-2 S3a-review
       base: { x: placement.x, y: placement.y, z: placement.z, orientation: THREE.MathUtils.degToRad(placement.rotationY) },
       phaseMs: undefined,
       phaseAt: undefined,
@@ -13634,6 +13740,7 @@ export class WorldRenderer3D {
         closedHands: undefined, // 12.10 6.24
         sheathCeremony: undefined, sheathArms: undefined, // 12.10 6.08
         transitionMoving: undefined, pendingTransition: undefined, // 12.10 6.07
+        resultKey: undefined, // 22.10 ARC-2 S3a-review
       };
       this.#units.set(object.guid, unit);
       this.#unitGroup.add(node);

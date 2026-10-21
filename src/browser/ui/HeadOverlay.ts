@@ -16,6 +16,7 @@ import { isWorldObjectDead } from "../../world/WorldState.js";
 import { cameraPivotHeight, game } from "../game/Context.js";
 import { viewSubjectPosition } from "../game/ViewSubject.js"; // 11.02-I
 import { drawnUnitPosition, type DrawnPoint } from "../VehiclePassengerOverlay.js"; // 11.02-tails
+import { resultUnitHeight } from "../RenderResults.js"; // 22.10 ARC-2 S3a
 import { plainChatText } from "./ChatLink.js";
 import { currentQuestLogEntries } from "./QuestLog.js";
 import {
@@ -368,7 +369,7 @@ function anchorFor(guid: bigint, camera: ReturnType<typeof createCamera>, width:
   const position = object === undefined ? undefined : drawnUnitPosition(object, ANCHOR_SEAT_DRAWN);
   if (!object || !position) return undefined;
   const isUnit = object.typeId === 3 || object.typeId === 4;
-  const standing = isUnit ? game.renderer?.unitHeight(guid) ?? 2 : 1.2;
+  const standing = isUnit ? resultUnitHeight(game.renderer?.results, guid) ?? 2 : 1.2; // 22.10 ARC-2 S3a: the record
   const crown = isWorldObjectDead(object) ? Math.min(standing, CORPSE_CROWN_HEIGHT) : standing;
   return projectPoint({ x: position.x, y: position.y, z: position.z + crown }, camera, width, height);
 }

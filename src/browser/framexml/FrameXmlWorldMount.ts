@@ -3436,7 +3436,7 @@ export async function mountFrameXmlVertical(
     battlegroundCatalog: () => battlegrounds?.catalog,
     lfgCatalog: () => lfgDungeons?.stock,
     // GetFramerate: the render loop's own RAF cadence, the number the diagnostics line shows.
-    framerate: () => game.renderer?.fps ?? 0,
+    framerate: () => game.renderer?.results.fps ?? 0, // 22.10 ARC-2 S3a: the renderer's record
     monotonic: () => performance.now(),
     globalCooldownUntil: () => game.globalCooldownUntil,
     globalCooldown: globalCooldownView(game), // L13-review 5.30: the sweeps and the redraw edge by category
@@ -3552,9 +3552,9 @@ export async function mountFrameXmlVertical(
     // only when a zone name changes.
     // 05.10 review A7b-4: since A7b-4 the renderer's flag is the server's outdoors (WMOAreaTable 4/2,
     // AreaTable INSIDE); the client's event keeps the MOGP test, asked of the locator's floor.
-    playerIndoors: () => liveWmoInterior() ?? game.renderer?.indoors === true,
+    playerIndoors: () => liveWmoInterior() ?? game.renderer?.results.indoors === true, // 22.10 ARC-2 S3a: the record
     // 19.10: the usability check's World::QueryOutdoors — the renderer's flag, which is the server's outdoors.
-    playerOutdoors: () => (game.renderer ? game.renderer.indoors !== true : undefined),
+    playerOutdoors: () => (game.renderer ? game.renderer.results.indoors !== true : undefined), // 22.10 ARC-2 S3a
   });
   // L17 3.14: the live seam answers the number itself; a seam handed in answers the text form.
   const unitGuidValue = (seam as { unitGuidValue?: (unit: string) => bigint | undefined }).unitGuidValue?.bind(seam);

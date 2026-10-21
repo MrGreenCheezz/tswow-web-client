@@ -137,7 +137,9 @@ test("the renderer turns game objects, their build placement and the placement g
   assert.match(source, /rotationY: THREE\.MathUtils\.radToDeg\(gameObjectNodeYaw\(position\.orientation\)\)/);
   assert.match(source, /radToDeg\(gameObjectNodeYaw\(preview\.orientation\)\)/);
   // The click box turns with the same world rotation, from where the node is drawn (scene → world).
-  const pick = source.slice(source.indexOf("  gameObjectPickCorners("), source.indexOf("  unitPivotHeight("));
+  // 22.10 ARC-2 S3a: private now; `#publishResults` writes its corners into the renderer's record.
+  const pick = source.slice(source.indexOf("  #gameObjectPickCorners("), source.indexOf("  #publishResults("));
+  assert.ok(pick.length > 0, "the pick corners source is found");
   assert.match(pick, /GAME_OBJECT_PICK_AT\.y = -at\.z;[\s\S]*GAME_OBJECT_PICK_AT\.z = at\.y;/);
   assert.match(pick, /gameObjectWorldRotation\(object, rendered\.base\.orientation, GAME_OBJECT_PICK_ROTATION\)/);
   assert.match(pick, /placedBoxCorners\(rendered\.pickBox, GAME_OBJECT_PICK_AT, GAME_OBJECT_PICK_ROTATION, rendered\.node\.scale\.x, out\)/);

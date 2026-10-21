@@ -105,6 +105,13 @@ globalThis.HTMLElement = class {};
 
 const { UPDATE_FIELDS } = await import("../dist/code/generated/updateFields.js");
 const { game } = await import("../dist/code/browser/game/Context.js");
+const { createRenderResults } = await import("../dist/code/browser/RenderResults.js"); // 22.10 ARC-2 S3a
+/** 22.10 ARC-2 S3a: a renderer record answering one height for every unit (was `{ unitHeight: () => h }`). */
+function anyUnitHeight(height) {
+  const results = createRenderResults(undefined);
+  results.units.get = () => Float64Array.of(height, 0, 0, 0);
+  return results;
+}
 const { updateMinimap, minimapSettings } = await import("../dist/code/browser/ui/Minimap.js");
 const { showTarget } = await import("../dist/code/browser/ui/Frames.js");
 const { getTip } = await import("../dist/code/browser/ui/Widgets.js");
@@ -280,7 +287,7 @@ test("Л1 a creature that speaks as it dies keeps the bubble, brought down onto 
     const player = unit(1n, { typeId: 4 });
     const speaker = unit(2n, { x: 12, health: 60 });
     game.world = stubWorld(new Map([[1n, player], [2n, speaker]]), undefined);
-    game.renderer = { unitHeight: () => 2 };
+    game.renderer = { results: anyUnitHeight(2) }; // 22.10 ARC-2 S3a
 
     const bubbleY = () => {
       resetHeadOverlay();
@@ -349,7 +356,7 @@ test("active quest creature and game-object targets get projected badges, but it
     world.itemTemplates = new Map([[769, { name: "Кусок мяса вепря" }]]);
     const creatureNames = new Map([[299, { name: "Лесной волк" }]]);
     game.world = world;
-    game.renderer = { unitHeight: () => 2 };
+    game.renderer = { results: anyUnitHeight(2) }; // 22.10 ARC-2 S3a
     game.creatureMetadata = { get: (id) => creatureNames.get(id) };
     game.itemMetadata = { get: () => undefined };
 

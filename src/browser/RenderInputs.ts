@@ -24,6 +24,8 @@ export interface RenderInputs {
   readonly facing: UnitFacingInputs;
   /** 11.02-H: the vehicle tables' rows (VehicleClient.ts); absent until they land. */
   readonly vehicles: VehicleCatalogRows | undefined;
+  /** 22.10 ARC-2 S3a: this frame's `endRenderFrame` writes the status line into RenderResults.ts (the 2 Hz tick). */
+  readonly publishStatus: boolean;
 }
 
 /** Nothing pushed (a benchmark, a test, before the first frame): no glow, every object shown, no facing sources. */
@@ -32,4 +34,5 @@ export const NO_RENDER_INPUTS: RenderInputs = Object.freeze({
   hiddenGameObjects: new Set<bigint>(),
   facing: NO_UNIT_FACING_INPUTS,
   vehicles: undefined,
+  publishStatus: false,
 });

@@ -59,7 +59,9 @@ import { M2_TO_SCENE } from "./AnimatedModel.js";
 import { vehiclePassengerSeatPose, type VehiclePassengerSeatPose } from "./VehicleSeatPose.js";
 import type { WvmAttachment } from "./Wvm.js";
 // 11.02-tails: what each frame did with a passenger, for the overlays (plate, bubbles, click box, ring).
-import { beginSeatDrawnFrame, seatDrawnRecord } from "./VehiclePassengerOverlay.js";
+// 22.10 ARC-2 S3a: kept by the poser and published by guid (RenderResults.ts), not in a module singleton.
+import { SeatDrawnRecords, type DrawnPoint, type SeatDrawnRecord } from "./VehiclePassengerOverlay.js";
+import type { RenderResults } from "./RenderResults.js";
 
 /** Wow.exe 0x00a2d3f0: VehicleSeat.AttachmentID 0…21 → the M2 attachment id on the vehicle's model. */
 export const VEHICLE_SEAT_ATTACHMENT_POINTS: readonly number[] = Object.freeze([
@@ -235,10 +237,19 @@ export class VehiclePassengerPoser {
   #placedBefore = new Set<THREE.Object3D>();
   /** How far up each node on a seat point was drawn above its unit's own place, for the camera. */
   readonly #lifts = new WeakMap<THREE.Object3D, number>();
+  /** 22.10 ARC-2 S3a-review: bumped whenever any lift changes, so unchanged units skip `seatLift` (RenderResultRows.ts). */
+  #liftEpoch = 0;
   /** The drawn units on a transport this frame (ships too — `seatOf` turns those away); reused. */
   readonly #riders: WorldObjectState[] = [];
   /** Nodes a HIDE_PASSENGER seat hid this frame (`hides`). */
   readonly #hidden = new Set<THREE.Object3D>();
+  /** 22.10 ARC-2 S3a: this poser's seat records (was VehiclePassengerOverlay.ts's module state). */
+  readonly #seatRecords = new SeatDrawnRecords();
+  /** 22.10 ARC-2 S3a: the passengers the last `place` recorded, and their records, for `publishSeats`; reused. */
+  readonly #seatedGuids: bigint[] = [];
+  readonly #seatedRecords: SeatDrawnRecord[] = [];
+  /** 22.10 ARC-2 S3a: how many `place` passes have run. */
+  #places = 0;
 
   begin(objects: Objects, catalog: VehicleCatalog | undefined): void {
     this.#objects = objects;
@@ -252,6 +263,11 @@ export class VehiclePassengerPoser {
    */
   seatLift(node: THREE.Object3D): number {
     return this.#lifts.get(node) ?? 0;
+  }
+
+  /** 22.10 ARC-2 S3a-review: moves whenever any node's `seatLift` answer does. */
+  get liftEpoch(): number {
+    return this.#liftEpoch;
   }
 
   /**
@@ -293,7 +309,10 @@ export class VehiclePassengerPoser {
     this.#placed.clear();
     if (this.#hidden.size > 0) this.#hidden.clear();
     // 11.02-tails: last frame's overlay records go stale, tables or not.
-    beginSeatDrawnFrame();
+    this.#seatRecords.begin(); // 22.10 ARC-2 S3a: and the pass is a new one to publish
+    this.#places++;
+    this.#seatedGuids.length = 0;
+    this.#seatedRecords.length = 0;
     if (this.#catalog !== undefined && this.#objects !== undefined) {
       const riders = this.#riders;
       for (let index = 0; index < admitted.length; index++) {
@@ -315,6 +334,42 @@ export class VehiclePassengerPoser {
       }
     }
     if (this.#placedBefore.size > 0) this.#placedBefore.forEach(this.#release);
+  }
+
+  /** 11.02-tails: where the last `place` drew this unit (VehiclePassengerOverlay.ts), for the renderer's own ring. */
+  drawnUnitPosition(object: WorldObjectState, out: DrawnPoint): DrawnPoint | undefined {
+    return this.#seatRecords.drawnUnitPosition(object, out);
+  }
+
+  /**
+   * 22.10 ARC-2 S3a: the last `place`'s records as rows by guid (RenderResults.ts `seats`), once per pass. A row
+   * is reused per guid; the step is final here, after the pass wrote it.
+   */
+  publishSeats(results: RenderResults): void {
+    const pass = this.#places;
+    if (results.seatFrame === pass) return;
+    results.seatFrame = pass;
+    const seats = results.seats;
+    const guids = this.#seatedGuids;
+    const records = this.#seatedRecords;
+    let stamped = 0;
+    for (let index = 0; index < guids.length; index++) {
+      const guid = guids[index]!;
+      const record = records[index]!;
+      const seat = seats.get(guid);
+      if (seat === undefined) {
+        seats.set(guid, { x: record.x, y: record.y, z: record.z, hidden: record.hidden, stamp: pass });
+        stamped++;
+        continue;
+      }
+      if (seat.stamp !== pass) stamped++;
+      seat.x = record.x;
+      seat.y = record.y;
+      seat.z = record.z;
+      seat.hidden = record.hidden;
+      seat.stamp = pass;
+    }
+    if (seats.size !== stamped) for (const [guid, seat] of seats) if (seat.stamp !== pass) seats.delete(guid);
   }
 
   #isCarrier(guid: bigint): boolean {
@@ -354,7 +409,9 @@ export class VehiclePassengerPoser {
     const hidden = vehiclePassengerSeatPose(seat).hidden;
     // 11.02-tails: seated this frame, at its own place until the model goes on a point; a HIDE seat
     // hides it whether or not its model is built yet (0x00730f30 asks the seat, not the model).
-    const record = seatDrawnRecord(object, hidden);
+    const record = this.#seatRecords.record(object, hidden);
+    this.#seatedGuids.push(object.guid); // 22.10 ARC-2 S3a
+    this.#seatedRecords.push(record);
     const units = this.#units!;
     const unit = units.get(object.guid);
     if (unit === undefined) return;
@@ -387,7 +444,11 @@ export class VehiclePassengerPoser {
       // 5.32: the seat facing the renderer turned (`unit.seatFacing`); was `transport.orientation`.
       placeOnSeatAttachment(_attachmentWorld, seat, unit.seatFacing ?? transport.orientation, unit.scale, own?.position,
         unit.node.position, unit.node.quaternion);
-      this.#lifts.set(unit.node, unit.node.position.y - ownHeight);
+      const lift = unit.node.position.y - ownHeight;
+      if (this.#lifts.get(unit.node) !== lift) { // 22.10 ARC-2 S3a-review
+        this.#lifts.set(unit.node, lift);
+        this.#liftEpoch++;
+      }
       // 11.02-tails: the step in world axes (scene x, y, z = world x, z, −y) for the overlays.
       record.x = drawn.x - ownX;
       record.y = ownZ - drawn.z;
@@ -395,7 +456,7 @@ export class VehiclePassengerPoser {
       this.#placed.add(unit.node);
       return;
     }
-    this.#lifts.delete(unit.node);
+    if (this.#lifts.delete(unit.node)) this.#liftEpoch++; // 22.10 ARC-2 S3a-review
     // No such point on the model: the server's place, the seat's turn — nothing to change without one.
     if (finite(seat.passengerYaw) === 0 && finite(seat.passengerPitch) === 0 && finite(seat.passengerRoll) === 0) return;
     // 5.32: the turned seat facing (`unit.seatFacing`); was `transport.orientation`.
@@ -405,7 +466,7 @@ export class VehiclePassengerPoser {
 
   readonly #release = (node: THREE.Object3D): void => {
     if (this.#placed.has(node)) return;
-    this.#lifts.delete(node);
+    if (this.#lifts.delete(node)) this.#liftEpoch++; // 22.10 ARC-2 S3a-review
     // `#drawUnit` wrote only the facing this frame; a tilt left in the Euler would stay on it.
     node.rotation.x = 0;
     node.rotation.z = 0;

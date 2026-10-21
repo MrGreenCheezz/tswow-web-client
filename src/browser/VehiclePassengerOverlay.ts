@@ -28,8 +28,14 @@
 // than the latest `place` is stale, so a passenger that left its seat, or a frame without the vehicle
 // tables, reads as "not seated". A unit off every transport costs the readers one property read.
 // Records are made once per passenger object and reused, so a frame allocates nothing here.
+//
+// 22.10 ARC-2 S3a: the poser keeps its own records (`SeatDrawnRecords`, for the renderer's selection ring)
+// and publishes each pass as plain rows by guid (RenderResults.ts `seats`). The functions below are the main
+// thread's copy: `acceptSeatResults` turns a new pass into records on the objects drawn, right after `draw`
+// and before anything reads them, so the overlays answer what the poser's records answered.
 
 import type { WorldObjectState } from "../world/WorldState.js";
+import type { RenderResults } from "./RenderResults.js";
 
 /** A point in world coordinates: x and y on the map, z up. */
 export interface DrawnPoint {
@@ -50,57 +56,108 @@ export interface SeatDrawnRecord {
   frame: number;
 }
 
-const records = new WeakMap<WorldObjectState, SeatDrawnRecord>();
-let frame = 0;
+/** Seat records by passenger object, valid for one seat pass (`begin`). */
+export class SeatDrawnRecords {
+  readonly #records = new WeakMap<WorldObjectState, SeatDrawnRecord>();
+  #frame = 0;
 
-/** A new `place` begins: every record written before it is stale from now on. */
-export function beginSeatDrawnFrame(): void {
-  frame++;
-}
+  /** A new `place` begins: every record written before it is stale from now on. */
+  begin(): void {
+    this.#frame++;
+  }
 
-/**
- * This passenger's record for the current `place`, zero step, `hidden` as given; the poser writes
- * the step once the model is on its point. Made once per passenger object and reused after that.
- */
-export function seatDrawnRecord(object: WorldObjectState, hidden: boolean): SeatDrawnRecord {
-  let record = records.get(object);
-  if (record === undefined) {
-    record = { x: 0, y: 0, z: 0, hidden, frame };
-    records.set(object, record);
+  /**
+   * This passenger's record for the current `place`, zero step, `hidden` as given; the poser writes
+   * the step once the model is on its point. Made once per passenger object and reused after that.
+   */
+  record(object: WorldObjectState, hidden: boolean): SeatDrawnRecord {
+    let record = this.#records.get(object);
+    if (record === undefined) {
+      record = { x: 0, y: 0, z: 0, hidden, frame: this.#frame };
+      this.#records.set(object, record);
+      return record;
+    }
+    record.x = 0;
+    record.y = 0;
+    record.z = 0;
+    record.hidden = hidden;
+    record.frame = this.#frame;
     return record;
   }
-  record.x = 0;
-  record.y = 0;
-  record.z = 0;
-  record.hidden = hidden;
-  record.frame = frame;
-  return record;
+
+  /** The unit's record from the latest `place`, or undefined: off a transport, not seated, or stale. */
+  recordOf(object: WorldObjectState): SeatDrawnRecord | undefined {
+    if (object.transport === undefined) return undefined;
+    const record = this.#records.get(object);
+    return record !== undefined && record.frame === this.#frame ? record : undefined;
+  }
+
+  /**
+   * Where the overlays hang this unit: its own position object, untouched, unless the latest frame drew
+   * it on a vehicle seat point somewhere else — then that position moved with the model, written into
+   * the caller's `out` (scratch the caller owns and reads before its next call).
+   */
+  drawnUnitPosition(object: WorldObjectState, out: DrawnPoint): DrawnPoint | undefined {
+    const position = object.position;
+    if (position === undefined) return undefined;
+    const record = this.recordOf(object);
+    if (record === undefined || (record.x === 0 && record.y === 0 && record.z === 0)) return position;
+    out.x = position.x + record.x;
+    out.y = position.y + record.y;
+    out.z = position.z + record.z;
+    return out;
+  }
+
+  /** Whether a HIDE_PASSENGER seat hid this unit in the latest frame: no model, nothing for a click. */
+  hiddenBySeat(object: WorldObjectState): boolean {
+    return this.recordOf(object)?.hidden === true;
+  }
 }
 
-/** The unit's record from the latest `place`, or undefined: off a transport, not seated, or stale. */
+/** 22.10 ARC-2 S3a: the main thread's records, fed by `acceptSeatResults`. */
+const overlay = new SeatDrawnRecords();
+/** The record and seat pass accepted last, so an unchanged pass is not accepted twice. */
+let acceptedResults: RenderResults | undefined;
+let acceptedSeatFrame = -1;
+
+/** A new `place` begins on the main thread's copy (tests write records by hand after it). */
+export function beginSeatDrawnFrame(): void {
+  overlay.begin();
+}
+
+export function seatDrawnRecord(object: WorldObjectState, hidden: boolean): SeatDrawnRecord {
+  return overlay.record(object, hidden);
+}
+
 export function seatDrawnRecordOf(object: WorldObjectState): SeatDrawnRecord | undefined {
-  if (object.transport === undefined) return undefined;
-  const record = records.get(object);
-  return record !== undefined && record.frame === frame ? record : undefined;
+  return overlay.recordOf(object);
+}
+
+export function drawnUnitPosition(object: WorldObjectState, out: DrawnPoint): DrawnPoint | undefined {
+  return overlay.drawnUnitPosition(object, out);
+}
+
+export function hiddenBySeat(object: WorldObjectState): boolean {
+  return overlay.hiddenBySeat(object);
 }
 
 /**
- * Where the overlays hang this unit: its own position object, untouched, unless the latest frame drew
- * it on a vehicle seat point somewhere else — then that position moved with the model, written into
- * the caller's `out` (scratch the caller owns and reads before its next call).
+ * 22.10 ARC-2 S3a: the renderer's last seat pass onto the objects it drew, as its `place` wrote them. Called
+ * right after `draw` with the state drawn; a draw that ran no seat pass leaves the records as they were, as
+ * a frame without `place` left the poser's.
  */
-export function drawnUnitPosition(object: WorldObjectState, out: DrawnPoint): DrawnPoint | undefined {
-  const position = object.position;
-  if (position === undefined) return undefined;
-  const record = seatDrawnRecordOf(object);
-  if (record === undefined || (record.x === 0 && record.y === 0 && record.z === 0)) return position;
-  out.x = position.x + record.x;
-  out.y = position.y + record.y;
-  out.z = position.z + record.z;
-  return out;
-}
-
-/** Whether a HIDE_PASSENGER seat hid this unit in the latest frame: no model, nothing for a click. */
-export function hiddenBySeat(object: WorldObjectState): boolean {
-  return seatDrawnRecordOf(object)?.hidden === true;
+export function acceptSeatResults(results: RenderResults | undefined,
+  objects: ReadonlyMap<bigint, WorldObjectState>): void {
+  if (results === undefined || (results === acceptedResults && results.seatFrame === acceptedSeatFrame)) return;
+  acceptedResults = results;
+  acceptedSeatFrame = results.seatFrame;
+  overlay.begin();
+  for (const [guid, seat] of results.seats) {
+    const object = objects.get(guid);
+    if (object === undefined) continue;
+    const record = overlay.record(object, seat.hidden);
+    record.x = seat.x;
+    record.y = seat.y;
+    record.z = seat.z;
+  }
 }

@@ -57,8 +57,9 @@ globalThis.requestAnimationFrame = () => 0;
 globalThis.HTMLElement = class {};
 
 const {
-  beginSeatDrawnFrame, drawnUnitPosition, hiddenBySeat, seatDrawnRecord, seatDrawnRecordOf,
+  acceptSeatResults, beginSeatDrawnFrame, drawnUnitPosition, hiddenBySeat, seatDrawnRecord, seatDrawnRecordOf,
 } = await import("../dist/code/browser/VehiclePassengerOverlay.js");
+const { createRenderResults } = await import("../dist/code/browser/RenderResults.js"); // 22.10 ARC-2 S3a
 const { VehiclePassengerPoser } = await import("../dist/code/browser/VehiclePassengerPose.js");
 const { M2_TO_SCENE } = await import("../dist/code/browser/AnimatedModel.js");
 const {
@@ -160,9 +161,19 @@ function passengerRig(at) {
   node.position.set(...at);
   return { node, scale: 1, wvm: { attachments: [] } };
 }
+/** 22.10 ARC-2 S3a: each poser's renderer record, as the renderer keeps one for its life. */
+const recordOfPoser = new WeakMap();
+function resultsOf(poser) {
+  let results = recordOfPoser.get(poser);
+  if (results === undefined) recordOfPoser.set(poser, results = createRenderResults(undefined));
+  return results;
+}
+/** One draw's seat pass: `place`, the record the renderer publishes, and the loop accepting it right after draw. */
 function placeDrawn(poser, objects, guids, units) {
   const admitted = guids.filter((guid) => objects.has(guid)).map((guid) => ({ value: objects.get(guid) }));
   poser.place(admitted, new Set(guids), units);
+  poser.publishSeats(resultsOf(poser));
+  acceptSeatResults(resultsOf(poser), objects);
 }
 /** A mammoth owner at world (15, 0, 0) and a friend on its VehicleSeat2 (its own place a little off), both drawn. */
 /** Where `#drawUnit` puts the friend's node before the seat moves it: world (15, 2, 0.5) in scene axes. */
@@ -267,6 +278,53 @@ test("11.02-tails: HIDE_PASSENGER marks the passenger hidden, built or not; a sh
   assert.equal(hiddenBySeat(crew), true);
 });
 
+// ---- 22.10 ARC-2 S3a: the seat pass reaches the overlays through the renderer's record -------------------
+
+test("22.10 ARC-2 S3a: the overlays read the seat pass from the record, cloned, exactly as the poser recorded it", () => {
+  const poser = new VehiclePassengerPoser();
+  const owner = object(MAMMOTH_OWNER, { vehicleId: MAMMOTH_VEHICLE, x: 15 });
+  const friend = object(FRIEND, { carrier: MAMMOTH_OWNER, seat: 1, x: 15, y: 2, z: 0.5 });
+  const objects = new Map([[MAMMOTH_OWNER, owner], [FRIEND, friend]]);
+  const rider = rig({ at: [15, 0, 0], facing: 0.3 });
+  const mammoth = rig({ attachments: [{ id: 40, bone: 0, position: [-0.5, 0.8, 4.2] }] });
+  rider.node.add(mammoth.node);
+  const units = new Map([
+    [MAMMOTH_OWNER, { ...rider, mount: { skinned: mammoth.skinned, template: mammoth.template, wvm: mammoth.wvm } }],
+    [FRIEND, passengerRig(FRIEND_OWN_PLACE)],
+  ]);
+  poser.begin(objects, catalog);
+  poser.place([{ value: owner }, { value: friend }], new Set([MAMMOTH_OWNER, FRIEND]), units);
+  const results = createRenderResults(undefined);
+  poser.publishSeats(results);
+  assert.deepEqual([...results.seats.keys()], [FRIEND], "one row, by guid");
+  // Posted from a worker one day: the clone is what the main thread accepts.
+  const posted = structuredClone(results);
+  acceptSeatResults(posted, objects);
+  const renderer = poser.drawnUnitPosition(friend, { x: 0, y: 0, z: 0 });
+  const overlay = drawnUnitPosition(friend, { x: 0, y: 0, z: 0 });
+  assert.deepEqual(overlay, renderer, "the overlays hang it where the renderer's ring does");
+  assert.ok(overlay.z > 3, `on the beast's back (${overlay.z})`);
+  assert.equal(hiddenBySeat(friend), false);
+  // A draw that ran no seat pass publishes nothing new, and accepting it again changes nothing.
+  const record = seatDrawnRecordOf(friend);
+  poser.publishSeats(posted);
+  acceptSeatResults(posted, objects);
+  assert.equal(seatDrawnRecordOf(friend), record, "the same record, still current");
+  // An object replaced under the same guid after the pass is nobody's passenger until the next pass — as the
+  // poser's records keyed by the object answered.
+  const reborn = object(FRIEND, { carrier: MAMMOTH_OWNER, seat: 1, x: 15, y: 2, z: 0.5 });
+  assert.equal(drawnUnitPosition(reborn, { x: 0, y: 0, z: 0 }), reborn.position);
+  assert.equal(poser.drawnUnitPosition(reborn, { x: 0, y: 0, z: 0 }), reborn.position);
+  // The next pass with nobody seated empties the rows; the overlays follow.
+  friend.transport = undefined;
+  poser.place([{ value: owner }, { value: friend }], new Set([MAMMOTH_OWNER, FRIEND]), units);
+  poser.publishSeats(results);
+  assert.equal(results.seats.size, 0, "the row of a passenger that left goes with the pass");
+  friend.transport = { guid: MAMMOTH_OWNER, x: 0, y: 0, z: 0, orientation: 0, seat: 1 };
+  acceptSeatResults(results, objects);
+  assert.equal(seatDrawnRecordOf(friend), undefined, "not seated in the accepted pass");
+});
+
 // ---- the canvas overlay: click boxes and plates ---------------------------------------------------
 
 const WIDTH = 1280;
@@ -348,6 +406,13 @@ test("11.02-tails: a passenger a HIDE seat hides has no body to click; its plate
 
 // ---- bubbles and floating numbers, the sight test ---------------------------------------------------
 
+/** 22.10 ARC-2 S3a: a renderer record answering one height for every unit (was `{ unitHeight: () => h }`). */
+function anyUnitHeight(height) {
+  const results = createRenderResults(undefined);
+  results.units.get = () => Float64Array.of(height, 0, 0, 0);
+  return results;
+}
+
 function stubWorld(objects) {
   return {
     mapId: 0, state: { selfGuid: SELF, objects }, targetGuid: undefined, group: undefined, questPoi: new Map(),
@@ -364,7 +429,7 @@ test("11.02-tails: a seated passenger's speech bubble hangs over its model on th
     const owner = object(MAMMOTH_OWNER, { vehicleId: MAMMOTH_VEHICLE, x: 15 });
     const friend = object(FRIEND, { carrier: MAMMOTH_OWNER, seat: 1, x: 15 });
     game.world = stubWorld(new Map([[SELF, self], [MAMMOTH_OWNER, owner], [FRIEND, friend]]));
-    game.renderer = { unitHeight: () => BODY };
+    game.renderer = { results: anyUnitHeight(BODY) }; // 22.10 ARC-2 S3a
     beginSeatDrawnFrame();
     const record = seatDrawnRecord(friend, false);
     record.z = 3;
@@ -395,7 +460,7 @@ test("11.02-tails: the sight line to a seated passenger aims at its drawn chest"
     const owner = object(MAMMOTH_OWNER, { vehicleId: MAMMOTH_VEHICLE, x: 15 });
     const friend = object(FRIEND, { carrier: MAMMOTH_OWNER, seat: 1, x: 15 });
     game.world = stubWorld(new Map([[SELF, self], [MAMMOTH_OWNER, owner], [FRIEND, friend]]));
-    game.renderer = { unitHeight: () => BODY };
+    game.renderer = { results: anyUnitHeight(BODY) }; // 22.10 ARC-2 S3a
     let aimed;
     game.collision = { world: { size: 1, firstHit(_from, to) { aimed = { ...to }; return undefined; } } };
     beginSeatDrawnFrame();
@@ -430,5 +495,6 @@ test("11.02-tails: the selection ring, the canvas overlay, the bubbles and the s
   assert.match(scene, /hiddenBySeat\(object\)[^\n]*11\.02-tails/, "no body box for a hidden passenger");
   assert.match(overlay, /function anchorFor[\s\S]{0,600}?drawnUnitPosition\(object, /, "bubbles and numbers");
   assert.match(targeting, /export function inSightFromCamera[\s\S]{0,500}?drawnUnitPosition\(/, "the sight line");
-  assert.match(pose, /beginSeatDrawnFrame\(\)/, "every place starts a new frame of records");
+  // 22.10 ARC-2 S3a: the poser's own records, published by guid; the loop accepts them after draw.
+  assert.match(pose, /this\.#seatRecords\.begin\(\);/, "every place starts a new frame of records");
 });

@@ -1,6 +1,5 @@
 import { UPDATE_FIELDS } from "../generated/updateFields.js";
 import { UNIT_FLAGS_UNCLICKABLE } from "../world/FactionRules.js";
-import { GO_FLAG_NOT_SELECTABLE, interactiveGameObjectType } from "../world/GameObjectProtocol.js";
 import { unit } from "../world/Fields.js";
 import { isWorldObjectDead, type WorldObjectState, type WorldPosition, type WorldState } from "../world/WorldState.js";
 import type { EnvironmentObject } from "./Terrain.js";
@@ -9,6 +8,12 @@ import { setIconSource } from "./ui/IconImage.js";
 import { drawPlate, plateLayout, stackPlates, type PlateBox, type PlateData } from "./NamePlate.js";
 import { viewSubjectIn } from "./game/ViewSubject.js"; // 11.02-I
 import { drawnUnitPosition, hiddenBySeat, type DrawnPoint } from "./VehiclePassengerOverlay.js"; // 11.02-tails
+// 22.10 ARC-2 S3a: the game-object click test and the overlay's range moved to GameObjectClickable.ts (the renderer
+// publishes boxes for what passes them); re-exported for this file's importers.
+import {
+  OVERLAY_OBJECT_RANGE, clickableGameObject, gameObjectType, overlaySquaredDistance,
+} from "./GameObjectClickable.js";
+export { clickableGameObject, gameObjectType } from "./GameObjectClickable.js";
 // 21.10 ARC-2 S1: the shared camera lives in SceneCamera.ts; re-exported for this file's importers.
 import {
   CAMERA_DEFAULT_DISTANCE, CAMERA_DEFAULT_PITCH, CAMERA_DEFAULT_PIVOT_HEIGHT, CAMERA_FIRST_PERSON_DISTANCE,
@@ -156,23 +161,6 @@ const GAMEOBJECT_NAMES: Partial<Record<number, string>> = {
   35: "Люк",
 };
 
-/**
- * The object's type, from byte 1 of its bytes field.
- *
- * Absent means zero, not unknown: a create block writes a field only when its value is non-zero,
- * so an open door — type 0, state 0 — arrives with the whole word missing. Treating that as "no
- * type" left every open door in the world unlabelled and unclassified.
- */
-export function gameObjectType(object: WorldObjectState): number {
-  return ((object.fields.get(UPDATE_FIELDS.GAMEOBJECT_BYTES_1.offset) ?? 0) >>> 8) & 0xff;
-}
-
-/** 06.10-7.24-review: whether a click can land on this game object (the test `#drawGameObject` makes). */
-export function clickableGameObject(object: WorldObjectState): boolean {
-  const flags = object.fields.get(UPDATE_FIELDS.GAMEOBJECT_FLAGS.offset) ?? 0;
-  return interactiveGameObjectType(gameObjectType(object)) && (flags & GO_FLAG_NOT_SELECTABLE) === 0;
-}
-
 export function gameObjectLabel(object: WorldObjectState): string {
   const type = gameObjectType(object);
   return GAMEOBJECT_NAMES[type] ?? `Объект type ${type}`;
@@ -292,8 +280,8 @@ export class SimpleScene {
       const objectPosition = object.position;
       if (!objectPosition) continue;
       if (firstPerson && object.guid === state.selfGuid) continue;
-      const squared = squaredDistance(objectPosition, playerPosition);
-      if (!(squared < 100 * 100)) continue;
+      const squared = overlaySquaredDistance(objectPosition, playerPosition); // 22.10 ARC-2 S3a: shared
+      if (!(squared < OVERLAY_OBJECT_RANGE * OVERLAY_OBJECT_RANGE)) continue;
       // 11.02-tails: a passenger drawn on a vehicle's seat point is boxed and plated where it is drawn.
       const point = projectPoint(drawnUnitPosition(object, SEAT_DRAWN) ?? objectPosition, camera, width, height);
       if (point === undefined) continue;
@@ -827,10 +815,6 @@ export class SimpleScene {
 
 function dot(left: Vector3, right: Vector3): number {
   return left.x * right.x + left.y * right.y + left.z * right.z;
-}
-
-function squaredDistance(left: WorldPosition, right: WorldPosition): number {
-  return (left.x - right.x) ** 2 + (left.y - right.y) ** 2 + (left.z - right.z) ** 2;
 }
 
 function environmentColor(object: EnvironmentObject): string {

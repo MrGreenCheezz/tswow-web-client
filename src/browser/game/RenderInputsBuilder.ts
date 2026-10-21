@@ -40,6 +40,8 @@ export interface RenderInputSources {
   readonly vehicles: VehicleCatalog | undefined;
   /** 12.10 7.33: whether a game object is drawn (Loop.ts `loopGameObjectShown`). */
   readonly gameObjectShown: (object: WorldObjectState) => boolean;
+  /** 22.10 ARC-2 S3a: whether the loop shows the status line after this frame. */
+  readonly publishStatus?: boolean;
 }
 
 export class RenderInputsBuilder {
@@ -53,6 +55,7 @@ export class RenderInputsBuilder {
       hiddenGameObjects: this.#hidden,
       facing: this.#facing.build(undefined, undefined),
       vehicles: undefined,
+      publishStatus: false,
     };
   }
 
@@ -62,6 +65,7 @@ export class RenderInputsBuilder {
     inputs.enchantGlow = enchantGlowTables(sources.enchantments);
     inputs.facing = this.#facing.build(world, spellAttributeWordsOf(sources.spells));
     inputs.vehicles = sources.vehicles?.rows;
+    inputs.publishStatus = sources.publishStatus === true; // 22.10 ARC-2 S3a
     this.#collectHidden(world?.state, sources.gameObjectShown);
     return inputs;
   }

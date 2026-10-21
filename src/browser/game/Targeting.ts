@@ -11,6 +11,7 @@ import { cameraPivotHeight, game } from "./Context.js";
 import { viewSubjectPosition } from "./ViewSubject.js"; // 11.02-I
 import { canInteractWithUnit } from "../../world/UnitInteractGate.js"; // 11.02-tails
 import { drawnUnitPosition } from "../VehiclePassengerOverlay.js"; // 11.02-tails
+import { resultUnitHeight } from "../RenderResults.js"; // 22.10 ARC-2 S3a
 import { reactionsByTemplate } from "../../world/UnitInteractGate.js"; // 11.02-tails-review
 import { isPlayerGhost } from "../../world/Fields.js"; // 11.02-tails-review
 import { isTabIgnoredCreatureType } from "../../world/TargetSearch.js"; // L2 1.10
@@ -574,7 +575,7 @@ export function inSightFromCamera(guid: bigint): boolean {
   // leave from where the click was aimed from, not from where the drag asked to be.
   const camera = createCamera(player, game.camera.yaw, game.camera.viewPitch, game.camera.view,
     { pivotHeight: cameraPivotHeight() });
-  const height = game.renderer?.unitHeight(guid) ?? 2;
+  const height = resultUnitHeight(game.renderer?.results, guid) ?? 2; // 22.10 ARC-2 S3a: the last draw's record
   const chest = { x: position.x, y: position.y, z: position.z + height * 0.6 };
   const dx = chest.x - camera.position.x;
   const dy = chest.y - camera.position.y;

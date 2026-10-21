@@ -269,7 +269,7 @@ export function drawDebugTab(): void {
   const serverWeatherText = serverWeather
     ? `${weatherKind(serverWeather.state)} (${serverWeather.state}) ${serverWeather.intensity.toFixed(2)}`
     : "нет пакета";
-  const storm = game.renderer?.weatherStorm ?? 0;
+  const storm = game.renderer?.results.weatherStorm ?? 0; // 22.10 ARC-2 S3a: the last draw's record
   weatherLine.textContent = debugWeather.active
     ? `Отладка: ${weatherKind(debugWeather.state ?? 0)} ${(debugWeather.intensity ?? 0).toFixed(2)} · сервер: ${serverWeatherText} · штормовое небо ${storm.toFixed(2)}`
     : `Сервер: ${serverWeatherText} · штормовое небо ${storm.toFixed(2)}`;
