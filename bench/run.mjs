@@ -484,6 +484,12 @@ async function main() {
         if (trace) raw.debug = await page.evaluate(() => window.__benchDebug);
         // performance.now() of the measurement start mark: aligns atMs above with frames[].rafAtMs.
         if (trace) raw.benchStartMs = await page.evaluate(() => performance.getEntriesByName('bench-start').at(-1)?.startTime ?? null);
+        // 21.10 (12.18): the same mark on the wall clock, so outside samplers (nvidia-smi, the GPU engine
+        // counters) can be cut to the measured seconds; the window is `config.durationSeconds` long.
+        raw.benchStartEpochMs = await page.evaluate(() => {
+          const mark = performance.getEntriesByName('bench-start').at(-1);
+          return mark ? performance.timeOrigin + mark.startTime : null;
+        });
         if (diagnostic) raw.sceneStats = await page.evaluate(() => window.__bench.sceneStats());
         if (trace) {
           const profile = await client.send('Profiler.stop');
