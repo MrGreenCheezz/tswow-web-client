@@ -648,7 +648,7 @@ test("11.02-H: the only one-shot in or out of a seat is the seat's start, on tak
 
 test("11.02-H: the renderer's hooks are in place and marked", () => {
   const renderer = readFileSync(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
-  const begin = renderer.indexOf("this.#vehiclePassengers.begin(state.objects, vehicleCatalog()); // 11.02-H");
+  const begin = renderer.indexOf("this.#vehiclePassengers.begin(state.objects, this.#vehicles()); // 11.02-H"); // 22.10 ARC-2 S2a
   const draw = renderer.indexOf("this.#drawUnit(object, state.selfGuid === object.guid");
   // Review 11.02-H: the admitted entries go in, so a frame with nobody on a transport looks nothing up.
   const place = renderer.indexOf("this.#vehiclePassengers.place(admission.admitted, drawn, this.#units); // 11.02-H-review");

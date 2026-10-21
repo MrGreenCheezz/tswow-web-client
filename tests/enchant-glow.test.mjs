@@ -84,13 +84,15 @@ test("the dataset resolves the famous enchants to their models", async () => {
 
 test("the renderer hangs the tint on cloned materials and lets go of them", async () => {
   const renderer = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
-  assert.match(renderer, /setEnchantGlow\(/,
-    "the loop pushes a resolver like the selection — never threaded through draw()");
+  assert.match(renderer, /setRenderInputs\(/,
+    "the loop pushes the tables like the selection — never threaded through draw() (22.10 ARC-2 S2a)");
   assert.match(renderer, /glow: EnchantGlow \| undefined/, "the tint rides the wanted entry");
   assert.match(renderer, /glowClones/, "clones are tracked for release");
   assert.match(renderer, /clone\.emissive\.setHex\(item\.glow!\.color\)/, "emissive, never the shared base colour");
   assert.match(renderer, /#disposeAttachedGlow\(node\)/, "a rebuild lets go of the old clones");
   const loop = await readFile(new URL("../src/browser/game/Loop.ts", import.meta.url), "utf8");
-  // 05.10-A7a-E (6.14): `attachedGlow` carries the ItemVisuals slots beside the tint.
-  assert.match(loop, /attachedGlow\(object, slot/, "the frame resolves per worn weapon");
+  // 05.10-A7a-E (6.14): `attachedGlow` carries the ItemVisuals slots beside the tint; 22.10 ARC-2 S2a: the
+  // renderer resolves it per worn weapon over the tables the loop pushes.
+  assert.match(renderer, /attachedGlow\(object, item\.slot, enchantGlowSource\(glowTables\)/, "the frame resolves per worn weapon");
+  assert.match(loop, /enchantments: enchantClient/, "the loop hands over the client's tables");
 });

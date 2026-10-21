@@ -5,11 +5,14 @@ import { UPDATE_FIELDS } from "../dist/code/generated/updateFields.js";
 import { MOVEMENT_FLAGS } from "../dist/code/world/MovementProtocol.js";
 import {
   EMOTE_FLAG_TURNS, SPELL_ATTR1_CHANNEL_TRACK_TARGET, SPELL_ATTR5_DONT_TURN_DURING_CAST, ShownUnitFacing, UNIT_FACING_SNAP,
-  VEHICLE_SEAT_FLAG_ALLOW_TURNING, setUnitFacingSources, unitAutoFacing, unitFacingTurn, unitSeatFacing,
+  NO_UNIT_FACING_INPUTS, VEHICLE_SEAT_FLAG_ALLOW_TURNING, unitAutoFacing, unitFacingTurn, unitSeatFacing,
 } from "../dist/code/world/UnitFacing.js";
 import { CREATURE_MOVEMENT_CHASE_RATES, EMOTE_FLAGS } from "../dist/code/generated/animations.js";
-import { setPetSpellAttributesSource } from "../dist/code/world/PetCastSpell.js";
-import { interactionNpcGuid, unitFacingSourcesOf } from "../dist/code/world/UnitFacingSources.js";
+import { UnitFacingInputsBuilder, interactionNpcGuid } from "../dist/code/world/UnitFacingSources.js";
+
+// 22.10 ARC-2 S2a: the facing's sources are pushed data (`UnitFacingInputs`), no longer registered callbacks.
+const inputs = (overrides = {}) => ({ ...NO_UNIT_FACING_INPUTS, ...overrides });
+const castOf = (spellId, channel = false) => ({ spellId, startedAt: performance.now(), duration: 60_000, channel });
 
 // 11.10: «enemies do not look toward the one they attack». The core turns a creature to its victim
 // only server-side (`Unit::SetInFront` sends nothing) and leaves the drawing to the client: Wow.exe
@@ -138,8 +141,9 @@ test("11.10 the renderer draws a unit it does not move at that facing, and the c
   const yaw = source.slice(start, end);
   assert.match(yaw, /unit\.node\.rotation\.y = mover \|\| world === undefined \? position\.orientation/);
   // 5.32: the active player reaches it (an interaction window turns an NPC), and a seat is turned in the seat.
-  assert.match(yaw, /unitAutoFacing\(object, world\.objects, undefined, world\.selfGuid\) \?\? position\.orientation,\s*unitFacingTurn\(object\), elapsed/);
-  assert.match(yaw, /unitSeatFacing\(object, world\.objects, seat\.flags, this\.#drawnVehicleFacing, world\.selfGuid\) \?\? own/);
+  // 22.10 ARC-2 S2a: with the frame's pushed facing inputs.
+  assert.match(yaw, /unitAutoFacing\(object, world\.objects, undefined, world\.selfGuid, this\.#inputs\.facing\) \?\? position\.orientation,\s*unitFacingTurn\(object, this\.#inputs\.facing\), elapsed/);
+  assert.match(yaw, /unitSeatFacing\(object, world\.objects, seat\.flags, this\.#drawnVehicleFacing, world\.selfGuid, undefined,\s*this\.#inputs\.facing\) \?\? own/);
   assert.match(yaw, /unit\.seatFacing = local;\s*unit\.node\.rotation\.y = position\.orientation \+ local - own;/);
   assert.match(yaw, /const mover = self \|\| \(world !== undefined && world\.predictedGuid === object\.guid\)/);
   assert.match(source, /this\.#unitShadowCasters\.decide\(object\.guid, rank, distance, this\.#lightingProfile\),[^\n]*\n\s*state\);/,
@@ -171,20 +175,28 @@ test("5.32 not while casting a spell with SPELL_ATTR5_DONT_TURN_DURING_CAST (0x0
   const victim = unit({ x: 3, y: 0 });
   const caster = unit({ target: victim.guid });
   const objects = world(victim, caster);
-  setPetSpellAttributesSource((id) => (id === 700 ? [0, 0, 0, 0, 0, 0x80000, 0, 0] : id === 701 ? [0, 0, 0, 0, 0, 0x40000, 0, 0] : undefined));
-  try {
-    setUnitFacingSources({ casting: (guid) => (guid === caster.guid ? 700 : undefined) });
-    assert.equal(unitAutoFacing(caster, objects), undefined, "AttributesEx5 0x80000");
-    setUnitFacingSources({ casting: () => 701 });
-    assert.equal(unitAutoFacing(caster, objects), 0, "another bit");
-    setUnitFacingSources({ casting: () => 702 });
-    assert.equal(unitAutoFacing(caster, objects), 0, "a row not known");
-    setUnitFacingSources({ casting: () => undefined });
-    assert.equal(unitAutoFacing(caster, objects), 0, "not casting");
-  } finally {
-    setUnitFacingSources(undefined);
-    setPetSpellAttributesSource(undefined);
-  }
+  const spellAttributes = new Map([[700, [0, 0, 0, 0, 0, 0x80000, 0, 0]], [701, [0, 0, 0, 0, 0, 0x40000, 0, 0]]]);
+  const casting = (spellId, cast = castOf(spellId)) =>
+    unitAutoFacing(caster, objects, undefined, undefined, inputs({ spellAttributes, casts: new Map([[caster.guid, cast]]) }));
+  assert.equal(casting(700), undefined, "AttributesEx5 0x80000");
+  assert.equal(casting(701), 0, "another bit");
+  assert.equal(casting(702), 0, "a row not known");
+  assert.equal(unitAutoFacing(caster, objects, undefined, undefined, inputs({ spellAttributes })), 0, "not casting");
+  // The cast is +0xa60 only while it runs, and never a channel.
+  assert.equal(casting(700, { ...castOf(700), startedAt: performance.now() - 10_000, duration: 1_000 }), 0, "run its time");
+  assert.equal(casting(700, castOf(700, true)), 0, "a channel is not +0xa60");
+  assert.equal(unitAutoFacing(caster, objects), 0, "no inputs: nothing there");
+});
+
+test("22.10 ARC-2 S2a: a channel's tracking is read off the pushed spell rows when no reader is given", () => {
+  const victim = unit({ x: 3, y: 0 });
+  const totem = unit({ x: 0, y: -3 });
+  const objects = world(victim, totem);
+  const caster = unit({ target: victim.guid, channelObject: totem.guid, channelSpell: 1234 });
+  const rows = (word) => inputs({ spellAttributes: new Map([[1234, [0, word, 0, 0, 0, 0, 0, 0]]]) });
+  near(unitAutoFacing(caster, objects, undefined, undefined, rows(SPELL_ATTR1_CHANNEL_TRACK_TARGET)), -Math.PI / 2, "tracks");
+  assert.equal(unitAutoFacing(caster, objects, undefined, undefined, rows(0)), 0, "another channel keeps the target");
+  assert.equal(unitAutoFacing(caster, objects), 0, "no rows: not known");
 });
 
 test("5.32 with no target an NPC faces the player whose interaction window is open on it (0x00bd07a8)", () => {
@@ -192,18 +204,15 @@ test("5.32 with no target an NPC faces the player whose interaction window is op
   const vendor = unit({ orientation: 1 });
   const other = unit({ x: 5, y: 0 });
   const objects = world(player, vendor, other);
-  try {
-    setUnitFacingSources({ interactionNpc: () => vendor.guid });
-    near(unitAutoFacing(vendor, objects, undefined, player.guid), Math.PI / 2, "toward the player");
-    assert.equal(unitAutoFacing(vendor, objects), undefined, "no active player, nobody to face");
-    const busy = unit({ orientation: 1, target: other.guid });
-    setUnitFacingSources({ interactionNpc: () => busy.guid });
-    assert.equal(unitAutoFacing(busy, world(player, busy, other), undefined, player.guid), 0, "its target first");
-    setUnitFacingSources({ interactionNpc: () => other.guid });
-    assert.equal(unitAutoFacing(vendor, objects, undefined, player.guid), undefined, "another NPC's window");
-  } finally {
-    setUnitFacingSources(undefined);
-  }
+  near(unitAutoFacing(vendor, objects, undefined, player.guid, inputs({ interactionNpc: vendor.guid })), Math.PI / 2,
+    "toward the player");
+  assert.equal(unitAutoFacing(vendor, objects, undefined, undefined, inputs({ interactionNpc: vendor.guid })), undefined,
+    "no active player, nobody to face");
+  const busy = unit({ orientation: 1, target: other.guid });
+  assert.equal(unitAutoFacing(busy, world(player, busy, other), undefined, player.guid, inputs({ interactionNpc: busy.guid })), 0,
+    "its target first");
+  assert.equal(unitAutoFacing(vendor, objects, undefined, player.guid, inputs({ interactionNpc: other.guid })), undefined,
+    "another NPC's window");
   // The windows that set it, read off the world client.
   const none = {
     casts: new Map(), creatureTemplates: new Map(), gossip: undefined, questDialog: undefined, questList: undefined,
@@ -222,17 +231,23 @@ test("5.32 with no target an NPC faces the player whose interaction window is op
   }
   assert.equal(interactionNpcGuid({ ...none, stableMasterGuid: 17n }), undefined, "a stable master with its list shut");
   assert.equal(interactionNpcGuid({ ...none, stable: {}, stableMasterGuid: 17n }), 17n);
-  // The casting answer: a cast, not a channel, while it runs.
-  const casts = new Map([[1n, { spellId: 5, startedAt: performance.now(), duration: 60_000, channel: false }],
-    [2n, { spellId: 6, startedAt: performance.now(), duration: 60_000, channel: true }],
-    [3n, { spellId: 7, startedAt: performance.now() - 10_000, duration: 1_000, channel: false }]]);
-  const answers = unitFacingSourcesOf(() => ({ ...none, casts }));
-  assert.equal(answers.casting(1n), 5);
-  assert.equal(answers.casting(2n), undefined, "a channel is not +0xa60");
-  assert.equal(answers.casting(3n), undefined, "a cast that has run its time");
-  const templates = unitFacingSourcesOf(() => ({ ...none, creatureTemplates: new Map([[42, { movementId: 441 }]]) }));
-  assert.equal(templates.movementId(unit({ entry: 42 })), 441);
-  assert.equal(templates.movementId(unit({ entry: 0 })), undefined);
+  // 22.10 ARC-2 S2a: the builder hands over the world's own casts and its interaction NPC, and collects the
+  // entries' movement ids again only when the template cache changed.
+  const casts = new Map([[1n, castOf(5)]]);
+  const creatureTemplates = new Map([[42, { movementId: 441 }]]);
+  const builder = new UnitFacingInputsBuilder();
+  const live = { ...none, casts, creatureTemplates, gossip: { guid: 7n }, creatureTemplatesRevision: 1 };
+  const built = builder.build(live, new Map([[5, [1, 2, 3, 4, 5, 6, 7, 8]]]));
+  assert.equal(built.casts, casts, "the world's own map");
+  assert.equal(built.interactionNpc, 7n);
+  assert.deepEqual([...built.movementIds], [[42, 441]]);
+  assert.deepEqual([...built.spellAttributes], [[5, [1, 2, 3, 4, 5, 6, 7, 8]]]);
+  creatureTemplates.set(43, { movementId: 801 });
+  assert.equal(builder.build(live, undefined).movementIds.has(43), false, "the same revision: not collected again");
+  live.creatureTemplatesRevision++;
+  assert.equal(builder.build(live, undefined).movementIds.get(43), 801, "a new revision: collected");
+  assert.equal(builder.build(undefined, undefined).movementIds.size, 0, "no world: nothing");
+  assert.equal(builder.build(undefined, undefined).interactionNpc, undefined);
 });
 
 test("5.32 a creature whose CreatureMovementInfo row names a SmoothFacingChaseRate springs at it", { skip: generated }, () => {
@@ -240,19 +255,14 @@ test("5.32 a creature whose CreatureMovementInfo row names a SmoothFacingChaseRa
   assert.equal(CREATURE_MOVEMENT_CHASE_RATES[441], 10);
   assert.equal(CREATURE_MOVEMENT_CHASE_RATES[801], 0.25);
   assert.equal(CREATURE_MOVEMENT_CHASE_RATES[41], undefined);
-  try {
-    setUnitFacingSources({ movementId: () => 441 });
-    assert.equal(unitFacingTurn(unit({})), 10);
-    assert.equal(unitFacingTurn(unit({ flags: 0x808 })), 10, "before the pet's spring");
-    assert.equal(unitFacingTurn(unit({ typeId: 4 })), "average", "a player has no creature row");
-    setUnitFacingSources({ movementId: () => 801 });
-    assert.equal(unitFacingTurn(unit({})), 0.25);
-    setUnitFacingSources({ movementId: () => 41 });
-    assert.equal(unitFacingTurn(unit({})), "average", "a row of 0");
-    assert.equal(unitFacingTurn(unit({ flags: 0x8 })), 20);
-  } finally {
-    setUnitFacingSources(undefined);
-  }
+  const movement = (movementId) => inputs({ movementIds: new Map([[42, movementId]]) });
+  assert.equal(unitFacingTurn(unit({ entry: 42 }), movement(441)), 10);
+  assert.equal(unitFacingTurn(unit({ entry: 42, flags: 0x808 }), movement(441)), 10, "before the pet's spring");
+  assert.equal(unitFacingTurn(unit({ entry: 42, typeId: 4 }), movement(441)), "average", "a player has no creature row");
+  assert.equal(unitFacingTurn(unit({ entry: 0 }), movement(441)), "average", "no entry, no row");
+  assert.equal(unitFacingTurn(unit({ entry: 42 }), movement(801)), 0.25);
+  assert.equal(unitFacingTurn(unit({ entry: 42 }), movement(41)), "average", "a row of 0");
+  assert.equal(unitFacingTurn(unit({ entry: 42, flags: 0x8 }), movement(41)), 20);
 });
 
 test("5.32 a passenger on a seat with VEHICLE_SEAT_FLAG_ALLOW_TURNING turns in its seat", () => {

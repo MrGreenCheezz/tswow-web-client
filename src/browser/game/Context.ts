@@ -7,6 +7,7 @@ import type { GroundCoverClient } from "../GroundCover.js";
 import type { LightClient } from "../LightClient.js";
 import type { LiquidTextureClient } from "../Water.js";
 import type { SpellMetadata, SpellMetadataClient } from "../SpellMetadata.js";
+import { SpellRows } from "../SpellRows.js"; // 22.10 ARC-2 S2a
 import type { SpellVisualClient } from "../SpellVisualClient.js";
 import type { SpellVisualCoordinator } from "../SpellVisualLifecycle.js";
 import type { CreatureMetadataClient } from "../CreatureMetadata.js";
@@ -210,7 +211,7 @@ export const game: GameContext = {
   itemMetadata: undefined,
   assetWarmup: undefined,
   modules: undefined,
-  spells: new Map(),
+  spells: new SpellRows(), // 22.10 ARC-2 S2a: keeps the attribute words the renderer is handed
   groundTarget: undefined,
   groundTargetItem: undefined,
   globalCooldownUntil: 0,

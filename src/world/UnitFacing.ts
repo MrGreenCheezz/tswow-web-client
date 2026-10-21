@@ -20,7 +20,7 @@
  * * is not UNIT_FLAG_STUNNED (0x40000), UNIT_FLAG_POSSESSED (0x1000000) nor UNIT_FLAG2_CANNOT_TURN
  *   (0x8000), and is no player at all (the object's type mask carries PLAYER);
  * * casts nothing with SPELL_ATTR5_DONT_TURN_DURING_CAST (0x00722640: the spell at +0xa60, AttributesEx5
- *   0x80000) — 5.32: read from the casts this client tracks (`UnitFacingSources.casting`);
+ *   0x80000) — 5.32: read from the casts this client tracks (`UnitFacingInputs.casts`);
  * * rides no vehicle seat, or one whose VehicleSeat.dbc row has VEHICLE_SEAT_FLAG_ALLOW_TURNING (0x400;
  *   0x0074b8b0, 0x005d3340) — 5.32: such a seat turns its passenger, in the seat ({@link unitSeatFacing}),
  *
@@ -29,7 +29,7 @@
  * otherwise — when that unit is in view. With neither, it faces the active player while that player has its
  * gossip, quest, vendor, trainer, bank… window open on it (the global 0x00bd07a8: set by 0x0051fce0 from the
  * frames — QuestFrame.cpp, TradeFrame.cpp, ItemTextFrame.cpp among them — cleared by 0x00512e60) — 5.32:
- * `UnitFacingSources.interactionNpc`. Everything else draws the unit at its own movement facing.
+ * `UnitFacingInputs.interactionNpc`. Everything else draws the unit at its own movement facing.
  *
  * The drawn facing then follows the chosen one smoothly ({@link ShownUnitFacing}).
  *
@@ -41,7 +41,6 @@ import { CREATURE_MOVEMENT_CHASE_RATES, EMOTE_FLAGS } from "../generated/animati
 import { UPDATE_FIELDS } from "../generated/updateFields.js";
 import { guidFromWords } from "../protocol/Guid.js";
 import { MOVEMENT_FLAGS } from "./MovementProtocol.js";
-import { spellAttributeWords } from "./PetCastSpell.js";
 import type { WorldObjectState } from "./WorldState.js";
 
 /** `UNIT_FLAG_PLAYER_CONTROLLED`, `UNIT_FLAG_PET_IN_COMBAT`, `UNIT_FLAG_STUNNED`, `UNIT_FLAG_POSSESSED` (UnitDefines.h). */
@@ -74,33 +73,46 @@ const FLAGS = UPDATE_FIELDS.UNIT_FIELD_FLAGS.offset;
 const FLAGS_2 = UPDATE_FIELDS.UNIT_FIELD_FLAGS_2.offset;
 const BYTES_1 = UPDATE_FIELDS.UNIT_FIELD_BYTES_1.offset;
 const EMOTE_STATE = UPDATE_FIELDS.UNIT_NPC_EMOTESTATE.offset;
+const ENTRY = UPDATE_FIELDS.OBJECT_FIELD_ENTRY.offset;
+
+/** A cast as the world client holds it (WorldClient `casts`); the facing reads these four. */
+export interface FacingCast {
+  readonly spellId: number;
+  /** `performance.now()` at SMSG_SPELL_START. */
+  readonly startedAt: number;
+  readonly duration: number;
+  readonly channel: boolean;
+}
 
 /**
- * 5.32: what 0x00735f60 reads that is not on the unit's own fields, registered by the page (app/EnterWorld.ts)
- * from the world client; each absent answer reads as Wow.exe's «nothing there».
+ * 5.32: what 0x00735f60 reads that is not on the unit's own fields; each absent answer reads as Wow.exe's
+ * «nothing there». 22.10 ARC-2 S2a: plain data the main thread pushes (game/RenderInputsBuilder.ts) instead of
+ * callbacks into the world client — structured-clonable, no live singleton behind it.
  */
-export interface UnitFacingSources {
-  /** The spell a unit is casting now, not channelling (+0xa60, SMSG_SPELL_START until it ends), or undefined. */
-  casting?(guid: bigint): number | undefined;
+export interface UnitFacingInputs {
+  /** Who is casting what, by caster (+0xa60 is a cast, not a channel, until `startedAt + duration`). */
+  readonly casts: ReadonlyMap<bigint, FacingCast>;
   /** The unit the player's interaction window is open on (0x00bd07a8), or undefined. */
-  interactionNpc?(): bigint | undefined;
-  /** A creature's CreatureMovementInfo id (SMSG_CREATURE_QUERY_RESPONSE `movementId`; +0x964 +0x58), or undefined. */
-  movementId?(object: WorldObjectState): number | undefined;
+  readonly interactionNpc: bigint | undefined;
+  /** A creature entry's CreatureMovementInfo id (SMSG_CREATURE_QUERY_RESPONSE `movementId`; +0x964 +0x58). */
+  readonly movementIds: ReadonlyMap<number, number>;
+  /** The spell rows' eight attribute words (`/dbc/spells?v=14` `attributes`), by spell id; absent: not known. */
+  readonly spellAttributes: ReadonlyMap<number, readonly number[]>;
 }
 
-let sources: UnitFacingSources = {};
+/** 22.10 ARC-2 S2a: no world — every answer «nothing there». */
+export const NO_UNIT_FACING_INPUTS: UnitFacingInputs = Object.freeze({
+  casts: new Map<bigint, FacingCast>(),
+  interactionNpc: undefined,
+  movementIds: new Map<number, number>(),
+  spellAttributes: new Map<number, readonly number[]>(),
+});
 
-/** 5.32: the page's answers (`undefined` forgets them, as on leaving the world). */
-export function setUnitFacingSources(next: UnitFacingSources | undefined): void {
-  sources = next ?? {};
-}
-
-/**
- * 12.10 6.03: the unit the player's interaction window is open on (the global 0x00bd07a8), or undefined — also
- * what 0x007171c0 reads to set aside an emote state whose row carries 0x2000 (browser/UnitStandingPose.ts).
- */
-export function interactionNpcGuid(): bigint | undefined {
-  return sources.interactionNpc?.();
+/** The spell `guid` is casting now, not channelling, or undefined (the cast's time measured at the call). */
+function castingNow(inputs: UnitFacingInputs, guid: bigint): number | undefined {
+  const cast = inputs.casts.get(guid);
+  if (cast === undefined || cast.channel) return undefined;
+  return performance.now() <= cast.startedAt + cast.duration ? cast.spellId : undefined;
 }
 
 /** A guid held in two slots, or undefined for an empty one — no bigint is made for the empty case. */
@@ -110,9 +122,17 @@ function guidIn(object: WorldObjectState, index: number): bigint | undefined {
   return low === 0 && high === 0 ? undefined : guidFromWords(low >>> 0, high >>> 0);
 }
 
+/** A spell row's attribute words (PetCastSpell.ts `spellAttributeWords` over `spellAttributes`). */
+function attributeWords(spellAttributes: ReadonlyMap<number, readonly number[]>, spellId: number): readonly number[] | undefined {
+  return spellId > 0 ? spellAttributes.get(spellId) : undefined;
+}
+
 /** Whether a spell's row carries SPELL_ATTR1_CHANNEL_TRACK_TARGET; undefined while its row is not known. */
-export function spellChannelTracksTarget(spellId: number): boolean | undefined {
-  const words = spellAttributeWords(spellId);
+export function spellChannelTracksTarget(
+  spellId: number,
+  spellAttributes: ReadonlyMap<number, readonly number[]> = NO_UNIT_FACING_INPUTS.spellAttributes,
+): boolean | undefined {
+  const words = attributeWords(spellAttributes, spellId);
   return words === undefined ? undefined : ((words[1] ?? 0) & SPELL_ATTR1_CHANNEL_TRACK_TARGET) !== 0;
 }
 
@@ -123,8 +143,9 @@ export function spellChannelTracksTarget(spellId: number): boolean | undefined {
 function facingTarget(
   object: WorldObjectState,
   objects: ReadonlyMap<bigint, WorldObjectState>,
-  channelTracksTarget: (spellId: number) => boolean | undefined,
+  channelTracksTarget: ((spellId: number) => boolean | undefined) | undefined,
   selfGuid: bigint | undefined,
+  inputs: UnitFacingInputs,
 ): WorldObjectState | undefined {
   if (object.typeId !== TYPEID_UNIT) return undefined;
   if (!object.position || (object.movementFlags & OWN_AXES) !== 0 || object.motion !== undefined) return undefined;
@@ -139,15 +160,17 @@ function facingTarget(
   if ((flags & (UNIT_FLAG_STUNNED | UNIT_FLAG_POSSESSED)) !== 0) return undefined;
   if (((object.fields.get(FLAGS_2) ?? 0) & UNIT_FLAG2_CANNOT_TURN) !== 0) return undefined;
   // 5.32: 0x00722640 — not while casting a spell that must not turn its caster.
-  const casting = sources.casting?.(object.guid);
-  if (casting !== undefined && ((spellAttributeWords(casting)?.[5] ?? 0) & SPELL_ATTR5_DONT_TURN_DURING_CAST) !== 0) {
+  const casting = castingNow(inputs, object.guid);
+  if (casting !== undefined
+    && ((attributeWords(inputs.spellAttributes, casting)?.[5] ?? 0) & SPELL_ATTR5_DONT_TURN_DURING_CAST) !== 0) {
     return undefined;
   }
   const channel = object.fields.get(CHANNEL_SPELL) ?? 0;
-  let guid = channel !== 0 && channelTracksTarget(channel) === true
-    ? guidIn(object, CHANNEL_OBJECT) : guidIn(object, TARGET);
+  const tracks = channel === 0 ? false
+    : channelTracksTarget !== undefined ? channelTracksTarget(channel) : spellChannelTracksTarget(channel, inputs.spellAttributes);
+  let guid = tracks === true ? guidIn(object, CHANNEL_OBJECT) : guidIn(object, TARGET);
   // 5.32: no target — the active player, while its interaction window is open on this unit.
-  if (guid === undefined && selfGuid !== undefined && sources.interactionNpc?.() === object.guid) guid = selfGuid;
+  if (guid === undefined && selfGuid !== undefined && inputs.interactionNpc === object.guid) guid = selfGuid;
   if (guid === undefined || guid === object.guid) return undefined;
   const target = objects.get(guid);
   if (!target?.position || (target.typeId !== TYPEID_UNIT && target.typeId !== TYPEID_PLAYER)) return undefined;
@@ -167,11 +190,12 @@ function facingTarget(
 export function unitAutoFacing(
   object: WorldObjectState,
   objects: ReadonlyMap<bigint, WorldObjectState>,
-  channelTracksTarget: (spellId: number) => boolean | undefined = spellChannelTracksTarget,
+  channelTracksTarget?: (spellId: number) => boolean | undefined,
   selfGuid?: bigint,
+  inputs: UnitFacingInputs = NO_UNIT_FACING_INPUTS, // 22.10 ARC-2 S2a: was module state; absent `channelTracksTarget` reads its rows
 ): number | undefined {
   if (object.transport !== undefined && objects.get(object.transport.guid)?.typeId !== TYPEID_GAMEOBJECT) return undefined;
-  const target = facingTarget(object, objects, channelTracksTarget, selfGuid);
+  const target = facingTarget(object, objects, channelTracksTarget, selfGuid, inputs);
   if (target === undefined) return undefined;
   return Math.atan2(target.position!.y - object.position!.y, target.position!.x - object.position!.x);
 }
@@ -189,14 +213,15 @@ export function unitSeatFacing(
   seatFlags: number | undefined,
   vehicleFacing: (vehicle: WorldObjectState) => number,
   selfGuid?: bigint,
-  channelTracksTarget: (spellId: number) => boolean | undefined = spellChannelTracksTarget,
+  channelTracksTarget?: (spellId: number) => boolean | undefined,
+  inputs: UnitFacingInputs = NO_UNIT_FACING_INPUTS, // 22.10 ARC-2 S2a
 ): number | undefined {
   const transport = object.transport;
   if (transport === undefined) return undefined;
   if (seatFlags !== undefined && (seatFlags & VEHICLE_SEAT_FLAG_ALLOW_TURNING) === 0) return undefined;
   const vehicle = objects.get(transport.guid);
   if (vehicle === undefined) return undefined;
-  const target = facingTarget(object, objects, channelTracksTarget, selfGuid);
+  const target = facingTarget(object, objects, channelTracksTarget, selfGuid, inputs);
   if (target === undefined) return undefined;
   const world = Math.atan2(target.position!.y - object.position!.y, target.position!.x - object.position!.x);
   return wrap(world - vehicleFacing(vehicle));
@@ -205,13 +230,14 @@ export function unitSeatFacing(
 /**
  * How the drawn facing follows the chosen one in 0x00735f60: a creature whose CreatureMovementInfo row
  * (SMSG_CREATURE_QUERY_RESPONSE `movementId`) names a SmoothFacingChaseRate over 1e-5 springs at that rate
- * (0x007160b0) — 5.32: read (`UnitFacingSources.movementId`, generated `CREATURE_MOVEMENT_CHASE_RATES`);
+ * (0x007160b0) — 5.32: read (`UnitFacingInputs.movementIds`, generated `CREATURE_MOVEMENT_CHASE_RATES`);
  * otherwise `"average"` — half of the last four frames' differences a frame — for a unit that is not
  * UNIT_FLAG_PLAYER_CONTROLLED and for a player; a critically damped spring of 20 rad/s (`_DAT_009f281c`)
  * for a player's pet or charm, 30 (`_DAT_00a19cdc`) while UNIT_FLAG_PET_IN_COMBAT is up (0x0071afb0).
  */
-export function unitFacingTurn(object: WorldObjectState): "average" | number {
-  const movement = object.typeId === TYPEID_UNIT ? sources.movementId?.(object) : undefined;
+export function unitFacingTurn(object: WorldObjectState, inputs: UnitFacingInputs = NO_UNIT_FACING_INPUTS): "average" | number {
+  const entry = object.typeId === TYPEID_UNIT ? object.fields.get(ENTRY) ?? 0 : 0;
+  const movement = entry === 0 ? undefined : inputs.movementIds.get(entry); // 22.10 ARC-2 S2a: by entry
   if (movement !== undefined && movement !== 0) {
     const rate = CREATURE_MOVEMENT_CHASE_RATES[movement];
     if (rate !== undefined && rate > CHASE_RATE_MINIMUM) return rate;

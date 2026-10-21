@@ -44,7 +44,8 @@ import { vehicleCamera } from "./VehicleCamera.js"; // 11.02-GF3
 import { cameraViews } from "./CameraViews.js"; // DEC-B 3.11
 import { cameraSaved } from "./CameraSaved.js"; // 5.14
 import { vehicleCatalog } from "../VehicleClient.js"; // 11.02-GF3
-import { attachedGlow, itemEnchantments } from "../ItemEnchantments.js"; // 05.10-A7a-E: attachedGlow (slots + tint)
+import { itemEnchantments } from "../ItemEnchantments.js";
+import { RenderInputsBuilder } from "./RenderInputsBuilder.js"; // 22.10 ARC-2 S2a
 import { updateCastBars } from "../ui/CastBar.js";
 import { updateActionBar } from "../ui/ActionBar.js";
 import { updateMirrorTimers } from "../ui/MirrorTimers.js";
@@ -129,6 +130,9 @@ function loopUnitHeight(guid: bigint): number | undefined {
 function loopGameObjectCorners(object: WorldObjectState, out: Float64Array): boolean {
   return game.renderer?.gameObjectPickCorners(object, out) ?? false;
 }
+
+/** 22.10 ARC-2 S2a: the frame's pushed renderer inputs, refilled in place each frame. */
+const renderInputs = new RenderInputsBuilder();
 
 let lastFrame = performance.now();
 let renderStatusShownAt = 0;
@@ -620,16 +624,19 @@ function frame(now: number): void {
       inBounds: world.duelInBounds !== false,
     });
     syncPortraitTargets(game.renderer);
-    // Enchant glows ride a pushed resolver like the selection: the renderer knows meshes,
+    // Enchant glows ride the pushed inputs like the selection: the renderer knows meshes,
     // the loop knows the gateway. Loading is kicked once and stays deduped in the client; until
     // it lands the blades draw unlit, exactly like helmets whose model has not arrived.
     const enchantClient = game.gatewayOrigin ? itemEnchantments(game.gatewayOrigin) : undefined;
     if (enchantClient && !enchantClient.ready) void enchantClient.load().catch(() => {});
-    game.renderer?.setEnchantGlow(enchantClient?.ready
-      ? (object: WorldObjectState, slot: number, displayId?: number) =>
-        attachedGlow(object, slot, enchantClient, displayId) // 05.10-A7a-E (6.14); 05.10-A7a-E2: the display's glow
-      : undefined);
-    game.renderer?.setGameObjectShown(loopGameObjectShown); // 12.10 7.33: one portal per difficulty
+    // 22.10 ARC-2 S2a: the answers the renderer called back for, as data — the enchant tables (05.10-A7a-E),
+    // the portals of the other difficulty (12.10 7.33), the unit facing's sources (5.32), the vehicle rows.
+    if (game.renderer) {
+      game.renderer.setRenderInputs(renderInputs.build({
+        world, spells: game.spells, enchantments: enchantClient, vehicles: vehicleCatalog(),
+        gameObjectShown: loopGameObjectShown,
+      }));
+    }
     hitchLight = performance.now();
     const renderer = game.renderer;
     if (renderer) {

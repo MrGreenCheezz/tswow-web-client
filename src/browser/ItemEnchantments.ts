@@ -79,20 +79,81 @@ export class ItemEnchantmentClient {
 
   /** The glow model files the dataset resolves for this enchant id, if any. */
   glowModels(enchantId: number): readonly string[] {
-    return this.visuals.get(enchantId) ?? NO_GLOW_MODELS; // 05.10-A7a-E2: one shared empty list, asked per frame
+    return tableGlowModels(this, enchantId);
   }
 
   /** 05.10-A7a-E (6.14): the five ItemVisuals slots of this enchant's ItemVisual, if it has any. */
   glowSlots(enchantId: number): readonly (string | null)[] | undefined {
-    const visual = this.enchantments.get(enchantId)?.visual;
-    return visual ? this.itemVisualSlots.get(visual) : undefined;
+    return tableGlowSlots(this, enchantId);
   }
 
   /** 05.10-A7a-E (6.14): the five slots of a display's own ItemVisual (a legendary's glow), if any. */
   displayGlowSlots(displayId: number): readonly (string | null)[] | undefined {
-    const visual = this.displayVisuals.get(displayId);
-    return visual ? this.itemVisualSlots.get(visual) : undefined;
+    return tableDisplayGlowSlots(this, displayId);
   }
+}
+
+/**
+ * 22.10 ARC-2 S2a: the four tables a weapon's glow is read from — the client's own maps, plain data the main
+ * thread hands the renderer (RenderInputs.ts) instead of a per-frame resolver closure over the client.
+ */
+export interface EnchantGlowTables {
+  readonly enchantments: ReadonlyMap<number, ItemEnchantmentInfo>;
+  readonly visuals: ReadonlyMap<number, readonly string[]>;
+  readonly itemVisualSlots: ReadonlyMap<number, readonly (string | null)[]>;
+  readonly displayVisuals: ReadonlyMap<number, number>;
+}
+
+function tableGlowModels(tables: EnchantGlowTables, enchantId: number): readonly string[] {
+  return tables.visuals.get(enchantId) ?? NO_GLOW_MODELS; // 05.10-A7a-E2: one shared empty list, asked per frame
+}
+
+function tableGlowSlots(tables: EnchantGlowTables, enchantId: number): readonly (string | null)[] | undefined {
+  const visual = tables.enchantments.get(enchantId)?.visual;
+  return visual ? tables.itemVisualSlots.get(visual) : undefined;
+}
+
+function tableDisplayGlowSlots(tables: EnchantGlowTables, displayId: number): readonly (string | null)[] | undefined {
+  const visual = tables.displayVisuals.get(displayId);
+  return visual ? tables.itemVisualSlots.get(visual) : undefined;
+}
+
+const glowTablesOfClient = new WeakMap<ItemEnchantmentClient, EnchantGlowTables>();
+
+/**
+ * 22.10 ARC-2 S2a: a ready client's tables, one record per client (its maps are refilled in place, never
+ * replaced); undefined while it loads — blades then draw unlit, as before.
+ */
+export function enchantGlowTables(client: ItemEnchantmentClient | undefined): EnchantGlowTables | undefined {
+  if (!client?.ready) return undefined;
+  let tables = glowTablesOfClient.get(client);
+  if (tables === undefined) {
+    tables = {
+      enchantments: client.enchantments, visuals: client.visuals,
+      itemVisualSlots: client.itemVisualSlots, displayVisuals: client.displayVisuals,
+    };
+    glowTablesOfClient.set(client, tables);
+  }
+  return tables;
+}
+
+const glowSourceOfTables = new WeakMap<EnchantGlowTables, GlowSource>();
+
+/**
+ * 22.10 ARC-2 S2a: the renderer's `attachedGlow` source over pushed tables — one per tables record, so the
+ * remembered glows below stay keyed as they were by the client.
+ */
+export function enchantGlowSource(tables: EnchantGlowTables): GlowSource {
+  let source = glowSourceOfTables.get(tables);
+  if (source === undefined) {
+    source = {
+      glowModels: (enchantId) => tableGlowModels(tables, enchantId),
+      glowSlots: (enchantId) => tableGlowSlots(tables, enchantId),
+      displayGlowSlots: (displayId) => tableDisplayGlowSlots(tables, displayId),
+    };
+    glowSourceOfTables.set(tables, source);
+  }
+  return source;
 }
 
 /**
@@ -264,7 +325,7 @@ export function attachedGlow(
 }
 
 // 05.10-A7a-E2: remembered glows, per source (the page's one client; a test's literal).
-type GlowSource = Pick<ItemEnchantmentClient, "glowModels" | "glowSlots" | "displayGlowSlots">;
+export type GlowSource = Pick<ItemEnchantmentClient, "glowModels" | "glowSlots" | "displayGlowSlots">;
 interface RememberedGlow {
   slots: readonly (string | null)[] | undefined;
   models: readonly string[] | undefined;

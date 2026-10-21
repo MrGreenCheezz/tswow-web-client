@@ -281,6 +281,19 @@ function vehicleSeatEntry(row: readonly (number | string)[]): VehicleSeatEntry {
   });
 }
 
+/** 22.10 ARC-2 S2a: a catalog's checked rows (`VehicleCatalog.rows`), structured-clonable. */
+export interface VehicleCatalogRows {
+  readonly vehicles: readonly VehicleEntry[];
+  readonly seats: readonly VehicleSeatEntry[];
+  readonly indicators: readonly { readonly id: number; readonly backgroundTexture: string }[];
+  readonly indicatorSeats: readonly (VehicleUIIndicatorSeat & { readonly indicatorId: number })[];
+}
+
+/** 22.10 ARC-2 S2a: the catalog the same rows build — every answer the one the page's catalog gives. */
+export function vehicleCatalogOfRows(rows: VehicleCatalogRows): VehicleCatalog {
+  return new VehicleCatalog(rows.vehicles, rows.seats, rows.indicators, rows.indicatorSeats);
+}
+
 /**
  * The four tables by id. A later row with an id already seen replaces it, as an id index filled in
  * file order does (the core's DBCStorage and Wow.exe's record-by-id array alike); this dataset has none.
@@ -289,6 +302,8 @@ export class VehicleCatalog {
   readonly #vehicles = new Map<number, VehicleEntry>();
   readonly #seats = new Map<number, VehicleSeatEntry>();
   readonly #indicators = new Map<number, VehicleUIIndicator>();
+  /** 22.10 ARC-2 S2a: the rows it was built from — plain data the renderer is handed and builds its own from. */
+  readonly rows: VehicleCatalogRows;
 
   constructor(
     vehicles: readonly VehicleEntry[],
@@ -296,6 +311,7 @@ export class VehicleCatalog {
     indicators: readonly { id: number; backgroundTexture: string }[],
     indicatorSeats: readonly (VehicleUIIndicatorSeat & { indicatorId: number })[],
   ) {
+    this.rows = Object.freeze({ vehicles, seats, indicators, indicatorSeats });
     for (const row of vehicles) this.#vehicles.set(row.id, row);
     for (const row of seats) this.#seats.set(row.id, row);
     const byId = new Map<number, VehicleUIIndicatorSeat & { indicatorId: number }>();

@@ -14,6 +14,8 @@ import * as THREE from "three";
 import { stableBoundedTopKWhere, type UnitAdmissionCandidate } from "./RenderAdmission.js";
 import { ENVIRONMENT_FAR_RANGE } from "./Terrain.js";
 
+/** The ordinary game objects' admission range (WorldRenderer3D.ts re-exports it with its budget). */
+export const GAMEOBJECT_RANGE = 120;
 /** Admission range of a moving transport: the far scenery leash (750 yards). */
 export const GAMEOBJECT_TRANSPORT_RANGE = ENVIRONMENT_FAR_RANGE;
 /**

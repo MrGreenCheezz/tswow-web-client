@@ -1539,6 +1539,8 @@ export class WorldClient {
   wardenPackets = 0;
   /** The query cache, which is this client's replacement for the original's `WDB` files. */
   readonly creatureTemplates = new Map<number, CreatureTemplate>();
+  /** 22.10 ARC-2 S2a: bumped on every write to `creatureTemplates`, so a reader rebuilds what it derives only then. */
+  creatureTemplatesRevision = 0;
   readonly itemTemplates = new Map<number, ItemTemplate>();
   readonly itemSetNames = new Map<number, ItemSetName>();
   readonly pageTexts = new Map<number, PageText>();
@@ -9426,6 +9428,7 @@ export class WorldClient {
     if (packet.opcode === OPCODES.SMSG_CREATURE_QUERY_RESPONSE) {
       const template = parseCreatureQueryResponse(packet.payload);
       this.creatureTemplates.set(template.entry, template);
+      this.creatureTemplatesRevision++; // 22.10 ARC-2 S2a
       this.events.emit("QUERY_CACHE_CHANGED", { kind: "creature", id: template.entry });
       return true;
     }
@@ -9622,6 +9625,7 @@ export class WorldClient {
   #clearQueryCache(): void {
     this.#pendingItemUses.clear();
     this.creatureTemplates.clear();
+    this.creatureTemplatesRevision++; // 22.10 ARC-2 S2a
     this.itemTemplates.clear();
     this.itemSetNames.clear();
     this.pageTexts.clear();

@@ -313,8 +313,9 @@ test("a slot with a canvas and no unit is blanked once, not on every frame", () 
 });
 
 test("a stock portrait of the player uses the player's light rig and Stand; anybody else the target's", async () => {
+  // 22.10 ARC-2 S2a: the player's guid comes from the state the world renderer draws, not from `game.world`.
   const previous = game.world;
-  game.world = { state: { selfGuid: 21n, objects: new Map() } };
+  game.world = undefined;
   try {
     const { renderer, state } = fakeRenderer();
     const stock = new StockPortraitTargets();
@@ -331,6 +332,7 @@ test("a stock portrait of the player uses the player's light rig and Stand; anyb
       liveBones: [liveBone],
     };
     const view = new PortraitRenderer(renderer, () => rigged, { stockTargets: stock });
+    view.setWorld({ selfGuid: 21n, objects: new Map() });
     stock.set("stock:TradeFramePlayerPortrait", 21n, canvas());
     view.setTargets(new Map([["player", { guid: 21n, canvas: canvas() }], ["target", { guid: 22n, canvas: canvas() }]]));
     stock.set("stock:TradeFrameRecipientPortrait", 22n, canvas());

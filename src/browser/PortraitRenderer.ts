@@ -17,8 +17,8 @@ import {
 import type { WvmModel } from "./Wvm.js";
 import { cloneMaterialForPortrait } from "./WorldLighting.js";
 import { ProgramWarmup, PROGRAM_WARMUP_BATCH } from "./ProgramWarmup.js";
-import { game } from "./game/Context.js";
 import { unit as unitFields } from "../world/Fields.js";
+import type { WorldObjectState } from "../world/WorldState.js"; // 22.10 ARC-2 S2a
 
 export const PORTRAIT_SLOTS = ["player", "target", "focus", "tot", "pet"] as const;
 /** Stable party rows share the same renderer but keep their own surfaces and output canvases. */
@@ -267,13 +267,23 @@ export function portraitLightDirectionToScene(
 }
 
 /**
+ * 22.10 ARC-2 S2a: the world a portrait reads the player's guid and a unit's race from — the state the renderer
+ * is drawing (`WorldRenderer3D.draw` hands it over each frame), no longer the page's `game.world`.
+ */
+export interface PortraitWorld {
+  readonly selfGuid: bigint | undefined;
+  readonly objects: ReadonlyMap<bigint, WorldObjectState>;
+}
+
+/**
  * The fixed slot whose light rig and pose a stock portrait shares: the player's own bust (race
  * lights, Stand) when a window names the player — TradeFramePlayerPortrait, PVPFramePortrait —
  * and the target's (HUD lights, the live world pose) for anybody else.
  */
-function portraitRole(slot: PortraitSlot, guid: bigint | undefined): Exclude<PortraitSlot, StockPortraitSlot> {
+function portraitRole(slot: PortraitSlot, guid: bigint | undefined, world: PortraitWorld | undefined,
+): Exclude<PortraitSlot, StockPortraitSlot> {
   if (!isStockPortraitSlot(slot)) return slot;
-  const self = game.world?.state.selfGuid;
+  const self = world?.selfGuid;
   return guid !== undefined && self !== undefined && guid === self ? "player" : "target";
 }
 
@@ -288,8 +298,8 @@ export function portraitLightingProfile(
   return PORTRAIT_LIGHTING_PROFILES[race];
 }
 
-function portraitRaceForGuid(guid: bigint): PortraitRace {
-  const object = game.world?.state.objects.get(guid);
+function portraitRaceForGuid(guid: bigint, world: PortraitWorld | undefined): PortraitRace {
+  const object = world?.objects.get(guid);
   const race = object === undefined ? undefined : unitFields.race(object);
   if (race === 1) return "human";
   if (race === 4) return "nightElf";
@@ -506,6 +516,8 @@ export class PortraitRenderer {
   readonly #blankCanvases = new WeakSet<HTMLCanvasElement>();
   /** The GUID whose picture each canvas holds from this renderer's last readback into it. */
   readonly #paintedGuids = new WeakMap<HTMLCanvasElement, bigint>();
+  /** 22.10 ARC-2 S2a: the world being drawn (`setWorld`); absent, nobody is the player and every race neutral. */
+  #world: PortraitWorld | undefined;
 
   constructor(renderer: THREE.WebGLRenderer, source: PortraitSourceProvider,
     options: PortraitRendererOptions = {}) {
@@ -753,6 +765,11 @@ export class PortraitRenderer {
   }
 
   /** Render invalidated portraits. Returns readbacks submitted; canvas updates finish asynchronously. */
+  /** 22.10 ARC-2 S2a: the state the world renderer draws this frame (its `draw` argument). */
+  setWorld(world: PortraitWorld | undefined): void {
+    this.#world = world;
+  }
+
   render(_now = performance.now()): number {
     let rendered = 0;
     for (const slot of ALL_PORTRAIT_SLOTS) rendered += this.#renderSlot(slot);
@@ -925,7 +942,7 @@ export class PortraitRenderer {
     // when a world unit later changes state.
     // The player's bust camera is authored for Stand. Freezing a running, casting or dead world
     // pose can leave the head outside that camera until the appearance changes again.
-    const role = portraitRole(slot, surface.sourceGuid);
+    const role = portraitRole(slot, surface.sourceGuid, this.#world);
     if (role !== "player" && role !== PAPERDOLL_PORTRAIT_SLOT && role !== CHARACTER_PORTRAIT_SLOT && source.liveBones) {
       const bones = skinned.skeleton.bones;
       for (let index = 0; index < bones.length; index++) {
@@ -990,8 +1007,8 @@ export class PortraitRenderer {
 
   #applyLighting(slot: PortraitSlot, guid?: bigint): void {
     const profile = portraitLightingProfile(
-      portraitRole(slot, guid),
-      guid === undefined ? "neutral" : portraitRaceForGuid(guid),
+      portraitRole(slot, guid, this.#world),
+      guid === undefined ? "neutral" : portraitRaceForGuid(guid, this.#world),
     );
     const character = profile.mode === "character";
     this.#ambient.visible = !character;

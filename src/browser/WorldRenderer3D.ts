@@ -8,7 +8,7 @@ import { sceneYaw, toRenderAxes, type Quat } from "../world/GameObjectRotation.j
 import { gameObjectNodeYaw, gameObjectWorldRotation, placedBoxCorners, type ModelBox } from "../world/GameObjectModelFrame.js"; // 06.10-7.24
 import { modelPickBox } from "./GameObjectPickBox.js"; // 06.10-7.24
 import { passengerGameObjectTilt } from "../world/TransportPassengers.js";
-import { ShownUnitFacing, interactionNpcGuid, unitAutoFacing, unitFacingTurn, unitSeatFacing } from "../world/UnitFacing.js"; // 11.10; 5.32: + unitSeatFacing; 12.10 6.03: + interactionNpcGuid
+import { ShownUnitFacing, unitAutoFacing, unitFacingTurn, unitSeatFacing } from "../world/UnitFacing.js"; // 11.10; 5.32: + unitSeatFacing; 22.10 ARC-2 S2a: the interaction NPC is an input
 import {
   CAMERA_DEFAULT_DISTANCE, CAMERA_DEFAULT_EYE_HEIGHT, CAMERA_DEFAULT_PITCH, CAMERA_DEFAULT_PIVOT_HEIGHT,
   CAMERA_EYE_BODY_SHARE, CAMERA_FIRST_PERSON_DISTANCE, CAMERA_FOV_DEGREES, CAMERA_PIVOT_BODY_SHARE,
@@ -28,6 +28,7 @@ import { EnvironmentGridIndex } from "./EnvironmentGridIndex.js";
 import { environmentVegetationKind } from "./EnvironmentNames.js"; // 05.10-A7b-0 1.23
 import {
   gameObjectWithinAdmissionRange, selectGameObjectAdmissionWithTransports, transportWmoViewer,
+  GAMEOBJECT_RANGE, // 22.10 ARC-2 S2a
   GAMEOBJECT_TRANSPORT_SHELL_RANGE, // 05.10-7.05-review
   type GameObjectAdmissionCandidate,
 } from "./GameObjectTransportAdmission.js"; // 05.10-7.05
@@ -94,7 +95,7 @@ import {
 } from "./Water.js";
 import { DAY_HALF_MINUTES } from "../world/GameTimeProtocol.js";
 import { DUEL_OUT_OF_BOUNDS_YARDS } from "../world/DuelProtocol.js";
-import type { EnchantGlow } from "./ItemEnchantments.js";
+import { attachedGlow, enchantGlowSource, type EnchantGlow } from "./ItemEnchantments.js"; // 22.10 ARC-2 S2a: + attachedGlow over pushed tables
 import type { GameObjectDisplayMetadata } from "./GameObjectMetadata.js";
 import type { CreatureModelMetadata, UnitModel } from "./CreatureModelClient.js";
 import { attachedOf, virtualItemEntry, weaponMetadataPending } from "./NpcWeapons.js"; // 05.10-A7a-B 6.02 (virtualItemEntry: 05.10 review)
@@ -204,7 +205,8 @@ import {
 import { viewSubjectIn } from "./game/ViewSubject.js"; // 11.02-I
 import { cameraSubjectOpacity } from "./game/CameraClip.js"; // 5.33
 import { VehiclePassengerPoser } from "./VehiclePassengerPose.js"; // 11.02-H
-import { vehicleCatalog } from "./VehicleClient.js"; // 11.02-H
+import { vehicleCatalogOfRows, type VehicleCatalog, type VehicleCatalogRows } from "../world/VehicleDbc.js"; // 11.02-H; 22.10 ARC-2 S2a: built from pushed rows
+import { NO_RENDER_INPUTS, type RenderInputs } from "./RenderInputs.js"; // 22.10 ARC-2 S2a
 import { drawnUnitPosition } from "./VehiclePassengerOverlay.js"; // 11.02-tails
 import { selectWmoPortalGroups } from "./WmoOcclusion.js";
 import { WmoRangeTable, sameWmoSelection, type WmoRangeTotals } from "./WmoGroupRange.js"; // P1-12a/b
@@ -3464,7 +3466,7 @@ export const MODEL_RANGE = ENVIRONMENT_RANGE;
  * the filter, so the worst measured circle in a city built and posed 739 nodes every frame, and
  * whatever was over the horizon was rebuilt from nothing the moment it came back.
  */
-export const GAMEOBJECT_RANGE = 120;
+export { GAMEOBJECT_RANGE }; // 22.10 ARC-2 S2a: defined beside the admission, which the main thread also reads
 export const GAMEOBJECT_BUDGET = 96;
 /** Spawn-fade quantization for game objects: at most six private material generations per fade. */
 const GAMEOBJECT_FADE_STEPS = 6;
@@ -3846,9 +3848,14 @@ export class WorldRenderer3D {
    */
   #duelRing: DuelRing | undefined;
   #duelRingMesh: RenderedSelectionRing | undefined;
-  #enchantGlow: ((object: WorldObjectState, slot: number, displayId?: number) => EnchantGlow | undefined) | undefined; // 05.10-A7a-E2: displayId
-  /** 12.10 7.33: whether a game object is drawn at all (`setGameObjectShown`); absent draws every one. */
-  #gameObjectShown: ((object: WorldObjectState) => boolean) | undefined;
+  /**
+   * 22.10 ARC-2 S2a: the frame's pushed answers (`setRenderInputs`) — the enchant tables, the game objects not
+   * drawn (12.10 7.33), the unit facing's sources and the vehicle rows; nothing pushed reads as none of them.
+   */
+  #inputs: RenderInputs = NO_RENDER_INPUTS;
+  /** 22.10 ARC-2 S2a: the vehicle catalog built from `#inputs.vehicles`, rebuilt only when those rows change. */
+  #vehicleRows: VehicleCatalogRows | undefined;
+  #vehicleCatalog: VehicleCatalog | undefined;
   /** 12.10 6.25: the doodad lists of game objects' WMOs, made for the environment client's base URL. */
   #wmoDoodadClient: WmoDoodadClient | undefined;
   /**
@@ -7018,26 +7025,25 @@ export class WorldRenderer3D {
   }
 
   /**
-   * The enchant glow tint for a worn weapon slot.
-   *
-   * Pushed like the selection rather than threaded through `draw()`: the formal benchmark pins
-   * the submission's trailing arguments, and a resolver set looks exactly like the model
-   * callbacks the loop already pushes. Absent while the enchant table is loading — blades then
-   * draw unlit, like helmets whose model has not arrived.
+   * 22.10 ARC-2 S2a: the frame's answers the main thread computes (RenderInputs.ts, game/RenderInputsBuilder.ts):
+   * the enchant tables a worn weapon's glow is read from (absent while they load — blades draw unlit, like helmets
+   * whose model has not arrived), the game objects Wow.exe hides (12.10 7.33: a dungeon-difficulty portal of the
+   * other difficulty, kept resident but neither drawn nor pinned), the unit facing's sources and the vehicle rows.
+   * Pushed like the selection rather than threaded through `draw()`: the formal benchmark pins the submission's
+   * trailing arguments. Replaces `setEnchantGlow` and `setGameObjectShown`, which took main-thread functions.
    */
-  setEnchantGlow(
-    resolve: ((object: WorldObjectState, slot: number, displayId?: number) => EnchantGlow | undefined) | undefined, // 05.10-A7a-E2
-  ): void {
-    this.#enchantGlow = resolve;
+  setRenderInputs(inputs: RenderInputs | undefined): void {
+    this.#inputs = inputs ?? NO_RENDER_INPUTS;
   }
 
-  /**
-   * 12.10 7.33: which game objects are drawn at all — the dungeon-difficulty portals show only the
-   * one for the current difficulty (`world/DungeonDifficultyObject.ts`, Wow.exe 0x00710a50). Pushed
-   * like the enchant glow; one the predicate refuses is kept resident but neither drawn nor pinned.
-   */
-  setGameObjectShown(shown: ((object: WorldObjectState) => boolean) | undefined): void {
-    this.#gameObjectShown = shown;
+  /** 22.10 ARC-2 S2a: the vehicle tables of `#inputs`, as a catalog (11.02-H). */
+  #vehicles(): VehicleCatalog | undefined {
+    const rows = this.#inputs.vehicles;
+    if (rows !== this.#vehicleRows) {
+      this.#vehicleRows = rows;
+      this.#vehicleCatalog = rows === undefined ? undefined : vehicleCatalogOfRows(rows);
+    }
+    return this.#vehicleCatalog;
   }
 
   /** The placing spell's ghost model; `undefined` removes it immediately. */
@@ -7244,10 +7250,11 @@ export class WorldRenderer3D {
     this.#groundTarget = undefined;
     this.#disposeDuelRing();
     this.#duelRing = undefined;
-    this.#enchantGlow = undefined;
+    this.#inputs = NO_RENDER_INPUTS; // 22.10 ARC-2 S2a
     this.#disposeGameObjectPreview();
     this.#gameObjectPreview = undefined;
     this.#portraits.clear();
+    this.#portraits.setWorld(undefined); // 22.10 ARC-2 S2a
 
     // Before the weather: the atmosphere hands the weather its faithful material back.
     this.#atmosphere?.dispose();
@@ -8010,6 +8017,8 @@ export class WorldRenderer3D {
     const evolutionTime = frameTime === undefined
       ? undefined
       : cloneRenderFrameTime(frameTime);
+    // 22.10 ARC-2 S2a: the portraits read the player's guid and a unit's race off the state drawn this frame.
+    this.#portraits.setWorld(state);
     // Every value below describes this submission attempt, never a live cache. Reset before the
     // player guard so loading/teleport frames cannot repeat the last populated scene's numbers.
     this.#resetFrameCounters();
@@ -12652,7 +12661,7 @@ export class WorldRenderer3D {
       if (!gameObjectWithinAdmissionRange(distance, transport, GAMEOBJECT_RANGE)) continue;
       // 12.10 7.33: an object Wow.exe hides (a portal of the other difficulty) stays resident,
       // unpinned and not visible, exactly like one outside the view.
-      const shown = this.#gameObjectShown?.(object) ?? true;
+      const shown = !this.#inputs.hiddenGameObjects.has(object.guid); // 22.10 ARC-2 S2a
       const isPinned = shown && pinned.has(object.guid);
       const radius = this.#gameObjectVisibilityRadius(object, this.#gameObjects.get(object.guid));
       const visible = shown && (isPinned || radius === undefined || unitSphereVisibleInFrustum(
@@ -13264,7 +13273,7 @@ export class WorldRenderer3D {
     this.#unitAnimationPrefetch.clear();
     this.#atlasFrameDemands.clear();
     this.#atlasFrameActive.clear();
-    this.#vehiclePassengers.begin(state.objects, vehicleCatalog()); // 11.02-H
+    this.#vehiclePassengers.begin(state.objects, this.#vehicles()); // 11.02-H; 22.10 ARC-2 S2a: pushed rows
     this.#objectsForFacing = state.objects; // 5.32
     // The frustum is composed before admission so invisible neighbours do not consume the same
     // budget as the units on screen. Numeric sphere tests below allocate nothing per candidate.
@@ -13720,16 +13729,17 @@ export class WorldRenderer3D {
     if (seat !== undefined && world !== undefined) {
       const own = object.transport!.orientation;
       const local = (unit.shownFacing ??= new ShownUnitFacing()).step(
-        unitSeatFacing(object, world.objects, seat.flags, this.#drawnVehicleFacing, world.selfGuid) ?? own,
-        unitFacingTurn(object), elapsed);
+        unitSeatFacing(object, world.objects, seat.flags, this.#drawnVehicleFacing, world.selfGuid, undefined,
+          this.#inputs.facing) ?? own,
+        unitFacingTurn(object, this.#inputs.facing), elapsed); // 22.10 ARC-2 S2a: pushed facing inputs
       unit.seatFacing = local;
       unit.node.rotation.y = position.orientation + local - own;
     } else {
       // 5.32: `world.selfGuid` — a unit with no target faces the player whose interaction window is open on it.
       unit.node.rotation.y = mover || world === undefined ? position.orientation
         : (unit.shownFacing ??= new ShownUnitFacing()).step(
-          unitAutoFacing(object, world.objects, undefined, world.selfGuid) ?? position.orientation,
-          unitFacingTurn(object), elapsed);
+          unitAutoFacing(object, world.objects, undefined, world.selfGuid, this.#inputs.facing) ?? position.orientation,
+          unitFacingTurn(object, this.#inputs.facing), elapsed);
     }
     if (mover) unit.shownFacing = undefined;
     const content = unitContentVisible(object, self, this.#firstPerson, unit.body !== undefined);
@@ -14191,11 +14201,13 @@ export class WorldRenderer3D {
     // 12.10 6.08: the active player's own draw or sheathe hangs each piece by its arm's event, not by the field.
     const ceremony = unit.sheathCeremony;
     const wanted = new Map<string, { point: number; model: string; texture: string; build: string; glow: EnchantGlow | undefined }>();
+    const glowTables = this.#inputs.enchantGlow; // 22.10 ARC-2 S2a
     for (const item of attached ?? []) {
       const point = worldAttachmentPoint(item, ceremony ? ceremonySheath(ceremony, item.slot, now) : sheath,
         sheatheOf(item, metadata)); // 05.10-A7a-G2 6.08: Wow.exe sheath points
       if (point === undefined) continue;
-      const glow = this.#enchantGlow?.(object, item.slot, item.displayId); // 05.10-A7a-E2: the display's own glow
+      const glow = glowTables === undefined ? undefined
+        : attachedGlow(object, item.slot, enchantGlowSource(glowTables), item.displayId); // 05.10-A7a-E2; 22.10 ARC-2 S2a
       const glowKey = glow === undefined ? "0"
         : `${glow.color.toString(16)}@${glow.intensity}${glowSlotsKey(glow.slots)}`; // 05.10-A7a-E: slots ride the key
       // The point rides in the key: drawing or sheathing moves the blade between bones, and a key
@@ -14600,7 +14612,7 @@ export class WorldRenderer3D {
     // which is the horse's and holds neither; 6.07: the STUNNED/LOOTING holds, on an edge only.
     // 12.10 6.03: every emote-state value is a held base (Wow.exe 0x007171c0) — none is played once on a change —
     // and the unit the player is talking to sets aside a row with EmoteFlags 0x2000.
-    applyStandingPose(pose, object.fields, attachedOf(metadata), interactionNpcGuid() === object.guid);
+    applyStandingPose(pose, object.fields, attachedOf(metadata), this.#inputs.facing.interactionNpc === object.guid); // 22.10 ARC-2 S2a
     const flagPoses = flagPoseBits(object.fields.get(UPDATE_FIELDS.UNIT_FIELD_FLAGS.offset), isTerminalUnitPose(pose));
     if (flagPoses !== (unit.flagPoses ?? 0)) {
       syncFlagPoses(unit.flagPoses ?? 0, flagPoses, isTerminalUnitPose(pose), now, this.#actions.get(object.guid),

@@ -36,10 +36,10 @@ test("what is not known stays drawn: no template yet, another type, a raid's por
 test("the renderer keeps a hidden object resident but unpinned and invisible; the loop pushes the rule", () => {
   const renderer = readFileSync(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
   const pass = renderer.slice(renderer.indexOf("  #updateGameObjects("), renderer.indexOf("    const admission = selectGameObjectAdmissionWithTransports"));
-  assert.match(pass, /const shown = this\.#gameObjectShown\?\.\(object\) \?\? true;/);
+  assert.match(pass, /const shown = !this\.#inputs\.hiddenGameObjects\.has\(object\.guid\);/); // 22.10 ARC-2 S2a
   assert.match(pass, /const isPinned = shown && pinned\.has\(object\.guid\);/);
   assert.match(pass, /const visible = shown && \(isPinned \|\| radius === undefined/);
   const loop = readFileSync(new URL("../src/browser/game/Loop.ts", import.meta.url), "utf8");
-  assert.match(loop, /game\.renderer\?\.setGameObjectShown\(loopGameObjectShown\);/);
+  assert.match(loop, /renderInputs\.build\(\{[^}]*gameObjectShown: loopGameObjectShown,/); // 22.10 ARC-2 S2a
   assert.match(loop, /world\.group\?\.dungeonDifficulty \?\? world\.dungeonDifficulty/);
 });

@@ -210,12 +210,12 @@ test("dataset: the gateway's attached weapon and NPC weapon carry the ItemDispla
 
 test("the renderer's hooks: bodies mount, pose, pin, and the display id reaches the glow resolver", () => {
   const source = readFileSync(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
-  assert.match(source, /this\.#enchantGlow\?\.\(object, item\.slot, item\.displayId\)/);
+  assert.match(source, /attachedGlow\(object, item\.slot, enchantGlowSource\(glowTables\), item\.displayId\)/); // 22.10 ARC-2 S2a
   assert.match(source, /mountGlowBodies\(glowAnchorsOf\(node\), /);
   assert.match(source, /poseGlowBodies\(glowAnchorsOf\(node\), elapsed, now, this\.#camera\)/);
   assert.match(source, /pinGlowBuilds\(glowAnchorsOf\(node\), unitPins\)/);
   const loop = readFileSync(new URL("../src/browser/game/Loop.ts", import.meta.url), "utf8");
-  assert.match(loop, /attachedGlow\(object, slot, enchantClient, displayId\)/);
+  assert.match(loop, /enchantments: enchantClient/); // 22.10 ARC-2 S2a: the tables, not a resolver
 });
 
 // 05.10: ревью E2 — a glow follows the unit the way the blade it sits on does: faded with it (stealth,

@@ -128,8 +128,6 @@ import { closeSocketing } from "../ui/Socketing.js";
 import { CollisionSource } from "../game/CollisionSource.js";
 import { attachPredictedGlobalCooldown } from "../game/PredictedGlobalCooldown.js"; // L12 5.30
 import { setPetSpellAttributesSource } from "../../world/PetCastSpell.js"; // L13 11.02-D
-import { setUnitFacingSources } from "../../world/UnitFacing.js"; // 5.32
-import { unitFacingSourcesOf } from "../../world/UnitFacingSources.js"; // 5.32
 import { setPetSpellPlacementSource } from "../../world/PetCastSpell.js"; // L13-review 11.02-D
 import { clearHeldKeys } from "../input/Controls.js";
 import { applyKnockback, isAutoRunning, isWalking, reissueHeldMovement, resetCharacterMotion } from "../input/Movement.js";
@@ -919,8 +917,8 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
   }
   // L13 11.02-D: the pet bar's AttributesEx4 0x20 spells go out as CMSG_PET_CAST_SPELL (world/PetCastSpell.ts).
   setPetSpellAttributesSource((spellId) => game.spells.get(spellId)?.attributes); // L13 11.02-D
-  // 5.32: what a unit's drawn facing reads off this world (world/UnitFacing.ts, Wow.exe 0x00735f60).
-  setUnitFacingSources(unitFacingSourcesOf(() => (game.world === world ? world : undefined))); // 5.32
+  // 5.32: what a unit's drawn facing reads off this world (world/UnitFacing.ts, Wow.exe 0x00735f60) is pushed to
+  // the renderer each frame from `game.world` (22.10 ARC-2 S2a: game/RenderInputsBuilder.ts).
   // L13-review 11.02-D: a ground spell (Targets 0x40) of such a bar goes out only at a unit the player may attack.
   setPetSpellPlacementSource({ // L13-review 11.02-D
     targets: (spellId) => game.spells.get(spellId)?.targets, // L13-review 11.02-D
