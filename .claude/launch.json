@@ -6,6 +6,12 @@
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev"],
       "port": 5173
+    },
+    {
+      "name": "webclient-gateway",
+      "runtimeExecutable": ".runtime/node/node.exe",
+      "runtimeArgs": ["--enable-source-maps", "tools/start-gateway.mjs"],
+      "port": 8090
     }
   ]
 }

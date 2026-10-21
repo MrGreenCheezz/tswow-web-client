@@ -65,6 +65,11 @@ async function main() {
   const browserKind = value('--browser', 'chrome');
   if (!['chrome', 'electron'].includes(browserKind)) throw new Error('--browser must be chrome or electron');
   const headed = args.includes('--headed');
+  // 21.10 (12.18): --vsync keeps the display's own rhythm (no frame-rate and vsync switches), so a scene
+  // can be measured capped as a player sees it — the GPU clocks down when frames wait for the display.
+  // Headless Chrome has no display to wait for, hence a visible window or the Electron shell.
+  const vsync = args.includes('--vsync');
+  if (vsync && browserKind === 'chrome' && !headed) throw new Error('--vsync needs --headed or --browser electron');
   const cpuPolicy = process.platform !== 'win32' || cpuClass === 'none'
     ? { policy: 'system-default', selected: null, mask: '0' }
     : JSON.parse(execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
@@ -233,9 +238,9 @@ async function main() {
   // The shell's --uncapped sets the same frame-rate and vsync switches; its main.cjs adds the
   // two backgrounding switches itself.
   const chromeArgs = browserKind === 'electron'
-    ? [resolve('electron'), `--cpu-class=${cpuClass}`, `--window=${config.width}x${config.height}`, '--uncapped',
-      ...(jsFlags ? [`--js-flags=${jsFlags}`] : [])]
-    : ['--disable-frame-rate-limit', '--disable-gpu-vsync', '--enable-precise-memory-info',
+    ? [resolve('electron'), `--cpu-class=${cpuClass}`, `--window=${config.width}x${config.height}`,
+      ...(vsync ? [] : ['--uncapped']), ...(jsFlags ? [`--js-flags=${jsFlags}`] : [])]
+    : [...(vsync ? [] : ['--disable-frame-rate-limit', '--disable-gpu-vsync']), '--enable-precise-memory-info',
       '--disable-backgrounding-occluded-windows', '--disable-renderer-backgrounding', ...(jsFlags ? [`--js-flags=${jsFlags}`] : [])];
   let browser;
   const result = { schemaVersion: 1, timestamp: stamp, label: value('--label', smoke ? 'smoke' : trace ? 'trace' : 'measurement'),
@@ -243,7 +248,7 @@ async function main() {
     git: { head: git('rev-parse', 'HEAD'), branch: git('branch', '--show-current'), dirty: Boolean(git('status', '--porcelain')) },
     host: { platform: os.platform(), release: os.release(), cpu: os.cpus()[0]?.model, cores: os.cpus().length,
       memoryBytes: os.totalmem(), node: process.version, cpuPolicy },
-    browser: { kind: browserKind, headed: browserKind === 'electron' || headed, executablePath, args: chromeArgs,
+    browser: { kind: browserKind, headed: browserKind === 'electron' || headed, vsync, executablePath, args: chromeArgs,
       crossOriginIsolationHeaders: isolation, jsProfilingHeader: jsProfiling },
     scenarios: [], artifacts: `bench/results/${stamp}`, errors: [] };
   const resultPath = resolve('bench/results', `${stamp}.json`);
@@ -583,7 +588,7 @@ async function main() {
     // question than the strict P-core headless baseline, so it never replaces one.
     result.budgetProbeRun = budgetProbe; // P2-09a: each scenario carries its `budgetProbe` report
     result.valid = result.errors.length === 0 && !smoke && !prepareOnly && !diagnostic && !allowLoad && !variantDir && !budgetProbe
-      && browserKind === 'chrome' && !headed && cpuClass !== 'none' && isolation && !jsProfiling && !jsFlags
+      && browserKind === 'chrome' && !headed && !vsync && cpuClass !== 'none' && isolation && !jsProfiling && !jsFlags
       && bundleTarget === DEFAULT_BENCHMARK_TARGET && bundleEnv === DEFAULT_BENCHMARK_ENV
       && bundleNames === DEFAULT_BENCHMARK_NAMES;
     result.comparable = result.valid && !trace && !captureAbba && !heapProfile;
