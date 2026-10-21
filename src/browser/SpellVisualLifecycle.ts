@@ -20,6 +20,7 @@ import type {
   SpellVisualEffectTransform, SpellVisualKitRecord, SpellVisualMetadata,
 } from "../gateway/SpellVisual.js";
 import { DynamicObjectAreas } from "./DynamicObjectVisual.js"; // 05.10-A7a-G2 6.05б
+import { allocateRenderId } from "./RenderCommandIds.js"; // 22.10 ARC-2 S4a
 
 /** The finite effects the renderer owns while an aura is present. */
 export interface StateVisualDescriptor {
@@ -32,12 +33,16 @@ export interface StateVisualDescriptor {
   transform?: SpellVisualEffectTransform;
 }
 
-/** The deliberately small renderer surface used by the lifecycle coordinator. */
+/**
+ * The deliberately small renderer surface used by the lifecycle coordinator. 22.10 ARC-2 S4a: a played visual is
+ * named by an id this side allocates (RenderCommandIds.ts), never by an object the renderer hands back; the plan's
+ * and the retime's absolute times are main-clock `performance.now()` values (RenderClock.ts converts them).
+ */
 export interface SpellVisualLifecycleRenderer {
-  playSpellVisual(plan: SpellVisualPlan): unknown;
+  playSpellVisual(plan: SpellVisualPlan, id: number): void;
   setStateVisuals(byUnit: ReadonlyMap<bigint, readonly StateVisualDescriptor[]>): void;
-  cancelSpellVisual?(handle: unknown): void;
-  retimeSpellVisual?(handle: unknown, absoluteEndsAt: number): void;
+  cancelSpellVisual?(id: number): void;
+  retimeSpellVisual?(id: number, absoluteEndsAt: number): void;
   cancelUnitAction?(guid: bigint): void;
   clearSpellVisuals?(): void;
   playUnitAction?(guid: bigint, action: "precast" | "channel" | "cast" | "shoot", hold?: number): void;
@@ -171,7 +176,7 @@ interface StateVisualOwnership {
   key: string;
   epoch: number;
   world: SpellVisualLifecycleWorld;
-  handle: unknown;
+  handle: number; // 22.10 ARC-2 S4a: the visual's id
 }
 
 interface PendingFallback {
@@ -193,7 +198,7 @@ interface ActiveStart {
   /** Last authoritative update, used only for bounded metadata TTL; plan times stay startedAt. */
   receivedAt: number;
   duration: number;
-  handle: unknown;
+  handle: number | undefined; // 22.10 ARC-2 S4a: the visual's id
   /** Sound-only start plans have no renderer handle; remember that their one dispatch happened. */
   soundDispatched: boolean;
 }
@@ -1274,7 +1279,7 @@ export class SpellVisualCoordinator {
     now: number,
     world: SpellVisualLifecycleWorld,
     state: StateDeferredGuard,
-  ): unknown {
+  ): number | undefined { // 22.10 ARC-2 S4a
     // StateKit instances are owned by setStateVisuals; only its one-shot animations and sound
     // belong to this finite dispatch.
     return this.#dispatchPlan({ instances: [], animations: plan.animations, sounds: plan.sounds }, receivedAt, now, world,
@@ -1288,7 +1293,7 @@ export class SpellVisualCoordinator {
     world: SpellVisualLifecycleWorld,
     deferIfMissingRenderer = true,
     state?: StateDeferredGuard,
-  ): unknown {
+  ): number | undefined { // 22.10 ARC-2 S4a: the visual's id when the renderer was asked to play it
     if (!this.#active || this.#world !== world || now - receivedAt > this.#ttl) return undefined;
     const instances = plan.instances.filter((instance) => instance.endsAt > now);
     // One-shots are still meaningful when replayed a few milliseconds late (impact flashes and
@@ -1327,7 +1332,8 @@ export class SpellVisualCoordinator {
       this.#drainSounds(now);
       return undefined;
     }
-    const handle = renderer.playSpellVisual(filtered);
+    const handle = allocateRenderId(); // 22.10 ARC-2 S4a
+    renderer.playSpellVisual(filtered, handle);
     this.#drainSounds(now);
     return handle;
   }

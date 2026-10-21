@@ -246,10 +246,13 @@ test("hook lines: onSwing, the renderer's reaction entry and the variant roll", 
   assert.doesNotMatch(onSwing, /playUnitReaction\(/);
   assert.match(onSwing, /swingReactions\.swing\(swing, swingAction\(swing\.hitInfo\)\)/);
   assert.match(enter, /world\.onMeleeAttack = \(attacker, victim\) => swingReactions\.meleeAttack\(attacker, victim\)/);
-  assert.match(enter, /entryLifecycle\.track\(\(\) => swingReactions\.dispose\(\)\)/);
+  // 22.10 ARC-2 S4a: the entry also leaves the context the loop syncs and ticks it through.
+  assert.match(enter, /entryLifecycle\.track\(\(\) => \{\r?\n\s+swingReactions\.dispose\(\);[^\n]*\n\s+if \(game\.swingReactions === swingReactions\) game\.swingReactions = undefined;/);
+  assert.match(enter, /game\.swingReactions = swingReactions;/);
   const host = readFileSync(new URL("../src/browser/game/SwingReactionHost.ts", import.meta.url), "utf8");
-  assert.match(host, /renderer\?\.playUnitAction\(swing\.attacker, action\)/);
-  assert.match(host, /renderer\.afterUnits = this\.#tick/);
+  // 22.10 ARC-2 S4a: the swing is queued under an id this side allocates; nothing is handed to the renderer to call.
+  assert.match(host, /this\.#renderer\(\)\?\.playUnitAction\(swing\.attacker, action, 0, id\)/);
+  assert.doesNotMatch(host, /afterUnits\s*=|kitWoundCombat\s*=/);
   const client = readFileSync(new URL("../src/world/WorldClient.ts", import.meta.url), "utf8");
   assert.match(client, /parseAttackStart\(packet\.payload\);\n\s+this\.onMeleeAttack\?\.\(attack\.attacker, attack\.victim\);/);
   assert.match(client, /parseAttackStop\(packet\.payload\);\n\s+this\.onMeleeAttack\?\.\(attack\.attacker, undefined\);/);
@@ -264,9 +267,22 @@ test("hook lines: onSwing, the renderer's reaction entry and the variant roll", 
   assert.match(body("#entryAnimation"), /combatAnimations\(pending, attachedOf\(metadata\)\)/);
   // 05.10-A7a-D2: a weapon without a parry (0x73b050) drops the entry instead of waiting for a clip.
   assert.match(body("#entryAnimation"), /combat !== undefined && combat\.length === 0\) return "drop"/);
-  assert.match(body("playUnitAction"), /return this\.#submitUnitAction\(/);
-  assert.match(body("meleeSwingProgress"), /shown\.entry === token/);
-  assert.match(body("#updateUnits"), /this\.afterUnits\?\.\(now\)/);
+  // 22.10 ARC-2 S4a: the entry is watched under main's id, which comes back instead of the entry.
+  assert.match(body("playUnitAction"), /const entry = this\.#submitUnitAction\(/);
+  assert.match(body("playUnitAction"), /this\.#swingWatch\.watch\(id, guid, entry\);[^\n]*\n\s+return id;/);
+  assert.match(body("#meleeSwingProgress"), /shown\.entry === entry/);
+  assert.match(body("#updateUnits"), /this\.#swingWatch\.publish\(this\.#results, now, this\.#swingProgressOf\);/);
+  // 22.10 ARC-2 S4a: `draw` calls nothing of the main thread's: no `afterUnits` hook, no `kitWoundCombat` question.
+  assert.doesNotMatch(renderer, /afterUnits|kitWoundCombat/);
+  assert.match(renderer, /\n {2}playUnitAction\(guid: bigint, action: UnitAction, hold = 0, id\?: number\): number \| undefined \{/);
+  assert.match(body("#setUnitAnimation"), /kitWoundAnimation\(animation\.animation, this\.#meleeTargets\.has\(animation\.guid\)\)/);
+  assert.match(body("setMeleeTargets"), /this\.#meleeTargets = units;/);
+  assert.match(body("releaseUnitAction"), /this\.#swingWatch\.release\(id\);/);
+  const loop = readFileSync(new URL("../src/browser/game/Loop.ts", import.meta.url), "utf8");
+  assert.match(loop, /game\.swingReactions\?\.syncMeleeTargets\(\);\s+try \{\s+try \{\s+renderer\.draw\(/,
+    "the +0xa20 set is pushed before the frame a kit wound may come due in");
+  assert.match(loop, /\} finally \{\s+(?:\/\/[^\n]*\s+)+game\.swingReactions\?\.afterDraw\(\);/,
+    "the cues tick once draw returned, first thing");
   // 05.10-A7a-D-review: a queue for a guid never drawn leaves with the range — one reaction per hit
   // on every victim must not pile up queues for units beyond the draw distance.
   assert.match(body("#updateUnits"),

@@ -34,8 +34,9 @@ function harness(visuals = { 5740: VISUAL }) {
   const areas = new DynamicObjectAreas({
     visual: (spellId) => { asked.push(spellId); return visuals[spellId]; },
     renderer: () => ({
-      playSpellVisual: (plan) => { const handle = { plan }; played.push(handle); return handle; },
-      cancelSpellVisual: (handle) => cancelled.push(handle),
+      // 22.10 ARC-2 S4a: played under the areas' own numeric id; cancelled by that id.
+      playSpellVisual: (plan, id) => { assert.equal(typeof id, "number"); played.push({ plan, id }); },
+      cancelSpellVisual: (id) => cancelled.push(played.find((one) => one.id === id)),
     }),
   });
   return { areas, played, cancelled, asked };

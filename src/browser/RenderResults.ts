@@ -41,6 +41,19 @@ export interface SeatResult {
   stamp: number;
 }
 
+/** 22.10 ARC-2 S4a: one watched melee swing as the renderer saw it once the units animated (SwingProgressWatch.ts). */
+export interface SwingResult {
+  /**
+   * Was `renderer.meleeSwingProgress`: the clip fraction while shown, 1 once it ran out, undefined while it waits
+   * in the queue, null when it left the queue without playing through.
+   */
+  progress: number | null | undefined;
+  /** Whether its clip ever started (the entry's `started`). */
+  started: boolean;
+  /** The clip length in seconds the renderer resolved for a swing it could not draw (entry `payload.swingSeconds`). */
+  swingSeconds: number | undefined;
+}
+
 export interface RenderResults {
   /** Bumped by every fill of the rows below. */
   frame: number;
@@ -73,13 +86,21 @@ export interface RenderResults {
    * these are not overwritten per frame: each is applied exactly once.
    */
   readonly portraits: PortraitOutput[];
+  /**
+   * 22.10 ARC-2 S4a: every watched swing (by the id main gave `playUnitAction`) at the moment the units of the last
+   * drawn frame had animated — where the renderer used to call `afterUnits` back. Rewritten by every frame that
+   * reaches the units; `swingFrame` counts those frames, `swingNow` is that frame's `now` on the main clock.
+   */
+  readonly swings: Map<number, SwingResult>;
+  swingFrame: number;
+  swingNow: number;
 }
 
 export function createRenderResults(atmosphereProfile: Readonly<AtmosphereProfile>): RenderResults {
   return {
     frame: 0, units: new Map(), gameObjectCorners: new Map(), seats: new Map(), seatFrame: 0,
     cameraAspect: 1, weatherStorm: 0, atmosphereProfile, atmosphereAudio: undefined, fps: 0, indoors: false, status: "",
-    portraits: [],
+    portraits: [], swings: new Map(), swingFrame: 0, swingNow: 0,
   };
 }
 

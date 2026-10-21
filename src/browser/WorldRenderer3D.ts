@@ -23,6 +23,9 @@ import {
   CAMERA_NEAR_PLANE, // 5.33
 } from "./SceneCamera.js"; // 21.10 ARC-2 S1: not SimpleScene.ts, which brings the DOM overlay along
 import { pageRenderHost, type CanvasCssSize, type RenderHost } from "./RenderHost.js"; // 21.10 ARC-2 S1
+import { planToRenderTime, toRenderTime } from "./RenderClock.js"; // 22.10 ARC-2 S4a
+import { SwingProgressWatch } from "./SwingProgressWatch.js"; // 22.10 ARC-2 S4a
+import { SpellVisualIds } from "./SpellVisualIds.js"; // 22.10 ARC-2 S4a
 import { captureBenchmarkWebGl, type BenchmarkEnvironmentInput } from "./BenchmarkManifest.js"; // 21.10 ARC-2 S1
 import { ENVIRONMENT_FAR_RANGE, ENVIRONMENT_RANGE, ENVIRONMENT_RESIDENT_HYSTERESIS, ENVIRONMENT_STREAM_RANGE, TERRAIN_GRID_SIZE, modelKey, terrainGrid, terrainGridIndex, type EnvironmentClient, type EnvironmentModel, type EnvironmentObject, type TerrainClient } from "./Terrain.js";
 import { terrainGeometryData, terrainGeometrySteps, type TerrainGeometryData } from "./TerrainGeometry.js";
@@ -3031,7 +3034,10 @@ interface RenderedVisual {
   boneOffsetSource?: WvmModel;
 }
 
-/** Opaque ownership token returned by {@link WorldRenderer3D.playSpellVisual}. */
+/** 22.10 ARC-2 S4a: no unit has a melee target until main pushes some (`setMeleeTargets`). */
+const NO_MELEE_TARGETS: ReadonlySet<bigint> = new Set();
+
+/** The renderer's own ownership token of one played spell visual; main names it by id (SpellVisualIds.ts). */
 export interface SpellVisualHandle {
   readonly id: number;
 }
@@ -3797,6 +3803,9 @@ export class WorldRenderer3D {
   /** Everything the spells currently in the air are showing, in world coordinates. */
   readonly #visuals: RenderedVisual[] = [];
   #visualSequence = 0;
+  /** 22.10 ARC-2 S4a: the main thread's spell visual ids → the handles below (SpellVisualIds.ts). */
+  readonly #spellVisualIds = new SpellVisualIds<SpellVisualHandle>();
+  readonly #liveVisualHandles = (): ReadonlySet<SpellVisualHandle> => this.#collectVisualHandles(); // 22.10 ARC-2 S4a
   /** Animations from future spell impacts, held out of #actions until their absolute start. */
   readonly #pendingVisualAnimations: Array<{
     animation: VisualAnimation;
@@ -6247,7 +6256,8 @@ export class WorldRenderer3D {
    * because none of that needs a scene and all of it is worth being able to assert. What is left
    * here is the part that does: putting a node in the world and taking it away again.
    */
-  playSpellVisual(plan: SpellVisualPlan): SpellVisualHandle {
+  playSpellVisual(mainPlan: SpellVisualPlan, id?: number): void { // 22.10 ARC-2 S4a: an id, no handle back
+    const plan = planToRenderTime(mainPlan); // 22.10 ARC-2 S4a: the plan's absolute times onto this clock
     const now = performance.now();
     const handle: SpellVisualHandle = Object.freeze({ id: ++this.#visualSequence });
     for (const instance of plan.instances) {
@@ -6291,7 +6301,19 @@ export class WorldRenderer3D {
       }
       this.#setUnitAnimation(animation, "visual", handle);
     }
-    return handle;
+    if (id !== undefined) this.#spellVisualIds.set(id, handle, this.#liveVisualHandles); // 22.10 ARC-2 S4a
+  }
+
+  /** 22.10 ARC-2 S4a: every spell visual handle a node, a beam, a pending pose or a queued action still holds. */
+  #collectVisualHandles(): Set<SpellVisualHandle> {
+    const held = new Set<SpellVisualHandle>();
+    for (const visual of this.#visuals) held.add(visual.handle);
+    for (const pending of this.#pendingVisualAnimations) held.add(pending.handle);
+    this.#chainBeams?.collectHandles(held as Set<unknown>);
+    for (const queue of this.#actions.values()) {
+      for (const entry of queue.entries) if (entry.owner !== undefined) held.add(entry.owner as SpellVisualHandle);
+    }
+    return held;
   }
 
   /** Remove spell FX/state and only their particle bookkeeping; portraits and world scenery stay. */
@@ -6305,6 +6327,7 @@ export class WorldRenderer3D {
       this.#disposeRenderedVisual(visual);
     }
     this.#visuals.length = 0;
+    this.#spellVisualIds.clear(); // 22.10 ARC-2 S4a
     // The poses go with them. Whatever is on show is released on the unit's next pose pass, which
     // cross-fades it into the unit's own pose instead of cutting it.
     for (const [guid, queue] of this.#actions) {
@@ -6314,7 +6337,9 @@ export class WorldRenderer3D {
   }
 
   /** Remove only one cast's nodes, emitters and not-yet-started animation requests. */
-  cancelSpellVisual(handle: SpellVisualHandle): void {
+  cancelSpellVisual(id: number): void {
+    const handle = this.#spellVisualIds.delete(id); // 22.10 ARC-2 S4a: the id main gave it
+    if (handle === undefined) return;
     this.#chainBeams?.cancel(handle); // 05.10-A7a-E
     for (let index = this.#pendingVisualAnimations.length - 1; index >= 0; index--) {
       if (this.#pendingVisualAnimations[index]!.handle === handle) this.#pendingVisualAnimations.splice(index, 1);
@@ -6336,8 +6361,11 @@ export class WorldRenderer3D {
   }
 
   /** Extend or shorten one cast without restarting its particles or creating another node. */
-  retimeSpellVisual(handle: SpellVisualHandle, endsAt: number): void {
-    if (!Number.isFinite(endsAt)) return;
+  retimeSpellVisual(id: number, mainEndsAt: number): void {
+    if (!Number.isFinite(mainEndsAt)) return;
+    const handle = this.#spellVisualIds.get(id); // 22.10 ARC-2 S4a: the id main gave it
+    if (handle === undefined) return;
+    const endsAt = toRenderTime(mainEndsAt); // 22.10 ARC-2 S4a
     this.#chainBeams?.retime(handle, endsAt); // 05.10-A7a-E
     const now = performance.now();
     for (const visual of this.#visuals) {
@@ -13495,7 +13523,9 @@ export class WorldRenderer3D {
     this.#unitShadowCasters.end(); // 06.10-shadow
     // 11.02-H: vehicle passengers onto their seats, now that every vehicle stands and is posed.
     this.#vehiclePassengers.place(admission.admitted, drawn, this.#units); // 11.02-H-review
-    this.afterUnits?.(now); // 05.10-A7a-D2 6.06: melee reactions at the attackers' swing moments
+    // 05.10-A7a-D2 6.06: melee reactions at the attackers' swing moments. 22.10 ARC-2 S4a: the swings' progress at
+    // this moment is published (SwingProgressWatch.ts); main ticks its cues from it after `draw`, no call back.
+    this.#swingWatch.publish(this.#results, now, this.#swingProgressOf);
     // Current poses across the whole crowd get first use of the animation slice. Spend any
     // remainder on the resident sidecars so future actions keep the original prefetch behaviour.
     for (const [template, path] of this.#unitAnimationPrefetch) {
@@ -14587,12 +14617,12 @@ export class WorldRenderer3D {
       ...(visualHandle === undefined ? {} : { owner: visualHandle }),
       payload: {
         wanted: [animation.kitWound === true // 05.10-6.21: Wow.exe's flinch rule for a kit AnimID wound
-          ? kitWoundAnimation(animation.animation, this.kitWoundCombat?.(animation.guid) === true) : animation.animation],
+          ? kitWoundAnimation(animation.animation, this.#meleeTargets.has(animation.guid)) : animation.animation], // 22.10 ARC-2 S4a
         action: undefined,
         stage: animation.followUp ? "lead" : "main",
         ...(animation.followUp
           ? { followUp: { animation: animation.followUp.kitWound === true // 05.10-6.21
-            ? kitWoundAnimation(animation.followUp.animation, this.kitWoundCombat?.(animation.guid) === true)
+            ? kitWoundAnimation(animation.followUp.animation, this.#meleeTargets.has(animation.guid)) // 22.10 ARC-2 S4a
             : animation.followUp.animation, mode: animation.followUp.mode } }
           : {}),
         sequenceAt: 0,
@@ -14603,12 +14633,16 @@ export class WorldRenderer3D {
     }, now);
   }
 
-  /** A swing or a shot (melee layer) — or, for the unused spell kinds, a cast. */
-  playUnitAction(guid: bigint, action: UnitAction, hold = 0): UnitActionEntry<UnitActionPayload> | undefined { // 05.10-A7a-D2: the entry is the swing's token
+  /**
+   * A swing or a shot (melee layer) — or, for the unused spell kinds, a cast. 22.10 ARC-2 S4a: with `id` (a melee
+   * swing's, allocated by main) the queued entry is watched under it — its progress published in RenderResults.ts
+   * `swings` until `releaseUnitAction(id)` — and the id comes back; undefined when refused or without an id.
+   */
+  playUnitAction(guid: bigint, action: UnitAction, hold = 0, id?: number): number | undefined {
     const now = performance.now();
     const layer: UnitActionLayer = action === "precast" || action === "cast" || action === "channel" ? "cast"
       : action === "loot" ? "emote" : "melee";
-    return this.#submitUnitAction(guid, { // 05.10-A7a-D2
+    const entry = this.#submitUnitAction(guid, { // 05.10-A7a-D2
       layer,
       held: hold > 0,
       until: now + (hold > 0 ? hold : ACTION_SIDECAR_WAIT),
@@ -14625,6 +14659,29 @@ export class WorldRenderer3D {
         roll: Math.random(), // 05.10-A7a-D 6.06; 05.10-A7a-D-review: unread (Wow.exe 0x755130 does not roll), kept for 6.16c
       },
     }, now);
+    if (entry === undefined || id === undefined) return undefined;
+    this.#swingWatch.watch(id, guid, entry); // 22.10 ARC-2 S4a
+    return id;
+  }
+
+  /** 22.10 ARC-2 S4a: main's cue record of swing `id` is gone; its progress is no longer published. */
+  releaseUnitAction(id: number): void {
+    this.#swingWatch.release(id);
+  }
+
+  /**
+   * 05.10-6.21, 22.10 ARC-2 S4a: the units with a melee target of their own (`+0xa20`), pushed by main
+   * (game/SwingReactionHost.ts) for a kit's wound — was a question called back into main. `undefined` takes back
+   * `owner`'s set only, so a later world entry's push stays.
+   */
+  setMeleeTargets(units: ReadonlySet<bigint> | undefined, owner: number): void {
+    if (units !== undefined) {
+      this.#meleeTargets = units;
+      this.#meleeTargetsOwner = owner;
+    } else if (this.#meleeTargetsOwner === owner) {
+      this.#meleeTargets = NO_MELEE_TARGETS;
+      this.#meleeTargetsOwner = 0;
+    }
   }
 
   /**
@@ -14647,26 +14704,29 @@ export class WorldRenderer3D {
   }
 
   /**
-   * 05.10-A7a-D2 6.06: how far the swing queued as `token` has played on `guid` (game/SwingReactionCues.ts
+   * 05.10-A7a-D2 6.06: how far the swing queued as `entry` has played on `guid` (game/SwingReactionCues.ts
    * times the victim's reaction by it): the clip fraction while shown, 1 once it ran to its hand-back,
-   * undefined while it waits, null when it went without playing through.
+   * undefined while it waits, null when it went without playing through. 22.10 ARC-2 S4a: asked by the swing
+   * watch at the units' moment of the frame, published, never called from main.
    */
-  meleeSwingProgress(guid: bigint, token: object, now: number): number | undefined | null {
+  #meleeSwingProgress(guid: bigint, entry: UnitActionEntry<UnitActionPayload>, now: number): number | undefined | null {
     const queue = this.#actions.get(guid);
     const shown = queue?.shown;
-    if (shown !== undefined && shown.entry === token) {
+    if (shown !== undefined && shown.entry === entry) {
       const duration = shown.action.getClip().duration;
       return duration > 0 ? shown.action.time / duration : 1;
     }
-    const entry = token as UnitActionEntry<UnitActionPayload>;
     if (entry.started) return now >= entry.until ? 1 : null;
     return queue !== undefined && queue.entries.includes(entry) ? undefined : null;
   }
 
-  /** 05.10-A7a-D2: called once per frame after the units animated (EnterWorld times melee reactions). */
-  afterUnits: ((now: number) => void) | undefined;
-  /** 05.10-6.21: whether a unit has a melee target of its own (`+0xa20`), for a kit's wound (game/SwingReactionHost.ts). */
-  kitWoundCombat: ((guid: bigint) => boolean) | undefined;
+  /** 22.10 ARC-2 S4a: the watched melee swings (SwingProgressWatch.ts) and their progress question, bound once. */
+  readonly #swingWatch = new SwingProgressWatch<UnitActionEntry<UnitActionPayload>>();
+  readonly #swingProgressOf = (guid: bigint, entry: UnitActionEntry<UnitActionPayload>, now: number): number | undefined | null =>
+    this.#meleeSwingProgress(guid, entry, now);
+  /** 22.10 ARC-2 S4a: main's last `setMeleeTargets` and who pushed it. */
+  #meleeTargets: ReadonlySet<bigint> = NO_MELEE_TARGETS;
+  #meleeTargetsOwner = 0;
 
   /** An emote, which the server names by animation rather than by kind. */
   playUnitEmote(guid: bigint, animation: number, hold = 0): void {

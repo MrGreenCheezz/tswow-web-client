@@ -140,46 +140,54 @@ test("renderer: a kit wound resolves by the unit's melee target when it is queue
   const submitted = [];
   h.submitUnitAction = (guid, request) => submitted.push(request);
   const wound = { guid: 7n, animation: 9, at: 0, hold: 0, mode: "once", layer: "reaction", kitWound: true };
+  h.meleeTargets = new Set(); // 22.10 ARC-2 S4a: pushed by main (setMeleeTargets), not asked back
   h.setUnitAnimation(wound, "visual");
   assert.deepEqual(submitted[0].payload.wanted, [8], "no melee target known: StandWound");
-  h.kitWoundCombat = (guid) => guid === 7n;
+  h.meleeTargets = new Set([7n]);
   h.setUnitAnimation(wound, "visual");
   assert.deepEqual(submitted[1].payload.wanted, [9]);
   h.setUnitAnimation({ ...wound, kitWound: undefined }, "visual");
   assert.deepEqual(submitted[2].payload.wanted, [9], "an unmarked pose is played as named");
-  h.kitWoundCombat = () => false;
+  h.meleeTargets = new Set();
   h.setUnitAnimation({ guid: 7n, animation: 5, at: 0, hold: 0, mode: "once", layer: "reaction",
     followUp: { animation: 9, mode: "once", hold: 0, kitWound: true } }, "visual");
   assert.deepEqual(submitted[3].payload.wanted, [5]);
   assert.equal(submitted[3].payload.followUp.animation, 8, "the follow-up AnimID is the one rerouted");
 });
 
-// 05.10 review 6.21: the host hands the renderer the `+0xa20` question once, keeps it through
-// SMSG_ATTACK_START/STOP, and takes back only its own callback on dispose.
-test("review: SwingMeleeReactions wires kitWoundCombat once and releases only its own", async () => {
+// 05.10 review 6.21; 22.10 ARC-2 S4a: the host hands the renderer the `+0xa20` answer as data — the units with a
+// melee target, pushed whenever it may have changed and only then — and takes back only its own set on dispose.
+test("review: SwingMeleeReactions pushes its melee targets as data and takes back only its own", async () => {
   const { SwingMeleeReactions } = await import("../dist/code/browser/game/SwingReactionHost.js");
   const unit = { fields: new Map() };
   const world = { objects: new Map([[5n, unit]]) };
   let renderer;
   const reactions = new SwingMeleeReactions(world, () => renderer);
-  renderer = { afterUnits: undefined, kitWoundCombat: undefined, playUnitAction: () => undefined,
-    playUnitReaction: () => {}, meleeSwingProgress: () => undefined };
-  reactions.meleeAttack(5n, 6n); // the renderer appears after the entry: the first start attaches
-  const wired = renderer.kitWoundCombat;
-  assert.equal(typeof wired, "function");
-  assert.equal(wired(5n), true, "a unit with SMSG_ATTACK_START has a melee target");
-  assert.equal(wired(6n), false);
+  const pushes = [];
+  renderer = {
+    units: undefined, owner: 0, results: { swings: new Map(), swingFrame: 0, swingNow: 0 },
+    playUnitAction: () => undefined, playUnitReaction: () => {}, releaseUnitAction: () => {},
+    setMeleeTargets(units, owner) {
+      pushes.push(units === undefined ? undefined : [...units]);
+      if (units !== undefined) { renderer.units = units; renderer.owner = owner; }
+      else if (renderer.owner === owner) { renderer.units = undefined; renderer.owner = 0; }
+    },
+  };
+  reactions.meleeAttack(5n, 6n); // the renderer appears after the entry: the first start pushes
+  assert.deepEqual(pushes, [[5n]], "a unit with SMSG_ATTACK_START has a melee target");
+  assert.equal(structuredClone(renderer.units).has(5n), true, "plain data: a Set of guids");
   reactions.meleeAttack(5n, 6n);
-  assert.equal(renderer.kitWoundCombat === wired, true, "no second attach");
+  reactions.syncMeleeTargets();
+  assert.equal(pushes.length, 1, "an unchanged set is not pushed again");
   reactions.meleeAttack(5n, undefined);
-  assert.equal(wired(5n), false, "SMSG_ATTACK_STOP clears it");
-  reactions.dispose();
-  assert.equal(renderer.kitWoundCombat, undefined, "dispose takes its callback back");
-  const other = () => true;
-  const next = new SwingMeleeReactions(world, () => renderer);
-  renderer.kitWoundCombat = other; // a later entry's own callback
+  assert.deepEqual(pushes.at(-1), [], "SMSG_ATTACK_STOP clears it");
+  const next = new SwingMeleeReactions(world, () => renderer); // a later entry pushes its own
+  const later = renderer.units;
+  assert.notEqual(later, undefined);
+  reactions.dispose(); // the old entry after it: not its set any more
+  assert.equal(renderer.units, later, "a foreign set is left alone");
   next.dispose();
-  assert.equal(renderer.kitWoundCombat === other, true, "a foreign callback is left alone");
+  assert.equal(renderer.units, undefined, "dispose takes its own set back");
 });
 
 /* --- 05.10-6.21b: owner decision — a pose off the list over a travelling base takes the whole body - */

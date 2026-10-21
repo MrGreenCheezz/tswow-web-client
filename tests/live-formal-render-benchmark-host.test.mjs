@@ -748,10 +748,11 @@ test("spell, state-visual, and portrait ingress is isolated then reconciled on r
   const player = { guid: 1n, canvas: undefined, width: 0, height: 0, stockGround: false, ready: undefined };
   const portraitTargets = { targets: new Map([["player", player]]), stock: new Map(), stockVersion: 0, rejected: [] };
 
-  const handle = harness.renderer.playSpellVisual({ instances: [], animations: [] });
-  assert.ok(handle.id < 0, "suppressed casts still receive an opaque cancellable handle");
-  harness.renderer.cancelSpellVisual(handle);
-  harness.renderer.retimeSpellVisual(handle, 10);
+  // 22.10 ARC-2 S4a: a cast is named by main's own id; suppressed, the renderer never learns it, and its later
+  // cancel or retime (here, or after the lease) finds nothing.
+  assert.equal(harness.renderer.playSpellVisual({ instances: [], animations: [] }, 77), undefined);
+  harness.renderer.cancelSpellVisual(77);
+  harness.renderer.retimeSpellVisual(77, 10);
   harness.renderer.clearSpellVisuals();
   harness.renderer.setStateVisuals(stateVisuals);
   harness.renderer.clearPortraits();

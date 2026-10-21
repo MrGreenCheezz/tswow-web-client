@@ -189,6 +189,11 @@ export class ChainBeams {
     for (let index = this.#live.length - 1; index >= 0; index--) this.#release(index);
   }
 
+  /** 22.10 ARC-2 S4a: the handles that still own a beam (SpellVisualIds.ts prune). */
+  collectHandles(out: Set<unknown>): void {
+    for (const live of this.#live) out.add(live.handle);
+  }
+
   /** Places every live beam for this frame (`eye` in scene coordinates); drops the finished ones. */
   update(now: number, points: BeamPoints, state: WorldState | undefined, eye: THREE.Vector3): void {
     _eye.x = eye.x;

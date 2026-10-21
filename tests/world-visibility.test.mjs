@@ -487,9 +487,11 @@ test("V4 spell M2 effects use a local clock and a skinned emitter rig", async ()
 
 test("V4 visual cleanup and cancellation are ownership-scoped", async () => {
   const source = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
-  assert.match(source, /playSpellVisual\(plan: SpellVisualPlan\): SpellVisualHandle/);
-  assert.match(source, /cancelSpellVisual\(handle: SpellVisualHandle\)/);
-  assert.match(source, /retimeSpellVisual\(handle: SpellVisualHandle, endsAt: number\)/);
+  // 22.10 ARC-2 S4a: main names a visual by its own numeric id; the renderer maps it to the handle it keys by.
+  assert.match(source, /playSpellVisual\(mainPlan: SpellVisualPlan, id\?: number\): void/);
+  assert.match(source, /cancelSpellVisual\(id: number\): void \{\s+const handle = this\.#spellVisualIds\.delete\(id\);/);
+  assert.match(source, /retimeSpellVisual\(id: number, mainEndsAt: number\): void \{/);
+  assert.match(source, /const endsAt = toRenderTime\(mainEndsAt\);/);
   assert.match(source, /pending\.animation\.hold = Math\.max\(0, endsAt - pending\.animation\.at\)/,
     "retiming a cast also updates pending scheduled animation duration");
   // Poses now live in per-unit `UnitActionQueue`s whose entries carry their owning handle.
@@ -694,4 +696,126 @@ test("Ж4.2 frustum culling is asked only of things that have geometry", async (
     assert.match(argument, /\.mesh$/,
       `frustum culling is asked of \`${argument}\`, which is not a mesh and will throw`);
   }
+});
+
+/**
+ * 22.10 ARC-2 S4a: the renderer's spell visual methods, extracted from source (private names made public) and run
+ * on stand-in collaborators: play, retime, cancel and clear by main's numeric id, through the id map.
+ */
+async function spellVisualIdHarness() {
+  const ts = (await import("typescript")).default;
+  const { SpellVisualIds } = await import("../dist/code/browser/SpellVisualIds.js");
+  const clock = await import("../dist/code/browser/RenderClock.js");
+  const source = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
+  const parsed = ts.createSourceFile("WorldRenderer3D.ts", source, ts.ScriptTarget.Latest, true);
+  const renderer = parsed.statements.find((node) => ts.isClassDeclaration(node) && node.name?.text === "WorldRenderer3D");
+  const names = ["playSpellVisual", "clearSpellVisuals", "cancelSpellVisual", "retimeSpellVisual", "#collectVisualHandles"];
+  const members = names.map((name) => {
+    const member = renderer.members.find((candidate) => candidate.name?.getText(parsed) === name);
+    assert.ok(member, name);
+    return member.getText(parsed).replaceAll("this.#", "this.").replace(/^#/, "");
+  });
+  const body = ts.transpileModule(`class Harness { ${members.join("\n")} }`, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
+  }).outputText;
+  const dependencies = {
+    THREE, MODEL_VFX_LOAD_GRACE_MS: 3_000, visualHasStarted, visualAnimationIsDue,
+    planToRenderTime: clock.planToRenderTime, toRenderTime: clock.toRenderTime,
+  };
+  const Harness = Function(...Object.keys(dependencies), `${body}; return Harness;`)(...Object.values(dependencies));
+  const h = new Harness();
+  h.visualSequence = 0;
+  h.visuals = [];
+  h.pendingVisualAnimations = [];
+  h.spellVisualIds = new SpellVisualIds();
+  h.liveVisualHandles = () => h.collectVisualHandles();
+  h.chainBeams = undefined;
+  h.cameraShakes = { add() {}, clear() {} };
+  h.visualGroup = { add() {}, remove() {} };
+  h.dropEffects = () => {};
+  h.disposeRenderedVisual = () => {};
+  h.actions = new Map();
+  // A due pose goes into the unit's queue owned by the handle, as #setUnitAnimation does.
+  h.setUnitAnimation = (animation, _source, handle) => {
+    let queue = h.actions.get(animation.guid);
+    if (!queue) {
+      queue = {
+        entries: [],
+        removeWhere(test) { queue.entries = queue.entries.filter((entry) => !test(entry)); },
+        get idle() { return queue.entries.length === 0; },
+      };
+      h.actions.set(animation.guid, queue);
+    }
+    queue.entries.push({ owner: handle, held: animation.mode === "hold", until: animation.at + animation.hold, payload: { source: "visual" } });
+  };
+  return { h, clock };
+}
+
+test("22.10 ARC-2 S4a: spell visual ids round-trip play, retime, cancel and clear; the renderer's map is cleaned", async () => {
+  const { h, clock } = await spellVisualIdHarness();
+  const now = performance.now();
+  const plan = (guid) => ({
+    instances: [{ path: "spells/a.m2", scale: 1, attachment: -1, startedAt: now, endsAt: now + 5_000 }],
+    animations: [
+      { guid, animation: 11, at: now - 1, hold: 4_000, mode: "hold", layer: "cast" }, // due: queued at once
+      { guid, animation: 12, at: now + 60_000, hold: 1_000, mode: "hold", layer: "cast" }, // future: pending
+    ],
+    sounds: [],
+  });
+  assert.equal(h.playSpellVisual(plan(1n), 101), undefined, "no handle comes back");
+  h.playSpellVisual(plan(2n), 102);
+  assert.equal(h.spellVisualIds.size, 2);
+  assert.equal(h.visuals.length, 2);
+  assert.equal(h.pendingVisualAnimations.length, 2);
+  const [first, second] = h.visuals;
+  assert.notEqual(first.handle, second.handle);
+  assert.equal(h.spellVisualIds.get(101), first.handle, "the id names the handle its nodes are keyed by");
+  // Retime by id: only that cast's node, pending pose and held action move.
+  h.retimeSpellVisual(101, now + 9_000);
+  assert.equal(first.instance.endsAt, now + 9_000);
+  assert.equal(second.instance.endsAt, now + 5_000);
+  assert.equal(h.pendingVisualAnimations[0].animation.hold, 0, "a hold ending before its pose starts is 0");
+  assert.equal(h.pendingVisualAnimations[1].animation.hold, 1_000);
+  assert.equal(h.actions.get(1n).entries[0].until, now + 9_000);
+  assert.equal(h.actions.get(2n).entries[0].until, now - 1 + 4_000);
+  h.retimeSpellVisual(999, now + 1); // an id the renderer never had
+  assert.equal(second.instance.endsAt, now + 5_000);
+  // Cancel by id: that cast's node, pending pose and pose go, and the id leaves the map.
+  h.cancelSpellVisual(101);
+  assert.equal(h.spellVisualIds.size, 1);
+  assert.equal(h.spellVisualIds.get(101), undefined);
+  assert.deepEqual(h.visuals, [second]);
+  assert.equal(h.pendingVisualAnimations.length, 1);
+  assert.equal(h.actions.has(1n), false);
+  h.cancelSpellVisual(101); // twice: nothing left to find
+  h.retimeSpellVisual(101, now + 20_000);
+  assert.equal(second.instance.endsAt, now + 5_000);
+  // Clear: every id goes with every visual.
+  h.clearSpellVisuals();
+  assert.equal(h.spellVisualIds.size, 0);
+  assert.equal(h.visuals.length, 0);
+  // The commands are plain data.
+  for (const command of [["playSpellVisual", plan(3n), 103], ["retimeSpellVisual", 103, now], ["cancelSpellVisual", 103]]) {
+    assert.deepEqual(structuredClone(command), command);
+  }
+  // A visual that runs out is never cancelled: the map is pruned of handles nothing holds once it doubles.
+  for (let id = 1_000; id < 1_200; id++) {
+    h.playSpellVisual({ instances: [], animations: [], sounds: [] }, id);
+  }
+  assert.ok(h.spellVisualIds.size < 64, `pruned to ${h.spellVisualIds.size}`);
+  // 22.10 ARC-2 S4a: the plan's absolute times go through RenderClock.ts — identity in the page, an offset in a worker.
+  clock.setRenderClockOffset(-250);
+  try {
+    const shifted = plan(4n);
+    h.playSpellVisual(shifted, 104);
+    assert.equal(h.visuals.at(-1).instance.startedAt, now - 250);
+    assert.equal(h.pendingVisualAnimations.at(-1).animation.at, now + 60_000 - 250);
+    h.retimeSpellVisual(104, now + 7_000);
+    assert.equal(h.visuals.at(-1).instance.endsAt, now + 7_000 - 250);
+  } finally {
+    clock.setRenderClockOffset(0);
+  }
+  const same = plan(5n);
+  assert.equal(clock.planToRenderTime(same), same, "the page converts nothing");
+  assert.equal(same.instances[0].startedAt, now);
 });

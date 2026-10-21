@@ -667,6 +667,8 @@ function frame(now: number): void {
       // render/readback. The nested finally closes the GPU query and restores renderer.info even if
       // either draw path throws; endRenderFrame itself is deliberately non-throwing.
       renderer.beginRenderFrame();
+      // 22.10 ARC-2 S4a: the `+0xa20` set as the world stands now — a kit wound due inside `draw` reads it.
+      game.swingReactions?.syncMeleeTargets();
       try {
         try {
           renderer.draw(
@@ -692,6 +694,9 @@ function frame(now: number): void {
             undefined,
           );
         } finally {
+          // 22.10 ARC-2 S4a: the melee cues tick on the swing progress the frame published where `draw` used to call
+          // `afterUnits`; their reactions are queued for the next frame's unit pass, as before (SwingReactionHost.ts).
+          game.swingReactions?.afterDraw();
           // 22.10 ARC-2 S2b: the collision models draw missed are asked for now, as draw itself used to ask.
           renderLookups.requestCollisionModels(game.collision?.models, renderer.collisionModelWants());
           // 22.10 ARC-2 S2c: then the asking path for the units it admitted, in its order — after the collision asks,

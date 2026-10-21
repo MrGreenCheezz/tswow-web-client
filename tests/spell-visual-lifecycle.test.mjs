@@ -49,17 +49,24 @@ function go(spellId = 7, overrides = {}) {
 
 function rendererRef() {
   let value;
-  const calls = { plans: [], states: [], cancelled: [], retimed: [], actions: [], order: [], currentAction: undefined };
+  const calls = { plans: [], states: [], cancelled: [], retimed: [], actions: [], order: [], currentAction: undefined, ids: [] };
+  // 22.10 ARC-2 S4a: the coordinator names each visual by an id it allocates; like the renderer, the fake maps the
+  // id to its own handle (`{ id: n }`, n in play order) and resolves every cancel and retime through that map.
+  const handles = new Map();
+  const handleOf = (id) => handles.get(id) ?? { unknownId: id };
   const renderer = {
-    playSpellVisual(plan) {
+    playSpellVisual(plan, id) {
+      assert.equal(typeof id, "number", "a visual is played under main's numeric id");
+      assert.equal(handles.has(id), false, "never an id twice");
       calls.order.push("visual");
       calls.currentAction = "visual";
       calls.plans.push(plan);
-      return { id: calls.plans.length };
+      calls.ids.push(id);
+      handles.set(id, { id: calls.plans.length });
     },
     setStateVisuals(map) { calls.states.push(map); },
-    cancelSpellVisual(handle) { calls.cancelled.push(handle); },
-    retimeSpellVisual(handle, at) { calls.retimed.push({ handle, at }); },
+    cancelSpellVisual(id) { calls.cancelled.push(handleOf(id)); },
+    retimeSpellVisual(id, at) { calls.retimed.push({ handle: handleOf(id), at }); },
     cancelUnitAction(guid) {
       calls.order.push("cancel");
       calls.currentAction = undefined;

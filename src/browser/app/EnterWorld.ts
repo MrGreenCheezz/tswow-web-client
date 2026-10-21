@@ -328,7 +328,12 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
   const spellVisualCoordinator = new SpellVisualCoordinator({
     metadata: spellVisuals,
     kitMetadata: spellVisualKits,
-    renderer: () => game.renderer,
+    // 22.10 ARC-2 S4a: the `+0xa20` set a kit's wound reads is brought up to date before the renderer is asked to
+    // play anything (game/SwingReactionHost.ts `syncMeleeTargets`), as the renderer once asked it at that moment.
+    renderer: () => {
+      game.swingReactions?.syncMeleeTargets();
+      return game.renderer;
+    },
     playSound: (soundId, at, guard) => {
       if (!game.sound || !game.soundKits) return false;
       playKit(soundId, { channel: "effects", at, guard });
@@ -501,7 +506,11 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
   // 05.10-A7a-D2 6.06: the victim reacts at the attacker's swing events ($CPP parry/dodge/block, $CAH
   // wound), as Wow.exe does — not when the packet arrives (game/SwingReactionCues.ts).
   const swingReactions = new SwingMeleeReactions(world.state, () => game.renderer); // 05.10-A7a-D2
-  entryLifecycle.track(() => swingReactions.dispose()); // 05.10-A7a-D2
+  game.swingReactions = swingReactions; // 22.10 ARC-2 S4a: the loop syncs it before and ticks it after `draw`
+  entryLifecycle.track(() => {
+    swingReactions.dispose(); // 05.10-A7a-D2
+    if (game.swingReactions === swingReactions) game.swingReactions = undefined; // 22.10 ARC-2 S4a
+  });
   world.onMeleeAttack = (attacker, victim) => swingReactions.meleeAttack(attacker, victim); // 05.10-A7a-D2
   world.onSwing = (swing) => {
     logSwing(world, swing);

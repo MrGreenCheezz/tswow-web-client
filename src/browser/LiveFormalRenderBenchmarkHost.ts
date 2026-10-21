@@ -578,7 +578,6 @@ export class LiveFormalRenderBenchmarkHost implements FormalRenderBenchmarkHost 
   #rendererMutationAuthorization: RendererMutationAuthorization | undefined;
   #externalRendererMutation: RendererMutatorName | undefined;
   #externalUserGraphics: Readonly<UserGraphicsSettings> | undefined;
-  #suppressedVisualHandleId = -1;
   #deferredClearSpellVisuals = false;
   #deferredStateVisuals: ReadonlyMap<bigint, readonly StateVisual[]> | undefined;
   #deferredClearPortraits = false;
@@ -1689,15 +1688,14 @@ export class LiveFormalRenderBenchmarkHost implements FormalRenderBenchmarkHost 
     // The ordinary RAF is paused, but packet/UI handlers can still deliver short-lived effects.
     // They are irrelevant to the fixed replay and must neither contaminate it nor make a 15-minute
     // suite fail merely because combat continued on the server while the local scene was leased.
-    if (name === "playSpellVisual") {
-      return Object.freeze({ id: this.#suppressedVisualHandleId-- });
-    }
     if (name === "clearSpellVisuals") {
       this.#deferredClearSpellVisuals = true;
       this.#deferredStateVisuals = undefined;
       return undefined;
     }
-    if (name === "cancelSpellVisual" || name === "retimeSpellVisual"
+    // 22.10 ARC-2 S4a: a suppressed cast is named by main's own id, which the renderer then never learns; its
+    // cancel or retime finds nothing, as the old opaque stand-in handle did.
+    if (name === "playSpellVisual" || name === "cancelSpellVisual" || name === "retimeSpellVisual"
       || name === "playGameObjectAnimation" || name === "playUnitAction"
       || name === "playUnitEmote" || name === "cancelUnitAction"
       || name === "playUnitReaction") { // 05.10-A7a-D 6.06
@@ -2018,7 +2016,6 @@ export class LiveFormalRenderBenchmarkHost implements FormalRenderBenchmarkHost 
         this.#rendererMutationAuthorization = undefined;
         this.#externalRendererMutation = undefined;
         this.#externalUserGraphics = undefined;
-        this.#suppressedVisualHandleId = -1;
         this.#deferredClearSpellVisuals = false;
         this.#deferredStateVisuals = undefined;
         this.#deferredClearPortraits = false;

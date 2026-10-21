@@ -54,13 +54,22 @@ const SPELLS = KINDS.map((_, index) => 100 + index);
 function recorder() {
   const log = [];
   let handles = 0;
+  // 22.10 ARC-2 S4a: the coordinator names a visual by its own id; like the renderer, the recorder maps it to a
+  // handle numbered in play order, so both sides log the same numbers. The reference keeps the returned handle.
+  const byId = new Map();
+  const handleOf = (named) => (typeof named === "number" ? byId.get(named) : named);
   const renderer = {
-    playSpellVisual(plan) { log.push(["play", structuredClone(plan)]); return { id: ++handles }; },
+    playSpellVisual(plan, id) {
+      log.push(["play", structuredClone(plan)]);
+      const handle = { id: ++handles };
+      if (id !== undefined) byId.set(id, handle);
+      return handle;
+    },
     setStateVisuals(byUnit) {
       log.push(["state", [...byUnit].map(([guid, effects]) => [guid, structuredClone(effects)])]);
     },
-    cancelSpellVisual(handle) { log.push(["cancel", handle.id]); },
-    retimeSpellVisual(handle, at) { log.push(["retime", handle.id, at]); },
+    cancelSpellVisual(named) { log.push(["cancel", handleOf(named).id]); },
+    retimeSpellVisual(named, at) { log.push(["retime", handleOf(named).id, at]); },
     clearSpellVisuals() { log.push(["clear"]); },
   };
   return { log, renderer };

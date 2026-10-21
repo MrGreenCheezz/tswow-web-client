@@ -32,6 +32,7 @@
 import { UPDATE_FIELDS } from "../generated/updateFields.js";
 import type { SpellVisualMetadata } from "../gateway/SpellVisual.js";
 import { planPersistentArea, type SpellVisualPlan } from "./SpellVisuals.js";
+import { allocateRenderId } from "./RenderCommandIds.js"; // 22.10 ARC-2 S4a
 
 export const DYNAMIC_OBJECT_TYPE_ID = 6;
 /** How long after a SPELL_GO an object of the same caster and spell is that cast's own. */
@@ -75,15 +76,15 @@ export function dynamicObjectArea(object: Pick<AreaObject, "typeId" | "fields">)
 }
 
 interface DrawnArea {
-  /** The renderer's handle, or null for an object its cast draws (or with nothing to draw). */
-  handle: unknown;
+  /** The visual's id (22.10 ARC-2 S4a: allocated here), or null for an object its cast draws (or with nothing to draw). */
+  handle: number | null;
   mark: number;
 }
 
 export interface DynamicObjectAreasOptions {
   /** The spell's visual row (asking for it again until it arrives), or undefined. */
   visual(spellId: number): SpellVisualMetadata | undefined;
-  renderer(): { playSpellVisual(plan: SpellVisualPlan): unknown; cancelSpellVisual?(handle: unknown): void } | undefined;
+  renderer(): { playSpellVisual(plan: SpellVisualPlan, id: number): void; cancelSpellVisual?(id: number): void } | undefined;
 }
 
 /** The areas of the DynamicObjects in the world state that no seen cast already draws. */
@@ -132,8 +133,9 @@ export class DynamicObjectAreas {
       }
       const renderer = this.#options.renderer();
       if (!renderer) continue;
-      const handle = renderer.playSpellVisual(planPersistentArea(visual, object.position, now));
-      this.#drawn.set(guid, { handle: handle ?? null, mark });
+      const handle = allocateRenderId(); // 22.10 ARC-2 S4a
+      renderer.playSpellVisual(planPersistentArea(visual, object.position, now), handle);
+      this.#drawn.set(guid, { handle, mark });
     }
     if (this.#drawn.size > 0) {
       for (const [guid, drawn] of this.#drawn) {

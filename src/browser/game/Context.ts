@@ -10,6 +10,7 @@ import type { SpellMetadata, SpellMetadataClient } from "../SpellMetadata.js";
 import { SpellRows } from "../SpellRows.js"; // 22.10 ARC-2 S2a
 import type { SpellVisualClient } from "../SpellVisualClient.js";
 import type { SpellVisualCoordinator } from "../SpellVisualLifecycle.js";
+import type { SwingMeleeReactions } from "./SwingReactionHost.js"; // 22.10 ARC-2 S4a
 import type { CreatureMetadataClient } from "../CreatureMetadata.js";
 import type { GameObjectMetadataClient } from "../GameObjectMetadata.js";
 import type { TransportPathClient } from "../TransportPath.js";
@@ -73,6 +74,8 @@ export interface GameContext {
   spellVisuals: SpellVisualClient | undefined;
   /** Owns authoritative cast/aura visual lifetimes across metadata and world epochs. */
   spellVisualCoordinator: SpellVisualCoordinator | undefined;
+  /** 22.10 ARC-2 S4a: the world entry's melee reactions, which the loop syncs before and ticks after `draw`. */
+  swingReactions: SwingMeleeReactions | undefined;
   creatureMetadata: CreatureMetadataClient | undefined;
   gameObjectMetadata: GameObjectMetadataClient | undefined;
   /** The paths lifts run on, by game object entry. Nothing else in the world uses them. */
@@ -189,6 +192,7 @@ export const game: GameContext = {
   spellMetadataClient: undefined,
   spellVisuals: undefined,
   spellVisualCoordinator: undefined,
+  swingReactions: undefined, // 22.10 ARC-2 S4a
   creatureMetadata: undefined,
   gameObjectMetadata: undefined,
   transportPaths: undefined,

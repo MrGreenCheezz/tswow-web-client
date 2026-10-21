@@ -84,9 +84,9 @@ export interface SwingCueHost {
    * drawn, refused: `token` undefined) — the cues then run the nominal clock (05.10-A7a-D3); null
    * when the attacker is gone or dead, or a drawn swing was cut short: the record goes unfired.
    */
-  swingProgress(attacker: bigint, token: object | undefined, now: number): number | undefined | null;
+  swingProgress(attacker: bigint, token: unknown, now: number): number | undefined | null;
   /** 05.10-A7a-D3: the attacker's swing length in ms for the nominal clock; SWING_NOMINAL_MS without it. */
-  swingDuration?(attacker: bigint, token: object | undefined): number;
+  swingDuration?(attacker: bigint, token: unknown): number;
   /**
    * 05.10-A7a-D3: whether `unit` is still the object whose SMSG_ATTACK_START left `stamp` — `+0xa20`
    * lives on the unit object and goes with it. Without it every stamp counts.
@@ -107,7 +107,8 @@ interface PendingSwing {
   hitInfo: number;
   victimState: number;
   blocked: number;
-  token: object | undefined;
+  /** 22.10 ARC-2 S4a: the host's name for the queued swing (an id now; any value in tests). */
+  token: unknown;
   cues: number;
   /** 05.10-A7a-D3: the nominal clock's start, the first tick after arrival; NaN until then. */
   at: number;
@@ -124,6 +125,12 @@ export class SwingReactionCues {
   #host: SwingCueHost | undefined;
   #now = 0;
   readonly #step = (pending: PendingSwing, attacker: bigint): void => this.#advance(pending, attacker);
+  /** 22.10 ARC-2 S4a: told the token of every record that leaves, so the host can release its swing. */
+  readonly #onDrop: ((token: unknown) => void) | undefined;
+
+  constructor(onDrop?: (token: unknown) => void) {
+    this.#onDrop = onDrop;
+  }
 
   /** Records waiting for their attacker's events. */
   get pending(): number {
@@ -152,19 +159,20 @@ export class SwingReactionCues {
   /**
    * A swing arrived. `token` is the swing the renderer queued on the attacker (undefined when none
    * was: refused, no renderer, or HITINFO_NO_ANIMATION); `attackerKnown` whether the client has the attacker.
+   * 22.10 ARC-2 S4a: true when a record now waits on `token` (the onDrop callback will see it leave).
    */
-  swing(swing: CuedSwing, token: object | undefined, attackerKnown: boolean, host: SwingCueHost): void {
+  swing(swing: CuedSwing, token: unknown, attackerKnown: boolean, host: SwingCueHost): boolean {
     // 0x756180: the previous record of this attacker leaves without an animation.
     this.#drop(swing.attacker);
     if (!attackerKnown) {
       this.#fireHit(swing.victim, swing, host);
-      return;
+      return false;
     }
     // 0x755130 draws no swing for HITINFO_NO_ANIMATION: no model event, the record waits for a flush
     // that animates nothing. 05.10-A7a-D3: a swing merely not drawn by us (no token) still cues.
-    if ((swing.hitInfo & HITINFO_NO_ANIMATION) !== 0) return;
+    if ((swing.hitInfo & HITINFO_NO_ANIMATION) !== 0) return false;
     // A record that can play nothing (a miss, an evade, an immunity) is not kept.
-    if ((swing.hitInfo & HITINFO_AFFECTS_VICTIM) === 0 && parryCueReaction(swing) === undefined) return;
+    if ((swing.hitInfo & HITINFO_AFFECTS_VICTIM) === 0 && parryCueReaction(swing) === undefined) return false;
     const pending = this.#spare.pop()
       ?? { victim: 0n, hitInfo: 0, victimState: 0, blocked: 0, token: undefined, cues: 0, at: Number.NaN };
     pending.victim = swing.victim;
@@ -175,6 +183,7 @@ export class SwingReactionCues {
     pending.cues = CUE_PARRY_BIT | CUE_HIT_BIT;
     pending.at = Number.NaN;
     this.#pending.set(swing.attacker, pending);
+    return true;
   }
 
   /** Once per frame, after the units have animated. */
@@ -234,6 +243,15 @@ export class SwingReactionCues {
   }
 
   /** 05.10-A7a-D3: `+0xa20` of the unit as it is now — a start left on an object since destroyed does not count. */
+  /**
+   * 22.10 ARC-2 S4a: every unit whose `+0xa20` counts now, into `out` — what the renderer is handed for a kit's
+   * wound instead of asking {@link hasMeleeTarget} back. Drops a stale start as the question does.
+   */
+  meleeTargetUnits(host: Pick<SwingCueHost, "sameUnit">, out: Set<bigint>): void {
+    // Deleting the entry being visited is safe in a Map walk; nothing is allocated.
+    for (const unit of this.#meleeTargets.keys()) if (this.#hasMeleeTarget(unit, host)) out.add(unit);
+  }
+
   #hasMeleeTarget(unit: bigint, host: Pick<SwingCueHost, "sameUnit">): boolean { // 05.10-6.21: Pick
     if (!this.#meleeTargets.has(unit)) return false;
     const stamp = this.#meleeTargets.get(unit);
@@ -246,7 +264,9 @@ export class SwingReactionCues {
     const pending = this.#pending.get(attacker);
     if (pending === undefined) return;
     this.#pending.delete(attacker);
+    const token = pending.token;
     pending.token = undefined;
     this.#spare.push(pending);
+    if (token !== undefined) this.#onDrop?.(token); // 22.10 ARC-2 S4a
   }
 }
