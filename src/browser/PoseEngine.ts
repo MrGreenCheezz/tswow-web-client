@@ -576,10 +576,12 @@ export type PoseEngineAvailability =
  * silent: one console line and `poseEngineStatus()` for a performance panel.
  */
 export function poseEngineAvailability(scope: {
-  crossOriginIsolated?: boolean; location?: { search?: string };
+  crossOriginIsolated?: boolean | undefined; location?: { search?: string } | undefined;
   Worker?: unknown; SharedArrayBuffer?: unknown; Atomics?: unknown;
+  /** 21.10 ARC-2 S1: the renderer host's query flags; they replace `location.search` when given. */
+  flags?: URLSearchParams | undefined;
 }): PoseEngineAvailability {
-  if (/[?&]poseworker=0(?:&|$)/.test(scope.location?.search ?? "")) {
+  if (/[?&]poseworker=0(?:&|$)/.test(poseQuery(scope))) {
     return { state: "query", reason: "?poseworker=0" };
   }
   if (scope.crossOriginIsolated !== true) {
@@ -595,6 +597,15 @@ export function poseEngineAvailability(scope: {
   return { state: "on" };
 }
 
+/**
+ * 21.10 ARC-2 S1: the query the two pose flags are matched in — the injected flags serialised
+ * (`a=1&poseworker=0`, which the same patterns read as they read `?a=1&poseworker=0`), else the
+ * page's own `location.search`. A worker has no page location, so the renderer passes its host's.
+ */
+function poseQuery(scope: { location?: { search?: string } | undefined; flags?: URLSearchParams | undefined }): string {
+  return scope.flags ? `?${scope.flags.toString()}` : scope.location?.search ?? "";
+}
+
 let pageEngineStatus: PoseEngineAvailability | undefined;
 
 /** Why the page's crowd poses run where they do; undefined until `pagePoseEngine` was first asked. */
@@ -605,19 +616,24 @@ export function poseEngineStatus(): PoseEngineAvailability | undefined {
 /**
  * The page's pose engine, created on first use: only in a cross-origin isolated page with
  * SharedArrayBuffer, Atomics and Web Workers. `?poseworker=0` keeps crowds on the main thread,
- * `?poseworkers=N` (1..4) sets the worker count.
+ * `?poseworkers=N` (1..4) sets the worker count. `flags` (21.10 ARC-2 S1) are where those two are
+ * read when given — the renderer passes its host's — else `location.search`; the first call decides.
  */
-export function pagePoseEngine(): PoseEngine | undefined {
+export function pagePoseEngine(flags?: URLSearchParams): PoseEngine | undefined {
   if (pageEngine !== undefined) return pageEngine ?? undefined;
   pageEngine = null;
-  const scope = globalThis as { crossOriginIsolated?: boolean; location?: { search?: string } };
-  const availability = poseEngineAvailability(globalThis as Parameters<typeof poseEngineAvailability>[0]);
+  const page = globalThis as Parameters<typeof poseEngineAvailability>[0];
+  const scope = {
+    crossOriginIsolated: page.crossOriginIsolated, location: page.location,
+    Worker: page.Worker, SharedArrayBuffer: page.SharedArrayBuffer, Atomics: page.Atomics, flags,
+  };
+  const availability = poseEngineAvailability(scope);
   pageEngineStatus = availability;
   if (availability.state !== "on") {
     console.info(`[pose] crowd pose worker off: ${availability.reason}`);
     return undefined;
   }
-  const search = scope.location?.search ?? "";
+  const search = poseQuery(scope);
   const count = Number(/[?&]poseworkers=(\d)(?:&|$)/.exec(search)?.[1] ?? 1);
   try {
     pageEngine = PoseEngine.create({ workers: Math.max(1, Math.min(POSE_MAX_WORKERS, count)) }) ?? null;

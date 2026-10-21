@@ -13,6 +13,7 @@ import { textureUrl } from "./Wvm.js";
 import { knownLogicalTextureBytes, type RetainedResourceVisitor } from "./ResourceAccounting.js";
 import type { BenchmarkAsyncReadinessStats } from "./RenderBenchmarkReadiness.js";
 import { FRAME_BUDGET, frameBudgetProbe } from "./FrameBudgetProbe.js"; // P2-09a
+import { createRenderCanvas } from "./RenderHost.js"; // 21.10 ARC-2 S1
 
 /** Where each piece lands on the body texture. Mirrors BODY_SECTIONS on the gateway. */
 export const BODY_TEXTURE_SIZE = 512;
@@ -209,8 +210,22 @@ export function layerPaths(layer: BodyLayer): readonly string[] {
   return layer.alternate ? [layer.path, layer.alternate] : [layer.path];
 }
 
+/**
+ * 21.10 ARC-2 S1: the canvas a body is composed in — an OffscreenCanvas where there is one, so the
+ * atlas needs no document (the render worker has none); a DOM canvas otherwise. Same 2D API, and
+ * three uploads either through the same `texImage2D` with the same unpack flags (only an
+ * ImageBitmap skips them), so the composed texels and their sampling are what they were.
+ */
+type BodyCanvas = HTMLCanvasElement | OffscreenCanvas;
+type BodyContext = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
+
+/** Both kinds answer `getContext("2d")` alike; the cast only joins TS's two overload sets. */
+function bodyContext(canvas: BodyCanvas): BodyContext | null {
+  return (canvas as HTMLCanvasElement).getContext("2d");
+}
+
 /** Paints the layers that have a picture, in order, each into its rectangle; says how many did. */
-function paintBodyLayers(context: CanvasRenderingContext2D, layers: readonly BodyLayer[],
+function paintBodyLayers(context: BodyContext, layers: readonly BodyLayer[],
   images: readonly (ImageBitmap | undefined)[]): number {
   let painted = 0;
   for (let index = 0; index < layers.length; index++) {
@@ -728,7 +743,9 @@ export class CharacterAtlasClient {
 
   #checkHiddenPaintTurn(): void {
     if (!this.#paintScheduled) return;
-    if (document.hidden) {
+    // 21.10 ARC-2 S1: a worker has no document to ask. Until a later slice tells it the page's
+    // visibility, the timer there keeps waiting for the frame callback instead of throwing.
+    if (typeof document !== "undefined" && document.hidden) {
       this.#flushPaintTurn();
     } else {
       // A slow visible frame still has just one frame allowance; the timer only substitutes for
@@ -783,10 +800,8 @@ export class CharacterAtlasClient {
     arrived: readonly (CharacterAtlasImageLease | undefined | null)[]): Promise<void> {
     await this.#waitForPaintTurn(request);
     if (!this.#isCurrentCompose(request) || this.#atlases.has(request.key)) return;
-    const canvas = document.createElement("canvas");
-    canvas.width = BODY_TEXTURE_SIZE;
-    canvas.height = BODY_TEXTURE_SIZE;
-    const context = canvas.getContext("2d");
+    const canvas = createRenderCanvas(BODY_TEXTURE_SIZE, BODY_TEXTURE_SIZE); // 21.10 ARC-2 S1
+    const context = bodyContext(canvas);
     if (!context) return;
     // P2-09a: the atlas limiter — the paint itself, in the microtasks after its turn's frame callback.
     const paintAt = frameBudgetProbe.begin();
@@ -864,11 +879,11 @@ export class CharacterAtlasClient {
       // Texture object, not the atlas map, so a body that gains its missing trousers has to gain them
       // *in place* — a new CanvasTexture would sit in this map with nothing sampling it.
       const previous = this.#atlases.get(key);
-      const canvas = (previous?.texture.image as HTMLCanvasElement | undefined)
-        ?? document.createElement("canvas");
+      const canvas = (previous?.texture.image as BodyCanvas | undefined)
+        ?? createRenderCanvas(BODY_TEXTURE_SIZE, BODY_TEXTURE_SIZE); // 21.10 ARC-2 S1
       canvas.width = BODY_TEXTURE_SIZE;
       canvas.height = BODY_TEXTURE_SIZE;
-      const context = canvas.getContext("2d");
+      const context = bodyContext(canvas);
       if (!context) {
         this.#defer(key, layers, Infinity);
         return undefined;

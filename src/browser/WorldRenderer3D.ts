@@ -14,7 +14,9 @@ import {
   CAMERA_EYE_BODY_SHARE, CAMERA_FIRST_PERSON_DISTANCE, CAMERA_FOV_DEGREES, CAMERA_PIVOT_BODY_SHARE,
   cameraBodyHeight, createCamera, type HeightSampler,
   CAMERA_NEAR_PLANE, // 5.33
-} from "./SimpleScene.js";
+} from "./SceneCamera.js"; // 21.10 ARC-2 S1: not SimpleScene.ts, which brings the DOM overlay along
+import { pageRenderHost, type CanvasCssSize, type RenderHost } from "./RenderHost.js"; // 21.10 ARC-2 S1
+import { captureBenchmarkWebGl, type BenchmarkEnvironmentInput } from "./BenchmarkManifest.js"; // 21.10 ARC-2 S1
 import { ENVIRONMENT_FAR_RANGE, ENVIRONMENT_RANGE, ENVIRONMENT_RESIDENT_HYSTERESIS, ENVIRONMENT_STREAM_RANGE, TERRAIN_GRID_SIZE, modelKey, terrainGrid, terrainGridIndex, type EnvironmentClient, type EnvironmentModel, type EnvironmentObject, type TerrainClient } from "./Terrain.js";
 import { terrainGeometryData, terrainGeometrySteps, type TerrainGeometryData } from "./TerrainGeometry.js";
 export { terrainGeometryData, terrainHeightField, terrainNormals, surfaceNormal, type TerrainGeometryData } from "./TerrainGeometry.js";
@@ -3674,7 +3676,9 @@ export class WorldRenderer3D {
     else this.#worldSubmissionCapture = undefined;
   }
 
-  readonly #canvas: HTMLCanvasElement;
+  readonly #canvas: HTMLCanvasElement | OffscreenCanvas;
+  /** 21.10 ARC-2 S1: the page or worker environment; see `RenderHost.ts`. */
+  readonly #host: RenderHost;
   readonly #renderer: THREE.WebGLRenderer;
   /** Programs of newly built content, compiled before the frame that would have paid for them. */
   readonly #programWarmup: ProgramWarmup;
@@ -4009,12 +4013,10 @@ export class WorldRenderer3D {
   #worldMaterialGenerationOffset = 0;
   readonly #foliageGeometry = new THREE.DodecahedronGeometry(1, 1);
   readonly #trunkGeometry = new THREE.CylinderGeometry(0.35, 0.5, 2, 7);
-  /**
-   * Weather textures have their own surface flags and no fallback. World-model surfaces use the
-   * exact leased cache below instead; keeping this loader weather-only prevents an unbounded second
-   * URL cache from silently reappearing beside it.
-   */
-  readonly #textureLoader = new THREE.TextureLoader();
+  // Weather textures have their own surface flags and no fallback, and load through
+  // `#loadWorldTexture` (21.10 ARC-2 S1: the host's bitmap path, which shares a decode only while a
+  // texture holds it). World-model surfaces use the exact leased cache below instead; keeping that
+  // path weather-only prevents an unbounded second URL cache from silently reappearing beside it.
   /** Generic world textures are not URL-cached here, so readiness owns one counter per request. */
   #worldTexturesPending = 0;
   /** Current terminal generic texture failures; a later successful load clears its URL. */
@@ -4157,14 +4159,17 @@ export class WorldRenderer3D {
   }
 
   /**
-   * All direct world TextureLoader calls pass through this wrapper. The callbacks remain unchanged
+   * All direct world texture loads pass through this wrapper. The callbacks remain unchanged
    * for callers, while the readiness counter is balanced exactly once for synchronous and normal
    * asynchronous completion (including a misbehaving loader that calls both callbacks).
+   *
+   * 21.10 ARC-2 S1: through the host's bitmap path rather than a `THREE.TextureLoader` `<img>`.
+   * Both callers (weather, atmosphere) upload with `flipY = false`, so the decode keeps the file's
+   * rows; colour space and the rest stay theirs to set in `onLoad`, as before.
    */
   #loadWorldTexture(
     url: string,
     onLoad?: (texture: THREE.Texture) => void,
-    onProgress?: (event: ProgressEvent) => void,
     onError?: (error: unknown) => void,
   ): THREE.Texture {
     const epoch = this.#worldResourceEpoch;
@@ -4180,13 +4185,13 @@ export class WorldRenderer3D {
       else this.#worldTextureErrors.add(url);
     };
     try {
-      return this.#textureLoader.load(
+      return this.#host.loadTexture(
         url,
+        { flipY: false },
         (texture) => {
           settle(true);
           if (epoch === this.#worldResourceEpoch) onLoad?.(texture);
         },
-        onProgress,
         (error) => {
           settle(false);
           if (epoch === this.#worldResourceEpoch) onError?.(error);
@@ -4446,7 +4451,7 @@ export class WorldRenderer3D {
    * Crowd poses on a worker (`PoseEngine.ts`): the page's engine when the page is cross-origin
    * isolated, otherwise undefined and every flat pose stays `FastPoseState`.
    */
-  readonly #poseEngine: PoseEngine | undefined = pagePoseEngine();
+  readonly #poseEngine: PoseEngine | undefined; // 21.10 ARC-2 S1: set first in the constructor, from the host's flags
   /** How many units were drawn last frame, and how many the budget turned away. */
   #unitsDrawn = 0;
   #unitsDropped = 0;
@@ -4643,8 +4648,15 @@ export class WorldRenderer3D {
    */
   #collisionModels: ((name: string) => CollisionModel | undefined) | undefined;
 
-  constructor(canvas: HTMLCanvasElement) {
+  /**
+   * 21.10 ARC-2 S1: `host` is where the renderer learns its pixel ratio, canvas size and query flags
+   * and loads its sprite textures. On the page it defaults to `pageRenderHost` over the canvas; an
+   * OffscreenCanvas (a later worker slice) has no page to default to and comes with its own host.
+   */
+  constructor(canvas: HTMLCanvasElement | OffscreenCanvas, host?: RenderHost) {
     this.#canvas = canvas;
+    this.#host = host ?? pageRenderHost(canvas as HTMLCanvasElement);
+    this.#poseEngine = pagePoseEngine(this.#host.queryFlags());
     // Before the first material: three copies `tonemapping_pars_fragment` into every program it
     // builds and does not put the chunk's text in the program cache key, so a later swap would
     // leave already-compiled shaders on the old curve.
@@ -4658,7 +4670,7 @@ export class WorldRenderer3D {
     canvas.addEventListener("webglcontextlost", this.#contextLostListener);
     canvas.addEventListener("webglcontextrestored", this.#contextRestoredListener);
     this.#gpuTimer = createWebGlGpuTimer(this.#renderer.getContext(), renderBenchmarkGpuObserver);
-    this.#renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    this.#renderer.setPixelRatio(Math.min(this.#host.devicePixelRatio() || 1, 2));
     this.#renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.#renderer.toneMapping = THREE.CustomToneMapping;
     this.#portraits = new PortraitRenderer(this.#renderer, (guid) => this.#portraitSource(guid));
@@ -5837,11 +5849,12 @@ export class WorldRenderer3D {
   get formalRenderSurfaceStamp(): Readonly<FormalRenderSurfaceStamp> {
     let contextLost = true;
     try { contextLost = !webGlContextCanSubmit(this.#renderer.getContext()); } catch { /* fail closed */ }
-    const systemDpr = Number.isFinite(window.devicePixelRatio) && window.devicePixelRatio > 0
-      ? window.devicePixelRatio : 1;
+    const reportedDpr = this.#host.devicePixelRatio();
+    const systemDpr = Number.isFinite(reportedDpr) && reportedDpr > 0 ? reportedDpr : 1;
+    const css = this.#host.canvasCssSize();
     return Object.freeze({
-      cssWidth: this.#canvas.clientWidth,
-      cssHeight: this.#canvas.clientHeight,
+      cssWidth: css.width,
+      cssHeight: css.height,
       backingWidth: this.#canvas.width,
       backingHeight: this.#canvas.height,
       systemDpr,
@@ -5849,6 +5862,33 @@ export class WorldRenderer3D {
       contextLost,
       contextGeneration: this.#webGlContextGeneration,
     });
+  }
+
+  /**
+   * 21.10 ARC-2 S1: the benchmark record's WebGL block, from the renderer's own context. `main.ts`
+   * asked the canvas for it with `getContext("webgl2") ?? getContext("webgl")`, which returned this
+   * same context; once the canvas's control is transferred to a worker that call throws.
+   */
+  benchmarkWebGl(): BenchmarkEnvironmentInput["webgl"] {
+    let context: WebGL2RenderingContext | undefined;
+    try { context = this.#renderer.getContext() as WebGL2RenderingContext; } catch { context = undefined; }
+    return captureBenchmarkWebGl(context);
+  }
+
+  /**
+   * 21.10 ARC-2 S1: the version string and adapter name a performance capture records, read as
+   * `PerformanceCapture.ts` read them off the canvas's context. Either is absent when its query
+   * throws (a restricted or lost context); the caller keeps its own fallback words.
+   */
+  webGlIdentity(): { readonly version?: string; readonly adapter?: string } {
+    const identity: { version?: string; adapter?: string } = {};
+    try {
+      const gl = this.#renderer.getContext();
+      identity.version = String(gl.getParameter(gl.VERSION));
+      const debug = gl.getExtension("WEBGL_debug_renderer_info");
+      identity.adapter = String(gl.getParameter(debug ? debug.UNMASKED_RENDERER_WEBGL : gl.RENDERER));
+    } catch { /* A restricted/lost context still permits CPU recording. */ }
+    return identity;
   }
 
   beginFormalBenchmarkIsolation(): void {
@@ -7327,7 +7367,7 @@ export class WorldRenderer3D {
     this.clearWorldResources();
     this.#canvas.removeEventListener("webglcontextlost", this.#contextLostListener);
     this.#canvas.removeEventListener("webglcontextrestored", this.#contextRestoredListener);
-    this.#canvasSizeObserver?.disconnect();
+    this.#canvasSizeObserver?.();
     this.#canvasSizeObserver = undefined;
     this.#observedCanvasSize = undefined;
     this.#portraits.dispose();
@@ -8983,11 +9023,12 @@ export class WorldRenderer3D {
   setRenderScale(scale: number): void {
     const clamped = Math.max(0.5, Math.min(1, Number.isFinite(scale) ? scale : 1));
     this.#renderScale = clamped;
-    const wanted = Math.min(window.devicePixelRatio || 1, 2) * clamped;
+    const wanted = Math.min(this.#host.devicePixelRatio() || 1, 2) * clamped;
     if (Math.abs(this.#renderer.getPixelRatio() - wanted) > 1e-4) {
       this.#renderer.setPixelRatio(wanted);
       // The size is remembered in CSS pixels, so changing the ratio has to re-derive the buffer.
-      this.#renderer.setSize(Math.max(1, this.#canvas.clientWidth), Math.max(1, this.#canvas.clientHeight), false);
+      const css = this.#host.canvasCssSize();
+      this.#renderer.setSize(Math.max(1, css.width), Math.max(1, css.height), false);
     }
     // Outside the branch, and that is a measured decision rather than caution: setting the scale to
     // the value it already holds returns early, and a settings apply that does exactly that is the
@@ -8997,8 +9038,9 @@ export class WorldRenderer3D {
   }
 
   /** The canvas's CSS size as the last layout left it; see `#canvasCssSize`. */
-  #observedCanvasSize: { width: number; height: number } | undefined;
-  #canvasSizeObserver: ResizeObserver | undefined;
+  #observedCanvasSize: CanvasCssSize | undefined;
+  /** 21.10 ARC-2 S1: the host's size subscription (on the page a `ResizeObserver`); its unsubscribe. */
+  #canvasSizeObserver: (() => void) | undefined;
 
   /**
    * The canvas's CSS size, without laying the page out to learn it.
@@ -9012,20 +9054,10 @@ export class WorldRenderer3D {
    * Until the first observation, and where there is no observer at all (tests), the read is as
    * before. `SimpleScene` made the same change for the overlay canvas.
    */
-  #canvasCssSize(): { width: number; height: number } {
+  #canvasCssSize(): CanvasCssSize {
     if (this.#observedCanvasSize) return this.#observedCanvasSize;
-    if (!this.#canvasSizeObserver && typeof ResizeObserver === "function") {
-      this.#canvasSizeObserver = new ResizeObserver((entries) => {
-        const entry = entries[entries.length - 1];
-        if (entry) {
-          this.#observedCanvasSize = {
-            width: Math.round(entry.contentRect.width), height: Math.round(entry.contentRect.height),
-          };
-        }
-      });
-      this.#canvasSizeObserver.observe(this.#canvas);
-    }
-    return { width: this.#canvas.clientWidth, height: this.#canvas.clientHeight };
+    this.#canvasSizeObserver ??= this.#host.observeCanvasCssSize((size) => { this.#observedCanvasSize = size; });
+    return this.#host.canvasCssSize();
   }
 
   #resize(): void {

@@ -209,10 +209,20 @@ function bitmapDecodingAvailable(): boolean {
     && typeof ImageBitmap === "function";
 }
 
-async function decodeModelImage(url: string): Promise<ImageBitmap> {
+/**
+ * 21.10 ARC-2 S1: the decode for a texture that keeps three's default `flipY = true` (the liquid
+ * strip). WebGL does not apply `UNPACK_FLIP_Y_WEBGL` to a bitmap, so the flip the `<img>` upload
+ * did is made by the decoder instead; alpha and colour as {@link MODEL_IMAGE_DECODE}.
+ */
+const FLIPPED_IMAGE_DECODE: ImageBitmapOptions = Object.freeze({
+  ...MODEL_IMAGE_DECODE,
+  imageOrientation: "flipY",
+});
+
+async function decodeModelImage(url: string, options: ImageBitmapOptions = MODEL_IMAGE_DECODE): Promise<ImageBitmap> {
   const response = await fetch(url, MODEL_IMAGE_REQUEST);
   if (!response.ok) throw new Error(`${url} returned ${response.status}`);
-  return createImageBitmap(await response.blob(), MODEL_IMAGE_DECODE);
+  return createImageBitmap(await response.blob(), options);
 }
 
 function decodedImageBytes(image: { readonly width?: unknown; readonly height?: unknown }): number {
@@ -359,14 +369,17 @@ function onModelImageHolderDispose(event: { readonly target: THREE.Texture }): v
  */
 class ModelImageCache {
   readonly #limits: ModelImageCacheLimits;
+  /** One decode per cache, so a URL's shared bitmap always has one orientation (21.10 ARC-2 S1). */
+  readonly #decodeOptions: ImageBitmapOptions;
   /** Insertion order is the idle order: a release, or a landing nobody waits on, moves a record last. */
   readonly #records = new Map<string, ModelImageRecord>();
   #requests = 0;
   #hits = 0;
   #closed = 0;
 
-  constructor(limits: ModelImageCacheLimits) {
+  constructor(limits: ModelImageCacheLimits, decodeOptions: ImageBitmapOptions = MODEL_IMAGE_DECODE) {
     this.#limits = limits;
+    this.#decodeOptions = decodeOptions;
   }
 
   /** `TextureLoader.load`'s contract: a Texture now, exactly one callback when its pixels settle. */
@@ -459,7 +472,7 @@ class ModelImageCache {
   async #decode(record: ModelImageRecord): Promise<void> {
     let bitmap: ImageBitmap;
     try {
-      bitmap = await decodeModelImage(record.url);
+      bitmap = await decodeModelImage(record.url, this.#decodeOptions);
     } catch (error) {
       this.#fail(record, error);
       return;
@@ -1112,6 +1125,39 @@ export class ModelTextureLoader {
       && this.#knownLogicalTextureBytes <= this.#cacheLimits.knownLogicalTextureBytes;
   }
 }
+
+/**
+ * 21.10 ARC-2 S1: one URL-to-texture load outside `ModelTextureLoader`, for the renderer's weather
+ * and atmosphere sprites and the liquid strips, which went through their own `THREE.TextureLoader`
+ * — an `<img>`, so a DOM the render worker will not have. Same contract as `TextureLoader.load`:
+ * a plain-default Texture now, exactly one callback later; the caller sets colour space, wrap and
+ * `flipY` as it did. In a browser it is the model path (fetch, `createImageBitmap`, a decode shared
+ * by URL and kept no longer than a texture holds it); where there is no decoder (Node), the
+ * `<img>` loader as before.
+ *
+ * `flipY` says how the caller's texture will be uploaded, because a bitmap's orientation is fixed
+ * when it is decoded: `false` (the client's v = 0 is the top row) keeps the file's rows, `true`
+ * (three's default, which the liquid strip keeps) decodes them flipped, as the `<img>` went up.
+ */
+export function loadImageTexture(
+  url: string,
+  options: { readonly flipY: boolean },
+  onLoad: (texture: THREE.Texture) => void,
+  onError: (error: unknown) => void,
+): THREE.Texture {
+  if (!bitmapDecodingAvailable()) {
+    imageTextureLoader ??= new THREE.TextureLoader();
+    return imageTextureLoader.load(url, onLoad, undefined, onError);
+  }
+  const images = options.flipY
+    ? (flippedImageTextures ??= new ModelImageCache(CACHED_LOADER_IMAGE_CACHE_LIMITS, FLIPPED_IMAGE_DECODE))
+    : (imageTextures ??= new ModelImageCache(CACHED_LOADER_IMAGE_CACHE_LIMITS));
+  return images.load(url, onLoad, onError);
+}
+
+let imageTextureLoader: THREE.TextureLoader | undefined;
+let imageTextures: ModelImageCache | undefined;
+let flippedImageTextures: ModelImageCache | undefined;
 
 /**
  * Turns one texture into the opaque white pixel, in place.

@@ -3,7 +3,7 @@ import { FrameExtraColumns, PhaseAccumulator, StackingProbe } from "./CaptureExt
 import { formalRenderBenchmarkExclusiveActive } from "../RenderBenchmarkExclusiveLease.js";
 import { renderBenchmarkRuntime } from "../RenderBenchmarkRuntime.js";
 import { game } from "./Context.js";
-import { world3dCanvas, worldPanel } from "../ui/Dom.js";
+import { worldPanel } from "../ui/Dom.js";
 import { settings } from "../ui/Settings.js";
 import { loadingScreenVisible } from "../ui/LoadingScreen.js";
 import { autoQualityStatus } from "../AutoQuality.js";
@@ -270,16 +270,11 @@ function stopJsProfiler(startedAt: number): void {
 export function startPerformanceCapture(): boolean {
   // A new profiler must not start while the last one is still handing over its trace.
   if (recording || profilePending || !worldActive()) return false;
-  const gl = game.renderer ? world3dCanvas.getContext("webgl2") : null;
-  let adapter = "unavailable";
-  let webgl = "Canvas fallback";
-  try {
-    if (gl) {
-      webgl = String(gl.getParameter(gl.VERSION));
-      const debug = gl.getExtension("WEBGL_debug_renderer_info");
-      adapter = String(gl.getParameter(debug ? debug.UNMASKED_RENDERER_WEBGL : gl.RENDERER));
-    }
-  } catch { /* A restricted/lost context still permits CPU recording. */ }
+  // 21.10 ARC-2 S1: asked of the renderer, not of the canvas, whose `getContext` throws once its
+  // control is transferred to a worker.
+  const identity = game.renderer?.webGlIdentity();
+  const adapter = identity?.adapter ?? "unavailable";
+  const webgl = identity?.version ?? "Canvas fallback";
   metadata = {
     recordedAt: new Date().toISOString(), browser: navigator.userAgent, webgl, adapter,
     viewport: { width: innerWidth, height: innerHeight, dpr: devicePixelRatio },

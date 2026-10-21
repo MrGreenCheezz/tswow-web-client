@@ -26,6 +26,7 @@ function rendererFixture() {
       trace = enabled ? new ShaderProgramTrace(this.programs, performance.now()) : undefined;
     },
     drainShaderProgramCapture() { return trace?.drain(); },
+    webGlIdentity() { return {}; }, // 21.10 ARC-2 S1: asked of the renderer, not the canvas
     addProgram(id, phase) {
       this.programs.push({ id, type: 'MeshStandardMaterial', cacheKey: 'standard,highp,srgb,42' });
       trace?.mark(phase, this.programs, performance.now());

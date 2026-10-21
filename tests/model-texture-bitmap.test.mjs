@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import * as THREE from "three";
 
-import { ModelTextureLoader, registerPendingTextureView } from "../dist/code/browser/TextureLoad.js";
+import { ModelTextureLoader, loadImageTexture, registerPendingTextureView } from "../dist/code/browser/TextureLoad.js";
 
 // Model textures are decoded off the main thread and shared by URL. An <img> handed to WebGL is
 // decoded again inside the draw that first samples it; the bitmap has to carry the texels that
@@ -411,4 +411,64 @@ test("image cache limits are validated like the texture cache's", () => {
   assert.throws(() => new ModelTextureLoader({ images: { count: -1 } }), RangeError);
   assert.throws(() => new ModelTextureLoader({ images: { decodedBytes: 0.5 } }), RangeError);
   assert.doesNotThrow(() => new ModelTextureLoader({ images: { count: 0, decodedBytes: 0 } }));
+});
+
+// 21.10 ARC-2 S1: the weather/atmosphere sprites and the liquid strips leave their own
+// `THREE.TextureLoader` for this path, so the render worker needs no `<img>`. The texture comes back
+// with every field `TextureLoader` left at its default (the callers set the rest), and the decode
+// carries the orientation the caller's upload had: rows as filed for `flipY = false`, flipped for
+// three's default `flipY = true`, since WebGL skips UNPACK_FLIP_Y for a bitmap.
+test("loadImageTexture decodes as the <img> upload did, rows flipped only for a flipY texture",
+  withBitmapPage(async (page) => {
+    const fresh = new THREE.Texture();
+    const loaded = [];
+    const failed = [];
+    const flat = loadImageTexture(A, { flipY: false }, (texture) => loaded.push(texture), (error) => failed.push(error));
+    const flipped = loadImageTexture(B, { flipY: true }, (texture) => loaded.push(texture), (error) => failed.push(error));
+    for (const texture of [flat, flipped]) {
+      for (const key of ["flipY", "premultiplyAlpha", "generateMipmaps", "minFilter", "magFilter", "wrapS", "wrapT", "colorSpace", "anisotropy", "unpackAlignment"]) {
+        assert.equal(texture[key], fresh[key], key);
+      }
+    }
+    assert.deepEqual(page.requests.map((request) => ({ url: request.url, ...request.init })), [
+      { url: A, mode: "cors", credentials: "same-origin", priority: "low" },
+      { url: B, mode: "cors", credentials: "same-origin", priority: "low" },
+    ]);
+    await settle();
+    assert.deepEqual(failed, []);
+    assert.deepEqual(loaded, [flat, flipped]);
+    const options = new Map(page.decodes.map((decode) => [decode.url, { ...decode.options }]));
+    assert.deepEqual(options.get(A), { premultiplyAlpha: "none", colorSpaceConversion: "none" });
+    assert.deepEqual(options.get(B), { premultiplyAlpha: "none", colorSpaceConversion: "none", imageOrientation: "flipY" });
+    assert.equal(flat.image.url, A);
+    assert.equal(flipped.image.url, B);
+
+    // A failure is reported once and leaves nothing to upload, as a failed `<img>` did.
+    const missing = loadImageTexture(MISSING, { flipY: false }, () => assert.fail("no load"), (error) => failed.push(error));
+    await settle();
+    assert.equal(failed.length, 1);
+    assert.equal(missing.image, null);
+    flat.dispose();
+    flipped.dispose();
+    missing.dispose();
+  }, { statuses: { [MISSING]: 404 } }));
+
+test("loadImageTexture keeps the <img> loader where there is no decoder", () => {
+  const original = THREE.TextureLoader.prototype.load;
+  const calls = [];
+  THREE.TextureLoader.prototype.load = function (url, onLoad, onProgress, onError) {
+    calls.push({ url, onProgress });
+    const texture = new THREE.Texture();
+    onLoad(texture);
+    return texture;
+  };
+  try {
+    assert.equal(typeof globalThis.createImageBitmap, "undefined");
+    let loaded;
+    const texture = loadImageTexture(A, { flipY: false }, (value) => { loaded = value; }, () => assert.fail("no error"));
+    assert.equal(loaded, texture);
+    assert.deepEqual(calls, [{ url: A, onProgress: undefined }]);
+  } finally {
+    THREE.TextureLoader.prototype.load = original;
+  }
 });

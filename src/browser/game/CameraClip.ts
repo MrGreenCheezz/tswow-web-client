@@ -35,7 +35,7 @@
  * (`SimpleScene.cameraBodyHeight`) and changes at once; the water rules (`CameraWater.ts`).
  */
 
-import { CAMERA_FOV_DEGREES } from "../SimpleScene.js";
+import { CAMERA_FOV_DEGREES } from "../SceneCamera.js"; // 21.10 ARC-2 S1: not the DOM overlay
 import type { CollisionMesh, CollisionWorld, Vector3 } from "./Collision.js";
 
 /** 0x00a1e354: what a hit gives back (1/9 of a yard, as a float), and how far under its eased number an answer has to fall to restart its ease. */

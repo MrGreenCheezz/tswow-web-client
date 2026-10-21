@@ -7,6 +7,7 @@
 
 import * as THREE from "three";
 import type { LightSample } from "./LightTypes.js";
+import { loadImageTexture } from "./TextureLoad.js";
 import type { RetainedResourceVisitor } from "./ResourceAccounting.js";
 import type { BenchmarkAsyncReadinessStats } from "./RenderBenchmarkReadiness.js";
 
@@ -403,7 +404,8 @@ export class LiquidTextureClient {
       let callbackSettled = false;
       let resolvedTexture: THREE.Texture | undefined;
       const texture = await new Promise<THREE.Texture>((resolve, reject) => {
-        loaderTexture = new THREE.TextureLoader().load(`${this.#baseUrl}${stripPath}.png`,
+        // 21.10 ARC-2 S1: the bitmap path, not an `<img>`; the strip keeps three's `flipY = true`.
+        loaderTexture = loadImageTexture(`${this.#baseUrl}${stripPath}.png`, { flipY: true },
           (loaded) => {
             if (callbackSettled) {
               if (loaded !== resolvedTexture) this.#disposeTexture(loaded);
@@ -413,7 +415,7 @@ export class LiquidTextureClient {
             resolvedTexture = loaded;
             if (!this.#isCurrent(epoch)) this.#disposeTexture(loaded);
             resolve(loaded);
-          }, undefined, () => {
+          }, () => {
             if (callbackSettled) return;
             callbackSettled = true;
             reject(new Error(`Failed to load the ${liquidClass} strip`));

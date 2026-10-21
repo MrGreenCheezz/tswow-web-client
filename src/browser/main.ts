@@ -131,17 +131,10 @@ function captureLiveBenchmarkEnvironment(
     effectivePixelRatio: game.renderer?.pixelRatio ?? ("unsupported" as const),
     renderScalePercent,
   };
-  let context: WebGLRenderingContext | WebGL2RenderingContext | null = null;
-  if (game.renderer) {
-    try {
-      // The renderer already owns this canvas; getContext returns that existing context and does
-      // not ask for any vendor/renderer extension. A failed/lost context remains explicit below.
-      context = world3dCanvas.getContext("webgl2") ?? world3dCanvas.getContext("webgl");
-    } catch {
-      context = null;
-    }
-  }
-  const webgl = captureBenchmarkWebGl(context ?? undefined);
+  // 21.10 ARC-2 S1: the renderer reads its own context (no vendor/renderer extension asked for); the
+  // canvas's `getContext` would throw once its control is transferred to a worker. A failed/lost
+  // context remains explicit in the record, and no renderer is the unsupported block as before.
+  const webgl = game.renderer ? game.renderer.benchmarkWebGl() : captureBenchmarkWebGl(undefined);
   const userAgent = typeof navigator === "undefined" ? "" : navigator.userAgent;
   return captureBenchmarkEnvironment({
     canvas,

@@ -30,7 +30,7 @@ import type { SimpleScene } from "../SimpleScene.js";
 import {
   CAMERA_DEFAULT_DISTANCE, CAMERA_DEFAULT_EYE_HEIGHT, CAMERA_DEFAULT_PITCH, CAMERA_DEFAULT_PIVOT_HEIGHT,
   CAMERA_FIRST_PERSON_DISTANCE,
-} from "../SimpleScene.js";
+} from "../SceneCamera.js"; // 21.10 ARC-2 S1: the camera alone, not the DOM overlay
 import type { SoundClient } from "../SoundClient.js";
 import type { SoundPlayer } from "../Sound.js";
 import type { ModuleLoader } from "../ui/ModuleLoader.js";

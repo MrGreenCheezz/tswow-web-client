@@ -21,3 +21,15 @@ test("the other refusals each have their own state; an isolated capable page is 
     { state: "query", reason: "?poseworker=0" });
   assert.equal(poseEngineAvailability({ ...capable, location: { search: "?poseworker=01" } }).state, "on");
 });
+
+// 21.10 ARC-2 S1: a worker has no page location; the renderer passes its host's query flags.
+test("injected query flags decide ?poseworker=0 in place of location.search", () => {
+  assert.deepEqual(poseEngineAvailability({ ...capable, flags: new URLSearchParams("a=1&poseworker=0") }),
+    { state: "query", reason: "?poseworker=0" });
+  assert.equal(poseEngineAvailability({ ...capable, flags: new URLSearchParams("poseworker=01") }).state, "on");
+  // Given flags are the whole answer: the page's own search is not consulted beside them.
+  assert.equal(poseEngineAvailability({
+    ...capable, location: { search: "?poseworker=0" }, flags: new URLSearchParams(""),
+  }).state, "on");
+  assert.equal(poseEngineAvailability({ ...capable, location: undefined, flags: undefined }).state, "on");
+});

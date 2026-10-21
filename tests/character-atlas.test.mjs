@@ -1204,6 +1204,47 @@ test("a hidden tab finishes a queued atlas without waiting for a paused animatio
     page.restore();
   }
 });
+
+// 21.10 ARC-2 S1: the render worker has OffscreenCanvas and no document. The atlas composes into
+// an OffscreenCanvas, and its hidden-tab fallback timer waits for the frame instead of throwing.
+test("an atlas composes without a document where OffscreenCanvas exists", async () => {
+  const page = installPage();
+  const previousOffscreen = globalThis.OffscreenCanvas;
+  const offscreen = [];
+  globalThis.document = undefined;
+  globalThis.OffscreenCanvas = class {
+    constructor(width, height) {
+      this.width = width;
+      this.height = height;
+      this.drawn = 0;
+      offscreen.push(this);
+    }
+    getContext(kind) {
+      assert.equal(kind, "2d");
+      return { drawImage: () => { this.drawn++; } };
+    }
+  };
+  const atlas = new CharacterAtlasClient("http://atlas.test");
+  try {
+    const painted = atlas.compose("worker", layer(4));
+    await settle();
+    assert.equal(page.callbacks.size, 1);
+    // Two turns of the 100 ms fallback timer, which read `document.hidden` unguarded.
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    await page.frame();
+    const texture = await painted;
+    assert.ok(texture, "the body is composed");
+    assert.equal(offscreen.length, 1);
+    assert.equal(texture.image, offscreen[0], "the CanvasTexture samples the OffscreenCanvas");
+    assert.deepEqual([offscreen[0].width, offscreen[0].height, offscreen[0].drawn], [512, 512, 1]);
+    assert.equal(page.canvases.length, 0, "no DOM canvas was asked for");
+  } finally {
+    atlas.dispose();
+    page.restore();
+    if (previousOffscreen === undefined) delete globalThis.OffscreenCanvas;
+    else globalThis.OffscreenCanvas = previousOffscreen;
+  }
+});
 }
 
 // ── character-atlas-partial-paint.test.mjs

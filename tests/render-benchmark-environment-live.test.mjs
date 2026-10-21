@@ -93,7 +93,9 @@ test("live metadata records the renderer ratio rather than recomputing it from b
 test("the browser console runner captures live environment before finishing", async () => {
   const source = await readFile(new URL("../src/browser/main.ts", import.meta.url), "utf8");
   assert.match(source, /captureBenchmarkEnvironment/);
-  assert.match(source, /world3dCanvas\.getContext\("webgl2"\)/);
+  // 21.10 ARC-2 S1: from the renderer's own context; the canvas's getContext throws once transferred.
+  assert.match(source, /game\.renderer \? game\.renderer\.benchmarkWebGl\(\) : captureBenchmarkWebGl\(undefined\)/);
+  assert.doesNotMatch(source, /world3dCanvas\.getContext\(/);
   assert.match(source, /game\.renderer\?\.pixelRatio \?\? \("unsupported" as const\)/);
   assert.doesNotMatch(source, /benchmarkEffectivePixelRatio/);
   assert.match(source, /settings\(\)/);

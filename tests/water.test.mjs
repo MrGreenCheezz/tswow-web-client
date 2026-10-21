@@ -241,3 +241,58 @@ test("world teardown disposes liquids after renderer borrowers and before droppi
   const drop = clear.indexOf("game.liquids = undefined;");
   assert.ok(renderer >= 0 && liquids > renderer && drop > liquids);
 });
+
+// 21.10 ARC-2 S1: the liquid strip is no longer an `<img>` (the render worker has no DOM). It goes
+// through the model bitmap path, and since three does not apply UNPACK_FLIP_Y to an ImageBitmap the
+// flip its `<img>` upload made (the strip keeps three's default `flipY = true`) is made by the decoder.
+test("the liquid strip is decoded as a flipped bitmap and samples as its <img> did", async () => {
+  const originals = {
+    fetch: globalThis.fetch, createImageBitmap: globalThis.createImageBitmap,
+    ImageBitmap: globalThis.ImageBitmap, load: THREE.TextureLoader.prototype.load,
+  };
+  class FakeImageBitmap { constructor() { this.width = 512; this.height = 15360; } close() {} }
+  const requests = [];
+  const decodes = [];
+  globalThis.ImageBitmap = FakeImageBitmap;
+  globalThis.fetch = async (url, init) => {
+    requests.push({ url: String(url), init });
+    if (String(url).endsWith(".png")) return new Response(new Blob(["png"]), { status: 200 });
+    return { ok: true, status: 200, json: async () => ({ frames: 30 }) };
+  };
+  globalThis.createImageBitmap = async (_blob, options) => {
+    const bitmap = new FakeImageBitmap();
+    decodes.push({ options, bitmap });
+    return bitmap;
+  };
+  THREE.TextureLoader.prototype.load = () => { throw new Error("no <img> where createImageBitmap exists"); };
+  try {
+    const client = new LiquidTextureClient("ws://water.test/world");
+    assert.equal(client.get("water"), undefined);
+    await settle(20);
+    const strip = client.get("water");
+    assert.ok(strip, "the strip loaded");
+    assert.equal(strip.frames, 30);
+    const png = requests.find((request) => request.url.endsWith(".png"));
+    assert.deepEqual({ ...png.init }, { mode: "cors", credentials: "same-origin", priority: "low" });
+    assert.equal(decodes.length, 1);
+    assert.deepEqual({ ...decodes[0].options },
+      { premultiplyAlpha: "none", colorSpaceConversion: "none", imageOrientation: "flipY" });
+    const texture = strip.texture;
+    assert.equal(texture.image, decodes[0].bitmap);
+    // What `TextureLoader` handed back plus Water's own settings: every other sampler field default.
+    const fresh = new THREE.Texture();
+    for (const key of ["flipY", "premultiplyAlpha", "generateMipmaps", "minFilter", "magFilter", "anisotropy", "unpackAlignment", "format", "type"]) {
+      assert.equal(texture[key], fresh[key], key);
+    }
+    assert.equal(texture.colorSpace, THREE.SRGBColorSpace);
+    assert.equal(texture.wrapS, THREE.RepeatWrapping);
+    assert.equal(texture.wrapT, THREE.ClampToEdgeWrapping);
+    client.dispose();
+  } finally {
+    for (const name of ["fetch", "createImageBitmap", "ImageBitmap"]) {
+      if (originals[name] === undefined) delete globalThis[name];
+      else globalThis[name] = originals[name];
+    }
+    THREE.TextureLoader.prototype.load = originals.load;
+  }
+});

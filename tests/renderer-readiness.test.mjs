@@ -67,10 +67,11 @@ test("model texture loader settles synchronous throws without hiding an exact fa
 test("renderer has one generic texture entry point and a frozen readiness wiring", () => {
   const source = readFileSync("src/browser/WorldRenderer3D.ts", "utf8");
   assert.equal(
-    (source.match(/#textureLoader\.load/g) ?? []).length,
+    (source.match(/#host\.loadTexture\(/g) ?? []).length,
     1,
-    "only #loadWorldTexture may call the generic TextureLoader directly",
+    "only #loadWorldTexture may call the generic texture loader directly (21.10 ARC-2 S1: the host's)",
   );
+  assert.doesNotMatch(source, /new THREE\.TextureLoader\b/);
   assert.match(source, /#loadWorldTexture\(\s*url: string/);
   assert.match(source, /get benchmarkReadiness\(\): Readonly<BenchmarkRendererReadinessInput>/);
   assert.match(source, /modelTexturesPending:\s*this\.#textures\.stats\.pending\s*\+\s*this\.#spellTextures\.stats\.pending/);
