@@ -148,10 +148,64 @@ export function unitModelFor(
   object: WorldObjectState,
   creatureModels: CreatureModelClient | undefined,
   itemMetadata: ItemMetadataClient | undefined,
-  mirrorImages?: Pick<MirrorImages, "get" | "awaiting">, // 05.10-A7a-H 6.11б: SMSG_MIRRORIMAGE_DATA replies
+  mirrorImages?: MirrorImageSource, // 05.10-A7a-H 6.11б: SMSG_MIRRORIMAGE_DATA replies
+): UnitModel | undefined {
+  return resolveUnitModel(object, creatureModels, itemMetadata, mirrorImages, false);
+}
+
+/**
+ * 22.10 ARC-2 S2c: what `unitModelFor` would answer right now, with nothing asked and nothing remembered — no item
+ * load, no look fetched, no mirror-image question, no weapon request, no memo written (memos are read). The frame
+ * loop answers the renderer's units with it before `draw` (game/RenderLookupsBuilder.ts) and runs `unitModelFor`,
+ * the asking path, for the units `draw` admitted right after it. The two differ only where `unitModelFor`'s own
+ * asks change its answer in the same call: an item template already on the world client is absorbed by
+ * `ItemMetadataClient.load`, so that dressed look reaches the renderer a frame later.
+ */
+export function unitModelPeek(
+  object: WorldObjectState,
+  creatureModels: CreatureModelClient | undefined,
+  itemMetadata: ItemMetadataClient | undefined,
+  mirrorImages?: MirrorImageSource,
+): UnitModel | undefined {
+  return resolveUnitModel(object, creatureModels, itemMetadata, mirrorImages, true);
+}
+
+/**
+ * 22.10 ARC-2 S2c: whether `unitModelPeek`'s answer for this object can change with time alone: a creature
+ * flagged as a mirror image reads `MirrorImages.awaitingAfterGet`, whose wait runs out on the clock. Every
+ * other input is a field of the object or a client revision (game/RenderLookupsBuilder.ts keys on those).
+ */
+export function unitModelVolatile(object: WorldObjectState): boolean {
+  return object.typeId !== 4 && object.typeId !== 7
+    && ((object.fields.get(UPDATE_FIELDS.UNIT_FIELD_FLAGS_2.offset) ?? 0) & UNIT_FLAG2_MIRROR_IMAGE) !== 0;
+}
+
+/**
+ * 22.10 ARC-2 S2c: the client identities and revisions `unitModelPeek` reads, for the table's change key.
+ */
+export function unitModelInputs(
+  creatureModels: CreatureModelClient | undefined,
+  itemMetadata: ItemMetadataClient | undefined,
+  mirrorImages?: Pick<MirrorImages, "generation">,
+): unknown[] {
+  return [
+    creatureModels, creatureModels?.generation, creatureModels?.npcWeapons, creatureModels?.npcWeapons.generation,
+    itemMetadata, itemMetadata?.generation, mirrorImages, mirrorImages?.generation,
+  ];
+}
+
+/** 05.10-A7a-H 6.11б: the mirror-image replies; 22.10 ARC-2 S2c: `peek`/`awaitingAfterGet` for the read-only path. */
+export type MirrorImageSource = Pick<MirrorImages, "get" | "awaiting"> & Partial<Pick<MirrorImages, "peek" | "awaitingAfterGet">>;
+
+function resolveUnitModel(
+  object: WorldObjectState,
+  creatureModels: CreatureModelClient | undefined,
+  itemMetadata: ItemMetadataClient | undefined,
+  mirrorImages: MirrorImageSource | undefined,
+  readOnly: boolean, // 22.10 ARC-2 S2c
 ): UnitModel | undefined {
   // 05.10-A7a-G2 6.05: a corpse (or the renderer's view of one) wears its owner's look or its bones.
-  if (object.typeId === 7) return corpseModelFor(object, creatureModels);
+  if (object.typeId === 7) return corpseModelFor(object, creatureModels, readOnly);
   const displayId = object.fields.get(UPDATE_FIELDS.UNIT_FIELD_DISPLAYID.offset) ?? 0;
   const metadata = creatureModels?.get(displayId);
   if (!metadata || !creatureModels) return metadata;
@@ -160,10 +214,13 @@ export function unitModelFor(
     // 05.10-A7a-H 6.11б: a mirror image, outfit NPC or NPCBot wears the look its reply describes.
     const flags2 = object.fields.get(UPDATE_FIELDS.UNIT_FIELD_FLAGS_2.offset) ?? 0;
     const worn = mirrorImages !== undefined && (flags2 & UNIT_FLAG2_MIRROR_IMAGE) !== 0
-      ? mirrorImageModelFor(object, metadata, mirrorImages.get(object.guid, displayId, flags2), creatureModels,
-        mirrorImages.awaiting(object.guid, displayId))
+      ? (readOnly // 22.10 ARC-2 S2c: the reply and the wait as they stand after `get` would have asked
+        ? mirrorImageModelFor(object, metadata, mirrorImages.peek?.(object.guid, displayId, flags2), creatureModels,
+          mirrorImages.awaitingAfterGet?.(object.guid, displayId, flags2) ?? false, true)
+        : mirrorImageModelFor(object, metadata, mirrorImages.get(object.guid, displayId, flags2), creatureModels,
+          mirrorImages.awaiting(object.guid, displayId)))
       : metadata;
-    return withVirtualWeapons(worn, object, creatureModels.npcWeapons);
+    return withVirtualWeapons(worn, object, creatureModels.npcWeapons, readOnly);
   }
   // A player who is not currently in their own body: a cat, a bear, a sheep, a ghost wolf. The
   // server writes NATIVEDISPLAYID once, in `Player::InitDisplayIds`, and moves DISPLAYID for every
@@ -190,8 +247,8 @@ export function unitModelFor(
     && cached.bytes === bytes && cached.look === look && cached.look2 === look2
     && cached.hiddenWorn === hiddenWorn // 05.10-A7a-A 6.09
     && visibleItemsMatch(object.fields, cached.visibleItems)) return cached.model;
-  const equipment = visibleEquipmentFor(object, itemMetadata);
-  const appearance = creatureModels?.playerAppearance(
+  const equipment = visibleEquipmentFor(object, itemMetadata, readOnly);
+  const appearance = (readOnly ? creatureModels.peekAppearance : creatureModels.playerAppearance).call(creatureModels,
     bytes & 0xff, (bytes >>> 16) & 0xff,
     look & 0xff, (look >>> 8) & 0xff, (look >>> 16) & 0xff, (look >>> 24) & 0xff,
     look2 & 0xff, equipment, (bytes >>> 8) & 0xff); // 05.10-A7a-A 6.10: the class, for the DK eye glow
@@ -207,7 +264,7 @@ export function unitModelFor(
   // Pending item rows must keep the existing retry path active. Both real clients expose a
   // generation that changes when their async answers arrive; replay/test clients without one
   // continue through the ordinary resolver so a mutable mock cannot leave a stale appearance.
-  if (!appearancePending && Number.isFinite(creatureModels.generation)
+  if (!readOnly && !appearancePending && Number.isFinite(creatureModels.generation)
     && (itemMetadata === undefined || Number.isFinite(itemMetadata.generation))) {
     resolvedPlayerModels.set(object, {
       creatureModels, itemMetadata, creatureGeneration: creatureModels.generation,
@@ -260,6 +317,7 @@ export function mountModel(object: WorldObjectState): UnitModel | undefined {
 export function visibleEquipmentFor(
   object: WorldObjectState,
   itemMetadata: ItemMetadataClient | undefined,
+  readOnly = false, // 22.10 ARC-2 S2c: the rows already here, nothing loaded
 ): EquippedItem[] {
   // Which word an item came from is its EQUIPMENT_SLOT, and that is not the same thing as its
   // inventory type: a one-handed weapon is INVTYPE_WEAPON whichever hand it is in.
@@ -269,7 +327,7 @@ export function visibleEquipmentFor(
     if (entry > 0) worn.push({ slot, entry });
   }
   if (worn.length === 0) return [];
-  void itemMetadata?.load(worn.map(({ entry }) => entry)).catch(() => undefined);
+  if (!readOnly) void itemMetadata?.load(worn.map(({ entry }) => entry)).catch(() => undefined);
 
   const equipment: EquippedItem[] = [];
   const hidden = hiddenWornFlags(object); // 05.10-A7a-A 6.09

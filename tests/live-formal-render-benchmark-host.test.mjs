@@ -277,6 +277,7 @@ class FakeRenderer {
   lookupsCalls = [];
   setRenderLookups(lookups) { this.lookupsCalls.push(lookups); }
   collisionModelWants() { return new Set(); }
+  unitModelWants() { return []; } // 22.10 ARC-2 S2c
   draw(...args) {
     this.order.push("draw");
     this.drawCalls.push(args);
@@ -504,9 +505,10 @@ test("prewarm traverses every fixed frame without GPU begin, then render wraps t
     // 22.10 ARC-2 S2b: the revision rides the pushed lookups, set before the draw and not inside the GPU envelope.
     assert.equal(harness.renderer.lookupsCalls.at(-1).gameObjectDisplayRevision, 0,
       "formal rendering supplies the matching game-object metadata revision");
-    assert.deepEqual(draw.flatMap((argument, index) => (typeof argument === "function" ? [index] : [])), [2, 9],
-      "the replay's draw takes no lookup function but the terrain sampler and the unit model");
-    assert.strictEqual(draw[9], harness.bindings.unitModel);
+    // 22.10 ARC-2 S2c: the unit models are pushed (setRenderLookups) and asked for after the draw.
+    assert.deepEqual(draw.flatMap((argument, index) => (typeof argument === "function" ? [index] : [])), [2],
+      "the replay's draw takes no lookup function but the terrain sampler");
+    assert.ok(harness.renderer.lookupsCalls.at(-1).unitModels instanceof Map, "the replay pushes the unit-model table");
     assert.equal(harness.renderer.beginCount, 1);
     assert.deepEqual(harness.renderer.order, ["begin", "draw", "end"],
       "the renderer/GPU timing envelope contains only the world submission");

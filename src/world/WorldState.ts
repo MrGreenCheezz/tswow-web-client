@@ -2,6 +2,7 @@ import { unzlibSync } from "three/examples/jsm/libs/fflate.module.js";
 import { PacketReader } from "../protocol/PacketReader.js";
 import { MOVEMENT_FLAGS, MOVEMENT_MASK_MOVING, readMovementInfo, type MovementInfo } from "./MovementProtocol.js";
 import { UPDATE_FIELDS } from "../generated/updateFields.js";
+import { bumpFieldsVersion } from "./FieldsVersion.js"; // 22.10 ARC-2 S2c
 // Constants only, and `Fields.ts` takes nothing back from here but a type, so this is one edge and
 // not a cycle: the compiled `Fields.js` imports `updateFields.js` and nothing else.
 import { UNIT_DYNFLAG_DEAD, UNIT_DYNFLAG_LOOTABLE } from "./Fields.js";
@@ -752,7 +753,9 @@ export class WorldState {
   }
 
   setField(guid: bigint, index: number, value: number): void {
-    this.#get(guid).fields.set(index, value);
+    const fields = this.#get(guid).fields;
+    fields.set(index, value);
+    bumpFieldsVersion(fields); // 22.10 ARC-2 S2c
     this.revision++;
     this.observer?.fieldsChanged(guid, [index]);
   }
@@ -767,6 +770,7 @@ export class WorldState {
     const object = this.objects.get(guid);
     if (!object) return false;
     object.fields.set(index, value);
+    bumpFieldsVersion(object.fields); // 22.10 ARC-2 S2c
     this.revision++;
     this.observer?.fieldsChanged(guid, [index]);
     return true;
@@ -1422,6 +1426,7 @@ function commitValues(fields: Map<number, number>, slots: number): number[] {
     fields.set(index, FIELD_VALUE_SCRATCH[slot]!);
     changed[slot] = index;
   }
+  bumpFieldsVersion(fields); // 22.10 ARC-2 S2c
   return changed;
 }
 

@@ -19,6 +19,10 @@ interface AppearanceSource {
   playerAppearance(race: number, sex: number, skin: number, face: number, hairStyle: number,
     hairColor: number, facialHair: number, equipment?: readonly EquippedItem[],
     classId?: number): CharacterAppearance | undefined;
+  /** 22.10 ARC-2 S2c: the same look without asking (CreatureModelClient.peekAppearance); read-only callers only. */
+  peekAppearance?(race: number, sex: number, skin: number, face: number, hairStyle: number,
+    hairColor: number, facialHair: number, equipment?: readonly EquippedItem[],
+    classId?: number): CharacterAppearance | undefined;
 }
 
 interface Dressed {
@@ -36,7 +40,8 @@ const dressed = new WeakMap<object, Dressed>();
  * wears for its short wait rather than building it bare and dressing it a moment later.
  */
 export function mirrorImageModelFor(unit: object, metadata: UnitModel, data: MirrorImageData | undefined,
-  creatureModels: AppearanceSource, awaiting = false): UnitModel {
+  creatureModels: AppearanceSource, awaiting = false,
+  readOnly = false): UnitModel { // 22.10 ARC-2 S2c: read-only reads the memo, asks and remembers nothing
   if (!data && !awaiting) return metadata;
   // 05.10 review H: only a character display takes a look (the gateway bakes one into every
   // `Character\` record). An NPCBot keeps the flag in bear or cat form, hexed or polymorphed, and the
@@ -50,12 +55,14 @@ export function mirrorImageModelFor(unit: object, metadata: UnitModel, data: Mir
   if (!data) {
     model = { ...metadata, appearancePending: true };
   } else {
-    const appearance = creatureModels.playerAppearance(data.race, data.gender, data.skin, data.face, data.hair,
+    const appearance = (readOnly ? creatureModels.peekAppearance : creatureModels.playerAppearance)?.call(
+      creatureModels, data.race, data.gender, data.skin, data.face, data.hair,
       data.hairColour, data.facialHair, mirrorImageEquipment(data.equipmentDisplayIds), data.classId);
     model = appearance ? { ...metadata, appearance } : { ...metadata, appearancePending: true };
     // A look still in flight is asked again next frame (the client's cache answers then), not memoised.
     if (!appearance) return model;
   }
+  if (readOnly) return model;
   dressed.set(unit, { data, metadata, generation: creatureModels.generation, model });
   return model;
 }

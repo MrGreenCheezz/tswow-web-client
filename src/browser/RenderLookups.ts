@@ -36,6 +36,14 @@ export interface RenderLookups {
   readonly collisionModels: ReadonlyMap<string, CollisionModel> | undefined;
   /** For a worker slice: moves whenever `collisionModels` changed content. */
   readonly collisionRevision: number;
+  /**
+   * 22.10 ARC-2 S2c: the model each unit, player and corpse wears, by guid — answered read-only (ui/Frames.ts
+   * `unitModelPeek`) for every one the renderer's unit admission could pick; a guid without an entry has no
+   * model yet. Was the `creatureModel` function `draw` took; the asking half runs after `draw` for the guids
+   * the renderer admitted (`WorldRenderer3D.unitModelWants`). Refilled every frame: a worker slice posts the
+   * entries whose record object changed.
+   */
+  readonly unitModels: ReadonlyMap<bigint, UnitModel> | undefined;
 }
 
 /** Nothing pushed (a benchmark harness, a test, between worlds): every lookup misses and nothing is asked for. */
@@ -46,6 +54,7 @@ export const NO_RENDER_LOOKUPS: RenderLookups = Object.freeze({
   creatureDisplayRevision: undefined,
   collisionModels: undefined,
   collisionRevision: 0,
+  unitModels: undefined,
 });
 
 /** What a display cache answers with: a live client (`get`) or the pushed map. */

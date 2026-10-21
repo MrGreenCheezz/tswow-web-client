@@ -95,6 +95,30 @@ export class MirrorImages {
     return undefined;
   }
 
+  /** 22.10 ARC-2 S2c: what `get` answers, without asking — the matching reply, else undefined. */
+  peek(guid: bigint, displayId: number, flags2: number): MirrorImageData | undefined {
+    if ((flags2 & UNIT_FLAG2_MIRROR_IMAGE) === 0) return undefined;
+    const reply = this.#replies.get(guid);
+    return reply && reply.displayId === displayId ? reply : undefined;
+  }
+
+  /**
+   * 22.10 ARC-2 S2c: what `awaiting` answers right after `get(guid, displayId, flags2)` — the order
+   * ui/Frames.ts `unitModelFor` reads them in — without asking: a question `get` would send now (a new
+   * one, or a retry that is due) is one being waited for.
+   */
+  awaitingAfterGet(guid: bigint, displayId: number, flags2: number): boolean {
+    if ((flags2 & UNIT_FLAG2_MIRROR_IMAGE) !== 0) {
+      const reply = this.#replies.get(guid);
+      if (!reply || reply.displayId !== displayId) {
+        const asked = this.#asked.get(guid);
+        if (!asked || asked.displayId !== displayId) return true;
+        if (asked.tries < MIRROR_IMAGE_TRIES && this.#now() - asked.at >= MIRROR_IMAGE_RETRY_MS) return true;
+      }
+    }
+    return this.awaiting(guid, displayId);
+  }
+
   /** Whether a question for this unit and display is still worth waiting for. */
   awaiting(guid: bigint, displayId: number): boolean {
     const asked = this.#asked.get(guid);

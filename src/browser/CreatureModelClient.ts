@@ -103,6 +103,19 @@ export class CreatureModelClient {
   }
 
   /**
+   * 22.10 ARC-2 S2c: what `playerAppearance` would answer right now, without asking for anything — the
+   * look if it has arrived, else undefined (asked, failed or never asked alike). For the renderer's
+   * read-only unit-model table (game/RenderLookupsBuilder.ts); the ask itself runs after `draw`.
+   */
+  peekAppearance(race: number, sex: number, skin: number, face: number, hairStyle: number,
+    hairColor: number, facialHair: number,
+    equipment: readonly EquippedItem[] = [],
+    classId?: number): CharacterAppearance | undefined {
+    return this.#appearances.get(appearanceKey(race, sex, skin, face, hairStyle, hairColor, facialHair,
+      equipment, classId).key);
+  }
+
+  /**
    * A player's look, from the appearance bytes the server publishes: the textures to paint its
    * body from, the hair texture, and which geosets to draw. Returns undefined until the answer
    * arrives — the unit keeps its stand-in rather than appearing with the wrong face.
@@ -111,21 +124,8 @@ export class CreatureModelClient {
     hairColor: number, facialHair: number,
     equipment: readonly EquippedItem[] = [],
     classId?: number): CharacterAppearance | undefined { // 05.10-A7a-A 6.10: the class decides the DK eye glow
-    // Equipment belongs in the key: changing armour changes the body texture, the geosets and
-    // what hangs off the bones, so it is a different appearance and a different composed atlas.
-    // Sorted for a stable identity — the order it paints in is the gateway's decision, not this
-    // list's, so sorting here cannot reach the picture.
-    // The subclass is part of the look identity as well as the gateway payload: INVTYPE_RANGEDRIGHT
-    // covers both guns and wands, and reusing the gun appearance after the item query resolves a
-    // wand would leave the attached model right while its shoot pose stays wrong.
-    const worn = equipment.map((item) => `${item.slot}:${item.inventoryType}:${item.displayId}`
-      + (item.subClass === undefined ? "" : `:${item.subClass}`)).sort().join(",");
-    // 05.10-A7a-A 6.10: an integer class 0..255 joins the key and the request; anything else is the
-    // old classless look (no `class=`, which an older gateway ignores anyway).
-    const knownClass = classId !== undefined && Number.isInteger(classId) && classId >= 0 && classId <= 255
-      ? classId : undefined;
-    const key = `${race}/${sex}/${skin}/${face}/${hairStyle}/${hairColor}/${facialHair}/${worn}`
-      + (knownClass === undefined ? "" : `/c${knownClass}`);
+    const { worn, knownClass, key } = appearanceKey(race, sex, skin, face, hairStyle, hairColor, facialHair,
+      equipment, classId); // 22.10 ARC-2 S2c: one key with `peekAppearance`
     const known = this.#appearances.get(key);
     if (known !== undefined) return known;
     if (this.#requestedAppearances.has(key)) return undefined;
@@ -277,6 +277,28 @@ function isAppearance(value: unknown): boolean {
   return Array.isArray(appearance.body) && Array.isArray(appearance.geosets)
     && Array.isArray(appearance.attached)
     && typeof appearance.hair === "string" && typeof appearance.cloak === "string";
+}
+
+/** A look's identity: the request's worn list and class, and the cache key (22.10 ARC-2 S2c: shared by the peek). */
+function appearanceKey(race: number, sex: number, skin: number, face: number, hairStyle: number,
+  hairColor: number, facialHair: number, equipment: readonly EquippedItem[], classId: number | undefined,
+): { worn: string; knownClass: number | undefined; key: string } {
+  // Equipment belongs in the key: changing armour changes the body texture, the geosets and
+  // what hangs off the bones, so it is a different appearance and a different composed atlas.
+  // Sorted for a stable identity — the order it paints in is the gateway's decision, not this
+  // list's, so sorting here cannot reach the picture.
+  // The subclass is part of the look identity as well as the gateway payload: INVTYPE_RANGEDRIGHT
+  // covers both guns and wands, and reusing the gun appearance after the item query resolves a
+  // wand would leave the attached model right while its shoot pose stays wrong.
+  const worn = equipment.map((item) => `${item.slot}:${item.inventoryType}:${item.displayId}`
+    + (item.subClass === undefined ? "" : `:${item.subClass}`)).sort().join(",");
+  // 05.10-A7a-A 6.10: an integer class 0..255 joins the key and the request; anything else is the
+  // old classless look (no `class=`, which an older gateway ignores anyway).
+  const knownClass = classId !== undefined && Number.isInteger(classId) && classId >= 0 && classId <= 255
+    ? classId : undefined;
+  const key = `${race}/${sex}/${skin}/${face}/${hairStyle}/${hairColor}/${facialHair}/${worn}`
+    + (knownClass === undefined ? "" : `/c${knownClass}`);
+  return { worn, knownClass, key };
 }
 
 function isMetadata(value: unknown): value is CreatureModelMetadata {

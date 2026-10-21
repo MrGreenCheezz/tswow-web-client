@@ -121,6 +121,7 @@ test("the hooks: admission, the dead pose, the display request, the model, the m
   // P1-20c: the world pass's model requests moved to UnitModelRequests.ts (events + WorldView's sweep).
   assert.match(src("browser/UnitModelRequests.ts"), /corpseDisplayRequest\(object\)/);
   assert.match(src("browser/ui/WorldView.ts"), /sweepUnitModels\(state, game\.creatureModels\)/);
-  assert.match(src("browser/ui/Frames.ts"), /if \(object\.typeId === 7\) return corpseModelFor\(object, creatureModels\);/);
+  // 22.10 ARC-2 S2c: + the read-only flag of `unitModelPeek`.
+  assert.match(src("browser/ui/Frames.ts"), /if \(object\.typeId === 7\) return corpseModelFor\(object, creatureModels, readOnly\);/);
   assert.match(src("browser/SimpleScene.ts"), /object\.typeId === 7 && unitHeight\?\.\(object\.guid\) !== undefined/);
 });

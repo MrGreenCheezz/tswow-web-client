@@ -33,6 +33,7 @@
 
 import type { EquippedItem } from "../gateway/CharacterAppearance.js";
 import { UPDATE_FIELDS } from "../generated/updateFields.js";
+import { bumpFieldsVersion } from "../world/FieldsVersion.js";
 import type { WorldObjectState } from "../world/WorldState.js";
 import type { CreatureModelClient, UnitModel } from "./CreatureModelClient.js";
 
@@ -165,6 +166,7 @@ export function corpseUnitView(corpse: WorldObjectState): WorldObjectState | und
     }
     fields.set(UPDATE_FIELDS.UNIT_FIELD_DISPLAYID.offset, displayId);
     fields.set(UPDATE_FIELDS.UNIT_FIELD_NATIVEDISPLAYID.offset, displayId);
+    bumpFieldsVersion(fields); // 22.10 ARC-2 S2c: a rewritten view is a changed unit for the model table
   }
   return view;
 }
@@ -204,7 +206,9 @@ function sameLook(fields: WorldObjectState["fields"], words: Uint32Array): boole
  * have arrived.
  */
 export function corpseModelFor(object: WorldObjectState,
-  creatureModels: Pick<CreatureModelClient, "generation" | "get" | "playerAppearance"> | undefined): UnitModel | undefined {
+  creatureModels: Pick<CreatureModelClient, "generation" | "get" | "playerAppearance">
+    & Partial<Pick<CreatureModelClient, "peekAppearance">> | undefined,
+  readOnly = false): UnitModel | undefined { // 22.10 ARC-2 S2c: read-only reads the memo, asks and remembers nothing
   const corpse = owners.get(object) ?? object;
   if (corpse.typeId !== CORPSE_TYPE_ID || !creatureModels) return undefined;
   const cached = resolved.get(corpse);
@@ -223,13 +227,14 @@ export function corpseModelFor(object: WorldObjectState,
     if (!/^character\\/i.test(metadata.model)) {
       model = metadata;
     } else {
-      const appearance = creatureModels.playerAppearance(look.race, look.sex, look.skin, look.face,
+      const appearance = (readOnly ? creatureModels.peekAppearance : creatureModels.playerAppearance)?.call(
+        creatureModels, look.race, look.sex, look.skin, look.face,
         look.hairStyle, look.hairColor, look.facialHair, look.equipment);
       if (appearance === undefined) return undefined;
       model = { ...metadata, appearance };
     }
   }
-  if (Number.isFinite(creatureModels.generation)) {
+  if (!readOnly && Number.isFinite(creatureModels.generation)) {
     const words = new Uint32Array(LOOK_WORDS);
     for (let index = 0; index < LOOK_WORDS; index++) words[index] = lookWord(corpse.fields, index);
     resolved.set(corpse, { client: creatureModels, generation: creatureModels.generation, words, model });

@@ -14,6 +14,7 @@ import { HorizonClient } from "../Horizon.js";
 import { environmentStandInsWith } from "../StandIn.js"; // 05.10-A7b-9 (7.18)
 import { CharacterAtlasClient, appearanceKey, CREATURE_MODEL_VERSION } from "../CharacterAtlas.js";
 import type { UnitModel } from "../CreatureModelClient.js";
+import { NO_RENDER_LOOKUPS, type RenderLookups } from "../RenderLookups.js"; // 22.10 ARC-2 S2c
 import { buildModel, characterSlots } from "../ModelBuild.js"; // 05.10-A7a-G 6.18: geosetList → figureGeosets
 import { figureGeosets } from "../FigureGeosets.js"; // 05.10-A7a-G 6.18
 import { addSkinnedClips, buildSkinnedTemplateFrom, instantiateSkinned } from "../AnimatedModel.js";
@@ -206,6 +207,12 @@ if (movement) {
   const modelOf = city
     ? (object: WorldObjectState) => displayById.get(object.fields.get(UPDATE_FIELDS.UNIT_FIELD_DISPLAYID.offset) ?? 0)
     : () => display;
+  // 22.10 ARC-2 S2c: `modelOf` reaches the renderer as the pushed unit-model table, filled for every unit (it asks
+  // for nothing, so answering the ones the renderer then culls changes nothing). Its answer reads only the display
+  // id, which no bench unit changes, and units only ever arrive — so the table is filled when the count moves.
+  const benchUnitModels = new Map<bigint, UnitModel>();
+  let benchUnitsFilled = -1;
+  const benchLookups: RenderLookups = { ...NO_RENDER_LOOKUPS, unitModels: benchUnitModels };
   render = (seconds, elapsed, frame) => {
     lastFraction = Math.max(0, Math.min(1, seconds / config.durationSeconds));
     lastFrame = frame;
@@ -247,17 +254,26 @@ if (movement) {
       const p = objects[0]!.position!;
       worldRenderer.updateLighting(lighting.sample(map, x, y, config.halfMinute, 0, p.z), config.halfMinute);
       queryMs = performance.now() - queryAt;
+      if (benchUnitsFilled !== state.objects.size) {
+        benchUnitsFilled = state.objects.size;
+        for (const object of state.objects.values()) {
+          if (benchUnitModels.has(object.guid)) continue;
+          const model = modelOf(object);
+          if (model !== undefined) benchUnitModels.set(object.guid, model);
+        }
+      }
+      worldRenderer.setRenderLookups(benchLookups);
       worldRenderer.beginRenderFrame();
       try {
         const crowdClock = worldCrowd || city;
         const view = config.view;
         // 22.10 ARC-2 S2b: no game-object rows, display-answered test or mount lookup to push (setRenderLookups):
-        // the bench has no game objects or mounts, and every unit's record is answered by `modelOf`.
+        // the bench has no game objects or mounts, and every unit's record is answered by `modelOf` (S2c: pushed).
         worldRenderer.draw(state, map, heightAt, terrain, scenery, environment,
           view ? view.yaw : city ? angle : worldCrowd ? angle : Math.sin(lastFraction * Math.PI * 2) * .4,
           view ? view.pitch : city ? config.city.pitch : worldCrowd ? -.4 : -.22,
           view ? view.orbit : city ? config.city.orbit : worldCrowd ? 42 : 24,
-          modelOf, splat, liquids, undefined, horizon, 24, 1.6,
+          splat, liquids, undefined, horizon, 24, 1.6,
           undefined, { nowMs: (crowdClock
             ? preparingWorldCrowd ? 0 : config.warmupSeconds + seconds
             : seconds) * 1000, elapsedSeconds: elapsed, frameIndex: frame });

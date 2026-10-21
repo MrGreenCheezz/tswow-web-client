@@ -184,6 +184,15 @@ interface LiveHostBindings {
   readonly captureClientReadiness: () => Readonly<BenchmarkClientReadinessInput> | undefined;
   readonly captureUserGraphics: () => Readonly<UserGraphicsSettings>;
   readonly unitModel: (object: WorldObjectState) => UnitModel | undefined;
+  /**
+   * 22.10 ARC-2 S2c: `unitModel` without its asks (ui/Frames.ts `unitModelPeek`), answered for every unit before the
+   * draw; `unitModel` itself then runs for the units the draw admitted. A supplied `unitModel` alone serves both.
+   */
+  readonly unitModelPeek: (object: WorldObjectState) => UnitModel | undefined;
+  /** 22.10 ARC-2 S2c: the peek's change key — the client identities and revisions it reads (ui/Frames.ts). */
+  readonly unitModelInputs: () => readonly unknown[];
+  /** 22.10 ARC-2 S2c: answers that change with time alone, recomputed every frame (ui/Frames.ts). */
+  readonly unitModelVolatile: (object: WorldObjectState) => boolean;
   readonly selectionRingColour: (
     object: WorldObjectState | undefined,
     self: WorldObjectState | undefined,
@@ -1157,7 +1166,7 @@ export class LiveFormalRenderBenchmarkHost implements FormalRenderBenchmarkHost 
     const resources = this.#requireResources();
     const needLoop = supplied.captureTelemetry === undefined || supplied.captureClientReadiness === undefined;
     const needSettings = supplied.captureUserGraphics === undefined;
-    const needModels = supplied.unitModel === undefined;
+    const needModels = supplied.unitModel === undefined; // 22.10 ARC-2 S2c: a supplied one also answers the peek
     const needSelection = supplied.selectionRingColour === undefined;
     const [loop, settingsModule, settingsModel, frames, names] = await Promise.all([
       needLoop ? import("./game/Loop.js") : undefined,
@@ -1196,6 +1205,15 @@ export class LiveFormalRenderBenchmarkHost implements FormalRenderBenchmarkHost 
         ?? ((object: WorldObjectState) => frames!.unitModelFor(
           object, resources.creatureModels, resources.itemMetadata,
         )),
+      unitModelPeek: supplied.unitModelPeek ?? supplied.unitModel
+        ?? ((object: WorldObjectState) => frames!.unitModelPeek(
+          object, resources.creatureModels, resources.itemMetadata,
+        )), // 22.10 ARC-2 S2c
+      // A supplied peek has unknown inputs: every unit is recomputed each frame, as before this cache.
+      unitModelInputs: supplied.unitModelInputs ?? (supplied.unitModelPeek !== undefined || supplied.unitModel !== undefined
+        ? () => [] : () => frames!.unitModelInputs(resources.creatureModels, resources.itemMetadata)),
+      unitModelVolatile: supplied.unitModelVolatile ?? (supplied.unitModelPeek !== undefined || supplied.unitModel !== undefined
+        ? () => true : frames!.unitModelVolatile),
       selectionRingColour: supplied.selectionRingColour
         ?? ((object: WorldObjectState | undefined, self: WorldObjectState | undefined) =>
           names!.selectionRingColourFor(object, self, resources.factions)),
@@ -1318,6 +1336,10 @@ export class LiveFormalRenderBenchmarkHost implements FormalRenderBenchmarkHost 
       resources.renderer.setRenderLookups(this.#renderLookups.build({
         gameObjectMetadata: resources.gameObjectMetadata, creatureModels: resources.creatureModels,
         collision: resources.collision.models, environment,
+        units: { // 22.10 ARC-2 S2c: the replay's own clients key the table, as `bindings.unitModelPeek` reads them
+          objects: replay.state.objects, peek: bindings.unitModelPeek, volatile: bindings.unitModelVolatile,
+          inputs: bindings.unitModelInputs(),
+        },
       }));
     });
     const observation = deepFreeze({
@@ -1340,7 +1362,6 @@ export class LiveFormalRenderBenchmarkHost implements FormalRenderBenchmarkHost 
           frame.yaw,
           frame.viewPitch,
           frame.view,
-          bindings.unitModel,
           resources.terrainSplat,
           resources.liquids,
           resources.transportPaths,
@@ -1353,6 +1374,8 @@ export class LiveFormalRenderBenchmarkHost implements FormalRenderBenchmarkHost 
       } finally {
         // 22.10 ARC-2 S2b: the collision models the draw missed, asked for as the draw itself used to ask.
         this.#renderLookups.requestCollisionModels(resources.collision.models, resources.renderer.collisionModelWants());
+        // 22.10 ARC-2 S2c: then the asking path for the units the draw admitted, in its order.
+        this.#renderLookups.requestUnitModels(replay.state.objects, resources.renderer.unitModelWants(), bindings.unitModel);
       }
     };
     const receipt = submit

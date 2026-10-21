@@ -4666,6 +4666,8 @@ export class WorldRenderer3D {
   // 22.10 ARC-2 S2b: read from `#lookups.collisionModels`; was a main-thread function (`setCollisionModels`).
   /** 22.10 ARC-2 S2b: the WMO placement names whose collision model this frame's `draw` missed (`collisionModelWants`). */
   readonly #collisionWants = new Set<string>();
+  /** 22.10 ARC-2 S2c: the guids this frame's `draw` read a unit model for (`unitModelWants`). */
+  readonly #unitModelWants: bigint[] = [];
   /** 22.10 ARC-2 S2b: the main thread's caches, pushed as data (`setRenderLookups`, RenderLookups.ts). */
   #lookups: RenderLookups = NO_RENDER_LOOKUPS;
 
@@ -6888,6 +6890,16 @@ export class WorldRenderer3D {
     return this.#collisionWants;
   }
 
+  /**
+   * 22.10 ARC-2 S2c: the guids the last `draw` admitted and read a model for, in its order. The main thread runs
+   * the asking path (ui/Frames.ts `unitModel`) for exactly these right after `draw` — the item loads, looks,
+   * mirror-image questions and weapon requests the renderer's `creatureModel` calls used to start inside it.
+   * Emptied by the next `draw`; a worker slice posts it back with the frame.
+   */
+  unitModelWants(): readonly bigint[] {
+    return this.#unitModelWants;
+  }
+
   /** 22.10 ARC-2 S2b: a placement's collision model from the pushed lookups; a miss is noted for the main thread. */
   #collisionModel(name: string): CollisionModel | undefined {
     const models = this.#lookups.collisionModels;
@@ -7370,6 +7382,7 @@ export class WorldRenderer3D {
     this.#liquidTextures = undefined;
     this.#lookups = NO_RENDER_LOOKUPS; // 22.10 ARC-2 S2b: and the collision models with them, as before
     this.#collisionWants.clear();
+    this.#unitModelWants.length = 0; // 22.10 ARC-2 S2c
     this.#lightSample = undefined;
     this.#lightTime = 0;
     this.#skyboxPath = undefined;
@@ -8020,7 +8033,7 @@ export class WorldRenderer3D {
     cameraYaw = 0,
     cameraPitch = CAMERA_DEFAULT_PITCH,
     cameraDistance = CAMERA_DEFAULT_DISTANCE,
-    creatureModel?: (object: WorldObjectState) => UnitModel | undefined,
+    // 22.10 ARC-2 S2c: the unit models are pushed too (`RenderLookups.unitModels`); was `creatureModel`, a function.
     splatClient?: TerrainSplatClient,
     liquidTextures?: LiquidTextureClient,
     transportPaths?: TransportPathClient,
@@ -8040,6 +8053,7 @@ export class WorldRenderer3D {
     validateRenderEvolutionMode(this.#replaySeed !== undefined, frameTime !== undefined);
     // 22.10 ARC-2 S2b: this frame's collision misses only; the main thread drained the last frame's.
     this.#collisionWants.clear();
+    this.#unitModelWants.length = 0; // 22.10 ARC-2 S2c: and its admitted units
     const evolutionTime = frameTime === undefined
       ? undefined
       : cloneRenderFrameTime(frameTime);
@@ -8156,7 +8170,7 @@ export class WorldRenderer3D {
       this.#lookups.gameObjectDisplayRevision, transportPaths, now, elapsed); // 22.10 ARC-2 S2b: pushed rows
     this.#drawPhaseMs.objects = performance.now() - drawPhaseAt;
     drawPhaseAt = performance.now();
-    this.#updateUnits(state, player.position, now, elapsed, environmentClient, creatureModel);
+    this.#updateUnits(state, player.position, now, elapsed, environmentClient);
     // After the units, because a ring is sized from the body the pass above measured.
     this.#updateSelectionRings(state, heightAt);
     // The aiming reticle and the placing spell's ghost, after the model passes above have stocked
@@ -13285,7 +13299,6 @@ export class WorldRenderer3D {
     now: number,
     elapsed: number,
     client: EnvironmentClient | undefined,
-    creatureModel: ((object: WorldObjectState) => UnitModel | undefined) | undefined,
   ): void {
     // The question is always "what is a capsule now", so the ledger starts empty every frame.
     this.#standIns.begin();
@@ -13351,7 +13364,7 @@ export class WorldRenderer3D {
     this.#unitShadowCasters.begin(); // 06.10-shadow
     for (const [rank, { value: object, distance }] of admission.admitted.entries()) {
       drawn.add(object.guid);
-      this.#drawUnit(object, state.selfGuid === object.guid, distance, now, elapsed, client, creatureModel,
+      this.#drawUnit(object, state.selfGuid === object.guid, distance, now, elapsed, client,
         this.#unitShadowCasters.decide(object.guid, rank, distance, this.#lightingProfile), // 06.10-shadow: was unitCastsEnhancedShadow
         state); // 11.10: the unit's facing (UnitFacing.ts)
       const rendered = this.#units.get(object.guid);
@@ -13571,7 +13584,6 @@ export class WorldRenderer3D {
     now: number,
     elapsed: number,
     client: EnvironmentClient | undefined,
-    creatureModel: ((object: WorldObjectState) => UnitModel | undefined) | undefined,
     shadowCaster: boolean,
     world?: Pick<WorldState, "objects" | "predictedGuid" | "selfGuid">, // 11.10: for the facing (UnitFacing.ts); 5.32: + selfGuid
   ): void {
@@ -13639,7 +13651,11 @@ export class WorldRenderer3D {
     });
     unit.stealthed = appearance.stealth;
 
-    const metadata = creatureModel?.(object);
+    // 22.10 ARC-2 S2c: the pushed read-only answer, and the guid noted for the asking path the main thread runs
+    // after `draw` (`unitModelWants`) — where `creatureModel(object)` used to ask, in this order.
+    const unitModels = this.#lookups.unitModels;
+    const metadata = unitModels?.get(object.guid);
+    if (unitModels !== undefined) this.#unitModelWants.push(object.guid);
     unit.particleColours = metadata?.particleColors; // 05.10-A7a-H 6.11а
     const displayOpacity = appearance.opacity * creatureDisplayAlpha(metadata) // 05.10-A7a-H 6.11а: CreatureModelAlpha multiplies
       // 5.33: the camera's subject fades as the eye closes in on it (Wow.exe 0x00606f90, CameraClip.ts); folded in here

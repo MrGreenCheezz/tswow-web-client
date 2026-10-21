@@ -224,8 +224,8 @@ test("draw no longer takes the lookup functions, and nothing sets a collision fu
   for (const gone of ["gameObjectMetadata:", "displayAnswered", "mountModel", "gameObjectMetadataRevision"]) {
     assert.equal(signature.includes(gone), false, `draw no longer takes ${gone}`);
   }
-  // The one function argument left besides the terrain sampler is the unit model (not yet data; see S2b report).
-  assert.deepEqual(signature.match(/\w+\??: \([^)]*\) =>/g), ["creatureModel?: (object: WorldObjectState) =>"]);
+  // 22.10 ARC-2 S2c: the unit model is pushed too (render-unit-models.test.mjs); only the terrain sampler is left.
+  assert.equal(signature.match(/\w+\??: \([^)]*\) =>/g), null);
   assert.doesNotMatch(renderer, /setCollisionModels\(|#collisionModels\b/, "the collision function is gone");
   assert.match(renderer, /ground\?: GroundTargetRingHeights \| undefined;/, "the reticle carries heights, not a sampler");
 

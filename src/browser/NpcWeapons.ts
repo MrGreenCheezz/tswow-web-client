@@ -159,7 +159,8 @@ function isNpcWeapon(value: unknown): value is NpcWeapon {
  * The held list for three entries, whether an answer is still coming for any of them, and — while
  * one waits out a failure — the earliest moment one may be asked again (`retryAt`).
  */
-export function heldWeapons(entries: readonly number[], client: NpcWeaponClient):
+export function heldWeapons(entries: readonly number[], client: NpcWeaponClient,
+  readOnly = false): // 22.10 ARC-2 S2c: read-only asks for nothing (the held list and `pending` are the same)
   { held: AttachedModel[]; pending: boolean; waiting: boolean; retryAt?: number } {
   const held: AttachedModel[] = [];
   let pending = false;
@@ -170,7 +171,7 @@ export function heldWeapons(entries: readonly number[], client: NpcWeaponClient)
     if (entry <= 0) continue;
     const weapon = client.weapon(entry);
     if (weapon === undefined) {
-      client.request(entry);
+      if (!readOnly) client.request(entry);
       const state = client.state(entry);
       if (state === "inflight") pending = true;
       else if (state === "waiting") {
@@ -213,7 +214,8 @@ const armedModels = new WeakMap<WorldObjectState, ArmedModel>();
  * answer is on its way. Unarmed creatures, and callers without a client, get the record unchanged.
  */
 export function withVirtualWeapons(metadata: UnitModel, object: WorldObjectState,
-  client: NpcWeaponClient | undefined): UnitModel {
+  client: NpcWeaponClient | undefined,
+  readOnly = false): UnitModel { // 22.10 ARC-2 S2c: read-only reads the memo, asks and remembers nothing
   if (!client) return metadata;
   const main = virtualItemEntry(object, 0);
   const off = virtualItemEntry(object, 1);
@@ -224,8 +226,9 @@ export function withVirtualWeapons(metadata: UnitModel, object: WorldObjectState
     && cached.generation === client.generation
     && cached.main === main && cached.off === off && cached.ranged === ranged
     && (cached.retryAt === undefined || client.now() < cached.retryAt)) return cached.model;
-  const { held, pending, waiting, retryAt } = heldWeapons([main, off, ranged], client);
+  const { held, pending, waiting, retryAt } = heldWeapons([main, off, ranged], client, readOnly);
   const model: UnitModel = { ...metadata, held, ...(pending ? { heldPending: true } : {}) };
+  if (readOnly) return model;
   // 6.02: an entry waiting out a failure moves no generation when the wait ends, so the record holds
   // until then and the first ask after it sends the retry (was: a new record every frame of the wait).
   // A wait with no known end is not remembered.

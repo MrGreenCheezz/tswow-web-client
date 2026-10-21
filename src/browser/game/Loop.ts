@@ -13,7 +13,7 @@ import { formatGameTime, halfMinuteOfDay } from "../../world/GameTimeProtocol.js
 import { lightOverrideWeight } from "../LightClient.js";
 import { GhostLightFade } from "../LightStateFade.js"; // 05.10-A7b-5 (7.15)
 import { isPlayerGhost } from "../../world/Fields.js"; // 05.10-A7b-5 (7.15)
-import { unitModel } from "../ui/Frames.js";
+import { unitModel, unitModelInputs, unitModelPeek, unitModelVolatile } from "../ui/Frames.js";
 import {
   advancePhysics, heartbeatDue, sendMovement,
 } from "../input/Movement.js";
@@ -115,6 +115,11 @@ function loopMapInstanceType(mapId: number): number | undefined {
 
 function loopCreatureMetadata(entry: number): ReturnType<NonNullable<typeof game.creatureMetadata>["get"]> | undefined {
   return game.creatureMetadata?.get(entry);
+}
+
+/** 22.10 ARC-2 S2c: `unitModel` without its asks, over the same live clients (ui/Frames.ts `unitModelPeek`). */
+function loopUnitModelPeek(object: WorldObjectState): ReturnType<typeof unitModelPeek> {
+  return unitModelPeek(object, game.creatureModels, game.itemMetadata, game.world?.mirrorImages);
 }
 
 function loopUnitHeight(guid: bigint): number | undefined {
@@ -638,6 +643,10 @@ function frame(now: number): void {
       game.renderer.setRenderLookups(renderLookups.build({
         gameObjectMetadata: game.gameObjectMetadata, creatureModels: game.creatureModels,
         collision: game.collision?.models, environment,
+        units: { // 22.10 ARC-2 S2c
+          objects: world.state.objects, peek: loopUnitModelPeek, volatile: unitModelVolatile,
+          inputs: unitModelInputs(game.creatureModels, game.itemMetadata, world.mirrorImages),
+        },
       }));
     }
     hitchLight = performance.now();
@@ -662,7 +671,6 @@ function frame(now: number): void {
             // the walls'. Every camera this frame builds has to be built out of the same pair.
             game.camera.viewPitch,
             game.camera.view,
-            unitModel,
             game.terrainSplat,
             game.liquids,
             game.transportPaths,
@@ -675,6 +683,9 @@ function frame(now: number): void {
         } finally {
           // 22.10 ARC-2 S2b: the collision models draw missed are asked for now, as draw itself used to ask.
           renderLookups.requestCollisionModels(game.collision?.models, renderer.collisionModelWants());
+          // 22.10 ARC-2 S2c: then the asking path for the units it admitted, in its order — after the collision asks,
+          // as the unit pass followed the environment pass inside draw.
+          renderLookups.requestUnitModels(world.state.objects, renderer.unitModelWants(), unitModel);
         }
         const hitchPortraitsAt = performance.now();
         renderer.renderPortraits(now);

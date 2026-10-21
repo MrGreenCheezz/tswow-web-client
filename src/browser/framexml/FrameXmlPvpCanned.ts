@@ -11,6 +11,7 @@ import { STATUS_IN_PROGRESS, type PvpLogData } from "../../world/PvpProtocol.js"
 import type { WorldObjectState } from "../../world/WorldState.js";
 import type { WorldStateUiRow } from "../../world/WorldStateUiData.js";
 import { UPDATE_FIELDS } from "../../generated/updateFields.js";
+import { bumpFieldsVersion } from "../../world/FieldsVersion.js"; // 22.10 ARC-2 S2c: a writer of an object's fields
 
 type Listener = (payload: never) => void;
 
@@ -105,6 +106,7 @@ export class FrameXmlPvpCannedWorld {
   /** Sets PLAYER_FLAGS; the caller tells the model (`pvpFlag.flagsChanged()`) as the store would. */
   setPlayerFlags(flags: number): void {
     this.self.fields.set(UPDATE_FIELDS.PLAYER_FLAGS.offset, flags);
+    bumpFieldsVersion(this.self.fields);
   }
 
   playerFlags(): number {
@@ -136,6 +138,7 @@ export class FrameXmlPvpCannedWorld {
     this.self.fields.set(base, team.info.teamId);
     this.self.fields.set(base + 1, team.info.type);
     this.self.fields.set(base + 2, team.captain ? 0 : 1);
+    bumpFieldsVersion(this.self.fields);
     this.arenaTeams.set(team.info.teamId, team.info);
     this.arenaTeamStats.set(team.info.teamId, team.stats);
     this.events.emit("ARENA_TEAM_CHANGED", { teamId: team.info.teamId });
