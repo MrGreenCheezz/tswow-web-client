@@ -4,9 +4,9 @@ import * as THREE from "three";
 import { readFile } from "node:fs/promises";
 import {
   clonePortraitMaterials,
-  PortraitRenderer,
   portraitLightingProfile,
 } from "../dist/code/browser/PortraitRenderer.js";
+import { portraitView } from "./fixtures/portrait-view.mjs"; // 22.10 ARC-2 S3b
 import {
   applyWorldLight,
   createWorldLightUniforms,
@@ -204,7 +204,7 @@ test("pending portrait readback never blocks or repeats a world frame and restor
   const pending = deferredReadbacks(renderer, state);
   const output = canvas(2, 2);
   const current = source();
-  const view = new PortraitRenderer(renderer, () => current);
+  const view = portraitView(renderer, () => current);
   const previousTarget = state.target;
   view.setTargets(new Map([["player", { guid: 1n, canvas: output }]]));
   assert.equal(view.render(0), 1, "count submitted readbacks without waiting for the fence");
@@ -240,7 +240,7 @@ for (const change of ["guid", "guid-away-and-back", "source-key", "texture-revis
     const map = new THREE.Texture({ width: 1, height: 1 });
     current.built.materials[0].map = map;
     let guid = 1n;
-    const view = new PortraitRenderer(renderer, () => current);
+    const view = portraitView(renderer, () => current);
     const targets = () => new Map([["target", { guid, canvas: output }]]);
     view.setTargets(targets());
     assert.equal(view.render(0), 1);
@@ -275,7 +275,7 @@ test("clear and repopulate retain the per-slot pending limit and cannot publish 
   const pending = deferredReadbacks(renderer, state);
   const first = canvas();
   const second = canvas();
-  const view = new PortraitRenderer(renderer, () => source());
+  const view = portraitView(renderer, () => source());
   view.setTargets(new Map([["target", { guid: 1n, canvas: first }]]));
   assert.equal(view.render(0), 1);
   view.clear();
@@ -298,7 +298,7 @@ test("dispose while a portrait fence is pending releases the model and ignores c
   const pending = deferredReadbacks(renderer, state);
   const output = canvas();
   const current = source();
-  const view = new PortraitRenderer(renderer, () => current);
+  const view = portraitView(renderer, () => current);
   view.setTargets(new Map([["player", { guid: 1n, canvas: output }]]));
   assert.equal(view.render(0), 1);
   view.dispose();
@@ -316,7 +316,7 @@ test("a rejected portrait readback preserves an existing snapshot and permits on
   const current = source();
   const texture = new THREE.Texture();
   current.built.materials[0].map = texture;
-  const view = new PortraitRenderer(renderer, () => current);
+  const view = portraitView(renderer, () => current);
   view.setTargets(new Map([["player", { guid: 1n, canvas: output }]]));
   view.render(0);
   pending[0].resolve();
@@ -342,7 +342,7 @@ test("independent portrait slots can complete in reverse order without sharing p
   const { renderer, state } = fakeRenderer();
   const pending = deferredReadbacks(renderer, state);
   const player = canvas(), target = canvas();
-  const view = new PortraitRenderer(renderer, () => source());
+  const view = portraitView(renderer, () => source());
   view.setTargets(new Map([["player", { guid: 1n, canvas: player }], ["target", { guid: 2n, canvas: target }]]));
   assert.equal(view.render(0), 2);
   pending[1].resolve(100);
@@ -365,7 +365,7 @@ test("portrait program owners reuse exact variants after target retirement and d
     return material;
   });
   const player = canvas(), target = canvas();
-  const view = new PortraitRenderer(renderer, () => current);
+  const view = portraitView(renderer, () => current);
   const targets = guid => new Map([["player", { guid: 1n, canvas: player }], ["target", { guid, canvas: target }]]);
   view.setTargets(targets(2n));
   assert.equal(view.render(0), 2);
@@ -421,7 +421,7 @@ test("portrait material clones keep maps and flags but remove only the world sha
 
 test("party portrait slots share the existing renderer and paint four independent surfaces", async () => {
   const { renderer, state } = fakeRenderer();
-  const view = new PortraitRenderer(renderer, () => source());
+  const view = portraitView(renderer, () => source());
   const outputs = [1, 2, 3, 4].map(() => canvas());
   view.setTargets(new Map(outputs.map((output, index) => [
     `party${index + 1}`, { guid: BigInt(index + 1), canvas: output },
@@ -438,7 +438,7 @@ test("party portrait slots share the existing renderer and paint four independen
 test("paperdoll uses the shared renderer and performs only one dirty readback", async () => {
   const { renderer, state } = fakeRenderer();
   const output = canvas(8, 12);
-  const view = new PortraitRenderer(renderer, () => source());
+  const view = portraitView(renderer, () => source());
   view.setTargets(new Map([[
     "paperdoll", { guid: 77n, canvas: output },
   ]]));
@@ -469,7 +469,7 @@ test("paperdoll converts linear WebGL readback to display sRGB while preserving 
     }
   };
   const output = canvas(2, 2);
-  const view = new PortraitRenderer(renderer, () => source("linear-readback"));
+  const view = portraitView(renderer, () => source("linear-readback"));
   view.setTargets(new Map([["paperdoll", { guid: 78n, canvas: output }]]));
 
   assert.equal(view.render(0), 1);
@@ -501,7 +501,7 @@ test("portrait renderer disposes its material clones without disposing borrowed 
   try {
     const current = source("owned-material");
     current.built.materials = [world];
-    const view = new PortraitRenderer(renderer, () => current);
+    const view = portraitView(renderer, () => current);
     view.setTargets(new Map([["target", { guid: 23n, canvas: canvas() }]]));
     assert.equal(view.render(0), 1);
     await Promise.resolve();
@@ -518,7 +518,7 @@ test("portrait renderer disposes its material clones without disposing borrowed 
 test("portrait surfaces expose their exact retained build until the root is cleared", async () => {
   const { renderer } = fakeRenderer();
   const current = source("retained");
-  const view = new PortraitRenderer(renderer, () => current);
+  const view = portraitView(renderer, () => current);
   view.setTargets(new Map([["player", { guid: 1n, canvas: canvas() }]]));
   assert.equal(view.render(0), 1);
   await Promise.resolve();
@@ -537,7 +537,7 @@ test("portrait renderer reuses per-slot target, paints static portraits once, fl
   const { renderer, state } = fakeRenderer();
   let available = true;
   const output = canvas();
-  const view = new PortraitRenderer(renderer, () => available ? source() : undefined);
+  const view = portraitView(renderer, () => available ? source() : undefined);
   view.setTargets(new Map([["player", { guid: 1n, canvas: output }]]));
   assert.equal(view.targetGuids().has(1n), true);
   assert.equal(view.needsPose(1n), true, "a new target needs one world pose for the static snapshot");
@@ -579,7 +579,7 @@ test("a temporary portrait source miss keeps only the current pixels and cannot 
   const { renderer } = fakeRenderer();
   let current = source("first-character");
   const output = canvas();
-  const view = new PortraitRenderer(renderer, () => current);
+  const view = portraitView(renderer, () => current);
   view.setTargets(new Map([["player", { guid: 1n, canvas: output }]]));
   view.render(0);
   await Promise.resolve();
@@ -614,7 +614,7 @@ test("a temporary portrait source miss keeps only the current pixels and cannot 
 test("portrait target render target is resized in place and fallback is deterministic", async () => {
   const { renderer, state } = fakeRenderer();
   const output = canvas(4, 4);
-  const view = new PortraitRenderer(renderer, () => source("fallback"));
+  const view = portraitView(renderer, () => source("fallback"));
   view.setTargets(new Map([["target", { guid: 2n, canvas: output }]]));
   view.render(0);
   await Promise.resolve();
@@ -638,7 +638,7 @@ test("portrait slots isolate their roots and freeze the live skeleton pose at fi
     [1n, source("one")],
     [2n, source("two")],
   ]);
-  const view = new PortraitRenderer(renderer, (guid) => sources.get(guid));
+  const view = portraitView(renderer, (guid) => sources.get(guid));
   view.setTargets(new Map([
     ["player", { guid: 1n, canvas: outputs[0] }],
     ["target", { guid: 2n, canvas: outputs[1] }],
@@ -650,7 +650,7 @@ test("portrait slots isolate their roots and freeze the live skeleton pose at fi
   const liveBone = new THREE.Bone();
   liveBone.position.x = 1.25;
   const posed = skinnedSource("posed", [liveBone]);
-  const posedView = new PortraitRenderer(renderer, () => posed);
+  const posedView = portraitView(renderer, () => posed);
   const posedCanvas = canvas();
   posedView.setTargets(new Map([["target", { guid: 3n, canvas: posedCanvas }]]));
   assert.equal(posedView.needsPose(3n), true);
@@ -673,7 +673,7 @@ test("player and paperdoll sample Stand so a moving or dead world pose cannot br
     new THREE.NumberKeyframeTrack("bone0.position[x]", [0, 1], [2, 2]),
   ]));
   neutral.template.animations.add(0);
-  const view = new PortraitRenderer(renderer, () => neutral);
+  const view = portraitView(renderer, () => neutral);
   view.setTargets(new Map([
     ["player", { guid: 31n, canvas: canvas() }],
     ["target", { guid: 31n, canvas: canvas() }],
@@ -711,7 +711,7 @@ test("changing only the target GUID rebuilds the static pose even for a shared a
     [12n, skinnedSource("shared", [secondBone])],
   ]);
   const output = canvas();
-  const view = new PortraitRenderer(renderer, (guid) => sources.get(guid));
+  const view = portraitView(renderer, (guid) => sources.get(guid));
   view.setTargets(new Map([["target", { guid: 11n, canvas: output }]]));
   assert.equal(view.needsPose(11n), true);
   assert.equal(view.render(0), 1);
@@ -730,7 +730,7 @@ test("source-key changes invalidate a static portrait for the same target GUID",
   const { renderer } = fakeRenderer();
   let current = source("atlas-generation-1");
   const output = canvas();
-  const view = new PortraitRenderer(renderer, () => current);
+  const view = portraitView(renderer, () => current);
   view.setTargets(new Map([["target", { guid: 21n, canvas: output }]]));
   assert.equal(view.render(0), 1);
   await Promise.resolve();
@@ -748,7 +748,7 @@ test("late model texture completion invalidates a frozen portrait", async () => 
   const map = new THREE.Texture();
   const current = source("texture-late");
   current.built.materials = [new THREE.MeshBasicMaterial({ map })];
-  const view = new PortraitRenderer(renderer, () => current);
+  const view = portraitView(renderer, () => current);
   view.setTargets(new Map([["target", { guid: 22n, canvas: output }]]));
   assert.equal(view.render(0), 1);
   await Promise.resolve();
@@ -763,7 +763,7 @@ test("late model texture completion invalidates a frozen portrait", async () => 
 test("changing a target invalidates the previous 3D canvas immediately", async () => {
   const { renderer } = fakeRenderer();
   const output = canvas();
-  const view = new PortraitRenderer(renderer, () => source());
+  const view = portraitView(renderer, () => source());
   view.setTargets(new Map([["target", { guid: 1n, canvas: output }]]));
   view.render(0);
   await Promise.resolve();

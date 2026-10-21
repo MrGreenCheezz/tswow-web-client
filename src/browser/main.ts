@@ -18,6 +18,7 @@ import {
   resetLayout, status, world3dCanvas, worldCanvas,
 } from "./ui/Dom.js";
 import { usePanelHost } from "./ui/Widgets.js";
+import { attachPortraitOutputs } from "./ui/Portraits.js";
 import { wirePanelButtons } from "./ui/Windows.js";
 import { wireLoginForms } from "./app/Login.js";
 import {
@@ -47,6 +48,7 @@ resetLayout.addEventListener("click", () => gameWindows.resetLayout());
 
 try {
   game.renderer = new WorldRenderer3D(world3dCanvas);
+  attachPortraitOutputs(game.renderer); // 22.10 ARC-2 S3b: the page paints the portrait canvases
 } catch (error) {
   world3dCanvas.hidden = true;
   console.warn("WebGL renderer unavailable", error);

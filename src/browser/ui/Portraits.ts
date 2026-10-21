@@ -1,8 +1,8 @@
 import {
   CHARACTER_PORTRAIT_SLOT, FOCUS_TARGET_PORTRAIT_SLOT, PAPERDOLL_PORTRAIT_SLOT, PARTY_PORTRAIT_SLOTS,
-  PORTRAIT_STOCK_GROUND, QUEST_GIVER_PORTRAIT_SLOT,
-  type PortraitSlot, type PortraitTarget,
+  QUEST_GIVER_PORTRAIT_SLOT, type PortraitSlot,
 } from "../PortraitRenderer.js";
+import { PORTRAIT_STOCK_GROUND, PortraitCanvasBridge, type PortraitTarget } from "../PortraitCanvasBridge.js"; // 22.10 ARC-2 S3b
 import {
   HUD_PORTRAIT_CSS_PIXELS, portraitCanvasBackingPixels, setPortraitCanvasBackingStore,
 } from "../PortraitCanvas.js";
@@ -17,6 +17,11 @@ import type { UnitFrame } from "./UnitFrame.js";
 const playerCanvas = ensureCanvas(playerIcon, "player");
 const targetCanvas = ensureCanvas(targetIcon, "target");
 const targets = new Map<PortraitSlot, PortraitTarget>();
+/**
+ * 22.10 ARC-2 S3b: these canvases' ids, the inputs pushed to the renderer, and the painter of what it sends back —
+ * for the HUD rows here and the stock windows' registry (`stockPortraitTargets`).
+ */
+const canvasBridge = new PortraitCanvasBridge();
 let paperdollCanvas: HTMLCanvasElement | undefined;
 let characterFrameCanvas: HTMLCanvasElement | undefined;
 let questGiverCanvas: HTMLCanvasElement | undefined;
@@ -734,7 +739,26 @@ export function syncPortraitTargets(renderer: WorldRenderer3D | undefined): void
     const visible = probeShown(probe);
     if ((target.visible !== false) !== visible) targets.set(slot, { guid: target.guid, canvas: target.canvas, visible });
   }
-  renderer?.setPortraitTargets(targets);
+  renderer?.setPortraitTargets(canvasBridge.inputs(targets));
+}
+
+/** 22.10 ARC-2 S3b: the slot-to-canvas map `syncPortraitTargets` pushes from (read-only; tests and diagnostics). */
+export function portraitTargetCanvases(): ReadonlyMap<PortraitSlot, Readonly<PortraitTarget>> {
+  return targets;
+}
+
+/**
+ * 22.10 ARC-2 S3b: paints what the renderer queued — blanks and finished readbacks — onto this page's canvases.
+ * Called by the renderer's listener as each is queued (`attachPortraitOutputs`), so a picture lands when the old
+ * direct paint did, and by the loop after draw.
+ */
+export function drainPortraitOutputs(renderer: WorldRenderer3D | undefined): void {
+  if (renderer) canvasBridge.drain(renderer.results.portraits);
+}
+
+/** 22.10 ARC-2 S3b: once per renderer (main.ts): the page applies each portrait operation as it is queued. */
+export function attachPortraitOutputs(renderer: WorldRenderer3D): void {
+  renderer.setPortraitOutputListener(() => drainPortraitOutputs(renderer));
 }
 
 /** Keeps the old class/creature image visible until a real model has successfully read back. */

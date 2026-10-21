@@ -2236,7 +2236,8 @@ import {
   CharacterAtlasClient, appearanceKey, configureCharacterAtlasTexture,
   type CharacterAppearance, type CharacterAtlasResidencyStats,
 } from "./CharacterAtlas.js";
-import { PortraitRenderer, type PortraitSource, type PortraitSlot, type PortraitTarget } from "./PortraitRenderer.js";
+import { PortraitRenderer, type PortraitSource } from "./PortraitRenderer.js";
+import type { PortraitTargetInputs } from "./PortraitTargetData.js"; // 22.10 ARC-2 S3b
 
 /**
  * P1-09: every field of a retained record is present from its creation literal on, absent values
@@ -3998,6 +3999,7 @@ export class WorldRenderer3D {
   };
   /** Five UI model views, all rendered through the one world WebGLRenderer. */
   readonly #portraits: PortraitRenderer;
+  #portraitOutputListener: (() => void) | undefined; // 22.10 ARC-2 S3b
   /** Unit radius 0.5 and length 1 give a capsule exactly two units tall, so scaling is a ratio. */
   readonly #unitBodyGeometry = new THREE.CapsuleGeometry(0.5, 1, 4, 12);
   readonly #unitFacingGeometry = new THREE.ConeGeometry(0.16, 0.42, 4);
@@ -4720,7 +4722,10 @@ export class WorldRenderer3D {
     this.#renderer.setPixelRatio(Math.min(this.#host.devicePixelRatio() || 1, 2));
     this.#renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.#renderer.toneMapping = THREE.CustomToneMapping;
-    this.#portraits = new PortraitRenderer(this.#renderer, (guid) => this.#portraitSource(guid));
+    // 22.10 ARC-2 S3b: canvas operations go into the results; the page is woken after each (`setPortraitOutputListener`).
+    this.#portraits = new PortraitRenderer(this.#renderer, (guid) => this.#portraitSource(guid), {
+      outputs: this.#results.portraits, onOutputs: () => this.#portraitOutputListener?.(),
+    });
     // Fog and background share a colour, otherwise the horizon shows the seam between them. Both
     // are only the starting values now: `updateLighting` replaces them from the map's own tables as
     // soon as the world clock and the light volumes have arrived.
@@ -7167,9 +7172,20 @@ export class WorldRenderer3D {
     if (!preview) this.#disposeGameObjectPreview();
   }
 
-  /** Assigns the five DOM outputs. The render targets themselves remain owned by the renderer. */
-  setPortraitTargets(targets: ReadonlyMap<PortraitSlot, PortraitTarget>): void {
-    this.#portraits.setTargets(targets);
+  /**
+   * Assigns the portrait outputs. 22.10 ARC-2 S3b: as data — the page's canvas ids and what it read off them
+   * (PortraitCanvasBridge.ts); the render targets remain the renderer's, the canvases the page's.
+   */
+  setPortraitTargets(inputs: PortraitTargetInputs): void {
+    this.#portraits.setTargets(inputs);
+  }
+
+  /**
+   * 22.10 ARC-2 S3b: told after each portrait operation is queued in `results.portraits`, so the page applies it
+   * where the renderer used to touch the canvas itself. In a worker this becomes a message.
+   */
+  setPortraitOutputListener(listener: (() => void) | undefined): void {
+    this.#portraitOutputListener = listener;
   }
 
   /** True only when the shared world model/build is ready for a non-empty static portrait. */

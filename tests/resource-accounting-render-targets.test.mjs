@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import * as THREE from "three";
 
-import { PortraitRenderer } from "../dist/code/browser/PortraitRenderer.js";
+import { portraitView } from "./fixtures/portrait-view.mjs"; // 22.10 ARC-2 S3b
 import { ResourceAccountingLedger } from "../dist/code/browser/ResourceAccounting.js";
 import { benchmarkResourceCheckpoint } from "../dist/code/browser/RenderBenchmarkRuntime.js";
 
@@ -349,7 +349,7 @@ function portraitSource() {
 
 test("portrait accounting follows public render, resize, and clear behavior", async () => {
   const output = portraitCanvas(4, 2);
-  const portraits = new PortraitRenderer(portraitRenderer(), () => portraitSource());
+  const portraits = portraitView(portraitRenderer(), () => portraitSource());
   portraits.setTargets(new Map([["player", { guid: 1n, canvas: output }]]));
   assert.equal(portraits.render(0), 1);
   await Promise.resolve();

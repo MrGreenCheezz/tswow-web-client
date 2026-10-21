@@ -165,7 +165,7 @@ const {
   adoptPlayerPortraitCanvas, adoptTargetOfTargetPortraitCanvas, adoptTargetPortraitCanvas,
   adoptCharacterPortraitCanvas, characterPortraitCanvas,
   adoptQuestGiverPortraitCanvas, setQuestGiverPortrait, adoptFocusTargetPortraitCanvas,
-  clearPortraitTargets, portraitCanvases, setPartyPortrait, syncPortraitTargets,
+  clearPortraitTargets, portraitCanvases, portraitTargetCanvases, setPartyPortrait, syncPortraitTargets,
 } =
   await import("../dist/code/browser/ui/Portraits.js");
 const { game } = await import("../dist/code/browser/game/Context.js");
@@ -328,12 +328,14 @@ test("QuestFrame portrait uses its own 60px canvas and the active giver GUID", (
     assert.equal(canvas.width, 120);
     assert.equal(canvas.height, 120);
     const snapshots = [];
-    syncPortraitTargets({ setPortraitTargets(targets) { snapshots.push(new Map(targets)); } });
+    // 22.10 ARC-2 S3b: the renderer gets plain inputs; the slot-to-canvas map stays on the page.
+    syncPortraitTargets({ setPortraitTargets() { snapshots.push(new Map(portraitTargetCanvases())); } });
     assert.deepEqual(snapshots.at(-1).get("questnpc"), { guid, canvas });
     assert.notEqual(canvas, portraitCanvases().get("target"),
       "changing selection cannot move the quest giver portrait");
     setQuestGiverPortrait(undefined);
-    syncPortraitTargets({ setPortraitTargets(targets) { snapshots.push(new Map(targets)); } });
+    // 22.10 ARC-2 S3b: the renderer gets plain inputs; the slot-to-canvas map stays on the page.
+    syncPortraitTargets({ setPortraitTargets() { snapshots.push(new Map(portraitTargetCanvases())); } });
     assert.equal(snapshots.at(-1).get("questnpc").guid, undefined);
     assert.equal(adoptQuestGiverPortraitCanvas(texture), cleanup);
   } finally {
@@ -443,8 +445,8 @@ test("party portrait slots retarget GUIDs on reorder without replacing canvases"
   }));
   const snapshots = [];
   const renderer = {
-    setPortraitTargets(targets) {
-      snapshots.push(new Map(targets));
+    setPortraitTargets() {
+      snapshots.push(new Map(portraitTargetCanvases())); // 22.10 ARC-2 S3b: the page's map
     },
   };
   frames.forEach((frame, index) => setPartyPortrait(index, frame));
@@ -599,7 +601,8 @@ test("FocusFrameToT adoption creates its own canvas and follows the focus's targ
   game.focusGuid = focusGuid;
   const snapshots = [];
   const sync = () => {
-    syncPortraitTargets({ setPortraitTargets(targets) { snapshots.push(new Map(targets)); } });
+    // 22.10 ARC-2 S3b: the renderer gets plain inputs; the slot-to-canvas map stays on the page.
+    syncPortraitTargets({ setPortraitTargets() { snapshots.push(new Map(portraitTargetCanvases())); } });
     return snapshots.at(-1).get("focustot");
   };
   let cleanup;

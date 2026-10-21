@@ -89,10 +89,10 @@ globalThis.location = { protocol: "http:", hostname: "localhost" };
 globalThis.window = { devicePixelRatio: 1, innerWidth: 1024, innerHeight: 768, addEventListener() {},
   removeEventListener() {}, localStorage: undefined };
 
-const { PortraitRenderer } = await import("../dist/code/browser/PortraitRenderer.js");
+const { portraitView } = await import("./fixtures/portrait-view.mjs"); // 22.10 ARC-2 S3b
 const {
   adoptCharacterFramePortraitCanvas, adoptCharacterPortraitCanvas, mountNativeCharacterPortrait,
-  syncPortraitTargets,
+  syncPortraitTargets, portraitTargetCanvases, attachPortraitOutputs, drainPortraitOutputs,
 } = await import("../dist/code/browser/ui/Portraits.js");
 const { game } = await import("../dist/code/browser/game/Context.js");
 const { frameXmlCharacterModelGate } = await import("../dist/code/browser/framexml/FrameXmlCharacterController.js");
@@ -156,7 +156,7 @@ test("a hidden paper doll is neither rebuilt nor drawn; shown again it paints on
   const { renderer, state } = recordingRenderer();
   let source = rigged("look-a");
   let built = 0;
-  const view = new PortraitRenderer(renderer, () => { built++; return source; });
+  const view = portraitView(renderer, () => { built++; return source; });
   const output = canvas(4, 4);
   const guid = 1n;
   view.setTargets(new Map([["paperdoll", { guid, canvas: output, visible: false }]]));
@@ -184,7 +184,7 @@ test("a hidden paper doll is neither rebuilt nor drawn; shown again it paints on
 test("hiding keeps the painted surface; it repaints on show only when its look moved meanwhile", async () => {
   const { renderer, state } = recordingRenderer();
   let source = rigged("look-a");
-  const view = new PortraitRenderer(renderer, () => source);
+  const view = portraitView(renderer, () => source);
   const output = canvas(4, 4);
   const targets = (visible) => new Map([["character", { guid: 7n, canvas: output, visible }]]);
   view.setTargets(targets(true));
@@ -211,7 +211,7 @@ test("the player's own HUD row painted, a stale hidden paper doll does not keep 
   // The live shape: one GUID in the always-shown PlayerFrame slot and in the closed paper doll.
   const { renderer } = recordingRenderer();
   const source = rigged("look-a");
-  const view = new PortraitRenderer(renderer, () => source);
+  const view = portraitView(renderer, () => source);
   const guid = 1n;
   view.setTargets(new Map([
     ["player", { guid, canvas: canvas() }],
@@ -226,7 +226,7 @@ test("the player's own HUD row painted, a stale hidden paper doll does not keep 
 
 test("targets without a visibility say keep painting: the HUD's player and target rows", () => {
   const { renderer, state } = recordingRenderer();
-  const view = new PortraitRenderer(renderer, () => rigged("look-a"));
+  const view = portraitView(renderer, () => rigged("look-a"));
   view.setTargets(new Map([["player", { guid: 1n, canvas: canvas() }], ["target", { guid: 2n, canvas: canvas() }]]));
   assert.equal(view.render(0), 2);
   assert.equal(state.renders, 2);
@@ -239,7 +239,7 @@ test("the host samples each closable window's probe into its target once a frame
   game.world = { state: { selfGuid: 0x10n, objects: new Map() } };
   const snapshots = [];
   const sync = () => {
-    syncPortraitTargets({ setPortraitTargets(targets) { snapshots.push(new Map(targets)); } });
+    syncPortraitTargets({ setPortraitTargets() { snapshots.push(new Map(portraitTargetCanvases())); } }); // 22.10 ARC-2 S3b
     return snapshots.at(-1);
   };
   const model = fakeNode("div");
@@ -286,7 +286,7 @@ test("the native character window is shown exactly while no ancestor carries `hi
   windowElement.hidden = true;
   const snapshots = [];
   const sync = () => {
-    syncPortraitTargets({ setPortraitTargets(targets) { snapshots.push(new Map(targets)); } });
+    syncPortraitTargets({ setPortraitTargets() { snapshots.push(new Map(portraitTargetCanvases())); } }); // 22.10 ARC-2 S3b
     return snapshots.at(-1).get("paperdoll");
   };
   let cleanup;
@@ -353,7 +353,7 @@ test("the CharacterFrame gate hands stock IsVisible of its model and bust to the
   const gate = frameXmlCharacterModelGate({ bridge }, { elementFor: (value) => elements.get(value) });
   assert.ok(gate, "the stock tree passes the gate");
   let targets;
-  const sync = () => syncPortraitTargets({ setPortraitTargets(value) { targets = new Map(value); } });
+  const sync = () => syncPortraitTargets({ setPortraitTargets() { targets = new Map(portraitTargetCanvases()); } }); // 22.10 ARC-2 S3b
   try {
     for (const value of frames.values()) value.visible = true;
     character.visible = false;
@@ -383,8 +383,42 @@ test("a probe that throws leaves its target shown, the behaviour before probes",
   try {
     cleanup = adoptCharacterPortraitCanvas(model, 233, 215, () => { throw new Error("no bridge"); });
     let target;
-    syncPortraitTargets({ setPortraitTargets(targets) { target = targets.get("paperdoll"); } });
+    syncPortraitTargets({ setPortraitTargets() { target = portraitTargetCanvases().get("paperdoll"); } }); // 22.10 ARC-2 S3b
     assert.notEqual(target.visible, false);
+  } finally {
+    cleanup?.();
+    game.world = previousWorld;
+  }
+});
+
+test("22.10 ARC-2 S3b: the page applies the renderer's portrait operations as they are queued, onto its own canvas", () => {
+  const previousWorld = game.world;
+  game.world = { state: { selfGuid: 0x10n, objects: new Map() } };
+  const model = fakeNode("div");
+  model.setAttribute("data-framexml-model-placeholder", "true");
+  let listener;
+  let pushed;
+  const renderer = {
+    results: { portraits: [] },
+    setPortraitOutputListener(value) { listener = value; },
+    setPortraitTargets(inputs) { pushed = inputs; },
+  };
+  let cleanup;
+  try {
+    cleanup = adoptCharacterPortraitCanvas(model, 233, 215);
+    attachPortraitOutputs(renderer);
+    syncPortraitTargets(renderer);
+    const canvas = portraitTargetCanvases().get("paperdoll").canvas;
+    const input = pushed.targets.get("paperdoll");
+    assert.equal(typeof input.canvas, "number", "the renderer gets the canvas's id, not the canvas");
+    assert.deepEqual([input.guid, input.width, input.height, input.ready], [0x10n, canvas.width, canvas.height, "false"]);
+    canvas.dataset.portraitReady = "true";
+    // What WorldRenderer3D does on clearPortraits (a world exit or a teleport): queue the blank, wake the page.
+    renderer.results.portraits.push({ kind: "clear", canvas: input.canvas, pending: false, keepIfBlank: false, keepIfPainted: undefined });
+    listener();
+    assert.equal(canvas.dataset.portraitReady, "false", "blanked at once, before the fallback icons are re-read");
+    assert.equal(renderer.results.portraits.length, 0);
+    drainPortraitOutputs(renderer); // the loop's post-draw drain finds nothing left
   } finally {
     cleanup?.();
     game.world = previousWorld;

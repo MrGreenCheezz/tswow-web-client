@@ -11,6 +11,7 @@
  */
 
 import type { AtmosphereAudioState, AtmosphereProfile } from "./AtmosphereEffects.js";
+import type { PortraitOutput } from "./PortraitTargetData.js";
 import {
   CAMERA_DEFAULT_EYE_HEIGHT, CAMERA_DEFAULT_PIVOT_HEIGHT, CAMERA_EYE_BODY_SHARE, CAMERA_PIVOT_BODY_SHARE,
   cameraBodyHeight,
@@ -66,12 +67,19 @@ export interface RenderResults {
   indoors: boolean;
   /** The diagnostics status line, written by `endRenderFrame` on a frame whose inputs ask for it. */
   status: string;
+  /**
+   * 22.10 ARC-2 S3b: the portrait canvas operations — blanks and finished readbacks — oldest first, queued until
+   * the page takes them (PortraitCanvasBridge.ts `drain`, which empties the list). Unlike the rest of the record
+   * these are not overwritten per frame: each is applied exactly once.
+   */
+  readonly portraits: PortraitOutput[];
 }
 
 export function createRenderResults(atmosphereProfile: Readonly<AtmosphereProfile>): RenderResults {
   return {
     frame: 0, units: new Map(), gameObjectCorners: new Map(), seats: new Map(), seatFrame: 0,
     cameraAspect: 1, weatherStorm: 0, atmosphereProfile, atmosphereAudio: undefined, fps: 0, indoors: false, status: "",
+    portraits: [],
   };
 }
 

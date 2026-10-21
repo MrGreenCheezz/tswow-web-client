@@ -19,6 +19,9 @@ import { cloneMaterialForPortrait } from "./WorldLighting.js";
 import { ProgramWarmup, PROGRAM_WARMUP_BATCH } from "./ProgramWarmup.js";
 import { unit as unitFields } from "../world/Fields.js";
 import type { WorldObjectState } from "../world/WorldState.js"; // 22.10 ARC-2 S2a
+import {
+  NO_PORTRAIT_TARGET_INPUTS, type PortraitOutput, type PortraitTargetInput, type PortraitTargetInputs,
+} from "./PortraitTargetData.js"; // 22.10 ARC-2 S3b
 
 export const PORTRAIT_SLOTS = ["player", "target", "focus", "tot", "pet"] as const;
 /** Stable party rows share the same renderer but keep their own surfaces and output canvases. */
@@ -67,18 +70,12 @@ export function portraitTextureOutput(slot: PortraitSlot): boolean {
 }
 
 /**
- * 13.10: the dataset mark of a HUD row's canvas that a stock unit frame borrowed (ui/Portraits.ts
- * `adoptPortraitCanvas`: PlayerPortrait, TargetFramePortrait, FocusFramePortrait, PetPortrait, the
- * party and ToT rows). Stock UnitFrame_Update paints those with SetPortraitTexture too, so they are
- * the same picture — black ground in the circle — and their frame art has the same transparent hole
- * under the Texture: with the HUD's transparent ground the owner saw the world through the ring
- * around the head. The native frames keep the transparent ground their styled backgrounds need.
+ * Whether this slot's picture, on this output, is the stock one: opaque black ground, circle. 13.10: a HUD row a
+ * stock unit frame borrowed carries the page's stock-ground mark (PortraitCanvasBridge.ts PORTRAIT_STOCK_GROUND,
+ * pushed as `stockGround`), and is painted as the same SetPortraitTexture picture.
  */
-export const PORTRAIT_STOCK_GROUND = "portraitStockGround";
-
-/** Whether this slot's picture, on this canvas, is the stock one: opaque black ground, circle. */
-export function portraitOpaqueGround(slot: PortraitSlot, canvas: HTMLCanvasElement | undefined): boolean {
-  return portraitTextureOutput(slot) || canvas?.dataset[PORTRAIT_STOCK_GROUND] === "true";
+export function portraitOpaqueGround(slot: PortraitSlot, stockGround: boolean): boolean {
+  return portraitTextureOutput(slot) || stockGround;
 }
 
 /**
@@ -93,49 +90,6 @@ export function portraitOpaqueGround(slot: PortraitSlot, canvas: HTMLCanvasEleme
 function pendingStockPicture(slot: PortraitSlot, guid: bigint | undefined): boolean {
   return guid !== undefined && isStockPortraitSlot(slot);
 }
-
-/**
- * Host-owned stock portrait targets, read by the world's PortraitRenderer when `setTargets` runs.
- *
- * The HUD's fixed slots arrive as one map from ui/Portraits.ts every frame. Stock window portraits
- * are claimed by FrameXML's `SetPortraitTexture` bridge instead, and must not require that module
- * (or WorldRenderer3D) to know every window's texture. A write that changes nothing does not bump
- * the version, so the renderer's per-frame cost for an unchanged set is one integer compare.
- */
-export class StockPortraitTargets {
-  readonly #targets = new Map<StockPortraitSlot, PortraitTarget>();
-  #version = 0;
-
-  get version(): number {
-    return this.#version;
-  }
-
-  get size(): number {
-    return this.#targets.size;
-  }
-
-  get(slot: StockPortraitSlot): PortraitTarget | undefined {
-    return this.#targets.get(slot);
-  }
-
-  entries(): ReadonlyMap<StockPortraitSlot, PortraitTarget> {
-    return this.#targets;
-  }
-
-  set(slot: StockPortraitSlot, guid: bigint | undefined, canvas: HTMLCanvasElement | undefined): void {
-    const previous = this.#targets.get(slot);
-    if (previous && previous.guid === guid && previous.canvas === canvas) return;
-    this.#targets.set(slot, { guid, canvas });
-    this.#version++;
-  }
-
-  delete(slot: StockPortraitSlot): void {
-    if (this.#targets.delete(slot)) this.#version++;
-  }
-}
-
-/** The live client's single set; tests hand a PortraitRenderer their own instance. */
-export const stockPortraitTargets = new StockPortraitTargets();
 
 /** One fixed-function directional lamp in the stock character-select light set. */
 export interface PortraitDirectionalLightProfile {
@@ -171,7 +125,7 @@ export type PortraitRace = "neutral" | "human" | "nightElf";
 const PORTRAIT_BRDF_SCALE = Math.PI;
 /** M2 AnimationData's canonical Stand row; unlike a live unit pose this is stable across frames. */
 const STAND_ANIMATION_ID = 0;
-/** WebGLRenderTarget readback is working-space linear; ImageData expects display-space sRGB. */
+/** WebGLRenderTarget readback is working-space linear; a 2D canvas expects display-space sRGB. */
 const LINEAR_TO_SRGB_BYTE = Uint8Array.from({ length: 256 }, (_, byte) => {
   const linear = byte / 255;
   const srgb = linear <= 0.0031308
@@ -306,24 +260,41 @@ function portraitRaceForGuid(guid: bigint, world: PortraitWorld | undefined): Po
   return "neutral";
 }
 
-export interface PortraitTarget {
-  guid: bigint | undefined;
-  canvas: HTMLCanvasElement | undefined;
-  /**
-   * False while the canvas is off screen — its window closed. Omitted means shown, which is what
-   * the HUD rows always are. A hidden target is neither rebuilt nor drawn and asks the world for
-   * no pose; its surface keeps the source key of its last paint, so the comparison `#renderSlot`
-   * makes is deferred rather than skipped, and the first frame it shows again repaints it once if
-   * the look moved meanwhile. Before this every look change rebuilt the paper doll and the
-   * CharacterFrame bust with the character window closed — a skinned instance, a Stand pose,
-   * material clones, a first draw and a readback each: `render()` on the frame after an equip took
-   * 7.5 ms with all three player outputs shown and takes 2.2 ms with those two hidden (HumanMale,
-   * three over a no-op WebGL2, Node 22; driver and GPU time come on top of both).
-   */
-  visible?: boolean;
+/**
+ * 22.10 ARC-2 S3b: a slot's output as the renderer keeps it — a copy of the pushed PortraitTargetInput (the page's
+ * canvas id and what it read off that canvas), its `ready` overwritten by the operations this renderer queued
+ * since. `visible: false` while the canvas is off screen — its window closed; omitted means shown, which is what
+ * the HUD rows always are. A hidden target is neither rebuilt nor drawn and asks the world for no pose; its
+ * surface keeps the source key of its last paint, so the comparison `#renderSlot` makes is deferred rather than
+ * skipped, and the first frame it shows again repaints it once if the look moved meanwhile. Before this every
+ * look change rebuilt the paper doll and the CharacterFrame bust with the character window closed — a skinned
+ * instance, a Stand pose, material clones, a first draw and a readback each: `render()` on the frame after an
+ * equip took 7.5 ms with all three player outputs shown and takes 2.2 ms with those two hidden (HumanMale, three
+ * over a no-op WebGL2, Node 22; driver and GPU time come on top of both).
+ */
+type PortraitTarget = PortraitTargetInput;
+
+const EMPTY_PORTRAIT_TARGET: Readonly<PortraitTarget> = Object.freeze({
+  guid: undefined, canvas: undefined, width: 0, height: 0, stockGround: false, ready: undefined,
+});
+
+/** 22.10 ARC-2 S3b: the renderer's own record of a pushed target, never the pusher's (it reuses its records). */
+function copyTarget(input: Readonly<PortraitTarget>): PortraitTarget {
+  const copy: PortraitTarget = {
+    guid: input.guid, canvas: input.canvas, width: input.width, height: input.height,
+    stockGround: input.stockGround, ready: input.ready,
+  };
+  if (input.visible !== undefined) copy.visible = input.visible;
+  return copy;
 }
 
-const EMPTY_PORTRAIT_TARGET = { guid: undefined, canvas: undefined } as const;
+/** 22.10 ARC-2 S3b: what the old reads of the canvas answered live — its size, its marks — refreshed per push. */
+function refreshTarget(stored: PortraitTarget, input: Readonly<PortraitTarget>): void {
+  stored.width = input.width;
+  stored.height = input.height;
+  stored.stockGround = input.stockGround;
+  stored.ready = input.ready;
+}
 
 /** A target that is on screen: anything but an explicit `visible: false`. */
 function targetShown(target: PortraitTarget | undefined): boolean {
@@ -409,7 +380,8 @@ interface PortraitSurface {
   /** Texture-loader revision captured by the last submitted portrait readback. */
   textureRevision: string | undefined;
   sourceKey: string | undefined;
-  output: HTMLCanvasElement | undefined;
+  /** 22.10 ARC-2 S3b: the page's canvas id. */
+  output: number | undefined;
   pixels: Uint8Array;
   flipped: Uint8ClampedArray;
   width: number;
@@ -433,7 +405,7 @@ interface PortraitReadback {
   readonly guid: bigint;
   readonly sourceKey: string;
   readonly textureRevision: string;
-  readonly canvas: HTMLCanvasElement;
+  readonly canvas: number;
   readonly width: number;
   readonly height: number;
   readonly pixels: Uint8Array;
@@ -451,8 +423,12 @@ interface PortraitLightState {
 export interface PortraitRendererOptions {
   /** Reserved for source compatibility; portraits are now painted once per invalidation. */
   repaintIntervalMs?: number;
-  /** Stock window portrait targets; the module's `stockPortraitTargets` unless a test isolates it. */
-  stockTargets?: StockPortraitTargets;
+  /**
+   * 22.10 ARC-2 S3b: where the canvas operations go (WorldRenderer3D: `RenderResults.portraits`), and who is told
+   * after each one is queued — the page drains them then (PortraitCanvasBridge.ts), so they land when they did.
+   */
+  outputs?: PortraitOutput[];
+  onOutputs?: () => void;
 }
 
 /**
@@ -507,15 +483,22 @@ export class PortraitRenderer {
   readonly #pendingReadbacks = new Map<PortraitSlot, PortraitReadback>();
   readonly #programWarmup: ProgramWarmup;
   readonly #source: PortraitSourceProvider;
-  readonly #stockTargets: StockPortraitTargets;
-  /** `#stockTargets.version` last applied; -1 forces the next setTargets to re-read the set. */
+  /** The pushed stock set's version last applied; -1 forces the next setTargets to re-read the set. */
   #stockVersion = -1;
   /** The stock slots currently in `#targets`, as an array so the hot loops allocate nothing. */
   #stockSlots: StockPortraitSlot[] = [];
-  /** Canvases this renderer cleared and has not painted since; see `#markUnavailable`. */
-  readonly #blankCanvases = new WeakSet<HTMLCanvasElement>();
-  /** The GUID whose picture each canvas holds from this renderer's last readback into it. */
-  readonly #paintedGuids = new WeakMap<HTMLCanvasElement, bigint>();
+  /**
+   * 22.10 ARC-2 S3b: canvases this renderer queued a blank for and no paint since — a subset of the page's own
+   * record (PortraitCanvasBridge.ts), which decides; this only spares `#markUnavailable` a queued no-op a frame.
+   */
+  readonly #blankCanvases = new Set<number>();
+  /** 22.10 ARC-2 S3b: ready flags this push's own operations set (`#setReady`), newer than what the push read. */
+  readonly #readyOverrides = new Map<number, string>();
+  /** 22.10 ARC-2 S3b: the canvas operations, oldest first, and the page's wake-up after each. */
+  readonly #outputs: PortraitOutput[];
+  readonly #onOutputs: (() => void) | undefined;
+  /** 22.10 ARC-2 S3b: one stand-in object per canvas id for resource accounting (the canvas is the page's). */
+  readonly #canvasTokens = new Map<number, object>();
   /** 22.10 ARC-2 S2a: the world being drawn (`setWorld`); absent, nobody is the player and every race neutral. */
   #world: PortraitWorld | undefined;
 
@@ -524,7 +507,8 @@ export class PortraitRenderer {
     this.#renderer = renderer;
     this.#programWarmup = new ProgramWarmup(renderer, this.#scene);
     this.#source = source;
-    this.#stockTargets = options.stockTargets ?? stockPortraitTargets;
+    this.#outputs = options.outputs ?? [];
+    this.#onOutputs = options.onOutputs;
     // Keep accepting the old option while intentionally ignoring it. A static portrait has no
     // animation cadence to throttle: readback happens only after a model/target/size invalidation.
     void options.repaintIntervalMs;
@@ -585,11 +569,11 @@ export class PortraitRenderer {
   #slotNeedsPose(slot: PortraitSlot, guid: bigint): boolean {
     const target = this.#targets.get(slot);
     // A hidden surface paints nothing, so it must not keep the world unit off its flat pose.
-    if (target?.guid !== guid || !target.canvas || !targetShown(target)) return false;
+    if (target?.guid !== guid || target.canvas === undefined || !targetShown(target)) return false;
     const surface = this.#surfaces.get(slot);
     if (!surface || surface.dirty || !surface.staticPoseCaptured || surface.sourceGuid !== guid) return true;
-    const width = Math.max(1, target.canvas.width || 96);
-    const height = Math.max(1, target.canvas.height || 96);
+    const width = Math.max(1, target.width || 96);
+    const height = Math.max(1, target.height || 96);
     if (surface.width !== width || surface.height !== height) return true;
     // Atlas generations are folded into source.key. Resolve the current source only after the
     // cheap surface checks above, so ordinary non-portrait units still pay no provider call.
@@ -598,7 +582,18 @@ export class PortraitRenderer {
     return surface.textureRevision !== portraitTextureRevision(source.built);
   }
 
-  setTargets(targets: ReadonlyMap<PortraitSlot, PortraitTarget>): void {
+  /**
+   * 22.10 ARC-2 S3b: the page's push — the fixed slots, the stock set and the paints it refused — as plain data
+   * (PortraitTargetData.ts), in place of the slot-to-canvas map and the stock registry read here before.
+   */
+  setTargets(inputs: PortraitTargetInputs = NO_PORTRAIT_TARGET_INPUTS): void {
+    const targets = inputs.targets;
+    this.#readyOverrides.clear();
+    // A paint the page could not put down is a failed readback: the surface paints again.
+    for (const rejected of inputs.rejected) {
+      const surface = this.#surfaces.get(rejected.slot);
+      if (surface && surface.output === rejected.canvas) surface.dirty = true;
+    }
     // Pushed every frame by the loop: read first, write only on change, so an unchanged frame
     // costs comparisons instead of a cleared guid set, map writes and canvas clears.
     let changed = false;
@@ -611,12 +606,27 @@ export class PortraitRenderer {
         break;
       }
     }
-    const stockChanged = this.#stockVersion !== this.#stockTargets.version;
-    if (!changed && !stockChanged) return;
+    const stockChanged = this.#stockVersion !== inputs.stockVersion;
     if (changed) {
       for (const slot of ALL_PORTRAIT_SLOTS) this.#applyTarget(slot, targets.get(slot) ?? EMPTY_PORTRAIT_TARGET);
+    } else {
+      // 22.10 ARC-2 S3b: the same outputs; what was read off each canvas live is taken from this push.
+      for (const [slot, input] of targets) {
+        const stored = this.#targets.get(slot);
+        if (stored) this.#refresh(stored, input);
+      }
     }
-    if (stockChanged) this.#applyStockTargets();
+    if (stockChanged) this.#applyStockTargets(inputs);
+    else {
+      const stock = this.#stockSlots;
+      for (let index = 0; index < stock.length; index++) {
+        const slot = stock[index]!;
+        const input = inputs.stock.get(slot);
+        const stored = this.#targets.get(slot);
+        if (input && stored) this.#refresh(stored, input);
+      }
+    }
+    if (!changed && !stockChanged) return;
     this.#targetGuids.clear();
     // Only shown targets pin their unit into the world's admission; a closed window's does not.
     for (const target of this.#targets.values()) {
@@ -624,8 +634,11 @@ export class PortraitRenderer {
     }
   }
 
-  #applyTarget(slot: PortraitSlot, next: PortraitTarget): void {
+  #applyTarget(slot: PortraitSlot, input: Readonly<PortraitTarget>): void {
     const previous = this.#targets.get(slot);
+    const next = copyTarget(input);
+    const ready = next.canvas === undefined ? undefined : this.#readyOverrides.get(next.canvas);
+    if (ready !== undefined) next.ready = ready;
     this.#targets.set(slot, next);
     if (previous?.guid === next.guid && previous?.canvas === next.canvas) return;
     const surface = this.#surfaces.get(slot);
@@ -635,13 +648,22 @@ export class PortraitRenderer {
     }
     // A stock window reopened on the same unit (the vendor closed and talked to again) keeps the
     // picture its canvas already holds while the fresh surface paints; nothing stale can show,
-    // because that canvas last showed exactly this GUID.
-    if (!previous && isStockPortraitSlot(slot) && next.guid !== undefined && next.canvas
-      && this.#paintedGuids.get(next.canvas) === next.guid) return;
+    // because that canvas last showed exactly this GUID. 22.10 ARC-2 S3b: the page knows what its canvas
+    // last showed, so the blank goes out with that condition and the page decides.
+    if (!previous && isStockPortraitSlot(slot) && next.guid !== undefined && next.canvas !== undefined) {
+      this.#queue({ kind: "clear", canvas: next.canvas, pending: true, keepIfBlank: false, keepIfPainted: next.guid });
+      return;
+    }
     // Keep the old class/creature image as fallback while the new model is loading; a stale
     // 3D readback must not remain visible through a target transition.
     this.#clearCanvas(previous?.canvas);
     this.#clearCanvas(next.canvas, pendingStockPicture(slot, next.guid));
+  }
+
+  #refresh(stored: PortraitTarget, input: Readonly<PortraitTarget>): void {
+    refreshTarget(stored, input);
+    const ready = stored.canvas === undefined ? undefined : this.#readyOverrides.get(stored.canvas);
+    if (ready !== undefined) stored.ready = ready;
   }
 
   /**
@@ -649,9 +671,9 @@ export class PortraitRenderer {
    * shells, render target, group — rather than idling at "no GUID" like a fixed HUD row. A closed
    * window therefore costs nothing per frame, and the next open paints once from scratch.
    */
-  #applyStockTargets(): void {
-    this.#stockVersion = this.#stockTargets.version;
-    const entries = this.#stockTargets.entries();
+  #applyStockTargets(inputs: PortraitTargetInputs): void {
+    this.#stockVersion = inputs.stockVersion;
+    const entries = inputs.stock;
     for (const slot of this.#stockSlots) {
       if (!entries.has(slot)) this.#releaseStockSlot(slot);
     }
@@ -741,7 +763,7 @@ export class PortraitRenderer {
       visitor.referenceCpu(surface, surface.pixels);
       visitor.referenceCpu(surface, surface.flipped);
       visitor.referenceGpuRenderTarget(surface, surface.target);
-      if (surface.output) visitor.referenceUnsupported(surface, surface.output);
+      if (surface.output !== undefined) visitor.referenceUnsupported(surface, this.#canvasToken(surface.output));
       surface.root?.traverse((object) => {
         const mesh = object as THREE.Mesh;
         if (mesh.geometry?.isBufferGeometry === true) {
@@ -758,10 +780,20 @@ export class PortraitRenderer {
     for (const pending of this.#pendingReadbacks.values()) {
       visitor.referenceCpu(pending, pending.pixels);
       visitor.referenceCpu(pending, pending.surface.flipped);
-      visitor.referenceUnsupported(pending, pending.canvas);
+      visitor.referenceUnsupported(pending, this.#canvasToken(pending.canvas));
       // Three owns the transient pixel-pack buffer/fence; no raw WebGL handle is exposed here.
       visitor.referenceUnsupported(pending, pending);
     }
+  }
+
+  /** 22.10 ARC-2 S3b: the canvas's storage is the page's; one identity per canvas id keeps it counted once. */
+  #canvasToken(canvas: number): object {
+    let token = this.#canvasTokens.get(canvas);
+    if (token === undefined) {
+      token = { portraitCanvas: canvas };
+      this.#canvasTokens.set(canvas, token);
+    }
+    return token;
   }
 
   /** Render invalidated portraits. Returns readbacks submitted; canvas updates finish asynchronously. */
@@ -780,7 +812,7 @@ export class PortraitRenderer {
 
   #renderSlot(slot: PortraitSlot): number {
     const target = this.#targets.get(slot);
-    if (!target?.canvas || target.guid === undefined) {
+    if (target?.canvas === undefined || target.guid === undefined) {
       this.#markUnavailable(slot);
       return 0;
     }
@@ -793,7 +825,7 @@ export class PortraitRenderer {
       this.#markUnavailable(slot, true);
       return 0;
     }
-    const surface = this.#surface(slot, target.canvas);
+    const surface = this.#surface(slot, target, target.canvas);
     const sourceKey = source.key;
     const textureRevision = portraitTextureRevision(source.built);
     if (surface.sourceKey !== sourceKey || surface.sourceGuid !== target.guid) {
@@ -809,7 +841,7 @@ export class PortraitRenderer {
     }
     surface.output = target.canvas;
     // 13.10: a canvas a stock unit frame borrowed (or gave back) after its last paint.
-    const opaqueGround = portraitOpaqueGround(slot, target.canvas);
+    const opaqueGround = portraitOpaqueGround(slot, target.stockGround);
     if (surface.opaqueGround !== opaqueGround) {
       surface.opaqueGround = opaqueGround;
       surface.dirty = true;
@@ -850,11 +882,11 @@ export class PortraitRenderer {
     this.#scene.clear();
   }
 
-  #surface(slot: PortraitSlot, canvas: HTMLCanvasElement): PortraitSurface {
-    // Use the backing store only. clientWidth/clientHeight are zero for a display:none frame and
-    // must not make a portrait target depend on whether its parent is currently visible.
-    const width = Math.max(1, canvas.width || 96);
-    const height = Math.max(1, canvas.height || 96);
+  #surface(slot: PortraitSlot, output: PortraitTarget, canvas: number): PortraitSurface {
+    // Use the backing store only (22.10 ARC-2 S3b: as the page pushed it). clientWidth/clientHeight are zero for a
+    // display:none frame and must not make a portrait target depend on whether its parent is currently visible.
+    const width = Math.max(1, output.width || 96);
+    const height = Math.max(1, output.height || 96);
     let surface = this.#surfaces.get(slot);
     if (!surface) {
       const target = new THREE.WebGLRenderTarget(width, height, {
@@ -869,7 +901,7 @@ export class PortraitRenderer {
         sourceKey: undefined, output: canvas,
         pixels: new Uint8Array(width * height * 4),
         flipped: new Uint8ClampedArray(width * height * 4),
-        width, height, dirty: true, opaqueGround: portraitOpaqueGround(slot, canvas),
+        width, height, dirty: true, opaqueGround: portraitOpaqueGround(slot, output.stockGround),
         staticPoseCaptured: false, sourceGuid: undefined, paintedGuid: undefined,
         readbackVersion: 0,
       };
@@ -1162,15 +1194,11 @@ export class PortraitRenderer {
       const source = target?.guid === pending.guid ? this.#source(pending.guid) : undefined;
       if (!succeeded || surface.readbackVersion !== pending.version
         || target?.canvas !== canvas || surface.output !== canvas
-        || Math.max(1, canvas.width || 96) !== width || Math.max(1, canvas.height || 96) !== height
+        // 22.10 ARC-2 S3b: the size last pushed; the page checks the canvas itself again when it paints.
+        || Math.max(1, target.width || 96) !== width || Math.max(1, target.height || 96) !== height
         || surface.width !== width || surface.height !== height
         || source?.key !== pending.sourceKey
         || portraitTextureRevision(source.built) !== pending.textureRevision) {
-        surface.dirty = true;
-        return;
-      }
-      const context = canvas.getContext("2d");
-      if (!context) {
         surface.dirty = true;
         return;
       }
@@ -1191,14 +1219,14 @@ export class PortraitRenderer {
           surface.flipped[outputPixel + 3] = circle ? circle[y * width + column / 4]! : pixels[sourcePixel + 3]!;
         }
       }
-      const image = context.createImageData(width, height);
-      image.data.set(surface.flipped);
-      context.putImageData(image, 0, 0);
+      // 22.10 ARC-2 S3b: the page puts the picture down (PortraitCanvasBridge.ts) — a copy, as the 2D image was:
+      // the conversion buffer is this surface's and the next readback writes it again.
+      this.#queue({
+        kind: "paint", canvas, slot, guid: pending.guid, width, height, pixels: surface.flipped.slice(),
+      });
       this.#blankCanvases.delete(canvas);
-      this.#paintedGuids.set(canvas, pending.guid);
       surface.paintedGuid = pending.guid;
-      canvas.dataset["portraitReady"] = "true";
-      canvas.dataset["portraitSlot"] = slot;
+      this.#setReady(canvas, "true");
     } catch {
       // Driver/context loss or an unavailable 2D canvas leaves the existing fallback intact.
       // A later frame can retry after this slot's one pending fence has settled.
@@ -1211,7 +1239,7 @@ export class PortraitRenderer {
   /**
    * Runs every frame for every slot without a paintable unit, so its steady state is a no-op: a
    * canvas this renderer already blanked is not cleared again (measured before: one `clearRect`
-   * and a dataset write per frame for a closed quest page's canvas, for as long as the HUD lived),
+   * and a ready-flag write per frame for a closed quest page's canvas, for as long as the HUD lived),
    * and a surface whose model is already gone is not disposed again.
    */
   #markUnavailable(slot: PortraitSlot, preserveSnapshot = false): void {
@@ -1220,13 +1248,14 @@ export class PortraitRenderer {
     // Model/atlas replacement can briefly remove a source. Retain only the previous pixels for
     // this exact GUID/canvas; setTargets and clear still invalidate character/world transitions.
     const keepPixels = preserveSnapshot && target?.guid !== undefined && surface?.paintedGuid === target.guid
-      && surface.output === target.canvas && target.canvas?.dataset["portraitReady"] === "true"
-      && surface.width === target.canvas.width && surface.height === target.canvas.height;
+      && target.canvas !== undefined && surface.output === target.canvas && target.ready === "true"
+      && surface.width === target.width && surface.height === target.height;
     // Both halves: an adoption cleanup may restore an older `portraitReady` onto a canvas this
-    // renderer blanked, and the flag must be put right again once.
-    if (target?.canvas && !keepPixels && !(this.#blankCanvases.has(target.canvas)
-      && target.canvas.dataset["portraitReady"] === "false")) {
-      this.#clearCanvas(target.canvas, pendingStockPicture(slot, target.guid));
+    // renderer blanked, and the flag must be put right again once. 22.10 ARC-2 S3b: the page holds the exact
+    // blank record and re-checks it (`keepIfBlank`); the one here only spares it a queued no-op a frame.
+    if (target?.canvas !== undefined && !keepPixels && !(this.#blankCanvases.has(target.canvas)
+      && target.ready === "false")) {
+      this.#clearCanvas(target.canvas, pendingStockPicture(slot, target.guid), true);
     }
     if (surface && (surface.root !== undefined || surface.sourceGuid !== undefined
       || !surface.dirty || surface.output !== target?.canvas)) {
@@ -1237,20 +1266,29 @@ export class PortraitRenderer {
     }
   }
 
-  /** `pending`: blank to the black disc of `pendingStockPicture` rather than to transparent. */
-  #clearCanvas(canvas: HTMLCanvasElement | undefined, pending = false): void {
-    if (!canvas) return;
-    const context = canvas.getContext("2d");
-    context?.clearRect(0, 0, canvas.width, canvas.height);
-    if (pending && context && canvas.width > 0 && canvas.height > 0) {
-      // Colour 0 is the picture's black ground; the alpha is the same circle a readback gets.
-      const mask = portraitCircleMask(canvas.width, canvas.height);
-      const image = context.createImageData(canvas.width, canvas.height);
-      for (let index = 0; index < mask.length; index++) image.data[index * 4 + 3] = mask[index]!;
-      context.putImageData(image, 0, 0);
-    }
-    canvas.dataset["portraitReady"] = "false";
+  /**
+   * `pending`: blank to the black disc of `pendingStockPicture` rather than to transparent. 22.10 ARC-2 S3b: queued
+   * for the page; `keepIfBlank` lets the page skip a canvas it holds blank with its flag still "false".
+   */
+  #clearCanvas(canvas: number | undefined, pending = false, keepIfBlank = false): void {
+    if (canvas === undefined) return;
+    this.#queue({ kind: "clear", canvas, pending, keepIfBlank, keepIfPainted: undefined });
+    // Either way the canvas ends blank with its flag "false": cleared now, or found so by the page.
     this.#blankCanvases.add(canvas);
-    this.#paintedGuids.delete(canvas);
+    this.#setReady(canvas, "false");
+  }
+
+  /**
+   * 22.10 ARC-2 S3b: the ready flag as the queued operations leave it, for every slot showing that canvas, until
+   * the next push reads it off the canvas again (`#readyOverrides` carries it across that push's own copies).
+   */
+  #setReady(canvas: number, ready: string): void {
+    this.#readyOverrides.set(canvas, ready);
+    for (const target of this.#targets.values()) if (target.canvas === canvas) target.ready = ready;
+  }
+
+  #queue(output: PortraitOutput): void {
+    this.#outputs.push(output);
+    this.#onOutputs?.();
   }
 }

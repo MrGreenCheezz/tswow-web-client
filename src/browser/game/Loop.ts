@@ -74,7 +74,9 @@ import { updateLoadingScreen, worldPhysicsReady } from "../ui/LoadingScreen.js";
 import { updateCustomPackets, updateModuleWindowList } from "../ui/Diagnostics.js";
 import { debugTime, debugWeather, recordDebugLight } from "./DebugOverrides.js";
 import { drawDebugTab } from "../ui/DebugTab.js";
-import { applyPortraitVisibility, clearPortraitTargets, syncPortraitTargets } from "../ui/Portraits.js";
+import {
+  applyPortraitVisibility, clearPortraitTargets, drainPortraitOutputs, syncPortraitTargets,
+} from "../ui/Portraits.js";
 import {
   FullFrameClock, LONG_FRAME_THRESHOLD_MS, makeRenderTelemetrySnapshot, summarizeFrameHitch,
   topSectionAverages, type FrameHitch, type RenderTelemetrySnapshot,
@@ -707,6 +709,8 @@ function frame(now: number): void {
       }
     }
     hitchRender = performance.now();
+    // 22.10 ARC-2 S3b: whatever portrait operations the frame queued and the listener has not applied yet.
+    drainPortraitOutputs(renderer);
     applyPortraitVisibility();
     // Writing the status line every frame forces a layout pass for text nobody reads that often.
     if (statusDue) {

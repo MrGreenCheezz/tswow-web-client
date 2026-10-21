@@ -28,9 +28,8 @@
 import { unit as unitField } from "../../world/Fields.js";
 import type { WorldClient } from "../../world/WorldClient.js";
 import { setPortraitCanvasBackingStore } from "../PortraitCanvas.js";
-import {
-  stockPortraitTargets, type StockPortraitSlot, type StockPortraitTargets,
-} from "../PortraitRenderer.js";
+import type { StockPortraitSlot } from "../PortraitRenderer.js";
+import { stockPortraitTargets, type StockPortraitTargets } from "../PortraitCanvasBridge.js"; // 22.10 ARC-2 S3b
 import type { FrameXmlMutationKind, MutableFrameXmlFrame } from "../ui/framexml_compat/FrameXmlRuntime.js";
 import type { FrameXmlFrame, FrameXmlTexCoords } from "../ui/framexml_compat/FrameXmlTypes.js";
 import { liveFrameXmlInteractionNpc } from "./FrameXmlGossipLive.js";

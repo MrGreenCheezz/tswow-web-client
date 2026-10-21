@@ -7,9 +7,11 @@ import * as THREE from "three";
 // (PortraitRenderer.ts), the host that claims a Texture and lays a canvas over it
 // (framexml/FrameXmlPortraits.ts) and the unit-token resolution behind it.
 const {
-  PORTRAIT_STOCK_GROUND, PortraitRenderer, StockPortraitTargets, portraitCircleMask, portraitOpaqueGround,
-  portraitTextureOutput,
+  portraitCircleMask, portraitOpaqueGround, portraitTextureOutput,
 } = await import("../dist/code/browser/PortraitRenderer.js");
+// 22.10 ARC-2 S3b: the stock registry and the stock-ground mark are the page's (PortraitCanvasBridge.ts).
+const { PORTRAIT_STOCK_GROUND, StockPortraitTargets } = await import("../dist/code/browser/PortraitCanvasBridge.js");
+const { portraitView } = await import("./fixtures/portrait-view.mjs");
 const {
   createFrameXmlStockPortraits, frameXmlPortraitUnitGuid, frameXmlInteractionNpcGuid,
   FRAMEXML_DEDICATED_PORTRAIT_TEXTURES,
@@ -122,7 +124,7 @@ test("a stock SetPortraitTexture target paints once and then costs no draw or re
   const stock = new StockPortraitTargets();
   let lookups = 0;
   const npc = source();
-  const view = new PortraitRenderer(renderer, () => { lookups++; return npc; }, { stockTargets: stock });
+  const view = portraitView(renderer, () => { lookups++; return npc; }, { stockTargets: stock });
   const hud = new Map();
   const output = canvas(60, 60);
   stock.set("stock:GossipFramePortrait", 0x701n, output);
@@ -154,7 +156,7 @@ test("a stock SetPortraitTexture target paints once and then costs no draw or re
 test("the stock picture is opaque black inside the portrait circle and transparent outside it", async () => {
   const { renderer, state } = fakeRenderer();
   const stock = new StockPortraitTargets();
-  const view = new PortraitRenderer(renderer, () => source(), { stockTargets: stock });
+  const view = portraitView(renderer, () => source(), { stockTargets: stock });
   const npc = canvas(60, 60);
   const quest = canvas(60, 60);
   const target = canvas(60, 60);
@@ -183,11 +185,13 @@ test("the stock picture is opaque black inside the portrait circle and transpare
 
 test("13.10: a HUD row a stock unit frame borrowed paints the stock picture, and repaints when given back", async () => {
   const { renderer, state } = fakeRenderer();
-  const view = new PortraitRenderer(renderer, () => source());
+  const view = portraitView(renderer, () => source());
   const target = canvas(60, 60);
   // ui/Portraits.ts adoptPortraitCanvas marks the canvas it moves into TargetFramePortrait.
   target.dataset[PORTRAIT_STOCK_GROUND] = "true";
-  assert.equal(portraitOpaqueGround("target", target), true);
+  assert.equal(portraitOpaqueGround("target", true), true);
+  assert.equal(view.bridge.inputs(new Map([["target", { guid: 7n, canvas: target }]])).targets.get("target").stockGround, true,
+    "the page pushes the mark as the target's stockGround");
   view.setTargets(new Map([["target", { guid: 7n, canvas: target }]]));
   assert.equal(view.render(0), 1);
   await settle();
@@ -209,7 +213,7 @@ test("closing a stock window gives back the whole surface and leaves no per-fram
   const { renderer, state } = fakeRenderer();
   const stock = new StockPortraitTargets();
   let lookups = 0;
-  const view = new PortraitRenderer(renderer, () => { lookups++; return source(); }, { stockTargets: stock });
+  const view = portraitView(renderer, () => { lookups++; return source(); }, { stockTargets: stock });
   const output = canvas(58, 58);
   const hud = new Map();
   stock.set("stock:BankPortraitTexture", 9n, output);
@@ -262,7 +266,7 @@ test("a stock portrait not painted yet is the black disc, not a hole onto the «
   const { renderer } = fakeRenderer();
   const stock = new StockPortraitTargets();
   let npc; // the model is still loading
-  const view = new PortraitRenderer(renderer, (guid) => (guid === 0x701n ? npc : undefined), { stockTargets: stock });
+  const view = portraitView(renderer, (guid) => (guid === 0x701n ? npc : undefined), { stockTargets: stock });
   const output = canvas(60, 60);
   const quest = canvas(60, 60);
   const target = canvas(60, 60);
@@ -298,7 +302,7 @@ test("a stock portrait not painted yet is the black disc, not a hole onto the «
 
 test("a slot with a canvas and no unit is blanked once, not on every frame", () => {
   const { renderer } = fakeRenderer();
-  const view = new PortraitRenderer(renderer, () => source(), { stockTargets: new StockPortraitTargets() });
+  const view = portraitView(renderer, () => source(), { stockTargets: new StockPortraitTargets() });
   const quest = canvas(60, 60);
   // A closed quest page: setQuestGiverPortrait(undefined) keeps QuestFramePortrait's canvas.
   view.setTargets(new Map([["questnpc", { guid: undefined, canvas: quest }]]));
@@ -331,7 +335,7 @@ test("a stock portrait of the player uses the player's light rig and Stand; anyb
       },
       liveBones: [liveBone],
     };
-    const view = new PortraitRenderer(renderer, () => rigged, { stockTargets: stock });
+    const view = portraitView(renderer, () => rigged, { stockTargets: stock });
     view.setWorld({ selfGuid: 21n, objects: new Map() });
     stock.set("stock:TradeFramePlayerPortrait", 21n, canvas());
     view.setTargets(new Map([["player", { guid: 21n, canvas: canvas() }], ["target", { guid: 22n, canvas: canvas() }]]));

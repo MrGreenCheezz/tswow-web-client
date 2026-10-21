@@ -61,7 +61,7 @@ import type {
   WorldRenderer3D,
   WorldSubmissionReceipt,
 } from "./WorldRenderer3D.js";
-import type { PortraitSlot, PortraitTarget } from "./PortraitRenderer.js";
+import { clonePortraitTargetInputs, type PortraitTargetInputs } from "./PortraitTargetData.js"; // 22.10 ARC-2 S3b
 
 const DEFAULT_PREWARM_CHUNK_FRAMES = 30;
 const DEFAULT_PREWARM_TIMEOUT_MS = 180_000;
@@ -304,14 +304,6 @@ function cloneStateVisuals(
   for (const [guid, effects] of source) {
     copy.set(guid, Object.freeze(effects.map((effect) => Object.freeze({ ...effect }))));
   }
-  return copy;
-}
-
-function clonePortraitTargets(
-  source: ReadonlyMap<PortraitSlot, Readonly<PortraitTarget>>,
-): ReadonlyMap<PortraitSlot, Readonly<PortraitTarget>> {
-  const copy = new Map<PortraitSlot, Readonly<PortraitTarget>>();
-  for (const [slot, target] of source) copy.set(slot, Object.freeze({ ...target }));
   return copy;
 }
 
@@ -590,7 +582,7 @@ export class LiveFormalRenderBenchmarkHost implements FormalRenderBenchmarkHost 
   #deferredClearSpellVisuals = false;
   #deferredStateVisuals: ReadonlyMap<bigint, readonly StateVisual[]> | undefined;
   #deferredClearPortraits = false;
-  #deferredPortraitTargets: ReadonlyMap<PortraitSlot, Readonly<PortraitTarget>> | undefined;
+  #deferredPortraitTargets: PortraitTargetInputs | undefined;
   #rendererIsolationActive = false;
   #leaseContextGeneration: number | undefined;
   #expectedSurfaceStamp: Readonly<FormalRenderSurfaceStamp> | undefined;
@@ -1718,9 +1710,12 @@ export class LiveFormalRenderBenchmarkHost implements FormalRenderBenchmarkHost 
       return undefined;
     }
     if (name === "setPortraitTargets") {
-      this.#deferredPortraitTargets = clonePortraitTargets(
-        args[0] as ReadonlyMap<PortraitSlot, Readonly<PortraitTarget>>,
-      );
+      // 22.10 ARC-2 S3b: the page reuses its input records, so the deferred push is a copy; a refused paint is
+      // handed over once, so the ones of earlier deferred pushes ride along.
+      const deferred = clonePortraitTargetInputs(args[0] as PortraitTargetInputs);
+      const earlier = this.#deferredPortraitTargets?.rejected ?? [];
+      this.#deferredPortraitTargets = earlier.length === 0 ? deferred
+        : { ...deferred, rejected: [...earlier, ...deferred.rejected] };
       return undefined;
     }
     if (name === "renderPortraits") return 0;

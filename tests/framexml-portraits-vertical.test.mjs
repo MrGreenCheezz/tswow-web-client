@@ -22,7 +22,7 @@ const { CannedWorldSeam } = await import("../dist/code/browser/framexml/CannedWo
 const { FRAMEXML_VERTICAL_TOC } = await import("../dist/code/browser/framexml/FrameXmlCorpus.js");
 const { createFrameXmlNpcWindows } = await import("../dist/code/browser/framexml/FrameXmlGossipNpcWindows.js");
 const { createFrameXmlStockPortraits } = await import("../dist/code/browser/framexml/FrameXmlPortraits.js");
-const { StockPortraitTargets } = await import("../dist/code/browser/PortraitRenderer.js");
+const { StockPortraitTargets } = await import("../dist/code/browser/PortraitCanvasBridge.js"); // 22.10 ARC-2 S3b
 const decoder = new TextDecoder("utf-8");
 
 function node() {

@@ -744,7 +744,9 @@ test("spell, state-visual, and portrait ingress is isolated then reconciled on r
   const harness = makeHarness();
   const { lease } = await readyHost(harness);
   const stateVisuals = new Map([[1n, [{ spellId: 7, path: "spell/state.m2", attachment: 0, scale: 1 }]]]);
-  const portraitTargets = new Map([["player", { guid: 1n, canvas: undefined }]]);
+  // 22.10 ARC-2 S3b: the renderer's portrait push is plain data the page keeps reusing, so the host defers a copy.
+  const player = { guid: 1n, canvas: undefined, width: 0, height: 0, stockGround: false, ready: undefined };
+  const portraitTargets = { targets: new Map([["player", player]]), stock: new Map(), stockVersion: 0, rejected: [] };
 
   const handle = harness.renderer.playSpellVisual({ instances: [], animations: [] });
   assert.ok(handle.id < 0, "suppressed casts still receive an opaque cancellable handle");
@@ -759,13 +761,16 @@ test("spell, state-visual, and portrait ingress is isolated then reconciled on r
   assert.equal(harness.renderer.stateVisualCalls.length, 0);
   assert.equal(harness.renderer.clearPortraitCalls, 0);
   assert.equal(harness.renderer.portraitTargetsCalls.length, 0);
+  // The page rewrites its record after the push; the replay carries what was pushed.
+  player.guid = 2n;
 
   await lease.release();
   assert.equal(harness.renderer.isolationActive, false);
   assert.equal(harness.renderer.clearSpellVisualCalls, 1);
   assert.deepEqual([...harness.renderer.stateVisualCalls.at(-1)], [...stateVisuals]);
   assert.equal(harness.renderer.clearPortraitCalls, 1);
-  assert.deepEqual([...harness.renderer.portraitTargetsCalls.at(-1)], [...portraitTargets]);
+  assert.deepEqual(harness.renderer.portraitTargetsCalls.at(-1),
+    { ...portraitTargets, targets: new Map([["player", { ...player, guid: 1n }]]) });
 });
 
 test("clearSpellVisuals supersedes an earlier deferred state-visual map", async () => {
