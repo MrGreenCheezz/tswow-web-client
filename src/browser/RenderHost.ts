@@ -7,6 +7,10 @@
 // later slice gives the worker a host fed by messages from the page.
 
 import type * as THREE from "three";
+import type { FrameBudgetProbe } from "./FrameBudgetProbe.js";
+import type { GpuTimerObserver } from "./GpuTimer.js";
+import { renderBenchmarkGpuObserver } from "./RenderBenchmarkRuntime.js"; // 22.10 ARC-2 S4b: the page's answer
+import type { RenderResults } from "./RenderResults.js";
 import { loadImageTexture } from "./TextureLoad.js";
 
 /** A canvas's size in CSS pixels, rounded the way `clientWidth` rounds. */
@@ -37,6 +41,17 @@ export interface RenderHost {
     onLoad: (texture: THREE.Texture) => void,
     onError: (error: unknown) => void,
   ): THREE.Texture;
+  /**
+   * 22.10 ARC-2 S4b: the GPU timer's observer. The page's is the benchmark runtime's (`renderBenchmarkGpuObserver`);
+   * a renderer realm's queues into `results` (RendererReports.ts `queuedGpuObserver`) for the page to replay.
+   */
+  gpuTimerObserver(results: RenderResults): GpuTimerObserver;
+  /**
+   * 22.10 ARC-2 S4b: the renderer realm's own frame-budget sensor, when it is not the page's: enabled by the pushed
+   * flag (RenderInputs.ts `frameBudgetProbe`) and emptied into `results.budgetMs` after every draw. Undefined in
+   * the page, where the renderer's limiters already write the page's sensor.
+   */
+  readonly frameBudgetProbe: FrameBudgetProbe | undefined;
 }
 
 /**
@@ -73,5 +88,7 @@ export function pageRenderHost(canvas: HTMLCanvasElement): RenderHost {
     createCanvas: createRenderCanvas,
     queryFlags: () => new URLSearchParams(location.search),
     loadTexture: loadImageTexture,
+    gpuTimerObserver: () => renderBenchmarkGpuObserver, // 22.10 ARC-2 S4b
+    frameBudgetProbe: undefined,
   };
 }

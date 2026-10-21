@@ -67,11 +67,40 @@ export const renderSwitches: Readonly<RenderSwitches> = initial();
 /** Changes some switches; unknown keys and non-boolean values are ignored. Returns the result. */
 export function setRenderSwitches(patch: Partial<RenderSwitches>): Readonly<RenderSwitches> {
   applyPatch(renderSwitches as RenderSwitches, patch);
+  revision++; // 22.10 ARC-2 S4b
   return renderSwitches;
 }
 
 /** Back to the defaults — what every test that flips a switch calls when it is done. */
 export function resetRenderSwitches(): Readonly<RenderSwitches> {
   applyPatch(renderSwitches as RenderSwitches, DEFAULTS);
+  revision++; // 22.10 ARC-2 S4b
   return renderSwitches;
+}
+
+// ---- 22.10 ARC-2 S4b: the renderer's copy -------------------------------------------------------------
+// `renderSwitches` is one object per JS realm. The page's (DebugTab, glue, lab, the lookdev preset) is the source;
+// the renderer's realm gets the values pushed in RenderInputs.ts whenever they change and applies them to its own.
+// In the page both realms are one, so the apply writes the values already there.
+
+/** The page's switches as plain data, with the revision of the last write. */
+export interface RenderSwitchesPush {
+  readonly revision: number;
+  readonly values: Readonly<RenderSwitches>;
+}
+
+let revision = 0;
+let lastPush: RenderSwitchesPush | undefined;
+
+/** The current values; the same frozen record until the next write, so a frame allocates nothing. */
+export function renderSwitchesPush(): RenderSwitchesPush {
+  if (lastPush === undefined || lastPush.revision !== revision) {
+    lastPush = Object.freeze({ revision, values: Object.freeze({ ...renderSwitches }) });
+  }
+  return lastPush;
+}
+
+/** The renderer's side: pushed values onto this realm's switches, without counting it as a write. */
+export function applyRenderSwitchesPush(push: RenderSwitchesPush): void {
+  applyPatch(renderSwitches as RenderSwitches, push.values);
 }

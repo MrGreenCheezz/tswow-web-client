@@ -8,7 +8,9 @@
  * game/RenderInputsBuilder.ts and set by the frame loop right before `draw` (`WorldRenderer3D.setRenderInputs`).
  */
 
+import type { GatewayGenerationPush } from "./GatewayGeneration.js";
 import type { EnchantGlowTables } from "./ItemEnchantments.js";
+import type { RenderSwitchesPush } from "./RenderSwitches.js";
 import { NO_UNIT_FACING_INPUTS, type UnitFacingInputs } from "../world/UnitFacing.js";
 import type { VehicleCatalogRows } from "../world/VehicleDbc.js";
 
@@ -26,6 +28,15 @@ export interface RenderInputs {
   readonly vehicles: VehicleCatalogRows | undefined;
   /** 22.10 ARC-2 S3a: this frame's `endRenderFrame` writes the status line into RenderResults.ts (the 2 Hz tick). */
   readonly publishStatus: boolean;
+  /**
+   * 22.10 ARC-2 S4b: the page's render switches (DebugTab, the lookdev preset), applied to the renderer realm's own
+   * when the revision moves (RenderSwitches.ts). Absent: the renderer's stay as they are.
+   */
+  readonly switches: RenderSwitchesPush | undefined;
+  /** 22.10 ARC-2 S4b: the page's gateway cache generation, likewise (GatewayGeneration.ts). */
+  readonly gatewayGeneration: GatewayGenerationPush | undefined;
+  /** 22.10 ARC-2 S4b: whether the page's frame-budget sensor records; a renderer with its own follows it. */
+  readonly frameBudgetProbe: boolean;
 }
 
 /** Nothing pushed (a benchmark, a test, before the first frame): no glow, every object shown, no facing sources. */
@@ -35,4 +46,7 @@ export const NO_RENDER_INPUTS: RenderInputs = Object.freeze({
   facing: NO_UNIT_FACING_INPUTS,
   vehicles: undefined,
   publishStatus: false,
+  switches: undefined,
+  gatewayGeneration: undefined,
+  frameBudgetProbe: false,
 });

@@ -11,6 +11,10 @@ import { createHttpFileProvider } from "../dist/code/browser/glue/GlueLoader.js"
 import { GlueBrowserAudio } from "../dist/code/browser/glue/GlueAudio.js";
 import { fetchFrameXmlClientAddons } from "../dist/code/browser/framexml/FrameXmlClientAddons.js";
 import { ModelTextureLoader } from "../dist/code/browser/TextureLoad.js";
+import { setPatchChainSuspectSink } from "../dist/code/browser/PatchChainSuspect.js"; // 22.10 ARC-2 S4b
+import { patchChainSuspectQueue } from "../dist/code/browser/RendererReports.js";
+import { createRenderResults } from "../dist/code/browser/RenderResults.js";
+import { acceptRendererReports } from "../dist/code/browser/game/RendererReportsMain.js";
 
 const LATCH = { error: "client_patch_chain_changed", message: "The client patch set changed while the gateway was running." };
 
@@ -290,6 +294,41 @@ test("the same generation after a plain restart raises nothing, however long the
     assert.equal(banners(document).length, 0);
   } finally {
     globalThis.fetch = previousFetch;
+  }
+}));
+
+test("22.10 ARC-2 S4b: a renderer realm's failed texture reaches the page's latch through the results", withDocument(async (document) => {
+  const previousFetch = globalThis.fetch;
+  const previousLoad = THREE.TextureLoader.prototype.load;
+  const gateway = statusGateway();
+  globalThis.fetch = gateway.fetch;
+  THREE.TextureLoader.prototype.load = function (_url, _onLoad, _onProgress, onError) {
+    queueMicrotask(() => onError(new Event("error")));
+    return new THREE.Texture();
+  };
+  let now = 1_000;
+  try {
+    installPatchChainWatch(() => GATEWAY, { now: () => now });
+    await settle();
+    gateway.stale = true;
+    now += 3_000;
+    // The renderer realm's sink: its image loads queue in its results instead of probing.
+    const results = createRenderResults({});
+    setPatchChainSuspectSink(patchChainSuspectQueue(results));
+    const url = `${GATEWAY}/visual/texture/${"3".repeat(40)}.png`;
+    new ModelTextureLoader().load(url);
+    await settle();
+    assert.deepEqual(results.patchChainSuspects, [url], "queued, not probed on the renderer's side");
+    assert.equal(patchChainChanged(), false);
+    assert.equal(gateway.statusCalls, 1, "only the boot read so far");
+    // The page drains the record after the frame and runs its own check.
+    acceptRendererReports(structuredClone(results));
+    await settle();
+    assert.equal(patchChainChanged(), true);
+    assert.equal(banners(document).length, 1);
+  } finally {
+    globalThis.fetch = previousFetch;
+    THREE.TextureLoader.prototype.load = previousLoad;
   }
 }));
 

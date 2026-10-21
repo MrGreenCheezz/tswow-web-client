@@ -45,6 +45,11 @@ function normaliseOrigin(origin: string): string | undefined {
 }
 
 function rebuild(): void {
+  revision++; // 22.10 ARC-2 S4b
+  rebuildQuery();
+}
+
+function rebuildQuery(): void {
   const value = state.generation ?? state.bypass;
   state.first = value === undefined ? "" : `?g=${value}`;
   state.next = value === undefined ? "" : `&g=${value}`;
@@ -119,6 +124,38 @@ export function trustedGatewayIconUrl(path: string, origin: string): string | un
     && /^(?:\/item-icon\/|\/spell-icon\/)\d+$/.test(absolute.pathname)
     ? absolute.href
     : undefined;
+}
+
+// ---- 22.10 ARC-2 S4b: the renderer's copy -------------------------------------------------------------
+// The state above is one per JS realm. The page's is filled by PatchChainChanged.ts and read by its own clients
+// (collision, icons, minimap); the renderer's clients (terrain, splat, ground cover, horizon) read their realm's,
+// which takes the page's values pushed in RenderInputs.ts whenever they change. In the page both are one.
+
+/** The page's generation state as plain data, with the revision of the last change. */
+export interface GatewayGenerationPush {
+  readonly revision: number;
+  readonly origin: string | undefined;
+  readonly generation: string | undefined;
+  readonly bypass: string | undefined;
+}
+
+let revision = 0;
+let lastPush: GatewayGenerationPush | undefined;
+
+/** The current state; the same frozen record until it changes, so a frame allocates nothing. */
+export function gatewayGenerationPush(): GatewayGenerationPush {
+  if (lastPush === undefined || lastPush.revision !== revision) {
+    lastPush = Object.freeze({ revision, origin: state.origin, generation: state.generation, bypass: state.bypass });
+  }
+  return lastPush;
+}
+
+/** The renderer's side: pushed state onto this realm's, without counting it as a change. */
+export function applyGatewayGenerationPush(push: GatewayGenerationPush): void {
+  state.origin = push.origin;
+  state.generation = push.generation;
+  state.bypass = push.bypass;
+  rebuildQuery();
 }
 
 /** For tests. */

@@ -9,7 +9,7 @@ import * as THREE from "three";
 import {
   knownLogicalTextureBytes, type RetainedResourceVisitor,
 } from "./ResourceAccounting.js";
-import { suspectPatchChainChange } from "./PatchChainChanged.js";
+import { reportPatchChainSuspect } from "./PatchChainSuspect.js"; // 22.10 ARC-2 S4b: this realm's sink
 import { recencyStampLimit, renumberByUsed } from "./RecencyStamps.js";
 
 export type ModelTextureStatus = "pending" | "ready" | "failed";
@@ -757,7 +757,7 @@ export class ModelTextureLoader {
     const failed = () => {
       finish("failed");
       // An <img> never shows its 409 body: if the gateway's patch latch is why, say so once.
-      suspectPatchChainChange(url);
+      reportPatchChainSuspect(url);
     };
     try {
       texture = bitmapDecodingAvailable()

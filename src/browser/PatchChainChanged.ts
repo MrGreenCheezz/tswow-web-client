@@ -31,6 +31,7 @@
 // the new gateway answers. A player standing still loads nothing, so a visible page with no other
 // reason to ask also asks every thirty seconds — one summary read, which costs the gateway no child.
 
+import { setPatchChainSuspectSink } from "./PatchChainSuspect.js"; // 22.10 ARC-2 S4b
 import { beginGatewayCacheBypass, noteGatewayCacheGeneration, resetGatewayGeneration } from "./GatewayGeneration.js";
 
 export const PATCH_CHAIN_CHANGED = "client_patch_chain_changed";
@@ -655,6 +656,8 @@ export function installPatchChainWatch(
 ): void {
   state.origin = origin;
   if (options.now) state.now = options.now;
+  // 22.10 ARC-2 S4b: this realm's image loads report here (PatchChainSuspect.ts); a renderer realm's arrive drained.
+  setPatchChainSuspectSink(suspectPatchChainChange);
   const current = globalThis.fetch as typeof globalThis.fetch & { [WATCHED]?: true };
   if (current[WATCHED]) return;
   const original = current.bind(globalThis);
@@ -712,5 +715,6 @@ export function resetPatchChainWatch(): void {
   state.now = Date.now;
   state.lastProbeAt = Number.NEGATIVE_INFINITY;
   state.probing = undefined;
+  setPatchChainSuspectSink(undefined); // 22.10 ARC-2 S4b
   resetGatewayGeneration();
 }

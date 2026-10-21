@@ -11,7 +11,9 @@
  */
 
 import type { AtmosphereAudioState, AtmosphereProfile } from "./AtmosphereEffects.js";
+import { FRAME_BUDGET_SLOTS } from "./FrameBudgetProbe.js";
 import type { PortraitOutput } from "./PortraitTargetData.js";
+import type { RenderGpuEvent } from "./RendererReports.js";
 import {
   CAMERA_DEFAULT_EYE_HEIGHT, CAMERA_DEFAULT_PIVOT_HEIGHT, CAMERA_EYE_BODY_SHARE, CAMERA_PIVOT_BODY_SHARE,
   cameraBodyHeight,
@@ -94,6 +96,23 @@ export interface RenderResults {
   readonly swings: Map<number, SwingResult>;
   swingFrame: number;
   swingNow: number;
+  /**
+   * 22.10 ARC-2 S4b: the RAF interval of the last `observeFrame` (was only its return value) and the renderer CPU
+   * span of the last `endRenderFrame` that closed a frame (likewise) — what the benchmark runtime records.
+   */
+  frameInterval: number | undefined;
+  rendererFrameMs: number | undefined;
+  /**
+   * 22.10 ARC-2 S4b: what a renderer realm with its own frame-budget sensor (RenderHost `frameBudgetProbe`) spent
+   * per limiter since the page last merged it, and whether anything is waiting (RendererReports.ts). Always zero in
+   * the page, whose renderer writes the page's sensor itself.
+   */
+  readonly budgetMs: Float64Array;
+  budgetPending: boolean;
+  /** 22.10 ARC-2 S4b: GPU timer events a renderer realm queued for the page's observer, oldest first. */
+  readonly gpuEvents: RenderGpuEvent[];
+  /** 22.10 ARC-2 S4b: image URLs that failed in a renderer realm, for the page's patch-chain check (PatchChainSuspect.ts). */
+  readonly patchChainSuspects: string[];
 }
 
 export function createRenderResults(atmosphereProfile: Readonly<AtmosphereProfile>): RenderResults {
@@ -101,6 +120,8 @@ export function createRenderResults(atmosphereProfile: Readonly<AtmosphereProfil
     frame: 0, units: new Map(), gameObjectCorners: new Map(), seats: new Map(), seatFrame: 0,
     cameraAspect: 1, weatherStorm: 0, atmosphereProfile, atmosphereAudio: undefined, fps: 0, indoors: false, status: "",
     portraits: [], swings: new Map(), swingFrame: 0, swingNow: 0,
+    frameInterval: undefined, rendererFrameMs: undefined, // 22.10 ARC-2 S4b
+    budgetMs: new Float64Array(FRAME_BUDGET_SLOTS), budgetPending: false, gpuEvents: [], patchChainSuspects: [],
   };
 }
 

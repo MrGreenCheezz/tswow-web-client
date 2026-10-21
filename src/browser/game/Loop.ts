@@ -46,6 +46,7 @@ import { cameraSaved } from "./CameraSaved.js"; // 5.14
 import { vehicleCatalog } from "../VehicleClient.js"; // 11.02-GF3
 import { itemEnchantments } from "../ItemEnchantments.js";
 import { RenderInputsBuilder } from "./RenderInputsBuilder.js"; // 22.10 ARC-2 S2a
+import { acceptRendererReports } from "./RendererReportsMain.js"; // 22.10 ARC-2 S4b
 import { RenderLookupsBuilder } from "./RenderLookupsBuilder.js"; // 22.10 ARC-2 S2b
 import {
   resultGameObjectCorners, resultUnitEyeHeight, resultUnitHeight, resultUnitPivotHeight,
@@ -377,7 +378,9 @@ function frame(now: number): void {
   // Section marks are plain numbers: fast frames allocate nothing for the hitch ring, and only
   // a frame over 50 ms builds the record object at the end.
   const hitchStart = performance.now();
-  const frameInterval = game.renderer?.observeFrame(now);
+  // 22.10 ARC-2 S4b: the interval as the renderer published it (RenderResults.ts `frameInterval`).
+  game.renderer?.observeFrame(now);
+  const frameInterval = game.renderer?.results.frameInterval;
   if (frameInterval !== undefined) renderBenchmarkRuntime.recordFrameInterval(frameInterval);
   // Until this RAF actually reaches draw(), its public admission/submission counters describe an
   // empty frame. This also covers loading, a hidden world panel, or an exception in earlier UI work.
@@ -709,8 +712,11 @@ function frame(now: number): void {
         renderer.renderPortraits(now);
         hitchPortraitsMs = performance.now() - hitchPortraitsAt;
       } finally {
-        const rendererElapsed = renderer.endRenderFrame();
+        renderer.endRenderFrame();
+        // 22.10 ARC-2 S4b: the CPU span, then the GPU events, limiter times and failed images the renderer reported.
+        const rendererElapsed = renderer.results.rendererFrameMs;
         if (rendererElapsed !== undefined) renderBenchmarkRuntime.recordRendererFrameCpu(rendererElapsed);
+        acceptRendererReports(renderer.results);
       }
     }
     hitchRender = performance.now();

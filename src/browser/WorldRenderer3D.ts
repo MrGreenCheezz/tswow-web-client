@@ -23,6 +23,8 @@ import {
   CAMERA_NEAR_PLANE, // 5.33
 } from "./SceneCamera.js"; // 21.10 ARC-2 S1: not SimpleScene.ts, which brings the DOM overlay along
 import { pageRenderHost, type CanvasCssSize, type RenderHost } from "./RenderHost.js"; // 21.10 ARC-2 S1
+import { publishRendererBudget } from "./RendererReports.js"; // 22.10 ARC-2 S4b
+import { RenderSidePushes } from "./RenderSidePushes.js"; // 22.10 ARC-2 S4b
 import { planToRenderTime, toRenderTime } from "./RenderClock.js"; // 22.10 ARC-2 S4a
 import { SwingProgressWatch } from "./SwingProgressWatch.js"; // 22.10 ARC-2 S4a
 import { SpellVisualIds } from "./SpellVisualIds.js"; // 22.10 ARC-2 S4a
@@ -277,7 +279,6 @@ import {
   GpuTimer, MAX_PENDING_GPU_QUERIES, createWebGlGpuTimer,
   type GpuTimerUnavailableReason,
 } from "./GpuTimer.js";
-import { renderBenchmarkGpuObserver } from "./RenderBenchmarkRuntime.js";
 import type { BenchmarkRendererReadinessInput } from "./RenderBenchmarkReadiness.js";
 import { weatherIsBlack, weatherKind, type Weather } from "../world/WorldMessageProtocol.js";
 import type { BillboardView } from "./Particles.js";
@@ -3897,6 +3898,7 @@ export class WorldRenderer3D {
    * drawn (12.10 7.33), the unit facing's sources and the vehicle rows; nothing pushed reads as none of them.
    */
   #inputs: RenderInputs = NO_RENDER_INPUTS;
+  readonly #renderSidePushes = new RenderSidePushes(); // 22.10 ARC-2 S4b
   /** 22.10 ARC-2 S2a: the vehicle catalog built from `#inputs.vehicles`, rebuilt only when those rows change. */
   #vehicleRows: VehicleCatalogRows | undefined;
   #vehicleCatalog: VehicleCatalog | undefined;
@@ -4727,7 +4729,8 @@ export class WorldRenderer3D {
     useFloatUniformSetters(this.#renderer);
     canvas.addEventListener("webglcontextlost", this.#contextLostListener);
     canvas.addEventListener("webglcontextrestored", this.#contextRestoredListener);
-    this.#gpuTimer = createWebGlGpuTimer(this.#renderer.getContext(), renderBenchmarkGpuObserver);
+    // 22.10 ARC-2 S4b: the host's observer — the page's benchmark runtime, or a queue into the results in a worker.
+    this.#gpuTimer = createWebGlGpuTimer(this.#renderer.getContext(), this.#host.gpuTimerObserver(this.#results));
     this.#renderer.setPixelRatio(Math.min(this.#host.devicePixelRatio() || 1, 2));
     this.#renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.#renderer.toneMapping = THREE.CustomToneMapping;
@@ -5967,8 +5970,9 @@ export class WorldRenderer3D {
 
   /** Observes RAF cadence without changing animation elapsed or renderer CPU measurement. */
   observeFrame(timestamp: number): number | undefined {
-    const interval = this.#cadence.observe(timestamp);
+    const interval = this.#cadence.observe(toRenderTime(timestamp)); // 22.10 ARC-2 S4b: the RAF stamp is main's
     this.#results.fps = this.#cadence.fps; // 22.10 ARC-2 S3a
+    this.#results.frameInterval = interval; // 22.10 ARC-2 S4b: what the benchmark runtime records
     return interval;
   }
 
@@ -6157,6 +6161,8 @@ export class WorldRenderer3D {
     if (boxes.size !== boxed) dropStaleRows(boxes, PICK_RESULT_STAMP, stamp);
     this.#vehiclePassengers.publishSeats(results);
     this.#publishScalars();
+    // 22.10 ARC-2 S4b: a sensor of the renderer's own hands its limiter times to the page's (RendererReports.ts).
+    publishRendererBudget(this.#host.frameBudgetProbe, results);
   }
 
   /**
@@ -6246,7 +6252,7 @@ export class WorldRenderer3D {
    * `untilMs` on the `performance.now()` clock. The diagnostics window renews it on each redraw.
    */
   showEnvironmentStandInMarkers(untilMs: number): void {
-    this.#environmentStandInMarkers.showUntil(untilMs);
+    this.#environmentStandInMarkers.showUntil(toRenderTime(untilMs)); // 22.10 ARC-2 S4b: a main-clock deadline
   }
 
   /**
@@ -7182,6 +7188,8 @@ export class WorldRenderer3D {
    */
   setRenderInputs(inputs: RenderInputs | undefined): void {
     this.#inputs = inputs ?? NO_RENDER_INPUTS;
+    // 22.10 ARC-2 S4b: the page's switches, cache generation and sensor flag onto this realm's (RenderSidePushes.ts).
+    this.#renderSidePushes.apply(this.#inputs, this.#host.frameBudgetProbe);
   }
 
   /** 22.10 ARC-2 S2a: the vehicle tables of `#inputs`, as a catalog (11.02-H). */
@@ -7221,10 +7229,13 @@ export class WorldRenderer3D {
     return this.#portraitSource(guid) !== undefined;
   }
 
-  /** Submits dirty portrait readbacks after the world pass. */
-  renderPortraits(now = performance.now()): number {
+  /**
+   * Submits dirty portrait readbacks after the world pass. 22.10 ARC-2 S4b: `mainNow` is the loop's frame time on
+   * the main clock; without it the renderer's own clock.
+   */
+  renderPortraits(mainNow?: number): number {
     try {
-      return this.#portraits.render(now);
+      return this.#portraits.render(mainNow === undefined ? performance.now() : toRenderTime(mainNow));
     } finally {
       this.#shaderProgramTrace?.mark("portraits", this.#renderer.info.programs, performance.now());
     }
@@ -7267,6 +7278,7 @@ export class WorldRenderer3D {
    */
   endRenderFrame(): number | undefined {
     const elapsed = this.#closeRenderFrame();
+    this.#results.rendererFrameMs = elapsed; // 22.10 ARC-2 S4b: what the benchmark runtime records
     // 22.10 ARC-2 S3a: the status line the loop shows on its 2 Hz tick (was the `status` getter, read right after).
     if (this.#inputs.publishStatus && this.#renderFrameDepth === 0) this.#results.status = this.status;
     return elapsed;

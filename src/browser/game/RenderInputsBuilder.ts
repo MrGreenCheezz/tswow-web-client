@@ -7,7 +7,8 @@
  *   admission pass asked it for — game objects with a position inside `GAMEOBJECT_RANGE` of the view subject
  *   (a dungeon-difficulty object is never a moving transport) — so a template is asked for the same objects;
  * * the unit facing's casts, interaction NPC and creature movement ids (world/UnitFacingSources.ts);
- * * the spell rows' attribute words (SpellRows.ts) and the vehicle tables' rows.
+ * * the spell rows' attribute words (SpellRows.ts) and the vehicle tables' rows;
+ * * 22.10 ARC-2 S4b: the page's render switches, gateway cache generation and frame-budget flag.
  *
  * Nothing here is read by the renderer between frames, so the record and its sets are refilled in place.
  */
@@ -19,7 +20,10 @@ import type { WorldObjectState } from "../../world/WorldState.js";
 import { UPDATE_FIELDS } from "../../generated/updateFields.js";
 import { GAMEOBJECT_RANGE, gameObjectWithinAdmissionRange } from "../GameObjectTransportAdmission.js";
 import { hypot2 } from "../GroundCover.js";
+import { frameBudgetProbe } from "../FrameBudgetProbe.js"; // 22.10 ARC-2 S4b
+import { gatewayGenerationPush } from "../GatewayGeneration.js"; // 22.10 ARC-2 S4b
 import { enchantGlowTables, type ItemEnchantmentClient } from "../ItemEnchantments.js";
+import { renderSwitchesPush } from "../RenderSwitches.js"; // 22.10 ARC-2 S4b
 import type { RenderInputs } from "../RenderInputs.js";
 import type { SpellMetadata } from "../SpellMetadata.js";
 import { spellAttributeWordsOf } from "../SpellRows.js";
@@ -56,6 +60,9 @@ export class RenderInputsBuilder {
       facing: this.#facing.build(undefined, undefined),
       vehicles: undefined,
       publishStatus: false,
+      switches: undefined,
+      gatewayGeneration: undefined,
+      frameBudgetProbe: false,
     };
   }
 
@@ -66,6 +73,10 @@ export class RenderInputsBuilder {
     inputs.facing = this.#facing.build(world, spellAttributeWordsOf(sources.spells));
     inputs.vehicles = sources.vehicles?.rows;
     inputs.publishStatus = sources.publishStatus === true; // 22.10 ARC-2 S3a
+    // 22.10 ARC-2 S4b: the page's switches, cache generation and sensor flag — frozen records reused until they change.
+    inputs.switches = renderSwitchesPush();
+    inputs.gatewayGeneration = gatewayGenerationPush();
+    inputs.frameBudgetProbe = frameBudgetProbe.enabled;
     this.#collectHidden(world?.state, sources.gameObjectShown);
     return inputs;
   }

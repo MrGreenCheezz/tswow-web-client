@@ -48,6 +48,8 @@ export const FRAME_BUDGET_STACK_MS = 4;
 export const FRAME_BUDGET_GO_SHARE = 0.02;
 
 const SLOTS = FRAME_BUDGET_NAMES.length;
+/** 22.10 ARC-2 S4b: the accumulator count, for a record that carries one period (RenderResults.ts `budgetMs`). */
+export const FRAME_BUDGET_SLOTS = SLOTS;
 const LIMITERS = FRAME_BUDGET.framexml;
 /** The histogram's last bucket holds this many fired limiters or more. */
 const HISTOGRAM_TOP = 8;
@@ -152,6 +154,24 @@ export class FrameBudgetProbe {
     else this.#period.fill(0);
     this.#open = true;
     this.#counted = counted;
+  }
+
+  /**
+   * 22.10 ARC-2 S4b: a renderer realm's own sensor hands what its limiters spent since the last take to the page's
+   * (RendererReports.ts): added into `out` per slot, then zeroed here. Returns whether anything was spent.
+   */
+  takeOpenPeriod(out: Float64Array): boolean {
+    if (!this.#enabled) return false;
+    const period = this.#period;
+    let spent = false;
+    for (let id = 0; id < SLOTS; id++) {
+      const ms = period[id]!;
+      if (ms === 0) continue;
+      out[id] = out[id]! + ms;
+      period[id] = 0;
+      spent = true;
+    }
+    return spent;
   }
 
   /** The last closed period's limiter time (the step excluded) and how many limiters fired in it. */
