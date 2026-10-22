@@ -11,6 +11,7 @@ import { lightingProfile } from "../dist/code/browser/LightingQuality.js";
 import { fixtureLightSource } from "../dist/code/browser/FixtureLightSources.js"; // 06.10-render-fix
 import { LOCAL_LIGHT_FOCUS_AHEAD } from "../dist/code/browser/CinematicLights.js"; // 22.10 (7.36)
 import { LightHalos } from "../dist/code/browser/LightHalos.js"; // 22.10 (7.36)
+import { FarLightGlows } from "../dist/code/browser/FarLightGlows.js"; // 22.10 (7.46)
 
 const close = (a, b) => assert.ok(Math.abs(a - b) < 1e-6, `${a} != ${b}`);
 const lampName = "World\\Generic\\Human\\Passive Doodads\\Lampposts\\DuskwoodLamppost.m2";
@@ -170,6 +171,7 @@ test("production fixture pass keeps instanced offscreen lamps, skips interiors a
   Object.assign(harness, {
     localLightSelection: new LocalLightSelection(), localLightSample: sample(), localLightMatrix: new THREE.Matrix4(),
     localLightFocus: new THREE.Vector3(), lightHalos: new LightHalos(), // 22.10 (7.36)
+    farLightGlows: new FarLightGlows(), zoneFogFar: 640, // 22.10 (7.46)
     addLightHalo: (position, colour, strength) => harness.lightHalos.add(position, colour, strength, 0, harness.camera.position),
     lightingProfile: lightingProfile(1), worldLight: createWorldLightUniforms(), camera: new THREE.PerspectiveCamera(),
     environment: new Map([[1, retained], [2, { ...retained, interior: true, source: { id: 2, interior: true, name: lampName } }], [3, far],

@@ -83,6 +83,7 @@ import { fixtureLightSource } from "./FixtureLightSources.js"; // 06.10-render-f
 import { sampleWmoLight, wmoOutdoorLightPositions, wmoOutdoorLights } from "./WmoFixtureLights.js"; // 22.10 (7.36)
 import { LOCAL_LIGHT_FOCUS_AHEAD, WMO_LIGHT_RANK_SCALE } from "./CinematicLights.js"; // 22.10 (7.36)
 import { LightHalos } from "./LightHalos.js"; // 22.10 (7.36)
+import { FarLightGlows } from "./FarLightGlows.js"; // 22.10 (7.46)
 import {
   GOD_RAY_STRENGTH_SCALE_MAX, godRayStrengthScale, lightingProfile, shadowMaterialEligible,
   lightingClassicLook, // 05.10-7.20
@@ -4150,6 +4151,7 @@ export class WorldRenderer3D {
   readonly #localLightSelection = new LocalLightSelection();
   readonly #localLightFocus = new THREE.Vector3(); // 22.10 (7.36)
   readonly #lightHalos = new LightHalos(); // 22.10 (7.36)
+  readonly #farLightGlows = new FarLightGlows(); // 22.10 (7.46)
   readonly #addLightHalo = (position: THREE.Vector3, colour: THREE.Vector3, strength: number): void => {
     this.#lightHalos.add(position, colour, strength, this.#worldLight.wowDaylight.value, this.#camera.position);
   };
@@ -4865,6 +4867,7 @@ export class WorldRenderer3D {
       this.#groundCoverGroup, this.#gameObjectGroup, this.#unitGroup, this.#effectGroup, this.#visualGroup);
     this.#scene.add(this.#environmentStandInMarkers.group); // 05.10-A7b-9 7.18
     this.#scene.add(this.#lightHalos.mesh); // 22.10 (7.36)
+    this.#scene.add(this.#farLightGlows.mesh); // 22.10 (7.46)
     this.#programWarmup = new ProgramWarmup(this.#renderer, this.#scene);
     // The two leaf scenes compile their own variants — neither has the world's fog — and both are
     // first drawn at a moment the player is looking: a zone's LightSkybox appears on a flight path,
@@ -7496,6 +7499,7 @@ export class WorldRenderer3D {
     this.#spellPrewarmPaths.clear();
     for (const rendered of this.#environment.values()) this.#disposeEnvironment(rendered);
     this.#environment.clear();
+    this.#farLightGlows.invalidate(); // 22.10 (7.46)
     for (const rendered of this.#gameObjects.values()) this.#disposeGameObject(rendered);
     this.#gameObjects.clear();
     this.#gameObjectAnimations.clear();
@@ -7698,6 +7702,7 @@ export class WorldRenderer3D {
     this.#horizonDetail = undefined;
     this.#environmentStandInMarkers.dispose(); // 05.10-A7b-9 7.18
     this.#lightHalos.dispose(); // 22.10 (7.36)
+    this.#farLightGlows.dispose(); // 22.10 (7.46)
     for (const geometry of [
       this.#unitBodyGeometry, this.#unitFacingGeometry, this.#foliageGeometry, this.#trunkGeometry,
       this.#sky.geometry, this.#classicDome.geometry /* 13.10 7.04 */, this.#underwaterOverlay.geometry, this.#glowPasses.quad.geometry,
@@ -9503,6 +9508,11 @@ export class WorldRenderer3D {
     this.#lightHalos.begin();
     if (this.#lightingProfile.cinematicLights > 0) selection.forEachHalo(this.#addLightHalo);
     this.#lightHalos.end();
+    // 22.10 (7.46): and a cheap glow on every outdoor lamp out to a few hundred yards (FarLightGlows.ts).
+    if (cinematic) {
+      this.#farLightGlows.update(this.#environment, this.#camera.position, this.#worldLight.wowDaylight.value,
+        this.#zoneFogFar);
+    } else this.#farLightGlows.clear();
   }
 
   /** 22.10 (7.36): offers one WMO placement's outdoor lamps (`WmoFixtureLights.ts`) to the selection. */
@@ -11050,6 +11060,7 @@ export class WorldRenderer3D {
         if (visual instanceof THREE.Object3D) rendered.visual = visual;
         if (everVisible) rendered.everVisible = true;
         this.#environment.set(object.id, rendered);
+        this.#farLightGlows.invalidate(); // 22.10 (7.46)
         if (shadowOnly) node.visible = false; // 22.10 (7.41): casts through gate 2, never drawn
         // Rigged scenery draws skinned; see `#instanceGroup` for why the kinds keep to themselves.
         (rendered.skinned ? this.#animatedEnvironmentGroup : this.#environmentGroup).add(node);
@@ -11333,6 +11344,7 @@ export class WorldRenderer3D {
     this.#disposeEnvironment(rendered);
     rendered.liquidGeneration = undefined;
     this.#environment.delete(id);
+    this.#farLightGlows.invalidate(); // 22.10 (7.46)
     this.#dropEffects(`env:${id}`);
     this.#instancesDirty = true;
   }
