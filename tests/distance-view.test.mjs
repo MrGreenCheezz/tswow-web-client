@@ -126,17 +126,18 @@ test("the renderer stretches the fog per frame and builds the band only on uncha
   assert.match(source, /light\.fogFar = distanceFogRange\(/, "the post haze follows the stretched fog");
 });
 
-test("big outdoor shells hold the 1,100-yard skyline leash inside the streamed footprint", () => {
+test("big outdoor shells hold the 1,100-yard skyline leash when the renderer passes it", () => {
   assert.equal(ENVIRONMENT_FAR_RANGE, 750, "trees and transports keep the far tier");
   assert.equal(ENVIRONMENT_SHELL_RANGE, 1100);
-  assert.ok(ENVIRONMENT_SHELL_RANGE + ENVIRONMENT_RESIDENT_HYSTERESIS <= ENVIRONMENT_STREAM_RANGE);
+  assert.equal(ENVIRONMENT_STREAM_RANGE, ENVIRONMENT_FAR_RANGE + ENVIRONMENT_RESIDENT_HYSTERESIS,
+    "the constant is the faithful footprint (gated since the 7.39 review)");
   const keep = {
     id: "keep", kind: "wmo", name: "World\\wmo\\keep.wmo", x: 0, y: 0, z: 0, rotationX: 0, rotationY: 0, rotationZ: 0, scale: 1,
     bounds: { minX: -100, minY: -100, minZ: 0, maxX: 100, maxY: 100, maxZ: 40 },
   };
-  assert.equal(environmentDrawRange(keep), 1100);
+  assert.equal(environmentDrawRange(keep, 1, ENVIRONMENT_SHELL_RANGE), 1100);
   const box = (size) => new THREE.Box3(new THREE.Vector3(0, 0, 0), new THREE.Vector3(size, size, size));
-  assert.equal(wmoShellRange(box(120)), 1100);
+  assert.equal(wmoShellRange(box(120), ENVIRONMENT_SHELL_RANGE), 1100);
   assert.equal(wmoShellRange(box(60)), 250, "small shells stay near");
 });
 
@@ -153,7 +154,6 @@ test("objectDistance past the stock 150 % lengthens and uncaps the scenery leash
   };
   assert.equal(environmentSceneryRange(canopy, 1.5), 750);
   assert.equal(environmentSceneryRange(canopy, 2), 1000);
-  assert.ok(1000 + ENVIRONMENT_RESIDENT_HYSTERESIS <= ENVIRONMENT_STREAM_RANGE, "inside the streamed footprint");
   const oak = { ...canopy, id: "oak", name: "World\\Trees\\Oak01.m2", admissionRadius: undefined };
   delete oak.admissionRadius;
   assert.equal(environmentDrawRange(oak, 2), 1000, "the legacy tree leash takes the same cap");

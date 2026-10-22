@@ -9,7 +9,7 @@ export const ENVIRONMENT_RANGE = 400;
 export const ENVIRONMENT_FAR_RANGE = 750;
 /**
  * 22.10 (7.39): the skyline leash — outdoor WMOs at least 120 yards across, and their wide shell
- * groups. With the enhanced fog stretched toward the horizon (DistanceFog.ts) a town or a keep
+ * groups — on the enhanced path only; the faithful levels keep 750 behind their 500-yard fog. With the enhanced fog stretched toward the horizon (DistanceFog.ts) a town or a keep
  * that vanished at 750 yards did so in clear air; buildings are few and cheap per yard of view,
  * so they reach further than the 750-yard tier of trees and transports. Measured with the owner's
  * settings: +0.3 ms CPU, +22 draws and +59 textures in the city, nothing measurable while moving.
@@ -17,8 +17,12 @@ export const ENVIRONMENT_FAR_RANGE = 750;
 export const ENVIRONMENT_SHELL_RANGE = 1100;
 /** Extra yards retained past each draw leash; small models also prefetch inside this band. */
 export const ENVIRONMENT_RESIDENT_HYSTERESIS = 60;
-/** Tile/index coverage must include the resident band, including the far skyline. */
-export const ENVIRONMENT_STREAM_RANGE = Math.max(ENVIRONMENT_FAR_RANGE, ENVIRONMENT_SHELL_RANGE) + ENVIRONMENT_RESIDENT_HYSTERESIS;
+/**
+ * Tile/index coverage must include the resident band, including the far skyline. This is the
+ * faithful levels' footprint; the enhanced path's skyline and the object-distance step widen it
+ * through the renderer's `environmentStreamRange` (SceneryReach.ts, 22.10 7.39).
+ */
+export const ENVIRONMENT_STREAM_RANGE = ENVIRONMENT_FAR_RANGE + ENVIRONMENT_RESIDENT_HYSTERESIS;
 /** Production cap for completed CPU terrain tiles; active renderer pins may exceed it. */
 export const TERRAIN_TILE_CACHE_LIMIT = 64;
 /**

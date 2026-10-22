@@ -8,7 +8,7 @@
  */
 
 import { WorldRenderer3D } from "./WorldRenderer3D.js";
-import { ENVIRONMENT_STREAM_RANGE, type EnvironmentObject } from "./Terrain.js";
+import type { EnvironmentObject } from "./Terrain.js";
 import { toMainTime } from "./RenderClock.js";
 import { liftCarrierPose } from "./LiftClock.js";
 import { setPushedPageHidden } from "./PageVisibility.js";
@@ -163,7 +163,7 @@ export class RenderWorkerSession {
       this.#warmup.apply(environment);
       const at = this.#environmentAt;
       const objects = environment !== undefined && at !== undefined
-        ? environment.objectsAround(map, at[0], at[1], ENVIRONMENT_STREAM_RANGE) : NO_ENVIRONMENT;
+        ? environment.objectsAround(map, at[0], at[1], renderer.environmentStreamRange) : NO_ENVIRONMENT; // 22.10 (7.39)
       const terrain = clients?.terrain;
       renderer.beginRenderFrame();
       try {

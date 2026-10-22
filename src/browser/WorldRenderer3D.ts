@@ -32,8 +32,8 @@ import { SpellVisualIds } from "./SpellVisualIds.js"; // 22.10 ARC-2 S4a
 import { captureBenchmarkWebGl, type BenchmarkEnvironmentInput } from "./BenchmarkManifest.js"; // 21.10 ARC-2 S1
 import { distanceFogRange, distanceHorizonRange, type DistanceFogRange } from "./DistanceFog.js";
 import { HorizonBand } from "./HorizonBand.js";
-import { ENVIRONMENT_DETAIL_FAR_MAX, sceneryFarCap } from "./SceneryReach.js";
-import { ENVIRONMENT_FAR_RANGE, ENVIRONMENT_RANGE, ENVIRONMENT_SHELL_RANGE, ENVIRONMENT_RESIDENT_HYSTERESIS, ENVIRONMENT_STREAM_RANGE, TERRAIN_GRID_SIZE, modelKey, terrainGrid, terrainGridIndex, type EnvironmentClient, type EnvironmentModel, type EnvironmentObject, type TerrainClient } from "./Terrain.js";
+import { ENVIRONMENT_DETAIL_FAR_MAX, environmentShellRange, environmentStreamRange, sceneryFarCap } from "./SceneryReach.js";
+import { ENVIRONMENT_FAR_RANGE, ENVIRONMENT_RANGE, ENVIRONMENT_SHELL_RANGE, ENVIRONMENT_RESIDENT_HYSTERESIS, TERRAIN_GRID_SIZE, modelKey, terrainGrid, terrainGridIndex, type EnvironmentClient, type EnvironmentModel, type EnvironmentObject, type TerrainClient } from "./Terrain.js";
 import { terrainGeometryData, terrainGeometrySteps, type TerrainGeometryData } from "./TerrainGeometry.js";
 export { terrainGeometryData, terrainHeightField, terrainNormals, surfaceNormal, type TerrainGeometryData } from "./TerrainGeometry.js";
 import { TerrainStreamingWindow, type TerrainStreamingPlan } from "./TerrainStreaming.js";
@@ -1119,7 +1119,6 @@ const WMO_SHELL_FAR_MIN_DIAGONAL = 120;
 /** WMOs are room-heavy; keep their exterior shell on a smaller leash than loose outdoor objects. */
 const WMO_EXTERIOR_RANGE = 250;
 /** Outdoor shell groups big enough to read as skyline hold the far leash instead. */
-const WMO_SHELL_FAR_RANGE = ENVIRONMENT_SHELL_RANGE; // 22.10 (7.39)
 /** Interior counterpart of {@link ENVIRONMENT_WARM_EXTERIOR_BUDGET}: three previous view sectors. */
 export const ENVIRONMENT_WARM_INTERIOR_BUDGET = 1_080;
 /**
@@ -1171,15 +1170,17 @@ export function environmentSceneryRange(object: EnvironmentObject, detail = 1): 
 
 /**
  * How far a placement is drawn from the player, horizontally: rooms 60 (400 for the doodads of an
- * interior-only WMO, whose rooms then decide), big WMO shells 1100 (7.39), sized M2 scenery by
+ * interior-only WMO, whose rooms then decide), big WMO shells `shellRange` (750, or 1,100 on the
+ * enhanced path since 7.39), sized M2 scenery by
  * {@link environmentSceneryRange}, and everything else the legacy name-based leash (vegetation 600,
  * else 400). The detail multiplier scales M2s only.
  */
-export function environmentDrawRange(object: EnvironmentObject, detail = 1): number {
+export function environmentDrawRange(object: EnvironmentObject, detail = 1, shellRange = ENVIRONMENT_FAR_RANGE): number {
   if (object.interior === true) {
     return interiorOnlyDoodadShown(object) === undefined ? INTERIOR_RANGE : boundWmoDoodadLeash(object); // 05.10-A7b-2
   }
-  if (environmentFarEligible(object)) return ENVIRONMENT_SHELL_RANGE; // 22.10 (7.39)
+  // 22.10 (7.39): 1,100 on the enhanced path (SceneryReach.ts environmentShellRange), else 750.
+  if (environmentFarEligible(object)) return shellRange;
   const legacy = environmentVegetation(object) ? ENVIRONMENT_VEGETATION_RANGE : ENVIRONMENT_RANGE;
   if (object.kind !== "m2") return legacy;
   const sized = environmentSceneryRange(object, detail);
@@ -1243,6 +1244,7 @@ export function environmentCandidatesInRange(
   objects: readonly EnvironmentObject[],
   player: Pick<WorldPosition, "x" | "y">,
   detail = 1,
+  shellRange = ENVIRONMENT_FAR_RANGE, // 22.10 (7.39)
 ): RankedEnvironmentObject[] {
   const candidates: RankedEnvironmentObject[] = [];
   // Indexed: the footprint is tens of thousands of placements, and an iterator result per
@@ -1250,7 +1252,7 @@ export function environmentCandidatesInRange(
   for (let index = 0; index < objects.length; index++) {
     const object = objects[index]!;
     const distance = placementDistance(object, player);
-    const range = environmentDrawRange(object, detail);
+    const range = environmentDrawRange(object, detail, shellRange);
     if (distance < range) candidates.push({ object, distance, range });
   }
   return candidates;
@@ -1270,12 +1272,13 @@ export function environmentResidentsInRange(
   objects: readonly EnvironmentObject[],
   player: Pick<WorldPosition, "x" | "y">,
   detail = 1,
+  shellRange = ENVIRONMENT_FAR_RANGE, // 22.10 (7.39)
 ): RankedEnvironmentObject[] {
   const residents: RankedEnvironmentObject[] = [];
   for (let index = 0; index < objects.length; index++) {
     const object = objects[index]!;
     const distance = placementDistance(object, player);
-    const range = environmentDrawRange(object, detail);
+    const range = environmentDrawRange(object, detail, shellRange);
     if (distance < range + ENVIRONMENT_RESIDENT_HYSTERESIS) residents.push({ object, distance, range });
   }
   return residents;
@@ -1293,13 +1296,14 @@ export function environmentRankInRange(
   objects: readonly EnvironmentObject[],
   player: Pick<WorldPosition, "x" | "y">,
   detail = 1,
+  shellRange = ENVIRONMENT_FAR_RANGE, // 22.10 (7.39)
 ): { candidates: RankedEnvironmentObject[]; residents: RankedEnvironmentObject[] } {
   const candidates: RankedEnvironmentObject[] = [];
   const residents: RankedEnvironmentObject[] = [];
   for (let index = 0; index < objects.length; index++) {
     const object = objects[index]!;
     const distance = placementDistance(object, player);
-    const range = environmentDrawRange(object, detail);
+    const range = environmentDrawRange(object, detail, shellRange);
     if (distance < range + ENVIRONMENT_RESIDENT_HYSTERESIS) {
       const ranked: RankedEnvironmentObject = { object, distance, range };
       residents.push(ranked);
@@ -1732,14 +1736,17 @@ export function wmoGroupsInRange(
 }
 
 /** Outdoor shell leash by group width: skyline holds far, small bits stay near. */
-export function wmoShellRange(box: THREE.Box3): number {
+export function wmoShellRange(box: THREE.Box3, far = ENVIRONMENT_FAR_RANGE): number { // 22.10 (7.39): far
   const dx = box.max.x - box.min.x;
   const dy = box.max.y - box.min.y;
   const dz = box.max.z - box.min.z;
   if (!Number.isFinite(dx) || !Number.isFinite(dy) || !Number.isFinite(dz)
     || dx < 0 || dy < 0 || dz < 0) return WMO_EXTERIOR_RANGE;
-  return Math.hypot(dx, dy, dz) >= WMO_SHELL_FAR_MIN_DIAGONAL ? WMO_SHELL_FAR_RANGE : WMO_EXTERIOR_RANGE;
+  return Math.hypot(dx, dy, dz) >= WMO_SHELL_FAR_MIN_DIAGONAL ? far : WMO_EXTERIOR_RANGE;
 }
+
+/** 22.10 (7.39): leashes a range table earns by box at the skyline's longest; `setShellCap` lowers them per path. */
+const WMO_SKYLINE_SHELL_RANGE = (box: THREE.Box3): number => wmoShellRange(box, ENVIRONMENT_SHELL_RANGE);
 
 /**
  * Puts a built model where the tile says it stands.
@@ -2390,7 +2397,7 @@ interface PlacedWmo {
    * portal refinement still runs every frame — it reads the camera, which moves without the player.
    * The 05.10-7.05-review shell leash of a moving transport is passed to `select` with the player.
    */
-  ranges: Pick<WmoRangeTable, "select"> & Partial<Pick<WmoRangeTable, "totals">>;
+  ranges: Pick<WmoRangeTable, "select"> & Partial<Pick<WmoRangeTable, "totals" | "setShellCap">>; // 22.10 (7.39): setShellCap
   /** P1-12b: the wanted groups of the frame as a mask (allocated once, refilled per full pass). */
   groupMask?: Uint8Array;
   /**
@@ -5448,6 +5455,16 @@ export class WorldRenderer3D {
   /** Per-cascade shadow numbers for diagnostics and the look-dev harness; empty at quality 0. */
   get shadowCascadeStats(): ShadowCascadeSnapshot {
     return this.#sunCascades.stats;
+  }
+
+  /** 22.10 (7.39): the big outdoor shells' leash on this lighting path (SceneryReach.ts). */
+  get environmentShellRange(): number {
+    return environmentShellRange(this.#lightingProfile.quality);
+  }
+
+  /** 22.10 (7.39): how far placements are streamed and ranked on this path and detail. */
+  get environmentStreamRange(): number {
+    return environmentStreamRange(this.environmentShellRange, this.#environmentDetail);
   }
 
   /** 22.10 (7.39): the outdoor fog range the zone sample resolved to, and what the scene draws with. */
@@ -9010,7 +9027,10 @@ export class WorldRenderer3D {
       maxTextureSize: this.#renderer.capabilities.maxTextureSize,
     });
     const oldMapSize = this.#lightingProfile.shadowMapSize;
+    const oldShellRange = this.environmentShellRange; // 22.10 (7.39)
     this.#lightingProfile = next;
+    // 22.10 (7.39): the shells' leash and the footprint follow the path; reselect on the next frame.
+    if (this.environmentShellRange !== oldShellRange) this.#environmentCandidatesAt = undefined;
     setWorldLightImmersiveStrength(this.#worldLight, next.immersiveStrength);
     setTerrainBakedShadowStrength(terrainBakedShadowStrength(next.quality)); // 05.10-A7b-7 (7.06)
     setTerrainSpecularStrength(terrainSpecularStrength(next.quality)); // 05.10-A7b-7Г (7.16 Г)
@@ -10761,13 +10781,14 @@ export class WorldRenderer3D {
       this.#environmentGeneration++;
     }
     if (shouldReselect(this.#environmentCandidatesAt, player, this.#environmentGeneration)) {
+      // 22.10 (7.39): the footprint and the shells' leash follow the lighting path (SceneryReach.ts).
       const pool = this.#environmentSpatialIndex?.queryCached(
-        player.x, player.y, ENVIRONMENT_STREAM_RANGE,
+        player.x, player.y, this.environmentStreamRange,
       ).objects ?? objects;
       // Candidates and the loaded zone in one pass (P2-04b). The zone is strictly wider than every
       // draw leash, so the line an object crosses to appear is never the line it crosses to
       // disappear. Draw admission below still reads the strict set; disposal reads the wide one.
-      const ranked = environmentRankInRange(pool, player, this.#environmentDetail);
+      const ranked = environmentRankInRange(pool, player, this.#environmentDetail, this.environmentShellRange);
       this.#environmentCandidates = ranked.candidates;
       this.#environmentResidents = ranked.residents;
       this.#environmentCandidatesAt = {
@@ -12281,7 +12302,7 @@ export class WorldRenderer3D {
         modelToWorld,
         worldToModel: modelToWorld.clone().invert(),
         built: new Map(),
-        ranges: new WmoRangeTable(model, boxes, INTERIOR_RANGE, wmoShellRange), // P1-12a
+        ranges: new WmoRangeTable(model, boxes, INTERIOR_RANGE, WMO_SKYLINE_SHELL_RANGE), // P1-12a; 7.39: capped per path
       },
     };
   }
@@ -12442,6 +12463,7 @@ export class WorldRenderer3D {
     // question for every admitted building every frame. 05.10-7.05-review: the transport shell leash.
     // P1-12 telemetry: the table counts into the renderer's totals (a fake `ranges` just gains a field).
     placed.ranges.totals ??= this.#wmoRangeGroups;
+    placed.ranges.setShellCap?.(this.environmentShellRange); // 22.10 (7.39)
     let distanceGroups = placed.ranges.select(player.x, player.y, shellRange);
     // 22.10 (7.41): a building admitted for its shadow alone hangs only its outdoor rooms in the
     // distance leash — those with a stand-in — and none of the view's walks below run for it.
@@ -12636,7 +12658,8 @@ export class WorldRenderer3D {
     const state = placed.openAir ??= createWmoOpenAirState();
     if (wmoOpenAirCandidatesStale(state, player.x, player.y, player.z)) {
       // P1-12c: from a rest radius, the same array while unchanged; noting it still re-walks (the viewer moved).
-      const ranges = placed.openAirRanges ??= new WmoRangeTable(model, placed.boxes, WMO_OPEN_AIR_ROOM_RANGE, wmoShellRange);
+      const ranges = placed.openAirRanges ??= new WmoRangeTable(model, placed.boxes, WMO_OPEN_AIR_ROOM_RANGE, WMO_SKYLINE_SHELL_RANGE);
+      ranges.setShellCap(this.environmentShellRange); // 22.10 (7.39)
       ranges.totals ??= this.#wmoRangeOpenAir; // P1-12 telemetry
       wmoOpenAirNoteCandidates(state, ranges.select(player.x, player.y), player.x, player.y, player.z);
     }

@@ -51,6 +51,8 @@ export class WmoRangeTable {
   readonly #roomRange: number;
   /** The caller's shell override the leashes were filled for (undefined: by box size). */
   #shellOverride: number | undefined;
+  /** 22.10 (7.39): the ceiling on the box-earned shell leash (the faithful levels' 750 yards). */
+  #shellCap = Number.POSITIVE_INFINITY;
   #result: readonly number[] | undefined;
   readonly #scratch: number[] = [];
   /** The position of the last recompute — the centre of the rest radius, not the last call. */
@@ -127,10 +129,25 @@ export class WmoRangeTable {
     return this.#recompute(x, y);
   }
 
+  /**
+   * 22.10 (7.39): cap the box-earned shell leash — the skyline's 1,100 yards hold only while the
+   * enhanced fog shows them (SceneryReach.ts `environmentShellRange`). A caller's override is not
+   * capped. Unchanged, this is a compare; changed, the leashes refill and the next select recomputes.
+   */
+  setShellCap(cap: number): void {
+    if (cap === this.#shellCap) return;
+    this.#shellCap = cap;
+    this.#fillRanges(this.#shellOverride);
+    this.#slackSq = 0;
+    this.#x = Number.NaN;
+  }
+
   #fillRanges(shellRange: number | undefined): void {
     this.#shellOverride = shellRange;
     for (let index = 0; index < this.#range.length; index++) {
-      this.#range[index] = this.#shell[index] ? shellRange ?? this.#shellByBox[index]! : this.#roomRange;
+      this.#range[index] = this.#shell[index]
+        ? shellRange ?? Math.min(this.#shellByBox[index]!, this.#shellCap)
+        : this.#roomRange;
     }
   }
 

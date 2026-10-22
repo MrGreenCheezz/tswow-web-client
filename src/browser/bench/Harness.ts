@@ -2,7 +2,6 @@
 import * as THREE from "three";
 import { WorldRenderer3D } from "../WorldRenderer3D.js";
 import { ANIMATION_IDS } from "../../generated/animations.js";
-import { ENVIRONMENT_STREAM_RANGE } from "../Terrain.js";
 import { CharacterAtlasClient, appearanceKey, CREATURE_MODEL_VERSION } from "../CharacterAtlas.js";
 import type { UnitModel } from "../CreatureModelClient.js";
 import { buildModel, characterSlots } from "../ModelBuild.js"; // 05.10-A7a-G 6.18: geosetList → figureGeosets
@@ -150,7 +149,7 @@ if (movement) {
     if (crowd.place(seconds, lastFraction, heightAt) && recording) routeHeightMissing++;
     environment.beginResourceFrame();
     try {
-      const scenery = environment.objectsAround(map, x, y, ENVIRONMENT_STREAM_RANGE);
+      const scenery = environment.objectsAround(map, x, y, worldRenderer.environmentStreamRange); // 22.10 (7.39)
       const p = objects[0]!.position!;
       worldRenderer.updateLighting(lighting.sample(map, x, y, config.halfMinute, 0, p.z), config.halfMinute);
       queryMs = performance.now() - queryAt;
