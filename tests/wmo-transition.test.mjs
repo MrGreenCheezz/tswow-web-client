@@ -16,7 +16,7 @@ import {
 import { WWM_TRANSITION_VERTICES, encodeWwmGroup } from "../tools/wwm.mjs";
 import { parseWmoVisual, wmoDependencies, wmoGroupMeshes } from "../tools/wmo-visual.mjs";
 import {
-  WMO_LIGHT_INTERIOR, WMO_LIGHT_TRANSITION, classicWmoLight, decodeWwmGroup, wmoVertexLight,
+  WMO_LIGHT_INTERIOR, WMO_LIGHT_TRANSITION, classicStoredByte, classicWmoLight, decodeWwmGroup, wmoVertexLight,
 } from "../dist/code/browser/WmoModel.js";
 import { buildWmoGroupGeometry } from "../dist/code/browser/WmoGeometry.js";
 import {
@@ -74,7 +74,7 @@ test("the transition range is MOBA[transBatchCount − 1].maxIndex + 1, the byte
   assert.deepEqual([...unfixed], [200, 100, 0, 0]);
 });
 
-test("classic light: a transition vertex is 2·stored floored by the ambient, never boosted by its alpha", () => {
+test("classic light: a transition vertex is 2·stored, never boosted by its alpha", () => {
   const ambient = [19, 16, 14];
   // Vertex 0 is a transition vertex (stored bytes 60/40/3, sun share 128); vertex 1 is not (raw 60/40/3, α 100).
   const mesh = {
@@ -85,11 +85,15 @@ test("classic light: a transition vertex is 2·stored floored by the ambient, ne
   const light = wmoVertexLight(mesh, new Float32Array(6), ambient, [], "classic");
   for (let channel = 0; channel < 3; channel++) {
     const stored = mesh.colours[channel];
-    near(light[channel], srgb(Math.max(ambient[channel], 2 * stored) / 255), 1e-6, `transition channel ${channel}`);
-    near(light[3 + channel], classicWmoLight(stored, 100, ambient[channel]), 1e-6, `room channel ${channel}`);
+    // 22.10 (7.38): no floor at the ambient — the blue 3 draws as 6, not as the ambient's 14.
+    near(light[channel], srgb((2 * stored) / 255), 1e-6, `transition channel ${channel}`);
+    near(light[3 + channel], classicWmoLight(classicStoredByte(stored, 100)), 1e-6, `room channel ${channel}`);
   }
+  // The room vertex in integers, as 0x007D7380 stores it: (c + (c·100 >> 6)) >> 1 = 76, 51, 3.
+  near(light[3], srgb(152 / 255), 1e-6, "room red");
+  near(light[5], srgb(6 / 255), 1e-6, "room blue");
   // The same bytes read the old way, brightened by c·(1 + 128/64): more than twice the light.
-  assert.ok(classicWmoLight(60, 128, 19) > 2 * light[0]);
+  assert.ok(srgb(180 / 255) > 2 * light[0]);
 });
 
 test("v27 group blocks carry the range in stream bit 2 and decode it; a v26 block has none", () => {
@@ -147,7 +151,7 @@ try {
 }
 const withClient = { skip: archives ? false : "no 3.3.5a client on this machine" };
 
-test("the Goldshire Inn's vestibule: 4.78× the client's light before, the client's own after", withClient, async () => {
+test("the Goldshire Inn's vestibule: 4.77× the client's light before, the client's own after", withClient, async () => {
   const path = "World\\wmo\\Azeroth\\Buildings\\GoldshireInn\\GoldshireInn.wmo";
   const root = await archives.read(path);
   const groups = [];
@@ -166,7 +170,8 @@ test("the Goldshire Inn's vestibule: 4.78× the client's light before, the clien
     const light = wmoVertexLight(mesh, new Float32Array(mesh.positions.length), [19, 16, 14], [], "classic");
     return light.reduce((sum, value) => sum + value, 0) / light.length;
   };
-  near(mean(before), 2.649, 0.002, "v26: raw MOCV brightened by its alpha");
+  // 22.10 (7.38): 2.649 before the integer store of 0x007D7380 (>> 6, >> 1).
+  near(mean(before), 2.644, 0.002, "v26: raw MOCV brightened by its alpha");
   near(mean(after), 0.554, 0.002, "v27: FixColorVertexAlpha + AttenTransVerts");
   let share = 0;
   for (let vertex = 0; vertex < 70; vertex++) share += after.colours[vertex * 4 + 3] / 255;
