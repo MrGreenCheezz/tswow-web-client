@@ -33,7 +33,9 @@ import {
   VOLUME_SIDE_GAIN, VOLUME_SIDE_GLSL, VOLUME_SOFTEN_GLSL, VOLUME_SOFTEN_SPACING, volumeSideBeam,
 } from "./CinematicVolumeSide.js"; // 22.10 (7.30)
 import { GOD_RAY_STRENGTH_SCALE_MAX } from "./LightingQuality.js";
-import { SKY_HIGHLIGHT_GLSL } from "./CinematicSkyHighlight.js"; // 22.10 (7.30)
+import { CINEMATIC_SKY_GLSL } from "./CinematicSky.js"; // 22.10 (7.30)
+import { VOLUME_SOFTEN_PASSES, VOLUME_WIDTH_GLSL } from "./CinematicVolumeWidth.js"; // 22.10 (7.30)
+import { stepSunShown } from "./CinematicSunGate.js"; // 22.10 (7.30)
 import { highSunKeyWeight } from "./WorldLighting.js";
 
 export interface CinematicProfile {
@@ -132,7 +134,9 @@ export function cinematicPostActive(profile: Readonly<CinematicProfile>): boolea
 
 /** Leaves that read the resolved world depth (sun occlusion, distance, surface reconstruction). */
 export function cinematicNeedsDepth(profile: Readonly<CinematicProfile>): boolean {
-  return profile.bloom || profile.sunScattering || profile.ambientOcclusion;
+  // 22.10 (7.30): and the grade, which must tell the sky (left as the faithful frame has it,
+  // CinematicSky.ts) from the ground; without depth the sky took the whole grade.
+  return profile.grade || profile.bloom || profile.sunScattering || profile.ambientOcclusion;
 }
 
 /**
@@ -155,11 +159,6 @@ export const FILMIC_KNEE = 0.85;
 export const FILMIC_WHITE = 2.4;
 /** Mid-grey pivot for the log-space contrast. */
 export const FILMIC_PIVOT = 0.18;
-/**
- * 12.10-7.30: share of the grade's departures from neutral (contrast, lift, split toning,
- * saturation) a sky texel takes; the sky dome and its clouds are drawn from Light.dbc's bands.
- */
-export const SKY_GRADE_SHARE = 0.2;
 
 /**
  * Identity below the knee, then an extended-Reinhard shoulder that is C1-continuous at the knee and
@@ -359,7 +358,7 @@ export function cinematicGrade(input: Readonly<CinematicGradeInput>, target?: Ci
   // Small on purpose: the capture is display-referred, so every step of exposure pushes the brightest
   // authored texels (snow, sand, white stone) straight into the shoulder. The lift does the shade.
   out.exposure = 1 + amount * (0.03 * golden + 0.03 * midday - 0.02 * night);
-  // 12.10-7.21: +0.04 at midday, now that the sky takes a fifth of it (SKY_GRADE_SHARE) and the
+  // 12.10-7.21: +0.04 at midday, now that the sky is out of the grade (22.10: CinematicSky.ts) and the
   // key is daylight rather than orange: the ground's shade against its key, as the reference reads.
   out.contrast = 1 + amount * (0.04 + 0.04 * midday + 0.1 * golden + 0.02 * night) * calm;
   out.saturation = 1 + amount * ((0.07 + 0.06 * golden - 0.14 * night) * calm - 0.12 * storm);
@@ -978,22 +977,15 @@ void main() {
 
   float depth = useDepth > 0.5 ? texture2D(depthTexture, vUV).r : 0.5;
   bool sky = useDepth > 0.5 && depth >= 1.0;
-  // 22.10 (7.30): the client adds its glow into an eight-bit frame, so a sunlit cloud saturates per
-  // channel toward white. Kept as energy above one, the cream core (band 10 over band 11) went on with
-  // red past green and blue, and the shoulder, which keeps the hue, turned it into the salmon and
-  // orange blots of the «acid» sky (B-noon cloud core: r − g p98 36 faithful, 57 → 40 with this).
-  if (sky) {
-    display = min(display, vec3(1.0));
-    // 22.10 (7.30): cloud cores a little under the client's, against the darker cinematic sky
-    // (CinematicSkyHighlight.ts).
-${SKY_HIGHLIGHT_GLSL}
-  }
+  // 22.10 (7.30): the sky and its clouds leave here, as the classic composite writes them
+  // (CinematicSky.ts); nothing below runs on a sky texel.
+${CINEMATIC_SKY_GLSL}
   vec3 colour = cinematicToLinear(display);
-  vec3 view = cinematicViewPosition(vUV, sky ? 1.0 : depth);
+  vec3 view = cinematicViewPosition(vUV, depth);
   vec3 ray = normalize(mat3(cameraWorld) * view);
   float facing = dot(ray, sunDirection);
 
-  if (leaves.w > 0.5 && !sky) {
+  if (leaves.w > 0.5) {
     float ao = texture2D(occlusionTexture, vUV).r;
     colour *= mix(1.0, ao, occlusionStrength);
   }
@@ -1010,10 +1002,8 @@ ${SKY_HIGHLIGHT_GLSL}
     // into the washed-out golden veil the distant silhouettes sit in.
     // Narrow (about 20 degrees) and mostly on geometry: the open sky next to the sun already gets
     // its glare from the bloom prefilter.
-    inscatter += mix(sunColour, vec3(1.0), 0.35) * hazeGlare * pow(lobe, 8.0) * (sky ? 0.3 : 1.0);
-    // Sky texels stand at one and a half fog distances, so the horizon band hazes exactly like the
-    // most distant ground while the zenith, with its long rise, stays clear.
-    float distanceYards = sky ? 1.6 / haze.z : length(view);
+    inscatter += mix(sunColour, vec3(1.0), 0.35) * hazeGlare * pow(lobe, 8.0);
+    float distanceYards = length(view);
     float rise = max(ray.y, 0.0) * distanceYards * haze.w;
     float heightMean = rise > 1e-3 ? (1.0 - exp(-rise)) / rise : 1.0;
     float optical = distanceYards * haze.z * heightMean;
@@ -1044,10 +1034,8 @@ ${SKY_HIGHLIGHT_GLSL}
     // The beams are light scattered along the way to what a pixel sees: a few yards of air in
     // front of the ground at the character's feet carry almost none of it, a far hillside or the
     // sky the whole of it. Without this the field under a low sun was a white carpet of streaks.
-    float shaftPath = sky ? 1.0 : 1.0 - exp(-length(view) * shaftMarch.w);
-    // Beams read against the sky too — a bright bar across the haze between two trunks — at under
-    // half weight, since the open sky already carries the bloom's glare.
-    colour += mix(sunColour, vec3(1.0), 0.1) * shaft * shaftStrength * shaftPath * (sky ? 0.45 : 0.55);
+    float shaftPath = 1.0 - exp(-length(view) * shaftMarch.w);
+    colour += mix(sunColour, vec3(1.0), 0.1) * shaft * shaftStrength * shaftPath * 0.55;
   }
 
   if (volumeLight.x > 0.0) {
@@ -1070,6 +1058,8 @@ ${SKY_HIGHLIGHT_GLSL}
     float beam = sqrt(march.r) * (1.0 - min(around, march.r)) * march.g;
     // 22.10 (7.30): side-on, a beam is told from the veil by its contrast (CinematicVolumeSide.ts).
 ${VOLUME_SIDE_GLSL}
+    // 22.10 (7.30): a thin beam (the lit sheet behind a narrow gap) fades out (CinematicVolumeWidth.ts).
+${VOLUME_WIDTH_GLSL}
     colour += mix(sunColour, vec3(1.0), 0.15)
       * (beam * (0.1 + 0.9 * volumeLobe) + ${VOLUME_SIDE_GAIN.toFixed(3)} * sideBeam * (1.0 - volumeLobe)) * volumeLight.x;
   }
@@ -1083,29 +1073,20 @@ ${VOLUME_SIDE_GLSL}
     colour += texture2D(bloomTexture, vUV).rgb * bloomStrength
       - bloomScene * (bloomShare(bloomScene) * bloomStrength * ${BLOOM_LEVELS.toFixed(1)});
     colour = max(colour, vec3(0.0));
-    if (sky && sunDisc.x > 0.0) {
-      float disc = smoothstep(sunDisc.z, sunDisc.y, facing);
-      colour += sunColour * disc * sunDisc.x * 0.6;
-    }
   }
 
   if (leaves.x > 0.5) {
-    // 12.10-7.30: the sky and its clouds are Light.dbc's own bands; they keep only a fifth of the
-    // grade's departures (contrast, lift, split toning, saturation). Graded like the ground, a sunset
-    // sky took the highlight tint toward the orange diffuse band (red x1.4, blue x0.5 at golden
-    // hour) and the contrast pushed its glare past white: the whole sky went orange and burnt.
-    float tone = sky ? ${SKY_GRADE_SHARE.toFixed(3)} : 1.0;
     colour *= grade.x;
-    colour = ${FILMIC_PIVOT.toFixed(3)} * pow(max(colour, vec3(1e-6)) / ${FILMIC_PIVOT.toFixed(3)}, vec3(mix(1.0, grade.y, tone)));
+    colour = ${FILMIC_PIVOT.toFixed(3)} * pow(max(colour, vec3(1e-6)) / ${FILMIC_PIVOT.toFixed(3)}, vec3(grade.y));
     float luma = dot(colour, vec3(0.2126, 0.7152, 0.0722));
     // Daylight shadow lift after the contrast: canopy shade stays readable (monotonic for lift < 4).
-    colour *= 1.0 + gradeLift * tone * (1.0 - smoothstep(0.0, 0.22, luma));
+    colour *= 1.0 + gradeLift * (1.0 - smoothstep(0.0, 0.22, luma));
     luma = dot(colour, vec3(0.2126, 0.7152, 0.0722));
-    float highlight = smoothstep(0.05, 0.75, luma) * tone;
-    float shade = (1.0 - smoothstep(0.0, 0.3, luma)) * tone;
+    float highlight = smoothstep(0.05, 0.75, luma);
+    float shade = 1.0 - smoothstep(0.0, 0.3, luma);
     colour *= mix(vec3(1.0), highlightTint, highlight) * mix(vec3(1.0), shadowTint, shade);
     luma = dot(colour, vec3(0.2126, 0.7152, 0.0722));
-    colour = max(mix(vec3(luma), colour, mix(1.0, grade.z, tone)), vec3(0.0));
+    colour = max(mix(vec3(luma), colour, grade.z), vec3(0.0));
     // Film burns toward white rather than toward a saturated primary: energy above display white
     // (sun, bloom core, sunlit haze) loses chroma before the shoulder rolls it off.
     float peak = max(colour.r, max(colour.g, colour.b));
@@ -1149,6 +1130,11 @@ export interface CinematicLightInput {
    * colour. Absent (or 0: a v4 body) the high sun's colour is derived (`cinematicSunColour`).
    */
   readonly sunBand?: number | undefined;
+  /**
+   * 22.10 (7.30): the client draws no sun here (`clientDrawsSun` false: a LightSkybox model covers
+   * the sky, or no sky dome is drawn). The sun's beams, glare and haze warmth fade out.
+   */
+  readonly sunHidden?: boolean | undefined;
 }
 
 export interface CinematicFrame {
@@ -1305,6 +1291,7 @@ export class CinematicPost {
     fogFar: 640, sun: { x: 0, y: 1, z: 0 }, storm: 0, underwater: false, indoors: false,
     glow: undefined as number | undefined,
     sunBand: undefined as number | undefined,
+    sunHidden: false,
   };
   /** 12.10-7.29: the post's sun colour (`cinematicSunColour`), display space. */
   readonly #sunColour: GradeColour = { r: 1, g: 1, b: 1 };
@@ -1314,6 +1301,8 @@ export class CinematicPost {
   #adaptationTarget = 1;
   /** Smoothed 0 (open sky) .. 1 (under a roof); fades haze, sun disc, shafts and grade together. */
   #shelter = 0;
+  /** 22.10 (7.30): smoothed 0 (the client draws no sun) .. 1 (it does); CinematicSunGate.ts. */
+  #sunShown = 1;
   readonly #shaftSource: ShaftSource = { u: 0.5, v: 0.5, direction: 1, weight: 0 };
   /** Shaft gain before the view weight and the frame's ceiling; set with the light. */
   #shaftGain = 0;
@@ -1456,6 +1445,11 @@ export class CinematicPost {
     return this.#shelter;
   }
 
+  /** 22.10 (7.30): smoothed sun factor (`CinematicSunGate.ts`), for tests and diagnostics. */
+  get sunShown(): number {
+    return this.#sunShown;
+  }
+
   /** Returns whether the post-process leaves (not the material leaves) changed. */
   setProfile(profile: Readonly<Partial<CinematicProfile>> | undefined): boolean {
     const next = normaliseCinematicProfile(profile);
@@ -1491,6 +1485,7 @@ export class CinematicPost {
     stored.indoors = input.indoors;
     stored.glow = input.glow;
     stored.sunBand = input.sunBand;
+    stored.sunHidden = input.sunHidden === true;
     this.#adaptationTarget = input.indoors ? 1.1 : 1;
     this.#applyLight();
   }
@@ -1499,6 +1494,7 @@ export class CinematicPost {
   settle(): void {
     this.#adaptation = this.#adaptationTarget;
     this.#shelter = this.#light.indoors ? 1 : 0;
+    this.#sunShown = this.#light.sunHidden ? 0 : 1;
     this.#applyLight();
   }
 
@@ -1522,12 +1518,14 @@ export class CinematicPost {
     u.sunColour.value.setRGB(sunColour.r, sunColour.g, sunColour.b, THREE.SRGBColorSpace);
     u.fogColour.value.setRGB(input.fog.r, input.fog.g, input.fog.b, THREE.SRGBColorSpace);
     const outdoors = input.underwater ? 0 : open;
+    // 22.10 (7.30): the sun's own effects only where the client draws a sun (CinematicSunGate.ts).
+    const sunlit = outdoors * this.#sunShown;
     const t = CINEMATIC_TUNING;
-    u.sunDisc.value.x = t.sunDisc * grade.daylight * outdoors * strength;
-    u.sunGlare.value.x = (t.glare + t.glareGolden * grade.golden) * grade.daylight * outdoors * strength;
-    u.sunGlare.value.z = t.glareWide * grade.golden * grade.daylight * outdoors * strength;
+    u.sunDisc.value.x = t.sunDisc * grade.daylight * sunlit * strength;
+    u.sunGlare.value.x = (t.glare + t.glareGolden * grade.golden) * grade.daylight * sunlit * strength;
+    u.sunGlare.value.z = t.glareWide * grade.golden * grade.daylight * sunlit * strength;
     const fogFar = Number.isFinite(input.fogFar) && input.fogFar > 1 ? input.fogFar : 640;
-    const warmth = Math.min(1, (0.35 + 0.65 * grade.golden) * grade.daylight);
+    const warmth = Math.min(1, (0.35 + 0.65 * grade.golden) * grade.daylight) * this.#sunShown;
     const storm = Number.isFinite(input.storm) ? Math.max(0, Math.min(1, input.storm)) : 0;
     // 12.10-7.21: a quarter more aerial depth by full day (1.6 → 2.0 fog distances), so the ridges
     // behind a noon field layer; golden hour keeps its 3.2 and the night its 1.6.
@@ -1539,15 +1537,15 @@ export class CinematicPost {
       1 / 140,
     );
     u.hazeGlare.value = (t.hazeGlare + t.hazeGlareGolden * grade.golden) * grade.daylight * atmosphere
-      * outdoors * strength;
+      * sunlit * strength;
     u.gradeLift.value = grade.lift;
     u.shadowTint.value.setRGB(grade.shadowTint.r, grade.shadowTint.g, grade.shadowTint.b, THREE.LinearSRGBColorSpace);
     u.highlightTint.value.setRGB(grade.highlightTint.r, grade.highlightTint.g, grade.highlightTint.b, THREE.LinearSRGBColorSpace);
     // Shafts: from sunrise, longer and stronger toward golden hour, gone in a storm or under a roof.
     const sunUp = smooth(0.0, 0.1, sun.y);
-    this.#shaftGain = (t.shafts + t.shaftsGolden * grade.golden) * sunUp * (1 - storm) * outdoors * strength;
+    this.#shaftGain = (t.shafts + t.shaftsGolden * grade.golden) * sunUp * (1 - storm) * sunlit * strength;
     // 12.10-7.30: the volumetric march under the same day, weather and roof weighting.
-    this.#volumeGain = (t.volume + t.volumeGolden * grade.golden) * sunUp * (1 - storm) * outdoors * strength;
+    this.#volumeGain = (t.volume + t.volumeGolden * grade.golden) * sunUp * (1 - storm) * sunlit * strength;
     u.shaftSource.value.w = t.shaftDecayNoon + (t.shaftDecayGolden - t.shaftDecayNoon) * grade.golden;
     // A high sun lights shafts across a wide part of the sky; a low one from a tighter lobe.
     const high = smooth(0.3, 0.8, sun.y);
@@ -1583,6 +1581,11 @@ export class CinematicPost {
     if (this.#shelter !== shelterTarget) {
       const next = this.#shelter + (shelterTarget - this.#shelter) * (1 - Math.exp(-dt * 4));
       this.#shelter = Math.abs(next - shelterTarget) < 1e-3 ? shelterTarget : next;
+      this.#applyLight();
+    }
+    const sunShownTarget = this.#light.sunHidden ? 0 : 1;
+    if (this.#sunShown !== sunShownTarget) {
+      this.#sunShown = stepSunShown(this.#sunShown, sunShownTarget, dt);
       this.#applyLight();
     }
 
@@ -1696,14 +1699,17 @@ export class CinematicPost {
         const texelX = 1 / volume.target.width;
         const texelY = 1 / volume.target.height;
         quad.material = this.volumeSoften;
-        u.source.value = volume.target.texture;
-        u.sourceTexel.value.set(texelX * VOLUME_SOFTEN_SPACING, 0);
-        renderer.setRenderTarget(volume.soft);
-        renderer.render(this.scene, this.camera);
-        u.source.value = volume.soft.texture;
-        u.sourceTexel.value.set(0, texelY * VOLUME_SOFTEN_SPACING);
-        renderer.setRenderTarget(volume.target);
-        renderer.render(this.scene, this.camera);
+        // 22.10 (7.30): twice over, so a thin beam is spread wider and softer (CinematicVolumeWidth.ts).
+        for (let pass = 0; pass < VOLUME_SOFTEN_PASSES; pass++) {
+          u.source.value = volume.target.texture;
+          u.sourceTexel.value.set(texelX * VOLUME_SOFTEN_SPACING, 0);
+          renderer.setRenderTarget(volume.soft);
+          renderer.render(this.scene, this.camera);
+          u.source.value = volume.soft.texture;
+          u.sourceTexel.value.set(0, texelY * VOLUME_SOFTEN_SPACING);
+          renderer.setRenderTarget(volume.target);
+          renderer.render(this.scene, this.camera);
+        }
         u.volumeLight.value.set(volumeStrength, 0, 1 / volume.target.width, 1 / volume.target.height);
       }
     }

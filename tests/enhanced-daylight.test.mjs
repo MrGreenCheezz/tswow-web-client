@@ -9,7 +9,7 @@ import {
   highSunKeyPair, highSunKeyWeight, setWorldLightDaylight, setWorldLightIndoor, setWorldLightUniforms,
 } from "../dist/code/browser/WorldLighting.js";
 import {
-  CinematicPost, SKY_GRADE_SHARE, cinematicGrade, cinematicSunColour, highSunWeight,
+  CinematicPost, cinematicGrade, cinematicSunColour, highSunWeight,
 } from "../dist/code/browser/CinematicPost.js";
 
 const close = (actual, expected, epsilon = 1e-3) =>
@@ -96,14 +96,9 @@ test("the post's sun is the diffuse band's hue when low and near-white when high
   assert.deepEqual(cinematicSunColour(NOON.diffuse, NOON.ambient, elevation(1440), 0), high, "0 is a v4 body: derived");
 });
 
-test("sky texels keep only a fifth of the grade's departures", () => {
-  assert.equal(SKY_GRADE_SHARE, 0.2);
+test("the noon sun the post receives is near-white", () => {
+  // 22.10 (7.30): the sky no longer takes any of the grade (CinematicSky.ts, cinematic-post.test.mjs).
   const post = new CinematicPost();
-  const shader = post.composite.fragmentShader;
-  assert.ok(shader.includes(`float tone = sky ? ${SKY_GRADE_SHARE.toFixed(3)} : 1.0;`));
-  assert.ok(shader.includes("vec3(mix(1.0, grade.y, tone))"), "contrast");
-  assert.ok(shader.includes("float highlight = smoothstep(0.05, 0.75, luma) * tone;"), "split toning");
-  assert.ok(shader.includes("mix(1.0, grade.z, tone)"), "saturation");
   post.updateLight({
     diffuse: NOON.diffuse, ambient: NOON.ambient, fog: { r: 0.3, g: 0.47, b: 0.56 }, fogFar: 500,
     sun: new THREE.Vector3(0.35, 1, 0).normalize(), storm: 0, underwater: false, indoors: false, glow: 0.65,
