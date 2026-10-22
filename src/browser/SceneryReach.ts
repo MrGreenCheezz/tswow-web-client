@@ -36,3 +36,30 @@ export function environmentShellRange(lightingQuality: number): number {
 export function environmentStreamRange(shellRange: number, detail: number): number {
   return Math.max(ENVIRONMENT_FAR_RANGE, shellRange, sceneryFarCap(detail)) + ENVIRONMENT_RESIDENT_HYSTERESIS;
 }
+
+/**
+ * 22.10 (7.44): the enhanced path's leash for small outdoor WMOs — the houses, barns, mills and
+ * towers whose wire box is under the 120-yard far-tier diagonal. Their outdoor shell groups were
+ * held at 250 yards and the placement at 400, which the faithful levels' 500-yard fog hid; under the
+ * enhanced fog (7.39) Goldshire's houses vanished a quarter mile out. Only the shell groups (the
+ * `exterior || !indoor` ones) take it: rooms stay at 60 yards and doodads keep their own leashes.
+ */
+export const ENVIRONMENT_HOUSE_RANGE = 1100;
+
+/** The house leash in force for this shell range: 0 (no change) on the faithful levels. */
+export function environmentHouseRange(shellRange: number): number {
+  return shellRange > ENVIRONMENT_FAR_RANGE ? Math.min(shellRange, ENVIRONMENT_HOUSE_RANGE) : 0;
+}
+
+/**
+ * 22.10 (7.44): loose M2s at least this big (source radius × scale, in yards) that are not
+ * vegetation — big rocks, ruins, statues, windmill sails — keep their size-scaled leash past the
+ * scenery cap on the enhanced path, up to the shell range. Smaller ones are still capped as before.
+ */
+export const SCENERY_LANDMARK_MIN_RADIUS = 10;
+
+/** The cap on a loose non-vegetation M2 of this size: the shell range for a landmark on the enhanced path. */
+export function sceneryLandmarkCap(radius: number, detail: number, shellRange: number): number {
+  const cap = sceneryFarCap(detail);
+  return shellRange > ENVIRONMENT_FAR_RANGE && radius >= SCENERY_LANDMARK_MIN_RADIUS ? Math.max(cap, shellRange) : cap;
+}

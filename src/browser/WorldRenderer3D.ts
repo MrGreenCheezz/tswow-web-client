@@ -32,7 +32,7 @@ import { SpellVisualIds } from "./SpellVisualIds.js"; // 22.10 ARC-2 S4a
 import { captureBenchmarkWebGl, type BenchmarkEnvironmentInput } from "./BenchmarkManifest.js"; // 21.10 ARC-2 S1
 import { distanceFogRange, distanceHorizonRange, type DistanceFogRange } from "./DistanceFog.js";
 import { HorizonBand } from "./HorizonBand.js";
-import { ENVIRONMENT_DETAIL_FAR_MAX, environmentShellRange, environmentStreamRange, sceneryFarCap } from "./SceneryReach.js";
+import { ENVIRONMENT_DETAIL_FAR_MAX, SCENERY_LANDMARK_MIN_RADIUS, environmentHouseRange, environmentShellRange, environmentStreamRange, sceneryFarCap, sceneryLandmarkCap } from "./SceneryReach.js"; // 7.44: house, landmark
 import { ENVIRONMENT_FAR_RANGE, ENVIRONMENT_RANGE, ENVIRONMENT_SHELL_RANGE, ENVIRONMENT_RESIDENT_HYSTERESIS, TERRAIN_GRID_SIZE, modelKey, terrainGrid, terrainGridIndex, type EnvironmentClient, type EnvironmentModel, type EnvironmentObject, type TerrainClient } from "./Terrain.js";
 import { terrainGeometryData, terrainGeometrySteps, type TerrainGeometryData } from "./TerrainGeometry.js";
 export { terrainGeometryData, terrainHeightField, terrainNormals, surfaceNormal, type TerrainGeometryData } from "./TerrainGeometry.js";
@@ -1182,10 +1182,19 @@ export function environmentDrawRange(object: EnvironmentObject, detail = 1, shel
   }
   // 22.10 (7.39): 1,100 on the enhanced path (SceneryReach.ts environmentShellRange), else 750.
   if (environmentFarEligible(object)) return shellRange;
-  const legacy = environmentVegetation(object) ? ENVIRONMENT_VEGETATION_RANGE : ENVIRONMENT_RANGE;
-  if (object.kind !== "m2") return legacy;
+  const vegetation = environmentVegetation(object);
+  const legacy = vegetation ? ENVIRONMENT_VEGETATION_RANGE : ENVIRONMENT_RANGE;
+  // 22.10 (7.44): a small outdoor WMO (a house) keeps the enhanced path's house leash (SceneryReach.ts).
+  if (object.kind !== "m2") return vegetation ? legacy : Math.max(legacy, environmentHouseRange(shellRange));
   const sized = environmentSceneryRange(object, detail);
-  if (sized !== undefined) return sized;
+  if (sized !== undefined) {
+    // 22.10 (7.44): a big non-vegetation M2 keeps growing with its size up to the shell range.
+    const radius = (object.admissionRadius ?? 0) * object.scale;
+    if (vegetation || shellRange <= ENVIRONMENT_FAR_RANGE || radius < SCENERY_LANDMARK_MIN_RADIUS) return sized;
+    const scale = environmentDetailScale(detail);
+    return Math.max(sized, Math.min(sceneryLandmarkCap(radius, scale, shellRange),
+      Math.max(ENVIRONMENT_SCENERY_MIN_RANGE, radius * ENVIRONMENT_SCENERY_RANGE_PER_YARD) * scale));
+  }
   const scale = environmentDetailScale(detail);
   return Math.min(sceneryFarCap(scale), legacy * scale); // 22.10 (7.39)
 }
@@ -1403,6 +1412,11 @@ export function environmentFarEligible(object: EnvironmentObject): boolean {
   return diagonal !== undefined && diagonal >= ENVIRONMENT_FAR_MIN_DIAGONAL;
 }
 
+/** 22.10 (7.44): a small outdoor WMO placement — a house, barn or tower — whose shells take the house leash. */
+export function wmoHousePlacement(object: EnvironmentObject): boolean {
+  return object.kind === "wmo" && object.interior !== true && !environmentFarEligible(object) && !environmentVegetation(object);
+}
+
 const vegetationKindCache = new WeakMap<EnvironmentObject, boolean>();
 
 /**
@@ -1496,7 +1510,7 @@ export function environmentObjectVisibleInFrustum(
 /** Which admission quota a candidate competes in. */
 type EnvironmentAdmissionTier = "near" | "scenery" | "far" | "interior";
 
-function environmentAdmissionTier({ object, distance }: RankedEnvironmentObject): EnvironmentAdmissionTier | undefined {
+function environmentAdmissionTier({ object, distance, range }: RankedEnvironmentObject): EnvironmentAdmissionTier | undefined {
   // An interior-only building's doodad is admitted while one of its MODR rooms is shown: the
   // room answer moves with the camera every frame, the 400-yard candidate list does not.
   if (object.interior === true) {
@@ -1507,7 +1521,9 @@ function environmentAdmissionTier({ object, distance }: RankedEnvironmentObject)
   if (distance <= ENVIRONMENT_RANGE) return "near";
   // The far tier is its own quota: nearest-first over a merged list would spend the whole near
   // budget before a castle 500 yards out ever got a slot.
-  return environmentFarEligible(object) || environmentVegetation(object) ? "far" : undefined;
+  // 22.10 (7.44): a house ranked with the enhanced path's house leash (SceneryReach.ts) is far too.
+  return environmentFarEligible(object) || environmentVegetation(object)
+    || (object.kind === "wmo" && range !== undefined && range > ENVIRONMENT_RANGE) ? "far" : undefined;
 }
 
 /**
@@ -2378,6 +2394,8 @@ interface RenderedEnvironment {
 }
 
 interface PlacedWmo {
+  /** 22.10 (7.44): a small outdoor WMO (wmoHousePlacement): its shells take the house leash. */
+  house?: boolean;
   /** Visual ADT id, used only after a raw-vmap placement has matched by name and transform. */
   visualId: number;
   name: string;
@@ -12330,7 +12348,8 @@ export class WorldRenderer3D {
         modelToWorld,
         worldToModel: modelToWorld.clone().invert(),
         built: new Map(),
-        ranges: new WmoRangeTable(model, boxes, INTERIOR_RANGE, WMO_SKYLINE_SHELL_RANGE), // P1-12a; 7.39: capped per path
+        house: wmoHousePlacement(object), // 22.10 (7.44)
+        ranges: new WmoRangeTable(model, boxes, INTERIOR_RANGE, WMO_SKYLINE_SHELL_RANGE, wmoHousePlacement(object)), // P1-12a; 7.39: capped per path; 7.44: house
       },
     };
   }
@@ -12491,7 +12510,7 @@ export class WorldRenderer3D {
     // question for every admitted building every frame. 05.10-7.05-review: the transport shell leash.
     // P1-12 telemetry: the table counts into the renderer's totals (a fake `ranges` just gains a field).
     placed.ranges.totals ??= this.#wmoRangeGroups;
-    placed.ranges.setShellCap?.(this.environmentShellRange); // 22.10 (7.39)
+    placed.ranges.setShellCap?.(this.environmentShellRange, environmentHouseRange(this.environmentShellRange)); // 22.10 (7.39), 7.44
     let distanceGroups = placed.ranges.select(player.x, player.y, shellRange);
     // 22.10 (7.41): a building admitted for its shadow alone hangs only its outdoor rooms in the
     // distance leash — those with a stand-in — and none of the view's walks below run for it.
@@ -12686,8 +12705,8 @@ export class WorldRenderer3D {
     const state = placed.openAir ??= createWmoOpenAirState();
     if (wmoOpenAirCandidatesStale(state, player.x, player.y, player.z)) {
       // P1-12c: from a rest radius, the same array while unchanged; noting it still re-walks (the viewer moved).
-      const ranges = placed.openAirRanges ??= new WmoRangeTable(model, placed.boxes, WMO_OPEN_AIR_ROOM_RANGE, WMO_SKYLINE_SHELL_RANGE);
-      ranges.setShellCap(this.environmentShellRange); // 22.10 (7.39)
+      const ranges = placed.openAirRanges ??= new WmoRangeTable(model, placed.boxes, WMO_OPEN_AIR_ROOM_RANGE, WMO_SKYLINE_SHELL_RANGE, placed.house === true);
+      ranges.setShellCap(this.environmentShellRange, environmentHouseRange(this.environmentShellRange)); // 22.10 (7.39), 7.44
       ranges.totals ??= this.#wmoRangeOpenAir; // P1-12 telemetry
       wmoOpenAirNoteCandidates(state, ranges.select(player.x, player.y), player.x, player.y, player.z);
     }
