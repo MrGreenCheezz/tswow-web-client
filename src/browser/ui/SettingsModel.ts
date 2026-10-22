@@ -234,8 +234,9 @@ export const SETTING_DEFINITIONS: readonly SettingDefinition[] = [
     // quarter, VideoOptionsPanels.lua), in percent: a multiplier on how far M2 scenery is drawn,
     // each model to a distance scaled by its own size (WorldRenderer3D `environmentSceneryRange`).
     id: "objectDistance", label: "Дальность прорисовки объектов, %", group: "Графика", kind: "number", fallback: 100,
-    min: 50, max: 150, step: 25,
-    hint: "Как далеко видны деревья, кусты и другие объекты окружения; большие видны дальше мелких. 100 — дерево до 600 ярдов, 150 — до 750. Меньше — быстрее.",
+    // 22.10 (7.39): 175 and 200 are the far view's step past the stock slider (SceneryReach.ts).
+    min: 50, max: 200, step: 25,
+    hint: "Как далеко видны деревья, кусты и другие объекты окружения; большие видны дальше мелких. 100 — дерево до 600 ярдов, 150 — до 750, 200 — до 1000 (дороже: больше объектов в кадре). Меньше — быстрее.",
   },
   {
     // The original client's own «Ground Clutter Radius»: ground cover gets a ceiling of its own

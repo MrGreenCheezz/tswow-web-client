@@ -2,7 +2,6 @@
 import * as THREE from "three";
 import { WorldRenderer3D } from "../WorldRenderer3D.js";
 import { ANIMATION_IDS } from "../../generated/animations.js";
-import { ENVIRONMENT_STREAM_RANGE } from "../Terrain.js";
 import { CharacterAtlasClient, appearanceKey, CREATURE_MODEL_VERSION } from "../CharacterAtlas.js";
 import type { UnitModel } from "../CreatureModelClient.js";
 import { buildModel, characterSlots } from "../ModelBuild.js"; // 05.10-A7a-G 6.18: geosetList → figureGeosets
@@ -150,7 +149,7 @@ if (movement) {
     if (crowd.place(seconds, lastFraction, heightAt) && recording) routeHeightMissing++;
     environment.beginResourceFrame();
     try {
-      const scenery = environment.objectsAround(map, x, y, ENVIRONMENT_STREAM_RANGE);
+      const scenery = environment.objectsAround(map, x, y, worldRenderer.environmentStreamRange); // 22.10 (7.39)
       const p = objects[0]!.position!;
       worldRenderer.updateLighting(lighting.sample(map, x, y, config.halfMinute, 0, p.z), config.halfMinute);
       queryMs = performance.now() - queryAt;
@@ -476,7 +475,9 @@ host.__bench = {
     // seconds would carry its flattened grade and thinned haze into a clear-sky frame.
     if ('weather' in overrides) world?.setWeather(overrides.weather ?? { state: 0, intensity: 0, abrupt: true });
   },
-  shadowStats: () => world ? { cascades: world.shadowCascadeStats, calls: renderer.info.render.calls } : null,
+  shadowStats: () => world ? { cascades: world.shadowCascadeStats, calls: renderer.info.render.calls,
+    // 22.10 (7.39): the fog range the still was drawn with, so a distance change reads in yards.
+    fog: world.fogRange } : null,
   state: () => ({ scenario, fraction: lastFraction, frame: lastFrame, readiness: readiness() }),
   sceneStats: () => {
     // Diagnostic census of the scene graph the renderer last submitted: where the per-frame

@@ -253,19 +253,22 @@ test("buildHorizonGeometry: with the map's neighbours the shared edge gets one n
   assert.equal(horizonTileAt(map, 5, 5), undefined);
 });
 
-test("horizonColourWanted / HorizonMaterialSelector: lit and coloured on the classic path only", () => {
+// 22.10 (7.39): every level now — the enhanced fog reaches the horizon (DistanceFog.ts).
+test("horizonColourWanted / HorizonMaterialSelector: lit and coloured at every lighting level", () => {
   assert.equal(horizonColourWanted(0, true), true);
   assert.equal(horizonColourWanted(0, false), false);
-  assert.equal(horizonColourWanted(1, true), false);
-  assert.equal(horizonColourWanted(2, true), false);
+  assert.equal(horizonColourWanted(1, true), true);
+  assert.equal(horizonColourWanted(2, true), true);
+  assert.equal(horizonColourWanted(2, false), false);
   const basic = new THREE.MeshBasicMaterial({ color: 0x4a6b4f });
   const selector = new HorizonMaterialSelector(basic, createWorldLightUniforms());
   const texture = new THREE.Texture();
   let asked = 0;
   const colour = () => { asked++; return texture; };
-  assert.equal(selector.select(1, colour) === basic, true, "enhanced: flat");
-  assert.equal(selector.select(2, colour) === basic, true, "cinematic: flat");
-  assert.equal(asked, 0, "the presets never ask for the picture");
+  assert.equal(selector.select(2, () => undefined) === basic, true, "enhanced before the picture: flat");
+  assert.equal(selector.select(1, colour) === selector.lit, true, "enhanced: lit");
+  assert.equal(selector.select(2, colour) === selector.lit, true, "cinematic: lit");
+  assert.equal(asked, 2, "the presets ask for the picture too");
   assert.equal(selector.select(0, () => undefined) === basic, true, "classic before the picture: flat");
   const lit = selector.select(0, colour);
   assert.equal(lit === basic, false);
@@ -363,7 +366,8 @@ test("the renderer picks the horizon material per frame from the preset and buil
   const method = body.slice(0, body.indexOf("\n  }\n"));
   assert.match(method, /this\.#horizonMaterials\.select\(this\.#lightingProfile\.quality, \(\) => horizonClient\?\.colour\(map\)\)/);
   // P1-13b: the unchanged-ring test compares the centre tile and revision as numbers.
-  const unchanged = method.indexOf("if (this.#horizon?.tile === tile && this.#horizon.revision === revision) return;");
+  // 22.10 (7.39): the unchanged branch now also updates the outer band (HorizonBand.ts) before returning.
+  const unchanged = method.indexOf("if (this.#horizon?.tile === tile && this.#horizon.revision === revision) {");
   assert.ok(unchanged > 0, "the numeric unchanged-ring early return");
   assert.ok(method.indexOf("#horizonMaterials.select(") < unchanged,
     "chosen before the unchanged-ring early return, so a preset change or a late picture applies at once");

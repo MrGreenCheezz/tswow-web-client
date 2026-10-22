@@ -15,7 +15,6 @@
 
 import type * as THREE from "three";
 import { WorldRenderer3D, type RenderFrameTime } from "../WorldRenderer3D.js";
-import { ENVIRONMENT_STREAM_RANGE } from "../Terrain.js";
 import { frameBudgetProbe } from "../FrameBudgetProbe.js";
 import { applyGatewayGenerationPush } from "../GatewayGeneration.js";
 import { setPatchChainSuspectSink } from "../PatchChainSuspect.js";
@@ -210,7 +209,7 @@ class BenchRenderSession {
     environment.beginResourceFrame();
     try {
       // The player stands on the route point the in-page harness queries (BenchCrowd `place`).
-      const scenery = environment.objectsAround(map, self.x, self.y, ENVIRONMENT_STREAM_RANGE);
+      const scenery = environment.objectsAround(map, self.x, self.y, world.environmentStreamRange); // 22.10 (7.39)
       world.updateLighting(lighting.sample(map, self.x, self.y, halfMinute, 0, self.z), halfMinute);
       this.#queryMs = performance.now() - queryAt;
       world.setRenderLookups(receiver.lookups);

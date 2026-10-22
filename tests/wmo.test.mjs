@@ -773,7 +773,8 @@ test("standing in a district of Stormwind, the rule asks for the rooms around th
   // Measured, not chosen: exterior- or transition-lit runs inside an indoor group use the city's
   // 250 yd leash too, while groups remain bounded by their own AABB. Before the boundary marker,
   // only the outdoor shell used that leash and the rooms below were the smaller 60 yd set. Shell
-  // groups wide enough to read as skyline (120 yd diagonal) hold a second 750 yd leash on top,
+  // groups wide enough to read as skyline (120 yd diagonal) hold a second far leash on top (750 yd,
+  // 1,100 since 7.39),
   // so the districts below also carry the far roofs — still below two thirds of this city's
   // triangles in every measured district, and never approaching the full 286-group city.
   for (const [name, x, y, groups, wanted] of [
@@ -797,6 +798,9 @@ test("standing in a district of Stormwind, the rule asks for the rooms around th
   // And from outside it is the shell and nothing else: the skyline without any of its rooms.
   // The far leash puts 25 wide outdoor shells on the ridge instead of one — that is the LOD
   // working, measured at 248,547 triangles against the 20,639 of the single 250 yd shell.
+  // 22.10 (7.39): this is the faithful levels' 750-yard skyline; the enhanced path's 1,100 yards
+  // (SceneryReach.ts environmentShellRange) also sees the shells behind: 32 and 270,845 triangles
+  // (WmoRangeTable over wmoShellRange(box, 1100), tests/distance-view-gate.test.mjs).
   const ridge = wmoGroupsInRange(model, boxes, { x: -9250, y: 200, z: 100, orientation: 0 });
   assert.equal(ridge.length, 25);
   assert.equal(triangles(ridge), 248_547);
@@ -809,8 +813,10 @@ test("outdoor shell leash follows group width, rooms stay short", () => {
     new THREE.Vector3(0, 0, 0), new THREE.Vector3(size, size, size));
   // Diagonal 103.9 yd: below the skyline width, the near leash.
   assert.equal(wmoShellRange(box(60)), 250);
-  // Diagonal 207.8 yd: skyline, the far leash.
+  // Diagonal 207.8 yd: skyline, the far leash; 22.10 (7.39): the enhanced path passes its 1,100.
   assert.equal(wmoShellRange(box(120)), 750);
+  assert.equal(wmoShellRange(box(120), 1100), 1100);
+  assert.equal(wmoShellRange(box(60), 1100), 250, "small shells stay near on every path");
   const malformed = new THREE.Box3(new THREE.Vector3(5, 0, 0), new THREE.Vector3(0, 1, 1));
   assert.equal(wmoShellRange(malformed), 250, "an inverted box fails closed to the near leash");
   const nan = new THREE.Box3(new THREE.Vector3(0, 0, 0), new THREE.Vector3(Number.NaN, 1, 1));

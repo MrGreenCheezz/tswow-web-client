@@ -15,5 +15,8 @@ import { ENVIRONMENT_STREAM_RANGE } from "../Terrain.js";
 export const PAGE_ONLY_ENVIRONMENT_RANGE = 64;
 
 export function pageEnvironmentRange(renderer: ClientRenderer | undefined): number {
-  return renderer?.renderWorker === undefined ? ENVIRONMENT_STREAM_RANGE : PAGE_ONLY_ENVIRONMENT_RANGE;
+  if (renderer?.renderWorker !== undefined) return PAGE_ONLY_ENVIRONMENT_RANGE;
+  // 22.10 (7.39): the in-page renderer's own band, which the lighting path and detail widen (SceneryReach.ts).
+  return (renderer as { readonly environmentStreamRange?: number } | undefined)?.environmentStreamRange
+    ?? ENVIRONMENT_STREAM_RANGE;
 }

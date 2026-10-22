@@ -80,8 +80,9 @@ test("7.20 Config.wtf values map to settings faithfully", () => {
   });
   assert.deepEqual(comparisonOverridesFromConfigValues({ extShadowQuality: "0" }), { lightingQuality: 0 },
     "no shadow quality: the plain classic level");
+  // 22.10 (7.39): the setting's ceiling is the far-view step's 200 (SceneryReach.ts).
   assert.deepEqual(comparisonOverridesFromConfigValues({ environmentDetail: "9", groundEffectDist: "x" }), {
-    objectDistance: 150,
+    objectDistance: 200,
   }, "values pass coerceSetting; garbage is dropped");
   assert.deepEqual(comparisonOverridesFromConfigValues(COMPARISON_CONFIG_WTF),
     Object.fromEntries(Object.keys(comparisonOverridesFromConfigValues(COMPARISON_CONFIG_WTF))
