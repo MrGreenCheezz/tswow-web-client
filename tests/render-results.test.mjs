@@ -116,7 +116,7 @@ test("22.10 ARC-2 S3a: the renderer fills the record wherever a value it publish
   assert.match(at("  endRenderFrame(): number | undefined {"),
     /if \(this\.#inputs\.publishStatus && this\.#renderFrameDepth === 0\) this\.#results\.status = this\.status;/);
   // The rows: every unit held, the boxes behind the overlay's own test, the seat pass, the scalars.
-  const publish = at("  #publishResults(state: WorldState | undefined): void {");
+  const publish = at("  #publishResults(state: RenderWorld | undefined): void {");
   // S3a-review: incremental (RenderResultRows.ts), with the same math as the per-frame fill.
   assert.match(publish, /this\.#unitRows\.fill\(results\.units, this\.#units, this\.#vehiclePassengers, stamp, this\.#unitRowCompute\);/);
   assert.match(renderer, /this\.#bodyHeight\(rendered, lift, ATTACHMENT_SHOULDER_RIGHT, CAMERA_PIVOT_BODY_SHARE, CAMERA_DEFAULT_PIVOT_HEIGHT\)/);

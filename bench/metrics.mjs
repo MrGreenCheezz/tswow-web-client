@@ -75,5 +75,18 @@ export function summarize(result) {
       .map(name => [name, distribution(column(name))])),
     peakJsHeapBytes: Math.max(...column('heapBytes')) || null,
     phasesMs: Object.fromEntries(result.phaseNames.map(name => [name, distribution(column(name))])),
+    ...renderBridgeSummary(result, column),
   };
+}
+
+/**
+ * 22.10 ARC-2 S5: `--renderbridge loopback`: the crossing per measured frame — encode, clone, decode, their sum, and the
+ * estimated bytes (all messages, and the world message alone), as `renderBridge`. Nothing on the direct path.
+ */
+function renderBridgeSummary(result, column) {
+  if (!result.columns.includes('bridgeEncodeMs')) return {};
+  const encode = column('bridgeEncodeMs'), clone = column('bridgeCloneMs'), decode = column('bridgeDecodeMs');
+  return { renderBridge: { encodeMs: distribution(encode), cloneMs: distribution(clone), decodeMs: distribution(decode),
+    totalMs: distribution(encode.map((value, index) => value + clone[index] + decode[index])),
+    bytes: distribution(column('bridgeBytes')), frameBytes: distribution(column('bridgeFrameBytes')) } };
 }

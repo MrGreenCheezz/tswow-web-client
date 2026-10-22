@@ -1075,6 +1075,7 @@ export class WorldState {
     if (drift !== undefined) this.#rebaseDrift(drift, object.movementFlags, now);
     object.speeds ??= new Map();
     object.speeds.set(name, value);
+    bumpFieldsVersion(object.speeds); // 22.10 ARC-2 S5: the rates were written
     if (drift !== undefined) {
       // L8-review 5.04: a pitching drift goes on from the pitch its keys have turned to, not the packet's.
       const pitch = drift.pitchTurn !== 0 ? driftPitch(drift, now) : object.pitch; // L8-review 5.04
@@ -1199,6 +1200,7 @@ export class WorldState {
         const value = movement.speeds[index]!;
         if (Number.isFinite(value) && value >= 0) speeds.set(CREATE_SPEED_ORDER[index]!, value);
       }
+      bumpFieldsVersion(speeds); // 22.10 ARC-2 S5: the rates were written
     }
     if (movement.info) object.pitch = movement.info.pitch;
     if (movement.rotation) object.rotation = movement.rotation;

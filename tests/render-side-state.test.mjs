@@ -190,7 +190,7 @@ test("the renderer applies the pushes and reports through the record; the loop a
   };
   assert.match(at("  setRenderInputs(inputs: RenderInputs | undefined): void {"),
     /this\.#renderSidePushes\.apply\(this\.#inputs, this\.#host\.frameBudgetProbe\);/);
-  assert.match(at("  #publishResults(state: WorldState | undefined): void {"),
+  assert.match(at("  #publishResults(state: RenderWorld | undefined): void {"),
     /publishRendererBudget\(this\.#host\.frameBudgetProbe, results\);/);
   assert.match(at("  observeFrame(timestamp: number): number | undefined {"), /this\.#results\.frameInterval = interval;/);
   assert.match(at("  endRenderFrame(): number | undefined {"), /this\.#results\.rendererFrameMs = elapsed;/);

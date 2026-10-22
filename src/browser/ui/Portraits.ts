@@ -702,7 +702,8 @@ export function clearPortraitTargets(): void {
   }
 }
 
-export function syncPortraitTargets(renderer: WorldRenderer3D | undefined): void {
+// 22.10 ARC-2 S5: the push alone (`Pick`), so the loopback bridge can stand in for the renderer (RenderBridgeLoopback.ts).
+export function syncPortraitTargets(renderer: Pick<WorldRenderer3D, "setPortraitTargets"> | undefined): void {
   // Self GUID can be replaced by a world transfer while the character window remains mounted.
   // Keep the target identity current without rebuilding the canvas or renderer.
   if (paperdollCanvas) {

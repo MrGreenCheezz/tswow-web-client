@@ -52,6 +52,7 @@ import {
   resultGameObjectCorners, resultUnitEyeHeight, resultUnitHeight, resultUnitPivotHeight,
 } from "../RenderResults.js"; // 22.10 ARC-2 S3a
 import { acceptSeatResults } from "../VehiclePassengerOverlay.js"; // 22.10 ARC-2 S3a
+import { RenderBridgeLoopback, renderBridgeMode } from "../RenderBridgeLoopback.js"; // 22.10 ARC-2 S5
 import { updateCastBars } from "../ui/CastBar.js";
 import { updateActionBar } from "../ui/ActionBar.js";
 import { updateMirrorTimers } from "../ui/MirrorTimers.js";
@@ -143,6 +144,12 @@ function loopGameObjectCorners(object: WorldObjectState, out: Float64Array): boo
 const renderInputs = new RenderInputsBuilder();
 /** 22.10 ARC-2 S2b: the frame's pushed caches (display rows, collision models), refilled in place each frame. */
 const renderLookups = new RenderLookupsBuilder();
+/**
+ * 22.10 ARC-2 S5: `?renderbridge=loopback` — the renderer drawn from a mirror fed by the worker's messages, cloned on
+ * this thread (RenderBridgeLoopback.ts). Without the flag the renderer reads the live state, as before.
+ */
+const renderBridge = typeof location !== "undefined" && renderBridgeMode(new URLSearchParams(location.search)) === "loopback"
+  ? new RenderBridgeLoopback() : undefined;
 
 let lastFrame = performance.now();
 let renderStatusShownAt = 0;
@@ -637,7 +644,7 @@ function frame(now: number): void {
       x: duelPosition.x, y: duelPosition.y, z: duelPosition.z,
       inBounds: world.duelInBounds !== false,
     });
-    syncPortraitTargets(game.renderer);
+    syncPortraitTargets(renderBridge && game.renderer ? renderBridge.portraitTarget(game.renderer) : game.renderer); // 22.10 ARC-2 S5
     // Enchant glows ride the pushed inputs like the selection: the renderer knows meshes,
     // the loop knows the gateway. Loading is kicked once and stays deduped in the client; until
     // it lands the blades draw unlit, exactly like helmets whose model has not arrived.
@@ -648,20 +655,24 @@ function frame(now: number): void {
     // 22.10 ARC-2 S3a: the status line's half-second tick, decided before draw so `endRenderFrame` writes the line.
     const statusDue = now - renderStatusShownAt > 500;
     if (game.renderer) {
-      game.renderer.setRenderInputs(renderInputs.build({
+      const inputs = renderInputs.build({
         world, spells: game.spells, enchantments: enchantClient, vehicles: vehicleCatalog(),
         gameObjectShown: loopGameObjectShown, publishStatus: statusDue,
-      }));
+      });
+      if (renderBridge) renderBridge.setRenderInputs(game.renderer, inputs); // 22.10 ARC-2 S5: crossed as a message
+      else game.renderer.setRenderInputs(inputs);
       // 22.10 ARC-2 S2b: the caches draw read through functions — game-object and creature display rows, and the
       // collision models of this environment list's buildings (was `setCollisionModels`, EnterWorld.ts).
-      game.renderer.setRenderLookups(renderLookups.build({
+      const lookups = renderLookups.build({
         gameObjectMetadata: game.gameObjectMetadata, creatureModels: game.creatureModels,
         collision: game.collision?.models, environment,
         units: { // 22.10 ARC-2 S2c
           objects: world.state.objects, peek: loopUnitModelPeek, volatile: unitModelVolatile,
           inputs: unitModelInputs(game.creatureModels, game.itemMetadata, world.mirrorImages),
         },
-      }));
+      });
+      if (renderBridge) renderBridge.setRenderLookups(game.renderer, lookups); // 22.10 ARC-2 S5: crossed as a message
+      else game.renderer.setRenderLookups(lookups);
     }
     hitchLight = performance.now();
     const renderer = game.renderer;
@@ -674,7 +685,12 @@ function frame(now: number): void {
       game.swingReactions?.syncMeleeTargets();
       try {
         try {
-          renderer.draw(
+          // 22.10 ARC-2 S5: through the loopback bridge the same arguments reach `draw` after the crossing.
+          if (renderBridge) {
+            renderBridge.draw(renderer, world.state, world.mapId, heightAt, game.terrain, environment, game.environment,
+              game.camera.yaw, game.camera.viewPitch, game.camera.view, game.terrainSplat, game.liquids,
+              game.transportPaths, game.horizon, game.camera.distance, cameraPivotHeight(), cameraWmoFloor, undefined);
+          } else renderer.draw(
             world.state,
             world.mapId,
             heightAt,

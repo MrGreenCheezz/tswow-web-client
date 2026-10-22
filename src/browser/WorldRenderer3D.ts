@@ -4,6 +4,7 @@ import { UPDATE_FIELDS } from "../generated/updateFields.js";
 import {
   appearsDead, fieldFloat, isWorldObjectDead, splineAnimationTier, type WorldObjectState, type WorldPosition, type WorldState,
 } from "../world/WorldState.js";
+import type { RenderWorld } from "./FrameInput.js"; // 22.10 ARC-2 S5: draw reads this much of a state
 import { sceneYaw, toRenderAxes, type Quat } from "../world/GameObjectRotation.js";
 import { gameObjectNodeYaw, gameObjectWorldRotation, placedBoxCorners, type ModelBox } from "../world/GameObjectModelFrame.js"; // 06.10-7.24
 import { modelPickBox } from "./GameObjectPickBox.js"; // 06.10-7.24
@@ -6138,7 +6139,7 @@ export class WorldRenderer3D {
    *   collision hulls cost nothing.
    * * The seat pass (VehiclePassengerPose.ts) and the scalars.
    */
-  #publishResults(state: WorldState | undefined): void {
+  #publishResults(state: RenderWorld | undefined): void {
     const results = this.#results;
     const stamp = ++results.frame;
     // 22.10 ARC-2 S3a-review: a unit's row is recomputed only when what `#bodyHeight` reads moved.
@@ -7601,7 +7602,7 @@ export class WorldRenderer3D {
    * it is depth-tested like everything else — a target behind a wall no longer has a ring painted
    * over the wall.
    */
-  #updateSelectionRings(state: WorldState, heightAt: HeightSampler | undefined): void {
+  #updateSelectionRings(state: RenderWorld, heightAt: HeightSampler | undefined): void {
     for (const kind of ["target", "focus"] as const) {
       const wanted = this.#selection[kind];
       const object = wanted === undefined ? undefined : state.objects.get(wanted.guid);
@@ -8155,7 +8156,7 @@ export class WorldRenderer3D {
    * an early return or a throw leaves the record saying what the renderer's state says, as the getters did.
    */
   draw(
-    state: WorldState,
+    state: RenderWorld,
     map: number | undefined,
     heightAt: HeightSampler | undefined,
     terrainClient: TerrainClient | undefined,
@@ -8183,7 +8184,7 @@ export class WorldRenderer3D {
   }
 
   #drawFrame(
-    state: WorldState,
+    state: RenderWorld,
     map: number | undefined,
     heightAt: HeightSampler | undefined,
     terrainClient: TerrainClient | undefined,
@@ -12826,7 +12827,7 @@ export class WorldRenderer3D {
    * away and back.
    */
   #updateGameObjects(
-    state: WorldState,
+    state: RenderWorld,
     player: WorldPosition,
     client: EnvironmentClient | undefined,
     metadata: ReadonlyMap<number, GameObjectDisplayMetadata> | undefined, // 22.10 ARC-2 S2b: was a lookup function
@@ -13456,7 +13457,7 @@ export class WorldRenderer3D {
    * occluded like everything else, and ready to be swapped for skinned M2 models.
    */
   #updateUnits(
-    state: WorldState,
+    state: RenderWorld,
     player: WorldPosition,
     now: number,
     elapsed: number,
@@ -13749,7 +13750,7 @@ export class WorldRenderer3D {
     elapsed: number,
     client: EnvironmentClient | undefined,
     shadowCaster: boolean,
-    world?: Pick<WorldState, "objects" | "predictedGuid" | "selfGuid">, // 11.10: for the facing (UnitFacing.ts); 5.32: + selfGuid
+    world?: RenderWorld, // 11.10: for the facing (UnitFacing.ts); 5.32: + selfGuid; 22.10 ARC-2 S5: was a Pick of WorldState
   ): void {
     const detailedCapture = this.#shaderProgramTrace !== undefined;
     let unitPartAt = detailedCapture ? performance.now() : 0;

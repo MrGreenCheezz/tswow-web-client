@@ -45,6 +45,10 @@ async function main() {
   const diagnostic = args.includes('--diagnostic');
   // P2-09a: the frame budget sensor (two columns, a `budgetProbe` report per scenario); never valid.
   const budgetProbe = args.includes('--budget-probe');
+  // 22.10 ARC-2 S5: --renderbridge loopback draws the world from the worker-message mirror (RenderBridgeLoopback.ts) and
+  // adds the crossing's per-frame encode/clone/decode times and bytes; the default is the direct path.
+  const renderBridge = value('--renderbridge', 'direct');
+  if (!['direct', 'loopback'].includes(renderBridge)) throw new Error('--renderbridge must be direct or loopback');
   const captureAbba = args.includes('--capture-abba');
   // Development runs under background load: the load is still recorded and the result is marked
   // incomparable, so such numbers can guide work but never replace a strict baseline.
@@ -245,6 +249,7 @@ async function main() {
   let browser;
   const result = { schemaVersion: 1, timestamp: stamp, label: value('--label', smoke ? 'smoke' : trace ? 'trace' : 'measurement'),
     smoke, trace, diagnostic, captureAbba, heapProfileMode, config, configHash, sourceHash, sourceHashes, bundle: bundle.bundleOptions,
+    renderBridge, // 22.10 ARC-2 S5
     git: { head: git('rev-parse', 'HEAD'), branch: git('branch', '--show-current'), dirty: Boolean(git('status', '--porcelain')) },
     host: { platform: os.platform(), release: os.release(), cpu: os.cpus()[0]?.model, cores: os.cpus().length,
       memoryBytes: os.totalmem(), node: process.version, cpuPolicy },
@@ -294,7 +299,7 @@ async function main() {
     return connected;
   }
   async function open(scenario) {
-    const sceneUrl = `${origin}/?scenario=${scenario}${diagnostic ? '&diagnostic=1' : ''}${links ? '&links=1' : ''}${budgetProbe ? '&budgetprobe=1' : ''}`;
+    const sceneUrl = `${origin}/?scenario=${scenario}${diagnostic ? '&diagnostic=1' : ''}${links ? '&links=1' : ''}${budgetProbe ? '&budgetprobe=1' : ''}${renderBridge === 'loopback' ? '&renderbridge=loopback' : ''}`;
     let page;
     if (browserKind === 'electron') {
       browser = await launchElectron(sceneUrl);
@@ -534,6 +539,8 @@ async function main() {
         console.log(`${scenario}: ${summary.averageFps.toFixed(2)} FPS; 1% ${summary.onePercentLowFps.toFixed(2)}; p99 ${summary.p99FrameMs.toFixed(2)}ms; >30ms ${summary.framesOver30Ms}; CPU ${summary.cpuMs.mean.toFixed(2)}ms; GPU ${summary.gpuMs.mean?.toFixed(2) ?? 'unavailable'}ms`);
         // P2-02b: renders and CPU of each shadow cascade over the measured frames, and why the cached one re-rendered.
         if (scenarioResult.shadowCascadeSummary) console.log(`${scenario}: shadow cascades ${scenarioResult.shadowCascadeSummary.cascades.map((c, i) => `#${i} ${c.renders} renders (${c.rendersPerMinute?.toFixed(0)}/min) ${c.cpuMsPerRender?.toFixed(3) ?? '-'} ms/render`).join(' · ')}; far reasons ${JSON.stringify(scenarioResult.shadowCascadeSummary.farReasons)}`);
+        // 22.10 ARC-2 S5: the loopback crossing's cost per frame.
+        if (summary.renderBridge) console.log(`${scenario}: renderbridge encode ${summary.renderBridge.encodeMs.mean?.toFixed(3)} + clone ${summary.renderBridge.cloneMs.mean?.toFixed(3)} + decode ${summary.renderBridge.decodeMs.mean?.toFixed(3)} = ${summary.renderBridge.totalMs.mean?.toFixed(3)} ms (p99 ${summary.renderBridge.totalMs.p99?.toFixed(3)}); ${summary.renderBridge.bytes.mean?.toFixed(0)} B/frame (world ${summary.renderBridge.frameBytes.mean?.toFixed(0)}, max ${summary.renderBridge.bytes.max})`);
         if (scenarioResult.wmoRange) console.log(`${scenario}: wmoRange ${scenarioResult.wmoRange.recomputes}/${scenarioResult.wmoRange.selects} recomputes/selects; ${scenarioResult.wmoRange.recomputesPerFrame.toFixed(3)} recomputes/frame`);
         await browser.close(); browser = undefined;
         if (pageErrors.length) result.errors.push(...pageErrors.map(error => `${scenario}: ${error}`));

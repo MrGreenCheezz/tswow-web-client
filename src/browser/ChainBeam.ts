@@ -17,8 +17,11 @@
 import * as THREE from "three";
 import type { SpellChainEffect } from "../gateway/SpellVisual.js";
 import { UPDATE_FIELDS } from "../generated/updateFields.js";
-import type { WorldState } from "../world/WorldState.js";
+import type { WorldObjectState } from "../world/WorldState.js";
 import { LightningBeam, lightningAlphaReference } from "./LightningBeam.js";
+
+/** 22.10 ARC-2 S5: the part of a world state the beams read — the main one or the renderer's mirror. */
+type BeamWorld = { readonly objects: ReadonlyMap<bigint, WorldObjectState> };
 
 export type { SpellChainEffect };
 
@@ -110,7 +113,7 @@ export function beamColour(color: readonly number[], out: THREE.Color): number {
 }
 
 /** The caster's channel object (UNIT_FIELD_CHANNEL_OBJECT), or undefined. */
-export function channelObjectOf(state: WorldState | undefined, guid: bigint): bigint | undefined {
+export function channelObjectOf(state: BeamWorld | undefined, guid: bigint): bigint | undefined {
   const fields = state?.objects.get(guid)?.fields;
   if (!fields) return undefined;
   const offset = UPDATE_FIELDS.UNIT_FIELD_CHANNEL_OBJECT.offset;
@@ -195,7 +198,7 @@ export class ChainBeams {
   }
 
   /** Places every live beam for this frame (`eye` in scene coordinates); drops the finished ones. */
-  update(now: number, points: BeamPoints, state: WorldState | undefined, eye: THREE.Vector3): void {
+  update(now: number, points: BeamPoints, state: BeamWorld | undefined, eye: THREE.Vector3): void {
     _eye.x = eye.x;
     _eye.y = -eye.z;
     _eye.z = eye.y;
@@ -259,7 +262,7 @@ export class ChainBeams {
   }
 
   /** Both ends now, into `_a` and `_b`; false when the far end is unknown (a channel with no object yet). */
-  #ends(beam: VisualBeam, points: BeamPoints, state: WorldState | undefined): boolean {
+  #ends(beam: VisualBeam, points: BeamPoints, state: BeamWorld | undefined): boolean {
     const from = beam.from;
     if (!points.point(from.guid, from.attachment, _a, from.offset)) {
       _a.x = from.point.x; _a.y = from.point.y; _a.z = from.point.z;

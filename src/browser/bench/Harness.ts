@@ -27,6 +27,7 @@ import { defaultSettings, type SettingValues } from "../ui/SettingsModel.js";
 import { nextBenchmarkFrame } from "./FrameClock.js";
 import { frameBudgetProbe } from "../FrameBudgetProbe.js"; // P2-09a
 import { installKnownMissingTextureLedger, errorsAreKnownMissingTextures } from "./KnownMissingTextures.js"; // 06.10-P1-00b
+import { RenderBridgeLoopback, renderBridgeMode } from "../RenderBridgeLoopback.js"; // 22.10 ARC-2 S5
 
 interface Graphics {
   lightingQuality: number; grassRadius: number; grassDense: boolean; grassDensity: number; fullscreenGlow: boolean;
@@ -67,6 +68,11 @@ const diagnostic = params.has('diagnostic');
 const links = diagnostic || params.has('links');
 // P2-09a: the frame budget sensor's two columns per frame and its report (`--budget-probe`; never valid).
 const budgetProbe = params.has('budgetprobe');
+// 22.10 ARC-2 S5: `--renderbridge loopback`: the world drawn from the worker-message mirror (RenderBridgeLoopback.ts),
+// with the crossing's encode, clone and decode times and its estimated bytes (all, and the world message's) as five more
+// frame columns.
+const renderBridge = renderBridgeMode(params) === 'loopback' ? new RenderBridgeLoopback() : undefined;
+const BRIDGE_COLUMNS = ['bridgeEncodeMs', 'bridgeCloneMs', 'bridgeDecodeMs', 'bridgeBytes', 'bridgeFrameBytes'];
 const canvas = document.querySelector('canvas')!;
 const worldCrowd = scenario.startsWith('world-crowd-');
 /**
@@ -262,21 +268,28 @@ if (movement) {
           if (model !== undefined) benchUnitModels.set(object.guid, model);
         }
       }
-      worldRenderer.setRenderLookups(benchLookups);
+      if (renderBridge) renderBridge.setRenderLookups(worldRenderer, benchLookups); // 22.10 ARC-2 S5
+      else worldRenderer.setRenderLookups(benchLookups);
       worldRenderer.beginRenderFrame();
       try {
         const crowdClock = worldCrowd || city;
         const view = config.view;
         // 22.10 ARC-2 S2b: no game-object rows, display-answered test or mount lookup to push (setRenderLookups):
         // the bench has no game objects or mounts, and every unit's record is answered by `modelOf` (S2c: pushed).
-        worldRenderer.draw(state, map, heightAt, terrain, scenery, environment,
-          view ? view.yaw : city ? angle : worldCrowd ? angle : Math.sin(lastFraction * Math.PI * 2) * .4,
-          view ? view.pitch : city ? config.city.pitch : worldCrowd ? -.4 : -.22,
-          view ? view.orbit : city ? config.city.orbit : worldCrowd ? 42 : 24,
-          splat, liquids, undefined, horizon, 24, 1.6,
-          undefined, { nowMs: (crowdClock
-            ? preparingWorldCrowd ? 0 : config.warmupSeconds + seconds
-            : seconds) * 1000, elapsedSeconds: elapsed, frameIndex: frame });
+        const yaw = view ? view.yaw : city ? angle : worldCrowd ? angle : Math.sin(lastFraction * Math.PI * 2) * .4;
+        const pitch = view ? view.pitch : city ? config.city.pitch : worldCrowd ? -.4 : -.22;
+        const orbit = view ? view.orbit : city ? config.city.orbit : worldCrowd ? 42 : 24;
+        const frameTime = { nowMs: (crowdClock
+          ? preparingWorldCrowd ? 0 : config.warmupSeconds + seconds
+          : seconds) * 1000, elapsedSeconds: elapsed, frameIndex: frame };
+        // 22.10 ARC-2 S5: the same call through the bridge when `renderBridge` is set.
+        if (renderBridge) {
+          renderBridge.draw(worldRenderer, state, map, heightAt, terrain, scenery, environment, yaw, pitch, orbit,
+            splat, liquids, undefined, horizon, 24, 1.6, undefined, frameTime);
+        } else {
+          worldRenderer.draw(state, map, heightAt, terrain, scenery, environment, yaw, pitch, orbit,
+            splat, liquids, undefined, horizon, 24, 1.6, undefined, frameTime);
+        }
       } finally { worldRenderer.endRenderFrame(); }
     } finally { environment.endResourceFrame(); }
   };
@@ -440,7 +453,8 @@ host.__bench = {
     textureUploads.length = 0;
     const columns = ['rafAtMs', 'intervalMs', 'cpuMs', ...phaseNames, 'calls', 'triangles', 'programs', 'geometries', 'textures', 'heapBytes',
       ...(diagnostic ? ['boneUpdates', 'boneWorldUpdates', 'hiddenUnitVisits'] : []),
-      ...(budgetProbe ? ['budgetMs', 'budgetsFired'] : [])];
+      ...(budgetProbe ? ['budgetMs', 'budgetsFired'] : []),
+      ...(renderBridge ? BRIDGE_COLUMNS : [])]; // 22.10 ARC-2 S5
     const capacity = Math.ceil(config.durationSeconds * 2000);
     const samples = new Float64Array(capacity * columns.length);
     const worldSubmissions: Array<{ rafAtMs: number; sample: unknown }> = [];
@@ -517,6 +531,7 @@ host.__bench = {
       frameBudgetProbe.setEnabled(true);
       frameBudgetProbe.frameStart();
     }
+    renderBridge?.takeFrameStats(); // 22.10 ARC-2 S5: the seed frame's crossing is not a measured one
     performance.mark('bench-start');
     try {
       while (previous - start < config.durationSeconds * 1000) {
@@ -529,6 +544,7 @@ host.__bench = {
         if (arrival) arrive(seconds);
         render(seconds, (now - previous) / 1000, frame++);
         const cpuMs = performance.now() - at;
+        const bridge = renderBridge?.takeFrameStats(); // 22.10 ARC-2 S5
         if (budgetProbe) frameBudgetProbe.frameStart();
         const phase = phases(), info = renderer.info;
         const heap = (performance as Performance & { memory?: { usedJSHeapSize: number } }).memory?.usedJSHeapSize ?? 0;
@@ -537,7 +553,8 @@ host.__bench = {
           info.render.calls, info.render.triangles, info.programs?.length ?? 0,
           info.memory.geometries, info.memory.textures, heap,
           ...(diagnostic ? [counters.boneUpdates, counters.boneWorldUpdates, counters.hiddenUnitVisits] : []),
-          ...(budgetProbe ? [frameBudgetProbe.lastBudgetMs, frameBudgetProbe.lastFired] : [])];
+          ...(budgetProbe ? [frameBudgetProbe.lastBudgetMs, frameBudgetProbe.lastFired] : []),
+          ...(bridge ? [bridge.encodeMs, bridge.cloneMs, bridge.decodeMs, bridge.bytes, bridge.frameBytes] : [])];
         samples.set(row, sampleCount++ * columns.length);
         // Every program three linked inside a measured frame, with the frame's cost: a link that
         // the warm pass did not get to first is a 20–40 ms frame, and its cache key names it.
@@ -565,6 +582,7 @@ host.__bench = {
     const frames = Array.from({ length: sampleCount }, (_, index) =>
       Array.from(samples.subarray(index * columns.length, (index + 1) * columns.length)));
     return { scenario, count, columns, phaseNames, frames, gpuSamplesMs: [...gpuSamplesMs],
+      renderBridge: renderBridge ? 'loopback' : 'direct', // 22.10 ARC-2 S5
       ...(budgetReport ? { budgetProbe: budgetReport } : {}),
       hardware: hardware(), readiness: readiness(), routeHeightMissing, repeatedRafCallbacks,
       telemetry: world?.telemetry ?? null, wmoRangeAtStart, poseWorker: world?.poseWorkerStats() ?? null,
