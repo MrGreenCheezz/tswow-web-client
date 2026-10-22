@@ -998,6 +998,12 @@ export class EnvironmentClient {
   #footprintNext = new Int32Array(GRID_COUNT * GRID_COUNT);
   #footprintCount = 0;
   #objectsCache: EnvironmentObject[] = [];
+  /**
+   * 22.10 (7.34): the last merged placement per id and the map it was merged for. Unlike
+   * `#objectsCache` it survives an eviction, which is when a spanning placement's copy leaves.
+   */
+  #placements = new Map<number, EnvironmentObject>();
+  #placementsMap: number | undefined;
   #resourceFrameCommitted = false;
   #disposed = false;
   readonly #loadControllers = new Set<AbortController>();
@@ -1204,6 +1210,8 @@ export class EnvironmentClient {
     this.#animationDrainScheduled = false;
     this.#objectsMap = undefined; // P1-13a
     this.#objectsCache = [];
+    this.#placements = new Map(); // 22.10 7.34
+    this.#placementsMap = undefined;
     this.onStatus = undefined;
   }
 
@@ -1356,6 +1364,19 @@ export class EnvironmentClient {
         void this.#load(map, grid, key);
       }
     }
+    // 22.10 (7.34): a placement spanning tiles is listed in each under one id with equal fields —
+    // Stormwind's city WMO in 16. The last footprint tile used to win, so one landing or leaving
+    // handed the renderer another, equal copy; the renderer rebuilds a placement whose object
+    // changed, and the whole city vanished for a moment at a fixed line. Keep the object it had.
+    if (this.#placementsMap === map) {
+      const previous = this.#placements;
+      for (const [id, object] of objects) {
+        const before = previous.get(id);
+        if (before !== undefined && before !== object && sameEnvironmentPlacement(before, object)) objects.set(id, before);
+      }
+    }
+    this.#placements = objects;
+    this.#placementsMap = map;
     this.#objectsMap = map;
     this.#objectsGeneration = this.#generation;
     this.#objectsCache = [...objects.values()];
@@ -2927,6 +2948,7 @@ import {
   EnvironmentTileDecodeClient, VISUAL_TILE_ROUTE_VERSION, environmentTileLosses, // 05.10-A7b-1
 } from "./EnvironmentTileDecode.js";
 import { environmentTileGeneratorCut } from "./EnvironmentTileDecode.js"; // 05.10-A7b-9
+import { sameEnvironmentPlacement } from "./EnvironmentPlacementIdentity.js"; // 22.10 7.34
 import type { EnvironmentModelState, EnvironmentTileLossCounts } from "./StandIn.js"; // 05.10-A7b-9
 // The same ladder, from the file that measured it: a model the gateway has to build out of the
 // archives fails in exactly the way a body texture does, and two different waits would be two
