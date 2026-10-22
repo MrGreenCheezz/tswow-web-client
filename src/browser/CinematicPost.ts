@@ -33,6 +33,7 @@ import {
   VOLUME_SIDE_GAIN, VOLUME_SIDE_GLSL, VOLUME_SOFTEN_GLSL, VOLUME_SOFTEN_SPACING, volumeSideBeam,
 } from "./CinematicVolumeSide.js"; // 22.10 (7.30)
 import { GOD_RAY_STRENGTH_SCALE_MAX } from "./LightingQuality.js";
+import { SKY_HIGHLIGHT_GLSL } from "./CinematicSkyHighlight.js"; // 22.10 (7.30)
 import { highSunKeyWeight } from "./WorldLighting.js";
 
 export interface CinematicProfile {
@@ -976,7 +977,12 @@ void main() {
   // channel toward white. Kept as energy above one, the cream core (band 10 over band 11) went on with
   // red past green and blue, and the shoulder, which keeps the hue, turned it into the salmon and
   // orange blots of the «acid» sky (B-noon cloud core: r − g p98 36 faithful, 57 → 40 with this).
-  if (sky) display = min(display, vec3(1.0));
+  if (sky) {
+    display = min(display, vec3(1.0));
+    // 22.10 (7.30): cloud cores a little under the client's, against the darker cinematic sky
+    // (CinematicSkyHighlight.ts).
+${SKY_HIGHLIGHT_GLSL}
+  }
   vec3 colour = cinematicToLinear(display);
   vec3 view = cinematicViewPosition(vUV, sky ? 1.0 : depth);
   vec3 ray = normalize(mat3(cameraWorld) * view);
