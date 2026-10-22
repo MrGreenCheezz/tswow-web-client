@@ -87,11 +87,17 @@ export class LightHalos {
   readonly mesh: THREE.InstancedMesh;
   readonly #centres: THREE.InstancedBufferAttribute;
   readonly #colours: THREE.InstancedBufferAttribute;
+  readonly #capacity: number;
 
-  constructor() {
+  /**
+   * 22.10 (7.46): `capacity` and `name` let the far glows (`FarLightGlows.ts`) keep their own,
+   * larger instance set over the same shader source, so three shares the one program.
+   */
+  constructor(capacity = WORLD_LOCAL_LIGHT_LIMIT, name = "lightHalos") {
     const geometry = new THREE.PlaneGeometry(2, 2);
-    this.#centres = new THREE.InstancedBufferAttribute(new Float32Array(WORLD_LOCAL_LIGHT_LIMIT * 4), 4);
-    this.#colours = new THREE.InstancedBufferAttribute(new Float32Array(WORLD_LOCAL_LIGHT_LIMIT * 3), 3);
+    this.#capacity = Math.max(1, Math.floor(capacity));
+    this.#centres = new THREE.InstancedBufferAttribute(new Float32Array(this.#capacity * 4), 4);
+    this.#colours = new THREE.InstancedBufferAttribute(new Float32Array(this.#capacity * 3), 3);
     this.#centres.setUsage(THREE.DynamicDrawUsage);
     this.#colours.setUsage(THREE.DynamicDrawUsage);
     geometry.setAttribute("haloCentre", this.#centres);
@@ -105,8 +111,8 @@ export class LightHalos {
       blending: THREE.AdditiveBlending,
       fog: false,
     });
-    this.mesh = new THREE.InstancedMesh(geometry, material, WORLD_LOCAL_LIGHT_LIMIT);
-    this.mesh.name = "lightHalos";
+    this.mesh = new THREE.InstancedMesh(geometry, material, this.#capacity);
+    this.mesh.name = name;
     this.mesh.count = 0;
     this.mesh.frustumCulled = false;
     this.mesh.castShadow = false;
@@ -121,19 +127,25 @@ export class LightHalos {
 
   /** One light: scene position, linear colour, colour strength (intensity × selection weight). */
   add(position: THREE.Vector3, colour: THREE.Vector3, strength: number, daylight: number, camera: THREE.Vector3): void {
-    const index = this.mesh.count;
-    if (index >= WORLD_LOCAL_LIGHT_LIMIT) return;
     const weight = LIGHT_HALO_STRENGTH * strength * lightHaloWeight(daylight, position.distanceTo(camera));
     if (!(weight > 0.002)) return;
+    this.addGlow(position.x, position.y, position.z, LIGHT_HALO_RADIUS,
+      colour.x * weight, colour.y * weight, colour.z * weight);
+  }
+
+  /** 22.10 (7.46): one quad as given — centre, world radius and the final additive colour. */
+  addGlow(x: number, y: number, z: number, radius: number, red: number, green: number, blue: number): void {
+    const index = this.mesh.count;
+    if (index >= this.#capacity) return;
     const centres = this.#centres.array as Float32Array;
     const colours = this.#colours.array as Float32Array;
-    centres[index * 4] = position.x;
-    centres[index * 4 + 1] = position.y;
-    centres[index * 4 + 2] = position.z;
-    centres[index * 4 + 3] = LIGHT_HALO_RADIUS;
-    colours[index * 3] = colour.x * weight;
-    colours[index * 3 + 1] = colour.y * weight;
-    colours[index * 3 + 2] = colour.z * weight;
+    centres[index * 4] = x;
+    centres[index * 4 + 1] = y;
+    centres[index * 4 + 2] = z;
+    centres[index * 4 + 3] = radius;
+    colours[index * 3] = red;
+    colours[index * 3 + 1] = green;
+    colours[index * 3 + 2] = blue;
     this.mesh.count = index + 1;
   }
 
