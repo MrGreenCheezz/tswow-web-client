@@ -68,6 +68,7 @@ import {
   skyPostDrawsSun, // 05.10-A7b-6-review
   skyDayFraction, // 13.10 7.04
 } from "./SkyCelestials.js"; // 05.10-A7b-6
+import { clientDrawsSun } from "./CinematicSunGate.js"; // 22.10 (7.30)
 import {
   CLASSIC_DOME_VERTICES, buildClassicDome, classicDomeColours, highlightStrength, packDisplayColour,
   writeClassicDomeColours, type ClassicDomeBands,
@@ -4400,6 +4401,8 @@ export class WorldRenderer3D {
     glow: undefined as number | undefined,
     /** 12.10 7.30: Light int band 9, the colour Wow.exe draws the sun body with (0x7f3230). */
     sunBand: undefined as number | undefined,
+    /** 22.10 (7.30): the client draws no sun here (`clientDrawsSun`). */
+    sunHidden: false,
   };
   /** The account's cinematic leaves; the effective profile is empty while lighting quality is 0. */
   #cinematicRequested: Readonly<Partial<CinematicProfile>> | undefined;
@@ -4972,6 +4975,9 @@ export class WorldRenderer3D {
       light.fogFar = Math.max(sample.fogStart + 1, sample.fogEnd);
       light.glow = sample.glow;
       light.sunBand = sample.skyChannels ? sample.sunColour : undefined; // 12.10 7.30
+      // 22.10 (7.30): the sun's beams, glare and haze warmth only where the client draws a sun.
+      light.sunHidden = !clientDrawsSun(this.#sky.visible,
+        skyboxCoversSky(this.#skyboxGroup.children.length > 0, sample.skyboxFlags));
     }
     light.sun.x = sun.x; light.sun.y = sun.y; light.sun.z = sun.z;
     light.storm = this.#weatherFade.storm;

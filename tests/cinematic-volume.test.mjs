@@ -189,3 +189,47 @@ test("22.10 (7.30): a thin volume beam fades, a wide one is kept", () => {
   assert.ok(composite.includes("beam *= widthKeep;"), "the forward term too");
   assert.ok(composite.includes(`* vt * ${VOLUME_WIDTH_TEXELS.toFixed(1)}).r;`));
 });
+
+test("22.10 (7.30): the sun's effects fade where the client draws no sun", async () => {
+  // Owner, 22.10: «в некоторых местах солнце лишнее». Hellfire (HellfireSkyBox, flags 0), owner
+  // settings: mean luma 40.7 -> 31.5 with the sun's glare and haze warmth gone; Elwynn unchanged.
+  const { clientDrawsSun, stepSunShown, SUN_SHOWN_RATE } = await import("../dist/code/browser/CinematicSunGate.js");
+  const { skyboxCoversSky } = await import("../dist/code/browser/SkyCelestials.js");
+  assert.equal(clientDrawsSun(true, false), true);
+  assert.equal(clientDrawsSun(true, skyboxCoversSky(true, 0)), false, "a LightSkybox without Flags & 2 covers the sky");
+  assert.equal(clientDrawsSun(true, skyboxCoversSky(true, 2)), true, "an overlay skybox (Flags & 2) keeps the sun");
+  assert.equal(clientDrawsSun(false, false), false, "no sky dome (an interior-only room)");
+  close(stepSunShown(1, 0, 1 / 60), Math.exp(-SUN_SHOWN_RATE / 60), 1e-12);
+  assert.equal(stepSunShown(0.0005, 0, 1 / 60), 0, "snaps at the end");
+  const light = {
+    diffuse: { r: 1, g: 0.9, b: 0.8 }, ambient: { r: 0.4, g: 0.5, b: 0.6 }, fog: { r: 0.3, g: 0.47, b: 0.56 },
+    fogFar: 500, sun: new THREE.Vector3(0.2, 0.5, 0.3).normalize(), storm: 0, underwater: false, indoors: false, glow: 0.65,
+  };
+  const post = new CinematicPost();
+  post.setProfile({ grade: true, bloom: true, sunScattering: true });
+  post.updateLight(light);
+  post.settle();
+  const u = post.uniforms;
+  assert.ok(u.sunDisc.value.x > 0 && u.sunGlare.value.x > 0 && u.hazeGlare.value > 0 && u.haze.value.y > 0);
+  const haze = u.haze.value.x;
+  post.updateLight({ ...light, sunHidden: true });
+  const renderer = fakeRenderer();
+  post.render(renderer, frame([cascade(), cascade()]));
+  assert.ok(post.sunShown < 1 && post.sunShown > 0.9, `a fade, not a pop: ${post.sunShown}`);
+  post.settle();
+  assert.equal(post.sunShown, 0);
+  assert.equal(u.sunDisc.value.x, 0);
+  assert.equal(u.sunGlare.value.x, 0);
+  assert.equal(u.hazeGlare.value, 0);
+  assert.equal(u.haze.value.y, 0, "no sun warmth in the haze");
+  assert.equal(u.haze.value.x, haze, "the zone's own haze stays");
+  const before = renderer.targets.length;
+  post.render(renderer, frame([cascade(), cascade()]));
+  const names = renderer.targets.slice(before).map((target) => target?.texture?.name);
+  assert.ok(!names.includes("cinematic-volume"), "no march without a sun");
+  assert.equal(u.volumeLight.value.x, 0);
+  post.dispose();
+  const { readFile } = await import("node:fs/promises");
+  const source = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
+  assert.match(source, /light\.sunHidden = !clientDrawsSun\(this\.#sky\.visible,\s*skyboxCoversSky\(this\.#skyboxGroup\.children\.length > 0, sample\.skyboxFlags\)\);/);
+});

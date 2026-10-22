@@ -35,6 +35,7 @@ import {
 import { GOD_RAY_STRENGTH_SCALE_MAX } from "./LightingQuality.js";
 import { CINEMATIC_SKY_GLSL } from "./CinematicSky.js"; // 22.10 (7.30)
 import { VOLUME_SOFTEN_PASSES, VOLUME_WIDTH_GLSL } from "./CinematicVolumeWidth.js"; // 22.10 (7.30)
+import { stepSunShown } from "./CinematicSunGate.js"; // 22.10 (7.30)
 import { highSunKeyWeight } from "./WorldLighting.js";
 
 export interface CinematicProfile {
@@ -1129,6 +1130,11 @@ export interface CinematicLightInput {
    * colour. Absent (or 0: a v4 body) the high sun's colour is derived (`cinematicSunColour`).
    */
   readonly sunBand?: number | undefined;
+  /**
+   * 22.10 (7.30): the client draws no sun here (`clientDrawsSun` false: a LightSkybox model covers
+   * the sky, or no sky dome is drawn). The sun's beams, glare and haze warmth fade out.
+   */
+  readonly sunHidden?: boolean | undefined;
 }
 
 export interface CinematicFrame {
@@ -1285,6 +1291,7 @@ export class CinematicPost {
     fogFar: 640, sun: { x: 0, y: 1, z: 0 }, storm: 0, underwater: false, indoors: false,
     glow: undefined as number | undefined,
     sunBand: undefined as number | undefined,
+    sunHidden: false,
   };
   /** 12.10-7.29: the post's sun colour (`cinematicSunColour`), display space. */
   readonly #sunColour: GradeColour = { r: 1, g: 1, b: 1 };
@@ -1294,6 +1301,8 @@ export class CinematicPost {
   #adaptationTarget = 1;
   /** Smoothed 0 (open sky) .. 1 (under a roof); fades haze, sun disc, shafts and grade together. */
   #shelter = 0;
+  /** 22.10 (7.30): smoothed 0 (the client draws no sun) .. 1 (it does); CinematicSunGate.ts. */
+  #sunShown = 1;
   readonly #shaftSource: ShaftSource = { u: 0.5, v: 0.5, direction: 1, weight: 0 };
   /** Shaft gain before the view weight and the frame's ceiling; set with the light. */
   #shaftGain = 0;
@@ -1436,6 +1445,11 @@ export class CinematicPost {
     return this.#shelter;
   }
 
+  /** 22.10 (7.30): smoothed sun factor (`CinematicSunGate.ts`), for tests and diagnostics. */
+  get sunShown(): number {
+    return this.#sunShown;
+  }
+
   /** Returns whether the post-process leaves (not the material leaves) changed. */
   setProfile(profile: Readonly<Partial<CinematicProfile>> | undefined): boolean {
     const next = normaliseCinematicProfile(profile);
@@ -1471,6 +1485,7 @@ export class CinematicPost {
     stored.indoors = input.indoors;
     stored.glow = input.glow;
     stored.sunBand = input.sunBand;
+    stored.sunHidden = input.sunHidden === true;
     this.#adaptationTarget = input.indoors ? 1.1 : 1;
     this.#applyLight();
   }
@@ -1479,6 +1494,7 @@ export class CinematicPost {
   settle(): void {
     this.#adaptation = this.#adaptationTarget;
     this.#shelter = this.#light.indoors ? 1 : 0;
+    this.#sunShown = this.#light.sunHidden ? 0 : 1;
     this.#applyLight();
   }
 
@@ -1502,12 +1518,14 @@ export class CinematicPost {
     u.sunColour.value.setRGB(sunColour.r, sunColour.g, sunColour.b, THREE.SRGBColorSpace);
     u.fogColour.value.setRGB(input.fog.r, input.fog.g, input.fog.b, THREE.SRGBColorSpace);
     const outdoors = input.underwater ? 0 : open;
+    // 22.10 (7.30): the sun's own effects only where the client draws a sun (CinematicSunGate.ts).
+    const sunlit = outdoors * this.#sunShown;
     const t = CINEMATIC_TUNING;
-    u.sunDisc.value.x = t.sunDisc * grade.daylight * outdoors * strength;
-    u.sunGlare.value.x = (t.glare + t.glareGolden * grade.golden) * grade.daylight * outdoors * strength;
-    u.sunGlare.value.z = t.glareWide * grade.golden * grade.daylight * outdoors * strength;
+    u.sunDisc.value.x = t.sunDisc * grade.daylight * sunlit * strength;
+    u.sunGlare.value.x = (t.glare + t.glareGolden * grade.golden) * grade.daylight * sunlit * strength;
+    u.sunGlare.value.z = t.glareWide * grade.golden * grade.daylight * sunlit * strength;
     const fogFar = Number.isFinite(input.fogFar) && input.fogFar > 1 ? input.fogFar : 640;
-    const warmth = Math.min(1, (0.35 + 0.65 * grade.golden) * grade.daylight);
+    const warmth = Math.min(1, (0.35 + 0.65 * grade.golden) * grade.daylight) * this.#sunShown;
     const storm = Number.isFinite(input.storm) ? Math.max(0, Math.min(1, input.storm)) : 0;
     // 12.10-7.21: a quarter more aerial depth by full day (1.6 → 2.0 fog distances), so the ridges
     // behind a noon field layer; golden hour keeps its 3.2 and the night its 1.6.
@@ -1519,15 +1537,15 @@ export class CinematicPost {
       1 / 140,
     );
     u.hazeGlare.value = (t.hazeGlare + t.hazeGlareGolden * grade.golden) * grade.daylight * atmosphere
-      * outdoors * strength;
+      * sunlit * strength;
     u.gradeLift.value = grade.lift;
     u.shadowTint.value.setRGB(grade.shadowTint.r, grade.shadowTint.g, grade.shadowTint.b, THREE.LinearSRGBColorSpace);
     u.highlightTint.value.setRGB(grade.highlightTint.r, grade.highlightTint.g, grade.highlightTint.b, THREE.LinearSRGBColorSpace);
     // Shafts: from sunrise, longer and stronger toward golden hour, gone in a storm or under a roof.
     const sunUp = smooth(0.0, 0.1, sun.y);
-    this.#shaftGain = (t.shafts + t.shaftsGolden * grade.golden) * sunUp * (1 - storm) * outdoors * strength;
+    this.#shaftGain = (t.shafts + t.shaftsGolden * grade.golden) * sunUp * (1 - storm) * sunlit * strength;
     // 12.10-7.30: the volumetric march under the same day, weather and roof weighting.
-    this.#volumeGain = (t.volume + t.volumeGolden * grade.golden) * sunUp * (1 - storm) * outdoors * strength;
+    this.#volumeGain = (t.volume + t.volumeGolden * grade.golden) * sunUp * (1 - storm) * sunlit * strength;
     u.shaftSource.value.w = t.shaftDecayNoon + (t.shaftDecayGolden - t.shaftDecayNoon) * grade.golden;
     // A high sun lights shafts across a wide part of the sky; a low one from a tighter lobe.
     const high = smooth(0.3, 0.8, sun.y);
@@ -1563,6 +1581,11 @@ export class CinematicPost {
     if (this.#shelter !== shelterTarget) {
       const next = this.#shelter + (shelterTarget - this.#shelter) * (1 - Math.exp(-dt * 4));
       this.#shelter = Math.abs(next - shelterTarget) < 1e-3 ? shelterTarget : next;
+      this.#applyLight();
+    }
+    const sunShownTarget = this.#light.sunHidden ? 0 : 1;
+    if (this.#sunShown !== sunShownTarget) {
+      this.#sunShown = stepSunShown(this.#sunShown, sunShownTarget, dt);
       this.#applyLight();
     }
 
