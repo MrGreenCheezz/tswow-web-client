@@ -15,6 +15,7 @@ import {
 import { spawnFadeFactor, SPAWN_FADE_WINDOW_MS } from "../dist/code/browser/AnimatedModel.js";
 import { glowBodyMeshes } from "../dist/code/browser/WeaponGlowBody.js"; // 05.10: ревью E2
 import { glowAnchorsOf } from "../dist/code/browser/WeaponGlow.js"; // 05.10: ревью E2
+import { fadedDepthWrite } from "../dist/code/browser/FadeDepth.js"; // 22.10 (7.42)
 import { applyWorldLight, createWorldLightUniforms } from "../dist/code/browser/WorldLighting.js";
 
 // The unit warm hold (city-arrival: seven shader programs linked inside the frame a unit was first
@@ -56,6 +57,7 @@ const Harness = (() => {
     THREE, spawnFadeFactor, programWarmupKind, unitWarmBody, createFadeProgramTwin, createUnitCapsuleMaterial,
     borrowFadedMaterials, returnBorrowedMaterials, updateBorrowedMaterials,
     glowBodyMeshes, glowAnchorsOf, // 05.10: ревью E2 — `#unitOpacityMeshes` reaches the glow bodies
+    fadedDepthWrite, // 22.10 (7.42)
     UNIT_WARM_HOLD_FRAMES, UNIT_WARM_HOLD_SELF_FRAMES, UNIT_FADE_RETURN_HOLD_FRAMES, APPEARANCE_PENDING_WAIT_MS,
   };
   return Function(...Object.keys(deps), `${code}; return Harness;`)(...Object.values(deps));
@@ -114,6 +116,7 @@ function rig() {
     unitWarmHolds: new Map(), unitPartWarmHolds: new Map(), unitWarmTracked: new WeakSet(),
     fadeTwins: new WeakMap(), capsuleTwins: undefined, worldLight: createWorldLightUniforms(),
     unitBodyGeometry: new THREE.CapsuleGeometry(0.5, 1, 4, 12), submissionSerial: 1,
+    cinematic: { active: false }, // 22.10 (7.42)
     // 11.02-H-review: the release asks the vehicle poser whether a HIDE_PASSENGER seat hid the node.
     vehiclePassengers: { hides: () => false },
   });

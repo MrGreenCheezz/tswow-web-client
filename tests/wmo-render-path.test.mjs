@@ -5,7 +5,7 @@ import * as THREE from "three";
 import { parseWmoVisual, wmoDependencies, wmoGroupMeshes } from "../tools/wmo-visual.mjs";
 import { WWM_CLASSIC_VERTEX_LIGHT, WWM_VERTEX_ALPHA_UNFIXED, encodeWwm } from "../tools/wwm.mjs";
 import {
-  classicWmoLight, decodeWwm, wmoDoodadInAperture, wmoDoodadRoomVisible, wmoFloorLight, wmoInteriorGroupAt,
+  classicStoredByte, classicWmoLight, decodeWwm, wmoDoodadInAperture, wmoDoodadRoomVisible, wmoFloorLight, wmoInteriorGroupAt,
   wmoInteriorOnly, wmoVertexLight,
 } from "../dist/code/browser/WmoModel.js";
 import { selectWmoPortalGroups } from "../dist/code/browser/WmoOcclusion.js";
@@ -65,14 +65,19 @@ test("a classic room is lit by its baked colour, a unified one by the colour plu
   const lamp = { position: [2, 2, 1], colour: [255, 200, 150], intensity: 1, attenuationStart: 0, attenuationEnd: 10, attenuates: true };
   const mesh = { ...QUAD, lightRefs: new Uint16Array([0]) };
   const classic = wmoVertexLight(mesh, normals, ambient, [lamp], "classic");
-  // Vertex 0: MOCV alone. Vertex 1: MOCV equal to the ambient, the level Gundrak bakes its unlit
-  // stone at on 35.4% of its vertices. Vertex 2: below the ambient, floored at it by the load step.
-  // Vertex 3: alpha 128 brightens by 1 + 128/64, past white and up to twice the texture.
+  // 22.10 (7.38): 2·stored, stored = (c + (c·a >> 6)) >> 1 (FixColorVertexAlpha 0x007D7380).
+  // Vertex 0: MOCV alone. Vertex 1: MOCV equal to the ambient (64, 50, 61), the level Gundrak bakes
+  // its unlit stone at on 35.4% of its vertices; the odd 61 halves to 30 and draws as 60. Vertex 2:
+  // below the ambient and drawn as it is — the client has no floor at the ambient. Vertex 3: alpha
+  // 128 brightens by 1 + 128/64, past white and up to twice the texture.
   assert.deepEqual([...classic.subarray(0, 3)], [100, 80, 90].map((c) => f32(srgbToLinear(c / 255))));
-  assert.deepEqual([...classic.subarray(3, 6)], ambient.map((c) => f32(srgbToLinear(c / 255))));
-  assert.deepEqual([...classic.subarray(6, 9)], ambient.map((c) => f32(srgbToLinear(c / 255))));
+  assert.deepEqual([...classic.subarray(3, 6)], [64, 50, 60].map((c) => f32(srgbToLinear(c / 255))));
+  assert.deepEqual([...classic.subarray(6, 9)], [30, 20, 10].map((c) => f32(srgbToLinear(c / 255))));
   assert.deepEqual([...classic.subarray(9, 12)], [300, 240, 270].map((c) => f32(srgbToLinear(c / 255))));
-  assert.equal(classicWmoLight(255, 255, 0), srgbToLinear(2), "the Mod2x ceiling is twice the texture");
+  assert.equal(classicWmoLight(classicStoredByte(255, 255)), srgbToLinear(2), "the Mod2x ceiling is twice the texture");
+  // The byte the client stores, in integers: 0x7D7380's two shifts, the clamp, and no ambient.
+  assert.deepEqual([[61, 0], [61, 1], [100, 63], [100, 64], [255, 255], [0, 255]].map(([c, a]) => classicStoredByte(c, a)),
+    [30, 30, 99, 100, 255, 0]);
   // The classic bake already holds the lamps: a MOLR reference changes nothing on this path.
   assert.deepEqual(classic, wmoVertexLight({ ...mesh, lightRefs: new Uint16Array() }, normals, ambient, [], "classic"));
   // A group with no MOCV keeps the white the encoder wrote for it, and no alpha boost.
@@ -151,10 +156,11 @@ test("the floor light is the room's own baked light under the feet", () => {
   const { decoded } = encodeModel({ ...MODEL, ambient: [20, 20, 20], groups: [stacked], renderFlags: 0x5 });
   const upper = wmoFloorLight(decoded, 3, 2, 0.1);
   // Halfway across the floor's gradient at (3, 2): half of (200, 100, 50) and half of its black
-  // corner, which the classic load step floors at the ambient (20). The ceiling above is no floor.
-  assert.deepEqual(upper.map((value) => Math.round(value * 255)), [110, 60, 35]);
+  // corner, which stays black: 22.10 (7.38) the classic client has no floor at the ambient (20).
+  // The ceiling above is no floor.
+  assert.deepEqual(upper.map((value) => Math.round(value * 255)), [100, 50, 25]);
   const lower = wmoFloorLight(decoded, 3, 2, -9.9);
-  assert.deepEqual(lower.map((value) => Math.round(value * 255)), [20, 20, 30], "the storey below");
+  assert.deepEqual(lower.map((value) => Math.round(value * 255)), [10, 20, 30], "the storey below");
   assert.equal(wmoFloorLight(decoded, 20, 20, 0), undefined, "no room holds the point");
   assert.equal(wmoFloorLight(decoded, 2, 1, 30), undefined, "nothing within reach below");
   assert.equal(wmoInteriorGroupAt(decoded, 2, 2, -1), 0);
@@ -311,13 +317,24 @@ test("Gundrak is classic rooms alone, lit once by its ambient; Stormwind stays u
   assert.deepEqual(owners(113), [0, 1, 2, 18]);
   for (let ordinal = 0; ordinal < 962; ordinal++) assert.ok(owners(ordinal).length > 0, `doodad ${ordinal} has a room`);
   // Group 18, HubSacrificeLinkPipe, is baked at exactly the ambient: the classic light is that
-  // ambient, where the unified sum lit it at twice.
+  // ambient (22.10, 7.38: 2·(61 >> 1) = 60 in blue), where the unified sum lit it at twice.
   const pipe = gundrak.groups[18];
   const normals = new Float32Array(pipe.positions.length);
   const classic = wmoVertexLight(pipe, normals, gundrak.ambient, [], "classic");
   const unified = wmoVertexLight(pipe, normals, gundrak.ambient, []);
-  assert.deepEqual([...classic.subarray(0, 3)], [64, 50, 61].map((c) => f32(srgbToLinear(c / 255))));
+  assert.deepEqual([...classic.subarray(0, 3)], [64, 50, 60].map((c) => f32(srgbToLinear(c / 255))));
   assert.deepEqual([...unified.subarray(0, 3)], [128, 100, 122].map((c) => f32(srgbToLinear(c / 255))));
+  // 22.10 (7.38): Wow.exe has no floor at the ambient — the channels baked below it (0.44%) and the
+  // odd bytes the halving rounds down draw below it here too.
+  let below = 0;
+  for (const group of gundrak.groups) {
+    if (!group.colours?.length) continue;
+    const light = wmoVertexLight(group, new Float32Array(group.positions.length), gundrak.ambient, [], "classic");
+    for (let index = 0; index < light.length; index++) {
+      if (light[index] < f32(srgbToLinear(gundrak.ambient[index % 3] / 255)) - 1e-6) below++;
+    }
+  }
+  assert.ok(below > 1000, `${below} channels below the ambient`);
 
   const stormwind = await readBuilding("World\\wmo\\Azeroth\\Buildings\\Stormwind\\Stormwind.wmo");
   assert.equal(stormwind.renderFlags, 0xf);

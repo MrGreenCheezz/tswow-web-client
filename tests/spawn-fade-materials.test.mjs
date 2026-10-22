@@ -8,6 +8,7 @@ import {applyBlendMode, cloneMaterialFaded} from '../dist/code/browser/ModelBuil
 import {spawnFadeFactor} from '../dist/code/browser/AnimatedModel.js';
 import {glowBodyMeshes, makeGlowBody, mountGlowBodies} from '../dist/code/browser/WeaponGlowBody.js'; // 05.10: ревью E2
 import {attachGlowAnchors, glowAnchorsOf, glowPlacement} from '../dist/code/browser/WeaponGlow.js'; // 05.10: ревью E2
+import {fadedDepthWrite} from '../dist/code/browser/FadeDepth.js'; // 22.10 (7.42)
 
 const source = await readFile(new URL('../src/browser/WorldRenderer3D.ts', import.meta.url), 'utf8');
 const parsed = ts.createSourceFile('WorldRenderer3D.ts', source, ts.ScriptTarget.ES2022, true);
@@ -24,12 +25,14 @@ const harnessCode = ts.transpileModule('class Harness { ' + methods.join('\n') +
 const Harness = Function('THREE', 'borrowFadedMaterials', 'returnBorrowedMaterials',
   'updateBorrowedMaterials', 'spawnFadeFactor', 'GAMEOBJECT_FADE_STEPS',
   'glowBodyMeshes', 'glowAnchorsOf', // 05.10: ревью E2
+  'fadedDepthWrite', // 22.10 (7.42)
   harnessCode + '; return Harness;')(
     THREE, rendererExports.borrowFadedMaterials, rendererExports.returnBorrowedMaterials,
-    rendererExports.updateBorrowedMaterials, spawnFadeFactor, 6, glowBodyMeshes, glowAnchorsOf);
+    rendererExports.updateBorrowedMaterials, spawnFadeFactor, 6, glowBodyMeshes, glowAnchorsOf, fadedDepthWrite);
 function harness() {
   const h = new Harness();
   h.programWarmup = {registerObject() {}};
+  h.cinematic = {active: false}; // 22.10 (7.42)
   return h;
 }
 function unitFixture() {
@@ -153,4 +156,33 @@ test('a glow body on a weapon fades with its unit and gives its shared materials
   h.applyUnitOpacity(unit, 1);
   assert.ok(body.object.material === bodyShared, 'full opacity hands the shared array back');
   assert.equal(bodyShared[0].opacity, .9, 'the shared source is never written');
+});
+
+// 22.10 (7.42): a faded body wrote depth over the sky, and the cinematic chain (CinematicSky.ts reads
+// depth-1 texels as sky) graded its silhouette as ground — large faceted shapes at orbit ≈ 0.4.
+test('with the cinematic chain on, a faded unit writes no depth; the faithful frame keeps the authored state', () => {
+  const h = harness(), {shared, mesh, unit} = unitFixture();
+  assert.ok(shared.every(m => m.depthWrite), 'the fixture body writes depth');
+  h.applyUnitOpacity(unit, .3);
+  assert.ok(mesh.material.every(m => m.depthWrite), 'faithful: depth as authored');
+  const faithfulCopies = mesh.material;
+  h.cinematic.active = true;
+  h.applyUnitOpacity(unit, .3);
+  assert.equal(mesh.material, faithfulCopies, 'the chain switching on reaches a standing fade in place');
+  assert.ok(mesh.material.every(m => !m.depthWrite), 'enhanced: the faded copies leave the depth to the sky');
+  assert.equal(unit.material.depthWrite, false, 'and so does a stand-in pill');
+  h.applyUnitOpacity(unit, .2);
+  assert.ok(mesh.material.every(m => !m.depthWrite), 'every fade step keeps it off');
+  h.applyUnitOpacity(unit, 1);
+  assert.equal(mesh.material, shared, 'full opacity gives the shared materials back');
+  assert.ok(shared.every(m => m.depthWrite), 'and they were never touched');
+  assert.equal(unit.material.depthWrite, true);
+  h.applyUnitOpacity(unit, .5);
+  assert.ok(mesh.material.every(m => !m.depthWrite), 'a fresh borrow under the chain');
+  h.cinematic.active = false;
+  h.applyUnitOpacity(unit, .5);
+  assert.ok(mesh.material.every(m => m.depthWrite), 'the chain switched off restores the authored depth');
+  const authoredOff = new THREE.MeshBasicMaterial({depthWrite: false});
+  const [borrow] = rendererExports.borrowFadedMaterials([new THREE.Mesh(new THREE.BufferGeometry(), authoredOff)], .5, false);
+  assert.equal(borrow.clones[0].depthWrite, false, 'a copy never writes depth its source did not');
 });

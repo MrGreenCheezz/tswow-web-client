@@ -53,9 +53,9 @@ export const WMO_GROUP_HAS_COLOURS = 0x4;
 /**
  * Which of the client's two WMO pipelines lights a model's rooms, from MOHD bit 0x2.
  *
- * `classic` is `MapObj.wfx`: MOCV already holds `MOHD.ambColor` (the load step subtracts it and the
- * shader adds it back), so the room's light is MOCV itself, brightened by its alpha as
- * `FixColorVertexAlpha` does. `unified` is `MapObjU.wfx`: the ambient is added to MOCV at run time.
+ * `classic` is `MapObj.wfx`: the classic tool baked `MOHD.ambColor` into MOCV, and the client never
+ * adds it again (22.10, 7.38: no subtraction at load, no ambient in the unlit program), so the
+ * room's light is MOCV itself, brightened by its alpha as `FixColorVertexAlpha` does. `unified` is `MapObjU.wfx`: the ambient is added to MOCV at run time.
  * Artifacts that predate the flag read as `unified`, which is the light they were always given.
  */
 export type WmoVertexLightPath = "classic" | "unified";
@@ -880,23 +880,16 @@ export function* wmoVertexLightSteps(
     // On Gundrak that lifted the darkest tenth of the dungeon from 54 to 108 of 255 and halved its
     // p90/p10 contrast (4.72 to 2.36), which is the flat, unlit look. A group without MOCV keeps
     // the white it always had: the encoder's placeholder is not light and gets no alpha boost.
-    const lookup = classicWmoLightLookup(ambient);
+    // 22.10 (7.38): the light is 2·stored per channel; the ambient plays no part (see classicWmoLight).
+    const lookup = classicWmoLightLookup();
     // 22.10 (7.37): a v27 group's transition vertices hold the client's own bytes already.
     const transition = Math.min(vertexCount, mesh.transitionVertices ?? 0);
     for (let start = 0; start < vertexCount; start += WMO_GEOMETRY_STEP_VERTICES) {
       const end = Math.min(start + WMO_GEOMETRY_STEP_VERTICES, vertexCount);
       for (let vertex = start; vertex < end; vertex++) {
-        if (vertex < transition && bakedColours) {
-          for (let channel = 0; channel < 3; channel++) {
-            light[vertex * 3 + channel] = lookup[channel * 256 + classicTransitionColour(mesh.colours[vertex * 4 + channel]!, alphaFixed)]!;
-          }
-          continue;
-        }
-        const alpha = alphaFixed ? mesh.colours[vertex * 4 + 3]! : 0;
         for (let channel = 0; channel < 3; channel++) {
           light[vertex * 3 + channel] = !bakedColours ? 1
-            : alpha === 0 ? lookup[channel * 256 + mesh.colours[vertex * 4 + channel]!]!
-              : classicWmoLight(mesh.colours[vertex * 4 + channel]!, alpha, ambient[channel]!);
+            : lookup[classicStoredColour(mesh.colours, vertex, channel, vertex < transition, alphaFixed)]!;
         }
       }
       yield;
@@ -1005,44 +998,51 @@ function bakedWmoLightLookup(ambient: readonly [number, number, number]): Float3
 }
 
 /**
- * One channel of a classic room's light, linear, from its MOCV byte, alpha and the model ambient.
+ * 22.10 (7.38): one channel of a classic room's light, linear, from the byte Wow.exe holds for it.
  *
- * `FixColorVertexAlpha` stores (c·(1 + a/64) − ambient) / 2 clamped to a byte, `MapObjDiffuse_T1`
- * adds the ambient's half back and clamps to one, and `MapObjDiffuse` doubles it (Mod2x). Composed,
- * the multiplier on the texel is c·(1 + a/64) held between the ambient and 510/255: the ambient is
- * a floor rather than an addend, and a large alpha may brighten up to twice the texture.
+ * The classic render (0x007AC9F0) draws every interior and transition batch of a group with
+ * lighting mode 0, so `SelectWorldShaders` (0x007A84D0) picks an even `MapObjDiffuse_T1`
+ * permutation, which is only `MOV result.color, vertex.attrib[4]`: the stored MOCV byte is the
+ * vertex colour as it is. `MapObjDiffuse` then multiplies it into the texel twice (Mod2x). Neither
+ * the MOHD ambient nor the emissive constant c29 (read by the lit permutations only) takes part, so
+ * the multiplier on the texel is 2·stored/255 — up to twice the texture, with no floor at the
+ * ambient. The stored byte comes from {@link classicStoredByte}.
  */
-export function classicWmoLight(colour: number, alpha: number, ambient: number): number {
-  const boosted = colour * (1 + alpha / 64);
-  return srgbToLinear(Math.min(510, Math.max(ambient, boosted)) / 255);
+export function classicWmoLight(stored: number): number {
+  return srgbToLinear((2 * stored) / 255);
 }
 
 /**
- * 22.10 (7.37): a classic transition vertex's room colour, on the scale {@link classicWmoLight} reads.
- *
- * The byte is what Wow.exe holds after `FixColorVertexAlpha` (0x007D7380) halved it — that function
- * brightens by alpha only the vertices past the transition range — and `AttenTransVerts`
- * (0x007D78C0) pulled it towards 127 (`tools/wmo-transition.mjs`). Every other vertex reaches
- * {@link classicWmoLight} as c·(1 + a/64), twice the stored byte, so this one does too: 2·stored, and
- * no alpha boost. Without the halving (MOHD 0x8) the byte is read as it is, like any other.
+ * 22.10 (7.38): the byte `CMapObjGroup::FixColorVertexAlpha` (0x007D7380) stores for a vertex past
+ * the transition range: (c + (c·a >> 6)) >> 1, clamped to 255, in integers, with alpha set to 0xFF.
+ * Neither branch subtracts the ambient. Through {@link classicWmoLight} this is ≈ c·(1 + a/64),
+ * rounded down to an even step.
  */
-export function classicTransitionColour(stored: number, alphaFixed: boolean): number {
-  return alphaFixed ? Math.min(255, stored * 2) : stored;
+export function classicStoredByte(colour: number, alpha: number): number {
+  return Math.min(255, (colour + ((colour * alpha) >> 6)) >> 1);
 }
 
-/** Alpha-zero classic transfer table per live WMO ambient — 94.6% of Gundrak's vertices. */
-const classicWmoLightLookups = new WeakMap<readonly [number, number, number], BakedWmoLightLookup>();
+/**
+ * The stored byte of one channel of one classic vertex. A v27 transition vertex already holds the
+ * client's byte (halved by `FixColorVertexAlpha`, pulled to 127 by `AttenTransVerts` 0x007D78C0 in
+ * `tools/wmo-transition.mjs`); any other vertex is fixed here. MOHD 0x8 skips the load step, and the
+ * unlit program then passes the raw MOCV byte.
+ */
+function classicStoredColour(
+  colours: Uint8Array, vertex: number, channel: number, transition: boolean, alphaFixed: boolean,
+): number {
+  const colour = colours[vertex * 4 + channel]!;
+  return transition || !alphaFixed ? colour : classicStoredByte(colour, colours[vertex * 4 + 3]!);
+}
 
-function classicWmoLightLookup(ambient: readonly [number, number, number]): Float32Array {
-  const current = classicWmoLightLookups.get(ambient);
-  if (current?.red === ambient[0] && current.green === ambient[1] && current.blue === ambient[2]) {
-    return current.values;
-  }
-  const values = new Float32Array(256 * 3);
-  for (let channel = 0; channel < 3; channel++) {
-    for (let colour = 0; colour < 256; colour++) values[channel * 256 + colour] = classicWmoLight(colour, 0, ambient[channel]!);
-  }
-  classicWmoLightLookups.set(ambient, { red: ambient[0], green: ambient[1], blue: ambient[2], values });
+/** The classic transfer table over the stored byte; it does not depend on the model. */
+let classicWmoLightTable: Float32Array | undefined;
+
+function classicWmoLightLookup(): Float32Array {
+  if (classicWmoLightTable) return classicWmoLightTable;
+  const values = new Float32Array(256);
+  for (let stored = 0; stored < 256; stored++) values[stored] = classicWmoLight(stored);
+  classicWmoLightTable = values;
   return values;
 }
 
@@ -1144,8 +1144,10 @@ function wmoDisplayLight(
   const colour = mesh.colours[vertex * 4 + channel]!;
   const ambient = model.ambient[channel]!;
   if (model.vertexLight !== "classic") return Math.min(1, (colour + ambient) / 255);
-  const alpha = model.vertexAlphaFixed === false ? 0 : mesh.colours[vertex * 4 + 3]!;
-  return Math.min(1, Math.max(ambient, colour * (1 + alpha / 64)) / 255);
+  // 22.10 (7.38): the classic room light is 2·stored, as the rooms themselves are drawn.
+  const transition = vertex < (mesh.transitionVertices ?? 0);
+  const stored = classicStoredColour(mesh.colours, vertex, channel, transition, model.vertexAlphaFixed !== false);
+  return Math.min(1, (2 * stored) / 255);
 }
 
 /**
