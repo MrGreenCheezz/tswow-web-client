@@ -100,8 +100,10 @@ export class PersistentAssetStore {
     this.#prune(space, gateway, kind, generation);
     const known = await this.#knownIds(space, gateway, kind, generation);
     const wanted = ids.filter((id) => known.has(id));
-    this.stats.misses += ids.length - wanted.length;
-    if (wanted.length === 0) return ids.map(() => undefined);
+    if (wanted.length === 0) {
+      this.stats.misses += ids.length;
+      return ids.map(() => undefined);
+    }
     const keys = wanted.map((id) => persistentAssetKey(gateway, kind, generation, id));
     let found: readonly (StoredEntry | undefined)[];
     try {

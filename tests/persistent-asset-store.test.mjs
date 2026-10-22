@@ -100,3 +100,14 @@ test("a backend that fails keeps nothing and throws nothing", async () => {
   await store.flush();
   assert.ok(store.stats.failures > 0);
 });
+
+test("each id asked is counted once, as a hit or a miss", async () => {
+  const { store } = storeWith();
+  store.put("rows", GATEWAY, "kind", "g", [["1", "one"]]);
+  await store.flush();
+  await store.getMany("rows", GATEWAY, "kind", "g", ["1", "2", "3"]);
+  assert.equal(store.stats.hits, 1);
+  assert.equal(store.stats.misses, 2);
+  await store.getMany("rows", GATEWAY, "kind", "g", ["4"]);
+  assert.equal(store.stats.misses, 3);
+});
