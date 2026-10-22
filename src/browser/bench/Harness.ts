@@ -19,6 +19,7 @@ import {
   BenchCrowd, BenchUnitModels, benchCamera, benchFrameTime, benchModelOf, benchPhaseNames, benchScenario, type BenchConfig,
 } from "./BenchScene.js"; // 22.10 ARC-2 S6a
 import { benchReadiness, configureBenchRenderer, createBenchClients } from "./BenchRenderSide.js"; // 22.10 ARC-2 S6a
+import { wmoReliefStats } from "../WmoReliefShader.js"; // 22.10 (7.47 stage 2)
 
 // 22.10 ARC-2 S6a: the config, scenario flags, crowd and unit-model table are shared with the worker bench page.
 type Config = BenchConfig;
@@ -27,7 +28,8 @@ interface BenchWindow extends Window {
   __bench?: { prepare(): Promise<unknown>; run(): Promise<unknown>; view(fraction: number): Promise<unknown>;
     state(): unknown; setWorldSubmissionCapture(enabled: boolean): void; sceneStats(): unknown;
     lookdev(overrides: Partial<Config>): void; shadowStats(): unknown;
-    gpuView(frames: number, warm: number): Promise<number[]>; terrainRelief(enabled: boolean): void }; // 22.10 (7.47)
+    gpuView(frames: number, warm: number): Promise<number[]>; terrainRelief(enabled: boolean): void; // 22.10 (7.47)
+    wmoRelief(enabled: boolean): void; wmoReliefStats(): unknown }; // 22.10 (7.47 stage 2)
 }
 const host = window as BenchWindow;
 const config = await (await fetch('/config.json')).json() as Config;
@@ -489,6 +491,10 @@ host.__bench = {
   },
   /** 22.10 (7.47): «Объём земли» on or off in place, for `gpuView` A/B runs. */
   terrainRelief(enabled: boolean) { world?.setTerrainRelief(enabled); },
+  /** 22.10 (7.47 stage 2): «Объём зданий» on or off in place, for `gpuView` A/B runs. */
+  wmoRelief(enabled: boolean) { world?.setWmoRelief(enabled); },
+  /** 22.10 (7.47 stage 2): tracked and bound materials and the relief maps held (counts, bytes). */
+  wmoReliefStats() { return wmoReliefStats(); },
   lookdev(overrides) {
     // Time of day, camera and weather for the next `view()`; nothing here is measured.
     Object.assign(config, overrides);
