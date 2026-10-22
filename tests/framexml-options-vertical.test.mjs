@@ -278,7 +278,7 @@ test("the WebClient category: every control a live stock control, Cancel reverts
     end
     return InterfaceOptionsFramePanelContainer.displayedPanel:GetName(), table.concat(out, "|")`, 2);
   assert.equal(panel, "InterfaceOptionsWebClientGraphicsPanel");
-  assert.equal(graphics, "Масштаб отрисовки, %: 100|Автокачество графики|Качество освещения: 2|Скрывать невидимые помещения"
+  assert.equal(graphics, "Масштаб отрисовки, %: 100|Автокачество графики|Где рисуется мир: 0|Качество освещения: 2|Скрывать невидимые помещения"
     + "|Чёткость текстур персонажей|Густая трава|Густота травы: 2");
   assert.deepEqual(lua(boot, `local names = {}
     for _, button in ipairs(InterfaceOptionsFrameCategories.buttons) do
@@ -335,7 +335,8 @@ test("the WebClient «Эффекты» panel is one column under its subsections
   assert.equal(columns, "16,22", "one column: checks at 16, sliders at 22 — no second column past the frame's edge");
   assert.equal(fits, 1, `the scroll child (${childHeight}) holds the lowest control`);
   assert.equal(headings, "Свет и атмосфера|Вода|Тени и рельеф|Погода и ветер");
-  assert.equal(graphicsScroll, 0, "a panel that fits keeps its plain layout");
+  // 22.10 (12.14): «Где рисуется мир» made the graphics panel outgrow the frame, so it scrolls like Effects.
+  assert.equal(graphicsScroll, 1, "a panel that outgrows the frame scrolls inside it");
   assert.equal(wheel, 1, "the stock scroll template's OnMouseWheel scrolls it");
   assert.deepEqual(writes.slice(from), [], "opening and cancelling writes nothing");
 });

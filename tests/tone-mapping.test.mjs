@@ -210,7 +210,8 @@ const worldRenderer = readFile(new URL("../src/browser/WorldRenderer3D.ts", impo
 
 async function rendererRegions() {
   const world = await worldRenderer;
-  const built = world.indexOf("constructor(canvas: HTMLCanvasElement)");
+  // 22.10 ARC-2 S1: the renderer takes an OffscreenCanvas and a RenderHost too.
+  const built = world.indexOf("constructor(canvas: HTMLCanvasElement | OffscreenCanvas, host?: RenderHost)");
   const quality = world.indexOf("setLightingQuality(quality: number)");
   return {
     world,

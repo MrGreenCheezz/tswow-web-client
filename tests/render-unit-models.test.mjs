@@ -314,7 +314,9 @@ test("draw takes no model function; the loop, the replay host and the bench push
   assert.match(call, /renderLookups\.requestUnitModels\(world\.state\.objects, renderer\.unitModelWants\(\), unitModel\)/);
   const host = source("LiveFormalRenderBenchmarkHost.ts");
   assert.match(host, /requestUnitModels\(replay\.state\.objects, resources\.renderer\.unitModelWants\(\), bindings\.unitModel\)/);
-  assert.match(source("bench/Harness.ts"), /benchUnitModels\.set\(object\.guid, model\)/);
+  // 22.10 ARC-2 S6a: the bench's table moved to BenchScene.ts so the worker bench page shares it.
+  assert.match(source("bench/BenchScene.ts"), /this\.models\.set\(object\.guid, model\)/);
+  assert.match(source("bench/Harness.ts"), /unitModels\.refresh\(state\)/);
 });
 
 test("WorldState marks an object's fields written on every write path the unit table keys on", async () => {
