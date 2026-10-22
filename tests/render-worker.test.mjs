@@ -264,7 +264,7 @@ test("the bench's worker build serves the render worker and the workers it start
     // Nested workers resolve against the render worker's own URL (the root): each must be one run.mjs serves.
     const nested = [...worker.matchAll(/new URL\("\.\/([\w.]+\.worker\.ts)", import\.meta\.url\)/g)].map((m) => m[1]);
     assert.deepEqual([...new Set(nested)].sort(),
-      ["EnvironmentTileDecode.worker.ts", "PoseEngine.worker.ts", "WvaAnimationDecode.worker.ts"]);
+      ["EnvironmentTileDecode.worker.ts", "PoseEngine.worker.ts", "TerrainRelief.worker.ts", "WvaAnimationDecode.worker.ts"]); // 22.10 (7.47): the relief worker
     for (const name of nested) assert.ok(BENCHMARK_SCRIPT_FILES[`/${name}`], `${name} is served`);
     assert.doesNotMatch(worker, /document\.querySelector/);
     const output = Object.values(result.metafile.outputs)

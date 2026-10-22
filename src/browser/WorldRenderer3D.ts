@@ -56,6 +56,7 @@ import {
   applyTerrainSplat, setTerrainSplatMicroNormals, type TerrainSplatClient,
 } from "./TerrainSplat.js";
 import { setTerrainBakedShadowStrength, terrainBakedShadowStrength } from "./TerrainSplat.js"; // 05.10-A7b-7
+import { setTerrainReliefWanted, setTerrainSplatRelief, terrainReliefActive } from "./TerrainReliefShader.js"; // 22.10 (7.47)
 import { setTerrainSpecularColour, setTerrainSpecularStrength, terrainSpecularStrength } from "./TerrainSplat.js"; // 05.10-A7b-7Г; 13.10 7.16
 import {
   GROUND_COVER_BUDGET, GROUND_COVER_MARGIN, GROUND_COVER_MAX_RADIUS, createGroundCoverCellCache,
@@ -2620,6 +2621,10 @@ interface RenderedTerrain {
   water: THREE.Mesh[] | undefined;
   /** Hidden splats upload one texture per quiet frame, before they become visible. */
   textureWarmup: THREE.Texture[] | undefined;
+  /** 22.10 (7.47): the relief array the material draws with («Объём земли»), if any. */
+  relief: THREE.Texture | undefined;
+  /** 22.10 (7.47): the relief state this tile last matched (`#terrainReliefRevision`). */
+  reliefRevision: number;
 }
 
 interface PreparedTerrain {
@@ -4055,6 +4060,11 @@ export class WorldRenderer3D {
   #characterAtlasAnisotropyEnabled = false;
   /** Reversible graphics leaves; aerial fog shares one uniform pair with world and horizon. */
   #experimentalShaderProfile: Readonly<ExperimentalShaderProfile> = DEFAULT_EXPERIMENTAL_SHADER_PROFILE;
+  /** 22.10 (7.47): the «Объём земли» setting, and whether the current lighting level draws it. */
+  #terrainReliefSetting = false;
+  #terrainReliefActive = false;
+  /** 22.10 (7.47): bumped on every change of the active state; a tile off it re-syncs on its next frame. */
+  #terrainReliefRevision = 0;
   #renderScale = 1;
   /** While true, UI portrait ownership cannot pin or retain units in a fixed replay. */
   #formalBenchmarkIsolation = false;
@@ -9089,6 +9099,7 @@ export class WorldRenderer3D {
     // No material is mutated. Existing unit trees are reclassified once on their next draw.
     for (const unit of this.#units.values()) unit.shadowCaster = undefined;
     if (oldGodRaysActive !== this.#godRaysActive()) this.#syncFullscreenGlowTargets();
+    this.#syncTerrainRelief(); // 22.10 (7.47): the classic levels never draw the relief
   }
 
   /** Moving light and target together preserves the authored direction while centring its map. */
@@ -10371,6 +10382,7 @@ export class WorldRenderer3D {
       const rendered: RenderedTerrain = {
         mesh, material, revision: job.revision, ownRevision: job.ownRevision,
         liquidGeneration: job.liquidGeneration, splatted: false, water: undefined, textureWarmup: undefined,
+        relief: undefined, reliefRevision: this.#terrainReliefRevision, // 22.10 (7.47)
       };
       this.#terrains.set(job.key, rendered);
       this.#scene.add(mesh);
@@ -10501,6 +10513,7 @@ export class WorldRenderer3D {
     const rendered: RenderedTerrain = {
       material, mesh, revision, ownRevision, splatted: false, liquidGeneration: this.#liquidTextures?.generation ?? 0,
       water: undefined, textureWarmup: undefined,
+      relief: undefined, reliefRevision: this.#terrainReliefRevision, // 22.10 (7.47)
     };
     this.#terrains.set(key, rendered);
     this.#scene.add(mesh);
@@ -10509,22 +10522,75 @@ export class WorldRenderer3D {
   }
 
   /**
+   * 22.10 (7.47): a splatted tile whose relief does not match the leaf any more: turned on, it asks
+   * the splat client (which derives the maps once and attaches them) until they arrive; turned off,
+   * one `get` lets the client release them (the material was unbound in `#syncTerrainRelief`).
+   */
+  #updateTerrainRelief(map: number, grid: { x: number; y: number }, rendered: RenderedTerrain, splatClient: TerrainSplatClient | undefined): void {
+    if (rendered.reliefRevision === this.#terrainReliefRevision || !splatClient) return;
+    const splat = splatClient.get(map, grid);
+    if (!this.#terrainReliefActive) {
+      rendered.reliefRevision = this.#terrainReliefRevision;
+      return;
+    }
+    const relief = splat?.relief;
+    if (!relief) return;
+    rendered.relief = relief;
+    rendered.reliefRevision = this.#terrainReliefRevision;
+    if (setTerrainSplatRelief(rendered.material, relief, true)) this.#programWarmup.registerObject(rendered.mesh);
+  }
+
+  /**
+   * 22.10 (7.47): «Объём земли» — parallax and derived normals on the ground near the camera
+   * (TerrainReliefShader.ts). Drawn only on the enhanced levels; the classic ones (0 and the
+   * comparison level 3) keep their program. A change re-keys the terrain programs once.
+   */
+  setTerrainRelief(enabled: boolean): void {
+    if (this.#terrainReliefSetting === enabled) return;
+    this.#terrainReliefSetting = enabled;
+    this.#syncTerrainRelief();
+  }
+
+  #syncTerrainRelief(): void {
+    const active = terrainReliefActive(this.#terrainReliefSetting, this.#lightingProfile.quality);
+    if (active === this.#terrainReliefActive) return;
+    this.#terrainReliefActive = active;
+    this.#terrainReliefRevision++;
+    setTerrainReliefWanted(active);
+    for (const terrain of this.#terrains.values()) {
+      if (!terrain.splatted) continue;
+      if (!active) terrain.relief = undefined;
+      if (setTerrainSplatRelief(terrain.material, terrain.relief, active)) this.#programWarmup.registerObject(terrain.mesh);
+    }
+  }
+
+  /**
    * The ground used to be one baked picture per tile — under two pixels per metre, with every
    * texture smeared across a whole chunk. Now the shader blends the original ground textures at
    * their own resolution, so this only has to hand the material its ingredients once they arrive.
    */
   #updateTerrainSplat(map: number, grid: { x: number; y: number }, rendered: RenderedTerrain, splatClient: TerrainSplatClient | undefined): void {
-    if (rendered.splatted || !splatClient) return;
+    if (rendered.splatted) {
+      this.#updateTerrainRelief(map, grid, rendered, splatClient); // 22.10 (7.47)
+      return;
+    }
+    if (!splatClient) return;
     const splat = splatClient.get(map, grid);
     if (!splat) return;
     splat.layers.anisotropy = this.#anisotropy();
     applyTerrainSplat(rendered.material, splat);
     setTerrainSplatMicroNormals(rendered.material, this.#experimentalShaderProfile.terrainMicroNormals);
+    // 22.10 (7.47): the relief arrives with the splat when the leaf is on, so this is the program
+    // the tile is first drawn with; off (or on a classic level) nothing is wrapped.
+    rendered.relief = this.#terrainReliefActive ? splat.relief : undefined;
+    rendered.reliefRevision = this.#terrainReliefRevision;
+    setTerrainSplatRelief(rendered.material, rendered.relief, this.#terrainReliefActive);
     setTerrainWetness(rendered.material, this.#atmosphereProfile.wetSurfaces, this.#atmosphereProfile.rainSplashes);
     rendered.splatted = true;
     if (!rendered.mesh.visible) {
       rendered.textureWarmup = [splat.layers, splat.alpha, splat.index];
       if (splat.colours) rendered.textureWarmup.push(splat.colours);
+      if (rendered.relief) rendered.textureWarmup.push(rendered.relief); // 22.10 (7.47)
     }
     // The splat hook and the micro-normal switch are part of the material's program cache key, so
     // the unsplatted variant warmed at build time is not the one this tile will draw.

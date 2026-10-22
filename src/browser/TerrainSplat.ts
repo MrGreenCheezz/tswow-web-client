@@ -5,6 +5,8 @@ import { withGeneration } from "./GatewayGeneration.js";
 import { RetryLadder } from "./RetryLadder.js"; // 05.10-A7b-0 1.24
 import { renderSwitches } from "./RenderSwitches.js"; // 05.10-A7b-7Г
 import { lightingClassicLook } from "./LightingQuality.js"; // 05.10-7.20
+import { terrainReliefWanted } from "./TerrainReliefShader.js"; // 22.10 (7.47)
+import { terrainReliefArray, terrainReliefLayer, type TerrainReliefLayerRecord } from "./TerrainReliefLayers.js"; // 22.10 (7.47)
 
 /** Ground textures are republished at this size so one array can hold all of a tile's layers. */
 const LAYER_SIZE = 256;
@@ -155,6 +157,12 @@ export interface TerrainSplat {
    * has none). Only when the `terrainSpecular` render switch was on as the tile loaded.
    */
   specular?: boolean;
+  /**
+   * 22.10 (7.47): the layers' relief maps (TerrainReliefDerive.ts: RG normal, B height), one per
+   * layer slot at half the side — present while «Объём земли» is wanted (terrainReliefWanted).
+   * Set as the tile loads, or later on a `get` when the leaf is turned on; removed when it is off.
+   */
+  relief?: THREE.DataArrayTexture;
 }
 
 export interface TerrainSplatStats {
@@ -167,7 +175,7 @@ export interface TerrainSplatStats {
   readonly layerRequestEntries: number;
 }
 
-interface LayerRecord {
+interface LayerRecord extends TerrainReliefLayerRecord { // 22.10 (7.47): and its relief map
   readonly id: string;
   readonly promise: Promise<Uint8ClampedArray>;
   pixels?: Uint8ClampedArray;
@@ -178,7 +186,13 @@ interface TerrainSplatTileRecord {
   readonly splat: TerrainSplat;
   readonly layers: ReadonlyMap<string, LayerRecord>;
   /** Every loader handle is owned even if a non-standard loader resolves with a different object. */
-  readonly textures: ReadonlySet<THREE.Texture>;
+  readonly textures: Set<THREE.Texture>;
+  /** 22.10 (7.47): what a relief map attached after the load needs: the layers and masks in slot order. */
+  readonly layerIds: readonly string[];
+  readonly maskIds: readonly (string | null)[] | undefined;
+  readonly layerSize: number;
+  /** 22.10 (7.47): a relief derivation for this tile is running, or failed (not retried while resident). */
+  relief?: "pending" | "failed";
 }
 
 interface TerrainSplatRequest {
@@ -206,6 +220,7 @@ export class TerrainSplatClient {
   /** Texture.dispose dispatches an event repeatedly, so ownership needs its own exact-once guard. */
   readonly #disposedTextures = new WeakSet<THREE.Texture>();
   #decodedLayerBytes = 0;
+  #reliefBytes = 0; // 22.10 (7.47)
   #epoch = 0;
   #disposed = false;
   /**
@@ -247,11 +262,14 @@ export class TerrainSplatClient {
   visitRetainedResources(visitor: RetainedResourceVisitor): void {
     for (const [id, layer] of this.#layers) {
       if (layer.pixels) visitor.referenceCpu(`terrain-splat-layer:${id}`, layer.pixels);
+      if (layer.reliefBytes) visitor.referenceCpu(`terrain-relief-layer:${id}`, layer.reliefBytes); // 22.10 (7.47)
     }
     for (const tile of this.#tiles.values()) {
       if (!tile) continue;
       const layerData = tile.splat.layers.image.data;
       if (layerData) visitor.referenceCpu(tile, layerData);
+      const relief = tile.splat.relief; // 22.10 (7.47)
+      if (relief?.image.data) visitor.referenceCpu(relief, relief.image.data);
       for (const texture of tile.textures) visitor.referenceGpuTexture(tile, texture);
     }
     for (const request of this.#requests.values()) {
@@ -282,7 +300,10 @@ export class TerrainSplatClient {
   get(map: number, grid: TerrainGrid): TerrainSplat | undefined {
     const key = `${map}/${grid.x}/${grid.y}`;
     const tile = this.#tiles.get(key);
-    if (tile) return tile.splat;
+    if (tile) {
+      this.#syncRelief(key, tile); // 22.10 (7.47)
+      return tile.splat;
+    }
     if (this.#disposed || tile === null || this.#requests.has(key)) return undefined;
     if (this.#activeKeys !== undefined && !this.#activeKeys.has(key)) return undefined;
     if (!this.#failures.ready(key)) return undefined; // 05.10-A7b-0 1.24: waiting for its retry
@@ -366,6 +387,10 @@ export class TerrainSplatClient {
       this.#decodedLayerBytes -= layer.pixels.byteLength;
       delete layer.pixels;
     }
+    // 22.10 (7.47): a late relief answer finds the record released and keeps nothing.
+    if (layer.reliefBytes) this.#reliefBytes -= layer.reliefBytes.byteLength;
+    delete layer.reliefBytes;
+    delete layer.relief;
   }
 
   async #load(map: number, grid: TerrainGrid, request: TerrainSplatRequest): Promise<void> {
@@ -476,14 +501,24 @@ export class TerrainSplatClient {
         colours.needsUpdate = true;
       }
 
+      // 22.10 (7.47): «Объём земли» — the relief maps join the tile before it is handed out, so its
+      // first program already has them (no recompile once it is drawn). A map that fails costs the
+      // tile its relief, never its ground.
+      const maskIds = masks && masked ? masks : undefined;
+      const relief = terrainReliefWanted() && this.#isCurrent(request)
+        ? await this.#buildRelief(layers as string[], maskIds, layerSize).catch(() => undefined)
+        : undefined;
+      if (relief) this.#trackTexture(request, relief);
       if (!this.#isCurrent(request)) return;
       const splat: TerrainSplat = {
         layers: array, alpha, index, ...(colours ? { colours } : {}), ...(masked ? { specular: true } : {}), // 05.10-A7b-7Г
+        ...(relief ? { relief } : {}), // 22.10 (7.47)
       };
       const tile: TerrainSplatTileRecord = {
         splat,
         layers: new Map(request.layers),
         textures: new Set(request.textures),
+        layerIds: layers as string[], maskIds, layerSize, // 22.10 (7.47)
       };
       request.layers.clear();
       request.textures.clear();
@@ -505,6 +540,71 @@ export class TerrainSplatClient {
       }
       if (this.#requests.get(request.key) === request) this.#requests.delete(request.key);
     }
+  }
+
+  /**
+   * 22.10 (7.47): one tile's relief array from the shared per-layer maps (derived once per layer id
+   * in the relief worker, with the layer's `_s` mask where the tile has one). Undefined if a layer
+   * it needs is no longer held.
+   */
+  async #buildRelief(
+    layerIds: readonly string[], maskIds: readonly (string | null)[] | undefined, layerSize: number,
+  ): Promise<THREE.DataArrayTexture | undefined> {
+    const recordKey = (id: string) => (layerSize === LAYER_SIZE ? id : `${id}@${layerSize}`);
+    const maps = await Promise.all(layerIds.map(async (id, slot) => {
+      const layer = this.#layers.get(recordKey(id));
+      if (!layer) return undefined;
+      const maskId = maskIds?.[slot];
+      const mask = maskId ? this.#layers.get(recordKey(maskId)) : undefined;
+      return terrainReliefLayer(layer, layerSize, mask?.promise, (bytes) => {
+        if (this.#layers.get(layer.id) !== layer || layer.leases <= 0) return false;
+        this.#reliefBytes += bytes;
+        return true;
+      });
+    }));
+    if (maps.some((map) => map === undefined)) return undefined;
+    return terrainReliefArray(maps as Uint8Array[], layerSize);
+  }
+
+  /**
+   * 22.10 (7.47): a resident tile follows the leaf — gets its relief when wanted (once; a failure is
+   * not retried while it stays resident), releases it when not. The renderer unbinds the materials
+   * before it turns the leaf off, so a released array is never drawn.
+   */
+  #syncRelief(key: string, tile: TerrainSplatTileRecord): void {
+    if (!terrainReliefWanted()) {
+      const relief = tile.splat.relief;
+      if (relief) {
+        delete tile.splat.relief;
+        tile.textures.delete(relief);
+        this.#disposeTexture(relief);
+      }
+      if (tile.relief === "failed") delete tile.relief;
+      return;
+    }
+    if (tile.splat.relief || tile.relief !== undefined) return;
+    tile.relief = "pending";
+    const epoch = this.#epoch;
+    const settle = (relief: THREE.DataArrayTexture | undefined) => {
+      const current = this.#tiles.get(key) === tile && epoch === this.#epoch && !this.#disposed;
+      if (relief && current && terrainReliefWanted() && !tile.splat.relief) {
+        delete tile.relief;
+        tile.textures.add(relief);
+        tile.splat.relief = relief;
+        return;
+      }
+      if (relief) this.#disposeTexture(relief);
+      if (current) {
+        if (relief || !terrainReliefWanted()) delete tile.relief;
+        else tile.relief = "failed";
+      }
+    };
+    void this.#buildRelief(tile.layerIds, tile.maskIds, tile.layerSize).then(settle, () => settle(undefined));
+  }
+
+  /** 22.10 (7.47): bytes of derived per-layer relief maps currently cached (diagnostics, the 7.47 report). */
+  get reliefBytes(): number {
+    return this.#reliefBytes;
   }
 
   #reportStatus(message: string, error: boolean): void {

@@ -5,6 +5,7 @@ export const ENHANCED_GRAPHICS_OVERRIDES: Readonly<SettingValues> = Object.freez
   lightingQuality: 2,
   experimentalAerialHeightFog: true,
   experimentalTerrainMicroNormals: true,
+  experimentalTerrainRelief: true, // 22.10 (7.47)
   experimentalWaterFresnel: true,
   experimentalWaterMicroWaves: true,
   experimentalWaterSunSparkle: true,

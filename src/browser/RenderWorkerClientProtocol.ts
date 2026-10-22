@@ -34,6 +34,7 @@ export type RenderCommandKind = "setting" | "state" | "action";
 export const RENDER_WORKER_COMMANDS: Readonly<Record<ClientRendererCommand, RenderCommandKind>> = Object.freeze({
   setRenderScale: "setting", setLightingQuality: "setting", setWmoOcclusion: "setting",
   setCharacterAtlasAnisotropy: "setting", setExperimentalShaderProfile: "setting", setUnderwaterOverlay: "setting",
+  setTerrainRelief: "setting", // 22.10 (7.47)
   setFullscreenGlow: "setting", setGodRays: "setting", setGodRayStrength: "setting", setCinematicProfile: "setting",
   setCinematicStrength: "setting", setAtmosphereEffects: "setting", setEnvironmentDetail: "setting",
   setGroundCover: "setting", setWeather: "setting", setIndoors: "setting", updateLighting: "setting",
