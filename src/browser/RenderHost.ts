@@ -11,6 +11,7 @@ import type { FrameBudgetProbe } from "./FrameBudgetProbe.js";
 import type { GpuTimerObserver } from "./GpuTimer.js";
 import { renderBenchmarkGpuObserver } from "./RenderBenchmarkRuntime.js"; // 22.10 ARC-2 S4b: the page's answer
 import type { RenderResults } from "./RenderResults.js";
+import type { RenderWorkerHostValues } from "./RenderWorkerProtocol.js";
 import { loadImageTexture } from "./TextureLoad.js";
 
 /** A canvas's size in CSS pixels, rounded the way `clientWidth` rounds. */
@@ -91,4 +92,10 @@ export function pageRenderHost(canvas: HTMLCanvasElement): RenderHost {
     gpuTimerObserver: () => renderBenchmarkGpuObserver, // 22.10 ARC-2 S4b
     frameBudgetProbe: undefined,
   };
+}
+
+/** 22.10 ARC-2 S6a: what the page's canvas and window answer now, pushed as a worker host's values (WorkerRenderHost.ts). */
+export function pageHostValues(canvas: { readonly clientWidth: number; readonly clientHeight: number },
+  devicePixelRatio: number, query: string): RenderWorkerHostValues {
+  return { devicePixelRatio, cssWidth: canvas.clientWidth, cssHeight: canvas.clientHeight, query };
 }

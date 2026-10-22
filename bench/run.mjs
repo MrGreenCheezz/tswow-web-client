@@ -27,7 +27,7 @@ if (Number(process.versions.node.split('.')[0]) < 22) {
 async function main() {
   if (process.argv.includes('--additive-probe')) { await import('./additive-probe.mjs'); return; }
   const { default: puppeteer } = await import('puppeteer-core');
-  const { buildBenchmarkBundle, BENCHMARK_SCRIPT_FILES } = await import('./build.mjs');
+  const { buildBenchmarkBundle, buildRenderWorkerBench, BENCHMARK_SCRIPT_FILES, RENDER_WORKER_SCRIPT_FILES } = await import('./build.mjs');
   const { PNG } = await import('pngjs');
   const args = process.argv.slice(2);
   const value = (flag, fallback) => args.includes(flag) ? args[args.indexOf(flag) + 1] : fallback;
@@ -47,13 +47,26 @@ async function main() {
   const budgetProbe = args.includes('--budget-probe');
   // 22.10 ARC-2 S5: --renderbridge loopback draws the world from the worker-message mirror (RenderBridgeLoopback.ts) and
   // adds the crossing's per-frame encode/clone/decode times and bytes; the default is the direct path.
+  // 22.10 ARC-2 S6a: --renderbridge worker draws in a DedicatedWorker (src/browser/bench/BenchRender.worker.ts) while
+  // the page keeps the world and posts it each frame (WorkerBenchPage.ts); the frame columns are the worker's.
   const renderBridge = value('--renderbridge', 'direct');
-  if (!['direct', 'loopback'].includes(renderBridge)) throw new Error('--renderbridge must be direct or loopback');
+  if (!['direct', 'loopback', 'worker'].includes(renderBridge)) throw new Error('--renderbridge must be direct, loopback or worker');
+  const workerBridge = renderBridge === 'worker';
+  // 22.10 ARC-2 S6a: --load busies the page's main thread (8 ms of every page frame, 150 ms every 2 s), in-page or
+  // with the worker renderer: the frames the main thread costs the drawing (checkpoint B). Never a valid result.
+  const mainLoad = args.includes('--load');
+  // 22.10 ARC-2 S6a: in worker mode the page posts its world after each worker frame (`worker`), or on its own rAF (`raf`).
+  const pagePace = value('--page-pace', 'worker');
+  if (!['worker', 'raf'].includes(pagePace)) throw new Error('--page-pace must be worker or raf');
+  if (pagePace !== 'worker' && !workerBridge) throw new Error('--page-pace needs --renderbridge worker');
   const captureAbba = args.includes('--capture-abba');
   // Development runs under background load: the load is still recorded and the result is marked
   // incomparable, so such numbers can guide work but never replace a strict baseline.
   const allowLoad = args.includes('--allow-load');
   if (diagnostic && !trace) throw new Error('--diagnostic requires --trace; diagnostic timings are never comparable');
+  if (workerBridge && (trace || diagnostic || links || captureAbba)) {
+    throw new Error('--renderbridge worker: --trace, --diagnostic, --links and --capture-abba read the renderer on the page');
+  }
   if (smoke) { config.durationSeconds = 3; config.warmupSeconds = 1; }
   const scenarios = value('--scenario', config.scenarios.join(',')).split(',');
   if (captureAbba && (scenarios.length !== 1 || scenarios[0] !== 'world-crowd-50'
@@ -83,6 +96,9 @@ async function main() {
   const supportedScenarios = [...config.scenarios, 'world-crowd-10', 'world-crowd-50',
     'world-crowd-64', 'world-crowd-200', 'city', 'city-arrival'];
   if (scenarios.some(s => !supportedScenarios.includes(s))) throw new Error('Unknown scenario');
+  if (workerBridge && scenarios.some(s => s !== 'movement' && !s.startsWith('world-crowd-') && !isCityScenario(s))) {
+    throw new Error('--renderbridge worker draws the world scenarios only (movement, world-crowd-*, city, city-arrival)');
+  }
   // Only a city run carries the city block, so every other scenario keeps its existing config hash.
   if (scenarios.some(isCityScenario)) {
     config.city = JSON.parse(await readFile('bench/city.json', 'utf8'));
@@ -124,6 +140,14 @@ async function main() {
     sourceHashes[path] = await readFile(path).then(sha, () => 'variant-only');
   }
   // A variant file replaces its working-tree source in the bundle, so it is what the hash covers.
+  // 22.10 ARC-2 S6a: the worker mode's page and render worker, built with the same options and variant.
+  const workerBundle = workerBridge ? await buildRenderWorkerBench('bench/build', variantDir, bundle.bundleOptions) : undefined;
+  if (workerBundle) {
+    for (const path of Object.keys(workerBundle.metafile.inputs).sort()) {
+      sourceHashes[path] ??= await readFile(path).then(sha, () => 'variant-only');
+    }
+    for (const path of workerBundle.variantFiles) if (!bundle.variantFiles.includes(path)) bundle.variantFiles.push(path);
+  }
   for (const path of bundle.variantFiles) sourceHashes[`variant:${path}`] = sha(await readFile(path));
   const sourceHash = sha(JSON.stringify(sourceHashes));
   // How the sources were built, beside their hashes but outside sourceHash: two sides of an A/B that
@@ -199,11 +223,14 @@ async function main() {
         res.writeHead(200, { 'content-type': 'text/html' }).end(`<!doctype html><html><head><meta charset="utf-8"><title>Three.js benchmark</title>
           <style>html,body{margin:0;overflow:hidden;background:#213243}canvas{display:block;width:${config.width}px;height:${config.height}px}</style>
           <script>window.__benchRenderers=[];window.__THREE_DEVTOOLS__={dispatchEvent(e){if(e.detail?.isWebGLRenderer)window.__benchRenderers.push(e.detail)}};</script>
-          </head><body><canvas></canvas><script type="module" src="/harness.js"></script></body></html>`);
+          ${mainLoad ? '<script>(()=>{const busy=ms=>{const end=performance.now()+ms;while(performance.now()<end);};const loop=()=>{busy(8);requestAnimationFrame(loop)};requestAnimationFrame(loop);setInterval(()=>busy(150),2000)})();</script>' : ''}
+          </head><body><canvas></canvas><script type="module" src="${workerBridge ? '/bench-page.js' : '/harness.js'}"></script></body></html>`);
       } else if (url.pathname === '/config.json') {
         res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(config));
       } else if (Object.hasOwn(BENCHMARK_SCRIPT_FILES, url.pathname)) {
         res.writeHead(200, { 'content-type': 'text/javascript' }).end(await readFile(resolve('bench/build', BENCHMARK_SCRIPT_FILES[url.pathname])));
+      } else if (workerBridge && Object.hasOwn(RENDER_WORKER_SCRIPT_FILES, url.pathname)) { // 22.10 ARC-2 S6a
+        res.writeHead(200, { 'content-type': 'text/javascript' }).end(await readFile(resolve('bench/build', RENDER_WORKER_SCRIPT_FILES[url.pathname])));
       } else if (url.pathname === '/favicon.ico') {
         res.writeHead(204).end();
       } else if (/^\/textures\/water\/[A-Za-z]+_N\.jpg$/.test(url.pathname)) {
@@ -249,7 +276,7 @@ async function main() {
   let browser;
   const result = { schemaVersion: 1, timestamp: stamp, label: value('--label', smoke ? 'smoke' : trace ? 'trace' : 'measurement'),
     smoke, trace, diagnostic, captureAbba, heapProfileMode, config, configHash, sourceHash, sourceHashes, bundle: bundle.bundleOptions,
-    renderBridge, // 22.10 ARC-2 S5
+    renderBridge, mainLoad, ...(workerBridge ? { pagePace } : {}), // 22.10 ARC-2 S5, S6a
     git: { head: git('rev-parse', 'HEAD'), branch: git('branch', '--show-current'), dirty: Boolean(git('status', '--porcelain')) },
     host: { platform: os.platform(), release: os.release(), cpu: os.cpus()[0]?.model, cores: os.cpus().length,
       memoryBytes: os.totalmem(), node: process.version, cpuPolicy },
@@ -299,7 +326,7 @@ async function main() {
     return connected;
   }
   async function open(scenario) {
-    const sceneUrl = `${origin}/?scenario=${scenario}${diagnostic ? '&diagnostic=1' : ''}${links ? '&links=1' : ''}${budgetProbe ? '&budgetprobe=1' : ''}${renderBridge === 'loopback' ? '&renderbridge=loopback' : ''}`;
+    const sceneUrl = `${origin}/?scenario=${scenario}${diagnostic ? '&diagnostic=1' : ''}${links ? '&links=1' : ''}${budgetProbe ? '&budgetprobe=1' : ''}${renderBridge !== 'direct' ? `&renderbridge=${renderBridge}` : ''}${pagePace === 'raf' ? '&pagepace=raf' : ''}`;
     let page;
     if (browserKind === 'electron') {
       browser = await launchElectron(sceneUrl);
@@ -350,6 +377,8 @@ async function main() {
     ]);
     const prepared = await page.evaluate(() => window.__bench.prepare());
     console.log(`${scenario}: ready, GPU ${prepared.hardware.gpu}`);
+    // 22.10 ARC-2 S6a: the render worker's realm must be isolated too (the pose engine's SharedArrayBuffer).
+    if (workerBridge) console.log(`${scenario}: render worker, crossOriginIsolated page ${prepared.hardware.pageCrossOriginIsolated} worker ${prepared.hardware.crossOriginIsolated}`);
     if (/swiftshader|llvmpipe|software rasterizer/i.test(prepared.hardware.gpu)) {
       throw new Error('Software GPU detected; hardware performance target cannot be evaluated');
     }
@@ -540,6 +569,7 @@ async function main() {
         // P2-02b: renders and CPU of each shadow cascade over the measured frames, and why the cached one re-rendered.
         if (scenarioResult.shadowCascadeSummary) console.log(`${scenario}: shadow cascades ${scenarioResult.shadowCascadeSummary.cascades.map((c, i) => `#${i} ${c.renders} renders (${c.rendersPerMinute?.toFixed(0)}/min) ${c.cpuMsPerRender?.toFixed(3) ?? '-'} ms/render`).join(' · ')}; far reasons ${JSON.stringify(scenarioResult.shadowCascadeSummary.farReasons)}`);
         // 22.10 ARC-2 S5: the loopback crossing's cost per frame.
+        if (raw.renderWorker) console.log(`${scenario}: render worker drew ${raw.renderWorker.workerFrames} frames; the page posted ${raw.renderWorker.pagePosts} worlds (${raw.renderWorker.pagePace}-paced) over ${raw.renderWorker.pageFrames} page frames, ${raw.renderWorker.pageIntervalsMs.filter(ms => ms > 100).length} of them > 100 ms${mainLoad ? ' (page under --load)' : ''}`); // 22.10 ARC-2 S6a
         if (summary.renderBridge) console.log(`${scenario}: renderbridge encode ${summary.renderBridge.encodeMs.mean?.toFixed(3)} + clone ${summary.renderBridge.cloneMs.mean?.toFixed(3)} + decode ${summary.renderBridge.decodeMs.mean?.toFixed(3)} = ${summary.renderBridge.totalMs.mean?.toFixed(3)} ms (p99 ${summary.renderBridge.totalMs.p99?.toFixed(3)}); ${summary.renderBridge.bytes.mean?.toFixed(0)} B/frame (world ${summary.renderBridge.frameBytes.mean?.toFixed(0)}, max ${summary.renderBridge.bytes.max})`);
         if (scenarioResult.wmoRange) console.log(`${scenario}: wmoRange ${scenarioResult.wmoRange.recomputes}/${scenarioResult.wmoRange.selects} recomputes/selects; ${scenarioResult.wmoRange.recomputesPerFrame.toFixed(3)} recomputes/frame`);
         await browser.close(); browser = undefined;
@@ -600,7 +630,7 @@ async function main() {
     // A player-style run (no pinning, a visible window or the desktop shell) answers a different
     // question than the strict P-core headless baseline, so it never replaces one.
     result.budgetProbeRun = budgetProbe; // P2-09a: each scenario carries its `budgetProbe` report
-    result.valid = result.errors.length === 0 && !smoke && !prepareOnly && !diagnostic && !allowLoad && !variantDir && !budgetProbe
+    result.valid = result.errors.length === 0 && !smoke && !prepareOnly && !diagnostic && !allowLoad && !mainLoad && !variantDir && !budgetProbe
       && browserKind === 'chrome' && !headed && !vsync && cpuClass !== 'none' && isolation && !jsProfiling && !jsFlags
       && bundleTarget === DEFAULT_BENCHMARK_TARGET && bundleEnv === DEFAULT_BENCHMARK_ENV
       && bundleNames === DEFAULT_BENCHMARK_NAMES;

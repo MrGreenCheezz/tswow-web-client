@@ -16,6 +16,19 @@ export const BENCHMARK_SCRIPT_FILES = Object.freeze({
 });
 
 /**
+ * 22.10 ARC-2 S6a: `--renderbridge worker`: the bench page that keeps the world (WorkerBenchPage.ts) and the render
+ * worker it starts (BenchRender.worker.ts), built only for that mode by `buildRenderWorkerBench`. The page starts the
+ * worker as `new URL('./BenchRender.worker.ts', import.meta.url)`, served like the other workers; inside it the pose,
+ * tile and animation workers resolve against the worker's own URL, which is the same root.
+ */
+export const RENDER_WORKER_SCRIPT_FILES = Object.freeze({
+  '/bench-page.js': 'bench-page.js',
+  '/bench-page.js.map': 'bench-page.js.map',
+  '/BenchRender.worker.ts': 'BenchRender.worker.js',
+  '/BenchRender.worker.js.map': 'BenchRender.worker.js.map',
+});
+
+/**
  * A/B development builds: a file under `variantDir` with the same path relative to `src/`
  * replaces the working-tree source in the bundle. Nothing is copied into the working tree.
  */
@@ -99,5 +112,23 @@ export async function buildBenchmarkBundle(outdir = 'bench/build', variantDir = 
   });
   result.variantFiles = variant ? [...variant.used].sort() : [];
   result.bundleOptions = bundleOptions;
+  return result;
+}
+
+/** 22.10 ARC-2 S6a: the two `--renderbridge worker` entries, built exactly as the harness bundle (same options and variant). */
+export async function buildRenderWorkerBench(outdir = 'bench/build', variantDir = undefined, bundleOptions = { target: 'es2022', env: 'prod', names: 'plain' }) {
+  const variant = variantDir ? variantPlugin(variantDir) : undefined;
+  const result = await build({
+    define: benchmarkEnvDefine(bundleOptions.env),
+    plugins: variant ? [variant.plugin] : [],
+    entryPoints: {
+      'bench-page': 'src/browser/bench/WorkerBenchPage.ts',
+      'BenchRender.worker': 'src/browser/bench/BenchRender.worker.ts',
+    },
+    outdir, bundle: true, format: 'esm', platform: 'browser', target: bundleOptions.target,
+    ...(bundleOptions.target === 'es2022' ? {} : { supported: { 'top-level-await': true } }),
+    minify: false, sourcemap: true, metafile: true, keepNames: bundleOptions.names === 'keep',
+  });
+  result.variantFiles = variant ? [...variant.used].sort() : [];
   return result;
 }

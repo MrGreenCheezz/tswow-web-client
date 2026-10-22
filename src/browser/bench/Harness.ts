@@ -1,20 +1,10 @@
 /** Local deterministic benchmark. Imports shipping render paths; never opens a world connection. */
 import * as THREE from "three";
 import { WorldRenderer3D } from "../WorldRenderer3D.js";
-import { WorldState, type WorldObjectState } from "../../world/WorldState.js";
-import { UPDATE_FIELDS } from "../../generated/updateFields.js";
-import { MOVEMENT_FLAGS } from "../../world/MovementProtocol.js";
 import { ANIMATION_IDS } from "../../generated/animations.js";
-import { TerrainClient, EnvironmentClient, ENVIRONMENT_STREAM_RANGE } from "../Terrain.js";
-import { TerrainSplatClient } from "../TerrainSplat.js";
-import { GroundCoverClient } from "../GroundCover.js";
-import { LightClient } from "../LightClient.js";
-import { LiquidTextureClient } from "../Water.js";
-import { HorizonClient } from "../Horizon.js";
-import { environmentStandInsWith } from "../StandIn.js"; // 05.10-A7b-9 (7.18)
+import { ENVIRONMENT_STREAM_RANGE } from "../Terrain.js";
 import { CharacterAtlasClient, appearanceKey, CREATURE_MODEL_VERSION } from "../CharacterAtlas.js";
 import type { UnitModel } from "../CreatureModelClient.js";
-import { NO_RENDER_LOOKUPS, type RenderLookups } from "../RenderLookups.js"; // 22.10 ARC-2 S2c
 import { buildModel, characterSlots } from "../ModelBuild.js"; // 05.10-A7a-G 6.18: geosetList → figureGeosets
 import { figureGeosets } from "../FigureGeosets.js"; // 05.10-A7a-G 6.18
 import { addSkinnedClips, buildSkinnedTemplateFrom, instantiateSkinned } from "../AnimatedModel.js";
@@ -22,37 +12,17 @@ import { decodeWvm9, decodeWvaAnimations, visualModelUrl, visualAnimationsUrl, T
 import { acquireRenderBenchmarkFormalGpuObserver } from "../RenderBenchmarkRuntime.js";
 import { createWebGlGpuTimer } from "../GpuTimer.js";
 import { UnitSceneGroup } from "../UnitSceneGroup.js";
-import { applyRendererGraphicsSettings } from "../RendererGraphicsSettings.js";
-import { defaultSettings, type SettingValues } from "../ui/SettingsModel.js";
 import { nextBenchmarkFrame } from "./FrameClock.js";
 import { frameBudgetProbe } from "../FrameBudgetProbe.js"; // P2-09a
 import { installKnownMissingTextureLedger, errorsAreKnownMissingTextures } from "./KnownMissingTextures.js"; // 06.10-P1-00b
 import { RenderBridgeLoopback, renderBridgeMode } from "../RenderBridgeLoopback.js"; // 22.10 ARC-2 S5
+import {
+  BenchCrowd, BenchUnitModels, benchCamera, benchFrameTime, benchModelOf, benchPhaseNames, benchScenario, type BenchConfig,
+} from "./BenchScene.js"; // 22.10 ARC-2 S6a
+import { benchReadiness, configureBenchRenderer, createBenchClients } from "./BenchRenderSide.js"; // 22.10 ARC-2 S6a
 
-interface Graphics {
-  lightingQuality: number; grassRadius: number; grassDense: boolean; grassDensity: number; fullscreenGlow: boolean;
-  godRays?: boolean;
-}
-interface Config {
-  seed: number; width: number; height: number; pixelRatio: number; durationSeconds: number;
-  warmupSeconds: number; timeoutSeconds: number; halfMinute: number;
-  route: { map: number; x: number; y: number; dx: number; dy: number };
-  graphics: Graphics;
-  /** A dense city square: a fixed WMO floor, a mixed population and the live client's settings. */
-  city: { map: number; x: number; y: number; z: number; population: number; spacing: number; walkers: number;
-    orbit: number; pitch: number; displays: number[]; graphics: Graphics };
-  /** `bench/run.mjs --settings`: a player's account settings, pushed like the page pushes them. */
-  settings?: SettingValues;
-  /**
-   * `bench/lookdev.mjs`: a fixed camera (yaw, pitch, orbit) over the scenario's own route, a weather
-   * packet handed to the renderer as the world would, and how many frames `view()` lets run
-   * before it reads the pixels (rain, wind and the veil need a few seconds to settle). Never part
-   * of a measurement: lookdev frames are looked at, not timed.
-   */
-  view?: { yaw: number; pitch: number; orbit: number };
-  weather?: { state: number; intensity: number; abrupt: boolean } | null;
-  viewFrames?: number;
-}
+// 22.10 ARC-2 S6a: the config, scenario flags, crowd and unit-model table are shared with the worker bench page.
+type Config = BenchConfig;
 interface BenchWindow extends Window {
   __benchRenderers?: THREE.WebGLRenderer[];
   __bench?: { prepare(): Promise<unknown>; run(): Promise<unknown>; view(fraction: number): Promise<unknown>;
@@ -74,20 +44,8 @@ const budgetProbe = params.has('budgetprobe');
 const renderBridge = renderBridgeMode(params) === 'loopback' ? new RenderBridgeLoopback() : undefined;
 const BRIDGE_COLUMNS = ['bridgeEncodeMs', 'bridgeCloneMs', 'bridgeDecodeMs', 'bridgeBytes', 'bridgeFrameBytes'];
 const canvas = document.querySelector('canvas')!;
-const worldCrowd = scenario.startsWith('world-crowd-');
-/**
- * `city-arrival`: the city square without its crowd during preparation; the crowd then comes into
- * range while the clock runs, eight units a second, as it does when a rider enters a city. The
- * plain `city` builds everyone before timing, so it never measures a unit's first appearance.
- */
-const arrival = scenario === 'city-arrival';
-const ARRIVAL_GROUP = 8;
-const city = scenario === 'city' || arrival;
-const movement = scenario === 'movement' || worldCrowd || city;
-const count = scenario === 'movement' ? 10 : city ? config.city.population : Number(scenario.split('-').at(-1));
-if (!city && ![10, 50, 64, 200].includes(count)) throw new Error('Invalid scenario');
-const graphics = city ? config.city.graphics : config.graphics;
-const map = city ? config.city.map : config.route.map;
+const scene = benchScenario(config, scenario); // 22.10 ARC-2 S6a (BenchScene.ts)
+const { worldCrowd, arrival, city, movement, count, graphics, map } = scene;
 const counters = { boneUpdates: 0, boneWorldUpdates: 0, hiddenUnitVisits: 0 };
 if (diagnostic) {
   const update = THREE.Object3D.prototype.updateMatrixWorld;
@@ -131,9 +89,7 @@ let recording = false;
 let gpuReason: string | undefined;
 const gpuObserver = { onSample(ms: number) { if (recording) gpuSamplesMs.push(ms); },
   onUnavailable(reason: string) { gpuReason = reason; } };
-const phaseNames = movement
-  ? ['query', 'setup', 'terrain', 'env', 'ground', 'objects', 'units', 'visuals', 'warm', 'evict', 'submit']
-  : ['animation', 'submit'];
+const phaseNames = benchPhaseNames(scene);
 let render: (seconds: number, elapsed: number, frame: number) => void;
 let reset: () => void;
 /** city-arrival: admits the units due by this many seconds into the measurement. */
@@ -174,114 +130,40 @@ if (movement) {
         width: image?.width ?? 0, height: image?.height ?? 0, depth: image?.depth ?? 1 });
     };
   }
-  const terrain = new TerrainClient(baseUrl);
-  const environment = new EnvironmentClient(baseUrl);
-  const splat = new TerrainSplatClient(baseUrl);
-  const cover = new GroundCoverClient(baseUrl);
-  const lighting = new LightClient(baseUrl);
-  const liquids = new LiquidTextureClient(baseUrl);
-  const horizon = new HorizonClient(baseUrl);
-  world.setLightingQuality(graphics.lightingQuality);
-  world.setFullscreenGlow(graphics.fullscreenGlow);
-  if (graphics.godRays !== undefined) world.setGodRays(graphics.godRays);
-  world.setGroundCover(cover, graphics.grassRadius, graphics.grassDense, graphics.grassDensity);
-  // A player's own graphics options over the scenario's block: every leaf the page would push.
-  if (config.settings) applyRendererGraphicsSettings(world, { ...defaultSettings(), ...config.settings }, cover);
-  if (config.weather) world.setWeather(config.weather);
-  const state = new WorldState();
-  const objects: WorldObjectState[] = [];
-  for (let i = 0; i < count; i++) {
-    const npc = (worldCrowd || city) && i > 0;
-    // City walkers run small loops; everyone else in a crowd stands, as vendors and guards do.
-    const walking = city
-      ? npc && i % Math.max(1, Math.floor(count / Math.max(1, config.city.walkers))) === 0
-      : !npc;
-    const displayId = city ? cityDisplays[i % cityDisplays.length]!.id : display.id;
-    const object: WorldObjectState = { guid: BigInt(i + 1), typeId: npc ? 3 : 4,
-      position: { x: config.route.x, y: config.route.y, z: 60, orientation: Math.PI },
-      movementFlags: walking ? MOVEMENT_FLAGS.forward : 0, updateFlags: 0, targetGuid: undefined,
-      runSpeed: 7, turnRate: undefined, motion: undefined, glide: undefined,
-      transport: undefined, speeds: undefined, transportTime: undefined,
-      fields: new Map([[UPDATE_FIELDS.UNIT_FIELD_DISPLAYID.offset, displayId],
-        [UPDATE_FIELDS.UNIT_FIELD_HEALTH.offset, 100], [UPDATE_FIELDS.UNIT_FIELD_MAXHEALTH.offset, 100]]) };
-    if (!arrival || i === 0) state.objects.set(object.guid, object);
-    objects.push(object);
-  }
-  state.selfGuid = objects[0]!.guid;
+  // 22.10 ARC-2 S6a: clients, graphics and readiness shared with the render worker (BenchRenderSide.ts); the crowd,
+  // camera and unit-model table with the worker bench page (BenchScene.ts).
+  const clients = createBenchClients(baseUrl);
+  const { terrain, environment, splat, cover, lighting, liquids, horizon } = clients;
+  configureBenchRenderer(world, config, graphics, cover);
+  const crowd = new BenchCrowd(config, scene, (i) => city ? cityDisplays[i % cityDisplays.length]!.id : display.id);
+  const { state, objects } = crowd;
   const heightAt = (x: number, y: number) => terrain.heightAt(map, x, y);
-  const displayById = new Map(cityDisplays.map((model) => [model.id, model]));
-  const modelOf = city
-    ? (object: WorldObjectState) => displayById.get(object.fields.get(UPDATE_FIELDS.UNIT_FIELD_DISPLAYID.offset) ?? 0)
-    : () => display;
-  // 22.10 ARC-2 S2c: `modelOf` reaches the renderer as the pushed unit-model table, filled for every unit (it asks
-  // for nothing, so answering the ones the renderer then culls changes nothing). Its answer reads only the display
-  // id, which no bench unit changes, and units only ever arrive — so the table is filled when the count moves.
-  const benchUnitModels = new Map<bigint, UnitModel>();
-  let benchUnitsFilled = -1;
-  const benchLookups: RenderLookups = { ...NO_RENDER_LOOKUPS, unitModels: benchUnitModels };
+  const unitModels = new BenchUnitModels(benchModelOf(scene, display, cityDisplays));
+  const benchLookups = unitModels.lookups;
+  const camera = { yaw: 0, pitch: 0, orbit: 0 };
   render = (seconds, elapsed, frame) => {
     lastFraction = Math.max(0, Math.min(1, seconds / config.durationSeconds));
     lastFrame = frame;
-    const angle = lastFraction * Math.PI * 2;
-    const centreX = city ? config.city.x : config.route.x;
-    const centreY = city ? config.city.y : config.route.y;
-    const x = city ? centreX : config.route.x + (worldCrowd ? Math.cos(angle) * 22 : config.route.dx * lastFraction);
-    const y = city ? centreY : config.route.y + (worldCrowd ? Math.sin(angle) * 22 : config.route.dy * Math.sin(angle));
-    const rows = Math.ceil(Math.sqrt(count - 1));
-    const spacing = city ? config.city.spacing : 2.5;
+    const x = crowd.routeX(lastFraction);
+    const y = crowd.routeY(lastFraction);
     const queryAt = performance.now();
-    for (let i = 0; i < objects.length; i++) {
-      const object = objects[i]!;
-      const p = object.position!;
-      if (city) {
-        if (i === 0) { p.x = centreX; p.y = centreY; }
-        else {
-          const gridX = centreX + ((i - 1) % rows - (rows - 1) / 2) * spacing;
-          const gridY = centreY + (Math.floor((i - 1) / rows) - (rows - 1) / 2) * spacing;
-          const loop = object.movementFlags !== 0 ? seconds * 0.9 + i : 0;
-          p.x = gridX + (object.movementFlags !== 0 ? Math.cos(loop) * 1.5 : 0);
-          p.y = gridY + (object.movementFlags !== 0 ? Math.sin(loop) * 1.5 : 0);
-          p.orientation = object.movementFlags !== 0 ? loop + Math.PI / 2 : (i * 2.39996) % (Math.PI * 2);
-        }
-        p.z = config.city.z;
-        continue;
-      }
-      p.x = worldCrowd && i > 0 ? config.route.x + ((i - 1) % rows - (rows - 1) / 2) * 2.5
-        : x + (i === 0 ? 0 : (i % 3) * 2 - 4);
-      p.y = worldCrowd && i > 0 ? config.route.y + (Math.floor((i - 1) / rows) - (rows - 1) / 2) * 2.5
-        : y + (i === 0 ? 0 : Math.ceil(i / 3) * 3);
-      const height = heightAt(p.x, p.y);
-      if (height !== undefined) p.z = height + .02;
-      else if (recording && i === 0) routeHeightMissing++;
-    }
+    if (crowd.place(seconds, lastFraction, heightAt) && recording) routeHeightMissing++;
     environment.beginResourceFrame();
     try {
       const scenery = environment.objectsAround(map, x, y, ENVIRONMENT_STREAM_RANGE);
       const p = objects[0]!.position!;
       worldRenderer.updateLighting(lighting.sample(map, x, y, config.halfMinute, 0, p.z), config.halfMinute);
       queryMs = performance.now() - queryAt;
-      if (benchUnitsFilled !== state.objects.size) {
-        benchUnitsFilled = state.objects.size;
-        for (const object of state.objects.values()) {
-          if (benchUnitModels.has(object.guid)) continue;
-          const model = modelOf(object);
-          if (model !== undefined) benchUnitModels.set(object.guid, model);
-        }
-      }
+      unitModels.refresh(state);
       if (renderBridge) renderBridge.setRenderLookups(worldRenderer, benchLookups); // 22.10 ARC-2 S5
       else worldRenderer.setRenderLookups(benchLookups);
       worldRenderer.beginRenderFrame();
       try {
-        const crowdClock = worldCrowd || city;
-        const view = config.view;
         // 22.10 ARC-2 S2b: no game-object rows, display-answered test or mount lookup to push (setRenderLookups):
         // the bench has no game objects or mounts, and every unit's record is answered by `modelOf` (S2c: pushed).
-        const yaw = view ? view.yaw : city ? angle : worldCrowd ? angle : Math.sin(lastFraction * Math.PI * 2) * .4;
-        const pitch = view ? view.pitch : city ? config.city.pitch : worldCrowd ? -.4 : -.22;
-        const orbit = view ? view.orbit : city ? config.city.orbit : worldCrowd ? 42 : 24;
-        const frameTime = { nowMs: (crowdClock
-          ? preparingWorldCrowd ? 0 : config.warmupSeconds + seconds
-          : seconds) * 1000, elapsedSeconds: elapsed, frameIndex: frame };
+        benchCamera(config, scene, lastFraction, camera);
+        const { yaw, pitch, orbit } = camera;
+        const frameTime = benchFrameTime(config, scene, preparingWorldCrowd, seconds, elapsed, frame);
         // 22.10 ARC-2 S5: the same call through the bridge when `renderBridge` is set.
         if (renderBridge) {
           renderBridge.draw(worldRenderer, state, map, heightAt, terrain, scenery, environment, yaw, pitch, orbit,
@@ -294,32 +176,9 @@ if (movement) {
     } finally { environment.endResourceFrame(); }
   };
   reset = () => worldRenderer.resetReplayEpoch(config.seed);
-  arrive = (seconds) => {
-    const due = Math.min(objects.length, 1 + ARRIVAL_GROUP * Math.floor(seconds));
-    for (let i = 1; i < due; i++) if (!state.objects.has(objects[i]!.guid)) state.objects.set(objects[i]!.guid, objects[i]!);
-  };
+  arrive = (seconds) => crowd.arrive(seconds);
   phases = () => ({ query: queryMs, ...worldRenderer.drawPhaseMs });
-  // 05.10-A7b-9 (7.18): the environment stand-ins with the tile losses and retry waits of this run's clients.
-  const benchStandIns = () => {
-    const report = worldRenderer.standInReport();
-    return { ...report, environment: environmentStandInsWith(report.environment,
-      { environment, splat, light: lighting, horizon }) };
-  };
-  readiness = () => {
-    const e = environment.stats, t = terrain.stats, s = splat.stats, r = worldRenderer.benchmarkReadiness;
-    const async = [cover.stats, lighting.stats, liquids.stats, horizon.stats];
-    const pending = e.activeTiles + e.activeModels + e.queuedModels + e.activeGroups + e.queuedGroups
-      + e.activeAnimations + e.queuedAnimations + t.active + s.active
-      + r.modelTexturesPending + r.worldTexturesPending + (r.wmoGroupsPending ?? 0)
-      + (r.terrainRepairsPending ?? 0)
-      + r.groundCoverModelsPending + r.characterAtlasPending
-      + worldRenderer.programWarmup.queued + async.reduce((n, x) => n + x.pending, 0);
-    const errors = e.failedModels + e.failedTiles + e.failedGroups + e.failedAnimations
-      + r.modelTexturesErrors + r.worldTexturesErrors + r.characterAtlasErrors + t.failed + s.failed + async.reduce((n, x) => n + x.error, 0);
-    return { pending, errors, details: { environment: e, terrain: t, splat: s, renderer: r,
-      units: worldRenderer.telemetry.unitsDrawn, standIns: benchStandIns(),
-      knownMissingTextures: [...missingTextures.missing], textureOtherFailures: missingTextures.otherFailures } }; // 06.10-P1-00b
-  };
+  readiness = () => benchReadiness(worldRenderer, clients, missingTextures);
 } else {
   const appearance = display.appearance;
   const [modelBuffer, animationBuffer] = await Promise.all([
