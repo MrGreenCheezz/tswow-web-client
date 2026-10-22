@@ -20,11 +20,47 @@
 export const VOLUME_SIDE_GAIN = 1.25;
 /** Lit share above the shade around at which a ray starts to count as a beam (the march's noise). */
 export const VOLUME_SIDE_CONTRAST_FROM = 0.02;
-/** Lit share above the shade around at which a ray is all beam. */
-export const VOLUME_SIDE_CONTRAST_FULL = 0.17;
+/**
+ * Lit share above the shade around at which a ray is all beam. 22.10 (7.30): 0.17 -> 0.12 with the
+ * soften pass (`VOLUME_SOFTEN_GLSL`), which lowers a thin beam's peak contrast: the Elwynn forest
+ * still keeps its beam strength (mean 15.5 -> 16.4 of 255) without the stipple.
+ */
+export const VOLUME_SIDE_CONTRAST_FULL = 0.12;
 /** Share of a whole reach of air (the march's green) over which the side term fades in. */
 export const VOLUME_SIDE_AIR_FROM = 0.65;
 export const VOLUME_SIDE_AIR_FULL = 0.95;
+
+/**
+ * 22.10 (7.30): half-resolution texels between the taps of the separable gaussian the march goes
+ * through before the composite reads it (`VOLUME_SOFTEN_GLSL`, one horizontal and one vertical
+ * pass). Owner, 22.10, Goldshire: the side-on beams were white stripes, hatched and dotted — the
+ * march's per-pixel jitter and the leaves' speckled shadows, which the contrast ramp amplifies.
+ * At 1.5 the gaussian's sigma is about three half-resolution texels (six screen pixels): the
+ * stipple goes, a beam a few yards across keeps its edges.
+ */
+export const VOLUME_SOFTEN_SPACING = 1.5;
+/** The gaussian's five bilinear taps (nine texels): centre weight, then offset and weight pairs. */
+export const VOLUME_SOFTEN_TAPS: readonly (readonly [number, number])[] = Object.freeze([
+  Object.freeze([0, 0.2270270270] as const),
+  Object.freeze([1.3846153846, 0.3162162162] as const),
+  Object.freeze([3.2307692308, 0.0702702703] as const),
+]);
+
+/**
+ * 22.10 (7.30): one direction of the march's soften pass; `sourceTexel` carries the texel times the
+ * direction times `VOLUME_SOFTEN_SPACING`. Both channels go through it: the lit share (red) and the
+ * air (green), so the composite's weights stay in step with the light they weigh.
+ */
+export const VOLUME_SOFTEN_GLSL = /* glsl */ `
+uniform sampler2D source;
+uniform vec2 sourceTexel;
+varying vec2 vUV;
+void main() {
+  vec2 sum = texture2D(source, vUV).rg * ${VOLUME_SOFTEN_TAPS[0]![1].toFixed(10)};
+${VOLUME_SOFTEN_TAPS.slice(1).map(([offset, weight]) => `  sum += (texture2D(source, vUV + sourceTexel * ${offset.toFixed(10)}).rg
+    + texture2D(source, vUV - sourceTexel * ${offset.toFixed(10)}).rg) * ${weight.toFixed(10)};`).join("\n")}
+  gl_FragColor = vec4(sum, 0.0, 1.0);
+}`;
 
 const unit = (value: number): number => Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0;
 

@@ -143,7 +143,7 @@ test("profiles normalise, and only post leaves select the composited path", () =
 
 test("the post chain builds without a context and keeps its shaders self-consistent", () => {
   const post = new CinematicPost();
-  assert.equal(post.materials.length, 9); // 12.10-7.30: + the volumetric march
+  assert.equal(post.materials.length, 10); // 12.10-7.30: + the volumetric march; 22.10 (7.30): + its soften pass
   assert.equal(post.active, false);
   assert.equal(post.setProfile({ bloom: true }), true);
   assert.equal(post.active, true);
