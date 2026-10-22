@@ -1,5 +1,6 @@
 import { FrameCadenceClock } from "../RenderStats.js";
 import { worldPanel } from "./Dom.js";
+import { fpsCounterText } from "./FpsCounterText.js"; // 22.10 ARC-2 live fix
 
 const UPDATE_INTERVAL_MS = 500;
 const cadence = new FrameCadenceClock();
@@ -31,8 +32,12 @@ export function setFpsCounterVisible(visible: boolean): void {
   if (counter) counter.hidden = !visible || worldPanel.hidden || document.hidden;
 }
 
-/** Called by the existing RAF loop. Hidden/disabled counters collect no samples or DOM updates. */
-export function updateFpsCounter(now: number, active: boolean): void {
+/**
+ * Called by the existing RAF loop. Hidden/disabled counters collect no samples or DOM updates.
+ * 22.10 ARC-2 live fix: `worldFps` is the world's own rate when a render worker draws it; the page's rate measured
+ * here is then the HUD's alone, and read as the world's it showed 60 for a world drawn at 50.
+ */
+export function updateFpsCounter(now: number, active: boolean, worldFps?: number): void {
   if (!enabled || !counter) return;
   if (!active) {
     if (!counter.hidden) {
@@ -49,6 +54,5 @@ export function updateFpsCounter(now: number, active: boolean): void {
   shownAt = now;
   const frames = cadence.snapshot();
   if (frames.average <= 0) return;
-  counter.textContent = `${Math.round(cadence.fps)} FPS · кадр ${frames.average.toFixed(1)} мс`
-    + ` · макс. ${frames.worst.toFixed(1)} мс`;
+  counter.textContent = fpsCounterText(cadence.fps, frames.average, frames.worst, worldFps);
 }

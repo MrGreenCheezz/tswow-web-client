@@ -424,7 +424,9 @@ function frame(now: number): void {
   const elapsed = Math.min(elapsedRaw, 0.1);
   lastFrame = now;
   const world = game.world;
-  updateFpsCounter(now, !!world && !worldPanel.hidden && !document.hidden);
+  // 22.10 ARC-2 live fix: with a render worker the world's rate is the worker's (its results' cadence), not this loop's.
+  updateFpsCounter(now, !!world && !worldPanel.hidden && !document.hidden,
+    game.renderer?.renderWorker === undefined ? undefined : game.renderer.results.fps);
   // Everything the packets changed since the last frame is delivered here, once, before anything
   // reads it: a panel is woken by the fields it asked for rather than by every packet that lands.
   // P1-20a: the four big pieces of `state` are marked on their own (`state.flush|motions|visuals|view`),

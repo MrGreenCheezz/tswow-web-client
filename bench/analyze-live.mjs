@@ -8,7 +8,10 @@ const [input, output] = process.argv.slice(2);
 if (!input || !output) throw new Error('Usage: node bench/analyze-live.mjs <capture.json> <report.json>');
 const bytes = await readFile(input);
 const capture = JSON.parse(bytes);
-const { frames, frameColumns, events } = capture;
+const { frames, frameColumns } = capture;
+// 22.10 ARC-2 live fix: a capture without an event kind (a worker recording has no long animation frame) has no key.
+const events = { checkpoints: [], cpuSections: [], resources: [], shaderPrograms: [], longAnimationFrames: [],
+  ...capture.events };
 const index = name => {
   const value = frameColumns.indexOf(name);
   if (value < 0) throw new Error(`Missing frame column: ${name}`);

@@ -284,6 +284,10 @@ export function startPerformanceCapture(): boolean {
     // 22.10 ARC-2 S6b: the world drawn in a worker: its frames are `renderWorkerFrames` and checkpoints' `renderWorker`,
     // the rows and their draw phases are the page's (phases sampled from the worker's last frame).
     ...(game.renderer?.renderWorker === undefined ? {} : { renderWorker: true }),
+    // 22.10 ARC-2 live fix: what the renderer applied (after clamps), and its pixel ratio, so two recordings show
+    // whether they drew with the same graphics state — the worker's from its last report.
+    appliedGraphics: game.renderer?.benchmarkGraphicsConfiguration,
+    pixelRatio: game.renderer?.pixelRatio,
   };
   workerLastAt = undefined;
   takeRenderWorkerWindow();

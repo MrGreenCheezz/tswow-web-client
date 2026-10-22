@@ -48,6 +48,8 @@ export class RenderWorkerSession {
   #standInsUntil = Number.NEGATIVE_INFINITY;
   #slowAt = Number.NEGATIVE_INFINITY;
   #shaderCapture = false;
+  /** 22.10 ARC-2 live fix: the page's last render scale, re-applied when the pushed DPR moves. */
+  #renderScale: number | undefined;
   #identity: Pick<RenderWorkerSlowReport, "webgl" | "identity"> | undefined;
 
   constructor(scope: RenderWorkerSessionScope, host: WorkerRenderHost, renderer: WorldRenderer3D) {
@@ -59,8 +61,15 @@ export class RenderWorkerSession {
 
   handle(message: RenderWorkerMessage): void {
     if (message.type === "host") {
+      // 22.10 ARC-2 live fix: the page's settings apply re-derives the in-page ratio from the current DPR on every
+      // `setRenderScale`; here that repeat is suppressed (RenderWorkerClient.ts `sameArgs`), so a DPR the page
+      // pushes is applied as that repeat would have applied it.
+      const dpr = this.#host.devicePixelRatio();
       this.#host.update(message.host);
       setPushedPageHidden(message.host.pageHidden);
+      if (this.#renderScale !== undefined && message.host.devicePixelRatio !== dpr) {
+        this.#renderer.setRenderScale(this.#renderScale);
+      }
       return;
     }
     for (const command of message.commands) this.#command(command);
@@ -84,6 +93,7 @@ export class RenderWorkerSession {
       case "#standIns": this.#standInsUntil = performance.now() + Number(command.args[0] ?? 0); return;
       case "setGroundCover": this.#groundCover = command.args; break;
       case "setShaderProgramCapture": this.#shaderCapture = command.args[0] === true; break;
+      case "setRenderScale": this.#renderScale = command.args[0] as number; break; // 22.10 ARC-2 live fix
       default: break;
     }
     applyRenderCommand(renderer, command, (present) => present ? this.#clients?.cover : undefined);
