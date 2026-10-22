@@ -13,6 +13,8 @@ export const BENCHMARK_SCRIPT_FILES = Object.freeze({
   '/EnvironmentTileDecode.worker.js.map': 'EnvironmentTileDecode.worker.js.map',
   '/PoseEngine.worker.ts': 'PoseEngine.worker.js',
   '/PoseEngine.worker.js.map': 'PoseEngine.worker.js.map',
+  '/TerrainRelief.worker.ts': 'TerrainRelief.worker.js', // 22.10 (7.47)
+  '/TerrainRelief.worker.js.map': 'TerrainRelief.worker.js.map',
 });
 
 /**
@@ -100,6 +102,7 @@ export async function buildBenchmarkBundle(outdir = 'bench/build', variantDir = 
       'WvaAnimationDecode.worker': 'src/browser/WvaAnimationDecode.worker.ts',
       'EnvironmentTileDecode.worker': 'src/browser/EnvironmentTileDecode.worker.ts',
       'PoseEngine.worker': 'src/browser/PoseEngine.worker.ts',
+      'TerrainRelief.worker': 'src/browser/TerrainRelief.worker.ts', // 22.10 (7.47)
     },
     outdir, bundle: true, format: 'esm', platform: 'browser', target: bundleOptions.target,
     // The harness entry (bench-only) awaits at top level, which esbuild refuses below es2022 although

@@ -326,6 +326,7 @@ function buildVariantConfigurations(settings: BenchmarkJsonObject): Readonly<{ A
   // exact no-shader baseline instead of inheriting the interactive defaults.
   base.experimentalAerialHeightFog = false;
   base.experimentalTerrainMicroNormals = false;
+  base.experimentalTerrainRelief = false; // 22.10 (7.47)
   base.experimentalWaterFresnel = false;
   base.experimentalWaterMicroWaves = false;
   base.experimentalWaterSunSparkle = false;

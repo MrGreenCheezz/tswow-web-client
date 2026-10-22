@@ -81,7 +81,8 @@ type ShaderRenderer = Parameters<THREE.Material["onBeforeCompile"]>[1];
 
 interface Binding {
   readonly previousCompile: (shader: ShaderSource, renderer: ShaderRenderer) => void;
-  readonly previousKey: string;
+  /** 22.10 (7.47): read on every call — a hook bound earlier (terrain relief) may change its own key later. */
+  readonly previousKey: () => string;
   enabled: boolean;
   /** Part of the cache key: which compiled variant the hook injects (e.g. with/without rings). */
   variant: string;
@@ -107,7 +108,7 @@ function bind(
   if (!enabled) return;
   const binding: Binding = {
     previousCompile: material.onBeforeCompile,
-    previousKey: material.customProgramCacheKey(),
+    previousKey: material.customProgramCacheKey.bind(material),
     enabled,
     variant,
   };
@@ -118,8 +119,8 @@ function bind(
     inject(shader, binding);
   };
   material.customProgramCacheKey = () => binding.enabled
-    ? `${binding.previousKey}|${binding.variant}`
-    : binding.previousKey;
+    ? `${binding.previousKey()}|${binding.variant}`
+    : binding.previousKey();
   material.needsUpdate = true;
 }
 

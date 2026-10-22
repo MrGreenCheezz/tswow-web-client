@@ -44,6 +44,7 @@ export const SETTING_SECTIONS: Readonly<Partial<Record<SettingGroup, readonly Se
       title: "Тени и рельеф",
       ids: Object.freeze([
         "experimentalSceneryShadows", "experimentalAmbientOcclusion", "experimentalTerrainMicroNormals",
+        "experimentalTerrainRelief", // 22.10 (7.47)
       ]),
     }),
     Object.freeze({

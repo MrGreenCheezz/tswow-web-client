@@ -99,6 +99,11 @@ export const SETTING_DEFINITIONS: readonly SettingDefinition[] = [
     hint: "Свет подчёркивает мелкие неровности камня, земли и дорог. Вдали эффект плавно ослабевает.",
   },
   {
+    // 22.10 (7.47): parallax and derived normals on the ground; drawn on the enhanced lighting levels only.
+    id: "experimentalTerrainRelief", label: "Объём земли", group: "Эффекты", kind: "boolean", fallback: true,
+    hint: "Камни, мостовая и трещины на земле вблизи выглядят объёмными и отбрасывают мелкие тени. Только с улучшенным освещением; немного нагружает видеокарту.",
+  },
+  {
     id: "experimentalWaterFresnel", label: "Отражения на воде", group: "Эффекты", kind: "boolean", fallback: true,
     hint: "Поверхность сильнее отражает свет при взгляде вдоль воды и остаётся прозрачнее при взгляде сверху.",
   },
