@@ -4,6 +4,7 @@ import type { RetainedResourceVisitor } from "./ResourceAccounting.js";
 import type { BenchmarkAsyncReadinessStats } from "./RenderBenchmarkReadiness.js";
 import { withGeneration } from "./GatewayGeneration.js";
 import { RetryLadder } from "./RetryLadder.js"; // 05.10-A7b-0 1.24
+import { HorizonDetailTiles } from "./HorizonDetailTiles.js"; // 22.10 (7.44)
 
 /**
  * The world beyond the tiles that are really loaded, out of the client's own `.wdl`.
@@ -321,6 +322,8 @@ export class HorizonClient {
   #revision = 0;
   #success = 0;
   #error = 0;
+  /** 22.10 (7.44): the minimap bakes the enhanced path lays over the inner rings (HorizonDetail.ts). */
+  readonly detail: HorizonDetailTiles;
 
   /** `now` (05.10-A7b-0 1.24) is the retry ladder's clock; tests inject their own. */
   constructor(gatewayWebSocketUrl: string, now?: () => number) {
@@ -329,6 +332,7 @@ export class HorizonClient {
     this.#baseUrl = url.origin;
     this.#failures = new RetryLadder<number>(undefined, now);
     this.#colourFailures = new RetryLadder<number>(undefined, now); // 05.10-A7b-7
+    this.detail = new HorizonDetailTiles(gatewayWebSocketUrl);
   }
 
   /**

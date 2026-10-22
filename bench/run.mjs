@@ -172,7 +172,7 @@ async function main() {
   let cacheMisses = 0;
   const gateway = new URL(process.env.BENCH_GATEWAY_URL ?? 'http://127.0.0.1:8090');
   if (!['127.0.0.1', 'localhost', '[::1]'].includes(gateway.hostname)) throw new Error('Benchmark gateway must be loopback');
-  const allowed = /^(?:\/dbc\/(?:creature-models|character-appearance|light\/\d+|ground-effects|liquid-types)|\/terrain\/|\/visual\/|\/texture(?:\?|$)|\/terrain-splat\/|\/terrain-layer\/|\/ground-cover\/|\/liquid\/|\/horizon\/|\/environment\/)/;
+  const allowed = /^(?:\/dbc\/(?:creature-models|character-appearance|light\/\d+|ground-effects|liquid-types)|\/terrain\/|\/visual\/|\/texture(?:\?|$)|\/terrain-splat\/|\/terrain-layer\/|\/ground-cover\/|\/liquid\/|\/horizon\/|\/minimap\/\d+\/index\.json|\/environment\/)/; // 22.10 (7.44): minimap index
   // 22.10 (12.14): the requests the scene made, per route (bench/request-ledger.mjs); reset at each open.
   const requestLedger = createRequestLedger();
   async function asset(key) {

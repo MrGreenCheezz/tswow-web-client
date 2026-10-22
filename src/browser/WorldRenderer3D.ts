@@ -265,6 +265,7 @@ import {
 } from "./Horizon.js";
 import { horizonTileAt } from "./Horizon.js"; // 05.10-A7b-7
 import { HorizonMaterialSelector } from "./HorizonMaterial.js"; // 05.10-A7b-7
+import { HorizonDetail } from "./HorizonDetail.js"; // 22.10 (7.44)
 import {
   billboardView, buildModelEffects, disposeModelEffects, resetModelEffects, setModelEffectsFantasyGlow,
   updateModelEffects,
@@ -4337,6 +4338,8 @@ export class WorldRenderer3D {
   readonly #horizonMaterial = new THREE.MeshBasicMaterial({ color: 0x4a6b4f, fog: true });
   /** 05.10-A7b-7 (7.08): the classic path's lit, coloured horizon beside the flat one above. */
   #horizonMaterials: HorizonMaterialSelector | undefined;
+  /** 22.10 (7.44): the enhanced path's minimap detail over the inner horizon (HorizonDetail.ts). */
+  #horizonDetail: HorizonDetail | undefined;
   readonly #wmoMaterial = new THREE.MeshStandardMaterial({ color: 0x927d62, roughness: 0.92, side: THREE.DoubleSide, flatShading: true });
   readonly #m2Material = new THREE.MeshStandardMaterial({ color: 0x73835e, roughness: 0.95, side: THREE.DoubleSide, flatShading: true });
   readonly #stoneMaterial = new THREE.MeshStandardMaterial({ color: 0x747b80, roughness: 1, side: THREE.DoubleSide, flatShading: true });
@@ -7674,6 +7677,8 @@ export class WorldRenderer3D {
     this.#waterDetailMaps.dispose();
     this.#disposeFullscreenGlowTargets();
     this.#horizonMaterials?.dispose(); // 05.10-A7b-7
+    this.#horizonDetail?.dispose(); // 22.10 (7.44)
+    this.#horizonDetail = undefined;
     this.#environmentStandInMarkers.dispose(); // 05.10-A7b-9 7.18
     this.#lightHalos.dispose(); // 22.10 (7.36)
     for (const geometry of [
@@ -10406,7 +10411,8 @@ export class WorldRenderer3D {
     const revision = horizonClient?.revision ?? 0;
     // 05.10-A7b-7 (7.08): lit and coloured on the classic path once the map's picture is in.
     this.#horizonMaterials ??= new HorizonMaterialSelector(this.#horizonMaterial, this.#worldLight);
-    const horizonMaterial = this.#horizonMaterials.select(this.#lightingProfile.quality, () => horizonClient?.colour(map));
+    const horizonMaterial = this.#horizonMaterials.select(this.#lightingProfile.quality, () => horizonClient?.colour(map),
+      this.#updateHorizonDetail(map, cell, horizonClient)); // 22.10 (7.44)
     if (this.#horizon && this.#horizon.mesh.material !== horizonMaterial) this.#horizon.mesh.material = horizonMaterial;
     // 22.10 (7.39): the enhanced path's fog reaches past these four tiles; the band beyond them is
     // built on a frame of its own, never the one that rebuilt this mesh (HorizonBand.ts).
@@ -10433,6 +10439,28 @@ export class WorldRenderer3D {
     mesh.renderOrder = 0;
     this.#horizon = { mesh, tile, revision };
     this.#scene.add(mesh);
+  }
+
+  /**
+   * 22.10 (7.44): stream the minimap detail around the player's tile on the enhanced path; the
+   * faithful levels release it (and its 21 MB) and keep the colour map alone.
+   */
+  #updateHorizonDetail(map: number, cell: number, horizonClient: HorizonClient | undefined): HorizonDetail | undefined {
+    if (lightingClassicLook(this.#lightingProfile.quality) || !horizonClient) {
+      if (this.#horizonDetail) {
+        this.#horizonDetail.dispose();
+        this.#horizonDetail = undefined;
+      }
+      return undefined;
+    }
+    this.#horizonDetail ??= new HorizonDetail();
+    this.#horizonDetail.update(this.#renderer, map, Math.floor(cell / 64), cell % 64, horizonClient.detail, performance.now());
+    return this.#horizonDetail;
+  }
+
+  /** 22.10 (7.44): far-ground detail cells still loading or waiting for their upload (bench readiness). */
+  get horizonDetailPending(): number {
+    return this.#horizonDetail?.pending ?? 0;
   }
 
   #buildTerrain(key: string, map: number, grid: { x: number; y: number }, revision: number, ownRevision: number, player: WorldPosition, heightAt: HeightSampler | undefined, terrainClient: TerrainClient | undefined): void {
