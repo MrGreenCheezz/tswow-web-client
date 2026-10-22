@@ -279,7 +279,8 @@ test("hook lines: onSwing, the renderer's reaction entry and the variant roll", 
   assert.match(body("setMeleeTargets"), /this\.#meleeTargets = units;/);
   assert.match(body("releaseUnitAction"), /this\.#swingWatch\.release\(id\);/);
   const loop = readFileSync(new URL("../src/browser/game/Loop.ts", import.meta.url), "utf8");
-  assert.match(loop, /game\.swingReactions\?\.syncMeleeTargets\(\);\s+try \{\s+try \{\s+renderer\.draw\(/,
+  // 22.10 ARC-2 S5: the call may go through the loopback bridge first; either way after the sync.
+  assert.match(loop, /game\.swingReactions\?\.syncMeleeTargets\(\);\s+try \{\s+try \{\s+(?:\/\/[^\n]*\s+)*if \(renderBridge\) \{\s+renderBridge\.draw\([\s\S]{0,400}?\} else renderer\.draw\(/,
     "the +0xa20 set is pushed before the frame a kit wound may come due in");
   assert.match(loop, /\} finally \{\s+(?:\/\/[^\n]*\s+)+game\.swingReactions\?\.afterDraw\(\);/,
     "the cues tick once draw returned, first thing");

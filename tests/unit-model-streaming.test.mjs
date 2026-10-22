@@ -188,6 +188,8 @@ test("equipment requests continue but ready attachment builds share the body and
   Object.assign(h, {
     unitBuildBudget: new FrameBuildBudget(2, 2, () => 0), builtUnits: {},
     programWarmup: { registerObject() {} }, disposeAttachedGlow() {},
+    // 22.10 ARC-2 S2a: the enchant-glow tables arrive in the pushed render inputs; none here.
+    inputs: { enchantGlow: undefined },
     wvmBuild() { builds++; return { geometry: new THREE.BufferGeometry(), materials: [] }; },
   });
   const rendered = { attached: new Map(), skinned: {}, template: { pivots: [] } };
