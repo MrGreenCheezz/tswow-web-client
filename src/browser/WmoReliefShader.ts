@@ -29,8 +29,10 @@ import { WMO_RELIEF_FLAT, WmoReliefMaps, type WmoReliefMapStats } from "./WmoRel
  * yards — gentler than the ground, since walls are mostly seen at a grazing angle. The march, the
  * steps and the distance fade are the ground's: 5–10 steps, full to 35 yards, none past 85, nothing
  * below a 9° view; the march's shift is capped at 1/0.3 of the depth, so a silhouette never swims.
- * A lit run (exterior, transition) also takes the derived normal into the world light and the soft
- * sun self-shadow; a room's run (MOCV-lit, no sun) takes the parallax alone.
+ * Every run darkens its joints (cavity) and lights the stones' upturned faces from overhead (sky):
+ * the shape in the shade and in rooms (MOCV-lit, no sun). A lit run (exterior, transition) also
+ * takes the derived normal into the sun's N·L — only there, not the rim or fill — and the soft sun
+ * self-shadow.
  *
  * Program keys. A material is bound when it is built (or when the leaf turns on), with its key
  * {@link WMO_RELIEF_MARKER}; its map arrives later through a uniform — a 1×1 flat stand-in and a
@@ -40,22 +42,59 @@ import { WMO_RELIEF_FLAT, WmoReliefMaps, type WmoReliefMapStats } from "./WmoRel
  */
 
 /** 22.10 (7.47 stage 2): bumped when the injected program changes; part of the cache key. */
-export const WMO_RELIEF_PROFILE_VERSION = 1;
+export const WMO_RELIEF_PROFILE_VERSION = 2; // 22.10 (7.47): v2 — the shading's tilt, the sun as a factor, cavity and sky
 export const WMO_RELIEF_MARKER = `wmo-relief-v${WMO_RELIEF_PROFILE_VERSION}`;
-/** 22.10 (7.47 stage 2): the relief's depth in UV units of the run's texture (the ground's is 0.03). */
+/**
+ * 22.10 (7.47 stage 2): the relief's depth in UV units of the run's texture (the ground's is 0.03).
+ * 22.10 (7.47): kept — the march was not why the buildings read flat (the shading was, see
+ * {@link WMO_RELIEF_WALL_TILT}); 0.025 under a 0.11-yard cap read no better in the stills and stepped
+ * along the wall tops.
+ */
 export const WMO_RELIEF_DEPTH_UV = 0.02;
 /** 22.10 (7.47 stage 2): and never deeper than this, in yards (≈ 7 cm), however large the texture's repeat. */
 export const WMO_RELIEF_DEPTH_MAX = 0.08;
-/** 22.10 (7.47 stage 2): the share of the sun term a stone's own shadow may take (the ground's is 0.6). */
-export const WMO_RELIEF_SHADOW_STRENGTH = 0.5;
+/** 22.10 (7.47): the share of the sun term a stone's own shadow may take (stage 2: 0.5; the ground's too is 0.6). */
+export const WMO_RELIEF_SHADOW_STRENGTH = 0.6;
 /**
- * 22.10 (7.47 stage 2): the derived normal's tilt over the one the depth implies, and its cap
- * (tangent of the tilt). At full strength a wall facing away from the sun lit up stone by stone and
- * the steep joints took the sky-blue rim light (the stills of the first pass); half, capped at ≈ 17°,
- * keeps the stones' shape without relighting the wall.
+ * 22.10 (7.47): the joints' cavity — the light factor is 1 ± this × the height against its
+ * neighbourhood (×2, clamped to ±1): a joint darker, a crown lighter, the face's mean kept (a
+ * darkening-only cavity took 6 % off a Stormwind wall). What reads in the shade and in rooms, where
+ * there is no sun for the tilt to shape.
  */
-export const WMO_RELIEF_NORMAL_STRENGTH = 0.5;
-export const WMO_RELIEF_NORMAL_MAX_TILT = 0.3;
+export const WMO_RELIEF_CAVITY = 0.35;
+/** 22.10 (7.47): the neighbourhood the shading terms measure the height against, in texels of the map (a mip ≈ 4 levels up). */
+export const WMO_RELIEF_LOCAL_SPAN = 16;
+/**
+ * 22.10 (7.47): the overhead light's share by the stone's own tilt — a face turned up is lighter, one
+ * turned down darker (± this times the tilt's upward part). The shade's and the rooms' direction.
+ */
+export const WMO_RELIEF_SKY = 0.4;
+/**
+ * 22.10 (7.47): the derived normal's tilt over the one the depth implies, and its cap (tangent of the
+ * tilt). Stage 2 put the tilted normal into `normal`, which the world light's rim and fill also read
+ * (`pow( 1 - N·V, 3 )` against the cool ambient): the steep joints took a sky-blue rim, and the cure
+ * was half strength under a ≈ 17° cap — flat. The tilt now reaches the sun's N·L alone,
+ * as a hue-neutral factor on the colour (`SUN` below); the rim, the fill and the lamps keep the
+ * face's own normal, so the full slope the depth implies is safe, capped at ≈ 31° for smooth stones.
+ */
+export const WMO_RELIEF_NORMAL_STRENGTH = 1.0;
+export const WMO_RELIEF_NORMAL_MAX_TILT = 0.6;
+/**
+ * 22.10 (7.47): a wall's tilt (tangent) where the height stands ±0.5 off its neighbourhood. Building textures
+ * are painted lit from above — a light top edge, a dark lower one, a face shaded top to bottom — so
+ * the brightness' slope across a face runs against its shape: the height's normal turned every face
+ * down, and under a high sun the relief undid the painted light (local contrast 8.8 → 8.1 on a
+ * Stormwind wall: why stage 2 read flat). On an upright face the tilt is the shading's instead —
+ * brighter than the mean leans up the face, darker down — which agrees with the paint
+ * and needs no slope at all, so it stays as smooth as the height. Floors (cobbles, painted from
+ * above) keep the height's slope, as the ground does.
+ */
+export const WMO_RELIEF_WALL_TILT = 0.7;
+/** 22.10 (7.47): the relief's sun factor — its gain over the N·L difference, and how far from one it may go. */
+export const WMO_RELIEF_SUN_GAIN = 1.0;
+export const WMO_RELIEF_SUN_RANGE = 0.5;
+/** 22.10 (7.47): the face's own N·L at which its relief takes the whole sun factor (none at 0). */
+export const WMO_RELIEF_SUN_FACING = 0.2;
 
 export type WmoReliefVariant = "lit" | "room";
 
@@ -123,6 +162,7 @@ const MARCH = /* glsl */ `
   vec3 wmoReliefN = vec3( 0.0, 0.0, 1.0 );
   vec3 wmoReliefGu = vec3( 0.0 );
   vec3 wmoReliefGv = vec3( 0.0 );
+  vec3 wmoReliefBump = vec3( 0.0 );
 #ifdef USE_MAP
   vec2 wmoReliefUv = vMapUv;
   vec2 wmoReliefGx = dFdx( vMapUv );
@@ -174,29 +214,60 @@ const MARCH = /* glsl */ `
 #endif
 `;
 
-/** After three's normal (lit runs): the derived slope through ∇u, ∇v into the view-space normal. */
-const NORMAL = /* glsl */ `
+/**
+ * After the colour tap (both variants): the derived slope through ∇u, ∇v as a view-space tilt, the
+ * joints' cavity and the overhead light by the tilt — the relief's shape without a sun.
+ */
+const SHAPE = /* glsl */ `
 #ifdef USE_MAP
-  // ${WMO_RELIEF_MARKER}: N + depth · (slope_u ∇u + slope_v ∇v) / the map's own depth.
+  // ${WMO_RELIEF_MARKER}: (22.10, 7.47) the tilt — on a floor the height's slope, N' = N + depth · (slope_u ∇u
+  // + slope_v ∇v) / the map's own depth, as on the ground; on a wall the shading's, up the face.
   if ( wmoReliefFade > 0.0 ) {
-    vec2 wmoReliefTilt = textureGrad( wmoRelief, wmoReliefUv, wmoReliefGx, wmoReliefGy ).rg * 2.0 - 1.0;
+    vec4 wmoReliefTexel = textureGrad( wmoRelief, wmoReliefUv, wmoReliefGx, wmoReliefGy );
+    // The height against its neighbourhood (a mip about a stone wide): what the shading terms read,
+    // so each keeps the face's mean light wherever the texture is mostly joint or mostly crown.
+    vec4 wmoReliefAround = textureGrad( wmoRelief, wmoReliefUv,
+      wmoReliefGx * ${f(WMO_RELIEF_LOCAL_SPAN)}, wmoReliefGy * ${f(WMO_RELIEF_LOCAL_SPAN)} );
+    float wmoReliefLocal = wmoReliefTexel.b - wmoReliefAround.b;
+    // The slope too, against the neighbourhood's mean (a floor brightened 7 % under the sun without).
+    vec2 wmoReliefTilt = ( wmoReliefTexel.rg - wmoReliefAround.rg ) * 2.0;
     vec2 wmoReliefSlope = wmoReliefTilt / sqrt( max( 1.0 - dot( wmoReliefTilt, wmoReliefTilt ), 0.04 ) );
-    vec3 wmoReliefBump = ( wmoReliefGu * wmoReliefSlope.x + wmoReliefGv * wmoReliefSlope.y )
+    vec3 wmoReliefFloor = ( wmoReliefGu * wmoReliefSlope.x + wmoReliefGv * wmoReliefSlope.y )
       * ( wmoReliefDepth * ${f(WMO_RELIEF_NORMAL_STRENGTH)} / ${f(TERRAIN_RELIEF_DEPTH * TERRAIN_RELIEF_NORMAL_BOOST)} );
-    float wmoReliefTiltLength = length( wmoReliefBump );
-    if ( wmoReliefTiltLength > ${f(WMO_RELIEF_NORMAL_MAX_TILT)} ) wmoReliefBump *= ${f(WMO_RELIEF_NORMAL_MAX_TILT)} / wmoReliefTiltLength;
-    normal = normalize( normal + wmoReliefBump * wmoReliefFade );
+    float wmoReliefTiltLength = length( wmoReliefFloor );
+    if ( wmoReliefTiltLength > ${f(WMO_RELIEF_NORMAL_MAX_TILT)} ) wmoReliefFloor *= ${f(WMO_RELIEF_NORMAL_MAX_TILT)} / wmoReliefTiltLength;
+    // Up along the face: brighter than the mean leans toward it, darker away. World up, not the
+    // texture's top — a beam or a trim maps its texture any way round, and its paint turns with it.
+    vec3 wmoReliefUp = normalize( ( viewMatrix * vec4( 0.0, 1.0, 0.0, 0.0 ) ).xyz );
+    float wmoReliefUpN = dot( wmoReliefN, wmoReliefUp );
+    vec3 wmoReliefTop = ( wmoReliefUp - wmoReliefN * wmoReliefUpN ) / max( sqrt( max( 1.0 - wmoReliefUpN * wmoReliefUpN, 0.0 ) ), 1e-3 );
+    vec3 wmoReliefWall = wmoReliefTop * ( clamp( wmoReliefLocal * 2.0, -1.0, 1.0 ) * ${f(WMO_RELIEF_WALL_TILT)} );
+    float wmoReliefUpright = 1.0 - smoothstep( 0.5, 0.85, abs( wmoReliefUpN ) );
+    wmoReliefBump = mix( wmoReliefFloor, wmoReliefWall, wmoReliefUpright ) * wmoReliefFade;
+    // A joint (below its neighbourhood) loses part of the light, a crown gains as much, so the face
+    // keeps its mean; a face turned up takes more of the overhead light, one turned down less. Both
+    // follow the smoothed height, so the stones stay rounded.
+    float wmoReliefCavity = 1.0 + ${f(WMO_RELIEF_CAVITY)} * wmoReliefFade * clamp( wmoReliefLocal * 2.0, -1.0, 1.0 );
+    float wmoReliefSky = 1.0 + ${f(WMO_RELIEF_SKY)} * dot( wmoReliefBump, wmoReliefUp );
+    diffuseColor.rgb *= wmoReliefCavity * wmoReliefSky;
   }
 #endif
 `;
 
-/** Before the sun term (lit runs): a stone between this texel and the sun takes part of it. */
-const SHADOW = /* glsl */ `
+/**
+ * Before the sun term (lit runs): the relief's own sun — the tilted normal's N·L against the face's,
+ * and a stone between this texel and the sun — as a hue-neutral factor on the colour, weighted by
+ * the key's share of the light and the cascades' shadow. `normal`, `wowDot` and `wowShadow` stay
+ * the face's: stage 2 tilted `normal` itself, and where the tilt turned a joint from the sun the
+ * world light's shade tint (cool, sky-leaning fill) and its rim followed — the blue joints.
+ */
+const SUN = /* glsl */ `
 #ifdef USE_MAP
-// ${WMO_RELIEF_MARKER}: the soft self-shadow toward the sun.
-if ( wmoReliefFade > 0.0 && wmoReliefSurface > 0.0 ) {
+// ${WMO_RELIEF_MARKER}: (22.10, 7.47) the relief's sun and its soft self-shadow.
+if ( wmoReliefFade > 0.0 ) {
+  float wmoReliefSelf = 1.0;
   float wmoSunN = dot( wowViewSunDirection, wmoReliefN );
-  if ( wmoSunN > 0.02 ) {
+  if ( wmoReliefSurface > 0.0 && wmoSunN > 0.02 ) {
     vec3 wmoSunT = wowViewSunDirection - wmoReliefN * wmoSunN;
     vec2 wmoSunShift = vec2( dot( wmoReliefGu, wmoSunT ), dot( wmoReliefGv, wmoSunT ) ) / max( wmoSunN, 0.3 )
       * wmoReliefScale * wmoReliefSurface;
@@ -207,8 +278,17 @@ if ( wmoReliefFade > 0.0 && wmoReliefSurface > 0.0 ) {
       float wmoAt = 1.0 - textureGrad( wmoRelief, wmoReliefUv + wmoSunShift * wmoAlong, wmoReliefGx, wmoReliefGy ).b;
       wmoOccluded = max( wmoOccluded, ( wmoRay - wmoAt ) * ( 1.0 - wmoAlong ) );
     }
-    wowShadow *= 1.0 - ${f(WMO_RELIEF_SHADOW_STRENGTH)} * wmoReliefFade * clamp( wmoOccluded * 6.0, 0.0, 1.0 );
+    wmoReliefSelf = 1.0 - ${f(WMO_RELIEF_SHADOW_STRENGTH)} * wmoReliefFade * clamp( wmoOccluded * 6.0, 0.0, 1.0 );
   }
+  float wmoKeyLuma = dot( wowDiffuse, vec3( 0.2126, 0.7152, 0.0722 ) );
+  float wmoKeyShare = wmoKeyLuma / max( wmoKeyLuma + dot( wowAmbient, vec3( 0.2126, 0.7152, 0.0722 ) ), 1e-4 );
+  // Linear in the tilt (no renormalising), so a face's relief keeps its mean light.
+  float wmoReliefNL = max( dot( normalize( normal ) + wmoReliefBump, wowViewSunDirection ), 0.0 );
+  // A face turned from the sun takes none of it: its stones may not catch what the wall does not
+  // (stage 2: such walls «lit up stone by stone»).
+  float wmoReliefSun = 1.0 + ${f(WMO_RELIEF_SUN_GAIN)} * wmoKeyShare * wowShadow * smoothstep( 0.0, ${f(WMO_RELIEF_SUN_FACING)}, wowDot )
+    * ( wmoReliefNL * wmoReliefSelf - max( wowDot, 0.0 ) );
+  diffuseColor.rgb *= clamp( wmoReliefSun, ${f(1 - WMO_RELIEF_SUN_RANGE)}, ${f(1 + WMO_RELIEF_SUN_RANGE)} );
 }
 #endif
 `;
@@ -233,10 +313,10 @@ export function injectWmoRelief(shader: ShaderSource, variant: WmoReliefVariant)
     .replace(LOGDEPTH_MARKER, `${LOGDEPTH_MARKER}${MARCH}`)
     // Every colour tap reads at the shifted UV with the unshifted UV's gradients, so the mip choice
     // never jumps at a stone's edge.
-    .replace(MAP_MARKER, mapChunk.replace(MAP_SAMPLE, "textureGrad( map, wmoReliefUv, wmoReliefGx, wmoReliefGy )"));
+    .replace(MAP_MARKER, `${mapChunk.replace(MAP_SAMPLE, "textureGrad( map, wmoReliefUv, wmoReliefGx, wmoReliefGy )")}${SHAPE}`);
   if (variant === "lit") {
-    next = next.replace(NORMAL_MARKER, `${NORMAL_MARKER}${NORMAL}`);
-    if (count(next, SUN_MARKER) === 1) next = next.replace(SUN_MARKER, `${SHADOW}${SUN_MARKER}`);
+    // Outside the world light (no sun term to find) a lit run keeps the cavity and the sky alone.
+    if (count(next, SUN_MARKER) === 1) next = next.replace(SUN_MARKER, `${SUN}${SUN_MARKER}`);
   }
   shader.fragmentShader = next;
   shader.vertexShader = `${VERTEX_PARS}${vertex}`.replace(PROJECT_MARKER, `${PROJECT_MARKER}${VERTEX_BODY}`);
