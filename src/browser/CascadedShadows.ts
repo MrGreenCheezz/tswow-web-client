@@ -35,6 +35,7 @@ import {
   type ShadowCasterList,
 } from "./ShadowCasterList.js";
 import { windShadowDepth } from "./VegetationWind.js"; // 7.26
+import { SteppedShadowSun } from "./ShadowSunStep.js"; // 22.10 (7.35)
 
 /** Depth-only WMO stand-ins live here: shadow cameras draw them, the view camera never does. */
 export const SHADOW_PROXY_LAYER = 29;
@@ -308,6 +309,7 @@ export class CascadedSunShadows {
   readonly #farReasons = [0, 0, 0, 0, 0];
   readonly #farCenter = new THREE.Vector3();
   readonly #farSun = new THREE.Vector3();
+  readonly #sunStep = new SteppedShadowSun(); // 22.10 (7.35)
   // Scratch.
   readonly #sun = new THREE.Vector3();
   readonly #forward = new THREE.Vector3();
@@ -630,6 +632,8 @@ export class CascadedSunShadows {
     const length = sun.length();
     if (!(length > 0)) return;
     const direction = this.#sun.copy(sun).divideScalar(length);
+    // 22.10 (7.35): the maps take the sun in steps, so the light plane does not turn every frame.
+    this.#sunStep.step(direction, direction);
     const basis = directionalShadowBasis(direction);
     if (!basis) return;
     this.#basis.right.set(basis.right.x, basis.right.y, basis.right.z);
@@ -659,13 +663,16 @@ export class CascadedSunShadows {
       this.#delta.x * basis.right.x + this.#delta.y * basis.right.y + this.#delta.z * basis.right.z,
       this.#delta.x * basis.up.x + this.#delta.y * basis.up.y + this.#delta.z * basis.up.z,
     );
+    // 22.10 (7.35): the direction changes only in whole steps, each larger than the cached
+    // cascade's own sun tolerance, so any change is a turn and the far map follows the near ones.
+    const farSunDot = this.#farSun.equals(direction) ? 1 : 0;
     const stale = farCascadeStale({
       dirty: this.#farDirty || farCascade.extent !== extent || farCascade.light.shadow.map === null,
       framesSinceRender: frame - this.#farRenderedFrame,
       refreshFrames: Math.max(1, profile.shadowFarRefreshFrames),
       offset,
       margin,
-      sunDot: this.#farSun.dot(direction),
+      sunDot: farSunDot,
       msSinceRender: nowMs - this.#farRenderedAtMs,
       idleRefreshMs: this.#farAnimated ? undefined : SHADOW_FAR_IDLE_REFRESH_MS,
     });
@@ -677,7 +684,7 @@ export class CascadedSunShadows {
         refreshFrames: Math.max(1, profile.shadowFarRefreshFrames),
         offset,
         margin,
-        sunDot: this.#farSun.dot(direction),
+        sunDot: farSunDot,
         msSinceRender: nowMs - this.#farRenderedAtMs,
         idleRefreshMs: this.#farAnimated ? undefined : SHADOW_FAR_IDLE_REFRESH_MS,
       });

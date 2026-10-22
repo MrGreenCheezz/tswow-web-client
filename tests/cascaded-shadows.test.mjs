@@ -152,6 +152,41 @@ test("view-fitted cascades keep their texel grid while the camera moves and turn
   assert.ok(lights.slice(1).every((light) => scene.children.includes(light)), "added cascades join the scene");
 });
 
+test("22.10 (7.35): the maps hold the sun until it turns a whole step, then every cascade follows", () => {
+  const { cascades, renderer, calls, scene } = setup(2);
+  const camera = makeCamera();
+  const lights = cascades.lights;
+  const far = lights.at(-1);
+  const probe = new THREE.Vector3(-9585, 54, 318);
+  const base = sunTowards.clone().normalize();
+  const axis = new THREE.Vector3(0.2, 0.3, 0.93).normalize();
+  // The time of day turns the sun about 0.004 degrees a second: three seconds of it, frame by frame.
+  const turnedBy = (degrees) => base.clone().applyAxisAngle(axis, THREE.MathUtils.degToRad(degrees));
+  const lightDirection = (light) => light.position.clone().sub(light.target.position).normalize();
+  const renderFrame = (frame, sun) => {
+    cascades.update(camera, sun, frame, frame * 6.944);
+    calls.length = 0;
+    renderer.shadowMap.render(lights, scene, camera);
+    return calls.map((call) => call.lights[0]);
+  };
+  renderFrame(1, base);
+  const held = lights.map(lightDirection);
+  const texels = lights.map((light) => texelOf(light, probe));
+  for (let frame = 2; frame <= 432; frame++) {
+    renderFrame(frame, turnedBy(0.0125 * (frame - 1) / 431));
+  }
+  lights.forEach((light, index) => {
+    assert.ok(lightDirection(light).angleTo(held[index]) < 1e-9, `cascade ${index} turned with a 0.0125-degree sun`);
+    const { u, v } = texelOf(light, probe);
+    assert.ok(Math.abs(u - texels[index].u) < 1e-6 && Math.abs(v - texels[index].v) < 1e-6,
+      `cascade ${index}: a still point kept its texel (${texels[index].u}, ${texels[index].v} -> ${u}, ${v})`);
+  });
+  // A whole step: every map takes the new sun on the same frame, the cached one included.
+  const stepped = turnedBy(0.2);
+  assert.ok(renderFrame(433, stepped).includes(far), "the cached cascade follows the step");
+  for (const light of lights) assert.ok(lightDirection(light).angleTo(stepped) < 1e-6);
+});
+
 test("the outermost cascade is cached and re-rendered only when it must be", () => {
   const { cascades, renderer, calls, profile, scene } = setup(2);
   const camera = makeCamera();
