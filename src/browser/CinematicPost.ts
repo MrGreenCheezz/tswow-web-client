@@ -29,6 +29,7 @@
  */
 import * as THREE from "three";
 
+import { VOLUME_SIDE_GAIN, VOLUME_SIDE_GLSL, volumeSideBeam } from "./CinematicVolumeSide.js"; // 22.10 (7.30)
 import { GOD_RAY_STRENGTH_SCALE_MAX } from "./LightingQuality.js";
 import { highSunKeyWeight } from "./WorldLighting.js";
 
@@ -477,11 +478,15 @@ export const VOLUME_CONTEXT_TEXELS = 16;
  * all of it toward the sun (the haze leaf's Henyey-Greenstein lobe). A quarter side-on laid a milky
  * veil over a Stormwind street at noon (+17 luma), where the houses' shadows cross every ray; a
  * `4·s·(1−s)` shape drew a bright seam along every large shadow's edge. CPU twin of the GLSL.
+ * 22.10 (7.30): plus the side-on beam (`volumeSideBeam`), weighted by what the lobe leaves: a lit
+ * ray among shade reads from the side too, while a street's evenly crossed shadows stay at a tenth.
  */
 export function volumeScatter(litShare: number, around: number, air: number, forwardLobe: number): number {
   const unit = (value: number): number => Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0;
   const s = unit(litShare);
-  return Math.sqrt(s) * (1 - Math.min(unit(around), s)) * unit(air) * (0.1 + 0.9 * unit(forwardLobe));
+  const lobe = unit(forwardLobe);
+  return Math.sqrt(s) * (1 - Math.min(unit(around), s)) * unit(air) * (0.1 + 0.9 * lobe)
+    + VOLUME_SIDE_GAIN * volumeSideBeam(litShare, around, air) * (1 - lobe);
 }
 
 /**
@@ -1035,7 +1040,8 @@ void main() {
   if (volumeLight.x > 0.0) {
     // 12.10-7.30: the volumetric march — lit air between the shadows of leaves and roofs — from any
     // view direction. A cross of five half-resolution taps takes the march's jitter; the sun's
-    // angle to the ray weights it (volumeScatter): a tenth side-on, all of it toward the sun.
+    // angle to the ray weights it (volumeScatter): a tenth side-on, all of it toward the sun; side-on
+    // a contrasted beam gets the rest back (22.10, below).
     vec2 vt = volumeLight.zw;
     vec2 march = texture2D(volumeTexture, vUV).rg * 0.4
       + (texture2D(volumeTexture, vUV + vec2(vt.x, 0.0)).rg + texture2D(volumeTexture, vUV - vec2(vt.x, 0.0)).rg
@@ -1049,7 +1055,10 @@ void main() {
     float around = 0.25 * (texture2D(volumeTexture, vUV + vec2(vw.x, 0.0)).r + texture2D(volumeTexture, vUV - vec2(vw.x, 0.0)).r
       + texture2D(volumeTexture, vUV + vec2(0.0, vw.y)).r + texture2D(volumeTexture, vUV - vec2(0.0, vw.y)).r);
     float beam = sqrt(march.r) * (1.0 - min(around, march.r)) * march.g;
-    colour += mix(sunColour, vec3(1.0), 0.15) * beam * (0.1 + 0.9 * volumeLobe) * volumeLight.x;
+    // 22.10 (7.30): side-on, a beam is told from the veil by its contrast (CinematicVolumeSide.ts).
+${VOLUME_SIDE_GLSL}
+    colour += mix(sunColour, vec3(1.0), 0.15)
+      * (beam * (0.1 + 0.9 * volumeLobe) + ${VOLUME_SIDE_GAIN.toFixed(3)} * sideBeam * (1.0 - volumeLobe)) * volumeLight.x;
   }
 
   if (leaves.y > 0.5) {

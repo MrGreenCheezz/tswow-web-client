@@ -8,6 +8,9 @@ import {
   CINEMATIC_TUNING, CinematicPost, VOLUME_CASCADES, VOLUME_CONTEXT_TEXELS, VOLUME_FADE_YARDS, VOLUME_REACH_YARDS,
   VOLUME_STEPS, volumeScatter,
 } from "../dist/code/browser/CinematicPost.js";
+import {
+  VOLUME_SIDE_CONTRAST_FROM, VOLUME_SIDE_CONTRAST_FULL, VOLUME_SIDE_GAIN, volumeSideBeam,
+} from "../dist/code/browser/CinematicVolumeSide.js";
 
 const close = (actual, expected, epsilon = 1e-9) =>
   assert.ok(Math.abs(actual - expected) <= epsilon, `${actual} != ${expected}`);
@@ -19,13 +22,33 @@ test("beams are lit air among shade: nothing in open sun or full shade, a lit ra
   close(volumeScatter(1, 0, 1, 1), 1, 1e-12);
   close(volumeScatter(0.25, 0, 1, 1), 0.5); // a thin beam over a dim canopy floor still reads
   close(volumeScatter(0.25, 0, 0.5, 1), 0.25); // a short ray (the ground a few yards off) carries less
-  close(volumeScatter(0.25, 0, 1, 0), 0.05); // side-on a tenth
+  // 22.10 (7.30): side-on a tenth for the veil, but a lit ray among shade is a beam from the side too.
+  close(volumeScatter(0.5, 0.5, 1, 0), 0.5 * Math.SQRT1_2 * 0.1);
+  close(volumeScatter(0.25, 0, 1, 0), 0.05 + VOLUME_SIDE_GAIN);
+  assert.ok(volumeScatter(1, 0, 1, 0) >= volumeScatter(1, 0, 1, 1), "a canopy beam reads side-on");
   assert.equal(volumeScatter(0, 1, 1, 1), 0, "a shaded ray among lit ones adds nothing");
   // Along a large shadow's edge the lit side glows softly, the shaded side not at all.
   assert.ok(volumeScatter(1, 0.5, 1, 1) <= 0.5);
   assert.equal(volumeScatter(Number.NaN, 0, 1, 1), 0);
   assert.ok(VOLUME_STEPS >= 16 && VOLUME_REACH_YARDS >= 30 && VOLUME_FADE_YARDS > 0 && VOLUME_CONTEXT_TEXELS > 4);
   assert.ok(CINEMATIC_TUNING.volume > 0 && CINEMATIC_TUNING.volumeGolden >= 0);
+});
+
+test("22.10 (7.30): side-on, a beam is told from the veil by contrast, not angle", () => {
+  // volumeSideBeam(lit share of the ray, lit share around it, air)
+  close(volumeSideBeam(1, 0, 1), 1, 1e-12); // a canopy gap's ray among dark shade
+  assert.equal(volumeSideBeam(0.5, 0.5, 1), 0, "evenly crossed shadows (a street) add no side-on beam");
+  assert.equal(volumeSideBeam(0.6, 0.6 - VOLUME_SIDE_CONTRAST_FROM / 2, 1), 0, "the march's noise is no beam");
+  close(volumeSideBeam(VOLUME_SIDE_CONTRAST_FULL, 0, 1), 1, 1e-12);
+  assert.equal(volumeSideBeam(1, 0, 0.3), 0, "a grass blade a few yards off against the far forest is no beam");
+  assert.ok(volumeSideBeam(1, 0.5, 1) <= 0.5, "a large shadow's edge glows at most half");
+  assert.equal(volumeSideBeam(Number.NaN, 0, 1), 0);
+  // Toward the sun the forward term has it all; the side term fades with the lobe.
+  close(volumeScatter(1, 0, 1, 1), 1, 1e-12);
+  close(volumeScatter(1, 0, 1, 0), 0.1 + VOLUME_SIDE_GAIN, 1e-12);
+  const composite = new CinematicPost().composite.fragmentShader;
+  assert.ok(composite.includes(`+ ${VOLUME_SIDE_GAIN.toFixed(3)} * sideBeam * (1.0 - volumeLobe)) * volumeLight.x;`));
+  assert.ok(composite.includes("float sideBeam = clamp((wideLit - wideAround"));
 });
 
 test("the march reads the cascades the world material reads, nearest first", () => {
@@ -43,7 +66,7 @@ test("the march reads the cascades the world material reads, nearest first", () 
   const composite = post.composite.fragmentShader;
   assert.ok(composite.includes("float beam = sqrt(march.r) * (1.0 - min(around, march.r)) * march.g;"));
   assert.ok(composite.includes(`vec2 vw = vt * ${VOLUME_CONTEXT_TEXELS.toFixed(1)};`), "the shade around, from a wide cross");
-  assert.ok(composite.includes("(0.1 + 0.9 * volumeLobe) * volumeLight.x"));
+  assert.ok(composite.includes("(beam * (0.1 + 0.9 * volumeLobe) + "));
   post.dispose();
 });
 
