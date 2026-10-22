@@ -967,9 +967,14 @@ float phaseHG(float c, float g) {
 }
 void main() {
   // The classic composite first, unchanged: glow and shafts stay the zone-authored additions.
-  vec3 display = texture2D(source, vUV).rgb
-    + texture2D(glow, vUV).rgb * glowStrength
-    + texture2D(rays, vUV).rgb * rayStrength;
+  vec3 scene = texture2D(source, vUV).rgb;
+  // 22.10 (7.36): the client adds its glow and rays into an eight-bit frame, so they saturate each
+  // channel at one. Kept as energy above one, a fire-lit wall (red near one, green and blue well
+  // under) went on red past white into the chain, and its hue-keeping shoulder and burn toward
+  // white turned the inn's fireplace into solid red with pink-white mortar. The scene's own light
+  // above one (the cinematic sun disc) is left as it is: only what the glow adds is bounded.
+  vec3 display = min(scene + texture2D(glow, vUV).rgb * glowStrength + texture2D(rays, vUV).rgb * rayStrength,
+    max(scene, vec3(1.0)));
 
   float depth = useDepth > 0.5 ? texture2D(depthTexture, vUV).r : 0.5;
   bool sky = useDepth > 0.5 && depth >= 1.0;

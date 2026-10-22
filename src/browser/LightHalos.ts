@@ -25,13 +25,23 @@ export const LIGHT_HALO_DAY_SHARE = 0.08;
 export const LIGHT_HALO_FADE: readonly [number, number] = Object.freeze([48, 64]);
 
 /**
+ * 22.10 (7.36): weight of the halo's tight core against its wide skirt (`LIGHT_HALO_SKIRT`). Owner,
+ * 22.10: the halo and the spill are good, the source itself burns. The core lies on the lamp's own
+ * glass and glow card, which the client already draws at full brightness: at 0.75 a Goldshire
+ * lantern read 2.5 times the faithful profile's luma; the skirt is what reads as the light in the air.
+ */
+export const LIGHT_HALO_CORE = 0.2;
+/** Weight of the halo's wide skirt. */
+export const LIGHT_HALO_SKIRT = 0.25;
+
+/**
  * CPU twin of the halo's radial profile at `r` (0 centre … 1 quad edge): a gaussian core and a
  * wide skirt, scaled so the edge is exactly zero.
  */
 export function lightHaloProfile(r: number): number {
   if (!Number.isFinite(r) || r < 0 || r >= 1) return 0;
   const edge = 1 - r * r;
-  return (0.75 * Math.exp(-18 * r * r) + 0.25 * Math.exp(-3.5 * r * r)) * edge * edge;
+  return (LIGHT_HALO_CORE * Math.exp(-18 * r * r) + LIGHT_HALO_SKIRT * Math.exp(-3.5 * r * r)) * edge * edge;
 }
 
 /** CPU twin of the halo strength's day/night and distance weight. */
@@ -68,7 +78,7 @@ void main() {
   float r2 = dot( vHaloUv, vHaloUv );
   if ( r2 >= 1.0 ) discard;
   float edge = 1.0 - r2;
-  float profile = ( 0.75 * exp( -18.0 * r2 ) + 0.25 * exp( -3.5 * r2 ) ) * edge * edge;
+  float profile = ( ${LIGHT_HALO_CORE.toFixed(3)} * exp( -18.0 * r2 ) + ${LIGHT_HALO_SKIRT.toFixed(3)} * exp( -3.5 * r2 ) ) * edge * edge;
   gl_FragColor = vec4( vHaloColour * profile, 1.0 );
 }
 `;
