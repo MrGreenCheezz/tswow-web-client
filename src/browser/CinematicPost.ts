@@ -34,6 +34,7 @@ import {
 } from "./CinematicVolumeSide.js"; // 22.10 (7.30)
 import { GOD_RAY_STRENGTH_SCALE_MAX } from "./LightingQuality.js";
 import { CINEMATIC_SKY_GLSL } from "./CinematicSky.js"; // 22.10 (7.30)
+import { VOLUME_SOFTEN_PASSES, VOLUME_WIDTH_GLSL } from "./CinematicVolumeWidth.js"; // 22.10 (7.30)
 import { highSunKeyWeight } from "./WorldLighting.js";
 
 export interface CinematicProfile {
@@ -1056,6 +1057,8 @@ ${CINEMATIC_SKY_GLSL}
     float beam = sqrt(march.r) * (1.0 - min(around, march.r)) * march.g;
     // 22.10 (7.30): side-on, a beam is told from the veil by its contrast (CinematicVolumeSide.ts).
 ${VOLUME_SIDE_GLSL}
+    // 22.10 (7.30): a thin beam (the lit sheet behind a narrow gap) fades out (CinematicVolumeWidth.ts).
+${VOLUME_WIDTH_GLSL}
     colour += mix(sunColour, vec3(1.0), 0.15)
       * (beam * (0.1 + 0.9 * volumeLobe) + ${VOLUME_SIDE_GAIN.toFixed(3)} * sideBeam * (1.0 - volumeLobe)) * volumeLight.x;
   }
@@ -1673,14 +1676,17 @@ export class CinematicPost {
         const texelX = 1 / volume.target.width;
         const texelY = 1 / volume.target.height;
         quad.material = this.volumeSoften;
-        u.source.value = volume.target.texture;
-        u.sourceTexel.value.set(texelX * VOLUME_SOFTEN_SPACING, 0);
-        renderer.setRenderTarget(volume.soft);
-        renderer.render(this.scene, this.camera);
-        u.source.value = volume.soft.texture;
-        u.sourceTexel.value.set(0, texelY * VOLUME_SOFTEN_SPACING);
-        renderer.setRenderTarget(volume.target);
-        renderer.render(this.scene, this.camera);
+        // 22.10 (7.30): twice over, so a thin beam is spread wider and softer (CinematicVolumeWidth.ts).
+        for (let pass = 0; pass < VOLUME_SOFTEN_PASSES; pass++) {
+          u.source.value = volume.target.texture;
+          u.sourceTexel.value.set(texelX * VOLUME_SOFTEN_SPACING, 0);
+          renderer.setRenderTarget(volume.soft);
+          renderer.render(this.scene, this.camera);
+          u.source.value = volume.soft.texture;
+          u.sourceTexel.value.set(0, texelY * VOLUME_SOFTEN_SPACING);
+          renderer.setRenderTarget(volume.target);
+          renderer.render(this.scene, this.camera);
+        }
         u.volumeLight.value.set(volumeStrength, 0, 1 / volume.target.width, 1 / volume.target.height);
       }
     }

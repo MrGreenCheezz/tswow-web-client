@@ -10,7 +10,7 @@
  *
  * `--frame name=halfMinute,yaw,pitch,orbit[,weather:intensity][,@x/y]` may repeat; weather is
  * `rain`, `snow`, `thunder`, `fog` or `sand`; `@x/y` stands the player at those world coordinates
- * (movement scenario). The camera yaw is relative to the player, who faces west (orientation π):
+ * (movement scenario); `@x/y/map` on the first frame also loads that map (1: Kalimdor). The camera yaw is relative to the player, who faces west (orientation π):
  * yaw 4.712 looks west, toward the setting sun, and 1.571 east, toward the rising one. `--settings enhanced` is the «Улучшенная графика» preset over
  * the defaults; a path reads a settings file the way `bench/run.mjs --settings` does. `--population`
  * caps the city crowd (default 12: the crowd is not what a still is for). `--frames` is how many
@@ -51,9 +51,10 @@ function parseFrame(spec) {
   for (const part of parts.slice(4)) {
     if (part.startsWith('@')) {
       // `@x/y`: stand the player here (movement scenario only; the world streams in around them).
-      const [x, y] = part.slice(1).split('/').map(Number);
+      // 22.10 (7.30): `@x/y/map` also picks the map (the first frame's map is the one loaded).
+      const [x, y, map] = part.slice(1).split('/').map(Number);
       if (![x, y].every(Number.isFinite)) throw new Error(`Bad position in --frame ${spec}`);
-      at = { x, y };
+      at = Number.isInteger(map) ? { x, y, map } : { x, y };
       continue;
     }
     const [kind, intensity] = part.split(':');
@@ -192,7 +193,7 @@ async function main() {
     // The first frame's time, camera and weather are in place before the scene settles, so its
     // assets (the rain textures, a night light table) are part of the preparation.
     const route = { ...config.route };
-    const routeFor = (frame) => frame.at ? { ...route, x: frame.at.x, y: frame.at.y, dx: 0, dy: 0 } : route;
+    const routeFor = (frame) => frame.at ? { ...route, ...frame.at, dx: 0, dy: 0 } : route;
     const first = frames[0];
     config.halfMinute = first.halfMinute;
     config.view = first.view;

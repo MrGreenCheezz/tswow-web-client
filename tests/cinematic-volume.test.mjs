@@ -12,6 +12,9 @@ import {
   VOLUME_SIDE_CONTRAST_FROM, VOLUME_SIDE_CONTRAST_FULL, VOLUME_SIDE_GAIN, VOLUME_SOFTEN_SPACING, VOLUME_SOFTEN_TAPS,
   volumeSideBeam,
 } from "../dist/code/browser/CinematicVolumeSide.js";
+import {
+  VOLUME_SOFTEN_PASSES, VOLUME_WIDTH_FROM, VOLUME_WIDTH_FULL, VOLUME_WIDTH_TEXELS, volumeBeamWidthKeep,
+} from "../dist/code/browser/CinematicVolumeWidth.js";
 
 const close = (actual, expected, epsilon = 1e-9) =>
   assert.ok(Math.abs(actual - expected) <= epsilon, `${actual} != ${expected}`);
@@ -127,7 +130,10 @@ test("22.10 (7.30): the march is softened by a separable gaussian before the com
   const names = renderer.targets.map((target) => target?.texture?.name);
   const march = names.indexOf("cinematic-volume");
   assert.ok(march >= 0, "the march ran");
-  assert.deepEqual(names.slice(march, march + 3), ["cinematic-volume", "cinematic-volume-soft", "cinematic-volume"]);
+  // 22.10 (7.30): twice over (CinematicVolumeWidth.ts).
+  assert.equal(VOLUME_SOFTEN_PASSES, 2);
+  assert.deepEqual(names.slice(march, march + 5),
+    ["cinematic-volume", "cinematic-volume-soft", "cinematic-volume", "cinematic-volume-soft", "cinematic-volume"]);
   assert.equal(post.uniforms.volumeTexture.value.name, "cinematic-volume");
   assert.ok(post.renderTargets.some((target) => target.texture.name === "cinematic-volume-soft"));
   post.dispose();
@@ -163,4 +169,23 @@ test("the march runs only with cascades handed over, and never leaves a compare 
   post.release();
   assert.equal(u.sunShadowMap0.value, null, "the cascades' maps are only borrowed for a frame");
   post.dispose();
+});
+
+test("22.10 (7.30): a thin volume beam fades, a wide one is kept", () => {
+  // Owner, 22.10, Orgrimmar's gate: one long thin bright line across the frame. Owner settings, beam
+  // contribution (on − godRays off), thin part p99.5 / max of 255: Elwynn forest side-on 15.5 / 40.4
+  // -> 13.4 / 37.3 (beam mean 21.7 -> 21.5), Goldshire 17.7 / 73.5 -> 16.6 / 57.0.
+  // volumeBeamWidthKeep(ray's lit share, ring's mean lit share, shade around)
+  assert.equal(volumeBeamWidthKeep(1, 1, 0), 1, "a wide beam: the ring is as lit as the ray");
+  assert.equal(volumeBeamWidthKeep(1, 0.25, 0), 0, "a thin line: only the two ring taps along it are lit");
+  close(volumeBeamWidthKeep(1, (VOLUME_WIDTH_FROM + VOLUME_WIDTH_FULL) / 2, 0), 0.5, 1e-12);
+  assert.equal(volumeBeamWidthKeep(0.51, 0.5, 0.5), 1, "no contrast to measure a width against: left as it was");
+  assert.equal(volumeBeamWidthKeep(Number.NaN, 0, 0), 1);
+  assert.ok(VOLUME_WIDTH_TEXELS >= 8, "the ring stands clear of a thin line's softened profile");
+  const composite = new CinematicPost().composite.fragmentShader;
+  const side = composite.indexOf("float sideBeam = clamp((wideLit - wideAround");
+  const width = composite.indexOf("sideBeam *= widthKeep;");
+  assert.ok(side > 0 && width > side && width < composite.indexOf("* (beam * (0.1 + 0.9 * volumeLobe) + "));
+  assert.ok(composite.includes("beam *= widthKeep;"), "the forward term too");
+  assert.ok(composite.includes(`* vt * ${VOLUME_WIDTH_TEXELS.toFixed(1)}).r;`));
 });
