@@ -367,3 +367,31 @@ test("splat client: with the leaf off nothing is derived", async () => {
     restore();
   }
 });
+
+// 22.10 (7.47, owner): «слишком много острых выпуклостей» — two [1 2 1] passes after the high-pass halve the
+// fine detail (a 4-texel period) against the stones' own scale (16 texels) compared with one pass.
+test("the relief keeps the stones' scale and softens the fine detail under it", () => {
+  const size = 256;
+  const pixels = new Uint8Array(size * size * 4);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const luma = 0.5 + 0.1 * Math.sin((2 * Math.PI * x) / 32) + 0.1 * Math.sin((2 * Math.PI * x) / 8);
+      const byte = Math.round(luma * 255);
+      pixels.set([byte, byte, byte, 255], (y * size + x) * 4);
+    }
+  }
+  const height = terrainReliefHeight({ pixels, size });
+  const side = terrainReliefSize(size);
+  const amplitude = (period) => {
+    let re = 0;
+    let im = 0;
+    for (let x = 0; x < side; x++) {
+      const value = height[7 * side + x] - 0.5;
+      re += value * Math.cos((2 * Math.PI * x) / period);
+      im += value * Math.sin((2 * Math.PI * x) / period);
+    }
+    return Math.hypot(re, im);
+  };
+  const ratio = amplitude(4) / amplitude(16);
+  assert.ok(ratio < 0.3, `fine detail ${ratio.toFixed(3)} of the stones' scale`);
+});
