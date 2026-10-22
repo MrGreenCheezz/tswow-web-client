@@ -26,7 +26,8 @@ interface BenchWindow extends Window {
   __benchRenderers?: THREE.WebGLRenderer[];
   __bench?: { prepare(): Promise<unknown>; run(): Promise<unknown>; view(fraction: number): Promise<unknown>;
     state(): unknown; setWorldSubmissionCapture(enabled: boolean): void; sceneStats(): unknown;
-    lookdev(overrides: Partial<Config>): void; shadowStats(): unknown };
+    lookdev(overrides: Partial<Config>): void; shadowStats(): unknown;
+    gpuView(frames: number, warm: number): Promise<number[]>; terrainRelief(enabled: boolean): void }; // 22.10 (7.47)
 }
 const host = window as BenchWindow;
 const config = await (await fetch('/config.json')).json() as Config;
@@ -86,7 +87,10 @@ if (city && cityDisplays.length !== config.city.displays.length) throw new Error
 const gpuSamplesMs: number[] = [];
 let recording = false;
 let gpuReason: string | undefined;
-const gpuObserver = { onSample(ms: number) { if (recording) gpuSamplesMs.push(ms); },
+/** 22.10 (7.47): GPU samples of `gpuView`'s frames (an A/B inside one page, e.g. «Объём земли»). */
+const viewGpuMs: number[] = [];
+let viewTiming = false;
+const gpuObserver = { onSample(ms: number) { if (recording) gpuSamplesMs.push(ms); if (viewTiming) viewGpuMs.push(ms); },
   onUnavailable(reason: string) { gpuReason = reason; } };
 const phaseNames = benchPhaseNames(scene);
 let render: (seconds: number, elapsed: number, frame: number) => void;
@@ -468,6 +472,23 @@ host.__bench = {
     // Serialize pixels in the same task as the draw, before the compositor clears the drawing buffer.
     return { png: canvas.toDataURL('image/png'), readiness: readiness() };
   },
+  /**
+   * 22.10 (7.47): the frames of a still, timed on the GPU — `frames` frames at the current view after
+   * `warm` untimed ones (a toggled leaf compiles and derives first). Returns the GPU samples (ms).
+   */
+  async gpuView(frames: number, warm: number) {
+    if (arrival) arrive(Number.POSITIVE_INFINITY);
+    for (let frame = 0; frame < warm; frame++) { await nextFrame(); render(0, 1 / 60, frame + 1); }
+    viewGpuMs.length = 0;
+    viewTiming = true;
+    try {
+      for (let frame = 0; frame < frames; frame++) { await nextFrame(); render(0, 1 / 60, warm + frame + 1); }
+      for (let frame = 0; frame < 4; frame++) await nextFrame(); // the last queries resolve
+    } finally { viewTiming = false; }
+    return [...viewGpuMs];
+  },
+  /** 22.10 (7.47): «Объём земли» on or off in place, for `gpuView` A/B runs. */
+  terrainRelief(enabled: boolean) { world?.setTerrainRelief(enabled); },
   lookdev(overrides) {
     // Time of day, camera and weather for the next `view()`; nothing here is measured.
     Object.assign(config, overrides);
