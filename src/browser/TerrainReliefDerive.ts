@@ -39,10 +39,10 @@ export const TERRAIN_RELIEF_DEPTH = 0.03;
 export const TERRAIN_RELIEF_NORMAL_BOOST = 1.0;
 /**
  * 22.10 (7.47, owner): passes of the [1 2 1] smoothing after the high-pass. One left too many sharp bumps in
- * play («слишком много острых выпуклостей»); two are a 5-tap binomial, which rounds the stones' crowns and keeps
- * the joints.
+ * play («слишком много острых выпуклостей»); two were better, and the owner asked for «ещё малость» — three are a
+ * 7-tap binomial, which rounds the stones' crowns and still keeps the joints.
  */
-export const TERRAIN_RELIEF_SMOOTH_PASSES = 2;
+export const TERRAIN_RELIEF_SMOOTH_PASSES = 3;
 
 export interface TerrainReliefInput {
   /** The decoded layer, RGBA8, `size`² texels, row 0 at v = 0 (as the layer array uploads it). */
