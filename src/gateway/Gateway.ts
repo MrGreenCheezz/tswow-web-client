@@ -86,8 +86,12 @@ import {
 import { AssetPreloader } from "./AssetPreloader.js";
 import {
   LEGACY_TILE_DAY, LEGACY_TILE_HOUR, cacheGeneration, datasetCacheHeaders, datasetEtag, etagMatches,
-  isDatasetCacheRoute, processCacheNonce, tileCacheControl,
+  isDatasetCacheRoute, processCacheNonce, tileCacheControl, REVALIDATE, // 22.10 (6.26): REVALIDATE
 } from "./CachePolicy.js";
+import {
+  METADATA_GENERATION_PARAM, VISUAL_GENERATION_PARAM, assetCacheControl, gatewayCodeIdentity, metadataGeneration,
+  visualGeneration,
+} from "./AssetGeneration.js"; // 22.10 (6.26)
 
 const MAX_CLIENT_MESSAGE = 64 * 1024;
 /** How often a bridged socket is pinged; two missed pongs in a row close it. */
@@ -155,6 +159,9 @@ const MAX_BRIDGED_SOCKETS_PER_ADDRESS = 8;
 export function visualModelCacheNamespace(modelPath: string): "visual-v24" | "visual-wmo-v27" {
   return modelPath.toLowerCase().endsWith(".wmo") ? "visual-wmo-v27" : "visual-v24";
 }
+
+/** 22.10 (6.26): the namespace `/texture` hashes its files under; part of the visual generation (AssetGeneration.ts). */
+export const TEXTURE_CACHE_NAMESPACE = "texture-v1";
 
 /** The artifact name of a `/visual/model` path, as the route computes it (10.22: the preloader's key). */
 export function visualModelHash(modelPath: string): string {
@@ -880,6 +887,22 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
    */
   // 10.12: one random part per process for cache validators — a restart may be new code.
   const cacheNonce = processCacheNonce();
+  // 22.10 (6.26): the restart-stable generations (AssetGeneration.ts). The visual one is the startup chain's, as
+  // `patches.generation` is; the metadata one moves with the DBC half and is taken per request.
+  const visualAssetGeneration = visualGeneration({
+    archivesHash: fingerprint.archivesHash, chain: fingerprint.chain,
+    namespaces: [visualModelCacheNamespace("a.m2"), visualModelCacheNamespace("a.wmo"), TEXTURE_CACHE_NAMESPACE],
+    coordinatedVisuals: options.coordinatedVisuals ?? false,
+  });
+  const codeIdentity = await gatewayCodeIdentity();
+  let metadataMemo: { dbcHash: string | undefined; value: string | undefined } | undefined;
+  const currentMetadataGeneration = (): string | undefined => {
+    const dbcHash = fingerprint.dbcHash;
+    if (metadataMemo === undefined || metadataMemo.dbcHash !== dbcHash) {
+      metadataMemo = { dbcHash, value: metadataGeneration({ codeIdentity, dbcHash, visualGeneration: visualAssetGeneration }) };
+    }
+    return metadataMemo.value;
+  };
   const characterTextures = (): Promise<CharacterTextureIndex | undefined> =>
     (indexes.characterTextures ??= loadCharacterTextures(options.listCharacterTextures));
   const environmentModels = new Map<string, Promise<Uint8Array>>();
@@ -1021,6 +1044,9 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
     const requestEpoch = fingerprint.epoch;
     const requestDatasetTag = () => datasetEtag(cacheNonce, requestEpoch);
     const requestCacheGeneration = () => cacheGeneration(cacheNonce, requestEpoch, patches.generation);
+    // 22.10 (6.26): taken as the request starts, like `requestEpoch`: an answer built after a DBC walk that lands
+    // mid-request can only be newer than the generation it is filed under, never older.
+    const requestMetadataGeneration = currentMetadataGeneration();
 
     // Deliberately outside `isClientVisualProfileRoute`: this is how the latch is reported, so it
     // keeps answering after it. Read-only (nothing on the network may reload anything) and
@@ -1039,7 +1065,9 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
         "content-type": "application/json; charset=utf-8",
       });
       // `cacheGeneration` (10.12) is what a page puts in `g=` on tile routes to cache them for good.
-      response.end(JSON.stringify({ ...body, cacheGeneration: requestCacheGeneration() }));
+      // 22.10 (6.26): and the two restart-stable ones (`vg=`, `mg=`; AssetGeneration.ts), absent when unknown.
+      response.end(JSON.stringify({ ...body, cacheGeneration: requestCacheGeneration(),
+        visualGeneration: visualAssetGeneration, metadataGeneration: requestMetadataGeneration }));
       return;
     }
 
@@ -1101,7 +1129,7 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
         respondError(response, 400, origin);
         return;
       }
-      const id = createHash("sha1").update(`texture-v1\0${texturePath.toLowerCase()}`).digest("hex");
+      const id = createHash("sha1").update(`${TEXTURE_CACHE_NAMESPACE}\0${texturePath.toLowerCase()}`).digest("hex");
       const filename = join(options.texturesDirectory, `${id}.png`);
       try {
         // One thunk for both ways a route needs the generator — the file is not there at all, or
@@ -1124,6 +1152,8 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
         // 10.21 (a): the validator is the file's `stat`, so a 304 never reads it (FileResponse.ts).
         await respondFile(request, response, filename, {
           origin, contentType: "image/png", rebuild: options.generateTexture ? rebuild : undefined,
+          // 22.10 (6.26): immutable when the URL names this visual generation (AssetGeneration.ts).
+          cacheControl: assetCacheControl(url.searchParams.get(VISUAL_GENERATION_PARAM), visualAssetGeneration, REVALIDATE),
         });
       } catch (error) {
         // The two ways this route fails are not the same news, and answering 404 for both is what
@@ -1235,6 +1265,8 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
         if (options.generateVisualModel) await fingerprint.ensureCurrent(filename, { requireStamp: true });
         await respondFile(request, response, filename, {
           origin, contentType: visualDoodads ? "application/json" : "application/octet-stream", // 12.10 6.25
+          // 22.10 (6.26): immutable when the URL names this visual generation (AssetGeneration.ts).
+          cacheControl: assetCacheControl(url.searchParams.get(VISUAL_GENERATION_PARAM), visualAssetGeneration, REVALIDATE),
           rebuild: options.generateVisualModel ? rebuild : undefined,
         });
       } catch (error) {
@@ -3065,7 +3097,9 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
         const data = JSON.stringify(ids.map((id) => metadata.get(id)).filter(Boolean));
         response.writeHead(200, {
           "access-control-allow-origin": origin,
-          "cache-control": "no-store",
+          // 22.10 (6.26): immutable for a URL naming this metadata generation (AssetGeneration.ts); no-store otherwise.
+          "cache-control": assetCacheControl(url.searchParams.get(METADATA_GENERATION_PARAM), requestMetadataGeneration, "no-store"),
+          vary: "Origin",
           "content-type": "application/json; charset=utf-8",
         });
         response.end(data);
@@ -3156,7 +3190,9 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
           appearance[4]!, appearance[5]!, appearance[6]!, equipment, appearanceClass)); // 05.10-A7a-A 6.10
         response.writeHead(200, {
           "access-control-allow-origin": origin,
-          "cache-control": "no-store",
+          // 22.10 (6.26): immutable for a URL naming this metadata generation (AssetGeneration.ts); no-store otherwise.
+          "cache-control": assetCacheControl(url.searchParams.get(METADATA_GENERATION_PARAM), requestMetadataGeneration, "no-store"),
+          vary: "Origin",
           "content-type": "application/json; charset=utf-8",
         });
         response.end(data);
