@@ -437,7 +437,8 @@ function appearanceTextures(appearance: CharacterAppearance): string[] {
   return boundedUnique(paths.filter(Boolean), paths.length);
 }
 
-function modelTextureUrls(model: EnvironmentModel, baseUrl: string): string[] {
+/** 22.10 (12.14): exported for the worker's warm-up (RenderWorkerModelWarmup.ts). */
+export function modelTextureUrls(model: EnvironmentModel, baseUrl: string): string[] {
   const urls = [model.textureUrl ?? "", ...(model.textureUrls ?? []), ...(model.wmo?.textureUrls ?? [])];
   if (model.wvm) {
     for (const path of modelOwnTexturePaths(model.wvm)) urls.push(textureUrl(baseUrl, path));
@@ -446,7 +447,8 @@ function modelTextureUrls(model: EnvironmentModel, baseUrl: string): string[] {
 }
 
 export interface AssetWarmupClients {
-  environment: EnvironmentClient;
+  /** 22.10 (12.14): what the warm-up asks of it — the page's client, or in worker mode app/WarmModelTarget.ts. */
+  environment: Pick<EnvironmentClient, "model" | "baseUrl">;
   creatureModels: CreatureModelClient;
   itemMetadata: ItemMetadataClient;
   spellVisuals: SpellVisualClient;

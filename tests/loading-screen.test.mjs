@@ -97,6 +97,38 @@ test("the entry soak renders hidden frames after the barrier before the reveal",
   game.worldLoading = false;
 });
 
+// 22.10 (12.14): in worker mode the page's frames draw nothing; the worker's own terrain and frames are what count.
+test("in worker mode the curtain waits for the worker's terrain and the frames it drew with it", () => {
+  game.world = destination();
+  game.terrain = { isReady: () => true };
+  game.collision = { refresh() {}, isReady: () => true };
+  let frames = 0;
+  game.renderer = { renderWorker: { drawReadiness: { framesReadyAt: (map, x, y) => (map === 1 && x === 0 && y === 0 ? frames : 0) } } };
+  showLoadingScreen("Hero");
+  for (let frame = 0; frame < 10; frame++) updateLoadingScreen(performance.now());
+  assert.equal(loadingScreenVisible(), true, "the page's tile and ten page frames are not the worker's");
+  assert.equal(worldPhysicsReady(), false, "the barrier waits for the worker's terrain too");
+  frames = 1;
+  updateLoadingScreen(performance.now());
+  assert.equal(worldPhysicsReady(), true);
+  for (let frame = 0; frame < 10; frame++) updateLoadingScreen(performance.now());
+  assert.equal(loadingScreenVisible(), true, "one drawn worker frame is not the soak");
+  frames = 4;
+  updateLoadingScreen(performance.now());
+  assert.equal(loadingScreenVisible(), false, "the first worker frame and its three soak frames");
+  frames = 0;
+  showLoadingScreen("Hero");
+  updateLoadingScreen(performance.now() + 20_001);
+  for (let frame = 0; frame < 10 && loadingScreenVisible(); frame++) updateLoadingScreen(performance.now() + 20_001 + frame);
+  assert.equal(loadingScreenVisible(), false, "a worker that never draws does not hold the curtain past the ceiling");
+  resetLoadingScreen();
+  game.renderer = undefined;
+  game.world = undefined;
+  game.terrain = undefined;
+  game.collision = undefined;
+  game.worldLoading = false;
+});
+
 test("physics and movement packets stay still while the transfer barrier is closed", () => {
   const world = destination();
   const position = world.state.objects.get(1n).position;

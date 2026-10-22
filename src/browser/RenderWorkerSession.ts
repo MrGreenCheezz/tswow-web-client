@@ -22,6 +22,9 @@ import type {
   RenderWorkerSlowReport,
 } from "./RenderWorkerClientProtocol.js";
 import type { ShaderProgramEvent } from "./ShaderProgramTrace.js";
+import type { RenderWorkerDrawReadiness } from "./RenderWorkerLoading.js"; // 22.10 (12.14)
+import { RenderWorkerModelWarmup } from "./RenderWorkerModelWarmup.js"; // 22.10 (12.14)
+import type { ModelLoadPriority } from "./Terrain.js";
 
 /** How often the slower reads go to the page (telemetry, warm-up, shadows, pose worker, graphics). */
 const SLOW_REPORT_MS = 500;
@@ -51,6 +54,8 @@ export class RenderWorkerSession {
   /** 22.10 ARC-2 live fix: the page's last render scale, re-applied when the pushed DPR moves. */
   #renderScale: number | undefined;
   #identity: Pick<RenderWorkerSlowReport, "webgl" | "identity"> | undefined;
+  /** 22.10 (12.14): the page's warm-up asks. */
+  readonly #warmup = new RenderWorkerModelWarmup();
 
   constructor(scope: RenderWorkerSessionScope, host: WorkerRenderHost, renderer: WorldRenderer3D) {
     this.#scope = scope;
@@ -94,6 +99,7 @@ export class RenderWorkerSession {
       case "setGroundCover": this.#groundCover = command.args; break;
       case "setShaderProgramCapture": this.#shaderCapture = command.args[0] === true; break;
       case "setRenderScale": this.#renderScale = command.args[0] as number; break; // 22.10 ARC-2 live fix
+      case "#warmModels": this.#warmup.add(command.args[0] as string, command.args[1] as ModelLoadPriority); return;
       default: break;
     }
     applyRenderCommand(renderer, command, (present) => present ? this.#clients?.cover : undefined);
@@ -113,6 +119,8 @@ export class RenderWorkerSession {
     if (key === undefined || key.key === this.#clients?.key) return;
     this.#clients?.dispose();
     this.#clients = new RenderWorkerResourceClients(key.key, key.url);
+    // 22.10 (12.14): the warm-up's asks go to them from now on.
+    this.#warmup.clientsChanged();
     // 22.10 ARC-2 S7: passengers of lifts ride the car this worker draws (the page's `startLiftCarriers`).
     this.#receiver.smoothing.carrierPose = liftCarrierPose(this.#clients.transportPaths);
     const cover = this.#groundCover;
@@ -147,6 +155,8 @@ export class RenderWorkerSession {
     let frameError: string | undefined;
     environment?.beginResourceFrame();
     try {
+      // 22.10 (12.14): the page's warm-up asks, inside the frame as the page made them inside its own.
+      this.#warmup.apply(environment);
       const at = this.#environmentAt;
       const objects = environment !== undefined && at !== undefined
         ? environment.objectsAround(map, at[0], at[1], ENVIRONMENT_STREAM_RANGE) : NO_ENVIRONMENT;
@@ -173,14 +183,27 @@ export class RenderWorkerSession {
       environment?.endResourceFrame();
     }
     const shaderPrograms = this.#shaderCapture ? this.#shaderPrograms() : undefined;
+    const readiness = this.#readiness(map);
     const report: RenderWorkerFrameReport = {
       collisionWants, unitWants, drawPhaseMs: { ...renderer.drawPhaseMs }, drawSubmitStats: { ...renderer.drawSubmitStats },
       cpuMs: performance.now() - startedAt, at: mainTime,
       ...(frameError === undefined ? {} : { frameError }),
       ...(shaderPrograms === undefined ? {} : { shaderPrograms }),
+      ...(readiness === undefined ? {} : { readiness }),
     };
     this.#post(report);
   };
+
+  /**
+   * 22.10 (12.14): whether this worker's terrain has answered where the page stands (its `environmentAt`): the page's
+   * loading curtain waits for it as it waits for its own (ui/LoadingScreen.ts). Asking starts the tile's load.
+   */
+  #readiness(map: number): RenderWorkerDrawReadiness | undefined {
+    const at = this.#environmentAt;
+    const clients = this.#clients;
+    if (at === undefined || clients === undefined) return undefined;
+    return { map, x: at[0], y: at[1], terrain: clients.terrain.isReady(map, at[0], at[1]), clients: clients.key };
+  }
 
   /** The capture's events since the last frame, on the page's clock. */
   #shaderPrograms(): ShaderProgramEvent[] | undefined {

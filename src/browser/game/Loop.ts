@@ -22,7 +22,7 @@ import {
   type EyeLiquidSurface,
 } from "./Physics.js";
 import { collisionLiquidEyeSubmerged, collisionModelLiquidAtEye } from "./CollisionLiquid.js";
-import { ENVIRONMENT_STREAM_RANGE, terrainGridDependencyFootprint, terrainGridIndex } from "../Terrain.js";
+import { terrainGridDependencyFootprint, terrainGridIndex } from "../Terrain.js";
 import { updateZoneSound } from "./ZoneSound.js";
 import { updateWeatherSound } from "./WeatherAmbience.js";
 import { updateCombatSounds } from "./CombatSounds.js";
@@ -92,6 +92,7 @@ import {
   performanceCaptureActive, recordRenderWorkerFrame,
 } from "./PerformanceCapture.js";
 import type { RenderWorkerResultSteps } from "../RenderWorkerClient.js"; // 22.10 ARC-2 S6b
+import { pageEnvironmentRange } from "./PageEnvironmentRange.js"; // 22.10 (12.14)
 
 /**
  * Per-frame metadata resolvers, hoisted out of the frame body.
@@ -554,7 +555,9 @@ function frame(now: number): void {
     // yards (far shells, far vegetation) must exist in this array or no admission pass below
     // can ever see them. Include the resident/prefetch band beyond the draw leash as well;
     // tile residency follows the same footprint, bounded by the tile LRU.
-    const environment = game.environment?.objectsAround(world.mapId, position.x, position.y, ENVIRONMENT_STREAM_RANGE) ?? [];
+    // 22.10 (12.14): in worker mode the worker streams the band with its own client; the page keeps its own tile.
+    const environment = game.environment?.objectsAround(world.mapId, position.x, position.y,
+      pageEnvironmentRange(game.renderer)) ?? [];
     // 22.10 ARC-2 S6b: a worker renderer asks its own environment client at the same point (RenderWorkerClient.ts).
     game.renderer?.renderWorker?.queryEnvironmentAt(position.x, position.y);
     // This observes the same already-requested placement list the renderer receives below. It

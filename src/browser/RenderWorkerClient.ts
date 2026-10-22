@@ -31,6 +31,8 @@ import type { RenderWorkerHostValues, RenderWorkerToPage } from "./RenderWorkerP
 import type { ShaderProgramEvent } from "./ShaderProgramTrace.js";
 import type { WorldStandInReport } from "./StandIn.js";
 import type { WorldRenderer3D } from "./WorldRenderer3D.js";
+import type { ModelLoadPriority } from "./Terrain.js";
+import { RenderWorkerReadinessTracker } from "./RenderWorkerLoading.js"; // 22.10 (12.14)
 
 /** The worker as the page posts to it (a Worker, or a fake in tests). */
 export interface RenderWorkerPort {
@@ -126,6 +128,8 @@ export class RenderWorkerClient implements ClientRenderer {
   #shaderEvents: ShaderProgramEvent[] | undefined;
   #lastFrameError = "";
   #closed = false;
+  /** 22.10 (12.14): worker frames drawn with its terrain ready under the view subject (ui/LoadingScreen.ts). */
+  readonly drawReadiness = new RenderWorkerReadinessTracker();
   /** Worker draws that threw, and results messages applied (diagnostics, tests). */
   frameErrors = 0;
   resultsApplied = 0;
@@ -263,6 +267,11 @@ export class RenderWorkerClient implements ClientRenderer {
     this.#portraitTargets = inputs;
   }
 
+  /** 22.10 (12.14): a model the page's warm-up wants, for the worker's environment client (app/WarmModelTarget.ts). */
+  warmModel(path: string, priority: ModelLoadPriority): void {
+    this.#queue({ method: "#warmModels", args: [path, priority] });
+  }
+
   /** Where game/Loop.ts asked `objectsAround` this frame; the worker asks its own environment client there. */
   queryEnvironmentAt(x: number, y: number): void {
     const at = this.#environmentAt;
@@ -387,6 +396,7 @@ export class RenderWorkerClient implements ClientRenderer {
     const report = message.report;
     if (report !== undefined) {
       this.#report = report;
+      this.drawReadiness.observe(report.readiness, this.#clientsKey); // 22.10 (12.14)
       if (report.shaderPrograms !== undefined) this.#shaderEvents?.push(...report.shaderPrograms);
       if (report.frameError !== undefined) this.#frameFailed(report.frameError);
     }

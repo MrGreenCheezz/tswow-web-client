@@ -7,6 +7,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { once } from 'node:events';
 import os from 'node:os';
 import { shadowCascadeSummary, summarize, wmoRangeSummary } from './metrics.mjs';
+import { createRequestLedger, requestLedgerLine } from './request-ledger.mjs'; // 22.10 (12.14)
 import { DEFAULT_BENCHMARK_ENV, DEFAULT_BENCHMARK_NAMES, DEFAULT_BENCHMARK_TARGET, heapProfileFileName, heapProfileSamplingOptions, parseBundleOptions,
   parseHeapProfileMode } from './run-options.mjs';
 
@@ -172,6 +173,8 @@ async function main() {
   const gateway = new URL(process.env.BENCH_GATEWAY_URL ?? 'http://127.0.0.1:8090');
   if (!['127.0.0.1', 'localhost', '[::1]'].includes(gateway.hostname)) throw new Error('Benchmark gateway must be loopback');
   const allowed = /^(?:\/dbc\/(?:creature-models|character-appearance|light\/\d+|ground-effects|liquid-types)|\/terrain\/|\/visual\/|\/texture(?:\?|$)|\/terrain-splat\/|\/terrain-layer\/|\/ground-cover\/|\/liquid\/|\/horizon\/|\/environment\/)/;
+  // 22.10 (12.14): the requests the scene made, per route (bench/request-ledger.mjs); reset at each open.
+  const requestLedger = createRequestLedger();
   async function asset(key) {
     if (pending.has(key)) return pending.get(key);
     const task = (async () => {
@@ -240,6 +243,7 @@ async function main() {
           .end(await readFile(resolve('public', url.pathname.slice(1))));
       } else if (allowed.test(key)) {
         const { entry, bytes } = await asset(key);
+        requestLedger.record(key, bytes.length); // 22.10 (12.14)
         res.writeHead(entry.status, { 'content-type': entry.type, 'cache-control': 'public,max-age=31536000,immutable' }).end(bytes);
       } else {
         requestFailures.push(`Unexpected route: ${key}`);
@@ -328,6 +332,7 @@ async function main() {
   async function open(scenario) {
     const sceneUrl = `${origin}/?scenario=${scenario}${diagnostic ? '&diagnostic=1' : ''}${links ? '&links=1' : ''}${budgetProbe ? '&budgetprobe=1' : ''}${renderBridge !== 'direct' ? `&renderbridge=${renderBridge}` : ''}${pagePace === 'raf' ? '&pagepace=raf' : ''}`;
     let page;
+    requestLedger.reset(); // 22.10 (12.14)
     if (browserKind === 'electron') {
       browser = await launchElectron(sceneUrl);
       for (let attempt = 0; attempt < 60 && !page; attempt++) {
@@ -377,6 +382,11 @@ async function main() {
     ]);
     const prepared = await page.evaluate(() => window.__bench.prepare());
     console.log(`${scenario}: ready, GPU ${prepared.hardware.gpu}`);
+    // 22.10 (12.14): how long the scene took to settle the first time, and what it asked the server for until ready.
+    prepared.requests = requestLedger.snapshot();
+    requestLedger.reset();
+    if (prepared.firstSettle) console.log(`${scenario}: first settle at ${prepared.firstSettle.atMs.toFixed(0)} ms after navigation, ${prepared.firstSettle.frames} frames (${prepared.firstSettle.ms.toFixed(0)} ms in settle)`);
+    console.log(`${scenario}: preparation ${requestLedgerLine(prepared.requests)}`);
     // 22.10 ARC-2 S6a: the render worker's realm must be isolated too (the pose engine's SharedArrayBuffer).
     if (workerBridge) console.log(`${scenario}: render worker, crossOriginIsolated page ${prepared.hardware.pageCrossOriginIsolated} worker ${prepared.hardware.crossOriginIsolated}`);
     if (/swiftshader|llvmpipe|software rasterizer/i.test(prepared.hardware.gpu)) {
@@ -560,6 +570,8 @@ async function main() {
           screenshots.push(name);
         }
         pageErrors.push(...screenshotErrors);
+        raw.runRequests = requestLedger.snapshot(); // 22.10 (12.14)
+        console.log(`${scenario}: measurement ${requestLedgerLine(raw.runRequests)}`);
         const scenarioResult = { ...raw, summary, wmoRange: wmoRangeSummary(raw), shadowCascadeSummary: shadowCascadeSummary(raw), prepared, screenshots, pageErrors,
           screenshotPolicy: scenario.startsWith('world-crowd-') || isCityScenario(scenario) ? 'fresh-prepared-scene-v1' : 'after-measurement-v1',
           cacheMisses: cacheMisses - missesBefore, measurementCacheMisses: measurementMisses };

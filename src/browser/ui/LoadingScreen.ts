@@ -19,6 +19,7 @@
 
 import { game } from "../game/Context.js";
 import { syncMovement } from "../input/Movement.js";
+import { workerCurtainFrames } from "./LoadingScreenWorker.js"; // 22.10 (12.14)
 import {
   LOADING_BAR_BORDER, LOADING_BAR_FILL, LOADING_BAR_GLOW, LOADING_STAGE_PROGRESS, LoadingScreenArtTable,
   gatewayHttpOrigin, loadingProgressStep, loadingScreenPicture, loadingTextureUrl, type LoadingStage,
@@ -255,7 +256,11 @@ export function updateLoadingScreen(now: number): void {
     // No transfer generation token is needed here: readiness is sampled from the live map and
     // self position every frame, and CollisionSource.reset() invalidates the old tile set before
     // this probe can release the new destination.
-    const terrainReady = game.terrain?.isReady(world.mapId, position.x, position.y) === true;
+    // 22.10 (12.14): in worker mode the worker's own terrain has to have answered too, and the soak counts the frames
+    // the worker drew with it (LoadingScreenWorker.ts) — the page's frames there draw nothing. Undefined in-page.
+    const workerFrames = workerCurtainFrames(world.mapId, position.x, position.y);
+    const terrainReady = game.terrain?.isReady(world.mapId, position.x, position.y) === true
+      && (workerFrames === undefined || workerFrames > 0 || worldReady);
     game.collision?.refresh(world.mapId, position.x, position.y);
     const collisionReady = game.collision?.isReady(world.mapId, position.x, position.y) === true;
     if (!terrainReady) {
@@ -266,7 +271,8 @@ export function updateLoadingScreen(now: number): void {
     } else {
       reachStage("soak");
       worldReady = true;
-      releaseWhenSoaked();
+      // A worker that has not drawn its soak by the ceiling is waited for no longer: the page's frames count then.
+      releaseWhenSoaked(now - shownAt > MAX_WAIT_MS ? undefined : workerFrames);
       return;
     }
   }
@@ -286,7 +292,7 @@ export function updateLoadingScreen(now: number): void {
  * Physics is already running on the first soaked frame (`worldReady` is set before this runs),
  * so the soak costs nothing but a few hidden frames and hides the first-panorama upload spike.
  */
-function releaseWhenSoaked(): void {
+function releaseWhenSoaked(workerFrames?: number): void {
   if (!soakArmed) {
     soakArmed = true;
     soakFrames = ENTRY_SOAK_FRAMES;
@@ -294,8 +300,9 @@ function releaseWhenSoaked(): void {
     reachStage("soak");
     setProgress(Math.max(progress, LOADING_STAGE_PROGRESS.soak));
   }
-  if (soakFrames > 0) {
-    soakFrames--;
+  // 22.10 (12.14): the worker's frames drawn with its terrain, the first one and then the soak's three.
+  if (workerFrames !== undefined ? workerFrames <= ENTRY_SOAK_FRAMES : soakFrames > 0) {
+    if (workerFrames === undefined) soakFrames--;
     loadingStatus("Подготовка первого кадра…");
     return;
   }

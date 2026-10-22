@@ -204,12 +204,15 @@ async function hardware(): Promise<Record<string, unknown>> {
     pageCrossOriginIsolated: globalThis.crossOriginIsolated === true, workerCrossOriginIsolated };
 }
 
+/** 22.10 (12.14): frames drawn by `settle` since `prepare` began. */
+let settleFrames = 0;
 async function settle(fraction: number): Promise<BenchReadiness> {
   const deadline = performance.now() + config.timeoutSeconds * 1000;
   let stable = 0, frame = 0;
   while (performance.now() < deadline) {
     await nextFrame();
     frame++;
+    settleFrames++;
     const { readiness: status } = await drawNow(fraction * config.durationSeconds, 0, frame - 1, { readiness: frame % 10 === 0 });
     if (status === undefined) continue;
     stable = status.pending === 0 ? stable + 1 : 0;
@@ -234,8 +237,12 @@ const bench = {
   async prepare() {
     await call('reset');
     // Retained NPCs must have been admitted around the whole square before timing.
+    // 22.10 (12.14): the first settle — the scene's time to its first fully drawn frame, and its frames until then.
+    const settleFrom = performance.now();
+    settleFrames = 0;
     if (worldCrowd || city) for (let i = 0; i < 8; i++) await settle(i / 8);
     await settle(0);
+    const firstSettle = { atMs: performance.now(), ms: performance.now() - settleFrom, frames: settleFrames };
     // Admission happens at zero throughout preparation. Timed/views start after spawn fade,
     // without rewinding admission ages from the later preparation viewpoints into the future.
     preparingWorldCrowd = false;
@@ -246,7 +253,7 @@ const bench = {
       await drawNow(0, (now - previous) / 1000, frame++); previous = now;
     }
     await settle(0);
-    return { scenario: scenarioName, count, hardware: await hardware(), readiness: await readiness() };
+    return { scenario: scenarioName, count, hardware: await hardware(), readiness: await readiness(), firstSettle };
   },
   async run() {
     await call('reset');

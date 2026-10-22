@@ -19,6 +19,7 @@ import type { PoseEngineStats } from "./PoseEngine.js";
 import type { PortraitTargetInputs } from "./PortraitTargetData.js";
 import type { RenderWorkerFrame, RenderWorkerResults } from "./RenderWorkerProtocol.js";
 import type { ShaderProgramEvent } from "./ShaderProgramTrace.js";
+import type { RenderWorkerDrawReadiness } from "./RenderWorkerLoading.js"; // 22.10 (12.14)
 import type { WorldStandInReport } from "./StandIn.js";
 import type { WorldRenderer3D, WorldRendererGraphicsReadback } from "./WorldRenderer3D.js";
 
@@ -51,9 +52,10 @@ export const RENDER_WORKER_COMMANDS: Readonly<Record<ClientRendererCommand, Rend
 /**
  * The worker-only commands: `#idle` (the page drew no world this frame: stop drawing until the next frame message),
  * `#clearInputs`/`#clearLookups` (`setRenderInputs(undefined)`, `setRenderLookups(undefined)`), `#poseReset`
- * (`poseWorkerStats(true)`), `#standIns` (put the stand-in report into the next slow reports).
+ * (`poseWorkerStats(true)`), `#standIns` (put the stand-in report into the next slow reports). 22.10 (12.14):
+ * `#warmModels` ([path, priority]: a model the page's warm-up asks for, RenderWorkerModelWarmup.ts).
  */
-export type RenderWorkerOwnCommand = "#idle" | "#clearInputs" | "#clearLookups" | "#poseReset" | "#standIns";
+export type RenderWorkerOwnCommand = "#idle" | "#clearInputs" | "#clearLookups" | "#poseReset" | "#standIns" | "#warmModels";
 
 export interface RenderCommand {
   readonly method: ClientRendererCommand | RenderWorkerOwnCommand;
@@ -99,6 +101,8 @@ export interface RenderWorkerFrameReport {
   readonly frameError?: string;
   /** The shader programs a capture attributed this frame, on the page's clock. */
   readonly shaderPrograms?: readonly ShaderProgramEvent[];
+  /** 22.10 (12.14): whether the worker's terrain has answered under the page's view subject (the loading curtain). */
+  readonly readiness?: RenderWorkerDrawReadiness;
 }
 
 /** The slower reads, twice a second. */
