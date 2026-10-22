@@ -32,7 +32,7 @@ import {
   unitLuminanceHue,
 } from "../dist/code/browser/CinematicPost.js";
 import { GOD_RAY_STRENGTH_SCALE_MAX } from "../dist/code/browser/LightingQuality.js";
-import { SKY_HIGHLIGHT_KNEE, SKY_HIGHLIGHT_SLOPE, skyHighlight } from "../dist/code/browser/CinematicSkyHighlight.js";
+import { cinematicSkyTexel } from "../dist/code/browser/CinematicSky.js";
 import { lowSunRimStrength, createWorldLightUniforms, setWorldLightRim, WORLD_LIGHT_BODY } from "../dist/code/browser/WorldLighting.js";
 import { copyWaterSkyBands, createWaterShaderSharedUniforms, setLiquidWaterShaderProfile } from "../dist/code/browser/Water.js";
 import { ENHANCED_GRAPHICS_OVERRIDES } from "../dist/code/browser/ui/EnhancedGraphics.js";
@@ -135,8 +135,8 @@ test("profiles normalise, and only post leaves select the composited path", () =
   assert.equal(cinematicPostActive(DEFAULT_CINEMATIC_PROFILE), false);
   const material = normaliseCinematicProfile({ rimLight: true, waterSunGlitter: true, sceneryShadows: true });
   assert.equal(cinematicPostActive(material), false, "material leaves never force a capture");
-  assert.equal(cinematicNeedsDepth(normaliseCinematicProfile({ grade: true })), false);
-  for (const leaf of ["bloom", "sunScattering", "ambientOcclusion"]) {
+  // 22.10 (7.30): the grade needs depth too — it tells the sky (left untouched) from the ground.
+  for (const leaf of ["grade", "bloom", "sunScattering", "ambientOcclusion"]) {
     assert.equal(cinematicNeedsDepth(normaliseCinematicProfile({ [leaf]: true })), true, leaf);
   }
   assert.ok(AMBIENT_OCCLUSION_MIN_RENDER_SCALE > 0.5 && AMBIENT_OCCLUSION_MIN_RENDER_SCALE < 1);
@@ -158,10 +158,6 @@ test("the post chain builds without a context and keeps its shaders self-consist
   }
   assert.match(post.composite.fragmentShader, new RegExp(`knee = ${FILMIC_KNEE.toFixed(4)}`));
   assert.match(post.composite.fragmentShader, new RegExp(`white = ${FILMIC_WHITE.toFixed(4)}`));
-  // 22.10 (7.30): a sky texel's glow saturates per channel, as in the client's eight-bit frame,
-  // before the linear chain — else a cream cloud core turned salmon under the hue-keeping shoulder.
-  assert.match(post.composite.fragmentShader,
-    /if \(sky\) \{\s*display = min\(display, vec3\(1\.0\)\);[\s\S]*?\}\s*\}\s*vec3 colour = cinematicToLinear\(display\);/);
   assert.equal(post.upsample.blending, THREE.AdditiveBlending);
   // Per-frame light push writes into the existing uniform objects.
   const sunColour = post.uniforms.sunColour.value;
@@ -284,7 +280,7 @@ test("shaft passes are fixed-cost two-pass marches and only the composite adds t
   // The near-sun guard is a few degrees wide, not the golden-hour emission lobe's whole width.
   assert.match(post.composite.fragmentShader, /shaft \*= 1\.0 - 0\.6 \* smoothstep\(0\.94, 0\.995, facing\);/);
   // Scattered along the view ray: the ground at the character's feet carries almost none of it.
-  assert.match(post.composite.fragmentShader, /float shaftPath = sky \? 1\.0 : 1\.0 - exp\(-length\(view\) \* shaftMarch\.w\);/);
+  assert.match(post.composite.fragmentShader, /float shaftPath = 1\.0 - exp\(-length\(view\) \* shaftMarch\.w\);/);
   assert.ok(Math.abs(post.uniforms.shaftMarch.value.w - 1 / SHAFT_AIR_YARDS) < 1e-12);
   assert.doesNotMatch(post.composite.fragmentShader, /smoothstep\(0\.9, 0\.99, facing\)/);
   assert.match(post.shaftMask.fragmentShader, /gl_FragColor = vec4\(emit \* above, lobe \* above, sky \* lobe \* above, 1\.0\);/);
@@ -496,22 +492,17 @@ test("every uniform a post pass reads is declared in that pass", () => {
   }
 });
 
-test("22.10 (7.30): the cinematic sky's cloud cores are compressed on luma, blue sky untouched", () => {
-  // Owner, 22.10: clouds still slightly too bright. Stormwind noon, frozen clouds: the brightest cloud
-  // core p98 220 -> 198 (faithful 226), the blue sky around it unchanged (112.5).
-  assert.equal(SKY_HIGHLIGHT_KNEE, 0.72);
-  assert.equal(SKY_HIGHLIGHT_SLOPE, 0.4);
-  const blue = [0.25, 0.5, 0.95]; // a clear sky: the blue channel high, luma well under the knee
-  assert.deepEqual(skyHighlight(blue), blue);
-  const cloud = skyHighlight([1, 0.95, 0.85]);
-  const luma = (c) => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
-  const before = luma([1, 0.95, 0.85]);
-  assert.ok(Math.abs(luma(cloud) - (SKY_HIGHLIGHT_KNEE + (before - SKY_HIGHLIGHT_KNEE) * SKY_HIGHLIGHT_SLOPE)) < 1e-9);
-  assert.ok(Math.abs(cloud[0] / cloud[1] - 1 / 0.95) < 1e-9, "the hue holds");
+test("22.10 (7.30): a sky texel leaves the composite as the classic composite writes it", () => {
+  // Owner, 22.10: clouds still a strange colour — make them look as on the faithful profile. Stormwind,
+  // clouds held still, owner settings vs lighting quality 0: sky texels mean |diff| 0.01, p98 0 at
+  // dawn, noon (sun at the client bearing) and dusk; before, 13 / 50 / 17 (p98 25 / 118 / 32).
+  assert.deepEqual(cinematicSkyTexel([0.25, 0.5, 0.75], [0.5, 0.25, 0.5], 0.5), [0.5, 0.625, 1]);
+  assert.deepEqual(cinematicSkyTexel([0.9, 0.85, 0.8], [0.4, 0.3, 0.1], 1), [1, 1, 0.9], "per channel, as eight bits");
   const composite = new CinematicPost().composite.fragmentShader;
-  const clamp = composite.indexOf("display = min(display, vec3(1.0));");
-  const knee = composite.indexOf(`if (skyLuma > ${SKY_HIGHLIGHT_KNEE.toFixed(3)}) {`);
-  assert.ok(clamp > 0 && knee > clamp && knee < composite.indexOf("vec3 colour = cinematicToLinear(display);"),
-    "after the per-channel clamp, on sky texels only, before the chain");
-  assert.ok(composite.includes("float skyLuma = dot(display, vec3(0.2126, 0.7152, 0.0722));"));
+  const exit = composite.indexOf("gl_FragColor = vec4(clamp(display, vec3(0.0), vec3(1.0)), 1.0);");
+  const sky = composite.indexOf("bool sky = useDepth > 0.5 && depth >= 1.0;");
+  assert.ok(sky > 0 && exit > sky && exit < composite.indexOf("vec3 colour = cinematicToLinear(display);"),
+    "before occlusion, haze, shafts, volume, bloom, grade and dither");
+  assert.match(composite.slice(sky, exit + 80), /if \(sky\) \{\s*gl_FragColor = [^;]+;\s*return;\s*\}/);
+  assert.ok(!composite.includes("tone"), "no share of the grade is left for the sky");
 });

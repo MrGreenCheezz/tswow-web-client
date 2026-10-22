@@ -246,18 +246,20 @@ export function cloudCoverThreshold(density: number): number {
 
 /**
  * 05.10: ревью A7b-6. Whether another pass draws a sun at the renderer's own sun direction, so the
- * client-placed sun quad must give way («one sun»). Under the cinematic chain the disc is injected
- * by the bloom leaf only, scaled by the strength slider; the classic radial shafts are skipped there.
- * Without it the classic shafts draw their source at `godRaySunDirection` while their slider is up.
+ * client-placed sun quad must give way («one sun»). The classic radial shafts draw their source at
+ * `godRaySunDirection` while their slider is up. 22.10 (7.30): under the cinematic chain no pass
+ * draws a disc over the sky (`CinematicSky.ts`); the quad and its glare move there (`sunAt`).
  */
 export function skyPostDrawsSun(
   cinematicActive: boolean,
-  cinematicBloom: boolean,
-  cinematicStrength: number,
+  _cinematicBloom: boolean,
+  _cinematicStrength: number,
   godRaysActive: boolean,
   godRayScale: number,
 ): boolean {
-  if (cinematicActive) return cinematicBloom && cinematicStrength > 0;
+  // 22.10 (7.30): the chain draws no disc over the sky any more; the quad moves to its sun instead
+  // (`SkyCelestialInput.sunAt`).
+  if (cinematicActive) return false;
   return godRaysActive && godRayScale > 0;
 }
 
@@ -404,6 +406,16 @@ export interface SkyCelestialInput {
    * renderer's own sun direction; the client-placed sun quad then stays hidden so there is one sun.
    */
   postSun: boolean;
+  /**
+   * 22.10 (7.30): the sun's quad and its glare stand at (`sunAtX`, `sunAtY`, `sunAtZ`), a unit
+   * scene-space direction, instead of the client's bearing. The cinematic chain lights the world
+   * from the renderer's own sun and no longer draws a disc over the sky (`CinematicSky.ts`): the
+   * client's quad and glare are the one sun there, where the shafts and the haze point.
+   */
+  sunAt: boolean;
+  sunAtX: number;
+  sunAtY: number;
+  sunAtZ: number;
   /** Seconds, for the clouds' drift. */
   seconds: number;
   /** 13.10 7.04: the camera's unit view direction in scene space (the glare's facing term). */
@@ -421,7 +433,7 @@ export interface SkyCelestialInput {
 export function createSkyCelestialInput(): SkyCelestialInput {
   return {
     enabled: false, time: 0, day: 0, sunColour: 0, sunHalo: 0, cloudA: 0, cloudB: 0,
-    cloudDensity: 0, storm: 0, postSun: false, seconds: 0, viewX: 0, viewY: 0, viewZ: -1, skyboxPresent: false,
+    cloudDensity: 0, storm: 0, postSun: false, sunAt: false, sunAtX: 0, sunAtY: 1, sunAtZ: 0, seconds: 0, viewX: 0, viewY: 0, viewZ: -1, skyboxPresent: false,
   };
 }
 
@@ -504,6 +516,8 @@ export class SkyCelestials {
   #source: SkyTextureSource | undefined;
   /** 13.10 7.04: the sun's and the moon's glare (`SkyGlare.ts`). */
   readonly #glares: GlareMesh[];
+  /** 22.10 (7.30): the sun body when `SkyCelestialInput.sunAt` moves it; reused, never reallocated. */
+  readonly #movedSun: CelestialBody = { x: 0, y: 1, z: 0, scale: 1 };
   /** 13.10 7.04: the second moon's sticky colour alpha (`moon2Alpha`). */
   #moon2Alpha = 0;
   /** 13.10 7.04: the previous update's `seconds`, for the glare's frame time (0x00d38b48). */
@@ -655,7 +669,7 @@ export class SkyCelestials {
     const bodies = this.#bodies;
     for (let index = 0; index < bodies.length; index++) {
       const body = bodies[index]!;
-      const at = index === 0 ? frame.sun : index === 1 ? frame.moon : frame.moon2;
+      const at = index === 0 ? this.#sunAt(input, frame.sun) : index === 1 ? frame.moon : frame.moon2;
       const texture = this.#texture(body);
       // The client clips the quad at the horizon (0x7edee0); it is gone once its top edge is under.
       const shown = texture !== undefined && at.y * SKY_CELESTIAL_DISTANCE + at.scale * 0.5 > 0 && storm < 1
@@ -692,7 +706,7 @@ export class SkyCelestials {
     const u = this.#cloudUniforms;
     for (let index = 0; index < this.#glares.length; index++) {
       const glare = this.#glares[index]!;
-      const at = index === 0 ? this.frame.sun : this.frame.moon;
+      const at = index === 0 ? this.#sunAt(input, this.frame.sun) : this.frame.moon;
       const cover = this.#cloud.visible
         ? cloudAlphaAt(at.x, at.y, at.z, u.cloudThreshold.value, u.cloudOffset.value.x, u.cloudOffset.value.y)
         : 0;
@@ -712,6 +726,19 @@ export class SkyCelestials {
       glare.uniforms.celestialColour.value.setHex(input.sunColour & 0xffffff, THREE.SRGBColorSpace);
       glare.uniforms.celestialOpacity.value = alpha;
     }
+  }
+
+  /** 22.10 (7.30): where the sun's quad and glare stand this frame (`SkyCelestialInput.sunAt`). */
+  #sunAt(input: SkyCelestialInput, client: CelestialBody): CelestialBody {
+    if (!input.sunAt) return client;
+    const length = Math.hypot(input.sunAtX, input.sunAtY, input.sunAtZ);
+    if (!(length > 0)) return client;
+    const moved = this.#movedSun;
+    moved.x = input.sunAtX / length;
+    moved.y = input.sunAtY / length;
+    moved.z = input.sunAtZ / length;
+    moved.scale = client.scale;
+    return moved;
   }
 
   #glareTexture(glare: GlareMesh): THREE.Texture | undefined {

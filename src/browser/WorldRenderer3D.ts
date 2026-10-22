@@ -6913,7 +6913,10 @@ export class WorldRenderer3D {
    * scale, visibility, the celestials' gate). Every other look — the enhanced preset — is unchanged.
    */
   #updateClassicDome(sample: LightSample | undefined): void {
-    const classic = sample !== undefined && lightingClassicLook(this.#lightingProfile.quality);
+    // 22.10 (7.30): the cinematic chain leaves the sky as the faithful frame has it (CinematicSky.ts),
+    // so under it the dome is the client's too: the band shader's gradient was a second sky colour.
+    const classic = sample !== undefined
+      && (lightingClassicLook(this.#lightingProfile.quality) || this.#cinematic.active);
     (this.#sky.material as THREE.Material).visible = !classic;
     this.#classicDome.visible = classic;
     if (!classic) return;
@@ -6963,6 +6966,12 @@ export class WorldRenderer3D {
       // 05.10-A7b-6-review: only when that disc is really drawn (bloom leaf, slider above zero).
       input.postSun = skyPostDrawsSun(this.#cinematic.active, this.#cinematic.profile.bloom,
         this.#cinematic.strength, this.#godRaysActive(), this.#godRayStrengthScale);
+      // 22.10 (7.30): under the cinematic chain the client's quad and glare are the sun over the sky
+      // (CinematicSky.ts), at the sun the chain lights, shades and throws shafts from.
+      input.sunAt = this.#cinematic.active;
+      if (input.sunAt) {
+        input.sunAtX = this.#cinematicSun.x; input.sunAtY = this.#cinematicSun.y; input.sunAtZ = this.#cinematicSun.z;
+      }
       input.seconds = performance.now() / 1000;
       // 13.10 7.04: the glare's facing term and its LightSkybox weight.
       this.#camera.getWorldDirection(this.#skyViewDirection);

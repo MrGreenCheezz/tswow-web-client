@@ -185,6 +185,12 @@ test("7.04 renderer layer: off without v5 channels; bodies only once their textu
   sky.update(input, camera);
   assert.equal(visible(sky, "skySun"), false, "the cinematic post owns the sun disc");
   input.postSun = false;
+  // 22.10 (7.30): under the cinematic chain the quad stands at the renderer's sun instead.
+  input.sunAt = true; input.sunAtX = 0; input.sunAtY = 0; input.sunAtZ = 2;
+  sky.update(input, camera);
+  assert.equal(visible(sky, "skySun"), true);
+  assert.ok(near(sun.position.z, 700, 1e-6) && near(sun.position.y, 0, 1e-6), `moved sun ${sun.position.toArray()}`);
+  input.sunAt = false;
   input.storm = 1;
   sky.update(input, camera);
   assert.equal(visible(sky, "skySun"), false, "a full storm hides the bodies (alpha 1 − storm)");
@@ -390,9 +396,10 @@ test("05.10 review: the sun quad hides only when another pass really draws a sun
   assert.equal(typeof skyPostDrawsSun, "function");
   // Classic look (no cinematic, no shafts): the client sun.
   assert.equal(skyPostDrawsSun(false, false, 1, false, 1), false);
-  // Cinematic with bloom at a non-zero strength: the post's HDR disc is the sun.
-  assert.equal(skyPostDrawsSun(true, true, 1, false, 1), true);
-  assert.equal(skyPostDrawsSun(true, true, 1, true, 1), true);
+  // 22.10 (7.30): the cinematic chain draws no disc over the sky (CinematicSky.ts); the client's
+  // quad moves to the renderer's sun instead (`sunAt`).
+  assert.equal(skyPostDrawsSun(true, true, 1, false, 1), false);
+  assert.equal(skyPostDrawsSun(true, true, 1, true, 1), false);
   // Cinematic grade / AO / scattering without bloom: no disc anywhere — keep the quad.
   assert.equal(skyPostDrawsSun(true, false, 1, false, 1), false);
   assert.equal(skyPostDrawsSun(true, false, 1, true, 1), false, "the classic shafts are skipped under the cinematic chain");
@@ -405,6 +412,10 @@ test("05.10 review: the sun quad hides only when another pass really draws a sun
   const start = source.indexOf("  #updateSkyCelestials(client");
   const hook = source.slice(start, source.indexOf("\n  }\n", start));
   assert.match(hook, /input\.postSun = skyPostDrawsSun\(/);
+  assert.match(hook, /input\.sunAt = this\.#cinematic\.active;/);
+  // 22.10 (7.30): and under the chain the dome is the client's (SkyDome.ts), as on the faithful look.
+  const dome = source.slice(source.indexOf("  #updateClassicDome(sample"), source.indexOf("  #updateSkyCelestials(client"));
+  assert.match(dome, /lightingClassicLook\(this\.#lightingProfile\.quality\) \|\| this\.#cinematic\.active/);
 });
 
 // 05.10: ревью A7b-6. An old gateway (v4 body, skyChannels = false) must keep today's skybox clip
