@@ -476,7 +476,9 @@ host.__bench = {
     // seconds would carry its flattened grade and thinned haze into a clear-sky frame.
     if ('weather' in overrides) world?.setWeather(overrides.weather ?? { state: 0, intensity: 0, abrupt: true });
   },
-  shadowStats: () => world ? { cascades: world.shadowCascadeStats, calls: renderer.info.render.calls } : null,
+  shadowStats: () => world ? { cascades: world.shadowCascadeStats, calls: renderer.info.render.calls,
+    // 22.10 (7.39): the fog range the still was drawn with, so a distance change reads in yards.
+    fog: world.fogRange } : null,
   state: () => ({ scenario, fraction: lastFraction, frame: lastFrame, readiness: readiness() }),
   sceneStats: () => {
     // Diagnostic census of the scene graph the renderer last submitted: where the per-frame
