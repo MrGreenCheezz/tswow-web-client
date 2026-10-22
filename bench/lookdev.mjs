@@ -67,7 +67,7 @@ function parseFrame(spec) {
 
 async function main() {
   const { default: puppeteer } = await import('puppeteer-core');
-  const { buildBenchmarkBundle, BENCHMARK_SCRIPT_FILES } = await import('./build.mjs');
+  const { buildBenchmarkBundle, buildRenderWorkerBench, BENCHMARK_SCRIPT_FILES, RENDER_WORKER_SCRIPT_FILES } = await import('./build.mjs');
   const args = process.argv.slice(2);
   const value = (flag, fallback) => args.includes(flag) ? args[args.indexOf(flag) + 1] : fallback;
   const values = (flag) => args.flatMap((arg, index) => arg === flag ? [args[index + 1]] : []);
@@ -77,6 +77,13 @@ async function main() {
   if (scenario === 'city') {
     config.city = JSON.parse(await readFile('bench/city.json', 'utf8'));
     config.city.population = Number(value('--population', 12));
+    // 23.10 (7.46): `--city-at x/y/z` stands the city crowd and player elsewhere on the city floor.
+    const cityAt = value('--city-at');
+    if (cityAt) {
+      const [x, y, z] = cityAt.split('/').map(Number);
+      if (![x, y, z].every(Number.isFinite)) throw new Error(`--city-at expects x/y/z: ${cityAt}`);
+      Object.assign(config.city, { x, y, z });
+    }
     if (config.city.viewport) { config.width = config.city.viewport.width; config.height = config.city.viewport.height; }
   }
   config.width = Number(value('--width', config.width));
@@ -104,11 +111,18 @@ async function main() {
   await mkdir(out, { recursive: true });
   await mkdir('bench/build', { recursive: true });
   await mkdir('bench/cache', { recursive: true });
+  // 23.10 (7.46): `--cache dir` keeps its own index and new blobs there (reading the shared blobs
+  // too), so a still can take the gateway's current artifacts without rewriting the bench's cache.
+  const cacheDir = resolve(value('--cache', 'bench/cache'));
+  await mkdir(cacheDir, { recursive: true });
   const variantDir = value('--variant');
-  await buildBenchmarkBundle('bench/build', variantDir);
+  const bundle = await buildBenchmarkBundle('bench/build', variantDir);
+  // 23.10 (7.46): `--worker` draws the stills in the render worker, as the Electron client does.
+  const worker = args.includes('--worker');
+  if (worker) await buildRenderWorkerBench('bench/build', variantDir, bundle.bundleOptions);
 
   const sha = data => createHash('sha256').update(data).digest('hex');
-  const cacheFile = resolve('bench/cache/index.json');
+  const cacheFile = resolve(cacheDir, 'index.json');
   const cache = JSON.parse(await readFile(cacheFile, 'utf8').catch(() => '{}'));
   let cacheMisses = 0;
   const gateway = new URL(process.env.BENCH_GATEWAY_URL ?? 'http://127.0.0.1:8090');
@@ -129,12 +143,12 @@ async function main() {
         entry = { status: response.status, type: response.headers.get('content-type') ?? 'application/octet-stream',
           sha256: sha(bytes), bytes: bytes.length };
         if (!blobTasks.has(entry.sha256)) {
-          blobTasks.set(entry.sha256, writeFile(resolve('bench/cache', entry.sha256), bytes).then(() => bytes));
+          blobTasks.set(entry.sha256, writeFile(resolve(cacheDir, entry.sha256), bytes).then(() => bytes));
         }
         await blobTasks.get(entry.sha256);
         cache[key] = entry;
       }
-      if (!blobTasks.has(entry.sha256)) blobTasks.set(entry.sha256, readFile(resolve('bench/cache', entry.sha256)));
+      if (!blobTasks.has(entry.sha256)) blobTasks.set(entry.sha256, readFile(resolve(cacheDir, entry.sha256)).catch(() => readFile(resolve('bench/cache', entry.sha256))));
       const bytes = await blobTasks.get(entry.sha256);
       if (sha(bytes) !== entry.sha256) throw new Error(`Asset cache hash mismatch: ${key}`);
       return { entry, bytes };
@@ -154,11 +168,13 @@ async function main() {
         res.writeHead(200, { 'content-type': 'text/html' }).end(`<!doctype html><html><head><meta charset="utf-8"><title>Lookdev</title>
           <style>html,body{margin:0;overflow:hidden;background:#213243}canvas{display:block;width:${config.width}px;height:${config.height}px}</style>
           <script>window.__benchRenderers=[];window.__THREE_DEVTOOLS__={dispatchEvent(e){if(e.detail?.isWebGLRenderer)window.__benchRenderers.push(e.detail)}};</script>
-          </head><body><canvas></canvas><script type="module" src="/harness.js"></script></body></html>`);
+          </head><body><canvas></canvas><script type="module" src="${worker ? '/bench-page.js' : '/harness.js'}"></script></body></html>`);
       } else if (url.pathname === '/config.json') {
         res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(config));
       } else if (Object.hasOwn(BENCHMARK_SCRIPT_FILES, url.pathname)) {
         res.writeHead(200, { 'content-type': 'text/javascript' }).end(await readFile(resolve('bench/build', BENCHMARK_SCRIPT_FILES[url.pathname])));
+      } else if (worker && Object.hasOwn(RENDER_WORKER_SCRIPT_FILES, url.pathname)) { // 23.10 (7.46)
+        res.writeHead(200, { 'content-type': 'text/javascript' }).end(await readFile(resolve('bench/build', RENDER_WORKER_SCRIPT_FILES[url.pathname])));
       } else if (url.pathname === '/favicon.ico') {
         res.writeHead(204).end();
       } else if (/^\/textures\/water\/[A-Za-z]+_N\.jpg$/.test(url.pathname)) {
@@ -190,6 +206,8 @@ async function main() {
     page.setDefaultTimeout(config.timeoutSeconds * 1000);
     page.on('pageerror', error => console.error(`Page error: ${error.message}`));
     page.on('console', message => { if (message.type() === 'error') console.error(message.text()); });
+    // 23.10 (7.46): the render worker's errors too.
+    page.on('workercreated', w => w.on('console', message => { if (message.type() === 'error') console.error(message.text()); }));
     // The first frame's time, camera and weather are in place before the scene settles, so its
     // assets (the rain textures, a night light table) are part of the preparation.
     const route = { ...config.route };
