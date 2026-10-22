@@ -217,6 +217,8 @@ function gameObjects(cost = 3) {
     disposeGameObject(rendered) { rendered.node.removeFromParent(); }, dropEffects() {},
     placeGameObject(_rendered, object, position) { positions.set(object.guid, position.x); },
     stampGameObjectAdmission() {}, gameObjectFadeMeshes: () => [],
+    // 22.10 ARC-2 S2a: whether a game object is shown arrives in the pushed render inputs.
+    inputs: { hiddenGameObjects: new Set() },
     applyGameObjectOpacity() {}, poseGameObject() {},
   });
   const state = { objects: new Map(Array.from({ length: 8 }, (_, i) => {
@@ -226,7 +228,8 @@ function gameObjects(cost = 3) {
   })) };
   const model = {};
   const draw = () => harness.updateGameObjects(state, { x: 0, y: 0, z: 0 },
-    { model: () => model }, () => ({ model: "new.m2" }), 0, undefined, 100, 0.016);
+    // 22.10 ARC-2 S2b: the display rows arrive as a map, not a lookup function; every id answers new.m2.
+    { model: () => model }, { get: () => ({ model: "new.m2" }) }, 0, undefined, 100, 0.016);
   return { harness, state, positions, draw };
 }
 
