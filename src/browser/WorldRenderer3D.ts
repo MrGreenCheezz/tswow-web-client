@@ -266,6 +266,7 @@ import {
 import { horizonTileAt } from "./Horizon.js"; // 05.10-A7b-7
 import { HorizonMaterialSelector } from "./HorizonMaterial.js"; // 05.10-A7b-7
 import { HorizonDetail } from "./HorizonDetail.js"; // 22.10 (7.44)
+import { HORIZON_LOD_REACH, HorizonLodRing } from "./HorizonLodRing.js"; // 22.10 (7.44)
 import {
   billboardView, buildModelEffects, disposeModelEffects, resetModelEffects, setModelEffectsFantasyGlow,
   updateModelEffects,
@@ -4350,7 +4351,9 @@ export class WorldRenderer3D {
   readonly #terrains = new Map<string, RenderedTerrain>();
   /** The far horizon: one mesh for every distant tile, rebuilt when the player changes tile. */
   /** P1-13b: the horizon mesh and what it was built for — `map * 4096 + cell` and the client revision. */
-  #horizon: { mesh: THREE.Mesh; tile: number; revision: number } | undefined;
+  #horizon: { mesh: THREE.Mesh; tile: number; revision: number; inner: number } | undefined; // 7.44: inner reach
+  /** 22.10 (7.44): the enhanced path's first ring past the near window, from real terrain heights. */
+  readonly #horizonLod = new HorizonLodRing();
   /** 22.10 (7.39): the enhanced path's coarse outer horizon, tiles five and six (HorizonBand.ts). */
   readonly #horizonBand = new HorizonBand();
   readonly #horizonMaterial = new THREE.MeshBasicMaterial({ color: 0x4a6b4f, fog: true });
@@ -7548,6 +7551,7 @@ export class WorldRenderer3D {
       this.#horizon = undefined;
     }
     this.#horizonBand.clear(this.#scene); // 22.10 (7.39)
+    this.#horizonLod.clear(this.#scene); // 22.10 (7.44)
     this.#clearGroundCover();
     for (const key of [...this.#instances.keys()]) this.#dropInstance(key);
     for (const ring of this.#selectionRings.values()) {
@@ -8448,7 +8452,7 @@ export class WorldRenderer3D {
     this.#drawPhaseMs.setup = performance.now() - drawPhaseAt;
     drawPhaseAt = performance.now();
     this.#updateTerrain(player.position, map, heightAt, terrainClient, splatClient);
-    this.#updateHorizon(player.position, map, horizonClient);
+    this.#updateHorizon(player.position, map, horizonClient, terrainClient); // 7.44: the LOD ring's terrain
     this.#drawPhaseMs.terrain = performance.now() - drawPhaseAt;
     drawPhaseAt = performance.now();
     this.#updateEnvironment(player.position, objects, environmentClient, elapsed);
@@ -10412,7 +10416,8 @@ export class WorldRenderer3D {
    * per frame: it is forty-odd tiles of static geometry and its own accuracy is a whole yard, so
    * there is nothing in it that changes as the camera moves.
    */
-  #updateHorizon(player: WorldPosition, map: number | undefined, horizonClient: HorizonClient | undefined): void {
+  #updateHorizon(player: WorldPosition, map: number | undefined, horizonClient: HorizonClient | undefined,
+    terrainClient?: TerrainClient): void {
     // P1-13b: the centre tile as one number (`map * 4096 + cell`); its grid object only on a rebuild.
     const cell = map === undefined ? -1 : terrainGridIndex(player.x, player.y);
     const world = horizonClient?.get(map);
@@ -10423,6 +10428,7 @@ export class WorldRenderer3D {
         this.#horizon = undefined;
       }
       this.#horizonBand.clear(this.#scene); // 22.10 (7.39)
+      this.#horizonLod.clear(this.#scene); // 22.10 (7.44)
       return;
     }
     const tile = map * 4096 + cell;
@@ -10435,7 +10441,14 @@ export class WorldRenderer3D {
     // 22.10 (7.39): the enhanced path's fog reaches past these four tiles; the band beyond them is
     // built on a frame of its own, never the one that rebuilt this mesh (HorizonBand.ts).
     const bandRange = distanceHorizonRange(this.#lightingProfile.quality);
-    if (this.#horizon?.tile === tile && this.#horizon.revision === revision) {
+    // 22.10 (7.44): the enhanced path draws the first ring past the near window from the terrain's
+    // own heights (HorizonLodRing.ts) and the WDL ring leaves it out; the faithful levels keep the WDL.
+    const enhanced = !lightingClassicLook(this.#lightingProfile.quality);
+    const inner = enhanced ? HORIZON_LOD_REACH : 1;
+    if (enhanced) {
+      this.#horizonLod.update(this.#scene, map, Math.floor(cell / 64), cell % 64, world, terrainClient, horizonMaterial);
+    } else this.#horizonLod.clear(this.#scene);
+    if (this.#horizon?.tile === tile && this.#horizon.revision === revision && this.#horizon.inner === inner) {
       this.#horizonBand.update(this.#scene, world, tile, revision, bandRange, horizonMaterial);
       return;
     }
@@ -10445,7 +10458,7 @@ export class WorldRenderer3D {
     }
     this.#horizonBand.hideUnless(tile); // 22.10 (7.39): an old band would overlap the new ring
     const centre = { x: Math.floor(cell / 64), y: cell % 64 };
-    const tiles = horizonTiles(world, centre);
+    const tiles = horizonTiles(world, centre, undefined, inner); // 22.10 (7.44)
     if (tiles.length === 0) {
       this.#horizon = undefined;
       return;
@@ -10455,7 +10468,7 @@ export class WorldRenderer3D {
     // neither depth nor a depth test, so anything sharing that order is painted over by it —
     // measured as a horizon that loaded, selected its 63 tiles, built its mesh and never appeared.
     mesh.renderOrder = 0;
-    this.#horizon = { mesh, tile, revision };
+    this.#horizon = { mesh, tile, revision, inner };
     this.#scene.add(mesh);
   }
 

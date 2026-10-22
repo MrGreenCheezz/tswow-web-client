@@ -134,12 +134,16 @@ export function decodeHorizon(data: ArrayBuffer): HorizonMap {
  * Never the nine the near ring holds — those are real ground, and a low-resolution copy of them
  * fighting for the depth buffer is the one way this can look worse than nothing.
  */
-export function horizonTiles(map: HorizonMap, centre: { x: number; y: number }, rangeYards = HORIZON_RANGE): HorizonTile[] {
+export function horizonTiles(
+  map: HorizonMap, centre: { x: number; y: number }, rangeYards = HORIZON_RANGE,
+  /** 22.10 (7.44): the Chebyshev reach left to others — 1 (the near ring), 2 on the enhanced path (HorizonLodRing.ts). */
+  inner = 1,
+): HorizonTile[] {
   const reach = Math.ceil(rangeYards / TERRAIN_GRID_SIZE);
   const found: HorizonTile[] = [];
   for (let gridX = centre.x - reach; gridX <= centre.x + reach; gridX++) {
     for (let gridY = centre.y - reach; gridY <= centre.y + reach; gridY++) {
-      if (Math.abs(gridX - centre.x) <= 1 && Math.abs(gridY - centre.y) <= 1) continue;
+      if (Math.abs(gridX - centre.x) <= inner && Math.abs(gridY - centre.y) <= inner) continue;
       const tile = map.tiles.get(tileKey(gridX, gridY));
       if (tile) found.push(tile);
     }

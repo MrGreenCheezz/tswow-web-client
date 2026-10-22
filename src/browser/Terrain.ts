@@ -696,6 +696,18 @@ export class TerrainClient {
   }
 
   /**
+   * 22.10 (7.44): the height where the tile is already resident, `undefined` otherwise — and,
+   * unlike {@link heightAt}, never a download. The far LOD ring (HorizonLodRing.ts) reads the
+   * tiles the near ring's edge normals already fetched, and must not widen the footprint.
+   */
+  residentHeightAt(map: number, x: number, y: number): number | undefined {
+    const gridX = terrainGridAxis(x);
+    const gridY = terrainGridAxis(y);
+    if (gridX < 0 || gridY < 0) return undefined;
+    return this.#tileByGrid(map, gridX, gridY)?.heightAt(x, y);
+  }
+
+  /**
    * `isHole(map, x, y) ? undefined : heightAt(map, x, y)` with one tile lookup — the ground under
    * somebody else's extrapolated run (5.04): a terrain hole is no floor. Like `heightAt` it starts
    * the load of a tile that has not answered yet.
