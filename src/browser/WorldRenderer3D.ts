@@ -6712,6 +6712,7 @@ export class WorldRenderer3D {
   #updateAtmosphere(
     player: { x: number; y: number; z: number }, map: number | undefined,
     heightAt: HeightSampler | undefined, terrainClient: TerrainClient | undefined, now: number, elapsed: number,
+    flying = false,
   ): void {
     const atmosphere = this.#atmosphere!;
     if (!atmosphereProfileActive(atmosphere.profile)) return;
@@ -6746,6 +6747,7 @@ export class WorldRenderer3D {
     frame.camera = this.#camera;
     frame.feet.set(player.x, player.z, -player.y);
     frame.heightAt = heightAt ? this.#atmosphereSurfaceAt : undefined;
+    frame.flying = flying; // 22.10 (7.45): rain splashes on the ground below a flyer
     frame.seconds = now / 1000;
     frame.elapsed = elapsed;
     frame.map = map;
@@ -8470,7 +8472,8 @@ export class WorldRenderer3D {
     this.#updateFixtureLights(now);
     // New weather materials must enter the same warm pass as every other first-frame draw.
     this.#updateWeather(elapsed);
-    if (this.#atmosphere) this.#updateAtmosphere(player.position, map, heightAt, terrainClient, now, elapsed);
+    if (this.#atmosphere) this.#updateAtmosphere(player.position, map, heightAt, terrainClient, now, elapsed,
+      isUnitFlying(player.movementFlags, player.motion?.flying === true));
     this.#drawPhaseMs.visuals = performance.now() - drawPhaseAt;
     drawPhaseAt = performance.now();
     // Programs for everything the passes above just built, handed to the driver before this frame

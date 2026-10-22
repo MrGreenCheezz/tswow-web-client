@@ -28,6 +28,11 @@
  * a dock) is detected by their own height disagreeing with the terrain under them, and the field
  * then lies flat at their feet — right for a plaza, and the depth test hides any splash that
  * would land inside a wall.
+ *
+ * 22.10 (7.45): unless the character is flying. A flyer's feet disagree with the terrain too, and
+ * the field used to lie flat through them — rings on an invisible floor in mid-air (owner, 22.10).
+ * In flight the grid samples the ground (and the water) under each cell; past 64 yards of view
+ * depth the distance fade already has every splash at zero.
  */
 
 import * as THREE from "three";
@@ -75,11 +80,13 @@ export const RAIN_SPLASH_FLOOR_TOLERANCE = 1.2;
  * (sceneX, -sceneZ).
  */
 export function splashesOnTerrain(
-  centreX: number, centreZ: number, floorY: number, heightAt: HeightSampler | undefined,
+  centreX: number, centreZ: number, floorY: number, heightAt: HeightSampler | undefined, flying = false,
 ): boolean {
   const underFeet = heightAt?.(centreX, -centreZ);
-  return underFeet !== undefined && Number.isFinite(underFeet)
-    && Math.abs(underFeet - floorY) <= RAIN_SPLASH_FLOOR_TOLERANCE;
+  if (underFeet === undefined || !Number.isFinite(underFeet)) return false;
+  // 22.10 (7.45): a flyer above the ground is not standing on a WMO floor at their own height.
+  if (flying && floorY >= underFeet - RAIN_SPLASH_FLOOR_TOLERANCE) return true;
+  return Math.abs(underFeet - floorY) <= RAIN_SPLASH_FLOOR_TOLERANCE;
 }
 
 /**
@@ -113,9 +120,9 @@ export function fillSplashHeightRows(
  */
 export function fillSplashHeights(
   heights: Float32Array, centreX: number, centreZ: number, floorY: number,
-  heightAt: HeightSampler | undefined,
+  heightAt: HeightSampler | undefined, flying = false,
 ): boolean {
-  const onTerrain = splashesOnTerrain(centreX, centreZ, floorY, heightAt);
+  const onTerrain = splashesOnTerrain(centreX, centreZ, floorY, heightAt, flying);
   fillSplashHeightRows(heights, centreX, centreZ, floorY, heightAt, onTerrain, 0, RAIN_SPLASH_GRID);
   return onTerrain;
 }
@@ -257,6 +264,7 @@ export class RainSplashes {
   #gridX = Number.NaN;
   #gridZ = Number.NaN;
   #gridFloor = Number.NaN;
+  #gridOnTerrain = false;
   #regrid: SplashRegrid | undefined;
   #clock = 0;
 
@@ -312,11 +320,11 @@ export class RainSplashes {
 
   /**
    * `feet` is the character in scene space; `density` 0..1 of rain landing (0 hides the field);
-   * `quality` 0.25..1 scales the count.
+   * `quality` 0.25..1 scales the count; `flying` (22.10, 7.45) lays the field on the ground below.
    */
   update(
     feet: THREE.Vector3, heightAt: HeightSampler | undefined, elapsed: number, density: number,
-    texture: THREE.Texture | null, light: THREE.Color, quality: number,
+    texture: THREE.Texture | null, light: THREE.Color, quality: number, flying = false,
   ): void {
     const d = Math.max(0, Math.min(1, density));
     if (d <= 0 || !texture) {
@@ -324,7 +332,7 @@ export class RainSplashes {
       this.#geometry.setDrawRange(0, 0);
       return;
     }
-    this.#advanceGrid(feet, heightAt);
+    this.#advanceGrid(feet, heightAt, flying);
     this.#clock += Math.max(0, Math.min(0.25, elapsed));
     const u = this.#uniforms;
     u["uMap"]!.value = texture;
@@ -341,22 +349,24 @@ export class RainSplashes {
    * The first grid is built at once; later ones a few rows a frame into the staging buffer while
    * the grid in use — six yards wider than the field — keeps serving, then swapped in whole.
    */
-  #advanceGrid(feet: THREE.Vector3, heightAt: HeightSampler | undefined): void {
-    const moved = !(Math.hypot(feet.x - this.#gridX, feet.z - this.#gridZ) < RAIN_SPLASH_REGRID_YARDS)
-      || !(Math.abs(feet.y - this.#gridFloor) < 0.6);
+  #advanceGrid(feet: THREE.Vector3, heightAt: HeightSampler | undefined, flying: boolean): void {
     if (Number.isNaN(this.#gridX)) {
-      const onTerrain = fillSplashHeights(this.#heights, feet.x, feet.z, feet.y, heightAt);
+      const onTerrain = fillSplashHeights(this.#heights, feet.x, feet.z, feet.y, heightAt, flying);
       this.#adoptGrid(feet.x, feet.z, feet.y, onTerrain);
       return;
     }
+    // 22.10 (7.45): the character's height only matters to a flat grid (or when the field moves
+    // between flat and terrain). A grid on the terrain is the same at any height of the feet, so a
+    // climbing flyer no longer restarts the rebuild every frame and never finishes it.
+    const onTerrain = splashesOnTerrain(feet.x, feet.z, feet.y, heightAt, flying);
+    const away = (x: number, z: number, floorY: number, terrain: boolean): boolean =>
+      !(Math.hypot(feet.x - x, feet.z - z) < RAIN_SPLASH_REGRID_YARDS) || terrain !== onTerrain
+      || (!onTerrain && !(Math.abs(feet.y - floorY) < 0.6));
     const regrid = this.#regrid;
-    if (moved && (!regrid || Math.hypot(feet.x - regrid.centreX, feet.z - regrid.centreZ) >= RAIN_SPLASH_REGRID_YARDS
-      || Math.abs(feet.y - regrid.floorY) >= 0.6)) {
+    if (away(this.#gridX, this.#gridZ, this.#gridFloor, this.#gridOnTerrain)
+      && (!regrid || away(regrid.centreX, regrid.centreZ, regrid.floorY, regrid.onTerrain))) {
       // Start (or restart, if the character has outrun the one under way) a rebuild here.
-      this.#regrid = {
-        centreX: feet.x, centreZ: feet.z, floorY: feet.y,
-        onTerrain: splashesOnTerrain(feet.x, feet.z, feet.y, heightAt), row: 0,
-      };
+      this.#regrid = { centreX: feet.x, centreZ: feet.z, floorY: feet.y, onTerrain, row: 0 };
     }
     const job = this.#regrid;
     if (!job) return;
@@ -370,7 +380,7 @@ export class RainSplashes {
   }
 
   #adoptGrid(centreX: number, centreZ: number, floorY: number, onTerrain: boolean): void {
-    void onTerrain;
+    this.#gridOnTerrain = onTerrain;
     this.#gridX = centreX;
     this.#gridZ = centreZ;
     this.#gridFloor = floorY;
