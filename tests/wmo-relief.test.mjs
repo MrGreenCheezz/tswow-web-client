@@ -13,7 +13,9 @@ import {
 } from "../dist/code/browser/WmoReliefDerive.js";
 import { WMO_RELIEF_FLAT, WmoReliefMaps } from "../dist/code/browser/WmoReliefMaps.js";
 import {
-  WMO_RELIEF_DEPTH_MAX, WMO_RELIEF_DEPTH_UV, WMO_RELIEF_MARKER, injectWmoRelief, setWmoReliefActive, trackWmoReliefMaterial,
+  WMO_RELIEF_CAVITY, WMO_RELIEF_DEPTH_MAX, WMO_RELIEF_DEPTH_UV, WMO_RELIEF_LOCAL_SPAN, WMO_RELIEF_MARKER, WMO_RELIEF_NORMAL_MAX_TILT,
+  WMO_RELIEF_NORMAL_STRENGTH, WMO_RELIEF_SHADOW_STRENGTH, WMO_RELIEF_SKY, WMO_RELIEF_SUN_FACING, WMO_RELIEF_SUN_GAIN,
+  WMO_RELIEF_SUN_RANGE, WMO_RELIEF_WALL_TILT, injectWmoRelief, setWmoReliefActive, trackWmoReliefMaterial,
   wmoReliefActive, wmoReliefDepth, wmoReliefDrawing, wmoReliefMapReady, wmoReliefMaps, wmoReliefStats, wmoRunReliefVariant,
 } from "../dist/code/browser/WmoReliefShader.js";
 import { applyWorldLight, createWorldLightUniforms } from "../dist/code/browser/WorldLighting.js";
@@ -161,6 +163,21 @@ test("gating: enhanced levels only — never lighting quality 0 or the compariso
   assert.equal(wmoReliefActive(false, 2), false);
 });
 
+test("shading: the tuned strengths (22.10, 7.47: stage 2 read flat)", () => {
+  // The height's slope at full strength (stage 2: half) under a ≈ 31° cap (stage 2: ≈ 17°).
+  assert.equal(WMO_RELIEF_NORMAL_STRENGTH, 1.0);
+  assert.equal(WMO_RELIEF_NORMAL_MAX_TILT, 0.6);
+  assert.equal(WMO_RELIEF_SHADOW_STRENGTH, 0.6);
+  // The shading's tilt on walls, the cavity and the sky (new), the relief's sun as a bounded factor.
+  assert.equal(WMO_RELIEF_WALL_TILT, 0.7);
+  assert.equal(WMO_RELIEF_CAVITY, 0.35);
+  assert.equal(WMO_RELIEF_SKY, 0.4);
+  assert.equal(WMO_RELIEF_LOCAL_SPAN, 16);
+  assert.equal(WMO_RELIEF_SUN_GAIN, 1.0);
+  assert.equal(WMO_RELIEF_SUN_RANGE, 0.5);
+  assert.equal(WMO_RELIEF_SUN_FACING, 0.2);
+});
+
 test("depth: a fiftieth of the texture's repeat, gentler than the ground, never past 0.08 yards", () => {
   assert.equal(WMO_RELIEF_DEPTH_UV, 0.02);
   assert.equal(WMO_RELIEF_DEPTH_MAX, 0.08);
@@ -209,9 +226,9 @@ test("program: its own versioned key, set at build time; the map arrives through
     const offKey = material.customProgramCacheKey();
     const offShader = compile(material);
     trackWmoReliefMaterial(material, url, "lit");
-    assert.equal(WMO_RELIEF_MARKER, "wmo-relief-v1");
+    assert.equal(WMO_RELIEF_MARKER, "wmo-relief-v2", "22.10 (7.47): the tuned program is a new key");
     const onKey = material.customProgramCacheKey();
-    assert.equal(onKey, `${offKey}|wmo-relief-v1:lit`);
+    assert.equal(onKey, `${offKey}|wmo-relief-v2:lit`);
     const shader = compile(material);
     assert.equal(shader.uniforms.wmoRelief.value, WMO_RELIEF_FLAT, "the 1×1 flat stand-in until the map arrives");
     assert.equal(shader.uniforms.wmoReliefOn.value, 0);
@@ -255,24 +272,40 @@ test("program: marches before the colour, taps with the unshifted gradients, the
   assert.match(fragment, /for \( int wmoStep = 0; wmoStep < 10; wmoStep\+\+ \)/);
   assert.match(fragment, /\/ max\( wmoReliefVN, 0\.3 \) \* wmoReliefScale;/);
   assert.match(fragment, /wmoReliefFade = wmoReliefOn \*/, "the switch uniform gates it all");
-  // The derived normal goes in before the world light reads `normal`; the shadow multiplies the sun term only.
-  assert.ok(fragment.indexOf("vec3 wmoReliefBump") > fragment.indexOf("#include <normal_fragment_maps>"));
-  assert.ok(fragment.indexOf("vec3 wmoReliefBump") < fragment.indexOf("vec3 wowViewSunDirection"));
-  assert.ok(fragment.indexOf("wowShadow *= 1.0 -") > fragment.indexOf("float wowShadow = 1.0;"));
-  assert.ok(fragment.indexOf("wowShadow *= 1.0 -") < fragment.indexOf("vec3 wowAuthoredLight ="));
+  // 22.10 (7.47): the shape (tilt, cavity, sky) right after the colour tap; the relief's sun is a
+  // hue-neutral factor on the colour before the sun term. `normal`, `wowDot` and `wowShadow` stay the
+  // face's, so the world light's cool shade tint and rim never follow a joint (stage 2's blue joints).
+  const shape = fragment.indexOf("diffuseColor.rgb *= wmoReliefCavity * wmoReliefSky;");
+  assert.ok(shape > fragment.indexOf("vec4 sampledDiffuseColor"));
+  assert.doesNotMatch(fragment, /normal = normalize\( normal \+ wmoReliefBump/);
+  assert.doesNotMatch(fragment, /wowShadow \*=/);
+  assert.match(fragment, /float wowDot = dot\( normalize\( normal \), wowViewSunDirection \);/);
+  const sun = fragment.indexOf("diffuseColor.rgb *= clamp( wmoReliefSun, 0.5000, 1.5000 );");
+  assert.ok(sun > fragment.indexOf("float wowShadow = 1.0;"));
+  assert.ok(sun < fragment.indexOf("vec3 wowAuthoredLight ="));
+  // Mean-keeping: the shading terms read the height and the slope against a mip about a stone wide.
+  assert.match(fragment, /wmoReliefGx \* 16\.0000, wmoReliefGy \* 16\.0000 \)/);
+  assert.match(fragment, /float wmoReliefLocal = wmoReliefTexel\.b - wmoReliefAround\.b;/);
+  assert.match(fragment, /vec2 wmoReliefTilt = \( wmoReliefTexel\.rg - wmoReliefAround\.rg \) \* 2\.0;/);
+  // A wall leans by its shading, up the face in world space; a face turned from the sun takes none of the relief's sun.
+  assert.match(fragment, /vec3 wmoReliefUp = normalize\( \( viewMatrix \* vec4\( 0\.0, 1\.0, 0\.0, 0\.0 \) \)\.xyz \);/);
+  assert.match(fragment, /clamp\( wmoReliefLocal \* 2\.0, -1\.0, 1\.0 \) \* 0\.7000/);
+  assert.match(fragment, /smoothstep\( 0\.0, 0\.2000, wowDot \)/);
   // Injected once only.
   const before = shader.fragmentShader;
   injectWmoRelief(shader, "lit");
   assert.equal(shader.fragmentShader, before);
 });
 
-test("program: a room's run takes the parallax alone (no normal, no sun)", () => {
+test("program: a room's run takes the parallax, the cavity and the sky — no sun", () => {
   const material = new THREE.MeshBasicMaterial({ map: new THREE.Texture(), vertexColors: true });
   const shader = compile(material);
   injectWmoRelief(shader, "room");
   assert.match(shader.fragmentShader, /textureGrad\( map, wmoReliefUv, wmoReliefGx, wmoReliefGy \)/);
-  assert.doesNotMatch(shader.fragmentShader, /wmoReliefBump/);
-  assert.doesNotMatch(shader.fragmentShader, /wowShadow \*=/);
+  // 22.10 (7.47): stage 2 gave rooms the parallax alone, which read as nothing in MOCV light.
+  assert.match(shader.fragmentShader, /diffuseColor\.rgb \*= wmoReliefCavity \* wmoReliefSky;/);
+  assert.doesNotMatch(shader.fragmentShader, /wmoReliefSun/);
+  assert.doesNotMatch(shader.fragmentShader, /wowShadow/);
 });
 
 test("program: a shader without the markers is left exactly as it was", () => {
@@ -288,9 +321,9 @@ test("program: a wet-surface hook bound later still sees the relief key change",
     const material = litMaterial();
     trackWmoReliefMaterial(material, "/visual/texture/wet-0.png", "lit");
     setTerrainWetness(material, true, false);
-    assert.match(material.customProgramCacheKey(), /wmo-relief-v1:lit/);
+    assert.match(material.customProgramCacheKey(), /wmo-relief-v2:lit/);
     setWmoReliefActive(false);
-    assert.doesNotMatch(material.customProgramCacheKey(), /wmo-relief-v1/, "the outer hook must not keep a stale key");
+    assert.doesNotMatch(material.customProgramCacheKey(), /wmo-relief-v2/, "the outer hook must not keep a stale key");
     material.dispose();
   } finally {
     setWmoReliefActive(false);
