@@ -54,6 +54,7 @@ import {
   EYE_LIQUID_SAMPLE_BAND, FLOOR_SEARCH_DEPTH, STEP_HEIGHT, eyeLiquidSurface, eyeUnderwater,
 } from "./game/Physics.js";
 import { game, type GameContext } from "./game/Context.js";
+import { inPageRenderer } from "./ClientRenderer.js"; // 22.10 ARC-2 S6b
 import type {
   ExperimentalShaderProfile,
   FormalRenderSurfaceStamp,
@@ -1133,7 +1134,7 @@ export class LiveFormalRenderBenchmarkHost implements FormalRenderBenchmarkHost 
       throw new Error("formal renderer faction data is not ready");
     }
     return Object.freeze({
-      renderer: context.renderer!,
+      renderer: inPageRenderer(context.renderer!), // 22.10 ARC-2 S6b: refused with the worker renderer
       terrain: context.terrain!,
       terrainSplat: context.terrainSplat!,
       groundCover: context.groundCover!,

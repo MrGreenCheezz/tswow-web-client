@@ -89,8 +89,9 @@ import { renderBenchmarkRuntime } from "../RenderBenchmarkRuntime.js";
 import { formalRenderBenchmarkExclusiveActive } from "../RenderBenchmarkExclusiveLease.js";
 import {
   addCheckpointSection, beginPerformanceCaptureFrame, captureFrameSections, endPerformanceCaptureFrame,
-  performanceCaptureActive,
+  performanceCaptureActive, recordRenderWorkerFrame,
 } from "./PerformanceCapture.js";
+import type { RenderWorkerResultSteps } from "../RenderWorkerClient.js"; // 22.10 ARC-2 S6b
 
 /**
  * Per-frame metadata resolvers, hoisted out of the frame body.
@@ -284,6 +285,31 @@ export function captureRenderTelemetry(capturedAt = performance.now()): Readonly
     accounting: accounting.snapshot(),
   }, captureBenchmarkClientReadiness());
 }
+/**
+ * 22.10 ARC-2 S6b: what the frame below does after an in-page draw, for a render worker's results instead
+ * (RenderWorkerClient.ts runs them per results message, in this order): the cadence, the swing cues, the collision
+ * and unit-model asks, the seats, the CPU span, the reports, the portrait canvases — and the freeze recording's row.
+ */
+export function renderWorkerResultSteps(): RenderWorkerResultSteps {
+  return {
+    recordFrameInterval: (interval) => renderBenchmarkRuntime.recordFrameInterval(interval),
+    afterDraw: () => game.swingReactions?.afterDraw(),
+    requestCollisionModels: (wants) => renderLookups.requestCollisionModels(game.collision?.models, wants),
+    requestUnitModels: (wants) => renderLookups.requestUnitModels(game.world?.state.objects, wants, unitModel),
+    acceptSeats: (results) => {
+      const world = game.world;
+      if (world) acceptSeatResults(results, world.state.objects);
+    },
+    recordRendererFrame: (milliseconds) => renderBenchmarkRuntime.recordRendererFrameCpu(milliseconds),
+    acceptReports: acceptRendererReports,
+    drainPortraits: (results) => {
+      drainPortraitOutputs({ results });
+      applyPortraitVisibility();
+    },
+    workerFrame: recordRenderWorkerFrame,
+  };
+}
+
 /** Consecutive frames that have thrown, reset by the first one that does not. */
 let frameFailures = 0;
 /** The last message reported, so a frame that throws every time says so once. */
@@ -527,6 +553,8 @@ function frame(now: number): void {
     // can ever see them. Include the resident/prefetch band beyond the draw leash as well;
     // tile residency follows the same footprint, bounded by the tile LRU.
     const environment = game.environment?.objectsAround(world.mapId, position.x, position.y, ENVIRONMENT_STREAM_RANGE) ?? [];
+    // 22.10 ARC-2 S6b: a worker renderer asks its own environment client at the same point (RenderWorkerClient.ts).
+    game.renderer?.renderWorker?.queryEnvironmentAt(position.x, position.y);
     // This observes the same already-requested placement list the renderer receives below. It
     // starts no terrain/environment tile fan-out of its own and never delays the frame or curtain.
     game.assetWarmup?.tick({ player, environment, actionButtons: world.actionButtons });
@@ -800,7 +828,8 @@ function frame(now: number): void {
   // The draw phases live on the renderer and are overwritten by the next draw: read them here,
   // on the same tick, and copy the numbers into the record rather than retaining the object.
   // A frame whose draw threw keeps the zeroed phases from the frame counters, never stale ones.
-  const drawPhases = game.renderer?.drawPhaseMs;
+  // 22.10 ARC-2 S6b: a worker renderer's phases are its own frames', not this one's (PerformanceCapture records them).
+  const drawPhases = game.renderer?.renderWorker === undefined ? game.renderer?.drawPhaseMs : undefined;
   updateCombatLog(now);
   // Outside the block above on purpose. The player's own death is a level on `UNIT_FIELD_HEALTH`
   // and not a packet, so it is looked at rather than listened for — and a character can die in a

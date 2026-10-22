@@ -10,6 +10,7 @@ import { autoQualityStatus } from "../AutoQuality.js";
 import { setCaptureProbe } from "../../world/CaptureProbe.js";
 import { poseWorkerReport } from "../ui/PoseWorkerStatus.js"; // L10 (10.18)
 import { FRAME_BUDGET, frameBudgetProbe, type FrameBudgetReport } from "../FrameBudgetProbe.js"; // P2-09a
+import type { RenderWorkerFrameReport } from "../RenderWorkerClientProtocol.js"; // 22.10 ARC-2 S6b
 
 interface LongFrameEntry extends PerformanceEntry {
   readonly blockingDuration?: number;
@@ -280,7 +281,12 @@ export function startPerformanceCapture(): boolean {
     viewport: { width: innerWidth, height: innerHeight, dpr: devicePixelRatio },
     // These are preferences; the checkpoint contains the effective adaptive scale.
     settings: { ...settings() },
+    // 22.10 ARC-2 S6b: the world drawn in a worker: its frames are `renderWorkerFrames` and checkpoints' `renderWorker`,
+    // the rows and their draw phases are the page's (phases sampled from the worker's last frame).
+    ...(game.renderer?.renderWorker === undefined ? {} : { renderWorker: true }),
   };
+  workerLastAt = undefined;
+  takeRenderWorkerWindow();
   game.renderer?.resetGpuTimingEpoch();
   recording = new FrameCapture(performance.now());
   shaderCaptureRenderer = game.renderer;
@@ -468,6 +474,42 @@ function resetCheckpointSections(): void {
   checkpointSectionFrames = 0;
 }
 
+/**
+ * 22.10 ARC-2 S6b: a render worker's frames (`?renderworker=1`), from its results messages — the world's own cadence
+ * and CPU, which the page's rows no longer contain. Summed per checkpoint; a worker frame over the long-frame line is
+ * an event of its own, as a page hitch is a `cpuSections` event.
+ */
+const workerWindow = { frames: 0, cpuMs: 0, cpuMaxMs: 0, intervalMaxMs: 0, longFrames: 0, errors: 0 };
+let workerLastAt: number | undefined;
+const WORKER_LONG_FRAME_MS = 50;
+
+export function recordRenderWorkerFrame(report: RenderWorkerFrameReport): void {
+  const capture = recording;
+  if (!capture) return;
+  const interval = workerLastAt === undefined ? 0 : report.at - workerLastAt;
+  workerLastAt = report.at;
+  workerWindow.frames++;
+  workerWindow.cpuMs += report.cpuMs;
+  workerWindow.cpuMaxMs = Math.max(workerWindow.cpuMaxMs, report.cpuMs);
+  workerWindow.intervalMaxMs = Math.max(workerWindow.intervalMaxMs, interval);
+  if (report.frameError !== undefined) workerWindow.errors++;
+  if (report.cpuMs > WORKER_LONG_FRAME_MS || interval > 2 * WORKER_LONG_FRAME_MS) {
+    workerWindow.longFrames++;
+    capture.event("renderWorkerFrames", report.at, { cpuMs: report.cpuMs, intervalMs: interval,
+      phases: { ...report.drawPhaseMs } });
+  }
+}
+
+/** The worker frames since the last checkpoint, and a fresh window; undefined without a worker frame. */
+function takeRenderWorkerWindow(): Record<string, number> | undefined {
+  if (workerWindow.frames === 0) return undefined;
+  const summary = { frames: workerWindow.frames, cpuMeanMs: round2(workerWindow.cpuMs / workerWindow.frames),
+    cpuMaxMs: round2(workerWindow.cpuMaxMs), intervalMaxMs: round2(workerWindow.intervalMaxMs),
+    longFrames: workerWindow.longFrames, errors: workerWindow.errors };
+  Object.assign(workerWindow, { frames: 0, cpuMs: 0, cpuMaxMs: 0, intervalMaxMs: 0, longFrames: 0, errors: 0 });
+  return summary;
+}
+
 /** Checkpoint reads are outside CPU measurement and never walk the full resource accounting tree. */
 export function endPerformanceCaptureFrame(rafAt: number, cpuMs: number, failed: boolean): void {
   const capture = frameRecording;
@@ -502,6 +544,7 @@ export function endPerformanceCaptureFrame(rafAt: number, cpuMs: number, failed:
           sections: takeCheckpointSections(),
           poseWorker: game.renderer?.poseWorkerStats(),
           shadow: shadowCheckpoint(game.renderer?.shadowCascadeStats),
+          renderWorker: takeRenderWorkerWindow(), // 22.10 ARC-2 S6b: absent in-page
           diagnosticMs: performance.now() - checkpointStart,
         });
       } catch {

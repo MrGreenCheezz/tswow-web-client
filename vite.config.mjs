@@ -180,6 +180,9 @@ export const BUILD_TARGET = "es2022";
  */
 export const CSS_TARGET = Object.freeze(["es2020", "edge88", "firefox78", "chrome87", "safari14"]);
 
+/** 22.10 ARC-2 S6b: the bundle format of every worker (nested workers need ES modules; Vite's default is `iife`). */
+export const RENDER_WORKER_FORMAT = "es";
+
 function port(value, fallback) {
   const parsed = Number.parseInt(value || String(fallback), 10);
   if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65535) throw new Error(`Invalid web port: ${value}`);
@@ -225,6 +228,9 @@ export default defineConfig(({ mode }) => {
       headers: isolation,
     },
     plugins: [keepBuildLocalOnly(), keepSourceMapsBesideBuild()],
+    // 22.10 ARC-2 S6b: workers as ES modules, so the world renderer's worker (`?renderworker=1`) can start the pose and
+    // decode workers itself; every worker is already created with `type: "module"`.
+    worker: { format: RENDER_WORKER_FORMAT },
     build: {
       outDir: "dist/web",
       emptyOutDir: true,

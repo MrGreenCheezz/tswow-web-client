@@ -31,6 +31,8 @@ import { installPatchChainWatch } from "./PatchChainChanged.js";
 import { gatewayOrigin as defaultGatewayOrigin, pageGatewayPolicy } from "./Environment.js";
 import { installNativeAppShell } from "./app/NativeAppShell.js";
 import { GlueServerUnavailableError, probeGlueServer, showGlueServerUnavailable } from "./glue/GlueRetry.js";
+import { renderWorkerRequested } from "./RenderWorkerStart.js"; // 22.10 ARC-2 S6b
+import { mountWorldRenderWorker, worldRendererCanvas } from "./app/RenderWorkerMount.js"; // 22.10 ARC-2 S6b
 
 /**
  * Assembly. Everything this file used to do itself now lives in a module it can be found in:
@@ -47,10 +49,16 @@ usePanelHost(gameWindows);
 resetLayout.addEventListener("click", () => gameWindows.resetLayout());
 
 try {
-  game.renderer = new WorldRenderer3D(world3dCanvas);
-  attachPortraitOutputs(game.renderer); // 22.10 ARC-2 S3b: the page paints the portrait canvases
+  if (renderWorkerRequested(location.search)) {
+    // 22.10 ARC-2 S6b: `?renderworker=1` — the world drawn in a worker, the in-page renderer when it cannot be.
+    game.renderer = mountWorldRenderWorker(world3dCanvas);
+  } else {
+    const renderer = new WorldRenderer3D(world3dCanvas);
+    game.renderer = renderer;
+    attachPortraitOutputs(renderer); // 22.10 ARC-2 S3b: the page paints the portrait canvases
+  }
 } catch (error) {
-  world3dCanvas.hidden = true;
+  worldRendererCanvas(world3dCanvas).hidden = true;
   console.warn("WebGL renderer unavailable", error);
 }
 game.scene = new SimpleScene(worldCanvas, game.renderer === undefined);
@@ -124,11 +132,12 @@ function captureLiveBenchmarkEnvironment(
     ? window.devicePixelRatio
     : 1;
   const renderScalePercent = metadataNumber("renderScale", settingNumber(values, "renderScale"));
+  const worldCanvasElement = worldRendererCanvas(world3dCanvas); // 22.10 ARC-2 S6b: another element after a fallback
   const canvas = {
-    cssWidth: world3dCanvas.clientWidth,
-    cssHeight: world3dCanvas.clientHeight,
-    backingWidth: world3dCanvas.width,
-    backingHeight: world3dCanvas.height,
+    cssWidth: worldCanvasElement.clientWidth,
+    cssHeight: worldCanvasElement.clientHeight,
+    backingWidth: worldCanvasElement.width,
+    backingHeight: worldCanvasElement.height,
     systemDpr,
     effectivePixelRatio: game.renderer?.pixelRatio ?? ("unsupported" as const),
     renderScalePercent,

@@ -27,7 +27,7 @@ import type { MinimapTileClient } from "../MinimapTiles.js";
 import type { TextureBitmapCache } from "../TextureBitmaps.js";
 import type { CollisionSource } from "./CollisionSource.js";
 import type { ItemMetadataClient } from "../ItemMetadata.js";
-import type { WorldRenderer3D } from "../WorldRenderer3D.js";
+import type { ClientRenderer } from "../ClientRenderer.js"; // 22.10 ARC-2 S6b: in-page or the worker's proxy
 import type { SimpleScene } from "../SimpleScene.js";
 import {
   CAMERA_DEFAULT_DISTANCE, CAMERA_DEFAULT_EYE_HEIGHT, CAMERA_DEFAULT_PITCH, CAMERA_DEFAULT_PIVOT_HEIGHT,
@@ -165,7 +165,7 @@ export interface GameContext {
    * still has somewhere to write, so nothing has to be rewired when the frame arrives.
    */
   focusGuid: bigint | undefined;
-  renderer: WorldRenderer3D | undefined;
+  renderer: ClientRenderer | undefined;
   scene: SimpleScene | undefined;
   /**
    * Where the camera is looking, and how it is getting there. Every field is documented on

@@ -27,6 +27,8 @@ export interface RenderWorkerHostValues {
   readonly cssHeight: number;
   /** The page's `location.search` (`?poseworker=0` and the like). */
   readonly query: string;
+  /** 22.10 ARC-2 S6b: the page's `document.hidden` (PageVisibility.ts); absent means shown. */
+  readonly pageHidden?: boolean;
 }
 
 export interface RenderWorkerInit<D = unknown> {

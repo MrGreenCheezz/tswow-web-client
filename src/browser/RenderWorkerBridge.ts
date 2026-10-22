@@ -35,8 +35,9 @@ export class RenderFrameSender {
    * Encodes this frame's world, value arguments and pushed records (each optional record only when given; the
    * receiver keeps the last one) and posts them with the typed arrays transferred. Returns the message posted.
    */
-  post(target: RenderMessageTarget, world: RenderWorld, args: FrameArgValues, lookups: RenderLookups | undefined,
-    inputs: RenderInputs | undefined, call?: RenderWorkerCall): RenderWorkerFrame {
+  post<E extends object = Record<never, never>>(target: RenderMessageTarget, world: RenderWorld, args: FrameArgValues,
+    lookups: RenderLookups | undefined, inputs: RenderInputs | undefined, call?: RenderWorkerCall,
+    extra?: E): RenderWorkerFrame & E { // 22.10 ARC-2 S6b: `extra`, the client's fields (RenderWorkerClientProtocol.ts)
     const encodeAt = performance.now();
     const input = this.#encoder.encode(world, args, NO_ENVIRONMENT);
     const lookupsMessage = lookups === undefined ? undefined : this.#lookups.encode(lookups);
@@ -45,11 +46,12 @@ export class RenderFrameSender {
     const frameBytes = this.measureBytes ? structuredSize(input) : 0;
     const bytes = this.measureBytes
       ? frameBytes + structuredSize(lookupsMessage ?? null) + structuredSize(inputsMessage ?? null) : 0;
-    const message: RenderWorkerFrame = {
+    const message = {
+      ...extra,
       type: "frame", input, lookups: lookupsMessage, inputs: inputsMessage,
       cost: { encodeMs, postMs: this.#postMs, bytes, frameBytes },
       ...(call === undefined ? {} : { call }),
-    };
+    } as RenderWorkerFrame & E;
     const postAt = performance.now();
     target.postMessage(message, frameTransferList(input));
     this.#postMs = performance.now() - postAt;

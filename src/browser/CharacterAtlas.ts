@@ -14,6 +14,7 @@ import { knownLogicalTextureBytes, type RetainedResourceVisitor } from "./Resour
 import type { BenchmarkAsyncReadinessStats } from "./RenderBenchmarkReadiness.js";
 import { FRAME_BUDGET, frameBudgetProbe } from "./FrameBudgetProbe.js"; // P2-09a
 import { createRenderCanvas } from "./RenderHost.js"; // 21.10 ARC-2 S1
+import { pageHidden } from "./PageVisibility.js"; // 22.10 ARC-2 S6b
 
 /** Where each piece lands on the body texture. Mirrors BODY_SECTIONS on the gateway. */
 export const BODY_TEXTURE_SIZE = 512;
@@ -743,9 +744,9 @@ export class CharacterAtlasClient {
 
   #checkHiddenPaintTurn(): void {
     if (!this.#paintScheduled) return;
-    // 21.10 ARC-2 S1: a worker has no document to ask. Until a later slice tells it the page's
-    // visibility, the timer there keeps waiting for the frame callback instead of throwing.
-    if (typeof document !== "undefined" && document.hidden) {
+    // 21.10 ARC-2 S1: a worker has no document to ask. 22.10 ARC-2 S6b: there the page's visibility is the
+    // pushed one (PageVisibility.ts); on the page it is `document.hidden`, as before.
+    if (pageHidden()) {
       this.#flushPaintTurn();
     } else {
       // A slow visible frame still has just one frame allowance; the timer only substitutes for

@@ -753,7 +753,7 @@ export function portraitTargetCanvases(): ReadonlyMap<PortraitSlot, Readonly<Por
  * Called by the renderer's listener as each is queued (`attachPortraitOutputs`), so a picture lands when the old
  * direct paint did, and by the loop after draw.
  */
-export function drainPortraitOutputs(renderer: WorldRenderer3D | undefined): void {
+export function drainPortraitOutputs(renderer: Pick<WorldRenderer3D, "results"> | undefined): void { // 22.10 ARC-2 S6b: the record alone
   if (renderer) canvasBridge.drain(renderer.results.portraits);
 }
 
