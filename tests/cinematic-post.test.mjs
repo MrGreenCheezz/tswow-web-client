@@ -32,6 +32,7 @@ import {
   unitLuminanceHue,
 } from "../dist/code/browser/CinematicPost.js";
 import { GOD_RAY_STRENGTH_SCALE_MAX } from "../dist/code/browser/LightingQuality.js";
+import { SKY_HIGHLIGHT_KNEE, SKY_HIGHLIGHT_SLOPE, skyHighlight } from "../dist/code/browser/CinematicSkyHighlight.js";
 import { lowSunRimStrength, createWorldLightUniforms, setWorldLightRim, WORLD_LIGHT_BODY } from "../dist/code/browser/WorldLighting.js";
 import { copyWaterSkyBands, createWaterShaderSharedUniforms, setLiquidWaterShaderProfile } from "../dist/code/browser/Water.js";
 import { ENHANCED_GRAPHICS_OVERRIDES } from "../dist/code/browser/ui/EnhancedGraphics.js";
@@ -143,7 +144,7 @@ test("profiles normalise, and only post leaves select the composited path", () =
 
 test("the post chain builds without a context and keeps its shaders self-consistent", () => {
   const post = new CinematicPost();
-  assert.equal(post.materials.length, 9); // 12.10-7.30: + the volumetric march
+  assert.equal(post.materials.length, 10); // 12.10-7.30: + the volumetric march; 22.10 (7.30): + its soften pass
   assert.equal(post.active, false);
   assert.equal(post.setProfile({ bloom: true }), true);
   assert.equal(post.active, true);
@@ -160,7 +161,7 @@ test("the post chain builds without a context and keeps its shaders self-consist
   // 22.10 (7.30): a sky texel's glow saturates per channel, as in the client's eight-bit frame,
   // before the linear chain — else a cream cloud core turned salmon under the hue-keeping shoulder.
   assert.match(post.composite.fragmentShader,
-    /if \(sky\) display = min\(display, vec3\(1\.0\)\);\s*vec3 colour = cinematicToLinear\(display\);/);
+    /if \(sky\) \{\s*display = min\(display, vec3\(1\.0\)\);[\s\S]*?\}\s*\}\s*vec3 colour = cinematicToLinear\(display\);/);
   assert.equal(post.upsample.blending, THREE.AdditiveBlending);
   // Per-frame light push writes into the existing uniform objects.
   const sunColour = post.uniforms.sunColour.value;
@@ -493,4 +494,24 @@ test("every uniform a post pass reads is declared in that pass", () => {
       assert.match(code, new RegExp(`uniform (highp )?\\w+ ${name};`), `${name} is read but not declared`);
     }
   }
+});
+
+test("22.10 (7.30): the cinematic sky's cloud cores are compressed on luma, blue sky untouched", () => {
+  // Owner, 22.10: clouds still slightly too bright. Stormwind noon, frozen clouds: the brightest cloud
+  // core p98 220 -> 198 (faithful 226), the blue sky around it unchanged (112.5).
+  assert.equal(SKY_HIGHLIGHT_KNEE, 0.72);
+  assert.equal(SKY_HIGHLIGHT_SLOPE, 0.4);
+  const blue = [0.25, 0.5, 0.95]; // a clear sky: the blue channel high, luma well under the knee
+  assert.deepEqual(skyHighlight(blue), blue);
+  const cloud = skyHighlight([1, 0.95, 0.85]);
+  const luma = (c) => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+  const before = luma([1, 0.95, 0.85]);
+  assert.ok(Math.abs(luma(cloud) - (SKY_HIGHLIGHT_KNEE + (before - SKY_HIGHLIGHT_KNEE) * SKY_HIGHLIGHT_SLOPE)) < 1e-9);
+  assert.ok(Math.abs(cloud[0] / cloud[1] - 1 / 0.95) < 1e-9, "the hue holds");
+  const composite = new CinematicPost().composite.fragmentShader;
+  const clamp = composite.indexOf("display = min(display, vec3(1.0));");
+  const knee = composite.indexOf(`if (skyLuma > ${SKY_HIGHLIGHT_KNEE.toFixed(3)}) {`);
+  assert.ok(clamp > 0 && knee > clamp && knee < composite.indexOf("vec3 colour = cinematicToLinear(display);"),
+    "after the per-channel clamp, on sky texels only, before the chain");
+  assert.ok(composite.includes("float skyLuma = dot(display, vec3(0.2126, 0.7152, 0.0722));"));
 });

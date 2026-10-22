@@ -53,6 +53,18 @@ export function cinematicPoolFalloff(distance: number, reach: number, strength =
   return CINEMATIC_POOL_PEAK * Math.min(1, strength) * window * window;
 }
 
+/**
+ * 22.10 (7.36): CPU twin of the share of `CINEMATIC_POOL_WARMTH` a lit point takes: the pool's part
+ * above the client's own term (`client`, the light before colour). Near the lamp the client's curve
+ * is the larger and the light keeps its authored colour; the warm amber is the wide pool's. With
+ * the tint on the whole term, a hot spot already near one in red went on to red alone after the
+ * `pow 2.2` (green x0.86 -> x0.72).
+ */
+export function cinematicPoolWarmthShare(client: number, pool: number): number {
+  if (!(pool > 0) || !Number.isFinite(client) || !Number.isFinite(pool)) return 0;
+  return pool > client ? 1 - Math.max(0, client) / pool : 0;
+}
+
 /** CPU twin of the pool's day/night weight, `wowDaylight` 1 at noon and 0 at night. */
 export function cinematicPoolNightWeight(daylight: number): number {
   const day = Math.max(0, Math.min(1, Number.isFinite(daylight) ? daylight : 1));
@@ -87,9 +99,12 @@ export const CINEMATIC_POOL_GLSL = /* glsl */ `
         float wowPool = ${CINEMATIC_POOL_PEAK.toFixed(3)} * wowPoolWindow * wowPoolWindow * wowPoolWrap
           * ( ${CINEMATIC_POOL_DAY_SHARE.toFixed(3)} + ${(1 - CINEMATIC_POOL_DAY_SHARE).toFixed(3)} * ( 1.0 - wowDaylight ) )
           * min( wowLocalLightPool, 1.0 );
+        // 22.10 (7.36): the warmth is the pool's own, on its share above the client's curve, so the
+        // lamp's hot spot keeps the client's colour (cinematicPoolWarmthShare).
+        float wowPoolWarmth = wowPool > wowLampTerm ? 1.0 - wowLampTerm / wowPool : 0.0;
         wowLampTerm = max( wowLampTerm, wowPool );
         if ( wowLampColour.r >= wowLampColour.b ) {
           wowLampTint = mix( vec3( 1.0 ), vec3( ${CINEMATIC_POOL_WARMTH.map((v) => v.toFixed(3)).join(", ")} ),
-            min( wowLocalLightPool, 1.0 ) );
+            min( wowLocalLightPool, 1.0 ) * wowPoolWarmth );
         }
       }`;

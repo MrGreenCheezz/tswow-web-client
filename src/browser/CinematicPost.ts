@@ -29,8 +29,11 @@
  */
 import * as THREE from "three";
 
-import { VOLUME_SIDE_GAIN, VOLUME_SIDE_GLSL, volumeSideBeam } from "./CinematicVolumeSide.js"; // 22.10 (7.30)
+import {
+  VOLUME_SIDE_GAIN, VOLUME_SIDE_GLSL, VOLUME_SOFTEN_GLSL, VOLUME_SOFTEN_SPACING, volumeSideBeam,
+} from "./CinematicVolumeSide.js"; // 22.10 (7.30)
 import { GOD_RAY_STRENGTH_SCALE_MAX } from "./LightingQuality.js";
+import { SKY_HIGHLIGHT_GLSL } from "./CinematicSkyHighlight.js"; // 22.10 (7.30)
 import { highSunKeyWeight } from "./WorldLighting.js";
 
 export interface CinematicProfile {
@@ -964,9 +967,14 @@ float phaseHG(float c, float g) {
 }
 void main() {
   // The classic composite first, unchanged: glow and shafts stay the zone-authored additions.
-  vec3 display = texture2D(source, vUV).rgb
-    + texture2D(glow, vUV).rgb * glowStrength
-    + texture2D(rays, vUV).rgb * rayStrength;
+  vec3 scene = texture2D(source, vUV).rgb;
+  // 22.10 (7.36): the client adds its glow and rays into an eight-bit frame, so they saturate each
+  // channel at one. Kept as energy above one, a fire-lit wall (red near one, green and blue well
+  // under) went on red past white into the chain, and its hue-keeping shoulder and burn toward
+  // white turned the inn's fireplace into solid red with pink-white mortar. The scene's own light
+  // above one (the cinematic sun disc) is left as it is: only what the glow adds is bounded.
+  vec3 display = min(scene + texture2D(glow, vUV).rgb * glowStrength + texture2D(rays, vUV).rgb * rayStrength,
+    max(scene, vec3(1.0)));
 
   float depth = useDepth > 0.5 ? texture2D(depthTexture, vUV).r : 0.5;
   bool sky = useDepth > 0.5 && depth >= 1.0;
@@ -974,7 +982,12 @@ void main() {
   // channel toward white. Kept as energy above one, the cream core (band 10 over band 11) went on with
   // red past green and blue, and the shoulder, which keeps the hue, turned it into the salmon and
   // orange blots of the «acid» sky (B-noon cloud core: r − g p98 36 faithful, 57 → 40 with this).
-  if (sky) display = min(display, vec3(1.0));
+  if (sky) {
+    display = min(display, vec3(1.0));
+    // 22.10 (7.30): cloud cores a little under the client's, against the darker cinematic sky
+    // (CinematicSkyHighlight.ts).
+${SKY_HIGHLIGHT_GLSL}
+  }
   vec3 colour = cinematicToLinear(display);
   vec3 view = cinematicViewPosition(vUV, sky ? 1.0 : depth);
   vec3 ray = normalize(mat3(cameraWorld) * view);
@@ -1188,6 +1201,8 @@ interface VolumeTarget {
   readonly height: number;
   readonly contextGeneration: number;
   readonly target: THREE.WebGLRenderTarget;
+  /** 22.10 (7.30): the soften pass's horizontal half (`VOLUME_SOFTEN_GLSL`); the vertical one writes back to `target`. */
+  readonly soft: THREE.WebGLRenderTarget;
 }
 
 const DEFAULT_LIGHT: CinematicLightInput = Object.freeze({
@@ -1370,6 +1385,7 @@ export class CinematicPost {
   readonly shaftMask: THREE.ShaderMaterial;
   readonly shaftBlur: THREE.ShaderMaterial;
   readonly volumeMarch: THREE.ShaderMaterial;
+  readonly volumeSoften: THREE.ShaderMaterial; // 22.10 (7.30)
   readonly composite: THREE.ShaderMaterial;
 
   constructor() {
@@ -1392,6 +1408,7 @@ export class CinematicPost {
     this.shaftMask = pass(SHAFT_MASK);
     this.shaftBlur = pass(SHAFT_BLUR);
     this.volumeMarch = pass(VOLUME_MARCH);
+    this.volumeSoften = pass(VOLUME_SOFTEN_GLSL); // 22.10 (7.30)
     this.composite = pass(COMPOSITE);
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute("position", new THREE.Float32BufferAttribute([-1, -1, 0, 3, -1, 0, -1, 3, 0], 3));
@@ -1402,7 +1419,7 @@ export class CinematicPost {
 
   get materials(): readonly THREE.ShaderMaterial[] {
     return [this.prefilter, this.downsample, this.upsample, this.ambientOcclusion, this.occlusionBlur,
-      this.shaftMask, this.shaftBlur, this.volumeMarch, this.composite];
+      this.shaftMask, this.shaftBlur, this.volumeMarch, this.volumeSoften, this.composite];
   }
 
   get profile(): Readonly<CinematicProfile> {
@@ -1417,7 +1434,7 @@ export class CinematicPost {
     return [
       ...(targets ? [...targets.bloom, targets.occlusion, targets.occlusionBlur] : []),
       ...(shafts ? [shafts.a, shafts.b] : []),
-      ...(volume ? [volume.target] : []),
+      ...(volume ? [volume.target, volume.soft] : []),
     ];
   }
 
@@ -1674,6 +1691,19 @@ export class CinematicPost {
         quad.material = this.volumeMarch;
         renderer.setRenderTarget(volume.target);
         renderer.render(this.scene, this.camera);
+        // 22.10 (7.30): a separable gaussian over the march (VOLUME_SOFTEN_GLSL): the side-on beams
+        // came out hatched and dotted where the contrast ramp amplified its jitter.
+        const texelX = 1 / volume.target.width;
+        const texelY = 1 / volume.target.height;
+        quad.material = this.volumeSoften;
+        u.source.value = volume.target.texture;
+        u.sourceTexel.value.set(texelX * VOLUME_SOFTEN_SPACING, 0);
+        renderer.setRenderTarget(volume.soft);
+        renderer.render(this.scene, this.camera);
+        u.source.value = volume.soft.texture;
+        u.sourceTexel.value.set(0, texelY * VOLUME_SOFTEN_SPACING);
+        renderer.setRenderTarget(volume.target);
+        renderer.render(this.scene, this.camera);
         u.volumeLight.value.set(volumeStrength, 0, 1 / volume.target.width, 1 / volume.target.height);
       }
     }
@@ -1730,6 +1760,7 @@ export class CinematicPost {
     this.#volumeTarget = undefined;
     this.release();
     volume?.target.dispose();
+    volume?.soft.dispose();
     if (shafts) {
       shafts.a.dispose();
       shafts.b.dispose();
@@ -1796,20 +1827,31 @@ export class CinematicPost {
       && current.contextGeneration === frame.contextGeneration) return current;
     this.#volumeTarget = undefined;
     current?.target.dispose();
+    current?.soft.dispose();
     this.#probeHalfFloat(renderer, frame.contextGeneration, current?.contextGeneration);
+    const made: THREE.WebGLRenderTarget[] = [];
     try {
-      const target = new THREE.WebGLRenderTarget(
-        Math.max(1, Math.floor(frame.width / 2)), Math.max(1, Math.floor(frame.height / 2)), {
-          type: this.#halfFloat ? THREE.HalfFloatType : THREE.UnsignedByteType,
-          depthBuffer: false,
-          stencilBuffer: false,
-        });
-      target.texture.name = "cinematic-volume";
+      const half = (name: string): THREE.WebGLRenderTarget => {
+        const target = new THREE.WebGLRenderTarget(
+          Math.max(1, Math.floor(frame.width / 2)), Math.max(1, Math.floor(frame.height / 2)), {
+            type: this.#halfFloat ? THREE.HalfFloatType : THREE.UnsignedByteType,
+            depthBuffer: false,
+            stencilBuffer: false,
+          });
+        target.texture.name = name;
+        made.push(target);
+        return target;
+      };
+      const target = half("cinematic-volume");
+      const soft = half("cinematic-volume-soft"); // 22.10 (7.30)
       this.#volumeTarget = Object.freeze({
-        width: frame.width, height: frame.height, contextGeneration: frame.contextGeneration, target,
+        width: frame.width, height: frame.height, contextGeneration: frame.contextGeneration, target, soft,
       });
       return this.#volumeTarget;
     } catch {
+      for (const target of made) {
+        try { target.dispose(); } catch { /* best effort */ }
+      }
       return undefined;
     }
   }

@@ -5,14 +5,18 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import * as THREE from "three";
 import {
-  CINEMATIC_POOL_PEAK, CINEMATIC_POOL_REACH, cinematicPoolFalloff, cinematicPoolNightWeight, localLightSelectionFade,
+  CINEMATIC_POOL_PEAK, CINEMATIC_POOL_REACH, cinematicPoolFalloff, cinematicPoolNightWeight, cinematicPoolWarmthShare,
+  localLightSelectionFade,
 } from "../dist/code/browser/CinematicLights.js";
 import { LocalLightSelection, m2LightFalloff, modelFixtureLights } from "../dist/code/browser/LocalLighting.js";
 import { applyWorldLight, createWorldLightUniforms, WORLD_LIGHT_BODY } from "../dist/code/browser/WorldLighting.js";
 import { lightingProfile } from "../dist/code/browser/LightingQuality.js";
 import { fixtureLightSource } from "../dist/code/browser/FixtureLightSources.js";
 import { sampleWmoLight, wmoOutdoorLights } from "../dist/code/browser/WmoFixtureLights.js";
-import { LightHalos, lightHaloProfile, lightHaloWeight } from "../dist/code/browser/LightHalos.js";
+import {
+  LIGHT_HALO_CORE, LIGHT_HALO_SKIRT, LightHalos, lightHaloProfile, lightHaloWeight,
+} from "../dist/code/browser/LightHalos.js";
+import { CinematicPost } from "../dist/code/browser/CinematicPost.js";
 
 const close = (a, b, epsilon = 1e-6) => assert.ok(Math.abs(a - b) < epsilon, `${a} != ${b}`);
 const sample = () => ({ position: new THREE.Vector3(), colour: new THREE.Vector3(1, 0.6, 0.3), radius: 8, intensity: 1 });
@@ -131,7 +135,12 @@ test("a WMO's lamps outside its rooms become fixtures; a room's lamp and an inte
 });
 
 test("halos: soft profile, night and distance weighted, one program, bounded instances", () => {
-  assert.ok(lightHaloProfile(0) > 0.9);
+  // 22.10 (7.36): the core is a fifth, the skirt a quarter: the lamp's own glass is the client's
+  // (Goldshire lantern luma 147 -> 105, faithful 59), the halo is the light in the air around it.
+  assert.equal(LIGHT_HALO_CORE, 0.2);
+  assert.equal(LIGHT_HALO_SKIRT, 0.25);
+  close(lightHaloProfile(0), 0.45);
+  assert.ok(lightHaloProfile(0.5) > 0.5 * lightHaloProfile(0) * 0.25, "the skirt carries past the core");
   assert.equal(lightHaloProfile(1), 0);
   assert.ok(lightHaloProfile(0.95) < 0.01, "no edge");
   assert.ok(lightHaloWeight(0, 10) > 0.99);
@@ -172,4 +181,22 @@ test("a Stormwind street lamp's unlit glass pane is its light; an unlit opaque m
   assert.equal(lights.length, 1);
   close(lights[0].position[2], 4);
   assert.equal(modelFixtureLights(lamp("Dungeons\Textures\Doodads\StormwindWood.blp"), name).length, 0);
+});
+
+test("22.10 (7.36): near the source the light keeps the client's colour and the glow cannot burn it", () => {
+  // The warmth is the pool's share above the client's curve: none at the lamp, all of it far out.
+  assert.equal(cinematicPoolWarmthShare(0.9, 0.8), 0, "the client's hot spot is the larger: its own colour");
+  close(cinematicPoolWarmthShare(0.2, 0.8), 0.75);
+  assert.equal(cinematicPoolWarmthShare(0, 0.5), 1, "past the client's reach the pool is all warm");
+  assert.equal(cinematicPoolWarmthShare(0.5, 0), 0);
+  assert.equal(cinematicPoolWarmthShare(Number.NaN, 0.5), 0);
+  assert.ok(WORLD_LIGHT_BODY.includes("float wowPoolWarmth = wowPool > wowLampTerm ? 1.0 - wowLampTerm / wowPool : 0.0;"));
+  assert.ok(WORLD_LIGHT_BODY.indexOf("float wowPoolWarmth") < WORLD_LIGHT_BODY.indexOf("wowLampTerm = max( wowLampTerm, wowPool );"),
+    "measured against the client's term before the max");
+  assert.ok(WORLD_LIGHT_BODY.includes("min( wowLocalLightPool, 1.0 ) * wowPoolWarmth );"));
+  // The glow and rays saturate each channel at one, as in the client's eight-bit frame: the inn's
+  // fireplace, red clipped on 14.5 % of it and pink-white mortar, now 0.1 %.
+  const composite = new CinematicPost().composite.fragmentShader;
+  assert.ok(composite.includes("vec3 display = min(scene + texture2D(glow, vUV).rgb * glowStrength + texture2D(rays, vUV).rgb * rayStrength,"));
+  assert.ok(composite.includes("max(scene, vec3(1.0)));"), "the scene's own light above one is kept");
 });

@@ -9,7 +9,8 @@ import {
   VOLUME_STEPS, volumeScatter,
 } from "../dist/code/browser/CinematicPost.js";
 import {
-  VOLUME_SIDE_CONTRAST_FROM, VOLUME_SIDE_CONTRAST_FULL, VOLUME_SIDE_GAIN, volumeSideBeam,
+  VOLUME_SIDE_CONTRAST_FROM, VOLUME_SIDE_CONTRAST_FULL, VOLUME_SIDE_GAIN, VOLUME_SOFTEN_SPACING, VOLUME_SOFTEN_TAPS,
+  volumeSideBeam,
 } from "../dist/code/browser/CinematicVolumeSide.js";
 
 const close = (actual, expected, epsilon = 1e-9) =>
@@ -101,6 +102,36 @@ function cascade(withMap = true) {
   light.shadow.matrix.makeTranslation(1, 2, 3);
   return light;
 }
+
+test("22.10 (7.30): the march is softened by a separable gaussian before the composite reads it", () => {
+  // Owner, 22.10, Goldshire: hatched, dotted side-on stripes. The soften pass takes the stipple
+  // (|Laplacian| per unit of beam 1.12 -> 0.31 in the Elwynn forest still); the steeper contrast
+  // ramp gives the softened beams their strength back (beam mean 15.5 -> 16.4).
+  assert.equal(VOLUME_SOFTEN_SPACING, 1.5);
+  assert.equal(VOLUME_SIDE_CONTRAST_FULL, 0.12);
+  const total = VOLUME_SOFTEN_TAPS[0][1] + 2 * VOLUME_SOFTEN_TAPS.slice(1).reduce((sum, [, weight]) => sum + weight, 0);
+  close(total, 1, 1e-6);
+  const post = new CinematicPost();
+  assert.ok(post.materials.includes(post.volumeSoften), "warmed with the other passes");
+  const soften = post.volumeSoften.fragmentShader;
+  assert.ok(soften.includes("texture2D(source, vUV + sourceTexel * 1.3846153846).rg"));
+  assert.ok(soften.includes("gl_FragColor = vec4(sum, 0.0, 1.0);"), "both the lit share and the air");
+  // March -> soft (horizontal) -> back to the march target (vertical), at half resolution.
+  const renderer = fakeRenderer();
+  post.setProfile({ grade: true, bloom: true, sunScattering: true });
+  post.updateLight({
+    diffuse: { r: 1, g: 0.9, b: 0.8 }, ambient: { r: 0.4, g: 0.5, b: 0.6 }, fog: { r: 0.3, g: 0.47, b: 0.56 },
+    fogFar: 500, sun: new THREE.Vector3(0.2, 0.9, 0.3).normalize(), storm: 0, underwater: false, indoors: false, glow: 0.65,
+  });
+  post.render(renderer, frame([cascade(), cascade()]));
+  const names = renderer.targets.map((target) => target?.texture?.name);
+  const march = names.indexOf("cinematic-volume");
+  assert.ok(march >= 0, "the march ran");
+  assert.deepEqual(names.slice(march, march + 3), ["cinematic-volume", "cinematic-volume-soft", "cinematic-volume"]);
+  assert.equal(post.uniforms.volumeTexture.value.name, "cinematic-volume");
+  assert.ok(post.renderTargets.some((target) => target.texture.name === "cinematic-volume-soft"));
+  post.dispose();
+});
 
 test("the march runs only with cascades handed over, and never leaves a compare slot empty", () => {
   const post = new CinematicPost();
