@@ -118,9 +118,10 @@ function wmoAmbient(mohd) {
  *
  * Bit 0x2 picks `Shaders\Effects\MapObjU.wfx` (unified) over `MapObj.wfx` (classic), and the two
  * disagree about MOCV: the classic vertex shader `MapObjDiffuse_T1` multiplies it into the light,
- * the unified `MapObjUDiffuse_T1` adds it, and the classic load step
- * (`CMapObjGroup::FixColorVertexAlpha`) takes `ambColor` back out of MOCV because the classic
- * tool baked it in. Bit 0x8 skips that load step. Measured over the stock client's 1,985 root
+ * the unified `MapObjUDiffuse_T1` adds it. The classic tool baked `ambColor` into MOCV, and the
+ * classic client never adds it again: the load step (`CMapObjGroup::FixColorVertexAlpha`
+ * 0x007D7380) only halves and alpha-boosts MOCV, and the unlit classic program passes it as it is
+ * (22.10, 7.38). Bit 0x8 skips that load step. Measured over the stock client's 1,985 root
  * WMOs: 1,823 classic (0x0 ×1,066, 0x5 ×440, 0x1 ×317) and 162 unified (0xF ×124 — Stormwind,
  * Dalaran, Icecrown — 0x7 ×19, 0x3 ×19). The bake shows in the data: Gundrak's 171,138 vertices
  * sit at or above its ambient (64, 50, 61) in every channel on 98.5% and exactly on it on 35.4%,

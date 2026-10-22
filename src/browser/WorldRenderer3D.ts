@@ -225,6 +225,7 @@ import {
 } from "./game/CollisionSource.js";
 import { viewSubjectIn } from "./game/ViewSubject.js"; // 11.02-I
 import { cameraSubjectOpacity } from "./game/CameraClip.js"; // 5.33
+import { fadedDepthWrite } from "./FadeDepth.js"; // 22.10 (7.42)
 import { VehiclePassengerPoser } from "./VehiclePassengerPose.js"; // 11.02-H
 import { vehicleCatalogOfRows, type VehicleCatalog, type VehicleCatalogRows } from "../world/VehicleDbc.js"; // 11.02-H; 22.10 ARC-2 S2a: built from pushed rows
 import { NO_RENDER_INPUTS, type RenderInputs } from "./RenderInputs.js"; // 22.10 ARC-2 S2a
@@ -2890,6 +2891,8 @@ export interface MaterialBorrow {
   mesh: THREE.Mesh;
   shared: THREE.Material | THREE.Material[];
   clones: THREE.Material[];
+  /** 22.10 (7.42): the cinematic-chain state the copies' `depthWrite` was set for (`FadeDepth.ts`). */
+  cinematic: boolean;
 }
 
 /**
@@ -2900,26 +2903,32 @@ export interface MaterialBorrow {
  * groups draws nothing at all.
  */
 export function borrowFadedMaterials(
-  meshes: Iterable<THREE.Mesh>, factor: number,
+  meshes: Iterable<THREE.Mesh>, factor: number, cinematic = false,
 ): MaterialBorrow[] {
   const borrows: MaterialBorrow[] = [];
   for (const mesh of meshes) {
     const shared = mesh.material;
-    const clones = (Array.isArray(shared) ? shared : [shared])
-      .map((material) => cloneMaterialFaded(material, factor));
+    const sources = Array.isArray(shared) ? shared : [shared];
+    const clones = sources.map((material) => cloneMaterialFaded(material, factor));
+    // 22.10 (7.42): depth is not program state, so this links nothing new.
+    clones.forEach((clone, index) => { clone.depthWrite = fadedDepthWrite(sources[index]!.depthWrite, cinematic); });
     mesh.material = Array.isArray(shared) ? clones : clones[0]!;
-    borrows.push({ mesh, shared, clones });
+    borrows.push({ mesh, shared, clones, cinematic });
   }
   return borrows;
 }
 
 /** Changes fade uniforms without releasing the materials that own the compiled programs. */
-export function updateBorrowedMaterials(borrows: readonly MaterialBorrow[], factor: number): void {
+export function updateBorrowedMaterials(
+  borrows: readonly MaterialBorrow[], factor: number, cinematic = false,
+): void {
   for (const borrow of borrows) {
     for (let index = 0; index < borrow.clones.length; index++) {
       const source = Array.isArray(borrow.shared) ? borrow.shared[index]! : borrow.shared;
       fadeMaterial(borrow.clones[index]!, factor, source);
+      borrow.clones[index]!.depthWrite = fadedDepthWrite(source.depthWrite, cinematic); // 22.10 (7.42)
     }
+    borrow.cinematic = cinematic;
   }
 }
 
@@ -9080,11 +9089,16 @@ export class WorldRenderer3D {
     // Full opacity still worn translucent is a fade that has not been given back yet, so it is
     // never "already applied": the frame that stops keeping it has to reach the release below.
     const lingering = wanted >= 1 && (unit.opacityBorrows !== undefined || unit.material.transparent);
-    if (wanted === unit.unitOpacity && !stale && !lingering) return;
+    // 22.10 (7.42): with the cinematic chain on, faded copies write no depth (`FadeDepth.ts`); a
+    // chain switched on or off under a standing fade has to reach the copies too.
+    const cinematic = this.#cinematic.active;
+    const depthCurrent = unit.opacityBorrows === undefined || unit.opacityBorrows[0]?.cinematic === cinematic;
+    if (wanted === unit.unitOpacity && !stale && !lingering && depthCurrent) return;
     if (!stale && unit.opacityBorrows && (wanted < 1 || keepFaded)) {
       unit.unitOpacity = wanted;
       unit.material.opacity = wanted;
-      updateBorrowedMaterials(unit.opacityBorrows, wanted);
+      unit.material.depthWrite = fadedDepthWrite(true, cinematic);
+      updateBorrowedMaterials(unit.opacityBorrows, wanted, cinematic);
       return;
     }
     this.#releaseUnitOpacity(unit);
@@ -9100,9 +9114,10 @@ export class WorldRenderer3D {
       unit.shadowCaster = undefined;
     }
     unit.material.opacity = wanted;
+    unit.material.depthWrite = translucent ? fadedDepthWrite(true, cinematic) : true; // 22.10 (7.42)
     // Kept at full opacity through a change of what it wears: the new set is borrowed at 1.
     if (!translucent) return;
-    const borrows = borrowFadedMaterials(this.#unitOpacityMeshes(unit), wanted);
+    const borrows = borrowFadedMaterials(this.#unitOpacityMeshes(unit), wanted, cinematic);
     if (borrows.length > 0) unit.opacityBorrows = borrows;
     // The shadow policy is decided from `material.transparent`, and it early-returns while the
     // recorded answer still stands. Forgetting it here is what makes a unit that fades without
