@@ -213,9 +213,17 @@ test("the renderer retains the wider resident set and warms ahead", async () => 
   const { readFile } = await import("node:fs/promises");
   const source = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
   const loop = await readFile(new URL("../src/browser/game/Loop.ts", import.meta.url), "utf8");
-  assert.match(loop, /objectsAround\(world\.mapId, position\.x, position\.y, ENVIRONMENT_STREAM_RANGE\)/,
+  // 22.10 (12.14): the page asks for the band through pageEnvironmentRange — the in-page renderer's
+  // whole band, or only its own tile while a worker streams the band with its own client at the
+  // same point. 22.10 (7.39): the in-page band is the renderer's `environmentStreamRange`, which
+  // covers the far tier and its resident band (tests/distance-view-gate.test.mjs pins the values).
+  assert.match(loop, /objectsAround\(world\.mapId, position\.x, position\.y,\s+pageEnvironmentRange\(game\.renderer\)\)/,
     "the placement pool covers the far tier and its resident band");
-  assert.match(source, /const ranked = environmentRankInRange\(pool, player, this\.#environmentDetail\);\s+this\.#environmentCandidates = ranked\.candidates;\s+this\.#environmentResidents = ranked\.residents;/,
+  assert.match(loop, /game\.renderer\?\.renderWorker\?\.queryEnvironmentAt\(position\.x, position\.y\);/,
+    "a worker renderer streams its band at the same point");
+  const range = await readFile(new URL("../src/browser/game/PageEnvironmentRange.ts", import.meta.url), "utf8");
+  assert.match(range, /environmentStreamRange\s+\?\? ENVIRONMENT_STREAM_RANGE/, "in page: the renderer's own band");
+  assert.match(source, /const ranked = environmentRankInRange\(pool, player, this\.#environmentDetail, this\.environmentShellRange\);\s+this\.#environmentCandidates = ranked\.candidates;\s+this\.#environmentResidents = ranked\.residents;/,
     "residents are computed from the wide pool on reselect, like candidates");
   // The actual disposal/admission decisions are exercised through #updateEnvironment in
   // environment-membership-cache.test.mjs. This test covers the wider source and prefetch path.
