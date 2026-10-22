@@ -109,6 +109,9 @@
 //  ..  f32[3] × vertexCount authored normals when block flag bit 0 is set
 //  ..  f32[2] × vertexCount second texture coordinates, then u8 × vertexCount blend factors padded
 //      to four, when block flag bit 1 is set (a group drawing a Composite record)
+//  ..  u32 transitionVertices when block flag bit 2 is set (22.10 7.37, `visual-wmo-v27`): the
+//      colours of the first that many vertices are Wow.exe's after `FixColorVertexAlpha` and
+//      `AttenTransVerts`, their alpha the sun's share (`wmo-transition.mjs`)
 //  ..  the index list, numbered from this group's own first vertex, padded to a multiple of four
 //  ..  the runs, 16 bytes each: u32 start, u32 count, u16 material, u8 blendMode,
 //      u8 materialFlags, u8 lighting, u8 reserved, u16 MOMT record + 1 (05.10-A7b-3: zero —
@@ -137,6 +140,11 @@ export const WWM_AUTHORED_NORMALS = 0x01;
  * MOCV's alpha), padded to four (`wmo-composite.mjs`).
  */
 export const WWM_COMPOSITE_STREAMS = 0x02;
+/**
+ * 22.10 (7.37), bit 2 (`visual-wmo-v27` only): a u32 count of transition vertices follows the
+ * Composite streams (or the normals, or the colours); their colours are already the client's own.
+ */
+export const WWM_TRANSITION_VERTICES = 0x04;
 export const WWM1_HEADER_SIZE = 24;
 export const WWM1_GROUP_SIZE = 40;
 export const WWM1_BLOCK_HEADER_SIZE = 16;
@@ -224,19 +232,24 @@ export function encodeWwmGroup(group, index) {
     }
     assertFloat32Stream(group.secondUvs, "second UV");
   }
+  // 22.10 (7.37): the transition range (`visual-wmo-v27`), only on a group that has one.
+  const transitionVertices = Number.isInteger(group.transitionVertices) && group.transitionVertices > 0
+    ? group.transitionVertices : 0;
+  if (transitionVertices > vertexCount) throw new Error("WWM2 group transition range exceeds its vertices");
   const wide = vertexCount > 65_536;
   const indexBytes = wide ? 4 : 2;
   const indexLength = align4(indexCount * indexBytes);
   const runLength = group.runs.length * WWM1_RUN_SIZE;
   const vertexStride = 24 + (hasNormals ? 12 : 0);
   const compositeLength = hasComposite ? vertexCount * 8 + align4(vertexCount) : 0;
-  const indexOffset = WWM1_BLOCK_HEADER_SIZE + vertexCount * vertexStride + compositeLength;
+  const indexOffset = WWM1_BLOCK_HEADER_SIZE + vertexCount * vertexStride + compositeLength + (transitionVertices > 0 ? 4 : 0);
   const data = Buffer.alloc(indexOffset + indexLength + runLength + align4(lightRefs.length * 2));
   data.writeUInt32LE(vertexCount, 0);
   data.writeUInt32LE(indexCount, 4);
   data.writeUInt16LE(group.runs.length, 8);
   data.writeUInt8(indexBytes, 10);
-  data.writeUInt8((hasNormals ? WWM_AUTHORED_NORMALS : 0) | (hasComposite ? WWM_COMPOSITE_STREAMS : 0), 11);
+  data.writeUInt8((hasNormals ? WWM_AUTHORED_NORMALS : 0) | (hasComposite ? WWM_COMPOSITE_STREAMS : 0)
+    | (transitionVertices > 0 ? WWM_TRANSITION_VERTICES : 0), 11);
   data.writeUInt16LE(index, 12);
   data.writeUInt16LE(lightRefs.length, 14);
   let offset = WWM1_BLOCK_HEADER_SIZE;
@@ -252,6 +265,7 @@ export function encodeWwmGroup(group, index) {
     data.set(group.blendAlpha, offset);
     offset += align4(vertexCount);
   }
+  if (transitionVertices > 0) data.writeUInt32LE(transitionVertices, offset), offset += 4;
   for (const value of group.indices) {
     if (value >= vertexCount) throw new Error("WWM1 group index is out of range");
     if (wide) data.writeUInt32LE(value, offset);

@@ -148,8 +148,12 @@ const MAX_BRIDGED_SOCKETS_PER_ADDRESS = 8;
 // streams (second MOTV, second MOCV alpha) of a group drawing MOMT shader 6 — the Icecrown roots only.
 // A v25 artifact decodes with none, indistinguishable from a building without Composite, so the name
 // turns over. The tools still answer a v25 hash with the exact v25 bytes (`generate-visual-model.mjs`).
-export function visualModelCacheNamespace(modelPath: string): "visual-v24" | "visual-wmo-v26" {
-  return modelPath.toLowerCase().endsWith(".wmo") ? "visual-wmo-v26" : "visual-v24";
+// 22.10 (7.37): visual-wmo-v27 is the same WWM2 whose group blocks may set stream bit 2, the
+// transition range: the colours of a group's transition vertices as Wow.exe holds them after
+// `FixColorVertexAlpha` and `AttenTransVerts` (`tools/wmo-transition.mjs`). A v26 artifact decodes with
+// none and keeps the raw MOCV there, so the name turns over; a v26 hash still gets the v26 bytes.
+export function visualModelCacheNamespace(modelPath: string): "visual-v24" | "visual-wmo-v27" {
+  return modelPath.toLowerCase().endsWith(".wmo") ? "visual-wmo-v27" : "visual-v24";
 }
 
 /** The artifact name of a `/visual/model` path, as the route computes it (10.22: the preloader's key). */

@@ -153,7 +153,8 @@ test("the renderer draws an unlit exterior run basic, in the sky's fog, its F_UN
   assert.match(body, /if \(state\.unfogged\) value\.fog = false;/);
   assert.match(body, /if \(mocv && value instanceof THREE\.MeshBasicMaterial\) applyWmoUnlitMocv\(value\);/);
   assert.match(body, /if \(interior\) applyWmoInteriorFog\(value, this\.#wmoInteriorFog\);/);
-  assert.match(body, /wmoRunDrawStateKey\(state\), \/\/ 13\.10 7\.11/);
+  // 22.10 (7.37): the transition blend joins the same tail (`WmoTransitionLight.ts`).
+  assert.match(body, /\[wmoRunDrawStateKey\(state\), blendsSun \? WMO_TRANSITION_PROGRAM_KEY : ""\]\.filter\(Boolean\)\.join\("\|"\), \/\/ 13\.10 7\.11/);
   assert.match(body, /if \(texture && !clamped\) \{/);
   assert.match(body, /const view = privateTextureView\(base\);\r?\n\s+applyWmoRunClamp\(view, state\);/);
 });

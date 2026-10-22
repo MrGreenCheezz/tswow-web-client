@@ -1,4 +1,5 @@
 import { wmoCompositeRecords, wmoCompositeStreams } from "./wmo-composite.mjs"; // 13.10 7.11
+import { wmoApplyTransitionLight, wmoGroupTransitionPortals, wmoTransitionVertexEnd } from "./wmo-transition.mjs"; // 22.10 (7.37)
 
 /** A MOPY triangle whose material is this belongs to the collision hull and is never drawn. */
 const MOPY_MATERIAL_COLLISION_ONLY = 0xff;
@@ -348,6 +349,20 @@ export function parseWmoVisual(root, groups, rootPath, options = {}) {
         hasColour ? colourData[colourOffset] : 255,
         hasColour ? colourData[colourOffset + 3] : 255);
     }
+    // 22.10 (7.37): only for a `visual-wmo-v27` job (`options.transition`): the transition vertices'
+    // MOCV as Wow.exe holds it after `FixColorVertexAlpha` and `AttenTransVerts` (`wmo-transition.mjs`).
+    let transitionVertices = 0;
+    if (options?.transition === true && colourData && colourData.length >= vertexCount * 4) {
+      transitionVertices = wmoTransitionVertexEnd(mogp, batchData, vertexCount);
+      if (transitionVertices > 0) {
+        const renderFlags = wmoRenderFlags(rootChunks.get("MOHD"));
+        const fixAlpha = renderFlags === undefined || (renderFlags & 0x8) === 0;
+        const local = colours.slice(base * 4, (base + transitionVertices) * 4);
+        wmoApplyTransitionLight(local, vertices.slice(base * 3, (base + transitionVertices) * 3), transitionVertices,
+          wmoGroupTransitionPortals(rootChunks, mogp), fixAlpha);
+        for (let at = 0; at < local.length; at++) colours[base * 4 + at] = local[at];
+      }
+    }
     const triangleCount = indexData.length / 6;
     // Appended one at a time throughout: a spread passes the whole array as call arguments, and a
     // WMO group can hold more indices than the engine's argument limit (Stormwind's largest is
@@ -427,6 +442,7 @@ export function parseWmoVisual(root, groups, rootPath, options = {}) {
       fogIds: [0, 1, 2, 3].map((slot) => mogp[MOGP_FOG_IDS + slot]),
       ...(groupNormals ? { normals: groupNormals } : {}),
       ...(composite ? { composite } : {}), // 13.10 7.11
+      ...(transitionVertices > 0 ? { transitionVertices } : {}), // 22.10 (7.37)
     });
   }
   if (vertices.length === 0 || indices.length === 0 || vertices.length / 3 > 1_000_000 || indices.length > 6_000_000) throw new Error("WMO visual geometry is empty or too large");
@@ -618,6 +634,9 @@ export function wmoGroupMeshes(model, options = undefined) {
       ...(record.composite && record.composite.blend.length === vertexCount
         ? { secondUvs: record.composite.uvs, blendAlpha: record.composite.blend }
         : {}),
+      // 22.10 (7.37) (`visual-wmo-v27`): how many leading vertices are transition ones (`wmo-transition.mjs`).
+      ...(Number.isInteger(record.transitionVertices) && record.transitionVertices > 0
+        ? { transitionVertices: record.transitionVertices } : {}),
     });
   }
   return {
