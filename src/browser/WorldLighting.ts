@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { CINEMATIC_POOL_GLSL, CINEMATIC_POOL_REACH } from "./CinematicLights.js"; // 22.10 (7.36)
 
 /** A display-space light multiplier, as the bands in Light.dbc store it. */
 export interface WorldLightColour {
@@ -13,7 +14,7 @@ export interface WorldLightPair {
 }
 
 /** Fixed shader budget; quality settings change the active count without compiling a new program. */
-export const WORLD_LOCAL_LIGHT_LIMIT = 8;
+export const WORLD_LOCAL_LIGHT_LIMIT = 12; // 22.10 (7.36): 8 -> 12, the high profile's count
 
 /**
  * 12.10-6.17: the constant, linear and quadratic attenuation Wow.exe's M2 point lights reach the
@@ -37,6 +38,8 @@ export interface WorldLightUniforms {
   wowLocalLightCount: { value: number };
   wowLocalLightPosition: { value: THREE.Vector4[] };
   wowLocalLightColour: { value: THREE.Vector4[] };
+  /** 22.10 (7.36): cinematic pool strength (`CinematicLights.ts`); zero is the 6.17 light exactly. */
+  wowLocalLightPool: { value: number };
   /** Optional aerial perspective; zero leaves the authored fog equation unchanged. */
   wowAerialStrength: { value: number };
   /** Daylight and low-sun weighting for the sun-facing haze; zero at night. */
@@ -138,6 +141,7 @@ export function createWorldLightUniforms(
     wowLocalLightCount: { value: 0 },
     wowLocalLightPosition: { value: Array.from({ length: WORLD_LOCAL_LIGHT_LIMIT }, () => new THREE.Vector4()) },
     wowLocalLightColour: { value: Array.from({ length: WORLD_LOCAL_LIGHT_LIMIT }, () => new THREE.Vector4()) },
+    wowLocalLightPool: { value: 0 },
     wowAerialStrength: { value: 0 },
     wowAerialWarmth: { value: 0 },
     wowRimStrength: { value: 0 },
@@ -375,6 +379,7 @@ uniform vec2 wowHighSunKey;
 uniform int wowLocalLightCount;
 uniform vec4 wowLocalLightPosition[ ${WORLD_LOCAL_LIGHT_LIMIT} ];
 uniform vec4 wowLocalLightColour[ ${WORLD_LOCAL_LIGHT_LIMIT} ];
+uniform float wowLocalLightPool;
 #ifdef USE_SHADOWMAP
 uniform vec3 wowShadowFade;
 #endif
@@ -538,9 +543,13 @@ if ( wowImmersiveStrength > 0.0001 ) {
     vec3 wowToLamp = wowLamp.xyz + vViewPosition;
     float wowLampDistance = length( wowToLamp );
     float wowLampReach = abs( wowLamp.w );
-    if ( wowLampDistance < wowLampReach ) {
+    // 22.10 (7.36): the cinematic pool's reach; an M2 light's is its own, a heuristic fixture's wider.
+    float wowPoolReach = wowLamp.w < 0.0 ? wowLampReach : max( wowLampReach, ${CINEMATIC_POOL_REACH.toFixed(1)} );
+    if ( wowLampDistance < ( wowLocalLightPool > 0.0 ? wowPoolReach : wowLampReach ) ) {
       float wowLampFacing = dot( normalize( normal ), wowToLamp / max( wowLampDistance, 0.001 ) );
       vec4 wowLampColour = wowLocalLightColour[ wowLightIndex ];
+      float wowLampTerm;
+      vec3 wowLampTint = vec3( 1.0 );
       if ( wowLamp.w < 0.0 ) {
         // 12.10-6.17: a model's own M2Light, as Wow.exe's lit M2 and terrain programs add it:
         // colour · max(N·L, 0) / (k0 + k1·d + k2·d²) under the same ceiling of one, by day as by
@@ -548,16 +557,18 @@ if ( wowImmersiveStrength > 0.0001 ) {
         float wowClientFalloff = min( ${M2_LIGHT_FALLOFF_CAP.toFixed(1)}, 1.0 / max( ${M2_LIGHT_ATTENUATION[0].toFixed(3)}
           + ${M2_LIGHT_ATTENUATION[1].toFixed(3)} * wowLampDistance
           + ${M2_LIGHT_ATTENUATION[2].toFixed(3)} * wowLampDistance * wowLampDistance, 0.001 ) );
-        wowLight += wowLampColour.rgb * wowLampColour.w * max( wowLampFacing, 0.0 ) * wowClientFalloff
-          * ( 1.0 - smoothstep( 0.75 * wowLampReach, wowLampReach, wowLampDistance ) )
-          * min( 1.0, wowImmersiveStrength / 0.65 );
+        wowLampTerm = max( wowLampFacing, 0.0 ) * wowClientFalloff
+          * ( 1.0 - smoothstep( 0.75 * wowLampReach, wowLampReach, wowLampDistance ) );
       } else {
         float wowFalloff = 1.0 - smoothstep( 0.0, wowLampReach, wowLampDistance );
         float wowLampDiffuse = 0.22 + 0.78 * max( wowLampFacing, 0.0 );
-        wowLight += wowLampColour.rgb * wowLampColour.w * wowFalloff * wowLampDiffuse
+        wowLampTerm = wowFalloff * wowLampDiffuse
           * ( 0.35 + 0.65 * ( 1.0 - wowDaylight ) )
-          * ( 0.70 + 0.30 * wowDarkness ) * min( 1.0, wowImmersiveStrength / 0.65 );
+          * ( 0.70 + 0.30 * wowDarkness );
       }
+${CINEMATIC_POOL_GLSL}
+      wowLight += wowLampColour.rgb * wowLampTint * wowLampColour.w * wowLampTerm
+        * min( 1.0, wowImmersiveStrength / 0.65 );
     }
   }
   // Rim and fixture light fill toward the same ceiling rather than past it: on a surface the sun
@@ -580,7 +591,7 @@ interface WorldLightBinding {
 }
 
 const WORLD_LIGHT_BINDINGS = new WeakMap<THREE.Material, WorldLightBinding>();
-const WORLD_LIGHT_KEY = "world-light-r185-v7"; // 05.10-A7b-0 7.07: terrain N.L; 12.10: 7.29 high-sun key, 6.17 M2 falloff
+const WORLD_LIGHT_KEY = "world-light-r185-v8"; // 05.10-A7b-0 7.07: terrain N.L; 12.10: 7.29 high-sun key, 6.17 M2 falloff; 22.10: 7.36 pool
 
 /**
  * The scene's Light.dbc fog is the floor of this effect. At strength zero the shader below is the
@@ -746,6 +757,7 @@ export function applyWorldLight(
     shader.uniforms.wowLocalLightCount = binding.uniforms.wowLocalLightCount;
     shader.uniforms.wowLocalLightPosition = binding.uniforms.wowLocalLightPosition;
     shader.uniforms.wowLocalLightColour = binding.uniforms.wowLocalLightColour;
+    shader.uniforms.wowLocalLightPool = binding.uniforms.wowLocalLightPool; // 22.10 (7.36)
     shader.uniforms.wowShadowFade = binding.uniforms.wowShadowFade;
     const unindentedTarget = WORLD_LIGHT_TARGET.replaceAll("\n\t", "\n");
     const target = shader.fragmentShader.includes(WORLD_LIGHT_TARGET)

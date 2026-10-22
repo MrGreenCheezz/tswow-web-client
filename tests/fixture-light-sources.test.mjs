@@ -36,6 +36,7 @@ test("the renderer's fixture-light pass asks this predicate for environment plac
   const source = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
   const body = source.slice(source.indexOf("#updateFixtureLights(now: number): void {"));
   const loop = body.slice(0, body.indexOf("for (const rendered of this.#gameObjects.values())"));
-  assert.match(loop, /if \(!fixtureLightSource\(rendered\.source\)\) continue;/);
+  // 22.10 (7.36): the cinematic profile's flag admits a building's outdoor lamps (cinematic-lights.test.mjs).
+  assert.match(loop, /if \(!fixtureLightSource\(rendered\.source, cinematic\)\) continue;/);
   assert.doesNotMatch(loop, /if \(rendered\.interior \|\| rendered\.source\.localLight\) continue;/);
 });

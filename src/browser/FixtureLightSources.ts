@@ -16,6 +16,9 @@ export function fixtureLightSource(object: {
   readonly id: number;
   readonly interior?: boolean | undefined;
   readonly localLight?: unknown;
-}): boolean {
-  return object.interior !== true && object.localLight === undefined && object.id >= 0;
+}, buildingLamps = false): boolean {
+  // 22.10 (7.36): `buildingLamps` (the cinematic profile) admits a building's outdoor doodads too.
+  // The switching that excluded them is gone: `LocalLightSelection` fades a light out before the
+  // nearest-N set drops it. Room-lit doodads (`localLight`) and interior ones stay out.
+  return object.interior !== true && object.localLight === undefined && (buildingLamps || object.id >= 0);
 }
