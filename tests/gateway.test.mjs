@@ -1116,7 +1116,7 @@ test("the two artifact namespaces move independently and never collide", () => {
   // R5.1 takes WMO to 17 and Э1's WVM9 follows at 16. The families invalidate independently while
   // their generation numbers remain unambiguous to readers and diagnostics.
   assert.equal(visualModelCacheNamespace("World\\Tree.m2"), "visual-v24"); // 05.10-A7a-F2; 12.10 6.24: v24
-  assert.equal(visualModelCacheNamespace("World\\Stormwind.WMO"), "visual-wmo-v26"); // 05.10-A7b-1; 13.10 7.11
+  assert.equal(visualModelCacheNamespace("World\\Stormwind.WMO"), "visual-wmo-v27"); // 05.10-A7b-1; 13.10 7.11; 22.10 (7.37)
 });
 
 test("a rebuilt DBC is answered without restarting the gateway", async () => {

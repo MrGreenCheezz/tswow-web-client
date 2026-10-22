@@ -4,6 +4,7 @@ import {
 } from "./WmoModel.js";
 import { WMO_UNLIT_MOCV_ATTRIBUTE, wmoGroupNeedsUnlitMocv, wmoUnlitMocv } from "./WmoMaterialFlags.js"; // 13.10 7.11
 import { WMO_COMPOSITE_BLEND_ATTRIBUTE, WMO_COMPOSITE_UV_ATTRIBUTE } from "./WmoRunLook.js"; // 13.10 7.11
+import { WMO_TRANSITION_SUN_ATTRIBUTE, wmoGroupBlendsSun, wmoTransitionSunShare } from "./WmoTransitionLight.js"; // 22.10 (7.37)
 
 /** Builds one decoded room without calculating vertex light that none of its runs will read. */
 export function buildWmoGroupGeometry(model: WmoModel, index: number): THREE.BufferGeometry | undefined {
@@ -32,6 +33,9 @@ export function* buildWmoGroupGeometrySteps(
       if (wmoRunIsInterior(group, source.runs[ordinal]!)) { interior = true; break; }
       if ((ordinal + 1) % WMO_GEOMETRY_STEP_VERTICES === 0) yield;
     }
+    // 22.10 (7.37): a transition run mixes the sun with the room light, so it reads `color` too.
+    const blendsSun = wmoGroupBlendsSun(source);
+    if (blendsSun) interior = true;
     const positions = new Float32Array(source.positions.length);
     const bounds = new THREE.Box3();
     const point = new THREE.Vector3();
@@ -71,6 +75,10 @@ export function* buildWmoGroupGeometrySteps(
           model.vertexLight ?? "unified", (group.flags & WMO_GROUP_HAS_COLOURS) !== 0,
           model.vertexAlphaFixed !== false), 3,
       ));
+    }
+    if (blendsSun) {
+      geometry.setAttribute(WMO_TRANSITION_SUN_ATTRIBUTE, new THREE.BufferAttribute(wmoTransitionSunShare(source), 1));
+      yield;
     }
     // 13.10 7.11: an F_UNLIT exterior run of a group with MOCV is drawn MOCV × texture
     // (`WmoMaterialFlags.ts`); the interior `color` above is another formula, so it gets its own.

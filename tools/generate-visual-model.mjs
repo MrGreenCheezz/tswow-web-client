@@ -161,7 +161,12 @@ export async function publishVisualModel(requestedPath, hash, archives) {
     // `visual-wmo-v22` asks for its own hash and keeps receiving the exact v22 bytes.
     // 13.10 7.11: `visual-wmo-v26` adds the Composite streams; a gateway started before it still asks
     // for its `visual-wmo-v25` hash and gets exactly the v25 bytes (WME4/WME5, no streams).
-    const composite = hash === visualModelHash(requestedPath) || hash === visualModelHash(modelPath);
+    // 22.10 (7.37): `visual-wmo-v27` adds the transition range (`wmo-transition.mjs`); a gateway started
+    // before it still asks for its `visual-wmo-v26` hash and gets exactly the v26 bytes.
+    const transition = hash === visualModelHash(requestedPath) || hash === visualModelHash(modelPath);
+    const v26 = hash === visualModelHashIn("visual-wmo-v26", requestedPath)
+      || hash === visualModelHashIn("visual-wmo-v26", modelPath);
+    const composite = transition || v26;
     const v25 = hash === visualModelHashIn("visual-wmo-v25", requestedPath)
       || hash === visualModelHashIn("visual-wmo-v25", modelPath);
     const effectiveDoodadSets = composite || v25;
@@ -169,7 +174,7 @@ export async function publishVisualModel(requestedPath, hash, archives) {
     // `visual-wmo-v25` gate — not one byte more for a `visual-wmo-v22` job.
     const materialTable = effectiveDoodadSets;
     const parsed = wmoGroupMeshes(
-      parseWmoVisual(rootWmo, groups, modelPath, { effectiveDoodadSets, materialTable, composite }),
+      parseWmoVisual(rootWmo, groups, modelPath, { effectiveDoodadSets, materialTable, composite, transition }),
       { materialTable });
 
     const textureUrls = new Array(parsed.textures.length).fill("");

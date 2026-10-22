@@ -243,6 +243,7 @@ import { applyWmoRunLook, wmoRunLook, wmoRunLookKey } from "./WmoRunLook.js"; //
 import {
   applyWmoRunClamp, applyWmoUnlitMocv, wmoGroupNeedsUnlitMocv, wmoRunDrawState, wmoRunDrawStateKey,
 } from "./WmoMaterialFlags.js"; // 13.10 7.11
+import { WMO_TRANSITION_PROGRAM_KEY, applyWmoTransitionBlend, wmoRunBlendsSun } from "./WmoTransitionLight.js"; // 22.10 (7.37)
 import { createWmoRoomFog, wmoRoomFogFor } from "./WmoRoomFog.js"; // 05.10-A7b-2 (7.12)
 import { renderSwitches } from "./RenderSwitches.js"; // 05.10-A7b-2 (7.12)
 import {
@@ -12643,10 +12644,12 @@ export class WorldRenderer3D {
     group: WmoGroup,
     run: WmoRun,
   ): WorldMaterialEntry {
-    const interior = wmoRunIsInterior(group, run);
-    const url = model.textureUrls[run.material] ?? "";
     // 13.10 7.11: F_UNLIT / F_UNFOGGED / clamp where Wow.exe honours them (`WmoMaterialFlags.ts`).
     const state = wmoRunDrawState(model, group, run);
+    // 22.10 (7.37): a v27 transition run is lit and mixed with its room light (`WmoTransitionLight.ts`).
+    const blendsSun = !state.unlit && wmoRunBlendsSun(group.mesh, run);
+    const interior = !blendsSun && wmoRunIsInterior(group, run);
+    const url = model.textureUrls[run.material] ?? "";
     const clamped = state.clampS || state.clampT;
     // An unlit exterior run is drawn as Wow.exe's unlit vertex program draws it: MOCV, no sun.
     const mocv = state.unlit && wmoGroupNeedsUnlitMocv(model, group, [run]);
@@ -12665,7 +12668,7 @@ export class WorldRenderer3D {
       run.materialFlags,
       interior,
       look === undefined ? undefined : { record: record!, key: wmoRunLookKey(look) }, // 05.10-A7b-2
-      wmoRunDrawStateKey(state), // 13.10 7.11
+      [wmoRunDrawStateKey(state), blendsSun ? WMO_TRANSITION_PROGRAM_KEY : ""].filter(Boolean).join("|"), // 13.10 7.11; 22.10 (7.37)
     );
     return this.#worldMaterials.getOrCreate({
       key,
@@ -12704,6 +12707,7 @@ export class WorldRenderer3D {
         applyBlendMode(value, run.blendMode);
         if (state.unfogged) value.fog = false; // 13.10 7.11: F_UNFOGGED (0x007a8440 with 0)
         if (mocv && value instanceof THREE.MeshBasicMaterial) applyWmoUnlitMocv(value); // 13.10 7.11
+        if (blendsSun && value instanceof THREE.MeshStandardMaterial) applyWmoTransitionBlend(value); // 22.10 (7.37)
         if (look) { // 05.10-A7b-2 (7.11 P1)
           applyWmoRunLook(value, look, { daylight: this.#worldLight.wowDaylight },
             look.env ? this.#wmoEnvTexture(look.env.url)

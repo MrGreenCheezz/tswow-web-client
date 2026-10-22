@@ -21,6 +21,7 @@ const LIGHT_SIZE = 28;
 const COMPLETE = 0x01;
 const AUTHORED_NORMALS = 0x01;
 const COMPOSITE_STREAMS = 0x02; // 13.10 7.11: `tools/wwm.mjs` WWM_COMPOSITE_STREAMS
+const TRANSITION_VERTICES = 0x04; // 22.10 (7.37): `tools/wwm.mjs` WWM_TRANSITION_VERTICES
 const LEGACY_METADATA_MAGIC = "WME1";
 const LEGACY_METADATA_HEADER_SIZE = 8;
 const METADATA_MAGIC = "WME2";
@@ -284,6 +285,12 @@ export interface WmoGroupMesh {
   secondUvs?: Float32Array;
   /** 13.10 7.11: and its second MOCV's alpha, the Composite blend factor (255: the first texture). */
   blendAlpha?: Uint8Array;
+  /**
+   * 22.10 (7.37) (`visual-wmo-v27`): the leading vertices that the group's transition batches own.
+   * Their {@link colours} are Wow.exe's after `FixColorVertexAlpha` and `AttenTransVerts`, and their
+   * alpha is the share of the sun in them (`tools/wmo-transition.mjs`). Absent: none, or an older artifact.
+   */
+  transitionVertices?: number;
   indices: Uint16Array | Uint32Array;
   runs: WmoRun[];
   /** Which of the model's lamps hang in this group, by index into its light table. */
@@ -874,9 +881,17 @@ export function* wmoVertexLightSteps(
     // p90/p10 contrast (4.72 to 2.36), which is the flat, unlit look. A group without MOCV keeps
     // the white it always had: the encoder's placeholder is not light and gets no alpha boost.
     const lookup = classicWmoLightLookup(ambient);
+    // 22.10 (7.37): a v27 group's transition vertices hold the client's own bytes already.
+    const transition = Math.min(vertexCount, mesh.transitionVertices ?? 0);
     for (let start = 0; start < vertexCount; start += WMO_GEOMETRY_STEP_VERTICES) {
       const end = Math.min(start + WMO_GEOMETRY_STEP_VERTICES, vertexCount);
       for (let vertex = start; vertex < end; vertex++) {
+        if (vertex < transition && bakedColours) {
+          for (let channel = 0; channel < 3; channel++) {
+            light[vertex * 3 + channel] = lookup[channel * 256 + classicTransitionColour(mesh.colours[vertex * 4 + channel]!, alphaFixed)]!;
+          }
+          continue;
+        }
         const alpha = alphaFixed ? mesh.colours[vertex * 4 + 3]! : 0;
         for (let channel = 0; channel < 3; channel++) {
           light[vertex * 3 + channel] = !bakedColours ? 1
@@ -1000,6 +1015,19 @@ function bakedWmoLightLookup(ambient: readonly [number, number, number]): Float3
 export function classicWmoLight(colour: number, alpha: number, ambient: number): number {
   const boosted = colour * (1 + alpha / 64);
   return srgbToLinear(Math.min(510, Math.max(ambient, boosted)) / 255);
+}
+
+/**
+ * 22.10 (7.37): a classic transition vertex's room colour, on the scale {@link classicWmoLight} reads.
+ *
+ * The byte is what Wow.exe holds after `FixColorVertexAlpha` (0x007D7380) halved it — that function
+ * brightens by alpha only the vertices past the transition range — and `AttenTransVerts`
+ * (0x007D78C0) pulled it towards 127 (`tools/wmo-transition.mjs`). Every other vertex reaches
+ * {@link classicWmoLight} as c·(1 + a/64), twice the stored byte, so this one does too: 2·stored, and
+ * no alpha boost. Without the halving (MOHD 0x8) the byte is read as it is, like any other.
+ */
+export function classicTransitionColour(stored: number, alphaFixed: boolean): number {
+  return alphaFixed ? Math.min(255, stored * 2) : stored;
 }
 
 /** Alpha-zero classic transfer table per live WMO ambient — 94.6% of Gundrak's vertices. */
@@ -1191,14 +1219,16 @@ export function decodeWwmGroup(data: ArrayBuffer): { index: number; mesh: WmoGro
   const index = view.getUint16(12, true);
   const lightRefCount = view.getUint16(14, true);
   if (vertexCount === 0 || vertexCount > 1_000_000 || indexCount % 3 !== 0 || indexCount > 6_000_000
-    || (indexBytes !== 2 && indexBytes !== 4) || (streamFlags & ~(AUTHORED_NORMALS | COMPOSITE_STREAMS)) !== 0) {
+    || (indexBytes !== 2 && indexBytes !== 4) || (streamFlags & ~(AUTHORED_NORMALS | COMPOSITE_STREAMS | TRANSITION_VERTICES)) !== 0) {
     throw new Error("WMO group has invalid counts or stream flags");
   }
   const hasNormals = (streamFlags & AUTHORED_NORMALS) !== 0;
   const hasComposite = (streamFlags & COMPOSITE_STREAMS) !== 0; // 13.10 7.11 (visual-wmo-v26)
   const vertexStride = 24 + (hasNormals ? 12 : 0);
   const compositeOffset = BLOCK_HEADER_SIZE + vertexCount * vertexStride;
-  const indexOffset = compositeOffset + (hasComposite ? vertexCount * 8 + ((vertexCount + 3) & ~3) : 0);
+  const transitionOffset = compositeOffset + (hasComposite ? vertexCount * 8 + ((vertexCount + 3) & ~3) : 0);
+  const hasTransition = (streamFlags & TRANSITION_VERTICES) !== 0; // 22.10 (7.37) (visual-wmo-v27)
+  const indexOffset = transitionOffset + (hasTransition ? 4 : 0);
   const runOffset = indexOffset + ((indexCount * indexBytes + 3) & ~3);
   const lightOffset = runOffset + runCount * RUN_SIZE;
   const expectedLength = lightOffset + ((lightRefCount * 2 + 3) & ~3);
@@ -1225,6 +1255,8 @@ export function decodeWwmGroup(data: ArrayBuffer): { index: number; mesh: WmoGro
   const blendAlpha = hasComposite
     ? new Uint8Array(data.slice(compositeOffset + vertexCount * 8, compositeOffset + vertexCount * 9))
     : undefined;
+  const transitionVertices = hasTransition ? view.getUint32(transitionOffset, true) : 0;
+  if (transitionVertices > vertexCount) throw new Error("WMO group transition range exceeds its vertices");
   const indices = indexBytes === 2
     ? new Uint16Array(data.slice(indexOffset, indexOffset + indexCount * 2))
     : new Uint32Array(data.slice(indexOffset, indexOffset + indexCount * 4));
@@ -1253,6 +1285,7 @@ export function decodeWwmGroup(data: ArrayBuffer): { index: number; mesh: WmoGro
     mesh: {
       positions, uvs, colours, indices, runs, lightRefs, ...(normals ? { normals } : {}),
       ...(secondUvs && blendAlpha ? { secondUvs, blendAlpha } : {}), // 13.10 7.11
+      ...(transitionVertices > 0 ? { transitionVertices } : {}), // 22.10 (7.37)
     },
   };
 }

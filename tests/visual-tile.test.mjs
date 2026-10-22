@@ -455,15 +455,18 @@ test("one generation name in the generator, the gateway, its configuration and t
   assert.match(configuration, /"generate-visual-tile\.mjs", \[String\(map\), String\(gridX\), String\(gridY\), VISUAL_TILE_GENERATION\]/);
 });
 
-test("the WMO namespace turns over with the tile: visual-wmo-v26 in the gateway and in the tools' key", async () => {
+test("the WMO namespace turns over with the tile: visual-wmo-v27 in the gateway and in the tools' key", async () => {
   // 13.10 7.11: v26 (the Composite streams); v25 hashes keep their v25 bytes.
+  // 22.10 (7.37): v27 (the transition range); v26 hashes keep their v26 bytes.
   const { visualModelNamespace } = await import("../tools/visual-model-key.mjs");
-  assert.equal(visualModelNamespace("World\\wmo\\Test\\Inn.WMO"), "visual-wmo-v26");
+  assert.equal(visualModelNamespace("World\\wmo\\Test\\Inn.WMO"), "visual-wmo-v27");
   assert.equal(visualModelNamespace("World\\Tree.m2"), "visual-v24", "M2 artifacts turn over on their own (12.10 6.24)");
   const gateway = readFileSync("src/gateway/Gateway.ts", "utf8");
-  assert.match(gateway, /endsWith\("\.wmo"\) \? "visual-wmo-v26" : "visual-v24"/); // 12.10 6.24
+  assert.match(gateway, /endsWith\("\.wmo"\) \? "visual-wmo-v27" : "visual-v24"/); // 12.10 6.24
   const model = readFileSync("tools/generate-visual-model.mjs", "utf8");
-  assert.match(model, /const composite = hash === visualModelHash\(requestedPath\) \|\| hash === visualModelHash\(modelPath\);/);
+  assert.match(model, /const transition = hash === visualModelHash\(requestedPath\) \|\| hash === visualModelHash\(modelPath\);/);
+  assert.match(model, /const v26 = hash === visualModelHashIn\("visual-wmo-v26", requestedPath\)\r?\n\s+\|\| hash === visualModelHashIn\("visual-wmo-v26", modelPath\);/);
+  assert.match(model, /const composite = transition \|\| v26;/, "a v26 hash keeps its Composite streams");
   assert.match(model, /const v25 = hash === visualModelHashIn\("visual-wmo-v25", requestedPath\)\r?\n\s+\|\| hash === visualModelHashIn\("visual-wmo-v25", modelPath\);/);
   assert.match(model, /const effectiveDoodadSets = composite \|\| v25;/,
     "the effective room tables for a hash of v25 or v26 — a v22 request keeps its bytes");

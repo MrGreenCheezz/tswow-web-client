@@ -195,7 +195,8 @@ test("and the renderer picks the material by that rule, not by the batch on its 
   const method = source.indexOf("  #wmoRunMaterial(");
   assert.ok(method > 0, "the material for one run is still chosen in one named place");
   const body = source.slice(method, source.indexOf("\n  }", method));
-  assert.match(body, /const interior = wmoRunIsInterior\(group, run\)/,
+  // 22.10 (7.37): a v27 transition run is the one exception — lit and mixed with its room light.
+  assert.match(body, /const interior = !blendsSun && wmoRunIsInterior\(group, run\)/,
     "the group and the batch together decide which material a run gets");
   assert.doesNotMatch(body, /run\.lighting !== WMO_LIGHT_EXTERIOR/,
     "and the batch order alone must not decide it again behind the rule's back");
