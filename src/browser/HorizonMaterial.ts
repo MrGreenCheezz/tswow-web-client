@@ -1,6 +1,5 @@
 import * as THREE from "three";
 import { horizonColourWanted } from "./Horizon.js";
-import { lightingClassicLook } from "./LightingQuality.js"; // 05.10-7.20
 import { applyWorldLight, type WorldLightUniforms } from "./WorldLighting.js";
 
 /**
@@ -34,11 +33,11 @@ export class HorizonMaterialSelector {
   }
 
   /**
-   * The material for this frame. `colour` is asked only on the classic path, so the enhanced and
-   * cinematic presets never download the picture or hold its texture.
+   * The material for this frame: the lit, coloured horizon once the map's picture is in, at every
+   * lighting level since 7.39; the flat fogged green until then.
    */
   select(lightingQuality: number, colour: () => THREE.Texture | undefined): THREE.Material {
-    if (!lightingClassicLook(lightingQuality)) return this.#basic; // 05.10-7.20
+    // 22.10 (7.39): every level takes the coloured horizon; the enhanced fog now shows it.
     const texture = colour();
     if (!horizonColourWanted(lightingQuality, texture !== undefined) || !texture) return this.#basic;
     if (!this.#lit) {

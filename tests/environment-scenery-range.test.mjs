@@ -56,7 +56,8 @@ test("an M2's leash scales with its own size between a floor and the vegetation 
   near(environmentSceneryRange(m2("bush", 0, 0, 5.1), 1.5), 382.5);
   assert.equal(environmentSceneryRange(m2("canopy", 0, 0, 60.1), 0.5), 300);
   assert.equal(environmentSceneryRange(m2("pebble", 0, 0, 0.3), 0.5), 45);
-  assert.equal(environmentSceneryRange(m2("bush", 0, 0, 5.1), 99), environmentSceneryRange(m2("bush", 0, 0, 5.1), 1.5));
+  // 22.10 (7.39): the clamp is the far-view step's 2 (SceneryReach.ts), not the stock 1.5.
+  assert.equal(environmentSceneryRange(m2("bush", 0, 0, 5.1), 99), environmentSceneryRange(m2("bush", 0, 0, 5.1), 2));
   near(environmentSceneryRange(m2("bush", 0, 0, 5.1), Number.NaN), 255, "junk detail reads as 1");
   // No trustworthy size: the legacy path decides.
   assert.equal(environmentSceneryRange(m2("rigged", 0, 0, undefined)), undefined);

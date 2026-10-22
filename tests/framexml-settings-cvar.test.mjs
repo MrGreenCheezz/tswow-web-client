@@ -98,11 +98,15 @@ test("5.14 the camera and mouse CVars are the original's numbers and write throu
   assert.equal(writes.length, 4);
 });
 
-test("environmentDetail is the object distance as the stock 0.5-1.5 multiplier", () => {
+test("environmentDetail is the object distance as the stock multiplier, to 7.39's 2", () => {
   const { adapter, values } = fakeSettings();
   assert.equal(adapter.get("environmentDetail"), "1");
   assert.equal(adapter.getDefault("environmentDetail"), "1");
-  assert.deepEqual(adapter.range("environmentDetail"), [0.5, 1.5], "exactly the stock slider's range");
+  // 22.10 (7.39): the stock slider's 0.5-1.5 plus the far-view step (SceneryReach.ts), so the
+  // stock video panel's GetCVarMax reaches it too.
+  assert.deepEqual(adapter.range("environmentDetail"), [0.5, 2]);
+  assert.equal(adapter.set("environmentDetail", "2"), true);
+  assert.equal(values().objectDistance, 200);
   assert.equal(adapter.set("environmentDetail", "1.5"), true);
   assert.equal(values().objectDistance, 150);
   assert.equal(adapter.set("environmentDetail", "0.25"), true);

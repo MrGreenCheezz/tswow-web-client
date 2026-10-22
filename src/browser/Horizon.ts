@@ -4,7 +4,6 @@ import type { RetainedResourceVisitor } from "./ResourceAccounting.js";
 import type { BenchmarkAsyncReadinessStats } from "./RenderBenchmarkReadiness.js";
 import { withGeneration } from "./GatewayGeneration.js";
 import { RetryLadder } from "./RetryLadder.js"; // 05.10-A7b-0 1.24
-import { lightingClassicLook } from "./LightingQuality.js"; // 05.10-7.20
 
 /**
  * The world beyond the tiles that are really loaded, out of the client's own `.wdl`.
@@ -21,9 +20,9 @@ import { lightingClassicLook } from "./LightingQuality.js"; // 05.10-7.20
  */
 
 /** 17 outer heights across a tile, one every 33.3 yards. */
-const OUTER = 17;
+export const OUTER = 17; // 22.10 (7.39): exported for HorizonBand.ts
 /** 16 inner heights, each at the middle of an outer cell — the same shape as the terrain's V8. */
-const INNER = 16;
+export const INNER = 16;
 const MARE_BYTES = (OUTER * OUTER + INNER * INNER) * 2;
 
 /**
@@ -74,11 +73,14 @@ export const HORIZON_COLOUR_SIDE = 64 * HORIZON_COLOUR_TEXELS;
 /**
  * 05.10-A7b-7 (7.08): whether the horizon draws lit and coloured. The classic path (lighting quality
  * 0) follows the client: the far ground is lit by the world's own light and carries the zone's
- * colour. The enhanced and cinematic presets keep the owner's look — the flat aerial-fogged green
- * they were tuned with — until the owner says otherwise.
+ * colour. The enhanced and cinematic presets kept the flat aerial-fogged green until 7.39 pushed
+ * their fog out to the horizon.
  */
 export function horizonColourWanted(lightingQuality: number, hasColour: boolean): boolean {
-  return lightingClassicLook(lightingQuality) && hasColour; // 05.10-7.20: and the comparison level
+  // 22.10 (7.39): every level now. The enhanced fog reaches out to the horizon (DistanceFog.ts),
+  // where the flat green would show as a painted backdrop; the far ground takes the zone's colour.
+  void lightingQuality;
+  return hasColour;
 }
 
 /**
@@ -262,7 +264,7 @@ function outerHeight(
  * 05.10-A7b-7: height change per grid step along (dRow, dColumn) at an outer vertex — the central
  * difference, or the one-sided one at a map edge with no neighbour.
  */
-function outerSlope(
+export function outerSlope(
   tile: HorizonTile, row: number, column: number, dRow: number, dColumn: number,
   neighbour: ((gridX: number, gridY: number) => HorizonTile | undefined) | undefined,
 ): number {
@@ -279,18 +281,20 @@ function outerSlope(
  * 05.10-A7b-7: the up-facing unit normal of a height field whose height grows by `southward` per
  * row and `eastward` per column, rows `step` yards apart along −x and columns along +z.
  */
-function writeNormal(normals: Float32Array, at: number, southward: number, eastward: number, step: number): void {
+export function writeNormal(normals: Float32Array, at: number, southward: number, eastward: number, step: number): void {
   // dh/dx = southward / −step, dh/dz = eastward / step; the normal is (−dh/dx, 1, −dh/dz).
   const x = southward / step;
   const z = 0 - eastward / step; // not -0 on flat ground
-  const length = Math.hypot(x, 1, z);
+  // 22.10 (7.39): sqrt, not Math.hypot — the builtin allocates per call, and the six-tile horizon
+  // writes 87,000 normals in the frame that crosses a tile.
+  const length = Math.sqrt(x * x + 1 + z * z);
   normals[at] = x / length;
   normals[at + 1] = 1 / length;
   normals[at + 2] = z / length;
 }
 
 /** 05.10-A7b-7: where (row, column) of `tile` lies on the map's colour picture (row 0 at v = 0). */
-function writeUv(uvs: Float32Array, at: number, tile: HorizonTile, row: number, column: number): void {
+export function writeUv(uvs: Float32Array, at: number, tile: HorizonTile, row: number, column: number): void {
   uvs[at] = (tile.gridY * HORIZON_COLOUR_TEXELS + column) / HORIZON_COLOUR_SIDE;
   uvs[at + 1] = (tile.gridX * HORIZON_COLOUR_TEXELS + row) / HORIZON_COLOUR_SIDE;
 }

@@ -30,7 +30,10 @@ import { planToRenderTime, toRenderTime } from "./RenderClock.js"; // 22.10 ARC-
 import { SwingProgressWatch } from "./SwingProgressWatch.js"; // 22.10 ARC-2 S4a
 import { SpellVisualIds } from "./SpellVisualIds.js"; // 22.10 ARC-2 S4a
 import { captureBenchmarkWebGl, type BenchmarkEnvironmentInput } from "./BenchmarkManifest.js"; // 21.10 ARC-2 S1
-import { ENVIRONMENT_FAR_RANGE, ENVIRONMENT_RANGE, ENVIRONMENT_RESIDENT_HYSTERESIS, ENVIRONMENT_STREAM_RANGE, TERRAIN_GRID_SIZE, modelKey, terrainGrid, terrainGridIndex, type EnvironmentClient, type EnvironmentModel, type EnvironmentObject, type TerrainClient } from "./Terrain.js";
+import { distanceFogRange, distanceHorizonRange, type DistanceFogRange } from "./DistanceFog.js";
+import { HorizonBand } from "./HorizonBand.js";
+import { ENVIRONMENT_DETAIL_FAR_MAX, sceneryFarCap } from "./SceneryReach.js";
+import { ENVIRONMENT_FAR_RANGE, ENVIRONMENT_RANGE, ENVIRONMENT_SHELL_RANGE, ENVIRONMENT_RESIDENT_HYSTERESIS, ENVIRONMENT_STREAM_RANGE, TERRAIN_GRID_SIZE, modelKey, terrainGrid, terrainGridIndex, type EnvironmentClient, type EnvironmentModel, type EnvironmentObject, type TerrainClient } from "./Terrain.js";
 import { terrainGeometryData, terrainGeometrySteps, type TerrainGeometryData } from "./TerrainGeometry.js";
 export { terrainGeometryData, terrainHeightField, terrainNormals, surfaceNormal, type TerrainGeometryData } from "./TerrainGeometry.js";
 import { TerrainStreamingWindow, type TerrainStreamingPlan } from "./TerrainStreaming.js";
@@ -1086,9 +1089,12 @@ export const ENVIRONMENT_SCENERY_RANGE_PER_YARD = 50;
 export const ENVIRONMENT_SCENERY_MIN_RANGE = 90;
 /** Longest size-scaled leash at detail 1; the stock 1.5 detail stretches it to the far leash. */
 export const ENVIRONMENT_SCENERY_MAX_RANGE = ENVIRONMENT_VEGETATION_RANGE;
-/** The stock `environmentDetail` slider's range (VideoOptionsPanels.lua: 0.5–1.5, step 0.25). */
+/**
+ * The stock `environmentDetail` slider's range (VideoOptionsPanels.lua: 0.5–1.5, step 0.25),
+ * extended to 2 by 7.39's far-view step (SceneryReach.ts).
+ */
 export const ENVIRONMENT_DETAIL_MIN = 0.5;
-export const ENVIRONMENT_DETAIL_MAX = 1.5;
+export const ENVIRONMENT_DETAIL_MAX = ENVIRONMENT_DETAIL_FAR_MAX;
 /**
  * Safety quota for loose outdoor M2 scenery, ranked by the share of its own leash already
  * covered: an overloaded view sheds the farthest-for-its-size first, which reads as a lower
@@ -1112,7 +1118,7 @@ const WMO_SHELL_FAR_MIN_DIAGONAL = 120;
 /** WMOs are room-heavy; keep their exterior shell on a smaller leash than loose outdoor objects. */
 const WMO_EXTERIOR_RANGE = 250;
 /** Outdoor shell groups big enough to read as skyline hold the far leash instead. */
-const WMO_SHELL_FAR_RANGE = ENVIRONMENT_FAR_RANGE;
+const WMO_SHELL_FAR_RANGE = ENVIRONMENT_SHELL_RANGE; // 22.10 (7.39)
 /** Interior counterpart of {@link ENVIRONMENT_WARM_EXTERIOR_BUDGET}: three previous view sectors. */
 export const ENVIRONMENT_WARM_INTERIOR_BUDGET = 1_080;
 /**
@@ -1156,13 +1162,15 @@ export function environmentSceneryRange(object: EnvironmentObject, detail = 1): 
     || !Number.isFinite(object.scale) || object.scale <= 0) return undefined;
   const sized = Math.min(ENVIRONMENT_SCENERY_MAX_RANGE,
     Math.max(ENVIRONMENT_SCENERY_MIN_RANGE, radius * object.scale * ENVIRONMENT_SCENERY_RANGE_PER_YARD));
-  // The far leash is the streaming footprint's own limit (Terrain.ts ENVIRONMENT_STREAM_RANGE).
-  return Math.min(ENVIRONMENT_FAR_RANGE, sized * environmentDetailScale(detail));
+  // The far leash is the streaming footprint's own limit (Terrain.ts ENVIRONMENT_STREAM_RANGE);
+  // 22.10 (7.39): past the stock 1.5 the cap grows with the detail (SceneryReach.ts).
+  const scale = environmentDetailScale(detail);
+  return Math.min(sceneryFarCap(scale), sized * scale);
 }
 
 /**
  * How far a placement is drawn from the player, horizontally: rooms 60 (400 for the doodads of an
- * interior-only WMO, whose rooms then decide), big WMO shells 750, sized M2 scenery by
+ * interior-only WMO, whose rooms then decide), big WMO shells 1100 (7.39), sized M2 scenery by
  * {@link environmentSceneryRange}, and everything else the legacy name-based leash (vegetation 600,
  * else 400). The detail multiplier scales M2s only.
  */
@@ -1170,12 +1178,13 @@ export function environmentDrawRange(object: EnvironmentObject, detail = 1): num
   if (object.interior === true) {
     return interiorOnlyDoodadShown(object) === undefined ? INTERIOR_RANGE : boundWmoDoodadLeash(object); // 05.10-A7b-2
   }
-  if (environmentFarEligible(object)) return ENVIRONMENT_FAR_RANGE;
+  if (environmentFarEligible(object)) return ENVIRONMENT_SHELL_RANGE; // 22.10 (7.39)
   const legacy = environmentVegetation(object) ? ENVIRONMENT_VEGETATION_RANGE : ENVIRONMENT_RANGE;
   if (object.kind !== "m2") return legacy;
   const sized = environmentSceneryRange(object, detail);
   if (sized !== undefined) return sized;
-  return Math.min(ENVIRONMENT_FAR_RANGE, legacy * environmentDetailScale(detail));
+  const scale = environmentDetailScale(detail);
+  return Math.min(sceneryFarCap(scale), legacy * scale); // 22.10 (7.39)
 }
 
 /** A retained static model's already-transformed scene-space visibility sphere. */
@@ -4307,6 +4316,8 @@ export class WorldRenderer3D {
   /** The far horizon: one mesh for every distant tile, rebuilt when the player changes tile. */
   /** P1-13b: the horizon mesh and what it was built for — `map * 4096 + cell` and the client revision. */
   #horizon: { mesh: THREE.Mesh; tile: number; revision: number } | undefined;
+  /** 22.10 (7.39): the enhanced path's coarse outer horizon, tiles five and six (HorizonBand.ts). */
+  readonly #horizonBand = new HorizonBand();
   readonly #horizonMaterial = new THREE.MeshBasicMaterial({ color: 0x4a6b4f, fog: true });
   /** 05.10-A7b-7 (7.08): the classic path's lit, coloured horizon beside the flat one above. */
   #horizonMaterials: HorizonMaterialSelector | undefined;
@@ -4972,7 +4983,9 @@ export class WorldRenderer3D {
       light.diffuse.r = colours.diffuse.r; light.diffuse.g = colours.diffuse.g; light.diffuse.b = colours.diffuse.b;
       light.ambient.r = colours.ambient.r; light.ambient.g = colours.ambient.g; light.ambient.b = colours.ambient.b;
       light.fog.r = colours.fog.r; light.fog.g = colours.fog.g; light.fog.b = colours.fog.b;
-      light.fogFar = Math.max(sample.fogStart + 1, sample.fogEnd);
+      // 22.10 (7.39): the post haze spreads over the same stretched distance as the scene fog.
+      light.fogFar = distanceFogRange(sample.fogStart, Math.max(sample.fogStart + 1, sample.fogEnd),
+        this.#lightingProfile.quality, this.#underwater, this.#atmosphere?.haze ?? 0, this.#cinematicFogRange).far;
       light.glow = sample.glow;
       light.sunBand = sample.skyChannels ? sample.sunColour : undefined; // 12.10 7.30
       // 22.10 (7.30): the sun's beams, glare and haze warmth only where the client draws a sun.
@@ -5428,6 +5441,12 @@ export class WorldRenderer3D {
     return this.#sunCascades.stats;
   }
 
+  /** 22.10 (7.39): the outdoor fog range the zone sample resolved to, and what the scene draws with. */
+  get fogRange(): { zoneNear: number; zoneFar: number; near: number; far: number } {
+    const fog = this.#scene.fog as THREE.Fog;
+    return { zoneNear: this.#zoneFogNear, zoneFar: this.#zoneFogFar, near: fog.near, far: fog.far };
+  }
+
   get cinematicProfile(): Readonly<CinematicProfile> {
     return this.#cinematic.profile;
   }
@@ -5565,13 +5584,21 @@ export class WorldRenderer3D {
   /** Restore outdoor fog globally and make it the WMO-material fallback for this frame. */
   #restoreZoneFog(): void {
     const fog = this.#scene.fog as THREE.Fog;
+    // 22.10 (7.39): the enhanced path draws the authored fog stretched toward the horizon
+    // (DistanceFog.ts); the faithful levels and water get the zone's values unchanged.
+    const range = distanceFogRange(this.#zoneFogNear, this.#zoneFogFar, this.#lightingProfile.quality,
+      this.#underwater, this.#atmosphere?.haze ?? 0, this.#distanceFog);
     fog.color.copy(this.#zoneFogColour);
-    fog.near = this.#zoneFogNear;
-    fog.far = this.#zoneFogFar;
+    fog.near = range.near;
+    fog.far = range.far;
     this.#wmoInteriorFog.colour.value.copy(this.#zoneFogColour);
-    this.#wmoInteriorFog.near.value = this.#zoneFogNear;
-    this.#wmoInteriorFog.far.value = this.#zoneFogFar;
+    this.#wmoInteriorFog.near.value = range.near;
+    this.#wmoInteriorFog.far.value = range.far;
   }
+
+  /** 22.10 (7.39): the frame's fog range, reused (DistanceFog.ts). */
+  readonly #distanceFog: DistanceFogRange = { near: 0, far: 0 };
+  readonly #cinematicFogRange: DistanceFogRange = { near: 0, far: 0 };
 
   /** Immutable renderer-only telemetry for diagnostics and benchmark capture. */
   get telemetry(): Readonly<RendererTelemetrySnapshot> & {
@@ -7071,8 +7098,8 @@ export class WorldRenderer3D {
   }
 
   /**
-   * «Дальность прорисовки объектов»: the stock client's `environmentDetail` multiplier (0.5–1.5)
-   * on every M2 scenery leash. Clamped; a change reselects the candidates on the next frame, and
+   * «Дальность прорисовки объектов»: the stock client's `environmentDetail` multiplier (0.5–1.5,
+   * 2 since 7.39's far-view step) on every M2 scenery leash. Clamped; a change reselects the candidates on the next frame, and
    * residents past the new leash leave through the ordinary hysteresis and warm caps.
    */
   setEnvironmentDetail(detail: number): void {
@@ -7473,6 +7500,7 @@ export class WorldRenderer3D {
       this.#horizon.mesh.geometry.dispose();
       this.#horizon = undefined;
     }
+    this.#horizonBand.clear(this.#scene); // 22.10 (7.39)
     this.#clearGroundCover();
     for (const key of [...this.#instances.keys()]) this.#dropInstance(key);
     for (const ring of this.#selectionRings.values()) {
@@ -10336,6 +10364,7 @@ export class WorldRenderer3D {
         this.#horizon.mesh.geometry.dispose();
         this.#horizon = undefined;
       }
+      this.#horizonBand.clear(this.#scene); // 22.10 (7.39)
       return;
     }
     const tile = map * 4096 + cell;
@@ -10344,11 +10373,18 @@ export class WorldRenderer3D {
     this.#horizonMaterials ??= new HorizonMaterialSelector(this.#horizonMaterial, this.#worldLight);
     const horizonMaterial = this.#horizonMaterials.select(this.#lightingProfile.quality, () => horizonClient?.colour(map));
     if (this.#horizon && this.#horizon.mesh.material !== horizonMaterial) this.#horizon.mesh.material = horizonMaterial;
-    if (this.#horizon?.tile === tile && this.#horizon.revision === revision) return;
+    // 22.10 (7.39): the enhanced path's fog reaches past these four tiles; the band beyond them is
+    // built on a frame of its own, never the one that rebuilt this mesh (HorizonBand.ts).
+    const bandRange = distanceHorizonRange(this.#lightingProfile.quality);
+    if (this.#horizon?.tile === tile && this.#horizon.revision === revision) {
+      this.#horizonBand.update(this.#scene, world, tile, revision, bandRange, horizonMaterial);
+      return;
+    }
     if (this.#horizon) {
       this.#scene.remove(this.#horizon.mesh);
       this.#horizon.mesh.geometry.dispose();
     }
+    this.#horizonBand.hideUnless(tile); // 22.10 (7.39): an old band would overlap the new ring
     const centre = { x: Math.floor(cell / 64), y: cell % 64 };
     const tiles = horizonTiles(world, centre);
     if (tiles.length === 0) {

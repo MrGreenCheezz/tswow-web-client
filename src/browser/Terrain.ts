@@ -1,15 +1,24 @@
 export const TERRAIN_GRID_SIZE = 533.3333333333334;
 export const ENVIRONMENT_RANGE = 400;
 /**
- * LOD-1 leash for big outdoor shells (see WorldRenderer3D): the placement pool, the spatial
- * query and the per-frame tile footprint must all cover this, or the far tier is dead for any
- * placement whose tiles do not already overlap the near footprint.
+ * LOD-1 leash for the biggest trees and for transports (see WorldRenderer3D); big outdoor shells
+ * have their own longer one since 7.39. The placement pool, the spatial query and the per-frame
+ * tile footprint must all cover both, or the far tier is dead for any placement whose tiles do
+ * not already overlap the near footprint.
  */
 export const ENVIRONMENT_FAR_RANGE = 750;
+/**
+ * 22.10 (7.39): the skyline leash — outdoor WMOs at least 120 yards across, and their wide shell
+ * groups. With the enhanced fog stretched toward the horizon (DistanceFog.ts) a town or a keep
+ * that vanished at 750 yards did so in clear air; buildings are few and cheap per yard of view,
+ * so they reach further than the 750-yard tier of trees and transports. Measured with the owner's
+ * settings: +0.3 ms CPU, +22 draws and +59 textures in the city, nothing measurable while moving.
+ */
+export const ENVIRONMENT_SHELL_RANGE = 1100;
 /** Extra yards retained past each draw leash; small models also prefetch inside this band. */
 export const ENVIRONMENT_RESIDENT_HYSTERESIS = 60;
 /** Tile/index coverage must include the resident band, including the far skyline. */
-export const ENVIRONMENT_STREAM_RANGE = ENVIRONMENT_FAR_RANGE + ENVIRONMENT_RESIDENT_HYSTERESIS;
+export const ENVIRONMENT_STREAM_RANGE = Math.max(ENVIRONMENT_FAR_RANGE, ENVIRONMENT_SHELL_RANGE) + ENVIRONMENT_RESIDENT_HYSTERESIS;
 /** Production cap for completed CPU terrain tiles; active renderer pins may exceed it. */
 export const TERRAIN_TILE_CACHE_LIMIT = 64;
 /**

@@ -773,7 +773,8 @@ test("standing in a district of Stormwind, the rule asks for the rooms around th
   // Measured, not chosen: exterior- or transition-lit runs inside an indoor group use the city's
   // 250 yd leash too, while groups remain bounded by their own AABB. Before the boundary marker,
   // only the outdoor shell used that leash and the rooms below were the smaller 60 yd set. Shell
-  // groups wide enough to read as skyline (120 yd diagonal) hold a second 750 yd leash on top,
+  // groups wide enough to read as skyline (120 yd diagonal) hold a second far leash on top (750 yd,
+  // 1,100 since 7.39),
   // so the districts below also carry the far roofs — still below two thirds of this city's
   // triangles in every measured district, and never approaching the full 286-group city.
   for (const [name, x, y, groups, wanted] of [
@@ -797,9 +798,12 @@ test("standing in a district of Stormwind, the rule asks for the rooms around th
   // And from outside it is the shell and nothing else: the skyline without any of its rooms.
   // The far leash puts 25 wide outdoor shells on the ridge instead of one — that is the LOD
   // working, measured at 248,547 triangles against the 20,639 of the single 250 yd shell.
+  // 22.10 (7.39): the skyline leash is 1,100 yards now (Terrain.ts ENVIRONMENT_SHELL_RANGE), so
+  // the ridge also sees the shells behind the first ones: 32 and 270,845 triangles, still only the
+  // outside.
   const ridge = wmoGroupsInRange(model, boxes, { x: -9250, y: 200, z: 100, orientation: 0 });
-  assert.equal(ridge.length, 25);
-  assert.equal(triangles(ridge), 248_547);
+  assert.equal(ridge.length, 32);
+  assert.equal(triangles(ridge), 270_845);
   assert.ok(ridge.every((index) => model.groups[index].exterior || !model.groups[index].indoor),
     "and what is left is the outside of the city");
 });
@@ -809,8 +813,8 @@ test("outdoor shell leash follows group width, rooms stay short", () => {
     new THREE.Vector3(0, 0, 0), new THREE.Vector3(size, size, size));
   // Diagonal 103.9 yd: below the skyline width, the near leash.
   assert.equal(wmoShellRange(box(60)), 250);
-  // Diagonal 207.8 yd: skyline, the far leash.
-  assert.equal(wmoShellRange(box(120)), 750);
+  // Diagonal 207.8 yd: skyline, the far leash (22.10, 7.39: 1,100 yards, ENVIRONMENT_SHELL_RANGE).
+  assert.equal(wmoShellRange(box(120)), 1100);
   const malformed = new THREE.Box3(new THREE.Vector3(5, 0, 0), new THREE.Vector3(0, 1, 1));
   assert.equal(wmoShellRange(malformed), 250, "an inverted box fails closed to the near leash");
   const nan = new THREE.Box3(new THREE.Vector3(0, 0, 0), new THREE.Vector3(Number.NaN, 1, 1));
