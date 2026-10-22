@@ -1138,7 +1138,8 @@ test("hidden warm caps and admitted-only draw paths are explicit in the renderer
   const liquidAt = update.indexOf("#buildWmoLiquid(");
   assert.ok(wmoAt > admissionAt(update), "WMO portal groups remain refinement after parent admission");
   assert.ok(liquidAt > admissionAt(update), "liquid construction remains after parent admission");
-  const drawLoopAt = update.indexOf("for (const { object, distance } of admitted)");
+  // 22.10 (7.41): the loop takes the admitted list, then the shadow-only one (SceneryShadowAdmission.ts).
+  const drawLoopAt = update.indexOf("for (let order = 0; order < passCount; order++)");
   assert.ok(drawLoopAt > admissionAt(update), "resource work iterates only the admitted parent list");
   assert.ok(wmoAt > drawLoopAt, "WMO group work stays inside the admitted parent path");
   assert.ok(liquidAt > drawLoopAt, "liquid work stays inside the admitted parent path");
@@ -1182,7 +1183,8 @@ test("a camera snap suppresses grow-ins while sustained sweeps keep them", async
   assert.match(draw, /this\.#turnSuppressUntilSerial = this\.#submissionSerial \+ CAMERA_FLICK_SUPPRESS_FRAMES;/,
     "suppression is clocked in submission serials, like the growth it gates");
   const update = updateEnvironmentSource(source);
-  assert.match(update, /const suppressGrowth = this\.#submissionSerial < this\.#turnSuppressUntilSerial;/,
+  // 22.10 (7.41): a shadow-only build is never seen, so it never grows in either.
+  assert.match(update, /const suppressGrowth = shadowOnly \|\| this\.#submissionSerial < this\.#turnSuppressUntilSerial;/,
     "first sights admitted mid-sweep read whole at once");
   assert.match(update, /else if \(rendered\.actual && rendered\.visual !== undefined\) \{/,
     "a suppressed first sight is stamped seen so a later calm frame cannot shrink it");

@@ -87,6 +87,7 @@ import {
   type LightingProfile,
 } from "./LightingQuality.js";
 import { UnitShadowCasterSet, unitShadowFootprint, unitShadowInReach, type UnitShadowSphere } from "./UnitShadowCasters.js"; // 06.10-shadow
+import { admitShadowCastersInto, outdoorCasterGroups, SCENERY_SHADOW_HOLD_FRAMES } from "./SceneryShadowAdmission.js"; // 22.10 (7.41)
 import {
   CascadedSunShadows, SHADOW_FAR_LAYER, SHADOW_PROXY_LAYER, type ShadowCascadeSnapshot, type ShadowCasterCensus,
 } from "./CascadedShadows.js";
@@ -1563,8 +1564,11 @@ export function admitEnvironmentInto(
   retainedSphereOf: ((object: EnvironmentObject) => EnvironmentVisibilitySphere | undefined) | undefined,
   vertexPadding: number,
   out: RankedEnvironmentObject[],
+  rejected?: RankedEnvironmentObject[],
 ): RankedEnvironmentObject[] {
   const [near, scenery, far, interior] = ADMISSION_HEAPS;
+  // 22.10 (7.41): the outdoor candidates the frustum turned away, for the shadow-only admission.
+  if (rejected) rejected.length = 0;
   near.reset(ENVIRONMENT_BUDGET);
   scenery.reset(ENVIRONMENT_SCENERY_BUDGET);
   far.reset(ENVIRONMENT_FAR_BUDGET);
@@ -1578,7 +1582,10 @@ export function admitEnvironmentInto(
     const retainedSphere = candidate.object.bounds === undefined
       ? retainedSphereOf?.(candidate.object) ?? environmentSourceVisibilitySphere(candidate.object, vertexPadding)
       : undefined;
-    if (!environmentObjectVisibleInFrustum(candidate.object, planes, ENVIRONMENT_FRUSTUM_MARGIN, retainedSphere)) continue;
+    if (!environmentObjectVisibleInFrustum(candidate.object, planes, ENVIRONMENT_FRUSTUM_MARGIN, retainedSphere)) {
+      if (rejected && tier !== "interior") rejected.push(candidate);
+      continue;
+    }
     if (tier === "near") near.offer(candidate, candidate.distance);
     else if (tier === "scenery") scenery.offer(candidate, environmentSceneryScore(candidate));
     else if (tier === "far") far.offer(candidate, candidate.distance);
@@ -2325,6 +2332,11 @@ interface RenderedEnvironment {
   /** P2-06a: the admission run that last admitted this placement (`#admissionRun`). */
   drawnRun: number;
   /**
+   * 22.10 (7.41): the last submission serial this placement is admitted for its shadow alone
+   * (`SceneryShadowAdmission.ts`): a building keeps its outdoor rooms and casts through gate 2.
+   */
+  shadowUntil: number;
+  /**
    * Whether this placement has ever been seen grown or whole.
    *
    * A tree returning from frustum culling or a settled budget churn reads full opacity at once:
@@ -2358,6 +2370,9 @@ interface PlacedWmo {
   worldToModel: THREE.Matrix4;
   /** Only meshes attached for the final distance/portal demand remain in this map. */
   built: Map<number, RenderedWmoGroup>;
+  /** 22.10 (7.41): the distance rooms the shadow-only selection was filtered from, and its answer. */
+  shadowSource?: readonly number[];
+  shadowGroups?: number[];
   /**
    * P1-12a: the distance selection (`wmoGroupsInRange`) of this placement, answered from a rest
    * radius: the same array while the player moves less than the nearest leash edge is away. The
@@ -4598,6 +4613,18 @@ export class WorldRenderer3D {
   #warmPruneAtSerial = -WARM_PRUNE_INTERVAL_FRAMES;
   /** Admitted set reused on calm skipped frames; see the admission gate in `#updateEnvironment`. */
   #lastAdmitted: RankedEnvironmentObject[] | undefined;
+  /** 22.10 (7.41): the candidates the last admission's frustum rejected, and those admitted for their shadow. */
+  readonly #admissionRejected: RankedEnvironmentObject[] = [];
+  readonly #shadowAdmitted: RankedEnvironmentObject[] = [];
+  /** 22.10 (7.41): the shadow-only admission's view, filled once per admission run. */
+  readonly #shadowAdmissionView = {
+    planes: [] as readonly UnitFrustumPlane[],
+    sun: new THREE.Vector3(),
+    camera: new THREE.Vector3(),
+    shadowDistance: 0,
+    viewFittedCovers: (x: number, y: number, z: number, radius: number): boolean =>
+      this.#sunCascades.viewFittedCovers(x, y, z, radius),
+  };
   /** Candidate array the cached admission was computed from; a new one always recomputes. */
   #admissionCandidates: readonly RankedEnvironmentObject[] | undefined;
   /** Placements currently growing in; while zero the growth scan is skipped entirely. */
@@ -5287,7 +5314,10 @@ export class WorldRenderer3D {
       return;
     }
     if (proxy.castShadow !== casts) proxy.castShadow = casts;
-    this.#shadowCasters.set(proxy, casts);
+    // 22.10 (7.41): owned by its placement, so a building admitted for its shadow casts hidden.
+    const owner = this.#environment.get(placed.visualId);
+    if (owner?.wmo === placed) this.#shadowCasters.set(proxy, casts, owner.node, this.#environmentShadowGate, owner);
+    else this.#shadowCasters.set(proxy, casts);
     if (proxy.visible !== casts) proxy.visible = casts;
     // P2-02b: the building's node (the room hangs on it) and the group, stable across re-hangs.
     this.#noteSceneryFar(mesh, (mesh.parent?.id ?? 0) * 4096 + index, casts);
@@ -5322,8 +5352,9 @@ export class WorldRenderer3D {
    */
   readonly #environmentShadowGate: CasterGate = (ref) => {
     const rendered = ref as RenderedEnvironment;
-    return !rendered.admitted && this.#sceneryShadowsApplied && rendered.actual && !rendered.interior
-      && rendered.wmo === undefined ? 2 : 1;
+    if (rendered.admitted || !this.#sceneryShadowsApplied || !rendered.actual || rendered.interior) return 1;
+    // 22.10 (7.41): a building casts hidden while it is admitted for its shadow (its rooms stay hung).
+    return rendered.wmo === undefined || rendered.shadowUntil >= this.#submissionSerial ? 2 : 1;
   };
 
   /**
@@ -5336,7 +5367,7 @@ export class WorldRenderer3D {
     for (const rendered of this.#environment.values()) {
       placements.set(rendered.node, rendered);
       if (!this.#sceneryShadowsApplied) continue;
-      if (rendered.admitted || !rendered.actual || rendered.interior || rendered.wmo || rendered.node.visible) continue;
+      if (rendered.admitted || !rendered.actual || rendered.interior || (rendered.wmo && rendered.shadowUntil < this.#submissionSerial) || rendered.node.visible) continue;
       shown.add(rendered.node);
     }
     // Scenery draws by gate and by whether the placement could join an instance bucket (the
@@ -10704,9 +10735,12 @@ export class WorldRenderer3D {
         this.#retainedEnvironmentSphere,
         this.#experimentalShaderProfile.vegetationWind ? VEGETATION_WIND_CULL_PADDING : 0,
         this.#admissionBuffers[this.#admissionFlip]!,
+        this.#admissionRejected,
       );
       this.#lastAdmitted = admitted;
       this.#admissionCandidates = this.#environmentCandidates;
+      // 22.10 (7.41): of what the frustum turned away, what casts into the shadowed view.
+      this.#admitShadowCasters();
     }
     // These ranked arrays are replaced on reselection/admission, never edited in place.
     // Keep only the current membership; live resource, room and growth work below still runs.
@@ -10741,7 +10775,13 @@ export class WorldRenderer3D {
         this.#removeEnvironment(id, rendered);
         return;
       }
-      this.#setEnvironmentAdmitted(rendered, rendered.drawnRun === drawnRun);
+      // 22.10 (7.41): a placement admitted for its shadow keeps its building's rooms and stays warm.
+      const shadowOnly = rendered.drawnRun !== drawnRun && rendered.shadowUntil >= this.#submissionSerial;
+      this.#setEnvironmentAdmitted(rendered, rendered.drawnRun === drawnRun, shadowOnly);
+      if (shadowOnly) rendered.lastAdmittedFrame = this.#submissionSerial;
+      else if (!rendered.admitted && rendered.wmo !== undefined && rendered.wmo.built.size > 0) {
+        this.#clearWmoGroups(rendered.wmo, rendered.node); // its shadow hold ran out
+      }
     });
     if (this.#submissionSerial - this.#warmPruneAtSerial >= WARM_PRUNE_INTERVAL_FRAMES) {
       this.#warmPruneAtSerial = this.#submissionSerial;
@@ -10757,7 +10797,15 @@ export class WorldRenderer3D {
     this.#environmentBuildBudget.begin();
     this.#environmentStandIns.begin(); // 05.10-A7b-9 7.18
     this.#environmentStandInMarkers.beginFrame(performance.now()); // 05.10-A7b-9 7.18
-    for (const { object, distance } of admitted) {
+    // 22.10 (7.41): the view's admissions first, then those admitted for their shadow alone, in
+    // whatever build budget the view left: built hidden, at their full size, from resolved models
+    // only (no stand-in casts), and never rebuilt here — the view's pass replaces what it sees.
+    const shadowAdmitted = this.#shadowAdmitted;
+    const viewCount = admitted.length;
+    const passCount = viewCount + shadowAdmitted.length;
+    for (let order = 0; order < passCount; order++) {
+      const shadowOnly = order >= viewCount;
+      const { object, distance } = shadowOnly ? shadowAdmitted[order - viewCount]! : admitted[order]!;
       // The same distance the ranking used: to the building rather than to the pin, or a city is
       // ranked in but still swapped for its stand-in box from most of its own streets. Far-tier
       // shells and far vegetation resolve their model too — the rooms stay on the near leash
@@ -10765,8 +10813,9 @@ export class WorldRenderer3D {
       // inside its own size-scaled leash, so it always resolves: a big rock at 500 yards is art.
       const asked = distance < MODEL_RANGE || object.kind === "m2" || environmentFarEligible(object) // 05.10-A7b-9: named
         || environmentVegetation(object);
-      const model = asked ? client?.model(object.name, "normal") : undefined;
+      const model = asked ? client?.model(object.name, shadowOnly ? "background" : "normal") : undefined;
       let rendered = this.#environment.get(object.id);
+      if (shadowOnly && (rendered !== undefined ? rendered.admitted || !rendered.actual : model === undefined)) continue;
       const replacesWmo = rendered !== undefined && model !== undefined
         && (rendered.wmo !== undefined || model.wmo !== undefined)
         && rendered.wmo?.model !== model.wmo;
@@ -10777,7 +10826,7 @@ export class WorldRenderer3D {
       );
       const replacesWvm = rendered !== undefined && model?.wvm !== undefined
         && rendered.wvm !== undefined && rendered.wvm !== model.wvm;
-      if (!rendered || (!rendered.actual && model) || replacesWmo || replacesLegacy || replacesWvm) {
+      if (!rendered || (!shadowOnly && ((!rendered.actual && model) || replacesWmo || replacesLegacy || replacesWvm))) {
         // A first sight that already grew keeps its stamp across a display rebuild, so a tree
         // that changes state does not grow twice. A model landing on a loading stand-in starts
         // unstamped and eases in below.
@@ -10804,9 +10853,10 @@ export class WorldRenderer3D {
           node,
           effectKey: undefined,
           source: object,
-          admitted: true,
+          admitted: !shadowOnly, // 22.10 (7.41): a shadow-only build stays hidden
           interior: object.interior === true,
           lastAdmittedFrame: this.#submissionSerial,
+          shadowUntil: shadowOnly ? this.#submissionSerial + SCENERY_SHADOW_HOLD_FRAMES : -1,
           visibilitySphere: undefined,
           built: undefined,
           decodedModel: undefined,
@@ -10825,7 +10875,7 @@ export class WorldRenderer3D {
           growthTotal: undefined,
           everVisible: undefined,
           // P2-06a: built for an entry of the current admission run.
-          drawnRun: this.#admittedMembership?.run ?? 0,
+          drawnRun: shadowOnly ? 0 : this.#admittedMembership?.run ?? 0,
           skinned: undefined,
           template: undefined,
           model: undefined,
@@ -10858,6 +10908,7 @@ export class WorldRenderer3D {
         if (visual instanceof THREE.Object3D) rendered.visual = visual;
         if (everVisible) rendered.everVisible = true;
         this.#environment.set(object.id, rendered);
+        if (shadowOnly) node.visible = false; // 22.10 (7.41): casts through gate 2, never drawn
         // Rigged scenery draws skinned; see `#instanceGroup` for why the kinds keep to themselves.
         (rendered.skinned ? this.#animatedEnvironmentGroup : this.#environmentGroup).add(node);
         // Vegetation grows in instead of popping — but only on real content at first sight,
@@ -10868,7 +10919,8 @@ export class WorldRenderer3D {
         // Matrices stay live until it settles, and instancing waits — an instance matrix is
         // exact placement state, and a tree mid-growth is not exact. Rigged placements are
         // exempt: their sails are already live.
-        const suppressGrowth = this.#submissionSerial < this.#turnSuppressUntilSerial;
+        // 22.10 (7.41): nor unseen — a shadow-only build casts at its full size from the start.
+        const suppressGrowth = shadowOnly || this.#submissionSerial < this.#turnSuppressUntilSerial;
         const growing = environmentVegetation(object) && rendered.skinned === undefined
           && rendered.actual && rendered.visual !== undefined && !everVisible && !suppressGrowth;
         if (growing) {
@@ -10937,12 +10989,14 @@ export class WorldRenderer3D {
       // player walks through the building, and the ones that were asked for land later.
       if (rendered.wmo) {
         if (model?.wmo === rendered.wmo.model) {
-          this.#updateWmoGroups(rendered.wmo, player, rendered.node, client, true);
+          this.#updateWmoGroups(rendered.wmo, player, rendered.node, client, true, undefined, shadowOnly);
         } else {
           // An undefined answer after dormancy, or a replacement parent, cannot revive old rooms.
           this.#clearWmoGroups(rendered.wmo, rendered.node);
         }
       }
+      // 22.10 (7.41): a shadow-only placement has no water, no stand-in and no on-screen count.
+      if (shadowOnly) continue;
       // The building's own water. Attempted every frame until it is built because the collision
       // model it comes from arrives on its own schedule, and rebuilt when the animation strip
       // lands — the same reason the tile's water carries a generation.
@@ -11078,7 +11132,7 @@ export class WorldRenderer3D {
   }
 
   /** Changes draw membership without changing ownership of the retained placement. */
-  #setEnvironmentAdmitted(rendered: RenderedEnvironment, admitted: boolean): void {
+  #setEnvironmentAdmitted(rendered: RenderedEnvironment, admitted: boolean, keepRooms = false): void {
     if (admitted) rendered.lastAdmittedFrame = this.#submissionSerial;
     if (rendered.admitted === admitted) return;
     rendered.admitted = admitted;
@@ -11103,8 +11157,33 @@ export class WorldRenderer3D {
       if (this.#sceneryFarOwners.has(rendered)) this.#sceneryFarDirty = true; // P2-02b
       this.#sceneryShadowsForPlacement(rendered);
     }
-    // WMO room wrappers are demand-side resources. Keep the parent warm, not every hidden room.
-    if (rendered.wmo) this.#clearWmoGroups(rendered.wmo, rendered.node);
+    // WMO room wrappers are demand-side resources. Keep the parent warm, not every hidden room —
+    // 22.10 (7.41): unless the building casts into the view; its shadow pass then trims them.
+    if (rendered.wmo && !keepRooms) this.#clearWmoGroups(rendered.wmo, rendered.node);
+  }
+
+  /**
+   * 22.10 (7.41): admits for their shadow alone the candidates the view's frustum rejected whose
+   * shadow can land in the shadowed view (`SceneryShadowAdmission.ts`), nearest first and bounded.
+   * Runs with the view's admission; each admitted placement is held `SCENERY_SHADOW_HOLD_FRAMES`.
+   */
+  #admitShadowCasters(): void {
+    const out = this.#shadowAdmitted;
+    if (!this.#sceneryShadowsApplied || !this.#sunCascades.active) {
+      out.length = 0;
+      return;
+    }
+    const view = this.#shadowAdmissionView;
+    view.planes = this.#frustum.planes;
+    view.sun.copy(this.#sunOffset);
+    view.camera.copy(this.#camera.position);
+    view.shadowDistance = this.#lightingProfile.shadowDistance;
+    admitShadowCastersInto(this.#admissionRejected, view, out);
+    const until = this.#submissionSerial + SCENERY_SHADOW_HOLD_FRAMES;
+    for (let index = 0; index < out.length; index++) {
+      const rendered = this.#environment.get(out[index]!.object.id);
+      if (rendered) rendered.shadowUntil = until;
+    }
   }
 
   /** Removes one placement after it leaves range or loses the bounded warm LRU. */
@@ -12291,26 +12370,37 @@ export class WorldRenderer3D {
     client: EnvironmentClient | undefined,
     staticEnvironment = false,
     shellRange?: number, // 05.10-7.05-review
+    shadowOnly = false, // 22.10 (7.41)
   ): void {
     // P1-12a: the same set while no group can have crossed its leash — the player re-asks the
     // question for every admitted building every frame. 05.10-7.05-review: the transport shell leash.
     // P1-12 telemetry: the table counts into the renderer's totals (a fake `ranges` just gains a field).
     placed.ranges.totals ??= this.#wmoRangeGroups;
     let distanceGroups = placed.ranges.select(player.x, player.y, shellRange);
-    const fogPlacement = staticEnvironment && placed.visualId === this.#wmoFogVisualId;
+    // 22.10 (7.41): a building admitted for its shadow alone hangs only its outdoor rooms in the
+    // distance leash — those with a stand-in — and none of the view's walks below run for it.
+    if (shadowOnly) {
+      if (placed.shadowSource !== distanceGroups || placed.shadowGroups === undefined) {
+        placed.shadowSource = distanceGroups;
+        placed.shadowGroups = outdoorCasterGroups(placed.model.groups, distanceGroups, placed.shadowGroups ?? []);
+      }
+      distanceGroups = placed.shadowGroups;
+    }
+    const viewed = staticEnvironment && !shadowOnly;
+    const fogPlacement = viewed && placed.visualId === this.#wmoFogVisualId;
     // A building of rooms alone that the camera or the player has entered is chosen through its
     // portals from the far leash (a dungeon's halls outrun sixty yards); seen from outside it keeps
     // the room leash like any other building.
-    const entered = staticEnvironment && wmoInteriorOnly(placed.model) && this.#enteredInteriorOnly(placed, player);
+    const entered = viewed && wmoInteriorOnly(placed.model) && this.#enteredInteriorOnly(placed, player);
     const roomLeash = distanceGroups;
     if (entered) distanceGroups = this.#interiorOnlyRange(placed, player);
     let selected: readonly number[] = distanceGroups;
     let clipped = false;
     let walked = false; // 05.10-A7b-2: the indoor walk above answered
-    if (fogPlacement || (staticEnvironment && this.#indoors) || entered) {
+    if (fogPlacement || (viewed && this.#indoors) || entered) {
       this.#wmoCameraModel.copy(this.#camera.position).applyMatrix4(placed.worldToModel);
       if (fogPlacement) this.#considerWmoFog(placed, this.#wmoCameraModel);
-      if (staticEnvironment && (this.#indoors || entered) && this.#wmoOcclusion && placed.model.portals) {
+      if (viewed && (this.#indoors || entered) && this.#wmoOcclusion && placed.model.portals) {
         this.#wmoViewerModel.set(player.x, player.z, -player.y).applyMatrix4(placed.worldToModel);
         this.#wmoModelToClip
           .multiplyMatrices(this.#camera.matrixWorldInverse, placed.modelToWorld)
@@ -12349,7 +12439,7 @@ export class WorldRenderer3D {
     if (entered) this.#noteInteriorOnly(placed, player, selected, clipped);
     // 05.10-A7b-2 (7.03 slice 3): a building with a street — its rooms seen through its doors from
     // the street, and its furniture bound to the rooms either walk showed.
-    if (staticEnvironment && !entered && this.#wmoOcclusion && placed.model.portals && !wmoInteriorOnly(placed.model)) {
+    if (viewed && !entered && this.#wmoOcclusion && placed.model.portals && !wmoInteriorOnly(placed.model)) {
       selected = this.#wmoRoomsFromOpenAir(placed, player, selected, walked);
     }
     // Room builds (geometry compose, material setup, uploads) are the building-shaped turn

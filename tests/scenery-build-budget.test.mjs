@@ -265,6 +265,7 @@ test("environment construction observes elapsed time and resumes without disposi
     environmentVegetation: () => false,
     // 05.10 suite-fix 2: the 7.18 stand-in ledger (05.10-A7b-9) — a model-less build is a stand-in.
     environmentFarEligible: () => false, drawableModel: model => model !== undefined, standInKind: () => "none",
+    SCENERY_SHADOW_HOLD_FRAMES: 30, // 22.10 (7.41)
   });
   const harness = new Harness();
   let clock = 0;
@@ -273,6 +274,7 @@ test("environment construction observes elapsed time and resumes without disposi
   Object.assign(harness, {
     environmentObjects: objects, environmentCandidates: candidates, environmentResidents: candidates,
     lastAdmitted: candidates, admissionCandidates: candidates, cameraTurnRate: 0, submissionSerial: 1,
+    shadowAdmitted: [], // 22.10 (7.41): nothing admitted for its shadow alone
     warmPruneAtSerial: 0, turnSuppressUntilSerial: 0, environment: new Map(),
     environmentGroup: new THREE.Group(), camera: new THREE.PerspectiveCamera(),
     frustum: new THREE.Frustum(), frustumMatrix: new THREE.Matrix4(),
