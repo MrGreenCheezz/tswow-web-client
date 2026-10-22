@@ -37,6 +37,12 @@ export const TERRAIN_RELIEF_SPAN = 2.5;
 export const TERRAIN_RELIEF_DEPTH = 0.03;
 /** 22.10 (7.47): the normals' slope over the geometric one the depth implies (1: they agree; 1.5 read lumpy in the stills). */
 export const TERRAIN_RELIEF_NORMAL_BOOST = 1.0;
+/**
+ * 22.10 (7.47, owner): passes of the [1 2 1] smoothing after the high-pass. One left too many sharp bumps in
+ * play («слишком много острых выпуклостей»); two are a 5-tap binomial, which rounds the stones' crowns and keeps
+ * the joints.
+ */
+export const TERRAIN_RELIEF_SMOOTH_PASSES = 2;
 
 export interface TerrainReliefInput {
   /** The decoded layer, RGBA8, `size`² texels, row 0 at v = 0 (as the layer array uploads it). */
@@ -136,7 +142,7 @@ function downsampleChannel(
 
 /**
  * The band-pass, in standard deviations of its own output (floored by the contrast floor): the value
- * minus its wrap-around Gaussian (three box passes) at the large radius, then a [1 2 1] smoothing.
+ * minus its wrap-around Gaussian (three box passes) at the large radius, then `TERRAIN_RELIEF_SMOOTH_PASSES` [1 2 1] smoothings.
  */
 function bandPass(values: Float32Array, side: number): Float32Array {
   const radius = Math.max(1, Math.round(side * TERRAIN_RELIEF_LARGE_RADIUS));
@@ -148,7 +154,7 @@ function bandPass(values: Float32Array, side: number): Float32Array {
   }
   const high = new Float32Array(values.length);
   for (let index = 0; index < values.length; index++) high[index] = values[index]! - low[index]!;
-  smoothWrap(high, scratch, side);
+  for (let pass = 0; pass < TERRAIN_RELIEF_SMOOTH_PASSES; pass++) smoothWrap(high, scratch, side);
   let sum = 0;
   let squares = 0;
   for (let index = 0; index < high.length; index++) {
