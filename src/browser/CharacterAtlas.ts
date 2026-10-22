@@ -15,6 +15,7 @@ import type { BenchmarkAsyncReadinessStats } from "./RenderBenchmarkReadiness.js
 import { FRAME_BUDGET, frameBudgetProbe } from "./FrameBudgetProbe.js"; // P2-09a
 import { createRenderCanvas } from "./RenderHost.js"; // 21.10 ARC-2 S1
 import { pageHidden } from "./PageVisibility.js"; // 22.10 ARC-2 S6b
+import { createCharacterAtlasPersistence, type CharacterAtlasPersistence } from "./CharacterAtlasPersistence.js"; // 22.10 (6.26)
 
 /** Where each piece lands on the body texture. Mirrors BODY_SECTIONS on the gateway. */
 export const BODY_TEXTURE_SIZE = 512;
@@ -316,6 +317,11 @@ export interface CharacterAtlasResidencyLimits {
 
 export interface CharacterAtlasClientOptions {
   readonly limits?: Partial<CharacterAtlasResidencyLimits>;
+  /**
+   * 22.10 (6.26): where finished bodies are kept between sessions (CharacterAtlasPersistence.ts). Absent: the
+   * realm's IndexedDB store when there is one; null: none.
+   */
+  readonly persistence?: CharacterAtlasPersistence | null;
 }
 
 export interface CharacterAtlasResidencyStats {
@@ -504,6 +510,10 @@ export class CharacterAtlasClient {
    */
   #nextRefresh = Infinity;
   readonly #now: () => number;
+  /** 22.10 (6.26): the between-session store of finished bodies, if this realm has one. */
+  readonly #persistence: CharacterAtlasPersistence | undefined;
+  /** 22.10 (6.26): bodies this client painted out of the store rather than out of their layers. */
+  #restored = 0;
 
   /**
    * @param now the clock the backoff is measured against. Injected so a test can drive half a
@@ -530,6 +540,8 @@ export class CharacterAtlasClient {
       }
     }
     this.#limits = Object.freeze(limits);
+    this.#persistence = options.persistence === null ? undefined
+      : options.persistence ?? createCharacterAtlasPersistence(BODY_TEXTURE_SIZE);
   }
 
   /** Immutable asynchronous work snapshot for the formal replay readiness barrier. */
@@ -818,9 +830,51 @@ export class CharacterAtlasClient {
     this.#defer(request.key, layers, this.#now());
   }
 
+  /** 22.10 (6.26): how many bodies came out of the between-session store. */
+  get restored(): number {
+    return this.#restored;
+  }
+
+  /**
+   * 22.10 (6.26): a first composition of a look whose finished body is in the between-session store: painted from
+   * that one picture on its paint turn, with no layer fetched. Undefined when there is none (or the store fails),
+   * and the layers are composed as before. A body already here (a repaint for a missing layer) never comes back
+   * this way: the store only holds bodies painted from every layer.
+   */
+  async #restore(request: CharacterAtlasComposeRequest, layers: readonly BodyLayer[],
+    generation: string | undefined): Promise<THREE.Texture | undefined> {
+    const persistence = this.#persistence;
+    if (persistence === undefined || this.#atlases.has(request.key)) return undefined;
+    const texels = await persistence.load(layers, generation);
+    if (texels === undefined || !this.#isCurrentCompose(request)) return undefined;
+    await this.#waitForPaintTurn(request);
+    if (!this.#isCurrentCompose(request) || this.#atlases.has(request.key)) return undefined;
+    const canvas = createRenderCanvas(BODY_TEXTURE_SIZE, BODY_TEXTURE_SIZE);
+    const context = bodyContext(canvas);
+    if (!context) return undefined;
+    const paintAt = frameBudgetProbe.begin(); // P2-09a: the atlas limiter
+    context.putImageData(texels, 0, 0);
+    frameBudgetProbe.end(FRAME_BUDGET.atlas, paintAt);
+    const texture = new THREE.CanvasTexture(canvas);
+    configureBodyTexture(texture);
+    this.#setAtlasEntry({ key: request.key, texture, knownLogicalTextureBytes: undefined });
+    this.#generations.set(request.key, (this.#generations.get(request.key) ?? 0) + 1);
+    this.#failed.delete(request.key);
+    this.#terminalFailures.delete(request.key);
+    this.#restored++;
+    return texture;
+  }
+
   async #build(request: CharacterAtlasComposeRequest,
     layers: readonly BodyLayer[]): Promise<THREE.Texture | undefined> {
     const { key } = request;
+    // 22.10 (6.26): a look painted in an earlier session comes back as one picture.
+    // Without a store not even a microtask is spent on it, so composition starts exactly as it did.
+    const persistGeneration = this.#persistence?.generation();
+    if (this.#persistence !== undefined && !this.#atlases.has(key)) {
+      const restored = await this.#restore(request, layers, persistGeneration);
+      if (restored !== undefined) return restored;
+    }
     const spellings = layers.map((layer) => layerPaths(layer));
     // What each layer settled to so far: `null` still on its way, `undefined` settled with nothing.
     const arrived: (CharacterAtlasImageLease | undefined | null)[] = layers.map(() => null);
@@ -906,6 +960,7 @@ export class CharacterAtlasClient {
       if (painted === layers.length) {
         this.#failed.delete(key);
         this.#terminalFailures.delete(key);
+        this.#persistence?.save(layers, context, persistGeneration); // 22.10 (6.26): every layer is in it, so it is kept for next time
       } else if (retryAt === Infinity) {
         this.#failed.delete(key);
         this.#markTerminal(key);

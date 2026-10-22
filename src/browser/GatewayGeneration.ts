@@ -29,9 +29,14 @@ interface GenerationState {
   /** `?g=…` and `&g=…`, built once per change rather than once per request. */
   first: string;
   next: string;
+  /** 22.10 (6.26): the restart-stable `visualGeneration` and `metadataGeneration` (gateway/AssetGeneration.ts). */
+  visual: string | undefined;
+  metadata: string | undefined;
 }
 
-const state: GenerationState = { origin: undefined, generation: undefined, bypass: undefined, first: "", next: "" };
+const state: GenerationState = {
+  origin: undefined, generation: undefined, bypass: undefined, first: "", next: "", visual: undefined, metadata: undefined,
+};
 
 /** What the gateway may put in `cacheGeneration` (CachePolicy.ts: hex nonce + hex epoch + 8 hex). */
 const GENERATION_SHAPE = /^[0-9A-Za-z]{1,64}$/;
@@ -69,6 +74,11 @@ export function noteGatewayCacheGeneration(origin: string, value: unknown): bool
   const normalised = normaliseOrigin(origin);
   const generation = typeof value === "string" && GENERATION_SHAPE.test(value) ? value : undefined;
   const changed = generation !== state.generation || normalised !== state.origin;
+  // 22.10 (6.26): another gateway's asset generations are not this one's.
+  if (normalised !== state.origin) {
+    state.visual = undefined;
+    state.metadata = undefined;
+  }
   state.origin = normalised;
   state.generation = generation;
   // The gateway has spoken: from here on it is its generation or nothing.
@@ -99,6 +109,61 @@ export function withGeneration(url: string): string {
   const after = url.charCodeAt(origin.length);
   if (after !== 47 /* / */ && after !== 63 /* ? */ && url.length !== origin.length) return url;
   return url + (url.indexOf("?", origin.length) < 0 ? state.first : state.next);
+}
+
+/**
+ * 22.10 (6.26): files the restart-stable generations a `/client/patch-status` answer from `origin` carried
+ * (`visualGeneration`, `metadataGeneration`); absent or malformed (an older gateway) clears each. Call after
+ * `noteGatewayCacheGeneration` for the same answer. Returns whether either changed.
+ */
+export function noteGatewayAssetGenerations(origin: string, visual: unknown, metadata: unknown): boolean {
+  const normalised = normaliseOrigin(origin);
+  const nextVisual = normalised !== undefined && typeof visual === "string" && GENERATION_SHAPE.test(visual) ? visual : undefined;
+  const nextMetadata = normalised !== undefined && typeof metadata === "string" && GENERATION_SHAPE.test(metadata)
+    ? metadata : undefined;
+  const changed = nextVisual !== state.visual || nextMetadata !== state.metadata || normalised !== state.origin;
+  if (!changed) return false;
+  state.origin = normalised;
+  state.visual = nextVisual;
+  state.metadata = nextMetadata;
+  revision++;
+  return true;
+}
+
+/** 22.10 (6.26): the visual generation the gateway last published, if any (persistent atlas keys). */
+export function gatewayVisualGeneration(): string | undefined {
+  return state.visual;
+}
+
+/** 22.10 (6.26): the metadata generation the gateway last published, if any (persistent display rows). */
+export function gatewayMetadataGeneration(): string | undefined {
+  return state.metadata;
+}
+
+/** 22.10 (6.26): the gateway origin those generations belong to. */
+export function gatewayGenerationOrigin(): string | undefined {
+  return state.origin;
+}
+
+function appendParam(url: string, name: string, value: string | undefined): string {
+  const origin = state.origin;
+  if (value === undefined || origin === undefined || !url.startsWith(origin)) return url;
+  const after = url.charCodeAt(origin.length);
+  if (after !== 47 /* / */ && after !== 63 /* ? */ && url.length !== origin.length) return url;
+  return `${url}${url.indexOf("?", origin.length) < 0 ? "?" : "&"}${name}=${value}`;
+}
+
+/**
+ * 22.10 (6.26): `url` with `vg=<visualGeneration>` when it is a URL of the gateway that published one: the gateway
+ * then answers `/visual/*` and `/texture` immutable, so the browser keeps them across sessions and restarts.
+ */
+export function withVisualGeneration(url: string): string {
+  return appendParam(url, "vg", state.visual);
+}
+
+/** 22.10 (6.26): `url` with `mg=<metadataGeneration>` (`/dbc/character-appearance`, `/dbc/creature-models`). */
+export function withMetadataGeneration(url: string): string {
+  return appendParam(url, "mg", state.metadata);
 }
 
 /** `?g=<token>` and nothing else: the only query `withGeneration` adds to a URL without one. */
@@ -137,6 +202,9 @@ export interface GatewayGenerationPush {
   readonly origin: string | undefined;
   readonly generation: string | undefined;
   readonly bypass: string | undefined;
+  /** 22.10 (6.26): absent from an older page's push. */
+  readonly visual?: string | undefined;
+  readonly metadata?: string | undefined;
 }
 
 let revision = 0;
@@ -145,7 +213,8 @@ let lastPush: GatewayGenerationPush | undefined;
 /** The current state; the same frozen record until it changes, so a frame allocates nothing. */
 export function gatewayGenerationPush(): GatewayGenerationPush {
   if (lastPush === undefined || lastPush.revision !== revision) {
-    lastPush = Object.freeze({ revision, origin: state.origin, generation: state.generation, bypass: state.bypass });
+    lastPush = Object.freeze({ revision, origin: state.origin, generation: state.generation, bypass: state.bypass,
+      visual: state.visual, metadata: state.metadata }); // 22.10 (6.26)
   }
   return lastPush;
 }
@@ -155,6 +224,8 @@ export function applyGatewayGenerationPush(push: GatewayGenerationPush): void {
   state.origin = push.origin;
   state.generation = push.generation;
   state.bypass = push.bypass;
+  state.visual = push.visual; // 22.10 (6.26)
+  state.metadata = push.metadata;
   rebuildQuery();
 }
 
@@ -163,5 +234,7 @@ export function resetGatewayGeneration(): void {
   state.origin = undefined;
   state.generation = undefined;
   state.bypass = undefined;
+  state.visual = undefined; // 22.10 (6.26)
+  state.metadata = undefined;
   rebuild();
 }

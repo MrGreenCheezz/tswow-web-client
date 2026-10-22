@@ -48,6 +48,7 @@ import { itemEnchantments } from "../ItemEnchantments.js";
 import { RenderInputsBuilder } from "./RenderInputsBuilder.js"; // 22.10 ARC-2 S2a
 import { acceptRendererReports } from "./RendererReportsMain.js"; // 22.10 ARC-2 S4b
 import { RenderLookupsBuilder } from "./RenderLookupsBuilder.js"; // 22.10 ARC-2 S2b
+import { UnitLookPrefetch } from "../UnitPrefetch.js"; // 22.10 (6.26)
 import {
   resultGameObjectCorners, resultUnitEyeHeight, resultUnitHeight, resultUnitPivotHeight,
 } from "../RenderResults.js"; // 22.10 ARC-2 S3a
@@ -148,6 +149,8 @@ function loopGameObjectCorners(object: WorldObjectState, out: Float64Array): boo
 const renderInputs = new RenderInputsBuilder();
 /** 22.10 ARC-2 S2b: the frame's pushed caches (display rows, collision models), refilled in place each frame. */
 const renderLookups = new RenderLookupsBuilder();
+/** 22.10 (6.26): the nearest units' looks asked for on arrival, not on admission (UnitPrefetch.ts). */
+const unitLookPrefetch = new UnitLookPrefetch();
 /**
  * 22.10 ARC-2 S5: `?renderbridge=loopback` — the renderer drawn from a mirror fed by the worker's messages, cloned on
  * this thread (RenderBridgeLoopback.ts). Without the flag the renderer reads the live state, as before.
@@ -758,6 +761,8 @@ function frame(now: number): void {
           // 22.10 ARC-2 S2c: then the asking path for the units it admitted, in its order — after the collision asks,
           // as the unit pass followed the environment pass inside draw.
           renderLookups.requestUnitModels(world.state.objects, renderer.unitModelWants(), unitModel);
+          // 22.10 (6.26): and every few frames the nearest units' asking path, admitted or not (UnitPrefetch.ts).
+          unitLookPrefetch.tick(world.state.objects.values(), player?.position, unitModel);
           // 22.10 ARC-2 S3a: the seat pass onto the objects drawn, before the plates, boxes and bubbles read it.
           acceptSeatResults(renderer.results, world.state.objects);
         }

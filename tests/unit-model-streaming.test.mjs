@@ -30,7 +30,9 @@ function methods(names, dependencies = {}) {
   return Function(...Object.keys(deps), body + "; return Harness;")(...Object.values(deps));
 }
 function bodyHarness(budget = new FrameBuildBudget(2, 2, () => 0)) {
-  const Harness = methods(["#attachSkinnedModel", "#updateMount"], {
+  // 22.10 (6.26): #attachSkinnedModel paints a waiting model's body ahead (#composeBodyAhead).
+  const Harness = methods(["#attachSkinnedModel", "#updateMount", "#composeBodyAhead"], {
+    CharacterAtlasClient: class { get() {} compose() {} },
     characterSlots: () => new Map(), worldCharacterGeosets: () => new Set([0]),
     creatureGeosetChoice: (_model, choice) => choice, // 05.10-A7a-H 6.11а: geoset data is not this test's subject
     TEXTURE_TYPE_BODY: 1, M2_TO_SCENE: new THREE.Quaternion(),
@@ -142,6 +144,10 @@ test("renderer continues updating all admitted units and removes objects that le
     camera, frustum: new THREE.Frustum(), selection: {}, formalBenchmarkIsolation: true,
     units: new Map(), actions: new Map(), unitGroup: new THREE.Group(), draws: [],
     unitVisibilityRadius: () => undefined, clearUnitNode() {}, dropEffects() {},
+    // 22.10 (6.26): the pieces #updateUnits gained since this harness was written (vehicles and swing progress,
+    // ARC-2), and the prefetch of the units it did not draw.
+    vehicles: () => undefined, swingWatch: { publish() {} }, results: {}, swingProgressOf: () => undefined,
+    prefetches: 0, prefetchUnits() { this.prefetches++; },
     drawUnit(object) {
       this.draws.push(object.guid);
       if (!this.units.has(object.guid)) this.units.set(object.guid, {
@@ -162,6 +168,7 @@ test("renderer continues updating all admitted units and removes objects that le
   draw();
   assert.equal(h.draws.length, 11);
   assert.equal(h.units.has(0n), false);
+  assert.equal(h.prefetches, 2, "22.10 (6.26): every unit pass offers its undrawn units to the prefetch");
 });
 
 test("equipment requests continue but ready attachment builds share the body and mount slice", () => {
