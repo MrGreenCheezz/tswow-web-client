@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { horizonColourWanted } from "./Horizon.js";
+import { installHorizonDetail, type HorizonDetail } from "./HorizonDetail.js"; // 22.10 (7.44)
 import { applyWorldLight, type WorldLightUniforms } from "./WorldLighting.js";
 
 /**
@@ -21,6 +22,9 @@ export class HorizonMaterialSelector {
   readonly #basic: THREE.Material;
   readonly #worldLight: WorldLightUniforms;
   #lit: THREE.MeshLambertMaterial | undefined;
+  /** 22.10 (7.44): the enhanced path's lit horizon with the minimap detail (HorizonDetail.ts). */
+  #detailed: THREE.MeshLambertMaterial | undefined;
+  #detailedFor: HorizonDetail | undefined;
 
   constructor(basic: THREE.Material, worldLight: WorldLightUniforms) {
     this.#basic = basic;
@@ -36,10 +40,12 @@ export class HorizonMaterialSelector {
    * The material for this frame: the lit, coloured horizon once the map's picture is in, at every
    * lighting level since 7.39; the flat fogged green until then.
    */
-  select(lightingQuality: number, colour: () => THREE.Texture | undefined): THREE.Material {
+  select(lightingQuality: number, colour: () => THREE.Texture | undefined, detail?: HorizonDetail): THREE.Material {
     // 22.10 (7.39): every level takes the coloured horizon; the enhanced fog now shows it.
     const texture = colour();
     if (!horizonColourWanted(lightingQuality, texture !== undefined) || !texture) return this.#basic;
+    // 22.10 (7.44): the caller passes the detail on the enhanced path only.
+    if (detail) return this.#detailMaterial(texture, detail);
     if (!this.#lit) {
       this.#lit = new THREE.MeshLambertMaterial({ map: texture, fog: true });
       this.#lit.color.setScalar(HORIZON_COLOUR_GAIN);
@@ -52,7 +58,34 @@ export class HorizonMaterialSelector {
     return this.#lit;
   }
 
+  /** 22.10 (7.44): the detailed material, once it has been needed (tests and disposal). */
+  get detailed(): THREE.MeshLambertMaterial | undefined {
+    return this.#detailed;
+  }
+
+  #detailMaterial(texture: THREE.Texture, detail: HorizonDetail): THREE.MeshLambertMaterial {
+    if (this.#detailed && this.#detailedFor !== detail) {
+      this.#detailed.dispose();
+      this.#detailed = undefined;
+    }
+    if (!this.#detailed) {
+      const material = new THREE.MeshLambertMaterial({ map: texture, fog: true });
+      material.color.setScalar(HORIZON_COLOUR_GAIN);
+      material.name = "horizon-detail";
+      installHorizonDetail(material, detail);
+      applyWorldLight(material, this.#worldLight, "terrain");
+      this.#detailed = material;
+      this.#detailedFor = detail;
+    } else if (this.#detailed.map !== texture) {
+      this.#detailed.map = texture;
+    }
+    return this.#detailed;
+  }
+
   dispose(): void {
+    this.#detailed?.dispose();
+    this.#detailed = undefined;
+    this.#detailedFor = undefined;
     this.#lit?.dispose();
     this.#lit = undefined;
   }

@@ -53,6 +53,9 @@ export class WmoRangeTable {
   #shellOverride: number | undefined;
   /** 22.10 (7.39): the ceiling on the box-earned shell leash (the faithful levels' 750 yards). */
   #shellCap = Number.POSITIVE_INFINITY;
+  /** 22.10 (7.44): whether the placement is a house (a small outdoor WMO), and the house leash in force. */
+  readonly #house: boolean;
+  #houseRange = 0;
   #result: readonly number[] | undefined;
   readonly #scratch: number[] = [];
   /** The position of the last recompute — the centre of the rest radius, not the last call. */
@@ -74,7 +77,10 @@ export class WmoRangeTable {
     boxes: readonly (THREE.Box3 | undefined)[],
     roomRange: number,
     shellRange: (box: THREE.Box3) => number,
+    /** 22.10 (7.44): a small outdoor WMO: its shell groups take the house leash (SceneryReach.ts). */
+    house = false,
   ) {
+    this.#house = house;
     const count = model.groups.length;
     this.#kind = new Uint8Array(count);
     this.#shell = new Uint8Array(count);
@@ -134,9 +140,11 @@ export class WmoRangeTable {
    * enhanced fog shows them (SceneryReach.ts `environmentShellRange`). A caller's override is not
    * capped. Unchanged, this is a compare; changed, the leashes refill and the next select recomputes.
    */
-  setShellCap(cap: number): void {
-    if (cap === this.#shellCap) return;
+  setShellCap(cap: number, houseRange = 0): void {
+    // 22.10 (7.44): and the house leash, 0 on the faithful levels (SceneryReach.ts environmentHouseRange).
+    if (cap === this.#shellCap && houseRange === this.#houseRange) return;
     this.#shellCap = cap;
+    this.#houseRange = houseRange;
     this.#fillRanges(this.#shellOverride);
     this.#slackSq = 0;
     this.#x = Number.NaN;
@@ -146,7 +154,7 @@ export class WmoRangeTable {
     this.#shellOverride = shellRange;
     for (let index = 0; index < this.#range.length; index++) {
       this.#range[index] = this.#shell[index]
-        ? shellRange ?? Math.min(this.#shellByBox[index]!, this.#shellCap)
+        ? shellRange ?? Math.max(Math.min(this.#shellByBox[index]!, this.#shellCap), this.#house ? this.#houseRange : 0)
         : this.#roomRange;
     }
   }

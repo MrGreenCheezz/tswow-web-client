@@ -424,7 +424,7 @@ test("P1-12c: a new player position re-walks from open air even with the same ca
 test("P1-12c: the renderer asks the rest-radius table and the memo", async () => {
   const source = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
   const openAir = source.slice(source.indexOf("  #wmoRoomsFromOpenAir("), source.indexOf("  #considerWmoFog("));
-  assert.match(openAir, /placed\.openAirRanges \?\?= new WmoRangeTable\(model, placed\.boxes, WMO_OPEN_AIR_ROOM_RANGE, wmoShellRange\)/);
+  assert.match(openAir, /placed\.openAirRanges \?\?= new WmoRangeTable\(model, placed\.boxes, WMO_OPEN_AIR_ROOM_RANGE, WMO_SKYLINE_SHELL_RANGE, placed\.house === true\)/); // 22.10 (7.39) skyline, 7.44 house
   assert.match(openAir, /wmoOpenAirNoteCandidates\(state, ranges\.select\(player\.x, player\.y\), player\.x, player\.y, player\.z\);/);
   assert.doesNotMatch(openAir, /wmoGroupsInRange\(/, "no per-move candidate array");
   const update = source.slice(source.indexOf("  #updateWmoGroups("), source.indexOf("  #wmoRoomsFromOpenAir("));

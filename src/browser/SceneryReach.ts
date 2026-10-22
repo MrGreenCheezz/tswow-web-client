@@ -36,3 +36,24 @@ export function environmentShellRange(lightingQuality: number): number {
 export function environmentStreamRange(shellRange: number, detail: number): number {
   return Math.max(ENVIRONMENT_FAR_RANGE, shellRange, sceneryFarCap(detail)) + ENVIRONMENT_RESIDENT_HYSTERESIS;
 }
+
+/**
+ * 22.10 (7.44): the enhanced path's leash for small outdoor WMOs — the houses, barns, mills and
+ * towers whose wire box is under the 120-yard far-tier diagonal. Their outdoor shell groups were
+ * held at 250 yards and the placement at 400, which the faithful levels' 500-yard fog hid; under the
+ * enhanced fog (7.39) Goldshire's houses vanished a quarter mile out. Only the shell groups (the
+ * `exterior || !indoor` ones) take it: rooms stay at 60 yards and doodads keep their own leashes.
+ */
+export const ENVIRONMENT_HOUSE_RANGE = 1100;
+
+/** The house leash in force for this shell range: 0 (no change) on the faithful levels. */
+export function environmentHouseRange(shellRange: number): number {
+  return shellRange > ENVIRONMENT_FAR_RANGE ? Math.min(shellRange, ENVIRONMENT_HOUSE_RANGE) : 0;
+}
+
+/*
+ * 22.10 (7.44): a landmark step — non-vegetation M2s of radius 10+ keeping their size-scaled leash
+ * past the 750-yard cap up to the shell range — was measured and left out: +30 draws and +0.3 ms
+ * CPU in the city bench (Stormwind harbour's dock pylons and cranes), against 26 cliff rocks
+ * around Goldshire. The minimap detail (HorizonDetail.ts) already shows those rocks past 750.
+ */

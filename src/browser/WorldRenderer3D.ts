@@ -32,7 +32,7 @@ import { SpellVisualIds } from "./SpellVisualIds.js"; // 22.10 ARC-2 S4a
 import { captureBenchmarkWebGl, type BenchmarkEnvironmentInput } from "./BenchmarkManifest.js"; // 21.10 ARC-2 S1
 import { distanceFogRange, distanceHorizonRange, type DistanceFogRange } from "./DistanceFog.js";
 import { HorizonBand } from "./HorizonBand.js";
-import { ENVIRONMENT_DETAIL_FAR_MAX, environmentShellRange, environmentStreamRange, sceneryFarCap } from "./SceneryReach.js";
+import { ENVIRONMENT_DETAIL_FAR_MAX, environmentHouseRange, environmentShellRange, environmentStreamRange, sceneryFarCap } from "./SceneryReach.js"; // 7.44: house
 import { ENVIRONMENT_FAR_RANGE, ENVIRONMENT_RANGE, ENVIRONMENT_SHELL_RANGE, ENVIRONMENT_RESIDENT_HYSTERESIS, TERRAIN_GRID_SIZE, modelKey, terrainGrid, terrainGridIndex, type EnvironmentClient, type EnvironmentModel, type EnvironmentObject, type TerrainClient } from "./Terrain.js";
 import { terrainGeometryData, terrainGeometrySteps, type TerrainGeometryData } from "./TerrainGeometry.js";
 export { terrainGeometryData, terrainHeightField, terrainNormals, surfaceNormal, type TerrainGeometryData } from "./TerrainGeometry.js";
@@ -265,6 +265,8 @@ import {
 } from "./Horizon.js";
 import { horizonTileAt } from "./Horizon.js"; // 05.10-A7b-7
 import { HorizonMaterialSelector } from "./HorizonMaterial.js"; // 05.10-A7b-7
+import { HorizonDetail } from "./HorizonDetail.js"; // 22.10 (7.44)
+import { HORIZON_LOD_REACH, HorizonLodRing } from "./HorizonLodRing.js"; // 22.10 (7.44)
 import {
   billboardView, buildModelEffects, disposeModelEffects, resetModelEffects, setModelEffectsFantasyGlow,
   updateModelEffects,
@@ -1181,8 +1183,10 @@ export function environmentDrawRange(object: EnvironmentObject, detail = 1, shel
   }
   // 22.10 (7.39): 1,100 on the enhanced path (SceneryReach.ts environmentShellRange), else 750.
   if (environmentFarEligible(object)) return shellRange;
-  const legacy = environmentVegetation(object) ? ENVIRONMENT_VEGETATION_RANGE : ENVIRONMENT_RANGE;
-  if (object.kind !== "m2") return legacy;
+  const vegetation = environmentVegetation(object);
+  const legacy = vegetation ? ENVIRONMENT_VEGETATION_RANGE : ENVIRONMENT_RANGE;
+  // 22.10 (7.44): a small outdoor WMO (a house) keeps the enhanced path's house leash (SceneryReach.ts).
+  if (object.kind !== "m2") return vegetation ? legacy : Math.max(legacy, environmentHouseRange(shellRange));
   const sized = environmentSceneryRange(object, detail);
   if (sized !== undefined) return sized;
   const scale = environmentDetailScale(detail);
@@ -1402,6 +1406,11 @@ export function environmentFarEligible(object: EnvironmentObject): boolean {
   return diagonal !== undefined && diagonal >= ENVIRONMENT_FAR_MIN_DIAGONAL;
 }
 
+/** 22.10 (7.44): a small outdoor WMO placement — a house, barn or tower — whose shells take the house leash. */
+export function wmoHousePlacement(object: EnvironmentObject): boolean {
+  return object.kind === "wmo" && object.interior !== true && !environmentFarEligible(object) && !environmentVegetation(object);
+}
+
 const vegetationKindCache = new WeakMap<EnvironmentObject, boolean>();
 
 /**
@@ -1495,7 +1504,7 @@ export function environmentObjectVisibleInFrustum(
 /** Which admission quota a candidate competes in. */
 type EnvironmentAdmissionTier = "near" | "scenery" | "far" | "interior";
 
-function environmentAdmissionTier({ object, distance }: RankedEnvironmentObject): EnvironmentAdmissionTier | undefined {
+function environmentAdmissionTier({ object, distance, range }: RankedEnvironmentObject): EnvironmentAdmissionTier | undefined {
   // An interior-only building's doodad is admitted while one of its MODR rooms is shown: the
   // room answer moves with the camera every frame, the 400-yard candidate list does not.
   if (object.interior === true) {
@@ -1506,7 +1515,9 @@ function environmentAdmissionTier({ object, distance }: RankedEnvironmentObject)
   if (distance <= ENVIRONMENT_RANGE) return "near";
   // The far tier is its own quota: nearest-first over a merged list would spend the whole near
   // budget before a castle 500 yards out ever got a slot.
-  return environmentFarEligible(object) || environmentVegetation(object) ? "far" : undefined;
+  // 22.10 (7.44): a house ranked with the enhanced path's house leash (SceneryReach.ts) is far too.
+  return environmentFarEligible(object) || environmentVegetation(object)
+    || (object.kind === "wmo" && range !== undefined && range > ENVIRONMENT_RANGE) ? "far" : undefined;
 }
 
 /**
@@ -2377,6 +2388,8 @@ interface RenderedEnvironment {
 }
 
 interface PlacedWmo {
+  /** 22.10 (7.44): a small outdoor WMO (wmoHousePlacement): its shells take the house leash. */
+  house?: boolean;
   /** Visual ADT id, used only after a raw-vmap placement has matched by name and transform. */
   visualId: number;
   name: string;
@@ -4331,12 +4344,16 @@ export class WorldRenderer3D {
   readonly #terrains = new Map<string, RenderedTerrain>();
   /** The far horizon: one mesh for every distant tile, rebuilt when the player changes tile. */
   /** P1-13b: the horizon mesh and what it was built for — `map * 4096 + cell` and the client revision. */
-  #horizon: { mesh: THREE.Mesh; tile: number; revision: number } | undefined;
+  #horizon: { mesh: THREE.Mesh; tile: number; revision: number; inner: number } | undefined; // 7.44: inner reach
+  /** 22.10 (7.44): the enhanced path's first ring past the near window, from real terrain heights. */
+  readonly #horizonLod = new HorizonLodRing();
   /** 22.10 (7.39): the enhanced path's coarse outer horizon, tiles five and six (HorizonBand.ts). */
   readonly #horizonBand = new HorizonBand();
   readonly #horizonMaterial = new THREE.MeshBasicMaterial({ color: 0x4a6b4f, fog: true });
   /** 05.10-A7b-7 (7.08): the classic path's lit, coloured horizon beside the flat one above. */
   #horizonMaterials: HorizonMaterialSelector | undefined;
+  /** 22.10 (7.44): the enhanced path's minimap detail over the inner horizon (HorizonDetail.ts). */
+  #horizonDetail: HorizonDetail | undefined;
   readonly #wmoMaterial = new THREE.MeshStandardMaterial({ color: 0x927d62, roughness: 0.92, side: THREE.DoubleSide, flatShading: true });
   readonly #m2Material = new THREE.MeshStandardMaterial({ color: 0x73835e, roughness: 0.95, side: THREE.DoubleSide, flatShading: true });
   readonly #stoneMaterial = new THREE.MeshStandardMaterial({ color: 0x747b80, roughness: 1, side: THREE.DoubleSide, flatShading: true });
@@ -7529,6 +7546,7 @@ export class WorldRenderer3D {
       this.#horizon = undefined;
     }
     this.#horizonBand.clear(this.#scene); // 22.10 (7.39)
+    this.#horizonLod.clear(this.#scene); // 22.10 (7.44)
     this.#clearGroundCover();
     for (const key of [...this.#instances.keys()]) this.#dropInstance(key);
     for (const ring of this.#selectionRings.values()) {
@@ -7676,6 +7694,8 @@ export class WorldRenderer3D {
     this.#waterDetailMaps.dispose();
     this.#disposeFullscreenGlowTargets();
     this.#horizonMaterials?.dispose(); // 05.10-A7b-7
+    this.#horizonDetail?.dispose(); // 22.10 (7.44)
+    this.#horizonDetail = undefined;
     this.#environmentStandInMarkers.dispose(); // 05.10-A7b-9 7.18
     this.#lightHalos.dispose(); // 22.10 (7.36)
     for (const geometry of [
@@ -8427,7 +8447,7 @@ export class WorldRenderer3D {
     this.#drawPhaseMs.setup = performance.now() - drawPhaseAt;
     drawPhaseAt = performance.now();
     this.#updateTerrain(player.position, map, heightAt, terrainClient, splatClient);
-    this.#updateHorizon(player.position, map, horizonClient);
+    this.#updateHorizon(player.position, map, horizonClient, terrainClient); // 7.44: the LOD ring's terrain
     this.#drawPhaseMs.terrain = performance.now() - drawPhaseAt;
     drawPhaseAt = performance.now();
     this.#updateEnvironment(player.position, objects, environmentClient, elapsed);
@@ -10392,7 +10412,8 @@ export class WorldRenderer3D {
    * per frame: it is forty-odd tiles of static geometry and its own accuracy is a whole yard, so
    * there is nothing in it that changes as the camera moves.
    */
-  #updateHorizon(player: WorldPosition, map: number | undefined, horizonClient: HorizonClient | undefined): void {
+  #updateHorizon(player: WorldPosition, map: number | undefined, horizonClient: HorizonClient | undefined,
+    terrainClient?: TerrainClient): void {
     // P1-13b: the centre tile as one number (`map * 4096 + cell`); its grid object only on a rebuild.
     const cell = map === undefined ? -1 : terrainGridIndex(player.x, player.y);
     const world = horizonClient?.get(map);
@@ -10403,18 +10424,27 @@ export class WorldRenderer3D {
         this.#horizon = undefined;
       }
       this.#horizonBand.clear(this.#scene); // 22.10 (7.39)
+      this.#horizonLod.clear(this.#scene); // 22.10 (7.44)
       return;
     }
     const tile = map * 4096 + cell;
     const revision = horizonClient?.revision ?? 0;
     // 05.10-A7b-7 (7.08): lit and coloured on the classic path once the map's picture is in.
     this.#horizonMaterials ??= new HorizonMaterialSelector(this.#horizonMaterial, this.#worldLight);
-    const horizonMaterial = this.#horizonMaterials.select(this.#lightingProfile.quality, () => horizonClient?.colour(map));
+    const horizonMaterial = this.#horizonMaterials.select(this.#lightingProfile.quality, () => horizonClient?.colour(map),
+      this.#updateHorizonDetail(map, cell, horizonClient)); // 22.10 (7.44)
     if (this.#horizon && this.#horizon.mesh.material !== horizonMaterial) this.#horizon.mesh.material = horizonMaterial;
     // 22.10 (7.39): the enhanced path's fog reaches past these four tiles; the band beyond them is
     // built on a frame of its own, never the one that rebuilt this mesh (HorizonBand.ts).
     const bandRange = distanceHorizonRange(this.#lightingProfile.quality);
-    if (this.#horizon?.tile === tile && this.#horizon.revision === revision) {
+    // 22.10 (7.44): the enhanced path draws the first ring past the near window from the terrain's
+    // own heights (HorizonLodRing.ts) and the WDL ring leaves it out; the faithful levels keep the WDL.
+    const enhanced = !lightingClassicLook(this.#lightingProfile.quality);
+    const inner = enhanced ? HORIZON_LOD_REACH : 1;
+    if (enhanced) {
+      this.#horizonLod.update(this.#scene, map, Math.floor(cell / 64), cell % 64, world, terrainClient, horizonMaterial);
+    } else this.#horizonLod.clear(this.#scene);
+    if (this.#horizon?.tile === tile && this.#horizon.revision === revision && this.#horizon.inner === inner) {
       this.#horizonBand.update(this.#scene, world, tile, revision, bandRange, horizonMaterial);
       return;
     }
@@ -10424,7 +10454,7 @@ export class WorldRenderer3D {
     }
     this.#horizonBand.hideUnless(tile); // 22.10 (7.39): an old band would overlap the new ring
     const centre = { x: Math.floor(cell / 64), y: cell % 64 };
-    const tiles = horizonTiles(world, centre);
+    const tiles = horizonTiles(world, centre, undefined, inner); // 22.10 (7.44)
     if (tiles.length === 0) {
       this.#horizon = undefined;
       return;
@@ -10434,8 +10464,30 @@ export class WorldRenderer3D {
     // neither depth nor a depth test, so anything sharing that order is painted over by it —
     // measured as a horizon that loaded, selected its 63 tiles, built its mesh and never appeared.
     mesh.renderOrder = 0;
-    this.#horizon = { mesh, tile, revision };
+    this.#horizon = { mesh, tile, revision, inner };
     this.#scene.add(mesh);
+  }
+
+  /**
+   * 22.10 (7.44): stream the minimap detail around the player's tile on the enhanced path; the
+   * faithful levels release it (and its 21 MB) and keep the colour map alone.
+   */
+  #updateHorizonDetail(map: number, cell: number, horizonClient: HorizonClient | undefined): HorizonDetail | undefined {
+    if (lightingClassicLook(this.#lightingProfile.quality) || !horizonClient) {
+      if (this.#horizonDetail) {
+        this.#horizonDetail.dispose();
+        this.#horizonDetail = undefined;
+      }
+      return undefined;
+    }
+    this.#horizonDetail ??= new HorizonDetail();
+    this.#horizonDetail.update(this.#renderer, map, Math.floor(cell / 64), cell % 64, horizonClient.detail, performance.now());
+    return this.#horizonDetail;
+  }
+
+  /** 22.10 (7.44): far-ground detail cells still loading or waiting for their upload (bench readiness). */
+  get horizonDetailPending(): number {
+    return this.#horizonDetail?.pending ?? 0;
   }
 
   #buildTerrain(key: string, map: number, grid: { x: number; y: number }, revision: number, ownRevision: number, player: WorldPosition, heightAt: HeightSampler | undefined, terrainClient: TerrainClient | undefined): void {
@@ -12305,7 +12357,8 @@ export class WorldRenderer3D {
         modelToWorld,
         worldToModel: modelToWorld.clone().invert(),
         built: new Map(),
-        ranges: new WmoRangeTable(model, boxes, INTERIOR_RANGE, WMO_SKYLINE_SHELL_RANGE), // P1-12a; 7.39: capped per path
+        house: wmoHousePlacement(object), // 22.10 (7.44)
+        ranges: new WmoRangeTable(model, boxes, INTERIOR_RANGE, WMO_SKYLINE_SHELL_RANGE, wmoHousePlacement(object)), // P1-12a; 7.39: capped per path; 7.44: house
       },
     };
   }
@@ -12466,7 +12519,7 @@ export class WorldRenderer3D {
     // question for every admitted building every frame. 05.10-7.05-review: the transport shell leash.
     // P1-12 telemetry: the table counts into the renderer's totals (a fake `ranges` just gains a field).
     placed.ranges.totals ??= this.#wmoRangeGroups;
-    placed.ranges.setShellCap?.(this.environmentShellRange); // 22.10 (7.39)
+    placed.ranges.setShellCap?.(this.environmentShellRange, environmentHouseRange(this.environmentShellRange)); // 22.10 (7.39), 7.44
     let distanceGroups = placed.ranges.select(player.x, player.y, shellRange);
     // 22.10 (7.41): a building admitted for its shadow alone hangs only its outdoor rooms in the
     // distance leash — those with a stand-in — and none of the view's walks below run for it.
@@ -12661,8 +12714,8 @@ export class WorldRenderer3D {
     const state = placed.openAir ??= createWmoOpenAirState();
     if (wmoOpenAirCandidatesStale(state, player.x, player.y, player.z)) {
       // P1-12c: from a rest radius, the same array while unchanged; noting it still re-walks (the viewer moved).
-      const ranges = placed.openAirRanges ??= new WmoRangeTable(model, placed.boxes, WMO_OPEN_AIR_ROOM_RANGE, WMO_SKYLINE_SHELL_RANGE);
-      ranges.setShellCap(this.environmentShellRange); // 22.10 (7.39)
+      const ranges = placed.openAirRanges ??= new WmoRangeTable(model, placed.boxes, WMO_OPEN_AIR_ROOM_RANGE, WMO_SKYLINE_SHELL_RANGE, placed.house === true);
+      ranges.setShellCap(this.environmentShellRange, environmentHouseRange(this.environmentShellRange)); // 22.10 (7.39), 7.44
       ranges.totals ??= this.#wmoRangeOpenAir; // P1-12 telemetry
       wmoOpenAirNoteCandidates(state, ranges.select(player.x, player.y), player.x, player.y, player.z);
     }

@@ -119,7 +119,7 @@ test("the renderer stretches the fog per frame and builds the band only on uncha
   assert.match(body, /this\.#wmoInteriorFog\.far\.value = range\.far;/, "WMO materials take the same range");
   const horizon = source.slice(source.indexOf("  #updateHorizon(player: WorldPosition"));
   const method = horizon.slice(0, horizon.indexOf("\n  }\n"));
-  const unchanged = method.indexOf("if (this.#horizon?.tile === tile && this.#horizon.revision === revision) {");
+  const unchanged = method.indexOf("if (this.#horizon?.tile === tile && this.#horizon.revision === revision && this.#horizon.inner === inner) {");
   const bandUpdate = method.indexOf("this.#horizonBand.update(");
   assert.ok(unchanged > 0 && bandUpdate > unchanged && bandUpdate < method.indexOf("return;", unchanged));
   assert.ok(method.indexOf("this.#horizonBand.hideUnless(tile)") > unchanged);

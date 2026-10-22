@@ -191,11 +191,11 @@ test("P1-12: the renderer sums both kinds of table into telemetry and the harnes
     readFile(new URL("../bench/run.mjs", import.meta.url), "utf8"),
   ]);
   const update = source.slice(source.indexOf("  #updateWmoGroups("), source.indexOf("  #wmoRoomsFromOpenAir("));
-  assert.match(update, /placed\.ranges\.totals \?\?= this\.#wmoRangeGroups;\n\s*let distanceGroups = placed\.ranges\.select\(player\.x, player\.y, shellRange\);/);
+  assert.match(update, /placed\.ranges\.totals \?\?= this\.#wmoRangeGroups;\n\s*placed\.ranges\.setShellCap[^\n]*\n\s*let distanceGroups = placed\.ranges\.select\(player\.x, player\.y, shellRange\);/);
   const openAir = source.slice(source.indexOf("  #wmoRoomsFromOpenAir("), source.indexOf("  #considerWmoFog("));
   assert.match(openAir, /ranges\.totals \?\?= this\.#wmoRangeOpenAir;[^\n]*\n\s*wmoOpenAirNoteCandidates\(state, ranges\.select\(player\.x, player\.y\)/);
   // Robust to a fake `ranges` holding only `select` (tests, Pick<> typing): nothing else is read off it.
-  assert.doesNotMatch(update, /placed\.ranges\.(?!select\(|totals \?\?=)/);
+  assert.doesNotMatch(update, /placed\.ranges\.(?!select\(|totals \?\?=|setShellCap\?\.\()/); // 22.10 (7.39): and the optional shell cap
   const telemetry = source.slice(source.indexOf("  get telemetry(): "), source.indexOf("  get builtModelResidencyStats("));
   assert.match(telemetry, /groups: Object\.freeze\(\{ selects: this\.#wmoRangeGroups\.selects, recomputes: this\.#wmoRangeGroups\.recomputes \}\)/);
   assert.match(telemetry, /openAir: Object\.freeze\(\{ selects: this\.#wmoRangeOpenAir\.selects, recomputes: this\.#wmoRangeOpenAir\.recomputes \}\)/);
@@ -207,7 +207,7 @@ test("P1-12: the renderer sums both kinds of table into telemetry and the harnes
 test("P1-12a: the reference and the shell rule stay untouched in the renderer", async () => {
   const source = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
   assert.match(source, /if \(Math\.hypot\(outsideX, outsideZ\) < range\) chosen\.push\(index\);/);
-  assert.match(source, /ranges: new WmoRangeTable\(model, boxes, INTERIOR_RANGE, wmoShellRange\), \/\/ P1-12a/);
+  assert.match(source, /ranges: new WmoRangeTable\(model, boxes, INTERIOR_RANGE, WMO_SKYLINE_SHELL_RANGE, wmoHousePlacement\(object\)\), \/\/ P1-12a/); // 22.10 (7.39) skyline, 7.44 house
   const placed = source.slice(source.indexOf("interface PlacedWmo {"), source.indexOf("\n}\n", source.indexOf("interface PlacedWmo {")));
   assert.ok(!placed.includes("rangePlayer") && !placed.includes("rangeGroups"), "the exact-position cache is gone");
 });

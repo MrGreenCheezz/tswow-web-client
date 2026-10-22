@@ -61,13 +61,14 @@ export function benchReadiness(world: WorldRenderer3D, clients: BenchClients,
   missingTextures: KnownMissingTextureLedger): BenchReadiness {
   const { environment, terrain, splat, cover, lighting, liquids, horizon } = clients;
   const e = environment.stats, t = terrain.stats, s = splat.stats, r = world.benchmarkReadiness;
-  const async = [cover.stats, lighting.stats, liquids.stats, horizon.stats];
+  const async = [cover.stats, lighting.stats, liquids.stats, horizon.stats, horizon.detail.stats]; // 22.10 (7.44): detail
   const pending = e.activeTiles + e.activeModels + e.queuedModels + e.activeGroups + e.queuedGroups
     + e.activeAnimations + e.queuedAnimations + t.active + s.active
     + r.modelTexturesPending + r.worldTexturesPending + (r.wmoGroupsPending ?? 0)
     + (r.terrainRepairsPending ?? 0)
     + r.groundCoverModelsPending + r.characterAtlasPending
-    + world.programWarmup.queued + async.reduce((n, x) => n + x.pending, 0);
+    + world.programWarmup.queued + async.reduce((n, x) => n + x.pending, 0)
+    + world.horizonDetailPending; // 22.10 (7.44)
   const errors = e.failedModels + e.failedTiles + e.failedGroups + e.failedAnimations
     + r.modelTexturesErrors + r.worldTexturesErrors + r.characterAtlasErrors + t.failed + s.failed + async.reduce((n, x) => n + x.error, 0);
   // 05.10-A7b-9 (7.18): the environment stand-ins with the tile losses and retry waits of this run's clients.

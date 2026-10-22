@@ -4,6 +4,7 @@ import type { RetainedResourceVisitor } from "./ResourceAccounting.js";
 import type { BenchmarkAsyncReadinessStats } from "./RenderBenchmarkReadiness.js";
 import { withGeneration } from "./GatewayGeneration.js";
 import { RetryLadder } from "./RetryLadder.js"; // 05.10-A7b-0 1.24
+import { HorizonDetailTiles } from "./HorizonDetailTiles.js"; // 22.10 (7.44)
 
 /**
  * The world beyond the tiles that are really loaded, out of the client's own `.wdl`.
@@ -133,12 +134,16 @@ export function decodeHorizon(data: ArrayBuffer): HorizonMap {
  * Never the nine the near ring holds — those are real ground, and a low-resolution copy of them
  * fighting for the depth buffer is the one way this can look worse than nothing.
  */
-export function horizonTiles(map: HorizonMap, centre: { x: number; y: number }, rangeYards = HORIZON_RANGE): HorizonTile[] {
+export function horizonTiles(
+  map: HorizonMap, centre: { x: number; y: number }, rangeYards = HORIZON_RANGE,
+  /** 22.10 (7.44): the Chebyshev reach left to others — 1 (the near ring), 2 on the enhanced path (HorizonLodRing.ts). */
+  inner = 1,
+): HorizonTile[] {
   const reach = Math.ceil(rangeYards / TERRAIN_GRID_SIZE);
   const found: HorizonTile[] = [];
   for (let gridX = centre.x - reach; gridX <= centre.x + reach; gridX++) {
     for (let gridY = centre.y - reach; gridY <= centre.y + reach; gridY++) {
-      if (Math.abs(gridX - centre.x) <= 1 && Math.abs(gridY - centre.y) <= 1) continue;
+      if (Math.abs(gridX - centre.x) <= inner && Math.abs(gridY - centre.y) <= inner) continue;
       const tile = map.tiles.get(tileKey(gridX, gridY));
       if (tile) found.push(tile);
     }
@@ -321,6 +326,8 @@ export class HorizonClient {
   #revision = 0;
   #success = 0;
   #error = 0;
+  /** 22.10 (7.44): the minimap bakes the enhanced path lays over the inner rings (HorizonDetail.ts). */
+  readonly detail: HorizonDetailTiles;
 
   /** `now` (05.10-A7b-0 1.24) is the retry ladder's clock; tests inject their own. */
   constructor(gatewayWebSocketUrl: string, now?: () => number) {
@@ -329,6 +336,7 @@ export class HorizonClient {
     this.#baseUrl = url.origin;
     this.#failures = new RetryLadder<number>(undefined, now);
     this.#colourFailures = new RetryLadder<number>(undefined, now); // 05.10-A7b-7
+    this.detail = new HorizonDetailTiles(gatewayWebSocketUrl);
   }
 
   /**

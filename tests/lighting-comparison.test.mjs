@@ -63,7 +63,8 @@ test("7.20 the classic look covers quality 0 and the comparison level only", () 
   assert.equal(terrainSpecularStrength(2), 0);
   assert.equal(horizonColourWanted(3, true), true, "lit, coloured horizon");
   assert.equal(horizonColourWanted(3, false), false);
-  assert.equal(horizonColourWanted(1, true), false);
+  // 22.10 (7.39): the enhanced fog reaches the horizon, so every level takes its colour (7.44 lays the detail over it).
+  assert.equal(horizonColourWanted(1, true), true);
 });
 
 test("7.20 the horizon selector draws the lit horizon on the comparison level", () => {
@@ -71,7 +72,9 @@ test("7.20 the horizon selector draws the lit horizon on the comparison level", 
   const selector = new HorizonMaterialSelector(basic, createWorldLightUniforms());
   const texture = new THREE.Texture();
   assert.equal(selector.select(3, () => texture).name, "horizon-lit");
-  assert.equal(selector.select(1, () => texture) === basic, true);
+  // 22.10 (7.39): every level takes the lit, coloured horizon; 7.44 adds the detail only when the renderer passes it.
+  assert.equal(selector.select(1, () => texture).name, "horizon-lit");
+  assert.equal(selector.select(1, () => undefined) === basic, true);
   selector.dispose();
   basic.dispose();
 });
@@ -81,7 +84,7 @@ test("7.20 the renderer's classic branches read the classic look, not quality 0"
   assert.equal(world.includes("this.#lightingProfile.quality === 0"), false,
     "no renderer branch singles out quality 0 any more");
   const uses = world.split("lightingClassicLook(this.#lightingProfile.quality)").length - 1;
-  assert.equal(uses, 4, "key light, cinematic override, visible sun and (13.10 7.04) the classic dome");
+  assert.equal(uses, 5, "key light, cinematic override, visible sun, (13.10 7.04) the classic dome and (22.10 7.44) the horizon detail");
   const cinematic = world.slice(world.indexOf("  #applyCinematicProfile(): void {"));
   assert.match(cinematic.slice(0, 400),
     /const profile = lightingClassicLook\(this\.#lightingProfile\.quality\) \? undefined : this\.#cinematicRequested;/,
