@@ -149,6 +149,8 @@ export interface AtmosphereFrame {
   /** The character's feet, scene space. */
   feet: THREE.Vector3;
   heightAt: HeightSampler | undefined;
+  /** 22.10 (7.45): the character is flying, so the rain lands on the ground below, not at the feet. */
+  flying?: boolean;
   /** Frame clock in seconds (deterministic under the bench) and the step. */
   seconds: number;
   elapsed: number;
@@ -285,7 +287,7 @@ export class AtmosphereEffects {
       this.#splashes ??= this.#adopt(new RainSplashes());
       if (outdoorsRain > 0 && !this.#splashTexture) this.#splashTexture = this.#load(RAIN_SPLASH_TEXTURE);
       this.#splashes.update(frame.feet, frame.heightAt, frame.elapsed, outdoorsRain,
-        this.#splashTexture ?? null, this.#rainLight, frame.quality);
+        this.#splashTexture ?? null, this.#rainLight, frame.quality, frame.flying === true);
       WET_SURFACE_UNIFORMS.rain.value = raining;
     }
     WET_SURFACE_UNIFORMS.time.value = frame.seconds;
