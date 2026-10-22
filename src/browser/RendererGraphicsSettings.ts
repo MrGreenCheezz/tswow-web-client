@@ -46,6 +46,8 @@ export function applyRendererGraphicsSettings(
   renderer.setUnderwaterOverlay?.(settingBoolean(values, "underwaterOverlay"));
   // 22.10 (7.47): «Объём земли», its own leaf; the renderer draws it on the enhanced levels only.
   renderer.setTerrainRelief?.(settingBoolean(values, "experimentalTerrainRelief"));
+  // 22.10 (7.47 stage 2): «Объём зданий», its own leaf, enhanced levels only like the ground's.
+  renderer.setWmoRelief?.(settingBoolean(values, "experimentalWmoRelief"));
   // The classic glow and solar rays are independent leaves sharing one offscreen scene path. Each
   // switch controls only its own effect; the direct pre-P4 path is selected only when both are OFF.
   renderer.setFullscreenGlow?.(settingBoolean(values, "fullscreenGlow"));

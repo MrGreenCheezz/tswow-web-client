@@ -45,6 +45,7 @@ export const SETTING_SECTIONS: Readonly<Partial<Record<SettingGroup, readonly Se
       ids: Object.freeze([
         "experimentalSceneryShadows", "experimentalAmbientOcclusion", "experimentalTerrainMicroNormals",
         "experimentalTerrainRelief", // 22.10 (7.47)
+        "experimentalWmoRelief", // 22.10 (7.47 stage 2)
       ]),
     }),
     Object.freeze({

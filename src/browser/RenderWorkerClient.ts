@@ -162,6 +162,7 @@ export class RenderWorkerClient implements ClientRenderer {
   }
   setUnderwaterOverlay(...args: Args<"setUnderwaterOverlay">): void { this.#send("setUnderwaterOverlay", args); }
   setTerrainRelief(...args: Args<"setTerrainRelief">): void { this.#send("setTerrainRelief", args); } // 22.10 (7.47)
+  setWmoRelief(...args: Args<"setWmoRelief">): void { this.#send("setWmoRelief", args); } // 22.10 (7.47 stage 2)
   setFullscreenGlow(...args: Args<"setFullscreenGlow">): void { this.#send("setFullscreenGlow", args); }
   setGodRays(...args: Args<"setGodRays">): void { this.#send("setGodRays", args); }
   setGodRayStrength(...args: Args<"setGodRayStrength">): void { this.#send("setGodRayStrength", args); }

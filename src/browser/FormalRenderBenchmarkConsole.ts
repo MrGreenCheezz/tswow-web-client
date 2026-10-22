@@ -327,6 +327,7 @@ function buildVariantConfigurations(settings: BenchmarkJsonObject): Readonly<{ A
   base.experimentalAerialHeightFog = false;
   base.experimentalTerrainMicroNormals = false;
   base.experimentalTerrainRelief = false; // 22.10 (7.47)
+  base.experimentalWmoRelief = false; // 22.10 (7.47 stage 2)
   base.experimentalWaterFresnel = false;
   base.experimentalWaterMicroWaves = false;
   base.experimentalWaterSunSparkle = false;

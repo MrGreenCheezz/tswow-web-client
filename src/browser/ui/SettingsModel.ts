@@ -104,6 +104,11 @@ export const SETTING_DEFINITIONS: readonly SettingDefinition[] = [
     hint: "Камни, мостовая и трещины на земле вблизи выглядят объёмными и отбрасывают мелкие тени. Только с улучшенным освещением; немного нагружает видеокарту.",
   },
   {
+    // 22.10 (7.47 stage 2): the same relief on building surfaces (WMO); enhanced lighting levels only.
+    id: "experimentalWmoRelief", label: "Объём зданий", group: "Эффекты", kind: "boolean", fallback: true,
+    hint: "Каменная кладка, кирпич, черепица и доски на стенах и мостовые городов вблизи выглядят объёмными. Только с улучшенным освещением; немного нагружает видеокарту.",
+  },
+  {
     id: "experimentalWaterFresnel", label: "Отражения на воде", group: "Эффекты", kind: "boolean", fallback: true,
     hint: "Поверхность сильнее отражает свет при взгляде вдоль воды и остаётся прозрачнее при взгляде сверху.",
   },
