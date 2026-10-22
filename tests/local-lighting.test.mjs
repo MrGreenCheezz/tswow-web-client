@@ -9,6 +9,8 @@ import {
 import { applyWorldLight, createWorldLightUniforms, setWorldLightDaylight } from "../dist/code/browser/WorldLighting.js";
 import { lightingProfile } from "../dist/code/browser/LightingQuality.js";
 import { fixtureLightSource } from "../dist/code/browser/FixtureLightSources.js"; // 06.10-render-fix
+import { LOCAL_LIGHT_FOCUS_AHEAD } from "../dist/code/browser/CinematicLights.js"; // 22.10 (7.36)
+import { LightHalos } from "../dist/code/browser/LightHalos.js"; // 22.10 (7.36)
 
 const close = (a, b) => assert.ok(Math.abs(a - b) < 1e-6, `${a} != ${b}`);
 const lampName = "World\\Generic\\Human\\Passive Doodads\\Lampposts\\DuskwoodLamppost.m2";
@@ -106,7 +108,7 @@ test("nearest light selection is bounded, transforms into camera space and clear
   assert.equal(uniforms.wowLocalLightPosition.value, positions, "uniform storage survives toggling");
   assert.equal(lightingProfile(0).localLights, 0);
   assert.equal(lightingProfile(1).localLights, 4);
-  assert.equal(lightingProfile(2, { shadowMaps: false, maxTextureSize: 0 }).localLights, 8);
+  assert.equal(lightingProfile(2, { shadowMaps: false, maxTextureSize: 0 }).localLights, 12); // 22.10 (7.36)
 });
 
 test("local light has a soft finite radius in every production lit material", () => {
@@ -151,8 +153,8 @@ test("production fixture pass keeps instanced offscreen lamps, skips interiors a
   const js = ts.transpileModule(`class Harness { ${method.getText(parsed).replaceAll("#", "")} }`, {
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
   }).outputText;
-  const Harness = Function("modelFixtureLights", "sampleFixtureLight", "fixtureLightSource", js + ";return Harness;")(
-    modelFixtureLights, sampleFixtureLight, fixtureLightSource); // 06.10-render-fix
+  const Harness = Function("modelFixtureLights", "sampleFixtureLight", "fixtureLightSource", "LOCAL_LIGHT_FOCUS_AHEAD",
+    js + ";return Harness;")(modelFixtureLights, sampleFixtureLight, fixtureLightSource, LOCAL_LIGHT_FOCUS_AHEAD); // 06.10-render-fix; 22.10 (7.36)
   const harness = new Harness();
   const model = lampModel();
   const placement = new THREE.Group();
@@ -167,6 +169,8 @@ test("production fixture pass keeps instanced offscreen lamps, skips interiors a
   const far = { node: farPlacement, source: { id: 3, name: lampName }, wvm: model, skinned: { root: expensive } };
   Object.assign(harness, {
     localLightSelection: new LocalLightSelection(), localLightSample: sample(), localLightMatrix: new THREE.Matrix4(),
+    localLightFocus: new THREE.Vector3(), lightHalos: new LightHalos(), // 22.10 (7.36)
+    addLightHalo: (position, colour, strength) => harness.lightHalos.add(position, colour, strength, 0, harness.camera.position),
     lightingProfile: lightingProfile(1), worldLight: createWorldLightUniforms(), camera: new THREE.PerspectiveCamera(),
     environment: new Map([[1, retained], [2, { ...retained, interior: true, source: { id: 2, interior: true, name: lampName } }], [3, far],
       // 06.10-render-fix: a building's façade lamp (v5 tile: `interior: false`) lights nothing.
@@ -176,6 +180,13 @@ test("production fixture pass keeps instanced offscreen lamps, skips interiors a
   assert.equal(harness.worldLight.wowLocalLightCount.value, 1, "instancing and frustum hiding must not extinguish an outdoor lamp");
   close(harness.worldLight.wowLocalLightPosition.value[0].x, 2);
   close(harness.worldLight.wowLocalLightPosition.value[0].y, 3);
+  assert.equal(harness.lightHalos.mesh.count, 0, "22.10 (7.36): no halo outside the cinematic profile");
+  harness.lightingProfile = lightingProfile(2);
+  harness.updateFixtureLights(1050);
+  assert.equal(harness.worldLight.wowLocalLightCount.value, 2, "22.10 (7.36): the cinematic profile takes the façade lamp too");
+  assert.equal(harness.worldLight.wowLocalLightPool.value, 0, "the pool strength is the renderer's quality switch, not this pass");
+  assert.equal(harness.lightHalos.mesh.count, 2, "and gives each emitter a halo");
+  harness.lightingProfile = lightingProfile(1);
   harness.environment.clear();
   harness.updateFixtureLights(1100);
   assert.equal(harness.worldLight.wowLocalLightCount.value, 0, "unloaded lamps leave no stale light");

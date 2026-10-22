@@ -76,6 +76,9 @@ import type { LightSample, ResolvedColour } from "./LightTypes.js";
 import { lightDarkensByDepth, liquidLightTint, type UnderwaterLight } from "./UnderwaterLiquidLight.js"; // 05.10-A7b-5 review
 import { LocalLightSelection, modelFixtureLights, sampleFixtureLight } from "./LocalLighting.js";
 import { fixtureLightSource } from "./FixtureLightSources.js"; // 06.10-render-fix
+import { sampleWmoLight, wmoOutdoorLightPositions, wmoOutdoorLights } from "./WmoFixtureLights.js"; // 22.10 (7.36)
+import { LOCAL_LIGHT_FOCUS_AHEAD, WMO_LIGHT_RANK_SCALE } from "./CinematicLights.js"; // 22.10 (7.36)
+import { LightHalos } from "./LightHalos.js"; // 22.10 (7.36)
 import {
   GOD_RAY_STRENGTH_SCALE_MAX, godRayStrengthScale, lightingProfile, shadowMaterialEligible,
   lightingClassicLook, // 05.10-7.20
@@ -4090,6 +4093,11 @@ export class WorldRenderer3D {
   readonly #spellTextures = new ModelTextureLoader({ cache: true });
   readonly #worldLight = createWorldLightUniforms();
   readonly #localLightSelection = new LocalLightSelection();
+  readonly #localLightFocus = new THREE.Vector3(); // 22.10 (7.36)
+  readonly #lightHalos = new LightHalos(); // 22.10 (7.36)
+  readonly #addLightHalo = (position: THREE.Vector3, colour: THREE.Vector3, strength: number): void => {
+    this.#lightHalos.add(position, colour, strength, this.#worldLight.wowDaylight.value, this.#camera.position);
+  };
   readonly #localLightSample = { position: new THREE.Vector3(), colour: new THREE.Vector3(), radius: 0, intensity: 0 };
   readonly #localLightMatrix = new THREE.Matrix4();
   readonly #zoneFogColour = new THREE.Color(SKY_COLOR);
@@ -4781,6 +4789,7 @@ export class WorldRenderer3D {
       this.#environmentGroup, this.#animatedEnvironmentGroup, this.#instanceGroup, this.#localLightInstanceGroup,
       this.#groundCoverGroup, this.#gameObjectGroup, this.#unitGroup, this.#effectGroup, this.#visualGroup);
     this.#scene.add(this.#environmentStandInMarkers.group); // 05.10-A7b-9 7.18
+    this.#scene.add(this.#lightHalos.mesh); // 22.10 (7.36)
     this.#programWarmup = new ProgramWarmup(this.#renderer, this.#scene);
     // The two leaf scenes compile their own variants — neither has the world's fog — and both are
     // first drawn at a moment the player is looking: a zone's LightSkybox appears on a flight path,
@@ -7565,6 +7574,7 @@ export class WorldRenderer3D {
     this.#disposeFullscreenGlowTargets();
     this.#horizonMaterials?.dispose(); // 05.10-A7b-7
     this.#environmentStandInMarkers.dispose(); // 05.10-A7b-9 7.18
+    this.#lightHalos.dispose(); // 22.10 (7.36)
     for (const geometry of [
       this.#unitBodyGeometry, this.#unitFacingGeometry, this.#foliageGeometry, this.#trunkGeometry,
       this.#sky.geometry, this.#classicDome.geometry /* 13.10 7.04 */, this.#underwaterOverlay.geometry, this.#glowPasses.quad.geometry,
@@ -8921,6 +8931,7 @@ export class WorldRenderer3D {
     setTerrainBakedShadowStrength(terrainBakedShadowStrength(next.quality)); // 05.10-A7b-7 (7.06)
     setTerrainSpecularStrength(terrainSpecularStrength(next.quality)); // 05.10-A7b-7Г (7.16 Г)
     if (next.localLights === 0) this.#worldLight.wowLocalLightCount.value = 0;
+    this.#worldLight.wowLocalLightPool.value = next.cinematicLights; // 22.10 (7.36)
 
     // r185 has physically-correct light units as its only path. Keep the established colour
     // pipeline for every quality so switching the optional pass never reinterprets textures — the
@@ -9293,6 +9304,12 @@ export class WorldRenderer3D {
   #updateFixtureLights(now: number): void {
     const selection = this.#localLightSelection;
     selection.begin(this.#lightingProfile.localLights);
+    const cinematic = this.#lightingProfile.cinematicLights > 0; // 22.10 (7.36)
+    // 22.10 (7.36): the cinematic profile ranks lights from a point ahead of the camera.
+    const focus = cinematic
+      ? this.#camera.getWorldDirection(this.#localLightFocus).multiplyScalar(LOCAL_LIGHT_FOCUS_AHEAD)
+        .add(this.#camera.position)
+      : this.#camera.position;
     if (this.#lightingProfile.localLights > 0) {
       const visit = (rendered: {
         wvm?: WvmModel | undefined;
@@ -9329,7 +9346,7 @@ export class WorldRenderer3D {
           const matrix = bone && inverse
             ? this.#localLightMatrix.multiplyMatrices(bone.matrixWorld, inverse) : fallback;
           if (sampleFixtureLight(fixture, model, matrix, animationMs, now, this.#localLightSample)) {
-            selection.add(this.#localLightSample, this.#camera.position);
+            selection.add(this.#localLightSample, focus);
           }
         }
       };
@@ -9338,7 +9355,10 @@ export class WorldRenderer3D {
         // that path instead of shining an unshadowed point through the building's exterior wall.
         // Outdoor retained lamps remain active when the fixture is just outside the camera view.
         // 06.10-render-fix: and no doodad of a building, whose v5 façade lamps are `interior: false`.
-        if (!fixtureLightSource(rendered.source)) continue;
+        // 22.10 (7.36): the cinematic profile also takes a city's street lamps — a building's outdoor
+        // lamp doodads and the WMO's own lamps outside its rooms (WmoFixtureLights.ts).
+        if (cinematic && rendered.wmo) this.#addWmoFixtureLights(rendered.wmo, focus);
+        if (!fixtureLightSource(rendered.source, cinematic)) continue;
         visit(rendered, rendered.source.name, rendered.node);
       }
       for (const rendered of this.#gameObjects.values()) {
@@ -9346,6 +9366,28 @@ export class WorldRenderer3D {
       }
     }
     selection.write(this.#worldLight, this.#camera.matrixWorldInverse);
+    // 22.10 (7.36): the cinematic profile's halos around the selected emitters (LightHalos.ts).
+    this.#lightHalos.begin();
+    if (this.#lightingProfile.cinematicLights > 0) selection.forEachHalo(this.#addLightHalo);
+    this.#lightHalos.end();
+  }
+
+  /** 22.10 (7.36): offers one WMO placement's outdoor lamps (`WmoFixtureLights.ts`) to the selection. */
+  #addWmoFixtureLights(
+    placed: { readonly model: WmoModel; readonly modelToWorld: THREE.Matrix4 },
+    focus: THREE.Vector3,
+  ): void {
+    const lights = wmoOutdoorLights(placed.model);
+    if (lights.length === 0) return;
+    const positions = wmoOutdoorLightPositions(placed, lights, placed.modelToWorld);
+    for (let index = 0; index < lights.length; index++) {
+      const x = positions[index * 3]!, y = positions[index * 3 + 1]!, z = positions[index * 3 + 2]!;
+      const dx = x - focus.x, dy = y - focus.y, dz = z - focus.z;
+      if (dx * dx + dy * dy + dz * dz > 64 * 64) continue;
+      if (sampleWmoLight(lights[index]!, x, y, z, this.#localLightSample)) {
+        this.#localLightSelection.add(this.#localLightSample, focus, WMO_LIGHT_RANK_SCALE);
+      }
+    }
   }
 
   /**

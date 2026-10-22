@@ -144,6 +144,12 @@ export interface LightingProfile {
   /** Nearby outdoor flame/glow fixtures contributing light in the existing material shader. */
   localLights: number;
   /**
+   * 22.10 (7.36): strength of the cinematic light pools (`CinematicLights.ts`) — a wide warm pool
+   * under each fixture light, and a building's outdoor street lamps admitted as fixtures. Zero is
+   * the 6.17 light exactly; only the high profile, which the enhanced preset selects, sets it.
+   */
+  cinematicLights: number;
+  /**
    * Strength ceiling for the optional screen-space sun shafts.
    *
    * The effect still has its own account switch. Quality zero keeps the direct baseline even when
@@ -195,6 +201,7 @@ const PROFILES: Readonly<Record<LightingQuality, Omit<LightingProfile,
     exposure: 1,
     immersiveStrength: 0,
     localLights: 0,
+    cinematicLights: 0,
     godRayStrength: 0,
     wantedShadowMapSize: 0,
     wantedShadowFarMapSize: 0,
@@ -213,6 +220,7 @@ const PROFILES: Readonly<Record<LightingQuality, Omit<LightingProfile,
     exposure: 1,
     immersiveStrength: 0.65,
     localLights: 4,
+    cinematicLights: 0,
     godRayStrength: 0.12,
     wantedShadowMapSize: 512,
     wantedShadowFarMapSize: 1024,
@@ -229,7 +237,8 @@ const PROFILES: Readonly<Record<LightingQuality, Omit<LightingProfile,
   2: {
     exposure: 1,
     immersiveStrength: 1,
-    localLights: 8,
+    localLights: 12, // 22.10 (7.36): was 8; a street holds more lamps than eight
+    cinematicLights: 1,
     godRayStrength: 0.2,
     wantedShadowMapSize: 1024,
     wantedShadowFarMapSize: 2048,
@@ -252,6 +261,7 @@ const PROFILES: Readonly<Record<LightingQuality, Omit<LightingProfile,
     exposure: 1,
     immersiveStrength: 0,
     localLights: 0,
+    cinematicLights: 0,
     godRayStrength: 0,
     wantedShadowMapSize: 0,
     wantedShadowFarMapSize: 0,
@@ -320,6 +330,7 @@ export function lightingProfile(
     exposure: source.exposure,
     immersiveStrength: source.immersiveStrength,
     localLights: source.localLights,
+    cinematicLights: source.cinematicLights, // 22.10 (7.36)
     godRayStrength: source.godRayStrength,
     shadowMapSize,
     shadowCasters: shadows ? shadowSource.shadowCasters : 0,

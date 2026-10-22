@@ -201,7 +201,7 @@ test("applyWorldLight preserves an existing hook and key and removes three's BRD
   assert.equal(shader.fragmentShader.includes("#include <lights_fragment_begin>"), false);
   assert.equal((shader.fragmentShader.match(/getShadow\(/g) ?? []).length, 1,
     "the stock lookup is removed before the authored lookup is inserted");
-  assert.equal(material.customProgramCacheKey(), "previous-key|world-light-r185-v7:surface");
+  assert.equal(material.customProgramCacheKey(), "previous-key|world-light-r185-v8:surface");
 });
 
 test("portrait clone removes only the world wrapper and keeps the pre-world hook and key", () => {
@@ -319,7 +319,7 @@ test("the terrain mode survives the splat hook that arrives after the base mater
   assert.match(shader.fragmentShader, /uniform sampler2DArray splatLayers/);
   assert.equal(shader.fragmentShader.includes("#include <lights_fragment_begin>"), false);
   // 05.10-A7b-7: the splat program is v2 (baked MCSH shadow, per-chunk alpha clamp).
-  assert.equal(material.customProgramCacheKey(), "world-light-r185-v7:terrain|terrain-splat-v2");
+  assert.equal(material.customProgramCacheKey(), "world-light-r185-v8:terrain|terrain-splat-v2");
 });
 
 test("renderer material policy hooks every lit world path and leaves authored flat paths alone", async () => {

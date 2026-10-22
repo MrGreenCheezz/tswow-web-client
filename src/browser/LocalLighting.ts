@@ -8,6 +8,10 @@ import {
 import {
   M2_LIGHT_ATTENUATION, M2_LIGHT_FALLOFF_CAP, WORLD_LOCAL_LIGHT_LIMIT, type WorldLightUniforms,
 } from "./WorldLighting.js";
+import { localLightSelectionFade } from "./CinematicLights.js"; // 22.10 (7.36)
+
+/** Camera distance, in yards, past which no fixture is selected. */
+const LOCAL_LIGHT_RANGE = 64;
 
 /** Enhanced fixture light is an artistic addition, not a fabricated M2 light record. */
 export interface FixtureLight {
@@ -85,10 +89,12 @@ export function modelFixtureLights(model: WvmModel, name: string): readonly Fixt
   const lights: FixtureLight[] = [];
   const submeshes = new Set<number>();
   for (const batch of model.batches) {
-    if (submeshes.has(batch.submesh) || (batch.materialFlags & MATERIAL_UNLIT) === 0
-      || ![BLEND_ADD, BLEND_NO_ALPHA_ADD, BLEND_BLEND_ADD].includes(batch.blendMode)) continue;
+    if (submeshes.has(batch.submesh) || (batch.materialFlags & MATERIAL_UNLIT) === 0) continue;
     const texture = batch.textures.map((slot) => model.textures[slot]?.path ?? "").join(" ").toLowerCase();
-    if (!/glow|flame|fire|light/.test(texture)) continue;
+    // 22.10 (7.36): or an unlit lamp glass of any blend — `stormwindstreetlamp01.m2` draws its lit
+    // pane as an opaque unlit `StormwindLampGlass.blp` and has no glow card, flame or M2 light.
+    const additive = [BLEND_ADD, BLEND_NO_ALPHA_ADD, BLEND_BLEND_ADD].includes(batch.blendMode);
+    if (!(additive && /glow|flame|fire|light/.test(texture)) && !/lampglass/.test(texture)) continue;
     const submesh = model.submeshes[batch.submesh];
     if (!submesh) continue;
     const vertices = new Set<number>();
@@ -143,6 +149,11 @@ export interface LocalLightSample {
    * fixture's soft pool. Set by every `sampleFixtureLight`; absent reads as the heuristic.
    */
   client?: boolean;
+  /**
+   * 22.10 (7.36): whether the light is a known emitter that may wear a halo (`LightHalos.ts`).
+   * Set by every sampler; a WMO record's place is only roughly its lamp's, so it wears none.
+   */
+  halo?: boolean;
 }
 
 /**
@@ -190,6 +201,7 @@ export function sampleFixtureLight(
   let opacity = 1;
   result.colour.set(...fixture.colour);
   result.client = false; // 12.10-6.17
+  result.halo = true; // 22.10 (7.36)
   if (fixture.light) return sampleM2Light(fixture, fixture.light, sample, matrix, result); // 05.10-A7a-F2
   if (fixture.batch) {
     const batch = fixture.batch;
@@ -268,9 +280,10 @@ export function localLightFalloff(distance: number, radius: number): number {
 
 /** A tiny reusable ranked list; never creates lights, render targets or shader variants. */
 export class LocalLightSelection {
-  readonly #entries = Array.from({ length: WORLD_LOCAL_LIGHT_LIMIT }, () => ({
+  // 22.10 (7.36): one entry past the limit, the nearest light left out, sets the fade-out cut.
+  readonly #entries = Array.from({ length: WORLD_LOCAL_LIGHT_LIMIT + 1 }, () => ({
     position: new THREE.Vector3(), colour: new THREE.Vector3(), radius: 0, intensity: 0, distance: Infinity,
-    client: false,
+    client: false, halo: false, weight: 0,
   }));
   #count = 0;
   #limit = 0;
@@ -280,35 +293,52 @@ export class LocalLightSelection {
     this.#limit = Math.max(0, Math.min(WORLD_LOCAL_LIGHT_LIMIT, Math.floor(limit)));
   }
 
-  add(sample: LocalLightSample, camera: THREE.Vector3): void {
+  /** 22.10 (7.36): `rankScale` ranks the light as if that many times farther (`WMO_LIGHT_RANK_SCALE`). */
+  add(sample: LocalLightSample, camera: THREE.Vector3, rankScale = 1): void {
     if (this.#limit === 0) return;
-    const distance = sample.position.distanceToSquared(camera);
-    if (distance > 64 * 64) return;
+    const distance = sample.position.distanceToSquared(camera) * rankScale * rankScale;
+    if (distance > LOCAL_LIGHT_RANGE * LOCAL_LIGHT_RANGE) return;
+    const kept = this.#limit + 1;
     let index = this.#count;
     while (index > 0 && this.#entries[index - 1]!.distance > distance) index--;
-    if (index >= this.#limit) return;
-    const reusable = this.#entries[Math.min(this.#count, this.#limit - 1)]!;
-    for (let at = Math.min(this.#count, this.#limit - 1); at > index; at--) this.#entries[at] = this.#entries[at - 1]!;
+    if (index >= kept) return;
+    const reusable = this.#entries[Math.min(this.#count, kept - 1)]!;
+    for (let at = Math.min(this.#count, kept - 1); at > index; at--) this.#entries[at] = this.#entries[at - 1]!;
     this.#entries[index] = reusable;
     reusable.position.copy(sample.position);
     reusable.colour.copy(sample.colour);
     reusable.radius = sample.radius;
     reusable.intensity = sample.intensity;
     reusable.client = sample.client === true;
+    reusable.halo = sample.halo === true;
     reusable.distance = distance;
-    this.#count = Math.min(this.#count + 1, this.#limit);
+    this.#count = Math.min(this.#count + 1, kept);
   }
 
   write(uniforms: WorldLightUniforms, viewMatrix: THREE.Matrix4): number {
-    uniforms.wowLocalLightCount.value = this.#count;
-    for (let index = 0; index < this.#count; index++) {
+    const count = Math.min(this.#count, this.#limit);
+    // 22.10 (7.36): every selected light fades to nothing as it nears the first one left out (or
+    // the selection's range), so the nearest-N set reshuffles without a pool popping on or off.
+    const cut = this.#count > this.#limit ? Math.sqrt(this.#entries[this.#limit]!.distance) : LOCAL_LIGHT_RANGE;
+    uniforms.wowLocalLightCount.value = count;
+    for (let index = 0; index < count; index++) {
       const entry = this.#entries[index]!;
       const position = uniforms.wowLocalLightPosition.value[index]!;
       position.set(entry.position.x, entry.position.y, entry.position.z, 1).applyMatrix4(viewMatrix);
       // 12.10-6.17: a negative reach tells the shader to use the client's falloff (m2LightFalloff).
       position.w = entry.client ? -entry.radius : entry.radius;
-      uniforms.wowLocalLightColour.value[index]!.set(entry.colour.x, entry.colour.y, entry.colour.z, entry.intensity);
+      entry.weight = entry.intensity * localLightSelectionFade(Math.sqrt(entry.distance), cut);
+      uniforms.wowLocalLightColour.value[index]!.set(entry.colour.x, entry.colour.y, entry.colour.z, entry.weight);
     }
-    return this.#count;
+    return count;
+  }
+
+  /** 22.10 (7.36): the lights the last `write` sent that wear a halo, with their written strength. */
+  forEachHalo(visit: (position: THREE.Vector3, colour: THREE.Vector3, strength: number) => void): void {
+    const count = Math.min(this.#count, this.#limit);
+    for (let index = 0; index < count; index++) {
+      const entry = this.#entries[index]!;
+      if (entry.halo && entry.weight > 0) visit(entry.position, entry.colour, entry.weight);
+    }
   }
 }
