@@ -960,7 +960,9 @@ export class CharacterAtlasClient {
       if (painted === layers.length) {
         this.#failed.delete(key);
         this.#terminalFailures.delete(key);
-        this.#persistence?.save(layers, context, persistGeneration); // 22.10 (6.26): every layer is in it, so it is kept for next time
+        // 22.10 (6.26): every layer is in it, so it is kept for next time — painted again from the same layers into a
+        // CPU canvas, because reading this one back would wait for the GPU (CharacterAtlasPersistence.ts).
+        this.#persistence?.save(layers, (target) => { paintBodyLayers(target, layers, images); }, persistGeneration);
       } else if (retryAt === Infinity) {
         this.#failed.delete(key);
         this.#markTerminal(key);

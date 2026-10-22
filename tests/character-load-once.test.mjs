@@ -109,25 +109,29 @@ test("a stored body round-trips under its generation, and under no other", async
   let generation = "v1";
   const backend = new MemoryAssetBackend();
   const store = new PersistentAssetStore(backend, { rows: 10, blobs: 10 });
-  const persistence = createCharacterAtlasPersistence(4, {
-    store, generation: () => generation, gateway: () => GATEWAY,
-    imageData: (pixels, width, height) => ({ width, height, data: pixels }), later: (work) => work(),
-  });
   const painted = fakeTexels(4, 4);
   painted.data[0] = 200;
-  persistence.save(LAYERS, { getImageData: () => painted }, "v1");
+  const drawn = [];
+  const persistence = createCharacterAtlasPersistence(4, {
+    store, generation: () => generation, gateway: () => GATEWAY,
+    imageData: (pixels, width, height) => ({ width, height, data: pixels }),
+    // The CPU-side canvas a body is painted into for keeping (never the GPU atlas itself: reading that back stalls).
+    saveContext: () => ({ drawImage: (...args) => drawn.push(args), getImageData: () => painted }),
+  });
+  persistence.save(LAYERS, (context) => context.drawImage("layer"), "v1");
+  assert.deepEqual(drawn, [["layer"]], "the body is painted into the keeping canvas");
   await store.flush();
   const restored = await persistence.load(LAYERS, "v1");
   assert.equal(restored.width, 4);
   assert.equal(restored.data[0], 200);
   assert.equal(await persistence.load([LAYERS[0]], "v1"), undefined, "another look is a miss");
   assert.equal(await persistence.load(LAYERS, undefined), undefined, "no generation, nothing read");
-  persistence.save([LAYERS[0]], { getImageData: () => painted }, undefined);
+  persistence.save([LAYERS[0]], (context) => context.drawImage("layer"), undefined);
   await store.flush();
   assert.equal([...backend.spaces.blobs.keys()].filter((key) => key.includes(ATLAS_PERSIST_KIND)).length, 1,
     "no generation, nothing written");
   // A stored value of another size is not this body.
-  store.put("blobs", GATEWAY, ATLAS_PERSIST_KIND, "v1", [[atlasPersistId([LAYERS[0]]), { width: 2, height: 2, pixels: new ArrayBuffer(16) }]]);
+  store.put("blobs", GATEWAY, ATLAS_PERSIST_KIND, "v1", [[atlasPersistId([LAYERS[0]]), { width: 2, height: 2, rgba: new Blob([new Uint8Array(16)]) }]]);
   await store.flush();
   assert.equal(await persistence.load([LAYERS[0]], "v1"), undefined);
   // A new patch chain: a miss, and its first use drops the old chain's bodies.
@@ -193,7 +197,11 @@ test("a body painted from every layer is stored under the generation its composi
     const persistence = {
       generation: () => generation,
       load: async () => undefined,
-      save: (layers, context, at) => saved.push({ layers, at, readable: typeof context.getImageData === "function" }),
+      save: (layers, paint, at) => {
+        const drawn = [];
+        paint({ drawImage: (...args) => drawn.push(args) });
+        saved.push({ layers, at, drawn: drawn.length });
+      },
     };
     const atlas = new CharacterAtlasClient(GATEWAY, Date.now, { persistence });
     const pending = atlas.compose("full", LAYERS);
@@ -201,7 +209,7 @@ test("a body painted from every layer is stored under the generation its composi
     assert.ok(await pending);
     assert.equal(saved.length, 1);
     assert.equal(saved[0].at, "v1", "never filed under a later generation than its layers");
-    assert.equal(saved[0].readable, true);
+    assert.equal(saved[0].drawn, LAYERS.length, "the keeping canvas gets every layer, painted from the same pictures");
     assert.ok(page.asked.length >= 2, "the layers were fetched");
     await atlas.compose("partial", [LAYERS[0], { path: "Item\\Missing.blp", section: "legUpper" }]);
     assert.equal(saved.length, 1, "a body short a layer is not stored");

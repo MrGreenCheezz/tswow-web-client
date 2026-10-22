@@ -8,10 +8,15 @@
  * body painted from every one of its layers is stored (CharacterAtlas.ts `#build`); a body short a layer keeps
  * its retry ledger and is never written down.
  *
- * Stored as its raw RGBA texels (1 MiB at 512x512), not as a PNG: measured in the arrival probe
- * (.runtime/lane-charcache), a stored PNG waited 134 ms (median) for `createImageBitmap` behind the crowd's own
- * texture decodes, while `putImageData` of the raw texels is synchronous and about a millisecond. The texels are read
- * back once per look and generation, after its composition, off the frame that painted it.
+ * How it is stored was chosen by measurement (the arrival probe, .runtime/lane-charcache, 22 looks):
+ *
+ * - Not read back from the atlas's own canvas. That canvas is drawn on the GPU, and `getImageData` or
+ *   `convertToBlob` on it waited for the GPU: 289 ms and 334 ms of the main thread across the 22 looks, 108 ms in
+ *   one call — a hitch on every new look. The body is painted a second time, from the same decoded layers, into a
+ *   small CPU canvas (`willReadFrequently`) whose texels cost a copy.
+ * - Not as a PNG: a stored PNG waited 134 ms (median) for `createImageBitmap` behind the crowd's own texture
+ *   decodes. The raw texels (1 MiB) go in as a Blob — a handle to clone, not a mebibyte — and come back with one
+ *   `arrayBuffer()` and one `putImageData`.
  */
 
 import type { BodyLayer } from "../gateway/CharacterAppearance.js";
@@ -21,17 +26,15 @@ import { persistentAssetStore, type PersistentAssetStore } from "./PersistentAss
 /** The stored kind; bumped with the body's size, its paint rules (BODY_TEXTURE_SIZE, SECTIONS) or the value's shape. */
 export const ATLAS_PERSIST_KIND = "atlas-512-rgba-v1";
 
-/** The stored value: the body's texels, row by row, unpremultiplied RGBA as `getImageData` gives them. */
+/** The stored value: the body's texels, row by row, unpremultiplied RGBA as `getImageData` gives them, in a Blob. */
 export interface StoredAtlas {
   readonly width: number;
   readonly height: number;
-  readonly pixels: ArrayBuffer;
+  readonly rgba: Blob;
 }
 
-/** The 2D surface a body is read from and written into (the subset of both canvas contexts used here). */
-export interface AtlasPixels {
-  getImageData(x: number, y: number, width: number, height: number): ImageData;
-}
+/** The 2D context a body is painted into for keeping (either canvas context). */
+export type AtlasSaveContext = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
 
 /** What CharacterAtlas.ts asks of the store. */
 export interface CharacterAtlasPersistence {
@@ -41,10 +44,10 @@ export interface CharacterAtlasPersistence {
   load(layers: readonly BodyLayer[], generation: string | undefined): Promise<ImageData | undefined>;
   /**
    * Stores a body painted from every layer under the generation its composition started in: its layers were fetched
-   * under it, so the picture is never filed under a later one. The texels are read from `context` a moment later,
-   * off the paint's frame; a complete body is never repainted, so they are the ones painted.
+   * under it, so the picture is never filed under a later one. `paint` paints the body into the context it is given,
+   * synchronously (from the decoded layers the composition still holds).
    */
-  save(layers: readonly BodyLayer[], context: AtlasPixels, generation: string | undefined): void;
+  save(layers: readonly BodyLayer[], paint: (context: AtlasSaveContext) => void, generation: string | undefined): void;
 }
 
 /** 32-bit FNV-1a over a string, twice with different seeds: a 64-bit name for a layer list. */
@@ -76,8 +79,21 @@ export interface AtlasPersistenceSources {
   readonly gateway: () => string | undefined;
   /** Makes the texels `putImageData` takes; absent where there is no ImageData (then nothing is kept). */
   readonly imageData: ((pixels: Uint8ClampedArray, width: number, height: number) => ImageData) | undefined;
-  /** Runs the texel read-back later (the next task by default). */
-  readonly later: (work: () => void) => void;
+  /** A CPU-side 2D context of `size` x `size` to paint a body into for keeping; undefined where none can be made. */
+  readonly saveContext: (size: number) => AtlasSaveContext | undefined;
+}
+
+/** An OffscreenCanvas (page or worker), or a DOM canvas, asked to keep its texels on the CPU. */
+function cpuContext(size: number): AtlasSaveContext | undefined {
+  const options = { willReadFrequently: true };
+  if (typeof OffscreenCanvas === "function") {
+    return (new OffscreenCanvas(size, size).getContext("2d", options) as OffscreenCanvasRenderingContext2D | null) ?? undefined;
+  }
+  if (typeof document === "undefined") return undefined;
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  return (canvas.getContext("2d", options) as CanvasRenderingContext2D | null) ?? undefined;
 }
 
 /**
@@ -94,7 +110,7 @@ export function createCharacterAtlasPersistence(size: number,
   if (!store || !imageData) return undefined;
   const generation = sources.generation ?? gatewayVisualGeneration;
   const gateway = sources.gateway ?? gatewayGenerationOrigin;
-  const later = sources.later ?? ((work: () => void) => { setTimeout(work, 0); });
+  const saveContext = sources.saveContext ?? cpuContext;
   return {
     generation,
     async load(layers, current) {
@@ -102,26 +118,26 @@ export function createCharacterAtlasPersistence(size: number,
       if (current === undefined || origin === undefined || layers.length === 0) return undefined;
       try {
         const stored = await store.get<StoredAtlas>("blobs", origin, ATLAS_PERSIST_KIND, current, atlasPersistId(layers));
-        if (!stored || stored.width !== size || stored.height !== size || !(stored.pixels instanceof ArrayBuffer)
-          || stored.pixels.byteLength !== size * size * 4) return undefined;
-        return imageData(new Uint8ClampedArray(stored.pixels), size, size);
+        if (!stored || stored.width !== size || stored.height !== size || !(stored.rgba instanceof Blob)
+          || stored.rgba.size !== size * size * 4) return undefined;
+        return imageData(new Uint8ClampedArray(await stored.rgba.arrayBuffer()), size, size);
       } catch {
         return undefined;
       }
     },
-    save(layers, context, current) {
+    save(layers, paint, current) {
       const origin = gateway();
       if (current === undefined || origin === undefined || layers.length === 0) return;
-      const id = atlasPersistId(layers);
-      later(() => {
-        try {
-          const texels = context.getImageData(0, 0, size, size);
-          const value: StoredAtlas = { width: size, height: size, pixels: texels.data.slice().buffer };
-          store.put("blobs", origin, ATLAS_PERSIST_KIND, current, [[id, value]]);
-        } catch {
-          // A context that cannot be read back (lost, or tainted) keeps nothing.
-        }
-      });
+      try {
+        const context = saveContext(size);
+        if (!context) return;
+        paint(context);
+        const rgba = new Blob([context.getImageData(0, 0, size, size).data]);
+        const value: StoredAtlas = { width: size, height: size, rgba };
+        store.put("blobs", origin, ATLAS_PERSIST_KIND, current, [[atlasPersistId(layers), value]]);
+      } catch {
+        // A context that cannot be made or read keeps nothing.
+      }
     },
   };
 }
