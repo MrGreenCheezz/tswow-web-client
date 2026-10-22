@@ -240,3 +240,35 @@ test("draw no longer takes the lookup functions, and nothing sets a collision fu
   assert.doesNotMatch(source("game/Context.ts"), /setCollisionModels\(/);
   assert.doesNotMatch(source("game/GroundTargetPreview.ts"), /ground: groundRingSampler/);
 });
+
+// 22.10 (12.14): in worker mode the page lists its own environment tile only (game/PageEnvironmentRange.ts); a WMO
+// the worker admits from its wider band comes back as a want and must reach the lookups, not just the download.
+test("a WMO a render worker wants outside the page's environment list reaches the collision lookups", () => {
+  const held = new Map();
+  const asked = [];
+  const collision = { peek: (name) => held.get(name), model: (name) => { asked.push(name); return held.get(name); } };
+  const builder = new RenderLookupsBuilder();
+  const pageList = [{ id: 1, kind: "wmo", name: "World/wmo/own.wmo" }];
+  const far = "World/wmo/Stormwind/Stormwind.wmo";
+  const build = () => builder.build({ gameObjectMetadata: undefined, creatureModels: undefined, collision,
+    environment: pageList });
+  build();
+  builder.requestCollisionModels(collision, [far], true);
+  assert.deepEqual(asked, [collisionModelName(far)]);
+  assert.equal(build().collisionModels.has(far), false, "still on its way");
+  const model = { groups: [] };
+  held.set(collisionModelName(far), model);
+  const before = build().collisionRevision;
+  const lookups = build();
+  assert.equal(lookups.collisionModels.get(far), model, "the worker gets the building's collision model");
+  assert.ok(lookups.collisionRevision >= before);
+  held.delete(collisionModelName(far));
+  assert.equal(build().collisionModels.has(far), false, "dropped when the client no longer holds it");
+  // In-page (no retain) the list stays the only source, as before.
+  const inPage = new RenderLookupsBuilder();
+  inPage.build({ gameObjectMetadata: undefined, creatureModels: undefined, collision, environment: pageList });
+  held.set(collisionModelName(far), model);
+  inPage.requestCollisionModels(collision, [far]);
+  assert.equal(inPage.build({ gameObjectMetadata: undefined, creatureModels: undefined, collision,
+    environment: pageList }).collisionModels.has(far), false);
+});

@@ -52,7 +52,9 @@ export interface ClientRenderer extends Pick<WorldRenderer3D, ClientRendererComm
  */
 export function inPageRenderer(renderer: ClientRenderer): WorldRenderer3D {
   if (renderer.renderWorker !== undefined) {
-    throw new Error("this path needs the in-page world renderer; the page runs it in a worker (?renderworker=1)");
+    // 22.10 (12.14): the desktop app runs it in a worker by default; the way back to the page is named.
+    throw new Error("this path needs the in-page world renderer; the page runs it in a worker"
+      + " (open with ?renderworker=0, or set «Где рисуется мир» to 2 and restart)");
   }
   return renderer as WorldRenderer3D;
 }

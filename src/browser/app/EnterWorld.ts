@@ -57,6 +57,9 @@ import { resetHeadOverlay, showChatBubble, showFloatingText } from "../ui/HeadOv
 import { notePlateHit } from "../ui/OverlayModel.js";
 import { clearSpellNames } from "../ui/SpellNames.js";
 import { notice, resetNotices } from "../ui/Notices.js";
+import { showPageResourceStatus } from "./ResourceStatusLines.js"; // 22.10 (12.14)
+import { resourceStatusTargets } from "./ResourceStatusTargets.js"; // 22.10 (12.14)
+import { warmModelTarget } from "./WarmModelTarget.js"; // 22.10 (12.14)
 import { updateLogoutPending } from "../ui/GameMenu.js";
 import { beginModuleCommandLoad, systemLine } from "../ui/Chat.js";
 import { applySettings, drawSettings, settingOn, settingsStore, watchSettingsApplied } from "../ui/Settings.js";
@@ -349,7 +352,8 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
     // three round trips a cold spell used to pay, and the only one that can be removed before
     // anything at all has happened. `get` answers from cache for every id in a loaded batch, so
     // nothing here can start another metadata request.
-    const environment = game.environment;
+    // 22.10 (12.14): to the client that draws — the worker's in worker mode (WarmModelTarget.ts).
+    const environment = game.environment && warmModelTarget(game.environment, () => game.renderer);
     if (!environment) return;
     for (const path of loadedVisualWarmPaths(ids, (id) => spellVisuals.get(id))) {
       environment.model(path, "normal");
@@ -359,7 +363,7 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
     spellVisualCoordinator.onKitsLoaded(ids);
     // The same S1 seam, for the packets that have no cast bar to spend: the answer already names
     // every file the kit is made of, so warming them costs one walk of an object already in memory.
-    const environment = game.environment;
+    const environment = game.environment && warmModelTarget(game.environment, () => game.renderer); // 22.10 (12.14)
     if (!environment) return;
     const warmed = new Set<string>();
     for (const id of ids) {
@@ -1092,17 +1096,13 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
     game.terrain = terrain;
     terrain.onStatus = (message, error) => {
       if (game.terrain !== terrain) return;
-      if (error) notice(message);
-      terrainStatus.className = error ? "error" : "success";
-      terrainStatus.textContent = `Terrain: ${message}`;
+      showPageResourceStatus(resourceStatusTargets(), game.renderer, "terrain", message, error); // 22.10 (12.14)
     };
     const splat = new TerrainSplatClient(gatewayInput.value);
     game.terrainSplat = splat;
     splat.onStatus = (message, error) => {
       if (game.terrainSplat !== splat) return;
-      if (error) notice(message);
-      terrainStatus.className = error ? "error" : "success";
-      terrainStatus.textContent = `Terrain: ${message}`;
+      showPageResourceStatus(resourceStatusTargets(), game.renderer, "terrain", message, error); // 22.10 (12.14)
     };
     // What grows on the ground rides the same family of files as the splat, so it is built beside
     // it; `applySettings` below is what tells the renderer about it, along with how far the field
@@ -1111,9 +1111,7 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
     game.groundCover = groundCover;
     groundCover.onStatus = (message, error) => {
       if (game.groundCover !== groundCover) return;
-      if (error) notice(message);
-      terrainStatus.className = error ? "error" : "success";
-      terrainStatus.textContent = `Terrain: ${message}`;
+      showPageResourceStatus(resourceStatusTargets(), game.renderer, "terrain", message, error); // 22.10 (12.14)
     };
     const light = new LightClient(gatewayInput.value);
     game.light = light;
@@ -1121,9 +1119,7 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
     game.liquids = liquids;
     liquids.onStatus = (message, error) => {
       if (game.liquids !== liquids) return;
-      if (error) notice(message);
-      terrainStatus.className = error ? "error" : "success";
-      terrainStatus.textContent = `Terrain: ${message}`;
+      showPageResourceStatus(resourceStatusTargets(), game.renderer, "terrain", message, error); // 22.10 (12.14)
     };
     light.onStatus = (message, error) => {
       if (game.light !== light) return;
@@ -1135,9 +1131,7 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
     game.environment = environment;
     environment.onStatus = (message, error) => {
       if (game.environment !== environment) return;
-      if (error) notice(message);
-      environmentStatus.className = error ? "error" : "success";
-      environmentStatus.textContent = `Environment: ${message}`;
+      showPageResourceStatus(resourceStatusTargets(), game.renderer, "environment", message, error); // 22.10 (12.14)
     };
     game.spellMetadataClient = new SpellMetadataClient(gatewayInput.value);
     game.creatureMetadata = new CreatureMetadataClient(gatewayInput.value);
@@ -1193,8 +1187,9 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
     // The spellbook, not just the action bar: the spell nobody put on a bar is exactly the one
     // whose first cast is cold. Read through a function because `SMSG_INITIAL_SPELLS` is only the
     // first of the packets that change it.
+    // 22.10 (12.14): its models go to the client that draws — the worker's in worker mode (WarmModelTarget.ts).
     assetWarmup = new SessionAssetWarmup(
-      { environment, creatureModels, itemMetadata, spellVisuals },
+      { environment: warmModelTarget(environment, () => game.renderer), creatureModels, itemMetadata, spellVisuals },
       { knownSpellIds: () => world.knownSpells.map((spell) => spell.id) },
     );
     game.assetWarmup = assetWarmup;

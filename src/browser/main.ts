@@ -31,7 +31,7 @@ import { installPatchChainWatch } from "./PatchChainChanged.js";
 import { gatewayOrigin as defaultGatewayOrigin, pageGatewayPolicy } from "./Environment.js";
 import { installNativeAppShell } from "./app/NativeAppShell.js";
 import { GlueServerUnavailableError, probeGlueServer, showGlueServerUnavailable } from "./glue/GlueRetry.js";
-import { renderWorkerRequested } from "./RenderWorkerStart.js"; // 22.10 ARC-2 S6b
+import { renderWorkerChosen } from "./RenderWorkerStart.js"; // 22.10 ARC-2 S6b, 12.14
 import { mountWorldRenderWorker, worldRendererCanvas } from "./app/RenderWorkerMount.js"; // 22.10 ARC-2 S6b
 
 /**
@@ -49,8 +49,10 @@ usePanelHost(gameWindows);
 resetLayout.addEventListener("click", () => gameWindows.resetLayout());
 
 try {
-  if (renderWorkerRequested(location.search)) {
-    // 22.10 ARC-2 S6b: `?renderworker=1` — the world drawn in a worker, the in-page renderer when it cannot be.
+  // 22.10 (12.14): the setting as the last session left it (the account blob's local mirror; it applies on a restart).
+  if (renderWorkerChosen(location.search, settingNumber(settings(), "renderWorker"), navigator.userAgent)) {
+    // 22.10 ARC-2 S6b: `?renderworker=1` (12.14: or the setting, or the desktop app by default) — the world drawn in a
+    // worker, the in-page renderer when it cannot be.
     game.renderer = mountWorldRenderWorker(world3dCanvas);
   } else {
     const renderer = new WorldRenderer3D(world3dCanvas);

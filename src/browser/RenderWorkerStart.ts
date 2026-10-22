@@ -16,6 +16,38 @@ export function renderWorkerRequested(search: string): boolean {
   return new URLSearchParams(search).get("renderworker") === "1";
 }
 
+/**
+ * 22.10 (12.14): the setting «Где рисуется мир» (ui/SettingsModel.ts `renderWorker`): 0 — by the device, 1 — in a
+ * worker, 2 — in the page.
+ */
+export const RENDER_WORKER_AUTO = 0;
+export const RENDER_WORKER_ON = 1;
+export const RENDER_WORKER_OFF = 2;
+
+/**
+ * 22.10 (12.14): the desktop app — the development shell and the packed one (`tswow-webclient-desktop`) and the
+ * player app (`wow-webclient-player`): Electron names itself and the app in the user agent. It pins the whole process to
+ * the P-cores (electron/main.cjs), where the worker draws as fast as the page (PERF_STATUS, step 25: 55.5 against
+ * 54.7 FPS); Chrome lets the worker fall to the E-cores (50.6 against 55.4), so a browser keeps the page.
+ */
+export function desktopAppUserAgent(userAgent: string): boolean {
+  return /\bElectron\/|tswow-webclient-desktop|wow-webclient-player/.test(userAgent);
+}
+
+/**
+ * 22.10 (12.14): whether the world is drawn in a worker: `?renderworker=1`/`0` first, then the setting, and by default
+ * the desktop app does and a browser does not. A worker that cannot start or fails still hands the page back
+ * (app/RenderWorkerMount.ts).
+ */
+export function renderWorkerChosen(search: string, setting: number | undefined, userAgent: string): boolean {
+  const flag = new URLSearchParams(search).get("renderworker");
+  if (flag === "1") return true;
+  if (flag === "0") return false;
+  if (setting === RENDER_WORKER_ON) return true;
+  if (setting === RENDER_WORKER_OFF) return false;
+  return desktopAppUserAgent(userAgent);
+}
+
 interface WorkerCapabilityScope {
   readonly OffscreenCanvas?: unknown;
   readonly HTMLCanvasElement?: { readonly prototype: object };
