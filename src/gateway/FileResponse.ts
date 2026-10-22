@@ -36,6 +36,11 @@ export interface FileResponseOptions {
   readonly contentType: string;
   /** Run once when the file is missing, then the file is opened again (a generator). */
   readonly rebuild?: (() => Promise<unknown>) | undefined;
+  /**
+   * 22.10 (6.26): the answer's `cache-control` (AssetGeneration.ts `assetCacheControl`: immutable for a URL that names
+   * the current visual generation). Absent: revalidated, as before.
+   */
+  readonly cacheControl?: string | undefined;
   /** Injectable for tests: how the file is opened. */
   readonly open?: (filename: string) => Promise<FileHandle>;
 }
@@ -65,7 +70,10 @@ export async function respondFile(
     const etag = fileEtag(await handle.stat({ bigint: true }));
     const headers = {
       ...(options.origin ? { "access-control-allow-origin": options.origin } : {}),
-      "cache-control": "public, max-age=0, must-revalidate",
+      "cache-control": options.cacheControl ?? "public, max-age=0, must-revalidate",
+      // 22.10 (6.26): the answer echoes the caller's Origin, and an immutable copy is never revalidated, so a
+      // shared cache must not hand one origin's copy to another (CachePolicy.ts gives the same reason).
+      ...(options.origin ? { vary: "Origin" } : {}),
       "content-type": options.contentType,
       etag,
     };

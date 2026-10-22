@@ -7,6 +7,8 @@ import {
   type CharacterAppearance,
 } from "./CharacterAtlas.js";
 import type { BenchmarkAsyncReadinessStats } from "./RenderBenchmarkReadiness.js";
+import { withMetadataGeneration } from "./GatewayGeneration.js"; // 22.10 (6.26)
+import { createDisplayRowPersistence, type DisplayRowPersistence } from "./CreatureDisplayPersistence.js"; // 22.10 (6.26)
 
 export type { CreatureModelMetadata, EquippedItem };
 
@@ -55,6 +57,10 @@ export class CreatureModelClient {
   #success = 0;
   #error = 0;
   #generation = 0;
+  /** 22.10 (6.26): display records kept between sessions (CreatureDisplayPersistence.ts), when the realm has a store. */
+  readonly #persistence: DisplayRowPersistence | undefined;
+  /** 22.10 (6.26): display records answered out of that store this session. */
+  #stored = 0;
 
   /** Immutable current async ownership; lifetime attempt totals are not readiness errors. */
   get stats(): Readonly<BenchmarkAsyncReadinessStats> {
@@ -81,12 +87,17 @@ export class CreatureModelClient {
     return this.#generation;
   }
 
-  /** @param now the clock the backoff is measured against; injected so a test need not wait. */
-  constructor(gatewayWebSocketUrl: string, now: () => number = Date.now) {
+  /**
+   * @param now the clock the backoff is measured against; injected so a test need not wait.
+   * @param persistence 22.10 (6.26): where display records are kept between sessions; absent: the realm's store,
+   * null: none.
+   */
+  constructor(gatewayWebSocketUrl: string, now: () => number = Date.now, persistence?: DisplayRowPersistence | null) {
     const url = new URL(gatewayWebSocketUrl);
     url.protocol = url.protocol === "wss:" ? "https:" : "http:";
     this.#baseUrl = url.origin;
     this.#now = now;
+    this.#persistence = persistence === null ? undefined : persistence ?? createDisplayRowPersistence(CREATURE_MODEL_VERSION);
     this.npcWeapons = new NpcWeaponClient(url.origin, now); // 05.10-A7a-B 6.02
   }
 
@@ -158,7 +169,9 @@ export class CreatureModelClient {
           + `&hair=${hairStyle}&hairColor=${hairColor}&facialHair=${facialHair}`
           + (worn ? `&items=${encodeURIComponent(worn)}` : "")
           + (knownClass === undefined ? "" : `&class=${knownClass}`); // 05.10-A7a-A 6.10
-        const response = await fetch(`${this.#baseUrl}/dbc/character-appearance?${query}`);
+        // 22.10 (6.26): + `mg=`: the gateway answers a look of its current metadata generation immutable, so the
+        // browser keeps it between sessions.
+        const response = await fetch(withMetadataGeneration(`${this.#baseUrl}/dbc/character-appearance?${query}`));
         if (!response.ok) throw new Error(`Character appearance gateway returned ${response.status}`);
         const value = await response.json() as CharacterAppearance;
         if (!isAppearance(value)) throw new Error("malformed appearance");
@@ -202,7 +215,11 @@ export class CreatureModelClient {
     try {
       while (this.#pending.length > 0) {
         // The gateway accepts at most 200 ids per call.
-        const batch = this.#pending.splice(0, 200);
+        const asked = this.#pending.splice(0, 200);
+        // 22.10 (6.26): the ids an earlier session already got under this generation are answered from the store.
+        const persistGeneration = this.#persistence?.generation();
+        const batch = this.#persistence === undefined ? asked : await this.#fromStore(asked, persistGeneration);
+        if (batch.length === 0) continue;
         let settled = false;
         const settle = (success: boolean): void => {
           if (settled) return;
@@ -218,12 +235,13 @@ export class CreatureModelClient {
           // again, so a deploy that adds a field to the record would otherwise be served an hour of
           // pre-upgrade responses and then never ask again. `CREATURE_MODEL_VERSION` is shared
           // with the lab, which fetches the same route for the same reason.
-          const response = await fetch(
-            `${this.#baseUrl}/dbc/creature-models?v=${CREATURE_MODEL_VERSION}&ids=${batch.join(",")}`);
+          const response = await fetch(withMetadataGeneration( // 22.10 (6.26): mg=
+            `${this.#baseUrl}/dbc/creature-models?v=${CREATURE_MODEL_VERSION}&ids=${batch.join(",")}`));
           if (!response.ok) throw new Error(`Creature model gateway returned ${response.status}`);
           const value: unknown = await response.json();
           if (!Array.isArray(value) || !value.every(isMetadata)) throw new Error("Creature model gateway returned invalid data");
           const returned = new Set<number>();
+          this.#persistence?.save(value.filter((metadata) => batch.includes(metadata.id)), persistGeneration); // 22.10 (6.26)
           for (const metadata of value) {
             if (!batch.includes(metadata.id)) continue;
             returned.add(metadata.id);
@@ -266,6 +284,41 @@ export class CreatureModelClient {
     } finally {
       this.#flushing = false;
     }
+  }
+
+  /** 22.10 (6.26): how many display records came out of the between-session store. */
+  get storedAnswers(): number {
+    return this.#stored;
+  }
+
+  /**
+   * 22.10 (6.26): answers what the store holds of `asked` (each settled like a fetched answer), and returns the
+   * rest for the gateway. A stored record is validated like an answer; one that fails is simply asked for.
+   */
+  async #fromStore(asked: number[], generation: string | undefined): Promise<number[]> {
+    const stored = await this.#persistence!.load(asked, generation);
+    if (stored.size === 0) return asked;
+    const rest: number[] = [];
+    let answered = 0;
+    for (const id of asked) {
+      const metadata = stored.get(id);
+      if (metadata === undefined || !isMetadata(metadata) || metadata.id !== id) {
+        rest.push(id);
+        continue;
+      }
+      if (this.#cache.get(id) !== metadata) this.#generation++;
+      this.#cache.set(id, metadata);
+      this.#failures.delete(id);
+      this.#negative.delete(id);
+      answered++;
+    }
+    if (answered > 0) {
+      this.#stored += answered;
+      this.#pendingRequests -= answered;
+      this.#success += answered;
+      this.#generation++;
+    }
+    return rest;
   }
 }
 

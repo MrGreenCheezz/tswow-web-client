@@ -52,6 +52,7 @@ import {
   BoundedTopK, selectGameObjectAdmission, selectUnitAdmission, stableBoundedTopKWhere,
   type UnitAdmissionCandidate,
 } from "./RenderAdmission.js";
+import { selectUnitPrefetch, UNIT_PREFETCH_EVERY } from "./UnitPrefetch.js"; // 22.10 (6.26)
 import {
   applyTerrainSplat, setTerrainSplatMicroNormals, type TerrainSplatClient,
 } from "./TerrainSplat.js";
@@ -4031,6 +4032,10 @@ export class WorldRenderer3D {
   });
   /** P2-03b: the vertex attributes `#builtUnits` builds share; replaced whenever the caches are dropped. */
   #modelBuffers = new SharedModelBuffers();
+  /** 22.10 (6.26): frames counted for `#prefetchUnits`, which runs every UNIT_PREFETCH_EVERY of them. */
+  #unitPrefetchFrame = 0;
+  /** 22.10 (6.26): the units `#prefetchUnits` chose last, asked for on every frame until it chooses again. */
+  #unitPrefetchGuids: readonly bigint[] = [];
   /** One name per appearance, so the digest is computed once per look rather than once a frame. */
   readonly #appearanceKeys = new WeakMap<CharacterAppearance, string>();
   /** Bodies, mounts and equipment share one per-frame construction/upload admission slice. */
@@ -13893,6 +13898,8 @@ export class WorldRenderer3D {
       if (rendered?.applied) this.#atlasFrameActive.add(rendered.applied);
     }
     this.#unitShadowCasters.end(); // 06.10-shadow
+    // 22.10 (6.26): what the nearest in-range units the frame did not draw will need, asked for now (UnitPrefetch.ts).
+    this.#prefetchUnits(candidates, drawn, client);
     // 11.02-H: vehicle passengers onto their seats, now that every vehicle stands and is posed.
     this.#vehiclePassengers.place(admission.admitted, drawn, this.#units); // 11.02-H-review
     // 05.10-A7a-D2 6.06: melee reactions at the attackers' swing moments. 22.10 ARC-2 S4a: the swings' progress at
@@ -14407,6 +14414,50 @@ export class WorldRenderer3D {
   }
 
   /**
+   * 22.10 (6.26): starts painting a look's body before its model has arrived. The atlas used to be asked for only
+   * once the WVM was decoded (`#attachSkinnedModel`), so a character waited for its model and then for its body;
+   * now the two load side by side. A display with an appearance is a character in every record the gateway serves
+   * (CreatureModelMetadata.ts), and a body painted for a model that turns out to have no body slot is only an atlas
+   * nothing samples, released with the others. The key is demanded this frame, so the atlas is kept while it waits.
+   */
+  #composeBodyAhead(key: string, metadata: UnitModel): void {
+    const body = metadata.appearance?.body;
+    if (body === undefined || body.length === 0) return;
+    this.#atlasFrameDemands.add(key);
+    this.#atlases ??= new CharacterAtlasClient(this.#baseUrl);
+    if (this.#atlases.get(key) === undefined) void this.#atlases.compose(key, body);
+  }
+
+  /**
+   * 22.10 (6.26): for the nearest in-range units this frame did not draw — past the 64-unit budget, or out of view —
+   * the model file, the attached pieces' files and the body, so the unit is ready when it is admitted (UnitPrefetch.ts).
+   * Model files at "normal" priority, below every admitted unit's "critical"; pieces at "background". Nothing is
+   * built: geometry and rigs wait for admission and the build budget, as before.
+   */
+  #prefetchUnits(candidates: readonly UnitAdmissionCandidate<WorldObjectState>[], drawn: ReadonlySet<bigint>,
+    client: EnvironmentClient | undefined): void {
+    if (client === undefined) return;
+    // The nearest are chosen every few frames, and only when some unit in range was not drawn (a crowd all on screen
+    // pays one comparison); they are asked for on every frame, because a queued model or a composing body nobody
+    // asked for in the last frame is dropped (Terrain.ts `#pruneModelWork`, CharacterAtlas.ts `pruneInactiveWork`).
+    if (++this.#unitPrefetchFrame % UNIT_PREFETCH_EVERY === 0) {
+      this.#unitPrefetchGuids = candidates.length <= drawn.size ? []
+        : selectUnitPrefetch(candidates, drawn).map((object) => object.guid);
+    }
+    const unitModels = this.#lookups.unitModels;
+    if (unitModels === undefined) return;
+    for (const guid of this.#unitPrefetchGuids) {
+      if (drawn.has(guid)) continue;
+      const metadata = unitModels.get(guid);
+      if (metadata === undefined) continue;
+      client.model(metadata.model, "normal");
+      for (const piece of metadata.appearance?.attached ?? []) if (piece.model) client.model(piece.model, "background");
+      for (const piece of metadata.held ?? []) if (piece.model) client.model(piece.model, "background");
+      this.#composeBodyAhead(this.#unitKey(metadata), metadata);
+    }
+  }
+
+  /**
    * Swaps the stand-in capsule for the real model as soon as its skeleton has downloaded.
    *
    * Returns what stopped it, or undefined when the unit is now wearing its model. Every early
@@ -14417,7 +14468,11 @@ export class WorldRenderer3D {
     model: EnvironmentModel | undefined, client?: EnvironmentClient): StandInReason | undefined {
     // The download is keyed on the model path alone now, so every appearance of a race shares one
     // file; only the geometry and materials built below vary with the appearance.
-    if (!model) return "artifact";
+    if (!model) {
+      // 22.10 (6.26): the body is painted while the model is still on its way, not after it.
+      this.#composeBodyAhead(key, metadata);
+      return "artifact";
+    }
 
     if (model.wvm) {
       const appearance = metadata.appearance;

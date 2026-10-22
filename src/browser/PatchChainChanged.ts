@@ -32,7 +32,9 @@
 // reason to ask also asks every thirty seconds — one summary read, which costs the gateway no child.
 
 import { setPatchChainSuspectSink } from "./PatchChainSuspect.js"; // 22.10 ARC-2 S4b
-import { beginGatewayCacheBypass, noteGatewayCacheGeneration, resetGatewayGeneration } from "./GatewayGeneration.js";
+import {
+  beginGatewayCacheBypass, noteGatewayAssetGenerations, noteGatewayCacheGeneration, resetGatewayGeneration,
+} from "./GatewayGeneration.js"; // 22.10 (6.26): noteGatewayAssetGenerations
 
 export const PATCH_CHAIN_CHANGED = "client_patch_chain_changed";
 export const PATCH_CHAIN_CHANGED_MESSAGE = "Патчи TSWoW обновились — перезапустите шлюз и обновите страницу";
@@ -96,6 +98,9 @@ export interface PatchStatusSummaryLike {
   readonly clientError?: string;
   /** 10.12: what tile URLs carry in `g=` (GatewayGeneration.ts); absent from a gateway built before it. */
   readonly cacheGeneration?: string;
+  /** 22.10 (6.26): the restart-stable generations (gateway/AssetGeneration.ts); absent from an older gateway. */
+  readonly visualGeneration?: string;
+  readonly metadataGeneration?: string;
   /**
    * 10.15 (C): when the supervisor restarts the gateway whoever is connected, epoch ms on the
    * gateway's clock; null or absent while none is scheduled (and from a gateway built before it).
@@ -307,6 +312,7 @@ export async function readPatchStatus(
   }
   if (response.status === 404) {
     noteGatewayCacheGeneration(origin, undefined);
+    noteGatewayAssetGenerations(origin, undefined, undefined); // 22.10 (6.26)
     return { kind: "unsupported" };
   }
   if (!response.ok) return { kind: "unreachable", error: `${url.pathname} answered ${response.status}` };
@@ -317,6 +323,7 @@ export async function readPatchStatus(
     }
     // Every read keeps the tile URLs on the generation the gateway serves now (10.12).
     noteGatewayCacheGeneration(origin, status.cacheGeneration);
+    noteGatewayAssetGenerations(origin, status.visualGeneration, status.metadataGeneration); // 22.10 (6.26)
     return { kind: "ok", status };
   } catch (error) {
     return { kind: "unreachable", error: error instanceof Error ? error.message : String(error) };

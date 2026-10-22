@@ -456,6 +456,11 @@ export class DatasetFingerprint {
     return this.#archivesHash;
   }
 
+  /** 22.10 (6.26): the DBC half of the last complete walk (DBCs, dumps, overlays); undefined before one. */
+  get dbcHash(): string | undefined {
+    return this.#dbcHash;
+  }
+
   /** The chain composition digest of the last complete walk, as `tools/mpq.mjs` computes it. */
   get chain(): string | undefined {
     return this.#chain;

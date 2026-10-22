@@ -29,6 +29,7 @@
 // unit's transform, M2 lights — and stepped bone channels decoded as steps (`WvaChannelKeys.ts`).
 // 12.10 6.24: `visual-v24` adds the key bone table to WVE1 (`WvmModel.keyBones`).
 
+import { withVisualGeneration } from "./GatewayGeneration.js"; // 22.10 (6.26)
 import { readChannelKeys, steppedKeyCount } from "./WvaChannelKeys.js"; // 05.10-A7a-F2
 
 /** M2Material.blending_mode, in the file's own order. */
@@ -1360,20 +1361,23 @@ export function isCoordinatedVisualTexturePath(path: string): boolean {
 export function textureUrl(baseUrl: string, mpqPath: string): string {
   const path = mpqPath.replaceAll("/", "\\");
   const version = isCoordinatedVisualTexturePath(path) ? `v=${TEXTURE_ROUTE_VERSION}&` : "";
-  return `${baseUrl}/texture?${version}path=${encodeURIComponent(path)}`;
+  // 22.10 (6.26): + `vg=` once the gateway published its visual generation: answered immutable, kept across sessions.
+  return withVisualGeneration(`${baseUrl}/texture?${version}path=${encodeURIComponent(path)}`);
 }
 
 /** Versioned URL for one visual model or one streamed WMO group. */
 export function visualModelUrl(baseUrl: string, mpqPath: string, group?: number): string {
   const path = mpqPath.replaceAll("/", "\\");
   const groupQuery = group === undefined ? "" : `&group=${group}`;
-  return `${baseUrl}/visual/model?path=${encodeURIComponent(path)}${groupQuery}&v=${VISUAL_MODEL_ROUTE_VERSION}`;
+  return withVisualGeneration( // 22.10 (6.26)
+    `${baseUrl}/visual/model?path=${encodeURIComponent(path)}${groupQuery}&v=${VISUAL_MODEL_ROUTE_VERSION}`);
 }
 
 /** Versioned URL for the held-back animation sidecar paired with a visual model. */
 export function visualAnimationsUrl(baseUrl: string, mpqPath: string): string {
   const path = mpqPath.replaceAll("/", "\\");
-  return `${baseUrl}/visual/animations?path=${encodeURIComponent(path)}&v=${VISUAL_MODEL_ROUTE_VERSION}`;
+  return withVisualGeneration( // 22.10 (6.26)
+    `${baseUrl}/visual/animations?path=${encodeURIComponent(path)}&v=${VISUAL_MODEL_ROUTE_VERSION}`);
 }
 
 /**
