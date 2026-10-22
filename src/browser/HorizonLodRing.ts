@@ -204,6 +204,8 @@ export class HorizonLodRing {
   /** The ring's cells for {@link #cellsFor}: rebuilt only when the centre tile changes. */
   #cells: Array<{ x: number; y: number }> = [];
   #cellsFor = -1;
+  /** The grid object handed to `ownRevision`, reused: the ring asks sixteen times a frame. */
+  readonly #grid = { x: 0, y: 0 };
   /** Terrain builds done so far (tests and diagnostics). */
   builds = 0;
 
@@ -239,7 +241,9 @@ export class HorizonLodRing {
       const existing = this.#tiles.get(id);
       if (existing && existing.mesh.material !== material) existing.mesh.material = material;
       const centreHeight = terrain?.residentHeightAt(map, (31.5 - x) * TERRAIN_GRID_SIZE, (31.5 - y) * TERRAIN_GRID_SIZE);
-      const revision = centreHeight === undefined ? 0 : terrain!.ownRevision(map, { x, y });
+      this.#grid.x = x;
+      this.#grid.y = y;
+      const revision = centreHeight === undefined ? 0 : terrain!.ownRevision(map, this.#grid);
       if (existing && existing.revision === revision) continue;
       if (existing && revision === 0) continue; // keep the terrain build until the tile is back
       let geometry: THREE.BufferGeometry | undefined;

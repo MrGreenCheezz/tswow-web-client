@@ -146,6 +146,8 @@ export class HorizonDetail {
   #inFlight = 0;
   #generation = 0;
   #lastTime = Number.NaN;
+  /** Decoded cells waiting for their upload; the upload pass is skipped (and allocates nothing) at 0. */
+  #ready = 0;
   /** Uploads done so far (diagnostics and tests). */
   uploads = 0;
 
@@ -209,6 +211,7 @@ export class HorizonDetail {
 
   #reset(map: number): void {
     this.#generation++;
+    this.#ready = 0;
     for (const state of this.#levels) {
       for (const cell of state.cells.values()) cell.bitmap?.close();
       state.cells.clear();
@@ -241,6 +244,7 @@ export class HorizonDetail {
       });
       for (const [id, cell] of state.cells) {
         if (wanted.has(id)) continue;
+        if (cell.status === "ready") this.#ready--;
         cell.bitmap?.close();
         state.cells.delete(id);
         this.#setResidency(id, index, 0, true);
@@ -279,12 +283,14 @@ export class HorizonDetail {
           }
           cell.status = "ready";
           cell.bitmap = bitmap;
+          this.#ready++;
         });
       }
     }
   }
 
   #upload(renderer: THREE.WebGLRenderer): void {
+    if (this.#ready === 0) return;
     let budget = HORIZON_DETAIL_UPLOADS_PER_FRAME;
     for (let index = 0; index < this.#levels.length && budget > 0; index++) {
       const state = this.#levels[index]!;
@@ -321,6 +327,7 @@ export class HorizonDetail {
         cell.bitmap!.close();
         cell.bitmap = undefined;
         cell.status = "uploaded";
+        this.#ready--;
         this.#setResidency(id, index, 255, false);
         this.uploads++;
         budget--;
