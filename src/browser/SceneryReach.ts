@@ -51,15 +51,9 @@ export function environmentHouseRange(shellRange: number): number {
   return shellRange > ENVIRONMENT_FAR_RANGE ? Math.min(shellRange, ENVIRONMENT_HOUSE_RANGE) : 0;
 }
 
-/**
- * 22.10 (7.44): loose M2s at least this big (source radius × scale, in yards) that are not
- * vegetation — big rocks, ruins, statues, windmill sails — keep their size-scaled leash past the
- * scenery cap on the enhanced path, up to the shell range. Smaller ones are still capped as before.
+/*
+ * 22.10 (7.44): a landmark step — non-vegetation M2s of radius 10+ keeping their size-scaled leash
+ * past the 750-yard cap up to the shell range — was measured and left out: +30 draws and +0.3 ms
+ * CPU in the city bench (Stormwind harbour's dock pylons and cranes), against 26 cliff rocks
+ * around Goldshire. The minimap detail (HorizonDetail.ts) already shows those rocks past 750.
  */
-export const SCENERY_LANDMARK_MIN_RADIUS = 10;
-
-/** The cap on a loose non-vegetation M2 of this size: the shell range for a landmark on the enhanced path. */
-export function sceneryLandmarkCap(radius: number, detail: number, shellRange: number): number {
-  const cap = sceneryFarCap(detail);
-  return shellRange > ENVIRONMENT_FAR_RANGE && radius >= SCENERY_LANDMARK_MIN_RADIUS ? Math.max(cap, shellRange) : cap;
-}

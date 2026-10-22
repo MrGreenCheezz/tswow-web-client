@@ -1,4 +1,4 @@
-// 22.10 (7.44): the enhanced path's far leashes for houses (small outdoor WMOs) and landmark M2s.
+// 22.10 (7.44): the enhanced path's far leash for houses (small outdoor WMOs).
 // Under 7.39's 2.5 km fog the 250-yard house shells and the 750-yard cap on big rocks showed; the
 // faithful levels (shell range 750) keep every leash they had.
 import assert from "node:assert/strict";
@@ -8,7 +8,7 @@ import {
   ENVIRONMENT_FAR_RANGE, ENVIRONMENT_RANGE, environmentDrawRange, selectEnvironmentAdmission, wmoHousePlacement,
 } from "../dist/code/browser/WorldRenderer3D.js";
 import {
-  ENVIRONMENT_HOUSE_RANGE, SCENERY_LANDMARK_MIN_RADIUS, environmentHouseRange, environmentShellRange,
+  ENVIRONMENT_HOUSE_RANGE, environmentHouseRange, environmentShellRange,
 } from "../dist/code/browser/SceneryReach.js";
 import { WmoRangeTable } from "../dist/code/browser/WmoGroupRange.js";
 
@@ -67,12 +67,9 @@ test("a house's outdoor shell groups take the house leash; its rooms do not", ()
   assert.deepEqual([...notHouse.select(0, 0)], [], "a big WMO's small exterior bits keep 250");
 });
 
-test("a landmark M2 grows with its size up to the shell range on the enhanced path only", () => {
+test("loose M2s keep the scenery cap on both paths: the landmark step was measured and left out", () => {
   const rock = m2("cliffrock", 0, 20);
-  assert.ok(20 >= SCENERY_LANDMARK_MIN_RADIUS);
-  assert.equal(environmentDrawRange(rock, 1.5, ENHANCED), ENHANCED, "20 yd × 50 × 1.5 = 1,500, capped at 1,100");
-  assert.equal(environmentDrawRange(rock, 1.5, FAITHFUL), ENVIRONMENT_FAR_RANGE, "the faithful cap");
+  assert.equal(environmentDrawRange(rock, 1.5, ENHANCED), ENVIRONMENT_FAR_RANGE);
+  assert.equal(environmentDrawRange(rock, 1.5, FAITHFUL), ENVIRONMENT_FAR_RANGE);
   assert.equal(environmentDrawRange(m2("crate", 0, 4), 1.5, ENHANCED), 300, "small M2s unchanged");
-  const tree = m2("canopy", 0, 60, "World\\Azeroth\\Elwynn\\PassiveDoodads\\Trees\\ElwynnTreeCanopy01.m2");
-  assert.equal(environmentDrawRange(tree, 1.5, ENHANCED), ENVIRONMENT_FAR_RANGE, "trees keep the scenery cap");
 });

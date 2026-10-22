@@ -32,7 +32,7 @@ import { SpellVisualIds } from "./SpellVisualIds.js"; // 22.10 ARC-2 S4a
 import { captureBenchmarkWebGl, type BenchmarkEnvironmentInput } from "./BenchmarkManifest.js"; // 21.10 ARC-2 S1
 import { distanceFogRange, distanceHorizonRange, type DistanceFogRange } from "./DistanceFog.js";
 import { HorizonBand } from "./HorizonBand.js";
-import { ENVIRONMENT_DETAIL_FAR_MAX, SCENERY_LANDMARK_MIN_RADIUS, environmentHouseRange, environmentShellRange, environmentStreamRange, sceneryFarCap, sceneryLandmarkCap } from "./SceneryReach.js"; // 7.44: house, landmark
+import { ENVIRONMENT_DETAIL_FAR_MAX, environmentHouseRange, environmentShellRange, environmentStreamRange, sceneryFarCap } from "./SceneryReach.js"; // 7.44: house
 import { ENVIRONMENT_FAR_RANGE, ENVIRONMENT_RANGE, ENVIRONMENT_SHELL_RANGE, ENVIRONMENT_RESIDENT_HYSTERESIS, TERRAIN_GRID_SIZE, modelKey, terrainGrid, terrainGridIndex, type EnvironmentClient, type EnvironmentModel, type EnvironmentObject, type TerrainClient } from "./Terrain.js";
 import { terrainGeometryData, terrainGeometrySteps, type TerrainGeometryData } from "./TerrainGeometry.js";
 export { terrainGeometryData, terrainHeightField, terrainNormals, surfaceNormal, type TerrainGeometryData } from "./TerrainGeometry.js";
@@ -1188,14 +1188,7 @@ export function environmentDrawRange(object: EnvironmentObject, detail = 1, shel
   // 22.10 (7.44): a small outdoor WMO (a house) keeps the enhanced path's house leash (SceneryReach.ts).
   if (object.kind !== "m2") return vegetation ? legacy : Math.max(legacy, environmentHouseRange(shellRange));
   const sized = environmentSceneryRange(object, detail);
-  if (sized !== undefined) {
-    // 22.10 (7.44): a big non-vegetation M2 keeps growing with its size up to the shell range.
-    const radius = (object.admissionRadius ?? 0) * object.scale;
-    if (vegetation || shellRange <= ENVIRONMENT_FAR_RANGE || radius < SCENERY_LANDMARK_MIN_RADIUS) return sized;
-    const scale = environmentDetailScale(detail);
-    return Math.max(sized, Math.min(sceneryLandmarkCap(radius, scale, shellRange),
-      Math.max(ENVIRONMENT_SCENERY_MIN_RANGE, radius * ENVIRONMENT_SCENERY_RANGE_PER_YARD) * scale));
-  }
+  if (sized !== undefined) return sized;
   const scale = environmentDetailScale(detail);
   return Math.min(sceneryFarCap(scale), legacy * scale); // 22.10 (7.39)
 }
