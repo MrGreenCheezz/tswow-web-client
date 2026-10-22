@@ -57,6 +57,7 @@ import {
 } from "./TerrainSplat.js";
 import { setTerrainBakedShadowStrength, terrainBakedShadowStrength } from "./TerrainSplat.js"; // 05.10-A7b-7
 import { setTerrainReliefWanted, setTerrainSplatRelief, terrainReliefActive } from "./TerrainReliefShader.js"; // 22.10 (7.47)
+import { setWmoReliefActive, trackWmoReliefMaterial, wmoReliefActive, wmoRunReliefVariant } from "./WmoReliefShader.js"; // 22.10 (7.47 stage 2)
 import { setTerrainSpecularColour, setTerrainSpecularStrength, terrainSpecularStrength } from "./TerrainSplat.js"; // 05.10-A7b-7Г; 13.10 7.16
 import {
   GROUND_COVER_BUDGET, GROUND_COVER_MARGIN, GROUND_COVER_MAX_RADIUS, createGroundCoverCellCache,
@@ -4063,6 +4064,8 @@ export class WorldRenderer3D {
   #experimentalShaderProfile: Readonly<ExperimentalShaderProfile> = DEFAULT_EXPERIMENTAL_SHADER_PROFILE;
   /** 22.10 (7.47): the «Объём земли» setting, and whether the current lighting level draws it. */
   #terrainReliefSetting = false;
+  /** 22.10 (7.47 stage 2): the «Объём зданий» setting (drawn on the enhanced levels only). */
+  #wmoReliefSetting = false;
   #terrainReliefActive = false;
   /** 22.10 (7.47): bumped on every change of the active state; a tile off it re-syncs on its next frame. */
   #terrainReliefRevision = 0;
@@ -9105,6 +9108,7 @@ export class WorldRenderer3D {
     for (const unit of this.#units.values()) unit.shadowCaster = undefined;
     if (oldGodRaysActive !== this.#godRaysActive()) this.#syncFullscreenGlowTargets();
     this.#syncTerrainRelief(); // 22.10 (7.47): the classic levels never draw the relief
+    this.#syncWmoRelief(); // 22.10 (7.47 stage 2): nor the buildings' relief
   }
 
   /** Moving light and target together preserves the authored direction while centring its map. */
@@ -10555,6 +10559,20 @@ export class WorldRenderer3D {
    * (TerrainReliefShader.ts). Drawn only on the enhanced levels; the classic ones (0 and the
    * comparison level 3) keep their program. A change re-keys the terrain programs once.
    */
+  /**
+   * 22.10 (7.47 stage 2): «Объём зданий» — parallax and derived normals on building surfaces near the
+   * camera (WmoReliefShader.ts). Enhanced levels only; a change re-keys the bound WMO programs once.
+   */
+  setWmoRelief(enabled: boolean): void {
+    if (this.#wmoReliefSetting === enabled) return;
+    this.#wmoReliefSetting = enabled;
+    this.#syncWmoRelief();
+  }
+
+  #syncWmoRelief(): void {
+    setWmoReliefActive(wmoReliefActive(this.#wmoReliefSetting, this.#lightingProfile.quality));
+  }
+
   setTerrainRelief(enabled: boolean): void {
     if (this.#terrainReliefSetting === enabled) return;
     this.#terrainReliefSetting = enabled;
@@ -12983,6 +13001,11 @@ export class WorldRenderer3D {
       look === undefined ? undefined : { record: record!, key: wmoRunLookKey(look) }, // 05.10-A7b-2
       [wmoRunDrawStateKey(state), blendsSun ? WMO_TRANSITION_PROGRAM_KEY : ""].filter(Boolean).join("|"), // 13.10 7.11; 22.10 (7.37)
     );
+    // 22.10 (7.47 stage 2): what relief the run may draw — decided only by parts of its key.
+    const relief = wmoRunReliefVariant({
+      url, blendMode: run.blendMode, materialFlags: run.materialFlags, unlit: state.unlit, clamped,
+      envOrComposite: look?.env !== undefined || look?.composite !== undefined, interior,
+    });
     return this.#worldMaterials.getOrCreate({
       key,
       kind: "wmo-run",
@@ -13033,6 +13056,8 @@ export class WorldRenderer3D {
           applyWorldLight(value, this.#worldLight, "surface");
           trackWmoWetSurface(value);
         }
+        // 22.10 (7.47 stage 2): «Объём зданий» — after every other hook, so it wraps them all.
+        if (relief && texture) trackWmoReliefMaterial(value, url, relief);
         return value;
       },
     });

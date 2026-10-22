@@ -52,6 +52,15 @@ export interface TerrainReliefInput {
   readonly mask?: ArrayLike<number> | undefined;
 }
 
+/**
+ * 22.10 (7.47 stage 2): what a derivation measured on its way — the band-passed luminance's standard
+ * deviation (0–1 luminance) before it is normalised. The WMO relief (`WmoReliefDerive.ts`) leaves a
+ * texture below its own floor flat rather than lifting it to the full range.
+ */
+export interface TerrainReliefStats {
+  contrast: number;
+}
+
 /** 22.10 (7.47): the side of the relief map a layer of `size` gets. */
 export function terrainReliefSize(size: number): number {
   return Math.max(1, Math.floor(size / TERRAIN_RELIEF_DOWNSAMPLE));
@@ -61,14 +70,14 @@ export function terrainReliefSize(size: number): number {
  * 22.10 (7.47): the height alone (0–1 per output texel, 0.5 the mean) — the first half of
  * {@link deriveTerrainRelief}, exported for the tests that pin the band-pass.
  */
-export function terrainReliefHeight(input: TerrainReliefInput): Float32Array {
+export function terrainReliefHeight(input: TerrainReliefInput, stats?: TerrainReliefStats): Float32Array {
   const { pixels, size, mask } = input;
   if (!Number.isInteger(size) || size < 2 || pixels.length < size * size * 4) {
     throw new Error(`terrain relief needs ${size}² RGBA texels`);
   }
   const side = terrainReliefSize(size);
   const luma = downsampleChannel(pixels, size, side, lumaOf);
-  const heightZ = bandPass(luma, side);
+  const heightZ = bandPass(luma, side, stats);
   if (mask && mask.length >= size * size * 4) {
     const maskZ = bandPass(downsampleChannel(mask, size, side, (data, offset) => data[offset]! / 255), side);
     for (let index = 0; index < heightZ.length; index++) {
@@ -83,9 +92,9 @@ export function terrainReliefHeight(input: TerrainReliefInput): Float32Array {
 }
 
 /** 22.10 (7.47): the relief map (RG normal, B height, A 255) of one layer; see the file comment. */
-export function deriveTerrainRelief(input: TerrainReliefInput): Uint8Array {
+export function deriveTerrainRelief(input: TerrainReliefInput, stats?: TerrainReliefStats): Uint8Array {
   const side = terrainReliefSize(input.size);
-  const height = terrainReliefHeight(input);
+  const height = terrainReliefHeight(input, stats);
   const out = new Uint8Array(side * side * 4);
   // Height 0–1 spans TERRAIN_RELIEF_DEPTH of detail UV; a texel is 1/side of it. dh/du in UV units
   // is (Δh per texel) · side · depth.
@@ -144,7 +153,7 @@ function downsampleChannel(
  * The band-pass, in standard deviations of its own output (floored by the contrast floor): the value
  * minus its wrap-around Gaussian (three box passes) at the large radius, then `TERRAIN_RELIEF_SMOOTH_PASSES` [1 2 1] smoothings.
  */
-function bandPass(values: Float32Array, side: number): Float32Array {
+function bandPass(values: Float32Array, side: number, stats?: TerrainReliefStats): Float32Array {
   const radius = Math.max(1, Math.round(side * TERRAIN_RELIEF_LARGE_RADIUS));
   const low = values.slice();
   const scratch = new Float32Array(values.length);
@@ -163,6 +172,7 @@ function bandPass(values: Float32Array, side: number): Float32Array {
   }
   const mean = sum / high.length;
   const deviation = Math.sqrt(Math.max(0, squares / high.length - mean * mean));
+  if (stats) stats.contrast = deviation; // 22.10 (7.47 stage 2)
   const inverse = 1 / Math.max(deviation, TERRAIN_RELIEF_CONTRAST_FLOOR);
   for (let index = 0; index < high.length; index++) high[index] = (high[index]! - mean) * inverse;
   return high;
