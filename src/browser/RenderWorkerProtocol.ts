@@ -59,6 +59,11 @@ export interface RenderWorkerFrame {
   readonly lookups: RenderLookupsMessage | undefined;
   readonly inputs: RenderInputsMessage | undefined;
   readonly cost: RenderFrameCost;
+  /**
+   * 22.10 ARC-2 S7: the page moment (main clock) the world was advanced to — the page frame's own time, else when it was
+   * encoded. The worker's input age and velocities count from it (RenderInputSmoothing.ts).
+   */
+  readonly at?: number;
   /** A frame drawn as soon as it arrives (not on the worker's next animation frame) and answered by this call. */
   readonly call?: RenderWorkerCall;
 }

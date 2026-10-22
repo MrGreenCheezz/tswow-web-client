@@ -13,6 +13,8 @@ import type { RenderInputs } from "./RenderInputs.js";
 import type { RenderLookups } from "./RenderLookups.js";
 import { RenderInputsReceiver, RenderInputsSender, RenderLookupsReceiver, RenderLookupsSender } from "./RenderTablesBridge.js";
 import { structuredSize } from "./StructuredSize.js";
+import { toRenderTime } from "./RenderClock.js";
+import { RenderInputSmoothing } from "./RenderInputSmoothing.js";
 import { frameTransferList, type RenderWorkerCall, type RenderWorkerFrame } from "./RenderWorkerProtocol.js";
 
 /** The page's `postMessage(message, transfer)` — a Worker, or a fake in tests. */
@@ -37,7 +39,7 @@ export class RenderFrameSender {
    */
   post<E extends object = Record<never, never>>(target: RenderMessageTarget, world: RenderWorld, args: FrameArgValues,
     lookups: RenderLookups | undefined, inputs: RenderInputs | undefined, call?: RenderWorkerCall,
-    extra?: E): RenderWorkerFrame & E { // 22.10 ARC-2 S6b: `extra`, the client's fields (RenderWorkerClientProtocol.ts)
+    extra?: E, at?: number): RenderWorkerFrame & E { // 22.10 ARC-2 S6b: `extra`, the client's fields (RenderWorkerClientProtocol.ts)
     const encodeAt = performance.now();
     const input = this.#encoder.encode(world, args, NO_ENVIRONMENT);
     const lookupsMessage = lookups === undefined ? undefined : this.#lookups.encode(lookups);
@@ -50,6 +52,7 @@ export class RenderFrameSender {
       ...extra,
       type: "frame", input, lookups: lookupsMessage, inputs: inputsMessage,
       cost: { encodeMs, postMs: this.#postMs, bytes, frameBytes },
+      at: at ?? encodeAt, // 22.10 ARC-2 S7: the world's moment
       ...(call === undefined ? {} : { call }),
     } as RenderWorkerFrame & E;
     const postAt = performance.now();
@@ -75,10 +78,16 @@ export function emptyFrameApplied(): RenderFrameApplied {
 
 export class RenderFrameReceiver {
   readonly #decoder = new FrameInputDecoder();
+  /** 22.10 ARC-2 S7: the frames drawn without fresh input (`advance`), undone before each message and lockstep draw. */
+  readonly smoothing = new RenderInputSmoothing();
   readonly #inputs = new RenderInputsReceiver();
   readonly #lookups = new RenderLookupsReceiver();
   #lookupsRecord: RenderLookups | undefined;
   #inputsRecord: RenderInputs | undefined;
+
+  constructor() {
+    this.#decoder.motionLog = this.smoothing; // 22.10 ARC-2 S7
+  }
 
   /** The mirror world the renderer draws from. */
   get world(): MirrorWorld {
@@ -99,10 +108,29 @@ export class RenderFrameReceiver {
     return this.#inputsRecord;
   }
 
+  /**
+   * 22.10 ARC-2 S7: the latest world to draw at `now` (render clock) on the worker's own frames — exact while the input
+   * is fresh, advanced and extrapolated while the page is late (RenderInputSmoothing.ts). Returns the draw's arguments.
+   */
+  advance(now: number, periodMs?: number): FrameArgs | undefined {
+    const args = this.#decoder.args;
+    return args === undefined ? undefined : this.smoothing.advance(this.#decoder.world, args, now, periodMs);
+  }
+
+  /** 22.10 ARC-2 S7: the exact latest input, for a lockstep draw (a bench screenshot). */
+  exact(): void {
+    this.smoothing.exact();
+  }
+
   /** Applies one message (they must all be applied, in order: each is a difference) and adds its costs. */
   apply(message: RenderWorkerFrame, applied: RenderFrameApplied): void {
     const at = performance.now();
-    this.#decoder.apply(message.input);
+    // 22.10 ARC-2 S7: the exact input back first: the message is a difference against it.
+    const smoothing = this.smoothing;
+    const decoder = this.#decoder;
+    smoothing.beginInput(message.at === undefined ? undefined : toRenderTime(message.at), message.input.reset);
+    decoder.apply(message.input);
+    smoothing.endInput(decoder.world, decoder.args, message.input.reset);
     if (message.lookups !== undefined) this.#lookupsRecord = this.#lookups.apply(message.lookups);
     if (message.inputs !== undefined) this.#inputsRecord = this.#inputs.apply(message.inputs);
     applied.decodeMs += performance.now() - at;

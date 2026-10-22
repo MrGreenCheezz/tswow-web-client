@@ -116,6 +116,8 @@ export class RenderWorkerClient implements ClientRenderer {
   /** The worker is drawing (a frame went since the last `#idle`), and whether this page frame posted one. */
   #drawing = false;
   #postedSinceMark = false;
+  /** 22.10 ARC-2 S7: this page frame's time (`observeFrame`). */
+  #frameAt: number | undefined;
   #results: RenderResults = createRenderResults(DEFAULT_ATMOSPHERE_PROFILE);
   #report: RenderWorkerFrameReport | undefined;
   #slow: RenderWorkerSlowReport | undefined;
@@ -226,8 +228,14 @@ export class RenderWorkerClient implements ClientRenderer {
 
   // ---- the frame ----------------------------------------------------------------------------------------------
 
-  /** The cadence is the worker's own (its results carry `fps` and the interval). */
-  observeFrame(): number | undefined { return undefined; }
+  /**
+   * The cadence is the worker's own (its results carry `fps` and the interval). 22.10 ARC-2 S7: the page frame's time
+   * stamps the frame's world (RenderWorkerProtocol.ts `at`), the moment the loop advanced it to.
+   */
+  observeFrame(now?: number): number | undefined {
+    this.#frameAt = now;
+    return undefined;
+  }
   /** Called at every page frame's start: a page frame before it that drew nothing stops the worker's draws. */
   markFrameNotRendered(): void {
     if (this.#drawing && !this.#postedSinceMark) {
@@ -283,7 +291,7 @@ export class RenderWorkerClient implements ClientRenderer {
     };
     try {
       this.#sender.post(this.#port, state, { map, cameraYaw, cameraPitch, cameraDistance, cameraAnchorDistance,
-        cameraPivotHeight, wmoFloor, frameTime }, this.#lookups, this.#inputs, undefined, extra);
+        cameraPivotHeight, wmoFloor, frameTime }, this.#lookups, this.#inputs, undefined, extra, this.#frameAt);
     } catch (error) {
       // The frame is lost (logged once per message, as the loop logs a failed frame); its commands are not.
       this.#frameFailed(`frame not posted: ${errorText(error)}`);

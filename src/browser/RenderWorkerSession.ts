@@ -10,6 +10,7 @@
 import { WorldRenderer3D } from "./WorldRenderer3D.js";
 import { ENVIRONMENT_STREAM_RANGE, type EnvironmentObject } from "./Terrain.js";
 import { toMainTime } from "./RenderClock.js";
+import { liftCarrierPose } from "./LiftClock.js";
 import { setPushedPageHidden } from "./PageVisibility.js";
 import type { WorkerRenderHost } from "./WorkerRenderHost.js";
 import { RenderFrameReceiver, emptyFrameApplied } from "./RenderWorkerBridge.js";
@@ -93,6 +94,7 @@ export class RenderWorkerSession {
       // The page drops its clients with the realm (Context.ts `clearWorldContext`); so do these.
       this.#clients?.dispose();
       this.#clients = undefined;
+      this.#receiver.smoothing.carrierPose = undefined; // 22.10 ARC-2 S7
     }
   }
 
@@ -101,6 +103,8 @@ export class RenderWorkerSession {
     if (key === undefined || key.key === this.#clients?.key) return;
     this.#clients?.dispose();
     this.#clients = new RenderWorkerResourceClients(key.key, key.url);
+    // 22.10 ARC-2 S7: passengers of lifts ride the car this worker draws (the page's `startLiftCarriers`).
+    this.#receiver.smoothing.carrierPose = liftCarrierPose(this.#clients.transportPaths);
     const cover = this.#groundCover;
     if (cover !== undefined) {
       applyRenderCommand(this.#renderer, { method: "setGroundCover", args: cover },
@@ -114,7 +118,8 @@ export class RenderWorkerSession {
     const mainTime = toMainTime(time);
     renderer.observeFrame(mainTime);
     renderer.markFrameNotRendered();
-    const args = this.#receiver.args;
+    // 22.10 ARC-2 S7: the latest input, advanced and extrapolated when the page is late (RenderInputSmoothing.ts).
+    const args = this.#drawing ? this.#receiver.advance(time) : this.#receiver.args;
     if (!this.#drawing || args === undefined || args.map === undefined) {
       // Outside a world the page draws nothing; queued portrait clears and reports still reach it.
       const results = renderer.results;

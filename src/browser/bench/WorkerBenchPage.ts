@@ -21,6 +21,7 @@ import { drainPatchChainSuspects, mergeRendererBudget, replayGpuEvents } from ".
 import { NO_RENDER_INPUTS, type RenderInputs } from "../RenderInputs.js";
 import { TerrainClient } from "../Terrain.js";
 import { RenderFrameSender } from "../RenderWorkerBridge.js";
+import { summarizeInputStates } from "../RenderInputSmoothing.js";
 import type { RenderWorkerCall, RenderWorkerInit, RenderWorkerToPage } from "../RenderWorkerProtocol.js";
 import { pageHostValues } from "../RenderHost.js";
 import type { GpuTimerObserver, GpuTimerUnavailableReason } from "../GpuTimer.js";
@@ -35,6 +36,12 @@ import type { BenchDrawRequest, BenchWorkerDriver } from "./BenchRender.worker.j
 /** The in-page harness's bridge columns (its `--renderbridge loopback` five), then how many frame messages a draw applied. */
 export const WORKER_BRIDGE_COLUMNS = Object.freeze(['bridgeEncodeMs', 'bridgeCloneMs', 'bridgeDecodeMs', 'bridgeBytes',
   'bridgeFrameBytes', 'bridgeMessages']);
+/**
+ * 22.10 ARC-2 S7: per worker frame, how old the page's input was when drawn (ms) and what was drawn of it
+ * (RenderInputSmoothing.ts: 0 fresh, 1 splines advanced, 2 extrapolated, 3 extrapolation held at its cap).
+ */
+export const WORKER_INPUT_COLUMNS = Object.freeze(['inputAgeMs', 'inputState']);
+const WORKER_TAIL_COLUMNS = Object.freeze([...WORKER_BRIDGE_COLUMNS, ...WORKER_INPUT_COLUMNS]);
 
 const config = await (await fetch('/config.json')).json() as BenchConfig;
 const params = new URLSearchParams(location.search);
@@ -153,7 +160,8 @@ function call<T>(method: string, ...args: unknown[]): Promise<T> {
 }
 
 /** This page frame's world, encoded and posted; with `request`, drawn at once and answered. */
-function post(seconds: number, elapsed: number, frame: number, request?: BenchDrawRequest): Promise<unknown> | undefined {
+function post(seconds: number, elapsed: number, frame: number, request?: BenchDrawRequest,
+  at?: number): Promise<unknown> | undefined { // 22.10 ARC-2 S7: `at`, the page moment `seconds` stands for
   lastFraction = Math.max(0, Math.min(1, seconds / config.durationSeconds));
   lastFrame = frame;
   if (crowd.place(seconds, lastFraction, heightAt) && recording) routeHeightMissing++;
@@ -165,7 +173,7 @@ function post(seconds: number, elapsed: number, frame: number, request?: BenchDr
   const inputs = pushInputs;
   pushInputs = undefined;
   if (request === undefined) {
-    sender.post(worker, crowd.state, args, unitModels.lookups, inputs);
+    sender.post(worker, crowd.state, args, unitModels.lookups, inputs, undefined, undefined, at);
     return undefined;
   }
   const { call: drawCall, answer } = newCall('draw', [request]);
@@ -245,10 +253,10 @@ const bench = {
     routeHeightMissing = 0;
     gpuSamplesMs.length = 0;
     const columns = ['rafAtMs', 'intervalMs', 'cpuMs', ...phaseNames, 'calls', 'triangles', 'programs', 'geometries', 'textures', 'heapBytes',
-      ...(budgetProbe ? ['budgetMs', 'budgetsFired'] : []), ...WORKER_BRIDGE_COLUMNS];
+      ...(budgetProbe ? ['budgetMs', 'budgetsFired'] : []), ...WORKER_TAIL_COLUMNS];
     const capacity = Math.ceil(config.durationSeconds * 2000);
     const samples = new Float64Array(capacity * columns.length);
-    const bridgeAt = columns.length - WORKER_BRIDGE_COLUMNS.length;
+    const bridgeAt = columns.length - WORKER_TAIL_COLUMNS.length;
     let sampleCount = 0;
     let frame = 0;
     // The seed frame is drawn before timing, as in the page.
@@ -267,7 +275,8 @@ const bench = {
       if (!Number.isFinite(startMain)) return;
       const seconds = Math.max(0, now - startMain) / 1000;
       if (arrival) crowd.arrive(seconds);
-      post(seconds, Math.max(0, now - (Number.isFinite(previousPost) ? previousPost : startMain)) / 1000, frame++);
+      post(seconds, Math.max(0, now - (Number.isFinite(previousPost) ? previousPost : startMain)) / 1000, frame++,
+        undefined, now);
       pagePosts++;
       previousPost = now;
     };
@@ -275,7 +284,7 @@ const bench = {
       if (pagePace === 'worker') postNow(performance.now());
       if (sampleCount >= capacity) throw new Error('Frame capacity exceeded');
       const at = sampleCount++ * columns.length;
-      const base = row.length - WORKER_BRIDGE_COLUMNS.length;
+      const base = row.length - WORKER_TAIL_COLUMNS.length;
       samples.set(row.subarray(0, base), at);
       if (budgetProbe) {
         frameBudgetProbe.frameStart();
@@ -327,7 +336,8 @@ const bench = {
       repeatedRafCallbacks: rest['repeatedRafCallbacks'], telemetry: rest['telemetry'] ?? null,
       wmoRangeAtStart: rest['wmoRangeAtStart'] ?? null, poseWorker: rest['poseWorker'] ?? null,
       shadowCascadesAtStart: rest['shadowCascadesAtStart'] ?? null, shadowCascades: rest['shadowCascades'] ?? null,
-      renderWorker: { workerFrames: rest['frames'], pagePace, pagePosts, pageFrames, pageIntervalsMs: pageIntervals } };
+      renderWorker: { workerFrames: rest['frames'], pagePace, pagePosts, pageFrames, pageIntervalsMs: pageIntervals,
+        inputSmoothing: summarizeInputStates(frames, columns) } }; // 22.10 ARC-2 S7
   },
   async view(fraction: number) {
     if (arrival) crowd.arrive(Number.POSITIVE_INFINITY);

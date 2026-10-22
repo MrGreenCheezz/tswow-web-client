@@ -15,6 +15,7 @@ import { toRenderTime } from "./RenderClock.js";
 import type { SplineTrack } from "../world/SplineModel.js";
 import type { SplineSpeedName } from "../world/SplineStateProtocol.js";
 import type { WorldObjectState } from "../world/WorldState.js";
+import type { MotionLog } from "./RenderInputSmoothing.js";
 import {
   FIELDS_REPLACED, MOTION_FLAGS, MOTION_GENERATION, MOTION_ORIENTATION, MOTION_SLOT, MOTION_STRIDE, MOTION_X, MOTION_Y,
   MOTION_Z,
@@ -43,6 +44,8 @@ export class FrameInputDecoder {
   readonly world = new MirrorWorld();
   readonly #slots = new Map<number, MirrorRecord>();
   #args: FrameArgs | undefined;
+  /** 22.10 ARC-2 S7: told of every row that moves a positioned object (the render worker's RenderInputSmoothing.ts). */
+  motionLog: MotionLog | undefined;
 
   /** The last frame's value arguments. */
   get args(): FrameArgs | undefined {
@@ -107,6 +110,10 @@ export class FrameInputDecoder {
       const z = rows[at + MOTION_Z]!;
       const orientation = rows[at + MOTION_ORIENTATION]!;
       const position = object.position;
+      // 22.10 ARC-2 S7: where it was and where it goes, for the worker's velocities.
+      if (position !== undefined) {
+        this.motionLog?.noteMove(object, position.x, position.y, position.z, position.orientation, x, y, z, orientation);
+      }
       if (generation !== record.generation || position === undefined) {
         record.generation = generation;
         object.position = { x, y, z, orientation };

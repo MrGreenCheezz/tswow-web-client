@@ -68,7 +68,7 @@ const UNIT_FLAG_ON_TAXI = 0x00100000;
  * what the core clears itself (`UnitDefines.h:303-306`): a creature whose create block caught it
  * in the air keeps `FALLING` by the same silence and plays the jump loop for ever.
  */
-const SPLINE_SCRUB_MASK = MOVEMENT_MASK_MOVING | MOVE_SPLINE_ENABLED;
+export const SPLINE_SCRUB_MASK = MOVEMENT_MASK_MOVING | MOVE_SPLINE_ENABLED; // 22.10 ARC-2 S7: exported for MirrorMotion.ts
 
 const MAX_UPDATE_PAYLOAD = 16 * 1024 * 1024;
 /** One sample buffer for every unit's frame, so evaluating a spline allocates nothing. */
@@ -199,7 +199,7 @@ interface SplineTierLatch {
   track: SplineTrack;
 }
 
-interface SplineMotion {
+export interface SplineMotion { // 22.10 ARC-2 S7: exported with `trackFromMotion`
   splineId: number;
   /** The first lap's path in world coordinates, closed for a cycle. */
   points: SplinePoint[];
@@ -1272,7 +1272,7 @@ export function splineAnimationTier(object: WorldObjectState, now: number): numb
 const BYTES_1_INDEX = UPDATE_FIELDS.UNIT_FIELD_BYTES_1.offset;
 
 /** The anim tier byte of UNIT_FIELD_BYTES_1 (byte 3), as `unitFields.animationTier` reads it. */
-function fieldAnimationTier(object: WorldObjectState): number | undefined {
+export function fieldAnimationTier(object: WorldObjectState): number | undefined { // 22.10 ARC-2 S7: exported
   const raw = object.fields.get(BYTES_1_INDEX);
   return raw === undefined ? undefined : (raw >>> 24) & 0xff;
 }
@@ -1506,7 +1506,7 @@ function readPosition(reader: PacketReader): WorldPosition {
  * 11.01: a sample taken in a carrier's frame put on its pose, in place — `composePassengerPosition`
  * without the allocation (`pos + Rz(o) · local`, facing `o + local`).
  */
-function composeSample(carrier: WorldPosition, sample: SplineSample): void {
+export function composeSample(carrier: WorldPosition, sample: SplineSample): void { // 22.10 ARC-2 S7: exported
   const cos = Math.cos(carrier.orientation);
   const sin = Math.sin(carrier.orientation);
   const x = sample.x;
@@ -1521,7 +1521,7 @@ function composeSample(carrier: WorldPosition, sample: SplineSample): void {
  * A track equivalent to a motion that carries only the plain fields: its closed polyline, angle
  * facing and cycle, exactly as `updateMotions` evaluated them before the description existed.
  */
-function trackFromMotion(motion: SplineMotion): SplineTrack {
+export function trackFromMotion(motion: SplineMotion): SplineTrack { // 22.10 ARC-2 S7: exported
   const open = motion.cyclic ? motion.points.slice(0, -1) : motion.points;
   return buildTrack({
     splineId: motion.splineId, flags: 0, points: open, durationMs: motion.duration, timePassedMs: 0,

@@ -6,7 +6,8 @@
  * * a frame with a `draw` call (preparation, settling, views) is drawn as soon as it arrives and answered, with the
  *   readiness or the screenshot it asked for — the in-page harness's lockstep, one draw per page frame;
  * * during `runStart`…`runEnd` the worker draws on its own animation frames with the latest world it received, on its
- *   own clock, and records the measured row of each (the in-page harness's columns, plus the bridge's five).
+ *   own clock, and records the measured row of each (the in-page harness's columns, plus the bridge's five, plus — 22.10
+ *   ARC-2 S7 — how old the input it drew was and whether it was drawn fresh, advanced, extrapolated or held).
  *
  * After every draw the RenderResults record (with the GPU, budget and patch-chain reports) goes to the page, which
  * applies the reports and keeps the rows. Nothing here reads the page: everything it knows was pushed in `init`.
@@ -22,6 +23,7 @@ import { patchChainSuspectQueue } from "../RendererReports.js";
 import { setRenderClockOffset, toMainTime } from "../RenderClock.js";
 import { WorkerRenderHost } from "../WorkerRenderHost.js";
 import { emptyFrameApplied, RenderFrameReceiver, type RenderFrameApplied } from "../RenderWorkerBridge.js";
+import type { FrameArgs } from "../FrameInput.js";
 import {
   clearPostedReports, type PageToRenderWorker, type RenderWorkerCall, type RenderWorkerFrame, type RenderWorkerInit,
   type RenderWorkerToPage,
@@ -189,10 +191,13 @@ class BenchRenderSession {
     queue.length = 0;
   }
 
-  /** One draw of the latest world: the scenery and light around the player, then the renderer's frame. */
-  #draw(frameTime: RenderFrameTime | undefined): void {
+  /**
+   * One draw of the latest world: the scenery and light around the player, then the renderer's frame. 22.10 ARC-2 S7:
+   * with `drawArgs` (the measured frames' `advance`), else the exact input.
+   */
+  #draw(frameTime: RenderFrameTime | undefined, drawArgs?: FrameArgs): void {
     const receiver = this.#receiver;
-    const args = receiver.args;
+    const args = drawArgs ?? receiver.args;
     if (args === undefined || args.map === undefined) throw new Error("render worker: no frame to draw");
     const world = this.world;
     const mirror = receiver.world;
@@ -228,6 +233,8 @@ class BenchRenderSession {
   /** A lockstep frame: everything queued (this frame last), drawn now with the page's clock. */
   async #drawNow(call: RenderWorkerCall): Promise<unknown> {
     this.#applyQueued(emptyFrameApplied());
+    // 22.10 ARC-2 S7: lockstep draws (settling, views, screenshots) draw the page's exact input.
+    this.#receiver.exact();
     this.#draw(undefined);
     // The drawing buffer is cleared once this task ends: read it in the task that drew it.
     const pixels = (call.args[0] as BenchDrawRequest | undefined)?.png
@@ -289,16 +296,21 @@ class BenchRenderSession {
       const at = performance.now();
       const applied = emptyFrameApplied();
       this.#applyQueued(applied);
-      // The worker's own clock: a page that stalls leaves the world where it was, never the animation.
+      // 22.10 ARC-2 S7: a page that stalls no longer leaves the world where it was: splines advance, the player, the
+      // crowd and the camera go on from their last two inputs for up to 50 ms (RenderInputSmoothing.ts).
+      const receiver = this.#receiver;
+      const drawArgs = receiver.advance(now);
+      // The worker's own clock for the animation.
       this.#draw({ nowMs: (crowdClock ? config.warmupSeconds + seconds : seconds) * 1000,
-        elapsedSeconds: (now - previous) / 1000, frameIndex: frame++ });
+        elapsedSeconds: (now - previous) / 1000, frameIndex: frame++ }, drawArgs);
       const cpuMs = performance.now() - at;
       const phase: Readonly<Record<string, number>> = { query: this.#queryMs, ...world.drawPhaseMs }, info = renderer.info;
       const heap = (performance as Performance & { memory?: { usedJSHeapSize: number } }).memory?.usedJSHeapSize ?? 0;
       const row = Float64Array.of(now - start, now - previous, cpuMs, ...phaseNames.map((name) => phase[name] ?? 0),
         info.render.calls, info.render.triangles, info.programs?.length ?? 0,
         info.memory.geometries, info.memory.textures, heap,
-        applied.encodeMs, applied.postMs, applied.decodeMs, applied.bytes, applied.frameBytes, applied.messages);
+        applied.encodeMs, applied.postMs, applied.decodeMs, applied.bytes, applied.frameBytes, applied.messages,
+        receiver.smoothing.lastAgeMs, receiver.smoothing.lastState); // 22.10 ARC-2 S7: WORKER_INPUT_COLUMNS
       this.#postResults(row);
       frames++;
       previous = now;
