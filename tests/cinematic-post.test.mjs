@@ -157,6 +157,10 @@ test("the post chain builds without a context and keeps its shaders self-consist
   }
   assert.match(post.composite.fragmentShader, new RegExp(`knee = ${FILMIC_KNEE.toFixed(4)}`));
   assert.match(post.composite.fragmentShader, new RegExp(`white = ${FILMIC_WHITE.toFixed(4)}`));
+  // 22.10 (7.30): a sky texel's glow saturates per channel, as in the client's eight-bit frame,
+  // before the linear chain — else a cream cloud core turned salmon under the hue-keeping shoulder.
+  assert.match(post.composite.fragmentShader,
+    /if \(sky\) display = min\(display, vec3\(1\.0\)\);\s*vec3 colour = cinematicToLinear\(display\);/);
   assert.equal(post.upsample.blending, THREE.AdditiveBlending);
   // Per-frame light push writes into the existing uniform objects.
   const sunColour = post.uniforms.sunColour.value;

@@ -962,10 +962,15 @@ void main() {
   vec3 display = texture2D(source, vUV).rgb
     + texture2D(glow, vUV).rgb * glowStrength
     + texture2D(rays, vUV).rgb * rayStrength;
-  vec3 colour = cinematicToLinear(display);
 
   float depth = useDepth > 0.5 ? texture2D(depthTexture, vUV).r : 0.5;
   bool sky = useDepth > 0.5 && depth >= 1.0;
+  // 22.10 (7.30): the client adds its glow into an eight-bit frame, so a sunlit cloud saturates per
+  // channel toward white. Kept as energy above one, the cream core (band 10 over band 11) went on with
+  // red past green and blue, and the shoulder, which keeps the hue, turned it into the salmon and
+  // orange blots of the «acid» sky (B-noon cloud core: r − g p98 36 faithful, 57 → 40 with this).
+  if (sky) display = min(display, vec3(1.0));
+  vec3 colour = cinematicToLinear(display);
   vec3 view = cinematicViewPosition(vUV, sky ? 1.0 : depth);
   vec3 ray = normalize(mat3(cameraWorld) * view);
   float facing = dot(ray, sunDirection);
