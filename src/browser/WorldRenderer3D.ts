@@ -86,7 +86,7 @@ import { fixtureLightSource } from "./FixtureLightSources.js"; // 06.10-render-f
 import { sampleWmoLight, wmoOutdoorLightPositions, wmoOutdoorLights } from "./WmoFixtureLights.js"; // 22.10 (7.36)
 import { LOCAL_LIGHT_FOCUS_AHEAD, WMO_LIGHT_RANK_SCALE } from "./CinematicLights.js"; // 22.10 (7.36)
 import { LightHalos } from "./LightHalos.js"; // 22.10 (7.36)
-import { FarLightGlows } from "./FarLightGlows.js"; // 22.10 (7.46)
+import { FarLightGlows, type FarLightStreamed } from "./FarLightGlows.js"; // 22.10 (7.46)
 import {
   GOD_RAY_STRENGTH_SCALE_MAX, godRayStrengthScale, lightingProfile, shadowMaterialEligible,
   lightingClassicLook, // 05.10-7.20
@@ -4168,6 +4168,16 @@ export class WorldRenderer3D {
   readonly #worldLight = createWorldLightUniforms();
   readonly #localLightSelection = new LocalLightSelection();
   readonly #localLightFocus = new THREE.Vector3(); // 22.10 (7.36)
+  // 23.10 (7.36): the far glows' view of the streamed placements (FarLightGlows.ts streamedFarLightSources).
+  readonly #farLightStreamFrame = new THREE.Object3D();
+  readonly #farLightStreamed: FarLightStreamed<EnvironmentObject> = {
+    objects: [],
+    place: (object, target) => {
+      const frame = placeEnvironmentNode(this.#farLightStreamFrame, object);
+      frame.updateMatrix();
+      return target.copy(frame.matrix);
+    },
+  };
   readonly #lightHalos = new LightHalos(); // 22.10 (7.36)
   readonly #farLightGlows = new FarLightGlows(); // 22.10 (7.46)
   readonly #addLightHalo = (position: THREE.Vector3, colour: THREE.Vector3, strength: number): void => {
@@ -9479,7 +9489,7 @@ export class WorldRenderer3D {
         name: string, placement: THREE.Object3D): void => {
         const model = rendered.wvm;
         if (!model) return;
-        const fixtures = modelFixtureLights(model, name);
+        const fixtures = modelFixtureLights(model, name, cinematic); // 23.10 (7.36)
         if (fixtures.length === 0) return;
         // Reject distant fixtures before propagating animated bones. Expand by the authored
         // source offset, placement scale and a swing margin so tall/hanging lamps are retained.
@@ -9530,8 +9540,10 @@ export class WorldRenderer3D {
     this.#lightHalos.end();
     // 22.10 (7.46): and a cheap glow on every outdoor lamp out to a few hundred yards (FarLightGlows.ts).
     if (cinematic) {
+      // 23.10 (7.36): and the streamed lamps not built yet, placed from a resident twin's template.
+      this.#farLightStreamed.objects = this.#environmentObjects ?? [];
       this.#farLightGlows.update(this.#environment, this.#camera.position, this.#worldLight.wowDaylight.value,
-        this.#zoneFogFar);
+        this.#zoneFogFar, this.#farLightStreamed);
     } else this.#farLightGlows.clear();
   }
 
