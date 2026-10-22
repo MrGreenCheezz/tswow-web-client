@@ -438,18 +438,20 @@ test("the splash field is wide, thins towards its rim and rebuilds its ground a 
   assert.equal(splashes.regridding, false, "the first grid is built at once");
   const firstGrid = asked.length;
   assert.equal(firstGrid, 1 + RAIN_SPLASH_GRID * RAIN_SPLASH_GRID);
+  // 22.10 (7.45): later frames ask one sample each for the floor-or-terrain rule (a flying character's field
+  // follows the ground below it), even when nothing is rebuilt.
   assert.deepEqual(splashes.gridCentre, { x: 100, z: -50 });
   // A step short of the regrid distance asks nothing more.
   feet.x += RAIN_SPLASH_REGRID_YARDS - 1;
   splashes.update(feet, slope, 1 / 60, 1, texture, light, 1);
-  assert.equal(asked.length, firstGrid);
+  assert.equal(asked.length, firstGrid + 1, "only the frame's rule sample");
   // Past it, the rebuild starts and takes a few rows a frame while the old grid keeps serving.
   feet.x += 2;
   splashes.update(feet, slope, 1 / 60, 1, texture, light, 1);
   assert.equal(splashes.regridding, true);
   assert.deepEqual(splashes.gridCentre, { x: 100, z: -50 }, "the old grid serves until the new one is whole");
-  const perFrame = asked.length - firstGrid;
-  assert.ok(perFrame <= 1 + RAIN_SPLASH_ROWS_PER_FRAME * RAIN_SPLASH_GRID, `${perFrame} queries in one frame`);
+  const perFrame = asked.length - firstGrid - 1;
+  assert.ok(perFrame <= 2 + RAIN_SPLASH_ROWS_PER_FRAME * RAIN_SPLASH_GRID, `${perFrame} queries in one frame`);
   for (let frame = 0; frame < 20 && splashes.regridding; frame++) splashes.update(feet, slope, 1 / 60, 1, texture, light, 1);
   assert.equal(splashes.regridding, false);
   assert.deepEqual(splashes.gridCentre, { x: feet.x, z: feet.z });
