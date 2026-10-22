@@ -172,6 +172,7 @@ test("production fixture pass keeps instanced offscreen lamps, skips interiors a
     localLightSelection: new LocalLightSelection(), localLightSample: sample(), localLightMatrix: new THREE.Matrix4(),
     localLightFocus: new THREE.Vector3(), lightHalos: new LightHalos(), // 22.10 (7.36)
     farLightGlows: new FarLightGlows(), zoneFogFar: 640, // 22.10 (7.46)
+    farLightStreamed: { objects: [], place: (object, target) => target }, // 23.10 (7.36)
     addLightHalo: (position, colour, strength) => harness.lightHalos.add(position, colour, strength, 0, harness.camera.position),
     lightingProfile: lightingProfile(1), worldLight: createWorldLightUniforms(), camera: new THREE.PerspectiveCamera(),
     environment: new Map([[1, retained], [2, { ...retained, interior: true, source: { id: 2, interior: true, name: lampName } }], [3, far],

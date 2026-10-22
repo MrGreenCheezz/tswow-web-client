@@ -2,7 +2,7 @@ import * as THREE from "three";
 import { sampleRamp, sampleTrack } from "./Particles.js";
 import { renderSwitches } from "./RenderSwitches.js"; // 05.10-A7a-F2
 import {
-  BLEND_ADD, BLEND_BLEND_ADD, BLEND_NO_ALPHA_ADD, MATERIAL_UNLIT,
+  BLEND_ADD, BLEND_ALPHA, BLEND_BLEND_ADD, BLEND_NO_ALPHA_ADD, MATERIAL_UNLIT,
   type WvmBatch, type WvmLight, type WvmModel, type WvmParticleEmitter, // 05.10-A7a-F2
 } from "./Wvm.js";
 import {
@@ -65,12 +65,12 @@ function fixtureColour(path: string): readonly [number, number, number] {
  * The name gate prevents a creature's eyes, magic weapon or an arbitrary additive mesh becoming
  * a lamp. Off/broken fixtures and models without a visible luminous source remain dark.
  */
-export function modelFixtureLights(model: WvmModel, name: string): readonly FixtureLight[] {
+export function modelFixtureLights(model: WvmModel, name: string, cinematic = false): readonly FixtureLight[] {
   let byName = fixtureCache.get(model);
   // 05.10-A7a-F2 (6.17): with `m2Lights` on, a model that declares its lights is lit by them and
   // only them. Cached apart from the heuristic's answer, so flipping the switch takes effect.
   const declares = renderSwitches.m2Lights && (model.lights?.length ?? 0) > 0;
-  const cacheKey = declares ? `\u0001${name}` : name;
+  const cacheKey = declares ? `\u0001${name}` : cinematic ? `\u0002${name}` : name;
   const cached = byName?.get(cacheKey);
   if (cached) return cached;
   if (!byName) { byName = new Map(); fixtureCache.set(model, byName); }
@@ -83,44 +83,60 @@ export function modelFixtureLights(model: WvmModel, name: string): readonly Fixt
   const filename = path.slice(path.lastIndexOf("\\") + 1);
   if (!/(?:lamp|lantern|torch|brazier|campfire|bonfire|hearth|candle|chandelier|firepit)/.test(filename)
     || /(?:unlit|nolight|broken|wrecked|busted|(?:^|[_-])off(?:[_.-]|$)|\d?off\.)/.test(filename)) {
-    byName.set(name, EMPTY);
+    byName.set(cacheKey, EMPTY);
     return EMPTY;
   }
   const lights: FixtureLight[] = [];
   const submeshes = new Set<number>();
-  for (const batch of model.batches) {
-    if (submeshes.has(batch.submesh) || (batch.materialFlags & MATERIAL_UNLIT) === 0) continue;
-    const texture = batch.textures.map((slot) => model.textures[slot]?.path ?? "").join(" ").toLowerCase();
+  // 23.10 (7.36): the cinematic profile also reads two lit parts the faithful heuristic skips, both
+  // measured on Stormwind's lamps: an alpha-blended unlit glow card (`GeneralHangingLantern01.m2`,
+  // `Glow32.blp`, blend 2) and, only when a model has no card at all, its unlit lantern pane
+  // (`GeneralLantern01/03.m2`, `ElwynnLantern01.blp`; `LightGlass02.blp`). Without them 52 of the
+  // city's outdoor lanterns gave no light, halo or far glow.
+  const glowing = (batch: WvmModel["batches"][number], texture: string, panes: boolean): boolean => {
+    const additive = [BLEND_ADD, BLEND_NO_ALPHA_ADD, BLEND_BLEND_ADD].includes(batch.blendMode);
+    if (additive && /glow|flame|fire|light/.test(texture)) return true;
     // 22.10 (7.36): or an unlit lamp glass of any blend — `stormwindstreetlamp01.m2` draws its lit
     // pane as an opaque unlit `StormwindLampGlass.blp` and has no glow card, flame or M2 light.
-    const additive = [BLEND_ADD, BLEND_NO_ALPHA_ADD, BLEND_BLEND_ADD].includes(batch.blendMode);
-    if (!(additive && /glow|flame|fire|light/.test(texture)) && !/lampglass/.test(texture)) continue;
-    const submesh = model.submeshes[batch.submesh];
-    if (!submesh) continue;
-    const vertices = new Set<number>();
-    for (let index = submesh.indexStart; index < submesh.indexStart + submesh.indexCount; index++) {
-      const vertex = model.indices[index];
-      if (vertex !== undefined && vertex * 3 + 2 < model.positions.length) vertices.add(vertex);
-    }
-    if (vertices.size === 0) continue;
-    const position: [number, number, number] = [0, 0, 0];
-    const boneWeights = new Map<number, number>();
-    for (const vertex of vertices) {
-      for (let axis = 0; axis < 3; axis++) position[axis]! += model.positions[vertex * 3 + axis]! / vertices.size;
-      for (let slot = 0; slot < 4; slot++) {
-        const bone = model.boneIndices?.[vertex * 4 + slot];
-        const weight = model.boneWeights?.[vertex * 4 + slot] ?? 0;
-        if (bone !== undefined && weight > 0) boneWeights.set(bone, (boneWeights.get(bone) ?? 0) + weight);
+    if (/lampglass/.test(texture)) return true;
+    if (!cinematic) return false;
+    if (batch.blendMode === BLEND_ALPHA && /glow/.test(texture)) return true;
+    return panes && /lightglass|lantern/.test(texture);
+  };
+  const pass = (panes: boolean): void => {
+    for (const batch of model.batches) {
+      if (submeshes.has(batch.submesh) || (batch.materialFlags & MATERIAL_UNLIT) === 0) continue;
+      const texture = batch.textures.map((slot) => model.textures[slot]?.path ?? "").join(" ").toLowerCase();
+      if (!glowing(batch, texture, panes)) continue;
+      const submesh = model.submeshes[batch.submesh];
+      if (!submesh) continue;
+      const vertices = new Set<number>();
+      for (let index = submesh.indexStart; index < submesh.indexStart + submesh.indexCount; index++) {
+        const vertex = model.indices[index];
+        if (vertex !== undefined && vertex * 3 + 2 < model.positions.length) vertices.add(vertex);
       }
+      if (vertices.size === 0) continue;
+      const position: [number, number, number] = [0, 0, 0];
+      const boneWeights = new Map<number, number>();
+      for (const vertex of vertices) {
+        for (let axis = 0; axis < 3; axis++) position[axis]! += model.positions[vertex * 3 + axis]! / vertices.size;
+        for (let slot = 0; slot < 4; slot++) {
+          const bone = model.boneIndices?.[vertex * 4 + slot];
+          const weight = model.boneWeights?.[vertex * 4 + slot] ?? 0;
+          if (bone !== undefined && weight > 0) boneWeights.set(bone, (boneWeights.get(bone) ?? 0) + weight);
+        }
+      }
+      if (!position.every(Number.isFinite)) continue;
+      let bone = -1;
+      let weight = 0;
+      for (const [candidate, sum] of boneWeights) if (sum > weight) { bone = candidate; weight = sum; }
+      lights.push({ position, bone, radius: 8, intensity: 1.1, colour: fixtureColour(`${filename} ${texture}`), batch });
+      submeshes.add(batch.submesh);
+      if (lights.length === 4) break;
     }
-    if (!position.every(Number.isFinite)) continue;
-    let bone = -1;
-    let weight = 0;
-    for (const [candidate, sum] of boneWeights) if (sum > weight) { bone = candidate; weight = sum; }
-    lights.push({ position, bone, radius: 8, intensity: 1.1, colour: fixtureColour(`${filename} ${texture}`), batch });
-    submeshes.add(batch.submesh);
-    if (lights.length === 4) break;
-  }
+  };
+  pass(false);
+  if (cinematic && lights.length === 0) pass(true); // 23.10 (7.36): a pane only without a card
   // A glow card already represents its flame. Adding its particles again doubles one fixture.
   if (lights.length === 0) {
     for (const emitter of model.particleEmitters) {
@@ -135,7 +151,7 @@ export function modelFixtureLights(model: WvmModel, name: string): readonly Fixt
       if (lights.length >= 4) break;
     }
   }
-  byName.set(name, lights.length > 0 ? lights : EMPTY);
+  byName.set(cacheKey, lights.length > 0 ? lights : EMPTY);
   return lights.length > 0 ? lights : EMPTY;
 }
 
