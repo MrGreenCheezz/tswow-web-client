@@ -103,10 +103,11 @@ test("the dome material: vertex colours decoded once, no depth, drawn first", ()
   assert.ok(THREE.ShaderChunk.tonemapping_fragment && THREE.ShaderChunk.colorspace_fragment);
 });
 
-test("the renderer shows it on the classic look only, the band shader's surface stepping aside", async () => {
+test("the renderer shows it on the classic look and under the cinematic chain, the band shader's surface stepping aside", async () => {
   const source = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
   const body = source.slice(source.indexOf("  #updateClassicDome(sample"), source.indexOf("  #updateSkyCelestials(client"));
-  assert.match(body, /const classic = sample !== undefined && lightingClassicLook\(this\.#lightingProfile\.quality\);/);
+  // 22.10 (7.30): and under the cinematic chain, which leaves the sky as the faithful frame has it.
+  assert.match(body, /const classic = sample !== undefined\s+&& \(lightingClassicLook\(this\.#lightingProfile\.quality\) \|\| this\.#cinematic\.active\);/);
   assert.match(body, /\(this\.#sky\.material as THREE\.Material\)\.visible = !classic;/);
   assert.match(body, /this\.#classicDome\.visible = classic;/);
   assert.match(body, /highlightStrength\(skyDayFraction\(this\.#lightTime\), sample\.highlightSky\)/);
