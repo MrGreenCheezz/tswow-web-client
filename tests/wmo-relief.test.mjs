@@ -15,7 +15,7 @@ import { WMO_RELIEF_FLAT, WmoReliefMaps } from "../dist/code/browser/WmoReliefMa
 import {
   WMO_RELIEF_CAVITY, WMO_RELIEF_DEPTH_MAX, WMO_RELIEF_DEPTH_UV, WMO_RELIEF_LOCAL_SPAN, WMO_RELIEF_MARKER, WMO_RELIEF_NORMAL_MAX_TILT,
   WMO_RELIEF_NORMAL_STRENGTH, WMO_RELIEF_SHADOW_STRENGTH, WMO_RELIEF_SKY, WMO_RELIEF_SUN_FACING, WMO_RELIEF_SUN_GAIN,
-  WMO_RELIEF_SUN_RANGE, WMO_RELIEF_WALL_TILT, injectWmoRelief, setWmoReliefActive, trackWmoReliefMaterial,
+  WMO_RELIEF_SUN_RANGE, WMO_RELIEF_WALL_TILT, WMO_RELIEF_FADE_IN_MS, injectWmoRelief, setWmoReliefActive, setWmoReliefClock, trackWmoReliefMaterial,
   wmoReliefActive, wmoReliefDepth, wmoReliefDrawing, wmoReliefMapReady, wmoReliefMaps, wmoReliefStats, wmoRunReliefVariant,
 } from "../dist/code/browser/WmoReliefShader.js";
 import { applyWorldLight, createWorldLightUniforms } from "../dist/code/browser/WorldLighting.js";
@@ -37,6 +37,9 @@ wmoReliefMaps(new WmoReliefMaps(async (url) => {
   if (answer instanceof Error) throw answer;
   return answer ?? { side: 0, contrast: 0 };
 }));
+// 23.10 (7.47): the fade-in's clock, moved by hand.
+let now = 1000;
+setWmoReliefClock(() => now);
 const settle = async () => { for (let turn = 0; turn < 10; turn++) await new Promise((resolve) => setTimeout(resolve, 0)); };
 
 // ---- reading the PNG back ----------------------------------------------------------------------
@@ -238,6 +241,11 @@ test("program: its own versioned key, set at build time; the map arrives through
     await settle();
     assert.equal(wmoReliefMapReady(material), true);
     assert.equal(shader.uniforms.wmoRelief.value.image.width, 4);
+    // 23.10 (7.47): a map arriving after the first draw fades in rather than pops.
+    assert.equal(shader.uniforms.wmoReliefOn.value, 0);
+    now += WMO_RELIEF_FADE_IN_MS / 2;
+    assert.equal(shader.uniforms.wmoReliefOn.value, 0.5);
+    now += WMO_RELIEF_FADE_IN_MS;
     assert.equal(shader.uniforms.wmoReliefOn.value, 1);
     assert.equal(material.version, version, "no needsUpdate when the map arrives");
     assert.equal(material.customProgramCacheKey(), onKey, "and no new key");
@@ -246,6 +254,7 @@ test("program: its own versioned key, set at build time; the map arrives through
     assert.equal(material.customProgramCacheKey(), offKey);
     assert.equal(compile(material).fragmentShader, offShader.fragmentShader);
     assert.equal(wmoReliefStats().maps, 0, "the map is released with its last material");
+    assert.equal(wmoReliefStats().retained, 0, "and not kept with the leaf off");
     material.dispose();
   } finally {
     setWmoReliefActive(false);
@@ -352,23 +361,85 @@ test("maps: one per URL, shared, disposed with its last holder; a flat or failed
   assert.equal(seen[0].flipY, false);
   assert.equal(seen[0].wrapS, THREE.RepeatWrapping);
   assert.equal(seen[0].colorSpace, THREE.NoColorSpace);
-  assert.deepEqual({ ...maps.stats }, { entries: 3, maps: 1, bytes: 16, pending: 0 });
+  assert.deepEqual({ ...maps.stats }, { entries: 3, maps: 1, bytes: 16, pending: 0, retained: 0 });
   let disposed = false;
   seen[0].addEventListener("dispose", () => { disposed = true; });
   first();
   first();
   assert.equal(disposed, false, "still held");
   second();
+  // 23.10 (7.47): the last release retires the map; it is disposed when dropped.
+  assert.equal(disposed, false, "retired, not disposed");
+  assert.equal(maps.stats.retained, 1);
+  maps.trim();
   assert.equal(disposed, true);
   assert.equal(maps.stats.bytes, 0);
-  // A late answer for a released URL keeps nothing.
+  // A late answer for a released and dropped URL keeps nothing.
   let late;
-  const slow = new WmoReliefMaps(() => new Promise((resolve) => { late = resolve; }));
+  const slow = new WmoReliefMaps(() => new Promise((resolve) => { late = resolve; }), 0);
   slow.acquire("late", () => assert.fail("released before it arrived"))();
   late({ relief: new Uint8Array(16), side: 2, contrast: 0.2 });
   await settle();
   assert.equal(slow.stats.entries, 0);
   assert.equal(slow.stats.bytes, 0);
+});
+
+test("maps: 23.10 (7.47) released maps are retained for a comeback, the oldest dropped past the limit", async () => {
+  const calls = [];
+  let pending;
+  const maps = new WmoReliefMaps((url) => {
+    calls.push(url);
+    if (url === "slow") return new Promise((resolve) => { pending = resolve; });
+    return Promise.resolve({ relief: new Uint8Array(16).fill(9), side: 2, contrast: 0.2 });
+  }, 2);
+  let first;
+  const releaseA = maps.acquire("a", (texture) => { first = texture; });
+  await settle();
+  assert.ok(first);
+  releaseA();
+  let again;
+  maps.acquire("a", (texture) => { again = texture; });
+  assert.equal(again, first, "bound at once, the same map");
+  assert.deepEqual(calls, ["a"], "not derived again");
+  // A derivation released before it answers is kept too, and binds on comeback.
+  maps.acquire("slow", () => {})();
+  pending({ relief: new Uint8Array(16), side: 2, contrast: 0.2 });
+  await settle();
+  let slow;
+  maps.acquire("slow", (texture) => { slow = texture; })();
+  assert.ok(slow);
+  // The limit: oldest out first.
+  maps.acquire("b", () => {})();
+  maps.acquire("c", () => {})();
+  await settle();
+  assert.equal(maps.stats.retained, 2);
+  maps.acquire("slow", () => {});
+  assert.deepEqual(calls, ["a", "slow", "b", "c", "slow"], "the oldest retired map was dropped");
+});
+
+test("material: 23.10 (7.47) a rebuilt material for a known texture starts with its map — no flat first frame (the blink)", async () => {
+  const url = "/visual/texture/rebuild-0.png";
+  answers.set(url, { relief: new Uint8Array(4 * 4 * 4).fill(200), side: 4, contrast: 0.1 });
+  setWmoReliefActive(true);
+  try {
+    const first = litMaterial();
+    trackWmoReliefMaterial(first, url, "lit");
+    await settle();
+    now += WMO_RELIEF_FADE_IN_MS * 2;
+    const map = compile(first).uniforms.wmoRelief.value;
+    assert.notEqual(map, WMO_RELIEF_FLAT);
+    // The world material cache evicts it, and the same run is built again a frame later.
+    first.dispose();
+    const second = litMaterial();
+    trackWmoReliefMaterial(second, url, "lit");
+    const shader = compile(second);
+    assert.equal(shader.uniforms.wmoRelief.value, map, "the same map, bound before the first draw");
+    assert.equal(shader.uniforms.wmoReliefOn.value, 1, "at full strength, not fading in again");
+    assert.equal(derived.filter((value) => value.endsWith(url)).length, 1, "derived once");
+    second.dispose();
+  } finally {
+    setWmoReliefActive(false);
+  }
 });
 
 // ---- settings and wiring -------------------------------------------------------------------------

@@ -328,7 +328,7 @@ interface WmoReliefBinding {
   readonly variant: WmoReliefVariant;
   /** Shared by every program this material compiles, so a program reused from its cache still finds them. */
   readonly relief: { value: THREE.Texture };
-  readonly on: { value: number };
+  readonly on: ReliefSwitch;
   active: boolean;
   release?: (() => void) | undefined;
 }
@@ -336,6 +336,38 @@ interface WmoReliefBinding {
 interface Tracked {
   readonly url: string;
   readonly variant: WmoReliefVariant;
+}
+
+/** 23.10 (7.47): a map that arrives after the material is drawn fades in over this, not pops. */
+export const WMO_RELIEF_FADE_IN_MS = 300;
+
+let reliefClock: () => number = () => performance.now();
+
+/** 23.10 (7.47): the fade-in's clock (tests hand in their own). */
+export function setWmoReliefClock(now: () => number): void {
+  reliefClock = now;
+}
+
+/**
+ * 23.10 (7.47): `wmoReliefOn`'s value — 0 until the map arrives, then 0 → 1 over
+ * {@link WMO_RELIEF_FADE_IN_MS}; three reads `value` at each upload, so no per-frame tick is needed.
+ */
+class ReliefSwitch {
+  #from = Number.POSITIVE_INFINITY;
+  get value(): number {
+    const t = (reliefClock() - this.#from) / WMO_RELIEF_FADE_IN_MS;
+    return t >= 1 ? 1 : t > 0 ? t : 0;
+  }
+  /** At once (a map already derived), or fading in from now. */
+  arrive(fade: boolean): void {
+    this.#from = fade ? reliefClock() : Number.NEGATIVE_INFINITY;
+  }
+  clear(): void {
+    this.#from = Number.POSITIVE_INFINITY;
+  }
+  get arrived(): boolean {
+    return this.#from !== Number.POSITIVE_INFINITY;
+  }
 }
 
 const TRACKED = new Map<THREE.Material, Tracked>();
@@ -366,7 +398,7 @@ function setBound(material: THREE.Material, tracked: Tracked, active: boolean): 
       previousKey: material.customProgramCacheKey.bind(material),
       variant: tracked.variant,
       relief: { value: WMO_RELIEF_FLAT },
-      on: { value: 0 },
+      on: new ReliefSwitch(),
       active: false,
     };
     BINDINGS.set(material, created);
@@ -387,15 +419,19 @@ function setBound(material: THREE.Material, tracked: Tracked, active: boolean): 
   material.needsUpdate = true;
   if (active) {
     const held = binding;
+    // 23.10 (7.47): a map already derived (shared or retained) is bound before the first draw, at
+    // full strength; one that arrives later fades in.
+    let acquiring = true;
     held.release = wmoReliefMaps().acquire(absoluteUrl(tracked.url), (texture) => {
       held.relief.value = texture;
-      held.on.value = 1;
+      held.on.arrive(!acquiring);
     });
+    acquiring = false;
   } else {
     binding.release?.();
     binding.release = undefined;
     binding.relief.value = WMO_RELIEF_FLAT;
-    binding.on.value = 0;
+    binding.on.clear();
   }
   return true;
 }
@@ -433,6 +469,7 @@ export function setWmoReliefActive(active: boolean): number {
   reliefActive = active;
   let changed = 0;
   for (const [material, tracked] of TRACKED) if (setBound(material, tracked, active)) changed++;
+  if (!active) wmoReliefMaps().trim(); // 23.10 (7.47): off, nothing is kept for a comeback
   return changed;
 }
 
@@ -443,7 +480,7 @@ export function wmoReliefDrawing(material: THREE.Material): boolean {
 
 /** 22.10 (7.47 stage 2): whether the material's relief map has arrived (tests and diagnostics). */
 export function wmoReliefMapReady(material: THREE.Material): boolean {
-  return BINDINGS.get(material)?.on.value === 1;
+  return BINDINGS.get(material)?.on.arrived === true;
 }
 
 export interface WmoReliefStats extends WmoReliefMapStats {
@@ -459,7 +496,7 @@ export function wmoReliefStats(): WmoReliefStats {
   for (const material of TRACKED.keys()) {
     const binding = BINDINGS.get(material);
     if (binding?.active) drawing++;
-    if (binding?.active && binding.on.value === 1) withMap++;
+    if (binding?.active && binding.on.arrived) withMap++;
   }
   return { tracked: TRACKED.size, drawing, withMap, ...wmoReliefMaps().stats };
 }

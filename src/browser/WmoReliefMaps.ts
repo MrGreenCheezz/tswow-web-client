@@ -36,7 +36,18 @@ export interface WmoReliefMapStats {
   /** CPU bytes of the maps (the GPU holds the same plus a third for mips). */
   readonly bytes: number;
   readonly pending: number;
+  /** 23.10 (7.47): released maps kept for a quick rebuild (`WMO_RELIEF_RETAIN`). */
+  readonly retained: number;
 }
+
+/**
+ * 23.10 (7.47): how many released URLs keep their map (or their pending derivation, or their "no
+ * map" answer) for a while. A building's materials are rebuilt now and then — the world material
+ * cache evicting, a placement rebuilt, a range change — and a map released with its last material
+ * used to be disposed and derived again in the worker, so the new material drew flat until it came
+ * back: the relief blinked off and on (the owner, 22.10). ≤ 128² RGBA each: 64 × 64 KB = 4 MB CPU.
+ */
+export const WMO_RELIEF_RETAIN = 64;
 
 /** 22.10 (7.47 stage 2): the map's texture: RGBA8 data (not colour), repeating, mipmapped like its base. */
 export function wmoReliefTexture(relief: Uint8Array, side: number): THREE.DataTexture {
@@ -55,23 +66,32 @@ export function wmoReliefTexture(relief: Uint8Array, side: number): THREE.DataTe
 
 export class WmoReliefMaps {
   readonly #entries = new Map<string, MapEntry>();
+  /** 23.10 (7.47): released entries, oldest first (a Map keeps insertion order). */
+  readonly #retired = new Map<string, MapEntry>();
   readonly #derive: (url: string) => Promise<WmoReliefAnswer>;
+  readonly #retain: number;
   #bytes = 0;
 
-  constructor(derive: (url: string) => Promise<WmoReliefAnswer> = deriveWmoReliefAsync) {
+  constructor(derive: (url: string) => Promise<WmoReliefAnswer> = deriveWmoReliefAsync, retain = WMO_RELIEF_RETAIN) {
     this.#derive = derive;
+    this.#retain = retain;
   }
 
   /**
    * 22.10 (7.47 stage 2): holds the map of `url`; `onMap` is called once with it (now, if it is
-   * ready). Returns the release; the last release disposes the map.
+   * ready). Returns the release; the last release retires the map (`WMO_RELIEF_RETAIN`).
    */
   acquire(url: string, onMap: Listener): () => void {
     let entry = this.#entries.get(url);
     if (!entry) {
-      entry = { refs: 0, settled: false, listeners: new Set() };
+      // 23.10 (7.47): a map released moments ago comes back as it was — bound at once, not derived again.
+      entry = this.#retired.get(url);
+      if (entry) this.#retired.delete(url);
+      else {
+        entry = { refs: 0, settled: false, listeners: new Set() };
+        this.#start(url, entry);
+      }
       this.#entries.set(url, entry);
-      this.#start(url, entry);
     }
     entry.refs++;
     if (entry.texture) onMap(entry.texture);
@@ -85,12 +105,26 @@ export class WmoReliefMaps {
       held.refs--;
       if (held.refs > 0 || this.#entries.get(url) !== held) return;
       this.#entries.delete(url);
-      if (held.texture) {
-        this.#bytes -= (held.texture.image.data as Uint8Array).byteLength;
-        held.texture.dispose();
-        delete held.texture;
-      }
+      this.#retired.set(url, held);
+      this.#trim(this.#retain);
     };
+  }
+
+  /** 23.10 (7.47): drops the released maps past the newest `keep` (all of them with 0: the leaf turned off). */
+  trim(keep = 0): void {
+    this.#trim(keep);
+  }
+
+  #trim(keep: number): void {
+    for (const [url, entry] of this.#retired) {
+      if (this.#retired.size <= keep) return;
+      this.#retired.delete(url);
+      if (entry.texture) {
+        this.#bytes -= (entry.texture.image.data as Uint8Array).byteLength;
+        entry.texture.dispose();
+        delete entry.texture;
+      }
+    }
   }
 
   #start(url: string, entry: MapEntry): void {
@@ -98,8 +132,8 @@ export class WmoReliefMaps {
       entry.settled = true;
       const listeners = [...entry.listeners];
       entry.listeners.clear();
-      // Released meanwhile: nothing is kept.
-      if (this.#entries.get(url) !== entry || !answer?.relief) return;
+      // Released and dropped meanwhile: nothing is kept (released but retained: kept for a comeback).
+      if ((this.#entries.get(url) !== entry && this.#retired.get(url) !== entry) || !answer?.relief) return;
       entry.texture = wmoReliefTexture(answer.relief, answer.side);
       this.#bytes += answer.relief.byteLength;
       for (const listener of listeners) listener(entry.texture);
@@ -114,6 +148,6 @@ export class WmoReliefMaps {
       if (entry.texture) maps++;
       else if (!entry.settled) pending++;
     }
-    return { entries: this.#entries.size, maps, bytes: this.#bytes, pending };
+    return { entries: this.#entries.size, maps, bytes: this.#bytes, pending, retained: this.#retired.size };
   }
 }
