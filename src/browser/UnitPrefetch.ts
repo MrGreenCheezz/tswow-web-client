@@ -1,10 +1,11 @@
 /**
- * 22.10 (6.26): a unit's model, look and body start loading when it arrives, not when it first comes into view.
+ * 22.10 (6.26): a unit's model, look and body start loading when it arrives, not when the renderer admits it.
  *
- * Until now everything past the display record waited for the renderer to *admit* the unit, and admission takes
- * only units in the view frustum (RenderAdmission.ts `selectVisibleAdmission`). A crowd behind the camera, or a
- * rider coming up from behind, therefore had nothing at all loaded — no item rows, no look, no model file, no body
- * atlas — and stood as capsules for the whole chain the moment the camera turned. Two halves, nearest first:
+ * Everything past the display record waits for the renderer to *admit* the unit: the nearest 64 in range, those in
+ * view or not yet measurable (a unit with no built model counts as visible, WorldRenderer3D `#unitVisibilityRadius`).
+ * Measured in the arrival probe (.runtime/lane-charcache), that already admits a crowd that arrives behind the
+ * camera; what it leaves out is everyone past the 64th in a crowded place, who had nothing at all loaded — no item
+ * rows, no look, no model file, no body — until a nearer unit left view. Two halves, nearest first:
  *
  * - the page (`UnitLookPrefetch`): the asking path (ui/Frames.ts `unitModelFor`: item rows, the look) for the nearest
  *   units every few frames, admitted or not; it memoises, so a resolved unit costs a lookup;

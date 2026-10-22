@@ -14351,7 +14351,7 @@ export class WorldRenderer3D {
   }
 
   /**
-   * 22.10 (6.26): for the nearest in-range units this frame did not draw — behind the camera, or past the budget —
+   * 22.10 (6.26): for the nearest in-range units this frame did not draw — past the 64-unit budget, or out of view —
    * the model file, the attached pieces' files and the body, so the unit is ready when it is admitted (UnitPrefetch.ts).
    * Model files at "normal" priority, below every admitted unit's "critical"; pieces at "background". Nothing is
    * built: geometry and rigs wait for admission and the build budget, as before.
