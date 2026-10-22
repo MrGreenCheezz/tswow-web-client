@@ -12,7 +12,7 @@ import { RenderWorkerClient } from "../dist/code/browser/RenderWorkerClient.js";
 import { applyRenderCommand } from "../dist/code/browser/RenderWorkerCommands.js";
 import { RENDER_WORKER_COMMANDS } from "../dist/code/browser/RenderWorkerClientProtocol.js";
 import {
-  renderWorkerRequested, renderWorkerSupported, startRenderWorker,
+  desktopAppUserAgent, renderWorkerChosen, renderWorkerRequested, renderWorkerSupported, startRenderWorker,
 } from "../dist/code/browser/RenderWorkerStart.js";
 import { RenderFrameReceiver, emptyFrameApplied } from "../dist/code/browser/RenderWorkerBridge.js";
 import { createRenderResults } from "../dist/code/browser/RenderResults.js";
@@ -350,9 +350,27 @@ test("the client render worker imports no page-only module and reads no page glo
   }
 });
 
-test("the page starts the render worker only behind the flag, with the in-page path unchanged", async () => {
+// 22.10 (12.14): the desktop app draws in a worker by default, a browser in the page; the flag and the setting override.
+const CHROME_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
+const DESKTOP_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) tswow-webclient-desktop/0.1.0 Chrome/140.0.0.0 Electron/38.0.0 Safari/537.36";
+const PLAYER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) wow-webclient-player/0.1.7 Chrome/140.0.0.0 Electron/38.0.0 Safari/537.36";
+
+test("the world is drawn in a worker by default in the desktop app and in the page in a browser", () => {
+  assert.equal(desktopAppUserAgent(CHROME_UA), false);
+  assert.equal(desktopAppUserAgent(DESKTOP_UA), true);
+  assert.equal(desktopAppUserAgent(PLAYER_UA), true);
+  assert.equal(renderWorkerChosen("", 0, CHROME_UA), false, "a browser keeps the page");
+  assert.equal(renderWorkerChosen("", 0, DESKTOP_UA), true, "the desktop app draws in a worker");
+  assert.equal(renderWorkerChosen("", undefined, PLAYER_UA), true, "the player app too");
+  assert.equal(renderWorkerChosen("", 2, DESKTOP_UA), false, "the owner can switch it off");
+  assert.equal(renderWorkerChosen("", 1, CHROME_UA), true, "or on in a browser");
+  assert.equal(renderWorkerChosen("?renderworker=0", 1, DESKTOP_UA), false, "the address wins");
+  assert.equal(renderWorkerChosen("?legacy-login&renderworker=1", 2, CHROME_UA), true);
+});
+
+test("the page starts the render worker as chosen, with the in-page path unchanged", async () => {
   const main = await readFile(path.join(SRC, "browser", "main.ts"), "utf8");
-  assert.match(main, /if \(renderWorkerRequested\(location\.search\)\) \{\s*\/\/[^\n]*\n\s*game\.renderer = mountWorldRenderWorker\(world3dCanvas\);\s*\} else \{\s*const renderer = new WorldRenderer3D\(world3dCanvas\);/);
+  assert.match(main, /if \(renderWorkerChosen\(location\.search, settingNumber\(settings\(\), "renderWorker"\), navigator\.userAgent\)\) \{\s*(\/\/[^\n]*\n\s*)+game\.renderer = mountWorldRenderWorker\(world3dCanvas\);\s*\} else \{\s*const renderer = new WorldRenderer3D\(world3dCanvas\);/);
   const mount = await readFile(path.join(SRC, "browser", "app", "RenderWorkerMount.ts"), "utf8");
   assert.match(mount, /new Worker\(new URL\("\.\.\/RenderWorker\.worker\.ts", import\.meta\.url\), \{\s*type: "module"/);
 });

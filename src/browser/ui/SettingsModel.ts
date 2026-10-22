@@ -69,6 +69,13 @@ export const SETTING_DEFINITIONS: readonly SettingDefinition[] = [
     hint: "При долгой просадке кадров клиент сам опускает масштаб отрисовки не ниже 40% и возвращает его, когда запас держится. Ручной масштаб выше — потолок, а не приказ.",
   },
   {
+    // 22.10 (12.14): read once at the page's start (main.ts, RenderWorkerStart.ts `renderWorkerChosen`); 0 picks by the
+    // device — a worker in the desktop app (P-cores), the page in a browser (the worker would fall to E-cores).
+    id: "renderWorker", label: "Где рисуется мир", group: "Графика", kind: "number", fallback: 0,
+    min: 0, max: 2, step: 1,
+    hint: "0 — само: в приложении в отдельном потоке, в браузере на странице; 1 — в отдельном потоке (интерфейс не ждёт мир); 2 — на странице. Действует после перезапуска. Адрес с ?renderworker=1 или 0 важнее.",
+  },
+  {
     // 05.10-7.20: 3 is «сравнение» (LightingQuality.ts LIGHTING_QUALITY_COMPARISON) — after 2 so a saved
     // 0, 1 or 2 keeps its meaning. The default is the highest quality, 2 (owner, 12.10, decision 0.4e).
     id: "lightingQuality", label: "Качество освещения", group: "Графика", kind: "number", fallback: 2,
