@@ -84,7 +84,7 @@ test("7.20 the renderer's classic branches read the classic look, not quality 0"
   assert.equal(world.includes("this.#lightingProfile.quality === 0"), false,
     "no renderer branch singles out quality 0 any more");
   const uses = world.split("lightingClassicLook(this.#lightingProfile.quality)").length - 1;
-  assert.equal(uses, 5, "key light, cinematic override, visible sun, (13.10 7.04) the classic dome and (22.10 7.44) the horizon detail");
+  assert.equal(uses, 6, "key light, cinematic override, visible sun, (13.10 7.04) the classic dome, (22.10 7.44) the horizon detail and the terrain-height ring");
   const cinematic = world.slice(world.indexOf("  #applyCinematicProfile(): void {"));
   assert.match(cinematic.slice(0, 400),
     /const profile = lightingClassicLook\(this\.#lightingProfile\.quality\) \? undefined : this\.#cinematicRequested;/,
