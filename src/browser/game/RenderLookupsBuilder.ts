@@ -107,13 +107,25 @@ export interface RenderLookupSources {
   readonly units?: UnitModelSource | undefined;
 }
 
+/** 22.10 (12.14): retained worker wants at most; a city has a few dozen WMO models. */
+const RETAINED_WANTS_LIMIT = 256;
+
 export class RenderLookupsBuilder {
   readonly #lookups: { -readonly [K in keyof RenderLookups]: RenderLookups[K] };
   readonly #collisionModels = new Map<string, CollisionModel>();
   #collisionSource: CollisionModelSource | undefined;
   #namesOf: readonly EnvironmentObject[] | undefined;
+  /** 22.10 (12.14): the WMO names of `#namesOf`. */
+  #listed: ReadonlySet<string> = new Set();
   /** Placement name and the collision route's name for it, once per WMO model in the list. */
   #names: { readonly placement: string; readonly collision: string }[] = [];
+  /**
+   * 22.10 (12.14): WMO names a render worker wanted beyond the page's list (`requestCollisionModels` with `retain`):
+   * in worker mode the page keeps only its own environment tile (PageEnvironmentRange.ts) while the worker admits from
+   * the whole band, so its misses join the lookups here. The value says whether the model has been answered since;
+   * an answered one leaves when the client no longer holds it (the worker asks again if it still draws it).
+   */
+  readonly #retained = new Map<string, boolean>();
   readonly #unitModels = new Map<bigint, UnitModel>();
   /** 22.10 ARC-2 S2c: the cached answers, by world object (the lookup) and by guid (the sweep of departed units). */
   #unitEntries = new WeakMap<WorldObjectState, UnitEntry>();
@@ -230,15 +242,24 @@ export class RenderLookupsBuilder {
    * The misses `draw` reported (`WorldRenderer3D.collisionModelWants`), asked for as the renderer asked: by the
    * collision route's name, starting the download (or its retry) on the client's own queue.
    */
-  requestCollisionModels(collision: CollisionModelSource | undefined, wants: Iterable<string>): void {
+  requestCollisionModels(collision: CollisionModelSource | undefined, wants: Iterable<string>, retain = false): void {
     if (!collision) return;
-    for (const name of wants) collision.model(collisionModelName(name));
+    for (const name of wants) {
+      collision.model(collisionModelName(name));
+      if (!retain || this.#retained.has(name)) continue;
+      if (this.#retained.size >= RETAINED_WANTS_LIMIT) {
+        const oldest = this.#retained.keys().next().value;
+        if (oldest !== undefined) this.#retained.delete(oldest);
+      }
+      this.#retained.set(name, false);
+    }
   }
 
   #fillCollision(collision: CollisionModelSource | undefined, environment: readonly EnvironmentObject[]): ReadonlyMap<string, CollisionModel> | undefined {
     const models = this.#collisionModels;
     if (collision !== this.#collisionSource) {
       this.#collisionSource = collision;
+      this.#retained.clear(); // 22.10 (12.14)
       if (models.size > 0) {
         models.clear();
         this.#lookups.collisionRevision++;
@@ -250,6 +271,18 @@ export class RenderLookupsBuilder {
     // without the client's revision moving. A map lookup or two per WMO model in the list.
     for (const { placement, collision: name } of this.#names) {
       const model = collision.peek(name);
+      if (model === models.get(placement)) continue;
+      if (model) models.set(placement, model);
+      else models.delete(placement);
+      this.#lookups.collisionRevision++;
+    }
+    // 22.10 (12.14): a worker's wants outside the page's list.
+    for (const [placement, answered] of this.#retained) {
+      if (this.#listed.has(placement)) continue;
+      const model = collision.peek(collisionModelName(placement));
+      if (model) {
+        if (!answered) this.#retained.set(placement, true);
+      } else if (answered) this.#retained.delete(placement);
       if (model === models.get(placement)) continue;
       if (model) models.set(placement, model);
       else models.delete(placement);
@@ -268,9 +301,10 @@ export class RenderLookupsBuilder {
       names.push({ placement: object.name, collision: collisionModelName(object.name) });
     }
     this.#names = names;
+    this.#listed = seen;
     const models = this.#collisionModels;
     for (const placement of models.keys()) {
-      if (seen.has(placement)) continue;
+      if (seen.has(placement) || this.#retained.has(placement)) continue;
       models.delete(placement);
       this.#lookups.collisionRevision++;
     }

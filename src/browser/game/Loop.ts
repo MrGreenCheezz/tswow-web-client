@@ -297,7 +297,8 @@ export function renderWorkerResultSteps(): RenderWorkerResultSteps {
   return {
     recordFrameInterval: (interval) => renderBenchmarkRuntime.recordFrameInterval(interval),
     afterDraw: () => game.swingReactions?.afterDraw(),
-    requestCollisionModels: (wants) => renderLookups.requestCollisionModels(game.collision?.models, wants),
+    // 22.10 (12.14): retained, so a WMO outside the page's own environment tile reaches the worker's lookups.
+    requestCollisionModels: (wants) => renderLookups.requestCollisionModels(game.collision?.models, wants, true),
     requestUnitModels: (wants) => renderLookups.requestUnitModels(game.world?.state.objects, wants, unitModel),
     acceptSeats: (results) => {
       const world = game.world;
