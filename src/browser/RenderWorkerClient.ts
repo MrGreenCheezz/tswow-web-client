@@ -32,7 +32,7 @@ import type { ShaderProgramEvent } from "./ShaderProgramTrace.js";
 import type { WorldStandInReport } from "./StandIn.js";
 import type { WorldRenderer3D } from "./WorldRenderer3D.js";
 import type { ModelLoadPriority } from "./Terrain.js";
-import { RenderWorkerReadinessTracker } from "./RenderWorkerLoading.js"; // 22.10 (12.14)
+import { RenderWorkerReadinessTracker, type RenderWorkerStatus } from "./RenderWorkerLoading.js"; // 22.10 (12.14)
 
 /** The worker as the page posts to it (a Worker, or a fake in tests). */
 export interface RenderWorkerPort {
@@ -62,6 +62,8 @@ export interface RenderWorkerResultSteps {
   drainPortraits(results: RenderResults): void;
   /** The freeze recording's worker-frame column (game/PerformanceCapture.ts). */
   workerFrame?(report: RenderWorkerFrameReport): void;
+  /** 22.10 (12.14): the worker's resource clients' messages, onto the page's status lines (app/ResourceStatusLines.ts). */
+  acceptStatuses?(statuses: readonly RenderWorkerStatus[]): void;
 }
 
 export interface RenderWorkerClientOptions {
@@ -417,6 +419,7 @@ export class RenderWorkerClient implements ClientRenderer {
       steps.acceptReports(results);
       steps.drainPortraits(results);
       if (report !== undefined) steps.workerFrame?.(report);
+      if (message.statuses !== undefined) steps.acceptStatuses?.(message.statuses); // 22.10 (12.14)
     } catch (error) {
       console.error("[render worker] the page's after-draw work failed", error);
     }

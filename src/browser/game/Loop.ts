@@ -93,6 +93,8 @@ import {
 } from "./PerformanceCapture.js";
 import type { RenderWorkerResultSteps } from "../RenderWorkerClient.js"; // 22.10 ARC-2 S6b
 import { pageEnvironmentRange } from "./PageEnvironmentRange.js"; // 22.10 (12.14)
+import { showWorkerResourceStatuses } from "../app/ResourceStatusLines.js"; // 22.10 (12.14)
+import { resourceStatusTargets } from "../app/ResourceStatusTargets.js"; // 22.10 (12.14)
 
 /**
  * Per-frame metadata resolvers, hoisted out of the frame body.
@@ -308,6 +310,7 @@ export function renderWorkerResultSteps(): RenderWorkerResultSteps {
       applyPortraitVisibility();
     },
     workerFrame: recordRenderWorkerFrame,
+    acceptStatuses: (statuses) => showWorkerResourceStatuses(resourceStatusTargets(), statuses), // 22.10 (12.14)
   };
 }
 

@@ -1,12 +1,14 @@
 // 22.10 (12.14) — loading in worker mode (`?renderworker=1`): the curtain waits for the worker's own terrain and its
-// drawn frames (RenderWorkerLoading.ts, ui/LoadingScreen.ts), the warm-up's models go to the client that draws (app/WarmModelTarget.ts,
+// drawn frames (RenderWorkerLoading.ts, ui/LoadingScreen.ts), the worker's clients' messages reach the page's status
+// lines (app/ResourceStatusLines.ts), the warm-up's models go to the client that draws (app/WarmModelTarget.ts,
 // RenderWorkerModelWarmup.ts), and the page keeps only its own environment tile while the worker streams the band
 // (game/PageEnvironmentRange.ts).
 import assert from "node:assert/strict";
 import test from "node:test";
-import { RenderWorkerReadinessTracker } from "../dist/code/browser/RenderWorkerLoading.js";
+import { RenderWorkerReadinessTracker, RenderWorkerStatusCollector } from "../dist/code/browser/RenderWorkerLoading.js";
 import { RenderWorkerModelWarmup } from "../dist/code/browser/RenderWorkerModelWarmup.js";
 import { warmModelTarget } from "../dist/code/browser/app/WarmModelTarget.js";
+import { showPageResourceStatus, showWorkerResourceStatuses } from "../dist/code/browser/app/ResourceStatusLines.js";
 import { PAGE_ONLY_ENVIRONMENT_RANGE, pageEnvironmentRange } from "../dist/code/browser/game/PageEnvironmentRange.js";
 import { ENVIRONMENT_STREAM_RANGE, terrainGridFootprintCells } from "../dist/code/browser/Terrain.js";
 import { RenderWorkerClient } from "../dist/code/browser/RenderWorkerClient.js";
@@ -34,6 +36,49 @@ test("the curtain's count: consecutive ready worker frames, for this map, tile a
   assert.equal(tracker.framesReadyAt(STORMWIND.map, STORMWIND.x + 600, STORMWIND.y), 1, "a new tile starts again");
   tracker.observe(undefined, 2);
   assert.equal(tracker.framesReadyAt(STORMWIND.map, STORMWIND.x + 600, STORMWIND.y), 0, "a frame without the terrain");
+});
+
+test("the worker's status messages: routed to the page's two lines, errors kept, the last plain one per line", () => {
+  const collector = new RenderWorkerStatusCollector();
+  const sources = { terrain: {}, splat: {}, cover: {}, liquids: {}, environment: {} };
+  collector.watch(sources);
+  sources.terrain.onStatus("Terrain tiles загружено: 1", false);
+  sources.splat.onStatus("splat 404", true);
+  sources.liquids.onStatus("Terrain tiles загружено: 2", false);
+  sources.environment.onStatus("VMAP tiles: 3", false);
+  assert.deepEqual(collector.drain(), [
+    { line: "terrain", message: "splat 404", error: true },
+    { line: "terrain", message: "Terrain tiles загружено: 2", error: false },
+    { line: "environment", message: "VMAP tiles: 3", error: false },
+  ]);
+  assert.equal(collector.drain(), undefined);
+  collector.unwatch();
+  assert.equal(sources.terrain.onStatus, undefined, "dropped clients say nothing more");
+});
+
+function statusTargets() {
+  const notices = [];
+  return { notices, terrain: { className: "", textContent: "" }, environment: { className: "", textContent: "" },
+    notice: (message) => notices.push(message) };
+}
+
+test("the status lines speak for the clients that draw: the page's in-page, the worker's in worker mode", () => {
+  const targets = statusTargets();
+  const worker = { renderWorker: {} };
+  showPageResourceStatus(targets, undefined, "terrain", "Terrain tiles загружено: 4", false);
+  assert.equal(targets.terrain.textContent, "Terrain: Terrain tiles загружено: 4");
+  showPageResourceStatus(targets, worker, "terrain", "page tile failed", true);
+  showPageResourceStatus(targets, worker, "environment", "VMAP tiles: 1", false);
+  assert.equal(targets.terrain.textContent, "Terrain: Terrain tiles загружено: 4", "the page's own stay off the lines");
+  assert.equal(targets.environment.textContent, "");
+  assert.deepEqual(targets.notices, []);
+  showWorkerResourceStatuses(targets, [{ line: "environment", message: "VMAP tiles: 9", error: false },
+    { line: "terrain", message: "Terrain gateway returned 500", error: true }]);
+  assert.equal(targets.environment.textContent, "Environment: VMAP tiles: 9");
+  assert.equal(targets.environment.className, "success");
+  assert.equal(targets.terrain.textContent, "Terrain: Terrain gateway returned 500");
+  assert.equal(targets.terrain.className, "error");
+  assert.deepEqual(targets.notices, ["Terrain gateway returned 500"]);
 });
 
 test("a warmed model goes to the client that draws: the page's in-page, forwarded once to the worker", () => {
@@ -108,10 +153,11 @@ const NO_STEPS = {
   recordRendererFrame() {}, acceptReports() {}, drainPortraits() {},
 };
 
-test("the page's proxy: a warmed model is a worker command; results bring the curtain's frames", () => {
+test("the page's proxy: a warmed model is a worker command; results bring statuses and the curtain's frames", () => {
   const target = port();
+  const statuses = [];
   const proxy = new RenderWorkerClient(target, { clientsUrl: () => "ws://127.0.0.1:8090/auth",
-    steps: NO_STEPS, queueTask: (run) => run() });
+    steps: { ...NO_STEPS, acceptStatuses: (lines) => statuses.push(...lines) }, queueTask: (run) => run() });
   proxy.warmModel("tree.m2", "background");
   assert.deepEqual(target.delivered.at(-1).commands, [{ method: "#warmModels", args: ["tree.m2", "background"] }]);
   const state = { objects: new Map(), selfGuid: undefined, predictedGuid: undefined };
@@ -119,8 +165,10 @@ test("the page's proxy: a warmed model is a worker command; results bring the cu
   const report = { collisionWants: [], unitWants: [], drawPhaseMs: {}, drawSubmitStats: { programs: 0, textures: 0,
     geometries: 0 }, cpuMs: 1, at: 1, readiness: { ...STORMWIND, terrain: true, clients: 1 } };
   for (let frame = 0; frame < 2; frame++) {
-    proxy.accept({ type: "results", results: createRenderResults(DEFAULT_ATMOSPHERE_PROFILE), row: undefined, report });
+    proxy.accept({ type: "results", results: createRenderResults(DEFAULT_ATMOSPHERE_PROFILE), row: undefined, report,
+      ...(frame === 0 ? { statuses: [{ line: "terrain", message: "ok", error: false }] } : {}) });
   }
+  assert.deepEqual(statuses, [{ line: "terrain", message: "ok", error: false }]);
   assert.equal(proxy.drawReadiness.framesReadyAt(STORMWIND.map, STORMWIND.x, STORMWIND.y), 2);
 });
 
@@ -134,7 +182,7 @@ function fakeRenderer(log) {
   return new Proxy(known, { get: (object, key) => (key in object ? object[key] : key === "then" ? undefined : () => undefined) });
 }
 
-test("the worker session: warm asks inside its frame, the terrain's readiness in its results", async () => {
+test("the worker session: warm asks inside its frame, statuses and the terrain's readiness in its results", async () => {
   const requested = [];
   const realFetch = globalThis.fetch;
   globalThis.fetch = async (url) => {
@@ -168,6 +216,8 @@ test("the worker session: warm asks inside its frame, the terrain's readiness in
     ticks.shift()(32);
     const second = posted.at(-1);
     assert.equal(second.report.readiness.terrain, true, "a 404 is the tile's answer");
+    assert.ok(second.statuses?.some((status) => status.line === "terrain" && /не найден/.test(status.message)),
+      JSON.stringify(second.statuses));
     assert.equal(requested.filter((url) => /\/terrain\/0\//.test(url)).length, 1, "the worker's terrain, asked once");
   } finally {
     globalThis.fetch = realFetch;

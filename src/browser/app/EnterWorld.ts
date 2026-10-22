@@ -57,6 +57,8 @@ import { resetHeadOverlay, showChatBubble, showFloatingText } from "../ui/HeadOv
 import { notePlateHit } from "../ui/OverlayModel.js";
 import { clearSpellNames } from "../ui/SpellNames.js";
 import { notice, resetNotices } from "../ui/Notices.js";
+import { showPageResourceStatus } from "./ResourceStatusLines.js"; // 22.10 (12.14)
+import { resourceStatusTargets } from "./ResourceStatusTargets.js"; // 22.10 (12.14)
 import { warmModelTarget } from "./WarmModelTarget.js"; // 22.10 (12.14)
 import { updateLogoutPending } from "../ui/GameMenu.js";
 import { beginModuleCommandLoad, systemLine } from "../ui/Chat.js";
@@ -1094,17 +1096,13 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
     game.terrain = terrain;
     terrain.onStatus = (message, error) => {
       if (game.terrain !== terrain) return;
-      if (error) notice(message);
-      terrainStatus.className = error ? "error" : "success";
-      terrainStatus.textContent = `Terrain: ${message}`;
+      showPageResourceStatus(resourceStatusTargets(), game.renderer, "terrain", message, error); // 22.10 (12.14)
     };
     const splat = new TerrainSplatClient(gatewayInput.value);
     game.terrainSplat = splat;
     splat.onStatus = (message, error) => {
       if (game.terrainSplat !== splat) return;
-      if (error) notice(message);
-      terrainStatus.className = error ? "error" : "success";
-      terrainStatus.textContent = `Terrain: ${message}`;
+      showPageResourceStatus(resourceStatusTargets(), game.renderer, "terrain", message, error); // 22.10 (12.14)
     };
     // What grows on the ground rides the same family of files as the splat, so it is built beside
     // it; `applySettings` below is what tells the renderer about it, along with how far the field
@@ -1113,9 +1111,7 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
     game.groundCover = groundCover;
     groundCover.onStatus = (message, error) => {
       if (game.groundCover !== groundCover) return;
-      if (error) notice(message);
-      terrainStatus.className = error ? "error" : "success";
-      terrainStatus.textContent = `Terrain: ${message}`;
+      showPageResourceStatus(resourceStatusTargets(), game.renderer, "terrain", message, error); // 22.10 (12.14)
     };
     const light = new LightClient(gatewayInput.value);
     game.light = light;
@@ -1123,9 +1119,7 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
     game.liquids = liquids;
     liquids.onStatus = (message, error) => {
       if (game.liquids !== liquids) return;
-      if (error) notice(message);
-      terrainStatus.className = error ? "error" : "success";
-      terrainStatus.textContent = `Terrain: ${message}`;
+      showPageResourceStatus(resourceStatusTargets(), game.renderer, "terrain", message, error); // 22.10 (12.14)
     };
     light.onStatus = (message, error) => {
       if (game.light !== light) return;
@@ -1137,9 +1131,7 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
     game.environment = environment;
     environment.onStatus = (message, error) => {
       if (game.environment !== environment) return;
-      if (error) notice(message);
-      environmentStatus.className = error ? "error" : "success";
-      environmentStatus.textContent = `Environment: ${message}`;
+      showPageResourceStatus(resourceStatusTargets(), game.renderer, "environment", message, error); // 22.10 (12.14)
     };
     game.spellMetadataClient = new SpellMetadataClient(gatewayInput.value);
     game.creatureMetadata = new CreatureMetadataClient(gatewayInput.value);

@@ -19,7 +19,7 @@ import type { PoseEngineStats } from "./PoseEngine.js";
 import type { PortraitTargetInputs } from "./PortraitTargetData.js";
 import type { RenderWorkerFrame, RenderWorkerResults } from "./RenderWorkerProtocol.js";
 import type { ShaderProgramEvent } from "./ShaderProgramTrace.js";
-import type { RenderWorkerDrawReadiness } from "./RenderWorkerLoading.js"; // 22.10 (12.14)
+import type { RenderWorkerDrawReadiness, RenderWorkerStatus } from "./RenderWorkerLoading.js"; // 22.10 (12.14)
 import type { WorldStandInReport } from "./StandIn.js";
 import type { WorldRenderer3D, WorldRendererGraphicsReadback } from "./WorldRenderer3D.js";
 
@@ -121,6 +121,8 @@ export interface RenderWorkerSlowReport {
 export interface ClientRenderResults extends RenderWorkerResults {
   readonly report?: RenderWorkerFrameReport;
   readonly slow?: RenderWorkerSlowReport;
+  /** 22.10 (12.14): the worker's resource clients' status messages since the last results (the HUD's lines). */
+  readonly statuses?: readonly RenderWorkerStatus[];
 }
 
 /** An error the worker caught and goes on after (a rejected fetch, a listener that threw): logged on the page. */
