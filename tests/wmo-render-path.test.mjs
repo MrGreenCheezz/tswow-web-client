@@ -267,7 +267,9 @@ test("units in a building of rooms take the doodads' indoor equation and no sun"
 
 test("the renderer notes interior-only buildings, lights units by the room and hides the dome", async () => {
   const source = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
-  assert.match(source, /const entered = staticEnvironment && wmoInteriorOnly\(placed\.model\) && this\.#enteredInteriorOnly\(placed, player\);/);
+  // 22.10 (7.41): a building admitted for its shadow alone is not "viewed" and never enters its rooms.
+  assert.match(source, /const viewed = staticEnvironment && !shadowOnly;/);
+  assert.match(source, /const entered = viewed && wmoInteriorOnly\(placed\.model\) && this\.#enteredInteriorOnly\(placed, player\);/);
   assert.match(source, /if \(entered\) distanceGroups = this\.#interiorOnlyRange\(placed, player\);/);
   // P1-12c: named once, for the walk and for its memo (`WmoPortalMemo.ts`).
   assert.match(source, /const screenApertures = entered \? this\.#interiorOnlyRoomsOf\(placed\)\.apertures : undefined;/);
