@@ -37,6 +37,11 @@ export interface BenchConfig {
   view?: { yaw: number; pitch: number; orbit: number };
   weather?: { state: number; intensity: number; abrupt: boolean } | null;
   viewFrames?: number;
+  /**
+   * 23.10 (7.48): `bench/lookdev.mjs --hd-textures`: the HD generation the page is told, as `/client/patch-status`
+   * tells a live page; with «Чёткие текстуры эффектов» on, effect textures are then asked for with `hd=`.
+   */
+  hdTextureGeneration?: string;
 }
 
 export interface BenchScenario {

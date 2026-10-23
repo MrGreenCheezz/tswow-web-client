@@ -101,6 +101,8 @@ export interface PatchStatusSummaryLike {
   /** 22.10 (6.26): the restart-stable generations (gateway/AssetGeneration.ts); absent from an older gateway. */
   readonly visualGeneration?: string;
   readonly metadataGeneration?: string;
+  /** 23.10 (7.48): present while the gateway serves an HD texture set (gateway/HdTextures.ts). */
+  readonly hdTextureGeneration?: string;
   /**
    * 10.15 (C): when the supervisor restarts the gateway whoever is connected, epoch ms on the
    * gateway's clock; null or absent while none is scheduled (and from a gateway built before it).
@@ -323,7 +325,8 @@ export async function readPatchStatus(
     }
     // Every read keeps the tile URLs on the generation the gateway serves now (10.12).
     noteGatewayCacheGeneration(origin, status.cacheGeneration);
-    noteGatewayAssetGenerations(origin, status.visualGeneration, status.metadataGeneration); // 22.10 (6.26)
+    noteGatewayAssetGenerations(origin, status.visualGeneration, status.metadataGeneration, // 22.10 (6.26)
+      status.hdTextureGeneration); // 23.10 (7.48)
     return { kind: "ok", status };
   } catch (error) {
     return { kind: "unreachable", error: error instanceof Error ? error.message : String(error) };

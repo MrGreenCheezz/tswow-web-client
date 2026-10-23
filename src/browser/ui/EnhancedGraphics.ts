@@ -14,6 +14,7 @@ export const ENHANCED_GRAPHICS_OVERRIDES: Readonly<SettingValues> = Object.freez
   experimentalVegetationWind: true,
   experimentalFantasyGlow: true,
   experimentalLivingSpells: true, // 23.10 (6.27)
+  experimentalSharpEffectTextures: true, // 23.10 (7.48)
   fullscreenGlow: true,
   godRays: true,
   experimentalCinematicGrade: true,

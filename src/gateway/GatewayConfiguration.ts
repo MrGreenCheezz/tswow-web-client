@@ -11,6 +11,7 @@ import { assertModuleWritePolicy } from "./ModuleWritePolicy.js";
 import { parseLoginAttemptEnv } from "./LoginAttemptLimiter.js";
 import { VISUAL_TILE_GENERATION } from "./VisualTileGeneration.js"; // 05.10-A7b-1
 import { TERRAIN_SPLAT_GENERATION } from "./TerrainSplatGeneration.js"; // 05.10-A7b-7
+import { HdTextureSets, parseHdTexturesEnv } from "./HdTextures.js"; // 23.10 (7.48)
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -286,6 +287,8 @@ export async function createGatewayConfiguration(): Promise<{ options: GatewayOp
     generateVisualModel: (path, hash) => publish(
       { kind: "visual-model", path, hash }, visualModelPriority(path), "generate-visual-model.mjs", [path, hash]),
     texturesDirectory: process.env.TEXTURE_DIR ?? resolve(process.cwd(), "data/textures"),
+    // 23.10 (7.48): the HD sets tools/upscale-textures.mjs builds; HD_TEXTURES=0 (bat/32 by default) switches them off.
+    ...(parseHdTexturesEnv(process.env) ? { hdTextures: { sets: hdTextureSets() } } : {}),
     // World map art is asked for a tile at a time and is only ever wanted a whole picture at a
     // time — twelve for a zone, plus one to four for each exploration overlay painted over it. Sent
     // to the ordinary generator that is forty processes each opening twenty-two archives; sent here
@@ -439,6 +442,17 @@ export async function createGatewayConfiguration(): Promise<{ options: GatewayOp
    * the restamp passes write what they stamped there and say nothing on success otherwise, and their
    * stdout is StormLib's. Without it the child's stderr is only read to explain a non-zero exit.
    */
+  /** 23.10 (7.48): the HD sets, restamped in the background (no GPU) when a patch publish left their stamps behind. */
+  function hdTextureSets(): HdTextureSets {
+    const directory = process.env.HD_TEXTURE_DIR ?? resolve(process.cwd(), ".runtime/hd-textures");
+    return new HdTextureSets(directory, {
+      onStale: (set) => {
+        runAssetGenerator("upscale-textures.mjs", ["--set", set, "--restamp-only", "--out", directory], "HD textures")
+          .catch((error: unknown) => console.warn(`HD textures (${set}) could not be restamped: ${String(error).slice(0, 400)}`));
+      },
+    });
+  }
+
   function runAssetGenerator(script: string, args: string[], relay?: string): Promise<void> {
     if (closed) return Promise.reject(new Error("Resource provider is closed"));
     return new Promise((resolveJob, rejectJob) => {

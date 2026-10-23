@@ -37,6 +37,7 @@ export const RENDER_WORKER_COMMANDS: Readonly<Record<ClientRendererCommand, Rend
   setTerrainRelief: "setting", // 22.10 (7.47)
   setWmoRelief: "setting", // 22.10 (7.47 stage 2)
   setLivingSpells: "setting", // 23.10 (6.27)
+  setHdEffectTextures: "setting", // 23.10 (7.48)
   setFullscreenGlow: "setting", setGodRays: "setting", setGodRayStrength: "setting", setCinematicProfile: "setting",
   setCinematicStrength: "setting", setAtmosphereEffects: "setting", setEnvironmentDetail: "setting",
   setGroundCover: "setting", setWeather: "setting", setIndoors: "setting", updateLighting: "setting",

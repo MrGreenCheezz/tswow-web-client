@@ -202,6 +202,12 @@ export const SETTING_DEFINITIONS: readonly SettingDefinition[] = [
     hint: "Плавная смена кадров у частиц, мягкий край у земли, яркое свечение и свет от заклинаний на окружение.",
   },
   {
+    // 23.10 (7.48): effect textures from the gateway's HD set (HdEffectTextures.ts); off is the client's own textures.
+    id: "experimentalSharpEffectTextures", label: "Чёткие текстуры эффектов", group: "Эффекты", kind: "boolean",
+    fallback: false,
+    hint: "Текстуры частиц и заклинаний, увеличенные нейросетью в 2–4 раза. Нужен набор, собранный на сервере.",
+  },
+  {
     // Cinematic leaves of «Улучшенная графика» (CinematicPost.ts). The four post-process ones share
     // the glow chain's capture and cost a full-screen pass or more, so they are off until the preset
     // or the player turns them on; the two material ones are free and follow the water/wind leaves.

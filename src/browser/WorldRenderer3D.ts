@@ -83,6 +83,7 @@ import type { LightSample, ResolvedColour } from "./LightTypes.js";
 import { lightDarkensByDepth, liquidLightTint, type UnderwaterLight } from "./UnderwaterLiquidLight.js"; // 05.10-A7b-5 review
 import { LocalLightSelection, modelFixtureLights, sampleFixtureLight } from "./LocalLighting.js";
 import { SpellLights } from "./SpellLights.js"; // 23.10 (6.27)
+import { hdEffectTexturesEnabled, setHdEffectTexturesEnabled } from "./HdEffectTextures.js"; // 23.10 (7.48)
 import { fixtureLightSource } from "./FixtureLightSources.js"; // 06.10-render-fix
 import { sampleWmoLight, wmoOutdoorLightPositions, wmoOutdoorLights } from "./WmoFixtureLights.js"; // 22.10 (7.36)
 import { LOCAL_LIGHT_FOCUS_AHEAD, WMO_LIGHT_RANK_SCALE } from "./CinematicLights.js"; // 22.10 (7.36)
@@ -9437,6 +9438,17 @@ export class WorldRenderer3D {
     this.#livingSpells = enabled;
     for (const visual of this.#visuals) this.#dropEffects(visual.key);
     this.#spellLights.clear();
+  }
+
+  /**
+   * 23.10 (7.48): «Чёткие текстуры эффектов» on or off (HdEffectTextures.ts): effect textures are asked for with
+   * `hd=` from now on. Live spell effects are rebuilt on the next frame, like `setLivingSpells`, so they pick up
+   * the other copy; an effect texture a world doodad already holds keeps it until that doodad is built again.
+   */
+  setHdEffectTextures(enabled: boolean): void {
+    if (hdEffectTexturesEnabled() === enabled) return;
+    setHdEffectTexturesEnabled(enabled);
+    for (const visual of this.#visuals) this.#dropEffects(visual.key);
   }
 
   /** Re-admits only static WVM scenery whose material cache variant changes with GPU wind. */

@@ -10,6 +10,9 @@
 //   MODULE_UI_WRITE=0    a forwarded connection can look local, and the write guard trusts that
 //   ASSET_PRELOAD=0      background model preloading is for the owner's own play, not the served
 //                        gateway (owner, 12.10)
+//   HD_TEXTURES=0        23.10 (7.48): the upscaled effect textures (tools/upscale-textures.mjs) stay with the
+//                        owner's own play unless .env says PUBLIC_HD_TEXTURES=1 — whether players get them
+//                        is the owner's decision
 //   GATEWAY_RESTART_ON_PATCH=1 (unless .env says 0) after a TSWoW build the gateway restarts by
 //                        itself once nobody is connected — or, counted down on the players' pages,
 //                        GATEWAY_RESTART_DEADLINE_MIN (default 5) minutes after the build settled —
@@ -63,6 +66,7 @@ process.env.ALLOWED_ORIGINS = [...origins].join(",");
 process.env.GATEWAY_HOST = bind;
 process.env.MODULE_UI_WRITE = "0";
 process.env.ASSET_PRELOAD = "0";
+process.env.HD_TEXTURES = process.env.PUBLIC_HD_TEXTURES?.trim() === "1" ? "1" : "0"; // 23.10 (7.48)
 process.env.GATEWAY_RESTART_ON_PATCH ??= "1";
 // 10.15: whatever .env says about restarts after a build, a crashed gateway comes back by itself
 // (tools/gateway-supervisor.mjs; a sixth crash in ten minutes still stops it).

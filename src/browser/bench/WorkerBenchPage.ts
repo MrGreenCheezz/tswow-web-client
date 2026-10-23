@@ -15,7 +15,7 @@
 import { CREATURE_MODEL_VERSION } from "../CharacterAtlas.js";
 import type { UnitModel } from "../CreatureModelClient.js";
 import { frameBudgetProbe } from "../FrameBudgetProbe.js";
-import { gatewayGenerationPush } from "../GatewayGeneration.js";
+import { gatewayGenerationPush, noteGatewayAssetGenerations } from "../GatewayGeneration.js"; // 23.10 (7.48): note
 import { reportPatchChainSuspect } from "../PatchChainSuspect.js";
 import { drainPatchChainSuspects, mergeRendererBudget, replayGpuEvents } from "../RendererReports.js";
 import { NO_RENDER_INPUTS, type RenderInputs } from "../RenderInputs.js";
@@ -63,6 +63,8 @@ const { worldCrowd, city, arrival, count, map } = scene;
 const phaseNames = benchPhaseNames(scene);
 const nextFrame = () => new Promise<number>(resolve => requestAnimationFrame(resolve));
 const baseUrl = location.origin;
+// 23.10 (7.48): lookdev's HD stills (Harness.ts does the same), pushed to the worker with the generation state.
+if (config.hdTextureGeneration) noteGatewayAssetGenerations(baseUrl, undefined, undefined, config.hdTextureGeneration);
 async function checked(url: string): Promise<Response> {
   const response = await fetch(url);
   if (!response.ok) throw new Error(`Asset ${response.status}: ${url}`);
