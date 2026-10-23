@@ -32,10 +32,13 @@ interface GenerationState {
   /** 22.10 (6.26): the restart-stable `visualGeneration` and `metadataGeneration` (gateway/AssetGeneration.ts). */
   visual: string | undefined;
   metadata: string | undefined;
+  /** 23.10 (7.48): the gateway's HD texture generation (gateway/HdTextures.ts), absent when it serves none. */
+  hd: string | undefined;
 }
 
 const state: GenerationState = {
   origin: undefined, generation: undefined, bypass: undefined, first: "", next: "", visual: undefined, metadata: undefined,
+  hd: undefined, // 23.10 (7.48)
 };
 
 /** What the gateway may put in `cacheGeneration` (CachePolicy.ts: hex nonce + hex epoch + 8 hex). */
@@ -78,6 +81,7 @@ export function noteGatewayCacheGeneration(origin: string, value: unknown): bool
   if (normalised !== state.origin) {
     state.visual = undefined;
     state.metadata = undefined;
+    state.hd = undefined; // 23.10 (7.48)
   }
   state.origin = normalised;
   state.generation = generation;
@@ -116,18 +120,35 @@ export function withGeneration(url: string): string {
  * (`visualGeneration`, `metadataGeneration`); absent or malformed (an older gateway) clears each. Call after
  * `noteGatewayCacheGeneration` for the same answer. Returns whether either changed.
  */
-export function noteGatewayAssetGenerations(origin: string, visual: unknown, metadata: unknown): boolean {
+export function noteGatewayAssetGenerations(origin: string, visual: unknown, metadata: unknown, hd?: unknown): boolean {
   const normalised = normaliseOrigin(origin);
   const nextVisual = normalised !== undefined && typeof visual === "string" && GENERATION_SHAPE.test(visual) ? visual : undefined;
   const nextMetadata = normalised !== undefined && typeof metadata === "string" && GENERATION_SHAPE.test(metadata)
     ? metadata : undefined;
-  const changed = nextVisual !== state.visual || nextMetadata !== state.metadata || normalised !== state.origin;
+  // 23.10 (7.48): `hdTextureGeneration`, absent while the gateway serves no HD set (or has them switched off).
+  const nextHd = normalised !== undefined && typeof hd === "string" && GENERATION_SHAPE.test(hd) ? hd : undefined;
+  const changed = nextVisual !== state.visual || nextMetadata !== state.metadata || nextHd !== state.hd
+    || normalised !== state.origin;
   if (!changed) return false;
   state.origin = normalised;
   state.visual = nextVisual;
   state.metadata = nextMetadata;
+  state.hd = nextHd;
   revision++;
   return true;
+}
+
+/** 23.10 (7.48): the HD texture generation the gateway last published, if any (HdEffectTextures.ts). */
+export function gatewayHdTextureGeneration(): string | undefined {
+  return state.hd;
+}
+
+/**
+ * 23.10 (7.48): `url` with `hd=<hdTextureGeneration>` when it is a URL of the gateway that published one; the
+ * gateway then answers from its HD set when the set holds the path (gateway/HdTextures.ts).
+ */
+export function withHdTextureGeneration(url: string): string {
+  return appendParam(url, "hd", state.hd);
 }
 
 /** 22.10 (6.26): the visual generation the gateway last published, if any (persistent atlas keys). */
@@ -205,6 +226,8 @@ export interface GatewayGenerationPush {
   /** 22.10 (6.26): absent from an older page's push. */
   readonly visual?: string | undefined;
   readonly metadata?: string | undefined;
+  /** 23.10 (7.48): absent from an older page's push. */
+  readonly hd?: string | undefined;
 }
 
 let revision = 0;
@@ -214,7 +237,7 @@ let lastPush: GatewayGenerationPush | undefined;
 export function gatewayGenerationPush(): GatewayGenerationPush {
   if (lastPush === undefined || lastPush.revision !== revision) {
     lastPush = Object.freeze({ revision, origin: state.origin, generation: state.generation, bypass: state.bypass,
-      visual: state.visual, metadata: state.metadata }); // 22.10 (6.26)
+      visual: state.visual, metadata: state.metadata, hd: state.hd }); // 22.10 (6.26), 23.10 (7.48): hd
   }
   return lastPush;
 }
@@ -226,6 +249,7 @@ export function applyGatewayGenerationPush(push: GatewayGenerationPush): void {
   state.bypass = push.bypass;
   state.visual = push.visual; // 22.10 (6.26)
   state.metadata = push.metadata;
+  state.hd = push.hd; // 23.10 (7.48)
   rebuildQuery();
 }
 
@@ -236,5 +260,6 @@ export function resetGatewayGeneration(): void {
   state.bypass = undefined;
   state.visual = undefined; // 22.10 (6.26)
   state.metadata = undefined;
+  state.hd = undefined; // 23.10 (7.48)
   rebuild();
 }

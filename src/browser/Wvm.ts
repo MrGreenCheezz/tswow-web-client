@@ -30,6 +30,7 @@
 // 12.10 6.24: `visual-v24` adds the key bone table to WVE1 (`WvmModel.keyBones`).
 
 import { withVisualGeneration } from "./GatewayGeneration.js"; // 22.10 (6.26)
+import { withHdEffectTexture } from "./HdEffectTextures.js"; // 23.10 (7.48)
 import { readChannelKeys, steppedKeyCount } from "./WvaChannelKeys.js"; // 05.10-A7a-F2
 
 /** M2Material.blending_mode, in the file's own order. */
@@ -1362,7 +1363,8 @@ export function textureUrl(baseUrl: string, mpqPath: string): string {
   const path = mpqPath.replaceAll("/", "\\");
   const version = isCoordinatedVisualTexturePath(path) ? `v=${TEXTURE_ROUTE_VERSION}&` : "";
   // 22.10 (6.26): + `vg=` once the gateway published its visual generation: answered immutable, kept across sessions.
-  return withVisualGeneration(`${baseUrl}/texture?${version}path=${encodeURIComponent(path)}`);
+  // 23.10 (7.48): + `hd=` for an effect texture while «Чёткие текстуры эффектов» is on (HdEffectTextures.ts).
+  return withHdEffectTexture(withVisualGeneration(`${baseUrl}/texture?${version}path=${encodeURIComponent(path)}`), path);
 }
 
 /** Versioned URL for one visual model or one streamed WMO group. */

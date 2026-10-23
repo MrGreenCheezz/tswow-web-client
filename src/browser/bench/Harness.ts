@@ -21,6 +21,7 @@ import {
 import { benchReadiness, configureBenchRenderer, createBenchClients } from "./BenchRenderSide.js"; // 22.10 ARC-2 S6a
 import { wmoReliefStats } from "../WmoReliefShader.js"; // 22.10 (7.47 stage 2)
 import { planSpellVisual, planSpellVisualKitEvent } from "../SpellVisuals.js"; // 23.10 (6.27)
+import { noteGatewayAssetGenerations } from "../GatewayGeneration.js"; // 23.10 (7.48)
 import type { SpellVisualKitRecord, SpellVisualMetadata } from "../../gateway/SpellVisual.js"; // 23.10 (6.27)
 
 /** 23.10 (6.27): one spell-visual frame strip (`bench/lookdev.mjs --spell/--kit`). */
@@ -94,6 +95,8 @@ Math.random = () => {
   return randomState / 4294967296;
 };
 const baseUrl = location.origin;
+// 23.10 (7.48): lookdev's HD stills — the generation a live page would read from `/client/patch-status`.
+if (config.hdTextureGeneration) noteGatewayAssetGenerations(baseUrl, undefined, undefined, config.hdTextureGeneration);
 // 06.10-P1-00b: textures the corpus lacks (404) are drawn as the white pixel, as in the game.
 const missingTextures = installKnownMissingTextureLedger(globalThis, baseUrl);
 async function checked(url: string): Promise<Response> {

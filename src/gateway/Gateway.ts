@@ -87,7 +87,9 @@ import { AssetPreloader } from "./AssetPreloader.js";
 import {
   LEGACY_TILE_DAY, LEGACY_TILE_HOUR, cacheGeneration, datasetCacheHeaders, datasetEtag, etagMatches,
   isDatasetCacheRoute, processCacheNonce, tileCacheControl, REVALIDATE, // 22.10 (6.26): REVALIDATE
+  IMMUTABLE, // 23.10 (7.48)
 } from "./CachePolicy.js";
+import { HD_TEXTURE_PARAM, type HdTextureSets } from "./HdTextures.js"; // 23.10 (7.48)
 import {
   METADATA_GENERATION_PARAM, VISUAL_GENERATION_PARAM, assetCacheControl, gatewayCodeIdentity, metadataGeneration,
   visualGeneration,
@@ -339,6 +341,13 @@ export interface GatewayOptions {
   generateHorizonColour?: (map: number) => Promise<void>;
   /** Where published client textures live, keyed on their path in the archives. */
   texturesDirectory?: string;
+  /**
+   * 23.10 (7.48): the HD texture sets (tools/upscale-textures.mjs) `/texture` serves to an `hd=` request; absent
+   * when `HD_TEXTURES=0`. `isCurrent` is for tests: by default an HD file is served only while its source stamp
+   * matches the client (`DatasetFingerprint.isCurrent`, read-only — a stale HD copy is never deleted here, the
+   * tool rebuilds or restamps it).
+   */
+  hdTextures?: { readonly sets: HdTextureSets; readonly isCurrent?: (file: string) => Promise<boolean> };
   /** Where the animated liquid strips live, one per liquid class. */
   liquidDirectory?: string;
   /**
@@ -1066,8 +1075,11 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
       });
       // `cacheGeneration` (10.12) is what a page puts in `g=` on tile routes to cache them for good.
       // 22.10 (6.26): and the two restart-stable ones (`vg=`, `mg=`; AssetGeneration.ts), absent when unknown.
+      // 23.10 (7.48): + `hdTextureGeneration` while the HD sets are switched on and one exists (HdTextures.ts).
+      const hdTextureGeneration = await options.hdTextures?.sets.generation();
       response.end(JSON.stringify({ ...body, cacheGeneration: requestCacheGeneration(),
-        visualGeneration: visualAssetGeneration, metadataGeneration: requestMetadataGeneration }));
+        visualGeneration: visualAssetGeneration, metadataGeneration: requestMetadataGeneration,
+        ...(hdTextureGeneration === undefined ? {} : { hdTextureGeneration }) }));
       return;
     }
 
@@ -1131,6 +1143,28 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
       }
       const id = createHash("sha1").update(`${TEXTURE_CACHE_NAMESPACE}\0${texturePath.toLowerCase()}`).digest("hex");
       const filename = join(options.texturesDirectory, `${id}.png`);
+      // 23.10 (7.48): an `hd=` request is answered from an HD set when one holds a current copy (HdTextures.ts).
+      // Immutable only under this visual generation and this HD generation; the original answered to an `hd=`
+      // request is revalidated, so a set built later replaces it on the browser's next request.
+      const hdRequested = url.searchParams.get(HD_TEXTURE_PARAM);
+      if (hdRequested !== null && options.hdTextures) {
+        const { sets, isCurrent } = options.hdTextures;
+        const hdFile = await sets.find(texturePath,
+          isCurrent ?? ((file) => fingerprint.isCurrent(file, { requireStamp: true })));
+        if (hdFile !== undefined) {
+          try {
+            const pinned = hdRequested === await sets.generation()
+              && visualAssetGeneration !== undefined
+              && url.searchParams.get(VISUAL_GENERATION_PARAM) === visualAssetGeneration;
+            await respondFile(request, response, hdFile, {
+              origin, contentType: "image/png", cacheControl: pinned ? IMMUTABLE : REVALIDATE,
+            });
+            return;
+          } catch {
+            // Gone between the look and the open (a rebuild renamed it away): the original below.
+          }
+        }
+      }
       try {
         // One thunk for both ways a route needs the generator — the file is not there at all, or
         // it is there and the stamp check has something to say about it — on the same lane under
@@ -1153,7 +1187,8 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
         await respondFile(request, response, filename, {
           origin, contentType: "image/png", rebuild: options.generateTexture ? rebuild : undefined,
           // 22.10 (6.26): immutable when the URL names this visual generation (AssetGeneration.ts).
-          cacheControl: assetCacheControl(url.searchParams.get(VISUAL_GENERATION_PARAM), visualAssetGeneration, REVALIDATE),
+          cacheControl: hdRequested !== null ? REVALIDATE
+            : assetCacheControl(url.searchParams.get(VISUAL_GENERATION_PARAM), visualAssetGeneration, REVALIDATE),
         });
       } catch (error) {
         // The two ways this route fails are not the same news, and answering 404 for both is what

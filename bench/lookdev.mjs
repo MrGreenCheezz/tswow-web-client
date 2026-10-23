@@ -23,8 +23,13 @@
  * frame is read at every `--shots ms,ms,...` after the cast (default 0,150,300,500,800,1200,1800); the stills
  * are `<frame>-<ms>.png` and, with `--crop WxH[+dy]` (a box around the canvas centre), `<frame>-strip.png`.
  * Use `--scenario city --population 1` so nothing else walks through the shot.
+ *
+ * 23.10 (7.48): `--hd-textures [dir]` serves effect textures from the HD sets `tools/upscale-textures.mjs` built
+ * (default `.runtime/hd-textures`) straight off the disk, as a gateway with them would, so HD stills need no gateway
+ * restart. The page is told an HD generation; it asks with `hd=` only while «Чёткие текстуры эффектов» is on
+ * (`--settings enhanced`, or `--set experimentalSharpEffectTextures=false` for the originals in the same setup).
  */
-import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { access, mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 import { resolve, dirname } from 'node:path';
@@ -121,6 +126,18 @@ async function main() {
     config.settings[key] = raw === 'true' ? true : raw === 'false' ? false : Number.isFinite(Number(raw)) ? Number(raw) : raw;
   }
   const frames = values('--frame').map(parseFrame);
+  // 23.10 (7.48): HD effect textures straight from the generated sets.
+  const hdIndex = args.indexOf('--hd-textures');
+  const hdDirectory = hdIndex < 0 ? undefined
+    : resolve(args[hdIndex + 1] && !args[hdIndex + 1].startsWith('--') ? args[hdIndex + 1] : '.runtime/hd-textures');
+  const hdSets = hdDirectory ? (await readdir(hdDirectory, { withFileTypes: true }).catch(() => []))
+    .filter((entry) => entry.isDirectory() && /^[a-z0-9-]{1,32}$/.test(entry.name)).map((entry) => resolve(hdDirectory, entry.name)) : [];
+  if (hdDirectory) {
+    if (hdSets.length === 0) throw new Error(`--hd-textures: no set under ${hdDirectory}`);
+    const manifests = await Promise.all(hdSets.map((set) => readFile(resolve(set, 'manifest.json')).catch(() => Buffer.alloc(0))));
+    config.hdTextureGeneration = createHash('sha1').update(Buffer.concat(manifests)).digest('hex').slice(0, 20);
+  }
+  let hdServed = 0;
   // 23.10 (6.27): a spell-visual strip per frame.
   const spellArg = value('--spell');
   const kitArg = value('--kit');
@@ -214,6 +231,23 @@ async function main() {
       } else if (/^\/textures\/water\/[A-Za-z]+_N\.jpg$/.test(url.pathname)) {
         res.writeHead(200, { 'content-type': 'image/jpeg', 'cache-control': 'no-store' })
           .end(await readFile(resolve('public', url.pathname.slice(1))));
+      } else if (hdDirectory && url.pathname === '/texture' && url.searchParams.has('hd')) {
+        // 23.10 (7.48): the HD copy when a set holds it (gateway/HdTextures.ts names it the same way), else the original.
+        const path = (url.searchParams.get('path') ?? '').replaceAll('/', '\\').toLowerCase();
+        const id = createHash('sha1').update(`hd-texture-v1\0${path}`).digest('hex');
+        let hd;
+        for (const set of hdSets) {
+          hd = await readFile(resolve(set, `${id}.png`)).catch(() => undefined);
+          if (hd) break;
+        }
+        if (hd) {
+          hdServed++;
+          res.writeHead(200, { 'content-type': 'image/png', 'cache-control': 'no-store' }).end(hd);
+        } else {
+          url.searchParams.delete('hd');
+          const { entry, bytes } = await asset(url.pathname + url.search);
+          res.writeHead(entry.status, { 'content-type': entry.type, 'cache-control': 'no-store' }).end(bytes);
+        }
       } else if (allowed.test(key)) {
         const { entry, bytes } = await asset(key);
         res.writeHead(entry.status, { 'content-type': entry.type, 'cache-control': 'public,max-age=31536000,immutable' }).end(bytes);
@@ -295,7 +329,8 @@ async function main() {
       written.push({ path, shadows });
       console.log(`${frame.name}: ${path} (${png.length} bytes) shadows ${JSON.stringify(shadows)}`);
     }
-    await writeFile(resolve(out, 'lookdev.json'), JSON.stringify({ scenario, config, frames, written, cacheMisses, failures }, null, 2));
+    if (hdDirectory) console.log(`HD textures served from ${hdDirectory}: ${hdServed}`); // 23.10 (7.48)
+    await writeFile(resolve(out, 'lookdev.json'), JSON.stringify({ scenario, config, frames, written, cacheMisses, hdServed, failures }, null, 2));
     if (failures.length) console.error(`Asset failures:\n${failures.join('\n')}`);
   } finally {
     await browser.close().catch(() => {});
