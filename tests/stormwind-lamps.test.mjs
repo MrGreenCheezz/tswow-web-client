@@ -5,6 +5,8 @@ import test from "node:test";
 import * as THREE from "three";
 import { FarLightGlows } from "../dist/code/browser/FarLightGlows.js";
 import { modelFixtureLights } from "../dist/code/browser/LocalLighting.js";
+import { LightTemplateCatalog } from "../dist/code/browser/LightTemplateCatalog.js"; // 24.10 (7.50)
+import { PrelitLights } from "../dist/code/browser/PrelitLights.js"; // 24.10 (7.50)
 
 /** A model with an opaque post and one more batch: `texture`, `flags`, `blend`, 4 yards up. */
 const model = (texture, flags = 1, blend = 0) => ({
@@ -35,31 +37,37 @@ test("23.10 (7.36): the city's lanterns are lit on the cinematic profile only", 
   assert.equal(modelFixtureLights(model("ElwynnLantern02.blp", 4, 0), "GeneralLantern02.m2", true).length, 0);
 });
 
-test("23.10 (7.36): a street lamp not built yet glows from afar, placed from a built twin", () => {
+test("24.10 (7.50): a street lamp not built yet glows from afar, from its model's template", () => {
   const wvm = model("Dungeons\\Textures\\Doodads\\StormwindLampGlass.blp");
   // The built lamp, as the renderer keeps it: a placed node with the visual inside.
   const node = new THREE.Group();
-  node.position.set(0, 0, 0);
   const visual = new THREE.Object3D();
   node.add(visual);
   const resident = { source: { id: -101, name: LAMP, interior: false }, node, visual, wvm };
   const placements = new Map([[-101, resident]]);
   // The streamed tile list: the built lamp, an unbuilt twin 150 yards off, a room's lamp beside it.
   const objects = [
-    { id: -101, name: LAMP, interior: false, at: 0 },
-    { id: -102, name: LAMP, interior: false, at: 150 },
-    { id: -103, name: LAMP, interior: true, at: 152 },
+    { id: -101, kind: "m2", name: LAMP, interior: false, x: 0, y: 0, z: 0 },
+    { id: -102, kind: "m2", name: LAMP, interior: false, x: 150, y: 0, z: 0 },
+    { id: -103, kind: "m2", name: LAMP, interior: true, x: 152, y: 0, z: 0 },
   ];
-  const streamed = {
-    objects,
-    place: (object, target) => target.makeTranslation(object.at, 0, 0),
+  // 24.10 (7.50): known from the model's data before any placement of it is built, not from a built twin.
+  const catalog = new LightTemplateCatalog(null);
+  catalog.learn(LAMP, wvm);
+  const host = {
+    place: (object, target) => target.makeTranslation(object.x, object.z, -object.y),
+    openAir: () => false,
+    built: (id) => placements.has(id),
   };
+  const prelit = new PrelitLights();
+  prelit.update(objects, catalog, host, new THREE.Vector3());
+  const extra = { get generation() { return prelit.generation; }, appendFarSources: (out) => prelit.appendFarSources(host, out) };
   const glows = new FarLightGlows();
   const camera = new THREE.Vector3(0, 2, 0);
-  for (let frame = 0; frame < 70; frame++) glows.update(placements, camera, 0, Number.POSITIVE_INFINITY, streamed);
+  for (let frame = 0; frame < 70; frame++) glows.update(placements, camera, 0, Number.POSITIVE_INFINITY, extra);
   assert.equal(glows.sourceCount, 2, "the built lamp and its outdoor twin; never the room's lamp");
   assert.ok(glows.mesh.count >= 1, "the twin at 150 yards draws a far glow");
-  // Without the streamed list only the built lamp, inside the near band, is a source.
+  // Without the unbuilt list only the built lamp, inside the near band, is a source.
   const old = new FarLightGlows();
   for (let frame = 0; frame < 70; frame++) old.update(placements, camera, 0);
   assert.equal(old.sourceCount, 1);

@@ -173,8 +173,9 @@ test("the page's proxy: a warmed model is a worker command; results bring status
 });
 
 /** A renderer that answers every read with nothing and records the draws. */
-function fakeRenderer(log) {
+function fakeRenderer(log, lights = { ready: true }) {
   const known = {
+    lightsReadyAround: () => lights.ready, // 24.10 (7.50)
     results: createRenderResults(DEFAULT_ATMOSPHERE_PROFILE), drawPhaseMs: {}, drawSubmitStats: {},
     programWarmup: {}, collisionModelWants: () => [], unitModelWants: () => [],
     draw: () => log.push("draw"),
@@ -194,7 +195,8 @@ test("the worker session: warm asks inside its frame, statuses and the terrain's
     const ticks = [];
     const log = [];
     const scope = { postMessage: (message) => posted.push(message), requestAnimationFrame: (run) => ticks.push(run) };
-    const session = new RenderWorkerSession(scope, {}, fakeRenderer(log));
+    const lights = { ready: false }; // 24.10 (7.50): the lamps around the subject not known yet
+    const session = new RenderWorkerSession(scope, {}, fakeRenderer(log, lights));
     const page = port();
     const proxy = new RenderWorkerClient(page, { clientsUrl: () => "ws://127.0.0.1:8090/auth", steps: NO_STEPS,
       queueTask: (run) => run() });
@@ -214,10 +216,14 @@ test("the worker session: warm asks inside its frame, statuses and the terrain's
     await settle();
     assert.ok(requested.some((url) => url.includes("tree")), "the warm ask, made by the worker's frame");
     ticks.shift()(32);
+    const middle = posted.at(-1);
+    assert.equal(middle.report.readiness.terrain, false, "24.10 (7.50): the terrain is in, the lamps are not yet");
+    lights.ready = true;
+    ticks.shift()(48);
     const second = posted.at(-1);
     assert.equal(second.report.readiness.terrain, true, "a 404 is the tile's answer");
-    assert.ok(second.statuses?.some((status) => status.line === "terrain" && /не найден/.test(status.message)),
-      JSON.stringify(second.statuses));
+    assert.ok(middle.statuses?.some((status) => status.line === "terrain" && /не найден/.test(status.message)),
+      JSON.stringify(middle.statuses));
     assert.equal(requested.filter((url) => /\/terrain\/0\//.test(url)).length, 1, "the worker's terrain, asked once");
   } finally {
     globalThis.fetch = realFetch;

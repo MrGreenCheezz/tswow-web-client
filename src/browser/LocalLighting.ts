@@ -68,6 +68,27 @@ function fixtureColour(path: string): readonly [number, number, number] {
   return [1, 0.56, 0.20];
 }
 
+/** 24.10 (7.50): the lower-case file name of a model path, as the fixture heuristic reads it. */
+function fixtureFilename(name: string): string {
+  const path = name.replaceAll("/", "\\").toLowerCase();
+  return path.slice(path.lastIndexOf("\\") + 1);
+}
+
+/** The heuristic's name gate on a lower-case file name: a lamp, torch or fire that is not off. */
+function fixtureNameLit(filename: string): boolean {
+  return /(?:lamp|lantern|torch|brazier|campfire|bonfire|hearth|candle|chandelier|firepit)/.test(filename)
+    && !/(?:unlit|nolight|broken|wrecked|busted|(?:^|[_-])off(?:[_.-]|$)|\d?off\.)/.test(filename);
+}
+
+/**
+ * 24.10 (7.50): whether `modelFixtureLights` could find a heuristic light in a model of this path —
+ * its name gate, read before the model is loaded (`LightTemplateCatalog.ts`). A model that declares
+ * its own M2 lights may light whatever its name.
+ */
+export function fixtureNameCandidate(name: string): boolean {
+  return fixtureNameLit(fixtureFilename(name));
+}
+
 /**
  * Duskwood/Elwynn lamps have no M2 lights: they express illumination as an unlit additive glow
  * quad. Locate that existing flame/glow, never the model bounds (which include posts and chains).
@@ -90,10 +111,8 @@ export function modelFixtureLights(model: WvmModel, name: string, cinematic = fa
     byName.set(cacheKey, declared.length > 0 ? declared : EMPTY);
     return declared.length > 0 ? declared : EMPTY;
   }
-  const path = name.replaceAll("/", "\\").toLowerCase();
-  const filename = path.slice(path.lastIndexOf("\\") + 1);
-  if (!/(?:lamp|lantern|torch|brazier|campfire|bonfire|hearth|candle|chandelier|firepit)/.test(filename)
-    || /(?:unlit|nolight|broken|wrecked|busted|(?:^|[_-])off(?:[_.-]|$)|\d?off\.)/.test(filename)) {
+  const filename = fixtureFilename(name);
+  if (!fixtureNameLit(filename)) {
     byName.set(cacheKey, EMPTY);
     return EMPTY;
   }
@@ -211,6 +230,21 @@ export function m2LightFalloff(distance: number, radius = M2_LIGHT_REACH): numbe
   return curve * (1 - t * t * (3 - 2 * t));
 }
 
+/** Most yards a heuristic fixture's pool reaches, whatever its placement's scale. */
+export const FIXTURE_RADIUS_CAP = 12;
+/** 24.10 (7.50): the same for a model's own M2 light (`sampleM2Light`). */
+export const M2_LIGHT_RADIUS_CAP = 24;
+
+/**
+ * Stable low-amplitude flicker of a heuristic fixture at scene position x/y/z (its placement's
+ * translation); no random calls and no dependency on frame rate. 0.94 at the origin at time 0.
+ */
+export function fixtureFlicker(x: number, y: number, z: number, worldMs: number): number {
+  const phase = x * 0.71 + y * 0.37 + z * 0.53;
+  const seconds = worldMs / 1000;
+  return 0.94 + 0.04 * Math.sin(seconds * 4.1 + phase) + 0.02 * Math.sin(seconds * 7.7 + phase * 1.7);
+}
+
 const flameColour = [1, 1, 1];
 const flameOpacity = [1];
 
@@ -254,12 +288,8 @@ export function sampleFixtureLight(
   const e = matrix.elements;
   const scale = Math.max(Math.hypot(e[0]!, e[1]!, e[2]!), Math.hypot(e[4]!, e[5]!, e[6]!),
     Math.hypot(e[8]!, e[9]!, e[10]!));
-  result.radius = Math.min(12, fixture.radius * scale);
-  // Stable low-amplitude flicker; no random calls and no dependency on frame rate.
-  const phase = e[12]! * 0.71 + e[13]! * 0.37 + e[14]! * 0.53;
-  const seconds = worldMs / 1000;
-  const flicker = 0.94 + 0.04 * Math.sin(seconds * 4.1 + phase) + 0.02 * Math.sin(seconds * 7.7 + phase * 1.7);
-  result.intensity = fixture.intensity * Math.min(1, opacity) * flicker;
+  result.radius = Math.min(FIXTURE_RADIUS_CAP, fixture.radius * scale);
+  result.intensity = fixture.intensity * Math.min(1, opacity) * fixtureFlicker(e[12]!, e[13]!, e[14]!, worldMs);
   return Number.isFinite(result.radius) && result.radius > 0
     && Number.isFinite(result.intensity)
     && Number.isFinite(result.colour.x) && Number.isFinite(result.colour.y) && Number.isFinite(result.colour.z)
@@ -289,7 +319,7 @@ function sampleM2Light(
   const e = matrix.elements;
   const scale = Math.max(Math.hypot(e[0]!, e[1]!, e[2]!), Math.hypot(e[4]!, e[5]!, e[6]!),
     Math.hypot(e[8]!, e[9]!, e[10]!));
-  result.radius = Math.min(24, M2_LIGHT_REACH * scale);
+  result.radius = Math.min(M2_LIGHT_RADIUS_CAP, M2_LIGHT_REACH * scale);
   // Capped at twice the heuristic's 1.1-ish scale: a hand-edited or broken track stays bounded.
   result.intensity = Math.min(2, intensity);
   result.client = true;
@@ -358,6 +388,15 @@ export class LocalLightSelection {
       uniforms.wowLocalLightColour.value[index]!.set(entry.colour.x, entry.colour.y, entry.colour.z, entry.weight);
     }
     return count;
+  }
+
+  /** 24.10 (7.50): every light the last `write` sent, with its written strength (`LightCensus.ts`). */
+  forEachWritten(visit: (position: THREE.Vector3, strength: number) => void): void {
+    const count = Math.min(this.#count, this.#limit);
+    for (let index = 0; index < count; index++) {
+      const entry = this.#entries[index]!;
+      if (entry.weight > 0) visit(entry.position, entry.weight);
+    }
   }
 
   /** 22.10 (7.36): the lights the last `write` sent that wear a halo, with their written strength. */

@@ -141,10 +141,10 @@ test("gating: enhanced lighting only; the renderer gathers incrementally", async
   assert.ok(lightingProfile(2).cinematicLights > 0);
   for (const quality of [0, 1, 3]) assert.equal(lightingProfile(quality).cinematicLights, 0);
   const renderer = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
-  // 23.10 (7.36): the streamed lamps not built yet come along (FarLightGlows.ts streamedFarLightSources).
-  assert.match(renderer, /if \(cinematic\) \{\n(?:\s+\/\/.*\n)?\s+this\.#farLightStreamed\.objects = this\.#environmentObjects \?\? \[\];\n\s+this\.#farLightGlows\.update\(this\.#environment, /);
+  // 24.10 (7.50): the lamps not built yet come along (PrelitLights.ts), superseding 23.10's templates.
+  assert.match(renderer, /if \(cinematic\) \{\n(?:\s+\/\/.*\n)?\s+this\.#farLightGlows\.update\(this\.#environment, /);
   // 23.10 (7.46): with the open-air test for a building's doodads (WmoOpenAirLamps.ts).
-  assert.match(renderer, /this\.#zoneFogFar, this\.#farLightStreamed, this\.#openAirDoodad\);/);
+  assert.match(renderer, /this\.#zoneFogFar, this\.#prelitFar, this\.#openAirDoodad\);/);
   assert.match(renderer, /\} else this\.#farLightGlows\.clear\(\);/);
   assert.match(renderer, /this\.#scene\.add\(this\.#farLightGlows\.mesh\);/);
   // The source list is rebuilt only when the placement set changes.
