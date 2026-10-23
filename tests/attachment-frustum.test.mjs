@@ -4,6 +4,8 @@ import test from 'node:test';
 import ts from 'typescript';
 import * as THREE from 'three';
 import { UPDATE_FIELDS } from '../dist/code/generated/updateFields.js';
+import { NO_RENDER_INPUTS } from '../dist/code/browser/RenderInputs.js';
+import { attachedGlow, enchantGlowSource } from '../dist/code/browser/ItemEnchantments.js';
 
 // Exercise the actual attachment construction method; the asset request/build boundary is stubbed.
 const source = readFileSync(new URL('../src/browser/WorldRenderer3D.ts', import.meta.url), 'utf8');
@@ -24,12 +26,14 @@ function fixture() {
     rememberItemModel() {}, // 13.10 6.15: the item's emitters (AttachedEmitters.ts)
     attachmentOffset: () => new THREE.Vector3(), attachmentRotation: () => undefined,
     TEXTURE_TYPE_OBJECT_SKIN: 2, EVERY_GEOSET: 'all',
-    attachedOf: (metadata) => metadata?.appearance?.attached }; // 05.10-A7a-B 6.02
+    attachedOf: (metadata) => metadata?.appearance?.attached, // 05.10-A7a-B 6.02
+    attachedGlow, enchantGlowSource }; // 22.10 ARC-2 S2a: the glow is read from the pushed tables
   const Harness = Function(...Object.keys(deps), js + '; return Harness;')(...Object.values(deps));
   const harness = new Harness();
   const geometry = new THREE.BoxGeometry(1, 2, 0.5);
   geometry.computeBoundingSphere();
-  Object.assign(harness, { unitBuildBudget: { take: () => true, done() {} }, builtUnits: {}, // P2-09a: done() ends a build
+  // 22.10 ARC-2 S2a: nothing pushed (`setRenderInputs`), so no enchant tables and no glow, as before.
+  Object.assign(harness, { inputs: NO_RENDER_INPUTS, unitBuildBudget: { take: () => true, done() {} }, builtUnits: {}, // P2-09a: done() ends a build
     programWarmup: { registerObject() {} },
     wvmBuild: () => ({ geometry, materials: [new THREE.MeshBasicMaterial()] }) });
   const unit = { attached: new Map(), skinned: {}, template: {} };
