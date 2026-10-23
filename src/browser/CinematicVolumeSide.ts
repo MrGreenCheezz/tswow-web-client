@@ -15,6 +15,7 @@
  * beams through the canopy come out as distinct streaks; the Stormwind street at noon gains
  * +0.4 luma over the previous term (+9.8 → +10.2 against the volume term off).
  */
+import { VOLUME_AIR_FLOOR, VOLUME_AIR_WEIGHT_GLSL } from "./CinematicSilhouettes.js"; // 23.10 (7.49)
 
 /** Weight of the side-on beam term, against 1 for a fully lit ray in shade looking into the sun. */
 export const VOLUME_SIDE_GAIN = 1.25;
@@ -50,16 +51,27 @@ export const VOLUME_SOFTEN_TAPS: readonly (readonly [number, number])[] = Object
  * 22.10 (7.30): one direction of the march's soften pass; `sourceTexel` carries the texel times the
  * direction times `VOLUME_SOFTEN_SPACING`. Both channels go through it: the lit share (red) and the
  * air (green), so the composite's weights stay in step with the light they weigh.
+ * 23.10 (7.49): a bilateral gaussian — each tap also weighed by how alike its air is to the centre's
+ * (`volumeAirWeight`, CinematicSilhouettes.ts). Rays of the same reach soften together as before (a
+ * canopy's beams among far air), but a walker's few-yard rays and the forest's rays behind him no
+ * longer mix: that mix was the bright ring a few pixels outside every silhouette.
  */
 export const VOLUME_SOFTEN_GLSL = /* glsl */ `
 uniform sampler2D source;
 uniform vec2 sourceTexel;
 varying vec2 vUV;
+${VOLUME_AIR_WEIGHT_GLSL}
 void main() {
-  vec2 sum = texture2D(source, vUV).rg * ${VOLUME_SOFTEN_TAPS[0]![1].toFixed(10)};
-${VOLUME_SOFTEN_TAPS.slice(1).map(([offset, weight]) => `  sum += (texture2D(source, vUV + sourceTexel * ${offset.toFixed(10)}).rg
-    + texture2D(source, vUV - sourceTexel * ${offset.toFixed(10)}).rg) * ${weight.toFixed(10)};`).join("\n")}
-  gl_FragColor = vec4(sum, 0.0, 1.0);
+  vec2 centre = texture2D(source, vUV).rg;
+  vec2 sum = centre * ${VOLUME_SOFTEN_TAPS[0]![1].toFixed(10)};
+  float total = ${VOLUME_SOFTEN_TAPS[0]![1].toFixed(10)};
+  vec2 tap;
+  float w;
+${VOLUME_SOFTEN_TAPS.slice(1).flatMap(([offset, weight]) => [1, -1].map((sign) => `  tap = texture2D(source, vUV ${sign > 0 ? "+" : "-"} sourceTexel * ${offset.toFixed(10)}).rg;
+  w = ${weight.toFixed(10)} * (volumeAirWeight(tap.g, centre.g) + ${VOLUME_AIR_FLOOR.toExponential(1)});
+  sum += tap * w;
+  total += w;`)).join("\n")}
+  gl_FragColor = vec4(sum / total, 0.0, 1.0);
 }`;
 
 const unit = (value: number): number => Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0;
@@ -87,16 +99,23 @@ export function volumeSideBeam(litShare: number, around: number, air: number): n
  * at `vw` for the shade around): thresholding a contrast amplifies the march's per-pixel jitter, and
  * on the narrow taps the beams came out as dotted lines. A tap around whose own ray is short (a
  * walker or a bush in front of the far forest) is no shade of the air: it counts as the ray itself,
- * or every silhouette against the forest got a white halo.
+ * or every silhouette against the forest got a white halo. 23.10 (7.49): the ray's own taps are
+ * weighed by their air against `refAir` (`cinematicVolumeLight`, CinematicSilhouettes.ts) too.
  */
 export const VOLUME_SIDE_GLSL = /* glsl */ `
+    // 23.10 (7.49): the ray's taps weighed by how alike their air is to its own (CinematicSilhouettes.ts):
+    // a walker's short, fully lit rays no longer raise the forest's lit share around him.
     float wideLit = 0.0;
-    for (int x = -1; x <= 1; x++) {
-      for (int y = -1; y <= 1; y++) wideLit += texture2D(volumeTexture, vUV + vec2(float(x), float(y)) * vt).r;
+    float wideWeight = 0.0;
+    for (int i = 0; i < 13; i++) {
+      vec2 offset = i < 9 ? vec2(float(i - (i / 3) * 3 - 1), float(i / 3 - 1))
+        : vec2(i < 11 ? 2.5 : -2.5, (i == 9 || i == 11) ? 2.5 : -2.5);
+      vec2 tap = texture2D(volumeTexture, vUV + offset * vt).rg;
+      float w = volumeAirWeight(tap.g, refAir) + ${VOLUME_AIR_FLOOR.toExponential(1)};
+      wideLit += tap.r * w;
+      wideWeight += w;
     }
-    vec2 vs = vt * 2.5;
-    wideLit = (wideLit + texture2D(volumeTexture, vUV + vs).r + texture2D(volumeTexture, vUV - vs).r
-      + texture2D(volumeTexture, vUV + vec2(vs.x, -vs.y)).r + texture2D(volumeTexture, vUV - vec2(vs.x, -vs.y)).r) / 13.0;
+    wideLit /= wideWeight;
     float wideAround = 0.0;
     for (int i = 0; i < 8; i++) {
       float angle = float(i) * 0.7853982;

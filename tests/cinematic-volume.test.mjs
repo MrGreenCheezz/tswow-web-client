@@ -51,7 +51,7 @@ test("22.10 (7.30): side-on, a beam is told from the veil by contrast, not angle
   close(volumeScatter(1, 0, 1, 1), 1, 1e-12);
   close(volumeScatter(1, 0, 1, 0), 0.1 + VOLUME_SIDE_GAIN, 1e-12);
   const composite = new CinematicPost().composite.fragmentShader;
-  assert.ok(composite.includes(`+ ${VOLUME_SIDE_GAIN.toFixed(3)} * sideBeam * (1.0 - volumeLobe)) * volumeLight.x;`));
+  assert.ok(composite.includes(`+ ${VOLUME_SIDE_GAIN.toFixed(3)} * sideBeam * (1.0 - volumeLobe)) * volumeLight.x`));
   assert.ok(composite.includes("float sideBeam = clamp((wideLit - wideAround"));
 });
 
@@ -118,7 +118,8 @@ test("22.10 (7.30): the march is softened by a separable gaussian before the com
   assert.ok(post.materials.includes(post.volumeSoften), "warmed with the other passes");
   const soften = post.volumeSoften.fragmentShader;
   assert.ok(soften.includes("texture2D(source, vUV + sourceTexel * 1.3846153846).rg"));
-  assert.ok(soften.includes("gl_FragColor = vec4(sum, 0.0, 1.0);"), "both the lit share and the air");
+  // 23.10 (7.49): normalised by its weights, which are bilateral (tests/cinematic-silhouettes.test.mjs).
+  assert.ok(soften.includes("gl_FragColor = vec4(sum / total, 0.0, 1.0);"), "both the lit share and the air");
   // March -> soft (horizontal) -> back to the march target (vertical), at half resolution.
   const renderer = fakeRenderer();
   post.setProfile({ grade: true, bloom: true, sunScattering: true });
@@ -185,9 +186,10 @@ test("22.10 (7.30): a thin volume beam fades, a wide one is kept", () => {
   const composite = new CinematicPost().composite.fragmentShader;
   const side = composite.indexOf("float sideBeam = clamp((wideLit - wideAround");
   const width = composite.indexOf("sideBeam *= widthKeep;");
-  assert.ok(side > 0 && width > side && width < composite.indexOf("* (beam * (0.1 + 0.9 * volumeLobe) + "));
+  assert.ok(side > 0 && width > side && width < composite.indexOf("(beam * (0.1 + 0.9 * volumeLobe) + "));
   assert.ok(composite.includes("beam *= widthKeep;"), "the forward term too");
-  assert.ok(composite.includes(`* vt * ${VOLUME_WIDTH_TEXELS.toFixed(1)}).r;`));
+  // 23.10 (7.49): the ring reads the air too (a tap of another reach counts as the ray itself).
+  assert.ok(composite.includes(`* vt * ${VOLUME_WIDTH_TEXELS.toFixed(1)}).rg;`));
 });
 
 test("22.10 (7.30): the sun's effects fade where the client draws no sun", async () => {
