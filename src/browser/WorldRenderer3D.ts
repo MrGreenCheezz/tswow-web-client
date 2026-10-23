@@ -2351,6 +2351,11 @@ interface RenderedEnvironment {
    * reading the matrix of the placement's mesh.
    */
   instanceKey: string | undefined;
+  /**
+   * 23.10 (7.46 review): whether this building doodad is named only by open-air groups
+   * (`wmoDoodadOpenAir`), kept once its building has landed: the fixture pass asks it every frame.
+   */
+  openAirLamp?: boolean | undefined;
   /** `instanceKey` plus the light lane, built once: the bucket this copy joins in `#updateInstances`. */
   instanceBucket: string | undefined;
   /** Its world matrix, computed once when it was placed. Nothing in the environment ever moves. */
@@ -4189,11 +4194,16 @@ export class WorldRenderer3D {
    */
   readonly #openAirDoodad = (object: { readonly id: number }): boolean => {
     if (!(object.id < 0)) return false;
+    const resident = this.#environment.get(object.id);
+    if (resident?.source === object && resident.openAirLamp !== undefined) return resident.openAirLamp;
     const code = -object.id - 1;
     const parent = Math.floor(code / 1_000_000);
     const building = this.#environment.get(parent);
     const model = building?.wmo?.model;
-    return model !== undefined && wmoDoodadOpenAir(model, building!.source.doodadSet ?? 0, code - parent * 1_000_000);
+    if (model === undefined) return false;
+    const open = wmoDoodadOpenAir(model, building!.source.doodadSet ?? 0, code - parent * 1_000_000);
+    if (resident?.source === object) resident.openAirLamp = open;
+    return open;
   };
   readonly #farLightGlows = new FarLightGlows(); // 22.10 (7.46)
   readonly #addLightHalo = (position: THREE.Vector3, colour: THREE.Vector3, strength: number): void => {
@@ -9543,7 +9553,9 @@ export class WorldRenderer3D {
         // lamp doodads and the WMO's own lamps outside its rooms (WmoFixtureLights.ts).
         if (cinematic && rendered.wmo) this.#addWmoFixtureLights(rendered.wmo, focus, now);
         // 23.10 (7.46): and a building's lamp doodads that only its open-air groups name.
-        if (!fixtureLightSource(rendered.source, cinematic, cinematic ? this.#openAirDoodad : undefined)) continue;
+        // 23.10 (7.46 review): the answer is kept on the entry (`openAirLamp`), asked only of interior ones.
+        if (!fixtureLightSource(rendered.source, cinematic, cinematic && rendered.source.interior === true
+          && rendered.source.id < 0 ? rendered.openAirLamp ?? this.#openAirDoodad(rendered.source) : false)) continue;
         visit(rendered, rendered.source.name, rendered.node);
       }
       for (const rendered of this.#gameObjects.values()) {

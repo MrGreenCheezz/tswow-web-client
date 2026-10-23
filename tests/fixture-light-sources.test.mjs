@@ -38,6 +38,7 @@ test("the renderer's fixture-light pass asks this predicate for environment plac
   const loop = body.slice(0, body.indexOf("for (const rendered of this.#gameObjects.values())"));
   // 22.10 (7.36): the cinematic profile's flag admits a building's outdoor lamps (cinematic-lights.test.mjs).
   // 23.10 (7.46): and, on it, a building's doodad that only open-air groups name (wmo-open-air-lamps.test.mjs).
-  assert.match(loop, /if \(!fixtureLightSource\(rendered\.source, cinematic, cinematic \? this\.#openAirDoodad : undefined\)\) continue;/);
+  // 23.10 (7.46 review): the answer kept on the entry, asked only of interior placements.
+  assert.match(loop, /if \(!fixtureLightSource\(rendered\.source, cinematic, cinematic && rendered\.source\.interior === true\n\s+&& rendered\.source\.id < 0 \? rendered\.openAirLamp \?\? this\.#openAirDoodad\(rendered\.source\) : false\)\) continue;/);
   assert.doesNotMatch(loop, /if \(rendered\.interior \|\| rendered\.source\.localLight\) continue;/);
 });

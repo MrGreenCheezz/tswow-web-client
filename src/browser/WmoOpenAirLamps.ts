@@ -38,6 +38,8 @@ import type { WmoDoodadRooms, WmoGroup, WmoGroupMesh, WmoModel } from "./WmoMode
 export const WMO_GROUP_OPEN_AIR = 0x48;
 /** Yards between triangle centroids of one glass piece. */
 export const LANTERN_JOIN = 1.5;
+/** The finder's grid cell: twice the join, so a neighbour within it is in one of 8 cells. */
+const LANTERN_CELL = 2 * LANTERN_JOIN;
 /** A lantern's glass fits in this many yards along every axis. */
 export const LANTERN_SIZE = 3;
 /**
@@ -60,39 +62,81 @@ export function findWmoLanterns(mesh: Pick<WmoGroupMesh, "positions" | "indices"
   const indices = mesh.indices;
   for (const run of mesh.runs) {
     if ((run.materialFlags & WMO_MATERIAL_SIDN) === 0) continue;
-    // Per piece: centroid sum, count, the facing sectors seen (8 bits) and the vertex box.
-    const pieces: { x: number; y: number; z: number; n: number; sectors: number; box: number[] }[] = [];
     const end = Math.min(indices.length, run.start + run.count);
-    for (let at = run.start; at + 2 < end; at += 3) {
+    const count = Math.max(0, Math.floor((end - run.start) / 3));
+    if (count === 0) continue;
+    // 23.10 (7.46 review): pieces are the triangles linked by centroids closer than `LANTERN_JOIN`,
+    // found through a grid of cells twice that size: a centroid within reach lies in the cell of this
+    // one or its neighbour on the near side along each axis, so each triangle asks 8 cells and a group
+    // costs about its SIDN triangle count. The first form asked every piece so far for every
+    // triangle, triangles × pieces on a street group with hundreds of window panes (Orgrimmar's
+    // bazzaar02 and Warrior02: 2.5–7.6 ms cold in one pass, now 0.6–1.1). The pieces are the same on
+    // all 145 groups with SIDN runs of the 106-WMO census: 215 lanterns, none of them a window.
+    const centres = new Float64Array(count * 3);
+    const sectors = new Uint8Array(count);
+    const parent = new Int32Array(count);
+    const next = new Int32Array(count);
+    const cells = new Map<number, number>();
+    const find = (at: number): number => {
+      while (parent[at] !== at) { parent[at] = parent[parent[at]!]!; at = parent[at]!; }
+      return at;
+    };
+    for (let triangle = 0; triangle < count; triangle++) {
+      const at = run.start + triangle * 3;
       const a = indices[at]! * 3, b = indices[at + 1]! * 3, c = indices[at + 2]! * 3;
       const ax = positions[a]!, ay = positions[a + 1]!, az = positions[a + 2]!;
       const bx = positions[b]!, by = positions[b + 1]!, bz = positions[b + 2]!;
       const cx = positions[c]!, cy = positions[c + 1]!, cz = positions[c + 2]!;
       const mx = (ax + bx + cx) / 3, my = (ay + by + cy) / 3, mz = (az + bz + cz) / 3;
-      if (!Number.isFinite(mx) || !Number.isFinite(my) || !Number.isFinite(mz)) continue;
-      let piece = undefined as (typeof pieces)[number] | undefined;
-      // Every piece is asked, latest first: a lantern's panes are not always together in the run
-      // (asking only the last 16 lost 13 of Stormwind's 215). Once per group; a city street group with
-      // hundreds of window panes (Warrior01, Orgrimmar's bazzaar02, 24,000 triangles) took 0.6–3.3 ms
-      // warm on this machine under external load.
-      for (let index = pieces.length - 1; index >= 0; index--) {
-        const candidate = pieces[index]!;
-        const dx = candidate.x / candidate.n - mx, dy = candidate.y / candidate.n - my, dz = candidate.z / candidate.n - mz;
-        if (dx * dx + dy * dy + dz * dz < LANTERN_JOIN * LANTERN_JOIN) { piece = candidate; break; }
-      }
-      if (!piece) {
-        piece = { x: 0, y: 0, z: 0, n: 0, sectors: 0, box: [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity] };
-        pieces.push(piece);
-      }
-      piece.x += mx; piece.y += my; piece.z += mz; piece.n++;
-      const box = piece.box;
-      box[0] = Math.min(box[0]!, ax, bx, cx); box[1] = Math.min(box[1]!, ay, by, cy); box[2] = Math.min(box[2]!, az, bz, cz);
-      box[3] = Math.max(box[3]!, ax, bx, cx); box[4] = Math.max(box[4]!, ay, by, cy); box[5] = Math.max(box[5]!, az, bz, cz);
+      parent[triangle] = triangle;
+      next[triangle] = -1;
+      centres[triangle * 3] = mx; centres[triangle * 3 + 1] = my; centres[triangle * 3 + 2] = mz;
+      if (!Number.isFinite(mx) || !Number.isFinite(my) || !Number.isFinite(mz)) { parent[triangle] = -1; continue; }
       // Model space is z-up: a pane's facing is its normal's heading, when the normal is mostly level.
       const ux = bx - ax, uy = by - ay, uz = bz - az, vx = cx - ax, vy = cy - ay, vz = cz - az;
       const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
       const level = nx * nx + ny * ny;
-      if (level > 0.25 * (level + nz * nz)) piece.sectors |= 1 << (Math.round(Math.atan2(ny, nx) / (Math.PI / 4)) & 7);
+      if (level > 0.25 * (level + nz * nz)) sectors[triangle] = 1 << (Math.round(Math.atan2(ny, nx) / (Math.PI / 4)) & 7);
+      const fx = mx / LANTERN_CELL, fy = my / LANTERN_CELL, fz = mz / LANTERN_CELL;
+      const ix = Math.floor(fx), iy = Math.floor(fy), iz = Math.floor(fz);
+      const sx = fx - ix < 0.5 ? -1 : 1, sy = fy - iy < 0.5 ? -1 : 1, sz = fz - iz < 0.5 ? -1 : 1;
+      for (let near = 0; near < 8; near++) {
+        const key = lanternCell(ix + ((near & 1) !== 0 ? sx : 0), iy + ((near & 2) !== 0 ? sy : 0), iz + ((near & 4) !== 0 ? sz : 0));
+        for (let other = cells.get(key) ?? -1; other >= 0; other = next[other]!) {
+          const dx = centres[other * 3]! - mx, dy = centres[other * 3 + 1]! - my, dz = centres[other * 3 + 2]! - mz;
+          if (dx * dx + dy * dy + dz * dz >= LANTERN_JOIN * LANTERN_JOIN) continue;
+          const mine = find(triangle), theirs = find(other);
+          if (mine !== theirs) parent[Math.max(mine, theirs)] = Math.min(mine, theirs);
+        }
+      }
+      const key = lanternCell(ix, iy, iz);
+      next[triangle] = cells.get(key) ?? -1;
+      cells.set(key, triangle);
+    }
+    // Per piece, in the order of its first triangle: centroid sum, count, facing sectors, vertex box.
+    const slot = new Int32Array(count).fill(-1);
+    const pieces: { x: number; y: number; z: number; n: number; sectors: number; box: number[] }[] = [];
+    for (let triangle = 0; triangle < count; triangle++) {
+      if (parent[triangle] === -1) continue;
+      const root = find(triangle);
+      let piece = pieces[slot[root]!];
+      if (slot[root] === -1 || !piece) {
+        slot[root] = pieces.length;
+        piece = { x: 0, y: 0, z: 0, n: 0, sectors: 0, box: [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity] };
+        pieces.push(piece);
+      }
+      piece.x += centres[triangle * 3]!; piece.y += centres[triangle * 3 + 1]!; piece.z += centres[triangle * 3 + 2]!;
+      piece.n++;
+      piece.sectors |= sectors[triangle]!;
+      const box = piece.box;
+      for (let corner = 0; corner < 3; corner++) {
+        const vertex = indices[run.start + triangle * 3 + corner]! * 3;
+        for (let axis = 0; axis < 3; axis++) {
+          const value = positions[vertex + axis]!;
+          if (value < box[axis]!) box[axis] = value;
+          if (value > box[axis + 3]!) box[axis + 3] = value;
+        }
+      }
     }
     for (const piece of pieces) {
       let opposite = 0;
@@ -107,6 +151,19 @@ export function findWmoLanterns(mesh: Pick<WmoGroupMesh, "positions" | "indices"
   }
   return new Float32Array(found);
 }
+
+/** One grid cell's key; a collision only costs a distance test. */
+function lanternCell(x: number, y: number, z: number): number {
+  // Kept under 2^30 so the key stays a small integer in V8's maps.
+  return (Math.imul(x, 73_856_093) ^ Math.imul(y, 19_349_663) ^ Math.imul(z, 83_492_791)) & 0x3fffffff;
+}
+
+/**
+ * Milliseconds of group reading one `wmoLanterns` call may spend. A group itself takes 0.07–0.25 ms
+ * warm on the 24,000-triangle street groups (best of 60); the first ones read in a session run cold
+ * and took 0.6–3.5 ms in one pass on this machine under external load.
+ */
+export const WMO_LANTERN_SCAN_BUDGET_MS = 0.5;
 
 /** A model's lanterns found so far, in model space; `generation` grows when more are found. */
 export interface WmoLanterns {
@@ -138,6 +195,9 @@ export function wmoLanterns(model: WmoModel): WmoLanterns {
   if (scan.remaining === 0) return scan;
   let added: number[] | undefined;
   const groups = model.groups;
+  // 23.10 (7.46 review): a call reads groups only until `WMO_LANTERN_SCAN_BUDGET_MS` is spent; the
+  // rest wait for the next frame, so a city arriving with many street groups does not stall one.
+  const started = performance.now();
   for (let index = 0; index < groups.length; index++) {
     if (scan.scanned[index] === 1) continue;
     const group = groups[index]!;
@@ -151,6 +211,7 @@ export function wmoLanterns(model: WmoModel): WmoLanterns {
     scan.remaining--;
     const found = findWmoLanterns(group.mesh);
     if (found.length > 0) (added ??= []).push(...found);
+    if (performance.now() - started > WMO_LANTERN_SCAN_BUDGET_MS) break;
   }
   if (added) {
     const grown = new Float32Array(scan.positions.length + added.length);

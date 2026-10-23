@@ -16,13 +16,16 @@ export function fixtureLightSource<T extends {
   readonly id: number;
   readonly interior?: boolean | undefined;
   readonly localLight?: unknown;
-}>(object: T, buildingLamps = false, openAir?: (object: T) => boolean): boolean {
+}>(object: T, buildingLamps = false, openAir?: boolean | ((object: T) => boolean)): boolean {
   // 22.10 (7.36): `buildingLamps` (the cinematic profile) admits a building's outdoor doodads too.
   // The switching that excluded them is gone: `LocalLightSelection` fades a light out before the
   // nearest-N set drops it. Room-lit doodads (`localLight`) and interior ones stay out.
   if (object.localLight !== undefined) return false;
   // 23.10 (7.46): except, on that profile, a building's doodad that only open-air groups name
   // (`wmoDoodadOpenAir`, WmoOpenAirLamps.ts): a street lamp of a city whose streets are flagged indoor.
-  if (object.interior === true) return buildingLamps && object.id < 0 && openAir !== undefined && openAir(object);
+  // 23.10 (7.46 review): the answer itself, or a test to ask (the far glows ask while rebuilding).
+  if (object.interior === true) {
+    return buildingLamps && object.id < 0 && (typeof openAir === "function" ? openAir(object) : openAir === true);
+  }
   return buildingLamps || object.id >= 0;
 }

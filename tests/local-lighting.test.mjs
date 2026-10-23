@@ -177,7 +177,12 @@ test("production fixture pass keeps instanced offscreen lamps, skips interiors a
     lightingProfile: lightingProfile(1), worldLight: createWorldLightUniforms(), camera: new THREE.PerspectiveCamera(),
     environment: new Map([[1, retained], [2, { ...retained, interior: true, source: { id: 2, interior: true, name: lampName } }], [3, far],
       // 06.10-render-fix: a building's façade lamp (v5 tile: `interior: false`) lights nothing.
-      [-1, { ...retained, source: { id: -(10047 * 1_000_000 + 1), interior: false, name: lampName } }]]), gameObjects: new Map(),
+      [-1, { ...retained, source: { id: -(10047 * 1_000_000 + 1), interior: false, name: lampName } }],
+      // 23.10 (7.46): a building's interior doodad: a room's (asked of the renderer: no) and a street's (kept: yes).
+      [-2, { ...retained, source: { id: -(10047 * 1_000_000 + 2), interior: true, name: lampName } }],
+      [-3, { ...retained, openAirLamp: true, source: { id: -(10047 * 1_000_000 + 3), interior: true, name: lampName } }]]),
+    gameObjects: new Map(),
+    openAirDoodad: () => false, // 23.10 (7.46): no building resident in this harness
   });
   harness.updateFixtureLights(1000);
   assert.equal(harness.worldLight.wowLocalLightCount.value, 1, "instancing and frustum hiding must not extinguish an outdoor lamp");
@@ -186,9 +191,10 @@ test("production fixture pass keeps instanced offscreen lamps, skips interiors a
   assert.equal(harness.lightHalos.mesh.count, 0, "22.10 (7.36): no halo outside the cinematic profile");
   harness.lightingProfile = lightingProfile(2);
   harness.updateFixtureLights(1050);
-  assert.equal(harness.worldLight.wowLocalLightCount.value, 2, "22.10 (7.36): the cinematic profile takes the façade lamp too");
+  assert.equal(harness.worldLight.wowLocalLightCount.value, 3,
+    "22.10 (7.36): the cinematic profile takes the façade lamp too; 23.10 (7.46): and the open-air street's, not the room's");
   assert.equal(harness.worldLight.wowLocalLightPool.value, 0, "the pool strength is the renderer's quality switch, not this pass");
-  assert.equal(harness.lightHalos.mesh.count, 2, "and gives each emitter a halo");
+  assert.equal(harness.lightHalos.mesh.count, 3, "and gives each emitter a halo");
   harness.lightingProfile = lightingProfile(1);
   harness.environment.clear();
   harness.updateFixtureLights(1100);

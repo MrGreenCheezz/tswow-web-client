@@ -55,6 +55,16 @@ test("a lamp post's glass is told from windows by its shape", () => {
   assert.equal(findWmoLanterns(paneMesh([{ materialFlags: 0x10, panes: [[[0, 0, 0], 0], [[0, 0, 0], 90], [[0, 0, 0], 180]] }])).length, 0);
 });
 
+test("7.46 review: a lantern's panes found anywhere in a run among hundreds of windows", () => {
+  // Stormwind's lanterns do not always keep their panes together in the run; the grid finder links
+  // them wherever they are, and 400 window panes a yard apart in a row make no lantern.
+  const panes = lantern([5, 5, 5]);
+  const windows = Array.from({ length: 400 }, (_, index) => [[20 + index, 0, 5], 90]);
+  const run = [panes[0], ...windows.slice(0, 200), panes[2], panes[1], ...windows.slice(200), panes[3]];
+  const found = findWmoLanterns(paneMesh([{ materialFlags: 0x10, panes: run }]));
+  assert.deepEqual([...found].map((v) => Math.round(v * 100) / 100), [5, 5, 5]);
+});
+
 test("open air is MOGP 0x8 or 0x40, the flags Wow.exe lights by the sun", () => {
   assert.equal(wmoGroupOpenAir({ flags: 0x2a41 }), true, "Stormwind's bazaar01: indoor and exterior-lit");
   assert.equal(wmoGroupOpenAir({ flags: 0x1809 }), true, "a canal: outdoor");
@@ -110,6 +120,10 @@ test("a building's doodad is open air only when every group naming it is", () =>
   assert.equal(fixtureLightSource(torch, true, () => false), false);
   assert.equal(fixtureLightSource(torch, false, () => true), false, "the faithful profiles never");
   assert.equal(fixtureLightSource(torch, true), false, "and without the answer, as before");
+  // 7.46 review: the renderer passes the answer it keeps on the entry.
+  assert.equal(fixtureLightSource(torch, true, true), true);
+  assert.equal(fixtureLightSource(torch, true, false), false);
+  assert.equal(fixtureLightSource(torch, false, true), false);
   assert.equal(fixtureLightSource({ ...torch, localLight: [1, 2, 3, 255] }, true, () => true), false, "room-lit stays out");
   assert.equal(fixtureLightSource({ id: 5, interior: true }, true, () => true), false, "a terrain placement indoors stays out");
 });
