@@ -70,12 +70,14 @@ test("the HD generation travels to the renderer's realm with the rest of the gen
   resetGatewayGeneration();
 });
 
-test("«Чёткие текстуры эффектов»: off by default and in the comparison profile, on in the enhanced one, sent to the renderer", () => {
+// 23.10 (7.48): opt-in, not part of the enhanced preset — at play distance the HD set changed
+// 0–0.6 % of a spell's pixels (1.8 % on a close-up Fireball) while each spell costs ≈5 MB of GPU memory.
+test("«Чёткие текстуры эффектов»: off by default, in the comparison profile and in the enhanced preset, sent to the renderer", () => {
   const definition = settingDefinition("experimentalSharpEffectTextures");
   assert.equal(definition?.label, "Чёткие текстуры эффектов");
   assert.equal(definition?.fallback, false);
   assert.equal(defaultSettings().experimentalSharpEffectTextures, false);
-  assert.equal(ENHANCED_GRAPHICS_OVERRIDES.experimentalSharpEffectTextures, true);
+  assert.equal(ENHANCED_GRAPHICS_OVERRIDES.experimentalSharpEffectTextures, undefined);
   assert.equal(COMPARISON_GRAPHICS_OVERRIDES.experimentalSharpEffectTextures, false);
   assert.equal(RENDER_WORKER_COMMANDS.setHdEffectTextures, "setting");
   const calls = [];
