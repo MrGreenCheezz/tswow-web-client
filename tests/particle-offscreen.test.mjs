@@ -4,7 +4,8 @@ import test from "node:test";
 import * as THREE from "three";
 
 import {
-  PARTICLE_FLAG_MODEL_SPACE, PARTICLE_FLAG_PINNED, PARTICLE_FLAG_XY_QUAD,
+  PARTICLE_FLAG_CLAMP_TAIL, PARTICLE_FLAG_HEAD, PARTICLE_FLAG_MODEL_SPACE, PARTICLE_FLAG_SCALE_WITH_EMITTER,
+  PARTICLE_FLAG_TAIL, PARTICLE_FLAG_VELOCITY_HEAD, PARTICLE_FLAG_XY_QUAD,
   createParticleSystem, createQuadBuffers, writeParticleQuads,
 } from "../dist/code/browser/Particles.js";
 import { particlesOutside } from "../dist/code/browser/ParticleRender.js";
@@ -50,8 +51,12 @@ function emitter(flags, next) {
 
 function system(seed) {
   const next = random(seed);
-  const flags = (next() < 0.4 ? PARTICLE_FLAG_PINNED : 0) | (next() < 0.4 ? PARTICLE_FLAG_MODEL_SPACE : 0)
-    | (next() < 0.25 ? PARTICLE_FLAG_XY_QUAD : 0);
+  // 23.10 (6.27): the Wow.exe styles — head, tail or both, a clamped tail, a velocity head, scale with the emitter.
+  const style = next();
+  const flags = (style < 0.4 ? PARTICLE_FLAG_HEAD : style < 0.7 ? PARTICLE_FLAG_TAIL : PARTICLE_FLAG_HEAD | PARTICLE_FLAG_TAIL)
+    | (next() < 0.4 ? PARTICLE_FLAG_MODEL_SPACE : 0) | (next() < 0.25 ? PARTICLE_FLAG_XY_QUAD : 0)
+    | (next() < 0.3 ? PARTICLE_FLAG_CLAMP_TAIL : 0) | (next() < 0.2 ? PARTICLE_FLAG_VELOCITY_HEAD : 0)
+    | (next() < 0.3 ? PARTICLE_FLAG_SCALE_WITH_EMITTER : 0);
   const made = createParticleSystem(emitter(flags, next), new Uint32Array(0), seed);
   const centre = [(next() - 0.5) * 300, (next() - 0.5) * 60, (next() - 0.5) * 300];
   for (let index = 0, count = 1 + Math.floor(next() * 40); index < count; index++) {
@@ -93,7 +98,7 @@ test("off screen means every written quad is off screen, over 3000 random system
     const made = system(seed);
     const { frustum, billboard } = view(next);
     const outside = particlesOutside(made, frustum, identity);
-    const buffers = createQuadBuffers(256);
+    const buffers = createQuadBuffers(512);
     const quads = writeParticleQuads(made, billboard, buffers);
     const box = new THREE.Box3();
     for (let index = 0; index < quads * 12; index += 3) {
@@ -121,7 +126,7 @@ test("an empty system or twinkle is never culled; the renderer passes its frustu
 
 test("a quad whose centre is just past the edge but whose half-size reaches in is kept", () => {
   // An orthographic view of x, y in [-1, 1] looking down -z; one particle at x = 1.7 whose quad is
-  // 2 wide (scale ramp 2, factor 1): it spans x 0.7 … 2.7 and so shows on screen.
+  // 4 wide (scale ramp 2 is the half size, 23.10 6.27): it spans x −0.3 … 3.7 and so shows on screen.
   const next = random(9);
   const made = createParticleSystem(emitter(0, next), new Uint32Array(0), 9);
   made.emitter.scale = { components: 2, times: Float32Array.from([0, 1]), values: Float32Array.from([2, 2, 2, 2]) };
@@ -138,6 +143,6 @@ test("a quad whose centre is just past the edge but whose half-size reaches in i
   for (let index = 0; index < 12; index += 3) box.expandByPoint(new THREE.Vector3(buffers.positions[index], buffers.positions[index + 1], buffers.positions[index + 2]));
   assert.ok(frustum.intersectsBox(box), "the written quad does reach the view");
   assert.equal(particlesOutside(made, frustum, new THREE.Matrix4()), false);
-  made.particles[0].x = made.particles[0].bx = 3.5; // now 2.5 … 4.5: really off screen
+  made.particles[0].x = made.particles[0].bx = 4.5; // now 2.5 … 6.5: really off screen (the bound is the half-diagonal)
   assert.equal(particlesOutside(made, frustum, new THREE.Matrix4()), true);
 });

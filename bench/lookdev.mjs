@@ -17,6 +17,12 @@
  * frames each still lets run before its pixels are read (default 90; rain needs ~300 for its veil).
  * Missing assets are fetched from the gateway on `BENCH_GATEWAY_URL` (default 127.0.0.1:8090) and
  * kept in the cache, as the bench does.
+ *
+ * 23.10 (6.27): `--spell <Spell.dbc id>` or `--kit <SpellVisualKit id>` turns each frame into a spell-visual
+ * strip: the visual is cast on the bench player (caster and target, as SMSG_SPELL_GO for a self-buff) and a
+ * frame is read at every `--shots ms,ms,...` after the cast (default 0,150,300,500,800,1200,1800); the stills
+ * are `<frame>-<ms>.png` and, with `--crop WxH[+dy]` (a box around the canvas centre), `<frame>-strip.png`.
+ * Use `--scenario city --population 1` so nothing else walks through the shot.
  */
 import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
@@ -38,6 +44,13 @@ if (Number(process.versions.node.split('.')[0]) < 22) {
   await once(child, 'exit');
 } else {
   await main();
+}
+
+/** 23.10 (6.27): a TypeScript module bundled on the fly, for a worktree without `dist/code`. */
+async function importSource(path) {
+  const { build } = await import('esbuild');
+  const result = await build({ entryPoints: [path], bundle: true, format: 'esm', platform: 'neutral', write: false });
+  return import(`data:text/javascript;base64,${Buffer.from(result.outputFiles[0].text).toString('base64')}`);
 }
 
 function parseFrame(spec) {
@@ -93,7 +106,9 @@ async function main() {
   if (settingsArg === 'enhanced') {
     // The preset the page applies with «Улучшенная графика» (src/browser/ui/EnhancedGraphics.ts),
     // read from the compiled module so the stills use the same leaves the player gets.
-    const { ENHANCED_GRAPHICS_OVERRIDES } = await import('../dist/code/browser/ui/EnhancedGraphics.js');
+    // 23.10 (6.27): a worktree has no dist/code; the preset is then bundled from the source.
+    const { ENHANCED_GRAPHICS_OVERRIDES } = await import('../dist/code/browser/ui/EnhancedGraphics.js')
+      .catch(() => importSource('src/browser/ui/EnhancedGraphics.ts'));
     config.settings = { ...ENHANCED_GRAPHICS_OVERRIDES };
   } else if (settingsArg) {
     const parsed = JSON.parse(await readFile(settingsArg, 'utf8'));
@@ -106,6 +121,22 @@ async function main() {
     config.settings[key] = raw === 'true' ? true : raw === 'false' ? false : Number.isFinite(Number(raw)) ? Number(raw) : raw;
   }
   const frames = values('--frame').map(parseFrame);
+  // 23.10 (6.27): a spell-visual strip per frame.
+  const spellArg = value('--spell');
+  const kitArg = value('--kit');
+  const strip = spellArg !== undefined || kitArg !== undefined ? {
+    ...(spellArg !== undefined ? { spell: Number(spellArg) } : { kit: Number(kitArg) }),
+    shotsMs: value('--shots', '0,150,300,500,800,1200,1800').split(',').map(Number),
+  } : undefined;
+  const cropArg = value('--crop');
+  if (strip && cropArg) {
+    const match = /^(\d+)x(\d+)([+-]\d+)?$/.exec(cropArg);
+    if (!match) throw new Error(`--crop expects WxH[+dy]: ${cropArg}`);
+    strip.crop = { width: Number(match[1]), height: Number(match[2]), dy: Number(match[3] ?? 0) };
+  }
+  if (strip && (!Number.isInteger(strip.spell ?? strip.kit) || !strip.shotsMs.every(Number.isFinite))) {
+    throw new Error('--spell/--kit expects an id and --shots a list of milliseconds');
+  }
   if (frames.length === 0) throw new Error('At least one --frame name=halfMinute,yaw,pitch,orbit[,weather:intensity]');
   const out = resolve(value('--out', `bench/results/lookdev-${new Date().toISOString().replaceAll(':', '-').replaceAll('.', '-')}`));
   await mkdir(out, { recursive: true });
@@ -127,7 +158,7 @@ async function main() {
   let cacheMisses = 0;
   const gateway = new URL(process.env.BENCH_GATEWAY_URL ?? 'http://127.0.0.1:8090');
   if (!['127.0.0.1', 'localhost', '[::1]'].includes(gateway.hostname)) throw new Error('Lookdev gateway must be loopback');
-  const allowed = /^(?:\/dbc\/(?:creature-models|character-appearance|light\/\d+|ground-effects|liquid-types)|\/terrain\/|\/visual\/|\/texture(?:\?|$)|\/terrain-splat\/|\/terrain-layer\/|\/ground-cover\/|\/liquid\/|\/horizon\/|\/minimap\/\d+\/index\.json|\/environment\/)/; // 22.10 (7.44): minimap index
+  const allowed = /^(?:\/dbc\/(?:creature-models|character-appearance|light\/\d+|ground-effects|liquid-types|spell-visuals|spell-visual-kits)|\/terrain\/|\/visual\/|\/texture(?:\?|$)|\/terrain-splat\/|\/terrain-layer\/|\/ground-cover\/|\/liquid\/|\/horizon\/|\/minimap\/\d+\/index\.json|\/environment\/)/; // 22.10 (7.44): minimap index
   const pending = new Map();
   const blobTasks = new Map();
   async function asset(key) {
@@ -228,6 +259,31 @@ async function main() {
     for (const frame of frames) {
       await page.evaluate((overrides) => window.__bench.lookdev(overrides),
         { halfMinute: frame.halfMinute, view: frame.view, weather: frame.weather, route: routeFor(frame) });
+      if (strip && args.includes('--cost-rounds')) {
+        // 23.10 (6.27): the living leaf's cost, on and off alternated inside one page.
+        const sides = await page.evaluate((spec, rounds) => window.__bench.spellCost(spec, rounds), strip, Number(value('--cost-rounds')));
+        console.log(`${frame.name}: cost ${JSON.stringify(sides)}`);
+        written.push({ cost: sides });
+        continue;
+      }
+      if (strip) {
+        // 23.10 (6.27): the spell strip instead of one still.
+        const result = await page.evaluate((spec) => window.__bench.spellStrip(spec), strip);
+        for (const shot of result.shots) {
+          const path = resolve(out, `${frame.name}-${String(shot.atMs).padStart(4, '0')}.png`);
+          await writeFile(path, Buffer.from(shot.png.split(',')[1], 'base64'));
+          written.push({ path });
+        }
+        if (result.strip) {
+          const path = resolve(out, `${frame.name}-strip.png`);
+          await writeFile(path, Buffer.from(result.strip.split(',')[1], 'base64'));
+          written.push({ path });
+          console.log(`${frame.name}: ${path}`);
+        }
+        console.log(`${frame.name}: ${result.shots.length} shots, pending ${JSON.stringify(result.readiness?.pending)}, timing ${JSON.stringify(result.timing)}`);
+        written.push({ timing: result.timing });
+        continue;
+      }
       const result = await page.evaluate(() => window.__bench.view(0));
       const png = Buffer.from(result.png.split(',')[1], 'base64');
       const path = resolve(out, `${frame.name}.png`);

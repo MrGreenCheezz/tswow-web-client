@@ -8,8 +8,8 @@ import { readGlobalSequences, readParticleEmitters, readRibbonEmitters } from ".
 import { encodeWvm9 } from "../tools/wvm.mjs";
 import { decodeWvm9 } from "../dist/code/browser/Wvm.js";
 import {
-  EMITTER_SPHERE, PARTICLE_FLAG_DO_NOT_TRAIL, PARTICLE_FLAG_MODEL_SPACE, PARTICLE_FLAG_PINNED,
-  PARTICLE_FLAG_XY_QUAD,
+  EMITTER_SPHERE, PARTICLE_FLAG_CLAMP_TAIL, PARTICLE_FLAG_MODEL_SPACE, PARTICLE_FLAG_SCALE_WITH_EMITTER,
+  PARTICLE_FLAG_TAIL, PARTICLE_FLAG_XY_QUAD,
   createParticleSystem, createQuadBuffers, createRibbonSystem,
   particleAppearance, primeParticleSystem, sampleRamp, sampleTrack, seededRandom,
   stepParticles, stepParticlesCatchUp, stepRibbon,
@@ -238,17 +238,20 @@ test("gravity gives the same arc however many steps it is cut into", () => {
     gravity: track([9.8], [0]),
     verticalRange: track([0], [0]),
   });
+  // 23.10 (6.27): a world-space particle falls along the world's down, the scene's −y (Wow.exe 0x00979bb0), so
+  // the emitter is turned to throw along the scene's +y — the quarter turn every placed model carries.
+  const upright = new THREE.Matrix4().makeRotationX(-Math.PI / 2).elements;
   const height = (steps) => {
     const system = createParticleSystem(rising, new Uint32Array(0), 7);
-    stepParticles(system, 1 / 240, { matrix: IDENTITY, animationMs: 0, worldMs: 0 });
+    stepParticles(system, 1 / 240, { matrix: upright, animationMs: 0, worldMs: 0 });
     system.pending = 0;
     const particle = system.particles[0];
     assert.ok(particle, "one particle was born");
-    const start = particle.z;
+    const start = particle.y;
     for (let index = 0; index < steps; index++) {
-      stepParticles(system, 0.5 / steps, { matrix: IDENTITY, animationMs: 0, worldMs: 0 });
+      stepParticles(system, 0.5 / steps, { matrix: upright, animationMs: 0, worldMs: 0 });
     }
-    return particle.z - start;
+    return particle.y - start;
   };
   const coarse = height(6);
   const fine = height(60);
@@ -429,116 +432,76 @@ test("a particle is drawn as a quad centred on itself, in the cell the ramp name
   assert.ok(Math.abs(centreX - particle.x) < 1e-5 && Math.abs(centreY - particle.y) < 1e-5
     && Math.abs(centreZ - particle.z) < 1e-5, "the quad is centred on the particle");
   const width = Math.abs(buffers.positions[3] - buffers.positions[0]);
-  assert.ok(Math.abs(width - 2) < 1e-5, `a scale of 2 is 2 across, not ${width}`);
+  // 23.10 (6.27): the scale is the half size — Wow.exe's corner table (0x00b2d5b4) is ±1.
+  assert.ok(Math.abs(width - 4) < 1e-5, `a scale of 2 is 4 across, not ${width}`);
 
   const us = [buffers.uvs[0], buffers.uvs[2], buffers.uvs[4], buffers.uvs[6]];
   const vs = [buffers.uvs[1], buffers.uvs[3], buffers.uvs[5], buffers.uvs[7]];
   assert.ok(Math.abs(Math.min(...us) - 2 / 4) < 1e-6, "column 2 of 4");
   assert.ok(Math.abs(Math.max(...us) - 3 / 4) < 1e-6);
-  assert.ok(Math.abs(Math.min(...vs) - 0) < 1e-6, "row 1 of 2, counted from the top of the sheet");
-  assert.ok(Math.abs(Math.max(...vs) - 0.5) < 1e-6);
+  // 23.10 (6.27): v = 0 is the top of the image (flipY off), so row 1 of 2 is the lower half, and the quad's
+  // top corners (2, 3) take the cell's top edge, as the client's (0,0) texcoord sits top-left (0x00b2d5d4).
+  assert.ok(Math.abs(Math.min(...vs) - 0.5) < 1e-6, "row 1 of 2, counted from the top of the sheet");
+  assert.ok(Math.abs(Math.max(...vs) - 1) < 1e-6);
+  assert.ok(Math.abs(buffers.uvs[5] - 0.5) < 1e-6 && Math.abs(buffers.uvs[1] - 1) < 1e-6, "upright, not upside down");
 });
 
-test("model-space spell particles inherit the attached model scale", () => {
-  // The hand emitter in the real `spells\\shaman_thunder.m2` is MODEL_SPACE (0x80). Its local
-  // particle quad must be transformed by the same bone/effect matrix as its centre; transforming
-  // only the centre leaves a scaled hand spark visibly too small and makes the scale seam look
-  // like a flat card. This is deliberately a writer-level test: no renderer or texture is needed.
-  const local = emitter({
-    flags: PARTICLE_FLAG_MODEL_SPACE,
-    scale: ramp([1, 1], [0], 2),
-  });
-  const system = createParticleSystem(local, new Uint32Array(0), 37);
-  system.particles.push({
-    x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, bx: 0, by: 0, bz: 0,
-    age: 0, life: 2, scaleX: 1, scaleY: 1, spin: 0, spinRate: 0, cellOffset: 0,
-  });
-  const buffers = createQuadBuffers(1);
-  const scale = new THREE.Matrix4().makeScale(2, 2, 2);
-  system.matrix.set(scale.elements);
-  assert.equal(writeParticleQuads(system, VIEW, buffers), 1);
-  const width = Math.abs(buffers.positions[3] - buffers.positions[0]);
-  const height = Math.abs(buffers.positions[6 + 1] - buffers.positions[0 + 1]);
-  assert.ok(Math.abs(width - 2) < 1e-5, `model scale reaches particle width: ${width}`);
-  assert.ok(Math.abs(height - 2) < 1e-5, `model scale reaches particle height: ${height}`);
+test("model-space particles ride the emitter's frame; only 0x20 scales their quads with it", () => {
+  // 23.10 (6.27): Wow.exe's model space is record 0x10 (→ m_flags 0x200, 0x00833d0x) and a quad's corners are
+  // added in the view after the particle is carried through the frame (0x0097a390, 0x0097be80): its size takes
+  // the frame's scale only with 0x20 (m_flags 0x400 → × m_xformScale). `shaman_thunder.m2`'s hand emitter is
+  // 0x10 | 0x20 among others; 0x80 is a sphere-only bit and no longer model space.
+  const quadWidth = (flags) => {
+    const local = emitter({ flags, scale: ramp([1, 1], [0], 2) });
+    const system = createParticleSystem(local, new Uint32Array(0), 37);
+    system.particles.push({
+      x: 1, y: 0, z: 0, vx: 0, vy: 0, vz: 0, bx: 1, by: 0, bz: 0,
+      age: 0, life: 2, scaleX: 1, scaleY: 1, spin: 0, spinRate: 0, cellOffset: 0,
+    });
+    const buffers = createQuadBuffers(1);
+    system.matrix.set(new THREE.Matrix4().makeScale(2, 2, 2).elements);
+    assert.equal(writeParticleQuads(system, VIEW, buffers), 1);
+    const centre = (buffers.positions[0] + buffers.positions[3]) / 2;
+    return { width: Math.abs(buffers.positions[3] - buffers.positions[0]), centre };
+  };
+  assert.equal(createParticleSystem(emitter({ flags: 0x80 }), new Uint32Array(0)).modelSpace, false);
+  const plain = quadWidth(PARTICLE_FLAG_MODEL_SPACE);
+  assert.ok(Math.abs(plain.centre - 2) < 1e-6, "the particle is carried through the frame");
+  assert.ok(Math.abs(plain.width - 2) < 1e-6, `a model-space quad keeps its size: ${plain.width}`);
+  const scaled = quadWidth(PARTICLE_FLAG_MODEL_SPACE | PARTICLE_FLAG_SCALE_WITH_EMITTER);
+  assert.ok(Math.abs(scaled.width - 4) < 1e-6, `0x20 scales it with the frame: ${scaled.width}`);
 });
 
-test("Э1 a pinned streak is as long as tailLength allows, and its far end is on the particle", () => {
-  // `spells\forceshield_andxplosion.m2`, which is the worst case in the client: 27.8 yards/s for
-  // 3.0 s is an 83.3-yard flight — the maximum over the 881 pinned emitters under `spells\`,
-  // against a median spread of 0.6 and 6.7 at p90 — and the quad ran the whole of it, because
-  // `tailLength` was authored on 5,427 of the 5,445 emitters there and read by nobody.
-  const streak = emitter({ flags: PARTICLE_FLAG_PINNED, tailLength: 0.1, scale: ramp([1, 1], [0], 2) });
-  const system = createParticleSystem(streak, new Uint32Array(0), 7);
-  // Placed by hand rather than simulated: what is under test is the quad, and a spawn that put the
-  // particle somewhere else would be testing the emitter instead. It flies along +Y, which is
-  // `VIEW`'s up: a streak exactly along the camera's right has no width left to face the eye with
-  // and stays a billboard, which is a different branch and the one the next test does not want.
-  system.particles.push({
-    x: 0, y: 83.3, z: 0, vx: 0, vy: 27.8, vz: 0, bx: 0, by: 0, bz: 0,
-    age: 3, life: 3, scaleX: 1, scaleY: 1, spin: 0, spinRate: 0, cellOffset: 0,
-  });
-  const buffers = createQuadBuffers(4);
-  assert.equal(writeParticleQuads(system, VIEW, buffers), 1);
-
-  const ys = [0, 1, 2, 3].map((corner) => buffers.positions[corner * 3 + 1]);
-  const length = Math.max(...ys) - Math.min(...ys);
-  assert.ok(Math.abs(length - 2.78) < 1e-3, `27.8 yards/s for 0.1 s is 2.78 yards, not ${length}`);
-  assert.ok(Math.abs(Math.max(...ys) - 83.3) < 1e-3,
-    `the far end stays on the particle at 83.3, not at ${Math.max(...ys)}`);
+test("6.27 a tail runs back along the velocity for tailLength seconds, clamped to the age by 0x400", () => {
+  // `spells\\sealofrighteous_impact_base.m2`'s rising sparks are tail-only (0x40000) with a 3.1 s tail clamped
+  // to their age (0x400) — a streak behind each spark, never a round head (BuildVertex 0x0097be80).
+  const streak = (flags, age) => {
+    const system = createParticleSystem(emitter({ flags, tailLength: 3.1, scale: ramp([0.25, 0.25], [0], 2) }), new Uint32Array(0), 7);
+    system.particles.push({
+      x: 0, y: 5, z: 0, vx: 0, vy: 3, vz: 0, bx: 0, by: 0, bz: 0,
+      age, life: 9, scaleX: 1, scaleY: 1, spin: 0, spinRate: 0, cellOffset: 0,
+    });
+    const buffers = createQuadBuffers(2);
+    const quads = writeParticleQuads(system, VIEW, buffers);
+    const ys = [0, 1, 2, 3].map((corner) => buffers.positions[corner * 3 + 1]);
+    const xs = [0, 1, 2, 3].map((corner) => buffers.positions[corner * 3]);
+    return { quads, length: Math.max(...ys) - Math.min(...ys), top: Math.max(...ys), width: Math.max(...xs) - Math.min(...xs), uvs: buffers.uvs.slice(0, 8) };
+  };
+  const clamped = streak(PARTICLE_FLAG_TAIL | PARTICLE_FLAG_CLAMP_TAIL, 0.5);
+  assert.equal(clamped.quads, 1, "a tail-only emitter draws no head");
+  assert.ok(Math.abs(clamped.length - 1.5) < 1e-5, `3 yd/s for its 0.5 s of age: ${clamped.length}`);
+  assert.ok(Math.abs(clamped.top - 5) < 1e-5, "the streak starts on the particle and trails behind it");
+  assert.ok(Math.abs(clamped.width - 0.5) < 1e-5, "as wide as its scale, both ways");
+  assert.ok(Math.abs(streak(PARTICLE_FLAG_TAIL, 0.5).length - 9.3) < 1e-4, "unclamped: the whole 3.1 s");
+  // u runs from the particle (0) back along the tail (1).
+  assert.deepEqual([...clamped.uvs].map((v) => Math.round(v)), [0, 0, 0, 1, 1, 1, 1, 0]);
+  assert.equal(streak(PARTICLE_FLAG_TAIL | 0x20000, 0.5).quads, 2, "head and tail both");
 });
 
-test("Э1 a streak shorter than its own allowance is still drawn whole", () => {
-  // The limit is a ceiling, not a length: a spark 0.5 yards old must not be stretched to the
-  // 2.78 the allowance would permit, or every emitter would fire fully-grown streaks.
-  const streak = emitter({ flags: PARTICLE_FLAG_PINNED, tailLength: 0.1, scale: ramp([1, 1], [0], 2) });
-  const system = createParticleSystem(streak, new Uint32Array(0), 7);
-  system.particles.push({
-    x: 0, y: 0.5, z: 0, vx: 0, vy: 27.8, vz: 0, bx: 0, by: 0, bz: 0,
-    age: 0.018, life: 3, scaleX: 1, scaleY: 1, spin: 0, spinRate: 0, cellOffset: 0,
-  });
-  const buffers = createQuadBuffers(4);
-  assert.equal(writeParticleQuads(system, VIEW, buffers), 1);
-  const ys = [0, 1, 2, 3].map((corner) => buffers.positions[corner * 3 + 1]);
-  assert.ok(Math.abs(Math.max(...ys) - Math.min(...ys) - 0.5) < 1e-3, "the whole of a short streak");
-  assert.ok(Math.abs(Math.min(...ys)) < 1e-3, "and it still starts where the particle was born");
-});
-
-test("Э1 an emitter with no tailLength keeps the streak it always had", () => {
-  // 18 of the 5,445 emitters under `spells\` leave it at zero, and zero is "no limit" rather than
-  // "no tail": the quad goes on running from the birthplace to wherever the particle is.
-  const streak = emitter({ flags: PARTICLE_FLAG_PINNED, tailLength: 0, scale: ramp([1, 1], [0], 2) });
-  const system = createParticleSystem(streak, new Uint32Array(0), 7);
-  system.particles.push({
-    x: 0, y: 12, z: 0, vx: 0, vy: 4, vz: 0, bx: 0, by: 0, bz: 0,
-    age: 3, life: 3, scaleX: 1, scaleY: 1, spin: 0, spinRate: 0, cellOffset: 0,
-  });
-  const buffers = createQuadBuffers(4);
-  assert.equal(writeParticleQuads(system, VIEW, buffers), 1);
-  const ys = [0, 1, 2, 3].map((corner) => buffers.positions[corner * 3 + 1]);
-  assert.ok(Math.abs(Math.max(...ys) - Math.min(...ys) - 12) < 1e-3, "the whole flight");
-});
-
-test("DO_NOT_TRAIL keeps a pinned spell particle as a head instead of a false streak", () => {
-  const head = emitter({
-    flags: PARTICLE_FLAG_PINNED | PARTICLE_FLAG_DO_NOT_TRAIL,
-    tailLength: 1,
-    scale: ramp([1, 1], [0], 2),
-  });
-  const system = createParticleSystem(head, new Uint32Array(0), 7);
-  system.particles.push({
-    x: 0, y: 12, z: 0, vx: 0, vy: 12, vz: 0, bx: 0, by: 0, bz: 0,
-    age: 1, life: 2, scaleX: 1, scaleY: 1, spin: 0, spinRate: 0, cellOffset: 0,
-  });
-  const buffers = createQuadBuffers(1);
-  assert.equal(writeParticleQuads(system, VIEW, buffers), 1);
-  const ys = [0, 1, 2, 3].map((corner) => buffers.positions[corner * 3 + 1]);
-  assert.ok(Math.abs(Math.max(...ys) - Math.min(...ys) - 1) < 1e-5,
-    "the quad keeps its one-yard authored height rather than spanning its twelve-yard flight");
-});
-
-test("XY_QUAD stays in the emitter plane when the camera axes turn", () => {
-  const planar = emitter({ flags: PARTICLE_FLAG_XY_QUAD, scale: ramp([2, 2], [0], 2) });
+test("6.27 an XY quad lies in its particle space's XY plane: the ground for a world-space particle", () => {
+  // RenderParticlesPrep (0x0097a390): the billboard basis is the particle space's own axes — the world's x and
+  // y (scene x and −z) for a world-space particle, the emitter's for a model-space one.
+  const planar = emitter({ flags: PARTICLE_FLAG_XY_QUAD, scale: ramp([1, 1], [0], 2) });
   const system = createParticleSystem(planar, new Uint32Array(0), 7);
   system.particles.push({
     x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, bx: 0, by: 0, bz: 0,
@@ -548,31 +511,11 @@ test("XY_QUAD stays in the emitter plane when the camera axes turn", () => {
   const turnedView = { rightX: 0, rightY: 0, rightZ: 1, upX: 0, upY: 1, upZ: 0 };
   assert.equal(writeParticleQuads(system, turnedView, buffers), 1);
   const xs = [0, 1, 2, 3].map((corner) => buffers.positions[corner * 3]);
-  const zs = [0, 1, 2, 3].map((corner) => buffers.positions[corner * 3 + 2]);
-  assert.ok(Math.abs(Math.max(...xs) - Math.min(...xs) - 2) < 1e-5);
-  assert.ok(zs.every((z) => Math.abs(z) < 1e-6), "camera rotation cannot tip an XY quad out of plane");
-});
-
-test("PINNED deliberately owns the tail shape when an emitter also sets XY_QUAD", () => {
-  const combined = emitter({
-    flags: PARTICLE_FLAG_PINNED | PARTICLE_FLAG_XY_QUAD,
-    tailLength: 0,
-    scale: ramp([1, 1], [0], 2),
-  });
-  const system = createParticleSystem(combined, new Uint32Array(0), 7);
-  system.particles.push({
-    x: 0, y: 2, z: 0, vx: 0, vy: 2, vz: 0, bx: 0, by: 0, bz: 0,
-    age: 1, life: 2, scaleX: 1, scaleY: 1, spin: 0, spinRate: 0, cellOffset: 0,
-  });
-  const buffers = createQuadBuffers(1);
-  const turnedView = { rightX: 0, rightY: 0, rightZ: 1, upX: 1, upY: 0, upZ: 0 };
-  assert.equal(writeParticleQuads(system, turnedView, buffers), 1);
   const ys = [0, 1, 2, 3].map((corner) => buffers.positions[corner * 3 + 1]);
   const zs = [0, 1, 2, 3].map((corner) => buffers.positions[corner * 3 + 2]);
-  assert.ok(Math.abs(Math.max(...ys) - Math.min(...ys) - 2) < 1e-5,
-    "the pinned birth-to-head tail remains two yards long");
-  assert.ok(Math.max(...zs) - Math.min(...zs) > 0.9,
-    "the tail keeps a camera-facing width instead of being flattened into emitter XY");
+  assert.ok(Math.abs(Math.max(...xs) - Math.min(...xs) - 2) < 1e-5);
+  assert.ok(Math.abs(Math.max(...zs) - Math.min(...zs) - 2) < 1e-5);
+  assert.ok(ys.every((y) => Math.abs(y) < 1e-6), "flat on the ground whatever the camera does");
 });
 
 test("a particle's colour and size come off the ramps at its own age", () => {

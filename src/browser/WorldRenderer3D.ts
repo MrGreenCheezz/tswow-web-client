@@ -82,6 +82,7 @@ import {
 import type { LightSample, ResolvedColour } from "./LightTypes.js";
 import { lightDarkensByDepth, liquidLightTint, type UnderwaterLight } from "./UnderwaterLiquidLight.js"; // 05.10-A7b-5 review
 import { LocalLightSelection, modelFixtureLights, sampleFixtureLight } from "./LocalLighting.js";
+import { SpellLights } from "./SpellLights.js"; // 23.10 (6.27)
 import { fixtureLightSource } from "./FixtureLightSources.js"; // 06.10-render-fix
 import { sampleWmoLight, wmoOutdoorLightPositions, wmoOutdoorLights } from "./WmoFixtureLights.js"; // 22.10 (7.36)
 import { LOCAL_LIGHT_FOCUS_AHEAD, WMO_LIGHT_RANK_SCALE } from "./CinematicLights.js"; // 22.10 (7.36)
@@ -276,7 +277,7 @@ import { HorizonDetail } from "./HorizonDetail.js"; // 22.10 (7.44)
 import { HORIZON_LOD_REACH, HorizonLodRing } from "./HorizonLodRing.js"; // 22.10 (7.44)
 import {
   billboardView, buildModelEffects, disposeModelEffects, resetModelEffects, setModelEffectsFantasyGlow,
-  updateModelEffects,
+  updateModelEffects, setModelEffectsGround, // 23.10 (6.27)
   visitModelEffectsResources, type ModelEffects,
 } from "./ParticleRender.js";
 import { creatureDisplayAlpha, creatureGeosetChoice, particleColouredWvm } from "./CreatureDisplayLook.js"; // 05.10-A7a-H 6.11а
@@ -335,6 +336,14 @@ import { UNIT_STAND_STATE_STAND } from "../world/CharacterProgressProtocol.js";
 import type { CollisionLiquid, CollisionModel } from "../world/CollisionFormat.js";
 
 /** One deterministic evolution step supplied by an offline render replay. */
+/** 23.10 (6.27): scratch for spell light positions. */
+const _spellLightAt = new THREE.Vector3();
+
+/** 23.10 (6.27): a spell mesh material that adds light (SrcAlpha/One or One/One), the ones that glow. */
+function isAdditiveSpellMaterial(material: THREE.Material): boolean {
+  return material.blending === THREE.CustomBlending && material.blendDst === THREE.OneFactor && material.opacity > 0;
+}
+
 export interface RenderFrameTime {
   readonly nowMs: number;
   readonly elapsedSeconds: number;
@@ -4075,6 +4084,9 @@ export class WorldRenderer3D {
   #characterAtlasAnisotropyEnabled = false;
   /** Reversible graphics leaves; aerial fog shares one uniform pair with world and horizon. */
   #experimentalShaderProfile: Readonly<ExperimentalShaderProfile> = DEFAULT_EXPERIMENTAL_SHADER_PROFILE;
+  /** 23.10 (6.27): «Живые эффекты заклинаний» — the enhanced look of spell particles and their light. */
+  #livingSpells = false;
+  readonly #spellLights = new SpellLights(); // 23.10 (6.27)
   /** 22.10 (7.47): the «Объём земли» setting, and whether the current lighting level draws it. */
   #terrainReliefSetting = false;
   /** 22.10 (7.47 stage 2): the «Объём зданий» setting (drawn on the enhanced levels only). */
@@ -9415,6 +9427,18 @@ export class WorldRenderer3D {
     }
   }
 
+  /**
+   * 23.10 (6.27): «Живые эффекты заклинаний» on or off (SpellParticleLook.ts, SpellLights.ts). A spell's
+   * emitters are rebuilt on the next frame (their catch-up simulates the missed age), so a live effect takes
+   * the new look without a restart; off is the faithful build exactly — no attribute, uniform or light.
+   */
+  setLivingSpells(enabled: boolean): void {
+    if (this.#livingSpells === enabled) return;
+    this.#livingSpells = enabled;
+    for (const visual of this.#visuals) this.#dropEffects(visual.key);
+    this.#spellLights.clear();
+  }
+
   /** Re-admits only static WVM scenery whose material cache variant changes with GPU wind. */
   #rebuildVegetationWindModels(): void {
     for (const [id, rendered] of [...this.#environment]) {
@@ -9561,6 +9585,10 @@ export class WorldRenderer3D {
       for (const rendered of this.#gameObjects.values()) {
         if (rendered.node.visible && rendered.model) visit(rendered, rendered.model, rendered.node);
       }
+    }
+    // 23.10 (6.27): the living spells' lights, ranked like any fixture (SpellLights.ts).
+    if (this.#livingSpells && this.#lightingProfile.localLights > 0) {
+      this.#spellLights.forEach(this.#localLightSample, (sample) => selection.add(sample, focus));
     }
     selection.write(this.#worldLight, this.#camera.matrixWorldInverse);
     // 22.10 (7.36): the cinematic profile's halos around the selected emitters (LightHalos.ts).
@@ -9902,6 +9930,8 @@ export class WorldRenderer3D {
     }
 
     let effectBuilds = 0;
+    const living = this.#livingSpells; // 23.10 (6.27)
+    if (living) this.#spellLights.begin();
     // P1-04: the particle step summed over every group, only during an explicit capture.
     const detailedCapture = this.#shaderProgramTrace !== undefined;
     let particleMs = 0;
@@ -9932,6 +9962,7 @@ export class WorldRenderer3D {
           // frames so one campfire does not restart its noise every time it is rebuilt.
           seed: modelEffectSeed(entry.key, this.#replaySeed),
           ...(entry.spell ? { fantasyGlow: this.#experimentalShaderProfile.fantasyGlow } : {}),
+          ...(entry.spell && this.#livingSpells ? { livingSpells: true } : {}), // 23.10 (6.27)
         });
         if (!built) {
           // Nothing drawable — every emitter's texture is a slot the client has to fill. Remember
@@ -9991,6 +10022,9 @@ export class WorldRenderer3D {
         && spellEffectNeedsFirstBurst(entry.spell.instance, firstEligible,
           entry.spell.playbackStartedAt, entry.spell.instance.startedAt, spellAgeMs!, primeSeconds);
       const particleAt = detailedCapture ? performance.now() : 0;
+      // 23.10 (6.27): a living spell effect's ground (its particles' soft fade) and its glow (its light).
+      const spellGlow = living && entry.spell ? this.#spellLights.glowOf(entry.spell.handle.id) : undefined;
+      if (living && entry.spell) setModelEffectsGround(held.effects, this.#spellGround(entry.spell));
       updateModelEffects(held.effects, primeSeconds, {
         matrixFor,
         // A unit's emitters follow the clip it is playing; a doodad has no clip to follow, so its
@@ -10017,12 +10051,47 @@ export class WorldRenderer3D {
         firstBurst,
         ...(firstBurst ? { firstBurstAnimationMs: 0 } : {}),
         frustum: this.#effectFrustum,
+        ...(spellGlow ? { glow: spellGlow } : {}), // 23.10 (6.27)
       });
       if (detailedCapture) particleMs += performance.now() - particleAt;
       if (entry.fade !== undefined) fadeGlowEmitters(held.effects, entry.fade); // 05.10: ревью E2 — a glow fades with its unit
     }
     this.#budgetProbe?.end(FRAME_BUDGET.effects, effectsAt);
     if (detailedCapture) this.#drawPhaseMs["visuals.particles"] = particleMs;
+    if (living) {
+      // 23.10 (6.27): and the additive mesh batches of every started spell model (Seal of Righteousness is
+      // mostly mesh: wings, crown and rune), then the frame's spell lights.
+      for (const visual of this.#visuals) {
+        if (!visual.built || !visual.node.visible) continue;
+        visual.node.getWorldPosition(_spellLightAt);
+        for (const material of visual.built.materials) {
+          if (!isAdditiveSpellMaterial(material) || !material.visible) continue;
+          const tinted = material as THREE.Material & { color?: THREE.Color };
+          const colour = tinted.color;
+          this.#spellLights.addBatch(visual.handle.id, _spellLightAt.x, _spellLightAt.y + 1, _spellLightAt.z,
+            colour?.r ?? 1, colour?.g ?? 1, colour?.b ?? 1, material.opacity);
+        }
+      }
+      this.#spellLights.end(elapsed);
+    }
+  }
+
+  /**
+   * 23.10 (6.27): the scene height of the ground under a spell visual — its unit's feet when it hangs on one,
+   * its own point when it stands in the world; far below anything for a missile (no soft fade in flight).
+   */
+  #spellGround(visual: RenderedVisual): number {
+    const instance = visual.instance;
+    if (instance.flight) return -1e6;
+    if (instance.anchor !== undefined) {
+      const unit = this.#units.get(instance.anchor);
+      const root = unit?.skinned?.root ?? unit?.node;
+      if (root) {
+        root.getWorldPosition(_spellLightAt);
+        return _spellLightAt.y;
+      }
+    }
+    return instance.position ? instance.position.z : -1e6;
   }
 
   #markExpiredSpellEffectPhases(now: number): void {

@@ -197,6 +197,11 @@ export const SETTING_DEFINITIONS: readonly SettingDefinition[] = [
     hint: "Делает ярче светящиеся части заклинаний и раскалённые поверхности.",
   },
   {
+    // 23.10 (6.27): the enhanced look of spell effects (SpellParticleLook.ts, SpellLights.ts); off is Wow.exe's.
+    id: "experimentalLivingSpells", label: "Живые эффекты заклинаний", group: "Эффекты", kind: "boolean", fallback: false,
+    hint: "Плавная смена кадров у частиц, мягкий край у земли, яркое свечение и свет от заклинаний на окружение.",
+  },
+  {
     // Cinematic leaves of «Улучшенная графика» (CinematicPost.ts). The four post-process ones share
     // the glow chain's capture and cost a full-screen pass or more, so they are off until the preset
     // or the player turns them on; the two material ones are free and follow the water/wind leaves.

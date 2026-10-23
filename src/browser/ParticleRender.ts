@@ -18,10 +18,12 @@ import {
   createParticleSystem, createQuadBuffers, createRibbonSystem,
   primeParticleSystem, stepParticles, stepParticlesCatchUp,
   resetParticleSystem, resetRibbonSystem, stepRibbon, stepRibbonCatchUp,
-  writeParticleQuads, writeRibbonStrip,
-  PARTICLE_FLAG_DO_NOT_TRAIL, PARTICLE_FLAG_PINNED,
-  type BillboardView, type EmitterFrame, type ParticleSystem, type QuadBuffers, type RibbonSystem,
+  writeParticleQuads, writeRibbonStrip, particleQuadsPerParticle, // 23.10 (6.27)
+  PARTICLE_FLAG_SCALE_WITH_EMITTER, PARTICLE_FLAG_TAIL, PARTICLE_FLAG_UNFOGGED, PARTICLE_FLAG_XY_QUAD, // 23.10 (6.27)
+  type BillboardView, type EmitterFrame, type ParticleGlow, type ParticleSystem, type QuadBuffers, type RibbonSystem,
 } from "./Particles.js";
+import { installSpellParticleLook, spellParticleLookOf } from "./SpellParticleLook.js"; // 23.10 (6.27)
+import { BLEND_ADD, BLEND_BLEND_ADD, BLEND_NO_ALPHA_ADD } from "./Wvm.js"; // 23.10 (6.27)
 import { renderSwitches } from "./RenderSwitches.js"; // 12.08
 import { MATERIAL_UNFOGGED, TEXTURE_TYPE_OWN, textureUrl, type WvmModel } from "./Wvm.js";
 import type { ResourceOwnerId, RetainedResourceVisitor } from "./ResourceAccounting.js";
@@ -135,6 +137,8 @@ export interface EffectUpdateOptions {
    * still simulated, but writes, uploads and draws nothing this frame (`particlesOutside`).
    */
   frustum?: THREE.Frustum;
+  /** 23.10 (6.27): summed glow of the particles drawn this frame (the enhanced profile's spell light). */
+  glow?: ParticleGlow;
 }
 
 /**
@@ -156,6 +160,11 @@ export function buildModelEffects(
     seed?: number;
     /** Single-pass additive lift for spell-owned emitters; never set for world ambience. */
     fantasyGlow?: boolean;
+    /**
+     * 23.10 (6.27): «Живые эффекты заклинаний» (SpellParticleLook.ts) — frame blending, soft ground and glow
+     * on a spell's particles; enhanced profile only, and it replaces `fantasyGlow` on those materials.
+     */
+    livingSpells?: boolean;
   },
 ): ModelEffects | undefined {
   if (model.particleEmitters.length === 0 && model.ribbonEmitters.length === 0) return undefined;
@@ -198,10 +207,14 @@ export function buildModelEffects(
     const seedOffset = Math.imul(index, 0x9e3779b1) >>> 0;
     const particles = createParticleSystem(emitter, model.globalSequences, (seed + seedOffset) >>> 0);
     // 13.10 6.15: room for the pool Wow.exe would give this emitter (`particleCapacity`), not a flat 256.
-    const buffers = createQuadBuffers(particles.capacity);
-    // An emitter record carries no material flags of its own — only a blend type — so its fog and
-    // its sidedness follow from that alone.
-    const drawn = buildDrawn(buffers, map, emitter.blendType, 0, options.fantasyGlow);
+    // 23.10 (6.27): times the quads one particle draws (head, tail or both, 0x00978d00).
+    const living = options.livingSpells === true;
+    const buffers = createQuadBuffers(particles.capacity * particleQuadsPerParticle(emitter), living);
+    // 23.10 (6.27): the record's 0x8 is its unfogged bit (CParticleMat → M2 material 0x2, 0x008214e0); until
+    // 23.10 every particle was fogged. Its sidedness and blend follow from the blend type.
+    const materialFlags = (emitter.flags & PARTICLE_FLAG_UNFOGGED) !== 0 ? MATERIAL_UNFOGGED : 0;
+    const drawn = buildDrawn(buffers, map, emitter.blendType, materialFlags, living ? undefined : options.fantasyGlow,
+      undefined, living ? { soft: (emitter.flags & PARTICLE_FLAG_XY_QUAD) === 0 } : undefined);
     emitters.push({
       ...drawn,
       buffers,
@@ -268,6 +281,7 @@ function buildDrawn(
   materialFlags: number,
   fantasyGlow: boolean | undefined,
   shared?: THREE.BufferGeometry, // 13.10 6.15: a further ribbon texture draws the leader's strip again
+  living?: { soft: boolean }, // 23.10 (6.27): the living spell look (SpellParticleLook.ts)
 ): { mesh: THREE.Mesh; geometry: THREE.BufferGeometry; material: THREE.Material } {
   const geometry = shared ?? new THREE.BufferGeometry();
   if (!shared) {
@@ -282,6 +296,14 @@ function buildDrawn(
     geometry.setAttribute("color", color);
     geometry.setIndex(new THREE.BufferAttribute(buffers.indices, 1));
     geometry.setDrawRange(0, 0);
+    if (buffers.uvs2 && buffers.blends) { // 23.10 (6.27): frame blending's next cell, living spells only
+      const uv2 = new THREE.BufferAttribute(buffers.uvs2, 2);
+      const blend = new THREE.BufferAttribute(buffers.blends, 1);
+      uv2.setUsage(THREE.DynamicDrawUsage);
+      blend.setUsage(THREE.DynamicDrawUsage);
+      geometry.setAttribute("uv2Cell", uv2);
+      geometry.setAttribute("cellBlend", blend);
+    }
   }
 
   // Unlit, and not because a flag said so. The two bits that would decide it are named "lit" and
@@ -348,6 +370,15 @@ function buildDrawn(
     if (fantasyGlow) material.needsUpdate = true;
   }
 
+  if (living) {
+    // 23.10 (6.27): after the fog step, so the soft fade and the glow see the fogged colour's alpha.
+    installSpellParticleLook(material, {
+      additive: blendMode === BLEND_ADD || blendMode === BLEND_NO_ALPHA_ADD || blendMode === BLEND_BLEND_ADD,
+      srcAlphaBlend: blendMode !== BLEND_NO_ALPHA_ADD && blendMode !== BLEND_BLEND_ADD,
+      soft: living.soft,
+      frameBlend: geometry.getAttribute("uv2Cell") !== undefined,
+    });
+  }
   const mesh = new THREE.Mesh(geometry, material);
   mesh.frustumCulled = false;
   // Drawn after the world and before nothing: particles are transparent, and three sorts
@@ -408,7 +439,7 @@ export function updateModelEffects(
         drawn.mesh.visible = false;
         continue;
       }
-      quads = writeParticleQuads(drawn.particles, view, drawn.buffers);
+      quads = writeParticleQuads(drawn.particles, view, drawn.buffers, options.glow);
     } else if (drawn.ribbon) {
       if (options.catchUp) stepRibbonCatchUp(drawn.ribbon, seconds, emitterFrame);
       else stepRibbon(drawn.ribbon, seconds, emitterFrame);
@@ -423,6 +454,18 @@ export function updateModelEffects(
     markUpdated(drawn.geometry.getAttribute("position") as THREE.BufferAttribute, quads * 4);
     markUpdated(drawn.geometry.getAttribute("uv") as THREE.BufferAttribute, quads * 4);
     markUpdated(drawn.geometry.getAttribute("color") as THREE.BufferAttribute, quads * 4);
+    if (drawn.buffers.uvs2) { // 23.10 (6.27)
+      markUpdated(drawn.geometry.getAttribute("uv2Cell") as THREE.BufferAttribute, quads * 4);
+      markUpdated(drawn.geometry.getAttribute("cellBlend") as THREE.BufferAttribute, quads * 4);
+    }
+  }
+}
+
+/** 23.10 (6.27): the ground under a living spell effect (scene y), for its particles' soft fade. */
+export function setModelEffectsGround(effects: ModelEffects, ground: number): void {
+  for (const emitter of effects.emitters) {
+    const look = spellParticleLookOf(emitter.material);
+    if (look) look.spellGround.value = ground;
   }
 }
 
@@ -454,12 +497,13 @@ export function particlesOutside(system: ParticleSystem, frustum: THREE.Frustum,
   const particles = system.particles;
   if (particles.length === 0 || renderSwitches.particleTwinkle) return false;
   const emitter = system.emitter;
-  const pinned = (emitter.flags & PARTICLE_FLAG_PINNED) !== 0 && (emitter.flags & PARTICLE_FLAG_DO_NOT_TRAIL) === 0;
+  // 23.10 (6.27): a tail reaches back along the velocity for at most `tailLength` seconds (0x0097be80).
+  const tail = (emitter.flags & PARTICLE_FLAG_TAIL) !== 0 ? Math.max(0, emitter.tailLength) : 0;
   const m = system.matrix;
   const modelSpace = system.modelSpace;
-  const frameScale = modelSpace ? Math.max(
-    Math.hypot(m[0]!, m[1]!, m[2]!), Math.hypot(m[4]!, m[5]!, m[6]!), Math.hypot(m[8]!, m[9]!, m[10]!)) : 1;
-  const sizeBound = 0.5 * Math.SQRT2 * scaleMaximum(emitter) * frameScale;
+  // 23.10 (6.27): a quad's corners are ±scale (0x00b2d5b4), times the emitter's scale only with 0x20.
+  const frameScale = (emitter.flags & PARTICLE_FLAG_SCALE_WITH_EMITTER) !== 0 ? Math.hypot(m[0]!, m[1]!, m[2]!) : 1;
+  const sizeBound = Math.SQRT2 * scaleMaximum(emitter) * frameScale;
   let minX = Infinity, minY = Infinity, minZ = Infinity, maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
   let radius = 0;
   const extend = (x: number, y: number, z: number): void => {
@@ -479,7 +523,7 @@ export function particlesOutside(system: ParticleSystem, frustum: THREE.Frustum,
   for (let index = 0; index < particles.length; index++) {
     const particle = particles[index]!;
     extend(particle.x, particle.y, particle.z);
-    if (pinned) extend(particle.bx, particle.by, particle.bz);
+    if (tail > 0) extend(particle.x - particle.vx * tail, particle.y - particle.vy * tail, particle.z - particle.vz * tail);
     const size = sizeBound * Math.max(Math.abs(particle.scaleX), Math.abs(particle.scaleY));
     if (size > radius) radius = size;
   }
