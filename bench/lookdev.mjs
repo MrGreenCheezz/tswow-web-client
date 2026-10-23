@@ -141,8 +141,11 @@ async function main() {
   // 23.10 (6.27): a spell-visual strip per frame.
   const spellArg = value('--spell');
   const kitArg = value('--kit');
-  const strip = spellArg !== undefined || kitArg !== undefined ? {
-    ...(spellArg !== undefined ? { spell: Number(spellArg) } : { kit: Number(kitArg) }),
+  // 6.27 review: `--model <path>@dx,dy` stands any M2 beside the player for the strip.
+  const modelArg = value('--model');
+  const modelSpec = modelArg ? (() => { const [path, at = '-4,2'] = modelArg.split('@'); const [dx, dy] = at.split(',').map(Number); return { path, dx, dy }; })() : undefined;
+  const strip = spellArg !== undefined || kitArg !== undefined || modelSpec ? {
+    ...(spellArg !== undefined ? { spell: Number(spellArg) } : kitArg !== undefined ? { kit: Number(kitArg) } : { model: modelSpec }),
     shotsMs: value('--shots', '0,150,300,500,800,1200,1800').split(',').map(Number),
   } : undefined;
   const cropArg = value('--crop');
@@ -151,7 +154,7 @@ async function main() {
     if (!match) throw new Error(`--crop expects WxH[+dy]: ${cropArg}`);
     strip.crop = { width: Number(match[1]), height: Number(match[2]), dy: Number(match[3] ?? 0) };
   }
-  if (strip && (!Number.isInteger(strip.spell ?? strip.kit) || !strip.shotsMs.every(Number.isFinite))) {
+  if (strip && ((!strip.model && !Number.isInteger(strip.spell ?? strip.kit)) || !strip.shotsMs.every(Number.isFinite))) {
     throw new Error('--spell/--kit expects an id and --shots a list of milliseconds');
   }
   if (frames.length === 0) throw new Error('At least one --frame name=halfMinute,yaw,pitch,orbit[,weather:intensity]');

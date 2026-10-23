@@ -30,6 +30,11 @@ interface SpellStripSpec {
   spell?: number;
   /** Or one SpellVisualKit, as SMSG_PLAY_SPELL_VISUAL_KIT plays it on the player. */
   kit?: number;
+  /**
+   * Or any M2 stood in the world beside the player (`dx`/`dy` yards), held for the whole strip: a campfire, a torch
+   * or a portal, to compare emitters outside spells on the same clock and camera (6.27 review).
+   */
+  model?: { path: string; dx: number; dy: number; scale?: number };
   /** Milliseconds after the cast at which a frame is captured, ascending. */
   shotsMs: number[];
   /** Optional crop around the canvas centre for the strip (CSS px of the canvas). */
@@ -552,7 +557,11 @@ host.__bench = {
       const kit = rows.find((row) => row.id === spec.kit)?.kit;
       if (!kit) throw new Error(`Kit ${spec.kit} resolves to nothing`);
       plan = planSpellVisualKitEvent(kit, { guid: 1n, point }, startAt);
-    } else throw new Error('spellStrip needs spell or kit');
+    } else if (spec.model !== undefined) {
+      const { path, dx, dy, scale } = spec.model;
+      plan = { instances: [{ path, scale: scale ?? 1, attachment: -1, position: { x: point.x + dx, y: point.y + dy, z: point.z },
+        startedAt: startAt, endsAt: startAt + 600_000, modelPlayback: 'hold' as const }], animations: [], sounds: [] };
+    } else throw new Error('spellStrip needs spell, kit or model');
     worldRenderer.playSpellVisual(plan);
     let frame = 1;
     // Load while the clock stands before the start: at least a second of frames, then until nothing is pending.
