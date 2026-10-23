@@ -88,6 +88,9 @@ import { LOCAL_LIGHT_FOCUS_AHEAD, WMO_LIGHT_RANK_SCALE } from "./CinematicLights
 import { LightHalos } from "./LightHalos.js"; // 22.10 (7.36)
 import { FarLightGlows, type FarLightStreamed } from "./FarLightGlows.js"; // 22.10 (7.46)
 import {
+  sampleWmoLantern, wmoDoodadOpenAir, wmoLanterns, wmoLanternWorldPositions,
+} from "./WmoOpenAirLamps.js"; // 23.10 (7.46)
+import {
   GOD_RAY_STRENGTH_SCALE_MAX, godRayStrengthScale, lightingProfile, shadowMaterialEligible,
   lightingClassicLook, // 05.10-7.20
   LIGHTING_QUALITY_COMPARISON, // 11.10
@@ -2348,6 +2351,11 @@ interface RenderedEnvironment {
    * reading the matrix of the placement's mesh.
    */
   instanceKey: string | undefined;
+  /**
+   * 23.10 (7.46 review): whether this building doodad is named only by open-air groups
+   * (`wmoDoodadOpenAir`), kept once its building has landed: the fixture pass asks it every frame.
+   */
+  openAirLamp?: boolean | undefined;
   /** `instanceKey` plus the light lane, built once: the bucket this copy joins in `#updateInstances`. */
   instanceBucket: string | undefined;
   /** Its world matrix, computed once when it was placed. Nothing in the environment ever moves. */
@@ -4179,6 +4187,24 @@ export class WorldRenderer3D {
     },
   };
   readonly #lightHalos = new LightHalos(); // 22.10 (7.36)
+  /**
+   * 23.10 (7.46): whether a building's doodad is named only by its open-air groups
+   * (`wmoDoodadOpenAir`): the tile ids it -(placement · 1e6 + ordinal + 1), and the ordinal indexes
+   * WME4's table of the placement's doodad set, as `#bindWmoDoodads` reads it.
+   */
+  readonly #openAirDoodad = (object: { readonly id: number }): boolean => {
+    if (!(object.id < 0)) return false;
+    const resident = this.#environment.get(object.id);
+    if (resident?.source === object && resident.openAirLamp !== undefined) return resident.openAirLamp;
+    const code = -object.id - 1;
+    const parent = Math.floor(code / 1_000_000);
+    const building = this.#environment.get(parent);
+    const model = building?.wmo?.model;
+    if (model === undefined) return false;
+    const open = wmoDoodadOpenAir(model, building!.source.doodadSet ?? 0, code - parent * 1_000_000);
+    if (resident?.source === object) resident.openAirLamp = open;
+    return open;
+  };
   readonly #farLightGlows = new FarLightGlows(); // 22.10 (7.46)
   readonly #addLightHalo = (position: THREE.Vector3, colour: THREE.Vector3, strength: number): void => {
     this.#lightHalos.add(position, colour, strength, this.#worldLight.wowDaylight.value, this.#camera.position);
@@ -9525,8 +9551,11 @@ export class WorldRenderer3D {
         // 06.10-render-fix: and no doodad of a building, whose v5 façade lamps are `interior: false`.
         // 22.10 (7.36): the cinematic profile also takes a city's street lamps — a building's outdoor
         // lamp doodads and the WMO's own lamps outside its rooms (WmoFixtureLights.ts).
-        if (cinematic && rendered.wmo) this.#addWmoFixtureLights(rendered.wmo, focus);
-        if (!fixtureLightSource(rendered.source, cinematic)) continue;
+        if (cinematic && rendered.wmo) this.#addWmoFixtureLights(rendered.wmo, focus, now);
+        // 23.10 (7.46): and a building's lamp doodads that only its open-air groups name.
+        // 23.10 (7.46 review): the answer is kept on the entry (`openAirLamp`), asked only of interior ones.
+        if (!fixtureLightSource(rendered.source, cinematic, cinematic && rendered.source.interior === true
+          && rendered.source.id < 0 ? rendered.openAirLamp ?? this.#openAirDoodad(rendered.source) : false)) continue;
         visit(rendered, rendered.source.name, rendered.node);
       }
       for (const rendered of this.#gameObjects.values()) {
@@ -9543,7 +9572,7 @@ export class WorldRenderer3D {
       // 23.10 (7.36): and the streamed lamps not built yet, placed from a resident twin's template.
       this.#farLightStreamed.objects = this.#environmentObjects ?? [];
       this.#farLightGlows.update(this.#environment, this.#camera.position, this.#worldLight.wowDaylight.value,
-        this.#zoneFogFar, this.#farLightStreamed);
+        this.#zoneFogFar, this.#farLightStreamed, this.#openAirDoodad); // 23.10 (7.46): open-air doodads
     } else this.#farLightGlows.clear();
   }
 
@@ -9551,17 +9580,30 @@ export class WorldRenderer3D {
   #addWmoFixtureLights(
     placed: { readonly model: WmoModel; readonly modelToWorld: THREE.Matrix4 },
     focus: THREE.Vector3,
+    now: number,
   ): void {
     const lights = wmoOutdoorLights(placed.model);
-    if (lights.length === 0) return;
-    const positions = wmoOutdoorLightPositions(placed, lights, placed.modelToWorld);
-    for (let index = 0; index < lights.length; index++) {
-      const x = positions[index * 3]!, y = positions[index * 3 + 1]!, z = positions[index * 3 + 2]!;
+    if (lights.length > 0) {
+      const positions = wmoOutdoorLightPositions(placed, lights, placed.modelToWorld);
+      for (let index = 0; index < lights.length; index++) {
+        const x = positions[index * 3]!, y = positions[index * 3 + 1]!, z = positions[index * 3 + 2]!;
+        const dx = x - focus.x, dy = y - focus.y, dz = z - focus.z;
+        if (dx * dx + dy * dy + dz * dz > 64 * 64) continue;
+        if (sampleWmoLight(lights[index]!, x, y, z, this.#localLightSample)) {
+          this.#localLightSelection.add(this.#localLightSample, focus, WMO_LIGHT_RANK_SCALE);
+        }
+      }
+    }
+    // 23.10 (7.46): the lamp posts of its open-air groups (WmoOpenAirLamps.ts) — a real lamp each,
+    // ranked as a doodad lamp is and wearing its halo.
+    const lanterns = wmoLanterns(placed.model);
+    if (lanterns.positions.length === 0) return;
+    const positions = wmoLanternWorldPositions(placed, lanterns, placed.modelToWorld);
+    for (let at = 0; at + 2 < positions.length; at += 3) {
+      const x = positions[at]!, y = positions[at + 1]!, z = positions[at + 2]!;
       const dx = x - focus.x, dy = y - focus.y, dz = z - focus.z;
       if (dx * dx + dy * dy + dz * dz > 64 * 64) continue;
-      if (sampleWmoLight(lights[index]!, x, y, z, this.#localLightSample)) {
-        this.#localLightSelection.add(this.#localLightSample, focus, WMO_LIGHT_RANK_SCALE);
-      }
+      if (sampleWmoLantern(x, y, z, now, this.#localLightSample)) this.#localLightSelection.add(this.#localLightSample, focus);
     }
   }
 
