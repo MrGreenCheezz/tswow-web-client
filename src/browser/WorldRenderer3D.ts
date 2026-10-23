@@ -2355,7 +2355,7 @@ interface RenderedEnvironment {
    * 23.10 (7.46 review): whether this building doodad is named only by open-air groups
    * (`wmoDoodadOpenAir`), kept once its building has landed: the fixture pass asks it every frame.
    */
-  openAirLamp?: boolean | undefined;
+  openAirLamp: boolean | undefined;
   /** `instanceKey` plus the light lane, built once: the bucket this copy joins in `#updateInstances`. */
   instanceBucket: string | undefined;
   /** Its world matrix, computed once when it was placed. Nothing in the environment ever moves. */
@@ -11164,6 +11164,7 @@ export class WorldRenderer3D {
           liquidGeneration: undefined,
           wmo: undefined,
           instanceKey: undefined,
+          openAirLamp: undefined,
           instanceBucket: undefined,
           instanceMatrix: undefined,
           growthStartedAt: undefined,
