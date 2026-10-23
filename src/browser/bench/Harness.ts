@@ -20,6 +20,7 @@ import {
 } from "./BenchScene.js"; // 22.10 ARC-2 S6a
 import { benchReadiness, configureBenchRenderer, createBenchClients } from "./BenchRenderSide.js"; // 22.10 ARC-2 S6a
 import { wmoReliefStats } from "../WmoReliefShader.js"; // 22.10 (7.47 stage 2)
+import { ResourceAccountingLedger } from "../ResourceAccounting.js"; // 23.10 (7.48 step 2)
 import { planSpellVisual, planSpellVisualKitEvent } from "../SpellVisuals.js"; // 23.10 (6.27)
 import { noteGatewayAssetGenerations } from "../GatewayGeneration.js"; // 23.10 (7.48)
 import type { SpellVisualKitRecord, SpellVisualMetadata } from "../../gateway/SpellVisual.js"; // 23.10 (6.27)
@@ -51,7 +52,8 @@ interface BenchWindow extends Window {
     spellStrip(spec: SpellStripSpec): Promise<unknown>; // 23.10 (6.27)
     spellCost(spec: SpellStripSpec, rounds: number): Promise<unknown>; // 23.10 (6.27)
     gpuView(frames: number, warm: number): Promise<number[]>; terrainRelief(enabled: boolean): void; // 22.10 (7.47)
-    wmoRelief(enabled: boolean): void; wmoReliefStats(): unknown }; // 22.10 (7.47 stage 2)
+    wmoRelief(enabled: boolean): void; wmoReliefStats(): unknown; // 22.10 (7.47 stage 2)
+    textureMemory(): unknown }; // 23.10 (7.48 step 2)
 }
 const host = window as BenchWindow;
 const config = await (await fetch('/config.json')).json() as Config;
@@ -127,6 +129,8 @@ let readiness: () => { pending: number; errors: number; details: unknown };
 let phases: () => Readonly<Record<string, number>>;
 let world: WorldRenderer3D | undefined;
 let renderer: THREE.WebGLRenderer;
+/** 23.10 (7.48 step 2): resident texture bytes (ResourceAccounting.ts) — all, and the ground's own. */
+let textureMemory: () => unknown = () => undefined;
 let lastFraction = 0;
 let queryMs = 0;
 let routeHeightMissing = 0;
@@ -165,6 +169,19 @@ if (movement) {
   // camera and unit-model table with the worker bench page (BenchScene.ts).
   const clients = createBenchClients(baseUrl);
   const { terrain, environment, splat, cover, lighting, liquids, horizon } = clients;
+  textureMemory = () => { // 23.10 (7.48 step 2)
+    const all = new ResourceAccountingLedger();
+    splat.visitRetainedResources(all);
+    world?.visitRetainedResources(all);
+    const ground = new ResourceAccountingLedger();
+    splat.visitRetainedResources(ground);
+    const gl = renderer.getContext();
+    return {
+      all: all.snapshot().gpuTextures, ground: ground.snapshot().gpuTextures,
+      hdTiles: splat.hdTileStats,
+      extensions: (gl.getSupportedExtensions() ?? []).filter((name) => /compressed|bptc|s3tc|astc|etc|rgtc/i.test(name)),
+    };
+  };
   configureBenchRenderer(world, config, graphics, cover);
   const crowd = new BenchCrowd(config, scene, (i) => city ? cityDisplays[i % cityDisplays.length]!.id : display.id);
   const { state, objects } = crowd;
@@ -522,6 +539,8 @@ host.__bench = {
   wmoRelief(enabled: boolean) { world?.setWmoRelief(enabled); },
   /** 22.10 (7.47 stage 2): tracked and bound materials and the relief maps held (counts, bytes). */
   wmoReliefStats() { return wmoReliefStats(); },
+  /** 23.10 (7.48 step 2): resident texture bytes and the compressed-texture extensions of this context. */
+  textureMemory() { return textureMemory(); },
   lookdev(overrides) {
     // Time of day, camera and weather for the next `view()`; nothing here is measured.
     Object.assign(config, overrides);

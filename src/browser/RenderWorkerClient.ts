@@ -165,6 +165,7 @@ export class RenderWorkerClient implements ClientRenderer {
   setWmoRelief(...args: Args<"setWmoRelief">): void { this.#send("setWmoRelief", args); } // 22.10 (7.47 stage 2)
   setLivingSpells(...args: Args<"setLivingSpells">): void { this.#send("setLivingSpells", args); } // 23.10 (6.27)
   setHdEffectTextures(...args: Args<"setHdEffectTextures">): void { this.#send("setHdEffectTextures", args); } // 23.10 (7.48)
+  setHdWorldTextures(...args: Args<"setHdWorldTextures">): void { this.#send("setHdWorldTextures", args); } // 23.10 (7.48 step 2)
   setFullscreenGlow(...args: Args<"setFullscreenGlow">): void { this.#send("setFullscreenGlow", args); }
   setGodRays(...args: Args<"setGodRays">): void { this.#send("setGodRays", args); }
   setGodRayStrength(...args: Args<"setGodRayStrength">): void { this.#send("setGodRayStrength", args); }

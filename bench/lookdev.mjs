@@ -138,6 +138,27 @@ async function main() {
     config.hdTextureGeneration = createHash('sha1').update(Buffer.concat(manifests)).digest('hex').slice(0, 20);
   }
   let hdServed = 0;
+  // 23.10 (7.48 step 2): the world set's compressed copies (`<id>.wht`), found as the gateway finds them
+  // (gateway/HdTextures.ts): a ground layer by its id, a building texture by the digest of its original PNG.
+  const worldSetDirectory = hdSets.find((set) => /[\\/]world$/.test(set));
+  let worldIndex;
+  if (worldSetDirectory) {
+    const manifest = JSON.parse(await readFile(resolve(worldSetDirectory, 'manifest.json'), 'utf8'));
+    worldIndex = { terrainLayers: new Map(), buildingPngs: new Map() };
+    for (const [path, entry] of Object.entries(manifest.entries ?? {})) {
+      if (!entry?.compressed) continue;
+      if (path.startsWith('tileset\\')) {
+        for (const namespace of ['terrain-layer-v1', 'terrain-layer-v2']) {
+          worldIndex.terrainLayers.set(createHash('sha1').update(`${namespace}\0${path}`).digest('hex'), path);
+        }
+      } else if (entry.compressed.originalPng) {
+        worldIndex.buildingPngs.set(entry.compressed.originalPng, path);
+      }
+    }
+  }
+  let hdWorldServed = 0;
+  /** 23.10 (7.48 step 2): bytes of the compressed copies served, and of the originals they replaced. */
+  const hdWorldBytes = { hd: 0, original: 0 };
   // 23.10 (6.27): a spell-visual strip per frame.
   const spellArg = value('--spell');
   const kitArg = value('--kit');
@@ -248,6 +269,25 @@ async function main() {
           const { entry, bytes } = await asset(url.pathname + url.search);
           res.writeHead(entry.status, { 'content-type': entry.type, 'cache-control': 'no-store' }).end(bytes);
         }
+      } else if (worldIndex && url.searchParams.has('hd')
+        && (url.pathname.startsWith('/terrain-layer/') || url.pathname.startsWith('/visual/texture/'))) {
+        // 23.10 (7.48 step 2): the compressed HD copy when the world set holds one, else the original.
+        url.searchParams.delete('hd');
+        const original = await asset(url.pathname + url.search);
+        const layer = /^\/terrain-layer\/([0-9a-f]{40})\.png$/.exec(url.pathname);
+        const path = layer ? worldIndex.terrainLayers.get(layer[1])
+          : worldIndex.buildingPngs.get(createHash('sha1').update(original.bytes).digest('hex'));
+        const id = path && createHash('sha1').update(`hd-texture-v1\0${path}`).digest('hex');
+        const hd = id && await readFile(resolve(worldSetDirectory, `${id}.wht`)).catch(() => undefined);
+        if (hd) {
+          hdServed++;
+          hdWorldServed++;
+          hdWorldBytes.hd += hd.length;
+          hdWorldBytes.original += original.bytes.length;
+          res.writeHead(200, { 'content-type': 'application/x-webclient-hd-texture', 'cache-control': 'no-store' }).end(hd);
+        } else {
+          res.writeHead(original.entry.status, { 'content-type': original.entry.type, 'cache-control': 'no-store' }).end(original.bytes);
+        }
       } else if (allowed.test(key)) {
         const { entry, bytes } = await asset(key);
         res.writeHead(entry.status, { 'content-type': entry.type, 'cache-control': 'public,max-age=31536000,immutable' }).end(bytes);
@@ -326,10 +366,25 @@ async function main() {
       const path = resolve(out, `${frame.name}.png`);
       await writeFile(path, png);
       const shadows = await page.evaluate(() => window.__bench.shadowStats());
-      written.push({ path, shadows });
+      // 23.10 (7.48 step 2): resident texture bytes after the still (ResourceAccounting.ts), when the page reports them.
+      const textures = await page.evaluate(() => window.__bench.textureMemory?.());
+      // 23.10 (7.48 step 2): `--gpu-frames N` times N frames of the still on the GPU (after 30 untimed), median ms.
+      const gpuFrames = Number(value('--gpu-frames', 0));
+      let gpuMs;
+      if (gpuFrames > 0) {
+        const samples = (await page.evaluate((count) => window.__bench.gpuView(count, 30), gpuFrames)).sort((a, b) => a - b);
+        gpuMs = samples.length ? samples[Math.floor(samples.length / 2)] : undefined;
+        console.log(`  GPU median ${gpuMs?.toFixed(2)} ms over ${samples.length} frames`);
+      }
+      written.push({ path, shadows, textures, gpuMs });
       console.log(`${frame.name}: ${path} (${png.length} bytes) shadows ${JSON.stringify(shadows)}`);
+      if (textures) {
+        const mb = (value) => (value / 1048576).toFixed(1);
+        console.log(`  textures: all ${mb(textures.all.estimatedLogicalTextureBytes)} MB, ground ${mb(textures.ground.estimatedLogicalTextureBytes)} MB; ${JSON.stringify(textures.extensions)}`);
+        if (textures.hdTiles) console.log(`  HD ground tiles: ${JSON.stringify(textures.hdTiles)}`);
+      }
     }
-    if (hdDirectory) console.log(`HD textures served from ${hdDirectory}: ${hdServed}`); // 23.10 (7.48)
+    if (hdDirectory) console.log(`HD textures served from ${hdDirectory}: ${hdServed} (world, compressed: ${hdWorldServed}, ${(hdWorldBytes.hd / 1048576).toFixed(1)} MB in place of ${(hdWorldBytes.original / 1048576).toFixed(1)} MB)`); // 23.10 (7.48)
     await writeFile(resolve(out, 'lookdev.json'), JSON.stringify({ scenario, config, frames, written, cacheMisses, hdServed, failures }, null, 2));
     if (failures.length) console.error(`Asset failures:\n${failures.join('\n')}`);
   } finally {

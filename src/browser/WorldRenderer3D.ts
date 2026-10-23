@@ -59,7 +59,7 @@ import {
 import { setTerrainBakedShadowStrength, terrainBakedShadowStrength } from "./TerrainSplat.js"; // 05.10-A7b-7
 import { setTerrainReliefWanted, setTerrainSplatRelief, terrainReliefActive } from "./TerrainReliefShader.js"; // 22.10 (7.47)
 import { setWmoReliefActive, trackWmoReliefMaterial, wmoReliefActive, wmoRunReliefVariant } from "./WmoReliefShader.js"; // 22.10 (7.47 stage 2)
-import { setTerrainSpecularColour, setTerrainSpecularStrength, terrainSpecularStrength } from "./TerrainSplat.js"; // 05.10-A7b-7Г; 13.10 7.16
+import { setTerrainSpecularColour, setTerrainSpecularStrength, terrainGlintDrawn, terrainSpecularStrength } from "./TerrainSplat.js"; // 05.10-A7b-7Г; 13.10 7.16
 import {
   GROUND_COVER_BUDGET, GROUND_COVER_MARGIN, GROUND_COVER_MAX_RADIUS, createGroundCoverCellCache,
   groundCoverRecipeSource, hypot2, scatterGroundCover, writeGroundCoverInstanceMatrices,
@@ -84,6 +84,9 @@ import { lightDarkensByDepth, liquidLightTint, type UnderwaterLight } from "./Un
 import { LocalLightSelection, modelFixtureLights, sampleFixtureLight } from "./LocalLighting.js";
 import { SpellLights } from "./SpellLights.js"; // 23.10 (6.27)
 import { hdEffectTexturesEnabled, setHdEffectTexturesEnabled } from "./HdEffectTextures.js"; // 23.10 (7.48)
+import {
+  HD_WORLD_TEXTURE_EXTENSION, hdWorldTexturesActive, setHdWorldTexturesEnabled, withHdWorldTexture,
+} from "./HdWorldTextures.js"; // 23.10 (7.48)
 import { fixtureLightSource } from "./FixtureLightSources.js"; // 06.10-render-fix
 import { sampleWmoLight, wmoOutdoorLightPositions, wmoOutdoorLights } from "./WmoFixtureLights.js"; // 22.10 (7.36)
 import { LOCAL_LIGHT_FOCUS_AHEAD, WMO_LIGHT_RANK_SCALE } from "./CinematicLights.js"; // 22.10 (7.36)
@@ -9128,7 +9131,11 @@ export class WorldRenderer3D {
     if (this.environmentShellRange !== oldShellRange) this.#environmentCandidatesAt = undefined;
     setWorldLightImmersiveStrength(this.#worldLight, next.immersiveStrength);
     setTerrainBakedShadowStrength(terrainBakedShadowStrength(next.quality)); // 05.10-A7b-7 (7.06)
+    const glintBefore = terrainGlintDrawn(); // 23.10 (7.48)
     setTerrainSpecularStrength(terrainSpecularStrength(next.quality)); // 05.10-A7b-7Г (7.16 Г)
+    // 23.10 (7.48): HD ground tiles exist only where the glint is not drawn; a lighting change that turns it on or off
+    // reloads the ground, so a classic-lit tile gets its glint (originals) and a preset tile its HD layers.
+    if (hdWorldTexturesActive() && terrainGlintDrawn() !== glintBefore) this.#hdWorldTerrainReload = true;
     if (next.localLights === 0) this.#worldLight.wowLocalLightCount.value = 0;
     this.#worldLight.wowLocalLightPool.value = next.cinematicLights; // 22.10 (7.36)
 
@@ -9449,6 +9456,34 @@ export class WorldRenderer3D {
     if (hdEffectTexturesEnabled() === enabled) return;
     setHdEffectTexturesEnabled(enabled);
     for (const visual of this.#visuals) this.#dropEffects(visual.key);
+  }
+
+  /**
+   * 23.10 (7.48): «Чёткие текстуры мира» on or off (HdWorldTextures.ts): ground layers and building textures are
+   * asked for with `hd=` — only where this context draws BC7 (`EXT_texture_compression_bptc`; else everything stays
+   * the original). A change reloads the ground on the next frame (`#updateTerrain`: the materials are detached
+   * first, then the splat client drops its tiles) and rebuilds the placed buildings, like the wind leaf does with
+   * vegetation; a game object's or transport's building keeps its textures until it is built again.
+   */
+  setHdWorldTextures(enabled: boolean): void {
+    const before = hdWorldTexturesActive();
+    // Asked only when wanted: `has` enables the extension, and off leaves the context as it was.
+    setHdWorldTexturesEnabled(enabled, enabled && this.#renderer.extensions.has(HD_WORLD_TEXTURE_EXTENSION));
+    if (hdWorldTexturesActive() === before) return;
+    this.#hdWorldTerrainReload = true;
+    this.#rebuildWmoPlacements();
+  }
+
+  /** 23.10 (7.48): set when the world HD copies changed; `#updateTerrain` reloads the ground once. */
+  #hdWorldTerrainReload = false;
+
+  /** 23.10 (7.48): re-admits every placed building, so its materials are made again with the current texture URLs. */
+  #rebuildWmoPlacements(): void {
+    for (const [id, rendered] of [...this.#environment]) {
+      if (rendered.source.kind !== "wmo") continue;
+      this.#environmentVisibilitySpheres.delete(rendered.source);
+      this.#removeEnvironment(id, rendered);
+    }
   }
 
   /** Re-admits only static WVM scenery whose material cache variant changes with GPU wind. */
@@ -10238,6 +10273,12 @@ export class WorldRenderer3D {
   }
 
   #updateTerrain(player: WorldPosition, map: number | undefined, heightAt: HeightSampler | undefined, terrainClient: TerrainClient | undefined, splatClient: TerrainSplatClient | undefined): void {
+    if (this.#hdWorldTerrainReload && splatClient) {
+      // 23.10 (7.48): «Чёткие текстуры мира» changed — materials detached before the splat textures go.
+      this.#hdWorldTerrainReload = false;
+      this.clearTerrain();
+      splatClient.reloadTiles();
+    }
     const center = terrainGrid(player.x, player.y);
     if (map === undefined || !center) {
       this.clearTerrain();
@@ -12384,7 +12425,8 @@ export class WorldRenderer3D {
   } {
     const parentToken = this.#legacyModelKey(model);
     const sourceUrls = model.textureUrls ?? [model.textureUrl ?? ""];
-    const urls = sourceUrls.length > 0 ? sourceUrls : [""];
+    // 23.10 (7.48): + `hd=` on a building texture while «Чёткие текстуры мира» is on (HdWorldTextures.ts).
+    const urls = (sourceUrls.length > 0 ? sourceUrls : [""]).map(withHdWorldTexture);
     const groups = model.groups;
     const runs = groups?.length
       ? groups.map((group, ordinal) => ({
@@ -13122,6 +13164,9 @@ export class WorldRenderer3D {
     const blendsSun = !state.unlit && wmoRunBlendsSun(group.mesh, run);
     const interior = !blendsSun && wmoRunIsInterior(group, run);
     const url = model.textureUrls[run.material] ?? "";
+    // 23.10 (7.48): the URL the base texture is loaded from — + `hd=` while «Чёткие текстуры мира» is on
+    // (HdWorldTextures.ts), so the two variants are two cache entries; the relief keeps deriving from `url`.
+    const textureUrl = withHdWorldTexture(url);
     const clamped = state.clampS || state.clampT;
     // An unlit exterior run is drawn as Wow.exe's unlit vertex program draws it: MOCV, no sun.
     const mocv = state.unlit && wmoGroupNeedsUnlitMocv(model, group, [run]);
@@ -13135,7 +13180,7 @@ export class WorldRenderer3D {
     const key = wmoRunMaterialCacheKey(
       this.#wmoModelKey(model),
       run.material,
-      url,
+      textureUrl, // 23.10 (7.48)
       run.blendMode,
       run.materialFlags,
       interior,
@@ -13150,7 +13195,7 @@ export class WorldRenderer3D {
     return this.#worldMaterials.getOrCreate({
       key,
       kind: "wmo-run",
-      ...(url ? { textureUrl: url } : {}),
+      ...(url ? { textureUrl } : {}), // 23.10 (7.48)
       // 13.10 7.11: 0x40/0x80 clamp the run's own view of the shared base (0x00681450 per batch).
       ...(url && clamped ? {
         createPrivateView: (base: THREE.Texture) => {

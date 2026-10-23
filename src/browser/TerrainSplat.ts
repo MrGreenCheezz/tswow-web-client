@@ -7,6 +7,8 @@ import { renderSwitches } from "./RenderSwitches.js"; // 05.10-A7b-7Г
 import { lightingClassicLook } from "./LightingQuality.js"; // 05.10-7.20
 import { terrainReliefWanted } from "./TerrainReliefShader.js"; // 22.10 (7.47)
 import { terrainReliefArray, terrainReliefLayer, type TerrainReliefLayerRecord } from "./TerrainReliefLayers.js"; // 22.10 (7.47)
+import { isHdTextureContainer, parseHdTexture, type HdCompressedTexture } from "./HdTextureContainer.js"; // 23.10 (7.48)
+import { compressedLayerArray, hdWorldTexturesActive, withHdWorldTexture } from "./HdWorldTextures.js"; // 23.10 (7.48)
 
 /** Ground textures are republished at this size so one array can hold all of a tile's layers. */
 const LAYER_SIZE = 256;
@@ -124,6 +126,11 @@ export function terrainSpecularStrengthValue(): number {
   return TERRAIN_SPECULAR.value;
 }
 
+/** 23.10 (7.48): whether a newly loaded tile would draw the ground's specular glint (the switch on, a strength above 0). */
+export function terrainGlintDrawn(): boolean {
+  return renderSwitches.terrainSpecular && TERRAIN_SPECULAR.value > 0;
+}
+
 /**
  * 05.10-A7b-7Г: the specular masks a `terrain-splat-v2` splat.json names — one 40-hex id or null per
  * layer, at least one id — or undefined (an older gateway, a tile without `_s` textures, a bad list).
@@ -142,7 +149,8 @@ export function terrainSplatSpecularMasks(value: unknown, layerCount: number): (
 export const SPLAT_REPEAT = 16 * 8;
 
 export interface TerrainSplat {
-  layers: THREE.DataArrayTexture;
+  /** 23.10 (7.48): compressed (BC7, 512² a layer) when the tile was loaded with «Чёткие текстуры мира». */
+  layers: THREE.DataArrayTexture | THREE.CompressedArrayTexture;
   alpha: THREE.Texture;
   index: THREE.Texture;
   /**
@@ -182,9 +190,23 @@ interface LayerRecord extends TerrainReliefLayerRecord { // 22.10 (7.47): and it
   leases: number;
 }
 
+/** 23.10 (7.48): one ground texture's compressed HD copy, shared by id; undefined when the gateway has none. */
+interface HdLayerRecord {
+  readonly id: string;
+  readonly promise: Promise<HdCompressedTexture | undefined>;
+  texture?: HdCompressedTexture;
+  leases: number;
+}
+
+/** 23.10 (7.48): the side and level count of an HD ground layer (the gateway's 256 × 2, a full chain). */
+const HD_LAYER_SIZE = LAYER_SIZE * 2;
+
 interface TerrainSplatTileRecord {
   readonly splat: TerrainSplat;
-  readonly layers: ReadonlyMap<string, LayerRecord>;
+  /** 23.10 (7.48): mutable — an HD tile leases its original layers only when a relief map needs them. */
+  readonly layers: Map<string, LayerRecord>;
+  /** 23.10 (7.48): the compressed HD layers an HD tile was built from (empty otherwise). */
+  readonly hdLayers: ReadonlyMap<string, HdLayerRecord>;
   /** Every loader handle is owned even if a non-standard loader resolves with a different object. */
   readonly textures: Set<THREE.Texture>;
   /** 22.10 (7.47): what a relief map attached after the load needs: the layers and masks in slot order. */
@@ -199,6 +221,7 @@ interface TerrainSplatRequest {
   readonly key: string;
   readonly epoch: number;
   readonly layers: Map<string, LayerRecord>;
+  readonly hdLayers: Map<string, HdLayerRecord>; // 23.10 (7.48)
   readonly textures: Set<THREE.Texture>;
   cancelled: boolean;
 }
@@ -217,6 +240,8 @@ export class TerrainSplatClient {
   #activeKeys: Set<string> | undefined;
   /** Neighbouring tiles share one decoded record while at least one tile/request leases it. */
   readonly #layers = new Map<string, LayerRecord>();
+  /** 23.10 (7.48): the compressed HD ground layers, shared like {@link #layers}. */
+  readonly #hdLayers = new Map<string, HdLayerRecord>();
   /** Texture.dispose dispatches an event repeatedly, so ownership needs its own exact-once guard. */
   readonly #disposedTextures = new WeakSet<THREE.Texture>();
   #decodedLayerBytes = 0;
@@ -264,10 +289,17 @@ export class TerrainSplatClient {
       if (layer.pixels) visitor.referenceCpu(`terrain-splat-layer:${id}`, layer.pixels);
       if (layer.reliefBytes) visitor.referenceCpu(`terrain-relief-layer:${id}`, layer.reliefBytes); // 22.10 (7.47)
     }
+    for (const [id, layer] of this.#hdLayers) { // 23.10 (7.48)
+      if (layer.texture) for (const level of layer.texture.levels) visitor.referenceCpu(`terrain-hd-layer:${id}`, level.data);
+    }
     for (const tile of this.#tiles.values()) {
       if (!tile) continue;
-      const layerData = tile.splat.layers.image.data;
-      if (layerData) visitor.referenceCpu(tile, layerData);
+      const layers = tile.splat.layers;
+      if (layers instanceof THREE.CompressedArrayTexture) { // 23.10 (7.48): the joined levels are the CPU copy
+        for (const level of layers.mipmaps) visitor.referenceCpu(tile, level.data);
+      } else if (layers.image.data) {
+        visitor.referenceCpu(tile, layers.image.data);
+      }
       const relief = tile.splat.relief; // 22.10 (7.47)
       if (relief?.image.data) visitor.referenceCpu(relief, relief.image.data);
       for (const texture of tile.textures) visitor.referenceGpuTexture(tile, texture);
@@ -311,6 +343,7 @@ export class TerrainSplatClient {
       key,
       epoch: this.#epoch,
       layers: new Map(),
+      hdLayers: new Map(), // 23.10 (7.48)
       textures: new Set(),
       cancelled: false,
     };
@@ -353,6 +386,7 @@ export class TerrainSplatClient {
     if (!tile) return;
     for (const texture of tile.textures) this.#disposeTexture(texture);
     for (const layer of tile.layers.values()) this.#releaseLayer(layer);
+    for (const layer of tile.hdLayers.values()) this.#releaseHdLayer(layer); // 23.10 (7.48)
   }
 
   #disposeTexture(texture: THREE.Texture): void {
@@ -377,6 +411,83 @@ export class TerrainSplatClient {
   #releaseRequestLayers(request: TerrainSplatRequest): void {
     for (const layer of request.layers.values()) this.#releaseLayer(layer);
     request.layers.clear();
+    for (const layer of request.hdLayers.values()) this.#releaseHdLayer(layer); // 23.10 (7.48)
+    request.hdLayers.clear();
+  }
+
+  /** 23.10 (7.48): one lease of an HD ground layer; the last one forgets it. */
+  #releaseHdLayer(layer: HdLayerRecord): void {
+    layer.leases--;
+    if (layer.leases !== 0 || this.#hdLayers.get(layer.id) !== layer) return;
+    this.#hdLayers.delete(layer.id);
+    delete layer.texture;
+  }
+
+  /**
+   * 23.10 (7.48): the compressed HD copy of one ground layer, shared by id. The answer is the gateway's `WHT1`
+   * container (512², a full BC7 chain) or, when it holds no copy, the original PNG — then undefined, and the tile
+   * takes the original path. A malformed container is undefined too (the original is never worse than a guess).
+   */
+  #acquireHdLayer(id: string): HdLayerRecord {
+    let layer = this.#hdLayers.get(id);
+    if (!layer) {
+      const url = withHdWorldTexture(withGeneration(`${this.#baseUrl}/terrain-layer/${id}.png`));
+      const promise = (async () => {
+        const response = await fetch(url);
+        if (!response.ok) return undefined;
+        const bytes = new Uint8Array(await response.arrayBuffer());
+        if (!isHdTextureContainer(bytes)) return undefined;
+        const texture = parseHdTexture(bytes);
+        return texture && texture.width === HD_LAYER_SIZE && texture.height === HD_LAYER_SIZE ? texture : undefined;
+      })().catch(() => undefined);
+      const record: HdLayerRecord = { id, promise, leases: 0 };
+      layer = record;
+      this.#hdLayers.set(id, record);
+      void promise.then((texture) => {
+        if (texture && this.#hdLayers.get(id) === record) record.texture = texture;
+      });
+    }
+    layer.leases++;
+    return layer;
+  }
+
+  /**
+   * 23.10 (7.48): a tile's ground as compressed HD layers, or undefined when any layer has no HD copy (the whole
+   * tile then takes the original path: one array holds one format).
+   */
+  async #hdLayerArray(layers: readonly string[], request: TerrainSplatRequest): Promise<THREE.CompressedArrayTexture | undefined> {
+    for (const id of new Set(layers)) request.hdLayers.set(id, this.#acquireHdLayer(id));
+    const textures = await Promise.all(layers.map((id) => request.hdLayers.get(id)!.promise));
+    const missing = layers.filter((_, slot) => textures[slot] === undefined);
+    const array = missing.length === 0 ? compressedLayerArray(textures as HdCompressedTexture[]) : undefined;
+    // Diagnostics: which tiles took the HD array, and which layer sent a tile back to its originals.
+    if (array) this.#hdTiles.hd++;
+    else {
+      this.#hdTiles.fallback++;
+      for (const id of missing) this.#hdTiles.missingLayers.add(id);
+    }
+    return array;
+  }
+
+  /** 23.10 (7.48): tiles built from compressed HD layers, tiles that fell back, and the layer ids that lacked a copy. */
+  readonly #hdTiles = { hd: 0, fallback: 0, missingLayers: new Set<string>() };
+
+  /** 23.10 (7.48): {@link #hdTiles}, for the bench and diagnostics. */
+  get hdTileStats(): { hd: number; fallback: number; missingLayers: string[] } {
+    return { hd: this.#hdTiles.hd, fallback: this.#hdTiles.fallback, missingLayers: [...this.#hdTiles.missingLayers] };
+  }
+
+  /**
+   * 23.10 (7.48): «Чёткие текстуры мира» changed — every resident tile is dropped and loads again the other way.
+   * The renderer calls this after it has detached every terrain material (`clearTerrain`), so nothing draws a
+   * released array.
+   */
+  reloadTiles(): void {
+    if (this.#disposed) return;
+    this.#epoch++;
+    for (const request of [...this.#requests.values()]) this.#cancelRequest(request);
+    for (const key of [...this.#tiles.keys()]) this.#evict(key);
+    this.#failures.reset();
   }
 
   #releaseLayer(layer: LayerRecord): void {
@@ -391,6 +502,39 @@ export class TerrainSplatClient {
     if (layer.reliefBytes) this.#reliefBytes -= layer.reliefBytes.byteLength;
     delete layer.reliefBytes;
     delete layer.relief;
+  }
+
+  /** The tile's own RGBA layer array out of the shared decoded layers (and its specular masks), mipmapped by the GPU. */
+  #originalLayerArray(
+    request: TerrainSplatRequest, pixels: readonly Uint8ClampedArray[], masked: readonly (Uint8ClampedArray | undefined)[] | undefined,
+    layerSize: number, count: number,
+  ): THREE.DataArrayTexture {
+    const data = new Uint8Array(layerSize * layerSize * 4 * count);
+    for (let layer = 0; layer < pixels.length; layer++) data.set(pixels[layer]!, layer * layerSize * layerSize * 4);
+    // 05.10-A7b-7Г: each mask's grey into its layer's alpha, in this tile's own copy (the decoded
+    // layers are shared between tiles); a layer without one stays opaque — full mask, as the
+    // client's textures without alpha read. No new memory: the array was RGBA already.
+    if (masked) {
+      const texels = layerSize * layerSize;
+      for (let layer = 0; layer < masked.length; layer++) {
+        const mask = masked[layer];
+        const offset = layer * texels * 4 + 3;
+        if (mask) for (let texel = 0; texel < texels; texel++) data[offset + texel * 4] = mask[texel * 4]!;
+        else for (let texel = 0; texel < texels; texel++) data[offset + texel * 4] = 255;
+      }
+    }
+    const array = new THREE.DataArrayTexture(data, layerSize, layerSize, count);
+    this.#trackTexture(request, array);
+    array.format = THREE.RGBAFormat;
+    array.type = THREE.UnsignedByteType;
+    array.colorSpace = THREE.SRGBColorSpace;
+    array.wrapS = THREE.RepeatWrapping;
+    array.wrapT = THREE.RepeatWrapping;
+    array.minFilter = THREE.LinearMipmapLinearFilter;
+    array.magFilter = THREE.LinearFilter;
+    array.generateMipmaps = true;
+    array.needsUpdate = true;
+    return array;
   }
 
   async #load(map: number, grid: TerrainGrid, request: TerrainSplatRequest): Promise<void> {
@@ -418,7 +562,18 @@ export class TerrainSplatClient {
 
       const painted = (value as { mccv?: unknown }).mccv === true;
       const layerSize = terrainSplatLayerSize(value); // 05.10-A7b-7 (7.16)
-      for (const id of new Set(layers)) request.layers.set(id, this.#acquireLayer(id, layerSize));
+      // 23.10 (7.48): «Чёткие текстуры мира» — the ground from the world set's compressed ×2 layers when every one of
+      // them has a copy (a 256 array only), and only where the specular glint is not drawn (the presets: strength 0):
+      // the HD layers are opaque, the glint reads the `_s` masks from the original layers' alpha (with the mask in
+      // BC7's alpha the colour lost 1.7 % sharpness). The originals are still leased when a relief map wants them: it
+      // derives from them, at their scale.
+      const tryHd = hdWorldTexturesActive() && layerSize === LAYER_SIZE && !terrainGlintDrawn();
+      const hdArray = tryHd ? this.#hdLayerArray(layers as string[], request).catch(() => undefined) : undefined;
+      const originalPixels = (): Promise<Uint8ClampedArray[]> => {
+        for (const id of new Set(layers)) if (!request.layers.has(id)) request.layers.set(id, this.#acquireLayer(id, layerSize));
+        return Promise.all(layers.map((id) => request.layers.get(id)!.promise));
+      };
+      if (!tryHd || terrainReliefWanted()) for (const id of new Set(layers)) request.layers.set(id, this.#acquireLayer(id, layerSize));
       // 05.10-A7b-7Г (7.16 Г): masks only while the switch is on — off, nothing more is fetched.
       const masks = renderSwitches.terrainSpecular ? terrainSplatSpecularMasks(value, layers.length) : undefined;
       if (masks) {
@@ -429,7 +584,17 @@ export class TerrainSplatClient {
         ? Promise.all(masks.map((id) => (id === null ? undefined : request.layers.get(id)!.promise))).catch(() => undefined)
         : Promise.resolve(undefined);
       const results = await Promise.allSettled([
-        Promise.all(layers.map((id) => request.layers.get(id)!.promise)),
+        hdArray === undefined ? originalPixels() : (async (): Promise<Uint8ClampedArray[] | THREE.CompressedArrayTexture> => {
+          // 23.10 (7.48): the HD array, or — some layer has no copy — the originals after all.
+          const hd = await hdArray;
+          if (hd) {
+            this.#trackTexture(request, hd);
+            return hd;
+          }
+          for (const layer of request.hdLayers.values()) this.#releaseHdLayer(layer);
+          request.hdLayers.clear();
+          return originalPixels();
+        })(),
         // 05.10-A7b-7 (7.06): RGBA since v2 — its alpha is the baked shadow (see #loadBitmapTexture).
         this.#loadTexture(request, withGeneration(`${base}/alpha.png?v=${TERRAIN_SPLAT_CLIENT_VERSION}`)),
         this.#loadTexture(request, withGeneration(`${base}/index.png`)),
@@ -439,37 +604,13 @@ export class TerrainSplatClient {
       const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
       if (failure) throw failure.reason;
       if (!this.#isCurrent(request)) return;
-      const pixels = (results[0] as PromiseFulfilledResult<Uint8ClampedArray[]>).value;
+      const ground = (results[0] as PromiseFulfilledResult<Uint8ClampedArray[] | THREE.CompressedArrayTexture>).value;
       const alpha = (results[1] as PromiseFulfilledResult<THREE.Texture>).value;
       const index = (results[2] as PromiseFulfilledResult<THREE.Texture>).value;
       const colours = (results[3] as PromiseFulfilledResult<THREE.Texture | undefined>).value;
-
-      const data = new Uint8Array(layerSize * layerSize * 4 * layers.length);
-      for (let layer = 0; layer < pixels.length; layer++) data.set(pixels[layer]!, layer * layerSize * layerSize * 4);
-      // 05.10-A7b-7Г: each mask's grey into its layer's alpha, in this tile's own copy (the decoded
-      // layers are shared between tiles); a layer without one stays opaque — full mask, as the
-      // client's textures without alpha read. No new memory: the array was RGBA already.
       const masked = (results[4] as PromiseFulfilledResult<(Uint8ClampedArray | undefined)[] | undefined>).value;
-      if (masked) {
-        const texels = layerSize * layerSize;
-        for (let layer = 0; layer < masked.length; layer++) {
-          const mask = masked[layer];
-          const offset = layer * texels * 4 + 3;
-          if (mask) for (let texel = 0; texel < texels; texel++) data[offset + texel * 4] = mask[texel * 4]!;
-          else for (let texel = 0; texel < texels; texel++) data[offset + texel * 4] = 255;
-        }
-      }
-      const array = new THREE.DataArrayTexture(data, layerSize, layerSize, layers.length);
-      this.#trackTexture(request, array);
-      array.format = THREE.RGBAFormat;
-      array.type = THREE.UnsignedByteType;
-      array.colorSpace = THREE.SRGBColorSpace;
-      array.wrapS = THREE.RepeatWrapping;
-      array.wrapT = THREE.RepeatWrapping;
-      array.minFilter = THREE.LinearMipmapLinearFilter;
-      array.magFilter = THREE.LinearFilter;
-      array.generateMipmaps = true;
-      array.needsUpdate = true;
+      const array = ground instanceof THREE.CompressedArrayTexture ? ground // 23.10 (7.48): set up by compressedLayerArray
+        : this.#originalLayerArray(request, ground, masked, layerSize, layers.length);
 
       // The alpha maps carry no mipmaps on purpose: at a coarse level a chunk shrinks to a single
       // texel and starts bleeding its blend into the chunk next door.
@@ -511,16 +652,19 @@ export class TerrainSplatClient {
       if (relief) this.#trackTexture(request, relief);
       if (!this.#isCurrent(request)) return;
       const splat: TerrainSplat = {
-        layers: array, alpha, index, ...(colours ? { colours } : {}), ...(masked ? { specular: true } : {}), // 05.10-A7b-7Г
+        layers: array, alpha, index, ...(colours ? { colours } : {}),
+        ...(masked && !(array instanceof THREE.CompressedArrayTexture) ? { specular: true } : {}), // 05.10-A7b-7Г; 23.10 (7.48)
         ...(relief ? { relief } : {}), // 22.10 (7.47)
       };
       const tile: TerrainSplatTileRecord = {
         splat,
         layers: new Map(request.layers),
+        hdLayers: new Map(request.hdLayers), // 23.10 (7.48)
         textures: new Set(request.textures),
         layerIds: layers as string[], maskIds, layerSize, // 22.10 (7.47)
       };
       request.layers.clear();
+      request.hdLayers.clear(); // 23.10 (7.48)
       request.textures.clear();
       this.#failures.clear(request.key); // 05.10-A7b-0 1.24
       this.#tiles.set(request.key, tile);
@@ -584,6 +728,11 @@ export class TerrainSplatClient {
     }
     if (tile.splat.relief || tile.relief !== undefined) return;
     tile.relief = "pending";
+    // 23.10 (7.48): an HD tile loaded without relief holds no original layers; the relief derives from them (its
+    // scale in world units is the original's), so the tile leases them now and releases them with itself.
+    for (const id of tile.layerIds) {
+      if (!tile.layers.has(id)) tile.layers.set(id, this.#acquireLayer(id, tile.layerSize));
+    }
     const epoch = this.#epoch;
     const settle = (relief: THREE.DataArrayTexture | undefined) => {
       const current = this.#tiles.get(key) === tile && epoch === this.#epoch && !this.#disposed;
