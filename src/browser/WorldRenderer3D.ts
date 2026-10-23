@@ -81,7 +81,7 @@ import {
 } from "./SkyDome.js"; // 13.10 7.04
 import type { LightSample, ResolvedColour } from "./LightTypes.js";
 import { lightDarkensByDepth, liquidLightTint, type UnderwaterLight } from "./UnderwaterLiquidLight.js"; // 05.10-A7b-5 review
-import { LocalLightSelection, modelFixtureLights, sampleFixtureLight } from "./LocalLighting.js";
+import { LocalLightSelection, modelFixtureLights, sampleFixtureLight, type LocalLightSample } from "./LocalLighting.js";
 import { SpellLights } from "./SpellLights.js"; // 23.10 (6.27)
 import { hdEffectTexturesEnabled, setHdEffectTexturesEnabled } from "./HdEffectTextures.js"; // 23.10 (7.48)
 import {
@@ -91,10 +91,13 @@ import { fixtureLightSource } from "./FixtureLightSources.js"; // 06.10-render-f
 import { sampleWmoLight, wmoOutdoorLightPositions, wmoOutdoorLights } from "./WmoFixtureLights.js"; // 22.10 (7.36)
 import { LOCAL_LIGHT_FOCUS_AHEAD, WMO_LIGHT_RANK_SCALE } from "./CinematicLights.js"; // 22.10 (7.36)
 import { LightHalos } from "./LightHalos.js"; // 22.10 (7.36)
-import { FarLightGlows, type FarLightStreamed } from "./FarLightGlows.js"; // 22.10 (7.46)
+import { FarLightGlows, type FarLightExtra } from "./FarLightGlows.js"; // 22.10 (7.46)
 import {
   sampleWmoLantern, wmoDoodadOpenAir, wmoLanterns, wmoLanternWorldPositions,
 } from "./WmoOpenAirLamps.js"; // 23.10 (7.46)
+import { lightCensus, type LightCensusFrame } from "./LightCensus.js"; // 24.10 (7.50)
+import { LightTemplateCatalog } from "./LightTemplateCatalog.js"; // 24.10 (7.50)
+import { PrelitLights, type PrelitHost } from "./PrelitLights.js"; // 24.10 (7.50)
 import {
   GOD_RAY_STRENGTH_SCALE_MAX, godRayStrengthScale, lightingProfile, shadowMaterialEligible,
   lightingClassicLook, // 05.10-7.20
@@ -4192,15 +4195,38 @@ export class WorldRenderer3D {
   readonly #worldLight = createWorldLightUniforms();
   readonly #localLightSelection = new LocalLightSelection();
   readonly #localLightFocus = new THREE.Vector3(); // 22.10 (7.36)
-  // 23.10 (7.36): the far glows' view of the streamed placements (FarLightGlows.ts streamedFarLightSources).
-  readonly #farLightStreamFrame = new THREE.Object3D();
-  readonly #farLightStreamed: FarLightStreamed<EnvironmentObject> = {
-    objects: [],
+  // 24.10 (7.50): the lights of streamed placements not built yet (PrelitLights.ts), from the lamp
+  // models' templates (LightTemplateCatalog.ts), for the near selection and the far glows alike.
+  readonly #lightCatalog = new LightTemplateCatalog();
+  readonly #prelitLights = new PrelitLights<EnvironmentObject>();
+  readonly #prelitFrame = new THREE.Object3D();
+  readonly #prelitHost: PrelitHost<EnvironmentObject> = {
+    // The built doodad's mesh: its node (`placeEnvironmentNode`) turned by `ADT_MODEL_TO_SCENE`.
     place: (object, target) => {
-      const frame = placeEnvironmentNode(this.#farLightStreamFrame, object);
+      const frame = placeEnvironmentNode(this.#prelitFrame, object);
       frame.updateMatrix();
-      return target.copy(frame.matrix);
+      return target.makeRotationFromQuaternion(ADT_MODEL_TO_SCENE).premultiply(frame.matrix);
     },
+    openAir: (object) => {
+      const parent = Math.floor((-object.id - 1) / 1_000_000);
+      return this.#environment.get(parent)?.wmo?.model === undefined ? undefined : this.#openAirDoodad(object);
+    },
+    built: (id) => this.#environment.get(id)?.wvm !== undefined,
+    buildingKnown: (id) => this.#environment.get(id)?.wmo !== undefined,
+  };
+  readonly #prelitFar: FarLightExtra = (() => {
+    const prelit = this.#prelitLights;
+    const host = this.#prelitHost;
+    return {
+      get generation(): number { return prelit.generation; },
+      appendFarSources: (out: number[]): void => prelit.appendFarSources(host, out),
+    };
+  })();
+  /** 24.10 (7.50): the environment client of the last frame (lamp models; `lightsReadyAround`). */
+  #lightModels: EnvironmentClient | undefined;
+  #lightsWait: { key: number; since: number } | undefined;
+  readonly #addPrelitLight = (sample: LocalLightSample): void => {
+    this.#localLightSelection.add(sample, this.#localLightFocus);
   };
   readonly #lightHalos = new LightHalos(); // 22.10 (7.36)
   /**
@@ -5561,6 +5587,34 @@ export class WorldRenderer3D {
   get fogRange(): { zoneNear: number; zoneFar: number; near: number; far: number } {
     const fog = this.#scene.fog as THREE.Fog;
     return { zoneNear: this.#zoneFogNear, zoneFar: this.#zoneFogFar, near: fog.near, far: fog.far };
+  }
+
+  /** 24.10 (7.50): the last frame's light pools, halos and far glows, for the bench's light trace. */
+  lightCensus(): LightCensusFrame {
+    return lightCensus(this.#localLightSelection, [this.#lightHalos.mesh, this.#farLightGlows.mesh]);
+  }
+
+  /**
+   * 24.10 (7.50): whether the lamps around world (x, y) on `map` are known, so the loading curtain may lift
+   * with them lit (ui/LoadingScreen.ts; the render worker folds it into its readiness): the placement tile
+   * there has answered and every lamp placement within `LIGHTS_READY_RANGE` has its model's lights. Always
+   * true off the cinematic profile, and once `LIGHTS_READY_WAIT_MS` passed at this tile: a lamp model that
+   * is slow to come never holds the curtain longer.
+   */
+  lightsReadyAround(map: number, x: number, y: number): boolean {
+    if (this.#lightingProfile.cinematicLights <= 0) return true;
+    const key = map * 4096 + terrainGridIndex(x, y);
+    const now = performance.now();
+    if (this.#lightsWait?.key !== key) this.#lightsWait = { key, since: now };
+    if (now - this.#lightsWait.since > LIGHTS_READY_WAIT_MS) return true;
+    const client = this.#lightModels;
+    if (client === undefined || !client.tileAnswered(map, x, y)) return false;
+    return this.#prelitLights.pendingNear(this.#lightCatalog, this.#prelitHost, x, y, LIGHTS_READY_RANGE) === 0;
+  }
+
+  /** 24.10 (7.50): the unbuilt lamps' list and the lamp-model catalog, for the bench's light trace. */
+  get prelitLightStats(): unknown {
+    return { prelit: { ...this.#prelitLights.stats }, catalog: { ...this.#lightCatalog.stats, pending: this.#lightCatalog.pendingCount } };
   }
 
   get cinematicProfile(): Readonly<CinematicProfile> {
@@ -8564,7 +8618,7 @@ export class WorldRenderer3D {
     if (detailedCapture) visualPartAt = performance.now();
     this.#updateEffects(player.position, now, elapsed);
     if (detailedCapture) this.#drawPhaseMs["visuals.effects"] = performance.now() - visualPartAt;
-    this.#updateFixtureLights(now);
+    this.#updateFixtureLights(now, environmentClient); // 24.10 (7.50): the client for lamp models
     // New weather materials must enter the same warm pass as every other first-frame draw.
     this.#updateWeather(elapsed);
     if (this.#atmosphere) this.#updateAtmosphere(player.position, map, heightAt, terrainClient, now, elapsed,
@@ -9566,7 +9620,7 @@ export class WorldRenderer3D {
   }
 
   /** Sample nearby outdoor flame/glow fixtures after posing, including instanced street lamps. */
-  #updateFixtureLights(now: number): void {
+  #updateFixtureLights(now: number, client: EnvironmentClient | undefined): void {
     const selection = this.#localLightSelection;
     selection.begin(this.#lightingProfile.localLights);
     const cinematic = this.#lightingProfile.cinematicLights > 0; // 22.10 (7.36)
@@ -9588,6 +9642,8 @@ export class WorldRenderer3D {
         if (!model) return;
         const fixtures = modelFixtureLights(model, name, cinematic); // 23.10 (7.36)
         if (fixtures.length === 0) return;
+        // 24.10 (7.50): a model past no name gate that lights is known from its first build on.
+        if (cinematic) this.#lightCatalog.noteLit(name, model);
         // Reject distant fixtures before propagating animated bones. Expand by the authored
         // source offset, placement scale and a swing margin so tall/hanging lamps are retained.
         let sourceOffset = 0;
@@ -9622,7 +9678,11 @@ export class WorldRenderer3D {
         // 06.10-render-fix: and no doodad of a building, whose v5 façade lamps are `interior: false`.
         // 22.10 (7.36): the cinematic profile also takes a city's street lamps — a building's outdoor
         // lamp doodads and the WMO's own lamps outside its rooms (WmoFixtureLights.ts).
-        if (cinematic && rendered.wmo) this.#addWmoFixtureLights(rendered.wmo, focus, now);
+        if (cinematic && rendered.wmo) {
+          // 24.10 (7.50): its lamp posts known from an earlier session light before their groups arrive.
+          this.#lightCatalog.syncWmo(rendered.source.name, rendered.wmo.model);
+          this.#addWmoFixtureLights(rendered.wmo, focus, now);
+        }
         // 23.10 (7.46): and a building's lamp doodads that only its open-air groups name.
         // 23.10 (7.46 review): the answer is kept on the entry (`openAirLamp`), asked only of interior ones.
         if (!fixtureLightSource(rendered.source, cinematic, cinematic && rendered.source.interior === true
@@ -9631,6 +9691,14 @@ export class WorldRenderer3D {
       }
       for (const rendered of this.#gameObjects.values()) {
         if (rendered.node.visible && rendered.model) visit(rendered, rendered.model, rendered.node);
+      }
+      // 24.10 (7.50): and the lamps the tiles list that are not built yet (PrelitLights.ts): their models
+      // are asked for as the tiles land and their lights stand before their meshes do.
+      if (cinematic) {
+        this.#lightModels = client;
+        this.#lightCatalog.pump(client);
+        this.#prelitLights.update(this.#environmentObjects ?? [], this.#lightCatalog, this.#prelitHost, this.#camera.position);
+        this.#prelitLights.forEachNear(focus, now, this.#prelitHost, this.#addPrelitLight, this.#localLightSample);
       }
     }
     // 23.10 (6.27): the living spells' lights, ranked like any fixture (SpellLights.ts).
@@ -9644,10 +9712,9 @@ export class WorldRenderer3D {
     this.#lightHalos.end();
     // 22.10 (7.46): and a cheap glow on every outdoor lamp out to a few hundred yards (FarLightGlows.ts).
     if (cinematic) {
-      // 23.10 (7.36): and the streamed lamps not built yet, placed from a resident twin's template.
-      this.#farLightStreamed.objects = this.#environmentObjects ?? [];
+      // 24.10 (7.50): and the lamps not built yet (PrelitLights.ts).
       this.#farLightGlows.update(this.#environment, this.#camera.position, this.#worldLight.wowDaylight.value,
-        this.#zoneFogFar, this.#farLightStreamed, this.#openAirDoodad); // 23.10 (7.46): open-air doodads
+        this.#zoneFogFar, this.#prelitFar, this.#openAirDoodad); // 23.10 (7.46): open-air doodads
     } else this.#farLightGlows.clear();
   }
 
@@ -17334,6 +17401,11 @@ const VMAP_TO_THREE = new THREE.Matrix4().set(
  * doodad's quaternion through the tile generator — is conjugated by `VMAP_TO_THREE` at the point
  * it is written.
  */
+/** 24.10 (7.50): yards around the player whose lamps the loading curtain waits for (`lightsReadyAround`). */
+export const LIGHTS_READY_RANGE = 150;
+/** 24.10 (7.50): the longest the curtain waits for them at one tile, milliseconds. */
+export const LIGHTS_READY_WAIT_MS = 3000;
+
 export const ADT_MODEL_TO_SCENE = new THREE.Quaternion().setFromRotationMatrix(VMAP_TO_THREE);
 
 const SCENE_UP = new THREE.Vector3(0, 1, 0);

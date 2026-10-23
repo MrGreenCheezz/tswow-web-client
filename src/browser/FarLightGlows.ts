@@ -161,11 +161,9 @@ export function farLightSources(placement: FarLightPlacement, openAir?: FarLight
     if (fixtures.length > 0 && (placement.instanceMatrix || root)) {
       if (!placement.instanceMatrix) root!.updateWorldMatrix(true, false);
       const matrix = placement.instanceMatrix ?? root!.matrixWorld;
-      const start = out.length;
       for (const fixture of fixtures) {
         if (sampleFixtureLight(fixture, model, matrix, 0, 0, sample)) push(out, sample, 1);
       }
-      if (out.length > start && !wmo) learnTemplate(placement, out.slice(start));
     }
   }
   const sources = out.length > 0 ? new Float32Array(out) : NONE;
@@ -177,56 +175,15 @@ export function farLightSources(placement: FarLightPlacement, openAir?: FarLight
 }
 
 /**
- * 23.10 (7.36): a lamp model's glow sources in its placement's own frame, learned from the first
- * resident placement of that model. Stormwind's street lamps are city doodads on a size-scaled
- * leash (245–305 yards at detail 1, less once the city's dense scenery budget binds) and its
- * lanterns on the 90-yard floor; a placement not yet drawn has no model and gave no far glow, so in
- * the city lamps seemed to switch on as one approached, while Elwynn's `LampPost.m2` (no source
- * radius, the 400-yard name leash) glowed from afar. The streamed tile list still holds every
- * placement: one known template places the glow of all the others of the same model.
+ * 24.10 (7.50): the glows of the placements not built yet (`PrelitLights.ts`): every streamed lamp
+ * whose model's lights are known (`LightTemplateCatalog.ts`), placed as the built lamp's glow would
+ * be. Supersedes 23.10's per-session templates, learned from the first built placement of a model.
  */
-const TEMPLATES = new Map<string, Float32Array>();
-let templateGeneration = 0;
-const inverse = new THREE.Matrix4();
-const point = new THREE.Vector3();
-
-function learnTemplate(placement: FarLightPlacement, world: number[]): void {
-  const name = placement.source.name;
-  if (TEMPLATES.has(name)) return;
-  placement.node.updateWorldMatrix(true, false);
-  inverse.copy(placement.node.matrixWorld).invert();
-  const local = new Float32Array(world);
-  for (let at = 0; at < local.length; at += STRIDE) {
-    point.set(local[at]!, local[at + 1]!, local[at + 2]!).applyMatrix4(inverse);
-    local[at] = point.x; local[at + 1] = point.y; local[at + 2] = point.z;
-  }
-  if (!local.every(Number.isFinite)) return;
-  TEMPLATES.set(name, local);
-  templateGeneration++;
-}
-
-/** 23.10 (7.36): a streamed placement the renderer has not built (yet), and how it is placed. */
-export interface FarLightStreamed<T extends FarLightPlacement["source"] = FarLightPlacement["source"]> {
-  objects: readonly T[];
-  /** The placement's frame, as the renderer would place its node (`placeEnvironmentNode`). */
-  readonly place: (object: T, target: THREE.Matrix4) => THREE.Matrix4;
-}
-
-const placed = new THREE.Matrix4();
-
-/** 23.10 (7.36): appends the glows of the streamed placements no resident stands for. */
-export function streamedFarLightSources<T extends FarLightPlacement["source"]>(streamed: FarLightStreamed<T>,
-  resident: ReadonlyMap<unknown, unknown>, out: number[], openAir?: FarLightOpenAir): void {
-  if (TEMPLATES.size === 0) return;
-  for (const object of streamed.objects) {
-    const template = TEMPLATES.get(object.name);
-    if (!template || resident.has(object.id) || !fixtureLightSource(object, true, openAir)) continue;
-    const matrix = streamed.place(object, placed);
-    for (let at = 0; at < template.length; at += STRIDE) {
-      point.set(template[at]!, template[at + 1]!, template[at + 2]!).applyMatrix4(matrix);
-      out.push(point.x, point.y, point.z, template[at + 3]!, template[at + 4]!, template[at + 5]!);
-    }
-  }
+export interface FarLightExtra {
+  /** Grows when the list changed. */
+  readonly generation: number;
+  /** Appends x, y, z, r, g, b per source, the colour already times strength. */
+  appendFarSources(out: number[]): void;
 }
 
 export class FarLightGlows {
@@ -241,8 +198,7 @@ export class FarLightGlows {
   #pickedRange = FAR_LIGHT_RANGE;
   readonly #pickedAt = new THREE.Vector3(Number.POSITIVE_INFINITY, 0, 0);
   #dirty = true;
-  #streamedObjects: readonly unknown[] | undefined;
-  #templateGeneration = 0;
+  #extraGeneration = -1; // 24.10 (7.50)
   #lanternGeneration = 0; // 23.10 (7.46)
   #framesSinceRebuild = FAR_LIGHT_REBUILD_FRAMES;
   readonly #byDistance = (a: number, b: number): number => this.#distances[a]! - this.#distances[b]!;
@@ -271,21 +227,19 @@ export class FarLightGlows {
    * nearest set when the camera has moved, and re-weights the picked glows.
    */
   update(placements: ReadonlyMap<unknown, FarLightPlacement>, camera: THREE.Vector3,
-    daylight: number, fogFar = Number.POSITIVE_INFINITY, streamed?: FarLightStreamed<any>, openAir?: FarLightOpenAir): void {
+    daylight: number, fogFar = Number.POSITIVE_INFINITY, extra?: FarLightExtra, openAir?: FarLightOpenAir): void {
     let repick = false;
-    // 23.10 (7.36): a new streamed snapshot or a newly learned lamp template also rebuilds.
+    // 24.10 (7.50): a changed list of unbuilt placements' lights also rebuilds.
     // 23.10 (7.46): and so do a building's newly found lanterns.
-    const streamedObjects = streamed?.objects;
-    if (streamedObjects !== this.#streamedObjects || this.#templateGeneration !== templateGeneration
-      || this.#lanternGeneration !== wmoLanternGeneration()) {
-      this.#streamedObjects = streamedObjects;
-      this.#templateGeneration = templateGeneration;
+    const extraGeneration = extra?.generation ?? -1;
+    if (extraGeneration !== this.#extraGeneration || this.#lanternGeneration !== wmoLanternGeneration()) {
+      this.#extraGeneration = extraGeneration;
       this.#lanternGeneration = wmoLanternGeneration();
       this.#dirty = true;
     }
     if (this.#framesSinceRebuild < FAR_LIGHT_REBUILD_FRAMES) this.#framesSinceRebuild++;
     if (this.#dirty && this.#framesSinceRebuild >= FAR_LIGHT_REBUILD_FRAMES) {
-      this.#rebuild(placements, streamed, openAir);
+      this.#rebuild(placements, extra, openAir);
       this.#framesSinceRebuild = 0;
       repick = true;
     }
@@ -312,17 +266,17 @@ export class FarLightGlows {
     halos.end();
   }
 
-  #rebuild(placements: ReadonlyMap<unknown, FarLightPlacement>, streamed?: FarLightStreamed<any>,
+  #rebuild(placements: ReadonlyMap<unknown, FarLightPlacement>, extra?: FarLightExtra,
     openAir?: FarLightOpenAir): void {
     this.#dirty = false;
     let count = 0;
     const lists: Iterable<Float32Array> = (function* () {
       for (const placement of placements.values()) yield farLightSources(placement, openAir);
-      // 23.10 (7.36): after the residents, which teach the templates.
-      if (streamed) {
-        const extra: number[] = [];
-        streamedFarLightSources(streamed, placements, extra, openAir);
-        if (extra.length > 0) yield new Float32Array(extra);
+      // 24.10 (7.50): and the placements not built yet (PrelitLights.ts).
+      if (extra) {
+        const unbuilt: number[] = [];
+        extra.appendFarSources(unbuilt);
+        if (unbuilt.length > 0) yield new Float32Array(unbuilt);
       }
     })();
     for (const own of lists) {

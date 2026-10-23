@@ -268,6 +268,9 @@ export function updateLoadingScreen(now: number): void {
     } else if (!collisionReady) {
       reachStage("collision");
       loadingStatus("Загрузка коллизии…");
+    } else if (!pageLightsReady(world.mapId, position.x, position.y)) {
+      // 24.10 (7.50): the lamps around the character, so they are lit when the curtain lifts (bounded).
+      loadingStatus("Загрузка фонарей…");
     } else {
       reachStage("soak");
       worldReady = true;
@@ -285,6 +288,17 @@ export function updateLoadingScreen(now: number): void {
     worldReady = true;
     releaseWhenSoaked();
   }
+}
+
+/**
+ * 24.10 (7.50): whether the in-page renderer knows the lamps around the character
+ * (`WorldRenderer3D.lightsReadyAround`, at most a few seconds); a render worker answers it in its own
+ * terrain readiness (RenderWorkerSession.ts), so the page does not ask it.
+ */
+function pageLightsReady(map: number, x: number, y: number): boolean {
+  const renderer = game.renderer as { renderWorker?: unknown; lightsReadyAround?: (map: number, x: number, y: number) => boolean } | undefined;
+  if (!renderer || renderer.renderWorker !== undefined || typeof renderer.lightsReadyAround !== "function") return true;
+  return renderer.lightsReadyAround(map, x, y);
 }
 
 /**

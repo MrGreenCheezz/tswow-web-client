@@ -126,6 +126,18 @@ async function main() {
     config.settings[key] = raw === 'true' ? true : raw === 'false' ? false : Number.isFinite(Number(raw)) ? Number(raw) : raw;
   }
   const frames = values('--frame').map(parseFrame);
+  // 24.10 (7.50): `--light-trace spec.json` (repeatable): when each light first appears on a night run or after a
+  // teleport (src/browser/bench/LightTrace.ts); the movement scenario. Without `--frame` the first trace's first
+  // waypoint (or its `from`) and time of day prepare the scene.
+  // 24.10 (7.50): `--light-catalog <name>` keeps the lamp catalog in the profile's IndexedDB under that name, and
+  // `--user-data-dir <dir>` keeps the profile between runs: a second run is a second session.
+  if (value('--light-catalog')) config.lightCatalogGeneration = value('--light-catalog');
+  const traces = await Promise.all(values('--light-trace').map(async (path) => JSON.parse(await readFile(path, 'utf8'))));
+  if (frames.length === 0 && traces.length > 0) {
+    const [x, y] = traces[0].from ?? traces[0].path[0];
+    frames.push({ name: 'trace', halfMinute: traces[0].halfMinute, view: { yaw: 0, pitch: -0.2, orbit: 12 }, weather: null,
+      at: { x, y, map: traces[0].map ?? 0 } });
+  }
   // 23.10 (7.48): HD effect textures straight from the generated sets.
   const hdIndex = args.indexOf('--hd-textures');
   const hdDirectory = hdIndex < 0 ? undefined
@@ -301,12 +313,14 @@ async function main() {
       res.end('Lookdev asset failed');
     }
   });
-  server.listen(0, '127.0.0.1');
+  // 24.10 (7.50): `--port` keeps the page's origin, and with it IndexedDB and the HTTP cache of `--user-data-dir`.
+  server.listen(Number(value('--port', 0)), '127.0.0.1');
   await once(server, 'listening');
   const origin = `http://127.0.0.1:${server.address().port}`;
   const executablePath = process.env.BENCH_CHROME_PATH ?? 'C:/Program Files/Google/Chrome/Application/chrome.exe';
   const headed = args.includes('--headed');
-  const browser = await puppeteer.launch({ executablePath, headless: !headed,
+  const userDataDir = value('--user-data-dir'); // 24.10 (7.50)
+  const browser = await puppeteer.launch({ executablePath, headless: !headed, ...(userDataDir ? { userDataDir: resolve(userDataDir) } : {}),
     args: ['--disable-frame-rate-limit', '--disable-gpu-vsync', '--disable-backgrounding-occluded-windows', '--disable-renderer-backgrounding'],
     defaultViewport: { width: config.width, height: config.height, deviceScaleFactor: config.pixelRatio }, protocolTimeout: 600000 });
   try {
@@ -333,6 +347,15 @@ async function main() {
     const prepared = await page.evaluate(() => window.__bench.prepare());
     console.log(`${scenario}: ready, GPU ${prepared.hardware.gpu}`);
     const written = [];
+    for (const spec of traces) { // 24.10 (7.50)
+      const started = Date.now();
+      const result = await page.evaluate((value) => window.__bench.lightTrace(value), spec);
+      await writeFile(resolve(out, `trace-${spec.name}.json`), JSON.stringify(result, null, 1));
+      const { lights: _lights, timeline: _timeline, ...summary } = result;
+      console.log(`trace ${spec.name} (${((Date.now() - started) / 1000).toFixed(0)} s): ${JSON.stringify(summary)}`);
+      written.push({ trace: spec.name });
+    }
+    if (traces.length > 0) frames.length = 0;
     for (const frame of frames) {
       await page.evaluate((overrides) => window.__bench.lookdev(overrides),
         { halfMinute: frame.halfMinute, view: frame.view, weather: frame.weather, route: routeFor(frame) });

@@ -34,7 +34,8 @@ test("a terrain lamp (ADT placement) still lights, unless it is indoors or room-
 
 test("the renderer's fixture-light pass asks this predicate for environment placements", async () => {
   const source = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
-  const body = source.slice(source.indexOf("#updateFixtureLights(now: number): void {"));
+  // 24.10 (7.50): the pass also takes the environment client (the lamp models of PrelitLights.ts).
+  const body = source.slice(source.indexOf("#updateFixtureLights(now: number, client: EnvironmentClient | undefined): void {"));
   const loop = body.slice(0, body.indexOf("for (const rendered of this.#gameObjects.values())"));
   // 22.10 (7.36): the cinematic profile's flag admits a building's outdoor lamps (cinematic-lights.test.mjs).
   // 23.10 (7.46): and, on it, a building's doodad that only open-air groups name (wmo-open-air-lamps.test.mjs).

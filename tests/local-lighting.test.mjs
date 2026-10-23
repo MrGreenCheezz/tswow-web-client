@@ -12,6 +12,8 @@ import { fixtureLightSource } from "../dist/code/browser/FixtureLightSources.js"
 import { LOCAL_LIGHT_FOCUS_AHEAD } from "../dist/code/browser/CinematicLights.js"; // 22.10 (7.36)
 import { LightHalos } from "../dist/code/browser/LightHalos.js"; // 22.10 (7.36)
 import { FarLightGlows } from "../dist/code/browser/FarLightGlows.js"; // 22.10 (7.46)
+import { LightTemplateCatalog } from "../dist/code/browser/LightTemplateCatalog.js"; // 24.10 (7.50)
+import { PrelitLights } from "../dist/code/browser/PrelitLights.js"; // 24.10 (7.50)
 
 const close = (a, b) => assert.ok(Math.abs(a - b) < 1e-6, `${a} != ${b}`);
 const lampName = "World\\Generic\\Human\\Passive Doodads\\Lampposts\\DuskwoodLamppost.m2";
@@ -172,7 +174,10 @@ test("production fixture pass keeps instanced offscreen lamps, skips interiors a
     localLightSelection: new LocalLightSelection(), localLightSample: sample(), localLightMatrix: new THREE.Matrix4(),
     localLightFocus: new THREE.Vector3(), lightHalos: new LightHalos(), // 22.10 (7.36)
     farLightGlows: new FarLightGlows(), zoneFogFar: 640, // 22.10 (7.46)
-    farLightStreamed: { objects: [], place: (object, target) => target }, // 23.10 (7.36)
+    // 24.10 (7.50): the unbuilt lamps' list, empty here (no tile list in this harness).
+    lightCatalog: new LightTemplateCatalog(null), prelitLights: new PrelitLights(),
+    prelitHost: { place: (object, target) => target, openAir: () => undefined, built: () => true },
+    prelitFar: undefined, addPrelitLight: () => {},
     addLightHalo: (position, colour, strength) => harness.lightHalos.add(position, colour, strength, 0, harness.camera.position),
     lightingProfile: lightingProfile(1), worldLight: createWorldLightUniforms(), camera: new THREE.PerspectiveCamera(),
     environment: new Map([[1, retained], [2, { ...retained, interior: true, source: { id: 2, interior: true, name: lampName } }], [3, far],
