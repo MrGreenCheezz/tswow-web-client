@@ -11,7 +11,10 @@ import {
   setLiquidWaterShaderProfile,
 } from "../dist/code/browser/Water.js";
 
-const currentWater = await import(`../src/browser/Water.ts?visibility=${Date.now()}`);
+// The current Water module through the dist path (the source hook transpiles it, `--dist` runs the
+// build). Importing `src/browser/Water.ts` directly stopped resolving once Water.ts took a value
+// import of `./TextureLoad.js` (ARC-2 S1): Node's type stripping does not map `.js` to `.ts`.
+const currentWater = await import("../dist/code/browser/Water.js");
 
 const PROFILE_ON = Object.freeze({
   waterFresnel: true,

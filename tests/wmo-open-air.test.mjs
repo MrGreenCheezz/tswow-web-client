@@ -67,8 +67,10 @@ test("the state's walk options carry its own scratch and seed from outside", () 
 
 test("the renderer walks from open air only for static buildings with a street, behind the switch", async () => {
   const source = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
+  // 22.10 (7.41): a static building admitted for its shadow alone is not viewed, so it does not walk.
+  assert.match(source, /const viewed = staticEnvironment && !shadowOnly;/);
   assert.match(source,
-    /if \(staticEnvironment && !entered && this\.#wmoOcclusion && placed\.model\.portals && !wmoInteriorOnly\(placed\.model\)\) \{\r?\n\s+selected = this\.#wmoRoomsFromOpenAir\(placed, player, selected, walked\);/);
+    /if \(viewed && !entered && this\.#wmoOcclusion && placed\.model\.portals && !wmoInteriorOnly\(placed\.model\)\) \{\r?\n\s+selected = this\.#wmoRoomsFromOpenAir\(placed, player, selected, walked\);/);
   assert.match(source, /clipped = entered;\r?\n\s+walked = true; \/\/ 05\.10-A7b-2/,
     "an indoor walk that answered is told apart from one that fell back");
   assert.match(source, /if \(wmoOpenAirWalkStale\(state, clip, rooms\)\) \{/, "walked again only on change");

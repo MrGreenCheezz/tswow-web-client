@@ -271,7 +271,7 @@ test("environment construction observes elapsed time and resumes without disposi
     SCENERY_SHADOW_HOLD_FRAMES: 30, // 22.10 (7.41)
   });
   const harness = new Harness();
-  let clock = 0;
+  let clock = 0, invalidations = 0;
   const objects = Array.from({ length: 20 }, (_, id) => ({ id, name: `prop${id}.m2`, kind: "m2" }));
   const candidates = objects.map(object => ({ object, distance: 1 }));
   Object.assign(harness, {
@@ -288,11 +288,14 @@ test("environment construction observes elapsed time and resumes without disposi
     setEnvironmentAdmitted() {},
     environmentStandIns: { begin() {} }, environmentStandInMarkers: { beginFrame() {}, endFrame() {} },
     noteEnvironmentStandIn() {},
+    // 22.10 (7.46): a placement entering the record re-collects the far lamp glows.
+    farLightGlows: { invalidate() { invalidations++; } },
     disposeEnvironment() { assert.fail("unchanged residents must not be rebuilt"); },
   });
   for (let frame = 1; frame <= 20; frame++) {
     harness.updateEnvironment({ x: 0, y: 0, z: 0 }, objects, undefined, 0.016);
     assert.equal(harness.environment.size, frame);
+    assert.equal(invalidations, frame, "each placement built tells the far glows once");
   }
   const retained = [...harness.environment.values()].map(item => item.node);
   harness.updateEnvironment({ x: 0, y: 0, z: 0 }, objects, undefined, 0.016);
@@ -300,4 +303,5 @@ test("environment construction observes elapsed time and resumes without disposi
   const after = [...harness.environment.values()].map(item => item.node);
   assert.equal(after.length, retained.length);
   assert.equal(after.filter((node, index) => node !== retained[index]).length, 0, "every retained node is kept");
+  assert.equal(invalidations, 20, "a frame that builds nothing leaves the far glows alone");
 });

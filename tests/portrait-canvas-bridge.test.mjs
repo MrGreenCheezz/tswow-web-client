@@ -206,9 +206,9 @@ test("clear blanks the page's canvases through the same operations", async () =>
 
 test("sources: the renderer side holds no DOM canvas, and the page drains where it used to be painted", async () => {
   const read = (path) => readFile(new URL(`../src/browser/${path}`, import.meta.url), "utf8");
-  const [portraitRenderer, world, portraits, main, loop, enterWorld, context] = await Promise.all([
+  const [portraitRenderer, world, portraits, main, loop, enterWorld, context, workerMount] = await Promise.all([
     read("PortraitRenderer.ts"), read("WorldRenderer3D.ts"), read("ui/Portraits.ts"), read("main.ts"),
-    read("game/Loop.ts"), read("app/EnterWorld.ts"), read("game/Context.ts"),
+    read("game/Loop.ts"), read("app/EnterWorld.ts"), read("game/Context.ts"), read("app/RenderWorkerMount.ts"),
   ]);
   for (const [name, source] of [["PortraitRenderer.ts", portraitRenderer], ["WorldRenderer3D.ts", world]]) {
     assert.doesNotMatch(source, /getContext\("2d"\)|ImageData|putImageData|\.dataset\b|dataset\[/, name);
@@ -218,7 +218,10 @@ test("sources: the renderer side holds no DOM canvas, and the page drains where 
   assert.equal((world.match(/HTMLCanvasElement/g) ?? []).length, 3);
   assert.match(world, /outputs: this\.#results\.portraits, onOutputs: \(\) => this\.#portraitOutputListener\?\.\(\)/);
   assert.match(portraits, /renderer\?\.setPortraitTargets\(canvasBridge\.inputs\(targets\)\)/);
-  assert.match(main, /game\.renderer = new WorldRenderer3D\(world3dCanvas\);\n\s*attachPortraitOutputs\(game\.renderer\);/);
+  // 22.10 ARC-2 S6b: main.ts builds the in-page renderer only without the render worker; that branch,
+  // and the worker's in-page fallback, attach the page's portrait outputs to the renderer they build.
+  assert.match(main, /const renderer = new WorldRenderer3D\(world3dCanvas\);\r?\n\s*game\.renderer = renderer;\r?\n\s*attachPortraitOutputs\(renderer\);/);
+  assert.match(workerMount, /const renderer = new WorldRenderer3D\(canvas\);\r?\n\s*attachPortraitOutputs\(renderer\);/);
   const drained = loop.indexOf("drainPortraitOutputs(renderer);");
   assert.ok(drained > loop.indexOf("renderer.renderPortraits(now);") && drained < loop.indexOf("applyPortraitVisibility();", drained),
     "after the portrait pass, before the fallback icons read the ready flags");
