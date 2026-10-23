@@ -223,10 +223,12 @@ test("7.04 renderer layer: clouds follow band 3; stars take the client's alpha",
   input.sunHalo = 0xffc78a;
   sky.update(input, camera);
   assert.equal(visible(sky, "skyClouds"), true);
+  // 23.10 (7.43): the client's CPU texture (SkyClouds.ts) — density byte, display bytes, the light.
   const clouds = sky.group.getObjectByName("skyClouds");
-  assert.equal(clouds.material.uniforms.cloudThreshold.value, 128 / 255);
-  assert.ok(near(clouds.material.uniforms.cloudBase.value.r, 0x20 / 255), "display-space bytes");
-  assert.ok(clouds.material.uniforms.cloudLight.value.y > 0.99, "lit from the noon sun");
+  assert.equal(clouds.material.uniforms.cloudMap.value.isDataTexture, true);
+  assert.equal(sky.cloudShading.densityByte, 128);
+  assert.ok(near(sky.cloudShading.baseR, 0x20 * 0.0039215689), "display-space bytes");
+  assert.ok(Math.abs(sky.cloudShading.lightU - 64) < 8 && Math.abs(sky.cloudShading.lightV - 64) < 8, "the noon sun (5° off the zenith) is near the texture's middle");
   // Stars: a built node handed over, its opacity the client's alpha times the material's own.
   const material = new THREE.MeshBasicMaterial({ opacity: 0.8, transparent: false });
   const node = new THREE.Mesh(new THREE.BufferGeometry(), material);
@@ -380,10 +382,11 @@ test("7.04 GLSL check catches the faults that cost a white frame (self-test)", (
   const { celestialHorizon: _, ...missing } = uniforms;
   assert.throws(() => checkProgram("m", CELESTIAL_VERTEX_SHADER, CELESTIAL_FRAGMENT_SHADER, missing));
   assert.throws(() => checkProgram("m", CELESTIAL_VERTEX_SHADER.replace("varying vec3 vCelestialDirection;", "varying vec2 vCelestialDirection;"), CELESTIAL_FRAGMENT_SHADER, uniforms));
-  const reordered = CLOUD_FRAGMENT_SHADER.replace(/float cloudHash[\s\S]*?\n}\n/, "")
-    .replace("float cloudField", "float cloudHash(vec2 p) {\n  return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);\n}\nfloat cloudField");
-  const cloudUniforms = Object.fromEntries(["cloudBase", "cloudBody", "cloudLit", "cloudLight", "cloudThreshold",
-    "cloudLitScale", "cloudOpacity", "cloudOffset"].map((name) => [name, {}]));
+  // 23.10 (7.43): the cloud program is the textured dome now; its decode moved after main.
+  const decode = /vec3 cloudToLinear[\s\S]*?\n}\n/.exec(CLOUD_FRAGMENT_SHADER)[0];
+  const reordered = CLOUD_FRAGMENT_SHADER.replace(decode, "") + "\n" + decode;
+  const cloudUniforms = { cloudMap: {} };
+  checkProgram("c", CLOUD_VERTEX_SHADER, CLOUD_FRAGMENT_SHADER, cloudUniforms);
   assert.throws(() => checkProgram("c", CLOUD_VERTEX_SHADER, reordered, cloudUniforms), /before it is defined/);
 });
 

@@ -8,12 +8,13 @@ import test from "node:test";
 import * as THREE from "three";
 
 import {
-  MOON_GLARE, SUN_GLARE, cloudAlphaAt, glareAlpha, glareFacing, glareSize, glareStep, glareTarget,
+  MOON_GLARE, SUN_GLARE, glareAlpha, glareFacing, glareSize, glareStep, glareTarget,
   moonGlareCloudTerm, sunGlareCloudTerm,
 } from "../dist/code/browser/SkyGlare.js";
 import {
   CELESTIAL_FRAGMENT_SHADER, CLOUD_FRAGMENT_SHADER, SkyCelestials, createSkyCelestialInput, moon2Alpha,
 } from "../dist/code/browser/SkyCelestials.js";
+import { DayNightCloudTexture, createCloudShading } from "../dist/code/browser/SkyClouds.js"; // 23.10 (7.43)
 
 const near = (a, b, e = 1e-6) => Math.abs(a - b) <= e;
 
@@ -63,15 +64,20 @@ test("facing: zero under the 0.7 cosine, one looking straight at it; size and al
   assert.equal(glareAlpha(SUN_GLARE, 1, 1, 0.001), 0, "a byte of 0 draws nothing");
 });
 
-test("the CPU cloud cover uses the shader's own field, threshold and fade", () => {
-  for (const text of ["127.1, 311.7", "43758.5453", "/ (direction.y + 0.15) * 1.5", "* 0.6667", "* 0.3333", "* 4.0", "smoothstep(0.0, 0.12"]) {
-    assert.ok(CLOUD_FRAGMENT_SHADER.includes(text), text);
-  }
-  assert.equal(cloudAlphaAt(1, -0.1, 0, 0, 0, 0), 0, "under the horizon");
-  assert.equal(cloudAlphaAt(0, 1, 0, 1, 0, 0), 0, "threshold 1: no cloud");
-  assert.equal(cloudAlphaAt(0, 1, 0, -1, 0, 0), 1, "every noise value is over −1: full cloud at the zenith");
-  const low = cloudAlphaAt(1, 0.05, 0, -1, 0, 0);
-  assert.ok(low > 0 && low < 1, "faded near the horizon");
+// 23.10 (7.43): 0x7efa30 reads the cloud texture's own alpha bytes under the body.
+test("the glare's cloud cover is the cloud texture's alpha under the body", () => {
+  const texture = new DayNightCloudTexture();
+  const shading = createCloudShading();
+  shading.densityByte = 0; // every level byte is over 0: cover everywhere
+  for (let frame = 0; frame < 16; frame++) texture.update(0.01, shading);
+  const covered = texture.densityAt(0.5, 0.5);
+  assert.ok(covered > 0.5, `zenith cover ${covered}`);
+  assert.equal(texture.densityAt(0.5, 0.5), texture.densities[64 * 128 + 64] * 0.0039215689);
+  assert.equal(texture.densityAt(-3, 9), texture.densities[127 * 128] * 0.0039215689, "clamped to the edge like the client");
+  shading.densityByte = 255; // no level reaches 255
+  for (let frame = 0; frame < 16; frame++) texture.update(0.01, shading);
+  assert.equal(texture.densityAt(0.5, 0.5), 0);
+  assert.ok(CLOUD_FRAGMENT_SHADER.includes("texture2D(cloudMap"));
 });
 
 function source(ready = true) {
