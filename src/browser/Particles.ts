@@ -19,16 +19,11 @@
 //     ground. The sign is the other way round. It is a small correction in practice — `zSource` is
 //     zero on 8,434 of the client's own 8,692 emitters under `spells\` and `creature\` — but the
 //     ones that set it are the fires.
-//   * There is no head-or-tail choice to make. The layout gives byte 0x2D of the record as
-//     `headorTail`, an enum of 0, 1 and 2 — and the byte does not hold one. Across the 26 emitters
-//     of the local models it takes the values 0, 4, 6, 8, 9, 16, 19, 24 and 32, and an enum of
-//     three does not produce 24. Those numbers are `fp_2_5` fixed point — 0, 1/8, 3/16, 1/4, 9/32,
-//     1/2, 19/32, 3/4 and 1 — which is what sits at that offset from Burning Crusade onwards:
-//     `multiTextureParamX`. So every emitter draws a head, and which of them also draws a streak
-//     is the `PINNED` flag, which is a flag and means what it says. `tailLength` is read, but for
-//     how long that streak may be rather than for whether there is one: it is the length in
-//     *seconds of flight* at the particle's current speed, and it caps a quad that would otherwise
-//     run from the birthplace to wherever the particle had got to (`:862-884`).
+//   * Byte 0x2D of the record is not a head-or-tail enum (it is `fp_2_5` fixed point from Burning
+//     Crusade onwards). 23.10 (6.27): the choice lives in the flags instead — 0x20000 draws a head,
+//     0x40000 a tail, both draw both (Wow.exe SetParticleStyle 0x00978d00, see the flag table below).
+//     A tail runs back along the velocity for `tailLength` *seconds of flight*, clamped to the
+//     particle's age by 0x400 (BuildVertex 0x0097be80).
 //   * `verticalRange` measures from a different zero on each generator, because each generator's
 //     natural zero is different. On a plane it is the half-angle off the plane's normal, so zero
 //     is a beam straight up — which is what `sunwell_beamfx.m2` is. On a sphere it is the latitude
@@ -53,19 +48,48 @@ import { twinklePhase, twinkleSize } from "./ParticleTwinkle.js"; // 05.10-A7a-F
  * ever set, which retires the compressed-gravity trap the study called practically important —
  * 0x800000 appears on nothing.
  */
-/** Particles rise along world up rather than along the emitter's own. */
-export const PARTICLE_FLAG_WORLD_UP = 0x00000008;
-/** A pinned emitter still draws particle heads, but deliberately does not stretch them into tails. */
-export const PARTICLE_FLAG_DO_NOT_TRAIL = 0x00000010;
-export const PARTICLE_FLAG_BURST = 0x00000040;
-/** Particles stay in the model's frame, so posing the emitter carries them with it. */
-export const PARTICLE_FLAG_MODEL_SPACE = 0x00000080;
-/** The quad stretches from where the particle was born to where it is now. Set on 18% of them. */
-export const PARTICLE_FLAG_PINNED = 0x00000400;
-/** Quads remain in the emitter's local XY plane instead of turning to face the camera. */
+//
+// 23.10 (6.27): the record's bits as Wow.exe reads them. The emitter setup in CM2Model's load (the loop
+// at 0x00833c80…0x00833e10, called from 0x00832ea0) maps each record bit onto a CParticleEmitter2 flag —
+// read here from the bytes of the unpacked 3.3.5a 12340 Wow.exe — and the emitter code then acts on those
+// (wowdecomp ParticleSystem2.cpp, cross-checked byte for byte at the addresses cited per bit):
+//   0x1 → unlit material, 0x2 → depth-sorted (0x0097e580), 0x4 → head along the velocity (0x0097be80),
+//   0x8 → unfogged material (0x008214e0), 0x10 → model space (0x009815c0/0x00981950/0x0097a390),
+//   0x20 → size × the emitter's scale (0x0097be80), 0x40 → inherits the emitter's velocity (0x0097eb10),
+//   0x80/0x100 → sphere: stop at the centre / rise straight up, 0x200 → spin either way,
+//   0x400 → tail no longer than the particle's age, 0x800 → spawn along the emitter's path,
+//   0x1000 → quad in the particle space's XY plane, 0x2000 → spawn on the ground, 0x4000 → follow,
+//   0x10000 → random cell, 0x20000 → draw a head, 0x40000 → draw a tail (SetParticleStyle 0x00978d00),
+//   0x80000 → independent scale variation.
+// Until 23.10 the names below were the wiki's, several bits off: 0x80 was taken for model space (it is
+// a sphere-only bit), 0x10 for "do not trail" (it is model space), 0x400 for a birth-to-head streak (it
+// clamps the tail) and 0x20000/0x40000 for outward/inward spheres (they are the head and the tail). Of the
+// 5,445 emitters under `spells\`, 1,076 draw only a tail and 1,984 live in model space.
+
+/** 23.10 (6.27): drawn back to front within the emitter (m_flags 0x20, BuildParticleVertices 0x0097e580). */
+export const PARTICLE_FLAG_SORT = 0x00000002;
+/** 23.10 (6.27): the head quad turns to lie along the particle's velocity (m_flags 0x200000, 0x0097be80). */
+export const PARTICLE_FLAG_VELOCITY_HEAD = 0x00000004;
+/** 23.10 (6.27): fog leaves the particle alone (CParticleMat bit 2 off → M2 material 0x2, 0x008214e0). */
+export const PARTICLE_FLAG_UNFOGGED = 0x00000008;
+/** 23.10 (6.27): particles live in the emitter's frame, so posing the emitter carries them (m_flags 0x200). */
+export const PARTICLE_FLAG_MODEL_SPACE = 0x00000010;
+/** 23.10 (6.27): the quad's size follows the emitter's scale (m_flags 0x400 → × m_xformScale, 0x0097be80). */
+export const PARTICLE_FLAG_SCALE_WITH_EMITTER = 0x00000020;
+/** 23.10 (6.27): a sphere's particle dies once it passes the centre (m_flags 0x1000, MoveParticle 0x00979bb0). */
+export const PARTICLE_FLAG_SPHERE_STOP_AT_CENTRE = 0x00000080;
+/** 23.10 (6.27): a sphere's particle flies straight up its own Z (m_flags 0x8000, 0x00981950). */
+export const PARTICLE_FLAG_SPHERE_STRAIGHT_UP = 0x00000100;
+/** 23.10 (6.27): a tail is never longer than the particle has lived (m_flags 0x20000, 0x0097be80). */
+export const PARTICLE_FLAG_CLAMP_TAIL = 0x00000400;
+/** Quads lie in the particle space's XY plane instead of turning to face the camera (m_flags 0x4000). */
 export const PARTICLE_FLAG_XY_QUAD = 0x00001000;
-export const PARTICLE_FLAG_OUTWARD = 0x00020000;
-export const PARTICLE_FLAG_INWARD = 0x00040000;
+/** 23.10 (6.27): particles are carried along with the emitter's movement (m_flags 0x80000, 0x0097eb10). */
+export const PARTICLE_FLAG_FOLLOW = 0x00004000;
+/** 23.10 (6.27): a head quad is drawn (SetParticleStyle 0x00978d00 → m_flags 0x4). */
+export const PARTICLE_FLAG_HEAD = 0x00020000;
+/** 23.10 (6.27): a tail quad is drawn, back along the velocity (SetParticleStyle → m_flags 0x8). */
+export const PARTICLE_FLAG_TAIL = 0x00040000;
 /** ScaleVary works on x and y separately; without it, x varies both and y is unused. */
 export const PARTICLE_FLAG_SCALE_VARY_INDEPENDENT = 0x00080000;
 /**
@@ -114,12 +138,11 @@ function trackMaximum(track: WvmTrack | undefined, fallback: number): number {
 /**
  * 13.10 6.15: how many particles this emitter's pool holds, as 0x0097edf0 sizes it: the next power of two of
  * round((rate + rateVary) · (lifespan + lifespanVary) · 1.15), here over the busiest key of each track (Wow.exe
- * regrows the pool as the values rise, never shrinks it), capped by the draw limit. The burst multiplier this
- * simulation applies to bursting emitters is counted in, so they keep the room they emit into.
+ * regrows the pool as the values rise, never shrinks it), capped by the draw limit. 23.10 (6.27): no burst
+ * multiplier — record 0x40 is velocity inheritance (0x0097eb10), and Sync (0x0097edf0) counts rate × life only.
  */
 export function particleCapacity(emitter: WvmParticleEmitter): number {
-  let rate = Math.max(0, trackMaximum(emitter.emissionRate, 0)) + Math.max(0, emitter.emissionRateVary);
-  if ((emitter.flags & PARTICLE_FLAG_BURST) !== 0 && emitter.burstMultiplier > 0) rate *= emitter.burstMultiplier;
+  const rate = Math.max(0, trackMaximum(emitter.emissionRate, 0)) + Math.max(0, emitter.emissionRateVary);
   const life = Math.max(0, trackMaximum(emitter.lifespan, 1)) + Math.max(0, emitter.lifespanVary);
   if (!(rate > 0) || !Number.isFinite(rate * life)) return 0;
   // Wow.exe rounds to nearest, so a pool under half a particle would be empty and the emitter never seen; at
@@ -397,27 +420,6 @@ function transformVector(m: ArrayLike<number>, x: number, y: number, z: number, 
   out[2] = m[2]! * x + m[6]! * y + m[10]! * z;
 }
 
-/** The inverse of the affine 3x3, used to aim a model-space billboard before applying its scale. */
-function inverseTransformVector(
-  m: ArrayLike<number>, x: number, y: number, z: number, out: number[],
-): boolean {
-  const a00 = m[0]!; const a01 = m[4]!; const a02 = m[8]!;
-  const a10 = m[1]!; const a11 = m[5]!; const a12 = m[9]!;
-  const a20 = m[2]!; const a21 = m[6]!; const a22 = m[10]!;
-  const b01 = a22 * a11 - a12 * a21;
-  const b11 = a12 * a20 - a10 * a22;
-  const b21 = a10 * a21 - a11 * a20;
-  const determinant = a00 * b01 + a01 * b11 + a02 * b21;
-  if (!Number.isFinite(determinant) || Math.abs(determinant) < 1e-8) return false;
-  out[0] = (b01 * x + (a02 * a21 - a01 * a22) * y
-    + (a01 * a12 - a02 * a11) * z) / determinant;
-  out[1] = (b11 * x + (a00 * a22 - a02 * a20) * y
-    + (a02 * a10 - a00 * a12) * z) / determinant;
-  out[2] = (b21 * x + (a01 * a20 - a00 * a21) * y
-    + (a00 * a11 - a01 * a10) * z) / determinant;
-  return true;
-}
-
 function normalise(out: number[]): void {
   const length = Math.hypot(out[0]!, out[1]!, out[2]!);
   if (length < 1e-8) {
@@ -486,10 +488,12 @@ function spawnLocal(
         direction[1] = 0;
         direction[2] = 1;
       }
-      if ((emitter.flags & PARTICLE_FLAG_INWARD) !== 0 && (emitter.flags & PARTICLE_FLAG_OUTWARD) === 0) {
-        direction[0] = -direction[0]!;
-        direction[1] = -direction[1]!;
-        direction[2] = -direction[2]!;
+      // 23.10 (6.27): 0x20000/0x40000 are the head and tail styles, not outward/inward — a tail-only sphere
+      // flew backwards here. A sphere's own direction bit is 0x100: straight up its Z (0x00981950).
+      if ((emitter.flags & PARTICLE_FLAG_SPHERE_STRAIGHT_UP) !== 0) {
+        direction[0] = 0;
+        direction[1] = 0;
+        direction[2] = 1;
       }
       break;
     }
@@ -633,39 +637,41 @@ function stepParticlesOnce(system: ParticleSystem, seconds: number, frame: Emitt
   // speed/scale pairs are the ends of a ramp: below the first speed nothing is carried, above the
   // second the full second scale is, and between them it is linear. A standing emitter and an
   // emitter with both scales at zero — which is most of them — cost nothing.
+  // 23.10 (6.27): only a following emitter (record 0x4000 → m_flags 0x80000) carries its particles, by
+  // clamp(speed · slope + intercept, 0, 1) of its own move — the line through (followSpeed1, followScale1) and
+  // (followSpeed2, followScale2), no slope when the speeds coincide (SetFollowParams 0x00978dd0, Update
+  // 0x0097eb10) — and only particles older than two steps take it (MoveParticle 0x00979bb0). SoR's emitters
+  // author follow values without the bit, and every one of them was dragged along.
   let carryX = 0;
   let carryY = 0;
   let carryZ = 0;
-  if (!system.modelSpace && (emitter.followScale1 !== 0 || emitter.followScale2 !== 0) && step > 0) {
+  if (!system.modelSpace && (emitter.flags & PARTICLE_FLAG_FOLLOW) !== 0 && step > 0) {
     const speed = Math.hypot(moveX, moveY, moveZ) / step;
     const span = emitter.followSpeed2 - emitter.followSpeed1;
-    const fraction = span > 0 ? Math.min(1, Math.max(0, (speed - emitter.followSpeed1) / span)) : speed > emitter.followSpeed1 ? 1 : 0;
-    const scale = emitter.followScale1 + (emitter.followScale2 - emitter.followScale1) * fraction;
+    const flat = Math.abs(span) < 2.384e-7;
+    const slope = flat ? 0 : (emitter.followScale2 - emitter.followScale1) / span;
+    const intercept = flat ? 0 : emitter.followScale1 - emitter.followSpeed1 * slope;
+    const scale = Math.min(1, Math.max(0, speed * slope + intercept));
     carryX = moveX * scale;
     carryY = moveY * scale;
     carryZ = moveZ * scale;
   }
 
-  // Which way is down for these particles. A model-space emitter never leaves its own frame, so
-  // its gravity is its own −Z; a world-up emitter uses the scene's vertical however the model is
-  // turned; everything else falls along the emitter's −Z expressed in the world.
+  // 23.10 (6.27): which way is down. Wow.exe takes gravity off the particle's own z (MoveParticle 0x00979bb0):
+  // a model-space particle falls along its emitter's −Z, every other one along the world's — the scene's −Y.
+  // Record 0x8 is the unfogged material bit, not a "world up" switch (0x00833d…, 0x008214e0).
   let gravityX = 0;
-  let gravityY = 0;
-  let gravityZ = -1;
-  if (!system.modelSpace) {
-    if ((emitter.flags & PARTICLE_FLAG_WORLD_UP) !== 0) {
-      gravityX = 0;
-      gravityY = -1;
-      gravityZ = 0;
-    } else {
-      transformVector(matrix, 0, 0, -1, scratchB);
-      normalise(scratchB);
-      gravityX = scratchB[0]!;
-      gravityY = scratchB[1]!;
-      gravityZ = scratchB[2]!;
-    }
-    // Read out of the scratch before anything else borrows it.
+  let gravityY = -1;
+  let gravityZ = 0;
+  if (system.modelSpace) {
+    gravityY = 0;
+    gravityZ = -1;
   }
+  // 23.10 (6.27): a sphere whose particles stop at the centre (record 0x80 on a sphere → m_flags 0x1000).
+  const stopAtCentre = emitter.emitterType === EMITTER_SPHERE && (emitter.flags & PARTICLE_FLAG_SPHERE_STOP_AT_CENTRE) !== 0;
+  const centreX = system.modelSpace ? emitter.position[0] : system.originX;
+  const centreY = system.modelSpace ? emitter.position[1] : system.originY;
+  const centreZ = system.modelSpace ? emitter.position[2] : system.originZ;
 
   const gravity = track(emitter.gravity, 0);
   const drag = emitter.drag;
@@ -695,9 +701,14 @@ function stepParticlesOnce(system: ParticleSystem, seconds: number, frame: Emitt
       particles.pop();
       continue;
     }
-    particle.x += particle.vx * step + carryX;
-    particle.y += particle.vy * step + carryY;
-    particle.z += particle.vz * step + carryZ;
+    // 23.10 (6.27): the carry reaches particles older than two steps only (0x00979bb0).
+    const carried = particle.age > step + step;
+    const stepX = particle.vx * step;
+    const stepY = particle.vy * step;
+    const stepZ = particle.vz * step;
+    particle.x += stepX + (carried ? carryX : 0);
+    particle.y += stepY + (carried ? carryY : 0);
+    particle.z += stepZ + (carried ? carryZ : 0);
     // The exact drop over the step, rather than the drift that accumulating it frame by frame
     // gives: half of it belongs to the position and the whole of it to the velocity.
     if (gravity !== 0) {
@@ -726,6 +737,12 @@ function stepParticlesOnce(system: ParticleSystem, seconds: number, frame: Emitt
       particle.vz *= dragFactor;
     }
     particle.spin += particle.spinRate * step;
+    // 23.10 (6.27): a sphere's inward particle is gone once it moves away from the centre (0x00979bb0).
+    if (stopAtCentre && step > 0
+      && (particle.x - centreX) * stepX + (particle.y - centreY) * stepY + (particle.z - centreZ) * stepZ > 0) {
+      particles[index] = particles[particles.length - 1]!;
+      particles.pop();
+    }
   }
 
   if (step <= 0) return;
@@ -740,10 +757,9 @@ function stepParticlesOnce(system: ParticleSystem, seconds: number, frame: Emitt
     system.pending = 0;
     return;
   }
-  let rate = base;
-  if ((emitter.flags & PARTICLE_FLAG_BURST) !== 0 && emitter.burstMultiplier > 0) {
-    rate *= emitter.burstMultiplier;
-  }
+  // 23.10 (6.27): the rate is the rate — record 0x40 is velocity inheritance (0x0097eb10) and EmitNewParticles
+  // (0x0097d8c0) multiplies only by the density setting and the view-distance thinning, not by 0x170.
+  const rate = base;
   // A step whose variance draw came out at or below zero contributes nothing and takes nothing
   // away. Clearing the accumulator here instead loses every fraction of a particle banked since
   // the last spawn, and loses more of it the higher the frame rate — 82 of the client's emitters
@@ -803,10 +819,11 @@ function spawn(system: ParticleSystem, frame: EmitterFrame): Particle {
     x = scratchA[0]!;
     y = scratchA[1]!;
     z = scratchA[2]!;
-    // The direction is turned by the emitter but not stretched by it: a model at half scale emits
-    // half as far, not half as fast in a direction that is no longer a unit.
+    // 23.10 (6.27): the direction is turned *and* stretched by the emitter's frame — Wow.exe multiplies the
+    // emitter-space velocity by the transform's 3×3 as it stands (CPlaneParticleEmitter::CreateParticle
+    // 0x009815c0, the sphere's 0x00981950), so a spell effect at twice the size throws its sparks twice as far,
+    // as its spawn area already was. Until 23.10 the vector was normalised here.
     transformVector(matrix, direction[0]!, direction[1]!, direction[2]!, scratchB);
-    normalise(scratchB);
     vx = scratchB[0]! * speed;
     vy = scratchB[1]! * speed;
     vz = scratchB[2]! * speed;
@@ -870,6 +887,14 @@ export interface ParticleAppearance {
   height: number;
   /** Which cell of the flip-book, already wrapped into the grid. */
   cell: number;
+  /** 23.10 (6.27): the tail quad's cell (the tail-cell ramp, Wow.exe InterpolateAllTracks 0x00979e90). */
+  tailCell?: number;
+  /**
+   * 23.10 (6.27): the head ramp's next cell and how far towards it this moment is (0..1) — what the enhanced
+   * profile's frame blending mixes; the faithful draw uses `cell` alone, as Wow.exe does.
+   */
+  nextCell?: number;
+  cellBlend?: number;
 }
 
 /**
@@ -908,9 +933,32 @@ export function particleAppearance(
   }
   const cells = Math.max(1, emitter.textureRows) * Math.max(1, emitter.textureColumns);
   sampleRamp(emitter.headCell, life, scratchRamp, 0);
-  const cell = Math.floor(scratchRamp[0]! + particle.cellOffset);
+  const value = scratchRamp[0]! + particle.cellOffset;
+  const cell = Math.floor(value);
   out.cell = ((cell % cells) + cells) % cells;
+  // 23.10 (6.27): the step towards the next authored cell, never past the ramp's own last cell.
+  const top = headCellMaximum(emitter.headCell) + particle.cellOffset;
+  const next = Math.min(cell + 1, Math.max(cell, Math.floor(top)));
+  out.nextCell = ((next % cells) + cells) % cells;
+  out.cellBlend = next === cell ? 0 : value - cell;
+  sampleRamp(emitter.tailCell, life, scratchRamp, 0);
+  const tail = Math.floor(scratchRamp[0]!);
+  out.tailCell = ((tail % cells) + cells) % cells;
   return out;
+}
+
+const HEAD_CELL_MAXIMA = new WeakMap<object, number>();
+
+/** 23.10 (6.27): the largest cell a head ramp names (0 without one), cached per ramp. */
+function headCellMaximum(ramp: WvmRamp | undefined): number {
+  if (!ramp || ramp.values.length === 0) return 0;
+  let maximum = HEAD_CELL_MAXIMA.get(ramp);
+  if (maximum === undefined) {
+    maximum = 0;
+    for (let index = 0; index < ramp.values.length; index++) maximum = Math.max(maximum, ramp.values[index]!);
+    HEAD_CELL_MAXIMA.set(ramp, maximum);
+  }
+  return maximum;
 }
 
 /** The camera's own axes in the scene, which is all a billboard needs to know about it. */
@@ -919,15 +967,21 @@ export interface BillboardView {
   upX: number; upY: number; upZ: number;
 }
 
-/** Where one emitter's quads are written. Four vertices and six indices per particle. */
+/** Where one emitter's quads are written. Four vertices and six indices per quad. */
 export interface QuadBuffers {
   positions: Float32Array;
   uvs: Float32Array;
   colors: Float32Array;
+  /**
+   * 23.10 (6.27): the enhanced profile's frame blending — the next flip-book cell's corner UVs and the blend
+   * towards it, per vertex. Absent on every faithful build, which then writes exactly what it always wrote.
+   */
+  uvs2?: Float32Array;
+  blends?: Float32Array;
 }
 
-/** Room for `count` particles, with the index buffer they all share. */
-export function createQuadBuffers(count: number): QuadBuffers & { indices: Uint16Array } {
+/** Room for `count` quads, with the index buffer they all share. */
+export function createQuadBuffers(count: number, frameBlend = false): QuadBuffers & { indices: Uint16Array } {
   const indices = new Uint16Array(count * 6);
   for (let quad = 0; quad < count; quad++) {
     const base = quad * 4;
@@ -937,245 +991,310 @@ export function createQuadBuffers(count: number): QuadBuffers & { indices: Uint1
     positions: new Float32Array(count * 4 * 3),
     uvs: new Float32Array(count * 4 * 2),
     colors: new Float32Array(count * 4 * 4),
+    ...(frameBlend ? { uvs2: new Float32Array(count * 4 * 2), blends: new Float32Array(count * 4) } : {}),
     indices,
   };
 }
 
-const appearance: ParticleAppearance = { red: 1, green: 1, blue: 1, alpha: 1, width: 1, height: 1, cell: 0 };
+/**
+ * 23.10 (6.27): how many quads one particle of this emitter draws — a head (record 0x20000), a tail
+ * (0x40000) or both (SetParticleStyle 0x00978d00: four vertices each). An emitter with neither style draws a
+ * head: no shipped 3.3.5a emitter is authored so (0 of the 5,445 under `spells\`), and a hand-made one in a
+ * test or a tool should still show something.
+ */
+export function particleQuadsPerParticle(emitter: Pick<WvmParticleEmitter, "flags">): number {
+  const head = (emitter.flags & PARTICLE_FLAG_HEAD) !== 0;
+  const tail = (emitter.flags & PARTICLE_FLAG_TAIL) !== 0;
+  return head && tail ? 2 : 1;
+}
+
+/**
+ * 23.10 (6.27): what an emitter's drawn particles add up to this frame — their summed visible energy
+ * (alpha × brightness × area) and its energy-weighted colour and centre in the scene. The enhanced profile
+ * lights the surroundings from it (`SpellLights.ts`); nothing faithful reads it.
+ */
+export interface ParticleGlow {
+  energy: number;
+  red: number; green: number; blue: number;
+  x: number; y: number; z: number;
+}
+
+const appearance: ParticleAppearance = {
+  red: 1, green: 1, blue: 1, alpha: 1, width: 1, height: 1, cell: 0, tailCell: 0, nextCell: 0, cellBlend: 0,
+};
+
+/** Reused per call: the order a sorted emitter writes its particles in. */
+let sortOrder = new Uint32Array(64);
+let sortDepth = new Float64Array(64);
 
 /**
  * Turns one emitter's live particles into quads, and says how many it wrote.
  *
- * The caller keeps the buffers and the geometry; this only fills them, so the same code serves a
- * campfire on a hillside and a spell effect on a character's hand. A particle whose quad has no
- * area or no opacity is skipped rather than written — a bonfire's smoke spends the last fifth of
- * its life at zero scale, and drawing those is a sixth of the triangles for nothing.
+ * 23.10 (6.27): written as Wow.exe's CParticleEmitter2::BuildVertex (0x0097be80) builds them, in the view's
+ * plane: a head is the quad ±scale around the particle — the corner table at 0x00b2d5b4 is ±1, so the scale
+ * ramp is the *half* size (until 23.10 this drew every particle at half its size) — upright, spinning, lying
+ * in the particle space's XY plane (0x1000) or along its velocity (0x4); a tail runs from the particle back
+ * along its velocity for `tailLength` seconds (clamped to its age by 0x400), as wide as its scale. Corner
+ * texture coordinates are the client's (0x00b2d5d4): the cell's top-left texel at the view's top-left corner,
+ * cell n at column n mod columns and row n div columns counted from the top of the sheet — the rows ran
+ * from the bottom, upside down, before. Sizes take the emitter's scale only with record 0x20.
+ *
+ * The caller keeps the buffers and the geometry; this only fills them. A particle whose quad has no area or
+ * no opacity is skipped rather than written.
  */
 export function writeParticleQuads(
   system: ParticleSystem,
   view: BillboardView,
   buffers: QuadBuffers,
+  glow?: ParticleGlow,
 ): number {
   const { emitter, particles } = system;
   const columns = Math.max(1, emitter.textureColumns);
   const rows = Math.max(1, emitter.textureRows);
-  const pinned = (emitter.flags & PARTICLE_FLAG_PINNED) !== 0
-    && (emitter.flags & PARTICLE_FLAG_DO_NOT_TRAIL) === 0;
-  const xyQuad = (emitter.flags & PARTICLE_FLAG_XY_QUAD) !== 0;
+  const flags = emitter.flags;
+  const tailStyle = (flags & PARTICLE_FLAG_TAIL) !== 0;
+  const headStyle = (flags & PARTICLE_FLAG_HEAD) !== 0 || !tailStyle;
+  const xyQuad = (flags & PARTICLE_FLAG_XY_QUAD) !== 0;
+  const velocityHead = (flags & PARTICLE_FLAG_VELOCITY_HEAD) !== 0;
+  const clampTail = (flags & PARTICLE_FLAG_CLAMP_TAIL) !== 0;
   const spins = particleSpins(emitter); // 13.10 6.15
   const capacity = Math.floor(buffers.positions.length / 12);
+  const m = system.matrix;
+  const modelSpace = system.modelSpace;
+  // m_xformScale: the length of the emitter transform's first column (UpdateXform 0x0097ac20).
+  const frameScale = (flags & PARTICLE_FLAG_SCALE_WITH_EMITTER) !== 0 ? Math.hypot(m[0]!, m[1]!, m[2]!) : 1;
+  const frameBlend = buffers.uvs2 !== undefined && buffers.blends !== undefined;
+
+  // The XY plane of the particles' own space: the emitter's frame for model space, the world's horizontal
+  // (WoW x and y are scene x and −z) otherwise (RenderParticlesPrep 0x0097a390), unit length either way.
+  let planeAX = 1, planeAY = 0, planeAZ = 0, planeBX = 0, planeBY = 0, planeBZ = -1;
+  if (xyQuad && modelSpace) {
+    transformVector(m, 1, 0, 0, scratchA);
+    normalise(scratchA);
+    transformVector(m, 0, 1, 0, scratchB);
+    normalise(scratchB);
+    planeAX = scratchA[0]!; planeAY = scratchA[1]!; planeAZ = scratchA[2]!;
+    planeBX = scratchB[0]!; planeBY = scratchB[1]!; planeBZ = scratchB[2]!;
+  }
+
+  // Depth order, far first (the client pops its queue deepest first), for a sorted emitter.
+  const count = particles.length;
+  const sorted = (flags & PARTICLE_FLAG_SORT) !== 0 && count > 1;
+  if (sorted) {
+    if (sortOrder.length < count) {
+      sortOrder = new Uint32Array(count * 2);
+      sortDepth = new Float64Array(count * 2);
+    }
+    // The view's forward is −(right × up).
+    const forwardX = -(view.rightY * view.upZ - view.rightZ * view.upY);
+    const forwardY = -(view.rightZ * view.upX - view.rightX * view.upZ);
+    const forwardZ = -(view.rightX * view.upY - view.rightY * view.upX);
+    for (let index = 0; index < count; index++) {
+      const particle = particles[index]!;
+      let x = particle.x, y = particle.y, z = particle.z;
+      if (modelSpace) {
+        transformPoint(m, x, y, z, scratchC);
+        x = scratchC[0]!; y = scratchC[1]!; z = scratchC[2]!;
+      }
+      sortOrder[index] = index;
+      sortDepth[index] = x * forwardX + y * forwardY + z * forwardZ;
+    }
+    const order = sortOrder.subarray(0, count);
+    order.sort((left, right) => sortDepth[right]! - sortDepth[left]!);
+  }
 
   let quads = 0;
-  for (const particle of particles) {
+  for (let visit = 0; visit < count; visit++) {
     if (quads >= capacity) break;
+    const particle = particles[sorted ? sortOrder[visit]! : visit]!;
     particleAppearance(emitter, particle, appearance);
     if (appearance.alpha <= 0.002 || appearance.width <= 0 || appearance.height <= 0) continue;
+    const sizeX = appearance.width * frameScale;
+    const sizeY = appearance.height * frameScale;
 
-    let x = particle.x;
-    let y = particle.y;
-    let z = particle.z;
-    let bornX = particle.bx;
-    let bornY = particle.by;
-    let bornZ = particle.bz;
-    if (system.modelSpace) {
-      transformPoint(system.matrix, x, y, z, scratchA);
-      x = scratchA[0]!;
-      y = scratchA[1]!;
-      z = scratchA[2]!;
-      transformPoint(system.matrix, bornX, bornY, bornZ, scratchA);
-      bornX = scratchA[0]!;
-      bornY = scratchA[1]!;
-      bornZ = scratchA[2]!;
+    let centreX = particle.x;
+    let centreY = particle.y;
+    let centreZ = particle.z;
+    if (modelSpace) {
+      transformPoint(m, centreX, centreY, centreZ, scratchA);
+      centreX = scratchA[0]!;
+      centreY = scratchA[1]!;
+      centreZ = scratchA[2]!;
+    }
+    // The velocity in the scene: a model-space one goes through the emitter's frame (s_particleXform).
+    let velocityX = particle.vx;
+    let velocityY = particle.vy;
+    let velocityZ = particle.vz;
+    if (modelSpace) {
+      transformVector(m, velocityX, velocityY, velocityZ, scratchB);
+      velocityX = scratchB[0]!;
+      velocityY = scratchB[1]!;
+      velocityZ = scratchB[2]!;
     }
 
-    // The quad's two axes. A head faces the camera and turns on its own axis; a pinned quad is
-    // stretched along the line it has travelled instead, and only its width faces the camera.
-    //
-    // Pinning is the one thing here decided by the flag table, which is known to be wrong about at
-    // least one bit — 0x400 is named Pinned by two independent sources, and 4,543 of the client's
-    // 25,201 emitters set it. It degrades continuously if that name is wrong: a particle that has
-    // not moved yet gives a quad indistinguishable from a billboard, and the streak only grows as
-    // far as the particle actually travels.
-    let axisX = view.rightX;
-    let axisY = view.rightY;
-    let axisZ = view.rightZ;
-    let sideX = view.upX;
-    let sideY = view.upY;
-    let sideZ = view.upZ;
-    let halfWidth = appearance.width * 0.5;
-    let halfHeight = appearance.height * 0.5;
-    let centreX = x;
-    let centreY = y;
-    let centreZ = z;
-
-    if (system.modelSpace && !xyQuad) {
-      // MODEL_SPACE means the complete particle quad stays in the emitter frame, not only its
-      // centre. Aim the local billboard at the camera, then carry the normalised local axes
-      // through the frame so a hand/effect scale reaches its width and height as well. The old
-      // path transformed only the centre and left a scaled MODEL_SPACE spark at its authored
-      // size. `shaman_thunder.m2` is the shipped hand-effect seam that exposes this most clearly.
-      const rightInModel = inverseTransformVector(system.matrix,
-        view.rightX, view.rightY, view.rightZ, scratchA);
-      const upInModel = inverseTransformVector(system.matrix,
-        view.upX, view.upY, view.upZ, scratchB);
-      if (rightInModel && upInModel) {
-        normalise(scratchA);
-        transformVector(system.matrix, scratchA[0]!, scratchA[1]!, scratchA[2]!, scratchC);
-        const rightScale = Math.hypot(scratchC[0]!, scratchC[1]!, scratchC[2]!);
-        normalise(scratchC);
-        axisX = scratchC[0]!;
-        axisY = scratchC[1]!;
-        axisZ = scratchC[2]!;
-
-        normalise(scratchB);
-        transformVector(system.matrix, scratchB[0]!, scratchB[1]!, scratchB[2]!, scratchC);
-        const upScale = Math.hypot(scratchC[0]!, scratchC[1]!, scratchC[2]!);
-        normalise(scratchC);
-        sideX = scratchC[0]!;
-        sideY = scratchC[1]!;
-        sideZ = scratchC[2]!;
-        if (rightScale > 1e-8) halfWidth *= rightScale;
-        if (upScale > 1e-8) halfHeight *= upScale;
-      }
-    }
-
-    if (xyQuad && !pinned) {
-      // The authored plane is the emitter's own XY, carried into world space by the same matrix
-      // that places its particles. This is intentionally camera-independent: rotating the view
-      // must not make a ground rune or planar magical seal stand up to face it.
-      // PINNED takes precedence when both flags are present: its birth-to-head tail is the shape,
-      // while XY_QUAD only defines the plane of an ordinary head. Three shipped spell emitters set
-      // both, so this ordering is deliberate rather than an accidental second overwrite below.
-      transformVector(system.matrix, 1, 0, 0, scratchA);
-      transformVector(system.matrix, 0, 1, 0, scratchB);
-      const widthScale = Math.hypot(scratchA[0]!, scratchA[1]!, scratchA[2]!);
-      const heightScale = Math.hypot(scratchB[0]!, scratchB[1]!, scratchB[2]!);
-      normalise(scratchA);
-      normalise(scratchB);
-      axisX = scratchA[0]!;
-      axisY = scratchA[1]!;
-      axisZ = scratchA[2]!;
-      sideX = scratchB[0]!;
-      sideY = scratchB[1]!;
-      sideZ = scratchB[2]!;
-      if (system.modelSpace) {
-        if (widthScale > 1e-8) halfWidth *= widthScale;
-        if (heightScale > 1e-8) halfHeight *= heightScale;
-      }
-    }
-
-    if (pinned) {
-      let alongX = x - bornX;
-      let alongY = y - bornY;
-      let alongZ = z - bornZ;
-      const length = Math.hypot(alongX, alongY, alongZ);
-      if (length > 1e-5) {
-        alongX /= length;
-        alongY /= length;
-        alongZ /= length;
-        // Across the streak: the part of the camera's right that is not along it, so the ribbon
-        // of a spark keeps facing the eye however it is flying.
-        const dot = alongX * view.rightX + alongY * view.rightY + alongZ * view.rightZ;
-        let acrossX = view.rightX - alongX * dot;
-        let acrossY = view.rightY - alongY * dot;
-        let acrossZ = view.rightZ - alongZ * dot;
-        const across = Math.hypot(acrossX, acrossY, acrossZ);
-        if (across > 1e-5) {
-          acrossX /= across;
-          acrossY /= across;
-          acrossZ /= across;
-          axisX = acrossX;
-          axisY = acrossY;
-          axisZ = acrossZ;
-          sideX = alongX;
-          sideY = alongY;
-          sideZ = alongZ;
-          // How long the streak is allowed to be: the emitter's own `tailLength`, in seconds of
-          // travel at the particle's current speed. Nothing read it until now — it is filled in on
-          // **5,427 of the 5,445** emitters under `spells\` — and the quad simply ran from the
-          // birthplace to wherever the particle had got to. Over the 881 pinned emitters there the
-          // spread `emissionSpeed × lifespan` is 0.6 yards at the median and 6.7 at p90, but 27.8
-          // at p99 and **83.3 at the worst**: `spells\forceshield_andxplosion.m2` fires at
-          // 27.8 yards/s for 3.0 s with `tailLength` 0.1, so a spark that should be a 2.8-yard
-          // streak was an 83-yard bar across the screen.
-          //
-          // The far end stays on the particle rather than the quad staying centred on the
-          // birth-to-now midpoint: a shortened tail centred on the old midpoint would lag behind
-          // the spark it belongs to, which is worse than a long one.
-          //
-          // The speed is measured in the same space as `length`. For a model-space emitter that is
-          // the emitter's frame carried through the matrix, and the matrix can scale — a spell
-          // visual is placed at a scale the server sends — so the velocity goes through it too,
-          // exactly as the gravity and wind vectors above do.
-          let speed: number;
-          if (system.modelSpace) {
-            transformVector(system.matrix, particle.vx, particle.vy, particle.vz, scratchB);
-            speed = Math.hypot(scratchB[0]!, scratchB[1]!, scratchB[2]!);
-          } else speed = Math.hypot(particle.vx, particle.vy, particle.vz);
-          const limit = emitter.tailLength > 0 ? speed * emitter.tailLength : length;
-          halfHeight = Math.min(length, limit) * 0.5;
-          centreX = x - alongX * halfHeight;
-          centreY = y - alongY * halfHeight;
-          centreZ = z - alongZ * halfHeight;
+    if (headStyle && quads < capacity) {
+      // Four corners from two axes: corner (sx, sy) of {(−1,−1), (1,−1), (1,1), (−1,1)} is
+      // centre + axis·sx·sizeX + side·sy·sizeY.
+      let axisX = view.rightX, axisY = view.rightY, axisZ = view.rightZ;
+      let sideX = view.upX, sideY = view.upY, sideZ = view.upZ;
+      let width = sizeX;
+      const speedSquared = velocityX * velocityX + velocityY * velocityY + velocityZ * velocityZ;
+      if (velocityHead && speedSquared > 2.384e-7) {
+        // 0x200000: the quad's x axis lies along the reverse velocity as the eye sees it, its length
+        // foreshortened by how much of that velocity is in the view's plane.
+        const along = -(velocityX * view.rightX + velocityY * view.rightY + velocityZ * view.rightZ);
+        const up = -(velocityX * view.upX + velocityY * view.upY + velocityZ * view.upZ);
+        const flat = Math.hypot(along, up);
+        if (flat > 4.88e-4) {
+          const ax = along / flat;
+          const ay = up / flat;
+          width = sizeX * flat / Math.sqrt(speedSquared);
+          axisX = view.rightX * ax + view.upX * ay;
+          axisY = view.rightY * ax + view.upY * ay;
+          axisZ = view.rightZ * ax + view.upZ * ay;
+          sideX = view.upX * ax - view.rightX * ay;
+          sideY = view.upY * ax - view.rightY * ay;
+          sideZ = view.upZ * ax - view.rightZ * ay;
+        } else {
+          width = 0;
+        }
+      } else {
+        if (xyQuad) {
+          axisX = planeAX; axisY = planeAY; axisZ = planeAZ;
+          sideX = planeBX; sideY = planeBY; sideZ = planeBZ;
+        }
+        if (spins && particle.spin !== 0) { // 13.10 6.15: no spin rate, no turn (Wow.exe 0x0097be80)
+          const cos = Math.cos(particle.spin);
+          const sin = Math.sin(particle.spin);
+          const baseAxisX = axisX, baseAxisY = axisY, baseAxisZ = axisZ;
+          axisX = baseAxisX * cos + sideX * sin;
+          axisY = baseAxisY * cos + sideY * sin;
+          axisZ = baseAxisZ * cos + sideZ * sin;
+          sideX = sideX * cos - baseAxisX * sin;
+          sideY = sideY * cos - baseAxisY * sin;
+          sideZ = sideZ * cos - baseAxisZ * sin;
         }
       }
-    } else if (spins && particle.spin !== 0) { // 13.10 6.15: no spin rate, no turn (Wow.exe 0x0097be80)
-      const cos = Math.cos(particle.spin);
-      const sin = Math.sin(particle.spin);
-      const baseAxisX = axisX;
-      const baseAxisY = axisY;
-      const baseAxisZ = axisZ;
-      const baseSideX = sideX;
-      const baseSideY = sideY;
-      const baseSideZ = sideZ;
-      axisX = baseAxisX * cos + baseSideX * sin;
-      axisY = baseAxisY * cos + baseSideY * sin;
-      axisZ = baseAxisZ * cos + baseSideZ * sin;
-      sideX = baseSideX * cos - baseAxisX * sin;
-      sideY = baseSideY * cos - baseAxisY * sin;
-      sideZ = baseSideZ * cos - baseAxisZ * sin;
+      if (width > 0) {
+        const dx = axisX * width, dy = axisY * width, dz = axisZ * width;
+        const ex = sideX * sizeY, ey = sideY * sizeY, ez = sideZ * sizeY;
+        const at = quads * 12;
+        const positions = buffers.positions;
+        positions[at] = centreX - dx - ex; positions[at + 1] = centreY - dy - ey; positions[at + 2] = centreZ - dz - ez;
+        positions[at + 3] = centreX + dx - ex; positions[at + 4] = centreY + dy - ey; positions[at + 5] = centreZ + dz - ez;
+        positions[at + 6] = centreX + dx + ex; positions[at + 7] = centreY + dy + ey; positions[at + 8] = centreZ + dz + ez;
+        positions[at + 9] = centreX - dx + ex; positions[at + 10] = centreY - dy + ey; positions[at + 11] = centreZ - dz + ez;
+        writeCellUvs(buffers.uvs, quads, appearance.cell, columns, rows, false);
+        if (frameBlend) {
+          writeCellUvs(buffers.uvs2!, quads, appearance.nextCell ?? appearance.cell, columns, rows, false);
+          buffers.blends!.fill(appearance.cellBlend ?? 0, quads * 4, quads * 4 + 4);
+        }
+        writeColour(buffers.colors, quads);
+        quads++;
+        if (glow) addGlow(glow, centreX, centreY, centreZ, width * sizeY);
+      }
     }
 
-    const dx = axisX * halfWidth;
-    const dy = axisY * halfWidth;
-    const dz = axisZ * halfWidth;
-    const ex = sideX * halfHeight;
-    const ey = sideY * halfHeight;
-    const ez = sideZ * halfHeight;
-
-    const at = quads * 12;
-    const positions = buffers.positions;
-    positions[at] = centreX - dx - ex; positions[at + 1] = centreY - dy - ey; positions[at + 2] = centreZ - dz - ez;
-    positions[at + 3] = centreX + dx - ex; positions[at + 4] = centreY + dy - ey; positions[at + 5] = centreZ + dz - ez;
-    positions[at + 6] = centreX + dx + ex; positions[at + 7] = centreY + dy + ey; positions[at + 8] = centreZ + dz + ez;
-    positions[at + 9] = centreX - dx + ex; positions[at + 10] = centreY - dy + ey; positions[at + 11] = centreZ - dz + ez;
-
-    const column = appearance.cell % columns;
-    const row = Math.floor(appearance.cell / columns) % rows;
-    const u0 = column / columns;
-    const u1 = (column + 1) / columns;
-    // The atlas runs top to bottom while the quad is built bottom-up, so the rows are read the
-    // other way: cell 0 is the top-left tile, not the bottom-left one.
-    const v0 = 1 - (row + 1) / rows;
-    const v1 = 1 - row / rows;
-    // Element by element: `set` would take a fresh eight-number array for every particle, every frame.
-    const uvAt = quads * 8;
-    const uvs = buffers.uvs;
-    uvs[uvAt] = u0; uvs[uvAt + 1] = v0; uvs[uvAt + 2] = u1; uvs[uvAt + 3] = v0;
-    uvs[uvAt + 4] = u1; uvs[uvAt + 5] = v1; uvs[uvAt + 6] = u0; uvs[uvAt + 7] = v1;
-
-    const colorAt = quads * 16;
-    for (let corner = 0; corner < 4; corner++) {
-      const to = colorAt + corner * 4;
-      buffers.colors[to] = appearance.red;
-      buffers.colors[to + 1] = appearance.green;
-      buffers.colors[to + 2] = appearance.blue;
-      buffers.colors[to + 3] = appearance.alpha;
+    if (tailStyle && quads < capacity) {
+      let length = emitter.tailLength;
+      if (clampTail && length > particle.age) length = particle.age;
+      const tailX = -velocityX * length;
+      const tailY = -velocityY * length;
+      const tailZ = -velocityZ * length;
+      const along = tailX * view.rightX + tailY * view.rightY + tailZ * view.rightZ;
+      const up = tailX * view.upX + tailY * view.upY + tailZ * view.upZ;
+      const flatSquared = along * along + up * up;
+      const at = quads * 12;
+      const positions = buffers.positions;
+      if (flatSquared < 0.00077160494) {
+        // Too short to read as a streak on screen: a plain upright quad in the tail's cell.
+        const dx = view.rightX * sizeX, dy = view.rightY * sizeX, dz = view.rightZ * sizeX;
+        const ex = view.upX * sizeY, ey = view.upY * sizeY, ez = view.upZ * sizeY;
+        positions[at] = centreX - dx - ex; positions[at + 1] = centreY - dy - ey; positions[at + 2] = centreZ - dz - ez;
+        positions[at + 3] = centreX + dx - ex; positions[at + 4] = centreY + dy - ey; positions[at + 5] = centreZ + dz - ez;
+        positions[at + 6] = centreX + dx + ex; positions[at + 7] = centreY + dy + ey; positions[at + 8] = centreZ + dz + ez;
+        positions[at + 9] = centreX - dx + ex; positions[at + 10] = centreY - dy + ey; positions[at + 11] = centreZ - dz + ez;
+        writeCellUvs(buffers.uvs, quads, appearance.tailCell ?? 0, columns, rows, false);
+        if (glow) addGlow(glow, centreX, centreY, centreZ, sizeX * sizeY);
+      } else {
+        // Across the streak, in the view's plane: (−perpY, perpX) with perp = flat · scale / |flat|.
+        const inverse = 1 / Math.sqrt(flatSquared);
+        const perpX = along * sizeX * inverse;
+        const perpY = up * inverse * sizeY;
+        const wx = -perpY * view.rightX + perpX * view.upX;
+        const wy = -perpY * view.rightY + perpX * view.upY;
+        const wz = -perpY * view.rightZ + perpX * view.upZ;
+        const endX = centreX + tailX, endY = centreY + tailY, endZ = centreZ + tailZ;
+        // Loop order head+w, head−w, end−w, end+w with the client's texcoords (0,0), (0,1), (1,1), (1,0):
+        // u runs from the particle back along the tail, v across it.
+        positions[at] = centreX + wx; positions[at + 1] = centreY + wy; positions[at + 2] = centreZ + wz;
+        positions[at + 3] = centreX - wx; positions[at + 4] = centreY - wy; positions[at + 5] = centreZ - wz;
+        positions[at + 6] = endX - wx; positions[at + 7] = endY - wy; positions[at + 8] = endZ - wz;
+        positions[at + 9] = endX + wx; positions[at + 10] = endY + wy; positions[at + 11] = endZ + wz;
+        writeCellUvs(buffers.uvs, quads, appearance.tailCell ?? 0, columns, rows, true);
+        if (glow) addGlow(glow, centreX + tailX * 0.5, centreY + tailY * 0.5, centreZ + tailZ * 0.5, Math.sqrt(flatSquared) * sizeX);
+      }
+      if (frameBlend) {
+        // A tail has no frame blending: its cell is the tail ramp's, held.
+        buffers.uvs2!.set(buffers.uvs.subarray(quads * 8, quads * 8 + 8), quads * 8);
+        buffers.blends!.fill(0, quads * 4, quads * 4 + 4);
+      }
+      writeColour(buffers.colors, quads);
+      quads++;
     }
-    quads++;
   }
   return quads;
 }
+
+/**
+ * One quad's texture coordinates for `cell`. A head's loop corners (−1,−1), (1,−1), (1,1), (−1,1) take the
+ * client's texcoords (0,1), (1,1), (1,0), (0,0); a tail's head+w, head−w, end−w, end+w take (0,0), (0,1),
+ * (1,1), (1,0) (0x00b2d5d4 and BuildVertex 0x0097be80). v = 0 is the top of the image here, as for every
+ * client texture (`flipY` off).
+ */
+function writeCellUvs(uvs: Float32Array, quad: number, cell: number, columns: number, rows: number, tail: boolean): void {
+  const column = cell % columns;
+  const row = Math.floor(cell / columns) % rows;
+  const u0 = column / columns;
+  const u1 = (column + 1) / columns;
+  const v0 = row / rows;
+  const v1 = (row + 1) / rows;
+  const at = quad * 8;
+  if (tail) {
+    uvs[at] = u0; uvs[at + 1] = v0; uvs[at + 2] = u0; uvs[at + 3] = v1;
+    uvs[at + 4] = u1; uvs[at + 5] = v1; uvs[at + 6] = u1; uvs[at + 7] = v0;
+  } else {
+    uvs[at] = u0; uvs[at + 1] = v1; uvs[at + 2] = u1; uvs[at + 3] = v1;
+    uvs[at + 4] = u1; uvs[at + 5] = v0; uvs[at + 6] = u0; uvs[at + 7] = v0;
+  }
+}
+
+/** The current appearance's colour on all four corners of one quad. */
+function writeColour(colors: Float32Array, quad: number): void {
+  const at = quad * 16;
+  for (let corner = 0; corner < 4; corner++) {
+    const to = at + corner * 4;
+    colors[to] = appearance.red;
+    colors[to + 1] = appearance.green;
+    colors[to + 2] = appearance.blue;
+    colors[to + 3] = appearance.alpha;
+  }
+}
+
+/** 23.10 (6.27): one drawn quad's share of the emitter's glow (`ParticleGlow`). */
+function addGlow(glow: ParticleGlow, x: number, y: number, z: number, area: number): void {
+  const brightness = Math.max(appearance.red, appearance.green, appearance.blue);
+  const energy = appearance.alpha * brightness * Math.max(0, area);
+  if (!(energy > 0) || !Number.isFinite(energy)) return;
+  glow.energy += energy;
+  glow.red += appearance.red * appearance.alpha * area;
+  glow.green += appearance.green * appearance.alpha * area;
+  glow.blue += appearance.blue * appearance.alpha * area;
+  glow.x += x * energy;
+  glow.y += y * energy;
+  glow.z += z * energy;
+}
+
 
 /* --- Ribbons --------------------------------------------------------------------------------
    13.10 6.15: a ribbon is not a cloud of independent points but one strip that remembers where its bone has

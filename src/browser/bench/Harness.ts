@@ -20,6 +20,25 @@ import {
 } from "./BenchScene.js"; // 22.10 ARC-2 S6a
 import { benchReadiness, configureBenchRenderer, createBenchClients } from "./BenchRenderSide.js"; // 22.10 ARC-2 S6a
 import { wmoReliefStats } from "../WmoReliefShader.js"; // 22.10 (7.47 stage 2)
+import { planSpellVisual, planSpellVisualKitEvent } from "../SpellVisuals.js"; // 23.10 (6.27)
+import type { SpellVisualKitRecord, SpellVisualMetadata } from "../../gateway/SpellVisual.js"; // 23.10 (6.27)
+
+/** 23.10 (6.27): one spell-visual frame strip (`bench/lookdev.mjs --spell/--kit`). */
+interface SpellStripSpec {
+  /** A Spell.dbc id: its SpellVisual is played as SMSG_SPELL_GO would (caster and target = the player). */
+  spell?: number;
+  /** Or one SpellVisualKit, as SMSG_PLAY_SPELL_VISUAL_KIT plays it on the player. */
+  kit?: number;
+  /**
+   * Or any M2 stood in the world beside the player (`dx`/`dy` yards), held for the whole strip: a campfire, a torch
+   * or a portal, to compare emitters outside spells on the same clock and camera (6.27 review).
+   */
+  model?: { path: string; dx: number; dy: number; scale?: number };
+  /** Milliseconds after the cast at which a frame is captured, ascending. */
+  shotsMs: number[];
+  /** Optional crop around the canvas centre for the strip (CSS px of the canvas). */
+  crop?: { width: number; height: number; dy?: number };
+}
 
 // 22.10 ARC-2 S6a: the config, scenario flags, crowd and unit-model table are shared with the worker bench page.
 type Config = BenchConfig;
@@ -28,6 +47,8 @@ interface BenchWindow extends Window {
   __bench?: { prepare(): Promise<unknown>; run(): Promise<unknown>; view(fraction: number): Promise<unknown>;
     state(): unknown; setWorldSubmissionCapture(enabled: boolean): void; sceneStats(): unknown;
     lookdev(overrides: Partial<Config>): void; shadowStats(): unknown;
+    spellStrip(spec: SpellStripSpec): Promise<unknown>; // 23.10 (6.27)
+    spellCost(spec: SpellStripSpec, rounds: number): Promise<unknown>; // 23.10 (6.27)
     gpuView(frames: number, warm: number): Promise<number[]>; terrainRelief(enabled: boolean): void; // 22.10 (7.47)
     wmoRelief(enabled: boolean): void; wmoReliefStats(): unknown }; // 22.10 (7.47 stage 2)
 }
@@ -110,6 +131,8 @@ let lastFrame = 0;
 let preparingWorldCrowd = worldCrowd || city;
 let lastScene: THREE.Object3D | undefined;
 const textureUploads: Array<{ atMs: number; ms: number; type: string; width: number; height: number; depth: number }> = [];
+/** 23.10 (6.27): where the bench player (guid 1) stands, for a spell strip's cast. */
+let selfPoint: (() => { x: number; y: number; z: number }) | undefined;
 
 if (movement) {
   acquireRenderBenchmarkFormalGpuObserver(gpuObserver);
@@ -143,6 +166,7 @@ if (movement) {
   const crowd = new BenchCrowd(config, scene, (i) => city ? cityDisplays[i % cityDisplays.length]!.id : display.id);
   const { state, objects } = crowd;
   const heightAt = (x: number, y: number) => terrain.heightAt(map, x, y);
+  selfPoint = () => { const p = objects[0]!.position!; return { x: p.x, y: p.y, z: p.z }; }; // 23.10 (6.27)
   const unitModels = new BenchUnitModels(benchModelOf(scene, display, cityDisplays));
   const benchLookups = unitModels.lookups;
   const camera = { yaw: 0, pitch: 0, orbit: 0 };
@@ -501,6 +525,98 @@ host.__bench = {
     // Clearing is abrupt too: a still taken while the last frame's storm fades out over five
     // seconds would carry its flattened grade and thinned haze into a clear-sky frame.
     if ('weather' in overrides) world?.setWeather(overrides.weather ?? { state: 0, intensity: 0, abrupt: true });
+  },
+  /**
+   * 23.10 (6.27): a spell visual on the bench player, frame by frame on the replay clock. The plan is scheduled a
+   * few seconds ahead so its model and textures load while the clock stands still (an instance waits hidden until
+   * its start), then the clock runs at 60 frames a second and a frame is read at every `shotsMs`. Nothing is timed.
+   */
+  async spellStrip(spec: SpellStripSpec) {
+    if (!world || !selfPoint) throw new Error('spellStrip needs a world scenario');
+    const worldRenderer = world;
+    if (arrival) arrive(Number.POSITIVE_INFINITY);
+    await settle(lastFraction);
+    reset();
+    if (config.weather) worldRenderer.setWeather(config.weather);
+    const baseSeconds = lastFraction * config.durationSeconds;
+    const clockMs = (seconds: number) => benchFrameTime(config, scene, false, seconds, 0, 0).nowMs;
+    const leadMs = 3000;
+    const startAt = clockMs(baseSeconds) + leadMs;
+    const point = selfPoint();
+    let plan;
+    if (spec.spell !== undefined) {
+      const rows = await (await checked(`${baseUrl}/dbc/spell-visuals?v=9&ids=${spec.spell}`)).json() as SpellVisualMetadata[];
+      const visual = rows.find((row) => row.id === spec.spell);
+      if (!visual) throw new Error(`Spell ${spec.spell} has no visual`);
+      plan = planSpellVisual(visual, { caster: 1n, casterPoint: point, targets: [{ guid: 1n, point }] }, startAt);
+    } else if (spec.kit !== undefined) {
+      const rows = await (await checked(`${baseUrl}/dbc/spell-visual-kits?v=2&ids=${spec.kit}`)).json() as SpellVisualKitRecord[];
+      const kit = rows.find((row) => row.id === spec.kit)?.kit;
+      if (!kit) throw new Error(`Kit ${spec.kit} resolves to nothing`);
+      plan = planSpellVisualKitEvent(kit, { guid: 1n, point }, startAt);
+    } else if (spec.model !== undefined) {
+      const { path, dx, dy, scale } = spec.model;
+      plan = { instances: [{ path, scale: scale ?? 1, attachment: -1, position: { x: point.x + dx, y: point.y + dy, z: point.z },
+        startedAt: startAt, endsAt: startAt + 600_000, modelPlayback: 'hold' as const }], animations: [], sounds: [] };
+    } else throw new Error('spellStrip needs spell, kit or model');
+    worldRenderer.playSpellVisual(plan);
+    let frame = 1;
+    // Load while the clock stands before the start: at least a second of frames, then until nothing is pending.
+    let stable = 0;
+    for (let index = 0; index < 1200 && stable < 12; index++) {
+      await nextFrame(); render(baseSeconds, 1 / 60, frame++);
+      if (index >= 60) stable = readiness().pending === 0 ? stable + 1 : 0;
+    }
+    const shots: Array<{ atMs: number; png: string }> = [];
+    const stepMs = 1000 / 60;
+    const crop = spec.crop;
+    const sheet = crop ? document.createElement('canvas') : undefined;
+    if (sheet && crop) { sheet.width = crop.width * spec.shotsMs.length; sheet.height = crop.height; }
+    const lastShot = Math.max(...spec.shotsMs);
+    let next = 0;
+    // The render's CPU time and the GPU samples of the strip's frames, for a leaf-on/off comparison.
+    const cpuMs: number[] = [];
+    viewGpuMs.length = 0;
+    viewTiming = true;
+    for (let t = 0; t <= lastShot + stepMs && next < spec.shotsMs.length; t += stepMs) {
+      await nextFrame();
+      const at = performance.now();
+      render(baseSeconds + (leadMs + t) / 1000, 1 / 60, frame++);
+      cpuMs.push(performance.now() - at);
+      while (next < spec.shotsMs.length && t + 1e-6 >= spec.shotsMs[next]!) {
+        shots.push({ atMs: Math.round(t), png: canvas.toDataURL('image/png') });
+        if (sheet && crop) {
+          const context = sheet.getContext('2d')!;
+          const sx = (canvas.width - crop.width) / 2;
+          const sy = (canvas.height - crop.height) / 2 + (crop.dy ?? 0);
+          context.drawImage(canvas, sx, sy, crop.width, crop.height, next * crop.width, 0, crop.width, crop.height);
+        }
+        next++;
+      }
+    }
+    for (let wait = 0; wait < 4; wait++) await nextFrame(); // the last GPU queries resolve
+    viewTiming = false;
+    worldRenderer.clearSpellVisuals();
+    const median = (values: number[]) => values.length ? [...values].sort((a, b) => a - b)[values.length >> 1]! : null;
+    return { shots, strip: sheet?.toDataURL('image/png'), readiness: readiness(),
+      timing: { frames: cpuMs.length, cpuMedianMs: median(cpuMs), gpuMedianMs: median(viewGpuMs), gpuSamples: viewGpuMs.length } };
+  },
+  /**
+   * 23.10 (6.27): the cost of «Живые эффекты заклинаний» inside one page — the same strip with the leaf on and
+   * off, alternated `rounds` times, so a machine whose speed drifts between runs (other lanes, the owner's game)
+   * weighs on both sides alike. Only timings come back.
+   */
+  async spellCost(spec: SpellStripSpec, rounds: number) {
+    if (!world) throw new Error('spellCost needs a world scenario');
+    const sides: Record<'on' | 'off', Array<{ cpuMedianMs: number | null; gpuMedianMs: number | null }>> = { on: [], off: [] };
+    for (let round = 0; round < rounds * 2; round++) {
+      const on = round % 2 === 0;
+      world.setLivingSpells(on);
+      const { crop: _crop, ...uncropped } = spec;
+      const result = await host.__bench!.spellStrip(uncropped) as { timing: { cpuMedianMs: number | null; gpuMedianMs: number | null } };
+      sides[on ? 'on' : 'off'].push({ cpuMedianMs: result.timing.cpuMedianMs, gpuMedianMs: result.timing.gpuMedianMs });
+    }
+    return sides;
   },
   shadowStats: () => world ? { cascades: world.shadowCascadeStats, calls: renderer.info.render.calls,
     // 22.10 (7.39): the fog range the still was drawn with, so a distance change reads in yards.
