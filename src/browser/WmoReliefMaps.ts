@@ -70,11 +70,20 @@ export class WmoReliefMaps {
   readonly #retired = new Map<string, MapEntry>();
   readonly #derive: (url: string) => Promise<WmoReliefAnswer>;
   readonly #retain: number;
+  readonly #prepare: ((key: string, texture: THREE.DataTexture) => void) | undefined;
   #bytes = 0;
 
-  constructor(derive: (url: string) => Promise<WmoReliefAnswer> = deriveWmoReliefAsync, retain = WMO_RELIEF_RETAIN) {
+  /**
+   * 23.10 (7.47 stage 3): `prepare` sets up each new map's texture by the key it was asked for (the
+   * doodads' maps clamp where their texture does, `M2Relief.ts`).
+   */
+  constructor(
+    derive: (url: string) => Promise<WmoReliefAnswer> = deriveWmoReliefAsync, retain = WMO_RELIEF_RETAIN,
+    prepare?: (key: string, texture: THREE.DataTexture) => void,
+  ) {
     this.#derive = derive;
     this.#retain = retain;
+    this.#prepare = prepare;
   }
 
   /**
@@ -135,6 +144,7 @@ export class WmoReliefMaps {
       // Released and dropped meanwhile: nothing is kept (released but retained: kept for a comeback).
       if ((this.#entries.get(url) !== entry && this.#retired.get(url) !== entry) || !answer?.relief) return;
       entry.texture = wmoReliefTexture(answer.relief, answer.side);
+      this.#prepare?.(url, entry.texture); // 23.10 (7.47 stage 3)
       this.#bytes += answer.relief.byteLength;
       for (const listener of listeners) listener(entry.texture);
     };

@@ -180,6 +180,8 @@ export function applySettings(): void {
   game.renderer?.setTerrainRelief?.(settingBoolean(values, "experimentalTerrainRelief"));
   // 22.10 (7.47 stage 2): «Объём зданий», its own leaf; enhanced levels only.
   game.renderer?.setWmoRelief?.(settingBoolean(values, "experimentalWmoRelief"));
+  // 23.10 (7.47 stage 3): «Объём предметов», its own leaf; enhanced levels only.
+  game.renderer?.setM2Relief?.(settingBoolean(values, "experimentalModelRelief"));
   // 23.10 (6.27): «Живые эффекты заклинаний», its own leaf (SpellParticleLook.ts, SpellLights.ts).
   game.renderer?.setLivingSpells?.(settingBoolean(values, "experimentalLivingSpells"));
   // 23.10 (7.48): «Чёткие текстуры эффектов» (HdEffectTextures.ts).

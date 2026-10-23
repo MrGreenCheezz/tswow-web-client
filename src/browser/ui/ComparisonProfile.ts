@@ -98,6 +98,7 @@ export const COMPARISON_GRAPHICS_OVERRIDES: Readonly<SettingValues> = Object.fre
   experimentalTerrainMicroNormals: false,
   experimentalTerrainRelief: false, // 22.10 (7.47)
   experimentalWmoRelief: false, // 22.10 (7.47 stage 2)
+  experimentalModelRelief: false, // 23.10 (7.47 stage 3)
   experimentalWaterFresnel: false,
   experimentalWaterMicroWaves: false,
   experimentalWaterSunSparkle: false,
