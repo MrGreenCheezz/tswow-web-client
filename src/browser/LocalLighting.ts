@@ -48,7 +48,16 @@ function m2PointLights(model: WvmModel): FixtureLight[] {
   return lights;
 }
 
-const fixtureCache = new WeakMap<WvmModel, Map<string, readonly FixtureLight[]>>();
+/**
+ * Per model, one map by doodad name for each answer kind: [faithful heuristic, cinematic heuristic, declared lights].
+ * 23.10 (perf): three maps keyed by the name itself, not one keyed by a prefixed name — the fixture pass asks for
+ * every resident doodad every frame, and a `\u0002${name}` key was a fresh string to hash on each ask (the cinematic
+ * profile asks for all of them; 7.46 added a city's open-air doodads to the pass).
+ */
+const fixtureCache = new WeakMap<WvmModel, readonly Map<string, readonly FixtureLight[]>[]>();
+const FIXTURE_FAITHFUL = 0;
+const FIXTURE_CINEMATIC = 1;
+const FIXTURE_DECLARED = 2;
 const EMPTY: readonly FixtureLight[] = Object.freeze([]);
 
 function fixtureColour(path: string): readonly [number, number, number] {
@@ -87,14 +96,16 @@ export function fixtureNameCandidate(name: string): boolean {
  * a lamp. Off/broken fixtures and models without a visible luminous source remain dark.
  */
 export function modelFixtureLights(model: WvmModel, name: string, cinematic = false): readonly FixtureLight[] {
-  let byName = fixtureCache.get(model);
+  let byMode = fixtureCache.get(model);
   // 05.10-A7a-F2 (6.17): with `m2Lights` on, a model that declares its lights is lit by them and
   // only them. Cached apart from the heuristic's answer, so flipping the switch takes effect.
   const declares = renderSwitches.m2Lights && (model.lights?.length ?? 0) > 0;
-  const cacheKey = declares ? `\u0001${name}` : cinematic ? `\u0002${name}` : name;
-  const cached = byName?.get(cacheKey);
+  const mode = declares ? FIXTURE_DECLARED : cinematic ? FIXTURE_CINEMATIC : FIXTURE_FAITHFUL;
+  const cacheKey = name;
+  const cached = byMode?.[mode]!.get(cacheKey);
   if (cached) return cached;
-  if (!byName) { byName = new Map(); fixtureCache.set(model, byName); }
+  if (!byMode) { byMode = [new Map(), new Map(), new Map()]; fixtureCache.set(model, byMode); }
+  const byName = byMode[mode]!;
   if (declares) {
     const declared = m2PointLights(model);
     byName.set(cacheKey, declared.length > 0 ? declared : EMPTY);

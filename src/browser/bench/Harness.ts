@@ -20,6 +20,7 @@ import {
 } from "./BenchScene.js"; // 22.10 ARC-2 S6a
 import { benchReadiness, configureBenchRenderer, createBenchClients } from "./BenchRenderSide.js"; // 22.10 ARC-2 S6a
 import { wmoReliefStats } from "../WmoReliefShader.js"; // 22.10 (7.47 stage 2)
+import { m2ReliefStats } from "../M2Relief.js"; // 23.10 (7.47 stage 3)
 import { ResourceAccountingLedger } from "../ResourceAccounting.js"; // 23.10 (7.48 step 2)
 import { planSpellVisual, planSpellVisualKitEvent } from "../SpellVisuals.js"; // 23.10 (6.27)
 import { noteGatewayAssetGenerations } from "../GatewayGeneration.js"; // 23.10 (7.48)
@@ -53,8 +54,9 @@ interface BenchWindow extends Window {
     lookdev(overrides: Partial<Config>): void; shadowStats(): unknown;
     spellStrip(spec: SpellStripSpec): Promise<unknown>; // 23.10 (6.27)
     spellCost(spec: SpellStripSpec, rounds: number): Promise<unknown>; // 23.10 (6.27)
-    gpuView(frames: number, warm: number): Promise<number[]>; terrainRelief(enabled: boolean): void; // 22.10 (7.47)
+    gpuView(frames: number, warm: number): Promise<number[]>; viewCpu(): number[]; terrainRelief(enabled: boolean): void; // 22.10 (7.47)
     wmoRelief(enabled: boolean): void; wmoReliefStats(): unknown; // 22.10 (7.47 stage 2)
+    m2Relief(enabled: boolean): void; m2ReliefStats(): unknown; // 23.10 (7.47 stage 3)
     textureMemory(): unknown; // 23.10 (7.48 step 2)
     lightTrace(spec: LightTraceSpec): Promise<unknown> }; // 24.10 (7.50)
 }
@@ -123,6 +125,8 @@ let recording = false;
 let gpuReason: string | undefined;
 /** 22.10 (7.47): GPU samples of `gpuView`'s frames (an A/B inside one page, e.g. «Объём земли»). */
 const viewGpuMs: number[] = [];
+/** 23.10 (7.47 stage 3): the render's CPU time of `gpuView`'s timed frames (`viewCpu()`). */
+const viewCpuMs: number[] = [];
 let viewTiming = false;
 const gpuObserver = { onSample(ms: number) { if (recording) gpuSamplesMs.push(ms); if (viewTiming) viewGpuMs.push(ms); },
   onUnavailable(reason: string) { gpuReason = reason; } };
@@ -538,9 +542,15 @@ host.__bench = {
     if (arrival) arrive(Number.POSITIVE_INFINITY);
     for (let frame = 0; frame < warm; frame++) { await nextFrame(); render(0, 1 / 60, frame + 1); }
     viewGpuMs.length = 0;
+    viewCpuMs.length = 0;
     viewTiming = true;
     try {
-      for (let frame = 0; frame < frames; frame++) { await nextFrame(); render(0, 1 / 60, warm + frame + 1); }
+      for (let frame = 0; frame < frames; frame++) {
+        await nextFrame();
+        const at = performance.now();
+        render(0, 1 / 60, warm + frame + 1);
+        viewCpuMs.push(performance.now() - at); // 23.10 (7.47 stage 3)
+      }
       for (let frame = 0; frame < 4; frame++) await nextFrame(); // the last queries resolve
     } finally { viewTiming = false; }
     return [...viewGpuMs];
@@ -551,6 +561,10 @@ host.__bench = {
   wmoRelief(enabled: boolean) { world?.setWmoRelief(enabled); },
   /** 22.10 (7.47 stage 2): tracked and bound materials and the relief maps held (counts, bytes). */
   wmoReliefStats() { return wmoReliefStats(); },
+  m2Relief(enabled: boolean) { world?.setM2Relief(enabled); }, // 23.10 (7.47 stage 3)
+  m2ReliefStats() { return m2ReliefStats(); },
+  /** 23.10 (7.47 stage 3): the CPU samples (ms) of the last `gpuView`. */
+  viewCpu() { return [...viewCpuMs]; },
   /** 23.10 (7.48 step 2): resident texture bytes and the compressed-texture extensions of this context. */
   textureMemory() { return textureMemory(); },
   /** 24.10 (7.50): when each light first appears on a night run or after a teleport (LightTrace.ts). */
