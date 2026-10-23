@@ -13,7 +13,7 @@ import {
 } from "../dist/code/browser/HdWorldTextures.js";
 import { parseHdTexture } from "../dist/code/browser/HdTextureContainer.js";
 import { ModelTextureLoader, registerPendingTextureView } from "../dist/code/browser/TextureLoad.js";
-import { TerrainSplatClient } from "../dist/code/browser/TerrainSplat.js";
+import { TerrainSplatClient, setTerrainSpecularStrength, terrainGlintDrawn } from "../dist/code/browser/TerrainSplat.js";
 import { knownLogicalTextureBytes } from "../dist/code/browser/ResourceAccounting.js";
 import { ENHANCED_GRAPHICS_OVERRIDES } from "../dist/code/browser/ui/EnhancedGraphics.js";
 import { COMPARISON_GRAPHICS_OVERRIDES } from "../dist/code/browser/ui/ComparisonProfile.js";
@@ -149,10 +149,13 @@ test("compressed ground layers become one BC7 array, 512² with ten levels, each
   assert.equal(compressedLayerArray([a, small]), undefined, "one array, one side: mixed sides take the original path");
 });
 
-test("a ground tile: all layers compressed → a BC7 array; one layer without a copy → the whole tile's originals", async () => {
+test("a ground tile: all layers compressed → a BC7 array; one layer without a copy, or the glint drawn → the originals", async () => {
   resetGatewayGeneration();
   noteGatewayAssetGenerations(BASE, undefined, undefined, HG);
   setHdWorldTexturesEnabled(true, true);
+  // The presets: the specular glint is not drawn (strength 0), the only place the HD ground is used.
+  setTerrainSpecularStrength(0);
+  assert.equal(terrainGlintDrawn(), false);
   const saved = { fetch: globalThis.fetch, createImageBitmap: globalThis.createImageBitmap, OffscreenCanvas: globalThis.OffscreenCanvas,
     ImageBitmap: globalThis.ImageBitmap };
   globalThis.ImageBitmap = FakeImageBitmap;
@@ -188,12 +191,24 @@ test("a ground tile: all layers compressed → a BC7 array; one layer without a 
     assert.equal(fallback.layers.image.width, 256);
     assert.equal(asked.filter((url) => url.includes("/terrain-layer/1111") && !url.includes("hd=")).length, 1,
       "only the fallback tile decoded the original of the shared layer");
+    assert.equal(hd.specular, undefined, "an HD tile draws no glint (its layers are opaque)");
+
+    // The classic look draws the glint from the original layers' alpha: there the ground stays the original.
+    setTerrainSpecularStrength(1);
+    assert.equal(terrainGlintDrawn(), true);
+    const classic = new TerrainSplatClient("ws://gateway.test:8090");
+    classic.get(0, { x: 1, y: 1 });
+    await settle(30);
+    assert.ok(classic.get(0, { x: 1, y: 1 }).layers instanceof THREE.DataArrayTexture);
+    assert.deepEqual(classic.hdTileStats, { hd: 0, fallback: 0, missingLayers: [] }, "not even asked for");
+    assert.deepEqual(client.hdTileStats, { hd: 1, fallback: 1, missingLayers: ["3".repeat(40)] });
   } finally {
     for (const [name, value] of Object.entries(saved)) {
       if (value === undefined) delete globalThis[name];
       else globalThis[name] = value;
     }
     setHdWorldTexturesEnabled(false, false);
+    setTerrainSpecularStrength(1);
     resetGatewayGeneration();
   }
 });

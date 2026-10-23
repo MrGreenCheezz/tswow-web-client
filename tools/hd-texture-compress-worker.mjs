@@ -1,12 +1,13 @@
 // 23.10 (7.48): one worker of the world set's compression pass (tools/upscale-textures.mjs `compressSet`).
 //
-// Told `{ id, png, blp, mask, ground, destination }`: reads the HD PNG, puts a ground texture on the terrain array's
-// side (512) with its `_s.blp` specular mask (`mask`, the BLP bytes, if any) in its alpha, encodes BC7 with its mip
-// chain (tools/hd-texture-bc7.mjs) and renames the container into place.
+// Told `{ id, png, blp, ground, destination }`: reads the HD PNG, puts a ground texture on the terrain array's side
+// (512, opaque), encodes BC7 — level 0 the HD picture, level 1 onwards the original (tools/hd-texture-bc7.mjs) — and
+// renames the container into place.
 // Answers `{ id, ok, width, height, levels, bytes, opaque, error, halfError, originalPng }` — `originalPng` is the
 // sha1 of the PNG the gateway publishes for the same BLP (`blpToPng`, what `/visual/texture/<hash>-<n>.png` serves),
 // by which the gateway finds a building's HD copy; `halfError` is the mean absolute difference between the decoded
-// HD level of the original's size and the original (0–255, alpha-weighted colour), the faithfulness check.
+// level of the original's size (since pipeline v2 the original itself, so this is BC7's error) and the original
+// (0–255, alpha-weighted colour), the faithfulness check.
 
 import { createHash } from "node:crypto";
 import { readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -35,24 +36,30 @@ parentPort.on("message", (job) => {
   try {
     const png = PNG.sync.read(readFileSync(job.png));
     let image = { width: png.width, height: png.height, data: new Uint8Array(png.data.buffer, png.data.byteOffset, png.data.length) };
+    const blpBytes = Buffer.from(job.blp);
+    const source = decodeBlp(blpBytes);
+    // Level 1 onwards is the original (see `compressTexture`'s `lower`): the ground's as the gateway lays it out
+    // (resampled to the array's 256, opaque), a building's as decoded.
+    let lower = source;
     if (job.ground) {
-      // The ground's alpha is its specular mask, as the gateway's layer arrays carry it (the `_s.blp` alpha,
-      // tools/generate-terrain-splat.mjs `specularMaskPng`), resampled to the HD side; opaque without one.
-      image = resampleWrapped(image, GROUND_SIDE, GROUND_SIDE);
-      const data = Uint8Array.from(image.data);
-      const mask = job.mask ? resampleWrapped(decodeBlp(Buffer.from(job.mask)), GROUND_SIDE, GROUND_SIDE) : undefined;
-      for (let at = 3; at < data.length; at += 4) data[at] = mask ? mask.data[at] : 255;
-      image = { width: GROUND_SIDE, height: GROUND_SIDE, data };
+      // The ground on the array's sides (the gateway resamples a layer that is not 256 the same way), opaque: the
+      // terrain reads only colour from an HD layer (the specular glint keeps the originals, TerrainSplat.ts).
+      const opaque = (picture, side) => {
+        const data = Uint8Array.from(resampleWrapped(picture, side, side).data);
+        for (let at = 3; at < data.length; at += 4) data[at] = 255;
+        return { width: side, height: side, data };
+      };
+      image = opaque(image, GROUND_SIDE);
+      lower = opaque(source, GROUND_SIDE / 2);
     }
-    const result = compressTexture(image);
+    const result = compressTexture(image, { lower });
     const temporary = `${job.destination}.${process.pid}-${job.id}.tmp`;
     writeFileSync(temporary, result.bytes);
     renameSync(temporary, job.destination);
-    const blp = Buffer.from(job.blp);
-    const originalPng = createHash("sha1").update(blpToPng(blp)).digest("hex");
+    const originalPng = createHash("sha1").update(blpToPng(blpBytes)).digest("hex");
     let halfError;
     try {
-      const original = decodeBlp(blp);
+      const original = source;
       // The ground was resampled to 512: its original is compared on the array's own 256 side, as the gateway lays it.
       const reference = job.ground ? resampleWrapped(original, GROUND_SIDE / 2, GROUND_SIDE / 2) : original;
       if (job.ground) for (let at = 3; at < reference.data.length; at += 4) reference.data[at] = 255;

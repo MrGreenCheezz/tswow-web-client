@@ -114,6 +114,30 @@ test("the WHT1 container: what the tool writes the browser parses — sizes, a f
   assert.equal(CONTAINER_CONTENT_TYPE, HD_TEXTURE_CONTENT_TYPE, "the tool and the gateway name one content type");
 });
 
+test("level 1 onwards can be the original: minified sampling then reads the original's own texels", () => {
+  // Stone-like: every channel follows one field, as most texture blocks do (one colour line per block).
+  const stone = (side, period) => {
+    const data = new Uint8Array(side * side * 4);
+    for (let y = 0; y < side; y++) {
+      for (let x = 0; x < side; x++) {
+        const v = 127 + 90 * Math.sin(x / period) * Math.cos(y / (period * 1.3));
+        data.set([Math.round(v), Math.round(0.8 * v), Math.round(0.6 * v), 255], (y * side + x) * 4);
+      }
+    }
+    return { width: side, height: side, data };
+  };
+  const hd = stone(32, 6);
+  const original = stone(16, 3);
+  const result = decodeContainer(compressTexture(hd, { lower: original }).bytes);
+  assert.equal(result.levels.length, 6);
+  const level1 = decodeBc7Image(result.levels[1].data, 16, 16);
+  assert.ok(psnr(level1.data, original.data) > 40, "level 1 is the original (up to BC7)");
+  const level2 = decodeBc7Image(result.levels[2].data, 8, 8);
+  assert.ok(psnr(level2.data, halveImage(original).data) > 40, "and the chain below it is made from the original");
+  assert.throws(() => compressTexture(hd, { lower: picture(8, 8) }), /expected half/);
+  assert.equal(compressTexture(hd, { lower: picture(16, 16, true) }).opaque, false, "alpha below level 0 counts too");
+});
+
 test("the parser refuses anything that is not a whole, well-formed BC7 texture", () => {
   const good = compressTexture(picture(16, 16)).bytes;
   const png = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, ...new Uint8Array(40)]);

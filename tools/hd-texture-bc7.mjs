@@ -8,6 +8,11 @@
 // for BC3 and half for BC1, but four colours a 4×4 block on a 5:6:5 line is visibly blotchy on smooth upscaled
 // stone and grass; BC7 mode 6 keeps 7-bit endpoints and sixteen steps between them.
 //
+// Mip chain (pipeline v2, 23.10): level 0 is the network's ×2 picture; level 1 onwards is the original texture and
+// the chain made from it in linear light, as the GPU makes it for the original — so anything drawn minified looks
+// exactly as before (up to BC7) and only magnified texels gain. With the chain made from the HD picture instead
+// (v1), the network's smoothing showed at play distance: 4–6 % less sharpness than the original.
+//
 // The encoder writes only mode 6 (one subset, RGBA endpoints 7 bits + a shared p-bit, 4-bit indices): a principal
 // axis fit, then two least-squares refinements of the endpoints against the chosen indices, every p-bit pair tried
 // for blocks with alpha (opaque blocks keep p = 1 so alpha stays exactly 255). Pure functions over straight RGBA.
@@ -324,6 +329,9 @@ for (let value = 0; value < 256; value++) {
   SRGB_TO_LINEAR[value] = c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
 }
 
+/** Values as stored, scaled to 0–1 (an sRGB-space box filter). */
+const IDENTITY = Float64Array.from({ length: 256 }, (_, value) => value / 255);
+
 function linearToSrgb(value) {
   const c = value <= 0.0031308 ? value * 12.92 : 1.055 * value ** (1 / 2.4) - 0.055;
   return Math.min(255, Math.max(0, Math.round(c * 255)));
@@ -333,7 +341,9 @@ function linearToSrgb(value) {
  * The next mip level: a 2×2 box (2×1 / 1×2 at a side of 1), colour averaged in linear light as the GPU's own
  * `generateMipmap` filters an sRGB texture (D3D11 GenerateMips), alpha averaged as stored.
  */
-export function halveImage(image) {
+export function halveImage(image, space = "linear") {
+  const decode = space === "linear" ? SRGB_TO_LINEAR : IDENTITY;
+  const encode = space === "linear" ? linearToSrgb : (value) => Math.min(255, Math.max(0, Math.round(value * 255)));
   const { width, height, data } = image;
   const outWidth = Math.max(1, width >> 1);
   const outHeight = Math.max(1, height >> 1);
@@ -346,17 +356,17 @@ export function halveImage(image) {
       for (let dy = 0; dy < stepY; dy++) {
         for (let dx = 0; dx < stepX; dx++) {
           const at = ((y * stepY + dy) * width + x * stepX + dx) * 4;
-          sums[0] += SRGB_TO_LINEAR[data[at]];
-          sums[1] += SRGB_TO_LINEAR[data[at + 1]];
-          sums[2] += SRGB_TO_LINEAR[data[at + 2]];
+          sums[0] += decode[data[at]];
+          sums[1] += decode[data[at + 1]];
+          sums[2] += decode[data[at + 2]];
           sums[3] += data[at + 3];
         }
       }
       const count = stepX * stepY;
       const at = (y * outWidth + x) * 4;
-      out[at] = linearToSrgb(sums[0] / count);
-      out[at + 1] = linearToSrgb(sums[1] / count);
-      out[at + 2] = linearToSrgb(sums[2] / count);
+      out[at] = encode(sums[0] / count);
+      out[at + 1] = encode(sums[1] / count);
+      out[at + 2] = encode(sums[2] / count);
       out[at + 3] = Math.round(sums[3] / count);
     }
   }
@@ -364,11 +374,11 @@ export function halveImage(image) {
 }
 
 /** Every level from `image` down to 1×1, largest first. */
-export function mipChain(image) {
+export function mipChain(image, space = "linear") {
   const levels = [image];
   let current = image;
   while (current.width > 1 || current.height > 1) {
-    current = halveImage(current);
+    current = halveImage(current, space);
     levels.push(current);
   }
   return levels;
@@ -415,15 +425,22 @@ export function isOpaque(image) {
  * per channel of level 0 (sRGB values). `opaque: true` forces alpha to 255 first (the ground: the terrain shader reads
  * only colour).
  */
-export function compressTexture(image, { forceOpaque = false } = {}) {
+export function compressTexture(image, { forceOpaque = false, lower, mipSpace = "linear" } = {}) {
   let base = image;
   if (forceOpaque) {
     const data = Uint8Array.from(image.data);
     for (let index = 3; index < data.length; index += 4) data[index] = 255;
     base = { width: image.width, height: image.height, data };
   }
-  const opaque = forceOpaque || isOpaque(base);
-  const levels = mipChain(base).map((level, index) => {
+  const opaque = forceOpaque || (isOpaque(base) && (!lower || isOpaque(lower)));
+  // 23.10 (7.48): `lower` — the original texture at half the HD size — is level 1 onwards, so wherever the GPU
+  // samples below level 0 (anything not magnified) it reads the original's own texels and the GPU-made chain of them,
+  // exactly what the original path draws; only magnified texels come from the network's level 0.
+  if (lower && (lower.width !== Math.max(1, base.width >> 1) || lower.height !== Math.max(1, base.height >> 1))) {
+    throw new Error(`lower levels are ${lower.width}×${lower.height}, expected half of ${base.width}×${base.height}`);
+  }
+  const chain = lower ? [base, ...mipChain(lower, mipSpace)] : mipChain(base, mipSpace);
+  const levels = chain.map((level, index) => {
     const encoded = encodeBc7Image(level);
     return { width: level.width, height: level.height, data: encoded.data, error: index === 0 ? encoded.error : undefined };
   });

@@ -381,6 +381,7 @@ async function main() {
       if (textures) {
         const mb = (value) => (value / 1048576).toFixed(1);
         console.log(`  textures: all ${mb(textures.all.estimatedLogicalTextureBytes)} MB, ground ${mb(textures.ground.estimatedLogicalTextureBytes)} MB; ${JSON.stringify(textures.extensions)}`);
+        if (textures.hdTiles) console.log(`  HD ground tiles: ${JSON.stringify(textures.hdTiles)}`);
       }
     }
     if (hdDirectory) console.log(`HD textures served from ${hdDirectory}: ${hdServed} (world, compressed: ${hdWorldServed}, ${(hdWorldBytes.hd / 1048576).toFixed(1)} MB in place of ${(hdWorldBytes.original / 1048576).toFixed(1)} MB)`); // 23.10 (7.48)

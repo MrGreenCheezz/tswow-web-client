@@ -126,6 +126,11 @@ export function terrainSpecularStrengthValue(): number {
   return TERRAIN_SPECULAR.value;
 }
 
+/** 23.10 (7.48): whether a newly loaded tile would draw the ground's specular glint (the switch on, a strength above 0). */
+export function terrainGlintDrawn(): boolean {
+  return renderSwitches.terrainSpecular && TERRAIN_SPECULAR.value > 0;
+}
+
 /**
  * 05.10-A7b-7Г: the specular masks a `terrain-splat-v2` splat.json names — one 40-hex id or null per
  * layer, at least one id — or undefined (an older gateway, a tile without `_s` textures, a bad list).
@@ -453,8 +458,23 @@ export class TerrainSplatClient {
   async #hdLayerArray(layers: readonly string[], request: TerrainSplatRequest): Promise<THREE.CompressedArrayTexture | undefined> {
     for (const id of new Set(layers)) request.hdLayers.set(id, this.#acquireHdLayer(id));
     const textures = await Promise.all(layers.map((id) => request.hdLayers.get(id)!.promise));
-    if (textures.some((texture) => texture === undefined)) return undefined;
-    return compressedLayerArray(textures as HdCompressedTexture[]);
+    const missing = layers.filter((_, slot) => textures[slot] === undefined);
+    const array = missing.length === 0 ? compressedLayerArray(textures as HdCompressedTexture[]) : undefined;
+    // Diagnostics: which tiles took the HD array, and which layer sent a tile back to its originals.
+    if (array) this.#hdTiles.hd++;
+    else {
+      this.#hdTiles.fallback++;
+      for (const id of missing) this.#hdTiles.missingLayers.add(id);
+    }
+    return array;
+  }
+
+  /** 23.10 (7.48): tiles built from compressed HD layers, tiles that fell back, and the layer ids that lacked a copy. */
+  readonly #hdTiles = { hd: 0, fallback: 0, missingLayers: new Set<string>() };
+
+  /** 23.10 (7.48): {@link #hdTiles}, for the bench and diagnostics. */
+  get hdTileStats(): { hd: number; fallback: number; missingLayers: string[] } {
+    return { hd: this.#hdTiles.hd, fallback: this.#hdTiles.fallback, missingLayers: [...this.#hdTiles.missingLayers] };
   }
 
   /**
@@ -543,10 +563,11 @@ export class TerrainSplatClient {
       const painted = (value as { mccv?: unknown }).mccv === true;
       const layerSize = terrainSplatLayerSize(value); // 05.10-A7b-7 (7.16)
       // 23.10 (7.48): «Чёткие текстуры мира» — the ground from the world set's compressed ×2 layers when every one of
-      // them has a copy (a 256 array only). Each copy carries its `_s.blp` specular mask in alpha, as this tile's own
-      // array would (255 without one), so the glint reads the same channel. The originals are still leased when a
-      // relief map wants them: it derives from them, at their scale.
-      const tryHd = hdWorldTexturesActive() && layerSize === LAYER_SIZE;
+      // them has a copy (a 256 array only), and only where the specular glint is not drawn (the presets: strength 0):
+      // the HD layers are opaque, the glint reads the `_s` masks from the original layers' alpha (with the mask in
+      // BC7's alpha the colour lost 1.7 % sharpness). The originals are still leased when a relief map wants them: it
+      // derives from them, at their scale.
+      const tryHd = hdWorldTexturesActive() && layerSize === LAYER_SIZE && !terrainGlintDrawn();
       const hdArray = tryHd ? this.#hdLayerArray(layers as string[], request).catch(() => undefined) : undefined;
       const originalPixels = (): Promise<Uint8ClampedArray[]> => {
         for (const id of new Set(layers)) if (!request.layers.has(id)) request.layers.set(id, this.#acquireLayer(id, layerSize));
@@ -631,7 +652,8 @@ export class TerrainSplatClient {
       if (relief) this.#trackTexture(request, relief);
       if (!this.#isCurrent(request)) return;
       const splat: TerrainSplat = {
-        layers: array, alpha, index, ...(colours ? { colours } : {}), ...(masked ? { specular: true } : {}), // 05.10-A7b-7Г
+        layers: array, alpha, index, ...(colours ? { colours } : {}),
+        ...(masked && !(array instanceof THREE.CompressedArrayTexture) ? { specular: true } : {}), // 05.10-A7b-7Г; 23.10 (7.48)
         ...(relief ? { relief } : {}), // 22.10 (7.47)
       };
       const tile: TerrainSplatTileRecord = {

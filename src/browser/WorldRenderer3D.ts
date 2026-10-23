@@ -59,7 +59,7 @@ import {
 import { setTerrainBakedShadowStrength, terrainBakedShadowStrength } from "./TerrainSplat.js"; // 05.10-A7b-7
 import { setTerrainReliefWanted, setTerrainSplatRelief, terrainReliefActive } from "./TerrainReliefShader.js"; // 22.10 (7.47)
 import { setWmoReliefActive, trackWmoReliefMaterial, wmoReliefActive, wmoRunReliefVariant } from "./WmoReliefShader.js"; // 22.10 (7.47 stage 2)
-import { setTerrainSpecularColour, setTerrainSpecularStrength, terrainSpecularStrength } from "./TerrainSplat.js"; // 05.10-A7b-7Г; 13.10 7.16
+import { setTerrainSpecularColour, setTerrainSpecularStrength, terrainGlintDrawn, terrainSpecularStrength } from "./TerrainSplat.js"; // 05.10-A7b-7Г; 13.10 7.16
 import {
   GROUND_COVER_BUDGET, GROUND_COVER_MARGIN, GROUND_COVER_MAX_RADIUS, createGroundCoverCellCache,
   groundCoverRecipeSource, hypot2, scatterGroundCover, writeGroundCoverInstanceMatrices,
@@ -9131,7 +9131,11 @@ export class WorldRenderer3D {
     if (this.environmentShellRange !== oldShellRange) this.#environmentCandidatesAt = undefined;
     setWorldLightImmersiveStrength(this.#worldLight, next.immersiveStrength);
     setTerrainBakedShadowStrength(terrainBakedShadowStrength(next.quality)); // 05.10-A7b-7 (7.06)
+    const glintBefore = terrainGlintDrawn(); // 23.10 (7.48)
     setTerrainSpecularStrength(terrainSpecularStrength(next.quality)); // 05.10-A7b-7Г (7.16 Г)
+    // 23.10 (7.48): HD ground tiles exist only where the glint is not drawn; a lighting change that turns it on or off
+    // reloads the ground, so a classic-lit tile gets its glint (originals) and a preset tile its HD layers.
+    if (hdWorldTexturesActive() && terrainGlintDrawn() !== glintBefore) this.#hdWorldTerrainReload = true;
     if (next.localLights === 0) this.#worldLight.wowLocalLightCount.value = 0;
     this.#worldLight.wowLocalLightPool.value = next.cinematicLights; // 22.10 (7.36)
 

@@ -3,7 +3,7 @@
 //   node tools/upscale-textures.mjs --set effects            build or bring up to date the effects set
 //   node tools/upscale-textures.mjs --set effects --dry-run  say what would be done, touch nothing
 //
-// Options: --model realesr-animevideov3 (default; see MODEL below), --batch 150 (textures per GPU run),
+// Options: --model (default per set, SET_MODEL below: animevideov3 for effects, x4plus for the world), --batch 150 (textures per GPU run),
 // --max-side 512 (the largest side an upscaled texture may reach; 256 keeps ×4 to 64 px sources and ×2 to 128),
 // --only <text> (paths containing it), --out <dir> (default HD_TEXTURE_DIR or .runtime/hd-textures),
 // --gpu <id>, --lock-script <gpu-lock.mjs> --lock-owner <name> (wraps every GPU run in
@@ -24,8 +24,8 @@
 // The `world` set (23.10, step 2: ground textures and buildings' diffuse textures, ×2 up to 256 px a side) also gets
 // a GPU-compressed form of every entry, made on the CPU after the GPU runs (`compressSet`, tools/hd-texture-bc7.mjs):
 // - `<id>.wht` — BC7 with its full mip chain in a small container, what the gateway serves to the world routes (the
-//   PNG beside it is only the compressor's input); a ground texture is put on the terrain array's 512 side with its
-//   `_s.blp` specular mask in alpha; `<id>.wht.src` — its stamp (the texture, and the `_s.blp` it read);
+//   PNG beside it is only the compressor's input); level 1 onwards is the original texture, so only magnified texels
+//   change; a ground texture is put on the terrain array's 512 side, opaque; `<id>.wht.src` — its stamp;
 // - the manifest entry's `compressed` record (sizes, BC7 error, the HD-½-vs-original difference and, for a building
 //   texture, `originalPng`: the sha1 of the PNG `/visual/texture` serves, by which the gateway finds it).
 // `--compress-only` runs only that CPU pass (no GPU), `--no-compress` skips it, `--workers N` (default 4) threads.
@@ -60,6 +60,14 @@ export const MANIFEST_SCHEMA = "hd-textures-1";
  * soft shapes soft and the hard edges clean, and is 4.7× faster (0.9 s against 4.3 s).
  */
 export const MODEL = "realesr-animevideov3";
+/**
+ * 23.10 (7.48 step 2): the world set's model. On 40 sampled 256² building and ground textures (×4, 2×2 box, as built)
+ * realesrgan-x4plus kept the stone grain, cloth folds and wood fibre that animevideov3 paints flat: Laplacian
+ * sharpness 8.30 against 6.12 (a bilinear ×2 of the original: 3.96), drift back to the source 3.8 against 3.4 — and
+ * on screen animevideov3's level 0 read 6 % softer than the original's magnified texels on Stormwind's cobbles. The
+ * streaks it draws into soft smoke do not arise on these opaque surfaces. 4× the GPU time (11.5 s against 2.8 s).
+ */
+export const SET_MODEL = Object.freeze({ effects: MODEL, world: "realesrgan-x4plus" });
 
 /** The same name the gateway computes (src/gateway/HdTextures.ts `hdTextureId`). */
 export function hdTextureId(path) {
@@ -105,7 +113,7 @@ function decodePng(bytes) {
 }
 
 function parseArguments(argv) {
-  const options = { set: undefined, model: MODEL, batch: 150, maxSide: undefined, only: undefined, out: undefined, gpu: undefined,
+  const options = { set: undefined, model: undefined, batch: 150, maxSide: undefined, only: undefined, out: undefined, gpu: undefined,
     lockScript: undefined, lockOwner: "upscale-textures", dryRun: false, restampOnly: false,
     compress: true, compressOnly: false, workers: Math.max(1, Math.min(4, availableParallelism() - 2)) };
   for (let index = 0; index < argv.length; index++) {
@@ -134,6 +142,7 @@ function parseArguments(argv) {
     }
   }
   if (!SET_NAMES.includes(options.set)) throw new Error(`--set must be one of ${SET_NAMES.join(", ")}`);
+  options.model ??= SET_MODEL[options.set];
   if (!MODELS[options.model]) throw new Error(`--model must be one of ${Object.keys(MODELS).join(", ")}`);
   if (!Number.isInteger(options.batch) || options.batch < 1) throw new Error("--batch must be a positive integer");
   if (!Number.isInteger(options.workers) || options.workers < 1) throw new Error("--workers must be a positive integer");
@@ -166,9 +175,12 @@ function takeSetLock(setDirectory) {
  * 23.10 (7.48): bumped when the compressed form changes (encoder, mip filter, ground side), so every `.wht` is
  * rebuilt — on the CPU only, from the PNG beside it.
  */
-export const COMPRESS_PIPELINE = "bc7-mode6-v1/mips-linear/ground512";
-/** 23.10 (7.48): a ground texture's container also carries its `_s.blp` specular mask in alpha. */
-const GROUND_COMPRESS_PIPELINE = `${COMPRESS_PIPELINE}/specmask`;
+export const COMPRESS_PIPELINE = "bc7-mode6-v2/hd0-original-mips/ground512";
+/**
+ * 23.10 (7.48): a ground texture's container is opaque — its `_s.blp` specular mask is not carried (the client uses the
+ * HD ground only where the glint is not drawn; with the mask in alpha BC7 cost the colour 1.7 % sharpness).
+ */
+const GROUND_COMPRESS_PIPELINE = `${COMPRESS_PIPELINE}/opaque`;
 
 /** 23.10 (7.48): whether a world-set path is a ground texture (the terrain array's layers). */
 function isGround(path) {
@@ -178,17 +190,6 @@ function isGround(path) {
 /** 23.10 (7.48): the pipeline a compressed entry of `path` must have been made by. */
 export function compressPipeline(path) {
   return isGround(path) ? GROUND_COMPRESS_PIPELINE : COMPRESS_PIPELINE;
-}
-
-/**
- * 23.10 (7.48): the archive paths a compressed copy is stamped with — the texture, and for the ground its `_s.blp`
- * when the client has one (the mask in its alpha), so a patch that replaces either retires the copy.
- */
-async function compressedSources(path, archives) {
-  if (!isGround(path)) return { paths: [path], mask: undefined };
-  const maskPath = path.replace(/\.blp$/, "_s.blp");
-  const mask = await archives.read(maskPath);
-  return mask ? { paths: [path, maskPath], mask } : { paths: [path], mask: undefined };
 }
 
 /** 23.10 (7.48): the compressed form beside an HD PNG (`<id>.wht`, src/gateway/HdTextures.ts names it the same). */
@@ -207,11 +208,10 @@ function removeEntryFiles(png) {
 /**
  * 23.10 (7.48): the world set's compressed forms (tools/hd-texture-bc7.mjs) — every entry whose `.wht` is missing
  * or was made by another pipeline (`compressPipeline`), on `options.workers` threads (CPU only). A ground texture
- * (`tileset\`) is put on the terrain array's 512 side with its `_s.blp` specular mask in alpha (opaque without one),
- * as the gateway's layer arrays carry it. The manifest entry gains
- * `compressed: { pipeline, width, height, levels, bytes, opaque, error, halfError, originalPng, mask? }`; the file is
- * stamped with its sources (the texture, and the `_s.blp` it read), so the gateway serves it only while they match
- * the client.
+ * (`tileset\`) is put on the terrain array's 512 side, opaque. Level 1 onwards of every container is the original
+ * texture (tools/hd-texture-bc7.mjs). The manifest entry gains
+ * `compressed: { pipeline, width, height, levels, bytes, opaque, error, halfError, originalPng }`; the file is stamped
+ * like the PNG, so the gateway serves it only while it matches the client.
  */
 async function compressSet(manifest, manifestFile, setDirectory, archives, options) {
   const jobs = [];
@@ -242,7 +242,6 @@ async function compressSet(manifest, manifestFile, setDirectory, archives, optio
           const job = jobs[next];
           const id = next++;
           const blp = await archives.read(job.path);
-          job.sources = await compressedSources(job.path, archives);
           if (!blp) {
             failed++;
             continue;
@@ -250,7 +249,7 @@ async function compressSet(manifest, manifestFile, setDirectory, archives, optio
           current = job;
           worker.postMessage({ id, png: job.png, destination: job.destination, ground: job.ground,
             blp: new Uint8Array(blp), // a compact copy: a view would clone its whole pool slab
-            ...(job.sources.mask ? { mask: new Uint8Array(job.sources.mask) } : {}) });
+          });
 
           return;
         }
@@ -263,9 +262,9 @@ async function compressSet(manifest, manifestFile, setDirectory, archives, optio
           const job = current;
           if (answer.ok && job && manifest.entries[job.path]) {
             const { ok: _ok, id: _id, ...result } = answer;
-            await stampGenerated(job.destination, archives, { paths: job.sources.paths });
+            await stampGenerated(job.destination, archives, { paths: [job.path] });
             manifest.entries[job.path].compressed = { pipeline: compressPipeline(job.path), ...result,
-              ...(job.sources.mask ? { mask: true } : {}) };
+            };
             bytes += answer.bytes;
             done++;
             if (++sinceWrite >= 250) {
@@ -361,9 +360,8 @@ async function main() {
         }
         // 23.10 (7.48): and its compressed form, which carries a stamp of its own.
         const compressed = compressedFile(destination);
-        const sources = existsSync(compressed) && !options.dryRun ? (await compressedSources(entry.path, archives)).paths : undefined;
-        if (sources && !await stampIsCurrent(compressed, archives, { paths: sources })) {
-          await stampGenerated(compressed, archives, { paths: sources });
+        if (!options.dryRun && existsSync(compressed) && !await stampIsCurrent(compressed, archives, { paths: [entry.path] })) {
+          await stampGenerated(compressed, archives, { paths: [entry.path] });
         }
         continue;
       }

@@ -178,6 +178,7 @@ if (movement) {
     const gl = renderer.getContext();
     return {
       all: all.snapshot().gpuTextures, ground: ground.snapshot().gpuTextures,
+      hdTiles: splat.hdTileStats,
       extensions: (gl.getSupportedExtensions() ?? []).filter((name) => /compressed|bptc|s3tc|astc|etc|rgtc/i.test(name)),
     };
   };

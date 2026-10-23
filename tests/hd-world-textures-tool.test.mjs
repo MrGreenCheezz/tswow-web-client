@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { wmoDiffuseTextures, worldSet } from "../tools/hd-texture-set.mjs";
-import { compressedFile, compressPipeline, COMPRESS_PIPELINE, SCALE_POLICY } from "../tools/upscale-textures.mjs";
+import { compressedFile, compressPipeline, COMPRESS_PIPELINE, MODEL, SCALE_POLICY, SET_MODEL } from "../tools/upscale-textures.mjs";
 
 function chunk(tag, body) {
   const head = Buffer.alloc(8);
@@ -65,5 +65,7 @@ test("×2 only up to 256 a side and never past 1024; compressed bookkeeping per 
   assert.equal(SCALE_POLICY.world(256, 512), 1);
   assert.equal(compressedFile("C:\\set\\abc.png"), "C:\\set\\abc.wht");
   assert.equal(compressPipeline("dungeons\\textures\\wall.blp"), COMPRESS_PIPELINE);
-  assert.notEqual(compressPipeline("tileset\\elwynn\\grass.blp"), COMPRESS_PIPELINE, "the ground also carries its specular mask");
+  assert.notEqual(compressPipeline("tileset\\elwynn\\grass.blp"), COMPRESS_PIPELINE, "the ground is stored opaque");
+  assert.equal(SET_MODEL.effects, MODEL, "effects keep animevideov3");
+  assert.equal(SET_MODEL.world, "realesrgan-x4plus", "the world keeps its grain with x4plus");
 });
