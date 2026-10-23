@@ -12,19 +12,28 @@
  *   * Soft ground: a camera-facing particle fades over its last `SPELL_SOFT_GROUND` yards above the ground
  *     under its effect, so a glow standing in the floor ends in a gradient rather than a cut line. A quad
  *     lying in its own XY plane (a rune, a ring on the floor) is meant to touch the ground and keeps its look.
- *   * Glow: additive particles get brighter where they are dense, and their hottest texels roll towards
- *     white, which lands them over the cinematic bloom's 0.8 threshold (CinematicPost.ts) — the capture is
- *     display-referred eight-bit, so headroom has to be spent here, on the particle, not in the post chain.
+ *   * Glow: an additive camera-facing particle's hottest texels — where what it adds to the frame passes
+ *     `SPELL_GLOW_KNEE` — roll towards white, which lands them over the cinematic bloom's 0.8 threshold
+ *     (CinematicPost.ts); the capture is display-referred eight-bit, so headroom has to be spent on the
+ *     particle. 23.10 (6.27 review): only the peaks are lifted — no gain on the whole quad — and a quad lying
+ *     in its XY plane gets none: Seal of Righteousness's ground ring is 55 such quads a second stacked at the
+ *     feet, and a lift on each filled the ring into a yellow pool around the legs (41 % of the ring area
+ *     yellow-filled against 16 % faithful).
  */
 import * as THREE from "three";
 
 /** Yards above the effect's ground over which a camera-facing particle fades in. */
 export const SPELL_SOFT_GROUND = 0.6;
-/** Brightness gain of an additive spell particle at full opacity (1 + gain · energy). */
-export const SPELL_GLOW_GAIN = 0.45;
-/** Above this channel maximum the colour rolls towards white by `SPELL_GLOW_WHITE` of the excess. */
-export const SPELL_GLOW_KNEE = 0.55;
-export const SPELL_GLOW_WHITE = 0.9;
+/** Above this contribution the colour rolls towards white by `SPELL_GLOW_WHITE` of the excess. */
+export const SPELL_GLOW_KNEE = 0.6;
+export const SPELL_GLOW_WHITE = 0.6;
+/**
+ * 23.10 (6.27 review): an additive quad lying in its XY plane adds this share of its light. A ground ring is many
+ * such quads stacked on one spot, and under the cinematic bloom and grade (on with this leaf) the faithful
+ * stack — already white at its core — spreads into a gold pool over the legs; at this share the ring keeps its
+ * band and its glowing rim. The faithful profile never reaches this.
+ */
+export const SPELL_GROUND_QUAD_SHARE = 0.7;
 
 /** The per-effect inputs a living spell material reads each frame. */
 export interface SpellParticleLookUniforms {
@@ -48,8 +57,6 @@ export function spellSoftGroundFade(height: number, softness = SPELL_SOFT_GROUND
  */
 export function spellGlowColour(rgb: [number, number, number], alpha: number, srcAlphaBlend = true): [number, number, number] {
   const a = Math.max(0, Math.min(1, alpha));
-  const energy = a * a * (3 - 2 * a);
-  for (let index = 0; index < 3; index++) rgb[index] = rgb[index]! * (1 + SPELL_GLOW_GAIN * energy);
   const weight = srcAlphaBlend ? a : 1;
   const peak = Math.max(rgb[0], rgb[1], rgb[2]) * weight;
   const white = Math.max(0, peak - SPELL_GLOW_KNEE) * SPELL_GLOW_WHITE / Math.max(weight, 1e-3);
@@ -60,7 +67,8 @@ export function spellGlowColour(rgb: [number, number, number], alpha: number, sr
 /**
  * Installs the living look on one spell particle material. `additive` decides whether the glow applies
  * (an alpha or modulating particle is a smoke or a shadow, not a light); `srcAlphaBlend` whether the soft
- * fade goes on the alpha (SrcAlpha blends) or on the colour (One/One); `soft` is false for XY-plane quads;
+ * fade goes on the alpha (SrcAlpha blends) or on the colour (One/One); `soft` (the ground fade and the glow)
+ * is false for XY-plane quads, which lie on the ground on purpose;
  * `frameBlend` whether the material reads the `uv2Cell`/`cellBlend` attributes.
  */
 export function installSpellParticleLook(
@@ -91,16 +99,16 @@ export function installSpellParticleLook(
       if ( vSpellCellBlend > 0.0 ) sampledDiffuseColor = mix( sampledDiffuseColor, texture2D( map, vSpellUv2 ), vSpellCellBlend );
       diffuseColor *= sampledDiffuseColor;`);
     }
-    const glow = options.additive ? `
-      float spellEnergy = smoothstep( 0.0, 1.0, diffuseColor.a );
-      diffuseColor.rgb *= 1.0 + ${SPELL_GLOW_GAIN.toFixed(3)} * spellEnergy;
+    const glow = options.additive && options.soft ? `
       float spellWeight = ${options.srcAlphaBlend ? "diffuseColor.a" : "1.0"};
       float spellPeak = max( diffuseColor.r, max( diffuseColor.g, diffuseColor.b ) ) * spellWeight;
       diffuseColor.rgb += vec3( max( spellPeak - ${SPELL_GLOW_KNEE.toFixed(3)}, 0.0 ) * ${SPELL_GLOW_WHITE.toFixed(3)}
         / max( spellWeight, 0.001 ) );` : "";
     const soft = options.soft ? `
       float spellSoft = smoothstep( 0.0, ${SPELL_SOFT_GROUND.toFixed(3)}, vSpellHeight - spellGround );
-      ${options.srcAlphaBlend ? "diffuseColor.a *= spellSoft;" : "diffuseColor.rgb *= spellSoft;"}` : "";
+      ${options.srcAlphaBlend ? "diffuseColor.a *= spellSoft;" : "diffuseColor.rgb *= spellSoft;"}`
+      : options.additive ? `
+      ${options.srcAlphaBlend ? "diffuseColor.a" : "diffuseColor.rgb"} *= ${SPELL_GROUND_QUAD_SHARE.toFixed(3)};` : "";
     shader.fragmentShader = replaceOnce(shader.fragmentShader, "#include <color_fragment>", `#include <color_fragment>
       /* spell-look-v1 */${glow}${soft}`);
   };

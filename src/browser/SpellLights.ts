@@ -20,9 +20,13 @@ import type { LocalLightSample } from "./LocalLighting.js";
 /** Effects that light the world at once; the rest are drawn but cast nothing. */
 export const SPELL_LIGHT_LIMIT = 2;
 /** Energy (alpha × brightness × yd²) at which a spell light reaches 63 % of its peak. */
-export const SPELL_LIGHT_ENERGY = 3;
-/** Intensity of a saturated spell light, in the fixture lights' units (a lamp is ~1.1). */
-export const SPELL_LIGHT_PEAK = 1.25;
+export const SPELL_LIGHT_ENERGY = 6;
+/**
+ * Intensity of a saturated spell light, in the fixture lights' units (a lamp is ~1.1). 23.10 (6.27 review): 0.6,
+ * not 1.25 — at 1.25 Seal of Righteousness washed the paladin's legs gold; a spell lights its surroundings, it
+ * is not a lamp held at the knee.
+ */
+export const SPELL_LIGHT_PEAK = 0.6;
 /** Reach of a spell light's soft pool, in yards. */
 export const SPELL_LIGHT_RADIUS = 9;
 /** Time constant of the smoothing, in seconds. */

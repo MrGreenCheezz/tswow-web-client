@@ -213,7 +213,21 @@ test("6.27 the soft ground fade and the glow are bounded, and the glow whitens o
   const faint = spellGlowColour([1, 0.6, 0.1], 0.2);
   assert.ok(faint[2] < 0.2, "a faint particle keeps its hue");
   const dense = spellGlowColour([1, 0.6, 0.1], 1);
-  assert.ok(dense[0] > 1 && dense[2] > SPELL_GLOW_KNEE, "a dense one rolls towards white, over the bloom threshold");
+  assert.ok(dense[0] > 1 && dense[2] - 0.1 > 0.2, "a dense one rolls towards white, over the bloom threshold");
+  assert.equal(SPELL_GLOW_KNEE, 0.6);
+  // 6.27 review: no gain on the whole quad — below the knee a particle is exactly its own colour.
+  assert.deepEqual(faint, [1, 0.6, 0.1]);
+});
+
+test("6.27 review: a quad lying in its XY plane (a ground ring) gets neither the glow nor the soft fade", () => {
+  const ring = emitter({ flags: PARTICLE_FLAG_HEAD | 0x1000, emissionRate: track([10]), lifespan: track([1]) });
+  const effects = buildModelEffects({ globalSequences: NONE, particleEmitters: [ring], ribbonEmitters: [],
+    textures: [{ type: 0, flags: 0, path: "spells\\shockwave.blp" }] },
+  { baseUrl: "http://gateway", loadTexture: () => new THREE.Texture(), livingSpells: true });
+  const shader = compile(effects.emitters[0].material);
+  assert.match(shader.fragmentShader, /spell-look-v1/);
+  assert.doesNotMatch(shader.fragmentShader, /spellPeak|spellSoft/);
+  disposeModelEffects(effects);
 });
 
 test("6.27 spell lights follow the drawn glow, saturate, smooth, keep the brightest two and fade out", () => {
