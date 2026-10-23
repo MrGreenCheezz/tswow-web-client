@@ -197,6 +197,7 @@ export async function runLightTrace(spec: LightTraceSpec, deps: LightTraceDeps):
   let liftFrame = -1;
   let readyFrame = -1;
   let liftCensus: LightCensusFrame | undefined;
+  let liftProgress: unknown;
   const snapshots: { seconds: number; census: LightCensusFrame | undefined }[] = [];
   const marks = [0, 0.5, 1, 2, 3, 5, 8, 12, 20];
   let mark = 0;
@@ -206,6 +207,7 @@ export async function runLightTrace(spec: LightTraceSpec, deps: LightTraceDeps):
     if (liftFrame < 0 && readyFrame >= 0 && frame >= readyFrame + 3) {
       liftFrame = frame;
       liftCensus = deps.census();
+      liftProgress = deps.progress();
     }
     if (liftFrame >= 0) {
       const after = (frame - liftFrame) * dt;
@@ -242,5 +244,6 @@ export async function runLightTrace(spec: LightTraceSpec, deps: LightTraceDeps):
     };
   }
   report["progress"] = deps.progress();
+  report["atLift"] = liftProgress;
   return report;
 }

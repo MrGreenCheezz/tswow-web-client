@@ -113,6 +113,11 @@ export class PrelitLights<T extends PrelitPlacement = PrelitPlacement> {
   /** Counters for the bench and the tests. */
   readonly stats = { rebuilds: 0, candidates: 0, lights: 0, rebuildMs: 0, scans: 0, scanMs: 0, placements: 0 };
 
+  /** The next update places the lights again at once if anything changed (the loading curtain lifts next). */
+  flush(): void {
+    this.#framesSinceRebuild = PRELIT_REBUILD_FRAMES;
+  }
+
   /** Grows when the light list changed (the far glows rebuild from it). */
   get generation(): number {
     return this.#generation;

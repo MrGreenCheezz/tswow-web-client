@@ -4228,7 +4228,7 @@ export class WorldRenderer3D {
   })();
   /** 24.10 (7.50): the environment client of the last frame (lamp models; `lightsReadyAround`). */
   #lightModels: EnvironmentClient | undefined;
-  #lightsWait: { key: number; since: number } | undefined;
+  #lightsWait: { key: number; since: number; flushed: boolean; pending: number } | undefined;
   readonly #addPrelitLight = (sample: LocalLightSample): void => {
     this.#localLightSelection.add(sample, this.#localLightFocus);
   };
@@ -5609,16 +5609,36 @@ export class WorldRenderer3D {
     if (this.#lightingProfile.cinematicLights <= 0) return true;
     const key = map * 4096 + terrainGridIndex(x, y);
     const now = performance.now();
-    if (this.#lightsWait?.key !== key) this.#lightsWait = { key, since: now };
-    if (now - this.#lightsWait.since > LIGHTS_READY_WAIT_MS) return true;
+    if (this.#lightsWait?.key !== key) this.#lightsWait = { key, since: now, flushed: false, pending: -1 };
+    const wait = this.#lightsWait;
+    if (now - wait.since > LIGHTS_READY_WAIT_MS) return true;
     const client = this.#lightModels;
-    if (client === undefined || !client.tileAnswered(map, x, y)) return false;
-    return this.#prelitLights.pendingNear(this.#lightCatalog, this.#prelitHost, x, y, LIGHTS_READY_RANGE) === 0;
+    if (client === undefined || !client.tileAnswered(map, x, y)) {
+      wait.flushed = false;
+      wait.pending = -1;
+      return false;
+    }
+    wait.pending = this.#prelitLights.pendingNear(this.#lightCatalog, this.#prelitHost, x, y, LIGHTS_READY_RANGE);
+    if (wait.pending > 0) {
+      wait.flushed = false;
+      return false;
+    }
+    // Known: the lists rebuild on the next frame rather than up to half a second later, and only after
+    // that frame is the answer yes — the far glows' throttle had the lamps 48–280 yards off land late.
+    if (!wait.flushed) {
+      wait.flushed = true;
+      this.#prelitLights.flush();
+      this.#farLightGlows.flush();
+      return false;
+    }
+    return true;
   }
 
   /** 24.10 (7.50): the unbuilt lamps' list and the lamp-model catalog, for the bench's light trace. */
   get prelitLightStats(): unknown {
-    return { prelit: { ...this.#prelitLights.stats }, catalog: { ...this.#lightCatalog.stats, pending: this.#lightCatalog.pendingCount } };
+    const wait = this.#lightsWait;
+    return { prelit: { ...this.#prelitLights.stats }, catalog: { ...this.#lightCatalog.stats, pending: this.#lightCatalog.pendingCount },
+      curtain: wait ? { waitedMs: Math.round(performance.now() - wait.since), pending: wait.pending, flushed: wait.flushed } : undefined };
   }
 
   get cinematicProfile(): Readonly<CinematicProfile> {

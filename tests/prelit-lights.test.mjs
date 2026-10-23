@@ -11,7 +11,7 @@ import {
 import { deriveLightTemplates, sampleLightTemplate } from "../dist/code/browser/LightTemplates.js";
 import { LightTemplateCatalog } from "../dist/code/browser/LightTemplateCatalog.js";
 import { PrelitLights } from "../dist/code/browser/PrelitLights.js";
-import { farLightSources } from "../dist/code/browser/FarLightGlows.js";
+import { FarLightGlows, farLightSources } from "../dist/code/browser/FarLightGlows.js";
 import { ADT_MODEL_TO_SCENE, placeEnvironmentNode } from "../dist/code/browser/WorldRenderer3D.js";
 import { MemoryAssetBackend, PersistentAssetStore } from "../dist/code/browser/PersistentAssetStore.js";
 import { wmoLanterns } from "../dist/code/browser/WmoOpenAirLamps.js";
@@ -299,7 +299,9 @@ test("24.10 (7.50): the renderer's wiring — cinematic only, the built mesh's f
   assert.match(renderer, /this\.#zoneFogFar, this\.#prelitFar, this\.#openAirDoodad\)/);
   // The curtain: off the cinematic profile nothing waits, and no lamp holds it past the cap.
   assert.match(renderer, /lightsReadyAround\(map: number, x: number, y: number\): boolean \{\n\s+if \(this\.#lightingProfile\.cinematicLights <= 0\) return true;/);
-  assert.match(renderer, /if \(now - this\.#lightsWait\.since > LIGHTS_READY_WAIT_MS\) return true;/);
+  assert.match(renderer, /if \(now - wait\.since > LIGHTS_READY_WAIT_MS\) return true;/);
+  // Ready only a frame after the light lists were told to rebuild at once (no half-second throttle at the lift).
+  assert.match(renderer, /if \(!wait\.flushed\) \{\n\s+wait\.flushed = true;\n\s+this\.#prelitLights\.flush\(\);\n\s+this\.#farLightGlows\.flush\(\);\n\s+return false;/);
   const curtain = readFileSync(new URL("../src/browser/ui/LoadingScreen.ts", import.meta.url), "utf8");
   assert.match(curtain, /\} else if \(!pageLightsReady\(world\.mapId, position\.x, position\.y\)\) \{/);
   const worker = readFileSync(new URL("../src/browser/RenderWorkerSession.ts", import.meta.url), "utf8");
@@ -353,4 +355,23 @@ test("24.10 (7.50): a city's lamp posts read in an earlier session light before 
   } finally {
     resetGatewayGeneration();
   }
+});
+
+test("24.10 (7.50): before the curtain lifts the far glows take the new lamps at once, not half a second later", () => {
+  const catalog = new LightTemplateCatalog(null);
+  catalog.learn(GLOW_LAMP, glowLamp());
+  const prelit = new PrelitLights();
+  const h = host();
+  const extra = { get generation() { return prelit.generation; }, appendFarSources: (out) => prelit.appendFarSources(h, out) };
+  const glows = new FarLightGlows();
+  const camera = new THREE.Vector3(0, 2, 0);
+  glows.update(new Map(), camera, 0, Number.POSITIVE_INFINITY, extra);
+  assert.equal(glows.sourceCount, 0);
+  // A tile lands with a lamp 150 yards off: its light is known at once, the far list waits its throttle.
+  prelit.update([placementAt(1, GLOW_LAMP, 150, 0, 0)], catalog, h, camera);
+  glows.update(new Map(), camera, 0, Number.POSITIVE_INFINITY, extra);
+  assert.equal(glows.sourceCount, 0, "throttled while streaming");
+  glows.flush();
+  glows.update(new Map(), camera, 0, Number.POSITIVE_INFINITY, extra);
+  assert.equal(glows.sourceCount, 1, "flushed: the next frame has it");
 });

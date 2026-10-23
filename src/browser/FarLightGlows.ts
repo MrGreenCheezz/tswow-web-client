@@ -217,6 +217,11 @@ export class FarLightGlows {
     this.#dirty = true;
   }
 
+  /** 24.10 (7.50): the next update rebuilds at once if anything changed (the loading curtain is about to lift). */
+  flush(): void {
+    this.#framesSinceRebuild = FAR_LIGHT_REBUILD_FRAMES;
+  }
+
   /** Draws nothing this frame (the faithful profiles). */
   clear(): void {
     this.#halos.begin();
