@@ -10033,10 +10033,10 @@ export class WorldRenderer3D {
       const firstBurst = newSpellEffects && entry.spell !== undefined
         && spellEffectNeedsFirstBurst(entry.spell.instance, firstEligible,
           entry.spell.playbackStartedAt, entry.spell.instance.startedAt, spellAgeMs!, primeSeconds);
-      const particleAt = detailedCapture ? performance.now() : 0;
       // 23.10 (6.27): a living spell effect's ground (its particles' soft fade) and its glow (its light).
       const spellGlow = living && entry.spell ? this.#spellLights.glowOf(entry.spell.handle.id) : undefined;
       if (living && entry.spell) setModelEffectsGround(held.effects, this.#spellGround(entry.spell));
+      const particleAt = detailedCapture ? performance.now() : 0;
       updateModelEffects(held.effects, primeSeconds, {
         matrixFor,
         // A unit's emitters follow the clip it is playing; a doodad has no clip to follow, so its
@@ -10069,7 +10069,6 @@ export class WorldRenderer3D {
       if (entry.fade !== undefined) fadeGlowEmitters(held.effects, entry.fade); // 05.10: ревью E2 — a glow fades with its unit
     }
     this.#budgetProbe?.end(FRAME_BUDGET.effects, effectsAt);
-    if (detailedCapture) this.#drawPhaseMs["visuals.particles"] = particleMs;
     if (living) {
       // 23.10 (6.27): and the additive mesh batches of every started spell model (Seal of Righteousness is
       // mostly mesh: wings, crown and rune), then the frame's spell lights.
@@ -10086,6 +10085,7 @@ export class WorldRenderer3D {
       }
       this.#spellLights.end(elapsed);
     }
+    if (detailedCapture) this.#drawPhaseMs["visuals.particles"] = particleMs;
   }
 
   /**
