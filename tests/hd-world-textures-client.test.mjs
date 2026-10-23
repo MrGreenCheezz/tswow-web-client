@@ -4,6 +4,7 @@
 // what it costs in the accounting, and the setting's plumbing (off by default, off in the comparison profile).
 import assert from "node:assert/strict";
 import test from "node:test";
+import v8 from "node:v8";
 import * as THREE from "three";
 
 import { compressTexture } from "../tools/hd-texture-bc7.mjs";
@@ -125,6 +126,34 @@ test("a building texture answered with a container is a BC7 texture with its lev
     // A texture's own fields still read and write as before when its source is not compressed.
     plain.generateMipmaps = false;
     assert.equal(plain.generateMipmaps, false);
+  });
+});
+
+test("perf: model textures keep V8's fast properties and one hidden class — the compressed view lives on the prototype", async () => {
+  // Accessors defined on every instance (the first form of the view) put each model texture in dictionary mode, and
+  // three reads these textures' fields on every draw; the setting is off by default, so that cost was everyone's.
+  v8.setFlagsFromString("--allow-natives-syntax");
+  const fast = new Function("o", "return %HasFastProperties(o)");
+  const sameMap = new Function("a", "b", "return %HaveSameMap(a, b)");
+  const first = `${BASE}/visual/texture/${"e".repeat(40)}-0.png?v=3`;
+  const second = `${BASE}/visual/texture/${"f".repeat(40)}-1.png?v=3`;
+  await withPage({ [first]: "A", [second]: "B" }, async () => {
+    const loader = new ModelTextureLoader({ cache: true });
+    const a = loader.load(first);
+    const b = loader.load(second);
+    a.flipY = false;
+    b.flipY = false;
+    await settle();
+    const view = a.clone();
+    for (const texture of [a, b, view]) {
+      assert.equal(fast(texture), true, "a model texture is not a dictionary-mode object");
+      for (const key of ["mipmaps", "format", "generateMipmaps", "flipY", "isCompressedTexture"]) {
+        assert.equal(Object.getOwnPropertyDescriptor(texture, key), undefined, `${key} is read through the prototype`);
+      }
+    }
+    assert.equal(sameMap(a, b), true, "two model textures share one hidden class");
+    assert.equal(a.flipY, false);
+    assert.equal(b.generateMipmaps, true, "the texture's own values read as before");
   });
 });
 
