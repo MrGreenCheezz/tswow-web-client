@@ -24,14 +24,15 @@
 //   * 0x7efd00/0x7efae0: the day-night clouds are a CPU noise texture (`DNClouds0/1`), covered where
 //     the noise exceeds 1 − Light float band 3 (low byte, as the client keeps it), coloured
 //     band 12 + band 11 × density shade + band 10 × lighting, lit from the sun from 04:50 to 22:10
-//     and from the moon outside it, the lit term scaled down by 0.75 × storm.
+//     and from the moon outside it, the lit term scaled down by 0.75 × storm. 23.10 (7.43): now
+//     built exactly that way on the CPU — `SkyClouds.ts`.
 //   * 0x7ecf20: a LightSkybox model with `Flags & 1` has its clip laid over the game day (time =
 //     minute / 1440 × duration, played at one clip per day); without it the clip runs on the wall
 //     clock like any model.
 //
-// What is NOT from the client (calibrations, recorded in WORK_PLAN 7.04 and the line): the clouds'
-// noise shape, drift speed and alpha ramp (the client builds its alpha table at run time), and the
-// day number the second moon's cycle counts from.
+// What is NOT from the client (calibrations, recorded in WORK_PLAN 7.04 and the line): the day
+// number the second moon's cycle counts from, and the session's `srand` seed behind the clouds'
+// lattice values (23.10, 7.43: the noise, its drift and its alpha ramp are the client's now).
 // 13.10 7.04: the glare sprites are drawn (`SkyGlare.ts`: update 0x7ef6e0, draw 0x9ac400).
 // 13.10 7.04, the second moon's colour: the body objects keep their colour at +0xc (0x007edbe0 copies
 // it into every vertex) — the sun's 0x00d38e34 and the moon's 0x00d38e54 are rewritten each frame from
@@ -44,7 +45,12 @@
 import * as THREE from "three";
 
 import {
-  MOON_GLARE, SUN_GLARE, cloudAlphaAt, glareAlpha, glareFacing, glareSize, glareStep, glareTarget,
+  CLOUD_FRAGMENT_SHADER, CLOUD_LIGHT_HEIGHT, CLOUD_STORM_DIMMING, CLOUD_STORM_LIGHT_HEIGHT, CLOUD_TEXTURE_SIZE,
+  CLOUD_VERTEX_SHADER, DayNightCloudTexture, buildCloudDomeGeometry, cloudDensityByte, cloudDomeUv,
+  cloudTextureUv, createCloudDataTexture, createCloudShading, setCloudBands, type CloudShading,
+} from "./SkyClouds.js"; // 23.10 (7.43)
+import {
+  MOON_GLARE, SUN_GLARE, glareAlpha, glareFacing, glareSize, glareStep, glareTarget,
   moonGlareCloudTerm, sunGlareCloudTerm, type GlareSpec,
 } from "./SkyGlare.js"; // 13.10 7.04
 import type { ModelTextureStatus } from "./TextureLoad.js";
@@ -328,61 +334,8 @@ void main() {
   #include <colorspace_fragment>
 }`;
 
-export const CLOUD_VERTEX_SHADER = `
-varying vec3 vCloudDirection;
-void main() {
-  vCloudDirection = normalize(position);
-  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-}`;
-
-export const CLOUD_FRAGMENT_SHADER = `
-uniform vec3 cloudBase;
-uniform vec3 cloudBody;
-uniform vec3 cloudLit;
-uniform vec3 cloudLight;
-uniform float cloudThreshold;
-uniform float cloudLitScale;
-uniform float cloudOpacity;
-uniform vec2 cloudOffset;
-varying vec3 vCloudDirection;
-float cloudHash(vec2 p) {
-  return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
-}
-float cloudNoise(vec2 p) {
-  vec2 cell = floor(p);
-  vec2 into = fract(p);
-  vec2 ease = into * into * (3.0 - 2.0 * into);
-  float bottom = mix(cloudHash(cell), cloudHash(cell + vec2(1.0, 0.0)), ease.x);
-  float top = mix(cloudHash(cell + vec2(0.0, 1.0)), cloudHash(cell + vec2(1.0, 1.0)), ease.x);
-  return mix(bottom, top, ease.y);
-}
-float cloudField(vec2 p) {
-  return (cloudNoise(p) * 0.6667 + cloudNoise(p * 2.0 + vec2(5.2, 1.3)) * 0.3333);
-}
-vec3 cloudToLinear(vec3 c) {
-  return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(vec3(0.04045), c));
-}
-void main() {
-  vec3 direction = normalize(vCloudDirection);
-  if (direction.y <= 0.0) discard;
-  vec2 plane = direction.xz / (direction.y + 0.15) * 1.5 + cloudOffset;
-  float density = cloudField(plane);
-  float alpha = clamp((density - cloudThreshold) * 4.0, 0.0, 1.0);
-  alpha *= smoothstep(0.0, 0.12, direction.y) * cloudOpacity;
-  if (alpha <= 0.0) discard;
-  float shade = (1.0 - alpha) * 0.5 + 0.25;
-  vec3 colour = cloudBase + cloudBody * shade;
-  float slopeX = cloudField(plane + vec2(0.05, 0.0)) - density;
-  float slopeY = cloudField(plane + vec2(0.0, 0.05)) - density;
-  vec3 surface = normalize(vec3(-slopeX * 20.0, -slopeY * 20.0, 1.0));
-  vec3 toLight = normalize(vec3(cloudLight.x, cloudLight.z, max(cloudLight.y, 0.0) + 0.05));
-  float lit = dot(surface, toLight);
-  if (lit > 0.0) colour += cloudLit * (lit * cloudLitScale);
-  colour = min(colour, vec3(1.0));
-  gl_FragColor = vec4(cloudToLinear(colour), alpha);
-  #include <tonemapping_fragment>
-  #include <colorspace_fragment>
-}`;
+// 23.10 (7.43): the cloud programs live with the client's cloud texture (`SkyClouds.ts`).
+export { CLOUD_FRAGMENT_SHADER, CLOUD_VERTEX_SHADER };
 
 /** What the renderer hands over each frame; owned and mutated by the renderer, never reallocated. */
 export interface SkyCelestialInput {
@@ -486,10 +439,6 @@ export function moon2Alpha(previous: number, storm: number): number {
   return s !== 0 ? Math.round((1 - s) * 255) / 255 : previous;
 }
 
-/** Drift of the cloud field per second (calibration; the client's own wind term is not traced). */
-const CLOUD_DRIFT_X = 0.006;
-const CLOUD_DRIFT_Y = 0.0025;
-
 /**
  * The procedural sky's bodies, stars and clouds, as one camera-centred group for the sky scene.
  * Nothing in `update` allocates: three quads, one cloud dome, an optional stars node.
@@ -500,16 +449,12 @@ export class SkyCelestials {
   readonly #quad = new THREE.PlaneGeometry(1, 1);
   readonly #bodies: BodyMesh[];
   readonly #cloud: THREE.Mesh;
-  readonly #cloudUniforms = {
-    cloudBase: { value: new THREE.Color() },
-    cloudBody: { value: new THREE.Color() },
-    cloudLit: { value: new THREE.Color() },
-    cloudLight: { value: new THREE.Vector3(0, 1, 0) },
-    cloudThreshold: { value: 1 },
-    cloudLitScale: { value: 1 },
-    cloudOpacity: { value: 1 },
-    cloudOffset: { value: new THREE.Vector2() },
-  };
+  /** 23.10 (7.43): the client's cloud texture (0x7efd00), its GPU copy and the pass's lighting. */
+  readonly #cloudTexture = new DayNightCloudTexture();
+  readonly #cloudMap = createCloudDataTexture(this.#cloudTexture.pixels);
+  readonly #cloudShading = createCloudShading();
+  readonly #cloudUv = new Float64Array(2);
+  readonly #cloudUniforms = { cloudMap: { value: this.#cloudMap as THREE.Texture } };
   #stars: THREE.Object3D | undefined;
   #starMaterials: readonly THREE.Material[] = [];
   #starBaseOpacity: readonly number[] = [];
@@ -566,10 +511,10 @@ export class SkyCelestials {
       depthTest: false,
       depthWrite: false,
       fog: false,
-      side: THREE.BackSide,
+      side: THREE.DoubleSide, // 0x9acd40 turns culling off
     });
-    // The upper half only: the clouds are never under the horizon.
-    this.#cloud = new THREE.Mesh(new THREE.SphereGeometry(CLOUD_RADIUS, 32, 8, 0, Math.PI * 2, 0, Math.PI / 2), cloudMaterial);
+    // 23.10 (7.43): the client's own dome (0x7f20e0): down to the horizon, faded over its last rings.
+    this.#cloud = new THREE.Mesh(buildCloudDomeGeometry(CLOUD_RADIUS), cloudMaterial);
     this.#cloud.name = "skyClouds";
     this.#cloud.frustumCulled = false;
     this.#cloud.renderOrder = -0.75;
@@ -697,19 +642,21 @@ export class SkyCelestials {
         }
       }
     }
-    this.#updateClouds(input, fraction, storm);
+    this.#updateClouds(input, fraction, storm, frameSeconds);
     this.#updateGlare(input, fraction, storm, frameSeconds);
   }
 
   /** 13.10 7.04: 0x7ef6e0 and 0x9ac400 for the sun's and the moon's glare. */
   #updateGlare(input: SkyCelestialInput, fraction: number, storm: number, frameSeconds: number): void {
-    const u = this.#cloudUniforms;
     for (let index = 0; index < this.#glares.length; index++) {
       const glare = this.#glares[index]!;
       const at = index === 0 ? this.#sunAt(input, this.frame.sun) : this.frame.moon;
-      const cover = this.#cloud.visible
-        ? cloudAlphaAt(at.x, at.y, at.z, u.cloudThreshold.value, u.cloudOffset.value.x, u.cloudOffset.value.y)
-        : 0;
+      // 23.10 (7.43): 0x7efa30 reads the cloud texture's alpha under the body (12 units out).
+      let cover = 0;
+      if (this.#cloud.visible) {
+        cloudTextureUv(at.x * SKY_CELESTIAL_DISTANCE, -at.z * SKY_CELESTIAL_DISTANCE, at.y * SKY_CELESTIAL_DISTANCE, this.#cloudUv);
+        cover = this.#cloudTexture.densityAt(this.#cloudUv[0]!, this.#cloudUv[1]!);
+      }
       const cloudTerm = index === 0 ? sunGlareCloudTerm(cover) : moonGlareCloudTerm(cover);
       const target = glareTarget(glare.spec, cloudTerm, input.skyboxPresent ? 1 : 0, fraction);
       glare.current = glareStep(glare.current, target, glare.spec, frameSeconds);
@@ -750,23 +697,42 @@ export class SkyCelestials {
     return this.#source?.ready(glare.texture) ? glare.texture : undefined;
   }
 
-  #updateClouds(input: SkyCelestialInput, fraction: number, storm: number): void {
+  /**
+   * 23.10 (7.43): one frame of the client's clouds (0x7efd00 with 0x7efae0's lighting): 8 rows of the
+   * texture, lit from the sun (the moon outside 04:50–22:10) as a point light over its spot on the
+   * dome, uploaded when a pass is shown. The sun is the one drawn: under the cinematic chain it
+   * stands at the chain's sun (`sunAt`), so the lit side of the clouds faces the disc on screen.
+   */
+  #updateClouds(input: SkyCelestialInput, fraction: number, storm: number, frameSeconds: number): void {
     const threshold = cloudCoverThreshold(input.cloudDensity);
     const shown = input.cloudDensity > 0 && threshold < 1;
+    // Back from a pause (no clouds, a covering skybox, indoors): rewrite the whole texture at once.
+    if (shown && !this.#cloud.visible) this.#cloudTexture.requestFullUpdate();
     this.#cloud.visible = shown;
     if (!shown) return;
-    const u = this.#cloudUniforms;
-    // Display-space values: the client adds and clamps them as bytes, then the shader decodes once.
-    setDisplay(u.cloudBase.value, input.cloudB);
-    setDisplay(u.cloudBody.value, input.cloudA);
-    setDisplay(u.cloudLit.value, input.sunHalo);
-    const light = cloudLightIsSun(fraction) ? this.frame.sun : this.frame.moon;
-    u.cloudLight.value.set(light.x, light.y, light.z);
-    u.cloudThreshold.value = threshold;
-    u.cloudLitScale.value = 1 - 0.75 * storm;
-    u.cloudOpacity.value = 1;
-    const seconds = Number.isFinite(input.seconds) ? input.seconds : 0;
-    u.cloudOffset.value.set((seconds * CLOUD_DRIFT_X) % 1024, (seconds * CLOUD_DRIFT_Y) % 1024);
+    const shading = this.#cloudShading;
+    setCloudBands(shading, input.sunHalo, input.cloudA, input.cloudB);
+    const light = cloudLightIsSun(fraction) ? this.#sunAt(input, this.frame.sun) : this.frame.moon;
+    cloudDomeUv(light.x, light.y, light.z, this.#cloudUv);
+    shading.lightU = this.#cloudUv[0]! * CLOUD_TEXTURE_SIZE;
+    shading.lightV = this.#cloudUv[1]! * CLOUD_TEXTURE_SIZE;
+    shading.lightHeight = CLOUD_LIGHT_HEIGHT + CLOUD_STORM_LIGHT_HEIGHT * storm;
+    shading.intensity = 1 - CLOUD_STORM_DIMMING * storm;
+    shading.densityByte = cloudDensityByte(input.cloudDensity);
+    if (this.#cloudTexture.update(frameSeconds, shading)) {
+      this.#cloudMap.image.data = this.#cloudTexture.pixels;
+      this.#cloudMap.needsUpdate = true;
+    }
+  }
+
+  /** 23.10 (7.43): the lighting the last cloud rows were written with (tests, probes). */
+  get cloudShading(): Readonly<CloudShading> {
+    return this.#cloudShading;
+  }
+
+  /** 23.10 (7.43): the client's cloud texture behind the dome. */
+  get cloudTexture(): DayNightCloudTexture {
+    return this.#cloudTexture;
   }
 
   #texture(body: BodyMesh): THREE.Texture | undefined {
@@ -798,16 +764,11 @@ export class SkyCelestials {
     this.#quad.dispose();
     this.#cloud.geometry.dispose();
     (this.#cloud.material as THREE.Material).dispose();
+    this.#cloudMap.dispose(); // 23.10 (7.43)
     this.group.clear();
   }
 }
 
-function setDisplay(target: THREE.Color, packed: number): void {
-  const value = Number.isFinite(packed) ? packed & 0xffffff : 0;
-  target.r = ((value >> 16) & 0xff) / 255;
-  target.g = ((value >> 8) & 0xff) / 255;
-  target.b = (value & 0xff) / 255;
-}
 
 /**
  * The sky copy of an M2 node's materials, as `#updateSkybox` makes them: unlit, fog-free, no

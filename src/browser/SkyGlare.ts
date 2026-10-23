@@ -17,6 +17,7 @@
 //     itself), blend 3 (additive by alpha), no depth.
 //   * Cloud term: 0x007efa30 samples the day-night cloud texture at the glare's direction; the sun
 //     takes 1 − c (0x007f1020), the moon 1 − |2c − 1| (0x007f1040) — brightest through thin cloud.
+//     23.10 (7.43): read from the client-style cloud texture itself (`SkyClouds.ts`, densityAt).
 //   * Depth term 0x007eda30: 1 − min(1, liquid depth × 0.1); the sky is not drawn under water here.
 // What is not reproduced: the occlusion ray (0x009abc60: collision and a second scene test along the
 // view to the far clip, or a hardware query); the glare is drawn in the sky pass, so the world in
@@ -117,44 +118,4 @@ export function glareAlpha(spec: GlareSpec, colourAlpha: number, f: number, curr
 
 function clamp01(value: number): number {
   return Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0;
-}
-
-// --- the cloud cover at a direction, the CPU twin of `CLOUD_FRAGMENT_SHADER` ----------------------
-
-const f32 = Math.fround;
-
-function cloudHash(x: number, y: number): number {
-  const value = f32(Math.sin(f32(f32(x * 127.1) + f32(y * 311.7))) * 43758.5453);
-  return value - Math.floor(value);
-}
-
-function cloudNoise(x: number, y: number): number {
-  const cx = Math.floor(x), cy = Math.floor(y);
-  const ix = x - cx, iy = y - cy;
-  const ex = ix * ix * (3 - 2 * ix), ey = iy * iy * (3 - 2 * iy);
-  const bottom = cloudHash(cx, cy) + (cloudHash(cx + 1, cy) - cloudHash(cx, cy)) * ex;
-  const top = cloudHash(cx, cy + 1) + (cloudHash(cx + 1, cy + 1) - cloudHash(cx, cy + 1)) * ex;
-  return bottom + (top - bottom) * ey;
-}
-
-function cloudField(x: number, y: number): number {
-  return cloudNoise(x, y) * 0.6667 + cloudNoise(x * 2 + 5.2, y * 2 + 1.3) * 0.3333;
-}
-
-/**
- * The drawn clouds' alpha in a scene-space unit direction — what 0x007efa30 reads from the client's
- * own cloud texture. Same field, threshold and offset as the shader (`SkyCelestials.ts`); the hash is
- * evaluated at float precision, so the GPU's own `sin` may differ by a little.
- */
-export function cloudAlphaAt(x: number, y: number, z: number, threshold: number, offsetX: number, offsetY: number): number {
-  const length = Math.hypot(x, y, z);
-  if (!(length > 0)) return 0;
-  const dx = x / length, dy = y / length, dz = z / length;
-  if (dy <= 0) return 0;
-  const px = (dx / (dy + 0.15)) * 1.5 + offsetX;
-  const py = (dz / (dy + 0.15)) * 1.5 + offsetY;
-  const density = cloudField(px, py);
-  const alpha = Math.max(0, Math.min(1, (density - threshold) * 4));
-  const t = Math.max(0, Math.min(1, dy / 0.12));
-  return alpha * (t * t * (3 - 2 * t));
 }
