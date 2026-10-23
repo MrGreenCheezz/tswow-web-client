@@ -34,6 +34,9 @@ import {
 } from "./CinematicVolumeSide.js"; // 22.10 (7.30)
 import { GOD_RAY_STRENGTH_SCALE_MAX } from "./LightingQuality.js";
 import { CINEMATIC_SKY_GLSL } from "./CinematicSky.js"; // 22.10 (7.30)
+import {
+  CINEMATIC_EDGE_GLSL, CINEMATIC_EDGE_PARS_GLSL, VOLUME_AIR_FLOOR, VOLUME_AIR_WEIGHT_GLSL, volumeRayAirGlsl,
+} from "./CinematicSilhouettes.js"; // 23.10 (7.49)
 import { VOLUME_SOFTEN_PASSES, VOLUME_WIDTH_GLSL } from "./CinematicVolumeWidth.js"; // 22.10 (7.30)
 import { stepSunShown } from "./CinematicSunGate.js"; // 22.10 (7.30)
 import { highSunKeyWeight } from "./WorldLighting.js";
@@ -941,9 +944,13 @@ uniform vec3 shadowTint;
 uniform vec3 highlightTint;
 uniform vec2 aspect;
 uniform vec4 threshold; // the prefilter's soft knee: x threshold, y knee, z 1/(4 knee)
+uniform vec2 depthTexel; // 23.10 (7.49): the silhouette test reads the four depth neighbours
 varying vec2 vUV;
 ${COLOUR_PARS}
 ${VIEW_PARS}
+${CINEMATIC_EDGE_PARS_GLSL}
+${VOLUME_AIR_WEIGHT_GLSL}
+${volumeRayAirGlsl(VOLUME_REACH_YARDS, VOLUME_FADE_YARDS)}
 // The prefilter's share of a texel (bloomContribution in JS), for the texel itself.
 float bloomShare(vec3 c) {
   float bright = max(c.r, max(c.g, c.b));
@@ -964,6 +971,58 @@ float phaseHG(float c, float g) {
   float d = 1.0 + g * g - 2.0 * g * c;
   return (1.0 - g * g) / max(d * sqrt(d), 1e-6);
 }
+// The haze's share of a layer \`yards\` away along a ray rising \`rayY\`; 23.10 (7.49): a function, so
+// a silhouette texel can take both of its layers' shares.
+float cinematicHazeAmount(float yards, float rayY, float lobe) {
+  float rise = max(rayY, 0.0) * yards * haze.w;
+  float heightMean = rise > 1e-3 ? (1.0 - exp(-rise)) / rise : 1.0;
+  float optical = yards * haze.z * heightMean;
+  return (1.0 - exp(-optical)) * haze.x * (0.55 + 0.45 * lobe);
+}
+// 12.10-7.30: the volumetric march — lit air between the shadows of leaves and roofs — from any
+// view direction, for a ray holding \`ownAir\` of a whole reach. A cross of five half-resolution taps
+// takes the march's jitter; the sun's angle to the ray weights it (volumeScatter): a tenth side-on,
+// all of it toward the sun; side-on a contrasted beam gets the rest back (22.10, below).
+// 23.10 (7.49): every tap counts by how alike its air is to the ray's own (CinematicSilhouettes.ts):
+// rays of another reach (a walker before the forest, the forest behind him) are not this ray's.
+float cinematicVolumeLight(float ownAir, float volumeLobe) {
+  vec2 vt = volumeLight.zw;
+  vec2 m0 = texture2D(volumeTexture, vUV).rg;
+  vec2 m1 = texture2D(volumeTexture, vUV + vec2(vt.x, 0.0)).rg;
+  vec2 m2 = texture2D(volumeTexture, vUV - vec2(vt.x, 0.0)).rg;
+  vec2 m3 = texture2D(volumeTexture, vUV + vec2(0.0, vt.y)).rg;
+  vec2 m4 = texture2D(volumeTexture, vUV - vec2(0.0, vt.y)).rg;
+  // With no tap of its reach near, the half-resolution march knows nothing of this ray (a grass
+  // blade before a far hill, a far ray through a one-pixel gap between near leaves): it is read
+  // against the air of its neighbourhood instead, and scaled by its own air over that.
+  float alike = 0.4 * volumeAirWeight(m0.g, ownAir) + 0.15 * (volumeAirWeight(m1.g, ownAir)
+    + volumeAirWeight(m2.g, ownAir) + volumeAirWeight(m3.g, ownAir) + volumeAirWeight(m4.g, ownAir));
+  float refAir = mix(m0.g * 0.4 + (m1.g + m2.g + m3.g + m4.g) * 0.15, ownAir, volumeAirConfidence(alike));
+  float w0 = 0.4 * (volumeAirWeight(m0.g, refAir) + ${VOLUME_AIR_FLOOR.toExponential(1)});
+  float w1 = 0.15 * (volumeAirWeight(m1.g, refAir) + ${VOLUME_AIR_FLOOR.toExponential(1)});
+  float w2 = 0.15 * (volumeAirWeight(m2.g, refAir) + ${VOLUME_AIR_FLOOR.toExponential(1)});
+  float w3 = 0.15 * (volumeAirWeight(m3.g, refAir) + ${VOLUME_AIR_FLOOR.toExponential(1)});
+  float w4 = 0.15 * (volumeAirWeight(m4.g, refAir) + ${VOLUME_AIR_FLOOR.toExponential(1)});
+  vec2 march = vec2((m0.r * w0 + m1.r * w1 + m2.r * w2 + m3.r * w3 + m4.r * w4) / (w0 + w1 + w2 + w3 + w4), refAir);
+  // Beams are lit air among shadow: the ray's lit share s against the shade around it, 1 − s̄ over
+  // a wide cross of taps — nothing in open sunlit air (the haze leaf's), nothing in full shade,
+  // and a lit ray among shaded ones the whole of it (volumeScatter). 23.10 (7.49): a tap of another
+  // reach is no shade of this air; it counts as the ray itself.
+  vec2 vw = vt * ${VOLUME_CONTEXT_TEXELS.toFixed(1)};
+  vec2 a0 = texture2D(volumeTexture, vUV + vec2(vw.x, 0.0)).rg;
+  vec2 a1 = texture2D(volumeTexture, vUV - vec2(vw.x, 0.0)).rg;
+  vec2 a2 = texture2D(volumeTexture, vUV + vec2(0.0, vw.y)).rg;
+  vec2 a3 = texture2D(volumeTexture, vUV - vec2(0.0, vw.y)).rg;
+  float around = 0.25 * (mix(march.r, a0.r, volumeAirWeight(a0.g, refAir)) + mix(march.r, a1.r, volumeAirWeight(a1.g, refAir))
+    + mix(march.r, a2.r, volumeAirWeight(a2.g, refAir)) + mix(march.r, a3.r, volumeAirWeight(a3.g, refAir)));
+  float beam = sqrt(march.r) * (1.0 - min(around, march.r)) * march.g;
+  // 22.10 (7.30): side-on, a beam is told from the veil by its contrast (CinematicVolumeSide.ts).
+${VOLUME_SIDE_GLSL}
+  // 22.10 (7.30): a thin beam (the lit sheet behind a narrow gap) fades out (CinematicVolumeWidth.ts).
+${VOLUME_WIDTH_GLSL}
+  return (beam * (0.1 + 0.9 * volumeLobe) + ${VOLUME_SIDE_GAIN.toFixed(3)} * sideBeam * (1.0 - volumeLobe)) * volumeLight.x
+    * min(1.0, ownAir / max(refAir, 1e-3));
+}
 void main() {
   // The classic composite first, unchanged: glow and shafts stay the zone-authored additions.
   vec3 scene = texture2D(source, vUV).rgb;
@@ -977,6 +1036,9 @@ void main() {
 
   float depth = useDepth > 0.5 ? texture2D(depthTexture, vUV).r : 0.5;
   bool sky = useDepth > 0.5 && depth >= 1.0;
+  // 23.10 (7.49): a silhouette texel's colour holds two layers, its depth one sample; find the
+  // layers and the near one's share (CinematicSilhouettes.ts).
+${CINEMATIC_EDGE_GLSL}
   // 22.10 (7.30): the sky and its clouds leave here, as the classic composite writes them
   // (CinematicSky.ts); nothing below runs on a sky texel.
 ${CINEMATIC_SKY_GLSL}
@@ -984,6 +1046,13 @@ ${CINEMATIC_SKY_GLSL}
   vec3 view = cinematicViewPosition(vUV, depth);
   vec3 ray = normalize(mat3(cameraWorld) * view);
   float facing = dot(ray, sunDirection);
+  // 23.10 (7.49): the distances of a silhouette texel's two layers; elsewhere the texel's own.
+  float nearYards = length(view);
+  float farYards = nearYards;
+  if (nearShare < 1.0 || skyShare > 0.0) {
+    nearYards = length(cinematicViewPosition(vUV, nearDepth));
+    farYards = length(cinematicViewPosition(vUV, farDepth));
+  }
 
   if (leaves.w > 0.5) {
     float ao = texture2D(occlusionTexture, vUV).r;
@@ -1003,11 +1072,9 @@ ${CINEMATIC_SKY_GLSL}
     // Narrow (about 20 degrees) and mostly on geometry: the open sky next to the sun already gets
     // its glare from the bloom prefilter.
     inscatter += mix(sunColour, vec3(1.0), 0.35) * hazeGlare * pow(lobe, 8.0);
-    float distanceYards = length(view);
-    float rise = max(ray.y, 0.0) * distanceYards * haze.w;
-    float heightMean = rise > 1e-3 ? (1.0 - exp(-rise)) / rise : 1.0;
-    float optical = distanceYards * haze.z * heightMean;
-    float amount = (1.0 - exp(-optical)) * haze.x * (0.55 + 0.45 * lobe);
+    float amount = cinematicHazeAmount(nearYards, ray.y, lobe);
+    // 23.10 (7.49): a silhouette texel takes each layer's haze by its share.
+    if (nearShare < 1.0) amount = mix(cinematicHazeAmount(farYards, ray.y, lobe), amount, nearShare);
     colour = mix(colour, inscatter, amount);
   }
 
@@ -1034,34 +1101,18 @@ ${CINEMATIC_SKY_GLSL}
     // The beams are light scattered along the way to what a pixel sees: a few yards of air in
     // front of the ground at the character's feet carry almost none of it, a far hillside or the
     // sky the whole of it. Without this the field under a low sun was a white carpet of streaks.
-    float shaftPath = 1.0 - exp(-length(view) * shaftMarch.w);
+    float shaftPath = 1.0 - exp(-nearYards * shaftMarch.w);
+    if (nearShare < 1.0) shaftPath = mix(1.0 - exp(-farYards * shaftMarch.w), shaftPath, nearShare); // 23.10 (7.49)
     colour += mix(sunColour, vec3(1.0), 0.1) * shaft * shaftStrength * shaftPath * 0.55;
   }
 
   if (volumeLight.x > 0.0) {
-    // 12.10-7.30: the volumetric march — lit air between the shadows of leaves and roofs — from any
-    // view direction. A cross of five half-resolution taps takes the march's jitter; the sun's
-    // angle to the ray weights it (volumeScatter): a tenth side-on, all of it toward the sun; side-on
-    // a contrasted beam gets the rest back (22.10, below).
-    vec2 vt = volumeLight.zw;
-    vec2 march = texture2D(volumeTexture, vUV).rg * 0.4
-      + (texture2D(volumeTexture, vUV + vec2(vt.x, 0.0)).rg + texture2D(volumeTexture, vUV - vec2(vt.x, 0.0)).rg
-        + texture2D(volumeTexture, vUV + vec2(0.0, vt.y)).rg + texture2D(volumeTexture, vUV - vec2(0.0, vt.y)).rg) * 0.15;
     float volumeLobe = sqrt(clamp((phaseHG(facing, ${SCATTERING_G.toFixed(3)}) - ${scatteringPhase(0, SCATTERING_G).toFixed(5)})
       / ${(scatteringPhase(1, SCATTERING_G) - scatteringPhase(0, SCATTERING_G)).toFixed(5)}, 0.0, 1.0));
-    // Beams are lit air among shadow: the ray's lit share s against the shade around it, 1 − s̄ over
-    // a wide cross of taps — nothing in open sunlit air (the haze leaf's), nothing in full shade,
-    // and a lit ray among shaded ones the whole of it (volumeScatter).
-    vec2 vw = vt * ${VOLUME_CONTEXT_TEXELS.toFixed(1)};
-    float around = 0.25 * (texture2D(volumeTexture, vUV + vec2(vw.x, 0.0)).r + texture2D(volumeTexture, vUV - vec2(vw.x, 0.0)).r
-      + texture2D(volumeTexture, vUV + vec2(0.0, vw.y)).r + texture2D(volumeTexture, vUV - vec2(0.0, vw.y)).r);
-    float beam = sqrt(march.r) * (1.0 - min(around, march.r)) * march.g;
-    // 22.10 (7.30): side-on, a beam is told from the veil by its contrast (CinematicVolumeSide.ts).
-${VOLUME_SIDE_GLSL}
-    // 22.10 (7.30): a thin beam (the lit sheet behind a narrow gap) fades out (CinematicVolumeWidth.ts).
-${VOLUME_WIDTH_GLSL}
-    colour += mix(sunColour, vec3(1.0), 0.15)
-      * (beam * (0.1 + 0.9 * volumeLobe) + ${VOLUME_SIDE_GAIN.toFixed(3)} * sideBeam * (1.0 - volumeLobe)) * volumeLight.x;
+    // 23.10 (7.49): the ray's own air from its full-resolution depth, not from the softened march.
+    float volumeAdd = cinematicVolumeLight(volumeRayAir(nearYards), volumeLobe);
+    if (nearShare < 1.0) volumeAdd = mix(cinematicVolumeLight(volumeRayAir(farYards), volumeLobe), volumeAdd, nearShare);
+    colour += mix(sunColour, vec3(1.0), 0.15) * volumeAdd;
   }
 
   if (leaves.y > 0.5) {
@@ -1102,6 +1153,8 @@ ${VOLUME_WIDTH_GLSL}
   }
 
   vec3 outColour = cinematicToDisplay(colour);
+  // 23.10 (7.49): the sky's share of a silhouette texel stays as the classic composite writes it.
+  if (skyShare > 0.0) outColour = mix(outColour, clamp(display, vec3(0.0), vec3(1.0)), skyShare);
   // Triangular dither: an eight-bit canvas bands on the smooth haze and vignette gradients.
   float n0 = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
   float n1 = fract(52.9829189 * fract(dot(gl_FragCoord.xy + 17.0, vec2(0.00583715, 0.06711056))));

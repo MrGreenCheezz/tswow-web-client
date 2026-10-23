@@ -55,13 +55,16 @@ export function volumeBeamWidthKeep(narrow: number, ring: number, around: number
 
 /**
  * The composite's width term, after `VOLUME_SIDE_GLSL` (it reads `wideLit` and `wideAround`); it
- * scales `beam` and `sideBeam`.
+ * scales `beam` and `sideBeam`. 23.10 (7.49): its ring taps are read against `refAir`, the air
+ * `cinematicVolumeLight` reads the march against (CinematicSilhouettes.ts).
  */
 export const VOLUME_WIDTH_GLSL = /* glsl */ `
     float ringLit = 0.0;
     for (int i = 0; i < 8; i++) {
       float angle = (float(i) + 0.5) * 0.7853982;
-      ringLit += texture2D(volumeTexture, vUV + vec2(cos(angle), sin(angle)) * vt * ${VOLUME_WIDTH_TEXELS.toFixed(1)}).r;
+      vec2 ringTap = texture2D(volumeTexture, vUV + vec2(cos(angle), sin(angle)) * vt * ${VOLUME_WIDTH_TEXELS.toFixed(1)}).rg;
+      // 23.10 (7.49): a ring tap of another reach (a walker before the beam) counts as the ray itself.
+      ringLit += mix(wideLit, ringTap.r, volumeAirWeight(ringTap.g, refAir));
     }
     ringLit *= 0.125;
     float beamContrast = clamp(wideLit, 0.0, 1.0) - clamp(wideAround, 0.0, 1.0);

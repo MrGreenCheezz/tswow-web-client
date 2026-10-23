@@ -280,7 +280,9 @@ test("shaft passes are fixed-cost two-pass marches and only the composite adds t
   // The near-sun guard is a few degrees wide, not the golden-hour emission lobe's whole width.
   assert.match(post.composite.fragmentShader, /shaft \*= 1\.0 - 0\.6 \* smoothstep\(0\.94, 0\.995, facing\);/);
   // Scattered along the view ray: the ground at the character's feet carries almost none of it.
-  assert.match(post.composite.fragmentShader, /float shaftPath = 1\.0 - exp\(-length\(view\) \* shaftMarch\.w\);/);
+  // 23.10 (7.49): the near layer's distance (the texel's own away from silhouettes, CinematicSilhouettes.ts).
+  assert.match(post.composite.fragmentShader, /float nearYards = length\(view\);/);
+  assert.match(post.composite.fragmentShader, /float shaftPath = 1\.0 - exp\(-nearYards \* shaftMarch\.w\);/);
   assert.ok(Math.abs(post.uniforms.shaftMarch.value.w - 1 / SHAFT_AIR_YARDS) < 1e-12);
   assert.doesNotMatch(post.composite.fragmentShader, /smoothstep\(0\.9, 0\.99, facing\)/);
   assert.match(post.shaftMask.fragmentShader, /gl_FragColor = vec4\(emit \* above, lobe \* above, sky \* lobe \* above, 1\.0\);/);
