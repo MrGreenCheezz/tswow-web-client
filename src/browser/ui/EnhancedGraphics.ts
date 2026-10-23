@@ -7,6 +7,7 @@ export const ENHANCED_GRAPHICS_OVERRIDES: Readonly<SettingValues> = Object.freez
   experimentalTerrainMicroNormals: true,
   experimentalTerrainRelief: true, // 22.10 (7.47)
   experimentalWmoRelief: true, // 22.10 (7.47 stage 2)
+  experimentalModelRelief: true, // 23.10 (7.47 stage 3)
   experimentalWaterFresnel: true,
   experimentalWaterMicroWaves: true,
   experimentalWaterSunSparkle: true,

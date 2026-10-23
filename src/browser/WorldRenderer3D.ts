@@ -59,6 +59,7 @@ import {
 import { setTerrainBakedShadowStrength, terrainBakedShadowStrength } from "./TerrainSplat.js"; // 05.10-A7b-7
 import { setTerrainReliefWanted, setTerrainSplatRelief, terrainReliefActive } from "./TerrainReliefShader.js"; // 22.10 (7.47)
 import { setWmoReliefActive, trackWmoReliefMaterial, wmoReliefActive, wmoRunReliefVariant } from "./WmoReliefShader.js"; // 22.10 (7.47 stage 2)
+import { M2_RELIEF_BUILD, M2_RELIEF_BUILD_PREFIX, m2ReliefActive, type M2ReliefBuild } from "./M2Relief.js"; // 23.10 (7.47 stage 3)
 import { setTerrainSpecularColour, setTerrainSpecularStrength, terrainGlintDrawn, terrainSpecularStrength } from "./TerrainSplat.js"; // 05.10-A7b-7Г; 13.10 7.16
 import {
   GROUND_COVER_BUDGET, GROUND_COVER_MARGIN, GROUND_COVER_MAX_RADIUS, createGroundCoverCellCache,
@@ -4095,6 +4096,9 @@ export class WorldRenderer3D {
   #terrainReliefSetting = false;
   /** 22.10 (7.47 stage 2): the «Объём зданий» setting (drawn on the enhanced levels only). */
   #wmoReliefSetting = false;
+  /** 23.10 (7.47 stage 3): the «Объём предметов» setting, and whether the doodads are built with it. */
+  #m2ReliefSetting = false;
+  #m2ReliefActive = false;
   #terrainReliefActive = false;
   /** 22.10 (7.47): bumped on every change of the active state; a tile off it re-syncs on its next frame. */
   #terrainReliefRevision = 0;
@@ -9170,6 +9174,7 @@ export class WorldRenderer3D {
     if (oldGodRaysActive !== this.#godRaysActive()) this.#syncFullscreenGlowTargets();
     this.#syncTerrainRelief(); // 22.10 (7.47): the classic levels never draw the relief
     this.#syncWmoRelief(); // 22.10 (7.47 stage 2): nor the buildings' relief
+    this.#syncM2Relief(); // 23.10 (7.47 stage 3): nor the doodads'
   }
 
   /** Moving light and target together preserves the authored direction while centring its map. */
@@ -9488,14 +9493,22 @@ export class WorldRenderer3D {
 
   /** Re-admits only static WVM scenery whose material cache variant changes with GPU wind. */
   #rebuildVegetationWindModels(): void {
+    this.#rebuildSceneryModels();
+    // Ground cover is all WVM and owns only instance buffers; its static/wind builds remain
+    // separate bounded cache entries and the next frame repopulates the current variant.
+    this.#clearGroundCover();
+  }
+
+  /**
+   * The placed static doodads, dropped so the next frames build them again under the current build
+   * key (23.10, 7.47 stage 3: split out of `#rebuildVegetationWindModels` for the doodads' relief).
+   */
+  #rebuildSceneryModels(): void {
     for (const [id, rendered] of [...this.#environment]) {
       if (!rendered.wvm || rendered.skinned) continue;
       this.#environmentVisibilitySpheres.delete(rendered.source);
       this.#removeEnvironment(id, rendered);
     }
-    // Ground cover is all WVM and owns only instance buffers; its static/wind builds remain
-    // separate bounded cache entries and the next frame repopulates the current variant.
-    this.#clearGroundCover();
   }
 
   /**
@@ -10754,6 +10767,35 @@ export class WorldRenderer3D {
     setWmoReliefActive(wmoReliefActive(this.#wmoReliefSetting, this.#lightingProfile.quality));
   }
 
+  /**
+   * 23.10 (7.47 stage 3): «Объём предметов» — parallax and derived shading on the world's doodads
+   * (M2Relief.ts). Enhanced levels only. The leaf is part of the doodads' build key, so a change
+   * rebuilds the placed doodads once (as the wind leaf does); off, every build is as it was.
+   */
+  setM2Relief(enabled: boolean): void {
+    if (this.#m2ReliefSetting === enabled) return;
+    this.#m2ReliefSetting = enabled;
+    this.#syncM2Relief();
+  }
+
+  #syncM2Relief(): void {
+    const active = m2ReliefActive(this.#m2ReliefSetting, this.#lightingProfile.quality);
+    if (active === this.#m2ReliefActive) return;
+    this.#m2ReliefActive = active;
+    this.#rebuildSceneryModels();
+  }
+
+  /** 23.10 (7.47 stage 3): what a doodad build asks of `buildModel` for the relief, if anything. */
+  #m2ReliefBuild(): M2ReliefBuild | undefined {
+    return this.#m2ReliefActive ? M2_RELIEF_BUILD : undefined;
+  }
+
+  /** 23.10 (7.47 stage 3): a placed doodad's build key — the wind's, plus the relief while it is active. */
+  #doodadBuildKey(path: string): string {
+    const key = this.#vegetationBuildKey(path);
+    return this.#m2ReliefActive ? `${M2_RELIEF_BUILD_PREFIX}${key}` : key;
+  }
+
   setTerrainRelief(enabled: boolean): void {
     if (this.#terrainReliefSetting === enabled) return;
     this.#terrainReliefSetting = enabled;
@@ -11536,7 +11578,7 @@ export class WorldRenderer3D {
     visual: unknown,
     model: EnvironmentModel | undefined,
   ): void {
-    const instanceKey = this.#vegetationBuildKey(object.name);
+    const instanceKey = this.#doodadBuildKey(object.name); // 23.10 (7.47 stage 3): the key #wvmNode built under
     const built = instanceable(model)
       ? this.#builtModels.get(this.#builtCacheKey(this.#builtModels, instanceKey))
       : undefined;
@@ -12485,7 +12527,7 @@ export class WorldRenderer3D {
   #wvmBuild(cache: BuiltModelCache<BuiltModel>, key: string, modelPath: string, wvm: WvmModel,
     slots: TextureSlots | undefined, geosets: GeosetChoice | undefined, skinned: boolean,
     slotTextures?: ReadonlyMap<number, THREE.Texture>, vegetationWind = false,
-    groundCoverFade?: GroundCoverFadeUniforms): BuiltModel {
+    groundCoverFade?: GroundCoverFadeUniforms, relief?: M2ReliefBuild): BuiltModel {
     const cacheKey = this.#builtCacheKey(cache, key);
     let built = cache.get(cacheKey);
     if (built) return built;
@@ -12508,6 +12550,7 @@ export class WorldRenderer3D {
       worldLight: this.#worldLight,
       vegetationWind,
       ...(groundCoverFade ? { groundCoverFade } : {}),
+      ...(relief ? { relief } : {}), // 23.10 (7.47 stage 3)
     });
     const externalKeys = cache === this.#builtUnits && slotTextures?.has(TEXTURE_TYPE_BODY)
       ? [key]
@@ -12567,10 +12610,10 @@ export class WorldRenderer3D {
     tint?: ModelPlacementTint,
     localLight?: ModelPlacementTint,
   ): THREE.Object3D {
-    const buildKey = this.#vegetationBuildKey(name);
+    const buildKey = this.#doodadBuildKey(name); // 23.10 (7.47 stage 3)
     const built = this.#wvmBuild(
       this.#builtModels, buildKey, name, wvm, undefined, undefined, false, undefined,
-      this.#experimentalShaderProfile.vegetationWind,
+      this.#experimentalShaderProfile.vegetationWind, undefined, this.#m2ReliefBuild(),
     );
     const placementMaterials = localLight
       ? createModelPlacementLocalLightMaterials(built.materials, localLight)

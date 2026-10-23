@@ -376,8 +376,35 @@ async function main() {
         gpuMs = samples.length ? samples[Math.floor(samples.length / 2)] : undefined;
         console.log(`  GPU median ${gpuMs?.toFixed(2)} ms over ${samples.length} frames`);
       }
-      written.push({ path, shadows, textures, gpuMs });
+      // 23.10 (7.47 stage 3): the doodads' relief (materials drawing it, maps and their bytes), when the page has it.
+      const m2Relief = await page.evaluate(() => window.__bench.m2ReliefStats?.());
+      written.push({ path, shadows, textures, gpuMs, m2Relief });
       console.log(`${frame.name}: ${path} (${png.length} bytes) shadows ${JSON.stringify(shadows)}`);
+      if (m2Relief) console.log(`  doodad relief: ${JSON.stringify(m2Relief)}`);
+      // 23.10 (7.47 stage 3): `--leaf-cost <hook> --leaf-rounds N` — a leaf's cost at this still, off and on
+      // alternated ABBA inside the page (`__bench[hook](enabled)`, e.g. m2Relief), `--gpu-frames` timed frames
+      // (default 120) after 240 untimed ones per side (the toggled doodads rebuild and their maps arrive).
+      const leafHook = value('--leaf-cost');
+      if (leafHook) {
+        const rounds = Number(value('--leaf-rounds', 4));
+        const timed = Number(value('--gpu-frames', 0)) || 120;
+        const median = (values) => values.length ? [...values].sort((a, b) => a - b)[values.length >> 1] : undefined;
+        const sides = { off: { gpu: [], cpu: [] }, on: { gpu: [], cpu: [] } };
+        for (let round = 0; round < rounds; round++) {
+          for (const on of round % 2 === 0 ? [false, true] : [true, false]) {
+            await page.evaluate((hook, enabled) => window.__bench[hook](enabled), leafHook, on);
+            const gpu = await page.evaluate((count) => window.__bench.gpuView(count, 240), timed);
+            const cpu = await page.evaluate(() => window.__bench.viewCpu());
+            sides[on ? 'on' : 'off'].gpu.push(median(gpu));
+            sides[on ? 'on' : 'off'].cpu.push(median(cpu));
+          }
+        }
+        const summary = Object.fromEntries(Object.entries(sides).map(([side, { gpu, cpu }]) => [side, {
+          gpuMs: median(gpu), cpuMs: median(cpu), gpuRounds: gpu.map((ms) => ms?.toFixed(2)), cpuRounds: cpu.map((ms) => ms?.toFixed(2)),
+        }]));
+        console.log(`  leaf ${leafHook} cost: ${JSON.stringify(summary)}`);
+        written.push({ leafCost: { hook: leafHook, ...summary, stats: await page.evaluate(() => window.__bench.m2ReliefStats?.()) } });
+      }
       if (textures) {
         const mb = (value) => (value / 1048576).toFixed(1);
         console.log(`  textures: all ${mb(textures.all.estimatedLogicalTextureBytes)} MB, ground ${mb(textures.ground.estimatedLogicalTextureBytes)} MB; ${JSON.stringify(textures.extensions)}`);
