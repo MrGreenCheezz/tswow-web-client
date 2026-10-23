@@ -20,6 +20,8 @@
  * (M2 lights, glow cards, flames, lamp glass) and a WMO's own outdoor lamps (`WmoFixtureLights.ts`),
  * admitted by the same `fixtureLightSource` test as the near lights (no room-lit or interior
  * doodads, so nothing glows through a building's walls; the quad is depth-tested as the halo is).
+ * 23.10 (7.46): and a city's lamp posts that are its WMO's own geometry, with the doodads only its
+ * open-air groups name (`WmoOpenAirLamps.ts`).
  * Each placement's sources are sampled once, at their bind pose, and cached; the flat list is
  * rebuilt only after the placement set changed (at most every `FAR_LIGHT_REBUILD_FRAMES`), and the nearest set is
  * re-picked only after the camera moved `FAR_LIGHT_REPICK` yards. A frame only re-weights the
@@ -33,6 +35,9 @@ import {
 import { modelFixtureLights, sampleFixtureLight, type LocalLightSample } from "./LocalLighting.js";
 import { sampleWmoLight, wmoOutdoorLightPositions, wmoOutdoorLights } from "./WmoFixtureLights.js";
 import type { WmoModel } from "./WmoModel.js";
+import {
+  sampleWmoLantern, wmoLanternGeneration, wmoLanterns, wmoLanternWorldPositions,
+} from "./WmoOpenAirLamps.js"; // 23.10 (7.46)
 import type { WvmModel } from "./Wvm.js";
 
 /** Camera distance, yards, past which no far glow is drawn. */
@@ -105,7 +110,8 @@ export interface FarLightPlacement {
 }
 
 const NONE = new Float32Array(0);
-const PLACEMENT_SOURCES = new WeakMap<object, Float32Array>();
+/** 23.10 (7.46): with the lantern generation of a WMO placement's model they were built at. */
+const PLACEMENT_SOURCES = new WeakMap<object, { readonly sources: Float32Array; readonly lanterns: number }>();
 const sample: LocalLightSample = { position: new THREE.Vector3(), colour: new THREE.Vector3(), radius: 0, intensity: 0 };
 
 function push(out: number[], value: LocalLightSample, share: number): void {
@@ -114,12 +120,22 @@ function push(out: number[], value: LocalLightSample, share: number): void {
     value.colour.x * strength, value.colour.y * strength, value.colour.z * strength);
 }
 
-/** One placement's glow sources, sampled once at their bind pose and cached on the placement. */
-export function farLightSources(placement: FarLightPlacement): Float32Array {
-  const known = PLACEMENT_SOURCES.get(placement);
-  if (known) return known;
-  const out: number[] = [];
+/**
+ * 23.10 (7.46): which interior doodads stand in the open (`wmoDoodadOpenAir`), as the renderer
+ * answers it; without one every interior doodad stays out, as before.
+ */
+export type FarLightOpenAir = (source: FarLightPlacement["source"]) => boolean;
+
+/**
+ * One placement's glow sources, sampled once at their bind pose and cached on the placement.
+ * 23.10 (7.46): a building's again once more of its lanterns arrived with its groups.
+ */
+export function farLightSources(placement: FarLightPlacement, openAir?: FarLightOpenAir): Float32Array {
   const wmo = placement.wmo;
+  const lanterns = wmo ? wmoLanterns(wmo.model) : undefined;
+  const known = PLACEMENT_SOURCES.get(placement);
+  if (known && known.lanterns === (lanterns?.generation ?? 0)) return known.sources;
+  const out: number[] = [];
   if (wmo) {
     const lights = wmoOutdoorLights(wmo.model);
     if (lights.length > 0) {
@@ -130,9 +146,16 @@ export function farLightSources(placement: FarLightPlacement): Float32Array {
         }
       }
     }
+    // 23.10 (7.46): its lamp posts (WmoOpenAirLamps.ts) glow as a doodad lamp's glass does.
+    if (lanterns && lanterns.positions.length > 0) {
+      const positions = wmoLanternWorldPositions(wmo, lanterns, wmo.modelToWorld);
+      for (let at = 0; at + 2 < positions.length; at += 3) {
+        if (sampleWmoLantern(positions[at]!, positions[at + 1]!, positions[at + 2]!, undefined, sample)) push(out, sample, 1);
+      }
+    }
   }
   const model = placement.wvm;
-  if (model && fixtureLightSource(placement.source, true)) {
+  if (model && fixtureLightSource(placement.source, true, openAir)) {
     const fixtures = modelFixtureLights(model, placement.source.name, true);
     const root = placement.visual;
     if (fixtures.length > 0 && (placement.instanceMatrix || root)) {
@@ -146,7 +169,10 @@ export function farLightSources(placement: FarLightPlacement): Float32Array {
     }
   }
   const sources = out.length > 0 ? new Float32Array(out) : NONE;
-  PLACEMENT_SOURCES.set(placement, sources);
+  // 23.10 (7.46): an interior doodad left out may be let in once its building has landed.
+  if (sources.length > 0 || placement.source.interior !== true || !openAir) {
+    PLACEMENT_SOURCES.set(placement, { sources, lanterns: lanterns?.generation ?? 0 });
+  }
   return sources;
 }
 
@@ -190,11 +216,11 @@ const placed = new THREE.Matrix4();
 
 /** 23.10 (7.36): appends the glows of the streamed placements no resident stands for. */
 export function streamedFarLightSources<T extends FarLightPlacement["source"]>(streamed: FarLightStreamed<T>,
-  resident: ReadonlyMap<unknown, unknown>, out: number[]): void {
+  resident: ReadonlyMap<unknown, unknown>, out: number[], openAir?: FarLightOpenAir): void {
   if (TEMPLATES.size === 0) return;
   for (const object of streamed.objects) {
     const template = TEMPLATES.get(object.name);
-    if (!template || resident.has(object.id) || !fixtureLightSource(object, true)) continue;
+    if (!template || resident.has(object.id) || !fixtureLightSource(object, true, openAir)) continue;
     const matrix = streamed.place(object, placed);
     for (let at = 0; at < template.length; at += STRIDE) {
       point.set(template[at]!, template[at + 1]!, template[at + 2]!).applyMatrix4(matrix);
@@ -217,6 +243,7 @@ export class FarLightGlows {
   #dirty = true;
   #streamedObjects: readonly unknown[] | undefined;
   #templateGeneration = 0;
+  #lanternGeneration = 0; // 23.10 (7.46)
   #framesSinceRebuild = FAR_LIGHT_REBUILD_FRAMES;
   readonly #byDistance = (a: number, b: number): number => this.#distances[a]! - this.#distances[b]!;
 
@@ -244,18 +271,21 @@ export class FarLightGlows {
    * nearest set when the camera has moved, and re-weights the picked glows.
    */
   update(placements: ReadonlyMap<unknown, FarLightPlacement>, camera: THREE.Vector3,
-    daylight: number, fogFar = Number.POSITIVE_INFINITY, streamed?: FarLightStreamed<any>): void {
+    daylight: number, fogFar = Number.POSITIVE_INFINITY, streamed?: FarLightStreamed<any>, openAir?: FarLightOpenAir): void {
     let repick = false;
     // 23.10 (7.36): a new streamed snapshot or a newly learned lamp template also rebuilds.
+    // 23.10 (7.46): and so do a building's newly found lanterns.
     const streamedObjects = streamed?.objects;
-    if (streamedObjects !== this.#streamedObjects || this.#templateGeneration !== templateGeneration) {
+    if (streamedObjects !== this.#streamedObjects || this.#templateGeneration !== templateGeneration
+      || this.#lanternGeneration !== wmoLanternGeneration()) {
       this.#streamedObjects = streamedObjects;
       this.#templateGeneration = templateGeneration;
+      this.#lanternGeneration = wmoLanternGeneration();
       this.#dirty = true;
     }
     if (this.#framesSinceRebuild < FAR_LIGHT_REBUILD_FRAMES) this.#framesSinceRebuild++;
     if (this.#dirty && this.#framesSinceRebuild >= FAR_LIGHT_REBUILD_FRAMES) {
-      this.#rebuild(placements, streamed);
+      this.#rebuild(placements, streamed, openAir);
       this.#framesSinceRebuild = 0;
       repick = true;
     }
@@ -282,15 +312,16 @@ export class FarLightGlows {
     halos.end();
   }
 
-  #rebuild(placements: ReadonlyMap<unknown, FarLightPlacement>, streamed?: FarLightStreamed<any>): void {
+  #rebuild(placements: ReadonlyMap<unknown, FarLightPlacement>, streamed?: FarLightStreamed<any>,
+    openAir?: FarLightOpenAir): void {
     this.#dirty = false;
     let count = 0;
     const lists: Iterable<Float32Array> = (function* () {
-      for (const placement of placements.values()) yield farLightSources(placement);
+      for (const placement of placements.values()) yield farLightSources(placement, openAir);
       // 23.10 (7.36): after the residents, which teach the templates.
       if (streamed) {
         const extra: number[] = [];
-        streamedFarLightSources(streamed, placements, extra);
+        streamedFarLightSources(streamed, placements, extra, openAir);
         if (extra.length > 0) yield new Float32Array(extra);
       }
     })();

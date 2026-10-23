@@ -143,7 +143,8 @@ test("gating: enhanced lighting only; the renderer gathers incrementally", async
   const renderer = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
   // 23.10 (7.36): the streamed lamps not built yet come along (FarLightGlows.ts streamedFarLightSources).
   assert.match(renderer, /if \(cinematic\) \{\n(?:\s+\/\/.*\n)?\s+this\.#farLightStreamed\.objects = this\.#environmentObjects \?\? \[\];\n\s+this\.#farLightGlows\.update\(this\.#environment, /);
-  assert.match(renderer, /this\.#zoneFogFar, this\.#farLightStreamed\);/);
+  // 23.10 (7.46): with the open-air test for a building's doodads (WmoOpenAirLamps.ts).
+  assert.match(renderer, /this\.#zoneFogFar, this\.#farLightStreamed, this\.#openAirDoodad\);/);
   assert.match(renderer, /\} else this\.#farLightGlows\.clear\(\);/);
   assert.match(renderer, /this\.#scene\.add\(this\.#farLightGlows\.mesh\);/);
   // The source list is rebuilt only when the placement set changes.
