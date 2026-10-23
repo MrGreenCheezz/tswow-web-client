@@ -92,7 +92,7 @@ export const RESOURCE_ACCOUNTING_GAPS = Object.freeze([
   "multisampled, multiview, external, and invalid mixed render-target attachment topologies without renderer capability state",
   "renderer-generated morph-target DataArrayTextures whose allocation depends on renderer capabilities",
   "browser-owned decoded image, canvas, and bitmap CPU storage",
-  "standalone cube, video, HTML/external, compressed-array, and other unsupported special texture layouts",
+  "standalone cube, video, HTML/external, and other unsupported special texture layouts",
   "opaque JavaScript arrays and engine-owned object overhead",
 ] as const);
 
@@ -439,8 +439,8 @@ function isUnknownTextureLayout(texture: THREE.Texture): boolean {
     || value.isHTMLTexture === true
     || value.isExternalTexture === true
     || value.isCubeDepthTexture === true
-    || value.isFramebufferTexture === true
-    || value.isCompressedArrayTexture === true;
+    || value.isFramebufferTexture === true;
+  // 23.10 (7.48): a compressed array (the HD ground, BC7) is priced below: its levels × its layers.
 }
 
 function usesTextureObjectIdentity(texture: THREE.Texture): boolean {
@@ -645,7 +645,7 @@ export function knownLogicalTextureBytes(texture: THREE.Texture): number | undef
   if ((texture as TextureLike).isDepthTexture === true) return logicalStandaloneDepthTextureBytes(texture);
   if (texture.internalFormat !== null || texture.normalized === true) return undefined;
   const value = texture as TextureLike;
-  const isArray = value.isDataArrayTexture === true;
+  const isArray = value.isDataArrayTexture === true || value.isCompressedArrayTexture === true; // 23.10 (7.48)
   const is3d = value.isData3DTexture === true;
   const base = textureDimensions(texture.image);
   if (!base) return undefined;

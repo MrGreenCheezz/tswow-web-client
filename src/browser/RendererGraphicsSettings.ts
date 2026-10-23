@@ -52,6 +52,8 @@ export function applyRendererGraphicsSettings(
   renderer.setLivingSpells?.(settingBoolean(values, "experimentalLivingSpells"));
   // 23.10 (7.48): «Чёткие текстуры эффектов» (HdEffectTextures.ts).
   renderer.setHdEffectTextures?.(settingBoolean(values, "experimentalSharpEffectTextures"));
+  // 23.10 (7.48 step 2): «Чёткие текстуры мира» (HdWorldTextures.ts).
+  renderer.setHdWorldTextures?.(settingBoolean(values, "experimentalSharpWorldTextures"));
   // The classic glow and solar rays are independent leaves sharing one offscreen scene path. Each
   // switch controls only its own effect; the direct pre-P4 path is selected only when both are OFF.
   renderer.setFullscreenGlow?.(settingBoolean(values, "fullscreenGlow"));

@@ -175,11 +175,73 @@ export async function effectsSet(archives, report = () => undefined) {
   return mergeUses(lists).filter((entry) => EFFECT_TEXTURE_PREFIXES.some((prefix) => entry.path.startsWith(prefix)));
 }
 
-/** The `world` set (later step): terrain tilesets and WMO textures, no grids, wrapped. Not generated yet. */
-export async function worldSet(archives) {
-  const paths = [];
-  for (const prefix of ["tileset\\", "world\\"]) {
-    for (const path of await archives.list(prefix)) if (path.endsWith(".blp") && upscalable(path)) paths.push(path);
+/** 23.10 (7.48): MOMT records are 64 bytes in 3.3.5a; the diffuse texture's MOTX offset is at +0x0C. */
+const MOMT_SIZE = 0x40;
+const MOMT_TEXTURE1 = 0x0c;
+
+/**
+ * 23.10 (7.48): the diffuse texture paths one root WMO's materials name (MOMT texture 1 into MOTX) — the
+ * pictures `/visual/texture/<hash>-<n>.png` serves for that building (tools/wmo-visual.mjs `wmoGroupMeshes`
+ * lists the same ones). A file that does not parse yields nothing.
+ */
+export function wmoDiffuseTextures(root) {
+  if (!root || root.length < 8) return [];
+  let motx;
+  let momt;
+  for (let offset = 0; offset + 8 <= root.length;) {
+    const tag = root.toString("latin1", offset, offset + 4);
+    const size = root.readUInt32LE(offset + 4);
+    const start = offset + 8;
+    if (start + size > root.length) break;
+    // FourCCs are stored reversed: "XTOM" is MOTX.
+    if (tag === "XTOM") motx = root.subarray(start, start + size);
+    else if (tag === "TMOM") momt = root.subarray(start, start + size);
+    if (motx && momt) break;
+    offset = start + size;
   }
-  return paths.sort().map((path) => ({ path, wrap: true, grids: [] }));
+  if (!motx || !momt) return [];
+  const paths = new Set();
+  for (let at = 0; at + MOMT_SIZE <= momt.length; at += MOMT_SIZE) {
+    const offset = momt.readUInt32LE(at + MOMT_TEXTURE1);
+    if (offset >= motx.length) continue;
+    let end = offset;
+    while (end < motx.length && motx[end] !== 0) end++;
+    const name = motx.toString("latin1", offset, end).trim();
+    if (/\.blp$/i.test(name)) paths.add(textureKey(name));
+  }
+  return [...paths];
+}
+
+/** 23.10 (7.48): a WMO group file (`<root>_000.wmo`), not a root. */
+const WMO_GROUP_FILE = /_\d{3}\.wmo$/;
+
+/**
+ * The `world` set (23.10, 7.48 step 2): the ground textures (`tileset\`, without the `_s` specular masks, which the
+ * terrain draws from their own files) and every root WMO's diffuse textures — buildings, never doodads. Character,
+ * creature and item art is left out as everywhere; effect folders are the effects set's. No grids; wrapped (both
+ * tile across their surfaces).
+ */
+export async function worldSet(archives, report = () => undefined) {
+  const paths = new Set();
+  let ground = 0;
+  for (const path of await archives.list("tileset\\")) {
+    if (!path.endsWith(".blp") || path.endsWith("_s.blp") || !upscalable(path)) continue;
+    paths.add(path);
+    ground++;
+  }
+  let roots = 0;
+  let wmoTextures = 0;
+  for (const path of [...await archives.list("world\\wmo\\")].sort()) {
+    if (!path.endsWith(".wmo") || WMO_GROUP_FILE.test(path)) continue;
+    const root = await archives.read(path);
+    if (!root) continue;
+    roots++;
+    for (const texture of wmoDiffuseTextures(root)) {
+      if (!upscalable(texture) || EFFECT_TEXTURE_PREFIXES.some((prefix) => texture.startsWith(prefix))) continue;
+      if (!paths.has(texture)) wmoTextures++;
+      paths.add(texture);
+    }
+  }
+  report({ ground, roots, wmoTextures });
+  return [...paths].sort().map((path) => ({ path, wrap: true, grids: [] }));
 }

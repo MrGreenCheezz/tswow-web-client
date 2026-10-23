@@ -11,6 +11,8 @@ import {
 } from "./ResourceAccounting.js";
 import { reportPatchChainSuspect } from "./PatchChainSuspect.js"; // 22.10 ARC-2 S4b: this realm's sink
 import { recencyStampLimit, renumberByUsed } from "./RecencyStamps.js";
+import { isHdTextureContainer, parseHdTexture, type HdCompressedTexture } from "./HdTextureContainer.js"; // 23.10 (7.48)
+import { asksForHdTexture, compressedMipmaps, isHdWorldTextureUrl } from "./HdWorldTextures.js"; // 23.10 (7.48)
 
 export type ModelTextureStatus = "pending" | "ready" | "failed";
 
@@ -225,6 +227,27 @@ async function decodeModelImage(url: string, options: ImageBitmapOptions = MODEL
   return createImageBitmap(await response.blob(), options);
 }
 
+/**
+ * 23.10 (7.48): a building texture asked for with `hd=` (HdWorldTextures.ts) is answered either with the world
+ * set's BC7 container or, when the gateway holds no HD copy, with the original PNG — told apart by the container's
+ * magic. A container that does not parse is a failure (the visible white pixel), never a guess. Every other URL
+ * takes {@link decodeModelImage} unchanged.
+ */
+async function decodeModelImageOrHd(
+  url: string, options: ImageBitmapOptions = MODEL_IMAGE_DECODE,
+): Promise<ImageBitmap | HdCompressedTexture> {
+  if (!asksForHdTexture(url) || !isHdWorldTextureUrl(url)) return decodeModelImage(url, options);
+  const response = await fetch(url, MODEL_IMAGE_REQUEST);
+  if (!response.ok) throw new Error(`${url} returned ${response.status}`);
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  if (isHdTextureContainer(bytes)) {
+    const compressed = parseHdTexture(bytes);
+    if (!compressed) throw new Error(`${url} returned a malformed HD texture`);
+    return compressed;
+  }
+  return createImageBitmap(new Blob([bytes]), options);
+}
+
 function decodedImageBytes(image: { readonly width?: unknown; readonly height?: unknown }): number {
   const { width, height } = image;
   if (typeof width !== "number" || typeof height !== "number") return 0;
@@ -290,6 +313,11 @@ class ModelImageRecord {
   readonly source: ModelImageSource;
   status: ModelTextureStatus = "pending";
   bitmap: ImageBitmap | undefined = undefined;
+  /**
+   * 23.10 (7.48): the BC7 levels when the answer was the world HD set's container; every texture on `source` then
+   * reads as a compressed texture (see {@link defineCompressedView}).
+   */
+  mipmaps: THREE.CompressedTextureMipmap[] | undefined = undefined;
   bytes = 0;
   /** Live textures on `source`: loaded bases and every clone of them. */
   holders = 0;
@@ -310,11 +338,62 @@ class ModelImageRecord {
  * it (a spell build, a world material, a unit whose base was disposed first).
  */
 class ModelImageTexture extends THREE.Texture {
+  constructor() {
+    super();
+    defineCompressedView(this); // 23.10 (7.48)
+  }
+
   override copy(source: THREE.Texture): this {
     super.copy(source);
     holdModelImage(this);
     return this;
   }
+}
+
+/** 23.10 (7.48): the record whose compressed HD levels a texture's source holds, if any. */
+function compressedRecordOf(texture: THREE.Texture): ModelImageRecord | undefined {
+  const source = texture.source;
+  return source instanceof ModelImageSource && source.record.mipmaps !== undefined ? source.record : undefined;
+}
+
+/**
+ * 23.10 (7.48): what makes one shared source either a bitmap or a BC7 texture for every texture on it.
+ *
+ * three picks the upload path by the texture's own fields — `isCompressedTexture`, `mipmaps`, `format` — but a
+ * {@link ModelImageSource} is shared by a loaded base and every `privateTextureView` clone of it, some of them made
+ * before the answer arrived (parked by {@link registerPendingTextureView}). So these fields read through to the
+ * source's record: while it holds a container they are the compressed texture's (`RGBA_BPTC_Format`, the levels,
+ * no generated mips, no flip — WebGL cannot flip a compressed upload, and every consumer sets `flipY = false`
+ * anyway); otherwise each is the texture's own value, written and read exactly as before. Colour space, wrapping
+ * and filters stay the consumer's, so the HD copy is sampled as the original (sRGB, repeat, trilinear).
+ */
+function defineCompressedView(texture: THREE.Texture): void {
+  const own: Record<string, unknown> = {};
+  const target = texture as unknown as Record<string, unknown>;
+  const view: Record<string, (record: ModelImageRecord) => unknown> = {
+    mipmaps: (record) => record.mipmaps,
+    format: () => THREE.RGBA_BPTC_Format,
+    generateMipmaps: () => false,
+    flipY: () => false,
+  };
+  for (const [key, compressed] of Object.entries(view)) {
+    own[key] = target[key];
+    Object.defineProperty(texture, key, {
+      configurable: true,
+      enumerable: true,
+      get: () => {
+        const record = compressedRecordOf(texture);
+        return record ? compressed(record) : own[key];
+      },
+      set: (value: unknown) => {
+        own[key] = value;
+      },
+    });
+  }
+  Object.defineProperty(texture, "isCompressedTexture", {
+    configurable: true,
+    get: () => compressedRecordOf(texture) !== undefined,
+  });
 }
 
 /** The record each live holder counts against; a texture holds at most one. */
@@ -470,9 +549,9 @@ class ModelImageCache {
   }
 
   async #decode(record: ModelImageRecord): Promise<void> {
-    let bitmap: ImageBitmap;
+    let bitmap: ImageBitmap | HdCompressedTexture;
     try {
-      bitmap = await decodeModelImage(record.url, this.#decodeOptions);
+      bitmap = await decodeModelImageOrHd(record.url, this.#decodeOptions); // 23.10 (7.48): or a BC7 container
     } catch (error) {
       this.#fail(record, error);
       return;
@@ -480,21 +559,31 @@ class ModelImageCache {
     this.#publish(record, bitmap);
   }
 
-  #publish(record: ModelImageRecord, bitmap: ImageBitmap): void {
+  #publish(record: ModelImageRecord, answer: ImageBitmap | HdCompressedTexture): void {
     const waiters = record.waiters;
     record.waiters = [];
+    const compressed = "levels" in answer ? answer : undefined; // 23.10 (7.48)
     if (!record.pooled && record.holders === 0) {
       // Cleared while in flight, and every texture that waited has been disposed since: nothing
       // can draw it, and the stale requests it would answer were already reset by that clear.
-      closeImage(bitmap);
+      if (!compressed) closeImage(answer as ImageBitmap);
       this.#closed++;
       return;
     }
-    record.bitmap = bitmap;
-    record.bytes = decodedImageBytes(bitmap);
-    record.status = "ready";
-    // One write reaches every texture on this source, and every view cloned from one of them.
-    record.source.data = bitmap;
+    if (compressed) {
+      // 23.10 (7.48): the image a compressed texture carries is only its size; the levels are the record's.
+      record.mipmaps = compressedMipmaps(compressed);
+      record.bytes = compressed.byteLength;
+      record.status = "ready";
+      record.source.data = { width: compressed.width, height: compressed.height };
+    } else {
+      const bitmap = answer as ImageBitmap;
+      record.bitmap = bitmap;
+      record.bytes = decodedImageBytes(bitmap);
+      record.status = "ready";
+      // One write reaches every texture on this source, and every view cloned from one of them.
+      record.source.data = bitmap;
+    }
     for (const waiter of waiters) {
       deliver(() => {
         // What `TextureLoader` does before its callback; the loader's own completion marks again.
@@ -547,6 +636,13 @@ class ModelImageCache {
   }
 
   #close(record: ModelImageRecord): void {
+    if (record.mipmaps) {
+      // 23.10 (7.48): a compressed record has no bitmap; its levels go with it (the source keeps its size only).
+      record.mipmaps = undefined;
+      if (record.source.data !== null) record.source.data = null;
+      this.#closed++;
+      return;
+    }
     const bitmap = record.bitmap;
     if (!bitmap) return;
     record.bitmap = undefined;

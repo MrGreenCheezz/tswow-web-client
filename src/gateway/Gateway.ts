@@ -89,7 +89,7 @@ import {
   isDatasetCacheRoute, processCacheNonce, tileCacheControl, REVALIDATE, // 22.10 (6.26): REVALIDATE
   IMMUTABLE, // 23.10 (7.48)
 } from "./CachePolicy.js";
-import { HD_TEXTURE_PARAM, type HdTextureSets } from "./HdTextures.js"; // 23.10 (7.48)
+import { HD_TEXTURE_CONTENT_TYPE, HD_TEXTURE_PARAM, type HdTextureSets } from "./HdTextures.js"; // 23.10 (7.48)
 import {
   METADATA_GENERATION_PARAM, VISUAL_GENERATION_PARAM, assetCacheControl, gatewayCodeIdentity, metadataGeneration,
   visualGeneration,
@@ -1329,12 +1329,29 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
         response.writeHead(403).end();
         return;
       }
+      // 23.10 (7.48): an `hd=` request is answered with the world set's compressed copy of this building texture,
+      // found by the original PNG's digest (HdTextures.ts); revalidated like the original, so a republished
+      // building or a rebuilt set reaches the browser on its next request.
+      const visualTextureFile = join(options.visualModelsDirectory, `${visualTexture[1]}.png`);
+      if (url.searchParams.get(HD_TEXTURE_PARAM) !== null && options.hdTextures) {
+        const { sets, isCurrent } = options.hdTextures;
+        const hdFile = await sets.findBuildingTexture(visualTextureFile,
+          isCurrent ?? ((file) => fingerprint.isCurrent(file, { requireStamp: true })));
+        if (hdFile !== undefined) {
+          try {
+            await respondFile(request, response, hdFile, { origin, contentType: HD_TEXTURE_CONTENT_TYPE, cacheControl: REVALIDATE });
+            return;
+          } catch {
+            // Gone between the look and the open: the original below.
+          }
+        }
+      }
       try {
         // The WMO generator rewrites this same hash-keyed PNG when an archive overlay changes.
         // It has no independent route key, so a one-day freshness window could leave an already
         // open browser drawing the previous building texture. A file validator keeps the URL
         // backwards-compatible while max-age=0 makes cached responses revalidate after republish.
-        await respondFile(request, response, join(options.visualModelsDirectory, `${visualTexture[1]}.png`), {
+        await respondFile(request, response, visualTextureFile, {
           origin, contentType: "image/png",
         });
       } catch (error) {
@@ -1529,11 +1546,33 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
         response.writeHead(403).end();
         return;
       }
+      // 23.10 (7.48): an `hd=` request is answered with the world set's compressed copy of this ground texture
+      // when it holds a current one (HdTextures.ts); immutable only under this cache generation and this HD one.
+      // The original answered to an `hd=` request is revalidated, so a set built later replaces it.
+      const hdRequested = url.searchParams.get(HD_TEXTURE_PARAM);
+      if (hdRequested !== null && options.hdTextures) {
+        const { sets, isCurrent } = options.hdTextures;
+        const hdFile = await sets.findTerrainLayer(terrainLayer[1]!,
+          isCurrent ?? ((file) => fingerprint.isCurrent(file, { requireStamp: true })));
+        if (hdFile !== undefined) {
+          try {
+            const pinned = hdRequested === await sets.generation()
+              && url.searchParams.get("g") === requestCacheGeneration();
+            await respondFile(request, response, hdFile, {
+              origin, contentType: HD_TEXTURE_CONTENT_TYPE, cacheControl: pinned ? IMMUTABLE : REVALIDATE,
+            });
+            return;
+          } catch {
+            // Gone between the look and the open: the original below.
+          }
+        }
+      }
       try {
         const data = await readFile(join(options.terrainLayersDirectory, `${terrainLayer[1]}.png`));
         response.writeHead(200, {
           "access-control-allow-origin": origin,
-          "cache-control": tileCacheControl(url.searchParams.get("g"), requestCacheGeneration(), LEGACY_TILE_DAY),
+          "cache-control": hdRequested !== null ? REVALIDATE // 23.10 (7.48)
+            : tileCacheControl(url.searchParams.get("g"), requestCacheGeneration(), LEGACY_TILE_DAY),
           "content-length": data.byteLength,
           "content-type": "image/png",
         });

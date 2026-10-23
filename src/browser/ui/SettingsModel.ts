@@ -208,6 +208,12 @@ export const SETTING_DEFINITIONS: readonly SettingDefinition[] = [
     hint: "Текстуры частиц и заклинаний, увеличенные нейросетью в 2–4 раза. Нужен набор, собранный на сервере.",
   },
   {
+    // 23.10 (7.48): ground and building textures from the gateway's world HD set, BC7 on the GPU (HdWorldTextures.ts).
+    id: "experimentalSharpWorldTextures", label: "Чёткие текстуры мира", group: "Эффекты", kind: "boolean",
+    fallback: false,
+    hint: "Текстуры земли и зданий, увеличенные нейросетью вдвое и сжатые для видеокарты: видеопамяти столько же, сколько у обычных. Нужен набор, собранный на сервере.",
+  },
+  {
     // Cinematic leaves of «Улучшенная графика» (CinematicPost.ts). The four post-process ones share
     // the glow chain's capture and cost a full-screen pass or more, so they are off until the preset
     // or the player turns them on; the two material ones are free and follow the water/wind leaves.

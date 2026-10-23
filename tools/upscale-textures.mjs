@@ -21,12 +21,23 @@
 // - `manifest.json` — path → { scale, size, source sha1, grid, wrap }, plus the model and pipeline version. The
 //   gateway's HD generation is a digest of it, so a rebuilt set reaches browsers under new URLs.
 //
+// The `world` set (23.10, step 2: ground textures and buildings' diffuse textures, ×2 up to 256 px a side) also gets
+// a GPU-compressed form of every entry, made on the CPU after the GPU runs (`compressSet`, tools/hd-texture-bc7.mjs):
+// - `<id>.wht` — BC7 with its full mip chain in a small container, what the gateway serves to the world routes (the
+//   PNG beside it is only the compressor's input); a ground texture is put on the terrain array's 512 side with its
+//   `_s.blp` specular mask in alpha; `<id>.wht.src` — its stamp (the texture, and the `_s.blp` it read);
+// - the manifest entry's `compressed` record (sizes, BC7 error, the HD-½-vs-original difference and, for a building
+//   texture, `originalPng`: the sha1 of the PNG `/visual/texture` serves, by which the gateway finds it).
+// `--compress-only` runs only that CPU pass (no GPU), `--no-compress` skips it, `--workers N` (default 4) threads.
+//
 // Resumable: the manifest is rewritten after every batch and an entry whose source sha1, scale, model and
 // pipeline match (and whose file is there) is skipped. Parallel-safe: one run per set at a time (a lock
 // directory in the set), each run works in its own temporary folder, every file is renamed into place.
 
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
+import { availableParallelism } from "node:os";
+import { Worker } from "node:worker_threads";
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -95,7 +106,8 @@ function decodePng(bytes) {
 
 function parseArguments(argv) {
   const options = { set: undefined, model: MODEL, batch: 150, maxSide: undefined, only: undefined, out: undefined, gpu: undefined,
-    lockScript: undefined, lockOwner: "upscale-textures", dryRun: false, restampOnly: false };
+    lockScript: undefined, lockOwner: "upscale-textures", dryRun: false, restampOnly: false,
+    compress: true, compressOnly: false, workers: Math.max(1, Math.min(4, availableParallelism() - 2)) };
   for (let index = 0; index < argv.length; index++) {
     const name = argv[index];
     const value = () => {
@@ -115,12 +127,16 @@ function parseArguments(argv) {
       case "--lock-owner": options.lockOwner = value(); break;
       case "--dry-run": options.dryRun = true; break;
       case "--restamp-only": options.restampOnly = true; break;
+      case "--compress-only": options.compressOnly = true; break; // 23.10 (7.48)
+      case "--no-compress": options.compress = false; break;
+      case "--workers": options.workers = Number.parseInt(value(), 10); break;
       default: throw new Error(`Unknown option ${name}`);
     }
   }
   if (!SET_NAMES.includes(options.set)) throw new Error(`--set must be one of ${SET_NAMES.join(", ")}`);
   if (!MODELS[options.model]) throw new Error(`--model must be one of ${Object.keys(MODELS).join(", ")}`);
   if (!Number.isInteger(options.batch) || options.batch < 1) throw new Error("--batch must be a positive integer");
+  if (!Number.isInteger(options.workers) || options.workers < 1) throw new Error("--workers must be a positive integer");
   return options;
 }
 
@@ -146,6 +162,135 @@ function takeSetLock(setDirectory) {
   return () => rmSync(lockDirectory, { recursive: true, force: true });
 }
 
+/**
+ * 23.10 (7.48): bumped when the compressed form changes (encoder, mip filter, ground side), so every `.wht` is
+ * rebuilt — on the CPU only, from the PNG beside it.
+ */
+export const COMPRESS_PIPELINE = "bc7-mode6-v1/mips-linear/ground512";
+/** 23.10 (7.48): a ground texture's container also carries its `_s.blp` specular mask in alpha. */
+const GROUND_COMPRESS_PIPELINE = `${COMPRESS_PIPELINE}/specmask`;
+
+/** 23.10 (7.48): whether a world-set path is a ground texture (the terrain array's layers). */
+function isGround(path) {
+  return path.startsWith("tileset\\");
+}
+
+/** 23.10 (7.48): the pipeline a compressed entry of `path` must have been made by. */
+export function compressPipeline(path) {
+  return isGround(path) ? GROUND_COMPRESS_PIPELINE : COMPRESS_PIPELINE;
+}
+
+/**
+ * 23.10 (7.48): the archive paths a compressed copy is stamped with — the texture, and for the ground its `_s.blp`
+ * when the client has one (the mask in its alpha), so a patch that replaces either retires the copy.
+ */
+async function compressedSources(path, archives) {
+  if (!isGround(path)) return { paths: [path], mask: undefined };
+  const maskPath = path.replace(/\.blp$/, "_s.blp");
+  const mask = await archives.read(maskPath);
+  return mask ? { paths: [path, maskPath], mask } : { paths: [path], mask: undefined };
+}
+
+/** 23.10 (7.48): the compressed form beside an HD PNG (`<id>.wht`, src/gateway/HdTextures.ts names it the same). */
+export function compressedFile(png) {
+  return png.replace(/\.png$/, ".wht");
+}
+
+/** An entry's files: the HD PNG, its compressed form and both stamps. */
+function removeEntryFiles(png) {
+  for (const file of [png, compressedFile(png)]) {
+    rmSync(file, { force: true });
+    rmSync(`${file}.src`, { force: true });
+  }
+}
+
+/**
+ * 23.10 (7.48): the world set's compressed forms (tools/hd-texture-bc7.mjs) — every entry whose `.wht` is missing
+ * or was made by another pipeline (`compressPipeline`), on `options.workers` threads (CPU only). A ground texture
+ * (`tileset\`) is put on the terrain array's 512 side with its `_s.blp` specular mask in alpha (opaque without one),
+ * as the gateway's layer arrays carry it. The manifest entry gains
+ * `compressed: { pipeline, width, height, levels, bytes, opaque, error, halfError, originalPng, mask? }`; the file is
+ * stamped with its sources (the texture, and the `_s.blp` it read), so the gateway serves it only while they match
+ * the client.
+ */
+async function compressSet(manifest, manifestFile, setDirectory, archives, options) {
+  const jobs = [];
+  for (const [path, entry] of Object.entries(manifest.entries)) {
+    if (options.only && !path.includes(options.only)) continue;
+    const png = join(setDirectory, `${hdTextureId(path)}.png`);
+    const destination = compressedFile(png);
+    if (!existsSync(png)) continue;
+    if (entry.compressed?.pipeline === compressPipeline(path) && existsSync(destination)) continue;
+    jobs.push({ path, png, destination, ground: isGround(path) });
+  }
+  console.log(`${jobs.length} HD textures to compress (BC7) on ${options.workers} threads`);
+  if (options.dryRun || jobs.length === 0) return;
+  const started = Date.now();
+  const workers = Array.from({ length: Math.min(options.workers, jobs.length) },
+    () => new Worker(new URL("./hd-texture-compress-worker.mjs", import.meta.url)));
+  let next = 0;
+  let done = 0;
+  let failed = 0;
+  let bytes = 0;
+  let sinceWrite = 0;
+  const failures = [];
+  try {
+    await Promise.all(workers.map((worker) => new Promise((resolveWorker, rejectWorker) => {
+      let current;
+      const feed = async () => {
+        while (next < jobs.length) {
+          const job = jobs[next];
+          const id = next++;
+          const blp = await archives.read(job.path);
+          job.sources = await compressedSources(job.path, archives);
+          if (!blp) {
+            failed++;
+            continue;
+          }
+          current = job;
+          worker.postMessage({ id, png: job.png, destination: job.destination, ground: job.ground,
+            blp: new Uint8Array(blp), // a compact copy: a view would clone its whole pool slab
+            ...(job.sources.mask ? { mask: new Uint8Array(job.sources.mask) } : {}) });
+
+          return;
+        }
+        current = undefined;
+        resolveWorker();
+      };
+      worker.on("error", rejectWorker);
+      worker.on("message", (answer) => {
+        void (async () => {
+          const job = current;
+          if (answer.ok && job && manifest.entries[job.path]) {
+            const { ok: _ok, id: _id, ...result } = answer;
+            await stampGenerated(job.destination, archives, { paths: job.sources.paths });
+            manifest.entries[job.path].compressed = { pipeline: compressPipeline(job.path), ...result,
+              ...(job.sources.mask ? { mask: true } : {}) };
+            bytes += answer.bytes;
+            done++;
+            if (++sinceWrite >= 250) {
+              sinceWrite = 0;
+              await writeManifest(manifestFile, manifest);
+              console.log(`  ${done}/${jobs.length} compressed (${Math.round((Date.now() - started) / 1000)} s)`);
+            }
+          } else {
+            failed++;
+            if (job) failures.push(`${job.path}: ${answer.reason ?? "entry gone"}`);
+          }
+          await feed();
+        })().catch(rejectWorker);
+      });
+      void feed().catch(rejectWorker);
+    })));
+  } finally {
+    await Promise.all(workers.map((worker) => worker.terminate()));
+    await writeManifest(manifestFile, manifest);
+  }
+  console.log(`Compressed ${done} HD textures in ${Math.round((Date.now() - started) / 1000)} s, `
+    + `${(bytes / 1048576).toFixed(1)} MB of BC7${failed ? `; ${failed} failed` : ""}`);
+  if (failures.length) console.log(`  ${failures.slice(0, 20).join("\n  ")}`);
+}
+
 async function writeManifest(file, manifest) {
   const sorted = Object.fromEntries(Object.entries(manifest.entries).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
   await writeFileAtomic(file, `${JSON.stringify({ ...manifest, entries: sorted }, null, 1)}\n`);
@@ -161,7 +306,8 @@ async function main() {
   try {
     const entries = options.set === "effects"
       ? await effectsSet(archives, (report) => console.log(`${report.models} spell models, ${report.read} read, ${report.missing} not in the client`))
-      : await worldSet(archives);
+      : await worldSet(archives, (report) => console.log(`${report.ground} ground textures, ${report.roots} root WMOs, `
+        + `${report.wmoTextures} more building textures`));
     const selected = options.only ? entries.filter((entry) => entry.path.includes(options.only)) : entries;
     const previous = readManifest(manifestFile);
     const manifest = { schema: MANIFEST_SCHEMA, set: options.set, model: options.model, pipeline: PIPELINE,
@@ -199,8 +345,7 @@ async function main() {
         notScaled++;
         if (manifest.entries[entry.path] && !options.dryRun) {
           delete manifest.entries[entry.path];
-          rmSync(destination, { force: true });
-          rmSync(`${destination}.src`, { force: true });
+          removeEntryFiles(destination);
         }
         continue;
       }
@@ -214,6 +359,12 @@ async function main() {
           await stampGenerated(destination, archives, { paths: [entry.path] });
           restamped++;
         }
+        // 23.10 (7.48): and its compressed form, which carries a stamp of its own.
+        const compressed = compressedFile(destination);
+        const sources = existsSync(compressed) && !options.dryRun ? (await compressedSources(entry.path, archives)).paths : undefined;
+        if (sources && !await stampIsCurrent(compressed, archives, { paths: sources })) {
+          await stampGenerated(compressed, archives, { paths: sources });
+        }
         continue;
       }
       queue.push({ entry, image, layout, wanted, destination });
@@ -225,16 +376,18 @@ async function main() {
       for (const path of Object.keys(manifest.entries)) {
         if (current.has(path)) continue;
         const destination = join(setDirectory, `${hdTextureId(path)}.png`);
-        rmSync(destination, { force: true });
-        rmSync(`${destination}.src`, { force: true });
+        removeEntryFiles(destination);
         delete manifest.entries[path];
         pruned++;
       }
     }
     console.log(`${selected.length} textures in the ${options.set} set: ${upToDate} up to date (${restamped} restamped), `
       + `${queue.length} to build, ${notScaled} too large to upscale, ${undecodable} undecodable, ${pruned} pruned`);
-    if (options.dryRun || options.restampOnly || queue.length === 0) {
+    const compressing = options.set === "world" && options.compress && !options.restampOnly; // 23.10 (7.48)
+    if (options.dryRun || options.restampOnly || options.compressOnly || queue.length === 0) {
+      if (options.compressOnly && queue.length > 0) console.log(`  ${queue.length} wait for a GPU run (not built by --compress-only)`);
       if (!options.dryRun && !options.restampOnly) await writeManifest(manifestFile, manifest);
+      if (compressing) await compressSet(manifest, manifestFile, setDirectory, archives, options);
       return;
     }
 
@@ -284,8 +437,7 @@ async function main() {
           if (drift.colour > FIDELITY_LIMIT || drift.alpha > FIDELITY_LIMIT) {
             rejected.push(`${job.entry.path} (colour ${drift.colour.toFixed(1)}, alpha ${drift.alpha.toFixed(1)})`);
             delete manifest.entries[job.entry.path];
-            rmSync(job.destination, { force: true });
-            rmSync(`${job.destination}.src`, { force: true });
+            removeEntryFiles(job.destination);
             continue;
           }
           worst = Math.max(worst, drift.colour, drift.alpha);
@@ -307,6 +459,7 @@ async function main() {
       + `(GPU ${Math.round(gpuMs / 1000)} s), ${(bytes / 1048576).toFixed(1)} MB written to ${setDirectory}; `
       + `largest drift from the source ${worst.toFixed(1)}`);
     if (rejected.length) console.log(`Kept the original for ${rejected.length} (drift past ${FIDELITY_LIMIT}):\n  ${rejected.join("\n  ")}`);
+    if (compressing) await compressSet(manifest, manifestFile, setDirectory, archives, options); // 23.10 (7.48)
   } finally {
     releaseSetLock();
     archives.close();
