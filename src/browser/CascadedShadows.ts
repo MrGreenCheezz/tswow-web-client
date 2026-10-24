@@ -35,6 +35,7 @@ import {
   type ShadowCasterList,
 } from "./ShadowCasterList.js";
 import { windShadowDepth } from "./VegetationWind.js"; // 7.26
+import { shadowDepthFor } from "./ShadowDepthKinds.js"; // 25.10 (12.10)
 import { SteppedShadowSun } from "./ShadowSunStep.js"; // 22.10 (7.35)
 
 /** Depth-only WMO stand-ins live here: shadow cameras draw them, the view camera never does. */
@@ -215,6 +216,25 @@ let depthOnlyDepth = 0;
 let depthOnlyInstalled = false;
 /** The depth material this hook turned colour off on, for `onAfterShadow` to give it back. */
 let depthOnlyFlipped: THREE.Material | null = null;
+
+/**
+ * 25.10 (12.10): while the cascades render, an instanced or skinned caster draws with its kind's twin
+ * of the depth material three chose (`ShadowDepthKinds.ts`). Installed once per renderer: swapping
+ * `renderBufferDirect` around every frame cost more than it saved (P2-01d's first try, above).
+ */
+const DEPTH_KIND_RENDERERS = new WeakSet<object>();
+
+function installDepthKinds(renderer: THREE.WebGLRenderer): void {
+  type Direct = THREE.WebGLRenderer["renderBufferDirect"];
+  const direct: Direct | undefined = renderer.renderBufferDirect;
+  if (typeof direct !== "function" || DEPTH_KIND_RENDERERS.has(renderer)) return;
+  DEPTH_KIND_RENDERERS.add(renderer);
+  const wrapped: Direct = function (this: THREE.WebGLRenderer, camera, scene, geometry, material, object, group) {
+    const chosen = depthOnlyDepth > 0 ? shadowDepthFor(material, object) : material;
+    direct.call(this, camera, scene, geometry, chosen, object, group);
+  };
+  renderer.renderBufferDirect = wrapped;
+}
 
 function installDepthOnlyHook(): void {
   if (depthOnlyInstalled) return;
@@ -784,6 +804,7 @@ export class CascadedSunShadows {
     const owner = this;
     const others: THREE.Light[] = [];
     installDepthOnlyHook();
+    installDepthKinds(renderer); // 25.10 (12.10)
     const wrapped: ShadowRender = function (lights, scene, camera) {
       const cascades = owner.#cascades;
       if (cascades.length === 0) {
