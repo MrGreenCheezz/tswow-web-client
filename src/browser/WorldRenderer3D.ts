@@ -271,6 +271,7 @@ import {
   wmoDoodadsOfPlacement, // 05.10 review A7b-2
 } from "./WmoOpenAir.js"; // 05.10-A7b-2 (7.03 slice 3)
 import { wmoRunMaterial } from "./WmoMaterials.js"; // 05.10-A7b-2 (7.11 P1)
+import { wmoRoomDrawGeometry } from "./WmoRunMerge.js"; // 25.10 (12.10)
 import { applyWmoRunLook, wmoRunLook, wmoRunLookKey } from "./WmoRunLook.js"; // 05.10-A7b-2 (7.11 P1)
 import {
   applyWmoRunClamp, applyWmoUnlitMocv, wmoGroupNeedsUnlitMocv, wmoRunDrawState, wmoRunDrawStateKey,
@@ -2169,6 +2170,23 @@ export function instanceable(model: { wvm?: WvmModel | undefined; wmo?: unknown 
 export function instanceableBuild(materials: THREE.Material | readonly THREE.Material[]): boolean {
   const list = Array.isArray(materials) ? materials : [materials as THREE.Material];
   return list.every((material) => !material.transparent);
+}
+
+/** 25.10 (12.10) bench census: one drawn mesh — what it is and whose. */
+export interface DrawCensusTag { kind: string; placement: number | undefined; model: string | undefined }
+
+/** 25.10 (12.10) bench census: a placement's drawn mesh by what it is, and why a doodad is not in a bucket. */
+function environmentDrawKind(rendered: RenderedEnvironment, mesh: THREE.Object3D): string {
+  if (rendered.wmo) return mesh.userData[WMO_SHADOW_PROXY] === true ? "wmo-proxy" : "wmo-room";
+  if (rendered.skinned) return "doodad-skinned";
+  if (rendered.standIn) return `standin-${rendered.standIn}`;
+  if (rendered.instanceKey !== undefined) return "doodad-instanceable-plain";
+  if (rendered.growthStartedAt !== undefined) return "doodad-growing";
+  if (!rendered.wvm) return "doodad-legacy";
+  if (rendered.wvm.particleEmitters.length + rendered.wvm.ribbonEmitters.length > 0) return "doodad-emitters";
+  const material = (mesh as THREE.Mesh).material;
+  if (material && !instanceableBuild(material)) return "doodad-transparent";
+  return "doodad-other";
 }
 
 /**
@@ -5671,6 +5689,27 @@ export class WorldRenderer3D {
       return undefined;
     };
     return this.#sunCascades.casterCensus(this.#scene, (node) => shown.has(node), classify);
+  }
+
+  /**
+   * 25.10 (12.10) bench census (`sceneStats.drawCensus`, `BenchDrawCensus.ts`): what a drawn mesh is
+   * — a building's room, a doodad and why it is not instanced, an instance bucket — and whose it is.
+   */
+  drawCensusClassifier(): (mesh: THREE.Object3D) => DrawCensusTag | undefined {
+    const placements = new Map<THREE.Object3D, RenderedEnvironment>();
+    for (const rendered of this.#environment.values()) placements.set(rendered.node, rendered);
+    return (mesh) => {
+      for (let node: THREE.Object3D | null = mesh; node; node = node.parent) {
+        const rendered = placements.get(node);
+        if (!rendered) continue;
+        return { kind: environmentDrawKind(rendered, mesh), placement: rendered.source.id, model: rendered.source.name };
+      }
+      if ((mesh as THREE.InstancedMesh).isInstancedMesh && (mesh.parent === this.#instanceGroup
+        || mesh.parent === this.#localLightInstanceGroup)) {
+        return { kind: mesh.parent === this.#instanceGroup ? "instanced" : "instanced-local", placement: undefined, model: undefined };
+      }
+      return undefined;
+    };
   }
 
   // 06.10-shadow: unit casters with hysteresis, and admission of units whose shadow reaches the view
@@ -13655,7 +13694,9 @@ export class WorldRenderer3D {
     const runEntries = source.runs.map((run) => this.#wmoRunMaterial(model, group, run));
     const materialEntries = Object.freeze([...new Set(runEntries)]);
     const materials = runEntries.map((materialEntry) => materialEntry.material);
-    const mesh = new THREE.Mesh(entry.geometry, materials.length === 1 ? materials[0]! : materials);
+    // 25.10 (12.10): opaque runs sharing a material drawn as one range (WmoRunMerge.ts).
+    const geometry = materials.length === 1 ? entry.geometry : wmoRoomDrawGeometry(entry.geometry, materials);
+    const mesh = new THREE.Mesh(geometry, materials.length === 1 ? materials[0]! : materials);
     this.#programWarmup.registerObject(mesh);
     this.#wmoGroupBuildBudget.done(); // P2-09a
     return { entry, materialEntries, mesh };
