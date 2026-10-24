@@ -3981,7 +3981,13 @@ export class WorldRenderer3D {
   readonly #effectView = new THREE.Vector3();
   readonly #particleLight = { r: 1, g: 1, b: 1 };
   /** 25.10 (6.27): the ground under scene (x, z), for record 0x2000 particles (WoW (x, −z) → scene height). */
-  readonly #particleGround = (x: number, z: number): number | undefined => this.#missileHeightAt?.(x, -z);
+  readonly #particleGround = (x: number, z: number): number | undefined =>
+    this.#particleFloor !== undefined ? this.#particleFloor : this.#missileHeightAt?.(x, -z);
+  /**
+   * 25.10 (6.27): the floor under the spell effect being stepped (its unit's feet, its point) — what Wow.exe's ray
+   * (0x0077f540) meets on a building's floor as well as on the ground; the terrain only answers for the rest.
+   */
+  #particleFloor: number | undefined;
   readonly #boneMatrix = new THREE.Matrix4();
   readonly #environment = new Map<number, RenderedEnvironment>();
   /**
@@ -10470,6 +10476,8 @@ export class WorldRenderer3D {
         this.#spellLights.pin(entry.spell, _spellLightAt.x, _spellLightAt.y, _spellLightAt.z);
       }
       if (living && entry.spell) setModelEffectsGround(held.effects, this.#spellGround(entry.spell));
+      const floor = entry.spell ? this.#spellGround(entry.spell) : undefined; // 25.10 (6.27)
+      this.#particleFloor = floor !== undefined && floor > -1e5 ? floor : undefined;
       const particleAt = detailedCapture ? performance.now() : 0;
       updateModelEffects(held.effects, primeSeconds, {
         matrixFor,

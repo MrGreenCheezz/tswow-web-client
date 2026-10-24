@@ -1059,8 +1059,10 @@ function spawn(system: ParticleSystem, frame: EmitterFrame): Particle {
     // 25.10 (6.27): record 0x2000 — on the ground under it, raised by the larger of its birth scales
     // (ProjectParticle 0x00979740: z = ground + max(scale.x, scale.y) of the scale ramp at its age, here 0).
     if ((emitter.flags & PARTICLE_FLAG_SPAWN_ON_GROUND) !== 0 && frame.ground) {
+      // World::ProjectPositionCallback (0x0077f540): a ray 20 yards straight down from the particle; no floor in that
+      // reach (or one above it) leaves the particle where it was born.
       const ground = frame.ground(x, z);
-      if (ground !== undefined && Number.isFinite(ground)) {
+      if (ground !== undefined && Number.isFinite(ground) && ground <= y && y - ground <= 20) {
         sampleRamp(emitter.scale, 0, scratchRamp, 1);
         const lift = (emitter.scale?.components ?? 1) > 1 ? Math.max(scratchRamp[0]!, scratchRamp[1]!) : scratchRamp[0]!;
         y = ground + lift;

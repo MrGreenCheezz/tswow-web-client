@@ -21,7 +21,7 @@ const parsed = ts.createSourceFile('renderer.ts', source, ts.ScriptTarget.ES2022
 const renderer = parsed.statements.find(n => ts.isClassDeclaration(n) && n.name?.text === 'WorldRenderer3D');
 const methods = ['#updateVisuals', '#faceModelSpace', '#orientVisualFrame', '#applySpellVisualTransform',
   '#applySpellBillboards', '#attachmentBone', '#updateEffects',
-  '#sequenceSpellModel', // 25.10 (6.27): Stand → Hold/Decay (SpellModelSequence.ts)
+  '#sequenceSpellModel', '#spellGround', // 25.10 (6.27): Stand → Hold/Decay; the floor for 0x2000 particles
 ].map(name => {
   const member = renderer.members.find(m => m.name?.getText(parsed) === name);
   assert.ok(member, name);
@@ -31,7 +31,7 @@ const constants = ['EFFECT_RANGE', 'EFFECT_RANGE_SQUARED', 'EFFECT_BUDGET', 'EFF
   'VISUAL_EFFECT_BUDGET', 'EMPTY_EFFECTS', 'IDENTITY_MATRIX', '_scratchScale', // 05.10: ревью G2 — slice E dropped the arc scratch `_flightPoint`
   'IDENTITY_QUATERNION', 'M2_FROM_SCENE',
   '_missileSample', // 05.10: ревью G2 — slice E's homing sample
-  '_spellDurations', '_spellPick', '_particleNormal', 'MODEL_VFX_MAX_MS', // 25.10 (6.27)
+  '_spellDurations', '_spellPick', '_particleNormal', 'MODEL_VFX_MAX_MS', '_spellLightAt', // 25.10 (6.27)
 ].map(name => {
   const declaration = parsed.statements.filter(ts.isVariableStatement)
     .flatMap(s => [...s.declarationList.declarations]).find(d => d.name.getText(parsed) === name);

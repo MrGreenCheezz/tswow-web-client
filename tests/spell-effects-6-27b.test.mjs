@@ -111,6 +111,12 @@ test("6.27b record 0x800 spreads spawns along the move; 0x2000 stands them on th
   const ground = createParticleSystem(grounded, NONE, 4);
   stepParticles(ground, 1 / 60, frame({ matrix: new THREE.Matrix4().makeTranslation(0, 20, 0).elements, ground: () => 3 }));
   assert.ok(ground.particles.length > 0 && ground.particles.every((p) => Math.abs(p.y - 3.75) < 1e-6), "ground + the larger birth scale");
+  // World::ProjectPositionCallback (0x0077f540): a ray 20 yards down — a floor above or further below is no floor.
+  for (const level of [25, -10]) {
+    const away = createParticleSystem(grounded, NONE, 4);
+    stepParticles(away, 1 / 60, frame({ matrix: new THREE.Matrix4().makeTranslation(0, 20, 0).elements, ground: () => level }));
+    assert.ok(away.particles.every((p) => Math.abs(p.y - 20) < 1e-6), `left where born with a floor at ${level}`);
+  }
 });
 
 test("6.27b distance thinning: rate × clamp(1 − (d − 50) · 0.02, 0.25, 1) (0x0097d8c0)", () => {
