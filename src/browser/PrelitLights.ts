@@ -235,6 +235,8 @@ export class PrelitLights<T extends PrelitPlacement = PrelitPlacement> {
       else if (templates.length > 0 && object.interior === true && object.localLight === undefined && object.id < 0
         && host.openAir(object) === undefined) pending++;
     }
+    // 25.10 (7.50): the gateway's lit-model index on its first way: which other models light is not known yet.
+    if (catalog.litIndexPending) pending++;
     // A building around or near the point whose root has not come: its own lamps, MOLT and lanterns.
     // 24.10 (7.50): or whose lamp table (its lamp posts) is still on its first way from the gateway.
     if (host.buildingKnown) {

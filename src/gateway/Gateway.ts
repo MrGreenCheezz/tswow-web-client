@@ -68,6 +68,7 @@ import { validAssetPath } from "./AssetPath.js";
 import { listeningServerError } from "./ProcessGuard.js";
 import { originAllowed, refuseUpgrade, routeUpgrade } from "./UpgradeGuard.js";
 import { WMO_MINIMAP_ROUTE, serveWmoMinimapRoute, type WmoMinimapMemo } from "./WmoMinimapRoute.js"; // 05.10-A7b-3
+import { LIT_MODEL_INDEX_ROUTE, serveLitModelIndexRoute } from "./LitModelIndexRoute.js"; // 25.10 (7.50)
 import { WMO_LAMP_TABLE_ROUTE, serveWmoLampTableRoute, type WmoLampTableBuilds } from "./WmoLampTableRoute.js"; // 24.10 (7.50)
 import {
   MAX_MODULE_FILE_BYTES, moduleFileKind, readModuleFile, readModuleIndex,
@@ -205,6 +206,7 @@ function isClientVisualProfileRoute(method: string | undefined, pathname: string
     || pathname === "/visual/animations"
     || pathname === "/visual/doodads" // 12.10 6.25
     || pathname === "/visual/wmo-lamps" // 24.10 (7.50): read from the same artifacts
+    || pathname === "/visual/lit-models" // 25.10 (7.50): read from the same archive chain
     || /^\/visual\/texture\/[0-9a-f]{40}(?:-\d{1,3})?\.png$/.test(pathname)
     || pathname === "/dbc/creature-models"
     || pathname === "/dbc/character-options"
@@ -364,6 +366,8 @@ export interface GatewayOptions {
   generateMinimapIndex?: (map: number) => Promise<void>;
   /** 05.10-A7b-3 (7.14): publishes `<minimapDirectory>/wmo.json`, every WMO's baked tiles (WmoMinimapRoute.ts). */
   generateWmoMinimapIndex?: () => Promise<void>;
+  /** 25.10 (7.50): publishes `<visualModelsDirectory>/lit-models.json`, the models that declare M2 lights (LitModelIndexRoute.ts). */
+  generateLitModelIndex?: () => Promise<void>;
   /** Published 128×128 uint32 continent hit masks, keyed only by Map.dbc id. */
   worldMapZoneMapsDirectory?: string;
   generateWorldMapZoneMap?: (map: number) => Promise<void>;
@@ -939,6 +943,9 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
   const minimapLane = generationLane();
   const wmoMinimapMemo: WmoMinimapMemo = {}; // 05.10-A7b-3 (7.14): the parsed wmo.json, per process
   const wmoLampTableBuilds: WmoLampTableBuilds = new Map(); // 24.10 (7.50): lamp tables being read
+  // 25.10 (7.50): the lit-model index reads every model of the chain once (≈24 s); a lane of its own, so no
+  // model, texture or tile queues behind it, and not one the background preloader yields to.
+  const litModelLane = generationLane();
   const worldMapZoneMapLane = generationLane();
   // Its own lane, and not one of the eleven above: the pass reads every family, and putting it on
   // any of them would make the first genuinely missing asset of that family queue behind the whole
@@ -1346,6 +1353,16 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
           || (!options.generateVisualModel && (error as NodeJS.ErrnoException).code === "ENOENT"),
         cacheControl: (requested) => assetCacheControl(requested, visualAssetGeneration, REVALIDATE),
       })) return;
+
+    // 25.10 (7.50): `/visual/lit-models?v=1`, the models that give light by themselves (LitModelIndexRoute.ts).
+    if (pathname === LIT_MODEL_INDEX_ROUTE && options.visualModelsDirectory && await serveLitModelIndexRoute(request, response, url, {
+      visualModelsDirectory: options.visualModelsDirectory,
+      allowedOrigins: options.allowedOrigins,
+      generate: options.generateLitModelIndex
+        ? () => generateOnce(litModelLane, "lit-models", () => options.generateLitModelIndex!()) : undefined,
+      ensureCurrent: options.generateLitModelIndex ? (file) => fingerprint.ensureCurrent(file) : undefined,
+      cacheControl: (requested) => assetCacheControl(requested, visualAssetGeneration, REVALIDATE),
+    })) return;
 
     const visualTexture = pathname.match(/^\/visual\/texture\/([0-9a-f]{40}(?:-\d{1,3})?)\.png$/);
     if (request.method === "GET" && visualTexture && options.visualModelsDirectory) {

@@ -160,12 +160,15 @@ test("continent hit rectangles use the stock WorldMapContinent transform", () =>
   const targets = new Map(hierarchy.targets(hierarchy.node("world:1"))
     .map((target) => [target.node.key, target.rect]));
 
+  // 3.58 tail (25.10): Wow.exe's placement (0x00547EB0) over the 1002 × 668 art — 62.625 tiles across, 41.75 down,
+  // right and bottom one tile past their boundary: left (26·0.7 + 31.3125 − 22.4 + 16.875) / 62.625, top
+  // (8·0.7 + 20.875 − 22.4 − 1.5) / 41.75, width 19·0.7 / 62.625, height 53·0.7 / 41.75. Was /64 on both axes.
   const eastern = targets.get("area:14");
   assert.ok(eastern);
-  assert.ok(Math.abs(eastern.left - 0.698046875) < 1e-6);
-  assert.ok(Math.abs(eastern.top - 0.2140625) < 1e-6);
-  assert.ok(Math.abs(eastern.width - 0.196875) < 1e-6);
-  assert.ok(Math.abs(eastern.height - 0.56875) < 1e-6);
+  assert.ok(Math.abs(eastern.left - 0.70239521) < 1e-6);
+  assert.ok(Math.abs(eastern.top - 0.06167665) < 1e-6);
+  assert.ok(Math.abs(eastern.width - 0.21237525) < 1e-6);
+  assert.ok(Math.abs(eastern.height - 0.8886228) < 1e-6);
 
   const kalimdor = targets.get("area:13");
   assert.ok(kalimdor.left < eastern.left && kalimdor.top > eastern.top);

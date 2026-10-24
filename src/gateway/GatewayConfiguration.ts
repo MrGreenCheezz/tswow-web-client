@@ -311,6 +311,8 @@ export async function createGatewayConfiguration(): Promise<{ options: GatewayOp
     // 05.10-A7b-3 (7.14): every WMO's baked tiles in one file, once per md5translate — a one-shot
     // process, not a worker kind: one run per patch does not earn a job of its own.
     generateWmoMinimapIndex: () => runAssetGenerator("generate-minimap-index.mjs", ["--wmo"]),
+    // 25.10 (7.50): the models that declare M2 point lights, read once from the whole chain (LitModelIndexRoute.ts).
+    generateLitModelIndex: () => runAssetGenerator("generate-lit-model-index.mjs", []),
     worldMapZoneMapsDirectory: process.env.WORLD_MAP_ZONE_MAP_DIR
       ?? resolve(process.cwd(), "data/worldmap-zone-maps"),
     generateWorldMapZoneMap: (map) => publish({ kind: "zone-map", map }, 0, "generate-worldmap-zone-map.mjs", [String(map)]),
