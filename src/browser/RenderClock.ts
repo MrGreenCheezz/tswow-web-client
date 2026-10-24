@@ -46,5 +46,11 @@ export function planToRenderTime(plan: SpellVisualPlan): SpellVisualPlan {
     }
   }
   if (plan.shakes) for (const shake of plan.shakes) shake.at = toRenderTime(shake.at);
+  if (plan.tints) { // 25.10 (6.27)
+    for (const tint of plan.tints) {
+      tint.startedAt = toRenderTime(tint.startedAt);
+      tint.endsAt = toRenderTime(tint.endsAt);
+    }
+  }
   return plan;
 }

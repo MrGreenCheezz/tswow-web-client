@@ -84,7 +84,12 @@ import {
 import type { LightSample, ResolvedColour } from "./LightTypes.js";
 import { lightDarkensByDepth, liquidLightTint, type UnderwaterLight } from "./UnderwaterLiquidLight.js"; // 05.10-A7b-5 review
 import { LocalLightSelection, modelFixtureLights, sampleFixtureLight, type LocalLightSample } from "./LocalLighting.js";
-import { SpellLights } from "./SpellLights.js"; // 23.10 (6.27)
+import { SpellLights, type SpellLightKind } from "./SpellLights.js"; // 23.10 (6.27); 25.10 kinds
+import { UnitTints, WHITE } from "./UnitTints.js"; // 25.10 (6.27)
+import {
+  SPELL_ANIM_DECAY, SPELL_ANIM_HOLD, SPELL_ANIM_STAND, spellModelSequence, spellOneShotModelMs,
+  type SpellSequenceDurations, type SpellSequencePick,
+} from "./SpellModelSequence.js"; // 25.10 (6.27)
 import { hdEffectTexturesEnabled, setHdEffectTexturesEnabled } from "./HdEffectTextures.js"; // 23.10 (7.48)
 import {
   HD_WORLD_TEXTURE_EXTENSION, hdWorldTexturesActive, setHdWorldTexturesEnabled, withHdModelTexture, withHdWorldTexture,
@@ -171,7 +176,7 @@ import { poseTakesWholeBody, wholeBodyOutlivesBase } from "./game/ActionOverBase
 import { FastPoseState, type FastPoseProgram } from "./FastPose.js";
 import { SharedPose, pagePoseEngine, type PoseEngine, type PoseEngineStats } from "./PoseEngine.js";
 import {
-  EVERY_GEOSET, UNIT_SLOT_FOLD, applyBlendMode, buildModel, characterSlots, cloneMaterialFaded, fadeMaterial,
+  EVERY_GEOSET, UNIT_SLOT_FOLD, applyBlendMode, buildModel, characterSlots, cloneMaterialFaded, cloneMaterialTinted, tintMaterial, fadeMaterial,
   privateTextureView, // 13.10 7.11: a clamped WMO run's own sampler view
   setBuiltModelFantasyGlow,
   unitGeosets, updateBatchColours, worldCharacterGeosets,
@@ -291,6 +296,7 @@ import { HORIZON_LOD_REACH, HorizonLodRing } from "./HorizonLodRing.js"; // 22.1
 import {
   billboardView, buildModelEffects, disposeModelEffects, resetModelEffects, setModelEffectsFantasyGlow,
   updateModelEffects, setModelEffectsGround, // 23.10 (6.27)
+  particleLightColour, // 25.10 (6.27)
   visitModelEffectsResources, type ModelEffects,
 } from "./ParticleRender.js";
 import { creatureDisplayAlpha, creatureGeosetChoice, particleColouredWvm } from "./CreatureDisplayLook.js"; // 05.10-A7a-H 6.11а
@@ -351,6 +357,13 @@ import type { CollisionLiquid, CollisionModel } from "../world/CollisionFormat.j
 /** One deterministic evolution step supplied by an offline render replay. */
 /** 23.10 (6.27): scratch for spell light positions. */
 const _spellLightAt = new THREE.Vector3();
+/** 25.10 (6.27): what kind of light a spell model gives in the enhanced profile (SpellLights.ts). */
+function spellLightKind(instance: VisualInstance): SpellLightKind {
+  return instance.flight ? "missile" : instance.modelPlayback === "hold" ? "aura" : "burst";
+}
+const _spellDurations: SpellSequenceDurations = { stand: 0 }; // 25.10 (6.27)
+const _spellPick: SpellSequencePick = { animation: 0, time: 0, loop: false };
+const _particleNormal = new THREE.Vector3(0, 1, 0); // 25.10 (6.27): a lit particle's normal, the world's up (0x0097a390)
 
 /** 23.10 (6.27): a spell mesh material that adds light (SrcAlpha/One or One/One), the ones that glow. */
 function isAdditiveSpellMaterial(material: THREE.Material): boolean {
@@ -2891,6 +2904,9 @@ interface RenderedUnit extends PosedModel {
   particleColours: readonly number[] | undefined;
   /** Which meshes are wearing private faded copies, and the shared arrays they gave back. */
   opacityBorrows: MaterialBorrow[] | undefined;
+  /** 25.10 (6.27): the spell tint the unit wears (0xRRGGBB, UnitTints.ts) and the tinted copies wearing it. */
+  spellTint?: number | undefined;
+  tintBorrows?: MaterialBorrow[] | undefined;
   /**
    * The body (`unitWarmBody`) the warm hold last let onto the screen. A body that is not this one
    * is new, and is checked against the warm pass before it is drawn; see `#holdUnitUntilWarm`.
@@ -2974,6 +2990,31 @@ export function borrowFadedMaterials(
     borrows.push({ mesh, shared, clones, cinematic });
   }
   return borrows;
+}
+
+/**
+ * 25.10 (6.27): private tinted copies (`cloneMaterialTinted`) on every mesh given, as `borrowFadedMaterials` does for
+ * a fade; the copies keep every program state of their source, so they draw with its linked program.
+ */
+export function borrowTintedMaterials(meshes: Iterable<THREE.Mesh>, colour: number): MaterialBorrow[] {
+  const borrows: MaterialBorrow[] = [];
+  for (const mesh of meshes) {
+    const shared = mesh.material;
+    const sources = Array.isArray(shared) ? shared : [shared];
+    const clones = sources.map((material) => cloneMaterialTinted(material, colour));
+    mesh.material = Array.isArray(shared) ? clones : clones[0]!;
+    borrows.push({ mesh, shared, clones, cinematic: false });
+  }
+  return borrows;
+}
+
+/** 25.10 (6.27): a new tint on the copies already worn. */
+export function updateTintedMaterials(borrows: readonly MaterialBorrow[], colour: number): void {
+  for (const borrow of borrows) {
+    for (let index = 0; index < borrow.clones.length; index++) {
+      tintMaterial(borrow.clones[index]!, colour, Array.isArray(borrow.shared) ? borrow.shared[index]! : borrow.shared);
+    }
+  }
 }
 
 /** Changes fade uniforms without releasing the materials that own the compiled programs. */
@@ -3130,6 +3171,11 @@ interface RenderedVisual {
    */
   boneOffset?: THREE.Vector3;
   boneOffsetSource?: WvmModel;
+  /** 25.10 (6.27): the sequence slot and its time (ms) a Hold/Decay model plays this frame (#sequenceSpellModel). */
+  sequenceSlot?: number | undefined;
+  sequenceMs?: number;
+  /** 25.10 (6.27): when its aura ended and a held model began its Decay (cancelSpellVisual). */
+  decayStartedAt?: number;
 }
 
 /** 22.10 ARC-2 S4a: no unit has a melee target until main pushes some (`setMeleeTargets`). */
@@ -3898,6 +3944,27 @@ export class WorldRenderer3D {
   #skyStarsBuilt: BuiltModel | undefined;
   /** Live emitter sets, by `kind:id`. Per placement, never shared: two campfires are two fires. */
   readonly #effects = new Map<string, { effects: ModelEffects; source: WvmModel }>();
+  /** 25.10 (6.27): spell tints and flashes on units (CharProc 1 / 13, UnitTints.ts). */
+  readonly #unitTints = new UnitTints();
+
+  /**
+   * 25.10 (6.27): diagnostics for lookdev — every held effect set's emitters this frame: live particles, quads
+   * drawn, visibility. Allocates; never called on a frame path.
+   */
+  effectEmitterStats(): Array<{ key: string; emitters: Array<{ particles: number; quads: number; visible: boolean; flags: number; quad0: number[]; colour0: number[] }> }> {
+    const out = [];
+    for (const [key, held] of this.#effects) {
+      out.push({ key, emitters: held.effects.emitters.map((drawn) => ({
+        particles: drawn.particles?.particles.length ?? -1,
+        quads: Math.round(drawn.geometry.drawRange.count / 6),
+        visible: drawn.mesh.visible && drawn.mesh.parent?.visible !== false,
+        flags: drawn.particles?.emitter.flags ?? -1,
+        quad0: Array.from(drawn.buffers.positions.subarray(0, 12), (v) => Math.round(v * 100) / 100),
+        colour0: Array.from(drawn.buffers.colors.subarray(0, 4), (v) => Math.round(v * 100) / 100),
+      })) });
+    }
+    return out;
+  }
   /** Everything the spells currently in the air are showing, in world coordinates. */
   readonly #visuals: RenderedVisual[] = [];
   #visualSequence = 0;
@@ -3911,6 +3978,17 @@ export class WorldRenderer3D {
     handle: SpellVisualHandle;
   }> = [];
   readonly #billboard: BillboardView = { rightX: 1, rightY: 0, rightZ: 0, upX: 0, upY: 1, upZ: 0 };
+  /** 25.10 (6.27): the camera this frame (emitter thinning) and the light a lit particle takes. */
+  readonly #effectView = new THREE.Vector3();
+  readonly #particleLight = { r: 1, g: 1, b: 1 };
+  /** 25.10 (6.27): the ground under scene (x, z), for record 0x2000 particles (WoW (x, −z) → scene height). */
+  readonly #particleGround = (x: number, z: number): number | undefined =>
+    this.#particleFloor !== undefined ? this.#particleFloor : this.#missileHeightAt?.(x, -z);
+  /**
+   * 25.10 (6.27): the floor under the spell effect being stepped (its unit's feet, its point) — what Wow.exe's ray
+   * (0x0077f540) meets on a building's floor as well as on the ground; the terrain only answers for the rest.
+   */
+  #particleFloor: number | undefined;
   readonly #boneMatrix = new THREE.Matrix4();
   readonly #environment = new Map<number, RenderedEnvironment>();
   /**
@@ -6597,6 +6675,7 @@ export class WorldRenderer3D {
     // 05.10-A7a-E (6.13): the plan's beams under this handle, its shakes into the bank.
     if (plan.beams && plan.beams.length > 0) this.#beams().add(handle, plan.beams);
     if (plan.shakes) for (const shake of plan.shakes) this.#cameraShakes.add(shake.shakes, shake.point, shake.at);
+    if (plan.tints && plan.tints.length > 0) this.#unitTints.add(handle, plan.tints); // 25.10 (6.27)
     // One unit cannot play two action clips at once. Composite rows often provide both
     // ImpactKit and TargetImpactKit for the same target/time; installing both in a Map<guid,...>
     // used to make the last one win, while minor packet/model timing changes changed which kit was
@@ -6631,6 +6710,7 @@ export class WorldRenderer3D {
 
   /** Remove spell FX/state and only their particle bookkeeping; portraits and world scenery stay. */
   clearSpellVisuals(): void {
+    this.#unitTints.clear(); // 25.10 (6.27)
     this.#pendingVisualAnimations.length = 0;
     this.#chainBeams?.clear(); // 05.10-A7a-E
     this.#cameraShakes.clear(); // 05.10-A7a-E
@@ -6654,12 +6734,22 @@ export class WorldRenderer3D {
     const handle = this.#spellVisualIds.delete(id); // 22.10 ARC-2 S4a: the id main gave it
     if (handle === undefined) return;
     this.#chainBeams?.cancel(handle); // 05.10-A7a-E
+    this.#unitTints.cancel(handle); // 25.10 (6.27)
     for (let index = this.#pendingVisualAnimations.length - 1; index >= 0; index--) {
       if (this.#pendingVisualAnimations[index]!.handle === handle) this.#pendingVisualAnimations.splice(index, 1);
     }
+    const now = performance.now();
     for (let index = this.#visuals.length - 1; index >= 0; index--) {
       const visual = this.#visuals[index]!;
       if (visual.handle !== handle) continue;
+      // 25.10 (6.27): a held aura model with a Decay plays it out before it goes (OnSpellEffectClear 0x00743250).
+      const decay = visual.instance.modelPlayback === "hold" && !visual.instance.flight && visual.skinned
+        && visual.decayStartedAt === undefined ? visual.template?.clips.get(SPELL_ANIM_DECAY) : undefined;
+      if (decay && visualHasStarted(visual.instance, now)) {
+        visual.decayStartedAt = now;
+        visual.instance.endsAt = now + Math.min(MODEL_VFX_MAX_MS, decay.duration * 1000);
+        continue;
+      }
       this.#visualGroup.remove(visual.node);
       this.#dropEffects(visual.key);
       this.#disposeRenderedVisual(visual);
@@ -6680,6 +6770,7 @@ export class WorldRenderer3D {
     if (handle === undefined) return;
     const endsAt = toRenderTime(mainEndsAt); // 22.10 ARC-2 S4a
     this.#chainBeams?.retime(handle, endsAt); // 05.10-A7a-E
+    this.#unitTints.retime(handle, endsAt); // 25.10 (6.27)
     const now = performance.now();
     for (const visual of this.#visuals) {
       if (visual.handle !== handle || !(visual.instance.endsAt > now)) continue;
@@ -8280,7 +8371,9 @@ export class WorldRenderer3D {
       if (!started) continue;
 
       if (visual.skinned) {
-        visual.skinned.mixer.update(elapsed);
+        // 25.10 (6.27): a model with Hold/Decay plays Stand → Hold (aura) or Stand → Decay (one-shot), as Wow.exe's
+        // effect callbacks chain them (SpellModelSequence.ts); every other spell model keeps its single clip.
+        if (!this.#sequenceSpellModel(visual, now, client)) visual.skinned.mixer.update(elapsed);
         applyGlobalSequenceBones(visual.skinned, visual.template!, visual.wvm!.globalSequences, now);
       }
 
@@ -8357,6 +8450,65 @@ export class WorldRenderer3D {
   /** A free-standing effect is drawn in model space, so its frame carries the turn into the scene. */
   #faceModelSpace(visual: RenderedVisual): void {
     visual.frame.quaternion.copy(M2_TO_SCENE);
+  }
+
+  /**
+   * 25.10 (6.27): Stand → Hold / Decay for a spell model that declares either (SpellModelSequence.ts, Wow.exe
+   * 0x00744870 / 0x007449c0 / 0x00744920). Asks for the sidecar clips the model declared and did not ship with,
+   * places the mixer on the picked sequence at the picked time, records the sequence for the batch colours, and
+   * lets a one-shot run on through its Decay. False — nothing done — for any other model or a missile.
+   */
+  #sequenceSpellModel(visual: RenderedVisual, now: number, client: EnvironmentClient | undefined): boolean {
+    const template = visual.template;
+    const skinned = visual.skinned;
+    if (!template || !skinned || visual.instance.flight) return false;
+    if (!template.animations.has(SPELL_ANIM_HOLD) && !template.animations.has(SPELL_ANIM_DECAY)) return false;
+    const stand = template.clips.get(SPELL_ANIM_STAND);
+    if (!stand) return false;
+    if (!template.merged && client
+      && ((template.animations.has(SPELL_ANIM_HOLD) && !template.clips.has(SPELL_ANIM_HOLD))
+        || (template.animations.has(SPELL_ANIM_DECAY) && !template.clips.has(SPELL_ANIM_DECAY)))) {
+      const clips = client.animations(visual.instance.path, template.parents.length, "critical");
+      if (clips) {
+        addSkinnedClips(template, clips);
+        template.merged = true;
+      }
+    }
+    const hold = visual.instance.modelPlayback === "hold";
+    const durations = _spellDurations;
+    durations.stand = stand.duration;
+    durations.hold = template.clips.get(SPELL_ANIM_HOLD)?.duration;
+    durations.decay = template.clips.get(SPELL_ANIM_DECAY)?.duration;
+    // A one-shot that fits its model runs on through its Decay (0x00744870 destroys it only when Decay ends).
+    if (!hold && visual.instance.fitToModel && durations.decay !== undefined) {
+      const origin = visual.playbackStartedAt ?? visual.instance.startedAt;
+      const through = origin + Math.min(MODEL_VFX_MAX_MS, spellOneShotModelMs(durations));
+      if (through > visual.instance.endsAt) visual.instance.endsAt = through;
+    }
+    const age = Math.max(0, (now - (visual.playbackStartedAt ?? visual.instance.startedAt)) / 1000);
+    const pick = spellModelSequence(age, hold, durations, _spellPick);
+    if (visual.decayStartedAt !== undefined && durations.decay !== undefined) {
+      // 25.10 (6.27): the aura has gone: Decay once from that moment (0x00743250 → AuraDecayHandler 0x00743230).
+      pick.animation = SPELL_ANIM_DECAY;
+      pick.time = Math.min(durations.decay, Math.max(0, (now - visual.decayStartedAt) / 1000));
+      pick.loop = false;
+    }
+    const clip = template.clips.get(pick.animation) ?? stand;
+    let action = visual.action;
+    if (!action || action.getClip() !== clip) {
+      action?.stop();
+      action = skinned.mixer.clipAction(clip);
+      action.reset();
+      action.setLoop(pick.loop ? THREE.LoopRepeat : THREE.LoopOnce, Infinity);
+      action.clampWhenFinished = !pick.loop;
+      action.play();
+      visual.action = action;
+    }
+    action.time = Math.min(clip.duration, pick.time);
+    skinned.mixer.update(0);
+    visual.sequenceSlot = playingSequence(action);
+    visual.sequenceMs = pick.time * 1000;
+    return true;
   }
 
   #orientVisualFrame(visual: RenderedVisual, unitRig = false): void {
@@ -9402,6 +9554,52 @@ export class WorldRenderer3D {
     unit.shadowCaster = undefined;
   }
 
+  /**
+   * 25.10 (6.27): a spell tint on the unit's body and what it holds (UpdateModelTint 0x00720db0 sets the model's
+   * diffuse tint): private copies of their materials with the colour multiplied in — the same programs, nothing to
+   * warm — kept while the tint stands and refreshed when it changes or the unit's meshes do.
+   */
+  #applyUnitTint(unit: RenderedUnit, colour: number): void {
+    if (colour === WHITE) {
+      if (unit.tintBorrows) this.#releaseUnitTint(unit);
+      return;
+    }
+    let current = unit.tintBorrows !== undefined;
+    if (current) {
+      // A body or an item rebuilt under the tint is a mesh that does not wear the copies.
+      let count = 0;
+      for (const mesh of this.#unitTintMeshes(unit)) {
+        count++;
+        const borrow = unit.tintBorrows!.find((entry) => entry.mesh === mesh);
+        if (!borrow || mesh.material !== (Array.isArray(borrow.shared) ? borrow.clones : borrow.clones[0])) current = false;
+      }
+      if (count !== unit.tintBorrows!.length) current = false;
+    }
+    if (current && unit.spellTint === colour) return;
+    if (!current) {
+      this.#releaseUnitTint(unit);
+      unit.tintBorrows = borrowTintedMaterials(this.#unitTintMeshes(unit), colour);
+    } else {
+      updateTintedMaterials(unit.tintBorrows!, colour);
+    }
+    unit.spellTint = colour;
+  }
+
+  #releaseUnitTint(unit: RenderedUnit): void {
+    const borrows = unit.tintBorrows;
+    unit.spellTint = undefined;
+    if (!borrows) return;
+    returnBorrowedMaterials(borrows);
+    unit.tintBorrows = undefined;
+  }
+
+  /** 25.10 (6.27): the meshes a spell tint colours — the body and what hangs on it, not a mount or glow bodies. */
+  * #unitTintMeshes(unit: RenderedUnit): Generator<THREE.Mesh> {
+    if (unit.skinned) yield unit.skinned.mesh;
+    else if (unit.visual instanceof THREE.Mesh) yield unit.visual;
+    for (const node of unit.attached.values()) if (node instanceof THREE.Mesh) yield node;
+  }
+
   /** Gives every borrowed material array back and disposes the copies. Exactly reverses the above. */
   #releaseUnitOpacity(unit: RenderedUnit): void {
     const borrows = unit.opacityBorrows;
@@ -9901,6 +10099,11 @@ export class WorldRenderer3D {
     // 12.08: the view the emitters are drawn in; one off screen writes and draws nothing.
     this.#effectFrustumMatrix.multiplyMatrices(this.#camera.projectionMatrix, this.#camera.matrixWorldInverse);
     this.#effectFrustum.setFromProjectionMatrix(this.#effectFrustumMatrix);
+    // 25.10 (6.27): the camera for the emitters' distance thinning (0x0097d8c0) and the light a lit particle takes —
+    // the model light on a quad whose normal is the world's up (0x0097a390: the view matrix's c row).
+    this.#camera.getWorldPosition(this.#effectView);
+    particleLightColour(this.#worldLight.wowAmbient.value, this.#worldLight.wowDiffuse.value,
+      this.#worldLight.wowSunDirection.value, _particleNormal, this.#particleLight);
 
     const wanted: {
       key: string;
@@ -10160,7 +10363,9 @@ export class WorldRenderer3D {
         || phaseAdmissionRejected.has(groupKey)
         || (phaseEmitterGroups.has(groupKey) && !selectedSpellGroups.has(groupKey))) continue;
       const origin = visual.phaseOriginAt ?? visual.playbackStartedAt ?? visual.instance.startedAt;
-      updateBatchColours(visual.built.animatedBatches, Math.max(0, now - origin), now);
+      // 25.10 (6.27): on the sequence a Hold/Decay model is playing, at its own time (SpellModelSequence.ts).
+      if (visual.sequenceSlot !== undefined) updateBatchColours(visual.built.animatedBatches, visual.sequenceMs ?? 0, now, visual.sequenceSlot);
+      else updateBatchColours(visual.built.animatedBatches, Math.max(0, now - origin), now);
     }
 
     wanted.sort((left, right) => left.distance - right.distance);
@@ -10273,8 +10478,15 @@ export class WorldRenderer3D {
         && spellEffectNeedsFirstBurst(entry.spell.instance, firstEligible,
           entry.spell.playbackStartedAt, entry.spell.instance.startedAt, spellAgeMs!, primeSeconds);
       // 23.10 (6.27): a living spell effect's ground (its particles' soft fade) and its glow (its light).
-      const spellGlow = living && entry.spell ? this.#spellLights.glowOf(entry.spell.handle.id) : undefined;
+      // 25.10 (6.27): per spell model, by kind (a missile's light pinned on the bolt, SpellLights.ts).
+      const spellGlow = living && entry.spell ? this.#spellLights.glowOf(entry.spell, spellLightKind(entry.spell.instance)) : undefined;
+      if (spellGlow && entry.spell?.instance.flight) {
+        entry.spell.node.getWorldPosition(_spellLightAt);
+        this.#spellLights.pin(entry.spell, _spellLightAt.x, _spellLightAt.y, _spellLightAt.z);
+      }
       if (living && entry.spell) setModelEffectsGround(held.effects, this.#spellGround(entry.spell));
+      const floor = entry.spell ? this.#spellGround(entry.spell) : undefined; // 25.10 (6.27)
+      this.#particleFloor = floor !== undefined && floor > -1e5 ? floor : undefined;
       const particleAt = detailedCapture ? performance.now() : 0;
       updateModelEffects(held.effects, primeSeconds, {
         matrixFor,
@@ -10287,6 +10499,9 @@ export class WorldRenderer3D {
         worldMs: now,
         // 13.10 6.15: per-sequence tracks on the playing clip's slot, as Wow.exe samples them (0x0082d2f0).
         sequence: playingSequence(entry.spell ? entry.spell.action : posed?.action),
+        // 25.10 (6.27): the camera for the distance thinning, except for a spell with a SpellMissile row (0x0097d8c0).
+        viewX: entry.spell?.instance.ignoreDistance ? undefined : this.#effectView.x,
+        viewY: this.#effectView.y, viewZ: this.#effectView.z, ground: this.#particleGround,
         ...(newEffects && entry.spell ? {
           // The catch-up integrator samples keyed tracks along the local interval instead of
           // repeating the final clock value at each 100 ms substep.
@@ -10303,6 +10518,7 @@ export class WorldRenderer3D {
         ...(firstBurst ? { firstBurstAnimationMs: 0 } : {}),
         frustum: this.#effectFrustum,
         ...(spellGlow ? { glow: spellGlow } : {}), // 23.10 (6.27)
+        particleLight: this.#particleLight, // 25.10 (6.27)
       });
       if (detailedCapture) particleMs += performance.now() - particleAt;
       if (entry.fade !== undefined) fadeGlowEmitters(held.effects, entry.fade); // 05.10: ревью E2 — a glow fades with its unit
@@ -10318,8 +10534,8 @@ export class WorldRenderer3D {
           if (!isAdditiveSpellMaterial(material) || !material.visible) continue;
           const tinted = material as THREE.Material & { color?: THREE.Color };
           const colour = tinted.color;
-          this.#spellLights.addBatch(visual.handle.id, _spellLightAt.x, _spellLightAt.y + 1, _spellLightAt.z,
-            colour?.r ?? 1, colour?.g ?? 1, colour?.b ?? 1, material.opacity);
+          this.#spellLights.addBatch(visual, _spellLightAt.x, _spellLightAt.y + (visual.instance.flight ? 0 : 1), _spellLightAt.z,
+            colour?.r ?? 1, colour?.g ?? 1, colour?.b ?? 1, material.opacity, spellLightKind(visual.instance)); // 25.10 (6.27)
         }
       }
       this.#spellLights.end(elapsed);
@@ -12355,7 +12571,8 @@ export class WorldRenderer3D {
   #unitMeshProgramsReady(unit: RenderedUnit, mesh: THREE.Mesh, fading: boolean): boolean {
     const kind = programWarmupKind(mesh);
     if (!kind) return true;
-    const borrow = unit.opacityBorrows?.find((entry) => entry.mesh === mesh);
+    const borrow = unit.opacityBorrows?.find((entry) => entry.mesh === mesh)
+      ?? unit.tintBorrows?.find((entry) => entry.mesh === mesh); // 25.10 (6.27)
     const shared = borrow ? borrow.shared : mesh.material;
     let ready = true;
     for (const material of Array.isArray(shared) ? shared : [shared]) {
@@ -14832,6 +15049,10 @@ export class WorldRenderer3D {
     // multiplies, it is never replaced. A held unit is dressed here exactly as it will be drawn on
     // the frame it is let go — its clock is stopped, not skipped.
     const opacity = displayOpacity * spawnFadeFactor(unit.admittedAt, now); // 05.10-A7a-H 6.11а
+    // 25.10 (6.27): a spell's tint or flash on the model (UnitTints.ts); never on a fading or dead body.
+    if (unit.tintBorrows !== undefined || !this.#unitTints.empty) {
+      this.#applyUnitTint(unit, dead || opacity < 1 || unit.opacityBorrows !== undefined ? WHITE : this.#unitTints.colourOf(object.guid, now));
+    }
     this.#applyUnitOpacity(unit, opacity, this.#unitFadeReturnWaits(unit, opacity));
     this.#applyUnitShadow(unit, shadowCaster);
     if (detailedCapture) this.#drawPhaseMs["units.presentation"]! += performance.now() - unitPartAt;
@@ -15440,6 +15661,7 @@ export class WorldRenderer3D {
     // Before anything is unparented or disposed, while the meshes that borrowed still exist: the
     // shared arrays go back to builds that are about to be handed to somebody else, and the copies
     // are disposed here rather than left to the meshes that are being thrown away.
+    this.#releaseUnitTint(unit); // 25.10 (6.27): before the opacity borrow, which would lend the tinted copies
     this.#releaseUnitOpacity(unit);
     // 05.10-A7a-F1 (6.16а): after the opacity borrow, which hands back the array the death fade wears.
     dropDeathFade(unit);

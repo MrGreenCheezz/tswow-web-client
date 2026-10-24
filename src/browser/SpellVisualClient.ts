@@ -169,7 +169,8 @@ export class SpellVisualClient extends BatchedMetadataClient<SpellVisualMetadata
     // persistent/fan flags; `beamEnds` on a visual with beams; `destRaw`; `followGround` whenever any of its
     // four columns says something. An older gateway answers v=8's shape: the new keys are optional, a chain row
     // without them is filled with zeros (a straight band, as before) and a missile keeps its chest aim.
-    return `${this.baseUrl}/dbc/spell-visuals?v=9&ids=${ids.join(",")}`;
+    // v=10 (25.10, 6.27): a kit's `tint` (CharProc 1) and `flash` (CharProc 13); an older gateway answers v=9 without them.
+    return `${this.baseUrl}/dbc/spell-visuals?v=10&ids=${ids.join(",")}`;
   }
 
   protected override accept(value: unknown): value is SpellVisualMetadata {
@@ -191,7 +192,8 @@ export class SpellVisualClient extends BatchedMetadataClient<SpellVisualMetadata
 export class SpellVisualKitClient extends BatchedMetadataClient<SpellVisualKitRecord> {
   protected override url(ids: readonly number[]): string {
     // v=2 (13.10, 6.13): the same chain fields as `/dbc/spell-visuals?v=9`.
-    return `${this.baseUrl}/dbc/spell-visual-kits?v=2&ids=${ids.join(",")}`;
+    // v=3 (25.10, 6.27): `tint` and `flash`, as `/dbc/spell-visuals?v=10`.
+    return `${this.baseUrl}/dbc/spell-visual-kits?v=3&ids=${ids.join(",")}`;
   }
 
   protected override accept(value: unknown): value is SpellVisualKitRecord {
@@ -249,6 +251,16 @@ function isKitExtras(shape: Record<string, unknown>): boolean {
       const combos = slot["combos"]; // 13.10
       if (combos !== undefined && (!Array.isArray(combos) || !combos.every(isChainEffect))) return false;
     }
+  }
+  // 25.10 (6.27): CharProc 1 / 13 — an 0xRRGGBB tint, and a flash with its hold and fade in milliseconds.
+  const tint = shape["tint"];
+  if (tint !== undefined && !(Number.isInteger(tint) && (tint as number) >= 0 && (tint as number) <= 0xffffff)) return false;
+  const flash = shape["flash"];
+  if (flash !== undefined) {
+    if (!flash || typeof flash !== "object") return false;
+    const fields = flash as Record<string, unknown>;
+    if (!Number.isInteger(fields["colour"]) || (fields["colour"] as number) < 0 || (fields["colour"] as number) > 0xffffff) return false;
+    if (!finite(fields["delayMs"]) || !finite(fields["durationMs"])) return false;
   }
   return true;
 }

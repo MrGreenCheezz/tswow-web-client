@@ -499,11 +499,12 @@ export interface AnimatedBatch {
  */
 export function updateBatchAppearance(
   batches: readonly AnimatedBatch[], animationMs: number, worldMs = animationMs,
+  sequence = REST_SEQUENCE, // 25.10 (6.27): the sequence slot a spell model plays (SpellModelSequence.ts)
 ): void {
   for (const entry of batches) {
     const sequences = entry.globalSequences;
     const at = (track: WvmTrack | undefined, component = 0, fallback = 1): number =>
-      sampleTrack(track, animationMs, worldMs, sequences, fallback, component, REST_SEQUENCE);
+      sampleTrack(track, animationMs, worldMs, sequences, fallback, component, sequence);
     const opacity = Math.max(0, Math.min(1, at(entry.colour?.alpha) * at(entry.weight)));
     if (entry.tinted) {
       entry.material.color.setRGB(at(entry.colour?.rgb, 0), at(entry.colour?.rgb, 1), at(entry.colour?.rgb, 2));
@@ -1809,6 +1810,30 @@ export function cloneMaterialFaded(material: THREE.Material, factor: number): TH
   if (isFacingCarrier(material)) clone.forceSinglePass = true;
   fadeMaterial(clone, factor);
   return clone;
+}
+
+/**
+ * 25.10 (6.27): a private copy of one built material wearing a spell's tint on a unit (UnitTints.ts) — the hooks and
+ * the cache key carried over as `cloneMaterialFaded` does, nothing program-relevant changed.
+ */
+export function cloneMaterialTinted(material: THREE.Material, colour: number): THREE.Material {
+  const clone = material.clone();
+  clone.onBeforeCompile = material.onBeforeCompile;
+  const key = material.customProgramCacheKey();
+  clone.customProgramCacheKey = () => key;
+  if (isFacingCarrier(material)) clone.forceSinglePass = true;
+  tintMaterial(clone, colour, material);
+  return clone;
+}
+
+const TINT_SCRATCH = new THREE.Color();
+
+/** 25.10 (6.27): `source`'s colour times the tint (0xRRGGBB, an sRGB colour like the client's). */
+export function tintMaterial(material: THREE.Material, colour: number, source: THREE.Material): void {
+  const tinted = material as THREE.Material & { color?: THREE.Color };
+  const original = source as THREE.Material & { color?: THREE.Color };
+  if (!tinted.color || !original.color) return;
+  tinted.color.copy(original.color).multiply(TINT_SCRATCH.setHex(colour));
 }
 
 /**
