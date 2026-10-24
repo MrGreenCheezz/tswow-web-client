@@ -25,6 +25,7 @@ import { ResourceAccountingLedger } from "../ResourceAccounting.js"; // 23.10 (7
 import { planSpellAuraState, planSpellCastStart, planSpellVisual, planSpellVisualKitEvent, type SpellVisualPlan } from "../SpellVisuals.js"; // 23.10 (6.27); 25.10 phases
 import { noteGatewayAssetGenerations } from "../GatewayGeneration.js"; // 23.10 (7.48)
 import type { SpellVisualKitRecord, SpellVisualMetadata } from "../../gateway/SpellVisual.js"; // 23.10 (6.27)
+import { BenchDrawCensus } from "./BenchDrawCensus.js"; // 25.10 (12.10)
 import { runLightTrace, type LightTraceSpec } from "./LightTrace.js"; // 24.10 (7.50)
 import { overrideLightCatalogGeneration } from "../LightCatalogGeneration.js"; // 24.10 (7.50)
 import { BenchSpellCasts } from "./BenchSpellCasts.js"; // 25.10 (perf)
@@ -818,10 +819,15 @@ host.__bench = {
     // Shadow-pass draws by branch and object kind: what the cascades redraw, and how much of it is
     // scenery the view did not admit (shown for the shadow cameras only).
     const shadowDraws: Record<string, number> = {};
+    const drawCensus = new BenchDrawCensus(); // 25.10 (12.10)
     const direct = renderer.renderBufferDirect;
     renderer.renderBufferDirect = function (...args) {
       const material = args[3] as THREE.Material, object = args[4] as THREE.Object3D;
       currentDraw = { object, material, pass: shadowPass ? "shadow" : args[1] === scene ? "main" : "other" };
+      if (shadowPass || args[1] === scene) {
+        drawCensus.note(object, args[2] as THREE.BufferGeometry, material, args[5] as { start: number } | null,
+          shadowPass ? "shadow" : "main");
+      }
       if (shadowPass) {
         const kind = (object as THREE.InstancedMesh).isInstancedMesh ? "instanced"
           : (object as THREE.SkinnedMesh).isSkinnedMesh ? "skinned" : "mesh";
@@ -867,7 +873,10 @@ host.__bench = {
     // P2-01a: the caster list against three's own walk of the scene, cascade by cascade, as
     // that frame left them (`missing = extra = 0` is the condition for P2-01b and c1–c2).
     const shadowCasterList = world?.shadowCasterCensus() ?? null;
+    const classify = world?.drawCensusClassifier();
+    const drawCensusSummary = drawCensus.summarize((object) => classify?.(object), branchOf); // 25.10 (12.10)
     return { byBranch, drawsByBranch, shadowDraws, materials: materials.size, visibleMaterials: visibleMaterials.size,
-      programs: renderer.info.programs?.length ?? 0, parameterDerivations, programKeys, shadowCasterList };
+      programs: renderer.info.programs?.length ?? 0, parameterDerivations, programKeys, shadowCasterList,
+      drawCensus: drawCensusSummary };
   },
 };

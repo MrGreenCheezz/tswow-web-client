@@ -2171,6 +2171,23 @@ export function instanceableBuild(materials: THREE.Material | readonly THREE.Mat
   return list.every((material) => !material.transparent);
 }
 
+/** 25.10 (12.10) bench census: one drawn mesh — what it is and whose. */
+export interface DrawCensusTag { kind: string; placement: number | undefined; model: string | undefined }
+
+/** 25.10 (12.10) bench census: a placement's drawn mesh by what it is, and why a doodad is not in a bucket. */
+function environmentDrawKind(rendered: RenderedEnvironment, mesh: THREE.Object3D): string {
+  if (rendered.wmo) return mesh.userData[WMO_SHADOW_PROXY] === true ? "wmo-proxy" : "wmo-room";
+  if (rendered.skinned) return "doodad-skinned";
+  if (rendered.standIn) return `standin-${rendered.standIn}`;
+  if (rendered.instanceKey !== undefined) return "doodad-instanceable-plain";
+  if (rendered.growthStartedAt !== undefined) return "doodad-growing";
+  if (!rendered.wvm) return "doodad-legacy";
+  if (rendered.wvm.particleEmitters.length + rendered.wvm.ribbonEmitters.length > 0) return "doodad-emitters";
+  const material = (mesh as THREE.Mesh).material;
+  if (material && !instanceableBuild(material)) return "doodad-transparent";
+  return "doodad-other";
+}
+
 /**
  * How large to make an instanced draw for this many copies.
  *
@@ -5671,6 +5688,27 @@ export class WorldRenderer3D {
       return undefined;
     };
     return this.#sunCascades.casterCensus(this.#scene, (node) => shown.has(node), classify);
+  }
+
+  /**
+   * 25.10 (12.10) bench census (`sceneStats.drawCensus`, `BenchDrawCensus.ts`): what a drawn mesh is
+   * — a building's room, a doodad and why it is not instanced, an instance bucket — and whose it is.
+   */
+  drawCensusClassifier(): (mesh: THREE.Object3D) => DrawCensusTag | undefined {
+    const placements = new Map<THREE.Object3D, RenderedEnvironment>();
+    for (const rendered of this.#environment.values()) placements.set(rendered.node, rendered);
+    return (mesh) => {
+      for (let node: THREE.Object3D | null = mesh; node; node = node.parent) {
+        const rendered = placements.get(node);
+        if (!rendered) continue;
+        return { kind: environmentDrawKind(rendered, mesh), placement: rendered.source.id, model: rendered.source.name };
+      }
+      if ((mesh as THREE.InstancedMesh).isInstancedMesh && (mesh.parent === this.#instanceGroup
+        || mesh.parent === this.#localLightInstanceGroup)) {
+        return { kind: mesh.parent === this.#instanceGroup ? "instanced" : "instanced-local", placement: undefined, model: undefined };
+      }
+      return undefined;
+    };
   }
 
   // 06.10-shadow: unit casters with hysteresis, and admission of units whose shadow reaches the view
