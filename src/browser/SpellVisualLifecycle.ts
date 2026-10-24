@@ -1306,7 +1306,10 @@ export class SpellVisualCoordinator {
     const beams = plan.beams?.filter((beam) => beam.endsAt > now);
     if (beams && beams.length > 0) filtered.beams = beams;
     if (plan.shakes && plan.shakes.length > 0) filtered.shakes = plan.shakes;
-    const extras = (filtered.beams?.length ?? 0) + (filtered.shakes?.length ?? 0);
+    // 25.10 (6.27): unit tints and flashes (CharProc 1 / 13) travel with the handle too.
+    const tints = plan.tints?.filter((tint) => tint.endsAt > now || tint.flash !== undefined);
+    if (tints && tints.length > 0) filtered.tints = tints;
+    const extras = (filtered.beams?.length ?? 0) + (filtered.shakes?.length ?? 0) + (filtered.tints?.length ?? 0);
     const renderer = this.#renderer();
     if (!renderer) {
       if (deferIfMissingRenderer && (instances.length > 0 || animations.length > 0 || plan.sounds.length > 0 || extras > 0)) {

@@ -1813,6 +1813,30 @@ export function cloneMaterialFaded(material: THREE.Material, factor: number): TH
 }
 
 /**
+ * 25.10 (6.27): a private copy of one built material wearing a spell's tint on a unit (UnitTints.ts) — the hooks and
+ * the cache key carried over as `cloneMaterialFaded` does, nothing program-relevant changed.
+ */
+export function cloneMaterialTinted(material: THREE.Material, colour: number): THREE.Material {
+  const clone = material.clone();
+  clone.onBeforeCompile = material.onBeforeCompile;
+  const key = material.customProgramCacheKey();
+  clone.customProgramCacheKey = () => key;
+  if (isFacingCarrier(material)) clone.forceSinglePass = true;
+  tintMaterial(clone, colour, material);
+  return clone;
+}
+
+const TINT_SCRATCH = new THREE.Color();
+
+/** 25.10 (6.27): `source`'s colour times the tint (0xRRGGBB, an sRGB colour like the client's). */
+export function tintMaterial(material: THREE.Material, colour: number, source: THREE.Material): void {
+  const tinted = material as THREE.Material & { color?: THREE.Color };
+  const original = source as THREE.Material & { color?: THREE.Color };
+  if (!tinted.color || !original.color) return;
+  tinted.color.copy(original.color).multiply(TINT_SCRATCH.setHex(colour));
+}
+
+/**
  * The smallest factor a faded cut-out threshold is scaled by.
  *
  * Scaling 224/255 by a factor of exactly zero made the threshold zero, and `alphaTest` crossing

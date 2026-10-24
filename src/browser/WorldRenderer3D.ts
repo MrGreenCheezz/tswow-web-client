@@ -85,6 +85,7 @@ import type { LightSample, ResolvedColour } from "./LightTypes.js";
 import { lightDarkensByDepth, liquidLightTint, type UnderwaterLight } from "./UnderwaterLiquidLight.js"; // 05.10-A7b-5 review
 import { LocalLightSelection, modelFixtureLights, sampleFixtureLight, type LocalLightSample } from "./LocalLighting.js";
 import { SpellLights, type SpellLightKind } from "./SpellLights.js"; // 23.10 (6.27); 25.10 kinds
+import { UnitTints, WHITE } from "./UnitTints.js"; // 25.10 (6.27)
 import {
   SPELL_ANIM_DECAY, SPELL_ANIM_HOLD, SPELL_ANIM_STAND, spellModelSequence, spellOneShotModelMs,
   type SpellSequenceDurations, type SpellSequencePick,
@@ -174,7 +175,7 @@ import { poseTakesWholeBody, wholeBodyOutlivesBase } from "./game/ActionOverBase
 import { FastPoseState, type FastPoseProgram } from "./FastPose.js";
 import { SharedPose, pagePoseEngine, type PoseEngine, type PoseEngineStats } from "./PoseEngine.js";
 import {
-  EVERY_GEOSET, UNIT_SLOT_FOLD, applyBlendMode, buildModel, characterSlots, cloneMaterialFaded, fadeMaterial,
+  EVERY_GEOSET, UNIT_SLOT_FOLD, applyBlendMode, buildModel, characterSlots, cloneMaterialFaded, cloneMaterialTinted, tintMaterial, fadeMaterial,
   privateTextureView, // 13.10 7.11: a clamped WMO run's own sampler view
   setBuiltModelFantasyGlow,
   unitGeosets, updateBatchColours, worldCharacterGeosets,
@@ -2902,6 +2903,9 @@ interface RenderedUnit extends PosedModel {
   particleColours: readonly number[] | undefined;
   /** Which meshes are wearing private faded copies, and the shared arrays they gave back. */
   opacityBorrows: MaterialBorrow[] | undefined;
+  /** 25.10 (6.27): the spell tint the unit wears (0xRRGGBB, UnitTints.ts) and the tinted copies wearing it. */
+  spellTint?: number | undefined;
+  tintBorrows?: MaterialBorrow[] | undefined;
   /**
    * The body (`unitWarmBody`) the warm hold last let onto the screen. A body that is not this one
    * is new, and is checked against the warm pass before it is drawn; see `#holdUnitUntilWarm`.
@@ -2985,6 +2989,31 @@ export function borrowFadedMaterials(
     borrows.push({ mesh, shared, clones, cinematic });
   }
   return borrows;
+}
+
+/**
+ * 25.10 (6.27): private tinted copies (`cloneMaterialTinted`) on every mesh given, as `borrowFadedMaterials` does for
+ * a fade; the copies keep every program state of their source, so they draw with its linked program.
+ */
+export function borrowTintedMaterials(meshes: Iterable<THREE.Mesh>, colour: number): MaterialBorrow[] {
+  const borrows: MaterialBorrow[] = [];
+  for (const mesh of meshes) {
+    const shared = mesh.material;
+    const sources = Array.isArray(shared) ? shared : [shared];
+    const clones = sources.map((material) => cloneMaterialTinted(material, colour));
+    mesh.material = Array.isArray(shared) ? clones : clones[0]!;
+    borrows.push({ mesh, shared, clones, cinematic: false });
+  }
+  return borrows;
+}
+
+/** 25.10 (6.27): a new tint on the copies already worn. */
+export function updateTintedMaterials(borrows: readonly MaterialBorrow[], colour: number): void {
+  for (const borrow of borrows) {
+    for (let index = 0; index < borrow.clones.length; index++) {
+      tintMaterial(borrow.clones[index]!, colour, Array.isArray(borrow.shared) ? borrow.shared[index]! : borrow.shared);
+    }
+  }
 }
 
 /** Changes fade uniforms without releasing the materials that own the compiled programs. */
@@ -3914,6 +3943,8 @@ export class WorldRenderer3D {
   #skyStarsBuilt: BuiltModel | undefined;
   /** Live emitter sets, by `kind:id`. Per placement, never shared: two campfires are two fires. */
   readonly #effects = new Map<string, { effects: ModelEffects; source: WvmModel }>();
+  /** 25.10 (6.27): spell tints and flashes on units (CharProc 1 / 13, UnitTints.ts). */
+  readonly #unitTints = new UnitTints();
 
   /**
    * 25.10 (6.27): diagnostics for lookdev — every held effect set's emitters this frame: live particles, quads
@@ -6630,6 +6661,7 @@ export class WorldRenderer3D {
     // 05.10-A7a-E (6.13): the plan's beams under this handle, its shakes into the bank.
     if (plan.beams && plan.beams.length > 0) this.#beams().add(handle, plan.beams);
     if (plan.shakes) for (const shake of plan.shakes) this.#cameraShakes.add(shake.shakes, shake.point, shake.at);
+    if (plan.tints && plan.tints.length > 0) this.#unitTints.add(handle, plan.tints); // 25.10 (6.27)
     // One unit cannot play two action clips at once. Composite rows often provide both
     // ImpactKit and TargetImpactKit for the same target/time; installing both in a Map<guid,...>
     // used to make the last one win, while minor packet/model timing changes changed which kit was
@@ -6664,6 +6696,7 @@ export class WorldRenderer3D {
 
   /** Remove spell FX/state and only their particle bookkeeping; portraits and world scenery stay. */
   clearSpellVisuals(): void {
+    this.#unitTints.clear(); // 25.10 (6.27)
     this.#pendingVisualAnimations.length = 0;
     this.#chainBeams?.clear(); // 05.10-A7a-E
     this.#cameraShakes.clear(); // 05.10-A7a-E
@@ -6687,6 +6720,7 @@ export class WorldRenderer3D {
     const handle = this.#spellVisualIds.delete(id); // 22.10 ARC-2 S4a: the id main gave it
     if (handle === undefined) return;
     this.#chainBeams?.cancel(handle); // 05.10-A7a-E
+    this.#unitTints.cancel(handle); // 25.10 (6.27)
     for (let index = this.#pendingVisualAnimations.length - 1; index >= 0; index--) {
       if (this.#pendingVisualAnimations[index]!.handle === handle) this.#pendingVisualAnimations.splice(index, 1);
     }
@@ -6722,6 +6756,7 @@ export class WorldRenderer3D {
     if (handle === undefined) return;
     const endsAt = toRenderTime(mainEndsAt); // 22.10 ARC-2 S4a
     this.#chainBeams?.retime(handle, endsAt); // 05.10-A7a-E
+    this.#unitTints.retime(handle, endsAt); // 25.10 (6.27)
     const now = performance.now();
     for (const visual of this.#visuals) {
       if (visual.handle !== handle || !(visual.instance.endsAt > now)) continue;
@@ -8416,8 +8451,9 @@ export class WorldRenderer3D {
     if (!template.animations.has(SPELL_ANIM_HOLD) && !template.animations.has(SPELL_ANIM_DECAY)) return false;
     const stand = template.clips.get(SPELL_ANIM_STAND);
     if (!stand) return false;
-    const wanted = (animation: number): boolean => template.animations.has(animation) && !template.clips.has(animation);
-    if (!template.merged && (wanted(SPELL_ANIM_HOLD) || wanted(SPELL_ANIM_DECAY)) && client) {
+    if (!template.merged && client
+      && ((template.animations.has(SPELL_ANIM_HOLD) && !template.clips.has(SPELL_ANIM_HOLD))
+        || (template.animations.has(SPELL_ANIM_DECAY) && !template.clips.has(SPELL_ANIM_DECAY)))) {
       const clips = client.animations(visual.instance.path, template.parents.length, "critical");
       if (clips) {
         addSkinnedClips(template, clips);
@@ -9502,6 +9538,52 @@ export class WorldRenderer3D {
     // recorded answer still stands. Forgetting it here is what makes a unit that fades without
     // otherwise changing stop casting a solid shadow on the same frame it fades.
     unit.shadowCaster = undefined;
+  }
+
+  /**
+   * 25.10 (6.27): a spell tint on the unit's body and what it holds (UpdateModelTint 0x00720db0 sets the model's
+   * diffuse tint): private copies of their materials with the colour multiplied in — the same programs, nothing to
+   * warm — kept while the tint stands and refreshed when it changes or the unit's meshes do.
+   */
+  #applyUnitTint(unit: RenderedUnit, colour: number): void {
+    if (colour === WHITE) {
+      if (unit.tintBorrows) this.#releaseUnitTint(unit);
+      return;
+    }
+    let current = unit.tintBorrows !== undefined;
+    if (current) {
+      // A body or an item rebuilt under the tint is a mesh that does not wear the copies.
+      let count = 0;
+      for (const mesh of this.#unitTintMeshes(unit)) {
+        count++;
+        const borrow = unit.tintBorrows!.find((entry) => entry.mesh === mesh);
+        if (!borrow || mesh.material !== (Array.isArray(borrow.shared) ? borrow.clones : borrow.clones[0])) current = false;
+      }
+      if (count !== unit.tintBorrows!.length) current = false;
+    }
+    if (current && unit.spellTint === colour) return;
+    if (!current) {
+      this.#releaseUnitTint(unit);
+      unit.tintBorrows = borrowTintedMaterials(this.#unitTintMeshes(unit), colour);
+    } else {
+      updateTintedMaterials(unit.tintBorrows!, colour);
+    }
+    unit.spellTint = colour;
+  }
+
+  #releaseUnitTint(unit: RenderedUnit): void {
+    const borrows = unit.tintBorrows;
+    unit.spellTint = undefined;
+    if (!borrows) return;
+    returnBorrowedMaterials(borrows);
+    unit.tintBorrows = undefined;
+  }
+
+  /** 25.10 (6.27): the meshes a spell tint colours — the body and what hangs on it, not a mount or glow bodies. */
+  * #unitTintMeshes(unit: RenderedUnit): Generator<THREE.Mesh> {
+    if (unit.skinned) yield unit.skinned.mesh;
+    else if (unit.visual instanceof THREE.Mesh) yield unit.visual;
+    for (const node of unit.attached.values()) if (node instanceof THREE.Mesh) yield node;
   }
 
   /** Gives every borrowed material array back and disposes the copies. Exactly reverses the above. */
@@ -12472,7 +12554,8 @@ export class WorldRenderer3D {
   #unitMeshProgramsReady(unit: RenderedUnit, mesh: THREE.Mesh, fading: boolean): boolean {
     const kind = programWarmupKind(mesh);
     if (!kind) return true;
-    const borrow = unit.opacityBorrows?.find((entry) => entry.mesh === mesh);
+    const borrow = unit.opacityBorrows?.find((entry) => entry.mesh === mesh)
+      ?? unit.tintBorrows?.find((entry) => entry.mesh === mesh); // 25.10 (6.27)
     const shared = borrow ? borrow.shared : mesh.material;
     let ready = true;
     for (const material of Array.isArray(shared) ? shared : [shared]) {
@@ -14949,6 +15032,10 @@ export class WorldRenderer3D {
     // multiplies, it is never replaced. A held unit is dressed here exactly as it will be drawn on
     // the frame it is let go — its clock is stopped, not skipped.
     const opacity = displayOpacity * spawnFadeFactor(unit.admittedAt, now); // 05.10-A7a-H 6.11а
+    // 25.10 (6.27): a spell's tint or flash on the model (UnitTints.ts); never on a fading or dead body.
+    if (unit.tintBorrows !== undefined || !this.#unitTints.empty) {
+      this.#applyUnitTint(unit, dead || opacity < 1 || unit.opacityBorrows !== undefined ? WHITE : this.#unitTints.colourOf(object.guid, now));
+    }
     this.#applyUnitOpacity(unit, opacity, this.#unitFadeReturnWaits(unit, opacity));
     this.#applyUnitShadow(unit, shadowCaster);
     if (detailedCapture) this.#drawPhaseMs["units.presentation"]! += performance.now() - unitPartAt;
@@ -15557,6 +15644,7 @@ export class WorldRenderer3D {
     // Before anything is unparented or disposed, while the meshes that borrowed still exist: the
     // shared arrays go back to builds that are about to be handed to somebody else, and the copies
     // are disposed here rather than left to the meshes that are being thrown away.
+    this.#releaseUnitTint(unit); // 25.10 (6.27): before the opacity borrow, which would lend the tinted copies
     this.#releaseUnitOpacity(unit);
     // 05.10-A7a-F1 (6.16а): after the opacity borrow, which hands back the array the death fade wears.
     dropDeathFade(unit);

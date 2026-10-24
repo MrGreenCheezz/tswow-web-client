@@ -634,7 +634,7 @@ host.__bench = {
     const point = selfPoint();
     let plan: SpellVisualPlan;
     if (spec.spell !== undefined) {
-      const rows = await (await checked(`${baseUrl}/dbc/spell-visuals?v=9&ids=${spec.spell}`)).json() as SpellVisualMetadata[];
+      const rows = await (await checked(`${baseUrl}/dbc/spell-visuals?v=10&ids=${spec.spell}`)).json() as SpellVisualMetadata[];
       const visual = rows.find((row) => row.id === spec.spell);
       if (!visual) throw new Error(`Spell ${spec.spell} has no visual`);
       // 25.10 (6.27): from a point off to the side (`from`), the precast before the GO (`cast`), or the aura (`state`).
@@ -655,7 +655,7 @@ host.__bench = {
         }
       }
     } else if (spec.kit !== undefined) {
-      const rows = await (await checked(`${baseUrl}/dbc/spell-visual-kits?v=2&ids=${spec.kit}`)).json() as SpellVisualKitRecord[];
+      const rows = await (await checked(`${baseUrl}/dbc/spell-visual-kits?v=3&ids=${spec.kit}`)).json() as SpellVisualKitRecord[];
       const kit = rows.find((row) => row.id === spec.kit)?.kit;
       if (!kit) throw new Error(`Kit ${spec.kit} resolves to nothing`);
       plan = planSpellVisualKitEvent(kit, { guid: 1n, point }, startAt);

@@ -165,6 +165,17 @@ async function main() {
   // 24.10 (7.50): `--lamp-tables` answers `/visual/wmo-lamps` as a gateway with the route does — the table built by the
   // shared module (src/world/WmoLampTable.ts) from the WMO's root and groups as this harness serves them — so a first
   // visit can be traced without a gateway restart. Without it the route is a 404, as from an older gateway.
+  // 25.10 (6.27): `--local-visuals` answers `/dbc/spell-visuals` and `/dbc/spell-visual-kits` from this worktree's gateway
+  // code over the dataset's DBCs (tools/paths.mjs), as a gateway with that code would — a new kit field (CharProc tints)
+  // without a gateway restart. Never cached.
+  const localVisuals = args.includes('--local-visuals') ? await (async () => {
+    const { build } = await import('esbuild');
+    const result = await build({ entryPoints: ['src/gateway/SpellVisual.ts'], bundle: true, format: 'esm', platform: 'node', write: false });
+    const module = await import(`data:text/javascript;base64,${Buffer.from(result.outputFiles[0].text).toString('base64')}`);
+    const { dbcDirectory } = await import('../tools/paths.mjs');
+    const directory = dbcDirectory();
+    return { visuals: await module.loadSpellVisuals(directory), kits: await module.loadSpellVisualKits(directory), served: 0 };
+  })() : undefined;
   const lampTables = args.includes('--lamp-tables')
     ? { ...(await importSource('src/world/WmoLampTable.ts')), ...(await importSource('src/browser/Wvm.ts').then(({ VISUAL_MODEL_ROUTE_VERSION }) => ({ VISUAL_MODEL_ROUTE_VERSION }))),
       built: new Map(), served: 0, ms: 0 }
@@ -338,6 +349,14 @@ async function main() {
         } else {
           res.writeHead(original.entry.status, { 'content-type': original.entry.type, 'cache-control': 'no-store' }).end(original.bytes);
         }
+      } else if (localVisuals && (url.pathname === '/dbc/spell-visuals' || url.pathname === '/dbc/spell-visual-kits')) {
+        // 25.10 (6.27): `--local-visuals`, BigInt-free JSON as the gateway writes it.
+        const ids = (url.searchParams.get('ids') ?? '').split(',').map(Number).filter((id) => Number.isInteger(id) && id > 0);
+        const body = url.pathname === '/dbc/spell-visuals'
+          ? ids.map((id) => localVisuals.visuals.get(id) ?? { id })
+          : ids.map((id) => { const kit = localVisuals.kits.get(id); return kit ? { id, kit } : { id }; });
+        localVisuals.served++;
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }).end(JSON.stringify(body));
       } else if (url.pathname === '/visual/wmo-lamps') {
         // 24.10 (7.50): a building's lamp table (`--lamp-tables`), else the older gateway's 404 — never cached.
         const path = url.searchParams.get('path') ?? '';
