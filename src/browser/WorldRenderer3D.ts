@@ -2145,16 +2145,17 @@ export function drawableModel(model: EnvironmentModel | undefined): model is Env
 /**
  * Whether a placement can be drawn as one of many copies of a single mesh.
  *
- * Two things disqualify one. A building is drawn a room at a time and has no single mesh at all. A
- * stand-in shape is not the model.
+ * Three things disqualify one, and only the third is subtle. A building is drawn a room at a time
+ * and has no single mesh at all. A stand-in shape is not the model. And a model that carries
+ * emitters must keep its own object: `#updateEffects` places a torch's sparks by reading the world
+ * matrix of the mesh that holds the torch, and an instance has no object to read — the sparks
+ * would all be left standing at the map's origin.
  *
- * 25.10 (12.10): a model with emitters is no longer one of them. `#updateEffects` places a torch's
- * sparks by reading the world matrix of the placement's own mesh, and an instanced copy keeps that
- * mesh — hidden, its matrix frozen where it was placed — exactly as an instanced lamp keeps it for
- * its fixture light. Dalaran's sconces and lanterns were 195 of its 1,694 main draws, one per copy.
+ * Measured on this client's baked artifacts, seven of 148 models carry any emitter at all.
  */
 export function instanceable(model: { wvm?: WvmModel | undefined; wmo?: unknown } | undefined): boolean {
-  return model?.wvm !== undefined && !model.wmo;
+  if (!model?.wvm || model.wmo) return false;
+  return model.wvm.particleEmitters.length + model.wvm.ribbonEmitters.length === 0;
 }
 
 /**
@@ -2408,8 +2409,9 @@ interface RenderedEnvironment {
   /**
    * Which built model this placement is a copy of, when it is one that can be instanced.
    *
-   * Absent for a building and for a stand-in shape. 25.10 (12.10): a model with emitters has one —
-   * its copy keeps the placement's mesh, hidden, whose frozen matrix `#updateEffects` reads.
+   * Absent for a building, for a stand-in shape, and for anything whose model carries emitters —
+   * an instance has no `Object3D` of its own, and `#updateEffects` places a torch's sparks by
+   * reading the matrix of the placement's mesh.
    */
   instanceKey: string | undefined;
   /**
@@ -11950,9 +11952,9 @@ export class WorldRenderer3D {
           this.#environmentVisibilitySpheres.delete(object);
         }
         // Which placements can be drawn as copies of one mesh. A building cannot — it is drawn a
-        // room at a time. A model with emitters can (25.10, 12.10): its sparks read this mesh's
-        // matrix, which stays frozen while the copy is drawn by its bucket. A growing tree joins the
-        // instances when it settles; its mid-growth matrix is not exact placement state.
+        // room at a time — and neither can a model with emitters, whose sparks are placed by
+        // reading the matrix of this very mesh. A growing tree joins the instances when it
+        // settles; its mid-growth matrix is not exact placement state.
         if (!growing) this.#assignEnvironmentInstance(rendered, object, visual, model);
         // P2-02a: its shadow flags now, after its matrices: no longer at the next thirtieth light push.
         this.#sceneryShadowsForPlacement(rendered);
