@@ -191,12 +191,14 @@ function compile(material) {
   return shader;
 }
 
-// sha256 of each program at c7183d3, before the slider.
+// sha256 of each program before the slider: the buildings' at c7183d3; the terrain's and the M2's at 8f76122
+// (7.50 light pools, which merged beside the slider and changed the lit materials' shared lighting chunk —
+// main's programs stripped of the slider's lines were checked equal to 8f76122's to the byte).
 const BEFORE = {
-  terrain: "28dd243af65b9f374b10f5c949108509ae604564fddcbef042e00a94554cdfe6",
+  terrain: "c84312536b00e8ba4a956ef2a97ffb7682a584c76199e72296ea4c1a3f6e0145",
   wmoLit: "1f5528782644610f6034a4cbab28a02c7c15ce77fdeb88b6ae82b52481019c3a",
   wmoRoom: "03889732631cd54ee5ec602a63aee8af4bf80eb0194e83e600e1ed5fc12d320f",
-  m2: "78b3baefe6645c4444c86bdcd20e1dc8f32ac90452211e64c9063fac08e76c23",
+  m2: "be5c3235298f1a3c37fd33fcd1c99b607749fbfc3034e8257a0b562540f006cf",
 };
 
 test("programs: stripped of the slider's lines and gains, each is the program of before the slider to the byte", () => {
