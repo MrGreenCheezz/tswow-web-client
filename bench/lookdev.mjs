@@ -30,6 +30,9 @@
  * (`--settings enhanced`, or `--set experimentalSharpEffectTextures=false` for the originals in the same setup).
  * 23.10/24.10 (7.48 steps 2–3): the world set's BC7 copies too — ground layers, building textures and (step 3) the
  * scenery models' `/texture` textures — while `--set experimentalSharpWorldTextures=true`.
+ *
+ * 24.10 (7.50): `--lamp-tables` answers `/visual/wmo-lamps` (the buildings' lamp tables) the way a gateway with the
+ * route does, from the artifacts this harness serves; without it that route is the older gateway's 404.
  */
 import { access, mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
@@ -152,6 +155,13 @@ async function main() {
     config.hdTextureGeneration = createHash('sha1').update(Buffer.concat(manifests)).digest('hex').slice(0, 20);
   }
   let hdServed = 0;
+  // 24.10 (7.50): `--lamp-tables` answers `/visual/wmo-lamps` as a gateway with the route does — the table built by the
+  // shared module (src/world/WmoLampTable.ts) from the WMO's root and groups as this harness serves them — so a first
+  // visit can be traced without a gateway restart. Without it the route is a 404, as from an older gateway.
+  const lampTables = args.includes('--lamp-tables')
+    ? { ...(await importSource('src/world/WmoLampTable.ts')), ...(await importSource('src/browser/Wvm.ts').then(({ VISUAL_MODEL_ROUTE_VERSION }) => ({ VISUAL_MODEL_ROUTE_VERSION }))),
+      built: new Map(), served: 0, ms: 0 }
+    : undefined;
   // 23.10 (7.48 step 2): the world set's compressed copies (`<id>.wht`), found as the gateway finds them
   // (gateway/HdTextures.ts): a ground layer by its id, a building texture by the digest of its original PNG.
   const worldSetDirectory = hdSets.find((set) => /[\\/]world$/.test(set));
@@ -315,6 +325,30 @@ async function main() {
         } else {
           res.writeHead(original.entry.status, { 'content-type': original.entry.type, 'cache-control': 'no-store' }).end(original.bytes);
         }
+      } else if (url.pathname === '/visual/wmo-lamps') {
+        // 24.10 (7.50): a building's lamp table (`--lamp-tables`), else the older gateway's 404 — never cached.
+        const path = url.searchParams.get('path') ?? '';
+        if (!lampTables || url.searchParams.get('v') !== String(lampTables.WMO_LAMP_TABLE_VERSION) || !/\.wmo$/i.test(path)) {
+          res.writeHead(404, { 'cache-control': 'no-store' }).end();
+          return;
+        }
+        const modelKey = (group) => `/visual/model?path=${encodeURIComponent(path)}${group === undefined ? '' : `&group=${group}`}&v=${lampTables.VISUAL_MODEL_ROUTE_VERSION}`;
+        let table = lampTables.built.get(path.toLowerCase());
+        if (!table) {
+          const started = performance.now();
+          const root = await asset(modelKey());
+          if (root.entry.status !== 200) { res.writeHead(404, { 'cache-control': 'no-store' }).end(); return; }
+          const view = (bytes) => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+          table = Buffer.from(JSON.stringify(await lampTables.buildWmoLampTable(view(root.bytes), async (group) => {
+            const answer = await asset(modelKey(group));
+            if (answer.entry.status !== 200) throw new Error(`Lamp table: group ${group} of ${path} answered ${answer.entry.status}`);
+            return view(answer.bytes);
+          })));
+          lampTables.ms += performance.now() - started;
+          lampTables.built.set(path.toLowerCase(), table);
+        }
+        lampTables.served++;
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }).end(table);
       } else if (allowed.test(key)) {
         const { entry, bytes } = await asset(key);
         res.writeHead(entry.status, { 'content-type': entry.type, 'cache-control': 'public,max-age=31536000,immutable' }).end(bytes);
@@ -449,6 +483,7 @@ async function main() {
         if (textures.hdTiles) console.log(`  HD ground tiles: ${JSON.stringify(textures.hdTiles)}`);
       }
     }
+    if (lampTables) console.log(`Lamp tables: ${lampTables.built.size} built (${lampTables.ms.toFixed(0)} ms), ${lampTables.served} served`); // 24.10 (7.50)
     if (hdDirectory) console.log(`HD textures served from ${hdDirectory}: ${hdServed} (world, compressed: ${hdWorldServed}, ${(hdWorldBytes.hd / 1048576).toFixed(1)} MB in place of ${(hdWorldBytes.original / 1048576).toFixed(1)} MB)`); // 23.10 (7.48)
     await writeFile(resolve(out, 'lookdev.json'), JSON.stringify({ scenario, config, frames, written, cacheMisses, hdServed, failures }, null, 2));
     if (failures.length) console.error(`Asset failures:\n${failures.join('\n')}`);

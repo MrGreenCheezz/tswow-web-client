@@ -97,6 +97,7 @@ import {
   sampleWmoLantern, wmoDoodadOpenAir, wmoLanterns, wmoLanternWorldPositions,
 } from "./WmoOpenAirLamps.js"; // 23.10 (7.46)
 import { lightCensus, type LightCensusFrame } from "./LightCensus.js"; // 24.10 (7.50)
+import { WmoLampTableClient } from "./WmoLampTableClient.js"; // 24.10 (7.50): buildings' lamp tables
 import { LightTemplateCatalog } from "./LightTemplateCatalog.js"; // 24.10 (7.50)
 import { PrelitLights, type PrelitHost } from "./PrelitLights.js"; // 24.10 (7.50)
 import {
@@ -4229,6 +4230,13 @@ export class WorldRenderer3D {
   /** 24.10 (7.50): the environment client of the last frame (lamp models; `lightsReadyAround`). */
   #lightModels: EnvironmentClient | undefined;
   #lightsWait: { key: number; since: number; flushed: boolean; pending: number } | undefined;
+  /** 24.10 (7.50): the buildings' lamp tables (`/visual/wmo-lamps`), one client per gateway. */
+  #lampTables: WmoLampTableClient | undefined;
+  #lampTableSource(baseUrl: string): WmoLampTableClient {
+    let tables = this.#lampTables;
+    if (tables?.baseUrl !== baseUrl) this.#lampTables = tables = new WmoLampTableClient(baseUrl);
+    return tables;
+  }
   readonly #addPrelitLight = (sample: LocalLightSample): void => {
     this.#localLightSelection.add(sample, this.#localLightFocus);
   };
@@ -5638,6 +5646,7 @@ export class WorldRenderer3D {
   get prelitLightStats(): unknown {
     const wait = this.#lightsWait;
     return { prelit: { ...this.#prelitLights.stats }, catalog: { ...this.#lightCatalog.stats, pending: this.#lightCatalog.pendingCount },
+      lampTables: this.#lampTables ? { ...this.#lampTables.stats } : undefined, // 24.10 (7.50)
       curtain: wait ? { waitedMs: Math.round(performance.now() - wait.since), pending: wait.pending, flushed: wait.flushed } : undefined };
   }
 
@@ -9748,7 +9757,7 @@ export class WorldRenderer3D {
       // are asked for as the tiles land and their lights stand before their meshes do.
       if (cinematic) {
         this.#lightModels = client;
-        this.#lightCatalog.pump(client);
+        this.#lightCatalog.pump(client, client ? this.#lampTableSource(client.baseUrl) : undefined); // 24.10 (7.50): + lamp tables
         this.#prelitLights.update(this.#environmentObjects ?? [], this.#lightCatalog, this.#prelitHost, this.#camera.position);
         this.#prelitLights.forEachNear(focus, now, this.#prelitHost, this.#addPrelitLight, this.#localLightSample);
       }

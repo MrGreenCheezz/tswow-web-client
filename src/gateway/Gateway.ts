@@ -68,6 +68,7 @@ import { validAssetPath } from "./AssetPath.js";
 import { listeningServerError } from "./ProcessGuard.js";
 import { originAllowed, refuseUpgrade, routeUpgrade } from "./UpgradeGuard.js";
 import { WMO_MINIMAP_ROUTE, serveWmoMinimapRoute, type WmoMinimapMemo } from "./WmoMinimapRoute.js"; // 05.10-A7b-3
+import { WMO_LAMP_TABLE_ROUTE, serveWmoLampTableRoute, type WmoLampTableBuilds } from "./WmoLampTableRoute.js"; // 24.10 (7.50)
 import {
   MAX_MODULE_FILE_BYTES, moduleFileKind, readModuleFile, readModuleIndex,
   validModuleFileName, validModuleName, writeModuleFile, type ModuleRoot,
@@ -203,6 +204,7 @@ function isClientVisualProfileRoute(method: string | undefined, pathname: string
     || pathname === "/visual/model"
     || pathname === "/visual/animations"
     || pathname === "/visual/doodads" // 12.10 6.25
+    || pathname === "/visual/wmo-lamps" // 24.10 (7.50): read from the same artifacts
     || /^\/visual\/texture\/[0-9a-f]{40}(?:-\d{1,3})?\.png$/.test(pathname)
     || pathname === "/dbc/creature-models"
     || pathname === "/dbc/character-options"
@@ -936,6 +938,7 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
   const liquidLane = generationLane();
   const minimapLane = generationLane();
   const wmoMinimapMemo: WmoMinimapMemo = {}; // 05.10-A7b-3 (7.14): the parsed wmo.json, per process
+  const wmoLampTableBuilds: WmoLampTableBuilds = new Map(); // 24.10 (7.50): lamp tables being read
   const worldMapZoneMapLane = generationLane();
   // Its own lane, and not one of the eleven above: the pass reads every family, and putting it on
   // any of them would make the first genuinely missing asset of that family queue behind the whole
@@ -1325,6 +1328,24 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
       }
       return;
     }
+
+    // 24.10 (7.50): `/visual/wmo-lamps?path=&v=1`, one WMO's lamp table, read from its published artifact
+    // (WmoLampTableRoute.ts); the model is published on its own lane first when it is not on disk yet.
+    if (pathname === WMO_LAMP_TABLE_ROUTE && options.visualModelsDirectory && await serveWmoLampTableRoute(request, response, url,
+      wmoLampTableBuilds, {
+        visualModelsDirectory: options.visualModelsDirectory,
+        allowedOrigins: options.allowedOrigins,
+        validPath: validVisualModelPath,
+        hash: visualModelHash,
+        generate: options.generateVisualModel
+          ? (modelPath, hash) => generateOnce(visualModelLane, hash, () => options.generateVisualModel!(modelPath, hash),
+            visualModelPriority(modelPath)) : undefined,
+        ensureCurrent: options.generateVisualModel
+          ? (file) => fingerprint.ensureCurrent(file, { requireStamp: true }) : undefined,
+        absent: (error) => sourceMissing(error)
+          || (!options.generateVisualModel && (error as NodeJS.ErrnoException).code === "ENOENT"),
+        cacheControl: (requested) => assetCacheControl(requested, visualAssetGeneration, REVALIDATE),
+      })) return;
 
     const visualTexture = pathname.match(/^\/visual\/texture\/([0-9a-f]{40}(?:-\d{1,3})?)\.png$/);
     if (request.method === "GET" && visualTexture && options.visualModelsDirectory) {

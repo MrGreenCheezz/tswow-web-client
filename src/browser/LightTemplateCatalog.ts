@@ -14,6 +14,11 @@
  * gateway's visual generation), so on a later visit every lamp of a tile lights as the tile lands.
  * So are a city's own lamp posts (`WmoOpenAirLamps.ts`), group by group as their meshes were read:
  * on a later visit a street's lanterns light with the building, before its groups arrive.
+ *
+ * 24.10 (7.50): and, from a gateway that has the route, every building's lamp table
+ * (`/visual/wmo-lamps`, `WmoLampTableClient.ts`): asked as soon as a tile lists the building
+ * (`wantLampTable`), it names the lanterns of all of its open-air groups, so its lamp posts light with
+ * its root even on a first visit. Without it (an older gateway) the groups are read as they arrive.
  */
 import { fixtureNameCandidate } from "./LocalLighting.js";
 import { deriveLightTemplates, validLightTemplates, type LightTemplate } from "./LightTemplates.js";
@@ -23,6 +28,7 @@ import { persistentAssetStore, type PersistentAssetStore } from "./PersistentAss
 import { renderSwitches } from "./RenderSwitches.js";
 import { seedWmoLanterns, wmoLanternGroups } from "./WmoOpenAirLamps.js";
 import type { WmoModel } from "./WmoModel.js";
+import { LAMP_TABLE_PENDING, type WmoLampTable, type WmoLampTableSource } from "./WmoLampTableClient.js"; // 24.10 (7.50)
 import type { WvmModel } from "./Wvm.js";
 
 /** Yards within which a lamp model is asked for at `normal` priority rather than `background`. */
@@ -85,12 +91,18 @@ export class LightTemplateCatalog {
   readonly #lanterns = new Map<string, Map<number, readonly number[]>>();
   #lanternRevision = 0;
   readonly #wmoSync = new WeakMap<WmoModel, { seeded: number; learned: number }>();
+  /** 24.10 (7.50): the gateway's lamp tables that arrived, per WMO path; and the paths still asked for. */
+  readonly #tables = new Map<string, WmoLampTable>();
+  #tableWanted: { key: string; name: string }[] = [];
+  readonly #tableWantedKeys = new Set<string>();
+  #tableCursor = 0;
+  #tableSource: WmoLampTableSource | undefined;
   readonly #store: PersistentAssetStore | null | undefined;
   #persisted: { origin: string; generation: string } | undefined;
   #loading: Promise<void> | undefined;
   #saveTimer: ReturnType<typeof setTimeout> | undefined;
   /** Templates derived from model data this session, and how many came from the persistent record. */
-  readonly stats = { derived: 0, loaded: 0, asked: 0 };
+  readonly stats = { derived: 0, loaded: 0, asked: 0, lampTables: 0 };
 
   /** `store`: undefined uses the realm's (`persistentAssetStore`), null keeps nothing. */
   constructor(store?: PersistentAssetStore | null) {
@@ -140,8 +152,9 @@ export class LightTemplateCatalog {
    * Polls up to `LIGHT_MODEL_POLL` wanted models, nearest first; derives the templates of those that
    * arrived. A model the client cannot give (absent, a hull, a building) lights nothing.
    */
-  pump(models: LightModelSource | undefined): void {
+  pump(models: LightModelSource | undefined, tables?: WmoLampTableSource): void {
     this.#attach();
+    if (tables) this.#pumpTables(tables); // 24.10 (7.50)
     if (!models || this.#pending.length === 0) return;
     let polled = 0;
     if (this.#cursor >= this.#pending.length) this.#cursor = 0;
@@ -173,6 +186,55 @@ export class LightTemplateCatalog {
         this.#pending.splice(this.#cursor, 1);
         this.#pendingNames.delete(entry.name);
       } else this.#cursor++;
+    }
+  }
+
+  /**
+   * 24.10 (7.50): asks for a building's lamp table (the next `pump` with a table source sends the request).
+   * Called for every building of a new placement snapshot; a path asked or answered already costs two lookups.
+   */
+  wantLampTable(name: string): void {
+    const key = pathKey(name);
+    if (this.#tables.has(key) || this.#tableWantedKeys.has(key) || this.#tableSource?.settled(key) === true) return;
+    this.#tableWantedKeys.add(key);
+    this.#tableWanted.push({ key, name });
+  }
+
+  /** 24.10 (7.50): whether a building's lamp table is still on its first way here (the loading curtain waits). */
+  lampTablePending(name: string): boolean {
+    const source = this.#tableSource;
+    if (!source) return false;
+    const key = pathKey(name);
+    return !this.#tables.has(key) && source.lookup(key, name) === LAMP_TABLE_PENDING;
+  }
+
+  /** 24.10 (7.50): the lamp table that arrived for a WMO path (tests, the bench). */
+  lampTable(name: string): WmoLampTable | undefined {
+    return this.#tables.get(pathKey(name));
+  }
+
+  /** Polls up to `LIGHT_MODEL_POLL` wanted lamp tables; a table that arrived is seeded by `syncWmo`. */
+  #pumpTables(source: WmoLampTableSource): void {
+    this.#tableSource = source;
+    const wanted = this.#tableWanted;
+    if (wanted.length === 0) return;
+    let polled = 0;
+    if (this.#tableCursor >= wanted.length) this.#tableCursor = 0;
+    while (polled < LIGHT_MODEL_POLL && this.#tableCursor < wanted.length) {
+      const entry = wanted[this.#tableCursor]!;
+      polled++;
+      const answer = source.lookup(entry.key, entry.name);
+      let done = source.settled(entry.key);
+      if (typeof answer === "object") {
+        this.#tables.set(entry.key, answer);
+        this.#lanternRevision++;
+        this.stats.lampTables++;
+        done = true;
+      }
+      if (done) {
+        wanted.splice(this.#tableCursor, 1);
+        this.#tableWantedKeys.delete(entry.key);
+      } else this.#tableCursor++;
     }
   }
 
@@ -223,6 +285,9 @@ export class LightTemplateCatalog {
     const key = pathKey(name);
     if (state.seeded !== this.#lanternRevision) {
       state.seeded = this.#lanternRevision;
+      // 24.10 (7.50): the gateway's table first — every open-air group — when it is this model's.
+      const table = this.#tables.get(key);
+      if (table && table.groupCount === model.groups.length) seedWmoLanterns(model, table.groups);
       const known = this.#lanterns.get(key);
       if (known) seedWmoLanterns(model, known);
     }

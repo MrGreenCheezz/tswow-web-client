@@ -291,7 +291,8 @@ test("24.10 (7.50): the catalog asks for lamp models nearest first and learns wh
 test("24.10 (7.50): the renderer's wiring — cinematic only, the built mesh's frame, built lamps skipped", () => {
   const renderer = readFileSync(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
   // The faithful profile never reaches the prelit list, the catalog or its model requests.
-  assert.match(renderer, /if \(cinematic\) \{\n\s+this\.#lightModels = client;\n\s+this\.#lightCatalog\.pump\(client\);\n\s+this\.#prelitLights\.update\(/);
+  // 24.10 (7.50): and the buildings' lamp tables ride the same pump (WmoLampTableClient.ts).
+  assert.match(renderer, /if \(cinematic\) \{\n\s+this\.#lightModels = client;\n\s+this\.#lightCatalog\.pump\(client, client \? this\.#lampTableSource\(client\.baseUrl\) : undefined\);.*\n\s+this\.#prelitLights\.update\(/);
   assert.match(renderer, /if \(cinematic\) this\.#lightCatalog\.noteLit\(name, model\);/);
   // Placed as `#wvmNode` places the mesh, and a placement with a built model is left to itself.
   assert.match(renderer, /target\.makeRotationFromQuaternion\(ADT_MODEL_TO_SCENE\)\.premultiply\(frame\.matrix\)/);
