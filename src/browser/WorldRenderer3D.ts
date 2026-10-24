@@ -85,6 +85,10 @@ import type { LightSample, ResolvedColour } from "./LightTypes.js";
 import { lightDarkensByDepth, liquidLightTint, type UnderwaterLight } from "./UnderwaterLiquidLight.js"; // 05.10-A7b-5 review
 import { LocalLightSelection, modelFixtureLights, sampleFixtureLight, type LocalLightSample } from "./LocalLighting.js";
 import { SpellLights } from "./SpellLights.js"; // 23.10 (6.27)
+import {
+  SPELL_ANIM_DECAY, SPELL_ANIM_HOLD, SPELL_ANIM_STAND, spellModelSequence, spellOneShotModelMs,
+  type SpellSequenceDurations, type SpellSequencePick,
+} from "./SpellModelSequence.js"; // 25.10 (6.27)
 import { hdEffectTexturesEnabled, setHdEffectTexturesEnabled } from "./HdEffectTextures.js"; // 23.10 (7.48)
 import {
   HD_WORLD_TEXTURE_EXTENSION, hdWorldTexturesActive, setHdWorldTexturesEnabled, withHdModelTexture, withHdWorldTexture,
@@ -290,6 +294,7 @@ import { HORIZON_LOD_REACH, HorizonLodRing } from "./HorizonLodRing.js"; // 22.1
 import {
   billboardView, buildModelEffects, disposeModelEffects, resetModelEffects, setModelEffectsFantasyGlow,
   updateModelEffects, setModelEffectsGround, // 23.10 (6.27)
+  particleLightColour, // 25.10 (6.27)
   visitModelEffectsResources, type ModelEffects,
 } from "./ParticleRender.js";
 import { creatureDisplayAlpha, creatureGeosetChoice, particleColouredWvm } from "./CreatureDisplayLook.js"; // 05.10-A7a-H 6.11а
@@ -350,6 +355,9 @@ import type { CollisionLiquid, CollisionModel } from "../world/CollisionFormat.j
 /** One deterministic evolution step supplied by an offline render replay. */
 /** 23.10 (6.27): scratch for spell light positions. */
 const _spellLightAt = new THREE.Vector3();
+const _spellDurations: SpellSequenceDurations = { stand: 0 }; // 25.10 (6.27)
+const _spellPick: SpellSequencePick = { animation: 0, time: 0, loop: false };
+const _particleNormal = new THREE.Vector3(0, 1, 0); // 25.10 (6.27): a lit particle's normal, the world's up (0x0097a390)
 
 /** 23.10 (6.27): a spell mesh material that adds light (SrcAlpha/One or One/One), the ones that glow. */
 function isAdditiveSpellMaterial(material: THREE.Material): boolean {
@@ -3129,6 +3137,9 @@ interface RenderedVisual {
    */
   boneOffset?: THREE.Vector3;
   boneOffsetSource?: WvmModel;
+  /** 25.10 (6.27): the sequence slot and its time (ms) a Hold/Decay model plays this frame (#sequenceSpellModel). */
+  sequenceSlot?: number | undefined;
+  sequenceMs?: number;
 }
 
 /** 22.10 ARC-2 S4a: no unit has a melee target until main pushes some (`setMeleeTargets`). */
@@ -3897,6 +3908,25 @@ export class WorldRenderer3D {
   #skyStarsBuilt: BuiltModel | undefined;
   /** Live emitter sets, by `kind:id`. Per placement, never shared: two campfires are two fires. */
   readonly #effects = new Map<string, { effects: ModelEffects; source: WvmModel }>();
+
+  /**
+   * 25.10 (6.27): diagnostics for lookdev — every held effect set's emitters this frame: live particles, quads
+   * drawn, visibility. Allocates; never called on a frame path.
+   */
+  effectEmitterStats(): Array<{ key: string; emitters: Array<{ particles: number; quads: number; visible: boolean; flags: number; quad0: number[]; colour0: number[] }> }> {
+    const out = [];
+    for (const [key, held] of this.#effects) {
+      out.push({ key, emitters: held.effects.emitters.map((drawn) => ({
+        particles: drawn.particles?.particles.length ?? -1,
+        quads: Math.round(drawn.geometry.drawRange.count / 6),
+        visible: drawn.mesh.visible && drawn.mesh.parent?.visible !== false,
+        flags: drawn.particles?.emitter.flags ?? -1,
+        quad0: Array.from(drawn.buffers.positions.subarray(0, 12), (v) => Math.round(v * 100) / 100),
+        colour0: Array.from(drawn.buffers.colors.subarray(0, 4), (v) => Math.round(v * 100) / 100),
+      })) });
+    }
+    return out;
+  }
   /** Everything the spells currently in the air are showing, in world coordinates. */
   readonly #visuals: RenderedVisual[] = [];
   #visualSequence = 0;
@@ -3910,6 +3940,11 @@ export class WorldRenderer3D {
     handle: SpellVisualHandle;
   }> = [];
   readonly #billboard: BillboardView = { rightX: 1, rightY: 0, rightZ: 0, upX: 0, upY: 1, upZ: 0 };
+  /** 25.10 (6.27): the camera this frame (emitter thinning) and the light a lit particle takes. */
+  readonly #effectView = new THREE.Vector3();
+  readonly #particleLight = { r: 1, g: 1, b: 1 };
+  /** 25.10 (6.27): the ground under scene (x, z), for record 0x2000 particles (WoW (x, −z) → scene height). */
+  readonly #particleGround = (x: number, z: number): number | undefined => this.#missileHeightAt?.(x, -z);
   readonly #boneMatrix = new THREE.Matrix4();
   readonly #environment = new Map<number, RenderedEnvironment>();
   /**
@@ -8272,7 +8307,9 @@ export class WorldRenderer3D {
       if (!started) continue;
 
       if (visual.skinned) {
-        visual.skinned.mixer.update(elapsed);
+        // 25.10 (6.27): a model with Hold/Decay plays Stand → Hold (aura) or Stand → Decay (one-shot), as Wow.exe's
+        // effect callbacks chain them (SpellModelSequence.ts); every other spell model keeps its single clip.
+        if (!this.#sequenceSpellModel(visual, now, client)) visual.skinned.mixer.update(elapsed);
         applyGlobalSequenceBones(visual.skinned, visual.template!, visual.wvm!.globalSequences, now);
       }
 
@@ -8349,6 +8386,58 @@ export class WorldRenderer3D {
   /** A free-standing effect is drawn in model space, so its frame carries the turn into the scene. */
   #faceModelSpace(visual: RenderedVisual): void {
     visual.frame.quaternion.copy(M2_TO_SCENE);
+  }
+
+  /**
+   * 25.10 (6.27): Stand → Hold / Decay for a spell model that declares either (SpellModelSequence.ts, Wow.exe
+   * 0x00744870 / 0x007449c0 / 0x00744920). Asks for the sidecar clips the model declared and did not ship with,
+   * places the mixer on the picked sequence at the picked time, records the sequence for the batch colours, and
+   * lets a one-shot run on through its Decay. False — nothing done — for any other model or a missile.
+   */
+  #sequenceSpellModel(visual: RenderedVisual, now: number, client: EnvironmentClient | undefined): boolean {
+    const template = visual.template;
+    const skinned = visual.skinned;
+    if (!template || !skinned || visual.instance.flight) return false;
+    if (!template.animations.has(SPELL_ANIM_HOLD) && !template.animations.has(SPELL_ANIM_DECAY)) return false;
+    const stand = template.clips.get(SPELL_ANIM_STAND);
+    if (!stand) return false;
+    const wanted = (animation: number): boolean => template.animations.has(animation) && !template.clips.has(animation);
+    if (!template.merged && (wanted(SPELL_ANIM_HOLD) || wanted(SPELL_ANIM_DECAY)) && client) {
+      const clips = client.animations(visual.instance.path, template.parents.length, "critical");
+      if (clips) {
+        addSkinnedClips(template, clips);
+        template.merged = true;
+      }
+    }
+    const hold = visual.instance.modelPlayback === "hold";
+    const durations = _spellDurations;
+    durations.stand = stand.duration;
+    durations.hold = template.clips.get(SPELL_ANIM_HOLD)?.duration;
+    durations.decay = template.clips.get(SPELL_ANIM_DECAY)?.duration;
+    // A one-shot that fits its model runs on through its Decay (0x00744870 destroys it only when Decay ends).
+    if (!hold && visual.instance.fitToModel && durations.decay !== undefined) {
+      const origin = visual.playbackStartedAt ?? visual.instance.startedAt;
+      const through = origin + Math.min(MODEL_VFX_MAX_MS, spellOneShotModelMs(durations));
+      if (through > visual.instance.endsAt) visual.instance.endsAt = through;
+    }
+    const age = Math.max(0, (now - (visual.playbackStartedAt ?? visual.instance.startedAt)) / 1000);
+    const pick = spellModelSequence(age, hold, durations, _spellPick);
+    const clip = template.clips.get(pick.animation) ?? stand;
+    let action = visual.action;
+    if (!action || action.getClip() !== clip) {
+      action?.stop();
+      action = skinned.mixer.clipAction(clip);
+      action.reset();
+      action.setLoop(pick.loop ? THREE.LoopRepeat : THREE.LoopOnce, Infinity);
+      action.clampWhenFinished = !pick.loop;
+      action.play();
+      visual.action = action;
+    }
+    action.time = Math.min(clip.duration, pick.time);
+    skinned.mixer.update(0);
+    visual.sequenceSlot = playingSequence(action);
+    visual.sequenceMs = pick.time * 1000;
+    return true;
   }
 
   #orientVisualFrame(visual: RenderedVisual, unitRig = false): void {
@@ -9892,6 +9981,11 @@ export class WorldRenderer3D {
     // 12.08: the view the emitters are drawn in; one off screen writes and draws nothing.
     this.#effectFrustumMatrix.multiplyMatrices(this.#camera.projectionMatrix, this.#camera.matrixWorldInverse);
     this.#effectFrustum.setFromProjectionMatrix(this.#effectFrustumMatrix);
+    // 25.10 (6.27): the camera for the emitters' distance thinning (0x0097d8c0) and the light a lit particle takes —
+    // the model light on a quad whose normal is the world's up (0x0097a390: the view matrix's c row).
+    this.#camera.getWorldPosition(this.#effectView);
+    particleLightColour(this.#worldLight.wowAmbient.value, this.#worldLight.wowDiffuse.value,
+      this.#worldLight.wowSunDirection.value, _particleNormal, this.#particleLight);
 
     const wanted: {
       key: string;
@@ -10151,7 +10245,9 @@ export class WorldRenderer3D {
         || phaseAdmissionRejected.has(groupKey)
         || (phaseEmitterGroups.has(groupKey) && !selectedSpellGroups.has(groupKey))) continue;
       const origin = visual.phaseOriginAt ?? visual.playbackStartedAt ?? visual.instance.startedAt;
-      updateBatchColours(visual.built.animatedBatches, Math.max(0, now - origin), now);
+      // 25.10 (6.27): on the sequence a Hold/Decay model is playing, at its own time (SpellModelSequence.ts).
+      if (visual.sequenceSlot !== undefined) updateBatchColours(visual.built.animatedBatches, visual.sequenceMs ?? 0, now, visual.sequenceSlot);
+      else updateBatchColours(visual.built.animatedBatches, Math.max(0, now - origin), now);
     }
 
     wanted.sort((left, right) => left.distance - right.distance);
@@ -10278,6 +10374,7 @@ export class WorldRenderer3D {
         worldMs: now,
         // 13.10 6.15: per-sequence tracks on the playing clip's slot, as Wow.exe samples them (0x0082d2f0).
         sequence: playingSequence(entry.spell ? entry.spell.action : posed?.action),
+        viewX: this.#effectView.x, viewY: this.#effectView.y, viewZ: this.#effectView.z, ground: this.#particleGround, // 25.10 (6.27)
         ...(newEffects && entry.spell ? {
           // The catch-up integrator samples keyed tracks along the local interval instead of
           // repeating the final clock value at each 100 ms substep.
@@ -10294,6 +10391,7 @@ export class WorldRenderer3D {
         ...(firstBurst ? { firstBurstAnimationMs: 0 } : {}),
         frustum: this.#effectFrustum,
         ...(spellGlow ? { glow: spellGlow } : {}), // 23.10 (6.27)
+        particleLight: this.#particleLight, // 25.10 (6.27)
       });
       if (detailedCapture) particleMs += performance.now() - particleAt;
       if (entry.fade !== undefined) fadeGlowEmitters(held.effects, entry.fade); // 05.10: ревью E2 — a glow fades with its unit

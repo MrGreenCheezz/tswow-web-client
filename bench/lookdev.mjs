@@ -23,6 +23,9 @@
  * frame is read at every `--shots ms,ms,...` after the cast (default 0,150,300,500,800,1200,1800); the stills
  * are `<frame>-<ms>.png` and, with `--crop WxH[+dy]` (a box around the canvas centre), `<frame>-strip.png`.
  * Use `--scenario city --population 1` so nothing else walks through the shot.
+ * 25.10 (6.27): `--from dx,dy` casts from a point beside the player at the player (Fireball's bolt flies into the
+ * shot and lands on the chest); `--phase cast` plays the precast for `--cast-ms` (default 1000) before the GO, and
+ * `--phase state` the aura's StateKit (Power Word: Shield's bubble).
  *
  * 23.10 (7.48): `--hd-textures [dir]` serves effect textures from the HD sets `tools/upscale-textures.mjs` built
  * (default `.runtime/hd-textures`) straight off the disk, as a gateway with them would, so HD stills need no gateway
@@ -197,6 +200,12 @@ async function main() {
   const strip = spellArg !== undefined || kitArg !== undefined || modelSpec ? {
     ...(spellArg !== undefined ? { spell: Number(spellArg) } : kitArg !== undefined ? { kit: Number(kitArg) } : { model: modelSpec }),
     shotsMs: value('--shots', '0,150,300,500,800,1200,1800').split(',').map(Number),
+    // 25.10 (6.27): `--from dx,dy` casts from beside the player at the player (a missile flies in); `--phase
+    // cast|state` plays the precast for `--cast-ms` then the GO, or the aura's state kit.
+    ...(value('--from') ? { from: (([dx, dy]) => ({ dx, dy }))(value('--from').split(',').map(Number)) } : {}),
+    ...(value('--phase') ? { phase: value('--phase') } : {}),
+    ...(value('--cast-ms') ? { castMs: Number(value('--cast-ms')) } : {}),
+    ...(args.includes('--effect-debug') ? { debug: true } : {}),
   } : undefined;
   const cropArg = value('--crop');
   if (strip && cropArg) {
@@ -436,6 +445,7 @@ async function main() {
           const path = resolve(out, `${frame.name}-${String(shot.atMs).padStart(4, '0')}.png`);
           await writeFile(path, Buffer.from(shot.png.split(',')[1], 'base64'));
           written.push({ path });
+          if (shot.emitters) console.log(`${frame.name} ${shot.atMs} ms: ${JSON.stringify(shot.emitters)}`); // 25.10 (6.27)
         }
         if (result.strip) {
           const path = resolve(out, `${frame.name}-strip.png`);

@@ -40,8 +40,8 @@ function emitter(overrides = {}) {
     id: 1, flags: 0, position: [0, 0, 0], bone: 0, texture: 0, blendType: 4, emitterType: 1,
     particleType: 0, headTail: 0, particleColorIndex: 0, textureTileRotation: 0,
     textureRows: 1, textureColumns: 1, lifespanVary: 0.4, emissionRateVary: 0.25,
-    scaleVary: [0.4, 0], tailLength: 0, twinkleSpeed: 0, twinklePercent: 0,
-    twinkleScaleMin: 0, twinkleScaleMax: 0, burstMultiplier: 0, drag: 0,
+    scaleVary: [0.4, 0], tailLength: 0, twinkleSpeed: 0, twinklePercent: 1,
+    twinkleScaleMin: 1, twinkleScaleMax: 1, burstMultiplier: 0, drag: 0, // 25.10 (6.27): neutral twinkle
     baseSpin: 0, baseSpinVary: 2, spin: 0, spinVary: 1,
     windVector: [0, 0, 0], windTime: 0, followSpeed1: 0, followScale1: 0,
     followSpeed2: 0, followScale2: 0, splinePoints: new Float32Array(0),

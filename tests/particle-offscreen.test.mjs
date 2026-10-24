@@ -30,7 +30,7 @@ function emitter(flags, next) {
     id: 1, flags, position: [0, 0, 0], bone: 0, texture: 0, blendType: 4, emitterType: 1,
     particleType: 0, headTail: 0, particleColorIndex: 0, textureTileRotation: 0,
     textureRows: 1, textureColumns: 1, lifespanVary: 0, emissionRateVary: 0, scaleVary: [0, 0],
-    tailLength: next() < 0.5 ? 0 : next() * 2, twinkleSpeed: 0, twinklePercent: 0, twinkleScaleMin: 0, twinkleScaleMax: 0,
+    tailLength: next() < 0.5 ? 0 : next() * 2, twinkleSpeed: 0, twinklePercent: 1, twinkleScaleMin: 1, twinkleScaleMax: 1, // 25.10 (6.27): neutral twinkle (on by default)
     burstMultiplier: 0, drag: 0, baseSpin: 0, baseSpinVary: 0, spin: 0, spinVary: 0,
     windVector: [0, 0, 0], windTime: 0, followSpeed1: 0, followScale1: 0, followSpeed2: 0,
     followScale2: 0, splinePoints: new Float32Array(0),
@@ -46,6 +46,8 @@ function emitter(flags, next) {
   blank.opacity = ramp([1, 1]);
   blank.headCell = ramp([0, 0]);
   blank.tailCell = ramp([0, 0]);
+  // 25.10 (6.27): twinkle is on by default; a third of the systems twinkle up to 3× (the bound must hold them).
+  if (next() < 0.33) Object.assign(blank, { twinkleSpeed: 10 + next() * 20, twinkleScaleMin: 0.3 + next(), twinkleScaleMax: 1 + next() * 2 });
   return blank;
 }
 
@@ -112,7 +114,7 @@ test("off screen means every written quad is off screen, over 3000 random system
   assert.ok(culled > 300 && kept > 300, `both answers occur (${culled} culled, ${kept} kept)`);
 });
 
-test("an empty system or twinkle is never culled; the renderer passes its frustum", () => {
+test("an empty system is never culled; twinkle widens the bound; the renderer passes its frustum", () => {
   const made = system(5);
   made.particles.length = 0;
   const far = new THREE.Frustum().setFromProjectionMatrix(new THREE.Matrix4().makeOrthographic(-1, 1, 1, -1, 0.1, 1));
@@ -120,7 +122,9 @@ test("an empty system or twinkle is never culled; the renderer passes its frustu
   const source = readFileSync(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
   assert.match(source, /firstBurstAnimationMs: 0 \} : \{\}\),\s+frustum: this\.#effectFrustum,/);
   const render = readFileSync(new URL("../src/browser/ParticleRender.ts", import.meta.url), "utf8");
-  assert.match(render, /if \(particles\.length === 0 \|\| renderSwitches\.particleTwinkle\) return false;/);
+  // 25.10 (6.27): twinkle is on by default and widens the bound instead of turning the test off.
+  assert.match(render, /if \(particles\.length === 0\) return false;/);
+  assert.match(render, /const sizeBound = Math\.SQRT2 \* scaleMaximum\(emitter\) \* frameScale \* twinkle;/);
   assert.match(render, /drawn\.mesh\.visible = quads > 0;/);
 });
 

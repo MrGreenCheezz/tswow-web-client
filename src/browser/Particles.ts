@@ -105,6 +105,54 @@ export const PARTICLE_FLAG_RANDOM_FLIPBOOK = 0x00010000;
  */
 export const PARTICLE_FLAG_SPIN_EITHER_WAY = 0x00000200;
 
+/**
+ * 25.10 (6.27): the emitter inherits its own movement (record 0x40 → m_flags 0x800 at 0x00833d…, M2Model setup;
+ * CParticleEmitter2::Update 0x0097eb10 measures it every 1/30 s, CreateParticle 0x009815c0/0x00981950 adds it).
+ */
+export const PARTICLE_FLAG_INHERIT_VELOCITY = 0x00000040;
+/** 25.10 (6.27): spawn anywhere along the emitter's move this step (record 0x800 → m_flags 0x2000, 0x0097d8c0). */
+export const PARTICLE_FLAG_SPAWN_ALONG_PATH = 0x00000800;
+/**
+ * 25.10 (6.27): a world-space particle is born on the ground under it, raised by its larger birth scale (record
+ * 0x2000 → m_flags 0x40000, ProjectParticle 0x00979740 from CreateParticle 0x009815c0/0x00981950).
+ */
+export const PARTICLE_FLAG_SPAWN_ON_GROUND = 0x00002000;
+/**
+ * 25.10 (6.27): no steady stream — one burst of `rate` particles each time the emitter turns visible with a rate
+ * (record 0x8000 clears m_flags 0x1 at 0x00833e…; CM2Model::AnimateParticleST 0x008309c0 raises m_flags 0x40 on
+ * the edge, EmitNewParticles 0x0097d8c0 spends int(rate) at once). 1,665 of the 8,454 spell visuals use it.
+ */
+export const PARTICLE_FLAG_BURST = 0x00008000;
+/** 25.10 (6.27): unlit material — without it the particle takes the scene's light (CParticleMat bit 1, 0x0097e730). */
+export const PARTICLE_FLAG_UNLIT = 0x00000001;
+
+/**
+ * 25.10 (6.27): CM2Model::AnimateParticleST (0x008309c0) puts every emitter's frame through the static matrix at
+ * 0x00d411e0 — (0,1,0,0, −1,0,0,0, 0,0,1,0, 0,0,0,1), built at 0x00830c74 — before its bone: the emitter's own
+ * x runs along the model's y and its y along the model's −x. So a plane's length (0xC8) lies along the model's y, a
+ * partial azimuth starts at the model's +y, and a model-space quad in its XY plane is turned a quarter. Census:
+ * 1,537 spell visuals have a plane longer than wide, 927 a partial azimuth, 790 a model-space XY quad.
+ */
+function rotateEmitterFrame(out: number[]): void {
+  const x = out[0]!;
+  out[0] = -out[1]!;
+  out[1] = x;
+}
+
+/** 25.10 (6.27): VEL_UPDATE_TIME (0x0097eb10): how often the inherited velocity is measured. */
+const INHERIT_UPDATE_SECONDS = 0.033333335;
+
+/**
+ * 25.10 (6.27): EmitNewParticles (0x0097d8c0) thins an emitter by its distance from the camera — rate ×
+ * clamp(1 − (d − 50) · 0.02, 0.25, 1), d in yards — unless its effect asked to ignore distance (m_flags 0x400000,
+ * CEffect::SetEmissionRateIgnoresDistance 0x006f75f0; no caller of this client is known to set it).
+ */
+export function emitterDistanceScale(distance: number): number {
+  if (!(distance > 50)) return 1;
+  const scale = 1 - (distance - 50) * 0.02;
+  return scale < 0.25 ? 0.25 : scale;
+}
+
 /** `M2Particle.emitterType`. */
 export const EMITTER_PLANE = 1;
 export const EMITTER_SPHERE = 2;
@@ -346,6 +394,15 @@ export interface EmitterFrame {
   worldStartMs?: number | undefined;
   /** 13.10 6.15: the sequence-table slot the model is playing, for per-sequence tracks (`emitterTrackSequence`). */
   sequence?: number | undefined;
+  /** 25.10 (6.27): the camera in the scene, for the distance thinning (`emitterDistanceScale`); absent: none. */
+  viewX?: number | undefined;
+  viewY?: number | undefined;
+  viewZ?: number | undefined;
+  /**
+   * 25.10 (6.27): the ground's scene height under scene (x, z), for record 0x2000 (`PARTICLE_FLAG_SPAWN_ON_GROUND`);
+   * undefined where nothing is known (the particle keeps its spawn point, as when 0x00979740's callback fails).
+   */
+  ground?: ((x: number, z: number) => number | undefined) | undefined;
 }
 
 export interface ParticleSystem {
@@ -367,6 +424,19 @@ export interface ParticleSystem {
   twinkleSerial?: number;
   /** 13.10 6.15: the pool Wow.exe would give this emitter (`particleCapacity`); spawning stops when it is full. */
   readonly capacity: number;
+  /**
+   * 25.10 (6.27): record 0x40 — the inherited velocity (m_parentVelocity, scene axes for a world-space emitter,
+   * the emitter's own for a model-space one) and the time since it was last measured (m_ivelTimer).
+   */
+  parentVX: number; parentVY: number; parentVZ: number;
+  inheritTimer: number;
+  /** 25.10 (6.27): record 0x8000 — whether this visible stretch has had its burst (M2ModelParticle m_burstFired). */
+  burstFired: boolean;
+  /** 25.10 (6.27): record 0x800 — the emitter's move this step, which spawns are spread along. */
+  pathX: number; pathY: number; pathZ: number;
+  /** 25.10 (6.27): a spline emitter's last end (0xDC) and whether its next spawn sits there (0x00981cd0). */
+  splineEnd: number;
+  splineAtEnd: boolean;
 }
 
 const IDENTITY = new Float64Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
@@ -387,6 +457,8 @@ export function createParticleSystem(
     matrix: Float64Array.from(IDENTITY),
     modelSpace: (emitter.flags & PARTICLE_FLAG_MODEL_SPACE) !== 0,
     capacity: particleCapacity(emitter), // 13.10 6.15
+    parentVX: 0, parentVY: 0, parentVZ: 0, inheritTimer: 0, burstFired: false, pathX: 0, pathY: 0, pathZ: 0, // 25.10 (6.27)
+    splineEnd: 0, splineAtEnd: false,
   };
 }
 
@@ -404,6 +476,11 @@ export function resetParticleSystem(system: ParticleSystem, seed: number): void 
   system.placed = false;
   system.matrix.set(IDENTITY);
   system.twinkleSerial = 0; // 05.10-A7a-F1
+  system.parentVX = system.parentVY = system.parentVZ = system.inheritTimer = 0; // 25.10 (6.27)
+  system.burstFired = false;
+  system.pathX = system.pathY = system.pathZ = 0;
+  system.splineEnd = 0;
+  system.splineAtEnd = false;
 }
 
 /** `matrix * (x, y, z, 1)`, written into `out`. */
@@ -433,6 +510,75 @@ function normalise(out: number[]): void {
   out[2]! /= length;
 }
 
+/**
+ * 25.10 (6.27): a spline emitter's cubic Bézier (C3Spline_Bezier3): ⌊points / 3⌋ segments of four points sharing
+ * ends, each 20-step length cached per point array. Writes the point at arc length `t` (0..1) and its first
+ * derivative (the tangent, unnormalised); false without a whole segment.
+ */
+const BEZIER_LENGTHS = new WeakMap<Float32Array, Float64Array>();
+function bezierAt(points: Float32Array, t: number, position: number[], tangent: number[]): boolean {
+  const segments = Math.floor(points.length / 3 / 3);
+  if (segments < 1 || points.length < (segments * 3 + 1) * 3) return false;
+  let lengths = BEZIER_LENGTHS.get(points);
+  if (!lengths) {
+    lengths = new Float64Array(segments + 1);
+    for (let segment = 0; segment < segments; segment++) {
+      // 0x004c3b10: twenty chords at 0.05 steps.
+      bezierPoint(points, segment, 0, scratchB);
+      let px = scratchB[0]!, py = scratchB[1]!, pz = scratchB[2]!, length = 0;
+      for (let step = 1; step <= 20; step++) {
+        bezierPoint(points, segment, step * 0.05, scratchB);
+        length += Math.hypot(scratchB[0]! - px, scratchB[1]! - py, scratchB[2]! - pz);
+        px = scratchB[0]!; py = scratchB[1]!; pz = scratchB[2]!;
+      }
+      lengths[segment] = length;
+      lengths[segments] = lengths[segments]! + length;
+    }
+    BEZIER_LENGTHS.set(points, lengths);
+  }
+  // 0x004c3bd0: walk the cached lengths to the segment holding t · total, unclamped within it.
+  let segment = 0;
+  let segmentT = t;
+  if (segments > 1) {
+    const target = lengths[segments]! * t;
+    let before = 0;
+    while (segment < segments - 1 && before + lengths[segment]! <= target) {
+      before += lengths[segment]!;
+      segment++;
+    }
+    segmentT = lengths[segment]! > 0 ? (target - before) / lengths[segment]! : 0;
+  }
+  bezierPoint(points, segment, segmentT, position);
+  // The derivative of the Bernstein basis (0x004c3e70).
+  const u = 1 - segmentT;
+  const w0 = -3 * u * u, w1 = 3 * u * u - 6 * u * segmentT, w2 = 6 * u * segmentT - 3 * segmentT * segmentT, w3 = 3 * segmentT * segmentT;
+  const at = segment * 9;
+  for (let axis = 0; axis < 3; axis++) {
+    tangent[axis] = w0 * points[at + axis]! + w1 * points[at + 3 + axis]! + w2 * points[at + 6 + axis]! + w3 * points[at + 9 + axis]!;
+  }
+  return true;
+}
+
+function bezierPoint(points: Float32Array, segment: number, t: number, out: number[]): void {
+  const u = 1 - t;
+  const w0 = u * u * u, w1 = 3 * u * u * t, w2 = 3 * u * t * t, w3 = t * t * t;
+  const at = segment * 9;
+  for (let axis = 0; axis < 3; axis++) {
+    out[axis] = w0 * points[at + axis]! + w1 * points[at + 3 + axis]! + w2 * points[at + 6 + axis]! + w3 * points[at + 9 + axis]!;
+  }
+}
+
+/** 25.10 (6.27): `vector` turned by `angle` about the unit `axis` (C33Matrix::Rotation, as 0x00981d40 uses it). */
+function rotateAbout(vector: number[], axis: number[], angle: number): void {
+  const c = Math.cos(angle), s = Math.sin(angle);
+  const x = vector[0]!, y = vector[1]!, z = vector[2]!;
+  const ax = axis[0]!, ay = axis[1]!, az = axis[2]!;
+  const dot = ax * x + ay * y + az * z;
+  vector[0] = x * c + (ay * z - az * y) * s + ax * dot * (1 - c);
+  vector[1] = y * c + (az * x - ax * z) * s + ay * dot * (1 - c);
+  vector[2] = z * c + (ax * y - ay * x) * s + az * dot * (1 - c);
+}
+
 /** A symmetric draw: −1 to 1, so a "vary" of v spreads a value by ±v. */
 function spread(random: () => number): number {
   return random() * 2 - 1;
@@ -442,6 +588,8 @@ const scratchA: number[] = [0, 0, 0];
 const scratchB: number[] = [0, 0, 0];
 const scratchC: number[] = [0, 0, 0];
 const scratchRamp: number[] = [0, 0, 0];
+const spawnPosition: number[] = [0, 0, 0];
+const spawnDirection: number[] = [0, 0, 1];
 
 /**
  * Where one particle starts and which way it goes, in the emitter's own frame.
@@ -498,28 +646,38 @@ function spawnLocal(
       break;
     }
     case EMITTER_SPLINE: {
-      // A point along the authored path, straight-line between control points. No local model
-      // uses this generator, so it is written to the layout rather than to a measurement.
-      const points = emitter.splinePoints.length / 3;
-      if (points === 0) {
-        position[0] = 0;
-        position[1] = 0;
-        position[2] = 0;
+      // 25.10 (6.27): as CSplineParticleEmitter::CreateParticle (0x00981d40) builds it — a point at arc length
+      // t ∈ [start, end] (0xC8 and 0xDC clamped to 0..1, SetWidth 0x00981c90 / SetHeight 0x00981cd0; the first
+      // spawn after `end` moves is at `end`) along the cubic Bézier through the points (C3Spline_Bezier3, basis
+      // 0x00ac3778, 20-step segment lengths 0x004c3b10), thrown straight up the emitter's z — or, with a latitude,
+      // up turned about the path's tangent by ±latitude and pushed out along that by longitude · rand. Census: 50
+      // emitters in 136 spell visuals. Until 25.10 a random polyline point with the plane's cone.
+      const start = Math.min(1, Math.max(0, areaLength));
+      const end = Math.min(1, Math.max(0, areaWidth));
+      let t: number;
+      if (system.splineAtEnd) {
+        t = end;
+        system.splineAtEnd = false;
       } else {
-        const at = random() * (points - 1);
-        const first = Math.floor(at);
-        const next = Math.min(points - 1, first + 1);
-        const fraction = at - first;
-        for (let axis = 0; axis < 3; axis++) {
-          const from = emitter.splinePoints[first * 3 + axis]!;
-          position[axis] = from + (emitter.splinePoints[next * 3 + axis]! - from) * fraction;
+        t = (end - start) * random() + start;
+      }
+      if (!bezierAt(emitter.splinePoints, t, position, scratchC)) {
+        position[0] = position[1] = position[2] = 0;
+        scratchC[0] = 1; scratchC[1] = 0; scratchC[2] = 0;
+      }
+      direction[0] = 0;
+      direction[1] = 0;
+      direction[2] = 1;
+      if (vertical !== 0) {
+        normalise(scratchC);
+        rotateAbout(direction, scratchC, vertical * spread(random));
+        if (horizontal !== 0) {
+          const out = random() * horizontal;
+          position[0] = position[0]! + direction[0]! * out;
+          position[1] = position[1]! + direction[1]! * out;
+          position[2] = position[2]! + direction[2]! * out;
         }
       }
-      const polar = vertical * spread(random);
-      const azimuth = horizontal * spread(random);
-      direction[0] = Math.sin(polar) * Math.cos(azimuth);
-      direction[1] = Math.sin(polar) * Math.sin(azimuth);
-      direction[2] = Math.cos(polar);
       break;
     }
     default: {
@@ -551,6 +709,9 @@ function spawnLocal(
     direction[2] = zSource - position[2]!;
     normalise(direction);
   }
+  // 25.10 (6.27): the emitter's frame is the bone's turned a quarter about z (0x008309c0, `rotateEmitterFrame`).
+  rotateEmitterFrame(position);
+  rotateEmitterFrame(direction);
 }
 
 /**
@@ -581,6 +742,12 @@ export function primeParticleSystem(system: ParticleSystem, frame: EmitterFrame)
   // Set the transform/origin exactly as a zero-time ordinary step would before spawning in the
   // emitter's current frame. No pending debt or particle age is fabricated.
   stepParticlesOnce(system, 0, frame);
+  // 25.10 (6.27): a burst emitter's first frame is its whole burst (0x0097d8c0), and it is then spent.
+  if ((emitter.flags & PARTICLE_FLAG_BURST) !== 0) {
+    system.burstFired = true;
+    emitBurst(system, frame, Math.floor(rate));
+    return system.particles.length > 0;
+  }
   system.particles.push(spawn(system, frame));
   return true;
 }
@@ -747,19 +914,60 @@ function stepParticlesOnce(system: ParticleSystem, seconds: number, frame: Emitt
 
   if (step <= 0) return;
 
+  // 25.10 (6.27): record 0x40 — Update (0x0097eb10) measures the emitter's move every VEL_UPDATE_TIME: the last
+  // frame's move × ivelScale (record 0x170, m_ivelScale +0x14c) / (30 × the time since the last measurement), and
+  // zero while nothing is alive. It is a world vector; a model-space emitter adds it to its particles' own-frame
+  // velocity unconverted, as 0x009815c0 does — the scene move (x, y, z) is the world's (x, −z, y), taken as the
+  // emitter's (turned) frame and so the bone frame's (z, x, y).
+  if ((emitter.flags & PARTICLE_FLAG_INHERIT_VELOCITY) !== 0) {
+    system.inheritTimer += step;
+    if (system.inheritTimer > INHERIT_UPDATE_SECONDS) {
+      const scale = particles.length > 0 ? emitter.burstMultiplier / (system.inheritTimer * 29.999998) : 0;
+      system.inheritTimer = 0;
+      if (system.modelSpace) {
+        system.parentVX = moveZ * scale;
+        system.parentVY = moveX * scale;
+        system.parentVZ = moveY * scale;
+      } else {
+        system.parentVX = moveX * scale;
+        system.parentVY = moveY * scale;
+        system.parentVZ = moveZ * scale;
+      }
+    }
+  }
+  // 25.10 (6.27): record 0x800 — this step's move, for spawns spread along it (0x0097d8c0).
+  system.pathX = moveX;
+  system.pathY = moveY;
+  system.pathZ = moveZ;
+
   // Off for this stretch of the animation, and that is a real state rather than an absence: four
   // of the twenty-six local emitters key `enabledIn`, and all four switch off partway through.
   const enabled = track(emitter.enabledIn, 1);
   const base = enabled > 0.5 ? track(emitter.emissionRate, 0) : 0;
+  const burst = (emitter.flags & PARTICLE_FLAG_BURST) !== 0; // 25.10 (6.27)
+  // 25.10 (6.27): a spline emits rate × end (SetEmissionRate 0x009814e0), and its first spawn after the end moves
+  // is at the end (SetHeight 0x00981cd0).
+  let splineScale = 1;
+  if (emitter.emitterType === EMITTER_SPLINE) {
+    const end = Math.min(1, Math.max(0, track(emitter.emissionAreaWidth, 0)));
+    if (Math.abs(end - system.splineEnd) >= 2.384e-7) {
+      system.splineEnd = end;
+      system.splineAtEnd = true;
+    }
+    splineScale = end;
+  }
   if (base <= 0) {
     // Stopped, not merely quiet: an emitter that has been switched off owes nothing when it
-    // comes back on.
+    // comes back on. 25.10 (6.27): and a burst emitter fires again (0x008309c0 clears m_burstFired).
     system.pending = 0;
+    system.burstFired = false;
     return;
   }
   // 23.10 (6.27): the rate is the rate — record 0x40 is velocity inheritance (0x0097eb10) and EmitNewParticles
   // (0x0097d8c0) multiplies only by the density setting and the view-distance thinning, not by 0x170.
-  const rate = base;
+  // 25.10 (6.27): the thinning is applied (`emitterDistanceScale`), from the emitter's origin to the camera.
+  const rate = splineScale * (frame.viewX === undefined ? base : base * emitterDistanceScale(Math.hypot(
+    system.originX - frame.viewX, system.originY - (frame.viewY ?? 0), system.originZ - (frame.viewZ ?? 0))));
   // A step whose variance draw came out at or below zero contributes nothing and takes nothing
   // away. Clearing the accumulator here instead loses every fraction of a particle banked since
   // the last spawn, and loses more of it the higher the frame rate — 82 of the client's emitters
@@ -769,18 +977,39 @@ function stepParticlesOnce(system: ParticleSystem, seconds: number, frame: Emitt
   const varied = emitter.emissionRateVary === 0
     ? rate
     : Math.max(0, rate + emitter.emissionRateVary * spread(random));
+  const capacity = system.capacity;
+  if (burst) {
+    // 25.10 (6.27): int(rate) particles at once on the first visible step, then nothing until the emitter has been
+    // off or rateless again (0x0097d8c0 under m_flags 0x40; the steady stream needs m_flags 0x1, which 0x8000 clears).
+    if (!system.burstFired) {
+      system.burstFired = true;
+      emitBurst(system, frame, Math.floor(varied));
+    }
+    return;
+  }
   if (varied <= 0) return;
 
   system.pending += varied * step;
   // A tab that was in the background does not owe a thousand particles on the frame it returns.
   // 13.10 6.15: the pool is the emitter's own (`particleCapacity`, Wow.exe 0x0097edf0), not a flat 256.
-  const capacity = system.capacity;
   if (system.pending > capacity) system.pending = capacity;
-  while (system.pending >= 1 && particles.length < capacity) {
-    system.pending -= 1;
+  // 25.10 (6.27): int(owed + 0.5) are spawned and the owed count keeps the rest, which may go below zero
+  // (EmitNewParticles 0x0097d8c0) — a slow emitter's first particle comes half a period sooner than at owed ≥ 1.
+  let count = Math.floor(system.pending + 0.5);
+  let emitted = 0;
+  while (count > 0 && particles.length < capacity) {
     particles.push(spawn(system, frame));
+    count--;
+    emitted++;
   }
+  system.pending -= emitted;
   if (particles.length >= capacity) system.pending = 0;
+}
+
+/** 25.10 (6.27): one burst of `count` particles, as far as the pool has room (0x0097d8c0). */
+function emitBurst(system: ParticleSystem, frame: EmitterFrame, count: number): void {
+  const particles = system.particles;
+  for (let left = count; left > 0 && particles.length < system.capacity; left--) particles.push(spawn(system, frame));
 }
 
 function spawn(system: ParticleSystem, frame: EmitterFrame): Particle {
@@ -789,8 +1018,11 @@ function spawn(system: ParticleSystem, frame: EmitterFrame): Particle {
   const track = (value: WvmTrack, fallback: number): number =>
     emitterTrack(value, animationMs, worldMs, globalSequences, fallback, sequence); // 13.10 6.15
 
-  const local: number[] = [0, 0, 0];
-  const direction: number[] = [0, 0, 1];
+  // 25.10 (6.27): module scratch, not two arrays per spawn (a burst spawns hundreds at once).
+  const local = spawnPosition;
+  const direction = spawnDirection;
+  local[0] = 0; local[1] = 0; local[2] = 0;
+  direction[0] = 0; direction[1] = 0; direction[2] = 1;
   spawnLocal(system, animationMs, worldMs, local, direction, sequence);
 
   let speed = track(emitter.emissionSpeed, 0);
@@ -819,6 +1051,24 @@ function spawn(system: ParticleSystem, frame: EmitterFrame): Particle {
     x = scratchA[0]!;
     y = scratchA[1]!;
     z = scratchA[2]!;
+    // 25.10 (6.27): record 0x800 — born anywhere along the emitter's move this step (0x0097d8c0 sets the frame's
+    // translation to last + move · t, t uniform).
+    if ((emitter.flags & PARTICLE_FLAG_SPAWN_ALONG_PATH) !== 0) {
+      const back = 1 - random();
+      x -= system.pathX * back;
+      y -= system.pathY * back;
+      z -= system.pathZ * back;
+    }
+    // 25.10 (6.27): record 0x2000 — on the ground under it, raised by the larger of its birth scales
+    // (ProjectParticle 0x00979740: z = ground + max(scale.x, scale.y) of the scale ramp at its age, here 0).
+    if ((emitter.flags & PARTICLE_FLAG_SPAWN_ON_GROUND) !== 0 && frame.ground) {
+      const ground = frame.ground(x, z);
+      if (ground !== undefined && Number.isFinite(ground)) {
+        sampleRamp(emitter.scale, 0, scratchRamp, 1);
+        const lift = (emitter.scale?.components ?? 1) > 1 ? Math.max(scratchRamp[0]!, scratchRamp[1]!) : scratchRamp[0]!;
+        y = ground + lift;
+      }
+    }
     // 23.10 (6.27): the direction is turned *and* stretched by the emitter's frame — Wow.exe multiplies the
     // emitter-space velocity by the transform's 3×3 as it stands (CPlaneParticleEmitter::CreateParticle
     // 0x009815c0, the sphere's 0x00981950), so a spell effect at twice the size throws its sparks twice as far,
@@ -827,6 +1077,15 @@ function spawn(system: ParticleSystem, frame: EmitterFrame): Particle {
     vx = scratchB[0]! * speed;
     vy = scratchB[1]! * speed;
     vz = scratchB[2]! * speed;
+  }
+  // 25.10 (6.27): record 0x40 — plus the emitter's inherited velocity, varied like the speed (1 + sfloat ·
+  // variation; 0x009815c0, 0x00981950).
+  if ((emitter.flags & PARTICLE_FLAG_INHERIT_VELOCITY) !== 0
+    && (system.parentVX !== 0 || system.parentVY !== 0 || system.parentVZ !== 0)) {
+    const inherit = 1 + variation * spread(random);
+    vx += system.parentVX * inherit;
+    vy += system.parentVY * inherit;
+    vz += system.parentVZ * inherit;
   }
 
   const life = Math.max(0.02, track(emitter.lifespan, 1) + emitter.lifespanVary * spread(random));
@@ -1069,9 +1328,11 @@ export function writeParticleQuads(
   // (WoW x and y are scene x and −z) otherwise (RenderParticlesPrep 0x0097a390), unit length either way.
   let planeAX = 1, planeAY = 0, planeAZ = 0, planeBX = 0, planeBY = 0, planeBZ = -1;
   if (xyQuad && modelSpace) {
-    transformVector(m, 1, 0, 0, scratchA);
+    // 25.10 (6.27): the emitter's frame is the bone's turned a quarter about z (0x008309c0): its x is the bone's y,
+    // its y the bone's −x, and s_billboardXform (0x0097a390) takes them from that frame.
+    transformVector(m, 0, 1, 0, scratchA);
     normalise(scratchA);
-    transformVector(m, 0, 1, 0, scratchB);
+    transformVector(m, -1, 0, 0, scratchB);
     normalise(scratchB);
     planeAX = scratchA[0]!; planeAY = scratchA[1]!; planeAZ = scratchA[2]!;
     planeBX = scratchB[0]!; planeBY = scratchB[1]!; planeBZ = scratchB[2]!;

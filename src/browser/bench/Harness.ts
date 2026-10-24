@@ -22,7 +22,7 @@ import { benchReadiness, configureBenchRenderer, createBenchClients } from "./Be
 import { wmoReliefStats } from "../WmoReliefShader.js"; // 22.10 (7.47 stage 2)
 import { m2ReliefStats } from "../M2Relief.js"; // 23.10 (7.47 stage 3)
 import { ResourceAccountingLedger } from "../ResourceAccounting.js"; // 23.10 (7.48 step 2)
-import { planSpellVisual, planSpellVisualKitEvent } from "../SpellVisuals.js"; // 23.10 (6.27)
+import { planSpellAuraState, planSpellCastStart, planSpellVisual, planSpellVisualKitEvent, type SpellVisualPlan } from "../SpellVisuals.js"; // 23.10 (6.27); 25.10 phases
 import { noteGatewayAssetGenerations } from "../GatewayGeneration.js"; // 23.10 (7.48)
 import type { SpellVisualKitRecord, SpellVisualMetadata } from "../../gateway/SpellVisual.js"; // 23.10 (6.27)
 import { runLightTrace, type LightTraceSpec } from "./LightTrace.js"; // 24.10 (7.50)
@@ -39,6 +39,19 @@ interface SpellStripSpec {
    * or a portal, to compare emitters outside spells on the same clock and camera (6.27 review).
    */
   model?: { path: string; dx: number; dy: number; scale?: number };
+  /**
+   * 25.10 (6.27): the spell is cast from a point `dx`/`dy` yards from the player (1.5 yards up, no caster unit)
+   * at the player, so a missile flies into the shot and lands on the player's chest.
+   */
+  from?: { dx: number; dy: number };
+  /**
+   * 25.10 (6.27): which packets the strip plays — `go` (SMSG_SPELL_GO, the default), `cast` (SMSG_SPELL_START's
+   * precast for `castMs`, then the GO), `state` (the aura's StateKit, held).
+   */
+  phase?: "go" | "cast" | "state";
+  castMs?: number;
+  /** 25.10 (6.27): report every held effect emitter's particles and quads at each shot. */
+  debug?: boolean;
   /** Milliseconds after the cast at which a frame is captured, ascending. */
   shotsMs: number[];
   /** Optional crop around the canvas centre for the strip (CSS px of the canvas). */
@@ -619,12 +632,28 @@ host.__bench = {
     const leadMs = 3000;
     const startAt = clockMs(baseSeconds) + leadMs;
     const point = selfPoint();
-    let plan;
+    let plan: SpellVisualPlan;
     if (spec.spell !== undefined) {
       const rows = await (await checked(`${baseUrl}/dbc/spell-visuals?v=9&ids=${spec.spell}`)).json() as SpellVisualMetadata[];
       const visual = rows.find((row) => row.id === spec.spell);
       if (!visual) throw new Error(`Spell ${spec.spell} has no visual`);
-      plan = planSpellVisual(visual, { caster: 1n, casterPoint: point, targets: [{ guid: 1n, point }] }, startAt);
+      // 25.10 (6.27): from a point off to the side (`from`), the precast before the GO (`cast`), or the aura (`state`).
+      const caster = spec.from ? 0n : 1n;
+      const casterPoint = spec.from ? { x: point.x + spec.from.dx, y: point.y + spec.from.dy, z: point.z + 1.5 } : point;
+      const castMs = spec.phase === "cast" ? spec.castMs ?? 1000 : 0;
+      const cast = { caster, casterPoint, targets: [{ guid: 1n, point }] };
+      if (spec.phase === "state") {
+        plan = planSpellAuraState(visual, { guid: 1n, point }, startAt, startAt + 600_000);
+      } else {
+        plan = planSpellVisual(visual, cast, startAt + castMs);
+        if (castMs > 0) {
+          const precast = planSpellCastStart(visual, { ...cast, castTime: castMs }, startAt);
+          // The GO ends the stance, as the packet does (CAST_END_GRACE_MS is only for a lost packet).
+          for (const instance of precast.instances) instance.endsAt = Math.min(instance.endsAt, startAt + castMs);
+          plan.instances.push(...precast.instances);
+          plan.animations.push(...precast.animations);
+        }
+      }
     } else if (spec.kit !== undefined) {
       const rows = await (await checked(`${baseUrl}/dbc/spell-visual-kits?v=2&ids=${spec.kit}`)).json() as SpellVisualKitRecord[];
       const kit = rows.find((row) => row.id === spec.kit)?.kit;
@@ -643,7 +672,7 @@ host.__bench = {
       await nextFrame(); render(baseSeconds, 1 / 60, frame++);
       if (index >= 60) stable = readiness().pending === 0 ? stable + 1 : 0;
     }
-    const shots: Array<{ atMs: number; png: string }> = [];
+    const shots: Array<{ atMs: number; png: string; emitters?: unknown }> = [];
     const stepMs = 1000 / 60;
     const crop = spec.crop;
     const sheet = crop ? document.createElement('canvas') : undefined;
@@ -660,7 +689,9 @@ host.__bench = {
       render(baseSeconds + (leadMs + t) / 1000, 1 / 60, frame++);
       cpuMs.push(performance.now() - at);
       while (next < spec.shotsMs.length && t + 1e-6 >= spec.shotsMs[next]!) {
-        shots.push({ atMs: Math.round(t), png: canvas.toDataURL('image/png') });
+        shots.push({ atMs: Math.round(t), png: canvas.toDataURL('image/png'),
+          // 25.10 (6.27): `--effect-debug`: the held effect sets' emitters at this shot.
+          ...(spec.debug ? { emitters: worldRenderer.effectEmitterStats().filter((one) => !one.key.startsWith('env:')) } : {}) });
         if (sheet && crop) {
           const context = sheet.getContext('2d')!;
           const sx = (canvas.width - crop.width) / 2;

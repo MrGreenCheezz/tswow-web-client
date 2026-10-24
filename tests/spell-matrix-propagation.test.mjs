@@ -12,6 +12,7 @@ import { updateBatchColours } from '../dist/code/browser/ModelBuild.js';
 import { BONE_SPHERICAL_BILLBOARD as SPHERE, BONE_CYLINDRICAL_BILLBOARD_Z as CYLINDER } from '../dist/code/browser/Wvm.js';
 import { effectFixture, compareArrays } from './fixtures/billboard-effects.mjs';
 import * as missileFlight from '../dist/code/browser/MissileFlight.js'; // 05.10: ревью G2 — straight homing (slice E)
+import * as spellSequence from '../dist/code/browser/SpellModelSequence.js'; // 25.10 (6.27)
 
 // Execute the production visual/effect passes without a WebGL constructor. Only asset loading,
 // prewarming and expiry are stubbed; placement, billboards, admission and emitters are real.
@@ -19,7 +20,9 @@ const source = readFileSync(new URL('../src/browser/WorldRenderer3D.ts', import.
 const parsed = ts.createSourceFile('renderer.ts', source, ts.ScriptTarget.ES2022, true);
 const renderer = parsed.statements.find(n => ts.isClassDeclaration(n) && n.name?.text === 'WorldRenderer3D');
 const methods = ['#updateVisuals', '#faceModelSpace', '#orientVisualFrame', '#applySpellVisualTransform',
-  '#applySpellBillboards', '#attachmentBone', '#updateEffects'].map(name => {
+  '#applySpellBillboards', '#attachmentBone', '#updateEffects',
+  '#sequenceSpellModel', // 25.10 (6.27): Stand → Hold/Decay (SpellModelSequence.ts)
+].map(name => {
   const member = renderer.members.find(m => m.name?.getText(parsed) === name);
   assert.ok(member, name);
   return member.getText(parsed).replaceAll('#', '');
@@ -28,6 +31,7 @@ const constants = ['EFFECT_RANGE', 'EFFECT_RANGE_SQUARED', 'EFFECT_BUDGET', 'EFF
   'VISUAL_EFFECT_BUDGET', 'EMPTY_EFFECTS', 'IDENTITY_MATRIX', '_scratchScale', // 05.10: ревью G2 — slice E dropped the arc scratch `_flightPoint`
   'IDENTITY_QUATERNION', 'M2_FROM_SCENE',
   '_missileSample', // 05.10: ревью G2 — slice E's homing sample
+  '_spellDurations', '_spellPick', '_particleNormal', 'MODEL_VFX_MAX_MS', // 25.10 (6.27)
 ].map(name => {
   const declaration = parsed.statements.filter(ts.isVariableStatement)
     .flatMap(s => [...s.declarationList.declarations]).find(d => d.name.getText(parsed) === name);
@@ -39,7 +43,7 @@ const js = ts.transpileModule(`${constants.join('\n')}\nclass Harness { ${method
 }).outputText;
 
 function harness(legacy) {
-  const deps = { THREE, ...animation, ...world, ...spells, ...particles, ...missileFlight, boneOf, updateBatchColours }; // 05.10: ревью G2 — + MissileFlight
+  const deps = { THREE, ...animation, ...world, ...spells, ...particles, ...missileFlight, ...spellSequence, boneOf, updateBatchColours }; // 05.10: ревью G2 — + MissileFlight
   if (legacy) {
     // Restore exactly the two former eager propagation points around the unchanged real passes.
     deps.applyGlobalSequenceBones = (...args) => {
@@ -57,6 +61,10 @@ function harness(legacy) {
     // 12.08: the effects pass culls emitters against the camera's frustum.
     effectFrustum: new THREE.Frustum(), effectFrustumMatrix: new THREE.Matrix4(),
     baseUrl: 'fixture', replaySeed: 12340, experimentalShaderProfile: { fantasyGlow: false },
+    // 25.10 (6.27): the camera and the light a lit particle takes, and the ground under a 0x2000 particle.
+    effectView: new THREE.Vector3(), particleLight: { r: 1, g: 1, b: 1 }, particleGround: () => undefined,
+    worldLight: { wowAmbient: { value: new THREE.Color(0.4, 0.4, 0.4) }, wowDiffuse: { value: new THREE.Color(0.6, 0.6, 0.6) },
+      wowSunDirection: { value: new THREE.Vector3(0, 1, 0) } },
     programWarmup: { registerObject() {} }, pumpSpellPrewarm() {}, markExpiredSpellEffectPhases() {},
     // A new set is held until its programs are warm; this harness has no warm pass, so nothing holds.
     effectWarmHold: { hold() {}, release() {}, forget() {}, clear() {} },

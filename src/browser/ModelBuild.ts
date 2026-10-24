@@ -499,11 +499,12 @@ export interface AnimatedBatch {
  */
 export function updateBatchAppearance(
   batches: readonly AnimatedBatch[], animationMs: number, worldMs = animationMs,
+  sequence = REST_SEQUENCE, // 25.10 (6.27): the sequence slot a spell model plays (SpellModelSequence.ts)
 ): void {
   for (const entry of batches) {
     const sequences = entry.globalSequences;
     const at = (track: WvmTrack | undefined, component = 0, fallback = 1): number =>
-      sampleTrack(track, animationMs, worldMs, sequences, fallback, component, REST_SEQUENCE);
+      sampleTrack(track, animationMs, worldMs, sequences, fallback, component, sequence);
     const opacity = Math.max(0, Math.min(1, at(entry.colour?.alpha) * at(entry.weight)));
     if (entry.tinted) {
       entry.material.color.setRGB(at(entry.colour?.rgb, 0), at(entry.colour?.rgb, 1), at(entry.colour?.rgb, 2));
