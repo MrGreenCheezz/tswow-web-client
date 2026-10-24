@@ -143,7 +143,10 @@ export class PrelitLights<T extends PrelitPlacement = PrelitPlacement> {
       for (const object of objects) {
         if (object.kind === "m2") {
           if (catalog.candidate(object.name)) candidates.push(object);
-        } else if (object.kind === "wmo") buildings.push(object);
+        } else if (object.kind === "wmo") {
+          buildings.push(object);
+          catalog.wantLampTable(object.name); // 24.10 (7.50): its lamp posts, before its groups
+        }
       }
       this.#candidates = candidates;
       this.#buildings = buildings;
@@ -233,13 +236,14 @@ export class PrelitLights<T extends PrelitPlacement = PrelitPlacement> {
         && host.openAir(object) === undefined) pending++;
     }
     // A building around or near the point whose root has not come: its own lamps, MOLT and lanterns.
+    // 24.10 (7.50): or whose lamp table (its lamp posts) is still on its first way from the gateway.
     if (host.buildingKnown) {
       for (const object of this.#buildings) {
         const box = object.bounds;
         const near = box
           ? x >= box.minX - range && x <= box.maxX + range && y >= box.minY - range && y <= box.maxY + range
           : (object.x - x) ** 2 + (object.y - y) ** 2 <= range * range;
-        if (near && !host.buildingKnown(object.id)) pending++;
+        if (near && (!host.buildingKnown(object.id) || catalog.lampTablePending(object.name))) pending++;
       }
     }
     return pending;
