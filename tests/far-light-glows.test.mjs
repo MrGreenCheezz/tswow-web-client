@@ -130,7 +130,8 @@ test("the cap binds: the nearest are kept and the set fades before the first lef
 
 test("sources: a room's lamp or an interior doodad never glows (no light through walls)", () => {
   const model = lampModel();
-  assert.equal(farLightSources(placement(model, 0)).length, 6);
+  // 24.10 (7.50): x, y, z, glow r, g, b, the pool's signed reach and the share (FAR_LIGHT_STRIDE).
+  assert.equal(farLightSources(placement(model, 0)).length, 8);
   assert.equal(farLightSources(placement(model, 0, 0, { interior: true })).length, 0);
   assert.equal(farLightSources(placement(model, 0, 0, { localLight: [1, 1, 1] })).length, 0);
   const plain = { ...lampModel(), textures: [{ path: "a.blp" }, { path: "b.blp" }] };
@@ -145,7 +146,8 @@ test("gating: enhanced lighting only; the renderer gathers incrementally", async
   assert.match(renderer, /if \(cinematic\) \{\n(?:\s+\/\/.*\n)?\s+this\.#farLightGlows\.update\(this\.#environment, /);
   // 23.10 (7.46): with the open-air test for a building's doodads (WmoOpenAirLamps.ts).
   assert.match(renderer, /this\.#zoneFogFar, this\.#prelitFar, this\.#openAirDoodad\);/);
-  assert.match(renderer, /\} else this\.#farLightGlows\.clear\(\);/);
+  // 24.10 (7.50): the screen-space pools (LightPools.ts) are cleared with them.
+  assert.match(renderer, /\} else \{\n\s+this\.#farLightGlows\.clear\(\);\n\s+this\.#lightPools\.clear\(\);/);
   assert.match(renderer, /this\.#scene\.add\(this\.#farLightGlows\.mesh\);/);
   // The source list is rebuilt only when the placement set changes.
   assert.match(renderer, /this\.#environment\.set\(object\.id, rendered\);\n\s+this\.#farLightGlows\.invalidate\(\);/);

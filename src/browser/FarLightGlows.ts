@@ -64,8 +64,14 @@ export const FAR_LIGHT_WMO_SHARE = 0.75;
  * world clock: the clock may stand still (a paused or fixed-time scene) while placements arrive.
  */
 export const FAR_LIGHT_REBUILD_FRAMES = 30;
-/** Floats per source: x, y, z, then red, green, blue already times strength. */
-const STRIDE = 6;
+/**
+ * Floats per source: x, y, z, then red, green, blue already times strength; 24.10 (7.50) then the
+ * light's pool reach (negative: a model's own M2 light, lit with the client's falloff) and its share
+ * (`FAR_LIGHT_WMO_SHARE` for a WMO lamp record, else 1) — what the screen-space pools read
+ * (`LightPools.ts`).
+ */
+export const FAR_LIGHT_STRIDE = 8;
+const STRIDE = FAR_LIGHT_STRIDE;
 
 const smooth = (t: number): number => t * t * (3 - 2 * t);
 const clamp01 = (t: number): number => Math.max(0, Math.min(1, t));
@@ -117,7 +123,8 @@ const sample: LocalLightSample = { position: new THREE.Vector3(), colour: new TH
 function push(out: number[], value: LocalLightSample, share: number): void {
   const strength = LIGHT_HALO_STRENGTH * Math.max(0, value.intensity) * share;
   out.push(value.position.x, value.position.y, value.position.z,
-    value.colour.x * strength, value.colour.y * strength, value.colour.z * strength);
+    value.colour.x * strength, value.colour.y * strength, value.colour.z * strength,
+    value.client === true ? -value.radius : value.radius, share); // 24.10 (7.50)
 }
 
 /**
@@ -182,7 +189,7 @@ export function farLightSources(placement: FarLightPlacement, openAir?: FarLight
 export interface FarLightExtra {
   /** Grows when the list changed. */
   readonly generation: number;
-  /** Appends x, y, z, r, g, b per source, the colour already times strength. */
+  /** Appends `FAR_LIGHT_STRIDE` floats per source: x, y, z, r, g, b (the colour already times strength), reach, share. */
   appendFarSources(out: number[]): void;
 }
 
@@ -201,6 +208,7 @@ export class FarLightGlows {
   #extraGeneration = -1; // 24.10 (7.50)
   #lanternGeneration = 0; // 23.10 (7.46)
   #framesSinceRebuild = FAR_LIGHT_REBUILD_FRAMES;
+  #sourceGeneration = 0; // 24.10 (7.50)
   readonly #byDistance = (a: number, b: number): number => this.#distances[a]! - this.#distances[b]!;
 
   get mesh(): THREE.InstancedMesh {
@@ -210,6 +218,18 @@ export class FarLightGlows {
   /** The number of glow sources gathered from the loaded placements. */
   get sourceCount(): number {
     return this.#sourceCount;
+  }
+
+  /**
+   * 24.10 (7.50): the gathered sources, `FAR_LIGHT_STRIDE` floats each (`sourceCount` of them), for
+   * the screen-space pools (`LightPools.ts`); `sourceGeneration` grows with every rebuild.
+   */
+  get sources(): Float32Array {
+    return this.#sources;
+  }
+
+  get sourceGeneration(): number {
+    return this.#sourceGeneration;
   }
 
   /** The placement set changed: rebuild the source list at the next chance. */
@@ -296,6 +316,7 @@ export class FarLightGlows {
       count += own.length / STRIDE;
     }
     this.#sourceCount = count;
+    this.#sourceGeneration++; // 24.10 (7.50)
     if (this.#distances.length < count) {
       this.#distances = new Float32Array(Math.max(count, this.#distances.length * 2));
       this.#order = new Uint32Array(this.#distances.length);
@@ -329,6 +350,11 @@ export class FarLightGlows {
     }
     this.#picked.set(order.subarray(0, count));
     this.#pickedCount = count;
+  }
+
+  /** 24.10 (7.50): the glows drawn after the screen-space pools (`LightHalos.drawLate`). */
+  drawLate(renderer: THREE.WebGLRenderer, camera: THREE.Camera, depth: THREE.Texture | null, width: number, height: number): void {
+    this.#halos.drawLate(renderer, camera, depth, width, height);
   }
 
   dispose(): void {

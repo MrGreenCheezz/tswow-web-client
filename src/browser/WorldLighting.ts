@@ -60,7 +60,24 @@ export interface WorldLightUniforms {
    * cascade. Only compiled in while a shadow map exists; y = 0 disables the fade.
    */
   wowShadowFade: { value: THREE.Vector3 };
+  /**
+   * 24.10 (7.50): 1 while this frame's screen-space lamp pools run (`LightPoolPass.ts`): an opaque lit
+   * surface then writes the sun shadow it took into the capture's alpha (`WORLD_SHADOW_ALPHA_GLSL`),
+   * which nothing else reads. 0 on every other frame and profile: the alpha is left as it was.
+   */
+  wowShadowAlpha: { value: number };
 }
+
+/**
+ * 24.10 (7.50): the alpha an opaque lit surface writes while `wowShadowAlpha` is on: its sun shadow
+ * times this, so a texel at 1 (sky, unlit glass and windows, blended overlays) is told apart.
+ */
+export const WORLD_SHADOW_ALPHA_SCALE = 0.94;
+
+/** 24.10 (7.50): appended after three's last fragment chunk of an opaque world-lit material. */
+export const WORLD_SHADOW_ALPHA_GLSL = /* glsl */ `
+if ( wowShadowAlpha > 0.5 ) gl_FragColor.a = ${WORLD_SHADOW_ALPHA_SCALE.toFixed(2)} * clamp( wowShadow, 0.0, 1.0 );
+`;
 
 /**
  * Bring the brightest channel of ambient + diffuse down to one without changing their ratio.
@@ -147,6 +164,7 @@ export function createWorldLightUniforms(
     wowRimStrength: { value: 0 },
     wowHighSunKey: { value: new THREE.Vector2(0, 1) },
     wowShadowFade: { value: new THREE.Vector3() },
+    wowShadowAlpha: { value: 0 }, // 24.10 (7.50)
   };
   setWorldLightUniforms(uniforms, ambient, diffuse);
   return uniforms;
@@ -380,6 +398,7 @@ uniform int wowLocalLightCount;
 uniform vec4 wowLocalLightPosition[ ${WORLD_LOCAL_LIGHT_LIMIT} ];
 uniform vec4 wowLocalLightColour[ ${WORLD_LOCAL_LIGHT_LIMIT} ];
 uniform float wowLocalLightPool;
+uniform float wowShadowAlpha;
 #ifdef USE_SHADOWMAP
 uniform vec3 wowShadowFade;
 #endif
@@ -591,7 +610,9 @@ interface WorldLightBinding {
 }
 
 const WORLD_LIGHT_BINDINGS = new WeakMap<THREE.Material, WorldLightBinding>();
-const WORLD_LIGHT_KEY = "world-light-r185-v8"; // 05.10-A7b-0 7.07: terrain N.L; 12.10: 7.29 high-sun key, 6.17 M2 falloff; 22.10: 7.36 pool
+const WORLD_LIGHT_KEY = "world-light-r185-v9"; // 24.10 (7.50): the shadow in alpha for the screen-space pools
+/** 24.10 (7.50): three's last fragment chunk, after which the shadow is written to alpha. */
+const SHADOW_ALPHA_TARGET = "#include <dithering_fragment>"; // 05.10-A7b-0 7.07: terrain N.L; 12.10: 7.29 high-sun key, 6.17 M2 falloff; 22.10: 7.36 pool
 
 /**
  * The scene's Light.dbc fog is the floor of this effect. At strength zero the shader below is the
@@ -759,6 +780,7 @@ export function applyWorldLight(
     shader.uniforms.wowLocalLightColour = binding.uniforms.wowLocalLightColour;
     shader.uniforms.wowLocalLightPool = binding.uniforms.wowLocalLightPool; // 22.10 (7.36)
     shader.uniforms.wowShadowFade = binding.uniforms.wowShadowFade;
+    shader.uniforms.wowShadowAlpha = binding.uniforms.wowShadowAlpha; // 24.10 (7.50)
     const unindentedTarget = WORLD_LIGHT_TARGET.replaceAll("\n\t", "\n");
     const target = shader.fragmentShader.includes(WORLD_LIGHT_TARGET)
       ? WORLD_LIGHT_TARGET
@@ -774,11 +796,16 @@ export function applyWorldLight(
       : binding.kind === "foliage" ? "#define WOW_LIGHT_FOLIAGE\n" : "";
     shader.fragmentShader = `${define}${WORLD_LIGHT_PARS}\n${shader.fragmentShader}`
       .replace(target, WORLD_LIGHT_BODY);
+    // 24.10 (7.50): an opaque surface hands its sun shadow to the screen-space pools; a blended one
+    // keeps its alpha, which its blending reads.
+    if (!material.transparent && shader.fragmentShader.split(SHADOW_ALPHA_TARGET).length === 2) {
+      shader.fragmentShader = shader.fragmentShader.replace(SHADOW_ALPHA_TARGET, `${SHADOW_ALPHA_TARGET}\n${WORLD_SHADOW_ALPHA_GLSL}`);
+    }
     injectWorldAerialFog(shader, binding.uniforms);
   };
   material.customProgramCacheKey = () => [
     previousKey,
-    `${WORLD_LIGHT_KEY}:${binding.kind}`,
+    `${WORLD_LIGHT_KEY}:${binding.kind}${material.transparent ? ":blend" : ""}`, // 24.10 (7.50)
   ].filter(Boolean).join("|");
   material.needsUpdate = true;
 }

@@ -33,6 +33,10 @@
  *
  * 24.10 (7.50): `--lamp-tables` answers `/visual/wmo-lamps` (the buildings' lamp tables) the way a gateway with the
  * route does, from the artifacts this harness serves; without it that route is the older gateway's 404.
+ *
+ * 24.10 (7.50): the screen-space lamp pools (`src/browser/LightPools.ts`): `--light-pools off` draws without them,
+ * `--forward-lights N` caps the forward set (0: every lamp's pool in screen space), and every still prints the
+ * frame's pool counts and the lamps in view by distance (`lightPoolStats`); `--leaf-cost lightPools` times them.
  */
 import { access, mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
@@ -395,6 +399,16 @@ async function main() {
     ]);
     const prepared = await page.evaluate(() => window.__bench.prepare());
     console.log(`${scenario}: ready, GPU ${prepared.hardware.gpu}`);
+    // 24.10 (7.50): the screen-space pools' switches, before the traces and the first still.
+    if (value('--light-pools') === 'off') await page.evaluate(() => window.__bench.lightPools?.(false));
+    // `--light-pools show|lit|albedo`: the pool light, the light the pass believes a surface took, or its albedo estimate.
+    const poolShow = { show: 1, lit: 2, albedo: 3 }[value('--light-pools')];
+    if (poolShow) await page.evaluate((mode) => window.__bench.lightPoolShow?.(mode), poolShow);
+    // `--pool-max-rank N`: no screen-space pool past N yards (with `--forward-lights 0`: the forward set's own lamps).
+    if (value('--pool-max-rank') !== undefined) await page.evaluate((rank) => window.__bench.lightPoolMaxRank?.(rank), Number(value('--pool-max-rank')));
+    if (value('--forward-lights') !== undefined) {
+      await page.evaluate((limit) => window.__bench.lightPoolForward?.(limit), Number(value('--forward-lights')));
+    }
     const written = [];
     for (const spec of traces) { // 24.10 (7.50)
       const started = Date.now();
@@ -450,8 +464,10 @@ async function main() {
       }
       // 23.10 (7.47 stage 3): the doodads' relief (materials drawing it, maps and their bytes), when the page has it.
       const m2Relief = await page.evaluate(() => window.__bench.m2ReliefStats?.());
-      written.push({ path, shadows, textures, gpuMs, m2Relief });
+      const lightPools = await page.evaluate(() => window.__bench.lightPoolStats?.()); // 24.10 (7.50)
+      written.push({ path, shadows, textures, gpuMs, m2Relief, lightPools });
       console.log(`${frame.name}: ${path} (${png.length} bytes) shadows ${JSON.stringify(shadows)}`);
+      if (lightPools) console.log(`  light pools: ${JSON.stringify(lightPools)}`);
       if (m2Relief) console.log(`  doodad relief: ${JSON.stringify(m2Relief)}`);
       // 23.10 (7.47 stage 3): `--leaf-cost <hook> --leaf-rounds N` — a leaf's cost at this still, off and on
       // alternated ABBA inside the page (`__bench[hook](enabled)`, e.g. m2Relief), `--gpu-frames` timed frames

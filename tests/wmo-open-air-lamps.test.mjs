@@ -134,7 +134,7 @@ test("far glows: a city's lanterns glow from afar, and its later groups' lantern
   const model = { groups: [{ flags: 0x2a41, triangleCount: 8, mesh: glass([150, 0, 5]) }, late], lights: [] };
   const placement = { source: { id: 10047, name: "WORLD\\WMO\\AZEROTH\\BUILDINGS\\STORMWIND\\STORMWIND.WMO" },
     node: new THREE.Object3D(), wmo: { model, modelToWorld: new THREE.Matrix4() } };
-  assert.equal(farLightSources(placement).length, 6);
+  assert.equal(farLightSources(placement).length, 8); // 24.10 (7.50): + the pool's reach and share (FAR_LIGHT_STRIDE)
   const glows = new FarLightGlows();
   const placements = new Map([[10047, placement]]);
   const camera = new THREE.Vector3(0, 0, 0);
@@ -166,5 +166,5 @@ test("far glows: an interior lamp doodad glows only when its groups are open air
   };
   assert.equal(farLightSources(placement()).length, 0, "an interior doodad, as before");
   assert.equal(farLightSources(placement(), () => false).length, 0, "a room's lamp");
-  assert.equal(farLightSources(placement(), () => true).length, 6, "a street lamp of an open-air group");
+  assert.equal(farLightSources(placement(), () => true).length, 8, "a street lamp of an open-air group"); // 24.10 (7.50): FAR_LIGHT_STRIDE
 });

@@ -580,14 +580,15 @@ export function cinematicShaftSource(
 // Shaders
 // ---------------------------------------------------------------------------------------------
 
-const VERTEX = /* glsl */ `
+// 24.10 (7.50): the full-screen vertex, colour and view helpers are shared with the screen-space pools (LightPoolPass.ts).
+export const VERTEX = /* glsl */ `
 varying vec2 vUV;
 void main() {
   vUV = position.xy * 0.5 + 0.5;
   gl_Position = vec4(position.xy, 0.0, 1.0);
 }`;
 
-const COLOUR_PARS = /* glsl */ `
+export const COLOUR_PARS = /* glsl */ `
 vec3 cinematicToLinear(vec3 c) {
   c = max(c, vec3(0.0));
   return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(vec3(0.04045), c));
@@ -598,7 +599,7 @@ vec3 cinematicToDisplay(vec3 c) {
 }
 `;
 
-const VIEW_PARS = /* glsl */ `
+export const VIEW_PARS = /* glsl */ `
 uniform highp sampler2D depthTexture;
 uniform mat4 inverseProjection;
 vec3 cinematicViewPosition(vec2 uv, float depth) {

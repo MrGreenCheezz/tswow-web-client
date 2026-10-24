@@ -7,6 +7,7 @@
  */
 import type * as THREE from "three";
 import type { LocalLightSelection } from "./LocalLighting.js";
+import type { LightPools } from "./LightPools.js";
 
 /** One frame's lights in world coordinates (x north, y west, z up), four floats each. */
 export interface LightCensusFrame {
@@ -14,6 +15,8 @@ export interface LightCensusFrame {
   readonly near: number[];
   /** Halos and far glows drawn: x, y, z, the brightest channel of the quad's colour. */
   readonly glows: number[];
+  /** 24.10 (7.50): screen-space pools drawn (`LightPools.ts`): x, y, z, the brightest channel of the light's colour · weight. */
+  readonly pools: number[];
 }
 
 function pushScene(out: number[], x: number, y: number, z: number, value: number): void {
@@ -31,11 +34,17 @@ function pushInstances(out: number[], mesh: THREE.InstancedMesh): void {
   }
 }
 
-/** The pools the selection wrote and every halo or far glow quad of the frame. */
-export function lightCensus(selection: LocalLightSelection, halos: readonly THREE.InstancedMesh[]): LightCensusFrame {
+/** The pools the selection wrote, every halo or far glow quad of the frame, and the screen-space pools. */
+export function lightCensus(selection: LocalLightSelection, halos: readonly THREE.InstancedMesh[],
+  screen?: LightPools): LightCensusFrame {
   const near: number[] = [];
   selection.forEachWritten((position, strength) => pushScene(near, position.x, position.y, position.z, strength));
   const glows: number[] = [];
   for (const mesh of halos) pushInstances(glows, mesh);
-  return { near, glows };
+  const pools: number[] = [];
+  for (let index = 0; screen && index < screen.count; index++) {
+    const at = index * 4;
+    pushScene(pools, screen.scene[at]!, screen.scene[at + 1]!, screen.scene[at + 2]!, screen.scene[at + 3]!);
+  }
+  return { near, glows, pools };
 }
