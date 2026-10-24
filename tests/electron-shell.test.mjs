@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
+import { execFileSync } from "node:child_process"; // 25.10 (12.14)
+import { fileURLToPath } from "node:url"; // 25.10 (12.14)
 import test from "node:test";
 
 /**
@@ -43,6 +45,30 @@ test("server.json errors say which file and what is wrong", () => {
   assert.throws(() => parseServerConfig("{broken", "C:/app/server.json"), /C:\/app\/server\.json: не читается как JSON/);
   assert.throws(() => parseServerConfig("[]"), /ожидался объект/);
   assert.throws(() => parseServerConfig('{"url":"file:///x"}'), /url must be http/);
+});
+
+// 25.10 (12.14): `fastest-cores` (an A/B side of PERF_STATUS step 29) keeps one logical CPU of each fastest core.
+test("the CPU policy's fastest-cores is one logical CPU per fastest core", { skip: process.platform !== "win32" }, () => {
+  const policy = (cpuClass) => JSON.parse(execFileSync("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass",
+    "-File", fileURLToPath(new URL("../electron/cpu-policy.ps1", import.meta.url)), "-Class", cpuClass], { encoding: "utf8" }));
+  const all = policy("fastest");
+  const cores = policy("fastest-cores");
+  assert.equal(cores.policy, "performance-cores-no-smt");
+  assert.ok(cores.selected.length > 0 && cores.selected.every((cpu) => all.selected.includes(cpu)));
+  // Every fastest core once, and no core twice (on a machine without SMT the two answers are the same).
+  assert.equal(new Set(cores.cores).size, cores.cores.length, `cores ${cores.cores}`);
+  assert.deepEqual([...new Set(cores.cores)].sort((a, b) => a - b), [...new Set(all.cores)].sort((a, b) => a - b));
+  assert.equal(BigInt(cores.mask), cores.selected.reduce((mask, cpu) => mask | (1n << BigInt(cpu)), 0n));
+});
+
+test("main.cjs takes fastest-cores and opens without the focus for a bench run", async () => {
+  const main = await readFile(new URL("../electron/main.cjs", import.meta.url), "utf8");
+  assert.match(main, /\["fastest", "fastest-cores", "slowest", "none"\]\.includes\(cpuClass\)/);
+  assert.match(main, /show: !inactive/);
+  assert.match(main, /if \(inactive\) window\.showInactive\(\)/);
+  const bench = await readFile(new URL("../bench/run.mjs", import.meta.url), "utf8");
+  assert.match(bench, /'--inactive'/, "the bench's Electron window does not take the focus from the owner's game");
+  assert.match(bench, /'-Priority', electronPriority/, "the bench re-applies the shell's own priority, not the default");
 });
 
 test("main.cjs wires the recovery, and the packaged app carries the new modules", async () => {
