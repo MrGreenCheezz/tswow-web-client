@@ -19,6 +19,12 @@
  * (`/visual/wmo-lamps`, `WmoLampTableClient.ts`): asked as soon as a tile lists the building
  * (`wantLampTable`), it names the lanterns of all of its open-air groups, so its lamp posts light with
  * its root even on a first visit. Without it (an older gateway) the groups are read as they arrive.
+ *
+ * 25.10 (7.50): and, from a gateway that has the route, the index of models that declare their own M2 lights
+ * (`/visual/lit-models`, `LitModelIndexClient.ts`): a model past no name gate that the index names is a
+ * candidate like a lamp, asked for as soon as a tile lists it, and lights before it is built — the wagon
+ * lantern of `StormwindGypsyWagon01.m2` used to switch on at 112 yards when the wagon was first built.
+ * Without it (an older gateway) such a model is learned at its first build (`noteLit`), as before.
  */
 import { fixtureNameCandidate } from "./LocalLighting.js";
 import { deriveLightTemplates, validLightTemplates, type LightTemplate } from "./LightTemplates.js";
@@ -30,6 +36,7 @@ import { seedWmoLanterns, wmoLanternGroups } from "./WmoOpenAirLamps.js";
 import type { WmoModel } from "./WmoModel.js";
 import { LAMP_TABLE_PENDING, type WmoLampTable, type WmoLampTableSource } from "./WmoLampTableClient.js"; // 24.10 (7.50)
 import type { WvmModel } from "./Wvm.js";
+import { LIT_INDEX_PENDING, type LitModelIndexSource } from "./LitModelIndexClient.js"; // 25.10 (7.50)
 
 /** Yards within which a lamp model is asked for at `normal` priority rather than `background`. */
 export const LIGHT_MODEL_NEAR = 200;
@@ -97,12 +104,15 @@ export class LightTemplateCatalog {
   readonly #tableWantedKeys = new Set<string>();
   #tableCursor = 0;
   #tableSource: WmoLampTableSource | undefined;
+  /** 25.10 (7.50): the gateway's lit-model index once it arrived (`LitModelIndexClient`), and its source. */
+  #litIndex: ReadonlySet<string> | undefined;
+  #litSource: LitModelIndexSource | undefined;
   readonly #store: PersistentAssetStore | null | undefined;
   #persisted: { origin: string; generation: string } | undefined;
   #loading: Promise<void> | undefined;
   #saveTimer: ReturnType<typeof setTimeout> | undefined;
   /** Templates derived from model data this session, and how many came from the persistent record. */
-  readonly stats = { derived: 0, loaded: 0, asked: 0, lampTables: 0 };
+  readonly stats = { derived: 0, loaded: 0, asked: 0, lampTables: 0, litModels: 0 };
 
   /** `store`: undefined uses the realm's (`persistentAssetStore`), null keeps nothing. */
   constructor(store?: PersistentAssetStore | null) {
@@ -124,11 +134,15 @@ export class LightTemplateCatalog {
     return this.#known.get(catalogKey(name));
   }
 
-  /** Whether a placement of `name` may light: past the name gate, or known to light. */
+  /**
+   * Whether a placement of `name` may light: past the name gate, known to light, or (25.10, 7.50) named by
+   * the gateway's lit-model index.
+   */
   candidate(name: string): boolean {
     let answer = this.#candidate.get(name);
     if (answer === undefined) {
-      answer = fixtureNameCandidate(name) || (this.templates(name)?.length ?? 0) > 0;
+      answer = fixtureNameCandidate(name) || (this.templates(name)?.length ?? 0) > 0
+        || this.#litIndex?.has(pathKey(name)) === true;
       this.#candidate.set(name, answer);
     }
     return answer;
@@ -152,9 +166,10 @@ export class LightTemplateCatalog {
    * Polls up to `LIGHT_MODEL_POLL` wanted models, nearest first; derives the templates of those that
    * arrived. A model the client cannot give (absent, a hull, a building) lights nothing.
    */
-  pump(models: LightModelSource | undefined, tables?: WmoLampTableSource): void {
+  pump(models: LightModelSource | undefined, tables?: WmoLampTableSource, lit?: LitModelIndexSource): void {
     this.#attach();
     if (tables) this.#pumpTables(tables); // 24.10 (7.50)
+    if (lit) this.#pumpLit(lit); // 25.10 (7.50)
     if (!models || this.#pending.length === 0) return;
     let polled = 0;
     if (this.#cursor >= this.#pending.length) this.#cursor = 0;
@@ -206,6 +221,27 @@ export class LightTemplateCatalog {
     if (!source) return false;
     const key = pathKey(name);
     return !this.#tables.has(key) && source.lookup(key, name) === LAMP_TABLE_PENDING;
+  }
+
+  /**
+   * 25.10 (7.50): takes the lit-model index once it arrives: every name is read again as a candidate, so a
+   * snapshot's placements of those models are wanted (`PrelitLights.update`). One lookup a frame until then.
+   */
+  #pumpLit(source: LitModelIndexSource): void {
+    this.#litSource = source;
+    if (this.#litIndex) return;
+    const answer = source.lookup();
+    if (typeof answer !== "object") return;
+    this.#litIndex = answer;
+    this.stats.litModels = answer.size;
+    this.#candidate.clear();
+    this.#candidateGeneration++;
+  }
+
+  /** 25.10 (7.50): whether the lit-model index is still on its first way here (the loading curtain waits). */
+  get litIndexPending(): boolean {
+    const source = this.#litSource;
+    return source !== undefined && this.#litIndex === undefined && source.lookup() === LIT_INDEX_PENDING;
   }
 
   /** 24.10 (7.50): the lamp table that arrived for a WMO path (tests, the bench). */

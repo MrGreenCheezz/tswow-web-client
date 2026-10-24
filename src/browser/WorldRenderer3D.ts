@@ -102,6 +102,7 @@ import {
 import { lightCensus, type LightCensusFrame } from "./LightCensus.js"; // 24.10 (7.50)
 import { WmoLampTableClient } from "./WmoLampTableClient.js"; // 24.10 (7.50): buildings' lamp tables
 import { LightTemplateCatalog } from "./LightTemplateCatalog.js"; // 24.10 (7.50)
+import { LitModelIndexClient } from "./LitModelIndexClient.js"; // 25.10 (7.50): models with their own M2 lights
 import { PrelitLights, type PrelitHost } from "./PrelitLights.js"; // 24.10 (7.50)
 import {
   GOD_RAY_STRENGTH_SCALE_MAX, godRayStrengthScale, lightingProfile, shadowMaterialEligible,
@@ -4239,6 +4240,13 @@ export class WorldRenderer3D {
     let tables = this.#lampTables;
     if (tables?.baseUrl !== baseUrl) this.#lampTables = tables = new WmoLampTableClient(baseUrl);
     return tables;
+  }
+  /** 25.10 (7.50): the gateway's lit-model index (`/visual/lit-models`), one client per gateway. */
+  #litModels: LitModelIndexClient | undefined;
+  #litModelSource(baseUrl: string): LitModelIndexClient {
+    let index = this.#litModels;
+    if (index?.baseUrl !== baseUrl) this.#litModels = index = new LitModelIndexClient(baseUrl);
+    return index;
   }
   readonly #addPrelitLight = (sample: LocalLightSample): void => {
     this.#localLightSelection.add(sample, this.#localLightFocus);
@@ -9815,7 +9823,8 @@ export class WorldRenderer3D {
       // are asked for as the tiles land and their lights stand before their meshes do.
       if (cinematic) {
         this.#lightModels = client;
-        this.#lightCatalog.pump(client, client ? this.#lampTableSource(client.baseUrl) : undefined); // 24.10 (7.50): + lamp tables
+        this.#lightCatalog.pump(client, client ? this.#lampTableSource(client.baseUrl) : undefined, // 24.10 (7.50): + lamp tables
+          client ? this.#litModelSource(client.baseUrl) : undefined); // 25.10 (7.50): + models with their own lights
         this.#prelitLights.update(this.#environmentObjects ?? [], this.#lightCatalog, this.#prelitHost, this.#camera.position);
         this.#prelitLights.forEachNear(focus, now, this.#prelitHost, this.#addPrelitLight, this.#localLightSample);
       }
