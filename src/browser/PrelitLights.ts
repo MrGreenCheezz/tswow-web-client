@@ -287,7 +287,9 @@ export class PrelitLights<T extends PrelitPlacement = PrelitPlacement> {
       }
       if (lastBuilt) continue;
       const at = index * STRIDE;
-      out.push(lights[at]!, lights[at + 1]!, lights[at + 2]!, lights[at + 9]!, lights[at + 10]!, lights[at + 11]!);
+      // 24.10 (7.50): with the pool's reach (negative for an M2 light) and share, as `farLightSources` (FAR_LIGHT_STRIDE).
+      out.push(lights[at]!, lights[at + 1]!, lights[at + 2]!, lights[at + 9]!, lights[at + 10]!, lights[at + 11]!,
+        lights[at + 8] === 1 ? -lights[at + 6]! : lights[at + 6]!, 1);
     }
   }
 }

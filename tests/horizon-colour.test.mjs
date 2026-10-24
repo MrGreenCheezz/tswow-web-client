@@ -274,7 +274,7 @@ test("horizonColourWanted / HorizonMaterialSelector: lit and coloured at every l
   assert.equal(lit === basic, false);
   assert.equal(lit.type, "MeshLambertMaterial");
   assert.equal(lit.map === texture, true);
-  assert.match(lit.customProgramCacheKey(), /world-light-r185-v8:terrain/);
+  assert.match(lit.customProgramCacheKey(), /world-light-r185-v9:terrain/);
   const other = new THREE.Texture();
   assert.equal(selector.select(0, () => other) === lit, true, "one lit material for every map");
   assert.equal(lit.map === other, true);

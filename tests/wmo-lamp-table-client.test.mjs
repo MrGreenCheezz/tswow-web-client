@@ -68,7 +68,7 @@ test("a table lights the city's lamp posts with its root, before any of its grou
   assert.deepEqual([...lanterns.positions].map((value) => Math.round(value * 100) / 100), [10, 20, 5]);
   // A far glow at once, as for a lamp found in a group's mesh.
   const placement = { source: building, node: new THREE.Object3D(), wmo: { model, modelToWorld: new THREE.Matrix4() } };
-  assert.equal(farLightSources(placement).length, 6);
+  assert.equal(farLightSources(placement).length, 8); // 24.10 (7.50): FAR_LIGHT_STRIDE
   const glows = new FarLightGlows();
   for (let frame = 0; frame < 40; frame++) glows.update(new Map([[building.id, placement]]), new THREE.Vector3(0, 0, -150), 0);
   assert.equal(glows.sourceCount, 1);

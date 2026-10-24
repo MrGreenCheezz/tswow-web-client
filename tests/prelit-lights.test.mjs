@@ -194,7 +194,7 @@ test("24.10 (7.50): a placement lights without a built model, and only until it 
   assert.equal(near(prelit, new THREE.Vector3(0, 0, 10), 0, h).length, 1, "a built lamp lights itself");
   const far = [];
   prelit.appendFarSources(h, far);
-  assert.equal(far.length, 6, "and its far glow is the built one's");
+  assert.equal(far.length, 8, "and its far glow is the built one's"); // 24.10 (7.50): FAR_LIGHT_STRIDE
   assert.equal(near(prelit, new THREE.Vector3(500, 0, 500), 0, host()).length, 0, "nothing past the selection's range");
 });
 

@@ -93,6 +93,8 @@ import { sampleWmoLight, wmoOutdoorLightPositions, wmoOutdoorLights } from "./Wm
 import { LOCAL_LIGHT_FOCUS_AHEAD, WMO_LIGHT_RANK_SCALE } from "./CinematicLights.js"; // 22.10 (7.36)
 import { LightHalos } from "./LightHalos.js"; // 22.10 (7.36)
 import { FarLightGlows, type FarLightExtra } from "./FarLightGlows.js"; // 22.10 (7.46)
+import { LightPools } from "./LightPools.js"; // 24.10 (7.50)
+import { LightPoolPass } from "./LightPoolPass.js"; // 24.10 (7.50)
 import {
   sampleWmoLantern, wmoDoodadOpenAir, wmoLanterns, wmoLanternWorldPositions,
 } from "./WmoOpenAirLamps.js"; // 23.10 (7.46)
@@ -4260,6 +4262,18 @@ export class WorldRenderer3D {
     return open;
   };
   readonly #farLightGlows = new FarLightGlows(); // 22.10 (7.46)
+  // 24.10 (7.50): every lamp in view within 150 yards lays its pool, past the forward set, in screen space.
+  readonly #lightPools = new LightPools();
+  readonly #lightPoolPass = new LightPoolPass(this.#worldLight);
+  /** 24.10 (7.50): bench switches — the screen-space pools on or off, and the forward set's size (-1: the profile's). */
+  #lightPoolsEnabled = true;
+  #forwardLightLimit = -1;
+  /** 24.10 (7.50): this frame draws its halos and far glows after the screen-space pools. */
+  #lateGlows = false;
+  readonly #drawLateGlows = (renderer: THREE.WebGLRenderer, depth: THREE.Texture | null, width: number, height: number): void => {
+    this.#lightHalos.drawLate(renderer, this.#camera, depth, width, height);
+    this.#farLightGlows.drawLate(renderer, this.#camera, depth, width, height);
+  };
   readonly #addLightHalo = (position: THREE.Vector3, colour: THREE.Vector3, strength: number): void => {
     this.#lightHalos.add(position, colour, strength, this.#worldLight.wowDaylight.value, this.#camera.position);
   };
@@ -5001,6 +5015,11 @@ export class WorldRenderer3D {
     for (const pass of this.#cinematic.materials) {
       this.#glowWarmup.registerMaterial(pass, this.#cinematic.quad.geometry);
     }
+    // 24.10 (7.50): the screen-space pools' passes, compiled before the first night in a city.
+    const [poolNormals, poolLight, poolApply] = this.#lightPoolPass.materials;
+    this.#glowWarmup.registerMaterial(poolNormals!, this.#cinematic.quad.geometry);
+    this.#glowWarmup.registerMaterial(poolLight!, this.#lightPoolPass.lightGeometry);
+    this.#glowWarmup.registerMaterial(poolApply!, this.#cinematic.quad.geometry);
     // One line, once per renderer: without this extension the link blocks whoever calls it, and
     // precompiling then only moves the cost into the build phases instead of off the frame.
     console.info("[webclient] прогрев шейдеров: KHR_parallel_shader_compile "
@@ -5603,7 +5622,7 @@ export class WorldRenderer3D {
 
   /** 24.10 (7.50): the last frame's light pools, halos and far glows, for the bench's light trace. */
   lightCensus(): LightCensusFrame {
-    return lightCensus(this.#localLightSelection, [this.#lightHalos.mesh, this.#farLightGlows.mesh]);
+    return lightCensus(this.#localLightSelection, [this.#lightHalos.mesh, this.#farLightGlows.mesh], this.#lightPools); // 24.10 (7.50): + pools
   }
 
   /**
@@ -6032,6 +6051,7 @@ export class WorldRenderer3D {
     }
     // The cinematic leaves' bloom mips and occlusion buffers, present only while a post leaf is on.
     for (const target of this.#cinematic.renderTargets) visitor.referenceGpuRenderTarget(this, target);
+    for (const target of this.#lightPoolPass.renderTargets) visitor.referenceGpuRenderTarget(this, target); // 24.10 (7.50)
   }
 
   /**
@@ -7860,6 +7880,7 @@ export class WorldRenderer3D {
     this.#environmentStandInMarkers.dispose(); // 05.10-A7b-9 7.18
     this.#lightHalos.dispose(); // 22.10 (7.36)
     this.#farLightGlows.dispose(); // 22.10 (7.46)
+    this.#lightPoolPass.dispose(); // 24.10 (7.50)
     for (const geometry of [
       this.#unitBodyGeometry, this.#unitFacingGeometry, this.#foliageGeometry, this.#trunkGeometry,
       this.#sky.geometry, this.#classicDome.geometry /* 13.10 7.04 */, this.#underwaterOverlay.geometry, this.#glowPasses.quad.geometry,
@@ -8711,6 +8732,16 @@ export class WorldRenderer3D {
     const submitTexturesBefore = this.#textureCount();
     const submitGeometriesBefore = this.#geometryCount();
     const glow = this.#beginFullscreenGlow();
+    // 24.10 (7.50): with screen-space pools this frame, the halos and far glows are drawn after them
+    // (LightHalos.drawLate), so the pools' albedo estimate never takes a glow for a lit wall.
+    this.#lateGlows = glow !== undefined && glow.godRays && this.#cinematic.active && this.#lightPools.count > 0
+      && !this.#underwater;
+    if (this.#lateGlows) {
+      this.#lightHalos.mesh.visible = false;
+      this.#farLightGlows.mesh.visible = false;
+    }
+    // 24.10 (7.50): and every opaque lit surface writes the sun shadow it took into the capture's alpha.
+    this.#worldLight.wowShadowAlpha.value = this.#lateGlows ? 1 : 0;
     // Detailed clocks (`detailedCapture`, above) run only during an explicit capture. These overlap
     // their parent phases.
     let submitPartAt = detailedCapture ? performance.now() : 0;
@@ -8892,9 +8923,27 @@ export class WorldRenderer3D {
     if (!targets) return;
     const { uniforms, quad, scene, camera } = this.#glowPasses;
 
-    let glowTexture: THREE.Texture = targets.scene.texture;
+    // 24.10 (7.50): the lamps past the forward set lay their pools into the capture first (LightPoolPass.ts),
+    // so the glow, the bloom and the grade read them as they read a forward pool.
+    let sceneTexture: THREE.Texture = targets.scene.texture;
+    if (this.#cinematic.active && this.#lightPools.count > 0) {
+      const depth = targets.scene.depthTexture;
+      if (targets.godRays && depth instanceof THREE.DepthTexture && !this.#underwater) {
+        sceneTexture = this.#lightPoolPass.render(this.#renderer, {
+          scene: targets.scene.texture, depth, camera: this.#camera, width: targets.width, height: targets.height,
+          contextGeneration: targets.contextGeneration, pools: this.#lightPools,
+          late: this.#lateGlows ? this.#drawLateGlows : undefined,
+        }) ?? sceneTexture;
+      }
+    }
+    if (this.#lateGlows && sceneTexture === targets.scene.texture) {
+      // No pooled frame after all: the glows go where the world pass would have drawn them.
+      this.#renderer.setRenderTarget(targets.scene);
+      this.#drawLateGlows(this.#renderer, null, targets.width, targets.height);
+    }
+    let glowTexture: THREE.Texture = sceneTexture;
     if (this.#fullscreenGlowEnabled) {
-      uniforms.source.value = targets.scene.texture;
+      uniforms.source.value = sceneTexture;
       quad.material = this.#glowPasses.extract;
       this.#renderer.setRenderTarget(targets.blurA);
       this.#renderer.render(scene, camera);
@@ -8931,7 +8980,7 @@ export class WorldRenderer3D {
     if (this.#cinematic.active) {
       const depth = targets.scene.depthTexture;
       this.#cinematic.render(this.#renderer, {
-        scene: targets.scene.texture,
+        scene: sceneTexture, // 24.10 (7.50)
         depth: targets.godRays && depth instanceof THREE.DepthTexture && !this.#underwater ? depth : null,
         glow: glowTexture,
         glowStrength: this.#fullscreenGlowEnabled ? this.#glowStrength : 0,
@@ -9019,6 +9068,12 @@ export class WorldRenderer3D {
     this.#glowPasses.uniforms.rays.value = null;
     this.#glowPasses.uniforms.rayStrength.value = 0;
     this.#cinematic.release();
+    this.#lightPoolPass.release(); // 24.10 (7.50)
+    if (this.#lateGlows) { // 24.10 (7.50): the halos and far glows were drawn after the pools
+      this.#lateGlows = false;
+      this.#lightHalos.mesh.visible = true;
+      this.#farLightGlows.mesh.visible = true;
+    }
   }
 
   /**
@@ -9192,6 +9247,7 @@ export class WorldRenderer3D {
     this.#glowPasses.uniforms.rayStrength.value = 0;
     for (const target of [targets.scene, targets.blurA, targets.blurB]) target.dispose();
     this.#cinematic.dispose();
+    this.#lightPoolPass.dispose(); // 24.10 (7.50)
   }
 
   /**
@@ -9683,7 +9739,8 @@ export class WorldRenderer3D {
   /** Sample nearby outdoor flame/glow fixtures after posing, including instanced street lamps. */
   #updateFixtureLights(now: number, client: EnvironmentClient | undefined): void {
     const selection = this.#localLightSelection;
-    selection.begin(this.#lightingProfile.localLights);
+    selection.begin(this.#forwardLightLimit >= 0 ? Math.min(this.#forwardLightLimit, this.#lightingProfile.localLights)
+      : this.#lightingProfile.localLights); // 24.10 (7.50): the bench may shrink the forward set
     const cinematic = this.#lightingProfile.cinematicLights > 0; // 22.10 (7.36)
     // 22.10 (7.36): the cinematic profile ranks lights from a point ahead of the camera.
     const focus = cinematic
@@ -9776,7 +9833,16 @@ export class WorldRenderer3D {
       // 24.10 (7.50): and the lamps not built yet (PrelitLights.ts).
       this.#farLightGlows.update(this.#environment, this.#camera.position, this.#worldLight.wowDaylight.value,
         this.#zoneFogFar, this.#prelitFar, this.#openAirDoodad); // 23.10 (7.46): open-air doodads
-    } else this.#farLightGlows.clear();
+      // 24.10 (7.50): and every lamp past the forward set lays its pool in screen space (LightPools.ts).
+      if (this.#lightingProfile.localLights > 0) {
+        this.#lightPools.update(this.#farLightGlows, focus, selection.cut, this.#camera);
+        // The bench's off side still picks, so its census counts the lamps in view.
+        if (!this.#lightPoolsEnabled) this.#lightPools.clear();
+      } else this.#lightPools.clear();
+    } else {
+      this.#farLightGlows.clear();
+      this.#lightPools.clear();
+    }
   }
 
   /** 22.10 (7.36): offers one WMO placement's outdoor lamps (`WmoFixtureLights.ts`) to the selection. */
@@ -10880,6 +10946,36 @@ export class WorldRenderer3D {
 
   #syncWmoRelief(): void {
     setWmoReliefActive(wmoReliefActive(this.#wmoReliefSetting, this.#lightingProfile.quality));
+  }
+
+  /**
+   * 24.10 (7.50): bench switches for the screen-space lamp pools (LightPools.ts): `enabled` on or off
+   * in place (a cost A/B), `forwardLimit` caps the forward set (0: every lamp lit in screen space, for
+   * a forward-against-deferred comparison of one lamp; -1: the profile's own).
+   */
+  setLightPoolDebug(options: { readonly enabled?: boolean; readonly forwardLimit?: number; readonly show?: number;
+    readonly maxRank?: number }): void {
+    if (options.maxRank !== undefined) this.#lightPools.debugMaxRank = options.maxRank;
+    if (options.enabled !== undefined) this.#lightPoolsEnabled = options.enabled;
+    if (options.show !== undefined) this.#lightPoolPass.setDebug(options.show);
+    if (options.forwardLimit !== undefined) this.#forwardLightLimit = Math.floor(options.forwardLimit);
+  }
+
+  /**
+   * 24.10 (7.50): the last frame's screen-space pools, for the bench: counts, the forward set's cut,
+   * and the lamps in view by ranked distance with how many each set lit (`LightPools.census`).
+   */
+  get lightPoolStats(): unknown {
+    let forward = 0;
+    this.#localLightSelection.forEachWritten(() => { forward++; });
+    const cut = this.#localLightSelection.cut;
+    return {
+      ...this.#lightPools.stats, cut, forward,
+      light: { ambient: this.#worldLight.wowAmbient.value.toArray(), diffuse: this.#worldLight.wowDiffuse.value.toArray(),
+        sun: this.#worldLight.wowSunDirection.value.toArray(), daylight: this.#worldLight.wowDaylight.value,
+        immersive: this.#worldLight.wowImmersiveStrength.value, pool: this.#worldLight.wowLocalLightPool.value },
+      census: this.#lightPools.census(this.#farLightGlows, this.#localLightFocus, cut, this.#camera),
+    };
   }
 
   /**

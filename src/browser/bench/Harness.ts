@@ -59,7 +59,9 @@ interface BenchWindow extends Window {
     m2Relief(enabled: boolean): void; m2ReliefStats(): unknown; // 23.10 (7.47 stage 3)
     hdWorldTextures(enabled: boolean): void; // 24.10 (7.48 step 3): `lookdev.mjs --leaf-cost hdWorldTextures`
     textureMemory(): unknown; // 23.10 (7.48 step 2)
-    lightTrace(spec: LightTraceSpec): Promise<unknown> }; // 24.10 (7.50)
+    lightTrace(spec: LightTraceSpec): Promise<unknown>; // 24.10 (7.50)
+    // 24.10 (7.50): the screen-space lamp pools — `lookdev.mjs --leaf-cost lightPools`, the forward set's size, counts.
+    lightPools(enabled: boolean): void; lightPoolForward(limit: number): void; lightPoolShow(show: number): void; lightPoolMaxRank(rank: number): void; lightPoolStats(): unknown };
 }
 const host = window as BenchWindow;
 const config = await (await fetch('/config.json')).json() as Config;
@@ -564,6 +566,11 @@ host.__bench = {
   wmoReliefStats() { return wmoReliefStats(); },
   m2Relief(enabled: boolean) { world?.setM2Relief(enabled); }, // 23.10 (7.47 stage 3)
   hdWorldTextures(enabled: boolean) { world?.setHdWorldTextures(enabled); }, // 24.10 (7.48 step 3)
+  lightPools(enabled: boolean) { world?.setLightPoolDebug({ enabled }); }, // 24.10 (7.50)
+  lightPoolForward(limit: number) { world?.setLightPoolDebug({ forwardLimit: limit }); }, // 24.10 (7.50)
+  lightPoolShow(show: number) { world?.setLightPoolDebug({ show }); },
+  lightPoolMaxRank(rank: number) { world?.setLightPoolDebug({ maxRank: rank }); }, // 24.10 (7.50) // 24.10 (7.50): the pool light alone
+  lightPoolStats() { return world?.lightPoolStats; }, // 24.10 (7.50)
   m2ReliefStats() { return m2ReliefStats(); },
   /** 23.10 (7.47 stage 3): the CPU samples (ms) of the last `gpuView`. */
   viewCpu() { return [...viewCpuMs]; },

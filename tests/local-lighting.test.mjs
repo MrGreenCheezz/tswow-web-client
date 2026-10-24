@@ -14,6 +14,7 @@ import { LightHalos } from "../dist/code/browser/LightHalos.js"; // 22.10 (7.36)
 import { FarLightGlows } from "../dist/code/browser/FarLightGlows.js"; // 22.10 (7.46)
 import { LightTemplateCatalog } from "../dist/code/browser/LightTemplateCatalog.js"; // 24.10 (7.50)
 import { PrelitLights } from "../dist/code/browser/PrelitLights.js"; // 24.10 (7.50)
+import { LightPools } from "../dist/code/browser/LightPools.js"; // 24.10 (7.50)
 
 const close = (a, b) => assert.ok(Math.abs(a - b) < 1e-6, `${a} != ${b}`);
 const lampName = "World\\Generic\\Human\\Passive Doodads\\Lampposts\\DuskwoodLamppost.m2";
@@ -174,6 +175,7 @@ test("production fixture pass keeps instanced offscreen lamps, skips interiors a
     localLightSelection: new LocalLightSelection(), localLightSample: sample(), localLightMatrix: new THREE.Matrix4(),
     localLightFocus: new THREE.Vector3(), lightHalos: new LightHalos(), // 22.10 (7.36)
     farLightGlows: new FarLightGlows(), zoneFogFar: 640, // 22.10 (7.46)
+    lightPools: new LightPools(), lightPoolsEnabled: true, forwardLightLimit: -1, // 24.10 (7.50)
     // 24.10 (7.50): the unbuilt lamps' list, empty here (no tile list in this harness).
     lightCatalog: new LightTemplateCatalog(null), prelitLights: new PrelitLights(),
     prelitHost: { place: (object, target) => target, openAir: () => undefined, built: () => true },
@@ -200,6 +202,9 @@ test("production fixture pass keeps instanced offscreen lamps, skips interiors a
     "22.10 (7.36): the cinematic profile takes the façade lamp too; 23.10 (7.46): and the open-air street's, not the room's");
   assert.equal(harness.worldLight.wowLocalLightPool.value, 0, "the pool strength is the renderer's quality switch, not this pass");
   assert.equal(harness.lightHalos.mesh.count, 3, "and gives each emitter a halo");
+  // 24.10 (7.50): the screen-space pools picked the lamps too, and leave the forward set's to it.
+  assert.ok(harness.lightPools.stats.picked > 0, "the far sources reach the pools");
+  assert.equal(harness.lightPools.count, 0, "lamps within the forward set's range lay no screen-space pool");
   harness.lightingProfile = lightingProfile(1);
   harness.environment.clear();
   harness.updateFixtureLights(1100);

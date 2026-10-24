@@ -344,6 +344,17 @@ export class LocalLightSelection {
   }));
   #count = 0;
   #limit = 0;
+  #cut = 0; // 24.10 (7.50)
+
+  /**
+   * 24.10 (7.50): the ranked distance the last `write` faded its lights out towards — the nearest
+   * light left out, or the range. A light ranked farther is not in the forward set at all; one ranked
+   * nearer is in it at `localLightSelectionFade(distance, cut)` of its strength, and the screen-space
+   * pools (`LightPools.ts`) light the rest, so no surface is lit twice. 0 when nothing can be selected.
+   */
+  get cut(): number {
+    return this.#cut;
+  }
 
   begin(limit: number): void {
     this.#count = 0;
@@ -377,6 +388,7 @@ export class LocalLightSelection {
     // 22.10 (7.36): every selected light fades to nothing as it nears the first one left out (or
     // the selection's range), so the nearest-N set reshuffles without a pool popping on or off.
     const cut = this.#count > this.#limit ? Math.sqrt(this.#entries[this.#limit]!.distance) : LOCAL_LIGHT_RANGE;
+    this.#cut = this.#limit > 0 ? cut : 0; // 24.10 (7.50)
     uniforms.wowLocalLightCount.value = count;
     for (let index = 0; index < count; index++) {
       const entry = this.#entries[index]!;

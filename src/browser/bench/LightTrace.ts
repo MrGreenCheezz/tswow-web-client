@@ -83,6 +83,15 @@ function visitCensus(frame: LightCensusFrame | undefined, threshold: number,
   }
 }
 
+/** 24.10 (7.50): the lamps that lay a pool on the ground — the forward set's and the screen-space ones. */
+function visitPools(frame: LightCensusFrame | undefined, threshold: number,
+  visit: (x: number, y: number, z: number) => void): void {
+  if (!frame) return;
+  for (const list of [frame.near, frame.pools]) {
+    for (let at = 0; at + 3 < list.length; at += 4) if (list[at + 3]! > threshold) visit(list[at]!, list[at + 1]!, list[at + 2]!);
+  }
+}
+
 /** The lights of one census within `range` yards of `centre`, keyed. */
 function present(frame: LightCensusFrame | undefined, threshold: number, centre: { x: number; y: number; z: number },
   range: number): Map<string, number> {
@@ -117,6 +126,8 @@ export async function runLightTrace(spec: LightTraceSpec, deps: LightTraceDeps):
     return Math.atan2(b[1] - a[1], b[0] - a[0]);
   };
   const records = new Map<string, LightRecord>();
+  /** 24.10 (7.50): the player's distance when each lamp's pool first showed (-1: there at the start). */
+  const poolRecords = new Map<string, number>();
   let frame = 0;
   let seconds = 0;
   const record = (census: LightCensusFrame | undefined): void => {
@@ -126,6 +137,10 @@ export async function runLightTrace(spec: LightTraceSpec, deps: LightTraceDeps):
       if (records.has(id)) return;
       records.set(id, { x, y, z, firstFrame: frame, firstSeconds: seconds, firstKind: kind, firstStrength: strength,
         firstDistance: Math.hypot(x - p.x, y - p.y, z - p.z), px: p.x, py: p.y });
+    });
+    visitPools(census, threshold, (x, y, z) => {
+      const id = key(x, y, z);
+      if (!poolRecords.has(id)) poolRecords.set(id, Math.hypot(x - p.x, y - p.y, z - p.z));
     });
   };
   let clockStart = -1;
@@ -147,6 +162,7 @@ export async function runLightTrace(spec: LightTraceSpec, deps: LightTraceDeps):
     await step();
     const initial = records.size;
     for (const value of records.values()) value.firstFrame = -1;
+    for (const id of poolRecords.keys()) poolRecords.set(id, -1); // 24.10 (7.50)
     const speed = spec.speed ?? 7;
     const timeline: unknown[] = [];
     for (let leg = 0; leg + 1 < spec.path.length; leg++) {
@@ -171,6 +187,8 @@ export async function runLightTrace(spec: LightTraceSpec, deps: LightTraceDeps):
     const pops = appeared.filter((value) => value.firstStrength >= POP_STRENGTH && value.firstDistance < 250);
     const distances = appeared.map((value) => value.firstDistance);
     const sorted = [...distances].sort((a, b) => a - b);
+    // 24.10 (7.50): where each lamp's pool first lay on the ground as the player ran up to it.
+    const poolDistances = [...poolRecords.values()].filter((value) => value >= 0).sort((a, b) => a - b);
     return {
       name: spec.name, mode: spec.mode, frames: frame, seconds: Number(seconds.toFixed(2)),
       initial, appeared: appeared.length,
@@ -180,6 +198,8 @@ export async function runLightTrace(spec: LightTraceSpec, deps: LightTraceDeps):
       median: sorted[sorted.length >> 1] ?? null,
       pops: pops.length,
       popBins: bins(pops.map((value) => value.firstDistance), [64, 100, 150, 200]),
+      pools: { appeared: poolDistances.length, median: poolDistances[poolDistances.length >> 1] ?? null,
+        firstDistanceBins: bins(poolDistances, [32, 64, 100, 150, 200]) }, // 24.10 (7.50)
       lights: appeared.map((value) => ({ ...value, x: +value.x.toFixed(1), y: +value.y.toFixed(1), z: +value.z.toFixed(1),
         firstDistance: +value.firstDistance.toFixed(1), firstSeconds: +value.firstSeconds.toFixed(2) })),
       timeline,
