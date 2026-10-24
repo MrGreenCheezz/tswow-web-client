@@ -3144,6 +3144,8 @@ interface RenderedVisual {
   /** 25.10 (6.27): the sequence slot and its time (ms) a Hold/Decay model plays this frame (#sequenceSpellModel). */
   sequenceSlot?: number | undefined;
   sequenceMs?: number;
+  /** 25.10 (6.27): when its aura ended and a held model began its Decay (cancelSpellVisual). */
+  decayStartedAt?: number;
 }
 
 /** 22.10 ARC-2 S4a: no unit has a melee target until main pushes some (`setMeleeTargets`). */
@@ -6688,9 +6690,18 @@ export class WorldRenderer3D {
     for (let index = this.#pendingVisualAnimations.length - 1; index >= 0; index--) {
       if (this.#pendingVisualAnimations[index]!.handle === handle) this.#pendingVisualAnimations.splice(index, 1);
     }
+    const now = performance.now();
     for (let index = this.#visuals.length - 1; index >= 0; index--) {
       const visual = this.#visuals[index]!;
       if (visual.handle !== handle) continue;
+      // 25.10 (6.27): a held aura model with a Decay plays it out before it goes (OnSpellEffectClear 0x00743250).
+      const decay = visual.instance.modelPlayback === "hold" && !visual.instance.flight && visual.skinned
+        && visual.decayStartedAt === undefined ? visual.template?.clips.get(SPELL_ANIM_DECAY) : undefined;
+      if (decay && visualHasStarted(visual.instance, now)) {
+        visual.decayStartedAt = now;
+        visual.instance.endsAt = now + Math.min(MODEL_VFX_MAX_MS, decay.duration * 1000);
+        continue;
+      }
       this.#visualGroup.remove(visual.node);
       this.#dropEffects(visual.key);
       this.#disposeRenderedVisual(visual);
@@ -8426,6 +8437,12 @@ export class WorldRenderer3D {
     }
     const age = Math.max(0, (now - (visual.playbackStartedAt ?? visual.instance.startedAt)) / 1000);
     const pick = spellModelSequence(age, hold, durations, _spellPick);
+    if (visual.decayStartedAt !== undefined && durations.decay !== undefined) {
+      // 25.10 (6.27): the aura has gone: Decay once from that moment (0x00743250 → AuraDecayHandler 0x00743230).
+      pick.animation = SPELL_ANIM_DECAY;
+      pick.time = Math.min(durations.decay, Math.max(0, (now - visual.decayStartedAt) / 1000));
+      pick.loop = false;
+    }
     const clip = template.clips.get(pick.animation) ?? stand;
     let action = visual.action;
     if (!action || action.getClip() !== clip) {
@@ -10383,7 +10400,9 @@ export class WorldRenderer3D {
         worldMs: now,
         // 13.10 6.15: per-sequence tracks on the playing clip's slot, as Wow.exe samples them (0x0082d2f0).
         sequence: playingSequence(entry.spell ? entry.spell.action : posed?.action),
-        viewX: this.#effectView.x, viewY: this.#effectView.y, viewZ: this.#effectView.z, ground: this.#particleGround, // 25.10 (6.27)
+        // 25.10 (6.27): the camera for the distance thinning, except for a spell with a SpellMissile row (0x0097d8c0).
+        viewX: entry.spell?.instance.ignoreDistance ? undefined : this.#effectView.x,
+        viewY: this.#effectView.y, viewZ: this.#effectView.z, ground: this.#particleGround,
         ...(newEffects && entry.spell ? {
           // The catch-up integrator samples keyed tracks along the local interval instead of
           // repeating the final clock value at each 100 ms substep.

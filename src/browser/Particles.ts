@@ -145,7 +145,8 @@ const INHERIT_UPDATE_SECONDS = 0.033333335;
 /**
  * 25.10 (6.27): EmitNewParticles (0x0097d8c0) thins an emitter by its distance from the camera — rate ×
  * clamp(1 − (d − 50) · 0.02, 0.25, 1), d in yards — unless its effect asked to ignore distance (m_flags 0x400000,
- * CEffect::SetEmissionRateIgnoresDistance 0x006f75f0; no caller of this client is known to set it).
+ * CEffect::SetEmissionRateIgnoresDistance 0x006f75f0 — PlaySpellVisualKit 0x00745230 asks it for a spell with a
+ * SpellMissile row: `VisualInstance.ignoreDistance`, the renderer then passes no camera).
  */
 export function emitterDistanceScale(distance: number): number {
   if (!(distance > 50)) return 1;

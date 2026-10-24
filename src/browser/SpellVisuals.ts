@@ -147,6 +147,12 @@ export interface VisualInstance {
   fitToModel?: boolean;
   /** Explicit model-clip lifetime policy; held packet/aura VFX loop until endsAt. */
   modelPlayback?: VisualModelPlayback;
+  /**
+   * 25.10 (6.27): the spell has a SpellMissile row, so its effects are never thinned by distance: PlaySpellVisualKit
+   * (0x00745230, `or edi, 0x400000` at 0x00745317) passes effect flag 0x400000 for it and CEffect::SetEmissionRateIgnoresDistance (0x006f75f0) sets
+   * emitter flag 0x400000, which EmitNewParticles (0x0097d8c0) reads.
+   */
+  ignoreDistance?: true;
 }
 
 export type VisualAnimationMode = "once" | "hold";
@@ -215,6 +221,13 @@ export interface SpellCast {
 let missileGravitySource: ((spellId: number) => number | undefined) | undefined;
 export function setMissileGravitySource(source: ((spellId: number) => number | undefined) | undefined): void {
   missileGravitySource = source;
+}
+
+/** 25.10 (6.27): every model of a spell with a SpellMissile row ignores distance (VisualInstance.ignoreDistance). */
+function markIgnoreDistance(plan: SpellVisualPlan, spellId: number): SpellVisualPlan {
+  if (missileGravitySource?.(spellId) === undefined) return plan;
+  for (const instance of plan.instances) instance.ignoreDistance = true;
+  return plan;
 }
 
 export interface SpellVisualPlanOptions {
@@ -627,7 +640,7 @@ export function planSpellVisual(
     : PERSISTENT_AREA_FALLBACK_MS;
   addAreaKit(plan, visual.persistentArea, point, firstImpact, firstImpact + persistentDuration,
     false, "hold");
-  return plan;
+  return markIgnoreDistance(plan, visual.id); // 25.10 (6.27)
 }
 
 /**
@@ -661,7 +674,7 @@ export function planSpellCastStart(visual: SpellVisualMetadata, cast: SpellCast,
     // The pose only: the cast kit's models and sound already played with SPELL_GO.
     plan.animations.push(...kitAnimations(visual.cast, cast.caster, now, duration, "hold", "cast"));
   }
-  return plan;
+  return markIgnoreDistance(plan, visual.id); // 25.10 (6.27)
 }
 
 function kitPoses(kit: SpellVisualKit | undefined): boolean {
@@ -677,7 +690,7 @@ export function planSpellAuraState(
 ): SpellVisualPlan {
   const plan: SpellVisualPlan = { instances: [], animations: [], sounds: [] };
   addKit(plan, visual.state, "state", target.guid, target.point, now, Math.max(now, endsAt), true, "hold", false, "hold");
-  return plan;
+  return markIgnoreDistance(plan, visual.id); // 25.10 (6.27)
 }
 
 /** Plan the finite effect/sound emitted when an aura carrying StateDoneKit is actually removed. */
@@ -688,7 +701,7 @@ export function planSpellAuraDone(
 ): SpellVisualPlan {
   const plan: SpellVisualPlan = { instances: [], animations: [], sounds: [] };
   addKit(plan, visual.stateDone, "state", target.guid, target.point, now, now + IMPACT_KIT_MS, true, "once", true);
-  return plan;
+  return markIgnoreDistance(plan, visual.id); // 25.10 (6.27)
 }
 
 /**

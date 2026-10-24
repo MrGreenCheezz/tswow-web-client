@@ -254,3 +254,27 @@ test("6.27b a sphere of no radius throws along its drawn azimuth, not straight u
   // Azimuth 0 and latitude 0: the emitter's +x, the bone's +y after the quarter turn.
   assert.ok(system.particles.length > 0 && system.particles.every((p) => Math.abs(p.vy - 3) < 1e-6 && Math.abs(p.vz) < 1e-6));
 });
+
+test("6.27b an aura's held model plays its Decay when the aura ends (OnSpellEffectClear 0x00743250)", async () => {
+  const { readFileSync } = await import("node:fs");
+  const source = readFileSync(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
+  const cancel = source.slice(source.indexOf("  cancelSpellVisual(id: number): void {"), source.indexOf("  retimeSpellVisual(id: number"));
+  assert.match(cancel, /visual\.decayStartedAt = now;\n\s+visual\.instance\.endsAt = now \+ Math\.min\(MODEL_VFX_MAX_MS, decay\.duration \* 1000\);\n\s+continue;/);
+  assert.match(source, /if \(visual\.decayStartedAt !== undefined && durations\.decay !== undefined\) \{[\s\S]{0,200}pick\.animation = SPELL_ANIM_DECAY;/);
+});
+
+test("6.27b a spell with a SpellMissile row is never thinned by distance (0x00745230 → 0x006f75f0)", async () => {
+  const { planSpellVisual, planSpellAuraState, setMissileGravitySource } = await import("../dist/code/browser/SpellVisuals.js");
+  const kit = { startAnimation: -1, animation: -1, sound: 0, effects: [{ path: "spells/x.m2", attachment: 34, scale: 1 }] };
+  const visual = { id: 99, impact: kit, state: kit };
+  const cast = { caster: 1n, casterPoint: { x: 0, y: 0, z: 0 }, targets: [{ guid: 2n, point: { x: 5, y: 0, z: 0 } }] };
+  try {
+    setMissileGravitySource((spell) => spell === 99 ? 19.29 : undefined);
+    assert.ok(planSpellVisual(visual, cast, 0).instances.every((one) => one.ignoreDistance === true));
+    assert.ok(planSpellAuraState(visual, { guid: 2n, point: { x: 0, y: 0, z: 0 } }, 0).instances.every((one) => one.ignoreDistance));
+    setMissileGravitySource(() => undefined);
+    assert.ok(planSpellVisual(visual, cast, 0).instances.every((one) => one.ignoreDistance === undefined));
+  } finally {
+    setMissileGravitySource(undefined);
+  }
+});
