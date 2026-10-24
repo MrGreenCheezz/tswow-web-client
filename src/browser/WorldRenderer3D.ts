@@ -2938,8 +2938,8 @@ interface RenderedUnit extends PosedModel {
   /** Which meshes are wearing private faded copies, and the shared arrays they gave back. */
   opacityBorrows: MaterialBorrow[] | undefined;
   /** 25.10 (6.27): the spell tint the unit wears (0xRRGGBB, UnitTints.ts) and the tinted copies wearing it. */
-  spellTint?: number | undefined;
-  tintBorrows?: MaterialBorrow[] | undefined;
+  spellTint: number | undefined;
+  tintBorrows: MaterialBorrow[] | undefined;
   /**
    * The body (`unitWarmBody`) the warm hold last let onto the screen. A body that is not this one
    * is new, and is checked against the warm pass before it is drawn; see `#holdUnitUntilWarm`.
@@ -14920,6 +14920,7 @@ export class WorldRenderer3D {
         strideX: 0, strideY: 0, strideZ: 0, strideReady: false, strideSpeed: undefined,
         height: 0, radius: 0, scale: 1, dead: !dead, tint: tint ^ 1, applied: "",
         attached: new Map(), unitOpacity: 1, particleColours: undefined, // 05.10-A7a-H: one shape from birth
+        spellTint: undefined, tintBorrows: undefined, // 25.10 (6.27): the spell tint's fields, present from birth (P1-09)
         // P1-09b: every optional field present from birth, so no unit ever changes hidden class.
         actionKind: undefined, overlayAction: undefined, overlayAnimationId: undefined,
         overlayActionKind: undefined, overlayPreservesLocomotion: undefined, overlayFadeUntil: undefined,

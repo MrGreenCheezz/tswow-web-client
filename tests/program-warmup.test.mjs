@@ -430,6 +430,8 @@ test("renderer detach paths cancel queued borrowers while shared builds remain c
     warmup.registerObject(node);
     const harness = Object.assign(new Harness(), { programWarmup: warmup, environmentGroup: scene,
       gameObjectGroup: scene, dropWmoLiquid() {}, releaseUnitOpacity() {}, clearOverlay() {}, showCapsule() {},
+      // 25.10 (6.27): the unit teardown gives back spell-tint copies first; not under test here.
+      releaseUnitTint() {},
       forgetSceneryFar() {}, releaseWmoRoomShadow() {} }); // P2-02b: shadow bookkeeping, not under test here
     if (path === "environment") harness.disposeEnvironment({ node });
     if (path === "gameObject") harness.disposeGameObject({ node });

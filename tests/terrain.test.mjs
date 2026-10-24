@@ -124,6 +124,7 @@ test("EnvironmentClient loads the exact circular footprint and caches repeated r
       failedModels: 0,
       queuedModels: 0,
       activeModels: 0,
+      modelLoadsStarted: 0, // 25.10 (perf): only tiles were asked for
       queuedGroups: 0,
       activeGroups: 0,
       deferredGroups: 0,
@@ -711,6 +712,7 @@ test("EnvironmentClient stats split queued and active model and animation jobs a
       failedModels: 0,
       queuedModels: 1,
       activeModels: 4,
+      modelLoadsStarted: 4, // 25.10 (perf): the four active loads were started; the queued one was not
       queuedGroups: 0,
       activeGroups: 0,
       deferredGroups: 0,

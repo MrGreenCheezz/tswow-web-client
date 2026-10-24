@@ -369,7 +369,8 @@ test("dispose aborts every owned request and ignores late tile, model, and anima
     assert.deepEqual(client.stats, {
       residentTiles: 0, knownMissingTiles: 0, failedTiles: 0, activeTiles: 0, residentObjects: 0,
       residentModels: 0, knownMissingModels: 0, deferredModels: 0, failedModels: 0,
-      queuedModels: 0, activeModels: 0, queuedGroups: 0, activeGroups: 0,
+      // 25.10 (perf): the one model request above counts as started even though dispose aborted it.
+      queuedModels: 0, activeModels: 0, modelLoadsStarted: 1, queuedGroups: 0, activeGroups: 0,
       deferredGroups: 0, failedGroups: 0, residentAnimations: 0, failedAnimations: 0,
       deferredAnimations: 0, queuedAnimations: 0, activeAnimations: 0,
       modelDecodedTypedBackingBytes: 0, modelDecodedNumericArrayElements: 0,
