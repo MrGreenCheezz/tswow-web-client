@@ -118,6 +118,17 @@ export interface SpellVisualKit {
   shake?: SpellVisualShake[];
   /** 05.10-A7a-E (6.13): the kit's beam slots (CharProc 0/12 → SpellChainEffects), when it has any. */
   chains?: SpellVisualChain[];
+  /**
+   * 25.10 (6.27): CharProc 1 — the unit's model is tinted this colour (0xRRGGBB) while the kit's effect lives
+   * (CGUnit_C::CreateProceduralEffect 0x007265c0 links a proc effect with colour CharParamZero | 0xFF000000;
+   * UpdateModelTint 0x00720db0 sets the model's diffuse tint from it). 840 spell visuals.
+   */
+  tint?: number;
+  /**
+   * 25.10 (6.27): CharProc 13 — the unit flashes this colour: held for `delayMs` (CharParamOne s), then back to
+   * white over `durationMs` (CharParamTwo s) (0x007265c0; GetFlashColor 0x0071a9a0). 183 spell visuals.
+   */
+  flash?: { colour: number; delayMs: number; durationMs: number };
 }
 
 /**
@@ -406,15 +417,42 @@ function readKits(
       param2: [0, 1, 2, 3].map((slot) => kits.float(row, "CharParamTwo", slot)), // 13.10 (6.13)
       param3: [0, 1, 2, 3].map((slot) => kits.float(row, "CharParamThree", slot)), // 13.10 (6.13)
     }, extras.chains);
+    // 25.10 (6.27): the tint (CharProc 1) and the flash (CharProc 13) a kit puts on its unit (0x007265c0).
+    let tint: number | undefined;
+    let flash: SpellVisualKit["flash"];
+    for (let slot = 0; slot < 4; slot++) {
+      const proc = kits.int(row, "CharProc", slot);
+      if (proc !== 1 && proc !== 13) continue;
+      const colour = kitColour(kits.float(row, "CharParamZero", slot));
+      if (colour === undefined) continue;
+      if (proc === 1) tint ??= colour;
+      else flash ??= {
+        colour,
+        delayMs: Math.max(0, Math.round(kits.float(row, "CharParamOne", slot) * 1000)) || 0,
+        durationMs: Math.max(0, Math.round(kits.float(row, "CharParamTwo", slot) * 1000)) || 0,
+      };
+    }
     // A kit that shows nothing, asks for no pose, makes no noise, shakes nothing and draws no beam is not a kit.
-    if (effects.length === 0 && startAnimation < 0 && animation < 0 && sound === 0 && !shake && chains.length === 0) continue;
+    if (effects.length === 0 && startAnimation < 0 && animation < 0 && sound === 0 && !shake && chains.length === 0
+      && tint === undefined && flash === undefined) continue;
     result.set(kits.id(row), {
       startAnimation, animation, effects, sound,
       ...(shake ? { shake } : {}),
       ...(chains.length > 0 ? { chains } : {}),
+      ...(tint !== undefined ? { tint } : {}), // 25.10 (6.27)
+      ...(flash ? { flash } : {}),
     });
   }
   return result;
+}
+
+/**
+ * 25.10 (6.27): a kit colour parameter as 0xRRGGBB — Wow.exe truncates the float to an int and ORs in an opaque alpha
+ * (0x007265c0: `static_cast<int32_t>(param0) | 0xFF000000`, read as a CImVector b, g, r, a).
+ */
+export function kitColour(value: number): number | undefined {
+  if (!Number.isFinite(value) || value < 0 || value > 0xffffff + 1) return undefined;
+  return Math.trunc(value) & 0xffffff;
 }
 
 function readModelAttaches(

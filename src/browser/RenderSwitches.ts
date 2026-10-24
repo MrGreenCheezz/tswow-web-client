@@ -13,7 +13,7 @@
  *   write for alpha-blended batches. The census found 11,932 such batches in 6,431 models and not
  *   one carrying the no-depth-write flag 0x20, so the file never settles it per batch.
  * * `particleTwinkle` (6.15) — the per-frame size flicker and draw gate of `twinkleScale`/
- *   `twinklePercent` (`ParticleTwinkle.ts`). Off (today): every particle at ramp size.
+ *   `twinklePercent` (`ParticleTwinkle.ts`). Off: every particle at ramp size. 25.10 (6.27): on by default.
  * * `m2Lights` (6.17, 05.10-A7a-F2) — whether a model that declares `M2Light` records is lit by them
  *   (`LocalLighting.ts`) instead of the file-name heuristic. On by default since the owner's ruling of
  *   12.10; off gives the heuristic for every model. Worth a frame still: the Elwynn guard tower's four
@@ -40,7 +40,9 @@ export interface RenderSwitches {
 }
 
 const DEFAULTS: Readonly<RenderSwitches> = Object.freeze({
-  m2AlphaDepthWrite: true, particleTwinkle: false, m2Lights: true, // 6.17: on by the owner's ruling of 12.10
+  // 25.10 (6.27): twinkle on — the 3.3.5a writer is read exactly (0x0097be80, ParticleTwinkle.ts) and 2,891 of the
+  // 8,454 spell visuals flicker or skip particles by it (census .runtime/lane-spells2/census).
+  m2AlphaDepthWrite: true, particleTwinkle: true, m2Lights: true, // 6.17: on by the owner's ruling of 12.10
   // 05.10 (orchestrator): off until the 14.25 tavern-door frame — on, it reverses the 04.09 fix that
   // kept Goldshire's peach 83-yard MFOG off the street seen through the door.
   wmoRoomFogOnScene: false, // 05.10-A7b-2 (7.12)

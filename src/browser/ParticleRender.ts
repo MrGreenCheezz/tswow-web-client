@@ -20,6 +20,7 @@ import {
   resetParticleSystem, resetRibbonSystem, stepRibbon, stepRibbonCatchUp,
   writeParticleQuads, writeRibbonStrip, particleQuadsPerParticle, // 23.10 (6.27)
   PARTICLE_FLAG_SCALE_WITH_EMITTER, PARTICLE_FLAG_TAIL, PARTICLE_FLAG_UNFOGGED, PARTICLE_FLAG_XY_QUAD, // 23.10 (6.27)
+  PARTICLE_FLAG_UNLIT, PARTICLE_FLAG_SPAWN_ON_GROUND, // 25.10 (6.27)
   type BillboardView, type EmitterFrame, type ParticleGlow, type ParticleSystem, type QuadBuffers, type RibbonSystem,
 } from "./Particles.js";
 import { installSpellParticleLook, spellParticleLookOf } from "./SpellParticleLook.js"; // 23.10 (6.27)
@@ -40,6 +41,8 @@ interface DrawnEmitter {
   readonly seedOffset: number;
   readonly particles?: ParticleSystem;
   readonly ribbon?: RibbonSystem;
+  /** 25.10 (6.27): a particle emitter without record 0x1 takes the scene's light (`EffectUpdateOptions.particleLight`). */
+  readonly lit?: boolean;
   /**
    * 13.10 6.15: a further texture of a ribbon. Wow.exe's CRibbonEmitter render (0x00980b70) draws the one strip
    * once per material/texture pair; this entry shares the leader's geometry and buffers, has its own material,
@@ -124,6 +127,11 @@ export interface EffectFrame {
   worldStartMs?: number;
   /** 13.10 6.15: the sequence-table slot the model plays; per-sequence emitter tracks read it (Wow.exe 0x0082d2f0). */
   sequence?: number | undefined;
+  /** 25.10 (6.27): the camera (distance thinning) and the ground (record 0x2000), as `EmitterFrame` takes them. */
+  viewX?: number | undefined;
+  viewY?: number | undefined;
+  viewZ?: number | undefined;
+  ground?: ((x: number, z: number) => number | undefined) | undefined;
 }
 
 export interface EffectUpdateOptions {
@@ -140,6 +148,29 @@ export interface EffectUpdateOptions {
   frustum?: THREE.Frustum;
   /** 23.10 (6.27): summed glow of the particles drawn this frame (the enhanced profile's spell light). */
   glow?: ParticleGlow;
+  /**
+   * 25.10 (6.27): the light a lit particle takes this frame — the scene's model light on a quad whose normal is the
+   * world's up (`particleLightColour`). Wow.exe draws an emitter without record 0x1 with lighting on (CParticleMat bit 1
+   * → GxVBF_PNCT, 0x0097e730) and every vertex normal s_particleNormal = the view matrix's c row (0x0097a390) — the
+   * world's z in the view space the quads are written in. Absent: unlit.
+   */
+  particleLight?: { r: number; g: number; b: number };
+}
+
+/**
+ * 25.10 (6.27): the light on a lit particle: ambient + diffuse · max(0, n · l), each channel at most 1 (the vertex
+ * light clamps), n the particle's normal (the world's up, 0x0097a390) and l towards the sun, scene axes.
+ */
+export function particleLightColour(
+  ambient: { r: number; g: number; b: number }, diffuse: { r: number; g: number; b: number },
+  toSun: { x: number; y: number; z: number }, normal: { x: number; y: number; z: number },
+  out: { r: number; g: number; b: number },
+): { r: number; g: number; b: number } {
+  const facing = Math.max(0, toSun.x * normal.x + toSun.y * normal.y + toSun.z * normal.z);
+  out.r = Math.min(1, Math.max(0, ambient.r + diffuse.r * facing));
+  out.g = Math.min(1, Math.max(0, ambient.g + diffuse.g * facing));
+  out.b = Math.min(1, Math.max(0, ambient.b + diffuse.b * facing));
+  return out;
 }
 
 /**
@@ -216,13 +247,16 @@ export function buildModelEffects(
     // 23.10 every particle was fogged. Its sidedness and blend follow from the blend type.
     const materialFlags = (emitter.flags & PARTICLE_FLAG_UNFOGGED) !== 0 ? MATERIAL_UNFOGGED : 0;
     const drawn = buildDrawn(buffers, map, emitter.blendType, materialFlags, living ? undefined : options.fantasyGlow,
-      undefined, living ? { soft: (emitter.flags & PARTICLE_FLAG_XY_QUAD) === 0 } : undefined);
+      // 25.10 (6.27): a particle born on the ground (record 0x2000, Frost Nova's ring of mist) lies there on purpose,
+      // as an XY quad does: no soft fade, which would erase it.
+      undefined, living ? { soft: (emitter.flags & (PARTICLE_FLAG_XY_QUAD | PARTICLE_FLAG_SPAWN_ON_GROUND)) === 0 } : undefined);
     emitters.push({
       ...drawn,
       buffers,
       bone: emitter.bone,
       seedOffset,
       particles,
+      ...((emitter.flags & PARTICLE_FLAG_UNLIT) === 0 ? { lit: true } : {}), // 25.10 (6.27)
     });
     group.add(drawn.mesh);
   });
@@ -391,6 +425,7 @@ function buildDrawn(
 
 const EMITTER_FRAME: EmitterFrame = {
   matrix: [], animationMs: 0, worldMs: 0, animationStartMs: undefined, worldStartMs: undefined, sequence: undefined,
+  viewX: undefined, viewY: undefined, viewZ: undefined, ground: undefined, // 25.10 (6.27)
 };
 
 /**
@@ -423,6 +458,10 @@ export function updateModelEffects(
     emitterFrame.animationStartMs = frame.animationStartMs;
     emitterFrame.worldStartMs = frame.worldStartMs;
     emitterFrame.sequence = frame.sequence; // 13.10 6.15
+    emitterFrame.viewX = frame.viewX; // 25.10 (6.27)
+    emitterFrame.viewY = frame.viewY;
+    emitterFrame.viewZ = frame.viewZ;
+    emitterFrame.ground = frame.ground;
     let quads = 0;
     if (drawn.particles) {
       if (options.firstBurst) {
@@ -442,6 +481,11 @@ export function updateModelEffects(
         continue;
       }
       quads = writeParticleQuads(drawn.particles, view, drawn.buffers, options.glow);
+      // 25.10 (6.27): a lit emitter's quads take the scene's light through the material colour (no recompile).
+      if (drawn.lit) {
+        const light = options.particleLight;
+        (drawn.material as THREE.MeshBasicMaterial).color.setRGB(light?.r ?? 1, light?.g ?? 1, light?.b ?? 1);
+      }
     } else if (drawn.ribbon) {
       if (options.catchUp) stepRibbonCatchUp(drawn.ribbon, seconds, emitterFrame);
       else stepRibbon(drawn.ribbon, seconds, emitterFrame);
@@ -497,15 +541,19 @@ function scaleMaximum(emitter: ParticleSystem["emitter"]): number {
  */
 export function particlesOutside(system: ParticleSystem, frustum: THREE.Frustum, meshWorld: THREE.Matrix4): boolean {
   const particles = system.particles;
-  if (particles.length === 0 || renderSwitches.particleTwinkle) return false;
+  if (particles.length === 0) return false;
   const emitter = system.emitter;
+  // 25.10 (6.27): twinkle grows a quad by at most the larger end of its range (0x0097be80), so it widens the bound
+  // instead of turning the test off — it is on by default now.
+  const twinkle = renderSwitches.particleTwinkle
+    ? Math.max(1, Math.abs(emitter.twinkleScaleMin), Math.abs(emitter.twinkleScaleMax)) : 1;
   // 23.10 (6.27): a tail reaches back along the velocity for at most `tailLength` seconds (0x0097be80).
   const tail = (emitter.flags & PARTICLE_FLAG_TAIL) !== 0 ? Math.max(0, emitter.tailLength) : 0;
   const m = system.matrix;
   const modelSpace = system.modelSpace;
   // 23.10 (6.27): a quad's corners are ±scale (0x00b2d5b4), times the emitter's scale only with 0x20.
   const frameScale = (emitter.flags & PARTICLE_FLAG_SCALE_WITH_EMITTER) !== 0 ? Math.hypot(m[0]!, m[1]!, m[2]!) : 1;
-  const sizeBound = Math.SQRT2 * scaleMaximum(emitter) * frameScale;
+  const sizeBound = Math.SQRT2 * scaleMaximum(emitter) * frameScale * twinkle;
   let minX = Infinity, minY = Infinity, minZ = Infinity, maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
   let radius = 0;
   const extend = (x: number, y: number, z: number): void => {
