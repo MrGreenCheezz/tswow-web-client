@@ -4,6 +4,7 @@ import type {
 import {
   hasMapBounds, worldMapPoint, WORLD_MAP_FRAME_HEIGHT, WORLD_MAP_FRAME_WIDTH,
 } from "../MinimapGeometry.js";
+import { worldMapContinentRect } from "../framexml/FrameXmlWorldProjection.js"; // 3.58 tail (25.10)
 
 export type WorldMapNodeKey = "cosmic" | `world:${number}` | `area:${number}`;
 
@@ -307,13 +308,15 @@ export class WorldMapHierarchy {
   }
 }
 
-/** The client transform from an ADT boundary to its highlight rectangle on World/World*. */
+/**
+ * The client transform from an ADT boundary to its highlight rectangle on World/World*.
+ * 3.58 tail (25.10): Wow.exe's (CGWorldMap::InitializeGame 0x00547EB0, FrameXmlWorldProjection.ts) — over the
+ * 1002 × 668 art, 62.625 tiles across and 41.75 down, the right and bottom edges one tile past their boundary. It was
+ * `((b − 32) · scale + offset + 32) / 64` on both axes: the Eastern Kingdoms 0.21–0.78 down instead of 0.06–0.95,
+ * so the rectangles and the player arrow (GetPlayerMapPosition, the same placement) disagreed.
+ */
 function continentWorldRect(continent: ContinentInfo): WorldMapTargetRect | undefined {
-  const toWorld = (boundary: number, offset: number) => ((boundary - 32) * continent.scale + offset + 32) / 64;
-  const left = toWorld(continent.left, continent.offsetX);
-  const right = toWorld(continent.right, continent.offsetX);
-  const top = toWorld(continent.top, continent.offsetY);
-  const bottom = toWorld(continent.bottom, continent.offsetY);
+  const [left, top, right, bottom] = worldMapContinentRect(continent);
   return clippedRect(Math.min(left, right), Math.min(top, bottom), Math.max(left, right), Math.max(top, bottom));
 }
 

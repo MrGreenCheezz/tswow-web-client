@@ -1,7 +1,9 @@
 import type {
   AreaData, AreaInfo, AreaPoiInfo, DungeonMapInfo, MapAreaInfo, MapOverlayInfo,
 } from "../../gateway/AreaMetadata.js";
-import { hasMapBounds, worldMapPoint } from "../MinimapGeometry.js";
+import { hasMapBounds } from "../MinimapGeometry.js";
+// 3.58 tail (25.10): the Azeroth world map's projection (0x00544140 over WorldMapContinent/WorldMapTransforms).
+import { worldMapPoint as azerothMapPoint } from "./FrameXmlWorldProjection.js";
 // 3.58 (24.10): Wow.exe's landmark rows and icons (0x00546310, 0x005445f0, 0x00545a30).
 import {
   AREA_POI_FLAG_BATTLE_MAP, AREA_POI_FLAG_OWN_AREA, areaPoiFlagsAllow, areaPoiLandmarkIcon, type FrameXmlLandmarkView,
@@ -476,6 +478,13 @@ export class FrameXmlMap {
   /** The original client uses the exact pair (0,0) as its off-map arrow sentinel. */
   getPlayerMapPosition(unit: string): readonly [number, number] {
     const node = this.#node();
+    if (node?.kind === "world") {
+      // 3.58 tail (25.10): GetPlayerPosition (0x005444F0) on the Azeroth map: the continent placement, unclamped;
+      // (0, 0) in Outland or on a map no WorldMapContinent row places.
+      const location = unit === "player" ? this.#source.location() : this.#source.positionOfUnit?.(unit);
+      const point = location && this.#azerothPoint(location);
+      return point && !point.outland ? [point.u, point.v] : OFF_MAP;
+    }
     if (node?.kind !== "area") return OFF_MAP;
     const location = unit === "player" ? this.#source.location() : this.#source.positionOfUnit?.(unit);
     const point = location && this.#pointOnMap(node.mapArea, location);
@@ -746,6 +755,13 @@ export class FrameXmlMap {
     return this.#hierarchy.displayPoint(area, location.mapId, location.x, location.y);
   }
 
+  /** 3.58 tail (25.10): where a world position falls on the Azeroth world map (0x00544140), unclamped. */
+  #azerothPoint(location: Pick<FrameXmlMapLocation, "mapId" | "x" | "y">):
+    { u: number; v: number; outland: boolean } | undefined {
+    const data = this.#data;
+    return data ? azerothMapPoint(data, location.mapId, location.x, location.y) : undefined;
+  }
+
   #visibleOverlays(): readonly MapOverlayInfo[] {
     const node = this.#node();
     if (node?.kind !== "area") return NOTHING;
@@ -757,6 +773,11 @@ export class FrameXmlMap {
   #markerPosition(location: FrameXmlMapLocation | null | undefined): MapValues {
     if (location === undefined) return NOTHING;
     const node = this.#node();
+    if (node?.kind === "world") {
+      // 3.58 tail (25.10): the corpse and the release point (0x00545950, 0x005459C0) on the Azeroth map, Outland too.
+      const point = location ? this.#azerothPoint(location) : undefined;
+      return point ? [point.u, point.v] : OFF_MAP;
+    }
     const point = location && node?.kind === "area" ? this.#pointOnMap(node.mapArea, location) : undefined;
     return point && point.u >= 0 && point.u <= 1 && point.v >= 0 && point.v <= 1
       ? [point.u, point.v] : OFF_MAP;
@@ -794,10 +815,12 @@ export class FrameXmlMap {
    * 3.58 (24.10): the AreaPOI rows CGWorldMap::SetMap lists (0x00546310 over 0x005445f0): the flag tests of
    * FrameXmlMapLandmarks.ts, 0x400 rows on their own WorldMapArea only, a row inside the map, an explored
    * area (or one with ExplorationLevel below 0; with no exploration source every row counts), a set world
-   * state. FactionID is not a filter. The Azeroth and cosmic maps have no positions here, so none there.
+   * state. FactionID is not a filter. The cosmic map has no positions (0x00544140 answers 0, 0), so none there.
+   * 3.58 tail (25.10): the Azeroth map lists every map's rows with 0x10 and 0x8 by the continent placement.
    */
   #landmarks(): readonly FrameXmlLandmark[] {
     const node = this.#node();
+    if (node?.kind === "world") return this.#azerothLandmarks();
     if (node?.kind !== "area") return NOTHING;
     const selected = node.mapArea;
     const rows = this.#poisByMap.get(selected.mapId) ?? NOTHING;
@@ -823,6 +846,38 @@ export class FrameXmlMap {
       const point = this.#pointOnMap(selected, { mapId: gossip.mapId, areaId: 0, x: gossip.x, y: gossip.y });
       if (point && point.u >= 0 && point.u <= 1 && point.v >= 0 && point.v <= 1
         && (point.u !== 0 || point.v !== 0)) output.push({ gossip, ...point });
+    }
+    return output;
+  }
+
+  /**
+   * 3.58 tail (25.10): SetMap's list on the Azeroth map (m_currentContinent −1, 0x00546310): every AreaPOI row with
+   * 0x10 and 0x8 (0x005445f0), none with 0x400 (GetZoneID(−1, −1) names no area), placed by its continent
+   * (0x00544140) and not in Outland, not at (0, 0) — unclamped, as Wow.exe —, explored, its world state set; then the
+   * gossip POI the same way.
+   */
+  #azerothLandmarks(): readonly FrameXmlLandmark[] {
+    const data = this.#data;
+    if (!data) return NOTHING;
+    const explored = this.#source.isExploredArea;
+    const output: FrameXmlLandmark[] = [];
+    const placed = (point: { u: number; v: number; outland: boolean } | undefined): point is { u: number; v: number; outland: boolean } =>
+      !!point && !point.outland && (Math.abs(point.u) >= 2.3841858e-7 || Math.abs(point.v) >= 2.3841858e-7);
+    for (const poi of data.areaPois) {
+      if (!areaPoiFlagsAllow("world", poi.flags) || (poi.flags & AREA_POI_FLAG_OWN_AREA)) continue;
+      const point = this.#azerothPoint(poi);
+      if (!placed(point)) continue;
+      if (poi.areaId > 0 && explored) {
+        const area = this.#areaById.get(poi.areaId);
+        if (!area || (area.explorationLevel >= 0 && explored(poi.areaId) !== true)) continue;
+      }
+      if (poi.worldStateId && !this.#worldState(poi.worldStateId)) continue;
+      output.push({ poi, view: "world", u: point.u, v: point.v });
+    }
+    const gossip = this.#source.gossipPoi?.();
+    if (gossip && gossip.mapId !== undefined) {
+      const point = this.#azerothPoint({ mapId: gossip.mapId, x: gossip.x, y: gossip.y });
+      if (placed(point)) output.push({ gossip, u: point.u, v: point.v });
     }
     return output;
   }
