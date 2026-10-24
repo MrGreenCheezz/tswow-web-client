@@ -43,6 +43,11 @@ export interface BenchConfig {
    * tells a live page; with «Чёткие текстуры эффектов» on, effect textures are then asked for with `hd=`.
    */
   hdTextureGeneration?: string;
+  /**
+   * 25.10 (7.51): `bench/lookdev.mjs --allow-unsettled`: a scene still loading at the deadline goes on (a light trace
+   * of Dalaran, whose model set outgrows the 256-model cache and never settles) instead of failing the run.
+   */
+  allowUnsettled?: boolean;
 }
 
 export interface BenchScenario {

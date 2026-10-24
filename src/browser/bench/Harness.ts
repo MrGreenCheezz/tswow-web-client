@@ -366,6 +366,12 @@ async function settle(fraction: number) {
       return status;
     }
   }
+  // 25.10 (7.51): a light trace may go on with the scene still loading (`--allow-unsettled`).
+  if (config.allowUnsettled) {
+    const status = readiness();
+    console.warn(`Scene did not settle, going on: pending ${status.pending}`);
+    return status;
+  }
   throw new Error(`Scene did not settle: ${JSON.stringify(readiness())}`);
 }
 host.__bench = {

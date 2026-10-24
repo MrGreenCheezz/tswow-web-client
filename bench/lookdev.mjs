@@ -152,6 +152,9 @@ async function main() {
   // 24.10 (7.50): `--light-catalog <name>` keeps the lamp catalog in the profile's IndexedDB under that name, and
   // `--user-data-dir <dir>` keeps the profile between runs: a second run is a second session.
   if (value('--light-catalog')) config.lightCatalogGeneration = value('--light-catalog');
+  // 25.10 (7.51): `--allow-unsettled` goes on with a scene still loading at the deadline; `--settle-seconds N` sets it.
+  if (args.includes('--allow-unsettled')) config.allowUnsettled = true;
+  config.timeoutSeconds = Number(value('--settle-seconds', config.timeoutSeconds));
   const traces = await Promise.all(values('--light-trace').map(async (path) => JSON.parse(await readFile(path, 'utf8'))));
   if (frames.length === 0 && traces.length > 0) {
     const [x, y] = traces[0].from ?? traces[0].path[0];
@@ -507,15 +510,19 @@ async function main() {
       // 23.10 (7.48 step 2): `--gpu-frames N` times N frames of the still on the GPU (after 30 untimed), median ms.
       const gpuFrames = Number(value('--gpu-frames', 0));
       let gpuMs;
+      let cpuMs; // 25.10 (7.51)
       if (gpuFrames > 0) {
         const samples = (await page.evaluate((count) => window.__bench.gpuView(count, 30), gpuFrames)).sort((a, b) => a - b);
         gpuMs = samples.length ? samples[Math.floor(samples.length / 2)] : undefined;
-        console.log(`  GPU median ${gpuMs?.toFixed(2)} ms over ${samples.length} frames`);
+        // 25.10 (7.51): and the CPU of the same frames (`viewCpu`), median.
+        const cpu = ((await page.evaluate(() => window.__bench.viewCpu?.())) ?? []).sort((a, b) => a - b);
+        cpuMs = cpu.length ? cpu[Math.floor(cpu.length / 2)] : undefined;
+        console.log(`  GPU median ${gpuMs?.toFixed(2)} ms, CPU median ${cpuMs?.toFixed(2)} ms over ${samples.length} frames`);
       }
       // 23.10 (7.47 stage 3): the doodads' relief (materials drawing it, maps and their bytes), when the page has it.
       const m2Relief = await page.evaluate(() => window.__bench.m2ReliefStats?.());
       const lightPools = await page.evaluate(() => window.__bench.lightPoolStats?.()); // 24.10 (7.50)
-      written.push({ path, shadows, textures, gpuMs, m2Relief, lightPools });
+      written.push({ path, shadows, textures, gpuMs, cpuMs, m2Relief, lightPools });
       console.log(`${frame.name}: ${path} (${png.length} bytes) shadows ${JSON.stringify(shadows)}`);
       if (lightPools) console.log(`  light pools: ${JSON.stringify(lightPools)}`);
       if (m2Relief) console.log(`  doodad relief: ${JSON.stringify(m2Relief)}`);
