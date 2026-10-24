@@ -275,18 +275,6 @@ export class ShadowCasterList {
   }
 
   /**
-   * 25.10 (12.10): hands every caster this frame emits to `merger` (`ShadowGroupMerge.ts`), after
-   * `beginFrame` and before the cascades render; the merger restores them in the pass's `finally`.
-   */
-  mergeGroups(merger: { swap(mesh: THREE.Mesh): void }): void {
-    const buckets = this.#buckets;
-    for (let slot = 0; slot < buckets.length; slot++) {
-      const bucket = buckets[slot]! as THREE.Mesh[];
-      for (let index = 0; index < bucket.length; index++) merger.swap(bucket[index]!);
-    }
-  }
-
-  /**
    * Hands this frame's casters to `root`, kind by kind; odd views take the kinds in the mirrored
    * order, so consecutive cascades meet on the same kind and three keeps its depth program across
    * the boundary. Returns the number of meshes handed over.
