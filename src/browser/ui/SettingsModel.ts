@@ -114,6 +114,13 @@ export const SETTING_DEFINITIONS: readonly SettingDefinition[] = [
     hint: "Камни и скалы, стволы деревьев, заборы, бочки, ящики и другие предметы мира вблизи выглядят объёмными. Листва и персонажи не меняются. Только с улучшенным освещением; немного нагружает видеокарту.",
   },
   {
+    // 24.10 (7.47): one multiplier over the three relief leaves (ReliefStrength.ts) — a uniform shared by
+    // every relief program, so moving it recompiles and rebuilds nothing; 100 is exactly the look before it.
+    id: "reliefStrength", label: "Сила объёма, %", group: "Эффекты", kind: "number", fallback: 100,
+    min: 0, max: 300, step: 25,
+    hint: "Насколько выражен объём земли, зданий и предметов: 100 — нынешний вид, 200–300 — заметно глубже. Только с улучшенным освещением; не действует, пока выключены все три «Объёма».",
+  },
+  {
     id: "experimentalWaterFresnel", label: "Отражения на воде", group: "Эффекты", kind: "boolean", fallback: true,
     hint: "Поверхность сильнее отражает свет при взгляде вдоль воды и остаётся прозрачнее при взгляде сверху.",
   },

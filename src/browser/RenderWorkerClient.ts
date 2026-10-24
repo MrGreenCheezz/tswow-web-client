@@ -164,6 +164,7 @@ export class RenderWorkerClient implements ClientRenderer {
   setTerrainRelief(...args: Args<"setTerrainRelief">): void { this.#send("setTerrainRelief", args); } // 22.10 (7.47)
   setWmoRelief(...args: Args<"setWmoRelief">): void { this.#send("setWmoRelief", args); } // 22.10 (7.47 stage 2)
   setM2Relief(...args: Args<"setM2Relief">): void { this.#send("setM2Relief", args); } // 23.10 (7.47 stage 3)
+  setReliefStrength(...args: Args<"setReliefStrength">): void { this.#send("setReliefStrength", args); } // 24.10 (7.47)
   setLivingSpells(...args: Args<"setLivingSpells">): void { this.#send("setLivingSpells", args); } // 23.10 (6.27)
   setHdEffectTextures(...args: Args<"setHdEffectTextures">): void { this.#send("setHdEffectTextures", args); } // 23.10 (7.48)
   setHdWorldTextures(...args: Args<"setHdWorldTextures">): void { this.#send("setHdWorldTextures", args); } // 23.10 (7.48 step 2)

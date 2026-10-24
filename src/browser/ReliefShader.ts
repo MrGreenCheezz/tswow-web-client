@@ -4,6 +4,9 @@ import {
   TERRAIN_RELIEF_FADE_FAR, TERRAIN_RELIEF_FADE_NEAR, TERRAIN_RELIEF_GRAZING, TERRAIN_RELIEF_MAX_STEPS,
   TERRAIN_RELIEF_MIN_STEPS, TERRAIN_RELIEF_SHADOW_STEPS,
 } from "./TerrainReliefShader.js";
+import {
+  RELIEF_SHAPE_CEILING, RELIEF_SHAPE_FLOOR, RELIEF_STRENGTH_GLSL, RELIEF_STRENGTH_TAG, RELIEF_TILT_CAP,
+} from "./ReliefStrength.js"; // 24.10 (7.47)
 
 /**
  * 23.10 (7.47 stage 3): the relief program shared by the buildings (stage 2, `WmoReliefShader.ts`) and
@@ -84,8 +87,7 @@ export function reliefChunks(look: ReliefLook): ReliefChunks {
   const fragmentPars = /* glsl */ `
 uniform sampler2D wmoRelief;
 uniform float wmoReliefOn;
-varying vec3 vWmoReliefView;
-`;
+varying vec3 vWmoReliefView;${RELIEF_STRENGTH_GLSL}`;
   /** The frame and the march, before any colour tap; declares what the later stages read. */
   const march = /* glsl */ `
   // ${marker}: (22.10, 7.47 stage 2) the cotangent frame from the screen derivatives.
@@ -119,12 +121,12 @@ varying vec3 vWmoReliefView;
   wmoReliefFade = wmoReliefOn * step( 1e-20, abs( wmoReliefDet ) )
     * ( 1.0 - smoothstep( ${f(TERRAIN_RELIEF_FADE_NEAR)}, ${f(TERRAIN_RELIEF_FADE_FAR)}, length( vWmoReliefView ) ) )
     * smoothstep( ${f(TERRAIN_RELIEF_GRAZING * 0.5)}, ${f(TERRAIN_RELIEF_GRAZING)}, wmoReliefVN );
-  wmoReliefScale = wmoReliefDepth * wmoReliefFade;
+  wmoReliefScale = wmoReliefDepth * reliefDepthGain( wmoReliefVN ) * wmoReliefFade;
   if ( wmoReliefFade > 0.0 ) {
     vec3 wmoReliefVt = wmoReliefV - wmoReliefN * wmoReliefVN;
     vec2 wmoReliefShift = vec2( dot( wmoReliefGu, wmoReliefVt ), dot( wmoReliefGv, wmoReliefVt ) )
       / max( wmoReliefVN, 0.3 ) * wmoReliefScale;
-    float wmoSteps = floor( mix( ${f(TERRAIN_RELIEF_MAX_STEPS)}, ${f(TERRAIN_RELIEF_MIN_STEPS)}, clamp( wmoReliefVN, 0.0, 1.0 ) ) );
+    float wmoSteps = floor( mix( ${f(TERRAIN_RELIEF_MAX_STEPS)}, ${f(TERRAIN_RELIEF_MIN_STEPS)} * reliefStepGain( wmoReliefVN ), clamp( wmoReliefVN, 0.0, 1.0 ) ) );
     float wmoLayerStep = 1.0 / wmoSteps;
     vec2 wmoUvStep = wmoReliefShift * wmoLayerStep;
     float wmoLayer = 0.0;
@@ -192,17 +194,21 @@ ${look.localFloor ? `    // ${marker}: (23.10, 7.47 stage 3) never narrower than
     vec3 wmoReliefWall = wmoReliefTop * ( clamp( wmoReliefLocal * 2.0, -1.0, 1.0 ) * ${f(look.wallTilt)} );
     float wmoReliefUpright = 1.0 - smoothstep( 0.5, 0.85, abs( wmoReliefUpN ) );
     wmoReliefBump = mix( wmoReliefFloor, wmoReliefWall, wmoReliefUpright ) * wmoReliefFade;
+    wmoReliefBump = reliefTilt( wmoReliefBump, ${f(RELIEF_TILT_CAP)} ); // 24.10 (7.47): «Сила объёма» ${RELIEF_STRENGTH_TAG}
     // A joint (below its neighbourhood) loses part of the light, a crown gains as much, so the face
     // keeps its mean; a face turned up takes more of the overhead light, one turned down less. Both
     // follow the smoothed height, so the stones stay rounded.
-    float wmoReliefCavity = 1.0 + ${f(look.cavity)} * wmoReliefFade * clamp( wmoReliefLocal * 2.0, -1.0, 1.0 );
+    float wmoReliefCavity = 1.0 + ${f(look.cavity)} * reliefCavityGain * wmoReliefFade * clamp( wmoReliefLocal * 2.0, -1.0, 1.0 );
     float wmoReliefSky = 1.0 + ${f(look.sky)} * dot( wmoReliefBump, wmoReliefUp );
 ${look.keepMean
     // Never darker than the factor on the texel would make it: a texel darker than its neighbourhood under a
     // strong factor went black (a hole in a magnified Elwynn rock).
     ? `    float wmoReliefShape = wmoReliefCavity * wmoReliefSky;
+    wmoReliefShape = clamp( wmoReliefShape, ${f(RELIEF_SHAPE_FLOOR)}, ${f(RELIEF_SHAPE_CEILING)} ); // 24.10 (7.47) ${RELIEF_STRENGTH_TAG}
     diffuseColor.rgb = max( diffuseColor.rgb + ( wmoReliefShape - 1.0 ) * wmoReliefMean, diffuseColor.rgb * min( wmoReliefShape, 1.0 ) );`
-    : "    diffuseColor.rgb *= wmoReliefCavity * wmoReliefSky;"}
+    // 24.10 (7.47): the product held as the doodads' is (at 100 % it never leaves these bounds).
+    : `    wmoReliefCavity = clamp( wmoReliefCavity, ${f(RELIEF_SHAPE_FLOOR)} / wmoReliefSky, ${f(RELIEF_SHAPE_CEILING)} / wmoReliefSky ); // 24.10 (7.47) ${RELIEF_STRENGTH_TAG}
+    diffuseColor.rgb *= wmoReliefCavity * wmoReliefSky;`}
   }
 #endif
 `;
@@ -230,7 +236,7 @@ if ( wmoReliefFade > 0.0 ) {
       float wmoAt = 1.0 - textureGrad( wmoRelief, wmoReliefUv + wmoSunShift * wmoAlong, wmoReliefGx, wmoReliefGy ).b;
       wmoOccluded = max( wmoOccluded, ( wmoRay - wmoAt ) * ( 1.0 - wmoAlong ) );
     }
-    wmoReliefSelf = 1.0 - ${f(look.shadowStrength)} * wmoReliefFade * clamp( wmoOccluded * 6.0, 0.0, 1.0 );
+    wmoReliefSelf = 1.0 - ${f(look.shadowStrength)} * reliefShadowGain( ${f(look.shadowStrength)} ) * wmoReliefFade * clamp( wmoOccluded * 6.0, 0.0, 1.0 );
   }
   float wmoKeyLuma = dot( wowDiffuse, vec3( 0.2126, 0.7152, 0.0722 ) );
   float wmoKeyShare = wmoKeyLuma / max( wmoKeyLuma + dot( wowAmbient, vec3( 0.2126, 0.7152, 0.0722 ) ), 1e-4 );

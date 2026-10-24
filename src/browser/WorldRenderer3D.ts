@@ -59,6 +59,7 @@ import {
 import { setTerrainBakedShadowStrength, terrainBakedShadowStrength } from "./TerrainSplat.js"; // 05.10-A7b-7
 import { setTerrainReliefWanted, setTerrainSplatRelief, terrainReliefActive } from "./TerrainReliefShader.js"; // 22.10 (7.47)
 import { setWmoReliefActive, trackWmoReliefMaterial, wmoReliefActive, wmoRunReliefVariant } from "./WmoReliefShader.js"; // 22.10 (7.47 stage 2)
+import { setReliefStrength as setSharedReliefStrength } from "./ReliefStrength.js"; // 24.10 (7.47)
 import { M2_RELIEF_BUILD, M2_RELIEF_BUILD_PREFIX, m2ReliefActive, type M2ReliefBuild } from "./M2Relief.js"; // 23.10 (7.47 stage 3)
 import { setTerrainSpecularColour, setTerrainSpecularStrength, terrainGlintDrawn, terrainSpecularStrength } from "./TerrainSplat.js"; // 05.10-A7b-7Г; 13.10 7.16
 import {
@@ -10891,6 +10892,16 @@ export class WorldRenderer3D {
     if (this.#m2ReliefSetting === enabled) return;
     this.#m2ReliefSetting = enabled;
     this.#syncM2Relief();
+  }
+
+  /**
+   * 24.10 (7.47): «Сила объёма» as a multiplier (setting percent / 100, 0..3) over all three relief
+   * leaves (ReliefStrength.ts). It writes the one uniform value every relief program of this thread
+   * binds: no key changes, nothing recompiles or rebuilds; the leaves and the lighting level still
+   * decide whether any relief is drawn.
+   */
+  setReliefStrength(scale: number): void {
+    setSharedReliefStrength(scale);
   }
 
   #syncM2Relief(): void {

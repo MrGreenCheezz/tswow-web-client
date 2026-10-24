@@ -15,6 +15,7 @@ import {
   m2ReliefMapKey, m2ReliefMapReady, m2ReliefMaps, m2ReliefStats, prepareM2ReliefTexture,
 } from "../dist/code/browser/M2Relief.js";
 import { RELIEF_SUN_MARKER, setReliefClock } from "../dist/code/browser/ReliefShader.js";
+import { RELIEF_STRENGTH_TAG } from "../dist/code/browser/ReliefStrength.js"; // 24.10 (7.47)
 import { injectWmoRelief } from "../dist/code/browser/WmoReliefShader.js";
 import { WMO_RELIEF_FLAT, WmoReliefMaps } from "../dist/code/browser/WmoReliefMaps.js";
 import { applyWorldLight, cloneMaterialForPortrait, createWorldLightUniforms } from "../dist/code/browser/WorldLighting.js";
@@ -120,10 +121,13 @@ test("program: the buildings' relief program is the stage-2 text to the byte aft
   injectWmoRelief(lit, "lit");
   const room = libShader(THREE.ShaderLib.basic);
   injectWmoRelief(room, "room");
-  // Hashes of `injectWmoRelief`'s output at 1dc29c0, before the move.
-  assert.equal(sha(lit.fragmentShader), "1f5528782644610f6034a4cbab28a02c7c15ce77fdeb88b6ae82b52481019c3a");
+  // Hashes of `injectWmoRelief`'s output at 1dc29c0, before the move. 24.10 (7.47): «Сила объёма»'s
+  // tagged lines and gain tokens stripped (tests/relief-strength.test.mjs pins that strip for all four programs).
+  const strip = (text) => text.split("\n").filter((line) => !line.endsWith(RELIEF_STRENGTH_TAG)).join("\n")
+    .replace(/ \* relief[A-Za-z]+Gain(\( [^()]* \))?/g, "");
+  assert.equal(sha(strip(lit.fragmentShader)), "1f5528782644610f6034a4cbab28a02c7c15ce77fdeb88b6ae82b52481019c3a");
   assert.equal(sha(lit.vertexShader), "8a346fc18ae1d80265e8b847372ef70fe90651af4e1b72151cd8edaa71f721fb");
-  assert.equal(sha(room.fragmentShader), "03889732631cd54ee5ec602a63aee8af4bf80eb0194e83e600e1ed5fc12d320f");
+  assert.equal(sha(strip(room.fragmentShader)), "03889732631cd54ee5ec602a63aee8af4bf80eb0194e83e600e1ed5fc12d320f");
   assert.equal(sha(room.vertexShader), "323b826557acb983d2bd2c46e2d6649a81aed3689993e2e505752ce445e490f4");
 });
 
@@ -200,7 +204,8 @@ test("build: its own versioned key at build time — shape in the chain, sun aft
   assert.ok(fragment.includes("wmoReliefMean = diffuse * textureGrad( map, wmoReliefUv, wmoAroundGx, wmoAroundGy ).rgb;"));
   assert.ok(fragment.includes("diffuseColor.rgb = max( diffuseColor.rgb + ( wmoReliefShape - 1.0 ) * wmoReliefMean, diffuseColor.rgb * min( wmoReliefShape, 1.0 ) );"),
     "never darker than the factor on the texel (no black holes)");
-  assert.ok(fragment.includes("1.0 - 0.4500 * wmoReliefFade * clamp( wmoOccluded * 6.0, 0.0, 1.0 )"), "a softer self-shadow than the buildings'");
+  assert.ok(fragment.includes("1.0 - 0.4500 * reliefShadowGain( 0.4500 ) * wmoReliefFade * clamp( wmoOccluded * 6.0, 0.0, 1.0 )"),
+    "a softer self-shadow than the buildings' (24.10, 7.47: times «Сила объёма»'s gain)");
   assert.doesNotMatch(fragment, /diffuseColor\.rgb \*= wmoReliefCavity/);
   const sun = fragment.indexOf("diffuseColor.rgb = max( diffuseColor.rgb + ( wmoReliefSunFactor - 1.0 ) * wmoReliefMean,");
   assert.ok(sun > 0 && sun < fragment.indexOf("vec3 wowAuthoredLight ="), "the relief's sun before the sun term");

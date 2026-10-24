@@ -4,6 +4,7 @@ import {
   RELIEF_FADE_IN_MS, ReliefSwitch, absoluteReliefUrl, injectReliefShape, injectReliefSun, reliefChunks, setReliefClock,
   type ReliefLook,
 } from "./ReliefShader.js"; // 23.10 (7.47 stage 3)
+import { RELIEF_STRENGTH, RELIEF_STRENGTH_UNIFORM } from "./ReliefStrength.js"; // 24.10 (7.47)
 import { WMO_MATERIAL_SIDN, WMO_MATERIAL_WINDOW } from "./WmoMaterials.js";
 import { WMO_RELIEF_FLAT, WmoReliefMaps, type WmoReliefMapStats } from "./WmoReliefMaps.js";
 
@@ -218,6 +219,7 @@ function setBound(material: THREE.Material, tracked: Tracked, active: boolean): 
       if (!created.active) return;
       shader.uniforms["wmoRelief"] = created.relief;
       shader.uniforms["wmoReliefOn"] = created.on;
+      shader.uniforms[RELIEF_STRENGTH_UNIFORM] = RELIEF_STRENGTH; // 24.10 (7.47): «Сила объёма», one value for every program
       injectWmoRelief(shader, created.variant);
     };
     material.customProgramCacheKey = () => created.active
