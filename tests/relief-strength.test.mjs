@@ -9,8 +9,8 @@ import test from "node:test";
 import * as THREE from "three";
 
 import {
-  RELIEF_DEPTH_GAIN_MAX, RELIEF_SHADOW_MAX, RELIEF_STRENGTH, RELIEF_STRENGTH_MAX, RELIEF_STRENGTH_TAG, RELIEF_TILT_CAP,
-  reliefDepthGain, reliefStrengthScale, reliefTiltLength, setReliefStrength,
+  RELIEF_CAVITY_GAIN_MAX, RELIEF_DEPTH_GAIN_MAX, RELIEF_SHADOW_MAX, RELIEF_STRENGTH, RELIEF_STRENGTH_GLSL, RELIEF_STRENGTH_MAX,
+  RELIEF_STRENGTH_TAG, RELIEF_TILT_CAP, TERRAIN_RELIEF_SLOPE_CAP, reliefDepthGain, reliefStrengthScale, reliefTiltLength, setReliefStrength,
 } from "../dist/code/browser/ReliefStrength.js";
 import { setTerrainSplatRelief } from "../dist/code/browser/TerrainReliefShader.js";
 import { applyTerrainSplat, setTerrainSplatMicroNormals } from "../dist/code/browser/TerrainSplat.js";
@@ -115,11 +115,23 @@ test("gains: 1 at 100 %; the depth at most 2× and only from well above; the til
   assert.ok(reliefDepthGain(3, 0.45) > 1 && reliefDepthGain(3, 0.45) < 2);
   assert.equal(reliefDepthGain(0.5, 0.2), 0.5, "weaker is weaker everywhere");
   for (const length of [0, 0.3, 0.7]) assert.equal(reliefTiltLength(length, RELIEF_TILT_CAP, 1), length);
-  assert.ok(Math.abs(reliefTiltLength(0.3, RELIEF_TILT_CAP, 3) - 0.9) < 1e-12);
+  assert.ok(Math.abs(reliefTiltLength(0.2, RELIEF_TILT_CAP, 3) - 0.6) < 1e-12);
   assert.equal(reliefTiltLength(0.6, RELIEF_TILT_CAP, 3), RELIEF_TILT_CAP);
   assert.equal(reliefTiltLength(1.2, RELIEF_TILT_CAP, 3), 1.2, "a tilt already past the cap is not shortened");
   assert.equal(reliefTiltLength(0.6, RELIEF_TILT_CAP, 0.5), 0.3);
-  assert.ok(RELIEF_SHADOW_MAX < 1);
+  // The caps the stills settled on (24.10): past these, 300 % gave blue rims on the ground's stone edges
+  // and the statues' mean drifted ≈ 3 %.
+  assert.equal(RELIEF_TILT_CAP, 0.85);
+  assert.equal(TERRAIN_RELIEF_SLOPE_CAP, 0.6);
+  assert.equal(RELIEF_CAVITY_GAIN_MAX, 2);
+  assert.equal(RELIEF_SHADOW_MAX, 0.7);
+  // The GLSL's gains are the number forms above.
+  assert.ok(RELIEF_STRENGTH_GLSL.includes("#define reliefDepthGain( e ) ( reliefStrength < 1.0 ? reliefStrength : 1.0 + ( min( reliefStrength, 2.0000 ) - 1.0 ) * smoothstep( 0.3000, 0.6000, e ) )"));
+  assert.ok(RELIEF_STRENGTH_GLSL.includes("#define reliefStepGain( e ) max( reliefDepthGain( e ), 1.0 )"),
+    "the steps never fewer than today's (and at most 10: 5 × 2)");
+  assert.ok(RELIEF_STRENGTH_GLSL.includes("#define reliefCavityGain min( reliefStrength, 2.0000 )"));
+  assert.ok(RELIEF_STRENGTH_GLSL.includes("#define reliefShadowGain( s ) min( reliefStrength, 0.7000 / s )"));
+  assert.ok(RELIEF_STRENGTH_GLSL.includes("float most = max( l, cap ); return l * reliefStrength > most ? tilt * ( most / l ) : tilt * reliefStrength; }"));
 });
 
 // ---- the programs --------------------------------------------------------------------------------
@@ -200,7 +212,10 @@ test("programs: stripped of the slider's lines and gains, each is the program of
     assert.equal(text.split("uniform float reliefStrength;").length - 1, 1, `${name}: the uniform once`);
     assert.match(text, / \* reliefDepthGain\( /, `${name}: the march's depth`);
     assert.match(text, / \* reliefStepGain\( /, `${name}: the march's steps`);
-    assert.match(text, /reliefTilt\( /, `${name}: the tilt`);
+  }
+  assert.ok(terrain.includes("  slope = reliefTilt( slope, 0.6000 );"), "terrain: the slope through the tilt");
+  for (const [name, text] of [["wmoLit", lit.fragmentShader], ["wmoRoom", room.fragmentShader], ["m2", m2]]) {
+    assert.ok(text.includes("    wmoReliefBump = reliefTilt( wmoReliefBump, 0.8500 );"), `${name}: the bump through the tilt`);
   }
   for (const [name, text] of [["terrain", terrain], ["wmoLit", lit.fragmentShader], ["m2", m2]]) {
     assert.match(text, / \* reliefShadowGain\( /, `${name}: the self-shadow`);

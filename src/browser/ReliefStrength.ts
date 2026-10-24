@@ -18,7 +18,7 @@
  *   down is not coarser;
  * - the derived tilt (the buildings' and doodads' bump, the ground's normal) linearly, but never past
  *   the larger of its own length and a cap ({@link RELIEF_TILT_CAP}, {@link TERRAIN_RELIEF_SLOPE_CAP});
- * - the joints' cavity linearly, the shading's whole factor held in
+ * - the joints' cavity up to {@link RELIEF_CAVITY_GAIN_MAX}×, the shading's whole factor held in
  *   [{@link RELIEF_SHAPE_FLOOR}, {@link RELIEF_SHAPE_CEILING}] (no black joints, no burnt crowns);
  * - the soft self-shadow, its strength never past {@link RELIEF_SHADOW_MAX}.
  * The sky term follows the tilt by itself; the relief sun's ±50 % range stays as it is (it already
@@ -36,15 +36,23 @@ export const RELIEF_STRENGTH_DEFAULT = 1;
 export const RELIEF_DEPTH_GAIN_MAX = 2;
 /** 24.10 (7.47): the view elevation |V·N| over which a deeper march fades in (≈ 17° … 37°). */
 export const RELIEF_DEPTH_GAIN_VIEW: readonly [number, number] = Object.freeze([0.3, 0.6]);
-/** 24.10 (7.47): the buildings' and doodads' tilt (a tangent) grows to at most ≈ 45°. */
-export const RELIEF_TILT_CAP = 1.0;
-/** 24.10 (7.47): the ground's tangent-space slope (a sine) grows to at most ≈ 58°. */
-export const TERRAIN_RELIEF_SLOPE_CAP = 0.85;
+/**
+ * 24.10 (7.47): the buildings' and doodads' tilt (a tangent) grows to at most ≈ 40° (1.0 lifted the
+ * lion's mean ≈ 3 % at 300 %).
+ */
+export const RELIEF_TILT_CAP = 0.85;
+/**
+ * 24.10 (7.47): the ground's tangent-space slope (a sine) grows to at most ≈ 37°: the ground's tilted
+ * normal feeds the world light's rim and cool fill, and 0.85 drew blue rims along the stones at 300 %.
+ */
+export const TERRAIN_RELIEF_SLOPE_CAP = 0.6;
+/** 24.10 (7.47): the joints' cavity grows at most this much (0.35 → 0.7). */
+export const RELIEF_CAVITY_GAIN_MAX = 2;
 /** 24.10 (7.47): the cavity × sky factor's bounds (today's reach: ≈ 0.47 … 1.73). */
 export const RELIEF_SHAPE_FLOOR = 0.45;
 export const RELIEF_SHAPE_CEILING = 1.8;
 /** 24.10 (7.47): the most of the sun term a stone's own shadow may take, whatever the slider. */
-export const RELIEF_SHADOW_MAX = 0.8;
+export const RELIEF_SHADOW_MAX = 0.7;
 
 /** 24.10 (7.47): the uniform's name in every relief program. */
 export const RELIEF_STRENGTH_UNIFORM = "reliefStrength";
@@ -77,7 +85,7 @@ export const RELIEF_STRENGTH_GLSL = /* glsl */ `
 uniform float ${RELIEF_STRENGTH_UNIFORM}; ${T}
 #define reliefDepthGain( e ) ( reliefStrength < 1.0 ? reliefStrength : 1.0 + ( min( reliefStrength, ${f(RELIEF_DEPTH_GAIN_MAX)} ) - 1.0 ) * smoothstep( ${f(RELIEF_DEPTH_GAIN_VIEW[0])}, ${f(RELIEF_DEPTH_GAIN_VIEW[1])}, e ) ) ${T}
 #define reliefStepGain( e ) max( reliefDepthGain( e ), 1.0 ) ${T}
-#define reliefCavityGain reliefStrength ${T}
+#define reliefCavityGain min( reliefStrength, ${f(RELIEF_CAVITY_GAIN_MAX)} ) ${T}
 #define reliefShadowGain( s ) min( reliefStrength, ${f(RELIEF_SHADOW_MAX)} / s ) ${T}
 vec3 reliefTilt( vec3 tilt, float cap ) { float l = length( tilt ); float most = max( l, cap ); return l * reliefStrength > most ? tilt * ( most / l ) : tilt * reliefStrength; } ${T}
 vec2 reliefTilt( vec2 tilt, float cap ) { float l = length( tilt ); float most = max( l, cap ); return l * reliefStrength > most ? tilt * ( most / l ) : tilt * reliefStrength; } ${T}

@@ -57,6 +57,7 @@ interface BenchWindow extends Window {
     gpuView(frames: number, warm: number): Promise<number[]>; viewCpu(): number[]; terrainRelief(enabled: boolean): void; // 22.10 (7.47)
     wmoRelief(enabled: boolean): void; wmoReliefStats(): unknown; // 22.10 (7.47 stage 2)
     m2Relief(enabled: boolean): void; m2ReliefStats(): unknown; // 23.10 (7.47 stage 3)
+    reliefStrength300(enabled: boolean): void; // 24.10 (7.47)
     hdWorldTextures(enabled: boolean): void; // 24.10 (7.48 step 3): `lookdev.mjs --leaf-cost hdWorldTextures`
     textureMemory(): unknown; // 23.10 (7.48 step 2)
     lightTrace(spec: LightTraceSpec): Promise<unknown> }; // 24.10 (7.50)
@@ -563,6 +564,8 @@ host.__bench = {
   /** 22.10 (7.47 stage 2): tracked and bound materials and the relief maps held (counts, bytes). */
   wmoReliefStats() { return wmoReliefStats(); },
   m2Relief(enabled: boolean) { world?.setM2Relief(enabled); }, // 23.10 (7.47 stage 3)
+  /** 24.10 (7.47): «Сила объёма» at 300 % (on) or 100 % (off), for `--leaf-cost` A/B runs. */
+  reliefStrength300(enabled: boolean) { world?.setReliefStrength(enabled ? 3 : 1); },
   hdWorldTextures(enabled: boolean) { world?.setHdWorldTextures(enabled); }, // 24.10 (7.48 step 3)
   m2ReliefStats() { return m2ReliefStats(); },
   /** 23.10 (7.47 stage 3): the CPU samples (ms) of the last `gpuView`. */
