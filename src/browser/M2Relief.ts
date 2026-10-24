@@ -4,6 +4,7 @@ import { OP_MOD, OP_OPAQUE, decodeShaderId } from "./M2Combiners.js";
 import {
   ReliefSwitch, absoluteReliefUrl, injectReliefShape, injectReliefSun, reliefChunks, type ReliefLook,
 } from "./ReliefShader.js";
+import { RELIEF_STRENGTH, RELIEF_STRENGTH_UNIFORM } from "./ReliefStrength.js"; // 24.10 (7.47)
 import {
   WMO_RELIEF_CAVITY, WMO_RELIEF_LOCAL_SPAN, WMO_RELIEF_NORMAL_MAX_TILT, WMO_RELIEF_NORMAL_STRENGTH,
   WMO_RELIEF_SKY, WMO_RELIEF_SUN_FACING, WMO_RELIEF_SUN_GAIN, WMO_RELIEF_SUN_RANGE,
@@ -196,6 +197,7 @@ export function installM2ReliefShape(material: THREE.Material, url: string, slot
     previousCompile.call(material, shader, renderer);
     shader.uniforms["wmoRelief"] = binding.relief;
     shader.uniforms["wmoReliefOn"] = binding.on;
+    shader.uniforms[RELIEF_STRENGTH_UNIFORM] = RELIEF_STRENGTH; // 24.10 (7.47): «Сила объёма», one value for every program
     injectReliefShape(shader, M2_CHUNKS, lit);
   };
   const key = `${previousKey}|${M2_RELIEF_MARKER}`;

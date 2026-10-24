@@ -182,6 +182,8 @@ export function applySettings(): void {
   game.renderer?.setWmoRelief?.(settingBoolean(values, "experimentalWmoRelief"));
   // 23.10 (7.47 stage 3): «Объём предметов», its own leaf; enhanced levels only.
   game.renderer?.setM2Relief?.(settingBoolean(values, "experimentalModelRelief"));
+  // 24.10 (7.47): «Сила объёма», a multiplier over all three; a percentage on the account.
+  game.renderer?.setReliefStrength?.(settingNumber(values, "reliefStrength") / 100);
   // 23.10 (6.27): «Живые эффекты заклинаний», its own leaf (SpellParticleLook.ts, SpellLights.ts).
   game.renderer?.setLivingSpells?.(settingBoolean(values, "experimentalLivingSpells"));
   // 23.10 (7.48): «Чёткие текстуры эффектов» (HdEffectTextures.ts).

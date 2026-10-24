@@ -1,6 +1,9 @@
 import type * as THREE from "three";
 import { lightingClassicLook } from "./LightingQuality.js";
 import { TERRAIN_RELIEF_DEPTH } from "./TerrainReliefDerive.js";
+import {
+  RELIEF_STRENGTH, RELIEF_STRENGTH_GLSL, RELIEF_STRENGTH_TAG, RELIEF_STRENGTH_UNIFORM, TERRAIN_RELIEF_SLOPE_CAP,
+} from "./ReliefStrength.js"; // 24.10 (7.47)
 
 /**
  * 22.10 (7.47): «Объём земли» — parallax occlusion mapping and derived normals on the splatted ground.
@@ -101,7 +104,9 @@ export function setTerrainSplatRelief(
   material.onBeforeCompile = (shader, renderer) => {
     binding.previousCompile.call(material, shader, renderer);
     shader.uniforms["splatRelief"] = binding.relief;
-    if (binding.active) injectTerrainRelief(shader);
+    if (!binding.active) return;
+    shader.uniforms[RELIEF_STRENGTH_UNIFORM] = RELIEF_STRENGTH; // 24.10 (7.47): «Сила объёма», one value for every program
+    injectTerrainRelief(shader);
   };
   material.customProgramCacheKey = () => binding.active
     ? `${binding.previousKey()}|${TERRAIN_RELIEF_MARKER}`
@@ -126,8 +131,7 @@ const SUN_MARKER = "vec3 wowAuthoredLight = max( wowAmbient + wowDiffuse * ( wow
 const f = (value: number) => value.toFixed(4);
 
 const RELIEF_FUNCTIONS = /* glsl */ `
-uniform sampler2DArray splatRelief;
-// ${TERRAIN_RELIEF_MARKER}: the blended depth (0 = top of the highest stone) at a detail UV.
+uniform sampler2DArray splatRelief;${RELIEF_STRENGTH_GLSL}// ${TERRAIN_RELIEF_MARKER}: the blended depth (0 = top of the highest stone) at a detail UV.
 float terrainReliefDepth( vec2 uv, vec4 slots, vec4 weights, vec2 gx, vec2 gy ) {
   float height = 0.5 * max( 1.0 - dot( weights, vec4( 1.0 ) ), 0.0 );
   if ( weights.x > 0.004 ) height += weights.x * textureGrad( splatRelief, vec3( uv, slots.x ), gx, gy ).b;
@@ -143,6 +147,7 @@ vec3 terrainReliefNormal( vec2 uv, vec4 slots, vec4 weights, vec2 gx, vec2 gy ) 
   if ( weights.y > 0.004 ) slope += weights.y * ( textureGrad( splatRelief, vec3( uv, slots.y ), gx, gy ).rg * 2.0 - 1.0 );
   if ( weights.z > 0.004 ) slope += weights.z * ( textureGrad( splatRelief, vec3( uv, slots.z ), gx, gy ).rg * 2.0 - 1.0 );
   if ( weights.w > 0.004 ) slope += weights.w * ( textureGrad( splatRelief, vec3( uv, slots.w ), gx, gy ).rg * 2.0 - 1.0 );
+  slope = reliefTilt( slope, ${f(TERRAIN_RELIEF_SLOPE_CAP)} ); // 24.10 (7.47): «Сила объёма» ${RELIEF_STRENGTH_TAG}
   return vec3( slope, sqrt( max( 1.0 - dot( slope, slope ), 0.0 ) ) );
 }
 `;
@@ -167,10 +172,10 @@ const RELIEF_MARCH = /* glsl */ `
         dot( terrainReliefVw, terrainReliefNw ) );
       float terrainReliefFade = ( 1.0 - smoothstep( ${f(TERRAIN_RELIEF_FADE_NEAR)}, ${f(TERRAIN_RELIEF_FADE_FAR)}, length( vViewPosition ) ) )
         * smoothstep( ${f(TERRAIN_RELIEF_GRAZING * 0.5)}, ${f(TERRAIN_RELIEF_GRAZING)}, terrainReliefView.z );
-      float terrainReliefScale = ${f(TERRAIN_RELIEF_DEPTH)} * terrainReliefFade;
+      float terrainReliefScale = ${f(TERRAIN_RELIEF_DEPTH)} * reliefDepthGain( terrainReliefView.z ) * terrainReliefFade;
       float terrainReliefSurface = 0.0;
       if ( terrainReliefFade > 0.0 ) {
-        float terrainSteps = floor( mix( ${f(TERRAIN_RELIEF_MAX_STEPS)}, ${f(TERRAIN_RELIEF_MIN_STEPS)}, clamp( terrainReliefView.z, 0.0, 1.0 ) ) );
+        float terrainSteps = floor( mix( ${f(TERRAIN_RELIEF_MAX_STEPS)}, ${f(TERRAIN_RELIEF_MIN_STEPS)} * reliefStepGain( terrainReliefView.z ), clamp( terrainReliefView.z, 0.0, 1.0 ) ) );
         float terrainLayerStep = 1.0 / terrainSteps;
         vec2 terrainUvStep = terrainReliefView.xy / max( terrainReliefView.z, 0.3 ) * terrainReliefScale * terrainLayerStep;
         float terrainLayer = 0.0;
@@ -221,7 +226,7 @@ if ( terrainReliefFade > 0.0 ) {
         terrainReliefGx, terrainReliefGy );
       terrainOccluded = max( terrainOccluded, ( terrainRay - terrainAt ) * ( 1.0 - terrainAlong ) );
     }
-    wowShadow *= 1.0 - ${f(TERRAIN_RELIEF_SHADOW_STRENGTH)} * terrainReliefFade * clamp( terrainOccluded * 6.0, 0.0, 1.0 );
+    wowShadow *= 1.0 - ${f(TERRAIN_RELIEF_SHADOW_STRENGTH)} * reliefShadowGain( ${f(TERRAIN_RELIEF_SHADOW_STRENGTH)} ) * terrainReliefFade * clamp( terrainOccluded * 6.0, 0.0, 1.0 );
   }
 }
 `;
