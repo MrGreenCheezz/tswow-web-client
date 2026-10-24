@@ -77,11 +77,16 @@ async function main() {
   // Development only: --cpu-class slowest pins benchmark Chrome to efficiency cores instead.
   // --cpu-class none leaves Chrome where Windows puts it, as a player's browser runs.
   const cpuClass = value('--cpu-class', 'fastest');
-  if (!['fastest', 'slowest', 'none'].includes(cpuClass)) throw new Error('--cpu-class must be fastest, slowest or none');
   // --browser electron runs the scene in the Electron shell (electron/main.cjs), which applies
   // --cpu-class to its own processes; --headed shows Chrome's window instead of headless.
   const browserKind = value('--browser', 'chrome');
   if (!['chrome', 'electron'].includes(browserKind)) throw new Error('--browser must be chrome or electron');
+  // 25.10 (12.14): the shell's fastest-cores (one logical CPU per performance core) and its --priority, as A/B sides.
+  if (!['fastest', 'slowest', 'none', ...(browserKind === 'electron' ? ['fastest-cores'] : [])].includes(cpuClass)) {
+    throw new Error('--cpu-class must be fastest, slowest or none (fastest-cores with --browser electron)');
+  }
+  const electronPriority = value('--electron-priority', 'abovenormal');
+  if (!['normal', 'abovenormal', 'high'].includes(electronPriority)) throw new Error('--electron-priority must be normal, abovenormal or high');
   const headed = args.includes('--headed');
   // 21.10 (12.18): --vsync keeps the display's own rhythm (no frame-rate and vsync switches), so a scene
   // can be measured capped as a player sees it — the GPU clocks down when frames wait for the display.
@@ -276,7 +281,7 @@ async function main() {
   // The shell's --uncapped sets the same frame-rate and vsync switches; its main.cjs adds the
   // two backgrounding switches itself.
   const chromeArgs = browserKind === 'electron'
-    ? [resolve('electron'), `--cpu-class=${cpuClass}`, `--window=${config.width}x${config.height}`,
+    ? [resolve('electron'), `--cpu-class=${cpuClass}`, `--priority=${electronPriority}`, `--window=${config.width}x${config.height}`, '--inactive', // 25.10 (12.14)
       ...(vsync ? [] : ['--uncapped']), ...(jsFlags ? [`--js-flags=${jsFlags}`] : [])]
     : [...(vsync ? [] : ['--disable-frame-rate-limit', '--disable-gpu-vsync']), '--enable-precise-memory-info',
       '--disable-backgrounding-occluded-windows', '--disable-renderer-backgrounding', ...(jsFlags ? [`--js-flags=${jsFlags}`] : [])];
@@ -338,7 +343,7 @@ async function main() {
     requestLedger.reset(); // 22.10 (12.14)
     if (browserKind === 'electron') {
       browser = await launchElectron(sceneUrl);
-      for (let attempt = 0; attempt < 60 && !page; attempt++) {
+      for (let attempt = 0; attempt < 240 && !page; attempt++) { // 25.10 (12.14): 15 s missed a slow start now and then
         page = (await browser.pages()).find(candidate => candidate.url().startsWith(origin));
         if (!page) await new Promise(done => setTimeout(done, 250));
       }
@@ -372,7 +377,7 @@ async function main() {
       const { processInfo } = await session.send('SystemInfo.getProcessInfo');
       await session.detach();
       const policyArgs = browserKind === 'electron'
-        ? ['-File', resolve('electron/cpu-policy.ps1'), '-Class', cpuClass, '-ProcessName', 'electron']
+        ? ['-File', resolve('electron/cpu-policy.ps1'), '-Class', cpuClass, '-Priority', electronPriority, '-ProcessName', 'electron']
         : ['-File', resolve('bench/cpu-policy.ps1'), '-Class', cpuClass];
       const applied = JSON.parse(execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass',
         ...policyArgs, '-ProcessIds', processInfo.map(p => p.id).join(',')],

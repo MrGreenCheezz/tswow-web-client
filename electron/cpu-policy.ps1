@@ -1,6 +1,6 @@
 param(
   [string]$ProcessIds = '',
-  [ValidateSet('fastest', 'slowest', 'none')][string]$Class = 'fastest',
+  [ValidateSet('fastest', 'fastest-cores', 'slowest', 'none')][string]$Class = 'fastest',
   [ValidateSet('normal', 'abovenormal', 'high')][string]$Priority = 'abovenormal',
   [string]$ProcessName = 'electron'
 )
@@ -32,6 +32,7 @@ try {
       $topology += [pscustomobject]@{
         group = [Runtime.InteropServices.Marshal]::ReadInt16($entry, 12)
         logical = [Runtime.InteropServices.Marshal]::ReadByte($entry, 14)
+        core = [Runtime.InteropServices.Marshal]::ReadByte($entry, 15)
         efficiency = [Runtime.InteropServices.Marshal]::ReadByte($entry, 18)
       }
     }
@@ -47,6 +48,8 @@ if ($Class -ne 'none') {
   $wanted = if ($Class -eq 'slowest') { ($topology | Measure-Object -Property efficiency -Minimum).Minimum }
     else { ($topology | Measure-Object -Property efficiency -Maximum).Maximum }
   $selected = @($topology | Where-Object { $_.efficiency -eq $wanted })
+  # 25.10 (12.14): fastest-cores — one logical CPU of each fastest core, so two threads of the shell never share a core.
+  if ($Class -eq 'fastest-cores') { $selected = @($selected | Group-Object core | ForEach-Object { $_.Group | Sort-Object logical | Select-Object -First 1 }) }
   foreach ($cpu in $selected) { $mask = $mask -bor ([long]1 -shl $cpu.logical) }
 }
 $priorityClass = switch ($Priority) {
@@ -70,6 +73,6 @@ if ($ProcessIds) {
   }
 }
 [pscustomobject]@{
-  policy = $(switch ($Class) { 'slowest' { 'efficiency-cores' } 'none' { 'system-default' } default { 'performance-cores' } })
-  mask = $mask.ToString(); selected = @($selected.logical); priority = $Priority; applied = $applied
+  policy = $(switch ($Class) { 'slowest' { 'efficiency-cores' } 'none' { 'system-default' } 'fastest-cores' { 'performance-cores-no-smt' } default { 'performance-cores' } })
+  mask = $mask.ToString(); selected = @($selected.logical); cores = @($selected.core); priority = $Priority; applied = $applied
 } | ConvertTo-Json -Depth 3 -Compress

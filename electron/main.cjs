@@ -35,9 +35,11 @@
 //   --server-url=<url>        players' server page, instead of server.json's
 //   --web-dir=<dir>           built page directory to serve, e.g. ../dist/web
 //   --port=<port>             port of the built page (default 5173, the port Vite uses in development)
-//   --cpu-class=fastest|slowest|none   core class (default fastest; none = Windows decides)
+//   --cpu-class=fastest|fastest-cores|slowest|none   core class (default fastest; none = Windows decides;
+//                             25.10 (12.14) fastest-cores: one logical CPU per performance core, no SMT siblings)
 //   --priority=normal|abovenormal|high (default abovenormal)
 //   --uncapped                no vsync and no frame-rate limit (measurement)
+//   --inactive                25.10 (12.14): the window opens without taking the focus (bench runs)
 //   --window=<width>x<height> initial client size (default 1600x900)
 //   --no-isolation            do not add the cross-origin isolation headers to the page origin
 //   --no-js-profiling         do not allow the JS Self-Profiling API on the page (the freeze
@@ -132,10 +134,12 @@ if (!Number.isInteger(webPort) || webPort < 1 || webPort > 65535) throw new Erro
 const cpuClass = option("cpu-class", serverConfig?.cpuClass ?? "fastest");
 const priority = option("priority", serverConfig?.priority ?? "abovenormal");
 const uncapped = process.argv.includes("--uncapped");
+/** 25.10 (12.14): the window opens without taking the focus (bench runs while the owner plays). */
+const inactive = process.argv.includes("--inactive");
 const isolated = !process.argv.includes("--no-isolation");
 const jsProfiling = !process.argv.includes("--no-js-profiling");
 const [windowWidth, windowHeight] = option("window", "1600x900").split("x").map(Number);
-if (!["fastest", "slowest", "none"].includes(cpuClass)) throw new Error(`--cpu-class: ${cpuClass}`);
+if (!["fastest", "fastest-cores", "slowest", "none"].includes(cpuClass)) throw new Error(`--cpu-class: ${cpuClass}`);
 if (!["normal", "abovenormal", "high"].includes(priority)) throw new Error(`--priority: ${priority}`);
 
 // A game window is never "in the background" for its own purposes: chat, cast bars and the
@@ -327,6 +331,7 @@ app.whenReady().then(async () => {
     useContentSize: true,
     backgroundColor: "#000000",
     title: "WoW WebClient",
+    show: !inactive, // 25.10 (12.14): shown below without the focus
     // No spell checker: a chat line is not prose, and the red underline is the browser's, not the client's.
     webPreferences: {
       backgroundThrottling: false, contextIsolation: true, sandbox: true, nodeIntegration: false, spellcheck: false,
@@ -334,6 +339,7 @@ app.whenReady().then(async () => {
   });
   // No pinch zoom on a touchpad or screen; the page itself keeps Ctrl+wheel and Ctrl+± from zooming
   // (src/browser/app/NativeAppShell.ts), and without a menu Electron has no zoom keys of its own.
+  if (inactive) window.showInactive();
   window.webContents.setVisualZoomLevelLimits(1, 1).catch(() => {});
   const origin = new URL(pageUrl).origin;
   // Cross-origin isolation for the page origin, whatever serves it (the crowd pose worker needs a

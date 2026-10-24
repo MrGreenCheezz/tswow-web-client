@@ -71,7 +71,7 @@ import { updateInteractionPrompts } from "../ui/InteractionPrompts.js";
 import { notice, updateNotices } from "../ui/Notices.js";
 import { updatePetBar } from "../ui/PetBar.js";
 import { updateTotems } from "../ui/Totems.js";
-import { updateFpsCounter } from "../ui/FpsCounter.js";
+import { noteWorldFrameCpu, updateFpsCounter } from "../ui/FpsCounter.js"; // 25.10 (12.14): + noteWorldFrameCpu
 import { autoQualityDue, autoQualityStatus, updateAutoQuality } from "../AutoQuality.js";
 import { updateLoadingScreen, worldPhysicsReady } from "../ui/LoadingScreen.js";
 import { updateCustomPackets, updateModuleWindowList } from "../ui/Diagnostics.js";
@@ -307,7 +307,10 @@ export function renderWorkerResultSteps(): RenderWorkerResultSteps {
       const world = game.world;
       if (world) acceptSeatResults(results, world.state.objects);
     },
-    recordRendererFrame: (milliseconds) => renderBenchmarkRuntime.recordRendererFrameCpu(milliseconds),
+    recordRendererFrame: (milliseconds) => {
+      renderBenchmarkRuntime.recordRendererFrameCpu(milliseconds);
+      noteWorldFrameCpu(milliseconds); // 25.10 (12.14): the FPS line's «ЦП мира»
+    },
     acceptReports: acceptRendererReports,
     drainPortraits: (results) => {
       drainPortraitOutputs({ results });
@@ -773,7 +776,10 @@ function frame(now: number): void {
         renderer.endRenderFrame();
         // 22.10 ARC-2 S4b: the CPU span, then the GPU events, limiter times and failed images the renderer reported.
         const rendererElapsed = renderer.results.rendererFrameMs;
-        if (rendererElapsed !== undefined) renderBenchmarkRuntime.recordRendererFrameCpu(rendererElapsed);
+        if (rendererElapsed !== undefined) {
+          renderBenchmarkRuntime.recordRendererFrameCpu(rendererElapsed);
+          noteWorldFrameCpu(rendererElapsed); // 25.10 (12.14): the FPS line's «ЦП мира»
+        }
         acceptRendererReports(renderer.results);
       }
     }
