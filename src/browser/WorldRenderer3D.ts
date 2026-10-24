@@ -272,6 +272,7 @@ import {
 } from "./WmoOpenAir.js"; // 05.10-A7b-2 (7.03 slice 3)
 import { wmoRunMaterial } from "./WmoMaterials.js"; // 05.10-A7b-2 (7.11 P1)
 import { wmoRoomDrawGeometry } from "./WmoRunMerge.js"; // 25.10 (12.10)
+import { instanceSplit, splitInstanceMaterials, type InstanceSplit } from "./InstanceSplit.js"; // 25.10 (12.10)
 import { applyWmoRunLook, wmoRunLook, wmoRunLookKey } from "./WmoRunLook.js"; // 05.10-A7b-2 (7.11 P1)
 import {
   applyWmoRunClamp, applyWmoUnlitMocv, wmoGroupNeedsUnlitMocv, wmoRunDrawState, wmoRunDrawStateKey,
@@ -2165,6 +2166,9 @@ export function instanceable(model: { wvm?: WvmModel | undefined; wmo?: unknown 
  * being ordered among themselves. A blended doodad drawn in buffer order shows through the one in
  * front of it. Opaque and alpha-tested runs do not care: their order is a hint about overdraw and
  * nothing else.
+ *
+ * 25.10 (12.10): no longer what decides a bucket — a model with blended runs is instanced by its opaque
+ * ones (`InstanceSplit.ts`); this stays the census's name for the copies that are not.
  */
 export function instanceableBuild(materials: THREE.Material | readonly THREE.Material[]): boolean {
   const list = Array.isArray(materials) ? materials : [materials as THREE.Material];
@@ -4934,6 +4938,8 @@ export class WorldRenderer3D {
     mesh: THREE.InstancedMesh;
     capacity: number;
     built: BuiltModel;
+    /** 25.10 (12.10): a model with blended batches: the bucket draws its opaque twin (InstanceSplit.ts). */
+    split: InstanceSplit | undefined;
     /** Placement-owned material and attribute state for an indoor-light bucket. */
     localLight?: {
       materials: readonly THREE.Material[];
@@ -4951,7 +4957,14 @@ export class WorldRenderer3D {
    * Шаг 19: fresh instanced meshes kept hidden until the warm pass has linked their programs, with
    * the frames waited and the copies that keep drawing as their own nodes meanwhile.
    */
-  readonly #instanceWarmHolds = new Map<THREE.InstancedMesh, { frames: number; nodes: THREE.Object3D[] }>();
+  readonly #instanceWarmHolds = new Map<THREE.InstancedMesh, {
+    frames: number; copies: RenderedEnvironment[]; split: InstanceSplit | undefined;
+  }>();
+  /**
+   * 25.10 (12.10): copies of a split model covered by their bucket — their mesh draws only its blended
+   * groups (`InstanceSplit.ts`) — with the geometry it is given back when shown plain again.
+   */
+  readonly #splitCovered = new WeakMap<RenderedEnvironment, THREE.BufferGeometry>();
   /**
    * Units whose new body waits hidden for its programs (`#holdUnitUntilWarm`): frames waited, the
    * cap, where the paused fade clock last stood, and what `#drawUnit` wanted shown on which frame.
@@ -5700,7 +5713,9 @@ export class WorldRenderer3D {
       for (let node: THREE.Object3D | null = mesh; node; node = node.parent) {
         const rendered = placements.get(node);
         if (!rendered) continue;
-        return { kind: environmentDrawKind(rendered, mesh), placement: rendered.source.id, model: rendered.source.name };
+        const kind = environmentDrawKind(rendered, mesh);
+        return { kind: kind === "doodad-instanceable-plain" && this.#splitCovered.has(rendered) ? "doodad-split-blended" : kind,
+          placement: rendered.source.id, model: rendered.source.name };
       }
       if ((mesh as THREE.InstancedMesh).isInstancedMesh && (mesh.parent === this.#instanceGroup
         || mesh.parent === this.#localLightInstanceGroup)) {
@@ -12099,7 +12114,8 @@ export class WorldRenderer3D {
     if (
       visual instanceof THREE.Object3D
       && built
-      && instanceableBuild(built.materials)
+      // 25.10 (12.10): blended batches no longer keep a model out — it is split (InstanceSplit.ts).
+      && instanceSplit(built.geometry, built.materials) !== null
     ) {
       rendered.instanceKey = instanceKey;
       rendered.instanceMatrix = visual.matrixWorld.clone();
@@ -12330,8 +12346,9 @@ export class WorldRenderer3D {
    * The placements keep their nodes. Nothing is recomputed here — the matrix was taken when the
    * placement was made and the environment never moves. Membership follows explicit draw admission,
    * not `node.visible`: an admitted instance hides its source node, while a warm-hidden placement
-   * must be absent from this mesh entirely. Models with emitters stay uninstanced because an instance
-   * has no object frame from which a torch's sparks could be placed.
+   * must be absent from this mesh entirely. 25.10 (12.10): a model with emitters is instanced too (its
+   * hidden mesh still places the sparks), and one with blended batches by its opaque ones, each copy
+   * drawing its blended groups itself (`InstanceSplit.ts`).
    */
   #updateInstances(): void {
     // Only when the membership has changed. The matrices never do — the environment does not move
@@ -12368,6 +12385,13 @@ export class WorldRenderer3D {
       const built = this.#builtModels.get(this.#builtCacheKey(this.#builtModels, modelKey));
       if (!built) continue;
       const locallyLit = list[0]!.source.localLight !== undefined;
+      // 25.10 (12.10): a model with blended batches is instanced by its opaque ones (InstanceSplit.ts).
+      const split = instanceSplit(built.geometry, built.materials);
+      if (split === null) {
+        for (const rendered of list) this.#showAsPlain(rendered);
+        this.#dropInstance(key);
+        continue;
+      }
       let entry = this.#instances.get(key);
       // P2-07: the same copies in the same order as this bucket's last rebuild write the same
       // matrices, colours and sphere (placements never move and their tint and light are their
@@ -12381,14 +12405,15 @@ export class WorldRenderer3D {
         this.#dropInstance(key);
         freshMesh = true;
         const capacity = instanceCapacity(list.length);
+        const materials = split ? splitInstanceMaterials(built.materials) : built.materials;
         const localLight = locallyLit ? {
-          materials: createInstancedModelPlacementLocalLightMaterials(built.materials),
+          materials: createInstancedModelPlacementLocalLightMaterials(materials),
           attribute: new THREE.InstancedBufferAttribute(new Uint8Array(capacity * 3), 3, true),
         } : undefined;
         if (localLight) built.geometry.setAttribute(MODEL_PLACEMENT_LOCAL_LIGHT_ATTRIBUTE, localLight.attribute);
         const mesh = new THREE.InstancedMesh(
-          built.geometry,
-          localLight?.materials ?? built.materials,
+          split?.opaque ?? built.geometry,
+          localLight?.materials ?? materials,
           capacity,
         );
         // One sphere over every copy, spread across the whole selection radius, so per-object
@@ -12396,8 +12421,8 @@ export class WorldRenderer3D {
         mesh.frustumCulled = false;
         mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
         entry = localLight
-          ? { mesh, capacity, built, localLight }
-          : { mesh, capacity, built };
+          ? { mesh, capacity, built, split, localLight }
+          : { mesh, capacity, built, split };
         this.#instances.set(key, entry);
         (localLight ? this.#localLightInstanceGroup : this.#instanceGroup).add(mesh);
         this.#sceneryShadowsForInstance(mesh); // P2-02a
@@ -12414,8 +12439,7 @@ export class WorldRenderer3D {
             modelPlacementTintColour(rendered.source.tint, this.#instanceTint),
           );
         }
-        rendered.node.visible = false;
-        this.#plainShown.delete(rendered.node); // P2-07
+        this.#coverByInstance(rendered, entry.split); // 25.10 (12.10): hidden, or its blended groups only
       }
       entry.mesh.count = list.length;
       entry.mesh.instanceMatrix.needsUpdate = true;
@@ -12433,12 +12457,12 @@ export class WorldRenderer3D {
       // nothing pops, and no program is built and linked inside the submission (the movement
       // route's last compile frame, an 11 ms first draw).
       if (freshMesh && !this.#instancedMeshWarm(entry.mesh)) {
-        this.#instanceWarmHolds.set(entry.mesh, { frames: 0, nodes: [] });
+        this.#instanceWarmHolds.set(entry.mesh, { frames: 0, copies: [], split: entry.split });
       }
       const hold = this.#instanceWarmHolds.get(entry.mesh);
       if (hold) {
         entry.mesh.visible = false;
-        hold.nodes = list.map((rendered) => rendered.node);
+        hold.copies = list.slice();
         for (const rendered of list) this.#showAsPlain(rendered);
       }
     }
@@ -12461,6 +12485,12 @@ export class WorldRenderer3D {
    * and `hold` leaves a warm mesh alone.
    */
   #showAsPlain(rendered: RenderedEnvironment): void {
+    // 25.10 (12.10): a split copy draws its whole model again.
+    const whole = this.#splitCovered.get(rendered);
+    if (whole !== undefined) {
+      if (rendered.visual instanceof THREE.Mesh) rendered.visual.geometry = whole;
+      this.#splitCovered.delete(rendered);
+    }
     rendered.node.visible = true;
     // P2-07: a copy already shown plain was registered and held then; the bucket pass asks again
     // on every rebuild (every admission flip while the camera turns), which only re-derived the
@@ -12474,6 +12504,22 @@ export class WorldRenderer3D {
     }
   }
 
+  /**
+   * 25.10 (12.10): a copy its bucket now draws — hidden, or, for a model split by `InstanceSplit.ts`,
+   * left on screen drawing only its blended groups. Either way it is no longer shown plain (P2-07).
+   */
+  #coverByInstance(rendered: RenderedEnvironment, split: InstanceSplit | undefined): void {
+    const visual = rendered.visual;
+    if (split !== undefined && visual instanceof THREE.Mesh) {
+      if (!this.#splitCovered.has(rendered)) this.#splitCovered.set(rendered, visual.geometry);
+      visual.geometry = split.blended;
+      rendered.node.visible = rendered.admitted;
+    } else {
+      rendered.node.visible = false;
+    }
+    this.#plainShown.delete(rendered.node);
+  }
+
   /** After the warm pass: swaps each held instanced mesh in for its copies once it is warm. */
   #releaseWarmInstances(): void {
     for (const [mesh, hold] of this.#instanceWarmHolds) {
@@ -12481,9 +12527,8 @@ export class WorldRenderer3D {
         // Dropped while waiting (`#dropInstance`); its copies were given back by the caller.
         this.#instanceWarmHolds.delete(mesh);
       } else if (hold.frames >= INSTANCE_WARM_HOLD_FRAMES || this.#instancedMeshWarm(mesh)) {
-        for (const node of hold.nodes) node.visible = false;
+        for (const rendered of hold.copies) this.#coverByInstance(rendered, hold.split); // P2-07: plain no more
         mesh.visible = true;
-        for (const node of hold.nodes) this.#plainShown.delete(node); // P2-07: hidden again
         this.#instanceWarmHolds.delete(mesh);
       } else {
         hold.frames++;
