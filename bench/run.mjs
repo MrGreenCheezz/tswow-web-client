@@ -102,7 +102,10 @@ async function main() {
   }
   // Only a city run carries the city block, so every other scenario keeps its existing config hash.
   if (scenarios.some(isCityScenario)) {
-    config.city = JSON.parse(await readFile('bench/city.json', 'utf8'));
+    // 25.10 (perf): `--city <file>` — another city square (bench/dalaran.json) or the same one with a casting crowd
+    // (bench/city-spells.json); a `halfMinute` in it sets the time of day (lamps at night).
+    config.city = JSON.parse(await readFile(value('--city', 'bench/city.json'), 'utf8'));
+    if (typeof config.city.halfMinute === 'number') config.halfMinute = config.city.halfMinute;
     // The city is measured at the live client's canvas size, so it runs on its own.
     if (scenarios.length !== 1) throw new Error('The city scenario runs alone');
     if (config.city.viewport) { config.width = config.city.viewport.width; config.height = config.city.viewport.height; }
@@ -172,7 +175,7 @@ async function main() {
   let cacheMisses = 0;
   const gateway = new URL(process.env.BENCH_GATEWAY_URL ?? 'http://127.0.0.1:8090');
   if (!['127.0.0.1', 'localhost', '[::1]'].includes(gateway.hostname)) throw new Error('Benchmark gateway must be loopback');
-  const allowed = /^(?:\/dbc\/(?:creature-models|character-appearance|light\/\d+|ground-effects|liquid-types)|\/terrain\/|\/visual\/|\/texture(?:\?|$)|\/terrain-splat\/|\/terrain-layer\/|\/ground-cover\/|\/liquid\/|\/horizon\/|\/minimap\/\d+\/index\.json|\/environment\/)/; // 22.10 (7.44): minimap index
+  const allowed = /^(?:\/dbc\/(?:creature-models|character-appearance|light\/\d+|ground-effects|liquid-types|spell-visuals)|\/terrain\/|\/visual\/|\/texture(?:\?|$)|\/terrain-splat\/|\/terrain-layer\/|\/ground-cover\/|\/liquid\/|\/horizon\/|\/minimap\/\d+\/index\.json|\/environment\/)/; // 22.10 (7.44): minimap index
   // 22.10 (12.14): the requests the scene made, per route (bench/request-ledger.mjs); reset at each open.
   const requestLedger = createRequestLedger();
   async function asset(key) {
