@@ -20,10 +20,13 @@ import {
 } from "./BenchScene.js"; // 22.10 ARC-2 S6a
 import { benchReadiness, configureBenchRenderer, createBenchClients } from "./BenchRenderSide.js"; // 22.10 ARC-2 S6a
 import { wmoReliefStats } from "../WmoReliefShader.js"; // 22.10 (7.47 stage 2)
+import { m2ReliefStats } from "../M2Relief.js"; // 23.10 (7.47 stage 3)
 import { ResourceAccountingLedger } from "../ResourceAccounting.js"; // 23.10 (7.48 step 2)
 import { planSpellVisual, planSpellVisualKitEvent } from "../SpellVisuals.js"; // 23.10 (6.27)
 import { noteGatewayAssetGenerations } from "../GatewayGeneration.js"; // 23.10 (7.48)
 import type { SpellVisualKitRecord, SpellVisualMetadata } from "../../gateway/SpellVisual.js"; // 23.10 (6.27)
+import { runLightTrace, type LightTraceSpec } from "./LightTrace.js"; // 24.10 (7.50)
+import { overrideLightCatalogGeneration } from "../LightCatalogGeneration.js"; // 24.10 (7.50)
 
 /** 23.10 (6.27): one spell-visual frame strip (`bench/lookdev.mjs --spell/--kit`). */
 interface SpellStripSpec {
@@ -51,9 +54,11 @@ interface BenchWindow extends Window {
     lookdev(overrides: Partial<Config>): void; shadowStats(): unknown;
     spellStrip(spec: SpellStripSpec): Promise<unknown>; // 23.10 (6.27)
     spellCost(spec: SpellStripSpec, rounds: number): Promise<unknown>; // 23.10 (6.27)
-    gpuView(frames: number, warm: number): Promise<number[]>; terrainRelief(enabled: boolean): void; // 22.10 (7.47)
+    gpuView(frames: number, warm: number): Promise<number[]>; viewCpu(): number[]; terrainRelief(enabled: boolean): void; // 22.10 (7.47)
     wmoRelief(enabled: boolean): void; wmoReliefStats(): unknown; // 22.10 (7.47 stage 2)
-    textureMemory(): unknown }; // 23.10 (7.48 step 2)
+    m2Relief(enabled: boolean): void; m2ReliefStats(): unknown; // 23.10 (7.47 stage 3)
+    textureMemory(): unknown; // 23.10 (7.48 step 2)
+    lightTrace(spec: LightTraceSpec): Promise<unknown> }; // 24.10 (7.50)
 }
 const host = window as BenchWindow;
 const config = await (await fetch('/config.json')).json() as Config;
@@ -99,6 +104,9 @@ Math.random = () => {
 const baseUrl = location.origin;
 // 23.10 (7.48): lookdev's HD stills — the generation a live page would read from `/client/patch-status`.
 if (config.hdTextureGeneration) noteGatewayAssetGenerations(baseUrl, undefined, undefined, config.hdTextureGeneration);
+// 24.10 (7.50): the lamp catalog kept in this profile's IndexedDB between runs (`--light-catalog`), a second session.
+const lightCatalog = (config as { lightCatalogGeneration?: string }).lightCatalogGeneration;
+if (lightCatalog) overrideLightCatalogGeneration({ origin: baseUrl, generation: lightCatalog });
 // 06.10-P1-00b: textures the corpus lacks (404) are drawn as the white pixel, as in the game.
 const missingTextures = installKnownMissingTextureLedger(globalThis, baseUrl);
 async function checked(url: string): Promise<Response> {
@@ -117,6 +125,8 @@ let recording = false;
 let gpuReason: string | undefined;
 /** 22.10 (7.47): GPU samples of `gpuView`'s frames (an A/B inside one page, e.g. «Объём земли»). */
 const viewGpuMs: number[] = [];
+/** 23.10 (7.47 stage 3): the render's CPU time of `gpuView`'s timed frames (`viewCpu()`). */
+const viewCpuMs: number[] = [];
 let viewTiming = false;
 const gpuObserver = { onSample(ms: number) { if (recording) gpuSamplesMs.push(ms); if (viewTiming) viewGpuMs.push(ms); },
   onUnavailable(reason: string) { gpuReason = reason; } };
@@ -140,6 +150,8 @@ let lastScene: THREE.Object3D | undefined;
 const textureUploads: Array<{ atMs: number; ms: number; type: string; width: number; height: number; depth: number }> = [];
 /** 23.10 (6.27): where the bench player (guid 1) stands, for a spell strip's cast. */
 let selfPoint: (() => { x: number; y: number; z: number }) | undefined;
+/** 24.10 (7.50): whether the ground under a point is in (the live curtain's test, LoadingScreen.ts). */
+let terrainReady: (x: number, y: number) => boolean = () => true;
 
 if (movement) {
   acquireRenderBenchmarkFormalGpuObserver(gpuObserver);
@@ -187,6 +199,10 @@ if (movement) {
   const { state, objects } = crowd;
   const heightAt = (x: number, y: number) => terrain.heightAt(map, x, y);
   selfPoint = () => { const p = objects[0]!.position!; return { x: p.x, y: p.y, z: p.z }; }; // 23.10 (6.27)
+  // 24.10 (7.50): as the live curtain asks it — the ground, then the lamps around (when the renderer knows them).
+  terrainReady = (x, y) => terrain.isReady(map, x, y)
+    && ((worldRenderer as { lightsReadyAround?: (map: number, x: number, y: number) => boolean })
+      .lightsReadyAround?.(map, x, y) ?? true);
   const unitModels = new BenchUnitModels(benchModelOf(scene, display, cityDisplays));
   const benchLookups = unitModels.lookups;
   const camera = { yaw: 0, pitch: 0, orbit: 0 };
@@ -526,9 +542,15 @@ host.__bench = {
     if (arrival) arrive(Number.POSITIVE_INFINITY);
     for (let frame = 0; frame < warm; frame++) { await nextFrame(); render(0, 1 / 60, frame + 1); }
     viewGpuMs.length = 0;
+    viewCpuMs.length = 0;
     viewTiming = true;
     try {
-      for (let frame = 0; frame < frames; frame++) { await nextFrame(); render(0, 1 / 60, warm + frame + 1); }
+      for (let frame = 0; frame < frames; frame++) {
+        await nextFrame();
+        const at = performance.now();
+        render(0, 1 / 60, warm + frame + 1);
+        viewCpuMs.push(performance.now() - at); // 23.10 (7.47 stage 3)
+      }
       for (let frame = 0; frame < 4; frame++) await nextFrame(); // the last queries resolve
     } finally { viewTiming = false; }
     return [...viewGpuMs];
@@ -539,8 +561,28 @@ host.__bench = {
   wmoRelief(enabled: boolean) { world?.setWmoRelief(enabled); },
   /** 22.10 (7.47 stage 2): tracked and bound materials and the relief maps held (counts, bytes). */
   wmoReliefStats() { return wmoReliefStats(); },
+  m2Relief(enabled: boolean) { world?.setM2Relief(enabled); }, // 23.10 (7.47 stage 3)
+  m2ReliefStats() { return m2ReliefStats(); },
+  /** 23.10 (7.47 stage 3): the CPU samples (ms) of the last `gpuView`. */
+  viewCpu() { return [...viewCpuMs]; },
   /** 23.10 (7.48 step 2): resident texture bytes and the compressed-texture extensions of this context. */
   textureMemory() { return textureMemory(); },
+  /** 24.10 (7.50): when each light first appears on a night run or after a teleport (LightTrace.ts). */
+  async lightTrace(spec: LightTraceSpec) {
+    if (!world || !selfPoint) throw new Error('lightTrace needs a world scenario');
+    const worldRenderer = world;
+    return runLightTrace(spec, {
+      render, settle: () => settle(lastFraction), nextFrame, census: () => worldRenderer.lightCensus(),
+      place(x, y, yaw, pitch, orbit, halfMinute) {
+        config.route = { ...config.route, x, y, dx: 0, dy: 0 };
+        config.view = { yaw, pitch, orbit };
+        config.halfMinute = halfMinute;
+      },
+      player: selfPoint, terrainReady: (x, y) => terrainReady(x, y),
+      progress: () => ({ pending: readiness().pending,
+        lights: (worldRenderer as { prelitLightStats?: unknown }).prelitLightStats }),
+    });
+  },
   lookdev(overrides) {
     // Time of day, camera and weather for the next `view()`; nothing here is measured.
     Object.assign(config, overrides);

@@ -38,6 +38,7 @@ import {
   type SlotFoldLevel, type SlotRow,
 } from "./SlotMaterial.js"; // P2-03a
 import type { SharedModelBuffers } from "./SharedModelBuffers.js"; // P2-03b
+import { installM2ReliefShape, installM2ReliefSun, m2BatchReliefRejection, type M2ReliefBuild } from "./M2Relief.js"; // 23.10 (7.47 stage 3)
 
 /**
  * Which geoset of each family to draw.
@@ -978,6 +979,11 @@ export function buildModel(
     vegetationWind?: boolean;
     /** Only the separately cached ground-cover build uses the player's live distance fade. */
     groundCoverFade?: GroundCoverFadeUniforms;
+    /**
+     * 23.10 (7.47 stage 3): «Объём предметов» — the renderer's scenery builds set it while the leaf is
+     * active (`M2Relief.ts`); units, spells, portraits and the lab never do.
+     */
+    relief?: M2ReliefBuild;
   },
 ): BuiltModel {
   const geometry = new THREE.BufferGeometry();
@@ -1420,6 +1426,7 @@ function buildMaterial(
     anisotropy?: number;
     worldLight?: WorldLightUniforms;
     fantasyGlow?: boolean;
+    relief?: M2ReliefBuild; // 23.10 (7.47 stage 3)
   },
   /** P2-03a: a slot carrier's step, first in the chain and so before the world light. */
   slotShaderStep?: ShaderStep,
@@ -1497,10 +1504,16 @@ function buildMaterial(
   const fog = fogStep(batch.blendMode);
   if (fog) steps.push(fog);
   applyShaderSteps(material, steps);
+  // 23.10 (7.47 stage 3): «Объём предметов» — the shape in the batch's own chain (a locally lit copy,
+  // rebuilt from the chain before the world light, keeps it), the sun after the world light.
+  const relief = options.relief !== undefined && !slotShaderStep && !supplied && path !== "" && material.map !== null
+    && !transform && !secondUvSet && steps.length === 0 && m2BatchReliefRejection(model, batch) === undefined
+    && installM2ReliefShape(material, textureUrl(options.baseUrl, path), slot?.flags ?? 0);
   // Installed last so Э1's second-layer/fog chain runs first. Unlit and additive batches retain
   // their authored flat path and never receive a sun merely because they share the same model.
   if (material instanceof THREE.MeshStandardMaterial && options.worldLight) {
     applyWorldLight(material, options.worldLight, "surface");
+    if (relief) installM2ReliefSun(material); // 23.10 (7.47 stage 3)
   }
   bindSpellFantasyGlow(material, batch.blendMode, options.fantasyGlow);
 

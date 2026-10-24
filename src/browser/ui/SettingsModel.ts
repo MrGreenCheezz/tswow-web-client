@@ -109,6 +109,11 @@ export const SETTING_DEFINITIONS: readonly SettingDefinition[] = [
     hint: "Каменная кладка, кирпич, черепица и доски на стенах и мостовые городов вблизи выглядят объёмными. Только с улучшенным освещением; немного нагружает видеокарту.",
   },
   {
+    // 23.10 (7.47 stage 3): the same relief on the world's doodads (M2); enhanced lighting levels only.
+    id: "experimentalModelRelief", label: "Объём предметов", group: "Эффекты", kind: "boolean", fallback: true,
+    hint: "Камни и скалы, стволы деревьев, заборы, бочки, ящики и другие предметы мира вблизи выглядят объёмными. Листва и персонажи не меняются. Только с улучшенным освещением; немного нагружает видеокарту.",
+  },
+  {
     id: "experimentalWaterFresnel", label: "Отражения на воде", group: "Эффекты", kind: "boolean", fallback: true,
     hint: "Поверхность сильнее отражает свет при взгляде вдоль воды и остаётся прозрачнее при взгляде сверху.",
   },

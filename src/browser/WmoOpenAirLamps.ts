@@ -175,6 +175,9 @@ interface LanternScan extends WmoLanterns {
   /** One byte per group: its mesh was read (or it is not open air and never will be). */
   readonly scanned: Uint8Array;
   remaining: number;
+  /** 24.10 (7.50): the open-air groups read from their mesh and what each held (`wmoLanternGroups`). */
+  readonly read: Map<number, Float32Array>;
+  readRevision: number;
 }
 
 const LANTERNS = new WeakMap<WmoModel, LanternScan>();
@@ -189,7 +192,7 @@ export function wmoLanternGeneration(): number {
 export function wmoLanterns(model: WmoModel): WmoLanterns {
   let scan = LANTERNS.get(model);
   if (!scan) {
-    scan = { positions: new Float32Array(0), generation: 0, scanned: new Uint8Array(model.groups.length), remaining: model.groups.length };
+    scan = newLanternScan(model);
     LANTERNS.set(model, scan);
   }
   if (scan.remaining === 0) return scan;
@@ -210,6 +213,8 @@ export function wmoLanterns(model: WmoModel): WmoLanterns {
     scan.scanned[index] = 1;
     scan.remaining--;
     const found = findWmoLanterns(group.mesh);
+    scan.read.set(index, found); // 24.10 (7.50)
+    scan.readRevision++;
     if (found.length > 0) (added ??= []).push(...found);
     if (performance.now() - started > WMO_LANTERN_SCAN_BUDGET_MS) break;
   }
@@ -297,4 +302,47 @@ function doodadOpenAir(model: Pick<WmoModel, "groups">, table: WmoDoodadRooms, o
     known[ordinal] = open ? 1 : 2;
   }
   return known[ordinal] === 1;
+}
+
+function newLanternScan(model: WmoModel): LanternScan {
+  return { positions: new Float32Array(0), generation: 0, scanned: new Uint8Array(model.groups.length),
+    remaining: model.groups.length, read: new Map(), readRevision: 0 };
+}
+
+/**
+ * 24.10 (7.50): the open-air groups of `model` read so far, each with the lanterns it held (model
+ * space), and a revision that grows with every group read — what `LightTemplateCatalog` keeps
+ * between sessions. Undefined before the model was first asked for its lanterns.
+ */
+export function wmoLanternGroups(model: WmoModel): { readonly readRevision: number; readonly read: ReadonlyMap<number, Float32Array> } | undefined {
+  return LANTERNS.get(model); // the scan itself: asked every frame, so no new object
+}
+
+/**
+ * 24.10 (7.50): lanterns of groups read in an earlier session (`wmoLanternGroups`): those groups
+ * count as read and their lanterns light before their meshes arrive. A group read already, out of
+ * range or not open air is left as it is, so nothing is counted twice.
+ */
+export function seedWmoLanterns(model: WmoModel, groups: Iterable<readonly [number, ArrayLike<number>]>): void {
+  let scan = LANTERNS.get(model);
+  if (!scan) {
+    scan = newLanternScan(model);
+    LANTERNS.set(model, scan);
+  }
+  const added: number[] = [];
+  for (const [index, positions] of groups) {
+    const group = model.groups[index];
+    if (!Number.isInteger(index) || !group || scan.scanned[index] === 1 || !wmoGroupOpenAir(group)) continue;
+    if (positions.length % 3 !== 0) continue;
+    scan.scanned[index] = 1;
+    scan.remaining--;
+    for (let at = 0; at < positions.length; at++) added.push(positions[at]!);
+  }
+  if (added.length === 0) return;
+  const grown = new Float32Array(scan.positions.length + added.length);
+  grown.set(scan.positions);
+  grown.set(added, scan.positions.length);
+  scan.positions = grown;
+  scan.generation++;
+  lanternGeneration++;
 }

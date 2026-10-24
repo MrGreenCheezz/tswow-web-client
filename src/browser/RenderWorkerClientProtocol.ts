@@ -36,6 +36,7 @@ export const RENDER_WORKER_COMMANDS: Readonly<Record<ClientRendererCommand, Rend
   setCharacterAtlasAnisotropy: "setting", setExperimentalShaderProfile: "setting", setUnderwaterOverlay: "setting",
   setTerrainRelief: "setting", // 22.10 (7.47)
   setWmoRelief: "setting", // 22.10 (7.47 stage 2)
+  setM2Relief: "setting", // 23.10 (7.47 stage 3)
   setLivingSpells: "setting", // 23.10 (6.27)
   setHdEffectTextures: "setting", // 23.10 (7.48)
   setHdWorldTextures: "setting", // 23.10 (7.48 step 2)

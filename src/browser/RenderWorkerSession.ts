@@ -206,7 +206,9 @@ export class RenderWorkerSession {
     const at = this.#environmentAt;
     const clients = this.#clients;
     if (at === undefined || clients === undefined) return undefined;
-    return { map, x: at[0], y: at[1], terrain: clients.terrain.isReady(map, at[0], at[1]), clients: clients.key };
+    // 24.10 (7.50): and the lamps there known, so the curtain lifts with them lit (bounded: `lightsReadyAround`).
+    const terrain = clients.terrain.isReady(map, at[0], at[1]) && this.#renderer.lightsReadyAround(map, at[0], at[1]);
+    return { map, x: at[0], y: at[1], terrain, clients: clients.key };
   }
 
   /** The capture's events since the last frame, on the page's clock. */

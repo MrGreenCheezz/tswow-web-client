@@ -1408,6 +1408,15 @@ export class EnvironmentClient {
     return this.#objectsCache;
   }
 
+  /**
+   * 24.10 (7.50): whether the placement tile under (x, y) has its answer — a list or a known absence —
+   * so its lamps are known (the loading curtain's light check, `WorldRenderer3D.lightsReadyAround`).
+   */
+  tileAnswered(map: number, x: number, y: number): boolean {
+    const grid = terrainGrid(x, y);
+    return grid === undefined || this.#tiles.get(`${map}/${grid.x}/${grid.y}`) !== undefined;
+  }
+
   /** Where the gateway lives, for the texture URLs a model resolves for itself. */
   get baseUrl(): string {
     return this.#baseUrl;

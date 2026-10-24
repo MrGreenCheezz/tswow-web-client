@@ -339,11 +339,6 @@ class ModelImageRecord {
  * it (a spell build, a world material, a unit whose base was disposed first).
  */
 class ModelImageTexture extends THREE.Texture {
-  constructor() {
-    super();
-    defineCompressedView(this); // 23.10 (7.48)
-  }
-
   override copy(source: THREE.Texture): this {
     super.copy(source);
     holdModelImage(this);
@@ -367,35 +362,51 @@ function compressedRecordOf(texture: THREE.Texture): ModelImageRecord | undefine
  * no generated mips, no flip — WebGL cannot flip a compressed upload, and every consumer sets `flipY = false`
  * anyway); otherwise each is the texture's own value, written and read exactly as before. Colour space, wrapping
  * and filters stay the consumer's, so the HD copy is sampled as the original (sRGB, repeat, trilinear).
+ *
+ * 23.10 (perf): the accessors live once on the class's prototype, and each texture keeps its own values in plain
+ * data fields (`COMPRESSED_VIEW_FIELDS`), which `THREE.Texture`'s constructor creates through the setters, in the same
+ * order for every texture. The first form defined fresh accessors on every instance; V8 cannot share a hidden class
+ * between objects whose accessor pairs differ, so every model texture became a dictionary-mode object, with the
+ * setting off too, and three's per-draw reads of its fields (`setTexture2D`, `refreshTransformUniform`) slowed down
+ * (a Node probe of those reads: 19 → 400 ns a texture; PERF_STATUS «23.10»).
  */
-function defineCompressedView(texture: THREE.Texture): void {
-  const own: Record<string, unknown> = {};
-  const target = texture as unknown as Record<string, unknown>;
-  const view: Record<string, (record: ModelImageRecord) => unknown> = {
+const COMPRESSED_VIEW_FIELDS = {
+  mipmaps: "ownMipmaps",
+  format: "ownFormat",
+  generateMipmaps: "ownGenerateMipmaps",
+  flipY: "ownFlipY",
+} as const;
+
+function defineCompressedView(prototype: THREE.Texture): void {
+  const view: Record<keyof typeof COMPRESSED_VIEW_FIELDS, (record: ModelImageRecord) => unknown> = {
     mipmaps: (record) => record.mipmaps,
     format: () => THREE.RGBA_BPTC_Format,
     generateMipmaps: () => false,
     flipY: () => false,
   };
-  for (const [key, compressed] of Object.entries(view)) {
-    own[key] = target[key];
-    Object.defineProperty(texture, key, {
+  for (const key of Object.keys(COMPRESSED_VIEW_FIELDS) as (keyof typeof COMPRESSED_VIEW_FIELDS)[]) {
+    const field = COMPRESSED_VIEW_FIELDS[key];
+    const compressed = view[key];
+    Object.defineProperty(prototype, key, {
       configurable: true,
       enumerable: true,
-      get: () => {
-        const record = compressedRecordOf(texture);
-        return record ? compressed(record) : own[key];
+      get(this: THREE.Texture): unknown {
+        const record = compressedRecordOf(this);
+        return record ? compressed(record) : (this as unknown as Record<string, unknown>)[field];
       },
-      set: (value: unknown) => {
-        own[key] = value;
+      set(this: THREE.Texture, value: unknown): void {
+        (this as unknown as Record<string, unknown>)[field] = value;
       },
     });
   }
-  Object.defineProperty(texture, "isCompressedTexture", {
+  Object.defineProperty(prototype, "isCompressedTexture", {
     configurable: true,
-    get: () => compressedRecordOf(texture) !== undefined,
+    get(this: THREE.Texture): boolean {
+      return compressedRecordOf(this) !== undefined;
+    },
   });
 }
+defineCompressedView(ModelImageTexture.prototype); // 23.10 (7.48)
 
 /** The record each live holder counts against; a texture holds at most one. */
 const modelImageHolders = new WeakMap<THREE.Texture, ModelImageRecord>();

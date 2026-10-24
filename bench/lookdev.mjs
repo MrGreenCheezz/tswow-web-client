@@ -128,6 +128,18 @@ async function main() {
     config.settings[key] = raw === 'true' ? true : raw === 'false' ? false : Number.isFinite(Number(raw)) ? Number(raw) : raw;
   }
   const frames = values('--frame').map(parseFrame);
+  // 24.10 (7.50): `--light-trace spec.json` (repeatable): when each light first appears on a night run or after a
+  // teleport (src/browser/bench/LightTrace.ts); the movement scenario. Without `--frame` the first trace's first
+  // waypoint (or its `from`) and time of day prepare the scene.
+  // 24.10 (7.50): `--light-catalog <name>` keeps the lamp catalog in the profile's IndexedDB under that name, and
+  // `--user-data-dir <dir>` keeps the profile between runs: a second run is a second session.
+  if (value('--light-catalog')) config.lightCatalogGeneration = value('--light-catalog');
+  const traces = await Promise.all(values('--light-trace').map(async (path) => JSON.parse(await readFile(path, 'utf8'))));
+  if (frames.length === 0 && traces.length > 0) {
+    const [x, y] = traces[0].from ?? traces[0].path[0];
+    frames.push({ name: 'trace', halfMinute: traces[0].halfMinute, view: { yaw: 0, pitch: -0.2, orbit: 12 }, weather: null,
+      at: { x, y, map: traces[0].map ?? 0 } });
+  }
   // 23.10 (7.48): HD effect textures straight from the generated sets.
   const hdIndex = args.indexOf('--hd-textures');
   const hdDirectory = hdIndex < 0 ? undefined
@@ -316,12 +328,14 @@ async function main() {
       res.end('Lookdev asset failed');
     }
   });
-  server.listen(0, '127.0.0.1');
+  // 24.10 (7.50): `--port` keeps the page's origin, and with it IndexedDB and the HTTP cache of `--user-data-dir`.
+  server.listen(Number(value('--port', 0)), '127.0.0.1');
   await once(server, 'listening');
   const origin = `http://127.0.0.1:${server.address().port}`;
   const executablePath = process.env.BENCH_CHROME_PATH ?? 'C:/Program Files/Google/Chrome/Application/chrome.exe';
   const headed = args.includes('--headed');
-  const browser = await puppeteer.launch({ executablePath, headless: !headed,
+  const userDataDir = value('--user-data-dir'); // 24.10 (7.50)
+  const browser = await puppeteer.launch({ executablePath, headless: !headed, ...(userDataDir ? { userDataDir: resolve(userDataDir) } : {}),
     args: ['--disable-frame-rate-limit', '--disable-gpu-vsync', '--disable-backgrounding-occluded-windows', '--disable-renderer-backgrounding'],
     defaultViewport: { width: config.width, height: config.height, deviceScaleFactor: config.pixelRatio }, protocolTimeout: 600000 });
   try {
@@ -348,6 +362,15 @@ async function main() {
     const prepared = await page.evaluate(() => window.__bench.prepare());
     console.log(`${scenario}: ready, GPU ${prepared.hardware.gpu}`);
     const written = [];
+    for (const spec of traces) { // 24.10 (7.50)
+      const started = Date.now();
+      const result = await page.evaluate((value) => window.__bench.lightTrace(value), spec);
+      await writeFile(resolve(out, `trace-${spec.name}.json`), JSON.stringify(result, null, 1));
+      const { lights: _lights, timeline: _timeline, ...summary } = result;
+      console.log(`trace ${spec.name} (${((Date.now() - started) / 1000).toFixed(0)} s): ${JSON.stringify(summary)}`);
+      written.push({ trace: spec.name });
+    }
+    if (traces.length > 0) frames.length = 0;
     for (const frame of frames) {
       await page.evaluate((overrides) => window.__bench.lookdev(overrides),
         { halfMinute: frame.halfMinute, view: frame.view, weather: frame.weather, route: routeFor(frame) });
@@ -391,8 +414,35 @@ async function main() {
         gpuMs = samples.length ? samples[Math.floor(samples.length / 2)] : undefined;
         console.log(`  GPU median ${gpuMs?.toFixed(2)} ms over ${samples.length} frames`);
       }
-      written.push({ path, shadows, textures, gpuMs });
+      // 23.10 (7.47 stage 3): the doodads' relief (materials drawing it, maps and their bytes), when the page has it.
+      const m2Relief = await page.evaluate(() => window.__bench.m2ReliefStats?.());
+      written.push({ path, shadows, textures, gpuMs, m2Relief });
       console.log(`${frame.name}: ${path} (${png.length} bytes) shadows ${JSON.stringify(shadows)}`);
+      if (m2Relief) console.log(`  doodad relief: ${JSON.stringify(m2Relief)}`);
+      // 23.10 (7.47 stage 3): `--leaf-cost <hook> --leaf-rounds N` — a leaf's cost at this still, off and on
+      // alternated ABBA inside the page (`__bench[hook](enabled)`, e.g. m2Relief), `--gpu-frames` timed frames
+      // (default 120) after 240 untimed ones per side (the toggled doodads rebuild and their maps arrive).
+      const leafHook = value('--leaf-cost');
+      if (leafHook) {
+        const rounds = Number(value('--leaf-rounds', 4));
+        const timed = Number(value('--gpu-frames', 0)) || 120;
+        const median = (values) => values.length ? [...values].sort((a, b) => a - b)[values.length >> 1] : undefined;
+        const sides = { off: { gpu: [], cpu: [] }, on: { gpu: [], cpu: [] } };
+        for (let round = 0; round < rounds; round++) {
+          for (const on of round % 2 === 0 ? [false, true] : [true, false]) {
+            await page.evaluate((hook, enabled) => window.__bench[hook](enabled), leafHook, on);
+            const gpu = await page.evaluate((count) => window.__bench.gpuView(count, 240), timed);
+            const cpu = await page.evaluate(() => window.__bench.viewCpu());
+            sides[on ? 'on' : 'off'].gpu.push(median(gpu));
+            sides[on ? 'on' : 'off'].cpu.push(median(cpu));
+          }
+        }
+        const summary = Object.fromEntries(Object.entries(sides).map(([side, { gpu, cpu }]) => [side, {
+          gpuMs: median(gpu), cpuMs: median(cpu), gpuRounds: gpu.map((ms) => ms?.toFixed(2)), cpuRounds: cpu.map((ms) => ms?.toFixed(2)),
+        }]));
+        console.log(`  leaf ${leafHook} cost: ${JSON.stringify(summary)}`);
+        written.push({ leafCost: { hook: leafHook, ...summary, stats: await page.evaluate(() => window.__bench.m2ReliefStats?.()) } });
+      }
       if (textures) {
         const mb = (value) => (value / 1048576).toFixed(1);
         console.log(`  textures: all ${mb(textures.all.estimatedLogicalTextureBytes)} MB, ground ${mb(textures.ground.estimatedLogicalTextureBytes)} MB; ${JSON.stringify(textures.extensions)}`);
