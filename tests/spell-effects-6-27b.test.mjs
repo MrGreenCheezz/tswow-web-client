@@ -227,3 +227,30 @@ test("6.27b a spell model's batches are sampled on the sequence it plays (Hold's
   updateBatchAppearance([entry], 100, 100, 1);
   assert.ok(Math.abs(material.opacity - 0.2) < 1e-6, "Hold's slot");
 });
+
+test("6.27b living spells: one light per spell model, by kind; a missile's sits on the bolt", async () => {
+  const { SpellLights, SPELL_LIGHT_KIND_SCALE, spellLightIntensity } = await import("../dist/code/browser/SpellLights.js");
+  const lights = new SpellLights();
+  const bolt = {}, aura = {};
+  lights.begin();
+  const trail = lights.glowOf(bolt, "missile");
+  Object.assign(trail, { energy: 6, red: 6, green: 3, blue: 0, x: -30, y: 6, z: 0 }); // the trail's centre, 5 yd behind
+  lights.pin(bolt, 0, 1, 0);
+  Object.assign(lights.glowOf(aura, "aura"), { energy: 6, red: 6, green: 6, blue: 6, x: 0, y: 0, z: 0 });
+  lights.end(0);
+  const seen = [];
+  lights.forEach({ position: new THREE.Vector3(), colour: new THREE.Vector3(), radius: 0, intensity: 0, client: false, halo: false },
+    (sample) => seen.push({ at: sample.position.toArray(), intensity: sample.intensity }));
+  assert.equal(seen.length, 2);
+  assert.deepEqual(seen[0].at, [0, 1, 0], "the bolt's light is on the bolt");
+  assert.ok(Math.abs(seen[0].intensity - spellLightIntensity(6) * SPELL_LIGHT_KIND_SCALE.missile) < 1e-9);
+  assert.ok(Math.abs(seen[1].intensity - spellLightIntensity(6) * SPELL_LIGHT_KIND_SCALE.aura) < 1e-9, "an aura is fainter");
+});
+
+test("6.27b a sphere of no radius throws along its drawn azimuth, not straight up (0x00981950)", () => {
+  const point = emitter({ emitterType: EMITTER_SPHERE, emissionSpeed: track([3]), emissionRate: track([600]), lifespan: track([5]) });
+  const system = createParticleSystem(point, NONE, 4);
+  stepParticles(system, 1 / 60, frame());
+  // Azimuth 0 and latitude 0: the emitter's +x, the bone's +y after the quarter turn.
+  assert.ok(system.particles.length > 0 && system.particles.every((p) => Math.abs(p.vy - 3) < 1e-6 && Math.abs(p.vz) < 1e-6));
+});

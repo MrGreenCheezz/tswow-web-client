@@ -626,16 +626,12 @@ function spawnLocal(
       position[0] = radius * flat * Math.cos(azimuth);
       position[1] = radius * flat * Math.sin(azimuth);
       position[2] = radius * Math.sin(elevation);
-      direction[0] = position[0]!;
-      direction[1] = position[1]!;
-      direction[2] = position[2]!;
-      normalise(direction);
-      // Without a radius there is no outward to speak of; rise instead of dividing by nothing.
-      if (radius < 1e-6) {
-        direction[0] = 0;
-        direction[1] = 0;
-        direction[2] = 1;
-      }
+      // 25.10 (6.27): the direction is the drawn angles' unit vector whatever the radius (0x00981950) — a sphere
+      // of no radius throws along its azimuth, not straight up: Judgement's two gold beams (bones 11/12 of
+      // judgement_impact_chest.m2) rose as one vertical streak; a negative radius no longer turns it inward.
+      direction[0] = flat * Math.cos(azimuth);
+      direction[1] = flat * Math.sin(azimuth);
+      direction[2] = Math.sin(elevation);
       // 23.10 (6.27): 0x20000/0x40000 are the head and tail styles, not outward/inward — a tail-only sphere
       // flew backwards here. A sphere's own direction bit is 0x100: straight up its Z (0x00981950).
       if ((emitter.flags & PARTICLE_FLAG_SPHERE_STRAIGHT_UP) !== 0) {
@@ -1184,7 +1180,7 @@ export function particleAppearance(
   out.width = scratchRamp[0]! * particle.scaleX;
   out.height = (emitter.scale?.components ?? 1) > 1 ? scratchRamp[1]! * particle.scaleY : out.width;
   // 05.10-A7a-F1 (6.15): a twinkle reading now exists (`ParticleTwinkle.ts`) — behind the
-  // `particleTwinkle` switch, off by default, so the paragraph above still describes the default.
+  // `particleTwinkle` switch — 25.10 (6.27): on by default, the 3.3.5a writer being read exactly (0x0097be80).
   const twinkle = twinkleSize(emitter, particle.age, particle.phase ?? 0);
   if (twinkle !== 1) {
     out.width *= twinkle;

@@ -84,7 +84,7 @@ import {
 import type { LightSample, ResolvedColour } from "./LightTypes.js";
 import { lightDarkensByDepth, liquidLightTint, type UnderwaterLight } from "./UnderwaterLiquidLight.js"; // 05.10-A7b-5 review
 import { LocalLightSelection, modelFixtureLights, sampleFixtureLight, type LocalLightSample } from "./LocalLighting.js";
-import { SpellLights } from "./SpellLights.js"; // 23.10 (6.27)
+import { SpellLights, type SpellLightKind } from "./SpellLights.js"; // 23.10 (6.27); 25.10 kinds
 import {
   SPELL_ANIM_DECAY, SPELL_ANIM_HOLD, SPELL_ANIM_STAND, spellModelSequence, spellOneShotModelMs,
   type SpellSequenceDurations, type SpellSequencePick,
@@ -355,6 +355,10 @@ import type { CollisionLiquid, CollisionModel } from "../world/CollisionFormat.j
 /** One deterministic evolution step supplied by an offline render replay. */
 /** 23.10 (6.27): scratch for spell light positions. */
 const _spellLightAt = new THREE.Vector3();
+/** 25.10 (6.27): what kind of light a spell model gives in the enhanced profile (SpellLights.ts). */
+function spellLightKind(instance: VisualInstance): SpellLightKind {
+  return instance.flight ? "missile" : instance.modelPlayback === "hold" ? "aura" : "burst";
+}
 const _spellDurations: SpellSequenceDurations = { stand: 0 }; // 25.10 (6.27)
 const _spellPick: SpellSequencePick = { animation: 0, time: 0, loop: false };
 const _particleNormal = new THREE.Vector3(0, 1, 0); // 25.10 (6.27): a lit particle's normal, the world's up (0x0097a390)
@@ -10360,7 +10364,12 @@ export class WorldRenderer3D {
         && spellEffectNeedsFirstBurst(entry.spell.instance, firstEligible,
           entry.spell.playbackStartedAt, entry.spell.instance.startedAt, spellAgeMs!, primeSeconds);
       // 23.10 (6.27): a living spell effect's ground (its particles' soft fade) and its glow (its light).
-      const spellGlow = living && entry.spell ? this.#spellLights.glowOf(entry.spell.handle.id) : undefined;
+      // 25.10 (6.27): per spell model, by kind (a missile's light pinned on the bolt, SpellLights.ts).
+      const spellGlow = living && entry.spell ? this.#spellLights.glowOf(entry.spell, spellLightKind(entry.spell.instance)) : undefined;
+      if (spellGlow && entry.spell?.instance.flight) {
+        entry.spell.node.getWorldPosition(_spellLightAt);
+        this.#spellLights.pin(entry.spell, _spellLightAt.x, _spellLightAt.y, _spellLightAt.z);
+      }
       if (living && entry.spell) setModelEffectsGround(held.effects, this.#spellGround(entry.spell));
       const particleAt = detailedCapture ? performance.now() : 0;
       updateModelEffects(held.effects, primeSeconds, {
@@ -10407,8 +10416,8 @@ export class WorldRenderer3D {
           if (!isAdditiveSpellMaterial(material) || !material.visible) continue;
           const tinted = material as THREE.Material & { color?: THREE.Color };
           const colour = tinted.color;
-          this.#spellLights.addBatch(visual.handle.id, _spellLightAt.x, _spellLightAt.y + 1, _spellLightAt.z,
-            colour?.r ?? 1, colour?.g ?? 1, colour?.b ?? 1, material.opacity);
+          this.#spellLights.addBatch(visual, _spellLightAt.x, _spellLightAt.y + (visual.instance.flight ? 0 : 1), _spellLightAt.z,
+            colour?.r ?? 1, colour?.g ?? 1, colour?.b ?? 1, material.opacity, spellLightKind(visual.instance)); // 25.10 (6.27)
         }
       }
       this.#spellLights.end(elapsed);
