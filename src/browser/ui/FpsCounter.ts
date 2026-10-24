@@ -1,15 +1,18 @@
 import { FrameCadenceClock } from "../RenderStats.js";
 import { worldPanel } from "./Dom.js";
-import { fpsCounterText } from "./FpsCounterText.js"; // 22.10 ARC-2 live fix
+import { WorldCpuWindow, fpsCounterText } from "./FpsCounterText.js"; // 22.10 ARC-2 live fix; 25.10 (12.14): + WorldCpuWindow
 
 const UPDATE_INTERVAL_MS = 500;
 const cadence = new FrameCadenceClock();
+/** 25.10 (12.14): the world frames' renderer CPU since the line was last written. */
+const worldCpu = new WorldCpuWindow();
 let counter: HTMLDivElement | undefined;
 let enabled = false;
 let shownAt = 0;
 
 function reset(): void {
   cadence.reset();
+  worldCpu.reset();
   shownAt = 0;
   if (counter) counter.textContent = "FPS — · кадр — мс · макс. — мс";
 }
@@ -54,5 +57,13 @@ export function updateFpsCounter(now: number, active: boolean, worldFps?: number
   shownAt = now;
   const frames = cadence.snapshot();
   if (frames.average <= 0) return;
-  counter.textContent = fpsCounterText(cadence.fps, frames.average, frames.worst, worldFps);
+  counter.textContent = fpsCounterText(cadence.fps, frames.average, frames.worst, worldFps, worldCpu.take());
+}
+
+/**
+ * 25.10 (12.14): one world frame's renderer CPU (`RenderResults.rendererFrameMs`), as game/Loop.ts records it — after
+ * an in-page draw, or per results message of a render worker. Kept only while the counter is shown.
+ */
+export function noteWorldFrameCpu(milliseconds: number): void {
+  if (enabled && counter !== undefined && !counter.hidden) worldCpu.note(milliseconds);
 }
