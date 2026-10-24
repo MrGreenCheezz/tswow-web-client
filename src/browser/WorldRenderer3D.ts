@@ -83,7 +83,7 @@ import {
 } from "./SkyDome.js"; // 13.10 7.04
 import type { LightSample, ResolvedColour } from "./LightTypes.js";
 import { lightDarkensByDepth, liquidLightTint, type UnderwaterLight } from "./UnderwaterLiquidLight.js"; // 05.10-A7b-5 review
-import { LocalLightSelection, modelFixtureLights, sampleFixtureLight, type LocalLightSample } from "./LocalLighting.js";
+import { LocalLightSelection, modelFixtureLights, sampleFixtureLight, type FixtureLight, type LocalLightSample } from "./LocalLighting.js";
 import { SpellLights, type SpellLightKind } from "./SpellLights.js"; // 23.10 (6.27); 25.10 kinds
 import { UnitTints, WHITE } from "./UnitTints.js"; // 25.10 (6.27)
 import {
@@ -2331,6 +2331,16 @@ import type { PortraitTargetInputs } from "./PortraitTargetData.js"; // 22.10 AR
  * written as `undefined` and cleared with `= undefined`, never `delete` — one V8 hidden class per
  * record kind, no dictionary mode. A new field is `T | undefined` and goes into the literal.
  */
+/** 25.10 (perf): one placement's fixture answer, valid while its model and the two switches it depends on hold. */
+interface EnvironmentFixtureLights {
+  readonly wvm: WvmModel;
+  readonly cinematic: boolean;
+  readonly m2Lights: boolean;
+  readonly fixtures: readonly FixtureLight[];
+  /** The farthest fixture source from the model origin, yards (before the placement scale). */
+  readonly sourceOffset: number;
+}
+
 interface RenderedEnvironment {
   actual: boolean;
   /** 05.10-A7b-9 (7.18): what the node is when it is not the model — set at build, read by the stand-in ledger. */
@@ -2391,6 +2401,11 @@ interface RenderedEnvironment {
    * (`wmoDoodadOpenAir`), kept once its building has landed: the fixture pass asks it every frame.
    */
   openAirLamp: boolean | undefined;
+  /**
+   * 25.10 (perf): the fixtures of its model and their farthest source offset, worked out once: the fixture pass
+   * visits every resident placement every frame, and most of them have no lamp at all.
+   */
+  fixtureLights: EnvironmentFixtureLights | undefined;
   /** `instanceKey` plus the light lane, built once: the bucket this copy joins in `#updateInstances`. */
   instanceBucket: string | undefined;
   /** Its world matrix, computed once when it was placed. Nothing in the environment ever moves. */
@@ -9961,20 +9976,34 @@ export class WorldRenderer3D {
         skinned?: SkinnedInstance | undefined;
         template?: SkinnedTemplate | undefined;
         instanceMatrix?: THREE.Matrix4 | undefined;
+        fixtureLights?: EnvironmentFixtureLights | undefined;
       },
         name: string, placement: THREE.Object3D): void => {
         const model = rendered.wvm;
         if (!model) return;
-        const fixtures = modelFixtureLights(model, name, cinematic); // 23.10 (7.36)
+        // 25.10 (perf): an environment placement keeps its answer (`fixtureLights`) while its model and switches hold.
+        const known = rendered.fixtureLights;
+        let fixtures: readonly FixtureLight[];
+        let sourceOffset = 0;
+        if (known !== undefined && known.wvm === model && known.cinematic === cinematic
+          && known.m2Lights === renderSwitches.m2Lights) {
+          fixtures = known.fixtures;
+          sourceOffset = known.sourceOffset;
+        } else {
+          fixtures = modelFixtureLights(model, name, cinematic); // 23.10 (7.36)
+          // Reject distant fixtures before propagating animated bones. Expand by the authored
+          // source offset, placement scale and a swing margin so tall/hanging lamps are retained.
+          for (const fixture of fixtures) {
+            sourceOffset = Math.max(sourceOffset, Math.hypot(fixture.position[0], fixture.position[1], fixture.position[2]));
+          }
+          // Game objects carry no field: their answer stays the shared cache's, nothing is allocated for them.
+          if ("fixtureLights" in rendered) {
+            rendered.fixtureLights = { wvm: model, cinematic, m2Lights: renderSwitches.m2Lights, fixtures, sourceOffset };
+          }
+        }
         if (fixtures.length === 0) return;
         // 24.10 (7.50): a model past no name gate that lights is known from its first build on.
         if (cinematic) this.#lightCatalog.noteLit(name, model);
-        // Reject distant fixtures before propagating animated bones. Expand by the authored
-        // source offset, placement scale and a swing margin so tall/hanging lamps are retained.
-        let sourceOffset = 0;
-        for (const fixture of fixtures) {
-          sourceOffset = Math.max(sourceOffset, Math.hypot(fixture.position[0], fixture.position[1], fixture.position[2]));
-        }
         const scale = Math.max(Math.abs(placement.scale.x), Math.abs(placement.scale.y), Math.abs(placement.scale.z));
         const reach = 64 + (sourceOffset + 16) * scale;
         if (placement.position.distanceToSquared(this.#camera.position) > reach * reach) return;
@@ -11776,6 +11805,7 @@ export class WorldRenderer3D {
           wmo: undefined,
           instanceKey: undefined,
           openAirLamp: undefined,
+          fixtureLights: undefined, // 25.10 (perf)
           instanceBucket: undefined,
           instanceMatrix: undefined,
           growthStartedAt: undefined,

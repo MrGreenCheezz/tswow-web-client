@@ -27,6 +27,8 @@ import { noteGatewayAssetGenerations } from "../GatewayGeneration.js"; // 23.10 
 import type { SpellVisualKitRecord, SpellVisualMetadata } from "../../gateway/SpellVisual.js"; // 23.10 (6.27)
 import { runLightTrace, type LightTraceSpec } from "./LightTrace.js"; // 24.10 (7.50)
 import { overrideLightCatalogGeneration } from "../LightCatalogGeneration.js"; // 24.10 (7.50)
+import { BenchSpellCasts } from "./BenchSpellCasts.js"; // 25.10 (perf)
+import { benchLoadCensus } from "./BenchLoadCensus.js"; // 25.10 (perf)
 
 /** 23.10 (6.27): one spell-visual frame strip (`bench/lookdev.mjs --spell/--kit`). */
 interface SpellStripSpec {
@@ -137,6 +139,9 @@ const cityDisplays = city
   ? await (await checked(`${baseUrl}/dbc/creature-models?v=${CREATURE_MODEL_VERSION}&ids=${config.city.displays.join(',')}`)).json() as UnitModel[]
   : [];
 if (city && cityDisplays.length !== config.city.displays.length) throw new Error('City display missing');
+// 25.10 (perf): a casting crowd when the city file asks for one (bench/city-spells.json, bench/dalaran.json).
+const casts = city && config.city.casts
+  ? await BenchSpellCasts.load(baseUrl, config.city.casts, config.city.population, config.warmupSeconds) : undefined;
 const gpuSamplesMs: number[] = [];
 let recording = false;
 let gpuReason: string | undefined;
@@ -246,6 +251,9 @@ if (movement) {
         benchCamera(config, scene, lastFraction, camera);
         const { yaw, pitch, orbit } = camera;
         const frameTime = benchFrameTime(config, scene, preparingWorldCrowd, seconds, elapsed, frame);
+        // 25.10 (perf): the casts due by this frame's clock, on the renderer the frame draws with.
+        casts?.step(frameTime.nowMs, (guid) => state.objects.get(guid)?.position,
+          (plan) => worldRenderer.playSpellVisual(plan));
         // 22.10 ARC-2 S5: the same call through the bridge when `renderBridge` is set.
         if (renderBridge) {
           renderBridge.draw(worldRenderer, state, map, heightAt, terrain, scenery, environment, yaw, pitch, orbit,
@@ -257,7 +265,8 @@ if (movement) {
       } finally { worldRenderer.endRenderFrame(); }
     } finally { environment.endResourceFrame(); }
   };
-  reset = () => worldRenderer.resetReplayEpoch(config.seed);
+  // 25.10 (perf): a casting crowd's visuals go first; the replay reset refuses while any is on show.
+  reset = () => { if (casts) worldRenderer.clearSpellVisuals(); worldRenderer.resetReplayEpoch(config.seed); };
   arrive = (seconds) => crowd.arrive(seconds);
   phases = () => ({ query: queryMs, ...worldRenderer.drawPhaseMs });
   readiness = () => benchReadiness(worldRenderer, clients, missingTextures);
@@ -349,7 +358,9 @@ function hardware() {
 /** 22.10 (12.14): frames drawn by `settle` since `prepare` began. */
 let settleFrames = 0;
 async function settle(fraction: number) {
-  const deadline = performance.now() + config.timeoutSeconds * 1000;
+  // 25.10 (perf): a churning scene (bench/dalaran.json `settleLoose`) settles after 15 s on what it has.
+  const loose = (config.city as unknown as { settleLoose?: boolean } | undefined)?.settleLoose === true;
+  const deadline = performance.now() + (loose ? 15 : config.timeoutSeconds) * 1000;
   let stable = 0, frame = 0;
   while (performance.now() < deadline) {
     await nextFrame(); render(fraction * config.durationSeconds, 0, frame++);
@@ -360,12 +371,13 @@ async function settle(fraction: number) {
     if (stable >= 6) {
       // 06.10-P1-00b: model-texture errors that are all 404s of the corpus settle like a known-missing tile.
       const modelTexturesErrors = (status.details as { renderer?: { modelTexturesErrors?: number } } | null)?.renderer?.modelTexturesErrors ?? 0;
-      if (status.errors && !errorsAreKnownMissingTextures({ errors: status.errors, modelTexturesErrors }, missingTextures)) {
+      if (status.errors && !loose && !errorsAreKnownMissingTextures({ errors: status.errors, modelTexturesErrors }, missingTextures)) {
         throw new Error(`Asset errors: ${JSON.stringify(status)}`);
       }
       return status;
     }
   }
+  if (loose) return readiness();
   // 25.10 (7.51): a light trace may go on with the scene still loading (`--allow-unsettled`).
   if (config.allowUnsettled) {
     const status = readiness();
@@ -531,6 +543,11 @@ host.__bench = {
         previous = now;
       }
     } finally { recording = false; performance.mark('bench-end'); }
+    // 25.10 (perf): the load of one more frame at the run's last moment, outside the measured rows.
+    const lastSeconds = config.durationSeconds;
+    const loadCensus = movement ? benchLoadCensus(renderer, () => render(lastSeconds, 1 / 60, frame++)) : null;
+    const load = { census: loadCensus, castsPlayed: casts?.played ?? 0,
+      lightPools: (world as { lightPoolStats?: unknown } | undefined)?.lightPoolStats ?? null };
     const budgetReport = budgetProbe ? frameBudgetProbe.report() : undefined; // P2-09a
     if (budgetProbe) frameBudgetProbe.setEnabled(false);
     const frames = Array.from({ length: sampleCount }, (_, index) =>
@@ -538,7 +555,7 @@ host.__bench = {
     return { scenario, count, columns, phaseNames, frames, gpuSamplesMs: [...gpuSamplesMs],
       renderBridge: renderBridge ? 'loopback' : 'direct', // 22.10 ARC-2 S5
       ...(budgetReport ? { budgetProbe: budgetReport } : {}),
-      hardware: hardware(), readiness: readiness(), routeHeightMissing, repeatedRafCallbacks,
+      hardware: hardware(), readiness: readiness(), routeHeightMissing, repeatedRafCallbacks, load, // 25.10 (perf)
       telemetry: world?.telemetry ?? null, wmoRangeAtStart, poseWorker: world?.poseWorkerStats() ?? null,
       shadowCascadesAtStart, shadowCascades: world?.shadowCascadeStats ?? null,
       ...(diagnostic ? { worldSubmissions, textureUploads: [...textureUploads] } : {}),

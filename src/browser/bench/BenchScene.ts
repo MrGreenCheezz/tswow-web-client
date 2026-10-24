@@ -12,6 +12,7 @@ import type { UnitModel } from "../CreatureModelClient.js";
 import { NO_RENDER_LOOKUPS, type RenderLookups } from "../RenderLookups.js";
 import type { RenderFrameTime } from "../WorldRenderer3D.js";
 import type { SettingValues } from "../ui/SettingsModel.js";
+import type { BenchCastsConfig } from "./BenchSpellCasts.js";
 
 export interface BenchGraphics {
   lightingQuality: number; grassRadius: number; grassDense: boolean; grassDensity: number; fullscreenGlow: boolean;
@@ -26,7 +27,9 @@ export interface BenchConfig {
   graphics: BenchGraphics;
   /** A dense city square: a fixed WMO floor, a mixed population and the live client's settings. */
   city: { map: number; x: number; y: number; z: number; population: number; spacing: number; walkers: number;
-    orbit: number; pitch: number; displays: number[]; graphics: BenchGraphics };
+    orbit: number; pitch: number; displays: number[]; graphics: BenchGraphics;
+    /** 25.10 (perf): a casting crowd (BenchSpellCasts.ts); absent in bench/city.json. */
+    casts?: BenchCastsConfig };
   /** `bench/run.mjs --settings`: a player's account settings, pushed like the page pushes them. */
   settings?: SettingValues;
   /**
