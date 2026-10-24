@@ -80,6 +80,7 @@ import type { CharacterRegenTables } from "../CharacterRegenClient.js";
 import { FrameXmlServerPromptsModel } from "./FrameXmlServerPrompts.js";
 import { FrameXmlQuestPoiModel, frameXmlQuestPoiMask, type FrameXmlQuestPoiQuest } from "./FrameXmlQuestPoi.js";
 import { questPoiShiftComplete } from "./FrameXmlQuestPoiLayout.js"; // 3.13d (L6)
+import { frameXmlQuestWorldMapArea } from "./FrameXmlQuestPoiMapArea.js"; // 3.58 (24.10)
 import { frameXmlInstanceIsDynamic, frameXmlInstancePlayerDifficulty } from "./FrameXmlInstanceDynamic.js"; // 5.28 (L6)
 import { frameXmlLootOwnerLines, type FrameXmlLootOwnerLine } from "./FrameXmlLootOwnerTooltip.js"; // 5.28 (L6)
 import {
@@ -1748,6 +1749,17 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
       // 3.13d (L6): the icon spread's map size and the POIShiftComplete CVar (FrameXmlQuestPoiLayout.ts).
       mapWidthYards: () => this.map.questPoiMapWidth(),
       shiftComplete: () => questPoiShiftComplete(this.getCVar("POIShiftComplete")),
+      // 3.58 (24.10): GetQuestWorldMapAreaID (FrameXmlQuestPoiMapArea.ts, Wow.exe 0x005e2b60).
+      worldMapArea: (questId) => frameXmlQuestWorldMapArea({
+        quests: () => this.#questPoiQuests(),
+        blobs: (id) => context.world()?.questPoi?.get(id),
+        player: () => this.#self()?.position,
+        currentMapArea: () => this.map.questCurrentMapArea(),
+        mapAreaMapId: (id) => this.map.mapAreaMapId(id),
+        // The log header above the quest is its ZoneOrSort (FrameXmlQuestLog.ts); a quest not in the log has none.
+        headerMapArea: (id) => (this.questLog.indexOfQuest(id) === undefined ? 0
+          : this.map.zoneMapArea((this.#questTemplateById(id)?.sortId ?? 0) | 0)),
+      }, questId),
     });
     this.arenaRoster = new FrameXmlArenaRosterModel({
       world: () => context.world(), self: () => this.#self(), now: monotonic,

@@ -3383,6 +3383,8 @@ export async function mountFrameXmlVertical(
       },
       // 3.13: the guard's POI as one more landmark while it lives (GossipPoi.ts; Wow.exe 0x00546310).
       gossipPoi: () => activeGossipPoi(game.world, performance.now()),
+      // 3.58 (24.10): world-state AreaPOI rows (towers, workshops) show and pick their icon by it (0x00546310).
+      worldState: (id) => game.world?.worldStates.get(id),
       // L17 3.14: team, flag and vehicle pins, the battlefield map's icon scale and the party/raid pins.
       ...frameXmlBattlefieldMapSource({
         world: () => game.world,

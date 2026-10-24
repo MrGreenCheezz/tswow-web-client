@@ -293,6 +293,8 @@ export function frameXmlQuestPoiMask(objectives: FrameXmlQuestPoiObjectives): nu
 export interface FrameXmlQuestPoiModelContext extends FrameXmlQuestPoiContext {
   /** `GetQuestLogLeaderBoard(line, questLogIndex)` for the quest at a displayed row; undefined without one. */
   readonly leaderBoardLine: (logIndex: number, poiIndex: number) => readonly [string, string, boolean] | undefined;
+  /** 3.58 (24.10): `GetQuestWorldMapAreaID(questID)` (FrameXmlQuestPoiMapArea.ts); absent: 0, 0. */
+  readonly worldMapArea?: (questId: number) => readonly [number, number];
 }
 
 /**
@@ -362,6 +364,11 @@ export class FrameXmlQuestPoiModel {
     return this.#context.quests().find((quest) => quest.questId === questId)?.logIndex ?? 0;
   }
 
+  /** 3.58 (24.10): `GetQuestWorldMapAreaID(questID)` (0x005e56c0 → 0x005e2b60): WorldMapArea id and floor. */
+  worldMapArea(questId: number): readonly [number, number] {
+    return this.#context.worldMapArea?.(questId) ?? [0, 0];
+  }
+
   /** `GetQuestPOILeaderBoard(poiIndex, questLogIndex)` (0x5e6650 → 0x5e58c0). */
   leaderBoard(poiIndex: number, logIndex: number): readonly [string, string, boolean] | undefined {
     if (!Number.isInteger(poiIndex) || poiIndex < 0 || poiIndex > 15 || !Number.isInteger(logIndex) || logIndex < 1) {
@@ -377,6 +384,15 @@ export interface FrameXmlQuestPoiHost {
 
 const NOTHING: readonly unknown[] = Object.freeze([]);
 const NILS: readonly unknown[] = Object.freeze([undefined, undefined, undefined]);
+
+const LUA_NUMBER = /^\s*[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?\s*$|^\s*0[xX][0-9a-fA-F]+\s*$/;
+
+/** 3.58 (24.10): lua_isnumber and lua_tonumber — a number, or a numeric string. */
+function luaNumber(value: unknown): number | undefined {
+  if (typeof value === "number") return Number.isFinite(value) ? value : undefined;
+  if (typeof value === "string" && LUA_NUMBER.test(value)) return Number(value.trim());
+  return undefined;
+}
 
 function integer(value: unknown): number {
   const number = typeof value === "number" ? value : Number(value);
@@ -404,6 +420,14 @@ export function frameXmlQuestPoiBindings<Host extends FrameXmlQuestPoiHost>(
     },
     // 3.13d (L6): places and spreads the icons QuestPOIGetIconInfo then reads.
     QuestPOIUpdateIcons: (host) => { host.questPoi?.updateIcons(); return NOTHING; },
+    // 3.58 (24.10): WorldMap_OpenToQuest's map (0x005e56c0); "Usage" on a non-number like Wow.exe, 0, 0 with no
+    // POI model (the canned seam). Before this it answered nothing: SetMapByID(nil) did nothing and the map stayed
+    // on the player's own zone, without the quest's markers when they lie elsewhere.
+    GetQuestWorldMapAreaID: (host, args) => {
+      const id = luaNumber(args[0]);
+      if (id === undefined) throw new Error("Usage: GetQuestWorldMapAreaID(questID)");
+      return host.questPoi ? [...host.questPoi.worldMapArea(Math.trunc(id))] : [0, 0];
+    },
     GetQuestPOILeaderBoard: (host, args) => {
       const line = host.questPoi?.leaderBoard(integer(args[0]), integer(args[1]));
       return line ? [line[0], line[1], line[2] ? 1 : undefined] : NILS;

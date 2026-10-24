@@ -81,8 +81,10 @@ test("the world map lists the gossip POI after the AreaPOI rows on its map only"
   gossip = { mapId: 0, x: -9_050, y: -350, icon: 7, name: "Банк" };
   assert.equal(map.getNumMapLandmarks(), before + 1);
   const row = map.getMapLandmarkInfo(before + 1);
-  assert.equal(row.length, 6);
-  assert.deepEqual([row[0], row[1], row[2], row[5]], ["Банк", undefined, 7, undefined], "name, no text, icon, no link");
+  // 3.58 (24.10): seven values (0x00545a30), the last the packet flags' 0x200 (showInBattleMap).
+  assert.equal(row.length, 7);
+  assert.deepEqual([row[0], row[1], row[2], row[5], row[6]], ["Банк", undefined, 7, undefined, false],
+    "name, no text, icon, no link, not on the battle map");
   assert.ok(row[3] > 0 && row[3] < 1 && row[4] > 0 && row[4] < 1, "on the Elwynn sheet");
   gossip = { mapId: 1, x: -9_050, y: -350, icon: 7, name: "Банк" };
   assert.equal(map.getNumMapLandmarks(), before, "a POI from another map is not on this one");
