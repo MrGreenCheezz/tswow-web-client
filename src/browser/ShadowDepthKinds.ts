@@ -45,11 +45,33 @@ export function shadowDepthKind(object: THREE.Object3D): number {
   return (object as THREE.SkinnedMesh).isSkinnedMesh ? 3 : 0;
 }
 
+const HOOKS = ["onBeforeCompile", "customProgramCacheKey"] as const;
+
+/**
+ * Gives `twin` the compile hooks `source` carries as its own (the 7.26 wind of an alpha-keyed crown);
+ * answers whether that changed anything. Hooks only inherited from the prototype are left inherited: the
+ * bench census swaps `Material.prototype.customProgramCacheKey` for a frame, and a copied prototype method
+ * would look like a new hook every time it is swapped back.
+ */
+function syncHooks(source: THREE.Material, twin: THREE.Material): boolean {
+  let changed = false;
+  const from = source as unknown as Record<string, unknown>;
+  const to = twin as unknown as Record<string, unknown>;
+  for (const key of HOOKS) {
+    const value = Object.prototype.hasOwnProperty.call(source, key) ? from[key] : undefined;
+    const current = Object.prototype.hasOwnProperty.call(twin, key) ? to[key] : undefined;
+    if (value === current) continue;
+    if (value === undefined) delete to[key];
+    else to[key] = value;
+    changed = true;
+  }
+  return changed;
+}
+
 function makeTwin(source: THREE.Material): THREE.Material {
   const twin = source.clone();
-  // `Material.copy` leaves the compile hooks behind; the wind of an alpha-keyed crown lives there.
-  twin.onBeforeCompile = source.onBeforeCompile;
-  twin.customProgramCacheKey = source.customProgramCacheKey;
+  // `Material.copy` leaves the compile hooks behind.
+  syncHooks(source, twin);
   twin.name = `${source.name}|kind`;
   return twin;
 }
@@ -96,10 +118,8 @@ export function shadowDepthFor(depth: THREE.Material, object: THREE.Object3D): T
   if (twin === undefined) {
     twin = makeTwin(depth);
     twins.kinds[kind - 1] = twin;
-  } else if (twin.onBeforeCompile !== depth.onBeforeCompile || twin.customProgramCacheKey !== depth.customProgramCacheKey) {
+  } else if (syncHooks(depth, twin)) {
     // A hook installed on the source after its twin was made (7.26 wind): the twin compiles again with it.
-    twin.onBeforeCompile = depth.onBeforeCompile;
-    twin.customProgramCacheKey = depth.customProgramCacheKey;
     twin.needsUpdate = true;
   }
   copyDrawState(depth as DepthState, twin as DepthState);

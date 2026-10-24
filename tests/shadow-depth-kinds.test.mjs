@@ -60,6 +60,23 @@ test("a twin draws with the state three just wrote onto the source, and with its
   assert.ok(twin.version > version, "recompiled with the new hook");
 });
 
+test("a prototype method swapped for a frame (the bench census) is not taken for a new hook", () => {
+  const shared = new THREE.MeshDepthMaterial();
+  const instanced = bucket(true);
+  const twin = shadowDepthFor(shared, instanced);
+  const version = twin.version;
+  const original = THREE.Material.prototype.customProgramCacheKey;
+  THREE.Material.prototype.customProgramCacheKey = function () { return original.call(this); };
+  try {
+    assert.equal(shadowDepthFor(shared, instanced), twin);
+  } finally {
+    THREE.Material.prototype.customProgramCacheKey = original;
+  }
+  assert.equal(shadowDepthFor(shared, instanced), twin);
+  assert.equal(twin.version, version, "no program derived again for an inherited hook");
+  assert.equal(Object.prototype.hasOwnProperty.call(twin, "customProgramCacheKey"), false);
+});
+
 test("the cascades swap only while they render, through renderBufferDirect installed once", async () => {
   const { CascadedSunShadows } = await import("../dist/code/browser/CascadedShadows.js");
   const { lightingProfile } = await import("../dist/code/browser/LightingQuality.js");
