@@ -2,6 +2,10 @@ import type {
   AreaData, AreaInfo, AreaPoiInfo, DungeonMapInfo, MapAreaInfo, MapOverlayInfo,
 } from "../../gateway/AreaMetadata.js";
 import { hasMapBounds, worldMapPoint } from "../MinimapGeometry.js";
+// 3.58 (24.10): Wow.exe's landmark rows and icons (0x00546310, 0x005445f0, 0x00545a30).
+import {
+  AREA_POI_FLAG_BATTLE_MAP, AREA_POI_FLAG_OWN_AREA, areaPoiFlagsAllow, areaPoiLandmarkIcon, type FrameXmlLandmarkView,
+} from "./FrameXmlMapLandmarks.js";
 import {
   WorldMapHierarchy, type AreaWorldMapNode, type WorldMapNode, type WorldMapNodeKey,
 } from "../ui/WorldMapHierarchy.js";
@@ -48,6 +52,12 @@ export interface FrameXmlMapSource {
   readonly battlefieldMapIconScale?: () => number | undefined;
   /** 3.13: the live gossip POI (GossipPoi.ts), one more landmark on its map. */
   readonly gossipPoi?: () => FrameXmlGossipLandmark | undefined;
+  /**
+   * 3.58 (24.10): a world state's value (SMSG_INIT/UPDATE_WORLD_STATE); an AreaPOI row with a WorldStateID is a
+   * landmark only while it reads non-zero, and picks its icon by it (Wow.exe 0x00546310, 0x00545a30). Absent:
+   * such rows stay off the map.
+   */
+  readonly worldState?: (id: number) => number | undefined;
 }
 
 /** 3.13: what GetMapLandmarkInfo answers for the gossip POI (Wow.exe 0x00545a30 over record 0x00d394e8). */
@@ -57,10 +67,15 @@ export interface FrameXmlGossipLandmark {
   readonly y: number;
   readonly icon: number;
   readonly name: string;
+  /** 3.58 (24.10): the packet's flags; 0x200 is GetMapLandmarkInfo's seventh value. */
+  readonly flags?: number;
 }
 
 type FrameXmlLandmark =
-  | { readonly poi: AreaPoiInfo; readonly gossip?: undefined; readonly u: number; readonly v: number }
+  | {
+    readonly poi: AreaPoiInfo; readonly gossip?: undefined; readonly u: number; readonly v: number;
+    readonly view: FrameXmlLandmarkView;
+  }
   | { readonly poi?: undefined; readonly gossip: FrameXmlGossipLandmark; readonly u: number; readonly v: number };
 
 /** L17 3.14: one in-sight vehicle as GetBattlefieldVehicleInfo (0x0054c4d0) reads it. */
@@ -423,11 +438,39 @@ export class FrameXmlMap {
     const marker = this.#landmarks()[index - 1];
     if (marker?.gossip) {
       // 3.13: the gossip POI's row (0x00545a30, entry [4] = 1): its name, no description, its icon, no map link.
-      return [marker.gossip.name, undefined, marker.gossip.icon, marker.u, marker.v, undefined];
+      // 3.58 (24.10): and showInBattleMap, the packet flags' 0x200.
+      return [marker.gossip.name, undefined, marker.gossip.icon, marker.u, marker.v, undefined,
+        ((marker.gossip.flags ?? 0) & AREA_POI_FLAG_BATTLE_MAP) !== 0];
     }
-    return marker?.poi
-      ? [marker.poi.name, marker.poi.description, marker.poi.icons[0], marker.u, marker.v, marker.poi.worldMapLink]
-      : NOTHING;
+    if (!marker?.poi) return NOTHING;
+    // 3.58 (24.10): Icon[state] only with flag 0x80 or on a continent; elsewhere the empty cell 0 (0x00545a30).
+    const icon = areaPoiLandmarkIcon(marker.view, marker.poi, this.#worldState);
+    return [marker.poi.name, marker.poi.description, icon, marker.u, marker.v,
+      marker.poi.worldMapLink || undefined, (marker.poi.flags & AREA_POI_FLAG_BATTLE_MAP) !== 0];
+  }
+
+  /**
+   * 3.58 (24.10): `ClickLandmark(mapLinkID)` (0x00546ef0): the AreaPOI's WorldMapLink is a DungeonMap row; the
+   * map opens on the WorldMapArea of that row's map at that floor. Anything else does nothing.
+   */
+  clickLandmark(dungeonMapId: number): void {
+    this.#ensureData();
+    const floor = this.#dungeonById.get(dungeonMapId);
+    // Wow.exe walks its orphan-zone list for the floor's map; here the first WorldMapArea of that map with floors.
+    const area = floor && this.#data?.mapAreas.find((row) => row.mapId === floor.mapId && this.#floorRows(row).includes(floor));
+    if (!floor || !area || !this.#hierarchy?.area(area.id)) return;
+    this.#select(`area:${area.id}`, true);
+    const level = floor.floorIndex + (area.defaultDungeonFloor === -1 ? 1 : 0);
+    if (level !== this.#floor && level >= 1 && level <= this.#floorCount(area)) {
+      this.#floor = level;
+      this.#revision++;
+    }
+  }
+
+  /** Whether a WorldMapArea is one of a continent's zones (not an orphan zone). */
+  #zonesHave(area: MapAreaInfo): boolean {
+    const continent = this.#continentOf(area);
+    return !!continent && this.#zones(continent.mapId).some((row) => row.id === area.id);
   }
 
   /** The original client uses the exact pair (0,0) as its off-map arrow sentinel. */
@@ -483,6 +526,44 @@ export class FrameXmlMap {
     if (floor > 0 && this.#floorRows(area).some((entry) => entry.floorIndex
       === floor - (area.defaultDungeonFloor === -1 ? 1 : 0))) return undefined;
     return Math.abs(area.left - area.right);
+  }
+
+  /**
+   * 3.58 (24.10): GetQuestWorldMapAreaID's start (0x005e2b60): SetMapToCurrentZone, then the displayed
+   * WorldMapArea, its MapID and the current floor — the DungeonMap row's FloorIndex on a floor, else 0.
+   */
+  questCurrentMapArea(): { id: number; mapId: number; floor: number } | undefined {
+    this.setMapToCurrentZone();
+    const node = this.#node();
+    if (node?.kind !== "area") return undefined;
+    const area = node.mapArea;
+    const level = this.#floor;
+    const row = level > 0 ? this.#floorRows(area).find((entry) => entry.floorIndex
+      === level - (area.defaultDungeonFloor === -1 ? 1 : 0)) : undefined;
+    return { id: area.id, mapId: area.mapId, floor: row?.floorIndex ?? 0 };
+  }
+
+  /** 3.58 (24.10): a WorldMapArea row's MapID; undefined without the row. */
+  mapAreaMapId(worldMapAreaId: number): number | undefined {
+    this.#ensureData();
+    return this.#mapAreaById.get(worldMapAreaId)?.mapId;
+  }
+
+  /**
+   * 3.58 (24.10): GetQuestWorldMapAreaID's fallback (0x005e2b60): an AreaTable id walked up to its top-level
+   * parent, then the first WorldMapArea row of that area; 0 for none (or an id ≤ 0, a QuestSort).
+   */
+  zoneMapArea(areaId: number): number {
+    const data = this.#ensureData();
+    if (!data || !Number.isInteger(areaId) || areaId <= 0) return 0;
+    let id = areaId;
+    for (let depth = 0; depth < 32; depth++) {
+      const area = this.#areaById.get(id);
+      if (!area) return 0;
+      if (!area.parentId) break;
+      id = area.parentId;
+    }
+    return data.mapAreas.find((row) => row.areaId === id)?.id ?? 0;
   }
 
   processMapClick(u: number, v: number): void {
@@ -696,21 +777,45 @@ export class FrameXmlMap {
     return this.#isBattlegroundMap() ? undefined : NOTHING;
   }
 
+  readonly #worldState = (id: number): number | undefined => this.#source.worldState?.(id);
+
+  /**
+   * 3.58 (24.10): how Wow.exe's map state reads for the landmark tests: a continent-wide row is the continent
+   * (m_currentZone −1); a zone of a continent's zone list is a zone; a dungeon, a floor map or any other
+   * WorldMapArea is an orphan zone (SetMap(−2, …), 0x00546310).
+   */
+  #landmarkView(area: MapAreaInfo): FrameXmlLandmarkView {
+    if (area.areaId === 0) return this.#continentOf(area) ? "continent" : "orphan";
+    if (area.defaultDungeonFloor > 0) return "orphan";
+    return this.#zonesHave(area) ? "zone" : "orphan";
+  }
+
+  /**
+   * 3.58 (24.10): the AreaPOI rows CGWorldMap::SetMap lists (0x00546310 over 0x005445f0): the flag tests of
+   * FrameXmlMapLandmarks.ts, 0x400 rows on their own WorldMapArea only, a row inside the map, an explored
+   * area (or one with ExplorationLevel below 0; with no exploration source every row counts), a set world
+   * state. FactionID is not a filter. The Azeroth and cosmic maps have no positions here, so none there.
+   */
   #landmarks(): readonly FrameXmlLandmark[] {
     const node = this.#node();
     if (node?.kind !== "area") return NOTHING;
     const selected = node.mapArea;
     const rows = this.#poisByMap.get(selected.mapId) ?? NOTHING;
-    const continent = selected.areaId === 0;
+    const view = this.#landmarkView(selected);
+    const explored = this.#source.isExploredArea;
     const output: FrameXmlLandmark[] = [];
     for (const poi of rows) {
-      // World-state and faction-gated markers require their own live condition answers. These
-      // unconditionally visible rows can be read straight from the DBC without inventing state.
-      if (!poi.icons[0] || poi.worldStateId !== 0 || poi.factionId !== 0) continue;
-      if (!(poi.flags & (continent ? 1 : 4))) continue;
+      if (!areaPoiFlagsAllow(view, poi.flags)) continue;
+      if ((poi.flags & AREA_POI_FLAG_OWN_AREA)
+        && (view === "orphan" || selected.areaId !== poi.areaId || selected.mapId !== poi.mapId)) continue;
       const point = this.#pointOnMap(selected, { mapId: poi.mapId, areaId: poi.areaId, x: poi.x, y: poi.y });
-      if (!point || point.u < 0 || point.u > 1 || point.v < 0 || point.v > 1) continue;
-      output.push({ poi, ...point });
+      if (!point || point.u < 0 || point.u > 1 || point.v < 0 || point.v > 1 || (point.u === 0 && point.v === 0)) continue;
+      if (poi.areaId > 0 && explored) {
+        const area = this.#areaById.get(poi.areaId);
+        if (!area || (area.explorationLevel >= 0 && explored(poi.areaId) !== true)) continue;
+      }
+      if (poi.worldStateId && !this.#worldState(poi.worldStateId)) continue;
+      output.push({ poi, view, ...point });
     }
     // 3.13: the gossip POI after the AreaPOI rows (0x00546310), projected from the map it arrived on (0x00544140).
     const gossip = this.#source.gossipPoi?.();
@@ -789,6 +894,12 @@ export const FRAMEXML_MAP_BINDINGS: Readonly<Record<string, FrameXmlMapBinding>>
   GetCorpseMapPosition: (host) => host.map?.getCorpseMapPosition() ?? NOTHING,
   GetDeathReleasePosition: (host) => host.map?.getDeathReleasePosition() ?? NOTHING,
   GetMapLandmarkInfo: (host, args) => host.map?.getMapLandmarkInfo(integer(args[0]) ?? 0) ?? NOTHING,
+  // 3.58 (24.10): a landmark's WorldMapLink opens its dungeon floor (0x00546ef0).
+  ClickLandmark: (host, args) => {
+    const id = finite(args[0]);
+    if (id !== undefined) host.map?.clickLandmark(Math.trunc(id));
+    return NOTHING;
+  },
   HasDebugZoneMap: (host) => host.map ? [host.map.hasDebugZoneMap()] : NOTHING,
   GetNumMapDebugObjects: (host) => host.map ? [host.map.getNumMapDebugObjects()] : NOTHING,
   GetPlayerMapPosition: (host, args) => host.map?.getPlayerMapPosition(String(args[0] ?? "")) ?? NOTHING,
