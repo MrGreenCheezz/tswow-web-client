@@ -125,6 +125,61 @@ export function buildWorkImages(image, layout) {
   };
 }
 
+/** 24.10 (7.48 step 3): below this alpha a texel's colour is not trusted as the network's input (`dilateUnderAlpha`). */
+export const DILATE_ALPHA = 16;
+
+/**
+ * 24.10 (7.48 step 3): the colour under (nearly) transparent texels replaced by its visible neighbours', cell by cell —
+ * what the network sees for a cut-out texture of the world set. A DXT1 leaf card is black wherever it is cut out, and
+ * the network blended that black into the leaf's own edge: alpha-tested at ×2 every leaf had a dark rim and read darker
+ * (lookdev el-trunk, 24.10). Texels with alpha < `DILATE_ALPHA` take the mean of their already-filled 8 neighbours,
+ * ring after ring (`passes`); any left keep their colour. A wrapping layout looks across the opposite edge, a cell
+ * never into its neighbour. The colour under alpha 0 of the result is put back by `assemble` (`under`), so an
+ * additive no-alpha draw still sees the original's colour there. Returns a new image.
+ */
+export function dilateUnderAlpha(image, layout, passes = 32) {
+  const { width, data } = image;
+  const out = Uint8Array.from(data);
+  const filled = new Uint8Array(image.width * image.height);
+  for (let index = 0; index < filled.length; index++) filled[index] = data[index * 4 + 3] >= DILATE_ALPHA ? 1 : 0;
+  for (const cell of layout.cells) {
+    for (let pass = 0; pass < passes; pass++) {
+      const next = [];
+      for (let y = cell.sy; y < cell.sy + cell.sh; y++) {
+        for (let x = cell.sx; x < cell.sx + cell.sw; x++) {
+          if (filled[y * width + x]) continue;
+          const sum = [0, 0, 0];
+          let count = 0;
+          for (let dy = -1; dy <= 1; dy++) {
+            for (let dx = -1; dx <= 1; dx++) {
+              if (dx === 0 && dy === 0) continue;
+              let nx = x + dx;
+              let ny = y + dy;
+              if (layout.mode === "wrap") {
+                nx = cell.sx + ((((nx - cell.sx) % cell.sw) + cell.sw) % cell.sw);
+                ny = cell.sy + ((((ny - cell.sy) % cell.sh) + cell.sh) % cell.sh);
+              } else if (nx < cell.sx || ny < cell.sy || nx >= cell.sx + cell.sw || ny >= cell.sy + cell.sh) {
+                continue;
+              }
+              const at = ny * width + nx;
+              if (!filled[at]) continue;
+              for (let channel = 0; channel < 3; channel++) sum[channel] += out[at * 4 + channel];
+              count++;
+            }
+          }
+          if (count > 0) next.push([y * width + x, sum.map((value) => Math.round(value / count))]);
+        }
+      }
+      if (next.length === 0) break;
+      for (const [at, colour] of next) {
+        out.set(colour, at * 4);
+        filled[at] = 1;
+      }
+    }
+  }
+  return { width: image.width, height: image.height, data: out };
+}
+
 /**
  * Alpha this close to 0 or 255 is snapped to it. The network leaves a faint ±1–2 haze over flat regions; on an
  * additive or blended quad a 1/255 floor everywhere is a visible grey card around the particle.
@@ -137,8 +192,10 @@ export const ALPHA_SNAP = 3;
  * `colour` and `alpha` are the network's outputs (`{ width, height, data }`, RGB or RGBA at 3 or 4 channels;
  * `channels` says which). Each cell is cut out of its gutter at exact multiples and pasted where the source
  * cell was × scale. Alpha is the mean of the grey picture's three channels, snapped near the ends.
+ * 24.10 (7.48 step 3): `under` (the source image) — where the result's alpha is 0, the colour is the source texel's
+ * own (nearest), as it was before `dilateUnderAlpha` painted it for the network.
  */
-export function assemble(layout, scale, colour, alpha, channels = 4) {
+export function assemble(layout, scale, colour, alpha, channels = 4, under = undefined) {
   const width = layout.width * scale;
   const height = layout.height * scale;
   const expectedWidth = layout.workWidth * scale;
@@ -163,6 +220,12 @@ export function assemble(layout, scale, colour, alpha, channels = 4) {
         if (alpha) {
           const a = Math.round((alpha.data[from] + alpha.data[from + 1] + alpha.data[from + 2]) / 3);
           out[to + 3] = a < ALPHA_SNAP ? 0 : a > 255 - ALPHA_SNAP ? 255 : a;
+          if (under && out[to + 3] === 0) { // 24.10 (7.48 step 3)
+            const source = ((cell.sy + Math.floor(y / scale)) * under.width + cell.sx + Math.floor(x / scale)) * 4;
+            out[to] = under.data[source];
+            out[to + 1] = under.data[source + 1];
+            out[to + 2] = under.data[source + 2];
+          }
         } else {
           out[to + 3] = 255;
         }

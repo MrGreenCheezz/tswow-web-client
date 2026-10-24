@@ -31,6 +31,7 @@ import {
 } from "./VegetationWind.js";
 import { syncModelPlacementTintMaterials } from "./ModelPlacementTint.js";
 import { registerPendingTextureView } from "./TextureLoad.js";
+import { withHdModelTexture } from "./HdWorldTextures.js"; // 24.10 (7.48 step 3)
 import {
   WVM_SLOT_ROWS, WVM_SLOT_SAMPLERS, buildSlotAttribute, createSlotDepthMaterial, createSlotUniforms,
   isFacingCarrier, markFacingCarrier, registerSlotDepth, registerSlotMaps, slotStep,
@@ -1525,7 +1526,8 @@ function loadSlotMap(
   path: string,
   options: { baseUrl: string; loadTexture: (url: string) => THREE.Texture; anisotropy?: number },
 ): THREE.Texture {
-  const texture = options.loadTexture(textureUrl(options.baseUrl, path));
+  // 24.10 (7.48 step 3): + `hd=` on a scenery texture while «Чёткие текстуры мира» is on (HdWorldTextures.ts).
+  const texture = options.loadTexture(withHdModelTexture(textureUrl(options.baseUrl, path)));
   // The wrap flags are per texture and mostly clamp: of 244 slots measured across 62 client
   // models only 16 asked to tile. Forcing Repeat on the rest makes a face pull in the opposite
   // edge of its atlas wherever a UV strays outside [0, 1].
@@ -1672,7 +1674,7 @@ function secondLayer(
   // cannot resolve, and drawing it flat green would be worse than drawing one layer.
   if (!slot || slot.type !== TEXTURE_TYPE_OWN || !slot.path) return undefined;
 
-  const loaded = options.loadTexture(textureUrl(options.baseUrl, slot.path));
+  const loaded = options.loadTexture(withHdModelTexture(textureUrl(options.baseUrl, slot.path))); // 24.10 (7.48 step 3)
   const texture = options.privateLoadedTextureViews === true
     ? loaded
     : privateTextureView(loaded);

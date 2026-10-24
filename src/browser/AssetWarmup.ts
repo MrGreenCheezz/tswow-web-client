@@ -22,6 +22,7 @@ import type { EnvironmentClient, EnvironmentModel, EnvironmentObject, ModelLoadP
 import { layerPaths } from "./CharacterAtlas.js";
 import { spellVisualAllPhases, spellVisualPhasePaths } from "./SpellVisuals.js";
 import { modelOwnTexturePaths, textureUrl, visualAnimationsUrl } from "./Wvm.js";
+import { withHdModelTexture, withHdWorldTexture } from "./HdWorldTextures.js"; // 24.10 (7.48 step 3)
 
 export const ASSET_WARMUP_BUDGET = {
   sceneryModels: 6,
@@ -439,9 +440,11 @@ function appearanceTextures(appearance: CharacterAppearance): string[] {
 
 /** 22.10 (12.14): exported for the worker's warm-up (RenderWorkerModelWarmup.ts). */
 export function modelTextureUrls(model: EnvironmentModel, baseUrl: string): string[] {
-  const urls = [model.textureUrl ?? "", ...(model.textureUrls ?? []), ...(model.wmo?.textureUrls ?? [])];
+  // 24.10 (7.48 step 3): the URLs the renderer will ask for — `hd=` on building and scenery textures while
+  // «Чёткие текстуры мира» is on, so the warm-up fetches what is drawn (HdWorldTextures.ts).
+  const urls = [model.textureUrl ?? "", ...(model.textureUrls ?? []), ...(model.wmo?.textureUrls ?? [])].map(withHdWorldTexture);
   if (model.wvm) {
-    for (const path of modelOwnTexturePaths(model.wvm)) urls.push(textureUrl(baseUrl, path));
+    for (const path of modelOwnTexturePaths(model.wvm)) urls.push(withHdModelTexture(textureUrl(baseUrl, path)));
   }
   return boundedUnique(urls.filter(Boolean), urls.length);
 }

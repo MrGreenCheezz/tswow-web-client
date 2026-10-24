@@ -15,7 +15,7 @@ import { parentPort } from "node:worker_threads";
 import { PNG } from "pngjs";
 import { decodeBlp } from "./blp.mjs";
 import { blpToPng } from "./blp-png.mjs";
-import { compressTexture, decodeBc7Image, decodeContainer, resampleWrapped } from "./hd-texture-bc7.mjs";
+import { backProject, compressTexture, decodeBc7Image, decodeContainer, resampleWrapped } from "./hd-texture-bc7.mjs";
 
 /** The side every ground layer of the HD terrain array has (the gateway's 256 layers × 2). */
 export const GROUND_SIDE = 512;
@@ -41,6 +41,8 @@ parentPort.on("message", (job) => {
     // Level 1 onwards is the original (see `compressTexture`'s `lower`): the ground's as the gateway lays it out
     // (resampled to the array's 256, opaque), a building's as decoded.
     let lower = source;
+    // 24.10 (7.48 step 3): the network's picture back-projected onto the original (its drift in tone removed).
+    image = backProject(image, source, job.wrap === true || job.ground);
     if (job.ground) {
       // The ground on the array's sides (the gateway resamples a layer that is not 256 the same way), opaque: the
       // terrain reads only colour from an HD layer (the specular glint keeps the originals, TerrainSplat.ts).

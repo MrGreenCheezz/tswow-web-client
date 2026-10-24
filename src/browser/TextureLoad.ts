@@ -12,7 +12,7 @@ import {
 import { reportPatchChainSuspect } from "./PatchChainSuspect.js"; // 22.10 ARC-2 S4b: this realm's sink
 import { recencyStampLimit, renumberByUsed } from "./RecencyStamps.js";
 import { isHdTextureContainer, parseHdTexture, type HdCompressedTexture } from "./HdTextureContainer.js"; // 23.10 (7.48)
-import { asksForHdTexture, compressedMipmaps, isHdWorldTextureUrl } from "./HdWorldTextures.js"; // 23.10 (7.48)
+import { asksForHdTexture, compressedMipmaps, isHdModelTextureUrl, isHdWorldTextureUrl } from "./HdWorldTextures.js"; // 23.10 (7.48)
 
 export type ModelTextureStatus = "pending" | "ready" | "failed";
 
@@ -236,7 +236,8 @@ async function decodeModelImage(url: string, options: ImageBitmapOptions = MODEL
 async function decodeModelImageOrHd(
   url: string, options: ImageBitmapOptions = MODEL_IMAGE_DECODE,
 ): Promise<ImageBitmap | HdCompressedTexture> {
-  if (!asksForHdTexture(url) || !isHdWorldTextureUrl(url)) return decodeModelImage(url, options);
+  // 24.10 (7.48 step 3): and a scenery model's `/texture` URL (HdWorldTextures.ts `withHdModelTexture`).
+  if (!asksForHdTexture(url) || !(isHdWorldTextureUrl(url) || isHdModelTextureUrl(url))) return decodeModelImage(url, options);
   const response = await fetch(url, MODEL_IMAGE_REQUEST);
   if (!response.ok) throw new Error(`${url} returned ${response.status}`);
   const bytes = new Uint8Array(await response.arrayBuffer());

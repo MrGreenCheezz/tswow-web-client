@@ -21,7 +21,8 @@
 // - `manifest.json` — path → { scale, size, source sha1, grid, wrap }, plus the model and pipeline version. The
 //   gateway's HD generation is a digest of it, so a rebuilt set reaches browsers under new URLs.
 //
-// The `world` set (23.10, step 2: ground textures and buildings' diffuse textures, ×2 up to 256 px a side) also gets
+// The `world` set (23.10, step 2: ground textures and buildings' diffuse textures, ×2 up to 256 px a side; 24.10, step 3:
+// plus the scenery models' textures and the WMO second textures, and ×2 up to 512 px a side but for the ground) also gets
 // a GPU-compressed form of every entry, made on the CPU after the GPU runs (`compressSet`, tools/hd-texture-bc7.mjs):
 // - `<id>.wht` — BC7 with its full mip chain in a small container, what the gateway serves to the world routes (the
 //   PNG beside it is only the compressor's input); level 1 onwards is the original texture, so only magnified texels
@@ -43,8 +44,10 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PNG } from "pngjs";
 import { decodeBlp } from "./blp.mjs";
-import { effectsSet, worldSet, SET_NAMES } from "./hd-texture-set.mjs";
-import { assemble, buildWorkImages, effectScale, fidelity, planLayout, ALPHA_SNAP, FIDELITY_LIMIT } from "./hd-texture-image.mjs";
+import { effectsSet, worldSet, GROUND_MAX_SOURCE, SET_NAMES, WORLD_MAX_SOURCE } from "./hd-texture-set.mjs";
+import {
+  assemble, buildWorkImages, dilateUnderAlpha, effectScale, fidelity, planLayout, ALPHA_SNAP, DILATE_ALPHA, FIDELITY_LIMIT,
+} from "./hd-texture-image.mjs";
 import { downsample, MODELS, nativeScale, upscaleDirectory } from "./hd-texture-upscaler.mjs";
 import { clientArchives } from "./mpq.mjs";
 import { clientDirectory, repositoryRoot } from "./paths.mjs";
@@ -52,6 +55,19 @@ import { stampGenerated, stampIsCurrent, writeFileAtomic } from "./source-stamp.
 
 /** Bumped when the pixel pipeline changes (padding, alpha handling, assembly), so every entry is rebuilt. */
 export const PIPELINE = `hd-pipeline-2/pad8/snap${ALPHA_SNAP}/x4box`;
+/**
+ * 24.10 (7.48 step 3): a world-set texture with alpha is upscaled from `dilateUnderAlpha` (the colour under transparent
+ * texels taken from the visible ones, the original's put back under alpha 0): cut-out leaves had dark rims. Opaque
+ * textures and the effects set keep `PIPELINE`, so nothing else is rebuilt.
+ */
+export const DILATED_PIPELINE = `${PIPELINE}/dilate${DILATE_ALPHA}`;
+
+/** 24.10 (7.48 step 3): the pixel pipeline a texture of `set` is built by (`image`: its decoded source). */
+export function pipelineFor(set, image) {
+  if (set !== "world") return PIPELINE;
+  for (let index = 3; index < image.data.length; index += 4) if (image.data[index] !== 255) return DILATED_PIPELINE;
+  return PIPELINE;
+}
 export const MANIFEST_SCHEMA = "hd-textures-1";
 /**
  * 23.10: realesr-animevideov3. Compared on eight effect textures against realesrgan-x4plus and x4plus-anime
@@ -78,10 +94,18 @@ export function hdTextureDirectory() {
   return resolve(process.env.HD_TEXTURE_DIR ?? join(repositoryRoot, ".runtime", "hd-textures"));
 }
 
-/** How a set decides each texture's scale. `world` is the later step: ×2 for up to 256 px a side. */
+/**
+ * How a set decides each texture's scale (`path` is the texture's key). `world`: ×2 — 23.10 for up to 256 px a side;
+ * 24.10 (7.48 step 3) for up to 512 px (a result of at most 1024) except the ground, which stays at 256 px because its
+ * HD layers live in the terrain's 512 array (a 512-px ground texture makes its tile a 512 tile, drawn from originals).
+ */
 export const SCALE_POLICY = {
   effects: (width, height, maxSide = 512) => effectScale(width, height, maxSide),
-  world: (width, height, maxSide = 1024) => (Math.max(width, height) <= 256 && Math.max(width, height) * 2 <= maxSide ? 2 : 1),
+  world: (width, height, maxSide = 1024, path = "") => {
+    const side = Math.max(width, height);
+    const limit = path.startsWith("tileset\\") ? GROUND_MAX_SOURCE : WORLD_MAX_SOURCE;
+    return side <= limit && side * 2 <= maxSide ? 2 : 1;
+  },
 };
 
 /** Whether a manifest entry still describes what would be built now. */
@@ -175,12 +199,15 @@ function takeSetLock(setDirectory) {
  * 23.10 (7.48): bumped when the compressed form changes (encoder, mip filter, ground side), so every `.wht` is
  * rebuilt — on the CPU only, from the PNG beside it.
  */
-export const COMPRESS_PIPELINE = "bc7-mode6-v2/hd0-original-mips/ground512";
+// 24.10 (7.48 step 3): v4 — alpha blocks may be BC7 mode 5 (tools/hd-texture-bc7.mjs `encodeMode5`), and level 0 is
+// back-projected onto the original (`backProject`: x4plus's 2–3/255 drift in tone removed, sharpness kept).
+export const COMPRESS_PIPELINE = "bc7-mode56-v4/backproject/hd0-original-mips/ground512";
 /**
  * 23.10 (7.48): a ground texture's container is opaque — its `_s.blp` specular mask is not carried (the client uses the
- * HD ground only where the glint is not drawn; with the mask in alpha BC7 cost the colour 1.7 % sharpness).
+ * HD ground only where the glint is not drawn; with the mask in alpha BC7 cost the colour 1.7 % sharpness — 24.10
+ * re-measured on 40 ground textures with their masks: −6.7 % sharpness, colour error 1.0 → 1.5, mask error 2.6/255).
  */
-const GROUND_COMPRESS_PIPELINE = `${COMPRESS_PIPELINE}/opaque`;
+const OPAQUE_SUFFIX = "/opaque";
 
 /** 23.10 (7.48): whether a world-set path is a ground texture (the terrain array's layers). */
 function isGround(path) {
@@ -189,7 +216,12 @@ function isGround(path) {
 
 /** 23.10 (7.48): the pipeline a compressed entry of `path` must have been made by. */
 export function compressPipeline(path) {
-  return isGround(path) ? GROUND_COMPRESS_PIPELINE : COMPRESS_PIPELINE;
+  return isGround(path) ? `${COMPRESS_PIPELINE}${OPAQUE_SUFFIX}` : COMPRESS_PIPELINE;
+}
+
+/** 24.10 (7.48 step 3): whether an entry's compressed form is what this pipeline would make. */
+export function compressedUpToDate(path, entry) {
+  return entry?.compressed?.pipeline === compressPipeline(path);
 }
 
 /** 23.10 (7.48): the compressed form beside an HD PNG (`<id>.wht`, src/gateway/HdTextures.ts names it the same). */
@@ -220,8 +252,8 @@ async function compressSet(manifest, manifestFile, setDirectory, archives, optio
     const png = join(setDirectory, `${hdTextureId(path)}.png`);
     const destination = compressedFile(png);
     if (!existsSync(png)) continue;
-    if (entry.compressed?.pipeline === compressPipeline(path) && existsSync(destination)) continue;
-    jobs.push({ path, png, destination, ground: isGround(path) });
+    if (existsSync(destination) && compressedUpToDate(path, entry)) continue;
+    jobs.push({ path, png, destination, ground: isGround(path), wrap: entry.wrap === true });
   }
   console.log(`${jobs.length} HD textures to compress (BC7) on ${options.workers} threads`);
   if (options.dryRun || jobs.length === 0) return;
@@ -247,7 +279,7 @@ async function compressSet(manifest, manifestFile, setDirectory, archives, optio
             continue;
           }
           current = job;
-          worker.postMessage({ id, png: job.png, destination: job.destination, ground: job.ground,
+          worker.postMessage({ id, png: job.png, destination: job.destination, ground: job.ground, wrap: job.wrap,
             blp: new Uint8Array(blp), // a compact copy: a view would clone its whole pool slab
           });
 
@@ -306,7 +338,8 @@ async function main() {
     const entries = options.set === "effects"
       ? await effectsSet(archives, (report) => console.log(`${report.models} spell models, ${report.read} read, ${report.missing} not in the client`))
       : await worldSet(archives, (report) => console.log(`${report.ground} ground textures, ${report.roots} root WMOs, `
-        + `${report.wmoTextures} more building textures`));
+        + `${report.wmoTextures} more building textures, ${report.secondTextures} more WMO second textures, `
+        + `${report.models} scenery models with ${report.modelTextures} more textures`)); // 24.10 (7.48 step 3)
     const selected = options.only ? entries.filter((entry) => entry.path.includes(options.only)) : entries;
     const previous = readManifest(manifestFile);
     const manifest = { schema: MANIFEST_SCHEMA, set: options.set, model: options.model, pipeline: PIPELINE,
@@ -338,7 +371,7 @@ async function main() {
         undecodable++;
         continue;
       }
-      const scale = scaleOf(image.width, image.height, options.maxSide);
+      const scale = scaleOf(image.width, image.height, options.maxSide, entry.path); // 24.10 (7.48): per path
       const destination = join(setDirectory, `${hdTextureId(entry.path)}.png`);
       if (scale === 1) {
         notScaled++;
@@ -350,7 +383,7 @@ async function main() {
       }
       const layout = planLayout(image.width, image.height, { grids: entry.grids, wrap: entry.wrap, pad: 8 });
       const wanted = { sourceSha1: createHash("sha1").update(blp).digest("hex"), scale, model: options.model,
-        pipeline: PIPELINE, grid: [layout.rows, layout.columns], wrap: layout.mode === "wrap" };
+        pipeline: pipelineFor(options.set, image), grid: [layout.rows, layout.columns], wrap: layout.mode === "wrap" };
       if (entryUpToDate(manifest.entries[entry.path], wanted) && existsSync(destination)) {
         upToDate++;
         // Same bytes under a new archive (a republished patch): the HD copy is still right, only its stamp is not.
@@ -408,7 +441,9 @@ async function main() {
             groups.set(native, input);
             mkdirSync(input, { recursive: true });
           }
-          const { colour, alpha } = buildWorkImages(job.image, job.layout);
+          // 24.10 (7.48 step 3): a world cut-out's colour under its transparent texels is its neighbours' (see `pipelineFor`).
+          job.dilated = job.wanted.pipeline === DILATED_PIPELINE;
+          const { colour, alpha } = buildWorkImages(job.dilated ? dilateUnderAlpha(job.image, job.layout) : job.image, job.layout);
           writeFileSync(join(input, `${index}-c.png`), encodePng(colour));
           if (alpha) writeFileSync(join(input, `${index}-a.png`), encodePng(alpha));
           job.native = native;
@@ -429,7 +464,8 @@ async function main() {
           const output = join(work, `out-${job.native}`);
           const factor = job.native / job.wanted.scale;
           const read = (suffix) => downsample(decodePng(readFileSync(join(output, `${job.name}-${suffix}.png`))), factor);
-          const result = assemble(job.layout, job.wanted.scale, read("c"), job.hasAlpha ? read("a") : undefined);
+          const result = assemble(job.layout, job.wanted.scale, read("c"), job.hasAlpha ? read("a") : undefined, 4,
+            job.dilated ? job.image : undefined); // 24.10 (7.48): the original colour back under alpha 0
           // A run that went wrong on the GPU must not ship: past the limit the original stays (see `fidelity`).
           const drift = fidelity(result, job.image, job.wanted.scale);
           if (drift.colour > FIDELITY_LIMIT || drift.alpha > FIDELITY_LIMIT) {
