@@ -43,3 +43,15 @@ test("the renderer's fixture-light pass asks this predicate for environment plac
   assert.match(loop, /if \(!fixtureLightSource\(rendered\.source, cinematic, cinematic && rendered\.source\.interior === true\n\s+&& rendered\.source\.id < 0 \? rendered\.openAirLamp \?\? this\.#openAirDoodad\(rendered\.source\) : false\)\) continue;/);
   assert.doesNotMatch(loop, /if \(rendered\.interior \|\| rendered\.source\.localLight\) continue;/);
 });
+
+test("25.10 (perf): the fixture pass keeps each placement's fixture answer instead of asking every frame", async () => {
+  const renderer = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
+  const pass = renderer.slice(renderer.indexOf("#updateFixtureLights(now: number"), renderer.indexOf("#addWmoFixtureLights("));
+  // The shared cache is asked only when the placement's own answer is missing or stale (another model or switch).
+  assert.match(pass, /const known = rendered\.fixtureLights;/);
+  assert.match(pass, /known\.wvm === model && known\.cinematic === cinematic\s+&& known\.m2Lights === renderSwitches\.m2Lights/);
+  assert.match(pass, /} else {\s+fixtures = modelFixtureLights\(model, name, cinematic\);/);
+  assert.equal((pass.match(/modelFixtureLights\(/g) ?? []).length, 1, "one ask, in the stale branch");
+  // Every environment entry is born with the field, so its hidden class never changes when the answer lands.
+  assert.match(renderer, /openAirLamp: undefined,\s+fixtureLights: undefined,/);
+});
