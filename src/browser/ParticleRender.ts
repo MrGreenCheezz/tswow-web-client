@@ -20,7 +20,7 @@ import {
   resetParticleSystem, resetRibbonSystem, stepRibbon, stepRibbonCatchUp,
   writeParticleQuads, writeRibbonStrip, particleQuadsPerParticle, // 23.10 (6.27)
   PARTICLE_FLAG_SCALE_WITH_EMITTER, PARTICLE_FLAG_TAIL, PARTICLE_FLAG_UNFOGGED, PARTICLE_FLAG_XY_QUAD, // 23.10 (6.27)
-  PARTICLE_FLAG_UNLIT, // 25.10 (6.27)
+  PARTICLE_FLAG_UNLIT, PARTICLE_FLAG_SPAWN_ON_GROUND, // 25.10 (6.27)
   type BillboardView, type EmitterFrame, type ParticleGlow, type ParticleSystem, type QuadBuffers, type RibbonSystem,
 } from "./Particles.js";
 import { installSpellParticleLook, spellParticleLookOf } from "./SpellParticleLook.js"; // 23.10 (6.27)
@@ -247,7 +247,9 @@ export function buildModelEffects(
     // 23.10 every particle was fogged. Its sidedness and blend follow from the blend type.
     const materialFlags = (emitter.flags & PARTICLE_FLAG_UNFOGGED) !== 0 ? MATERIAL_UNFOGGED : 0;
     const drawn = buildDrawn(buffers, map, emitter.blendType, materialFlags, living ? undefined : options.fantasyGlow,
-      undefined, living ? { soft: (emitter.flags & PARTICLE_FLAG_XY_QUAD) === 0 } : undefined);
+      // 25.10 (6.27): a particle born on the ground (record 0x2000, Frost Nova's ring of mist) lies there on purpose,
+      // as an XY quad does: no soft fade, which would erase it.
+      undefined, living ? { soft: (emitter.flags & (PARTICLE_FLAG_XY_QUAD | PARTICLE_FLAG_SPAWN_ON_GROUND)) === 0 } : undefined);
     emitters.push({
       ...drawn,
       buffers,

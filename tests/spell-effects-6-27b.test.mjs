@@ -284,3 +284,19 @@ test("6.27b a spell with a SpellMissile row is never thinned by distance (0x0074
     setMissileGravitySource(undefined);
   }
 });
+
+test("6.27b living spells: a ground-born particle (0x2000) gets no soft ground fade, as an XY quad does", () => {
+  const model = (flags) => ({
+    particleEmitters: [emitter({ flags, emissionRate: track([60]), lifespan: track([5]) })],
+    ribbonEmitters: [], textures: [{ type: 0, flags: 0, path: "spells/x.blp" }], globalSequences: NONE,
+  });
+  const key = (flags) => {
+    const effects = buildModelEffects(model(flags), { baseUrl: "", loadTexture: () => new THREE.Texture(), livingSpells: true });
+    const value = effects.emitters[0].material.customProgramCacheKey();
+    disposeModelEffects(effects);
+    return value;
+  };
+  assert.match(key(PARTICLE_FLAG_HEAD), /spell-look-v1:111[01]/, "camera-facing: soft");
+  assert.match(key(PARTICLE_FLAG_HEAD | PARTICLE_FLAG_SPAWN_ON_GROUND), /spell-look-v1:110[01]/, "ground-born: not soft");
+  assert.match(key(PARTICLE_FLAG_HEAD | PARTICLE_FLAG_XY_QUAD), /spell-look-v1:110[01]/);
+});
