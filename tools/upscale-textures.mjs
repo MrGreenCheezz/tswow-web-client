@@ -21,7 +21,8 @@
 // - `manifest.json` — path → { scale, size, source sha1, grid, wrap }, plus the model and pipeline version. The
 //   gateway's HD generation is a digest of it, so a rebuilt set reaches browsers under new URLs.
 //
-// The `world` set (23.10, step 2: ground textures and buildings' diffuse textures, ×2 up to 256 px a side) also gets
+// The `world` set (23.10, step 2: ground textures and buildings' diffuse textures, ×2 up to 256 px a side; 24.10, step 3:
+// plus the scenery models' textures and the WMO second textures, and ×2 up to 512 px a side but for the ground) also gets
 // a GPU-compressed form of every entry, made on the CPU after the GPU runs (`compressSet`, tools/hd-texture-bc7.mjs):
 // - `<id>.wht` — BC7 with its full mip chain in a small container, what the gateway serves to the world routes (the
 //   PNG beside it is only the compressor's input); level 1 onwards is the original texture, so only magnified texels
@@ -43,7 +44,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PNG } from "pngjs";
 import { decodeBlp } from "./blp.mjs";
-import { effectsSet, worldSet, SET_NAMES } from "./hd-texture-set.mjs";
+import { effectsSet, worldSet, GROUND_MAX_SOURCE, SET_NAMES, WORLD_MAX_SOURCE } from "./hd-texture-set.mjs";
 import { assemble, buildWorkImages, effectScale, fidelity, planLayout, ALPHA_SNAP, FIDELITY_LIMIT } from "./hd-texture-image.mjs";
 import { downsample, MODELS, nativeScale, upscaleDirectory } from "./hd-texture-upscaler.mjs";
 import { clientArchives } from "./mpq.mjs";
@@ -78,10 +79,18 @@ export function hdTextureDirectory() {
   return resolve(process.env.HD_TEXTURE_DIR ?? join(repositoryRoot, ".runtime", "hd-textures"));
 }
 
-/** How a set decides each texture's scale. `world` is the later step: ×2 for up to 256 px a side. */
+/**
+ * How a set decides each texture's scale (`path` is the texture's key). `world`: ×2 — 23.10 for up to 256 px a side;
+ * 24.10 (7.48 step 3) for up to 512 px (a result of at most 1024) except the ground, which stays at 256 px because its
+ * HD layers live in the terrain's 512 array (a 512-px ground texture makes its tile a 512 tile, drawn from originals).
+ */
 export const SCALE_POLICY = {
   effects: (width, height, maxSide = 512) => effectScale(width, height, maxSide),
-  world: (width, height, maxSide = 1024) => (Math.max(width, height) <= 256 && Math.max(width, height) * 2 <= maxSide ? 2 : 1),
+  world: (width, height, maxSide = 1024, path = "") => {
+    const side = Math.max(width, height);
+    const limit = path.startsWith("tileset\\") ? GROUND_MAX_SOURCE : WORLD_MAX_SOURCE;
+    return side <= limit && side * 2 <= maxSide ? 2 : 1;
+  },
 };
 
 /** Whether a manifest entry still describes what would be built now. */
@@ -175,12 +184,18 @@ function takeSetLock(setDirectory) {
  * 23.10 (7.48): bumped when the compressed form changes (encoder, mip filter, ground side), so every `.wht` is
  * rebuilt — on the CPU only, from the PNG beside it.
  */
-export const COMPRESS_PIPELINE = "bc7-mode6-v2/hd0-original-mips/ground512";
+export const COMPRESS_PIPELINE = "bc7-mode56-v3/hd0-original-mips/ground512";
+/**
+ * 24.10 (7.48 step 3): the pipeline before mode 5 joined (alpha blocks only). An opaque container it made is byte for
+ * byte what v3 makes (opaque blocks are mode 6 as before), so it is kept and only relabelled — no CPU spent on it.
+ */
+const PREVIOUS_COMPRESS_PIPELINE = "bc7-mode6-v2/hd0-original-mips/ground512";
 /**
  * 23.10 (7.48): a ground texture's container is opaque — its `_s.blp` specular mask is not carried (the client uses the
- * HD ground only where the glint is not drawn; with the mask in alpha BC7 cost the colour 1.7 % sharpness).
+ * HD ground only where the glint is not drawn; with the mask in alpha BC7 cost the colour 1.7 % sharpness — 24.10
+ * re-measured on 40 ground textures with their masks: −6.7 % sharpness, colour error 1.0 → 1.5, mask error 2.6/255).
  */
-const GROUND_COMPRESS_PIPELINE = `${COMPRESS_PIPELINE}/opaque`;
+const OPAQUE_SUFFIX = "/opaque";
 
 /** 23.10 (7.48): whether a world-set path is a ground texture (the terrain array's layers). */
 function isGround(path) {
@@ -189,7 +204,21 @@ function isGround(path) {
 
 /** 23.10 (7.48): the pipeline a compressed entry of `path` must have been made by. */
 export function compressPipeline(path) {
-  return isGround(path) ? GROUND_COMPRESS_PIPELINE : COMPRESS_PIPELINE;
+  return isGround(path) ? `${COMPRESS_PIPELINE}${OPAQUE_SUFFIX}` : COMPRESS_PIPELINE;
+}
+
+/**
+ * 24.10 (7.48 step 3): whether an entry's compressed form is what this pipeline would make — its own label, or an
+ * opaque container of the previous pipeline (identical bytes). Such an entry is relabelled in place.
+ */
+export function compressedUpToDate(path, entry) {
+  const compressed = entry?.compressed;
+  if (!compressed) return false;
+  if (compressed.pipeline === compressPipeline(path)) return true;
+  const previous = isGround(path) ? `${PREVIOUS_COMPRESS_PIPELINE}${OPAQUE_SUFFIX}` : PREVIOUS_COMPRESS_PIPELINE;
+  if (compressed.opaque !== true || compressed.pipeline !== previous) return false;
+  compressed.pipeline = compressPipeline(path);
+  return true;
 }
 
 /** 23.10 (7.48): the compressed form beside an HD PNG (`<id>.wht`, src/gateway/HdTextures.ts names it the same). */
@@ -220,11 +249,15 @@ async function compressSet(manifest, manifestFile, setDirectory, archives, optio
     const png = join(setDirectory, `${hdTextureId(path)}.png`);
     const destination = compressedFile(png);
     if (!existsSync(png)) continue;
-    if (entry.compressed?.pipeline === compressPipeline(path) && existsSync(destination)) continue;
+    if (existsSync(destination) && compressedUpToDate(path, entry)) continue; // 24.10 (7.48): opaque v2 kept
     jobs.push({ path, png, destination, ground: isGround(path) });
   }
   console.log(`${jobs.length} HD textures to compress (BC7) on ${options.workers} threads`);
-  if (options.dryRun || jobs.length === 0) return;
+  if (options.dryRun) return;
+  if (jobs.length === 0) {
+    await writeManifest(manifestFile, manifest); // 24.10 (7.48): relabelled entries
+    return;
+  }
   const started = Date.now();
   const workers = Array.from({ length: Math.min(options.workers, jobs.length) },
     () => new Worker(new URL("./hd-texture-compress-worker.mjs", import.meta.url)));
@@ -306,7 +339,8 @@ async function main() {
     const entries = options.set === "effects"
       ? await effectsSet(archives, (report) => console.log(`${report.models} spell models, ${report.read} read, ${report.missing} not in the client`))
       : await worldSet(archives, (report) => console.log(`${report.ground} ground textures, ${report.roots} root WMOs, `
-        + `${report.wmoTextures} more building textures`));
+        + `${report.wmoTextures} more building textures, ${report.secondTextures} more WMO second textures, `
+        + `${report.models} scenery models with ${report.modelTextures} more textures`)); // 24.10 (7.48 step 3)
     const selected = options.only ? entries.filter((entry) => entry.path.includes(options.only)) : entries;
     const previous = readManifest(manifestFile);
     const manifest = { schema: MANIFEST_SCHEMA, set: options.set, model: options.model, pipeline: PIPELINE,
@@ -338,7 +372,7 @@ async function main() {
         undecodable++;
         continue;
       }
-      const scale = scaleOf(image.width, image.height, options.maxSide);
+      const scale = scaleOf(image.width, image.height, options.maxSide, entry.path); // 24.10 (7.48): per path
       const destination = join(setDirectory, `${hdTextureId(entry.path)}.png`);
       if (scale === 1) {
         notScaled++;

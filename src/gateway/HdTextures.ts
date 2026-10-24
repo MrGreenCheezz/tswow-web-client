@@ -19,6 +19,10 @@
  *   sha1(`terrain-layer-v1|v2\0<path>`) (tools/generate-terrain-splat.mjs), a building texture is known by the sha1
  *   of the original PNG `/visual/texture/<hash>-<n>.png` serves (`compressed.originalPng`, the same `blpToPng`
  *   bytes). Only a path the manifest lists is ever looked up; the file name is still computed from it here.
+ * - Scenery models (24.10, step 3): `/texture?path=…&hd=` for a path the world set lists with a compressed copy (not a
+ *   ground texture) is answered with that `.wht` — doodads, trees, skyboxes and WMO second textures. The browser asks
+ *   so only for the scenery folders and only from loaders that take a container (HdWorldTextures.ts); an effect
+ *   path is never in the world set, so the effects' PNG answers are unchanged.
  * - The generation: a digest of every set's `manifest.json`, re-read when its size or time changes and at most once
  *   a `refreshMs`, published in `/client/patch-status` as `hdTextureGeneration`. An HD answer is immutable only
  *   under the current asset generation *and* the current HD generation; anything else (an original answered to an
@@ -71,9 +75,14 @@ interface WorldIndex {
   readonly terrainLayers: ReadonlyMap<string, string>;
   /** sha1 of an original building PNG → texture path. */
   readonly buildingPngs: ReadonlyMap<string, string>;
+  /**
+   * 24.10 (7.48 step 3): the paths `/texture?path=…&hd=` may be answered compressed for — every entry with a
+   * compressed copy but the ground (whose copy is laid out on the terrain array's 512 side, opaque).
+   */
+  readonly modelTextures: ReadonlySet<string>;
 }
 
-const EMPTY_WORLD_INDEX: WorldIndex = { terrainLayers: new Map(), buildingPngs: new Map() };
+const EMPTY_WORLD_INDEX: WorldIndex = { terrainLayers: new Map(), buildingPngs: new Map(), modelTextures: new Set() };
 
 interface SetSnapshot {
   readonly names: readonly string[];
@@ -103,17 +112,21 @@ export function worldIndexOf(manifest: Buffer | string): WorldIndex {
   if (!entries || typeof entries !== "object") return EMPTY_WORLD_INDEX;
   const terrainLayers = new Map<string, string>();
   const buildingPngs = new Map<string, string>();
+  const modelTextures = new Set<string>();
   for (const [path, entry] of Object.entries(entries as Record<string, unknown>)) {
     const compressed = (entry as { compressed?: { originalPng?: unknown } } | null)?.compressed;
     if (!compressed || typeof compressed !== "object") continue;
-    const key = path.toLowerCase();
+    const key = path.replaceAll("/", "\\").toLowerCase();
     if (key.startsWith("tileset\\")) {
       for (const id of terrainLayerIds(key)) terrainLayers.set(id, key);
-    } else if (typeof compressed.originalPng === "string" && SHA1.test(compressed.originalPng)) {
+      continue;
+    }
+    modelTextures.add(key); // 24.10 (7.48 step 3)
+    if (typeof compressed.originalPng === "string" && SHA1.test(compressed.originalPng)) {
       buildingPngs.set(compressed.originalPng, key);
     }
   }
-  return { terrainLayers, buildingPngs };
+  return { terrainLayers, buildingPngs, modelTextures };
 }
 
 export interface HdTextureSetsOptions {
@@ -244,6 +257,16 @@ export class HdTextureSets {
     const snapshot = await this.#current();
     if (!snapshot.names.includes(HD_WORLD_SET)) return undefined;
     return this.#look(HD_WORLD_SET, join(this.directory, HD_WORLD_SET, `${hdTextureId(texturePath)}.wht`), isCurrent);
+  }
+
+  /**
+   * 24.10 (7.48 step 3): the compressed HD copy of a scenery texture asked for on `/texture?path=…&hd=` (a path the
+   * route has validated) — only when the world set lists it with a compressed copy and it is not a ground texture.
+   */
+  async findModelTexture(texturePath: string, isCurrent: (file: string) => Promise<boolean>): Promise<string | undefined> {
+    const key = texturePath.replaceAll("/", "\\").toLowerCase();
+    if (!(await this.#current()).world.modelTextures.has(key)) return undefined;
+    return this.#findCompressed(key, isCurrent);
   }
 
   /** 23.10 (7.48): the compressed HD copy for a `/terrain-layer/<id>.png` id (40 hex, validated by the route). */

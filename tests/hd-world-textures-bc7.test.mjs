@@ -30,8 +30,8 @@ function psnr(a, b) {
   return 10 * Math.log10((255 * 255) / (sum / a.length));
 }
 
-test("a BC7 block is mode 6 with its anchor index below 8, and decodes to what the encoder measured", () => {
-  const image = picture(4, 4, true);
+test("an opaque BC7 block is mode 6 with its anchor index below 8, and decodes to what the encoder measured", () => {
+  const image = picture(4, 4);
   const block = new Uint8Array(16);
   const error = encodeBc7Block(image.data, block);
   assert.equal(block[0] & 0x7f, 0x40, "mode 6: six zero bits, then a one");
@@ -41,7 +41,36 @@ test("a BC7 block is mode 6 with its anchor index below 8, and decodes to what t
   assert.equal(measured, error);
   // Bit 65 onwards: the anchor's index has three bits, so its fourth (implicit) bit is zero — the swap made sure.
   assert.equal(WEIGHTS4.length, 16);
-  assert.throws(() => decodeBc7Block(new Uint8Array(16).fill(0x01)), /not mode 6/);
+  assert.throws(() => decodeBc7Block(new Uint8Array(16).fill(0x01)), /not mode 5 or 6/);
+});
+
+// 24.10 (7.48 step 3): a cut-out block (a leaf's edge: transparent background, four leaf colours) — mode 6's one RGBA
+// line spends its steps on alpha and paints every solid texel one colour; mode 5 keeps colour and alpha apart.
+test("a cut-out block takes mode 5: alpha exact, the solid texels keep their colours; decodes to what was measured", () => {
+  const pixels = new Uint8Array(64);
+  const leaf = [[40, 90, 20], [60, 120, 30], [80, 150, 40], [100, 180, 50]];
+  for (let pixel = 0; pixel < 16; pixel++) {
+    const solid = pixel % 2 === 1;
+    pixels.set(solid ? [...leaf[(pixel >> 1) % 4], 255] : [0, 0, 0, 0], pixel * 4);
+  }
+  const block = new Uint8Array(16);
+  const error = encodeBc7Block(pixels, block);
+  assert.equal(block[0] & 0x3f, 0x20, "mode 5: five zero bits, then a one");
+  const decoded = decodeBc7Block(block);
+  let measured = 0;
+  let solidColour = 0;
+  for (let pixel = 0; pixel < 16; pixel++) {
+    for (let channel = 0; channel < 4; channel++) measured += (decoded[pixel * 4 + channel] - pixels[pixel * 4 + channel]) ** 2;
+    assert.equal(decoded[pixel * 4 + 3], pixels[pixel * 4 + 3], "alpha 0 and 255 exactly");
+    if (pixel % 2 === 1) for (let channel = 0; channel < 3; channel++) solidColour += Math.abs(decoded[pixel * 4 + channel] - pixels[pixel * 4 + channel]);
+  }
+  assert.equal(measured, error);
+  assert.ok(solidColour / 24 < 2, `solid texels' colour error ${solidColour / 24}`);
+  // An opaque copy of the same colours stays mode 6.
+  const opaque = Uint8Array.from(pixels);
+  for (let pixel = 0; pixel < 16; pixel++) opaque[pixel * 4 + 3] = 255;
+  encodeBc7Block(opaque, block);
+  assert.equal(block[0] & 0x7f, 0x40);
 });
 
 test("round trip: smooth colour well above 40 dB, alpha kept, opaque stays exactly 255, a flat colour nearly exact", () => {

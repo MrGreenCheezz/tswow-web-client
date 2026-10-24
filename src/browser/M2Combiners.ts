@@ -35,6 +35,7 @@ import {
   BLEND_OPAQUE, TEXTURE_TYPE_OWN, TEXTURE_WRAP_X, TEXTURE_WRAP_Y, textureUrl,
   type WvmBatch, type WvmModel, type WvmTextureTransform,
 } from "./Wvm.js";
+import { withHdModelTexture } from "./HdWorldTextures.js"; // 24.10 (7.48 step 3)
 
 export const OP_OPAQUE = 0;
 export const OP_MOD = 1;
@@ -232,7 +233,7 @@ function secondStageTexture(
   if (!sphere && !options.authoredSecondUvSet()) return undefined;
   const slot = model.textures[index];
   if (!slot || slot.type !== TEXTURE_TYPE_OWN || !slot.path) return undefined;
-  const loaded = options.loadTexture(textureUrl(options.baseUrl, slot.path));
+  const loaded = options.loadTexture(withHdModelTexture(textureUrl(options.baseUrl, slot.path))); // 24.10 (7.48 step 3)
   const texture = options.privateLoadedTextureViews === true ? loaded : options.privateView(loaded);
   texture.wrapS = (slot.flags & TEXTURE_WRAP_X) ? THREE.RepeatWrapping : THREE.ClampToEdgeWrapping;
   texture.wrapT = (slot.flags & TEXTURE_WRAP_Y) ? THREE.RepeatWrapping : THREE.ClampToEdgeWrapping;

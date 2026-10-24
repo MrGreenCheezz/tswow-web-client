@@ -1149,15 +1149,19 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
       const hdRequested = url.searchParams.get(HD_TEXTURE_PARAM);
       if (hdRequested !== null && options.hdTextures) {
         const { sets, isCurrent } = options.hdTextures;
-        const hdFile = await sets.find(texturePath,
-          isCurrent ?? ((file) => fingerprint.isCurrent(file, { requireStamp: true })));
+        const current = isCurrent ?? ((file: string) => fingerprint.isCurrent(file, { requireStamp: true }));
+        const effectFile = await sets.find(texturePath, current);
+        // 24.10 (7.48 step 3): a scenery model's texture — the world set's compressed copy (HdTextures.ts).
+        const modelFile = effectFile === undefined ? await sets.findModelTexture(texturePath, current) : undefined;
+        const hdFile = effectFile ?? modelFile;
         if (hdFile !== undefined) {
           try {
             const pinned = hdRequested === await sets.generation()
               && visualAssetGeneration !== undefined
               && url.searchParams.get(VISUAL_GENERATION_PARAM) === visualAssetGeneration;
             await respondFile(request, response, hdFile, {
-              origin, contentType: "image/png", cacheControl: pinned ? IMMUTABLE : REVALIDATE,
+              origin, contentType: modelFile !== undefined ? HD_TEXTURE_CONTENT_TYPE : "image/png",
+              cacheControl: pinned ? IMMUTABLE : REVALIDATE,
             });
             return;
           } catch {

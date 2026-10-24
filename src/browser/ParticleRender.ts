@@ -26,6 +26,7 @@ import { installSpellParticleLook, spellParticleLookOf } from "./SpellParticleLo
 import { BLEND_ADD, BLEND_BLEND_ADD, BLEND_NO_ALPHA_ADD } from "./Wvm.js"; // 23.10 (6.27)
 import { renderSwitches } from "./RenderSwitches.js"; // 12.08
 import { MATERIAL_UNFOGGED, TEXTURE_TYPE_OWN, textureUrl, type WvmModel } from "./Wvm.js";
+import { withHdModelTexture } from "./HdWorldTextures.js"; // 24.10 (7.48 step 3)
 import type { ResourceOwnerId, RetainedResourceVisitor } from "./ResourceAccounting.js";
 
 /** One emitter: its simulation, the buffers it fills and the mesh those buffers are attached to. */
@@ -186,7 +187,8 @@ export function buildModelEffects(
     if (!slot || slot.type !== TEXTURE_TYPE_OWN || !slot.path) return undefined;
     let value = loaded.get(slot.path);
     if (!value) {
-      const base = options.loadTexture(textureUrl(options.baseUrl, slot.path));
+      // 24.10 (7.48 step 3): a scenery emitter's own texture (a waterfall's spray) may come as the world set's copy.
+      const base = options.loadTexture(withHdModelTexture(textureUrl(options.baseUrl, slot.path)));
       value = options.privateTextureViews === true ? privateTextureView(base) : base;
       value.colorSpace = THREE.SRGBColorSpace;
       // The client's UVs put v = 0 at the top of the image; three's default upload flips it.

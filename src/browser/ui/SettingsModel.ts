@@ -209,9 +209,10 @@ export const SETTING_DEFINITIONS: readonly SettingDefinition[] = [
   },
   {
     // 23.10 (7.48): ground and building textures from the gateway's world HD set, BC7 on the GPU (HdWorldTextures.ts).
+    // 24.10 (7.48 step 3): and the scenery models' — trees, doodads, skyboxes.
     id: "experimentalSharpWorldTextures", label: "Чёткие текстуры мира", group: "Эффекты", kind: "boolean",
     fallback: false,
-    hint: "Текстуры земли и зданий, увеличенные нейросетью вдвое и сжатые для видеокарты: видеопамяти столько же, сколько у обычных. Нужен набор, собранный на сервере.",
+    hint: "Текстуры земли, зданий, деревьев, предметов обстановки и неба, увеличенные нейросетью вдвое и сжатые для видеокарты: видеопамяти столько же, сколько у обычных. Нужен набор, собранный на сервере.",
   },
   {
     // Cinematic leaves of «Улучшенная графика» (CinematicPost.ts). The four post-process ones share

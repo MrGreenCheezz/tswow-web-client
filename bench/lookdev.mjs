@@ -28,6 +28,8 @@
  * (default `.runtime/hd-textures`) straight off the disk, as a gateway with them would, so HD stills need no gateway
  * restart. The page is told an HD generation; it asks with `hd=` only while «Чёткие текстуры эффектов» is on
  * (`--settings enhanced`, or `--set experimentalSharpEffectTextures=false` for the originals in the same setup).
+ * 23.10/24.10 (7.48 steps 2–3): the world set's BC7 copies too — ground layers, building textures and (step 3) the
+ * scenery models' `/texture` textures — while `--set experimentalSharpWorldTextures=true`.
  */
 import { access, mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
@@ -144,16 +146,17 @@ async function main() {
   let worldIndex;
   if (worldSetDirectory) {
     const manifest = JSON.parse(await readFile(resolve(worldSetDirectory, 'manifest.json'), 'utf8'));
-    worldIndex = { terrainLayers: new Map(), buildingPngs: new Map() };
+    worldIndex = { terrainLayers: new Map(), buildingPngs: new Map(), modelTextures: new Set() };
     for (const [path, entry] of Object.entries(manifest.entries ?? {})) {
       if (!entry?.compressed) continue;
       if (path.startsWith('tileset\\')) {
         for (const namespace of ['terrain-layer-v1', 'terrain-layer-v2']) {
           worldIndex.terrainLayers.set(createHash('sha1').update(`${namespace}\0${path}`).digest('hex'), path);
         }
-      } else if (entry.compressed.originalPng) {
-        worldIndex.buildingPngs.set(entry.compressed.originalPng, path);
+        continue;
       }
+      worldIndex.modelTextures.add(path); // 24.10 (7.48 step 3): `/texture?path=…&hd=` for a scenery model
+      if (entry.compressed.originalPng) worldIndex.buildingPngs.set(entry.compressed.originalPng, path);
     }
   }
   let hdWorldServed = 0;
@@ -258,12 +261,24 @@ async function main() {
         const id = createHash('sha1').update(`hd-texture-v1\0${path}`).digest('hex');
         let hd;
         for (const set of hdSets) {
+          if (set === worldSetDirectory) continue; // 24.10 (7.48): its PNGs are the compressor's input, as on the gateway
           hd = await readFile(resolve(set, `${id}.png`)).catch(() => undefined);
           if (hd) break;
         }
+        // 24.10 (7.48 step 3): a scenery model's texture — the world set's compressed copy.
+        const modelHd = !hd && worldIndex?.modelTextures.has(path)
+          ? await readFile(resolve(worldSetDirectory, `${id}.wht`)).catch(() => undefined) : undefined;
         if (hd) {
           hdServed++;
           res.writeHead(200, { 'content-type': 'image/png', 'cache-control': 'no-store' }).end(hd);
+        } else if (modelHd) {
+          url.searchParams.delete('hd');
+          const original = await asset(url.pathname + url.search);
+          hdServed++;
+          hdWorldServed++;
+          hdWorldBytes.hd += modelHd.length;
+          hdWorldBytes.original += original.bytes.length;
+          res.writeHead(200, { 'content-type': 'application/x-webclient-hd-texture', 'cache-control': 'no-store' }).end(modelHd);
         } else {
           url.searchParams.delete('hd');
           const { entry, bytes } = await asset(url.pathname + url.search);

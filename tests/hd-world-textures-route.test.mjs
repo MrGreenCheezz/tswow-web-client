@@ -136,6 +136,54 @@ test("switched off: hd= is ignored on both world routes", async () => {
   }
 });
 
+// 24.10 (7.48 step 3): a scenery model's texture on `/texture?path=…&hd=` — the world set's compressed copy.
+test("a scenery texture asked for on /texture with hd= is its compressed copy; ground, no copy, stale or off: the original", async () => {
+  const { root, client, layers, visual, hd } = await fixture();
+  const textures = join(root, "textures");
+  await mkdir(textures);
+  const original = (path) => join(textures, `${SHA1(`texture-v1\0${path.toLowerCase()}`)}.png`);
+  const NO_COPY = "world\\azeroth\\elwynn\\nocopy.blp";
+  await writeFile(original(WALL), "PNG-wall-texture");
+  await writeFile(original(GROUND), "PNG-ground-texture");
+  await writeFile(original(NO_COPY), "PNG-no-copy");
+  let current = true;
+  const ask = (base, path, query = "") => get(base, `/texture?path=${encodeURIComponent(path)}${query}`);
+  try {
+    await withGateway({
+      clientDirectory: client, terrainLayersDirectory: layers, visualModelsDirectory: visual, texturesDirectory: textures,
+      hdTextures: { sets: new HdTextureSets(hd, { refreshMs: 0 }), isCurrent: async () => current },
+    }, async (base) => {
+      const { visualGeneration: vg, hdTextureGeneration: hg } = await status(base);
+      const plain = await ask(base, WALL, `&vg=${vg}`);
+      assert.equal(await plain.text(), "PNG-wall-texture", "no hd=: byte-identical to before");
+      assert.equal(plain.headers.get("content-type"), "image/png");
+
+      const hdAnswer = await ask(base, WALL, `&vg=${vg}&hd=${hg}`);
+      assert.equal(await hdAnswer.text(), "WHT1-wall");
+      assert.equal(hdAnswer.headers.get("content-type"), HD_TEXTURE_CONTENT_TYPE);
+      assert.equal(hdAnswer.headers.get("cache-control"), IMMUTABLE, "under the visual and the HD generation");
+      assert.equal((await ask(base, WALL, `&vg=${vg}&hd=00000000000000000000`)).headers.get("cache-control"), REVALIDATE);
+      assert.equal(await (await ask(base, "World/Generic/Human/Passive Doodads/WALL.BLP", `&hd=${hg}`)).text(), "WHT1-wall",
+        "another spelling of the same path");
+
+      const ground = await ask(base, GROUND, `&hd=${hg}`);
+      assert.equal(await ground.text(), "PNG-ground-texture", "a ground copy is laid out for the terrain array: never on /texture");
+      assert.equal(ground.headers.get("content-type"), "image/png");
+      assert.equal(await (await ask(base, NO_COPY, `&hd=${hg}`)).text(), "PNG-no-copy", "the set has no copy: the original");
+
+      current = false;
+      const stale = await ask(base, WALL, `&vg=${vg}&hd=${hg}`);
+      assert.equal(await stale.text(), "PNG-wall-texture", "a stamp that no longer matches: the original");
+      assert.equal(stale.headers.get("cache-control"), REVALIDATE);
+    });
+    await withGateway({ clientDirectory: client, visualModelsDirectory: visual, texturesDirectory: textures }, async (base) => {
+      assert.equal(await (await ask(base, WALL, "&hd=x")).text(), "PNG-wall-texture", "switched off: hd= is ignored");
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("the world index lists only entries with a compressed copy, only well-formed digests", () => {
   const index = worldIndexOf(JSON.stringify({ entries: {
     [GROUND]: { compressed: {} },
@@ -146,5 +194,8 @@ test("the world index lists only entries with a compressed copy, only well-forme
   assert.deepEqual([...new Set(index.terrainLayers.values())], [GROUND]);
   assert.deepEqual(new Set(index.terrainLayers.keys()), new Set(terrainLayerIds(GROUND)));
   assert.deepEqual([...index.buildingPngs], [[SHA1("x"), WALL]]);
+  // 24.10 (7.48 step 3): `/texture` may answer every compressed entry but the ground.
+  assert.deepEqual([...index.modelTextures].sort(), ["world\\bad.blp", WALL]);
   assert.equal(worldIndexOf("not json").terrainLayers.size, 0);
+  assert.equal(worldIndexOf("not json").modelTextures.size, 0);
 });

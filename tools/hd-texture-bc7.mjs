@@ -16,6 +16,9 @@
 // The encoder writes only mode 6 (one subset, RGBA endpoints 7 bits + a shared p-bit, 4-bit indices): a principal
 // axis fit, then two least-squares refinements of the endpoints against the chosen indices, every p-bit pair tried
 // for blocks with alpha (opaque blocks keep p = 1 so alpha stays exactly 255). Pure functions over straight RGBA.
+// 24.10 (7.48 step 3): a block with alpha is also tried as mode 5 (colour and alpha on separate lines, 2-bit indices
+// each) and keeps whichever is closer — cut-out leaves and fences lost their colour on mode 6's one RGBA line. Opaque
+// blocks are mode 6 exactly as before.
 //
 // Container `WHT1` (little-endian), one file a texture, served as `application/x-webclient-hd-texture`:
 //   0  "WHT1"   4  format (1 = BC7, sRGB colour)   8  width   12  height   16  levels   20  flags (bit 0: opaque)
@@ -197,11 +200,246 @@ function getBits(block, position, count) {
   return value;
 }
 
+/** 24.10 (7.48): BC7's 2-bit interpolation weights (of 64), mode 5's colour and alpha indices. */
+export const WEIGHTS2 = Object.freeze([0, 21, 43, 64]);
+
+/** 24.10 (7.48): a 7-bit endpoint channel as the 8-bit value the decoder rebuilds (mode 5: no p-bit). */
+function expand7(q) {
+  return (q << 1) | (q >> 6);
+}
+
+/** 24.10 (7.48): the nearest 4-level index of each pixel in a palette; returns the summed squared error. */
+function assign2(pixels, offset, channels, palette, indices) {
+  let total = 0;
+  for (let pixel = 0; pixel < 16; pixel++) {
+    let best = 0;
+    let bestError = Infinity;
+    for (let step = 0; step < 4; step++) {
+      let error = 0;
+      for (let channel = 0; channel < channels; channel++) {
+        const d = palette[step * channels + channel] - pixels[pixel * 4 + offset + channel];
+        error += d * d;
+      }
+      if (error < bestError) {
+        bestError = error;
+        best = step;
+      }
+    }
+    indices[pixel] = best;
+    total += bestError;
+  }
+  return total;
+}
+
 /**
- * One 4×4 block (16 RGBA pixels, row-major, 64 bytes) as a BC7 mode 6 block (16 bytes, into `out` at `at`).
- * Returns the block's squared error (sum over 16 pixels × 4 channels).
+ * 24.10 (7.48 step 3): the least a texel's colour counts — a texel under alpha 0 still counts a little (an additive
+ * no-alpha blend draws its colour), but at 1/16 the black under a leaf's cut-out pulled the leaf's own colours 3.6/255.
+ */
+const COLOUR_WEIGHT_FLOOR = 1 / 64;
+
+/**
+ * 24.10 (7.48 step 3): how much a texel's colour counts when an alpha block's encoding is chosen — its alpha (what an
+ * alpha-blended or alpha-tested draw shows of it), never less than `COLOUR_WEIGHT_FLOOR`.
+ */
+function colourWeight(alpha) {
+  return Math.max(alpha / 255, COLOUR_WEIGHT_FLOOR);
+}
+
+/** 24.10 (7.48 step 3): squared error of a decoded block — colour weighted by `colourWeight`, alpha in full. */
+function weightedBlockError(pixels, decoded) {
+  let error = 0;
+  for (let pixel = 0; pixel < 16; pixel++) {
+    const weight = colourWeight(pixels[pixel * 4 + 3]);
+    for (let channel = 0; channel < 3; channel++) error += weight * (decoded[pixel * 4 + channel] - pixels[pixel * 4 + channel]) ** 2;
+    error += (decoded[pixel * 4 + 3] - pixels[pixel * 4 + 3]) ** 2;
+  }
+  return error;
+}
+
+/** 24.10 (7.48 step 3): the principal axis of RGB with per-texel weights: float endpoints at the extremes. */
+function weightedColourAxis(pixels, weights) {
+  const mean = [0, 0, 0];
+  let total = 0;
+  for (let pixel = 0; pixel < 16; pixel++) {
+    total += weights[pixel];
+    for (let channel = 0; channel < 3; channel++) mean[channel] += weights[pixel] * pixels[pixel * 4 + channel];
+  }
+  for (let channel = 0; channel < 3; channel++) mean[channel] /= total;
+  const cov = new Float64Array(9);
+  for (let pixel = 0; pixel < 16; pixel++) {
+    for (let i = 0; i < 3; i++) {
+      const di = pixels[pixel * 4 + i] - mean[i];
+      for (let j = 0; j < 3; j++) cov[i * 3 + j] += weights[pixel] * di * (pixels[pixel * 4 + j] - mean[j]);
+    }
+  }
+  let axis = [0, 0, 0];
+  let widest = 0;
+  for (let channel = 1; channel < 3; channel++) if (cov[channel * 4] > cov[widest * 4]) widest = channel;
+  axis[widest] = 1;
+  for (let iteration = 0; iteration < 8; iteration++) {
+    const next = [0, 0, 0];
+    for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) next[i] += cov[i * 3 + j] * axis[j];
+    const length = Math.hypot(...next);
+    if (length < 1e-12) break;
+    axis = next.map((value) => value / length);
+  }
+  let low = Infinity;
+  let high = -Infinity;
+  for (let pixel = 0; pixel < 16; pixel++) {
+    if (weights[pixel] <= COLOUR_WEIGHT_FLOOR) continue; // the extremes come from the texels that are seen
+    let t = 0;
+    for (let channel = 0; channel < 3; channel++) t += (pixels[pixel * 4 + channel] - mean[channel]) * axis[channel];
+    if (t < low) low = t;
+    if (t > high) high = t;
+  }
+  if (low === Infinity) low = high = 0;
+  const clamp = (value) => Math.min(255, Math.max(0, value));
+  return { f0: mean.map((value, channel) => clamp(value + low * axis[channel])), f1: mean.map((value, channel) => clamp(value + high * axis[channel])) };
+}
+
+/** 24.10 (7.48): least-squares endpoints for fixed 2-bit indices over `channels` channels from `offset` (weighted). */
+function refit2(pixels, offset, channels, indices, weights = undefined) {
+  let aa = 0;
+  let ab = 0;
+  let bb = 0;
+  const ap = new Array(channels).fill(0);
+  const bp = new Array(channels).fill(0);
+  for (let pixel = 0; pixel < 16; pixel++) {
+    const w = weights ? weights[pixel] : 1;
+    const b = WEIGHTS2[indices[pixel]] / 64;
+    const a = 1 - b;
+    aa += w * a * a;
+    ab += w * a * b;
+    bb += w * b * b;
+    for (let channel = 0; channel < channels; channel++) {
+      ap[channel] += w * a * pixels[pixel * 4 + offset + channel];
+      bp[channel] += w * b * pixels[pixel * 4 + offset + channel];
+    }
+  }
+  const det = aa * bb - ab * ab;
+  if (Math.abs(det) < 1e-9) return undefined;
+  const clamp = (value) => Math.min(255, Math.max(0, value));
+  return {
+    f0: ap.map((_, channel) => clamp((bb * ap[channel] - ab * bp[channel]) / det)),
+    f1: ap.map((_, channel) => clamp((aa * bp[channel] - ab * ap[channel]) / det)),
+  };
+}
+
+/**
+ * 24.10 (7.48 step 3): one block as BC7 mode 5 — colour (RGB endpoints 7 bits, 2-bit indices) and alpha (endpoints 8
+ * bits, 2-bit indices) on separate lines, rotation 0. Mode 6 puts colour and alpha on one RGBA line, so a block where
+ * a cut-out leaf meets the transparent background spends its sixteen steps on alpha and loses the colour (measured on
+ * the world set's 300 worst alpha textures: 7.4/255 colour error on texels that survive the alpha test, a tree top 15);
+ * mode 5 keeps four colours a block on their own line — the shape of the DXT1/DXT5 blocks most BLPs were made from.
+ * Returns `{ error, block }` (squared error over 16 pixels × 4 channels).
+ */
+function encodeMode5(pixels) {
+  // Colour: the principal axis of RGB weighted by what is seen of each texel (`colourWeight`), then two weighted
+  // least-squares refinements; the indices are each texel's nearest colour, whatever its weight.
+  const weights = Float64Array.from({ length: 16 }, (_, pixel) => colourWeight(pixels[pixel * 4 + 3]));
+  const start = weightedColourAxis(pixels, weights);
+  const quantiseColour = (f0, f1) => {
+    const q0 = [0, 1, 2].map((channel) => Math.min(127, Math.max(0, Math.round((f0[channel] * 127) / 255))));
+    const q1 = [0, 1, 2].map((channel) => Math.min(127, Math.max(0, Math.round((f1[channel] * 127) / 255))));
+    const palette = new Int32Array(12);
+    for (let step = 0; step < 4; step++) {
+      for (let channel = 0; channel < 3; channel++) {
+        palette[step * 3 + channel] = interpolate(expand7(q0[channel]), expand7(q1[channel]), WEIGHTS2[step]);
+      }
+    }
+    const indices = new Uint8Array(16);
+    assign2(pixels, 0, 3, palette, indices);
+    let error = 0;
+    for (let pixel = 0; pixel < 16; pixel++) {
+      for (let channel = 0; channel < 3; channel++) {
+        error += weights[pixel] * (palette[indices[pixel] * 3 + channel] - pixels[pixel * 4 + channel]) ** 2;
+      }
+    }
+    return { q0, q1, indices, error };
+  };
+  let colour = quantiseColour(start.f0, start.f1);
+  for (let iteration = 0; iteration < 2 && colour.error > 0; iteration++) {
+    const fit = refit2(pixels, 0, 3, colour.indices, weights);
+    if (!fit) break;
+    const next = quantiseColour(fit.f0, fit.f1);
+    if (next.error >= colour.error) break;
+    colour = next;
+  }
+  // Alpha: min/max, then one least-squares refinement.
+  let low = 255;
+  let high = 0;
+  for (let pixel = 0; pixel < 16; pixel++) {
+    low = Math.min(low, pixels[pixel * 4 + 3]);
+    high = Math.max(high, pixels[pixel * 4 + 3]);
+  }
+  const quantiseAlpha = (a0, a1) => {
+    const e0 = Math.min(255, Math.max(0, Math.round(a0)));
+    const e1 = Math.min(255, Math.max(0, Math.round(a1)));
+    const palette = Int32Array.from(WEIGHTS2, (weight) => interpolate(e0, e1, weight));
+    const indices = new Uint8Array(16);
+    const error = assign2(pixels, 3, 1, palette, indices);
+    return { e0, e1, indices, error };
+  };
+  let alpha = quantiseAlpha(low, high);
+  const alphaFit = alpha.error > 0 ? refit2(pixels, 3, 1, alpha.indices) : undefined;
+  if (alphaFit) {
+    const next = quantiseAlpha(alphaFit.f0[0], alphaFit.f1[0]);
+    if (next.error < alpha.error) alpha = next;
+  }
+  let { q0, q1 } = colour;
+  let colourIndices = colour.indices;
+  let { e0, e1 } = alpha;
+  let alphaIndices = alpha.indices;
+  // Each anchor (pixel 0) stores 1 bit: its index must be < 2, so that line's endpoints swap when it is not.
+  if (colourIndices[0] >= 2) {
+    [q0, q1] = [q1, q0];
+    colourIndices = colourIndices.map((index) => 3 - index);
+  }
+  if (alphaIndices[0] >= 2) {
+    [e0, e1] = [e1, e0];
+    alphaIndices = alphaIndices.map((index) => 3 - index);
+  }
+  const block = new Uint8Array(16);
+  let position = putBits(block, 0, 1 << 5, 6);
+  position = putBits(block, position, 0, 2); // rotation 0: alpha is alpha
+  for (let channel = 0; channel < 3; channel++) {
+    position = putBits(block, position, q0[channel], 7);
+    position = putBits(block, position, q1[channel], 7);
+  }
+  position = putBits(block, position, e0, 8);
+  position = putBits(block, position, e1, 8);
+  position = putBits(block, position, colourIndices[0], 1);
+  for (let pixel = 1; pixel < 16; pixel++) position = putBits(block, position, colourIndices[pixel], 2);
+  position = putBits(block, position, alphaIndices[0], 1);
+  for (let pixel = 1; pixel < 16; pixel++) position = putBits(block, position, alphaIndices[pixel], 2);
+  return { block };
+}
+
+const scratchDecoded = new Uint8Array(64);
+
+/**
+ * One 4×4 block (16 RGBA pixels, row-major, 64 bytes) as a BC7 block (16 bytes, into `out` at `at`): mode 6, or — 24.10
+ * (7.48 step 3) — for a block with alpha, mode 5 when that is closer by `weightedBlockError` (colour counted by what is
+ * seen of it). An opaque block is always mode 6, byte for byte what it was. Returns the block's squared error (sum
+ * over 16 pixels × 4 channels, unweighted).
  */
 export function encodeBc7Block(pixels, out = new Uint8Array(16), at = 0) {
+  const error = encodeMode6Block(pixels, out, at);
+  let opaque = true;
+  for (let pixel = 0; pixel < 16; pixel++) if (pixels[pixel * 4 + 3] !== 255) { opaque = false; break; }
+  if (opaque || error === 0) return error;
+  const mode6Weighted = weightedBlockError(pixels, decodeBc7Block(out.subarray(at, at + 16), scratchDecoded));
+  const mode5 = encodeMode5(pixels);
+  const decoded = decodeBc7Block(mode5.block, scratchDecoded);
+  if (weightedBlockError(pixels, decoded) >= mode6Weighted) return error;
+  out.set(mode5.block, at);
+  let plain = 0;
+  for (let index = 0; index < 64; index++) plain += (decoded[index] - pixels[index]) ** 2;
+  return plain;
+}
+
+/** One block as BC7 mode 6 (one RGBA line, 7-bit endpoints and p-bits, 4-bit indices); its squared error. */
+function encodeMode6Block(pixels, out, at) {
   let opaque = true;
   for (let pixel = 0; pixel < 16; pixel++) if (pixels[pixel * 4 + 3] !== 255) { opaque = false; break; }
   const pbits = opaque ? PBITS_OPAQUE : PBITS_ALL;
@@ -237,11 +475,12 @@ export function encodeBc7Block(pixels, out = new Uint8Array(16), at = 0) {
 }
 
 /**
- * Decodes one BC7 block (mode 6 only — what `encodeBc7Block` writes) into 16 RGBA pixels. Throws on another mode:
+ * Decodes one BC7 block (modes 5 and 6 — what `encodeBc7Block` writes) into 16 RGBA pixels. Throws on another mode:
  * this is for the tool's own checks, not a general decoder.
  */
 export function decodeBc7Block(block, out = new Uint8Array(64)) {
-  if ((block[0] & 0x7f) !== 0x40) throw new Error(`BC7 block mode ${block[0]} is not mode 6`);
+  if ((block[0] & 0x3f) === 0x20) return decodeMode5Block(block, out); // 24.10 (7.48 step 3)
+  if ((block[0] & 0x7f) !== 0x40) throw new Error(`BC7 block mode ${block[0]} is not mode 5 or 6`);
   let position = 7;
   const q0 = [0, 0, 0, 0];
   const q1 = [0, 0, 0, 0];
@@ -260,6 +499,41 @@ export function decodeBc7Block(block, out = new Uint8Array(64)) {
     const index = getBits(block, position, bits);
     position += bits;
     for (let channel = 0; channel < 4; channel++) out[pixel * 4 + channel] = interpolate(e0[channel], e1[channel], WEIGHTS4[index]);
+  }
+  return out;
+}
+
+/** 24.10 (7.48 step 3): a mode 5 block (what `encodeMode5` writes; any rotation) into 16 RGBA pixels. */
+function decodeMode5Block(block, out) {
+  let position = 6;
+  const rotation = getBits(block, position, 2);
+  position += 2;
+  const c0 = [0, 0, 0];
+  const c1 = [0, 0, 0];
+  for (let channel = 0; channel < 3; channel++) {
+    c0[channel] = expand7(getBits(block, position, 7));
+    position += 7;
+    c1[channel] = expand7(getBits(block, position, 7));
+    position += 7;
+  }
+  const a0 = getBits(block, position, 8);
+  position += 8;
+  const a1 = getBits(block, position, 8);
+  position += 8;
+  const colourIndices = [];
+  for (let pixel = 0; pixel < 16; pixel++) {
+    const bits = pixel === 0 ? 1 : 2;
+    colourIndices.push(getBits(block, position, bits));
+    position += bits;
+  }
+  for (let pixel = 0; pixel < 16; pixel++) {
+    const bits = pixel === 0 ? 1 : 2;
+    const alphaIndex = getBits(block, position, bits);
+    position += bits;
+    const texel = [0, 1, 2].map((channel) => interpolate(c0[channel], c1[channel], WEIGHTS2[colourIndices[pixel]]));
+    texel.push(interpolate(a0, a1, WEIGHTS2[alphaIndex]));
+    if (rotation > 0) [texel[rotation - 1], texel[3]] = [texel[3], texel[rotation - 1]];
+    out.set(texel, pixel * 4);
   }
   return out;
 }

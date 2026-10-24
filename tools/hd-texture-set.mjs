@@ -12,8 +12,9 @@
 //   `SpellVisualEffectName.dbc` names elsewhere — mesh, particle and ribbon slots alike. Character, creature
 //   and item textures are never in it (character models and their skins are not touched), even when a spell
 //   model borrows one.
-// - `world` (a later step, not run yet): small terrain tilesets and WMO textures; enumerated here so the tool
-//   can take it, but the owner has not asked for it to be generated.
+// - `world` (23.10, step 2): the ground textures and the buildings' (WMO) diffuse textures. 24.10 (step 3, the last
+//   one by the owner's decision): plus the scenery models' own textures — world doodads and WMO doodads, trees,
+//   skybox models (`MODEL_TEXTURE_PREFIXES`) — and the WMO materials' second textures (env maps, composite layers).
 
 const TEXTURE_SIZE = 16;
 const HEADER_TEXTURES = 0x50;
@@ -212,14 +213,105 @@ export function wmoDiffuseTextures(root) {
   return [...paths];
 }
 
+/** 24.10 (7.48): MOMT texture 2 (+0x18) and the shader (+0x04): env maps (3, 5) and composite layers (6) draw it. */
+const MOMT_SHADER = 0x04;
+const MOMT_TEXTURE2 = 0x18;
+const SHADERS_WITH_TEXTURE2 = new Set([3, 5, 6]);
+
+/**
+ * 24.10 (7.48): the second textures one root WMO's materials draw — MOMT texture 2 of an env (3), env-metal (5) or
+ * composite (6) material, what `/texture?path=` serves for `WmoModel.materialTextureUrls`. Other shaders never load
+ * their texture 2, so it is not upscaled. A file that does not parse yields nothing.
+ */
+export function wmoSecondTextures(root) {
+  if (!root || root.length < 8) return [];
+  let motx;
+  let momt;
+  for (let offset = 0; offset + 8 <= root.length;) {
+    const tag = root.toString("latin1", offset, offset + 4);
+    const size = root.readUInt32LE(offset + 4);
+    const start = offset + 8;
+    if (start + size > root.length) break;
+    if (tag === "XTOM") motx = root.subarray(start, start + size);
+    else if (tag === "TMOM") momt = root.subarray(start, start + size);
+    if (motx && momt) break;
+    offset = start + size;
+  }
+  if (!motx || !momt) return [];
+  const paths = new Set();
+  for (let at = 0; at + MOMT_SIZE <= momt.length; at += MOMT_SIZE) {
+    if (!SHADERS_WITH_TEXTURE2.has(momt.readUInt32LE(at + MOMT_SHADER))) continue;
+    const offset = momt.readUInt32LE(at + MOMT_TEXTURE2);
+    if (offset === 0 || offset >= motx.length) continue;
+    let end = offset;
+    while (end < motx.length && motx[end] !== 0) end++;
+    const name = motx.toString("latin1", offset, end).trim();
+    if (/\.blp$/i.test(name)) paths.add(textureKey(name));
+  }
+  return [...paths];
+}
+
+/**
+ * 24.10 (7.48 step 3): the folders whose models are scenery — world doodads (ADT and WMO doodad sets), trees, game
+ * objects' props, skybox models — and whose own textures the world set takes. Equal to `HD_MODEL_TEXTURE_PREFIXES`
+ * in src/browser/HdWorldTextures.ts (a test holds them so): the browser asks for an HD copy of exactly these paths.
+ */
+export const MODEL_TEXTURE_PREFIXES = ["world\\", "dungeons\\", "environments\\"];
+/** 24.10 (7.48): never part of the world set even under those folders (the minimap bakes). */
+const MODEL_TEXTURE_EXCLUDED = ["world\\minimaps\\"];
+
+/**
+ * 24.10 (7.48): whether a texture path is one the world set takes from a scenery model: under the scenery folders,
+ * never character, creature, item or effect art, never the minimap. The browser applies the same rule.
+ */
+export function modelTexturePath(path) {
+  const key = textureKey(path);
+  return upscalable(key)
+    && MODEL_TEXTURE_PREFIXES.some((prefix) => key.startsWith(prefix))
+    && !MODEL_TEXTURE_EXCLUDED.some((prefix) => key.startsWith(prefix))
+    && !EFFECT_TEXTURE_PREFIXES.some((prefix) => key.startsWith(prefix));
+}
+
+/**
+ * 24.10 (7.48 step 3): every scenery model's own textures with how they are drawn (wrap, flip-book grids) — the `.m2`
+ * files under `MODEL_TEXTURE_PREFIXES`, whose textures pass `modelTexturePath`. A creature, character or item model
+ * is never read; a doodad that borrows such art does not bring it in.
+ */
+export async function worldModelTextureUses(archives, report = () => undefined) {
+  const models = new Set();
+  for (const prefix of MODEL_TEXTURE_PREFIXES) {
+    for (const path of await archives.list(prefix)) {
+      if (path.endsWith(".m2") && !MODEL_TEXTURE_EXCLUDED.some((excluded) => path.startsWith(excluded))) models.add(path);
+    }
+  }
+  const lists = [];
+  let read = 0;
+  for (const path of [...models].sort()) {
+    const model = await archives.read(path);
+    if (!model) continue;
+    read++;
+    lists.push(modelTextureUses(model).filter((use) => modelTexturePath(use.path)));
+  }
+  report({ models: models.size, read });
+  return mergeUses(lists);
+}
+
 /** 23.10 (7.48): a WMO group file (`<root>_000.wmo`), not a root. */
 const WMO_GROUP_FILE = /_\d{3}\.wmo$/;
 
+/** 24.10 (7.48): the side past which the world set does not upscale — ground ≤ 256 (its 512 array), the rest ≤ 512. */
+export const GROUND_MAX_SOURCE = 256;
+export const WORLD_MAX_SOURCE = 512;
+
 /**
  * The `world` set (23.10, 7.48 step 2): the ground textures (`tileset\`, without the `_s` specular masks, which the
- * terrain draws from their own files) and every root WMO's diffuse textures — buildings, never doodads. Character,
- * creature and item art is left out as everywhere; effect folders are the effects set's. No grids; wrapped (both
- * tile across their surfaces).
+ * terrain draws from their own files) and every root WMO's diffuse textures. Character, creature and item art is
+ * left out as everywhere; effect folders are the effects set's. Ground and buildings: no grids, wrapped (both tile
+ * across their surfaces).
+ *
+ * 24.10 (7.48 step 3): plus every scenery model's own textures (`worldModelTextureUses`: doodads, trees, skyboxes —
+ * with their own wrap flags and flip-book grids) and the WMO materials' second textures that are drawn
+ * (`wmoSecondTextures`, wrapped). A texture used several ways is one entry: wrapped if anything wraps it, every grid.
  */
 export async function worldSet(archives, report = () => undefined) {
   const paths = new Set();
@@ -231,6 +323,7 @@ export async function worldSet(archives, report = () => undefined) {
   }
   let roots = 0;
   let wmoTextures = 0;
+  const second = new Set();
   for (const path of [...await archives.list("world\\wmo\\")].sort()) {
     if (!path.endsWith(".wmo") || WMO_GROUP_FILE.test(path)) continue;
     const root = await archives.read(path);
@@ -241,7 +334,17 @@ export async function worldSet(archives, report = () => undefined) {
       if (!paths.has(texture)) wmoTextures++;
       paths.add(texture);
     }
+    for (const texture of wmoSecondTextures(root)) if (modelTexturePath(texture)) second.add(texture); // 24.10 (7.48)
   }
-  report({ ground, roots, wmoTextures });
-  return [...paths].sort().map((path) => ({ path, wrap: true, grids: [] }));
+  // 24.10 (7.48 step 3): the scenery models, then everything folded into one entry per path.
+  let modelReport = { models: 0, read: 0 };
+  const modelUses = await worldModelTextureUses(archives, (value) => { modelReport = value; });
+  const wrapped = [...paths, ...second].map((path) => ({ path, wrap: true, grids: [] }));
+  const entries = mergeUses([wrapped, modelUses]);
+  const known = new Set(paths);
+  const secondTextures = [...second].filter((path) => !known.has(path)).length;
+  for (const path of second) known.add(path);
+  const modelTextures = modelUses.filter((use) => !known.has(use.path)).length;
+  report({ ground, roots, wmoTextures, secondTextures, models: modelReport.models, modelTextures });
+  return entries;
 }

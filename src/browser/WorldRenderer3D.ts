@@ -85,7 +85,7 @@ import { LocalLightSelection, modelFixtureLights, sampleFixtureLight } from "./L
 import { SpellLights } from "./SpellLights.js"; // 23.10 (6.27)
 import { hdEffectTexturesEnabled, setHdEffectTexturesEnabled } from "./HdEffectTextures.js"; // 23.10 (7.48)
 import {
-  HD_WORLD_TEXTURE_EXTENSION, hdWorldTexturesActive, setHdWorldTexturesEnabled, withHdWorldTexture,
+  HD_WORLD_TEXTURE_EXTENSION, hdWorldTexturesActive, setHdWorldTexturesEnabled, withHdModelTexture, withHdWorldTexture,
 } from "./HdWorldTextures.js"; // 23.10 (7.48)
 import { fixtureLightSource } from "./FixtureLightSources.js"; // 06.10-render-fix
 import { sampleWmoLight, wmoOutdoorLightPositions, wmoOutdoorLights } from "./WmoFixtureLights.js"; // 22.10 (7.36)
@@ -9472,6 +9472,25 @@ export class WorldRenderer3D {
     if (hdWorldTexturesActive() === before) return;
     this.#hdWorldTerrainReload = true;
     this.#rebuildWmoPlacements();
+    this.#rebuildHdSceneryModels(); // 24.10 (7.48 step 3)
+  }
+
+  /**
+   * 24.10 (7.48 step 3): re-admits every placed scenery model (doodads, trees, WMO doodads), the ground cover and the
+   * skybox, so they are built again under the current `#builtCacheKey` variant — with or without `hd=` texture URLs.
+   * The other variant's builds stay in the bounded cache until evicted; units keep theirs until rebuilt.
+   */
+  #rebuildHdSceneryModels(): void {
+    for (const [id, rendered] of [...this.#environment]) {
+      if (!rendered.wvm) continue;
+      this.#environmentVisibilitySpheres.delete(rendered.source);
+      this.#removeEnvironment(id, rendered);
+    }
+    this.#clearGroundCover();
+    if (this.#skyboxLoadedPath !== undefined) {
+      this.#clearSkybox();
+      this.#skyboxLoadedPath = undefined;
+    }
   }
 
   /** 23.10 (7.48): set when the world HD copies changed; `#updateTerrain` reloads the ground once. */
@@ -12342,10 +12361,13 @@ export class WorldRenderer3D {
   }
 
   #builtCacheKey(cache: BuiltModelCache<BuiltModel>, key: string): string {
+    const unit = cache === this.#builtUnits;
     return worldBuiltModelCacheKey(
       this.#worldResourceEpoch,
-      cache === this.#builtUnits ? "unit" : "model",
-      key,
+      unit ? "unit" : "model",
+      // 24.10 (7.48 step 3): a scenery build made while «Чёткие текстуры мира» is active holds `hd=` texture URLs
+      // (ModelBuild → HdWorldTextures.withHdModelTexture), so it is its own cache entry; the off key is unchanged.
+      !unit && hdWorldTexturesActive() ? `hd-world|${key}` : key,
     );
   }
 
@@ -13251,7 +13273,8 @@ export class WorldRenderer3D {
 
   /** 05.10-A7b-2 (7.11 P1): an Env/EnvMetal run's environment map, one per URL, sampled like its base. */
   #wmoEnvTexture(url: string): THREE.Texture {
-    const texture = this.#wmoEnvTextures.load(url);
+    // 24.10 (7.48 step 3): + `hd=` while «Чёткие текстуры мира» is on (a WMO second texture is a `/texture` URL).
+    const texture = this.#wmoEnvTextures.load(withHdModelTexture(url));
     configureWmoCanonicalTexture(texture, this.#anisotropy());
     return texture;
   }
