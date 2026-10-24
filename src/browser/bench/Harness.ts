@@ -378,6 +378,12 @@ async function settle(fraction: number) {
     }
   }
   if (loose) return readiness();
+  // 25.10 (7.51): a light trace may go on with the scene still loading (`--allow-unsettled`).
+  if (config.allowUnsettled) {
+    const status = readiness();
+    console.warn(`Scene did not settle, going on: pending ${status.pending}`);
+    return status;
+  }
   throw new Error(`Scene did not settle: ${JSON.stringify(readiness())}`);
 }
 host.__bench = {
@@ -615,8 +621,8 @@ host.__bench = {
     const worldRenderer = world;
     return runLightTrace(spec, {
       render, settle: () => settle(lastFraction), nextFrame, census: () => worldRenderer.lightCensus(),
-      place(x, y, yaw, pitch, orbit, halfMinute) {
-        config.route = { ...config.route, x, y, dx: 0, dy: 0 };
+      place(x, y, yaw, pitch, orbit, halfMinute, z) {
+        config.route = { ...config.route, x, y, z, dx: 0, dy: 0 }; // 25.10 (7.51): + a floor over the terrain
         config.view = { yaw, pitch, orbit };
         config.halfMinute = halfMinute;
       },
