@@ -7,7 +7,7 @@ export function effectFixture(bone) {
     id: 1, flags: 0, position: [.05, .03, .04], bone, texture: 0, blendType: 4, emitterType: 1,
     particleType: 0, headTail: 0, particleColorIndex: 0, textureTileRotation: 0,
     textureRows: 1, textureColumns: 1, lifespanVary: 0, emissionRateVary: 0, scaleVary: [0, 0],
-    tailLength: 0, twinkleSpeed: 0, twinklePercent: 0, twinkleScaleMin: 0, twinkleScaleMax: 0,
+    tailLength: 0, twinkleSpeed: 0, twinklePercent: 1, twinkleScaleMin: 1, twinkleScaleMax: 1, // 25.10 (6.27): neutral twinkle (on by default)
     burstMultiplier: 0, drag: 0, baseSpin: 0, baseSpinVary: 0, spin: 0, spinVary: 0,
     windVector: [0, 0, 0], windTime: 0, followSpeed1: 0, followScale1: 0, followSpeed2: 0,
     followScale2: 0, splinePoints: new Float32Array(0),

@@ -721,6 +721,7 @@ async function spellVisualIdHarness() {
   const dependencies = {
     THREE, MODEL_VFX_LOAD_GRACE_MS: 3_000, visualHasStarted, visualAnimationIsDue,
     planToRenderTime: clock.planToRenderTime, toRenderTime: clock.toRenderTime,
+    SPELL_ANIM_DECAY: 159, MODEL_VFX_MAX_MS: 5_000, // 25.10 (6.27): an aura model's Decay on cancel
   };
   const Harness = Function(...Object.keys(dependencies), `${body}; return Harness;`)(...Object.values(dependencies));
   const h = new Harness();
@@ -731,6 +732,7 @@ async function spellVisualIdHarness() {
   h.liveVisualHandles = () => h.collectVisualHandles();
   h.chainBeams = undefined;
   h.cameraShakes = { add() {}, clear() {} };
+  h.unitTints = { add() {}, cancel() {}, retime() {}, clear() {} }; // 25.10 (6.27)
   h.visualGroup = { add() {}, remove() {} };
   h.dropEffects = () => {};
   h.disposeRenderedVisual = () => {};

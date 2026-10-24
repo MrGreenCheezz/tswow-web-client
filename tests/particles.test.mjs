@@ -21,6 +21,7 @@ import {
 import { spellEffectPrimeSeconds } from "../dist/code/browser/WorldRenderer3D.js";
 import { applyBillboardBones, buildSkinnedTemplateFrom, instantiateSkinned } from "../dist/code/browser/AnimatedModel.js";
 import { BONE_CYLINDRICAL_BILLBOARD_Z, BONE_SPHERICAL_BILLBOARD } from "../dist/code/browser/Wvm.js";
+import { resetRenderSwitches, setRenderSwitches } from "../dist/code/browser/RenderSwitches.js"; // 25.10 (6.27)
 
 const array = (buffer, at) => ({ count: buffer.readUInt32LE(at), offset: buffer.readUInt32LE(at + 4) });
 const HEADER = { globalLoops: 0x14, ribbonEmitters: 0x120, particleEmitters: 0x128 };
@@ -97,7 +98,7 @@ function emitter(overrides = {}) {
     id: 1, flags: 0, position: [0, 0, 0], bone: 0, texture: 0, blendType: 4, emitterType: 1,
     particleType: 0, headTail: 0, particleColorIndex: 0, textureTileRotation: 0,
     textureRows: 1, textureColumns: 1, lifespanVary: 0, emissionRateVary: 0, scaleVary: [0, 0],
-    tailLength: 0, twinkleSpeed: 0, twinklePercent: 0, twinkleScaleMin: 0, twinkleScaleMax: 0,
+    tailLength: 0, twinkleSpeed: 0, twinklePercent: 1, twinkleScaleMin: 1, twinkleScaleMax: 1, // 25.10 (6.27): neutral twinkle (on by default)
     burstMultiplier: 0, drag: 0, baseSpin: 0, baseSpinVary: 0, spin: 0, spinVary: 0,
     windVector: [0, 0, 0], windTime: 0, followSpeed1: 0, followScale1: 0, followSpeed2: 0,
     followScale2: 0, splinePoints: new Float32Array(0),
@@ -530,22 +531,27 @@ test("a particle's colour and size come off the ramps at its own age", () => {
   assert.ok(Math.abs(look.width - 2) < 1e-6 && Math.abs(look.height - 2) < 1e-6);
 });
 
-test("twinkle is left out rather than guessed at", () => {
-  // twinkleSpeed is authored on 8,564 of the client's 8,575 emitters and no source anywhere gives
-  // a formula for how twinkleScale enters the size. The range reaches 47.7 on native content, so
-  // every guess that flatters one emitter draws another one forty times life size. This pins the
-  // omission: a particle is the size its scale ramp says, whatever the twinkle fields hold.
+test("twinkle off keeps the ramp size; on (the default since 25.10) it scales within the authored range", () => {
+  // 13.10 6.15 read the 3.3.5a writer (0x0097be80): size × (min + noise · (max − min)) whatever the range.
+  // 25.10 (6.27): on by default; off still draws every particle the size its scale ramp says.
   const loud = emitter({
     scale: ramp([1, 1], [0], 2), twinkleSpeed: 15, twinklePercent: 1,
     twinkleScaleMin: 0.1, twinkleScaleMax: 47.7, emissionRate: track([60], [0]), lifespan: track([9], [0]),
   });
   const system = createParticleSystem(loud, new Uint32Array(0), 21);
-  for (let frame = 0; frame < 20; frame++) {
-    stepParticles(system, 1 / 60, { matrix: IDENTITY, animationMs: 0, worldMs: 0 });
-    for (const particle of system.particles) {
-      const look = particleAppearance(loud, particle, {});
-      assert.ok(Math.abs(look.width - 1) < 1e-6, `${look.width} is life size`);
+  try {
+    for (let frame = 0; frame < 20; frame++) {
+      stepParticles(system, 1 / 60, { matrix: IDENTITY, animationMs: 0, worldMs: 0 });
+      for (const particle of system.particles) {
+        setRenderSwitches({ particleTwinkle: false });
+        assert.ok(Math.abs(particleAppearance(loud, particle, {}).width - 1) < 1e-6, "off: life size");
+        resetRenderSwitches();
+        const width = particleAppearance(loud, particle, {}).width;
+        assert.ok(width >= 0.1 - 1e-6 && width <= 47.7 + 1e-4, `on: ${width} within the range`);
+      }
     }
+  } finally {
+    resetRenderSwitches();
   }
 });
 

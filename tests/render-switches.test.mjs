@@ -13,13 +13,14 @@ import {
 test('defaults are the frame this client already drew', () => {
   resetRenderSwitches();
   assert.equal(renderSwitches.m2AlphaDepthWrite, true);
-  assert.equal(renderSwitches.particleTwinkle, false);
-  setRenderSwitches({ particleTwinkle: true, m2AlphaDepthWrite: 'no', bogus: true });
+  // 25.10 (6.27): twinkle is on by default (0x0097be80 read exactly).
   assert.equal(renderSwitches.particleTwinkle, true);
+  setRenderSwitches({ particleTwinkle: false, m2AlphaDepthWrite: 'no', bogus: true });
+  assert.equal(renderSwitches.particleTwinkle, false);
   assert.equal(renderSwitches.m2AlphaDepthWrite, true, 'a non-boolean is ignored');
   assert.equal('bogus' in renderSwitches, false);
   resetRenderSwitches();
-  assert.equal(renderSwitches.particleTwinkle, false);
+  assert.equal(renderSwitches.particleTwinkle, true);
 });
 
 test('6.16д: m2AlphaDepthWrite off turns the write off for BLEND_ALPHA only', () => {
@@ -64,7 +65,7 @@ test('6.15 twinkle: the noise table, its index and the phase hash', () => {
 
 test('6.15 twinkle: size multiplier and percent gate, only behind the switch', () => {
   try {
-    resetRenderSwitches();
+    setRenderSwitches({ particleTwinkle: false }); // 25.10 (6.27): on by default
     assert.equal(twinkleSize(emitter(0, 1, 0.2), 0.5, 7), 1, 'switch off: ramp size');
     setRenderSwitches({ particleTwinkle: true });
     // 13.10 6.15: a degenerate range multiplies by its own value — Wow.exe 0x0097be80 applies min + noise · 0
@@ -117,7 +118,7 @@ test('6.15 twinkle reaches particleAppearance through the particle\'s phase', ()
   assert.ok(system.particles.length > 1);
   const out = {};
   try {
-    resetRenderSwitches();
+    setRenderSwitches({ particleTwinkle: false }); // 25.10 (6.27): on by default
     const plain = system.particles.map((p) => particleAppearance(system.emitter, p, out).width);
     assert.ok(plain.every((w) => Math.abs(w - 2) < 1e-6), 'off: ramp size');
     setRenderSwitches({ particleTwinkle: true });

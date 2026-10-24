@@ -31,6 +31,13 @@ export const SPELL_LIGHT_PEAK = 0.6;
 export const SPELL_LIGHT_RADIUS = 9;
 /** Time constant of the smoothing, in seconds. */
 export const SPELL_LIGHT_SMOOTHING = 0.1;
+/**
+ * 25.10 (6.27): how strongly each kind of spell model lights its surroundings, × `SPELL_LIGHT_PEAK`: a missile is the
+ * light moving through the scene (and its light sits on the bolt, not on the trail it leaves), an impact or a cast
+ * flash the ordinary one, an aura's held model a faint one — it stands on its unit for minutes.
+ */
+export const SPELL_LIGHT_KIND_SCALE = { missile: 1.5, burst: 1, aura: 0.5 } as const;
+export type SpellLightKind = keyof typeof SPELL_LIGHT_KIND_SCALE;
 /** Below this smoothed intensity a light is dropped. */
 const SPELL_LIGHT_FLOOR = 0.01;
 /** The yd² one fully opaque additive mesh batch counts for (a spell's mesh is a handful of cards). */
@@ -46,6 +53,10 @@ export function spellLightIntensity(energy: number): number {
 interface Candidate {
   glow: ParticleGlow;
   seen: boolean;
+  /** 25.10 (6.27): its kind's scale and, for a missile, the point it is pinned to this frame. */
+  scale: number;
+  pinned: boolean;
+  pinX: number; pinY: number; pinZ: number;
   smoothed: number;
   position: THREE.Vector3;
   colour: THREE.Vector3;
@@ -57,7 +68,9 @@ function emptyGlow(): ParticleGlow {
 
 /** Collects the frame's spell glow per effect and offers the brightest as fixture lights. */
 export class SpellLights {
-  readonly #byEffect = new Map<number, Candidate>();
+  // 25.10 (6.27): one candidate per spell model (its RenderedVisual), not per cast: a cast's hand flare, bolt and
+  // impact are different lights in different places.
+  readonly #byEffect = new Map<object, Candidate>();
   readonly #ranked: Candidate[] = [];
 
   /** Starts a frame: every effect is unseen until it offers glow again. */
@@ -70,23 +83,38 @@ export class SpellLights {
   }
 
   /** The accumulator one effect's emitters write into this frame (`updateModelEffects({ glow })`). */
-  glowOf(effect: number): ParticleGlow {
+  glowOf(effect: object, kind: SpellLightKind = "burst"): ParticleGlow {
+    return this.#candidate(effect, kind).glow;
+  }
+
+  #candidate(effect: object, kind: SpellLightKind): Candidate {
     let candidate = this.#byEffect.get(effect);
     if (!candidate) {
-      candidate = { glow: emptyGlow(), seen: false, smoothed: 0, position: new THREE.Vector3(), colour: new THREE.Vector3() };
+      candidate = { glow: emptyGlow(), seen: false, scale: 1, pinned: false, pinX: 0, pinY: 0, pinZ: 0, smoothed: 0,
+        position: new THREE.Vector3(), colour: new THREE.Vector3() };
       this.#byEffect.set(effect, candidate);
     }
+    if (!candidate.seen) candidate.pinned = false;
     candidate.seen = true;
-    return candidate.glow;
+    candidate.scale = SPELL_LIGHT_KIND_SCALE[kind];
+    return candidate;
+  }
+
+  /** 25.10 (6.27): a missile's light sits on the bolt (scene x, y, z), whatever its trail adds up to. */
+  pin(effect: object, x: number, y: number, z: number): void {
+    const candidate = this.#candidate(effect, "missile");
+    candidate.pinned = true;
+    candidate.pinX = x; candidate.pinY = y; candidate.pinZ = z;
   }
 
   /** An additive mesh batch of the effect at `opacity` and colour, centred at (x, y, z) in the scene. */
-  addBatch(effect: number, x: number, y: number, z: number, red: number, green: number, blue: number, opacity: number): void {
+  addBatch(effect: object, x: number, y: number, z: number, red: number, green: number, blue: number, opacity: number,
+    kind: SpellLightKind = "burst"): void {
     const area = SPELL_MESH_BATCH_AREA * Math.max(0, Math.min(1, opacity));
     const brightness = Math.max(red, green, blue);
     const energy = area * brightness;
     if (!(energy > 0) || !Number.isFinite(energy)) return;
-    const glow = this.glowOf(effect);
+    const glow = this.glowOf(effect, kind);
     glow.energy += energy;
     glow.red += red * area;
     glow.green += green * area;
@@ -102,10 +130,11 @@ export class SpellLights {
     this.#ranked.length = 0;
     for (const [effect, candidate] of this.#byEffect) {
       const glow = candidate.glow;
-      const target = candidate.seen ? spellLightIntensity(glow.energy) : 0;
+      const target = candidate.seen ? spellLightIntensity(glow.energy) * candidate.scale : 0;
       candidate.smoothed += (target - candidate.smoothed) * (elapsed > 0 ? blend : 1);
       if (candidate.seen && glow.energy > 0) {
-        candidate.position.set(glow.x / glow.energy, glow.y / glow.energy, glow.z / glow.energy);
+        if (candidate.pinned) candidate.position.set(candidate.pinX, candidate.pinY, candidate.pinZ);
+        else candidate.position.set(glow.x / glow.energy, glow.y / glow.energy, glow.z / glow.energy);
         const peak = Math.max(glow.red, glow.green, glow.blue);
         if (peak > 0) candidate.colour.set(glow.red / peak, glow.green / peak, glow.blue / peak);
       }

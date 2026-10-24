@@ -39,16 +39,16 @@ test("a DebugTab switch change reaches the renderer realm's switches through the
     // DebugTab's checkbox and `webclientDebug.switches(patch)` both call setRenderSwitches.
     assert.match(source("ui/DebugTab.ts"), /setRenderSwitches\(\{ \[key\]: box\.checked \}\)/);
     const before = renderSwitchesPush();
-    setRenderSwitches({ particleTwinkle: true, terrainSpecular: false });
+    setRenderSwitches({ particleTwinkle: false, terrainSpecular: false }); // 25.10 (6.27): twinkle is on by default
     const crossed = crossedInputs();
     assert.ok(crossed.switches.revision > before.revision, "the write moved the revision");
     assert.deepEqual(crossed.switches.values, { ...renderSwitches });
     // The renderer realm starts from its defaults.
     resetRenderSwitches();
-    assert.equal(renderSwitches.particleTwinkle, false);
+    assert.equal(renderSwitches.particleTwinkle, true);
     const pushes = new RenderSidePushes();
     pushes.apply(crossed, undefined);
-    assert.equal(renderSwitches.particleTwinkle, true, "the twinkle switch is on in the renderer's copy");
+    assert.equal(renderSwitches.particleTwinkle, false, "the twinkle switch is off in the renderer's copy");
     assert.equal(renderSwitches.terrainSpecular, false);
     // Applying is not a write of the page: the revision stays, and the same revision is not applied twice.
     const applied = renderSwitchesPush();
@@ -56,7 +56,7 @@ test("a DebugTab switch change reaches the renderer realm's switches through the
     assert.equal(renderSwitchesPush(), applied, "one frozen record until the next write");
     // Nothing pushed (a benchmark, a test): the renderer's copy stays.
     pushes.apply(NO_RENDER_INPUTS, undefined);
-    assert.equal(renderSwitches.particleTwinkle, true);
+    assert.equal(renderSwitches.particleTwinkle, false);
   } finally {
     resetRenderSwitches();
   }
