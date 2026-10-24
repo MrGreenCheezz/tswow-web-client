@@ -30,8 +30,16 @@ export const TERRAIN_TILE_CACHE_LIMIT = 64;
  * cap so a frame never evicts a tile it is currently asking the scene to draw.
  */
 export const ENVIRONMENT_TILE_CACHE_LIMIT = 64;
-/** Completed decoded model entries retained by the CPU cache; current-frame pins may exceed it. */
-export const ENVIRONMENT_MODEL_CACHE_LIMIT = 256;
+/**
+ * Completed decoded model entries retained by the CPU cache; current-frame pins may exceed it.
+ *
+ * 25.10 (perf): 1,024, was 256. A city's footprint under the far view (7.39) is larger than 256: Dalaran over
+ * Crystalsong holds ~1,000 models and Stormwind's trade district ~310, and a turning camera demands them in halves a few
+ * frames apart, so each half evicted the other — ~94 model loads a second in Dalaran (decode, rebuild of every
+ * placement on the reloaded model), 6 a second in Stormwind. The 1,007 models of Dalaran hold 60 MB of decoded arrays
+ * (45 MB at 256, most of it pinned by the scene anyway), under the byte budget below; the page's peak heap fell.
+ */
+export const ENVIRONMENT_MODEL_CACHE_LIMIT = 1024;
 /** P1-10a: count overflow past which `#evictModels` sorts once instead of scanning per eviction. */
 const MODEL_EVICTION_SORT_THRESHOLD = 16;
 /** P1-10a-2: frames a model key may go undemanded before `#sweepModelDemand` may drop it. */
@@ -49,7 +57,8 @@ export const ENVIRONMENT_ANIMATION_QUEUE_LIMIT = 256;
 /** Queued WMO group requests retained while the four group lanes are active. */
 export const ENVIRONMENT_MODEL_GROUP_QUEUE_LIMIT = 256;
 /** Soft decoded-residency budgets; exact active-frame pins may temporarily exceed them. */
-export const ENVIRONMENT_MODEL_TYPED_BACKING_BUDGET_BYTES = 64 * 1024 * 1024;
+/** 25.10 (perf): 128 MiB, was 64: Dalaran's 1,007 models alone hold 60 MB. */
+export const ENVIRONMENT_MODEL_TYPED_BACKING_BUDGET_BYTES = 128 * 1024 * 1024;
 export const ENVIRONMENT_MODEL_NUMERIC_ARRAY_BUDGET_ELEMENTS = 8_000_000;
 export const ENVIRONMENT_ANIMATION_TYPED_BACKING_BUDGET_BYTES = 64 * 1024 * 1024;
 /** Hard decoded-entry limits. Unlike soft budgets, active pins never bypass these. */
@@ -110,6 +119,8 @@ export interface EnvironmentStats {
   readonly activeTiles: number;
   readonly residentObjects: number;
   readonly residentModels: number;
+  /** 25.10 (perf): model loads started since the client was made — a full cache that churns keeps counting. */
+  readonly modelLoadsStarted: number;
   readonly knownMissingModels: number;
   readonly deferredModels: number;
   readonly failedModels: number;
@@ -999,6 +1010,7 @@ export class EnvironmentClient {
   #failedGroups = 0;
   #activeGroups = 0;
   #activeModels = 0;
+  #modelLoadsStarted = 0; // 25.10 (perf)
   #backgroundReservationStartedAt: number | undefined;
   #backgroundReservationReleased = false;
   #backgroundReservationTimer: ReturnType<typeof setTimeout> | undefined;
@@ -1295,6 +1307,7 @@ export class EnvironmentClient {
       failedModels,
       queuedModels: this.#modelQueue.size,
       activeModels: this.#activeModels,
+      modelLoadsStarted: this.#modelLoadsStarted,
       ...this.#groupStats(),
       residentAnimations,
       failedAnimations,
@@ -1812,6 +1825,7 @@ export class EnvironmentClient {
       this.#modelQueue.delete(wanted.name);
       if (wanted.priority === "critical") this.#releaseBackgroundReservation();
       this.#activeModels++;
+      this.#modelLoadsStarted++;
       void this.#loadModel(wanted.name, environmentFetchPriority(wanted.priority)).finally(() => {
         release();
         if (this.#disposed) return;

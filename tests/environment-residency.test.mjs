@@ -65,7 +65,7 @@ function modelPath(url) {
 }
 
 test("EnvironmentClient exports and validates conservative decoded-resource entry caps", () => {
-  assert.equal(ENVIRONMENT_MODEL_CACHE_LIMIT, 256);
+  assert.equal(ENVIRONMENT_MODEL_CACHE_LIMIT, 1024); // 25.10 (perf): a turning city's footprint
   assert.equal(ENVIRONMENT_ANIMATION_CACHE_LIMIT, 128);
   for (const limit of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1]) {
     assert.throws(
@@ -840,4 +840,38 @@ test("production wraps warmup and renderer consumers in one committed Environmen
   assert.ok(exclusive >= 0 && begin > exclusive, "formal-exclusive frames do not start live residency tracking");
   assert.ok(frame > begin && finallyAt > frame && end > finallyAt,
     "the whole production frame commits resource pins from a finally block");
+});
+
+test("25.10 (perf): a city's turning footprint stays resident instead of churning through the cache", async () => {
+  // Dalaran over Crystalsong: the camera's turn demands one half of ~1,000 models on one frame and the other half a
+  // few frames later. At 256 the halves evicted each other and the bench counted ~94 model loads a second.
+  const originalFetch = globalThis.fetch;
+  const requests = new Map();
+  globalThis.fetch = async (url) => {
+    const name = modelPath(url);
+    requests.set(name, (requests.get(name) ?? 0) + 1);
+    return { ok: true, status: 200, arrayBuffer: async () => emptyModel() };
+  };
+  try {
+    const client = new EnvironmentClient("ws://example.test/world");
+    const half = (side) => Array.from({ length: 300 }, (_, index) => `Turn${side}${index}.m2`);
+    for (let pass = 0; pass < 6; pass++) {
+      for (const side of ["A", "B"]) {
+        // Each half is demanded until it is loaded, as the renderer asks every frame.
+        for (let frame = 0; frame < 200; frame++) {
+          client.beginResourceFrame();
+          let missing = 0;
+          for (const name of half(side)) if (!client.model(name, "normal")) missing++;
+          client.endResourceFrame();
+          if (missing === 0) break;
+          await settle(8);
+        }
+      }
+    }
+    const reloaded = [...requests.values()].filter((count) => count > 1).length;
+    assert.equal(reloaded, 0, `models fetched again after eviction: ${reloaded}`);
+    assert.equal(client.stats.residentModels, 600);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
