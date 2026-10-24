@@ -30,6 +30,7 @@ import {
   directionalShadowBasis, frustumSliceSphere, stabiliseDirectionalShadowCenter,
   type LightingProfile,
 } from "./LightingQuality.js";
+import { ShadowGroupMerger } from "./ShadowGroupMerge.js"; // 25.10 (12.10)
 import {
   SHADOW_CASTER_KINDS, ShadowCasterRoot, referenceShadowWalk, shadowCasterKind, shadowDrawCount,
   type ShadowCasterList,
@@ -288,6 +289,8 @@ export class CascadedSunShadows {
   #shadowOnlyCount = 0;
   #casterList: ShadowCasterList | undefined;
   readonly #casterRoot = new ShadowCasterRoot();
+  /** 25.10 (12.10): casters' geometries swapped for their merged twins around the cascades. */
+  readonly #groupMerger = new ShadowGroupMerger();
   #boundedCasters: ((out: THREE.Mesh[]) => void) | undefined;
   readonly #boundedList: THREE.Mesh[] = [];
   readonly #boundedHidden: THREE.Mesh[] = [];
@@ -820,6 +823,11 @@ export class CascadedSunShadows {
       try {
         // A gate-2 caster that is its own (hidden) owner: three would stop at its `visible`.
         list?.showShadowOnly();
+        // 25.10 (12.10): one depth draw per depth state of a caster (ShadowGroupMerge.ts).
+        if (list) {
+          owner.#groupMerger.begin();
+          list.mergeGroups(owner.#groupMerger);
+        }
         for (let view = 0; view < cascades.length; view++) {
           const cascade = cascades[view]!;
           if (!cascade.scheduled || !lights.includes(cascade.light)) continue;
@@ -854,6 +862,7 @@ export class CascadedSunShadows {
         // the first main-pass draw (transmission, a manual clear) relies on that.
         renderer.state?.buffers.color.setMask(true);
         if (list) {
+          owner.#groupMerger.restore(); // 25.10 (12.10)
           list.hideShadowOnly();
           root.children.length = 0;
         } else {
