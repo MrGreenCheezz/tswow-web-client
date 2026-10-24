@@ -9,7 +9,10 @@ import test from "node:test";
 import {
   MODEL_TEXTURE_PREFIXES, modelTexturePath, wmoDiffuseTextures, wmoSecondTextures, worldSet,
 } from "../tools/hd-texture-set.mjs";
-import { compressedFile, compressPipeline, COMPRESS_PIPELINE, MODEL, SCALE_POLICY, SET_MODEL } from "../tools/upscale-textures.mjs";
+import {
+  compressedFile, compressPipeline, pipelineFor, COMPRESS_PIPELINE, DILATED_PIPELINE, MODEL, PIPELINE, SCALE_POLICY, SET_MODEL,
+} from "../tools/upscale-textures.mjs";
+import { assemble, buildWorkImages, dilateUnderAlpha, planLayout } from "../tools/hd-texture-image.mjs";
 import { HD_MODEL_TEXTURE_PREFIXES, isHdModelTexturePath } from "../dist/code/browser/HdWorldTextures.js";
 
 function chunk(tag, body) {
@@ -143,4 +146,44 @@ test("×2 up to 512 a side (never past 1024), the ground only up to 256; compres
   assert.notEqual(compressPipeline("tileset\\elwynn\\grass.blp"), COMPRESS_PIPELINE, "the ground is stored opaque");
   assert.equal(SET_MODEL.effects, MODEL, "effects keep animevideov3");
   assert.equal(SET_MODEL.world, "realesrgan-x4plus", "the world keeps its grain with x4plus");
+});
+
+// 24.10 (7.48 step 3): a cut-out's colour under its transparent texels (DXT1: black) must not reach the network.
+test("a world cut-out is upscaled from its dilated colour; the original colour returns under alpha 0; opaque and effects unchanged", () => {
+  const leaf = [60, 140, 40];
+  // 8×2, two cells of a 1×2 sheet: the left cell a leaf with a cut-out middle, the right cell red and fully opaque.
+  const image = { width: 8, height: 2, data: new Uint8Array(64) };
+  for (let y = 0; y < 2; y++) {
+    for (let x = 0; x < 8; x++) {
+      const at = (y * 8 + x) * 4;
+      if (x >= 4) image.data.set([200, 20, 20, 255], at);
+      else image.data.set(x === 1 || x === 2 ? [0, 0, 0, 0] : [...leaf, 255], at);
+    }
+  }
+  const layout = planLayout(8, 2, { grids: [[1, 2]], pad: 2 });
+  const dilated = dilateUnderAlpha(image, layout);
+  for (const x of [1, 2]) {
+    assert.deepEqual([...dilated.data.subarray(x * 4, x * 4 + 4)], [...leaf, 0], "the leaf's colour under its cut-out, alpha kept");
+  }
+  assert.deepEqual([...image.data.subarray(4, 8)], [0, 0, 0, 0], "the source is not modified");
+  // A nearest ×2 stand-in for the network, then assembly with the original put back under alpha 0.
+  const { colour, alpha } = buildWorkImages(dilated, layout);
+  const nearest = (picture) => {
+    const out = { width: picture.width * 2, height: picture.height * 2, data: new Uint8Array(picture.width * picture.height * 16) };
+    for (let y = 0; y < out.height; y++) {
+      for (let x = 0; x < out.width; x++) {
+        out.data.set(picture.data.subarray(((y >> 1) * picture.width + (x >> 1)) * 4, ((y >> 1) * picture.width + (x >> 1)) * 4 + 4), (y * out.width + x) * 4);
+      }
+    }
+    return out;
+  };
+  const result = assemble(layout, 2, nearest(colour), nearest(alpha), 4, image);
+  const texel = (x, y) => [...result.data.subarray((y * 16 + x) * 4, (y * 16 + x) * 4 + 4)];
+  assert.deepEqual(texel(3, 0), [0, 0, 0, 0], "under alpha 0: the original's black, as an additive no-alpha draw saw it");
+  assert.deepEqual(texel(1, 1), [...leaf, 255]);
+  assert.deepEqual(texel(9, 0), [200, 20, 20, 255], "the opaque cell is untouched");
+  assert.equal(pipelineFor("world", image), DILATED_PIPELINE);
+  const opaque = { width: 1, height: 1, data: Uint8Array.from([1, 2, 3, 255]) };
+  assert.equal(pipelineFor("world", opaque), PIPELINE, "an opaque texture keeps its entry");
+  assert.equal(pipelineFor("effects", image), PIPELINE, "the effects set is not rebuilt");
 });

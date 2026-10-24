@@ -658,6 +658,60 @@ export function mipChain(image, space = "linear") {
   return levels;
 }
 
+/** 24.10 (7.48 step 3): below this source alpha a texel's colour is not matched by `backProject` (it is not seen). */
+const BACK_PROJECT_ALPHA = 16;
+
+/**
+ * 24.10 (7.48 step 3): one back-projection step — the HD picture's colour moved so that its 2×2 box average is the
+ * source again: `hd + bilinear(source − box(hd))`. The network keeps its fine detail but loses its slow drift in tone
+ * (x4plus reads 3–6 % darker on leaves and bark, lookdev 24.10: canopies visibly darker up close). Colour only, in the
+ * stored (sRGB) values, only where the source texel is seen (alpha ≥ 16); alpha is left as the network made it.
+ * `wrap`: the texture tiles, so the correction near an edge reads across the opposite one (no seam); else it clamps.
+ * `hd` must be exactly twice `source` a side; anything else is returned unchanged.
+ */
+export function backProject(hd, source, wrap = false) {
+  if (hd.width !== source.width * 2 || hd.height !== source.height * 2) return hd;
+  const { width: sw, height: sh } = source;
+  const residual = new Float32Array(sw * sh * 3);
+  for (let y = 0; y < sh; y++) {
+    for (let x = 0; x < sw; x++) {
+      const at = (y * sw + x) * 4;
+      if (source.data[at + 3] < BACK_PROJECT_ALPHA) continue;
+      for (let channel = 0; channel < 3; channel++) {
+        let box = 0;
+        for (let dy = 0; dy < 2; dy++) {
+          for (let dx = 0; dx < 2; dx++) box += hd.data[((2 * y + dy) * hd.width + 2 * x + dx) * 4 + channel];
+        }
+        residual[(y * sw + x) * 3 + channel] = source.data[at + channel] - box / 4;
+      }
+    }
+  }
+  const out = Uint8Array.from(hd.data);
+  // HD texel centres in source texel units: wrapped across the edge for a tiling texture, else clamped.
+  const sample = (position, size) => {
+    if (wrap) {
+      const base = Math.floor(position);
+      return [((base % size) + size) % size, (((base + 1) % size) + size) % size, position - base];
+    }
+    const clamped = Math.min(size - 1, Math.max(0, position));
+    const base = Math.floor(clamped);
+    return [base, Math.min(size - 1, base + 1), clamped - base];
+  };
+  for (let y = 0; y < hd.height; y++) {
+    const [y0, y1, ty] = sample((y + 0.5) / 2 - 0.5, sh);
+    for (let x = 0; x < hd.width; x++) {
+      const [x0, x1, tx] = sample((x + 0.5) / 2 - 0.5, sw);
+      const at = (y * hd.width + x) * 4;
+      for (let channel = 0; channel < 3; channel++) {
+        const r = (residual[(y0 * sw + x0) * 3 + channel] * (1 - tx) + residual[(y0 * sw + x1) * 3 + channel] * tx) * (1 - ty)
+          + (residual[(y1 * sw + x0) * 3 + channel] * (1 - tx) + residual[(y1 * sw + x1) * 3 + channel] * tx) * ty;
+        out[at + channel] = Math.min(255, Math.max(0, Math.round(hd.data[at + channel] + r)));
+      }
+    }
+  }
+  return { width: hd.width, height: hd.height, data: out };
+}
+
 /**
  * Bilinear resample with wrapping (both directions tile) to `width` × `height` — the ground HD copy is put on the
  * one side the terrain array uses (512), as the gateway's own layers are resampled to the array side.

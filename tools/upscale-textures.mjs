@@ -45,7 +45,9 @@ import { fileURLToPath } from "node:url";
 import { PNG } from "pngjs";
 import { decodeBlp } from "./blp.mjs";
 import { effectsSet, worldSet, GROUND_MAX_SOURCE, SET_NAMES, WORLD_MAX_SOURCE } from "./hd-texture-set.mjs";
-import { assemble, buildWorkImages, effectScale, fidelity, planLayout, ALPHA_SNAP, FIDELITY_LIMIT } from "./hd-texture-image.mjs";
+import {
+  assemble, buildWorkImages, dilateUnderAlpha, effectScale, fidelity, planLayout, ALPHA_SNAP, DILATE_ALPHA, FIDELITY_LIMIT,
+} from "./hd-texture-image.mjs";
 import { downsample, MODELS, nativeScale, upscaleDirectory } from "./hd-texture-upscaler.mjs";
 import { clientArchives } from "./mpq.mjs";
 import { clientDirectory, repositoryRoot } from "./paths.mjs";
@@ -53,6 +55,19 @@ import { stampGenerated, stampIsCurrent, writeFileAtomic } from "./source-stamp.
 
 /** Bumped when the pixel pipeline changes (padding, alpha handling, assembly), so every entry is rebuilt. */
 export const PIPELINE = `hd-pipeline-2/pad8/snap${ALPHA_SNAP}/x4box`;
+/**
+ * 24.10 (7.48 step 3): a world-set texture with alpha is upscaled from `dilateUnderAlpha` (the colour under transparent
+ * texels taken from the visible ones, the original's put back under alpha 0): cut-out leaves had dark rims. Opaque
+ * textures and the effects set keep `PIPELINE`, so nothing else is rebuilt.
+ */
+export const DILATED_PIPELINE = `${PIPELINE}/dilate${DILATE_ALPHA}`;
+
+/** 24.10 (7.48 step 3): the pixel pipeline a texture of `set` is built by (`image`: its decoded source). */
+export function pipelineFor(set, image) {
+  if (set !== "world") return PIPELINE;
+  for (let index = 3; index < image.data.length; index += 4) if (image.data[index] !== 255) return DILATED_PIPELINE;
+  return PIPELINE;
+}
 export const MANIFEST_SCHEMA = "hd-textures-1";
 /**
  * 23.10: realesr-animevideov3. Compared on eight effect textures against realesrgan-x4plus and x4plus-anime
@@ -184,12 +199,9 @@ function takeSetLock(setDirectory) {
  * 23.10 (7.48): bumped when the compressed form changes (encoder, mip filter, ground side), so every `.wht` is
  * rebuilt — on the CPU only, from the PNG beside it.
  */
-export const COMPRESS_PIPELINE = "bc7-mode56-v3/hd0-original-mips/ground512";
-/**
- * 24.10 (7.48 step 3): the pipeline before mode 5 joined (alpha blocks only). An opaque container it made is byte for
- * byte what v3 makes (opaque blocks are mode 6 as before), so it is kept and only relabelled — no CPU spent on it.
- */
-const PREVIOUS_COMPRESS_PIPELINE = "bc7-mode6-v2/hd0-original-mips/ground512";
+// 24.10 (7.48 step 3): v4 — alpha blocks may be BC7 mode 5 (tools/hd-texture-bc7.mjs `encodeMode5`), and level 0 is
+// back-projected onto the original (`backProject`: x4plus's 2–3/255 drift in tone removed, sharpness kept).
+export const COMPRESS_PIPELINE = "bc7-mode56-v4/backproject/hd0-original-mips/ground512";
 /**
  * 23.10 (7.48): a ground texture's container is opaque — its `_s.blp` specular mask is not carried (the client uses the
  * HD ground only where the glint is not drawn; with the mask in alpha BC7 cost the colour 1.7 % sharpness — 24.10
@@ -207,18 +219,9 @@ export function compressPipeline(path) {
   return isGround(path) ? `${COMPRESS_PIPELINE}${OPAQUE_SUFFIX}` : COMPRESS_PIPELINE;
 }
 
-/**
- * 24.10 (7.48 step 3): whether an entry's compressed form is what this pipeline would make — its own label, or an
- * opaque container of the previous pipeline (identical bytes). Such an entry is relabelled in place.
- */
+/** 24.10 (7.48 step 3): whether an entry's compressed form is what this pipeline would make. */
 export function compressedUpToDate(path, entry) {
-  const compressed = entry?.compressed;
-  if (!compressed) return false;
-  if (compressed.pipeline === compressPipeline(path)) return true;
-  const previous = isGround(path) ? `${PREVIOUS_COMPRESS_PIPELINE}${OPAQUE_SUFFIX}` : PREVIOUS_COMPRESS_PIPELINE;
-  if (compressed.opaque !== true || compressed.pipeline !== previous) return false;
-  compressed.pipeline = compressPipeline(path);
-  return true;
+  return entry?.compressed?.pipeline === compressPipeline(path);
 }
 
 /** 23.10 (7.48): the compressed form beside an HD PNG (`<id>.wht`, src/gateway/HdTextures.ts names it the same). */
@@ -249,15 +252,11 @@ async function compressSet(manifest, manifestFile, setDirectory, archives, optio
     const png = join(setDirectory, `${hdTextureId(path)}.png`);
     const destination = compressedFile(png);
     if (!existsSync(png)) continue;
-    if (existsSync(destination) && compressedUpToDate(path, entry)) continue; // 24.10 (7.48): opaque v2 kept
-    jobs.push({ path, png, destination, ground: isGround(path) });
+    if (existsSync(destination) && compressedUpToDate(path, entry)) continue;
+    jobs.push({ path, png, destination, ground: isGround(path), wrap: entry.wrap === true });
   }
   console.log(`${jobs.length} HD textures to compress (BC7) on ${options.workers} threads`);
-  if (options.dryRun) return;
-  if (jobs.length === 0) {
-    await writeManifest(manifestFile, manifest); // 24.10 (7.48): relabelled entries
-    return;
-  }
+  if (options.dryRun || jobs.length === 0) return;
   const started = Date.now();
   const workers = Array.from({ length: Math.min(options.workers, jobs.length) },
     () => new Worker(new URL("./hd-texture-compress-worker.mjs", import.meta.url)));
@@ -280,7 +279,7 @@ async function compressSet(manifest, manifestFile, setDirectory, archives, optio
             continue;
           }
           current = job;
-          worker.postMessage({ id, png: job.png, destination: job.destination, ground: job.ground,
+          worker.postMessage({ id, png: job.png, destination: job.destination, ground: job.ground, wrap: job.wrap,
             blp: new Uint8Array(blp), // a compact copy: a view would clone its whole pool slab
           });
 
@@ -384,7 +383,7 @@ async function main() {
       }
       const layout = planLayout(image.width, image.height, { grids: entry.grids, wrap: entry.wrap, pad: 8 });
       const wanted = { sourceSha1: createHash("sha1").update(blp).digest("hex"), scale, model: options.model,
-        pipeline: PIPELINE, grid: [layout.rows, layout.columns], wrap: layout.mode === "wrap" };
+        pipeline: pipelineFor(options.set, image), grid: [layout.rows, layout.columns], wrap: layout.mode === "wrap" };
       if (entryUpToDate(manifest.entries[entry.path], wanted) && existsSync(destination)) {
         upToDate++;
         // Same bytes under a new archive (a republished patch): the HD copy is still right, only its stamp is not.
@@ -442,7 +441,9 @@ async function main() {
             groups.set(native, input);
             mkdirSync(input, { recursive: true });
           }
-          const { colour, alpha } = buildWorkImages(job.image, job.layout);
+          // 24.10 (7.48 step 3): a world cut-out's colour under its transparent texels is its neighbours' (see `pipelineFor`).
+          job.dilated = job.wanted.pipeline === DILATED_PIPELINE;
+          const { colour, alpha } = buildWorkImages(job.dilated ? dilateUnderAlpha(job.image, job.layout) : job.image, job.layout);
           writeFileSync(join(input, `${index}-c.png`), encodePng(colour));
           if (alpha) writeFileSync(join(input, `${index}-a.png`), encodePng(alpha));
           job.native = native;
@@ -463,7 +464,8 @@ async function main() {
           const output = join(work, `out-${job.native}`);
           const factor = job.native / job.wanted.scale;
           const read = (suffix) => downsample(decodePng(readFileSync(join(output, `${job.name}-${suffix}.png`))), factor);
-          const result = assemble(job.layout, job.wanted.scale, read("c"), job.hasAlpha ? read("a") : undefined);
+          const result = assemble(job.layout, job.wanted.scale, read("c"), job.hasAlpha ? read("a") : undefined, 4,
+            job.dilated ? job.image : undefined); // 24.10 (7.48): the original colour back under alpha 0
           // A run that went wrong on the GPU must not ship: past the limit the original stays (see `fidelity`).
           const drift = fidelity(result, job.image, job.wanted.scale);
           if (drift.colour > FIDELITY_LIMIT || drift.alpha > FIDELITY_LIMIT) {
