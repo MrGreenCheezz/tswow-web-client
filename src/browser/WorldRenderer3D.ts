@@ -271,6 +271,7 @@ import {
   wmoDoodadsOfPlacement, // 05.10 review A7b-2
 } from "./WmoOpenAir.js"; // 05.10-A7b-2 (7.03 slice 3)
 import { wmoRunMaterial } from "./WmoMaterials.js"; // 05.10-A7b-2 (7.11 P1)
+import { wmoRoomDrawGeometry } from "./WmoRunMerge.js"; // 25.10 (12.10)
 import { applyWmoRunLook, wmoRunLook, wmoRunLookKey } from "./WmoRunLook.js"; // 05.10-A7b-2 (7.11 P1)
 import {
   applyWmoRunClamp, applyWmoUnlitMocv, wmoGroupNeedsUnlitMocv, wmoRunDrawState, wmoRunDrawStateKey,
@@ -13693,7 +13694,9 @@ export class WorldRenderer3D {
     const runEntries = source.runs.map((run) => this.#wmoRunMaterial(model, group, run));
     const materialEntries = Object.freeze([...new Set(runEntries)]);
     const materials = runEntries.map((materialEntry) => materialEntry.material);
-    const mesh = new THREE.Mesh(entry.geometry, materials.length === 1 ? materials[0]! : materials);
+    // 25.10 (12.10): opaque runs sharing a material drawn as one range (WmoRunMerge.ts).
+    const geometry = materials.length === 1 ? entry.geometry : wmoRoomDrawGeometry(entry.geometry, materials);
+    const mesh = new THREE.Mesh(geometry, materials.length === 1 ? materials[0]! : materials);
     this.#programWarmup.registerObject(mesh);
     this.#wmoGroupBuildBudget.done(); // P2-09a
     return { entry, materialEntries, mesh };
