@@ -1383,14 +1383,13 @@ test("the environment ranking is not redone for four yards of walking", () => {
   assert.equal(shouldReselect(at, { x: 100, y: 200 }, 4), true);
 });
 
-test("a model with emitters is never drawn as an instance", () => {
-  // An instance has no object of its own, and `#updateEffects` places a torch's sparks by reading
-  // the world matrix of the mesh holding the torch. Instancing one leaves its sparks at the map's
-  // origin — visible from anywhere, and nowhere near the torch.
+test("a model is drawn as an instance unless it is a building or a stand-in", () => {
+  // 25.10 (12.10): emitters no longer keep a model out of a bucket — the copy keeps its hidden mesh,
+  // whose frozen matrix `#updateEffects` reads to place the sparks.
   const plain = { wvm: { particleEmitters: [], ribbonEmitters: [] } };
   assert.equal(instanceable(plain), true);
-  assert.equal(instanceable({ wvm: { particleEmitters: [{}], ribbonEmitters: [] } }), false);
-  assert.equal(instanceable({ wvm: { particleEmitters: [], ribbonEmitters: [{}] } }), false);
+  assert.equal(instanceable({ wvm: { particleEmitters: [{}], ribbonEmitters: [] } }), true);
+  assert.equal(instanceable({ wvm: { particleEmitters: [], ribbonEmitters: [{}] } }), true);
   // A building is drawn a room at a time and has no single mesh to copy.
   assert.equal(instanceable({ ...plain, wmo: {} }), false);
   // A stand-in shape is not the model.
