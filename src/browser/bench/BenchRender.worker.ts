@@ -32,6 +32,8 @@ import { nextBenchmarkFrame } from "./FrameClock.js";
 import { installKnownMissingTextureLedger } from "./KnownMissingTextures.js";
 import { benchPhaseNames, benchScenario, type BenchConfig, type BenchScenario } from "./BenchScene.js";
 import { benchReadiness, configureBenchRenderer, createBenchClients, type BenchClients } from "./BenchRenderSide.js";
+import { BenchSpellCasts } from "./BenchSpellCasts.js"; // 25.10 (perf)
+import { benchLoadCensus } from "./BenchLoadCensus.js"; // 25.10 (perf)
 
 /** The bench's part of `init` (RenderWorkerInit `driver`). */
 export interface BenchWorkerDriver {
@@ -103,7 +105,11 @@ async function startSession(init: RenderWorkerInit<BenchWorkerDriver>): Promise<
   setPatchChainSuspectSink(patchChainSuspectQueue(world.results));
   const renderer = renderers.at(-1);
   if (!renderer?.info) throw new Error("Three.js renderer observation failed in the render worker");
-  return new BenchRenderSession(init, host, world, renderer, missingTextures);
+  // 25.10 (perf): the casting crowd of a city file that asks for one, played here on the worker's own clock.
+  const city = init.driver.scenario === "city" || init.driver.scenario === "city-arrival";
+  const casts = city && config.city.casts
+    ? await BenchSpellCasts.load(init.baseUrl, config.city.casts, config.city.population, config.warmupSeconds) : undefined;
+  return new BenchRenderSession(init, host, world, renderer, missingTextures, casts);
 }
 
 class BenchRenderSession {
@@ -119,7 +125,8 @@ class BenchRenderSession {
 
   constructor(readonly init: RenderWorkerInit<BenchWorkerDriver>, readonly host: WorkerRenderHost,
     readonly world: WorldRenderer3D, readonly renderer: THREE.WebGLRenderer,
-    readonly missingTextures: ReturnType<typeof installKnownMissingTextureLedger>) {
+    readonly missingTextures: ReturnType<typeof installKnownMissingTextureLedger>,
+    readonly casts?: BenchSpellCasts) {
     this.#config = init.driver.config;
     this.#scene = benchScenario(this.#config, init.driver.scenario);
     if (!this.#scene.movement) throw new Error("The render worker draws the world scenarios only");
@@ -153,6 +160,7 @@ class BenchRenderSession {
     const world = this.world;
     switch (call.method) {
       case "reset": {
+        if (this.casts) world.clearSpellVisuals(); // 25.10 (perf): the replay reset refuses while one is on show
         world.resetReplayEpoch(this.#config.seed);
         // The replay reset forgets the weather packet, as a fresh world would; a lookdev still wants it.
         if ((call.args[0] as { weather?: boolean } | undefined)?.weather && this.#config.weather) {
@@ -213,6 +221,9 @@ class BenchRenderSession {
       world.updateLighting(lighting.sample(map, self.x, self.y, halfMinute, 0, self.z), halfMinute);
       this.#queryMs = performance.now() - queryAt;
       world.setRenderLookups(receiver.lookups);
+      // 25.10 (perf): the casts due by this frame's clock, at the mirror's unit positions.
+      this.casts?.step((frameTime ?? args.frameTime)?.nowMs ?? 0, (guid) => mirror.objects.get(guid)?.position,
+        (plan) => world.playSpellVisual(plan));
       world.beginRenderFrame();
       try {
         world.draw(mirror, map, (x, y) => terrain.heightAt(map, x, y), terrain, scenery, environment,
@@ -314,7 +325,12 @@ class BenchRenderSession {
       frames++;
       previous = now;
     }
-    return { frames, repeatedRafCallbacks, readiness: this.#readiness(), hardware: this.#hardware(),
+    // 25.10 (perf): the load of one more frame at the run's last moment, outside the measured rows.
+    const census = benchLoadCensus(renderer, () => this.#draw({ nowMs: (crowdClock ? config.warmupSeconds + durationSeconds
+      : durationSeconds) * 1000, elapsedSeconds: 1 / 60, frameIndex: frame++ }));
+    const load = { census, castsPlayed: this.casts?.played ?? 0,
+      lightPools: (world as { lightPoolStats?: unknown }).lightPoolStats ?? null };
+    return { frames, repeatedRafCallbacks, readiness: this.#readiness(), hardware: this.#hardware(), load,
       telemetry: world.telemetry ?? null, poseWorker: world.poseWorkerStats() ?? null,
       shadowCascades: world.shadowCascadeStats ?? null };
   }

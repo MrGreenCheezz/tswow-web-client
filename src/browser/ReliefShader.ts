@@ -311,16 +311,29 @@ export const RELIEF_FADE_IN_MS = 300;
  */
 export class ReliefSwitch {
   #from = Number.POSITIVE_INFINITY;
+  /**
+   * 25.10 (perf): the fade has finished, so `value` is 1 without asking the clock. three reads `value` on every
+   * upload of the uniform — every draw that changes material — and the clock read was ~0.1 ms a frame in Stormwind.
+   */
+  #settled = false;
   get value(): number {
+    if (this.#settled) return 1;
+    if (this.#from === Number.POSITIVE_INFINITY) return 0;
     const t = (reliefClock() - this.#from) / RELIEF_FADE_IN_MS;
-    return t >= 1 ? 1 : t > 0 ? t : 0;
+    if (t >= 1) {
+      this.#settled = true;
+      return 1;
+    }
+    return t > 0 ? t : 0;
   }
   /** At once (a map already derived), or fading in from now. */
   arrive(fade: boolean): void {
     this.#from = fade ? reliefClock() : Number.NEGATIVE_INFINITY;
+    this.#settled = !fade;
   }
   clear(): void {
     this.#from = Number.POSITIVE_INFINITY;
+    this.#settled = false;
   }
   get arrived(): boolean {
     return this.#from !== Number.POSITIVE_INFINITY;

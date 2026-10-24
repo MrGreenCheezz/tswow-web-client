@@ -214,7 +214,7 @@ test("EnvironmentClient exports conservative defaults, accepts legacy calls, and
     animationResponse: WVA_ANIMATION_RESPONSE_LIMIT_BYTES,
     hullResponse: COLLISION_HULL_RESPONSE_LIMIT_BYTES,
   }, {
-    modelTyped: 64 * 1024 * 1024,
+    modelTyped: 128 * 1024 * 1024, // 25.10 (perf): Dalaran's footprint
     modelNumeric: 8_000_000,
     animationTyped: 64 * 1024 * 1024,
     modelEntryTyped: 32 * 1024 * 1024,

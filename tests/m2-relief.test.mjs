@@ -338,3 +338,32 @@ test("renderer: the leaf and the lighting level decide; placed doodads build and
   assert.match(renderer, /const buildKey = "ground-cover\|" \+ this\.#vegetationBuildKey\(path\);/);
   assert.equal((renderer.match(/this\.#m2ReliefBuild\(\)/g) ?? []).length, 1, "the scenery build alone asks for it");
 });
+
+test("25.10 (perf): a relief switch whose fade has finished stops reading the clock", async () => {
+  const { ReliefSwitch } = await import("../dist/code/browser/ReliefShader.js");
+  let reads = 0;
+  let clock = 5000;
+  setReliefClock(() => { reads++; return clock; });
+  try {
+    const fading = new ReliefSwitch();
+    assert.equal(fading.value, 0, "no map yet");
+    fading.arrive(true);
+    clock += 150;
+    assert.ok(fading.value > 0.4 && fading.value < 0.6, "half way through the fade");
+    clock += 300;
+    assert.equal(fading.value, 1);
+    reads = 0;
+    for (let draw = 0; draw < 100; draw++) assert.equal(fading.value, 1);
+    assert.equal(reads, 0, "three's per-draw reads of a settled switch never reach the clock");
+    const atOnce = new ReliefSwitch();
+    atOnce.arrive(false);
+    assert.equal(atOnce.value, 1);
+    assert.equal(reads, 0, "a map already derived is on at once");
+    atOnce.clear();
+    assert.equal(atOnce.value, 0, "cleared, it is off again");
+    fading.arrive(true);
+    assert.equal(fading.value, 0, "a new map fades in again");
+  } finally {
+    setReliefClock(() => now);
+  }
+});

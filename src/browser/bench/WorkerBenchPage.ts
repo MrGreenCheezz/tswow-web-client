@@ -209,7 +209,9 @@ async function hardware(): Promise<Record<string, unknown>> {
 /** 22.10 (12.14): frames drawn by `settle` since `prepare` began. */
 let settleFrames = 0;
 async function settle(fraction: number): Promise<BenchReadiness> {
-  const deadline = performance.now() + config.timeoutSeconds * 1000;
+  // 25.10 (perf): a churning scene (bench/dalaran.json `settleLoose`) settles after 15 s on what it has.
+  const loose = (config.city as unknown as { settleLoose?: boolean } | undefined)?.settleLoose === true;
+  const deadline = performance.now() + (loose ? 15 : config.timeoutSeconds) * 1000;
   let stable = 0, frame = 0;
   while (performance.now() < deadline) {
     await nextFrame();
@@ -223,13 +225,14 @@ async function settle(fraction: number): Promise<BenchReadiness> {
       const details = status.details as { renderer?: { modelTexturesErrors?: number }; knownMissingTextures?: string[];
         textureOtherFailures?: number } | null;
       const ledger = { missing: new Set(details?.knownMissingTextures ?? []), otherFailures: details?.textureOtherFailures ?? 0 };
-      if (status.errors && !errorsAreKnownMissingTextures({ errors: status.errors,
+      if (status.errors && !loose && !errorsAreKnownMissingTextures({ errors: status.errors,
         modelTexturesErrors: details?.renderer?.modelTexturesErrors ?? 0 }, ledger)) {
         throw new Error(`Asset errors: ${JSON.stringify(status)}`);
       }
       return status;
     }
   }
+  if (loose) return await readiness();
   throw new Error(`Scene did not settle: ${JSON.stringify(await readiness())}`);
 }
 
@@ -343,6 +346,7 @@ const bench = {
         pageCrossOriginIsolated: globalThis.crossOriginIsolated === true, workerCrossOriginIsolated },
       readiness: withPageTerrain(workerReadiness), routeHeightMissing,
       repeatedRafCallbacks: rest['repeatedRafCallbacks'], telemetry: rest['telemetry'] ?? null,
+      load: rest['load'] ?? null, // 25.10 (perf): BenchRender.worker.ts
       wmoRangeAtStart: rest['wmoRangeAtStart'] ?? null, poseWorker: rest['poseWorker'] ?? null,
       shadowCascadesAtStart: rest['shadowCascadesAtStart'] ?? null, shadowCascades: rest['shadowCascades'] ?? null,
       renderWorker: { workerFrames: rest['frames'], pagePace, pagePosts, pageFrames, pageIntervalsMs: pageIntervals,
