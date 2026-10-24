@@ -74,19 +74,30 @@ function fixtureFilename(name: string): string {
   return path.slice(path.lastIndexOf("\\") + 1);
 }
 
-/** The heuristic's name gate on a lower-case file name: a lamp, torch or fire that is not off. */
-function fixtureNameLit(filename: string): boolean {
-  return /(?:lamp|lantern|torch|brazier|campfire|bonfire|hearth|candle|chandelier|firepit)/.test(filename)
+/**
+ * The heuristic's name gate on a lower-case file name: a lamp, torch or fire that is not off.
+ *
+ * 25.10 (7.51): the cinematic profile also takes a wall sconce. Dalaran's street lamps are
+ * `Dalaran_Sconce_Indoor_01/02/03.m2` (229 in `ND_Dalaran.wmo`'s doodad set, 43 of them named only by
+ * its open-air groups; the post's texture is `DALARAN_LAMPPOST01.BLP`), with no M2 light and no glow
+ * card: their light is two `GLOWBALL.BLP` particle emitters, drawn within the 90-yard effect range
+ * only. Past this gate they gave no pool, halo, far glow or prelit light, so the city's lamps showed
+ * only as their orbs did, around the player. The faithful profile keeps its gate.
+ */
+function fixtureNameLit(filename: string, cinematic = false): boolean {
+  return (/(?:lamp|lantern|torch|brazier|campfire|bonfire|hearth|candle|chandelier|firepit)/.test(filename)
+    || (cinematic && filename.includes("sconce")))
     && !/(?:unlit|nolight|broken|wrecked|busted|(?:^|[_-])off(?:[_.-]|$)|\d?off\.)/.test(filename);
 }
 
 /**
  * 24.10 (7.50): whether `modelFixtureLights` could find a heuristic light in a model of this path —
  * its name gate, read before the model is loaded (`LightTemplateCatalog.ts`). A model that declares
- * its own M2 lights may light whatever its name.
+ * its own M2 lights may light whatever its name. The catalog serves the cinematic profile, so this is
+ * that profile's gate (25.10, 7.51: sconces too).
  */
 export function fixtureNameCandidate(name: string): boolean {
-  return fixtureNameLit(fixtureFilename(name));
+  return fixtureNameLit(fixtureFilename(name), true);
 }
 
 /**
@@ -112,7 +123,7 @@ export function modelFixtureLights(model: WvmModel, name: string, cinematic = fa
     return declared.length > 0 ? declared : EMPTY;
   }
   const filename = fixtureFilename(name);
-  if (!fixtureNameLit(filename)) {
+  if (!fixtureNameLit(filename, cinematic)) {
     byName.set(cacheKey, EMPTY);
     return EMPTY;
   }

@@ -116,7 +116,13 @@ function assertPrelitMatchesBuilt(name, model) {
   const prelit = new PrelitLights();
   prelit.update([object], catalog, host(), new THREE.Vector3());
   const focus = new THREE.Vector3().setFromMatrixPosition(resident.visual.matrixWorld);
-  for (const worldMs of [0, 1234, 98_765]) {
+  // 25.10 (7.51): a glow card whose weight or alpha pulses on a global sequence (`AhnQirajWallTorch01.m2`,
+  // `VR_LampPost_Snow_01Blue.m2`, cached since the Dalaran traces) pulses once built; the template keeps its rest
+  // value (the prelit light stands only until the lamp is built). Such a model is held equal at rest only.
+  const pulses = fixtures.some((fixture) => [fixture.batch && model.textureWeights[fixture.batch.textureWeight],
+    fixture.batch && model.colours[fixture.batch.colorIndex]?.alpha, fixture.batch && model.colours[fixture.batch.colorIndex]?.rgb,
+    fixture.emitter?.enabledIn, fixture.emitter?.emissionRate].some((track) => track && track.globalSequence >= 0));
+  for (const worldMs of pulses ? [0] : [0, 1234, 98_765]) {
     const expected = [];
     const value = sample();
     for (const fixture of fixtures) {

@@ -44,6 +44,9 @@
  * 24.10 (7.50): the screen-space lamp pools (`src/browser/LightPools.ts`): `--light-pools off` draws without them,
  * `--forward-lights N` caps the forward set (0: every lamp's pool in screen space), and every still prints the
  * frame's pool counts and the lamps in view by distance (`lightPoolStats`); `--leaf-cost lightPools` times them.
+ *
+ * 25.10 (7.51): `@x/y/map/z` on a frame and `"z"` in a `--light-trace` spec stand the player on a floor over the
+ * terrain — Dalaran's streets are at z ≈ 648, the ground of its map under them at ≈ 160 (`@5804/624/571/648`).
  */
 import { access, mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
@@ -86,9 +89,10 @@ function parseFrame(spec) {
     if (part.startsWith('@')) {
       // `@x/y`: stand the player here (movement scenario only; the world streams in around them).
       // 22.10 (7.30): `@x/y/map` also picks the map (the first frame's map is the one loaded).
-      const [x, y, map] = part.slice(1).split('/').map(Number);
+      // 25.10 (7.51): `@x/y/map/z` stands the player on a floor over the terrain (Dalaran).
+      const [x, y, map, z] = part.slice(1).split('/').map(Number);
       if (![x, y].every(Number.isFinite)) throw new Error(`Bad position in --frame ${spec}`);
-      at = Number.isInteger(map) ? { x, y, map } : { x, y };
+      at = Number.isInteger(map) ? { x, y, map, ...(Number.isFinite(z) ? { z } : {}) } : { x, y };
       continue;
     }
     const [kind, intensity] = part.split(':');
@@ -148,11 +152,14 @@ async function main() {
   // 24.10 (7.50): `--light-catalog <name>` keeps the lamp catalog in the profile's IndexedDB under that name, and
   // `--user-data-dir <dir>` keeps the profile between runs: a second run is a second session.
   if (value('--light-catalog')) config.lightCatalogGeneration = value('--light-catalog');
+  // 25.10 (7.51): `--allow-unsettled` goes on with a scene still loading at the deadline; `--settle-seconds N` sets it.
+  if (args.includes('--allow-unsettled')) config.allowUnsettled = true;
+  config.timeoutSeconds = Number(value('--settle-seconds', config.timeoutSeconds));
   const traces = await Promise.all(values('--light-trace').map(async (path) => JSON.parse(await readFile(path, 'utf8'))));
   if (frames.length === 0 && traces.length > 0) {
     const [x, y] = traces[0].from ?? traces[0].path[0];
     frames.push({ name: 'trace', halfMinute: traces[0].halfMinute, view: { yaw: 0, pitch: -0.2, orbit: 12 }, weather: null,
-      at: { x, y, map: traces[0].map ?? 0 } });
+      at: { x, y, map: traces[0].map ?? 0, ...(traces[0].z !== undefined ? { z: traces[0].z } : {}) } }); // 25.10 (7.51): + z
   }
   // 23.10 (7.48): HD effect textures straight from the generated sets.
   const hdIndex = args.indexOf('--hd-textures');
@@ -503,15 +510,19 @@ async function main() {
       // 23.10 (7.48 step 2): `--gpu-frames N` times N frames of the still on the GPU (after 30 untimed), median ms.
       const gpuFrames = Number(value('--gpu-frames', 0));
       let gpuMs;
+      let cpuMs; // 25.10 (7.51)
       if (gpuFrames > 0) {
         const samples = (await page.evaluate((count) => window.__bench.gpuView(count, 30), gpuFrames)).sort((a, b) => a - b);
         gpuMs = samples.length ? samples[Math.floor(samples.length / 2)] : undefined;
-        console.log(`  GPU median ${gpuMs?.toFixed(2)} ms over ${samples.length} frames`);
+        // 25.10 (7.51): and the CPU of the same frames (`viewCpu`), median.
+        const cpu = ((await page.evaluate(() => window.__bench.viewCpu?.())) ?? []).sort((a, b) => a - b);
+        cpuMs = cpu.length ? cpu[Math.floor(cpu.length / 2)] : undefined;
+        console.log(`  GPU median ${gpuMs?.toFixed(2)} ms, CPU median ${cpuMs?.toFixed(2)} ms over ${samples.length} frames`);
       }
       // 23.10 (7.47 stage 3): the doodads' relief (materials drawing it, maps and their bytes), when the page has it.
       const m2Relief = await page.evaluate(() => window.__bench.m2ReliefStats?.());
       const lightPools = await page.evaluate(() => window.__bench.lightPoolStats?.()); // 24.10 (7.50)
-      written.push({ path, shadows, textures, gpuMs, m2Relief, lightPools });
+      written.push({ path, shadows, textures, gpuMs, cpuMs, m2Relief, lightPools });
       console.log(`${frame.name}: ${path} (${png.length} bytes) shadows ${JSON.stringify(shadows)}`);
       if (lightPools) console.log(`  light pools: ${JSON.stringify(lightPools)}`);
       if (m2Relief) console.log(`  doodad relief: ${JSON.stringify(m2Relief)}`);
