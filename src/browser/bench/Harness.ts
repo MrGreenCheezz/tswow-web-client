@@ -585,8 +585,8 @@ host.__bench = {
     const worldRenderer = world;
     return runLightTrace(spec, {
       render, settle: () => settle(lastFraction), nextFrame, census: () => worldRenderer.lightCensus(),
-      place(x, y, yaw, pitch, orbit, halfMinute) {
-        config.route = { ...config.route, x, y, dx: 0, dy: 0 };
+      place(x, y, yaw, pitch, orbit, halfMinute, z) {
+        config.route = { ...config.route, x, y, z, dx: 0, dy: 0 }; // 25.10 (7.51): + a floor over the terrain
         config.view = { yaw, pitch, orbit };
         config.halfMinute = halfMinute;
       },

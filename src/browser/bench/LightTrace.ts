@@ -24,6 +24,8 @@ export interface LightTraceSpec {
   /** Where an arrival settles before the teleport. */
   readonly from?: readonly [number, number];
   readonly halfMinute: number;
+  /** 25.10 (7.51): the floor the player stands on, when it is not the terrain (Dalaran: ≈650 over Crystalsong). */
+  readonly z?: number;
   readonly pitch?: number;
   readonly orbit?: number;
   /** Yards a second along the path (7: running). */
@@ -47,7 +49,7 @@ export interface LightTraceDeps {
   readonly nextFrame: () => Promise<number>;
   readonly census: () => LightCensusFrame | undefined;
   /** Stands the player (route point) and points the camera; yaw is relative to the player's facing. */
-  readonly place: (x: number, y: number, yaw: number, pitch: number, orbit: number, halfMinute: number) => void;
+  readonly place: (x: number, y: number, yaw: number, pitch: number, orbit: number, halfMinute: number, z?: number) => void;
   readonly player: () => { x: number; y: number; z: number };
   readonly terrainReady: (x: number, y: number) => boolean;
   /** Environment placements with a built model, and how many the client still waits for. */
@@ -157,7 +159,7 @@ export async function runLightTrace(spec: LightTraceSpec, deps: LightTraceDeps):
   };
 
   if (spec.mode === "run") {
-    deps.place(start[0], start[1], yawAlong(heading(0)), pitch, orbit, spec.halfMinute);
+    deps.place(start[0], start[1], yawAlong(heading(0)), pitch, orbit, spec.halfMinute, spec.z);
     await deps.settle();
     await step();
     const initial = records.size;
@@ -172,7 +174,7 @@ export async function runLightTrace(spec: LightTraceSpec, deps: LightTraceDeps):
       const yaw = yawAlong(heading(leg));
       for (let index = 1; index <= steps; index++) {
         const t = index / steps;
-        deps.place(a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, yaw, pitch, orbit, spec.halfMinute);
+        deps.place(a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, yaw, pitch, orbit, spec.halfMinute, spec.z);
         await step();
         if (frame % 60 === 0) {
           const census = deps.census();
@@ -209,10 +211,10 @@ export async function runLightTrace(spec: LightTraceSpec, deps: LightTraceDeps):
   // Arrival: settle elsewhere, then stand at the destination from the teleport on.
   const from = spec.from ?? start;
   const yaw = yawAlong(heading(0));
-  deps.place(from[0], from[1], yaw, pitch, orbit, spec.halfMinute);
+  deps.place(from[0], from[1], yaw, pitch, orbit, spec.halfMinute, spec.z);
   await deps.settle();
   records.clear();
-  deps.place(start[0], start[1], yaw, pitch, orbit, spec.halfMinute);
+  deps.place(start[0], start[1], yaw, pitch, orbit, spec.halfMinute, spec.z);
   const hold = spec.holdSeconds ?? 20;
   let liftFrame = -1;
   let readyFrame = -1;

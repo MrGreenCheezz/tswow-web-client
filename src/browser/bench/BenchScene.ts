@@ -21,7 +21,8 @@ export interface BenchGraphics {
 export interface BenchConfig {
   seed: number; width: number; height: number; pixelRatio: number; durationSeconds: number;
   warmupSeconds: number; timeoutSeconds: number; halfMinute: number;
-  route: { map: number; x: number; y: number; dx: number; dy: number };
+  /** 25.10 (7.51): `z`, a floor the player stands on above the terrain (Dalaran floats over Crystalsong). */
+  route: { map: number; x: number; y: number; dx: number; dy: number; z?: number | undefined };
   graphics: BenchGraphics;
   /** A dense city square: a fixed WMO floor, a mixed population and the live client's settings. */
   city: { map: number; x: number; y: number; z: number; population: number; spacing: number; walkers: number;
@@ -156,7 +157,7 @@ export class BenchCrowd {
         : x + (i === 0 ? 0 : (i % 3) * 2 - 4);
       p.y = worldCrowd && i > 0 ? config.route.y + (Math.floor((i - 1) / rows) - (rows - 1) / 2) * 2.5
         : y + (i === 0 ? 0 : Math.ceil(i / 3) * 3);
-      const height = heightAt(p.x, p.y);
+      const height = config.route.z ?? heightAt(p.x, p.y); // 25.10 (7.51): a city floor over the terrain
       if (height !== undefined) p.z = height + .02;
       else if (i === 0) selfMissing = true;
     }
