@@ -1,7 +1,7 @@
 // 25.10 (serve S3): the interface corpus in one gateway answer; the browser reads it first and /client/file for the rest.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,7 +9,7 @@ import test from "node:test";
 import zlib from "node:zlib";
 import { startGateway } from "../dist/code/gateway/Gateway.js";
 import {
-  interfaceTocEntries, interfaceXmlReferences, resolveInterfacePath, walkInterfaceCorpus,
+  encodeInterfaceBundle, interfaceTocEntries, interfaceXmlReferences, resolveInterfacePath, walkInterfaceCorpus,
 } from "../dist/code/gateway/InterfaceBundle.js";
 import {
   createBundledFileProvider, interfaceBundleUrl, parseInterfaceBundle, resetInterfaceBundles,
@@ -89,10 +89,14 @@ const CORPUS = {
   "Interface/AddOns/Blizzard_TalentUI/Blizzard_TalentUI.lua": "TALENT = 1",
 };
 
+const LISTING = [
+  { name: "Blizzard_TrainerUI", loadOnDemand: true, enabled: true }, { name: "Blizzard_TalentUI", loadOnDemand: true, enabled: true },
+];
+
 async function withGateway(clientFilesDirectory, run) {
   const gateway = await startGateway({
     host: "127.0.0.1", port: 0, auth: { host: "127.0.0.1", port: 1 }, world: { host: "127.0.0.1", port: 1 },
-    allowedOrigins: [ORIGIN], datasetPollMs: 0, clientFilesDirectory,
+    allowedOrigins: [ORIGIN], datasetPollMs: 0, clientFilesDirectory, clientAddonListing: LISTING,
   });
   try {
     return await run(`http://127.0.0.1:${gateway.port}`);
@@ -192,4 +196,48 @@ test("the browser reads the bundle once, settles its files and absences from it,
   assert.equal(old.filter((url) => url.includes("interface-bundle")).length, 1, "the missing bundle is asked for once");
   assert.equal(parseInterfaceBundle({ schema: "interface-bundle-0", files: {}, absent: [] }), undefined);
   assert.equal(parseInterfaceBundle({ schema: "interface-bundle-1", files: { a: 1 }, absent: [] }), undefined);
+});
+
+test("review: names this client does not have are ignored, not keyed; a bundle with a failed file is kept a while, not rebuilt per request", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "webclient-interface-bundle-review-"));
+  const lines = [];
+  const log = console.log;
+  console.log = (line, ...rest) => { if (String(line).startsWith("Interface bundle")) lines.push(String(line)); else log(line, ...rest); };
+  try {
+    await publish(directory, CORPUS);
+    // A cache entry that cannot be read (a directory where the file should be): that file's read fails.
+    const broken = "interface\\framexml\\constants.lua";
+    const id = createHash("sha1").update(`client-file-v1\0${broken}`).digest("hex");
+    await rm(join(directory, `${id}.lua`));
+    await mkdir(join(directory, `${id}.lua`));
+    await withGateway(directory, async (base) => {
+      const ask = async (query) => {
+        const response = await fetch(`${base}/client/interface-bundle?v=1&set=world${query}`, { headers: { origin: ORIGIN } });
+        assert.equal(response.status, 200, query);
+        return { etag: response.headers.get("etag"), body: await response.json() };
+      };
+      const plain = await ask("");
+      assert.equal(plain.body.files["interface/framexml/constants.lua"], undefined, "the failed file is left to /client/file");
+      assert.equal(plain.body.absent.includes("interface/framexml/constants.lua"), false);
+      const unknown1 = await ask("&addons=Nonexistent_One&tocs=Other_Two");
+      const unknown2 = await ask("&addons=Nonexistent_Three");
+      assert.equal(unknown1.etag, plain.etag);
+      assert.equal(unknown2.etag, plain.etag);
+      await ask("");
+      assert.equal(lines.length, 1, `one build for four requests: ${lines.join(" | ")}`);
+      assert.match(lines[0], /1 failed/);
+      await ask("&addons=Blizzard_TrainerUI");
+      assert.equal(lines.length, 2, "a known add-on is another list");
+    });
+  } finally {
+    console.log = log;
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("review: the bundle text does not depend on the order the walk happened to read files in", () => {
+  const corpus = (order) => ({ files: new Map(order.map((path) => [path, path.toUpperCase()])), absent: [...order].reverse(),
+    failed: [], skipped: [], truncated: false });
+  assert.equal(encodeInterfaceBundle("glue", corpus(["interface/b.lua", "interface/a.lua"])),
+    encodeInterfaceBundle("glue", corpus(["interface/a.lua", "interface/b.lua"])));
 });

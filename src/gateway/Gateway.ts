@@ -96,7 +96,7 @@ import { installContentEtag } from "./ContentEtag.js"; // 25.10 (serve S2)
 import { HD_TEXTURE_CONTENT_TYPE, HD_TEXTURE_PARAM, type HdTextureSets } from "./HdTextures.js"; // 23.10 (7.48)
 import {
   METADATA_GENERATION_PARAM, VISUAL_GENERATION_PARAM, assetCacheControl, gatewayCodeIdentity, metadataGeneration,
-  visualGeneration, scriptDirectoryIdentity, // 25.10 (serve S2): scriptDirectoryIdentity
+  visualGeneration, scriptDirectoryIdentity, statTreeIdentity, lockfileIdentity, // 25.10 (serve S2)
 } from "./AssetGeneration.js"; // 22.10 (6.26)
 import { GatewayTraffic, loopbackRequest, startTrafficReporter, type TrafficReporterOptions } from "./GatewayTraffic.js"; // 25.10 (serve S5)
 import { chooseEncoding, createResponseCompression, installCompression } from "./ResponseCompression.js"; // 25.10 (serve S1)
@@ -116,6 +116,9 @@ interface BuiltInterfaceBundle {
   /** No file failed and no bound cut the walk: kept for the process. */
   readonly complete: boolean;
 }
+
+/** 25.10 (serve S3, review): how long a bundle with a failed file is served before it is built again. */
+const INCOMPLETE_BUNDLE_TTL_MS = 60_000;
 
 /** How often a bridged socket is pinged; two missed pongs in a row close it. */
 const HEARTBEAT_INTERVAL_MS = 30_000;
@@ -500,6 +503,10 @@ export interface GatewayOptions {
    * (CachePolicy.ts `servedIdentity`), so a changed generator turns tile generations over. Absent: not counted.
    */
   toolsDirectory?: string;
+  /** 25.10 (serve S2, review): the lock file whose bytes name the installed packages; absent: not counted. */
+  lockFile?: string;
+  /** 25.10 (serve S2, review): `GATEWAY_CACHE_SALT`, a manual bump of every dataset tag and tile `g`. */
+  cacheSalt?: string;
 }
 
 /**
@@ -947,12 +954,16 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
   // configuration, the fingerprint and the startup patch generation; memoised on the fingerprint's halves.
   const toolsIdentity = options.toolsDirectory === undefined ? undefined : await scriptDirectoryIdentity(options.toolsDirectory);
   const configIdentity = servedConfigIdentity(options);
+  // Review fix: the packages, and the raw maps/vmaps trees the terrain and vmap routes serve as they are.
+  const packagesIdentity = options.lockFile === undefined ? undefined : await lockfileIdentity(options.lockFile);
+  const dataTreeIdentity = (await Promise.all([options.mapsDirectory, options.vmapsDirectory, options.buildingsDirectory]
+    .map(async (directory) => (directory === undefined ? "-" : await statTreeIdentity(directory))))).join(",");
   let servedMemo: { key: string; value: string } | undefined;
   const currentServedIdentity = (): string => {
     const key = `${fingerprint.dbcHash ?? ""}|${fingerprint.archivesHash ?? ""}|${fingerprint.chain ?? ""}`;
     if (servedMemo?.key !== key) {
       servedMemo = { key, value: servedIdentity({
-        codeIdentity, toolsIdentity, configIdentity, dbcHash: fingerprint.dbcHash, archivesHash: fingerprint.archivesHash,
+        codeIdentity, toolsIdentity, configIdentity, packagesIdentity, dataTreeIdentity, salt: options.cacheSalt, dbcHash: fingerprint.dbcHash, archivesHash: fingerprint.archivesHash,
         chain: fingerprint.chain, patchGeneration: patches.generation, nonce: cacheNonce,
       }) };
     }
@@ -1095,10 +1106,11 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
    * file, the same stamp check and generator — for the interface bundle. `undefined` is that route's 404;
    * a throw is its 400/500, which the bundle leaves out so the browser asks the route itself.
    */
-  const clientFileText = async (path: string): Promise<string | undefined> => {
+  const clientFileText = async (path: string): Promise<string | undefined | null> => {
     const directory = options.clientFilesDirectory;
     const clientPath = path.replaceAll("/", "\\");
-    if (directory === undefined || !validClientFilePath(clientPath)) throw new Error(`not a client file: ${path}`);
+    // Review fix: a path the route refuses (400) is a permanent answer, not a failure that unpins the bundle.
+    if (directory === undefined || !validClientFilePath(clientPath)) return null;
     const lower = clientPath.toLowerCase();
     const id = createHash("sha1").update(`client-file-v1\0${lower}`).digest("hex");
     const filename = join(directory, `${id}${lower.slice(lower.lastIndexOf("."))}`);
@@ -1122,6 +1134,11 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
   };
   /** 25.10 (serve S3): built bundles by set and add-on lists; a bundle with a failed file is not kept. */
   const interfaceBundles = new Map<string, Promise<BuiltInterfaceBundle>>();
+  // Review fix: one build at a time (each reads up to ≈500 files); the others wait their turn.
+  let interfaceBundleBuilds: Promise<unknown> = Promise.resolve();
+  /** Review fix: the add-on names a bundle may name — this client's own; any other is ignored, not keyed. */
+  const knownAddons = new Set([...(options.clientAddonListing ?? []), ...(options.clientAddons ?? [])]
+    .map((addon) => addon.name.toLowerCase()));
   const buildInterfaceBundle = async (set: InterfaceBundleSet, addons: readonly string[], tocs: readonly string[]) => {
     const started = performance.now();
     const corpus = await walkInterfaceCorpus(interfaceBundleTocs(set, addons), { read: clientFileText },
@@ -2082,7 +2099,7 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
       const list = (name: string): string[] | undefined => {
         const names = (url.searchParams.get(name) ?? "").split(",").filter(Boolean);
         return names.length <= 128 && names.every((entry) => INTERFACE_ADDON_NAME.test(entry))
-          ? [...new Set(names.map((entry) => entry.toLowerCase()))].sort() : undefined;
+          ? [...new Set(names.map((entry) => entry.toLowerCase()).filter((entry) => knownAddons.has(entry)))].sort() : undefined;
       };
       const addons = list("addons");
       const tocs = list("tocs");
@@ -2099,12 +2116,17 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
           interfaceBundles.delete(key);
           interfaceBundles.set(key, pending);
         } else {
-          pending = buildInterfaceBundle(set, addons, tocs);
+          const build = interfaceBundleBuilds.then(() => buildInterfaceBundle(set, addons, tocs));
+          interfaceBundleBuilds = build.catch(() => undefined);
+          pending = build;
           interfaceBundles.set(key, pending);
           // Kept only when whole; six lists at most (≈10 MB of text each for the world set): one per set and
           // per combination of add-ons the players have switched on.
-          void pending.then((built) => { if (!built.complete) interfaceBundles.delete(key); },
-            () => interfaceBundles.delete(key));
+          // Review fix: an incomplete one (a file failed, the walk was cut) is served for 60 s and then rebuilt,
+          // not rebuilt on every request; a failed build is forgotten at once.
+          const kept = pending;
+          const forget = () => { if (interfaceBundles.get(key) === kept) interfaceBundles.delete(key); };
+          void kept.then((built) => { if (!built.complete) setTimeout(forget, INCOMPLETE_BUNDLE_TTL_MS).unref(); }, forget);
           while (interfaceBundles.size > 6) interfaceBundles.delete(interfaceBundles.keys().next().value!);
         }
         const bundle = await pending;

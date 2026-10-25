@@ -40,6 +40,8 @@
  */
 
 import zlib from "node:zlib";
+import { createHash } from "node:crypto";
+import { CACHE_TAG_SCHEMA } from "./CachePolicy.js";
 import type { IncomingMessage, OutgoingHttpHeaders, ServerResponse } from "node:http";
 
 export type ContentEncoding = "br" | "gzip";
@@ -137,6 +139,11 @@ export interface ResponseCompression {
   readonly cache: CompressionCache;
   readonly stats: CompressionStats;
   readonly inFlight: Map<string, Promise<CacheEntry>>;
+  /** Review fix: compressions running now, and the ones waiting for a slot (`MAX_CONCURRENT_COMPRESSIONS`). */
+  running: number;
+  readonly waiting: (() => void)[];
+  /** The most that ran at once (tests). */
+  peak: number;
 }
 
 export function createResponseCompression(cacheBytes = MAX_COMPRESSED_CACHE_BYTES): ResponseCompression {
@@ -144,7 +151,43 @@ export function createResponseCompression(cacheBytes = MAX_COMPRESSED_CACHE_BYTE
     cache: new CompressionCache(cacheBytes),
     stats: { compressed: 0, cacheHits: 0, incompressible: 0, sourceBytes: 0, outputBytes: 0 },
     inFlight: new Map(),
+    running: 0,
+    waiting: [],
+    peak: 0,
   };
+}
+
+/**
+ * Review fix: async zlib runs on libuv's pool of four threads, which file reads share; more than two
+ * compressions at once would queue the gateway's own fs work behind them. The rest wait in order.
+ */
+export const MAX_CONCURRENT_COMPRESSIONS = 2;
+
+async function limited<T>(compression: ResponseCompression, run: () => Promise<T>): Promise<T> {
+  if (compression.running >= MAX_CONCURRENT_COMPRESSIONS) {
+    await new Promise<void>((resolve) => compression.waiting.push(resolve));
+  }
+  compression.running++;
+  compression.peak = Math.max(compression.peak, compression.running);
+  try {
+    return await run();
+  } finally {
+    compression.running--;
+    compression.waiting.shift()?.();
+  }
+}
+
+/**
+ * Review fix: the cache key names the body, not the URL — so `?x=<random>` cannot force a compression of
+ * bytes already compressed. A file or content tag (`e1-`, `c1-`, `ib1-`, a body digest) names one body
+ * whatever the query; a dataset tag (`d2-`) is shared by every query of its route, so those bodies are
+ * named by their digest.
+ */
+export function compressionKey(encoding: ContentEncoding, etag: string, body: Uint8Array): string {
+  const bare = etag.startsWith("W/") ? etag.slice(2) : etag;
+  return bare.startsWith(`"${CACHE_TAG_SCHEMA}-`)
+    ? `${encoding}\0body:${createHash("sha1").update(body).digest("hex")}`
+    : `${encoding}\0tag:${bare}`;
 }
 
 function compressBody(encoding: ContentEncoding, body: Buffer): Promise<Buffer> {
@@ -294,7 +337,7 @@ export function installCompression(request: IncomingMessage, response: ServerRes
       else sendCompressed(entry);
     };
     const etag = headerValue(headers, "etag");
-    const key = etag === undefined ? undefined : `${encoding}\0${request.url ?? ""}\0${etag}`;
+    const key = etag === undefined ? undefined : compressionKey(encoding, etag, body);
     const cached = key === undefined ? undefined : compression.cache.get(key);
     if (cached !== undefined) {
       compression.stats.cacheHits++;
@@ -303,7 +346,7 @@ export function installCompression(request: IncomingMessage, response: ServerRes
     }
     let run = key === undefined ? undefined : compression.inFlight.get(key);
     if (!run) {
-      run = compressBody(encoding, body).then((compressed): CacheEntry => {
+      run = limited(compression, () => compressBody(encoding, body)).then((compressed): CacheEntry => {
         compression.stats.compressed++;
         compression.stats.sourceBytes += body.byteLength;
         compression.stats.outputBytes += compressed.byteLength;

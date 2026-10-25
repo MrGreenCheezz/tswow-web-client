@@ -9,7 +9,7 @@ import test from "node:test";
 import zlib from "node:zlib";
 import { startGateway } from "../dist/code/gateway/Gateway.js";
 import {
-  chooseEncoding, compressibleType, createResponseCompression, installCompression,
+  MAX_CONCURRENT_COMPRESSIONS, chooseEncoding, compressibleType, compressionKey, createResponseCompression, installCompression,
 } from "../dist/code/gateway/ResponseCompression.js";
 import { dbcDirectory } from "../tools/paths.mjs";
 
@@ -154,6 +154,33 @@ test("an ETagged body is compressed once: the next request is a cache hit; concu
     assert.equal(compression.stats.cacheHits, 1);
     await get(url, { "accept-encoding": "br" });
     assert.equal(compression.stats.compressed, 2, "another encoding is another body");
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("review: the cache key names the body, so a random query is a cache hit; compressions run two at a time", async () => {
+  const body = Buffer.from("x".repeat(4096));
+  assert.equal(compressionKey("gzip", 'W/"c1-1000-abcd"', body), compressionKey("gzip", '"c1-1000-abcd"', body));
+  assert.notEqual(compressionKey("gzip", '"d2-0123"', body), compressionKey("gzip", '"d2-0123"', Buffer.from("y".repeat(4096))),
+    "a dataset tag is shared by its route's queries: the body decides");
+  const compression = createResponseCompression();
+  const server = createServer((request, response) => {
+    installCompression(request, response, compression);
+    const varied = new URL(request.url, "http://x").searchParams.get("body");
+    const text = varied === null ? body : Buffer.from(`${varied}`.repeat(3000));
+    response.writeHead(200, { "content-type": "text/plain", etag: varied === null ? '"c1-fixed"' : `"c1-${varied}"` });
+    response.end(text);
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const url = `http://127.0.0.1:${server.address().port}/x`;
+    for (const query of ["?x=1", "?x=2", "?x=3"]) await get(`${url}${query}`, { "accept-encoding": "gzip" });
+    assert.equal(compression.stats.compressed, 1, "?x=<random> does not compress the same bytes again");
+    await Promise.all(Array.from({ length: 8 }, (_, i) => get(`${url}?body=b${i}`, { "accept-encoding": "gzip" })));
+    assert.equal(compression.stats.compressed, 9);
+    assert.ok(compression.peak <= MAX_CONCURRENT_COMPRESSIONS, `at most ${MAX_CONCURRENT_COMPRESSIONS} at once (${compression.peak})`);
+    assert.equal(compression.running, 0);
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }

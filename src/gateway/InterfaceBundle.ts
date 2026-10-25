@@ -85,13 +85,15 @@ export interface InterfaceCorpus {
   readonly absent: string[];
   /** Paths whose read failed (a 500 there): left out of both lists, so the browser asks the old route. */
   readonly failed: string[];
+  /** Paths the reader will not serve here (its `null`, e.g. a 400 path): left out too, but not a failure. */
+  readonly skipped: string[];
   /** Whether a bound stopped the walk early. */
   readonly truncated: boolean;
 }
 
 export interface WalkOptions {
-  /** `undefined`: the chain has no such file. Throws: the read failed. */
-  readonly read: (path: string) => Promise<string | undefined>;
+  /** `undefined`: the chain has no such file. `null`: not this walk's to answer (the route says 400). Throws: failed. */
+  readonly read: (path: string) => Promise<string | undefined | null>;
   readonly maxFiles?: number;
   readonly maxBytes?: number;
   readonly concurrency?: number;
@@ -111,6 +113,7 @@ export async function walkInterfaceCorpus(
   const files = new Map<string, string>();
   const absent: string[] = [];
   const failed: string[] = [];
+  const skipped: string[] = [];
   const seen = new Set<string>();
   const queue: string[] = [];
   let bytes = 0;
@@ -133,11 +136,15 @@ export async function walkInterfaceCorpus(
   }
 
   const visit = async (path: string): Promise<void> => {
-    let source: string | undefined;
+    let source: string | undefined | null;
     try {
       source = await options.read(path);
     } catch {
       failed.push(path);
+      return;
+    }
+    if (source === null) {
+      skipped.push(path);
       return;
     }
     if (source === undefined) {
@@ -164,7 +171,7 @@ export async function walkInterfaceCorpus(
     }
     if (inFlight.size > 0) await Promise.race(inFlight);
   }
-  return { files, absent, failed, truncated };
+  return { files, absent, failed, skipped, truncated };
 }
 
 /** An add-on name as Wow.exe and ClientAddons.ts accept it. */
@@ -187,5 +194,7 @@ export function interfaceBundleTocs(set: InterfaceBundleSet, addons: readonly st
 
 /** The answer's JSON: `{ schema, set, files: { path: text }, absent: [path] }`. */
 export function encodeInterfaceBundle(set: InterfaceBundleSet, corpus: InterfaceCorpus): string {
-  return JSON.stringify({ schema: INTERFACE_BUNDLE_SCHEMA, set, files: Object.fromEntries(corpus.files), absent: corpus.absent });
+  // Sorted: the walk reads several files at once, so its order varies — and the tag over this text must not.
+  const files = [...corpus.files].sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
+  return JSON.stringify({ schema: INTERFACE_BUNDLE_SCHEMA, set, files: Object.fromEntries(files), absent: [...corpus.absent].sort() });
 }
