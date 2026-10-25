@@ -12,6 +12,7 @@ import {
   servedConfigIdentity, servedIdentity, tileCacheControl,
 } from "../dist/code/gateway/CachePolicy.js";
 import { dbcDirectory } from "../tools/paths.mjs";
+import { lockfileIdentity, scriptDirectoryIdentity, statTreeIdentity } from "../dist/code/gateway/AssetGeneration.js";
 
 const ORIGIN = "http://127.0.0.1:5173";
 
@@ -43,7 +44,8 @@ test("25.10 (serve S2): the served identity moves with every input, and with the
   assert.match(id, /^[0-9a-f]{20}$/);
   assert.equal(cacheGeneration(id), id);
   assert.equal(servedIdentity({ ...base, nonce: "n2" }), id, "a restart over the same inputs keeps it");
-  for (const key of ["codeIdentity", "toolsIdentity", "configIdentity", "dbcHash", "archivesHash", "chain", "patchGeneration"]) {
+  for (const key of ["codeIdentity", "toolsIdentity", "configIdentity", "packagesIdentity", "dataTreeIdentity", "salt",
+    "dbcHash", "archivesHash", "chain", "patchGeneration"]) {
     assert.notEqual(servedIdentity({ ...base, [key]: "other" }), id, `${key} moves it`);
   }
   const unvouched = { ...base, dbcHash: undefined, archivesHash: undefined };
@@ -53,6 +55,7 @@ test("25.10 (serve S2): the served identity moves with every input, and with the
     servedConfigIdentity({ mapsDirectory: "a", port: 2 }), "who may ask is not what is answered");
   assert.notEqual(servedConfigIdentity({ mapsDirectory: "a" }), servedConfigIdentity({ mapsDirectory: "b" }));
   assert.notEqual(servedConfigIdentity({ coordinatedVisuals: true }), servedConfigIdentity({ coordinatedVisuals: false }));
+  assert.notEqual(servedConfigIdentity({ audioDbcDirectory: null }), servedConfigIdentity({}), "null switches the overlay off");
   assert.match(contentEtag(Buffer.from("abc")), /^"c1-3-[0-9a-f]{16}"$/);
   assert.notEqual(contentEtag(Buffer.from("abc")), contentEtag(Buffer.from("abd")));
 });
@@ -200,5 +203,54 @@ test("10.21 (b): with a poll interval, a DBC edit is seen within a request or tw
     });
   } finally {
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("25.10 (serve S2, review): generator tree, lock file and maps/vmaps trees each move the identity they feed", async () => {
+  const root = await mkdtemp(join(tmpdir(), "webclient-identity-"));
+  try {
+    const tools = join(root, "tools");
+    await mkdir(join(tools, "dbd"), { recursive: true });
+    await mkdir(join(root, "dbc")); // the gateway watches this one alone: nothing below may move its DBC half
+    await writeFile(join(tools, "gen.mjs"), "export {};");
+    await writeFile(join(tools, "dbd", "Map.dbd"), "COLUMNS\nint ID");
+    const toolsBefore = await scriptDirectoryIdentity(tools);
+    await writeFile(join(tools, "dbd", "Map.dbd"), "COLUMNS\nint ID\nint Flags");
+    assert.notEqual(await scriptDirectoryIdentity(tools), toolsBefore, "(a) a nested definition file the generators load");
+    assert.equal(await scriptDirectoryIdentity(join(root, "absent")), "none");
+
+    const lock = join(root, "package-lock.json");
+    await writeFile(lock, '{"packages":{"node_modules/three":{"version":"0.170.0"}}}');
+    const lockBefore = await lockfileIdentity(lock);
+    await writeFile(lock, '{"packages":{"node_modules/three":{"version":"0.171.0"}}}');
+    assert.notEqual(await lockfileIdentity(lock), lockBefore, "(b) another package version");
+
+    const maps = join(root, "maps");
+    await mkdir(maps);
+    await writeFile(join(maps, "0003238.map"), "MAP1");
+    const mapsBefore = await statTreeIdentity(maps);
+    assert.equal(await statTreeIdentity(maps), mapsBefore, "nothing changed, nothing moves");
+    const later = new Date(Date.now() + 5_000);
+    await utimes(join(maps, "0003238.map"), later, later);
+    const touched = await statTreeIdentity(maps);
+    assert.notEqual(touched, mapsBefore, "(c) a re-extracted map");
+    await writeFile(join(maps, "0003239.map"), "MAP2");
+    assert.notEqual(await statTreeIdentity(maps), touched, "(c) a new map");
+
+    // Through the gateway: the same disk across a restart keeps the tile generation; a touched map or the salt moves it.
+    const generation = async (options) => withGateway({ dbcDirectory: join(root, "dbc"), ...options }, async (base) =>
+      (await (await fetch(`${base}/client/patch-status?summary=1`, { headers: { origin: ORIGIN } })).json()).cacheGeneration);
+    const first = await generation({ mapsDirectory: maps });
+    assert.equal(await generation({ mapsDirectory: maps }), first, "a restart over the same maps");
+    const later2 = new Date(Date.now() + 10_000);
+    await utimes(join(maps, "0003239.map"), later2, later2);
+    const afterMap = await generation({ mapsDirectory: maps });
+    assert.notEqual(afterMap, first, "(c) a re-extracted map moves g after the restart");
+    assert.notEqual(await generation({ mapsDirectory: maps, cacheSalt: "bump-1" }), afterMap, "(d) GATEWAY_CACHE_SALT");
+    const withLock = await generation({ mapsDirectory: maps, lockFile: lock });
+    await writeFile(lock, '{"packages":{"node_modules/three":{"version":"0.172.0"}}}');
+    assert.notEqual(await generation({ mapsDirectory: maps, lockFile: lock }), withLock, "(b) an upgraded package moves g after the restart");
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });

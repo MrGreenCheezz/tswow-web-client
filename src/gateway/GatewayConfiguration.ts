@@ -350,6 +350,9 @@ export async function createGatewayConfiguration(): Promise<{ options: GatewayOp
     ...(trafficReport ? { trafficReport } : {}), // 25.10 (serve S5)
     // 25.10 (serve S2): the generators publishing the tile caches; their digest is part of the tile `g`.
     toolsDirectory: resolve(process.cwd(), "tools"),
+    // Review fix: the installed packages, and the owner's manual bump (.env.example).
+    lockFile: resolve(process.cwd(), "package-lock.json"),
+    ...(process.env["GATEWAY_CACHE_SALT"]?.trim() ? { cacheSalt: process.env["GATEWAY_CACHE_SALT"].trim() } : {}),
     ...(preloadOn ? {
       preload,
       // The tile worker reads the published tile and answers its model list (`tools/tile-models.mjs`).

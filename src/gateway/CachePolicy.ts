@@ -60,6 +60,10 @@ export function processCacheNonce(): string {
  * - `toolsIdentity` — a digest of the generator scripts that publish the tile caches (`tools/*.mjs`), so
  *   a changed generator invalidates what it may now publish differently.
  * - `configIdentity` — the directories and startup flags the routes read (`servedConfigIdentity`).
+ * - `packagesIdentity` — the lock file: the installed packages the gateway and generators import.
+ * - `dataTreeIdentity` — names, sizes and mtimes of the raw `maps/` and `vmaps/` trees, taken at startup
+ *   (`/terrain` and the vmap routes serve those files as they are; no fingerprint half covers them).
+ * - `salt` — `GATEWAY_CACHE_SALT`: the owner's manual bump when anything else slipped through.
  * - `dbcHash`, `archivesHash`, `chain` — the dataset fingerprint as it stands for this request; they move
  *   exactly when the epoch moved (`DatasetFingerprint`), and are the same after a restart.
  * - `patchGeneration` — the archive generation this process selected at startup (PatchStatus.ts).
@@ -71,6 +75,9 @@ export interface ServedIdentityInput {
   readonly codeIdentity: string;
   readonly toolsIdentity: string | undefined;
   readonly configIdentity: string;
+  readonly packagesIdentity?: string | undefined;
+  readonly dataTreeIdentity?: string | undefined;
+  readonly salt?: string | undefined;
   readonly dbcHash: string | undefined;
   readonly archivesHash: string | undefined;
   readonly chain: string | undefined;
@@ -83,7 +90,8 @@ export function servedIdentity(input: ServedIdentityInput): string {
   const vouched = input.dbcHash !== undefined || input.archivesHash !== undefined;
   return createHash("sha1").update([
     CACHE_TAG_SCHEMA, `code:${input.codeIdentity}`, `tools:${input.toolsIdentity ?? "none"}`,
-    `config:${input.configIdentity}`, `dbc:${input.dbcHash ?? "none"}`, `archives:${input.archivesHash ?? "none"}`,
+    `config:${input.configIdentity}`, `packages:${input.packagesIdentity ?? "none"}`,
+    `data:${input.dataTreeIdentity ?? "none"}`, `salt:${input.salt ?? ""}`, `dbc:${input.dbcHash ?? "none"}`, `archives:${input.archivesHash ?? "none"}`,
     `chain:${input.chain ?? "none"}`, `patches:${input.patchGeneration}`, `process:${vouched ? "any" : input.nonce}`,
   ].join("\n")).digest("hex").slice(0, 20);
 }
@@ -98,6 +106,8 @@ export function servedConfigIdentity(options: object): string {
   for (const [key, value] of Object.entries(options).sort(([left], [right]) => left.localeCompare(right))) {
     if ((/(?:Directory|File)$/.test(key) && typeof value === "string")
       || (key === "coordinatedVisuals" && typeof value === "boolean")) parts.push(`${key}=${String(value)}`);
+    // `audioDbcDirectory: null` switches the audio overlay off, which absent does not.
+    else if (/(?:Directory|File)$/.test(key) && value === null) parts.push(`${key}=null`);
   }
   return createHash("sha1").update(parts.join("\n")).digest("hex").slice(0, 20);
 }
