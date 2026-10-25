@@ -320,10 +320,15 @@ async function main() {
       { stdio: ['ignore', 'pipe', 'pipe'] });
     child.stdout.on('data', data => process.stdout.write(`[electron] ${data}`));
     child.stderr.on('data', data => process.stderr.write(`[electron] ${data}`));
+    // 25.10 (Electron 44): attach only once the window's page target exists. Attached earlier,
+    // puppeteer-core 25 never saw the scene page Electron 44 opened afterwards (40 still reported it).
+    const sceneOrigin = new URL(url).origin;
     let connected;
     for (let attempt = 0; attempt < 120 && !connected; attempt++) {
       if (child.exitCode !== null) throw new Error(`Electron exited with ${child.exitCode}`);
       try {
+        const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
+        if (!targets.some(target => target.type === 'page' && String(target.url).startsWith(sceneOrigin))) throw new Error('no scene page yet');
         connected = await puppeteer.connect({ browserURL: `http://127.0.0.1:${port}`, defaultViewport: null, protocolTimeout: 300000 });
       } catch { await new Promise(done => setTimeout(done, 500)); }
     }
