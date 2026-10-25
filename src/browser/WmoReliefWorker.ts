@@ -1,4 +1,5 @@
 import { loadWmoRelief, type WmoReliefAnswer } from "./WmoReliefLoad.js";
+import { reliefSourceOf } from "./WmoReliefNeural.js"; // 25.10 (7.47)
 
 /**
  * 22.10 (7.47 stage 2): building-texture relief off the drawing thread. One worker for this thread
@@ -12,6 +13,8 @@ import { loadWmoRelief, type WmoReliefAnswer } from "./WmoReliefLoad.js";
 export interface WmoReliefRequest {
   readonly id: number;
   readonly url: string;
+  /** 25.10 (7.47): ask the gateway's neural set first (WmoReliefNeural.ts). */
+  readonly neural?: boolean;
 }
 
 export type WmoReliefResponse =
@@ -29,6 +32,7 @@ interface ReliefWorker {
 
 interface Job {
   readonly url: string;
+  readonly neural: boolean;
   readonly resolve: (answer: WmoReliefAnswer) => void;
   readonly reject: (reason: unknown) => void;
 }
@@ -82,7 +86,7 @@ function pump(): void {
     const target = workerOrUndefined();
     if (!target) {
       setTimeout(() => {
-        loadWmoRelief(job.url).then(job.resolve, job.reject).finally(() => {
+        loadWmoRelief(job.url, job.neural).then(job.resolve, job.reject).finally(() => {
           running.delete(id);
           pump();
         });
@@ -90,7 +94,7 @@ function pump(): void {
       continue;
     }
     try {
-      target.postMessage({ id, url: job.url }, []);
+      target.postMessage({ id, url: job.url, ...(job.neural ? { neural: true } : {}) }, []);
     } catch (error) {
       running.delete(id);
       job.reject(error);
@@ -98,10 +102,14 @@ function pump(): void {
   }
 }
 
-/** 22.10 (7.47 stage 2): the relief of the texture at `url` (absolute), derived in the relief worker. */
-export function deriveWmoReliefAsync(url: string): Promise<WmoReliefAnswer> {
+/**
+ * 22.10 (7.47 stage 2): the relief of the texture at `url` (absolute), derived in the relief worker. 25.10: a key
+ * marked by `withReliefSource` (WmoReliefNeural.ts) asks the gateway's neural set first.
+ */
+export function deriveWmoReliefAsync(key: string): Promise<WmoReliefAnswer> {
+  const { key: url, neural } = reliefSourceOf(key);
   return new Promise((resolve, reject) => {
-    queued.push({ url, resolve, reject });
+    queued.push({ url, neural, resolve, reject });
     pump();
   });
 }

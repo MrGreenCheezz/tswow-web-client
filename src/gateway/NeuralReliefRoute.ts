@@ -8,6 +8,9 @@
  * derives the relief from the layer it has. Answers: Origin refused 403; no map (or a stale one) 404 with
  * `no-store`; a hit 200, revalidated by its ETag (size and time), so a rebuilt set reaches the browser at once.
  * `NEURAL_RELIEF=0` switches the route off (bat/32 keeps it off unless `PUBLIC_NEURAL_RELIEF=1`).
+ *
+ * 25.10: `GET /neural-relief/<sha1>.bin` — a building or doodad texture's height, by the SHA-1 of the PNG the
+ * gateway serves for it (WmoReliefNeural.ts). Content-addressed, so never stale: answered as it is, or 404.
  */
 
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -18,6 +21,9 @@ import { originAllowed } from "./UpgradeGuard.js";
 export const NEURAL_RELIEF_ROUTE = /^\/terrain-relief\/([0-9a-f]{40})\.bin$/;
 /** The set's sub-directory for the ground (tools/neural-relief.mjs). */
 export const NEURAL_RELIEF_TERRAIN = "terrain";
+/** 25.10: the buildings' and doodads' heights by texture content, and the sub-directory they live in. */
+export const NEURAL_RELIEF_CONTENT_ROUTE = /^\/neural-relief\/([0-9a-f]{40})\.bin$/;
+export const NEURAL_RELIEF_CONTENT = "content";
 
 /** `NEURAL_RELIEF`: on unless it says 0/false/off/no. */
 export function parseNeuralReliefEnv(env: NodeJS.ProcessEnv): boolean {
@@ -38,17 +44,21 @@ export async function serveNeuralReliefRoute(
   request: IncomingMessage, response: ServerResponse, pathname: string, options: NeuralReliefRouteOptions,
 ): Promise<boolean> {
   const match = request.method === "GET" ? pathname.match(NEURAL_RELIEF_ROUTE) : null;
-  if (!match) return false;
+  const content = request.method === "GET" && !match ? pathname.match(NEURAL_RELIEF_CONTENT_ROUTE) : null;
+  if (!match && !content) return false;
   const origin = request.headers.origin;
   if (!originAllowed(origin, options.allowedOrigins)) {
     response.writeHead(403).end();
     return true;
   }
-  const id = match[1]!;
-  const file = join(options.directory, NEURAL_RELIEF_TERRAIN, `${id}.bin`);
+  const id = (match ?? content)![1]!;
+  const file = join(options.directory, match ? NEURAL_RELIEF_TERRAIN : NEURAL_RELIEF_CONTENT, `${id}.bin`);
   try {
-    const [map, layer] = await Promise.all([stat(file), stat(join(options.layersDirectory, `${id}.png`))]);
-    if (map.mtimeMs < layer.mtimeMs) throw Object.assign(new Error("stale"), { code: "ENOENT" });
+    const map = await stat(file);
+    if (match) {
+      const layer = await stat(join(options.layersDirectory, `${id}.png`));
+      if (map.mtimeMs < layer.mtimeMs) throw Object.assign(new Error("stale"), { code: "ENOENT" });
+    }
     const etag = `"${map.size.toString(16)}-${Math.floor(map.mtimeMs).toString(16)}"`;
     if (request.headers["if-none-match"] === etag) {
       response.writeHead(304, { "access-control-allow-origin": origin, etag, "cache-control": "no-cache" }).end();

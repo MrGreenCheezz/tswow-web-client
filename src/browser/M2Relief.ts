@@ -12,6 +12,7 @@ import {
 } from "./WmoReliefShader.js";
 import { WMO_RELIEF_FLAT, WmoReliefMaps, type WmoReliefMapStats } from "./WmoReliefMaps.js";
 import { deriveWmoReliefAsync } from "./WmoReliefWorker.js";
+import { NEURAL_RELIEF_KEY_SUFFIX, reliefSourceOf, withReliefSource } from "./WmoReliefNeural.js"; // 25.10 (7.47)
 import {
   BLEND_OPAQUE, MATERIAL_BILLBOARD, MATERIAL_UNLIT, TEXTURE_TYPE_OWN, TEXTURE_WRAP_X, TEXTURE_WRAP_Y,
   type WvmBatch, type WvmModel, type WvmTextureSlot,
@@ -143,7 +144,12 @@ let maps: WmoReliefMaps | undefined;
 export function m2ReliefMaps(replacement?: WmoReliefMaps): WmoReliefMaps {
   if (replacement) maps = replacement;
   maps ??= new WmoReliefMaps(
-    (key) => deriveWmoReliefAsync(key.endsWith(CLAMP_SUFFIX) ? key.slice(0, -CLAMP_SUFFIX.length) : key),
+    (marked) => {
+      // 25.10 (7.47): the source mark is outermost (`withReliefSource` over the clamp key).
+      const { key, neural } = reliefSourceOf(marked);
+      const url = key.endsWith(CLAMP_SUFFIX) ? key.slice(0, -CLAMP_SUFFIX.length) : key;
+      return deriveWmoReliefAsync(neural ? `${url}${NEURAL_RELIEF_KEY_SUFFIX}` : url);
+    },
     M2_RELIEF_RETAIN,
     prepareM2ReliefTexture,
   );
@@ -205,7 +211,7 @@ export function installM2ReliefShape(material: THREE.Material, url: string, slot
   // A map already derived (shared or retained) is bound before the first draw, at full strength;
   // one that arrives later fades in.
   let acquiring = true;
-  binding.release = m2ReliefMaps().acquire(m2ReliefMapKey(url, slotFlags), (texture) => {
+  binding.release = m2ReliefMaps().acquire(withReliefSource(m2ReliefMapKey(url, slotFlags)), (texture) => { // 25.10: + source
     binding.relief.value = texture;
     binding.on.arrive(!acquiring);
   });

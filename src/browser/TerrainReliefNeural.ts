@@ -74,13 +74,25 @@ export function parseNeuralHeight(buffer: ArrayBuffer): NeuralHeight | undefined
  * texels into detail UV (one repeat is the layer's width) and into the relief's 0–1 around 0.5.
  */
 export function neuralTerrainRelief(source: NeuralHeight, layerSize: number): Uint8Array {
-  const side = terrainReliefSize(layerSize);
+  return neuralReliefFromHeight(source, terrainReliefSize(layerSize), source.width).relief;
+}
+
+/**
+ * 25.10 (7.47): the relief map (`side`², the brightness relief's format) of a neural height of any shape — each
+ * output texel the mean of the source texels it covers (the nearest where the source is smaller), a texture's
+ * `unitTexels` texels to one unit of UV — and the height's deviation in the relief's 0–1 (the buildings and the
+ * doodads leave a map under their floor flat, as the brightness relief leaves a near-uniform fill).
+ */
+export function neuralReliefFromHeight(
+  source: NeuralHeight, side: number, unitTexels: number,
+): { readonly relief: Uint8Array; readonly deviation: number } {
   const { width, height: rows, values } = source;
-  const toRelief = NEURAL_RELIEF_GAIN / (width * TERRAIN_RELIEF_DEPTH);
+  const toRelief = NEURAL_RELIEF_GAIN / (unitTexels * TERRAIN_RELIEF_DEPTH);
   const spanX = Math.max(1, Math.round(width / side));
   const spanY = Math.max(1, Math.round(rows / side));
   const weight = toRelief / (spanX * spanY);
   const height = new Float32Array(side * side);
+  let sum2 = 0;
   for (let y = 0; y < side; y++) {
     const sourceY = Math.floor((y * rows) / side);
     for (let x = 0; x < side; x++) {
@@ -90,10 +102,12 @@ export function neuralTerrainRelief(source: NeuralHeight, layerSize: number): Ui
         const row = ((sourceY + dy) % rows) * width;
         for (let dx = 0; dx < spanX; dx++) sum += values[row + (sourceX + dx) % width]!;
       }
-      height[y * side + x] = Math.min(1, Math.max(0, 0.5 + sum * weight));
+      const offset = sum * weight;
+      sum2 += offset * offset;
+      height[y * side + x] = Math.min(1, Math.max(0, 0.5 + offset));
     }
   }
-  return terrainReliefFromHeight(height, side);
+  return { relief: terrainReliefFromHeight(height, side), deviation: Math.sqrt(sum2 / (side * side)) };
 }
 
 /**

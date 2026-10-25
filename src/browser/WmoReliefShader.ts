@@ -7,6 +7,7 @@ import {
 import { RELIEF_STRENGTH, RELIEF_STRENGTH_UNIFORM } from "./ReliefStrength.js"; // 24.10 (7.47)
 import { WMO_MATERIAL_SIDN, WMO_MATERIAL_WINDOW } from "./WmoMaterials.js";
 import { WMO_RELIEF_FLAT, WmoReliefMaps, type WmoReliefMapStats } from "./WmoReliefMaps.js";
+import { withReliefSource } from "./WmoReliefNeural.js"; // 25.10 (7.47)
 
 /**
  * 22.10 (7.47 stage 2): «Объём зданий» — the ground's relief (stage 1, `TerrainReliefShader.ts`) on
@@ -235,7 +236,7 @@ function setBound(material: THREE.Material, tracked: Tracked, active: boolean): 
     // 23.10 (7.47): a map already derived (shared or retained) is bound before the first draw, at
     // full strength; one that arrives later fades in.
     let acquiring = true;
-    held.release = wmoReliefMaps().acquire(absoluteUrl(tracked.url), (texture) => {
+    held.release = wmoReliefMaps().acquire(withReliefSource(absoluteUrl(tracked.url)), (texture) => { // 25.10: + source
       held.relief.value = texture;
       held.on.arrive(!acquiring);
     });

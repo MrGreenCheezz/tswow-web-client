@@ -112,11 +112,6 @@ export const SETTING_DEFINITIONS: readonly SettingDefinition[] = [
     hint: "Камни, мостовая и трещины на земле вблизи выглядят объёмными и отбрасывают мелкие тени. Только с улучшенным освещением; немного нагружает видеокарту.",
   },
   {
-    // 25.10 (7.47): the ground's relief maps from a neural network (tools/neural-relief.mjs) where the gateway has them.
-    id: "experimentalNeuralRelief", label: "Нейросетевой объём", group: "Эффекты", kind: "boolean", fallback: false,
-    hint: "Опыт: рельеф земли по картам, которые нейросеть построила по самим текстурам, — камень отличается от тёмных швов и пятен краски. Действует вместе с «Объёмом земли»; где карт нет, рельеф прежний.",
-  },
-  {
     // 22.10 (7.47 stage 2): the same relief on building surfaces (WMO); enhanced lighting levels only.
     id: "experimentalWmoRelief", label: "Объём зданий", group: "Эффекты", kind: "boolean", fallback: true,
     hint: "Каменная кладка, кирпич, черепица и доски на стенах и мостовые городов вблизи выглядят объёмными. Только с улучшенным освещением; немного нагружает видеокарту.",
@@ -125,6 +120,12 @@ export const SETTING_DEFINITIONS: readonly SettingDefinition[] = [
     // 23.10 (7.47 stage 3): the same relief on the world's doodads (M2); enhanced lighting levels only.
     id: "experimentalModelRelief", label: "Объём предметов", group: "Эффекты", kind: "boolean", fallback: true,
     hint: "Камни и скалы, стволы деревьев, заборы, бочки, ящики и другие предметы мира вблизи выглядят объёмными. Листва и персонажи не меняются. Только с улучшенным освещением; немного нагружает видеокарту.",
+  },
+  {
+    // 25.10 (7.47): the relief maps of the ground, the buildings and the doodads from a neural network
+    // (tools/neural-relief.mjs) where the gateway has them; the brightness relief elsewhere.
+    id: "experimentalNeuralRelief", label: "Нейросетевой объём", group: "Эффекты", kind: "boolean", fallback: false,
+    hint: "Опыт: рельеф земли, зданий и предметов по картам, которые нейросеть построила по самим текстурам, — камень отличается от тёмных швов и пятен краски. Действует вместе с тремя «Объёмами»; где карт нет, рельеф прежний.",
   },
   {
     // 24.10 (7.47): one multiplier over the three relief leaves (ReliefStrength.ts) — a uniform shared by

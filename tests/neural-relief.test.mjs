@@ -269,7 +269,7 @@ test("route: serves a current map with CORS and an ETag; refuses foreign origins
 
 // ---- the setting -------------------------------------------------------------------------------
 
-test("setting: «Нейросетевой объём», off by default and in the comparison profile, beside «Объём земли», pushed by both appliers", async () => {
+test("setting: «Нейросетевой объём», off by default and in the comparison profile, after the three «Объёмы», pushed by both appliers", async () => {
   const definition = settingDefinition("experimentalNeuralRelief");
   assert.equal(definition?.label, "Нейросетевой объём");
   assert.equal(definition?.kind, "boolean");
@@ -277,7 +277,7 @@ test("setting: «Нейросетевой объём», off by default and in th
   assert.equal(ENHANCED_GRAPHICS_OVERRIDES.experimentalNeuralRelief, undefined, "not part of the preset (yet)");
   assert.equal(COMPARISON_GRAPHICS_OVERRIDES.experimentalNeuralRelief, false);
   const section = SETTING_SECTIONS["Эффекты"]?.find((entry) => entry.title === "Тени и рельеф");
-  assert.equal(section?.ids[section.ids.indexOf("experimentalTerrainRelief") + 1], "experimentalNeuralRelief");
+  assert.equal(section?.ids[section.ids.indexOf("experimentalModelRelief") + 1], "experimentalNeuralRelief", "after the three it chooses the maps of");
   assert.equal(RENDER_WORKER_COMMANDS.setNeuralRelief, "setting");
   for (const file of ["browser/ui/Settings.ts", "browser/RendererGraphicsSettings.ts"]) {
     assert.match(await source(file), /setNeuralRelief\?\.\(settingBoolean\(values, "experimentalNeuralRelief"\)\)/, file);
@@ -287,4 +287,98 @@ test("setting: «Нейросетевой объём», off by default and in th
   assert.match(await readFile(new URL("../tools/start-server.mjs", import.meta.url), "utf8"),
     /process\.env\.NEURAL_RELIEF = process\.env\.PUBLIC_NEURAL_RELIEF\?\.trim\(\) === "1" \? "1" : "0";/,
     "players get the maps only when the owner says so");
+});
+
+// ---- buildings and doodads (by texture content) ------------------------------------------------
+
+test("content keys: the source mark is outermost and comes off whole; the setting decides it", async () => {
+  const { NEURAL_RELIEF_KEY_SUFFIX, reliefSourceOf, withReliefSource, contentDigest } = await import("../dist/code/browser/WmoReliefNeural.js");
+  const before = neuralReliefWanted();
+  try {
+    setNeuralReliefWanted(false);
+    assert.equal(withReliefSource("http://x/t.png#clamp"), "http://x/t.png#clamp");
+    setNeuralReliefWanted(true);
+    const marked = withReliefSource("http://x/t.png#clamp");
+    assert.equal(marked, `http://x/t.png#clamp${NEURAL_RELIEF_KEY_SUFFIX}`);
+    assert.deepEqual(reliefSourceOf(marked), { key: "http://x/t.png#clamp", neural: true });
+    assert.deepEqual(reliefSourceOf("http://x/t.png"), { key: "http://x/t.png", neural: false });
+  } finally {
+    setNeuralReliefWanted(before);
+  }
+  const { createHash } = await import("node:crypto");
+  const bytes = new Uint8Array([1, 2, 3, 250]);
+  assert.equal(await contentDigest(bytes), createHash("sha1").update(bytes).digest("hex"));
+});
+
+test("building texture: with the neural mark the map comes from `/neural-relief/<sha1 of the PNG>.bin`; flat or missing as before", async () => {
+  const { createRequire } = await import("node:module");
+  const { createHash } = await import("node:crypto");
+  const { PNG } = createRequire(import.meta.url)("pngjs");
+  const { loadWmoRelief } = await import("../dist/code/browser/WmoReliefLoad.js");
+  const png = new PNG({ width: 128, height: 64 });
+  for (let index = 0; index < 128 * 64; index++) {
+    const value = 90 + 60 * Math.sin(index / 7) * Math.cos(Math.floor(index / 128) / 5);
+    png.data.set([value, value, value, 255], index * 4);
+  }
+  const bytes = PNG.sync.write(png);
+  const digest = createHash("sha1").update(bytes).digest("hex");
+  const asked = [];
+  let answer = heightFile(128, 64, hill(128, 64, 32, 8, 3));
+  const saved = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const path = new URL(String(url)).pathname;
+    if (path === "/visual/texture/a.png") return new Response(bytes, { status: 200 });
+    asked.push(path);
+    return answer ? new Response(answer, { status: 200 }) : new Response(null, { status: 404 });
+  };
+  try {
+    const url = "http://gateway.test:8090/visual/texture/a.png";
+    const neural = await loadWmoRelief(url, true);
+    assert.deepEqual(asked, [`/neural-relief/${digest}.bin`]);
+    assert.equal(neural.side, 64, "the brightness relief's side: half the 128 square");
+    assert.ok(neural.relief[(32 * 64 + 32) * 4 + 2] > 140, "the network's bump, at its place");
+    const brightness = await loadWmoRelief(url);
+    assert.equal(asked.length, 1, "without the mark nothing is asked");
+    assert.notDeepEqual(brightness.relief, neural.relief);
+    answer = heightFile(128, 64, () => 0);
+    assert.equal((await loadWmoRelief(url, true)).relief, undefined, "a texture the network found flat gets no map");
+    answer = heightFile(64, 64, () => 1);
+    assert.deepEqual((await loadWmoRelief(url, true)).relief, brightness.relief, "a map of another size is not this texture's");
+    answer = undefined;
+    assert.deepEqual((await loadWmoRelief(url, true)).relief, brightness.relief, "no map: the brightness relief");
+  } finally {
+    globalThis.fetch = saved;
+  }
+});
+
+test("doodads and buildings: maps are asked for under source-marked keys; the doodads' build key carries the source", async () => {
+  const m2 = await source("browser/M2Relief.ts");
+  assert.match(m2, /m2ReliefMaps\(\)\.acquire\(withReliefSource\(m2ReliefMapKey\(url, slotFlags\)\)/);
+  assert.match(await source("browser/WmoReliefShader.ts"), /wmoReliefMaps\(\)\.acquire\(withReliefSource\(absoluteUrl\(tracked\.url\)\)/);
+  const renderer = await source("browser/WorldRenderer3D.ts");
+  assert.match(renderer, /\$\{M2_RELIEF_BUILD_PREFIX\}\$\{neuralReliefWanted\(\) \? "neural\|" : ""\}\$\{key\}/);
+  assert.match(renderer, /setWmoReliefActive\(false\);\n\s+setWmoReliefActive\(true\);/);
+});
+
+test("route: `/neural-relief/<sha1>.bin` from the content directory, never checked against a layer", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "neural-relief-content-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await mkdir(join(root, "set", "content"), { recursive: true });
+  const id = "f".repeat(40);
+  const map = heightFile(2, 2, () => 0.5);
+  await writeFile(join(root, "set", "content", `${id}.bin`), map);
+  const origin = "http://127.0.0.1:5173";
+  const server = createServer(async (request, response) => {
+    const handled = await serveNeuralReliefRoute(request, response, new URL(request.url, "http://x").pathname,
+      { directory: join(root, "set"), layersDirectory: join(root, "none"), allowedOrigins: [origin] });
+    if (!handled) response.writeHead(418).end();
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => server.close());
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const hit = await fetch(`${base}/neural-relief/${id}.bin`, { headers: { origin } });
+  assert.equal(hit.status, 200);
+  assert.deepEqual(new Uint8Array(await hit.arrayBuffer()), map);
+  assert.equal((await fetch(`${base}/neural-relief/${"a".repeat(40)}.bin`, { headers: { origin } })).status, 404);
+  assert.equal((await fetch(`${base}/neural-relief/${id}.bin`, { headers: { origin: "http://evil.test" } })).status, 403);
 });

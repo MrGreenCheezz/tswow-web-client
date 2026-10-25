@@ -412,9 +412,10 @@ async function main() {
         }
         litModels.served++;
         res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }).end(litModels.bytes);
-      } else if (/^\/terrain-relief\/[0-9a-f]{40}\.bin$/.test(url.pathname)) { // 25.10 (7.47)
+      } else if (/^\/(?:terrain|neural)-relief\/[0-9a-f]{40}\.bin$/.test(url.pathname)) { // 25.10 (7.47): ground, then content
+        const [, kind, name] = url.pathname.split('/');
         const bytes = neuralDirectory
-          ? await readFile(resolve(neuralDirectory, 'terrain', url.pathname.slice('/terrain-relief/'.length))).catch(() => undefined)
+          ? await readFile(resolve(neuralDirectory, kind === 'terrain-relief' ? 'terrain' : 'content', name)).catch(() => undefined)
           : undefined;
         if (bytes) neuralServed++;
         if (bytes) res.writeHead(200, { 'content-type': 'application/octet-stream', 'cache-control': 'no-store' }).end(bytes);

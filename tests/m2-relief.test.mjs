@@ -330,7 +330,8 @@ test("renderer: the leaf and the lighting level decide; placed doodads build and
   assert.match(renderer, /const active = m2ReliefActive\(this\.#m2ReliefSetting, this\.#lightingProfile\.quality\);/);
   assert.match(renderer, /this\.#syncM2Relief\(\); \/\/ 23\.10 \(7\.47 stage 3\)/, "re-decided on a lighting change");
   assert.match(renderer, /this\.#m2ReliefActive = active;\s*this\.#rebuildSceneryModels\(\);/);
-  assert.match(renderer, /return this\.#m2ReliefActive \? `\$\{M2_RELIEF_BUILD_PREFIX\}\$\{key\}` : key;/);
+  // 25.10 (7.47): + the relief maps' source («Нейросетевой объём»).
+  assert.match(renderer, /return this\.#m2ReliefActive \? `\$\{M2_RELIEF_BUILD_PREFIX\}\$\{neuralReliefWanted\(\) \? "neural\|" : ""\}\$\{key\}` : key;/);
   assert.equal(M2_RELIEF_BUILD_PREFIX, "m2-relief|");
   assert.match(renderer, /const buildKey = this\.#doodadBuildKey\(name\);/);
   assert.match(renderer, /this\.#experimentalShaderProfile\.vegetationWind, undefined, this\.#m2ReliefBuild\(\),/);

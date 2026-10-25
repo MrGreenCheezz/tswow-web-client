@@ -58,7 +58,7 @@ import {
 } from "./TerrainSplat.js";
 import { setTerrainBakedShadowStrength, terrainBakedShadowStrength } from "./TerrainSplat.js"; // 05.10-A7b-7
 import { setTerrainReliefWanted, setTerrainSplatRelief, terrainReliefActive } from "./TerrainReliefShader.js"; // 22.10 (7.47)
-import { setNeuralReliefWanted } from "./TerrainReliefNeural.js"; // 25.10 (7.47)
+import { neuralReliefWanted, setNeuralReliefWanted } from "./TerrainReliefNeural.js"; // 25.10 (7.47)
 import { setWmoReliefActive, trackWmoReliefMaterial, wmoReliefActive, wmoRunReliefVariant } from "./WmoReliefShader.js"; // 22.10 (7.47 stage 2)
 import { setReliefStrength as setSharedReliefStrength } from "./ReliefStrength.js"; // 24.10 (7.47)
 import { M2_RELIEF_BUILD, M2_RELIEF_BUILD_PREFIX, m2ReliefActive, type M2ReliefBuild } from "./M2Relief.js"; // 23.10 (7.47 stage 3)
@@ -11312,7 +11312,8 @@ export class WorldRenderer3D {
   /** 23.10 (7.47 stage 3): a placed doodad's build key — the wind's, plus the relief while it is active. */
   #doodadBuildKey(path: string): string {
     const key = this.#vegetationBuildKey(path);
-    return this.#m2ReliefActive ? `${M2_RELIEF_BUILD_PREFIX}${key}` : key;
+    // 25.10 (7.47): + the relief maps' source, so «Нейросетевой объём» rebuilds the doodads with the other maps.
+    return this.#m2ReliefActive ? `${M2_RELIEF_BUILD_PREFIX}${neuralReliefWanted() ? "neural|" : ""}${key}` : key;
   }
 
   setTerrainRelief(enabled: boolean): void {
@@ -11322,12 +11323,20 @@ export class WorldRenderer3D {
   }
 
   /**
-   * 25.10 (7.47): «Нейросетевой объём» — the ground's relief maps from the gateway's neural set where it has
-   * them (TerrainReliefNeural.ts). While the relief is drawn, the change unbinds every tile's map (the splat
-   * client disposes it and makes the new one) and the tiles take the new maps as they arrive.
+   * 25.10 (7.47): «Нейросетевой объём» — the relief maps from the gateway's neural set where it has them
+   * (TerrainReliefNeural.ts, WmoReliefNeural.ts). The ground: every tile's map is unbound (the splat client
+   * disposes it and makes the new one) and the tiles take the new maps as they arrive. The buildings: their
+   * materials are rebound under keys marked with the source. The doodads: the source is in their build key,
+   * so they are rebuilt once, as «Объём предметов» does.
    */
   setNeuralRelief(enabled: boolean): void {
-    if (!setNeuralReliefWanted(enabled) || !this.#terrainReliefActive) return;
+    if (!setNeuralReliefWanted(enabled)) return;
+    if (wmoReliefActive(this.#wmoReliefSetting, this.#lightingProfile.quality)) {
+      setWmoReliefActive(false);
+      setWmoReliefActive(true);
+    }
+    if (this.#m2ReliefActive) this.#rebuildSceneryModels();
+    if (!this.#terrainReliefActive) return;
     this.#terrainReliefRevision++;
     for (const terrain of this.#terrains.values()) {
       if (!terrain.splatted || !terrain.relief) continue;
