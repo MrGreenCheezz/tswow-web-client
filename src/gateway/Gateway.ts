@@ -2094,13 +2094,18 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
       const key = `${set}|${addons.join(",")}|${tocs.join(",")}`;
       try {
         let pending = interfaceBundles.get(key);
-        if (!pending) {
+        if (pending) {
+          // Most recently asked last, so the bound below drops the list nobody has asked for longest.
+          interfaceBundles.delete(key);
+          interfaceBundles.set(key, pending);
+        } else {
           pending = buildInterfaceBundle(set, addons, tocs);
           interfaceBundles.set(key, pending);
-          // Kept only when whole; a few lists at most per process (the browser sends one per page kind).
+          // Kept only when whole; six lists at most (≈10 MB of text each for the world set): one per set and
+          // per combination of add-ons the players have switched on.
           void pending.then((built) => { if (!built.complete) interfaceBundles.delete(key); },
             () => interfaceBundles.delete(key));
-          while (interfaceBundles.size > 16) interfaceBundles.delete(interfaceBundles.keys().next().value!);
+          while (interfaceBundles.size > 6) interfaceBundles.delete(interfaceBundles.keys().next().value!);
         }
         const bundle = await pending;
         const headers = {

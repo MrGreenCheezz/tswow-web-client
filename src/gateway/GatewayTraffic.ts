@@ -84,6 +84,9 @@ export class GatewayTraffic {
 
   /** Counts this answer when it finishes. Call before any route writes to `response`. */
   observe(request: IncomingMessage, response: ServerResponse): void {
+    // The native client's stdio dispatcher (LocalAssetStdio.ts) hands in a bare object with no events and
+    // no network behind it: nothing to count there.
+    if (typeof response.once !== "function") return;
     const started = this.#now();
     const routeClass = trafficRouteClass((request.url ?? "/").split("?", 1)[0] ?? "/");
     let bytes = 0;

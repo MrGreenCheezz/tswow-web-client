@@ -78,7 +78,8 @@ export function installContentEtag(request: IncomingMessage, response: ServerRes
     const callback = [args[1], args[2]].find((value): value is () => void => typeof value === "function");
     if (etagMatches(request.headers["if-none-match"], etag)) {
       sendHead(304, undefined, withHeader(without(headers, "content-length"), "etag", etag));
-      return (end as (cb?: () => void) => ServerResponse).call(response, callback);
+      return callback ? (end as (cb: () => void) => ServerResponse).call(response, callback)
+        : (end as () => ServerResponse).call(response);
     }
     sendHead(200, reason, withHeader(headers, "etag", etag));
     return (end as (b: Buffer, cb?: () => void) => ServerResponse).call(response, body, callback);
