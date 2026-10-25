@@ -9,6 +9,7 @@ import { clientAddonVersionCheck, discoverClientAddons, listClientAddons } from 
 import { readPatchStatusChild } from "./PatchStatus.js";
 import { assertModuleWritePolicy } from "./ModuleWritePolicy.js";
 import { parseLoginAttemptEnv } from "./LoginAttemptLimiter.js";
+import { parseTrafficReportEnv } from "./GatewayTraffic.js"; // 25.10 (serve S5)
 import { VISUAL_TILE_GENERATION } from "./VisualTileGeneration.js"; // 05.10-A7b-1
 import { TERRAIN_SPLAT_GENERATION } from "./TerrainSplatGeneration.js"; // 05.10-A7b-7
 import { HdTextureSets, parseHdTexturesEnv } from "./HdTextures.js"; // 23.10 (7.48)
@@ -89,6 +90,8 @@ export async function createGatewayConfiguration(): Promise<{ options: GatewayOp
   // 10.01: failed logins per player address before `/auth` is refused for a while; a bad value
   // stops the start here rather than running without the limit.
   const loginAttempts = parseLoginAttemptEnv(process.env);
+  // 25.10 (serve S5): the per-route traffic line and snapshot; a bad interval stops the start here.
+  const trafficReport = parseTrafficReportEnv(process.env, process.cwd());
 
   if (host !== "127.0.0.1" && host !== "localhost" && allowedOrigins.includes("*")) {
     console.warn(
@@ -344,6 +347,12 @@ export async function createGatewayConfiguration(): Promise<{ options: GatewayOp
     // 10.14: one line per closed bridge with its queue peaks and pauses, to measure a remote line.
     logBackpressure: process.env["GATEWAY_LOG_BACKPRESSURE"] === "1",
     loginAttempts,
+    ...(trafficReport ? { trafficReport } : {}), // 25.10 (serve S5)
+    // 25.10 (serve S2): the generators publishing the tile caches; their digest is part of the tile `g`.
+    toolsDirectory: resolve(process.cwd(), "tools"),
+    // Review fix: the installed packages, and the owner's manual bump (.env.example).
+    lockFile: resolve(process.cwd(), "package-lock.json"),
+    ...(process.env["GATEWAY_CACHE_SALT"]?.trim() ? { cacheSalt: process.env["GATEWAY_CACHE_SALT"].trim() } : {}),
     ...(preloadOn ? {
       preload,
       // The tile worker reads the published tile and answers its model list (`tools/tile-models.mjs`).

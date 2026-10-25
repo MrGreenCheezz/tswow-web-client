@@ -90,14 +90,36 @@ import {
   LEGACY_TILE_DAY, LEGACY_TILE_HOUR, cacheGeneration, datasetCacheHeaders, datasetEtag, etagMatches,
   isDatasetCacheRoute, processCacheNonce, tileCacheControl, REVALIDATE, // 22.10 (6.26): REVALIDATE
   IMMUTABLE, // 23.10 (7.48)
+  servedConfigIdentity, servedIdentity, // 25.10 (serve S2)
 } from "./CachePolicy.js";
+import { installContentEtag } from "./ContentEtag.js"; // 25.10 (serve S2)
 import { HD_TEXTURE_CONTENT_TYPE, HD_TEXTURE_PARAM, type HdTextureSets } from "./HdTextures.js"; // 23.10 (7.48)
 import {
   METADATA_GENERATION_PARAM, VISUAL_GENERATION_PARAM, assetCacheControl, gatewayCodeIdentity, metadataGeneration,
-  visualGeneration,
+  visualGeneration, scriptDirectoryIdentity, statTreeIdentity, lockfileIdentity, // 25.10 (serve S2)
 } from "./AssetGeneration.js"; // 22.10 (6.26)
+import { GatewayTraffic, loopbackRequest, startTrafficReporter, type TrafficReporterOptions } from "./GatewayTraffic.js"; // 25.10 (serve S5)
+import { chooseEncoding, createResponseCompression, installCompression } from "./ResponseCompression.js"; // 25.10 (serve S1)
+import {
+  INTERFACE_ADDON_NAME, INTERFACE_BUNDLE_SETS, encodeInterfaceBundle, interfaceAddonToc, interfaceBundleTocs,
+  walkInterfaceCorpus, type InterfaceBundleSet,
+} from "./InterfaceBundle.js"; // 25.10 (serve S3)
+import { brotliCompress, gzip, constants as zlibConstants } from "node:zlib"; // 25.10 (serve S3)
 
 const MAX_CLIENT_MESSAGE = 64 * 1024;
+/** 25.10 (serve S3): one built interface bundle (the `/client/interface-bundle` route). */
+interface BuiltInterfaceBundle {
+  readonly etag: string;
+  readonly raw: Buffer;
+  readonly gzip: Buffer;
+  br?: Promise<Buffer>;
+  /** No file failed and no bound cut the walk: kept for the process. */
+  readonly complete: boolean;
+}
+
+/** 25.10 (serve S3, review): how long a bundle with a failed file is served before it is built again. */
+const INCOMPLETE_BUNDLE_TTL_MS = 60_000;
+
 /** How often a bridged socket is pinged; two missed pongs in a row close it. */
 const HEARTBEAT_INTERVAL_MS = 30_000;
 /** Every upgrade opens a real worldserver socket, so an unbounded gateway exhausts the emulator. */
@@ -200,6 +222,7 @@ function isClientVisualProfileRoute(method: string | undefined, pathname: string
     // A late LoD/custom TSAddon file must come from the same winning FrameXML.toc generation that
     // booted the VM.  Otherwise a TSWoW publish can leave the running UI half old and half new.
     pathname === "/client/file"
+    || pathname === "/client/interface-bundle" // 25.10 (serve S3): the same files, many at a time
     || pathname === "/client/addons"
     || pathname === "/texture"
     || pathname === "/visual/model"
@@ -470,6 +493,20 @@ export interface GatewayOptions {
    * derived off the main thread (the tile worker's `tile-models` job); `undefined` when unpublished.
    */
   listTileModels?: (map: number, gridX: number, gridY: number) => Promise<readonly string[] | undefined>;
+  /**
+   * 25.10 (serve S5): print and file the per-route-class counters every interval with traffic
+   * (GatewayTraffic.ts). Absent: counted (for `/gateway/traffic`) but never printed or written.
+   */
+  trafficReport?: TrafficReporterOptions;
+  /**
+   * 25.10 (serve S2): the generator scripts' directory (`tools/`); its digest is part of the served identity
+   * (CachePolicy.ts `servedIdentity`), so a changed generator turns tile generations over. Absent: not counted.
+   */
+  toolsDirectory?: string;
+  /** 25.10 (serve S2, review): the lock file whose bytes name the installed packages; absent: not counted. */
+  lockFile?: string;
+  /** 25.10 (serve S2, review): `GATEWAY_CACHE_SALT`, a manual bump of every dataset tag and tile `g`. */
+  cacheSalt?: string;
 }
 
 /**
@@ -825,6 +862,8 @@ export interface GatewayAssetHandler {
   checkPatchChain(): Promise<PatchStatusSummary>;
   readonly patchEventsPending: boolean;
   scheduleRestart(at: number | undefined): void;
+  /** 25.10 (serve S5): what the HTTP routes answered (GatewayTraffic.ts). */
+  readonly traffic: GatewayTraffic;
 }
 
 /** Shared resource implementation. Creating it opens no listening or gameplay sockets. */
@@ -900,7 +939,8 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
    * Returning the promise rather than the value is also what keeps the `??=` below synchronous —
    * an `await` between the test and the assignment is how two requests start two loads.
    */
-  // 10.12: one random part per process for cache validators — a restart may be new code.
+  // 10.12: one random part per process for cache validators — 25.10 (serve S2): used only when no dataset or
+  // archive walk vouches for the bytes (CachePolicy.ts `servedIdentity`).
   const cacheNonce = processCacheNonce();
   // 22.10 (6.26): the restart-stable generations (AssetGeneration.ts). The visual one is the startup chain's, as
   // `patches.generation` is; the metadata one moves with the DBC half and is taken per request.
@@ -910,6 +950,25 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
     coordinatedVisuals: options.coordinatedVisuals ?? false,
   });
   const codeIdentity = await gatewayCodeIdentity();
+  // 25.10 (serve S2): what the dataset tags and the tile `g` name instead of the process — code, generators,
+  // configuration, the fingerprint and the startup patch generation; memoised on the fingerprint's halves.
+  const toolsIdentity = options.toolsDirectory === undefined ? undefined : await scriptDirectoryIdentity(options.toolsDirectory);
+  const configIdentity = servedConfigIdentity(options);
+  // Review fix: the packages, and the raw maps/vmaps trees the terrain and vmap routes serve as they are.
+  const packagesIdentity = options.lockFile === undefined ? undefined : await lockfileIdentity(options.lockFile);
+  const dataTreeIdentity = (await Promise.all([options.mapsDirectory, options.vmapsDirectory, options.buildingsDirectory]
+    .map(async (directory) => (directory === undefined ? "-" : await statTreeIdentity(directory))))).join(",");
+  let servedMemo: { key: string; value: string } | undefined;
+  const currentServedIdentity = (): string => {
+    const key = `${fingerprint.dbcHash ?? ""}|${fingerprint.archivesHash ?? ""}|${fingerprint.chain ?? ""}`;
+    if (servedMemo?.key !== key) {
+      servedMemo = { key, value: servedIdentity({
+        codeIdentity, toolsIdentity, configIdentity, packagesIdentity, dataTreeIdentity, salt: options.cacheSalt, dbcHash: fingerprint.dbcHash, archivesHash: fingerprint.archivesHash,
+        chain: fingerprint.chain, patchGeneration: patches.generation, nonce: cacheNonce,
+      }) };
+    }
+    return servedMemo.value;
+  };
   let metadataMemo: { dbcHash: string | undefined; value: string | undefined } | undefined;
   const currentMetadataGeneration = (): string | undefined => {
     const dbcHash = fingerprint.dbcHash;
@@ -1042,7 +1101,66 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
       preloader?.recycle();
     }
   };
+  /**
+   * 25.10 (serve S3): one interface file's text exactly as `/client/file` would serve it — the same cache
+   * file, the same stamp check and generator — for the interface bundle. `undefined` is that route's 404;
+   * a throw is its 400/500, which the bundle leaves out so the browser asks the route itself.
+   */
+  const clientFileText = async (path: string): Promise<string | undefined | null> => {
+    const directory = options.clientFilesDirectory;
+    const clientPath = path.replaceAll("/", "\\");
+    // Review fix: a path the route refuses (400) is a permanent answer, not a failure that unpins the bundle.
+    if (directory === undefined || !validClientFilePath(clientPath)) return null;
+    const lower = clientPath.toLowerCase();
+    const id = createHash("sha1").update(`client-file-v1\0${lower}`).digest("hex");
+    const filename = join(directory, `${id}${lower.slice(lower.lastIndexOf("."))}`);
+    if (options.generateClientFile) await fingerprint.ensureCurrent(filename, { requireStamp: true });
+    let bytes: Buffer;
+    try {
+      bytes = await readFile(filename);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      if (!options.generateClientFile) return undefined;
+      try {
+        await generateOnce(clientFileLane, id, () => options.generateClientFile!(clientPath));
+      } catch (failure) {
+        if (sourceMissing(failure)) return undefined;
+        throw failure;
+      }
+      bytes = await readFile(filename);
+    }
+    // What the browser's `response.text()` makes of the bytes: UTF-8, a BOM dropped, bad bytes replaced.
+    return new TextDecoder().decode(bytes);
+  };
+  /** 25.10 (serve S3): built bundles by set and add-on lists; a bundle with a failed file is not kept. */
+  const interfaceBundles = new Map<string, Promise<BuiltInterfaceBundle>>();
+  // Review fix: one build at a time (each reads up to ≈500 files); the others wait their turn.
+  let interfaceBundleBuilds: Promise<unknown> = Promise.resolve();
+  /** Review fix: the add-on names a bundle may name — this client's own; any other is ignored, not keyed. */
+  const knownAddons = new Set([...(options.clientAddonListing ?? []), ...(options.clientAddons ?? [])]
+    .map((addon) => addon.name.toLowerCase()));
+  const buildInterfaceBundle = async (set: InterfaceBundleSet, addons: readonly string[], tocs: readonly string[]) => {
+    const started = performance.now();
+    const corpus = await walkInterfaceCorpus(interfaceBundleTocs(set, addons), { read: clientFileText },
+      tocs.map(interfaceAddonToc));
+    const raw = Buffer.from(encodeInterfaceBundle(set, corpus));
+    const etag = `W/"ib1-${createHash("sha1").update(raw).digest("hex").slice(0, 20)}"`;
+    const gzipped = await new Promise<Buffer>((resolve, reject) => gzip(raw, { level: 6 }, (error, body) => (error ? reject(error) : resolve(body))));
+    console.log(`Interface bundle ${set}: ${corpus.files.size} files, ${corpus.absent.length} absent`
+      + `${corpus.failed.length > 0 ? `, ${corpus.failed.length} failed (not kept)` : ""}, ${(raw.byteLength / 1048576).toFixed(1)} MB`
+      + ` → ${(gzipped.byteLength / 1048576).toFixed(2)} MB gzip in ${Math.round(performance.now() - started)} ms`);
+    const built: BuiltInterfaceBundle = { etag, raw, gzip: gzipped, complete: corpus.failed.length === 0 && !corpus.truncated };
+    return built;
+  };
+
+  // 25.10 (serve S5): counted before anything is written, so every answer below is in the table.
+  const traffic = new GatewayTraffic();
+  // 25.10 (serve S1): above every route, under the counters (which therefore count what was sent).
+  const compression = createResponseCompression();
   const handle = (request: IncomingMessage, response: ServerResponse): void => void (async () => {
+    traffic.observe(request, response);
+    installCompression(request, response, compression);
+    installContentEtag(request, response); // 25.10 (serve S2): untagged 200s get a content tag and their 304
     if (request.url === "/health") {
       response.writeHead(200, { "content-type": "application/json" });
       response.end(localAssetNonce === undefined
@@ -1058,11 +1176,23 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
 
     const url = new URL(request.url ?? "/", "http://gateway.local");
     const pathname = url.pathname;
+
+    // 25.10 (serve S5): the counters, for the owner on this machine only. Counts and timings — no addresses.
+    if (request.method === "GET" && pathname === "/gateway/traffic") {
+      if (!loopbackRequest(request)) {
+        response.writeHead(403).end();
+        return;
+      }
+      response.writeHead(200, { "cache-control": "no-store", "content-type": "application/json; charset=utf-8" });
+      response.end(JSON.stringify(traffic.snapshot(), null, 1));
+      return;
+    }
     // 10.12 (CachePolicy.ts): validators name the epoch this request started in, so a body built
     // from indexes that a concurrent poll has since dropped is never filed under the newer tag.
-    const requestEpoch = fingerprint.epoch;
-    const requestDatasetTag = () => datasetEtag(cacheNonce, requestEpoch);
-    const requestCacheGeneration = () => cacheGeneration(cacheNonce, requestEpoch, patches.generation);
+    // 25.10 (serve S2): the served identity at the request's start, in place of process nonce + epoch.
+    const requestIdentity = currentServedIdentity();
+    const requestDatasetTag = () => datasetEtag(requestIdentity);
+    const requestCacheGeneration = () => cacheGeneration(requestIdentity);
     // 22.10 (6.26): taken as the request starts, like `requestEpoch`: an answer built after a DBC walk that lands
     // mid-request can only be newer than the generation it is filed under, never older.
     const requestMetadataGeneration = currentMetadataGeneration();
@@ -1951,6 +2081,90 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
     }
 
     /**
+     * 25.10 (serve S3): the interface corpus a screen needs in one answer (InterfaceBundle.ts).
+     *
+     * `?v=1&set=glue` — the GlueXML TOC's closure; `?v=1&set=world&addons=A,B&tocs=C,D` — FrameXML's, plus
+     * add-ons `A`, `B` whole and add-ons `C`, `D` by their TOC alone (the browser names what its world
+     * mount loads, prefetches and reads metadata of). JSON `{ schema, set, files: { path: text }, absent }`,
+     * each text the very bytes `/client/file` serves for that path; a path the browser wants that is in
+     * neither list it asks `/client/file` for (InterfaceBundleClient.ts). Built once per process and list
+     * (the archive chain cannot change under a running process: this route latches into 409 with
+     * `/client/file`), compressed once (gzip at build, brotli on first ask), revalidated by a tag over
+     * the JSON — an unchanged corpus is a 304 after a restart too.
+     */
+    if (request.method === "GET" && pathname === "/client/interface-bundle" && options.clientFilesDirectory) {
+      const origin = request.headers.origin;
+      if (!originAllowed(origin, options.allowedOrigins)) {
+        response.writeHead(403).end();
+        return;
+      }
+      const set = url.searchParams.get("set") as InterfaceBundleSet | null;
+      const list = (name: string): string[] | undefined => {
+        const names = (url.searchParams.get(name) ?? "").split(",").filter(Boolean);
+        return names.length <= 128 && names.every((entry) => INTERFACE_ADDON_NAME.test(entry))
+          ? [...new Set(names.map((entry) => entry.toLowerCase()).filter((entry) => knownAddons.has(entry)))].sort() : undefined;
+      };
+      const addons = list("addons");
+      const tocs = list("tocs");
+      if (url.searchParams.get("v") !== "1" || set === null || !INTERFACE_BUNDLE_SETS.includes(set)
+        || addons === undefined || tocs === undefined) {
+        respondError(response, 400, origin);
+        return;
+      }
+      const key = `${set}|${addons.join(",")}|${tocs.join(",")}`;
+      try {
+        let pending = interfaceBundles.get(key);
+        if (pending) {
+          // Most recently asked last, so the bound below drops the list nobody has asked for longest.
+          interfaceBundles.delete(key);
+          interfaceBundles.set(key, pending);
+        } else {
+          const build = interfaceBundleBuilds.then(() => buildInterfaceBundle(set, addons, tocs));
+          interfaceBundleBuilds = build.catch(() => undefined);
+          pending = build;
+          interfaceBundles.set(key, pending);
+          // Kept only when whole; six lists at most (≈10 MB of text each for the world set): one per set and
+          // per combination of add-ons the players have switched on.
+          // Review fix: an incomplete one (a file failed, the walk was cut) is served for 60 s and then rebuilt,
+          // not rebuilt on every request; a failed build is forgotten at once.
+          const kept = pending;
+          const forget = () => { if (interfaceBundles.get(key) === kept) interfaceBundles.delete(key); };
+          void kept.then((built) => { if (!built.complete) setTimeout(forget, INCOMPLETE_BUNDLE_TTL_MS).unref(); }, forget);
+          while (interfaceBundles.size > 6) interfaceBundles.delete(interfaceBundles.keys().next().value!);
+        }
+        const bundle = await pending;
+        const headers = {
+          "access-control-allow-origin": origin,
+          "cache-control": REVALIDATE,
+          "content-type": "application/json; charset=utf-8",
+          etag: bundle.etag,
+          vary: "Origin, Accept-Encoding",
+        };
+        if (etagMatches(request.headers["if-none-match"], bundle.etag)) {
+          response.writeHead(304, headers);
+          response.end();
+          return;
+        }
+        const encoding = chooseEncoding(request.headers["accept-encoding"]);
+        const body = encoding === "br"
+          ? await (bundle.br ??= new Promise<Buffer>((resolve, reject) => brotliCompress(bundle.raw, {
+            params: { [zlibConstants.BROTLI_PARAM_QUALITY]: 5, [zlibConstants.BROTLI_PARAM_SIZE_HINT]: bundle.raw.byteLength },
+          }, (error, compressed) => (error ? reject(error) : resolve(compressed)))))
+          : encoding === "gzip" ? bundle.gzip : bundle.raw;
+        response.writeHead(200, {
+          ...headers,
+          ...(encoding === undefined ? {} : { "content-encoding": encoding }),
+          "content-length": body.byteLength,
+        });
+        response.end(body);
+      } catch (error) {
+        console.warn(`Interface bundle ${set} failed: ${error instanceof Error ? error.message : String(error)}`);
+        respondError(response, 500, origin);
+      }
+      return;
+    }
+
+    /**
      * What `SoundEntries` says about a handful of kits, by id.
      *
      * By id and not whole: 12,941 rows carrying 20,642 paths is about a megabyte and a half of
@@ -2673,7 +2887,7 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
           "content-type": "application/json; charset=utf-8",
         };
         const ifNoneMatch = request.headers["if-none-match"];
-        if (ifNoneMatch && ifNoneMatch.split(",").some((value) => value.trim() === etag || value.trim() === "*")) {
+        if (etagMatches(ifNoneMatch, etag)) { // 25.10 (serve S1): weakly, as a compressed answer weakens the tag
           response.writeHead(304, cacheHeaders);
           response.end();
           return;
@@ -2712,7 +2926,7 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
           "content-type": "application/octet-stream",
         };
         const ifNoneMatch = request.headers["if-none-match"];
-        if (ifNoneMatch && ifNoneMatch.split(",").some((value) => value.trim() === body.etag || value.trim() === "*")) {
+        if (etagMatches(ifNoneMatch, body.etag)) { // 25.10 (serve S1): weakly, as everywhere else
           response.writeHead(304, cacheHeaders);
           response.end();
           return;
@@ -2938,7 +3152,7 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
           "content-type": "application/json; charset=utf-8",
         };
         const ifNoneMatch = request.headers["if-none-match"];
-        if (ifNoneMatch && ifNoneMatch.split(",").some((value) => value.trim() === etag || value.trim() === "*")) {
+        if (etagMatches(ifNoneMatch, etag)) { // 25.10 (serve S1): weakly, as a compressed answer weakens the tag
           response.writeHead(304, cacheHeaders);
           response.end();
           return;
@@ -3876,6 +4090,7 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
     },
     get patchEventsPending() { return fingerprint.archiveEventsPending; },
     scheduleRestart: (at) => patches.scheduleRestart(at),
+    traffic,
   };
 }
 
@@ -3990,11 +4205,14 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
     assets.close();
     throw new Error("Gateway did not bind a TCP address");
   }
+  // 25.10 (serve S5): one summary line per interval with traffic, and the owner's JSON snapshot.
+  const trafficReporter = options.trafficReport ? startTrafficReporter(assets.traffic, options.trafficReport) : undefined;
 
   return {
     host: options.host,
     port: address.port,
     close: async () => {
+      trafficReporter?.stop();
       assets.close();
       for (const webSocket of [...authServer.clients, ...worldServer.clients]) webSocket.terminate();
       await Promise.all([

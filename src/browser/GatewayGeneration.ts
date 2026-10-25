@@ -13,7 +13,8 @@
 // - Until the first read answers, URLs carry no `g` either (the route's previous lifetime), except
 //   on a page the patch banner reloaded: there a one-off token stands in until the gateway speaks,
 //   so nothing loaded in that window can come out of a cache entry the reload was meant to bypass.
-// - A changed generation (gateway restart, dataset epoch, patch publish) changes every later URL,
+// - A changed generation (new gateway code or generators, a dataset or archive change, a patch publish;
+//   25.10 serve S2: no longer a bare restart) changes every later URL,
 //   so a tile fetched after the change can never be served from an immutable copy of the old one.
 //   Nothing already loaded is fetched again because of it: the change costs no requests by itself.
 //
@@ -41,7 +42,7 @@ const state: GenerationState = {
   hd: undefined, // 23.10 (7.48)
 };
 
-/** What the gateway may put in `cacheGeneration` (CachePolicy.ts: hex nonce + hex epoch + 8 hex). */
+/** What the gateway may put in `cacheGeneration` (CachePolicy.ts `servedIdentity`: 20 hex since 25.10 serve S2). */
 const GENERATION_SHAPE = /^[0-9A-Za-z]{1,64}$/;
 
 function normaliseOrigin(origin: string): string | undefined {
