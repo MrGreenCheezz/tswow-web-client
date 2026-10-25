@@ -6,7 +6,7 @@ import { FrameXmlFontLoader } from "../ui/framexml_compat/FrameXmlFonts.js";
 import { FrameXmlTextureCache } from "../ui/framexml_compat/FrameXmlTextures.js";
 import { WebSocketByteStream } from "../../transport/WebSocketByteStream.js";
 import { GlueRuntime, glueStageMapping, glueNeedsHorizontalScroll, gluePinnedSize, GLUE_LOGICAL_HEIGHT } from "./GlueRuntime.js";
-import { createHttpFileProvider } from "./GlueLoader.js";
+import { createBundledFileProvider } from "./InterfaceBundleClient.js"; // 25.10 (serve S3)
 import { browserGlueVideo } from "./GlueVideo.js";
 import { GlueAddonList } from "./GlueAddons.js";
 import { createGlueCVarStore } from "./GlueCVarStore.js";
@@ -243,7 +243,8 @@ export async function startGlue(options: StartGlueOptions): Promise<GlueHandle> 
   // The shared connector (`GlueWorldConnector.ts`) unless the page brought its own wrapping of it.
   const liveConnect: GlueWorldConnector = options.connect ?? liveGlueWorldConnector(origin);
   const runtime = new GlueRuntime({
-    provider: createHttpFileProvider({ gatewayOrigin: origin }),
+    // 25.10 (serve S3): the GlueXML closure in one bundle request, /client/file for anything else.
+    provider: createBundledFileProvider({ gatewayOrigin: origin, bundle: { set: "glue" } }),
     lua: {
       onError: (message) => {
         // Kept as well as logged: a corpus script that raises aborts the rest of *its* handler and

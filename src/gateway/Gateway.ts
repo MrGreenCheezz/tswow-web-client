@@ -99,9 +99,24 @@ import {
   visualGeneration, scriptDirectoryIdentity, // 25.10 (serve S2): scriptDirectoryIdentity
 } from "./AssetGeneration.js"; // 22.10 (6.26)
 import { GatewayTraffic, loopbackRequest, startTrafficReporter, type TrafficReporterOptions } from "./GatewayTraffic.js"; // 25.10 (serve S5)
-import { createResponseCompression, installCompression } from "./ResponseCompression.js"; // 25.10 (serve S1)
+import { chooseEncoding, createResponseCompression, installCompression } from "./ResponseCompression.js"; // 25.10 (serve S1)
+import {
+  INTERFACE_ADDON_NAME, INTERFACE_BUNDLE_SETS, encodeInterfaceBundle, interfaceAddonToc, interfaceBundleTocs,
+  walkInterfaceCorpus, type InterfaceBundleSet,
+} from "./InterfaceBundle.js"; // 25.10 (serve S3)
+import { brotliCompress, gzip, constants as zlibConstants } from "node:zlib"; // 25.10 (serve S3)
 
 const MAX_CLIENT_MESSAGE = 64 * 1024;
+/** 25.10 (serve S3): one built interface bundle (the `/client/interface-bundle` route). */
+interface BuiltInterfaceBundle {
+  readonly etag: string;
+  readonly raw: Buffer;
+  readonly gzip: Buffer;
+  br?: Promise<Buffer>;
+  /** No file failed and no bound cut the walk: kept for the process. */
+  readonly complete: boolean;
+}
+
 /** How often a bridged socket is pinged; two missed pongs in a row close it. */
 const HEARTBEAT_INTERVAL_MS = 30_000;
 /** Every upgrade opens a real worldserver socket, so an unbounded gateway exhausts the emulator. */
@@ -204,6 +219,7 @@ function isClientVisualProfileRoute(method: string | undefined, pathname: string
     // A late LoD/custom TSAddon file must come from the same winning FrameXML.toc generation that
     // booted the VM.  Otherwise a TSWoW publish can leave the running UI half old and half new.
     pathname === "/client/file"
+    || pathname === "/client/interface-bundle" // 25.10 (serve S3): the same files, many at a time
     || pathname === "/client/addons"
     || pathname === "/texture"
     || pathname === "/visual/model"
@@ -1074,6 +1090,52 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
       preloader?.recycle();
     }
   };
+  /**
+   * 25.10 (serve S3): one interface file's text exactly as `/client/file` would serve it — the same cache
+   * file, the same stamp check and generator — for the interface bundle. `undefined` is that route's 404;
+   * a throw is its 400/500, which the bundle leaves out so the browser asks the route itself.
+   */
+  const clientFileText = async (path: string): Promise<string | undefined> => {
+    const directory = options.clientFilesDirectory;
+    const clientPath = path.replaceAll("/", "\\");
+    if (directory === undefined || !validClientFilePath(clientPath)) throw new Error(`not a client file: ${path}`);
+    const lower = clientPath.toLowerCase();
+    const id = createHash("sha1").update(`client-file-v1\0${lower}`).digest("hex");
+    const filename = join(directory, `${id}${lower.slice(lower.lastIndexOf("."))}`);
+    if (options.generateClientFile) await fingerprint.ensureCurrent(filename, { requireStamp: true });
+    let bytes: Buffer;
+    try {
+      bytes = await readFile(filename);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      if (!options.generateClientFile) return undefined;
+      try {
+        await generateOnce(clientFileLane, id, () => options.generateClientFile!(clientPath));
+      } catch (failure) {
+        if (sourceMissing(failure)) return undefined;
+        throw failure;
+      }
+      bytes = await readFile(filename);
+    }
+    // What the browser's `response.text()` makes of the bytes: UTF-8, a BOM dropped, bad bytes replaced.
+    return new TextDecoder().decode(bytes);
+  };
+  /** 25.10 (serve S3): built bundles by set and add-on lists; a bundle with a failed file is not kept. */
+  const interfaceBundles = new Map<string, Promise<BuiltInterfaceBundle>>();
+  const buildInterfaceBundle = async (set: InterfaceBundleSet, addons: readonly string[], tocs: readonly string[]) => {
+    const started = performance.now();
+    const corpus = await walkInterfaceCorpus(interfaceBundleTocs(set, addons), { read: clientFileText },
+      tocs.map(interfaceAddonToc));
+    const raw = Buffer.from(encodeInterfaceBundle(set, corpus));
+    const etag = `W/"ib1-${createHash("sha1").update(raw).digest("hex").slice(0, 20)}"`;
+    const gzipped = await new Promise<Buffer>((resolve, reject) => gzip(raw, { level: 6 }, (error, body) => (error ? reject(error) : resolve(body))));
+    console.log(`Interface bundle ${set}: ${corpus.files.size} files, ${corpus.absent.length} absent`
+      + `${corpus.failed.length > 0 ? `, ${corpus.failed.length} failed (not kept)` : ""}, ${(raw.byteLength / 1048576).toFixed(1)} MB`
+      + ` → ${(gzipped.byteLength / 1048576).toFixed(2)} MB gzip in ${Math.round(performance.now() - started)} ms`);
+    const built: BuiltInterfaceBundle = { etag, raw, gzip: gzipped, complete: corpus.failed.length === 0 && !corpus.truncated };
+    return built;
+  };
+
   // 25.10 (serve S5): counted before anything is written, so every answer below is in the table.
   const traffic = new GatewayTraffic();
   // 25.10 (serve S1): above every route, under the counters (which therefore count what was sent).
@@ -1994,6 +2056,80 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
         const absent = sourceMissing(error)
           || (!options.generateClientFile && (error as NodeJS.ErrnoException).code === "ENOENT");
         respondError(response, absent ? 404 : 500, origin);
+      }
+      return;
+    }
+
+    /**
+     * 25.10 (serve S3): the interface corpus a screen needs in one answer (InterfaceBundle.ts).
+     *
+     * `?v=1&set=glue` — the GlueXML TOC's closure; `?v=1&set=world&addons=A,B&tocs=C,D` — FrameXML's, plus
+     * add-ons `A`, `B` whole and add-ons `C`, `D` by their TOC alone (the browser names what its world
+     * mount loads, prefetches and reads metadata of). JSON `{ schema, set, files: { path: text }, absent }`,
+     * each text the very bytes `/client/file` serves for that path; a path the browser wants that is in
+     * neither list it asks `/client/file` for (InterfaceBundleClient.ts). Built once per process and list
+     * (the archive chain cannot change under a running process: this route latches into 409 with
+     * `/client/file`), compressed once (gzip at build, brotli on first ask), revalidated by a tag over
+     * the JSON — an unchanged corpus is a 304 after a restart too.
+     */
+    if (request.method === "GET" && pathname === "/client/interface-bundle" && options.clientFilesDirectory) {
+      const origin = request.headers.origin;
+      if (!originAllowed(origin, options.allowedOrigins)) {
+        response.writeHead(403).end();
+        return;
+      }
+      const set = url.searchParams.get("set") as InterfaceBundleSet | null;
+      const list = (name: string): string[] | undefined => {
+        const names = (url.searchParams.get(name) ?? "").split(",").filter(Boolean);
+        return names.length <= 128 && names.every((entry) => INTERFACE_ADDON_NAME.test(entry))
+          ? [...new Set(names.map((entry) => entry.toLowerCase()))].sort() : undefined;
+      };
+      const addons = list("addons");
+      const tocs = list("tocs");
+      if (url.searchParams.get("v") !== "1" || set === null || !INTERFACE_BUNDLE_SETS.includes(set)
+        || addons === undefined || tocs === undefined) {
+        respondError(response, 400, origin);
+        return;
+      }
+      const key = `${set}|${addons.join(",")}|${tocs.join(",")}`;
+      try {
+        let pending = interfaceBundles.get(key);
+        if (!pending) {
+          pending = buildInterfaceBundle(set, addons, tocs);
+          interfaceBundles.set(key, pending);
+          // Kept only when whole; a few lists at most per process (the browser sends one per page kind).
+          void pending.then((built) => { if (!built.complete) interfaceBundles.delete(key); },
+            () => interfaceBundles.delete(key));
+          while (interfaceBundles.size > 16) interfaceBundles.delete(interfaceBundles.keys().next().value!);
+        }
+        const bundle = await pending;
+        const headers = {
+          "access-control-allow-origin": origin,
+          "cache-control": REVALIDATE,
+          "content-type": "application/json; charset=utf-8",
+          etag: bundle.etag,
+          vary: "Origin, Accept-Encoding",
+        };
+        if (etagMatches(request.headers["if-none-match"], bundle.etag)) {
+          response.writeHead(304, headers);
+          response.end();
+          return;
+        }
+        const encoding = chooseEncoding(request.headers["accept-encoding"]);
+        const body = encoding === "br"
+          ? await (bundle.br ??= new Promise<Buffer>((resolve, reject) => brotliCompress(bundle.raw, {
+            params: { [zlibConstants.BROTLI_PARAM_QUALITY]: 5, [zlibConstants.BROTLI_PARAM_SIZE_HINT]: bundle.raw.byteLength },
+          }, (error, compressed) => (error ? reject(error) : resolve(compressed)))))
+          : encoding === "gzip" ? bundle.gzip : bundle.raw;
+        response.writeHead(200, {
+          ...headers,
+          ...(encoding === undefined ? {} : { "content-encoding": encoding }),
+          "content-length": body.byteLength,
+        });
+        response.end(body);
+      } catch (error) {
+        console.warn(`Interface bundle ${set} failed: ${error instanceof Error ? error.message : String(error)}`);
+        respondError(response, 500, origin);
       }
       return;
     }

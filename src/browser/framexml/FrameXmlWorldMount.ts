@@ -7,7 +7,7 @@ import { petFoodClient } from "../PetFoodClient.js"; // 05.10-petfood
 import { characterRegenClient } from "../CharacterRegenClient.js";
 import { spellLearnEffectsClient } from "../SpellLearnEffectsClient.js";
 import { installFrameXmlQuestPoiFrame } from "./FrameXmlQuestBlobPainter.js";
-import { createHttpFileProvider } from "../glue/GlueLoader.js";
+import { createBundledFileProvider } from "../glue/InterfaceBundleClient.js"; // 25.10 (serve S3)
 import { game, registerWorldContextCleanup } from "../game/Context.js";
 import { globalCooldownView } from "../game/PredictedGlobalCooldown.js"; // L13-review 5.30
 import { reactionBetween, setFocusGuid, unitReactionToPlayer } from "../game/Targeting.js";
@@ -3595,7 +3595,13 @@ export async function mountFrameXmlVertical(
       },
       ...(options.onSavedVariableProblem ? { onProblem: options.onSavedVariableProblem } : {}),
     } } : {}),
-    provider: createHttpFileProvider({ gatewayOrigin: origin }),
+    // 25.10 (serve S3): FrameXML, the add-ons this mount loads or prefetches (whole) and the installed ones
+    // (their TOC) in one bundle request; /client/file for whatever it does not settle.
+    provider: createBundledFileProvider({ gatewayOrigin: origin, bundle: {
+      set: "world",
+      addons: [...frameXmlLodPreloadNames(clientAddons), ...clientAddons.filter((addon) => !addon.loadOnDemand).map((addon) => addon.name)],
+      tocs: installedClientAddons.map((addon) => addon.name),
+    } }),
     locale: clientLocale(),
     installedAddons: installedClientAddons.map((addon) => addon.name), // 3.46 (13.10): was the enabled ones alone
     eagerAddons: clientAddons.filter((addon) => !addon.loadOnDemand).map((addon) => addon.name),
