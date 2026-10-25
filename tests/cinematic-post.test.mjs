@@ -472,7 +472,10 @@ test("enhanced world light never exceeds the authored headroom; the gamma step i
   assert.match(WORLD_LIGHT_BODY, /wowImmersiveLight \/ max\( wowImmersivePeak, 1\.0 \)/);
   assert.match(WORLD_LIGHT_BODY, /1\.0 - 0\.75 \* smoothstep\( 0\.7, 1\.0, wowAuthoredPeak \)/,
     "sunlit surfaces keep (almost) their authored light; the lift goes to the shade");
-  assert.match(WORLD_LIGHT_BODY, /wowLight = min\( wowLight, vec3\( 1\.0 \) \);\n\}\nreflectedLight\.directDiffuse/);
+  // 25.10 (6.27 indoors): outside (wowLampIndoor 0) the lamps share the ceiling of one; a sunless room adds them past it.
+  assert.match(WORLD_LIGHT_BODY, /wowLight = min\( wowLight \+ wowLampLight \* \( 1\.0 - wowLampIndoor \), vec3\( 1\.0 \) \);/);
+  assert.match(WORLD_LIGHT_BODY,
+    /wowLight = min\( wowLight \+ wowLampLight \* wowLampIndoor, vec3\( 1\.0 \+ 0\.50 \* wowLampIndoor \) \);\n\}\nreflectedLight\.directDiffuse/);
   assert.match(WORLD_LIGHT_BODY, /reflectedLight\.directDiffuse = diffuseColor\.rgb \* pow\( wowLight, vec3\( 2\.2 \) \);/);
   assert.doesNotMatch(WORLD_LIGHT_BODY, /vec3\( 1\.15 \)/);
 });

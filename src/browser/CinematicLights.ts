@@ -86,7 +86,8 @@ export function localLightSelectionFade(distance: number, cut: number, band = LO
 /**
  * GLSL for one fixture inside `WORLD_LIGHT_BODY`'s loop: lifts `wowLampTerm` (the light's scalar
  * contribution before colour) to the pool and warms `wowLampTint`. Reads `wowLampDistance`,
- * `wowPoolReach`, `wowLampFacing`, `wowLampColour`, `wowDaylight` and `wowLocalLightPool`.
+ * `wowPoolReach`, `wowLampFacing`, `wowLampColour`, `wowLampDaylight` (25.10: the lamps' daylight, none
+ * in a sunless room) and `wowLocalLightPool`.
  */
 export const CINEMATIC_POOL_GLSL = /* glsl */ `
       if ( wowLocalLightPool > 0.0 ) {
@@ -97,7 +98,7 @@ export const CINEMATIC_POOL_GLSL = /* glsl */ `
         // well away from the lamp (N·L under -0.67) takes none, so it does not leak through a wall.
         float wowPoolWrap = clamp( ${CINEMATIC_POOL_WRAP[0].toFixed(2)} + ${CINEMATIC_POOL_WRAP[1].toFixed(2)} * wowLampFacing, 0.0, 1.0 );
         float wowPool = ${CINEMATIC_POOL_PEAK.toFixed(3)} * wowPoolWindow * wowPoolWindow * wowPoolWrap
-          * ( ${CINEMATIC_POOL_DAY_SHARE.toFixed(3)} + ${(1 - CINEMATIC_POOL_DAY_SHARE).toFixed(3)} * ( 1.0 - wowDaylight ) )
+          * ( ${CINEMATIC_POOL_DAY_SHARE.toFixed(3)} + ${(1 - CINEMATIC_POOL_DAY_SHARE).toFixed(3)} * ( 1.0 - wowLampDaylight ) )
           * min( wowLocalLightPool, 1.0 );
         // 22.10 (7.36): the warmth is the pool's own, on its share above the client's curve, so the
         // lamp's hot spot keeps the client's colour (cinematicPoolWarmthShare).

@@ -14,7 +14,7 @@
  * Throws at load when `WORLD_LIGHT_BODY` no longer has the anchors it is cut at: a silent cut would
  * light the deferred pools by other rules than the forward ones.
  */
-import { WORLD_LIGHT_BODY } from "./WorldLighting.js";
+import { WORLD_LAMP_INDOOR_CEILING, WORLD_LIGHT_BODY, WORLD_LOCAL_LIGHT_LIMIT } from "./WorldLighting.js";
 
 function cut(source: string, from: string, to: string, what: string): string {
   const start = source.indexOf(from);
@@ -34,7 +34,7 @@ if (!LAMP_BODY.includes(LAMP_COLOUR)) throw new Error("LightPoolGlsl: the fixtur
 /** The enhanced grade and the forward lamps, from the authored light to the ceiling of one. */
 const LIT_BODY = cut(WORLD_LIGHT_BODY,
   "vec3 wowLight = wowAuthoredLight;",
-  "  wowLight = min( wowLight, vec3( 1.0 ) );\n}",
+  " * wowLampIndoor ) );\n}", // 25.10 (6.27 indoors): the lamps' ceiling, one outside, more in a sunless room
   "enhanced grade");
 
 /** The darkness the heuristic fixture term reads: the key ambient's luma, as the enhanced grade derives it. */
@@ -51,9 +51,10 @@ const DARKNESS_BODY = cut(WORLD_LIGHT_BODY,
  */
 export const LIGHT_POOL_LAMP_GLSL = /* glsl */ `
 vec3 lightPoolLamp( vec4 wowLamp, vec3 colour, vec3 normal, vec3 vViewPosition, float wowDarkness ) {
-  vec3 wowLight = vec3( 0.0 );
+  vec3 wowLampLight = vec3( 0.0 );
+  float wowLampDaylight = wowDaylight * ( 1.0 - wowLampIndoor ); // 25.10 (6.27 indoors), as the forward loop
 ${LAMP_BODY.replace(LAMP_COLOUR, "vec4 wowLampColour = vec4( colour, 1.0 );")}
-  return wowLight;
+  return wowLampLight;
 }
 `;
 
@@ -85,5 +86,39 @@ vec3 lightPoolLit( vec3 normal, vec3 vViewPosition, vec3 wowViewSunDirection, fl
   vec3 wowGradeAuthored = wowAuthoredLight;
 ${LIT_BODY}
   return wowLight;
+}
+`;
+
+/**
+ * 25.10 (6.27 indoors): `vec3 lightLamps( vec3 normal, vec3 vViewPosition )` — the forward set's lamps
+ * (`wowLocalLightPosition`/`wowLocalLightColour`, the first `wowLocalLightCount`) on a surface without
+ * the world light of its own: a room's inside (MeshBasic × MOCV) or a doodad lit by its MODD colour.
+ * Each lamp is `lightPoolLamp`, the forward loop's own body, with the darkness the grade reads from the
+ * same uniforms, so a fireball lights a dungeon wall by the rules it lights a street by. Zero unless the
+ * immersive grade is on.
+ *
+ * `vec3 lightLampsOver( vec3 base, vec3 lamps )`: the linear light the lamps add over a surface's own
+ * display-space light `base` — both under one ceiling (one outside, as the forward grade clips them;
+ * `WORLD_LAMP_INDOOR_CEILING` in a sunless room, `wowLampIndoor`) — minus what `base` already gave.
+ *
+ * Needs `WORLD_LIGHT_PARS`, `LIGHT_POOL_LAMP_GLSL` and `LIGHT_POOL_DARKNESS_GLSL` before it.
+ */
+export const LIGHT_LAMPS_GLSL = /* glsl */ `
+vec3 lightLamps( vec3 normal, vec3 vViewPosition ) {
+  vec3 wowLamps = vec3( 0.0 );
+  if ( wowImmersiveStrength <= 0.0001 || wowLocalLightCount <= 0 ) return wowLamps;
+  float wowDarkness = lightPoolDarkness();
+  for ( int wowLightIndex = 0; wowLightIndex < ${WORLD_LOCAL_LIGHT_LIMIT}; wowLightIndex ++ ) {
+    if ( wowLightIndex >= wowLocalLightCount ) break;
+    vec4 wowLampColour = wowLocalLightColour[ wowLightIndex ];
+    wowLamps += lightPoolLamp( wowLocalLightPosition[ wowLightIndex ], wowLampColour.rgb * wowLampColour.w,
+      normal, vViewPosition, wowDarkness );
+  }
+  return wowLamps;
+}
+vec3 lightLampsOver( vec3 base, vec3 lamps ) {
+  vec3 wowBase = max( base, vec3( 0.0 ) );
+  vec3 wowCeiling = max( wowBase, vec3( 1.0 + ${(WORLD_LAMP_INDOOR_CEILING - 1).toFixed(2)} * wowLampIndoor ) );
+  return max( pow( min( wowBase + lamps, wowCeiling ), vec3( 2.2 ) ) - pow( wowBase, vec3( 2.2 ) ), vec3( 0.0 ) );
 }
 `;

@@ -243,13 +243,14 @@ test("M2 placement tint owns one material state per placement and never treats M
 
 test("the world renderer separates local-light and outdoor M2 instances", () => {
   const renderer = readFileSync("src/browser/WorldRenderer3D.ts", "utf8");
-  assert.match(renderer, /createModelPlacementLocalLightMaterials\(built\.materials,\s*object\.localLight\)/,
+  // 25.10 (6.27 indoors): + the world light's uniforms, for the lamps over the room light (IndoorLamps.ts).
+  assert.match(renderer, /createModelPlacementLocalLightMaterials\(built\.materials,\s*object\.localLight,\s*this\.#worldLight\)/,
     "animated M2 doodads need placement-owned room-light uniforms");
-  assert.match(renderer, /createModelPlacementLocalLightMaterials\(built\.materials,\s*localLight\)/,
+  assert.match(renderer, /createModelPlacementLocalLightMaterials\(built\.materials,\s*localLight,\s*this\.#worldLight\)/,
     "ordinary M2 doodads need placement-owned room-light uniforms");
   assert.match(renderer, /rendered\.source\.localLight\s*\?\s*["']local["']\s*:\s*["']world["']/,
     "one material bucket must never mix local and outdoor lighting modes");
-  assert.match(renderer, /createInstancedModelPlacementLocalLightMaterials\(built\.materials\)/);
+  assert.match(renderer, /createInstancedModelPlacementLocalLightMaterials\(built\.materials,\s*this\.#worldLight\)/);
   // 06.10-doodad-light: as bytes — normalized setXYZ stored 256 - v (tests/doodad-instanced-local-light).
   assert.match(renderer, /writeInstancedLocalLight\(entry\.localLight\.attribute,\s*index,\s*localLight\)/,
     "instancing must retain each placement's own authored RGB");

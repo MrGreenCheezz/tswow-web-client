@@ -224,7 +224,8 @@ test("the deferred term is the forward shader's own text", () => {
   // The light a surface took: the enhanced grade and the forward set under one.
   assert.ok(LIGHT_POOL_LIT_GLSL.includes(`for ( int wowLightIndex = 0; wowLightIndex < ${WORLD_LOCAL_LIGHT_LIMIT};`));
   assert.ok(LIGHT_POOL_LIT_GLSL.includes("wowImmersiveLight / max( wowImmersivePeak, 1.0 )"));
-  assert.match(LIGHT_POOL_LIT_GLSL, /wowLight = min\( wowLight, vec3\( 1\.0 \) \);\n\}\n  return wowLight;/);
+  assert.match(LIGHT_POOL_LIT_GLSL,
+    /wowLight = min\( wowLight \+ wowLampLight \* wowLampIndoor, vec3\( 1\.0 \+ 0\.50 \* wowLampIndoor \) \);\n\}\n  return wowLight;/);
   assert.match(LIGHT_POOL_DARKNESS_GLSL, /float wowDarkness = 1\.0 - smoothstep\( 0\.18, 0\.55, wowAmbientLuma \);\n  return wowDarkness;/);
 });
 

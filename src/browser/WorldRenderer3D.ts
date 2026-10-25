@@ -197,6 +197,7 @@ import {
   type ModelPlacementTint,
 } from "./ModelPlacementTint.js";
 import { writeInstancedLocalLight } from "./InstancedLocalLight.js"; // 06.10-doodad-light
+import { applyIndoorLampsToRoom, indoorLampsWanted, setIndoorLampsEnabled } from "./IndoorLamps.js"; // 25.10 (6.27 indoors)
 import {
   BuiltModelCache, disposeEvictedBuiltModels, knownGeometryBufferBytes,
   type BuiltModelCacheStats, type EvictedBuiltModel,
@@ -9528,6 +9529,8 @@ export class WorldRenderer3D {
     if (oldGodRaysActive !== this.#godRaysActive()) this.#syncFullscreenGlowTargets();
     this.#syncTerrainRelief(); // 22.10 (7.47): the classic levels never draw the relief
     this.#syncWmoRelief(); // 22.10 (7.47 stage 2): nor the buildings' relief
+    // 25.10 (6.27 indoors): rooms and their doodads take the lamps only where lamps light anything.
+    setIndoorLampsEnabled(this.#worldLight, indoorLampsWanted(next));
     this.#syncM2Relief(); // 23.10 (7.47 stage 3): nor the doodads'
   }
 
@@ -12384,7 +12387,7 @@ export class WorldRenderer3D {
         freshMesh = true;
         const capacity = instanceCapacity(list.length);
         const localLight = locallyLit ? {
-          materials: createInstancedModelPlacementLocalLightMaterials(built.materials),
+          materials: createInstancedModelPlacementLocalLightMaterials(built.materials, this.#worldLight), // 25.10 (6.27 indoors)
           attribute: new THREE.InstancedBufferAttribute(new Uint8Array(capacity * 3), 3, true),
         } : undefined;
         if (localLight) built.geometry.setAttribute(MODEL_PLACEMENT_LOCAL_LIGHT_ATTRIBUTE, localLight.attribute);
@@ -13110,7 +13113,7 @@ export class WorldRenderer3D {
     if (!template) return undefined;
     const built = this.#wvmBuild(this.#builtModels, key, object.name, wvm, undefined, undefined, true);
     const placementMaterials = object.localLight
-      ? createModelPlacementLocalLightMaterials(built.materials, object.localLight)
+      ? createModelPlacementLocalLightMaterials(built.materials, object.localLight, this.#worldLight) // 25.10 (6.27 indoors)
       : createModelPlacementTintMaterials(built.materials, object.tint);
     const instance = instantiateSkinned(template, placementMaterials ?? built.materials);
     // The tile's frame and not the unit path's, the same half turn `#wvmNode` applies: an animated
@@ -13136,7 +13139,7 @@ export class WorldRenderer3D {
       this.#experimentalShaderProfile.vegetationWind, undefined, this.#m2ReliefBuild(),
     );
     const placementMaterials = localLight
-      ? createModelPlacementLocalLightMaterials(built.materials, localLight)
+      ? createModelPlacementLocalLightMaterials(built.materials, localLight, this.#worldLight) // 25.10 (6.27 indoors)
       : createModelPlacementTintMaterials(built.materials, tint);
     const mesh = new THREE.Mesh(built.geometry, placementMaterials ?? built.materials);
     // Not the unit rotation. A doodad is turned by the rotation its tile gives it, and that
@@ -13803,6 +13806,9 @@ export class WorldRenderer3D {
         if (value instanceof THREE.MeshBasicMaterial) {
           // An unlit exterior run stands in the sky's fog, not a room's.
           if (interior) applyWmoInteriorFog(value, this.#wmoInteriorFog);
+          // 25.10 (6.27 indoors): a room's opaque and alpha-keyed inside takes the lamps (spells, fixtures)
+          // while they are on (IndoorLamps.ts); the faithful levels keep this program as it was.
+          if (interior && run.blendMode <= 1) applyIndoorLampsToRoom(value, this.#worldLight);
         } else if (value instanceof THREE.MeshStandardMaterial) {
           applyWorldLight(value, this.#worldLight, "surface");
           trackWmoWetSurface(value);

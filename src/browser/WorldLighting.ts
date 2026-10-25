@@ -66,7 +66,20 @@ export interface WorldLightUniforms {
    * which nothing else reads. 0 on every other frame and profile: the alpha is left as it was.
    */
   wowShadowAlpha: { value: number };
+  /**
+   * 25.10 (6.27 indoors): 1 while the room light is applied (`setWorldLightIndoor`), 0 otherwise. A
+   * sunless room's lamps (spells, fixtures) are lit as at night (their daylight weight reads 0) and
+   * add on top of the room's ceiling of one rather than being clipped by it ({@link WORLD_LAMP_INDOOR_CEILING}).
+   * Read only inside the immersive branch: the faithful levels never evaluate it.
+   */
+  wowLampIndoor: { value: number };
 }
+
+/**
+ * 25.10 (6.27 indoors): how far lamp light may lift a surface inside a sunless room, as a display-space
+ * multiplier — the room's own light stays under one, a lamp adds up to this much on top.
+ */
+export const WORLD_LAMP_INDOOR_CEILING = 1.5;
 
 /**
  * 24.10 (7.50): the alpha an opaque lit surface writes while `wowShadowAlpha` is on: its sun shadow
@@ -165,6 +178,7 @@ export function createWorldLightUniforms(
     wowHighSunKey: { value: new THREE.Vector2(0, 1) },
     wowShadowFade: { value: new THREE.Vector3() },
     wowShadowAlpha: { value: 0 }, // 24.10 (7.50)
+    wowLampIndoor: { value: 0 }, // 25.10 (6.27 indoors)
   };
   setWorldLightUniforms(uniforms, ambient, diffuse);
   return uniforms;
@@ -307,6 +321,7 @@ export function setWorldLightUniforms(
   // enhanced grade can rebuild the authored pair (wowHighSunKey).
   const peak = Math.max(ambient.r + diffuse.r, ambient.g + diffuse.g, ambient.b + diffuse.b);
   uniforms.wowHighSunKey.value.y = peak > 1 && Number.isFinite(peak) ? peak : 1;
+  uniforms.wowLampIndoor.value = 0; // 25.10 (6.27 indoors): the sky's light, until a room replaces it
   // These are display-space multipliers. Marking the inputs as linear is how Color.setRGB keeps
   // their numeric values intact; the shader converts the final multiplier with pow(..., 2.2).
   uniforms.wowAmbient.value.setRGB(
@@ -359,6 +374,8 @@ export function setWorldLightIndoor(
   uniforms.wowRimStrength.value = 0;
   // 12.10-7.29: a room's pair has no headroom and no sun; its grade stays the peak-normalised one.
   uniforms.wowHighSunKey.value.set(0, 1);
+  // 25.10 (6.27 indoors): no sun in here, so no daylight to dim a lamp, and no shared ceiling with it.
+  uniforms.wowLampIndoor.value = 1;
   return pair;
 }
 
@@ -399,6 +416,7 @@ uniform vec4 wowLocalLightPosition[ ${WORLD_LOCAL_LIGHT_LIMIT} ];
 uniform vec4 wowLocalLightColour[ ${WORLD_LOCAL_LIGHT_LIMIT} ];
 uniform float wowLocalLightPool;
 uniform float wowShadowAlpha;
+uniform float wowLampIndoor;
 #ifdef USE_SHADOWMAP
 uniform vec3 wowShadowFade;
 #endif
@@ -556,6 +574,10 @@ if ( wowImmersiveStrength > 0.0001 ) {
 
   // The original light integration was replaced above, so Three PointLights cannot illuminate
   // these surfaces. Bounded fixture uniforms provide their soft pools in this same draw instead.
+  // 25.10 (6.27 indoors): summed apart from the grade, so a sunless room can add them past its ceiling,
+  // and weighed by a daylight that is the sun's outside and none in such a room.
+  vec3 wowLampLight = vec3( 0.0 );
+  float wowLampDaylight = wowDaylight * ( 1.0 - wowLampIndoor );
   for ( int wowLightIndex = 0; wowLightIndex < ${WORLD_LOCAL_LIGHT_LIMIT}; wowLightIndex ++ ) {
     if ( wowLightIndex >= wowLocalLightCount ) break;
     vec4 wowLamp = wowLocalLightPosition[ wowLightIndex ];
@@ -582,18 +604,20 @@ if ( wowImmersiveStrength > 0.0001 ) {
         float wowFalloff = 1.0 - smoothstep( 0.0, wowLampReach, wowLampDistance );
         float wowLampDiffuse = 0.22 + 0.78 * max( wowLampFacing, 0.0 );
         wowLampTerm = wowFalloff * wowLampDiffuse
-          * ( 0.35 + 0.65 * ( 1.0 - wowDaylight ) )
+          * ( 0.35 + 0.65 * ( 1.0 - wowLampDaylight ) )
           * ( 0.70 + 0.30 * wowDarkness );
       }
 ${CINEMATIC_POOL_GLSL}
-      wowLight += wowLampColour.rgb * wowLampTint * wowLampColour.w * wowLampTerm
+      wowLampLight += wowLampColour.rgb * wowLampTint * wowLampColour.w * wowLampTerm
         * min( 1.0, wowImmersiveStrength / 0.65 );
     }
   }
   // Rim and fixture light fill toward the same ceiling rather than past it: on a surface the sun
   // already lights at the authored peak, a lamp pool or a rim on top only clipped sunlit sand and
   // stone to flat white. In shade and at night, where they matter, the room below one is theirs.
-  wowLight = min( wowLight, vec3( 1.0 ) );
+  wowLight = min( wowLight + wowLampLight * ( 1.0 - wowLampIndoor ), vec3( 1.0 ) );
+  // 25.10 (6.27 indoors): a sunless room's light is under one already; its lamps go on top of it.
+  wowLight = min( wowLight + wowLampLight * wowLampIndoor, vec3( 1.0 + ${(WORLD_LAMP_INDOOR_CEILING - 1).toFixed(2)} * wowLampIndoor ) );
 }
 reflectedLight.directDiffuse = diffuseColor.rgb * pow( wowLight, vec3( 2.2 ) );
 reflectedLight.indirectDiffuse = vec3( 0.0 );
@@ -781,6 +805,7 @@ export function applyWorldLight(
     shader.uniforms.wowLocalLightPool = binding.uniforms.wowLocalLightPool; // 22.10 (7.36)
     shader.uniforms.wowShadowFade = binding.uniforms.wowShadowFade;
     shader.uniforms.wowShadowAlpha = binding.uniforms.wowShadowAlpha; // 24.10 (7.50)
+    shader.uniforms.wowLampIndoor = binding.uniforms.wowLampIndoor; // 25.10 (6.27 indoors)
     const unindentedTarget = WORLD_LIGHT_TARGET.replaceAll("\n\t", "\n");
     const target = shader.fragmentShader.includes(WORLD_LIGHT_TARGET)
       ? WORLD_LIGHT_TARGET

@@ -1,5 +1,6 @@
 import * as THREE from "three";
-import { WORLD_LIGHT_TARGET, cloneMaterialForPortrait } from "./WorldLighting.js";
+import { WORLD_LIGHT_TARGET, cloneMaterialForPortrait, type WorldLightUniforms } from "./WorldLighting.js";
+import { applyIndoorLampsToDoodad } from "./IndoorLamps.js"; // 25.10 (6.27 indoors)
 import { copyVegetationWind, shareVegetationWind } from "./VegetationWind.js";
 
 /** Display-order RGBA bytes used by placement colour and authored-light records. */
@@ -169,10 +170,13 @@ export function createModelPlacementTintMaterials(
  * fixed indoor light. Unlit/additive batches are cloned but deliberately left uncoloured: the
  * reference disables lighting for those batches, so multiplying MODD into them would apply the
  * same colour through a path that never received it in the client.
+ * 25.10 (6.27 indoors): with `lamps`, the forward set's lamps (spells, fixtures) add over that light
+ * while they are enabled for those uniforms (`IndoorLamps.ts`); off, the program is the one above.
  */
 export function createModelPlacementLocalLightMaterials(
   materials: readonly THREE.Material[],
   light: ModelPlacementTint | undefined,
+  lamps?: WorldLightUniforms,
 ): THREE.Material[] | undefined {
   if (!light) return undefined;
   const colourUniform = { value: new THREE.Vector3(light[0] / 255, light[1] / 255, light[2] / 255) };
@@ -198,6 +202,7 @@ export function createModelPlacementLocalLightMaterials(
         replaceLocalLightBlock(shader, localLightBody(MODEL_PLACEMENT_LOCAL_LIGHT_KEY));
       };
       copy.customProgramCacheKey = () => `${previousKey}|${MODEL_PLACEMENT_LOCAL_LIGHT_VERSION}:uniform`;
+      if (lamps) applyIndoorLampsToDoodad(copy, lamps); // 25.10 (6.27 indoors)
     }
     copy.onBeforeRender = (renderer, scene, camera, geometry, object, group) => {
       copyAnimatedAppearance(source, copy);
@@ -212,6 +217,7 @@ export function createModelPlacementLocalLightMaterials(
 /** One material array shared by a locally-lit instanced bucket; light data comes from attributes. */
 export function createInstancedModelPlacementLocalLightMaterials(
   materials: readonly THREE.Material[],
+  lamps?: WorldLightUniforms, // 25.10 (6.27 indoors): as `createModelPlacementLocalLightMaterials`
 ): THREE.Material[] {
   return materials.map((source) => {
     const copy = cloneMaterialForPortrait(source);
@@ -245,6 +251,7 @@ export function createInstancedModelPlacementLocalLightMaterials(
         replaceLocalLightBlock(shader, localLightBody("modelPlacementVLocalLight"));
       };
       copy.customProgramCacheKey = () => `${previousKey}|${MODEL_PLACEMENT_LOCAL_LIGHT_VERSION}:instanced`;
+      if (lamps) applyIndoorLampsToDoodad(copy, lamps); // 25.10 (6.27 indoors)
     }
     copy.onBeforeRender = (renderer, scene, camera, geometry, object, group) => {
       copyAnimatedAppearance(source, copy);
