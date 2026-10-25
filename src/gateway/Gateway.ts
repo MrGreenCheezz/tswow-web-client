@@ -97,6 +97,7 @@ import {
   visualGeneration,
 } from "./AssetGeneration.js"; // 22.10 (6.26)
 import { GatewayTraffic, loopbackRequest, startTrafficReporter, type TrafficReporterOptions } from "./GatewayTraffic.js"; // 25.10 (serve S5)
+import { createResponseCompression, installCompression } from "./ResponseCompression.js"; // 25.10 (serve S1)
 
 const MAX_CLIENT_MESSAGE = 64 * 1024;
 /** How often a bridged socket is pinged; two missed pongs in a row close it. */
@@ -1052,8 +1053,11 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
   };
   // 25.10 (serve S5): counted before anything is written, so every answer below is in the table.
   const traffic = new GatewayTraffic();
+  // 25.10 (serve S1): above every route, under the counters (which therefore count what was sent).
+  const compression = createResponseCompression();
   const handle = (request: IncomingMessage, response: ServerResponse): void => void (async () => {
     traffic.observe(request, response);
+    installCompression(request, response, compression);
     if (request.url === "/health") {
       response.writeHead(200, { "content-type": "application/json" });
       response.end(localAssetNonce === undefined
@@ -2692,7 +2696,7 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
           "content-type": "application/json; charset=utf-8",
         };
         const ifNoneMatch = request.headers["if-none-match"];
-        if (ifNoneMatch && ifNoneMatch.split(",").some((value) => value.trim() === etag || value.trim() === "*")) {
+        if (etagMatches(ifNoneMatch, etag)) { // 25.10 (serve S1): weakly, as a compressed answer weakens the tag
           response.writeHead(304, cacheHeaders);
           response.end();
           return;
@@ -2731,7 +2735,7 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
           "content-type": "application/octet-stream",
         };
         const ifNoneMatch = request.headers["if-none-match"];
-        if (ifNoneMatch && ifNoneMatch.split(",").some((value) => value.trim() === body.etag || value.trim() === "*")) {
+        if (etagMatches(ifNoneMatch, body.etag)) { // 25.10 (serve S1): weakly, as everywhere else
           response.writeHead(304, cacheHeaders);
           response.end();
           return;
@@ -2957,7 +2961,7 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
           "content-type": "application/json; charset=utf-8",
         };
         const ifNoneMatch = request.headers["if-none-match"];
-        if (ifNoneMatch && ifNoneMatch.split(",").some((value) => value.trim() === etag || value.trim() === "*")) {
+        if (etagMatches(ifNoneMatch, etag)) { // 25.10 (serve S1): weakly, as a compressed answer weakens the tag
           response.writeHead(304, cacheHeaders);
           response.end();
           return;

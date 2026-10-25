@@ -145,7 +145,8 @@ test("/texture and /visual/model are immutable under vg=<visualGeneration>, reva
         assert.equal(pinned.status, 200, route);
         assert.equal(await pinned.text(), body);
         assert.equal(pinned.headers.get("cache-control"), IMMUTABLE, `${route} under this generation`);
-        assert.equal(pinned.headers.get("vary"), "Origin", "an immutable copy echoes one Origin, so it varies on it");
+        // 25.10 (serve S1): + Accept-Encoding on a compressible type (ResponseCompression.ts).
+        assert.match(pinned.headers.get("vary") ?? "", /^Origin(, Accept-Encoding)?$/, "an immutable copy echoes one Origin, so it varies on it");
         assert.equal((await ask(route, query)).headers.get("cache-control"), REVALIDATE, `${route} without vg, as before`);
         assert.equal((await ask(route, `${query}&vg=00000000000000000000`)).headers.get("cache-control"), REVALIDATE,
           `${route} under another generation`);
@@ -174,7 +175,7 @@ test("/dbc/creature-models and /dbc/character-appearance are immutable under mg=
         const pinned = await ask(`${path}&mg=${mg}`);
         assert.equal(pinned.status, 200, path);
         assert.equal(pinned.headers.get("cache-control"), IMMUTABLE, path);
-        assert.equal(pinned.headers.get("vary"), "Origin");
+        assert.equal(pinned.headers.get("vary"), "Origin, Accept-Encoding"); // 25.10 (serve S1): JSON is compressible
         assert.equal((await ask(path)).headers.get("cache-control"), "no-store", `${path} without mg, as before`);
         assert.equal((await ask(`${path}&mg=00000000000000000000`)).headers.get("cache-control"), "no-store");
       }

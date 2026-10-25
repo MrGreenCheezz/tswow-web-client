@@ -58,7 +58,7 @@ test("LFG catalog HTTP route rejects other origins and caches metadata per gatew
     // Version 2 changed the body under the same path: revalidate every time, answer 304 when unchanged.
     assert.equal(first.headers.get("cache-control"), "public, max-age=0, must-revalidate");
     const etag = first.headers.get("etag");
-    assert.match(etag ?? "", /^"[0-9a-f]{40}"$/);
+    assert.match(etag ?? "", /^(W\/)?"[0-9a-f]{40}"$/); // 25.10 (serve S1): weak when compressed
     const body = await first.json();
     assert.equal(body.version, LFG_DUNGEON_CATALOG_VERSION);
     assert.ok(body.dungeons.length > 20);

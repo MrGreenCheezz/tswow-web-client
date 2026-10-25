@@ -77,9 +77,9 @@ test("a dataset answer revalidates: 304 for this epoch's tag, 200 with a new tag
       const first = await fetch(url, { headers: { origin: ORIGIN } });
       assert.equal(first.status, 200);
       assert.equal(first.headers.get("cache-control"), REVALIDATE);
-      assert.equal(first.headers.get("vary"), "Origin");
+      assert.equal(first.headers.get("vary"), "Origin, Accept-Encoding"); // 25.10 (serve S1)
       const tag = first.headers.get("etag");
-      assert.match(tag ?? "", /^"d1-[0-9a-f]{12}-[0-9a-f]+"$/);
+      assert.match(tag ?? "", /^(W\/)?"d1-[0-9a-f]{12}-[0-9a-f]+"$/); // 25.10 (serve S1): weak when compressed
       const body = await first.text();
 
       const again = await fetch(url, { headers: { origin: ORIGIN, "if-none-match": tag } });
@@ -87,7 +87,7 @@ test("a dataset answer revalidates: 304 for this epoch's tag, 200 with a new tag
       assert.equal(await again.text(), "", "no body");
       assert.equal(again.headers.get("etag"), tag);
       assert.equal(again.headers.get("access-control-allow-origin"), ORIGIN);
-      assert.equal((await fetch(url, { headers: { origin: ORIGIN, "if-none-match": `W/${tag}` } })).status, 304);
+      assert.equal((await fetch(url, { headers: { origin: ORIGIN, "if-none-match": `W/${tag.replace(/^W\//, "")}` } })).status, 304);
       const foreign = await fetch(url, { headers: { origin: "http://evil.test", "if-none-match": tag } });
       assert.equal(foreign.status, 403, "a matching tag is no way past the Origin check");
 
