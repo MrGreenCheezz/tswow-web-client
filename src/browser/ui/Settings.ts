@@ -180,6 +180,8 @@ export function applySettings(): void {
   game.renderer?.setUnderwaterOverlay?.(settingBoolean(values, "underwaterOverlay"));
   // 22.10 (7.47): «Объём земли», its own leaf; the renderer draws it on the enhanced levels only.
   game.renderer?.setTerrainRelief?.(settingBoolean(values, "experimentalTerrainRelief"));
+  // 25.10 (7.47): «Нейросетевой объём», the ground's maps from the gateway's neural set (TerrainReliefNeural.ts).
+  game.renderer?.setNeuralRelief?.(settingBoolean(values, "experimentalNeuralRelief"));
   // 22.10 (7.47 stage 2): «Объём зданий», its own leaf; enhanced levels only.
   game.renderer?.setWmoRelief?.(settingBoolean(values, "experimentalWmoRelief"));
   // 23.10 (7.47 stage 3): «Объём предметов», its own leaf; enhanced levels only.

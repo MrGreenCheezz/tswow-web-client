@@ -71,6 +71,7 @@ interface BenchWindow extends Window {
     spellStrip(spec: SpellStripSpec): Promise<unknown>; // 23.10 (6.27)
     spellCost(spec: SpellStripSpec, rounds: number): Promise<unknown>; // 23.10 (6.27)
     gpuView(frames: number, warm: number): Promise<number[]>; viewCpu(): number[]; terrainRelief(enabled: boolean): void; // 22.10 (7.47)
+    neuralRelief(enabled: boolean): void; // 25.10 (7.47)
     wmoRelief(enabled: boolean): void; wmoReliefStats(): unknown; // 22.10 (7.47 stage 2)
     m2Relief(enabled: boolean): void; m2ReliefStats(): unknown; // 23.10 (7.47 stage 3)
     reliefStrength300(enabled: boolean): void; // 24.10 (7.47)
@@ -598,6 +599,8 @@ host.__bench = {
   },
   /** 22.10 (7.47): «Объём земли» on or off in place, for `gpuView` A/B runs. */
   terrainRelief(enabled: boolean) { world?.setTerrainRelief(enabled); },
+  /** 25.10 (7.47): «Нейросетевой объём» on or off in place, for lookdev A/B stills. */
+  neuralRelief(enabled: boolean) { world?.setNeuralRelief(enabled); },
   /** 22.10 (7.47 stage 2): «Объём зданий» on or off in place, for `gpuView` A/B runs. */
   wmoRelief(enabled: boolean) { world?.setWmoRelief(enabled); },
   /** 22.10 (7.47 stage 2): tracked and bound materials and the relief maps held (counts, bytes). */

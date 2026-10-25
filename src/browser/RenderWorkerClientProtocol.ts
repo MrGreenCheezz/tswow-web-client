@@ -35,6 +35,7 @@ export const RENDER_WORKER_COMMANDS: Readonly<Record<ClientRendererCommand, Rend
   setRenderScale: "setting", setLightingQuality: "setting", setWmoOcclusion: "setting",
   setCharacterAtlasAnisotropy: "setting", setExperimentalShaderProfile: "setting", setUnderwaterOverlay: "setting",
   setTerrainRelief: "setting", // 22.10 (7.47)
+  setNeuralRelief: "setting", // 25.10 (7.47)
   setWmoRelief: "setting", // 22.10 (7.47 stage 2)
   setM2Relief: "setting", // 23.10 (7.47 stage 3)
   setReliefStrength: "setting", // 24.10 (7.47)

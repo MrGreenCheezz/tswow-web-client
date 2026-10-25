@@ -162,6 +162,13 @@ async function main() {
       at: { x, y, map: traces[0].map ?? 0, ...(traces[0].z !== undefined ? { z: traces[0].z } : {}) } }); // 25.10 (7.51): + z
   }
   // 23.10 (7.48): HD effect textures straight from the generated sets.
+  // 25.10 (7.47): `--neural-relief [dir]` answers `/terrain-relief/<id>.bin` from tools/neural-relief.mjs's set
+  // (default `.runtime/neural-relief`) as a gateway with the route does; the page asks only with
+  // `--set experimentalNeuralRelief=true`. Without it the route is the older gateway's 404 (never fetched or cached).
+  const neuralIndex = args.indexOf('--neural-relief');
+  const neuralDirectory = neuralIndex < 0 ? undefined
+    : resolve(args[neuralIndex + 1] && !args[neuralIndex + 1].startsWith('--') ? args[neuralIndex + 1] : '.runtime/neural-relief');
+  let neuralServed = 0;
   const hdIndex = args.indexOf('--hd-textures');
   const hdDirectory = hdIndex < 0 ? undefined
     : resolve(args[hdIndex + 1] && !args[hdIndex + 1].startsWith('--') ? args[hdIndex + 1] : '.runtime/hd-textures');
@@ -405,6 +412,13 @@ async function main() {
         }
         litModels.served++;
         res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }).end(litModels.bytes);
+      } else if (/^\/terrain-relief\/[0-9a-f]{40}\.bin$/.test(url.pathname)) { // 25.10 (7.47)
+        const bytes = neuralDirectory
+          ? await readFile(resolve(neuralDirectory, 'terrain', url.pathname.slice('/terrain-relief/'.length))).catch(() => undefined)
+          : undefined;
+        if (bytes) neuralServed++;
+        if (bytes) res.writeHead(200, { 'content-type': 'application/octet-stream', 'cache-control': 'no-store' }).end(bytes);
+        else res.writeHead(404, { 'cache-control': 'no-store' }).end();
       } else if (allowed.test(key)) {
         const { entry, bytes } = await asset(key);
         res.writeHead(entry.status, { 'content-type': entry.type, 'cache-control': 'public,max-age=31536000,immutable' }).end(bytes);
@@ -558,6 +572,7 @@ async function main() {
     }
     if (litModels) console.log(`Lit-model index: served ${litModels.served} time(s) from ${litModels.file}`); // 25.10 (7.50)
     if (lampTables) console.log(`Lamp tables: ${lampTables.built.size} built (${lampTables.ms.toFixed(0)} ms), ${lampTables.served} served`); // 24.10 (7.50)
+    if (neuralDirectory) console.log(`Neural relief maps served from ${neuralDirectory}: ${neuralServed}`); // 25.10 (7.47)
     if (hdDirectory) console.log(`HD textures served from ${hdDirectory}: ${hdServed} (world, compressed: ${hdWorldServed}, ${(hdWorldBytes.hd / 1048576).toFixed(1)} MB in place of ${(hdWorldBytes.original / 1048576).toFixed(1)} MB)`); // 23.10 (7.48)
     await writeFile(resolve(out, 'lookdev.json'), JSON.stringify({ scenario, config, frames, written, cacheMisses, hdServed, failures }, null, 2));
     if (failures.length) console.error(`Asset failures:\n${failures.join('\n')}`);

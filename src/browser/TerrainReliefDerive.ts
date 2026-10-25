@@ -93,8 +93,15 @@ export function terrainReliefHeight(input: TerrainReliefInput, stats?: TerrainRe
 
 /** 22.10 (7.47): the relief map (RG normal, B height, A 255) of one layer; see the file comment. */
 export function deriveTerrainRelief(input: TerrainReliefInput, stats?: TerrainReliefStats): Uint8Array {
-  const side = terrainReliefSize(input.size);
-  const height = terrainReliefHeight(input, stats);
+  return terrainReliefFromHeight(terrainReliefHeight(input, stats), terrainReliefSize(input.size));
+}
+
+/**
+ * 25.10 (7.47, neural maps): the relief map of a `side`² height (0–1, 0.5 the mean, 1 is
+ * `TERRAIN_RELIEF_DEPTH` of detail UV) — the second half of {@link deriveTerrainRelief}, shared with
+ * the neural heights (TerrainReliefNeural.ts).
+ */
+export function terrainReliefFromHeight(height: Float32Array, side: number): Uint8Array {
   const out = new Uint8Array(side * side * 4);
   // Height 0–1 spans TERRAIN_RELIEF_DEPTH of detail UV; a texel is 1/side of it. dh/du in UV units
   // is (Δh per texel) · side · depth.

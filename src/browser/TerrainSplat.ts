@@ -6,6 +6,7 @@ import { RetryLadder } from "./RetryLadder.js"; // 05.10-A7b-0 1.24
 import { renderSwitches } from "./RenderSwitches.js"; // 05.10-A7b-7Г
 import { lightingClassicLook } from "./LightingQuality.js"; // 05.10-7.20
 import { terrainReliefWanted } from "./TerrainReliefShader.js"; // 22.10 (7.47)
+import { terrainReliefSourceRevision } from "./TerrainReliefNeural.js"; // 25.10 (7.47)
 import { terrainReliefArray, terrainReliefLayer, type TerrainReliefLayerRecord } from "./TerrainReliefLayers.js"; // 22.10 (7.47)
 import { isHdTextureContainer, parseHdTexture, type HdCompressedTexture } from "./HdTextureContainer.js"; // 23.10 (7.48)
 import { compressedLayerArray, hdWorldTexturesActive, withHdWorldTexture } from "./HdWorldTextures.js"; // 23.10 (7.48)
@@ -215,6 +216,8 @@ interface TerrainSplatTileRecord {
   readonly layerSize: number;
   /** 22.10 (7.47): a relief derivation for this tile is running, or failed (not retried while resident). */
   relief?: "pending" | "failed";
+  /** 25.10 (7.47): the relief source revision `splat.relief` (or the running derivation) was made under. */
+  reliefSource?: number;
 }
 
 interface TerrainSplatRequest {
@@ -646,6 +649,7 @@ export class TerrainSplatClient {
       // first program already has them (no recompile once it is drawn). A map that fails costs the
       // tile its relief, never its ground.
       const maskIds = masks && masked ? masks : undefined;
+      const reliefSource = terrainReliefSourceRevision(); // 25.10 (7.47)
       const relief = terrainReliefWanted() && this.#isCurrent(request)
         ? await this.#buildRelief(layers as string[], maskIds, layerSize).catch(() => undefined)
         : undefined;
@@ -662,6 +666,7 @@ export class TerrainSplatClient {
         hdLayers: new Map(request.hdLayers), // 23.10 (7.48)
         textures: new Set(request.textures),
         layerIds: layers as string[], maskIds, layerSize, // 22.10 (7.47)
+        reliefSource, // 25.10 (7.47)
       };
       request.layers.clear();
       request.hdLayers.clear(); // 23.10 (7.48)
@@ -704,7 +709,7 @@ export class TerrainSplatClient {
         if (this.#layers.get(layer.id) !== layer || layer.leases <= 0) return false;
         this.#reliefBytes += bytes;
         return true;
-      });
+      }, { baseUrl: this.#baseUrl, layerId: id }, (bytes) => { this.#reliefBytes -= bytes; }); // 25.10 (7.47): neural maps
     }));
     if (maps.some((map) => map === undefined)) return undefined;
     return terrainReliefArray(maps as Uint8Array[], layerSize);
@@ -726,8 +731,20 @@ export class TerrainSplatClient {
       if (tile.relief === "failed") delete tile.relief;
       return;
     }
+    // 25.10 (7.47): the source changed («Нейросетевой объём»): the map goes, the renderer has already unbound it.
+    const source = terrainReliefSourceRevision();
+    if (tile.reliefSource !== source && tile.relief !== "pending") {
+      const relief = tile.splat.relief;
+      if (relief) {
+        delete tile.splat.relief;
+        tile.textures.delete(relief);
+        this.#disposeTexture(relief);
+      }
+      delete tile.relief;
+    }
     if (tile.splat.relief || tile.relief !== undefined) return;
     tile.relief = "pending";
+    tile.reliefSource = source;
     // 23.10 (7.48): an HD tile loaded without relief holds no original layers; the relief derives from them (its
     // scale in world units is the original's), so the tile leases them now and releases them with itself.
     for (const id of tile.layerIds) {

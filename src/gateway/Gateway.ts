@@ -68,6 +68,7 @@ import { validAssetPath } from "./AssetPath.js";
 import { listeningServerError } from "./ProcessGuard.js";
 import { originAllowed, refuseUpgrade, routeUpgrade } from "./UpgradeGuard.js";
 import { WMO_MINIMAP_ROUTE, serveWmoMinimapRoute, type WmoMinimapMemo } from "./WmoMinimapRoute.js"; // 05.10-A7b-3
+import { serveNeuralReliefRoute } from "./NeuralReliefRoute.js"; // 25.10 (7.47)
 import { LIT_MODEL_INDEX_ROUTE, serveLitModelIndexRoute } from "./LitModelIndexRoute.js"; // 25.10 (7.50)
 import { WMO_LAMP_TABLE_ROUTE, serveWmoLampTableRoute, type WmoLampTableBuilds } from "./WmoLampTableRoute.js"; // 24.10 (7.50)
 import {
@@ -375,6 +376,8 @@ export interface GatewayOptions {
    * tool rebuilds or restamps it).
    */
   hdTextures?: { readonly sets: HdTextureSets; readonly isCurrent?: (file: string) => Promise<boolean> };
+  /** 25.10 (7.47): the neural relief maps tools/neural-relief.mjs builds (NeuralReliefRoute.ts); absent when `NEURAL_RELIEF=0`. */
+  neuralReliefDirectory?: string;
   /** Where the animated liquid strips live, one per liquid class. */
   liquidDirectory?: string;
   /**
@@ -1714,6 +1717,11 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
     // layer carries every one of its ground textures in its own stamp, so the same edit makes the
     // splat stale, and rebuilding the splat rewrites the layers whose source moved
     // (`tools/generate-terrain-splat.mjs` skips only the layers whose stamp still agrees).
+    // 25.10 (7.47): `/terrain-relief/<id>.bin`, a ground layer's neural height (NeuralReliefRoute.ts).
+    if (options.neuralReliefDirectory && options.terrainLayersDirectory && await serveNeuralReliefRoute(request, response,
+      pathname, { directory: options.neuralReliefDirectory, layersDirectory: options.terrainLayersDirectory,
+        allowedOrigins: options.allowedOrigins })) return;
+
     const terrainLayer = pathname.match(/^\/terrain-layer\/([0-9a-f]{40})\.png$/);
     if (request.method === "GET" && terrainLayer && options.terrainLayersDirectory) {
       const origin = request.headers.origin;

@@ -71,6 +71,7 @@ process.env.GATEWAY_HOST = bind;
 process.env.MODULE_UI_WRITE = "0";
 process.env.ASSET_PRELOAD = "0";
 process.env.HD_TEXTURES = process.env.PUBLIC_HD_TEXTURES?.trim() === "1" ? "1" : "0"; // 23.10 (7.48)
+process.env.NEURAL_RELIEF = process.env.PUBLIC_NEURAL_RELIEF?.trim() === "1" ? "1" : "0"; // 25.10 (7.47)
 process.env.GATEWAY_RESTART_ON_PATCH ??= "1";
 // 10.15: whatever .env says about restarts after a build, a crashed gateway comes back by itself
 // (tools/gateway-supervisor.mjs; a sixth crash in ten minutes still stops it).

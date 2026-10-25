@@ -97,6 +97,7 @@ export const COMPARISON_GRAPHICS_OVERRIDES: Readonly<SettingValues> = Object.fre
   experimentalAerialHeightFog: false,
   experimentalTerrainMicroNormals: false,
   experimentalTerrainRelief: false, // 22.10 (7.47)
+  experimentalNeuralRelief: false, // 25.10 (7.47)
   experimentalWmoRelief: false, // 22.10 (7.47 stage 2)
   experimentalModelRelief: false, // 23.10 (7.47 stage 3)
   // 24.10 (7.47) neutral: the three relief leaves are off above, so this only pins «Сила объёма» to its default.

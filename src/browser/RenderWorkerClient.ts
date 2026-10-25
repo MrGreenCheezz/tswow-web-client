@@ -162,6 +162,7 @@ export class RenderWorkerClient implements ClientRenderer {
   }
   setUnderwaterOverlay(...args: Args<"setUnderwaterOverlay">): void { this.#send("setUnderwaterOverlay", args); }
   setTerrainRelief(...args: Args<"setTerrainRelief">): void { this.#send("setTerrainRelief", args); } // 22.10 (7.47)
+  setNeuralRelief(...args: Args<"setNeuralRelief">): void { this.#send("setNeuralRelief", args); } // 25.10 (7.47)
   setWmoRelief(...args: Args<"setWmoRelief">): void { this.#send("setWmoRelief", args); } // 22.10 (7.47 stage 2)
   setM2Relief(...args: Args<"setM2Relief">): void { this.#send("setM2Relief", args); } // 23.10 (7.47 stage 3)
   setReliefStrength(...args: Args<"setReliefStrength">): void { this.#send("setReliefStrength", args); } // 24.10 (7.47)

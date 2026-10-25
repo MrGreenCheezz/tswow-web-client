@@ -112,6 +112,11 @@ export const SETTING_DEFINITIONS: readonly SettingDefinition[] = [
     hint: "Камни, мостовая и трещины на земле вблизи выглядят объёмными и отбрасывают мелкие тени. Только с улучшенным освещением; немного нагружает видеокарту.",
   },
   {
+    // 25.10 (7.47): the ground's relief maps from a neural network (tools/neural-relief.mjs) where the gateway has them.
+    id: "experimentalNeuralRelief", label: "Нейросетевой объём", group: "Эффекты", kind: "boolean", fallback: false,
+    hint: "Опыт: рельеф земли по картам, которые нейросеть построила по самим текстурам, — камень отличается от тёмных швов и пятен краски. Действует вместе с «Объёмом земли»; где карт нет, рельеф прежний.",
+  },
+  {
     // 22.10 (7.47 stage 2): the same relief on building surfaces (WMO); enhanced lighting levels only.
     id: "experimentalWmoRelief", label: "Объём зданий", group: "Эффекты", kind: "boolean", fallback: true,
     hint: "Каменная кладка, кирпич, черепица и доски на стенах и мостовые городов вблизи выглядят объёмными. Только с улучшенным освещением; немного нагружает видеокарту.",

@@ -58,6 +58,7 @@ import {
 } from "./TerrainSplat.js";
 import { setTerrainBakedShadowStrength, terrainBakedShadowStrength } from "./TerrainSplat.js"; // 05.10-A7b-7
 import { setTerrainReliefWanted, setTerrainSplatRelief, terrainReliefActive } from "./TerrainReliefShader.js"; // 22.10 (7.47)
+import { setNeuralReliefWanted } from "./TerrainReliefNeural.js"; // 25.10 (7.47)
 import { setWmoReliefActive, trackWmoReliefMaterial, wmoReliefActive, wmoRunReliefVariant } from "./WmoReliefShader.js"; // 22.10 (7.47 stage 2)
 import { setReliefStrength as setSharedReliefStrength } from "./ReliefStrength.js"; // 24.10 (7.47)
 import { M2_RELIEF_BUILD, M2_RELIEF_BUILD_PREFIX, m2ReliefActive, type M2ReliefBuild } from "./M2Relief.js"; // 23.10 (7.47 stage 3)
@@ -11318,6 +11319,21 @@ export class WorldRenderer3D {
     if (this.#terrainReliefSetting === enabled) return;
     this.#terrainReliefSetting = enabled;
     this.#syncTerrainRelief();
+  }
+
+  /**
+   * 25.10 (7.47): «Нейросетевой объём» — the ground's relief maps from the gateway's neural set where it has
+   * them (TerrainReliefNeural.ts). While the relief is drawn, the change unbinds every tile's map (the splat
+   * client disposes it and makes the new one) and the tiles take the new maps as they arrive.
+   */
+  setNeuralRelief(enabled: boolean): void {
+    if (!setNeuralReliefWanted(enabled) || !this.#terrainReliefActive) return;
+    this.#terrainReliefRevision++;
+    for (const terrain of this.#terrains.values()) {
+      if (!terrain.splatted || !terrain.relief) continue;
+      terrain.relief = undefined;
+      if (setTerrainSplatRelief(terrain.material, undefined, true)) this.#programWarmup.registerObject(terrain.mesh);
+    }
   }
 
   #syncTerrainRelief(): void {

@@ -14,7 +14,7 @@ import type { RenderWorkerClient } from "./RenderWorkerClient.js";
 /** The commands: each is a message to a worker renderer, a direct call to the in-page one. */
 export type ClientRendererCommand =
   | "setRenderScale" | "setLightingQuality" | "setWmoOcclusion" | "setCharacterAtlasAnisotropy"
-  | "setExperimentalShaderProfile" | "setUnderwaterOverlay" | "setTerrainRelief" | "setWmoRelief" | "setM2Relief" | "setReliefStrength" |"setLivingSpells" | "setHdEffectTextures" | "setHdWorldTextures" | "setFullscreenGlow" | "setGodRays" | "setGodRayStrength"
+  | "setExperimentalShaderProfile" | "setUnderwaterOverlay" | "setTerrainRelief" | "setNeuralRelief" | "setWmoRelief" | "setM2Relief" | "setReliefStrength" |"setLivingSpells" | "setHdEffectTextures" | "setHdWorldTextures" | "setFullscreenGlow" | "setGodRays" | "setGodRayStrength"
   | "setCinematicProfile" | "setCinematicStrength" | "setAtmosphereEffects" | "setEnvironmentDetail" | "setGroundCover"
   | "invalidateGroundCover" | "clearPortraits" | "clearTerrain" | "clearWorldResources"
   | "setWeather" | "setIndoors" | "updateLighting" | "setUnderwaterSurface" | "setSelection" | "setGroundTargetPreview"
