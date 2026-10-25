@@ -222,9 +222,10 @@ export function emitterTrackSequence(track: WvmTrack | undefined, sequence: numb
 /** One emitter track at this frame, on the playing sequence (`emitterTrackSequence`). */
 function emitterTrack(
   value: WvmTrack, animationMs: number, worldMs: number, globalSequences: Uint32Array,
-  fallback: number, sequence: number | undefined,
+  fallback: number, sequence: number | undefined, inSequence = false,
 ): number {
-  return sampleTrack(value, animationMs, worldMs, globalSequences, fallback, 0, emitterTrackSequence(value, sequence));
+  return sampleTrack(value, animationMs, worldMs, globalSequences, fallback, 0, emitterTrackSequence(value, sequence),
+    inSequence); // 26.10 (6.27)
 }
 
 /**
@@ -270,6 +271,7 @@ export function sampleTrack(
   fallback: number,
   component = 0,
   sequence?: number,
+  inSequence = false,
 ): number {
   if (!track || track.tracks.length === 0) return fallback;
   // Runs for every emitter and every particle of a frame: no closures and no `find` callback here,
@@ -299,7 +301,12 @@ export function sampleTrack(
     const duration = globalSequences[track.globalSequence] ?? 0;
     time = duration > 0 ? worldMs % duration : worldMs;
   } else {
-    time = span > 0 ? sub.times[0]! + (animationMs % span) : animationMs;
+    // 26.10 (6.27): `inSequence` — the clock is already the playing sequence's own (a clip action's time: clamped at
+    // the end of a once-played clip, wrapped on the clip's length when it loops). A track then holds its last key
+    // past it, as Wow.exe samples every track on the sequence time: Thunder Clap's emitter, enabled 0–166 ms of a
+    // 4,933 ms clip, wrapped on its own 166 ms span and spawned shockwave rings for the whole clip. Without it (a
+    // doodad's wall clock) the span is still the only period known.
+    time = inSequence ? animationMs : span > 0 ? sub.times[0]! + (animationMs % span) : animationMs;
   }
 
   if (time <= sub.times[0]!) return values[component] ?? fallback;
@@ -395,6 +402,11 @@ export interface EmitterFrame {
   worldStartMs?: number | undefined;
   /** 13.10 6.15: the sequence-table slot the model is playing, for per-sequence tracks (`emitterTrackSequence`). */
   sequence?: number | undefined;
+  /**
+   * 26.10 (6.27): `animationMs` is already the playing sequence's own time (a clip action's), so tracks hold their last
+   * key past it instead of wrapping on their own key span (`sampleTrack`).
+   */
+  inSequence?: boolean | undefined;
   /** 25.10 (6.27): the camera in the scene, for the distance thinning (`emitterDistanceScale`); absent: none. */
   viewX?: number | undefined;
   viewY?: number | undefined;
@@ -606,10 +618,11 @@ function spawnLocal(
   position: number[],
   direction: number[],
   sequence: number | undefined, // 13.10 6.15
+  inSequence = false, // 26.10 (6.27)
 ): void {
   const { emitter, globalSequences, random } = system;
   const track = (value: WvmTrack, fallback: number): number =>
-    emitterTrack(value, animationMs, worldMs, globalSequences, fallback, sequence);
+    emitterTrack(value, animationMs, worldMs, globalSequences, fallback, sequence, inSequence);
 
   const vertical = track(emitter.verticalRange, 0);
   const horizontal = track(emitter.horizontalRange, 0);
@@ -732,9 +745,9 @@ export function primeParticleSystem(system: ParticleSystem, frame: EmitterFrame)
   if (system.particles.length > 0 || system.capacity <= 0) return false; // 13.10 6.15: an empty pool spawns nothing
   const { emitter, globalSequences } = system;
   const enabled = emitterTrack(emitter.enabledIn, frame.animationMs, frame.worldMs,
-    globalSequences, 1, frame.sequence);
+    globalSequences, 1, frame.sequence, frame.inSequence === true);
   const rate = emitterTrack(emitter.emissionRate, frame.animationMs, frame.worldMs,
-    globalSequences, 0, frame.sequence);
+    globalSequences, 0, frame.sequence, frame.inSequence === true);
   if (enabled <= 0.5 || rate <= 0) return false;
   // Set the transform/origin exactly as a zero-time ordinary step would before spawning in the
   // emitter's current frame. No pending debt or particle age is fabricated.
@@ -781,7 +794,7 @@ function stepParticlesOnce(system: ParticleSystem, seconds: number, frame: Emitt
   const { emitter, globalSequences, particles, random } = system;
   const { matrix, animationMs, worldMs, sequence } = frame;
   const track = (value: WvmTrack, fallback: number): number =>
-    emitterTrack(value, animationMs, worldMs, globalSequences, fallback, sequence); // 13.10 6.15
+    emitterTrack(value, animationMs, worldMs, globalSequences, fallback, sequence, frame.inSequence === true); // 13.10 6.15; 26.10
 
   for (let index = 0; index < 16; index++) system.matrix[index] = matrix[index]!;
 
@@ -1013,14 +1026,14 @@ function spawn(system: ParticleSystem, frame: EmitterFrame): Particle {
   const { emitter, globalSequences, random } = system;
   const { matrix, animationMs, worldMs, sequence } = frame;
   const track = (value: WvmTrack, fallback: number): number =>
-    emitterTrack(value, animationMs, worldMs, globalSequences, fallback, sequence); // 13.10 6.15
+    emitterTrack(value, animationMs, worldMs, globalSequences, fallback, sequence, frame.inSequence === true); // 13.10 6.15; 26.10
 
   // 25.10 (6.27): module scratch, not two arrays per spawn (a burst spawns hundreds at once).
   const local = spawnPosition;
   const direction = spawnDirection;
   local[0] = 0; local[1] = 0; local[2] = 0;
   direction[0] = 0; direction[1] = 0; direction[2] = 1;
-  spawnLocal(system, animationMs, worldMs, local, direction, sequence);
+  spawnLocal(system, animationMs, worldMs, local, direction, sequence, frame.inSequence === true);
 
   let speed = track(emitter.emissionSpeed, 0);
   const variation = track(emitter.speedVariation, 0);

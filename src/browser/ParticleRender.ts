@@ -127,6 +127,8 @@ export interface EffectFrame {
   worldStartMs?: number;
   /** 13.10 6.15: the sequence-table slot the model plays; per-sequence emitter tracks read it (Wow.exe 0x0082d2f0). */
   sequence?: number | undefined;
+  /** 26.10 (6.27): `animationMs` is the playing sequence's own time (Particles.ts `EmitterFrame.inSequence`). */
+  inSequence?: boolean | undefined;
   /** 25.10 (6.27): the camera (distance thinning) and the ground (record 0x2000), as `EmitterFrame` takes them. */
   viewX?: number | undefined;
   viewY?: number | undefined;
@@ -425,6 +427,7 @@ function buildDrawn(
 
 const EMITTER_FRAME: EmitterFrame = {
   matrix: [], animationMs: 0, worldMs: 0, animationStartMs: undefined, worldStartMs: undefined, sequence: undefined,
+  inSequence: undefined, // 26.10 (6.27)
   viewX: undefined, viewY: undefined, viewZ: undefined, ground: undefined, // 25.10 (6.27)
 };
 
@@ -458,6 +461,7 @@ export function updateModelEffects(
     emitterFrame.animationStartMs = frame.animationStartMs;
     emitterFrame.worldStartMs = frame.worldStartMs;
     emitterFrame.sequence = frame.sequence; // 13.10 6.15
+    emitterFrame.inSequence = frame.inSequence; // 26.10 (6.27)
     emitterFrame.viewX = frame.viewX; // 25.10 (6.27)
     emitterFrame.viewY = frame.viewY;
     emitterFrame.viewZ = frame.viewZ;

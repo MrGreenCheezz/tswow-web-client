@@ -123,7 +123,7 @@ export function stepRibbonCatchUp(system: RibbonSystem, seconds: number, frame: 
 
 function sample(system: RibbonSystem, value: WvmTrack, frame: EmitterFrame, fallback: number, component = 0): number {
   return sampleTrack(value, frame.animationMs, frame.worldMs, system.globalSequences, fallback, component,
-    emitterTrackSequence(value, frame.sequence));
+    emitterTrackSequence(value, frame.sequence), frame.inSequence === true); // 26.10 (6.27)
 }
 
 /** Where the bone is and which way its Y and Z axes point, unnormalised (the bone's scale widens the strip). */

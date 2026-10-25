@@ -10437,8 +10437,16 @@ export class WorldRenderer3D {
         || (phaseEmitterGroups.has(groupKey) && !selectedSpellGroups.has(groupKey))) continue;
       const origin = visual.phaseOriginAt ?? visual.playbackStartedAt ?? visual.instance.startedAt;
       // 25.10 (6.27): on the sequence a Hold/Decay model is playing, at its own time (SpellModelSequence.ts).
-      if (visual.sequenceSlot !== undefined) updateBatchColours(visual.built.animatedBatches, visual.sequenceMs ?? 0, now, visual.sequenceSlot);
-      else updateBatchColours(visual.built.animatedBatches, Math.max(0, now - origin), now);
+      // 26.10 (6.27): on the clip's own time where there is a clip (a once-played one stops at its end, a held one
+      // wraps on its length), so a short track — Thunder Clap's 466 ms fades — holds its last key instead of looping.
+      if (visual.sequenceSlot !== undefined) {
+        updateBatchColours(visual.built.animatedBatches, visual.sequenceMs ?? 0, now, visual.sequenceSlot, true);
+      } else if (visual.action) {
+        updateBatchColours(visual.built.animatedBatches, visual.action.time * 1000, now, undefined, true);
+      } else {
+        updateBatchColours(visual.built.animatedBatches, Math.max(0, now - origin), now, undefined,
+          visual.instance.modelPlayback !== "hold"); // 26.10: a once-played model's age is its sequence time
+      }
     }
 
     wanted.sort((left, right) => left.distance - right.distance);
@@ -10574,6 +10582,9 @@ export class WorldRenderer3D {
         worldMs: now,
         // 13.10 6.15: per-sequence tracks on the playing clip's slot, as Wow.exe samples them (0x0082d2f0).
         sequence: playingSequence(entry.spell ? entry.spell.action : posed?.action),
+        // 26.10 (6.27): a spell model's clock is its clip's own time — or, played once without a clip, its age, which
+        // is the same thing — so its tracks hold their last key past it. A held model without a clip keeps wrapping.
+        ...(entry.spell && (entry.spell.action || entry.spell.instance.modelPlayback !== "hold") ? { inSequence: true } : {}),
         // 25.10 (6.27): the camera for the distance thinning, except for a spell with a SpellMissile row (0x0097d8c0).
         viewX: entry.spell?.instance.ignoreDistance ? undefined : this.#effectView.x,
         viewY: this.#effectView.y, viewZ: this.#effectView.z, ground: this.#particleGround,
