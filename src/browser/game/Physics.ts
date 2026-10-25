@@ -369,6 +369,40 @@ function floorAt(
   return standingHeight(floor, input.waterWalking ? liquidOver(probe, motion, x, y, z) : undefined, input);
 }
 
+/**
+ * 25.10: whether the map's ground at the feet is a ceiling — the character is more than a step under
+ * it and stands over the server's collision geometry: the Deadmines' mine under the Westfall hills,
+ * Scholomance under Caer Darrow, Utgarde Keep, the Pit of Saron. The max of ground and collision floor
+ * then lifts the character out through the hillside at its first step down or its first landing.
+ * TrinityCore's `Map::GetHeight` counts the grid height only at or under the feet for the same reason.
+ * Decided once per step from where the step began, so walking outdoors over a cave is unchanged.
+ */
+function groundIsCeiling(probe: TerrainProbe, x: number, y: number, z: number): boolean {
+  if (!probe.floor || probe.hole(x, y)) return false;
+  const ground = probe.ground(x, y);
+  if (ground === undefined || ground - z <= STEP_HEIGHT) return false;
+  return probe.floor(x, y, z + STEP_HEIGHT, z - FLOOR_SEARCH_DEPTH) !== undefined;
+}
+
+/**
+ * 25.10: the probe a character under the map's ground walks with: the same world without the
+ * ground (no slope slide off the hill above, no floor up there), its collision answering instead.
+ * One reused object, so the per-substep path stays allocation-free.
+ */
+class UndergroundProbe implements TerrainProbe {
+  base: TerrainProbe = { ground: () => undefined, liquid: () => undefined, hole: () => false };
+  ground(): number | undefined { return undefined; }
+  liquid(x: number, y: number, z: number): LiquidAnswer { return this.base.liquid(x, y, z); }
+  hole(): boolean { return false; }
+  floor(x: number, y: number, fromZ: number, minZ: number): number | undefined { return this.base.floor?.(x, y, fromZ, minZ); }
+  pushOut(x: number, y: number, z: number, radius: number, bodyHeight: number): { x: number; y: number } {
+    return this.base.pushOut ? this.base.pushOut(x, y, z, radius, bodyHeight) : { x, y };
+  }
+  ceiling(x: number, y: number, fromZ: number, toZ: number): number | undefined { return this.base.ceiling?.(x, y, fromZ, toZ); }
+  loaded(x: number, y: number): boolean { return this.base.loaded?.(x, y) ?? true; }
+}
+const UNDERGROUND = new UndergroundProbe();
+
 /** The ground and the collision geometry: the part of the floor that is not water or levitation. */
 function solidFloor(probe: TerrainProbe, x: number, y: number, z: number): number | undefined {
   let floor = probe.hole(x, y) ? undefined : probe.ground(x, y);
@@ -610,7 +644,7 @@ export function stepCharacter(
   position: WorldPosition,
   motion: CharacterMotion,
   input: CharacterInput,
-  probe: TerrainProbe,
+  world: TerrainProbe,
   elapsed: number,
   events: PhysicsEvent[] = [],
 ): PhysicsEvent[] {
@@ -618,6 +652,13 @@ export function stepCharacter(
   // (≈30 ns, measured), and almost every substep reports nothing.
   if (events.length !== 0) events.length = 0;
   if (elapsed <= 0) return events;
+
+  // 25.10: under the map's ground (a mine, a crypt) the collision geometry alone is the floor.
+  let probe = world;
+  if (groundIsCeiling(world, position.x, position.y, position.z)) {
+    UNDERGROUND.base = world;
+    probe = UNDERGROUND;
+  }
 
   const collisionHeight = input.collisionHeight > 0 ? input.collisionHeight : DEFAULT_COLLISION_HEIGHT;
   const swimDepth = collisionHeight * SWIM_DEPTH_RATIO;

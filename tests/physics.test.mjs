@@ -452,6 +452,50 @@ test("a building's own floor is what is stood on, not the ground under the build
   assert.equal(downstairs.z, 0);
 });
 
+test("a mine under a hill is walked in, not climbed out of through the hillside (25.10, Deadmines)", () => {
+  // The map's ground is the hill, 40 yards over the mine; the mine's floor is the server's collision
+  // geometry, sloping down a yard over every five. Taking the higher of the two put the character on
+  // the hill at its first step down or its first landing.
+  const mineFloor = (x) => 10 - x / 5;
+  const mine = world({
+    ground: () => 50,
+    floor: (x, _y, fromZ, minZ) => {
+      const z = mineFloor(x);
+      return z <= fromZ && z >= minZ ? z : undefined;
+    },
+  });
+  const walker = at(0, 0, 10);
+  const motion = newCharacterMotion();
+  simulate(walker, motion, input({ forward: 1 }), mine, 2);
+  assert.ok(walker.x > 10, `walked on (${walker.x})`);
+  assert.ok(Math.abs(walker.z - mineFloor(walker.x)) < 0.01, `on the mine's floor: ${walker.z} at x=${walker.x}`);
+  assert.equal(motion.mode, "ground");
+
+  const jumper = at(0, 0, 10);
+  const jumping = newCharacterMotion();
+  simulate(jumper, jumping, input({ ascend: true }), mine, 1 / 30);
+  simulate(jumper, jumping, input(), mine, 2);
+  assert.equal(jumping.mode, "ground");
+  assert.ok(Math.abs(jumper.z - mineFloor(jumper.x)) < 0.01, `landed in the mine, not on the hill: ${jumper.z}`);
+});
+
+test("outdoors over a cave the hill is still the ground, and a step up onto it is still a step", () => {
+  // The same mine seen from the hill: the character stands on the ground with the mine far below.
+  const hill = world({
+    ground: (x) => x / 10,
+    floor: (_x, _y, fromZ, minZ) => (-30 <= fromZ && -30 >= minZ ? -30 : undefined),
+  });
+  const walker = at(0, 0, 0);
+  simulate(walker, newCharacterMotion(), input({ forward: 1 }), hill, 2);
+  assert.ok(Math.abs(walker.z - walker.x / 10) < 0.01, `on the hill: ${walker.z} at x=${walker.x}`);
+
+  // Half a yard under the ground over a floor: within a step, so the ground is stepped onto as before.
+  const sunk = at(0, 0, -0.5);
+  const flat = world({ ground: () => 0, floor: (_x, _y, fromZ, minZ) => (-0.5 <= fromZ && -0.5 >= minZ ? -0.5 : undefined) });
+  simulate(sunk, newCharacterMotion(), input({ forward: 1 }), flat, 0.5);
+  assert.equal(sunk.z, 0);
+});
+
 test("walking under a bridge walks under it", () => {
   // The deck is five yards up, well over a step: it is not the floor from below, and it is from
   // above. Both answers come out of the same query.
