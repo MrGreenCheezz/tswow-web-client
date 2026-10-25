@@ -29,3 +29,31 @@ test("enhanced lighting can be enabled and saved without resetting player prefer
   assert.equal(lightingClassicLook(baseline.lightingQuality), true, "the baseline draws the classic look");
   assert.equal(baseline.volumeMaster, 25);
 });
+
+test("25.10: a blob saved on the enhanced preset before an addition receives it once", async () => {
+  const { ENHANCED_PRESET_REVISION, ENHANCED_PRESET_REVISIONS, ENHANCED_PRESET_REVISION_SETTING } =
+    await import("../dist/code/browser/ui/EnhancedPresetRevision.js");
+  for (const revision of ENHANCED_PRESET_REVISIONS) {
+    for (const [id, value] of Object.entries(revision)) {
+      assert.equal(ENHANCED_GRAPHICS_OVERRIDES[id], value, `${id} is the preset's own value`);
+      assert.notEqual(settingDefinition(id).fallback, value, `${id} differs from its default, or it needs no migration`);
+    }
+  }
+  const pressedBefore = { ...enhancedGraphicsSettings(defaultSettings()), experimentalLivingSpells: false,
+    experimentalWindGusts: false };
+  const stored = JSON.parse(serialiseSettings(pressedBefore));
+  assert.equal(stored[ENHANCED_PRESET_REVISION_SETTING], ENHANCED_PRESET_REVISION, "a blob written now records the revision");
+  delete stored[ENHANCED_PRESET_REVISION_SETTING]; // as the blobs written before 25.10
+  const migrated = parseSettings(JSON.stringify(stored));
+  assert.equal(migrated.experimentalLivingSpells, true, "the addition arrives");
+  assert.equal(migrated.experimentalWindGusts, false, "a deliberate opt-out of an older preset key stays");
+  assert.equal(JSON.parse(serialiseSettings(migrated))[ENHANCED_PRESET_REVISION_SETTING], ENHANCED_PRESET_REVISION);
+  const optedOut = parseSettings(serialiseSettings({ ...migrated, experimentalLivingSpells: false }));
+  assert.equal(optedOut.experimentalLivingSpells, false, "turning it off after the migration sticks");
+  assert.equal(parseSettings(JSON.stringify({ lightingQuality: 1 })).experimentalLivingSpells, false,
+    "a blob that is not the enhanced profile is left alone");
+  const baseline = comparisonGraphicsSettings(enhancedGraphicsSettings(defaultSettings()));
+  assert.equal(parseSettings(serialiseSettings(baseline)).experimentalLivingSpells, false, "the comparison profile stays");
+  assert.equal(JSON.parse(serialiseSettings(baseline))[ENHANCED_PRESET_REVISION_SETTING], undefined,
+    "the comparison profile does not read as enhanced");
+});

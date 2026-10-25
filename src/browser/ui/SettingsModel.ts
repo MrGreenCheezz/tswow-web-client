@@ -14,6 +14,8 @@
  * DOM-free: this is the part with the defaults and the clamping in it.
  */
 
+import { ENHANCED_PRESET_REVISION, ENHANCED_PRESET_REVISION_SETTING, migrateEnhancedPreset, readsAsEnhancedProfile } from "./EnhancedPresetRevision.js";
+
 export type SettingKind = "boolean" | "number";
 
 export const SETTING_GROUPS = ["Игра", "Графика", "Эффекты", "Интерфейс", "Звук", "Чат"] as const;
@@ -589,6 +591,7 @@ export function parseSettings(text: string): SettingValues | undefined {
     if (definition) values[id] = coerceSetting(definition, value);
   }
   migrateCameraDistance(raw as Record<string, unknown>, values);
+  migrateEnhancedPreset(raw as Record<string, unknown>, values);
   return values;
 }
 
@@ -623,5 +626,8 @@ export function serialiseSettings(values: SettingValues): string {
     const value = values[definition.id];
     if (value !== undefined && value !== definition.fallback) changed[definition.id] = value;
   }
+  // 25.10: a blob on the enhanced profile records the preset revision it has, so a later opt-out is not
+  // undone. Not a setting: parse reads it from the blob alone (ui/EnhancedPresetRevision.ts).
+  if (readsAsEnhancedProfile(changed)) changed[ENHANCED_PRESET_REVISION_SETTING] = ENHANCED_PRESET_REVISION;
   return JSON.stringify(changed);
 }
