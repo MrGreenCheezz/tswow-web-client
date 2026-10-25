@@ -48,7 +48,7 @@ import { frameXmlStubPlanAsync } from "./FrameXmlStubPlan.js";
 import { FRAME_XML_SETTINGS_CVARS } from "./FrameXmlSettingsCVar.js";
 import {
   frameXmlOptionsAdoptSource, frameXmlOptionsCategorySource, frameXmlOptionsWebClientGroups,
-  FRAMEXML_OPTIONS_BEFORE_EVENTS_SOURCE, FRAMEXML_OPTIONS_WEBCLIENT_PANEL,
+  FRAMEXML_OPTIONS_BEFORE_EVENTS_SOURCE, FRAMEXML_OPTIONS_WEBCLIENT_PANEL, FRAMEXML_OPTIONS_WEBCLIENT_VIDEO_NAME,
 } from "./FrameXmlOptions.js";
 import {
   publishFrameXmlOptions, type FrameXmlOptionsOwner, type FrameXmlOptionsWindow,
@@ -440,10 +440,14 @@ export interface FrameXmlLazyOptionsOwner extends FrameXmlOptionsOwner {
 }
 
 function showSource(window: FrameXmlOptionsWindow, fromGameMenu: boolean): string {
-  const frame = window === "video" ? "VideoOptionsFrame" : window === "audio" ? "AudioOptionsFrame" : "InterfaceOptionsFrame";
+  // 26.10: «webclient» (`/settings`, the native menu's «Настройки») is the graphics page in «Видео» now.
+  const frame = window === "video" || window === "webclient" ? "VideoOptionsFrame"
+    : window === "audio" ? "AudioOptionsFrame" : "InterfaceOptionsFrame";
   // GameMenuFrame's own buttons: ShowUIPanel, then the menu to return to (GameMenuFrame.xml:58-91).
   const lastFrame = fromGameMenu ? `${frame}.lastFrame = GameMenuFrame` : "";
-  const category = window === "webclient" ? `InterfaceOptionsFrame_OpenToCategory(${FRAMEXML_OPTIONS_WEBCLIENT_PANEL})` : "";
+  // OptionsFrame_OpenToCategory takes a category's name only (OptionsFrameTemplates.lua:349 returns for a frame).
+  const category = window === "webclient"
+    ? `OptionsFrame_OpenToCategory(VideoOptionsFrame, ${JSON.stringify(FRAMEXML_OPTIONS_WEBCLIENT_VIDEO_NAME)})` : "";
   return `ShowUIPanel(${frame}) ${lastFrame} ${category}`;
 }
 
@@ -476,7 +480,9 @@ export function createLazyFrameXmlOptionsOwner(
   };
   const show = (request: { readonly window: FrameXmlOptionsWindow; readonly fromGameMenu: boolean }): void => {
     wanted = undefined;
-    const target = request.window === "video" ? frames!.video : request.window === "audio" ? frames!.audio : frames!.interface;
+    // 26.10: «webclient» is the graphics page in «Видео» (showSource).
+    const target = request.window === "video" || request.window === "webclient" ? frames!.video
+      : request.window === "audio" ? frames!.audio : frames!.interface;
     const errors = errorTotal(boot);
     // One options frame at a time, as the center UI panel slot keeps it in the client.
     for (const frame of openFrames()) if (frame !== target) cancel(frame);

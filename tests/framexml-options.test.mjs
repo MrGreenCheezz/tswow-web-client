@@ -124,9 +124,21 @@ test("the WebClient category carries every browser setting without a stock contr
   assert.deepEqual(graphics.controls.find((control) => control.setting === "renderScale"),
     { cvar: "webclient_renderScale", setting: "renderScale", kind: "slider", text: "Масштаб отрисовки, %",
       tooltip: SETTING_DEFINITIONS.find((definition) => definition.id === "renderScale").hint, min: 50, max: 100, step: 5 });
+  // 26.10 (owner: «все настройки находятся в отдельном меню webclient»): graphics and effects in «Видео», the rest
+  // under «WebClient»; a choice carries its steps' names (owner: «где 3 значение вообще путает»).
+  assert.deepEqual(groups.map((group) => [group.key, group.window, group.title]), [
+    ["Graphics", "video", "Качество и дальность"], ["Effects", "video", "Эффекты и свет"],
+    ["Interface", "interface", "Интерфейс"], ["Chat", "interface", "Чат"],
+  ]);
+  assert.deepEqual(graphics.controls.find((control) => control.setting === "lightingQuality").labels,
+    ["Как в оригинале", "Мягкое", "Полное", "Оригинал + тени"]);
   const source = frameXmlOptionsCategorySource(groups);
-  assert.match(source, /InterfaceOptions_AddCategory\(root\)/);
-  assert.match(source, /for group = #groups, 1, -1 do/, "children are inserted after their parent, so last first");
+  assert.match(source, /if videoKey == "video" then OptionsFrame_AddCategory\(video\.frame, root\) else InterfaceOptions_AddCategory\(root\) end/);
+  assert.match(source, /InterfaceOptions_AddCategory\(interfaceRoot\)/);
+  assert.match(source, /for index = #filed, 1, -1 do/, "«WebClient» children are inserted after their parent, so last first");
+  assert.match(source, /if entry\.key ~= "interface" then OptionsFrame_AddCategory\(entry\.place\.frame, entry\.panel\) end/,
+    "«Видео» lists its panels in the groups' order");
+  assert.match(source, /labels = \{ "Как в оригинале", "Мягкое", "Полное", "Оригинал \+ тени" \}/);
 });
 
 test("the WebClient «Эффекты» panel carries the settings window's subsections and a panel that overflows scrolls", () => {

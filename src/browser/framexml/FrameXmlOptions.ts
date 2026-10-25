@@ -306,6 +306,23 @@ export const FRAMEXML_OPTIONS_FIXED_ON: ReadonlyMap<string, string> = new Map([
 
 export const FRAMEXML_OPTIONS_WEBCLIENT_PANEL = "InterfaceOptionsWebClientPanel";
 export const FRAMEXML_OPTIONS_WEBCLIENT_NAME = "WebClient";
+/**
+ * 26.10 (owner: «все настройки находятся в отдельном меню webclient»): the graphics presets' page, the first of the
+ * browser's categories in the stock «Видео» window, beside the stock «Разрешение» and «Эффекты».
+ */
+export const FRAMEXML_OPTIONS_WEBCLIENT_VIDEO_PANEL = "VideoOptionsWebClientPanel";
+export const FRAMEXML_OPTIONS_WEBCLIENT_VIDEO_NAME = "Улучшенная графика";
+
+/** 26.10: which stock window a settings group's panel is filed in, and what it is called there. */
+export type FrameXmlOptionsWindow = "video" | "audio" | "interface";
+const GROUP_PLACES: Readonly<Record<SettingGroup, { readonly window: FrameXmlOptionsWindow; readonly title: string }>> = {
+  "Графика": { window: "video", title: "Качество и дальность" },
+  "Эффекты": { window: "video", title: "Эффекты и свет" },
+  "Звук": { window: "audio", title: "Звук браузера" },
+  "Игра": { window: "interface", title: "Игра" },
+  "Интерфейс": { window: "interface", title: "Интерфейс" },
+  "Чат": { window: "interface", title: "Чат" },
+};
 
 export interface FrameXmlOptionsWebClientControl {
   readonly cvar: string;
@@ -316,6 +333,8 @@ export interface FrameXmlOptionsWebClientControl {
   readonly min?: number;
   readonly max?: number;
   readonly step?: number;
+  /** 26.10: the names of a choice's steps (SettingsModel.ts `labels`), shown instead of the number. */
+  readonly labels?: readonly string[];
   /** The subsection heading it is drawn under (SettingsSections.ts); absent in a group without them. */
   readonly section?: string;
 }
@@ -324,6 +343,9 @@ export interface FrameXmlOptionsWebClientGroup {
   /** The panel's frame name: `InterfaceOptionsWebClient<key>Panel`. */
   readonly key: string;
   readonly name: SettingGroup;
+  /** 26.10: the stock window it is filed in, and its title in that window's list. */
+  readonly window: FrameXmlOptionsWindow;
+  readonly title: string;
   /** Settings of the native chat dock alone, which the stock chat hides when it takes the route. */
   readonly nativeChatOnly: boolean;
   readonly controls: readonly FrameXmlOptionsWebClientControl[];
@@ -359,6 +381,7 @@ export function frameXmlOptionsWebClientGroups(): readonly FrameXmlOptionsWebCli
         tooltip: definition.hint ?? definition.label,
         ...(definition.kind === "number" ? {
           min: definition.min ?? 0, max: definition.max ?? 100, step: definition.step ?? 1,
+          ...(definition.labels ? { labels: definition.labels } : {}), // 26.10
         } : {}),
       }));
     }
@@ -367,7 +390,8 @@ export function frameXmlOptionsWebClientGroups(): readonly FrameXmlOptionsWebCli
       title === undefined ? items : items.map((control) => Object.freeze({ ...control, section: title })));
     if (ordered.length > 0) {
       groups.push(Object.freeze({
-        key: GROUP_KEYS[group], name: group, nativeChatOnly: group === NATIVE_CHAT_GROUP, controls: Object.freeze(ordered),
+        key: GROUP_KEYS[group], name: group, window: GROUP_PLACES[group].window, title: GROUP_PLACES[group].title, // 26.10
+        nativeChatOnly: group === NATIVE_CHAT_GROUP, controls: Object.freeze(ordered),
       }));
     }
   }
@@ -394,9 +418,10 @@ function lua(value: string): string {
  * example panel does.
  */
 export function frameXmlOptionsCategorySource(groups: readonly FrameXmlOptionsWebClientGroup[]): string {
-  const table = groups.map((group) => `{ key = ${lua(group.key)}, name = ${lua(group.name)}, nativeChatOnly = ${group.nativeChatOnly}, controls = { ${
+  const table = groups.map((group) => `{ key = ${lua(group.key)}, name = ${lua(group.name)}, window = ${lua(group.window)}, title = ${lua(group.title)}, nativeChatOnly = ${group.nativeChatOnly}, controls = { ${
     group.controls.map((control) => `{ cvar = ${lua(control.cvar)}, kind = ${lua(control.kind)}, text = ${lua(control.text)}, tooltip = ${lua(control.tooltip)}${
       control.kind === "slider" ? `, min = ${control.min}, max = ${control.max}, step = ${control.step}` : ""}${
+      control.labels ? `, labels = { ${control.labels.map(lua).join(", ")} }` : ""}${
       control.section !== undefined ? `, section = ${lua(control.section)}` : ""} }`).join(", ")
   } } }`).join(",\n  ");
   const watched = [...FRAME_XML_SETTINGS_CVARS, ...FRAME_XML_WEBCLIENT_CVARS].map((row) => lua(row.cvar)).join(", ");
@@ -426,11 +451,37 @@ end
 local function whole(value)
   return string.format("%d", math.floor((tonumber(value) or 0) + 0.5))
 end
+-- 26.10: a choice's name for its value (the control's labels, from min by step), else the number.
+local function shown(control, value)
+  if control.labels then
+    local index = math.floor(((tonumber(value) or 0) - control.min) / control.step + 0.5) + 1
+    if control.labels[index] then return control.labels[index] end
+  end
+  return whole(value)
+end
 
-local root = CreateFrame("Frame", ${lua(FRAMEXML_OPTIONS_WEBCLIENT_PANEL)}, container)
+-- 26.10 (owner: «все настройки находятся в отдельном меню webclient»): each group lives in the stock window it
+-- belongs to — graphics and effects in «Видео» (after the presets' page), sound in «Звук», the rest under «WebClient»
+-- in «Интерфейс». A window this corpus lacks files its groups under «WebClient».
+local windows = {
+  video = { frame = rawget(_G, "VideoOptionsFrame"), container = rawget(_G, "VideoOptionsFramePanelContainer"), prefix = "VideoOptionsWebClient" },
+  audio = { frame = rawget(_G, "AudioOptionsFrame"), container = rawget(_G, "AudioOptionsFramePanelContainer"), prefix = "AudioOptionsWebClient" },
+  interface = { container = container, prefix = "InterfaceOptionsWebClient" },
+}
+local function windowOf(key)
+  local place = windows[key]
+  if place and place.container and (key == "interface" or place.frame) then return key, place end
+  return "interface", windows.interface
+end
+local videoKey, video = windowOf("video")
+local root = CreateFrame("Frame", ${lua(FRAMEXML_OPTIONS_WEBCLIENT_VIDEO_PANEL)}, video.container)
 root:Hide()
-root.name = ${lua(FRAMEXML_OPTIONS_WEBCLIENT_NAME)}
-header(root, "WebClient", "Настройки браузерного клиента, которых нет в оригинальном интерфейсе. Меняются сразу; «Отмена» возвращает прежние значения.")
+root.name = ${lua(FRAMEXML_OPTIONS_WEBCLIENT_VIDEO_NAME)}
+header(root, ${lua(FRAMEXML_OPTIONS_WEBCLIENT_VIDEO_NAME)}, "Графика браузерного клиента, которой нет в оригинале: пресеты здесь, отдельные настройки — в разделах «Качество и дальность» и «Эффекты и свет». Меняются сразу; «Отмена» возвращает прежние значения.")
+local interfaceRoot = CreateFrame("Frame", ${lua(FRAMEXML_OPTIONS_WEBCLIENT_PANEL)}, container)
+interfaceRoot:Hide()
+interfaceRoot.name = ${lua(FRAMEXML_OPTIONS_WEBCLIENT_NAME)}
+local interfaceNote = header(interfaceRoot, "WebClient", "Игра, интерфейс и чат браузерного клиента — то, чего нет в оригинальном интерфейсе. Графика — в окне «Видео», звук — в окне «Звук».")
 -- What a preset moved that no control of this frame carries, as it was before: [cvar] = value.
 local presetOld = {}
 local function applyPreset(kind)
@@ -438,12 +489,29 @@ local function applyPreset(kind)
   for _, cvar in ipairs(watched) do before[cvar] = GetCVar(cvar) end
   host("preset", kind)
   local controls = {}
-  for _, panel in ipairs({ container:GetChildren() }) do
+  -- Live controls only: the browser's own panels and the stock «Интерфейс» ones write as they move, so «Отмена» puts
+  -- back their old values. A stock «Видео»/«Звук» control writes on «Окей» alone: what a preset moved under it is
+  -- remembered here (presetOld) and put back by the page's own cancel, and the control just shows the new value.
+  local panels, deferred = {}, {}
+  for _, panel in ipairs(interfaceRoot.webclientAllPanels or {}) do panels[panel] = true end
+  for _, panel in ipairs({ container:GetChildren() }) do panels[panel] = true end
+  for panel in pairs(panels) do
     for _, control in ipairs(panel.controls or {}) do
       if control.cvar then
         local key = string.lower(control.cvar)
         controls[key] = controls[key] or {}
         table.insert(controls[key], control)
+      end
+    end
+  end
+  for key, place in pairs(windows) do
+    if key ~= "interface" and place.container then
+      for _, panel in ipairs({ place.container:GetChildren() }) do
+        if not panels[panel] then
+          for _, control in ipairs(panel.controls or {}) do
+            if control.cvar then deferred[string.lower(control.cvar)] = control end
+          end
+        end
       end
     end
   end
@@ -456,8 +524,14 @@ local function applyPreset(kind)
           BlizzardOptionsPanel_RefreshControl(control)
           control.oldValue = old
         end
-      elseif presetOld[cvar] == nil then
-        presetOld[cvar] = before[cvar]
+      else
+        if presetOld[cvar] == nil then presetOld[cvar] = before[cvar] end
+        local shownBy = deferred[string.lower(cvar)]
+        if shownBy then
+          local old = shownBy.oldValue
+          BlizzardOptionsPanel_RefreshControl(shownBy)
+          shownBy.oldValue = old
+        end
       end
     end
   end
@@ -501,19 +575,27 @@ root.cancel = function()
   presetOld = {}
 end
 root.refresh()
-root.webclientPanels = {}
-InterfaceOptions_AddCategory(root)
+if videoKey == "video" then OptionsFrame_AddCategory(video.frame, root) else InterfaceOptions_AddCategory(root) end
+InterfaceOptions_AddCategory(interfaceRoot)
+-- Every browser panel wherever it is filed (the sliders are armed over these after the frames' own setup), and the
+-- ones under «WebClient», which its page names.
+interfaceRoot.webclientAllPanels = {}
+interfaceRoot.webclientPanels = {}
+local filed = {}
 
-for group = #groups, 1, -1 do
+for group = 1, #groups do
   local spec = groups[group]
-  local panel = CreateFrame("Frame", "InterfaceOptionsWebClient" .. spec.key .. "Panel", container)
-  table.insert(root.webclientPanels, 1, panel)
+  local key, place = windowOf(spec.window)
+  local panel = CreateFrame("Frame", place.prefix .. spec.key .. "Panel", place.container)
+  table.insert(interfaceRoot.webclientAllPanels, panel)
+  if key == "interface" then table.insert(interfaceRoot.webclientPanels, panel) end
+  table.insert(filed, { key = key, place = place, panel = panel })
   panel:Hide()
-  panel.name = spec.name
-  panel.parent = root.name
+  panel.name = spec.title
+  if key == "interface" then panel.parent = interfaceRoot.name end
   panel.options = {}
-  local about = "Настройки WebClient. Подсказка у каждой — что именно она меняет."
-  local sub = header(panel, spec.name, about)
+  local about = "Настройки браузерного клиента. Подсказка у каждой — что именно она меняет."
+  local sub = header(panel, spec.title, about)
   -- One column, so a long label never runs under its neighbour's box. What does not fit the
   -- container (InterfaceOptionsFramePanelContainer, 413 x 428) scrolls in the stock
   -- UIPanelScrollFrameTemplate: «Эффекты» has grown past two columns, and the second one ran on
@@ -568,14 +650,15 @@ for group = #groups, 1, -1 do
       slider.type = CONTROLTYPE_SLIDER
       slider.cvar = control.cvar
       slider.label = control.text
-      _G[name .. "Low"]:SetText(whole(control.min))
-      _G[name .. "High"]:SetText(whole(control.max))
+      _G[name .. "Low"]:SetText(shown(control, control.min))
+      _G[name .. "High"]:SetText(shown(control, control.max))
+      slider.webclientControl = control -- 26.10: its value is shown by name when it is a choice
       -- BlizzardOptionsPanel_Slider_OnValueChanged's live write, after the panel's own setup:
       -- SetMinMaxValues clamps the fresh slider and fires this before the value has been read.
       slider:SetScript("OnValueChanged", function(self, value)
         self.value = value
         if self.webclientReady then BlizzardOptionsPanel_SetCVarSafe(self.cvar, value) end
-        _G[self:GetName() .. "Text"]:SetText(self.label .. ": " .. whole(value))
+        _G[self:GetName() .. "Text"]:SetText(self.label .. ": " .. shown(self.webclientControl, value))
       end)
       BlizzardOptionsPanel_RegisterControl(slider, panel)
       panel.options[control.cvar] = {
@@ -585,7 +668,11 @@ for group = #groups, 1, -1 do
     end
     y = y - height
   end
-  InterfaceOptionsPanel_OnLoad(panel)
+  -- Live controls with a Cancel baseline in every window, as the «WebClient» panels always had
+  -- (InterfaceOptionsPanel_OnLoad without its filing; each window files its own below).
+  -- Those three are local to InterfaceOptionsPanels.lua: taken from a stock panel InterfaceOptionsPanel_OnLoad set up.
+  local stock = rawget(_G, "InterfaceOptionsControlsPanel")
+  BlizzardOptionsPanel_OnLoad(panel, nil, stock and stock.cancel, stock and stock.default, stock and stock.refresh)
   if spec.nativeChatOnly then
     -- Live while the native chat dock is on screen; greyed with the reason, the way the unavailable
     -- stock controls are, while the stock chat has replaced it. Asked again on every open.
@@ -608,14 +695,23 @@ for group = #groups, 1, -1 do
   end
 end
 
+-- «Видео» and «Звук» list their panels after the stock ones, in the groups' order. «WebClient» files a child
+-- directly after its parent, so its children go in last to first.
+for _, entry in ipairs(filed) do
+  if entry.key ~= "interface" then OptionsFrame_AddCategory(entry.place.frame, entry.panel) end
+end
+for index = #filed, 1, -1 do
+  if filed[index].key == "interface" then InterfaceOptions_AddCategory(filed[index].panel) end
+end
+
 -- The sections are the category's children, collapsed under it as the client lists them; the root
 -- page names them too, one button each, so the first open is not a page of two buttons.
-local sections = root:CreateFontString(root:GetName() .. "Sections", "ARTWORK", "GameFontNormal")
-sections:SetPoint("TOPLEFT", note, "BOTTOMLEFT", 0, -24)
+local sections = interfaceRoot:CreateFontString(interfaceRoot:GetName() .. "Sections", "ARTWORK", "GameFontNormal")
+sections:SetPoint("TOPLEFT", interfaceNote, "BOTTOMLEFT", 0, -24)
 sections:SetText("Разделы")
 previous = nil
-for index, panel in ipairs(root.webclientPanels) do
-  local button = CreateFrame("Button", root:GetName() .. "Section" .. index, root, "UIPanelButtonTemplate")
+for index, panel in ipairs(interfaceRoot.webclientPanels) do
+  local button = CreateFrame("Button", interfaceRoot:GetName() .. "Section" .. index, interfaceRoot, "UIPanelButtonTemplate")
   button:SetWidth(160)
   button:SetHeight(22)
   if previous then button:SetPoint("TOPLEFT", previous, "BOTTOMLEFT", 0, -4)
@@ -717,11 +813,15 @@ for name, reason in pairs(fixed) do
   end
 end
 local root = _G[${lua(FRAMEXML_OPTIONS_WEBCLIENT_PANEL)}]
-for _, panel in ipairs(root and root.webclientPanels or {}) do
+for _, panel in ipairs(root and (root.webclientAllPanels or root.webclientPanels) or {}) do
   for _, control in ipairs(panel.controls or {}) do
     if control.type == CONTROLTYPE_SLIDER then
       control.webclientReady = true
-      _G[control:GetName() .. "Text"]:SetText(control.label .. ": " .. string.format("%d", math.floor((tonumber(control:GetValue()) or 0) + 0.5)))
+      -- 26.10: a choice by its name (the control spec's labels), as its OnValueChanged writes it.
+      local value = tonumber(control:GetValue()) or 0
+      local spec, label = control.webclientControl, nil
+      if spec and spec.labels then label = spec.labels[math.floor((value - spec.min) / spec.step + 0.5) + 1] end
+      _G[control:GetName() .. "Text"]:SetText(control.label .. ": " .. (label or string.format("%d", math.floor(value + 0.5))))
     end
   end
 end

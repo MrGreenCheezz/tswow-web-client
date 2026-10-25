@@ -267,29 +267,43 @@ test("the interface panels: bars switch the stock multibars at once, FCT keeps i
   assert.deepEqual(lua(boot, "return MultiBarBottomRight:IsShown() and 1 or 0, InterfaceOptionsFrame:IsShown() and 1 or 0", 2), [0, 0]);
 });
 
+// 26.10 (owner: «все настройки находятся в отдельном меню webclient»): graphics and effects are categories of the stock
+// «Видео» window; only what has no stock window (interface, chat) stays under «WebClient» in «Интерфейс». A choice shows
+// its name, not its number (owner: «ползунки путают, особенно свет и качество, где 3 значение вообще путает»).
 test("the WebClient category: every control a live stock control, Cancel reverts, Defaults leaves the interface switch alone", withClient, async () => {
   const { boot, writes, values } = await loaded();
   const from = writes.length;
-  const [panel, graphics] = lua(boot, `ShowUIPanel(InterfaceOptionsFrame)
-    InterfaceOptionsFrame_OpenToCategory(InterfaceOptionsWebClientGraphicsPanel)
+  const [panel, graphics] = lua(boot, `ShowUIPanel(VideoOptionsFrame)
+    OptionsFrame_OpenToCategory(VideoOptionsFrame, "Качество и дальность")
     local out = {}
-    for _, control in ipairs(InterfaceOptionsWebClientGraphicsPanel.controls) do
+    for _, control in ipairs(VideoOptionsWebClientGraphicsPanel.controls) do
       out[#out + 1] = _G[control:GetName() .. "Text"]:GetText()
     end
-    return InterfaceOptionsFramePanelContainer.displayedPanel:GetName(), table.concat(out, "|")`, 2);
-  assert.equal(panel, "InterfaceOptionsWebClientGraphicsPanel");
-  assert.equal(graphics, "Масштаб отрисовки, %: 100|Автокачество графики|Ограничение кадров: 72|Где рисуется мир: 0|Качество освещения: 2|Скрывать невидимые помещения"
-    + "|Чёткость текстур персонажей|Густая трава|Густота травы: 2");
+    return VideoOptionsFramePanelContainer.displayedPanel:GetName(), table.concat(out, "|")`, 2);
+  assert.equal(panel, "VideoOptionsWebClientGraphicsPanel");
+  assert.equal(graphics, "Масштаб отрисовки, %: 100|Автокачество графики|Ограничение кадров: 72|Где рисуется мир: Само|Качество освещения: Полное"
+    + "|Скрывать невидимые помещения|Чёткость текстур персонажей|Густая трава|Густота травы: ×2");
   assert.deepEqual(lua(boot, `local names = {}
+    for _, element in ipairs(VideoOptionsFrame.categoryList) do names[#names + 1] = element.name end
+    return table.concat(names, "|")`)[0].split("|").slice(-3), ["Улучшенная графика", "Качество и дальность", "Эффекты и свет"],
+  "after the stock categories, in the window's list");
+  assert.deepEqual(lua(boot, "return VideoOptionsWebClientGraphicsPanel5Low:GetText(), VideoOptionsWebClientGraphicsPanel5High:GetText()", 2),
+    ["Как в оригинале", "Оригинал + тени"], "the choice's ends by name");
+  boot.bridge.SetValue(boot.bridge.getFrame("VideoOptionsWebClientGraphicsPanel1"), 72, true);
+  lua(boot, "VideoOptionsWebClientGraphicsPanel2:Click()", 0);
+  assert.deepEqual(writes.slice(from), [["renderScale", 70], ["autoQuality", true]], "live, snapped to the setting's step");
+  assert.deepEqual(lua(boot, "return VideoOptionsWebClientGraphicsPanel1Text:GetText()"), ["Масштаб отрисовки, %: 70"]);
+  boot.bridge.SetValue(boot.bridge.getFrame("VideoOptionsWebClientGraphicsPanel5"), 3, true);
+  assert.deepEqual(lua(boot, "return VideoOptionsWebClientGraphicsPanel5Text:GetText()"), ["Качество освещения: Оригинал + тени"]);
+  lua(boot, "VideoOptionsFrameCancel:Click()", 0);
+  assert.equal(values().lightingQuality, 2);
+  assert.deepEqual(lua(boot, `local names = {}
+    ShowUIPanel(InterfaceOptionsFrame) InterfaceOptionsFrame_OpenToCategory(InterfaceOptionsWebClientInterfacePanel)
     for _, button in ipairs(InterfaceOptionsFrameCategories.buttons) do
       if button:IsShown() and button.element and button.element.parent == "WebClient" then names[#names + 1] = button.element.name end
     end
-    return table.concat(names, "|")`), ["Графика|Эффекты|Интерфейс|Чат"], "opening a section expands the category, in the window's order");
-  boot.bridge.SetValue(boot.bridge.getFrame("InterfaceOptionsWebClientGraphicsPanel1"), 72, true);
-  lua(boot, "InterfaceOptionsWebClientGraphicsPanel2:Click()", 0);
-  assert.deepEqual(writes.slice(from), [["renderScale", 70], ["autoQuality", true]], "live, snapped to the setting's step");
-  assert.deepEqual(lua(boot, "return InterfaceOptionsWebClientGraphicsPanel1Text:GetText()"), ["Масштаб отрисовки, %: 70"]);
-  lua(boot, "InterfaceOptionsFrameCancel:Click()", 0);
+    InterfaceOptionsFrameCancel:Click()
+    return table.concat(names, "|")`), ["Интерфейс|Чат"], "«WebClient» keeps what has no stock window");
   assert.equal(values().renderScale, 100);
   assert.equal(values().autoQuality, false, "off by default (owner, 12.10), and Cancel restores it");
   lua(boot, `ShowUIPanel(InterfaceOptionsFrame) InterfaceOptionsFrame_OpenToCategory(InterfaceOptionsWebClientInterfacePanel)
@@ -307,10 +321,10 @@ test("the WebClient category: every control a live stock control, Cancel reverts
 test("the WebClient «Эффекты» panel is one column under its subsections, scrolled inside the frame", withClient, async () => {
   const { boot, writes } = await loaded();
   const from = writes.length;
-  const [count, inChild, columns, fits, headings, graphicsScroll, wheel, childHeight] = lua(boot, `ShowUIPanel(InterfaceOptionsFrame)
-    InterfaceOptionsFrame_OpenToCategory(InterfaceOptionsWebClientEffectsPanel)
-    local panel = InterfaceOptionsWebClientEffectsPanel
-    local scroll = InterfaceOptionsWebClientEffectsPanelScroll
+  const [count, inChild, columns, fits, headings, graphicsScroll, wheel, childHeight] = lua(boot, `ShowUIPanel(VideoOptionsFrame)
+    OptionsFrame_OpenToCategory(VideoOptionsFrame, "Эффекты и свет")
+    local panel = VideoOptionsWebClientEffectsPanel
+    local scroll = VideoOptionsWebClientEffectsPanelScroll
     local child = scroll and scroll:GetScrollChild()
     local inChild, xs, seen, lowest = 0, {}, {}, 0
     for _, control in ipairs(panel.controls) do
@@ -325,9 +339,9 @@ test("the WebClient «Эффекты» panel is one column under its subsections
       local heading = _G[panel:GetName() .. "Heading" .. index]
       if heading then headings[#headings + 1] = heading:GetText() end
     end
-    InterfaceOptionsFrame_OpenToCategory(InterfaceOptionsWebClientGraphicsPanel)
-    local graphicsScroll = InterfaceOptionsWebClientGraphicsPanelScroll ~= nil
-    InterfaceOptionsFrameCancel:Click()
+    OptionsFrame_OpenToCategory(VideoOptionsFrame, "Качество и дальность")
+    local graphicsScroll = VideoOptionsWebClientGraphicsPanelScroll ~= nil
+    VideoOptionsFrameCancel:Click()
     return #panel.controls, inChild, table.concat(xs, ","), child and lowest <= child:GetHeight() and 1 or 0,
       table.concat(headings, "|"), graphicsScroll and 1 or 0, scroll and scroll:GetScript("OnMouseWheel") and 1 or 0,
       child and child:GetHeight() or 0`, 8);
@@ -342,7 +356,7 @@ test("the WebClient «Эффекты» panel is one column under its subsections
 });
 
 const WEBCLIENT_CONTROL = `local function webclientControl(cvar)
-  for _, panel in ipairs(InterfaceOptionsWebClientPanel.webclientPanels) do
+  for _, panel in ipairs(InterfaceOptionsWebClientPanel.webclientAllPanels) do
     for _, control in ipairs(panel.controls) do if control.cvar == cvar then return control end end
   end
 end`;
@@ -351,26 +365,24 @@ test("a preset is an edit: «Отмена» takes it back with the edits before 
   const { boot, writes, values, cvars } = await loaded();
   cvars.set("ffxGlow", "0");
   const start = values();
-  lua(boot, `ShowUIPanel(InterfaceOptionsFrame) InterfaceOptionsFrame_OpenToCategory(InterfaceOptionsActionBarsPanel)
-    InterfaceOptionsActionBarsPanelBottomRight:Click()
-    InterfaceOptionsFrame_OpenToCategory(InterfaceOptionsWebClientGraphicsPanel)`, 0);
-  boot.bridge.SetValue(boot.bridge.getFrame("InterfaceOptionsWebClientGraphicsPanel1"), 70, true);
+  lua(boot, `ShowUIPanel(VideoOptionsFrame) OptionsFrame_OpenToCategory(VideoOptionsFrame, "Качество и дальность")`, 0);
+  boot.bridge.SetValue(boot.bridge.getFrame("VideoOptionsWebClientGraphicsPanel1"), 70, true);
   const from = writes.length;
-  lua(boot, "InterfaceOptionsFrame_OpenToCategory(InterfaceOptionsWebClientPanel) InterfaceOptionsWebClientPanelEnhanced:Click()", 0);
+  lua(boot, `OptionsFrame_OpenToCategory(VideoOptionsFrame, "Улучшенная графика") VideoOptionsWebClientPanelEnhanced:Click()`, 0);
   assert.deepEqual(writes.slice(from), [["preset", "enhanced"]], "the profile lands as one write");
-  assert.deepEqual(values(), { ...enhancedGraphicsSettings(start), actionBarBottomRight: true, renderScale: 70 });
+  assert.deepEqual(values(), { ...enhancedGraphicsSettings(start), renderScale: 70 });
   assert.deepEqual(lua(boot, `${WEBCLIENT_CONTROL}
     local rays, light = webclientControl("webclient_godRays"), webclientControl("webclient_lightingQuality")
-    return rays:GetChecked() and 1 or 0, light:GetValue(), InterfaceOptionsWebClientGraphicsPanel1:GetValue()`, 3),
+    return rays:GetChecked() and 1 or 0, light:GetValue(), VideoOptionsWebClientGraphicsPanel1:GetValue()`, 3),
   [1, 2, 70], "the controls it moved show it; the edit before it stays");
-  // The fullscreen glow is the Video frame's control: the category's own cancel puts it back.
-  lua(boot, "InterfaceOptionsFrameCancel:Click()", 0);
+  // The fullscreen glow is the same window's stock control now: «Отмена» puts it back with the rest.
+  lua(boot, "VideoOptionsFrameCancel:Click()", 0);
   assert.deepEqual(values(), start, "the preset and the unsaved edits before it, all reverted");
-  assert.equal(boot.bridge.getFrame("InterfaceOptionsFrame").visible, false);
+  assert.equal(boot.bridge.getFrame("VideoOptionsFrame").visible, false);
 
-  lua(boot, "ShowUIPanel(InterfaceOptionsFrame) InterfaceOptionsFrame_OpenToCategory(InterfaceOptionsWebClientPanel) InterfaceOptionsWebClientPanelComparison:Click() InterfaceOptionsFrameOkay:Click()", 0);
+  lua(boot, `ShowUIPanel(VideoOptionsFrame) OptionsFrame_OpenToCategory(VideoOptionsFrame, "Улучшенная графика") VideoOptionsWebClientPanelComparison:Click() VideoOptionsFrameOkay:Click()`, 0);
   assert.deepEqual(values(), comparisonGraphicsSettings(start));
-  lua(boot, "ShowUIPanel(InterfaceOptionsFrame) InterfaceOptionsFrameCancel:Click()", 0);
+  lua(boot, "ShowUIPanel(VideoOptionsFrame) VideoOptionsFrameCancel:Click()", 0);
   assert.deepEqual(values(), comparisonGraphicsSettings(start), "a kept preset is the next open's baseline");
 });
 
@@ -390,7 +402,7 @@ test("the WebClient «Чат» settings are greyed with the reason while the sto
   assert.deepEqual(writes.slice(from), [], "a greyed control writes nothing");
   // The stock chat failed its gate: the native dock is back, and so are its settings.
   chat.native = true;
-  assert.deepEqual(open(), [7, 7, 0, "Настройки WebClient. Подсказка у каждой — что именно она меняет."]);
+  assert.deepEqual(open(), [7, 7, 0, "Настройки браузерного клиента. Подсказка у каждой — что именно она меняет."]);
   lua(boot, "InterfaceOptionsWebClientChatPanel2:Click()", 0);
   assert.deepEqual(writes.slice(from), [["chatTimestamps", true]]);
   lua(boot, "InterfaceOptionsFrameCancel:Click()", 0);
@@ -436,10 +448,10 @@ test("the lazy owner loads on the menu's first click, returns to the menu on Esc
     assert.deepEqual(lua(boot, "return InterfaceOptionsFrame:IsShown() and 1 or 0, GameMenuFrame:IsShown() and 1 or 0", 2), [0, 1]);
     lua(boot, "HideUIPanel(GameMenuFrame)", 0);
     assert.equal(controller.toggleFrameXmlOptions("webclient"), true);
-    assert.deepEqual(lua(boot, "return InterfaceOptionsFramePanelContainer.displayedPanel:GetName(), GameMenuFrame:IsShown() and 1 or 0", 2),
-      ["InterfaceOptionsWebClientPanel", 0], "/settings opens the category, with no menu to return to");
+    assert.deepEqual(lua(boot, "return VideoOptionsFramePanelContainer.displayedPanel:GetName(), GameMenuFrame:IsShown() and 1 or 0", 2),
+      ["VideoOptionsWebClientPanel", 0], "/settings opens the graphics page in «Видео», with no menu to return to");
     assert.equal(controller.toggleFrameXmlOptions("webclient"), true);
-    assert.equal(boot.bridge.getFrame("InterfaceOptionsFrame").visible, false);
+    assert.equal(boot.bridge.getFrame("VideoOptionsFrame").visible, false);
     assert.equal(boot.errorCount, errors);
     assert.deepEqual(failures, []);
     unpublish();

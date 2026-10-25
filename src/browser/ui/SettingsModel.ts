@@ -31,6 +31,11 @@ export interface SettingDefinition {
   min?: number | undefined;
   max?: number | undefined;
   step?: number | undefined;
+  /**
+   * 26.10 (owner: «ползунки путают, особенно свет и качество, где 3 значение вообще путает»): what each step of a
+   * number that is really a choice is called, from `min` by `step`. The control shows the name, not the number.
+   */
+  labels?: readonly string[] | undefined;
   /** Which group the window draws it under. */
   group: SettingGroup;
   /**
@@ -80,15 +85,15 @@ export const SETTING_DEFINITIONS: readonly SettingDefinition[] = [
     // 22.10 (12.14): read once at the page's start (main.ts, RenderWorkerStart.ts `renderWorkerChosen`); 0 picks by the
     // device — a worker in the desktop app (P-cores), the page in a browser (the worker would fall to E-cores).
     id: "renderWorker", label: "Где рисуется мир", group: "Графика", kind: "number", fallback: 0,
-    min: 0, max: 2, step: 1,
-    hint: "0 — само: в приложении в отдельном потоке, в браузере на странице; 1 — в отдельном потоке (интерфейс не ждёт мир); 2 — на странице. Действует после перезапуска. Адрес с ?renderworker=1 или 0 важнее.",
+    min: 0, max: 2, step: 1, labels: ["Само", "Отдельный поток", "На странице"], // 26.10
+    hint: "«Само»: в приложении — в отдельном потоке, в браузере — на странице. «Отдельный поток»: интерфейс не ждёт мир. «На странице»: всё в одном потоке. Действует после перезапуска.",
   },
   {
     // 05.10-7.20: 3 is «сравнение» (LightingQuality.ts LIGHTING_QUALITY_COMPARISON) — after 2 so a saved
     // 0, 1 or 2 keeps its meaning. The default is the highest quality, 2 (owner, 12.10, decision 0.4e).
     id: "lightingQuality", label: "Качество освещения", group: "Графика", kind: "number", fallback: 2,
-    min: 0, max: 3, step: 1,
-    hint: "0 — исходное освещение, 1 — мягкий тёплый свет и фонари, 2 — больше источников света и детальные тени, 3 — сравнение: исходное освещение и тени, как в оригинале с тенями.",
+    min: 0, max: 3, step: 1, labels: ["Как в оригинале", "Мягкое", "Полное", "Оригинал + тени"], // 26.10
+    hint: "«Как в оригинале» — свет клиента 3.3.5. «Мягкое» — тёплый свет и фонари. «Полное» — больше источников света и детальные тени (по умолчанию). «Оригинал + тени» — для сравнения: исходный свет оригинала, к которому добавлены только тени.",
   },
   {
     id: "wmoOcclusion", label: "Скрывать невидимые помещения", group: "Графика", kind: "boolean", fallback: true,
@@ -317,8 +322,8 @@ export const SETTING_DEFINITIONS: readonly SettingDefinition[] = [
     // clump. Positions stay a pure function of cell and index, so moving the slider thickens the
     // same meadow instead of reshuffling it; the field budget scales with it.
     id: "grassDensity", label: "Густота травы", group: "Графика", kind: "number", fallback: 2,
-    min: 1, max: 4, step: 1,
-    hint: "Во сколько раз гуще авторской плотности. 1 — как в таблице, 4 — луг стеной (и тяжелее).",
+    min: 1, max: 4, step: 1, labels: ["Как в игре", "×2", "×3", "×4"], // 26.10
+    hint: "Во сколько раз гуще авторской плотности: «Как в игре» — как в таблице клиента, ×4 — луг стеной (и тяжелее).",
   },
   {
     // 5.14: the original client's `cameraDistanceMaxFactor` (`InterfaceOptionsPanels.lua:1440`, a
