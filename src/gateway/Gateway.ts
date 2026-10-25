@@ -96,6 +96,7 @@ import {
   METADATA_GENERATION_PARAM, VISUAL_GENERATION_PARAM, assetCacheControl, gatewayCodeIdentity, metadataGeneration,
   visualGeneration,
 } from "./AssetGeneration.js"; // 22.10 (6.26)
+import { GatewayTraffic, loopbackRequest, startTrafficReporter, type TrafficReporterOptions } from "./GatewayTraffic.js"; // 25.10 (serve S5)
 
 const MAX_CLIENT_MESSAGE = 64 * 1024;
 /** How often a bridged socket is pinged; two missed pongs in a row close it. */
@@ -470,6 +471,11 @@ export interface GatewayOptions {
    * derived off the main thread (the tile worker's `tile-models` job); `undefined` when unpublished.
    */
   listTileModels?: (map: number, gridX: number, gridY: number) => Promise<readonly string[] | undefined>;
+  /**
+   * 25.10 (serve S5): print and file the per-route-class counters every interval with traffic
+   * (GatewayTraffic.ts). Absent: counted (for `/gateway/traffic`) but never printed or written.
+   */
+  trafficReport?: TrafficReporterOptions;
 }
 
 /**
@@ -825,6 +831,8 @@ export interface GatewayAssetHandler {
   checkPatchChain(): Promise<PatchStatusSummary>;
   readonly patchEventsPending: boolean;
   scheduleRestart(at: number | undefined): void;
+  /** 25.10 (serve S5): what the HTTP routes answered (GatewayTraffic.ts). */
+  readonly traffic: GatewayTraffic;
 }
 
 /** Shared resource implementation. Creating it opens no listening or gameplay sockets. */
@@ -1042,7 +1050,10 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
       preloader?.recycle();
     }
   };
+  // 25.10 (serve S5): counted before anything is written, so every answer below is in the table.
+  const traffic = new GatewayTraffic();
   const handle = (request: IncomingMessage, response: ServerResponse): void => void (async () => {
+    traffic.observe(request, response);
     if (request.url === "/health") {
       response.writeHead(200, { "content-type": "application/json" });
       response.end(localAssetNonce === undefined
@@ -1058,6 +1069,17 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
 
     const url = new URL(request.url ?? "/", "http://gateway.local");
     const pathname = url.pathname;
+
+    // 25.10 (serve S5): the counters, for the owner on this machine only. Counts and timings — no addresses.
+    if (request.method === "GET" && pathname === "/gateway/traffic") {
+      if (!loopbackRequest(request)) {
+        response.writeHead(403).end();
+        return;
+      }
+      response.writeHead(200, { "cache-control": "no-store", "content-type": "application/json; charset=utf-8" });
+      response.end(JSON.stringify(traffic.snapshot(), null, 1));
+      return;
+    }
     // 10.12 (CachePolicy.ts): validators name the epoch this request started in, so a body built
     // from indexes that a concurrent poll has since dropped is never filed under the newer tag.
     const requestEpoch = fingerprint.epoch;
@@ -3873,6 +3895,7 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
     },
     get patchEventsPending() { return fingerprint.archiveEventsPending; },
     scheduleRestart: (at) => patches.scheduleRestart(at),
+    traffic,
   };
 }
 
@@ -3987,11 +4010,14 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
     assets.close();
     throw new Error("Gateway did not bind a TCP address");
   }
+  // 25.10 (serve S5): one summary line per interval with traffic, and the owner's JSON snapshot.
+  const trafficReporter = options.trafficReport ? startTrafficReporter(assets.traffic, options.trafficReport) : undefined;
 
   return {
     host: options.host,
     port: address.port,
     close: async () => {
+      trafficReporter?.stop();
       assets.close();
       for (const webSocket of [...authServer.clients, ...worldServer.clients]) webSocket.terminate();
       await Promise.all([
