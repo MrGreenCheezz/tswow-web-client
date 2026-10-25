@@ -249,6 +249,11 @@ export interface SpellVisualMetadata {
   animEventSound?: number;
   /** Resolved SpellDuration.Duration in milliseconds; zero means no finite DBC duration. */
   durationMs?: number;
+  /**
+   * 26.10 (6.27): `Spell.DispelType` when not 0 (1 Magic, 2 Curse, 3 Disease, 4 Poison…, SharedDefines.h). The
+   * enhanced profile's spell light reads it: a disease, a poison or a curse is not a light (SpellLights.ts).
+   */
+  dispelType?: number;
 }
 
 /** Which effect column of a kit hangs on which attachment point. */
@@ -628,6 +633,8 @@ export function parseSpellVisuals(
     }
     const duration = durationById.get(spells.int(row, "DurationIndex"));
     if (duration !== undefined) merged.durationMs = Number.isFinite(duration) && duration > 0 ? duration : 0;
+    const dispelType = spells.int(row, "DispelType"); // 26.10 (6.27)
+    if (found && dispelType > 0) merged.dispelType = dispelType;
     if (found) result.set(merged.id, merged);
   }
   return result;

@@ -33,8 +33,8 @@ test("SpellVisualClient batches same-turn ids once and permanently remembers suc
     assert.equal(client.get(12), undefined);
     assert.equal(urls.length, 1, "one JavaScript turn becomes one metadata batch");
     // 05.10-A7a-E: v=8 was slice E's one bump; 13.10: v=9 (whole chain rows, combos, beam ends, destRaw).
-    // 25.10 (6.27): v=10 carries a kit's tint and flash (CharProc 1 / 13).
-    assert.equal(new URL(urls[0]).searchParams.get("v"), "10",
+    // 25.10 (6.27): v=10 carries a kit's tint and flash (CharProc 1 / 13); 26.10: v=11 the spell's dispelType.
+    assert.equal(new URL(urls[0]).searchParams.get("v"), "11",
       "non-cacheable visual metadata rolls the old client cache contract");
     assert.equal(new URL(urls[0]).searchParams.get("ids"), ids.join(","));
     client.get(12);

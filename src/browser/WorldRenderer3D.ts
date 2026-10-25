@@ -326,7 +326,7 @@ import type { BenchmarkRendererReadinessInput } from "./RenderBenchmarkReadiness
 import { weatherIsBlack, weatherKind, type Weather } from "../world/WorldMessageProtocol.js";
 import type { BillboardView } from "./Particles.js";
 import {
-  missileDirection,
+  missileDirection, spellModelGivesNoLight,
   spellVisualTransformEuler, spellVisualTransformOffset,
   type SpellVisualPlan, type VisualAnimation, type VisualAnimationMode, type VisualInstance,
 } from "./SpellVisuals.js";
@@ -360,8 +360,9 @@ import type { CollisionLiquid, CollisionModel } from "../world/CollisionFormat.j
 /** One deterministic evolution step supplied by an offline render replay. */
 /** 23.10 (6.27): scratch for spell light positions. */
 const _spellLightAt = new THREE.Vector3();
-/** 25.10 (6.27): what kind of light a spell model gives in the enhanced profile (SpellLights.ts). */
-function spellLightKind(instance: VisualInstance): SpellLightKind {
+/** 25.10 (6.27): what kind of light a spell model gives in the enhanced profile (SpellLights.ts); 26.10: none for a debuff's. */
+function spellLightKind(instance: VisualInstance): SpellLightKind | undefined {
+  if (instance.noLight || spellModelGivesNoLight(instance.path)) return undefined;
   return instance.flight ? "missile" : instance.modelPlayback === "hold" ? "aura" : "burst";
 }
 const _spellDurations: SpellSequenceDurations = { stand: 0 }; // 25.10 (6.27)
@@ -10551,7 +10552,9 @@ export class WorldRenderer3D {
           entry.spell.playbackStartedAt, entry.spell.instance.startedAt, spellAgeMs!, primeSeconds);
       // 23.10 (6.27): a living spell effect's ground (its particles' soft fade) and its glow (its light).
       // 25.10 (6.27): per spell model, by kind (a missile's light pinned on the bolt, SpellLights.ts).
-      const spellGlow = living && entry.spell ? this.#spellLights.glowOf(entry.spell, spellLightKind(entry.spell.instance)) : undefined;
+      // 26.10 (6.27): no kind (a disease's, a poison's, a curse's effect) gives no light.
+      const spellKind = living && entry.spell ? spellLightKind(entry.spell.instance) : undefined;
+      const spellGlow = spellKind && entry.spell ? this.#spellLights.glowOf(entry.spell, spellKind) : undefined;
       if (spellGlow && entry.spell?.instance.flight) {
         entry.spell.node.getWorldPosition(_spellLightAt);
         this.#spellLights.pin(entry.spell, _spellLightAt.x, _spellLightAt.y, _spellLightAt.z);
@@ -10601,13 +10604,15 @@ export class WorldRenderer3D {
       // mostly mesh: wings, crown and rune), then the frame's spell lights.
       for (const visual of this.#visuals) {
         if (!visual.built || !visual.node.visible) continue;
+        const kind = spellLightKind(visual.instance); // 26.10 (6.27): a debuff's held effect gives no light
+        if (!kind) continue;
         visual.node.getWorldPosition(_spellLightAt);
         for (const material of visual.built.materials) {
           if (!isAdditiveSpellMaterial(material) || !material.visible) continue;
           const tinted = material as THREE.Material & { color?: THREE.Color };
           const colour = tinted.color;
           this.#spellLights.addBatch(visual, _spellLightAt.x, _spellLightAt.y + (visual.instance.flight ? 0 : 1), _spellLightAt.z,
-            colour?.r ?? 1, colour?.g ?? 1, colour?.b ?? 1, material.opacity, spellLightKind(visual.instance)); // 25.10 (6.27)
+            colour?.r ?? 1, colour?.g ?? 1, colour?.b ?? 1, material.opacity, kind); // 25.10 (6.27)
         }
       }
       this.#spellLights.end(elapsed);

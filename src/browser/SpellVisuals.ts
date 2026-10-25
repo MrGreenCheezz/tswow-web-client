@@ -153,6 +153,12 @@ export interface VisualInstance {
    * emitter flag 0x400000, which EmitNewParticles (0x0097d8c0) reads.
    */
   ignoreDistance?: true;
+  /**
+   * 26.10 (6.27, owner: «болезнь логически не должна светить»): an effect of a disease, a poison or a curse
+   * (`dispelType`, {@link spellGivesNoLight}) gives no light in the enhanced profile; a fire debuff or a holy
+   * buff still does. Its model and particles are drawn as before.
+   */
+  noLight?: true;
 }
 
 export type VisualAnimationMode = "once" | "hold";
@@ -224,7 +230,31 @@ export function setMissileGravitySource(source: ((spellId: number) => number | u
 }
 
 /** 25.10 (6.27): every model of a spell with a SpellMissile row ignores distance (VisualInstance.ignoreDistance). */
-function markIgnoreDistance(plan: SpellVisualPlan, spellId: number): SpellVisualPlan {
+/** 26.10 (6.27): the dispel types whose effects give no light (SharedDefines.h): 2 Curse, 3 Disease, 4 Poison. */
+const NO_LIGHT_DISPEL_TYPES: ReadonlySet<number> = new Set([2, 3, 4]);
+
+/** 26.10 (6.27, owner): whether a spell of `dispelType` gives no light — a disease, a poison, a curse. */
+export function spellGivesNoLight(dispelType: number | undefined): boolean {
+  return dispelType !== undefined && NO_LIGHT_DISPEL_TYPES.has(dispelType);
+}
+
+/**
+ * 26.10 (6.27): an effect model that is a disease, a plague, a poison, a curse or a blight by its own file name gives
+ * no light either. The owner's case: the wolves' «Поражение болезнью» (71764) is a cosmetic dummy aura — physical
+ * school, DispelType 0 — and only its model, `SpellsBestowDisease_Impact_Chest.m2` (325 spells draw it), says what it
+ * is. The names are the art's own; the cures of these (`NullifyPoison`, `CurePoison`, `AbolishDisease`…) still light.
+ */
+const NO_LIGHT_MODEL = /(?:disease|plague|poison|venom|curse|blight)/i;
+const CURE_MODEL = /(?:nullify|cure|abolish|remove|cleanse|purif)/i;
+
+export function spellModelGivesNoLight(path: string): boolean {
+  const name = path.slice(Math.max(path.lastIndexOf("\\"), path.lastIndexOf("/")) + 1);
+  return NO_LIGHT_MODEL.test(name) && !CURE_MODEL.test(name);
+}
+
+function markIgnoreDistance(plan: SpellVisualPlan, spellId: number, dispelType?: number): SpellVisualPlan {
+  // 26.10 (6.27): a disease's, a poison's or a curse's effects give no light (`noLight`).
+  if (spellGivesNoLight(dispelType)) for (const instance of plan.instances) instance.noLight = true;
   if (missileGravitySource?.(spellId) === undefined) return plan;
   for (const instance of plan.instances) instance.ignoreDistance = true;
   return plan;
@@ -661,7 +691,7 @@ export function planSpellVisual(
     : PERSISTENT_AREA_FALLBACK_MS;
   addAreaKit(plan, visual.persistentArea, point, firstImpact, firstImpact + persistentDuration,
     false, "hold");
-  return markIgnoreDistance(plan, visual.id); // 25.10 (6.27)
+  return markIgnoreDistance(plan, visual.id, visual.dispelType); // 25.10 (6.27); 26.10 + light
 }
 
 /**
@@ -695,7 +725,7 @@ export function planSpellCastStart(visual: SpellVisualMetadata, cast: SpellCast,
     // The pose only: the cast kit's models and sound already played with SPELL_GO.
     plan.animations.push(...kitAnimations(visual.cast, cast.caster, now, duration, "hold", "cast"));
   }
-  return markIgnoreDistance(plan, visual.id); // 25.10 (6.27)
+  return markIgnoreDistance(plan, visual.id, visual.dispelType); // 25.10 (6.27); 26.10 + light
 }
 
 function kitPoses(kit: SpellVisualKit | undefined): boolean {
@@ -711,7 +741,7 @@ export function planSpellAuraState(
 ): SpellVisualPlan {
   const plan: SpellVisualPlan = { instances: [], animations: [], sounds: [] };
   addKit(plan, visual.state, "state", target.guid, target.point, now, Math.max(now, endsAt), true, "hold", false, "hold");
-  return markIgnoreDistance(plan, visual.id); // 25.10 (6.27)
+  return markIgnoreDistance(plan, visual.id, visual.dispelType); // 25.10 (6.27); 26.10 + light
 }
 
 /** Plan the finite effect/sound emitted when an aura carrying StateDoneKit is actually removed. */
@@ -722,7 +752,7 @@ export function planSpellAuraDone(
 ): SpellVisualPlan {
   const plan: SpellVisualPlan = { instances: [], animations: [], sounds: [] };
   addKit(plan, visual.stateDone, "state", target.guid, target.point, now, now + IMPACT_KIT_MS, true, "once", true);
-  return markIgnoreDistance(plan, visual.id); // 25.10 (6.27)
+  return markIgnoreDistance(plan, visual.id, visual.dispelType); // 25.10 (6.27); 26.10 + light
 }
 
 /**

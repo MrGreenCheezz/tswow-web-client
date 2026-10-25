@@ -277,7 +277,7 @@ test("setting: «Нейросетевой объём», off by default and in th
   assert.equal(ENHANCED_GRAPHICS_OVERRIDES.experimentalNeuralRelief, undefined, "not part of the preset (yet)");
   assert.equal(COMPARISON_GRAPHICS_OVERRIDES.experimentalNeuralRelief, false);
   const section = SETTING_SECTIONS["Эффекты"]?.find((entry) => entry.title === "Тени и рельеф");
-  assert.equal(section?.ids[section.ids.indexOf("experimentalModelRelief") + 1], "experimentalNeuralRelief", "after the three it chooses the maps of");
+  assert.equal(section?.ids[section.ids.indexOf("reliefStrength") + 1], "experimentalNeuralRelief", "after the three it chooses the maps of, and their strength");
   assert.equal(RENDER_WORKER_COMMANDS.setNeuralRelief, "setting");
   for (const file of ["browser/ui/Settings.ts", "browser/RendererGraphicsSettings.ts"]) {
     assert.match(await source(file), /setNeuralRelief\?\.\(settingBoolean\(values, "experimentalNeuralRelief"\)\)/, file);

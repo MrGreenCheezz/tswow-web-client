@@ -170,7 +170,8 @@ export class SpellVisualClient extends BatchedMetadataClient<SpellVisualMetadata
     // four columns says something. An older gateway answers v=8's shape: the new keys are optional, a chain row
     // without them is filled with zeros (a straight band, as before) and a missile keeps its chest aim.
     // v=10 (25.10, 6.27): a kit's `tint` (CharProc 1) and `flash` (CharProc 13); an older gateway answers v=9 without them.
-    return `${this.baseUrl}/dbc/spell-visuals?v=10&ids=${ids.join(",")}`;
+    // v=11 (26.10, 6.27): the spell's `dispelType`; an older gateway answers v=10 without it (every effect may light).
+    return `${this.baseUrl}/dbc/spell-visuals?v=11&ids=${ids.join(",")}`;
   }
 
   protected override accept(value: unknown): value is SpellVisualMetadata {
@@ -306,6 +307,7 @@ function isSpellVisual(value: unknown): value is SpellVisualMetadata {
   const visual = value as Record<string, unknown>;
   if (typeof visual["id"] !== "number" || !Number.isSafeInteger(visual["id"])) return false;
   if (visual["autoRepeat"] !== undefined && typeof visual["autoRepeat"] !== "boolean") return false;
+  if (visual["dispelType"] !== undefined && !(Number.isInteger(visual["dispelType"]) && (visual["dispelType"] as number) > 0)) return false; // 26.10
   for (const phase of [
     "precast", "cast", "impact", "state", "stateDone", "channel", "casterImpact", "targetImpact",
     "missileTargeting", "instantArea", "impactArea", "persistentArea",

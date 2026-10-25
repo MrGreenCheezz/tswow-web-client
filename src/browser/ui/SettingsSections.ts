@@ -47,8 +47,8 @@ export const SETTING_SECTIONS: Readonly<Partial<Record<SettingGroup, readonly Se
         "experimentalTerrainRelief", // 22.10 (7.47)
         "experimentalWmoRelief", // 22.10 (7.47 stage 2)
         "experimentalModelRelief", // 23.10 (7.47 stage 3)
-        "experimentalNeuralRelief", // 25.10 (7.47): the source of all three
         "reliefStrength", // 24.10 (7.47)
+        "experimentalNeuralRelief", // 25.10 (7.47): the source of all three
         "experimentalSharpWorldTextures", // 23.10 (7.48)
       ]),
     }),
