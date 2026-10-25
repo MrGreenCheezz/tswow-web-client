@@ -1,4 +1,5 @@
 import { GlueLoadScheduler } from "../glue/GlueLoadScheduler.js";
+import { FrameLimiter } from "../FrameLimit.js"; // 25.10
 import { gatewayOrigin as defaultGatewayOrigin, clientLocale } from "../Environment.js";
 import { questLogNameClient } from "../QuestLogNameClient.js";
 import { creatureTypeClient } from "../CreatureTypeClient.js";
@@ -4056,8 +4057,13 @@ export async function mountFrameXmlVertical(
       mounted = current;
       let previous = boot.pump.now();
       const reportStepError = createFrameXmlStepErrorReporter();
-      const step = (): void => {
+      const limiter = new FrameLimiter(); // 25.10: «Ограничение кадров», on the page loop's refreshes
+      const step = (time: number): void => {
         if (mounted !== current) return;
+        if (!limiter.due(time)) {
+          current.frame = window.requestAnimationFrame(step);
+          return;
+        }
         const now = boot.pump.now();
         const elapsed = Math.min(0.25, Math.max(0, now - previous));
         previous = now;
@@ -4391,8 +4397,13 @@ export async function mountFrameXmlVertical(
     });
     const reportStepError = createFrameXmlStepErrorReporter();
     let previous = boot.pump.now();
-    const step = (): void => {
+    const limiter = new FrameLimiter(); // 25.10: «Ограничение кадров», on the page loop's refreshes
+    const step = (time: number): void => {
       if (mounted !== current) return;
+      if (!limiter.due(time)) {
+        current.frame = window.requestAnimationFrame(step);
+        return;
+      }
       const now = boot.pump.now();
       const elapsed = Math.min(0.25, Math.max(0, now - previous));
       previous = now;

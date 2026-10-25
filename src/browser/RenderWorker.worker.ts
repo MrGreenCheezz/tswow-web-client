@@ -5,6 +5,7 @@
  * after are logged on the page; a failed start is the page's cue to draw in-page again.
  */
 
+import { setFrameLimit } from "./FrameLimit.js"; // 25.10
 import { WorldRenderer3D } from "./WorldRenderer3D.js";
 import { frameBudgetProbe } from "./FrameBudgetProbe.js";
 import { applyGatewayGenerationPush } from "./GatewayGeneration.js";
@@ -70,6 +71,7 @@ function start(init: RenderWorkerInit<ClientRenderDriver>): RenderWorkerSession 
   setRenderClockOffset(init.mainTimeOrigin - performance.timeOrigin);
   applyGatewayGenerationPush(init.gatewayGeneration);
   setPushedPageHidden(init.host.pageHidden);
+  setFrameLimit(init.host.frameLimit ?? 0); // 25.10
   const host = new WorkerRenderHost(init.host, frameBudgetProbe);
   const renderer = new WorldRenderer3D(init.canvas, host);
   setPatchChainSuspectSink(patchChainSuspectQueue(renderer.results));

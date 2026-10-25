@@ -6,6 +6,7 @@
  * every setting the proxy was given replayed onto it.
  */
 
+import { frameLimit, onFrameLimitChange } from "../FrameLimit.js"; // 25.10
 import type { ClientRenderer } from "../ClientRenderer.js";
 import { WorldRenderer3D } from "../WorldRenderer3D.js";
 import { gatewayGenerationPush } from "../GatewayGeneration.js";
@@ -41,7 +42,8 @@ function freshCanvas(old: HTMLCanvasElement): HTMLCanvasElement {
 }
 
 function hostValues(canvas: HTMLCanvasElement): RenderWorkerHostValues {
-  return { ...pageHostValues(canvas, window.devicePixelRatio, location.search), pageHidden: document.hidden };
+  return { ...pageHostValues(canvas, window.devicePixelRatio, location.search), pageHidden: document.hidden,
+    frameLimit: frameLimit() }; // 25.10
 }
 
 /**
@@ -87,6 +89,7 @@ export function mountWorldRenderWorker(canvas: HTMLCanvasElement): ClientRendere
   observer.observe(canvas);
   window.addEventListener("resize", push);
   document.addEventListener("visibilitychange", push);
+  unwatch.push(onFrameLimitChange(push)); // 25.10
   unwatch.push(() => observer.disconnect(), () => window.removeEventListener("resize", push),
     () => document.removeEventListener("visibilitychange", push));
   return client;

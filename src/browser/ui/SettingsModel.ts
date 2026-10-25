@@ -71,6 +71,12 @@ export const SETTING_DEFINITIONS: readonly SettingDefinition[] = [
     hint: "При долгой просадке кадров клиент сам опускает масштаб отрисовки не ниже 40% и возвращает его, когда запас держится. Ручной масштаб выше — потолок, а не приказ.",
   },
   {
+    // 25.10: the world and the interface each run their own loop since ARC-2 (FrameLimit.ts).
+    id: "frameLimit", label: "Ограничение кадров", group: "Графика", kind: "number", fallback: 72,
+    min: 0, max: 240, step: 6,
+    hint: "Больше кадров в секунду мир и интерфейс не рисуют: меньше нагрузка на процессор и видеокарту. 0 — по частоте монитора. В свёрнутом окне — 10.",
+  },
+  {
     // 22.10 (12.14): read once at the page's start (main.ts, RenderWorkerStart.ts `renderWorkerChosen`); 0 picks by the
     // device — a worker in the desktop app (P-cores), the page in a browser (the worker would fall to E-cores).
     id: "renderWorker", label: "Где рисуется мир", group: "Графика", kind: "number", fallback: 0,

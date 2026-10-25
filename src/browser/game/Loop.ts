@@ -30,6 +30,7 @@ import {
   CAMERA_DEFAULT_EYE_HEIGHT, CAMERA_DEFAULT_PIVOT_HEIGHT, createCamera,
 } from "../SimpleScene.js";
 import { advanceCameraFrame, cameraAllowsUpwardOrbit } from "./CameraRig.js";
+import { FrameLimiter } from "../FrameLimit.js"; // 25.10
 import { characterMotion } from "../input/Movement.js"; // L8 5.14
 import { cameraWaterSurface } from "./CameraWater.js"; // L8 5.14
 import { settingOn } from "../ui/Settings.js"; // L8 5.14
@@ -1012,9 +1013,13 @@ function formatSubmitDelta(delta: number): string {
  * sixty identical lines a second is not a log, it is a denial of service on the console — and the
  * counter is what tells a single hiccup apart from a frame that will now throw forever.
  */
+/** 25.10: «Ограничение кадров»; a skipped refresh leaves `lastFrame`, so the next frame's step covers it. */
+const frameLimiter = new FrameLimiter();
+
 export function animate(now: number): void {
   let measuring = false;
   try {
+    if (!frameLimiter.due(now)) return;
     beginPerformanceCaptureFrame();
     // The exclusive gate is checked before clocks, stores, physics, UI, portraits, sound, or any
     // renderer mutation. Rebase live time so release cannot create a clamped catch-up step from the

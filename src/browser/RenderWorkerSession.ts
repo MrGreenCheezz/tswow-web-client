@@ -12,6 +12,7 @@ import type { EnvironmentObject } from "./Terrain.js";
 import { toMainTime } from "./RenderClock.js";
 import { liftCarrierPose } from "./LiftClock.js";
 import { setPushedPageHidden } from "./PageVisibility.js";
+import { FrameLimiter, setFrameLimit } from "./FrameLimit.js"; // 25.10
 import type { WorkerRenderHost } from "./WorkerRenderHost.js";
 import { RenderFrameReceiver, emptyFrameApplied } from "./RenderWorkerBridge.js";
 import { clearPostedReports, type RenderWorkerHostUpdate } from "./RenderWorkerProtocol.js";
@@ -57,6 +58,8 @@ export class RenderWorkerSession {
   /** 22.10 (12.14): the clients' status messages for the page's lines, and the page's warm-up asks. */
   readonly #statuses = new RenderWorkerStatusCollector();
   readonly #warmup = new RenderWorkerModelWarmup();
+  /** 25.10: «Ограничение кадров» and the hidden page's rate, pushed with the host values (FrameLimit.ts). */
+  readonly #limiter = new FrameLimiter();
 
   constructor(scope: RenderWorkerSessionScope, host: WorkerRenderHost, renderer: WorldRenderer3D) {
     this.#scope = scope;
@@ -73,6 +76,7 @@ export class RenderWorkerSession {
       const dpr = this.#host.devicePixelRatio();
       this.#host.update(message.host);
       setPushedPageHidden(message.host.pageHidden);
+      setFrameLimit(message.host.frameLimit ?? 0); // 25.10
       if (this.#renderScale !== undefined && message.host.devicePixelRatio !== dpr) {
         this.#renderer.setRenderScale(this.#renderScale);
       }
@@ -135,6 +139,7 @@ export class RenderWorkerSession {
 
   readonly #tick = (time: number): void => {
     this.#scope.requestAnimationFrame(this.#tick);
+    if (!this.#limiter.due(time)) return;
     const renderer = this.#renderer;
     const mainTime = toMainTime(time);
     renderer.observeFrame(mainTime);

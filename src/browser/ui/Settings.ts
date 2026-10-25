@@ -26,6 +26,7 @@ import { comparisonGraphicsSettings } from "./ComparisonProfile.js";
 import { enhancedGraphicsSettings } from "./EnhancedGraphics.js";
 import { setTip, Panel } from "./Widgets.js";
 import { setFpsCounterVisible } from "./FpsCounter.js";
+import { frameLimitOverride, setFrameLimit } from "../FrameLimit.js"; // 25.10
 import {
   closeFrameXmlOptions, frameXmlOptionsOpen, toggleFrameXmlOptions,
 } from "../framexml/FrameXmlOptionsController.js";
@@ -137,6 +138,7 @@ export function toggleSettingsWindow(): void {
 export function applySettings(): void {
   const values = settingsStore.value;
   setFpsCounterVisible(settingBoolean(values, "showFps"));
+  setFrameLimit(frameLimitOverride(globalThis.location?.search ?? "") ?? settingNumber(values, "frameLimit")); // 25.10
   const uiScale = settingNumber(values, "uiScale");
   // A unitless factor for the HUD and game-window layer. The world canvases intentionally do not
   // consume it: changing interface size must not lower the scene's render resolution.

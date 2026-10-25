@@ -278,7 +278,7 @@ test("the WebClient category: every control a live stock control, Cancel reverts
     end
     return InterfaceOptionsFramePanelContainer.displayedPanel:GetName(), table.concat(out, "|")`, 2);
   assert.equal(panel, "InterfaceOptionsWebClientGraphicsPanel");
-  assert.equal(graphics, "Масштаб отрисовки, %: 100|Автокачество графики|Где рисуется мир: 0|Качество освещения: 2|Скрывать невидимые помещения"
+  assert.equal(graphics, "Масштаб отрисовки, %: 100|Автокачество графики|Ограничение кадров: 72|Где рисуется мир: 0|Качество освещения: 2|Скрывать невидимые помещения"
     + "|Чёткость текстур персонажей|Густая трава|Густота травы: 2");
   assert.deepEqual(lua(boot, `local names = {}
     for _, button in ipairs(InterfaceOptionsFrameCategories.buttons) do

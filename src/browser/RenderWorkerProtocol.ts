@@ -29,6 +29,8 @@ export interface RenderWorkerHostValues {
   readonly query: string;
   /** 22.10 ARC-2 S6b: the page's `document.hidden` (PageVisibility.ts); absent means shown. */
   readonly pageHidden?: boolean;
+  /** 25.10: the page's «Ограничение кадров» (FrameLimit.ts); absent means unlimited. */
+  readonly frameLimit?: number;
 }
 
 export interface RenderWorkerInit<D = unknown> {
