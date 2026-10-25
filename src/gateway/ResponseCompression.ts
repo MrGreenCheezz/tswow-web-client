@@ -167,7 +167,7 @@ function headerKey(headers: OutgoingHttpHeaders, name: string): string | undefin
   return undefined;
 }
 
-function headerValue(headers: OutgoingHttpHeaders, name: string): string | undefined {
+export function headerValue(headers: OutgoingHttpHeaders, name: string): string | undefined {
   const key = headerKey(headers, name);
   if (key === undefined) return undefined;
   const value = headers[key];
@@ -175,7 +175,7 @@ function headerValue(headers: OutgoingHttpHeaders, name: string): string | undef
 }
 
 /** `headers` with `name` set (replacing any spelling of it). */
-function withHeader(headers: OutgoingHttpHeaders, name: string, value: string | number): OutgoingHttpHeaders {
+export function withHeader(headers: OutgoingHttpHeaders, name: string, value: string | number): OutgoingHttpHeaders {
   const result: OutgoingHttpHeaders = {};
   for (const [key, existing] of Object.entries(headers)) if (key.toLowerCase() !== name) result[key] = existing;
   result[name] = value;
@@ -189,7 +189,7 @@ function withVary(headers: OutgoingHttpHeaders): OutgoingHttpHeaders {
   return withHeader(headers, "vary", `${vary}, Accept-Encoding`);
 }
 
-function bodyBuffer(chunk: unknown, encoding: unknown): Buffer | undefined {
+export function bodyBuffer(chunk: unknown, encoding: unknown): Buffer | undefined {
   if (typeof chunk === "string") return Buffer.from(chunk, typeof encoding === "string" ? encoding as BufferEncoding : "utf8");
   if (Buffer.isBuffer(chunk)) return chunk;
   if (chunk instanceof Uint8Array) return Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);

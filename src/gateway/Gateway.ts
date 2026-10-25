@@ -90,11 +90,13 @@ import {
   LEGACY_TILE_DAY, LEGACY_TILE_HOUR, cacheGeneration, datasetCacheHeaders, datasetEtag, etagMatches,
   isDatasetCacheRoute, processCacheNonce, tileCacheControl, REVALIDATE, // 22.10 (6.26): REVALIDATE
   IMMUTABLE, // 23.10 (7.48)
+  servedConfigIdentity, servedIdentity, // 25.10 (serve S2)
 } from "./CachePolicy.js";
+import { installContentEtag } from "./ContentEtag.js"; // 25.10 (serve S2)
 import { HD_TEXTURE_CONTENT_TYPE, HD_TEXTURE_PARAM, type HdTextureSets } from "./HdTextures.js"; // 23.10 (7.48)
 import {
   METADATA_GENERATION_PARAM, VISUAL_GENERATION_PARAM, assetCacheControl, gatewayCodeIdentity, metadataGeneration,
-  visualGeneration,
+  visualGeneration, scriptDirectoryIdentity, // 25.10 (serve S2): scriptDirectoryIdentity
 } from "./AssetGeneration.js"; // 22.10 (6.26)
 import { GatewayTraffic, loopbackRequest, startTrafficReporter, type TrafficReporterOptions } from "./GatewayTraffic.js"; // 25.10 (serve S5)
 import { createResponseCompression, installCompression } from "./ResponseCompression.js"; // 25.10 (serve S1)
@@ -477,6 +479,11 @@ export interface GatewayOptions {
    * (GatewayTraffic.ts). Absent: counted (for `/gateway/traffic`) but never printed or written.
    */
   trafficReport?: TrafficReporterOptions;
+  /**
+   * 25.10 (serve S2): the generator scripts' directory (`tools/`); its digest is part of the served identity
+   * (CachePolicy.ts `servedIdentity`), so a changed generator turns tile generations over. Absent: not counted.
+   */
+  toolsDirectory?: string;
 }
 
 /**
@@ -909,7 +916,8 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
    * Returning the promise rather than the value is also what keeps the `??=` below synchronous —
    * an `await` between the test and the assignment is how two requests start two loads.
    */
-  // 10.12: one random part per process for cache validators — a restart may be new code.
+  // 10.12: one random part per process for cache validators — 25.10 (serve S2): used only when no dataset or
+  // archive walk vouches for the bytes (CachePolicy.ts `servedIdentity`).
   const cacheNonce = processCacheNonce();
   // 22.10 (6.26): the restart-stable generations (AssetGeneration.ts). The visual one is the startup chain's, as
   // `patches.generation` is; the metadata one moves with the DBC half and is taken per request.
@@ -919,6 +927,21 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
     coordinatedVisuals: options.coordinatedVisuals ?? false,
   });
   const codeIdentity = await gatewayCodeIdentity();
+  // 25.10 (serve S2): what the dataset tags and the tile `g` name instead of the process — code, generators,
+  // configuration, the fingerprint and the startup patch generation; memoised on the fingerprint's halves.
+  const toolsIdentity = options.toolsDirectory === undefined ? undefined : await scriptDirectoryIdentity(options.toolsDirectory);
+  const configIdentity = servedConfigIdentity(options);
+  let servedMemo: { key: string; value: string } | undefined;
+  const currentServedIdentity = (): string => {
+    const key = `${fingerprint.dbcHash ?? ""}|${fingerprint.archivesHash ?? ""}|${fingerprint.chain ?? ""}`;
+    if (servedMemo?.key !== key) {
+      servedMemo = { key, value: servedIdentity({
+        codeIdentity, toolsIdentity, configIdentity, dbcHash: fingerprint.dbcHash, archivesHash: fingerprint.archivesHash,
+        chain: fingerprint.chain, patchGeneration: patches.generation, nonce: cacheNonce,
+      }) };
+    }
+    return servedMemo.value;
+  };
   let metadataMemo: { dbcHash: string | undefined; value: string | undefined } | undefined;
   const currentMetadataGeneration = (): string | undefined => {
     const dbcHash = fingerprint.dbcHash;
@@ -1058,6 +1081,7 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
   const handle = (request: IncomingMessage, response: ServerResponse): void => void (async () => {
     traffic.observe(request, response);
     installCompression(request, response, compression);
+    installContentEtag(request, response); // 25.10 (serve S2): untagged 200s get a content tag and their 304
     if (request.url === "/health") {
       response.writeHead(200, { "content-type": "application/json" });
       response.end(localAssetNonce === undefined
@@ -1086,9 +1110,10 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
     }
     // 10.12 (CachePolicy.ts): validators name the epoch this request started in, so a body built
     // from indexes that a concurrent poll has since dropped is never filed under the newer tag.
-    const requestEpoch = fingerprint.epoch;
-    const requestDatasetTag = () => datasetEtag(cacheNonce, requestEpoch);
-    const requestCacheGeneration = () => cacheGeneration(cacheNonce, requestEpoch, patches.generation);
+    // 25.10 (serve S2): the served identity at the request's start, in place of process nonce + epoch.
+    const requestIdentity = currentServedIdentity();
+    const requestDatasetTag = () => datasetEtag(requestIdentity);
+    const requestCacheGeneration = () => cacheGeneration(requestIdentity);
     // 22.10 (6.26): taken as the request starts, like `requestEpoch`: an answer built after a DBC walk that lands
     // mid-request can only be newer than the generation it is filed under, never older.
     const requestMetadataGeneration = currentMetadataGeneration();

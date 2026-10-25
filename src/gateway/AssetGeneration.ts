@@ -99,6 +99,30 @@ export function gatewayCodeIdentity(root?: string): Promise<string> {
 
 let defaultIdentity: Promise<string> | undefined;
 
+/**
+ * 25.10 (serve S2): a digest of the scripts directly in one directory (`tools/` — the generators that publish
+ * the tile caches), by name and bytes; for CachePolicy.ts `servedIdentity`. An unreadable directory is "none".
+ */
+export async function scriptDirectoryIdentity(directory: string): Promise<string> {
+  const hash = createHash("sha1").update(`${ASSET_GENERATION_SCHEMA}\0scripts`);
+  let names: string[];
+  try {
+    names = (await readdir(directory, { withFileTypes: true }))
+      .filter((entry) => entry.isFile() && /\.(?:mjs|cjs|js)$/.test(entry.name)).map((entry) => entry.name).sort();
+  } catch {
+    return "none";
+  }
+  for (const name of names) {
+    try {
+      const bytes = await readFile(join(directory, name));
+      hash.update(`\0${name}\0${bytes.length}\0`).update(bytes);
+    } catch {
+      // Gone between the listing and the read: as if it had not been listed.
+    }
+  }
+  return hash.digest("hex").slice(0, LENGTH);
+}
+
 async function computeCodeIdentity(root: string): Promise<string> {
   const hash = createHash("sha1").update(ASSET_GENERATION_SCHEMA);
   for (const directory of CODE_DIRECTORIES) {

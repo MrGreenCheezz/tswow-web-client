@@ -348,6 +348,8 @@ export async function createGatewayConfiguration(): Promise<{ options: GatewayOp
     logBackpressure: process.env["GATEWAY_LOG_BACKPRESSURE"] === "1",
     loginAttempts,
     ...(trafficReport ? { trafficReport } : {}), // 25.10 (serve S5)
+    // 25.10 (serve S2): the generators publishing the tile caches; their digest is part of the tile `g`.
+    toolsDirectory: resolve(process.cwd(), "tools"),
     ...(preloadOn ? {
       preload,
       // The tile worker reads the published tile and answers its model list (`tools/tile-models.mjs`).

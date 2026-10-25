@@ -97,7 +97,8 @@ test("/client/patch-status publishes both generations; a restart keeps them, an 
     const second = await withGateway(options, status);
     assert.equal(second.visualGeneration, first.visualGeneration, "a restart is not a new visual generation");
     assert.equal(second.metadataGeneration, first.metadataGeneration, "nor a new metadata generation");
-    assert.notEqual(second.cacheGeneration, first.cacheGeneration, "unlike the tile generation, which names the process");
+    // 25.10 (serve S2): the tile generation no longer names the process either (CachePolicy.ts `servedIdentity`).
+    assert.equal(second.cacheGeneration, first.cacheGeneration, "nor, since S2, a new tile generation");
 
     // A DBC rewrite moves the metadata generation at once (no restart), the visual one not at all.
     await withGateway(options, async (base) => {
@@ -107,6 +108,7 @@ test("/client/patch-status publishes both generations; a restart keeps them, an 
       const after = await status(base);
       assert.equal(after.visualGeneration, before.visualGeneration);
       assert.notEqual(after.metadataGeneration, before.metadataGeneration);
+      assert.notEqual(after.cacheGeneration, before.cacheGeneration, "25.10 (serve S2): and the tile generation");
     });
 
     // A patch archive rewritten: the next process serves a new visual generation (this one latches; Gateway.ts).
@@ -114,6 +116,7 @@ test("/client/patch-status publishes both generations; a restart keeps them, an 
     await utimes(join(client, "Data", "common.MPQ"), later, later);
     const third = await withGateway(options, status);
     assert.notEqual(third.visualGeneration, first.visualGeneration);
+    assert.notEqual(third.cacheGeneration, first.cacheGeneration, "25.10 (serve S2): the tile generation moves with the archives");
     assert.notEqual(third.metadataGeneration, first.metadataGeneration, "the metadata generation contains the visual one");
   } finally {
     await rm(client, { recursive: true, force: true });
