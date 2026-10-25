@@ -102,6 +102,9 @@ function runtime() {
       <FontString inherits="ChatFontNormal" justifyH="LEFT" indented="true" nonspacewrap="true"/>
       <Fontstring name="Authored" text="owned child"/>
     </ScrollingMessageFrame>
+    <EditBox name="TabbedEdit"><Scripts>
+      <OnTabPressed>TabCount = (TabCount or 0) + 1</OnTabPressed>
+    </Scripts></EditBox>
     <EditBox name="ChatEdit" historyLines="2"><Scripts>
       <OnEnterPressed>EnterCount = (EnterCount or 0) + 1</OnEnterPressed>
       <OnEscapePressed>EscapeCount = (EscapeCount or 0) + 1</OnEscapePressed>
@@ -370,4 +373,28 @@ test("stock chat geometry methods and lowercase widget names stay bounded", () =
   assert.equal(vm.getGlobal("Bottom"), 71);
   assert.equal(bridge.getFrame("Authored")?.type, "FontString");
   vm.close();
+});
+
+// 26.10 (owner: «на экране входа табуляция не работает, Enter сбрасывает пароль»): an edit box owns its Enter, and a
+// box with its own OnTabPressed owns its Tab, on the modal (login) screens too. Otherwise the press reached the
+// browser after the script: Tab walked on from the password the script had focused to the next button, and Enter
+// arrived as a keypress on the dialog button AccountLogin_Login had just opened and focused — cancelling the login.
+test("EditBox: Enter is the box's; Tab is the box's when it has an OnTabPressed script, the browser's otherwise", () => {
+  const { vm, bridge, loaded } = runtime();
+  const renderer = new FrameXmlDomRenderer(document.createElement("section"), { bridge });
+  try {
+    renderer.mount(loaded.roots);
+    const field = (name) => renderer.elementFor(bridge.getFrame(name)).children
+      .find((child) => child.getAttribute("data-framexml-input") === "true");
+    const press = (input, key) => {
+      const event = { type: "keydown", key, prevented: false, preventDefault() { this.prevented = true; } };
+      input.dispatchEvent(event);
+      return event.prevented;
+    };
+    assert.equal(press(field("ChatEdit"), "Enter"), true, "Enter never reaches a dialog the script opened");
+    assert.equal(vm.getGlobal("EnterCount"), 1);
+    assert.equal(press(field("TabbedEdit"), "Tab"), true, "its own Tab: the caret stays where the script put it");
+    assert.equal(vm.getGlobal("TabCount"), 1);
+    assert.equal(press(field("ChatEdit"), "Tab"), false, "no script: the login screens keep field-to-field Tab");
+  } finally { renderer.destroy(); vm.close(); }
 });

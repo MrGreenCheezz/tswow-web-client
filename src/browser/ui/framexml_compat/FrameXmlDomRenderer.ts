@@ -2014,8 +2014,15 @@ export class FrameXmlDomRenderer {
       field.addEventListener("keydown", (event) => {
         if (this.#layoutOnly?.(frame)) return;
         const key = (event as KeyboardEvent).key;
-        if (key === "Enter") this.#bridge?.fireScript(frame, "OnEnterPressed");
-        else if (key === "Escape") {
+        if (key === "Enter") {
+          this.#bridge?.fireScript(frame, "OnEnterPressed");
+          // 26.10 (owner: «Enter сбрасывает пароль»): the press is the box's, as in the client. The script may open a
+          // dialog whose button the accessibility layer focuses at once (AccountLogin_Login → «Соединение…» or
+          // «Введите пароль.»), and the browser then sent the same press, as a keypress, to that button: the login was
+          // cancelled the instant it began, after AccountLogin_Login had already emptied the password. A one-line box
+          // has nothing else to do with Enter; a multi-line one keeps its new line.
+          if (!multiLine) (event as KeyboardEvent & { preventDefault?: () => void }).preventDefault?.();
+        } else if (key === "Escape") {
           this.#bridge?.fireScript(frame, "OnEscapePressed");
           // The script is the whole meaning of the press. The page's key handler knows this
           // renderer's `<input>` (and stops there, see Controls.ts) but not the `<textarea>`: it took
@@ -2034,7 +2041,12 @@ export class FrameXmlDomRenderer {
           // (AutoCompleteEditBox_OnTabPressed keeps the caret and walks its list; a box without the
           // script ignores it), so the browser does not carry the caret off to another node now that
           // no modal trap holds it. The login screens keep field-to-field Tab (NativeAppShell.ts).
-          if (this.#dialogs === "modeless") (event as KeyboardEvent & { preventDefault?: () => void }).preventDefault?.();
+          // 26.10 (owner: «табуляция не работает»): a box with its own OnTabPressed owns the press on the login screens
+          // too — AccountLoginAccountEdit's moves the caret to the password, and the browser then carried it on to the
+          // next node in the page (a button). Only a box without the script keeps the browser's field-to-field walk.
+          if (this.#dialogs === "modeless" || this.#bridge?.hasScript(frame, "OnTabPressed") === true) {
+            (event as KeyboardEvent & { preventDefault?: () => void }).preventDefault?.();
+          }
         } else if (key === "ArrowUp" || key === "ArrowDown") {
           const changed = this.#bridge?.NavigateEditBoxHistory(frame, key === "ArrowUp" ? -1 : 1) ?? false;
           if (changed) (event as KeyboardEvent & { preventDefault?: () => void }).preventDefault?.();
