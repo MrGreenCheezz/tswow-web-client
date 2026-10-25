@@ -1447,7 +1447,10 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
         // 10.22: the player is here; the neighbourhood's models are what comes next.
         preloader?.noteTile(map, gridX, gridY);
       } catch (error) {
-        respondError(response, (error as NodeJS.ErrnoException).code === "ENOENT" ? 404 : 500, origin);
+        // 25.10: "no ADT and no global WMO here" (a cell outside the map) is the generator's
+        // `SourceMissing`, a final 404 like `/terrain-splat`'s; anything else is a 500 the browser may retry.
+        const absent = sourceMissing(error) || (error as NodeJS.ErrnoException).code === "ENOENT";
+        respondError(response, absent ? 404 : 500, origin);
       }
       return;
     }

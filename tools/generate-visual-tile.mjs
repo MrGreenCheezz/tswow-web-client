@@ -11,6 +11,7 @@ import { clientArchives } from "./mpq.mjs";
 import { clientDirectory, dbcDirectory } from "./paths.mjs";
 import { sourceStamp, stampGenerated, stampIsCurrent, writeFileAtomic, writeSourceStamp } from "./source-stamp.mjs";
 import { tileModelNames, tileModelsFile } from "./tile-models.mjs";
+import { SOURCE_MISSING_EXIT, SourceMissing } from "./source-missing.mjs";
 
 const VMAP_TO_THREE = new THREE.Matrix4().set(
   -1, 0, 0, 0,
@@ -114,7 +115,8 @@ export async function publishVisualTile(mapId, gridX, gridY, archives, options =
     const wdtPath = `World\\Maps\\${mapName}\\${mapName}.wdt`;
     const wdt = await archives.read(wdtPath);
     const global = wdt ? globalMapObjects(wdt, placementOptions) : undefined;
-    if (!global) throw new Error(`${adtPath} is not in the client`);
+    // 25.10: a cell outside the map (the Deadmines' row 29) is the 404 `/terrain-splat` answers, not a 500.
+    if (!global) throw new SourceMissing(`${adtPath} is not in the client`);
     tileSources.push(wdtPath);
     objects = global.filter((placement) => placementReachesCell(placement, gridX, gridY));
   }
@@ -248,6 +250,11 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import
   try {
     await publishVisualTile(mapId, gridX, gridY, archives,
       process.argv[5] ? { generation: process.argv[5] } : undefined);
+  } catch (error) {
+    // The gateway reads this exit code as its 404 (`sourceMissing`); anything else stays a crash.
+    if (!(error instanceof SourceMissing)) throw error;
+    console.error(error.message);
+    process.exitCode = SOURCE_MISSING_EXIT;
   } finally {
     archives.close();
   }

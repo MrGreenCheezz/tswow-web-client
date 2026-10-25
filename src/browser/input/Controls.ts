@@ -1179,7 +1179,16 @@ function wireMouse(): void {
     // A tap is a press with no useful move before it; the reticle gets its position from here so
     // touch shows the rings from the first contact.
     recordGroundTargetPointer(event.clientX, event.clientY);
-    worldCanvas.setPointerCapture(event.pointerId);
+    // 25.10: under pointer lock (the second button pressed while the first turns the camera) a capture
+    // throws InvalidStateError, and so does a pointer the browser already released; the throw used to
+    // skip `syncButtons`, losing the press. A lock already keeps every move on the canvas.
+    if (typeof document === "undefined" || document.pointerLockElement !== worldCanvas) {
+      try {
+        worldCanvas.setPointerCapture(event.pointerId);
+      } catch {
+        // Nothing to hold: the pointer is no longer active.
+      }
+    }
     syncButtons(event);
     setHoveredTarget(undefined, undefined);
     event.preventDefault();
