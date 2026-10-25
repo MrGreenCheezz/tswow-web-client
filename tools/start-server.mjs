@@ -19,6 +19,7 @@
 //                        keeping this environment
 //   GATEWAY_SUPERVISE=1  (unless .env says 0) a crashed gateway is started again by itself
 // The page server answers index.html and its assets only (10.13), compressed and revalidated.
+// 25.10: the players' site at / (download, open registration, play), the game at /play/.
 // 10.17 (updates): it also serves the player app's update from dist/player (bat\30):
 // /player/latest.json, /player/latest.json.sig and /player/WoWWebClient.zip, read-only — installed
 // apps check the first two at start and offer the zip when it is newer and correctly signed.
@@ -28,11 +29,14 @@
 import "./env.mjs";
 
 import { existsSync, readFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
-// The same loopback-safe static server the Electron version serves its built page with.
-const { serveStatic } = createRequire(import.meta.url)("../electron/static-server.cjs");
+import { authDatabaseRegistrar } from "./account-register.mjs";
+import { mysqlBinary, worldserverConf } from "./paths.mjs";
+import { playerSiteHandler } from "./player-site.mjs";
+
 const { MANIFEST_FILE, parseManifest, playerUpdateFiles } = createRequire(import.meta.url)("../electron/player-update.cjs"); // 10.17 (updates)
 
 function port(name, fallback) {
@@ -72,18 +76,26 @@ process.env.GATEWAY_RESTART_ON_PATCH ??= "1";
 // (tools/gateway-supervisor.mjs; a sixth crash in ten minutes still stops it).
 process.env.GATEWAY_SUPERVISE ??= "1";
 
+// 25.10: open registration on the players' site unless .env says PUBLIC_REGISTRATION=0.
+const register = process.env.PUBLIC_REGISTRATION?.trim() === "0"
+  ? undefined : await authDatabaseRegistrar({ configPath: worldserverConf(), mysql: mysqlBinary() });
 try {
   // 10.13: players get index.html and its assets only — glue.html, framexml.html and
   // character-lab.html are the owner's benches, and the local-only notice is not for them —
-  // compressed, with validators, and the hashed bundles cached for good.
-  await serveStatic(webRoot, {
-    host: bind, port: webPort, compress: true, publicPages: ["/", "/index.html"], files: playerUpdateFiles(playerRoot),
+  // compressed, with validators, and the hashed bundles cached for good. 25.10: in front of the
+  // game (now /play/) the players' site from site/ (tools/player-site.mjs).
+  const handler = playerSiteHandler({ webRoot, siteRoot: fileURLToPath(new URL("../site", import.meta.url)), files: playerUpdateFiles(playerRoot), register });
+  await new Promise((resolve, reject) => {
+    const server = createServer(handler);
+    server.once("error", reject);
+    server.listen(webPort, bind, resolve);
   });
 } catch (error) {
   throw new Error(error.code === "EADDRINUSE"
     ? `Port ${webPort} is taken; free it or set PUBLIC_WEB_PORT in .env.` : error.message, { cause: error });
 }
-console.log(`Page for players: ${publicUrl} (dist/web on ${bind}:${webPort})`);
+console.log(`Site for players: ${publicUrl} (site/ on ${bind}:${webPort}); the game: ${publicUrl}play/ (dist/web)`);
+console.log(register ? "Registration: open (PUBLIC_REGISTRATION=0 in .env closes it)." : "Registration: closed (PUBLIC_REGISTRATION=0).");
 console.log(`Gateway for players: http://${publicHost}:${gatewayPort}/ (on ${bind}:${gatewayPort})`);
 console.log(`Players need TCP ${webPort} and ${gatewayPort} forwarded to this machine.`);
 let offered;

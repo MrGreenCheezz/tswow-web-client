@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <title>WoW WebClient</title>
+    <link rel="stylesheet" href="/site/site.css" />
+    <script type="module" src="/site/site.js"></script>
+  </head>
+  <body>
+    <!-- The players' site (tools/player-site.mjs serves it at /, bat\32): download, register, play. -->
+    <div class="glow" aria-hidden="true"></div>
+    <main>
+      <header class="hero">
+        <p class="eyebrow">Wrath of the Lich King · 3.3.5a</p>
+        <h1>Азерот ждёт</h1>
+        <p class="lead">Наш сервер для своих. Играйте в браузере или в приложении — устанавливать клиент игры не нужно.</p>
+        <nav class="actions">
+          <a class="button primary" href="/play/">Играть в браузере</a>
+          <a class="button" href="#register">Регистрация</a>
+          <a class="button" href="#download">Скачать приложение</a>
+        </nav>
+      </header>
+
+      <section class="cards">
+        <article class="card" id="register">
+          <h2>Регистрация</h2>
+          <p class="hint">Логин — латиница и цифры, 3–16 символов. Пароль — 6–16 символов без пробелов. Регистр букв в игре не различается.</p>
+          <form id="register-form" novalidate>
+            <label>Логин
+              <input name="username" autocomplete="username" maxlength="16" required spellcheck="false" />
+            </label>
+            <label>Пароль
+              <input name="password" type="password" autocomplete="new-password" maxlength="16" required />
+            </label>
+            <label>Повтор пароля
+              <input name="repeat" type="password" autocomplete="new-password" maxlength="16" required />
+            </label>
+            <button class="button primary" type="submit">Создать учётную запись</button>
+            <p class="status" id="register-status" role="status" aria-live="polite"></p>
+          </form>
+        </article>
+
+        <article class="card" id="download">
+          <h2>Приложение</h2>
+          <p>Отдельное окно для Windows: та же игра, без вкладок браузера, на весь экран по F11. Обновляется само.</p>
+          <ol class="steps">
+            <li>Скачайте архив и распакуйте его целиком в любую папку.</li>
+            <li>Запустите <code>WoWWebClient.exe</code>.</li>
+            <li>Если Windows скажет «Система Windows защитила ваш компьютер» — «Подробнее» → «Выполнить в любом случае».</li>
+          </ol>
+          <a class="button primary" id="download-link" href="/player/WoWWebClient.zip" download>Скачать для Windows</a>
+          <p class="hint" id="download-info"></p>
+        </article>
+
+        <article class="card">
+          <h2>Играть в браузере</h2>
+          <p>Откройте игру прямо здесь и войдите с логином и паролем, которые создали в регистрации.</p>
+          <p class="hint">Лучше всего в Chrome или Edge на компьютере с видеокартой. Первый вход загружает ресурсы дольше обычного.</p>
+          <a class="button primary" href="/play/">Открыть игру</a>
+        </article>
+      </section>
+
+      <footer>Частный сервер для друзей. Не связан с Blizzard Entertainment.</footer>
+    </main>
+  </body>
+</html>

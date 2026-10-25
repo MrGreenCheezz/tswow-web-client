@@ -1,0 +1,167 @@
+:root {
+  color-scheme: dark;
+  --bg: #0b0d14;
+  --panel: rgba(20, 24, 36, 0.78);
+  --line: rgba(214, 178, 94, 0.22);
+  --gold: #e3b95f;
+  --gold-bright: #ffd98a;
+  --ice: #8fc7ff;
+  --text: #e9e4d6;
+  --muted: #a39d8f;
+  --error: #ff8a7a;
+  --ok: #9fe0a4;
+}
+
+* { box-sizing: border-box; }
+
+html { scroll-behavior: smooth; }
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--bg);
+  color: var(--text);
+  font: 16px/1.55 "Segoe UI", system-ui, sans-serif;
+  overflow-x: hidden;
+}
+
+.glow {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  background:
+    radial-gradient(60rem 30rem at 50% -8rem, rgba(143, 199, 255, 0.20), transparent 70%),
+    radial-gradient(40rem 28rem at 85% 30%, rgba(227, 185, 95, 0.10), transparent 70%),
+    radial-gradient(36rem 26rem at 10% 70%, rgba(110, 140, 220, 0.10), transparent 70%),
+    linear-gradient(180deg, #10131d 0%, #0b0d14 60%, #07080d 100%);
+}
+
+main {
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 0 16px 48px;
+}
+
+.hero {
+  text-align: center;
+  padding: 96px 0 64px;
+}
+
+.eyebrow {
+  margin: 0 0 12px;
+  color: var(--ice);
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  font-size: 13px;
+}
+
+h1 {
+  margin: 0;
+  font: 700 clamp(44px, 9vw, 88px)/1.05 Georgia, "Palatino Linotype", "Times New Roman", serif;
+  background: linear-gradient(180deg, var(--gold-bright), var(--gold) 55%, #9c7a34);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  text-shadow: 0 0 40px rgba(227, 185, 95, 0.18);
+}
+
+.lead {
+  max-width: 620px;
+  margin: 20px auto 32px;
+  color: var(--muted);
+  font-size: 18px;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 12px;
+}
+
+.button {
+  display: inline-block;
+  padding: 12px 22px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text);
+  font: 600 15px/1.2 inherit;
+  font-family: inherit;
+  text-decoration: none;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s, transform 0.15s;
+}
+
+.button:hover { border-color: var(--gold); background: rgba(227, 185, 95, 0.08); }
+.button:active { transform: translateY(1px); }
+.button:focus-visible, input:focus-visible { outline: 2px solid var(--ice); outline-offset: 2px; }
+
+.button.primary {
+  border-color: #b98a2e;
+  background: linear-gradient(180deg, #e9c06a, #b8882f);
+  color: #1a1306;
+}
+
+.button.primary:hover { background: linear-gradient(180deg, #ffd98a, #c9973a); }
+.button[aria-disabled="true"], .button:disabled { opacity: 0.5; pointer-events: none; }
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 20px;
+  align-items: start;
+}
+
+.card {
+  padding: 28px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  backdrop-filter: blur(6px);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+  scroll-margin-top: 24px;
+}
+
+.card h2 {
+  margin: 0 0 12px;
+  color: var(--gold);
+  font: 700 26px/1.2 Georgia, "Palatino Linotype", serif;
+}
+
+.card p { margin: 0 0 16px; }
+.hint { color: var(--muted); font-size: 14px; }
+
+.steps { margin: 0 0 20px; padding-left: 20px; color: var(--muted); }
+.steps li { margin-bottom: 6px; }
+
+code { color: var(--text); font-family: Consolas, monospace; }
+
+form { display: grid; gap: 14px; }
+
+label { display: grid; gap: 6px; color: var(--muted); font-size: 14px; }
+
+input {
+  width: 100%;
+  padding: 11px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.35);
+  color: var(--text);
+  font: 16px/1.2 inherit;
+  font-family: inherit;
+}
+
+input:focus { border-color: var(--gold); }
+
+.status { min-height: 1.5em; margin: 0; font-size: 14px; }
+.status.error { color: var(--error); }
+.status.ok { color: var(--ok); }
+
+footer { margin-top: 48px; text-align: center; color: var(--muted); font-size: 13px; }
+
+@media (max-width: 600px) {
+  .hero { padding: 56px 0 40px; }
+  .card { padding: 20px; }
+  .actions .button { flex: 1 1 100%; }
+}
