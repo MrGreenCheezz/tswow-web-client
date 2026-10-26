@@ -68,6 +68,8 @@ function harness(legacy) {
     programWarmup: { registerObject() {} }, pumpSpellPrewarm() {}, markExpiredSpellEffectPhases() {},
     // 26.10 (6.27, test): «Шлейфы снарядов» off, as by default (MissileTrails.ts).
     missileTrails: { enabled: false, sample() {}, update() {} }, missileTrailColours: new WeakMap(),
+    // 6.31 (26.10): the kits the emitter allowance admitted last frame.
+    keptEffectHandles: new Set(),
     // A new set is held until its programs are warm; this harness has no warm pass, so nothing holds.
     effectWarmHold: { hold() {}, release() {}, forget() {}, clear() {} },
     purgeFailedSpellEffectPhases() {}, spellAssetState: () => ({ ready: true, failed: false }),

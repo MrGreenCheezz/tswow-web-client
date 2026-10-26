@@ -93,6 +93,9 @@ import {
   SPELL_ANIM_DECAY, SPELL_ANIM_HOLD, SPELL_ANIM_STAND, spellModelSequence, spellOneShotModelMs,
   type SpellSequenceDurations, type SpellSequencePick,
 } from "./SpellModelSequence.js"; // 25.10 (6.27)
+import {
+  MISSILE_ANIM_IN_FLIGHT, missileSequence, missileSequenceTime, type MissileSequencePick,
+} from "./MissileSequence.js"; // 6.31 (26.10)
 import { hdEffectTexturesEnabled, setHdEffectTexturesEnabled } from "./HdEffectTextures.js"; // 23.10 (7.48)
 import {
   HD_WORLD_TEXTURE_EXTENSION, hdWorldTexturesActive, setHdWorldTexturesEnabled, withHdModelTexture, withHdWorldTexture,
@@ -336,7 +339,7 @@ import {
   type SpellVisualPlan, type VisualAnimation, type VisualAnimationMode, type VisualInstance,
 } from "./SpellVisuals.js";
 import type { SpellVisualEffectTransform } from "../gateway/SpellVisual.js";
-import { flyMissileInstance, missileQuaternion, missileSample, type MissilePoints } from "./MissileFlight.js"; // 05.10-A7a-E
+import { flyMissileInstance, missileQuaternion, missileSample, missileStillFlying, type MissilePoints } from "./MissileFlight.js"; // 05.10-A7a-E; 6.31: missileStillFlying
 import { addModelFrameOffset, missileGroundHit } from "./MissileGround.js"; // 13.10 (6.12)
 import { ChainBeams } from "./ChainBeam.js"; // 05.10-A7a-E
 import { CameraShakeBank } from "./CameraShake.js"; // 05.10-A7a-E
@@ -374,6 +377,14 @@ function spellLightKind(instance: VisualInstance): SpellLightKind | undefined {
 }
 const _spellDurations: SpellSequenceDurations = { stand: 0 }; // 25.10 (6.27)
 const _spellPick: SpellSequencePick = { animation: 0, time: 0, loop: false };
+const _missilePick: MissileSequencePick = { animation: 0, timeScale: 1 }; // 6.31
+/**
+ * 6.31 (26.10): a missile model's InFlight flags (`M2Sequence.flags` of 144) once its sidecar clips have been merged,
+ * by template; undefined in the map when the artifact carries none (written before visual-spell-v1).
+ */
+const missileInFlightFlags = new WeakMap<object, number | undefined>();
+/** 6.31: each missile's planned flight in seconds, fixed at its first drawn frame as Missile_C fixes its speed. */
+const missileFlightSeconds = new WeakMap<object, number>();
 const _particleNormal = new THREE.Vector3(0, 1, 0); // 25.10 (6.27): a lit particle's normal, the world's up (0x0097a390)
 
 /** 23.10 (6.27): a spell mesh material that adds light (SrcAlpha/One or One/One), the ones that glow. */
@@ -3367,9 +3378,13 @@ export function visualEffectPhaseStatuses(
  * may additionally hold a due phase at the gate while one of its active models is still loading.
  */
 export function selectVisualEffectGroups<T extends VisualEffectBudgetEntry>(
-  entries: readonly T[], budget: number, readyPhaseKeys?: ReadonlySet<string>,
+  entries: readonly T[], budget: number, readyPhaseKeys?: ReadonlySet<string>, kept?: ReadonlySet<number>,
 ): { selected: T[]; droppedGroups: number } {
-  const sorted = [...entries].sort((left, right) => left.distance - right.distance
+  // 6.31 (26.10): the kits admitted last frame (`kept`) are offered first, nearest first among them, then the rest.
+  // Ranked by distance alone, a missile flying past swapped kits in and out of the allowance from frame to frame,
+  // and every swap disposed a kit's emitters and primed them again — the owner's flicker.
+  const held = (entry: T): number => (kept?.has(entry.handleId) ? 0 : 1);
+  const sorted = [...entries].sort((left, right) => held(left) - held(right) || left.distance - right.distance
     || left.handleId - right.handleId || left.key.localeCompare(right.key));
   const groups = new Map<number, T[]>();
   for (const entry of sorted) {
@@ -4240,6 +4255,8 @@ export class WorldRenderer3D {
   #lensPitch = 0;
   /** 26.10 (6.27, test): «Шлейфы снарядов (опыт)» (MissileTrails.ts), and each missile model's trail colour. */
   readonly #missileTrails = new MissileTrails();
+  /** 6.31 (26.10): the spell kits the emitter allowance admitted last frame (`selectVisualEffectGroups`). */
+  readonly #keptEffectHandles = new Set<number>();
   /** 26.10: «Лучи над добычей» (LootBeams.ts). */
   readonly #lootBeams = new LootBeams();
   readonly #missileTrailColours = new WeakMap<object, THREE.Color | null>();
@@ -8349,6 +8366,8 @@ export class WorldRenderer3D {
     for (let index = this.#visuals.length - 1; index >= 0; index--) {
       const visual = this.#visuals[index]!;
       if (visual.instance.endsAt > now
+        // 6.31 (26.10): a missile later than planned flies on to its target (MissileFlight.ts missileStillFlying).
+        || missileStillFlying(visual.instance, now)
         || this.#phaseNeedsSettlement(visual, now)
         || (visual.loadDeadline !== undefined && now < visual.loadDeadline)) continue;
       this.#visualGroup.remove(visual.node);
@@ -8462,7 +8481,9 @@ export class WorldRenderer3D {
       if (visual.skinned) {
         // 25.10 (6.27): a model with Hold/Decay plays Stand → Hold (aura) or Stand → Decay (one-shot), as Wow.exe's
         // effect callbacks chain them (SpellModelSequence.ts); every other spell model keeps its single clip.
-        if (!this.#sequenceSpellModel(visual, now, client)) visual.skinned.mixer.update(elapsed);
+        if (!this.#sequenceSpellModel(visual, now, client) && !this.#sequenceMissileModel(visual, now, client)) {
+          visual.skinned.mixer.update(elapsed);
+        }
         applyGlobalSequenceBones(visual.skinned, visual.template!, visual.wvm!.globalSequences, now);
       }
 
@@ -8605,6 +8626,58 @@ export class WorldRenderer3D {
     skinned.mixer.update(0);
     visual.sequenceSlot = playingSequence(action);
     visual.sequenceMs = pick.time * 1000;
+    return true;
+  }
+
+  /**
+   * 6.31 (26.10): a missile's model on InFlight (144), one cycle stretched over the flight when the sequence says so,
+   * as Missile_C plays it (MissileSequence.ts). False — the clip it already plays runs on — for anything but a
+   * flight whose model has 144, and until that clip has arrived from the sidecar.
+   */
+  #sequenceMissileModel(visual: RenderedVisual, now: number, client: EnvironmentClient | undefined): boolean {
+    const template = visual.template;
+    const skinned = visual.skinned;
+    const instance = visual.instance;
+    if (!template || !skinned || !instance.flight || !template.animations.has(MISSILE_ANIM_IN_FLIGHT)) return false;
+    if (!template.clips.has(MISSILE_ANIM_IN_FLIGHT) && !template.merged && client) {
+      const clips = client.animations(instance.path, template.parents.length, "critical");
+      if (clips) {
+        addSkinnedClips(template, clips);
+        template.merged = true;
+      }
+    }
+    if (!missileInFlightFlags.has(template)) {
+      const source = visual.wvm?.skeleton?.clips.find((clip) => clip.animationId === MISSILE_ANIM_IN_FLIGHT)
+        ?? (template.merged && client
+          ? client.animations(instance.path, template.parents.length, "critical")
+            ?.find((clip) => clip.animationId === MISSILE_ANIM_IN_FLIGHT)
+          : undefined);
+      if (source || template.merged) missileInFlightFlags.set(template, source?.sequenceFlags);
+    }
+    const clip = template.clips.get(MISSILE_ANIM_IN_FLIGHT);
+    if (!clip) return false;
+    const start = visual.playbackStartedAt ?? instance.startedAt;
+    let flight = missileFlightSeconds.get(instance);
+    if (flight === undefined) {
+      flight = Math.max(0, (instance.endsAt - start) / 1000);
+      missileFlightSeconds.set(instance, flight);
+    }
+    const pick = missileSequence({ seconds: clip.duration, flags: missileInFlightFlags.get(template) }, flight, _missilePick);
+    if (pick.animation !== MISSILE_ANIM_IN_FLIGHT) return false;
+    let action = visual.action;
+    if (!action || action.getClip() !== clip) {
+      action?.stop();
+      action = skinned.mixer.clipAction(clip);
+      action.reset();
+      action.setLoop(THREE.LoopRepeat, Infinity);
+      action.play();
+      visual.action = action;
+    }
+    const time = missileSequenceTime((now - start) / 1000, pick.timeScale, clip.duration);
+    action.time = time;
+    skinned.mixer.update(0);
+    visual.sequenceSlot = playingSequence(action);
+    visual.sequenceMs = time * 1000;
     return true;
   }
 
@@ -10426,7 +10499,10 @@ export class WorldRenderer3D {
       return {
         groupKey: `${visual.handle.id}:${phaseKey}`,
         due: visualHasStarted(visual.instance, now),
-        rootVisible: visual.node.visible,
+        // 6.31 (26.10): a missile that arrived this frame is hidden until the next sweep takes it; it is done, not
+        // missing — counted as missing it rejected its whole phase, and the cast flourish beside it (Fireball's 1 s
+        // hand fire, a target under ~24 yd) was hidden for the frame and then played again from the start.
+        rootVisible: visual.node.visible || (visual.instance.flight !== undefined && visual.instance.endsAt <= now),
         hasEmitter: phaseEmitterGroups.has(`${visual.handle.id}:${phaseKey}`),
         // This policy compares against a real range, so keep real (not squared) distance here.
         distance: Math.sqrt(nearSquared(at.x, -at.z, at.y)),
@@ -10454,7 +10530,7 @@ export class WorldRenderer3D {
     // the next. Group by ownership and use a stable id tie-breaker so it cannot alternate.
     const budgeted = selectVisualEffectGroups(
       visuals,
-      VISUAL_EFFECT_BUDGET, readyPhaseKeys,
+      VISUAL_EFFECT_BUDGET, readyPhaseKeys, this.#keptEffectHandles, // 6.31: last frame's kits first
     );
     const selectedVisuals = budgeted.selected.filter((entry) =>
       !phaseAdmissionRejected.has(`${entry.handleId}:${entry.phaseKey ?? ""}`));
@@ -10464,6 +10540,8 @@ export class WorldRenderer3D {
     }
     const selectedSpellGroups = new Set(selectedVisuals.map((entry) =>
       `${entry.handleId}:${entry.phaseKey ?? ""}`));
+    this.#keptEffectHandles.clear(); // 6.31
+    for (const entry of selectedVisuals) this.#keptEffectHandles.add(entry.handleId);
     // Meshes do not consume emitter slots, but they are still part of the same authored kit. If a
     // phase is rejected by the effect budget or root/range admission, hide every member (hammer and
     // particles together) rather than drawing the mesh alone and making the cast look incomplete.
@@ -10488,10 +10566,10 @@ export class WorldRenderer3D {
       const admitted = !phaseAdmissionRejected.has(groupKey)
         && (!phaseHasEmitters || selectedSpellGroups.has(groupKey));
       if (!readyPhaseKeys.has(phaseKey)) continue;
-      if (!admitted) {
-        visual.phaseOriginAt = undefined;
-        continue;
-      }
+      // 6.31 (26.10): a phase not admitted this frame keeps the origin it was released with. Cleared, a phase that
+      // dropped out for a frame (a sibling's root, the budget, the range) was released again at `now` — its clip
+      // reset to 0 and its emitters primed from age 0 — and the owner saw the effect play twice.
+      if (!admitted) continue;
       if (visual.phaseOriginAt !== undefined) continue;
       const phaseOrigin = spellEffectPhaseOrigin(visual.instance, now, undefined);
       if (phaseOrigin === undefined) continue;

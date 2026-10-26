@@ -1,7 +1,7 @@
 import {
   WVA_CHANNEL_STRIDE, WVA_CLIP_ANIMATION, WVA_CLIP_BLEND_TIME, WVA_CLIP_CHANNELS, WVA_CLIP_DURATION,
   WVA_CLIP_FIRST_CHANNEL, WVA_CLIP_FIRST_KEY, WVA_CLIP_MOVING_SPEED, WVA_CLIP_STRIDE,
-  WVA_CLIP_VARIATION_INDEX, WVA_CLIP_VARIATION_NEXT, decodeWvaAnimationsPacked, type WvmSkeletonClip,
+  WVA_CLIP_SEQUENCE_FLAGS, WVA_CLIP_VARIATION_INDEX, WVA_CLIP_VARIATION_NEXT, decodeWvaAnimationsPacked, type WvmSkeletonClip,
 } from "./Wvm.js";
 import type {
   WvaAnimationDecodeRequest, WvaAnimationDecodeResponse, WvaAnimationResidencyCost, WvaPackedAnimations,
@@ -169,6 +169,8 @@ export function unpackWvaAnimations(packed: WvaPackedAnimations): WvmSkeletonCli
     if (!Number.isNaN(variationNext)) clip.variationNext = variationNext;
     const variationIndex = clipTable[at + WVA_CLIP_VARIATION_INDEX]!;
     if (!Number.isNaN(variationIndex)) clip.variationIndex = variationIndex;
+    const sequenceFlags = clipTable[at + WVA_CLIP_SEQUENCE_FLAGS]!; // 6.31
+    if (!Number.isNaN(sequenceFlags)) clip.sequenceFlags = sequenceFlags;
     lazyClips.set(clip, { source, at });
     clips.push(clip);
   }

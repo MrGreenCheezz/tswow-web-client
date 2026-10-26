@@ -51,6 +51,12 @@ const SPELL_LIGHT_DRIFT = 0.15;
  */
 export const SPELL_LIGHT_KIND_SCALE = { missile: 1.5, burst: 1, aura: 0.5 } as const;
 export type SpellLightKind = keyof typeof SPELL_LIGHT_KIND_SCALE;
+/**
+ * 6.31 (26.10): how much brighter a light must be to take a slot from one that held it last frame. Ranked bare, two
+ * bolts of Arcane Missiles and an impact swapped the two slots every few frames, and a light that lost its slot went
+ * from its intensity to nothing in one frame — a flicker.
+ */
+export const SPELL_LIGHT_SLOT_HOLD = 1.5;
 /** Below this smoothed intensity a light is dropped. */
 const SPELL_LIGHT_FLOOR = 0.01;
 /** The yd² one fully opaque additive mesh batch counts for (a spell's mesh is a handful of cards). */
@@ -85,6 +91,8 @@ interface Candidate {
 /** 26.10: a light in the world — one missile's, or every impact and held effect gathered around one place. */
 interface Light {
   smoothed: number;
+  /** 6.31: whether it held a slot last frame (`SPELL_LIGHT_SLOT_HOLD`). */
+  slotted: boolean;
   fed: boolean;
   fresh: boolean;
   /** This frame's target: a missile's own intensity, or the product of a gathered light's darkness. */
@@ -103,7 +111,7 @@ function emptyGlow(): ParticleGlow {
 }
 
 function newLight(): Light {
-  return { smoothed: 0, fed: false, fresh: true, target: 0, dark: 1, weight: 0, x: 0, y: 0, z: 0,
+  return { smoothed: 0, slotted: false, fed: false, fresh: true, target: 0, dark: 1, weight: 0, x: 0, y: 0, z: 0,
     red: 0, green: 0, blue: 0, position: new THREE.Vector3(), colour: new THREE.Vector3() };
 }
 
@@ -234,8 +242,12 @@ export class SpellLights {
       if (light.smoothed >= SPELL_LIGHT_FLOOR) this.#ranked.push(light);
     }
     this.#gathered.length = kept;
-    this.#ranked.sort((left, right) => right.smoothed - left.smoothed);
+    const rank = (light: Light): number => light.smoothed * (light.slotted ? SPELL_LIGHT_SLOT_HOLD : 1);
+    this.#ranked.sort((left, right) => rank(right) - rank(left));
+    for (const light of this.#missiles.values()) light.slotted = false;
+    for (const light of this.#gathered) light.slotted = false;
     if (this.#ranked.length > SPELL_LIGHT_LIMIT) this.#ranked.length = SPELL_LIGHT_LIMIT;
+    for (const light of this.#ranked) light.slotted = true;
   }
 
   /** The gathered light within `SPELL_LIGHT_GATHER` yards of (x, y, z), or a new one there. */

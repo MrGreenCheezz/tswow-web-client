@@ -9,7 +9,22 @@ import { createHash } from "node:crypto";
 export function visualModelNamespace(modelPath) {
   // 05.10-A7a-F2 (visual-v23); 05.10-A7b-1: visual-wmo-v25; 12.10 6.24: visual-v24, the key bone table;
   // 13.10 7.11: visual-wmo-v26, the Composite streams; 22.10 (7.37): visual-wmo-v27, the transition range.
-  return modelPath.toLowerCase().endsWith(".wmo") ? "visual-wmo-v27" : "visual-v24";
+  // 26.10 (6.31): visual-spell-v1 — the spell models alone, whose clips carry M2Sequence.flags.
+  const lower = modelPath.toLowerCase();
+  if (lower.endsWith(".wmo")) return "visual-wmo-v27";
+  return isSpellModelPath(lower) ? SPELL_MODEL_NAMESPACE : "visual-v24";
+}
+
+/**
+ * 6.31 (26.10): the namespace of the spell models (`Spells\…`). Their clips carry `M2Sequence.flags` — a missile
+ * stretches its InFlight over the flight when bit 0x1 is set (Missile_C) — and only theirs turn over: 1,567 small
+ * files regenerate on demand, not every creature and doodad of the client.
+ */
+export const SPELL_MODEL_NAMESPACE = "visual-spell-v1";
+
+/** Whether a model path is a spell model's (`Spells\…`, either separator, any case). */
+export function isSpellModelPath(modelPath) {
+  return /^spells[\\/]/i.test(modelPath);
 }
 
 /** `<hash>` of `<VISUAL_MODEL_DIR>/<hash>.bin` for a model path (backslashes, any case). */

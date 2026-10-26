@@ -32,7 +32,7 @@ import { publishTexture, SourceMissing, SOURCE_MISSING_EXIT, validTexturePath } 
 import { clientArchives } from "./mpq.mjs";
 import { clientDirectory } from "./paths.mjs";
 import { sourceStamp, stampIsCurrent, writeFileAtomic, writeSourceStamp } from "./source-stamp.mjs";
-import { visualModelHash, visualModelHashIn } from "./visual-model-key.mjs"; // 05.10-A7a-F2; 13.10 7.11
+import { isSpellModelPath, visualModelHash, visualModelHashIn } from "./visual-model-key.mjs"; // 05.10-A7a-F2; 13.10 7.11; 6.31
 // Out of the build, not copied: see the note over the same import in `generate-texture.mjs`.
 import { validAssetPath } from "../dist/code/gateway/AssetPath.js";
 
@@ -130,7 +130,14 @@ export async function publishVisualModel(requestedPath, hash, archives) {
     // 05.10-A7a-F2: the WVE1 block and the resolved shader ids only under the namespace that
     // expects them. A gateway still running `visual-v21` asks for its own hash and keeps getting
     // the bytes its readers know — its asset worker loads these tools fresh from disk.
-    const extensions = hash === visualModelHash(requestedPath) || hash === visualModelHash(modelPath);
+    const current = hash === visualModelHash(requestedPath) || hash === visualModelHash(modelPath);
+    // 26.10 (6.31): a spell model's current name is `visual-spell-v1`; a gateway started before it still asks for its
+    // `visual-v24` hash and gets exactly the v24 bytes — extensions, and no sequence flags.
+    const v24 = hash === visualModelHashIn("visual-v24", requestedPath) || hash === visualModelHashIn("visual-v24", modelPath);
+    const extensions = current || v24;
+    if (current && isSpellModelPath(modelPath) && skeleton) {
+      for (const clip of skeleton.clips) if (Number.isFinite(clip.m2Flags)) clip.sequenceFlags = clip.m2Flags;
+    }
     await writeFileAtomic(join(destination, `${hash}.bin`),
       encodeWvm9(model, shippedSkeleton, animations.map((animation) => animation.animationId), effects,
         { extensions }));

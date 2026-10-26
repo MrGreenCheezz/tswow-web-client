@@ -790,6 +790,11 @@ export function m2Animations(model) {
        * identity a follower points at is the record that was asked for.
        */
       variationIndex: record.index,
+      /**
+       * 6.31 (26.10): `M2Sequence.flags` of the record asked for. Missile_C reads bit 0x1 of InFlight (144) and
+       * stretches one cycle over the whole flight (wowdecomp Missile_C.cpp, the target setup beside 0x00702b10).
+       */
+      flags: record.flags,
       /** Undefined when the keyframes are inside the .m2. */
       external: (data.flags & SEQUENCE_DATA_INSIDE_M2) !== 0
         ? undefined
@@ -895,6 +900,8 @@ export function parseM2Skeleton(model, options = {}) {
       movingSpeed: animation.movingSpeed,
       variationNext: animation.variationNext,
       variationIndex: animation.variationIndex,
+      // 6.31: carried for the generator, which writes it only where it opts in (`sequenceFlags`, tools/wvm.mjs).
+      m2Flags: animation.flags,
       channels,
     });
   }

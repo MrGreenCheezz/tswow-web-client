@@ -702,11 +702,27 @@ export function flyMissileInstance(instance: MissileInstance, now: number, point
   }
   // A missile the script slowed down lives past its planned arrival, boundedly.
   if (now >= instance.endsAt) {
-    const plannedEnd = state.launchedAt + (Number.isFinite(state.baseSpeed) && state.baseSpeed > 0
-      ? (state.startDistance / state.baseSpeed) * 1000 : 0);
-    instance.endsAt = Math.min(Math.max(instance.endsAt, now + 50), plannedEnd + MISSILE_OVERRUN_MS);
+    instance.endsAt = Math.min(Math.max(instance.endsAt, now + 50), overrunLimit(state));
   }
   return true;
+}
+
+/** The latest a missile may still be flying: its planned arrival at its launch speed plus `MISSILE_OVERRUN_MS`. */
+function overrunLimit(state: MissileFlightState): number {
+  const plannedEnd = state.launchedAt + (Number.isFinite(state.baseSpeed) && state.baseSpeed > 0
+    ? (state.startDistance / state.baseSpeed) * 1000 : 0);
+  return plannedEnd + MISSILE_OVERRUN_MS;
+}
+
+/**
+ * 6.31 (26.10): whether a launched missile is still on its way at `now` — not arrived, inside its overrun. The
+ * renderer's sweep asks this before it removes a visual whose planned life is over: it runs before this frame's
+ * `flyMissileInstance`, so a missile later than planned (a receding target, a lead, a slowing script) was cut at
+ * its planned arrival, short of the target — the owner's «снаряды пропадают раньше времени».
+ */
+export function missileStillFlying(instance: object, now: number): boolean {
+  const state = states.get(instance);
+  return state !== undefined && !state.arrived && now < overrunLimit(state);
 }
 
 /** The unit's velocity from its position over the last frame (undefined on its first frame). */

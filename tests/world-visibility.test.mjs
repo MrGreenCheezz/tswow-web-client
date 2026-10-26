@@ -317,8 +317,10 @@ test("V5 emitter budget hides the whole spell kit, including non-emitter mesh me
   const origin = source.indexOf("Install the shared local origin only after the effect budget");
   assert.ok(budget >= 0 && origin > budget,
     "a ready-but-unselected kit cannot age before budget admission");
-  assert.match(source, /if \(!admitted\) \{\s*visual\.phaseOriginAt = undefined;/,
-    "rejected phases reset their release origin for a fresh full-cycle replay");
+  // 6.31 (26.10): a kit not yet released starts at its first admission (its origin is set there, never before);
+  // one already released keeps its origin through a frame it is dropped — clearing it replayed the effect.
+  assert.match(source, /if \(!admitted\) continue;\s*if \(visual\.phaseOriginAt !== undefined\) continue;/,
+    "a released phase keeps its origin; an unreleased one is released on its first admission");
 });
 
 test("V6 mixed-distance and missing-root members reject one spell phase atomically", () => {
@@ -481,7 +483,8 @@ test("V4 spell M2 effects use a local clock and a skinned emitter rig", async ()
     "model lifetime is measured from the actual playback origin");
   assert.match(source, /const built = buildModel\(model\.wvm,/,
     "spell mesh materials are per visual rather than shared with the scenery cache");
-  assert.match(source, /updateBatchColours\(visual\.built\.animatedBatches, Math\.max\(0, now - origin\), now\)/,
+  // 26.10 (6.27, c1dc301): with a once-played model's flag after it, so its short tracks hold their last key.
+  assert.match(source, /updateBatchColours\(visual\.built\.animatedBatches, Math\.max\(0, now - origin\), now(, [^)]*)?\)/,
     "spell mesh alpha/weight tracks use the local phase age");
 });
 

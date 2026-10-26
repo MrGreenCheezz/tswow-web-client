@@ -174,6 +174,8 @@ export const CLIP_EXTRAS_MAGIC = "WVX1";
 export const CLIP_EXTRAS_HEADER_SIZE = 8;
 /** f32 movingSpeed, i16 variationNext, u16 variationIndex. */
 export const CLIP_EXTRAS_RECORD_SIZE = 8;
+/** 6.31 (26.10): the same and then u32 `M2Sequence.flags`, written only when a clip carries `sequenceFlags`. */
+export const CLIP_EXTRAS_FLAGS_RECORD_SIZE = 12;
 
 /** Optional global-sequence bone channels appended after the skeleton's ordinary clips. */
 export const GLOBAL_BONE_CHANNELS_MAGIC = "WVG1";
@@ -759,9 +761,14 @@ function hasClipExtras(clip) {
  */
 function encodeClipExtras(clips) {
   if (!clips.some(hasClipExtras)) return Buffer.alloc(0);
-  const block = Buffer.alloc(CLIP_EXTRAS_HEADER_SIZE + clips.length * CLIP_EXTRAS_RECORD_SIZE);
+  // 6.31 (26.10): the sequence flags only where the generator put them on the clips (`sequenceFlags`, the spell
+  // models' namespace): every other artifact keeps its 8-byte records byte for byte, and a reader of this build
+  // steps over the 4 bytes it does not know by the record size, as the table was designed for.
+  const flagged = clips.some((clip) => Number.isFinite(clip.sequenceFlags));
+  const recordSize = flagged ? CLIP_EXTRAS_FLAGS_RECORD_SIZE : CLIP_EXTRAS_RECORD_SIZE;
+  const block = Buffer.alloc(CLIP_EXTRAS_HEADER_SIZE + clips.length * recordSize);
   block.write(CLIP_EXTRAS_MAGIC, 0, "ascii");
-  block.writeUInt16LE(CLIP_EXTRAS_RECORD_SIZE, 4);
+  block.writeUInt16LE(recordSize, 4);
   block.writeUInt16LE(clips.length, 6);
   let offset = CLIP_EXTRAS_HEADER_SIZE;
   for (const clip of clips) {
@@ -771,7 +778,8 @@ function encodeClipExtras(clips) {
     // −1 is the file's own "no follower", and it is why this is signed.
     block.writeInt16LE(clampInt16(clip.variationNext, -1), offset + 4);
     block.writeUInt16LE(clampUint16(clip.variationIndex, 0), offset + 6);
-    offset += CLIP_EXTRAS_RECORD_SIZE;
+    if (flagged) block.writeUInt32LE(Number.isFinite(clip.sequenceFlags) ? clip.sequenceFlags >>> 0 : 0, offset + 8);
+    offset += recordSize;
   }
   return block;
 }

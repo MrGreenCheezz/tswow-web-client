@@ -183,8 +183,12 @@ const MAX_BRIDGED_SOCKETS_PER_ADDRESS = 8;
 // transition range: the colours of a group's transition vertices as Wow.exe holds them after
 // `FixColorVertexAlpha` and `AttenTransVerts` (`tools/wmo-transition.mjs`). A v26 artifact decodes with
 // none and keeps the raw MOCV there, so the name turns over; a v26 hash still gets the v26 bytes.
-export function visualModelCacheNamespace(modelPath: string): "visual-v24" | "visual-wmo-v27" {
-  return modelPath.toLowerCase().endsWith(".wmo") ? "visual-wmo-v27" : "visual-v24";
+// 26.10 (6.31): visual-spell-v1 is the spell models alone (`Spells\…`): their clips carry M2Sequence.flags in a
+// 12-byte extras record, which a missile reads to stretch its InFlight over the flight. Only they turn over.
+export function visualModelCacheNamespace(modelPath: string): "visual-v24" | "visual-wmo-v27" | "visual-spell-v1" {
+  const lower = modelPath.toLowerCase();
+  if (lower.endsWith(".wmo")) return "visual-wmo-v27";
+  return /^spells[\\/]/.test(lower) ? "visual-spell-v1" : "visual-v24";
 }
 
 /** 22.10 (6.26): the namespace `/texture` hashes its files under; part of the visual generation (AssetGeneration.ts). */
@@ -949,7 +953,8 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
   // `patches.generation` is; the metadata one moves with the DBC half and is taken per request.
   const visualAssetGeneration = visualGeneration({
     archivesHash: fingerprint.archivesHash, chain: fingerprint.chain,
-    namespaces: [visualModelCacheNamespace("a.m2"), visualModelCacheNamespace("a.wmo"), TEXTURE_CACHE_NAMESPACE],
+    namespaces: [visualModelCacheNamespace("a.m2"), visualModelCacheNamespace("a.wmo"),
+      visualModelCacheNamespace("spells\\a.m2"), TEXTURE_CACHE_NAMESPACE], // 26.10 (6.31): + the spell models'
     coordinatedVisuals: options.coordinatedVisuals ?? false,
   });
   const codeIdentity = await gatewayCodeIdentity();

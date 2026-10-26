@@ -152,6 +152,11 @@ export interface WvmSkeletonClip {
   variationIndex?: number;
   /** The sequence the file says follows this one, as a table slot, or −1 for none. */
   variationNext?: number;
+  /**
+   * 6.31 (26.10): `M2Sequence.flags`, carried only by the spell models' artifacts. A missile reads bit 0x1 of its
+   * InFlight (144): set, one cycle of it is stretched over the whole flight (Missile_C, MissileSequence.ts).
+   */
+  sequenceFlags?: number;
   channels: Array<{ bone: number; kind: 0 | 1 | 2; times: Float32Array; values: Float32Array }>;
 }
 
@@ -471,7 +476,7 @@ const CHANNEL_HEADER_SIZE = 8;
  * block carries its own, so a record grown by a later slice is stepped over rather than misread.
  */
 /** Float64 slots per clip in a packed clip table (`decodeWvaAnimationsPacked`). */
-export const WVA_CLIP_STRIDE = 9;
+export const WVA_CLIP_STRIDE = 10;
 /** Slot offsets inside one packed clip record; an optional field the object form omits is NaN. */
 export const WVA_CLIP_ANIMATION = 0;
 export const WVA_CLIP_DURATION = 1;
@@ -482,11 +487,15 @@ export const WVA_CLIP_VARIATION_NEXT = 5;
 export const WVA_CLIP_FIRST_CHANNEL = 6;
 export const WVA_CLIP_CHANNELS = 7;
 export const WVA_CLIP_FIRST_KEY = 8;
+/** 6.31 (26.10): `M2Sequence.flags` from a 12-byte extras record, else NaN. */
+export const WVA_CLIP_SEQUENCE_FLAGS = 9;
 /** Uint32 words per packed channel: `bone | kind << 16`, then the key count. */
 export const WVA_CHANNEL_STRIDE = 2;
 const CLIP_EXTRAS_MAGIC = "WVX1";
 const CLIP_EXTRAS_HEADER_SIZE = 8;
 const CLIP_EXTRAS_RECORD_SIZE = 8;
+/** 6.31 (26.10): a record that also carries u32 `M2Sequence.flags` (the spell models' namespace, tools/wvm.mjs). */
+const CLIP_EXTRAS_FLAGS_RECORD_SIZE = 12;
 const GLOBAL_BONE_CHANNELS_MAGIC = "WVG1";
 const GLOBAL_BONE_CHANNELS_HEADER_SIZE = 8;
 const GLOBAL_BONE_CHANNEL_HEADER_SIZE = 12;
@@ -1235,6 +1244,7 @@ function readClipExtras(view: DataView, start: number, limit: number, clips: Wvm
     if (Number.isFinite(movingSpeed) && movingSpeed !== 0) clip.movingSpeed = movingSpeed;
     if (variationNext >= 0) clip.variationNext = variationNext;
     clip.variationIndex = variationIndex;
+    if (recordSize >= CLIP_EXTRAS_FLAGS_RECORD_SIZE) clip.sequenceFlags = view.getUint32(offset + 8, true); // 6.31
     // By the block's own record size, not this build's: a longer record is a later slice's, and
     // stepping over the part we do not understand is the whole point of carrying the width.
     offset += recordSize;
@@ -1281,6 +1291,7 @@ function readClipsPacked(view: DataView, start: number, clipCount: number, boneC
     clipTable[record + WVA_CLIP_MOVING_SPEED] = Number.NaN;
     clipTable[record + WVA_CLIP_VARIATION_INDEX] = Number.NaN;
     clipTable[record + WVA_CLIP_VARIATION_NEXT] = Number.NaN;
+    clipTable[record + WVA_CLIP_SEQUENCE_FLAGS] = Number.NaN; // 6.31
     clipTable[record + WVA_CLIP_FIRST_CHANNEL] = channelAt;
     clipTable[record + WVA_CLIP_FIRST_KEY] = keyAt;
     const firstChannel = channelAt;
@@ -1321,6 +1332,7 @@ function readClipsPacked(view: DataView, start: number, clipCount: number, boneC
       if (Number.isFinite(movingSpeed) && movingSpeed !== 0) clipTable[record + WVA_CLIP_MOVING_SPEED] = movingSpeed;
       if (variationNext >= 0) clipTable[record + WVA_CLIP_VARIATION_NEXT] = variationNext;
       clipTable[record + WVA_CLIP_VARIATION_INDEX] = view.getUint16(at + 6, true);
+      if (recordSize >= CLIP_EXTRAS_FLAGS_RECORD_SIZE) clipTable[record + WVA_CLIP_SEQUENCE_FLAGS] = view.getUint32(at + 8, true); // 6.31
     }
   }
   return { clipTable, channelTable, keys: keyData, span };
