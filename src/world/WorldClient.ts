@@ -4411,6 +4411,29 @@ export class WorldClient {
     if (!this.#closed) this.#connection.send(OPCODES.CMSG_REQUEST_PET_INFO, buildRequestPetInfo());
   }
 
+  /**
+   * 11.02 (26.10): a ground spell of the unit the character steers (a catapult's boulder, a demolisher's ram
+   * charge): the page arms its reticle for that caster (game/UnitGroundTarget.ts) and the click sends
+   * {@link castUnitSpellAt}. True when the page took the press (armed, or deciding once the spell's row is in;
+   * `send` then casts it the usual way if it is no ground spell); false sends it now, as before.
+   */
+  armUnitGroundTarget?: (casterGuid: bigint, spellId: number, send: () => void) => boolean;
+
+  /**
+   * 11.02 (26.10): the steered unit's spell at a ground point — `CMSG_PET_CAST_SPELL` from the unit with
+   * TARGET_FLAG_DEST_LOCATION (world coordinates, transport guid zero), as Wow.exe's cast sender writes any
+   * caster that is not the character (0x0080ac90). The server checks range, sight and that the unit knows it.
+   */
+  castUnitSpellAt(casterGuid: bigint, spellId: number, destination: { x: number; y: number; z: number }): void {
+    if (this.#closed || casterGuid === 0n || !Number.isSafeInteger(spellId) || spellId <= 0) return;
+    if (!Number.isFinite(destination.x) || !Number.isFinite(destination.y) || !Number.isFinite(destination.z)) return;
+    const castCount = (this.#castCount + 1) & 0xff;
+    const payload = buildPetCastSpell(casterGuid, castCount, spellId, 0, { destination });
+    if (!payload) return;
+    this.#castCount = castCount;
+    this.#connection.send(OPCODES.CMSG_PET_CAST_SPELL, payload);
+  }
+
   /** Presses a slot on the pet bar, sending back the word the server put in it. */
   usePetSlot(slot: number, targetGuid?: bigint): void {
     const button = this.petSpells?.bar[slot];
@@ -4446,21 +4469,30 @@ export class WorldClient {
       || (!petBarCastsAsUnit(bar.guid, this.controlledGuid, this.state.selfGuid, this.state.objects.get(bar.guid)) // 11.02-BCD-review: + the bar's unit
         && !petSpellCastsAsUnitAt(spellId, target))) return false; // L13 11.02-D: or AttributesEx4 0x20 (0x005d4210); L13-review: a ground spell only at a unit the player may attack
     if (spellId <= 0) return true;
-    // The count is the one every cast of this client draws from; the target is the press's unit or the
-    // selection — the core drops it for a spell that names no unit (Spell::InitExplicitTargets).
-    const castCount = (this.#castCount + 1) & 0xff;
     // 11.02-E: a missile trajectory spell carries its shot (flag 2), or is not sent (MissileCast.ts).
     const missilePlan = this.#missilePlan(spellId, bar.guid); // 11.02-E
     if (missilePlan !== undefined && !("shot" in missilePlan)) return true; // 11.02-E
-    const payload = missilePlan !== undefined // 11.02-E
-      ? buildPetCastSpell(bar.guid, castCount, spellId, CAST_FLAG_TRAJECTORY, trajectoryTargets(missilePlan.shot, target), // 11.02-E
-        trajectoryTail(missilePlan.shot, this.#missileMovementTail(bar.guid))) // 11.02-E
-      : buildPetCastSpell(bar.guid, castCount, spellId, 0, { unit: target === 0n ? undefined : target });
-    if (!payload) return true;
+    // 11.02 (26.10): a ground spell (not a trajectory shot) waits for the point the player picks.
+    if (missilePlan === undefined && this.armUnitGroundTarget?.(bar.guid, spellId, () => {
+      this.#sendUnitCast(bar.guid, spellId, target);
+    })) return true;
+    this.#sendUnitCast(bar.guid, spellId, target, missilePlan);
+    return true;
+  }
+
+  /** The steered unit's cast at its target (or its trajectory shot), as `#castAsControlledUnit` decided it. */
+  #sendUnitCast(casterGuid: bigint, spellId: number, target: bigint, missilePlan?: MissileCastPlan): void {
+    // The count is the one every cast of this client draws from; the target is the press's unit or the
+    // selection — the core drops it for a spell that names no unit (Spell::InitExplicitTargets).
+    const castCount = (this.#castCount + 1) & 0xff;
+    const payload = missilePlan !== undefined && "shot" in missilePlan // 11.02-E
+      ? buildPetCastSpell(casterGuid, castCount, spellId, CAST_FLAG_TRAJECTORY, trajectoryTargets(missilePlan.shot, target), // 11.02-E
+        trajectoryTail(missilePlan.shot, this.#missileMovementTail(casterGuid))) // 11.02-E
+      : buildPetCastSpell(casterGuid, castCount, spellId, 0, { unit: target === 0n ? undefined : target });
+    if (!payload) return;
     this.#castCount = castCount;
     this.#connection.send(OPCODES.CMSG_PET_CAST_SPELL, payload);
-    if (missilePlan !== undefined) this.#missiles.cast(bar.guid, spellId, performance.now()); // 11.02-E
-    return true;
+    if (missilePlan !== undefined) this.#missiles.cast(casterGuid, spellId, performance.now()); // 11.02-E
   }
 
   /**

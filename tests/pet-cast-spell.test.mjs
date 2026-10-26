@@ -367,3 +367,50 @@ test("L13-review 11.02-D: an ordinary pet's ground spell goes out only at a unit
     client.close();
   }
 });
+
+// 11.02 (26.10): a steered unit's ground spell (a catapult's boulder) takes the page's reticle instead of going out
+// at the selection; the click sends CMSG_PET_CAST_SPELL from the unit with TARGET_FLAG_DEST_LOCATION.
+test("11.02: a steered unit's ground spell waits for the reticle; the point goes out from the unit; the rest as before", async () => {
+  const { client, connection } = await barClient(VEHICLE, vehicleBar);
+  client.controlledGuid = VEHICLE;
+  const armed = [];
+  let later;
+  client.armUnitGroundTarget = (caster, spellId, send) => {
+    armed.push([caster, spellId]);
+    if (spellId === CANNON) return true; // a ground spell: the reticle is up
+    later = send; // its row is not in: the page decides when it comes
+    return true;
+  };
+  client.usePetSlot(0);
+  client.usePetSlot(1);
+  assert.deepEqual(armed, [[VEHICLE, CANNON], [VEHICLE, FLAME]]);
+  assert.deepEqual(connection.sent, [], "nothing out while the page decides");
+  later(); // FLAME's row came back: no ground spell, it goes out at the selection as before
+  client.castUnitSpellAt(VEHICLE, CANNON, { x: 10.5, y: -4, z: 2 });
+  const [flame, cannon] = connection.sent.map(({ opcode, payload }) => ({ opcode, reader: new PacketReader(payload) }));
+  assert.equal(flame.opcode, OPCODES.CMSG_PET_CAST_SPELL);
+  assert.equal(flame.reader.u64(), VEHICLE);
+  flame.reader.u8();
+  assert.equal(flame.reader.u32(), FLAME);
+  assert.equal(flame.reader.u8(), 0);
+  assert.equal(flame.reader.u32(), 0x2, "TARGET_FLAG_UNIT");
+  assert.equal(flame.reader.packedGuid(), ENEMY);
+  assert.equal(cannon.opcode, OPCODES.CMSG_PET_CAST_SPELL);
+  assert.equal(cannon.reader.u64(), VEHICLE);
+  cannon.reader.u8();
+  assert.equal(cannon.reader.u32(), CANNON);
+  assert.equal(cannon.reader.u8(), 0);
+  assert.equal(cannon.reader.u32(), 0x40, "TARGET_FLAG_DEST_LOCATION");
+  assert.equal(cannon.reader.packedGuid(), 0n, "world coordinates");
+  assert.deepEqual([cannon.reader.f32(), cannon.reader.f32(), cannon.reader.f32()], [10.5, -4, 2]);
+  cannon.reader.assertFinished();
+
+  // Without a page hook (or a page that does not take it) the press goes out now, as before 26.10.
+  client.armUnitGroundTarget = () => false;
+  connection.sent.length = 0;
+  client.usePetSlot(0);
+  assert.equal(connection.sent.length, 1);
+  client.castUnitSpellAt(VEHICLE, CANNON, { x: Number.NaN, y: 0, z: 0 });
+  assert.equal(connection.sent.length, 1, "no point, nothing sent");
+  client.close();
+});

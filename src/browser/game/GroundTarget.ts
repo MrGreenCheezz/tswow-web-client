@@ -45,6 +45,11 @@ export function pendingGroundTarget(): number | undefined {
   return game.groundTarget;
 }
 
+/** 11.02 (26.10): the unit a pending reticle casts for, if a vehicle's or possessed unit's bar armed it. */
+export function pendingGroundTargetCaster(): bigint | undefined {
+  return game.groundTargetCaster;
+}
+
 /** The item a pending reticle belongs to, if it was armed by using an item. */
 export function pendingGroundTargetItem(): { bag: number; slot: number; guid: bigint } | undefined {
   return game.groundTargetItem;
@@ -76,6 +81,7 @@ export function beginGroundTarget(spellId: number): boolean {
   // A fresh arming owns no item: the click below must not inherit a previous item reticle's
   // bag and slot. The item flow sets `groundTargetItem` itself right after this returns.
   game.groundTargetItem = undefined;
+  game.groundTargetCaster = undefined; // 11.02 (26.10): the unit flow sets it right after, like the item one
   groundTargetChanged(true); // 2.05 (13.10)
   return true;
 }
@@ -84,6 +90,7 @@ export function cancelGroundTarget(): void {
   const armed = game.groundTarget !== undefined; // 2.05 (13.10)
   game.groundTarget = undefined;
   game.groundTargetItem = undefined;
+  game.groundTargetCaster = undefined; // 11.02 (26.10)
   // The reticle's rings and any placing ghost are indication, not state: drop them with the arming
   // rather than on the next drawn frame, which a hidden world panel may not reach.
   game.renderer?.setGroundTargetPreview(undefined);

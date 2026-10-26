@@ -37,7 +37,7 @@ import { keyBindingsOpen, toggleKeyBindingsWindow } from "../ui/KeyBindings.js";
 import { notice } from "../ui/Notices.js";
 import {
   cancelGroundTarget, groundPointInRange, groundTargetRange, pendingGroundTarget,
-  pendingGroundTargetItem, resolveGroundTarget,
+  pendingGroundTargetItem, pendingGroundTargetCaster, resolveGroundTarget,
 } from "../game/GroundTarget.js";
 import { recordGroundTargetPointer } from "../game/GroundTargetPreview.js";
 import { cancelItemTarget, observeItemTarget, pendingItemTarget, targetGameObjectWithCursor } from "../game/SpellCursor.js";
@@ -613,9 +613,12 @@ function confirmGroundTargetAt(
     notice("Не удалось выбрать точку — кликните по земле, а не по небу", "info");
     return;
   }
+  // 11.02 (26.10): a steered unit's spell is measured from that unit, and sent from it.
+  const caster = pendingGroundTargetCaster();
   if (range !== undefined) {
-    const self = world.state.selfGuid === undefined
-      ? undefined : world.state.objects.get(world.state.selfGuid);
+    const casterGuid = caster ?? world.state.selfGuid;
+    const self = casterGuid === undefined
+      ? undefined : world.state.objects.get(casterGuid);
     if (self?.position && !groundPointInRange(point, self.position, range)) {
       notice(pendingGroundTargetItem() ? "Слишком далеко для этого предмета" : "Слишком далеко для выбранного заклинания");
       return;
@@ -627,6 +630,10 @@ function confirmGroundTargetAt(
   clearHoverCursor();
   if (item) {
     world.useItemAt(item.bag, item.slot, item.guid, point);
+    return;
+  }
+  if (caster !== undefined) {
+    world.castUnitSpellAt(caster, spellId, point); // 11.02 (26.10)
     return;
   }
   world.castSpellAt(spellId, point, cooldown, metadata?.cooldownStartedOnEvent ?? false);

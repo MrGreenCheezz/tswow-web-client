@@ -3,6 +3,7 @@
 // ever called from a world event, long after both modules have finished evaluating — and it is the
 // right side of the cycle, because the way out ends in `connectRealm`, which lives there.
 import { leaveWorld } from "./Login.js";
+import { installUnitGroundTarget } from "../game/UnitGroundTarget.js"; // 11.02 (26.10)
 import { describeFailure, worldConnectionLost } from "../glue/GlueMessages.js";
 import { enterWorldRefusal } from "../glue/GlueEnterGate.js";
 import { formatMoney } from "../ui/Format.js";
@@ -881,6 +882,7 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
       casterGuid: kill.killerGuid, targetGuid: kill.victimGuid, spellId: 0,
     });
   });
+  installUnitGroundTarget(world); // 11.02 (26.10): a steered unit's ground spells take the reticle
   world.onSpellStatus = (message, error) => {
     professionCastStatus(message, error);
     spellStatus.className = error ? "error" : "success";

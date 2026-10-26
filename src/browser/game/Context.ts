@@ -148,6 +148,11 @@ export interface GameContext {
    * `groundTarget`; a set spell with no item here is an ordinary spell reticle.
    */
   groundTargetItem: { bag: number; slot: number; guid: bigint } | undefined;
+  /**
+   * 11.02 (26.10): the unit a pending reticle casts for — the vehicle or possessed creature whose bar armed it
+   * (game/UnitGroundTarget.ts); undefined for the character's own spell or item. Set and cleared with `groundTarget`.
+   */
+  groundTargetCaster: bigint | undefined;
   /** Spell rows already resolved, by spell id. */
   spells: Map<number, SpellMetadata>;
   /**
@@ -218,6 +223,7 @@ export const game: GameContext = {
   spells: new SpellRows(), // 22.10 ARC-2 S2a: keeps the attribute words the renderer is handed
   groundTarget: undefined,
   groundTargetItem: undefined,
+  groundTargetCaster: undefined, // 11.02 (26.10)
   globalCooldownUntil: 0,
   focusGuid: undefined,
   renderer: undefined,
@@ -326,6 +332,7 @@ export function clearWorldContext(): void {
   game.spells.clear();
   game.groundTarget = undefined;
   game.groundTargetItem = undefined;
+  game.groundTargetCaster = undefined; // 11.02 (26.10)
   game.globalCooldownUntil = 0;
   game.focusGuid = undefined;
   // The wheel's own setting survives a change of world, but how far a wall was letting the camera
