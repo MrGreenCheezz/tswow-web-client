@@ -115,22 +115,30 @@ export function cameraPivot(player: WorldPosition, pivotHeight: number): Vector3
  * silently becomes a 21-yard-high orbit centre, and one of the two tests would have gone on
  * passing while measuring nothing. An object refuses a stray number at the type level and falls
  * back to the default at runtime.
+ *
+ * 11.02 (26.10): `lensYaw` and `lensPitch` are a vehicle's camera offsets (game/VehicleCamera.ts): the arm is
+ * swung by `lensYaw` about the vertical while the view keeps its direction, and the view is tilted up by
+ * `lensPitch` about the camera, which stays where it stands. Both 0 (or absent): the plain orbit.
  */
 export function createCamera(
   player: WorldPosition,
   yawOffset = 0,
   pitch = CAMERA_DEFAULT_PITCH,
   distance = CAMERA_DEFAULT_DISTANCE,
-  options: { pivotHeight?: number | undefined } = {},
+  options: { pivotHeight?: number | undefined; lensYaw?: number | undefined; lensPitch?: number | undefined } = {},
 ): Camera {
   const yaw = player.orientation + yawOffset;
-  const forward = { x: Math.cos(yaw) * Math.cos(pitch), y: Math.sin(yaw) * Math.cos(pitch), z: Math.sin(pitch) };
+  const lensYaw = options.lensYaw ?? 0;
+  const lensPitch = options.lensPitch ?? 0;
   const pivot = cameraPivot(player, options.pivotHeight ?? CAMERA_DEFAULT_PIVOT_HEIGHT);
+  const armYaw = yaw + lensYaw;
   const position = {
-    x: pivot.x - forward.x * distance,
-    y: pivot.y - forward.y * distance,
-    z: pivot.z - forward.z * distance,
+    x: pivot.x - Math.cos(armYaw) * Math.cos(pitch) * distance,
+    y: pivot.y - Math.sin(armYaw) * Math.cos(pitch) * distance,
+    z: pivot.z - Math.sin(pitch) * distance,
   };
+  const viewPitch = pitch + lensPitch;
+  const forward = { x: Math.cos(yaw) * Math.cos(viewPitch), y: Math.sin(yaw) * Math.cos(viewPitch), z: Math.sin(viewPitch) };
   const right = normalize({ x: forward.y, y: -forward.x, z: 0 });
   const up = cross(right, forward);
   return { position, forward, right, up };

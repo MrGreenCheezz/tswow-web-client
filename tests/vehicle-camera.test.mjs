@@ -401,3 +401,26 @@ test("11.02-G: the dataset — the siege engine's seats zoom out to the vehicle 
   const timed = vehicleCameraParams(undefined, real.seat(1723));
   assert.deepEqual([timed.enterDelay, timed.enterSeconds, timed.exitSeconds], [0, 2, 1.3], "FlagsB 0x40 without 0x80");
 });
+
+test("11.02 (26.10): the vehicle's lens offsets ease in over the seat's interval and back out on leaving", () => {
+  const tracker = new VehicleCameraTracker();
+  const rig = { distance: 15 };
+  tracker.update(world({ slot: 0 }), catalog, rig, 0);
+  assert.equal(tracker.lens.yaw, 0, "nothing before the seat's 0.5 s delay");
+  tracker.update(world({ slot: 0 }), catalog, rig, 500);
+  tracker.update(world({ slot: 0 }), catalog, rig, 1100);
+  close(tracker.lens.yaw, 0.025, "half way through 1.2 s: the half cosine's half");
+  close(tracker.lens.pitch, 0.125);
+  tracker.update(world({ slot: 0 }), catalog, rig, 1800);
+  close(tracker.lens.yaw, 0.05, "CameraYawOffset");
+  close(tracker.lens.pitch, 0.25, "CameraPitchOffset");
+  assert.equal(rig.lensYaw, tracker.lens.yaw, "written on the rig every camera reads");
+  assert.equal(rig.lensPitch, tracker.lens.pitch);
+  tracker.update(world(), catalog, rig, 2000);
+  tracker.update(world(), catalog, rig, 2250);
+  close(tracker.lens.pitch, 0.125, "leaving: back over ExitMaxDuration 0 → 0.5 s");
+  tracker.update(world(), catalog, rig, 2600);
+  assert.equal(tracker.lens.yaw, 0);
+  assert.equal(tracker.lens.pitch, 0);
+  assert.equal(rig.lensPitch, 0);
+});

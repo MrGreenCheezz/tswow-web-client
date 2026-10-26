@@ -393,13 +393,15 @@ export interface GroundTargetInputs {
   readonly floorUnder?: ((x: number, y: number, fromZ: number, minZ: number) => number | undefined) | undefined;
   /** Overrides the cave rule when the caller has already measured it. */
   readonly terrainIsCeiling?: boolean | undefined;
+  /** 11.02 (26.10): the vehicle lens offsets the world was drawn with (VehicleCamera.ts). */
+  readonly lensYaw?: number | undefined;
+  readonly lensPitch?: number | undefined;
 }
 
 /** The drawn camera's ray against the streamed world, in the units CMSG_CAST_SPELL carries. */
 export function screenGroundPoint(inputs: GroundTargetInputs): GroundPoint | undefined {
-  const camera = createCamera(
-    inputs.player, inputs.yaw, inputs.viewPitch, inputs.view, { pivotHeight: inputs.pivotHeight },
-  );
+  const camera = createCamera(inputs.player, inputs.yaw, inputs.viewPitch, inputs.view,
+    { pivotHeight: inputs.pivotHeight, lensYaw: inputs.lensYaw, lensPitch: inputs.lensPitch }); // 11.02 (26.10)
   const ray = screenRay(camera, inputs.canvasWidth, inputs.canvasHeight, inputs.pixelX, inputs.pixelY);
   // Spell range is measured from the caster, but the picking ray starts at the camera. At maximum
   // zoom even a point at the caster's feet is more than a short item range away from the ray origin.
@@ -458,6 +460,8 @@ export function resolveGroundTarget(
     viewPitch: game.camera.viewPitch,
     view: game.camera.view,
     pivotHeight: cameraPivotHeight(),
+    lensYaw: game.camera.lensYaw, // 11.02 (26.10)
+    lensPitch: game.camera.lensPitch,
     canvasWidth,
     canvasHeight,
     pixelX: clientX,

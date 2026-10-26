@@ -56,6 +56,12 @@ export interface CameraRig {
   pitch: number;
   /** What the wheel asked for, in yards, and the witness for first person. */
   distance: number;
+  /**
+   * 11.02 (26.10): a vehicle's camera offsets in force, radians (VehicleCamera.ts writes them, every camera built
+   * from this rig passes them to SceneCamera.createCamera). Absent or 0 outside a vehicle.
+   */
+  lensYaw?: number;
+  lensPitch?: number;
   /** How far the camera actually got this frame, and the only one of these numbers to be drawn. */
   view: number;
   /** How far it is tilted this frame, once the floor has had its say. */

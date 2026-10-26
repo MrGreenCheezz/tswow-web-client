@@ -541,6 +541,8 @@ function frame(now: number): void {
     viewTracker.settle(game.camera, subject.guid, world, game.worldLoading);
     // 11.02-GF3: the vehicle seat's camera (VehicleCamera.ts): the vehicle distance, a seat's zoom.
     vehicleCamera.update(world.state, vehicleCatalog(), game.camera, now);
+    // 26.10: its lens offsets reach the renderer as a setting (sent only when they move).
+    game.renderer?.setCameraLens?.(vehicleCamera.lens.yaw, vehicleCamera.lens.pitch);
     // 3.11: the camera's way back behind the character (cameraSmoothStyle) as Wow.exe 0x00602760 — on the input
     // word's edges, before the frame's glide (CameraFollow.ts); not behind a facing that is not the player's to change
     // (11.02-I, Wow.exe 0x005fa6b0). Was a pull every frame after the views, held back while a view glided.

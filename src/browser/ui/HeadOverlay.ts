@@ -164,7 +164,7 @@ export function updateHeadOverlay(now: number): void {
   // as a wall is holding it in or a floor is holding it up. The pivot height comes from the same
   // place for the same reason.
   const camera = createCamera(player, game.camera.yaw, game.camera.viewPitch, game.camera.view,
-    { pivotHeight: cameraPivotHeight() });
+    { pivotHeight: cameraPivotHeight(), lensYaw: game.camera.lensYaw, lensPitch: game.camera.lensPitch }); // 11.02 (26.10): the lens
 
   const liveQuestMarkerGuids = new Set<bigint>();
   for (const marker of worldMarkers) {

@@ -84,11 +84,23 @@ const MINUS_HALF_PI = -1.5707963705062866;
  * until the eye comes within {@link CAMERA_SUBJECT_FADE_START} past the near plane (`view` − `near`), then 0x008ca080's
  * half cosine down to nothing at {@link CAMERA_SUBJECT_FADE_END}. Closer than the hinge's height and looking up
  * past 68° the fade starts further out, by the square of the share of the last 22° still left to straight up.
- * `pitch` is this client's (positive looks up). Not ported: a vehicle's own fade distances from its model's
- * bounds (display flag 0x80000), the fade timed across a change of view (flags 0x40000000/0x8000).
+ * `pitch` is this client's (positive looks up). A vehicle's own fade distances (Vehicle Flags 0x80000) come in
+ * through `cameraFadeOpacity` (VehicleCameraFade.ts). Not ported: the fade timed across a change of view (flags
+ * 0x40000000/0x8000).
  */
 export function cameraSubjectOpacity(view: number, pitch: number, pivotHeight: number, near = CAMERA_CLIP_NEAR): number {
-  let start = CAMERA_SUBJECT_FADE_START;
+  return cameraFadeOpacity(view, pitch, pivotHeight, CAMERA_SUBJECT_FADE_START, CAMERA_SUBJECT_FADE_END, near);
+}
+
+/**
+ * 11.02 (26.10): `cameraSubjectOpacity` with the band given — whole from `start` yards past the near plane, gone at
+ * `end` (0x00606f90's loop body; a vehicle passes its fade scalars times its model's radius).
+ */
+export function cameraFadeOpacity(
+  distance: number, pitch: number, pivotHeight: number, fadeStart: number, fadeEnd: number, near = CAMERA_CLIP_NEAR,
+): number {
+  const view = distance;
+  let start = fadeStart;
   const wowPitch = -pitch;
   if (view < pivotHeight && wowPitch < FADE_STEEP_PITCH) {
     const share = (MINUS_HALF_PI - wowPitch) * FADE_STEEP_SCALE;
@@ -96,8 +108,8 @@ export function cameraSubjectOpacity(view: number, pitch: number, pivotHeight: n
   }
   const past = view - near;
   if (!(past < start)) return 1;
-  if (past <= CAMERA_SUBJECT_FADE_END) return 0;
-  const ratio = (past - CAMERA_SUBJECT_FADE_END) / (start - CAMERA_SUBJECT_FADE_END);
+  if (past <= fadeEnd) return 0;
+  const ratio = (past - fadeEnd) / (start - fadeEnd);
   return Math.round(255 * (1 - Math.cos(ratio * Math.PI)) * 0.5) / 255;
 }
 

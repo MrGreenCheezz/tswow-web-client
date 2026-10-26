@@ -574,7 +574,7 @@ export function inSightFromCamera(guid: bigint): boolean {
   // The camera the world was last drawn with, down to the tilt a floor granted: the ray has to
   // leave from where the click was aimed from, not from where the drag asked to be.
   const camera = createCamera(player, game.camera.yaw, game.camera.viewPitch, game.camera.view,
-    { pivotHeight: cameraPivotHeight() });
+    { pivotHeight: cameraPivotHeight(), lensYaw: game.camera.lensYaw, lensPitch: game.camera.lensPitch }); // 11.02 (26.10): the lens
   const height = resultUnitHeight(game.renderer?.results, guid) ?? 2; // 22.10 ARC-2 S3a: the last draw's record
   const chest = { x: position.x, y: position.y, z: position.z + height * 0.6 };
   const dx = chest.x - camera.position.x;

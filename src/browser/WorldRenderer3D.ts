@@ -256,6 +256,7 @@ import { viewSubjectIn } from "./game/ViewSubject.js"; // 11.02-I
 import { cameraSubjectOpacity } from "./game/CameraClip.js"; // 5.33
 import { fadedDepthWrite } from "./FadeDepth.js"; // 22.10 (7.42)
 import { VehiclePassengerPoser } from "./VehiclePassengerPose.js"; // 11.02-H
+import { cameraChainFade, type FadeModel } from "./VehicleCameraFade.js"; // 11.02 (26.10)
 import { vehicleCatalogOfRows, type VehicleCatalog, type VehicleCatalogRows } from "../world/VehicleDbc.js"; // 11.02-H; 22.10 ARC-2 S2a: built from pushed rows
 import { NO_RENDER_INPUTS, type RenderInputs } from "./RenderInputs.js"; // 22.10 ARC-2 S2a
 import {
@@ -4158,7 +4159,8 @@ export class WorldRenderer3D {
   /** Whether the camera is inside the player, which is the one unit that then must not be drawn. */
   #firstPerson = false;
   /** 5.33: the camera's subject and how opaque the eye's closeness leaves it this frame (CameraClip.cameraSubjectOpacity). */
-  #subjectFadeGuid: bigint | undefined;
+  /** 11.02 (26.10): the subject and the vehicles it is in or is, all drawn at `#subjectFade` (VehicleCameraFade.ts). */
+  readonly #subjectFadeGuids: bigint[] = [];
   #subjectFade = 1;
   /** null marks a model that has downloaded but carries no usable skeleton. */
   readonly #skinnedTemplates = new Map<string, SkinnedTemplate | null>();
@@ -4215,6 +4217,8 @@ export class WorldRenderer3D {
   /** 23.10 (6.27): «Живые эффекты заклинаний» — the enhanced look of spell particles and their light. */
   #livingSpells = false;
   #spellDensity = false; // 26.10 (6.27, test)
+  #lensYaw = 0; // 26.10 (11.02)
+  #lensPitch = 0;
   /** 26.10 (6.27, test): «Шлейфы снарядов (опыт)» (MissileTrails.ts), and each missile model's trail colour. */
   readonly #missileTrails = new MissileTrails();
   readonly #missileTrailColours = new WeakMap<object, THREE.Color | null>();
@@ -8810,13 +8814,16 @@ export class WorldRenderer3D {
     this.#firstPerson = cameraAnchorDistance <= CAMERA_FIRST_PERSON_DISTANCE;
     // 5.33: in third person a wall can now bring the eye all the way in (CameraRig.CAMERA_MIN_WALL_DISTANCE 0);
     // the subject fades as it does in Wow.exe (0x00606f90 → 0x004f8660, CameraClip.ts).
-    this.#subjectFadeGuid = player.guid;
+    this.#subjectFadeGuids.length = 0;
+    this.#subjectFadeGuids.push(player.guid);
     this.#subjectFade = this.#firstPerson ? 1 : cameraSubjectOpacity(cameraDistance, cameraPitch, cameraPivotHeight);
     // Phase marks are plain numbers beside the phase calls: nine pairs of `performance.now()`
     // cost about a microsecond and tell a JS-side build burst apart from driver-side submission.
     let drawPhaseAt = performance.now();
     this.#resize();
     this.#updateCamera(player.position, cameraYaw, cameraPitch, cameraDistance, cameraPivotHeight);
+    // 11.02 (26.10): a vehicle in the chain fades by its own band, measured from the camera just placed.
+    if (!this.#firstPerson) this.#vehicleCameraFade(state.objects, player.guid, cameraDistance, cameraPitch, cameraPivotHeight);
     this.#syncSun(player.position);
     let now: number;
     let elapsed: number;
@@ -9881,6 +9888,12 @@ export class WorldRenderer3D {
     this.#missileTrails.setEnabled(enabled);
   }
 
+  /** 11.02 (26.10): the vehicle camera offsets the view is drawn with (game/VehicleCamera.ts), radians. */
+  setCameraLens(yaw: number, pitch: number): void {
+    this.#lensYaw = Number.isFinite(yaw) ? yaw : 0;
+    this.#lensPitch = Number.isFinite(pitch) ? pitch : 0;
+  }
+
   setSpellDensity(enabled: boolean): void {
     if (this.#spellDensity === enabled) return;
     this.#spellDensity = enabled;
@@ -10788,8 +10801,33 @@ export class WorldRenderer3D {
     updateBatchColours(this.#skyboxAnimatedBatches, this.#skyboxAnimationMs, now);
   }
 
+  /** 11.02 (26.10): `cameraChainFade` over the subject's vehicles, with the camera `#updateCamera` placed. */
+  #vehicleCameraFade(objects: ReadonlyMap<bigint, WorldObjectState>, subject: bigint, view: number, pitch: number,
+    pivotHeight: number): void {
+    const catalog = this.#vehicles();
+    if (catalog === undefined) return;
+    const object = objects.get(subject);
+    if (object?.vehicleId === undefined && object?.transport === undefined) return;
+    const position = this.#camera.position;
+    this.#subjectFade = cameraChainFade(subject, objects, catalog, this.#fadeModelOf, {
+      x: position.x, y: -position.z, z: position.y, view, pitch, pivotHeight,
+    }, this.#subjectFadeGuids);
+  }
+
+  /** A unit's model for the fade: where its node stood last frame and its built radius times its scale. */
+  readonly #fadeModelOf = (guid: bigint): FadeModel | undefined => {
+    const unit = this.#units.get(guid);
+    const geometry = unit?.built?.geometry;
+    if (unit === undefined || geometry === undefined) return undefined;
+    if (!geometry.boundingSphere) geometry.computeBoundingSphere();
+    const radius = (geometry.boundingSphere?.radius ?? 0) * unit.scale;
+    _fadeModelAt.setFromMatrixPosition(unit.node.matrixWorld);
+    return { x: _fadeModelAt.x, y: -_fadeModelAt.z, z: _fadeModelAt.y, radius };
+  };
+
   #updateCamera(player: WorldPosition, yaw: number, pitch: number, distance: number, pivotHeight: number): void {
-    const camera = createCamera(player, yaw, pitch, distance, { pivotHeight });
+    const camera = createCamera(player, yaw, pitch, distance,
+      { pivotHeight, lensYaw: this.#lensYaw, lensPitch: this.#lensPitch }); // 11.02 (26.10): the vehicle lens
     // 05.10-A7a-E (6.13): kit camera shakes move the whole camera (CameraShake.ts, Wow.exe 0x00606970).
     if (this.#cameraShakes.size > 0
       && this.#cameraShakes.offset(performance.now(), player, player.orientation, _cameraShake)) {
@@ -15043,7 +15081,7 @@ export class WorldRenderer3D {
     const displayOpacity = appearance.opacity * creatureDisplayAlpha(metadata) // 05.10-A7a-H 6.11а: CreatureModelAlpha multiplies
       // 5.33: the camera's subject fades as the eye closes in on it (Wow.exe 0x00606f90, CameraClip.ts); folded in here
       // so the warm hold knows it will be drawn translucent.
-      * (object.guid === this.#subjectFadeGuid ? this.#subjectFade : 1);
+      * (this.#subjectFade < 1 && this.#subjectFadeGuids.includes(object.guid) ? this.#subjectFade : 1); // 11.02 (26.10): the chain
     let currentWvm = false;
     let currentObjectScale = 1;
     // Rebuilt whenever the model or the look changes, rather than once and never again. The key
@@ -18119,6 +18157,7 @@ export function stateVisualKey(guid: bigint, effect: StateVisual): string {
 // 05.10-A7a-E (6.12): missile scratch (MissileFlight.ts) and attachment offsets cached per model.
 const _missileSample = missileSample();
 const _cameraShake = { x: 0, y: 0, z: 0 }; // 05.10-A7a-E (6.13)
+const _fadeModelAt = new THREE.Vector3(); // 11.02 (26.10)
 /** 05.10-A7a-E2 (6.14): an effect model fills no texture slot of its own (all 17 bodies use type 0 only). */
 const NO_GLOW_SLOTS: TextureSlots = new Map();
 /** 05.10-A7a-E (6.14): one glow anchor as an emitter entry (anchored like a doodad; 05.10-A7a-E2: or posed by its body's rig). */
