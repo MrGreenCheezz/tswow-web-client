@@ -18,6 +18,7 @@
  */
 
 import { game } from "../game/Context.js";
+import { firstEntryMark } from "../app/FirstEntryTrace.js"; // 10.29 (26.10)
 import { syncMovement } from "../input/Movement.js";
 import { workerCurtainFrames } from "./LoadingScreenWorker.js"; // 22.10 (12.14)
 import {
@@ -177,6 +178,7 @@ function showArt(target: Parts, destination: LoadingScreenDestination | undefine
  * character list on entry, the new map on a worldport. Without it the curtain is plain black.
  */
 export function showLoadingScreen(characterName: string, hint = "", destination?: LoadingScreenDestination): void {
+  firstEntryMark("loading"); // 10.29 (26.10)
   parts ??= build();
   if (!parts) return;
   shownAt = performance.now();
@@ -204,6 +206,7 @@ export function loadingStatus(text: string): void {
 }
 
 export function hideLoadingScreen(): void {
+  firstEntryMark("world"); // 10.29 (26.10)
   const wasLoading = game.worldLoading;
   if (parts) parts.root.hidden = true;
   worldReady = true;

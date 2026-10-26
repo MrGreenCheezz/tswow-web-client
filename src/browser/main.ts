@@ -31,6 +31,7 @@ import { installPatchChainWatch } from "./PatchChainChanged.js";
 import { gatewayOrigin as defaultGatewayOrigin, pageGatewayPolicy } from "./Environment.js";
 import { installNativeAppShell } from "./app/NativeAppShell.js";
 import { installFullscreen } from "./app/Fullscreen.js"; // 10.28 (26.10)
+import { installFirstEntryTrace } from "./app/FirstEntryTrace.js"; // 10.29 (26.10)
 import { GlueServerUnavailableError, probeGlueServer, showGlueServerUnavailable } from "./glue/GlueRetry.js";
 import { renderWorkerChosen } from "./RenderWorkerStart.js"; // 22.10 ARC-2 S6b, 12.14
 import { mountWorldRenderWorker, worldRendererCanvas } from "./app/RenderWorkerMount.js"; // 22.10 ARC-2 S6b
@@ -43,6 +44,7 @@ import { mountWorldRenderWorker, worldRendererCanvas } from "./app/RenderWorkerM
 
 // An application, not a page: no selection, no ghost drags, no browser zoom, navigation or
 // shortcuts (app/NativeAppShell.ts) — in a browser tab and in the Electron window alike.
+installFirstEntryTrace(); // 10.29 (26.10): ?first-entry-trace, first, before the page fetches more
 installNativeAppShell();
 installFullscreen(); // 10.28 (26.10): Alt+Enter, the keyboard lock
 

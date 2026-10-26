@@ -1,4 +1,5 @@
 import type { GlueLuaVm } from "./GlueLua.js";
+import { firstEntryMark } from "../app/FirstEntryTrace.js"; // 10.29 (26.10)
 import type { FrameXmlUiBridge } from "../ui/framexml_compat/FrameXmlRuntime.js";
 import type { FrameXmlFrame } from "../ui/framexml_compat/FrameXmlTypes.js";
 import { loginToRealmList, readRealmList, type AuthSessionResult } from "../../auth/login.js";
@@ -651,10 +652,12 @@ export class GlueApi {
     const vm = this.#vm;
     vm.registerGlobal("SetCurrentScreen", (args) => {
       this.#currentScreen = String(args[0] ?? "");
+      firstEntryMark(`glue:${this.#currentScreen}`); // 10.29 (26.10)
       return [];
     });
     vm.registerGlobal("SetCurrentGlueScreenName", (args) => {
       this.#currentScreen = String(args[0] ?? "");
+      firstEntryMark(`glue:${this.#currentScreen}`); // 10.29 (26.10)
       return [];
     });
   }
