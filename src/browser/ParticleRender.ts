@@ -12,6 +12,7 @@
 // matrix comes from.
 
 import * as THREE from "three";
+import { spellDensityFor } from "./SpellDensity.js"; // 26.10 (6.27, test)
 import { applyBlendMode, applyFogMode, privateTextureView } from "./ModelBuild.js";
 import {
   ribbonCapacity,
@@ -199,6 +200,11 @@ export function buildModelEffects(
      * on a spell's particles; enhanced profile only, and it replaces `fantasyGlow` on those materials.
      */
     livingSpells?: boolean;
+    /**
+     * 26.10 (6.27, test): «Плотные эффекты заклинаний» (SpellDensity.ts) — a spell's emitters spawn more, fainter
+     * particles; enhanced profile only.
+     */
+    spellDensity?: boolean;
   },
 ): ModelEffects | undefined {
   if (model.particleEmitters.length === 0 && model.ribbonEmitters.length === 0) return undefined;
@@ -240,7 +246,8 @@ export function buildModelEffects(
     const map = texture(emitter.texture);
     if (!map) return;
     const seedOffset = Math.imul(index, 0x9e3779b1) >>> 0;
-    const particles = createParticleSystem(emitter, model.globalSequences, (seed + seedOffset) >>> 0);
+    const particles = createParticleSystem(emitter, model.globalSequences, (seed + seedOffset) >>> 0,
+      options.spellDensity ? spellDensityFor(emitter) : undefined); // 26.10 (6.27, test)
     // 13.10 6.15: room for the pool Wow.exe would give this emitter (`particleCapacity`), not a flat 256.
     // 23.10 (6.27): times the quads one particle draws (head, tail or both, 0x00978d00).
     const living = options.livingSpells === true;

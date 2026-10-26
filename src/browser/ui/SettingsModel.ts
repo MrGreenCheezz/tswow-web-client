@@ -231,7 +231,13 @@ export const SETTING_DEFINITIONS: readonly SettingDefinition[] = [
     // 23.10 (6.27): the enhanced look of spell effects (SpellParticleLook.ts, SpellLights.ts); off is Wow.exe's.
     id: "experimentalLivingSpells", label: "Живые эффекты заклинаний", group: "Эффекты", kind: "boolean", fallback: false,
     hint: "Плавная смена кадров у частиц, мягкий край у земли, яркое свечение и свет от заклинаний на окружение.",
+  },  {
+    // 26.10 (6.27, test version for the owner): a spell's emitters spawn twice the particles at 0.6 of their opacity
+    // (SpellDensity.ts). Off by default and outside the enhanced preset until the owner has looked at it.
+    id: "experimentalSpellDensity", label: "Плотные эффекты заклинаний (опыт)", group: "Эффекты", kind: "boolean", fallback: false,
+    hint: "Опыт: у заклинаний вдвое больше частиц, каждая прозрачнее — облака, искры и шлейфы гуще и плавнее, а не отдельные карточки. Руны и кольца на земле не меняются. Немного больше работы процессору.",
   },
+
   {
     // 23.10 (7.48): effect textures from the gateway's HD set (HdEffectTextures.ts); off is the client's own textures.
     id: "experimentalSharpEffectTextures", label: "Чёткие текстуры эффектов", group: "Эффекты", kind: "boolean",

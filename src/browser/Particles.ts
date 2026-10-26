@@ -438,6 +438,12 @@ export interface ParticleSystem {
   /** 13.10 6.15: the pool Wow.exe would give this emitter (`particleCapacity`); spawning stops when it is full. */
   readonly capacity: number;
   /**
+   * 26.10 (6.27, test): «Плотные эффекты заклинаний» — how many times the authored emission this system spawns, and
+   * the share of the authored opacity each particle keeps (`SPELL_DENSITY`). 1 and 1 (absent) is the client's.
+   */
+  readonly density?: number;
+  readonly alphaScale?: number;
+  /**
    * 25.10 (6.27): record 0x40 — the inherited velocity (m_parentVelocity, scene axes for a world-space emitter,
    * the emitter's own for a model-space one) and the time since it was last measured (m_ivelTimer).
    */
@@ -458,7 +464,9 @@ export function createParticleSystem(
   emitter: WvmParticleEmitter,
   globalSequences: Uint32Array,
   seed = 0x9e3779b9,
+  density?: { readonly emission: number; readonly alpha: number },
 ): ParticleSystem {
+  const authored = particleCapacity(emitter);
   return {
     emitter,
     globalSequences,
@@ -469,7 +477,9 @@ export function createParticleSystem(
     placed: false,
     matrix: Float64Array.from(IDENTITY),
     modelSpace: (emitter.flags & PARTICLE_FLAG_MODEL_SPACE) !== 0,
-    capacity: particleCapacity(emitter), // 13.10 6.15
+    // 13.10 6.15: the emitter's own pool; 26.10 (test): times the density, as a power of two under the cap.
+    capacity: density && authored > 0 ? Math.min(EMITTER_CAPACITY, authored * Math.ceil(density.emission)) : authored,
+    ...(density ? { density: density.emission, alphaScale: density.alpha } : {}),
     parentVX: 0, parentVY: 0, parentVZ: 0, inheritTimer: 0, burstFired: false, pathX: 0, pathY: 0, pathZ: 0, // 25.10 (6.27)
     splineEnd: 0, splineAtEnd: false,
   };
@@ -993,13 +1003,13 @@ function stepParticlesOnce(system: ParticleSystem, seconds: number, frame: Emitt
     // off or rateless again (0x0097d8c0 under m_flags 0x40; the steady stream needs m_flags 0x1, which 0x8000 clears).
     if (!system.burstFired) {
       system.burstFired = true;
-      emitBurst(system, frame, Math.floor(varied));
+      emitBurst(system, frame, Math.floor(varied * (system.density ?? 1))); // 26.10 (test): × density
     }
     return;
   }
   if (varied <= 0) return;
 
-  system.pending += varied * step;
+  system.pending += varied * step * (system.density ?? 1); // 26.10 (test): × density
   // A tab that was in the background does not owe a thousand particles on the frame it returns.
   // 13.10 6.15: the pool is the emitter's own (`particleCapacity`, Wow.exe 0x0097edf0), not a flat 256.
   if (system.pending > capacity) system.pending = capacity;
@@ -1381,6 +1391,7 @@ export function writeParticleQuads(
     if (quads >= capacity) break;
     const particle = particles[sorted ? sortOrder[visit]! : visit]!;
     particleAppearance(emitter, particle, appearance);
+    if (system.alphaScale !== undefined) appearance.alpha *= system.alphaScale; // 26.10 (test): density's share
     if (appearance.alpha <= 0.002 || appearance.width <= 0 || appearance.height <= 0) continue;
     const sizeX = appearance.width * frameScale;
     const sizeY = appearance.height * frameScale;

@@ -30,7 +30,9 @@ export const SETTING_SECTIONS: Readonly<Partial<Record<SettingGroup, readonly Se
       ids: Object.freeze([
         "fullscreenGlow", "experimentalCinematicBloom", "experimentalCinematicGrade", "experimentalSunScattering",
         "godRays", "godRayStrength", "cinematicStrength", "experimentalAerialHeightFog", "experimentalLowSunRimLight",
-        "experimentalFantasyGlow", "experimentalLivingSpells", "experimentalSharpEffectTextures", // 23.10 (7.48)
+        "experimentalFantasyGlow", "experimentalLivingSpells",
+        "experimentalSpellDensity", // 26.10 (6.27, test)
+        "experimentalSharpEffectTextures", // 23.10 (7.48)
       ]),
     }),
     Object.freeze({

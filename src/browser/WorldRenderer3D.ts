@@ -4213,6 +4213,7 @@ export class WorldRenderer3D {
   #experimentalShaderProfile: Readonly<ExperimentalShaderProfile> = DEFAULT_EXPERIMENTAL_SHADER_PROFILE;
   /** 23.10 (6.27): «Живые эффекты заклинаний» — the enhanced look of spell particles and their light. */
   #livingSpells = false;
+  #spellDensity = false; // 26.10 (6.27, test)
   readonly #spellLights = new SpellLights(); // 23.10 (6.27)
   /** 22.10 (7.47): the «Объём земли» setting, and whether the current lighting level draws it. */
   #terrainReliefSetting = false;
@@ -9858,6 +9859,16 @@ export class WorldRenderer3D {
   }
 
   /**
+   * 26.10 (6.27, test): «Плотные эффекты заклинаний» on or off (SpellDensity.ts). Like `setLivingSpells`, a spell's
+   * emitters are rebuilt on the next frame; off is the client's emission exactly.
+   */
+  setSpellDensity(enabled: boolean): void {
+    if (this.#spellDensity === enabled) return;
+    this.#spellDensity = enabled;
+    for (const visual of this.#visuals) this.#dropEffects(visual.key);
+  }
+
+  /**
    * 23.10 (7.48): «Чёткие текстуры эффектов» on or off (HdEffectTextures.ts): effect textures are asked for with
    * `hd=` from now on. Live spell effects are rebuilt on the next frame, like `setLivingSpells`, so they pick up
    * the other copy; an effect texture a world doodad already holds keeps it until that doodad is built again.
@@ -10500,6 +10511,7 @@ export class WorldRenderer3D {
           seed: modelEffectSeed(entry.key, this.#replaySeed),
           ...(entry.spell ? { fantasyGlow: this.#experimentalShaderProfile.fantasyGlow } : {}),
           ...(entry.spell && this.#livingSpells ? { livingSpells: true } : {}), // 23.10 (6.27)
+          ...(entry.spell && this.#spellDensity ? { spellDensity: true } : {}), // 26.10 (6.27, test)
         });
         if (!built) {
           // Nothing drawable — every emitter's texture is a slot the client has to fill. Remember
