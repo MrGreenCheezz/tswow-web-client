@@ -9,7 +9,7 @@ import { classifyTeleport, type TeleportKind } from "./TeleportKind.js";
  * in place (0x0072D2D0 → the move queue → 0x006ECF80): position and facing set, the fall reset,
  * and its input control re-issues whatever movement keys are still held (0x007413F0 → 0x005FBBC0),
  * so a mage who blinks holding W keeps running. Only a move of more than 150 yards brings the
- * loading screen up (see `TeleportKind.ts`).
+ * loading screen up (see `TeleportKind.ts`); a shorter one onto ground still streaming waits for it unseen.
  *
  * Every effect is a function the caller supplies, so this file decides *which* run and the browser
  * (EnterWorld) owns *how*.
@@ -22,6 +22,11 @@ export interface SameMapTeleportEffects {
   /** Far only. */
   spellVisualsWorldChanged(): void;
   showLoadingScreen(mapId: number): void;
+  /**
+   * 5.36: "hop" only — gravity and movement wait for the destination's ground with no curtain, and the curtain
+   * comes up only if the wait runs long (`LoadingScreen.ts` `holdForGround`).
+   */
+  holdUntilReady(mapId: number): void;
   /** Keys, autorun and the fall (`Controls.ts` `clearHeldKeys`). */
   clearHeldKeys(): void;
   invalidateGroundCover(): void;
@@ -31,7 +36,7 @@ export interface SameMapTeleportEffects {
   /** Re-read the zone under the minimap without hiding it. */
   refreshMinimapZone(): void;
   /**
-   * Near only: send START again for every movement key still held (`Movement.ts`
+   * Near and hop: send START again for every movement key still held (`Movement.ts`
    * `reissueHeldMovement`). `Player::TeleportTo` cleared the server's movement flags
    * (Player.cpp:1731), and Wow.exe re-issues held keys once the ACK is out (0x007413F0, case 199
    * → 0x005FBBC0), so W held through a blink is running again on every screen, not only this one.
@@ -49,7 +54,8 @@ export function applySameMapTeleport(
 ): void {
   effects.resetCharacterMotion();
   effects.refreshCollision(mapId, destination.x, destination.y);
-  if (kind === "near") {
+  if (kind === "hop") effects.holdUntilReady(mapId); // 5.36: before the keys, whose START waits for the ground
+  if (kind === "near" || kind === "hop") {
     effects.reissueHeldMovement();
     return;
   }

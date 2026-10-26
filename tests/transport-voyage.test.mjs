@@ -358,6 +358,7 @@ test("a path's teleport frame on the same map: MSG_MOVE_TELEPORT_ACK with the ol
       reissueHeldMovement,
       spellVisualsWorldChanged() {},
       showLoadingScreen() { game.worldLoading = true; },
+      holdUntilReady() { game.worldLoading = true; }, // 5.36
       clearHeldKeys() { releaseAllInput(); resetCharacterMotion(); },
       invalidateGroundCover() {},
       clearPortraitTargets() {},

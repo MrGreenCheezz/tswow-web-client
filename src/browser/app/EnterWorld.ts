@@ -72,7 +72,7 @@ import { resetPetBar, showPetBar } from "../ui/PetBar.js";
 import { resetTotems } from "../ui/Totems.js";
 import { resetAutoQuality } from "../AutoQuality.js";
 import { maybeShowWelcomeHints } from "../ui/WelcomeHints.js";
-import { hideLoadingScreen, resetLoadingScreen, showLoadingScreen } from "../ui/LoadingScreen.js";
+import { hideLoadingScreen, holdForGround, resetLoadingScreen, showLoadingScreen } from "../ui/LoadingScreen.js"; // 5.36: holdForGround
 import { resetDeathScreenEffect } from "../ui/DeathScreenEffect.js";
 import { watchMinimapRotation } from "../ui/Minimap.js";
 import { chatClass } from "../ui/ChatFormat.js";
@@ -469,6 +469,9 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
       reissueHeldMovement,
       spellVisualsWorldChanged: () => spellVisualCoordinator.worldChanged(world),
       showLoadingScreen: (map) => showLoadingScreen(world.selfName ?? "персонаж",
+        "Загрузка ландшафта и коллизии вокруг точки прибытия…", { mapId: map, gateway: gatewayInput.value }),
+      // 5.36: a short hop onto ground still streaming waits for it with no curtain (LoadingScreen.ts).
+      holdUntilReady: (map) => holdForGround(world.selfName ?? "персонаж",
         "Загрузка ландшафта и коллизии вокруг точки прибытия…", { mapId: map, gateway: gatewayInput.value }),
       clearHeldKeys,
       invalidateGroundCover: () => game.renderer?.invalidateGroundCover(),

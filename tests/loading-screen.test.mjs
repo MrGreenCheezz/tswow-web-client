@@ -5,8 +5,8 @@ import { OPCODES } from "../dist/code/generated/opcodes.js";
 import { UPDATE_FIELDS } from "../dist/code/generated/updateFields.js";
 import { advancePhysics, beginHeld, releaseAllInput, sendMovement } from "../dist/code/browser/input/Movement.js";
 import {
-  hideLoadingScreen, loadingScreenVisible, resetLoadingScreen, showLoadingScreen,
-  updateLoadingScreen, worldPhysicsReady,
+  QUIET_HOLD_MS, hideLoadingScreen, holdForGround, holdingForGround, loadingScreenVisible, resetLoadingScreen,
+  showLoadingScreen, updateLoadingScreen, worldPhysicsReady,
 } from "../dist/code/browser/ui/LoadingScreen.js";
 
 function node() {
@@ -90,6 +90,53 @@ test("the entry soak renders hidden frames after the barrier before the reveal",
     updateLoadingScreen(performance.now());
   }
   assert.equal(loadingScreenVisible(), false, "the soak is a few frames, not forever");
+  resetLoadingScreen();
+  game.world = undefined;
+  game.terrain = undefined;
+  game.collision = undefined;
+  game.worldLoading = false;
+});
+
+// 5.36 (26.10, owner: «Скачок мага включает экран загрузки»): a short hop onto ground still streaming.
+test("a hold for the ground keeps physics still with no curtain, and lets go the frame the ground answers", () => {
+  game.world = destination();
+  let ready = false;
+  game.terrain = { isReady: () => ready };
+  game.collision = { refresh() {}, isReady: () => ready };
+  const start = performance.now();
+  holdForGround("Hero");
+  assert.equal(loadingScreenVisible(), false, "no curtain");
+  assert.equal(holdingForGround(), true);
+  assert.equal(worldPhysicsReady(), false, "gravity waits for the ground, as behind the curtain");
+  updateLoadingScreen(start + 500);
+  assert.equal(loadingScreenVisible(), false);
+  ready = true;
+  updateLoadingScreen(start + 600);
+  assert.equal(holdingForGround(), false);
+  assert.equal(worldPhysicsReady(), true, "released at once: no soak, the world was on screen all along");
+  assert.equal(game.worldLoading, false);
+  resetLoadingScreen();
+  game.world = undefined;
+  game.terrain = undefined;
+  game.collision = undefined;
+  game.worldLoading = false;
+});
+
+test("a hold for the ground that runs long shows the curtain and goes on as one", () => {
+  game.world = destination();
+  game.terrain = { isReady: () => false };
+  game.collision = { refresh() {}, isReady: () => false };
+  holdForGround("Hero");
+  updateLoadingScreen(performance.now() + QUIET_HOLD_MS + 1);
+  assert.equal(loadingScreenVisible(), true);
+  assert.equal(holdingForGround(), false);
+  assert.equal(worldPhysicsReady(), false);
+  resetLoadingScreen();
+  // A curtain already up stays up.
+  showLoadingScreen("Hero");
+  holdForGround("Hero");
+  assert.equal(loadingScreenVisible(), true);
+  assert.equal(holdingForGround(), false);
   resetLoadingScreen();
   game.world = undefined;
   game.terrain = undefined;

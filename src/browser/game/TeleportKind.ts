@@ -12,7 +12,11 @@ import type { WorldPosition } from "../../world/WorldState.js";
  */
 export const NEAR_TELEPORT_YARDS = 150;
 
-export type TeleportKind = "near" | "far";
+/**
+ * "near": a step onto ground that has arrived. "hop" (5.36): a step whose ground is still on the wire — no
+ * curtain, but gravity and movement wait for it (`holdUntilReady`). "far": a journey, behind the curtain.
+ */
+export type TeleportKind = "near" | "hop" | "far";
 
 export interface TeleportClassification {
   /** Where the character stood before; undefined when it had no position yet. */
@@ -21,21 +25,26 @@ export interface TeleportClassification {
   /**
    * Whether terrain and collision have already answered at the destination. The stock client
    * loads synchronously; this one streams, so a short hop into ground nobody has fetched yet (a
-   * blink into a building whose VMAP groups are still on the wire) must take the loading barrier
-   * as well, or the first physics frame falls through the floor.
+   * blink into a building whose VMAP groups are still on the wire) must wait for it, or the first
+   * physics frame falls through the floor.
    */
   destinationReady: boolean;
 }
 
 /**
- * "near" — no curtain, keys and movement kept — only for a known origin, a move of at most
- * `NEAR_TELEPORT_YARDS` (strictly greater is far, as in Wow.exe) and a destination whose ground
- * has arrived. Everything else is "far".
+ * Within `NEAR_TELEPORT_YARDS` of a known origin (strictly greater is far, as in Wow.exe): "near" onto ready
+ * ground, "hop" onto ground still streaming. Everything else is "far".
+ *
+ * 5.36 (26.10, owner: «Скачок мага включает экран загрузки, хотя дистанция не большая»): a step onto unready
+ * ground was "far" and brought the curtain up. The collision barrier is strict — every building group around
+ * the point built — and the groups are built around where the character stands, so a 20-yard Blink often
+ * landed among groups not yet built. Wow.exe never shows its curtain under 150 yards; the wait stays, unseen.
  */
 export function classifyTeleport({ origin, destination, destinationReady }: TeleportClassification): TeleportKind {
-  if (!origin || !destinationReady) return "far";
+  if (!origin) return "far";
   const dx = destination.x - origin.x;
   const dy = destination.y - origin.y;
   const dz = destination.z - origin.z;
-  return dx * dx + dy * dy + dz * dz > NEAR_TELEPORT_YARDS * NEAR_TELEPORT_YARDS ? "far" : "near";
+  if (dx * dx + dy * dy + dz * dz > NEAR_TELEPORT_YARDS * NEAR_TELEPORT_YARDS) return "far";
+  return destinationReady ? "near" : "hop";
 }

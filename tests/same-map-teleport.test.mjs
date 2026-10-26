@@ -198,10 +198,12 @@ test("MSG_MOVE_TELEPORT naming the player takes the same path, without a reply",
 
 const at = (x, y = 0, z = 0) => ({ x, y, z, orientation: 0 });
 
-test("near is at most 150 yards, in three dimensions, from a known origin onto ready ground", () => {
+test("near is at most 150 yards, in three dimensions, from a known origin; onto ground still streaming it is a hop", () => {
   assert.equal(NEAR_TELEPORT_YARDS, 150);
   assert.equal(classifyTeleport({ origin: at(0), destination: at(20), destinationReady: true }), "near");
-  assert.equal(classifyTeleport({ origin: at(0), destination: at(20), destinationReady: false }), "far");
+  assert.equal(classifyTeleport({ origin: at(0), destination: at(20), destinationReady: false }), "hop",
+    "5.36: a Blink onto unbuilt collision is no journey");
+  assert.equal(classifyTeleport({ origin: at(0), destination: at(400), destinationReady: false }), "far");
   assert.equal(classifyTeleport({ origin: at(0), destination: at(400), destinationReady: true }), "far");
   assert.equal(classifyTeleport({ origin: undefined, destination: at(1), destinationReady: true }), "far");
   assert.equal(classifyTeleport({ origin: at(0), destination: at(150), destinationReady: true }), "near");
@@ -216,6 +218,7 @@ function spies() {
   const effects = Object.fromEntries([
     "resetCharacterMotion", "refreshCollision", "spellVisualsWorldChanged", "showLoadingScreen", "clearHeldKeys",
     "invalidateGroundCover", "clearPortraitTargets", "refreshUnitFrames", "refreshMinimapZone", "reissueHeldMovement",
+    "holdUntilReady",
   ].map((name) => [name, record(name)]));
   return { calls, effects, names: () => calls.map(([name]) => name) };
 }
@@ -227,6 +230,13 @@ test("a near teleport drops the arc, asks for collision and re-issues held keys;
   // Player::TeleportTo cleared the server's movement flags, so W held through a blink is a START again.
   assert.deepEqual(names(), ["resetCharacterMotion", "refreshCollision", "reissueHeldMovement"]);
   assert.deepEqual(calls[1], ["refreshCollision", 1, 5, 6]);
+});
+
+test("5.36: a hop waits for the ground unseen, then keeps the keys as a near one does", () => {
+  const { effects, calls, names } = spies();
+  applySameMapTeleport(effects, "hop", 1, at(5, 6, 7));
+  assert.deepEqual(names(), ["resetCharacterMotion", "refreshCollision", "holdUntilReady", "reissueHeldMovement"]);
+  assert.deepEqual(calls[2], ["holdUntilReady", 1]);
 });
 
 test("a far teleport brings the curtain and releases keys but keeps the map's collision, bosses and music", () => {
@@ -248,8 +258,11 @@ test("the handler classifies with the destination's readiness and returns the ki
   assert.deepEqual(asked, [[530, 20, 0]]);
   assert.deepEqual(names(), ["resetCharacterMotion", "refreshCollision", "reissueHeldMovement"]);
   const far = spies();
-  assert.equal(handleSameMapTeleport({ ...far.effects, destinationReady: () => false }, 530, at(20), at(0)), "far");
-  assert.ok(far.names().includes("showLoadingScreen"));
+  assert.equal(handleSameMapTeleport({ ...far.effects, destinationReady: () => false }, 530, at(20), at(0)), "hop");
+  assert.ok(!far.names().includes("showLoadingScreen"), "5.36: no curtain for a 20-yard hop");
+  const journey = spies();
+  assert.equal(handleSameMapTeleport({ ...journey.effects, destinationReady: () => true }, 530, at(400), at(0)), "far");
+  assert.ok(journey.names().includes("showLoadingScreen"));
 });
 
 // ---- the browser's wiring (EnterWorld.ts, Minimap.ts) -------------------------------------------
@@ -265,11 +278,12 @@ test("EnterWorld answers onSameMapTeleport through handleSameMapTeleport with th
   assert.match(block, /game\.terrain\?\.isReady\(map, x, y\) === true\s*&& game\.collision\?\.isReady\(map, x, y\) === true/,
     "near only onto terrain and collision that have both answered");
   for (const effect of ["resetCharacterMotion", "refreshCollision", "reissueHeldMovement", "spellVisualsWorldChanged",
-    "showLoadingScreen", "clearHeldKeys", "invalidateGroundCover", "clearPortraitTargets"]) {
+    "showLoadingScreen", "clearHeldKeys", "invalidateGroundCover", "clearPortraitTargets", "holdUntilReady"]) {
     assert.match(block, new RegExp(`\\b${effect}\\b`), effect);
   }
   assert.match(block, /refreshUnitFrames: \(\) => showUnitFrames\(\)/, "redraw, not forget, the encounter");
   assert.match(block, /refreshMinimapZone: forgetMinimapZone/);
+  assert.match(block, /holdUntilReady: \(map\) => holdForGround\(/, "5.36: the unseen wait");
   for (const never of ["collision?.reset(", "forgetUnitFrames(", "stopMusic(", "forgetZoneSound(", "forgetMinimap("]) {
     assert.ok(!block.includes(never), `a same-map teleport never calls ${never}`);
   }
