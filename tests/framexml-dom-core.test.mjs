@@ -555,7 +555,10 @@ test("reversed PlayerFrame TexCoords use a valid crop and one horizontal mirror"
   assert.equal(element.style["--framexml-texcoord-inset"], "0% 0% 21.875% 9.375%");
   assert.equal((element.style.transform.match(/scaleX\(-1\)/g) ?? []).length, 1);
   assert.equal((element.style.transform.match(/scaleY\(-1\)/g) ?? []).length, 0);
-  assert.match(element.style.transform, /translateX\(-50%\).*translateY\(-50%\)/);
+  // 26.10: a centre of declared size is laid out, so the transform holds only the mirror.
+  assert.equal(element.style.left, "calc(50% - 50px)");
+  assert.equal(element.style.top, "calc(50% - 10px)");
+  assert.doesNotMatch(element.style.transform, /translate/);
 
   bridge.update(frame, (mutable) => { mutable.textureRotation = Math.PI / 2; });
   assert.equal((element.style.transform.match(/scaleX\(-1\)/g) ?? []).length, 1);

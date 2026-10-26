@@ -835,16 +835,17 @@ test("an anchor to a centre-anchored frame lands on where that frame is painted"
   const title = find(host, "Title");
   assert.ok(dialog && header && title);
 
-  // The header is centre-anchored, so the renderer placed it at `left: calc(50% + -12px)` with a
-  // `translateX(-50%)`; the layout engine reports the pre-transform edge, 200 - 12 = 188.
-  assert.equal(header.style.transform, "translateX(-50%)");
-  Object.assign(header, { offsetLeft: 188, offsetTop: -12, offsetWidth: 256, offsetHeight: 64, offsetParent: dialog });
+  // 26.10: the header's width is declared, so its centre is laid out — `left` takes half the 256
+  // off and no translate is left to correct — and the layout edge is the painted one, 60.
+  assert.equal(header.style.left, "calc(50% + -12px - 128px)");
+  assert.equal(header.style.transform, "");
+  Object.assign(header, { offsetLeft: 60, offsetTop: -12, offsetWidth: 256, offsetHeight: 64, offsetParent: dialog });
   Object.assign(title, { offsetLeft: 0, offsetTop: 0, offsetWidth: 90, offsetHeight: 16, offsetParent: dialog });
   renderer.sync();
 
   // The plate is painted from 60 to 316, so its centre is at 188 and the title's own centre goes
   // there: 188 - 45. Read off the layout edge instead, it would have been 188 + 128 - 45 = 271.
-  assert.equal(title.style.left, "143px", "the target's own centring translate is taken off");
+  assert.equal(title.style.left, "143px", "the target's centre is where it is painted");
   // Its TOP is the plate's TOP, 14 below it: FrameXML's positive Y points up.
   assert.equal(title.style.top, "2px");
   renderer.destroy();

@@ -64,14 +64,18 @@ test("SetScale changes painted CENTER/TOPLEFT geometry and resets cleanly to one
   try {
     assert.equal(element("Center").style.width, "200px", "Lua width remains in the frame's own units");
     assert.equal(element("Center").style.zoom, "0.5");
-    assert.equal(element("Center").style.transform, "translateX(-50%) translateY(-50%)");
+    // 26.10: a centre of declared size is layout (half the size taken off), not a translate.
+    assert.equal(element("Center").style.left, "calc(50% - 100px)");
+    assert.equal(element("Center").style.top, "calc(50% - 50px)");
+    assert.equal(element("Center").style.transform, "");
     assert.equal(element("Center").style.transformOrigin, "50% 50%");
     assert.equal(element("TopLeft").style.zoom, "0.5");
     assert.equal(element("TopLeft").style.left, "20px", "the offset in the frame's own units, zoomed");
     assert.equal(element("TopLeft").style.top, "10px");
     assert.equal(element("TopLeft").style.transform, "");
     assert.equal(boot.vm.execute('Center:SetScale(1); TopLeft:SetScale(1)', '@scale-reset').ok, true);
-    assert.equal(element("Center").style.transform, "translateX(-50%) translateY(-50%)");
+    assert.equal(element("Center").style.left, "calc(50% - 100px)");
+    assert.equal(element("Center").style.transform, "");
     assert.ok(!element("Center").style.zoom, "scale one drops the zoom");
     assert.ok(!element("TopLeft").style.zoom);
     assert.equal(element("TopLeft").style.transform, "");
@@ -101,8 +105,9 @@ test("GetEffectiveScale and sibling anchor measurements include nested ancestor 
   try {
     assert.equal(boot.vm.getGlobal("NestedScale"), 0.25);
     Object.assign(element("Root"), { offsetLeft: 0, offsetTop: 0, offsetWidth: 1000, offsetHeight: 800, offsetParent: renderer.container });
-    // Center is `left: 50%` of a 1000-unit Root at zoom 0.5: 500 Root units, 1000 of its own.
-    Object.assign(element("Center"), { offsetLeft: 1000, offsetTop: 800, offsetWidth: 200, offsetHeight: 100, offsetParent: element("Root") });
+    // Center is `left: calc(50% - 100px)` of a 1000-unit Root at zoom 0.5: 500 Root units, 1000 of
+    // its own, less half its 200 — the painted edge, which is now also the layout edge.
+    Object.assign(element("Center"), { offsetLeft: 900, offsetTop: 750, offsetWidth: 200, offsetHeight: 100, offsetParent: element("Root") });
     Object.assign(element("Sibling"), { offsetLeft: 0, offsetTop: 0, offsetWidth: 10, offsetHeight: 10, offsetParent: element("Root") });
     // The mocked metrics changed without a widget change; a browser reports that through the
     // bridge's touch() (a picture or font arrived). Repeating a value already set is not a change.

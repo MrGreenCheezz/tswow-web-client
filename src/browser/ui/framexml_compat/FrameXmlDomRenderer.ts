@@ -4699,8 +4699,9 @@ export class FrameXmlDomRenderer {
     // it LEFT to the name's RIGHT, and the name is a centred parent anchor that never hit this).
     const ownHeight = (): number => (height !== undefined && !autoHeight)
       ? height : (typeof element.offsetHeight === "number" ? element.offsetHeight : 0);
-    const x = resolveAnchorAxis(xEdges.LEFT, xEdges.RIGHT, xEdges.CENTER, lastX === "RIGHT", ownWidth);
-    const y = resolveAnchorAxis(yEdges.TOP, yEdges.BOTTOM, yEdges.CENTER, lastY === "BOTTOM", ownHeight);
+    const x = resolveAnchorAxis(xEdges.LEFT, xEdges.RIGHT, xEdges.CENTER, lastX === "RIGHT", ownWidth, width);
+    const y = resolveAnchorAxis(yEdges.TOP, yEdges.BOTTOM, yEdges.CENTER, lastY === "BOTTOM", ownHeight,
+      autoHeight ? undefined : height);
     if (x.start !== undefined) geometry.left = x.start;
     if (x.end !== undefined) geometry.right = x.end;
     if (x.span !== undefined) geometry.width = x.span;
@@ -5487,7 +5488,7 @@ interface AnchorAxis {
   readonly span?: string;
   readonly pinnedStart: boolean;
   readonly pinnedEnd: boolean;
-  /** The start is a centre, finished by a -50% translate. */
+  /** The start is a centre of a box of unknown size, finished by a -50% translate. */
   readonly centred: boolean;
 }
 
@@ -5501,7 +5502,12 @@ interface AnchorAxis {
  *   end becoming `calc(100% - edge)`. A measured pair that does not open (end ≤ start) keeps the
  *   later anchor, at the frame's own size.
  * - One edge, or only a centre, places the box at its own size; a measured end or centre needs
- *   that size now, a parent centre leaves it to the translate.
+ *   that size now. A parent centre subtracts half the declared size (`declared`) and leaves only a
+ *   box of unknown size to the translate. 26.10: a translate is not layout, so the stage's zoom
+ *   (3.52) does not snap it: the 200-unit login fields at `left: 50%` moved -140.625 device pixels
+ *   at 1080 lines, every picture edge in them fell between two pixels, and each join of the
+ *   Backdrop's corners and sides drew as a line (headless Chrome, two 128-grey pieces on black: the
+ *   join 56–114 at 0.78–1.41 with the translate, 128 at every scale with the subtraction).
  */
 function resolveAnchorAxis(
   start: string | number | undefined,
@@ -5509,6 +5515,7 @@ function resolveAnchorAxis(
   centre: string | number | undefined,
   endLast: boolean,
   size: () => number,
+  declared?: number,
 ): AnchorAxis {
   const placed = (value: string, centred = false): AnchorAxis =>
     ({ start: value, pinnedStart: !centred, pinnedEnd: false, centred });
@@ -5531,7 +5538,10 @@ function resolveAnchorAxis(
       : { end, pinnedStart: false, pinnedEnd: true, centred: false };
   }
   if (centre !== undefined) {
-    return typeof centre === "number" ? placed(px(centre - size() / 2)) : placed(centre, true);
+    if (typeof centre === "number") return placed(px(centre - size() / 2));
+    if (declared === undefined) return placed(centre, true);
+    const inner = centre.startsWith("calc(") ? centre.slice(5, -1) : centre;
+    return { start: `calc(${inner} - ${px(declared / 2)})`, pinnedStart: false, pinnedEnd: false, centred: false };
   }
   return { pinnedStart: false, pinnedEnd: false, centred: false };
 }

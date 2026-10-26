@@ -12,7 +12,9 @@
  *
  * `zoom` lays the stage out at its drawn size instead, so the snapping happens in device pixels and
  * two pictures that share an edge in UI units share it on the screen: every join came out 128 at all
- * four scales, centred windows (`translateX(-50%)`) included. Wow.exe has no such line either: D3D
+ * four scales, centred windows (`translateX(-50%)`) included — a 384-wide window's half is 192 units,
+ * a whole pixel at those scales; a 200-wide login field's 100 is not, which is why a centre of
+ * declared size is laid out since 26.10 (`resolveAnchorAxis`). Wow.exe has no such line either: D3D
  * rasterises each quad without edge anti-aliasing, and two quads sharing an edge cover every pixel
  * exactly once. Nothing else moves: Chrome's standardized zoom keeps `offset*` in UI units and client
  * rectangles in CSS pixels (measured equal to the transform's), which is what the renderer's

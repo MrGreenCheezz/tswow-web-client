@@ -5,6 +5,7 @@ import { FrameXmlDomRenderer } from "../ui/framexml_compat/FrameXmlDomRenderer.j
 import { FrameXmlFontLoader } from "../ui/framexml_compat/FrameXmlFonts.js";
 import { FrameXmlTextureCache } from "../ui/framexml_compat/FrameXmlTextures.js";
 import { WebSocketByteStream } from "../../transport/WebSocketByteStream.js";
+import { scaleGlueStage } from "./GlueStageScale.js"; // 26.10
 import { GlueRuntime, glueStageMapping, glueNeedsHorizontalScroll, gluePinnedSize, GLUE_LOGICAL_HEIGHT } from "./GlueRuntime.js";
 import { createBundledFileProvider } from "./InterfaceBundleClient.js"; // 25.10 (serve S3)
 import { browserGlueVideo } from "./GlueVideo.js";
@@ -147,10 +148,9 @@ export async function startGlue(options: StartGlueOptions): Promise<GlueHandle> 
     const metrics = currentMetrics();
     stage.style.width = `${metrics.virtualWidth}px`;
     stage.style.height = `${GLUE_LOGICAL_HEIGHT}px`;
-    stage.style.transform = `scale(${metrics.scaleX}, ${metrics.scaleY})`;
-    stage.style.transformOrigin = "top left";
+    scaleGlueStage(stage, metrics.scaleX, metrics.scaleY);
     runtime.resizeLoginScene(metrics.virtualWidth);
-    // A refit can move or rescale the stage without a resize the renderer hears (a transform-only
+    // A refit can move or rescale the stage without a resize the renderer hears (a zoom-only
     // change): it measures the container again (P1-18). `pictures` is the renderer once built.
     pictures?.invalidateContainerBox();
   }
