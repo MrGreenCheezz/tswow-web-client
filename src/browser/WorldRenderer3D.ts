@@ -86,6 +86,7 @@ import type { LightSample, ResolvedColour } from "./LightTypes.js";
 import { lightDarkensByDepth, liquidLightTint, type UnderwaterLight } from "./UnderwaterLiquidLight.js"; // 05.10-A7b-5 review
 import { LocalLightSelection, modelFixtureLights, sampleFixtureLight, type FixtureLight, type LocalLightSample } from "./LocalLighting.js";
 import { SpellLights, type SpellLightKind } from "./SpellLights.js"; // 23.10 (6.27); 25.10 kinds
+import { MissileTrails, missileTrailColour } from "./MissileTrails.js"; // 26.10 (6.27, test)
 import { UnitTints, WHITE } from "./UnitTints.js"; // 25.10 (6.27)
 import {
   SPELL_ANIM_DECAY, SPELL_ANIM_HOLD, SPELL_ANIM_STAND, spellModelSequence, spellOneShotModelMs,
@@ -4214,6 +4215,9 @@ export class WorldRenderer3D {
   /** 23.10 (6.27): «Живые эффекты заклинаний» — the enhanced look of spell particles and their light. */
   #livingSpells = false;
   #spellDensity = false; // 26.10 (6.27, test)
+  /** 26.10 (6.27, test): «Шлейфы снарядов (опыт)» (MissileTrails.ts), and each missile model's trail colour. */
+  readonly #missileTrails = new MissileTrails();
+  readonly #missileTrailColours = new WeakMap<object, THREE.Color | null>();
   readonly #spellLights = new SpellLights(); // 23.10 (6.27)
   /** 22.10 (7.47): the «Объём земли» setting, and whether the current lighting level draws it. */
   #terrainReliefSetting = false;
@@ -5113,6 +5117,7 @@ export class WorldRenderer3D {
       this.#groundCoverGroup, this.#gameObjectGroup, this.#unitGroup, this.#effectGroup, this.#visualGroup);
     this.#scene.add(this.#environmentStandInMarkers.group); // 05.10-A7b-9 7.18
     this.#scene.add(this.#lightHalos.mesh); // 22.10 (7.36)
+    this.#scene.add(this.#missileTrails.mesh); // 26.10 (6.27, test)
     this.#scene.add(this.#farLightGlows.mesh); // 22.10 (7.46)
     this.#programWarmup = new ProgramWarmup(this.#renderer, this.#scene);
     // The two leaf scenes compile their own variants — neither has the world's fog — and both are
@@ -8444,6 +8449,14 @@ export class WorldRenderer3D {
         }
         const at = _missileSample.position;
         visual.node.position.set(at.x, at.z, -at.y);
+        if (this.#missileTrails.enabled && visual.wvm) { // 26.10 (6.27, test): «Шлейфы снарядов»
+          let colour = this.#missileTrailColours.get(visual.wvm);
+          if (colour === undefined) {
+            colour = missileTrailColour(visual.wvm) ?? null;
+            this.#missileTrailColours.set(visual.wvm, colour);
+          }
+          if (colour) this.#missileTrails.sample(visual, visual.node.position, now, colour, instance.scale);
+        }
         missileQuaternion(_missileSample, visual.node.quaternion);
         this.#orientVisualFrame(visual);
         visual.node.scale.setScalar(instance.scale * (_missileSample.scale > 0 ? _missileSample.scale : 1));
@@ -8886,6 +8899,7 @@ export class WorldRenderer3D {
     this.#updateVisuals(now, elapsed, environmentClient);
     if (detailedCapture) this.#drawPhaseMs["visuals.rigs"] = performance.now() - visualPartAt;
     this.#chainBeams?.update(now, this.#missilePoints, state, this.#camera.position); // 05.10-A7a-E (6.13)
+    this.#missileTrails.update(now, this.#camera); // 26.10 (6.27, test)
     // After everything has been placed and posed, and before anything is drawn: an emitter reads
     // the matrix of the bone it hangs on, and that matrix is only right once the pose is.
     if (detailedCapture) visualPartAt = performance.now();
@@ -9862,6 +9876,11 @@ export class WorldRenderer3D {
    * 26.10 (6.27, test): «Плотные эффекты заклинаний» on or off (SpellDensity.ts). Like `setLivingSpells`, a spell's
    * emitters are rebuilt on the next frame; off is the client's emission exactly.
    */
+  /** 26.10 (6.27, test): «Шлейфы снарядов (опыт)» on or off (MissileTrails.ts); off draws nothing at all. */
+  setMissileTrails(enabled: boolean): void {
+    this.#missileTrails.setEnabled(enabled);
+  }
+
   setSpellDensity(enabled: boolean): void {
     if (this.#spellDensity === enabled) return;
     this.#spellDensity = enabled;

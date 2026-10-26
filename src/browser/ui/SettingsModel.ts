@@ -236,7 +236,12 @@ export const SETTING_DEFINITIONS: readonly SettingDefinition[] = [
     // (SpellDensity.ts). Off by default and outside the enhanced preset until the owner has looked at it.
     id: "experimentalSpellDensity", label: "Плотные эффекты заклинаний (опыт)", group: "Эффекты", kind: "boolean", fallback: false,
     hint: "Опыт: у заклинаний вдвое больше частиц, каждая прозрачнее — облака, искры и шлейфы гуще и плавнее, а не отдельные карточки. Руны и кольца на земле не меняются. Немного больше работы процессору.",
+  },  {
+    // 26.10 (6.27, test version): a soft glowing ribbon behind each missile that has particles (MissileTrails.ts).
+    id: "experimentalMissileTrails", label: "Шлейфы снарядов (опыт)", group: "Эффекты", kind: "boolean", fallback: false,
+    hint: "Опыт: за огненным шаром, ледяной стрелой и другими светящимися снарядами тянется мягкий след их цвета и тает за четверть секунды. Стрелы и пули без изменений.",
   },
+
 
   {
     // 23.10 (7.48): effect textures from the gateway's HD set (HdEffectTextures.ts); off is the client's own textures.

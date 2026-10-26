@@ -66,6 +66,8 @@ function harness(legacy) {
     worldLight: { wowAmbient: { value: new THREE.Color(0.4, 0.4, 0.4) }, wowDiffuse: { value: new THREE.Color(0.6, 0.6, 0.6) },
       wowSunDirection: { value: new THREE.Vector3(0, 1, 0) } },
     programWarmup: { registerObject() {} }, pumpSpellPrewarm() {}, markExpiredSpellEffectPhases() {},
+    // 26.10 (6.27, test): «Шлейфы снарядов» off, as by default (MissileTrails.ts).
+    missileTrails: { enabled: false, sample() {}, update() {} }, missileTrailColours: new WeakMap(),
     // A new set is held until its programs are warm; this harness has no warm pass, so nothing holds.
     effectWarmHold: { hold() {}, release() {}, forget() {}, clear() {} },
     purgeFailedSpellEffectPhases() {}, spellAssetState: () => ({ ready: true, failed: false }),

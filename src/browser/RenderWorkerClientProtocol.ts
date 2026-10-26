@@ -41,6 +41,7 @@ export const RENDER_WORKER_COMMANDS: Readonly<Record<ClientRendererCommand, Rend
   setReliefStrength: "setting", // 24.10 (7.47)
   setLivingSpells: "setting", // 23.10 (6.27)
   setSpellDensity: "setting", // 26.10 (6.27, test)
+  setMissileTrails: "setting", // 26.10 (6.27, test)
   setHdEffectTextures: "setting", // 23.10 (7.48)
   setHdWorldTextures: "setting", // 23.10 (7.48 step 2)
   setFullscreenGlow: "setting", setGodRays: "setting", setGodRayStrength: "setting", setCinematicProfile: "setting",

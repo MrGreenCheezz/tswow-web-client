@@ -58,6 +58,8 @@ export function applyRendererGraphicsSettings(
   renderer.setLivingSpells?.(settingBoolean(values, "experimentalLivingSpells"));
   // 26.10 (6.27, test): «Плотные эффекты заклинаний» (SpellDensity.ts).
   renderer.setSpellDensity?.(settingBoolean(values, "experimentalSpellDensity"));
+  // 26.10 (6.27, test): «Шлейфы снарядов» (MissileTrails.ts).
+  renderer.setMissileTrails?.(settingBoolean(values, "experimentalMissileTrails"));
   // 23.10 (7.48): «Чёткие текстуры эффектов» (HdEffectTextures.ts).
   renderer.setHdEffectTextures?.(settingBoolean(values, "experimentalSharpEffectTextures"));
   // 23.10 (7.48 step 2): «Чёткие текстуры мира» (HdWorldTextures.ts).
