@@ -93,3 +93,24 @@ test("the renderer starts a transition when a drawn unit's seat changes, and app
   assert.match(source, /if \(unit\.seatTracked === true\) this\.#seatTransitions\.begin\(object\.guid, unit\.seatedRow, seatNow, unit\.node, now\);[\s\S]{0,200}unit\.node\.position\.set\(position\.x, position\.z, -position\.y\);/);
   assert.match(source, /this\.#vehiclePassengers\.place\([^\n]*\n[^\n]*\n\s+this\.#seatTransitions\.apply\(this\.#seatTransitionNode, now\);/);
 });
+
+test("the pose on the way: EnterAnimStart then EnterAnimLoop in, ExitAnimStart then ExitAnimLoop out, each a pose of its own", async () => {
+  const { vehicleSeatTransitionPose, vehiclePassengerSeatPose, vehicleSeatTransition } = await import("../dist/code/browser/VehicleSeatPose.js");
+  const row = {
+    ...seat(), id: 305, rideAnimStart: -1, rideAnimLoop: 91, rideUpperAnimStart: -1, rideUpperAnimLoop: -1,
+    enterAnimStart: 37, enterAnimLoop: 38, exitAnimStart: 39, exitAnimLoop: 40, flags: F.ENTER | F.EXIT_VOLUNTARY | 0x2,
+  };
+  const enter = vehicleSeatTransitionPose(row, "enter");
+  assert.deepEqual([...enter.wanted], [38]);
+  assert.equal(enter.start, 37);
+  const exit = vehicleSeatTransitionPose(row, "exit");
+  assert.deepEqual([...exit.wanted], [40]);
+  assert.equal(exit.start, 39);
+  const seated = vehiclePassengerSeatPose(row);
+  assert.notEqual(enter.id, seated.id);
+  assert.equal(vehicleSeatTransition(undefined, enter), 37, "boarding plays EnterAnimStart");
+  assert.equal(vehicleSeatTransition(seated, exit), 39, "leaving plays ExitAnimStart");
+  assert.deepEqual([...vehicleSeatTransitionPose({ ...row, flags: 0 }, "exit").wanted], [], "no exit flags: the ordinary pose");
+  const source = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
+  assert.match(source, /seatTransition !== undefined \? vehicleSeatTransitionPose\(seatTransition\.seat, seatTransition\.kind\)/);
+});

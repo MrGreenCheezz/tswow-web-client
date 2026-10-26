@@ -14,8 +14,8 @@
 //   (sitting is what shows), else the RideUpper pair; the upper/lower split itself is not drawn.
 // - −1 (and anything at or past the AnimationData row count 0x1fa) is no animation.
 // - Entering (states 1/2: HAS_LOWER_ANIM_FOR_ENTER 0x1 → EnterAnimStart/Loop) and leaving (4/5:
-//   ExitAnimStart/Loop, ExitAnimEnd on landing — JumpEnd turned JumpLandRun when moving) are not
-//   seen by this client, which has a passenger seated or not.
+//   ExitAnimStart/Loop, ExitAnimEnd on landing — JumpEnd turned JumpLandRun when moving): 26.10, while
+//   VehicleSeatTransition.ts carries the passenger, `vehicleSeatTransitionPose` (ExitAnimEnd not played).
 //
 // HIDE_PASSENGER 0x200: 0x007489c0 sets passenger+0x10 bit 0x400 on entering state 3 (kept on a
 // seat switch inside the same root vehicle); 0x00730f30 then gives the unit no model.
@@ -95,6 +95,40 @@ export function vehiclePassengerSeatPose(seat: VehicleSeatEntry): VehiclePasseng
     hidden: (seat.flags & VEHICLE_SEAT_FLAGS.HIDE_PASSENGER) !== 0,
   });
   seatPoses.set(seat, pose);
+  return pose;
+}
+
+/** 11.02 (26.10): the seat poses of the way in and out, cached per seat row. */
+const enterPoses = new WeakMap<VehicleSeatEntry, VehiclePassengerSeatPose>();
+const exitPoses = new WeakMap<VehicleSeatEntry, VehiclePassengerSeatPose>();
+/** Ids kept apart from the seat's own (a VehicleSeat id is far below these), so each is a new pose. */
+const ENTER_POSE_ID = 0x0100_0000;
+const EXIT_POSE_ID = 0x0200_0000;
+
+/**
+ * 11.02 (26.10): the pose a passenger holds on its way into a seat (`enter`, Wow.exe states 1/2) or out of it
+ * (`exit`, 4/5) — 0x00747b20's lower anim, played whole-body by 0x00748560 while the unit is not seated:
+ * EnterAnimStart once, then EnterAnimLoop (seat Flags 0x1); ExitAnimStart, then ExitAnimLoop (exit Flags 0x8 or
+ * 0x8000 — review: 0x0074bb60 picks one by movement flags2 0x40). ExitAnimEnd on landing is not played.
+ */
+export function vehicleSeatTransitionPose(seat: VehicleSeatEntry, kind: "enter" | "exit"): VehiclePassengerSeatPose {
+  const cache = kind === "enter" ? enterPoses : exitPoses;
+  const cached = cache.get(seat);
+  if (cached) return cached;
+  const allowed = kind === "enter"
+    ? (seat.flags & VEHICLE_SEAT_FLAGS.HAS_LOWER_ANIM_FOR_ENTER) !== 0
+    : (seat.flags & (0x8 | 0x8000)) !== 0;
+  const chosen = allowed
+    ? (kind === "enter" ? pair(seat.enterAnimStart, seat.enterAnimLoop) : pair(seat.exitAnimStart, seat.exitAnimLoop))
+    : undefined;
+  const loop = chosen?.loop;
+  const pose: VehiclePassengerSeatPose = Object.freeze({
+    id: (kind === "enter" ? ENTER_POSE_ID : EXIT_POSE_ID) + seat.id,
+    wanted: Object.freeze(loop === undefined ? [] : [loop]),
+    start: chosen?.start !== undefined && chosen.start !== loop ? chosen.start : undefined,
+    hidden: false,
+  });
+  cache.set(seat, pose);
   return pose;
 }
 

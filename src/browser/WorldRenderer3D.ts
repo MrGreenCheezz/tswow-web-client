@@ -258,6 +258,7 @@ import { fadedDepthWrite } from "./FadeDepth.js"; // 22.10 (7.42)
 import { VehiclePassengerPoser } from "./VehiclePassengerPose.js"; // 11.02-H
 import { cameraChainFade, type FadeModel } from "./VehicleCameraFade.js"; // 11.02 (26.10)
 import { VehicleSeatTransitions } from "./VehicleSeatTransition.js"; // 11.02 (26.10)
+import { vehicleSeatTransitionPose } from "./VehicleSeatPose.js"; // 11.02 (26.10)
 import { vehicleCatalogOfRows, type VehicleCatalog, type VehicleCatalogRows, type VehicleSeatEntry } from "../world/VehicleDbc.js"; // 11.02-H; 22.10 ARC-2 S2a: built from pushed rows
 import { NO_RENDER_INPUTS, type RenderInputs } from "./RenderInputs.js"; // 22.10 ARC-2 S2a
 import {
@@ -16158,9 +16159,12 @@ export class WorldRenderer3D {
       stealth: unit.stealthed === true,
     };
     // 11.02-H: the vehicle seat this unit sits in, when the tables know it; absent otherwise.
-    // 11.02 (26.10): on the way in the seat's ride pose waits for the seat (Wow.exe's state 3).
-    const vehicleSeat = unit.mount === undefined && !this.#seatTransitions.has(object.guid)
-      ? this.#vehiclePassengers.seatPose(object) : undefined;
+    // 11.02 (26.10): on the way in or out the passenger holds the seat's Enter/Exit pose; the ride pose waits for
+    // the seat (Wow.exe's state 3).
+    const seatTransition = unit.mount === undefined ? this.#seatTransitions.transitionOf(object.guid) : undefined;
+    const vehicleSeat = unit.mount !== undefined ? undefined
+      : seatTransition !== undefined ? vehicleSeatTransitionPose(seatTransition.seat, seatTransition.kind)
+      : this.#vehiclePassengers.seatPose(object);
     if (vehicleSeat !== undefined) pose.vehicleSeat = vehicleSeat;
     // 12.10 6.07: whether this fall began with a jump, and the jump clip the base is already in (Wow.exe 0x00723350,
     // 0x00724200 → 0x0071dc20): a jump keeps Jump to the ground, a walk-off runs on until FALLING_FAR and then falls.

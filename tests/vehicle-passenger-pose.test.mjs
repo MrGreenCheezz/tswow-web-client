@@ -654,7 +654,7 @@ test("11.02-H: the renderer's hooks are in place and marked", () => {
   const place = renderer.indexOf("this.#vehiclePassengers.place(admission.admitted, drawn, this.#units); // 11.02-H-review");
   assert.ok(begin > 0 && draw > begin && place > draw, "begin before the draws, place after every unit is drawn");
   assert.ok(renderer.lastIndexOf("11.02-H", place) > place - 200, "marked");
-  const pose = renderer.indexOf("? this.#vehiclePassengers.seatPose(object) : undefined;"); // 26.10: behind the seat transition
+  const pose = renderer.indexOf(": this.#vehiclePassengers.seatPose(object);"); // 26.10: behind the seat transition
   assert.ok(pose > 0 && renderer.indexOf("if (vehicleSeat !== undefined) pose.vehicleSeat = vehicleSeat;", pose) > pose);
   const body = renderer.indexOf("#bodyHeight(unit: RenderedUnit | undefined, vehicleSeatLift: number, point: number, share: number,"); // 22.10 ARC-2 S3a
   assert.ok(renderer.indexOf("body, share, fallback) + seat + vehicleSeatLift; // 11.02-H", body) > body, "the camera's pivot and eye");

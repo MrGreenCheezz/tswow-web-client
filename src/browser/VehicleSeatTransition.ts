@@ -167,9 +167,9 @@ export class VehicleSeatTransitions {
     });
   }
 
-  /** Whether a unit is on its way into or out of a seat (its seated pose waits). */
-  has(guid: bigint): boolean {
-    return this.#active.size > 0 && this.#active.has(guid);
+  /** The seat and the direction a unit is moving in, or undefined (VehicleSeatPose.ts `vehicleSeatTransitionPose`). */
+  transitionOf(guid: bigint): { readonly seat: VehicleSeatEntry; readonly kind: SeatTransitionKind } | undefined {
+    return this.#active.size > 0 ? this.#active.get(guid) : undefined;
   }
 
   /** Forgets a unit (gone from view, cleared world). */
