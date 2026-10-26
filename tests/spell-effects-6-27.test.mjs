@@ -12,7 +12,8 @@ import {
   SPELL_GLOW_KNEE, SPELL_SOFT_GROUND, spellGlowColour, spellParticleLookOf, spellSoftGroundFade,
 } from "../dist/code/browser/SpellParticleLook.js";
 import {
-  SPELL_LIGHT_LIMIT, SPELL_LIGHT_PEAK, SPELL_LIGHT_RADIUS, SpellLights, spellLightIntensity,
+  SPELL_LIGHT_GATHER, SPELL_LIGHT_LIMIT, SPELL_LIGHT_PEAK, SPELL_LIGHT_RADIUS, SpellLights, gatheredSpellLight,
+  spellLightIntensity,
 } from "../dist/code/browser/SpellLights.js";
 import { ENHANCED_GRAPHICS_OVERRIDES } from "../dist/code/browser/ui/EnhancedGraphics.js";
 import { COMPARISON_GRAPHICS_OVERRIDES } from "../dist/code/browser/ui/ComparisonProfile.js";
@@ -241,7 +242,8 @@ test("6.27 spell lights follow the drawn glow, saturate, smooth, keep the bright
       if (energy <= 0) return;
       const glow = lights.glowOf(effect);
       glow.energy += energy; glow.red += energy; glow.green += energy * 0.8; glow.blue += energy * 0.2;
-      glow.x += energy * 1; glow.y += energy * 2; glow.z += energy * 3;
+      // 26.10: each effect in its own place, farther apart than SPELL_LIGHT_GATHER, so each is its own light.
+      glow.x += energy * (1 + effect * 10); glow.y += energy * 2; glow.z += energy * 3;
     });
     lights.end(elapsed);
     const seen = [];
@@ -252,13 +254,59 @@ test("6.27 spell lights follow the drawn glow, saturate, smooth, keep the bright
   for (let index = 0; index < 60; index++) seen = frame([0, 5, 1, 20]);
   assert.equal(seen.length, SPELL_LIGHT_LIMIT);
   assert.ok(seen[0].intensity > seen[1].intensity && Math.abs(seen[0].intensity - spellLightIntensity(20)) < 1e-3);
-  assert.deepEqual(seen[0].position.toArray(), [1, 2, 3]);
+  assert.deepEqual(seen[0].position.toArray(), [31, 2, 3]);
   assert.ok(Math.abs(seen[0].colour.y - 0.8) < 1e-6 && seen[0].radius === SPELL_LIGHT_RADIUS && seen[0].halo === false);
   const first = frame([0, 0, 0, 0])[0];
   assert.ok(first && first.intensity < spellLightIntensity(20) && first.intensity > 0, "an ended effect fades, not cuts");
   for (let index = 0; index < 120; index++) seen = frame([0, 0, 0, 0]);
   assert.equal(seen.length, 0);
   assert.equal(lights.count, 0);
+});
+
+test("26.10 a crowd's hits on one monster light as one steady glow, not a strobe", () => {
+  // Owner, 26.10: «множество вспышек выглядит как светошоу». Ten players hit one target: an impact every 0.1 s,
+  // each blooming and fading over 0.3 s, all within a yard of the target's chest.
+  const lights = new SpellLights();
+  const sample = { position: new THREE.Vector3(), colour: new THREE.Vector3(), radius: 0, intensity: 0 };
+  const step = 1 / 60;
+  const impacts = [];
+  const readings = [];
+  for (let frame = 0; frame < 240; frame++) {
+    const time = frame * step;
+    if (frame % 6 === 0) impacts.push({ key: {}, start: time, x: (frame % 18) / 18 - 0.5 });
+    lights.begin();
+    for (const impact of impacts) {
+      const age = time - impact.start;
+      if (age < 0 || age > 0.3) continue;
+      const energy = 8 * Math.sin(Math.PI * age / 0.3);
+      if (energy <= 0) continue;
+      const glow = lights.glowOf(impact.key, "burst");
+      glow.energy += energy; glow.red += energy; glow.green += energy * 0.6; glow.blue += energy * 0.2;
+      glow.x += energy * impact.x; glow.y += energy; glow.z += 0;
+    }
+    lights.end(step);
+    const seen = [];
+    lights.forEach(sample, (light) => seen.push(light.intensity));
+    if (time > 1) readings.push(seen);
+  }
+  assert.ok(readings.every((seen) => seen.length === 1), "one light for the whole fight");
+  const values = readings.map((seen) => seen[0]);
+  const high = Math.max(...values), low = Math.min(...values);
+  assert.ok(high <= SPELL_LIGHT_PEAK + 1e-9, "never brighter than one saturated light");
+  assert.ok(low > 0.85 * high, `steady: ${low.toFixed(3)}..${high.toFixed(3)}`);
+  // The combination is that of coverages, and a lone impact is unchanged by it.
+  assert.ok(Math.abs(gatheredSpellLight([0.3]) - 0.3) < 1e-12);
+  assert.ok(Math.abs(gatheredSpellLight([0.3, 0.3]) - 0.45) < 1e-12);
+});
+
+test("26.10 impacts farther apart than the gathering radius stay two lights", () => {
+  const lights = new SpellLights();
+  const left = {}, right = {};
+  lights.begin();
+  Object.assign(lights.glowOf(left), { energy: 6, red: 6, green: 6, blue: 6, x: 0, y: 0, z: 0 });
+  Object.assign(lights.glowOf(right), { energy: 6, red: 6, green: 6, blue: 6, x: 6 * (SPELL_LIGHT_GATHER + 1), y: 0, z: 0 });
+  lights.end(0);
+  assert.equal(lights.count, 2);
 });
 
 test("6.27 the leaf is the enhanced profile's: off by default and in the comparison profile", () => {
