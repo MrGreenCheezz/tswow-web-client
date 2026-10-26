@@ -41,6 +41,8 @@ export function firstEntryTracing(): boolean {
 /** A moment of the entry (no-op without the flag); the first of each name is kept. */
 export function firstEntryMark(name: string): void {
   if (trace === undefined || trace.marks.some((mark) => mark.name === name)) return;
+  // The loading screen is also hidden before it is ever shown (a clean start): the world is the hide after it.
+  if (name === "world" && !trace.marks.some((mark) => mark.name === "loading")) return;
   trace.marks.push({ name, at: Math.round(performance.now()) });
 }
 

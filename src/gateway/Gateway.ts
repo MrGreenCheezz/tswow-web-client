@@ -1164,6 +1164,9 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
     traffic.observe(request, response);
     installCompression(request, response, compression);
     installContentEtag(request, response); // 25.10 (serve S2): untagged 200s get a content tag and their 304
+    // 26.10 (10.29): the page's resource timing may read the sizes of these answers (`?first-entry-trace`,
+    // app/FirstEntryTrace.ts); without it a cross-origin answer reports 0 bytes. Only the page's own origins.
+    if (options.allowedOrigins.length > 0) response.setHeader("timing-allow-origin", options.allowedOrigins.join(", "));
     if (request.url === "/health") {
       response.writeHead(200, { "content-type": "application/json" });
       response.end(localAssetNonce === undefined
