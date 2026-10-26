@@ -257,7 +257,8 @@ import { cameraSubjectOpacity } from "./game/CameraClip.js"; // 5.33
 import { fadedDepthWrite } from "./FadeDepth.js"; // 22.10 (7.42)
 import { VehiclePassengerPoser } from "./VehiclePassengerPose.js"; // 11.02-H
 import { cameraChainFade, type FadeModel } from "./VehicleCameraFade.js"; // 11.02 (26.10)
-import { vehicleCatalogOfRows, type VehicleCatalog, type VehicleCatalogRows } from "../world/VehicleDbc.js"; // 11.02-H; 22.10 ARC-2 S2a: built from pushed rows
+import { VehicleSeatTransitions } from "./VehicleSeatTransition.js"; // 11.02 (26.10)
+import { vehicleCatalogOfRows, type VehicleCatalog, type VehicleCatalogRows, type VehicleSeatEntry } from "../world/VehicleDbc.js"; // 11.02-H; 22.10 ARC-2 S2a: built from pushed rows
 import { NO_RENDER_INPUTS, type RenderInputs } from "./RenderInputs.js"; // 22.10 ARC-2 S2a
 import {
   NO_RENDER_LOOKUPS, creatureDisplayAnswered, mountDisplayModel, type RenderLookups,
@@ -2923,6 +2924,14 @@ interface RenderedUnit extends PosedModel {
   bodyHeight: number | undefined;
   /** 22.10 ARC-2 S3a-review: what its published row was derived from (RenderResultRows.ts). */
   resultKey: UnitRowKey | undefined;
+  /**
+   * 11.02 (26.10): the vehicle seat it was drawn in last frame (carrier guid, slot, row), and whether it has been
+   * drawn at all — a change starts the way in or out (VehicleSeatTransition.ts) from where it was last drawn.
+   */
+  seatedOn?: bigint | undefined;
+  seatedSlot?: number | undefined;
+  seatedRow?: VehicleSeatEntry | undefined;
+  seatTracked?: boolean | undefined;
   /** The file the emitters come from, kept so the effects pass does not re-resolve the model. */
   wvm: WvmModel | undefined;
   /** For an unrigged model, the mesh that carries the model-space rotation. */
@@ -4043,6 +4052,12 @@ export class WorldRenderer3D {
   readonly #units = new Map<bigint, RenderedUnit>();
   /** 11.02-H: vehicle passengers' seat poses and their place on the vehicle (VehiclePassengerPose.ts). */
   readonly #vehiclePassengers = new VehiclePassengerPoser();
+  readonly #seatTransitions = new VehicleSeatTransitions(); // 11.02 (26.10)
+  /** A unit's node for `#seatTransitions`, while it is drawn. */
+  readonly #seatTransitionNode = (guid: bigint): THREE.Object3D | undefined => {
+    const unit = this.#units.get(guid);
+    return unit !== undefined && unit.node.visible ? unit.node : undefined;
+  };
   /** 22.10 ARC-2 S3a: what the main thread reads back (RenderResults.ts), refilled in place. */
   readonly #results: RenderResults = createRenderResults(DEFAULT_ATMOSPHERE_PROFILE);
   /** 22.10 ARC-2 S3a: the published copy of the atmosphere's audio snapshot, made once. */
@@ -14790,6 +14805,8 @@ export class WorldRenderer3D {
     this.#prefetchUnits(candidates, drawn, client);
     // 11.02-H: vehicle passengers onto their seats, now that every vehicle stands and is posed.
     this.#vehiclePassengers.place(admission.admitted, drawn, this.#units); // 11.02-H-review
+    // 11.02 (26.10): passengers on their way into or out of a seat, from where they were to where the seat put them.
+    this.#seatTransitions.apply(this.#seatTransitionNode, now);
     // 05.10-A7a-D2 6.06: melee reactions at the attackers' swing moments. 22.10 ARC-2 S4a: the swings' progress at
     // this moment is published (SwingProgressWatch.ts); main ticks its cues from it after `draw`, no call back.
     this.#swingWatch.publish(this.#results, now, this.#swingProgressOf);
@@ -15172,6 +15189,18 @@ export class WorldRenderer3D {
     // Placed before it is posed, not after. A billboard bone is turned against the frame its own
     // parents are in, and a unit still standing where it was last frame turns its cards to face
     // where the camera was relative to *that* — visible on anything that spins on the spot.
+    // 11.02 (26.10): a seat taken, switched or left since the last frame starts the way there from where the node
+    // stands now (VehicleSeatTransition.ts); a unit seen for the first time is simply where it is.
+    const seatNow = object.transport === undefined || world === undefined ? undefined : this.#vehiclePassengers.seatOf(object);
+    const seatedOn = seatNow === undefined ? undefined : object.transport!.guid;
+    const seatedSlot = seatNow === undefined ? undefined : object.transport!.seat;
+    if (seatedOn !== unit.seatedOn || seatedSlot !== unit.seatedSlot) {
+      if (unit.seatTracked === true) this.#seatTransitions.begin(object.guid, unit.seatedRow, seatNow, unit.node, now);
+      unit.seatedOn = seatedOn;
+      unit.seatedSlot = seatedSlot;
+      unit.seatedRow = seatNow;
+    }
+    unit.seatTracked = true;
     unit.node.position.set(position.x, position.z, -position.y);
     // 11.10: a unit the client does not move is drawn at the facing Wow.exe 0x00735f60 gives it — its
     // target's while it stands in a fight, followed smoothly (world/UnitFacing.ts); the character and
@@ -16129,7 +16158,9 @@ export class WorldRenderer3D {
       stealth: unit.stealthed === true,
     };
     // 11.02-H: the vehicle seat this unit sits in, when the tables know it; absent otherwise.
-    const vehicleSeat = unit.mount === undefined ? this.#vehiclePassengers.seatPose(object) : undefined;
+    // 11.02 (26.10): on the way in the seat's ride pose waits for the seat (Wow.exe's state 3).
+    const vehicleSeat = unit.mount === undefined && !this.#seatTransitions.has(object.guid)
+      ? this.#vehiclePassengers.seatPose(object) : undefined;
     if (vehicleSeat !== undefined) pose.vehicleSeat = vehicleSeat;
     // 12.10 6.07: whether this fall began with a jump, and the jump clip the base is already in (Wow.exe 0x00723350,
     // 0x00724200 → 0x0071dc20): a jump keeps Jump to the ground, a walk-off runs on until FALLING_FAR and then falls.

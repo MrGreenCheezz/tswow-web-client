@@ -37,9 +37,8 @@
 // drawn one and whether its seat hides it (VehiclePassengerOverlay.ts): the plate, the bubbles, the
 // click box, the sight test and the selection ring hang from the model as drawn, like Wow.exe's.
 //
-// Not modelled: the entering and exiting arcs (states 1/2 and 4/5: EnterSpeed/Gravity/ArcHeight,
-// the eased progress of 0x00747d70, Enter/Exit animations, ExitAnimEnd on landing — this client sees
-// a passenger seated or not), the vehicle's own ride animation (VehicleRideAnimLoop on a bone,
+// 26.10: the entering and exiting arcs (states 1/2 and 4/5) are VehicleSeatTransition.ts, laid over `place`.
+// Not modelled: the Enter/Exit animations and ExitAnimEnd on landing, the vehicle's own ride animation (VehicleRideAnimLoop on a bone,
 // 0x00756d10), FlagsB 0x10000's mirrored vehicle pose (0x00748620), and the smoothing of the drawn
 // facing (0x00735f60).
 //
