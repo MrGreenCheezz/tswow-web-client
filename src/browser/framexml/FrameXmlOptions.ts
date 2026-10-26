@@ -181,7 +181,8 @@ export const FRAMEXML_OPTIONS_UNAVAILABLE: ReadonlyMap<string, string> = new Map
     "VideoOptionsResolutionPanelResolutionDropDown", "VideoOptionsResolutionPanelRefreshDropDown",
     "VideoOptionsResolutionPanelMultiSampleDropDown", "VideoOptionsResolutionPanelVSync",
     "VideoOptionsResolutionPanelTripleBuffer", "VideoOptionsResolutionPanelHardwareCursor",
-    "VideoOptionsResolutionPanelFixInputLag", "VideoOptionsResolutionPanelWindowed",
+    "VideoOptionsResolutionPanelFixInputLag",
+    // 10.28 (26.10): not VideoOptionsResolutionPanelWindowed — it is the page's full screen (gxWindow).
     "VideoOptionsResolutionPanelMaximized", "VideoOptionsResolutionPanelDisableResize",
     "VideoOptionsResolutionPanelDesktopGamma", "VideoOptionsResolutionPanelGammaSlider",
   ]),

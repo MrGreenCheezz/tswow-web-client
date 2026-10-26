@@ -26,6 +26,7 @@ import {
   type SettingDefinition,
   type SettingValues,
 } from "../ui/SettingsModel.js";
+import { isFullscreen, setFullscreen } from "../app/Fullscreen.js"; // 10.28 (26.10)
 
 /**
  * `volume` and `percent` are the model's whole percentages as the client's fractions (0.7 for 70);
@@ -245,21 +246,34 @@ function afterCurrentCall(write: () => void): void {
   else write();
 }
 
+/**
+ * 10.28 (26.10): the stock Video options' «Оконный режим» is the page's full screen (app/Fullscreen.ts) — live
+ * state, not a stored setting: "1" in a window, "0" filling the screen; a write switches it (an unchanged value,
+ * which the stock «Окей» writes back for every control, does nothing).
+ */
+const GX_WINDOW = "gxwindow";
+
 export function createFrameXmlSettingsCVar(host: FrameXmlSettingsCVarHost): FrameXmlSettingsCVarAdapter {
   return Object.freeze({
     get(name: string): string | undefined {
+      if (name.toLowerCase() === GX_WINDOW) return isFullscreen() ? "0" : "1";
       const binding = definitionFor(name);
       if (!binding) return undefined;
       return cvarFromSetting(binding, host.getSettings());
     },
 
     getDefault(name: string): string | undefined {
+      if (name.toLowerCase() === GX_WINDOW) return "1";
       const binding = definitionFor(name);
       if (!binding || binding.noDefault) return undefined;
       return cvarFromSetting(binding, defaultSettings());
     },
 
     set(name: string, value: unknown): boolean {
+      if (name.toLowerCase() === GX_WINDOW) {
+        setFullscreen(!stockBoolean(value));
+        return true;
+      }
       const binding = definitionFor(name);
       if (!binding || !modelDefinition(binding)) return false;
       const setting = settingFromCVar(binding, value);
