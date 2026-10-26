@@ -944,7 +944,7 @@ export class WorldClient {
       // NOT_RESET_AUTO_ACTIONS bar (Steady Shot) — the realm takes it then.
       const cast = this.state.selfGuid === undefined ? undefined : this.casts.get(this.state.selfGuid); // 5.05 (12.10)
       if (autoRepeatWaitsForCast(cast, performance.now(), spellId, cast === undefined ? undefined : spellAttributeWords(cast.spellId))) return false; // 05.10-5.05; 5.05 (12.10)
-      this.#startAutoRepeat(spellId, 0, false, target.guid, false);
+      this.#startAutoRepeat(spellId, 0, false, target.guid);
       return this.autoRepeatSpellId === spellId; // 05.10-5.05
     },
     cancelRepeat: () => this.#stopAutoRepeat(true, false), // L15 5.05: 0x00807560(1); L18 5.05: 0x26d alone — 0x00715ac0(0) is a local flag, no sheath
@@ -2184,7 +2184,7 @@ export class WorldClient {
     if (unitSeat(this.state.objects, this.state.objects.get(this.state.selfGuid))) return;
     // 11.01-A3: `MOVEMENTFLAG_ONTRANSPORT` never goes without its block — a zero guid makes the
     // core drop the passenger (MovementHandler.cpp:330-336). A caller that only knows the flags
-    // (`faceTarget`) gets the movement layer's seat, its facing taken relative to the carrier.
+    // gets the movement layer's seat, its facing taken relative to the carrier.
     if ((flags & MOVEMENT_FLAGS.onTransport) !== 0 && extra.transport === undefined) {
       const seat = this.movementSnapshot?.(this.state.selfGuid)?.transport;
       const carrier = seat === undefined ? undefined : this.state.objects.get(seat.guid)?.position;
@@ -2288,39 +2288,25 @@ export class WorldClient {
     if (!follows) return;
     // 5.05 (12.10): the carried fight turns nobody — 0x00524bf0 → 0x006e4950 → 0x006e2610 has no movement packet
     // (the swing's 0x00736d30 and 0x0072ed80 are the sheath and a cast visual); Tab takes units behind within 10 yd.
-    if (melee || ranged) this.startAttack(false, false); // L15 5.05: `|| ranged`; 5.05 (12.10): no facing
+    if (melee || ranged) this.startAttack(); // L15 5.05: `|| ranged`
     // A running Auto Shot is re-aimed rather than cancelled: HandleCastSpellOpcode replaces the
-    // repeat when the unit target differs (SpellHandler.cpp:384-396). 5.05 (12.10): without turning (0x0080cce0 turns nobody).
-    else if (repeat !== undefined) this.#startAutoRepeat(repeat, 0, false, guid, false);
+    // repeat when the unit target differs (SpellHandler.cpp:384-396).
+    else if (repeat !== undefined) this.#startAutoRepeat(repeat, 0, false, guid);
   }
 
   /**
-   * Turns to face the current target.
-   *
-   * A swing only lands inside a 120-degree arc, and the server says so exactly once and then goes
-   * quiet however long the player stands the wrong way round. Nothing here ever turned the
-   * character towards anything, so clicking something behind you meant attacking forever, seeing
-   * one line of Russian, and never landing a blow.
+   * 5.35 (26.10): no attack turns the character — not the player's own start (right click, the button,
+   * /startattack), not a fight carried to a new selection, not the controller's swing. Wow.exe's StartAttack
+   * 0x006e4950 → swing 0x006e2610 sends no movement packet: 0x006e2610's own calls are the stand-up,
+   * CMSG_ATTACKSWING, the sheath setter 0x00736d30(1, 1, 0) (the visible weapon and CMSG_SETSHEATHED on a change),
+   * 0x0072ed80 (ends a ranged cast's visual) and 0x0073ac30(0x40) (an animation) (.runtime/re-2026-10-01/a4-world/d4.c,
+   * re-2026-10-02/a9-p2/r8.c, re-2026-10-11/glue-1110/a505-3.txt). This client turned the player's own start to the
+   * unit, and since the camera's yaw is an offset from the character's facing (CameraRig.ts) the view snapped round
+   * with it — the owner's «камеру резко поворачивает к противнику». A unit outside the swing's arc answers
+   * SMSG_ATTACKSWING_BADFACING, «Нужно повернуться к цели», and the player turns, as in the client.
    */
-  faceTarget(targetGuid = this.targetGuid): void {
-    const self = this.state.selfGuid === undefined ? undefined : this.state.objects.get(this.state.selfGuid);
-    const target = targetGuid === undefined ? undefined : this.state.objects.get(targetGuid);
-    if (!self?.position || !target?.position) return;
-    const orientation = Math.atan2(target.position.y - self.position.y, target.position.x - self.position.x);
-    this.sendMovement(OPCODES.MSG_MOVE_SET_FACING, self.movementFlags, { ...self.position, orientation });
-  }
-
-  /**
-   * `face` (5.05, 12.10): whether this attack turns the character to the unit — this client's convention for the
-   * player's own start (right click, the button, /startattack). False for the controller's swing and for a fight
-   * carried to a new selection: Wow.exe's SetTarget 0x00524bf0 → StartAttack 0x006e4950 → swing 0x006e2610 sends
-   * no movement packet — 0x006e2610's own calls are the stand-up, CMSG_ATTACKSWING, the sheath setter 0x00736d30(1,
-   * 1, 0) (the visible weapon and CMSG_SETSHEATHED on a change), 0x0072ed80 (ends a ranged cast's visual) and
-   * 0x0073ac30(0x40) (an animation) (.runtime/re-2026-10-01/a4-world/d4.c, re-2026-10-02/a9-p2/r8.c,
-   * re-2026-10-11/glue-1110/a505-3.txt).
-   */
-  startAttack(meleeOnly = false, face = !meleeOnly): void { // L15 5.05: meleeOnly — the autoRangedCombat controller's own swing (0x006e2610)
-    if (!meleeOnly && this.#startAutoRanged(face)) return; // L15 5.05: 0x006e4950 with autoRangedCombat; 5.05 (12.10): face
+  startAttack(meleeOnly = false): void { // L15 5.05: meleeOnly — the autoRangedCombat controller's own swing (0x006e2610)
+    if (!meleeOnly && this.#startAutoRanged()) return; // L15 5.05: 0x006e4950 with autoRangedCombat
     if (this.#closed || this.targetGuid === undefined || this.#meleeEngaged()) return;
     const target = this.state.objects.get(this.targetGuid);
     if (!target || isWorldObjectDead(target)) {
@@ -2352,9 +2338,6 @@ export class WorldClient {
     // shot turning into a swing is the SHEATH 1 below (0x00736d30(1, 1, 0)). Was (true): SHEATH 0 first, the bow
     // put away and the blade drawn in two packets.
     if (this.autoRepeatSpellId !== undefined) this.#stopAutoRepeat(true, false); // 5.05 (12.10)
-    // L18-review: not the controller's own swing — 0x006e2610 never turns the character, and turning a hunter
-    // who runs from a mob at his back sends him into it (tests/auto-ranged-fight-rate.test.mjs, kiting).
-    if (face) this.faceTarget(); // L18-review: was unconditional; 5.05 (12.10): `face`, was `!meleeOnly`
     // 0x6e2610 stands a seated player up (0x6dcb40(0)) before the swing.
     if (self && !isWorldObjectDead(self) && (unitFields.standState(self) ?? 0) !== 0) this.setStandState(0);
     // Draw the weapon first. The server publishes the sheath state in UNIT_FIELD_BYTES_2 and the
@@ -2385,7 +2368,7 @@ export class WorldClient {
    * (AutoRangedCombat.ts): the mount rules read that spell's range, and the controller — not an
    * immediate swing — chooses the swing or the shot. False when it does not apply: the swing path runs.
    */
-  #startAutoRanged(face = true): boolean { // L15 5.05; 5.05 (12.10): face — false for a fight carried to a new selection
+  #startAutoRanged(): boolean { // L15 5.05
     const spell = this.#autoRangedSpell();
     if (spell === undefined || this.#closed || this.targetGuid === undefined) return false;
     const target = this.state.objects.get(this.targetGuid);
@@ -2406,11 +2389,7 @@ export class WorldClient {
       }
       this.#connection.send(OPCODES.CMSG_CANCEL_MOUNT_AURA);
     }
-    // L18-review: the player's own attack (right click, the button, /startattack) turns to the unit once when it
-    // starts the mode, as this client's swing did when it started; a press while the mode runs turns nothing (the
-    // swing path's `#meleeEngaged` return), and the controller's switches never do (0x006e2610, 0x0080cce0 turn
-    // nobody). 5.05 (12.10): nor does a fight carried to a new selection (0x00524bf0 → 0x006e4950: no movement packet).
-    if (face && !this.autoRanged.active && this.#autoRangedCanAttack(target)) this.faceTarget(); // L18-review; 5.05 (12.10): face
+    // 5.35 (26.10): nothing turns to the unit (startAttack); 0x006e2610 and 0x0080cce0 turn nobody.
     this.autoRanged.begin(target);
     return true;
   }
@@ -2479,7 +2458,7 @@ export class WorldClient {
   }
 
   #startAutoRepeat(spellId: number, cooldownDuration: number, cooldownStartedOnEvent: boolean,
-    explicitUnitTarget?: bigint, face = true): void { // L18-review: face — false for the autoRangedCombat controller's shot
+    explicitUnitTarget?: bigint): void {
     const targetGuid = explicitUnitTarget ?? this.targetGuid;
     const target = targetGuid === undefined ? undefined : this.state.objects.get(targetGuid);
     if (targetGuid === undefined || !target || isWorldObjectDead(target)) {
@@ -2492,7 +2471,7 @@ export class WorldClient {
     // SHEATH 2 below (was SHEATH 0 first: the blade put away, then the bow drawn).
     this.#cancelMeleeAttack(true, false); // L15 5.05; 5.05 (12.10): no sheath
     if (this.autoRepeatSpellId !== undefined) this.#stopAutoRepeat(true);
-    if (face) this.faceTarget(targetGuid); // L18-review: was unconditional
+    // 5.35 (26.10): the shot turns nobody either (0x0080cce0, startAttack).
     this.#connection.send(OPCODES.CMSG_SET_SHEATHED, buildSetSheathed(SHEATH_RANGED));
     this.#castCount = (this.#castCount + 1) & 0xff;
     this.#connection.send(
@@ -10531,11 +10510,8 @@ export class WorldClient {
         : undefined;
     if (warning) {
       this.swingWarning = warning;
-      // Facing the wrong way is the one of the two the client can fix by itself, and it has to:
-      // the server sends this once and then stays quiet however long the player stands there.
-      // L18-review: not while the autoRangedCombat mode runs — its swings come by themselves, and Wow.exe only
-      // latches the error (0x00756800 case 0x146 → 0x006cee70(2)); a turn would send a fleeing hunter into the mob.
-      if (packet.opcode === OPCODES.SMSG_ATTACK_SWING_BAD_FACING && !this.autoRanged.active) this.faceTarget(); // L18-review: `&& !active`
+      // 5.35 (26.10): the wrong facing is the player's to fix, as in Wow.exe, which only latches the error (0x00756800
+      // case 0x146 → 0x006cee70(2)); this client turned the character here, and the camera with it (startAttack).
       this.onCombatStatus?.(warning, this.attacking, true);
       return true;
     }

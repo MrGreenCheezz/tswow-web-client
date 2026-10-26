@@ -32,9 +32,8 @@ import { defaultSettings, settingBoolean } from "../dist/code/browser/ui/Setting
  *
  * Found here (L18-review): the controller's swing went through `startAttack`, whose `faceTarget()` sent
  * MSG_MOVE_SET_FACING and turned the character to the unit at every melee entry — a hunter running from a mob
- * at his back was spun round into it, and so was every BAD_FACING answer. Now only the player's own attack
- * that starts the mode turns to the unit once (this client's convention for an attack); the controller's
- * switches and BAD_FACING while the mode runs turn nobody.
+ * at his back was spun round into it, and so was every BAD_FACING answer. 5.35 (26.10): nothing turns the
+ * character any more — not the controller's switches, not BAD_FACING, not the player's own right click.
  */
 
 function fakeConnection() {
@@ -263,8 +262,8 @@ test("L18-review: an ordinary hunter fight — silence in steady states, packets
     if (tick >= 140 && tick < 220) mob(); // back to melee
     if (tick === 220) server.kill(A, tick + 1); // dies in melee reach
   });
-  assert.deepEqual(labels(within(log, 0, 1)), ["CMSG_SET_SELECTION", "MSG_MOVE_SET_FACING", "SHEATH 2", "CMSG_CAST_SPELL"],
-    "the right click: the character faced once, as this client's attacks always have, and the shot");
+  assert.deepEqual(labels(within(log, 0, 1)), ["CMSG_SET_SELECTION", "SHEATH 2", "CMSG_CAST_SPELL"],
+    "the right click: the shot, the character not turned (5.35, 0x0080cce0)");
   assert.deepEqual(labels(within(log, 1, 30)), [], "repeating at range: silence");
   assert.deepEqual(labels(within(log, 30, 60)), ["CMSG_CANCEL_AUTO_REPEAT_SPELL", "SHEATH 1", "CMSG_ATTACK_SWING"],
     "the mob arrives: the swing cancels the shot (0x006e2610); 5.05 (12.10): one sheath packet, no SHEATH 0 first");
@@ -274,9 +273,9 @@ test("L18-review: an ordinary hunter fight — silence in steady states, packets
   assert.deepEqual(labels(within(log, 130, 140)), ["CMSG_ATTACK_STOP", "SHEATH 2", "CMSG_CAST_SPELL"], "Disengage: the shot");
   assert.deepEqual(labels(within(log, 140, 300)), ["CMSG_CANCEL_AUTO_REPEAT_SPELL", "SHEATH 1", "CMSG_ATTACK_SWING"],
     "back in reach: the swing; the kill in reach sends nothing");
-  assert.equal(count(log, OPCODES.MSG_MOVE_SET_FACING), 1, "the controller's own switches never turn the character");
+  assert.equal(count(log, OPCODES.MSG_MOVE_SET_FACING), 0, "nothing turns the character (5.35)");
   assert.ok(busiestSecond(log) <= 4, `busiest second ${busiestSecond(log)}`);
-  assert.equal(log.length, 16, "0.5 packets a second over the fight (5.05 12.10: 18 with the SHEATH 0 of each shot→swing)");
+  assert.equal(log.length, 15, "0.5 packets a second over the fight (5.05 12.10: 18 with the SHEATH 0 of each shot→swing; 5.35: 16 with the right click's turn)");
   assert.equal(client.autoRanged.active, true, "a unit that died in reach leaves the mode registered (Wow.exe's melee branch, too)");
   client.close();
 });
@@ -302,7 +301,7 @@ test("L18-review: kiting — the mob catching up behind a running hunter is swun
     if (tick === 100) self.movementFlags = 0;
   });
   assert.deepEqual([...headings], [Math.PI], "no MSG_MOVE_SET_FACING turned the runner round to the mob");
-  assert.equal(count(log, OPCODES.MSG_MOVE_SET_FACING), 1, "only the right click's");
+  assert.equal(count(log, OPCODES.MSG_MOVE_SET_FACING), 0, "not even the right click's (5.35)");
   assert.equal(count(log, OPCODES.CMSG_CAST_SPELL), 0, "running forward: no shot (0x33)");
   // Each catch-up a swing (0x006e2610 sends it whatever the facing), each break-away its stop — alternating.
   const swings = log.filter(({ opcode }) => opcode === OPCODES.CMSG_ATTACK_SWING || opcode === OPCODES.CMSG_ATTACK_STOP).map(label);
@@ -346,7 +345,7 @@ test("L18-review: /startattack pressed again while the mode runs sends nothing (
   client.close();
 });
 
-test("L18-review: BAD_FACING while the mode runs only latches the warning (0x00756800 case 0x146); without it, as before", async () => {
+test("L18-review, 5.35: BAD_FACING only latches the warning (0x00756800 case 0x146), with the mode or without", async () => {
   {
     const { client, connection } = await fighter();
     const self = client.state.objects.get(SELF);
@@ -365,7 +364,7 @@ test("L18-review: BAD_FACING while the mode runs only latches the warning (0x007
     client.close();
   }
   {
-    // A warrior (no controller spell): this client's own convention stays — it turns to the target.
+    // A warrior (no controller spell): 5.35 (26.10) — the same, the warning latched and the player not turned.
     const { client, connection } = await fighter({ spells: [ATTACK], controllerSpells: [] });
     const self = client.state.objects.get(SELF);
     place(client, A, 3.5);
@@ -377,8 +376,9 @@ test("L18-review: BAD_FACING while the mode runs only latches the warning (0x007
     connection.sent.length = 0;
     connection.push(OPCODES.SMSG_ATTACK_SWING_BAD_FACING);
     await settle();
-    assert.deepEqual(labels(connection.sent), ["MSG_MOVE_SET_FACING"]);
-    assert.equal(self.position.orientation, 0);
+    assert.deepEqual(labels(connection.sent), [], "no MSG_MOVE_SET_FACING (5.35)");
+    assert.equal(self.position.orientation, Math.PI);
+    assert.equal(client.swingWarning, "Нужно повернуться к цели");
     client.close();
   }
 });

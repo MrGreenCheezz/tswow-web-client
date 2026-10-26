@@ -274,7 +274,8 @@ test("5.05 review: the action-bar Attack (6603) obeys the mounted rules of start
  * (the visible weapon; CMSG_SETSHEATHED 0x1e0 only on a change, for the active player), 0x0072ed80 (ends a ranged
  * cast's visual: +0xa38 bit 0x400, 0x0072afe0), 0x00807560(1), 0x0073ac30(0x40) (an animation) — no movement packet
  * anywhere (.runtime/re-2026-10-01/a4-world/d4.c, re-2026-10-02/a9-p2/r8.c, re-2026-10-11/glue-1110/a505-3.txt).
- * The player's own start keeps this client's one turn (L18-review), so the fixture lets movement go out.
+ * 5.35 (26.10, owner: «камеру резко поворачивает к противнику»): the player's own start turns nobody either; the
+ * fixture still lets movement go out, so a turn would show.
  */
 
 const facings = (connection) => opcodes(connection).filter((opcode) => opcode === OPCODES.MSG_MOVE_SET_FACING).length;
@@ -285,7 +286,7 @@ test("5.05 review: a swing carried to a new target does not turn the character",
   client.state.objects.get(B).position = { x: -2, y: 0, z: 0, orientation: 0 };
   client.selectTarget(A);
   client.startAttack();
-  assert.equal(facings(connection), 1, "the player's own start turns once (this client's convention), so turns can go out");
+  assert.equal(facings(connection), 0, "5.35: the player's own start turns nobody (0x006e2610)");
   connection.push(OPCODES.SMSG_ATTACK_START, attackStart(SELF, A));
   await settle();
   connection.sent.length = 0;
