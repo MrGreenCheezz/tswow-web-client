@@ -194,6 +194,8 @@ export function applySettings(): void {
   game.renderer?.setSpellDensity?.(settingBoolean(values, "experimentalSpellDensity"));
   // 26.10 (6.27, test): «Шлейфы снарядов» (MissileTrails.ts).
   game.renderer?.setMissileTrails?.(settingBoolean(values, "experimentalMissileTrails"));
+  // 26.10: «Лучи над добычей» (LootBeams.ts).
+  game.renderer?.setLootBeams?.(settingBoolean(values, "experimentalLootBeams"));
   // 23.10 (7.48): «Чёткие текстуры эффектов» (HdEffectTextures.ts).
   game.renderer?.setHdEffectTextures?.(settingBoolean(values, "experimentalSharpEffectTextures"));
   // 23.10 (7.48 step 2): «Чёткие текстуры мира» (HdWorldTextures.ts).

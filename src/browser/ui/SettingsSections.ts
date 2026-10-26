@@ -33,6 +33,7 @@ export const SETTING_SECTIONS: Readonly<Partial<Record<SettingGroup, readonly Se
         "experimentalFantasyGlow", "experimentalLivingSpells",
         "experimentalSpellDensity", // 26.10 (6.27, test)
         "experimentalMissileTrails", // 26.10 (6.27, test)
+        "experimentalLootBeams", // 26.10
         "experimentalSharpEffectTextures", // 23.10 (7.48)
       ]),
     }),

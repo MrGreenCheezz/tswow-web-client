@@ -87,6 +87,7 @@ import { lightDarkensByDepth, liquidLightTint, type UnderwaterLight } from "./Un
 import { LocalLightSelection, modelFixtureLights, sampleFixtureLight, type FixtureLight, type LocalLightSample } from "./LocalLighting.js";
 import { SpellLights, type SpellLightKind } from "./SpellLights.js"; // 23.10 (6.27); 25.10 kinds
 import { MissileTrails, missileTrailColour } from "./MissileTrails.js"; // 26.10 (6.27, test)
+import { LootBeams } from "./LootBeams.js"; // 26.10
 import { UnitTints, WHITE } from "./UnitTints.js"; // 25.10 (6.27)
 import {
   SPELL_ANIM_DECAY, SPELL_ANIM_HOLD, SPELL_ANIM_STAND, spellModelSequence, spellOneShotModelMs,
@@ -354,6 +355,7 @@ import {
   glowRigOnly, // 13.10 6.14
 } from "./WeaponGlowBody.js"; // 05.10-A7a-E2 (6.14): the effect models' meshes
 import {
+  isLootable, // 26.10: «Лучи над добычей»
   isPlayerGhost, isUnitCreeping, unitAppearance, unit as unitFields,
   type UnitAuraAppearance,
 } from "../world/Fields.js";
@@ -364,6 +366,7 @@ import type { CollisionLiquid, CollisionModel } from "../world/CollisionFormat.j
 /** One deterministic evolution step supplied by an offline render replay. */
 /** 23.10 (6.27): scratch for spell light positions. */
 const _spellLightAt = new THREE.Vector3();
+const _lootBeamAt = new THREE.Vector3(); // 26.10: a lootable body's drawn place (LootBeams.ts)
 /** 25.10 (6.27): what kind of light a spell model gives in the enhanced profile (SpellLights.ts); 26.10: none for a debuff's. */
 function spellLightKind(instance: VisualInstance): SpellLightKind | undefined {
   if (instance.noLight || spellModelGivesNoLight(instance.path)) return undefined;
@@ -4237,6 +4240,8 @@ export class WorldRenderer3D {
   #lensPitch = 0;
   /** 26.10 (6.27, test): «Шлейфы снарядов (опыт)» (MissileTrails.ts), and each missile model's trail colour. */
   readonly #missileTrails = new MissileTrails();
+  /** 26.10: «Лучи над добычей» (LootBeams.ts). */
+  readonly #lootBeams = new LootBeams();
   readonly #missileTrailColours = new WeakMap<object, THREE.Color | null>();
   readonly #spellLights = new SpellLights(); // 23.10 (6.27)
   /** 22.10 (7.47): the «Объём земли» setting, and whether the current lighting level draws it. */
@@ -5138,6 +5143,7 @@ export class WorldRenderer3D {
     this.#scene.add(this.#environmentStandInMarkers.group); // 05.10-A7b-9 7.18
     this.#scene.add(this.#lightHalos.mesh); // 22.10 (7.36)
     this.#scene.add(this.#missileTrails.mesh); // 26.10 (6.27, test)
+    this.#scene.add(this.#lootBeams.group); // 26.10
     this.#scene.add(this.#farLightGlows.mesh); // 22.10 (7.46)
     this.#programWarmup = new ProgramWarmup(this.#renderer, this.#scene);
     // The two leaf scenes compile their own variants — neither has the world's fog — and both are
@@ -8923,6 +8929,7 @@ export class WorldRenderer3D {
     if (detailedCapture) this.#drawPhaseMs["visuals.rigs"] = performance.now() - visualPartAt;
     this.#chainBeams?.update(now, this.#missilePoints, state, this.#camera.position); // 05.10-A7a-E (6.13)
     this.#missileTrails.update(now, this.#camera); // 26.10 (6.27, test)
+    if (this.#lootBeams.enabled) this.#updateLootBeams(state, now); // 26.10
     // After everything has been placed and posed, and before anything is drawn: an emitter reads
     // the matrix of the bone it hangs on, and that matrix is only right once the pose is.
     if (detailedCapture) visualPartAt = performance.now();
@@ -9902,6 +9909,27 @@ export class WorldRenderer3D {
   /** 26.10 (6.27, test): «Шлейфы снарядов (опыт)» on or off (MissileTrails.ts); off draws nothing at all. */
   setMissileTrails(enabled: boolean): void {
     this.#missileTrails.setEnabled(enabled);
+  }
+
+  /** 26.10: «Лучи над добычей» on or off (LootBeams.ts); off draws nothing at all. */
+  setLootBeams(enabled: boolean): void {
+    this.#lootBeams.setEnabled(enabled);
+  }
+
+  /**
+   * 26.10: a beam over every drawn body the server marks lootable for this viewer (LootBeams.ts), standing where
+   * the body is drawn — its node, laid down by the corpse pose — not where its record says.
+   */
+  #updateLootBeams(state: RenderWorld, now: number): void {
+    const beams = this.#lootBeams;
+    beams.begin();
+    for (const [guid, rendered] of this.#units) {
+      if (!rendered.node.visible || !rendered.node.parent) continue;
+      const object = state.objects.get(guid);
+      if (!object || !isWorldObjectDead(object) || !isLootable(object)) continue;
+      beams.mark(guid, rendered.node.getWorldPosition(_lootBeamAt));
+    }
+    beams.end(now, this.#camera.position);
   }
 
   /** 11.02 (26.10): the vehicle camera offsets the view is drawn with (game/VehicleCamera.ts), radians. */

@@ -330,6 +330,7 @@ function buildVariantConfigurations(settings: BenchmarkJsonObject): Readonly<{ A
   base.experimentalNeuralRelief = false; // 25.10 (7.47)
   base.experimentalSpellDensity = false; // 26.10 (6.27, test)
   base.experimentalMissileTrails = false; // 26.10 (6.27, test)
+  base.experimentalLootBeams = false; // 26.10
   base.experimentalWmoRelief = false; // 22.10 (7.47 stage 2)
   base.experimentalModelRelief = false; // 23.10 (7.47 stage 3)
   base.experimentalSharpWorldTextures = false; // 23.10 (7.48 step 2)

@@ -241,6 +241,11 @@ export const SETTING_DEFINITIONS: readonly SettingDefinition[] = [
     id: "experimentalMissileTrails", label: "Шлейфы снарядов (опыт)", group: "Эффекты", kind: "boolean", fallback: false,
     hint: "Опыт: за огненным шаром, ледяной стрелой и другими светящимися снарядами тянется мягкий след их цвета и тает за четверть секунды. Стрелы и пули без изменений.",
   },
+  {
+    // 26.10: a small golden beam over each body this character may loot (LootBeams.ts); not in Wow.exe.
+    id: "experimentalLootBeams", label: "Лучи над добычей", group: "Эффекты", kind: "boolean", fallback: true,
+    hint: "Над телами, которые можно обыскать, стоит небольшой золотой луч. Гаснет, когда добыча забрана.",
+  },
 
 
   {
