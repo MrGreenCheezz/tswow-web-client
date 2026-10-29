@@ -33,7 +33,7 @@ export class FactionClient {
 
   constructor(gatewayWebSocketUrl: string) {
     const url = new URL(gatewayWebSocketUrl);
-    url.protocol = url.protocol === "wss:" ? "https:" : "http:";
+    url.protocol = url.protocol === "wss:" || url.protocol === "https:" ? "https:" : "http:";
     this.#baseUrl = url.origin;
   }
 

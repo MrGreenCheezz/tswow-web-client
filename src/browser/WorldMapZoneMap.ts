@@ -100,7 +100,7 @@ export class WorldMapZoneMapClient {
 
   constructor(gatewayWebSocketUrl: string, retryBaseMs = 1_000) {
     const url = new URL(gatewayWebSocketUrl);
-    url.protocol = url.protocol === "wss:" ? "https:" : "http:";
+    url.protocol = url.protocol === "wss:" || url.protocol === "https:" ? "https:" : "http:";
     this.#baseUrl = url.origin;
     this.#retryBaseMs = Math.max(1, retryBaseMs);
   }

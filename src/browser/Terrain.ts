@@ -214,7 +214,7 @@ export const MODEL_BACKGROUND_RESERVATION_MS = 750;
 
 function gatewayBaseUrl(gatewayWebSocketUrl: string): string {
   const url = new URL(gatewayWebSocketUrl);
-  url.protocol = url.protocol === "wss:" ? "https:" : "http:";
+  url.protocol = url.protocol === "wss:" || url.protocol === "https:" ? "https:" : "http:";
   return url.origin;
 }
 

@@ -425,7 +425,7 @@ export class LightClient {
   /** `now` (05.10-A7b-0 1.24) is the retry ladder's clock; tests inject their own. */
   constructor(gatewayWebSocketUrl: string, now?: () => number) {
     const url = new URL(gatewayWebSocketUrl);
-    url.protocol = url.protocol === "wss:" ? "https:" : "http:";
+    url.protocol = url.protocol === "wss:" || url.protocol === "https:" ? "https:" : "http:";
     this.#baseUrl = url.origin;
     this.#failures = new RetryLadder<number>(undefined, now);
   }

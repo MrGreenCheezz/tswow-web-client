@@ -292,7 +292,7 @@ export class CollisionSource {
 
   constructor(gatewayWebSocketUrl: string, options: CollisionSourceOptions = {}) {
     const url = new URL(gatewayWebSocketUrl);
-    url.protocol = url.protocol === "wss:" ? "https:" : "http:";
+    url.protocol = url.protocol === "wss:" || url.protocol === "https:" ? "https:" : "http:";
     this.#baseUrl = url.origin;
     this.models = new CollisionClient(gatewayWebSocketUrl);
     this.#cacheLimit = Math.max(0, options.cacheBytes ?? GROUP_CACHE_BYTES);
