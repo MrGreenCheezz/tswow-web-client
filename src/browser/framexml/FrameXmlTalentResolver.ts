@@ -83,7 +83,7 @@ export interface FrameXmlTalentResolverSource {
   readonly talent: FrameXmlTalentMetadata | undefined;
 }
 
-/** One prerequisite as `GetTalentPrereqs` can report it. */
+/** One prerequisite as `GetTalentPrereqs` can report it; one naming an unknown talent is dropped. */
 export interface FrameXmlTalentPrerequisiteSnapshot {
   readonly talentId: number;
   /** Lua's one-based row; unavailable only when metadata names an unknown talent. */
@@ -268,16 +268,19 @@ function resolveFromTabs(
             continue;
           }
           const prerequisite = allEntries.get(required.talentId);
+          // Stock Talent.dbc keeps prerequisites on talents that no longer exist (1756 ← 1409,
+          // 1993 ← 1994). Player::LearnTalent skips a prerequisite it cannot look up, and handing
+          // one to GetTalentPrereqs gives TalentFrame_DrawLines a nil tier: the Lua error stops
+          // TalentFrame_Update midway and leaves every later button stale.
+          if (prerequisite === undefined) continue;
           const prerequisiteRank = learned.get(required.talentId) ?? 0;
-          const known = prerequisite !== undefined;
-          if (!known) meetsPrereq = undefined;
-          else if (prerequisiteRank < required.rank && meetsPrereq !== undefined) meetsPrereq = false;
+          if (prerequisiteRank < required.rank && meetsPrereq !== undefined) meetsPrereq = false;
           prerequisites.push(Object.freeze({
             talentId: required.talentId,
-            tier: prerequisite ? prerequisite.tier + 1 : undefined,
-            column: prerequisite ? prerequisite.column + 1 : undefined,
+            tier: prerequisite.tier + 1,
+            column: prerequisite.column + 1,
             requiredRank: required.rank,
-            meetsPrereq: known ? prerequisiteRank >= required.rank : undefined,
+            meetsPrereq: prerequisiteRank >= required.rank,
             meetsPreviewPrereq: undefined,
           }));
         }

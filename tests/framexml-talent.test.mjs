@@ -724,6 +724,26 @@ test("tier availability uses total tree points, independent of row ordering", ()
   assert.equal(snapshot.groups[0].tabs[0].talents[0].meetsPrereq, true);
 });
 
+test("a prerequisite naming a missing talent is dropped, as the core does (1756 ← 1409)", () => {
+  const snapshot = resolveFrameXmlTalentSnapshot(
+    player(2),
+    { pet: false, unspentPoints: 10, activeSpec: 0, specs: [{ talents: [{ talentId: 1403, rank: 5 }], glyphs: [] }] },
+    {
+      ready: true,
+      revision: 1,
+      tabsForClass: () => [{ id: 381, name: "Retribution", orderIndex: 2 }],
+      talentsIn: () => [
+        { id: 1403, tabId: 381, tier: 0, column: 1, ranks: [20060, 20061, 20062, 20063, 20064], prerequisites: [] },
+        { id: 1756, tabId: 381, tier: 1, column: 2, ranks: [31869], prerequisites: [{ talentId: 1409, rank: 1 }] },
+      ],
+    },
+  );
+  const cell = snapshot.groups[0].tabs[0].talents[1];
+  assert.equal(cell.id, 1756);
+  assert.deepEqual(cell.prerequisites, [], "GetTalentPrereqs must not hand TalentFrame_DrawLines a nil tier");
+  assert.equal(cell.meetsPrereq, true);
+});
+
 test("pet talent snapshot uses the family mask, one pet group and three points per tier", () => {
   const petTab = { id: 200, name: "Ferocity", orderIndex: 0, classMask: 0, petTalentMask: 1,
     iconTexture: "Interface\\Icons\\Ability_Hunter_Pet_Wolf", background: "PetFerocity" };
