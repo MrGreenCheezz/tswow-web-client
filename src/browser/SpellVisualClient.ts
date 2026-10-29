@@ -171,7 +171,8 @@ export class SpellVisualClient extends BatchedMetadataClient<SpellVisualMetadata
     // without them is filled with zeros (a straight band, as before) and a missile keeps its chest aim.
     // v=10 (25.10, 6.27): a kit's `tint` (CharProc 1) and `flash` (CharProc 13); an older gateway answers v=9 without them.
     // v=11 (26.10, 6.27): the spell's `dispelType`; an older gateway answers v=10 without it (every effect may light).
-    return `${this.baseUrl}/dbc/spell-visuals?v=11&ids=${ids.join(",")}`;
+    // v=12 (29.10): `ammoMissile`; an older gateway answers v=11 without it (no ammo flies, the shot still plays).
+    return `${this.baseUrl}/dbc/spell-visuals?v=12&ids=${ids.join(",")}`;
   }
 
   protected override accept(value: unknown): value is SpellVisualMetadata {
@@ -213,7 +214,7 @@ function hasAnything(visual: SpellVisualMetadata): boolean {
   return Boolean(
     visual.autoRepeat ?? visual.precast ?? visual.cast ?? visual.impact ?? visual.state ?? visual.stateDone ?? visual.channel
       ?? visual.casterImpact ?? visual.targetImpact ?? visual.missileTargeting ?? visual.instantArea
-      ?? visual.impactArea ?? visual.persistentArea ?? visual.missile
+      ?? visual.impactArea ?? visual.persistentArea ?? visual.missile ?? visual.ammoMissile // 29.10
       ?? visual.missileSound ?? visual.animEventSound,
   );
 }
@@ -327,6 +328,12 @@ function isSpellVisual(value: unknown): value is SpellVisualMetadata {
     if (shape["sound"] !== undefined
       && (typeof shape["sound"] !== "number" || !Number.isFinite(shape["sound"]))) return false;
     if (!isMissileExtras(shape)) return false; // 05.10-A7a-E
+  }
+  const ammo = visual["ammoMissile"]; // 29.10: a missile without its file (gateway SpellVisualAmmoMissile)
+  if (ammo !== undefined) {
+    if (!ammo || typeof ammo !== "object") return false;
+    const shape = ammo as Record<string, unknown>;
+    if (!finite(shape["attachment"]) || !finite(shape["speed"]) || !isMissileExtras(shape)) return false;
   }
   const ends = visual["beamEnds"]; // 13.10 (6.13)
   if (ends !== undefined) {

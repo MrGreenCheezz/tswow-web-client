@@ -144,6 +144,9 @@ export interface SpellVisualKitRecord {
   kit?: SpellVisualKit;
 }
 
+/** 29.10: a missile whose model is the cast's ammo: everything a {@link SpellVisualMissile} has but the file. */
+export type SpellVisualAmmoMissile = Omit<SpellVisualMissile, "path" | "scale" | "sound">;
+
 /** A missile: one model, flying from a point on the caster to a point on the target. */
 export interface SpellVisualMissile {
   path: string;
@@ -244,6 +247,12 @@ export interface SpellVisualMetadata {
   missile?: SpellVisualMissile;
   /** 13.10 (6.13): the beam ends of a visual whose kits draw a beam. */
   beamEnds?: SpellVisualBeamEnds;
+  /**
+   * 29.10: the missile flies the cast's ammo (SMSG_SPELL_GO's CAST_FLAG_AMMO pair, AmmoModels.ts) — a SpellVisual with
+   * HasMissile and MissileModel 0 (Wow.exe 0x00732ff0 → 0x004eab50), or a REQ_AMMO spell with no SpellVisualID.
+   * The columns of {@link SpellVisualMissile} without the model; the browser fills the model per cast.
+   */
+  ammoMissile?: SpellVisualAmmoMissile;
   /** SoundEntries ids authored directly on SpellVisual rather than on a kit. */
   missileSound?: number;
   animEventSound?: number;
@@ -589,6 +598,13 @@ export function parseSpellVisuals(
         speed: 0,
         ...missileExtras(visuals, row, motions), // 05.10-A7a-E
       };
+    } else if (visuals.int(row, "HasMissile") !== 0 && visuals.int(row, "MissileModel") === 0) {
+      // 29.10: a missile that names no model flies the cast's ammo (Wow.exe 0x00732ff0 → 0x004eab50, AmmoModels.ts).
+      record.ammoMissile = {
+        attachment: attachmentOr(visuals.int(row, "MissileAttachment"), ATTACH_SPELL_RIGHT_HAND),
+        speed: 0,
+        ...missileExtras(visuals, row, motions),
+      };
     }
     // 13.10 (6.13): a visual whose kits draw a beam carries its beam ends.
     if (VISUAL_KITS.some(([, phase]) => (record[phase] as SpellVisualKit | undefined)?.chains !== undefined)) {
@@ -625,12 +641,21 @@ export function parseSpellVisuals(
         }
       }
     }
+    // 29.10: a ranged weapon spell with no SpellVisualID at all — Auto Shot 75, Shoot 3018/5019, Throw 2764: 110 of
+    // the 448 SPELL_ATTR0_REQ_AMMO (0x2, SharedDefines.h) rows of this dataset — still flies its ammo in the original
+    // client. Where Wow.exe launches it for a spell without a visual is not read; it is taken as the visual-less
+    // case of 0x00732ff0's MissileModel 0, from the right hand like every missile without a MissileAttachment.
+    if (!merged.missile && !merged.ammoMissile && (spells.int(row, "Attributes") & SPELL_ATTR0_REQ_AMMO) !== 0
+      && spells.int(row, "SpellVisualID", 0) === 0 && spells.int(row, "SpellVisualID", 1) === 0) {
+      merged.ammoMissile = { attachment: ATTACH_SPELL_RIGHT_HAND, speed: 0 };
+      found = true;
+    }
     // The visual record is shared, so the speed is copied onto a record of this spell's own
     // rather than written into the one every other spell using that visual can see.
-    if (merged.missile) {
-      const speed = spells.float(row, "Speed");
-      merged.missile = { ...merged.missile, speed: Number.isFinite(speed) && speed > 0 ? speed : 0 };
-    }
+    const speed = spells.float(row, "Speed");
+    const ownSpeed = Number.isFinite(speed) && speed > 0 ? speed : 0;
+    if (merged.missile) merged.missile = { ...merged.missile, speed: ownSpeed };
+    if (merged.ammoMissile) merged.ammoMissile = { ...merged.ammoMissile, speed: ownSpeed }; // 29.10
     const duration = durationById.get(spells.int(row, "DurationIndex"));
     if (duration !== undefined) merged.durationMs = Number.isFinite(duration) && duration > 0 ? duration : 0;
     const dispelType = spells.int(row, "DispelType"); // 26.10 (6.27)
@@ -639,6 +664,9 @@ export function parseSpellVisuals(
   }
   return result;
 }
+
+/** 29.10: `SPELL_ATTR0_REQ_AMMO` (SharedDefines.h): the spell shoots the ranged weapon's ammo. */
+const SPELL_ATTR0_REQ_AMMO = 0x2;
 
 /** An attachment the table gives as −1 or out of range falls back to a point every model has. */
 function attachmentOr(value: number, fallback: number): number {

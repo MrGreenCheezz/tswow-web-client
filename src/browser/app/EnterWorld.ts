@@ -94,6 +94,7 @@ import { SpellVisualClient, SpellVisualKitClient } from "../SpellVisualClient.js
 import { setMissileGravitySource, spellVisualKitPaths } from "../SpellVisuals.js"; // 13.10 (6.12): gravity
 import { spellMissiles } from "../SpellMissileClient.js"; // 13.10 (6.12)
 import { SpellVisualCoordinator } from "../SpellVisualLifecycle.js";
+import { AmmoModelClient } from "../AmmoModelClient.js"; // 29.10
 import { CreatureMetadataClient } from "../CreatureMetadata.js";
 import { GameObjectMetadataClient } from "../GameObjectMetadata.js";
 import { TransportPathClient } from "../TransportPath.js";
@@ -329,9 +330,12 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
    * only reference that matters. The failure path below detaches its callback beside its sibling's.
    */
   const spellVisualKits = new SpellVisualKitClient(gatewayInput.value);
+  /** 29.10: the model a SPELL_GO's ammo flies as (AmmoModelClient.ts); the coordinator's own, like the kit client. */
+  const ammoModels = new AmmoModelClient(gatewayInput.value);
   const spellVisualCoordinator = new SpellVisualCoordinator({
     metadata: spellVisuals,
     kitMetadata: spellVisualKits,
+    ammoModels, // 29.10
     // 22.10 ARC-2 S4a: the `+0xa20` set a kit's wound reads is brought up to date before the renderer is asked to
     // play anything (game/SwingReactionHost.ts `syncMeleeTargets`), as the renderer once asked it at that moment.
     renderer: () => {
@@ -375,6 +379,11 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
         environment.model(path, "normal");
       }
     }
+  };
+  ammoModels.onLoaded = (models) => { // 29.10
+    spellVisualCoordinator.onAmmoModelsLoaded();
+    const environment = game.environment && warmModelTarget(game.environment, () => game.renderer);
+    if (environment) for (const model of models) environment.model(model.model, "critical");
   };
   spellVisualCoordinator.bindWorld(world);
   world.onStateChange = queueWorldState;
@@ -1540,6 +1549,7 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
       // The kit client is this closure's own, so it is retired on the same condition rather than
       // on one of its own: it exists to serve the coordinator that has just been retired above.
       spellVisualKits.onLoaded = undefined;
+      ammoModels.onLoaded = undefined; // 29.10
     }
     // Retiring the world can reject a pending login read. Its old error must not hide the loading
     // screen or replace the status of the new world that has already taken over.

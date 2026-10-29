@@ -3,6 +3,7 @@ import { PacketWriter } from "../protocol/PacketWriter.js";
 import { SPELL_CAST_RESULT_NAMES, globalString } from "../generated/globalStrings.js";
 import { formatGlobalString, formatGlobalStringByName } from "./GlobalStringFormat.js";
 import { WORLD_NAME_FALLBACKS, type WorldNameSources } from "./WorldNames.js";
+import { CAST_FLAG_AMMO, readSpellAmmo, type SpellAmmo } from "./SpellAmmo.js"; // 29.10
 
 /** `TARGET_FLAG_NONE`: no explicit target, which is what makes the server pick one. */
 export const TARGET_FLAG_NONE = 0x0000_0000;
@@ -96,6 +97,8 @@ export interface SpellGo extends SpellCastHeader {
    * after the power and rune words). Absent without the flag or when the tail does not read cleanly.
    */
   adjustMissile?: { elevation: number; delayMs: number };
+  /** 29.10: `CAST_FLAG_AMMO`'s pair (SpellAmmo.ts); absent without the flag or when the tail does not read cleanly. */
+  ammo?: SpellAmmo;
 }
 
 /** 13.10: `CAST_FLAG_RUNE_LIST` and `CAST_FLAG_ADJUST_MISSILE` (Spell.h). */
@@ -398,7 +401,6 @@ export function parseSpellCastHeader(payload: Uint8Array): SpellCastHeader {
 }
 
 /** `CAST_FLAG_*` (Spell.h:80-112) that add words to SMSG_SPELL_START after the target block. */
-const CAST_FLAG_AMMO = 0x20;
 const CAST_FLAG_POWER_LEFT_SELF = 0x800;
 export const CAST_FLAG_PENDING = 0x1;
 export const CAST_FLAG_IMMUNITY = 0x04000000;
@@ -413,6 +415,8 @@ export interface SpellStart extends SpellCastHeader {
    */
   schoolImmunityMask: number;
   mechanicImmunityMask: number;
+  /** 29.10: `CAST_FLAG_AMMO`'s pair (SpellAmmo.ts), when the flag is set and it reads cleanly. */
+  ammo?: SpellAmmo;
 }
 
 /**
@@ -435,7 +439,10 @@ export function parseSpellStart(payload: Uint8Array): SpellStart {
   if (targets !== undefined) start.targets = targets;
   try {
     if ((header.castFlags & CAST_FLAG_POWER_LEFT_SELF) !== 0) reader.u32();
-    if ((header.castFlags & CAST_FLAG_AMMO) !== 0) { reader.u32(); reader.u32(); }
+    if ((header.castFlags & CAST_FLAG_AMMO) !== 0) {
+      const ammo = readSpellAmmo(reader); // 29.10
+      if (ammo) start.ammo = ammo;
+    }
     if ((header.castFlags & CAST_FLAG_IMMUNITY) !== 0) {
       start.schoolImmunityMask = reader.u32();
       start.mechanicImmunityMask = reader.u32();
@@ -485,8 +492,11 @@ export function parseSpellGo(payload: Uint8Array): SpellGo {
   }
   const targets = parseSpellCastTargets(reader);
   const go: SpellGo = targets === undefined ? { ...header, hits, misses } : { ...header, hits, misses, targets };
-  // 13.10 (6.12): the tail up to the trajectory words, in Wow.exe 0x0080e1b0's order.
-  if ((header.castFlags & CAST_FLAG_ADJUST_MISSILE) !== 0 && targets !== undefined) {
+  // 13.10 (6.12): the tail up to the trajectory words, in Wow.exe 0x0080e1b0's order. 29.10: and on to the ammo
+  // pair, which SpellCastData's writer puts right after them (SpellPackets.cpp:146-156: power, runes, trajectory, ammo).
+  const adjust = (header.castFlags & CAST_FLAG_ADJUST_MISSILE) !== 0;
+  const ammoFlag = (header.castFlags & CAST_FLAG_AMMO) !== 0;
+  if ((adjust || ammoFlag) && targets !== undefined) {
     try {
       if ((header.castFlags & CAST_FLAG_POWER_LEFT_SELF) !== 0) reader.u32();
       if ((header.castFlags & CAST_FLAG_RUNE_LIST) !== 0) {
@@ -497,13 +507,19 @@ export function parseSpellGo(payload: Uint8Array): SpellGo {
           if ((before & bit) !== 0 && (after & bit) === 0) reader.u8();
         }
       }
-      const elevation = reader.f32();
-      const delayMs = reader.u32();
-      if (Number.isFinite(elevation) && Math.abs(elevation) <= 2 * Math.PI && delayMs <= ADJUST_MISSILE_MAX_DELAY_MS) {
-        go.adjustMissile = { elevation, delayMs };
+      if (adjust) {
+        const elevation = reader.f32();
+        const delayMs = reader.u32();
+        if (Number.isFinite(elevation) && Math.abs(elevation) <= 2 * Math.PI && delayMs <= ADJUST_MISSILE_MAX_DELAY_MS) {
+          go.adjustMissile = { elevation, delayMs };
+        }
+      }
+      if (ammoFlag) {
+        const ammo = readSpellAmmo(reader); // 29.10
+        if (ammo) go.ammo = ammo;
       }
     } catch {
-      // A short tail: no trajectory; the missile flies its straight line.
+      // A short tail: no trajectory (the missile flies its straight line) and no ammo.
     }
   }
   return go;

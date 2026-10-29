@@ -21,6 +21,9 @@ import type {
 } from "../gateway/SpellVisual.js";
 import { DynamicObjectAreas } from "./DynamicObjectVisual.js"; // 05.10-A7a-G2 6.05б
 import { allocateRenderId } from "./RenderCommandIds.js"; // 22.10 ARC-2 S4a
+import {
+  AmmoMissileWaits, castAmmoForVisual, castReleasesRangedWeapon, skinAmmoMissiles, withAmmoMissile, type AmmoModelSource,
+} from "./AmmoMissile.js"; // 29.10
 
 /** The finite effects the renderer owns while an aura is present. */
 export interface StateVisualDescriptor {
@@ -102,7 +105,8 @@ export interface SpellVisualLifecycleWorld {
 }
 
 /**
- * The only stock 3.3.5 SPELL_GO rows whose missing visual is itself the ranged release.
+ * The only stock 3.3.5 SPELL_GO rows whose missing visual is itself the ranged release, without the ammo pair.
+ * 29.10: a GO that carries CAST_FLAG_AMMO with a display is a release as well (AmmoMissile.ts castReleasesRangedWeapon).
  *
  * `SPELL_ATTR2_AUTOREPEAT_FLAG` is broader than the client action: the local DBC also marks a
  * handful of NPC/non-weapon rows (for example 1485, 31317 and 38196). Treating that bit alone as
@@ -111,7 +115,7 @@ export interface SpellVisualLifecycleWorld {
  * bounded stock mapping until a server-side ranged-release semantic is available.
  */
 export function usesStockRangedRelease(spellId: number, metadata: SpellVisualMetadata): boolean {
-  return metadata.autoRepeat === true && (spellId === 75 || spellId === 5019);
+  return castReleasesRangedWeapon({ spellId, castFlags: 0 }, metadata); // 29.10: one rule, AmmoMissile.ts
 }
 
 interface PendingVisual {
@@ -207,6 +211,8 @@ interface Options {
   metadata: SpellVisualMetadataSource;
   /** Absent means the kit packets keep their pre-S3 sound-only behaviour. */
   kitMetadata?: SpellVisualKitMetadataSource;
+  /** 29.10: an ammo display's flight model (AmmoModelClient); absent, no ammo flies (the shot still plays). */
+  ammoModels?: AmmoModelSource;
   renderer: SpellVisualLifecycleRenderer | (() => SpellVisualLifecycleRenderer | undefined);
   playSound?: SpellVisualSoundSink;
   now?: () => number;
@@ -342,6 +348,9 @@ function startEnd(active: { startedAt: number; duration: number }): number {
 export class SpellVisualCoordinator {
   readonly #metadataSource: SpellVisualMetadataSource;
   readonly #kitMetadataSource: SpellVisualKitMetadataSource | undefined;
+  readonly #ammoModels: AmmoModelSource | undefined; // 29.10
+  /** 29.10: SPELL_GOs waiting for their ammo's model (AmmoMissile.ts). */
+  readonly #ammoWaits = new AmmoMissileWaits();
   readonly #rendererSource: Options["renderer"];
   readonly #playSound: SpellVisualSoundSink | undefined;
   readonly #now: () => number;
@@ -397,6 +406,7 @@ export class SpellVisualCoordinator {
   constructor(options: Options) {
     this.#metadataSource = options.metadata;
     this.#kitMetadataSource = options.kitMetadata;
+    this.#ammoModels = options.ammoModels; // 29.10
     this.#rendererSource = options.renderer;
     this.#playSound = options.playSound;
     this.#now = options.now ?? (() => performance.now());
@@ -464,6 +474,13 @@ export class SpellVisualCoordinator {
     this.#clearEffects();
     this.#world = undefined;
     this.#clearAuraSnapshot();
+  }
+
+  /** 29.10: called by AmmoModelClient after a batch settled; the casts waiting for an ammo model play now. */
+  onAmmoModelsLoaded(): void {
+    if (!this.#active || this.#ammoWaits.size === 0) return;
+    const now = this.#now();
+    for (const replay of this.#ammoWaits.take(this.#epoch, now, this.#ttl)) replay(now);
   }
 
   /** Called by SpellVisualClient only after a successful metadata batch. */
@@ -628,6 +645,7 @@ export class SpellVisualCoordinator {
     this.#deferred.length = 0;
     this.#stateQueued.clear();
     this.#pendingFallbacks.length = 0;
+    this.#ammoWaits.clear(); // 29.10
     this.#seenEvents = new WeakSet<object>();
     this.#receiptSequence = 0;
     this.#stateShown.clear();
@@ -834,12 +852,27 @@ export class SpellVisualCoordinator {
       const replay = (replayNow: number): void => {
         const metadata = this.#getVisual(cast.spellId);
         const spellCast = capturedCast ?? this.#spellCast(world, cast);
-        if (!metadata) return;
+        if (!metadata) {
+          // 29.10: a row that resolved to nothing authors no caster animation; the ammo pair is still a release.
+          if (this.#knownNoVisual.has(cast.spellId) && castReleasesRangedWeapon(cast, undefined)) playRangedRelease();
+          return;
+        }
         if (!spellCast) {
-          if (usesStockRangedRelease(cast.spellId, metadata)) playRangedRelease();
+          if (castReleasesRangedWeapon(cast, metadata)) playRangedRelease(); // 29.10: or the ammo pair
         return;
       }
-      const plan = planSpellVisual(metadata, spellCast, now);
+      // 29.10: a visual whose missile is the cast's ammo waits for the ammo's model (AmmoMissile.ts); the shot
+      // itself does not wait.
+      const ammo = this.#ammoModels ? castAmmoForVisual(cast, metadata) : undefined;
+      const ammoModel = ammo ? this.#ammoModels!.model(ammo) : undefined;
+      if (ammo && ammoModel === undefined) {
+        const preview = planSpellVisual(metadata, spellCast, now);
+        if (castReleasesRangedWeapon(cast, metadata) && !preview.animations.some((animation) =>
+          animation.guid === cast.casterUnit || animation.guid === cast.casterGuid)) playRangedRelease();
+        this.#ammoWaits.add(this.#epoch, now, replay);
+        return;
+      }
+      const plan = skinAmmoMissiles(planSpellVisual(withAmmoMissile(metadata, ammoModel), spellCast, now), ammoModel);
       const currentActive = this.#starts.get(cast.casterUnit) ?? this.#starts.get(cast.casterGuid);
       const channelStillOwnsCaster = currentActive?.spellId === cast.spellId && currentActive.channel;
       const hasAuthoredCasterAnimation = plan.animations.some((animation) =>
@@ -850,8 +883,9 @@ export class SpellVisualCoordinator {
       );
       // Stock Auto Shot and wand Shoot have no SpellVisualID, so the repeat flag supplies their
       // ranged release. Other DBC rows carry the same repeat bit together with a real caster kit;
-      // that authored pose wins instead of being replaced by a generic weapon shot.
-      if (usesStockRangedRelease(cast.spellId, metadata) && !hasAuthoredCasterAnimation) {
+      // that authored pose wins instead of being replaced by a generic weapon shot. 29.10: the same
+      // rule for every GO with CAST_FLAG_AMMO's display — Arcane/Steady/Aimed/Multi-Shot and the stings.
+      if (castReleasesRangedWeapon(cast, metadata) && !hasAuthoredCasterAnimation) {
         playRangedRelease();
       }
     };
@@ -859,6 +893,9 @@ export class SpellVisualCoordinator {
       this.#metadataSource.get(cast.spellId);
       if (!this.#knownNoVisual.has(cast.spellId)) {
         this.#enqueue({ kind: "go", spellId: cast.spellId, key, receivedAt: now, epoch: this.#epoch, replay });
+      } else if (castReleasesRangedWeapon(cast, undefined)) {
+        // 29.10: no visual at all authors no caster animation; the ammo pair is still a release.
+        playRangedRelease();
       }
       return;
     }

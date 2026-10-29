@@ -8411,6 +8411,8 @@ export class WorldRenderer3D {
           const built = buildModel(model.wvm, {
             modelPath: instance.path,
             baseUrl: this.#baseUrl,
+            // 29.10: an ammo missile's object skin (a thrown weapon's texture, AmmoMissile.ts).
+            ...(instance.objectSkin ? { slots: new Map([[TEXTURE_TYPE_OBJECT_SKIN, instance.objectSkin]]) } : {}),
             loadTexture: (url) => this.#acquireSpellTexture(visual, url),
             borrowLoadedTextures: true,
             privateLoadedTextureViews: true,

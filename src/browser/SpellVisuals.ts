@@ -159,6 +159,11 @@ export interface VisualInstance {
    * buff still does. Its model and particles are drawn as before.
    */
   noLight?: true;
+  /**
+   * 29.10: the texture of the model's object-skin slot (M2Texture type 2), for a missile flying the cast's ammo — a
+   * thrown weapon's skin; Wow.exe 0x004eab50 sets it with `FUN_00825260(2, …)` (AmmoMissile.ts).
+   */
+  objectSkin?: string;
 }
 
 export type VisualAnimationMode = "once" | "hold";

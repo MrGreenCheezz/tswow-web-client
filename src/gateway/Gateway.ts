@@ -44,6 +44,7 @@ import { serveShipPathRoute } from "./TransportShipPaths.js";
 import { serveGameObjectModelsRoute } from "./GameObjectModels.js";
 import { serveGameObjectVolumesRoute, type ConvexVolumeReader } from "./GameObjectVolumes.js"; // 05.10-11.01
 import { serveNpcWeaponsRoute } from "./NpcWeapons.js"; // 05.10-A7a-B 6.02
+import { serveAmmoModelsRoute } from "./AmmoModels.js"; // 29.10
 import { CURRENCY_CATALOG_VERSION, loadCurrencyCatalog } from "./CurrencyCatalog.js";
 import { ACHIEVEMENT_CATALOG_VERSION, loadAchievementCatalog } from "./AchievementMetadata.js";
 import { loadReputationMetadata } from "./ReputationMetadata.js";
@@ -3077,6 +3078,8 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
     if (await serveGameObjectModelsRoute(request, response, url, indexes.catalogs ??= new Map(), options)) return;
     // 05.10-11.01: display id → WMO convex volume (MCVP) for leaving a transport in the air (GameObjectVolumes.ts).
     if (await serveGameObjectVolumesRoute(request, response, url, indexes.catalogs ??= new Map(), options)) return;
+    // 29.10: a SPELL_GO ammo pair (display, inventory type) → the model it flies as (AmmoModels.ts).
+    if (await serveAmmoModelsRoute(request, response, url, indexes.catalogs ??= new Map(), options)) return;
     // 05.10-A7a-B 6.02: a creature's UNIT_VIRTUAL_ITEM_SLOT_ID entries → held models via Item.dbc (NpcWeapons.ts).
     if (await serveNpcWeaponsRoute(request, response, url, indexes.catalogs ??= new Map(), options,
       () => indexes.characterAppearance ??= CharacterAppearanceIndex.load(options.dbcDirectory!, characterTextures(),
