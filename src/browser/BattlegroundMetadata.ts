@@ -1,3 +1,5 @@
+import { fetchCatalogJson } from "./CatalogFetch.js";
+
 /** The seven 3.3.5 battleground rows this client can present. */
 export const BATTLEGROUND_TYPE_IDS = Object.freeze([1, 2, 3, 7, 9, 30, 32] as const);
 
@@ -23,8 +25,6 @@ export interface BattlegroundMetadata {
 }
 
 export type BattlegroundCatalog = readonly BattlegroundMetadata[];
-
-const BATTLEGROUND_CATALOG_TIMEOUT_MS = 5_000;
 
 function validMap(value: unknown): value is BattlegroundMap {
   if (!value || typeof value !== "object") return false;
@@ -95,12 +95,8 @@ export class BattlegroundClient {
     if (this.#pending) return this.#pending;
     if (this.#failed) return Promise.resolve(undefined);
     this.#pending = (async () => {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), BATTLEGROUND_CATALOG_TIMEOUT_MS);
       try {
-        const response = await fetch(this.#url, { signal: controller.signal });
-        if (!response.ok) throw new Error(`Battleground gateway returned ${response.status}`);
-        const catalog = validateCatalog(await response.json());
+        const catalog = validateCatalog(await fetchCatalogJson(this.#url, "Battleground"));
         this.#catalog = catalog;
         this.onLoaded?.();
         return catalog;
@@ -109,7 +105,6 @@ export class BattlegroundClient {
         this.onStatus?.(`поля боя: ${error instanceof Error ? error.message : String(error)}`, true);
         return undefined;
       } finally {
-        clearTimeout(timeout);
         this.#pending = undefined;
       }
     })();

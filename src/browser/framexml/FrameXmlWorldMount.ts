@@ -116,7 +116,10 @@ import { frameXmlRealmPlayerKilling, frameXmlResolveZone } from "./FrameXmlZoneI
 import { hideFrameXmlRuneFrame } from "./FrameXmlRunes.js";
 import { fetchFrameXmlWorldStates } from "./FrameXmlWorldStates.js";
 import { mailDraftAttachments } from "../ui/Mail.js";
-import { openCalendar, openNativeCalendar, toggleCalendar } from "../ui/Calendar.js";
+import { closeCalendar, openCalendar, openNativeCalendar, toggleCalendar } from "../ui/Calendar.js";
+import { closeArenaWindow } from "../ui/ArenaWindow.js";
+import { closeProfessionList } from "../ui/Professions.js";
+import { closeReputation } from "../ui/Reputation.js";
 import { FrameXmlCalendarCatalogClient, installFrameXmlCalendarRoutes, mountFrameXmlCalendar } from "./FrameXmlCalendarOwner.js";
 import { closeWorldMap, toggleWorldMap } from "../ui/WorldMap.js";
 import { frameXmlWorldMapGate } from "./FrameXmlWorldMapController.js";
@@ -250,9 +253,9 @@ import { mountFrameXmlNpcWindows } from "./FrameXmlGossipNpcMount.js";
 import { showMail as showNativeMail } from "../ui/Mail.js";
 import { showTrade as showNativeTrade } from "../ui/Social.js";
 import { LfgDungeonClient } from "../LfgDungeons.js";
-import { openSettingsSection } from "../ui/Settings.js";
-import { keyBindingsOpen, toggleKeyBindingsWindow } from "../ui/KeyBindings.js";
-import { macroWindowOpen, toggleMacroWindow } from "../ui/Macros.js";
+import { closeSettingsWindow, openSettingsSection } from "../ui/Settings.js";
+import { closeKeyBindingsWindow, keyBindingsOpen, toggleKeyBindingsWindow } from "../ui/KeyBindings.js";
+import { closeMacroWindow, macroWindowOpen, toggleMacroWindow } from "../ui/Macros.js";
 import { openNativeKeyBindingsWindow } from "../ui/KeyBindings.js";
 import { frameXmlMacroStore, openMacroWindow, openNativeMacroWindow } from "../ui/Macros.js";
 import { runAction } from "../input/Actions.js";
@@ -3146,12 +3149,14 @@ export async function mountFrameXmlVertical(
   // PVPBattlegroundFrame_OnLoad reads GetNumBattlegroundTypes immediately. Load the complete
   // catalog before boot so a temporary empty callback cannot hide tab 2 and strand the owner.
   const battlegrounds = options.battlegrounds ?? (options.seam ? undefined : new FrameXmlBattlegroundClient(origin));
-  if (battlegrounds) await battlegrounds.load();
   // LFGDungeonList_Setup (LFGFrame.lua:375-386) reads the dungeon catalog once per session, on the
   // first LFDQueueFrame_Update — possibly during the session exercise. Load it before boot like the
   // battleground list; a failed or version-1 answer keeps the stock finder unpublished (native LFG).
   const lfgDungeons = options.seam || options.addonsOnly ? undefined : new LfgDungeonClient(origin);
-  if (lfgDungeons) await lfgDungeons.load();
+  // Side by side: each may take its time at world entry (CatalogFetch.ts), and neither helps the other.
+  await Promise.all([battlegrounds?.load(), lfgDungeons?.load()]);
+  if (battlegrounds && !battlegrounds.ready) console.warn("[FrameXML] /dbc/battlegrounds did not load; the stock battleground windows stay unpublished");
+  if (lfgDungeons && !lfgDungeons.ready) console.warn("[FrameXML] /dbc/lfg-dungeons did not load; the stock dungeon finder stays unpublished");
   const worldStateUi = options.seam ? undefined : await fetchFrameXmlWorldStates(origin).catch((error) => {
     console.warn(`WorldStateUI catalog is unavailable: ${String(error)}`);
     return undefined;
@@ -4509,6 +4514,11 @@ export async function mountFrameXmlVertical(
         hide: () => { boot.bridge.Hide(frame); },
       });
     }
+    // The owner's report (01.11): a native window opened while the corpus loaded (world entry, ReloadUI's
+    // remount) stayed up beside the stock one that had taken its route. These close here, as the scoreboard,
+    // help, game menu, finder and social windows below do.
+    if (resources.characterOwner) closeReputation();
+    if (resources.characterOwner || resources.spellbookFrame) closeProfessionList();
     if (resources.characterOwner) {
       resources.nativeCharacterWasHidden = characterWindow.hidden;
       characterWindow.hidden = true;
@@ -4533,6 +4543,7 @@ export async function mountFrameXmlVertical(
     // Blizzard_GuildBankUI likewise: the first banker visit loads it; the native window stays until its gate.
     resources.guildBankCleanup = mountFrameXmlGuildBank(seam, boot, renderer);
     if (resources.pvpOwner) {
+      if (resources.pvpOwner.showArena) closeArenaWindow();
       resources.pvpOwnerCleanup = publishFrameXmlPvp(resources.pvpOwner);
     }
     if (resources.scoreboardOwner) {
@@ -4559,6 +4570,9 @@ export async function mountFrameXmlVertical(
     // Blizzard_MacroUI and Blizzard_BindingUI are LoD: nothing loads until the first open, and the
     // native macro and binding windows stay the fallback until each stock gate passes.
     if (!options.addonsOnly) {
+      closeMacroWindow();
+      closeKeyBindingsWindow();
+      closeCalendar();
       resources.macroBindingWindowsCleanup = mountFrameXmlMacroBindingWindows(seam, boot, renderer, {
         openMacros: openMacroWindow,
         openNativeMacros: openNativeMacroWindow,
@@ -4574,6 +4588,7 @@ export async function mountFrameXmlVertical(
     // The options chain loads on the first «Изображение»/«Звук»/«Интерфейс» or /settings, not at boot
     // (FRAMEXML_OPTIONS_TOC); the native settings window stays the fallback until its gate passes.
     if (!options.addonsOnly) {
+      closeSettingsWindow();
       resources.optionsCleanup = mountFrameXmlOptions(boot, renderer,
         frameXmlLiveOptionsHost(() => !document.body.classList.contains(NATIVE_CHAT_REPLACEMENT_CLASS)));
     }

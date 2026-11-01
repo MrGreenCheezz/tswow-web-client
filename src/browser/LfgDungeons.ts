@@ -1,3 +1,5 @@
+import { fetchCatalogJson } from "./CatalogFetch.js";
+
 /** Browser projection of the gateway's `LFGDungeons` catalog. Queue eligibility stays server-owned. */
 export interface LfgDungeon {
   readonly id: number;
@@ -42,7 +44,6 @@ export interface LfgDungeonGroupRow {
  */
 export const LFG_DUNGEON_CATALOG_VERSION = 2;
 
-const LFG_DUNGEON_CATALOG_TIMEOUT_MS = 5_000;
 const MAX_DUNGEON_ID = 0x00ffffff;
 
 function validRow(value: unknown): value is LfgDungeon {
@@ -290,14 +291,10 @@ export class LfgDungeonClient {
     if (this.#pending) return this.#pending;
     if (this.#failed) return Promise.resolve(undefined);
     this.#pending = (async () => {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), LFG_DUNGEON_CATALOG_TIMEOUT_MS);
       try {
         // Revalidated, never served from freshness: the gateway sends a content ETag, so an unchanged
         // dataset costs a 304 while a body cached from the previous catalog shape is not reused.
-        const response = await fetch(this.#url, { signal: controller.signal, cache: "no-cache" });
-        if (!response.ok) throw new Error(`LFG gateway returned ${response.status}`);
-        const body: unknown = await response.json();
+        const body = await fetchCatalogJson(this.#url, "LFG", { init: { cache: "no-cache" } });
         const catalog = validateCatalog(body);
         this.#groups = validateGroups(body);
         this.#catalog = catalog;
@@ -308,7 +305,6 @@ export class LfgDungeonClient {
         this.onStatus?.(`подземелья: ${error instanceof Error ? error.message : String(error)}`, true);
         return undefined;
       } finally {
-        clearTimeout(timeout);
         this.#pending = undefined;
       }
     })();

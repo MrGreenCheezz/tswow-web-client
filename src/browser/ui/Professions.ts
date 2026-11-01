@@ -229,6 +229,11 @@ export function professionsOpen(): boolean {
   return [...craftPanels.values()].some((parts) => parts.panel.visible);
 }
 
+/** The list alone: an open craft window and its queue are not the stock window's business. */
+export function closeProfessionList(): void {
+  professionListPanel?.hide();
+}
+
 export function closeProfessions(): void {
   for (const unsubscribe of craftSubscriptions) unsubscribe();
   craftSubscriptions = [];
