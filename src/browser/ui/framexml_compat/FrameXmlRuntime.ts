@@ -1677,7 +1677,10 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
           const level = frameXmlAttribute(layer, "level")?.trim().toUpperCase() ?? "ARTWORK";
           let sub = 0;
           for (const child of layer.children) {
-            if (!isWidget(child) || isVirtual(child)) continue;
+            // No isVirtual here: `virtual` makes a template of a file-level declaration. A region in a
+            // frame's <Layer> is that frame's region whatever it says — WCollections' ModelControlButtonTemplate
+            // has <Texture parentKey="icon" virtual="true"> and every button's OnLoad reads self.icon.
+            if (!isWidget(child)) continue;
             const built = this.buildElement(child, frame);
             const mutable = this.own(built);
             if (!mutable) continue;

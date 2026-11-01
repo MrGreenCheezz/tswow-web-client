@@ -4341,7 +4341,8 @@ function parseEquipment(spec: string): { slot: number; inventoryType: number; di
 function validTexturePath(value: string): boolean {
   // Parentheses are in five real filenames the client ships, all PvP shoulder textures spelt
   // `..._B_01Gold(Left).blp`. They are ordinary characters in a path, not a traversal risk.
-  return validAssetPath(value, { extensions: ["blp"] });
+  // So is the bang of an add-on's `!UI-Frame`, which used to answer 400 (01.11).
+  return validAssetPath(value, { extensions: ["blp"], allowBang: true });
 }
 
 /** A path that could name a sound inside the archives. */

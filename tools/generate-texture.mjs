@@ -11,6 +11,7 @@ import { access, mkdir } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { blpToPng } from "./blp-png.mjs";
+import { tgaToPng } from "./tga-png.mjs";
 import { clientArchives } from "./mpq.mjs";
 import { clientDirectory } from "./paths.mjs";
 import { stampGenerated, stampSidecar, writeFileAtomic } from "./source-stamp.mjs";
@@ -69,7 +70,8 @@ export function textureDirectory() {
  * child processes per path per session.
  */
 export function validTexturePath(value) {
-  return validAssetPath(value, { extensions: ["blp"] });
+  // The bang as on the route: an add-on's `!UI-Frame` is an ordinary file name (Gateway.ts validTexturePath).
+  return validAssetPath(value, { extensions: ["blp"], allowBang: true });
 }
 
 export async function publishTexture(mpqPath, archives) {
@@ -86,16 +88,23 @@ export async function publishTexture(mpqPath, archives) {
   } catch {
     // Not published yet, or published before it carried a stamp.
   }
-  const blp = await archives.read(mpqPath);
-  if (!blp) throw new SourceMissing(`${mpqPath} is not in the client`);
-  const png = blpToPng(blp);
+  // The route's name is always the .blp; Wow.exe takes the .tga when the chain holds no .blp, and a loose
+  // add-on can ship either (WCollections has both, named without an extension: tga-png.mjs).
+  let source = mpqPath;
+  let bytes = await archives.read(source);
+  if (!bytes) {
+    source = mpqPath.replace(/\.blp$/i, ".tga");
+    bytes = await archives.read(source);
+  }
+  if (!bytes) throw new SourceMissing(`${mpqPath} is not in the client`);
+  const png = source === mpqPath ? blpToPng(bytes) : tgaToPng(bytes);
   await mkdir(dirname(destination), { recursive: true });
   // Renamed into place: the texture worker and the model worker can publish the same picture at
   // once while the route is reading it (see `writeFileAtomic`).
   await writeFileAtomic(destination, png);
   // Which copy of the BLP this came from, so a module that replaces it is not served this one for
   // the rest of the machine's life: the key is the path, and the path did not change.
-  await stampGenerated(destination, archives, { paths: [mpqPath] });
+  await stampGenerated(destination, archives, { paths: [source] });
   return { destination, cached: false, bytes: png.length };
 }
 

@@ -73,7 +73,9 @@ function resolveTexturePath(reference: string): string {
   const absolute = normalizedHttpTextureUrl(trimmed);
   if (absolute !== undefined) return absolute;
 
-  const path = trimmed.replaceAll("/", "\\");
+  // A doubled separator names the same file (Wow.exe's file layer folds them): WCollections writes
+  // `[[Interface\AddOns\WCollections\Interface\\FrameGeneral\UI-Frame]]` in a long string.
+  const path = trimmed.replace(/[\\/]+/g, "\\");
   if (path === "") return "";
   const cut = path.lastIndexOf("\\");
   const leaf = path.slice(cut + 1);
