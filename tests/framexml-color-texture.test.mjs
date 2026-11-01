@@ -72,6 +72,12 @@ const PORTRAITS = `<Ui>
       <Layer level="BACKGROUND">
         <Texture name="UnitBackground"><Size x="119" y="41"/><Anchors><Anchor point="TOPLEFT"/></Anchors>
           <Color r="0" g="0" b="0" a="0.5"/></Texture>
+        <Texture name="UnitGlow"><Size x="50" y="50"/><Anchors><Anchor point="BOTTOM"/></Anchors>
+          <Color r="1" g="1" b="1"/>
+          <Gradient orientation="VERTICAL">
+            <MinColor r="0.23" g="0.19" b="0"/>
+            <MaxColor r="0" g="0" b="0"/>
+          </Gradient></Texture>
       </Layer>
       <Layer level="ARTWORK">
         <Texture name="UnitPortrait"><Size x="64" y="64"/><Anchors><Anchor point="TOPRIGHT"/></Anchors></Texture>
@@ -123,6 +129,11 @@ test("a vertex colour on a file-less Texture draws nothing; a colour texture fil
     assert.match(background.style.backgroundColor, /^rgba\(0, 0, 0/);
     assert.equal(background.style.opacity, "0.5");
     assert.equal(background.getAttribute("data-framexml-blank"), null);
+
+    // A <Gradient> replaces the <Color> beneath it (WCollections' GlowBoxTemplate: white, then dark).
+    const glow = element("UnitGlow");
+    assert.equal(glow.style.backgroundColor ?? "", "", "no white fill under the gradient");
+    assert.match(glow.style.backgroundImage, /^linear-gradient\(to top, rgba?\(59, 48, 0/);
     assert.equal(loaded.errorCount, 0);
   } finally {
     renderer.destroy();

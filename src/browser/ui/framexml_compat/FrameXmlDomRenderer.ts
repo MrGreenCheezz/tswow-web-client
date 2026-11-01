@@ -3522,11 +3522,14 @@ export class FrameXmlDomRenderer {
       element.style.removeProperty("background-color");
     }
     if (frame.gradient) {
-      element.style.setProperty(
-        "--framexml-gradient",
-        `linear-gradient(${frame.gradient.orientation === "VERTICAL" ? "to top" : "to right"}, `
-          + `${cssColor(frame.gradient.min)}, ${cssColor(frame.gradient.max)})`,
-      );
+      const gradient = `linear-gradient(${frame.gradient.orientation === "VERTICAL" ? "to top" : "to right"}, `
+        + `${cssColor(frame.gradient.min)}, ${cssColor(frame.gradient.max)})`;
+      element.style.setProperty("--framexml-gradient", gradient);
+      // `<Gradient>` sets the corners' colours, which is what a file-less Texture draws: the `<Color>` above
+      // it is replaced, not multiplied. Nothing read the property, so WCollections' GlowBoxTemplate
+      // (a white `<Color>` under a dark gradient) came out as a white box over the action bar.
+      element.style.backgroundImage = source ? "" : gradient;
+      if (!source) element.style.backgroundColor = "";
     }
     // A Texture with neither a picture nor a colour draws nothing in the original; here it is an
     // `<img>` with no `src`, and a sized one of those is drawn by the browser as its own broken
