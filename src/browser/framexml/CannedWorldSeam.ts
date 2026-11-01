@@ -2947,6 +2947,10 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
     return this.#questRewardItemInfo(this.#questReward(questIndex)?.rewardChoiceItems?.[itemIndex - 1]);
   }
 
+  questLogItemLink(_type: unknown, _itemIndex: number): string | undefined {
+    return undefined;
+  }
+
   questLogRewardSpell(index?: number): FrameXmlQuestRewardSpell | undefined {
     const spell = this.#questReward(index)?.rewardDisplaySpell;
     if (!spell || !Number.isInteger(spell.spellId) || spell.spellId <= 0

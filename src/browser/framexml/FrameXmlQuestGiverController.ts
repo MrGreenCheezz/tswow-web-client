@@ -57,8 +57,10 @@ export function notifyFrameXmlQuestGiver(world: FrameXmlQuestGiverWorld): boolea
   const current = published;
   if (!current || current.owner.world !== world || current.owner.currentWorld() !== world) return false;
   const page = captureFrameXmlQuestSnapshot(world);
+  // One page stock has no rows for is the native dialog's, that page only: the next one is stock's again.
   if (!frameXmlQuestGiverPageSupported(page)) {
-    fail(current);
+    try { current.owner.dispose(); } catch { /* the native dialog still gets this page */ }
+    current.previous = undefined;
     return false;
   }
   const event = frameXmlQuestLifecycleEvent(current.previous, page);

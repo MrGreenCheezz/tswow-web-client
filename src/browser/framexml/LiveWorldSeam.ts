@@ -5359,6 +5359,7 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
             ...(cached[4] === undefined ? {} : { isUsable: cached[4] }),
           } : undefined;
         },
+        link: (itemId) => this.#merchantTemplateLink(itemId),
         spell: (spellId) => {
           const cached = this.#context.spell(spellId);
           const known = Array.isArray(world.knownSpells)
@@ -5859,6 +5860,15 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
   questLogChoiceInfo(itemIndex: number, questIndex?: number): FrameXmlQuestItemInfo | undefined {
     if (!Number.isInteger(itemIndex) || itemIndex < 1) return undefined;
     return this.#questItemInfo(this.#questReward(questIndex)?.rewardChoiceItems?.[itemIndex - 1]);
+  }
+
+  /** GetQuestLogItemLink's reward and choice rows, the selected quest's (QuestInfo.xml, QuestLogFrame.xml). */
+  questLogItemLink(type: unknown, itemIndex: number): string | undefined {
+    if (!Number.isInteger(itemIndex) || itemIndex < 1) return undefined;
+    const quest = this.#questReward(undefined);
+    const rows = type === "reward" ? quest?.rewardItems : type === "choice" ? quest?.rewardChoiceItems : undefined;
+    const item = rows?.[itemIndex - 1];
+    return item ? this.#merchantTemplateLink(item.itemId) : undefined;
   }
 
   questLogRewardSpell(index?: number): FrameXmlQuestRewardSpell | undefined {

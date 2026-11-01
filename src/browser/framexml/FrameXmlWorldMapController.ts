@@ -93,9 +93,10 @@ export function frameXmlWorldMapGate(
     if (!(toggle instanceof GlueLuaRef) || !(show instanceof GlueLuaRef)
       || !(hide instanceof GlueLuaRef)) return unavailable("UIParent map panel functions");
     const call = (fn: GlueLuaRef, expected: boolean): void => {
-      const errors = boot.errorCount;
       boot.vm.call(fn, [root], 0);
-      if (boot.errorCount !== errors || boot.bridge.isVisible(root) !== expected) {
+      // Whether the map moved, not whose handler raised on the way: an add-on's OnShow hook failing is its
+      // own error (Wow.exe), and must not hand the session's map to the native panel (01.11).
+      if (boot.bridge.isVisible(root) !== expected) {
         throw new Error(`stock WorldMapFrame ${expected ? "open" : "close"} did not complete`);
       }
     };

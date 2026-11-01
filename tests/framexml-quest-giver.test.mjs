@@ -205,7 +205,7 @@ test("item cache edges repaint an open page once per revision without opening a 
   } finally { release(); }
 });
 
-test("unsupported stock row counts demote to native and stale world cannot take the route", () => {
+test("an unsupported row count is native for that page only, and a stale world cannot take the route", () => {
   const f = fixture();
   const release = publishFrameXmlQuestGiver(f.owner);
   try {
@@ -213,8 +213,10 @@ test("unsupported stock row counts demote to native and stale world cannot take 
     f.world.questList = { quests: Array.from({ length: 33 }, () => ({})) };
     assert.equal(frameXmlQuestGiverPageSupported(f.world), false);
     assert.equal(notifyFrameXmlQuestGiver(f.world), false);
-    assert.equal(f.failures, 1);
+    assert.equal(f.failures, 0, "one page is no reason to give the session to the native dialog");
     assert.equal(notifyFrameXmlQuestGiver(f.world), false);
+    f.world.questList = { quests: [{}] };
+    assert.equal(notifyFrameXmlQuestGiver(f.world), true, "the next page is stock's again");
   } finally { release(); }
 });
 }

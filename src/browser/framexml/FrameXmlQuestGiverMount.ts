@@ -61,8 +61,6 @@ export function createFrameXmlQuestGiverMountOwner(
     QUEST_COMPLETE: structure.reward,
   } as const;
   const render = (event: FrameXmlQuestLifecycleEvent | "QUEST_ITEM_UPDATE"): boolean => {
-    const beforeErrors = boot.errorCount;
-    const beforeDiagnostics = boot.bridge.diagnostics.length;
     // The selected client's HideUIPanel may hide the root inside QUEST_FINISHED itself. Suppress
     // CloseQuest for the entire event, including its OnHide, when the server already ended it.
     const previous = suppressClose;
@@ -74,7 +72,10 @@ export function createFrameXmlQuestGiverMountOwner(
         if (event === "QUEST_FINISHED") boot.bridge.Hide(frame);
       });
     } finally { suppressClose = previous; }
-    if (boot.errorCount !== beforeErrors || boot.bridge.diagnostics.length !== beforeDiagnostics) return false;
+    // Whether the page came up, and nothing else (the owner's report, 01.11): every frame registered for
+    // the event runs inside this fire, add-ons' included. WCollections' row hook raising once used to hand
+    // the giver's whole session to the native dialog, so quests with reward items left the stock interface
+    // and the others did not. As in Wow.exe, somebody's handler failing is that handler's error.
     if (event === "QUEST_FINISHED") return !boot.bridge.isVisible(frame);
     if (!boot.bridge.isVisible(frame)) return false;
     return event === "QUEST_ITEM_UPDATE" || boot.bridge.isVisible(panels[event]);

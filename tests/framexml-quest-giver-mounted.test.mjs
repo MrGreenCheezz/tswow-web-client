@@ -182,6 +182,25 @@ test("selected MPQ QuestFrame renders all four packet pages and closes without a
     setPage(undefined, { kind: "details", guid: 0x700n, informGuid: 0n,
       questId: 45, title: "Четвёртое задание", details: "Описание", objectives: "Цель",
       autoLaunched: false, flags: 0, suggestedPlayers: 0, rewards: { ...rewardFields } });
+    // An add-on's handler raising on the page's event (WCollections' row hook did, through a C API it
+    // expects) is that handler's error: the page stays stock's for this and every later quest.
+    const raised = boot.errors.length;
+    assert.equal(boot.vm.execute(`
+      local addon = CreateFrame("Frame")
+      addon:RegisterEvent("QUEST_DETAIL")
+      addon:SetScript("OnEvent", function() error("an add-on's bug") end)
+    `, "@addon").ok, true);
+    setPage(undefined, undefined);
+    setPage(undefined, { kind: "details", guid: 0x700n, informGuid: 0n,
+      questId: 46, title: "Пятое задание", details: "Описание", objectives: "Цель",
+      autoLaunched: false, flags: 0, suggestedPlayers: 0, rewards: { ...rewardFields } });
+    assert.ok(boot.errors.length > raised, "the add-on really raised");
+    assert.equal(panel("QuestFrameDetailPanel"), true);
+    setPage(undefined, undefined);
+    setPage(undefined, { kind: "details", guid: 0x700n, informGuid: 0n,
+      questId: 47, title: "Шестое задание", details: "Описание", objectives: "Цель",
+      autoLaunched: false, flags: 0, suggestedPlayers: 0, rewards: { ...rewardFields } });
+    assert.equal(panel("QuestFrameDetailPanel"), true);
     release();
     assert.equal(cancels, 2, "forced mount teardown preserves the packet page");
     assert.ok(hides >= 7);

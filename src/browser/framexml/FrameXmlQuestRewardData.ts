@@ -6,6 +6,8 @@ import type {
 /** Cached host data only. These callbacks must not start a query while Lua is painting a row. */
 export interface FrameXmlQuestRewardMetadata {
   item(itemId: number, displayId: number): FrameXmlQuestItemMetadata | undefined;
+  /** The item's template chat link; a quest row names an item, it is no instance. */
+  link?(itemId: number): string | undefined;
   spell?(spellId: number): FrameXmlQuestRewardSpell | undefined;
   title?(titleId: number): string | undefined;
   /** Override for a host with different honor wire units. */
@@ -79,7 +81,7 @@ function itemInfo(
  * QuestFrame owner still needs its full event/command gate before it can replace the native dialog.
  */
 export const FRAMEXML_QUEST_REWARD_DATA_BINDINGS: Readonly<Record<
-  | "GetNumQuestRewards" | "GetNumQuestChoices" | "GetQuestItemInfo"
+  | "GetNumQuestRewards" | "GetNumQuestChoices" | "GetQuestItemInfo" | "GetQuestItemLink"
   | "GetRewardMoney" | "GetRewardHonor" | "GetRewardArenaPoints"
   | "GetRewardTalents" | "GetRewardXP" | "GetRewardTitle" | "GetRewardSpell",
   QuestRewardDataBinding
@@ -87,6 +89,12 @@ export const FRAMEXML_QUEST_REWARD_DATA_BINDINGS: Readonly<Record<
   GetNumQuestRewards: (dialog) => value(rewards(dialog)?.items.length),
   GetNumQuestChoices: (dialog) => value(rewards(dialog)?.choices.length),
   GetQuestItemInfo: itemInfo,
+  // QuestInfo.xml's and QuestFrameTemplates.xml's modified click, and any add-on painting a row.
+  GetQuestItemLink: (dialog, args, metadata) => {
+    const item = questItem(dialog, args[0], args[1]);
+    const link = item && item.id > 0 ? metadata.link?.(item.id) : undefined;
+    return link ? [link] : NOTHING;
+  },
   GetRewardMoney: (dialog) => value(rewards(dialog)?.money),
   GetRewardHonor: (dialog, _args, metadata) => {
     const wireHonor = rewards(dialog)?.honor;

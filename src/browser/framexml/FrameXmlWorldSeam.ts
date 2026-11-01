@@ -2161,6 +2161,8 @@ export interface FrameXmlWorldSeam {
   questLogRewardInfo(itemIndex: number, questIndex?: number): FrameXmlQuestItemInfo | undefined;
   /** One choice reward item, or nil while its cached item metadata is unresolved. */
   questLogChoiceInfo(itemIndex: number, questIndex?: number): FrameXmlQuestItemInfo | undefined;
+  /** GetQuestLogItemLink(type, index) for the selected quest; undefined is Lua's nil. */
+  questLogItemLink(type: unknown, itemIndex: number): string | undefined;
   /** The selected quest's display spell, or nil while spell metadata is unresolved. */
   questLogRewardSpell(index?: number): FrameXmlQuestRewardSpell | undefined;
   /** Positive signed quest money; a negative wire value is exposed by requiredMoney instead. */
@@ -3013,6 +3015,10 @@ export const FRAMEXML_SEAM_BINDINGS: Readonly<Record<string, FrameXmlSeamBinding
   GetQuestLogChoiceInfo: (seam, args) => {
     const row = seam.questLogChoiceInfo(slotOf(args[0]), questIndexOf(args[1]));
     return row === undefined ? NOTHING : [...row];
+  },
+  GetQuestLogItemLink: (seam, args) => {
+    const link = seam.questLogItemLink(args[0], slotOf(args[1]));
+    return link === undefined ? NOTHING : [link];
   },
   GetQuestLogRewardSpell: (seam, args) => {
     const row = seam.questLogRewardSpell(questIndexOf(args[0]));
