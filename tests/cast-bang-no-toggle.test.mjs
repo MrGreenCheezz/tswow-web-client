@@ -59,7 +59,7 @@ async function hunter() {
     "../game/Context.js": { game },
     "../Inventory.js": { playerInventory: () => undefined },
     "../../world/Fields.js": fields,
-    "./Spellbook.js": { castSpell: (...args) => { casts.push(args[0]); return true; } },
+    "./SpellCast.js": { castSpell: (...args) => { casts.push(args[0]); return true; } },
     "../game/GroundTarget.js": { requestInventoryItemUse() {} },
     "./MacroModel.js": macroModel,
     "./Chat.js": { systemLine: (line) => lines.push(line) },

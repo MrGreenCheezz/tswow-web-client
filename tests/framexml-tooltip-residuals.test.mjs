@@ -36,7 +36,7 @@ function SetTooltipMoney() SetTooltipMoneyCalls = (SetTooltipMoneyCalls or 0) + 
 Clicks = {}
 `;
 
-/** The stock spell rows `Spellbook.stockSpellTooltip` hands over, with the rank on the right. */
+/** The stock spell rows `SpellTooltip.stockSpellTooltip` hands over, with the rank on the right. */
 const FIREBALL = {
   title: "Огненный шар", titleRight: "Уровень 1",
   lines: [

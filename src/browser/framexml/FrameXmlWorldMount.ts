@@ -13,8 +13,8 @@ import { globalCooldownView } from "../game/PredictedGlobalCooldown.js"; // L13-
 import { reactionBetween, setFocusGuid, unitReactionToPlayer } from "../game/Targeting.js";
 import { rankOfReaction, unitRankTowardsPlayer, unitReputationFaction } from "../game/UnitStandingRank.js"; // 3.12, 4.04 (13.10)
 import { attackReactionTo, canAssistUnit, canAttackUnit } from "../game/Targeting.js"; // 4.04 (13.10)
-import { castSpell } from "../ui/Spellbook.js";
-import { getActionBarPage, turnActionPage, useSlot } from "../ui/ActionBar.js";
+import { castSpell } from "../ui/SpellCast.js";
+import { getActionBarPage, turnActionPage, useSlot } from "../ui/ActionSlots.js";
 import { ensureSpellNames } from "../ui/SpellNames.js";
 import { playNamedUiSound } from "../game/GameSounds.js";
 import { setSetting, settings, watchSettingsApplied } from "../ui/Settings.js";
@@ -117,7 +117,6 @@ import { fetchFrameXmlWorldStates } from "./FrameXmlWorldStates.js";
 import { closeCalendar } from "../ui/Calendar.js";
 import { openFrameXmlCalendar, toggleFrameXmlCalendar } from "./FrameXmlCalendarController.js";
 import { closeArenaWindow } from "../ui/ArenaWindow.js";
-import { closeProfessionList } from "../ui/Professions.js";
 import { closeReputation } from "../ui/Reputation.js";
 import { FrameXmlCalendarCatalogClient, installFrameXmlCalendarRoutes, mountFrameXmlCalendar } from "./FrameXmlCalendarOwner.js";
 import { closeWorldMap } from "../ui/WorldMap.js";
@@ -4351,7 +4350,6 @@ export async function mountFrameXmlVertical(
     // remount) stayed up beside the stock one that had taken its route. These close here, as the scoreboard,
     // help, game menu, finder and social windows below do.
     if (resources.characterOwner) closeReputation();
-    if (resources.characterOwner || resources.spellbookFrame) closeProfessionList();
     if (resources.characterOwner) {
       resources.nativeCharacterWasHidden = characterWindow.hidden;
       characterWindow.hidden = true;

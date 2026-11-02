@@ -8,7 +8,7 @@ import { // L2 3.11
   NEAREST_ENEMY_PLAYER, NEAREST_FRIEND, NEAREST_FRIEND_PLAYER, type NearestMode,
 } from "../game/TargetNearestModes.js";
 import type { TargetLastKind } from "../game/TargetLast.js"; // L2 3.11
-import { turnActionPage, useSlot } from "../ui/ActionBar.js";
+import { turnActionPage, useSlot } from "../ui/ActionSlots.js";
 import { chatInput, diagnosticsWindow } from "../ui/Dom.js";
 import { showUnhandledOpcodes } from "../ui/Diagnostics.js";
 import { toggleGmConsole } from "../ui/GmConsole.js";
@@ -45,10 +45,10 @@ import { toggleFrameXmlScoreboard } from "../framexml/FrameXmlScoreboardControll
 import { toggleFrameXmlBattlefieldMinimap, toggleFrameXmlMinimap } from "../framexml/FrameXmlBattlefieldMinimapKey.js"; // 05.10-L17t; 3.11
 import { minimapSettings, setMinimapRotation, zoomMinimap } from "../ui/Minimap.js";
 import { pressPetButton } from "../ui/PetCommands.js";
-import { castSpell } from "../ui/Spellbook.js";
+import { castSpell } from "../ui/SpellCast.js";
 import { macroUnitGuid } from "../ui/CombatCommands.js";
 import { setSetting, settingOn } from "../ui/Settings.js";
-import { actionPageViewable, getActionBarPage } from "../ui/ActionBar.js"; // L7 4.16b: actionPageViewable
+import { actionPageViewable, getActionBarPage } from "../ui/ActionSlots.js"; // L7 4.16b: actionPageViewable
 import { stockPageStep } from "../ui/ActionBarStockLayout.js"; // L7 4.16b
 import {
   EQUIPMENT_SLOT_MAINHAND, EQUIPMENT_SLOT_OFFHAND, EQUIPMENT_SLOT_RANGED, nextSheathState, partyMemberTarget,

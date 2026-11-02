@@ -16,7 +16,8 @@ import {
   characterModel, characterWindowTitle, combatStatus, creatureStatus, environmentStatus, gatewayInput,
   element, modelStatus, movementStatus, playerHudName, spellStatus, terrainStatus, worldPanel, worldStatus,
 } from "../ui/Dom.js";
-import { clearSpellbook, loadSpellMetadata, refreshPetSpellbook, showSpells, updateSpellCooldowns } from "../ui/Spellbook.js";
+import { clearSpellbook, refreshPetSpellbook, showSpells, updateSpellCooldowns } from "../ui/Spellbook.js";
+import { forgetSpellMetadataSettled, loadSpellMetadata } from "../ui/SpellData.js";
 import { showTarget } from "../ui/Frames.js";
 import { forgetUnitFrames, showUnitFrames } from "../ui/UnitFrames.js";
 import { bindUnitFrameRefresh } from "../ui/UnitFrameRefresh.js"; // P1-20b
@@ -129,7 +130,8 @@ import { ASSET_WARMUP_BUDGET, SessionAssetWarmup, loadedVisualWarmPaths } from "
 import { showTalents } from "../ui/Talents.js";
 import { resetBarberShop, showBarberShop } from "../ui/BarberShop.js";
 import { channelRosterOpen, resetChannelRoster, showChannelRoster } from "../ui/ChannelRoster.js";
-import { showProfessions, professionCastStatus } from "../ui/Professions.js";
+import { showProfessions } from "../ui/Professions.js";
+import { closeProfessionCraft, professionCastStatus } from "../ui/ProfessionCraft.js";
 import { closeSocketing } from "../ui/Socketing.js";
 import { CollisionSource } from "../game/CollisionSource.js";
 import { attachPredictedGlobalCooldown } from "../game/PredictedGlobalCooldown.js"; // L12 5.30
@@ -140,8 +142,7 @@ import { applyKnockback, isAutoRunning, isWalking, reissueHeldMovement, resetCha
 import { knockbackImpulse } from "../../world/KnockbackImpulse.js";
 import { showUnhandledOpcodes } from "../ui/Diagnostics.js";
 import { createModuleLoader } from "../ui/ModuleClient.js";
-import { showActionBar } from "../ui/ActionBar.js";
-import { upgradeActionBarRanks } from "../ui/ActionBar.js";
+import { refreshActionSlots, upgradeActionBarRanks } from "../ui/ActionSlots.js";
 import {
   bindQuestLogStore, clearQuestLog, requestMissingQuestTemplates, requestQuestPoi, showQuestLog,
   showQuestTracker,
@@ -308,6 +309,8 @@ export async function enterWorld(character: CharacterSummary): Promise<void> {
   combatStatus.textContent = "Кликни по существу в сцене или выбери его в списке.";
   spellStatus.className = "muted";
   spellStatus.textContent = "Ожидание SMSG_INITIAL_SPELLS…";
+  closeProfessionCraft();
+  forgetSpellMetadataSettled();
   clearSpellbook();
   showTarget();
   // Bind visual ownership before the login handshake: the first SPELL_GO, cast start or aura
@@ -605,7 +608,7 @@ export async function enterWorld(character: CharacterSummary): Promise<void> {
   onStoreEvent("PLAYER_TRACK_RESOURCES", () => showTracking());
   world.onSpellsChanged = () => {
     showSpells();
-    showActionBar();
+    refreshActionSlots();
     void loadSpellMetadata(world).then(showCharacterCollections);
   };
   // Slice P4: what the world says to everyone standing in it. The banner an area trigger raises
@@ -752,7 +755,7 @@ export async function enterWorld(character: CharacterSummary): Promise<void> {
   onWorldEvent("FLAG_CARRIERS_CHANGED", () => showScoreboard());
   onWorldEvent("ARENA_TEAM_CHANGED", () => showArenaWindow());
   onWorldEvent("WEATHER_CHANGED", () => queueWorldState(world.state));
-  onWorldEvent("ACTION_BUTTONS_CHANGED", () => showActionBar());
+  onWorldEvent("ACTION_BUTTONS_CHANGED", () => refreshActionSlots());
   // Boss frames, raid marks, the pet bar, member stats, threat (P1-20b): the boss list is edited at
   // once, and the frames are painted by the frame's one world refresh rather than once per packet.
   for (const stop of bindUnitFrameRefresh(world.events, () => queueWorldState(world.state))) entryLifecycle.track(stop);

@@ -2,7 +2,7 @@
  * The stock Blizzard_TradeSkillUI's C API (`Blizzard_TradeSkillUI.lua`) over this client's own
  * profession data: the learned skill lines (`PLAYER_SKILL_INFO_1_1`), the known recipe spells with
  * their `SkillLineAbility` rows (`/dbc/talents`), each recipe's reagents and output (`/dbc/spells`
- * v10+), the carried items, and the native craft queue in `ui/Professions.ts`.
+ * v10+), the carried items, and the craft queue in `ui/ProfessionCraft.ts`.
  *
  * Facts measured against the stock 3.3.5 Lua, this dataset and the active TrinityCore that shape it:
  *
@@ -116,7 +116,7 @@ export interface FrameXmlTradeSkillItemClass {
 }
 
 /**
- * The native craft path (`ui/Professions.ts`), which owns the repeat queue and its cast tracking.
+ * The craft path (`ui/ProfessionCraft.ts`), which owns the repeat queue and its cast tracking.
  * Every verdict stays the server's; these only send, stop and report.
  */
 export interface FrameXmlTradeSkillCraft {
@@ -1122,7 +1122,7 @@ function selfObject(world: FrameXmlTradeSkillWorld): WorldObjectState | undefine
 }
 
 /**
- * The source over the live world: the same reads `ui/Professions.ts` makes (`learnedProfessions`,
+ * The source over the live world: the same reads `ui/ProfessionCraft.ts` makes (`learnedProfessions`,
  * `professionRecipes`, the carried slots), so the stock window and the native one list the same
  * professions and recipes.
  */
@@ -1221,7 +1221,7 @@ export function liveFrameXmlTradeSkillSource(context: FrameXmlTradeSkillLiveCont
       context.enchantName ?? sessionEnchantName),
     craft: context.tradeSkill?.craft,
     token: () => context.world(),
-    // The route ui/Spellbook.ts and input/Actions.ts take from an opener to openProfession.
+    // The route ui/SpellCast.ts and input/Actions.ts take from an opener to openProfession.
     openerSkill: (spell) => professionSpellSkill(spell, context.tradeSkill?.professionData()),
   };
 }

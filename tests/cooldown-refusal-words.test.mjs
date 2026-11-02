@@ -24,8 +24,8 @@ const { SPELL_FAILED_NOT_READY } = await import("../dist/code/world/AutoRepeatRe
 const { setPetSpellAttributesSource } = await import("../dist/code/world/PetCastSpell.js");
 const { ACTION_BUTTON_ITEM, ACTION_BUTTON_SPELL } = await import("../dist/code/world/ActionBarProtocol.js");
 const { game } = await import("../dist/code/browser/game/Context.js");
-const { useSlot } = await import("../dist/code/browser/ui/ActionBar.js");
-const { castSpell } = await import("../dist/code/browser/ui/Spellbook.js");
+const { useSlot } = await import("../dist/code/browser/ui/ActionSlots.js");
+const { castSpell } = await import("../dist/code/browser/ui/SpellCast.js");
 const { LiveWorldSeam } = await import("../dist/code/browser/framexml/LiveWorldSeam.js");
 
 const words = (name) => globalString(name) ?? name;

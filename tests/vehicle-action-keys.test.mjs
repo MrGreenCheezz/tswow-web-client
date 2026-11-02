@@ -3,7 +3,7 @@ import test from "node:test";
 import v8 from "node:v8";
 import vm from "node:vm";
 import { installFakeUiDocument } from "./fixtures/fake-ui-document.mjs";
-import { isolatedModule, isolatedUi } from "./fixtures/isolated-ui.mjs";
+import { isolatedModule, isolatedUi, isolatedActionBar } from "./fixtures/isolated-ui.mjs";
 
 // 11.02-F2: keys 1–= and the native main row while the character drives a vehicle — Wow.exe 3.3.5a's
 // 0x005d4ad0 puts the vehicle's bar (VehicleSpellInitialize, slot words 8…15) on the main bar when the
@@ -187,7 +187,7 @@ async function nativeBar(given, tables) {
     "./IconImage.js": { spellIconUrl: (iconId) => `icon ${iconId}` },
     "./SpellNames.js": { ensureSpellNames: () => {} },
   });
-  const bar = await isolatedUi("ActionBar", {
+  const bar = await isolatedActionBar({
     "../../world/ActionBarProtocol.js": protocol,
     "./ActionDrag.js": await import("../dist/code/browser/ui/ActionDrag.js"),
     "../input/Bindings.js": bindings,
@@ -197,14 +197,16 @@ async function nativeBar(given, tables) {
     "../SpellMetadata.js": spellMetadata,
     "../SpellCastGuard.js": { spellPowerAvailable: () => true },
     "../../world/WorldClient.js": { MELEE_AUTO_ATTACK_SPELL_ID: 6603 },
-    "./Spellbook.js": { castSpell: (id) => { casts.push(id); return true; }, highestKnownRank: (id) => id, spellTooltip: (id) => ({ title: `spell ${id}` }) },
+    "./SpellCast.js": { castSpell: (id) => { casts.push(id); return true; } },
+    "./SpellData.js": { highestKnownRank: (id) => id },
+    "./SpellTooltip.js": { spellTooltip: (id) => ({ title: `spell ${id}` }) },
     "./Dom.js": { actionBar },
     "./Widgets.js": { IconButton, attachTooltip: () => {}, cooldownDuration: () => 0, cooldownLabel: () => "", cooldownView: () => ({ fraction: 0, remaining: 0 }) },
     "./IconImage.js": { spellIconUrl: (iconId) => `icon ${iconId}` },
     "./SpellNames.js": { ensureSpellNames: () => {} },
   });
   const actions = await isolatedModule("browser/input/Actions", {
-    "../ui/ActionBar.js": bar,
+    "../ui/ActionSlots.js": bar,
     "./Bindings.js": bindings,
     "../../world/ActionBarProtocol.js": protocol,
     "../game/Context.js": context,

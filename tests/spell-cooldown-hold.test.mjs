@@ -243,8 +243,9 @@ test("the stock seam answers a held spell as stock does: no cooldown, not enable
 
 test("the native book and bar keep a held spell's press at home", async () => {
   const { game } = await import("../dist/code/browser/game/Context.js");
-  const { castSpell, showSpells, updateSpellCooldowns } = await import("../dist/code/browser/ui/Spellbook.js");
-  const { useSlot } = await import("../dist/code/browser/ui/ActionBar.js");
+  const { showSpells, updateSpellCooldowns } = await import("../dist/code/browser/ui/Spellbook.js");
+  const { castSpell } = await import("../dist/code/browser/ui/SpellCast.js");
+  const { useSlot } = await import("../dist/code/browser/ui/ActionSlots.js");
   const { spellbookList } = await import("../dist/code/browser/ui/Dom.js");
   const { getTip } = await import("../dist/code/browser/ui/Widgets.js");
   const { ACTION_BUTTON_SPELL } = await import("../dist/code/world/ActionBarProtocol.js");
@@ -308,7 +309,7 @@ test("the native book and bar keep a held spell's press at home", async () => {
 test("the native bar greys a held slot with no sweep, and its own press stops there", async () => {
   // ActionBar.ts alone, its imports replaced (the pattern of action-bar-bonus-page.test.mjs): the
   // spellbook's own refusal is out of the picture, so the grey and the refusal are the bar's.
-  const { isolatedUi } = await import("./fixtures/isolated-ui.mjs");
+  const { isolatedUi, isolatedActionBar } = await import("./fixtures/isolated-ui.mjs");
   const protocol = await import("../dist/code/world/ActionBarProtocol.js");
   const context = await import("../dist/code/browser/game/Context.js");
   const { game } = context;
@@ -345,7 +346,7 @@ test("the native bar greys a held slot with no sweep, and its own press stops th
     };
     game.spells = new Map([STEALTH, EVASION].map((id) => [id,
       { id, iconId: id, passive: false, startRecoveryTime: 0, effectAura: [0, 0, 0], effectMiscValue: [0, 0, 0] }]));
-    const bar = await isolatedUi("ActionBar", {
+    const bar = await isolatedActionBar({
       "../../world/ActionBarProtocol.js": protocol,
       "../input/Bindings.js": await import("../dist/code/browser/input/Bindings.js"),
       "../game/Context.js": context,
@@ -355,7 +356,8 @@ test("the native bar greys a held slot with no sweep, and its own press stops th
       "../SpellCastGuard.js": { spellPowerAvailable: () => true, refuseSpellOnCooldown: (_world, id) => refusals.push(id) },
       "../game/ItemUseCooldown.js": await import("../dist/code/browser/game/ItemUseCooldown.js"),
       "../../world/WorldClient.js": { MELEE_AUTO_ATTACK_SPELL_ID: 6603 },
-      "./Spellbook.js": { castSpell: (id) => { casts.push(id); return true; }, highestKnownRank: (id) => id },
+      "./SpellCast.js": { castSpell: (id) => { casts.push(id); return true; } },
+      "./SpellData.js": { highestKnownRank: (id) => id },
       "./Dom.js": { actionBar },
       "./Widgets.js": {
         IconButton, attachTooltip: () => {}, cooldownDuration: () => 0, cooldownLabel: () => "",

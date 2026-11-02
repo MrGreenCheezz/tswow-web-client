@@ -8,7 +8,7 @@ import { element, playerAuras, targetAuras } from "./Dom.js";
 import { attachTooltip } from "./Widgets.js";
 import type { TooltipContent, TooltipLine } from "./TooltipTypes.js";
 import { setIconSource, spellIconUrl } from "./IconImage.js";
-import { spellTooltip } from "./Spellbook.js";
+import { spellTooltip } from "./SpellTooltip.js";
 import { unitAuraAppearances } from "./WindowBindings.js";
 import { NATIVE_LANES_REPLACED, NATIVE_TARGET_CONTEXT_REPLACED, nativeHudReplaced } from "./NativeHudReplacement.js";
 import { debuffTypeBorder } from "./DebuffType.js";

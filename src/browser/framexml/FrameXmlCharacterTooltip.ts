@@ -70,16 +70,16 @@ const FIRST_EQUIPPED_SLOT = 1;
 const LAST_EQUIPPED_SLOT = 19;
 
 /**
- * The spellbook module, once loaded: its stock spell tooltip, and the description context that
- * knows the character's attack power for an item spell's words.
+ * The spell tooltip module (SpellTooltip.ts), once loaded: its stock spell tooltip, and the description
+ * context that knows the character's attack power for an item spell's words.
  *
- * Loaded rather than imported: the spellbook brings the whole native interface with it, which a
- * FrameXML boot without a world never needs. A boot with a world starts loading it when its
+ * Loaded rather than imported: its item words bring the page's tooltip with them, which a FrameXML boot
+ * without a world never needs. A boot with a world starts loading it when its
  * adapter is built, so the first spell hovered is not the one that waits for it. Until it has
  * arrived a spell falls back to its name; the stock action tooltip refreshes itself five times a
  * second, and a link-shaped tooltip is redrawn by {@link spellRefresh} when the module lands.
  */
-let spellbook: typeof import("../ui/Spellbook.js") | undefined;
+let spellbook: typeof import("../ui/SpellTooltip.js") | undefined;
 let spellbookLoading = false;
 
 /**
@@ -121,7 +121,7 @@ export function resetFrameXmlTooltipRedraws(): void {
 function loadSpellbook(): void {
   if (spellbook || spellbookLoading) return;
   spellbookLoading = true;
-  void import("../ui/Spellbook.js").then((module) => { spellbook = module; runSpellRedraws(); },
+  void import("../ui/SpellTooltip.js").then((module) => { spellbook = module; runSpellRedraws(); },
     () => { spellbookLoading = false; });
 }
 

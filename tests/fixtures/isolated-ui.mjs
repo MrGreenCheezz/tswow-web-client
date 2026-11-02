@@ -29,3 +29,14 @@ export async function isolatedModule(path, modules = {}) {
 export function isolatedUi(file, modules) {
   return isolatedModule(`browser/ui/${file}`, modules);
 }
+
+/**
+ * The action slots (ActionSlots.ts) and the HTML rows that draw them (ActionBar.ts), over one table of
+ * replaced imports and wired to each other: both modules' exports, as one object.
+ */
+export async function isolatedActionBar(modules) {
+  const hosts = await isolatedUi("HtmlWindowHosts");
+  const slots = await isolatedUi("ActionSlots", { "./HtmlWindowHosts.js": hosts, ...modules });
+  const rows = await isolatedUi("ActionBar", { "./HtmlWindowHosts.js": hosts, "./ActionSlots.js": slots, ...modules });
+  return { ...slots, ...rows };
+}

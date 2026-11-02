@@ -23,7 +23,7 @@ const { ItemMetadataClient } = await import("../dist/code/browser/ItemMetadata.j
 const { SpellMetadataClient } = await import("../dist/code/browser/SpellMetadata.js");
 const { game } = await import("../dist/code/browser/game/Context.js");
 const ItemTooltip = await import("../dist/code/browser/ui/ItemTooltip.js");
-const Spellbook = await import("../dist/code/browser/ui/Spellbook.js");
+const SpellTooltip = await import("../dist/code/browser/ui/SpellTooltip.js");
 const { clearSpellNames } = await import("../dist/code/browser/ui/SpellNames.js");
 const { createFrameXmlCharacterTooltipAdapter } = await import("../dist/code/browser/framexml/FrameXmlCharacterTooltip.js");
 const { unmountFrameXmlVertical } = await import("../dist/code/browser/framexml/FrameXmlWorldMount.js");
@@ -208,15 +208,15 @@ test("the stock cast row says «Следующая атака» and «Поток
     [999, spell(999, "Старый шаблон", "", { description: "Описание." })],
   ]);
   try {
-    const castRow = (id) => textOf(Spellbook.stockSpellTooltip(id).lines[1]);
+    const castRow = (id) => textOf(SpellTooltip.stockSpellTooltip(id).lines[1]);
     assert.equal(castRow(78), "Следующая атака");
     assert.equal(castRow(5143), "Потоковое");
     assert.equal(castRow(133), "Применение: 1.5 сек.");
     assert.equal(castRow(999), "Мгновенное действие", "a row from an older gateway keeps today's words");
     const prose = (content) => content.lines.filter((line) => line.tone === "description").map(textOf);
-    assert.deepEqual(prose(Spellbook.stockSpellTooltip(6673)), ["Воин издает боевой крик."]);
-    assert.deepEqual(prose(Spellbook.stockSpellTooltip(6673, { aura: true })), ["Сила атаки увеличена на 15."]);
-    assert.deepEqual(prose(Spellbook.stockSpellTooltip(133, { aura: true })), ["Наносит урон."],
+    assert.deepEqual(prose(SpellTooltip.stockSpellTooltip(6673)), ["Воин издает боевой крик."]);
+    assert.deepEqual(prose(SpellTooltip.stockSpellTooltip(6673, { aura: true })), ["Сила атаки увеличена на 15."]);
+    assert.deepEqual(prose(SpellTooltip.stockSpellTooltip(133, { aura: true })), ["Наносит урон."],
       "no aura text: the description, as before");
   } finally {
     reset();

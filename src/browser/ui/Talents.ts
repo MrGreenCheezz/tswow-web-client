@@ -17,7 +17,7 @@ import { UPDATE_FIELDS } from "../../generated/updateFields.js"; // L7 1.28
 import { glyphChoicesForSocket, loadNativeGlyphCatalog } from "./GlyphSockets.js"; // L7 1.28
 import { nativeString } from "./Strings.js"; // L7 1.28
 import { showMenu } from "./Widgets.js"; // L7 1.28
-import { spellDescriptionContext } from "./Spellbook.js";
+import { spellDescriptionContext } from "./SpellTooltip.js";
 import {
   TALENT_COLUMNS, learnedInTab, nextRankRequest, pointsInTree, talentArrows, talentTreeState,
   tierRequirement, treeHeight, type TalentCell, type TalentDefinition,

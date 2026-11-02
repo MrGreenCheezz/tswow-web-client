@@ -1,13 +1,13 @@
 /**
  * The world mount's half of the stock trade skill window (FrameXmlTradeSkill.ts): the facts only the
- * mount has — `/dbc/talents`' profession tables, the `ItemSubClass` words and the native craft queue
- * of `ui/Professions.ts` — and the lazy owner wired to the native profession window.
+ * mount has — `/dbc/talents`' profession tables, the `ItemSubClass` words and the craft queue of
+ * `ui/ProfessionCraft.ts` — and the lazy owner.
  */
 import { game } from "../game/Context.js";
 import {
-  castProfessionRecipeOnItem, castProfessionRecipeOnTradeSlot, craftProfessionRecipe, hideProfessionWindows, nativeProfessionOpen, openNativeProfession,
+  castProfessionRecipeOnItem, castProfessionRecipeOnTradeSlot, craftProfessionRecipe,
   professionCraftRemaining, stopProfessionCraftRepeat,
-} from "../ui/Professions.js";
+} from "../ui/ProfessionCraft.js";
 import type { FrameXmlBoot } from "./FrameXmlBoot.js";
 import type { FrameXmlDomRenderer } from "../ui/framexml_compat/FrameXmlDomRenderer.js";
 import {
@@ -18,7 +18,7 @@ import { createLazyFrameXmlTradeSkillOwner } from "./FrameXmlTradeSkillOwner.js"
 import { sessionSpellDescriptionContext } from "../ui/SpellTextLiveContext.js"; // 12.10
 import { publishFrameXmlTradeSkill, type FrameXmlTradeSkillOwner } from "./FrameXmlTradeSkillController.js";
 
-/** The native queue as the stock window drives it. */
+/** The craft queue as the stock window drives it. */
 export const FRAMEXML_LIVE_TRADESKILL_CRAFT: FrameXmlTradeSkillCraft = Object.freeze({
   craft: craftProfessionRecipe,
   castOnItem: castProfessionRecipeOnItem,
@@ -26,6 +26,9 @@ export const FRAMEXML_LIVE_TRADESKILL_CRAFT: FrameXmlTradeSkillCraft = Object.fr
   stop: stopProfessionCraftRepeat,
   remaining: professionCraftRemaining,
 });
+
+/** The owner's fallback window, which the live game no longer has. */
+const NO_NATIVE_PROFESSION_WINDOW = Object.freeze({ open: () => false, stepAside: () => {} });
 
 /** The host LiveWorldSeam's trade skill model reads (`LiveWorldSeamContext.tradeSkill`). */
 export function frameXmlLiveTradeSkillHost(): FrameXmlTradeSkillLiveHost {
@@ -101,9 +104,9 @@ export function createFrameXmlCastCursor(
 }
 
 /**
- * The lazy stock owner in front of the native profession window. A failed load or gate unpublishes
- * it, and the line the player wanted opens natively. `textureUrl` is the mount's `/texture` route,
- * for the cast cursor's picture.
+ * The lazy stock owner. A failed load or gate unpublishes it. The first open waits for the add-on: under
+ * the stock interface the HTML craft window is hidden, so the owner has nothing to show meanwhile.
+ * `textureUrl` is the mount's `/texture` route, for the cast cursor's picture.
  */
 export function mountFrameXmlTradeSkill(
   seam: { readonly tradeSkill?: FrameXmlTradeSkillModel | undefined },
@@ -116,9 +119,9 @@ export function mountFrameXmlTradeSkill(
   let cleanup: (() => void) | undefined;
   const owner = createLazyFrameXmlTradeSkillOwner({
     seam, boot, renderer,
-    native: { open: openNativeProfession, stepAside: hideProfessionWindows, isOpen: nativeProfessionOpen },
+    native: NO_NATIVE_PROFESSION_WINDOW,
     onFailure: () => {
-      console.warn("[FrameXML trade skill] Blizzard_TradeSkillUI not published; the native profession window stays");
+      console.warn("[FrameXML trade skill] Blizzard_TradeSkillUI not published; the profession window will not open");
       cleanup?.();
     },
   });

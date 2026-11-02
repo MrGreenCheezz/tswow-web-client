@@ -27,7 +27,7 @@ import type { TooltipContent } from "./TooltipTypes.js";
  * branch), so the page cannot be dragged from, cleared or written.
  *
  * The keys run through the native bar in both interface modes (input/Actions.ts → `useSlot`), so the
- * page is answered here: `ActionBar.ts` asks `possessKeyPage` before its bonus rule and hands page 11
+ * page is answered here: `ActionSlots.ts` asks `possessKeyPage` before its bonus rule and hands page 11
  * to `pressPossessSlot`, the native row draws the mirrored words, and the character's own slots
  * 121–132 are left alone (Wow.exe overwrites them locally, without CMSG_SET_ACTION_BUTTON). The
  * state is the stock seam's model while one is attached (`frameXmlPossessLive`: its 60 ms poll and

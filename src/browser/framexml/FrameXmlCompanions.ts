@@ -19,7 +19,7 @@
  *   (`UNIT_CREATED_BY_SPELL`) is in view.
  * * `CallCompanion` casts the spell as the book does. `DismissCompanion("MOUNT")` casts the summoned
  *   mount's spell again, which is this client's dismount: `WorldClient.castSpell` sends
- *   `CMSG_CANCEL_MOUNT_AURA` for the active mount instead of a cast (ui/Spellbook.ts, its
+ *   `CMSG_CANCEL_MOUNT_AURA` for the active mount instead of a cast (ui/SpellCast.ts, its
  *   `togglingMount`). `DismissCompanion("CRITTER")` is `CMSG_DISMISS_CRITTER` with the summoned
  *   unit's guid (`WorldClient.dismissCritter`), the opcode the client sends for it.
  * * `PickupCompanion` puts the spell on the one cursor as the `companion` shape — `GetCursorInfo`

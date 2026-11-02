@@ -8,7 +8,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { installFakeUiDocument } from "./fixtures/fake-ui-document.mjs";
-import { isolatedModule, isolatedUi } from "./fixtures/isolated-ui.mjs";
+import { isolatedModule, isolatedUi, isolatedActionBar } from "./fixtures/isolated-ui.mjs";
 
 installFakeUiDocument();
 
@@ -185,7 +185,7 @@ async function nativeActionBar() {
   }
   for (const [id, row] of FORM_ROWS) game.spells.set(id, { id, passive: false, ...row });
 
-  const bar = await isolatedUi("ActionBar", {
+  const bar = await isolatedActionBar({
     "../../world/ActionBarProtocol.js": protocol,
     // 4.05: the drag payloads and the strict drop reader live there now.
     "./ActionDrag.js": await import("../dist/code/browser/ui/ActionDrag.js"),
@@ -195,11 +195,9 @@ async function nativeActionBar() {
     "../SpellMetadata.js": spellMetadata,
     "../SpellCastGuard.js": { spellPowerAvailable: () => true },
     "../../world/WorldClient.js": { MELEE_AUTO_ATTACK_SPELL_ID: 6603 },
-    "./Spellbook.js": {
-      castSpell: (id) => { casts.push(id); return true; },
-      highestKnownRank: (id) => id,
-      spellTooltip: (id) => ({ title: `spell ${id}` }),
-    },
+    "./SpellCast.js": { castSpell: (id) => { casts.push(id); return true; } },
+    "./SpellData.js": { highestKnownRank: (id) => id },
+    "./SpellTooltip.js": { spellTooltip: (id) => ({ title: `spell ${id}` }) },
     "./Dom.js": { actionBar },
     "./Widgets.js": {
       IconButton,
@@ -213,7 +211,7 @@ async function nativeActionBar() {
     "../GameWindows.js": { notifyHudLayout: () => { counts.layouts += 1; } },
   });
   const actions = await isolatedModule("browser/input/Actions", {
-    "../ui/ActionBar.js": bar,
+    "../ui/ActionSlots.js": bar,
     "./Bindings.js": bindings,
     "../../world/ActionBarProtocol.js": protocol,
     "../game/Context.js": context,

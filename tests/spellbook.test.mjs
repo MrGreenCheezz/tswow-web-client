@@ -74,11 +74,14 @@ globalThis.HTMLElement = class {};
 
 const { game } = await import("../dist/code/browser/game/Context.js");
 const {
-  castSpell, loadSpellMetadata, selectSpellbookTab, setSpellbookRankFilter, setSpellbookSearch, showSpells, spellTooltip,
+  selectSpellbookTab, setSpellbookRankFilter, setSpellbookSearch, showSpells,
   spellAbilityMatchesActor, spellAbilityVisible, SKILL_INTERNAL, updateSpellCooldowns,
   spellbookSearchKeyDown,
 } = await import("../dist/code/browser/ui/Spellbook.js");
-const { useSlot } = await import("../dist/code/browser/ui/ActionBar.js");
+const { useSlot } = await import("../dist/code/browser/ui/ActionSlots.js");
+const { castSpell } = await import("../dist/code/browser/ui/SpellCast.js");
+const { loadSpellMetadata } = await import("../dist/code/browser/ui/SpellData.js");
+const { spellTooltip } = await import("../dist/code/browser/ui/SpellTooltip.js");
 const { getTip } = await import("../dist/code/browser/ui/Widgets.js");
 const { loadAuraMetadata } = await import("../dist/code/browser/ui/Auras.js");
 const { clearSpellNames, ensureSpellNames } = await import("../dist/code/browser/ui/SpellNames.js");

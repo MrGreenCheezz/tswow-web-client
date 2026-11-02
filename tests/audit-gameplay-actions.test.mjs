@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { isolatedUi } from "./fixtures/isolated-ui.mjs";
+import { isolatedUi, isolatedActionBar } from "./fixtures/isolated-ui.mjs";
 import { WorldClient } from "../dist/code/world/WorldClient.js";
 import { PacketWriter } from "../dist/code/protocol/PacketWriter.js";
 import { PacketReader } from "../dist/code/protocol/PacketReader.js";
@@ -204,7 +204,7 @@ test("macros run every line and refuse only a unit or options /cast cannot read"
   class AccountStore { value = []; }
   const macroRunner = await import("../dist/code/browser/macro/MacroRunner.js");
   const store = await isolatedUi("MacroStore", { "../AccountStore.js": { AccountStore }, "./MacroModel.js": macroModel });
-  const macros = await isolatedUi("Macros", {
+  const macros = await isolatedUi("MacroRun", {
     "./MacroStore.js": store, "./MacroModel.js": macroModel, "../macro/MacroRunner.js": macroRunner,
     "./Chat.js": { submitChat: (line) => executions.push(line) }, "./Notices.js": { notice: (message) => notices.push(message) },
   });
@@ -256,7 +256,7 @@ test("combat commands use the existing cast guard and find an item in the curren
   const commands = await isolatedUi("CombatCommands", {
     "../game/Context.js": { game: { world, spells } },
     "./MacroModel.js": macroModel,
-    "./Spellbook.js": { castSpell: (id) => { casts.push(id); return false; } },
+    "./SpellCast.js": { castSpell: (id) => { casts.push(id); return false; } },
     "./Chat.js": { systemLine: (message) => messages.push(message) },
     "../Inventory.js": { playerInventory: () => ({ equipment: [], backpack: [], bags: [{ slots: [{ bag: 2, slot: 4, guid: 88n, item: { entry: 6948 } }] }] }) },
     "../../world/Fields.js": { worldObject: { entry: (item) => item.entry } },
@@ -673,18 +673,16 @@ test("learning a top rank promotes bar slots holding its lower ranks", async () 
         button.slot === slot ? { slot, action, type } : button);
     },
   };
-  const bar = await isolatedUi("ActionBar", {
+  const bar = await isolatedActionBar({
     "../game/Context.js": { game: { world } },
     "../Inventory.js": { playerInventory: () => undefined },
-    "./Spellbook.js": {
-      castSpell: () => false,
-      spellTooltip: () => ({}),
-      highestKnownRank: (id) => (id === 2 ? 1 : id),
-    },
-    "./Macros.js": { runMacro: () => {} },
+    "./SpellCast.js": { castSpell: () => false },
+    "./SpellTooltip.js": { spellTooltip: () => ({}) },
+    "./SpellData.js": { highestKnownRank: (id) => (id === 2 ? 1 : id) },
+    "./MacroRun.js": { runMacro: () => {} },
     "./MacroStore.js": { macroAt: () => undefined },
     "./MacroModel.js": macroModel,
-    "./EquipmentSets.js": { wearEquipmentSetByIndex: () => false },
+    "./EquipmentSetUse.js": { wearEquipmentSetByIndex: () => false },
     "../../world/ActionBarProtocol.js": await import("../dist/code/world/ActionBarProtocol.js"),
   });
   bar.upgradeActionBarRanks();

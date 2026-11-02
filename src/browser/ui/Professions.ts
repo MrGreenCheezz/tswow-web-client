@@ -1,23 +1,26 @@
 import { game } from "../game/Context.js";
 import { characterSkillsPane } from "./Dom.js";
-import { notice } from "./Notices.js";
 import { Bar, Panel, attachTooltip, textLine } from "./Widgets.js";
 import { setIconSource, spellIconUrl } from "./IconImage.js";
 import {
   SKILL_CATEGORY_NAMES, SKILL_CATEGORY_ORDER, effectiveSkill, readSkills, type SkillEntry,
 } from "./Skills.js";
-import { entryOf, playerInventory, stackCount, type ItemSlotState } from "../Inventory.js";
+import { entryOf, stackCount, type ItemSlotState } from "../Inventory.js";
 import { spellCastBlockReason } from "../SpellCastGuard.js";
-import { requestSpellCast } from "../game/GroundTarget.js";
-import { spellTooltip } from "./Spellbook.js";
+import { spellTooltip } from "./SpellTooltip.js";
 import { itemTooltipFor } from "./ItemTooltip.js";
 import type { SpellMetadata } from "../SpellMetadata.js";
 import {
-  craftableCount, filterCraftable, learnedProfessions, professionOpener, professionRecipe, professionRecipes,
+  craftableCount, filterCraftable, professionOpener, professionRecipes,
   professionSpellSkill, recipeAcceptsItem, recipeDifficulty, recipeRequiresItem, sortCraftRecipes,
   type CraftSort,
 } from "./ProfessionRules.js";
-import { openFrameXmlTradeSkill } from "../framexml/FrameXmlTradeSkillController.js";
+import {
+  CRAFT_QUEUE_MAX, cancelProfessionCraftQueue, carriedCounts, carriedSlots, closeProfessionCraft, craftTrackedWorld,
+  currentProfessions, ensureCraftTracking, knownMetadata, openProfession, professionCraftStatus, professionStillLearned,
+  sendProfessionCast,
+} from "./ProfessionCraft.js";
+import { setProfessionWindows } from "./HtmlWindowHosts.js";
 
 /**
  * The skills tab of the character window: professions first, then everything else the character
@@ -185,45 +188,6 @@ interface CraftParts {
 }
 
 const craftPanels = new Map<number, CraftParts>();
-let craftWorld: typeof game.world;
-let craftSubscriptions: Array<() => void> = [];
-let pendingCraft: number | undefined;
-let craftFeedback = "";
-let craftTimeout: ReturnType<typeof setTimeout> | undefined;
-/**
- * How many more times the current recipe should be sent after the cast in flight.
- *
- * Set when the player asks for more than one, consumed one per successful finish
- * (`SPELL_CAST_STOP` with success, or `SPELL_GO` for instant recipes). Any refusal —
- * `professionCastStatus`, an interrupted stop, a closed window — clears it, so a queue never
- * outlives the reason it stopped.
- */
-let craftQueue: { spellId: number; left: number; target?: bigint | undefined } | undefined;
-/** How many times to offer at most in one queue. Enough for a stack, short enough to stay sane. */
-export const CRAFT_QUEUE_MAX = 20;
-/**
- * The ceiling the queue itself accepts. The native count box clamps to {@link CRAFT_QUEUE_MAX}
- * before it gets here; the stock TradeSkillFrame's three-digit box (`letters="3"`) and its
- * «Создать все» hand over up to 999, clamped to what the bags can complete.
- */
-const CRAFT_REPEAT_MAX = 999;
-
-/** The queue as the window sees it, for tests and for the status line. */
-export function craftQueueState(): { spellId: number; left: number } | undefined {
-  return craftQueue === undefined ? undefined : { spellId: craftQueue.spellId, left: craftQueue.left };
-}
-
-function knownMetadata(): SpellMetadata[] {
-  return (game.world?.knownSpells ?? []).map(({ id }) => game.spells.get(id))
-    .filter((spell): spell is SpellMetadata => spell !== undefined);
-}
-
-function currentProfessions(): SkillEntry[] {
-  const world = game.world;
-  const self = world?.state.selfGuid === undefined ? undefined : world.state.objects.get(world.state.selfGuid);
-  return self ? learnedProfessions(readSkills(self), knownMetadata(), game.talentData) : [];
-}
-
 export function professionsOpen(): boolean {
   if (professionListPanel?.visible === true) return true;
   return [...craftPanels.values()].some((parts) => parts.panel.visible);
@@ -235,21 +199,7 @@ export function closeProfessionList(): void {
 }
 
 export function closeProfessions(): void {
-  for (const unsubscribe of craftSubscriptions) unsubscribe();
-  craftSubscriptions = [];
-  if (craftTimeout !== undefined) clearTimeout(craftTimeout);
-  craftTimeout = undefined;
-  pendingCraft = undefined;
-  craftQueue = undefined;
-  craftFeedback = "";
-  professionListPanel?.hide();
-  for (const parts of craftPanels.values()) {
-    parts.panel.hide();
-    parts.selected = undefined;
-    parts.target = undefined;
-    parts.signature = "";
-  }
-  craftWorld = undefined;
+  closeProfessionCraft();
 }
 
 /**
@@ -347,35 +297,12 @@ function drawProfessionList(): void {
   panel.body.replaceChildren(...rows);
 }
 
-/** The realm's normal cast refusal also belongs beside the recipe that initiated it. */
-export function professionCastStatus(message: string, error: boolean): void {
-  if (pendingCraft === undefined || !error) return;
-  pendingCraft = undefined;
-  craftQueue = undefined;
-  craftFeedback = message;
-  if (craftTimeout !== undefined) clearTimeout(craftTimeout);
-  for (const parts of craftPanels.values()) parts.signature = "";
-  refreshProfessionWindows();
-}
-
 /**
- * Every profession gets the same window, selected from the character's real skill fields. The stock
- * TradeSkillFrame answers first once the world mount has published it (FrameXmlTradeSkillController.ts);
- * the native craft window below is the fallback, and the one shown while Blizzard_TradeSkillUI loads.
+ * The native craft window for one profession line, whoever else may own the route. Every profession
+ * gets the same window, selected from the character's real skill fields.
  */
-export function openProfession(skillId: number): boolean {
-  if (openFrameXmlTradeSkill(skillId)) return true;
-  return openNativeProfession(skillId);
-}
-
-/** The native craft window for one profession line, whoever else may own the route. */
 export function openNativeProfession(skillId: number): boolean {
-  if (!currentProfessions().some((skill) => skill.skillId === skillId)) {
-    // A silent refusal reads as a dead button; say the one thing that can make it fail while the
-    // profession list still shows the row.
-    notice("Эта профессия больше не изучена");
-    return false;
-  }
+  if (!professionStillLearned(skillId)) return false;
   ensureCraftTracking();
   let parts = craftPanels.get(skillId);
   if (!parts) {
@@ -443,98 +370,6 @@ export function openNativeProfession(skillId: number): boolean {
   return true;
 }
 
-/**
- * Follow the current world's craft casts: the START/STOP/GO edges that move the queue on. Shared by
- * the native window and the stock TradeSkillFrame's craft hooks below.
- */
-function ensureCraftTracking(): void {
-  if (craftWorld !== undefined && craftWorld !== game.world) closeProfessions();
-  craftWorld = game.world;
-  if (craftSubscriptions.length === 0 && craftWorld) {
-    const world = craftWorld;
-    craftSubscriptions.push(world.events.on("SPELL_CAST_START", ({ casterGuid, spellId }) => {
-      if (game.world !== world || casterGuid !== world.state.selfGuid || pendingCraft !== spellId) return;
-      craftFeedback = "Создание…";
-      for (const parts of craftPanels.values()) parts.signature = "";
-      refreshProfessionWindows();
-    }), world.events.on("SPELL_CAST_STOP", ({ casterGuid, spellId, reason }) => {
-      if (game.world !== world || casterGuid !== world.state.selfGuid || pendingCraft !== spellId) return;
-      pendingCraft = undefined;
-      if (craftTimeout !== undefined) clearTimeout(craftTimeout);
-      if (reason === "success") continueCraftQueue(spellId);
-      else {
-        craftQueue = undefined;
-        craftFeedback = "Создание прервано.";
-        for (const parts of craftPanels.values()) parts.signature = "";
-        refreshProfessionWindows();
-      }
-    }), world.events.on("SPELL_GO", ({ casterGuid, casterUnit, spellId }) => {
-      // Instant recipes have GO without START and therefore no active cast to stop.
-      if (game.world !== world || pendingCraft !== spellId
-        || (casterGuid !== world.state.selfGuid && casterUnit !== world.state.selfGuid)) return;
-      pendingCraft = undefined;
-      if (craftTimeout !== undefined) clearTimeout(craftTimeout);
-      continueCraftQueue(spellId);
-    }));
-  }
-}
-
-/** A recipe spell the character knows, which is all the craft hooks below will cast. */
-function knownRecipe(spell: SpellMetadata | undefined): spell is SpellMetadata {
-  return professionRecipe(spell) && (game.world?.knownSpells.some(({ id }) => id === spell!.id) ?? false);
-}
-
-/**
- * The stock TradeSkillFrame's DoTradeSkill (FrameXmlTradeSkill.ts): `count` casts of a known recipe
- * through the same queue, preflight and cast tracking as «Создать», clamped to what the bags can
- * complete. A missing tool is left to the realm's answer, as the stock button leaves it. False when
- * nothing was sent.
- */
-export function craftProfessionRecipe(spellId: number, count: number): boolean {
-  const spell = game.spells.get(spellId);
-  if (!game.world || !knownRecipe(spell) || recipeRequiresItem(spell)) return false;
-  ensureCraftTracking();
-  const available = craftableCount(spell, carriedCounts(carriedSlots()));
-  if (available === undefined || available <= 0) return false;
-  const wanted = Math.max(1, Math.min(CRAFT_REPEAT_MAX, Math.floor(count) || 1));
-  return sendProfessionCast(spell, undefined, available === Infinity ? wanted : Math.min(wanted, available));
-}
-
-/** The stock enchant cursor's click: one cast of an enchant recipe on a carried item. */
-export function castProfessionRecipeOnItem(spellId: number, itemGuid: bigint): boolean {
-  const spell = game.spells.get(spellId);
-  if (!game.world || !knownRecipe(spell) || !recipeRequiresItem(spell)) return false;
-  ensureCraftTracking();
-  if ((craftableCount(spell, carriedCounts(carriedSlots())) ?? 0) <= 0) return false;
-  return sendProfessionCast(spell, itemGuid, 1);
-}
-
-/**
- * One known enchant on the trader's «will not be traded» slot (the stock TradeFrame's
- * `ClickTargetTradeButton(7)` with the enchant waiting): `CMSG_CAST_SPELL` with TARGET_FLAG_TRADE_ITEM
- * and slot 6 (WorldClient.castSpellOnTradeSlot). The realm parks it in the trade until both accept.
- */
-export function castProfessionRecipeOnTradeSlot(spellId: number): boolean {
-  const spell = game.spells.get(spellId);
-  if (!game.world?.tradeOpen || !knownRecipe(spell) || !recipeRequiresItem(spell)) return false;
-  ensureCraftTracking();
-  if ((craftableCount(spell, carriedCounts(carriedSlots())) ?? 0) <= 0) return false;
-  return sendProfessionCast(spell, TRADE_SLOT_TARGET, 1);
-}
-
-/** StopTradeSkillRepeat: the queue ends after the cast in flight, which stays the server's to finish. */
-export function stopProfessionCraftRepeat(): void {
-  if (craftQueue === undefined) return;
-  craftQueue = undefined;
-  for (const parts of craftPanels.values()) parts.signature = "";
-  refreshProfessionWindows();
-}
-
-/** GetTradeskillRepeatCount's source: the casts still to go, the one in flight included. */
-export function professionCraftRemaining(): number {
-  return (pendingCraft !== undefined ? 1 : 0) + (craftQueue?.left ?? 0);
-}
-
 /** The stock TradeSkillFrame took the window: the native craft panels step aside; the queue runs on. */
 export function hideProfessionWindows(): void {
   for (const parts of craftPanels.values()) parts.panel.hide();
@@ -545,28 +380,16 @@ export function nativeProfessionOpen(skillId: number): boolean {
   return craftPanels.get(skillId)?.panel.visible === true;
 }
 
-function carriedSlots(): ItemSlotState[] {
-  const inventory = game.world && playerInventory(game.world.state);
-  return inventory ? [...inventory.equipment, ...inventory.backpack, ...inventory.bags.flatMap((bag) => bag.slots)] : [];
-}
-
-function carriedCounts(slots: readonly ItemSlotState[]): Map<number, number> {
-  const owned = new Map<number, number>();
-  for (const slot of slots) {
-    const entry = entryOf(slot.item);
-    if (entry > 0) owned.set(entry, (owned.get(entry) ?? 0) + stackCount(slot));
-  }
-  return owned;
-}
-
 /** Repaints only when recipes, inventory, skill or cast state changed, retaining search focus. */
 export function refreshProfessionWindows(): void {
   if (!professionsOpen()) return;
+  const craftWorld = craftTrackedWorld();
   if (!game.world || (craftWorld !== undefined && craftWorld !== game.world)) {
     closeProfessions();
     return;
   }
   if (professionListPanel?.visible) drawProfessionList();
+  const craft = professionCraftStatus();
   const skills = currentProfessions();
   const known = knownMetadata();
   const slots = carriedSlots();
@@ -577,8 +400,8 @@ export function refreshProfessionWindows(): void {
     if (!skill) { parts.panel.hide(); continue; }
     const recipes = professionRecipes(skillId, known, game.talentData);
     const signature = [skill.value, skill.max, game.spells.size, game.itemMetadata?.revision,
-      game.world.itemTemplates.size, pendingCraft, craftQueue?.spellId ?? "", craftQueue?.left ?? 0,
-      craftFeedback, parts.query, parts.sort,
+      game.world.itemTemplates.size, craft.pending, craft.queue?.spellId ?? "", craft.queue?.left ?? 0,
+      craft.feedback, parts.query, parts.sort,
       parts.craftableOnly,
       recipes.map((spell) => `${spell.id}:${Math.ceil(game.world!.cooldownRemaining(spell.id, performance.now()) / 1000)}`).join(","),
       slots.map((slot) => `${slot.guid}:${entryOf(slot.item)}:${stackCount(slot)}`).join(","),
@@ -708,7 +531,8 @@ function drawRecipe(parts: CraftParts, skillId: number, spell: SpellMetadata, ow
     label.append(target); parts.detail.append(label);
   }
   const available = craftableCount(spell, owned);
-  const queued = craftQueue?.spellId === spell.id ? craftQueue.left : 0;
+  const craft = professionCraftStatus();
+  const queued = craft.queue?.spellId === spell.id ? craft.queue.left : 0;
   const countRow = document.createElement("label"); countRow.className = "craft-count";
   const countText = document.createElement("span"); countText.textContent = "Количество";
   const countInput = document.createElement("input");
@@ -720,13 +544,13 @@ function drawRecipe(parts: CraftParts, skillId: number, spell: SpellMetadata, ow
   const button = document.createElement("button"); button.type = "button"; button.className = "craft-create";
   button.textContent = recipeRequiresItem(spell) ? "Наложить чары" : "Создать";
   const busy = game.world?.state.selfGuid === undefined ? false : game.world.casts.has(game.world.state.selfGuid);
-  button.disabled = available === undefined || available === 0 || busy || pendingCraft !== undefined || queued > 0
+  button.disabled = available === undefined || available === 0 || busy || craft.pending !== undefined || queued > 0
     || (spell.tools ?? []).some((tool) => !owned.has(tool))
     || (recipeRequiresItem(spell) && parts.target === undefined)
     || (game.world !== undefined && spellCastBlockReason(game.world, spell.id) !== undefined);
   const status = document.createElement("p"); status.className = "muted craft-status";
   status.textContent = queued > 0 ? `Осталось создать: ${queued}.`
-    : craftFeedback || (busy ? "Дождитесь завершения текущего действия." : available === 0 ? "Недостаточно реагентов."
+    : craft.feedback || (busy ? "Дождитесь завершения текущего действия." : available === 0 ? "Недостаточно реагентов."
     : available === undefined ? "Ожидание данных рецепта." : available !== Infinity ? `Можно создать: ${available}` : "Реагенты не расходуются.");
   button.addEventListener("click", () => {
     // Validate fresh character/inventory state, not the snapshot captured by the button.
@@ -749,93 +573,25 @@ function drawRecipe(parts: CraftParts, skillId: number, spell: SpellMetadata, ow
   if (queued > 0) {
     const stop = document.createElement("button");
     stop.type = "button"; stop.textContent = "Остановить очередь";
-    stop.addEventListener("click", () => {
-      craftQueue = undefined;
-      craftFeedback = "Очередь остановлена.";
-      game.world?.cancelSpellCast();
-      for (const entry of craftPanels.values()) entry.signature = "";
-      refreshProfessionWindows();
-    });
+    stop.addEventListener("click", cancelProfessionCraftQueue);
     parts.detail.append(stop);
   }
 }
 
-/**
- * Sends the next cast of a finished queue, or finishes it with words.
- *
- * Called with `pendingCraft` already cleared by the STOP/GO handler. The server still owns every
- * verdict — this only revalidates against the fresh inventory so a queue that would instantly
- * fail stops with «реагенты закончились» instead of spending a round trip per missing herb.
- */
-function continueCraftQueue(spellId: number): void {
-  const queue = craftQueue;
-  craftQueue = undefined;
-  if (!queue || queue.spellId !== spellId || queue.left <= 0) {
-    craftFeedback = "Действие выполнено.";
-    for (const parts of craftPanels.values()) parts.signature = "";
+// The queue (ProfessionCraft.ts) runs whether these windows exist or not; they follow it from here.
+setProfessionWindows({
+  changed: (force) => {
+    if (force) for (const parts of craftPanels.values()) parts.signature = "";
     refreshProfessionWindows();
-    return;
-  }
-  const world = game.world;
-  const spell = game.spells.get(spellId);
-  if (!world || !spell) {
-    craftFeedback = "Очередь остановлена: рецепт недоступен.";
-    for (const parts of craftPanels.values()) parts.signature = "";
-    refreshProfessionWindows();
-    return;
-  }
-  const counts = carriedCounts(carriedSlots());
-  if ((craftableCount(spell, counts) ?? 0) <= 0 || (spell.tools ?? []).some((tool) => !counts.has(tool))) {
-    craftFeedback = "Очередь остановлена: недостаточно реагентов.";
-    for (const parts of craftPanels.values()) parts.signature = "";
-    refreshProfessionWindows();
-    return;
-  }
-  if (!sendProfessionCast(spell, queue.target, queue.left)) {
-    craftFeedback = "Очередь остановлена.";
-    for (const parts of craftPanels.values()) parts.signature = "";
-    refreshProfessionWindows();
-  }
-  // On success `sendProfessionCast` armed the fresh queue and refreshed already.
-}
-
-/** `sendProfessionCast`'s target for the trader's seventh slot rather than a carried item. */
-const TRADE_SLOT_TARGET = "trade-slot";
-
-function sendProfessionCast(spell: SpellMetadata, target?: bigint | typeof TRADE_SLOT_TARGET, count = 1): boolean {
-  const world = game.world;
-  if (!world || pendingCraft !== undefined || spellCastBlockReason(world, spell.id) !== undefined
-    || (world.state.selfGuid !== undefined && world.casts.has(world.state.selfGuid))) return false;
-  const cooldown = Math.max(spell.recoveryTime, spell.categoryRecoveryTime);
-  if (target === TRADE_SLOT_TARGET) {
-    if (!world.castSpellOnTradeSlot(spell.id, cooldown, spell.cooldownStartedOnEvent)) return false;
-    pendingCraft = spell.id;
-  } else if (recipeRequiresItem(spell)) {
-    const slot = carriedSlots().find((entry) => entry.guid === target);
-    const template = slot?.item && world.itemTemplate(entryOf(slot.item));
-    if (target === undefined || !template?.found || !recipeAcceptsItem(spell, template)) return false;
-    pendingCraft = spell.id;
-    world.castSpellOnItem(spell.id, target, cooldown, spell.cooldownStartedOnEvent);
-  } else {
-    requestSpellCast(spell.id, () => {
-      pendingCraft = spell.id;
-      world.castSpell(spell.id, cooldown, spell.cooldownStartedOnEvent);
-    });
-  }
-  // A ground-target recipe arms the reticle instead of sending: the closure above never ran, so
-  // there is no cast in flight and nothing for a queue to follow.
-  if (pendingCraft === spell.id) {
-    const left = Math.max(0, Math.min(CRAFT_REPEAT_MAX, Math.floor(count) || 1) - 1);
-    craftQueue = left > 0 && target !== TRADE_SLOT_TARGET ? { spellId: spell.id, left, target } : undefined;
-  } else craftQueue = undefined;
-  craftFeedback = "Запрос отправлен. Ожидаем ответ сервера…";
-  craftTimeout = setTimeout(() => {
-    if (game.world === world && pendingCraft === spell.id && !world.casts.has(world.state.selfGuid!)) {
-      pendingCraft = undefined;
-      craftFeedback = "Ответ не получен. Можно повторить создание.";
-      refreshProfessionWindows();
+  },
+  closed: () => {
+    professionListPanel?.hide();
+    for (const parts of craftPanels.values()) {
+      parts.panel.hide();
+      parts.selected = undefined;
+      parts.target = undefined;
+      parts.signature = "";
     }
-  }, 10000);
-  refreshProfessionWindows();
-  return true;
-}
+  },
+  open: openNativeProfession,
+});

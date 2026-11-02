@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
-import ts from "typescript";
+import { isolatedActionBar } from "./fixtures/isolated-ui.mjs";
 import { WorldClient } from "../dist/code/world/WorldClient.js";
 import { PacketWriter } from "../dist/code/protocol/PacketWriter.js";
 import { OPCODES } from "../dist/code/generated/opcodes.js";
@@ -43,11 +42,6 @@ async function loggedIn() {
 }
 
 async function actionBarFor(world) {
-  const source = await readFile(new URL("../src/browser/ui/ActionBar.ts", import.meta.url), "utf8");
-  const js = ts.transpileModule(source, { compilerOptions: {
-    target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS,
-  } }).outputText;
-  const exports = {};
   const slot = { bag: 255, slot: 23, guid: 88n, item: { entry: 6948 } };
   const buttons = [];
   const actionBar = { children: [], append(...children) { this.children.push(...children); },
@@ -60,7 +54,7 @@ async function actionBarFor(world) {
     setUsable(usable) { this.usable = usable; }
   }
   const game = { world, spells: new Map() };
-  new Function("require", "exports", js)((name) => ({
+  const exports = await isolatedActionBar({
     "../../world/ActionBarProtocol.js": actionProtocol,
     "../game/Context.js": { game },
     "../Inventory.js": { playerInventory: () => ({ backpack: [slot], bags: [], keyring: [] }), stackCount: () => 1 },
@@ -80,7 +74,7 @@ async function actionBarFor(world) {
     "../../world/WorldClient.js": { MELEE_AUTO_ATTACK_SPELL_ID: 6603 },
     "./Dom.js": { actionBar },
     "./Widgets.js": { IconButton, attachTooltip() {}, cooldownDuration, cooldownLabel, cooldownView },
-  })[name] ?? new Proxy({}, { get: () => () => {} }), exports);
+  });
   const originalDocument = globalThis.document;
   const element = () => ({ dataset: {}, hidden: false, children: [],
     append(...children) { this.children.push(...children); } });

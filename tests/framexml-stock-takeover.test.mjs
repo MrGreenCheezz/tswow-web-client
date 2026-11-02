@@ -167,7 +167,6 @@ test("a native window opened while the corpus loaded closes when its stock owner
     assert.ok(to > at, `${close} runs before ${publish}`);
   };
   before("closeReputation", "publishFrameXmlCharacter(");
-  before("closeProfessionList", "publishFrameXmlCharacter(");
   before("closeArenaWindow", "publishFrameXmlPvp(");
   before("closeMacroWindow", "mountFrameXmlMacroBindingWindows(");
   before("closeKeyBindingsWindow", "mountFrameXmlMacroBindingWindows(");

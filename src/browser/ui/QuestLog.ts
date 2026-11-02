@@ -21,7 +21,7 @@ import { formatMoney } from "./Format.js";
 import { itemTooltipFor } from "./ItemTooltip.js";
 import { setIconSource, spellIconUrl } from "./IconImage.js";
 import { ensureSpellNames } from "./SpellNames.js";
-import { spellTooltip } from "./Spellbook.js";
+import { spellTooltip } from "./SpellTooltip.js";
 import { questTimerDisplay } from "./QuestTimer.js";
 
 /**

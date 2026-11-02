@@ -98,7 +98,8 @@ test("the professions window lists owned professions with an opener each", async
   const { game } = await import("../dist/code/browser/game/Context.js");
   const { usePanelHost } = await import("../dist/code/browser/ui/Widgets.js");
   usePanelHost({ viewport: document.body, attach() {} });
-  const { toggleProfessionList, professionListOpen, openProfession, showProfessions } = await import("../dist/code/browser/ui/Professions.js");
+  const { toggleProfessionList, professionListOpen, showProfessions } = await import("../dist/code/browser/ui/Professions.js");
+  const { openProfession } = await import("../dist/code/browser/ui/ProfessionCraft.js");
   const { characterSkillsPane } = await import("../dist/code/browser/ui/Dom.js");
   const { UPDATE_FIELDS } = await import("../dist/code/generated/updateFields.js");
   const base = UPDATE_FIELDS.PLAYER_SKILL_INFO_1_1.offset;

@@ -1,4 +1,4 @@
-// Plan item 1.10 (12.10): this client's own macro runner (ui/Macros.ts `runNativeMacroLine`) sent /targetenemy and
+// Plan item 1.10 (12.10): this client's own macro runner (ui/MacroRun.ts `runNativeMacroLine`) sent /targetenemy and
 // the rest of the stock secure targeting commands to its chat, which knew none of them. They now run their
 // ChatFrame.lua:1163-1263 bodies (ui/NativeTargetCommands.ts): SecureCmdOptionParse, then TargetNearest*(action) /
 // ClearTarget / TargetLast* / AssistUnit / FocusUnit / ClearFocus over the same Tab list, history and focus the

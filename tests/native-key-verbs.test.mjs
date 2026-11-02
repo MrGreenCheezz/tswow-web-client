@@ -74,14 +74,14 @@ async function harness({ classId = 1, sheath = 0, equipment = {}, health = 100, 
     },
     "../ui/Bags.js": {
     },
-    "../ui/ActionBar.js": {
+    "../ui/ActionSlots.js": {
       getActionBarPage: () => page, turnActionPage: (next) => { page = next + 1; calls.push(["page", next]); },
       actionPageViewable: (page0) => stockLayout.mainPageViewable(page0, (bar) => shownBars.includes(bar)), // L7 4.16b
     },
     "../ui/ActionBarStockLayout.js": stockLayout,
     "../ui/PetCommands.js": { pressPetButton: (id) => { calls.push(["pet", id]); return id <= 3; } },
     "../framexml/FrameXmlShapeshiftForms.js": { frameXmlShapeshiftForms: () => [{ spellId: 2457 }, { spellId: 71 }] },
-    "../ui/Spellbook.js": { castSpell: (id) => calls.push(["cast", id]) },
+    "../ui/SpellCast.js": { castSpell: (id) => calls.push(["cast", id]) },
     "../ui/Settings.js": {
       settingOn: (id) => settings[id] === true,
       setSetting: (id, value) => { settings[id] = value; return true; },

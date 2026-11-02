@@ -2,10 +2,11 @@ import {
   EQUIPMENT_SET_SLOTS, MAX_EQUIPMENT_SETS, type EquipmentSet,
 } from "../../world/CharacterProgressProtocol.js";
 import { game } from "../game/Context.js";
-import { locateItem, playerInventory } from "../Inventory.js";
+import { playerInventory } from "../Inventory.js";
 import { equipmentSets as container } from "./Dom.js";
 import { setTip, attachTooltip, closeFloating, confirmPanel, openFloating } from "./Widgets.js";
 import { equipmentSetPieces, equipmentSlotName, ignoredSlotsOf } from "./EquipmentSetModel.js";
+import { wearSet } from "./EquipmentSetUse.js";
 
 /**
  * The equipment manager: saved sets of worn gear, and the two buttons that use one.
@@ -160,24 +161,4 @@ function saveSet(index: number, name: string, setGuid: bigint, ignored: Readonly
   if (!world || !inventory) return;
   const pieces = equipmentSetPieces((slot) => inventory.equipment[slot]?.guid, ignored);
   world.saveEquipmentSet(setGuid, index, name, DEFAULT_SET_ICON, pieces);
-}
-
-function wearSet(set: EquipmentSet): void {
-  const world = game.world;
-  const inventory = world && playerInventory(world.state);
-  if (!world || !inventory) return;
-  const pieces = Array.from({ length: EQUIPMENT_SET_SLOTS }, (_, index) => {
-    const guid = set.pieces[index] ?? 0n;
-    const found = locateItem(inventory, guid);
-    return { guid, bag: found?.bag ?? 0, slot: found?.slot ?? 0 };
-  });
-  world.useEquipmentSet(pieces);
-}
-
-/** Wears the set with this action-bar index, if it exists. Returns false when there is none. */
-export function wearEquipmentSetByIndex(index: number): boolean {
-  const set = game.world?.equipmentSets.find((entry) => entry.setId === index);
-  if (!set) return false;
-  wearSet(set);
-  return true;
 }

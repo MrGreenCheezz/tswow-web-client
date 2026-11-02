@@ -28,7 +28,7 @@
 
 ## Удалить: окна и HUD (65 файлов)
 
-- **Персонаж и HUD:** CharacterSheet, CharacterSheetModel, UnitFrame, UnitFrames, Auras, CastBar, MirrorTimers, PetBar, Totems, VehicleBarGates, ActionBarAccountSync, EquipmentSets, EquipmentSetModel, DragGhost, Slots, ItemSlots, ItemTargetClick, Widgets, Tooltip, Actions.
+- **Персонаж и HUD:** CharacterSheet, CharacterSheetModel, UnitFrame, UnitFrames, Auras, CastBar, MirrorTimers, PetBar, Totems, VehicleBarGates, EquipmentSets, EquipmentSetModel, DragGhost, Slots, ItemSlots, ItemTargetClick, Widgets, Tooltip, Actions.
 - **НПЦ и торговля:** Npc, NpcWait, VendorRepair, VendorRefund, VendorRefundRows, VendorQuantity, Bags, Bank, GuildBank, GuildBankModel, BarberShop, Petition, StableControls, NativeGiftWrap.
 - **Общение и группы:** Social, SocialPanel, ContactsModel, ChannelRoster, GroupMenu, GroupModel, LootRolls, LootRollModel, ReadyCheck, InteractionPrompts, LfgWait, LfgQueueClock, GmTickets.
 - **Прочие окна:** WorldMap, WorldMapQuestPlacement, Calendar, CalendarModel, CalendarEditor, Talents, TalentTree, GlyphSockets, PetSpellbook, Reputation, Scoreboard, ScoreboardModel, ArenaWindow, ArenaModel, CombatLog, WorldView.

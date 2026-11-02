@@ -83,7 +83,7 @@ globalThis.HTMLElement = class {};
 const { game } = await import("../dist/code/browser/game/Context.js");
 const { usePanelHost } = await import("../dist/code/browser/ui/Widgets.js");
 usePanelHost({ viewport: document.body, attach() {} });
-const professions = await import("../dist/code/browser/ui/Professions.js");
+const professions = { ...await import("../dist/code/browser/ui/Professions.js"), ...await import("../dist/code/browser/ui/ProfessionCraft.js") };
 const { CRAFT_QUEUE_MAX } = professions;
 const { UPDATE_FIELDS } = await import("../dist/code/generated/updateFields.js");
 

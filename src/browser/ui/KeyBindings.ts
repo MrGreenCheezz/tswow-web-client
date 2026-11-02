@@ -3,7 +3,7 @@ import {
 } from "../input/Bindings.js";
 import { frameXmlBindingCommand } from "../framexml/FrameXmlBinding.js";
 import { nativeString } from "./Strings.js";
-import { showActionBar } from "./ActionBar.js";
+import { refreshActionSlots } from "./ActionSlots.js";
 import { Panel } from "./Widgets.js";
 import {
   closeFrameXmlKeyBindings, frameXmlKeyBindingsOpen, toggleFrameXmlKeyBindings,
@@ -70,7 +70,7 @@ function captureKey(event: KeyboardEvent): void {
 function rebound(): void {
   stopCapture();
   draw();
-  showActionBar();
+  refreshActionSlots();
 }
 
 function slotButton(action: string, label: string, slot: 0 | 1): HTMLButtonElement {

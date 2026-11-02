@@ -7,7 +7,7 @@
 import { game } from "../game/Context.js";
 import { playerInventory } from "../Inventory.js";
 import { unit as unitField, worldObject } from "../../world/Fields.js";
-import { castSpell } from "./Spellbook.js";
+import { castSpell } from "./SpellCast.js";
 import { requestInventoryItemUse } from "../game/GroundTarget.js";
 import { createMacroContext, evaluateMacroOptions, macroOptions } from "./MacroModel.js";
 import type { MacroContext, MacroOptionResult } from "../macro/MacroOptions.js";

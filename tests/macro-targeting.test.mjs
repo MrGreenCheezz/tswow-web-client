@@ -17,7 +17,7 @@ async function combatCommands(game, casts, messages) {
     "../game/Context.js": { game },
     "../game/HoverTarget.js": { hoveredUnitGuid },
     "./MacroModel.js": macroModel,
-    "./Spellbook.js": { castSpell: (...args) => { casts.push(args); return true; } },
+    "./SpellCast.js": { castSpell: (...args) => { casts.push(args); return true; } },
     "./Chat.js": { systemLine: (line) => messages.push(line) },
   };
   const exports = {};

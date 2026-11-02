@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { installFakeUiDocument } from "./fixtures/fake-ui-document.mjs";
-import { isolatedModule, isolatedUi } from "./fixtures/isolated-ui.mjs";
+import { isolatedModule, isolatedUi, isolatedActionBar } from "./fixtures/isolated-ui.mjs";
 
 // 11.02-IF-review: keys 1–= and the native main row under possession, in both interface modes.
 // Wow.exe 3.3.5a: with the main-bar bit set (0x005d4ad0) slots 121–130 hold `0x10000000 | i` (0x005ab800 /
@@ -9,7 +9,7 @@ import { isolatedModule, isolatedUi } from "./fixtures/isolated-ui.mjs";
 // presses BonusActionButton n, action 120 + n (ActionButton_CalculateAction :131-153); UseAction there
 // (0x005abbc0) is the pet bar press 0x005d4210 with an empty guid, then ACTIONBAR_UPDATE_STATE; PickupAction
 // (0x005abe70) never lifts 0x78–0x83 and a held action is never dropped there. The keys run through the native
-// bar in both modes (input/Actions.ts -> ui/ActionBar.ts `useSlot`), so that is where the page is answered.
+// bar in both modes (input/Actions.ts -> ui/ActionSlots.ts `useSlot`), so that is where the page is answered.
 
 installFakeUiDocument();
 
@@ -179,7 +179,7 @@ async function nativeBar(fixture, options = {}) {
     "./IconImage.js": { spellIconUrl: (iconId) => `icon ${iconId}` },
     "./SpellNames.js": { ensureSpellNames: () => {} },
   });
-  const bar = await isolatedUi("ActionBar", {
+  const bar = await isolatedActionBar({
     "../../world/ActionBarProtocol.js": protocol,
     "./ActionDrag.js": await import("../dist/code/browser/ui/ActionDrag.js"),
     "../input/Bindings.js": bindings,
@@ -189,11 +189,9 @@ async function nativeBar(fixture, options = {}) {
     "../SpellMetadata.js": spellMetadata,
     "../SpellCastGuard.js": { spellPowerAvailable: () => true },
     "../../world/WorldClient.js": { MELEE_AUTO_ATTACK_SPELL_ID: 6603 },
-    "./Spellbook.js": {
-      castSpell: (id) => { casts.push(id); return true; },
-      highestKnownRank: (id) => id,
-      spellTooltip: (id) => ({ title: `spell ${id}` }),
-    },
+    "./SpellCast.js": { castSpell: (id) => { casts.push(id); return true; } },
+    "./SpellData.js": { highestKnownRank: (id) => id },
+    "./SpellTooltip.js": { spellTooltip: (id) => ({ title: `spell ${id}` }) },
     "./Dom.js": { actionBar },
     "./Widgets.js": {
       IconButton,
@@ -206,7 +204,7 @@ async function nativeBar(fixture, options = {}) {
     "./SpellNames.js": { ensureSpellNames: () => {} },
   });
   const actions = await isolatedModule("browser/input/Actions", {
-    "../ui/ActionBar.js": bar,
+    "../ui/ActionSlots.js": bar,
     "./Bindings.js": bindings,
     "../../world/ActionBarProtocol.js": protocol,
     "../game/Context.js": context,

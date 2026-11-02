@@ -7,7 +7,7 @@ import { showAuctions, showDuel, showGroup, showLfg, showMail, showTrade } from 
 import { showGuild } from "../ui/Guild.js";
 import { resetGuildBank } from "../ui/GuildBank.js";
 import { resetCalendar } from "../ui/Calendar.js";
-import { closeProfessions } from "../ui/Professions.js";
+import { closeProfessionCraft } from "../ui/ProfessionCraft.js";
 import { closeSocketing } from "../ui/Socketing.js";
 import { resetSocialPanel } from "../ui/SocialPanel.js";
 import { resetScoreboard } from "../ui/Scoreboard.js";
@@ -81,7 +81,7 @@ export function resetWorldUi(): void {
   showGuild();
   resetGuildBank();
   resetCalendar();
-  closeProfessions();
+  closeProfessionCraft();
   closeSocketing();
   resetSocialPanel();
   resetScoreboard();

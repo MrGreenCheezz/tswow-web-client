@@ -21,7 +21,7 @@ installFakeUiDocument();
 
 const { game } = await import("../dist/code/browser/game/Context.js");
 const ItemTooltip = await import("../dist/code/browser/ui/ItemTooltip.js");
-const Spellbook = await import("../dist/code/browser/ui/Spellbook.js");
+const SpellTooltip = await import("../dist/code/browser/ui/SpellTooltip.js");
 const { clearSpellNames } = await import("../dist/code/browser/ui/SpellNames.js");
 const { createFrameXmlCharacterTooltipAdapter } = await import("../dist/code/browser/framexml/FrameXmlCharacterTooltip.js");
 const { GLOBAL_STRING_DATA_AVAILABLE, GLOBAL_STRINGS } = await import("../dist/code/generated/globalStrings.js");
@@ -287,7 +287,7 @@ test("the stock spell tooltip pairs its rows and drops the school; the native on
     [20_600, spell(20_600, "Восприятие", "", { passive: true, description: "Скрытность обнаружить." })],
   ]);
   try {
-    const fireball = Spellbook.stockSpellTooltip(133);
+    const fireball = SpellTooltip.stockSpellTooltip(133);
     assert.equal(fireball.title, "Огненный шар");
     assert.equal(fireball.titleRight, "Уровень 1", "the rank sits right of the name");
     assert.deepEqual(fireball.lines, [
@@ -296,16 +296,16 @@ test("the stock spell tooltip pairs its rows and drops the school; the native on
       { text: "Наносит 16 ед. урона от огня.", tone: "description", wrap: true },
     ]);
     assert.equal(fireball.footer, undefined, "no native action hint");
-    assert.deepEqual(Spellbook.stockSpellTooltip(78).lines,
+    assert.deepEqual(SpellTooltip.stockSpellTooltip(78).lines,
       [{ text: "Ярость: 15", right: "Дистанция ближнего боя" }, { text: "Мгновенное действие" }]);
-    assert.deepEqual(Spellbook.stockSpellTooltip(12_042).lines[1],
+    assert.deepEqual(SpellTooltip.stockSpellTooltip(12_042).lines[1],
       { text: "Мгновенное действие", right: "Восстановление: 1.5 мин." }, "a cooldown from a minute up is minutes");
-    assert.equal(Spellbook.stockSpellTooltip(12_042).titleRight, undefined, "no rank, nothing on the right");
-    assert.deepEqual(Spellbook.stockSpellTooltip(20_600).lines,
+    assert.equal(SpellTooltip.stockSpellTooltip(12_042).titleRight, undefined, "no rank, nothing on the right");
+    assert.deepEqual(SpellTooltip.stockSpellTooltip(20_600).lines,
       [{ text: "Скрытность обнаружить.", tone: "description", wrap: true }], "a passive has no cast row");
     // The native spellbook tooltip is unchanged.
-    assert.ok(Spellbook.spellTooltip(133).lines.includes("Школа: огонь"));
-    assert.ok(Spellbook.spellTooltip(133).lines.includes("Сотворение: 1,5 с"));
+    assert.ok(SpellTooltip.spellTooltip(133).lines.includes("Школа: огонь"));
+    assert.ok(SpellTooltip.spellTooltip(133).lines.includes("Сотворение: 1,5 с"));
   } finally {
     reset();
   }
@@ -490,7 +490,7 @@ test("a HUD with a world has the spellbook module before its first spell is hove
     });
     // The same module instance the adapter asked for; once it has evaluated, the adapter's own
     // import has resolved as well (its reaction was queued first).
-    await import("../dist/code/browser/ui/Spellbook.js");
+    await import("../dist/code/browser/ui/SpellTooltip.js");
     await settle();
     const first = adapter.action(1);
     assert.equal(first.titleRight, "Уровень 1");

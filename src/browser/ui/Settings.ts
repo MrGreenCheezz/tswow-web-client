@@ -9,7 +9,7 @@
  */
 
 import { AccountStore } from "../AccountStore.js";
-import { showActionBar } from "./ActionBar.js";
+import { refreshActionSlots } from "./ActionSlots.js";
 import { setAutoQualityCeiling } from "../AutoQuality.js";
 import { PER_CHARACTER_CONFIG_CACHE } from "../../world/SessionProtocol.js";
 import { game } from "../game/Context.js";
@@ -246,7 +246,7 @@ export function applySettings(): void {
   // the server holds rather than the other way round.
   setSpellbookRankFilter(settingBoolean(values, "spellbookHideLowerRanks"));
   // Four of the switches decide whether an action bar row exists on screen at all.
-  showActionBar();
+  refreshActionSlots();
   applySoundVolumes();
   for (const listener of appliedListeners) listener();
 }

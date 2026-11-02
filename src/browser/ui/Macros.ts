@@ -1,86 +1,25 @@
 /**
- * The macro window, and the thing that runs one.
+ * The macro window.
  *
- * A body runs its lines, in order, through the one macro runner (macro/MacroRunner.ts); conditions
- * choose what each line does when it runs, and the cast guard what one press may send. The
+ * A body runs its lines, in order, through the one macro runner (macro/MacroRunner.ts, MacroRun.ts);
+ * conditions choose what each line does when it runs, and the cast guard what one press may send. The
  * complete body is validated before any line runs, including macros restored from account data.
- * With the stock chat installed and able to evaluate conditions, the lines go through stock
- * `ChatEdit_ParseText` as in the client (FrameXmlChatApi.ts); otherwise through this client's chat.
  * The macros themselves are in MacroStore.ts.
  */
 
 import {
   closeFrameXmlMacro, frameXmlMacroOpen, openFrameXmlMacro, toggleFrameXmlMacro,
 } from "../framexml/FrameXmlMacroController.js";
-import {
-  installMacroLineExecutor, macroBodyLines, macroLineExecutor, runMacroLines, stopMacro,
-} from "../macro/MacroRunner.js";
-import { submitChat } from "./Chat.js";
-import { nativeMacroContext } from "./CombatCommands.js";
-import { runNativeTargetCommand } from "./NativeTargetCommands.js"; // 1.10 (12.10)
+import { runMacro } from "./MacroRun.js";
 import { notice } from "./Notices.js";
 import {
-  MACRO_BODY_LIMIT, MACRO_NAME_LIMIT, MACROS_PER_ROW, evaluateMacroOptions, findMacro, installMacroOptionErrorSink,
-  isAccountMacro, macroIndexes, macroOptions, macroProblems, macrosForSet, nativeMacroEdit, nextFreeMacro,
-  trimMacroName,
+  MACRO_BODY_LIMIT, MACRO_NAME_LIMIT, MACROS_PER_ROW, findMacro, isAccountMacro, macroIndexes, macroProblems,
+  macrosForSet, nativeMacroEdit, nextFreeMacro, trimMacroName,
 } from "./MacroModel.js";
 import { allMacros, dropMacro, macroAt, macrosChanged, saveMacro } from "./MacroStore.js";
 import { setTip, Panel, Tabs, confirmPanel } from "./Widgets.js";
 import { macroActionDragPayload } from "./ActionDrag.js";
 import { beginIconDrag } from "./DragGhost.js";
-
-/** `/stopmacro [options]` (ChatFrame.lua:1398-1402); the ruRU client spells it only this way. */
-const STOP_MACRO = /^\/stopmacro(?:\s+([\s\S]*))?$/i;
-
-/**
- * One macro line through this client's own chat. `/stopmacro` is the runner's: its options are
- * evaluated here, as stock `SecureCmdList.STOPMACRO` does. `/cast` and `/use` evaluate their own
- * (CombatCommands.ts); any other line is what the player could have typed.
- */
-function runNativeMacroLine(line: string): void {
-  const stop = STOP_MACRO.exec(line);
-  if (!stop) {
-    // 1.10 (12.10): /targetenemy and the rest of the stock secure targeting commands (NativeTargetCommands.ts).
-    if (runNativeTargetCommand(line)) return;
-    submitChat(line);
-    return;
-  }
-  const options = macroOptions((stop[1] ?? "").trim());
-  if (options.error !== undefined) notice(`/stopmacro: ${options.error}.`);
-  else if (evaluateMacroOptions(options, nativeMacroContext())) stopMacro();
-}
-
-// This client's chat is the floor: a stock chat that can evaluate conditions installs its own over it,
-// and its UI error line over this notice for an unknown condition word (ERR_UNKNOWN_MACRO_OPTION_S).
-installMacroLineExecutor(runNativeMacroLine);
-installMacroOptionErrorSink((word) => notice(`Неизвестный параметр макроса: ${word}`));
-
-/**
- * Runs one macro: its lines, in order, through the macro runner, until the end or `/stopmacro`.
- * `button` is the mouse button that started it, which `[btn:N]` reads; without one — a key, a chat
- * line — the client reads `LeftButton` (0x5ef0d0).
- *
- * `#showtooltip`/`#show` and `-` lines are skipped; a line without `/` is said. Conditions are
- * evaluated as each line runs; `macroProblems` refuses only what cannot be read.
- */
-export function runMacro(index: number, button?: string): void {
-  const macro = macroAt(index);
-  if (!macro) {
-    notice(`Макрос ${index} пуст`);
-    return;
-  }
-  const problems = macroProblems(macro.name, macro.body);
-  if (problems.length > 0) {
-    notice(problems.join(" "));
-    return;
-  }
-  const lines = macroBodyLines(macro.body);
-  if (lines.length === 0) {
-    notice(`Макрос «${macro.name}» ничего не содержит`);
-    return;
-  }
-  runMacroLines(lines, macroLineExecutor() ?? runNativeMacroLine, button);
-}
 
 interface Parts {
   panel: Panel;

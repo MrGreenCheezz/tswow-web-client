@@ -25,7 +25,7 @@ const stockHud = (on) => (on ? bodyClasses.add(hud.NATIVE_LANES_REPLACED) : body
 async function keyVerbs() {
   const pressed = [];
   const actions = await isolatedModule("browser/input/Actions", {
-    "../ui/ActionBar.js": { useSlot: (column, page) => pressed.push(protocol.actionSlot(page, column)) },
+    "../ui/ActionSlots.js": { useSlot: (column, page) => pressed.push(protocol.actionSlot(page, column)) },
     "./Bindings.js": bindings,
     "../../world/ActionBarProtocol.js": protocol,
     "../ui/NativeHudReplacement.js": hud,

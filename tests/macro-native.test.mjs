@@ -56,7 +56,7 @@ async function combatCommands(game, casts, lines, bonusBar = () => 0) {
     "../game/Context.js": { game },
     "../Inventory.js": { playerInventory: () => undefined },
     "../../world/Fields.js": fields,
-    "./Spellbook.js": { castSpell: (...args) => { casts.push(args); return true; } },
+    "./SpellCast.js": { castSpell: (...args) => { casts.push(args); return true; } },
     "../game/GroundTarget.js": { requestInventoryItemUse() {} },
     "./MacroModel.js": macroModel,
     "./Chat.js": { systemLine: (line) => lines.push(line) },
@@ -177,13 +177,13 @@ test("the native context reads stances, the bonus bar, stealth and the pet from 
 });
 
 test("ActionBar.useSlot hands the macro the button that pressed it", async () => {
-  const { isolatedUi } = await import("./fixtures/isolated-ui.mjs");
+  const { isolatedUi, isolatedActionBar } = await import("./fixtures/isolated-ui.mjs");
   const { ACTION_BUTTON_MACRO } = await import("../dist/code/world/ActionBarProtocol.js");
   const runs = [];
   const world = { actionButtons: [{ slot: 0, action: 37, type: ACTION_BUTTON_MACRO }], knownSpells: [] };
-  const bar = await isolatedUi("ActionBar", {
+  const bar = await isolatedActionBar({
     "../game/Context.js": { game: { world, spells: new Map() } },
-    "./Macros.js": { runMacro: (index, button) => runs.push([index, button ?? null]) },
+    "./MacroRun.js": { runMacro: (index, button) => runs.push([index, button ?? null]) },
     "./MacroStore.js": { macroAt: (index) => ({ index, name: "Огонь", body: "/dance" }) },
     "./MacroModel.js": macroModel,
     "../../world/ActionBarProtocol.js": await import("../dist/code/world/ActionBarProtocol.js"),
@@ -205,11 +205,8 @@ async function nativeMacros(commands, chat, notices) {
     "../../world/SessionProtocol.js": { GLOBAL_MACROS_CACHE: 5, PER_CHARACTER_MACROS_CACHE: 6 },
     "./MacroModel.js": macroModel,
   });
-  const macros = await load("Macros.ts", {
+  const macros = await load("MacroRun.ts", {
     "./MacroStore.js": store,
-    "../framexml/FrameXmlMacroController.js": {
-      closeFrameXmlMacro() {}, frameXmlMacroOpen: () => false, openFrameXmlMacro: () => false, toggleFrameXmlMacro: () => false,
-    },
     "../macro/MacroRunner.js": runner,
     "./Chat.js": { submitChat: chat },
     "./CombatCommands.js": commands,
@@ -217,7 +214,6 @@ async function nativeMacros(commands, chat, notices) {
     "./NativeTargetCommands.js": { runNativeTargetCommand: () => false },
     "./Notices.js": { notice: (text) => notices.push(text) },
     "./MacroModel.js": macroModel,
-    "./Widgets.js": { Panel: class {}, Tabs: class {}, confirmPanel() {} },
   });
   return { macros, stores };
 }
@@ -306,7 +302,7 @@ async function guardedMacros({ predictedGcd = false } = {}) {
     return true;
   };
   const commands = await load("CombatCommands.ts", {
-    "../game/Context.js": { game }, "../../world/Fields.js": fields, "./Spellbook.js": { castSpell },
+    "../game/Context.js": { game }, "../../world/Fields.js": fields, "./SpellCast.js": { castSpell },
     "./MacroModel.js": macroModel, "./Chat.js": { systemLine() {} }, "../game/HoverTarget.js": { hoveredUnitGuid },
   });
   const submitChat = (line) => { if (line.startsWith("/cast ")) commands.runCastCommand(line.slice("/cast ".length)); };

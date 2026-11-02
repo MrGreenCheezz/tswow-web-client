@@ -8,7 +8,7 @@ import type { WorldClient } from "../../world/WorldClient.js";
 import { EXTRA_ACTION_BARS } from "../../world/ActionBarProtocol.js";
 import { readByte, unit } from "../../world/Fields.js"; // L7-review: unit.classId
 import { PER_CHARACTER_CONFIG_CACHE } from "../../world/SessionProtocol.js";
-import { EXTRA_BAR_SETTINGS, setExtraBarVisibility, showActionBar } from "./ActionBar.js";
+import { EXTRA_BAR_SETTINGS, refreshActionSlots, setExtraBarVisibility } from "./ActionSlots.js";
 import { ActionBarAccountSync } from "./ActionBarAccountSync.js";
 import {
   classifyConfigSlot, decodeLayoutRecord, encodeLayoutRecord, extraBarBits,
@@ -81,7 +81,7 @@ export function attachActionBarAccount(world: WorldClient): () => void {
       }
     },
     onMigrated: (count) => notice(`Кнопки дополнительных панелей перенесены на слоты стандартного интерфейса: ${count}.`, "info"),
-    redraw: showActionBar,
+    redraw: refreshActionSlots,
   });
   // The core sends the player's own object before it answers the slot (HandlePlayerLogin runs whole
   // before the request is read), so the byte is normally there; should it not be, the run is retried

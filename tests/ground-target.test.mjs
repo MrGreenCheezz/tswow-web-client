@@ -269,7 +269,7 @@ test("ground spells arm the reticle, clicks resolve it, Esc and right-click rele
     "a clean left click resolves the landing point");
   assert.match(controls, /if \(right\) \{\s*\n?\s*cancelGroundTarget\(\)/,
     "a right click cancels targeting instead of interacting");
-  const book = await readFile(new URL("../src/browser/ui/Spellbook.ts", import.meta.url), "utf8");
+  const book = await readFile(new URL("../src/browser/ui/SpellCast.ts", import.meta.url), "utf8");
   assert.match(book, /isGroundTargetSpell\(metadata\)/,
     "the book arms the reticle only through the targeting contract, never an id list");
   const ground = await readFile(new URL("../src/browser/game/GroundTarget.ts", import.meta.url), "utf8");
@@ -280,14 +280,14 @@ test("ground spells arm the reticle, clicks resolve it, Esc and right-click rele
     "../src/browser/ui/Tracking.ts",
     "../src/browser/ui/Talents.ts",
     "../src/browser/ui/WindowActions.ts",
-    "../src/browser/ui/Professions.ts",
+    "../src/browser/ui/ProfessionCraft.ts",
   ]) {
     const source = await readFile(new URL(path, import.meta.url), "utf8");
     assert.match(source, /requestSpellCast\(/,
       `${path} must route its cast through the reticle check`);
   }
   for (const path of [
-    "../src/browser/ui/ActionBar.ts",
+    "../src/browser/ui/ActionSlots.ts",
     "../src/browser/ui/CombatCommands.ts",
     "../src/browser/ui/ItemSlots.ts",
     "../src/browser/framexml/LiveWorldSeam.ts",

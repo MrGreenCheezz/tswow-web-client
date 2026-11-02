@@ -5,7 +5,7 @@ import { installFakeUiDocument } from "./fixtures/fake-ui-document.mjs";
 // The native bar imports `ui/Dom.ts`, which resolves its handles at import.
 installFakeUiDocument();
 
-// L13 (04.10), plan item 5.30: the native action bar's own press gate (ui/ActionBar.ts) and the shared cast guard
+// L13 (04.10), plan item 5.30: the native action bar's own press gate (ui/ActionSlots.ts) and the shared cast guard
 // (SpellCastGuard.ts) hold a spell by its StartRecoveryCategory (`/dbc/spells?v=17`), as Wow.exe 0x00807980 matches
 // an entry's global category: with a 133 global cooldown running, Удар смерти 45469 (0/1500) still goes out,
 // Ледяная стрела 116 (133/1500) and Воля Отрекшихся 7744 (133/0) do not. 12.10: a category-0 entry of its own
@@ -16,7 +16,7 @@ const SELF = 0x10n;
 
 test("L13 5.30: the native bar and the guard hold by category; an older gateway's rows as before", async () => {
   const { game } = await import("../dist/code/browser/game/Context.js");
-  const { useSlot } = await import("../dist/code/browser/ui/ActionBar.js");
+  const { useSlot } = await import("../dist/code/browser/ui/ActionSlots.js");
   const { ACTION_BUTTON_SPELL } = await import("../dist/code/world/ActionBarProtocol.js");
   const row = (id, columns) => ({
     id, name: `spell ${id}`, rank: "", description: "", iconId: 0, iconPath: "", passive: false, hidden: false,
