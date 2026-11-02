@@ -293,10 +293,6 @@ const BINDING = {
  * The DressUpModel type's methods, set once on the widget type's shared method table (its
  * metatable's `__index`), so they shadow the widget layer's recorded no-ops for every DressUpModel.
  *
- * `SetRotation(radians)` (PlayerModel, Model_OnLoad/Model_RotateLeft/Right, UIParent.lua:2824-2845)
- * turns the model about its vertical axis, which is what the model stage's `facing` is; the widget
- * layer only records it, so here it is the model's `SetFacing`. Model_OnLoad already ran for
- * DressUpModel at boot (rotation 0.61), so that rotation is applied once on install.
  * SetModel/SetCreature/SetDisplayInfo/ClearModel still do what they did and also end the unit view.
  */
 const DRESSUP_MODEL_METHODS = `
@@ -314,9 +310,6 @@ if not rawget(methods, "__webclientDressUp") then
   methods.Dress = function(self) dress(self) end
   methods.Undress = function(self) undress(self) end
   methods.TryOn = function(self, item) tryOn(self, item) end
-  methods.SetRotation = function(self, rotation)
-    if type(rotation) == "number" then self:SetFacing(rotation) end
-  end
   for _, name in ipairs({ "SetModel", "SetCreature", "SetDisplayInfo", "ClearModel" }) do
     local base = rawget(methods, name)
     if type(base) == "function" then
@@ -324,7 +317,6 @@ if not rawget(methods, "__webclientDressUp") then
     end
   end
 end
-if type(model.rotation) == "number" then model:SetRotation(model.rotation) end
 ${FRAMEXML_HOST_HOOK_GLOBAL}(DressUpFrame, "OnShow", function() wake() end) -- L5b 3.27 (was DressUpFrame:HookScript)
 return 1
 `;

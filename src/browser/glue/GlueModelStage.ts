@@ -904,6 +904,9 @@ interface ModelView {
   effects?: ModelEffects | undefined;
   root?: THREE.Object3D | undefined;
   action?: THREE.AnimationAction | undefined;
+  /** `fitBody`: the body's box, and the root or clip it was measured under (`bodyBounds`). */
+  fitBounds?: THREE.Box3 | undefined;
+  fitPose?: object | undefined;
   sequence: number;
   /** Local clock of the played clip, in milliseconds, for the emitters' animated tracks. */
   animationMs: number;
@@ -1876,6 +1879,29 @@ export class GlueModelStage {
   }
 
   /**
+   * The body's box in the pose it stands in, measured once per model and clip: the camera does not
+   * follow the idle.
+   *
+   * `Box3.setFromObject` reads a SkinnedMesh's cached box, which is right only once
+   * `updateMatrixWorld` has refreshed the mesh's bind inverse and the skeleton its bone matrices.
+   * Taken before them, on the first redraw, a rig under the M2 quarter turn came out turned twice,
+   * and the body stood off-centre and cut off by the frame (WORK_PLAN 3.61).
+   */
+  private bodyBounds(view: ModelView): THREE.Box3 {
+    const root = view.root ?? view.scene;
+    const pose = view.action ?? root;
+    if (view.fitBounds && view.fitPose === pose) return view.fitBounds;
+    root.updateMatrixWorld(true);
+    view.instance?.skeleton.update();
+    root.traverse((node) => {
+      if ((node as THREE.SkinnedMesh).isSkinnedMesh) (node as unknown as { boundingBox: THREE.Box3 | null }).boundingBox = null;
+    });
+    view.fitPose = pose;
+    view.fitBounds = new THREE.Box3().setFromObject(root);
+    return view.fitBounds;
+  }
+
+  /**
    * Frame the model the way it was authored to be framed.
    *
    * A glue set carries its own camera and G1 put it on the wire — measured, `UI_MainMenu` at 86°
@@ -1893,7 +1919,7 @@ export class GlueModelStage {
     if (!wvm) return;
     const camera = view.camera;
     if (view.source?.fitBody) {
-      const bounds = new THREE.Box3().setFromObject(view.root ?? view.scene);
+      const bounds = this.bodyBounds(view);
       const size = bounds.getSize(new THREE.Vector3());
       const centre = bounds.getCenter(new THREE.Vector3());
       const vertical = Math.PI / 8;

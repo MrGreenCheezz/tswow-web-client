@@ -188,6 +188,7 @@ import {
 } from "./FrameXmlTrainerController.js";
 import { mountFrameXmlAuction } from "./FrameXmlAuctionMount.js";
 import { mountFrameXmlDressUp } from "./FrameXmlDressUpMount.js";
+import { FrameXmlModelPreview } from "./FrameXmlModelPreview.js";
 import { mountFrameXmlInspectSocketBarber } from "./FrameXmlInspectMount.js";
 import { mountFrameXmlAchievement, provideFrameXmlAchievementCatalog } from "./FrameXmlAchievementMount.js";
 import { toggleFrameXmlAchievement } from "./FrameXmlAchievementController.js";
@@ -2708,6 +2709,8 @@ interface FrameXmlMountResources {
   auctionCleanup?: () => void;
   /** The stock DressUpFrame's model methods and model stage (FrameXmlDressUpMount.ts). */
   dressUpCleanup?: (() => void) | undefined;
+  /** 3.61: the mounts', companions' and stabled pets' pictures (FrameXmlModelPreview.ts). */
+  models?: FrameXmlModelPreview;
   /** The lazy stock InspectFrame, ItemSocketingFrame and BarberShopFrame (FrameXmlInspectMount.ts). */
   inspectSocketBarberCleanup?: () => void;
   achievementCleanup?: () => void;
@@ -2966,6 +2969,7 @@ function cleanupPublishedMount(record: FrameXmlMountResources): void {
   bestEffortCleanup(() => record.auctionCleanup?.());
   // The dressing room's model stage and its WebGL renderer go with the mount.
   bestEffortCleanup(() => record.dressUpCleanup?.());
+  bestEffortCleanup(() => record.models?.dispose());
   // InspectUnit goes back to stock, an open socketing session ends, an occupied chair goes to the native window.
   bestEffortCleanup(() => record.inspectSocketBarberCleanup?.());
   bestEffortCleanup(() => record.achievementCleanup?.());
@@ -4270,6 +4274,7 @@ export async function mountFrameXmlVertical(
         boot.bridge.flushDeferredPaint();
         renderer.tickCooldowns(now);
         renderer.tickMessageFades();
+        resources.models?.frame(elapsed, performance.now());
         publishMapWhenReady();
         document.body.classList.toggle("framexml-world-map-fullscreen",
           boot.bridge.getFrame("WorldMapFrame")?.visible === true
@@ -4367,6 +4372,15 @@ export async function mountFrameXmlVertical(
     resources.auctionCleanup = mountFrameXmlAuction(seam, boot, renderer);
     // Stock DressUpFrame: Ctrl+click's DressUpItemLink, and the auction add-on's side frame once it loads.
     resources.dressUpCleanup = mountFrameXmlDressUp(boot, renderer, { gatewayOrigin: origin });
+    // 3.61: SetCreature's picture: the mount and companion pages, the stable.
+    resources.models = new FrameXmlModelPreview({
+      gatewayOrigin: origin,
+      bridge: boot.bridge,
+      elementFor: (frame) => renderer.elementFor(frame),
+      creatureTemplate: (entry) => game.world?.creatureTemplate(entry),
+      creatureModels: game.creatureModels,
+      onDiagnostic: (message) => console.warn("[FrameXML model]", message),
+    });
     // Blizzard_InspectUI, Blizzard_ItemSocketingUI and Blizzard_BarbershopUI are LoD: nothing loads until first use.
     resources.inspectSocketBarberCleanup = mountFrameXmlInspectSocketBarber(seam, boot, renderer);
     // Blizzard_GuildBankUI likewise: the first banker visit loads it; the native window stays until its gate.

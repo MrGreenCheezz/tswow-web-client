@@ -118,6 +118,27 @@ test("a paused renderer keeps no window listener and reads nothing when the poin
   } finally { renderer.destroy(); boot.close(); }
 });
 
+test("3.60: the window's pointer events tell the bridge which buttons are held, and a lost window lets go", async () => {
+  const { boot, renderer, view } = await mounted();
+  try {
+    assert.equal(boot.bridge.isMouseButtonDown(), false);
+    view.send("pointerdown", { clientX: 10, clientY: 10, buttons: 1 });
+    assert.equal(boot.bridge.isMouseButtonDown("LeftButton"), true);
+    view.send("pointermove", { clientX: 20, clientY: 10, buttons: 3 });
+    assert.equal(boot.bridge.isMouseButtonDown("RightButton"), true, "a second button arrives as a pointermove");
+    view.send("pointerup", { clientX: 20, clientY: 10, buttons: 0 });
+    assert.equal(boot.bridge.isMouseButtonDown(), false);
+    view.send("pointerdown", { clientX: 10, clientY: 10, buttons: 1 });
+    view.send("blur", {});
+    assert.equal(boot.bridge.isMouseButtonDown(), false, "a release outside the window never arrives");
+    view.send("pointerdown", { clientX: 10, clientY: 10, buttons: 1 });
+    view.send("pointercancel", { clientX: 10, clientY: 10, buttons: 0 });
+    assert.equal(boot.bridge.isMouseButtonDown(), false);
+    renderer.setPointerTracking(false);
+    for (const type of ["pointerdown", "pointerup", "pointercancel", "blur"]) assert.equal(view.count(type), 0, type);
+  } finally { renderer.destroy(); boot.close(); }
+});
+
 test("a paused renderer drops the cursor tooltip's document listener, and no pass brings it back", async () => {
   const { boot, renderer, doc } = await mounted();
   try {

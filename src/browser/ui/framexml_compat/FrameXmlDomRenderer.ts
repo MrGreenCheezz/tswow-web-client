@@ -816,17 +816,30 @@ export class FrameXmlDomRenderer {
   private trackPointer(): void {
     const view = this.#container.ownerDocument?.defaultView;
     if (!this.#bridge || typeof view?.addEventListener !== "function") return;
-    const move = (event: Event): void => this.rememberCursor(event);
+    // 3.60: IsMouseButtonDown. A second button pressed during a press is a pointermove, not a pointerdown.
+    const buttons = (event: Event): void => {
+      const held = (event as Event & { readonly buttons?: unknown }).buttons;
+      if (typeof held === "number") this.#bridge?.setMouseButtons(held);
+    };
+    const move = (event: Event): void => {
+      this.rememberCursor(event);
+      buttons(event);
+    };
+    const letGo = (): void => this.#bridge?.setMouseButtons(0);
     const resize = (): void => {
       this.#screenRects.clear();
       this.invalidateContainerBox();
     };
     const scroll = (): void => this.invalidateContainerBox();
     view.addEventListener("pointermove", move, { capture: true, passive: true });
+    for (const type of ["pointerdown", "pointerup", "pointercancel"]) view.addEventListener(type, buttons, { capture: true, passive: true });
+    view.addEventListener("blur", letGo);
     view.addEventListener("resize", resize);
     view.addEventListener("scroll", scroll, { capture: true, passive: true });
     this.#pointerCleanup = () => {
       view.removeEventListener("pointermove", move, { capture: true });
+      for (const type of ["pointerdown", "pointerup", "pointercancel"]) view.removeEventListener(type, buttons, { capture: true });
+      view.removeEventListener("blur", letGo);
       view.removeEventListener("resize", resize);
       view.removeEventListener("scroll", scroll, { capture: true });
     };

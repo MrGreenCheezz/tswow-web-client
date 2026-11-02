@@ -1534,6 +1534,7 @@ export class FrameXmlBoot {
         ? [this.#options.locale === "ruRU" ? "Выход браузера по умолчанию" : "Browser default output"]
         : []);
     vm.registerGlobal("GetCursorPosition", () => [...this.bridge.mousePosition]);
+    vm.registerGlobal("IsMouseButtonDown", (args) => (this.bridge.isMouseButtonDown(args[0]) ? [1] : [])); // 3.60
     // File IO is asynchronous in the browser. LoadAddOn therefore reports the current
     // synchronous state; the host calls loadAddon() and only then exposes a loaded LoD module to
     // Lua — except an add-on whose files were prefetched, which LoadAddOn runs inside the call as

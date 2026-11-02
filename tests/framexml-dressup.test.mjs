@@ -136,9 +136,9 @@ test("the Lua methods land on the DressUpModel type: SetUnit/TryOn/Dress/Undress
     const models = new FrameXmlDressUpModels(host());
     let changes = 0;
     const frame = boot.bridge.getFrame("DressUpModel");
-    assert.equal(frame.model.facing, undefined, "before install the widget layer only records SetRotation");
+    assert.equal(frame.model.facing, 0.61, "Model_OnLoad's SetRotation is the model's facing (the widget layer, 3.61)");
     assert.equal(installFrameXmlDressUp(boot, models, () => { changes += 1; }), true);
-    assert.equal(frame.model.facing, 0.61, "Model_OnLoad's rotation is applied once on install");
+    assert.equal(frame.model.facing, 0.61, "and the install leaves it there");
     const run = (code) => assert.equal(boot.vm.execute(code, "@dressup-fixture").ok, true, code);
     run(`DressUpModel:SetUnit("player"); DressUpModel:TryOn("${link(1001).replaceAll('"', '\\"')}")`);
     assert.deepEqual(slots(models.outfit(frame)), [[4, 101], [15, 9002], [16, 9003]]);

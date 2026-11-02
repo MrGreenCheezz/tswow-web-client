@@ -542,6 +542,10 @@ function takeEventExclusion(event: string): ReadonlySet<string> | undefined {
   return pending.owners;
 }
 
+/** `IsMouseButtonDown`'s names and numbers, in the order of the `PointerEvent.buttons` bits below. */
+const MOUSE_BUTTON_NAMES: readonly string[] = ["LeftButton", "RightButton", "MiddleButton", "Button4", "Button5"];
+const MOUSE_BUTTON_BITS: readonly number[] = [1, 2, 4, 8, 16];
+
 export class FrameXmlUiBridge implements FrameXmlUiApi {
   readonly #registry: FrameXmlTemplateRegistry;
   #runtime: LuaAddonRuntime | undefined;
@@ -590,6 +594,8 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
    */
   readonly #clearedPoints = new WeakMap<FrameXmlFrame, FrameXmlFrame["points"]>();
   #mousePosition: readonly [number, number] = [0, 0];
+  /** WORK_PLAN 3.60: `PointerEvent.buttons`, as the host last reported it. */
+  #mouseButtons = 0;
   readonly #fontStyles = new Map<string, FrameXmlFontStyle>();
   /** `fontObjectStyle`'s cache; a superset of `#fontStyles`, filled on demand. */
   readonly #fontObjectStyles = new Map<string, FrameXmlFontStyle>();
@@ -740,6 +746,21 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
   }
 
   get mousePosition(): readonly [number, number] { return this.#mousePosition; }
+
+  /** Trusted host button state, as `PointerEvent.buttons`: 1 left, 2 right, 4 middle, 8 and 16 the side buttons. */
+  setMouseButtons(buttons: number): void {
+    if (Number.isInteger(buttons) && buttons >= 0) this.#mouseButtons = buttons;
+  }
+
+  /**
+   * `IsMouseButtonDown`: by stock name or number; with no argument, any button. FCFTab_OnUpdate ends a
+   * chat frame's drag on the first frame this is false (FloatingChatFrame.lua:1181).
+   */
+  isMouseButtonDown(button?: unknown): boolean {
+    if (button === undefined || button === null) return this.#mouseButtons !== 0;
+    const bit = typeof button === "number" ? MOUSE_BUTTON_BITS[button - 1] : MOUSE_BUTTON_BITS[MOUSE_BUTTON_NAMES.indexOf(String(button))];
+    return bit !== undefined && (this.#mouseButtons & bit) !== 0;
+  }
 
   /**
    * Effective size: what the host laid out, else the distance between two opposite anchors, else

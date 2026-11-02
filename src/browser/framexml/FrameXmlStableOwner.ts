@@ -6,11 +6,8 @@
  * `parent="UIParent" hidden="true"` and a `left` UI panel (UIParent.lua:43). Its purchase dialog is
  * StaticPopup.lua's CONFIRM_BUY_STABLE_SLOT (:2725), already in the vertical.
  *
- * The 3D pet is not drawn in the full HUD. PetStableModel is a PlayerModel; SetPetStablePaperdoll
- * hands it the selected pet's creature entry through `SetCreature`, the same state the add-on
- * model stage (FrameXmlModelPreview.ts) draws from — but the world mount runs that stage only for
- * the add-ons-only presentation, so here the model box stays empty. Every slot, text, price and
- * command works without it.
+ * The 3D pet: PetStableModel is a PlayerModel; SetPetStablePaperdoll hands it the selected pet's
+ * creature entry through `SetCreature`, which the model stage draws (FrameXmlModelPreview.ts).
  *
  * Dragging: the slots' OnDragStart lifts a pet (PickupStablePet); the DOM host dispatches no
  * OnReceiveDrag, so the drop is the next click on a slot (its OnClick runs the same ClickStablePet

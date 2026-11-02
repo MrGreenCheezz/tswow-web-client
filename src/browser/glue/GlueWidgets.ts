@@ -3253,7 +3253,13 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
       AdvanceTime: record("AdvanceTime"),
       SetCustomCamera: record("SetCustomCamera"),
       ReplaceIconTexture: record("ReplaceIconTexture"),
-      SetRotation: record("SetRotation"),
+      // Model_RotateLeft/Right (ModelFrames.lua): the mount page's and the stable's rotate buttons (3.61).
+      SetRotation: ({ frame, args }) => {
+        bridge.update(frame, (m) => {
+          m.model.facing = num(args[0]);
+          pushModelCall(m, "SetRotation", args);
+        });
+      },
     };
   }
 
