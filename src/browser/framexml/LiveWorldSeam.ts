@@ -313,6 +313,7 @@ import { clientLocale } from "../Environment.js";
 import {
   isTracking, trackingFieldsSignature, trackingSpellsOf, type TrackingSpell,
 } from "../ui/TrackingSpells.js";
+import { activeTownTracker, setTownTracker, townTrackersOf, type TownTracker } from "../ui/TownTracking.js"; // 03.11
 import {
   AURA_FLAGS,
   type ActiveAura,
@@ -9604,21 +9605,34 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     return trackingSpellsOf(world.knownSpells.map((known) => known.id), (id) => this.#context.spell(id));
   }
 
+  /** 03.11: the trackers that are not spells; which class gets the two extra ones is read off the player. */
+  #townTrackers(): readonly TownTracker[] {
+    const player = this.#self();
+    return townTrackersOf(player ? unitField.classId(player) : undefined);
+  }
+
   trackingCount(): number {
-    return this.#trackingSpells(this.#context.world()).length;
+    return this.#trackingSpells(this.#context.world()).length + this.#townTrackers().length;
   }
 
   trackingInfo(index: number): FrameXmlTrackingInfo | undefined {
-    const spell = this.#trackingSpells(this.#context.world())[index - 1];
-    if (!spell) return undefined;
-    // Every tracker this client models is a spell, which is also what stock keys its icon crop on.
+    const spells = this.#trackingSpells(this.#context.world());
+    const spell = spells[index - 1];
+    if (!spell) {
+      const town = this.#townTrackers()[index - 1 - spells.length];
+      // «other»: what stock's menu shows the picture of uncropped, and what Wow.exe answers for these.
+      return town && [globalString(town.name) ?? town.name, town.texture, activeTownTracker() === town.name, "other"];
+    }
     return [spell.name, this.#context.spell(spell.spellId)?.iconPath ?? "", isTracking(spell, this.#self()), "spell"];
   }
 
   trackingTexture(): string {
     const player = this.#self();
     const active = this.#trackingSpells(this.#context.world()).find((spell) => isTracking(spell, player));
-    return (active && this.#context.spell(active.spellId)?.iconPath) || FRAMEXML_TRACKING_NONE_TEXTURE;
+    const spellTexture = active && this.#context.spell(active.spellId)?.iconPath;
+    if (spellTexture) return spellTexture;
+    const town = this.#townTrackers().find((row) => row.name === activeTownTracker());
+    return town?.texture ?? FRAMEXML_TRACKING_NONE_TEXTURE;
   }
 
   /**
@@ -9635,12 +9649,27 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     if (!world) return;
     if (index === undefined) {
       for (const spell of spells) if (isTracking(spell, player)) world.cancelAura(spell.spellId);
+      setTownTracker(undefined);
       return;
     }
     const spell = spells[index - 1];
-    if (!spell) return;
+    if (!spell) {
+      // 03.11: one tracker at a time: a town tracker takes the place of the last one, spell or not.
+      const town = this.#townTrackers()[index - 1 - spells.length];
+      if (!town) return;
+      if (activeTownTracker() === town.name) {
+        setTownTracker(undefined);
+        return;
+      }
+      for (const known of spells) if (isTracking(known, player)) world.cancelAura(known.spellId);
+      setTownTracker(town.name);
+      return;
+    }
     if (isTracking(spell, player)) world.cancelAura(spell.spellId);
-    else this.#context.castSpell(spell.spellId);
+    else {
+      setTownTracker(undefined);
+      this.#context.castSpell(spell.spellId);
+    }
   }
 
   /** `MSG_QUERY_NEXT_MAIL_TIME` answers 0 while unread mail waits and minus one day otherwise. */

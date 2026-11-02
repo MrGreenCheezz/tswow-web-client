@@ -170,10 +170,12 @@ test("SetMapToCurrentZone raises WORLD_MAP_UPDATE even when the zone is already 
 
 test("the stock tracking C API reads the known tracking spells and the player's tracking words", () => {
   const { seam, player, fired, pump, cancelled, casts } = liveFixture();
-  assert.deepEqual(call(seam, "GetNumTrackingTypes"), [2], "Огненный шар is not a tracker");
+  assert.deepEqual(call(seam, "GetNumTrackingTypes"), [2 + 13], "Огненный шар is not a tracker; the town trackers follow");
   assert.deepEqual(call(seam, "GetTrackingInfo", 1),
     ["Поиск трав", "Interface\\Icons\\INV_Misc_Flower_02", false, "spell"]);
-  assert.deepEqual(call(seam, "GetTrackingInfo", 3), []);
+  assert.deepEqual(call(seam, "GetTrackingInfo", 3).slice(1), ["Interface\\Minimap\\Tracking\\Repair", false, "other"]);
+  assert.deepEqual(call(seam, "GetTrackingInfo", 2 + 13).slice(1), ["Interface\\Minimap\\Tracking\\TrivialQuests", false, "other"]);
+  assert.deepEqual(call(seam, "GetTrackingInfo", 2 + 14), []);
   assert.deepEqual(call(seam, "GetTrackingTexture"), ["Interface\\Minimap\\Tracking\\None"]);
 
   seam.attach(pump);
@@ -195,6 +197,19 @@ test("the stock tracking C API reads the known tracking spells and the player's 
     assert.deepEqual(cancelled, [2383], "the active tracker is switched off by CMSG_CANCEL_AURA");
     call(seam, "SetTracking", undefined);
     assert.deepEqual(cancelled, [2383, 2383], "SetTracking(nil) cancels every active tracker");
+    assert.deepEqual(casts, [2580]);
+
+    // A town tracker takes the place of the last one and asks the server nothing.
+    call(seam, "SetTracking", 3);
+    assert.deepEqual(cancelled, [2383, 2383, 2383], "the spell tracker gives way");
+    assert.equal(call(seam, "GetTrackingInfo", 3)[2], true);
+    player.fields.set(UPDATE_FIELDS.PLAYER_TRACK_RESOURCES.offset, 0);
+    assert.deepEqual(call(seam, "GetTrackingTexture"), ["Interface\\Minimap\\Tracking\\Repair"]);
+    call(seam, "SetTracking", 4);
+    assert.equal(call(seam, "GetTrackingInfo", 3)[2], false, "one at a time");
+    assert.equal(call(seam, "GetTrackingInfo", 4)[2], true);
+    call(seam, "SetTracking", 4);
+    assert.deepEqual(call(seam, "GetTrackingTexture"), ["Interface\\Minimap\\Tracking\\None"]);
     assert.deepEqual(casts, [2580]);
   } finally {
     seam.detach();

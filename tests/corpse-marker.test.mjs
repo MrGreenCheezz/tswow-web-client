@@ -224,10 +224,10 @@ test("reclaim stays unavailable until the ghost reaches its own corpse on the sa
   }
 });
 
-test("the minimap draws the player's own corpse as a rim blip on the same map", async () => {
+test("the minimap marks the player's own corpse on the same map: a tombstone near, an arrow past the circle", async () => {
   const source = await readFile(new URL("../src/browser/ui/Minimap.ts", import.meta.url), "utf8");
   assert.match(source, /world\?\.corpse/, "the corpse comes from the world, not from object gossip");
-  assert.match(source, /corpse\.mapId === world\?\.mapId/, "an entrance-map dot never points at the wrong place");
-  assert.match(source, /#ff5a5a/, "its own colour, not the lootable-body green");
-  assert.match(source, /ring: true/, "ringed so it survives the rim clamp as a direction");
+  assert.match(source, /corpse\.mapId === world\?\.mapId/, "an entrance-map mark never points at the wrong place");
+  assert.match(source, /MINIMAP_CORPSE_ARROW_TEXTURE/, "past the circle the client's corpse arrow");
+  assert.match(source, /MINIMAP_CORPSE_POI_ICON/, "inside it the tombstone of POIIcons");
 });

@@ -159,6 +159,24 @@ function picture(hash: string): WmoMinimapPicture | undefined {
  * is made without the rows, and then an empty query keeps the terrain too: Stormwind's streets lit as
  * exterior are interiors to the MOGP flag alone, and without the root row they would go dark.
  */
+/** 03.11: whether the building minimap applies here, which also picks the client's second zoom table. */
+export function liveWmoMinimapApplies(
+  mapId: number,
+  position: { readonly x: number; readonly y: number; readonly z?: number },
+): boolean {
+  const live = session;
+  const locator = live?.locator;
+  const floor = locator?.floor;
+  const visual = locator?.visual;
+  if (!live || !locator || locator.map !== mapId || !floor || !visual || position.z === undefined) return false;
+  if (!locator.answersAt(mapId, position.x, position.y)) return false;
+  const table = live.table.table();
+  const wmoId = visual.wmoId, nameSet = visual.nameSet;
+  const groupRow = wmoId !== undefined && nameSet !== undefined ? table?.lookup(wmoId, nameSet, floor.groupId) : undefined;
+  const rootRow = wmoId !== undefined && nameSet !== undefined ? table?.whole(wmoId, nameSet) : undefined;
+  return wmoMinimapMode(floor.groupFlags, groupRow?.flags, rootRow?.flags) !== "terrain" && live.tiles.hasTiles(visual.name);
+}
+
 export function drawLiveWmoMinimap(
   context: CanvasRenderingContext2D,
   mapId: number,

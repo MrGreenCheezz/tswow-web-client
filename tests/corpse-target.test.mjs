@@ -112,17 +112,13 @@ function anyUnitHeight(height) {
   results.units.get = () => Float64Array.of(height, 0, 0, 0);
   return results;
 }
-const { updateMinimap, minimapSettings } = await import("../dist/code/browser/ui/Minimap.js");
+const { updateMinimap } = await import("../dist/code/browser/ui/Minimap.js");
 const { showTarget } = await import("../dist/code/browser/ui/Frames.js");
 const { getTip } = await import("../dist/code/browser/ui/Widgets.js");
 const { resetHeadOverlay, showChatBubble, updateHeadOverlay } =
   await import("../dist/code/browser/ui/HeadOverlay.js");
 const { createCamera, projectPoint } = await import("../dist/code/browser/SimpleScene.js");
 const { plateLayout } = await import("../dist/code/browser/NamePlate.js");
-
-/** The default frame: 160 CSS pixels across (`style.css:556`) at the default 266-yard zoom. */
-const MINIMAP_SIZE = 160;
-const CORPSE_COLOUR = "#b4e650";
 
 function unit(guid, { typeId = 3, x = 0, y = 0, health = 100, dynamicFlags = 0, entry = 0 } = {}) {
   const fields = new Map([
@@ -154,83 +150,27 @@ function stubWorld(objects, targetGuid) {
   };
 }
 
-/**
- * One minimap frame, and the corpse dots it drew, as offsets in pixels from the character.
- *
- * A blip is `beginPath`, `arc`, then the colour and `fill` — the colour is written *after* the arc,
- * so the two have to be paired rather than filtered on. Everything is in the frame's own
- * coordinates: `drawMinimap` translates to the centre of the circle before any blip is drawn.
- */
-function corpseDots(objects) {
+// 03.11: on Wow.exe's frames a lootable body gets no mark on the minimap, whatever its bits say; nor does a target.
+test("Л1 a body and a target get no mark on the minimap", () => {
   const previous = game.world;
+  const art = game.mapArt;
+  game.mapArt = { revision: 0, bitmap: (path) => ({ path }) };
   try {
-    game.world = stubWorld(objects, undefined);
+    const objects = new Map([
+      [1n, unit(1n, { typeId: 4 })],
+      [2n, unit(2n, { x: 20, health: 0, dynamicFlags: 0x01 })],
+      [3n, unit(3n, { x: 21 })],
+    ]);
+    game.world = stubWorld(objects, 3n);
     canvasCalls.length = 0;
     updateMinimap(0);
-    const dots = [];
-    let pending;
-    for (const call of canvasCalls) {
-      if (call.name === "arc") pending = { column: call.args[0], row: call.args[1] };
-      else if (call.name === "fill" && pending && call.fillStyle === CORPSE_COLOUR) {
-        dots.push(pending);
-        pending = undefined;
-      }
-    }
-    return dots;
+    const painted = canvasCalls.filter((call) => call.name === "drawImage").map((call) => call.args[0].path);
+    assert.ok(painted.some((path) => path.includes("MinimapArrow")), "the frame was painted");
+    assert.deepEqual(painted.filter((path) => path.includes("ObjectIcons")), []);
   } finally {
     game.world = previous;
+    game.mapArt = art;
   }
-}
-
-test("Л1 the minimap dot is the loot bit and nothing else", () => {
-  const player = unit(1n, { typeId: 4 });
-  const objects = new Map([
-    [1n, player],
-    // Dead and still lootable: the dot.
-    [2n, unit(2n, { x: 20, health: 0, dynamicFlags: 0x01 })],
-    // Dead and emptied — the core clears the bit (`LootHandler.cpp:411`) — so no dot. Reading
-    // health instead would leave every kill of the day on the map for as long as the body stood.
-    [3n, unit(3n, { x: 21, health: 0, dynamicFlags: 0x04 })],
-    // Alive. The bit is on it, which the core does not do, but if it ever did the dot must not
-    // follow: this dot means «a body worth walking back to».
-    [4n, unit(4n, { x: 22, health: 60, dynamicFlags: 0x01 })],
-    // A player's corpse is not a creature and carries no creature loot.
-    [5n, unit(5n, { typeId: 4, x: 23, health: 0, dynamicFlags: 0x01 })],
-  ]);
-  assert.equal(corpseDots(objects).length, 1);
-  assert.deepEqual(objects.get(2n).fields.get(UPDATE_FIELDS.UNIT_DYNAMIC_FLAGS.offset), 0x01);
-});
-
-test("Л1 the corpse dot is ranged, and its range is where the rim stops lying", () => {
-  // The review's finding: `settings.zoom / 2` is exactly `radius` pixels, while the drawing loop
-  // clamps every blip to `radius - 4`, so the outer four pixels admitted dots and then pinned them
-  // all to the same circle. At the default 160 px frame and 266 yards across — 1.6625 yards to the
-  // pixel — that was every body between 126.35 and 133 yards drawn at radius 76: 5% of the radius
-  // and 9.75% of the area, over exactly the band where «walk back for it» is a real decision.
-  const { zoom } = minimapSettings();
-  assert.equal(zoom, 266, "the default zoom, which the arithmetic below is taken at");
-  const radius = MINIMAP_SIZE / 2;
-  const yardsPerPixel = zoom / (radius * 2);
-  const reach = (radius - 4) * yardsPerPixel;
-  assert.ok(Math.abs(reach - 126.35) < 1e-9, `${reach}`);
-
-  const player = unit(1n, { typeId: 4 });
-  const at = (yards) => corpseDots(new Map([
-    [1n, player],
-    [2n, unit(2n, { x: yards, health: 0, dynamicFlags: 0x01 })],
-  ]));
-
-  // Just inside: drawn, and drawn where the body is rather than on the rim. `minimapBlip` puts
-  // north — falling row — at rising X, so the row is the negated distance in pixels.
-  const near = at(reach - 1);
-  assert.equal(near.length, 1);
-  assert.ok(Math.abs(near[0].row + (reach - 1) / yardsPerPixel) < 1e-6,
-    `the dot was clamped: row ${near[0].row}`);
-  assert.ok(Math.hypot(near[0].row, near[0].column) < radius - 4);
-
-  // Just outside: no dot at all, rather than a dot on the rim saying «somewhere that way».
-  assert.deepEqual(at(reach + 1), []);
-  assert.deepEqual(at(zoom / 2 - 1), [], "including the whole band the old range admitted");
 });
 
 test("Л1 «Обыскать» is marked rather than disabled, and says which it is", () => {

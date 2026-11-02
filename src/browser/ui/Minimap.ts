@@ -10,7 +10,18 @@ import {
   MINIMAP_TILE_PIXELS, MINIMAP_YARDS_PER_PIXEL, clampToCircle, minimapBlip, minimapPixel,
   minimapTileOf, minimapWorldAt, type MinimapPixel, type WorldPoint,
 } from "../MinimapGeometry.js";
-import { formatGameTime } from "../../world/GameTimeProtocol.js";
+import {
+  MINIMAP_CORPSE_ARROW_TEXTURE, MINIMAP_CORPSE_POI_ICON, MINIMAP_DEFAULT_INDOOR_ZOOM, MINIMAP_DEFAULT_OUTDOOR_ZOOM,
+  MINIMAP_GROUP_ARROW_TEXTURE, MINIMAP_ICON_UNITS, MINIMAP_MASK_TEXTURE, MINIMAP_OBJECT_CELL, MINIMAP_OBJECT_ICONS_TEXTURE,
+  MINIMAP_PARTY_BLIPS_TEXTURE, MINIMAP_PARTY_CELL, MINIMAP_PLAYER_ARROW_TEXTURE, MINIMAP_PLAYER_ARROW_UNITS,
+  MINIMAP_POI_ARROW_TEXTURE, MINIMAP_RIM_ARROW_UNITS, MINIMAP_RIM_FRACTION, MINIMAP_TILE_SHIFT_FRACTION, MINIMAP_TOWN_CELL,
+  MINIMAP_UNITS, MINIMAP_ZOOM_LEVELS, minimapPartyCell, minimapPastRim, minimapPoiHasArrow, minimapQuestCell, minimapRimAngle,
+  minimapRimPois, minimapTileTint, minimapTrackedCell, minimapYards, minimapZoomIndex, type MinimapIconCell, type MinimapRimPoi,
+} from "./MinimapArt.js"; // 03.11
+import { townTrackedCell, trivialQuestsTracked } from "./TownTracking.js"; // 03.11
+import { unit as unitField } from "../../world/Fields.js";
+import { reactionTo } from "../game/Targeting.js";
+import { formatGameTime, halfMinuteOfDay } from "../../world/GameTimeProtocol.js";
 import { rightRail } from "./Dom.js";
 import { settingOn, watchSettingsApplied } from "./Settings.js";
 import { skinnable, slot } from "./Slots.js";
@@ -20,10 +31,10 @@ import { setTip } from "./Widgets.js";
 import { partyBlipMembers } from "../game/PartyPositions.js";
 import { activeGossipPoi, type GossipPoiMark } from "../GossipPoi.js"; // 3.13
 import {
-  drawGossipPoi, gossipPoiPlacement, MINIMAP_GUIDE_ARROW_TEXTURE, MINIMAP_POI_ICONS_TEXTURE,
+  drawGossipPoi, gossipPoiPlacement, minimapPoiIconCell, MINIMAP_GUIDE_ARROW_TEXTURE, MINIMAP_POI_ICONS_TEXTURE,
 } from "./MinimapGossipPoi.js"; // 3.13
 // 05.10-A7b-4 (7.13/7.14): the located area (WMO room → grid → map) and the building's own minimap.
-import { drawLiveWmoMinimap, liveAreaIdAt, liveIndoorZoneTexts, liveWmoMinimapRevision } from "../AreaLocatorLive.js";
+import { drawLiveWmoMinimap, liveAreaIdAt, liveIndoorZoneTexts, liveWmoMinimapApplies, liveWmoMinimapRevision } from "../AreaLocatorLive.js";
 
 /**
  * The minimap: the client's own baked tiles under the character, with the zone name and the
@@ -40,14 +51,14 @@ import { drawLiveWmoMinimap, liveAreaIdAt, liveIndoorZoneTexts, liveWmoMinimapRe
  * part of the permanent interface like the action bar, not a window to be dragged and remembered.
  */
 
-/** Yards across the circle. The middle one is about what the original client opens at. */
-const ZOOM_LEVELS = [100, 133, 200, 266, 400] as const;
 const STORAGE_KEY = "webclient.minimap";
 /** How often the zone under the character is recounted; every frame is a lookup for nothing. */
 const ZONE_INTERVAL = 250;
 
 interface MinimapSettings {
-  zoom: number;
+  /** 03.11: the client's two zooms, `minimapZoom` and `minimapInsideZoom`: a step of MinimapArt's tables, 0 the widest. */
+  outsideZoom: number;
+  insideZoom: number;
   /** Whether the map turns with the character, as the original client can be set to. */
   rotate: boolean;
 }
@@ -117,10 +128,13 @@ let activeMinimapAdoption: MinimapCanvasAdoption | undefined;
 function readSettings(): MinimapSettings {
   try {
     const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "null") as Partial<MinimapSettings> | null;
-    const zoom = ZOOM_LEVELS.indexOf((stored?.zoom ?? 0) as (typeof ZOOM_LEVELS)[number]) >= 0 ? stored!.zoom! : 266;
-    return { zoom, rotate: stored?.rotate === true };
+    return {
+      outsideZoom: minimapZoomIndex(stored?.outsideZoom, MINIMAP_DEFAULT_OUTDOOR_ZOOM),
+      insideZoom: minimapZoomIndex(stored?.insideZoom, MINIMAP_DEFAULT_INDOOR_ZOOM),
+      rotate: stored?.rotate === true,
+    };
   } catch {
-    return { zoom: 266, rotate: false };
+    return { outsideZoom: MINIMAP_DEFAULT_OUTDOOR_ZOOM, insideZoom: MINIMAP_DEFAULT_INDOOR_ZOOM, rotate: false };
   }
 }
 
@@ -152,8 +166,8 @@ function build(): MinimapParts {
 
   const controls = document.createElement("div");
   controls.className = "minimap-controls";
-  const out = controlButton("−", "Отдалить", () => changeZoom(1));
-  const into = controlButton("+", "Приблизить", () => changeZoom(-1));
+  const out = controlButton("−", "Отдалить", () => changeZoom(-1));
+  const into = controlButton("+", "Приблизить", () => changeZoom(1));
   const rotate = controlButton("⟳", "Вращать карту по направлению взгляда", () => {
     // Through the settings store rather than straight into the local copy: rotation is one of the
     // options the settings window owns, and the two would otherwise disagree.
@@ -372,9 +386,9 @@ export function adoptMinimapCanvas(target: HTMLElement | undefined): (() => void
 
 /** The two zoom buttons grey out at the ends of the range, and the rotate button says it is on. */
 function showControlState(out: HTMLButtonElement, into: HTMLButtonElement, rotate: HTMLButtonElement): void {
-  const index = ZOOM_LEVELS.indexOf(settings.zoom as (typeof ZOOM_LEVELS)[number]);
-  out.disabled = index >= ZOOM_LEVELS.length - 1;
-  into.disabled = index <= 0;
+  const index = currentZoomIndex();
+  out.disabled = index <= 0;
+  into.disabled = index >= MINIMAP_ZOOM_LEVELS - 1;
   rotate.classList.toggle("is-active", settings.rotate);
   rotate.setAttribute("aria-pressed", String(settings.rotate));
 }
@@ -396,38 +410,35 @@ function controlButton(label: string, title: string, onClick: () => void): HTMLB
 
 /** `Minimap_ZoomIn`/`Minimap_ZoomOut` (MINIMAPZOOMIN/OUT, 3.11): the + and − buttons' step. */
 export function zoomMinimap(direction: "in" | "out"): void {
-  changeZoom(direction === "in" ? -1 : 1);
+  changeZoom(direction === "in" ? 1 : -1);
+}
+
+/**
+ * 03.11: whether the map under the character is a building's pictures, which is what Wow.exe keys its second zoom on:
+ * in Stormwind's streets `IsIndoors` is nil and Minimap:SetZoom still writes `minimapInsideZoom`.
+ */
+let insideNow = false;
+
+function currentZoomIndex(): number {
+  return insideNow ? settings.insideZoom : settings.outsideZoom;
+}
+
+/** Yards across the circle right now. */
+function currentYards(): number {
+  return minimapYards(insideNow, currentZoomIndex());
 }
 
 function changeZoom(step: number): void {
-  const index = ZOOM_LEVELS.indexOf(settings.zoom as (typeof ZOOM_LEVELS)[number]);
-  setMinimapZoomIndex((index < 0 ? ZOOM_LEVELS.length - 2 : index) + step);
+  setMinimapZoomIndex(currentZoomIndex() + step);
 }
 
 function setMinimapZoomIndex(index: number): void {
   if (!Number.isFinite(index)) return;
-  const next = ZOOM_LEVELS[Math.max(0, Math.min(ZOOM_LEVELS.length - 1, Math.trunc(index)))];
-  if (next === undefined || next === settings.zoom) return;
-  settings = { ...settings, zoom: next };
+  const next = Math.max(0, Math.min(MINIMAP_ZOOM_LEVELS - 1, Math.trunc(index)));
+  if (next === currentZoomIndex()) return;
+  settings = insideNow ? { ...settings, insideZoom: next } : { ...settings, outsideZoom: next };
   writeSettings();
   refreshMinimapControls();
-}
-
-/**
- * FrameXML's Minimap:GetZoom() is a distance index, where increasing the value zooms in.  The
- * native minimap stores the corresponding yards-across values in ascending order, so the bridge
- * has to reverse the index at this boundary.  Native +/- controls intentionally keep using the
- * local index above: their callbacks already express the correct visual direction.
- */
-function frameXmlZoomIndex(): number {
-  const index = ZOOM_LEVELS.indexOf(settings.zoom as (typeof ZOOM_LEVELS)[number]);
-  return index >= 0 ? ZOOM_LEVELS.length - 1 - index : ZOOM_LEVELS.length - 2;
-}
-
-function setFrameXmlZoomIndex(index: number): void {
-  if (!Number.isFinite(index)) return;
-  const clamped = Math.max(0, Math.min(ZOOM_LEVELS.length - 1, Math.trunc(index)));
-  setMinimapZoomIndex(ZOOM_LEVELS.length - 1 - clamped);
 }
 
 /** Called by the bus when someone in the party marks a spot. */
@@ -543,7 +554,7 @@ function pingMinimapAt(point: MinimapPixel, size: number): void {
   const { x, y } = minimapWorldAt(
     self.position,
     point,
-    settings.zoom / size,
+    currentYards() / size,
     settings.rotate ? self.position.orientation : undefined,
   );
   // Record before sending so a synchronous test/server echo is absorbed as well as an async one.
@@ -561,9 +572,9 @@ export interface MinimapWidgetAdapter {
 
 /** The stable bridge for stock Minimap.lua's zoom and local-pixel ping calls. */
 export const minimapWidgetAdapter: MinimapWidgetAdapter = {
-  getZoom: frameXmlZoomIndex,
-  getZoomLevels: () => ZOOM_LEVELS.length,
-  setZoom: setFrameXmlZoomIndex,
+  getZoom: currentZoomIndex,
+  getZoomLevels: () => MINIMAP_ZOOM_LEVELS,
+  setZoom: setMinimapZoomIndex,
   pingLocation: (x, y) => {
     if (!Number.isFinite(x) || !Number.isFinite(y)) return;
     const canvas = parts?.canvas;
@@ -585,6 +596,7 @@ export function updateMinimap(now: number): void {
   if (parts.root.hidden) parts.root.hidden = false;
 
   const size = resize(parts.canvas, parts.context, adoptedMinimapSize(parts.canvas));
+  insideNow = liveWmoMinimapApplies(world.mapId, self.position); // 03.11
   // The canvas is a repaint, not a transform: sixty passes a second cost the same when nothing
   // has changed, and nothing that matters lands between two of them while the player stands still.
   // The clock keeps the map honest at a much lower rate, and anything that moves — the character,
@@ -596,9 +608,9 @@ export function updateMinimap(now: number): void {
   const poiOnMap = poi && poi.mapId === world.mapId ? poi : undefined;
   const key = `${world.mapId}|${Math.round(self.position.x * 8)}|${Math.round(self.position.y * 8)}`
     + `|${Math.round(self.position.orientation * 256)}|${size}`
-    + `|${game.minimapTiles?.revision ?? -1}|${settings.zoom}|${settings.rotate ? 1 : 0}`
+    + `|${game.minimapTiles?.revision ?? -1}|${currentYards()}|${settings.rotate ? 1 : 0}|${game.mapArt?.revision ?? -1}`
     + `|${liveWmoMinimapRevision()}` // 05.10-A7b-4 (7.14): the floor's building and its answer
-    + `|${poiOnMap ? `${poiOnMap.x},${poiOnMap.y},${poiOnMap.icon},${poiOnMap.flags}|${game.mapArt?.revision ?? -1}` : "-"}`;
+    + `|${poiOnMap ? `${poiOnMap.x},${poiOnMap.y},${poiOnMap.icon},${poiOnMap.flags}` : "-"}`;
   // The state is what the blips are made of, and it used to be in the key as its revision — which
   // every packet about anybody moves, so in a crowd the whole circle was repainted every frame for
   // neighbours far outside it. When the revision has moved, the blips are collected (one walk of
@@ -606,7 +618,7 @@ export function updateMinimap(now: number): void {
   // only a blip that appeared, went or moved asks for the frame.
   const stateMoved = world.state.revision !== lastDrawRevision || lastDrawWorld !== world;
   lastDrawRevision = world.state.revision;
-  let blips = stateMoved ? collectBlips(size / 2, self.position, world.state) : undefined;
+  let blips = stateMoved ? collectBlips(self.position, world.state) : undefined;
   let signature = blips === undefined ? undefined : blipSignature(blips);
   const blipsMoved = signature !== undefined && !sameBlipSignature(signature, lastBlipSignature);
   // A different world is never the same picture, whatever its numbers say; and nothing else the
@@ -621,7 +633,7 @@ export function updateMinimap(now: number): void {
   lastDrawWorld = world;
   lastDrawAt = now;
   if (blips === undefined || signature === undefined) {
-    blips = collectBlips(size / 2, self.position, world.state);
+    blips = collectBlips(self.position, world.state);
     signature = blipSignature(blips);
   }
   lastBlipSignature = signature;
@@ -629,10 +641,32 @@ export function updateMinimap(now: number): void {
   updateLabels(parts, world, self.position, now);
 }
 
+/** 03.11: device pixels a drawing unit takes on the screen, asked of the layout once a second. */
+let backingRatio = 0;
+let backingRatioAt = Number.NEGATIVE_INFINITY;
+let backingRatioSize = 0;
+
+/**
+ * The stock frame is 140 units and the interface scales them with a transform: at 1080 lines it takes 197 pixels of the
+ * screen, and a backing store of 140 would be stretched over them. Wow.exe draws into the frame's pixels.
+ */
+function canvasBackingRatio(canvas: HTMLCanvasElement, size: number): number {
+  const now = performance.now();
+  if (backingRatio === 0 || size !== backingRatioSize || now - backingRatioAt >= 1000) {
+    backingRatioAt = now;
+    backingRatioSize = size;
+    const device = window.devicePixelRatio || 1;
+    const box = canvas.getBoundingClientRect?.();
+    const shown = box ? Math.min(box.width, box.height) : 0;
+    backingRatio = shown > 0 && size > 0 ? Math.min(4, (shown * device) / size) : Math.min(2, device);
+  }
+  return backingRatio;
+}
+
 /** CSS pixels for drawing, device pixels for the backing store: the same scheme the scene uses. */
 function resize(canvas: HTMLCanvasElement, context: CanvasRenderingContext2D, authoredSize?: number): number {
   const size = authoredSize ?? (canvas.clientWidth || numericCssPixels(readStyle(canvas.style, "width")) || 160);
-  const ratio = Math.min(2, window.devicePixelRatio || 1);
+  const ratio = canvasBackingRatio(canvas, size);
   const pixels = Math.round(size * ratio);
   if (canvas.width !== pixels || canvas.height !== pixels) {
     canvas.width = pixels;
@@ -642,6 +676,12 @@ function resize(canvas: HTMLCanvasElement, context: CanvasRenderingContext2D, au
   return size;
 }
 
+/**
+ * 03.11: in Wow.exe's order, read from its draw calls: the map through Textures\\MinimapMask, the party, the object icons,
+ * the arrows on the rim, and the character's arrow over all of it. Only the map is masked; the rest is cut by the
+ * FrameXML border drawn over the canvas. The building's pictures come out of a render target cleared to black, so the
+ * circle is black where they end; the terrain tiles have nothing behind them.
+ */
 function drawMinimap(
   context: CanvasRenderingContext2D,
   size: number,
@@ -652,41 +692,56 @@ function drawMinimap(
   poi?: GossipPoiMark,
 ): void {
   const radius = size / 2;
+  const yards = currentYards();
+  const facing = settings.rotate ? position.orientation : undefined;
   context.clearRect(0, 0, size, size);
   context.save();
-  context.beginPath();
-  context.arc(radius, radius, radius - 1, 0, Math.PI * 2);
-  context.clip();
-  context.fillStyle = "#0b1014";
-  context.fillRect(0, 0, size, size);
-
+  if (insideNow) {
+    context.fillStyle = "#000000";
+    context.fillRect(0, 0, size, size);
+  }
   context.translate(radius, radius);
   if (settings.rotate) context.rotate(position.orientation);
   // 05.10-A7b-4 (7.14): in an interior room of a building with bakes, its pictures replace the ADT tiles.
   // 12.10 (7.27): wherever Wow.exe 0x007F5BA0 chooses the building minimap (Stormwind's streets too).
-  if (!drawLiveWmoMinimap(context, mapId, position, size / (settings.zoom / MINIMAP_YARDS_PER_PIXEL), settings.zoom / 2)) {
+  if (!drawLiveWmoMinimap(context, mapId, position, size / (yards / MINIMAP_YARDS_PER_PIXEL), yards / 2)) {
     drawTiles(context, size, mapId, position);
   }
-  drawBlips(context, radius, position, blips, now);
+  context.restore();
+  maskMap(context, size);
+
+  context.save();
+  context.translate(radius, radius);
+  drawIcons(context, size, position, blips, facing);
+  drawPings(context, radius, position, yards / size, now, facing);
+  drawRimArrows(context, size, position, blips, facing);
   context.restore();
 
   // 3.13: the guard's POI — its POIIcons cell near, a guide arrow on the rim farther (MinimapGossipPoi.ts).
   if (poi) {
-    const placement = gossipPoiPlacement(poi, position, settings.zoom / 2, settings.zoom / size,
-      settings.rotate ? position.orientation : undefined);
+    const placement = gossipPoiPlacement(poi, position, yards / 2, yards / size, facing);
     drawGossipPoi(context, radius, placement, {
       icons: game.mapArt?.bitmap(MINIMAP_POI_ICONS_TEXTURE),
       arrow: placement?.kind === "arrow" ? game.mapArt?.bitmap(MINIMAP_GUIDE_ARROW_TEXTURE) : undefined,
     }, poi);
   }
 
-  drawPlayerArrow(context, radius, position.orientation);
+  drawPlayerArrow(context, size, position.orientation);
+}
 
-  context.beginPath();
-  context.arc(radius, radius, radius - 1, 0, Math.PI * 2);
-  context.strokeStyle = "#b79b58";
-  context.lineWidth = 2;
-  context.stroke();
+/** Keeps the map only where the mask says; a plain circle until the mask has landed. */
+function maskMap(context: CanvasRenderingContext2D, size: number): void {
+  const mask = game.mapArt?.bitmap(MINIMAP_MASK_TEXTURE);
+  context.save();
+  context.globalCompositeOperation = "destination-in";
+  if (mask) {
+    context.drawImage(mask, 0, 0, size, size);
+  } else {
+    context.beginPath();
+    context.arc(size / 2, size / 2, size / 2, 0, Math.PI * 2);
+    context.fill();
+  }
+  context.restore();
 }
 
 function drawTiles(
@@ -698,13 +753,18 @@ function drawTiles(
   const tiles = game.minimapTiles;
   if (!tiles) return;
   // Screen pixels per sheet pixel. The sheet is 256 pixels to an ADT cell, whatever the zoom.
-  const scale = size / (settings.zoom / MINIMAP_YARDS_PER_PIXEL);
+  const yards = currentYards();
+  const scale = size / (yards / MINIMAP_YARDS_PER_PIXEL);
   const centre = minimapPixel(position.x, position.y);
   const here = minimapTileOf(position.x, position.y);
   // Enough cells to cover the circle's corners at this zoom, which is one either side even at the
-  // widest: a tile is 533 yards and the widest circle is 400.
-  const reach = Math.ceil(settings.zoom / 2 / (MINIMAP_TILE_PIXELS * MINIMAP_YARDS_PER_PIXEL)) + 1;
+  // widest: a tile is 533 yards and the widest circle is 467.
+  const reach = Math.ceil(yards / 2 / (MINIMAP_TILE_PIXELS * MINIMAP_YARDS_PER_PIXEL)) + 1;
   context.imageSmoothingEnabled = true;
+  const shift = size * MINIMAP_TILE_SHIFT_FRACTION;
+  context.translate(-shift, -shift);
+  // 03.11: only over the tiles that are there: where there is none the circle stays empty, not tinted.
+  const lit = new Path2D();
   for (let gridX = here.gridX - reach; gridX <= here.gridX + reach; gridX++) {
     for (let gridY = here.gridY - reach; gridY <= here.gridY + reach; gridY++) {
       const bitmap = tiles.tile(mapId, gridX, gridY);
@@ -717,40 +777,60 @@ function drawTiles(
       // Half a pixel of overlap: neighbouring tiles otherwise show a hairline of background
       // between them wherever the scale lands on a fraction.
       context.drawImage(bitmap, left, top, side + 0.5, side + 0.5);
+      lit.rect(left, top, side + 0.5, side + 0.5);
     }
   }
+  const tint = currentTileTint(mapId, position);
+  if (tint) {
+    context.save();
+    context.globalCompositeOperation = "multiply";
+    context.fillStyle = tint;
+    context.fill(lit);
+    context.restore();
+  }
 }
+
+/** 03.11: the world light where the character stands, as the multiplier of the terrain tiles; undefined until it has landed. */
+function currentTileTint(mapId: number, position: WorldPoint): string | undefined {
+  const time = game.world?.currentGameTime();
+  const sample = time ? game.light?.sample(mapId, position.x, position.y, halfMinuteOfDay(time)) : undefined;
+  if (!sample) return undefined;
+  const [r, g, b] = minimapTileTint(sample.colours.ambient, sample.colours.diffuse);
+  return `rgb(${Math.round(r * 255)}, ${Math.round(g * 255)}, ${Math.round(b * 255)})`;
+}
+
+type IconSheet = "party" | "objects" | "poi";
 
 interface Blip {
   /** Where it stands in the world; projected onto the circle only when it is painted. */
   at: WorldPoint;
-  colour: string;
-  size: number;
-  ring?: boolean;
+  sheet: IconSheet;
+  cell: MinimapIconCell;
 }
 
-interface QuestMark {
+/** Something past the map, told by an arrow on the rim. */
+interface RimArrow {
   at: WorldPoint;
-  mark: string;
+  texture: string;
 }
 
 /** Everything the state contributes to the circle, in painter order. */
 interface MinimapBlips {
   readonly blips: readonly Blip[];
-  readonly questMarks: readonly QuestMark[];
+  readonly arrows: readonly RimArrow[];
 }
 
 /**
- * The blips as plain values, in painter order: two equal signatures paint the same dots.
+ * The blips as plain values, in painter order: two equal signatures paint the same icons.
  *
  * World positions rather than circle pixels, so the character's own small steps stay with the
  * rounded key that has always decided them, and only something else moving asks from here.
  */
 function blipSignature(collected: MinimapBlips): unknown[] {
   const signature: unknown[] = [];
-  for (const blip of collected.blips) signature.push(blip.at.x, blip.at.y, blip.colour, blip.size, blip.ring === true);
-  signature.push(collected.questMarks.length);
-  for (const mark of collected.questMarks) signature.push(mark.at.x, mark.at.y, mark.mark);
+  for (const blip of collected.blips) signature.push(blip.at.x, blip.at.y, blip.sheet, blip.cell.column, blip.cell.row);
+  signature.push(collected.arrows.length);
+  for (const arrow of collected.arrows) signature.push(arrow.at.x, arrow.at.y, arrow.texture);
   return signature;
 }
 
@@ -760,130 +840,97 @@ function sameBlipSignature(left: readonly unknown[], right: readonly unknown[]):
   return true;
 }
 
-/**
- * How far inside the rim every blip is parked, in pixels.
- *
- * The frame's edge is a 2 px stroke on the circle at `radius - 1` (`drawMinimap` above), so a dot
- * at the full radius would be sitting on it. Named rather than spelled out at each of the three
- * places it is used, because the corpse dot's *range* is worked out from it: the loop below clamps
- * every blip to `radius - BLIP_RIM_INSET`, so a dot admitted from further out than that would be
- * pinned to the same ring of pixels as every other dot out there.
- */
+/** How far inside the rim a ping is parked, in pixels: at the full radius it would sit under the border. */
 const BLIP_RIM_INSET = 4;
-
-/**
- * The `!`/`?` over a quest giver on the minimap.
- *
- * The plate twin is `questMarkFor` in QuestLogData.ts; kept as a separate pure function so the
- * minimap never imports the QuestLog's UI ring. Only "something here for you" statuses mark;
- * the rest draw nothing.
- */
-export function minimapQuestMark(status: number): "!" | "?" | undefined {
-  if (status === QUEST_STATUS_REWARD || status === QUEST_STATUS_REWARD2
-    || status === QUEST_STATUS_REWARD_REP || status === QUEST_STATUS_LOW_LEVEL_REWARD_REP) return "?";
-  if (status === QUEST_STATUS_AVAILABLE || status === QUEST_STATUS_AVAILABLE_REP
-    || status === QUEST_STATUS_LOW_LEVEL_AVAILABLE || status === QUEST_STATUS_LOW_LEVEL_AVAILABLE_REP) return "!";
-  return undefined;
-}
 
 /** The world position a blip is kept at: a copy, so the signature is what was collected. */
 function blipAt(point: WorldPoint): WorldPoint {
   return { x: point.x, y: point.y };
 }
 
-/** Every dot and mark the state puts on the circle, gathered in one walk of the object table. */
-function collectBlips(radius: number, position: WorldPoint, state: WorldState): MinimapBlips {
-  const world = game.world;
-  const yardsPerPixel = settings.zoom / (radius * 2);
-  const blips: Blip[] = [];
+/** 03.11: the AreaPOI of this map that may get an arrow, recounted when the snapshot or the map changes. */
+let rimPois: { data: object; mapId: number; list: readonly MinimapRimPoi[] } | undefined;
 
-  // The party. The original client shows these and nothing else by default, and they are the one
-  // thing a minimap is genuinely needed for.
-  // 4.06: a member out of sight stays, at the whole-yard position SMSG_PARTY_MEMBER_STATS carries,
-  // drawn smaller and paler so a rounded point does not pass for an exact one.
+function rimPoisOfMap(mapId: number | undefined): readonly MinimapRimPoi[] {
+  const data = game.areas?.snapshot();
+  if (!data || mapId === undefined) return [];
+  if (rimPois?.data !== data || rimPois.mapId !== mapId) rimPois = { data, mapId, list: minimapRimPois(data.areaPois, mapId) };
+  return rimPois.list;
+}
+
+/**
+ * Every icon and arrow the state puts on the circle, gathered in one walk of the object table.
+ *
+ * 03.11, measured on rings of fake objects round the character: past the circle nothing gets an icon, and only the
+ * party, the corpse and the AreaPOI get an arrow. A target, a lootable body and a plain NPC get nothing at all; a quest
+ * giver's icon wins over tracking.
+ */
+function collectBlips(position: WorldPoint, state: WorldState): MinimapBlips {
+  const world = game.world;
+  const radiusYards = currentYards() / 2;
+  const blips: Blip[] = [];
+  const arrows: RimArrow[] = [];
+
+  // 4.06: a member out of sight stays, at the whole-yard position SMSG_PARTY_MEMBER_STATS carries.
   if (world?.group?.members.length) {
     for (const member of partyBlipMembers(world, (zoneId) => game.areas?.area(zoneId)?.mapId)) {
       // The member record is a fresh copy per collection, so it is the blip's position as it is.
-      blips.push(member.precise
-        ? { at: member, colour: "#65a9ff", size: 3.5 }
-        : { at: member, colour: "#65a9ff99", size: 2.5 });
+      if (minimapPastRim(position, member, radiusYards)) {
+        arrows.push({ at: member, texture: MINIMAP_GROUP_ARROW_TEXTURE });
+      } else {
+        // Out of sight the class is the name answer's, as it is for Wow.exe.
+        const object = state.objects.get(member.guid);
+        const classId = object ? unitField.classId(object) : world.names?.details?.(member.guid)?.classId;
+        blips.push({ at: member, sheet: "party", cell: minimapPartyCell(classId) });
+      }
     }
   }
 
-  // The target, so that what the character is fighting is findable when it runs.
-  const target = world?.targetGuid === undefined ? undefined : state.objects.get(world.targetGuid);
-  if (target?.position && !isWorldObjectDead(target)) {
-    blips.push({ at: blipAt(target.position), colour: "#ffe36e", size: 4, ring: true });
-  }
-
-  // Bodies that still hold something, strictly by `UNIT_DYNFLAG_LOOTABLE` — no guess from health,
-  // no memory of who killed what. The reference client draws the same dot off the same bit
-  // (`wowee/src/ui/game_screen_minimap.cpp:738-758`) and in the same yellow-green.
-  //
-  // Ranged rather than clamped, unlike the target above: a corpse is a place to walk back to, and
-  // a dot pinned to the rim would say «somewhere that way» about every kill made in the zone.
-  //
-  // The range is the clamp's own radius rather than the circle's, and that is the whole of the
-  // difference between saying it and doing it. `settings.zoom / 2` is exactly `radius` pixels, so
-  // the four pixels the loop below insets by were four pixels of dots that had been clamped after
-  // all: at the default 160 px frame and 266 yards across, 1.6625 yards to the pixel, every body
-  // between 126.35 and 133 yards was drawn on the same circle of radius 76 — 5% of the radius and
-  // 9.75% of the area of the map.
-  //
-  // A single pass covers corpses, quest marks and tracking. In a crowded city this otherwise
-  // walked the whole object table twice on every repaint while moving.
-  const reach = (radius - BLIP_RIM_INSET) * yardsPerPixel;
-  const reachSquared = reach * reach;
+  // A single pass covers quest marks and tracking. In a crowded city this otherwise walked the
+  // whole object table twice on every repaint while moving.
+  const reachSquared = radiusYards * radiusYards;
   const questStatus = world?.questGiverStatus;
   const tracks = trackingMatcher(state, world?.mapId);
-  // Keep tracked dots after loot dots in painter order, even though both are gathered together.
-  const trackedBlips: Blip[] = [];
-  const questMarks: QuestMark[] = [];
+  const trivial = trivialQuestsTracked();
   for (const object of state.objects.values()) {
     const objectPosition = object.position;
     if (!objectPosition || (object.typeId !== 3 && object.typeId !== 4 && object.typeId !== 5)) continue;
     const dx = objectPosition.x - position.x;
     const dy = objectPosition.y - position.y;
     const distanceSquared = dx * dx + dy * dy;
-    if (object.typeId === 3 && distanceSquared <= reachSquared) {
-      if (isWorldObjectDead(object) && isLootable(object)) {
-        blips.push({ at: blipAt(objectPosition), colour: "#b4e650", size: 3 });
-      }
+    if (distanceSquared > reachSquared) continue;
+    const status = object.typeId !== 5 ? questStatus?.get(object.guid) : undefined;
+    const quest = status === undefined ? undefined : minimapQuestCell(status, trivial);
+    if (quest) {
+      blips.push({ at: blipAt(objectPosition), sheet: "objects", cell: quest });
+      continue;
     }
-    if ((object.typeId === 3 || object.typeId === 4) && questStatus !== undefined && distanceSquared <= reachSquared) {
-      const status = questStatus.get(object.guid);
-      const mark = status === undefined ? undefined : minimapQuestMark(status);
-      if (mark) questMarks.push({ at: blipAt(objectPosition), mark });
+    const town = townTrackedCell(object);
+    if (town) {
+      blips.push({ at: blipAt(objectPosition), sheet: "objects", cell: town });
+      continue;
     }
     if (tracks?.(object, distanceSquared)) {
-      trackedBlips.push({ at: blipAt(objectPosition), colour: "#f2a63b", size: 3, ring: true });
+      blips.push({
+        at: blipAt(objectPosition),
+        sheet: "objects",
+        cell: object.typeId === 5 ? MINIMAP_TOWN_CELL : minimapTrackedCell(reactionTo(object)),
+      });
     }
   }
 
-  // Whatever the character is tracking. Which creatures and which resources those are is a pair of
-  // bit fields the server keeps on the player; nothing announces them.
-  for (const blip of trackedBlips) blips.push(blip);
-
-  // The player's own corpse, so a ghost can walk back to it. Clamped to the rim by the
-  // loop below like every other blip, which turns a far corpse into a direction instead of
-  // hiding it. Only on the same map: an instance corpse is reported at its entrance map
-  // (`CorpseLocation.mapId`), and a dot there would point at the wrong place.
+  // The player's own corpse: a tombstone on the map, an arrow at any distance past it. Only on the same map: an
+  // instance corpse is reported at its entrance map (`CorpseLocation.mapId`), and a mark there would be wrong.
   const self = state.selfGuid === undefined ? undefined : state.objects.get(state.selfGuid);
   const corpse = self && isPlayerGhost(self) ? world?.corpse : undefined;
   if (corpse?.found && corpse.mapId === world?.mapId) {
-    blips.push({
-      at: { x: corpse.x, y: corpse.y },
-      colour: "#ff5a5a", size: 4, ring: true,
-    });
+    const at = { x: corpse.x, y: corpse.y };
+    if (minimapPastRim(position, at, radiusYards)) arrows.push({ at, texture: MINIMAP_CORPSE_ARROW_TEXTURE });
+    else blips.push({ at, sheet: "poi", cell: { column: MINIMAP_CORPSE_POI_ICON, row: 0 } });
   }
 
-  // Quest givers: the same `!`/`?` the plates carry (`questMarkFor` in QuestLogData.ts is the
-  // canonical twin; this reads the status map directly so the minimap does not join the
-  // QuestLog→Npc→Settings import ring). Text, not dots: a dot cannot say which of the two it is.
-  // (Collected in the object pass above.)
-
-  // Quest markers, drawn as the centre of the blob rather than its outline: the frame is 160
-  // pixels across and a polygon on it is a smudge.
+  // Quest markers, drawn as the centre of the blob rather than its outline: the frame is 140
+  // units across and a polygon on it is a smudge. Not measured: the stand has no quest log.
   for (const blobs of world?.questPoi.values() ?? []) {
     for (const blob of blobs) {
       if (blob.map !== world?.mapId || blob.points.length === 0) continue;
@@ -894,45 +941,49 @@ function collectBlips(radius: number, position: WorldPoint, state: WorldState): 
         x += point.x / blob.points.length;
         y += point.y / blob.points.length;
       }
-      blips.push({ at: { x, y }, colour: "#f0c94a", size: 3 });
+      blips.push({ at: { x, y }, sheet: "objects", cell: MINIMAP_TOWN_CELL });
     }
   }
-  return { blips, questMarks };
+
+  // 03.11: the towns of AreaPOI.dbc, but not over a building's pictures: neither the inn nor the city had one.
+  if (!insideNow) {
+    for (const poi of rimPoisOfMap(world?.mapId)) {
+      if (minimapPoiHasArrow(position, poi, radiusYards)) arrows.push({ at: poi, texture: MINIMAP_POI_ARROW_TEXTURE });
+    }
+  }
+  return { blips, arrows };
 }
 
-function drawBlips(
+const ICON_SHEETS: Readonly<Record<IconSheet, string>> = {
+  party: MINIMAP_PARTY_BLIPS_TEXTURE,
+  objects: MINIMAP_OBJECT_ICONS_TEXTURE,
+  poi: MINIMAP_POI_ICONS_TEXTURE,
+};
+
+/** The context stands at the centre of the circle. An icon whose sheet has not landed waits for it. */
+function drawIcons(
   context: CanvasRenderingContext2D,
-  radius: number,
+  size: number,
   position: WorldPoint,
   collected: MinimapBlips,
-  now: number,
+  facing: number | undefined,
 ): void {
-  const yardsPerPixel = settings.zoom / (radius * 2);
+  const yardsPerPixel = currentYards() / size;
+  const side = MINIMAP_ICON_UNITS * (size / MINIMAP_UNITS);
   for (const blip of collected.blips) {
-    const point = clampToCircle(minimapBlip(position, blip.at, yardsPerPixel), radius - BLIP_RIM_INSET);
-    context.beginPath();
-    context.arc(point.column, point.row, blip.size, 0, Math.PI * 2);
-    context.fillStyle = blip.colour;
-    context.fill();
-    if (blip.ring) {
-      context.strokeStyle = "#000000aa";
-      context.lineWidth = 1;
-      context.stroke();
+    const bitmap = game.mapArt?.bitmap(ICON_SHEETS[blip.sheet]);
+    if (!bitmap) continue;
+    const point = minimapBlip(position, blip.at, yardsPerPixel, facing);
+    let sx: number, sy: number, cell: number;
+    if (blip.sheet === "poi") {
+      const poi = minimapPoiIconCell(blip.cell.column);
+      sx = poi.x; sy = poi.y; cell = poi.size;
+    } else {
+      cell = blip.sheet === "party" ? MINIMAP_PARTY_CELL : MINIMAP_OBJECT_CELL;
+      sx = blip.cell.column * cell; sy = blip.cell.row * cell;
     }
+    context.drawImage(bitmap, sx, sy, cell, cell, point.column - side / 2, point.row - side / 2, side, side);
   }
-  for (const { at: mapAt, mark } of collected.questMarks) {
-    const at = clampToCircle(minimapBlip(position, mapAt, yardsPerPixel), radius - BLIP_RIM_INSET);
-    context.font = "bold 11px system-ui, sans-serif";
-    context.textAlign = "center";
-    context.textBaseline = "middle";
-    context.lineWidth = 3;
-    context.strokeStyle = "#1b1200";
-    context.fillStyle = mark === "?" ? "#ffd24a" : "#7dd87d";
-    context.strokeText(mark, at.column, at.row);
-    context.fillText(mark, at.column, at.row);
-  }
-
-  drawPings(context, radius, position, yardsPerPixel, now);
 }
 
 function drawPings(
@@ -941,6 +992,7 @@ function drawPings(
   position: WorldPoint,
   yardsPerPixel: number,
   now: number,
+  facing: number | undefined,
 ): void {
   for (let index = pings.length - 1; index >= 0; index--) {
     const ping = pings[index]!;
@@ -948,7 +1000,7 @@ function drawPings(
       pings.splice(index, 1);
       continue;
     }
-    const point = clampToCircle(minimapBlip(position, ping, yardsPerPixel), radius - BLIP_RIM_INSET);
+    const point = clampToCircle(minimapBlip(position, ping, yardsPerPixel, facing), radius - BLIP_RIM_INSET);
     const age = 1 - (ping.until - now) / 5_000;
     context.beginPath();
     context.arc(point.column, point.row, 3 + age * 10, 0, Math.PI * 2);
@@ -958,23 +1010,36 @@ function drawPings(
   }
 }
 
-function drawPlayerArrow(context: CanvasRenderingContext2D, radius: number, orientation: number): void {
+/** The context stands at the centre. Each arrow's picture points up, turned towards what it names. */
+function drawRimArrows(
+  context: CanvasRenderingContext2D,
+  size: number,
+  position: WorldPoint,
+  collected: MinimapBlips,
+  facing: number | undefined,
+): void {
+  const side = MINIMAP_RIM_ARROW_UNITS * (size / MINIMAP_UNITS);
+  const centre = (size / 2) * MINIMAP_RIM_FRACTION;
+  for (const arrow of collected.arrows) {
+    const bitmap = game.mapArt?.bitmap(arrow.texture);
+    if (!bitmap) continue;
+    context.save();
+    context.rotate(minimapRimAngle(position, arrow.at, facing));
+    context.drawImage(bitmap, -side / 2, -centre - side / 2, side, side);
+    context.restore();
+  }
+}
+
+function drawPlayerArrow(context: CanvasRenderingContext2D, size: number, orientation: number): void {
+  const bitmap = game.mapArt?.bitmap(MINIMAP_PLAYER_ARROW_TEXTURE);
+  if (!bitmap) return;
+  const side = MINIMAP_PLAYER_ARROW_UNITS * (size / MINIMAP_UNITS);
   context.save();
-  context.translate(radius, radius);
+  context.translate(size / 2, size / 2);
   // With the map turning under it the arrow is always up; with north up it turns instead. The sign
   // is the inverse of the rotation the frame was drawn with.
   if (!settings.rotate) context.rotate(-orientation);
-  context.beginPath();
-  context.moveTo(0, -7);
-  context.lineTo(5, 6);
-  context.lineTo(0, 3);
-  context.lineTo(-5, 6);
-  context.closePath();
-  context.fillStyle = "#62e7a3";
-  context.strokeStyle = "#04140c";
-  context.lineWidth = 1;
-  context.fill();
-  context.stroke();
+  context.drawImage(bitmap, -side / 2, -side / 2, side, side);
   context.restore();
 }
 

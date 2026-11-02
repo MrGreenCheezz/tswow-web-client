@@ -12,8 +12,8 @@
 import { minimapBlip, type MinimapPixel, type WorldPoint } from "../MinimapGeometry.js";
 import type { GossipPoiMark } from "../GossipPoi.js";
 
-export const MINIMAP_POI_ICONS_TEXTURE = "Interface\\Minimap\\POIIcons";
-export const MINIMAP_GUIDE_ARROW_TEXTURE = "Interface\\Minimap\\Rotating-MinimapGuideArrow";
+export const MINIMAP_POI_ICONS_TEXTURE = "Interface\\Minimap\\POIIcons.blp";
+export const MINIMAP_GUIDE_ARROW_TEXTURE = "Interface\\Minimap\\Rotating-MinimapGuideArrow.blp";
 
 const ICON_COLUMNS = 14;
 const ICON_CELL = 18;
@@ -26,8 +26,8 @@ const FAR_YARDS = 694.44446;
 const FLAG_MINIMAP = 0x2;
 /** The stock minimap's box, UI units (Minimap.xml: 140×140): the canvas is drawn at this size's scale. */
 const MINIMAP_UNITS = 140;
-/** The guide arrow's box on the rim, UI units — an estimate; the art is a 32-unit cell. */
-const ARROW_UNITS = 32;
+/** 03.11: the guide arrow's box on the rim, UI units, as fitted to Wow.exe's POI arrows; its centre at 0.8 of the radius. */
+const ARROW_UNITS = 37;
 
 export type GossipPoiPlacement =
   | { readonly kind: "icon"; readonly point: MinimapPixel }
@@ -94,6 +94,6 @@ export function drawGossipPoi(
   context.save();
   context.translate(radius, radius);
   context.rotate(placement.angle);
-  context.drawImage(art.arrow, -size / 2, -radius, size, size);
+  context.drawImage(art.arrow, -size / 2, -radius * NEAR_FRACTION - size / 2, size, size);
   context.restore();
 }

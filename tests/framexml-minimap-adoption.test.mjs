@@ -123,10 +123,9 @@ function fakeNode(tag, ownerDocument) {
     removeAttribute(name) { delete node[name]; },
     getContext(kind) { return kind === "2d" ? fakeContext() : null; },
     getBoundingClientRect() {
-      return {
-        left: 0, top: 0, width: node.clientWidth, height: node.clientHeight,
-        right: node.clientWidth, bottom: node.clientHeight,
-      };
+      const width = Number.parseFloat(node.style?.width) || node.clientWidth;
+      const height = Number.parseFloat(node.style?.height) || node.clientHeight;
+      return { left: 0, top: 0, width, height, right: width, bottom: height };
     },
   };
   return node;
@@ -381,7 +380,7 @@ test("adopted geometry tracks target changes in the existing update and ping pro
       position: { x: 100, y: 200, z: 0, orientation: 0 },
       pingMinimap: (x, y) => calls.push({ x, y }),
     });
-    // Keep this projection case at the stock middle (266-yard) view.
+    // Stock index 1 outdoors: 400 yards across.
     minimapWidgetAdapter.setZoom(1);
     updateMinimap(performance.now());
     assert.equal(canvas.width, 280);
@@ -398,7 +397,7 @@ test("adopted geometry tracks target changes in the existing update and ping pro
 
     minimapWidgetAdapter.pingLocation(0, 60);
     assert.equal(calls.length, 1);
-    assert.ok(Math.abs(calls[0].x - 233) < 1e-9, "adapter projection uses the current 120px map size");
+    assert.ok(Math.abs(calls[0].x - 300) < 1e-9, "adapter projection uses the current 120px map size");
     assert.equal(calls[0].y, 200);
   } finally {
     game.world = previous;
@@ -451,30 +450,22 @@ test("optimistic local pings deduplicate only a matching immediate server echo",
   }
 });
 
-test("the FrameXML adapter preserves stock zoom direction and ignores invalid or duplicate writes", () => {
+test("the FrameXML adapter's zoom is the stock index, and ignores invalid or duplicate writes", () => {
   const original = minimapWidgetAdapter.getZoom();
-  assert.equal(minimapWidgetAdapter.getZoomLevels(), 5);
-  // WoW's Minimap:GetZoom() is a distance index: stock ZoomInClick increments it.  The native
-  // canvas stores the same levels as yards across the circle, so its array is intentionally the
-  // opposite direction (index 0 is the nearest/100-yard view).
-  const stockToYards = [400, 266, 200, 133, 100];
-  assert.deepEqual(stockToYards[original], minimapSettings().zoom);
-
-  for (const [index, value] of stockToYards.entries()) {
+  assert.equal(minimapWidgetAdapter.getZoomLevels(), 6, "Minimap:GetZoomLevels() on Wow.exe");
+  for (let index = 0; index < 6; index++) {
     minimapWidgetAdapter.setZoom(index);
     assert.equal(minimapWidgetAdapter.getZoom(), index);
-    assert.equal(minimapSettings().zoom, value, `${index} maps to ${value} yards`);
+    assert.equal(minimapSettings().outsideZoom, index);
   }
   const unchanged = minimapSettings();
-  minimapWidgetAdapter.setZoom(4);
+  minimapWidgetAdapter.setZoom(5);
   assert.equal(minimapSettings(), unchanged, "setting the active index is a no-op");
 
-  minimapWidgetAdapter.setZoom(4.9);
-  assert.equal(minimapWidgetAdapter.getZoom(), 4, "fractional levels truncate and clamp");
-  assert.equal(minimapSettings().zoom, 100);
+  minimapWidgetAdapter.setZoom(5.9);
+  assert.equal(minimapWidgetAdapter.getZoom(), 5, "fractional levels truncate and clamp");
   minimapWidgetAdapter.setZoom(-10);
   assert.equal(minimapWidgetAdapter.getZoom(), 0);
-  assert.equal(minimapSettings().zoom, 400);
   minimapWidgetAdapter.setZoom(Number.NaN);
   assert.equal(minimapWidgetAdapter.getZoom(), 0, "non-finite zoom does not mutate settings");
   minimapWidgetAdapter.setZoom(original);
@@ -492,13 +483,10 @@ test("native plus/minus controls agree with the stock adapter direction", () => 
     assert.ok(out && into, "native minimap has both zoom controls");
 
     minimapWidgetAdapter.setZoom(2);
-    assert.equal(minimapSettings().zoom, 200);
     into.dispatchEvent({ type: "click" });
-    assert.equal(minimapSettings().zoom, 133, "+ narrows the visible yard range");
     assert.equal(minimapWidgetAdapter.getZoom(), 3, "+ increments stock Minimap:GetZoom()");
 
     out.dispatchEvent({ type: "click" });
-    assert.equal(minimapSettings().zoom, 200, "− widens the visible yard range");
     assert.equal(minimapWidgetAdapter.getZoom(), 2, "− decrements stock Minimap:GetZoom()");
   } finally {
     game.world = previous;
@@ -519,11 +507,11 @@ test("the FrameXML adapter projects one local ping through the current minimap g
   try {
     const position = { x: 100, y: 200, z: 0, orientation: 0 };
     game.world = makeWorld({ position, pingMinimap: (x, y) => calls.push({ x, y }) });
-    // Stock index 1 is the middle 266-yard view; the adapter owns the direction conversion.
+    // Stock index 1 outdoors: 400 yards over 140 units.
     minimapWidgetAdapter.setZoom(1);
     minimapWidgetAdapter.pingLocation(20, -20);
     assert.equal(calls.length, 1, "stock Minimap OnMouseUp reaches one live ping path");
-    assert.deepEqual(calls[0], { x: 62, y: 162 },
+    assert.ok(Math.abs(calls[0].x - (100 - 20 * 400 / 140)) < 1e-9 && Math.abs(calls[0].y - (200 - 20 * 400 / 140)) < 1e-9,
       "stock local Y is positive upward and is inverted for the map's down-growing row");
 
     game.world = undefined;

@@ -103,7 +103,7 @@ test("a still minimap repaints on its own clock, and anything moving asks immedi
   current.state.revision += 1;
   updateMinimap(3.5);
   assert.equal(draws, drawn + 1, "a state change that moves no blip does not repaint");
-  current.targetGuid = 2n;
+  current.questGiverStatus = new Map([[2n, 8]]);
   current.state.objects.set(2n, { guid: 2n, typeId: 3, position: { x: 120, y: 200, z: 30, orientation: 0 }, fields: new Map() });
   current.state.revision += 1;
   updateMinimap(3.75);
@@ -112,7 +112,7 @@ test("a still minimap repaints on its own clock, and anything moving asks immedi
   current.state.revision += 1;
   updateMinimap(4);
   assert.equal(draws, drawn + 3, "a blip moving repaints at once");
-  current.targetGuid = undefined;
+  current.questGiverStatus = undefined;
   current.state.objects.delete(2n);
   current.state.revision += 1;
   updateMinimap(4);
@@ -163,31 +163,32 @@ test("a crowded minimap visits world objects once per repaint with tracking acti
   game.world = current;
   forgetMinimap();
   updateMinimap(0);
-  assert.equal(scans, 1, "loot, quest and tracking markers share one object-table traversal");
+  assert.equal(scans, 1, "quest and tracking marks share one object-table traversal");
   game.world = undefined;
   forgetMinimap();
 });
 
-test("tracked corpse keeps its loot dot under its tracking ring", async () => {
-  const { UPDATE_FIELDS } = await import("../dist/code/generated/updateFields.js");
+test("a tracked creature's icon follows its reaction, and a quest giver's wins over it", () => {
   const current = world();
-  const self = current.state.objects.get(1n);
-  self.fields.set(fieldIndex("PLAYER_TRACK_CREATURES"), 1);
-  const corpse = {
-    guid: 2n, typeId: 3,
-    position: { x: 101, y: 200, z: 30, orientation: 0 },
-    fields: new Map([
-      [UPDATE_FIELDS.UNIT_FIELD_HEALTH.offset, 0],
-      [UPDATE_FIELDS.UNIT_DYNAMIC_FLAGS.offset, 1],
-    ]),
-  };
-  current.state.objects.set(corpse.guid, corpse);
+  current.state.objects.get(1n).fields.set(fieldIndex("PLAYER_TRACK_CREATURES"), 1);
+  current.state.objects.set(2n, { guid: 2n, typeId: 3, position: { x: 101, y: 200, z: 30, orientation: 0 }, fields: new Map() });
   game.world = current;
   game.creatureMetadata = { get: () => ({ type: 1 }) };
-  paintColours.length = 0;
+  game.mapArt = { revision: 0, bitmap: (path) => ({ path }) };
+  const drawn = [];
+  const drawImage = context.drawImage;
+  context.drawImage = (...args) => { drawn.push(args); };
+  const cells = () => drawn.filter(([bitmap]) => bitmap.path.includes("ObjectIcons")).map((args) => args.slice(1, 3));
   forgetMinimap();
   updateMinimap(0);
-  assert.deepEqual(paintColours.slice(0, 3), ["#b4e650", "#f2a63b", "#62e7a3"]);
+  assert.deepEqual(cells(), [[6 * 32, 0]], "nothing says otherwise: neutral");
+  drawn.length = 0;
+  current.questGiverStatus = new Map([[2n, 8]]);
+  current.state.revision += 1;
+  updateMinimap(1);
+  assert.deepEqual(cells(), [[32, 32]], "the yellow «!», alone");
+  context.drawImage = drawImage;
+  game.mapArt = undefined;
   game.creatureMetadata = undefined;
   game.world = undefined;
   forgetMinimap();

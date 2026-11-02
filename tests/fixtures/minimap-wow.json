@@ -1,0 +1,30 @@
+{
+ "build": 12340,
+ "note": "Read off Wow.exe's frames on the stand: how many Rotating-MinimapArrow draws a position got, how many yards a zoom showed against the client's tiles, and the terrain tiles' tint.",
+ "arrows": [
+  { "name": "road, widest", "map": 0, "x": -9200, "y": 300, "yards": 466.67, "count": 2 },
+  { "name": "road, closest", "map": 0, "x": -9200, "y": 300, "yards": 133.33, "count": 3 },
+  { "name": "harbor", "map": 0, "x": -8380, "y": 1218, "yards": 466.67, "count": 0 },
+  { "name": "Goldshire", "map": 0, "x": -9465, "y": 62, "yards": 466.67, "count": 2 },
+  { "name": "Moonbrook", "map": 0, "x": -11000, "y": 1500, "yards": 466.67, "count": 1 },
+  { "name": "Darkshire", "map": 0, "x": -10500, "y": -1100, "yards": 466.67, "count": 0 },
+  { "name": "Kharanos", "map": 0, "x": -5600, "y": -500, "yards": 466.67, "count": 1 },
+  { "name": "Eastvale", "map": 0, "x": -9400, "y": -1600, "yards": 466.67, "count": 1 },
+  { "name": "Westfall's border", "map": 0, "x": -9900, "y": 800, "yards": 466.67, "count": 1 },
+  { "name": "690 yards from Lakeshire", "map": 0, "x": -9417.59, "y": -1538.43, "yards": 466.67, "count": 1 },
+  { "name": "720 yards from Lakeshire", "map": 0, "x": -9425.86, "y": -1509.59, "yards": 466.67, "count": 0 },
+  { "name": "690 yards from Lakeshire, closest", "map": 0, "x": -9417.59, "y": -1538.43, "yards": 133.33, "count": 1 },
+  { "name": "720 yards from Lakeshire, closest", "map": 0, "x": -9425.86, "y": -1509.59, "yards": 133.33, "count": 0 },
+  { "name": "a Horde town for a human", "map": 0, "x": -12007, "y": 8, "yards": 466.67, "count": 1 }
+ ],
+ "outdoorYards": [468, 401, 334, 267, 200.5, 134],
+ "tint": [
+  { "name": "road 12h", "ambient": [0.408, 0.510, 0.604], "diffuse": [1.000, 0.533, 0.000], "tint": [0.900, 0.794, 0.682] },
+  { "name": "road 0h", "ambient": [0.114, 0.235, 0.329], "diffuse": [0.380, 0.510, 0.635], "tint": [0.548, 0.611, 0.670] },
+  { "name": "road 6h", "ambient": [0.365, 0.490, 0.612], "diffuse": [1.000, 0.404, 0.000], "tint": [0.881, 0.750, 0.674] },
+  { "name": "road 20h", "ambient": [0.400, 0.376, 0.482], "diffuse": [1.000, 0.439, 0.000], "tint": [0.859, 0.716, 0.636] },
+  { "name": "Moonbrook 12h", "ambient": [0.259, 0.482, 0.635], "diffuse": [1.000, 0.525, 0.000], "tint": [0.857, 0.766, 0.657] },
+  { "name": "Darkshire 12h", "ambient": [0.251, 0.396, 0.537], "diffuse": [0.510, 0.725, 0.871], "tint": [0.704, 0.769, 0.835] },
+  { "name": "Kharanos 12h", "ambient": [0.122, 0.322, 0.490], "diffuse": [0.780, 0.659, 0.525], "tint": [0.684, 0.701, 0.718] }
+ ]
+}

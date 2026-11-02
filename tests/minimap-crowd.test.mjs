@@ -62,18 +62,18 @@ const { forgetMinimap, updateMinimap } = await import("../dist/code/browser/ui/M
 test("a crowd moving outside the circle repaints nothing; a body inside it moving does", () => {
   const self = { guid: 1n, typeId: 4, position: { x: 0, y: 0, z: 0, orientation: 0 }, fields: new Map() };
   const objects = new Map([[1n, self]]);
-  // Three hundred players far outside the 266-yard circle, walking every frame.
+  // Three hundred players far outside the circle, walking every frame.
   for (let index = 0; index < 300; index += 1) {
     objects.set(BigInt(100 + index), { guid: BigInt(100 + index), typeId: 4, position: { x: 2000 + index, y: 0, z: 0, orientation: 0 }, fields: new Map() });
   }
-  // One lootable corpse inside the circle: a blip.
+  // One quest giver inside the circle: an icon.
   const corpse = {
     guid: 50n, typeId: 3, position: { x: 30, y: 0, z: 0, orientation: 0 },
-    fields: new Map([[UPDATE_FIELDS.UNIT_FIELD_HEALTH.offset, 0], [UPDATE_FIELDS.UNIT_DYNAMIC_FLAGS.offset, 1]]),
+    fields: new Map([[UPDATE_FIELDS.UNIT_FIELD_HEALTH.offset, 100]]),
   };
   objects.set(50n, corpse);
   const world = {
-    mapId: 0, state: { selfGuid: 1n, revision: 0, objects }, questPoi: new Map(),
+    mapId: 0, state: { selfGuid: 1n, revision: 0, objects }, questPoi: new Map(), questGiverStatus: new Map([[50n, 8]]),
     currentGameTime: () => undefined,
   };
   game.world = world;
