@@ -8,7 +8,6 @@ import type { WorldClient } from "../../world/WorldClient.js";
 import { EXTRA_ACTION_BARS } from "../../world/ActionBarProtocol.js";
 import { readByte, unit } from "../../world/Fields.js"; // L7-review: unit.classId
 import { PER_CHARACTER_CONFIG_CACHE } from "../../world/SessionProtocol.js";
-import { frameXmlFlagEnabled } from "../framexml/FrameXmlWorldPolicy.js";
 import { EXTRA_BAR_SETTINGS, setExtraBarVisibility, showActionBar } from "./ActionBar.js";
 import { ActionBarAccountSync } from "./ActionBarAccountSync.js";
 import {
@@ -52,7 +51,7 @@ export function attachActionBarAccount(world: WorldClient): () => void {
     serverBits,
     talentGroup: () => world.talents?.activeSpec,
     playerClass, // L7-review
-    nativeHud: () => !frameXmlFlagEnabled(window.location.search, settingOn("originalFrameXml")),
+    nativeHud: () => false,
     settingsBits: () => extraBarBits((bar) => settingOn(EXTRA_BAR_SETTINGS[bar])),
     configSlot: () => {
       const text = world.accountData.get(PER_CHARACTER_CONFIG_CACHE)?.text;

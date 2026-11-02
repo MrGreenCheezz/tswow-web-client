@@ -507,8 +507,7 @@ export const FRAMEXML_VERTICAL_TOC: readonly string[] = Object.freeze([
   // root, AutoFollowStatus, shows on FollowUnit's AUTOFOLLOW_BEGIN/END (5.18, input/Follow.ts).
   // FadingFrame first: ZoneText_OnLoad calls FadingFrame_OnLoad. Measured over the canned seam: +4 files
   // (FadingFrame.xml/.lua, ZoneText.xml/.lua), +9,692 B, +8 widgets, 0 new Lua errors
-  // (tests/framexml-zonetext-vertical.test.mjs, which pins these increments); kept in the
-  // addonsOnly mode too, where the same four files and eight widgets are the whole cost.
+  // (tests/framexml-zonetext-vertical.test.mjs, which pins these increments).
   "FadingFrame.xml",
   "ZoneText.xml",
   "BattlefieldFrame.xml",
@@ -662,8 +661,7 @@ export const FRAMEXML_VERTICAL_TOC: readonly string[] = Object.freeze([
   // OffhandHasWeapon() for index 10 and, with any alert, VehicleSeatIndicator:IsShown() unguarded —
   // that frame is VehicleMenuBar.xml's (TOC 142, loaded below since 11.02-F2); FrameXmlBoot stands in
   // a hidden frame of that name only for a TOC without it (FrameXmlDurabilityFrame.ts).
-  // UPDATE_INVENTORY_ALERTS is FrameXmlInventoryAlerts.ts'. Visible root under UIParent; addonsOnly
-  // paints no stock HUD. Measured over the canned seam (before VehicleMenuBar.xml joined): +2 files,
+  // UPDATE_INVENTORY_ALERTS is FrameXmlInventoryAlerts.ts'. Visible root under UIParent. Measured over the canned seam (before VehicleMenuBar.xml joined): +2 files,
   // +8,460 B, +13 widgets (the frame and its twelve textures; the stand-in was there anyway for
   // MainMenuBar.lua), 0 new Lua errors (tests/framexml-durability-vertical.test.mjs).
   "DurabilityFrame.xml",
@@ -694,12 +692,10 @@ export const FRAMEXML_VERTICAL_TOC: readonly string[] = Object.freeze([
   "LFDFrame.xml",
   "LFRFrame.xml",
   // Stock TOC line 138: the death knight's six runes under PlayerFrame (FrameXmlRunes.ts answers
-  // GetRuneType/GetRuneCooldown and fires RUNE_POWER_UPDATE/RUNE_TYPE_UPDATE). Not optional, in the
-  // addonsOnly mode either: UnitFrame_SetUnit (UnitFrame.lua:64-77) calls RuneFrame:SetScale for a
-  // death knight's PlayerFrame and PetFrame unconditionally, so without the file PLAYER_ENTERING_WORLD
-  // raised and PlayerFrame_ToPlayerArt stopped at its first line; there the mount keeps it hidden
-  // (hideFrameXmlRuneFrame), since that mode paints no stock HUD. RuneFrame_OnLoad hides it for
-  // every other class.
+  // GetRuneType/GetRuneCooldown and fires RUNE_POWER_UPDATE/RUNE_TYPE_UPDATE). Not optional:
+  // UnitFrame_SetUnit (UnitFrame.lua:64-77) calls RuneFrame:SetScale for a death knight's PlayerFrame
+  // and PetFrame unconditionally, so without the file PLAYER_ENTERING_WORLD raised and
+  // PlayerFrame_ToPlayerArt stopped at its first line. RuneFrame_OnLoad hides it for every other class.
   // Measured over the canned seam as a death knight: +2 files, +10,620 B, +43 widgets, one Lua error
   // fewer (that raise); as the canned warrior 0 new Lua errors (tests/framexml-rune-vertical.test.mjs).
   "RuneFrame.xml",

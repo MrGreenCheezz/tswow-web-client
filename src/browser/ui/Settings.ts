@@ -332,7 +332,6 @@ function build(): Panel {
   reset.textContent = "Сбросить настройки";
   reset.addEventListener("click", () => {
     settingsStore.set(defaultSettings());
-    clearFrameXmlUrlOverride();
     applySettings();
     drawSettings();
   });
@@ -361,21 +360,10 @@ export function settingsStorageNote(): string {
     : "Нет соединения — настройки пока только в этом браузере.";
 }
 
-function clearFrameXmlUrlOverride(): void {
-  const url = new URL(window.location.href);
-  if (!url.searchParams.has("framexml")) return;
-  url.searchParams.delete("framexml");
-  window.history.replaceState(window.history.state, "", url);
-}
-
 function change(definition: SettingDefinition, value: unknown, redraw = true): boolean | number {
   const coerced = coerceSetting(definition, value);
   const next = { ...settingsStore.value, [definition.id]: coerced };
   settingsStore.set(next);
-  if (definition.id === "originalFrameXml") {
-    // A user choice supersedes an earlier diagnostic URL override without reconnecting.
-    clearFrameXmlUrlOverride();
-  }
   applySettings();
   if (redraw) drawSettings();
   return coerced;

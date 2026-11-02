@@ -8,7 +8,7 @@ import { defaultSettings, parseSettings } from "../dist/code/browser/ui/Settings
 
 test("12.10 the owner's defaults", () => {
   const defaults = defaultSettings();
-  assert.equal(defaults.originalFrameXml, true, "0.4a: the stock FrameXML interface");
+  assert.equal("originalFrameXml" in defaults, false, "02.11: the stock interface is the only one, no switch");
   assert.equal("tswowAddons" in defaults, false, "0.4b: the modules' addons are part of the interface, no switch");
   assert.equal(defaults.autoQuality, false, "0.4d: AutoQuality off until turned on");
   assert.equal(defaults.lightingQuality, 2, "0.4e: the highest lighting quality");
@@ -16,9 +16,10 @@ test("12.10 the owner's defaults", () => {
 
 test("12.10 a saved choice wins over the new defaults", () => {
   const saved = parseSettings('{"originalFrameXml":false,"autoQuality":true,"lightingQuality":1}');
-  assert.deepEqual([saved.originalFrameXml, saved.autoQuality, saved.lightingQuality], [false, true, 1]);
+  assert.deepEqual([saved.autoQuality, saved.lightingQuality], [true, 1]);
+  assert.equal("originalFrameXml" in saved, false, "a blob from before 02.11 no longer carries the switch");
   const blank = parseSettings("{}");
   assert.deepEqual(
-    [blank.originalFrameXml, blank.autoQuality, blank.lightingQuality],
-    [true, false, 2], "a blob without these keys takes the defaults");
+    [blank.autoQuality, blank.lightingQuality],
+    [false, 2], "a blob without these keys takes the defaults");
 });

@@ -217,5 +217,5 @@ test("06.10-dropdown: an unanchored root is undrawn until SetPoint, an anchored 
 
 test("06.10-dropdown: the world mount's renderer is the one that undraws unanchored roots", () => {
   const source = readFileSync(new URL("../src/browser/framexml/FrameXmlWorldMount.ts", import.meta.url), "utf8");
-  assert.match(source, /new FrameXmlDomRenderer\(stage, \{[\s\S]{0,1200}unanchoredRootsUndrawn: !options\.addonsOnly,/);
+  assert.match(source, /new FrameXmlDomRenderer\(stage, \{[\s\S]{0,1200}unanchoredRootsUndrawn: true,/);
 });

@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { existsSync, readFileSync } from "node:fs";
 import { FrameXmlBoot } from "../dist/code/browser/framexml/FrameXmlBoot.js";
-import { FrameXmlTsAddonPresentation } from "../dist/code/browser/framexml/FrameXmlTsAddonPresentation.js";
 import { createFrameXmlTsAddonWindows } from "../dist/code/browser/framexml/FrameXmlTsAddonWindows.js";
 import { createFixtureProvider } from "../dist/code/browser/glue/GlueLoader.js";
 import { FrameXmlUiBridge } from "../dist/code/browser/ui/framexml_compat/FrameXmlRuntime.js";
@@ -87,84 +86,6 @@ function fakeDocument() {
 
 globalThis.document = fakeDocument();
 
-test("TSWoW projection paints XML and lazy Lua UI over native anchors without painting stock HUD", async () => {
-  const boot = new FrameXmlBoot({
-    provider: createFixtureProvider({
-      "interface/framexml/framexml.toc": "Stock.xml\n## tsaddon-begin: future-ui\nTSAddons/future-ui/addon/addon.xml\n## tsaddon-end: future-ui",
-      "interface/framexml/stock.xml": `<Ui><Frame name="UIParent" width="1024" height="768">
-        <Frames><Frame name="StockHud"><Layers><Layer><FontString name="StockHudText" text="duplicate HUD"/></Layer></Layers></Frame>
-        <Frame name="CharacterFrame" hidden="true"><Frames><Frame name="PaperDollFrame"/></Frames></Frame></Frames>
-      </Frame></Ui>`,
-      "interface/framexml/tsaddons/future-ui/addon/addon.xml": `<Ui>
-        <Frame name="FutureCharacterStats" parent="PaperDollFrame" width="200" height="80">
-          <Layers><Layer><FontString name="FutureStatText" text="module stat"/></Layer></Layers>
-        </Frame><Script file="addon.lua"/></Ui>`,
-      "interface/framexml/tsaddons/future-ui/addon/addon.lua": `
-        function FutureOpen()
-          local frame = CreateFrame("Frame", "FutureLazyWindow", UIParent)
-          frame:SetSize(320, 180)
-          local button = CreateFrame("Button", "FutureLazyButton", frame)
-          button:SetSize(100, 30)
-          button:SetText("Original action")
-          button:SetScript("OnClick", function() FutureClicked = true end)
-        end
-      `,
-    }),
-    subset: ["Stock.xml"], includeActiveTsAddons: true, exercise: false,
-  });
-  let renderer;
-  try {
-    await boot.load();
-    assert.equal(boot.isModuleLoaded("future-ui"), true); // 3.46
-    assert.equal(boot.tsAddonOwner(boot.bridge.getFrame("FutureCharacterStats")), "future-ui");
-    const presentation = new FrameXmlTsAddonPresentation(boot);
-    const host = document.createElement("section");
-    renderer = new FrameXmlDomRenderer(host, {
-      bridge: boot.bridge, includeCreatedRoots: true, createdRootParent: "UIParent",
-      frameFilter: presentation.includes, layoutOnly: presentation.layoutOnly,
-    });
-    renderer.mount(boot.roots.filter(frame => !frame.parent));
-    assert.equal(renderer.elementFor(boot.bridge.getFrame("StockHud")), undefined);
-    assert.equal(renderer.elementFor(boot.bridge.getFrame("StockHudText")), undefined);
-    const character = boot.bridge.getFrame("CharacterFrame");
-    assert.equal(renderer.elementFor(character).hidden, true);
-    const rectangle = { left: 50, top: 80, width: 340, height: 500 };
-    const nativeCharacter = { hidden: false, getBoundingClientRect: () => rectangle };
-    const stage = { getBoundingClientRect: () => ({ left: 0, top: 0, width: 1024, height: 768 }) };
-    boot.bridge.runInMutationBatch(() => presentation.syncNativeAnchors(stage, nativeCharacter, null));
-    assert.equal(renderer.elementFor(character).hidden, false);
-    assert.equal(renderer.elementFor(boot.bridge.getFrame("FutureCharacterStats")).hidden, false);
-    assert.equal(renderer.elementFor(boot.bridge.getFrame("FutureStatText")).textContent, "module stat");
-    assert.equal(character.points[0].x, 50);
-    assert.equal(character.points[0].y, -80);
-    const nativeSheet = { hidden: true };
-    boot.bridge.runInMutationBatch(() => presentation.syncNativeAnchors(stage, nativeCharacter, null, nativeSheet));
-    assert.equal(renderer.elementFor(boot.bridge.getFrame("PaperDollFrame")).hidden, true,
-      "custom character stats follow the sheet tab, not skills/collections");
-    nativeSheet.hidden = false;
-    boot.bridge.runInMutationBatch(() => presentation.syncNativeAnchors(stage, nativeCharacter, null, nativeSheet));
-    assert.equal(renderer.elementFor(boot.bridge.getFrame("FutureCharacterStats")).hidden, false);
-    boot.bridge.runInMutationBatch(() => boot.vm.execute("FutureOpen()", "@host-open"));
-    const lazy = boot.bridge.getFrame("FutureLazyWindow");
-    assert.equal(boot.tsAddonOwner(lazy), "future-ui");
-    assert.equal(renderer.elementFor(lazy).hidden, false, "lazy UI is discovered after initial mount");
-    boot.bridge.Click(boot.bridge.getFrame("FutureLazyButton"));
-    assert.equal(boot.vm.getGlobal("FutureClicked"), true);
-    nativeCharacter.hidden = true;
-    boot.bridge.runInMutationBatch(() => presentation.syncNativeAnchors(stage, nativeCharacter, null));
-    assert.equal(renderer.elementFor(character).hidden, true);
-    assert.equal(renderer.elementFor(lazy).hidden, false, "closing C does not close independent addon windows");
-    boot.vm.execute('UISpecialFrames = { "FutureLazyWindow", "StockHud" }', "@register-escape");
-    const windows = createFrameXmlTsAddonWindows(boot);
-    assert.equal(windows.isOpen(), true);
-    windows.close();
-    assert.equal(renderer.elementFor(lazy).hidden, true, "Escape closes original module windows");
-    assert.equal(boot.bridge.getFrame("StockHud").visible, true, "only module-owned special frames are closed");
-    windows.dispose();
-    assert.equal(windows.isOpen(), false);
-    assert.deepEqual(boot.errors, []);
-  } finally { renderer?.destroy(); boot.close(); }
-});
 function find(root, name) {
   if (root.getAttribute("data-framexml-name") === name) return root;
   for (const child of root.children) {

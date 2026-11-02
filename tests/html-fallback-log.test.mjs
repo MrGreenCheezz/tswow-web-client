@@ -86,10 +86,9 @@ test("a look reports the windows, looks inside the holders and passes over the r
   assert.deepEqual([...visibleHtmlSurfaces(viewport)].sort(), ["#player-hud", "#vendor-window", ".bag-window", "(без имени)"].sort());
 });
 
-test("the watch is on for each world, for the stock interface only, and is told apart from the player's choice", async () => {
+test("the watch is on for each world and tells a stock interface still coming up from HTML on screen", async () => {
   const enter = await readFile(new URL("../src/browser/app/EnterWorld.ts", import.meta.url), "utf8");
   assert.match(enter, /entryLifecycle\.track\(watchHtmlFallbacks\(\)\);/);
   const watch = await readFile(new URL("../src/browser/ui/HtmlFallbackWatch.ts", import.meta.url), "utf8");
-  assert.match(watch, /frameXmlFlagEnabled\(window\.location\.search, settingOn\("originalFrameXml"\)\)/);
   assert.match(watch, /nativeHudReplaced\(NATIVE_LANES_REPLACED\) \? visibleHtmlSurfaces\(viewport\) : new Set\(\[STOCK_NOT_UP\]\)/);
 });

@@ -39,8 +39,7 @@ export const GOAL_VIEWPORT = Object.freeze({ width: 1920, height: 1080 });
 export const CPU_BUCKET_EDGES_MS = Object.freeze([0, 6, 8, 10, 12, 14, 17, 21, 28, Infinity]);
 /** The frame goal (line-P.ru.md §3): K2 ≥ 95 %, p99 ≤ 3 periods (20.8 ms), no interval over 100 ms. */
 export const GOAL = Object.freeze({ k2: 0.95, p99Periods: 3, framesOver100: 0 });
-const GRAPHICS_KEYS = ['renderScale', 'lightingQuality', 'grassRadius', 'grassDensity', 'godRays', 'fullscreenGlow',
-  'originalFrameXml'];
+const GRAPHICS_KEYS = ['renderScale', 'lightingQuality', 'grassRadius', 'grassDensity', 'godRays', 'fullscreenGlow'];
 const PERCENTILES = [['p50', 0.5], ['p90', 0.9], ['p95', 0.95], ['p99', 0.99], ['p999', 0.999]];
 const USAGE = 'Usage: node bench/live-periods.mjs <capture.json>... [--period 6.944] [--json out.json] [--vs <capture.json>...]';
 

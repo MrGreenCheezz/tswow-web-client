@@ -12,7 +12,7 @@ const { FrameXmlBoot } = await import("../dist/code/browser/framexml/FrameXmlBoo
 const { createFixtureProvider } = await import("../dist/code/browser/glue/GlueLoader.js");
 const { withFrameXmlHostHooks } = await import("../dist/code/browser/framexml/FrameXmlHostHooks.js");
 const { installFrameXmlPopupsAdapters } = await import("../dist/code/browser/framexml/FrameXmlPopupsOwner.js");
-const { mountFrameXmlAddonsOnlySurfaces, watchFrameXmlDialogLayer } = await import("../dist/code/browser/framexml/FrameXmlAddonsOnlyMessages.js");
+const { watchFrameXmlDialogLayer } = await import("../dist/code/browser/framexml/FrameXmlDialogLayer.js");
 const { FrameXmlDressUpModels, installFrameXmlDressUp } = await import("../dist/code/browser/framexml/FrameXmlDressUp.js");
 const { installFrameXmlAuctionAdapters } = await import("../dist/code/browser/framexml/FrameXmlAuctionOwner.js");
 const { frameXmlOptionsAdoptSource } = await import("../dist/code/browser/framexml/FrameXmlOptions.js");
@@ -70,23 +70,6 @@ function lua51(instance, source) {
 function global(instance, name) {
   return instance.vm.getGlobal(name);
 }
-
-test("the add-ons-only popup counter counts a shown dialog after an add-on's SetScript on its OnShow", async () => {
-  const instance = await boot();
-  let raises = 0;
-  const surfaces = mountFrameXmlAddonsOnlySurfaces(instance, {}, { raise() { raises += 1; } });
-  try {
-    lua51(instance, "StaticPopup1:Show() StaticPopup1:Hide()");
-    assert.equal(surfaces.counts().popups, 1);
-    lua51(instance, 'StaticPopup1:SetScript("OnShow", function() end) StaticPopup1:Show()');
-    assert.equal(surfaces.counts().popups, 2);
-    assert.equal(raises, 2);
-    assert.deepEqual(instance.errors, []);
-  } finally {
-    surfaces.dispose();
-    instance.close();
-  }
-});
 
 test("the dialog layer rises and falls with ReadyCheckFrame after an add-on's SetScript, and GetScript stays the add-on's", async () => {
   const instance = await boot();

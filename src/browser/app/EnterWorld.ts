@@ -14,7 +14,7 @@ import { game } from "../game/Context.js";
 import { canAttackUnit } from "../game/Targeting.js"; // 1.10 (12.10): the focus registers itself there
 import {
   characterModel, characterWindowTitle, combatStatus, creatureStatus, environmentStatus, gatewayInput,
-  modelStatus, movementStatus, playerHudName, spellStatus, terrainStatus, worldPanel, worldStatus,
+  element, modelStatus, movementStatus, playerHudName, spellStatus, terrainStatus, worldPanel, worldStatus,
 } from "../ui/Dom.js";
 import { clearSpellbook, loadSpellMetadata, refreshPetSpellbook, showSpells, updateSpellCooldowns } from "../ui/Spellbook.js";
 import { showTarget } from "../ui/Frames.js";
@@ -62,7 +62,7 @@ import { resourceStatusTargets } from "./ResourceStatusTargets.js"; // 22.10 (12
 import { warmModelTarget } from "./WarmModelTarget.js"; // 22.10 (12.14)
 import { updateLogoutPending } from "../ui/GameMenu.js";
 import { beginModuleCommandLoad, systemLine } from "../ui/Chat.js";
-import { applySettings, drawSettings, settingOn, settingsStore, watchSettingsApplied } from "../ui/Settings.js";
+import { applySettings, drawSettings, settingOn, settingsStore } from "../ui/Settings.js";
 import { acceptInputAccount, attachInputAccount } from "../input/InputAccountWiring.js";
 import { attachActionBarAccount } from "../ui/ActionBarAccountWiring.js"; // L7 4.16b/3.32
 import { installHudKeys } from "../ui/HudKeys.js";
@@ -148,8 +148,8 @@ import {
 import { showCharacterCollections, showCharacterSheet } from "../ui/CharacterSheet.js";
 import { clearReputation, showReputation } from "../ui/Reputation.js";
 import { keepCharacterWindowOverStock, showCharacterWindow } from "../ui/Windows.js";
-import { frameXmlFlagEnabled } from "../framexml/FrameXmlWorldPolicy.js";
-import { FrameXmlModeController } from "../framexml/FrameXmlModeController.js";
+import { FrameXmlInterfaceController } from "../framexml/FrameXmlInterfaceController.js";
+import { showGlueLoadFailure } from "../glue/GlueRetry.js";
 import { installNativeWowUiSkin } from "../ui/NativeUiSkin.js";
 import { frameXmlMerchantOpen, notifyFrameXmlMerchant } from "../framexml/FrameXmlMerchantController.js";
 import { frameXmlStockTrainerType, frameXmlTrainerOpen, notifyFrameXmlTrainer } from "../framexml/FrameXmlTrainerController.js";
@@ -1091,7 +1091,7 @@ export async function enterWorld(character: CharacterSummary): Promise<void> {
     // 9.03: module messages (0x102) are held from here until the JSON windows and the TSWoW Lua
     // have subscribed, then released in arrival order (`CustomPacketRegistry.beginBacklog`).
     world.customPackets.beginBacklog({ expect: ["modules", "lua"] });
-    const location = await world.loginCharacter(character.guid);
+    await world.loginCharacter(character.guid);
     // A logout or a new realm can retire this attempt while its login reply is in flight. Do not
     // rebuild asset clients into the context that now belongs to another world.
     if (!entryLifecycle.isCurrent(generation) || game.world !== world) return;
@@ -1481,19 +1481,16 @@ export async function enterWorld(character: CharacterSummary): Promise<void> {
       settingsStore.set({ ...settingsStore.value, minimapRotate: rotate });
     });
     showWorldState(world.state);
-    // Switching UI retires the previous VM and its borrowed canvases, without reconnecting.
     // Owner, 12.10: the TSWoW modules' interface is part of the client's, as interface patches are in
-    // Wow.exe — present exactly when a module brings it, with no switch of its own; so the WebClient
-    // interface mounts a VM for the modules' addons too.
-    const uiMode = new FrameXmlModeController(true, async () => {
+    // Wow.exe — present exactly when a module brings it, with no switch of its own.
+    const stockInterface = new FrameXmlInterfaceController(async () => {
       const module = await import("../framexml/FrameXmlWorldMount.js");
       return {
         unmount: module.unmountFrameXmlVertical,
-        mount: async (frameXmlEnabled: boolean) => {
+        mount: async () => {
           const finishModuleCommandLoad = beginModuleCommandLoad(world);
           try {
             return await module.mountFrameXmlVertical({
-              addonsOnly: !frameXmlEnabled,
               includeActiveTsAddons: true,
               ...(savedVariablesScope ? { savedVariablesScope } : {}),
               // 9.06: a variable that will not save is said once, in grey, like a module file.
@@ -1512,16 +1509,18 @@ export async function enterWorld(character: CharacterSummary): Promise<void> {
       };
     }, (message) => {
       if (entryLifecycle.isCurrent(generation) && game.world === world) systemLine(message);
+    }, (message) => {
+      // Nothing else can play the game, so the world is covered rather than left without an interface.
+      if (!entryLifecycle.isCurrent(generation) || game.world !== world) return;
+      console.error("[FrameXML] интерфейс не загрузился:", message);
+      showGlueLoadFailure({
+        container: element("world-viewport"), heading: "Интерфейс не загрузился", detail: message,
+        onRetry: () => window.location.reload(),
+      });
     });
-    const syncUiMode = (): void => {
-      if (entryLifecycle.isCurrent(generation) && game.world === world) {
-        void uiMode.select(frameXmlFlagEnabled(window.location.search, settingOn("originalFrameXml")));
-      }
-    };
-    entryLifecycle.track(() => uiMode.dispose());
-    entryLifecycle.track(watchSettingsApplied(syncUiMode));
+    entryLifecycle.track(() => stockInterface.dispose());
     entryLifecycle.track(watchHtmlFallbacks()); // 4.17 stage 1, temporary
-    syncUiMode();
+    void stockInterface.start();
   } catch (error) {
     if (game.assetWarmup === assetWarmup) {
       assetWarmup?.dispose();

@@ -393,12 +393,6 @@ export const SETTING_DEFINITIONS: readonly SettingDefinition[] = [
     hint: "Камера остаётся над водой, пока персонаж на поверхности, и под водой, когда он ныряет.",
   },
   {
-    // Owner, 12.10 (decisions 0.4a, 0.4h): the stock interface for every player; the WebClient one
-    // stays as the experimental fallback.
-    id: "originalFrameXml", label: "Оригинальный интерфейс WoW", group: "Интерфейс", kind: "boolean", fallback: true,
-    hint: "Включено — оригинальные окна и панели WoW 3.3.5a. Выключено — экспериментальный интерфейс WebClient. Переключается в игре, выбор сохраняется.",
-  },
-  {
     id: "showFps", label: "Показывать FPS", group: "Интерфейс", kind: "boolean", fallback: false,
     hint: "Счётчик сверху: средний FPS, среднее и максимальное время кадра за последние 120 кадров. Горячую клавишу можно изменить в управлении.",
   },

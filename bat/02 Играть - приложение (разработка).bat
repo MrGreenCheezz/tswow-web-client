@@ -8,7 +8,7 @@ rem the Vite dev server (script 01) and the gateway (script 10) - then opens the
 rem (electron\main.cjs) on the performance cores around the page from Vite. Until both answer,
 rem the window says what it is waiting for. Extra options pass through, for example:
 rem   02 ... --priority=high
-rem   02 ... --webclient-url=http://127.0.0.1:5173/?framexml=1
+rem   02 ... --webclient-url=http://127.0.0.1:5173/
 rem   02 ... --web-dir=dist\web        the built page instead of Vite (stop Vite first)
 rem F11 toggles full screen, F12 opens DevTools, Ctrl+R reloads.
 

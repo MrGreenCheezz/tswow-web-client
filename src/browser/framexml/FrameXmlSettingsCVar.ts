@@ -42,17 +42,6 @@ export interface FrameXmlSettingsCVarDefinition {
   readonly kind: FrameXmlSettingsCVarKind;
   /** Stock `ShowAllSpellRanks` is the inverse of the browser's hide switch. */
   readonly inverted?: boolean;
-  /**
-   * A mode switch rather than a preference: `GetCVarDefault` answers nothing, so the options
-   * frames' «По умолчанию» (BlizzardOptionsPanel_DefaultControl skips a control without a
-   * defaultValue) cannot switch the interface or the add-ons off together with the checkboxes.
-   */
-  readonly noDefault?: boolean;
-  /**
-   * Written once the current Lua call has returned. Switching the original interface off unmounts
-   * the VM whose «Окей» handler is still running the write.
-   */
-  readonly deferred?: boolean;
 }
 
 /**
@@ -135,14 +124,6 @@ export function frameXmlWebClientCVar(setting: string): string {
 }
 
 /**
- * The switch whose write rebuilds the interface; see `noDefault` and `deferred`. The TSWoW modules'
- * addons have no switch since 12.10 (owner): they are part of the interface, as patches are in Wow.exe.
- */
-const WEBCLIENT_MODE_SWITCHES: Readonly<Record<string, Pick<FrameXmlSettingsCVarDefinition, "noDefault" | "deferred">>> = {
-  originalFrameXml: { noDefault: true, deferred: true },
-};
-
-/**
  * Every browser setting the stock rows above do not carry, in the settings window's own order.
  * A setting drawn by its own window (`ownWindow`, the spellbook's rank switch) keeps that window.
  */
@@ -154,7 +135,6 @@ export const FRAME_XML_WEBCLIENT_CVARS: readonly FrameXmlSettingsCVarDefinition[
       cvar: frameXmlWebClientCVar(definition.id),
       setting: definition.id,
       kind: definition.kind === "boolean" ? "boolean" as const : "number" as const,
-      ...WEBCLIENT_MODE_SWITCHES[definition.id],
     })),
 );
 
@@ -240,12 +220,6 @@ function cvarFromSetting(
   return cvarNumber((typeof value === "number" ? value : definition.fallback as number) / scale(binding));
 }
 
-/** After the calling Lua returns; synchronously where no microtask queue exists. */
-function afterCurrentCall(write: () => void): void {
-  if (typeof queueMicrotask === "function") queueMicrotask(write);
-  else write();
-}
-
 /**
  * 10.28 (26.10): the stock Video options' «Оконный режим» is the page's full screen (app/Fullscreen.ts) — live
  * state, not a stored setting: "1" in a window, "0" filling the screen; a write switches it (an unchanged value,
@@ -265,7 +239,7 @@ export function createFrameXmlSettingsCVar(host: FrameXmlSettingsCVarHost): Fram
     getDefault(name: string): string | undefined {
       if (name.toLowerCase() === GX_WINDOW) return "1";
       const binding = definitionFor(name);
-      if (!binding || binding.noDefault) return undefined;
+      if (!binding) return undefined;
       return cvarFromSetting(binding, defaultSettings());
     },
 
@@ -276,9 +250,7 @@ export function createFrameXmlSettingsCVar(host: FrameXmlSettingsCVarHost): Fram
       }
       const binding = definitionFor(name);
       if (!binding || !modelDefinition(binding)) return false;
-      const setting = settingFromCVar(binding, value);
-      if (binding.deferred) afterCurrentCall(() => { host.setSetting(binding.setting, setting); });
-      else host.setSetting(binding.setting, setting);
+      host.setSetting(binding.setting, settingFromCVar(binding, value));
       return true;
     },
 

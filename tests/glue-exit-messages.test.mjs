@@ -54,14 +54,11 @@ test("the enter gate: 0x4 → 84, 0x01000000 → 85, both before 0x4000", () => 
   assert.equal(enterWorldRefusal(0x4000)?.key, "CHAR_RENAME_DESCRIPTION");
 });
 
-test("the DOM entry is guarded before anything is sent, and says why on the card panel", async () => {
+test("the entry is guarded before anything is sent", async () => {
   const source = await readFile(enterWorldSource, "utf8");
   assert.match(source,
-    /export async function enterWorld\([^)]*\): Promise<void> \{\s*if \(!game\.world\) return;[\s\S]{0,700}?const refusal = enterWorldRefusal\(character\.flags\);\s*if \(refusal\) \{[\s\S]{0,200}?return;\s*\}\s*const world = game\.world;/,
+    /export async function enterWorld\([^)]*\): Promise<void> \{\s*if \(!game\.world\) return;[\s\S]{0,700}?if \(enterWorldRefusal\(character\.flags\)\) return;/,
     "the gate runs before the world is touched");
-  // Login.ts's card button reaches the world only through this function.
-  const login = await readFile(loginSource, "utf8");
-  assert.match(login, /enter\.addEventListener\("click", \(\) => void enterWorld\(character, enter\)\);/);
 });
 
 test("the world's two ways out carry coded messages, never error.message", async () => {

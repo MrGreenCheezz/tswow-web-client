@@ -76,8 +76,8 @@ test("character/spellbook routes share gated original owners and keep native fal
   assert.match(productionMount, /publishFrameXmlCharacter\s*\(/);
   assert.match(productionMount, /includeActiveTsAddons:\s*options\.includeActiveTsAddons\s*\?\?\s*true/,
     "direct mounts retain generated blocks from the winning FrameXML TOC by default");
-  assert.match(entry, /new FrameXmlModeController\(true[\s\S]*?mountFrameXmlVertical\(\{[\s\S]*?includeActiveTsAddons:\s*true/,
-    "world entry runs the modules' addons in either interface (owner, 12.10: no switch)");
+  assert.match(entry, /new FrameXmlInterfaceController\([\s\S]*?mountFrameXmlVertical\(\{[\s\S]*?includeActiveTsAddons:\s*true/,
+    "world entry runs the modules' addons (owner, 12.10: no switch)");
   // 9.10: N is an add-on's owner when an add-on replaced ToggleTalentFrame, else the lazy stock one.
   assert.match(productionMount, /resources\.talentOwner\s*=\s*talentOwners\.talent;/);
   const ownersStart = mount.indexOf("export function createFrameXmlTalentOwners");

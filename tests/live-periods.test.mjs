@@ -28,7 +28,7 @@ function envelope(frames, { heap = HEAP, durationMs = 3000, extra = {} } = {}) {
     browser: 'Mozilla/5.0 (Windows NT 10.0) Chrome/144.0.7559.236 Electron/40.9.3 Safari/537.36',
     viewport: { width: 1920, height: 1080, dpr: 1 },
     settings: { renderScale: 100, lightingQuality: 2, grassRadius: 130, grassDensity: 4, godRays: true,
-      fullscreenGlow: true, originalFrameXml: true, volumeMaster: 70 },
+      fullscreenGlow: true, volumeMaster: 70 },
     durationMs, frameColumns: COLUMNS, frames,
     events: { checkpoints: heap.map(([atMs, usedMB]) => ({ atMs, heap: { usedMB, totalMB: usedMB + 50 } })) },
     ...extra,

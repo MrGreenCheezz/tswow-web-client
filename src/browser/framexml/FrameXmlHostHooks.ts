@@ -14,7 +14,7 @@
  * `GetScript` answers — as the client's own code is not.
  *
  * The installing chunk calls `__webclientHostHook(frame, script, fn)` instead of
- * `frame:HookScript(script, fn)` while `withFrameXmlHostHooks` runs it (FrameXmlAddonsOnlyMessages,
+ * `frame:HookScript(script, fn)` while `withFrameXmlHostHooks` runs it (FrameXmlDialogLayer,
  * FrameXmlPopupsOwner, FrameXmlDressUp, FrameXmlAuctionOwner, FrameXmlOptions/-Owner); the same Lua
  * function is called through the widget layer's own invoker (`__glueInvoke`, GlueWidgets.ts), as
  * its Lua hook was: the legacy globals set, an error to the error handler. Unlike Lua's HookScript

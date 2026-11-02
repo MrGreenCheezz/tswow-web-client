@@ -20,7 +20,6 @@ const { FrameXmlBoot } = await import("../dist/code/browser/framexml/FrameXmlBoo
 const { FRAMEXML_VERTICAL_TOC } = await import("../dist/code/browser/framexml/FrameXmlCorpus.js");
 const { CannedWorldSeam, CANNED_ACTION_BAR } = await import("../dist/code/browser/framexml/CannedWorldSeam.js");
 const { GlueWidgetBinder } = await import("../dist/code/browser/glue/GlueWidgets.js");
-const { installFrameXmlNativeItemTooltip } = await import("../dist/code/browser/framexml/FrameXmlNativeItemTooltip.js");
 const { extendItemTooltip } = await import("../dist/code/browser/ui/ItemTooltipExtensions.js");
 const { UPDATE_FIELDS } = await import("../dist/code/generated/updateFields.js");
 
@@ -298,26 +297,5 @@ test("a binder without GetMinimumWidth keeps the price as words, and the rest of
   } finally {
     GlueWidgetBinder.prototype.gameTooltipMethods = methods;
     boot?.close();
-  }
-});
-
-test("the native item tooltip keeps an add-on's AddDoubleLine row, as one line", withClient, async () => {
-  const { boot, run } = await bootWith({ inventoryItem: () => ({ title: "Шлем", lines: [] }) });
-  let cleanup;
-  try {
-    run(`hooksecurefunc(GameTooltip, "SetInventoryItem", function(self)
-      self:AddDoubleLine(NORMAL_FONT_COLOR_CODE .. "ItemID:" .. FONT_COLOR_CODE_CLOSE, "|cffffffff99001|r")
-      self:AddLine(" ")
-    end)`);
-    cleanup = installFrameXmlNativeItemTooltip(boot);
-    const item = { guid: 2n, fields: new Map([[UPDATE_FIELDS.OBJECT_FIELD_ENTRY.offset, 99001]]) };
-    const content = extendItemTooltip({ bag: 255, slot: 0, index: 0, guid: 2n, item }, { title: "Шлем", lines: [] });
-    const added = (content.lines ?? []).filter((line) => typeof line !== "string");
-    assert.equal(added.length, 1, "the double line is kept and the blank money opener is not");
-    assert.equal(added[0].text, "ItemID:  99001");
-    assert.deepEqual(boot.errors, []);
-  } finally {
-    cleanup?.();
-    boot.close();
   }
 });

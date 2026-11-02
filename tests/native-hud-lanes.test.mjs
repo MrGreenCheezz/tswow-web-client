@@ -4,7 +4,7 @@ import test from "node:test";
 // The native HUD under the stock FrameXML one: its lanes are hidden by the classes the world mount
 // publishes on <body> (NativeHudReplacement.ts), and the per-frame work that only kept them painted
 // — cooldown sweeps, cast bars, countdowns, the player frame's text — is skipped while they stand.
-// With the classes off (`originalFrameXml: false`) every lane is drawn exactly as before. The strips
+// With the classes off (a stock owner that did not come up) every lane is drawn exactly as before. The strips
 // that stay native are change-driven: the totem strip and the notices.
 
 /** Every DOM write, and the reads and constructions the lanes used to pay for each frame. */

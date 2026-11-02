@@ -813,16 +813,10 @@ test("the micro-button's face is a stock claim whose canvas carries the Texture'
 // ---- mount -------------------------------------------------------------------------------------
 
 test("both teardowns of a published mount release the stock portrait host, the add-on overlay's too", async () => {
-  // Source-level: a mount needs the lifecycle suite's whole fake page. The host exists in both
-  // modes (an add-on's own SetPortraitTexture claims a Texture over the native HUD), and the
-  // add-on overlay's teardown is an early-returning branch of its own.
+  // Source-level: a mount needs the lifecycle suite's whole fake page.
   const source = await readFile(new URL("../src/browser/framexml/FrameXmlWorldMount.ts", import.meta.url), "utf8");
   const body = /\nfunction cleanupPublishedMount\([^)]*\): void \{\n([\s\S]*?)\n\}\n/.exec(source)?.[1];
   assert.ok(body, "cleanupPublishedMount");
-  const branch = /\n {2}if \(record\.addonsOnly\) \{\n([\s\S]*?)\n {4}return;\n {2}\}\n/.exec(body);
-  assert.ok(branch, "the add-on overlay's branch");
-  const release = /record\.stockPortraitsCleanup\?\.\(\)/;
-  assert.match(branch[1], release, "the add-on overlay's teardown disposes the host");
-  assert.match(body.slice(branch.index + branch[0].length), release, "and so does the full UI's");
+  assert.match(body, /record\.stockPortraitsCleanup\?\.\(\)/, "the teardown disposes the host");
   assert.match(source, /resources\.stockPortraitsCleanup = /, "for the host every mount creates");
 });

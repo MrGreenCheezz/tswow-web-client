@@ -130,16 +130,10 @@ test("every other browser setting is a webclient_ CVar, once, and the spellbook'
   assert.deepEqual(writes, [{ id: "renderScale", value: 70 }, { id: "showFps", value: true }]);
 });
 
-test("the two mode switches have no default, and switching the interface off waits for the calling Lua", async () => {
-  const { adapter, writes, values } = fakeSettings();
-  assert.equal(adapter.getDefault("webclient_originalFrameXml"), undefined, "«По умолчанию» leaves the interface alone");
+test("nothing switches the interface or the modules' add-ons off, and a switch keeps its default", () => {
+  const { adapter } = fakeSettings();
+  assert.equal(adapter.get("webclient_originalFrameXml"), undefined, "the stock interface is the only one (owner, 02.11)");
   assert.equal(adapter.get("webclient_tswowAddons"), undefined, "the modules' interface has no switch (owner, 12.10)");
-  assert.equal(adapter.get("webclient_originalFrameXml"), "1", "owner, 12.10: the stock interface by default");
-  assert.equal(adapter.set("webclient_originalFrameXml", "0"), true);
-  assert.deepEqual(writes, [], "the write that unmounts this VM is not made inside its Okay handler");
-  await Promise.resolve();
-  assert.deepEqual(writes, [{ id: "originalFrameXml", value: false }]);
-  assert.equal(values().originalFrameXml, false);
   assert.equal(adapter.getDefault("webclient_showFps"), "0", "an ordinary switch keeps its default");
 });
 

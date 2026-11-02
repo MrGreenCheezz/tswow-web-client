@@ -464,7 +464,7 @@ const HORDE_RACE_IDS = new Set([2, 5, 6, 8, 10]);
  * picture and nothing had to be re-plumbed.
  *
  * **What this seam does not do.** It is constructed in the world and mounted by the ordinary
- * default-on route; `?framexml=0` prevents that mount. It is not the DOM HUD's replacement and
+ * default-on route; It is not the DOM HUD's replacement and
  * nothing outside the mounted FrameXML route can reach it.
  * Item actions share the cached texture/inventory and cooldown sources used by the bags. The
  * optional host action dispatcher also shares macro/equipment-set execution with keyboard input.

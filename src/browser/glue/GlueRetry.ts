@@ -88,6 +88,8 @@ export async function probeGlueServer(
 export interface LoadFailureScreenOptions {
   /** The element the notice covers (`#glue-host`); the notice is appended as its last child. */
   readonly container: HTMLElement;
+  /** The first line; the login screen's when absent. */
+  readonly heading?: string;
   /** What went wrong, as the failure said it. */
   readonly detail: string;
   /** What «Повторить» does. `location.reload()` in the page: a half-built stage is not reusable. */
@@ -96,12 +98,12 @@ export interface LoadFailureScreenOptions {
 }
 
 /**
- * The login screen failed although the gateway answered. Nothing else can sign a player in, so the
- * page says so and offers a reload rather than staying blank.
+ * The login screen or the world's interface failed although the gateway answered. Nothing else can
+ * sign a player in or play the game, so the page says so and offers a reload rather than staying blank.
  */
 export function showGlueLoadFailure(options: LoadFailureScreenOptions): void {
   const doc = options.document ?? document;
-  const { box, button } = noticeBox(doc, "Экран входа не загрузился");
+  const { box, button } = noticeBox(doc, options.heading ?? "Экран входа не загрузился");
   const line = doc.createElement("div");
   line.textContent = options.detail;
   box.insertBefore(line, button);

@@ -1,19 +1,16 @@
 /**
  * WORK_PLAN 4.17, stage 1: the page side of HtmlFallbackLog.ts. Temporary, it goes with the HTML interface.
  *
- * Twice a second, while the stock interface is the chosen one, it looks at what HTML is on screen. A look
- * rather than hooks in each window: the windows have many routes in, and a route nobody remembered is
+ * Twice a second it looks at what HTML is on screen. A look rather than hooks in each window: the windows have many routes in, and a route nobody remembered is
  * exactly what this is here to find. An appearance is one console line; `htmlFallbacks()` answers the whole
  * log, which survives a reload and a relog, with the gates that failed, so `copy(htmlFallbacks())` after a
  * session hands all of it over.
  */
 
-import { frameXmlFlagEnabled } from "../framexml/FrameXmlWorldPolicy.js";
 import {
   HtmlFallbackLog, parseHtmlFallbackLog, STOCK_NOT_UP, visibleHtmlSurfaces, type HtmlFallbackEntry,
 } from "./HtmlFallbackLog.js";
 import { NATIVE_LANES_REPLACED, nativeHudReplaced } from "./NativeHudReplacement.js";
-import { settingOn } from "./Settings.js";
 
 const STORAGE_KEY = "webclient.html-fallbacks";
 const LOOK_MS = 500;
@@ -43,10 +40,7 @@ export function watchHtmlFallbacks(): () => void {
 
   const look = (): void => {
     const now = Date.now();
-    const chosen = frameXmlFlagEnabled(window.location.search, settingOn("originalFrameXml"));
-    const visible = !chosen
-      ? none
-      : nativeHudReplaced(NATIVE_LANES_REPLACED) ? visibleHtmlSurfaces(viewport) : new Set([STOCK_NOT_UP]);
+    const visible = nativeHudReplaced(NATIVE_LANES_REPLACED) ? visibleHtmlSurfaces(viewport) : new Set([STOCK_NOT_UP]);
     const appeared = log.observe(visible, now);
     if (appeared.length === 0) return;
     for (const name of appeared) console.warn(`[html-fallback] ${name}`);

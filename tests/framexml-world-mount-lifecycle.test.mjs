@@ -397,7 +397,6 @@ const { FrameXmlDomRenderer } = await import("../dist/code/browser/ui/framexml_c
 const { clearWorldContext } = await import("../dist/code/browser/game/Context.js");
 const {
   frameXmlWorldVisibleRootAllowed,
-  frameXmlFlagEnabled,
   FRAMEXML_MICROBUTTON_NAMES,
   frameXmlMicroButtonOwnerGate,
   installFrameXmlMicroButtonAdapters,
@@ -412,32 +411,6 @@ const {
 const { game } = await import("../dist/code/browser/game/Context.js");
 const { updateMinimap } = await import("../dist/code/browser/ui/Minimap.js");
 const { inventoryWindow } = await import("../dist/code/browser/ui/Dom.js");
-
-test("FrameXML flag defaults off and accepts only the explicit diagnostic opt-in", () => {
-  assert.equal(frameXmlFlagEnabled("?framexml=1"), true);
-  assert.equal(frameXmlFlagEnabled("?framexml=true"), false);
-  assert.equal(frameXmlFlagEnabled("?framexml="), false);
-  assert.equal(frameXmlFlagEnabled(""), false);
-  assert.equal(frameXmlFlagEnabled("?framexml=0"), false);
-});
-
-test("EnterWorld watches the saved UI preference and scopes runtime switching to its session", async () => {
-  const source = await readFile(new URL("../src/browser/app/EnterWorld.ts", import.meta.url), "utf8");
-  assert.match(source, /uiMode\.select\(frameXmlFlagEnabled\(window\.location\.search, settingOn\("originalFrameXml"\)\)\)/);
-  assert.match(source, /installNativeWowUiSkin\(game\.gatewayOrigin\);\s*mountNativeCharacterPortrait/,
-    "both modes retain a complete custom fallback");
-  // Owner, 12.10: the modules' interface is part of the client's, as patches are in Wow.exe — no switch.
-  assert.doesNotMatch(source, /settingOn\("tswowAddons"\)|tswowAddonsEnabled/, "the modules' interface has no switch");
-  assert.match(source, /\n    const modules = createModuleLoader\(/, "the modules' windows load on every world entry");
-  assert.match(source, /new FrameXmlModeController\(true, async \(\) => \{\s*const module = await import/);
-  assert.match(source, /entryLifecycle\.track\(\(\) => uiMode\.dispose\(\)\)/);
-  assert.match(source, /entryLifecycle\.track\(watchSettingsApplied\(syncUiMode\)\)/);
-  assert.match(source, /mountFrameXmlVertical\(\{\s*addonsOnly: !frameXmlEnabled\s*[,}]/,
-    "the same policy selects an addon overlay for ordinary entry and the full HUD only for diagnostics");
-  assert.match(source, /includeActiveTsAddons: true,/, "the modules' addons run in both interfaces");
-  assert.doesNotMatch(source, /new URLSearchParams\(window\.location\.search\)\.get\("framexml"\) === "1"/,
-    "the old query opt-in must not remain on the ordinary route");
-});
 
 test("EnterWorld holds module messages from login until the JSON windows and the Lua are subscribed (9.03)", async () => {
   const source = await readFile(new URL("../src/browser/app/EnterWorld.ts", import.meta.url), "utf8");
@@ -1703,7 +1676,10 @@ test("world reset closes the old mount, reattaches the next world, and cancels a
   pendingLoad = new Promise((resolve) => { release = resolve; });
   const late = seam("late");
   const lateMount = mountFrameXmlVertical({ viewport, seam: late });
-  await Promise.resolve();
+  // The boot is built after the catalogs and the clock the mount waits for; the load then holds it pending.
+  for (let tries = 0; tries < 200 && !seams.some((entry) => entry.seam === late); tries++) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
   assert.equal(body.classList.contains("framexml-world-replaces-native"), false,
     "pending mount must not activate the replacement class");
   assert.equal(body.classList.contains("framexml-world-replaces-party"), false,
@@ -1831,7 +1807,7 @@ test("a failed FrameXML load never claims the native replacement class", async (
   }
 });
 
-test("addon overlay preserves native HUD and releases commands, menu actions and subscriptions across logout and cancelled login", async () => {
+test("the modules' add-ons release their commands, menu actions and subscriptions across logout and cancelled login", async () => {
   const { moduleCommandList } = await import("../dist/code/browser/ui/Chat.js");
   const { toggleGameMenu } = await import("../dist/code/browser/ui/GameMenu.js");
   const { usePanelHost } = await import("../dist/code/browser/ui/Widgets.js");
@@ -1843,19 +1819,20 @@ test("addon overlay preserves native HUD and releases commands, menu actions and
   const hits = [];
   const records = [];
   let defer;
-  FrameXmlBoot.prototype.load = async function addonLoad() {
+  FrameXmlBoot.prototype.load = async function addonLoad(...args) {
     const record = { boot: this, seam: this.seam, renderSubscriptions: 0 };
     records.push(record);
-    seams.push({ seam: this.seam, closed: false });
     const subscribe = this.bridge.subscribe.bind(this.bridge);
     this.bridge.subscribe = (callback) => {
       record.renderSubscriptions += 1;
       const unsubscribe = subscribe(callback);
       return () => { record.renderSubscriptions -= 1; unsubscribe(); };
     };
+    // The suite's fake corpus is the stock HUD the mount's gates ask for; the module joins it.
+    const loaded = await previousLoad.apply(this, args);
     this.isModuleLoaded = (name) => name === "lifecycle-addon"; // 3.46: the host asks this of a module
     this.bridge.CreateFrame("Frame", "UIParent");
-    const menu = this.bridge.CreateFrame("Frame", "GameMenuFrame");
+    const menu = this.bridge.getFrame("GameMenuFrame") ?? this.bridge.CreateFrame("Frame", "GameMenuFrame");
     this.bridge.CreateFrame("Button", "LifecycleMenuButton", menu);
     this.vm.registerGlobal("LifecycleHit", ([value]) => { hits.push(value); return []; });
     const result = this.vm.execute(`
@@ -1868,30 +1845,18 @@ test("addon overlay preserves native HUD and releases commands, menu actions and
     `, "@interface/framexml/tsaddons/lifecycle-addon/addon/addon.lua");
     assert.equal(result.ok, true, result.error);
     if (defer) await defer;
-    this.seam.attach(this.pump);
-    return inventory;
+    return loaded;
   };
   const command = () => moduleCommandList().find((entry) => entry.name === "lifecycle-addon");
   const descendants = (node) => [node, ...node.children.flatMap(descendants)];
   const menuActions = () => descendants(menuHost).filter((node) => node.textContent === "Lifecycle addon action");
-  const nativeState = new Map([...replacedNativeLanes, ...untouchedNativeLanes].map(([id, node]) =>
-    [id, { hidden: node.hidden, display: node.style.display, parent: node.parentNode }]));
-  const assertNative = () => {
-    for (const [id, node] of [...replacedNativeLanes, ...untouchedNativeLanes]) {
-      assert.deepEqual({ hidden: node.hidden, display: node.style.display, parent: node.parentNode }, nativeState.get(id),
-        `Addon overlay cannot replace or reparent native ${id}`);
-    }
-    assert.equal(body.classList.contains("framexml-world-replaces-native"), false);
-  };
   try {
     const first = seam("addons-first");
-    const result = await mountFrameXmlVertical({ viewport, seam: first, addonsOnly: true });
+    const result = await mountFrameXmlVertical({ viewport, seam: first });
     assert.equal(result.ok, true, result.message);
     assert.equal(first.attached, true);
     assert.equal(records[0].renderSubscriptions, 1);
-    assertNative();
     const host = viewport.children.find((node) => node.id === "framexml-world-host");
-    assert.equal(host.dataset.tswowAddons, "true");
     assert.equal(host.style.visibility, "visible");
     const retainedCommand = command();
     assert.ok(retainedCommand, "Own Lua command must be available through native chat");
@@ -1916,12 +1881,11 @@ test("addon overlay preserves native HUD and releases commands, menu actions and
     assert.equal(raf.cancelled.has(scheduled.id), true);
     assert.equal(resizeListeners.size, baselineResizeListenerCount);
     assert.equal(viewport.children.length, 0);
-    assertNative();
 
     let release;
     defer = new Promise((resolve) => { release = resolve; });
     const stale = seam("addons-cancelled");
-    const pending = mountFrameXmlVertical({ viewport, seam: stale, addonsOnly: true });
+    const pending = mountFrameXmlVertical({ viewport, seam: stale });
     assert.equal(command(), undefined, "A loading addon cannot publish its command prematurely");
     clearWorldContext();
     release();
@@ -1934,14 +1898,13 @@ test("addon overlay preserves native HUD and releases commands, menu actions and
 
     defer = undefined;
     const next = seam("addons-next");
-    assert.equal((await mountFrameXmlVertical({ viewport, seam: next, addonsOnly: true })).ok, true);
+    assert.equal((await mountFrameXmlVertical({ viewport, seam: next })).ok, true);
     assert.equal(menuActions().length, 1, "Next login publishes one fresh menu action");
     assert.ok(command());
     command().run("next");
     retainedCommand.run("old callback after login");
     retainedMenu.dispatchEvent({ type: "click" });
     assert.deepEqual(hits, ["first", "menu", "next"]);
-    assertNative();
     unmountFrameXmlVertical();
     assert.equal(command(), undefined);
     assert.equal(menuActions().length, 0);
@@ -1959,52 +1922,7 @@ test("addon overlay preserves native HUD and releases commands, menu actions and
   }
 });
 
-/**
- * The add-on overlay's stock dialog and error line over a stubbed load: a shown `StaticPopup`-like
- * frame Escape may dismiss, a stock `StaticPopup_EscapePressed` that records the press (and leaves
- * the dialog up unless `hideOnPress`), a `UIErrorsFrame` and the boot's `hooksecurefunc` shim.
- * Each generation's presses land in `escapes` under its index.
- */
-function installAddonDialogsLoad({ hideOnPress = false } = {}) {
-  const previousLoad = FrameXmlBoot.prototype.load;
-  const boots = [];
-  const escapes = [];
-  FrameXmlBoot.prototype.load = async function addonDialogsLoad() {
-    const generation = boots.length;
-    boots.push(this);
-    seams.push({ seam: this.seam, closed: false });
-    this.isModuleLoaded = () => false; // 3.46
-    this.bridge.CreateFrame("Frame", "UIParent");
-    this.bridge.CreateFrame("Frame", "GameMenuFrame");
-    this.bridge.CreateFrame("Frame", "LifecycleStaticPopup");
-    this.bridge.CreateFrame("MessageFrame", "UIErrorsFrame");
-    this.vm.registerGlobal("LifecycleEscape", () => { escapes.push(generation); return []; });
-    const result = this.vm.execute(`
-      function hooksecurefunc(target, name, hook)
-        if hook == nil then target, name, hook = _G, target, name end
-        local original = target[name]
-        target[name] = function(...) local results = { original(...) } hook(...) return table.unpack(results) end
-      end
-      assert(LifecycleStaticPopup:IsShown())
-      LifecycleStaticPopup.hideOnEscape = 1
-      StaticPopupDialogs = {}
-      StaticPopup_DisplayedFrames = { LifecycleStaticPopup }
-      function StaticPopup_EscapePressed()
-        LifecycleEscape()
-        ${hideOnPress ? "LifecycleStaticPopup:Hide()" : ""}
-        return 1
-      end
-    `, "@interface/framexml/staticpopup.lua");
-    assert.equal(result.ok, true, result.error);
-    this.seam.attach(this.pump);
-    return inventory;
-  };
-  return { boots, escapes, restore: () => { FrameXmlBoot.prototype.load = previousLoad; } };
-}
-
-const dialogSeam = (name) => Object.assign(seam(name), { popups: { popupsOwned: false } });
-
-test("world mounts draw their dialogs modeless in both modes: the world, the native HUD and other windows keep their input", async () => {
+test("the world mount draws its dialogs modeless: the world, the native HUD and other windows keep their input", async () => {
   const previousMount = FrameXmlDomRenderer.prototype.mount;
   const previousObserver = globalThis.MutationObserver;
   globalThis.MutationObserver = class { observe() {} disconnect() {} };
@@ -2013,17 +1931,12 @@ test("world mounts draw their dialogs modeless in both modes: the world, the nat
     renderers.push(this);
     return previousMount.apply(this, args);
   };
-  const load = installAddonDialogsLoad();
   try {
-    assert.equal((await mountFrameXmlVertical({ viewport, seam: dialogSeam("modeless-addons"), addonsOnly: true })).ok, true);
-    unmountFrameXmlVertical();
-    load.restore();
     assert.equal((await mountFrameXmlVertical({ viewport, seam: seam("modeless-full") })).ok, true);
     unmountFrameXmlVertical();
-    assert.deepEqual(renderers.map((renderer) => renderer.dialogs), ["modeless", "modeless"],
+    assert.deepEqual(renderers.map((renderer) => renderer.dialogs), ["modeless"],
       "a StaticPopup never makes #world-canvas or the native HUD inert, nor holds the keyboard");
   } finally {
-    load.restore();
     FrameXmlDomRenderer.prototype.mount = previousMount;
     unmountFrameXmlVertical();
     if (previousObserver === undefined) delete globalThis.MutationObserver;
@@ -2090,28 +2003,6 @@ async function withEscapeKey(run) {
   }
 }
 
-test("one Escape closes only an add-on dialog: the module window beneath and the target wait for the next press", async () => {
-  const load = installAddonDialogsLoad({ hideOnPress: true });
-  try {
-    await withEscapeKey(async ({ escape, world, calls, moduleWindow, enterWorld }) => {
-      assert.equal((await mountFrameXmlVertical({ viewport, seam: dialogSeam("escape-dialog"), addonsOnly: true })).ok, true);
-      enterWorld();
-      escape();
-      assert.deepEqual(load.escapes, [0], "the press reached stock StaticPopup_EscapePressed");
-      assert.equal(moduleWindow.closes, 0, "and stopped there: the module window under the dialog stays open");
-      assert.equal(world.targetGuid, 7n, "the target stays");
-      assert.deepEqual(calls, []);
-      escape();
-      assert.deepEqual(load.escapes, [0], "no dialog is up now: the next press is the native chain's");
-      assert.equal(moduleWindow.closes, 1);
-      // 4.04: the native chain is one step per press too — the window went, the target is the next press's.
-      assert.equal(world.targetGuid, 7n);
-    });
-  } finally {
-    load.restore();
-  }
-});
-
 test("full HUD without the stock game menu: one Escape answers the published stock popups alone, as stock ToggleGameMenu", async () => {
   const controller = await import("../dist/code/browser/framexml/FrameXmlPopupsController.js");
   await withEscapeKey(async ({ escape, world, calls, moduleWindow, enterWorld }) => {
@@ -2167,56 +2058,6 @@ test("full HUD: a shown stock dialog stands over the native windows, and the ove
   } finally {
     FrameXmlBoot.prototype.load = previousLoad;
     unmountFrameXmlVertical();
-    if (previousObserver === undefined) delete globalThis.MutationObserver;
-    else globalThis.MutationObserver = previousObserver;
-  }
-});
-
-test("addon overlay dialogs: the Escape step is published per mount and withdrawn by the entry-point cleanup; a module line raises the overlay", async () => {
-  const {
-    escapeFrameXmlAddonDialogs, frameXmlAddonDialogsEscapePublished,
-  } = await import("../dist/code/browser/framexml/FrameXmlTsAddonPresentation.js");
-  const previousClose = FrameXmlBoot.prototype.close;
-  const previousObserver = globalThis.MutationObserver;
-  globalThis.MutationObserver = class { observe() {} disconnect() {} };
-  const load = installAddonDialogsLoad();
-  const deferred = [];
-  // Each VM stays open past its unmount: a step the cleanup left behind would still answer.
-  FrameXmlBoot.prototype.close = function deferredClose() { deferred.push(this); };
-  try {
-    const first = dialogSeam("dialogs-first");
-    const mounted = await mountFrameXmlVertical({ viewport, seam: first, addonsOnly: true });
-    assert.equal(mounted.ok, true, mounted.message);
-    assert.deepEqual(window.frameXmlWorld().surfaces, { popups: 0, errors: 0, serverQuestions: "native" });
-    assert.equal(first.popups.popupsOwned, false, "the server's confirmations are not handed to stock");
-    const host = viewport.children.find((node) => node.id === "framexml-world-host");
-    const layer = Number(host.style.zIndex);
-    assert.equal(load.boots[0].vm.execute('UIErrorsFrame:AddMessage("Голод начинает ослаблять вас!", 1, 0.25, 0.15, 1)',
-      "@interface/framexml/tsaddons/lifecycle/addon/addon.lua").ok, true);
-    assert.equal(Number(host.style.zIndex) > layer, true, "the overlay rose over the native windows with the line");
-    assert.equal(window.frameXmlWorld().surfaces.errors, 1);
-    assert.equal(escapeFrameXmlAddonDialogs(), true);
-    assert.deepEqual(load.escapes, [0], "one press reaches stock StaticPopup_EscapePressed once");
-    unmountFrameXmlVertical();
-    assert.equal(deferred.includes(load.boots[0]), true, "the unmount reached boot.close");
-    assert.equal(frameXmlAddonDialogsEscapePublished(), false, "the entry-point cleanup withdrew the step");
-    assert.equal(escapeFrameXmlAddonDialogs(), false, "nothing answers it (its VM is still open)");
-    assert.deepEqual(load.escapes, [0]);
-
-    const next = dialogSeam("dialogs-next");
-    assert.equal((await mountFrameXmlVertical({ viewport, seam: next, addonsOnly: true })).ok, true);
-    assert.equal(escapeFrameXmlAddonDialogs(), true);
-    assert.deepEqual(load.escapes, [0, 1], "one handler after the remount: the new mount's, once");
-    assert.equal(next.popups.popupsOwned, false);
-    unmountFrameXmlVertical();
-    assert.equal(frameXmlAddonDialogsEscapePublished(), false);
-    assert.equal(escapeFrameXmlAddonDialogs(), false);
-    assert.deepEqual(load.escapes, [0, 1]);
-  } finally {
-    load.restore();
-    FrameXmlBoot.prototype.close = previousClose;
-    unmountFrameXmlVertical();
-    for (const boot of deferred) previousClose.call(boot);
     if (previousObserver === undefined) delete globalThis.MutationObserver;
     else globalThis.MutationObserver = previousObserver;
   }

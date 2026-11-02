@@ -151,15 +151,13 @@ try {
 const openedChains = new Set();
 after(() => { for (const chain of openedChains) chain.close(); });
 
-test("a module in the generated block raises its own stock dialog and error line over the native HUD", {
+test("a module in the generated block raises its own stock dialog and error line", {
   skip: clientDirectory ? false : "no 3.3.5a client on this machine",
 }, async () => {
   const { clientArchives } = await import("../tools/mpq.mjs");
   const { normalizeGluePath } = await import("../dist/code/browser/glue/GlueLoader.js");
   const { FRAMEXML_VERTICAL_TOC, FRAMEXML_TOC_PATH } = await import("../dist/code/browser/framexml/FrameXmlCorpus.js");
   const { CannedWorldSeam } = await import("../dist/code/browser/framexml/CannedWorldSeam.js");
-  const { FrameXmlTsAddonPresentation, markFrameXmlNativeHud } = await import("../dist/code/browser/framexml/FrameXmlTsAddonPresentation.js");
-  const { mountFrameXmlAddonsOnlySurfaces } = await import("../dist/code/browser/framexml/FrameXmlAddonsOnlyMessages.js");
   const chain = await clientArchives(clientDirectory);
   openedChains.add(chain);
   const decoder = new TextDecoder("utf-8");
@@ -199,22 +197,16 @@ test("a module in the generated block raises its own stock dialog and error line
     locale: "ruRU", subset: FRAMEXML_VERTICAL_TOC, includeActiveTsAddons: true, seam, exercise: true,
     screen: () => ({ width: 1365, height: 768 }),
   });
-  markFrameXmlNativeHud(boot);
   let entrypoints;
-  let surfaces;
   try {
     await boot.load();
     assert.equal(boot.isModuleLoaded("contract-dialogs"), true); // 3.46
     assert.deepEqual(boot.tsAddonResults.map((result) => [result.module, result.ok]), [["contract-dialogs", true]]);
-    const presentation = new FrameXmlTsAddonPresentation(boot);
-    surfaces = mountFrameXmlAddonsOnlySurfaces(boot, seam, {});
     const reset = boot.bridge.getFrame("ContractResetButton");
     assert.equal(boot.tsAddonOwner(reset), "contract-dialogs");
-    assert.equal(presentation.includes(reset), true, "the module's own button is painted");
     assert.equal(boot.bridge.Click(reset, "LeftButton", false) !== false, true);
     const dialog = boot.bridge.getFrame("StaticPopup1");
     assert.equal(dialog.visible, true, "StaticPopup_Show from the module opened StaticPopup1");
-    assert.equal(presentation.includes(dialog), true, "and it is painted over the native HUD");
     assert.equal(boot.bridge.getFrame("StaticPopup1Text").text, "Сбросить ветку Огонь? Все вложенные очки вернутся.");
     assert.equal(boot.bridge.Click(boot.bridge.getFrame("StaticPopup1Button1"), "LeftButton", false) !== false, true);
     assert.equal(boot.vm.getGlobal("ContractResets"), 1, "«Да» answered the module");
@@ -227,11 +219,8 @@ test("a module in the generated block raises its own stock dialog and error line
     warn.run("Жажда начинает ослаблять вас!");
     assert.equal(boot.bridge.GetNumMessages(errorsFrame), before + 1);
     assert.equal(boot.bridge.GetMessageInfo(errorsFrame, before + 1)[0], "Жажда начинает ослаблять вас!");
-    assert.equal(presentation.includes(errorsFrame), true, "UIErrorsFrame is painted over the native HUD");
-    assert.deepEqual({ ...surfaces.counts() }, { popups: 1, errors: 1, serverQuestions: "native" });
     assert.deepEqual(boot.errors, []);
   } finally {
-    surfaces?.dispose();
     entrypoints?.close();
     boot.close();
   }

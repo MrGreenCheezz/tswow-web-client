@@ -35,7 +35,7 @@ test("logout removes packet and store listeners before another character enters"
 test("a reply from a retired character login is gated before rebuilding world clients", async () => {
   const source = await readFile(new URL("../src/browser/app/EnterWorld.ts", import.meta.url), "utf8");
   assert.match(source,
-    /const location = await world\.loginCharacter\(character\.guid\);[\s\S]{0,250}?if \(!entryLifecycle\.isCurrent\(generation\) \|\| game\.world !== world\) return;/);
+    /await world\.loginCharacter\(character\.guid\);[\s\S]{0,250}?if \(!entryLifecycle\.isCurrent\(generation\) \|\| game\.world !== world\) return;/);
   assert.match(source,
     /if \(!entryLifecycle\.isCurrent\(generation\) \|\| game\.world !== world\) return;\s*hideLoadingScreen\(\);/,
     "a late rejection cannot hide the new world loading screen");

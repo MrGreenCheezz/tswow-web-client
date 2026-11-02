@@ -41,7 +41,7 @@ export const FRAME_XML_TRAINER_ADDON = "Blizzard_TrainerUI";
  * * `disabled` — deliberately not loaded yet: `LoadAddOn` answers `nil, "DISABLED"` at once, without
  *   reading a file. Blizzard_CombatText has no floating-text renderer to drive, Blizzard_DebugTools and
  *   Blizzard_GMSurveyUI have no host side. (L17 3.14: Blizzard_BattlefieldMinimap has its owner,
- *   FrameXmlBattlefieldMinimapLod.ts; in the addonsOnly mode FrameXmlBattlefieldMinimap.ts still refuses it.)
+ *   FrameXmlBattlefieldMinimapLod.ts.)
  *
  * A name missing here and from the client's add-on list is `MISSING`, as before. The client's own
  * AddOns directory (`/client/addons`) is the list's source; Blizzard_GMChatUI and Blizzard_VehicleUI

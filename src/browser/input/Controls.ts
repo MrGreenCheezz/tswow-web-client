@@ -31,7 +31,6 @@ import {
 import {
   closeFrameXmlPopups, frameXmlPopupsDropCursorItem, frameXmlPopupsOpen,
 } from "../framexml/FrameXmlPopupsController.js";
-import { escapeFrameXmlAddonDialogs } from "../framexml/FrameXmlTsAddonPresentation.js";
 import { stopFrameXmlTradeSkillTargeting } from "../framexml/FrameXmlTradeSkillController.js";
 import { keyBindingsOpen, toggleKeyBindingsWindow } from "../ui/KeyBindings.js";
 import { notice } from "../ui/Notices.js";
@@ -210,9 +209,8 @@ const NATIVE_ESCAPE: FrameXmlNativeEscape = {
  * stopped a cast; the original backs out of one thing at a time and stops the cast first.
  */
 const NATIVE_BACK_OUT: readonly EscapeStep[] = [
-  // StaticPopup_EscapePressed (UIParent.lua:2872): a stock dialog a TSWoW module raised over the
-  // native HUD, the published stock popups, and the native logout countdown standing in for CAMP.
-  () => escapeFrameXmlAddonDialogs(),
+  // StaticPopup_EscapePressed (UIParent.lua:2872): the published stock popups, and the native logout
+  // countdown standing in for CAMP.
   () => frameXmlPopupsOpen() && closeFrameXmlPopups(),
   () => NATIVE_ESCAPE.popups(),
   // GameMenuFrame shown → hidden.
