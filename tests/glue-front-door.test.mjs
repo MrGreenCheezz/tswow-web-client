@@ -2,21 +2,22 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
-  FRONT_DOOR_STORAGE_KEY, frontDoorGatewayOrigin, frontDoorHost, frontDoorMode, frontDoorReturn,
-  gatewayOverride, gatewaySocketUrl, parseGatewayOverride, storedFrontDoorMode, useFrontDoor,
+  frontDoorGatewayOrigin, frontDoorHost, frontDoorReturn,
+  gatewayOverride, gatewaySocketUrl, parseGatewayOverride, useFrontDoor,
 } from "../dist/code/browser/glue/FrontDoor.js";
 import { gatewayPolicy, storedGatewayAllowList } from "../dist/code/browser/Environment.js";
 import { adoptWorldConnection } from "../dist/code/browser/app/WorldAdoption.js";
 import { GlueRuntime } from "../dist/code/browser/glue/GlueRuntime.js";
 import { createFixtureProvider } from "../dist/code/browser/glue/GlueLoader.js";
 import { fakeGlueSession } from "../dist/code/browser/glue/GlueFakeSession.js";
+import { showGlueLoadFailure } from "../dist/code/browser/glue/GlueRetry.js";
 
 /**
  * G6: the GlueXML screens as the client's front door.
  *
- * Three things are checkable without a browser and are checked here — which interface the page
- * opens with, where a world sends the player back to, and what "adopting a connection" actually
- * does to the context — plus the wiring that only a source pin can hold, because it lives behind
+ * Two things are checkable without a browser and are checked here — where a world sends the player
+ * back to, and what "adopting a connection" actually does to the context — plus the wiring that
+ * only a source pin can hold, because it lives behind
  * `ui/Dom.ts`, which resolves 170 elements at import time and cannot exist in node.
  */
 
@@ -27,36 +28,6 @@ const indexSource = new URL("../index.html", import.meta.url);
 const glueSource = new URL("../glue.html", import.meta.url);
 const cssSource = new URL("../src/browser/glue/glue.css", import.meta.url);
 const globalStyleSource = new URL("../src/browser/style.css", import.meta.url);
-
-/* --- Which front door opens ------------------------------------------------------------------ */
-
-test("the glue screens are the default and the query flag wins in both directions", () => {
-  // Default: the client's own interface, which is the whole point of the T1 track.
-  assert.equal(frontDoorMode(""), "glue");
-  assert.equal(frontDoorMode("?screen=charselect"), "glue");
-
-  // The parity switch. A bare flag counts as "yes" because that is how a person types one.
-  assert.equal(frontDoorMode("?legacy-login=1"), "legacy");
-  assert.equal(frontDoorMode("?legacy-login"), "legacy");
-  assert.equal(frontDoorMode("?legacy-login=true"), "legacy");
-  assert.equal(frontDoorMode("?legacy-login=YES"), "legacy");
-  assert.equal(frontDoorMode("?fake=charselect&legacy-login=on"), "legacy");
-
-  // Remembered choice, when there is no flag.
-  assert.equal(frontDoorMode("", "legacy"), "legacy");
-  assert.equal(frontDoorMode("", "  LEGACY "), "legacy");
-  assert.equal(frontDoorMode("", "glue"), "glue");
-  assert.equal(frontDoorMode("", "nonsense"), "glue");
-  assert.equal(frontDoorMode("", null), "glue");
-
-  // …and the flag must be able to undo it, or the console escape hatch becomes a trap.
-  assert.equal(frontDoorMode("?legacy-login=0", "legacy"), "glue");
-  assert.equal(frontDoorMode("?legacy-login=false", "legacy"), "glue");
-  assert.equal(frontDoorMode("?legacy-login=1", "glue"), "legacy");
-  // A value that is neither yes nor no falls through to the stored choice rather than guessing.
-  assert.equal(frontDoorMode("?legacy-login=maybe", "legacy"), "legacy");
-  assert.equal(frontDoorMode("?legacy-login=maybe"), "glue");
-});
 
 /* --- 10.03: which gateways a link may point the page at ------------------------------------- */
 
@@ -128,18 +99,9 @@ test("the gateway policy is built from the page, the build and this browser", ()
   assert.deepEqual(storedGatewayAllowList({ getItem() { throw new Error("blocked"); } }), []);
   assert.deepEqual(storedGatewayAllowList({ getItem: () => '["x", 3]' }), ["x"]);
 });
-test("a browser that refuses site data still gets a front door", () => {
-  assert.equal(storedFrontDoorMode(null), null);
-  assert.equal(storedFrontDoorMode(undefined), null);
-  assert.equal(storedFrontDoorMode({ getItem: () => "legacy" }), "legacy");
-  assert.equal(storedFrontDoorMode({
-    getItem() { throw new Error("The operation is insecure."); },
-  }), null, "a throwing storage is 'no preference', not a broken page");
-  assert.equal(FRONT_DOOR_STORAGE_KEY, "webclient.frontDoor");
-});
 
 test("the gateway override takes every spelling a player is likely to paste", () => {
-  // The DOM form was pre-filled with a ws URL, so that is the string most likely to be copied.
+  // The gateway's own routes are ws URLs, so that is a string likely to be copied.
   assert.equal(parseGatewayOverride("?gateway=ws://10.0.0.5:8090/auth"), "http://10.0.0.5:8090");
   assert.equal(parseGatewayOverride("?gateway=wss://gw.example.net/auth"), "https://gw.example.net");
   assert.equal(parseGatewayOverride("?gateway=http://127.0.0.1:8091"), "http://127.0.0.1:8091");
@@ -191,7 +153,7 @@ test("every exit from the world maps to one glue screen", () => {
 });
 
 test("the front-door registry is empty until a glue runtime actually stands", () => {
-  assert.equal(frontDoorHost(), undefined, "legacy mode registers nothing, so every exit stays DOM");
+  assert.equal(frontDoorHost(), undefined, "nothing is registered before the screens stand");
   const exits = [];
   const host = {
     enteringWorld() { exits.push("entering"); },
@@ -375,16 +337,16 @@ test("a page with no world behind it says so instead of doing nothing", async ()
 
 /* --- Wiring that only a source pin can hold --------------------------------------------------- */
 
-test("index.html hosts both interfaces and names the panel that has to be hidden", async () => {
+test("index.html hosts the glue stage and the world panel, and no other way in", async () => {
   const html = await readFile(indexSource, "utf8");
-  assert.match(html, /<div id="glue-host" hidden>/,
-    "the glue stage lives in index.html and starts hidden, so legacy mode costs nothing");
+  assert.match(html, /<div id="glue-host" hidden>/, "the runtime shows the stage once it stands");
   assert.match(html, /<div id="glue-stage"><\/div>/);
   assert.match(html, /<div id="glue-status"><\/div>/);
-  assert.match(html, /<section id="login-panel" class="panel">/,
-    "the DOM login card needs an id now that something has to hide it");
-  assert.match(html, /id="character-panel"/);
-  assert.match(html, /id="world-panel"/, "the world panel is shared by both front doors");
+  assert.match(html, /id="world-panel"/);
+  assert.match(html, /<input id="gateway" type="hidden" \/>/, "EnterWorld reads the gateway from it");
+  for (const gone of ["login-panel", "login-form", "character-panel", "create-form"]) {
+    assert.doesNotMatch(html, new RegExp(`id="${gone}"`), `the old ${gone} is gone`);
+  }
 });
 
 test("FrameXML controls neutralize the global native control chrome", async () => {
@@ -429,27 +391,55 @@ test("the stage styles are shared rather than copied into the two pages", async 
     "index.html must not carry a third copy either");
 });
 
-test("main.ts chooses the front door once and loads the Lua VM only when it wins", async () => {
+test("main.ts opens the glue screens, and a failure says so instead of leaving a blank page", async () => {
   const source = await readFile(mainSource, "utf8");
-  assert.match(source, /frontDoorMode\(frontDoorSearch, storedFrontDoorMode\(globalThis\.localStorage\)\)/);
   assert.match(source, /import\("\.\/glue\/FrontDoorHost\.js"\)/,
-    "the glue runtime is a dynamic import, so legacy mode never fetches the Lua VM");
+    "the glue runtime is a dynamic import, so the page's first chunk does not carry the Lua VM");
   assert.doesNotMatch(source, /^import .*glue\/(Bootstrap|FrontDoorHost)\.js/m,
     "…which a static import would defeat");
-  assert.match(source, /loginPanel\.hidden = true/);
-  assert.match(source, /characterPanel\.hidden = true/);
-  // The gateway override has to reach the DOM field: `EnterWorld` builds every asset client from it.
+  assert.doesNotMatch(source, /legacy|loginPanel|characterPanel|wireLoginForms/);
+  // The gateway override has to reach the field: `EnterWorld` builds every asset client from it.
   assert.match(source, /gatewayInput\.value = gatewaySocketUrl\(frontDoorGateway, "\/auth"\)/);
   // 10.03: the override goes through the policy, never straight from the query.
   assert.match(source, /gatewayOverride\(frontDoorSearch, pageGatewayPolicy\(\)\)/);
   assert.doesNotMatch(source, /parseGatewayOverride/);
-  // A glue runtime that will not start falls back to the forms rather than to a blank page.
-  assert.match(source, /loginPanel\.hidden = false/);
-  // …unless the gateway itself is down (10.16): the forms need it too, so the page says so and waits.
+  // A runtime that never loaded has not shown its host, so the failure shows it.
+  assert.match(source, /\.catch\(\(error: unknown\) => \{\s*glueStage\.hidden = true;\s*glueHost\.hidden = false;/);
+  // The gateway down (10.16): the page says so and waits.
   assert.match(source, /if \(error instanceof GlueServerUnavailableError\) \{[^}]*showGlueServerUnavailable\(/s);
+  // Anything else: the page says what happened and offers a reload.
+  assert.match(source, /showGlueLoadFailure\(\{[\s\S]*?onRetry: \(\) => window\.location\.reload\(\)/);
 });
 
-test("both roads into a world end in the same adoption, and the resets are written once", async () => {
+test("both failures of the login screen draw one notice that a retry can reach", () => {
+  const made = [];
+  const element = (tag) => {
+    const node = {
+      tag, className: "", textContent: "", style: {}, children: [], attributes: {}, listeners: {},
+      setAttribute(name, value) { node.attributes[name] = value; },
+      append(...nodes) { node.children.push(...nodes); },
+      insertBefore(next, before) { node.children.splice(node.children.indexOf(before), 0, next); },
+      addEventListener(type, listener) { node.listeners[type] = listener; },
+      querySelector: () => null,
+    };
+    made.push(node);
+    return node;
+  };
+  const container = element("div");
+  let retried = 0;
+  showGlueLoadFailure({
+    container, detail: "Failed to fetch dynamically imported module", onRetry: () => { retried += 1; },
+    document: { createElement: element },
+  });
+  const [box] = container.children;
+  assert.equal(box.attributes.role, "alert");
+  assert.deepEqual(box.children.map((child) => child.textContent),
+    ["Экран входа не загрузился", "Failed to fetch dynamically imported module", "Повторить"]);
+  box.children[2].listeners.click();
+  assert.equal(retried, 1);
+});
+
+test("the road into a world ends in one adoption, and the resets are written once", async () => {
   const source = await readFile(loginSource, "utf8");
   // One list of resets, in one function, called by every route out of a world.
   assert.equal((source.match(/^export function resetWorldUi\(\): void \{$/gm) ?? []).length, 1);
@@ -463,15 +453,13 @@ test("both roads into a world end in the same adoption, and the resets are writt
   // The adoption tail is the shared function and not a second copy of the five lines.
   assert.equal((source.match(/adoptWorldConnection\(game, world, \{/g) ?? []).length, 1);
   assert.match(source, /export function adoptWorld\(world: WorldClient\): void/);
-  assert.equal((source.match(/adoptWorld\(world\);/g) ?? []).length, 1,
-    "connectRealm reaches the adoption through the shared function");
   assert.doesNotMatch(source, /new WorldStore\(/, "building the store is the shared function's job");
   assert.doesNotMatch(source, /bindPlayerHud\(game\.store\)/, "…and so is binding the HUD");
-  // The way out asks the front door where to land; legacy keeps the character panel.
+  // The way out asks the front door where to land.
   assert.match(source, /export function leaveWorld\(exit: WorldExit, message\?: GlueAuthMessage\): void/);
   assert.match(source, /const front = frontDoorHost\(\);\s*\n\s*if \(front\) \{/);
   assert.match(source, /front\.returnFromWorld\(exit, message\);/);
-  assert.match(source, /characterPanel\.hidden = false;/);
+  assert.match(source, /world\?\.close\(\);/, "with no glue screens standing, nobody else closes the socket");
 });
 
 test("every path that used to leave the world half-way now routes through leaveWorld", async () => {

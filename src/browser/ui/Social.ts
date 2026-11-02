@@ -39,7 +39,7 @@ import {
   lfgRandomPane,
   lfgRefresh, lfgRewardNote, lfgRewards, lfgSelectVisible, lfgSpecificPane, lfgTank, lfgTankIcon,
   lfgTeleport, lfgType, lfgWindow,
-  status, tradeAccept, tradeMessage, tradeMine, tradeOfferFields, tradeTheirTitle,
+  tradeAccept, tradeMessage, tradeMine, tradeOfferFields, tradeTheirTitle,
   tradeTheirs, tradeTitle, tradeWindow,
 } from "./Dom.js";
 import { loadNativeTexture } from "./NativeUiSkin.js";

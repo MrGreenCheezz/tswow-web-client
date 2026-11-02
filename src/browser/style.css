@@ -99,15 +99,6 @@ button:not(:disabled):hover { filter: brightness(1.18); }
 .danger { color: #250909; background: #ff8d8d; }
 .actions, .form-row { display: flex; flex-wrap: wrap; gap: 10px; }
 .actions button { min-height: 36px; padding: 0 12px; }
-#realms, #characters { display: grid; gap: 10px; }
-#realms article, #characters article {
-  display: grid;
-  gap: 4px;
-  padding: 12px;
-  border-radius: 8px;
-  background: #10171e;
-}
-#realms span, #characters span { color: #aab6c2; }
 
 #world-panel {
   position: fixed;

@@ -282,7 +282,7 @@ test("a worker that fails hands the page back once: closed, terminated, its sett
 test("the flag is opt-in and needs OffscreenCanvas, a transferable canvas and module workers", () => {
   assert.equal(renderWorkerRequested(""), false);
   assert.equal(renderWorkerRequested("?renderworker=0"), false);
-  assert.equal(renderWorkerRequested("?legacy-login&renderworker=1"), true);
+  assert.equal(renderWorkerRequested("?dev&renderworker=1"), true);
   class ModuleWorker { constructor(_url, options) { void options?.type; } terminate() {} }
   class ClassicWorker { constructor() {} terminate() {} }
   const canvas = { prototype: { transferControlToOffscreen() {} } };
@@ -365,7 +365,7 @@ test("the world is drawn in a worker by default in the desktop app and in the pa
   assert.equal(renderWorkerChosen("", 2, DESKTOP_UA), false, "the owner can switch it off");
   assert.equal(renderWorkerChosen("", 1, CHROME_UA), true, "or on in a browser");
   assert.equal(renderWorkerChosen("?renderworker=0", 1, DESKTOP_UA), false, "the address wins");
-  assert.equal(renderWorkerChosen("?legacy-login&renderworker=1", 2, CHROME_UA), true);
+  assert.equal(renderWorkerChosen("?dev&renderworker=1", 2, CHROME_UA), true);
 });
 
 test("the page starts the render worker as chosen, with the in-page path unchanged", async () => {

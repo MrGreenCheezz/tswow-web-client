@@ -13,17 +13,16 @@ import { enterWorld } from "../app/EnterWorld.js";
  *
  * This is the whole of what G6 added on top of G1–G5: the screens themselves were already real, and
  * what was missing was the two crossings. In: «Вход в игровой мир» stops the glue screens, gives
- * the world half of the client the connection the glue session already has, and calls the same
- * `enterWorld` the DOM character card called. Out: every way a world ends comes back through
- * `returnFromWorld` and lands on the screen `frontDoorReturn` names.
+ * the world half of the client the connection the glue session already has, and calls `enterWorld`.
+ * Out: every way a world ends comes back through `returnFromWorld` and lands on the screen
+ * `frontDoorReturn` names.
  *
  * **One session, lent — not two.** The socket stays owned by `GlueSession` for the whole time. The
  * world half only *adopts* it (`game.world`, a store, the HUD and the death layer), and leaving the
  * world drops that adoption without closing anything. That is what makes the way back a screen
  * change and not a second SRP6 login.
  *
- * Loaded on demand by `main.ts`, so a client started with `?legacy-login=1` never fetches the Lua
- * VM at all.
+ * Loaded on demand by `main.ts`, so the page's first chunk does not carry the Lua VM.
  */
 
 export interface GlueFrontDoorElements {
@@ -33,7 +32,7 @@ export interface GlueFrontDoorElements {
 }
 
 export interface OpenGlueFrontDoorOptions {
-  /** `?gateway=` — the glue screens' replacement for the DOM form's address field. */
+  /** `?gateway=`: the login screen has no address field of its own. */
   readonly gatewayOrigin?: string;
   /** `?screen=` — open one of the corpus' own screens directly. */
   readonly screen?: string | null;
@@ -101,8 +100,7 @@ export async function openGlueFrontDoor(
     // The same connector `glue.html` uses (`GlueWorldConnector.ts`), with the one thing this page
     // adds: it remembers the concrete client to lend to the world half.
     connect: liveGlueWorldConnector(origin, (client, auth) => {
-      // The account, for the half of the client that asks who is signed in. The DOM flow writes
-      // this in its login form; on this road the answer is only known here.
+      // The account, for the half of the client that asks who is signed in.
       game.session = auth;
       live = client;
     }),
@@ -116,15 +114,12 @@ export async function openGlueFrontDoor(
         return;
       }
       front.enteringWorld();
-      // Exactly where `connectRealm` would have been: the same five lines, out of the same
-      // function, so the two front doors cannot disagree about what a world session is.
       adoptWorld(world);
       void enterWorld(character);
     },
   });
 
-  // Registered only once the screens are actually up. Until then `frontDoorHost()` answers
-  // `undefined` and every exit keeps its DOM behaviour, which is what a failed glue load needs.
+  // Registered only once the screens are actually up: there is no way into a world before that.
   useFrontDoor(front);
   // Published beside `glueDiagnostics` for the same reason it is: the two crossings are the part of
   // this slice a browser check has to drive, and the owner's auth/world servers are down. Driving

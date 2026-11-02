@@ -391,8 +391,8 @@ test("Ж0 every way out of a world drops what the realm owned", async () => {
     "the drop belongs to one function, so no exit can carry half of it");
   assert.match(source, /export function resetWorldUi\(\): void \{[\s\S]{0,200}?clearWorldContext\(\);/,
     "…and that function is resetWorldUi");
-  assert.equal((source.match(/^\s*resetWorldUi\(\);$/gm) ?? []).length, 3,
-    "the login form, connectRealm and leaveWorld — the three roads out of a world");
+  assert.equal((source.match(/^\s*resetWorldUi\(\);$/gm) ?? []).length, 1,
+    "leaveWorld, the one road out of a world");
   // And the list of what that is stays in one place: a hand-copied half of it is what this
   // replaced, and the half that was missing was the module loader.
   for (const half of ["game.creatureMetadata = undefined", "game.spells.clear()"]) {

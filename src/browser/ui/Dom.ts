@@ -14,42 +14,13 @@ export function element<T extends HTMLElement>(id: string): T {
   return value as T;
 }
 
-export const form = element<HTMLFormElement>("login-form");
+/** Where the gateway is: filled in here, overridden by `?gateway=` (`main.ts`), read by `EnterWorld.ts`. */
 export const gatewayInput = element<HTMLInputElement>("gateway");
 gatewayInput.value = gatewayWebSocketUrl(location);
-export const usernameInput = element<HTMLInputElement>("username");
-export const passwordInput = element<HTMLInputElement>("password");
-export const tokenInput = element<HTMLInputElement>("token");
-export const status = element<HTMLParagraphElement>("status");
-export const realms = element<HTMLDivElement>("realms");
-const loginSubmitButton = form.querySelector<HTMLButtonElement>('button[type="submit"]');
-if (!loginSubmitButton) throw new Error("Missing login submit button");
-// Narrowed here rather than at the use site: a `| null` export carries no narrowing across a
-// module boundary, and every panel that touched it would have to prove it again.
-export const loginSubmit = loginSubmitButton;
-/**
- * The DOM login card, which since G6 is the *fallback* front door rather than the only one.
- *
- * It had no id at all while it was the only thing on the page. It needs one now because something
- * has to be able to hide it: the client opens on the GlueXML screens unless `?legacy-login=1` (or
- * the `webclient.frontDoor` storage key) says otherwise.
- */
-export const loginPanel = element<HTMLElement>("login-panel");
-/** Where the client's own GlueXML screens mount, when they are the front door. See `glue/`. */
+/** Where the client's own GlueXML screens mount. See `glue/`. */
 export const glueHost = element<HTMLElement>("glue-host");
 export const glueStage = element<HTMLElement>("glue-stage");
 export const glueStatus = element<HTMLElement>("glue-status");
-export const characterPanel = element<HTMLElement>("character-panel");
-export const characterStatus = element<HTMLParagraphElement>("character-status");
-export const characters = element<HTMLDivElement>("characters");
-export const createForm = element<HTMLFormElement>("create-form");
-export const characterName = element<HTMLInputElement>("character-name");
-export const characterRace = element<HTMLSelectElement>("character-race");
-export const characterClass = element<HTMLSelectElement>("character-class");
-export const characterGender = element<HTMLSelectElement>("character-gender");
-const createSubmitButton = createForm.querySelector<HTMLButtonElement>('button[type="submit"]');
-if (!createSubmitButton) throw new Error("Missing character create button");
-export const createSubmit = createSubmitButton;
 export const worldPanel = element<HTMLElement>("world-panel");
 export const worldStatus = element<HTMLParagraphElement>("world-status");
 export const playerPosition = element<HTMLParagraphElement>("player-position");
@@ -58,12 +29,6 @@ export const worldCanvas = element<HTMLCanvasElement>("world-canvas");
 export const world3dCanvas = element<HTMLCanvasElement>("world-3d-canvas");
 export const playerHudName = element<HTMLElement>("player-hud-name");
 export const playerHudDetails = element<HTMLElement>("player-hud-details");
-export const characterSkin = element<HTMLSelectElement>("character-skin");
-export const characterFace = element<HTMLSelectElement>("character-face");
-export const characterHair = element<HTMLSelectElement>("character-hair");
-export const characterHairColor = element<HTMLSelectElement>("character-hair-color");
-export const characterFacial = element<HTMLSelectElement>("character-facial");
-export const characterFacialLabel = element<HTMLElement>("character-facial-label");
 export const playerIcon = element<HTMLImageElement>("player-icon");
 export const playerHealthBar = element<HTMLElement>("player-health-bar");
 export const playerHealthText = element<HTMLElement>("player-health-text");

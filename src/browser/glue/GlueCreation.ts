@@ -260,8 +260,8 @@ export class GlueCreation {
     return this.classes.map((entry) => ({
       name: entry.name || `Класс ${entry.id}`,
       token: entry.fileName || String(entry.id),
-      // An empty `CharBaseInfo` row set means the dataset says nothing, which the DOM form already
-      // treats as "offer everything" — a custom race whose author forgot the pairs is creatable and
+      // An empty `CharBaseInfo` row set means the dataset says nothing, which is treated as
+      // "offer everything" — a custom race whose author forgot the pairs is creatable and
       // refused by the server, which is recoverable; a screen with no classes at all is not.
       enabled: permitted.size === 0 || permitted.has(entry.id),
     }));

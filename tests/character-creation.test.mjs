@@ -13,7 +13,7 @@ import {
   hasClassIcon, learnCreationNames, raceName,
 } from "../dist/code/browser/ui/UnitSnapshot.js";
 import {
-  CreationMemo, LatestAppearanceRequest, creationClasses, creationRaces, isCreationData, raceDisplayId,
+  isCreationData, raceDisplayId,
 } from "../dist/code/browser/ui/CharacterCreation.js";
 import { loadCharacterCreation } from "../dist/code/gateway/CharacterCreation.js";
 import { UPDATE_FIELDS } from "../dist/code/generated/updateFields.js";
@@ -63,36 +63,6 @@ const withClassIconData = {
 };
 
 const projectRoot = fileURLToPath(new URL("..", import.meta.url));
-
-test("late character-look answers cannot replace a newer race, sex or gateway", () => {
-  const requests = new LatestAppearanceRequest();
-  const human = requests.begin("ws://realm-a", 1, 0);
-  assert.equal(human.changed, true);
-  const humanRetry = requests.begin("ws://realm-a", 1, 0);
-  assert.equal(humanRetry.changed, false, "a retry may keep the currently displayed look");
-  assert.equal(requests.isCurrent(human.serial, "ws://realm-a", 1, 0), false);
-  assert.equal(requests.isCurrent(humanRetry.serial, "ws://realm-a", 1, 0), true);
-
-  const orc = requests.begin("ws://realm-a", 2, 0);
-  assert.equal(orc.changed, true, "changing race must clear the prior indices immediately");
-  assert.equal(requests.isCurrent(humanRetry.serial, "ws://realm-a", 1, 0), false);
-  assert.equal(requests.isCurrent(orc.serial, "ws://realm-a", 2, 1), false,
-    "a changed sex invalidates the answer even before another request starts");
-  const otherRealm = requests.begin("ws://realm-b", 2, 0);
-  assert.equal(otherRealm.changed, true);
-  assert.equal(requests.isCurrent(orc.serial, "ws://realm-a", 2, 0), false);
-  assert.equal(requests.isCurrent(otherRealm.serial, "ws://realm-b", 2, 0), true);
-});
-
-test("a late look answer for a different class cannot replace the selected class", () => {
-  const requests = new LatestAppearanceRequest();
-  const warrior = requests.begin("ws://realm-a", 1, 0, 1);
-  const deathKnight = requests.begin("ws://realm-a", 1, 0, 6);
-  assert.equal(deathKnight.changed, true);
-  assert.equal(requests.isCurrent(warrior.serial, "ws://realm-a", 1, 0, 1), false);
-  assert.equal(requests.isCurrent(deathKnight.serial, "ws://realm-a", 1, 0, 6), true);
-  assert.equal(requests.isCurrent(deathKnight.serial, "ws://realm-a", 1, 0, 1), false);
-});
 
 test("visible ranged equipment carries its subclass and reports late item metadata", async () => {
   const first = UPDATE_FIELDS.PLAYER_VISIBLE_ITEM_1_ENTRYID.offset;
@@ -523,43 +493,6 @@ test("Д3 a class with no colour of its own still gets one, and always the same 
   assert.equal(hues.size, 5, "neighbouring ids should not land on the same hue");
 });
 
-test("Д3 the creation lists are the dataset's, and the compiled ten when there is no gateway", () => {
-  const data = {
-    races: [
-      { id: 1, name: "Человек", playable: true, classes: [1, 2, 8] },
-      { id: 4, name: "Ночной эльф", playable: true, classes: [1, 4, 11] },
-      { id: 9, name: "Гоблин", playable: false, classes: [] },
-      { id: 22, name: "", playable: true, classes: [14] },
-    ],
-    classes: [
-      { id: 1, name: "Воин", playable: true },
-      { id: 2, name: "Паладин", playable: true },
-      { id: 4, name: "Разбойник", playable: true },
-      { id: 8, name: "Маг", playable: true },
-      { id: 11, name: "Друид", playable: true },
-      { id: 12, name: "Ничей", playable: false },
-      { id: 14, name: "Монах", playable: true },
-    ],
-  };
-  assert.deepEqual(creationRaces(data).map((race) => race.id), [1, 4, 22],
-    "the goblin is in ChrRaces and not offered; the custom race is offered");
-  assert.equal(creationRaces(data)[2].name, "Раса 22", "a nameless row is labelled, not dropped");
-  assert.deepEqual(creationClasses(data, 4).map((entry) => entry.id), [1, 4, 11],
-    "a night elf has no paladin and no mage, which is what CharBaseInfo says");
-  assert.deepEqual(creationClasses(data, 1).map((entry) => entry.id), [1, 2, 8]);
-  assert.deepEqual(creationClasses(data, 22).map((entry) => entry.id), [14]);
-  assert.equal(creationClasses(data, undefined).some((entry) => entry.id === 12), false,
-    "a class no race may take is never offered");
-
-  // The gateway being down is the case this screen has to survive: it is the screen you are on
-  // when you find out the gateway is down.
-  assert.deepEqual(creationRaces(undefined).map((race) => race.id), Object.keys(RACE_NAMES).map(Number));
-  assert.deepEqual(creationClasses(undefined, 4).map((entry) => entry.id), Object.keys(CLASS_NAMES).map(Number));
-  assert.equal(isCreationData({ races: [], classes: [] }), true);
-  assert.equal(isCreationData({ races: [] }), false);
-  assert.equal(isCreationData("<html>404</html>"), false);
-});
-
 test("G1 a race's display ids arrive when the gateway has them and are absent, not zero, when it does not", () => {
   const human = { id: 1, name: "Человек", playable: true, classes: [1], maleDisplayId: 49, femaleDisplayId: 50 };
   assert.equal(raceDisplayId(human, 0), 49);
@@ -577,53 +510,9 @@ test("G1 a race's display ids arrive when the gateway has them and are absent, n
   // The whole payload from such a gateway still validates: its races and classes are perfectly
   // good, and refusing it would drop the form back to the ten compiled names over a preview.
   assert.equal(isCreationData({ races: [older], classes: [{ id: 1, name: "Воин", playable: true }] }), true);
-});
-
-test("Д3 a second gateway keeps neither the first one's races nor the first one's names", () => {
-  const alpha = {
-    races: [{ id: 1, name: "Человек", playable: true, classes: [1] },
-      { id: 22, name: "Ворген", playable: true, classes: [1] }],
-    classes: [{ id: 1, name: "Воитель", playable: true }],
-  };
-  const beta = {
-    races: [{ id: 1, name: "Человек", playable: true, classes: [1] }],
-    classes: [{ id: 1, name: "Воин", playable: true }],
-  };
-  const memo = new CreationMemo();
-  try {
-    assert.equal(memo.aimAt("http://alpha:8090"), "http://alpha:8090");
-    assert.equal(memo.aimAt("http://alpha:8090"), undefined,
-      "asked once per gateway, and this runs on every visit to the form");
-    // The world address is what the field actually holds, and it is a websocket one.
-    assert.equal(memo.accept("http://alpha:8090", alpha), true);
-    assert.deepEqual(creationRaces(memo.data).map((race) => race.id), [1, 22]);
-    assert.equal(raceName(22), "Ворген");
-    assert.equal(className(1), "Воитель");
-
-    // The player edits the address: a second server, running a build with no creation route on it
-    // — which is the case `isCreationData` exists to survive, and the case where nothing arrives
-    // to overwrite what the first server said.
-    assert.equal(memo.aimAt("ws://beta:8090/world"), "http://beta:8090", "ws:// is the same origin");
-    assert.equal(memo.data, undefined, "alpha's races are not beta's races");
-    assert.equal(raceName(22), "Раса 22", "and alpha's names are not beta's names");
-    assert.equal(className(1), "Воин", "not even for a class both of them have");
-    assert.deepEqual(creationRaces(memo.data).map((race) => race.id), Object.keys(RACE_NAMES).map(Number));
-    assert.equal(memo.accept("http://beta:8090", undefined), false);
-    assert.equal(memo.aimAt("ws://beta:8090/world"), "http://beta:8090",
-      "a gateway that could not be reached is asked again, not written off");
-
-    // And an answer from the gateway the player has already left is dropped rather than learned:
-    // both were in flight at once, and this is the one that landed second.
-    assert.equal(memo.accept("http://alpha:8090", alpha), false);
-    assert.equal(memo.data, undefined);
-    assert.equal(raceName(22), "Раса 22");
-
-    assert.equal(memo.accept("http://beta:8090", beta), true);
-    assert.equal(memo.aimAt("http://"), undefined, "half typed is not an address");
-    assert.ok(memo.data, "and does not wipe the form that is standing");
-  } finally {
-    forgetCreationNames();
-  }
+  assert.equal(isCreationData({ races: [], classes: [] }), true);
+  assert.equal(isCreationData({ races: [] }), false);
+  assert.equal(isCreationData("<html>404</html>"), false);
 });
 
 test("Д3 the three tables read the way the creation form needs them", withDataset, async () => {

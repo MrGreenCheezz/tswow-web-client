@@ -10,9 +10,8 @@
  *    `isCyrillicCharacter(wname[0])` test): FORCE_DECLINE_CHARACTER with no argument, which shows the
  *    declension frame. Only when the caller names the character and the locale (the glue screens).
  *
- * The flag values are the core's (`Player.cpp` `CharacterFlags`). Both front doors ask this one
- * function: the glue screens' `EnterWorld()` and the DOM character card's «Войти в мир», which has
- * no rename dialog of its own and says so instead. A character the core would refuse is never sent:
+ * The flag values are the core's (`Player.cpp` `CharacterFlags`). The glue screens' `EnterWorld()`
+ * and `app/EnterWorld.ts` both ask this one function. A character the core would refuse is never sent:
  * it would load it only to kick it, and the screen would loop «disconnected → character select».
  *
  * Pure and import-free, so `app/EnterWorld.ts` can use it without pulling in the glue runtime.

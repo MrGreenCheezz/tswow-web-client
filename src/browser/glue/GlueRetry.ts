@@ -2,12 +2,11 @@
  * 10.16 — telling "the server is not there" from "the login screen is broken".
  *
  * The glue screens are fetched file by file from the gateway (`GlueLoader.createHttpFileProvider`).
- * A gateway that is restarting, or a patch chain that failed for a moment, answered one 5xx and the
- * whole front door fell back to the DOM forms — which need the same gateway and so were no help.
- * Network failures and 5xx are now retried on a short ladder; when the ladder runs out the failure
- * is a `GlueServerUnavailableError`, which `main.ts` shows as «server unavailable» with a retry
- * instead of the fallback forms. A 4xx, a 404 (the normal "file absent") and the 409 patch-chain
- * banner are not retried: waiting cannot change them.
+ * Network failures and 5xx from a gateway that is restarting, or a patch chain that failed for a
+ * moment, are retried on a short ladder; when the ladder runs out the failure is a
+ * `GlueServerUnavailableError`, which `main.ts` shows as «server unavailable» with a retry. A 4xx, a
+ * 404 (the normal "file absent") and the 409 patch-chain banner are not retried: waiting cannot
+ * change them.
  *
  * No imports: `main.ts` pulls this into the page's first chunk, which must not carry the Lua VM.
  */
@@ -86,6 +85,47 @@ export async function probeGlueServer(
   }
 }
 
+export interface LoadFailureScreenOptions {
+  /** The element the notice covers (`#glue-host`); the notice is appended as its last child. */
+  readonly container: HTMLElement;
+  /** What went wrong, as the failure said it. */
+  readonly detail: string;
+  /** What «Повторить» does. `location.reload()` in the page: a half-built stage is not reusable. */
+  readonly onRetry: () => void;
+  readonly document?: Document;
+}
+
+/**
+ * The login screen failed although the gateway answered. Nothing else can sign a player in, so the
+ * page says so and offers a reload rather than staying blank.
+ */
+export function showGlueLoadFailure(options: LoadFailureScreenOptions): void {
+  const doc = options.document ?? document;
+  const { box, button } = noticeBox(doc, "Экран входа не загрузился");
+  const line = doc.createElement("div");
+  line.textContent = options.detail;
+  box.insertBefore(line, button);
+  button.addEventListener("click", options.onRetry);
+  options.container.querySelector(":scope > .glue-unavailable")?.remove();
+  options.container.append(box);
+}
+
+function noticeBox(doc: Document, heading: string): { box: HTMLElement; button: HTMLButtonElement } {
+  const box = doc.createElement("div");
+  box.className = "glue-unavailable";
+  box.setAttribute("role", "alert");
+  box.style.cssText = "position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;"
+    + "justify-content:center;gap:12px;background:#000c;color:#f5d67b;font:16px sans-serif;"
+    + "text-align:center;z-index:10001;pointer-events:auto";
+  const title = doc.createElement("div");
+  title.textContent = heading;
+  const button = doc.createElement("button");
+  button.type = "button";
+  button.textContent = "Повторить";
+  box.append(title, button);
+  return { box, button };
+}
+
 export interface UnavailableScreenOptions {
   /** The element the notice covers (`#glue-host`); the notice is appended as its last child. */
   readonly container: HTMLElement;
@@ -106,19 +146,9 @@ export interface UnavailableScreenOptions {
 export function showGlueServerUnavailable(options: UnavailableScreenOptions): () => void {
   const doc = options.document ?? document;
   const interval = options.intervalMs ?? 10_000;
-  const box = doc.createElement("div");
-  box.className = "glue-unavailable";
-  box.setAttribute("role", "alert");
-  box.style.cssText = "position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;"
-    + "justify-content:center;gap:12px;background:#000c;color:#f5d67b;font:16px sans-serif;"
-    + "text-align:center;z-index:10001;pointer-events:auto";
-  const title = doc.createElement("div");
-  title.textContent = `Сервер недоступен: ${options.origin}`;
+  const { box, button } = noticeBox(doc, `Сервер недоступен: ${options.origin}`);
   const line = doc.createElement("div");
-  const button = doc.createElement("button");
-  button.type = "button";
-  button.textContent = "Повторить";
-  box.append(title, line, button);
+  box.insertBefore(line, button);
   options.container.querySelector(":scope > .glue-unavailable")?.remove();
   options.container.append(box);
 

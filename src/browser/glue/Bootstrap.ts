@@ -478,8 +478,8 @@ export async function startGlue(options: StartGlueOptions): Promise<GlueHandle> 
     }
   } catch (error) {
     report(`Не удалось загрузить интерфейс: ${String(error)}`);
-    // Rethrown as well as reported: on `index.html` the caller answers a failed glue load by
-    // putting the DOM forms back, and it cannot do that if the failure is swallowed here.
+    // Rethrown as well as reported: on `index.html` the caller answers a failed glue load with a
+    // notice and a retry, and it cannot do that if the failure is swallowed here.
     throw error;
   }
 

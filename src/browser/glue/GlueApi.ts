@@ -738,8 +738,8 @@ export class GlueApi {
    * `DefaultServerLogin(account, password)` — the one C-API entry in this slice
    * that talks to the server.
    *
-   * It runs the same SRP6 handshake the DOM login uses (`loginToRealmList` over
-   * a `WebSocketByteStream` to the gateway's `/auth` route), and reports back
+   * It runs the SRP6 handshake (`loginToRealmList` over a `WebSocketByteStream`
+   * to the gateway's `/auth` route), and reports back
    * through the events the corpus already listens for, so `GlueDialog.lua`
    * shows the status dialog it has always shown. The mapping is kept small and
    * honest: connecting, authenticating, and then either a close plus a screen

@@ -1,7 +1,6 @@
-// The one back-edge in `app/`: `Login.ts` imports `enterWorld` from here and this imports the way
-// out from there. It is safe because `leaveWorld` is a hoisted function declaration and is only
-// ever called from a world event, long after both modules have finished evaluating — and it is the
-// right side of the cycle, because the way out ends in `connectRealm`, which lives there.
+// The one back-edge in `app/`: `Login.ts` imports `retireEnterWorldSession` from here and this
+// imports the way out from there. It is safe because `leaveWorld` is a hoisted function declaration
+// and is only ever called from a world event, long after both modules have finished evaluating.
 import { leaveWorld } from "./Login.js";
 import { installUnitGroundTarget } from "../game/UnitGroundTarget.js"; // 11.02 (26.10)
 import { describeFailure, worldConnectionLost } from "../glue/GlueMessages.js";
@@ -14,7 +13,7 @@ import { unit } from "../../world/Fields.js";
 import { game } from "../game/Context.js";
 import { canAttackUnit } from "../game/Targeting.js"; // 1.10 (12.10): the focus registers itself there
 import {
-  characterModel, characterStatus, characterWindowTitle, combatStatus, creatureStatus, environmentStatus, gatewayInput,
+  characterModel, characterWindowTitle, combatStatus, creatureStatus, environmentStatus, gatewayInput,
   modelStatus, movementStatus, playerHudName, spellStatus, terrainStatus, worldPanel, worldStatus,
 } from "../ui/Dom.js";
 import { clearSpellbook, loadSpellMetadata, refreshPetSpellbook, showSpells, updateSpellCooldowns } from "../ui/Spellbook.js";
@@ -217,18 +216,12 @@ export function retireEnterWorldSession(): void {
   entryLifecycle.retire();
 }
 
-export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButtonElement): Promise<void> {
+export async function enterWorld(character: CharacterSummary): Promise<void> {
   if (!game.world) return;
   // The client's EnterWorld gate (FUN_004d9bd0): a character locked for transfer or by billing, or
   // one the core has marked for a new name, is never sent — the core would load it only to refuse
-  // and kick it. The glue screens ask the same function first and answer with their own dialogs; the
-  // DOM character card, which has no rename dialog, says why here and stays on the list.
-  const refusal = enterWorldRefusal(character.flags);
-  if (refusal) {
-    characterStatus.className = "error";
-    characterStatus.textContent = refusal.text;
-    return;
-  }
+  // and kick it. The glue screens ask the same function first and answer with their own dialogs.
+  if (enterWorldRefusal(character.flags)) return;
   const world = game.world;
   const savedVariablesScope = game.session && world.realmName ? {
     account: game.session.username,
@@ -261,8 +254,6 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
   // QuestLog module owns this one binding and replaces its previous one here,
   // so a character switch cannot leave a stale redraw listener behind.
   bindQuestLogStore(game.store, world);
-  if (onBusy) onBusy.disabled = true;
-  characterStatus.textContent = `Вход персонажем ${character.name}…`;
   // A text emote names its target by name rather than by GUID, so the only way to tell «машет
   // рукой вам» from «машет рукой кому-то» is to know what this character is called.
   world.selfName = character.name;
@@ -1465,8 +1456,6 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
     // anything is on the other side — a landing it was not waiting for no longer rebuilds it.
     // 22.10 ARC-2 S2b: handed over by the frame loop from `game.collision` (game/RenderLookupsBuilder.ts) — the
     // landed models as data before `draw`, the misses asked for right after it — no longer as a function here.
-    characterStatus.className = "success";
-    characterStatus.textContent = `World login подтверждён: map ${location.map}, ${location.x.toFixed(2)}, ${location.y.toFixed(2)}, ${location.z.toFixed(2)}.`;
     worldStatus.className = "success";
     showSpells();
     void loadSpellMetadata(world);
@@ -1561,13 +1550,8 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
     // CHAR_LOGIN_FAILED) for the player; the exception's own English for the log only.
     console.warn("[world] enter failed:", error instanceof Error ? error.message : String(error));
     const message = describeFailure(error, "world");
-    characterStatus.className = "error";
-    characterStatus.textContent = message.text ?? "Ошибка входа";
-    if (onBusy) onBusy.disabled = false;
-    // The way back. It used to be «hide the world panel and leave everything else standing», which
-    // was survivable only because the DOM character panel was still behind it; with the GlueXML
-    // screens as the front door there is nothing behind it at all, and a half-built world left in
-    // `game` is what the next attempt would inherit. `leaveWorld` hides the panel, clears the
+    // The way back. A half-built world left in `game` is what the next attempt would inherit.
+    // `leaveWorld` hides the panel, clears the
     // context (the dead death layer included) and returns the player to the screen the session came
     // from. The generation and world-identity guard above keeps a retired attempt off this path.
     clearQuestLog();

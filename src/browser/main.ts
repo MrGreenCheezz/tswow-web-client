@@ -14,16 +14,12 @@ import {
 } from "./RenderBenchmarkRuntime.js";
 import { wireControls } from "./input/Controls.js";
 import {
-  characterPanel, gameWindows, gatewayInput, glueHost, glueStage, glueStatus, loginPanel,
-  resetLayout, status, world3dCanvas, worldCanvas,
+  gameWindows, gatewayInput, glueHost, glueStage, glueStatus, resetLayout, world3dCanvas, worldCanvas,
 } from "./ui/Dom.js";
 import { usePanelHost } from "./ui/Widgets.js";
 import { attachPortraitOutputs } from "./ui/Portraits.js";
 import { wirePanelButtons } from "./ui/Windows.js";
-import { wireLoginForms } from "./app/Login.js";
-import {
-  frontDoorMode, gatewayOverride, gatewaySocketUrl, storedFrontDoorMode,
-} from "./glue/FrontDoor.js";
+import { gatewayOverride, gatewaySocketUrl } from "./glue/FrontDoor.js";
 import { settings } from "./ui/Settings.js";
 import { settingNumber } from "./ui/SettingsModel.js";
 import { wirePerformanceCapture } from "./ui/PerformanceCapture.js";
@@ -32,7 +28,9 @@ import { gatewayOrigin as defaultGatewayOrigin, pageGatewayPolicy } from "./Envi
 import { installNativeAppShell } from "./app/NativeAppShell.js";
 import { installFullscreen } from "./app/Fullscreen.js"; // 10.28 (26.10)
 import { installFirstEntryTrace } from "./app/FirstEntryTrace.js"; // 10.29 (26.10)
-import { GlueServerUnavailableError, probeGlueServer, showGlueServerUnavailable } from "./glue/GlueRetry.js";
+import {
+  GlueServerUnavailableError, probeGlueServer, showGlueLoadFailure, showGlueServerUnavailable,
+} from "./glue/GlueRetry.js";
 import { renderWorkerChosen } from "./RenderWorkerStart.js"; // 22.10 ARC-2 S6b, 12.14
 import { mountWorldRenderWorker, worldRendererCanvas } from "./app/RenderWorkerMount.js"; // 22.10 ARC-2 S6b
 
@@ -223,19 +221,11 @@ const formalRenderBenchmarkConsole = createFormalRenderBenchmarkConsole({
 
 wireControls();
 wirePanelButtons();
-// Wired in both modes. The forms exist in the page either way; in glue mode their panels are
-// hidden and their handlers simply never fire, which is what makes `?legacy-login` a visibility
-// decision and not a second code path.
-wireLoginForms();
 startRenderLoop();
 
 /**
- * Which interface this page opens with.
- *
- * The client's own GlueXML screens by default since G6 — that is the point of the whole T1 track —
- * with the DOM forms one query parameter away. The decision is made once, at start-up: everything
- * downstream asks `frontDoorHost()`, which answers `undefined` until and unless the glue runtime is
- * actually standing.
+ * The way in: the client's own GlueXML screens. Everything downstream asks `frontDoorHost()`, which
+ * answers `undefined` until the glue runtime is actually standing.
  */
 const frontDoorSearch = window.location.search;
 // 10.03: a `?gateway=` link is honoured only for gateways this page already trusts (same host,
@@ -245,62 +235,52 @@ const frontDoorGatewayVerdict = gatewayOverride(frontDoorSearch, pageGatewayPoli
 const frontDoorGateway = frontDoorGatewayVerdict.kind === "use" ? frontDoorGatewayVerdict.origin : undefined;
 if (frontDoorGatewayVerdict.kind === "refused") {
   console.warn(`[gateway] ${frontDoorGatewayVerdict.reason}`);
-  status.className = "error";
-  status.textContent = frontDoorGatewayVerdict.reason;
   glueStatus.textContent = frontDoorGatewayVerdict.reason;
 }
 if (frontDoorGateway) {
   // The GlueXML login screen has no address field — the corpus' `AccountLogin` knows about an
   // account and a password and nothing else — so `?gateway=` is where a player pointing at a
-  // non-default gateway says so. It is written back into the DOM field because that field is not
-  // just the login form's: `EnterWorld` builds all twenty-odd asset clients out of its value, so a
-  // world entered through the glue screens has to agree with it about where the gateway is.
+  // non-default gateway says so. `EnterWorld` builds all twenty-odd asset clients out of this
+  // field's value, so a world entered through the glue screens has to agree with it.
   gatewayInput.value = gatewaySocketUrl(frontDoorGateway, "/auth");
 }
 // A TSWoW build that rewrites the client patches latches the gateway (409 on every client-media
 // route) until it is restarted: one banner says so, whichever request meets it first.
 installPatchChainWatch(() => game.gatewayOrigin ?? frontDoorGateway ?? defaultGatewayOrigin(window.location));
 
-if (frontDoorMode(frontDoorSearch, storedFrontDoorMode(globalThis.localStorage)) === "glue") {
-  const parameters = new URLSearchParams(frontDoorSearch);
-  loginPanel.hidden = true;
-  characterPanel.hidden = true;
-  // Loaded on demand: the Lua VM is 338 kB, and a client started in legacy mode must not pay for
-  // a runtime it will never build.
-  void import("./glue/FrontDoorHost.js")
-    .then(async ({ openGlueFrontDoor, GLUE_FRONT_DOOR_CLASS }) => {
-      document.body.classList.add(GLUE_FRONT_DOOR_CLASS);
-      await openGlueFrontDoor({ host: glueHost, stage: glueStage, status: glueStatus }, {
-        ...(frontDoorGateway ? { gatewayOrigin: frontDoorGateway } : {}),
-        screen: parameters.get("screen"),
-        fake: parameters.get("fake"),
-      });
-    })
-    .catch((error: unknown) => {
-      if (error instanceof GlueServerUnavailableError) {
-        // 10.16: the gateway is not answering. The DOM forms would need the same gateway, so they are
-        // no fallback here: say so, and load the page again once the gateway serves the screens.
-        console.error("[glue] сервер недоступен", error);
-        glueStage.hidden = true;
-        showGlueServerUnavailable({
-          container: glueHost,
-          origin: error.origin,
-          probe: () => probeGlueServer(error.origin),
-          onAvailable: () => window.location.reload(),
-        });
-        return;
-      }
-      // A glue runtime that will not start must not leave a blank page: the DOM forms are still in
-      // the document and are exactly the fallback the plan keeps them for.
-      console.error("[glue] экран входа не загрузился, открыт запасной DOM-вход", error);
-      document.body.classList.remove("glue-front-door");
-      glueHost.hidden = true;
-      loginPanel.hidden = false;
-      status.className = "error";
-      status.textContent = "Экран GlueXML не загрузился — открыт запасной вход. "
-        + `Подробности в консоли: ${error instanceof Error ? error.message : String(error)}`;
+const frontDoorParameters = new URLSearchParams(frontDoorSearch);
+// Loaded on demand: the Lua VM is 338 kB, and the page's first chunk should not have to carry it.
+void import("./glue/FrontDoorHost.js")
+  .then(async ({ openGlueFrontDoor, GLUE_FRONT_DOOR_CLASS }) => {
+    document.body.classList.add(GLUE_FRONT_DOOR_CLASS);
+    await openGlueFrontDoor({ host: glueHost, stage: glueStage, status: glueStatus }, {
+      ...(frontDoorGateway ? { gatewayOrigin: frontDoorGateway } : {}),
+      screen: frontDoorParameters.get("screen"),
+      fake: frontDoorParameters.get("fake"),
     });
-}
+  })
+  .catch((error: unknown) => {
+    glueStage.hidden = true;
+    glueHost.hidden = false; // A runtime that never loaded has not shown its host yet.
+    if (error instanceof GlueServerUnavailableError) {
+      // 10.16: the gateway is not answering. Say so, and load the page again once it serves the screens.
+      console.error("[glue] сервер недоступен", error);
+      showGlueServerUnavailable({
+        container: glueHost,
+        origin: error.origin,
+        probe: () => probeGlueServer(error.origin),
+        onAvailable: () => window.location.reload(),
+      });
+      return;
+    }
+    // Nothing else can sign a player in, so the page says what happened rather than staying blank.
+    console.error("[glue] экран входа не загрузился", error);
+    showGlueLoadFailure({
+      container: glueHost,
+      detail: error instanceof Error ? error.message : String(error),
+      onRetry: () => window.location.reload(),
+    });
+  });
 
 let renderBenchmarksReady: Promise<void> | undefined;
 function ensureRenderBenchmarkConsoles(): Promise<void> {

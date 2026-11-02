@@ -114,10 +114,8 @@ export class GlueGatewayNames implements GlueNameLookup, GlueCreationSource {
   /**
    * `/dbc/character-creation?v=4` (`GLUE_CREATION_VERSION`).
    *
-   * Its own fetch rather than `ui/CharacterCreation.ts`'s, because that one is the DOM login page's
-   * and asks at `v=2`; the two pages read different shapes of the same route and must not share a
-   * cache entry. The validator and the display-id rule are still that module's — those are the
-   * parts that would drift if they were written twice.
+   * The validator and the display-id rule are `ui/CharacterCreation.ts`'s — those are the parts
+   * that would drift if they were written twice.
    */
   private async fetchCreation(): Promise<CharacterCreationData | undefined> {
     try {

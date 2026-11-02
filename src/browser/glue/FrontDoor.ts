@@ -1,5 +1,5 @@
 /**
- * Which interface `index.html` opens with, and where the world sends the player back to.
+ * Which gateway `index.html` talks to, and where the world sends the player back to.
  *
  * Deliberately the only module both halves of the client import: `app/Login.ts` needs to know
  * where a player who just left the world belongs, and it must not drag the Lua VM into
@@ -12,63 +12,15 @@
 import type { GlueAuthMessage } from "./GlueMessages.js";
 import { GATEWAY_ALLOWED_STORAGE_KEY, pageGatewayPolicy, type GatewayPolicy } from "../Environment.js";
 
-export type FrontDoorMode = "glue" | "legacy";
-
 /**
- * The console escape hatch, for a player who has to reach the old forms on a page they cannot
- * put a query parameter on.
+ * `?gateway=…` — how a player points their own client at another gateway.
  *
- * `localStorage.setItem("webclient.frontDoor", "legacy")` and reload; `"glue"` or
- * `localStorage.removeItem(...)` puts the GlueXML screens back. The query flag wins over it in
- * both directions, so a link can always override whatever this browser remembers.
- */
-export const FRONT_DOOR_STORAGE_KEY = "webclient.frontDoor";
-
-/** `?legacy-login=…`: the parity switch the plan promises («старый DOM-глю остаётся за флагом»). */
-export const LEGACY_LOGIN_PARAMETER = "legacy-login";
-
-/** Values a query flag may spell "yes" with. A bare `?legacy-login` is `""` and also means yes. */
-const TRUTHY = new Set(["", "1", "true", "yes", "on"]);
-const FALSY = new Set(["0", "false", "no", "off"]);
-
-/**
- * Query flag first, then this browser's remembered choice, then the GlueXML screens.
+ * The GlueXML login screen has no address field: the corpus' `AccountLogin` knows about an account
+ * and a password and nothing else. So the override is in the URL.
  *
- * The flag is read in both directions on purpose: `?legacy-login=0` has to be able to undo a
- * `localStorage` value set months ago from the console, or the escape hatch becomes a trap.
- */
-export function frontDoorMode(search: string, stored?: string | null): FrontDoorMode {
-  const flag = new URLSearchParams(search).get(LEGACY_LOGIN_PARAMETER);
-  if (flag !== null) {
-    const value = flag.trim().toLowerCase();
-    if (TRUTHY.has(value)) return "legacy";
-    if (FALSY.has(value)) return "glue";
-  }
-  return stored?.trim().toLowerCase() === "legacy" ? "legacy" : "glue";
-}
-
-/** Reads the remembered choice without letting a locked-down browser take the page down with it. */
-export function storedFrontDoorMode(storage?: Pick<Storage, "getItem"> | null): string | null {
-  try {
-    return storage?.getItem(FRONT_DOOR_STORAGE_KEY) ?? null;
-  } catch {
-    // A browser with site data blocked throws on the *getter*, not on the read. The page still has
-    // a front door: the default one.
-    return null;
-  }
-}
-
-/**
- * `?gateway=…` — the glue screens' answer to the DOM form's gateway field.
- *
- * The old login screen carried an editable address, and the GlueXML one has no such field: the
- * corpus' `AccountLogin` knows about an account and a password and nothing else. So the override
- * moves to the URL, where it is the same class of thing the text field was — something the person
- * sitting at this browser types to point their own client somewhere else.
- *
- * Accepts what a player is likely to paste: a bare `host:port`, an `http(s)://` origin, or the
- * `ws(s)://…/auth` URL the old field was pre-filled with. Anything else is refused rather than
- * half-understood, and the page falls back to the compiled default.
+ * Accepts what a player is likely to paste: a bare `host:port`, an `http(s)://` origin, or a
+ * `ws(s)://…/auth` URL. Anything else is refused rather than half-understood, and the page falls
+ * back to the compiled default.
  */
 export function parseGatewayOverride(search: string): string | undefined {
   const raw = new URLSearchParams(search).get("gateway")?.trim();
@@ -199,9 +151,8 @@ export function frontDoorReturn(exit: WorldExit, realmSelected: boolean): FrontD
 /**
  * What the world half of the client can ask of the glue half.
  *
- * Registered by `main.ts` after the glue runtime is up, so `app/Login.ts` can route a player out
- * of the world without importing the runtime — and so that in legacy mode nothing is registered
- * and every path keeps its old DOM behaviour by construction.
+ * Registered once the glue runtime is up, so `app/Login.ts` can route a player out of the world
+ * without importing the runtime.
  */
 export interface FrontDoorHost {
   /** The world is about to cover the screen: stop the music, the 3D and the clock. */
@@ -215,12 +166,12 @@ export interface FrontDoorHost {
 
 let host: FrontDoorHost | undefined;
 
-/** Called once by the page that owns a glue runtime; `undefined` puts the DOM flow back in charge. */
+/** Called once by the page that owns a glue runtime. */
 export function useFrontDoor(next: FrontDoorHost | undefined): void {
   host = next;
 }
 
-/** The registered host, or `undefined` in legacy mode. */
+/** The registered host, or `undefined` until the glue runtime is standing. */
 export function frontDoorHost(): FrontDoorHost | undefined {
   return host;
 }

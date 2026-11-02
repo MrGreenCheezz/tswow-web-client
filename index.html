@@ -8,89 +8,16 @@
   </head>
   <body>
     <!--
-      The client's own GlueXML login/realm/character screens, and the front door by default since
-      G6. The runtime is loaded on demand by src/browser/main.ts and mounts into #glue-stage; this
-      is the same markup glue.html carries, so the two pages build an identical stage.
-
-      `?legacy-login=1` (or localStorage["webclient.frontDoor"] = "legacy") leaves this hidden and
-      shows the DOM forms below instead — the parity switch, kept until the GlueXML path has proved
-      itself on every flow. A glue runtime that fails to load falls back to the same forms.
+      The client's own GlueXML login/realm/character screens. The runtime is loaded on demand by
+      src/browser/main.ts and mounts into #glue-stage; this is the same markup glue.html carries, so
+      the two pages build an identical stage.
     -->
     <div id="glue-host" hidden>
       <div id="glue-stage"></div>
       <div id="glue-status"></div>
     </div>
     <main>
-      <section id="login-panel" class="panel">
-        <p class="eyebrow">TSWoW · 3.3.5a</p>
-        <h1>WebClient</h1>
-        <p class="muted">WebGL terrain · WMO/M2 · существа · бой и заклинания</p>
-
-        <form id="login-form">
-          <label>
-            Gateway
-            <input id="gateway" name="gateway" type="url" value="ws://127.0.0.1:8090/auth" required />
-          </label>
-          <label>
-            Аккаунт
-            <input id="username" name="username" autocomplete="username" maxlength="16" required />
-          </label>
-          <label>
-            Пароль
-            <input id="password" name="password" type="password" autocomplete="current-password" required />
-          </label>
-          <label>
-            Authenticator <span class="muted">(если включён)</span>
-            <input id="token" name="token" inputmode="numeric" autocomplete="one-time-code" maxlength="6" />
-          </label>
-          <button type="submit">Получить список миров</button>
-        </form>
-
-        <p id="status" role="status" aria-live="polite">Gateway и authserver должны быть запущены.</p>
-        <div id="realms" aria-label="Игровые миры"></div>
-      </section>
-
-      <section id="character-panel" class="panel" hidden>
-        <p class="eyebrow">Worldserver</p>
-        <h2>Персонажи</h2>
-        <p id="character-status" role="status" aria-live="polite"></p>
-        <div id="characters" aria-label="Персонажи аккаунта"></div>
-
-        <form id="create-form">
-          <h3>Новый персонаж</h3>
-          <label>
-            Имя
-            <input id="character-name" maxlength="12" required />
-          </label>
-          <div class="form-row">
-            <label>
-              Раса
-              <select id="character-race"></select>
-            </label>
-            <label>
-              Класс
-              <select id="character-class"></select>
-            </label>
-            <label>
-              Пол
-              <select id="character-gender"></select>
-            </label>
-          </div>
-          <!-- The five appearance bytes. The form used to send none of them, and zero is a legal
-               appearance — so every character created here was born with skin 0, face 0 and hair
-               0, and for a human male hair 0 is the bald row. The choices are counted out of
-               CharSections by the gateway, per race and sex, because how many hairstyles a draenei
-               has is a fact about the client's own tables and not a number to guess. -->
-          <div class="form-row" id="character-look">
-            <label>Кожа<select id="character-skin"></select></label>
-            <label>Лицо<select id="character-face"></select></label>
-            <label>Причёска<select id="character-hair"></select></label>
-            <label>Цвет<select id="character-hair-color"></select></label>
-            <label id="character-facial-label">Борода<select id="character-facial"></select></label>
-          </div>
-          <button type="submit">Создать</button>
-        </form>
-      </section>
+      <input id="gateway" type="hidden" />
 
       <section id="world-panel" hidden>
         <div id="world-viewport">

@@ -206,10 +206,10 @@ test("main wires the frozen formal console without replacing live diagnostics", 
   assert.doesNotMatch(source, /import\s+\{\s*FormalRenderBenchmarkRunner/,
     "formal runner implementation must not remain in the eager login graph");
   assert.match(source, /webclientBenchmarksReady/);
-  const loginWired = source.lastIndexOf("wireLoginForms()");
+  const loginWired = source.lastIndexOf("wirePanelButtons()");
   const demandGetter = source.lastIndexOf('Object.defineProperty(globalThis, "webclientBenchmarksReady"');
   assert.ok(loginWired >= 0 && demandGetter > loginWired,
-    "login handlers are wired before the demand-loaded benchmark promise is exposed");
+    "the page's handlers are wired before the demand-loaded benchmark promise is exposed");
   const parsed = ts.createSourceFile("main.ts", source, ts.ScriptTarget.Latest, false, ts.ScriptKind.TS);
   const installCallOwners = [];
   const visit = (node, owner) => {

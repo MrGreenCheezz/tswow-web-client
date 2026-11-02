@@ -18,7 +18,7 @@ import { game } from "../game/Context.js";
 import { setTip, Bar } from "./Widgets.js";
 import { showAuras } from "./Auras.js";
 import {
-  attackButton, characterMicroIcon, clearTargetButton, form, interactButton, lootButton, playerHealthBar,
+  attackButton, characterMicroIcon, clearTargetButton, interactButton, lootButton, playerHealthBar,
   playerHealthText, playerIcon, playerHudDetails, playerPowerBar, targetActions, targetAuras, targetDetails, targetHealthBar, targetHealthText,
   targetIcon, targetName, targetPanel, bankerButton, trainerButton, vendorButton,
 } from "./Dom.js";

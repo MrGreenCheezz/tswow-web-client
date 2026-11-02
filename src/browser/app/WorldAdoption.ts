@@ -2,13 +2,8 @@ import { WorldStore } from "../../world/WorldStore.js";
 import type { WorldState } from "../../world/WorldState.js";
 
 /**
- * The tail of every route into a world: a live connection becomes *this client's* world.
- *
- * There are two routes now — `connectRealm` in the DOM flow, and the GlueXML character screen
- * handing over the connection it already opened — and they have to agree exactly. Not roughly:
- * the store is what every panel subscribes through, and a second route that forgot
- * `bindDeathScreenEffect` would be a client that never turns grey when the player dies, on one of
- * the two front doors only. So the five lines live here and both callers call them.
+ * The tail of the route into a world: the connection the GlueXML character screen already opened
+ * becomes *this client's* world.
  *
  * The bindings arrive as a seam rather than as imports because everything that draws lives behind
  * `ui/Dom.ts`, which resolves 166 elements at import time and cannot exist in a node test. What is

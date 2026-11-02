@@ -10,13 +10,13 @@
  * `?dev=1` in the page address turns it on and `?dev=0` off; without the parameter this browser's
  * remembered choice decides, set from the console — `localStorage.setItem("webclient.developer", "1")`
  * and reload (the player app has no address bar; its tools are on F12). The query wins in both
- * directions, as `?legacy-login` does (glue/FrontDoor.ts), so a link can always override what a
- * browser remembers. Off by default, and off outside a browser.
+ * directions, so a link can always override what a browser remembers. Off by default, and off
+ * outside a browser.
  *
  * A leaf with no imports: the input table, both game menus and the bindings windows ask it.
  */
 
-/** `?dev=…`. A bare `?dev` is `""` and means yes, as a bare `?legacy-login` does. */
+/** `?dev=…`. A bare `?dev` is `""` and means yes. */
 export const DEVELOPER_PARAMETER = "dev";
 /** The remembered choice: `"1"` (or true/yes/on) is on, anything else off. */
 export const DEVELOPER_STORAGE_KEY = "webclient.developer";
