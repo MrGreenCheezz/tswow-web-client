@@ -72,6 +72,7 @@ import { resetPetBar, showPetBar } from "../ui/PetBar.js";
 import { resetTotems } from "../ui/Totems.js";
 import { resetAutoQuality } from "../AutoQuality.js";
 import { maybeShowWelcomeHints } from "../ui/WelcomeHints.js";
+import { watchHtmlFallbacks } from "../ui/HtmlFallbackWatch.js"; // 4.17 stage 1, temporary
 import { hideLoadingScreen, holdForGround, resetLoadingScreen, showLoadingScreen } from "../ui/LoadingScreen.js"; // 5.36: holdForGround
 import { resetDeathScreenEffect } from "../ui/DeathScreenEffect.js";
 import { watchMinimapRotation } from "../ui/Minimap.js";
@@ -1530,6 +1531,7 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
     };
     entryLifecycle.track(() => uiMode.dispose());
     entryLifecycle.track(watchSettingsApplied(syncUiMode));
+    entryLifecycle.track(watchHtmlFallbacks()); // 4.17 stage 1, temporary
     syncUiMode();
   } catch (error) {
     if (game.assetWarmup === assetWarmup) {

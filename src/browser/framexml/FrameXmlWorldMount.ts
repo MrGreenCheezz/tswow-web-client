@@ -1047,6 +1047,9 @@ export function frameXmlBagGate(
     }
 
     const click = (frame: FrameXmlFrame): void => {
+      // Disable_BagButtons: the game menu and the bindings window shut these off while they are up. A
+      // click on one does nothing in Wow.exe; Click answers false for it, which is no failure of this owner.
+      if (frame.enabled === false) return;
       if (!checkedMutation(
         () => boot.bridge.Click(frame, "LeftButton", false),
         `click ${frame.name}`,

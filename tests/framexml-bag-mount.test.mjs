@@ -128,6 +128,7 @@ function fixture({
     },
     hasScript() { return true; },
     Click(target) {
+      if (target.enabled === false) return false; // As the real bridge answers for a disabled button.
       if (behavior.diagnoseOnClick) bridge.diagnostics.push("bag click failed");
       if (behavior.luaErrorOnClick) vm.errors.push("nil global in stock bag click");
       if (target === backpack) firstContainer.visible = true;
@@ -257,6 +258,24 @@ test("a post-publish stock error demotes the owner and releases its VM aliases",
   assert.equal(setup.boot.vm.getGlobal("BankFrame"), undefined);
   release();
   assert.equal(failures, 1, "stale cleanup does not demote a second time");
+});
+
+test("a press while the stock menu has the bag buttons off does nothing and keeps the owner", () => {
+  const setup = fixture();
+  let failures = 0;
+  const owner = frameXmlBagGate(setup.boot, setup.renderer, () => { failures += 1; });
+  assert.ok(owner);
+  const release = publishFrameXmlBags(owner);
+  const backpack = setup.frames.get("MainMenuBarBackpackButton");
+  backpack.enabled = false; // Disable_BagButtons, from GameMenuFrame's OnShow.
+  assert.equal(toggleFrameXmlBackpack(), true, "the press stays the stock owner's, so no HTML bag opens");
+  assert.equal(failures, 0, "a disabled button is no failure of the owner");
+  assert.equal(setup.frames.get("ContainerFrame1").visible, false);
+  backpack.enabled = true; // Enable_BagButtons, from its OnHide.
+  assert.equal(toggleFrameXmlBackpack(), true);
+  assert.equal(setup.frames.get("ContainerFrame1").visible, true, "the same owner answers once the menu is gone");
+  assert.equal(failures, 0);
+  release();
 });
 
 test("a real frame that takes a global over during the probe keeps it: through the probe, the owner and its release", () => {
