@@ -20,8 +20,9 @@ import { itemTooltipFor } from "./ItemTooltip.js";
 import { itemEnchantmentIds, itemSocketColors } from "../ItemEnchantments.js";
 import { openSocketing } from "./Socketing.js";
 import { extendItemTooltip, hideItemTooltipExtension } from "./ItemTooltipExtensions.js";
-import { attachTooltip, hideTooltip, setTip, type TooltipContent, lastPointer,
+import { attachTooltip, hideTooltip, setTip, lastPointer,
 } from "./Widgets.js";
+import type { TooltipContent } from "./TooltipTypes.js";
 import { setIconSource } from "./IconImage.js";
 import { clickRepairSlot, repairTooltipLine } from "./VendorRepair.js";
 import { clickItemTargetSlot } from "./ItemTargetClick.js";

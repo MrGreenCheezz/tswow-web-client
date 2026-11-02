@@ -37,6 +37,7 @@ const macroRoute = await import("../dist/code/browser/framexml/FrameXmlMacroCont
 const bindingRoute = await import("../dist/code/browser/framexml/FrameXmlBindingController.js");
 const keyBindings = await import("../dist/code/browser/ui/KeyBindings.js");
 const macros = await import("../dist/code/browser/ui/Macros.js");
+const macroStore = await import("../dist/code/browser/ui/MacroStore.js");
 const { GLOBAL_MACROS_CACHE } = await import("../dist/code/world/SessionProtocol.js");
 usePanelHost({ viewport: document.body, attach() {} });
 
@@ -103,27 +104,27 @@ test("Macros.ts: toggle, open and close ask the stock route first; the store is 
   assert.equal(macros.macroWindowOpen(), false);
 
   // The stock API's store is the two stores the native window writes, with their listeners.
-  const store = macros.frameXmlMacroStore;
+  const store = macroStore.frameXmlMacroStore;
   let heard = 0;
   const unsubscribe = store.subscribe(() => { heard += 1; });
   store.put({ index: 2, name: "A", body: "/a", icon: "Interface\\Icons\\Ability_Defend" });
   store.put({ index: 40, name: "B", body: "/b" });
   assert.deepEqual(store.list().map((macro) => macro.index), [2, 40]);
-  assert.equal(macros.macroAt(2).icon, "Interface\\Icons\\Ability_Defend");
+  assert.equal(macroStore.macroAt(2).icon, "Interface\\Icons\\Ability_Defend");
   assert.equal(heard, 0, "the API's own writes are not echoed back as outside changes");
   // The server's copy landing is an outside change.
   const world = {
     requestAccountData() {}, saveAccountData: async () => {},
     accountData: new Map([[GLOBAL_MACROS_CACHE, { text: '[{"index":1,"name":"S","body":"/s"}]' }]]),
   };
-  macros.macroStores[0].attach(world);
-  assert.equal(macros.macroStores[0].accept(GLOBAL_MACROS_CACHE), true);
+  macroStore.macroStores[0].attach(world);
+  assert.equal(macroStore.macroStores[0].accept(GLOBAL_MACROS_CACHE), true);
   assert.equal(heard, 1);
   assert.deepEqual(store.list().map((macro) => macro.index), [1, 40]);
   unsubscribe();
   store.remove(1);
   store.remove(40);
-  macros.macroStores[0].detach();
+  macroStore.macroStores[0].detach();
 });
 
 function fakeBoot({ ok = true } = {}) {

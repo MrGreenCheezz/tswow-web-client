@@ -16,7 +16,7 @@ import { wireControls } from "./input/Controls.js";
 import {
   gameWindows, gatewayInput, glueHost, glueStage, glueStatus, resetLayout, world3dCanvas, worldCanvas,
 } from "./ui/Dom.js";
-import { usePanelHost } from "./ui/Widgets.js";
+import { usePanelHost } from "./ui/ToolWidgets.js";
 import { attachPortraitOutputs } from "./ui/Portraits.js";
 import { wirePanelButtons } from "./ui/Windows.js";
 import { gatewayOverride, gatewaySocketUrl } from "./glue/FrontDoor.js";

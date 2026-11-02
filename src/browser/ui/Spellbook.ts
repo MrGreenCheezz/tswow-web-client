@@ -20,8 +20,8 @@ import { actionDragPayload } from "./ActionBar.js";
 import { beginIconDrag } from "./DragGhost.js";
 import {
   getTip, setTip, attachTooltip, cooldownDuration, cooldownLabel, cooldownView,
-  type TooltipContent, type TooltipLine,
 } from "./Widgets.js";
+import type { TooltipContent, TooltipLine } from "./TooltipTypes.js";
 import { setIconSource, spellIconUrl } from "./IconImage.js";
 import { unknownLabel } from "./Format.js";
 import { formatSpellDescription, spellDescriptionRows, type SpellDescriptionContext } from "./SpellText.js";

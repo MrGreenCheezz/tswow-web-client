@@ -7,7 +7,7 @@ import { game } from "../game/Context.js";
 import { unknownLabel } from "../ui/Format.js";
 import { ensureSpellNames } from "../ui/SpellNames.js";
 import { formatSpellDescription, spellDescriptionRows } from "../ui/SpellText.js";
-import type { TooltipContent, TooltipRefresh } from "../ui/Widgets.js";
+import type { TooltipContent, TooltipRefresh } from "../ui/TooltipTypes.js";
 import type { GameTooltipWidgetAdapter } from "../glue/GlueWidgets.js";
 import type { FrameXmlActionTooltip, FrameXmlWorldSeam } from "./FrameXmlWorldSeam.js";
 import type { FrameXmlSkinnableLine } from "./FrameXmlSkinnableTooltip.js";

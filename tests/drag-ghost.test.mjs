@@ -124,8 +124,9 @@ test("the macro window: a macro's button drags its payload with a letter ghost, 
   class FakeTabs { constructor() { this.root = node("div"); this.active = "account"; } set() {} }
   const model = await import("../dist/code/browser/ui/MacroModel.js");
   const real = await import("../dist/code/browser/ui/ActionDrag.js");
+  const store = await isolatedUi("MacroStore", { "../AccountStore.js": { AccountStore: FakeStore }, "./MacroModel.js": model });
   const ui = await isolatedUi("Macros", {
-    "../AccountStore.js": { AccountStore: FakeStore },
+    "./MacroStore.js": store,
     "./MacroModel.js": model,
     "./Widgets.js": { setTip() {}, Panel: FakePanel, Tabs: FakeTabs, confirmPanel() {} },
     "./ActionDrag.js": real,

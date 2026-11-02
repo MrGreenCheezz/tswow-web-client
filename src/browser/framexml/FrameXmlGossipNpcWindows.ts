@@ -60,7 +60,7 @@ interface EscapableEntry {
 export interface FrameXmlNpcWindowsNative {
   /** Repaint the native NPC windows from the world; each steps aside while its stock owner is published. */
   refresh?(): void;
-  /** Windows.ts `registerEscapable`. */
+  /** EscapeWindows.ts `registerEscapable`. */
   registerEscapable?(entry: EscapableEntry): () => void;
   /** The gateway's TaxiNodes/TaxiPath client, fetched on the first flight map. */
   taxiCatalog?: FrameXmlTaxiCatalogSource | undefined;

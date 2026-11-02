@@ -114,7 +114,6 @@ import { resetFrameXmlTooltipRedraws } from "./FrameXmlCharacterTooltip.js";
 import { LiveWorldSeam } from "./LiveWorldSeam.js";
 import { frameXmlRealmPlayerKilling, frameXmlResolveZone } from "./FrameXmlZoneInfo.js";
 import { fetchFrameXmlWorldStates } from "./FrameXmlWorldStates.js";
-import { mailDraftAttachments } from "../ui/Mail.js";
 import { closeCalendar } from "../ui/Calendar.js";
 import { openFrameXmlCalendar, toggleFrameXmlCalendar } from "./FrameXmlCalendarController.js";
 import { closeArenaWindow } from "../ui/ArenaWindow.js";
@@ -160,7 +159,7 @@ import { createFrameXmlHelpOwner, frameXmlHelpGate } from "./FrameXmlHelpOwner.j
 import { discoverFrameXmlAddonEntrypoints } from "./FrameXmlAddonEntrypoints.js";
 import { watchFrameXmlDialogLayer } from "./FrameXmlDialogLayer.js";
 import { createFrameXmlTsAddonWindows } from "./FrameXmlTsAddonWindows.js";
-import { registerEscapable } from "../ui/Windows.js";
+import { registerEscapable } from "../ui/EscapeWindows.js";
 import {
   closeFrameXmlQuestGiver, frameXmlQuestGiverOpen,
   notifyFrameXmlQuestGiverItemUpdate, publishFrameXmlQuestGiver,
@@ -252,7 +251,8 @@ import { LfgDungeonClient } from "../LfgDungeons.js";
 import { closeSettingsWindow } from "../ui/Settings.js";
 import { closeKeyBindingsWindow } from "../ui/KeyBindings.js";
 import { frameXmlKeyBindingsOpen, toggleFrameXmlKeyBindings } from "./FrameXmlBindingController.js";
-import { closeMacroWindow, frameXmlMacroStore } from "../ui/Macros.js";
+import { closeMacroWindow } from "../ui/Macros.js";
+import { frameXmlMacroStore } from "../ui/MacroStore.js";
 import { frameXmlMacroOpen, openFrameXmlMacro, toggleFrameXmlMacro } from "./FrameXmlMacroController.js";
 import { runAction } from "../input/Actions.js";
 import { FrameXmlMacroIconClient } from "./FrameXmlMacroIcons.js";
@@ -3327,7 +3327,6 @@ export async function mountFrameXmlVertical(
     creatureTypes: (() => { const types = creatureTypeClient(origin); if (types?.state === "failed") types.retry(); return types; })(),
     // 05.10-petfood: GetPetFoodTypes' diet tables; retried on each mount after a stale gateway.
     petFoods: (() => { const foods = petFoodClient(origin); if (foods?.state === "failed") foods.retry(); return foods; })(), // 05.10-petfood
-    mailDraftAttachments,
     stableSlotPrice: (owned) => game.slotPrices?.stableSlotPrice(owned),
     mapSource: {
       metadata: () => game.areas?.snapshot(),

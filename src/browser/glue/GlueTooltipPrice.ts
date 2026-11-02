@@ -7,7 +7,7 @@
  * +0x394). The shared builder puts the price in the content as a `money` line; this drops it, and a
  * late redraw (`refresh`) comes back without it too.
  */
-import type { TooltipContent, TooltipLine } from "../ui/Widgets.js";
+import type { TooltipContent, TooltipLine } from "../ui/TooltipTypes.js";
 
 function hasPrice(content: TooltipContent): boolean {
   for (const line of content.lines ?? []) if (typeof line !== "string" && line.money !== undefined) return true;

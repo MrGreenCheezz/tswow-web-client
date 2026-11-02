@@ -4,7 +4,7 @@
  * gateway catalog, stock's own LoD entry points, Escape and the AchievementMicroButton. Kept apart
  * from the owner so the owner and its tests stay free of the page's DOM modules.
  */
-import { registerEscapable } from "../ui/Windows.js";
+import { registerEscapable } from "../ui/EscapeWindows.js";
 import type { FrameXmlBoot } from "./FrameXmlBoot.js";
 import type { FrameXmlDomRenderer } from "../ui/framexml_compat/FrameXmlDomRenderer.js";
 import type { FrameXmlAchievementModel } from "./FrameXmlAchievement.js";

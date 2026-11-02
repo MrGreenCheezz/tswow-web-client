@@ -6,14 +6,9 @@
  * complete body is validated before any line runs, including macros restored from account data.
  * With the stock chat installed and able to evaluate conditions, the lines go through stock
  * `ChatEdit_ParseText` as in the client (FrameXmlChatApi.ts); otherwise through this client's chat.
- *
- * The two halves are stored in two different account-data slots, shared and per character, which
- * is why there are two stores and one merged list.
+ * The macros themselves are in MacroStore.ts.
  */
 
-import { AccountStore } from "../AccountStore.js";
-import { GLOBAL_MACROS_CACHE, PER_CHARACTER_MACROS_CACHE } from "../../world/SessionProtocol.js";
-import type { FrameXmlMacroStore } from "../framexml/FrameXmlMacro.js";
 import {
   closeFrameXmlMacro, frameXmlMacroOpen, openFrameXmlMacro, toggleFrameXmlMacro,
 } from "../framexml/FrameXmlMacroController.js";
@@ -26,82 +21,13 @@ import { runNativeTargetCommand } from "./NativeTargetCommands.js"; // 1.10 (12.
 import { notice } from "./Notices.js";
 import {
   MACRO_BODY_LIMIT, MACRO_NAME_LIMIT, MACROS_PER_ROW, evaluateMacroOptions, findMacro, installMacroOptionErrorSink,
-  isAccountMacro, macroIndexes, macroOptions, macroProblems, macrosForSet, nativeMacroEdit, nextFreeMacro, parseMacros,
-  putMacro, removeMacro, serialiseMacros, trimMacroName, type Macro,
+  isAccountMacro, macroIndexes, macroOptions, macroProblems, macrosForSet, nativeMacroEdit, nextFreeMacro,
+  trimMacroName,
 } from "./MacroModel.js";
+import { allMacros, dropMacro, macroAt, macrosChanged, saveMacro } from "./MacroStore.js";
 import { setTip, Panel, Tabs, confirmPanel } from "./Widgets.js";
 import { macroActionDragPayload } from "./ActionDrag.js";
 import { beginIconDrag } from "./DragGhost.js";
-
-const accountMacros = new AccountStore<Macro[]>({
-  slot: GLOBAL_MACROS_CACHE,
-  mirrorKey: "webclient.macros.account.v1",
-  fallback: () => [],
-  parse: parseMacros,
-  serialise: serialiseMacros,
-});
-
-const characterMacros = new AccountStore<Macro[]>({
-  slot: PER_CHARACTER_MACROS_CACHE,
-  mirrorKey: "webclient.macros.character.v1",
-  fallback: () => [],
-  parse: parseMacros,
-  serialise: serialiseMacros,
-});
-
-export const macroStores = [accountMacros, characterMacros];
-
-/** Every macro this character can see, both halves together. */
-export function allMacros(): Macro[] {
-  return [...accountMacros.value, ...characterMacros.value].sort((left, right) => left.index - right.index);
-}
-
-export function macroAt(index: number): Macro | undefined {
-  return findMacro(isAccountMacro(index) ? accountMacros.value : characterMacros.value, index);
-}
-
-function storeFor(index: number): AccountStore<Macro[]> {
-  return isAccountMacro(index) ? accountMacros : characterMacros;
-}
-
-function save(macro: Macro): void {
-  const store = storeFor(macro.index);
-  store.set(putMacro(store.value, macro));
-}
-
-function drop(index: number): void {
-  const store = storeFor(index);
-  store.set(removeMacro(store.value, index));
-}
-
-/**
- * Who hears that the macros changed from somewhere other than their own writes: the server's copy
- * landing, or the other window. The stock MacroFrame's model is one (UPDATE_MACROS).
- */
-const macroListeners = new Set<() => void>();
-
-function macrosChanged(): void {
-  for (const listener of [...macroListeners]) {
-    try { listener(); } catch (error) { console.error("[macros] listener failed", error); }
-  }
-}
-
-for (const store of macroStores) store.onLoaded = macrosChanged;
-
-/**
- * The same two stores for the stock macro API (FrameXmlMacro.ts): slots, names, bodies and icons
- * stay in the blobs this window has always written.
- */
-export const frameXmlMacroStore: FrameXmlMacroStore = {
-  list: allMacros,
-  put: save,
-  remove: drop,
-  subscribe: (listener) => {
-    macroListeners.add(listener);
-    return () => { macroListeners.delete(listener); };
-  },
-  flush: () => { for (const store of macroStores) store.flush(); },
-};
 
 /** `/stopmacro [options]` (ChatFrame.lua:1398-1402); the ruRU client spells it only this way. */
 const STOP_MACRO = /^\/stopmacro(?:\s+([\s\S]*))?$/i;
@@ -306,7 +232,7 @@ export function showMacros(): void {
       return;
     }
     // The icon is the stock window's to choose; a save here keeps the one it chose.
-    save(nativeMacroEdit(macro, selected as number, trimmedName, body.value));
+    saveMacro(nativeMacroEdit(macro, selected as number, trimmedName, body.value));
     macrosChanged();
     showMacros();
   });
@@ -324,7 +250,7 @@ export function showMacros(): void {
     title: `Удалить макрос «${macro?.name ?? selected}»?`,
     confirm: "Удалить",
     danger: true,
-    onConfirm: () => { drop(selected as number); selected = undefined; macrosChanged(); showMacros(); },
+    onConfirm: () => { dropMacro(selected as number); selected = undefined; macrosChanged(); showMacros(); },
   }));
   actions.append(store, run, erase);
 

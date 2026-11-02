@@ -3,7 +3,7 @@ import type { FrameXmlUiBridge } from "../ui/framexml_compat/FrameXmlRuntime.js"
 import type { FrameXmlWorldSeam } from "./FrameXmlWorldSeam.js";
 import type { FrameXmlInventoryTooltipItem, FrameXmlInventoryTooltipSeam } from "./FrameXmlCharacterTooltip.js";
 import type { FrameXmlSocketModel } from "./FrameXmlSocketModel.js";
-import { newSocketInfoFromLua, openSocketingFromLua } from "../ui/Socketing.js";
+import { openFrameXmlSocketTarget } from "./FrameXmlSocketController.js";
 
 interface SocketSelection {
   readonly location: number;
@@ -15,8 +15,9 @@ interface SocketSelection {
 /**
  * The socket-item window used by gem-abilities' original extraction action. Selection reads the
  * real equipped/carried item; the addon remains the owner of its button and OP85 request.
- * New-gem placement opens the native WebClient picker; pending replacements are exposed to the
- * addon's GetNewSocketInfo check so extraction cannot race a staged placement on the same item.
+ * New-gem placement goes to the published stock window (FrameXmlSocketController.ts); no HTML picker
+ * stands in for it (WORK_PLAN 4.17), so outside a stock session nothing is ever staged and the addon's
+ * GetNewSocketInfo check reads empty.
  *
  * Once the world mount has published the lazy stock owner (FrameXmlSocketOwner.ts), the same two
  * Lua entry points hand the request to the seam's socket model instead, and the real
@@ -60,7 +61,7 @@ export function installFrameXmlSocketing(
   });
   vm.registerGlobal("__fxSocketClear", () => { selection = undefined; return []; });
   vm.registerGlobal("__fxSocketInsert", () => selection && current()
-    ? [openSocketingFromLua(selection.location, selection.bag, selection.slot)] : [false]);
+    ? [openFrameXmlSocketTarget({ location: selection.location, bag: selection.bag, slot: selection.slot })] : [false]);
   vm.registerGlobal("__fxSocketEvent", (args) => {
     bridge.dispatchEvent(String(args[0]));
     return [];
@@ -109,10 +110,7 @@ export function installFrameXmlSocketing(
   });
   vm.registerGlobal("GetNewSocketInfo", (args) => {
     const model = stock();
-    if (model) return model.newSocketInfo(index(args[0]));
-    if (!selection || !current()) return [];
-    const staged = newSocketInfoFromLua(selection.location, selection.bag, selection.slot, Number(args[0]));
-    return staged ? [staged] : [];
+    return model ? model.newSocketInfo(index(args[0])) : [];
   });
   const result = vm.execute(SOCKETING_PRELUDE, "@FrameXmlSocketing");
   if (!result.ok) throw new Error(`FrameXML socketing binding failed: ${result.error}`);
@@ -220,7 +218,7 @@ do
     -- SOCKET_INFO_UPDATE then shows the real ItemSocketingFrame.
     if __fxSocketStock(location, bag, slot) then return end
     if rawget(_G, "ItemSocketingFrame") and not legacyFrame() then
-      -- Blizzard_ItemSocketingUI loaded but failed its gate: the native picker is the fallback.
+      -- Blizzard_ItemSocketingUI loaded but failed its gate: nothing takes the item now (WORK_PLAN 4.17).
       if __fxSocketSelect(location, bag, slot) then __fxSocketInsert() end
       __fxSocketClear()
       return

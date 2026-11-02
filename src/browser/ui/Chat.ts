@@ -18,7 +18,6 @@ import { emoteStandState, findEmote } from "../../world/EmoteRules.js";
 import type { WorldClient } from "../../world/WorldClient.js";
 import { game } from "../game/Context.js";
 import { activeChannelTab, appendChatMessage, selectChatTabByName } from "./ChatDock.js";
-import { startReadyCheck } from "./ReadyCheck.js";
 import { toggleFrameXmlCalendar } from "../framexml/FrameXmlCalendarController.js";
 import {
   openFrameXmlFriends, toggleFrameXmlFriendsChannel,
@@ -279,7 +278,7 @@ const COMMANDS: readonly SlashCommand[] = [
     names: ["readycheck", "rc"],
     usage: "/readycheck",
     help: "проверка готовности группы",
-    run() { startReadyCheck(); },
+    run() { game.world?.startReadyCheck(); },
   },
   {
     names: ["calendar"],

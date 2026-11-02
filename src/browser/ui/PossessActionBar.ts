@@ -9,7 +9,8 @@ import type { WorldObjectState } from "../../world/WorldState.js"; // 11.02-F2
 import { unknownLabel } from "./Format.js";
 import { spellIconUrl } from "./IconImage.js";
 import { ensureSpellNames } from "./SpellNames.js";
-import type { IconButton, TooltipContent } from "./Widgets.js";
+import type { IconButton } from "./Widgets.js";
+import type { TooltipContent } from "./TooltipTypes.js";
 
 /**
  * 11.02-IF-review: keys 1–= and the native main row under possession — Mind Control, Eyes of the

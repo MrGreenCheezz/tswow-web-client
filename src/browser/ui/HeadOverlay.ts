@@ -30,7 +30,7 @@ import {
   addFloater, expire, floaterOffset, floatingAmountText, floatingCombatTextRelevant, putBubble,
   removeIrrelevantFloaters, type Bubble, type Floater, type FloaterKind,
 } from "./OverlayModel.js";
-import { getTip, setTip } from "./Widgets.js";
+import { getTip, setTip } from "./Tooltip.js";
 
 /**
  * How far above the crown of the head a bubble hangs, clear of the name plate on the canvas.

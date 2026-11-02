@@ -1937,6 +1937,7 @@ let escapeKeydown;
  */
 async function withEscapeKey(run) {
   const windows = await import("../dist/code/browser/ui/Windows.js");
+  const { registerEscapable } = await import("../dist/code/browser/ui/EscapeWindows.js");
   const dom = await import("../dist/code/browser/ui/Dom.js");
   const controls = await import("../dist/code/browser/input/Controls.js");
   const previousObserver = globalThis.MutationObserver;
@@ -1964,7 +1965,7 @@ async function withEscapeKey(run) {
     },
   });
   const moduleWindow = { open: true, closes: 0, isOpen() { return this.open; }, close() { this.closes += 1; this.open = false; } };
-  const releaseModuleWindow = windows.registerEscapable(moduleWindow);
+  const releaseModuleWindow = registerEscapable(moduleWindow);
   try {
     if (!escapeKeydown) {
       const windowListen = window.addEventListener;

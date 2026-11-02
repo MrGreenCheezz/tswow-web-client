@@ -9,8 +9,8 @@
  * SOCKET_INFO_UPDATE for the waiting session; UIParent's own handler (UIParent.lua:990-994) then
  * runs ItemSocketingFrame_LoadUI — the global gem-abilities hooks to add its extraction button —
  * ItemSocketingFrame_Update and ShowUIPanel. Lua's LoadAddOn is only a status view here. A failed
- * load or gate hands the waiting item to the native picker (ui/Socketing.ts) for the session, and
- * the add-on costs nothing at boot.
+ * load or gate hands the waiting item to the caller's {@link FrameXmlSocketNativeWindow} for the
+ * session, and the add-on costs nothing at boot.
  *
  * Measured over the client MPQ (tests/framexml-socket-vertical.test.mjs): 4 files, 24,117 bytes,
  * +111 widgets, no roots of its own (ItemSocketingFrame is a UIParent child), no Lua error.
@@ -163,7 +163,7 @@ export function installFrameXmlSocketTooltipFallbacks(boot: Pick<FrameXmlBoot, "
 }
 
 export interface FrameXmlSocketNativeWindow {
-  /** The native picker for an item, after a failed load or gate (ui/Socketing.ts). */
+  /** The waiting item, after a failed load or gate. The world mount has no other window to offer it. */
   open(target: FrameXmlSocketTarget): void;
 }
 
@@ -183,7 +183,7 @@ export interface FrameXmlLazySocketOwner {
  * The lazy owner. It listens on the model's `onOpenRequest`: the first request starts the add-on
  * load, the gate hands the model to stock (`owned`), and the waiting session shows. A failure
  * leaves `owned` false, stops listening (FrameXmlSocketing.ts's legacy path answers every later
- * request) and gives the waiting item to the native picker.
+ * request) and gives the waiting item to `native`.
  */
 export function createLazyFrameXmlSocketOwner(
   seam: { readonly socket?: FrameXmlSocketModel | undefined },
@@ -208,7 +208,7 @@ export function createLazyFrameXmlSocketOwner(
     }
     const root = boot.bridge.getFrame("ItemSocketingFrame");
     if (root?.visible) {
-      try { boot.bridge.Hide(root); } catch { /* the native picker takes over either way */ }
+      try { boot.bridge.Hide(root); } catch { /* the owner has failed either way */ }
     }
     if (waiting) {
       try { native.open(waiting); } catch { /* nothing else can show it */ }

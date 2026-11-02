@@ -50,6 +50,7 @@ import { selectCharacterTab, type CharacterTab, wireCharacterTabs } from "./Char
 import { cancelLogoutCountdown, logoutCountdownOpen, toggleGameMenu } from "./GameMenu.js";
 import { closeFrameXmlPopups, frameXmlPopupsOpen } from "../framexml/FrameXmlPopupsController.js";
 import { closeEscapableWindows, escapableWindowOpen } from "./WindowRegistry.js";
+import { escapableWindows, registerEscapable, type EscapableWindow } from "./EscapeWindows.js";
 import { playUiSound } from "../game/GameSounds.js";
 import {
   closeFrameXmlSpellBook,
@@ -129,20 +130,11 @@ export function keepCharacterWindowOverStock(): void {
 }
 
 /**
- * The windows Escape closes.
- *
- * This was a nine-element array written out twice, once to ask whether anything was open and once
- * to close it, and the two could not disagree only because nobody had touched them since. Every
- * window built at run time — the bank, the guild, the calendar, the scoreboard — was missing from
- * both, so Escape walked straight past them into the game menu. A panel registers itself here
- * instead, and the list is one list.
+ * The HTML windows' and the stock owners' entries in the list Escape closes (EscapeWindows.ts). They
+ * are registered as this module loads, before any mount can register its own, which keeps them first
+ * and in this order.
  */
-export interface EscapableWindow {
-  isOpen(): boolean;
-  close(): void;
-}
-
-const ESCAPABLE: EscapableWindow[] = [
+const ESCAPABLE: readonly EscapableWindow[] = [
   // The stock CAMP popup cancels the server countdown when dismissed with Escape.
   { isOpen: logoutCountdownOpen, close: cancelLogoutCountdown },
   // The published stock StaticPopups: StaticPopup_EscapePressed runs each escapable dialog's own
@@ -226,13 +218,7 @@ const ESCAPABLE: EscapableWindow[] = [
   { isOpen: escapableWindowOpen, close: closeEscapableWindows },
 ];
 
-export function registerEscapable(entry: EscapableWindow): () => void {
-  ESCAPABLE.push(entry);
-  return () => {
-    const index = ESCAPABLE.indexOf(entry);
-    if (index >= 0) ESCAPABLE.splice(index, 1);
-  };
-}
+for (const entry of ESCAPABLE) registerEscapable(entry);
 
 const MARKUP_WINDOWS = [
   characterWindow, inventoryWindow, spellbookWindow, gossipWindow, questWindow, lootWindow,
@@ -246,7 +232,7 @@ export function anyGameWindowOpen(): boolean {
   // stands, which is what `closeGameWindows` gives back.
   return anyBagWindowOpen() || worldMapOpen() || trackingMenuOpen() || game.world?.bankerGuid !== undefined
     || MARKUP_WINDOWS.some((window) => !window.hidden)
-    || ESCAPABLE.some((entry) => entry.isOpen());
+    || escapableWindows().some((entry) => entry.isOpen());
 }
 
 export function closeGameWindows(): void {
@@ -270,7 +256,7 @@ export function closeGameWindows(): void {
   closeTrackingMenu();
   closeFloating();
   for (const window of MARKUP_WINDOWS) window.hidden = true;
-  for (const entry of ESCAPABLE) if (entry.isOpen()) entry.close();
+  for (const entry of escapableWindows()) if (entry.isOpen()) entry.close();
 }
 
 /** Every button in the page markup, connected to what it does. Registered once, at start-up. */

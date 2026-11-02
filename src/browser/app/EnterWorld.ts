@@ -66,7 +66,8 @@ import { applySettings, drawSettings, settingOn, settingsStore } from "../ui/Set
 import { acceptInputAccount, attachInputAccount } from "../input/InputAccountWiring.js";
 import { attachActionBarAccount } from "../ui/ActionBarAccountWiring.js"; // L7 4.16b/3.32
 import { installHudKeys } from "../ui/HudKeys.js";
-import { macroStores, resetMacroWindow, showMacros } from "../ui/Macros.js";
+import { resetMacroWindow, showMacros } from "../ui/Macros.js";
+import { macroStores } from "../ui/MacroStore.js";
 import { resetPetBar, showPetBar } from "../ui/PetBar.js";
 import { resetTotems } from "../ui/Totems.js";
 import { resetAutoQuality } from "../AutoQuality.js";

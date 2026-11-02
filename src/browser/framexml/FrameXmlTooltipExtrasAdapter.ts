@@ -18,7 +18,7 @@
  * * The shopping tooltips' item records (0x00630c70 reads the cache without asking) and whether a
  *   merchant is open.
  */
-import type { TooltipContent } from "../ui/Widgets.js";
+import type { TooltipContent } from "../ui/TooltipTypes.js";
 import type {
   GameTooltipExtrasAdapter, GameTooltipQuest, GameTooltipTalent, GameTooltipTalentRequirement,
 } from "../glue/GlueTooltipExtras.js";

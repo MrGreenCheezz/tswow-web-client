@@ -54,7 +54,7 @@ test("an item tooltip applies and then clears quality on the tooltip frame itsel
 test("close controls have accessible names but no font-dependent multiplication glyph", async () => {
   const [html, widgets, css] = await Promise.all([
     read("index.html"),
-    read("src/browser/ui/Widgets.ts"),
+    read("src/browser/ui/ToolWidgets.ts"),
     read("src/browser/style.css"),
   ]);
   assert.doesNotMatch(html, /class=["'][^"']*(?:window-close|frame-close)[^"']*["'][^>]*>\s*[×Ч]\s*</,

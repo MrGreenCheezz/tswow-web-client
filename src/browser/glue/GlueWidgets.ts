@@ -28,7 +28,7 @@ import {
   type LuaAddonRuntime,
   type LuaScriptContext,
 } from "../ui/framexml_compat/FrameXmlTypes.js";
-import type { TooltipContent, TooltipLine, TooltipTone } from "../ui/Widgets.js";
+import type { TooltipContent, TooltipLine, TooltipTone } from "../ui/TooltipTypes.js";
 import { // 4.04 (13.10)
   glueUnitLevelSlotsFromLua, glueUnitLevelText, glueUnitRowsAfterSkin, glueUnitRowsBeforeSkin, glueUnitThreatRow,
   type GameTooltipUnitFacts, type GlueUnitTooltipHost,

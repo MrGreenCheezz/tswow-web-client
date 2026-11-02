@@ -44,8 +44,9 @@ function fakeDocument() {
 globalThis.document = fakeDocument();
 // `place` nudges a tooltip back inside the window, so there has to be one to be inside of.
 globalThis.window = { innerWidth: 1280, innerHeight: 720 };
-const { Bar, IconButton, Panel, SlotGrid, attachTooltip, getTip, refreshTooltip, usePanelHost } =
+const { Bar, IconButton, SlotGrid, attachTooltip, getTip, refreshTooltip } =
   await import("../dist/code/browser/ui/Widgets.js");
+const { Panel, usePanelHost } = await import("../dist/code/browser/ui/ToolWidgets.js");
 
 test("an action icon keeps its image when a key label is assigned", () => {
   const button = new IconButton({ icon: "/icons/fireball.png" });

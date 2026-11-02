@@ -14,9 +14,8 @@ import { formatSpellDescription } from "./SpellText.js";
 import { sessionSpellDescriptionContext } from "./SpellTextLiveContext.js"; // 12.10
 import { className, raceName } from "./UnitSnapshot.js";
 import { itemDurationParts, itemDurationSeconds } from "./ItemDurationText.js"; // 5.22 (04.10, L4)
-import {
-  refreshTooltip, type TooltipContent, type TooltipLine, type TooltipRefresh, type TooltipTone,
-} from "./Widgets.js";
+import { refreshTooltip } from "./Tooltip.js";
+import type { TooltipContent, TooltipLine, TooltipRefresh, TooltipTone } from "./TooltipTypes.js";
 
 /**
  * The one item tooltip, for the nine places that show one.

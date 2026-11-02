@@ -12,7 +12,7 @@
  */
 
 import {
-  ACT_COMMAND, ACT_DISABLED, ACT_ENABLED, ACT_PASSIVE, ACT_REACTION, COMMAND_ABANDON,
+  ACT_COMMAND, ACT_DISABLED, ACT_ENABLED, ACT_PASSIVE, ACT_REACTION,
   PET_ACTION_BAR_SIZE, isVehicleActionBar, petActionOf, petActionTypeOf, petBarKind, petCommandText,
   petReactText, type PetActionButton,
 } from "../../world/PetProtocol.js";
@@ -26,6 +26,7 @@ import { PET_SPELL_DRAG_FORMAT, nativePetBook } from "./PetSpellbook.js";
 import { notifyHudLayout } from "../GameWindows.js";
 import { nativeVehicleGates, stockOwnsVehicleRow } from "./VehicleBarGates.js"; // 11.02-F2
 import { vehicleCatalog } from "../VehicleClient.js"; // 11.02-F2
+import { pressPetSlot, setPetAbandonConfirm } from "./PetCommands.js";
 
 let container: HTMLElement | undefined;
 const buttons: IconButton[] = [];
@@ -81,7 +82,7 @@ function build(): void {
   row.className = "pet-bar-row";
   actionRow = row;
   for (let slot = 0; slot < PET_ACTION_BAR_SIZE; slot++) {
-    const button = new IconButton({ onClick: () => pressSlot(slot) });
+    const button = new IconButton({ onClick: () => pressPetSlot(slot) });
     const index = slot;
     // Right-click toggles autocast on a pet spell, as in the original client. Commands and
     // reactions keep their left-click behaviour; passive spells have no autocast to toggle.
@@ -156,42 +157,18 @@ function vehicleControlKey(): string {
   return `${riding ?? ""}|${passengers.join(",")}${gated}`;
 }
 
-/**
- * `PetActionButtonDown(id)` from the keyboard (BONUSACTIONBUTTON1-10, 3.11): the button the click
- * presses, `id` 1–10. False when there is no pet bar or nothing in that button.
- */
-export function pressPetButton(id: number): boolean {
-  const button = game.world?.petSpells?.bar[id - 1];
-  if (!button || game.world?.petSpells?.closed) return false;
-  // An empty button is hidden on the bar (showPetBar); a key on it presses nothing either.
-  if (petActionOf(button.packed) === 0 && petActionTypeOf(button.packed) !== ACT_COMMAND
-    && petActionTypeOf(button.packed) !== ACT_REACTION) return false;
-  pressSlot(id - 1);
+// The question hangs from the button that was pressed; a bar not built yet has none to ask from.
+setPetAbandonConfirm((slot, abandon) => {
+  const anchor = buttons[slot]?.root;
+  if (!anchor) return false;
+  confirmPanel(anchor, {
+    title: "Отпустить питомца?",
+    confirm: "Отпустить",
+    danger: true,
+    onConfirm: abandon,
+  });
   return true;
-}
-
-function pressSlot(slot: number): void {
-  const world = game.world;
-  const button = world?.petSpells?.bar[slot];
-  if (!world || !button) return;
-  const type = petActionTypeOf(button.packed);
-  const action = petActionOf(button.packed);
-  // Dismissing is the one command worth asking about: a hunter's pet has to be summoned again and
-  // a temporary one does not come back at all.
-  if (type === ACT_COMMAND && action === COMMAND_ABANDON) {
-    const anchor = buttons[slot]?.root;
-    if (anchor) {
-      confirmPanel(anchor, {
-        title: "Отпустить питомца?",
-        confirm: "Отпустить",
-        danger: true,
-        onConfirm: () => world.usePetSlot(slot),
-      });
-      return;
-    }
-  }
-  world.usePetSlot(slot);
-}
+});
 
 function slotLabel(button: PetActionButton): { label?: string; icon?: string } {
   const type = petActionTypeOf(button.packed);

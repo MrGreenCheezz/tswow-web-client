@@ -203,8 +203,9 @@ test("macros run every line and refuse only a unit or options /cast cannot read"
   const executions = [], notices = [];
   class AccountStore { value = []; }
   const macroRunner = await import("../dist/code/browser/macro/MacroRunner.js");
+  const store = await isolatedUi("MacroStore", { "../AccountStore.js": { AccountStore }, "./MacroModel.js": macroModel });
   const macros = await isolatedUi("Macros", {
-    "../AccountStore.js": { AccountStore }, "./MacroModel.js": macroModel, "../macro/MacroRunner.js": macroRunner,
+    "./MacroStore.js": store, "./MacroModel.js": macroModel, "../macro/MacroRunner.js": macroRunner,
     "./Chat.js": { submitChat: (line) => executions.push(line) }, "./Notices.js": { notice: (message) => notices.push(message) },
   });
   // Conditions are evaluated as a line runs (the combat commands behind submitChat), `;` separates
@@ -212,38 +213,38 @@ test("macros run every line and refuse only a unit or options /cast cannot read"
   for (const body of ["/say hello\n/cast [combat] 133", "/cast 133\n/use 6948", "/cast 133; /cast 116",
     "/cast [mod:shift] 133"]) {
     executions.length = 0;
-    macros.macroStores[0].value = [{ index: 1, name: "test", body }];
+    store.macroStores[0].value = [{ index: 1, name: "test", body }];
     macros.runMacro(1);
     assert.deepEqual(executions, body.split("\n"));
   }
   // A line without / is said, as the client does; a # directive is not run.
   executions.length = 0;
-  macros.macroStores[0].value = [{ index: 1, name: "test", body: "Всем привет\n#show Fireball\n/wave" }];
+  store.macroStores[0].value = [{ index: 1, name: "test", body: "Всем привет\n#show Fireball\n/wave" }];
   macros.runMacro(1);
   assert.deepEqual(executions, ["Всем привет", "/wave"]);
   // A unit /cast cannot resolve, or a bracket never closed, refuses the whole macro before any line.
   executions.length = 0;
   for (const body of ["/say hello\n/cast [@unknown] 133", "/say hello\n/cast [mod:shift 133"]) {
-    macros.macroStores[0].value = [{ index: 1, name: "test", body }];
+    store.macroStores[0].value = [{ index: 1, name: "test", body }];
     macros.runMacro(1);
     assert.deepEqual(executions, []);
   }
   assert.equal(notices.length, 2);
-  macros.macroStores[0].value = [{ index: 1, name: "test", body: "/say hello\n/cast 133" }];
+  store.macroStores[0].value = [{ index: 1, name: "test", body: "/say hello\n/cast 133" }];
   macros.runMacro(1);
   assert.deepEqual(executions, ["/say hello", "/cast 133"]);
   // Names, a single [@unit] and #showtooltip lines now execute instead of refusing.
-  macros.macroStores[0].value = [{ index: 1, name: "named", body: "/cast Fireball" }];
+  store.macroStores[0].value = [{ index: 1, name: "named", body: "/cast Fireball" }];
   macros.runMacro(1);
   assert.equal(executions.at(-1), "/cast Fireball");
-  macros.macroStores[0].value = [{ index: 1, name: "targeted", body: "/cast [@target] 133" }];
+  store.macroStores[0].value = [{ index: 1, name: "targeted", body: "/cast [@target] 133" }];
   macros.runMacro(1);
   assert.equal(executions.at(-1), "/cast [@target] 133");
-  macros.macroStores[0].value = [{ index: 1, name: "tip", body: "#showtooltip Fireball\n/cast 133" }];
+  store.macroStores[0].value = [{ index: 1, name: "tip", body: "#showtooltip Fireball\n/cast 133" }];
   macros.runMacro(1);
   assert.equal(executions.at(-1), "/cast 133");
   const text = "/say [Группа] Готов |Hitem:6948|h[Камень возвращения]|h";
-  macros.macroStores[0].value = [{ index: 1, name: "chat", body: text }];
+  store.macroStores[0].value = [{ index: 1, name: "chat", body: text }];
   macros.runMacro(1);
   assert.equal(executions.at(-1), text, "chat brackets and item links are text, not macro conditions");
 });
@@ -680,7 +681,8 @@ test("learning a top rank promotes bar slots holding its lower ranks", async () 
       spellTooltip: () => ({}),
       highestKnownRank: (id) => (id === 2 ? 1 : id),
     },
-    "./Macros.js": { macroAt: () => undefined, runMacro: () => {} },
+    "./Macros.js": { runMacro: () => {} },
+    "./MacroStore.js": { macroAt: () => undefined },
     "./MacroModel.js": macroModel,
     "./EquipmentSets.js": { wearEquipmentSetByIndex: () => false },
     "../../world/ActionBarProtocol.js": await import("../dist/code/world/ActionBarProtocol.js"),

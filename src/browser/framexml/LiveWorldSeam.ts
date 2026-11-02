@@ -312,7 +312,7 @@ import { settledHoveredUnitGuid } from "../game/HoverTarget.js";
 import { clientLocale } from "../Environment.js";
 import {
   isTracking, trackingFieldsSignature, trackingSpellsOf, type TrackingSpell,
-} from "../ui/Tracking.js";
+} from "../ui/TrackingSpells.js";
 import {
   AURA_FLAGS,
   type ActiveAura,

@@ -40,7 +40,8 @@ import {
 } from "../game/GroundTarget.js";
 import { recordGroundTargetPointer } from "../game/GroundTargetPreview.js";
 import { cancelItemTarget, observeItemTarget, pendingItemTarget, targetGameObjectWithCursor } from "../game/SpellCursor.js";
-import { hideTooltipAtPoint, showTooltipAtPoint, type TooltipContent } from "../ui/Tooltip.js";
+import { hideTooltipAtPoint, showTooltipAtPoint } from "../ui/Tooltip.js";
+import type { TooltipContent } from "../ui/TooltipTypes.js";
 import { unitTooltipContent, unitTooltipFacts, unitTooltipKey } from "../ui/UnitTooltip.js";
 import { NATIVE_LANES_REPLACED, nativeHudReplaced } from "../ui/NativeHudReplacement.js";
 import { runAction } from "./Actions.js";

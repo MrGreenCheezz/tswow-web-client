@@ -9,7 +9,7 @@ import { setIconSource, spellIconUrl } from "./IconImage.js";
 import { ensureSpellNames, spellName } from "./SpellNames.js";
 import { unitDisplayName } from "./Frames.js";
 import { setTip } from "./Tooltip.js";
-import { Panel, Tabs } from "./Widgets.js";
+import { Panel, Tabs } from "./ToolWidgets.js";
 import {
   GM_KINDS, GM_QUALITY_COLOURS, GM_QUICK_GROUPS, GM_TARGET_ACTIONS, GmFavorites, GmHistory, gmRowActions,
   itemCount, normaliseCommand, type GmAction, type GmKind, type GmRow, type GmStorage,

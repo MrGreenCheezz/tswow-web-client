@@ -46,7 +46,8 @@ globalThis.window = {
   removeEventListener(name) { this.listeners.delete(name); },
   setTimeout(run) { run(); return 0; },
 };
-const { Tabs, closeFloating, confirmPanel, showMenu } = await import("../dist/code/browser/ui/Widgets.js");
+const { closeFloating, confirmPanel, showMenu } = await import("../dist/code/browser/ui/Widgets.js");
+const { Tabs } = await import("../dist/code/browser/ui/ToolWidgets.js");
 
 const anchor = () => document.createElement("div");
 const click = (node) => node.listeners.get("click")({ stopPropagation() {}, preventDefault() {} });

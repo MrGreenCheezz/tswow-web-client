@@ -13,7 +13,7 @@ import {
   moduleWindowStatus, moduleWindowStudio,
   unhandledOpcodeList, unhandledStatus,
 } from "./Dom.js";
-import { Tabs } from "./Widgets.js";
+import { Tabs } from "./ToolWidgets.js";
 import { packetsChanged, packetsView, type PacketsCounters } from "./PacketsModel.js";
 import { buildPacketDiagnosticsReport } from "./PacketDiagnosticsReport.js";
 import { drawPacketsTab } from "./PacketsTab.js";

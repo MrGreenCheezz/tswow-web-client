@@ -10,7 +10,7 @@ import { TaxiMetadataClient } from "../TaxiMetadata.js";
 import { showBank } from "../ui/Bank.js";
 import { showGossip, showTabardVendor, showTaxiMenu } from "../ui/Npc.js";
 import { showPetition } from "../ui/Petition.js";
-import { registerEscapable } from "../ui/Windows.js";
+import { registerEscapable } from "../ui/EscapeWindows.js";
 import type { FrameXmlBoot } from "./FrameXmlBoot.js";
 import type { FrameXmlDomRenderer } from "../ui/framexml_compat/FrameXmlDomRenderer.js";
 import { createFrameXmlNpcWindows, type FrameXmlNpcWindows, type FrameXmlNpcWindowsSeam } from "./FrameXmlGossipNpcWindows.js";

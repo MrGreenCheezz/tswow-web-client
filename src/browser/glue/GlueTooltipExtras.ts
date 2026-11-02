@@ -44,7 +44,7 @@
  * green 00ff00, glyph type 66bbff.
  */
 import type { FrameXmlColor, FrameXmlFrame } from "../ui/framexml_compat/FrameXmlTypes.js";
-import type { TooltipContent } from "../ui/Widgets.js";
+import type { TooltipContent } from "../ui/TooltipTypes.js";
 import type { WidgetMethod } from "./GlueWidgets.js";
 import {
   gameTooltipItemStats, gameTooltipStatDelta, gameTooltipStatDeltaRows, type GameTooltipStatSource,

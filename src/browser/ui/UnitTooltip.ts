@@ -36,7 +36,7 @@ import { creatureTypeName } from "../CreatureMetadata.js";
 import type { GatherSpellRow } from "../game/CreatureGather.js";
 import { frameXmlUnitSkinnableLine } from "../framexml/FrameXmlSkinnableTooltip.js";
 import { nativeString } from "./Strings.js";
-import type { TooltipContent, TooltipLine } from "./Tooltip.js";
+import type { TooltipContent, TooltipLine } from "./TooltipTypes.js";
 import { className, raceName } from "./UnitSnapshot.js";
 import { femaleOf } from "./UnitSnapshot.js"; // L3-review
 

@@ -44,7 +44,7 @@ import { frameXmlShapeshiftForms } from "../framexml/FrameXmlShapeshiftForms.js"
 import { toggleFrameXmlScoreboard } from "../framexml/FrameXmlScoreboardController.js"; // 3.24
 import { toggleFrameXmlBattlefieldMinimap, toggleFrameXmlMinimap } from "../framexml/FrameXmlBattlefieldMinimapKey.js"; // 05.10-L17t; 3.11
 import { minimapSettings, setMinimapRotation, zoomMinimap } from "../ui/Minimap.js";
-import { pressPetButton } from "../ui/PetBar.js";
+import { pressPetButton } from "../ui/PetCommands.js";
 import { castSpell } from "../ui/Spellbook.js";
 import { macroUnitGuid } from "../ui/CombatCommands.js";
 import { setSetting, settingOn } from "../ui/Settings.js";

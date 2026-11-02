@@ -6,14 +6,15 @@ import {
 import { game } from "../game/Context.js";
 import { bonusBarHooks, currentBonusBarOffset } from "../game/BonusBar.js";
 import { playerInventory, stackCount } from "../Inventory.js";
-import { macroAt, runMacro } from "./Macros.js";
+import { runMacro } from "./Macros.js";
+import { macroAt } from "./MacroStore.js";
 import { wearEquipmentSetByIndex } from "./EquipmentSets.js";
 import { macroLabel, macroLines } from "./MacroModel.js";
 import { actionBar } from "./Dom.js";
 import {
   IconButton, attachTooltip, cooldownDuration, cooldownLabel, cooldownView,
-  type TooltipContent,
 } from "./Widgets.js";
+import type { TooltipContent } from "./TooltipTypes.js";
 import { spellIconUrl } from "./IconImage.js";
 import { castSpell, highestKnownRank, spellTooltip } from "./Spellbook.js";
 import { itemUseSpellId, requestInventoryItemUse } from "../game/GroundTarget.js";

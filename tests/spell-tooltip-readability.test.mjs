@@ -22,7 +22,7 @@ function allRules(css, selector) {
 test("spell descriptions are readable body copy, separate from the muted action hint", async () => {
   const [spellbook, widgets, css] = await Promise.all([
     read("src/browser/ui/Spellbook.ts"),
-    read("src/browser/ui/Tooltip.ts"), // the tooltip module since 4.01
+    read("src/browser/ui/TooltipTypes.ts"), // the tooltip types since 4.17
     read("src/browser/style.css"),
   ]);
 

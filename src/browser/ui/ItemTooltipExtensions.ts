@@ -1,5 +1,5 @@
 import type { ItemSlotState } from "../Inventory.js";
-import type { TooltipContent } from "./Widgets.js";
+import type { TooltipContent } from "./TooltipTypes.js";
 
 export interface ItemTooltipExtension {
   decorate(slot: ItemSlotState, content: TooltipContent): TooltipContent;

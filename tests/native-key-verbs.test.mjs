@@ -79,7 +79,7 @@ async function harness({ classId = 1, sheath = 0, equipment = {}, health = 100, 
       actionPageViewable: (page0) => stockLayout.mainPageViewable(page0, (bar) => shownBars.includes(bar)), // L7 4.16b
     },
     "../ui/ActionBarStockLayout.js": stockLayout,
-    "../ui/PetBar.js": { pressPetButton: (id) => { calls.push(["pet", id]); return id <= 3; } },
+    "../ui/PetCommands.js": { pressPetButton: (id) => { calls.push(["pet", id]); return id <= 3; } },
     "../framexml/FrameXmlShapeshiftForms.js": { frameXmlShapeshiftForms: () => [{ spellId: 2457 }, { spellId: 71 }] },
     "../ui/Spellbook.js": { castSpell: (id) => calls.push(["cast", id]) },
     "../ui/Settings.js": {

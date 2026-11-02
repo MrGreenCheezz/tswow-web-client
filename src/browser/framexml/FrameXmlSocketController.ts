@@ -42,12 +42,17 @@ export function frameXmlSocketTarget(bag: number, slot: number): FrameXmlSocketT
   return undefined;
 }
 
+/** Open the stock socketing window for a Lua address; false when the stock window cannot take it. */
+export function openFrameXmlSocketTarget(target: FrameXmlSocketTarget): boolean {
+  const current = route;
+  if (!current) return false;
+  try { return current.open(target); } catch { return false; }
+}
+
 /** Open the stock socketing window for a native slot; false tells the caller to use the native one. */
 export function openFrameXmlSocket(bag: number, slot: number): boolean {
-  const current = route;
   const target = frameXmlSocketTarget(bag, slot);
-  if (!current || !target) return false;
-  try { return current.open(target); } catch { return false; }
+  return target ? openFrameXmlSocketTarget(target) : false;
 }
 
 export function frameXmlSocketOpen(): boolean {

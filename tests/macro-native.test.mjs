@@ -183,10 +183,8 @@ test("ActionBar.useSlot hands the macro the button that pressed it", async () =>
   const world = { actionButtons: [{ slot: 0, action: 37, type: ACTION_BUTTON_MACRO }], knownSpells: [] };
   const bar = await isolatedUi("ActionBar", {
     "../game/Context.js": { game: { world, spells: new Map() } },
-    "./Macros.js": {
-      macroAt: (index) => ({ index, name: "Огонь", body: "/dance" }),
-      runMacro: (index, button) => runs.push([index, button ?? null]),
-    },
+    "./Macros.js": { runMacro: (index, button) => runs.push([index, button ?? null]) },
+    "./MacroStore.js": { macroAt: (index) => ({ index, name: "Огонь", body: "/dance" }) },
     "./MacroModel.js": macroModel,
     "../../world/ActionBarProtocol.js": await import("../dist/code/world/ActionBarProtocol.js"),
   });
@@ -202,9 +200,13 @@ async function nativeMacros(commands, chat, notices) {
     set(value) { this.value = value; }
     flush() {}
   }
-  const macros = await load("Macros.ts", {
+  const store = await load("MacroStore.ts", {
     "../AccountStore.js": { AccountStore },
     "../../world/SessionProtocol.js": { GLOBAL_MACROS_CACHE: 5, PER_CHARACTER_MACROS_CACHE: 6 },
+    "./MacroModel.js": macroModel,
+  });
+  const macros = await load("Macros.ts", {
+    "./MacroStore.js": store,
     "../framexml/FrameXmlMacroController.js": {
       closeFrameXmlMacro() {}, frameXmlMacroOpen: () => false, openFrameXmlMacro: () => false, toggleFrameXmlMacro: () => false,
     },

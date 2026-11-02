@@ -1,10 +1,8 @@
 /**
  * The world mount's one call for stock socketing: the lazy Blizzard_ItemSocketingUI owner
- * (FrameXmlSocketOwner.ts) with the native picker as its fallback, published through
- * FrameXmlSocketController.ts. Kept apart from the owner so the owner and its tests stay free of the
- * page's DOM modules.
+ * (FrameXmlSocketOwner.ts), published through FrameXmlSocketController.ts. A failed load or gate has
+ * nothing to fall back to (WORK_PLAN 4.17): the window does not open.
  */
-import { openSocketingFromLua } from "../ui/Socketing.js";
 import type { FrameXmlBoot } from "./FrameXmlBoot.js";
 import type { FrameXmlDomRenderer } from "../ui/framexml_compat/FrameXmlDomRenderer.js";
 import type { FrameXmlSocketModel } from "./FrameXmlSocketModel.js";
@@ -23,9 +21,8 @@ export function mountFrameXmlSocket(
 ): () => void {
   const model = seam.socket;
   if (!model) return () => {};
-  const owner = createLazyFrameXmlSocketOwner(seam, boot, renderer, {
-    open: (target) => { openSocketingFromLua(target.location, target.bag, target.slot); },
-  }, (reason) => console.warn(`[FrameXML socketing] ${reason}; the native picker stays`));
+  const owner = createLazyFrameXmlSocketOwner(seam, boot, renderer, { open() {} },
+    (reason) => console.warn(`[FrameXML socketing] ${reason}; the window will not open`));
   const release = publishFrameXmlSocket({
     open: (target) => {
       if (owner.failed) return false;

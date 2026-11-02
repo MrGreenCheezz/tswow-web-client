@@ -25,7 +25,8 @@ import { chatInput, chatLog, chatTabs } from "./Dom.js";
 import { unknownLabel } from "./Format.js";
 import { itemTooltipFor } from "./ItemTooltip.js";
 import { setSetting, settingOn } from "./Settings.js";
-import { setTip, attachTooltip, type TooltipContent } from "./Widgets.js";
+import { setTip, attachTooltip } from "./Widgets.js";
+import type { TooltipContent } from "./TooltipTypes.js";
 
 /** How many lines one pane holds. The model keeps five hundred; this is what is drawn. */
 const PANE_LINES = 200;
