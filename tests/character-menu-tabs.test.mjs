@@ -39,7 +39,7 @@ test("character owns skills and collections as accessible fixed-size tabs", asyn
   assert.match(windows, /windowFixedSize[\s\S]*?style\.resize\s*=\s*"none"/);
 });
 
-test("character/spellbook routes share gated original owners and keep native fallbacks", async () => {
+test("character/spellbook routes reach the gated original owners only", async () => {
   const [bindings, actions, windows, mount, entry] = await Promise.all([
     source("src/browser/input/Bindings.ts"),
     source("src/browser/input/Actions.ts"),
@@ -51,17 +51,13 @@ test("character/spellbook routes share gated original owners and keep native fal
   assert.match(bindings, /toggleCharacter:\s*\["KeyC",\s*""\]/);
   assert.match(bindings, /toggleSpellbook:\s*\["KeyP",\s*""\]/);
   assert.match(bindings, /toggleTalents:\s*\["KeyN",\s*""\]/);
-  assert.match(actions, /case "toggleCharacter":\s*openCharacterWindow\("sheet"\);/);
-  assert.match(actions, /case "toggleSpellbook":\s*toggleGameWindow\(spellbookWindow\);/);
-  assert.match(actions, /case "toggleTalents":\s*if \(!toggleFrameXmlTalent\(\)\) toggleTalentsWindow\(\);/);
-  assert.doesNotMatch(actions, /toggleFrameXml(?:Character|SpellBook)\s*\(/,
-    "C/P route through the same window entry points as mouse input");
+  assert.match(actions, /case "toggleCharacter":\s*toggleFrameXmlCharacter\(\);/);
+  assert.match(actions, /case "toggleSpellbook":\s*toggleFrameXmlSpellBook\(\);/);
+  assert.match(actions, /case "toggleTalents":\s*toggleFrameXmlTalent\(\);/);
 
-  assert.match(windows, /characterToggle\.addEventListener\("click",\s*\(\) => \{\s*openCharacterWindow\("sheet"\);\s*\}\);/);
-  assert.match(windows, /spellbookToggle\.addEventListener\("click",\s*\(\) => \{\s*toggleGameWindow\(spellbookWindow\);\s*\}\);/);
-  assert.match(windows, /talentsToggle\.addEventListener\("click",\s*\(\) => \{\s*if \(!toggleFrameXmlTalent\(\)\) toggleTalentsWindow\(\);\s*\}\);/);
-  assert.match(windows, /window === spellbookWindow && toggleFrameXmlSpellBook\(\)/);
-  assert.match(windows, /tab === "sheet" && toggleFrameXmlCharacter\(\)/);
+  assert.match(windows, /characterToggle\.addEventListener\("click",\s*\(\) => \{\s*toggleFrameXmlCharacter\(\);\s*\}\);/);
+  assert.match(windows, /spellbookToggle\.addEventListener\("click",\s*\(\) => \{\s*toggleFrameXmlSpellBook\(\);\s*\}\);/);
+  assert.match(windows, /talentsToggle\.addEventListener\("click",\s*\(\) => \{\s*toggleFrameXmlTalent\(\);\s*\}\);/);
 
   const mountStart = mount.indexOf("export async function mountFrameXmlVertical");
   const mountEnd = mount.indexOf("export function unmountFrameXmlVertical", mountStart);
@@ -109,10 +105,8 @@ test("HUD has one centered game-menu button and diagnostics only lives inside th
   assert.doesNotMatch(html, /id="professions-toggle"/);
   assert.doesNotMatch(html, /id="diagnostics-toggle"/);
   assert.match(windows, /gameMenuToggle\.addEventListener\("click",\s*toggleGameMenu\)/);
-  assert.match(actions, /openCharacterWindow\("skills"\)/);
-  assert.match(menu, /menuButton\("Диагностика"/);
+  assert.match(actions, /toggleFrameXmlCharacterTab\("SkillFrame"\)/);
   assert.match(menu, /aria-expanded/);
-  assert.match(menu, /button:not\(:disabled\)/);
   assert.match(css, /\.game-menu\s*\{[\s\S]*?top:\s*50%[\s\S]*?left:\s*50%[\s\S]*?resize:\s*none[\s\S]*?transform:\s*translate\(-50%,\s*-50%\)/,
     "the Escape menu opens as one stable centered game menu, not another drifting tool panel");
   assert.match(css, /\.game-menu \.ui-panel-body\s*\{[\s\S]*?overflow-y:\s*auto/,

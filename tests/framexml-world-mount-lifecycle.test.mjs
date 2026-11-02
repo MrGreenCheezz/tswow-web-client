@@ -1807,14 +1807,10 @@ test("a failed FrameXML load never claims the native replacement class", async (
   }
 });
 
-test("the modules' add-ons release their commands, menu actions and subscriptions across logout and cancelled login", async () => {
+test("the modules' add-ons release their commands and subscriptions across logout and cancelled login", async () => {
   const { moduleCommandList } = await import("../dist/code/browser/ui/Chat.js");
-  const { toggleGameMenu } = await import("../dist/code/browser/ui/GameMenu.js");
-  const { usePanelHost } = await import("../dist/code/browser/ui/Widgets.js");
   const previousLoad = FrameXmlBoot.prototype.load;
   const previousObserver = globalThis.MutationObserver;
-  const menuHost = fakeNode("div");
-  usePanelHost({ viewport: menuHost, attach() {} });
   globalThis.MutationObserver = class { observe() {} disconnect() {} };
   const hits = [];
   const records = [];
@@ -1848,8 +1844,6 @@ test("the modules' add-ons release their commands, menu actions and subscription
     return loaded;
   };
   const command = () => moduleCommandList().find((entry) => entry.name === "lifecycle-addon");
-  const descendants = (node) => [node, ...node.children.flatMap(descendants)];
-  const menuActions = () => descendants(menuHost).filter((node) => node.textContent === "Lifecycle addon action");
   try {
     const first = seam("addons-first");
     const result = await mountFrameXmlVertical({ viewport, seam: first });
@@ -1861,23 +1855,17 @@ test("the modules' add-ons release their commands, menu actions and subscription
     const retainedCommand = command();
     assert.ok(retainedCommand, "Own Lua command must be available through native chat");
     retainedCommand.run("first");
-    toggleGameMenu();
-    assert.equal(menuActions().length, 1, "The native menu exposes one original addon action");
-    const retainedMenu = menuActions()[0];
-    retainedMenu.dispatchEvent({ type: "click" });
-    assert.deepEqual(hits, ["first", "menu"]);
+    assert.deepEqual(hits, ["first"]);
     const scheduled = [...raf.scheduled].at(-1);
     assert.equal(typeof window.frameXmlWorld, "function");
     clearWorldContext();
     assert.equal(first.attached, false);
     assert.equal(records[0].renderSubscriptions, 0, "Logout releases the renderer mutation subscription");
     assert.equal(command(), undefined, "Logout unregisters native slash commands");
-    assert.equal(menuActions().length, 0, "Logout removes native addon menu entries");
     assert.equal(typeof window.frameXmlWorld, "undefined", "Logout releases the diagnostic closure over the old VM");
     retainedCommand.run("stale command");
-    retainedMenu.dispatchEvent({ type: "click" });
     scheduled.callback();
-    assert.deepEqual(hits, ["first", "menu"], "Retained old callbacks never enter the closed VM");
+    assert.deepEqual(hits, ["first"], "Retained old callbacks never enter the closed VM");
     assert.equal(raf.cancelled.has(scheduled.id), true);
     assert.equal(resizeListeners.size, baselineResizeListenerCount);
     assert.equal(viewport.children.length, 0);
@@ -1892,22 +1880,18 @@ test("the modules' add-ons release their commands, menu actions and subscription
     assert.equal((await pending).ok, false);
     assert.equal(stale.attached, false, "Late boot completion detaches the old-world subscription");
     assert.equal(command(), undefined);
-    assert.equal(menuActions().length, 0);
     assert.equal(viewport.children.length, 0);
     assert.equal(resizeListeners.size, baselineResizeListenerCount);
 
     defer = undefined;
     const next = seam("addons-next");
     assert.equal((await mountFrameXmlVertical({ viewport, seam: next })).ok, true);
-    assert.equal(menuActions().length, 1, "Next login publishes one fresh menu action");
     assert.ok(command());
     command().run("next");
     retainedCommand.run("old callback after login");
-    retainedMenu.dispatchEvent({ type: "click" });
-    assert.deepEqual(hits, ["first", "menu", "next"]);
+    assert.deepEqual(hits, ["first", "next"]);
     unmountFrameXmlVertical();
     assert.equal(command(), undefined);
-    assert.equal(menuActions().length, 0);
     assert.equal(next.attached, false);
     assert.equal(resizeListeners.size, baselineResizeListenerCount);
     assert.ok(records.every((record) => seams.some((entry) => entry.seam === record.seam && entry.closed)),

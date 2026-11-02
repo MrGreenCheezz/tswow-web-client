@@ -228,20 +228,16 @@ test("3.11: INTERACTMOUSEOVER interacts with the unit under the pointer as a rig
   assert.deepEqual([...h.calls, ...shared.splice(0)], [["interact", DOOR]], "a game object is used, never selected");
 });
 
-test("3.11: TOGGLEMINIMAP runs the stock ToggleMinimap() when the stock UI is mounted, else hides the native map", async () => {
+test("3.11: TOGGLEMINIMAP runs the stock ToggleMinimap()", async () => {
   const calls = [];
-  let stockMounted = true;
   const modules = {
     "../framexml/FrameXmlBattlefieldMinimapKey.js": {
       toggleFrameXmlBattlefieldMinimap: () => false,
-      toggleFrameXmlMinimap: () => { calls.push("stock"); return stockMounted; },
+      toggleFrameXmlMinimap: () => { calls.push("stock"); return true; },
     },
-    "../ui/Minimap.js": { toggleMinimapShown: () => calls.push("native"), minimapSettings: () => ({ rotate: false }) },
+    "../ui/Minimap.js": { minimapSettings: () => ({ rotate: false }) },
   };
   const h = await harness({ modules });
   assert.equal(h.run("toggleMinimap"), true);
   assert.deepEqual(calls.splice(0), ["stock"]);
-  stockMounted = false;
-  assert.equal(h.run("toggleMinimap"), true);
-  assert.deepEqual(calls.splice(0), ["stock", "native"]);
 });

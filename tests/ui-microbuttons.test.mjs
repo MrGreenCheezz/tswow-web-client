@@ -13,17 +13,17 @@ test("micro buttons exist in markup and are wired to their toggles", async () =>
     readFile(new URL("../src/browser/ui/Windows.ts", import.meta.url), "utf8"),
   ]);
   for (const [id, toggle] of [
-    ["quest-toggle", "toggleQuestLog"],
-    ["social-toggle", "toggleSocialPanel"],
-    ["worldmap-toggle", "toggleWorldMap"],
-    ["calendar-toggle", "toggleCalendar"],
+    ["quest-toggle", "toggleFrameXmlQuest"],
+    ["social-toggle", "toggleFrameXmlFriends"],
+    ["worldmap-toggle", "toggleFrameXmlWorldMap"],
+    ["calendar-toggle", "toggleFrameXmlCalendar"],
   ]) {
     assert.match(markup, new RegExp(`id="${id}"[^>]*type="button"`), `${id} is a button in markup`);
     assert.match(markup, new RegExp(`id="${id}"[^>]*aria-label="[^"]+"`), `${id} names itself`);
     assert.ok(wiring.includes(`getElementById("${id}")`), `${id} is wired`);
     assert.ok(wiring.includes(`${toggle}()`), `${id} calls ${toggle}`);
   }
-  for (const toggle of ["toggleQuestLog", "toggleSocialPanel", "toggleWorldMap", "toggleCalendar"]) {
+  for (const toggle of ["toggleFrameXmlQuest", "toggleFrameXmlFriends", "toggleFrameXmlWorldMap", "toggleFrameXmlCalendar"]) {
     assert.match(wiring, new RegExp(`import \\{[^}]*${toggle}[^}]*\\}`), `${toggle} is imported`);
   }
 });

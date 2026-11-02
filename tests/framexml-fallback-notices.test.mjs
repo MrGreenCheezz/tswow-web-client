@@ -18,8 +18,8 @@ test("one notice per kind, every report recorded and warned", () => {
   fallbacks.report("trainer", "ещё раз");
   fallbacks.report("mail", "нет MailFrame");
   assert.deepEqual(notices, [
-    "Штатное окно «Тренер» не собралось: ClassTrainerFrame не прошёл проверку. Показано упрощённое.",
-    "Штатное окно «Почта» не собралось: нет MailFrame. Показано упрощённое.",
+    "Штатное окно «Тренер» не собралось: ClassTrainerFrame не прошёл проверку. Оно не откроется.",
+    "Штатное окно «Почта» не собралось: нет MailFrame. Оно не откроется.",
   ]);
   assert.deepEqual(fallbacks.records.map((record) => [record.kind, record.reason, record.at]), [
     ["trainer", "ClassTrainerFrame не прошёл проверку", 1], ["trainer", "ещё раз", 2], ["mail", "нет MailFrame", 3],
@@ -29,7 +29,7 @@ test("one notice per kind, every report recorded and warned", () => {
 });
 
 test("an unknown kind is named as it is; a throwing notice does not break the report", () => {
-  assert.equal(frameXmlFallbackText("guildbank", "x"), "Штатное окно «guildbank» не собралось: x. Показано упрощённое.");
+  assert.equal(frameXmlFallbackText("guildbank", "x"), "Штатное окно «guildbank» не собралось: x. Оно не откроется.");
   const fallbacks = createFrameXmlFallbackNotices({ notice: () => { throw new Error("no strip"); }, warn: () => {} });
   fallbacks.report("map", "нет карты");
   assert.equal(fallbacks.records.length, 1);

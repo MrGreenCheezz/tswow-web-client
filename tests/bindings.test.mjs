@@ -30,7 +30,6 @@ const UNBOUND_BY_DESIGN = {
   setFocus: "FOCUSTARGET has no stock key; the target frame's menu and /focus set it",
   interact: "INTERACTTARGET has no stock key; the right button speaks to a unit",
   toggleKeyring: "TOGGLEKEYRING has no stock key; the keyring is the button beside the bag bar",
-  toggleKeyBindings: "the client has no key for its bindings window; the game menu opens it",
   toggleDiagnostics: "a developer's window, behind the developer flag",
   toggleGmConsole: "the GM console, a developer's window behind the same flag",
 };

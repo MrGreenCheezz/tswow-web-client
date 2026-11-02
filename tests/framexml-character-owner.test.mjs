@@ -283,8 +283,8 @@ test("frameXmlPlayerClassToken answers only a real class file token", () => {
   }
 });
 
-test("native C and J shortcuts open the stock CharacterFrame pages when it is published", async () => {
-  const { openCharacterWindow } = await import("../dist/code/browser/ui/Windows.js");
+test("C and J open the stock CharacterFrame pages when it is published", async () => {
+  const { toggleFrameXmlCharacter, toggleFrameXmlCharacterTab } = await import("../dist/code/browser/framexml/FrameXmlCharacterController.js");
   const pages = [];
   const release = publishFrameXmlCharacter({
     isOpen: () => true,
@@ -293,8 +293,8 @@ test("native C and J shortcuts open the stock CharacterFrame pages when it is pu
     showTab(subFrame) { pages.push(subFrame); },
   });
   try {
-    openCharacterWindow("skills");
-    openCharacterWindow("sheet");
+    toggleFrameXmlCharacterTab("SkillFrame");
+    toggleFrameXmlCharacter();
     assert.deepEqual(pages, ["SkillFrame", "PaperDollFrame"],
       "skills (J) → tab 4; sheet (C) → ToggleCharacter(\"PaperDollFrame\"), even while the frame is open");
   } finally {

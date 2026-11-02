@@ -5,12 +5,11 @@ import test from "node:test";
 const root = new URL("../", import.meta.url);
 const source = (path) => readFile(new URL(path, root), "utf8");
 
-test("native LFG window has discoverable entries outside the FrameXML microbutton", async () => {
-  const [html, dom, windows, menu, chat, css] = await Promise.all([
+test("the dungeon finder has discoverable entries outside the FrameXML microbutton", async () => {
+  const [html, dom, windows, chat, css] = await Promise.all([
     source("index.html"),
     source("src/browser/ui/Dom.ts"),
     source("src/browser/ui/Windows.ts"),
-    source("src/browser/ui/GameMenu.ts"),
     source("src/browser/ui/Chat.ts"),
     source("src/browser/style.css"),
   ]);
@@ -21,10 +20,9 @@ test("native LFG window has discoverable entries outside the FrameXML microbutto
   assert.doesNotMatch(toggle, /micro-button-glyph/,
     "the stock LFG plate comes from the client art, not a glyph fallback");
   assert.match(dom, /element<HTMLButtonElement>\("lfg-toggle"\)/);
-  assert.match(windows, /lfgToggle\.addEventListener\("click",\s*\(\) => toggleLfgWindow\(\)\)/);
-  assert.match(menu, /menuButton\("Поиск подземелий", \(\) => \{ panel\.hide\(\); toggleLfgWindow\(\); \}\)/);
+  assert.match(windows, /lfgToggle\.addEventListener\("click",\s*\(\) => \{ toggleFrameXmlLfd\(\); \}\)/);
   assert.match(chat, /names: \["lfg"\]/);
-  assert.match(chat, /run\(\) \{ toggleLfgWindow\(\); \}/);
+  assert.match(chat, /run\(\) \{ toggleFrameXmlLfd\(\); \}/);
   assert.doesNotMatch(chat, /lfgWindow\.hidden = false/, "the slash command must go through the toggle so the catalog renders");
   assert.match(windows, /\{ isOpen: lfgWindowOpen, close: closeLfgWindow \}/);
   assert.match(css, /#lfg-toggle/);

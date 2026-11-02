@@ -35,7 +35,7 @@ globalThis.MutationObserver = class { observe() {} disconnect() {} };
 
 const { game } = await import('../dist/code/browser/game/Context.js');
 const { usePanelHost } = await import('../dist/code/browser/ui/Widgets.js');
-const { toggleGameMenu, updateLogoutPending, resetLogoutPending } = await import('../dist/code/browser/ui/GameMenu.js');
+const { updateLogoutPending, resetLogoutPending } = await import('../dist/code/browser/ui/GameMenu.js');
 const { WorldClient } = await import('../dist/code/world/WorldClient.js');
 const { PacketWriter } = await import('../dist/code/protocol/PacketWriter.js');
 const { OPCODES } = await import('../dist/code/generated/opcodes.js');
@@ -55,7 +55,7 @@ function connection() {
   };
 }
 
-test('the pending logout menu cancels the server countdown and does not request another logout', () => {
+test('the pending logout countdown cancels the server countdown and does not request another logout', () => {
   const calls = [];
   const world = {
     logout: { result: 0, instant: false }, loggedOut: false,
@@ -66,10 +66,7 @@ test('the pending logout menu cancels the server countdown and does not request 
     updateLogoutPending(world, true);
     const countdown = document.body.children.find(element => element.id === 'logout-countdown');
     assert.equal(countdown?.hidden, false, 'a granted response opens the cancellable countdown');
-    toggleGameMenu();
-    const menu = document.body.children.find(element => element.id === 'game-menu');
-    assert.ok(menu);
-    const cancel = all(menu).find(element => element.textContent === 'Отменить выход');
+    const cancel = all(countdown).find(element => element.textContent === 'Отменить выход');
     assert.ok(cancel, 'a granted logout must expose a cancellation action');
     cancel.click();
     assert.deepEqual(calls, ['cancel']);

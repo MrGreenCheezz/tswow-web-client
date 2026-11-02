@@ -267,7 +267,6 @@ test("map picker and binding buttons expose their action names", () => {
   const labels = root.children[1].children.filter((child) => child.className === "ui-binding-row")
     .map((child) => child.children[0].textContent);
   assert.equal(labels.includes("Диагностика"), false, "no developer flag: diagnostics is not offered");
-  assert.ok(labels.includes("Привязки клавиш"), "this client's other own row is");
   const [label, primary, secondary] = row.children;
   assert.match(primary.getAttribute("aria-label"), new RegExp(label.textContent));
   assert.match(secondary.getAttribute("aria-label"), new RegExp(label.textContent));

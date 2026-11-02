@@ -962,9 +962,7 @@ export async function enterWorld(character: CharacterSummary): Promise<void> {
   world.onAurasChanged = () => queueFrameTask(refreshAuras);
 
   world.onGossipChanged = showGossip;
-  world.onQuestChanged = () => {
-    if (!notifyFrameXmlQuestGiver(world)) showQuestState();
-  };
+  world.onQuestChanged = () => { notifyFrameXmlQuestGiver(world); };
   world.onLootChanged = () => {
     showLoot();
     // The master looter's candidate list rides this callback and raises no event of its own.
@@ -986,7 +984,7 @@ export async function enterWorld(character: CharacterSummary): Promise<void> {
     const vendor = world.vendor;
     if (!vendor) {
       merchantMetadata.reset();
-      if (!notifyFrameXmlMerchant("closed")) showVendor();
+      notifyFrameXmlMerchant("closed");
       return;
     }
     if (reason === "vendor" && !game.vendorCosts?.ready) game.vendorCosts?.load();
@@ -996,11 +994,11 @@ export async function enterWorld(character: CharacterSummary): Promise<void> {
       // vendor row's name/icon/stack data actually changed; the force bit bypasses raw vendor-shape
       // dedupe in the seam without making the next tick emit a duplicate UPDATE.
       if (presentation.changed) {
-        if (!notifyFrameXmlMerchant("update", true)) showVendor();
+        notifyFrameXmlMerchant("update", true);
       }
     } else {
       const event = frameXmlMerchantOpen() ? "update" : "show";
-      if (!notifyFrameXmlMerchant(event)) showVendor();
+      notifyFrameXmlMerchant(event);
     }
   };
   world.onVendorChanged = refreshVendorUi;
@@ -1046,15 +1044,14 @@ export async function enterWorld(character: CharacterSummary): Promise<void> {
       if (game.world === world && world.trainer !== undefined) refreshTrainerUi();
     });
     // 3.24 (12.10): a profession trainer (type 2) is stock ClassTrainerFrame as well (the stock owner,
-    // FrameXmlWorldMount.ts createLazyFrameXmlTrainerOwner); only a type SMSG_TRAINER_LIST never carries stays native.
+    // FrameXmlWorldMount.ts createLazyFrameXmlTrainerOwner).
     const supported = trainer !== undefined && frameXmlStockTrainerType(trainer.trainerType);
     if (!supported) {
       notifyFrameXmlTrainer("closed");
-      showTrainer();
       return;
     }
     const event = frameXmlTrainerOpen() ? "update" : "show";
-    if (!notifyFrameXmlTrainer(event)) showTrainer();
+    notifyFrameXmlTrainer(event);
   };
   world.onTrainerChanged = refreshTrainerUi;
   world.onDeathChanged = showDeath;

@@ -9,23 +9,18 @@ import { // L2 3.11
 } from "../game/TargetNearestModes.js";
 import type { TargetLastKind } from "../game/TargetLast.js"; // L2 3.11
 import { turnActionPage, useSlot } from "../ui/ActionBar.js";
-import { chatInput, diagnosticsWindow, spellbookWindow } from "../ui/Dom.js";
+import { chatInput, diagnosticsWindow } from "../ui/Dom.js";
 import { showUnhandledOpcodes } from "../ui/Diagnostics.js";
 import { toggleGmConsole } from "../ui/GmConsole.js";
 import { systemLine } from "../ui/Chat.js";
 import { openChatInput, replyToLastWhisper } from "../ui/ChatInputOwner.js";
 import { showTarget, unitDisplayName } from "../ui/Frames.js";
 import { interactWithGuid, interactWithTarget } from "../ui/Npc.js";
-import { toggleQuestLog } from "../ui/QuestLog.js";
-import { openCharacterWindow, toggleGameWindow } from "../ui/Windows.js";
-import { toggleAllBags, toggleKeyring } from "../ui/Bags.js";
-import { toggleWorldMap } from "../ui/WorldMap.js";
-import { toggleKeyBindingsWindow } from "../ui/KeyBindings.js";
-import { toggleTalentsWindow } from "../ui/Talents.js";
+import { toggleGameWindow } from "../ui/Windows.js";
+import { toggleFrameXmlWorldMap } from "../framexml/FrameXmlWorldMapPublication.js";
 import { toggleSetting } from "../ui/Settings.js";
 import { toggleFrameXmlPvp } from "../framexml/FrameXmlPvpController.js";
-import { toggleArenaWindow } from "../ui/ArenaWindow.js";
-import { toggleLfgWindow } from "../ui/Social.js";
+import { toggleFrameXmlLfd } from "../framexml/FrameXmlLfdController.js";
 import {
   toggleFrameXmlBags,
   toggleFrameXmlKeyring,
@@ -40,18 +35,15 @@ import { notice } from "../ui/Notices.js";
 import { UNIT_STAND_STATE_SIT, UNIT_STAND_STATE_STAND } from "../../world/CharacterProgressProtocol.js";
 import { UPDATE_FIELDS } from "../../generated/updateFields.js";
 import { playerInventory } from "../Inventory.js";
-import { toggleBackpack, toggleBag } from "../ui/Bags.js";
 import { toggleFrameXmlBackpack, toggleFrameXmlBag } from "../framexml/FrameXmlBagController.js";
-import { toggleFrameXmlCharacterTab } from "../framexml/FrameXmlCharacterController.js";
+import { toggleFrameXmlCharacter, toggleFrameXmlCharacterTab } from "../framexml/FrameXmlCharacterController.js";
+import { toggleFrameXmlSpellBook } from "../framexml/FrameXmlSpellBookController.js";
 import { toggleFrameXmlFriends } from "../framexml/FrameXmlFriendsController.js";
 import { frameXmlClassHasRelicSlot } from "../framexml/FrameXmlRelicSlot.js";
 import { frameXmlShapeshiftForms } from "../framexml/FrameXmlShapeshiftForms.js";
-import { toggleReputation } from "../ui/Reputation.js";
-import { toggleSocialPanel } from "../ui/SocialPanel.js";
-import { toggleScoreboard } from "../ui/Scoreboard.js";
 import { toggleFrameXmlScoreboard } from "../framexml/FrameXmlScoreboardController.js"; // 3.24
 import { toggleFrameXmlBattlefieldMinimap, toggleFrameXmlMinimap } from "../framexml/FrameXmlBattlefieldMinimapKey.js"; // 05.10-L17t; 3.11
-import { minimapSettings, setMinimapRotation, toggleMinimapShown, zoomMinimap } from "../ui/Minimap.js";
+import { minimapSettings, setMinimapRotation, zoomMinimap } from "../ui/Minimap.js";
 import { pressPetButton } from "../ui/PetBar.js";
 import { castSpell } from "../ui/Spellbook.js";
 import { macroUnitGuid } from "../ui/CombatCommands.js";
@@ -189,47 +181,45 @@ export function runAction(action: InputAction): boolean {
     }
 
     case "toggleCharacter":
-      openCharacterWindow("sheet");
+      toggleFrameXmlCharacter();
       return true;
 
     case "toggleBags":
-      if (!toggleFrameXmlBags()) toggleAllBags();
+      toggleFrameXmlBags();
       return true;
 
     case "toggleKeyring":
-      if (!toggleFrameXmlKeyring()) toggleKeyring();
+      toggleFrameXmlKeyring();
       return true;
 
     case "toggleSpellbook":
-      toggleGameWindow(spellbookWindow);
+      toggleFrameXmlSpellBook();
       return true;
 
     case "togglePvp":
-      // The stock PVP summary owns the honor and battleground pages; without a successful
-      // FrameXML gate the native arena window remains the explicit fallback.
-      if (!toggleFrameXmlPvp()) toggleArenaWindow();
+      toggleFrameXmlPvp();
       return true;
 
     case "toggleLfd":
-      // TOGGLELFGPARENT: the stock LFDParentFrame when the mount published it, else #lfg-window
-      // (toggleLfgWindow asks the stock owner first).
-      toggleLfgWindow();
+      // TOGGLELFGPARENT.
+      toggleFrameXmlLfd();
       return true;
 
     case "toggleTalents":
-      if (!toggleFrameXmlTalent()) toggleTalentsWindow();
+      toggleFrameXmlTalent();
       return true;
 
     case "toggleProfessions":
-      openCharacterWindow("skills");
+      // K is SkillFrame, tab 4 of CharacterFrame; the spellbook's skill-line tabs without that owner.
+      if (!toggleFrameXmlCharacterTab("SkillFrame")) toggleFrameXmlSpellBook();
       return true;
 
     case "toggleQuestLog":
-      if (!toggleFrameXmlQuest()) toggleQuestLog();
+      toggleFrameXmlQuest();
       return true;
 
     case "toggleWorldMap":
-      toggleWorldMap();
+      toggleFrameXmlWorldMap();
       return true;
 
     case "toggleDiagnostics":
@@ -251,10 +241,6 @@ export function runAction(action: InputAction): boolean {
 
     case "toggleFps":
       toggleSetting("showFps");
-      return true;
-
-    case "toggleKeyBindings":
-      toggleKeyBindingsWindow();
       return true;
 
     // The three chat keys ask `ChatInputOwner`, which answers with the stock `ChatFrame1EditBox`
@@ -396,7 +382,7 @@ export function runAction(action: InputAction): boolean {
       return true;
 
     case "toggleBackpack":
-      if (!toggleFrameXmlBackpack()) toggleBackpack();
+      toggleFrameXmlBackpack();
       return true;
 
     case "toggleBag1":
@@ -405,20 +391,20 @@ export function runAction(action: InputAction): boolean {
     case "toggleBag4": {
       // TOGGLEBAGn is ToggleBag(5 - n) (Bindings.xml): F8 is the fourth container.
       const container = 5 - Number(action.slice(-1));
-      return toggleFrameXmlBag(container) || toggleBag(container);
+      return toggleFrameXmlBag(container);
     }
 
     case "toggleReputation":
-      if (!toggleFrameXmlCharacterTab("ReputationFrame")) toggleReputation();
+      toggleFrameXmlCharacterTab("ReputationFrame");
       return true;
 
     case "toggleSocial":
-      if (!toggleFrameXmlFriends()) toggleSocialPanel();
+      toggleFrameXmlFriends();
       return true;
 
     case "toggleWorldStateScores":
-      // 3.24: stock ToggleWorldStateScoreFrame while WorldStateScoreFrame is published, else #scoreboard-window.
-      if (!toggleFrameXmlScoreboard()) toggleScoreboard();
+      // 3.24: stock ToggleWorldStateScoreFrame.
+      toggleFrameXmlScoreboard();
       return true;
 
     case "minimapZoomIn":
@@ -433,11 +419,11 @@ export function runAction(action: InputAction): boolean {
       setMinimapRotation(!minimapSettings().rotate);
       return true;
 
-    case "toggleMinimap": // 3.11: the stock UI's ToggleMinimap(), else the native map
-      if (!toggleFrameXmlMinimap()) toggleMinimapShown();
+    case "toggleMinimap": // 3.11: the stock UI's ToggleMinimap()
+      toggleFrameXmlMinimap();
       return true;
 
-    case "toggleBattlefieldMinimap": // 05.10-L17t: stock UI only; the native HUD has no zone minimap
+    case "toggleBattlefieldMinimap": // 05.10-L17t
       return toggleFrameXmlBattlefieldMinimap();
 
     case "previousActionPage":

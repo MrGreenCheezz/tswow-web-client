@@ -809,11 +809,11 @@ export class FrameXmlPopupsModel {
     this.#track(this.#instanceLock, this.#instanceLockPending(world, now), now, () => this.#fire("INSTANCE_LOCK_STOP"));
     const lock = this.#instanceLock.value;
     if (!lock || this.#instanceLock.shown || !this.#popupsOwned || this.#muted || frameXmlPopupsLeftToNative(lock)) return;
-    // The dialog always prints «Убито боссов: %d/%d». Without the DungeonEncounter table (М2) the
-    // total is unknown, so after the same wait a name gets the native prompt keeps the question: it
-    // says only the killed count.
-    if (this.#encounters(lock)) this.#show(this.#instanceLock, now, "INSTANCE_LOCK_START", () => []);
-    else if (now - this.#instanceLock.seenAt >= FRAMEXML_POPUP_NAME_WAIT_MS) markFrameXmlPopupLeftToNative(lock);
+    // The dialog prints «Убито боссов: %d/%d», which waits for the DungeonEncounter table (М2). The
+    // question matters more than the line: after the same wait a name gets, it is asked without one.
+    if (this.#encounters(lock) || now - this.#instanceLock.seenAt >= FRAMEXML_POPUP_NAME_WAIT_MS) {
+      this.#show(this.#instanceLock, now, "INSTANCE_LOCK_START", () => []);
+    }
   }
 
   #spiritHealerConfirm(guid: bigint): void {

@@ -68,10 +68,11 @@ async function harness({ classId = 1, sheath = 0, equipment = {}, health = 100, 
     "../framexml/FrameXmlRelicSlot.js": relic,
     "../Inventory.js": { playerInventory: () => ({ equipment: Array.from({ length: 19 }, (_, index) => slots[index] ?? { item: undefined }) }) },
     "../ui/CombatCommands.js": { macroUnitGuid: (token) => units[token] },
-    "../framexml/FrameXmlBagController.js": { toggleFrameXmlBackpack: () => false, toggleFrameXmlBag: () => false },
+    "../framexml/FrameXmlBagController.js": {
+      toggleFrameXmlBackpack: () => calls.push(["backpack"]),
+      toggleFrameXmlBag: (container) => { calls.push(["bag", container]); return container !== 3; },
+    },
     "../ui/Bags.js": {
-      toggleBackpack: () => calls.push(["backpack"]),
-      toggleBag: (container) => { calls.push(["bag", container]); return container !== 3; },
     },
     "../ui/ActionBar.js": {
       getActionBarPage: () => page, turnActionPage: (next) => { page = next + 1; calls.push(["page", next]); },

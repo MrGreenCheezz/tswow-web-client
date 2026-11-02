@@ -17,15 +17,14 @@ import {
 } from "./Dom.js";
 import { closeNpcServiceWindow } from "./Npc.js";
 import { showTarget } from "./Frames.js";
-import { anyBagWindowOpen, closeBagWindows, toggleAllBags } from "./Bags.js";
+import { anyBagWindowOpen, closeBagWindows } from "./Bags.js";
 import { closeWorldMap, worldMapOpen } from "./WorldMap.js";
 import { closeTrackingMenu, trackingMenuOpen } from "./Tracking.js";
-import { toggleTalentsWindow } from "./Talents.js";
 import { submitChat, systemLine } from "./Chat.js";
-import { changeAuctionOwnerPage, closeLfgWindow, lfgWindowOpen, selectedLfgDungeons, selectedLfgRoles, setAuctionOwnerPage, setAuctionTab, toggleLfgWindow } from "./Social.js";
+import { changeAuctionOwnerPage, closeLfgWindow, lfgWindowOpen, selectedLfgDungeons, selectedLfgRoles, setAuctionOwnerPage, setAuctionTab } from "./Social.js";
 import { closeMail, closeMailRead, mailOpen, mailReadOpen } from "./Mail.js";
 import { interactWithTarget, lootCurrentTarget } from "./Npc.js";
-import { setSpellbookSearch, showSpells, spellbookSearchKeyDown } from "./Spellbook.js";
+import { setSpellbookSearch, spellbookSearchKeyDown } from "./Spellbook.js";
 import { toggleSetting } from "./Settings.js";
 import { saveUnhandledOpcodeReport } from "./Diagnostics.js";
 import { closeFloating } from "./Widgets.js";
@@ -39,20 +38,15 @@ import { closeScoreboard, scoreboardOpen } from "./Scoreboard.js";
 import { closeReputation, reputationOpen } from "./Reputation.js";
 import { arenaWindowOpen, closeArenaWindow } from "./ArenaWindow.js";
 import { closeLootRolls, lootRollsOpen } from "./LootRolls.js";
-import { closeQuestLog, questLogOpen, toggleQuestLog } from "./QuestLog.js";
+import { closeQuestLog, questLogOpen } from "./QuestLog.js";
 import { barberOpen, closeBarberShop } from "./BarberShop.js";
 import { channelRosterOpen, closeChannelRoster } from "./ChannelRoster.js";
-import { toggleSocialPanel } from "./SocialPanel.js";
-import { toggleWorldMap } from "./WorldMap.js";
-import { toggleCalendar } from "./Calendar.js";
 import { closeReadyCheck, readyCheckOpen } from "./ReadyCheck.js";
 import { closeSettingsWindow, settingsWindowOpen } from "./Settings.js";
 import { closeMacroWindow, macroWindowOpen } from "./Macros.js";
 import { closeProfessions, professionsOpen } from "./Professions.js";
 import { closeSocketing, socketingOpen } from "./Socketing.js";
-import {
-  selectCharacterTab, selectedCharacterTab, type CharacterTab, wireCharacterTabs,
-} from "./CharacterSheet.js";
+import { selectCharacterTab, type CharacterTab, wireCharacterTabs } from "./CharacterSheet.js";
 import { cancelLogoutCountdown, logoutCountdownOpen, toggleGameMenu } from "./GameMenu.js";
 import { closeFrameXmlPopups, frameXmlPopupsOpen } from "../framexml/FrameXmlPopupsController.js";
 import { closeEscapableWindows, escapableWindowOpen } from "./WindowRegistry.js";
@@ -71,7 +65,6 @@ import {
   closeFrameXmlCharacter,
   frameXmlCharacterOpen,
   toggleFrameXmlCharacter,
-  toggleFrameXmlCharacterTab,
 } from "../framexml/FrameXmlCharacterController.js";
 import {
   closeFrameXmlQuest,
@@ -90,8 +83,10 @@ import {
 import { closeFrameXmlScoreboard, frameXmlScoreboardOpen } from "../framexml/FrameXmlScoreboardController.js"; // 3.24
 import { closeFrameXmlBattlemaster, frameXmlBattlemasterOpen } from "../framexml/FrameXmlBattlemasterController.js"; // 3.24
 import { closeFrameXmlHelp, frameXmlHelpOpen } from "../framexml/FrameXmlHelpController.js"; // 3.24
-import { closeFrameXmlLfd, frameXmlLfdOpen } from "../framexml/FrameXmlLfdController.js";
-import { closeFrameXmlFriends, frameXmlFriendsOpen } from "../framexml/FrameXmlFriendsController.js";
+import { closeFrameXmlLfd, frameXmlLfdOpen, toggleFrameXmlLfd } from "../framexml/FrameXmlLfdController.js";
+import { closeFrameXmlFriends, frameXmlFriendsOpen, toggleFrameXmlFriends } from "../framexml/FrameXmlFriendsController.js";
+import { toggleFrameXmlCalendar } from "../framexml/FrameXmlCalendarController.js";
+import { toggleFrameXmlWorldMap } from "../framexml/FrameXmlWorldMapPublication.js";
 import { closeFrameXmlLoot, frameXmlLootOpen } from "../framexml/FrameXmlLootController.js";
 import { closeFrameXmlMail, frameXmlMailOpen } from "../framexml/FrameXmlMailController.js";
 import { closeFrameXmlTrade, frameXmlTradeOpen } from "../framexml/FrameXmlTradeController.js";
@@ -106,19 +101,13 @@ import {
 } from "../framexml/FrameXmlTrainerController.js";
 import { closeFrameXmlTradeSkill, frameXmlTradeSkillOpen } from "../framexml/FrameXmlTradeSkillController.js";
 export function toggleGameWindow(window: HTMLElement): void {
-  if (window === spellbookWindow && toggleFrameXmlSpellBook()) return;
   window.hidden = !window.hidden;
   if (window.hidden) window.removeAttribute(CHARACTER_WINDOW_OVER_STOCK); // 3.49
   // The one place every markup window is opened and shut, so the one place that has to know a
   // window makes a noise. `igMainMenuOpen` and its closing pair are the client's own.
   playUiSound(window.hidden ? "windowClose" : "windowOpen");
   // Contents of a hidden window are not kept up to date, so they are rebuilt when it opens.
-  if (!window.hidden && game.world) {
-    showWorldState(game.world.state);
-    // A spell learned while the book was shut must not wait for another event to show up: the open
-    // is the repaint the player asked for. Every route into this window goes through here.
-    if (window === spellbookWindow) showSpells();
-  }
+  if (!window.hidden && game.world) showWorldState(game.world.state);
 }
 
 /** Makes a page visible without turning a server response into an accidental close toggle. */
@@ -131,34 +120,12 @@ export function showCharacterWindow(tab: CharacterTab): void {
  * 3.49: the attribute that lets the native character window show over a published stock
  * CharacterFrame, whose hide rule (FrameXmlWorldMount) skips a window carrying it. Only the stable's
  * fallback sets it — the native rows (StableControls.ts) when the stock PetStableFrame did not pass
- * its gate, which otherwise opened inside an invisible window — and the window closing or any player
- * route into it ({@link openCharacterWindow}) drops it, so C and the rest stay with the stock owner.
+ * its gate, which otherwise opened inside an invisible window — and the window closing drops it.
  */
 export const CHARACTER_WINDOW_OVER_STOCK = "data-over-stock";
 
 export function keepCharacterWindowOverStock(): void {
   characterWindow.setAttribute(CHARACTER_WINDOW_OVER_STOCK, "");
-}
-
-/**
- * Opens a page in the one native character window; repeating the same shortcut closes it.
- *
- * A published stock CharacterFrame owns its own pages through stock ToggleCharacter, with the
- * stock bindings' open/switch/close behaviour: «sheet» (C) is the paper doll, «skills» (K) is
- * SkillFrame on tab 4. Without that owner, skills keep the stock spellbook's skill-line tabs and
- * then the native pane. Stock ReputationFrame (tab 3) is reached through its tab only: no native
- * binding opens reputation directly.
- */
-export function openCharacterWindow(tab: CharacterTab): void {
-  if (tab === "sheet" && toggleFrameXmlCharacter()) return;
-  if (tab === "skills" && (toggleFrameXmlCharacterTab("SkillFrame") || toggleFrameXmlSpellBook())) return;
-  // 3.49: a player's route into the native window itself, not the stable's fallback.
-  characterWindow.removeAttribute(CHARACTER_WINDOW_OVER_STOCK);
-  if (!characterWindow.hidden && selectedCharacterTab() === tab) {
-    toggleGameWindow(characterWindow);
-    return;
-  }
-  showCharacterWindow(tab);
 }
 
 /**
@@ -324,27 +291,17 @@ export function wirePanelButtons(): void {
     showTarget();
   });
 
-  characterToggle.addEventListener("click", () => {
-    openCharacterWindow("sheet");
-  });
-  inventoryToggle.addEventListener("click", () => {
-    if (!toggleFrameXmlBags()) toggleAllBags();
-  });
-  spellbookToggle.addEventListener("click", () => {
-    toggleGameWindow(spellbookWindow);
-  });
-  talentsToggle.addEventListener("click", () => {
-    if (!toggleFrameXmlTalent()) toggleTalentsWindow();
-  });
-  lfgToggle.addEventListener("click", () => toggleLfgWindow());
+  characterToggle.addEventListener("click", () => { toggleFrameXmlCharacter(); });
+  inventoryToggle.addEventListener("click", () => { toggleFrameXmlBags(); });
+  spellbookToggle.addEventListener("click", () => { toggleFrameXmlSpellBook(); });
+  talentsToggle.addEventListener("click", () => { toggleFrameXmlTalent(); });
+  lfgToggle.addEventListener("click", () => { toggleFrameXmlLfd(); });
   // The journal, social panel, world map and calendar had no mouse entry point at all: only
   // hotkeys and slash commands. The windows were ready; only the buttons were missing.
-  document.getElementById("quest-toggle")?.addEventListener("click", () => {
-    if (!toggleFrameXmlQuest()) toggleQuestLog();
-  });
-  document.getElementById("social-toggle")?.addEventListener("click", () => toggleSocialPanel());
-  document.getElementById("worldmap-toggle")?.addEventListener("click", () => toggleWorldMap());
-  document.getElementById("calendar-toggle")?.addEventListener("click", () => toggleCalendar());
+  document.getElementById("quest-toggle")?.addEventListener("click", () => { toggleFrameXmlQuest(); });
+  document.getElementById("social-toggle")?.addEventListener("click", () => { toggleFrameXmlFriends(); });
+  document.getElementById("worldmap-toggle")?.addEventListener("click", () => { toggleFrameXmlWorldMap(); });
+  document.getElementById("calendar-toggle")?.addEventListener("click", () => { toggleFrameXmlCalendar(); });
   gameMenuToggle.addEventListener("click", toggleGameMenu);
   unhandledSave.addEventListener("click", saveUnhandledOpcodeReport);
   // Auction search state lives here so filters, pagination and pending-sales work without

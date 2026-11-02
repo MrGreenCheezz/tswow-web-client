@@ -1,10 +1,10 @@
 /**
  * A stock window that did not come up, told to the player (plan item 3.24).
  *
- * The world mount publishes each stock window behind a structural gate and keeps the native window
- * when the gate refuses; the reason went only to the console, so a player saw the simplified native
- * window with no word why. One notice per kind of window per mount now says it, once — the native
- * window is still what opens — and the list is kept for `frameXmlWorld().fallbacks`.
+ * The world mount publishes each stock window behind a structural gate. A window whose gate refuses
+ * does not open (WORK_PLAN 4.17: no HTML window stands in for it), so the player has to be told why:
+ * one notice per kind of window per mount says it, once, and the list is kept for
+ * `frameXmlWorld().fallbacks`.
  */
 
 export interface FrameXmlFallbackRecord {
@@ -29,11 +29,22 @@ export const FRAMEXML_FALLBACK_LABELS: Readonly<Record<string, string>> = Object
   battlemaster: "Распорядитель боя", // 3.24 (12.10)
   queueEye: "Очередь на поле боя", // 3.24 (12.10)
   help: "Помощь", // 3.24 (12.10)
+  quest: "Журнал заданий",
+  bags: "Сумки",
+  spellbook: "Книга заклинаний",
+  talent: "Таланты",
+  pvp: "PvP",
+  gameMenu: "Меню игры",
+  merchant: "Торговец",
+  macros: "Макросы",
+  keybindings: "Назначение клавиш",
+  calendar: "Календарь",
+  options: "Настройки",
 });
 
 export function frameXmlFallbackText(kind: string, reason: string): string {
   const label = FRAMEXML_FALLBACK_LABELS[kind] ?? kind;
-  return `Штатное окно «${label}» не собралось: ${reason}. Показано упрощённое.`;
+  return `Штатное окно «${label}» не собралось: ${reason}. Оно не откроется.`;
 }
 
 export interface FrameXmlFallbackNoticesOptions {
@@ -58,7 +69,7 @@ export function createFrameXmlFallbackNotices(options: FrameXmlFallbackNoticesOp
   return {
     report(kind, reason) {
       records.push(Object.freeze({ kind, reason, at: now() }));
-      warn(`[FrameXML ${kind}] ${reason}; the native window stays`);
+      warn(`[FrameXML ${kind}] ${reason}; the window will not open`);
       if (told.has(kind)) return;
       told.add(kind);
       try {

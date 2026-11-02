@@ -51,7 +51,6 @@ const CORE_INPUT_ACTIONS = [
   { action: "toggleDiagnostics", group: "Интерфейс", label: "Диагностика" },
   { action: "toggleGmConsole", group: "Интерфейс", label: "GM-консоль" },
   { action: "toggleFps", group: "Интерфейс", label: "Показать / скрыть FPS" },
-  { action: "toggleKeyBindings", group: "Интерфейс", label: "Привязки клавиш" },
   { action: "openChat", group: "Интерфейс", label: "Чат" },
   { action: "openChatSlash", group: "Интерфейс", label: "Чат с командой (/)" },
   { action: "replyWhisper", group: "Интерфейс", label: "Ответить на шёпот" },
@@ -210,8 +209,6 @@ const CORE_DEFAULT_BINDINGS: Readonly<Record<CoreInputAction, BindingPair>> = {
   // TOGGLEFPS (ToggleFramerate) is CTRL-R; NativeAppShell keeps the browser's reload off it, and the
   // settings window's «Показывать FPS» is the same switch.
   toggleFps: ["Ctrl+KeyR", ""],
-  // The bindings window has no key in the client either: the game menu's «Назначение клавиш».
-  toggleKeyBindings: ["", ""],
   openChat: ["Enter", "NumpadEnter"],
   // OPENCHATSLASH: `/` and `.` in DefaultBindings.wtf.
   openChatSlash: ["Slash", "Period"],
@@ -331,7 +328,6 @@ const PRE_STOCK_DEFAULTS: Readonly<Partial<Record<InputAction, BindingPair>>> = 
   toggleProfessions: ["KeyJ", ""],
   toggleDiagnostics: ["KeyO", ""],
   toggleFps: ["Ctrl+Shift+KeyF", ""],
-  toggleKeyBindings: ["KeyK", ""],
   // The stock rows whose key a core action held (STOCK_DEFAULTS_HELD) shipped unbound.
   toggleBackpack: ["", ""],
   assistTarget: ["", ""],

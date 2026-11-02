@@ -177,7 +177,7 @@ test("a left click on the world with an item on the stock cursor asks DELETE_ITE
 // 4.04: before the stock menu is published, Escape is stock ToggleGameMenu's order one step per
 // press (UIParent.lua:2868-2903) — SpellStopCasting, then CloseAllWindows, then ClearTarget, then
 // the menu. It used to close every window, drop the target and never touch the cast on one press.
-test("native Escape: the cast, then the windows, then the target, then the menu — one per press", () => {
+test("native Escape: the cast, then the windows, then the target, then the menu — one per press", async () => {
   const world = worldStub();
   let cancels = 0;
   world.casts = new Map([[1n, { duration: 3000, startedAt: performance.now() }]]);
@@ -185,6 +185,11 @@ test("native Escape: the cast, then the windows, then the target, then the menu 
   world.targetGuid = 5n;
   game.world = world;
   dom.auctionWindow.hidden = false;
+  let menuOpen = false;
+  const { publishFrameXmlGameMenu } = await import("../dist/code/browser/framexml/FrameXmlGameMenuController.js");
+  const releaseMenu = publishFrameXmlGameMenu({
+    isOpen: () => menuOpen, show() { menuOpen = true; }, hide() { menuOpen = false; },
+  });
   try {
     escape(false);
     assert.equal(cancels, 1, "the first press stops the cast");
@@ -207,6 +212,7 @@ test("native Escape: the cast, then the windows, then the target, then the menu 
   } finally {
     dom.auctionWindow.hidden = true;
     gameMenuModule.closeGameMenu();
+    releaseMenu();
     game.world = undefined;
   }
 });

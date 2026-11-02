@@ -17,22 +17,18 @@ import { raceBaseLanguage } from "./UnitSnapshot.js";
 import { emoteStandState, findEmote } from "../../world/EmoteRules.js";
 import type { WorldClient } from "../../world/WorldClient.js";
 import { game } from "../game/Context.js";
-import { appendChatMessage, selectChatTabByName } from "./ChatDock.js";
-import { toggleCalendar } from "./Calendar.js";
-import { toggleBarberShop } from "./BarberShop.js";
-import { toggleChannelRoster } from "./ChannelRoster.js";
-import { openGuildWindow } from "./Guild.js";
-import { openGuildBank } from "./GuildBank.js";
+import { activeChannelTab, appendChatMessage, selectChatTabByName } from "./ChatDock.js";
 import { startReadyCheck } from "./ReadyCheck.js";
-import { toggleScoreboard } from "./Scoreboard.js";
-import { toggleArenaWindow } from "./ArenaWindow.js";
+import { toggleFrameXmlCalendar } from "../framexml/FrameXmlCalendarController.js";
+import {
+  openFrameXmlFriends, toggleFrameXmlFriendsChannel,
+} from "../framexml/FrameXmlFriendsController.js";
+import { toggleFrameXmlLfd } from "../framexml/FrameXmlLfdController.js";
+import { toggleFrameXmlMacro } from "../framexml/FrameXmlMacroController.js";
+import { toggleFrameXmlOptions } from "../framexml/FrameXmlOptionsController.js";
 import { toggleFrameXmlScoreboard } from "../framexml/FrameXmlScoreboardController.js"; // 3.24
 import { toggleFrameXmlPvp } from "../framexml/FrameXmlPvpController.js"; // 3.24
-import { openSocialPanel } from "./SocialPanel.js";
-import { toggleMacroWindow } from "./Macros.js";
-import { toggleSettingsWindow } from "./Settings.js";
 import { CHAT_MAX_BYTES, chatByteLength, truncateChat } from "./ChatLink.js";
-import { toggleLfgWindow } from "./Social.js";
 import { runCastCommand, runUseCommand } from "./CombatCommands.js";
 
 export const CHAT_COMMANDS: Record<string, number> = {
@@ -241,14 +237,14 @@ const COMMANDS: readonly SlashCommand[] = [
     names: ["lfg"],
     usage: "/lfg",
     help: "поиск подземелья",
-    run() { toggleLfgWindow(); },
+    run() { toggleFrameXmlLfd(); },
   },
   {
     names: ["who"],
     usage: "/who Имя",
     help: "поиск игроков",
     run(rest, world) {
-      openSocialPanel("who");
+      openFrameXmlFriends("who");
       if (rest) world.requestWho({ name: rest });
     },
   },
@@ -267,7 +263,7 @@ const COMMANDS: readonly SlashCommand[] = [
     help: "добавить в друзья или открыть список",
     run(rest, world) {
       if (rest) world.addFriend(rest);
-      else openSocialPanel("friends");
+      else openFrameXmlFriends("friends");
     },
   },
   {
@@ -276,7 +272,7 @@ const COMMANDS: readonly SlashCommand[] = [
     help: "игнорировать игрока",
     run(rest, world) {
       if (rest) world.addIgnore(rest);
-      else openSocialPanel("ignore");
+      else openFrameXmlFriends("ignore");
     },
   },
   {
@@ -289,39 +285,36 @@ const COMMANDS: readonly SlashCommand[] = [
     names: ["calendar"],
     usage: "/calendar",
     help: "календарь",
-    run() { toggleCalendar(); },
-  },
-  {
-    names: ["barber"],
-    usage: "/barber",
-    help: "открыть парикмахерскую (нужно сидеть в кресле)",
-    run() { toggleBarberShop(); },
+    run() { toggleFrameXmlCalendar(); },
   },
   {
     names: ["score", "bg"],
     usage: "/score",
     help: "таблица боя",
-    // 3.24: stock WorldStateScoreFrame's own toggle while it is published (FrameXmlScoreboardController.ts).
-    run() { if (!toggleFrameXmlScoreboard()) toggleScoreboard(); },
+    // 3.24: stock WorldStateScoreFrame's own toggle (FrameXmlScoreboardController.ts).
+    run() { toggleFrameXmlScoreboard(); },
   },
   {
     names: ["arena"],
     usage: "/arena",
     help: "команды арены",
-    // 3.24: the teams are stock PVPFrame's (PVPTeam1-3) while the PvP owner is published, as H opens them.
-    run() { if (!toggleFrameXmlPvp()) toggleArenaWindow(); },
+    // 3.24: the teams are stock PVPFrame's (PVPTeam1-3), as H opens them.
+    run() { toggleFrameXmlPvp(); },
   },
   {
     names: ["gbank"],
     usage: "/gbank",
     help: "банк гильдии у выбранного банкира",
-    run() { openGuildBank(); },
+    run(_rest, world) {
+      const banker = world.guildBankerGuid !== 0n ? world.guildBankerGuid : world.targetGuid;
+      if (banker !== undefined && banker !== 0n) world.openGuildBank(banker);
+    },
   },
   {
     names: ["guildwindow", "gw"],
     usage: "/gw",
     help: "окно гильдии",
-    run() { openGuildWindow(); },
+    run() { openFrameXmlFriends("guild"); },
   },
   {
     names: ["roll"],
@@ -336,13 +329,13 @@ const COMMANDS: readonly SlashCommand[] = [
     names: ["macro", "m"],
     usage: "/macro",
     help: "окно макросов",
-    run() { toggleMacroWindow(); },
+    run() { toggleFrameXmlMacro(); },
   },
   {
     names: ["settings", "config"],
     usage: "/settings",
     help: "настройки",
-    run() { toggleSettingsWindow(); },
+    run() { toggleFrameXmlOptions("webclient"); },
   },
   {
     names: ["logout", "camp"],
@@ -463,7 +456,7 @@ const COMMANDS: readonly SlashCommand[] = [
     names: ["roster"],
     usage: "/roster [Канал]",
     help: "участники канала и модерация",
-    run(rest) { toggleChannelRoster(rest || undefined); },
+    run(rest) { toggleFrameXmlFriendsChannel(rest || undefined, rest.trim() ? undefined : activeChannelTab()); },
   },
   {
     names: ["chanlist", "channellist"],

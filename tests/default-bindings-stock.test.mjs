@@ -29,7 +29,6 @@ const OLD_LAYOUT = {
   toggleProfessions: ["KeyJ", ""],
   toggleDiagnostics: ["KeyO", ""],
   toggleFps: ["Ctrl+Shift+KeyF", ""],
-  toggleKeyBindings: ["KeyK", ""],
   toggleBackpack: ["", ""],
   assistTarget: ["", ""],
   toggleSocial: ["", ""],
@@ -114,7 +113,7 @@ test("every row ships its command's DefaultBindings.wtf keys; this client's own 
   assert.deepEqual(keys("toggleFps"), ["Ctrl+KeyR"], "TOGGLEFPS");
   assert.deepEqual(keys("jump"), ["Space", "Numpad0"]);
   assert.deepEqual(keys("openChatSlash"), ["Slash", "Period"]);
-  for (const action of ["setFocus", "interact", "toggleKeyring", "toggleDiagnostics", "toggleKeyBindings"]) {
+  for (const action of ["setFocus", "interact", "toggleKeyring", "toggleDiagnostics"]) {
     assert.deepEqual(keys(action), [], `${action} ships unbound`);
   }
   assert.deepEqual([...stock.STOCK_DEFAULTS_HELD], [], "no stock row gives its key up to a core action");
@@ -130,10 +129,10 @@ test("mutation check: the old layout, or any one row of it, is caught", () => {
   assert.deepEqual(diagnosticsOnO.length, 2, diagnosticsOnO.join("\n"));
   assert.match(diagnosticsOnO.join("\n"), /TOGGLESOCIAL \(toggleSocial\) ships \[\]/);
   assert.match(diagnosticsOnO.join("\n"), /WEBCLIENT_TOGGLEDIAGNOSTICS/);
-  const bindingsOnK = layoutProblems({ ...DEFAULT_BINDINGS, toggleKeyBindings: ["KeyK", ""], toggleProfessions: ["KeyJ", ""] });
+  const bindingsOnK = layoutProblems({ ...DEFAULT_BINDINGS, toggleDiagnostics: ["KeyK", ""], toggleProfessions: ["KeyJ", ""] });
   assert.match(bindingsOnK.join("\n"), /TOGGLECHARACTER1 \(toggleProfessions\) ships \["KeyJ"\]/);
   // A stock key put on a second row is a duplicate even when both rows are otherwise right.
-  assert.match(layoutProblems({ ...DEFAULT_BINDINGS, toggleKeyBindings: ["KeyO", ""] }).join("\n"), /KeyO is on both/);
+  assert.match(layoutProblems({ ...DEFAULT_BINDINGS, toggleDiagnostics: ["KeyO", ""] }).join("\n"), /KeyO is on both/);
 });
 
 test("the developer flag: the address first, both ways, then the browser's remembered value, off otherwise", () => {
@@ -151,7 +150,7 @@ test("the developer flag: the address first, both ways, then the browser's remem
   assert.deepEqual([...bindings.DEVELOPER_ACTIONS], ["toggleDiagnostics", "toggleGmConsole"]);
   assert.equal(bindings.actionOffered("toggleDiagnostics", false), false);
   assert.equal(bindings.actionOffered("toggleDiagnostics", true), true);
-  assert.equal(bindings.actionOffered("toggleKeyBindings", false), true);
+  assert.equal(bindings.actionOffered("toggleFps", false), true);
   // Outside a browser there is no address and no store: off.
   developer.useDeveloperMode(undefined);
   assert.equal(developer.developerMode(), false);

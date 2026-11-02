@@ -280,7 +280,7 @@ test("11.02-input: in the stock UI the keys are the same table — SetBinding/Ge
     assert.deepEqual(holds, [["vehicleAimUp", true], ["vehicleAimDown", true], ["vehicleAimUp", false]]);
     const listed = Array.from({ length: model.count() }, (_, index) => model.binding(index + 1)[0]);
     const header = listed.indexOf("HEADER_VEHICLE");
-    assert.ok(header > listed.indexOf("HEADER_BLANK6") && header < listed.indexOf("HEADER_WEBCLIENT"));
+    assert.ok(header > listed.indexOf("HEADER_BLANK6"));
     assert.deepEqual(listed.slice(header + 1, header + 10), VEHICLE_ROWS.map(([, command]) => command));
     model.detach();
   } finally {

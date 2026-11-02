@@ -246,13 +246,13 @@ test("boot loads neither add-on; the stock bars and micro buttons read the key t
   // F11 is TOGGLEBAG4 since 3.11; F12 stays the developer tools' and is bound to nothing.
   assert.deepEqual(lua('return GetBindingFromClick("ESCAPE"), GetBindingFromClick("1"), GetBindingFromClick("F12")', 3),
     ["TOGGLEGAMEMENU", "ACTIONBUTTON1", undefined]);
-  // A WebClient row's label is defined the first time GetBinding lists it. Diagnostics is listed only
-  // with the developer flag (4.11), which this page does not have: its command stays a bare name.
+  // A WebClient row's label is defined the first time GetBinding lists it. This client's only own rows
+  // are the developer's (4.11), and this page has no flag: the command stays a bare name.
   assert.deepEqual(lua(`
     for index = 1, GetNumBindings() do GetBinding(index) end
-    return GetBindingText("MOVEFORWARD", "BINDING_NAME_"), GetBindingText("WEBCLIENT_TOGGLEKEYBINDINGS", "BINDING_NAME_"),
-      BINDING_HEADER_WEBCLIENT, BINDING_NAME_MOVEFORWARD, GetBindingText("WEBCLIENT_TOGGLEDIAGNOSTICS", "BINDING_NAME_")`, 5),
-  ["Движение вперед", "Привязки клавиш", "WebClient", "Движение вперед", "WEBCLIENT_TOGGLEDIAGNOSTICS"],
+    return GetBindingText("MOVEFORWARD", "BINDING_NAME_"), BINDING_NAME_MOVEFORWARD,
+      GetBindingText("WEBCLIENT_TOGGLEDIAGNOSTICS", "BINDING_NAME_")`, 3),
+  ["Движение вперед", "Движение вперед", "WEBCLIENT_TOGGLEDIAGNOSTICS"],
   "a GlobalStrings label is never replaced");
   // A rebinding reaches the bar through UPDATE_BINDINGS.
   bindings.bindKey("action1", 0, "Shift+KeyQ");

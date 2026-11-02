@@ -100,7 +100,7 @@ import {
 } from "./FrameXmlBagController.js";
 import { installOwnedGlobals, releaseOwnedGlobals } from "./FrameXmlBagCompat.js";
 import {
-  publishFrameXmlCharacter, frameXmlCharacterModelGate, createFrameXmlCharacterOwner,
+  publishFrameXmlCharacter, frameXmlCharacterModelGate, createFrameXmlCharacterOwner, toggleFrameXmlCharacter,
   type FrameXmlCharacterOwner,
 } from "./FrameXmlCharacterController.js";
 import {
@@ -115,14 +115,15 @@ import { LiveWorldSeam } from "./LiveWorldSeam.js";
 import { frameXmlRealmPlayerKilling, frameXmlResolveZone } from "./FrameXmlZoneInfo.js";
 import { fetchFrameXmlWorldStates } from "./FrameXmlWorldStates.js";
 import { mailDraftAttachments } from "../ui/Mail.js";
-import { closeCalendar, openCalendar, openNativeCalendar, toggleCalendar } from "../ui/Calendar.js";
+import { closeCalendar } from "../ui/Calendar.js";
+import { openFrameXmlCalendar, toggleFrameXmlCalendar } from "./FrameXmlCalendarController.js";
 import { closeArenaWindow } from "../ui/ArenaWindow.js";
 import { closeProfessionList } from "../ui/Professions.js";
 import { closeReputation } from "../ui/Reputation.js";
 import { FrameXmlCalendarCatalogClient, installFrameXmlCalendarRoutes, mountFrameXmlCalendar } from "./FrameXmlCalendarOwner.js";
-import { closeWorldMap, toggleWorldMap } from "../ui/WorldMap.js";
+import { closeWorldMap } from "../ui/WorldMap.js";
 import { frameXmlWorldMapGate } from "./FrameXmlWorldMapController.js";
-import { publishFrameXmlWorldMap } from "./FrameXmlWorldMapPublication.js";
+import { publishFrameXmlWorldMap, toggleFrameXmlWorldMap } from "./FrameXmlWorldMapPublication.js";
 import { waitForFrameXmlLoginClock } from "./FrameXmlLoginClock.js";
 import {
   compileFrameXmlWorldMouseoverScripts, createFrameXmlWorldMouseover,
@@ -142,25 +143,24 @@ import { createFrameXmlSettingsCVar } from "./FrameXmlSettingsCVar.js";
 import { withCameraCVars } from "./FrameXmlCameraCVars.js"; // 3.11
 import { cameraViews } from "../game/CameraViews.js"; // 3.11
 import { cameraSaved } from "../game/CameraSaved.js"; // 3.11
-import { toggleSocialPanel } from "../ui/SocialPanel.js";
-import { closeSocialPanel, openSocialTab, toggleSocialTab } from "../ui/SocialPanel.js";
+import { closeSocialPanel } from "../ui/SocialPanel.js";
 import { closeGuildWindow, guildWindowOpen } from "../ui/Guild.js";
-import { publishFrameXmlFriends, type FrameXmlFriendsOwner } from "./FrameXmlFriendsController.js";
+import { openFrameXmlFriends, publishFrameXmlFriends, toggleFrameXmlFriends, type FrameXmlFriendsOwner } from "./FrameXmlFriendsController.js";
 import { createFrameXmlFriendsOwner, frameXmlFriendsGate, installFrameXmlFriendsRoutes } from "./FrameXmlFriendsOwner.js";
-import { closeLfgWindow, toggleLfgWindow } from "../ui/Social.js";
+import { closeLfgWindow } from "../ui/Social.js";
 import {
-  cancelLogoutRequest, closeGameMenu, logoutPending, openDiagnosticsWindow, registerGameMenuAddonButton,
+  cancelLogoutRequest, closeGameMenu, logoutPending, openDiagnosticsWindow,
   requestQuitToLogin, resetWindowLayout, toggleGameMenu,
 } from "../ui/GameMenu.js";
 import { gmConsoleOpen, toggleGmConsole } from "../ui/GmConsole.js";
 import { addModuleCommand, beginModuleCommandLoad, removeModuleCommands, systemLine } from "../ui/Chat.js";
-import { closeGmTickets, toggleGmTickets } from "../ui/GmTickets.js";
+import { closeGmTickets } from "../ui/GmTickets.js";
 import { publishFrameXmlHelp, toggleFrameXmlHelp, type FrameXmlHelpOwner } from "./FrameXmlHelpController.js"; // 3.24
 import { createFrameXmlHelpOwner, frameXmlHelpGate } from "./FrameXmlHelpOwner.js"; // 3.24
 import { discoverFrameXmlAddonEntrypoints } from "./FrameXmlAddonEntrypoints.js";
 import { watchFrameXmlDialogLayer } from "./FrameXmlDialogLayer.js";
 import { createFrameXmlTsAddonWindows } from "./FrameXmlTsAddonWindows.js";
-import { openCharacterWindow, registerEscapable } from "../ui/Windows.js";
+import { registerEscapable } from "../ui/Windows.js";
 import {
   closeFrameXmlQuestGiver, frameXmlQuestGiverOpen,
   notifyFrameXmlQuestGiverItemUpdate, publishFrameXmlQuestGiver,
@@ -213,7 +213,7 @@ import { publishFrameXmlGameMenu, type FrameXmlGameMenuOwner } from "./FrameXmlG
 import {
   createFrameXmlGameMenuOwner, frameXmlGameMenuGate, installFrameXmlGameMenuButtons,
 } from "./FrameXmlGameMenuOwner.js";
-import { publishFrameXmlLfd, type FrameXmlLfdOwner } from "./FrameXmlLfdController.js";
+import { publishFrameXmlLfd, toggleFrameXmlLfd, type FrameXmlLfdOwner } from "./FrameXmlLfdController.js";
 import {
   createFrameXmlLfdOwner,
   frameXmlLfdGate,
@@ -248,11 +248,11 @@ import { mountFrameXmlNpcWindows } from "./FrameXmlGossipNpcMount.js";
 import { showMail as showNativeMail } from "../ui/Mail.js";
 import { showTrade as showNativeTrade } from "../ui/Social.js";
 import { LfgDungeonClient } from "../LfgDungeons.js";
-import { closeSettingsWindow, openSettingsSection } from "../ui/Settings.js";
-import { closeKeyBindingsWindow, keyBindingsOpen, toggleKeyBindingsWindow } from "../ui/KeyBindings.js";
-import { closeMacroWindow, macroWindowOpen, toggleMacroWindow } from "../ui/Macros.js";
-import { openNativeKeyBindingsWindow } from "../ui/KeyBindings.js";
-import { frameXmlMacroStore, openMacroWindow, openNativeMacroWindow } from "../ui/Macros.js";
+import { closeSettingsWindow } from "../ui/Settings.js";
+import { closeKeyBindingsWindow } from "../ui/KeyBindings.js";
+import { frameXmlKeyBindingsOpen, toggleFrameXmlKeyBindings } from "./FrameXmlBindingController.js";
+import { closeMacroWindow, frameXmlMacroStore } from "../ui/Macros.js";
+import { frameXmlMacroOpen, openFrameXmlMacro, toggleFrameXmlMacro } from "./FrameXmlMacroController.js";
 import { runAction } from "../input/Actions.js";
 import { FrameXmlMacroIconClient } from "./FrameXmlMacroIcons.js";
 import { mountFrameXmlMacroBindingWindows } from "./FrameXmlMacroBindingMount.js";
@@ -2372,12 +2372,12 @@ function partyGate(
  * Minimap.xml's own OnClick is `ToggleFrame(WorldMapFrame)`, which bypasses frameXmlWorldMapGate:
  * clicked before the map data is ready (or with an unresolved corpse position) it showed the stock
  * map and WorldMapButton_OnUpdate failed every frame at worldmapframe.lua:900 — 702 errors in about
- * 12 s offline. toggleWorldMap() uses the published stock owner only after that gate and the
- * native panel otherwise, so this button can never show WorldMapFrame unready.
+ * 12 s offline. toggleFrameXmlWorldMap() uses the published stock owner only after that gate, so
+ * this button can never show WorldMapFrame unready.
  */
 export function installFrameXmlMinimapWorldMapButton(
   boot: Pick<FrameXmlBoot, "vm">,
-  toggle: () => void = toggleWorldMap,
+  toggle: () => void = toggleFrameXmlWorldMap,
 ): boolean {
   boot.vm.registerGlobal("__fxToggleWorldMap", () => { toggle(); return []; });
   const result = boot.vm.execute(`
@@ -3615,19 +3615,17 @@ export async function mountFrameXmlVertical(
       // stock options panel (which normally seeds this presentation global) is not in this TOC.
       loadedBoot.vm.setGlobal("WORLD_PVP_OBJECTIVES_DISPLAY", "1");
       microButtonAdaptersInstalled = installFrameXmlMicroButtonAdapters(loadedBoot, {
-        // The C route: the stock owner while it is published, the native sheet after a demotion
-        // (a token-less class demotes on its first open) — never a dead button.
-        character: () => openCharacterWindow("sheet"),
+        character: toggleFrameXmlCharacter,
         spellbook: toggleFrameXmlSpellBook,
         talent: toggleFrameXmlTalent,
         quest: toggleFrameXmlQuest,
-        socials: toggleSocialPanel,
+        socials: () => toggleFrameXmlFriends(),
         pvp: toggleFrameXmlPvp,
-        lfd: toggleLfgWindow,
+        lfd: toggleFrameXmlLfd,
         gameMenu: toggleGameMenu,
-        // 3.24: stock HelpFrame once published (FrameXmlHelpController.ts), the native GM ticket window before.
+        // 3.24: stock HelpFrame (FrameXmlHelpController.ts).
         // Printing the native /help list here put big-font command lines into the stock chat.
-        help: () => { if (!toggleFrameXmlHelp()) toggleGmTickets(); },
+        help: toggleFrameXmlHelp,
         // Blizzard_AchievementUI (LoD) through its lazy owner once published; disabled until then.
         achievement: () => toggleFrameXmlAchievement(),
       }) !== undefined;
@@ -3677,9 +3675,9 @@ export async function mountFrameXmlVertical(
       console.warn(`[TSWoW] ${hint}`);
       systemLine(`TSWoW: ${hint}`);
     }
-    // The stock clock's calendar button, /calendar and Calendar_Show reach ui/Calendar.ts, which asks the
-    // stock CalendarFrame first (published below; FrameXmlCalendarOwner.ts) and opens the native otherwise.
-    installFrameXmlCalendarRoutes(boot, { toggle: toggleCalendar, open: openCalendar });
+    // The stock clock's calendar button, /calendar and Calendar_Show reach the stock CalendarFrame
+    // (published below; FrameXmlCalendarOwner.ts).
+    installFrameXmlCalendarRoutes(boot, { toggle: toggleFrameXmlCalendar, open: openFrameXmlCalendar });
     installFrameXmlMinimapWorldMapButton(boot);
     // The stock game menu's host C APIs. Logout stays FrameXmlChatApi's single binding
     // (→ requestLogout, shared with /logout and /camp); CancelLogout and Quit are bound once, here.
@@ -3694,23 +3692,25 @@ export async function mountFrameXmlVertical(
       return [];
     });
     installFrameXmlGameMenuButtons(boot, {
-      video: () => openSettingsSection("Графика"),
-      sound: () => openSettingsSection("Звук"),
-      interface: () => openSettingsSection("Интерфейс"),
-      keybindings: () => { if (!keyBindingsOpen()) toggleKeyBindingsWindow(); },
-      macros: () => { if (!macroWindowOpen()) toggleMacroWindow(); },
+      // These three ask the stock option frames first (installFrameXmlGameMenuButtons), and a
+      // load that fails reports itself (mountFrameXmlOptions below): nothing is left to do here.
+      video: () => undefined,
+      sound: () => undefined,
+      interface: () => undefined,
+      keybindings: () => { if (!frameXmlKeyBindingsOpen()) toggleFrameXmlKeyBindings(); },
+      macros: () => { if (!frameXmlMacroOpen()) toggleFrameXmlMacro(); },
       diagnostics: openDiagnosticsWindow,
       gmConsole: () => { if (!gmConsoleOpen()) toggleGmConsole(); },
       resetLayout: resetWindowLayout,
       toggle: toggleGameMenu,
     });
     // MiniMapLFGFrame's click (queued/rolecheck) and add-ons call stock ToggleLFDParentFrame; it
-    // reaches the same route as the micro button: the stock owner once published, else native.
+    // reaches the same route as the micro button.
     // ToggleLFRParentFrame (/raidbrowser) is closed: the raid browser has no 3.3.5 protocol.
-    installFrameXmlLfdToggle(boot, toggleLfgWindow);
+    installFrameXmlLfdToggle(boot, toggleFrameXmlLfd);
     // Stock ToggleFriendsFrame/ToggleFriendsPanel/ToggleIgnorePanel/ShowWhoPanel and /groster reach
-    // the same routes as the Socials micro button: the stock FriendsFrame once published, else native.
-    installFrameXmlFriendsRoutes(boot, { toggle: toggleSocialTab, open: openSocialTab });
+    // the same owner as the Socials micro button.
+    installFrameXmlFriendsRoutes(boot, { toggle: toggleFrameXmlFriends, open: openFrameXmlFriends });
     // Before the renderer mounts: GroupLootFrame1-4 must already sit under UIParent (their template
     // parent is not inherited by the bridge), and the roll icon's tooltip setter must exist.
     installFrameXmlLootAdapters(boot);
@@ -3939,12 +3939,10 @@ export async function mountFrameXmlVertical(
     const addonWindows = createFrameXmlTsAddonWindows(boot);
     const unregisterWindows = registerEscapable(addonWindows);
     const commandOwners = new Set<string>();
-    const menuCleanups: (() => void)[] = [];
     resources.addonEntrypointsCleanup = () => {
       unregisterWindows();
       addonWindows.dispose();
       for (const owner of commandOwners) removeModuleCommands(owner);
-      for (const cleanup of menuCleanups) cleanup();
       entrypoints.close();
     };
     for (const command of entrypoints.commands) {
@@ -3954,9 +3952,6 @@ export async function mountFrameXmlVertical(
       });
       if (error) console.warn(`TSWoW /${command.name}: ${error}`);
       else commandOwners.add(owner);
-    }
-    for (const button of entrypoints.menuButtons) {
-      menuCleanups.push(registerGameMenuAddonButton(button.label, () => { button.run(); }));
     }
 
     // QuestLogFrame and WatchFrame are promoted together after the stock QuestLog/Watch structural
@@ -3968,23 +3963,28 @@ export async function mountFrameXmlVertical(
         isOpen: () => boot.bridge.isVisible(questFrame),
         show: () => { boot.bridge.Show(questFrame); },
         hide: () => { boot.bridge.Hide(questFrame); },
-        onFailure: () => demotePublishedQuest(resources),
+        onFailure: () => {
+          fallbacks.report("quest", "QuestLogFrame перестал открываться");
+          demotePublishedQuest(resources);
+        },
       };
       resources.questOwner = owner;
-    }
+    } else if (!options.seam) fallbacks.report("quest", "QuestLogFrame не прошёл проверку");
 
-    // ContainerFrame is optional until the parallel corpus and inventory seam land.  Its gate
-    // performs one real backpack click and leaves the native owner untouched when any stock
-    // dependency is absent, so the action routes keep their fallback automatically.
-    const bags = frameXmlBagGate(boot, renderer, () => demotePublishedBags(resources));
+    // ContainerFrame's gate performs one real backpack click.
+    const bags = frameXmlBagGate(boot, renderer, () => {
+      fallbacks.report("bags", "ContainerFrame перестал открываться");
+      demotePublishedBags(resources);
+    });
     if (bags) resources.bagOwner = bags;
+    else if (!options.seam) fallbacks.report("bags", "ContainerFrame не прошёл проверку");
 
-    // Only the original mode reaches this branch. Publish the actual authored windows after
-    // their structural/data gates; an unavailable owner retains the working WebClient fallback.
+    // Publish the actual authored windows after their structural/data gates.
     const spellbook = spellBookGate(seam, boot, renderer);
     if (spellbook) resources.spellbookFrame = spellbook.frame;
+    else if (!options.seam) fallbacks.report("spellbook", "SpellBookFrame не прошёл проверку");
     // The owner checks UnitClass("player") each time it opens, not here: the player's own object
-    // may land after publication, and a token-less class demotes to the native sheet on that press.
+    // may land after publication, and a token-less class demotes on that press.
     const character = frameXmlCharacterModelGate(boot, renderer,
       (reason) => fallbacks.report("character", reason));
     if (character) {
@@ -3998,14 +3998,16 @@ export async function mountFrameXmlVertical(
     // an add-on's N the glyph tab keeps a stock talent frame of its own (createFrameXmlTalentOwners).
     const talentOwners = createFrameXmlTalentOwners(seam, boot, renderer, {
       onAcquire: hideTalentsWindow,
-      onFailure: () => demotePublishedTalent(resources),
+      onFailure: () => {
+        fallbacks.report("talent", "Blizzard_TalentUI не загрузился или не прошёл проверку");
+        demotePublishedTalent(resources);
+      },
       onGlyphFailure: (reason) => console.warn(`[FrameXML glyphs] ${reason}; the talent frame keeps no glyph tab`),
     });
     resources.talentOwner = talentOwners.talent;
     if (talentOwners.glyphTalent) resources.glyphTalentOwner = talentOwners.glyphTalent;
 
-    // Blizzard_TrainerUI is LoD. Keep its native browser panel as the fallback while the
-    // asynchronous add-on load and exact tree gate are in flight.
+    // Blizzard_TrainerUI is LoD: the window comes up once the add-on load and exact tree gate are through.
     resources.trainerOwner = createLazyFrameXmlTrainerOwner(
       seam, boot, renderer, () => {
         fallbacks.report("trainer", "Blizzard_TrainerUI не загрузился или не прошёл проверку");
@@ -4013,15 +4015,14 @@ export async function mountFrameXmlVertical(
       }, () => game.world ?? seam,
     );
     resources.nativeTrainerWasHidden = trainerWindow.hidden;
-    // Blizzard_TradeSkillUI is LoD as well: the first profession opens natively while it loads and
-    // gates (FrameXmlTradeSkillOwner.ts); a failure leaves the native craft window as the route.
+    // Blizzard_TradeSkillUI is LoD as well (FrameXmlTradeSkillOwner.ts).
     const tradeSkillMount = mountFrameXmlTradeSkill(seam, boot, renderer, textureUrl);
     if (tradeSkillMount) resources.tradeSkillMount = tradeSkillMount;
 
     // PVPFrame is a separate stock owner from CharacterFrame. Its honor page and the bounded
     // battleground queue page are published only when their complete stock trees and seam data
     // pass the gate. ArenaFrame is a sibling stock page and joins this owner only when its
-    // battlemaster context/C APIs also pass, leaving ArenaWindow as fallback otherwise.
+    // battlemaster context/C APIs also pass.
     const pvp = frameXmlPvpGate(seam, boot, renderer);
     if (pvp) {
       resources.pvpFrame = pvp.frame;
@@ -4039,7 +4040,7 @@ export async function mountFrameXmlVertical(
         pvpOwner.hideArena = () => { boot.bridge.Hide(pvp.arena!); };
       }
       resources.pvpOwner = pvpOwner;
-    }
+    } else if (!options.seam) fallbacks.report("pvp", "PVPFrame не прошёл проверку");
     // 3.24: WorldStateScoreFrame answers TOGGLEWORLDSTATESCORES, /score and the native menu once its tree,
     // the scoreboard model and BattlefieldFrame's queue status are there — the last only after the PvP gate
     // above kept UPDATE_BATTLEFIELD_STATUS for the complete battleground page (FrameXmlScoreboardOwner.ts).
@@ -4047,38 +4048,37 @@ export async function mountFrameXmlVertical(
     if (stockScoreboard) resources.scoreboardOwner = createFrameXmlScoreboardOwner(boot, stockScoreboard.frame);
     else if (!options.seam) fallbacks.report("scoreboard", "WorldStateScoreFrame не прошёл проверку");
     // 3.24: the battlemaster's list — stock BattlefieldFrame over the seam's list, only beside the complete
-    // battleground page (a random battlemaster opens that page); the native dialog stays otherwise.
+    // battleground page (a random battlemaster opens that page).
     const stockBattlemaster = pvp?.battleground ? mountFrameXmlBattlemaster(seam, boot, renderer) : undefined;
     if (stockBattlemaster) resources.battlemasterOwner = stockBattlemaster;
     else if (!options.seam) fallbacks.report("battlemaster", "BattlefieldFrame не прошёл проверку");
     // 3.24: the queue eye's dropdown and the Wintergrasp queue (FrameXmlQueueEyeOwner.ts), beside the same page.
     resources.queueEyeReady = pvp?.battleground ? mountFrameXmlQueueEye(seam, boot, renderer) : false;
     if (!resources.queueEyeReady && !options.seam) fallbacks.report("queueEye", "MiniMapBattlefieldFrame не прошёл проверку");
-    // 3.24: the help window — stock HelpFrame over the GM ticket C API (FrameXmlHelpOwner.ts); the native one otherwise.
+    // 3.24: the help window — stock HelpFrame over the GM ticket C API (FrameXmlHelpOwner.ts).
     const stockHelp = frameXmlHelpGate(seam, boot, renderer);
     if (stockHelp) resources.helpOwner = createFrameXmlHelpOwner(boot, stockHelp.frame);
     else if (!options.seam) fallbacks.report("help", "HelpFrame не прошёл проверку");
 
     // GameMenuFrame becomes the game menu once its stock buttons, the adapters and extras
-    // (installed after load) and one silent Show/Hide pass; the native Panel stays the fallback.
+    // (installed after load) and one silent Show/Hide pass.
     const stockGameMenu = frameXmlGameMenuGate(boot, renderer);
     if (stockGameMenu) {
       resources.gameMenuOwner = createFrameXmlGameMenuOwner(boot, stockGameMenu.frame, logoutPending);
-    }
-    // LFDParentFrame becomes the dungeon finder only over a version-2 catalog (the gate refuses
-    // otherwise); a gateway still serving version 1 keeps the native #lfg-window.
+    } else if (!options.seam) fallbacks.report("gameMenu", "GameMenuFrame не прошёл проверку");
+    // LFDParentFrame becomes the dungeon finder only over a version-2 catalog (the gate refuses otherwise).
     const stockLfd = frameXmlLfdGate(seam, boot, renderer);
     if (stockLfd) resources.lfdOwner = createFrameXmlLfdOwner(boot, stockLfd.frame);
     else if (!options.seam) fallbacks.report("lfd", "LFDParentFrame не прошёл проверку");
     // FriendsFrame (Friends, Who, Guild, Chat, Raid tabs) becomes the social window once its tree and
-    // one silent muted visit of every tab pass; the native social panel and guild window stay otherwise.
+    // one silent muted visit of every tab pass.
     const stockFriends = frameXmlFriendsGate(seam, boot, renderer);
     if (stockFriends) resources.friendsOwner = createFrameXmlFriendsOwner(boot, stockFriends.frame);
     else if (!options.seam) fallbacks.report("friends", "FriendsFrame не прошёл проверку");
     // GossipFrame, BankFrame, TaxiFrame and ItemTextFrame, each behind its own gate (NPC lane).
     resources.npcWindows = mountFrameXmlNpcWindows(seam, boot, renderer, HOST_ID);
     // StaticPopup1-4 and ReadyCheckFrame become the server's confirmations once their stock tree,
-    // UIParent's event branches and one silent muted probe pass; the native panels stay otherwise.
+    // UIParent's event branches and one silent muted probe pass.
     installFrameXmlPopupsAdapters(boot);
     // While one of them is up the overlay stands over the native windows, whose clicks would take a
     // popup's buttons; it falls back when the last hides (FrameXmlDialogLayeges.ts).
@@ -4087,7 +4087,7 @@ export async function mountFrameXmlVertical(
     if (stockPopups) resources.popupsOwner = createFrameXmlPopupsOwner(boot, seam.popups);
     else if (!options.seam) fallbacks.report("popups", "StaticPopup не прошёл проверку");
     // LootFrame and GroupLootFrame1-4 own loot once their stock tree and one silent, muted synthetic
-    // opening and roll pass (FrameXmlLootOwner.ts); the native #loot-window and roll cards stay otherwise.
+    // opening and roll pass (FrameXmlLootOwner.ts).
     const stockLoot = seam.loot ? frameXmlLootGate(seam, boot, renderer) : undefined;
     if (stockLoot && seam.loot) resources.lootOwner = createFrameXmlLootOwner(boot, seam.loot, stockLoot.frame);
     else if (!options.seam) fallbacks.report("loot", "LootFrame не прошёл проверку");
@@ -4112,7 +4112,7 @@ export async function mountFrameXmlVertical(
           seam.merchantChanged(event, force);
         },
       };
-    }
+    } else if (!options.seam) fallbacks.report("merchant", "MerchantFrame не прошёл проверку");
 
     const buffFrame = boot.bridge.getFrame("BuffFrame");
     const buffFrameElement = buffFrame ? renderer.elementFor(buffFrame) : undefined;
@@ -4396,27 +4396,27 @@ export async function mountFrameXmlVertical(
     }
     // Each gated NPC window takes its route (an open page/map/bank is handed over, the native steps aside).
     if (resources.npcWindows) resources.npcWindowsCleanup = resources.npcWindows.publish();
-    // Blizzard_MacroUI and Blizzard_BindingUI are LoD: nothing loads until the first open, and the
-    // native macro and binding windows stay the fallback until each stock gate passes.
+    // Blizzard_MacroUI and Blizzard_BindingUI are LoD: nothing loads until the first open.
     closeMacroWindow();
     closeKeyBindingsWindow();
     closeCalendar();
     resources.macroBindingWindowsCleanup = mountFrameXmlMacroBindingWindows(seam, boot, renderer, {
-      openMacros: openMacroWindow,
-      openNativeMacros: openNativeMacroWindow,
-      openNativeKeyBindings: openNativeKeyBindingsWindow,
+      openMacros: () => { openFrameXmlMacro(); },
+      openNativeMacros: () => fallbacks.report("macros", "Blizzard_MacroUI не загрузился или не прошёл проверку"),
+      openNativeKeyBindings: () => fallbacks.report("keybindings", "Blizzard_BindingUI не загрузился или не прошёл проверку"),
     }).publish();
-    // Blizzard_Calendar is LoD too: the first open loads it beside /dbc/calendar; the native calendar
-    // stays the fallback until its gate passes.
+    // Blizzard_Calendar is LoD too: the first open loads it beside /dbc/calendar.
     resources.calendarCleanup = mountFrameXmlCalendar(seam, boot, renderer, {
-      openNative: openNativeCalendar,
+      openNative: () => fallbacks.report("calendar", "Blizzard_Calendar не загрузился или не прошёл проверку"),
       catalog: new FrameXmlCalendarCatalogClient(origin),
     }).publish();
     // The options chain loads on the first «Изображение»/«Звук»/«Интерфейс» or /settings, not at boot
-    // (FRAMEXML_OPTIONS_TOC); the native settings window stays the fallback until its gate passes.
+    // (FRAMEXML_OPTIONS_TOC).
     closeSettingsWindow();
-    resources.optionsCleanup = mountFrameXmlOptions(boot, renderer,
-      frameXmlLiveOptionsHost(() => !document.body.classList.contains(NATIVE_CHAT_REPLACEMENT_CLASS)));
+    resources.optionsCleanup = mountFrameXmlOptions(boot, renderer, {
+      ...frameXmlLiveOptionsHost(() => !document.body.classList.contains(NATIVE_CHAT_REPLACEMENT_CLASS)),
+      openNative: () => fallbacks.report("options", "окна настроек не загрузились"),
+    });
     if (resources.lfdOwner) {
       closeLfgWindow();
       resources.lfdOwnerCleanup = publishFrameXmlLfd(resources.lfdOwner);

@@ -32,7 +32,7 @@ import {
   closeFrameXmlPopups, frameXmlPopupsDropCursorItem, frameXmlPopupsOpen,
 } from "../framexml/FrameXmlPopupsController.js";
 import { stopFrameXmlTradeSkillTargeting } from "../framexml/FrameXmlTradeSkillController.js";
-import { keyBindingsOpen, toggleKeyBindingsWindow } from "../ui/KeyBindings.js";
+import { frameXmlKeyBindingsOpen, toggleFrameXmlKeyBindings } from "../framexml/FrameXmlBindingController.js";
 import { notice } from "../ui/Notices.js";
 import {
   cancelGroundTarget, groundPointInRange, groundTargetRange, pendingGroundTarget,
@@ -178,8 +178,8 @@ const NATIVE_ESCAPE: FrameXmlNativeEscape = {
   // Beside CloseAllWindows, on the same press: the bindings window and every escapable window.
   windows: () => {
     const world = game.world;
-    const open = keyBindingsOpen() || (world !== undefined && anyGameWindowOpen());
-    if (keyBindingsOpen()) toggleKeyBindingsWindow();
+    const open = frameXmlKeyBindingsOpen() || (world !== undefined && anyGameWindowOpen());
+    if (frameXmlKeyBindingsOpen()) toggleFrameXmlKeyBindings();
     if (world) {
       if (world.loot) world.closeLoot();
       closeGameWindows();
@@ -219,11 +219,10 @@ const NATIVE_BACK_OUT: readonly EscapeStep[] = [
     toggleGameMenu();
     return true;
   },
-  // The option frames come next in stock; the bindings window is this client's one, and it is the
-  // one window that can be open with no world behind it.
+  // The option frames come next in stock.
   () => {
-    if (!keyBindingsOpen()) return false;
-    toggleKeyBindingsWindow();
+    if (!frameXmlKeyBindingsOpen()) return false;
+    toggleFrameXmlKeyBindings();
     return true;
   },
   // CloseMenus: a floating menu (Widgets.openFloating) takes Escape itself in the capture phase.
@@ -304,7 +303,7 @@ function onKeyDown(event: KeyboardEvent): void {
       event.preventDefault();
       return;
     }
-    if (!game.world && !keyBindingsOpen()) return;
+    if (!game.world) return;
     (event.target as HTMLElement).blur();
     if (!event.repeat) backOut();
     event.preventDefault();

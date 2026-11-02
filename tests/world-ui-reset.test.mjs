@@ -40,6 +40,7 @@ const { toggleGameMenu, gameMenuOpen } = await import('../dist/code/browser/ui/G
 const { toggleKeyBindingsWindow, keyBindingsOpen } = await import('../dist/code/browser/ui/KeyBindings.js');
 const { inventoryWindow } = await import('../dist/code/browser/ui/Dom.js');
 const { resetWorldUi } = await import('../dist/code/browser/app/Login.js');
+const { publishFrameXmlGameMenu } = await import('../dist/code/browser/framexml/FrameXmlGameMenuController.js');
 usePanelHost({ viewport: document.body, attach() {} });
 
 test('world exit closes optional windows and releases old-world subscriptions and search', () => {
@@ -51,6 +52,10 @@ test('world exit closes optional windows and releases old-world subscriptions an
     displayName() { return 'Old character'; },
   };
   game.world = world;
+  let menuOpen = false;
+  const releaseMenu = publishFrameXmlGameMenu({
+    isOpen: () => menuOpen, show() { menuOpen = true; }, hide() { menuOpen = false; },
+  });
   try {
     toggleGmTickets();
     showPetition();
@@ -77,6 +82,6 @@ test('world exit closes optional windows and releases old-world subscriptions an
     assert.equal(events.listenerCount('GM_TICKET_CHANGED'), 0);
     assert.equal(events.listenerCount('PETITION_CHANGED'), 0);
   } finally {
-    resetGmTickets(); resetPetition(); clearReputation(); game.world = undefined;
+    releaseMenu(); resetGmTickets(); resetPetition(); clearReputation(); game.world = undefined;
   }
 });

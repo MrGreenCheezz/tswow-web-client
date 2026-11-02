@@ -84,7 +84,7 @@ test("GetBinding lists Bindings.xml's sections in order, then every WebClient-on
     "HEADER_CAMERA", // DEC-B 3.11: the camera views' eighteen rows (input/StockActions.ts)
     "HEADER_MULTIACTIONBAR", "HEADER_BLANK4", "HEADER_BLANK5", "HEADER_BLANK6",
     "HEADER_VEHICLE", // 11.02-input: the VEHICLE section's nine rows (input/StockActions.ts)
-    "HEADER_WEBCLIENT",
+    // No HEADER_WEBCLIENT: this client's only own rows are the developer's, and a test page has no flag.
   ]);
   assert.deepEqual(rows[0], ["HEADER_MOVEMENT"], "a header row has no keys");
   // 5.09: MOVEANDSTEER is Bindings.xml's first row, unbound here (its BUTTON3 is a mouse button); was rows[1] MOVEFORWARD.
@@ -114,9 +114,8 @@ test("GetBinding lists Bindings.xml's sections in order, then every WebClient-on
     developer.useDeveloperMode(false);
   }
   assert.deepEqual(FRAMEXML_WEBCLIENT_BINDING_ROWS.map(([command]) => command),
-    ["WEBCLIENT_TOGGLEDIAGNOSTICS", "WEBCLIENT_TOGGLEGMCONSOLE", "WEBCLIENT_TOGGLEKEYBINDINGS"]);
+    ["WEBCLIENT_TOGGLEDIAGNOSTICS", "WEBCLIENT_TOGGLEGMCONSOLE"]);
   assert.equal(model.label("WEBCLIENT_TOGGLEGMCONSOLE"), "GM-консоль");
-  assert.equal(model.label("WEBCLIENT_TOGGLEKEYBINDINGS"), "Привязки клавиш");
   assert.equal(model.binding(0).length, 0);
   assert.equal(model.binding(model.count() + 1).length, 0);
   // Stock order inside a section: the rows keep Bindings.xml's order, the 3.11 rows (StockActions.ts)

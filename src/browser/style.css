@@ -372,6 +372,10 @@ button:not(:disabled):hover { filter: brightness(1.18); }
   box-shadow: inset 0 0 0 1px #d7c27b44, 0 10px 35px #000d;
   resize: both;
 }
+/* WORK_PLAN 4.17, stage 4: the HTML windows no longer reach the screen, whatever still paints them;
+   the stock frames are the only windows. Left: the developer's tools, and the module windows,
+   which stage 6 takes away. Stage 6 removes this rule with the windows themselves. */
+.game-window:not(#diagnostics-window, .gm-console-window, .module-window, .window-builder) { display: none !important; }
 .game-window header.window-drag-handle {
   cursor: move;
   touch-action: none;

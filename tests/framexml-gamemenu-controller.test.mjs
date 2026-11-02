@@ -137,14 +137,13 @@ test("the controller answers false until published and keeps one owner", () => {
   assert.equal(controller.frameXmlGameMenuPublished(), false);
 });
 
-test("GameMenu.ts reaches the stock menu first and builds the native Panel only as the fallback", () => {
+test("GameMenu.ts reaches the stock menu only; unpublished there is no menu", () => {
   const stock = owner();
   const release = controller.publishFrameXmlGameMenu(stock);
   try {
     menu.toggleGameMenu();
     assert.equal(stock.open, true, "the gear button / micro button / Escape open the stock menu");
     assert.equal(menu.gameMenuOpen(), true);
-    assert.equal(nativeMenu(), undefined, "the native Panel is never built while stock owns the menu");
     assert.equal(dom.gameMenuToggle.getAttribute("aria-expanded"), "true");
     menu.toggleGameMenu();
     assert.equal(stock.open, false);
@@ -155,10 +154,9 @@ test("GameMenu.ts reaches the stock menu first and builds the native Panel only 
     release();
   }
   menu.toggleGameMenu();
-  assert.equal(nativeMenu()?.hidden, false, "unpublished: the native menu opens as before");
-  assert.equal(menu.gameMenuOpen(), true);
+  assert.equal(nativeMenu(), undefined, "unpublished: no HTML menu is built");
+  assert.equal(menu.gameMenuOpen(), false);
   menu.closeGameMenu();
-  assert.equal(nativeMenu().hidden, true);
 });
 
 test("Escape closes open windows first and opens the stock menu only when nothing else is open", () => {
@@ -259,7 +257,7 @@ test("a published escape chain takes every Escape press; wireControls registered
   assert.equal(controller.escapeFrameXmlGameMenu(), false, "unpublished: the caller keeps its native chain");
   try {
     escape();
-    assert.equal(nativeMenu()?.hidden, false, "and Escape opens the native menu again");
+    assert.equal(nativeMenu(), undefined, "and Escape opens no HTML menu");
   } finally {
     menu.closeGameMenu();
     game.world = undefined;
@@ -318,6 +316,6 @@ test("the mount binds Quit/CancelLogout once and keeps Logout on the chat API", 
   assert.match(mount, /requestQuitToLogin\(\(\) => \{ leaveWorldForQuit\?\.\("relogin"\); \}\)/);
   const adapters = mount.slice(mount.indexOf("installFrameXmlMicroButtonAdapters(loadedBoot, {"));
   const actionMap = adapters.slice(0, adapters.indexOf("}) !== undefined;"));
-  assert.match(actionMap, /\n\s*gameMenu: toggleGameMenu,\n/, "MainMenuMicroButton goes through GameMenu.ts's stock-first toggle");
-  assert.match(actionMap, /\n\s*lfd: toggleLfgWindow,\n/, "LFDMicroButton goes through Social.ts's stock-first toggle");
+  assert.match(actionMap, /\n\s*gameMenu: toggleGameMenu,\n/, "MainMenuMicroButton goes through GameMenu.ts's toggle");
+  assert.match(actionMap, /\n\s*lfd: toggleFrameXmlLfd,\n/, "LFDMicroButton reaches the stock owner");
 });

@@ -4,24 +4,18 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { isolatedModule } from "./fixtures/isolated-ui.mjs";
 
-test("TOGGLEWORLDSTATESCORES runs stock ToggleWorldStateScoreFrame while it is published, else the native board", async () => {
-  let stock = false;
+test("TOGGLEWORLDSTATESCORES runs stock ToggleWorldStateScoreFrame, and nothing beside it", async () => {
   let stockCalls = 0;
-  let nativeCalls = 0;
   const actions = await isolatedModule("browser/input/Actions", {
     "../game/Context.js": { game: { world: {} } },
     "../framexml/FrameXmlScoreboardController.js": {
-      toggleFrameXmlScoreboard: () => { stockCalls += 1; return stock; },
+      toggleFrameXmlScoreboard: () => { stockCalls += 1; return false; },
     },
-    "../ui/Scoreboard.js": { toggleScoreboard: () => { nativeCalls += 1; } },
     "./Bindings.js": { ACTION_BAR_SLOTS: [], ACTION_BAR_PAGES: [], EXTRA_ACTION_BAR_SLOTS: {} },
     "../../world/ActionBarProtocol.js": { EXTRA_ACTION_BARS: [], actionPage: () => 0 },
   });
   assert.equal(actions.runAction("toggleWorldStateScores"), true);
-  assert.deepEqual([stockCalls, nativeCalls], [1, 1], "no stock owner: the native window");
-  stock = true;
-  assert.equal(actions.runAction("toggleWorldStateScores"), true);
-  assert.deepEqual([stockCalls, nativeCalls], [2, 1], "the stock owner answered: no native window beside it");
+  assert.equal(stockCalls, 1);
 });
 
 function fakeElement() {

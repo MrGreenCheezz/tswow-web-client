@@ -575,7 +575,7 @@ test("2.09 model: INSTANCE_LOCK_START once; the remaining seconds, the bosses an
   assert.equal(call(model, "GetInstanceLockTimeRemaining")[1], true, "isPreviousInstance from the packet's byte");
 });
 
-test("2.09 model: a boss is killed by its DungeonEncounter bit, not its row; without the table stock is not asked at all", () => {
+test("2.09 model: a boss is killed by its DungeonEncounter bit, not its row; without the table the question still comes", () => {
   const { model, world } = scripted({
     dungeonEncounters: () => [{ bit: 2, name: "Второй в таблице" }, { bit: 0, name: "Первый в таблице" }],
   });
@@ -583,8 +583,8 @@ test("2.09 model: a boss is killed by its DungeonEncounter bit, not its row; wit
   assert.deepEqual(call(model, "GetInstanceLockTimeRemaining").slice(1), [false, 2, 1]);
   assert.deepEqual(call(model, "GetInstanceLockTimeRemainingEncounter", 1), ["Второй в таблице", undefined, true], "no SpellIcon: the texture is nil (0x005538b0)");
   assert.deepEqual(call(model, "GetInstanceLockTimeRemainingEncounter", 2), ["Первый в таблице", undefined, false]);
-  // Without the table stock's «Убито боссов: %d/%d» would be invented, so the native prompt (which
-  // says only the killed count) keeps the question — after the same 1.5 s a name gets.
+  // The table may still be on its way, so the dialog waits the same 1.5 s a name gets; then the question
+  // matters more than its boss line (WORK_PLAN 4.17: there is no other surface to ask it).
   const bare = scripted({ dungeonEncounters: undefined });
   bare.model.popupsOwned = true;
   bare.world.lockWarning(60_000, 0b1011, 999, 0);
@@ -593,8 +593,8 @@ test("2.09 model: a boss is killed by its DungeonEncounter bit, not its row; wit
   assert.equal(controller.frameXmlPopupsLeftToNative(bare.world.instanceLock), false);
   bare.clock.now += popups.FRAMEXML_POPUP_NAME_WAIT_MS;
   bare.model.tick();
-  assert.deepEqual(bare.take(), [], "no INSTANCE_LOCK_START without its boss line");
-  assert.equal(controller.frameXmlPopupsLeftToNative(bare.world.instanceLock), true);
+  assert.deepEqual(bare.take(), [["INSTANCE_LOCK_START"]], "asked without its boss line");
+  assert.equal(controller.frameXmlPopupsLeftToNative(bare.world.instanceLock), false);
   assert.deepEqual(call(bare.model, "GetInstanceLockTimeRemaining").slice(1), [false, 0, 0], "nothing invented for an addon either");
   assert.deepEqual(call(bare.model, "GetInstanceLockTimeRemainingEncounter", 1), []);
   call(bare.model, "RespondInstanceLock", true);
@@ -875,8 +875,7 @@ test("2.09 native: the lock with its countdown and killed bosses; Accept and Lea
     await push(OPCODES.SMSG_INSTANCE_LOCK_WARNING_QUERY, lockWarning(0b1));
     ui.updateInteractionPrompts(performance.now());
     assert.equal(ui.visible(), false, "stock INSTANCE_LOCK asks while published");
-    // Published, but no DungeonEncounter table: stock would invent «Убито боссов: N/N», so the stock
-    // model leaves the question here, where only the killed count is said.
+    // Published, but no DungeonEncounter table: stock still asks once the wait is over; nothing here.
     // Whole milliseconds: `(t + WAIT) - t` of a fractional performance.now() can fall short of WAIT.
     const clock = { now: Math.ceil(performance.now()) };
     const model = new popups.FrameXmlPopupsModel({
@@ -893,10 +892,8 @@ test("2.09 native: the lock with its countdown and killed bosses; Accept and Lea
     clock.now += popups.FRAMEXML_POPUP_NAME_WAIT_MS;
     model.tick();
     ui.updateInteractionPrompts(performance.now());
-    assert.deepEqual(fired, [], "no INSTANCE_LOCK_START");
-    assert.equal(ui.visible(), true, "the native prompt keeps it, the next frame");
-    assert.match(ui.text(), /Убито боссов: 2/);
-    assert.doesNotMatch(ui.text(), /Убито боссов: 2\/2/);
+    assert.deepEqual(fired, ["INSTANCE_LOCK_START"]);
+    assert.equal(ui.visible(), false, "one question, one prompt");
     model.detach();
   } finally {
     ui.dispose();
