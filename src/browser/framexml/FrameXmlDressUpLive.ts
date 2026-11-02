@@ -1,7 +1,7 @@
 /**
  * The live world's answers for the dressing room (FrameXmlDressUp.ts FrameXmlDressUpHost).
  *
- * The look is read exactly as ui/Frames.ts unitModelFor reads the player's for the world model:
+ * The look is read exactly as ui/UnitModels.ts unitModelFor reads the player's for the world model:
  * UNIT_FIELD_BYTES_0 race/gender, PLAYER_BYTES skin/face/hair style/hair colour, PLAYER_BYTES_2's
  * facial hair, and visibleEquipmentFor's nineteen PLAYER_VISIBLE_ITEM words. The body is
  * UNIT_FIELD_NATIVEDISPLAYID, not DISPLAYID: clothes go on the character, not on a cat form or a
@@ -14,7 +14,7 @@
 import { UPDATE_FIELDS } from "../../generated/updateFields.js";
 import { unit as unitFields } from "../../world/Fields.js";
 import { game } from "../game/Context.js";
-import { visibleEquipmentFor } from "../ui/Frames.js";
+import { visibleEquipmentFor } from "../ui/UnitModels.js";
 import type { FrameXmlDressUpHost, FrameXmlDressUpItem, FrameXmlDressUpLook } from "./FrameXmlDressUp.js";
 
 export function createLiveFrameXmlDressUpHost(): FrameXmlDressUpHost {
@@ -40,7 +40,7 @@ export function createLiveFrameXmlDressUpHost(): FrameXmlDressUpHost {
         hairStyle: (look >>> 16) & 0xff,
         hairColor: (look >>> 24) & 0xff,
         facialHair: look2 & 0xff,
-        classId: (bytes >>> 8) & 0xff, // 05.10-A7a-G 6.18: as ui/Frames.ts unitModelFor (6.10)
+        classId: (bytes >>> 8) & 0xff, // 05.10-A7a-G 6.18: as ui/UnitModels.ts unitModelFor (6.10)
         equipment: visibleEquipmentFor(object, game.itemMetadata),
       };
     },

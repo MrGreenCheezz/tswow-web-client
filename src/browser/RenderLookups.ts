@@ -63,7 +63,7 @@ export interface DisplayRows {
 }
 
 /**
- * The model a unit is riding: UNIT_FIELD_MOUNTDISPLAYID's record, read-only (ui/Frames.ts `mountModelFor`, which
+ * The model a unit is riding: UNIT_FIELD_MOUNTDISPLAYID's record, read-only (ui/UnitModels.ts `mountModelFor`, which
  * now answers through this, explains the field). Requests are owned by `ui/WorldView.ts`.
  */
 export function mountDisplayModel(object: WorldObjectState, displays: DisplayRows | undefined): UnitModel | undefined {

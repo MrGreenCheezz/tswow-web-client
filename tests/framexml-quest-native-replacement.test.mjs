@@ -169,7 +169,7 @@ test("stock quest publication captures, hides and identity-restores the native t
   questLog.showQuestTracker();
   assert.equal(tracker.hidden, false);
   const teardownState = questLog.beginQuestLogNativeReplacement();
-  questLog.clearQuestLog();
+  (await import("../dist/code/browser/ui/QuestLogData.js")).clearQuestLog();
   questLog.restoreQuestLogNativeReplacement(teardownState);
   assert.equal(tracker.hidden, true);
   assert.equal(teardownState.panel?.visible, false);
@@ -189,6 +189,6 @@ test("tracker absent at stock publication is never created by blocked native ref
   questLog.restoreQuestLogNativeReplacement(state);
   assert.equal(rail.children.length, 0, "teardown does not invent a tracker absent at publication");
 
-  questLog.clearQuestLog();
+  (await import("../dist/code/browser/ui/QuestLogData.js")).clearQuestLog();
   game.world = undefined;
 });

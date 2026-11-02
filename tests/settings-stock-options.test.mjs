@@ -65,16 +65,15 @@ globalThis.HTMLElement = class {};
 
 const { game } = await import("../dist/code/browser/game/Context.js");
 const settingsModule = await import("../dist/code/browser/ui/Settings.js");
+const settingsWindow = await import("../dist/code/browser/ui/SettingsWindow.js");
 const { defaultSettings } = await import("../dist/code/browser/ui/SettingsModel.js");
 const { enhancedGraphicsSettings } = await import("../dist/code/browser/ui/EnhancedGraphics.js");
 const { comparisonGraphicsSettings } = await import("../dist/code/browser/ui/ComparisonProfile.js");
 const controller = await import("../dist/code/browser/framexml/FrameXmlOptionsController.js");
 const { usePanelHost } = await import("../dist/code/browser/ui/Widgets.js");
 usePanelHost({ viewport: document.body, attach() {} });
-const {
-  settingsStore, applySoundVolumes, applySettingsPreset, toggleSettingsWindow, settingsWindowOpen, closeSettingsWindow,
-  openSettingsSection,
-} = settingsModule;
+const { settingsStore, applySoundVolumes, applySettingsPreset } = settingsModule;
+const { toggleSettingsWindow, settingsWindowOpen, closeSettingsWindow, openSettingsSection } = settingsWindow;
 
 function withSound(run) {
   const calls = new Map();

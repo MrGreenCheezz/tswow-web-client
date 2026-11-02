@@ -42,7 +42,7 @@ import { closeQuestLog, questLogOpen } from "./QuestLog.js";
 import { barberOpen, closeBarberShop } from "./BarberShop.js";
 import { channelRosterOpen, closeChannelRoster } from "./ChannelRoster.js";
 import { closeReadyCheck, readyCheckOpen } from "./ReadyCheck.js";
-import { closeSettingsWindow, settingsWindowOpen } from "./Settings.js";
+import { closeSettingsWindow, settingsWindowOpen } from "./SettingsWindow.js";
 import { closeMacroWindow, macroWindowOpen } from "./Macros.js";
 import { closeProfessions, professionsOpen } from "./Professions.js";
 import { closeSocketing, socketingOpen } from "./Socketing.js";

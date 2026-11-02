@@ -20,6 +20,7 @@ import { closeProfessionCraft } from "./ProfessionCraft.js";
 import { castSpell } from "./SpellCast.js";
 import { forgetSpellMetadataSettled, rankedSpell, spellMetadataSettled } from "./SpellData.js";
 import { setSpellBookHost } from "./HtmlWindowHosts.js";
+import { settingOn, watchSettingsApplied } from "./Settings.js";
 import { spellTooltip } from "./SpellTooltip.js";
 import { globalCooldownEndFor, globalCooldownSpanFor } from "../game/PredictedGlobalCooldown.js"; // L13-review 5.30
 import {
@@ -128,6 +129,8 @@ export function setSpellbookRankFilter(hide: boolean): void {
   hideLowerRanks = hide;
   showSpells();
 }
+
+watchSettingsApplied(() => { setSpellbookRankFilter(settingOn("spellbookHideLowerRanks")); });
 
 /** Forgets the buttons of the character that has just been left. */
 export function clearSpellbook(): void {

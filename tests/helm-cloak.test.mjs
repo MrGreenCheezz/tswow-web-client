@@ -4,7 +4,7 @@ import test from "node:test";
 // 6.09 (line A7a): «Показывать шлем / плащ». The packets themselves are `showing-helm.test.mjs`;
 // this is the stock C API (InterfaceOptionsPanels.xml:571-645) and the look without the hidden piece.
 
-// `ui/Frames.ts` resolves its DOM handles at import: the fake document of `shapeshift.test.mjs`.
+// The fake document of `shapeshift.test.mjs`.
 /** The document `self-name.test.mjs` uses: `ui/Dom.ts` resolves its handles once, at import. */
 function fakeDocument() {
   const byId = new Map();
@@ -71,7 +71,7 @@ const {
 const { FRAMEXML_SEAM_BINDINGS, FRAMEXML_SEAM_EVENTS } = await import("../dist/code/browser/framexml/FrameXmlWorldSeam.js");
 const { FRAMEXML_OPTIONS_UNAVAILABLE } = await import("../dist/code/browser/framexml/FrameXmlOptions.js");
 const { LiveWorldSeam } = await import("../dist/code/browser/framexml/LiveWorldSeam.js");
-const { unitModelFor, visibleEquipmentFor } = await import("../dist/code/browser/ui/Frames.js");
+const { unitModelFor, visibleEquipmentFor } = await import("../dist/code/browser/ui/UnitModels.js");
 const { UPDATE_FIELDS } = await import("../dist/code/generated/updateFields.js");
 
 const HIDE_HELM = 0x400;

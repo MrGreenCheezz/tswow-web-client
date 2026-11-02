@@ -4,7 +4,7 @@
  * `/dbc/creature-models` for the body's display record, `/dbc/character-appearance` with the outfit
  * (`slot:inventoryType:displayId`) for the skin, face, hair, armour layers and geosets,
  * CharacterAtlasClient for the body sheet (CreatureModelClient.playerAppearance, the same call
- * ui/Frames.ts unitModelFor makes for the player in the world).
+ * ui/UnitModels.ts unitModelFor makes for the player in the world).
  *
  * What the stage does not draw is `appearance.attached`: helmets, shoulders, weapons and shields are
  * models hung off bones, and GlueModelStage has no attachment path (GlueCharacterScene.ts

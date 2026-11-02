@@ -120,6 +120,8 @@ globalThis.HTMLTextAreaElement = class {};
 
 const { game } = await import("../dist/code/browser/game/Context.js");
 const dock = await import("../dist/code/browser/ui/ChatDock.js");
+const history = await import("../dist/code/browser/ui/CombatHistory.js");
+const resetDock = () => { history.resetCombatHistory(); dock.resetChatDock(); };
 // The store directly, not `setSetting`: that runs the whole `applySettings` chain (action bar
 // included) and this stub owns no action bar. The filter reads the same store either way.
 const { settingsStore } = await import("../dist/code/browser/ui/Settings.js");
@@ -133,14 +135,14 @@ const line = (kind, text) => ({ at: 1, text, kind, casterGuid: 1n, targetGuid: 2
 const paneTexts = () => chatLog.children.map((child) => child.textContent);
 
 test("the combat pane hides a switched-off bucket and keeps the rest", () => {
-  dock.resetChatDock();
+  resetDock();
   showAll();
   try {
     dock.selectChatTab("combat");
-    dock.recordCombatEntry(line("dealt", "вы: 47"));
-    dock.recordCombatEntry(line("taken", "вам: 12"));
-    dock.recordCombatEntry(line("crit", "крит 99"));
-    dock.recordCombatEntry(line("muted", "чужой бой"));
+    history.recordCombatEntry(line("dealt", "вы: 47"));
+    history.recordCombatEntry(line("taken", "вам: 12"));
+    history.recordCombatEntry(line("crit", "крит 99"));
+    history.recordCombatEntry(line("muted", "чужой бой"));
     assert.deepEqual(paneTexts(), ["вы: 47", "вам: 12", "крит 99", "чужой бой"]);
 
     hide("combatTaken", true);
@@ -148,7 +150,7 @@ test("the combat pane hides a switched-off bucket and keeps the rest", () => {
     assert.deepEqual(paneTexts(), ["вы: 47", "крит 99", "чужой бой"]);
 
     // A line arriving while its bucket is off never reaches the pane…
-    dock.recordCombatEntry(line("taken", "вам: 13"));
+    history.recordCombatEntry(line("taken", "вам: 13"));
     assert.deepEqual(paneTexts(), ["вы: 47", "крит 99", "чужой бой"]);
 
     // …but history kept it: switching the bucket back on shows everything again.
@@ -157,13 +159,13 @@ test("the combat pane hides a switched-off bucket and keeps the rest", () => {
     assert.deepEqual(paneTexts(), ["вы: 47", "вам: 12", "крит 99", "чужой бой", "вам: 13"]);
   } finally {
     showAll();
-    dock.resetChatDock();
+    resetDock();
     game.world = undefined;
   }
 });
 
 test("the filter row lives beside the pane, only on the combat tab", async () => {
-  dock.resetChatDock();
+  resetDock();
   try {
     dock.selectChatTab("combat");
     const bar = chatWindow.children.find((child) => child.className === "combat-filters");
@@ -175,7 +177,7 @@ test("the filter row lives beside the pane, only on the combat tab", async () =>
       "other tabs read plain chat and show no switches",
     );
   } finally {
-    dock.resetChatDock();
+    resetDock();
   }
 
   // The switches write through the settings account path, not a local flag.

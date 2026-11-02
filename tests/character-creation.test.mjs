@@ -43,8 +43,8 @@ function domStub() {
   globalThis.window = { addEventListener() {}, devicePixelRatio: 1 };
 }
 domStub();
-const { POWER_NAMES, powerName, visibleEquipmentFor, visibleEquipmentMetadataPendingFor } =
-  await import("../dist/code/browser/ui/Frames.js");
+const { POWER_NAMES, powerName } = await import("../dist/code/browser/ui/Frames.js");
+const { visibleEquipmentFor, visibleEquipmentMetadataPendingFor } = await import("../dist/code/browser/ui/UnitModels.js");
 const { qualityName } = await import("../dist/code/browser/ui/ItemSlots.js");
 
 let dbcDirectory;

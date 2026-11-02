@@ -7,7 +7,7 @@
  * camera; what it leaves out is everyone past the 64th in a crowded place, who had nothing at all loaded — no item
  * rows, no look, no model file, no body — until a nearer unit left view. Two halves, nearest first:
  *
- * - the page (`UnitLookPrefetch`): the asking path (ui/Frames.ts `unitModelFor`: item rows, the look) for the nearest
+ * - the page (`UnitLookPrefetch`): the asking path (ui/UnitModels.ts `unitModelFor`: item rows, the look) for the nearest
  *   units every few frames, admitted or not; it memoises, so a resolved unit costs a lookup;
  * - the renderer (`selectUnitPrefetch`): for the nearest in-range units it did not draw this frame, the model file,
  *   the attached pieces' files and the body atlas, at a priority below every admitted unit's.

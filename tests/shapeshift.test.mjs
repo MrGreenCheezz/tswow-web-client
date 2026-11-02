@@ -104,7 +104,7 @@ globalThis.HTMLElement = class {};
 
 const { UPDATE_FIELDS } = await import("../dist/code/generated/updateFields.js");
 const { game } = await import("../dist/code/browser/game/Context.js");
-const { mountModel, unitModel } = await import("../dist/code/browser/ui/Frames.js");
+const { mountModel, unitModel } = await import("../dist/code/browser/ui/UnitModels.js");
 const { CreatureModelClient } = await import("../dist/code/browser/CreatureModelClient.js");
 const { CREATURE_MODEL_VERSION, IMAGE_RETRY_BACKOFF_MS } = await import("../dist/code/browser/CharacterAtlas.js");
 const { unitObjectScale } = await import("../dist/code/browser/WorldRenderer3D.js");

@@ -8,20 +8,24 @@ import ts from 'typescript';
 // Local ignored protocol/client metadata must already be available, just as for a normal build.
 const dist = new URL('../dist/code/', import.meta.url).href;
 const src = new URL('../src/', import.meta.url).href;
+// A test asks for a fresh instance with `?name`; without this it got the last build's file instead.
+const withoutQuery = (url) => url.split('?')[0];
 registerHooks({
   resolve(specifier, context, nextResolve) {
     if (context.parentURL && (specifier.startsWith('.') || specifier.startsWith('file:'))) {
       const url = new URL(specifier, context.parentURL).href;
-      if (url.startsWith(dist) && url.endsWith('.js') &&
-          existsSync(fileURLToPath(src + url.slice(dist.length).replace(/\.js$/, '.ts')))) {
+      const file = withoutQuery(url);
+      if (file.startsWith(dist) && file.endsWith('.js') &&
+          existsSync(fileURLToPath(src + file.slice(dist.length).replace(/\.js$/, '.ts')))) {
         return { url, shortCircuit: true };
       }
     }
     return nextResolve(specifier, context);
   },
   load(url, context, nextLoad) {
-    if (url.startsWith(dist) && url.endsWith('.js')) {
-      const sourceUrl = src + url.slice(dist.length).replace(/\.js$/, '.ts');
+    const file = withoutQuery(url);
+    if (file.startsWith(dist) && file.endsWith('.js')) {
+      const sourceUrl = src + file.slice(dist.length).replace(/\.js$/, '.ts');
       const sourcePath = fileURLToPath(sourceUrl);
       if (existsSync(sourcePath)) {
         const result = ts.transpileModule(readFileSync(sourcePath, 'utf8'), {

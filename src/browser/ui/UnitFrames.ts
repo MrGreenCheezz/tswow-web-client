@@ -9,7 +9,8 @@ import {
 import { openGroupMenu } from "./GroupMenu.js";
 import { unitReactionToPlayer } from "../game/Targeting.js"; // 5.05 (12.10): was reactionTo
 import { arenaFrames, bossFrames, focusFrame, partyFrames, petFrame, raidFrames, targetOfTargetFrame } from "./Dom.js";
-import { showTarget, unitDisplayName } from "./Frames.js";
+import { showTarget } from "./Frames.js";
+import { unitDisplayName } from "./UnitNames.js";
 import { UnitFrame, UnitFrameList } from "./UnitFrame.js";
 import { raidMarksByUnit, threatFraction, unitSnapshot, type UnitSnapshot } from "./UnitSnapshot.js";
 import { setPartyPortrait, setUnitFramePortrait } from "./Portraits.js";

@@ -657,7 +657,7 @@ export class SessionAssetWarmup {
       bytes & 0xff, (bytes >>> 16) & 0xff,
       look & 0xff, (look >>> 8) & 0xff, (look >>> 16) & 0xff, (look >>> 24) & 0xff,
       look2 & 0xff, equipment,
-      (bytes >>> 8) & 0xff, // 05.10-A7a-A 6.10: the same key `ui/Frames.ts unitModelFor` asks with
+      (bytes >>> 8) & 0xff, // 05.10-A7a-A 6.10: the same key `ui/UnitModels.ts unitModelFor` asks with
     );
     if (!appearance) return;
     this.#addModels(

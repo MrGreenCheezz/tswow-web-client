@@ -1275,7 +1275,7 @@ export class WorldClient {
   readonly chatLog: ChatMessage[] = [];
   onChatMessage: ((message: ChatMessage) => void) | undefined;
   readonly names = new NameCache();
-  /** 05.10-A7a-H 6.11б: SMSG_MIRRORIMAGE_DATA replies, asked for by `ui/Frames.ts unitModelFor` (MirrorImages.ts). */
+  /** 05.10-A7a-H 6.11б: SMSG_MIRRORIMAGE_DATA replies, asked for by `ui/UnitModels.ts unitModelFor` (MirrorImages.ts). */
   readonly mirrorImages = new MirrorImages((guid) => {
     if (!this.#closed) this.#connection.send(OPCODES.CMSG_GET_MIRRORIMAGE_DATA, buildGetMirrorImageData(guid));
   }, () => performance.now());

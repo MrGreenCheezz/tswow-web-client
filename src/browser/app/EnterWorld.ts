@@ -52,8 +52,9 @@ import { noticeLootRoll, resetLootRolls, showLootRolls } from "../ui/LootRolls.j
 import { resetReadyCheck, showReadyCheck } from "../ui/ReadyCheck.js";
 import { resetInteractionPrompts, showInteractionPrompts } from "../ui/InteractionPrompts.js";
 import {
-  appendChatMessage, recordCombatEntry, redrawChatLog, refreshChatNames, resetChatDock, syncChannelTabs,
+  appendChatMessage, redrawChatLog, refreshChatNames, resetChatDock, syncChannelTabs,
 } from "../ui/ChatDock.js";
+import { recordCombatEntry, resetCombatHistory } from "../ui/CombatHistory.js";
 import { resetHeadOverlay, showChatBubble, showFloatingText } from "../ui/HeadOverlay.js";
 import { notePlateHit } from "../ui/OverlayModel.js";
 import { clearSpellNames } from "../ui/SpellNames.js";
@@ -63,7 +64,7 @@ import { resourceStatusTargets } from "./ResourceStatusTargets.js"; // 22.10 (12
 import { warmModelTarget } from "./WarmModelTarget.js"; // 22.10 (12.14)
 import { updateLogoutPending } from "../ui/GameMenu.js";
 import { beginModuleCommandLoad, systemLine } from "../ui/Chat.js";
-import { applySettings, drawSettings, settingOn, settingsStore } from "../ui/Settings.js";
+import { applySettings, settingOn, settingsStore } from "../ui/Settings.js";
 import { acceptInputAccount, attachInputAccount } from "../input/InputAccountWiring.js";
 import { attachActionBarAccount } from "../ui/ActionBarAccountWiring.js"; // L7 4.16b/3.32
 import { installHudKeys } from "../ui/HudKeys.js";
@@ -144,9 +145,9 @@ import { showUnhandledOpcodes } from "../ui/Diagnostics.js";
 import { createModuleLoader } from "../ui/ModuleClient.js";
 import { refreshActionSlots, upgradeActionBarRanks } from "../ui/ActionSlots.js";
 import {
-  bindQuestLogStore, clearQuestLog, requestMissingQuestTemplates, requestQuestPoi, showQuestLog,
-  showQuestTracker,
-} from "../ui/QuestLog.js";
+  bindQuestLogStore, clearQuestLog, requestMissingQuestTemplates, requestQuestPoi,
+} from "../ui/QuestLogData.js";
+import { showQuestLog, showQuestTracker } from "../ui/QuestLog.js";
 import { showCharacterCollections, showCharacterSheet } from "../ui/CharacterSheet.js";
 import { clearReputation, showReputation } from "../ui/Reputation.js";
 import { keepCharacterWindowOverStock, showCharacterWindow } from "../ui/Windows.js";
@@ -253,12 +254,13 @@ export async function enterWorld(character: CharacterSummary): Promise<void> {
   }
   clearQuestLog();
   // WorldStore coalesces all changed quest words into one event per frame. The
-  // QuestLog module owns this one binding and replaces its previous one here,
+  // QuestLogData module owns this one binding and replaces its previous one here,
   // so a character switch cannot leave a stale redraw listener behind.
   bindQuestLogStore(game.store, world);
   // A text emote names its target by name rather than by GUID, so the only way to tell «машет
   // рукой вам» from «машет рукой кому-то» is to know what this character is called.
   world.selfName = character.name;
+  resetCombatHistory();
   resetChatDock();
   resetHeadOverlay();
   clearSpellNames();
@@ -670,7 +672,6 @@ export async function enterWorld(character: CharacterSummary): Promise<void> {
     if (change.type === undefined) return;
     if (settingsStore.accept(change.type)) {
       applySettings();
-      drawSettings();
     }
     for (const store of macroStores) if (store.accept(change.type)) showMacros();
     acceptInputAccount(change.type); // 4.12: key bindings (slot 2) and window positions (slot 6)

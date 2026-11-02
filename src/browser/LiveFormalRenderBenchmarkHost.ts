@@ -1160,11 +1160,11 @@ export class LiveFormalRenderBenchmarkHost implements FormalRenderBenchmarkHost 
     const needSettings = supplied.captureUserGraphics === undefined;
     const needModels = supplied.unitModel === undefined; // 22.10 ARC-2 S2c: a supplied one also answers the peek
     const needSelection = supplied.selectionRingColour === undefined;
-    const [loop, settingsModule, settingsModel, frames, names] = await Promise.all([
+    const [loop, settingsModule, settingsModel, unitModels, names] = await Promise.all([
       needLoop ? import("./game/Loop.js") : undefined,
       needSettings ? import("./ui/Settings.js") : undefined,
       needSettings ? import("./ui/SettingsModel.js") : undefined,
-      needModels ? import("./ui/Frames.js") : undefined,
+      needModels ? import("./ui/UnitModels.js") : undefined,
       needSelection ? import("./ui/NamePlates.js") : undefined,
     ]);
     const captureUserGraphics = supplied.captureUserGraphics ?? (() => {
@@ -1194,18 +1194,18 @@ export class LiveFormalRenderBenchmarkHost implements FormalRenderBenchmarkHost 
       captureClientReadiness: supplied.captureClientReadiness ?? loop!.captureBenchmarkClientReadiness,
       captureUserGraphics,
       unitModel: supplied.unitModel
-        ?? ((object: WorldObjectState) => frames!.unitModelFor(
+        ?? ((object: WorldObjectState) => unitModels!.unitModelFor(
           object, resources.creatureModels, resources.itemMetadata,
         )),
       unitModelPeek: supplied.unitModelPeek ?? supplied.unitModel
-        ?? ((object: WorldObjectState) => frames!.unitModelPeek(
+        ?? ((object: WorldObjectState) => unitModels!.unitModelPeek(
           object, resources.creatureModels, resources.itemMetadata,
         )), // 22.10 ARC-2 S2c
       // A supplied peek has unknown inputs: every unit is recomputed each frame, as before this cache.
       unitModelInputs: supplied.unitModelInputs ?? (supplied.unitModelPeek !== undefined || supplied.unitModel !== undefined
-        ? () => [] : () => frames!.unitModelInputs(resources.creatureModels, resources.itemMetadata)),
+        ? () => [] : () => unitModels!.unitModelInputs(resources.creatureModels, resources.itemMetadata)),
       unitModelVolatile: supplied.unitModelVolatile ?? (supplied.unitModelPeek !== undefined || supplied.unitModel !== undefined
-        ? () => true : frames!.unitModelVolatile),
+        ? () => true : unitModels!.unitModelVolatile),
       selectionRingColour: supplied.selectionRingColour
         ?? ((object: WorldObjectState | undefined, self: WorldObjectState | undefined) =>
           names!.selectionRingColourFor(object, self, resources.factions)),

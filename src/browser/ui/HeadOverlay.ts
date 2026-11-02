@@ -18,7 +18,7 @@ import { viewSubjectPosition } from "../game/ViewSubject.js"; // 11.02-I
 import { drawnUnitPosition, type DrawnPoint } from "../VehiclePassengerOverlay.js"; // 11.02-tails
 import { resultUnitHeight } from "../RenderResults.js"; // 22.10 ARC-2 S3a
 import { plainChatText } from "./ChatLink.js";
-import { currentQuestLogEntries } from "./QuestLog.js";
+import { currentQuestLogEntries } from "./QuestLogData.js";
 import {
   questMarkerProgress,
   questWorldObjectiveMarkers,

@@ -17,12 +17,14 @@ import { game } from "../game/Context.js";
 import { chatClass, chatPrefix, channelTab, DEFAULT_CHAT_TABS, tabMessages, type ChatTab } from "./ChatFormat.js";
 import { insertChatLink, setNativeChatInputOwner } from "./ChatInputOwner.js";
 import { parseChatMarkup, type ChatSegment } from "./ChatLink.js";
+import { combatHistory, onCombatEntry } from "./CombatHistory.js";
 import {
   COMBAT_LOG_CATEGORIES, combatLogVisible, type CombatLogCategory, type CombatLogEntry,
-  COMBAT_LOG_HISTORY, pushCombatEntry,
+  COMBAT_LOG_HISTORY,
 } from "./CombatLogModel.js";
 import { chatInput, chatLog, chatTabs } from "./Dom.js";
 import { unknownLabel } from "./Format.js";
+import { setChatDockHost } from "./HtmlWindowHosts.js";
 import { itemTooltipFor } from "./ItemTooltip.js";
 import { setSetting, settingOn } from "./Settings.js";
 import { setTip, attachTooltip } from "./Widgets.js";
@@ -35,9 +37,6 @@ const tabs: ChatTab[] = [...DEFAULT_CHAT_TABS];
 const unread = new Map<string, number>();
 const scrollOffsets = new Map<string, number>();
 let activeTabId = tabs[0]?.id ?? "general";
-
-/** The combat log's own history, which is not chat and does not live in the chat backlog. */
-const combatEntries: CombatLogEntry[] = [];
 
 /** Which combat category each account switch hides. Off by default everywhere, like the log. */
 const COMBAT_SETTING: Readonly<Record<CombatLogCategory, string>> = {
@@ -194,7 +193,6 @@ export function resetChatDock(): void {
   tabs.splice(0, tabs.length, ...DEFAULT_CHAT_TABS);
   unread.clear();
   scrollOffsets.clear();
-  combatEntries.length = 0;
   combatFilterBar?.remove();
   combatFilterBar = undefined;
   wantedItems.clear();
@@ -376,7 +374,7 @@ export function redrawChatLog(): void {
   // backlog, so it is drawn before the world is asked about — it has entries either way.
   if (tab.combat) {
     const hidden = combatHiddenCategories();
-    chatLog.replaceChildren(...combatEntries
+    chatLog.replaceChildren(...combatHistory()
       .filter((entry) => combatLogVisible(entry, hidden)).slice(-PANE_LINES).map(renderCombatLine));
   } else if (!world) {
     chatLog.replaceChildren();
@@ -608,42 +606,15 @@ function flushItemRequests(): void {
   });
 }
 
-/** Everyone who mirrors the combat lines somewhere else — the stock chat's combat window. */
-const combatEntryListeners = new Set<(entry: CombatLogEntry) => void>();
-
-/**
- * Subscribes to every combat line as it is recorded; answers the unsubscribe.
- *
- * The native combat tab lives in `#chat-log`, which the stock chat hides, so this is the one feed a
- * stock `ChatFrame2` can be filled from without a second copy of the combat packet handlers.
- */
-export function onCombatEntry(listener: (entry: CombatLogEntry) => void): () => void {
-  combatEntryListeners.add(listener);
-  return () => { combatEntryListeners.delete(listener); };
-}
-
-/** The combat history the native tab holds, oldest first, for a mirror that starts late. */
-export function combatHistory(): readonly CombatLogEntry[] {
-  return combatEntries;
-}
-
-/** One line of combat, kept in the tab's history and drawn if that tab is the one on screen. */
-export function recordCombatEntry(entry: CombatLogEntry): void {
-  pushCombatEntry(combatEntries, entry);
-  for (const listener of combatEntryListeners) {
-    try {
-      listener(entry);
-    } catch (error) {
-      console.warn("[chat] a combat line mirror failed", error);
-    }
-  }
+/** One line of combat, counted on the tab and drawn if that tab is the one on screen. */
+function showCombatEntry(entry: CombatLogEntry): void {
   const tab = activeTab();
   if (!tab.combat) {
     unread.set("combat", Math.min(COMBAT_LOG_HISTORY, (unread.get("combat") ?? 0) + 1));
     syncChatTabBadges();
     return;
   }
-  // Behind the stock chat the pane is rebuilt from `combatEntries` when it comes back.
+  // Behind the stock chat the pane is rebuilt from the history when it comes back.
   if (paneReplaced()) return;
   // A filtered-out line still counts in history and in the unread badge; it simply is not drawn.
   if (!combatLogVisible(entry, combatHiddenCategories())) return;
@@ -651,3 +622,13 @@ export function recordCombatEntry(entry: CombatLogEntry): void {
   chatLog.append(renderCombatLine(entry));
   trimPane();
 }
+
+onCombatEntry(showCombatEntry);
+
+// What the chat commands ask of the dock while it exists (Chat.ts). Registered at load, which is
+// before any line can be typed, for the reason the native input's verbs above are.
+setChatDockHost({
+  append: appendChatMessage,
+  selectTab: selectChatTabByName,
+  activeChannel: activeChannelTab,
+});

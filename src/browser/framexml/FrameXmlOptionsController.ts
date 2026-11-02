@@ -3,7 +3,7 @@
  * window.
  *
  * GameMenuFrame's «Изображение», «Звук» and «Интерфейс» (FrameXmlGameMenuOwner.ts), `/settings` and
- * the native menu's «Настройки» (Settings.toggleSettingsWindow) ask here first. While nothing is
+ * the native menu's «Настройки» (SettingsWindow.toggleSettingsWindow) ask here first. While nothing is
  * published, or once the lazy owner has failed its load or gate, every function answers false and
  * the caller opens the native window instead.
  */

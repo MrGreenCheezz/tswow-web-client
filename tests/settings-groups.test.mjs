@@ -11,7 +11,7 @@ import {
   OTHER_SETTINGS_SECTION, SETTING_SECTIONS, sectionSettings,
 } from "../dist/code/browser/ui/SettingsSections.js";
 
-const settingsSource = new URL("../src/browser/ui/Settings.ts", import.meta.url);
+const settingsSource = new URL("../src/browser/ui/SettingsWindow.ts", import.meta.url);
 const styleSource = new URL("../src/browser/style.css", import.meta.url);
 
 function navigationFixture() {
@@ -174,7 +174,8 @@ test("the settings window uses the tested navigator and keeps control focus stab
     "production rendering consumes the navigator's tested cross-group view");
   assert.match(source, /settingsList\.contains\(document\.activeElement\)/,
     "external redraws remember the focused setting");
-  assert.match(source, /change\(definition, input\.checked, false\)/,
+  assert.match(source, /change\(definition, input\.checked\)/);
+  assert.match(source, /if \(!rowChanging\) drawSettings\(\)/,
     "changing a checkbox must not replace the focused control");
 });
 

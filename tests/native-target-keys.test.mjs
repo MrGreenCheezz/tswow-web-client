@@ -89,7 +89,8 @@ async function harness({ assistAttack = false, settingOn = undefined, modules = 
       targetNearestUnit: (mode, reverse) => { calls.push(["nearest", mode, reverse]); return picks; },
       targetLastUnit: (kind) => { calls.push(["last", kind]); return picks; },
     },
-    "../ui/Frames.js": { showTarget: () => calls.push(["showTarget"]), unitDisplayName: () => "" },
+    "../ui/Frames.js": { showTarget: () => calls.push(["showTarget"]) },
+    "../ui/UnitNames.js": { unitDisplayName: () => "" },
     ...modules,
   });
   const run = (action) => {

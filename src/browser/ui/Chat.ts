@@ -17,7 +17,7 @@ import { raceBaseLanguage } from "./UnitSnapshot.js";
 import { emoteStandState, findEmote } from "../../world/EmoteRules.js";
 import type { WorldClient } from "../../world/WorldClient.js";
 import { game } from "../game/Context.js";
-import { activeChannelTab, appendChatMessage, selectChatTabByName } from "./ChatDock.js";
+import { chatDockHost } from "./HtmlWindowHosts.js";
 import { toggleFrameXmlCalendar } from "../framexml/FrameXmlCalendarController.js";
 import {
   openFrameXmlFriends, toggleFrameXmlFriendsChannel,
@@ -65,7 +65,7 @@ export function systemLine(text: string, options?: { readonly markup?: boolean }
   };
   const world = game.world;
   if (world) world.pushLocalMessage(message, options?.markup ? { markup: true } : undefined);
-  else appendChatMessage(message);
+  else chatDockHost()?.append(message);
 }
 
 interface SlashCommand {
@@ -455,7 +455,7 @@ const COMMANDS: readonly SlashCommand[] = [
     names: ["roster"],
     usage: "/roster [Канал]",
     help: "участники канала и модерация",
-    run(rest) { toggleFrameXmlFriendsChannel(rest || undefined, rest.trim() ? undefined : activeChannelTab()); },
+    run(rest) { toggleFrameXmlFriendsChannel(rest || undefined, rest.trim() ? undefined : chatDockHost()?.activeChannel()); },
   },
   {
     names: ["chanlist", "channellist"],
@@ -509,7 +509,7 @@ const COMMANDS: readonly SlashCommand[] = [
     help: "переключить вкладку чата",
     run(rest) {
       if (!rest) return usage("/tab имя");
-      if (!selectChatTabByName(rest)) systemLine(`Нет вкладки «${rest}»`);
+      if (!chatDockHost()?.selectTab(rest)) systemLine(`Нет вкладки «${rest}»`);
     },
   },
 ];

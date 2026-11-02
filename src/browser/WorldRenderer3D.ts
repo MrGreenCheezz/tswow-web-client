@@ -15423,7 +15423,7 @@ export class WorldRenderer3D {
   /**
    * Whether a player's model waits for the visible-item rows its appearance was resolved without.
    *
-   * `Frames.unitModelFor` answers with the look made from the item rows already loaded and says the
+   * `UnitModels.unitModelFor` answers with the look made from the item rows already loaded and says the
    * rest are pending. Building that answer built every player twice — bare, then dressed a moment
    * later: two body atlases, two texture sets and two spawn fades, the first of them thrown away.
    * So the unit keeps whatever it stands in (its capsule, or the look it already wears) until the

@@ -14,7 +14,7 @@ import {
   classifyConfigSlot, decodeLayoutRecord, encodeLayoutRecord, extraBarBits,
 } from "./ActionBarStockLayout.js";
 import { notice } from "./Notices.js";
-import { applySettings, drawSettings, settingOn, settingsStore, watchSettingsApplied } from "./Settings.js";
+import { applySettings, settingOn, settingsStore, watchSettingsApplied } from "./Settings.js";
 import { parseSettings, settingNumber, type SettingValues } from "./SettingsModel.js";
 
 /** The per-browser record: `{ "<realm>/<guid>": mask }`. */
@@ -67,7 +67,6 @@ export function attachActionBarAccount(world: WorldClient): () => void {
       settingsStore.set(next);
       if (bits === undefined) return;
       applySettings();
-      drawSettings();
     },
     localRecord: () => {
       const value = readLocalRecords()[localKey()];

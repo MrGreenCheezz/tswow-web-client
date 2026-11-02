@@ -9,7 +9,7 @@ import test from "node:test";
 // hair) and pauldrons 4593; extra row 3941 is a human male with hair style 1 under helmet 15676,
 // which names no model but whose HelmetGeosetVisID 248 would hide the hair.
 
-// `ui/Frames.ts` resolves its DOM handles at import: the fake document of `helm-cloak.test.mjs`.
+// The fake document of `helm-cloak.test.mjs`.
 function fakeDocument() {
   const byId = new Map();
   const make = (tag) => {
@@ -77,7 +77,7 @@ const {
   NpcWeaponClient, attachedOf, heldWeapons, virtualItemEntry, weaponMetadataPending, withVirtualWeapons,
 } = await import("../dist/code/browser/NpcWeapons.js");
 const { CREATURE_MODEL_VERSION } = await import("../dist/code/browser/CharacterAtlas.js");
-const { unitModelFor } = await import("../dist/code/browser/ui/Frames.js");
+const { unitModelFor } = await import("../dist/code/browser/ui/UnitModels.js");
 const { actionAnimation, weaponPose } = await import("../dist/code/browser/AnimatedModel.js");
 const { ANIMATION_IDS } = await import("../dist/code/generated/animations.js");
 const { UPDATE_FIELDS } = await import("../dist/code/generated/updateFields.js");

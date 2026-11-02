@@ -10,7 +10,8 @@ import { setIconSource } from "./IconImage.js";
 import {
   creatureStatus, diagnosticsWindow, environmentStatus, playerPosition, worldObjects, worldStatus,
 } from "./Dom.js";
-import { typeNames, showTarget } from "./Frames.js";
+import { showTarget } from "./Frames.js";
+import { typeNames } from "./UnitNames.js";
 import { showDeath } from "./Npc.js";
 import { showUnitFrames } from "./UnitFrames.js";
 import { showProfessions } from "./Professions.js";

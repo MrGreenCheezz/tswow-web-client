@@ -383,7 +383,8 @@ test("quest search keeps focus and the complete query across sequential input re
   try {
     const { game } = await import("../dist/code/browser/game/Context.js");
     const { usePanelHost } = await import("../dist/code/browser/ui/Widgets.js");
-    const { clearQuestLog, toggleQuestLog } = await import("../dist/code/browser/ui/QuestLog.js");
+    const { toggleQuestLog } = await import("../dist/code/browser/ui/QuestLog.js");
+    const { clearQuestLog } = await import("../dist/code/browser/ui/QuestLogData.js");
     usePanelHost({ viewport: document.body, attach() {}, detach() {} });
     game.world = undefined;
     toggleQuestLog();
@@ -498,7 +499,8 @@ test("native quest targets re-prime cleared metadata caches and replace stable I
   try {
     const { game } = await import("../dist/code/browser/game/Context.js");
     const { UPDATE_FIELDS } = await import("../dist/code/generated/updateFields.js");
-    const { bindQuestLogStore, clearQuestLog, questObjectiveRows } = await import("../dist/code/browser/ui/QuestLog.js");
+    const { questObjectiveRows } = await import("../dist/code/browser/ui/QuestLog.js");
+    const { bindQuestLogStore, clearQuestLog } = await import("../dist/code/browser/ui/QuestLogData.js");
     const previousGame = {
       world: game.world, itemMetadata: game.itemMetadata, creatureMetadata: game.creatureMetadata,
       gatewayOrigin: game.gatewayOrigin,

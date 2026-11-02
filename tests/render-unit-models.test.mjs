@@ -1,5 +1,5 @@
 // 22.10 ARC-2 S2c — the model each unit wears reaches the world renderer as a pushed table (RenderLookups.unitModels)
-// answered read-only before `draw` (ui/Frames.ts `unitModelPeek`); the asking path (`unitModelFor`) runs right after
+// answered read-only before `draw` (ui/UnitModels.ts `unitModelPeek`); the asking path (`unitModelFor`) runs right after
 // `draw` for exactly the guids the renderer admitted (`WorldRenderer3D.unitModelWants`, RenderLookupsBuilder
 // `requestUnitModels`). Frame by frame, the renderer must read what the old in-draw call answered, and the same
 // requests must leave in the same frame and order — nothing for the units the renderer culled.
@@ -8,7 +8,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { UPDATE_FIELDS } from "../dist/code/generated/updateFields.js";
 
-// ui/Frames.ts builds DOM widgets at import time; the same stand-in replay-bound-lookups.test.mjs uses.
+// The same document stand-in replay-bound-lookups.test.mjs uses.
 function fakeDocument() {
   const make = () => {
     const node = {
@@ -44,7 +44,7 @@ globalThis.matchMedia = globalThis.window.matchMedia;
 globalThis.requestAnimationFrame = () => 0;
 globalThis.HTMLElement = class {};
 
-const { unitModelFor, unitModelInputs, unitModelPeek, unitModelVolatile } = await import("../dist/code/browser/ui/Frames.js");
+const { unitModelFor, unitModelInputs, unitModelPeek, unitModelVolatile } = await import("../dist/code/browser/ui/UnitModels.js");
 const { bumpFieldsVersion } = await import("../dist/code/world/FieldsVersion.js");
 const { CreatureModelClient } = await import("../dist/code/browser/CreatureModelClient.js");
 const { MirrorImages } = await import("../dist/code/world/MirrorImages.js");

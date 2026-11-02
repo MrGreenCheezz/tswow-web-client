@@ -90,7 +90,8 @@ const { UPDATE_FIELDS } = await import("../dist/code/generated/updateFields.js")
 const { OPCODES } = await import("../dist/code/generated/opcodes.js");
 const { PacketReader } = await import("../dist/code/protocol/PacketReader.js");
 const { game } = await import("../dist/code/browser/game/Context.js");
-const { showTarget, unitDisplayName } = await import("../dist/code/browser/ui/Frames.js");
+const { showTarget } = await import("../dist/code/browser/ui/Frames.js");
+const { unitDisplayName } = await import("../dist/code/browser/ui/UnitNames.js");
 const { showWorldState } = await import("../dist/code/browser/ui/WorldView.js");
 
 const SELF = 0x0000_0000_0000_0004n;

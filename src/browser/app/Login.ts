@@ -29,7 +29,7 @@ import { resetLoadingScreen } from "../ui/LoadingScreen.js";
 import { closeGameMenu, resetLogoutPending } from "../ui/GameMenu.js";
 import { closeKeyBindingsWindow } from "../ui/KeyBindings.js";
 import { closeGameWindows } from "../ui/Windows.js";
-import { clearQuestLog } from "../ui/QuestLog.js";
+import { clearQuestLog } from "../ui/QuestLogData.js";
 import { bindDeathScreenEffect, resetDeathScreenEffect } from "../ui/DeathScreenEffect.js";
 import { settingsStore } from "../ui/Settings.js";
 import { detachInputAccount } from "../input/InputAccountWiring.js";

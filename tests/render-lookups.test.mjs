@@ -49,7 +49,7 @@ function collisionModelBytes() {
   }]);
 }
 
-/** ui/Frames.ts `mountModelFor` before this slice, verbatim (Frames needs a DOM to import). */
+/** ui/UnitModels.ts `mountModelFor` before this slice, verbatim. */
 function mountModelFor(object, creatureModels) {
   const displayId = unit.mountDisplayId(object) ?? 0;
   if (displayId <= 0 || !creatureModels) return undefined;
@@ -125,7 +125,7 @@ test("a mount and the display-answered test read the pushed creature rows as the
   }
   assert.match(source("CreatureModelClient.ts"), /get displays\(\): ReadonlyMap<number, CreatureModelMetadata> \{\s*return this\.#cache;/,
     "the pushed rows are the very cache `get` reads");
-  assert.match(source("ui/Frames.ts"), /return mountDisplayModel\(object, creatureModels\);/,
+  assert.match(source("ui/UnitModels.ts"), /return mountDisplayModel\(object, creatureModels\);/,
     "the UI's mount lookup and the renderer's are one function");
   assert.match(source("GameObjectMetadata.ts"), /get displays\(\): ReadonlyMap<number, GameObjectDisplayMetadata> \{\s*return this\.#cache;/);
 });

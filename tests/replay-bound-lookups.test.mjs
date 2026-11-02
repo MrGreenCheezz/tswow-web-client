@@ -55,7 +55,7 @@ globalThis.HTMLElement = class {};
 
 const { game } = await import("../dist/code/browser/game/Context.js");
 const { mountModel, mountModelFor, unitModel, unitModelFor, visibleEquipment, visibleEquipmentFor } =
-  await import("../dist/code/browser/ui/Frames.js");
+  await import("../dist/code/browser/ui/UnitModels.js");
 const { reactionBetween } = await import("../dist/code/browser/game/Targeting.js");
 const { selectionRingColour, selectionRingColourFor } = await import("../dist/code/browser/ui/NamePlates.js");
 

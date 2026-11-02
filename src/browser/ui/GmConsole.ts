@@ -7,7 +7,7 @@ import type { WorldClient } from "../../world/WorldClient.js";
 import { submitChat } from "./Chat.js";
 import { setIconSource, spellIconUrl } from "./IconImage.js";
 import { ensureSpellNames, spellName } from "./SpellNames.js";
-import { unitDisplayName } from "./Frames.js";
+import { unitDisplayName } from "./UnitNames.js";
 import { setTip } from "./Tooltip.js";
 import { Panel, Tabs } from "./ToolWidgets.js";
 import {

@@ -104,7 +104,7 @@ export class MirrorImages {
 
   /**
    * 22.10 ARC-2 S2c: what `awaiting` answers right after `get(guid, displayId, flags2)` — the order
-   * ui/Frames.ts `unitModelFor` reads them in — without asking: a question `get` would send now (a new
+   * ui/UnitModels.ts `unitModelFor` reads them in — without asking: a question `get` would send now (a new
    * one, or a retry that is due) is one being waited for.
    */
   awaitingAfterGet(guid: bigint, displayId: number, flags2: number): boolean {

@@ -1,6 +1,6 @@
 import { HITINFO_CRITICAL, type AttackerState } from "../../world/CombatProtocol.js";
 import { WorldClient } from "../../world/WorldClient.js";
-import { recordCombatEntry } from "./ChatDock.js";
+import { recordCombatEntry } from "./CombatHistory.js";
 import { AVOIDED, ENVIRONMENT_NAMES, swingEntry, swingText } from "./CombatLogModel.js";
 import { swingWarning } from "./Dom.js";
 import { showFloatingText } from "./HeadOverlay.js";

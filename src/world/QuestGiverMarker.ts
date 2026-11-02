@@ -10,7 +10,7 @@
  * - The marks are the models of 0xadac98: 7 is Interface\Buttons\TalkToMeGreen.mdx — a green «!» over a
  *   flight master the character has not discovered.
  *
- * This file is the rule; the native plates and minimap draw marks from `questMarkFor` (ui/QuestLog.ts)
+ * This file is the rule; the native plates and minimap draw marks from `questMarkFor` (ui/QuestLogData.ts)
  * and `minimapQuestMark` (ui/Minimap.ts), which are not wired to it yet.
  */
 

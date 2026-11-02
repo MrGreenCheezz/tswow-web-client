@@ -14,7 +14,7 @@ import {
   questMapObjectiveMarkers, questMarkerProgress,
   type QuestMapObjectiveMarker, type QuestObjectiveNameResolver,
 } from "./QuestObjectiveMarkers.js";
-import { currentQuestLogEntries } from "./QuestLog.js";
+import { currentQuestLogEntries } from "./QuestLogData.js";
 import { setTip, Panel } from "./Widgets.js";
 import { partyBlipMembers } from "../game/PartyPositions.js";
 import {

@@ -107,6 +107,8 @@ globalThis.HTMLTextAreaElement = class {};
 
 const { game } = await import("../dist/code/browser/game/Context.js");
 const dock = await import("../dist/code/browser/ui/ChatDock.js");
+const history = await import("../dist/code/browser/ui/CombatHistory.js");
+const resetDock = () => { history.resetCombatHistory(); dock.resetChatDock(); };
 
 const CHAT_MSG_SAY = 0x01;
 const CHAT_MSG_WHISPER = 0x07;
@@ -139,7 +141,7 @@ const sameNodes = (left, right) => left.length === right.length && left.every((n
 test("a name answer redraws the pane only when a line on it now reads differently", () => {
   const world = crowdWorld();
   game.world = world;
-  dock.resetChatDock();
+  resetDock();
   try {
     say(world, 100n, "привет");
     say(world, 101n, "торгую");
@@ -168,7 +170,7 @@ test("a name answer redraws the pane only when a line on it now reads differentl
     assert.match(paneText(), /машет рукой Торговцу/);
   } finally {
     runFrame();
-    dock.resetChatDock();
+    resetDock();
     game.world = undefined;
   }
 });
@@ -176,7 +178,7 @@ test("a name answer redraws the pane only when a line on it now reads differentl
 test("a line for another tab moves its badge on the buttons already drawn", () => {
   const world = crowdWorld();
   game.world = world;
-  dock.resetChatDock();
+  resetDock();
   try {
     const buttons = [...chatTabs.children];
     const whisper = {
@@ -185,14 +187,14 @@ test("a line for another tab moves its badge on the buttons already drawn", () =
     };
     world.chatLog.push(whisper);
     dock.appendChatMessage(whisper);
-    dock.recordCombatEntry({ at: 1, text: "удар", kind: "muted", casterGuid: 5n, targetGuid: 6n, spellId: 0 });
-    dock.recordCombatEntry({ at: 1, text: "удар", kind: "muted", casterGuid: 5n, targetGuid: 6n, spellId: 0 });
+    history.recordCombatEntry({ at: 1, text: "удар", kind: "muted", casterGuid: 5n, targetGuid: 6n, spellId: 0 });
+    history.recordCombatEntry({ at: 1, text: "удар", kind: "muted", casterGuid: 5n, targetGuid: 6n, spellId: 0 });
     assert.ok(sameNodes(chatTabs.children, buttons), "the bar is not rebuilt for a count");
     const byTab = Object.fromEntries(chatTabs.children.map((button) => [button.dataset.chatTab, button.dataset.unread]));
     assert.deepEqual(byTab, { general: undefined, whisper: "1", combat: "2" });
   } finally {
     runFrame();
-    dock.resetChatDock();
+    resetDock();
     game.world = undefined;
   }
 });
@@ -200,7 +202,7 @@ test("a line for another tab moves its badge on the buttons already drawn", () =
 test("lines appended between two frames read the pane once and scroll it once, at the frame", () => {
   const world = crowdWorld();
   game.world = world;
-  dock.resetChatDock();
+  resetDock();
   runFrame();
   try {
     chatLog.scrollHeightValue = 100;
@@ -222,7 +224,7 @@ test("lines appended between two frames read the pane once and scroll it once, a
     runFrame();
     assert.equal(chatLog.scrollTop, 50);
   } finally {
-    dock.resetChatDock();
+    resetDock();
     game.world = undefined;
   }
 });
@@ -230,13 +232,13 @@ test("lines appended between two frames read the pane once and scroll it once, a
 test("while the stock chat owns the screen the pane is not drawn into, and nothing is laid out", () => {
   const world = crowdWorld();
   game.world = world;
-  dock.resetChatDock();
+  resetDock();
   runFrame();
   body.classList.add("framexml-world-replaces-chat");
   try {
     layoutReads = 0;
     for (let index = 0; index < 10; index += 1) say(world, 600n + BigInt(index), `скрыто ${index}`);
-    dock.recordCombatEntry({ at: 1, text: "удар", kind: "muted", casterGuid: 5n, targetGuid: 6n, spellId: 0 });
+    history.recordCombatEntry({ at: 1, text: "удар", kind: "muted", casterGuid: 5n, targetGuid: 6n, spellId: 0 });
     world.names.set(600n, "Кто-то");
     dock.refreshChatNames();
     assert.equal(chatLog.children.length, 0, "no line is built for a hidden pane");
@@ -252,7 +254,7 @@ test("while the stock chat owns the screen the pane is not drawn into, and nothi
     assert.match(paneText(), /Кто-то/);
   } finally {
     body.classList.remove("framexml-world-replaces-chat");
-    dock.resetChatDock();
+    resetDock();
     game.world = undefined;
   }
 });

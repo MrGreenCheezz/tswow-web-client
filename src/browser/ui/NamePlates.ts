@@ -22,7 +22,7 @@ import { healthRatio } from "../SimpleScene.js";
 import { game } from "../game/Context.js";
 import { reactionBetween, reactionTo, unitReactionToPlayer } from "../game/Targeting.js"; // 5.05 (12.10): unitReactionToPlayer
 import type { FactionClient } from "../FactionClient.js";
-import { questMarkFor } from "./QuestLog.js";
+import { questMarkFor } from "./QuestLogData.js";
 import { settingOn } from "./Settings.js";
 import { ensureSpellNames, spellName } from "./SpellNames.js";
 import { classColor, raidMarksByUnit } from "./UnitSnapshot.js";

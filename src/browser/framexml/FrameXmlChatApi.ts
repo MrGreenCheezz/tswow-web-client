@@ -921,16 +921,16 @@ export interface FrameXmlStockChatHost {
   readonly schedule?: (callback: () => void) => void;
 }
 
-/** One combat line as `ChatDock.recordCombatEntry` records it. */
+/** One combat line as `CombatHistory.recordCombatEntry` records it. */
 export interface FrameXmlCombatLine {
   readonly text: string;
   readonly kind: string;
 }
 
 export interface FrameXmlStockChatDeps extends FrameXmlChatApiDeps, FrameXmlNativeSlashDeps {
-  /** `ChatDock.onCombatEntry`, for the interim combat window. */
+  /** `CombatHistory.onCombatEntry`, for the interim combat window. */
   readonly onCombatEntry?: (listener: (entry: FrameXmlCombatLine) => void) => () => void;
-  /** `ChatDock.combatHistory`: what the native combat tab already held when the stock chat took over. */
+  /** `CombatHistory.combatHistory`: what the native combat tab already held when the stock chat took over. */
   readonly combatHistory?: () => readonly FrameXmlCombatLine[];
   /**
    * Whether the seam reports chat window 2 as shown or docked. The native combat tab is hidden

@@ -44,7 +44,7 @@ import { repaintPlayerHud } from "../ui/Frames.js";
 import { chatLog } from "../ui/Dom.js";
 import { redrawChatLog } from "../ui/ChatDock.js";
 // The stock chat input owner and C-API (chat lane); kept on their own lines beside the chat imports.
-import { combatHistory, onCombatEntry } from "../ui/ChatDock.js";
+import { combatHistory, onCombatEntry } from "../ui/CombatHistory.js";
 import { nativeSlashCommands, onNativeSlashCommandsChanged, runNativeCommand } from "../ui/Chat.js";
 import { macroUnitGuid, runCastCommand, runUseCommand } from "../ui/CombatCommands.js";
 import { installFrameXmlStockChat } from "./FrameXmlChatApi.js";
@@ -247,7 +247,7 @@ import { mountFrameXmlNpcWindows } from "./FrameXmlGossipNpcMount.js";
 import { showMail as showNativeMail } from "../ui/Mail.js";
 import { showTrade as showNativeTrade } from "../ui/Social.js";
 import { LfgDungeonClient } from "../LfgDungeons.js";
-import { closeSettingsWindow } from "../ui/Settings.js";
+import { closeSettingsWindow } from "../ui/SettingsWindow.js";
 import { closeKeyBindingsWindow } from "../ui/KeyBindings.js";
 import { frameXmlKeyBindingsOpen, toggleFrameXmlKeyBindings } from "./FrameXmlBindingController.js";
 import { closeMacroWindow } from "../ui/Macros.js";

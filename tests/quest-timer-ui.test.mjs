@@ -90,6 +90,7 @@ const { UPDATE_FIELDS } = await import("../dist/code/generated/updateFields.js")
 const { QUEST_STATE_COMPLETE, QUEST_STATE_FAIL } = await import("../dist/code/world/QuestProtocol.js");
 const { usePanelHost } = await import("../dist/code/browser/ui/Widgets.js");
 const questLog = await import("../dist/code/browser/ui/QuestLog.js");
+const { clearQuestLog } = await import("../dist/code/browser/ui/QuestLogData.js");
 
 test("timed quest updates journal and tracker without rebuilding them every second", () => {
   const actualSetInterval = globalThis.setInterval;
@@ -190,12 +191,12 @@ test("timed quest updates journal and tracker without rebuilding them every seco
     assert.equal(intervals.size, 1);
     const borrowed = questLog.beginQuestLogNativeReplacement();
     assert.equal(intervals.size, 0);
-    questLog.clearQuestLog();
+    clearQuestLog();
     questLog.restoreQuestLogNativeReplacement(borrowed);
     assert.equal(intervals.size, 0, "native teardown leaves the clock stopped");
     game.world = undefined;
   } finally {
-    questLog.clearQuestLog();
+    clearQuestLog();
     game.world = undefined;
     globalThis.setInterval = actualSetInterval;
     globalThis.clearInterval = actualClearInterval;

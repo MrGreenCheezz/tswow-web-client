@@ -13,7 +13,7 @@ import { formatGameTime, halfMinuteOfDay } from "../../world/GameTimeProtocol.js
 import { lightOverrideWeight } from "../LightClient.js";
 import { GhostLightFade } from "../LightStateFade.js"; // 05.10-A7b-5 (7.15)
 import { isPlayerGhost } from "../../world/Fields.js"; // 05.10-A7b-5 (7.15)
-import { unitModel, unitModelInputs, unitModelPeek, unitModelVolatile } from "../ui/Frames.js";
+import { unitModel, unitModelInputs, unitModelPeek, unitModelVolatile } from "../ui/UnitModels.js";
 import {
   advancePhysics, heartbeatDue, sendMovement,
 } from "../input/Movement.js";

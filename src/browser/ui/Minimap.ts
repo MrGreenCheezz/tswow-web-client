@@ -12,6 +12,7 @@ import {
 } from "../MinimapGeometry.js";
 import { formatGameTime } from "../../world/GameTimeProtocol.js";
 import { rightRail } from "./Dom.js";
+import { settingOn, watchSettingsApplied } from "./Settings.js";
 import { skinnable, slot } from "./Slots.js";
 import { toggleTrackingMenu, trackingMatcher } from "./Tracking.js";
 import { toggleWorldMap } from "./WorldMap.js";
@@ -453,6 +454,9 @@ export function toggleMinimapShown(): void {
   hiddenByKey = !hiddenByKey;
 }
 
+// The stock Minimap draws this same canvas, so the account's value reaches it whoever applied it.
+watchSettingsApplied(() => { setMinimapRotation(settingOn("minimapRotate")); });
+
 /** Called when the setting changes elsewhere, so the round button matches the checkbox. */
 export function refreshMinimapControls(): void {
   const buttons = parts?.root.querySelectorAll<HTMLButtonElement>(".minimap-button");
@@ -770,7 +774,7 @@ const BLIP_RIM_INSET = 4;
 /**
  * The `!`/`?` over a quest giver on the minimap.
  *
- * The plate twin is `questMarkFor` in QuestLog.ts; kept as a separate pure function so the
+ * The plate twin is `questMarkFor` in QuestLogData.ts; kept as a separate pure function so the
  * minimap never imports the QuestLog's UI ring. Only "something here for you" statuses mark;
  * the rest draw nothing.
  */
@@ -873,7 +877,7 @@ function collectBlips(radius: number, position: WorldPoint, state: WorldState): 
     });
   }
 
-  // Quest givers: the same `!`/`?` the plates carry (`questMarkFor` in QuestLog.ts is the
+  // Quest givers: the same `!`/`?` the plates carry (`questMarkFor` in QuestLogData.ts is the
   // canonical twin; this reads the status map directly so the minimap does not join the
   // QuestLog→Npc→Settings import ring). Text, not dots: a dot cannot say which of the two it is.
   // (Collected in the object pass above.)
