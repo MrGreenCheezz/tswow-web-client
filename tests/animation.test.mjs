@@ -25,7 +25,7 @@ import {
   stealthGroundAnimations,
   applyGlobalSequenceBones, applyStrafeYaw, buildSkinnedTemplateFrom, instantiateSkinned,
   resolveStrafeYawBones, stepStrafeYaw, strafeYawBonesFor,
-  strafeYawTarget, STRAFE_YAW_DIAGONAL, STRAFE_YAW_PURE, STRAFE_YAW_RATE,
+  strafeYawTarget, STRAFE_YAW_DIAGONAL, STRAFE_YAW_PURE, STRAFE_YAW_SETTLE_RATE, strafeYawSnapsBack,
   strafeUpperBodyTurns, STRAFE_UPPER_BODY_LIMIT, // 11.10
 } from "../dist/code/browser/AnimatedModel.js";
 import {
@@ -1604,9 +1604,14 @@ test("M1 the strafe yaw target is Wow.exe's body yaw, row for row", () => {
   // so a strafe jump does not straighten the legs for its arc (was 0).
   assert.equal(moving(F.falling | F.strafeLeft), STRAFE_YAW_PURE);
   assert.equal(strafeYawTarget(standing({ movementFlags: F.forward | F.strafeLeft, dead: true })), 0);
+  // 03.11: Wow.exe's frames of a horse, a ram, a raptor and a mammoth: the mount takes the same table as a man on foot.
   assert.equal(
-    strafeYawTarget(standing({ movementFlags: F.forward | F.strafeLeft, mounted: true })), 0,
-    "a rider's legs belong to the saddle, and the mount keeps the server's own facing");
+    strafeYawTarget(standing({ movementFlags: F.strafeLeft, mounted: true })), STRAFE_YAW_PURE);
+  assert.equal(
+    strafeYawTarget(standing({ movementFlags: F.forward | F.strafeRight, mounted: true })), -STRAFE_YAW_DIAGONAL);
+  assert.equal(
+    strafeYawTarget(standing({ movementFlags: F.backward | F.strafeLeft, mounted: true })), -STRAFE_YAW_DIAGONAL,
+    "and backing away mirrors the diagonal");
 });
 
 test("11.10 SpineLow and the head are turned back toward the facing by Wow.exe's shares", () => {
@@ -1626,40 +1631,76 @@ test("11.10 SpineLow and the head are turned back toward the facing by Wow.exe's
   assert.deepEqual(strafeUpperBodyTurns(Number.NaN, true, true), { spine: 0, head: 0 });
 });
 
-test("M1 the turn is bounded, so a key change never snaps the legs", () => {
-  // A quarter turn inside one commit window, which is the authored blend of every gait.
-  assert.ok(Math.abs(STRAFE_YAW_RATE - STRAFE_YAW_PURE / (LOCOMOTION_COMMIT_WINDOW / 1000)) < 1e-9);
+test("03.11 the turn is Wow.exe's spring under a key or a gait, a slow settle standing, and dropped in water or flight", () => {
+  const F = MOVEMENT_FLAGS;
   const frame = 1 / 60;
-  const perFrame = STRAFE_YAW_RATE * frame;
-  assert.ok(perFrame < STRAFE_YAW_DIAGONAL,
-    "one frame is never the whole diagonal, or the bound would not be a bound");
+  const still = standing({ movementFlags: 0 });
+  const held = standing({ movementFlags: F.strafeLeft });
+  const run = (state, target, pose, seconds) => {
+    for (let t = 0; t < seconds; t += frame) stepStrafeYaw(state, target, pose, frame);
+    return state;
+  };
 
-  let yaw = 0;
-  let frames = 0;
-  while (yaw !== STRAFE_YAW_DIAGONAL && frames < 1000) {
-    const next = stepStrafeYaw(yaw, STRAFE_YAW_DIAGONAL, frame);
-    assert.ok(next - yaw <= perFrame + 1e-9, "and no single step exceeds the rate");
-    yaw = next;
-    frames++;
+  // A strafe key: damped, so it arrives without overshooting, within about a quarter of a second at this rate.
+  const turning = { yaw: 0, velocity: 0 };
+  let peak = 0;
+  let reachedAt = -1;
+  for (let i = 0; i < 60; i++) {
+    stepStrafeYaw(turning, STRAFE_YAW_PURE, held, frame);
+    peak = Math.max(peak, turning.yaw);
+    if (reachedAt < 0 && turning.yaw > STRAFE_YAW_PURE * 0.9) reachedAt = (i + 1) * frame;
   }
-  assert.equal(yaw, STRAFE_YAW_DIAGONAL);
-  // 45 degrees in half a commit window, at 60 Hz.
-  assert.equal(frames, Math.ceil((STRAFE_YAW_DIAGONAL / STRAFE_YAW_RATE) / frame));
+  assert.deepEqual(turning, { yaw: STRAFE_YAW_PURE, velocity: 0 }, "and it lands exactly");
+  assert.ok(peak <= STRAFE_YAW_PURE + 1e-3, `no overshoot, peak ${peak}`);
+  assert.ok(reachedAt > 0.1 && reachedAt < 0.35, `90 % of the turn at ${reachedAt} s`);
 
-  // Releasing the key unwinds at the same rate rather than dropping the legs back.
-  const released = stepStrafeYaw(STRAFE_YAW_DIAGONAL, 0, frame);
-  assert.ok(released > 0 && released < STRAFE_YAW_DIAGONAL);
-  assert.equal(stepStrafeYaw(STRAFE_YAW_DIAGONAL, 0, 10), 0, "a long enough step still lands exactly");
-  // A frame that is not a frame — a tab that was hidden for a minute — turns a quarter second's
-  // worth and no more, so nothing integrates a whole stall in one step.
-  const stalled = stepStrafeYaw(-STRAFE_YAW_PURE, STRAFE_YAW_PURE, 60);
-  assert.ok(Math.abs(stalled - (-STRAFE_YAW_PURE + STRAFE_YAW_RATE * 0.25)) < 1e-9,
-    `a stalled frame is capped, got ${stalled}`);
-  assert.equal(stepStrafeYaw(stalled, STRAFE_YAW_PURE, 60), STRAFE_YAW_PURE,
-    "and the one after it lands");
-  assert.equal(stepStrafeYaw(0, STRAFE_YAW_PURE, 0), 0, "and a zero-length frame turns nothing");
-  assert.equal(stepStrafeYaw(Number.NaN, STRAFE_YAW_DIAGONAL, frame), STRAFE_YAW_DIAGONAL,
-    "a unit with nothing stored yet starts where it belongs");
+  // Forward or a fall after the key: the same spring on the way back (`flags & 0x1003`).
+  for (const flags of [F.forward, F.backward, F.falling]) {
+    const back = run({ yaw: STRAFE_YAW_PURE, velocity: 0 }, 0, standing({ movementFlags: flags }), 0.5);
+    assert.ok(Math.abs(back.yaw) < 0.02, `0x${flags.toString(16)} straightens at once, got ${back.yaw}`);
+  }
+
+  // Standing after the key: Wow.exe's frames, a quarter turn gone about four seconds later.
+  const stopped = { yaw: STRAFE_YAW_PURE, velocity: 3 };
+  stepStrafeYaw(stopped, 0, still, frame);
+  assert.equal(stopped.velocity, 0, "no spring is left over");
+  assert.ok(Math.abs(stopped.yaw - (STRAFE_YAW_PURE - STRAFE_YAW_SETTLE_RATE * frame)) < 1e-9);
+  run(stopped, 0, still, 1);
+  assert.ok(stopped.yaw > STRAFE_YAW_PURE * 0.6, `still turned a second later, got ${stopped.yaw}`);
+  run(stopped, 0, still, 3);
+  assert.equal(stopped.yaw, 0, "and on the facing by the fourth, exactly");
+  const otherWay = run({ yaw: -STRAFE_YAW_DIAGONAL, velocity: 0 }, 0, still, 0.5);
+  assert.ok(otherWay.yaw > -STRAFE_YAW_DIAGONAL && otherWay.yaw < 0, "either way round");
+
+  // Wow.exe's reset: dead, in water or in flight the body is on the facing at once, a fall is not among them.
+  for (const pose of [
+    standing({ movementFlags: F.strafeLeft, dead: true }),
+    standing({ movementFlags: F.swimming }),
+    standing({ movementFlags: F.flying }),
+  ]) {
+    assert.equal(strafeYawSnapsBack(pose), true);
+    const dropped = { yaw: STRAFE_YAW_PURE, velocity: 2 };
+    stepStrafeYaw(dropped, 0, pose, frame);
+    assert.deepEqual(dropped, { yaw: 0, velocity: 0 });
+  }
+  assert.equal(strafeYawSnapsBack(standing({ movementFlags: F.falling | F.strafeLeft })), false);
+
+  // A frame that is not a frame — a tab hidden for a minute — integrates a quarter second and no more.
+  const stalled = { yaw: STRAFE_YAW_PURE, velocity: 0 };
+  stepStrafeYaw(stalled, 0, still, 60);
+  assert.ok(Math.abs(stalled.yaw - (STRAFE_YAW_PURE - STRAFE_YAW_SETTLE_RATE * 0.25)) < 1e-9,
+    `a stalled frame is capped, got ${stalled.yaw}`);
+  const stalledSpring = { yaw: -STRAFE_YAW_PURE, velocity: 0 };
+  stepStrafeYaw(stalledSpring, STRAFE_YAW_PURE, held, 60);
+  assert.ok(Number.isFinite(stalledSpring.yaw) && Math.abs(stalledSpring.yaw) <= STRAFE_YAW_PURE + 1e-3,
+    `and the spring stays stable across it, got ${stalledSpring.yaw}`);
+
+  const idle = { yaw: 0.25, velocity: 0 };
+  stepStrafeYaw(idle, STRAFE_YAW_PURE, held, 0);
+  assert.equal(idle.yaw, 0.25, "a zero-length frame turns nothing");
+  const fresh = { yaw: Number.NaN, velocity: 1 };
+  stepStrafeYaw(fresh, STRAFE_YAW_DIAGONAL, held, frame);
+  assert.deepEqual(fresh, { yaw: STRAFE_YAW_DIAGONAL, velocity: 0 }, "a broken value starts where it belongs");
 });
 
 test("M1 the yaw bones are resolved from the rig, and fail open when it cannot answer", () => {

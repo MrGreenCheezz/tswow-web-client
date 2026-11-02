@@ -3034,6 +3034,8 @@ interface RenderedUnit extends PosedModel {
    * one set of clips, and the turn is the only part of the pose that is theirs alone.
    */
   strafeYaw: number | undefined;
+  /** 03.11: the spring's velocity for `strafeYaw` (`stepStrafeYaw`). */
+  strafeYawVelocity: number;
   /** 11.10: the facing this unit is drawn at, when the client does not move it itself. See `world/UnitFacing.ts`. */
   shownFacing: ShownUnitFacing | undefined;
   /** 5.32: a seated passenger's drawn facing in its seat (VehiclePassengerPose.ts reads it); undefined off a seat. */
@@ -3876,6 +3878,8 @@ const PLAYER_TINT = 0x5aa2e8;
 const CORPSE_TINT = 0x6c6a63;
 /** Scratch for the per-display creature tint in `#drawUnit`: `getHex` copies the value out. */
 const unitTintScratch = new THREE.Color();
+/** 03.11: the frame's working copy of a unit's body turn, so `#applyStrafeYaw` allocates nothing per unit. */
+const strafeYawState = { yaw: 0, velocity: 0 };
 /**
  * Placeholder gait for the capsule stand-ins: a slight bob while a unit is moving. Delete it
  * together with the capsules once skinned M2 models carry their own animations.
@@ -15378,7 +15382,7 @@ export class WorldRenderer3D {
         admissionHasAuthoredAttachments: undefined, bodyHeight: undefined, wvm: undefined, visual: undefined,
         mount: undefined, opacityBorrows: undefined, warmShown: undefined, modelShown: undefined,
         fadeReturnFrames: undefined, appearancePendingSince: undefined, stealthed: undefined,
-        strafeYaw: undefined, deathFade: undefined, flagPoses: undefined,
+        strafeYaw: undefined, strafeYawVelocity: 0, deathFade: undefined, flagPoses: undefined,
         shownFacing: undefined, // 11.10
         seatFacing: undefined, // 5.32
         closedHands: undefined, // 12.10 6.24
@@ -16797,6 +16801,8 @@ export class WorldRenderer3D {
    */
   #strafeYawIdle(unit: RenderedUnit, template: SkinnedTemplate, pose: UnitPose): boolean {
     if ((unit.strafeYaw ?? 0) !== 0) return false;
+    // 03.11: the mount turns whatever the rider's rig can do.
+    if (unit.mount) return strafeYawTarget(pose) === 0;
     // 11.10: no clip argument — a ground strafe is never a sidestep any more (`poseAnimation`).
     return strafeYawBonesFor(template, unit.wvm) === undefined
       || strafeYawTarget(pose) === 0;
@@ -16811,7 +16817,7 @@ export class WorldRenderer3D {
    * row is what it is live in `strafeYawTarget`, out where a test can drive them.
    *
    * The turn is stepped every frame the unit is posed, including the frames its target is zero, so
-   * releasing a strafe key unwinds at the same bounded rate it wound up at. The bones are resolved
+   * releasing a strafe key unwinds rather than snaps (03.11: `stepStrafeYaw` says how). The bones are resolved
    * once per rig and remembered on the template; a rig that cannot answer gets no turn at all and
    * still keeps its stored angle at zero.
    */
@@ -16819,12 +16825,20 @@ export class WorldRenderer3D {
     elapsed: number, self: boolean): void {
     // 11.10: the head is found through the model's HELM attachment (`resolveStrafeYawBones`).
     const bones = strafeYawBonesFor(template, unit.wvm);
+    const mount = unit.mount;
     // 11.10: was `strafeYawTarget(pose, <the clip playing>)` — the sidestep exemption is gone.
-    const target = bones === undefined ? 0 : strafeYawTarget(pose);
-    const yaw = stepStrafeYaw(unit.strafeYaw ?? 0, target, elapsed);
+    const target = bones === undefined && !mount ? 0 : strafeYawTarget(pose);
+    const state = strafeYawState;
+    state.yaw = unit.strafeYaw ?? 0;
+    state.velocity = unit.strafeYawVelocity;
+    stepStrafeYaw(state, target, pose, elapsed);
+    const yaw = state.yaw;
     unit.strafeYaw = yaw;
+    unit.strafeYawVelocity = state.velocity;
+    // 03.11: in the saddle the whole animal turns, carrying the rider on its seat bone.
+    if (mount) mount.node.rotation.y = yaw;
     // 11.10: `self` — the active player's SpineLow share is not halved (Wow.exe 0x0073dab0).
-    if (bones && unit.skinned) applyStrafeYaw(unit.skinned, bones, yaw, self);
+    if (bones && unit.skinned) applyStrafeYaw(unit.skinned, bones, yaw, self, mount !== undefined);
   }
 
   /**

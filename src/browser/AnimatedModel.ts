@@ -2307,23 +2307,13 @@ export const STRAFE_YAW_DIAGONAL = Math.PI / 4;
 /** A pure strafe: travel is a quarter turn off the facing (0x0073dab0: `_DAT_009e8d88`, π/2). */
 export const STRAFE_YAW_PURE = Math.PI / 2;
 
+/** 03.11: the spring of Wow.exe 0x00719660 (`_DAT_009f281c`, read from the executable): a SmoothCD at this rate. */
+export const STRAFE_YAW_SPRING = 20;
 /**
- * How fast the lower body turns toward the travel direction, in radians a second.
- *
- * A quarter turn inside one {@link LOCOMOTION_COMMIT_WINDOW} — the 150 ms that is the authored
- * `blendTime` of every gait on all eight playable rigs — so the legs finish turning exactly as the
- * gait they are turning under finishes its cross-fade, and the ±45° diagonal is reached in 75 ms.
- *
- * The reference client does not smooth this at all: `renderer.cpp:1613-1653` recomputes the delta
- * from the current keys every frame and writes it straight in. That is defensible for the one model
- * a local player drives at frame rate, and wrong for the twenty around it: a remote unit's flags
- * arrive with its movement packets, several frames apart, so an unsmoothed port would snap the legs
- * of everyone else in view. The bound is the whole of the difference.
- *
- * 11.10: Wow.exe springs the body yaw instead (0x00719660: a critically damped step at 20 rad/s,
- * `_DAT_009f281c`, the body kept within ±1.570482 of the facing, `_DAT_00a34bbc`); this rate was kept.
+ * 03.11: how fast a unit standing still comes back to its facing after a strafe, in radians a second. Taken from a series
+ * of Wow.exe's frames a mount and a man: a quarter turn is gone about four seconds after the key.
  */
-export const STRAFE_YAW_RATE = STRAFE_YAW_PURE / (LOCOMOTION_COMMIT_WINDOW / 1000);
+export const STRAFE_YAW_SETTLE_RATE = (Math.PI / 2) / 3.6;
 
 /** A frame longer than this is a stall, not a frame; the turn is allowed to finish across it. */
 const STRAFE_YAW_MAX_STEP_SECONDS = 0.25;
@@ -2352,15 +2342,17 @@ const STRAFE_YAW_MAX_STEP_SECONDS = 0.25;
  *
  * Wow.exe resets the turn on death (UNIT_FIELD_HEALTH < 1), in water or flight (`flags & 0x2200000`),
  * on certain vehicle seats and mounts, and for a rig with neither key bone; a fall is *not* among them,
- * so a strafe jump keeps its turn (11.10: was excluded). A mounted rider sits: its legs belong to the
- * saddle, and the mount keeps the server's own facing. A hover or fly tier keeps its own ladder.
+ * so a strafe jump keeps its turn (11.10: was excluded). A hover or fly tier keeps its own ladder.
+ *
+ * 03.11: in the saddle too, as recorded on Wow.exe (docs/implementation/mount-strafe.ru.md). A horse, a ram, a raptor, a
+ * mammoth and a skeletal gryphon on the ground all turn by this table with the rider on them; the rider's legs stay on
+ * the saddle and the upper body turns back toward the facing (`applyStrafeYaw`, `seated`). The mounts Wow.exe exempts
+ * are those whose model record has flag 0x200 or 0x1000: one model of 1467, not a mount, so that is not modelled.
  */
 export function strafeYawTarget(pose: UnitPose): number {
-  if (pose.dead || pose.mounted === true) return 0;
+  if (strafeYawSnapsBack(pose)) return 0; // 11.10: `|| isAirborne(pose)` dropped, as above
   const flags = pose.movementFlags;
   const has = (flag: number): boolean => (flags & flag) !== 0;
-  if (has(MOVEMENT_FLAGS.swimming) || isUnitFlying(flags, pose.flight === true)
-    || hoversOnFlightTier(pose)) return 0; // 11.10: `|| isAirborne(pose)` dropped, as above
   const left = has(MOVEMENT_FLAGS.strafeLeft);
   const right = has(MOVEMENT_FLAGS.strafeRight);
   if (left === right) return 0;
@@ -2395,19 +2387,55 @@ export function strafeUpperBodyTurns(radians: number, activePlayer: boolean, has
   return { spine: sign * spine, head: sign * head };
 }
 
+/** 03.11: `flags & 0x1003` of 0x0073dab0. */
+const STRAFE_YAW_SPRING_FLAGS = MOVEMENT_FLAGS.forward | MOVEMENT_FLAGS.backward | MOVEMENT_FLAGS.falling;
+
+/** 03.11: the state of the body's turn: the angle, and the spring's velocity. */
+export interface StrafeYawState {
+  yaw: number;
+  velocity: number;
+}
+
+/** Wow.exe's own reset (0x0073dab0): dead, in water or in flight, the body is on the facing at once rather than unwinding. */
+export function strafeYawSnapsBack(pose: UnitPose): boolean {
+  if (pose.dead) return true;
+  return (pose.movementFlags & MOVEMENT_FLAGS.swimming) !== 0 || isUnitFlying(pose.movementFlags, pose.flight === true)
+    || hoversOnFlightTier(pose);
+}
+
 /**
- * Moves the current turn toward its target at a bounded rate, so a key change never snaps.
+ * One frame of the body's turn. By Wow.exe 0x0073dab0:
  *
- * The shortest way round is not needed: both ends are inside ±90°, so the plain difference is
- * already the short arc. A non-finite carry-over — nothing has been stored yet — takes the target.
+ * * a strafe key held: the spring toward {@link strafeYawTarget}, 0x00719660, which is a SmoothCD;
+ * * no strafe key but forward, backward or a fall (`flags & 0x1003`): the same spring back to the facing;
+ * * standing: no spring. The body stays turned and comes round slowly, as the frames show. Wow.exe's own rule for this
+ *   part (`param_1[0x20d]`, `param_1[0x2af]`) is not settled, so the rate is the measured one;
+ * * {@link strafeYawSnapsBack}: on the facing at once.
  */
-export function stepStrafeYaw(current: number, target: number, seconds: number): number {
-  if (!Number.isFinite(current)) return target;
-  if (!Number.isFinite(seconds) || seconds <= 0) return current;
-  const step = STRAFE_YAW_RATE * Math.min(seconds, STRAFE_YAW_MAX_STEP_SECONDS);
-  const delta = target - current;
-  if (Math.abs(delta) <= step) return target;
-  return current + Math.sign(delta) * step;
+export function stepStrafeYaw(state: StrafeYawState, target: number, pose: UnitPose, seconds: number): void {
+  if (!Number.isFinite(state.yaw) || strafeYawSnapsBack(pose)) {
+    state.yaw = target;
+    state.velocity = 0;
+    return;
+  }
+  if (!Number.isFinite(seconds) || seconds <= 0) return;
+  const dt = Math.min(seconds, STRAFE_YAW_MAX_STEP_SECONDS);
+  if (target !== 0 || (pose.movementFlags & STRAFE_YAW_SPRING_FLAGS) !== 0) {
+    const x = STRAFE_YAW_SPRING * dt;
+    const damp = 1 / (1 + x + 0.48 * x * x + 0.235 * x * x * x);
+    const change = state.yaw - target;
+    const push = (state.velocity + STRAFE_YAW_SPRING * change) * dt;
+    state.velocity = (state.velocity - STRAFE_YAW_SPRING * push) * damp;
+    state.yaw = target + (change + push) * damp;
+    if (Math.abs(state.yaw - target) < 1e-3 && Math.abs(state.velocity) < 1e-2) {
+      state.yaw = target;
+      state.velocity = 0;
+    }
+    return;
+  }
+  state.velocity = 0;
+  const step = STRAFE_YAW_SETTLE_RATE * dt;
+  state.yaw = Math.abs(state.yaw) <= step ? 0 : state.yaw - Math.sign(state.yaw) * step;
 }
 
 /** The bones a strafe turns, resolved from the rig itself. See {@link resolveStrafeYawBones}. */
@@ -2637,7 +2665,7 @@ function turnYawedBone(bone: THREE.Object3D | undefined, local: THREE.Quaternion
  * share is not halved.
  */
 export function applyStrafeYaw(
-  instance: SkinnedInstance, bones: StrafeYawBones, radians: number, activePlayer = false,
+  instance: SkinnedInstance, bones: StrafeYawBones, radians: number, activePlayer = false, seated = false,
 ): void {
   const pelvis = instance.skeleton.bones[bones.pelvis];
   if (!pelvis) return;
@@ -2663,14 +2691,18 @@ export function applyStrafeYaw(
     return;
   }
   const upper = strafeUpperBodyTurns(radians, activePlayer, head !== undefined); // 11.10
+  // 03.11: in the saddle the mount has already taken the whole turn: the pelvis stays on it, and only the shares come back.
+  const body = seated ? 0 : radians;
 
-  strafeYawTurn.setFromAxisAngle(STRAFE_YAW_AXIS, radians);
   const above = boneChainQuaternion(pelvis.parent ?? instance.root, instance.root, strafeYawChain);
-  strafeYawLocal.copy(above).invert().multiply(strafeYawTurn).multiply(above);
-  turnYawedBone(pelvis, strafeYawLocal);
+  if (!seated) {
+    strafeYawTurn.setFromAxisAngle(STRAFE_YAW_AXIS, body);
+    strafeYawLocal.copy(above).invert().multiply(strafeYawTurn).multiply(above);
+    turnYawedBone(pelvis, strafeYawLocal);
+  }
   // 11.10: the spine shares the pelvis's parent, so the same frame carries its turn.
   if (spine.length > 0) {
-    strafeYawTurn.setFromAxisAngle(STRAFE_YAW_AXIS, radians - upper.spine);
+    strafeYawTurn.setFromAxisAngle(STRAFE_YAW_AXIS, body - upper.spine);
     strafeYawLocal.copy(above).invert().multiply(strafeYawTurn).multiply(above);
     for (const bone of spine) turnYawedBone(instance.skeleton.bones[bone], strafeYawLocal);
   }
