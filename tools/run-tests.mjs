@@ -25,6 +25,7 @@ import module from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { pruneCompileCache } from "./test-compile-cache.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -181,6 +182,7 @@ function main() {
     return;
   }
 
+  if (options.mode === "source") pruneCompileCache();
   const child = spawn(process.execPath, args, { cwd: root, env, stdio: "inherit" });
   let timedOut = false;
   const timer = setTimeout(() => {
