@@ -16,6 +16,10 @@
  *   `bazaarfacade03` have none and are portal targets, and Silvermoon's walls have none and show only from outside.
  *
  * The frustum then judges what was chosen, as for everything else in the scene.
+ *
+ * 7.53: from a room the outside world is drawn exactly when the walk reaches an outdoor group on screen (70 of 71 room
+ * frames, docs/implementation/wmo-camera-walk.ru.md): a door in view brings terrain back, the same room with its back to
+ * the door draws none. Which of its chunks then is not settled; WebClient draws the world as usual in that case.
  */
 
 import { WMO_GROUP_OUTDOOR, type WmoBounds, type WmoPortals } from "./WmoModel.js";
@@ -62,14 +66,27 @@ export function wmoGroupOfCollision(
   bounds: Readonly<WmoBounds>,
 ): number {
   for (let index = 0; index < groups.length; index++) {
-    const group = groups[index]!;
-    if (group.flags !== flags) continue;
-    const box = group.bounds;
-    if (Math.abs(box.minX - bounds.minX) <= SAME_BOUNDS && Math.abs(box.minY - bounds.minY) <= SAME_BOUNDS
-      && Math.abs(box.minZ - bounds.minZ) <= SAME_BOUNDS && Math.abs(box.maxX - bounds.maxX) <= SAME_BOUNDS
-      && Math.abs(box.maxY - bounds.maxY) <= SAME_BOUNDS && Math.abs(box.maxZ - bounds.maxZ) <= SAME_BOUNDS) return index;
+    if (sameGroup(groups[index]!, flags, bounds)) return index;
   }
   return -1;
+}
+
+function sameGroup(group: Pick<WmoCameraWalkGroup, "flags" | "bounds">, flags: number, bounds: Readonly<WmoBounds>): boolean {
+  if (group.flags !== flags) return false;
+  const box = group.bounds;
+  return Math.abs(box.minX - bounds.minX) <= SAME_BOUNDS && Math.abs(box.minY - bounds.minY) <= SAME_BOUNDS
+    && Math.abs(box.minZ - bounds.minZ) <= SAME_BOUNDS && Math.abs(box.maxX - bounds.maxX) <= SAME_BOUNDS
+    && Math.abs(box.maxY - bounds.maxY) <= SAME_BOUNDS && Math.abs(box.maxZ - bounds.maxZ) <= SAME_BOUNDS;
+}
+
+/** Whether another group has the flags and box of this one: `wmoGroupOfCollision` cannot tell them apart. */
+export function wmoGroupHasTwin(groups: readonly Pick<WmoCameraWalkGroup, "flags" | "bounds">[], index: number): boolean {
+  const group = groups[index];
+  if (!group) return false;
+  for (let other = 0; other < groups.length; other++) {
+    if (other !== index && sameGroup(groups[other]!, group.flags, group.bounds)) return true;
+  }
+  return false;
 }
 
 const PLANES = new WeakMap<WmoPortals, Float32Array>();
@@ -153,6 +170,26 @@ export function walkWmoFromCamera(
   return publishWalk(scratch, picked, count, count, screenApertures);
 }
 
+/** Whether the walk that just ran in `scratch` came out of the building on screen. MOGP 0x10000 alone does not count. */
+export function wmoWalkReachedOutside(
+  groups: readonly Pick<WmoCameraWalkGroup, "indoor" | "flags">[],
+  scratch: Pick<WmoPortalWalkScratch, "reached">,
+): boolean {
+  for (let index = 0; index < groups.length; index++) {
+    if (scratch.reached[index] === 1 && !wmoGroupIsRoom(groups[index]!)) return true;
+  }
+  return false;
+}
+
+/**
+ * Whether an environment placement belongs to a building: the building itself, or one of its doodads, whose ids are
+ * -(placement * 1e6 + ordinal + 1) (`wmoDoodadsOfPlacement`). Everything else is the world outside it.
+ */
+export function wmoPlacementOwns(placement: number, object: { readonly id: number; readonly interior?: boolean | undefined }): boolean {
+  if (object.id === placement) return true;
+  return object.interior === true && object.id < 0 && Math.floor((-object.id - 1) / 1_000_000) === placement;
+}
+
 /** One placement's walk: its scratch and the inputs of the answer in it, so a still camera walks once. */
 export interface WmoCameraWalkState {
   readonly scratch: WmoPortalWalkScratch;
@@ -162,6 +199,8 @@ export interface WmoCameraWalkState {
   walkedRoom: number;
   walkedRooms: object | undefined;
   walked: boolean;
+  /** Whether the walk came out of the building on screen (`wmoWalkReachedOutside`). */
+  reachedOutside: boolean;
 }
 
 export function createWmoCameraWalkState(): WmoCameraWalkState {
@@ -172,6 +211,7 @@ export function createWmoCameraWalkState(): WmoCameraWalkState {
     walkedRoom: -2,
     walkedRooms: undefined,
     walked: false,
+    reachedOutside: false,
   };
 }
 

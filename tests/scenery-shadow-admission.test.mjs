@@ -80,6 +80,24 @@ test("the view's admission hands over what its frustum rejected, furniture excep
   assert.deepEqual(rejected.map(({ object }) => object.id), [2]);
 });
 
+// 02.11 (7.53): from a room no portal leads out of, only that building and its doodads are drawn; the rest can still cast.
+test("from a room the view admits its building alone and hands the world over for its shadows", () => {
+  const view = viewOf({ sun: SUN_BEHIND });
+  const building = { object: { ...tree(7, -30), kind: "wmo" }, distance: 30, range: 200 };
+  const street = { object: tree(1, -30), distance: 30, range: 200 };
+  const neighbour = { object: { ...tree(8, -30), kind: "wmo" }, distance: 30, range: 200 };
+  const own = { object: tree(-(7 * 1_000_000 + 1), -5, 1, { interior: true }), distance: 5 };
+  const theirs = { object: tree(-(8 * 1_000_000 + 1), -5, 1, { interior: true }), distance: 5 };
+  const all = [building, street, neighbour, own, theirs];
+  const open = admitEnvironmentInto(all, view.planes, undefined, 0, [], []);
+  assert.deepEqual(open.map(({ object }) => object.id).sort((a, b) => a - b),
+    all.map(({ object }) => object.id).sort((a, b) => a - b), "the door in view: nothing changes");
+  const rejected = [];
+  const shut = admitEnvironmentInto(all, view.planes, undefined, 0, [], rejected, 7);
+  assert.deepEqual(shut.map(({ object }) => object.id).sort((a, b) => a - b), [own.object.id, 7]);
+  assert.deepEqual(rejected.map(({ object }) => object.id), [1, 8], "furniture of the neighbour does not cast, as ever");
+});
+
 test("a building's shadow-only rooms are the ones with a stand-in", () => {
   const groups = [{ indoor: false, exterior: false }, { indoor: true, exterior: false }, { indoor: true, exterior: true }, undefined];
   assert.deepEqual(outdoorCasterGroups(groups, [0, 1, 2, 3], [9]), [0, 2]);
@@ -89,7 +107,7 @@ test("the renderer builds shadow-only admissions hidden, keeps a building's room
   const source = readFileSync(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
   const gate = /readonly #environmentShadowGate: CasterGate = \(ref\) => \{([\s\S]*?)\n  \};/.exec(source)?.[1] ?? "";
   assert.match(gate, /shadowUntil >= this\.#submissionSerial \? 2 : 1/, "a building admitted for its shadow answers gate 2");
-  assert.match(source, /this\.#admissionRejected,\n\s*\);/, "admission collects its rejected candidates");
+  assert.match(source, /this\.#admissionRejected,\n/, "admission collects its rejected candidates");
   assert.match(source, /this\.#admitShadowCasters\(\);/);
   assert.match(source, /admitted: !shadowOnly/, "a shadow-only build is not drawn");
   assert.match(source, /if \(rendered\.wmo && !keepRooms\) this\.#clearWmoGroups/, "its rooms stay hung");

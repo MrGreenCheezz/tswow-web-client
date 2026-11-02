@@ -11,11 +11,12 @@ import { parseAdtPlacements } from "../tools/adt-placements.mjs";
 import { parseWmoVisual, wmoDependencies, wmoGroupMeshes } from "../tools/wmo-visual.mjs";
 import { encodeWwm } from "../tools/wwm.mjs";
 import { decodeWwm } from "../dist/code/browser/WmoModel.js";
-import { placeEnvironmentNode } from "../dist/code/browser/WorldRenderer3D.js";
+import { placeEnvironmentNode, setOutsideInView } from "../dist/code/browser/WorldRenderer3D.js";
+import { SHADOW_FAR_LAYER, SHADOW_PROXY_LAYER } from "../dist/code/browser/CascadedShadows.js";
 import { createWmoPortalWalkScratch } from "../dist/code/browser/WmoOcclusion.js";
 import {
   WMO_GROUP_ALWAYS_DRAW, createWmoCameraWalkState, walkWmoFromCamera, wmoCameraWalkNote, wmoCameraWalkStale,
-  wmoGroupIsRoom, wmoGroupOfCollision, wmoHasOutdoorGroup, wmoPortalPlanes,
+  wmoGroupHasTwin, wmoGroupIsRoom, wmoGroupOfCollision, wmoHasOutdoorGroup, wmoPlacementOwns, wmoPortalPlanes, wmoWalkReachedOutside,
 } from "../dist/code/browser/WmoCameraWalk.js";
 import { CollisionMesh, CollisionWorld } from "../dist/code/browser/game/Collision.js";
 
@@ -111,6 +112,17 @@ test("the collision's group is found by flags and box, not by its index", () => 
   assert.equal(wmoGroupOfCollision(visual, OUTDOOR, box(1)), -1, "no such flags");
 });
 
+test("twins are groups the collision's flags and box cannot tell apart", () => {
+  const groups = [
+    { flags: INDOOR, bounds: box(1) }, { flags: INDOOR, bounds: box(2) }, { flags: OUTDOOR, bounds: box(2) }, { flags: INDOOR, bounds: box(1) },
+  ];
+  assert.equal(wmoGroupHasTwin(groups, 0), true);
+  assert.equal(wmoGroupHasTwin(groups, 3), true, "the later one too");
+  assert.equal(wmoGroupHasTwin(groups, 1), false, "the same box with other flags is another group");
+  assert.equal(wmoGroupHasTwin(groups, 2), false);
+  assert.equal(wmoGroupHasTwin(groups, -1), false, "the group was not found");
+});
+
 test("a still camera walks once", () => {
   const state = createWmoCameraWalkState();
   const rooms = {};
@@ -149,6 +161,82 @@ test("the renderer asks the walk first, keeps what it leaves out hung, and is to
   assert.match(loop, /staticWmoSurfaceState\(/);
   assert.match(loop, /if \(cameraWmoSurface !== undefined\) game\.renderer\?\.setCameraWmoSurface\(cameraWmoSurface\);/,
     "while the collision is not current the last answer stands");
+});
+
+// 7.53: from a room the outside world is drawn exactly when the walk comes out of the building on screen.
+test("the walk comes out of a building only through a portal on screen", () => {
+  const out = (groups, graph, room, matrix = IDENTITY) => {
+    const scratch = createWmoPortalWalkScratch();
+    walkWmoFromCamera(groups, graph, room, CAMERA, matrix, undefined, scratch);
+    return wmoWalkReachedOutside(groups, scratch);
+  };
+  const door = portals([{ portal: 0, group: 1, side: 0 }]);
+  assert.equal(out([group(INDOOR, 0, 1), group(OUTDOOR)], door, 0), true);
+  assert.equal(out([group(INDOOR, 0, 1), group(INDOOR)], door, 0), false, "the next room is not outside");
+  const moved = [...IDENTITY];
+  moved[12] = 5; // Everything five half-screens to the right.
+  assert.equal(out([group(INDOOR, 0, 1), group(OUTDOOR)], door, 0, moved), false, "the door is off the screen");
+  assert.equal(out([group(INDOOR, 0, 1), group(INDOOR), group(OUTDOOR | WMO_GROUP_ALWAYS_DRAW)], door, 0), false,
+    "what draws wherever the camera is does not lead out");
+  // Three rooms, the far one with the door: the walk has to get there.
+  const chain = {
+    vertices: new Float32Array(SQUARE), definitions: [{ startVertex: 0, vertexCount: 4 }],
+    references: [{ portal: 0, group: 1, side: 0 }, { portal: 0, group: 2, side: 0 }],
+  };
+  assert.equal(out([group(INDOOR, 0, 1), group(INDOOR, 1, 1), group(OUTDOOR)], chain, 0), true);
+});
+
+test("a building owns itself and its doodads; a neighbour's doodads are the world outside", () => {
+  const doodad = (placement, ordinal) => ({ id: -(placement * 1_000_000 + ordinal + 1), interior: true });
+  assert.equal(wmoPlacementOwns(7, { id: 7 }), true);
+  assert.equal(wmoPlacementOwns(7, doodad(7, 0)), true);
+  assert.equal(wmoPlacementOwns(7, doodad(7, 999_999)), true);
+  assert.equal(wmoPlacementOwns(7, doodad(8, 0)), false);
+  assert.equal(wmoPlacementOwns(7, doodad(6, 999_999)), false);
+  assert.equal(wmoPlacementOwns(7, { id: 8 }), false, "another building");
+  assert.equal(wmoPlacementOwns(7, { id: -7_000_001 }), false, "a negative id without the doodad flag is not one");
+});
+
+test("out of the view a mesh still casts: only the shadow cameras see it", () => {
+  const view = new THREE.Camera();
+  const near = new THREE.Camera();
+  near.layers.set(0);
+  near.layers.enable(SHADOW_PROXY_LAYER);
+  const far = new THREE.Camera();
+  far.layers.set(SHADOW_FAR_LAYER);
+  const mesh = new THREE.Mesh();
+  mesh.layers.enable(SHADOW_FAR_LAYER);
+  const seen = () => [view, near, far].map((camera) => camera.layers.test(mesh.layers));
+  assert.deepEqual(seen(), [true, true, true]);
+  setOutsideInView(mesh, false);
+  assert.deepEqual(seen(), [false, true, true]);
+  setOutsideInView(mesh, false);
+  assert.deepEqual(seen(), [false, true, true], "asked twice, it stays");
+  setOutsideInView(mesh, true);
+  assert.deepEqual(seen(), [true, true, true]);
+  assert.equal(mesh.layers.isEnabled(SHADOW_PROXY_LAYER), false, "and leaves nothing behind");
+  const ground = new THREE.Mesh();
+  setOutsideInView(ground, true);
+  assert.equal(ground.layers.mask, 1, "in the view already: untouched");
+});
+
+test("the renderer hides the world before admission, and hears a door coming into view at once", async () => {
+  const renderer = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
+  const at = renderer.indexOf("this.#updateOutsideHidden(player.position);");
+  assert.ok(renderer.indexOf("this.#updateCamera(player.position, cameraYaw") < at, "the walk needs this frame's camera");
+  assert.ok(renderer.indexOf("this.#updateHorizon(player.position, map") < at, "what lands this frame is hidden this frame");
+  assert.ok(at < renderer.indexOf("this.#updateEnvironment(", at), "admission reads the answer");
+  const hide = renderer.slice(renderer.indexOf("  #updateOutsideHidden("), renderer.indexOf("  #walkFromCamera("));
+  assert.match(hide, /walk\.walkedRoom >= 0 && !walk\.reachedOutside && !placed\.cameraSurfaceTwin/, "from a room, sure of which");
+  assert.match(hide, /!wmoInteriorOnly\(placed\.model\)/, "a building with no outdoors stays on its own path");
+  for (const part of ["rendered.mesh", "rendered.water", "this.#horizon.mesh", "this.#horizonLod.meshes", "this.#groundCoverMeshes", "this.#farLightGlows.mesh"]) {
+    assert.ok(hide.includes(part), part);
+  }
+  assert.match(hide, /if \(hiddenFor === undefined && before === undefined\) return;/, "nothing to do costs nothing");
+  assert.match(renderer, /this\.#admissionRejected,\n\s*this\.#outsideHiddenFor,\n\s*\);/, "admission turns the rest away");
+  assert.match(renderer, /\|\| this\.#admittedOutsideHiddenFor !== this\.#outsideHiddenFor/, "half-rate admission does not delay a door");
+  const reset = renderer.slice(renderer.indexOf("this.#cameraSurfaceKnown = false;\n    this.#outsideHiddenFor"));
+  assert.match(reset, /^this\.#cameraSurfaceKnown = false;\n\s*this\.#outsideHiddenFor = undefined;/, "a new world starts with the world shown");
 });
 
 // ---- Against the recordings.
@@ -262,4 +350,42 @@ test("against what Wow.exe drew: nothing missing, no far-view copy, the same tri
   // The owner's report, on its own camera: over the square the real cathedral and neither of its copies.
   const square = report.filter((line) => line.startsWith("c04-plaza-z160"));
   assert.deepEqual(square, ["c04-plaza-z160: room, 4 drawn, 5 chosen, 0 extra"]);
+});
+
+// fixtures/wmo-world-through-doors-wow.json: every recorded frame with the camera over a room, 28 of them at real exits,
+// facing the door and with their back to it; the terrain chunks Wow.exe drew there, counted from its draw calls.
+test("against what Wow.exe drew: from a room terrain appears exactly when the walk comes out", withClient, async () => {
+  const { clientArchives } = await import("../tools/mpq.mjs");
+  const archives = await clientArchives(clientDirectory);
+  const recorded = JSON.parse(await readFile(new URL("./fixtures/wmo-world-through-doors-wow.json", import.meta.url), "utf8"));
+  // The mode of this camera is misjudged by the rule for groups too: Warrior01 60 yards below it, at a height of 200.
+  const MISREAD = new Set(["g-8860-340-200"]);
+  const buildings = new Map();
+  const scratch = createWmoPortalWalkScratch();
+  const wrong = [];
+  let out = 0, shut = 0;
+  for (const frame of recorded.frames) {
+    const building = buildings.get(frame.wmo) ?? await loadBuilding(archives, frame.wmo, frame.adt);
+    buildings.set(frame.wmo, building);
+    const { model, modelToWorld, worldToModel } = building;
+    const [cx, cy, cz] = frame.position, [fx, fy, fz] = frame.forward, [ux, uy, uz] = frame.up;
+    const camera = new THREE.PerspectiveCamera(2 * Math.atan(1 / recorded.yScale) * 180 / Math.PI, recorded.aspect, frame.near, frame.far);
+    camera.position.set(cx, cz, -cy);
+    camera.up.set(ux, uz, -uy);
+    camera.lookAt(cx + fx, cz + fz, -(cy + fy));
+    camera.updateMatrixWorld(true);
+    camera.updateProjectionMatrix();
+    const clip = new THREE.Matrix4().multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse).multiply(modelToWorld).elements;
+    const at = new THREE.Vector3(cx, cz, -cy).applyMatrix4(worldToModel);
+    const room = frame.room;
+    assert.ok(wmoGroupIsRoom(model.groups[room]), `${frame.name}: the camera is over a room`);
+    assert.equal(walkWmoFromCamera(model.groups, model.portals, room, at, clip, undefined, scratch).used, true, frame.name);
+    const reached = wmoWalkReachedOutside(model.groups, scratch);
+    if (reached) out++;
+    else shut++;
+    if (reached !== frame.terrainChunks > 0) wrong.push(frame.name);
+  }
+  assert.deepEqual(wrong.filter((name) => !MISREAD.has(name)), [], "reached outside but no terrain, or the other way round");
+  assert.deepEqual(wrong, [...MISREAD], "the misread camera is still the only miss; if it agrees now, drop it");
+  assert.deepEqual([out, shut], [17, 54], "both answers are exercised");
 });

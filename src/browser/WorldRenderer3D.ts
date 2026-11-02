@@ -275,7 +275,7 @@ import {
 import { selectWmoPortalGroups } from "./WmoOcclusion.js";
 import {
   createWmoCameraWalkState, walkWmoFromCamera, wmoCameraWalkNote, wmoCameraWalkStale, wmoGroupIsRoom, wmoGroupOfCollision,
-  wmoHasOutdoorGroup, type WmoCameraWalkState,
+  wmoGroupHasTwin, wmoHasOutdoorGroup, wmoPlacementOwns, wmoWalkReachedOutside, type WmoCameraWalkState,
 } from "./WmoCameraWalk.js"; // 02.11
 import { WmoRangeTable, sameWmoSelection, type WmoRangeTotals } from "./WmoGroupRange.js"; // P1-12a/b
 import { createWmoPortalMemo, wmoPortalMemoAnswer, wmoPortalMemoNote, type WmoPortalMemo } from "./WmoPortalMemo.js"; // P1-12c
@@ -1659,6 +1659,7 @@ export function admitEnvironmentInto(
   vertexPadding: number,
   out: RankedEnvironmentObject[],
   rejected?: RankedEnvironmentObject[],
+  onlyBuilding?: number, // 02.11 (7.53): the camera sees only this placement and its doodads
 ): RankedEnvironmentObject[] {
   const [near, scenery, far, interior] = ADMISSION_HEAPS;
   // 22.10 (7.41): the outdoor candidates the frustum turned away, for the shadow-only admission.
@@ -1673,6 +1674,11 @@ export function admitEnvironmentInto(
     if (tier === undefined) continue;
     // A hand-built list is held to the same strict leash the candidate pass applies.
     if (tier === "scenery" && candidate.distance >= (candidate.range ?? environmentDrawRange(candidate.object))) continue;
+    // 02.11 (7.53): the world outside is turned away as the frustum would turn it away, so it can still cast.
+    if (onlyBuilding !== undefined && !wmoPlacementOwns(onlyBuilding, candidate.object)) {
+      if (rejected && tier !== "interior") rejected.push(candidate);
+      continue;
+    }
     const retainedSphere = candidate.object.bounds === undefined
       ? retainedSphereOf?.(candidate.object) ?? environmentSourceVisibilitySphere(candidate.object, vertexPadding)
       : undefined;
@@ -2541,6 +2547,8 @@ interface PlacedWmo {
   cameraWalk?: WmoCameraWalkState;
   cameraSurface?: StaticWmoSurface;
   cameraSurfaceGroup?: number;
+  /** 02.11 (7.53): the collision answer fits more than one group, so the walk may have started from the wrong room. */
+  cameraSurfaceTwin?: boolean;
   /** 02.11: the groups the last full pass kept hung beside `appliedSelection`, by identity. */
   appliedHung?: readonly number[] | undefined;
 }
@@ -2553,6 +2561,21 @@ function setWmoRoomInView(mesh: THREE.Object3D, inView: boolean): void {
   if (mesh.layers.isEnabled(0) === inView) return;
   if (inView) mesh.layers.enable(0);
   else mesh.layers.disable(0);
+}
+
+/**
+ * 02.11 (7.53): a mesh of the outside world in or out of the view: out of it, it stands on the layer only the shadow
+ * cameras draw, so what it casts stays cast.
+ */
+export function setOutsideInView(mesh: THREE.Object3D, inView: boolean): void {
+  if (mesh.layers.isEnabled(0) === inView) return;
+  if (inView) {
+    mesh.layers.enable(0);
+    mesh.layers.disable(SHADOW_PROXY_LAYER);
+  } else {
+    mesh.layers.disable(0);
+    mesh.layers.enable(SHADOW_PROXY_LAYER);
+  }
 }
 
 /** The sole renderer owner of one converted WMO group geometry. */
@@ -4505,6 +4528,12 @@ export class WorldRenderer3D {
   #cameraSurfaceVisualId: number | undefined;
   #cameraSurfaceKnown = false;
   readonly #wmoSurfaceVisuals = new UniqueVisualWmoPlacementCache();
+  /**
+   * 02.11 (7.53): the building whose room the camera hangs over while no portal on screen leads out of it. The world
+   * outside is then not drawn (`#updateOutsideHidden`). Undefined: drawn as usual.
+   */
+  #outsideHiddenFor: number | undefined;
+  #admittedOutsideHiddenFor: number | undefined;
   /** Authored fog proposed by that exact placement/group; applied once after traversal. */
   #wmoFogCandidate: { fog: WmoFog; key: string } | undefined;
 
@@ -6390,7 +6419,7 @@ export class WorldRenderer3D {
     const occlusion = !this.#wmoOcclusion
       ? " · WMO portals выкл."
       : telemetry.wmoPortalModels > 0
-        ? ` · WMO portals ${telemetry.wmoPortalModels}: скрыто ${telemetry.wmoPortalCulled}/${telemetry.wmoPortalCandidates}`
+        ? ` · WMO portals ${telemetry.wmoPortalModels}: скрыто ${telemetry.wmoPortalCulled}/${telemetry.wmoPortalCandidates}${this.#outsideHiddenFor !== undefined ? " · мир скрыт" : ""}`
         : "";
     return `WebGL · terrain ${terrainVisible}/${this.#terrains.size} (${(terrainTriangles / 1000).toFixed(0)}k тр.)`
       + ` · окружение ${this.#environment.size}`
@@ -8074,6 +8103,8 @@ export class WorldRenderer3D {
     this.#cameraWmoSurface = undefined; // 02.11
     this.#cameraSurfaceVisualId = undefined;
     this.#cameraSurfaceKnown = false;
+    this.#outsideHiddenFor = undefined; // 02.11 (7.53)
+    this.#admittedOutsideHiddenFor = undefined;
     this.#indoors = false;
     this.#underwater = false;
     // The switch itself is the account's and survives a realm change; the surface is one frame's
@@ -9015,6 +9046,7 @@ export class WorldRenderer3D {
     drawPhaseAt = performance.now();
     this.#updateTerrain(player.position, map, heightAt, terrainClient, splatClient);
     this.#updateHorizon(player.position, map, horizonClient, terrainClient); // 7.44: the LOD ring's terrain
+    this.#updateOutsideHidden(player.position); // 02.11 (7.53): after what it hides is built, before admission
     this.#drawPhaseMs.terrain = performance.now() - drawPhaseAt;
     drawPhaseAt = performance.now();
     this.#updateEnvironment(player.position, objects, environmentClient, elapsed);
@@ -11985,6 +12017,7 @@ export class WorldRenderer3D {
     if (admitted === undefined
       || this.#admissionCandidates !== this.#environmentCandidates
       || this.#cameraTurnRate > CAMERA_FAST_TURN_RATE
+      || this.#admittedOutsideHiddenFor !== this.#outsideHiddenFor // 02.11 (7.53): a door coming into view shows at once
       || (this.#submissionSerial & 1) === 0) {
       // P2-04c: one pass, no allocation; two buffers alternate so a run is a new array identity.
       this.#admissionFlip ^= 1;
@@ -11995,7 +12028,9 @@ export class WorldRenderer3D {
         this.#experimentalShaderProfile.vegetationWind ? VEGETATION_WIND_CULL_PADDING : 0,
         this.#admissionBuffers[this.#admissionFlip]!,
         this.#admissionRejected,
+        this.#outsideHiddenFor,
       );
+      this.#admittedOutsideHiddenFor = this.#outsideHiddenFor;
       this.#lastAdmitted = admitted;
       this.#admissionCandidates = this.#environmentCandidates;
       // 22.10 (7.41): of what the frustum turned away, what casts into the shadowed view.
@@ -13847,6 +13882,49 @@ export class WorldRenderer3D {
    * below does not line up with the file's, or the camera is outside a building that has no outside to start from.
    */
   #wmoGroupsFromCamera(placed: PlacedWmo, player: WorldPosition): readonly number[] | undefined {
+    const state = this.#walkFromCamera(placed, player);
+    if (!state) return undefined;
+    const walk = state.scratch.result;
+    this.#wmoPortalModels++;
+    this.#wmoPortalCandidates += walk.candidates;
+    this.#wmoPortalCulled += walk.candidates - state.kept.length;
+    if ((placed.model.doodadRooms?.length ?? 0) > 0) this.#bindWmoDoodads(placed, state.kept, true, WMO_OPEN_AIR_ROOM_RANGE);
+    return state.kept;
+  }
+
+  /**
+   * 02.11 (7.53): the outside world, when the camera sees none of it. Terrain, water, the horizon and the grass stay built
+   * and move to the layer only the shadow cameras draw, so mountains keep their shadows and a door coming into view
+   * shows the world at once; loose models and other buildings are turned away by admission (`admitEnvironmentInto`).
+   * The sky stays: it is seen from a room with no roof, and walls hide it in one with a roof. Runs every frame while
+   * hidden, because a tile may land meanwhile; it costs nothing otherwise.
+   */
+  #updateOutsideHidden(player: WorldPosition): void {
+    const before = this.#outsideHiddenFor;
+    let hiddenFor: number | undefined;
+    if (this.#cameraSurfaceKnown && this.#cameraWmoSurface && this.#cameraSurfaceVisualId !== undefined && this.#wmoOcclusion) {
+      const placed = this.#environment.get(this.#cameraSurfaceVisualId)?.wmo;
+      if (placed && !wmoInteriorOnly(placed.model)) {
+        const walk = this.#walkFromCamera(placed, player);
+        // A walk from what may be the wrong room says nothing about the doors of the right one: the world stays.
+        if (walk && walk.walkedRoom >= 0 && !walk.reachedOutside && !placed.cameraSurfaceTwin) hiddenFor = placed.visualId;
+      }
+    }
+    this.#outsideHiddenFor = hiddenFor;
+    if (hiddenFor === undefined && before === undefined) return;
+    const inView = hiddenFor === undefined;
+    for (const rendered of this.#terrains.values()) {
+      setOutsideInView(rendered.mesh, inView);
+      for (const water of rendered.water ?? []) setOutsideInView(water, inView);
+    }
+    if (this.#horizon) setOutsideInView(this.#horizon.mesh, inView);
+    for (const mesh of this.#horizonLod.meshes) setOutsideInView(mesh, inView);
+    for (const { mesh } of this.#groundCoverMeshes.values()) setOutsideInView(mesh, inView);
+    setOutsideInView(this.#farLightGlows.mesh, inView);
+  }
+
+  /** 02.11: this frame's walk from the camera (`WmoCameraWalk.ts`), run once a frame at most; undefined: no answer. */
+  #walkFromCamera(placed: PlacedWmo, player: WorldPosition): WmoCameraWalkState | undefined {
     if (!this.#cameraSurfaceKnown) return undefined;
     const model = placed.model;
     const portals = model.portals;
@@ -13857,6 +13935,7 @@ export class WorldRenderer3D {
       if (placed.cameraSurface !== surface) {
         placed.cameraSurface = surface;
         placed.cameraSurfaceGroup = wmoGroupOfCollision(model.groups, surface.groupFlags, surface.groupBounds);
+        placed.cameraSurfaceTwin = wmoGroupHasTwin(model.groups, placed.cameraSurfaceGroup);
       }
       const group = model.groups[placed.cameraSurfaceGroup!];
       if (!group) return undefined;
@@ -13874,6 +13953,7 @@ export class WorldRenderer3D {
       this.#wmoCameraModel.copy(this.#camera.position).applyMatrix4(placed.worldToModel);
       const answer = walkWmoFromCamera(model.groups, portals, room, this.#wmoCameraModel, clip, rooms?.apertures, state.scratch);
       wmoCameraWalkNote(state, clip, room, rooms);
+      state.reachedOutside = answer.used && wmoWalkReachedOutside(model.groups, state.scratch);
       // The account's view distance still holds: what the walk reached past it stays out, as in the older walks' tables.
       const reach = this.environmentShellRange;
       const x = player.x;
@@ -13888,13 +13968,7 @@ export class WorldRenderer3D {
       }
       kept.length = count;
     }
-    const walk = state.scratch.result;
-    if (!walk.used) return undefined;
-    this.#wmoPortalModels++;
-    this.#wmoPortalCandidates += walk.candidates;
-    this.#wmoPortalCulled += walk.candidates - state.kept.length;
-    if (binds) this.#bindWmoDoodads(placed, state.kept, true, WMO_OPEN_AIR_ROOM_RANGE);
-    return state.kept;
+    return state.scratch.result.used ? state : undefined;
   }
 
   /**

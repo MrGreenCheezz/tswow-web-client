@@ -1,0 +1,1711 @@
+{
+ "build": 12340,
+ "yScale": 1.9626,
+ "aspect": 1.7777777777777777,
+ "frames": [
+  {
+   "name": "a02-plaza-z283-first",
+   "wmo": "World/wmo/Azeroth/Buildings/Stormwind/Stormwind.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_31_48.adt",
+   "position": [
+    -8654.21,
+    746.51,
+    282.828
+   ],
+   "forward": [
+    0.7579,
+    0.6288,
+    -0.1736
+   ],
+   "up": [
+    0.1336,
+    0.1109,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "room": 95,
+   "terrainChunks": 0
+  },
+  {
+   "name": "a03-plaza-z160",
+   "wmo": "World/wmo/Azeroth/Buildings/Stormwind/Stormwind.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_31_48.adt",
+   "position": [
+    -8654.21,
+    746.51,
+    162.828
+   ],
+   "forward": [
+    0.7579,
+    0.6288,
+    -0.1736
+   ],
+   "up": [
+    0.1336,
+    0.1109,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "room": 95,
+   "terrainChunks": 0
+  },
+  {
+   "name": "a04-plaza-z283-after",
+   "wmo": "World/wmo/Azeroth/Buildings/Stormwind/Stormwind.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_31_48.adt",
+   "position": [
+    -8654.21,
+    746.51,
+    282.828
+   ],
+   "forward": [
+    0.7579,
+    0.6288,
+    -0.1736
+   ],
+   "up": [
+    0.1336,
+    0.1109,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "room": 95,
+   "terrainChunks": 0
+  },
+  {
+   "name": "a05-plaza-z500",
+   "wmo": "World/wmo/Azeroth/Buildings/Stormwind/Stormwind.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_31_48.adt",
+   "position": [
+    -8654.21,
+    746.51,
+    502.828
+   ],
+   "forward": [
+    0.7579,
+    0.6288,
+    -0.1736
+   ],
+   "up": [
+    0.1336,
+    0.1109,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "room": 95,
+   "terrainChunks": 0
+  },
+  {
+   "name": "a07-trade-z250",
+   "wmo": "World/wmo/Azeroth/Buildings/Stormwind/Stormwind.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_31_48.adt",
+   "position": [
+    -8835.33,
+    615.668,
+    252.828
+   ],
+   "forward": [
+    0.7807,
+    0.6003,
+    -0.1736
+   ],
+   "up": [
+    0.1377,
+    0.1059,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "room": 257,
+   "terrainChunks": 0
+  },
+  {
+   "name": "a11-plaza-ground",
+   "wmo": "World/wmo/Azeroth/Buildings/Stormwind/Stormwind.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_31_48.adt",
+   "position": [
+    -8654.21,
+    746.51,
+    102.828
+   ],
+   "forward": [
+    0.7579,
+    0.6288,
+    -0.1736
+   ],
+   "up": [
+    0.1336,
+    0.1109,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "room": 95,
+   "terrainChunks": 0
+  },
+  {
+   "name": "c01-stairs",
+   "wmo": "World/wmo/Azeroth/Buildings/Stormwind/Stormwind.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_31_48.adt",
+   "position": [
+    -8607.21,
+    785.51,
+    112.828
+   ],
+   "forward": [
+    0.758,
+    0.6288,
+    -0.1736
+   ],
+   "up": [
+    0.1336,
+    0.1109,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "room": 95,
+   "terrainChunks": 0
+  },
+  {
+   "name": "c02-plaza",
+   "wmo": "World/wmo/Azeroth/Buildings/Stormwind/Stormwind.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_31_48.adt",
+   "position": [
+    -8654.21,
+    746.51,
+    102.828
+   ],
+   "forward": [
+    0.7579,
+    0.6288,
+    -0.1736
+   ],
+   "up": [
+    0.1336,
+    0.1109,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "room": 95,
+   "terrainChunks": 0
+  },
+  {
+   "name": "c03-plaza-z130",
+   "wmo": "World/wmo/Azeroth/Buildings/Stormwind/Stormwind.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_31_48.adt",
+   "position": [
+    -8654.21,
+    746.51,
+    132.828
+   ],
+   "forward": [
+    0.7579,
+    0.6288,
+    -0.1736
+   ],
+   "up": [
+    0.1336,
+    0.1109,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "room": 95,
+   "terrainChunks": 0
+  },
+  {
+   "name": "c04-plaza-z160",
+   "wmo": "World/wmo/Azeroth/Buildings/Stormwind/Stormwind.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_31_48.adt",
+   "position": [
+    -8654.21,
+    746.51,
+    162.828
+   ],
+   "forward": [
+    0.7579,
+    0.6288,
+    -0.1736
+   ],
+   "up": [
+    0.1336,
+    0.1109,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "room": 95,
+   "terrainChunks": 0
+  },
+  {
+   "name": "c05-plaza-z200",
+   "wmo": "World/wmo/Azeroth/Buildings/Stormwind/Stormwind.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_31_48.adt",
+   "position": [
+    -8654.21,
+    746.51,
+    202.828
+   ],
+   "forward": [
+    0.7579,
+    0.6288,
+    -0.1736
+   ],
+   "up": [
+    0.1336,
+    0.1109,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "room": 95,
+   "terrainChunks": 0
+  },
+  {
+   "name": "c06-plaza-z280",
+   "wmo": "World/wmo/Azeroth/Buildings/Stormwind/Stormwind.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_31_48.adt",
+   "position": [
+    -8654.21,
+    746.51,
+    282.828
+   ],
+   "forward": [
+    0.7579,
+    0.6288,
+    -0.1736
+   ],
+   "up": [
+    0.1336,
+    0.1109,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "room": 95,
+   "terrainChunks": 0
+  },
+  {
+   "name": "c07-trade",
+   "wmo": "World/wmo/Azeroth/Buildings/Stormwind/Stormwind.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_31_48.adt",
+   "position": [
+    -8835.33,
+    615.668,
+    102.828
+   ],
+   "forward": [
+    0.7807,
+    0.6003,
+    -0.1736
+   ],
+   "up": [
+    0.1377,
+    0.1059,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "room": 257,
+   "terrainChunks": 0
+  },
+  {
+   "name": "c08-trade-z250",
+   "wmo": "World/wmo/Azeroth/Buildings/Stormwind/Stormwind.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_31_48.adt",
+   "position": [
+    -8835.33,
+    615.668,
+    252.828
+   ],
+   "forward": [
+    0.7807,
+    0.6003,
+    -0.1736
+   ],
+   "up": [
+    0.1377,
+    0.1059,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "room": 257,
+   "terrainChunks": 0
+  },
+  {
+   "name": "c09-oldtown",
+   "wmo": "World/wmo/Azeroth/Buildings/Stormwind/Stormwind.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_31_48.adt",
+   "position": [
+    -8723.17,
+    380.984,
+    112.828
+   ],
+   "forward": [
+    0.3911,
+    0.9038,
+    -0.1736
+   ],
+   "up": [
+    0.069,
+    0.1594,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "room": 94,
+   "terrainChunks": 0
+  },
+  {
+   "name": "c10-dwarven",
+   "wmo": "World/wmo/Azeroth/Buildings/Stormwind/Stormwind.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_31_48.adt",
+   "position": [
+    -8427,
+    599,
+    111.523
+   ],
+   "forward": [
+    -0.3125,
+    0.9339,
+    -0.1736
+   ],
+   "up": [
+    -0.0551,
+    0.1647,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "room": 109,
+   "terrainChunks": 0
+  },
+  {
+   "name": "c11-mage",
+   "wmo": "World/wmo/Azeroth/Buildings/Stormwind/Stormwind.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_31_48.adt",
+   "position": [
+    -9000.47,
+    864.023,
+    112.828
+   ],
+   "forward": [
+    0.9848,
+    -0.0041,
+    -0.1736
+   ],
+   "up": [
+    0.1736,
+    -0.0007,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "room": 105,
+   "terrainChunks": 0
+  },
+  {
+   "name": "e-abbey0-away",
+   "wmo": "World/wmo/Azeroth/Buildings/NSAbbey/NSAbbey.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_32_48.adt",
+   "position": [
+    -8909.01,
+    -147.418,
+    85.2781
+   ],
+   "forward": [
+    0.3929,
+    -0.903,
+    -0.1736
+   ],
+   "up": [
+    0.0693,
+    -0.1592,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "room": 3,
+   "terrainChunks": 0
+  },
+  {
+   "name": "e-abbey0-in",
+   "wmo": "World/wmo/Azeroth/Buildings/NSAbbey/NSAbbey.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_32_48.adt",
+   "position": [
+    -8907.04,
+    -151.942,
+    85.2781
+   ],
+   "forward": [
+    -0.3929,
+    0.903,
+    -0.1736
+   ],
+   "up": [
+    -0.0693,
+    0.1592,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "room": 3,
+   "terrainChunks": 51
+  },
+  {
+   "name": "e-cave0-away",
+   "wmo": "World/wmo/Dungeon/MD_MountainCave/MD_IceCave03.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_32_42.adt",
+   "position": [
+    -5624.53,
+    -275.513,
+    369.557
+   ],
+   "forward": [
+    0.9713,
+    0.1627,
+    -0.1736
+   ],
+   "up": [
+    0.1713,
+    0.0287,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "room": 0,
+   "terrainChunks": 0
+  },
+  {
+   "name": "e-cave0-in",
+   "wmo": "World/wmo/Dungeon/MD_MountainCave/MD_IceCave03.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_32_42.adt",
+   "position": [
+    -5619.66,
+    -274.696,
+    369.557
+   ],
+   "forward": [
+    -0.9713,
+    -0.1628,
+    -0.1736
+   ],
+   "up": [
+    -0.1713,
+    -0.0287,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "room": 0,
+   "terrainChunks": 303
+  },
+  {
+   "name": "e-farm0-away",
+   "wmo": "World/wmo/Azeroth/Buildings/Human_Farm/Farm.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_31_49.adt",
+   "position": [
+    -9062.09,
+    153.742,
+    117.86
+   ],
+   "forward": [
+    0.9839,
+    0.0429,
+    -0.1736
+   ],
+   "up": [
+    0.1735,
+    0.0076,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "room": 1,
+   "terrainChunks": 0
+  },
+  {
+   "name": "e-farm0-in",
+   "wmo": "World/wmo/Azeroth/Buildings/Human_Farm/Farm.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_31_49.adt",
+   "position": [
+    -9057.16,
+    153.958,
+    117.862
+   ],
+   "forward": [
+    -0.9839,
+    -0.0429,
+    -0.1736
+   ],
+   "up": [
+    -0.1735,
+    -0.0076,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "room": 1,
+   "terrainChunks": 326
+  },
+  {
+   "name": "e-inn0-away",
+   "wmo": "World/wmo/Azeroth/Buildings/GoldshireInn/GoldshireInn.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_31_49.adt",
+   "position": [
+    -9459.59,
+    40.8649,
+    59.78
+   ],
+   "forward": [
+    -0.12,
+    -0.9775,
+    -0.1736
+   ],
+   "up": [
+    -0.0212,
+    -0.1724,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "room": 0,
+   "terrainChunks": 0
+  },
+  {
+   "name": "e-inn0-in",
+   "wmo": "World/wmo/Azeroth/Buildings/GoldshireInn/GoldshireInn.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_31_49.adt",
+   "position": [
+    -9460.19,
+    35.9651,
+    60.2781
+   ],
+   "forward": [
+    0.12,
+    0.9775,
+    -0.1736
+   ],
+   "up": [
+    0.0212,
+    0.1724,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "room": 1,
+   "terrainChunks": 169
+  },
+  {
+   "name": "e-iron0-away",
+   "wmo": "World/wmo/KhazModan/Cities/Ironforge/Ironforge.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_33_41.adt",
+   "position": [
+    -5015.25,
+    -841.273,
+    499.95
+   ],
+   "forward": [
+    0.6264,
+    -0.7599,
+    -0.1736
+   ],
+   "up": [
+    0.1105,
+    -0.134,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "room": 7,
+   "terrainChunks": 0
+  },
+  {
+   "name": "e-iron0-in",
+   "wmo": "World/wmo/KhazModan/Cities/Ironforge/Ironforge.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_33_41.adt",
+   "position": [
+    -5012.11,
+    -845.077,
+    499.813
+   ],
+   "forward": [
+    -0.6264,
+    0.7599,
+    -0.1736
+   ],
+   "up": [
+    -0.1105,
+    0.134,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "room": 7,
+   "terrainChunks": 549
+  },
+  {
+   "name": "e-mine0-away",
+   "wmo": "World/wmo/Dungeon/MD_GoldMine/MD_GoldMine.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_32_48.adt",
+   "position": [
+    -8668.76,
+    -122.521,
+    95.4281
+   ],
+   "forward": [
+    0.9078,
+    -0.3819,
+    -0.1736
+   ],
+   "up": [
+    0.1601,
+    -0.0673,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "room": 7,
+   "terrainChunks": 0
+  },
+  {
+   "name": "e-mine0-in",
+   "wmo": "World/wmo/Dungeon/MD_GoldMine/MD_GoldMine.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_32_48.adt",
+   "position": [
+    -8664.2,
+    -124.439,
+    95.4281
+   ],
+   "forward": [
+    -0.9078,
+    0.3819,
+    -0.1736
+   ],
+   "up": [
+    -0.1601,
+    0.0673,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "room": 7,
+   "terrainChunks": 166
+  },
+  {
+   "name": "e-smith0-away",
+   "wmo": "World/wmo/Azeroth/Buildings/GoldshireBlacksmith/GoldshireBlacksmith.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_31_49.adt",
+   "position": [
+    -9464.39,
+    99.9238,
+    61.1649
+   ],
+   "forward": [
+    0.0258,
+    -0.9845,
+    -0.1736
+   ],
+   "up": [
+    0.0045,
+    -0.1736,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "room": 0,
+   "terrainChunks": 123
+  },
+  {
+   "name": "e-smith0-in",
+   "wmo": "World/wmo/Azeroth/Buildings/GoldshireBlacksmith/GoldshireBlacksmith.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_31_49.adt",
+   "position": [
+    -9464.27,
+    94.9862,
+    61.1332
+   ],
+   "forward": [
+    -0.0258,
+    0.9845,
+    -0.1736
+   ],
+   "up": [
+    -0.0045,
+    0.1736,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "room": 0,
+   "terrainChunks": 225
+  },
+  {
+   "name": "e-smith1-away",
+   "wmo": "World/wmo/Azeroth/Buildings/GoldshireBlacksmith/GoldshireBlacksmith.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_31_49.adt",
+   "position": [
+    -9459.86,
+    87.3962,
+    61.1651
+   ],
+   "forward": [
+    -0.0258,
+    0.9845,
+    -0.1736
+   ],
+   "up": [
+    -0.0045,
+    0.1736,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "room": 0,
+   "terrainChunks": 184
+  },
+  {
+   "name": "e-smith1-in",
+   "wmo": "World/wmo/Azeroth/Buildings/GoldshireBlacksmith/GoldshireBlacksmith.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_31_49.adt",
+   "position": [
+    -9459.98,
+    92.3238,
+    61.1334
+   ],
+   "forward": [
+    0.0258,
+    -0.9845,
+    -0.1736
+   ],
+   "up": [
+    0.0045,
+    -0.1736,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "room": 0,
+   "terrainChunks": 161
+  },
+  {
+   "name": "e-snow0-in",
+   "wmo": "World/wmo/KhazModan/Buildings/Dwarven_Inn/Snow_Inn/Snow_Inn.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_32_42.adt",
+   "position": [
+    -5579.41,
+    -510.417,
+    406.709
+   ],
+   "forward": [
+    -0.9847,
+    0.0172,
+    -0.1736
+   ],
+   "up": [
+    -0.1736,
+    0.003,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "room": 4,
+   "terrainChunks": 136
+  },
+  {
+   "name": "e-spider0-away",
+   "wmo": "World/wmo/Dungeon/MD_SpiderMine/MD_SpiderMine.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_32_48.adt",
+   "position": [
+    -9177.33,
+    -603.231,
+    66.7081
+   ],
+   "forward": [
+    0.9213,
+    0.3478,
+    -0.1736
+   ],
+   "up": [
+    0.1625,
+    0.0613,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "room": 4,
+   "terrainChunks": 0
+  },
+  {
+   "name": "e-spider0-in",
+   "wmo": "World/wmo/Dungeon/MD_SpiderMine/MD_SpiderMine.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_32_48.adt",
+   "position": [
+    -9172.71,
+    -601.49,
+    66.7081
+   ],
+   "forward": [
+    -0.9213,
+    -0.3478,
+    -0.1736
+   ],
+   "up": [
+    -0.1625,
+    -0.0613,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "room": 4,
+   "terrainChunks": 212
+  },
+  {
+   "name": "e-sw0-in",
+   "wmo": "World/wmo/Azeroth/Buildings/Stormwind/Stormwind.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_31_48.adt",
+   "position": [
+    -8917.93,
+    526.608,
+    94.6887
+   ],
+   "forward": [
+    0.6131,
+    -0.7707,
+    -0.1736
+   ],
+   "up": [
+    0.1081,
+    -0.1359,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "room": 45,
+   "terrainChunks": 224
+  },
+  {
+   "name": "e-sw1-away",
+   "wmo": "World/wmo/Azeroth/Buildings/Stormwind/Stormwind.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_31_48.adt",
+   "position": [
+    -8940.3,
+    554.737,
+    95.637
+   ],
+   "forward": [
+    0.6131,
+    -0.7707,
+    -0.1736
+   ],
+   "up": [
+    0.1081,
+    -0.1359,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "room": 45,
+   "terrainChunks": 80
+  },
+  {
+   "name": "e-sw1-in",
+   "wmo": "World/wmo/Azeroth/Buildings/Stormwind/Stormwind.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_31_48.adt",
+   "position": [
+    -8937.24,
+    550.872,
+    95.637
+   ],
+   "forward": [
+    -0.613,
+    0.7707,
+    -0.1736
+   ],
+   "up": [
+    -0.1081,
+    0.1359,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "room": 45,
+   "terrainChunks": 41
+  },
+  {
+   "name": "e-sw2-away",
+   "wmo": "World/wmo/Azeroth/Buildings/Stormwind/Stormwind.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_31_48.adt",
+   "position": [
+    -8859.45,
+    491.617,
+    112.434
+   ],
+   "forward": [
+    0.7707,
+    0.6131,
+    -0.1736
+   ],
+   "up": [
+    0.1359,
+    0.1081,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "room": 196,
+   "terrainChunks": 0
+  },
+  {
+   "name": "e-sw2-in",
+   "wmo": "World/wmo/Azeroth/Buildings/Stormwind/Stormwind.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_31_48.adt",
+   "position": [
+    -8855.59,
+    494.683,
+    112.428
+   ],
+   "forward": [
+    -0.7707,
+    -0.6131,
+    -0.1736
+   ],
+   "up": [
+    -0.1359,
+    -0.1081,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "room": 196,
+   "terrainChunks": 268
+  },
+  {
+   "name": "e-sw3-away",
+   "wmo": "World/wmo/Azeroth/Buildings/Stormwind/Stormwind.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_31_48.adt",
+   "position": [
+    -8843.11,
+    471.077,
+    112.451
+   ],
+   "forward": [
+    0.7707,
+    0.6131,
+    -0.1736
+   ],
+   "up": [
+    0.1359,
+    0.1081,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "room": 196,
+   "terrainChunks": 0
+  },
+  {
+   "name": "e-sw3-in",
+   "wmo": "World/wmo/Azeroth/Buildings/Stormwind/Stormwind.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_31_48.adt",
+   "position": [
+    -8839.25,
+    474.153,
+    112.449
+   ],
+   "forward": [
+    -0.7707,
+    -0.6131,
+    -0.1736
+   ],
+   "up": [
+    -0.1359,
+    -0.1081,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "room": 196,
+   "terrainChunks": 256
+  },
+  {
+   "name": "g-8360-460-130",
+   "wmo": "World/wmo/Azeroth/Buildings/Stormwind/Stormwind.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_31_48.adt",
+   "position": [
+    -8364.18,
+    456.479,
+    132.828
+   ],
+   "forward": [
+    0.7532,
+    0.6344,
+    -0.1736
+   ],
+   "up": [
+    0.1328,
+    0.1119,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "room": 165,
+   "terrainChunks": 0
+  },
+  {
+   "name": "g-8360-460-200",
+   "wmo": "World/wmo/Azeroth/Buildings/Stormwind/Stormwind.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_31_48.adt",
+   "position": [
+    -8364.18,
+    456.479,
+    202.828
+   ],
+   "forward": [
+    0.7532,
+    0.6344,
+    -0.1736
+   ],
+   "up": [
+    0.1328,
+    0.1119,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "room": 164,
+   "terrainChunks": 0
+  },
+  {
+   "name": "g-8360-580-130",
+   "wmo": "World/wmo/Azeroth/Buildings/Stormwind/Stormwind.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_31_48.adt",
+   "position": [
+    -8364.18,
+    576.479,
+    132.828
+   ],
+   "forward": [
+    0.7532,
+    0.6344,
+    -0.1736
+   ],
+   "up": [
+    0.1328,
+    0.1119,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "room": 109,
+   "terrainChunks": 0
+  },
+  {
+   "name": "g-8360-580-200",
+   "wmo": "World/wmo/Azeroth/Buildings/Stormwind/Stormwind.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_31_48.adt",
+   "position": [
+    -8364.18,
+    576.479,
+    202.828
+   ],
+   "forward": [
+    0.7532,
+    0.6344,
+    -0.1736
+   ],
+   "up": [
+    0.1328,
+    0.1119,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "room": 109,
+   "terrainChunks": 0
+  },
+  {
+   "name": "g-8460-340-130",
+   "wmo": "World/wmo/Azeroth/Buildings/Stormwind/Stormwind.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_31_48.adt",
+   "position": [
+    -8460.51,
+    339.573,
+    131.981
+   ],
+   "forward": [
+    0.7532,
+    0.6344,
+    -0.1736
+   ],
+   "up": [
+    0.1328,
+    0.1119,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "room": 185,
+   "terrainChunks": 0
+  },
+  {
+   "name": "g-8460-340-200",
+   "wmo": "World/wmo/Azeroth/Buildings/Stormwind/Stormwind.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_31_48.adt",
+   "position": [
+    -8464.18,
+    336.479,
+    202.828
+   ],
+   "forward": [
+    0.7532,
+    0.6344,
+    -0.1736
+   ],
+   "up": [
+    0.1328,
+    0.1119,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "room": 185,
+   "terrainChunks": 0
+  },
+  {
+   "name": "g-8460-580-130",
+   "wmo": "World/wmo/Azeroth/Buildings/Stormwind/Stormwind.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_31_48.adt",
+   "position": [
+    -8464.18,
+    576.479,
+    132.828
+   ],
+   "forward": [
+    0.7532,
+    0.6344,
+    -0.1736
+   ],
+   "up": [
+    0.1328,
+    0.1119,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "room": 109,
+   "terrainChunks": 0
+  },
+  {
+   "name": "g-8460-580-200",
+   "wmo": "World/wmo/Azeroth/Buildings/Stormwind/Stormwind.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_31_48.adt",
+   "position": [
+    -8464.18,
+    576.479,
+    202.828
+   ],
+   "forward": [
+    0.7532,
+    0.6344,
+    -0.1736
+   ],
+   "up": [
+    0.1328,
+    0.1119,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "room": 109,
+   "terrainChunks": 0
+  },
+  {
+   "name": "g-8460-820-130",
+   "wmo": "World/wmo/Azeroth/Buildings/Stormwind/Stormwind.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_31_48.adt",
+   "position": [
+    -8464.18,
+    816.479,
+    132.828
+   ],
+   "forward": [
+    0.7532,
+    0.6344,
+    -0.1736
+   ],
+   "up": [
+    0.1328,
+    0.1119,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "room": 149,
+   "terrainChunks": 0
+  },
+  {
+   "name": "g-8560-820-130",
+   "wmo": "World/wmo/Azeroth/Buildings/Stormwind/Stormwind.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_31_48.adt",
+   "position": [
+    -8564.18,
+    816.479,
+    132.828
+   ],
+   "forward": [
+    0.7532,
+    0.6344,
+    -0.1736
+   ],
+   "up": [
+    0.1328,
+    0.1119,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "room": 95,
+   "terrainChunks": 0
+  },
+  {
+   "name": "g-8660-460-130",
+   "wmo": "World/wmo/Azeroth/Buildings/Stormwind/Stormwind.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_31_48.adt",
+   "position": [
+    -8664.18,
+    456.479,
+    132.828
+   ],
+   "forward": [
+    0.7532,
+    0.6344,
+    -0.1736
+   ],
+   "up": [
+    0.1328,
+    0.1119,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "room": 94,
+   "terrainChunks": 0
+  },
+  {
+   "name": "g-8660-460-200",
+   "wmo": "World/wmo/Azeroth/Buildings/Stormwind/Stormwind.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_31_48.adt",
+   "position": [
+    -8664.18,
+    456.479,
+    202.828
+   ],
+   "forward": [
+    0.7532,
+    0.6344,
+    -0.1736
+   ],
+   "up": [
+    0.1328,
+    0.1119,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "room": 94,
+   "terrainChunks": 0
+  },
+  {
+   "name": "g-8660-820-130",
+   "wmo": "World/wmo/Azeroth/Buildings/Stormwind/Stormwind.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_31_48.adt",
+   "position": [
+    -8664.18,
+    816.479,
+    132.828
+   ],
+   "forward": [
+    0.7532,
+    0.6344,
+    -0.1736
+   ],
+   "up": [
+    0.1328,
+    0.1119,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "room": 95,
+   "terrainChunks": 0
+  },
+  {
+   "name": "g-8660-820-200",
+   "wmo": "World/wmo/Azeroth/Buildings/Stormwind/Stormwind.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_31_48.adt",
+   "position": [
+    -8664.18,
+    816.479,
+    202.828
+   ],
+   "forward": [
+    0.7532,
+    0.6344,
+    -0.1736
+   ],
+   "up": [
+    0.1328,
+    0.1119,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "room": 95,
+   "terrainChunks": 0
+  },
+  {
+   "name": "g-8760-1060-130",
+   "wmo": "World/wmo/Azeroth/Buildings/Stormwind/Stormwind.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_31_48.adt",
+   "position": [
+    -8764.18,
+    1056.48,
+    132.828
+   ],
+   "forward": [
+    0.7532,
+    0.6344,
+    -0.1736
+   ],
+   "up": [
+    0.1328,
+    0.1119,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "room": 224,
+   "terrainChunks": 0
+  },
+  {
+   "name": "g-8760-1060-200",
+   "wmo": "World/wmo/Azeroth/Buildings/Stormwind/Stormwind.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_31_48.adt",
+   "position": [
+    -8764.18,
+    1056.48,
+    202.828
+   ],
+   "forward": [
+    0.7532,
+    0.6344,
+    -0.1736
+   ],
+   "up": [
+    0.1328,
+    0.1119,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "room": 224,
+   "terrainChunks": 0
+  },
+  {
+   "name": "g-8860-340-200",
+   "wmo": "World/wmo/Azeroth/Buildings/Stormwind/Stormwind.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_31_48.adt",
+   "position": [
+    -8864.18,
+    336.479,
+    202.828
+   ],
+   "forward": [
+    0.7532,
+    0.6344,
+    -0.1736
+   ],
+   "up": [
+    0.1328,
+    0.1119,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "room": 94,
+   "terrainChunks": 1117
+  },
+  {
+   "name": "g-8860-580-130",
+   "wmo": "World/wmo/Azeroth/Buildings/Stormwind/Stormwind.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_31_48.adt",
+   "position": [
+    -8864.18,
+    576.479,
+    132.828
+   ],
+   "forward": [
+    0.7532,
+    0.6344,
+    -0.1736
+   ],
+   "up": [
+    0.1328,
+    0.1119,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "room": 257,
+   "terrainChunks": 0
+  },
+  {
+   "name": "g-8860-580-200",
+   "wmo": "World/wmo/Azeroth/Buildings/Stormwind/Stormwind.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_31_48.adt",
+   "position": [
+    -8864.18,
+    576.479,
+    202.828
+   ],
+   "forward": [
+    0.7532,
+    0.6344,
+    -0.1736
+   ],
+   "up": [
+    0.1328,
+    0.1119,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "room": 257,
+   "terrainChunks": 0
+  },
+  {
+   "name": "g-8860-820-130",
+   "wmo": "World/wmo/Azeroth/Buildings/Stormwind/Stormwind.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_31_48.adt",
+   "position": [
+    -8864.18,
+    816.479,
+    132.828
+   ],
+   "forward": [
+    0.7532,
+    0.6344,
+    -0.1736
+   ],
+   "up": [
+    0.1328,
+    0.1119,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "room": 74,
+   "terrainChunks": 0
+  },
+  {
+   "name": "g-8860-820-200",
+   "wmo": "World/wmo/Azeroth/Buildings/Stormwind/Stormwind.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_31_48.adt",
+   "position": [
+    -8864.18,
+    816.479,
+    202.828
+   ],
+   "forward": [
+    0.7532,
+    0.6344,
+    -0.1736
+   ],
+   "up": [
+    0.1328,
+    0.1119,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "room": 74,
+   "terrainChunks": 0
+  },
+  {
+   "name": "g-8960-820-130",
+   "wmo": "World/wmo/Azeroth/Buildings/Stormwind/Stormwind.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_31_48.adt",
+   "position": [
+    -8964.18,
+    816.479,
+    132.828
+   ],
+   "forward": [
+    0.7532,
+    0.6344,
+    -0.1736
+   ],
+   "up": [
+    0.1328,
+    0.1119,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "room": 78,
+   "terrainChunks": 0
+  },
+  {
+   "name": "g-8960-820-200",
+   "wmo": "World/wmo/Azeroth/Buildings/Stormwind/Stormwind.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_31_48.adt",
+   "position": [
+    -8964.18,
+    816.479,
+    202.828
+   ],
+   "forward": [
+    0.7532,
+    0.6344,
+    -0.1736
+   ],
+   "up": [
+    0.1328,
+    0.1119,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "room": 78,
+   "terrainChunks": 0
+  },
+  {
+   "name": "g-8960-940-130",
+   "wmo": "World/wmo/Azeroth/Buildings/Stormwind/Stormwind.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_31_48.adt",
+   "position": [
+    -8960.07,
+    939.944,
+    131.88
+   ],
+   "forward": [
+    0.7532,
+    0.6344,
+    -0.1736
+   ],
+   "up": [
+    0.1328,
+    0.1119,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "room": 106,
+   "terrainChunks": 0
+  },
+  {
+   "name": "g-8960-940-200",
+   "wmo": "World/wmo/Azeroth/Buildings/Stormwind/Stormwind.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_31_48.adt",
+   "position": [
+    -8964.18,
+    936.479,
+    202.828
+   ],
+   "forward": [
+    0.7532,
+    0.6344,
+    -0.1736
+   ],
+   "up": [
+    0.1328,
+    0.1119,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "room": 106,
+   "terrainChunks": 0
+  },
+  {
+   "name": "s02",
+   "wmo": "WORLD/WMO/LORDERON/BUILDINGS/SILVERMOON/SILVERMOON_CITY_01.wmo",
+   "adt": "World/Maps/Expansion01/Expansion01_45_13.adt",
+   "position": [
+    9696.13,
+    -7453.86,
+    42.8281
+   ],
+   "forward": [
+    0.6964,
+    0.6964,
+    -0.1736
+   ],
+   "up": [
+    0.1228,
+    0.1228,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "room": 64,
+   "terrainChunks": 0
+  },
+  {
+   "name": "s04",
+   "wmo": "WORLD/WMO/LORDERON/BUILDINGS/SILVERMOON/SILVERMOON_CITY_01.wmo",
+   "adt": "World/Maps/Expansion01/Expansion01_45_13.adt",
+   "position": [
+    9557.76,
+    -7095.02,
+    42.8281
+   ],
+   "forward": [
+    0.4041,
+    -0.8981,
+    -0.1736
+   ],
+   "up": [
+    0.0713,
+    -0.1584,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "room": 63,
+   "terrainChunks": 0
+  },
+  {
+   "name": "s05",
+   "wmo": "WORLD/WMO/LORDERON/BUILDINGS/SILVERMOON/SILVERMOON_CITY_01.wmo",
+   "adt": "World/Maps/Expansion01/Expansion01_45_13.adt",
+   "position": [
+    9651.27,
+    -7146.18,
+    42.5735
+   ],
+   "forward": [
+    -0.3114,
+    -0.9343,
+    -0.1736
+   ],
+   "up": [
+    -0.0549,
+    -0.1647,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "room": 63,
+   "terrainChunks": 0
+  }
+ ]
+}
