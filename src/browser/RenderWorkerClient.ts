@@ -88,7 +88,7 @@ const STAND_IN_REQUEST_MS = 1_000;
  * from the same one by identity, and a clone is always new) and the ground cover's client (only its presence crosses).
  * Every other setting repeats only with the same primitive arguments: an object may have been refilled in place.
  */
-const IDENTITY_SETTINGS: ReadonlySet<string> = new Set(["setWeather", "setGroundCover"]);
+const IDENTITY_SETTINGS: ReadonlySet<string> = new Set(["setWeather", "setGroundCover", "setCameraWmoSurface"]);
 
 function sameArgs(method: string, a: readonly unknown[], b: readonly unknown[]): boolean {
   if (a.length !== b.length) return false;
@@ -199,6 +199,7 @@ export class RenderWorkerClient implements ClientRenderer {
     // The in-page renderer publishes it at once (`results.indoors`); the next results would, a frame later.
     this.#results.indoors = args[0];
   }
+  setCameraWmoSurface(...args: Args<"setCameraWmoSurface">): void { this.#send("setCameraWmoSurface", args); }
   updateLighting(...args: Args<"updateLighting">): void { this.#send("updateLighting", args); }
   setUnderwaterSurface(...args: Args<"setUnderwaterSurface">): void { this.#send("setUnderwaterSurface", args); }
   setSelection(...args: Args<"setSelection">): void { this.#send("setSelection", args); }

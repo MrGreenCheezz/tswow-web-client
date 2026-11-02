@@ -608,6 +608,16 @@ function frame(now: number): void {
       lightCamera.position.z,
       lightCamera.position.z - FLOOR_SEARCH_DEPTH,
     );
+    // 02.11: which of a building's groups the camera sees starts from what it hangs over (WmoCameraWalk.ts). While the
+    // collision around it is not current the renderer keeps the last answer: a tile landing is not a change of room.
+    const cameraWmoSurface = game.collision?.staticWmoSurfaceState(
+      world.mapId,
+      lightCamera.position.x,
+      lightCamera.position.y,
+      lightCamera.position.z,
+      lightCamera.position.z - FLOOR_SEARCH_DEPTH,
+    );
+    if (cameraWmoSurface !== undefined) game.renderer?.setCameraWmoSurface(cameraWmoSurface);
     let underwaterSurface: EyeLiquidSurface | undefined;
     if (gameTime && world.mapId !== undefined) {
       const half = halfMinuteOfDay(gameTime);

@@ -118,6 +118,19 @@ export interface StaticWmoFloor {
 }
 
 /**
+ * 02.11: the static WMO group a point hangs over, for the walk of `WmoCameraWalk.ts`. One object per group and
+ * collision revision, so an unchanged answer is the same object.
+ */
+export interface StaticWmoSurface {
+  readonly revision: number;
+  readonly placement: Readonly<StaticWmoPlacementIdentity>;
+  /** The `.vmo`'s group index, which is not the file's; the flags and the box name the file's group. */
+  readonly groupIndex: number;
+  readonly groupFlags: number;
+  readonly groupBounds: Readonly<CollisionModel["groups"][number]["bounds"]>;
+}
+
+/**
  * A column a caller has already walked: `CollisionWorld.floorHitUnder(x, y, fromZ, minZ)` with no
  * filter, at the same point and on the same collision revision. See `staticWmoFloorState`.
  */
@@ -287,6 +300,8 @@ export class CollisionSource {
   #triangles = 0;
   #dropped = 0;
   #revision = 0;
+  /** 02.11: the last `staticWmoSurfaceState` answer, handed out again while it stands. */
+  #surface: StaticWmoSurface | undefined;
   #tileSuccess = 0;
   #tileError = 0;
 
@@ -411,6 +426,36 @@ export class CollisionSource {
       groupId: hit.groupId,
       groupFlags: hit.flags,
     };
+  }
+
+  /**
+   * 02.11: the nearest surface of a static WMO under a point, of any slope: what Wow.exe's camera is measured to ask
+   * (`WmoCameraWalk.ts`), where the floor above stops at a roof too steep to stand on and answers for the room beneath.
+   * `null` when the collision around the point is current and nothing is there, `undefined` while it is not current.
+   */
+  staticWmoSurfaceState(
+    map: number | undefined,
+    x: number,
+    y: number,
+    fromZ: number,
+    minZ: number,
+  ): StaticWmoSurface | null | undefined {
+    if (map === undefined || map !== this.#map) return undefined;
+    if (this.#knownTiles !== this.#tileRevision || this.#modelRevision !== this.models.revision) return undefined;
+    if (this.#tileKeys(map, x, y).some((key) => !this.#tiles.has(key))) return undefined;
+    if (this.#pendingCovers(x, y)) return undefined;
+    const hit = this.world.floorHitUnder(x, y, fromZ, minZ, this.#acceptStaticWmo, true);
+    if (!hit || hit.groupIndex === undefined || hit.flags === undefined) return null;
+    const record = this.#placements.get(hit.instanceId);
+    const placement = record?.identity;
+    const group = record?.model.groups[hit.groupIndex];
+    if (!placement || !group) return null;
+    const known = this.#surface;
+    if (known?.revision === this.#revision && known.placement === placement && known.groupIndex === hit.groupIndex) return known;
+    this.#surface = Object.freeze({
+      revision: this.#revision, placement, groupIndex: hit.groupIndex, groupFlags: hit.flags, groupBounds: group.bounds,
+    });
+    return this.#surface;
   }
 
   /** A floor of a static WMO placement that still carries its group's provenance: no M2, no stale mesh. */

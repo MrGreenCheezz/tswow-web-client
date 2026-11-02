@@ -254,7 +254,7 @@ import {
 import { WmoGeometryBuild } from "./WmoGeometryBuild.js";
 import {
   canonicalCollisionModelName,
-  type StaticWmoFloor, type StaticWmoPlacementIdentity,
+  type StaticWmoFloor, type StaticWmoPlacementIdentity, type StaticWmoSurface,
 } from "./game/CollisionSource.js";
 import { viewSubjectIn } from "./game/ViewSubject.js"; // 11.02-I
 import { cameraSubjectOpacity } from "./game/CameraClip.js"; // 5.33
@@ -273,6 +273,10 @@ import {
   type GroundTargetRingHeights, type SelectionRingHeights,
 } from "./SelectionRingHeights.js"; // 22.10 ARC-2 S2b
 import { selectWmoPortalGroups } from "./WmoOcclusion.js";
+import {
+  createWmoCameraWalkState, walkWmoFromCamera, wmoCameraWalkNote, wmoCameraWalkStale, wmoGroupIsRoom, wmoGroupOfCollision,
+  wmoHasOutdoorGroup, type WmoCameraWalkState,
+} from "./WmoCameraWalk.js"; // 02.11
 import { WmoRangeTable, sameWmoSelection, type WmoRangeTotals } from "./WmoGroupRange.js"; // P1-12a/b
 import { createWmoPortalMemo, wmoPortalMemoAnswer, wmoPortalMemoNote, type WmoPortalMemo } from "./WmoPortalMemo.js"; // P1-12c
 import {
@@ -1774,6 +1778,8 @@ function validWmoBounds(bounds: WmoGroup["bounds"]): boolean {
  * authoritative fallback
  * and the candidate ceiling. `WmoOcclusion` may refine it only from a confirmed indoor group; old
  * artifacts, open air, invalid graphs and the 14 Stormwind groups with no portals keep this answer.
+ * 02.11: a building with a street now chooses what the view shows by `WmoCameraWalk.ts`, once the collision has
+ * said what the camera hangs over; this set then stays hung for its shadows and answers until the collision does.
  * `roomRange` is the room leash: sixty yards, or `INTERIOR_ONLY_RANGE` once the camera or the
  * player stands in a building of rooms alone, where the portals then decide.
  */
@@ -2531,6 +2537,22 @@ interface PlacedWmo {
   openAirRanges?: WmoRangeTable;
   /** P1-12c: the indoor portal walk's last inputs and answer (`WmoPortalMemo.ts`). */
   portalMemo?: WmoPortalMemo;
+  /** 02.11: the walk from the camera (`WmoCameraWalk.ts`), and the collision answer its room was read from. */
+  cameraWalk?: WmoCameraWalkState;
+  cameraSurface?: StaticWmoSurface;
+  cameraSurfaceGroup?: number;
+  /** 02.11: the groups the last full pass kept hung beside `appliedSelection`, by identity. */
+  appliedHung?: readonly number[] | undefined;
+}
+
+/**
+ * 02.11: a hung room out of the view or back in it: its own layer only. Its shadow stand-in has its own layers, and
+ * three walks an object's children whatever the object's layers say, so the room casts the same either way.
+ */
+function setWmoRoomInView(mesh: THREE.Object3D, inView: boolean): void {
+  if (mesh.layers.isEnabled(0) === inView) return;
+  if (inView) mesh.layers.enable(0);
+  else mesh.layers.disable(0);
 }
 
 /** The sole renderer owner of one converted WMO group geometry. */
@@ -4475,6 +4497,14 @@ export class WorldRenderer3D {
   #wmoFogVisualId: number | undefined;
   /** The floor's visual placement, found by a scan of every loaded placement only when its inputs change. */
   readonly #wmoFloorVisuals = new UniqueVisualWmoPlacementCache();
+  /**
+   * 02.11: what the camera hangs over (`setCameraWmoSurface`): undefined until the collision has answered, null
+   * for nothing, and its visual placement this frame. `#cameraSurfaceKnown` false: no walk from the camera this frame.
+   */
+  #cameraWmoSurface: StaticWmoSurface | null | undefined;
+  #cameraSurfaceVisualId: number | undefined;
+  #cameraSurfaceKnown = false;
+  readonly #wmoSurfaceVisuals = new UniqueVisualWmoPlacementCache();
   /** Authored fog proposed by that exact placement/group; applied once after traversal. */
   #wmoFogCandidate: { fog: WmoFog; key: string } | undefined;
 
@@ -7466,6 +7496,11 @@ export class WorldRenderer3D {
     this.#skyWarmup.registerObject(node);
   }
 
+  /** 02.11: what the camera hangs over, told like `setIndoors` and by the same collision world (`WmoCameraWalk.ts`). */
+  setCameraWmoSurface(surface: StaticWmoSurface | null): void {
+    this.#cameraWmoSurface = surface;
+  }
+
   /**
    * Whether the character is under a roof.
    *
@@ -8036,6 +8071,9 @@ export class WorldRenderer3D {
     this.#wmoFloor = undefined;
     this.#wmoFogVisualId = undefined;
     this.#wmoFogCandidate = undefined;
+    this.#cameraWmoSurface = undefined; // 02.11
+    this.#cameraSurfaceVisualId = undefined;
+    this.#cameraSurfaceKnown = false;
     this.#indoors = false;
     this.#underwater = false;
     // The switch itself is the account's and survives a realm change; the surface is one frame's
@@ -8873,6 +8911,8 @@ export class WorldRenderer3D {
     // Every value below describes this submission attempt, never a live cache. Reset before the
     // player guard so loading/teleport frames cannot repeat the last populated scene's numbers.
     this.#resetFrameCounters();
+    this.#cameraSurfaceVisualId = undefined; // 02.11
+    this.#cameraSurfaceKnown = false;
     this.#wmoFogCandidate = undefined;
     this.#wmoFloor = undefined;
     this.#wmoFogVisualId = undefined;
@@ -8904,6 +8944,14 @@ export class WorldRenderer3D {
         this.#wmoFloor = wmoFloor;
         this.#wmoFogVisualId = visual.id;
       }
+    }
+    // 02.11: a building is seen from a room of it only when that placement is here to be the one, so an answer from
+    // another map or one this list cannot place decides nothing this frame.
+    const cameraSurface = this.#cameraWmoSurface;
+    if (cameraSurface === null) this.#cameraSurfaceKnown = true;
+    else if (cameraSurface && cameraSurface.placement.map === map) {
+      this.#cameraSurfaceVisualId = this.#wmoSurfaceVisuals.lookup(cameraSurface.placement, objects)?.id;
+      this.#cameraSurfaceKnown = this.#cameraSurfaceVisualId !== undefined;
     }
     this.#liquidTextures = liquidTextures;
     // Zero orbit distance puts the camera inside the character's own head, where its body fills
@@ -13620,10 +13668,21 @@ export class WorldRenderer3D {
     let selected: readonly number[] = distanceGroups;
     let clipped = false;
     let walked = false; // 05.10-A7b-2: the indoor walk above answered
+    // 02.11: the rule recorded from Wow.exe (`WmoCameraWalk.ts`), for a building with a street once the collision has
+    // said what the camera hangs over; it answers instead of both walks below. What it leaves out of the view stays
+    // hung (`hung`): those rooms keep casting and are ready the moment a portal comes into the frame.
+    const fromCamera = viewed && !entered && this.#wmoOcclusion && placed.model.portals && !wmoInteriorOnly(placed.model)
+      ? this.#wmoGroupsFromCamera(placed, player)
+      : undefined;
+    let hung: readonly number[] | undefined;
+    if (fromCamera) {
+      selected = fromCamera;
+      hung = distanceGroups;
+    }
     if (fogPlacement || (viewed && this.#indoors) || entered) {
       this.#wmoCameraModel.copy(this.#camera.position).applyMatrix4(placed.worldToModel);
       if (fogPlacement) this.#considerWmoFog(placed, this.#wmoCameraModel);
-      if (viewed && (this.#indoors || entered) && this.#wmoOcclusion && placed.model.portals) {
+      if (!fromCamera && viewed && (this.#indoors || entered) && this.#wmoOcclusion && placed.model.portals) {
         this.#wmoViewerModel.set(player.x, player.z, -player.y).applyMatrix4(placed.worldToModel);
         this.#wmoModelToClip
           .multiplyMatrices(this.#camera.matrixWorldInverse, placed.modelToWorld)
@@ -13662,7 +13721,7 @@ export class WorldRenderer3D {
     if (entered) this.#noteInteriorOnly(placed, player, selected, clipped);
     // 05.10-A7b-2 (7.03 slice 3): a building with a street — its rooms seen through its doors from
     // the street, and its furniture bound to the rooms either walk showed.
-    if (viewed && !entered && this.#wmoOcclusion && placed.model.portals && !wmoInteriorOnly(placed.model)) {
+    if (!fromCamera && viewed && !entered && this.#wmoOcclusion && placed.model.portals && !wmoInteriorOnly(placed.model)) {
       selected = this.#wmoRoomsFromOpenAir(placed, player, selected, walked);
     }
     // Room builds (geometry compose, material setup, uploads) are the building-shaped turn
@@ -13679,13 +13738,23 @@ export class WorldRenderer3D {
     // wanted room is attached to its exact current entry and nothing else is, so the pass below
     // would detach, build and request nothing.
     if (placed.appliedSettled && placed.appliedEpoch === this.#wmoGeometries.epoch
-      && sameWmoSelection(placed.appliedSelection, selected)) return;
+      && placed.appliedHung === hung && sameWmoSelection(placed.appliedSelection, selected)) return;
     const groups = placed.model.groups;
     let wanted = placed.groupMask;
     if (wanted === undefined || wanted.length !== groups.length) {
       wanted = placed.groupMask = new Uint8Array(groups.length);
     } else wanted.fill(0);
     for (let at = 0; at < selected.length; at++) wanted[selected[at]!] = 1;
+    if (hung) {
+      // 2: hung for the shadows and the next turn of the camera, not drawn. Its stand-in is a child on the shadow
+      // layers, and a child is walked whatever its parent's layers say.
+      for (let at = 0; at < hung.length; at++) {
+        const index = hung[at]!;
+        if (wanted[index] === 0) wanted[index] = 2;
+      }
+    }
+    // Only a pass that hangs rooms touches the view layer, or the first one after such a pass.
+    const viewLayers = hung !== undefined || placed.appliedHung !== undefined;
     const missing: number[] = [];
     const buildable: number[] = [];
     for (let index = 0; index < groups.length; index++) {
@@ -13703,6 +13772,7 @@ export class WorldRenderer3D {
         continue;
       }
       if (built) {
+        if (viewLayers) setWmoRoomInView(built.mesh, wanted[index] === 1);
         // `peek`: the room is pinned while attached, so its recency matters only once it leaves.
         if (this.#wmoGeometries.peek(built.entry.cacheKey) === built.entry) continue;
         this.#wmoGeometries.get(built.entry.cacheKey);
@@ -13720,6 +13790,8 @@ export class WorldRenderer3D {
       buildable.push(index);
     }
     const shellFirst = (left: number, right: number): number => {
+      // 02.11: what the view is waiting for before what only hangs.
+      if ((wanted[left] === 1) !== (wanted[right] === 1)) return wanted[left] === 1 ? -1 : 1;
       const leftGroup = placed.model.groups[left]!;
       const rightGroup = placed.model.groups[right]!;
       const leftShell = leftGroup.exterior || !leftGroup.indoor ? 0 : 1;
@@ -13738,6 +13810,7 @@ export class WorldRenderer3D {
       placed.built.set(index, rendered);
       node.add(rendered.mesh);
       this.#holdWmoGroupUntilWarm(rendered.mesh);
+      if (viewLayers) setWmoRoomInView(rendered.mesh, wanted[index] === 1);
       // RND-12: a placed building is frozen, so its room is composed once and frozen as it is hung;
       // the scenery group then never walks it. A transport's rooms move with it and stay live.
       if (staticEnvironment) {
@@ -13765,6 +13838,63 @@ export class WorldRenderer3D {
     for (let at = 0; at < selected.length; at++) applied[at] = selected[at]!;
     placed.appliedEpoch = this.#wmoGeometries.epoch;
     placed.appliedSettled = missing.length === 0 && attached === buildable.length;
+    placed.appliedHung = hung;
+  }
+
+  /**
+   * 02.11: this building's groups by the rule recorded from Wow.exe (`WmoCameraWalk.ts`), and its furniture bound to
+   * them; undefined when the rule has no answer and the older walks decide: the collision has not spoken, the room
+   * below does not line up with the file's, or the camera is outside a building that has no outside to start from.
+   */
+  #wmoGroupsFromCamera(placed: PlacedWmo, player: WorldPosition): readonly number[] | undefined {
+    if (!this.#cameraSurfaceKnown) return undefined;
+    const model = placed.model;
+    const portals = model.portals;
+    if (!portals) return undefined;
+    let room = -1;
+    const surface = this.#cameraWmoSurface;
+    if (surface && placed.visualId === this.#cameraSurfaceVisualId) {
+      if (placed.cameraSurface !== surface) {
+        placed.cameraSurface = surface;
+        placed.cameraSurfaceGroup = wmoGroupOfCollision(model.groups, surface.groupFlags, surface.groupBounds);
+      }
+      const group = model.groups[placed.cameraSurfaceGroup!];
+      if (!group) return undefined;
+      if (wmoGroupIsRoom(group)) room = placed.cameraSurfaceGroup!;
+    }
+    if (room < 0 && !wmoHasOutdoorGroup(model.groups)) return undefined;
+    const state = placed.cameraWalk ??= createWmoCameraWalkState();
+    const clip = this.#wmoModelToClip
+      .multiplyMatrices(this.#camera.matrixWorldInverse, placed.modelToWorld)
+      .premultiply(this.#camera.projectionMatrix)
+      .elements;
+    const binds = (model.doodadRooms?.length ?? 0) > 0;
+    const rooms = binds ? this.#interiorOnlyRoomsOf(placed) : undefined;
+    if (wmoCameraWalkStale(state, clip, room, rooms)) {
+      this.#wmoCameraModel.copy(this.#camera.position).applyMatrix4(placed.worldToModel);
+      const answer = walkWmoFromCamera(model.groups, portals, room, this.#wmoCameraModel, clip, rooms?.apertures, state.scratch);
+      wmoCameraWalkNote(state, clip, room, rooms);
+      // The account's view distance still holds: what the walk reached past it stays out, as in the older walks' tables.
+      const reach = this.environmentShellRange;
+      const x = player.x;
+      const z = -player.y;
+      const kept = state.kept;
+      let count = 0;
+      for (let at = 0; at < answer.groups.length; at++) {
+        const index = answer.groups[at]!;
+        const box = placed.boxes[index];
+        if (box && Math.hypot(Math.max(box.min.x - x, 0, x - box.max.x), Math.max(box.min.z - z, 0, z - box.max.z)) >= reach) continue;
+        kept[count++] = index;
+      }
+      kept.length = count;
+    }
+    const walk = state.scratch.result;
+    if (!walk.used) return undefined;
+    this.#wmoPortalModels++;
+    this.#wmoPortalCandidates += walk.candidates;
+    this.#wmoPortalCulled += walk.candidates - state.kept.length;
+    if (binds) this.#bindWmoDoodads(placed, state.kept, true, WMO_OPEN_AIR_ROOM_RANGE);
+    return state.kept;
   }
 
   /**

@@ -48,7 +48,7 @@ export const RENDER_WORKER_COMMANDS: Readonly<Record<ClientRendererCommand, Rend
   setHdWorldTextures: "setting", // 23.10 (7.48 step 2)
   setFullscreenGlow: "setting", setGodRays: "setting", setGodRayStrength: "setting", setCinematicProfile: "setting",
   setCinematicStrength: "setting", setAtmosphereEffects: "setting", setEnvironmentDetail: "setting",
-  setGroundCover: "setting", setWeather: "setting", setIndoors: "setting", updateLighting: "setting",
+  setGroundCover: "setting", setWeather: "setting", setIndoors: "setting", setCameraWmoSurface: "setting", updateLighting: "setting",
   setUnderwaterSurface: "setting", setSelection: "setting", setGroundTargetPreview: "setting",
   setGameObjectPreview: "setting", setDuelRing: "setting", setUnitAuraAppearance: "setting",
   setWorldSubmissionCapture: "setting", setShaderProgramCapture: "setting",

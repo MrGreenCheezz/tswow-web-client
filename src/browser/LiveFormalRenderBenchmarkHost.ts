@@ -84,7 +84,7 @@ const RENDERER_MUTATORS = [
   "updateLighting", "setUnderwaterSurface",
   "observeFrame", "resetFrameCadence", "resetRenderEvolutionClock", "resetReplayEpoch", "endReplayEpoch",
   "playSpellVisual", "clearSpellVisuals", "cancelSpellVisual", "retimeSpellVisual", "setStateVisuals",
-  "setWeather", "setIndoors", "setRenderLookups", "setGroundCover", "invalidateGroundCover", "setSelection",
+  "setWeather", "setIndoors", "setCameraWmoSurface", "setRenderLookups", "setGroundCover", "invalidateGroundCover", "setSelection",
   "setGroundTargetPreview", "setGameObjectPreview",
   "setPortraitTargets", "renderPortraits", "clearPortraits",
   "markFrameNotRendered", "beginRenderFrame", "endRenderFrame", "resetGpuTimingEpoch", "draw",
@@ -1263,6 +1263,17 @@ export class LiveFormalRenderBenchmarkHost implements FormalRenderBenchmarkHost 
       lightCamera.position.z,
       lightCamera.position.z - FLOOR_SEARCH_DEPTH,
     );
+    // 02.11: as the live loop does (game/Loop.ts).
+    const cameraWmoSurface = resources.collision.staticWmoSurfaceState(
+      replay.mapId,
+      lightCamera.position.x,
+      lightCamera.position.y,
+      lightCamera.position.z,
+      lightCamera.position.z - FLOOR_SEARCH_DEPTH,
+    );
+    if (cameraWmoSurface !== undefined) {
+      this.#withRendererMutationAuthorization("setCameraWmoSurface", () => resources.renderer.setCameraWmoSurface(cameraWmoSurface));
+    }
     const terrainLiquid = resources.terrain.liquidAt(
       replay.mapId, lightCamera.position.x, lightCamera.position.y,
     );

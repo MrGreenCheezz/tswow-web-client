@@ -949,6 +949,7 @@ export class CollisionWorld {
     fromZ: number,
     minZ: number,
     accept?: (hit: CollisionFloorHit) => boolean,
+    anySlope = false, // 02.11: every surface in the column, not just those that can be stood on
   ): CollisionFloorHit | undefined {
     // Best-hit fields as locals: the loop below used to allocate one hit object per passing
     // triangle (plus two tiebreak arrays in the comparison), and this runs per physics substep,
@@ -974,7 +975,7 @@ export class CollisionWorld {
         const triangle = candidates ? candidates[entry]! : entry;
         const z = verticalHit(mesh.triangles, triangle, x, y);
         if (z === undefined || !Number.isFinite(z) || z > fromZ || z < minZ) continue;
-        if (!isFloorTriangle(mesh.triangles, triangle)) continue;
+        if (!anySlope && !isFloorTriangle(mesh.triangles, triangle)) continue;
         const candidateQuantum = Math.round(z / COLLISION_FLOOR_TIE_EPSILON);
         let run: CollisionRun | undefined;
         if (hasBest) {

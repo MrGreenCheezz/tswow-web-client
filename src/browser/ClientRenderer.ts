@@ -17,7 +17,7 @@ export type ClientRendererCommand =
   | "setExperimentalShaderProfile" | "setUnderwaterOverlay" | "setTerrainRelief" | "setNeuralRelief" | "setWmoRelief" | "setM2Relief" | "setReliefStrength" |"setLivingSpells" | "setSpellDensity" | "setMissileTrails" | "setLootBeams" | "setCameraLens" | "setHdEffectTextures" | "setHdWorldTextures" | "setFullscreenGlow" | "setGodRays" | "setGodRayStrength"
   | "setCinematicProfile" | "setCinematicStrength" | "setAtmosphereEffects" | "setEnvironmentDetail" | "setGroundCover"
   | "invalidateGroundCover" | "clearPortraits" | "clearTerrain" | "clearWorldResources"
-  | "setWeather" | "setIndoors" | "updateLighting" | "setUnderwaterSurface" | "setSelection" | "setGroundTargetPreview"
+  | "setWeather" | "setIndoors" | "setCameraWmoSurface" | "updateLighting" | "setUnderwaterSurface" | "setSelection" | "setGroundTargetPreview"
   | "setGameObjectPreview" | "setDuelRing" | "setUnitAuraAppearance" | "setStateVisuals"
   | "playSpellVisual" | "cancelSpellVisual" | "retimeSpellVisual" | "clearSpellVisuals" | "prewarmSpellModels"
   | "playUnitAction" | "releaseUnitAction" | "setMeleeTargets" | "playUnitReaction" | "playUnitEmote" | "cancelUnitAction"

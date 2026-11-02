@@ -224,7 +224,7 @@ export function createWmoPortalWalkScratch(): WmoPortalWalkScratch {
   };
 }
 
-function scratchFallback(scratch: WmoPortalWalkScratch, groups: readonly number[]): WmoOcclusionSelection {
+export function scratchFallback(scratch: WmoPortalWalkScratch, groups: readonly number[]): WmoOcclusionSelection {
   const result = scratch.result;
   result.groups = groups;
   result.candidates = groups.length;
@@ -234,8 +234,21 @@ function scratchFallback(scratch: WmoPortalWalkScratch, groups: readonly number[
   return result;
 }
 
+/** 02.11: the scratch sized for `count` groups, nothing reached and nothing queued. */
+export function clearWalk(scratch: WmoPortalWalkScratch, count: number): void {
+  if (scratch.groupCapacity < count) {
+    scratch.groupCapacity = count;
+    scratch.apertures = new Float64Array(count * 4);
+    scratch.reached = new Uint8Array(count);
+    scratch.queued = new Uint8Array(count);
+    scratch.queue = new Int32Array(count);
+  }
+  scratch.reached.fill(0, 0, count);
+  scratch.queued.fill(0, 0, count);
+}
+
 /** Seeds one group across the whole screen; the ring is empty before seeding, so it starts at 0. */
-function seedGroup(scratch: WmoPortalWalkScratch, index: number, size: number): number {
+export function seedGroup(scratch: WmoPortalWalkScratch, index: number, size: number): number {
   scratch.apertures[index * 4] = -1;
   scratch.apertures[index * 4 + 1] = 1;
   scratch.apertures[index * 4 + 2] = -1;
@@ -261,17 +274,7 @@ function selectFromOpenAir(
   if (!portals || count === 0 || !finitePoint(camera) || !validMatrix(modelToClip)) {
     return scratchFallback(scratch, distanceGroups);
   }
-  if (scratch.groupCapacity < count) {
-    scratch.groupCapacity = count;
-    scratch.apertures = new Float64Array(count * 4);
-    scratch.reached = new Uint8Array(count);
-    scratch.queued = new Uint8Array(count);
-    scratch.queue = new Int32Array(count);
-  }
-  const { apertures, reached, queued, queue, portal } = scratch;
-  reached.fill(0, 0, count);
-  queued.fill(0, 0, count);
-  let head = 0;
+  clearWalk(scratch, count);
   let size = 0;
   if (!cachedValidGroupBounds(groups)) return scratchFallback(scratch, distanceGroups);
   const viewerValid = viewer !== undefined && finitePoint(viewer);
@@ -288,10 +291,56 @@ function selectFromOpenAir(
   }
   if (size === 0 || !cachedValidGraph(groups, portals)) return scratchFallback(scratch, distanceGroups);
 
+  if (!walkPortals(groups, portals, modelToClip, scratch, size)) return scratchFallback(scratch, distanceGroups);
+
+  // P1-12c: picked into a buffer that never shrinks — `length = 0` dropped the backing store of the
+  // answer every walk and the pushes grew it again. The answer array is kept while its contents
+  // are, overwritten in place at the same length, and replaced only when the length changes.
+  const picks = scratch.picks;
+  const reached = scratch.reached;
+  let picked = 0;
+  for (let at = 0; at < distanceGroups.length; at++) {
+    const index = distanceGroups[at]!;
+    const group = groups[index];
+    if (!group) return scratchFallback(scratch, distanceGroups);
+    if (reached[index] === 1 || group.exterior || !group.indoor || group.portalCount === 0) {
+      if (picked < picks.length) picks[picked] = index;
+      else picks.push(index);
+      picked++;
+    }
+  }
+  return publishWalk(scratch, picked, distanceGroups.length, count, screenApertures);
+}
+
+/**
+ * 02.11: what makes a portal one-way for {@link walkPortals}: each portal's plane (four floats) and the camera.
+ * A reference is walked only when the camera is on the side it leads from.
+ */
+export interface WmoPortalSides {
+  readonly planes: Float32Array;
+  readonly camera: WmoOcclusionPoint;
+}
+
+/**
+ * The walk itself, over the `size` groups seeded in the ring; false when it reached its iteration cap.
+ * `sides` unset: every portal on screen is walked in both directions, as the open-air walk always has.
+ */
+export function walkPortals(
+  groups: readonly WmoOcclusionGroup[],
+  portals: WmoPortals,
+  modelToClip: readonly number[],
+  scratch: WmoPortalWalkScratch,
+  seeded: number,
+  sides?: WmoPortalSides,
+): boolean {
+  const count = groups.length;
+  const { apertures, reached, queued, queue, portal } = scratch;
+  let head = 0;
+  let size = seeded;
   const iterationLimit = Math.max(64, count * 16 + portals.references.length * 4);
   let iterations = 0;
   while (size > 0) {
-    if (++iterations > iterationLimit) return scratchFallback(scratch, distanceGroups);
+    if (++iterations > iterationLimit) return false;
     const sourceIndex = queue[head]!;
     head = (head + 1) % count;
     size--;
@@ -302,6 +351,12 @@ function selectFromOpenAir(
       const reference = portals.references[at]!;
       const target = reference.group;
       if (target === sourceIndex) continue;
+      if (sides !== undefined) {
+        const at = reference.portal * 4;
+        const planes = sides.planes;
+        const facing = planes[at]! * sides.camera.x + planes[at + 1]! * sides.camera.y + planes[at + 2]! * sides.camera.z + planes[at + 3]!;
+        if (facing * reference.side < 0) continue;
+      }
       const definition = portals.definitions[reference.portal]!;
       // P1-12c: the parent rectangle by its offset — doubles passed to a call that is not inlined
       // were boxed, four heap numbers per portal per walk. A target's own rectangle is written
@@ -333,22 +388,19 @@ function selectFromOpenAir(
       }
     }
   }
+  return true;
+}
 
-  // P1-12c: picked into a buffer that never shrinks — `length = 0` dropped the backing store of the
-  // answer every walk and the pushes grew it again. The answer array is kept while its contents
-  // are, overwritten in place at the same length, and replaced only when the length changes.
+/** The `picked` groups in `scratch.picks` as the walk's answer, over `candidates` groups it chose from. */
+export function publishWalk(
+  scratch: WmoPortalWalkScratch,
+  picked: number,
+  candidates: number,
+  count: number,
+  screenApertures: Float32Array | undefined,
+): WmoOcclusionSelection {
+  const { apertures, reached } = scratch;
   const picks = scratch.picks;
-  let picked = 0;
-  for (let at = 0; at < distanceGroups.length; at++) {
-    const index = distanceGroups[at]!;
-    const group = groups[index];
-    if (!group) return scratchFallback(scratch, distanceGroups);
-    if (reached[index] === 1 || group.exterior || !group.indoor || group.portalCount === 0) {
-      if (picked < picks.length) picks[picked] = index;
-      else picks.push(index);
-      picked++;
-    }
-  }
   let selected = scratch.selected;
   if (selected.length === picked) {
     for (let at = 0; at < picked; at++) selected[at] = picks[at]!;
@@ -381,9 +433,9 @@ function selectFromOpenAir(
   }
   const result = scratch.result;
   result.groups = selected;
-  result.candidates = distanceGroups.length;
+  result.candidates = candidates;
   result.visible = selected.length;
-  result.culled = Math.max(0, distanceGroups.length - selected.length);
+  result.culled = Math.max(0, candidates - selected.length);
   result.used = true;
   return result;
 }
@@ -395,7 +447,7 @@ function selectFromOpenAir(
  */
 const BOUNDS_VALIDATION = new WeakMap<object, { readonly count: number; readonly valid: boolean }>();
 
-function cachedValidGroupBounds(groups: readonly WmoOcclusionGroup[]): boolean {
+export function cachedValidGroupBounds(groups: readonly WmoOcclusionGroup[]): boolean {
   const known = BOUNDS_VALIDATION.get(groups);
   if (known !== undefined && known.count === groups.length) return known.valid;
   let valid = true;
@@ -410,7 +462,7 @@ function cachedValidGroupBounds(groups: readonly WmoOcclusionGroup[]): boolean {
   return valid;
 }
 
-function cachedValidGraph(groups: readonly WmoOcclusionGroup[], portals: WmoPortals): boolean {
+export function cachedValidGraph(groups: readonly WmoOcclusionGroup[], portals: WmoPortals): boolean {
   let byGroups = GRAPH_VALIDATION.get(portals);
   if (!byGroups) {
     byGroups = new WeakMap<object, boolean>();
@@ -466,11 +518,11 @@ function contains(bounds: WmoBounds, point: WmoOcclusionPoint): boolean {
     && point.z > bounds.minZ && point.z < bounds.maxZ;
 }
 
-function finitePoint(point: WmoOcclusionPoint): boolean {
+export function finitePoint(point: WmoOcclusionPoint): boolean {
   return Number.isFinite(point.x) && Number.isFinite(point.y) && Number.isFinite(point.z);
 }
 
-function validMatrix(matrix: readonly number[]): boolean {
+export function validMatrix(matrix: readonly number[]): boolean {
   if (matrix.length !== 16) return false;
   // P1-12c: indexed — `every` handed each element to its callback as a heap number. A hole is
   // skipped, as `every` skips it.

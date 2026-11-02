@@ -1,0 +1,960 @@
+{
+ "build": 12340,
+ "yScale": 1.9626,
+ "aspect": 1.7777777777777777,
+ "frames": [
+  {
+   "name": "c01-stairs",
+   "wmo": "World/wmo/Azeroth/Buildings/Stormwind/Stormwind.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_31_48.adt",
+   "position": [
+    -8607.21,
+    785.51,
+    112.828
+   ],
+   "forward": [
+    0.758,
+    0.6288,
+    -0.1736
+   ],
+   "up": [
+    0.1336,
+    0.1109,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "drawn": [
+    91,
+    95,
+    122
+   ],
+   "maybe": [
+    265,
+    266,
+    271
+   ]
+  },
+  {
+   "name": "c02-plaza",
+   "wmo": "World/wmo/Azeroth/Buildings/Stormwind/Stormwind.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_31_48.adt",
+   "position": [
+    -8654.21,
+    746.51,
+    102.828
+   ],
+   "forward": [
+    0.7579,
+    0.6288,
+    -0.1736
+   ],
+   "up": [
+    0.1336,
+    0.1109,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "drawn": [
+    91,
+    95,
+    113,
+    122
+   ],
+   "maybe": [
+    265,
+    266,
+    271
+   ]
+  },
+  {
+   "name": "c03-plaza-z130",
+   "wmo": "World/wmo/Azeroth/Buildings/Stormwind/Stormwind.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_31_48.adt",
+   "position": [
+    -8654.21,
+    746.51,
+    132.828
+   ],
+   "forward": [
+    0.7579,
+    0.6288,
+    -0.1736
+   ],
+   "up": [
+    0.1336,
+    0.1109,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "drawn": [
+    91,
+    95,
+    113,
+    122
+   ],
+   "maybe": [
+    265,
+    266,
+    271
+   ]
+  },
+  {
+   "name": "c04-plaza-z160",
+   "wmo": "World/wmo/Azeroth/Buildings/Stormwind/Stormwind.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_31_48.adt",
+   "position": [
+    -8654.21,
+    746.51,
+    162.828
+   ],
+   "forward": [
+    0.7579,
+    0.6288,
+    -0.1736
+   ],
+   "up": [
+    0.1336,
+    0.1109,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "drawn": [
+    91,
+    95,
+    113,
+    122
+   ],
+   "maybe": [
+    265,
+    266,
+    271
+   ]
+  },
+  {
+   "name": "c05-plaza-z200",
+   "wmo": "World/wmo/Azeroth/Buildings/Stormwind/Stormwind.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_31_48.adt",
+   "position": [
+    -8654.21,
+    746.51,
+    202.828
+   ],
+   "forward": [
+    0.7579,
+    0.6288,
+    -0.1736
+   ],
+   "up": [
+    0.1336,
+    0.1109,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "drawn": [
+    95
+   ],
+   "maybe": [
+    265,
+    266,
+    271
+   ]
+  },
+  {
+   "name": "c06-plaza-z280",
+   "wmo": "World/wmo/Azeroth/Buildings/Stormwind/Stormwind.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_31_48.adt",
+   "position": [
+    -8654.21,
+    746.51,
+    282.828
+   ],
+   "forward": [
+    0.7579,
+    0.6288,
+    -0.1736
+   ],
+   "up": [
+    0.1336,
+    0.1109,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "drawn": [
+    95
+   ],
+   "maybe": []
+  },
+  {
+   "name": "c07-trade",
+   "wmo": "World/wmo/Azeroth/Buildings/Stormwind/Stormwind.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_31_48.adt",
+   "position": [
+    -8835.33,
+    615.668,
+    102.828
+   ],
+   "forward": [
+    0.7807,
+    0.6003,
+    -0.1736
+   ],
+   "up": [
+    0.1377,
+    0.1059,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "drawn": [
+    68,
+    93,
+    191,
+    199,
+    249,
+    257,
+    278
+   ],
+   "maybe": [
+    130,
+    265,
+    266,
+    267,
+    268,
+    269,
+    270,
+    271,
+    272,
+    274
+   ]
+  },
+  {
+   "name": "c09-oldtown",
+   "wmo": "World/wmo/Azeroth/Buildings/Stormwind/Stormwind.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_31_48.adt",
+   "position": [
+    -8723.17,
+    380.984,
+    112.828
+   ],
+   "forward": [
+    0.3911,
+    0.9038,
+    -0.1736
+   ],
+   "up": [
+    0.069,
+    0.1594,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "drawn": [
+    6,
+    7,
+    70,
+    71,
+    82,
+    94,
+    192
+   ],
+   "maybe": [
+    9,
+    20,
+    130,
+    265,
+    266,
+    267,
+    268,
+    269,
+    270,
+    271,
+    272,
+    274
+   ]
+  },
+  {
+   "name": "c10-dwarven",
+   "wmo": "World/wmo/Azeroth/Buildings/Stormwind/Stormwind.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_31_48.adt",
+   "position": [
+    -8427,
+    599,
+    111.523
+   ],
+   "forward": [
+    -0.3125,
+    0.9339,
+    -0.1736
+   ],
+   "up": [
+    -0.0551,
+    0.1647,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "drawn": [
+    109,
+    221,
+    222
+   ],
+   "maybe": [
+    9,
+    20,
+    130,
+    265,
+    266,
+    267,
+    270,
+    271,
+    272,
+    274
+   ]
+  },
+  {
+   "name": "c11-mage",
+   "wmo": "World/wmo/Azeroth/Buildings/Stormwind/Stormwind.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_31_48.adt",
+   "position": [
+    -9000.47,
+    864.023,
+    112.828
+   ],
+   "forward": [
+    0.9848,
+    -0.0041,
+    -0.1736
+   ],
+   "up": [
+    0.1736,
+    -0.0007,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "drawn": [
+    82,
+    102,
+    103,
+    104,
+    105,
+    236
+   ],
+   "maybe": [
+    130,
+    265,
+    266,
+    267,
+    268,
+    269,
+    270,
+    271,
+    272,
+    274
+   ]
+  },
+  {
+   "name": "c12-road-outside",
+   "wmo": "World/wmo/Azeroth/Buildings/Stormwind/Stormwind.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_31_48.adt",
+   "position": [
+    -9204.23,
+    296.533,
+    92.8281
+   ],
+   "forward": [
+    0.7614,
+    0.6246,
+    -0.1736
+   ],
+   "up": [
+    0.1342,
+    0.1101,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "drawn": [
+    34,
+    38,
+    46,
+    82,
+    92,
+    161,
+    196,
+    273,
+    281,
+    282,
+    283,
+    284,
+    285
+   ],
+   "maybe": [
+    130,
+    265,
+    266,
+    267,
+    270,
+    271,
+    272,
+    274
+   ]
+  },
+  {
+   "name": "c13-outside-z400",
+   "wmo": "World/wmo/Azeroth/Buildings/Stormwind/Stormwind.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_31_48.adt",
+   "position": [
+    -9405.46,
+    900.234,
+    402.828
+   ],
+   "forward": [
+    0.9839,
+    -0.0422,
+    -0.1736
+   ],
+   "up": [
+    0.1735,
+    -0.0074,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "drawn": [
+    6,
+    10,
+    11,
+    16,
+    17,
+    29,
+    31,
+    34,
+    37,
+    38,
+    39,
+    40,
+    41,
+    42,
+    45,
+    46,
+    58,
+    73,
+    82,
+    92,
+    110,
+    112,
+    161,
+    173,
+    186,
+    189,
+    196,
+    223,
+    273,
+    281,
+    282,
+    283,
+    284,
+    285
+   ],
+   "maybe": [
+    21,
+    101,
+    130,
+    214,
+    233,
+    265,
+    266,
+    267,
+    268,
+    269,
+    270,
+    271,
+    272,
+    274,
+    280
+   ]
+  },
+  {
+   "name": "c14-harbor",
+   "wmo": "World/wmo/Azeroth/Buildings/Stormwind/Stormwind.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_31_48.adt",
+   "position": [
+    -8378.06,
+    1223.11,
+    32.8281
+   ],
+   "forward": [
+    -0.3492,
+    -0.9208,
+    -0.1736
+   ],
+   "up": [
+    -0.0616,
+    -0.1624,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "drawn": [
+    1,
+    2,
+    11,
+    15,
+    16,
+    26,
+    31,
+    34,
+    35,
+    37,
+    38,
+    39,
+    40,
+    41,
+    42,
+    46,
+    58,
+    74,
+    77,
+    82,
+    92,
+    110,
+    111,
+    112,
+    161,
+    189,
+    223,
+    237,
+    238,
+    273,
+    281,
+    282,
+    283,
+    284,
+    285
+   ],
+   "maybe": [
+    21,
+    101,
+    130,
+    214,
+    233,
+    265,
+    266,
+    267,
+    268,
+    269,
+    270,
+    271,
+    272,
+    274,
+    280
+   ]
+  },
+  {
+   "name": "a06-owner-like-z150",
+   "wmo": "World/wmo/Azeroth/Buildings/Stormwind/Stormwind.wmo",
+   "adt": "World/Maps/Azeroth/Azeroth_31_48.adt",
+   "position": [
+    -8592.55,
+    715.167,
+    152.828
+   ],
+   "forward": [
+    0.4599,
+    0.8708,
+    -0.1736
+   ],
+   "up": [
+    0.0811,
+    0.1535,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "drawn": [
+    92,
+    283,
+    284,
+    285
+   ],
+   "maybe": [
+    265,
+    266,
+    271
+   ]
+  },
+  {
+   "name": "s01",
+   "wmo": "WORLD/WMO/LORDERON/BUILDINGS/SILVERMOON/SILVERMOON_CITY_01.WMO",
+   "adt": "World/Maps/Expansion01/Expansion01_45_13.adt",
+   "position": [
+    9637.97,
+    -7294.93,
+    42.8281
+   ],
+   "forward": [
+    0.3657,
+    -0.9144,
+    -0.1736
+   ],
+   "up": [
+    0.0645,
+    -0.1612,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "drawn": [
+    4,
+    5,
+    14,
+    15,
+    16,
+    19,
+    23,
+    24,
+    31,
+    40,
+    61
+   ],
+   "maybe": []
+  },
+  {
+   "name": "s02",
+   "wmo": "WORLD/WMO/LORDERON/BUILDINGS/SILVERMOON/SILVERMOON_CITY_01.WMO",
+   "adt": "World/Maps/Expansion01/Expansion01_45_13.adt",
+   "position": [
+    9696.13,
+    -7453.86,
+    42.8281
+   ],
+   "forward": [
+    0.6964,
+    0.6964,
+    -0.1736
+   ],
+   "up": [
+    0.1228,
+    0.1228,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "drawn": [
+    13,
+    31,
+    40,
+    64,
+    114,
+    115
+   ],
+   "maybe": []
+  },
+  {
+   "name": "s03",
+   "wmo": "WORLD/WMO/LORDERON/BUILDINGS/SILVERMOON/SILVERMOON_CITY_01.WMO",
+   "adt": "World/Maps/Expansion01/Expansion01_45_13.adt",
+   "position": [
+    9803.03,
+    -7354.55,
+    42.8281
+   ],
+   "forward": [
+    -0.5463,
+    0.8194,
+    -0.1736
+   ],
+   "up": [
+    -0.0963,
+    0.1445,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "drawn": [
+    0,
+    1,
+    9,
+    13,
+    25,
+    26,
+    27,
+    29,
+    31,
+    40,
+    41,
+    42,
+    43,
+    48,
+    49,
+    50,
+    51,
+    54,
+    57,
+    60,
+    61,
+    110,
+    111,
+    112,
+    113
+   ],
+   "maybe": [
+    12,
+    28,
+    52,
+    53,
+    55,
+    56
+   ]
+  },
+  {
+   "name": "s04",
+   "wmo": "WORLD/WMO/LORDERON/BUILDINGS/SILVERMOON/SILVERMOON_CITY_01.WMO",
+   "adt": "World/Maps/Expansion01/Expansion01_45_13.adt",
+   "position": [
+    9557.76,
+    -7095.02,
+    42.8281
+   ],
+   "forward": [
+    0.4041,
+    -0.8981,
+    -0.1736
+   ],
+   "up": [
+    0.0713,
+    -0.1584,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "drawn": [
+    31,
+    36,
+    37,
+    40,
+    61,
+    63,
+    76,
+    79,
+    103,
+    111
+   ],
+   "maybe": []
+  },
+  {
+   "name": "s05",
+   "wmo": "WORLD/WMO/LORDERON/BUILDINGS/SILVERMOON/SILVERMOON_CITY_01.WMO",
+   "adt": "World/Maps/Expansion01/Expansion01_45_13.adt",
+   "position": [
+    9651.27,
+    -7146.18,
+    42.5735
+   ],
+   "forward": [
+    -0.3114,
+    -0.9343,
+    -0.1736
+   ],
+   "up": [
+    -0.0549,
+    -0.1647,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "drawn": [
+    31,
+    37,
+    40,
+    61,
+    63,
+    102,
+    103,
+    111
+   ],
+   "maybe": []
+  },
+  {
+   "name": "s06",
+   "wmo": "WORLD/WMO/LORDERON/BUILDINGS/SILVERMOON/SILVERMOON_CITY_01.WMO",
+   "adt": "World/Maps/Expansion01/Expansion01_45_13.adt",
+   "position": [
+    9721.81,
+    -7555.16,
+    42.8281
+   ],
+   "forward": [
+    -0.3253,
+    0.9295,
+    -0.1736
+   ],
+   "up": [
+    -0.0574,
+    0.1639,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "drawn": [
+    0,
+    1,
+    2,
+    9,
+    13,
+    25,
+    26,
+    27,
+    29,
+    30,
+    31,
+    40,
+    41,
+    42,
+    43,
+    44,
+    45,
+    46,
+    47,
+    48,
+    49,
+    50,
+    51,
+    54,
+    57,
+    60,
+    61,
+    108,
+    109,
+    110,
+    111,
+    112,
+    113
+   ],
+   "maybe": [
+    12,
+    28,
+    52,
+    53,
+    55,
+    56
+   ]
+  },
+  {
+   "name": "s07",
+   "wmo": "WORLD/WMO/LORDERON/BUILDINGS/SILVERMOON/SILVERMOON_CITY_01.WMO",
+   "adt": "World/Maps/Expansion01/Expansion01_45_13.adt",
+   "position": [
+    9446.97,
+    -6995.45,
+    62.8281
+   ],
+   "forward": [
+    0.5463,
+    -0.8194,
+    -0.1736
+   ],
+   "up": [
+    0.0963,
+    -0.1445,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "drawn": [
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    23,
+    24,
+    30,
+    31,
+    40,
+    61,
+    62,
+    108,
+    109,
+    110,
+    111,
+    112
+   ],
+   "maybe": []
+  },
+  {
+   "name": "s08",
+   "wmo": "WORLD/WMO/LORDERON/BUILDINGS/SILVERMOON/SILVERMOON_CITY_01.WMO",
+   "adt": "World/Maps/Expansion01/Expansion01_45_13.adt",
+   "position": [
+    9904.27,
+    -7503.41,
+    62.8281
+   ],
+   "forward": [
+    -0.769,
+    0.6152,
+    -0.1736
+   ],
+   "up": [
+    -0.1356,
+    0.1085,
+    0.9848
+   ],
+   "near": 0.2,
+   "far": 1277,
+   "drawn": [
+    0,
+    3,
+    9,
+    17,
+    18,
+    25,
+    26,
+    27,
+    29,
+    30,
+    31,
+    40,
+    41,
+    42,
+    43,
+    50,
+    57,
+    60,
+    61,
+    108,
+    109,
+    110,
+    111,
+    112,
+    113
+   ],
+   "maybe": [
+    12,
+    28,
+    52,
+    53,
+    55,
+    56
+   ]
+  }
+ ]
+}

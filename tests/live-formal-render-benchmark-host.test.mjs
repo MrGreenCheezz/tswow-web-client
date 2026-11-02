@@ -256,6 +256,7 @@ class FakeRenderer {
   }
   setWeather() {}
   setIndoors() {}
+  setCameraWmoSurface() {}
   updateLighting() {}
   // P3: pushed once per replay frame beside updateLighting, like weather and indoors above.
   setUnderwaterSurface(surface) { this.underwaterSurfaces.push(surface); }
@@ -328,6 +329,7 @@ function makeHarness(options = {}) {
     collision: {
       refresh() {},
       staticWmoFloorUnder: () => undefined,
+      staticWmoSurfaceState: () => undefined,
       world: { indoorsAt: () => false },
       models: { model: () => undefined },
     },
