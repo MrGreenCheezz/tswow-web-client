@@ -3,9 +3,18 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 
+import { clientDirectory, vmapsDirectory } from "../tools/paths.mjs";
+import { parseWmoVisual, wmoDependencies, wmoGroupMeshes } from "../tools/wmo-visual.mjs";
+import { encodeWwm } from "../tools/wwm.mjs";
+import { parseVMapModelGroups } from "../dist/code/gateway/VMapModel.js";
+import { alignWmoMinimapGroups } from "../dist/code/browser/WmoMinimapAlign.js";
+import { decodeWwm, wmoLandFogActive, wmoLandFogAt } from "../dist/code/browser/WmoModel.js";
 import { createWmoRoomFog, wmoRoomFogFor } from "../dist/code/browser/WmoRoomFog.js";
+import { locatedWmoFog } from "../dist/code/browser/WorldRenderer3D.js";
 import { renderSwitches, resetRenderSwitches, setRenderSwitches } from "../dist/code/browser/RenderSwitches.js";
 
 const record = (land, water) => ({
@@ -40,6 +49,68 @@ test("a record with no usable distance leaves the zone's fog", () => {
   assert.equal(wmoRoomFogFor(record([0, 0.5, [1, 1, 1]], [1, 0.5, [1, 1, 1]]), false, out), false);
   assert.equal(wmoRoomFogFor(record([Number.NaN, 0.5, [1, 1, 1]], [1, 0.5, [1, 1, 1]]), false, out), false);
   assert.equal(wmoRoomFogFor(record([10, Number.POSITIVE_INFINITY, [1, 1, 1]], [1, 0.5, [1, 1, 1]]), false, out), false);
+});
+
+test("the room is the collision group's flags and box, not its index: the `.vmo` leaves groups out", () => {
+  const box = (minX) => ({ minX, minY: -10, minZ: -2, maxX: minX + 20, maxY: 10, maxZ: 8 });
+  const room = (flags, minX, fogIds) => ({ flags, indoor: true, bounds: box(minX), fogIds });
+  const model = {
+    fogs: [INN, BLACKFATHOM],
+    // The file: a room, a group the `.vmo` leaves out (MOGP 0x80), then two rooms with the same flags around one camera.
+    groups: [room(0x2005, 0, []), room(0x22c1, 0, []), room(0x2005, -5, [0]), room(0x2005, -4, [1])],
+  };
+  const camera = { x: 2, y: 0, z: 2 };
+  const floor = (groupIndex, minX) => ({ groupIndex, groupFlags: 0x2005, groupBounds: box(minX) });
+  assert.equal(locatedWmoFog(model, floor(1, -5), camera), INN,
+    "collision group 1 is file group 2; at file group 1 the flags differ and the fog was silently lost");
+  assert.equal(locatedWmoFog(model, floor(2, -4), camera), BLACKFATHOM,
+    "collision group 2 is file group 3; file group 2 has the same flags, holds the camera and has another record");
+  assert.equal(locatedWmoFog(model, floor(0, 9), camera), undefined, "a group the file does not have keeps the zone's fog");
+});
+
+const stormwindVmo = join(vmapsDirectory(), "Stormwind.wmo.vmo");
+const withStormwind = {
+  skip: !existsSync(join(clientDirectory(), "Data")) ? `no client at ${clientDirectory()}`
+    : !existsSync(stormwindVmo) ? `no ${stormwindVmo}` : false,
+};
+
+test("on Stormwind's own `.vmo` a room reads its own group's record", withStormwind, async () => {
+  const { clientArchives } = await import("../tools/mpq.mjs");
+  const archives = await clientArchives(clientDirectory());
+  const name = "World\\wmo\\Azeroth\\Buildings\\Stormwind\\Stormwind.wmo";
+  const root = await archives.read(name);
+  const groupBytes = [];
+  for (const file of wmoDependencies(root, name).groups) groupBytes.push(await archives.read(file));
+  const city = wmoGroupMeshes(parseWmoVisual(root, groupBytes, name));
+  const wwm = encodeWwm(city, city.textures.map(() => ""), new Set());
+  const model = decodeWwm(wwm.buffer.slice(wwm.byteOffset, wwm.byteOffset + wwm.byteLength), "");
+  const collision = parseVMapModelGroups(new Uint8Array(await readFile(stormwindVmo)));
+  assert.ok(collision.length < model.groups.length, "the file has groups the `.vmo` leaves out");
+  const { visualOfCollision } = alignWmoMinimapGroups(model.groups, collision);
+  let answered = 0;
+  let movedAnswered = 0;
+  for (const [index, kept] of collision.entries()) {
+    const group = model.groups[visualOfCollision[index]];
+    if (!group.indoor) continue;
+    const floor = { groupIndex: index, groupFlags: kept.flags, groupBounds: kept.bounds };
+    for (const id of group.fogIds) {
+      const fog = model.fogs[id];
+      if (!fog || !wmoLandFogActive(fog)) continue;
+      // The point of this room's box nearest the record: inside the room and as deep in the record as the room goes.
+      const { minX, minY, minZ, maxX, maxY, maxZ } = group.bounds;
+      const clamp = (value, low, high) => Math.min(Math.max(value, low), high);
+      const camera = {
+        x: clamp(fog.position[0], minX, maxX), y: clamp(fog.position[1], minY, maxY), z: clamp(fog.position[2], minZ, maxZ),
+      };
+      const expected = wmoLandFogAt(model, group, camera.x, camera.y, camera.z);
+      assert.equal(locatedWmoFog(model, floor, camera), expected, `collision group ${index}, record ${id}`);
+      if (expected) {
+        answered++;
+        if (visualOfCollision[index] !== index) movedAnswered++;
+      }
+    }
+  }
+  assert.ok(movedAnswered > 0, `${answered} answers, none at a moved index: this test no longer tells the two lookups apart`);
 });
 
 test("the switch is off by default (until the 14.25 frame) and can be turned on", () => {

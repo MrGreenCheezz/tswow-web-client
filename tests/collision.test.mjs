@@ -144,6 +144,8 @@ test("the static WMO locator returns stable placement and authored floor-group i
     assert.equal(located.groupIndex, 0);
     assert.equal(located.groupId, 904);
     assert.equal(located.groupFlags, 0x2000);
+    assert.deepEqual(located.groupBounds, source.models.model("GoldshireInn.wmo").groups[0].bounds,
+      "the box that names the file's group");
     assert.equal(located.revision, source.revision);
     assert.equal(source.staticWmoFloorUnder(2, placement.x, placement.y, 10, -10), undefined,
       "a locator must never leak the last map's WMO");

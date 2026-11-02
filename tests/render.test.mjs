@@ -102,14 +102,14 @@ test("MFOG comes from the collision-selected visual group, not overlapping group
     // Both boxes contain the eye. Only the collision floor says group 1 won.
     groups: [group(0x2000, [1]), group(0x2001, [0, 2])],
   };
-  const selected = locatedWmoFog(model, { groupIndex: 1, groupFlags: 0x2001 }, { x: 0, y: 0, z: 2 });
+  const selected = locatedWmoFog(model, { groupFlags: 0x2001, groupBounds: bounds }, { x: 0, y: 0, z: 2 });
   assert.ok(selected);
   assert.equal(selected.land.end, 83.3333);
   assert.deepEqual(selected.land.colour, [0xfd, 0xcf, 0x9e],
     "the white sentinel is skipped inside the exact group");
-  assert.equal(locatedWmoFog(model, { groupIndex: 1, groupFlags: 0x2000 }, { x: 0, y: 0, z: 2 }), undefined,
+  assert.equal(locatedWmoFog(model, { groupFlags: 0x2002, groupBounds: bounds }, { x: 0, y: 0, z: 2 }), undefined,
     "a visual/collision flag mismatch fails closed");
-  assert.equal(locatedWmoFog(model, { groupIndex: 1, groupFlags: 0x2001 }, { x: 20, y: 0, z: 2 }), undefined,
+  assert.equal(locatedWmoFog(model, { groupFlags: 0x2001, groupBounds: bounds }, { x: 20, y: 0, z: 2 }), undefined,
     "a stale locator outside the group's own box fails closed");
 });
 

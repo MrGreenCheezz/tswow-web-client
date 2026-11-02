@@ -335,7 +335,10 @@ test("the loopback bridge draws from the mirror with the same arguments and the 
   const bridge = new RenderBridgeLoopback();
   const environment = [{ id: 1 }];
   const heightAt = () => 0;
-  const floor = { revision: 1, placement: { key: "k", map: 0 }, floorZ: 1, triangle: 2, groupIndex: 3, groupId: 4, groupFlags: 5 };
+  const floor = {
+    revision: 1, placement: { key: "k", map: 0 }, floorZ: 1, triangle: 2, groupIndex: 3, groupId: 4, groupFlags: 5,
+    groupBounds: { minX: 1, minY: 2, minZ: 3, maxX: 4, maxY: 5, maxZ: 6 },
+  };
   const frameTime = { nowMs: 5, elapsedSeconds: 0.01, frameIndex: 2 };
   bridge.draw(renderer, state, 0, heightAt, "terrain", environment, "env", 0.1, -0.2, 9, "splat", "liquids", "paths",
     "horizon", 12, 1.7, floor, frameTime);

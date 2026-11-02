@@ -112,9 +112,11 @@ export interface StaticWmoFloor {
   floorZ: number;
   /** The winning triangle's index within its own group. */
   triangle: number;
+  /** The `.vmo`'s group index, which is not the file's; the flags and the box name the file's group. */
   groupIndex: number;
   groupId: number;
   groupFlags: number;
+  groupBounds: Readonly<CollisionModel["groups"][number]["bounds"]>;
 }
 
 /**
@@ -415,8 +417,10 @@ export class CollisionSource {
     }
     if (walk) hit = this.world.floorHitUnder(x, y, fromZ, minZ, this.#acceptStaticWmo);
     if (!hit || hit.groupIndex === undefined || hit.groupId === undefined || hit.flags === undefined) return null;
-    const placement = this.#placements.get(hit.instanceId)?.identity;
-    if (!placement) return null;
+    const record = this.#placements.get(hit.instanceId);
+    const placement = record?.identity;
+    const group = record?.model.groups[hit.groupIndex];
+    if (!placement || !group) return null;
     return {
       revision: this.#revision,
       placement,
@@ -425,6 +429,7 @@ export class CollisionSource {
       groupIndex: hit.groupIndex,
       groupId: hit.groupId,
       groupFlags: hit.flags,
+      groupBounds: group.bounds,
     };
   }
 

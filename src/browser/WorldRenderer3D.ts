@@ -2647,13 +2647,13 @@ export class UniqueVisualWmoPlacementCache {
 /** Resolve MFOG only from the visual group proven by the winning collision-floor triangle. */
 export function locatedWmoFog(
   model: Pick<WmoModel, "groups" | "fogs">,
-  floor: Pick<StaticWmoFloor, "groupIndex" | "groupFlags">,
+  floor: Pick<StaticWmoFloor, "groupFlags" | "groupBounds">,
   camera: { x: number; y: number; z: number },
 ): WmoFog | undefined {
-  const group = model.groups[floor.groupIndex];
-  // Collision and visual groups come from the same source WMO and preserve file order. Flags and
-  // the model-space box are independent guards: any format/cache drift fails closed to zone fog.
-  if (!group || group.flags !== floor.groupFlags || !group.indoor) return undefined;
+  // The `.vmo` leaves groups out, so its index is not the file's; a kept group has the same flags
+  // and box in both, and a group that has no partner fails closed to zone fog.
+  const group = model.groups[wmoGroupOfCollision(model.groups, floor.groupFlags, floor.groupBounds)];
+  if (!group || !group.indoor) return undefined;
   const bounds = group.bounds;
   if (group.boundsValid === false || !validWmoBounds(bounds)) return undefined;
   const epsilon = 1e-3;
