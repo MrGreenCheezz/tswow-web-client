@@ -28,7 +28,7 @@
 
 ## Удалить: окна и HUD (65 файлов)
 
-- **Персонаж и HUD:** CharacterSheet, CharacterSheetModel, UnitFrame, UnitFrames, Auras, CastBar, MirrorTimers, PetBar, Totems, VehicleBarGates, EquipmentSets, EquipmentSetModel, DragGhost, Slots, ItemSlots, ItemTargetClick, Widgets, Tooltip, Actions.
+- **Персонаж и HUD:** CharacterSheet, CharacterSheetModel, UnitFrame, UnitFrames, Auras, CastBar, MirrorTimers, PetBar, Totems, VehicleBarGates, EquipmentSets, EquipmentSetModel, DragGhost, Slots, ItemSlots, ItemTargetClick, Widgets, Actions.
 - **НПЦ и торговля:** Npc, NpcWait, VendorRepair, VendorRefund, VendorRefundRows, VendorQuantity, Bags, Bank, GuildBank, GuildBankModel, BarberShop, Petition, StableControls, NativeGiftWrap.
 - **Общение и группы:** Social, SocialPanel, ContactsModel, ChannelRoster, GroupMenu, GroupModel, LootRolls, LootRollModel, ReadyCheck, InteractionPrompts, LfgWait, LfgQueueClock, GmTickets.
 - **Прочие окна:** WorldMap, WorldMapQuestPlacement, Calendar, CalendarModel, CalendarEditor, Talents, TalentTree, GlyphSockets, PetSpellbook, Reputation, Scoreboard, ScoreboardModel, ArenaWindow, ArenaModel, CombatLog, WorldView.
@@ -105,9 +105,36 @@
 2. **Убрать старый вход.** Сделано 02.11: убраны `?legacy-login`, формы в `index.html`, 480 из 630 строк `app/Login.ts`. Если экран входа не загрузился, вместо старых форм теперь сообщение и кнопка «Повторить».
 3. **Убрать переключатель.** Сделано 02.11: убраны настройка, `?framexml=0` и режим только с аддонами. Если интерфейс не загрузился, мир закрыт экраном с причиной и кнопкой «Повторить».
 4. **Снять запасные пути.** Сделано 02.11: клавиши, команды чата, микрокнопки, меню игры и `EnterWorld.ts` обращаются только к оригинальным окнам; `/barber` и действие `toggleKeyBindings` убраны; HTML-меню игры удалено. HTML-окна ещё рисуются, но не видны: их скрывает одно правило в `style.css`, а вернуть их можно, убрав его. Если проверка оригинального окна не прошла, появляется сообщение с причиной, окно не открывается. Вопрос о сохранении подземелья без таблицы боссов теперь задаёт оригинальный диалог, а не HTML. Остались только запасные пути ввода в чат (`chatInput.focus()`): их снимет этап 6 вместе с HTML-чатом.
-5. **Разделить смешанные файлы** и перевести `FrameXmlWorldMount.ts` на выделенную логику (он берёт из `ui/` 110 символов).
+5. **Разделить смешанные файлы** и перевести `FrameXmlWorldMount.ts` на выделенную логику. Сделаны три части из четырёх (02.11, коммиты f6d25fc, 4c232e4, cc33132), затем работа остановлена по решению владельца: дорого, а игрок разницы не видит. Осталась часть 4, см. раздел «Где остановились».
 6. **Удалить окна и HUD** партиями и снять их вызовы из связки: `app/EnterWorld.ts` 149 символов, `app/Login.ts` 70, `input/Actions.ts` 46, `game/Loop.ts` 45, `input/Controls.ts` 24, `main.ts` 17. Самая частая зависимость — `Widgets`: её импортируют 20 файлов.
 7. **Подчистить.** `style.css` (3 992 строки), `index.html`, `Dom.ts`, тесты.
+
+## Где остановились (02.11)
+
+Этапы 1–4 сделаны, этап 5 сделан на три четверти. Игра работает: окна только оригинальные, HTML-окна ещё есть в коде, но их скрывает правило в `style.css`. Продолжать лучше в новой сессии: начать с этого раздела, части 4 этапа 5.
+
+**Вынесено из HTML:** `TrackingSpells`, `MacroStore`, `MacroRun`, `PetCommands`, `EscapeWindows`, `TooltipTypes`, `ToolWidgets`, `SpellCast`, `SpellData`, `SpellTooltip`, `ActionSlots`, `ProfessionCraft`, `EquipmentSetUse`, `SettingsWindow` (окно отделено от `Settings.ts`, это оно удаляется), `UnitModels`, `UnitNames`, `CombatHistory`, `QuestLogData`, `HtmlWindowHosts`.
+
+**Остаются, хотя были в списке на удаление:** `Tooltip.ts` (им пользуются `NativeAppShell`, `GmConsole`, `HeadOverlay`, `ItemTooltip`, карточка имени объекта в `Controls`) и `ActionBarAccountSync.ts`. `ActionBarAccountWiring.ts`, вероятно, можно удалить: при `nativeHud: () => false` он почти ничего не делает.
+
+**Часть 4 этапа 5: что должно пережить удаление окон.** Это побочные действия внутри HTML-кода, от которых зависит игра. Каждое надо перенести до этапа 6.
+
+| Где | Что делает | На что влияет |
+| --- | --- | --- |
+| `Npc.ts`, около строк 433–439 и 1061 | `notifyFrameXmlTaxi`, `Charters`, `Stable`, `Battlemaster`, `Gossip` вызываются из функций отрисовки | оригинальные окна НПЦ и полётов не узнают о событиях |
+| `Social.ts`, `Guild.ts` и другие `show*` | функции показа печатают строки в чат (см. `FrameXmlPopupsNative.ts`) | сообщения о приглашениях и дуэлях; остальные `show*` из `EnterWorld` ещё не проверены |
+| `Frames.showTarget` | `setTargetPortrait`, `showAuras` → `setUnitAuraAppearance`, запрос шаблона объекта | портрет цели, вид юнитов |
+| `Frames.bindPlayerHud` | `setPlayerPortrait` | портрет игрока |
+| `WorldView.showWorldState` | запросы моделей маунтов и метаданных, `showTarget` | модели; проход прочитан не полностью |
+| `CombatLog.ts` | `pushCombatLine`, `logSwing` (история боя, `showFloatingText`) | оригинальный журнал боя, числа урона |
+| `QuestLog` | `showQuestLog` и `renderQuestTracker` запрашивают метаданные целей заданий | имена целей в `HeadOverlay` |
+| `ChatDock` | `setNativeChatInputOwner` при загрузке | клавиши чата, пока оригинальный чат не поднялся |
+| `PetBar.ts` | вопрос при отпускании питомца висит на HTML | без него клавиша отпустит питомца без вопроса |
+| `ActionBar.showActionBar` | `--bottom-bars`, `--side-bars`, `notifyHudLayout` | проверить, читает ли их что-то остающееся |
+
+**Этап 6, HTML без оригинальной замены:** ряд кнопок транспорта (`.is-vehicle`), действия у рамки цели, рамки боссов и арены, заставка загрузки (интерфейс поднимается в среднем 19 секунд и она его не ждёт).
+
+**Вне этого пункта:** на диске лежат файлы с CRLF, git их не видит (`git ls-files --eol | grep w/crlf`); перед полным прогоном их нормализовать. Полный прогон после этапа 4 и частей этапа 5 не запускался, проверялись затронутые файлы.
 
 ## Этап 1: результат офлайн (02.11)
 
