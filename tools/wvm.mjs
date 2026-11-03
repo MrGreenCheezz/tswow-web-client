@@ -176,6 +176,8 @@ export const CLIP_EXTRAS_HEADER_SIZE = 8;
 export const CLIP_EXTRAS_RECORD_SIZE = 8;
 /** 6.31 (26.10): the same and then u32 `M2Sequence.flags`, written only when a clip carries `sequenceFlags`. */
 export const CLIP_EXTRAS_FLAGS_RECORD_SIZE = 12;
+/** 03.11 (6.16в): the same and then u16 variation, u16 frequency, u16 replayMin, u16 replayMax, written only when a clip carries them. */
+export const CLIP_EXTRAS_VARIATION_RECORD_SIZE = 20;
 
 /** Optional global-sequence bone channels appended after the skeleton's ordinary clips. */
 export const GLOBAL_BONE_CHANNELS_MAGIC = "WVG1";
@@ -765,7 +767,10 @@ function encodeClipExtras(clips) {
   // models' namespace): every other artifact keeps its 8-byte records byte for byte, and a reader of this build
   // steps over the 4 bytes it does not know by the record size, as the table was designed for.
   const flagged = clips.some((clip) => Number.isFinite(clip.sequenceFlags));
-  const recordSize = flagged ? CLIP_EXTRAS_FLAGS_RECORD_SIZE : CLIP_EXTRAS_RECORD_SIZE;
+  // 03.11 (6.16в): the same again for a unit model's variations (`visual-unit-v1`). A clip with a later variation shares its id
+  // with the first, which an earlier reader would have taken for the clip itself; the namespace keeps the two apart.
+  const varied = clips.some((clip) => Number.isFinite(clip.variation));
+  const recordSize = varied ? CLIP_EXTRAS_VARIATION_RECORD_SIZE : flagged ? CLIP_EXTRAS_FLAGS_RECORD_SIZE : CLIP_EXTRAS_RECORD_SIZE;
   const block = Buffer.alloc(CLIP_EXTRAS_HEADER_SIZE + clips.length * recordSize);
   block.write(CLIP_EXTRAS_MAGIC, 0, "ascii");
   block.writeUInt16LE(recordSize, 4);
@@ -778,7 +783,13 @@ function encodeClipExtras(clips) {
     // −1 is the file's own "no follower", and it is why this is signed.
     block.writeInt16LE(clampInt16(clip.variationNext, -1), offset + 4);
     block.writeUInt16LE(clampUint16(clip.variationIndex, 0), offset + 6);
-    if (flagged) block.writeUInt32LE(Number.isFinite(clip.sequenceFlags) ? clip.sequenceFlags >>> 0 : 0, offset + 8);
+    if (flagged || varied) block.writeUInt32LE(Number.isFinite(clip.sequenceFlags) ? clip.sequenceFlags >>> 0 : 0, offset + 8);
+    if (varied) {
+      block.writeUInt16LE(clampUint16(clip.variation, 0), offset + 12);
+      block.writeUInt16LE(clampUint16(clip.frequency, 0), offset + 14);
+      block.writeUInt16LE(clampUint16(clip.replayMin, 0), offset + 16);
+      block.writeUInt16LE(clampUint16(clip.replayMax, 0), offset + 18);
+    }
     offset += recordSize;
   }
   return block;

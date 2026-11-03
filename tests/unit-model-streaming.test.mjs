@@ -248,6 +248,7 @@ async function actionHarness() {
   const Harness = methods(["#settleUnitAction", "#advanceLeadIn", "#entryAnimation", "#releaseUnitAction",
     "#requestAnimations"], {
     isFlinchAnimation: () => false,
+    playedSeconds: (action) => action.getClip().duration,
     pendingActionExpired, pendingActionFate,
     unitActionDisplay: arbiter.unitActionDisplay, unitActionEndsOnMovement: arbiter.unitActionEndsOnMovement,
     animationPlaysOnUpperBody: () => true, ANIMATION_IDS: { Stand: 0 }, poseAnimation: () => ({ wanted: [0] }),

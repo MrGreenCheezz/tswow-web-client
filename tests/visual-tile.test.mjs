@@ -463,7 +463,7 @@ test("the WMO namespace turns over with the tile: visual-wmo-v27 in the gateway 
   assert.equal(visualModelNamespace("World\\Tree.m2"), "visual-v24", "M2 artifacts turn over on their own (12.10 6.24)");
   const gateway = readFileSync("src/gateway/Gateway.ts", "utf8");
   // 12.10 6.24; 26.10 (6.31): the spell models apart, as visual-spell-v1 (tests/missile-sequence-6-31.test.mjs).
-  assert.match(gateway, /if \(lower\.endsWith\("\.wmo"\)\) return "visual-wmo-v27";\s+return \/\^spells\[\\\\\/\]\/\.test\(lower\) \? "visual-spell-v1" : "visual-v24";/);
+  assert.match(gateway, /if \(lower\.endsWith\("\.wmo"\)\) return "visual-wmo-v27";\s+if \(\/\^spells\[\\\\\/\]\/\.test\(lower\)\) return "visual-spell-v1";/);
   const model = readFileSync("tools/generate-visual-model.mjs", "utf8");
   assert.match(model, /const transition = hash === visualModelHash\(requestedPath\) \|\| hash === visualModelHash\(modelPath\);/);
   assert.match(model, /const v26 = hash === visualModelHashIn\("visual-wmo-v26", requestedPath\)\r?\n\s+\|\| hash === visualModelHashIn\("visual-wmo-v26", modelPath\);/);

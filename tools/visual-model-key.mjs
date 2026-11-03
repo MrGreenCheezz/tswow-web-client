@@ -10,9 +10,11 @@ export function visualModelNamespace(modelPath) {
   // 05.10-A7a-F2 (visual-v23); 05.10-A7b-1: visual-wmo-v25; 12.10 6.24: visual-v24, the key bone table;
   // 13.10 7.11: visual-wmo-v26, the Composite streams; 22.10 (7.37): visual-wmo-v27, the transition range.
   // 26.10 (6.31): visual-spell-v1 — the spell models alone, whose clips carry M2Sequence.flags.
+  // 03.11 (6.16в, 6.34): visual-unit-v1 — creatures and characters, whose clips carry their variations.
   const lower = modelPath.toLowerCase();
   if (lower.endsWith(".wmo")) return "visual-wmo-v27";
-  return isSpellModelPath(lower) ? SPELL_MODEL_NAMESPACE : "visual-v24";
+  if (isSpellModelPath(lower)) return SPELL_MODEL_NAMESPACE;
+  return isUnitModelPath(lower) ? UNIT_MODEL_NAMESPACE : "visual-v24";
 }
 
 /**
@@ -21,6 +23,18 @@ export function visualModelNamespace(modelPath) {
  * files regenerate on demand, not every creature and doodad of the client.
  */
 export const SPELL_MODEL_NAMESPACE = "visual-spell-v1";
+
+/**
+ * 03.11 (6.16в, 6.34): the namespace of the models a unit is drawn with (`Creature\…`, `Character\…`). Their clips are chosen
+ * the way Wow.exe chooses (the table, then a variation by frequency), which only a unit does: about 1,200 models turn over on
+ * demand, not every doodad of the client.
+ */
+export const UNIT_MODEL_NAMESPACE = "visual-unit-v1";
+
+/** Whether a model path is a unit's (`Creature\…`, `Character\…`, either separator, any case). */
+export function isUnitModelPath(modelPath) {
+  return /^(?:creature|character)[\\/]/i.test(modelPath);
+}
 
 /** Whether a model path is a spell model's (`Spells\…`, either separator, any case). */
 export function isSpellModelPath(modelPath) {

@@ -97,6 +97,102 @@ export interface SkinnedTemplate {
   strafeYawBones?: StrafeYawBones | null;
   /** Per-clip upper-body variants used by locomotion-preserving transient actions. */
   overlayClips?: Map<number, THREE.AnimationClip>;
+  /**
+   * 03.11 (6.16в): the variations of an animation, the one in `clips` first, for an artifact that carries them. Absent otherwise,
+   * and `drawClipVariation` then has nothing to draw. See {@link drawClipVariation}.
+   */
+  variations?: Map<number, ClipVariation[]>;
+}
+
+/** 03.11 (6.16в): one variation of an animation on a template. */
+export interface ClipVariation {
+  readonly variation: number;
+  readonly clip: THREE.AnimationClip;
+  /** Its cut for the split track; the whole clip on a rig with none. */
+  readonly overlay: THREE.AnimationClip;
+  readonly frequency: number;
+  readonly replayMin: number;
+  readonly replayMax: number;
+}
+
+/** 03.11 (6.16в): keeps a compiled clip among its animation's variations, in the file's order of them. */
+function rememberVariation(template: Pick<SkinnedTemplate, "variations">, source: WvmSkeletonClip,
+  clip: THREE.AnimationClip, overlay: THREE.AnimationClip | undefined): void {
+  if (source.variation === undefined) return;
+  template.variations ??= new Map();
+  let list = template.variations.get(source.animationId);
+  if (!list) {
+    list = [];
+    template.variations.set(source.animationId, list);
+  }
+  const entry: ClipVariation = {
+    variation: source.variation, clip, overlay: overlay ?? clip, frequency: source.frequency ?? 0,
+    replayMin: source.replayMin ?? 0, replayMax: source.replayMax ?? 0,
+  };
+  let at = list.length;
+  while (at > 0 && list[at - 1]!.variation > entry.variation) at--;
+  list.splice(at, 0, entry);
+}
+
+/** 03.11 (6.16в): the CRT's `rand`, which is what Wow.exe draws with, seeded the same every run so a benchmark replays the same bones. */
+let variationSeed = 0x7ee1;
+function nextRand(): number {
+  variationSeed = (Math.imul(variationSeed, 0x343fd) + 0x269ec3) | 0;
+  return (variationSeed >>> 16) & 0x7fff;
+}
+
+/**
+ * Which variation a draw lands on. `rand` is 0..0x7fff and the frequencies of an animation add up to that, near enough: 3,317 of
+ * the client's 3,781 varied animations do to within 2. Whatever they leave falls to the last.
+ */
+export function chooseClipVariation(variations: readonly ClipVariation[], rand: number): ClipVariation {
+  let left = rand;
+  for (let at = 0; at < variations.length - 1; at++) {
+    const entry = variations[at]!;
+    if (left < entry.frequency) return entry;
+    left -= entry.frequency;
+  }
+  return variations[variations.length - 1]!;
+}
+
+/** How many times over a drawn clip runs: Wow.exe 0x00826b00, `min + rand × (max − min) >> 15`, and at least once. */
+export function clipReplays(entry: Pick<ClipVariation, "replayMin" | "replayMax">, rand: number): number {
+  const span = Math.max(0, entry.replayMax - entry.replayMin);
+  return Math.max(1, entry.replayMin + Math.floor((rand * span) / 0x8000));
+}
+
+/** A start of an animation: the clip it plays, its split-track cut, and how many times over. */
+export interface DrawnClip {
+  readonly clip: THREE.AnimationClip;
+  readonly overlay: THREE.AnimationClip;
+  readonly replays: number;
+}
+
+/**
+ * 03.11 (6.16в): what a start of this animation plays, as Wow.exe 0x00832ab0 asked for no particular variation does: one by
+ * frequency, over its replays. Measured on HumanMale's Stand, 3 plays of the 3.4 % fidget in 180 s, each on a cycle's boundary,
+ * and the same on a rider's Mount. Undefined when the template has no variations of it. `keep` is the clip of a pose being moved
+ * between the whole body and the split track, which stays what it is.
+ */
+export function drawClipVariation(template: Pick<SkinnedTemplate, "variations">, animation: number,
+  keep?: THREE.AnimationClip): DrawnClip | undefined {
+  const variations = template.variations?.get(animation);
+  if (!variations || variations.length === 0) return undefined;
+  const kept = keep && variations.find((entry) => entry.clip === keep || entry.overlay === keep);
+  const entry = kept || chooseClipVariation(variations, nextRand());
+  return { clip: entry.clip, overlay: entry.overlay, replays: clipReplays(entry, nextRand()) };
+}
+
+/** 03.11 (6.16в): how long an action runs before it hands over, in seconds: a replayed one-shot is a finite repeat. */
+export function playedSeconds(action: THREE.AnimationAction): number {
+  const times = action.loop === THREE.LoopRepeat && Number.isFinite(action.repetitions) ? action.repetitions : 1;
+  return action.getClip().duration * times;
+}
+
+/** 03.11 (6.16в): whether an action plays as asked, a replayed one-shot counting as one. */
+export function playsAs(action: THREE.AnimationAction, wanted: THREE.AnimationActionLoopStyles): boolean {
+  return action.loop === wanted
+    || (wanted === THREE.LoopOnce && action.loop === THREE.LoopRepeat && Number.isFinite(action.repetitions));
 }
 
 export interface SkinnedInstance {
@@ -645,10 +741,15 @@ export function buildSkinnedTemplateFrom(
   const shared = compiledRig(skeleton);
   const clips = new Map<number, THREE.AnimationClip>();
   const overlayClips = new Map<number, THREE.AnimationClip>();
+  const variations: Pick<SkinnedTemplate, "variations"> = {};
   for (const source of skeleton.clips) {
     const { clip, overlay } = compiledClip(shared, source, skeleton);
-    if (clip) clips.set(source.animationId, clip);
-    if (overlay) overlayClips.set(source.animationId, overlay);
+    // 03.11 (6.16в): a later variation shares its id with the first, which alone answers `clips`.
+    if ((source.variation ?? 0) === 0) {
+      if (clip) clips.set(source.animationId, clip);
+      if (overlay) overlayClips.set(source.animationId, overlay);
+    }
+    if (clip) rememberVariation(variations, source, clip, overlay);
   }
   // A rig whose whole set was held back is still a rig: the clips are one request away, and
   // refusing it here would drop the model back to a stand-in capsule it never recovers from.
@@ -660,7 +761,7 @@ export function buildSkinnedTemplateFrom(
     geometry, clips, animations: new Set(skeleton.animations),
     boneInverses, parents: skeleton.parents, pivots: skeleton.pivots,
     flags: skeleton.flags, billboards: billboardBones(skeleton.flags), height,
-    globalChannels, locomotionBones: shared.locomotionBones, overlayClips,
+    globalChannels, locomotionBones: shared.locomotionBones, overlayClips, ...variations,
   };
   templateRigClips.set(template, shared);
   return template;
@@ -856,19 +957,22 @@ export function mergeSkinnedClips(template: SkinnedTemplate, clips: readonly Wvm
     progress.attempted++;
     attempted++;
     const source = clips[at]!;
-    if (!template.clips.has(source.animationId)) {
+    // 03.11 (6.16в): a later variation shares its id with the first, which alone answers `clips`.
+    const later = (source.variation ?? 0) > 0;
+    if (later || !template.clips.has(source.animationId)) {
       const compiled = shared
         ? compiledClip(shared, source, template)
         : { clip: buildClip(source, template), overlay: undefined };
       if (compiled.clip) {
-        template.clips.set(source.animationId, compiled.clip);
-        template.animations.add(source.animationId);
-        if (template.locomotionBones) {
-          (template.overlayClips ??= new Map()).set(
-            source.animationId, compiled.overlay
-              ?? locomotionOverlayClip(compiled.clip, template.locomotionBones));
+        const overlay = template.locomotionBones
+          ? compiled.overlay ?? locomotionOverlayClip(compiled.clip, template.locomotionBones) : undefined;
+        if (!later) {
+          template.clips.set(source.animationId, compiled.clip);
+          template.animations.add(source.animationId);
+          if (overlay) (template.overlayClips ??= new Map()).set(source.animationId, overlay);
+          added++;
         }
-        added++;
+        rememberVariation(template, source, compiled.clip, overlay);
       }
     }
     if (now() - started >= milliseconds) break;

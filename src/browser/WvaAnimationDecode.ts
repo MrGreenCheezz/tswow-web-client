@@ -1,7 +1,8 @@
 import {
   WVA_CHANNEL_STRIDE, WVA_CLIP_ANIMATION, WVA_CLIP_BLEND_TIME, WVA_CLIP_CHANNELS, WVA_CLIP_DURATION,
   WVA_CLIP_FIRST_CHANNEL, WVA_CLIP_FIRST_KEY, WVA_CLIP_MOVING_SPEED, WVA_CLIP_STRIDE,
-  WVA_CLIP_SEQUENCE_FLAGS, WVA_CLIP_VARIATION_INDEX, WVA_CLIP_VARIATION_NEXT, decodeWvaAnimationsPacked, type WvmSkeletonClip,
+  WVA_CLIP_FREQUENCY, WVA_CLIP_REPLAY_MAX, WVA_CLIP_REPLAY_MIN, WVA_CLIP_SEQUENCE_FLAGS, WVA_CLIP_VARIATION,
+  WVA_CLIP_VARIATION_INDEX, WVA_CLIP_VARIATION_NEXT, decodeWvaAnimationsPacked, type WvmSkeletonClip,
 } from "./Wvm.js";
 import type {
   WvaAnimationDecodeRequest, WvaAnimationDecodeResponse, WvaAnimationResidencyCost, WvaPackedAnimations,
@@ -171,6 +172,13 @@ export function unpackWvaAnimations(packed: WvaPackedAnimations): WvmSkeletonCli
     if (!Number.isNaN(variationIndex)) clip.variationIndex = variationIndex;
     const sequenceFlags = clipTable[at + WVA_CLIP_SEQUENCE_FLAGS]!; // 6.31
     if (!Number.isNaN(sequenceFlags)) clip.sequenceFlags = sequenceFlags;
+    const variation = clipTable[at + WVA_CLIP_VARIATION]!; // 03.11 6.16в
+    if (!Number.isNaN(variation)) {
+      clip.variation = variation;
+      clip.frequency = clipTable[at + WVA_CLIP_FREQUENCY]!;
+      clip.replayMin = clipTable[at + WVA_CLIP_REPLAY_MIN]!;
+      clip.replayMax = clipTable[at + WVA_CLIP_REPLAY_MAX]!;
+    }
     lazyClips.set(clip, { source, at });
     clips.push(clip);
   }

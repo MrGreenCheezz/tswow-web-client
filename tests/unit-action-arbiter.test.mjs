@@ -16,8 +16,8 @@ import ts from "typescript";
 import * as THREE from "three";
 import { m2Animations, parseM2Skeleton } from "../tools/m2.mjs";
 import {
-  animationBlend, clipBlendTime, gaitTimeScale, locomotionBoneMask, locomotionOverlayClip, pendingActionExpired,
-  strideStartTime, turnOnTheSpot,
+  animationBlend, clipBlendTime, drawClipVariation, gaitTimeScale, locomotionBoneMask, locomotionOverlayClip, pendingActionExpired,
+  playedSeconds, playsAs, strideStartTime, turnOnTheSpot,
 } from "../dist/code/browser/AnimatedModel.js";
 import { blendInto, flinchWith } from "../dist/code/browser/AnimationBlend.js";
 import { isFlinchAnimation } from "../dist/code/browser/game/AnimationSplit.js";
@@ -324,7 +324,7 @@ function executor({ moving = false, overrides = {}, legless = false } = {}) {
   const state = { moving };
   const Harness = methods([
     "#settleUnitAction", "#advanceLeadIn", "#entryAnimation", "#startUnitAction", "#shownAs",
-    "#releaseUnitAction", "#poseBase", "#turnOnTheSpot", "#flinchUnit", "#playAnimation", "#clearOverlay",
+    "#releaseUnitAction", "#poseBase", "#baseClipCameRound", "#turnOnTheSpot", "#drawAgainAtCycleEnd", "#flinchUnit", "#playAnimation", "#clearOverlay",
   ], {
     UnitActionQueue, unitActionDisplay, unitActionEndsOnMovement, heldClipPlaysOnce, locomotionUnderlayClip,
     animationPlaysOnUpperBody: (animation) => animation === CAST || animation === PRECAST,
@@ -344,6 +344,7 @@ function executor({ moving = false, overrides = {}, legless = false } = {}) {
     chooseAnimation: () => ({ animation: state.moving ? RUN : 0, loop: true }),
     poseAnimationFamily: () => "any",
     animationBlend, clipBlendTime, blendInto, flinchWith, isFlinchAnimation, strideStartTime, turnOnTheSpot,
+    drawClipVariation, playedSeconds, playsAs,
     TURN_ON_THE_SPOT: [ANIMATION_IDS.ShuffleLeft, ANIMATION_IDS.ShuffleRight],
     ACTION_CLIP_WAIT: 900, ACTION_SIDECAR_WAIT: 3_000,
     // 12.10 6.03/6.07: the playback modes #startUnitAction / #playAnimation / #poseBase read.
@@ -610,6 +611,116 @@ test("executor: the start deadlines do not cut short a shot that started late", 
   assert.equal(frame(1_600), "full", "and runs past that window to its own hand-back");
   assert.equal(unit.animationId, CAST);
   assert.equal(frame(1_200 + 1 * 1_000), undefined, "then hands back");
+});
+
+/* --- 03.11 6.16в: variations ---------------------------------------------------------------- */
+
+/** Stand with a fidget and an attack with two swings, and draws answered from a script. */
+function varied() {
+  const script = [];
+  const run = executor({ overrides: { drawClipVariation: (template, animation, keep) => {
+    const variations = template.variations?.get(animation);
+    if (!variations) return undefined;
+    const entry = variations.find((one) => one.clip === keep || one.overlay === keep) ?? variations[script.shift() ?? 0];
+    return { clip: entry.clip, overlay: entry.overlay, replays: entry.replays ?? 1 };
+  } } });
+  const { unit, clips } = run;
+  const fidget = new THREE.AnimationClip("stand-fidget", 1, [swing(1, 0.2, 0.2), swing(2, 0.2, 0.2)]);
+  const swingOther = new THREE.AnimationClip("cast-other", 2, [swing(1, 0.3, 0.3, 2), swing(2, 0.4, 0.4, 2)]);
+  unit.template.variations = new Map([
+    [0, [{ variation: 0, clip: clips.get(0), overlay: clips.get(0) }, { variation: 1, clip: fidget, overlay: fidget }]],
+    [CAST, [{ variation: 0, clip: clips.get(CAST), overlay: unit.template.overlayClips.get(CAST) }, { variation: 1, clip: swingOther, overlay: swingOther, replays: 2 }]],
+  ]);
+  return { ...run, script, fidget, swingOther };
+}
+
+test("executor: a loop stays the variation it drew until it comes round, then draws again", () => {
+  const { unit, frame, script, clips, fidget } = varied();
+  script.push(0, 1, 0);
+  frame(0);
+  assert.equal(unit.action.getClip(), clips.get(0));
+  unit.skinned.mixer.update(1.5);
+  frame(1_500);
+  assert.equal(unit.action.getClip(), clips.get(0), "mid-cycle nothing is drawn");
+  assert.equal(script.length, 2);
+  unit.skinned.mixer.update(1);
+  frame(2_500);
+  assert.equal(unit.action.getClip(), fidget, "the cycle's end draws, and the fidget comes up");
+  assert.equal(unit.animationId, 0, "the same animation for everyone else");
+  assert.equal(unit.action.time, 0);
+  unit.skinned.mixer.update(0.5);
+  frame(3_000);
+  assert.equal(unit.action.getClip(), fidget, "the clip on show answers while it plays");
+  unit.skinned.mixer.update(0.7);
+  frame(3_700);
+  assert.equal(unit.action.getClip(), clips.get(0), "and the fidget's own end draws the next");
+});
+
+test("executor: a loop that draws its own clip again just goes on, and one with replays waits them out", () => {
+  const { unit, frame, script, clips } = varied();
+  script.push(0, 0);
+  frame(0);
+  const action = unit.action;
+  unit.skinned.mixer.update(1.5);
+  frame(1_500);
+  unit.skinned.mixer.update(1);
+  frame(2_500);
+  assert.equal(unit.action, action);
+  assert.equal(unit.action.getClip(), clips.get(0));
+  assert.equal(script.length, 0, "it did draw");
+  // Replays: two cycles before the next draw.
+  const run = varied();
+  run.script.push(1, 0);
+  run.unit.template.variations.get(0)[1].replays = 2;
+  run.frame(0);
+  assert.equal(run.unit.action.getClip(), run.fidget);
+  run.unit.skinned.mixer.update(0.8);
+  run.frame(800);
+  run.unit.skinned.mixer.update(0.4);
+  run.frame(1_200);
+  assert.equal(run.unit.action.getClip(), run.fidget, "the first time round is not the end");
+  assert.equal(run.script.length, 1);
+  run.unit.skinned.mixer.update(1);
+  run.frame(2_200);
+  assert.equal(run.unit.action.getClip(), run.clips.get(0), "the second is");
+});
+
+test("executor: a one-shot draws at its start, hands back after its replays, and a new one draws again", () => {
+  const { unit, submit, frame, queue, script, swingOther, clips } = varied();
+  script.push(1);
+  submit("cast", CAST, false, 9_000, 0);
+  assert.equal(frame(0), "full");
+  assert.equal(unit.action.getClip(), swingOther);
+  assert.equal(queue.top().until, 2 * 2 * 1_000, "two seconds a time, twice over");
+  unit.skinned.mixer.update(3);
+  assert.equal(unit.action.isRunning(), true, "the second time through");
+  assert.equal(frame(3_000), "full");
+  assert.equal(unit.action.getClip(), swingOther, "the clip is not restarted as a mismatch of its loop");
+  assert.ok(unit.action.time > 0.9, "and not from the top");
+  unit.skinned.mixer.update(1.5);
+  assert.equal(unit.action.isRunning(), false, "clamped on its last frame after the replays");
+  assert.equal(frame(4_000), undefined, "then handed back");
+  assert.equal(script.length, 0);
+  assert.equal(unit.animationId, 0);
+  // Next one: the other clip, however the last ended.
+  script.push(0);
+  submit("cast", CAST, false, 9_000, 4_000);
+  frame(4_000);
+  assert.equal(unit.action.getClip(), clips.get(CAST));
+});
+
+test("executor: a pose moved between the layers stays the variation it drew", () => {
+  const { unit, submit, frame, script, state, swingOther } = varied();
+  script.push(1);
+  submit("cast", CAST, false, 3_000, 0);
+  assert.equal(frame(0), "full");
+  assert.equal(unit.action.getClip(), swingOther);
+  unit.skinned.mixer.update(0.3);
+  const phase = unit.action.time;
+  state.moving = true;
+  assert.equal(frame(300), "upper");
+  assert.equal(unit.overlayAction.getClip(), swingOther, "not a new draw");
+  assert.ok(Math.abs(unit.overlayAction.time - phase) < 1e-9);
 });
 
 /* --- 05.10-A7a-C: the standing base (6.03/6.04) and the flag poses (6.07) ----------------------- */

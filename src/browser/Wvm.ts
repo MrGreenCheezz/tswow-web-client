@@ -148,6 +148,15 @@ export interface WvmSkeletonClip {
    * not the number zero, and dividing by it would be meaningless.
    */
   movingSpeed?: number;
+  /**
+   * 03.11 (6.16в): which variation of its animation this is (`M2Sequence.variationIndex`), and how Wow.exe draws it: `frequency`
+   * out of 0x7fff, and how many times over it runs, `replayMin`..`replayMax`. Absent on anything but a unit model of `visual-unit-v1`.
+   * A clip with a variation above 0 shares its `animationId` with the first.
+   */
+  variation?: number;
+  frequency?: number;
+  replayMin?: number;
+  replayMax?: number;
   /** The sequence-table slot this clip occupies — what another clip's `variationNext` names. */
   variationIndex?: number;
   /** The sequence the file says follows this one, as a table slot, or −1 for none. */
@@ -476,7 +485,7 @@ const CHANNEL_HEADER_SIZE = 8;
  * block carries its own, so a record grown by a later slice is stepped over rather than misread.
  */
 /** Float64 slots per clip in a packed clip table (`decodeWvaAnimationsPacked`). */
-export const WVA_CLIP_STRIDE = 10;
+export const WVA_CLIP_STRIDE = 14;
 /** Slot offsets inside one packed clip record; an optional field the object form omits is NaN. */
 export const WVA_CLIP_ANIMATION = 0;
 export const WVA_CLIP_DURATION = 1;
@@ -489,6 +498,11 @@ export const WVA_CLIP_CHANNELS = 7;
 export const WVA_CLIP_FIRST_KEY = 8;
 /** 6.31 (26.10): `M2Sequence.flags` from a 12-byte extras record, else NaN. */
 export const WVA_CLIP_SEQUENCE_FLAGS = 9;
+/** 03.11 (6.16в): the variation fields, NaN when the artifact carries none. */
+export const WVA_CLIP_VARIATION = 10;
+export const WVA_CLIP_FREQUENCY = 11;
+export const WVA_CLIP_REPLAY_MIN = 12;
+export const WVA_CLIP_REPLAY_MAX = 13;
 /** Uint32 words per packed channel: `bone | kind << 16`, then the key count. */
 export const WVA_CHANNEL_STRIDE = 2;
 const CLIP_EXTRAS_MAGIC = "WVX1";
@@ -496,6 +510,8 @@ const CLIP_EXTRAS_HEADER_SIZE = 8;
 const CLIP_EXTRAS_RECORD_SIZE = 8;
 /** 6.31 (26.10): a record that also carries u32 `M2Sequence.flags` (the spell models' namespace, tools/wvm.mjs). */
 const CLIP_EXTRAS_FLAGS_RECORD_SIZE = 12;
+/** 03.11 (6.16в): and u16 variation, u16 frequency, u16 replayMin, u16 replayMax. */
+const CLIP_EXTRAS_VARIATION_RECORD_SIZE = 20;
 const GLOBAL_BONE_CHANNELS_MAGIC = "WVG1";
 const GLOBAL_BONE_CHANNELS_HEADER_SIZE = 8;
 const GLOBAL_BONE_CHANNEL_HEADER_SIZE = 12;
@@ -1245,6 +1261,12 @@ function readClipExtras(view: DataView, start: number, limit: number, clips: Wvm
     if (variationNext >= 0) clip.variationNext = variationNext;
     clip.variationIndex = variationIndex;
     if (recordSize >= CLIP_EXTRAS_FLAGS_RECORD_SIZE) clip.sequenceFlags = view.getUint32(offset + 8, true); // 6.31
+    if (recordSize >= CLIP_EXTRAS_VARIATION_RECORD_SIZE) { // 03.11 6.16в
+      clip.variation = view.getUint16(offset + 12, true);
+      clip.frequency = view.getUint16(offset + 14, true);
+      clip.replayMin = view.getUint16(offset + 16, true);
+      clip.replayMax = view.getUint16(offset + 18, true);
+    }
     // By the block's own record size, not this build's: a longer record is a later slice's, and
     // stepping over the part we do not understand is the whole point of carrying the width.
     offset += recordSize;
@@ -1292,6 +1314,10 @@ function readClipsPacked(view: DataView, start: number, clipCount: number, boneC
     clipTable[record + WVA_CLIP_VARIATION_INDEX] = Number.NaN;
     clipTable[record + WVA_CLIP_VARIATION_NEXT] = Number.NaN;
     clipTable[record + WVA_CLIP_SEQUENCE_FLAGS] = Number.NaN; // 6.31
+    clipTable[record + WVA_CLIP_VARIATION] = Number.NaN; // 03.11 6.16в
+    clipTable[record + WVA_CLIP_FREQUENCY] = Number.NaN;
+    clipTable[record + WVA_CLIP_REPLAY_MIN] = Number.NaN;
+    clipTable[record + WVA_CLIP_REPLAY_MAX] = Number.NaN;
     clipTable[record + WVA_CLIP_FIRST_CHANNEL] = channelAt;
     clipTable[record + WVA_CLIP_FIRST_KEY] = keyAt;
     const firstChannel = channelAt;
@@ -1333,6 +1359,12 @@ function readClipsPacked(view: DataView, start: number, clipCount: number, boneC
       if (variationNext >= 0) clipTable[record + WVA_CLIP_VARIATION_NEXT] = variationNext;
       clipTable[record + WVA_CLIP_VARIATION_INDEX] = view.getUint16(at + 6, true);
       if (recordSize >= CLIP_EXTRAS_FLAGS_RECORD_SIZE) clipTable[record + WVA_CLIP_SEQUENCE_FLAGS] = view.getUint32(at + 8, true); // 6.31
+      if (recordSize >= CLIP_EXTRAS_VARIATION_RECORD_SIZE) { // 03.11 6.16в
+        clipTable[record + WVA_CLIP_VARIATION] = view.getUint16(at + 12, true);
+        clipTable[record + WVA_CLIP_FREQUENCY] = view.getUint16(at + 14, true);
+        clipTable[record + WVA_CLIP_REPLAY_MIN] = view.getUint16(at + 16, true);
+        clipTable[record + WVA_CLIP_REPLAY_MAX] = view.getUint16(at + 18, true);
+      }
     }
   }
   return { clipTable, channelTable, keys: keyData, span };

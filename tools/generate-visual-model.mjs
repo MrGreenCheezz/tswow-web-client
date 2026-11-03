@@ -32,7 +32,7 @@ import { publishTexture, SourceMissing, SOURCE_MISSING_EXIT, validTexturePath } 
 import { clientArchives } from "./mpq.mjs";
 import { clientDirectory } from "./paths.mjs";
 import { sourceStamp, stampIsCurrent, writeFileAtomic, writeSourceStamp } from "./source-stamp.mjs";
-import { isSpellModelPath, visualModelHash, visualModelHashIn } from "./visual-model-key.mjs"; // 05.10-A7a-F2; 13.10 7.11; 6.31
+import { isSpellModelPath, isUnitModelPath, visualModelHash, visualModelHashIn } from "./visual-model-key.mjs"; // 05.10-A7a-F2; 13.10 7.11; 6.31
 // Out of the build, not copied: see the note over the same import in `generate-texture.mjs`.
 import { validAssetPath } from "../dist/code/gateway/AssetPath.js";
 
@@ -93,7 +93,14 @@ export async function publishVisualModel(requestedPath, hash, archives) {
       ribbonEmitters: readRibbonEmitters(m2Data, headerArray(m2Data, 0x120)),
     };
 
-    const animations = m2Animations(m2Data);
+    // 05.10-A7a-F2: the WVE1 block and the resolved shader ids only under the namespace that
+    // expects them. A gateway still running `visual-v21` asks for its own hash and keeps getting
+    // the bytes its readers know — its asset worker loads these tools fresh from disk.
+    const current = hash === visualModelHash(requestedPath) || hash === visualModelHash(modelPath);
+    // 03.11 (6.16в, 6.34): a unit's clips as Wow.exe chooses them, under `visual-unit-v1` alone: a gateway started before it
+    // still asks for its `visual-v24` hash and gets exactly the v24 bytes.
+    const asWowExe = current && isUnitModelPath(modelPath);
+    const animations = m2Animations(m2Data, { asWowExe });
     const external = new Map();
     for (const animation of animations) {
       if (!animation.external || external.has(animation.external)) continue;
@@ -105,7 +112,7 @@ export async function publishVisualModel(requestedPath, hash, archives) {
 
     let skeleton;
     try {
-      skeleton = parseM2Skeleton(m2Data, { animations: external });
+      skeleton = parseM2Skeleton(m2Data, { animations: external, asWowExe });
     } catch (error) {
       console.warn(`Skeleton unavailable for ${modelPath}: ${error instanceof Error ? error.message : error}`);
     }
@@ -127,10 +134,6 @@ export async function publishVisualModel(requestedPath, hash, archives) {
     }
 
     const shippedSkeleton = skeleton ? { ...skeleton, clips: shipped } : undefined;
-    // 05.10-A7a-F2: the WVE1 block and the resolved shader ids only under the namespace that
-    // expects them. A gateway still running `visual-v21` asks for its own hash and keeps getting
-    // the bytes its readers know — its asset worker loads these tools fresh from disk.
-    const current = hash === visualModelHash(requestedPath) || hash === visualModelHash(modelPath);
     // 26.10 (6.31): a spell model's current name is `visual-spell-v1`; a gateway started before it still asks for its
     // `visual-v24` hash and gets exactly the v24 bytes — extensions, and no sequence flags.
     const v24 = hash === visualModelHashIn("visual-v24", requestedPath) || hash === visualModelHashIn("visual-v24", modelPath);

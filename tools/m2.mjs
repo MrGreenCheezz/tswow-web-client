@@ -22,6 +22,7 @@ import { readCombinerCombos, resolveShaderId } from "./m2-combiners.mjs"; // 05.
 const HEADER = {
   globalLoops: 0x14,
   sequences: 0x1c,
+  sequenceLookup: 0x24, // 03.11 (6.34): animation id → sequence, a hash table with quadratic probes
   bones: 0x2c,
   keyBoneLookup: 0x34, // 12.10 6.24: key bone id → bone index, the table Wow.exe's 0x00832ab0 reads
   vertices: 0x3c,
@@ -735,8 +736,14 @@ export function readLights(model) {
  * Slice A2 gives all three a wire format. `blendTime` still rides the reserved u16 the clip header
  * already had; `movingSpeed`, `variationNext` and `variationIndex` ride the optional extras table
  * appended after the clips (`tools/wvm.mjs`, "WVX1").
+ *
+ * 03.11 (6.16в, 6.34): `options.asWowExe` answers the way `CM2Model::SetBoneSequence` (0x00832ab0) does. An animation is the
+ * sequence the model's lookup table finds, not the first record with its id: on 18 of 1,227 unit models they differ
+ * (RidingHorse's JumpStart is 467 ms, its first record 833). And every record on that sequence's `variationNext` chain
+ * comes too, with `variation`, `frequency` and `replayMin`/`replayMax`: the head first, so an id's first clip stays the one it
+ * always was. Without the option the list is what a `visual-v24` artifact was built from, byte for byte.
  */
-export function m2Animations(model) {
+export function m2Animations(model, options = {}) {
   const sequences = array(model, HEADER.sequences);
   if (sequences.count === 0 || sequences.count > 4096 || !fits(model, sequences, SEQUENCE_SIZE)) return [];
   const records = [];
@@ -752,13 +759,18 @@ export function m2Animations(model) {
       blendTime: model.readUInt32LE(at + 0x1c),
       variationNext: model.readInt16LE(at + 0x3c),
       aliasNext: model.readUInt16LE(at + 0x3e),
+      frequency: model.readInt16LE(at + 0x10),
+      replayMin: model.readUInt32LE(at + 0x14),
+      replayMax: model.readUInt32LE(at + 0x18),
     });
   }
 
+  const asWowExe = options.asWowExe === true;
   const result = [];
   const seen = new Set();
-  for (const record of records) {
-    if (record.variation !== 0 || seen.has(record.animationId)) continue;
+  const wanted = asWowExe ? sequencesAsWowExe(model, records) : records;
+  for (const record of wanted) {
+    if (!asWowExe && (record.variation !== 0 || seen.has(record.animationId))) continue;
     let data = record;
     for (let hop = 0; (data.flags & SEQUENCE_IS_ALIAS) !== 0 && hop < MAX_ALIAS_HOPS; hop++) {
       const next = records[data.aliasNext];
@@ -769,6 +781,10 @@ export function m2Animations(model) {
     if (data.duration === 0 || data.duration > 600_000) continue;
     seen.add(record.animationId);
     result.push({
+      ...(asWowExe ? {
+        variation: record.variation, frequency: Math.max(0, record.frequency),
+        replayMin: record.replayMin, replayMax: record.replayMax,
+      } : {}),
       animationId: record.animationId,
       /** The slot the tracks are indexed by, which is the alias target's when there is one. */
       sequenceIndex: data.index,
@@ -802,6 +818,43 @@ export function m2Animations(model) {
     });
   }
   return result;
+}
+
+/**
+ * Each animation id's sequence and the rest of its variation chain, in that order, by id in the order the file first names them.
+ *
+ * The probe is 0x00832ab0's: `id % count`, then the square of the step added on, until the slot is empty or holds this id. With
+ * no table at all it reads the records in order, as it does there.
+ */
+function sequencesAsWowExe(model, records) {
+  const table = array(model, HEADER.sequenceLookup);
+  const lookup = table.count > 0 && table.count <= 65_535 && fits(model, table, 2) ? table : undefined;
+  const find = (id) => {
+    if (!lookup) return records.find((record) => record.animationId === id);
+    let slot = id % lookup.count;
+    for (let step = 1; step <= lookup.count; step++) {
+      const index = model.readUInt16LE(lookup.offset + slot * 2);
+      if (index === 0xffff) return undefined;
+      if (records[index]?.animationId === id) return records[index];
+      slot = (step * step + slot) % lookup.count;
+    }
+    return undefined;
+  };
+  const out = [];
+  const ids = new Set();
+  for (const { animationId } of records) {
+    if (ids.has(animationId)) continue;
+    ids.add(animationId);
+    // A file whose table leaves an id out still has the record; the table was only ever a shortcut to it.
+    const head = find(animationId) ?? records.find((record) => record.animationId === animationId);
+    const chain = new Set();
+    for (let record = head; record && record.animationId === animationId && !chain.has(record); record = records[record.variationNext]) {
+      chain.add(record);
+      // One with no share of the draw never plays (HumanMale's Stand 3 and 4), and 5,770 of 5,798 have one.
+      if (record === head || record.frequency > 0) out.push(record);
+    }
+  }
+  return out;
 }
 
 /** The `####-##` an external sequence's file is named for: `HumanMale` + this + `.anim`. */
@@ -868,7 +921,7 @@ export function parseM2Skeleton(model, options = {}) {
   const files = options.animations ?? new Map();
   const clips = [];
   let missing = 0;
-  for (const animation of m2Animations(model)) {
+  for (const animation of m2Animations(model, { asWowExe: options.asWowExe === true })) {
     if (wanted && !wanted.has(animation.animationId)) continue;
     // An external animation reads from its own file and never from the model: the offsets belong
     // to that file's address space and mean something else entirely inside the .m2.
@@ -902,6 +955,11 @@ export function parseM2Skeleton(model, options = {}) {
       variationIndex: animation.variationIndex,
       // 6.31: carried for the generator, which writes it only where it opts in (`sequenceFlags`, tools/wvm.mjs).
       m2Flags: animation.flags,
+      // 03.11 (6.16в): only under `asWowExe`, and the extras table grows for them (tools/wvm.mjs).
+      ...(animation.variation !== undefined ? {
+        variation: animation.variation, frequency: animation.frequency,
+        replayMin: animation.replayMin, replayMax: animation.replayMax,
+      } : {}),
       channels,
     });
   }

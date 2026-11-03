@@ -1,13 +1,15 @@
 // Builds what the gateway would otherwise build on the first request, for one map (10.22).
 //
-//   node tools/pregenerate.mjs --map <id> [--tiles x1,y1-x2,y2] [--families splat,tile,models,players]
+//   node tools/pregenerate.mjs --map <id> [--tiles x1,y1-x2,y2] [--families splat,tile,models,players,units]
 //                              [--limit N] [--dry-run]
 //
 // After a patch change `tools/restamp.mjs` proves and re-signs what is already published; this
 // builds what is *missing* or stale: each tile's ground splat (or its 7.23 `.nosplat` marker), its
 // visual tile and model list, and every model the tiles place; `players` adds the playable races'
 // character models (ChrRaces → CreatureDisplayInfo → CreatureModelData, the path the browser asks
-// `/visual/model` for). It runs the very `publish*` functions the gateway's workers run
+// `/visual/model` for); `units`, asked for by name only, every creature and character model in
+// CreatureModelData, which is what a change of `visual-unit-v*` needs ahead of a gateway restart
+// (`--map 0 --tiles 0,0-0,0 --families units`). It runs the very `publish*` functions the gateway's workers run
 // (`tools/asset-jobs.mjs`), in this one process, out of one open archive chain, below normal
 // priority. Entries whose stamp still matches the client are skipped, so a second run does nothing.
 //
@@ -29,9 +31,11 @@ import { clientDirectory, dbcDirectory, repositoryRoot } from "./paths.mjs";
 import { SourceMissing } from "./source-missing.mjs";
 import { stampSidecar } from "./source-stamp.mjs";
 import { publishTileModels, tileModelNames, tileModelsFile } from "./tile-models.mjs";
-import { visualModelHash } from "./visual-model-key.mjs";
+import { isUnitModelPath, visualModelHash } from "./visual-model-key.mjs";
 
 export const PREGENERATE_FAMILIES = Object.freeze(["splat", "tile", "models", "players"]);
+/** Asked for by name only: 03.11, every unit model of the client, far more than a map's worth. */
+const NAMED_ONLY_FAMILIES = Object.freeze(["units"]);
 /** The visual tile generation the gateway requires (`/visual/environment`). */
 const VISUAL_TILE_GENERATION = "visual-tile-v7"; // 05.10-A7b-1; P2-04x: v6; 12.10 6.25: v7
 /** The terrain splat generation the gateway requires (`/terrain-splat`). */
@@ -115,6 +119,17 @@ export async function playerModelPaths(dbc) {
   return paths;
 }
 
+/** 03.11 (6.16в): the creature and character models of CreatureModelData, as `/visual/model` is asked for them. */
+export async function unitModelPaths(directory) {
+  const models = await openDbcFile(directory, "CreatureModelData");
+  const paths = new Map();
+  for (const row of models.rows()) {
+    const path = models.string(row, "ModelName").replaceAll("/", "\\").replace(/.(mdx|mdl|m2)$/i, ".m2");
+    if (isUnitModelPath(path)) paths.set(path.toLowerCase(), path);
+  }
+  return [...paths.values()];
+}
+
 function parseArguments(argv) {
   const options = { map: undefined, tiles: undefined, families: [...PREGENERATE_FAMILIES], limit: Infinity, dryRun: false };
   for (let index = 0; index < argv.length; index++) {
@@ -133,7 +148,7 @@ function parseArguments(argv) {
     } else if (argument === "--families") {
       options.families = value().split(",").map((name) => name.trim()).filter(Boolean);
       for (const family of options.families) {
-        if (!PREGENERATE_FAMILIES.includes(family)) throw new Error(`Unknown family ${family} (${PREGENERATE_FAMILIES.join(", ")})`);
+        if (!PREGENERATE_FAMILIES.includes(family) && !NAMED_ONLY_FAMILIES.includes(family)) throw new Error(`Unknown family ${family} (${PREGENERATE_FAMILIES.join(", ")})`);
       }
     } else if (argument === "--limit") {
       options.limit = Number(value());
@@ -260,6 +275,17 @@ export async function pregenerate(options, archives, log = (line) => console.log
       await model(path);
     }
     log(`players: ${players.length} models`);
+  }
+
+  if (families.has("units") && budgetLeft()) {
+    const visual = directory("VISUAL_DBC_DIR", "data/visual-dbc");
+    const hasVisual = await stat(join(visual, "CreatureModelData.dbc")).then(() => true, () => false);
+    const units = await unitModelPaths(hasVisual ? visual : dbcDirectory());
+    for (const path of units) {
+      if (!budgetLeft()) break;
+      await model(path);
+    }
+    log(`units: ${units.length} models`);
   }
 
   log(`${options.dryRun ? "Would build" : "Built"} ${options.dryRun ? counts.planned : counts.built}, `

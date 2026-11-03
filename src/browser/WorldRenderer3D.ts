@@ -168,7 +168,8 @@ import {
   isLocomotionGait, measuredTravelSpeed, spawnFadeFactor, strideStartTime,
   weaponPose, isBaseIdle, // 05.10-A7a-C: isBaseIdle
   isJumpAnimation, // 12.10 6.07
-  applyStrafeYaw, facingTurnBetween, stepStrafeYaw, strafeYawBonesFor, strafeYawTarget, turnOnTheSpot,
+  applyStrafeYaw, drawClipVariation, facingTurnBetween, playedSeconds, playsAs, stepStrafeYaw, strafeYawBonesFor, strafeYawTarget,
+  turnOnTheSpot,
   fastPoseProgramFor, writeGlobalSequenceLocals,
   type GlobalChannelSource, // 12.10 6.24
   type RigSkeleton, type SkinnedInstance, type SkinnedTemplate, type UnitAction, type UnitPose,
@@ -2832,8 +2833,12 @@ interface PosedModel {
   overlayFadeUntil: number | undefined;
   /** A one-shot playing over the pose — a jump landing, a swing, an emote — and when it ends. */
   overlayUntil: number;
-  /** 03.11 (6.33): where a Shuffle's clock was last frame, to see it come round (`#turnOnTheSpot`). */
-  shuffleClock: number | undefined;
+  /** 03.11 (6.33): how many times the base clip had come round at the last pose pass (`#baseClipCameRound`). */
+  clipLoops: number | undefined;
+  /** 03.11 (6.16в): the whole clip of the variation on show for `animationId`, when one was drawn. */
+  variationClip: THREE.AnimationClip | undefined;
+  /** 03.11 (6.16в): how many more times over it runs before the next draw. */
+  replaysLeft: number;
   /** The template `flatPoseProgram` was resolved for; see `#flatPose`. */
   flatPoseTemplate: SkinnedTemplate | undefined;
   flatPoseProgram: FastPoseProgram | undefined;
@@ -3928,11 +3933,16 @@ function visitSkinnedTemplateResources(visitor: RetainedResourceVisitor, templat
   visitor.referenceCpu(template, template.parents);
   visitor.referenceCpu(template, template.pivots);
   visitor.referenceCpu(template, template.flags);
-  for (const clip of template.clips.values()) {
+  const visitClip = (clip: THREE.AnimationClip): void => {
     for (const track of clip.tracks) {
       if (ArrayBuffer.isView(track.times)) visitor.referenceCpu(clip, track.times);
       if (ArrayBuffer.isView(track.values)) visitor.referenceCpu(clip, track.values);
     }
+  };
+  for (const clip of template.clips.values()) visitClip(clip);
+  // 03.11 (6.16в): the later variations, which `clips` does not name.
+  for (const variations of template.variations?.values() ?? []) {
+    for (const entry of variations) if (entry.variation > 0) visitClip(entry.clip);
   }
 }
 
@@ -14750,7 +14760,7 @@ export class WorldRenderer3D {
       overlayPreservesLocomotion: undefined,
       overlayFadeUntil: undefined,
       overlayUntil: 0,
-      shuffleClock: undefined,
+      clipLoops: undefined, variationClip: undefined, replaysLeft: 0,
       flatPoseTemplate: undefined,
       flatPoseProgram: undefined,
       animationMode: PLAYBACK_FORWARD, overlayAnimationMode: PLAYBACK_FORWARD, // 12.10 6.03/6.07
@@ -15377,7 +15387,7 @@ export class WorldRenderer3D {
         // P1-09b: every optional field present from birth, so no unit ever changes hidden class.
         actionKind: undefined, overlayAction: undefined, overlayAnimationId: undefined,
         overlayActionKind: undefined, overlayPreservesLocomotion: undefined, overlayFadeUntil: undefined,
-        shuffleClock: undefined, flatPoseTemplate: undefined, flatPoseProgram: undefined,
+        clipLoops: undefined, variationClip: undefined, replaysLeft: 0, flatPoseTemplate: undefined, flatPoseProgram: undefined,
         animationMode: PLAYBACK_FORWARD, overlayAnimationMode: PLAYBACK_FORWARD, // 12.10 6.03/6.07
         effectKey: undefined, decodedModel: undefined, legacyGeometry: undefined, materialEntries: undefined,
         admittedAt: undefined, animationClock: undefined, animationClockRig: undefined,
@@ -15924,7 +15934,7 @@ export class WorldRenderer3D {
       action: undefined, animationId: -1, overlayUntil: 0,
       actionKind: undefined, overlayAction: undefined, overlayAnimationId: undefined,
       overlayActionKind: undefined, overlayPreservesLocomotion: undefined, overlayFadeUntil: undefined,
-      shuffleClock: undefined, flatPoseTemplate: undefined, flatPoseProgram: undefined,
+      clipLoops: undefined, variationClip: undefined, replaysLeft: 0, flatPoseTemplate: undefined, flatPoseProgram: undefined,
       animationMode: PLAYBACK_FORWARD, overlayAnimationMode: PLAYBACK_FORWARD, // 12.10 6.03/6.07
       scale: metadata.scale,
       seat: mountSeatOffset(wvm, metadata.mountHeight, metadata.scale),
@@ -16932,10 +16942,12 @@ export class WorldRenderer3D {
 
     const chosen = chooseAnimation(mount.template.clips, pose);
     if (chosen) {
+      const round = this.#baseClipCameRound(mount);
       // 03.11 (6.33): the horse's feet follow its body, as a man's do; the rider keeps Mount.
-      const gait = this.#turnOnTheSpot(mount, chosen.animation, pose, unit.strafeYawTurning);
+      const gait = this.#turnOnTheSpot(mount, chosen.animation, pose, unit.strafeYawTurning, round);
       // 12.10 6.03/6.07: the fallback's playback mode.
       const mode = gait === chosen.animation ? chosen.mode ?? PLAYBACK_FORWARD : PLAYBACK_FORWARD;
+      if (round && chosen.loop && mode === PLAYBACK_FORWARD) this.#drawAgainAtCycleEnd(mount, gait);
       this.#playAnimation(mount, gait, chosen.loop, now, false, undefined, undefined, mode);
       // After the play call and never before it: `#playAnimation` puts every action it starts or
       // restarts back on the authored rate, so a gait scaled first would be flattened again.
@@ -17117,7 +17129,8 @@ export class WorldRenderer3D {
   #flinchUnit(unit: RenderedUnit, animation: number, whole: boolean): void {
     const template = unit.template!;
     const full = template.clips.get(animation);
-    const clip = whole ? full : template.overlayClips?.get(animation) ?? full;
+    const drawn = drawClipVariation(template, animation); // 6.16в
+    const clip = whole ? drawn?.clip ?? full : drawn?.overlay ?? template.overlayClips?.get(animation) ?? full;
     if (!clip) return;
     const action = unit.skinned!.mixer.clipAction(clip);
     if (action === unit.action || action === unit.overlayAction) return;
@@ -17245,18 +17258,26 @@ export class WorldRenderer3D {
     } else if (running && shown.slot !== display && shown.entry === entry) {
       // The unit started or stopped moving under this pose: move it to the other layer at its phase.
       const phase = shown.action.time;
+      // 03.11 (6.16в): the same variation it was playing.
+      const playing = shown.action.getClip();
       if (display === "upper") {
-        this.#playAnimation(unit, animation, loop, now, true, pending.action, undefined, mode);
+        this.#playAnimation(unit, animation, loop, now, true, pending.action, undefined, mode, playing);
         if (unit.overlayAction) unit.overlayAction.time = phase;
       } else {
-        this.#playAnimation(unit, animation, loop, now, false, pending.action, undefined, mode);
+        this.#playAnimation(unit, animation, loop, now, false, pending.action, undefined, mode, playing);
         if (unit.action) unit.action.time = phase;
         this.#clearOverlay(unit);
       }
       queue.shown = this.#shownAs(unit, entry, animation, display);
     } else {
       if (display === "full" && unit.overlayPreservesLocomotion === true) this.#clearOverlay(unit);
-      if (shown !== undefined && shown.animation === animation && shown.slot === display) {
+      // 03.11 (6.16в): an animation with variations draws again instead, which is a start like any other.
+      const again = shown !== undefined && shown.animation === animation && shown.slot === display;
+      if (again && template.variations?.has(animation)) {
+        if (display === "upper") unit.overlayAnimationId = undefined;
+        else unit.animationId = -1;
+        this.#playAnimation(unit, animation, loop, now, display === "upper", pending.action, undefined, mode);
+      } else if (again) {
         // A new one-shot of the clip already playing starts it again.
         shown.action.reset();
         shown.action.setEffectiveTimeScale(1);
@@ -17276,9 +17297,9 @@ export class WorldRenderer3D {
     if (display === "full") unit.overlayUntil = 0;
     if (entry.started) return;
     entry.started = true;
-    const clip = (display === "upper" ? template.overlayClips?.get(animation) : undefined) ?? template.clips.get(animation);
     // 03.11 (6.33): handed back when the clip has played out, as Wow.exe does: the base pose comes in over its held last frame.
-    const handBack = now + (clip?.duration ?? 0) * 1000;
+    const onShow = display === "upper" ? unit.overlayAction : unit.action;
+    const handBack = now + (onShow ? playedSeconds(onShow) : template.clips.get(animation)?.duration ?? 0) * 1000;
     if (pending.stage === "lead") {
       pending.sequenceAt = handBack;
       if (!entry.held) entry.until = handBack + ACTION_SIDECAR_WAIT;
@@ -17310,14 +17331,35 @@ export class WorldRenderer3D {
     if (unit.action === shown.action) unit.overlayUntil = 0;
   }
 
-  /** 03.11 (6.33): `turnOnTheSpot` for a model: where its Shuffle's clock is, and only a clip the model has in hand. */
-  #turnOnTheSpot(model: PosedModel, base: number, pose: UnitPose, turning: number): number {
+  /** 03.11 (6.33): whether the base clip came round since the last pose pass. A clip running backwards has no use for it. */
+  #baseClipCameRound(model: PosedModel): boolean {
     const action = model.action;
-    const shuffling = action !== undefined && TURN_ON_THE_SPOT.includes(model.animationId);
-    const cycleOver = !shuffling || action.time < (model.shuffleClock ?? 0);
-    model.shuffleClock = shuffling ? action.time : undefined;
-    const animation = turnOnTheSpot(base, shuffling ? model.animationId : undefined, pose, turning, cycleOver);
+    if (!action) {
+      model.clipLoops = undefined;
+      return false;
+    }
+    const loops = (action as unknown as { _loopCount: number })._loopCount;
+    const round = model.clipLoops !== undefined && loops > model.clipLoops && action.timeScale >= 0;
+    model.clipLoops = loops;
+    return round;
+  }
+
+  /** 03.11 (6.33): `turnOnTheSpot` for a model, and only a clip the model has in hand. */
+  #turnOnTheSpot(model: PosedModel, base: number, pose: UnitPose, turning: number, round: boolean): number {
+    const shuffling = model.action !== undefined && TURN_ON_THE_SPOT.includes(model.animationId);
+    const animation = turnOnTheSpot(base, shuffling ? model.animationId : undefined, pose, turning, !shuffling || round);
     return model.template!.clips.has(animation) ? animation : base;
+  }
+
+  /**
+   * 03.11 (6.16в): a looping clip that has come round its replays is a new start of its animation, which draws again (Wow.exe:
+   * the sequence's end calls back for the animation with no variation named). Over the next `#playAnimation` that is a blend
+   * into another variation, or the same one from the top with none.
+   */
+  #drawAgainAtCycleEnd(model: PosedModel, animation: number): void {
+    if (animation !== model.animationId || !model.template!.variations?.has(animation)) return;
+    if (--model.replaysLeft > 0) return;
+    model.animationId = -1;
   }
 
   /**
@@ -17331,11 +17373,14 @@ export class WorldRenderer3D {
     client: EnvironmentClient | undefined, metadata: UnitModel | undefined, overlay?: THREE.AnimationClip): void {
     const chosen = chooseAnimation(unit.template!.clips, pose);
     if (chosen) {
+      const round = this.#baseClipCameRound(unit);
       // 03.11 (6.33): a mounted unit's feet are the mount's (`#poseMount`).
-      const gait = unit.mount ? chosen.animation : this.#turnOnTheSpot(unit, chosen.animation, pose, unit.strafeYawTurning);
-      const full = overlay === undefined ? undefined : unit.template!.clips.get(gait);
+      const gait = unit.mount ? chosen.animation : this.#turnOnTheSpot(unit, chosen.animation, pose, unit.strafeYawTurning, round);
+      const full = overlay === undefined ? undefined
+        : gait === unit.animationId ? unit.variationClip ?? unit.template!.clips.get(gait) : unit.template!.clips.get(gait);
       // 12.10 6.03/6.07: the fallback's playback mode (0x00826350).
       const mode = gait === chosen.animation ? chosen.mode ?? PLAYBACK_FORWARD : PLAYBACK_FORWARD;
+      if (round && chosen.loop && mode === PLAYBACK_FORWARD && overlay === undefined) this.#drawAgainAtCycleEnd(unit, gait);
       this.#playAnimation(unit, gait, chosen.loop, now, false, undefined,
         full === undefined || overlay === undefined ? undefined : locomotionUnderlayClip(full, overlay), mode);
       this.#applyUnitGait(unit, gait, chosen.loop);
@@ -17366,11 +17411,14 @@ export class WorldRenderer3D {
      * pose's identity — Walk forwards and Walk for Walkbackwards are two poses of one clip.
      */
     mode: PlaybackMode = PLAYBACK_FORWARD,
+    /** 03.11 (6.16в): the variation to start, a pose moving between the layers; otherwise a start draws one. */
+    keepVariation?: THREE.AnimationClip,
   ): void {
     const template = unit.template!;
+    // 03.11 (6.16в): the clip on show answers for its animation while it plays; a start draws (below).
     const clip = preserveLocomotion
       ? (template.overlayClips?.get(animation) ?? template.clips.get(animation))
-      : (baseClip ?? template.clips.get(animation));
+      : (baseClip ?? (animation === unit.animationId ? unit.variationClip : undefined) ?? template.clips.get(animation));
     // Only record the animation once it is really playing, otherwise a model missing the clip
     // would be marked as switched and stay frozen in whatever it was doing before.
     if (!clip) return;
@@ -17380,7 +17428,7 @@ export class WorldRenderer3D {
     if (preserveLocomotion) {
       const current = unit.overlayAction;
       if (animation === unit.overlayAnimationId && current && unit.overlayAnimationMode === mode) {
-        if (held || (current.loop === wantedLoop && current.isRunning())) return;
+        if (held || (playsAs(current, wantedLoop) && current.isRunning())) return;
         current.reset();
         // An action can be reused after a caller changed its local time scale. Reset it here so
         // authored clip timing is always the baseline; cross-fade must not inherit a fast cast.
@@ -17391,20 +17439,21 @@ export class WorldRenderer3D {
         applyPlayback(current, mode, loop); // 12.10 6.03/6.07
         unit.overlayActionKind = actionKind;
         unit.overlayFadeUntil = undefined;
-        unit.overlayUntil = loop ? 0 : now + clip.duration * 1000;
+        unit.overlayUntil = loop ? 0 : now + current.getClip().duration * 1000;
         return;
       }
       const previous = current;
-      const next = unit.skinned!.mixer.clipAction(clip);
+      const drawn = mode === PLAYBACK_FORWARD ? drawClipVariation(template, animation, keepVariation) : undefined; // 6.16в
+      const next = unit.skinned!.mixer.clipAction(drawn?.overlay ?? clip);
       next.reset();
       next.setEffectiveTimeScale(1);
-      next.setLoop(wantedLoop, Infinity);
+      next.setLoop(!loop && (drawn?.replays ?? 1) > 1 ? THREE.LoopRepeat : wantedLoop, loop ? Infinity : drawn?.replays ?? Infinity);
       next.clampWhenFinished = !loop;
       next.setEffectiveWeight(1);
       next.play();
       applyPlayback(next, mode, loop); // 12.10 6.03/6.07
       // 03.11 (6.33): over the gait too: the split track comes in on the same curve from nothing, as measured on a swing and a cast.
-      const blend = animationBlend(clipBlendTime(clip));
+      const blend = animationBlend(clipBlendTime(next.getClip()));
       if (previous && previous !== next) blendInto(next, previous, blend, unit.skinned!.mixer.time);
       else if (!previous) next.fadeIn(blend);
       unit.overlayAction = next;
@@ -17413,12 +17462,12 @@ export class WorldRenderer3D {
       unit.overlayActionKind = actionKind;
       unit.overlayPreservesLocomotion = true;
       unit.overlayFadeUntil = undefined;
-      unit.overlayUntil = loop ? 0 : now + clip.duration * 1000;
+      unit.overlayUntil = loop ? 0 : now + playedSeconds(next) * 1000;
       return;
     }
 
     if (animation === unit.animationId && unit.action && unit.action.getClip() !== clip
-      && unit.action.isRunning() && unit.action.loop === wantedLoop && unit.animationMode === mode) { // 12.10: same mode
+      && unit.action.isRunning() && playsAs(unit.action, wantedLoop) && unit.animationMode === mode) { // 12.10: same mode
       // The same pose in another cut — the gait with or without the tracks an upper-body pose owns.
       // Swapped at the same phase and rate and cross-faded, so the legs see no seam (both cuts key
       // them identically) and the upper body hands over between the layers across the blend.
@@ -17441,7 +17490,7 @@ export class WorldRenderer3D {
       // The phase still has to change LoopOnce -> LoopRepeat for a held precast.
       // A mixer can stop a one-shot when it reaches its end. Re-start a stopped action even when
       // its loop mode matches, otherwise the unit can remain on its final frame forever.
-      if (held || (unit.action.loop === wantedLoop && unit.action.isRunning())) return; // 12.10: a held frame stays
+      if (held || (playsAs(unit.action, wantedLoop) && unit.action.isRunning())) return; // 12.10: a held frame stays
       unit.action.reset();
       // Reused actions retain their local timeScale across clips; animation data is authored in
       // seconds, so make the default playback rate explicit before every restart.
@@ -17452,30 +17501,37 @@ export class WorldRenderer3D {
       applyPlayback(unit.action, mode, loop); // 12.10 6.03/6.07
       unit.actionKind = actionKind;
       unit.overlayUntil = loop ? 0 : now + clip.duration * 1000;
+      unit.clipLoops = undefined;
       return;
     }
     const previous = unit.action;
-    const next = unit.skinned!.mixer.clipAction(clip);
+    // 03.11 (6.16в): a start in the model's own cut draws a variation, and how many times over it runs.
+    const drawn = baseClip === undefined && mode === PLAYBACK_FORWARD ? drawClipVariation(template, animation, keepVariation) : undefined;
+    const played = drawn?.clip ?? (baseClip ?? template.clips.get(animation) ?? clip);
+    const next = unit.skinned!.mixer.clipAction(played);
     next.reset();
     next.setEffectiveTimeScale(1);
-    next.setLoop(wantedLoop, Infinity);
+    next.setLoop(!loop && (drawn?.replays ?? 1) > 1 ? THREE.LoopRepeat : wantedLoop, loop ? Infinity : drawn?.replays ?? Infinity);
     next.clampWhenFinished = !loop;
     next.setEffectiveWeight(1);
     next.play();
     applyPlayback(next, mode, loop); // 12.10 6.03/6.07
     if (previous && previous !== next) {
       // 03.11 (6.33): Walk and Run hand over in step.
-      const start = strideStartTime(previous, clip);
+      const start = strideStartTime(previous, played);
       if (start !== undefined && loop && mode === PLAYBACK_FORWARD) next.time = start;
-      blendInto(next, previous, animationBlend(clipBlendTime(clip)), unit.skinned!.mixer.time);
+      blendInto(next, previous, animationBlend(clipBlendTime(played)), unit.skinned!.mixer.time);
     }
+    unit.variationClip = drawn?.clip;
+    unit.replaysLeft = drawn?.replays ?? 1;
+    unit.clipLoops = undefined;
     unit.action = next;
     unit.animationId = animation;
     unit.animationMode = mode; // 12.10 6.03/6.07
     unit.actionKind = actionKind;
     // 03.11 (6.33): a one-shot holds the unit for its whole length: measured on landings, a bow, a swing and a cast, the next
     // clip starts from zero when this one has played out, and comes in over its held last frame.
-    unit.overlayUntil = loop ? 0 : now + clip.duration * 1000;
+    unit.overlayUntil = loop ? 0 : now + playedSeconds(next) * 1000;
   }
 
   /**

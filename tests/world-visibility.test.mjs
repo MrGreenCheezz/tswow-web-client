@@ -426,11 +426,11 @@ test("V4 visual effects gate emitters and follow moving roots, while explicit po
 
 test("V4 spell unit clips run once for their full duration and lead into held primaries", async () => {
   const source = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
-  assert.match(source, /next\.setLoop\(wantedLoop, Infinity\)/);
+  assert.match(source, /next\.setLoop\(!loop && \(drawn\?\.replays \?\? 1\) > 1 \? THREE\.LoopRepeat : wantedLoop, loop \? Infinity : drawn\?\.replays \?\? Infinity\);/);
   // 03.11 (6.33): a one-shot holds the unit for all of its length, and the next clip comes in over its held last frame.
   assert.doesNotMatch(source, /clip\.duration \* 1000 - /, "no tail hands back early");
   assert.match(source, /unit\.overlayUntil = loop \? 0 : now \+ clip\.duration \* 1000;/);
-  assert.match(source, /blendInto\(next, previous, animationBlend\(clipBlendTime\(clip\)\), unit\.skinned!\.mixer\.time\)/,
+  assert.match(source, /blendInto\(next, previous, animationBlend\(clipBlendTime\(played\)\), unit\.skinned!\.mixer\.time\)/,
     "transitions take the incoming clip's authored M2Sequence.blendTime");
   // The unit-action arbiter (UnitActionArbiter.ts) replaced the single action slot: a lead-in is
   // armed when its entry first starts, and the entry is held when its follow-up is.
