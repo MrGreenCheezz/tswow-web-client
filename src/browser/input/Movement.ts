@@ -11,10 +11,11 @@ import { collisionModelLiquidAt, positionLiquid, type WmoLiquidFooting } from ".
 import type { CollisionSource } from "../game/CollisionSource.js";
 import type { TerrainClient } from "../Terrain.js";
 import {
-  CHARACTER_PITCH_LIMIT, DEFAULT_COLLISION_HEIGHT, applyImpulse, FLOOR_SEARCH_DEPTH, LIQUID_UNKNOWN, STEP_HEIGHT, newCharacterMotion,
+  CHARACTER_PITCH_LIMIT, DEFAULT_COLLISION_HEIGHT, applyImpulse, latchAirKey, FLOOR_SEARCH_DEPTH, LIQUID_UNKNOWN, STEP_HEIGHT, newCharacterMotion,
   stepCharacter,
   type CharacterInput, type CharacterMotion, type LiquidAnswer, type PhysicsEvent, type TerrainProbe,
 } from "../game/Physics.js";
+import { airMovementFlags } from "./AirKeys.js"; // 03.11 6.36
 import type { InputAction } from "./Bindings.js";
 import { heldMovementAction } from "./Bindings.js"; // 11.02-input
 import { advanceFollow, cancelFollow, followRunning, forgetFollow } from "./Follow.js";
@@ -351,6 +352,8 @@ export function movementFlags(): number {
   const flying = state?.canFly === true || state?.gravityDisabled === true;
   if (motion.mode === "swim") flags |= MOVEMENT_FLAGS.swimming;
   else if (motion.mode === "air") flags |= flying ? MOVEMENT_FLAGS.flying : MOVEMENT_FLAGS.falling;
+  // 03.11 (6.36): in a fall the direction bits are the flight's, and the keys wait for the landing (AirKeys.ts).
+  if (motion.mode === "air" && !flying && motion.drift === undefined) flags = airMovementFlags(flags, motion.airKeys, forward, strafe);
   // 12.10 6.07: and FALLING_FAR once the physics raised it (Physics.fallsFar, Wow.exe 0x007617f0) — a walk-off after
   // 500 ms, a jump once below where it began. The own pose reads it (Fall), and so do the other clients.
   if (motion.mode === "air" && !flying && motion.fallingFar) flags |= MOVEMENT_FLAGS.fallingFar;
@@ -709,6 +712,7 @@ export function advancePhysics(elapsed: number): void {
     input.descend = false;
   }
   input.runSpeed = currentSpeed();
+  input.walkSpeed = speedOf(world, self, "walk", DEFAULT_WALK_SPEED); // 03.11 6.36
   // 5.08: backwards on land is the run-back rate, or the walk rate in walk mode.
   input.runBackSpeed = walking ? input.runSpeed : speedOf(world, self, "runBack", DEFAULT_RUN_BACK_SPEED);
   input.swimSpeed = speedOf(world, self, "swim", DEFAULT_SWIM_SPEED);
@@ -1068,6 +1072,20 @@ export function sendMovement(opcode: number): void {
  * than per key is what makes autorun and the two-button run indistinguishable from `W` on the
  * wire, which is what they are.
  */
+/** 03.11 (6.36): a key's packet already says what it did to a standing jump (measured: START_FORWARD with xy 2.5). */
+function latchKeyInTheAir(forward: number, strafe: number): void {
+  if (motion.mode !== "air" || motion.drift !== undefined) return;
+  const world = game.world;
+  if (!world) return;
+  const state = moverState(world);
+  if (state.canFly || state.gravityDisabled) return;
+  const self = moverObject(world);
+  if (!self?.position) return;
+  latchAirKey(motion, forward, strafe, self.position.orientation, {
+    runSpeed: currentSpeed(), walkSpeed: speedOf(world, self, "walk", DEFAULT_WALK_SPEED),
+  });
+}
+
 export function syncMovement(): void {
   // 11.02-input: a held mover that turns on its seat reports its key edges with the seat (SeatedTurn.ts).
   if (game.world?.movementReady && !game.worldLoading && ownMovementServerControlled()) {
@@ -1084,6 +1102,7 @@ export function syncMovement(): void {
   const strafe = rooted || stunned ? 0 : strafeAxis();
   const turn = stunned ? 0 : turnAxis();
   const pitchKey = stunned ? 0 : pitchAxis();
+  latchKeyInTheAir(forward, strafe); // 03.11 6.36
   if (forward !== sentForward) {
     sendMovement(forward > 0 ? OPCODES.MSG_MOVE_START_FORWARD
       : forward < 0 ? OPCODES.MSG_MOVE_START_BACKWARD : OPCODES.MSG_MOVE_STOP);

@@ -26,6 +26,16 @@ export const MOVEMENT_FLAGS = {
   root: 0x00000800,
   falling: 0x00001000,
   fallingFar: 0x00002000,
+  /**
+   * 03.11 (6.36): a key pressed or let go in the air with a direction already going, kept until the landing
+   * (MOVEMENTFLAG_PENDING_*; measured on Wow.exe, input/AirKeys.ts).
+   */
+  pendingStop: 0x00004000,
+  pendingStrafeStop: 0x00008000,
+  pendingForward: 0x00010000,
+  pendingBackward: 0x00020000,
+  pendingStrafeLeft: 0x00040000,
+  pendingStrafeRight: 0x00080000,
   swimming: 0x00200000,
   ascending: 0x00400000,
   descending: 0x00800000,
@@ -122,7 +132,12 @@ export function readMovementInfo(reader: PacketReader): MovementInfo {
   if ((flags & (SWIMMING | FLYING)) !== 0 || (flags2 & ALWAYS_PITCH) !== 0) info.pitch = reader.f32();
   info.fallTime = reader.u32();
   if (flags & FALLING) {
-    info.jump = { velocity: reader.f32(), sinAngle: reader.f32(), cosAngle: reader.f32(), speed: reader.f32() };
+    // 03.11 (6.36): the cosine comes first, as the core's knock back writes it (vcos, vsin); measured off Wow.exe's own
+    // jump at facing 0.7: 0.765, then 0.644. TrinityCore's names for the two slots are the other way round.
+    const velocity = reader.f32();
+    const cosAngle = reader.f32();
+    const sinAngle = reader.f32();
+    info.jump = { velocity, sinAngle, cosAngle, speed: reader.f32() };
   }
   if (flags & SPLINE_ELEVATION) info.splineElevation = reader.f32();
 
@@ -165,7 +180,7 @@ export function writeMovementInfoBody(writer: PacketWriter, info: MovementInfo):
   writer.u32(info.fallTime ?? 0);
   if (info.flags & FALLING) {
     const jump = info.jump ?? { velocity: 0, sinAngle: 0, cosAngle: 0, speed: 0 };
-    writer.f32(jump.velocity).f32(jump.sinAngle).f32(jump.cosAngle).f32(jump.speed);
+    writer.f32(jump.velocity).f32(jump.cosAngle).f32(jump.sinAngle).f32(jump.speed); // 03.11 (6.36): the reader's order
   }
   if (info.flags & SPLINE_ELEVATION) writer.f32(info.splineElevation ?? 0);
   return writer;

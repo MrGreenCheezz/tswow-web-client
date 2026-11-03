@@ -200,13 +200,25 @@ export interface CharacterMotion {
   fallStartZ: number;
   /** 12.10 6.07: MOVEMENTFLAG_FALLING_FAR (0x2000), raised by {@link fallsFar} and kept until the fall ends. */
   fallingFar: boolean;
+  /**
+   * 03.11 (6.36): the direction keys the flight goes by ({@link AIR_KEY_FORWARD} and the others), taken at the takeoff or by
+   * the one key a standing jump allows (input/AirKeys.ts says what the rest of them become on the wire).
+   */
+  airKeys: number;
 }
+
+/** 03.11 (6.36): the bits of {@link CharacterMotion.airKeys}. */
+export const AIR_KEY_FORWARD = 1;
+export const AIR_KEY_BACKWARD = 2;
+export const AIR_KEY_LEFT = 4;
+export const AIR_KEY_RIGHT = 8;
 
 export function newCharacterMotion(): CharacterMotion {
   return {
     mode: "ground", velocityZ: 0, fallTime: 0, jump: undefined, pitch: 0, vertical: 0, liquid: undefined,
     loadWait: 0, airFlight: false, drift: undefined,
     fallStartZ: Number.NaN, fallingFar: false, // 12.10 6.07
+    airKeys: 0, // 03.11 6.36
   };
 }
 
@@ -307,6 +319,8 @@ export interface CharacterInput {
   flightSpeed: number;
   /** 5.08: the backward rates; absent means the forward one. */
   runBackSpeed?: number;
+  /** 03.11 (6.36): what a key gives a jump from a standstill ({@link latchAirKey}). Absent: 2.5, the base walk. */
+  walkSpeed?: number;
   swimBackSpeed?: number;
   flightBackSpeed?: number;
   /** 5.11: `UNIT_FLAG_STUNNED` on the mover — no step, no jump, no rise. */
@@ -695,12 +709,27 @@ export function stepCharacter(
   if (drift !== undefined && !drifting) motion.drift = undefined;
   // `Math.sqrt` rather than `Math.hypot`: the latter is ≈15 ns slower per call in V8 (measured).
   const length = drifting ? 0 : Math.sqrt(forward * forward + strafe * strafe);
+  const cosine = Math.cos(position.orientation);
+  const sine = Math.sin(position.orientation);
+  // 03.11 (6.36): what a fall starting on this step takes with it: the keys' direction (the facing without any), their speed.
+  TAKEOFF.cos = length > 0 ? cosine * (forward / length) - sine * (strafe / length) : cosine;
+  TAKEOFF.sin = length > 0 ? sine * (forward / length) + cosine * (strafe / length) : sine;
+  TAKEOFF.speed = length > 0 ? horizontalSpeed : 0;
+  TAKEOFF.keys = airKeysOf(forward, strafe);
+  // 03.11 (6.36): the flight is what the takeoff made it (Wow.exe 0x0098bff0 leaves +0x70, +0x74 and +0x8c alone while
+  // FALLING), measured: W let go, S, a strafe and a turn in the air land 5.87 yd along the takeoff's direction all the same.
+  const coasting = motion.mode === "air" && !flying && !drifting;
   if (drifting) {
     dx = drift.vx * elapsed;
     dy = drift.vy * elapsed;
+  } else if (coasting) {
+    latchAirKey(motion, forward, strafe, position.orientation, input);
+    const jump = motion.jump;
+    if (jump && jump.speed > 0) {
+      dx = jump.cosAngle * jump.speed * elapsed;
+      dy = jump.sinAngle * jump.speed * elapsed;
+    }
   } else if (length > 0) {
-    const cosine = Math.cos(position.orientation);
-    const sine = Math.sin(position.orientation);
     // Swimming or flying forward follows the pitch, so looking down and going forward is a dive.
     // The horizontal part is what is left of the speed once the vertical part has been taken.
     const planar = motion.mode === "swim" || (motion.mode === "air" && flying) ? Math.cos(motion.pitch) : 1;
@@ -731,6 +760,7 @@ export function stepCharacter(
     const out = probe.pushOut(position.x, position.y, position.z, input.radius, collisionHeight);
     position.x = out.x;
     position.y = out.y;
+    if (coasting) deflectFall(motion, position.x - fromX, position.y - fromY, dx, dy);
   }
 
   // The solid floor first and the liquid second, at the same feet: a probe that walks the collision
@@ -764,6 +794,7 @@ function setVertical(motion: CharacterMotion, wanted: number, events: PhysicsEve
 function beginSwim(motion: CharacterMotion, events: PhysicsEvent[]): void {
   motion.mode = "swim";
   motion.drift = undefined;
+  motion.airKeys = 0; // 03.11 6.36
   motion.velocityZ = 0;
   motion.fallTime = 0;
   motion.jump = undefined;
@@ -778,19 +809,68 @@ function clearVertical(motion: CharacterMotion, events: PhysicsEvent[]): void {
 }
 
 /** The jump block every airborne packet carries, written into the motion's own (5.13: no allocation per fall). */
-function setJump(motion: CharacterMotion, velocity: number, orientation: number, speed: number): void {
+function setJump(motion: CharacterMotion, velocity: number, cos: number, sin: number, speed: number): void {
   const jump = motion.jump;
   if (jump) {
     jump.velocity = velocity;
-    jump.sinAngle = Math.sin(orientation);
-    jump.cosAngle = Math.cos(orientation);
+    jump.sinAngle = sin;
+    jump.cosAngle = cos;
     jump.speed = speed;
   } else {
-    motion.jump = { velocity, sinAngle: Math.sin(orientation), cosAngle: Math.cos(orientation), speed };
+    motion.jump = { velocity, sinAngle: sin, cosAngle: cos, speed };
   }
 }
 
-function beginFall(motion: CharacterMotion, velocityZ: number, orientation: number, speed: number,
+/** 03.11 (6.36): one step's keys, for a fall that starts on it. */
+const TAKEOFF = { cos: 1, sin: 0, speed: 0, keys: 0 };
+
+function airKeysOf(forward: number, strafe: number): number {
+  return (forward > 0 ? AIR_KEY_FORWARD : forward < 0 ? AIR_KEY_BACKWARD : 0)
+    | (strafe > 0 ? AIR_KEY_LEFT : strafe < 0 ? AIR_KEY_RIGHT : 0);
+}
+
+/**
+ * 03.11 (6.36): the one thing keys can do in the air. A jump from a standstill goes nowhere until a key is pressed, and the
+ * first key gives it the walk's speed along where that key points now, for the rest of the flight: measured on Wow.exe, 2.5 yd/s
+ * for W, S and a strafe alike, 4 with the walk at 4, unmoved by a run of 14 or a back of 9, along the facing at the press and not
+ * after a turn. Forward wins a tie: W and a strafe in one frame flew along W. Every later key waits for the landing (AirKeys.ts).
+ */
+export function latchAirKey(
+  motion: CharacterMotion, forward: number, strafe: number, orientation: number, input: Pick<CharacterInput, "walkSpeed" | "runSpeed">,
+): void {
+  const jump = motion.jump;
+  if (!jump || motion.airKeys !== 0 || (forward === 0 && strafe === 0)) return;
+  const angle = orientation + (forward > 0 ? 0 : forward < 0 ? Math.PI : strafe > 0 ? Math.PI / 2 : -Math.PI / 2);
+  jump.cosAngle = Math.cos(angle);
+  jump.sinAngle = Math.sin(angle);
+  jump.speed = Math.min(input.walkSpeed ?? BASE_WALK_SPEED, input.runSpeed); // 0x00987654: the lesser of the two
+  motion.airKeys = forward !== 0 ? airKeysOf(forward, 0) : airKeysOf(0, strafe);
+}
+
+const BASE_WALK_SPEED = 2.5;
+
+/**
+ * 03.11 (6.36): a wall under a fall with no jump in it takes what it stops: the direction becomes where the body went and the
+ * speed what was left along it (Wow.exe 0x007612b0). A jump with a direction going keeps both, and goes on when the wall ends
+ * (there, the values saved on entry are put back).
+ */
+function deflectFall(motion: CharacterMotion, movedX: number, movedY: number, dx: number, dy: number): void {
+  const jump = motion.jump;
+  if (!jump || jump.velocity !== 0 || jump.speed <= 0) return;
+  if (Math.abs(movedX - dx) + Math.abs(movedY - dy) < 1e-4) return;
+  const moved = Math.sqrt(movedX * movedX + movedY * movedY);
+  if (moved < 1e-5) {
+    jump.speed = 0;
+    return;
+  }
+  const cos = movedX / moved;
+  const sin = movedY / moved;
+  jump.speed = Math.max(0, (cos * jump.cosAngle + sin * jump.sinAngle) * jump.speed);
+  jump.cosAngle = cos;
+  jump.sinAngle = sin;
+}
+
+function beginFall(motion: CharacterMotion, velocityZ: number,
   events: PhysicsEvent[], kind: "jump" | "startFall"): void {
   motion.mode = "air";
   motion.velocityZ = velocityZ;
@@ -800,7 +880,8 @@ function beginFall(motion: CharacterMotion, velocityZ: number, orientation: numb
   motion.fallingFar = false;
   // The direction is the one the character left the ground in; the server echoes it back to
   // everyone watching, and it is what makes a jump land where it was aimed.
-  setJump(motion, velocityZ, orientation, speed);
+  setJump(motion, velocityZ, TAKEOFF.cos, TAKEOFF.sin, TAKEOFF.speed); // 03.11 (6.36): the keys', not the facing's
+  motion.airKeys = TAKEOFF.keys;
   events.push(kind);
 }
 
@@ -818,20 +899,20 @@ function stepGrounded(
   // A tile that has not arrived is not a hole: the character waits on it rather than falling
   // through a world that is merely still loading.
   if (floor === undefined) {
-    if (probe.hole(position.x, position.y)) beginFall(motion, 0, position.orientation, horizontalSpeed, events, "startFall");
+    if (probe.hole(position.x, position.y)) beginFall(motion, 0, events, "startFall");
     return;
   }
   if (ascend) {
     // On a flying mount this is the take-off: the jump starts it, and the next frame finds
     // gravity switched off and the character rising while the key is held.
-    beginFall(motion, JUMP_VELOCITY, position.orientation, horizontalSpeed, events, "jump");
+    beginFall(motion, JUMP_VELOCITY, events, "jump");
     return;
   }
   const drop = position.z - floor;
   // L8 5.07: a step probes down in proportion to its length (Wow.exe 0x007620f0); standing still, as before.
   if (drop > (requested > 0 ? requested * STEP_DOWN_PER_YARD : STEP_DOWN) // L8 5.07: was `drop > STEP_DOWN`
     && !(requested > 0 && footHolds(position, motion, input, probe, fromX, fromY, drop, requested))) { // L8-review 5.07
-    beginFall(motion, 0, position.orientation, horizontalSpeed, events, "startFall");
+    beginFall(motion, 0, events, "startFall");
     return;
   }
   // A wall of terrain taller than a step: the character stays where it was rather than being
@@ -920,7 +1001,8 @@ function stepAirborne(
     motion.airFlight = false;
     motion.velocityZ = 0;
     motion.fallTime = 0;
-    setJump(motion, 0, position.orientation, input.runSpeed);
+    setJump(motion, 0, TAKEOFF.cos, TAKEOFF.sin, TAKEOFF.speed > 0 ? input.runSpeed : 0);
+    motion.airKeys = TAKEOFF.keys; // 03.11 6.36
     clearVertical(motion, events);
     motion.fallStartZ = Number.NaN; // 12.10 6.07: a new fall, from here
     motion.fallingFar = false;
@@ -956,6 +1038,7 @@ function land(position: WorldPosition, motion: CharacterMotion, floor: number, e
   motion.mode = "ground";
   motion.velocityZ = 0;
   motion.jump = undefined;
+  motion.airKeys = 0; // 03.11 6.36
   motion.airFlight = false;
   motion.drift = undefined;
   motion.fallingFar = false; // 12.10 6.07: the landing packet carries neither FALLING nor FALLING_FAR
@@ -979,7 +1062,8 @@ function stepSwimming(
     motion.fallTime = 0;
     motion.fallStartZ = Number.NaN; // 12.10 6.07
     motion.fallingFar = false;
-    setJump(motion, 0, position.orientation, input.swimSpeed);
+    setJump(motion, 0, TAKEOFF.cos, TAKEOFF.sin, TAKEOFF.speed);
+    motion.airKeys = TAKEOFF.keys; // 03.11 6.36
     events.push("stopSwim", "startFall");
     return;
   }
@@ -1009,7 +1093,7 @@ function stepSwimming(
   if (rise > 0 && position.z > floatZ && !input.gravityDisabled) {
     position.z = floatZ;
     motion.vertical = 0;
-    beginFall(motion, SWIM_JUMP_VELOCITY, position.orientation, horizontalSpeed, events, "jump");
+    beginFall(motion, SWIM_JUMP_VELOCITY, events, "jump");
     return;
   }
   if (position.z > floatZ) {
