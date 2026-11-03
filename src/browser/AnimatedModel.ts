@@ -2973,11 +2973,14 @@ export function mountPose(rider: UnitPose, available?: ReadonlySet<number> | Map
  * mounted, and rightly so for the rider — there is no clip for climbing into a saddle, and a
  * character that played JumpStart every time its horse went over a rise would be leaping out of
  * the seat. But the horse underneath is doing exactly what an unmounted unit does, and it has the
- * clips for it: measured, RidingHorse carries JumpStart 833 ms, Jump 667 ms, JumpEnd 1100 ms and
- * Fall 667 ms; NetherDrake carries JumpStart and Jump and no landing; Gryphon carries none of the
+ * clips for it; NetherDrake carries JumpStart and Jump and no landing; Gryphon carries none of the
  * four. So this is `poseTransition`'s airborne half and only that half — no sit/stand one-shots,
  * because `mountPose` has already fixed the stand state to STAND and a mount has no stand state of
  * its own to change.
+ *
+ * 03.11 (6.35): the whole of that half. This used to be "any fall is a jump, any landing is JumpEnd", so a horse going over a
+ * rise took off and then stood 1.1 s in its landing while running on. Wow.exe's bones on a running jump: JumpStart, Jump, and
+ * at the ground JumpLandRun, which on RidingHorse is its Run from zero.
  *
  * Both arguments are mount poses (`mountPose` output), not rider poses. Flight is refused because
  * a flying mount is airborne for the whole flight and its takeoff is not a jump; swimming for the
@@ -2989,8 +2992,34 @@ export function mountPoseTransition(previous: UnitPose | undefined, next: UnitPo
   if (swimming(next) || swimming(previous)) return undefined;
   if (isUnitFlying(next.movementFlags, next.flight === true)
     || isUnitFlying(previous.movementFlags, previous.flight === true)) return undefined;
-  if (!isAirborne(previous) && isAirborne(next)) return JumpStart;
-  if (isAirborne(previous) && !isAirborne(next)) return JumpEnd;
+  return airborneTransition(previous, next);
+}
+
+/**
+ * 03.11 (6.35): whether the pose left or reached the ground, or a walk-off became a fall. No one-shot outlives this: Wow.exe
+ * re-picks the clip at once when the movement word's `0x1000` changes (0x0073ee14), measured as a landing cutting JumpStart short.
+ * Left to run out, a landing clip played on in the air under the next jump, which reads as running on nothing.
+ */
+export function airborneChanged(previous: UnitPose | undefined, next: UnitPose): boolean {
+  if (!previous) return false;
+  return isAirborne(previous) !== isAirborne(next) || isReallyFalling(previous) !== isReallyFalling(next);
+}
+
+/**
+ * The one-shot of an {@link airborneChanged} edge, for a unit and for a mount alike.
+ *
+ * 12.10 6.07: the jump's own start only for a fall with a jump in it — a walk-off has none, and keeps the ground's pose until
+ * FALLING_FAR, then falls (`poseAnimation`); the landing only after a fall Wow.exe animated as one. 05.10-A7a-C 6.07: landing at a
+ * run is JumpLandRun (AnimationData falls back to Run), standing JumpEnd.
+ */
+function airborneTransition(previous: UnitPose, next: UnitPose): number | undefined {
+  if (!isReallyFalling(previous) && isReallyFalling(next)) {
+    return next.fallJumped === false || isAirborne(previous) ? undefined : JumpStart;
+  }
+  if (isAirborne(previous) && !isAirborne(next) && isReallyFalling(previous)) {
+    return (next.movementFlags & MOVEMENT_FLAGS.forward) !== 0 && ANIMATION_IDS["JumpLandRun"] !== undefined
+      ? ANIMATION_IDS["JumpLandRun"] : JumpEnd;
+  }
   return undefined;
 }
 
@@ -3049,7 +3078,6 @@ export function poseTransition(previous: UnitPose | undefined, next: UnitPose): 
   // (RideAnimStart / RideUpperAnimStart, Wow.exe 0x00747b20) — the vehicle does any jumping.
   const seatTransition = vehicleSeatTransition(previous.vehicleSeat, next.vehicleSeat);
   if (seatTransition !== false) return seatTransition;
-  const airborne = isAirborne;
   const swimming = (pose: UnitPose): boolean => (pose.movementFlags & MOVEMENT_FLAGS.swimming) !== 0;
   if (swimming(next) || swimming(previous)) return undefined;
   // Climbing into a saddle and dropping out of one have no clip in this build — none of the eight
@@ -3057,17 +3085,7 @@ export function poseTransition(previous: UnitPose | undefined, next: UnitPose): 
   // there the mount does the moving, so the airborne test below would have a rider leap off their
   // horse every time it went over a rise.
   if (previous.mounted === true || next.mounted === true) return undefined;
-  // 12.10 6.07: the jump's own start only for a fall with a jump in it — a walk-off has none, and keeps the ground's
-  // pose until FALLING_FAR, then falls (`poseAnimation`); the landing only after a fall Wow.exe animated as one.
-  if (!isReallyFalling(previous) && isReallyFalling(next)) {
-    return next.fallJumped === false || airborne(previous) ? undefined : JumpStart;
-  }
-  if (airborne(previous) && !airborne(next) && !isReallyFalling(previous)) return undefined;
-  // 05.10-A7a-C 6.07: landing at a run is JumpLandRun (AnimationData falls back to Run), standing JumpEnd.
-  if (airborne(previous) && !airborne(next)) {
-    return (next.movementFlags & MOVEMENT_FLAGS.forward) !== 0 && ANIMATION_IDS["JumpLandRun"] !== undefined
-      ? ANIMATION_IDS["JumpLandRun"] : JumpEnd;
-  }
+  if (airborneChanged(previous, next)) return airborneTransition(previous, next);
   if (previous.standState !== next.standState) {
     if (next.standState === UNIT_STAND_STATE_SIT) return SitGroundDown;
     if (previous.standState === UNIT_STAND_STATE_SIT) return SitGroundUp;

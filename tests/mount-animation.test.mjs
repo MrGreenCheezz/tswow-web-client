@@ -92,7 +92,9 @@ test("A2 the horse gets the takeoff and the landing the rider deliberately does 
   const air = mountPose(rider({ movementFlags: MOVEMENT_FLAGS.forward | MOVEMENT_FLAGS.falling }), HORSE);
 
   assert.equal(mountPoseTransition(ground, air), JumpStart);
-  assert.equal(mountPoseTransition(air, ground), JumpEnd);
+  // 03.11 (6.35): at a run the landing is JumpLandRun, standing JumpEnd (Wow.exe's bones, F:\WowOracle\runs\m1).
+  assert.equal(mountPoseTransition(air, ground), ANIMATION_IDS.JumpLandRun);
+  assert.equal(mountPoseTransition(air, mountPose(rider({ movementFlags: 0 }), HORSE)), JumpEnd);
   assert.equal(mountPoseTransition(air, air), undefined, "the arc itself is a loop, not a one-shot");
   assert.equal(mountPoseTransition(undefined, air), undefined, "a mount that appears mid-air has not jumped");
 

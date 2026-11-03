@@ -168,7 +168,7 @@ import {
   isLocomotionGait, measuredTravelSpeed, spawnFadeFactor, strideStartTime,
   weaponPose, isBaseIdle, // 05.10-A7a-C: isBaseIdle
   isJumpAnimation, // 12.10 6.07
-  applyStrafeYaw, drawClipVariation, facingTurnBetween, playedSeconds, playsAs, stepStrafeYaw, strafeYawBonesFor, strafeYawTarget,
+  airborneChanged, applyStrafeYaw, drawClipVariation, facingTurnBetween, playedSeconds, playsAs, stepStrafeYaw, strafeYawBonesFor, strafeYawTarget,
   turnOnTheSpot,
   fastPoseProgramFor, writeGlobalSequenceLocals,
   type GlobalChannelSource, // 12.10 6.24
@@ -2945,6 +2945,8 @@ interface RenderedUnit extends PosedModel {
   strideReady: boolean;
   /** Yards a second from the last stride measurement, or undefined before the second frame. */
   strideSpeed: number | undefined;
+  /** 03.11 (6.35): the speed the unit is declared to move at (`unitTravelSpeed`), for what is sampled once. */
+  travelSpeed: number | undefined;
   /** Last rig and its staggered animation clock; a newly attached rig always gets its first pose. */
   animationClock: UnitAnimationClock | undefined;
   animationClockRig: SkinnedInstance | undefined;
@@ -15380,7 +15382,7 @@ export class WorldRenderer3D {
         node, built: undefined, shadowCaster: undefined, body, material,
         skinned: undefined, template: undefined, action: undefined,
         animationId: -1, pose: undefined, overlayUntil: 0,
-        strideX: 0, strideY: 0, strideZ: 0, strideReady: false, strideSpeed: undefined,
+        strideX: 0, strideY: 0, strideZ: 0, strideReady: false, strideSpeed: undefined, travelSpeed: undefined,
         height: 0, radius: 0, scale: 1, dead: !dead, tint: tint ^ 1, applied: "",
         attached: new Map(), unitOpacity: 1, particleColours: undefined, // 05.10-A7a-H: one shape from birth
         spellTint: undefined, tintBorrows: undefined, // 25.10 (6.27): the spell tint's fields, present from birth (P1-09)
@@ -16502,6 +16504,7 @@ export class WorldRenderer3D {
     // Stride tempo before anything poses: the gait scaler below reads it, and the node already
     // stands where this frame drew it.
     unit.strideSpeed = this.#strideSpeed(unit, unit.node.position, elapsed);
+    unit.travelSpeed = unitTravelSpeed(pose, object.speeds, object.runSpeed);
     // The mount is the thing that walks, swims and flies, so it takes the same pose the rider
     // would have taken on foot — but only the travelling half of it. The sanitising is `mountPose`
     // and it happens inside `#poseMount`, which is the only place that holds the mount's own clips
@@ -16511,8 +16514,7 @@ export class WorldRenderer3D {
     // The speed is the rider's, because the rider is the unit the server sends rates for; the
     // horse is a display id with no movement of its own. It is what turns the authored stride into
     // a gait: without it a hasted mount replays a 6.94 yd/s stride while travelling at 14.
-    this.#poseMount(unit, object.guid, pose, now, client,
-      unitTravelSpeed(pose, object.speeds, object.runSpeed));
+    this.#poseMount(unit, object.guid, pose, now, client, unit.travelSpeed);
     // 05.10-A7a-C 6.03/6.04: the standing base (emote state, combat stance) — after the mount's pose,
     // which is the horse's and holds neither; 6.07: the STUNNED/LOOTING holds, on an edge only.
     // 12.10 6.03: every emote-state value is a held base (Wow.exe 0x007171c0) — none is played once on a change —
@@ -16549,8 +16551,9 @@ export class WorldRenderer3D {
     // 12.10 6.07: a pose transition (JumpLandRun, KneelStart…) gives way the moment the unit starts or stops moving —
     // Wow.exe re-picks the base on a movement change (0x0073ee14: +0x44 & 0xc0100f → 0x0073ac30) — instead of holding
     // the unit to the clip's end (833 ms of JumpLandRun slid along under a unit that had stopped).
+    // 03.11 (6.35): and it gives way when the unit leaves or reaches the ground (`airborneChanged`).
     const transitionCut = unit.transitionMoving !== undefined
-      && unit.transitionMoving !== isUnitMoving(pose.movementFlags, pose.spline);
+      && (unit.transitionMoving !== isUnitMoving(pose.movementFlags, pose.spline) || airborneChanged(unit.pose, pose));
     if (deathTransition || unit.overlayPreservesLocomotion === true || transitionCut
       || (now >= unit.overlayUntil && !terminalDeath)) {
       this.#poseUnit(unit, object.guid, pose, now, client, metadata);
@@ -16819,10 +16822,13 @@ export class WorldRenderer3D {
     const still = unit.strafeYawFacing === undefined || unit.strafeYawFacing === facing;
     if (unit.strafeYawFacing === undefined) unit.strafeYawFacing = facing;
     // 03.11: the mount turns whatever the rider's rig can do.
-    if (unit.mount) return still && strafeYawTarget(pose) === 0;
     // 11.10: no clip argument — a ground strafe is never a sidestep any more (`poseAnimation`).
-    return strafeYawBonesFor(template, unit.wvm) === undefined
-      || (still && strafeYawTarget(pose) === 0);
+    const idle = unit.mount || strafeYawBonesFor(template, unit.wvm) !== undefined
+      ? still && strafeYawTarget(pose) === 0 : true;
+    // 03.11 (6.35): no step will run to say so: the step that brought the body home said it was still moving, which held the
+    // feet in Shuffle for good.
+    if (idle) unit.strafeYawTurning = 0;
+    return idle;
   }
 
   /**
@@ -16921,8 +16927,12 @@ export class WorldRenderer3D {
     // The remembered pose is updated even while the one-shot owns the mount, and that is not
     // bookkeeping: leaving it behind would make the ground -> air change fire again the moment
     // JumpStart's window closed, and the horse would take off twice on one jump.
+    // 03.11 (6.35): until the rider leaves or reaches the ground, or sets off or stops, as a unit's transition gives way
+    // (`airborneChanged`, `transitionMoving`): a horse ran on in its 1.1 s landing and took a second jump in it.
+    const moved = mount.pose !== undefined
+      && isUnitMoving(mount.pose.movementFlags, mount.pose.spline) !== isUnitMoving(pose.movementFlags, pose.spline);
     if (mount.action?.loop === THREE.LoopOnce && mount.action.isRunning()
-      && now < mount.overlayUntil) {
+      && now < mount.overlayUntil && !moved && !airborneChanged(mount.pose, pose)) {
       mount.pose = pose;
       return;
     }
@@ -16930,12 +16940,12 @@ export class WorldRenderer3D {
     // The mount's own poseTransition. `resolveAnimation` and not the seat resolver: this is the
     // animal's locomotion, in the same family as any unit's, and a rig without a takeoff clip
     // simply gets undefined and keeps its gait — Gryphon carries none of 37/38/39/40.
+    // 03.11 (6.35): as a unit's: a landing at a run that falls back to the gait is the gait, from `chooseAnimation` below.
     const transition = mountPoseTransition(mount.pose, pose);
-    const takeoff = transition === undefined
-      ? undefined
-      : resolveAnimation(mount.template.clips, [transition]);
+    const takeoff = poseTransitionClip(mount.template.clips, transition);
     if (takeoff !== undefined) {
       this.#playAnimation(mount, takeoff, false, now);
+      this.#strideOneShot(mount, speed, now);
       mount.pose = pose;
       return;
     }
@@ -16956,6 +16966,19 @@ export class WorldRenderer3D {
     this.#requestAnimations(mount.template, poseAnimation(pose).wanted, client, mount.metadata);
     if (unit.strafeYawTurning !== 0) this.#requestAnimations(mount.template, TURN_ON_THE_SPOT, client, mount.metadata);
     mount.pose = pose;
+  }
+
+  /**
+   * 03.11 (6.35): a one-shot that is a stride runs at speed too (Wow.exe 0x007385c0 takes JumpLandRun, 0xbb, with the gaits) and
+   * holds the model for as much less: at +100 % a horse's landing used to run half as fast as it travelled.
+   */
+  #strideOneShot(model: PosedModel, speed: number | undefined, now: number): void {
+    const action = model.action;
+    if (!action) return;
+    const scale = gaitTimeScale(speed, clipMovingSpeed(action.getClip()));
+    if (scale === 1) return;
+    action.setEffectiveTimeScale(scale);
+    model.overlayUntil = now + (playedSeconds(action) / scale) * 1000;
   }
 
   /**
@@ -17050,6 +17073,8 @@ export class WorldRenderer3D {
       // 12.10 6.03/6.07: KneelEnd/SleepUp/SitGroundUp resolved to their way down play it backwards (0x00826350).
       this.#playAnimation(unit, overlay, false, now, false, undefined, undefined,
         fallbackPlayback(transition!, overlay));
+      // 03.11 6.35: not the measured speed: on the frame of a landing that has the fall in it, and a long frame in it.
+      this.#strideOneShot(unit, unit.travelSpeed, now);
       unit.transitionMoving = moving; // 12.10 6.07: a change of it ends the transition (#animateUnit)
       return;
     }

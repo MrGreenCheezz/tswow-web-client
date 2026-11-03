@@ -108,7 +108,7 @@ test("A2 the mount is posed from the rider's travel alone, with its own jumps an
   // remembered pose advanced on every path — including the held one, or a takeoff fires twice.
   assert.match(body, /mountPoseTransition\(mount\.pose, pose\)/,
     "the horse gets JumpStart/JumpEnd of its own");
-  assert.match(body, /resolveAnimation\(mount\.template\.clips, \[transition\]\)/,
+  assert.match(body, /poseTransitionClip\(mount\.template\.clips, transition\)/,
     "and it is resolved against what the rig actually carries, so a rig without one keeps its gait");
   assert.equal((body.match(/mount\.pose = pose/g) ?? []).length, 4,
     "every exit from the method leaves the remembered pose current");

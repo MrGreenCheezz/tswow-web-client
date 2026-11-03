@@ -132,7 +132,7 @@ test("a stunned rider is stunned on the upper body: Stun is on 0x71d800's list a
 test("the renderer: a movement change ends a transition; an edge waits for its clip", () => {
   const source = readFileSync(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
   const animate = source.slice(source.indexOf("  #animateUnit("), source.indexOf("  #flatPose("));
-  assert.match(animate, /const transitionCut = unit\.transitionMoving !== undefined\s+&& unit\.transitionMoving !== isUnitMoving\(pose\.movementFlags, pose\.spline\);/);
+  assert.match(animate, /const transitionCut = unit\.transitionMoving !== undefined\s+&& \(unit\.transitionMoving !== isUnitMoving\(pose\.movementFlags, pose\.spline\) \|\| airborneChanged\(unit\.pose, pose\)\);/);
   assert.match(animate, /if \(deathTransition \|\| unit\.overlayPreservesLocomotion === true \|\| transitionCut/);
   assert.match(animate, /if \(object\.fallJumped !== undefined\) pose\.fallJumped = object\.fallJumped;/);
   assert.match(animate, /pose\.airborneBase = isJumpAnimation\(unit\.animationId\) \? unit\.animationId : null;/);
