@@ -114,7 +114,8 @@ interface Standing {
 }
 
 /** The unit's standing on one creature's list, or undefined when it is not on it. */
-function standing(table: ThreatUpdate, unitGuid: bigint): Standing | undefined {
+/** A unit's standing in one creature's table. 03.11 (6.37): also what lights a plate's flash. */
+export function threatStanding(table: ThreatUpdate, unitGuid: bigint): Standing | undefined {
   const entries = table.entries;
   if (entries.length === 0) return undefined;
   const own = entries.find((entry) => entry.guid === unitGuid);
@@ -177,11 +178,11 @@ export class FrameXmlThreatModel {
     if (mobUnit !== undefined && mobUnit !== "") {
       const mobGuid = this.#context.unitGuid(mobUnit);
       const table = mobGuid === undefined ? undefined : world.threat?.get(mobGuid);
-      return table ? standing(table, unitGuid)?.status : undefined;
+      return table ? threatStanding(table, unitGuid)?.status : undefined;
     }
     let worst: FrameXmlThreatStatus | undefined;
     for (const table of world.threat?.tables() ?? []) {
-      const status = standing(table, unitGuid)?.status;
+      const status = threatStanding(table, unitGuid)?.status;
       if (status !== undefined && (worst === undefined || status > worst)) worst = status;
     }
     return worst;
@@ -194,7 +195,7 @@ export class FrameXmlThreatModel {
     const mobGuid = this.#context.unitGuid(mobUnit);
     if (!world || unitGuid === undefined || unitGuid === 0n || mobGuid === undefined) return undefined;
     const table = world.threat?.get(mobGuid);
-    const own = table ? standing(table, unitGuid) : undefined;
+    const own = table ? threatStanding(table, unitGuid) : undefined;
     if (!own) return undefined;
     const rawPercent = own.tanking ? 100
       : own.tankThreat > 0 ? own.mine / own.tankThreat * 100 : (own.mine > 0 ? 100 : 0);

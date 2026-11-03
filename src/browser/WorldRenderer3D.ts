@@ -10,7 +10,8 @@ import { gameObjectNodeYaw, gameObjectWorldRotation, placedBoxCorners, type Mode
 import { modelPickBox } from "./GameObjectPickBox.js"; // 06.10-7.24
 import { OVERLAY_OBJECT_RANGE, clickableGameObject, overlaySquaredDistance } from "./GameObjectClickable.js"; // 22.10 ARC-2 S3a
 import {
-  PICK_RESULT_STAMP, UNIT_RESULT_EYE, UNIT_RESULT_PIVOT, createRenderResults, dropStaleRows, type RenderResults,
+  PICK_RESULT_STAMP, UNIT_NAME_SIZE, UNIT_NAME_STAMP, UNIT_NAME_X, UNIT_NAME_Y, UNIT_NAME_Z, UNIT_RESULT_EYE, UNIT_RESULT_PIVOT,
+  createRenderResults, dropStaleRows, resultRow, type RenderResults,
 } from "./RenderResults.js"; // 22.10 ARC-2 S3a
 import {
   PickResultRows, UnitResultRows, type PickRowCompute, type PickRowKey, type UnitRowCompute, type UnitRowKey,
@@ -375,6 +376,10 @@ import type { CollisionLiquid, CollisionModel } from "../world/CollisionFormat.j
 /** One deterministic evolution step supplied by an offline render replay. */
 /** 23.10 (6.27): scratch for spell light positions. */
 const _spellLightAt = new THREE.Vector3();
+const _namePoint = new THREE.Vector3(); // 03.11 6.37
+/** 03.11 (6.37): M2 attachment ids: PlayerName, and PlayerNameMounted on a mount (0x0071fef0). */
+const ATTACHMENT_NAME = 18;
+const ATTACHMENT_NAME_MOUNTED = 29;
 const _lootBeamAt = new THREE.Vector3(); // 26.10: a lootable body's drawn place (LootBeams.ts)
 /** 25.10 (6.27): what kind of light a spell model gives in the enhanced profile (SpellLights.ts); 26.10: none for a debuff's. */
 function spellLightKind(instance: VisualInstance): SpellLightKind | undefined {
@@ -6728,10 +6733,48 @@ export class WorldRenderer3D {
       }
     }
     if (boxes.size !== boxed) dropStaleRows(boxes, PICK_RESULT_STAMP, stamp);
+    this.#publishNamePoints(subject, stamp);
     this.#vehiclePassengers.publishSeats(results);
     this.#publishScalars();
     // 22.10 ARC-2 S4b: a sensor of the renderer's own hands its limiter times to the page's (RendererReports.ts).
     publishRendererBudget(this.#host.frameBudgetProbe, results);
+  }
+
+  /**
+   * 03.11 (6.37): where everything over a head hangs from, Wow.exe's name position (vtable +0x20, 0x0071fef0): the drawn model's
+   * PlayerNameMounted point when mounted, else its PlayerName point, else the place raised by scale × height. Live, off the bone,
+   * so a plate and a mark stay on the model as it moves, and only near the view subject, where the plates and the marks are.
+   */
+  #publishNamePoints(subject: { x: number; y: number; z: number } | undefined, stamp: number): void {
+    const rows = this.#results.unitNames;
+    if (subject !== undefined) {
+      const reach = OVERLAY_OBJECT_RANGE * OVERLAY_OBJECT_RANGE;
+      for (const [guid, unit] of this.#units) {
+        const mount = unit.mount;
+        const mountBone = mount?.skinned && mount.wvm ? boneOf(mount.wvm, mount.skinned, ATTACHMENT_NAME_MOUNTED) : undefined;
+        const bone = mountBone ?? (unit.skinned && unit.wvm ? boneOf(unit.wvm, unit.skinned, ATTACHMENT_NAME) : undefined);
+        if (bone) {
+          const owner = mountBone ? mount! : unit;
+          bone.updateWorldMatrix(true, false);
+          _namePoint.copy(missileAttachmentOffset(owner.wvm!, owner.template!.pivots, mountBone ? ATTACHMENT_NAME_MOUNTED : ATTACHMENT_NAME));
+          _namePoint.applyMatrix4(bone.matrixWorld);
+        } else {
+          unit.node.getWorldPosition(_namePoint);
+          _namePoint.y += unit.height;
+        }
+        const x = _namePoint.x;
+        const y = -_namePoint.z;
+        const dx = x - subject.x;
+        const dy = y - subject.y;
+        if (dx * dx + dy * dy > reach) continue;
+        const row = resultRow(rows, guid, UNIT_NAME_SIZE);
+        row[UNIT_NAME_X] = x;
+        row[UNIT_NAME_Y] = y;
+        row[UNIT_NAME_Z] = _namePoint.y;
+        row[UNIT_NAME_STAMP] = stamp;
+      }
+    }
+    dropStaleRows(rows, UNIT_NAME_STAMP, stamp);
   }
 
   /**
@@ -7040,6 +7083,7 @@ export class WorldRenderer3D {
             endsAt: Number.POSITIVE_INFINITY,
             modelPlayback: "hold",
             ...(effect.transform ? { transform: effect.transform } : {}),
+            ...(effect.modelSequence !== undefined ? { modelSequence: effect.modelSequence } : {}), // 03.11 6.37
           },
           handle: Object.freeze({ id: ++this.#visualSequence }),
           key, node, frame, visual: undefined, built: undefined, wvm: undefined,
@@ -8571,6 +8615,7 @@ export class WorldRenderer3D {
       if (visual.skinned) {
         // 25.10 (6.27): a model with Hold/Decay plays Stand → Hold (aura) or Stand → Decay (one-shot), as Wow.exe's
         // effect callbacks chain them (SpellModelSequence.ts); every other spell model keeps its single clip.
+        this.#holdModelSequence(visual, client); // 03.11 6.37
         if (!this.#sequenceSpellModel(visual, now, client) && !this.#sequenceMissileModel(visual, now, client)) {
           visual.skinned.mixer.update(elapsed);
         }
@@ -8658,6 +8703,29 @@ export class WorldRenderer3D {
   /** A free-standing effect is drawn in model space, so its frame carries the turn into the scene. */
   #faceModelSpace(visual: RenderedVisual): void {
     visual.frame.quaternion.copy(M2_TO_SCENE);
+  }
+
+  /** 03.11 (6.37): a model told which sequence to loop goes on to it as soon as its clip is here. */
+  #holdModelSequence(visual: RenderedVisual, client: EnvironmentClient | undefined): void {
+    const wanted = visual.instance.modelSequence;
+    const template = visual.template;
+    const skinned = visual.skinned;
+    if (wanted === undefined || !template || !skinned) return;
+    if (!template.clips.has(wanted) && !template.merged && client) {
+      const clips = client.animations(visual.instance.path, template.parents.length, "critical");
+      if (clips) {
+        addSkinnedClips(template, clips);
+        template.merged = true;
+      }
+    }
+    const clip = template.clips.get(wanted);
+    if (!clip || visual.action?.getClip() === clip) return;
+    visual.action?.stop();
+    const action = skinned.mixer.clipAction(clip);
+    action.reset();
+    action.setLoop(THREE.LoopRepeat, Infinity);
+    action.play();
+    visual.action = action;
   }
 
   /**
@@ -18498,6 +18566,8 @@ const EMPTY_EFFECTS: ModelEffects = {
 const IDENTITY_MATRIX = new THREE.Matrix4();
 /** One lasting mark an aura leaves on a unit. */
 export interface StateVisual {
+  /** 03.11 (6.37): the sequence it loops, for a model that is not a spell's. */
+  modelSequence?: number;
   spellId: number;
   path: string;
   attachment: number;

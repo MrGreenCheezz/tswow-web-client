@@ -154,20 +154,6 @@ export function requestQuestObjectiveMetadata(list: readonly QuestLogEntryView[]
   }
 }
 
-/**
- * The mark over a head. The core sends a status per guid; these are the ones that mean "there is
- * something here for you", and the rest draw nothing.
- */
-export function questMarkFor(guid: bigint): string | undefined {
-  const status = game.world?.questGiverStatus.get(guid);
-  if (status === undefined) return undefined;
-  if (status === QUEST_STATUS_REWARD || status === QUEST_STATUS_REWARD2 || status === QUEST_STATUS_REWARD_REP
-    || status === QUEST_STATUS_LOW_LEVEL_REWARD_REP) return "?";
-  if (status === QUEST_STATUS_AVAILABLE || status === QUEST_STATUS_AVAILABLE_REP
-    || status === QUEST_STATUS_LOW_LEVEL_AVAILABLE || status === QUEST_STATUS_LOW_LEVEL_AVAILABLE_REP) return "!";
-  return undefined;
-}
-
 /** Forgets what was tracked, for a character that is no longer the one being played. */
 export function clearQuestLog(): void {
   stopStoreBinding?.();

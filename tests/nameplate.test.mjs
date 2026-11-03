@@ -1,36 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {
-  PLATE_NAME_HEIGHT, PLATE_RANGE, PLATE_TARGET_SCALE, RANK_BOSS, RANK_ELITE, RANK_NORMAL, RANK_RARE,
-  drawLootBag, drawPlate, drawRaidMark, plateColour, plateLayout, plateLevelText, plateRankMark,
-  plateVisible, stackPlates,
-} from "../dist/code/browser/NamePlate.js";
+import { RANK_NORMAL, plateColour } from "../dist/code/browser/NamePlate.js";
 import {
   SELECTION_RING_RELIEF, SELECTION_RING_SEGMENTS, buildSelectionRingGeometry, buildWorldCamera,
   updateSelectionRing,
 } from "../dist/code/browser/WorldRenderer3D.js";
 import { HORIZON_RANGE, HORIZON_FAR_PLANE } from "../dist/code/browser/Horizon.js";
 import { REACTION_FRIENDLY, REACTION_HOSTILE, REACTION_NEUTRAL } from "../dist/code/world/FactionRules.js";
-import { RAID_MARKS } from "../dist/code/browser/ui/UnitSnapshot.js";
 import { UPDATE_FIELDS } from "../dist/code/generated/updateFields.js";
-
-/** Records everything a plate asks a 2D context to do, so a drawing can be asserted about. */
-function recordingContext() {
-  const calls = [];
-  const state = {
-    fillStyle: "", strokeStyle: "", lineWidth: 0, font: "", textAlign: "", textBaseline: "",
-    measureText: (text) => ({ width: [...String(text)].length * 6 }),
-  };
-  const record = (name) => (...args) => {
-    calls.push({ name, args, fillStyle: state.fillStyle, strokeStyle: state.strokeStyle, lineWidth: state.lineWidth,
-      textAlign: state.textAlign });
-  };
-  const context = new Proxy(state, {
-    get: (target, property) => property in target ? target[property] : record(property),
-    set: (target, property, value) => { target[property] = value; return true; },
-  });
-  return { context, calls };
-}
 
 const plate = (overrides = {}) => ({
   guid: 7n,
@@ -40,191 +17,10 @@ const plate = (overrides = {}) => ({
   classColour: undefined,
   health: 0.5,
   raidMark: undefined,
-  questMark: undefined,
   rank: RANK_NORMAL,
   cast: undefined,
   target: false,
-  lootable: false,
-  tappedByOther: false,
   ...overrides,
-});
-
-test("a long name and cast stay inside their plate and leave the level readable", () => {
-  for (const target of [false, true]) {
-    const data = plate({ name: "Очень длинное имя редкого стража Северного королевства", level: 83,
-      rank: RANK_ELITE, target,
-      cast: { name: "Необычайно длинное название применяемого заклинания", progress: 0.4, channel: false } });
-    const box = plateLayout(data, 400, 300);
-    const { context, calls } = recordingContext();
-    drawPlate(context, box, data);
-    const texts = calls.filter((call) => call.name === "fillText");
-    const name = texts[0];
-    const level = texts.find((call) => call.args[0] === "83+");
-    const nameRight = name.args[1] + context.measureText(name.args[0]).width;
-    const levelLeft = level.args[1] - context.measureText(level.args[0]).width;
-    assert.ok(nameRight + 4 <= levelLeft, `name ends at ${nameRight}, level starts at ${levelLeft}`);
-    assert.ok(name.args[0].endsWith("…"), "the visible name signals its truncation");
-    const cast = texts.find((call) => call.args[0].startsWith("Необычайно"));
-    assert.ok(context.measureText(cast.args[0]).width <= box.width - 4, "cast text stays within its bar");
-  }
-});
-
-test("plates report known health, and never invent a percentage for unknown health", () => {
-  const written = (overrides) => {
-    const data = plate(overrides);
-    const { context, calls } = recordingContext();
-    drawPlate(context, plateLayout(data, 400, 300), data);
-    return calls.filter((call) => call.name === "fillText").map((call) => call.args[0]);
-  };
-  assert.ok(written({ health: 0.37 }).includes("37%"));
-  assert.ok(written({ health: 0.37, healthCurrent: 370, healthMax: 1000, target: true })
-    .includes("370 / 1000 · 37%"));
-  assert.ok(!written({ health: undefined }).some((text) => text.includes("%")));
-  assert.ok(!written({ health: 0, lootable: true }).some((text) => text.includes("%")));
-});
-
-test("the two plate switches are read separately, and the target answers to neither", () => {
-  const filter = { hostile: true, friendly: false };
-  assert.equal(plateVisible({ reaction: REACTION_HOSTILE, target: false }, 10, filter), true);
-  assert.equal(plateVisible({ reaction: REACTION_FRIENDLY, target: false }, 10, filter), false);
-  // Neutral is drawn by the enemy switch: a critter and a quest mob before it notices you are
-  // both neutral, and both are things the player is about to hit.
-  assert.equal(plateVisible({ reaction: REACTION_NEUTRAL, target: false }, 10, filter), true);
-  assert.equal(plateVisible({ reaction: REACTION_HOSTILE, target: false }, PLATE_RANGE + 1, filter), false);
-  // The ring under the target is drawn at any distance, so its plate has to be too.
-  assert.equal(plateVisible({ reaction: REACTION_FRIENDLY, target: true }, 90, { hostile: false, friendly: false }), true);
-});
-
-test("a plate is coloured by reaction first and by class only for a friend", () => {
-  assert.equal(plateColour({ reaction: REACTION_HOSTILE, classColour: "#9482c9" }), "#c5423d");
-  assert.equal(plateColour({ reaction: REACTION_FRIENDLY, classColour: "#9482c9" }), "#9482c9");
-  assert.equal(plateColour({ reaction: REACTION_FRIENDLY, classColour: undefined }), "#3fae5a");
-  assert.equal(plateColour({ reaction: REACTION_NEUTRAL, classColour: "#9482c9" }), "#d8bb3f");
-  assert.equal(plateColour({ reaction: undefined, classColour: undefined }), "#d8bb3f");
-});
-
-test("the level is what the original client would have written there", () => {
-  assert.equal(plateLevelText(12, RANK_NORMAL), "12");
-  assert.equal(plateLevelText(12, RANK_ELITE), "12+");
-  assert.equal(plateLevelText(83, RANK_BOSS), "??", "a world boss has no useful number");
-  assert.equal(plateLevelText(undefined, RANK_NORMAL), "");
-  assert.equal(plateRankMark(RANK_RARE), "★");
-  assert.equal(plateRankMark(RANK_NORMAL), "");
-});
-
-test("two units on one spot get two plates instead of one bar at some third value", () => {
-  const near = { box: plateLayout(plate(), 400, 300), depth: 10 };
-  const far = { box: plateLayout(plate(), 400, 300), depth: 25 };
-  const nearY = near.box.y;
-  stackPlates([near, far]);
-  assert.equal(near.box.y, nearY, "the nearer plate is the one the player is looking at");
-  assert.ok(far.box.y + far.box.height <= near.box.y, `the further plate was pushed clear: ${far.box.y}`);
-});
-
-test("plates that do not overlap are left where they were", () => {
-  const left = { box: plateLayout(plate(), 100, 300), depth: 10 };
-  const right = { box: plateLayout(plate(), 400, 300), depth: 25 };
-  const before = right.box.y;
-  stackPlates([left, right]);
-  assert.equal(right.box.y, before);
-});
-
-test("a stack of three ends up as three separate plates", () => {
-  const plates = [10, 12, 14].map((depth) => ({ box: plateLayout(plate(), 400, 300), depth }));
-  stackPlates(plates);
-  const boxes = plates.map((entry) => entry.box).sort((a, b) => a.y - b.y);
-  for (let index = 1; index < boxes.length; index++) {
-    assert.ok(boxes[index - 1].y + boxes[index - 1].height <= boxes[index].y,
-      "every pair is clear of the one below it");
-  }
-});
-
-test("the target's plate is drawn larger and framed in gold", () => {
-  const ordinary = plateLayout(plate(), 400, 300);
-  const targeted = plateLayout(plate({ target: true }), 400, 300);
-  assert.ok(Math.abs(targeted.width / ordinary.width - PLATE_TARGET_SCALE) < 1e-9);
-  // The frame is one strokeRect either way, so counting them says nothing: what marks the target
-  // is the colour it is stroked in.
-  const frameOf = (data) => {
-    const { context, calls } = recordingContext();
-    drawPlate(context, plateLayout(data, 400, 300), data);
-    return calls.find((call) => call.name === "strokeRect").strokeStyle;
-  };
-  assert.equal(frameOf(plate({ target: true })), "#ffe36e");
-  assert.notEqual(frameOf(plate()), "#ffe36e");
-});
-
-test("a cast bar appears over a head only while something is being cast", () => {
-  const quiet = recordingContext();
-  drawPlate(quiet.context, plateLayout(plate(), 400, 300), plate());
-  const casting = recordingContext();
-  const data = plate({ cast: { name: "Огненный шар", progress: 0.4, channel: false } });
-  drawPlate(casting.context, plateLayout(data, 400, 300), data);
-  assert.ok(casting.calls.filter((call) => call.name === "fillRect").length
-    > quiet.calls.filter((call) => call.name === "fillRect").length);
-  assert.ok(casting.calls.some((call) => call.name === "fillText" && call.args[0] === "Огненный шар"));
-  // The bar has room for the cast: the plate grew by exactly the cast row.
-  assert.ok(plateLayout(data, 400, 300).height > plateLayout(plate(), 400, 300).height);
-});
-
-test("the plate's cast bar shows the fraction it is handed, and does not invert it again", () => {
-  // `WorldClient.castProgress` already returns the fill and not the elapsed share: for a channel
-  // the two are opposite numbers, and it has turned it round. Inverting it a second time here made
-  // the plate's bar run backwards against the target frame's bar for the very same spell.
-  const barOf = (cast) => {
-    const { context, calls } = recordingContext();
-    const data = plate({ cast });
-    drawPlate(context, plateLayout(data, 400, 300), data);
-    const fills = calls.filter((call) => call.name === "fillRect");
-    return fills[fills.length - 1].args[2] / (plateLayout(data, 400, 300).width - 2);
-  };
-  assert.ok(Math.abs(barOf({ name: "Огненный шар", progress: 0.25, channel: false }) - 0.25) < 1e-6);
-  assert.ok(Math.abs(barOf({ name: "Иссушение", progress: 0.25, channel: true }) - 0.25) < 1e-6);
-  // The flag still decides the colour, which is the one thing that has to tell them apart.
-  const colourOf = (channel) => {
-    const { context, calls } = recordingContext();
-    const data = plate({ cast: { name: "Тест", progress: 0.5, channel } });
-    drawPlate(context, plateLayout(data, 400, 300), data);
-    const fills = calls.filter((call) => call.name === "fillRect");
-    return fills[fills.length - 1].fillStyle;
-  };
-  assert.notEqual(colourOf(true), colourOf(false));
-});
-
-test("all eight raid marks draw, and a ninth draws nothing", () => {
-  for (let icon = 0; icon < 8; icon++) {
-    const { context, calls } = recordingContext();
-    drawRaidMark(context, icon, 100, 100, 16);
-    assert.ok(calls.some((call) => call.name === "fill"), `mark ${icon} filled nothing`);
-    assert.equal(calls.filter((call) => call.name === "save").length, 1);
-    assert.equal(calls.filter((call) => call.name === "restore").length, 1, `mark ${icon} left the context transformed`);
-  }
-  const { context, calls } = recordingContext();
-  drawRaidMark(context, 8, 100, 100, 16);
-  assert.equal(calls.length, 0);
-});
-
-test("the crescent and the skull are cut out rather than painted over", () => {
-  for (const icon of [4, 7]) {
-    const { context, calls } = recordingContext();
-    drawRaidMark(context, icon, 100, 100, 16);
-    const fill = calls.find((call) => call.name === "fill");
-    assert.equal(fill.args[0], "evenodd", `mark ${icon} would be a solid disc under the non-zero rule`);
-  }
-});
-
-test("the raid mark glyphs are in the order the server numbers them", () => {
-  assert.equal(RAID_MARKS.length, 8);
-  assert.equal(RAID_MARKS[6], "✖", "slot 6 is the cross");
-  assert.equal(RAID_MARKS[7], "☠", "slot 7 is the skull, and it used to be a second cross");
-});
-
-test("a plate over a nameless unit still draws its bar", () => {
-  const { context, calls } = recordingContext();
-  const data = plate({ name: "", health: undefined });
-  drawPlate(context, plateLayout(data, 400, 300), data);
-  assert.ok(calls.some((call) => call.name === "fillRect"), "the empty track is drawn");
-  assert.equal(calls.filter((call) => call.name === "fillRect").length, 1, "and nothing is filled into it");
 });
 
 test("the selection ring follows the slope it is standing on", () => {
@@ -402,113 +198,9 @@ test("a corpse can be clicked, and the box is where the corpse is", async () => 
   assert.equal(scene.pick(feet.x, feet.y - 60), undefined);
 });
 
-test("Л1 the corpse's plate is drawn on its body and takes no click off a neighbour", async () => {
-  // The review's blocker, and the only test in the repository that builds a *dead* unit which
-  // `plateFor` answers about — without one, `SimpleScene`'s whole share of this slice could be
-  // reverted with every test still green.
-  //
-  // A lootable body at (15, 0) and a live mob one yard behind it at (15, 1), both fifteen yards
-  // from the camera: a camp with a respawn, and the ordinary shape of the bug. The corpse's plate
-  // hangs over the middle of its own lying body, which at that range is exactly the height of the
-  // standing mob's chest, and it is 104 px wide against the mob's 22.5 px hit box — so a plate box
-  // pushed into the hit list after every body took the click off the mob for a third of its height.
-  const { createCamera, projectPoint } = await import("../dist/code/browser/SimpleScene.js");
-  const player = worldUnit(1n, 4, 0, 100);
-  const corpse = worldUnit(2n, 3, 15, 0);
-  const living = worldUnit(3n, 3, 15, 60, 1);
-  const objects = new Map([[1n, player], [2n, corpse], [3n, living]]);
-  const { scene, calls } = await overlayDraw(objects, (object) => (object.guid === 2n
-    ? plate({ guid: 2n, name: "Труп", lootable: true, health: 0 })
-    : plate({ guid: 3n, name: "Живой" })));
-
-  const camera = createCamera(player.position, 0, undefined, undefined);
-  const feet = projectPoint({ x: 15, y: 0, z: 0 }, camera, 1280, 720);
-  const top = projectPoint({ x: 15, y: 0, z: 2 }, camera, 1280, 720);
-  assert.ok(feet && top);
-
-  // 1. The plate reached the screen, and it is anchored on the middle of the body rather than on
-  //    `top` — the feet plus a standing height, which for a body lying down is empty air.
-  const expected = plateLayout(plate({ lootable: true }), feet.x,
-    feet.y - Math.max(14, Math.max(4, feet.y - top.y) * 0.45) / 2);
-  const nameCall = calls.find((call) => call.name === "fillText" && call.args[0] === "Труп");
-  assert.ok(nameCall, "no plate was painted over the lootable body");
-  assert.equal(nameCall.args[1], expected.x);
-  assert.equal(nameCall.args[2], expected.y + PLATE_NAME_HEIGHT - 3, "the name sits on its own row");
-  assert.ok(expected.y > top.y, `${expected.y} has to be below the standing crown at ${top.y}`);
-
-  // 2. And it is not a click target. Straight down the middle of the living mob, through the band
-  //    the corpse's plate covers, every click is the mob's.
-  const mobFeet = projectPoint({ x: 15, y: 1, z: 0 }, camera, 1280, 720);
-  for (let y = Math.ceil(expected.y); y <= Math.floor(expected.y + expected.height); y++) {
-    assert.equal(scene.pick(mobFeet.x, y), 3n, `the corpse plate stole the click at y ${y}`);
-  }
-
-  // 3. The body itself is still reachable, which is what makes 2 affordable: the corpse is clicked
-  //    on the corpse, not on the label over it.
-  assert.equal(scene.pick(feet.x, feet.y), 2n);
-  assert.equal(scene.pick(feet.x, feet.y + 6), 2n);
-});
-
 // ---------------------------------------------------------------------------
-// Л1. The corpse plate.
+// What each plate says.
 // ---------------------------------------------------------------------------
-
-test("Л1 someone else's kill is grey before it is anything else", () => {
-  // TAPPED without TAPPED_BY_PLAYER, which is the pair the core writes per viewer. It answers
-  // «not yours», and that answer outranks the reaction — which is the original client's order:
-  // `TargetFrame_CheckFaction` greys on the tap test alone and reaches `UnitSelectionColor` only in
-  // the `else` (`Interface/FrameXML/TargetFrame.lua:261-272`). The reference client reads the same
-  // two bits *inside* its hostile branch (`wowee/src/ui/game_screen_hud.cpp:1024-1030`), so the
-  // friendly line below is where the two part company and this client follows the original:
-  // `hasLootRecipient()` sets TAPPED whatever the faction (`Unit.cpp:14747-14749`).
-  assert.equal(plateColour({ reaction: REACTION_HOSTILE, classColour: undefined, tappedByOther: true }), "#8d9298");
-  assert.equal(plateColour({ reaction: REACTION_FRIENDLY, classColour: "#9482c9", tappedByOther: true }), "#8d9298");
-  // And a plate with the flag absent altogether is exactly the plate it was before the flag.
-  assert.equal(plateColour({ reaction: REACTION_HOSTILE, classColour: undefined }), "#c5423d");
-  assert.equal(plateColour({ reaction: REACTION_HOSTILE, classColour: undefined, tappedByOther: false }), "#c5423d");
-
-  const barOf = (tappedByOther) => {
-    const data = plate({ tappedByOther });
-    const { context, calls } = recordingContext();
-    drawPlate(context, plateLayout(data, 400, 300), data);
-    return calls.filter((call) => call.name === "fillRect")[1].fillStyle;
-  };
-  assert.equal(barOf(true), "#8d9298");
-  assert.equal(barOf(false), "#c5423d");
-});
-
-test("Л1 a lootable corpse gets the short plate: a name, a bag, and no bar at all", () => {
-  const corpse = plate({ lootable: true, health: 0 });
-  const box = plateLayout(corpse, 400, 300);
-  const living = plateLayout(plate(), 400, 300);
-  assert.equal(box.height, PLATE_NAME_HEIGHT, "the box is the name row and nothing under it");
-  assert.ok(box.height < living.height, `${box.height} has to be shorter than ${living.height}`);
-
-  const { context, calls } = recordingContext();
-  drawPlate(context, box, corpse);
-  // No track, no fill, no frame. A dead unit's health is zero, so the bar would be an empty strip
-  // repeated over every body in a cleared camp — which is what the old plate would have drawn had
-  // corpses not been dropped outright before they reached here.
-  assert.equal(calls.filter((call) => call.name === "fillRect").length, 0);
-  assert.equal(calls.filter((call) => call.name === "strokeRect").length, 0);
-  // The name is still written, and the level is not: the number answers «can I take this one»,
-  // and that question is over.
-  const written = calls.filter((call) => call.name === "fillText").map((call) => call.args[0]);
-  assert.deepEqual(written, ["Гоблин-механик"]);
-  // And the bag is drawn where the level stood.
-  assert.ok(calls.some((call) => call.name === "fill"), "the bag paints something");
-  assert.equal(calls.filter((call) => call.name === "save").length, 1);
-  assert.equal(calls.filter((call) => call.name === "restore").length, 1, "and leaves the context as it found it");
-});
-
-test("Л1 the bag is a path, and it puts the context back", () => {
-  const { context, calls } = recordingContext();
-  drawLootBag(context, 100, 100, 14);
-  assert.ok(calls.some((call) => call.name === "fill"));
-  assert.ok(calls.some((call) => call.name === "stroke"));
-  assert.equal(calls.filter((call) => call.name === "save").length, 1);
-  assert.equal(calls.filter((call) => call.name === "restore").length, 1);
-});
 
 /**
  * `plateSource` reaches into `game`, the settings and the quest log, so it is exercised over the
@@ -566,6 +258,8 @@ function stubBrowser() {
 stubBrowser();
 const { game } = await import("../dist/code/browser/game/Context.js");
 const { plateSource } = await import("../dist/code/browser/ui/NamePlates.js");
+const { setSetting } = await import("../dist/code/browser/ui/Settings.js");
+setSetting("plateFriends", true); // a friendly faction's plate is what these ask about; the switch itself is plateVisible's
 
 /** One unit as `plateSource` reads it: health, max health and the dynamic flags. */
 function plateUnit(guid, { typeId = 3, health = 100, dynamicFlags = 0 } = {}) {
@@ -589,56 +283,11 @@ function plateWorld() {
     casts: new Map(),
     names: new Map(),
     questGiverStatus: new Map(),
-    castProgress: () => 0,
+    castProgress: () => 0.25,
+    threat: new Map(),
+    creatureTemplates: new Map(),
   };
 }
-
-test("Л1 a lootable corpse keeps a plate; a spent one does not, and neither does the player", () => {
-  const previous = game.world;
-  try {
-    game.world = plateWorld();
-    const source = plateSource(0);
-    // Every corpse used to be refused on the same line as the player's own body, so a cleared camp
-    // looked identical whether the loot had been taken or not.
-    const withLoot = source(plateUnit(2n, { health: 0, dynamicFlags: 0x01 }), 10);
-    assert.ok(withLoot, "a body the server still marks lootable carries a plate");
-    assert.equal(withLoot.lootable, true);
-    assert.equal(withLoot.health, 0);
-    assert.equal(plateLayout(withLoot, 400, 300).height, PLATE_NAME_HEIGHT);
-
-    assert.equal(source(plateUnit(3n, { health: 0, dynamicFlags: 0 }), 10), undefined,
-      "a body with nothing left on it is nothing to draw");
-    assert.equal(source(plateUnit(1n, { health: 100 }), 10), undefined, "and never one's own body");
-
-    // The bit and only the bit: 0x04 is TAPPED, which every kill carries, and it is not loot.
-    assert.equal(source(plateUnit(4n, { health: 0, dynamicFlags: 0x04 }), 10), undefined);
-
-    // The two plate switches do not reach a body. They are a rule about a crowd of names in a
-    // city; the corpse in front of the player is the only sign the kill left.
-    const far = source(plateUnit(5n, { health: 0, dynamicFlags: 0x01 }), PLATE_RANGE + 1);
-    assert.equal(far, undefined, "though the plate's own forty-yard limit still applies");
-    assert.ok(source(plateUnit(6n, { health: 0, dynamicFlags: 0x01 }), PLATE_RANGE - 1));
-  } finally {
-    game.world = previous;
-  }
-});
-
-test("Л1 the tap pair reaches the plate from the field rather than being guessed at", () => {
-  const previous = game.world;
-  try {
-    game.world = plateWorld();
-    const source = plateSource(0);
-    const tapped = source(plateUnit(2n, { health: 60, dynamicFlags: 0x04 }), 10);
-    assert.equal(tapped.tappedByOther, true);
-    assert.equal(tapped.healthCurrent, 60, "numeric health comes from the same actual server fields as the bar");
-    assert.equal(tapped.healthMax, 100);
-    assert.equal(source(plateUnit(3n, { health: 60, dynamicFlags: 0x0c }), 10).tappedByOther, false,
-      "TAPPED_BY_PLAYER is the half that says the kill is the viewer's own");
-    assert.equal(source(plateUnit(4n, { health: 60, dynamicFlags: 0 }), 10).tappedByOther, false);
-  } finally {
-    game.world = previous;
-  }
-});
 
 /*
  * 5.05 (12.10, owner: «да»): Wow.exe paints a name plate (0x0098ee30) and the selection colour (0x00521bf0) by the
@@ -659,7 +308,7 @@ function reactionWorld({ forced = new Map(), rows = new Map() } = {}) {
   world.state.objects.set(1n, self);
   world.forcedReactions = forced;
   world.factions = rows;
-  world.targetGuid = 2n; // the target keeps its plate whatever the switches say
+  world.targetGuid = 2n;
   return world;
 }
 
@@ -696,14 +345,14 @@ test("5.05 (12.10): the plate and the ring take the unit's view of the player; t
     const data = plateSource(0)(unit, 10);
     assert.equal(data.reaction, REACTION_NEUTRAL, "the player's view decides which switch shows it");
     assert.equal(data.colourReaction, REACTION_HOSTILE, "0x0098ee30: 0x007251c0(unit, player) < 2");
-    assert.equal(plateColour(data), "#c5423d", "red (was yellow: the player's view)");
+    assert.equal(plateColour(data), "#ff0000", "red (was yellow: the player's view)");
     assert.equal(selectionRingColour(unit), 0xdb4b45, "0x00521bf0: red (was yellow)");
   });
 });
 
 test("5.05 (12.10): a reputation faction's plate is the player's rank with it; a forced rank wins", () => {
   // Booty Bay: base 500 for every race (Faction.dbc), plus the wire's standing.
-  for (const [standing, colour, ring] of [[0, "#d8bb3f", 0xe0c341], [-42_000, "#c5423d", 0xdb4b45], [9000, "#3fae5a", 0x4fd06a]]) {
+  for (const [standing, colour, ring] of [[0, "#ffff00", 0xe0c341], [-42_000, "#ff0000", 0xdb4b45], [9000, "#00ff00", 0x4fd06a]]) {
     // At war or not is the player's view (CanAttack): it does not paint the plate.
     withReactions(reactionWorld({ rows: new Map([[1, { listId: 1, flags: 0x2, standing }]]) }), () => {
       const unit = targetUnit(120);
@@ -714,7 +363,7 @@ test("5.05 (12.10): a reputation faction's plate is the player's rank with it; a
   }
   withReactions(reactionWorld({ forced: new Map([[21, 4]]), rows: new Map([[1, { listId: 1, flags: 0, standing: -42_000 }]]) }), () => {
     const unit = targetUnit(120);
-    assert.equal(plateColour(plateSource(0)(unit, 10)), "#3fae5a", "a forced Friendly over a Hated rank");
+    assert.equal(plateColour(plateSource(0)(unit, 10)), "#00ff00", "a forced Friendly over a Hated rank");
     assert.equal(selectionRingColour(unit), 0x4fd06a);
   });
 });
@@ -727,11 +376,90 @@ test("5.05 (12.10): a CONTESTED_GUARD template paints a contested player's plate
   try {
     withReactions(world, () => {
       const bruiser = targetUnit(121);
-      assert.equal(plateColour(plateSource(0)(bruiser, 10)), "#c5423d", "0x0071f770: CONTESTED_GUARD first");
+      assert.equal(plateColour(plateSource(0)(bruiser, 10)), "#ff0000", "0x0071f770: CONTESTED_GUARD first");
       assert.equal(selectionRingColour(bruiser), 0xdb4b45);
-      assert.equal(plateColour(plateSource(0)(targetUnit(120), 10)), "#3fae5a", "Krazek's template has no such flag");
+      assert.equal(plateColour(plateSource(0)(targetUnit(120), 10)), "#00ff00", "Krazek's template has no such flag");
     });
   } finally {
     FACTIONS.templateFlagsOf = previous;
   }
+});
+
+// 03.11 (6.37): what a plate is told, as the client decides it (0x0072b060, 0x0098ef10).
+const LEVEL = UPDATE_FIELDS.UNIT_FIELD_LEVEL.offset;
+
+test("the dead have no plate, loot or no loot, and neither has the player", () => {
+  withReactions(reactionWorld(), () => {
+    const source = plateSource(0);
+    assert.equal(source(plateUnit(3n, { health: 0, dynamicFlags: 1 }), 10), undefined, "a lootable body: its beam says so");
+    assert.equal(source(plateUnit(3n, { health: 0 }), 10), undefined);
+    assert.ok(source(targetUnit(600), 10));
+    assert.equal(source(game.world.state.objects.get(1n), 10), undefined);
+  });
+});
+
+test("only the target's cast reaches its plate, and a target dims the rest", () => {
+  const world = reactionWorld();
+  world.casts.set(2n, { spellId: 133, channel: false });
+  world.casts.set(3n, { spellId: 133, channel: false });
+  withReactions(world, () => {
+    const source = plateSource(0);
+    const target = source(targetUnit(600), 10);
+    assert.equal(target.target, true);
+    assert.equal(target.dimmed, false);
+    assert.equal(target.cast.progress, 0.25);
+    const other = plateUnit(3n);
+    other.fields.set(FACTION_TEMPLATE, 600);
+    const data = source(other, 10);
+    assert.equal(data.cast, undefined, "measured: bar2 stays hidden on a caster that is not the target");
+    assert.equal(data.dimmed, true);
+  });
+  world.targetGuid = undefined;
+  withReactions(world, () => {
+    assert.equal(plateSource(0)(targetUnit(600), 10).dimmed, false, "nothing targeted, nothing dimmed");
+  });
+});
+
+test("the boss comes from the template's type flags, a template can refuse a plate, and the levels are both there", () => {
+  const world = reactionWorld();
+  const unit = targetUnit(600);
+  unit.fields.set(UPDATE_FIELDS.OBJECT_FIELD_ENTRY.offset, 77);
+  unit.fields.set(LEVEL, 83);
+  world.state.objects.get(1n).fields.set(LEVEL, 80);
+  world.creatureTemplates.set(77, { flags: 4 });
+  withReactions(world, () => {
+    const data = plateSource(0)(unit, 10);
+    assert.equal(data.boss, true);
+    assert.equal(data.level, 83);
+    assert.equal(data.playerLevel, 80);
+  });
+  world.creatureTemplates.set(77, { flags: 0x100000 });
+  withReactions(world, () => assert.equal(plateSource(0)(unit, 10), undefined));
+});
+
+test("a plate hangs from the name point raised by two thirds of a yard", async () => {
+  const { createCamera, projectPoint } = await import("../dist/code/browser/SimpleScene.js");
+  const player = worldUnit(1n, 4, 0, 100);
+  const mob = worldUnit(2n, 3, 22, 60);
+  const objects = new Map([[1n, player], [2n, mob]]);
+  const camera = createCamera(player.position, 0, undefined, undefined);
+  // Well off the unit's own head: nothing but the point it was told can put it there.
+  const namePoint = { x: 22, y: 3, z: 6 };
+  const anchor = projectPoint({ ...namePoint, z: namePoint.z + 2 / 3 }, camera, 1280, 720);
+  const scene = await overlayScene(objects, () => plate({ guid: 2n, namePoint }));
+  assert.equal(scene.pick(anchor.x, anchor.y + 5), 2n, "just under the anchor is the plate");
+  assert.equal(scene.pick(anchor.x, anchor.y - 30), undefined, "and past the pick slop over it is not");
+});
+
+test("the target is painted last, over every other plate, and a nearer plate over a further one", async () => {
+  const player = worldUnit(1n, 4, 0, 100);
+  const near = worldUnit(2n, 3, 12, 60);
+  const far = worldUnit(3n, 3, 30, 60);
+  const target = worldUnit(4n, 3, 40, 60);
+  const objects = new Map([[1n, player], [2n, near], [3n, far], [4n, target]]);
+  const { calls } = await overlayDraw(objects, (object) => (object.typeId === 3
+    ? plate({ guid: object.guid, name: `u${object.guid}`, target: object.guid === 4n }) : undefined));
+  const names = calls.filter((call) => call.name === "fillText" && /^u\d/.test(call.args[0])).map((call) => call.args[0]);
+  const order = names.filter((name, index) => names.indexOf(name) === index);
+  assert.deepEqual(order, ["u3", "u2", "u4"]);
 });

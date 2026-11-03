@@ -68,7 +68,7 @@ const {
 const { VEHICLE_SEAT_FLAGS } = await import("../dist/code/world/VehicleSeatModel.js");
 const { UPDATE_FIELDS } = await import("../dist/code/generated/updateFields.js");
 const { SimpleScene, createCamera, projectPoint } = await import("../dist/code/browser/SimpleScene.js");
-const { plateLayout, RANK_NORMAL } = await import("../dist/code/browser/NamePlate.js");
+const { PLATE_NAME_RAISE, plateLayout, RANK_NORMAL } = await import("../dist/code/browser/NamePlate.js");
 const { REACTION_HOSTILE } = await import("../dist/code/world/FactionRules.js");
 const { game, cameraPivotHeight } = await import("../dist/code/browser/game/Context.js");
 const { resetHeadOverlay, showChatBubble, updateHeadOverlay } = await import("../dist/code/browser/ui/HeadOverlay.js");
@@ -362,9 +362,8 @@ function bodyCentre(at) {
 }
 /** The middle of the plate hung over a unit standing at `at`. */
 function plateCentre(guid, at) {
-  const feet = projectPoint(at, camera(), WIDTH, HEIGHT);
-  const top = projectPoint({ ...at, z: at.z + BODY }, camera(), WIDTH, HEIGHT);
-  const box = plateLayout(plateData(guid), feet.x, top.y);
+  const anchor = projectPoint({ ...at, z: at.z + BODY + PLATE_NAME_RAISE }, camera(), WIDTH, HEIGHT);
+  const box = plateLayout(anchor.x, anchor.y, HEIGHT);
   return [box.x + box.width / 2, box.y + box.height / 2];
 }
 
@@ -493,7 +492,7 @@ test("11.02-tails: the selection ring, the canvas overlay, the bubbles and the s
   assert.match(renderer, /#updateSelectionRings[\s\S]{0,400}?drawnUnitPosition\(object, [^)]*\)[^\n]*11\.02-tails/,
     "the target ring is laid round the drawn feet");
   assert.match(scene, /hiddenBySeat\(object\)[^\n]*11\.02-tails/, "no body box for a hidden passenger");
-  assert.match(overlay, /function anchorFor[\s\S]{0,600}?drawnUnitPosition\(object, /, "bubbles and numbers");
+  assert.match(overlay, /function anchorFor[\s\S]{0,900}?drawnUnitPosition\(object, /, "bubbles and numbers");
   assert.match(targeting, /export function inSightFromCamera[\s\S]{0,500}?drawnUnitPosition\(/, "the sight line");
   // 22.10 ARC-2 S3a: the poser's own records, published by guid; the loop accepts them after draw.
   assert.match(pose, /this\.#seatRecords\.begin\(\);/, "every place starts a new frame of records");

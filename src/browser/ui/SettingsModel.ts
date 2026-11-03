@@ -62,6 +62,18 @@ export const SETTING_DEFINITIONS: readonly SettingDefinition[] = [
     hint: "Имя, уровень, здоровье и полоса каста над всем, что можно ударить.",
   },
   {
+    id: "plateCastBars", label: "Полоса каста на табличке цели", group: "Игра", kind: "boolean", fallback: true,
+    hint: "ShowVKeyCastbar: заклинание цели под её табличкой.",
+  },
+  {
+    id: "plateClassColours", label: "Цвет класса на табличках врагов", group: "Игра", kind: "boolean", fallback: false,
+    hint: "ShowClassColorInNameplate: вражеские игроки цветом класса, а не красным.",
+  },
+  {
+    id: "plateOverlap", label: "Таблички могут перекрываться", group: "Игра", kind: "boolean", fallback: true,
+    hint: "nameplateAllowOverlap: без этого таблички расходятся вверх, как в старых версиях.",
+  },
+  {
     id: "plateFriends", label: "Таблички над союзниками", group: "Игра", kind: "boolean", fallback: false,
     hint: "В городе это табличка над каждым стражником и каждым прохожим, поэтому выключено.",
   },

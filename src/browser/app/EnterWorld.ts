@@ -56,7 +56,6 @@ import {
 } from "../ui/ChatDock.js";
 import { recordCombatEntry, resetCombatHistory } from "../ui/CombatHistory.js";
 import { resetHeadOverlay, showChatBubble, showFloatingText } from "../ui/HeadOverlay.js";
-import { notePlateHit } from "../ui/OverlayModel.js";
 import { clearSpellNames } from "../ui/SpellNames.js";
 import { notice, resetNotices } from "../ui/Notices.js";
 import { showPageResourceStatus } from "./ResourceStatusLines.js"; // 22.10 (12.14)
@@ -865,12 +864,6 @@ export async function enterWorld(character: CharacterSummary): Promise<void> {
     if (text.kind === "damage" && text.amount > 0) {
       playCreatureSound(text.guid, text.critical ? "injuryCritical" : "injury");
     }
-  });
-  // The plate's hit-flash rides the same funnel as the numbers and the injury voices, so a flash
-  // and its number are never about different blows. Kind and amount gate inside `notePlateHit`:
-  // heals, power and misses never whiten a health bar.
-  onWorldEvent("FLOATING_TEXT", (text) => {
-    notePlateHit(text.guid, text.kind, text.amount, performance.now());
   });
   onWorldEvent("AI_REACTION", (reaction) => {
     // 2 is `AI_REACTION_HOSTILE`, the moment a creature decides it has seen you.

@@ -118,7 +118,7 @@ const { getTip } = await import("../dist/code/browser/ui/Widgets.js");
 const { resetHeadOverlay, showChatBubble, updateHeadOverlay } =
   await import("../dist/code/browser/ui/HeadOverlay.js");
 const { createCamera, projectPoint } = await import("../dist/code/browser/SimpleScene.js");
-const { plateLayout } = await import("../dist/code/browser/NamePlate.js");
+const { PLATE_NAME_RAISE } = await import("../dist/code/browser/NamePlate.js");
 
 function unit(guid, { typeId = 3, x = 0, y = 0, health = 100, dynamicFlags = 0, entry = 0 } = {}) {
   const fields = new Map([
@@ -250,9 +250,8 @@ test("Л1 a creature that speaks as it dies keeps the bubble, brought down onto 
     assert.ok(standing && lying);
 
     const alive = bubbleY();
-    const tallestPlate = plateLayout({ target: true, cast: {} }, standing.x, standing.y);
-    const raidMarkTop = tallestPlate.y - 18 * tallestPlate.scale;
-    assert.ok(alive < raidMarkTop, "the bubble clears the readable name/health/cast rows and raid mark");
+    const plateTop = projectPoint({ x: 12, y: 0, z: 2 + PLATE_NAME_RAISE }, camera, 1280, 720);
+    assert.ok(alive < plateTop.y, "the bubble clears the plate, which hangs from two thirds of a yard over the head");
 
     speaker.fields.set(UPDATE_FIELDS.UNIT_FIELD_HEALTH.offset, 0);
     const dead = bubbleY();

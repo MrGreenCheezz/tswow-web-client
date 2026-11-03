@@ -70,6 +70,10 @@ const FRAME_XML_SETTINGS_CVAR_ROWS: FrameXmlSettingsCVarDefinition[] = [
   { cvar: "enableCombatText", setting: "floatingCombatText", kind: "boolean" },
   { cvar: "nameplateShowEnemies", setting: "plateEnemies", kind: "boolean" },
   { cvar: "nameplateShowFriends", setting: "plateFriends", kind: "boolean" },
+  // 03.11 (6.37): what the plate reads (NamePlate.ts), with the client's own defaults (0x0051ecd4, 0x0051f205).
+  { cvar: "ShowVKeyCastbar", setting: "plateCastBars", kind: "boolean" },
+  { cvar: "ShowClassColorInNameplate", setting: "plateClassColours", kind: "boolean" },
+  { cvar: "nameplateAllowOverlap", setting: "plateOverlap", kind: "boolean" },
   { cvar: "ffxGlow", setting: "fullscreenGlow", kind: "boolean" },
   // The loot model's own switch (FrameXmlLootHost.ts) and stock LootFrame_Show's placement.
   { cvar: "autoLootDefault", setting: "autoLoot", kind: "boolean" },

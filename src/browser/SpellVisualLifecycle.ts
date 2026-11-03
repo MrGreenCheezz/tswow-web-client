@@ -19,6 +19,7 @@ import {
 import type {
   SpellVisualEffectTransform, SpellVisualKitRecord, SpellVisualMetadata,
 } from "../gateway/SpellVisual.js";
+import { QUEST_MARK_ATTACHMENT, QUEST_MARK_SEQUENCE } from "./ui/QuestMarks.js"; // 03.11 6.37
 import { DynamicObjectAreas } from "./DynamicObjectVisual.js"; // 05.10-A7a-G2 6.05б
 import { allocateRenderId } from "./RenderCommandIds.js"; // 22.10 ARC-2 S4a
 import {
@@ -34,6 +35,8 @@ export interface StateVisualDescriptor {
   /** Stable authored occurrence for duplicate model-attach rows; never an array position. */
   occurrence?: string;
   transform?: SpellVisualEffectTransform;
+  /** 03.11 (6.37): the sequence it loops, for a model that is not a spell's. */
+  modelSequence?: number;
 }
 
 /**
@@ -396,6 +399,7 @@ export class SpellVisualCoordinator {
   #stateDirty = new Set<bigint>();
   /** Whether the renderer is owed a `setStateVisuals`: the old per-packet call, coalesced. */
   #stateVisualsDue = false;
+  #questMarks: ReadonlyMap<bigint, string> = new Map(); // 03.11 6.37
   #lastRenderer: SpellVisualLifecycleRenderer | undefined;
   /** 05.10-A7a-G2 6.05б: the areas of DynamicObjects no seen cast draws (DynamicObjectVisual.ts). */
   readonly #areas = new DynamicObjectAreas({
@@ -1256,7 +1260,19 @@ export class SpellVisualCoordinator {
       if (effects) byUnit.set(guid, effects);
     }
     this.#stateDirty.clear();
+    // 03.11 (6.37): a quest giver's mark is one more model on the unit for as long as the status lasts (ui/QuestMarks.ts).
+    for (const [guid, path] of this.#questMarks) {
+      const mark: StateVisualDescriptor = { spellId: 0, path, attachment: QUEST_MARK_ATTACHMENT, scale: 1, occurrence: "questmark", modelSequence: QUEST_MARK_SEQUENCE };
+      const effects = byUnit.get(guid);
+      byUnit.set(guid, effects ? [...effects, mark] : [mark]);
+    }
     renderer.setStateVisuals(byUnit);
+  }
+
+  /** 03.11 (6.37): the quest marks now, by unit; the next tick hands them over with the rest of the persistent picture. */
+  setQuestMarks(marks: ReadonlyMap<bigint, string>): void {
+    this.#questMarks = marks;
+    this.#stateVisualsDue = true;
   }
 
   /** One unit's persistent state effects, in slot order; undefined when it shows none. */

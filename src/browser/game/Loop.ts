@@ -62,7 +62,8 @@ import { currentAreaId, updateMinimap } from "../ui/Minimap.js";
 import { updateLiveAreaLocator } from "../AreaLocatorLive.js"; // 05.10-A7b-4
 import { updateWorldMap } from "../ui/WorldMap.js";
 import { updateHeadOverlay } from "../ui/HeadOverlay.js";
-import { plateSource, selectionRingColour } from "../ui/NamePlates.js";
+import { plateArt, plateSource, selectionRingColour } from "../ui/NamePlates.js";
+import { syncQuestMarks } from "../ui/QuestMarksLive.js"; // 03.11 6.37
 import { updateCombatLog } from "../ui/CombatLog.js";
 import { updateLootRolls } from "../ui/LootRolls.js";
 import { updateReadyCheck } from "../ui/ReadyCheck.js";
@@ -830,7 +831,10 @@ function frame(now: number): void {
       game.camera.distance,
       cameraPivotHeight(),
       game.renderer ? loopGameObjectCorners : undefined, // 06.10-7.24
+      plateArt, // 03.11 6.37
+      settingOn("plateOverlap"), // 03.11 6.37
     );
+    syncQuestMarks(); // 03.11 6.37
     hitchScene = performance.now();
     // After both draw passes on purpose: the bubbles and the damage numbers are anchored with the
     // same camera those two used, and the physics step above has already replaced the position

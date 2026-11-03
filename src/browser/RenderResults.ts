@@ -26,6 +26,13 @@ export const UNIT_RESULT_EYE = 2;
 export const UNIT_RESULT_STAMP = 3;
 export const UNIT_RESULT_SIZE = 4;
 
+/** 03.11 (6.37): a unit's name point (Wow.exe 0x0071fef0) in server coordinates, as drawn this frame; then the fill's stamp. */
+export const UNIT_NAME_X = 0;
+export const UNIT_NAME_Y = 1;
+export const UNIT_NAME_Z = 2;
+export const UNIT_NAME_STAMP = 3;
+export const UNIT_NAME_SIZE = 4;
+
 /** A game object row: its model box's eight world corners (x, y, z each), then the fill's stamp. */
 export const PICK_CORNER_VALUES = 24;
 export const PICK_RESULT_STAMP = 24;
@@ -61,6 +68,8 @@ export interface RenderResults {
   frame: number;
   /** Every unit the renderer holds (drawn this frame or kept in range), by guid. */
   readonly units: Map<bigint, Float64Array>;
+  /** 03.11 (6.37): where the overlays hang from: every unit near the view subject. */
+  readonly unitNames: Map<bigint, Float64Array>;
   /**
    * 06.10-7.24: the drawn model box of every game object the overlay can ask about — clickable, a model with a
    * box drawn this frame, within the overlay's 100 yards of the view subject (SimpleScene.ts).
@@ -117,7 +126,7 @@ export interface RenderResults {
 
 export function createRenderResults(atmosphereProfile: Readonly<AtmosphereProfile>): RenderResults {
   return {
-    frame: 0, units: new Map(), gameObjectCorners: new Map(), seats: new Map(), seatFrame: 0,
+    frame: 0, units: new Map(), unitNames: new Map(), gameObjectCorners: new Map(), seats: new Map(), seatFrame: 0,
     cameraAspect: 1, weatherStorm: 0, atmosphereProfile, atmosphereAudio: undefined, fps: 0, indoors: false, status: "",
     portraits: [], swings: new Map(), swingFrame: 0, swingNow: 0,
     frameInterval: undefined, rendererFrameMs: undefined, // 22.10 ARC-2 S4b
@@ -141,6 +150,11 @@ export function dropStaleRows(rows: Map<bigint, Float64Array>, stampAt: number, 
 }
 
 // ---- the main thread's reader: what the old getters answered, from the record ----------------------------
+
+/** 03.11 (6.37): a unit's name point as drawn, undefined for a unit that has none this frame. */
+export function resultUnitNamePoint(results: RenderResults | undefined, guid: bigint): Float64Array | undefined {
+  return results?.unitNames.get(guid);
+}
 
 /** Was `renderer.unitHeight(guid)`: the drawn body's height, undefined for a unit the renderer does not hold. */
 export function resultUnitHeight(results: RenderResults | undefined, guid: bigint): number | undefined {

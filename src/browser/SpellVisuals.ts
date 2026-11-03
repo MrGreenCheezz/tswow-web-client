@@ -147,6 +147,8 @@ export interface VisualInstance {
   fitToModel?: boolean;
   /** Explicit model-clip lifetime policy; held packet/aura VFX loop until endsAt. */
   modelPlayback?: VisualModelPlayback;
+  /** 03.11 (6.37): the sequence this model loops, for one that is not a spell's (a quest mark plays 190). */
+  modelSequence?: number;
   /**
    * 25.10 (6.27): the spell has a SpellMissile row, so its effects are never thinned by distance: PlaySpellVisualKit
    * (0x00745230, `or edi, 0x400000` at 0x00745317) passes effect flag 0x400000 for it and CEffect::SetEmissionRateIgnoresDistance (0x006f75f0) sets

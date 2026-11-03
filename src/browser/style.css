@@ -2573,7 +2573,7 @@ body.native-wow-ui #mail-window button:disabled, body.native-wow-ui .mail-letter
   display: grid; justify-items: center; gap: 2px;
   color: #ffe8a0; filter: drop-shadow(0 2px 3px #000c);
 }
-/* A small brass sight, offset beside the plate so target identity stays readable in a crowd. */
+/* A small brass sight, straight over the creature (HeadOverlay.ts). */
 .quest-world-marker-sigil {
   position: relative; display: block; width: 25px; height: 25px; box-sizing: border-box;
   border: 2px solid #f0c94a; background: radial-gradient(circle, #ffe894 0 12%, #211807e8 14% 52%, #806420 54% 58%, #100c06e8 60%);

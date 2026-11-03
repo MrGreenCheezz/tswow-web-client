@@ -16,7 +16,7 @@ import { isWorldObjectDead } from "../../world/WorldState.js";
 import { cameraPivotHeight, game } from "../game/Context.js";
 import { viewSubjectPosition } from "../game/ViewSubject.js"; // 11.02-I
 import { drawnUnitPosition, type DrawnPoint } from "../VehiclePassengerOverlay.js"; // 11.02-tails
-import { resultUnitHeight } from "../RenderResults.js"; // 22.10 ARC-2 S3a
+import { UNIT_NAME_X, UNIT_NAME_Y, UNIT_NAME_Z, resultUnitHeight, resultUnitNamePoint } from "../RenderResults.js"; // 22.10 ARC-2 S3a
 import { plainChatText } from "./ChatLink.js";
 import { currentQuestLogEntries } from "./QuestLogData.js";
 import {
@@ -39,9 +39,10 @@ import { getTip, setTip } from "./Tooltip.js";
  */
 const BUBBLE_GAP_PX = 84;
 const FLOATER_GAP_PX = 12;
-/** Keep the brass objective badge beside, rather than over, the existing nameplate stack. */
-const QUEST_MARKER_X_PX = 86;
-const QUEST_MARKER_GAP_PX = 10;
+/** 03.11 (6.37): the objective badge stands on the plate's own anchor, straight over the creature: it used to hang 86 px to the side. */
+const QUEST_MARKER_GAP_PX = 4;
+/** 0x00715720: where the plate's top is, over the name point. */
+const QUEST_MARKER_RAISE = 2 / 3;
 /** Quest/object membership changes on packets, not frames; cap the loaded-object scan at 10 Hz. */
 const QUEST_MARKER_INTERVAL_MS = 100;
 
@@ -168,7 +169,7 @@ export function updateHeadOverlay(now: number): void {
 
   const liveQuestMarkerGuids = new Set<bigint>();
   for (const marker of worldMarkers) {
-    const anchor = anchorFor(marker.guid, camera, width, height);
+    const anchor = anchorFor(marker.guid, camera, width, height, QUEST_MARKER_RAISE);
     const parts = questMarkerNodes.get(marker.guid) ?? makeQuestMarker(root, marker.guid);
     liveQuestMarkerGuids.add(marker.guid);
     if (!anchor) {
@@ -177,7 +178,7 @@ export function updateHeadOverlay(now: number): void {
     }
     updateQuestMarker(parts, marker);
     if (parts.root.hidden) parts.root.hidden = false;
-    const markerTransform = `translate(-50%, -100%) translate(${Math.round(anchor.x + QUEST_MARKER_X_PX)}px, ${Math.round(anchor.y - QUEST_MARKER_GAP_PX)}px)`;
+    const markerTransform = `translate(-50%, -100%) translate(${Math.round(anchor.x)}px, ${Math.round(anchor.y - QUEST_MARKER_GAP_PX)}px)`;
     if (parts.root.style.transform !== markerTransform) parts.root.style.transform = markerTransform;
   }
   for (const [guid, parts] of questMarkerNodes) {
@@ -363,15 +364,18 @@ const ANCHOR_SEAT_DRAWN: DrawnPoint = { x: 0, y: 0, z: 0 };
  * fight that never appeared, and a creature that spoke as it died lost the bubble mid-sentence.
  * The body is kept and the anchor is brought down to it instead.
  */
-function anchorFor(guid: bigint, camera: ReturnType<typeof createCamera>, width: number, height: number) {
+function anchorFor(guid: bigint, camera: ReturnType<typeof createCamera>, width: number, height: number, raise = 0) {
   const object = game.world?.state.objects.get(guid);
+  // 03.11 (6.37): a living unit's head is its name point as drawn, the point Wow.exe's overhead text reads too (0x007e5420).
+  const name = object && !isWorldObjectDead(object) ? resultUnitNamePoint(game.renderer?.results, guid) : undefined;
+  if (name) return projectPoint({ x: name[UNIT_NAME_X]!, y: name[UNIT_NAME_Y]!, z: name[UNIT_NAME_Z]! + raise }, camera, width, height);
   // 11.02-tails: a vehicle passenger's head is where its model is drawn on the seat (Wow.exe 0x0071fef0).
   const position = object === undefined ? undefined : drawnUnitPosition(object, ANCHOR_SEAT_DRAWN);
   if (!object || !position) return undefined;
   const isUnit = object.typeId === 3 || object.typeId === 4;
   const standing = isUnit ? resultUnitHeight(game.renderer?.results, guid) ?? 2 : 1.2; // 22.10 ARC-2 S3a: the record
   const crown = isWorldObjectDead(object) ? Math.min(standing, CORPSE_CROWN_HEIGHT) : standing;
-  return projectPoint({ x: position.x, y: position.y, z: position.z + crown }, camera, width, height);
+  return projectPoint({ x: position.x, y: position.y, z: position.z + crown + raise }, camera, width, height);
 }
 
 function makeBubble(root: HTMLElement, guid: bigint): HTMLElement {

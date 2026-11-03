@@ -1,39 +1,68 @@
 /**
- * The plate over a head: who that is, how much of them is left, and what they are casting.
+ * The plate over a head, as Wow.exe draws it: measured 03.11 on the stand's client out of its own frames (every region of every
+ * plate read through Lua, F:\WowOracle\tools\plates-probe.lua), with the rules read from CGNamePlateFrame (0x0098f390, 0x0098ee30,
+ * 0x0098ef10, 0x0098e6e0, 0x0098e740). docs/implementation/nameplates-original.ru.md has the table.
  *
- * Split out of `SimpleScene` because it stopped being a decoration. The old plate was a bar and a
- * name drawn inline in the middle of the overlay's object loop; slice R6 adds a cast bar, the
- * eight raid marks, the elite ranks and a rule about which units get a plate at all, and every one
- * of those is a decision rather than a rectangle. Decisions are worth testing, and this file is
- * the half of the work that can be: no DOM, no `game`, no world state — a plate is described to
- * it, and it says where the plate goes and paints it.
- *
- * The projection stays where it was. `SimpleScene` already shares its camera intrinsics with the
- * WebGL scene to the pixel, so a plate anchored to a head sits on that head; nothing here needs to
- * know how that happened.
+ * Decisions are worth testing and this file is the half of the work that can be: no DOM, no `game`, no world state. A plate is
+ * described to it, and it says where the plate goes and paints it; the pictures come in through {@link PlateArt}.
  */
 
 import { REACTION_FRIENDLY, REACTION_HOSTILE } from "../world/FactionRules.js";
 
-/**
- * How far a plate is drawn, in yards.
- *
- * The original client's own limit, and it is not a rendering budget: plates stop at forty yards
- * because that is roughly where one stops meaning anything — it grows wider than the gap between
- * two units standing side by side, and the screen fills with names for things nobody is going to
- * fight. The player's own target is exempt below.
- */
+/** 0x00adaa7c: 1681, a square. The target has no exemption (0x0072b060). */
 export const PLATE_RANGE = 41;
+/** 0x00715720: the plate's top hangs off the name point raised by this many yards, and off nothing in pixels. */
+export const PLATE_NAME_RAISE = 2 / 3;
 
-/** Plates keep one size on screen, the way the original client's do. */
-export const PLATE_WIDTH = 144;
-export const PLATE_NAME_HEIGHT = 15;
-export const PLATE_BAR_HEIGHT = 13;
-export const PLATE_CAST_HEIGHT = 12;
-/** The gap between the crown of the head and the bottom of the plate. */
-export const PLATE_GAP = 10;
-/** The target's plate is drawn slightly larger, which is how the original client marks it. */
-export const PLATE_TARGET_SCALE = 1.15;
+/** The plate is sized against the screen's height, not the interface scale: WorldFrame is 768 units high whatever that says. */
+const SCREEN_UNITS = 768;
+
+/** 0x00b2da74 0.1 and 0x00b2da70 0.025, as Lua reads them on a 768-unit screen. */
+export const PLATE_WIDTH = 156.651;
+export const PLATE_HEIGHT = 39.163;
+const BAR_WIDTH = 125.948;
+const BAR_HEIGHT = 11.005;
+const BAR_LEFT = 4.86;
+const BAR_BOTTOM = 4.9;
+const CAST_RIGHT = 4.895;
+const CAST_BOTTOM = 4.895;
+/** The second border, turned round and hung half a plate lower, so its level box is the spell's. */
+const CAST_DROP = 19.58;
+const NAME_SIZE = 15.665;
+const LEVEL_SIZE = 14.099;
+const SHADOW = 1.567;
+const LEVEL_FROM_RIGHT = 14.41;
+const LEVEL_FROM_BOTTOM = 11.12;
+const SKULL_SIZE = 15.665;
+const ICON_SIZE = 15.665;
+const RAID_SIZE = 31.33;
+const ELITE_WIDTH = 46.055;
+const ELITE_HEIGHT = 33.68;
+const ELITE_RIGHT = 4.7;
+const ELITE_DOWN = 1.57;
+const ELITE_U = 0.578125;
+const ELITE_V = 0.84375;
+const FLASH_WIDTH = 172.316;
+const FLASH_HEIGHT = 45.429;
+const FLASH_LEFT = 1.57;
+const FLASH_DOWN = 10.18;
+const FLASH_U = 0.555;
+const FLASH_V0 = 0.53;
+const FLASH_V1 = 0.6;
+/** 127 of 255 on every plate but the target's, while there is a target. */
+const DIMMED_ALPHA = 127 / 255;
+
+export const PLATE_BORDER_TEXTURE = "Interface\\Tooltips\\Nameplate-Border.blp";
+export const PLATE_SHIELD_TEXTURE = "Interface\\Tooltips\\Nameplate-CastBar-Shield.blp";
+export const PLATE_GLOW_TEXTURE = "Interface\\Tooltips\\Nameplate-Glow.blp";
+export const PLATE_ELITE_TEXTURE = "Interface\\Tooltips\\EliteNameplateIcon.blp";
+export const PLATE_BAR_TEXTURE = "Interface\\TargetingFrame\\UI-TargetingFrame-BarFill.blp";
+export const PLATE_FLASH_TEXTURE = "Interface\\TargetingFrame\\UI-TargetingFrame-Flash.blp";
+export const PLATE_SKULL_TEXTURE = "Interface\\TargetingFrame\\UI-TargetingFrame-Skull.blp";
+export const PLATE_RAID_TEXTURE = "Interface\\TargetingFrame\\UI-RaidTargetingIcons.blp";
+
+/** NAMEPLATE_FONT: Fonts\FRIZQT__.TTF on this client, which NativeUiSkin publishes under this family. */
+const PLATE_FONT = '"WoW Friz", "Trebuchet MS", sans-serif';
 
 /** Creature ranks, as `creature_template.rank` numbers them. */
 export const RANK_NORMAL = 0;
@@ -46,12 +75,13 @@ export const RANK_RARE = 4;
  * What one plate says. Everything is already resolved: this file never asks the world anything.
  *
  * Health stays optional: a missing server value must not become an invented full or empty bar.
- * The selected unit also shows its current/max health when those fields are available.
  */
 export interface PlateData {
   guid: bigint;
   name: string;
   level: number | undefined;
+  /** The player's own level, which a level's colour and the skull are measured from. */
+  playerLevel?: number | undefined;
   /** `REACTION_*`. Undefined while the faction table is still on its way. */
   reaction: number | undefined;
   /**
@@ -60,60 +90,39 @@ export interface PlateData {
    * (`plateVisible`) still reads `reaction`.
    */
   colourReaction?: number | undefined;
-  /** A player's class colour: players are coloured by class, everything else by reaction. */
+  isPlayer?: boolean | undefined;
+  /** A hostile player's class colour, and only with ShowClassColorInNameplate on. */
   classColour: string | undefined;
   /** 0 to 1, or undefined for a unit whose health the server has not sent. */
   health: number | undefined;
-  healthCurrent?: number | undefined;
-  healthMax?: number | undefined;
   /** 0 to 7 when the unit wears a raid mark. */
   raidMark: number | undefined;
-  /** `!` or `?`, from the quest giver status. */
-  questMark: string | undefined;
   /** `creature_template.rank`: 1 elite, 2 rare elite, 3 world boss, 4 rare. */
   rank: number;
-  /**
-   * What is being cast, if anything.
-   *
-   * `progress` is how full the bar should be and not how far through the cast the unit is: the two
-   * are the same number for a cast and opposite ones for a channel, and `WorldClient.castProgress`
-   * has already turned it round. Inverting it a second time here made the plate's bar run backwards
-   * against the target frame's bar for the same spell.
-   */
-  cast: { name: string; progress: number; channel: boolean } | undefined;
-  /** The player's own current target, which is drawn larger and framed. */
+  /** CREATURE_TYPE_FLAG_BOSS (4, 0x00715d70): what the skull and the dragon go by, not the rank. */
+  boss?: boolean | undefined;
+  /** The target's cast (ShowVKeyCastbar). `progress` is how full the bar is: `WorldClient.castProgress` turned a channel round. */
+  cast: { iconPath: string | undefined; progress: number; shielded?: boolean | undefined } | undefined;
+  /** The player's own current target: drawn last and at full strength. */
   target: boolean;
-  /**
-   * White fraction whitening the health bar this frame, from `plateHitFlash`.
-   *
-   * Carried resolved rather than as a timestamp: the plate is described once per frame and the
-   * painter must not own a clock.
-   */
-  hitFlash?: number | undefined;
-  /**
-   * A body the server still shows loot on: `UNIT_DYNFLAG_LOOTABLE`, and nothing inferred.
-   *
-   * The plate a corpse gets is not the plate a unit gets. There is no health left to draw — the
-   * bar would be a full-width empty rectangle over every body in a cleared camp — and no level
-   * worth reading off something that cannot be fought, so this plate is the name and the bag.
-   */
-  lootable: boolean;
-  /**
-   * Somebody else's kill: `TAPPED` without `TAPPED_BY_PLAYER`, the pair the core writes per
-   * viewer. Greys the bar, as the original client does and the reference client after it
-   * (`wowee/src/ui/game_screen_hud.cpp:1025-1030`).
-   */
-  tappedByOther: boolean;
+  /** There is a target and this is not it. */
+  dimmed?: boolean | undefined;
+  /** Under the mouse: Nameplate-Glow, added. */
+  hovered?: boolean | undefined;
+  /** UnitThreatSituation of the player on this unit; 2 and 3 light the flash (0x0098eb18). */
+  threat?: number | undefined;
+  /** The name point (0x0071fef0) in the world as drawn, where the renderer knows it. */
+  namePoint?: { x: number; y: number; z: number } | undefined;
 }
 
 export interface PlateBox {
-  /** Left edge of the bar block, in CSS pixels of the overlay. */
+  /** Left edge, in CSS pixels of the overlay. */
   x: number;
-  /** Top edge of the name row. */
+  /** Top edge. */
   y: number;
   width: number;
   height: number;
-  /** How much the whole plate is scaled: only the target's is not 1. */
+  /** Pixels to a unit of the 768-high screen. */
   scale: number;
 }
 
@@ -129,104 +138,57 @@ export interface PlateFilter {
   friendly: boolean;
 }
 
-export function plateVisible(
-  data: Pick<PlateData, "reaction" | "target">,
-  distance: number,
-  filter: PlateFilter,
-): boolean {
-  // The target always keeps its plate: the ring under its feet is drawn at any distance, and a
-  // ring with no name over it is the one combination that tells the player nothing.
-  if (data.target) return true;
+export function plateVisible(data: Pick<PlateData, "reaction">, distance: number, filter: PlateFilter): boolean {
   if (distance > PLATE_RANGE) return false;
   return data.reaction === REACTION_FRIENDLY ? filter.friendly : filter.hostile;
 }
 
 /**
- * The colour of the health bar.
- *
- * Someone else's kill comes first and answers "not yours" before anything else the colour could
- * say, and a creature already tapped is not a creature to open on. Ahead of the reaction is where
- * the original client puts it: `TargetFrame_CheckFaction` greys the name background and the
- * portrait on the tap test alone and reaches `UnitSelectionColor` — the reaction — only in the
- * `else` (`Interface/FrameXML/TargetFrame.lua:261-272`, read out of the 3.3.5a archives).
- *
- * The reference client reads the same two bits and reads them somewhere else: its tap test lives
- * *inside* the hostile branch — `:1020` is `if (isCorpse)`, `:1024` is `} else if (isHostile) {`
- * and the pair is at `:1027-1030` (`wowee/src/ui/game_screen_hud.cpp`) — so a friendly or neutral
- * creature that somebody else killed keeps its own colour there and goes grey here. The difference
- * is real and this file follows the original: `hasLootRecipient()` sets `TAPPED` whatever the
- * faction of the thing killed (`Unit.cpp:14747-14749`), so the bit means "not yours" and nothing
- * about who it belonged to.
- *
- * Then reaction, and class only third, which is the opposite of a unit frame: a plate answers "can
- * I hit that", and a hostile warlock is red before it is purple. A friendly *player* is the one
- * case where the class colour wins, because there the question is "who is that".
+ * The colour of the health bar (0x0098ee30): red for the hostile, or their class with ShowClassColorInNameplate on; among the rest
+ * blue for a player, green for a friend, yellow otherwise. Somebody else's kill changes nothing: measured on a tapped creature with
+ * UnitIsTapped true, the bar stays red.
  */
-export function plateColour(
-  data: Pick<PlateData, "reaction" | "classColour"> & Partial<Pick<PlateData, "tappedByOther" | "colourReaction">>,
-): string {
-  if (data.tappedByOther) return "#8d9298";
-  const reaction = data.colourReaction ?? data.reaction; // 5.05 (12.10): the unit's view (0x0098ee30)
-  if (reaction === REACTION_HOSTILE) return "#c5423d";
-  if (reaction === REACTION_FRIENDLY) return data.classColour ?? "#3fae5a";
-  return "#d8bb3f";
+export function plateColour(data: Pick<PlateData, "reaction" | "classColour" | "isPlayer" | "colourReaction">): string {
+  const reaction = data.colourReaction ?? data.reaction;
+  if (reaction === REACTION_HOSTILE) return data.classColour ?? "#ff0000";
+  if (data.isPlayer) return "#0000ff";
+  return reaction === REACTION_FRIENDLY ? "#00ff00" : "#ffff00";
+}
+
+/** 0x00aa34b8, by the player's level over five: how far below it a level is still green. */
+const GREEN_RANGE = [4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8];
+
+/** A level's colour against the player's (0x0098e5f0). Before the player's level is known, the middle of it. */
+export function plateLevelColour(level: number, playerLevel: number | undefined): string {
+  if (playerLevel === undefined) return "#ffff00";
+  const difference = level - playerLevel;
+  if (difference >= 5) return "#ff1919";
+  if (difference >= 3) return "#ff7f3f";
+  if (difference >= -2) return "#ffff00";
+  const green = GREEN_RANGE[Math.trunc(playerLevel / 5)] ?? 8;
+  return -difference <= green ? "#3fb23f" : "#7f7f7f";
+}
+
+/** The skull instead of the number (0x0098ef10): a boss, or something hostile ten levels above the player. */
+export function plateShowsSkull(data: Pick<PlateData, "boss" | "level" | "playerLevel" | "reaction" | "colourReaction">): boolean {
+  if (data.boss) return true;
+  if ((data.colourReaction ?? data.reaction) !== REACTION_HOSTILE) return false;
+  return data.level !== undefined && data.playerLevel !== undefined && data.level - 10 >= data.playerLevel;
+}
+
+/** The dragon round the level (0x0098e6e0): a boss, an elite, a rare elite. A rare alone has none. */
+export function plateShowsElite(data: Pick<PlateData, "boss" | "rank">): boolean {
+  return data.boss === true || data.rank === RANK_ELITE || data.rank === RANK_RARE_ELITE;
 }
 
 /**
- * The level, as the plate writes it.
- *
- * A world boss is `??` — the original client shows a skull there, and for the same reason: the
- * number is not the useful part of "you cannot win this". Everything else prints its level, and an
- * elite carries the `+` the target frame already uses.
+ * Where a plate sits, given where its anchor projected to: the name point raised by {@link PLATE_NAME_RAISE}. The plate hangs from
+ * there and keeps its size on screen, so a far unit's plate comes down over the model, as it does in Wow.exe.
  */
-export function plateLevelText(level: number | undefined, rank: number): string {
-  if (rank === RANK_BOSS) return "??";
-  if (level === undefined) return "";
-  if (rank === RANK_ELITE || rank === RANK_RARE_ELITE) return `${level}+`;
-  return `${level}`;
-}
-
-/** The mark a rank puts in front of the name, or nothing for an ordinary creature. */
-export function plateRankMark(rank: number): string {
-  if (rank === RANK_RARE || rank === RANK_RARE_ELITE) return "★";
-  if (rank === RANK_BOSS) return "☠";
-  return "";
-}
-
-/**
- * Where a plate sits, given where the crown of the head projected to.
- *
- * A lootable corpse is the one plate with no bar under the name: `lootable` shortens the box to
- * the name row alone, and `drawPlate` puts the bag where the bar would have been.
- */
-export function plateLayout(
-  data: Pick<PlateData, "cast" | "target"> & Partial<Pick<PlateData, "lootable">>,
-  x: number,
-  headY: number,
-): PlateBox {
-  const scale = data.target ? PLATE_TARGET_SCALE : 1;
+export function plateLayout(x: number, anchorY: number, screenHeight: number): PlateBox {
+  const scale = screenHeight / SCREEN_UNITS;
   const width = PLATE_WIDTH * scale;
-  const height = data.lootable
-    ? PLATE_NAME_HEIGHT * scale
-    : (PLATE_NAME_HEIGHT + PLATE_BAR_HEIGHT + (data.cast ? PLATE_CAST_HEIGHT + 1 : 0)) * scale;
-  return { x: x - width / 2, y: headY - PLATE_GAP * scale - height, width, height, scale };
-}
-
-/**
- * How long a landed blow whitens the plate's health bar.
- *
- * Shorter than the number rising over the head (1.4 s): the flash is the impact, the number is
- * the reading. Long enough to survive a slow frame, short enough that a second blow re-fires it
- * instead of blending into it.
- */
-export const PLATE_HIT_FLASH_MS = 350;
-
-/** White fraction for a blow that landed at `hitAt`, seen at `now`; 0 when there is none to show. */
-export function plateHitFlash(now: number, hitAt: number | undefined): number {
-  if (hitAt === undefined) return 0;
-  const age = now - hitAt;
-  if (!(age >= 0) || age >= PLATE_HIT_FLASH_MS) return 0;
-  return 1 - age / PLATE_HIT_FLASH_MS;
+  return { x: x - width / 2, y: anchorY, width, height: PLATE_HEIGHT * scale, scale };
 }
 
 export interface StackedPlate {
@@ -236,12 +198,9 @@ export interface StackedPlate {
 }
 
 /**
- * Pushes overlapping plates apart, upwards.
- *
- * Two units standing on the same spot used to draw two bars over each other, and the result read
- * as one bar at some third value. The original client solves it the same way: plates stack rather
- * than overlap. The nearer one keeps its place, because it is the one the player is looking at,
- * and because any other rule makes the whole stack jump as the camera turns.
+ * Pushes overlapping plates apart, upwards: nameplateAllowOverlap off, the "(old) never overlapping version" as the client calls
+ * it. The default is on, and there plates simply overlap. The nearer one keeps its place, because it is the one the player is
+ * looking at, and because any other rule makes the whole stack jump as the camera turns.
  *
  * Mutates the boxes it is given and returns the list it was given, in that order.
  */
@@ -272,271 +231,152 @@ export function stackPlates(plates: readonly StackedPlate[]): readonly StackedPl
   return plates;
 }
 
-/** The eight raid marks in the sheet's own colours, in the order the server numbers them. */
-export const RAID_MARK_COLOURS = [
-  "#ffe04a", "#ff9a30", "#b45cd8", "#4cd94c", "#dfe3ee", "#3f8fdd", "#e04141", "#f0ece0",
-];
+export type PlateImage = CanvasImageSource & { readonly width: number; readonly height: number };
 
-/**
- * One raid mark, drawn rather than fetched.
- *
- * `UI-RaidTargetingIcons.blp` is one sheet in the client's `Interface` archive, and reaching it
- * would mean a new extractor, a new route on the gateway and a texture to wait for — for eight
- * shapes that are a star, a circle, a diamond, a triangle, a crescent, a square, a cross and a
- * skull. They are paths. Only the colours had to come from the sheet.
- */
-export function drawRaidMark(context: CanvasRenderingContext2D, icon: number, x: number, y: number, size: number): void {
-  const colour = RAID_MARK_COLOURS[icon];
-  if (!colour) return;
-  const radius = size / 2;
-  context.save();
-  context.translate(x, y);
+/** Where the pictures come from: none of them may be there yet, and a plate is drawn without what has not landed. */
+export interface PlateArt {
+  image(path: string): PlateImage | undefined;
+  /** The picture multiplied by a colour, as a vertex colour would. */
+  tinted(path: string, colour: string): PlateImage | undefined;
+}
+
+const NO_ART: PlateArt = { image: () => undefined, tinted: () => undefined };
+
+/** 0x0061a4f0's table: what a threat status lights the flash with. */
+const THREAT_COLOURS: Readonly<Record<number, string>> = { 2: "#ff9900", 3: "#ff0000" };
+
+/** A status bar's fill: the texture cut at the bar's value, not squeezed into it. */
+function drawBar(
+  context: CanvasRenderingContext2D, art: PlateArt, x: number, y: number, width: number, height: number, ratio: number, colour: string,
+): void {
+  const fill = Math.max(0, Math.min(1, ratio));
+  if (fill <= 0) return;
+  const image = art.tinted(PLATE_BAR_TEXTURE, colour);
+  if (image) {
+    context.drawImage(image, 0, 0, image.width * fill, image.height, x, y, width * fill, height);
+  } else {
+    context.fillStyle = colour;
+    context.fillRect(x, y, width * fill, height);
+  }
+}
+
+/** A font string with its shadow: the same text in black, a little right and down. */
+function drawText(
+  context: CanvasRenderingContext2D, text: string, x: number, y: number, size: number, scale: number, colour: string,
+): void {
+  context.font = `${size * scale}px ${PLATE_FONT}`;
+  context.fillStyle = "#000000";
+  context.fillText(text, x + SHADOW * scale, y + SHADOW * scale);
   context.fillStyle = colour;
-  context.strokeStyle = "#10131a";
-  context.lineWidth = Math.max(1, size * 0.09);
-  context.beginPath();
-  if (icon === 0) {
-    for (let point = 0; point < 10; point++) {
-      const angle = -Math.PI / 2 + point * Math.PI / 5;
-      const reach = point % 2 === 0 ? radius : radius * 0.44;
-      const px = Math.cos(angle) * reach;
-      const py = Math.sin(angle) * reach;
-      if (point === 0) context.moveTo(px, py);
-      else context.lineTo(px, py);
-    }
-    context.closePath();
-  } else if (icon === 1) {
-    context.arc(0, 0, radius * 0.86, 0, Math.PI * 2);
-  } else if (icon === 2) {
-    context.moveTo(0, -radius);
-    context.lineTo(radius * 0.72, 0);
-    context.lineTo(0, radius);
-    context.lineTo(-radius * 0.72, 0);
-    context.closePath();
-  } else if (icon === 3) {
-    context.moveTo(0, -radius);
-    context.lineTo(radius * 0.9, radius * 0.72);
-    context.lineTo(-radius * 0.9, radius * 0.72);
-    context.closePath();
-  } else if (icon === 4) {
-    // A crescent is a disc with a second disc taken out of it, and the even-odd rule below is what
-    // takes it out: two circles wound the same way and filled by the non-zero rule are a full moon.
-    context.arc(0, 0, radius * 0.9, 0, Math.PI * 2);
-    context.moveTo(radius * 1.16, -radius * 0.16);
-    context.arc(radius * 0.38, -radius * 0.16, radius * 0.78, 0, Math.PI * 2);
-  } else if (icon === 5) {
-    context.rect(-radius * 0.78, -radius * 0.78, radius * 1.56, radius * 1.56);
-  } else if (icon === 6) {
-    const arm = radius * 0.34;
-    const reach = radius * 0.95;
-    context.moveTo(-arm, -reach);
-    context.lineTo(arm, -reach);
-    context.lineTo(arm, -arm);
-    context.lineTo(reach, -arm);
-    context.lineTo(reach, arm);
-    context.lineTo(arm, arm);
-    context.lineTo(arm, reach);
-    context.lineTo(-arm, reach);
-    context.lineTo(-arm, arm);
-    context.lineTo(-reach, arm);
-    context.lineTo(-reach, -arm);
-    context.lineTo(-arm, -arm);
-    context.closePath();
-  } else {
-    // The skull: a dome over a jaw, with two sockets punched through it by the same even-odd rule.
-    context.moveTo(-radius * 0.72, radius * 0.1);
-    context.bezierCurveTo(-radius * 0.72, -radius, radius * 0.72, -radius, radius * 0.72, radius * 0.1);
-    context.lineTo(radius * 0.36, radius * 0.1);
-    context.lineTo(radius * 0.36, radius * 0.72);
-    context.lineTo(-radius * 0.36, radius * 0.72);
-    context.lineTo(-radius * 0.36, radius * 0.1);
-    context.closePath();
-    context.moveTo(-radius * 0.14, -radius * 0.28);
-    context.arc(-radius * 0.34, -radius * 0.28, radius * 0.2, 0, Math.PI * 2);
-    context.moveTo(radius * 0.54, -radius * 0.28);
-    context.arc(radius * 0.34, -radius * 0.28, radius * 0.2, 0, Math.PI * 2);
-  }
-  context.fill("evenodd");
-  context.stroke();
-  context.restore();
+  context.fillText(text, x, y);
 }
 
 /**
- * The bag over a lootable body.
- *
- * A path, for the same reason the eight raid marks are paths: the sheet it would otherwise come
- * from (`Interface\Cursor\LootAll.blp`) would cost an extractor, a gateway route and a wait, for a
- * shape that is a trapezoid, a lid and a drawstring.
+ * One plate, painted, in the order of the frame's layers: the bars under it, then BACKGROUND, BORDER, ARTWORK, OVERLAY, HIGHLIGHT.
+ * Nothing here reads a clock: a cast arrives as a fraction.
  */
-export function drawLootBag(context: CanvasRenderingContext2D, x: number, y: number, size: number): void {
-  const half = size / 2;
+export function drawPlate(context: CanvasRenderingContext2D, box: PlateBox, data: PlateData, art: PlateArt = NO_ART): void {
+  const s = box.scale;
+  const left = box.x;
+  const top = box.y;
+  const right = left + box.width;
+  const bottom = top + box.height;
+  const castTop = top + CAST_DROP * s;
+  const castBottom = castTop + box.height;
   context.save();
-  context.translate(x, y);
-  context.fillStyle = "#d8a94a";
-  context.strokeStyle = "#2a1d08";
-  context.lineWidth = Math.max(1, size * 0.1);
-  context.beginPath();
-  // The body: narrow at the tie, widening to a flat bottom.
-  context.moveTo(-half * 0.42, -half * 0.28);
-  context.lineTo(half * 0.42, -half * 0.28);
-  context.lineTo(half * 0.86, half * 0.9);
-  context.lineTo(-half * 0.86, half * 0.9);
-  context.closePath();
-  context.fill();
-  context.stroke();
-  // And the drawstring across the neck.
-  context.beginPath();
-  context.moveTo(-half * 0.6, -half * 0.28);
-  context.lineTo(half * 0.6, -half * 0.28);
-  context.stroke();
-  context.restore();
-}
+  context.globalAlpha = data.dimmed ? DIMMED_ALPHA : 1;
 
-/** Keep text legible at its chosen font size while reserving the neighbour's column. */
-function fitPlateText(context: CanvasRenderingContext2D, text: string, width: number): string {
-  if (context.measureText(text).width <= width) return text;
-  const characters = [...text];
-  let low = 0;
-  let high = characters.length;
-  while (low < high) {
-    const middle = Math.ceil((low + high) / 2);
-    if (context.measureText(`${characters.slice(0, middle).join("")}…`).width <= width) low = middle;
-    else high = middle - 1;
+  // The bars, a level under the frame's own regions.
+  if (data.health !== undefined) {
+    drawBar(context, art, left + BAR_LEFT * s, bottom - (BAR_BOTTOM + BAR_HEIGHT) * s, BAR_WIDTH * s, BAR_HEIGHT * s,
+      data.health, plateColour(data));
   }
-  return `${characters.slice(0, low).join("")}…`;
-}
-
-function compactHealth(value: number): string {
-  if (value < 10_000) return String(Math.round(value));
-  const divisor = value >= 1_000_000 ? 1_000_000 : 1_000;
-  return `${Math.round(value / divisor * 10) / 10}${divisor === 1_000 ? "к" : "м"}`;
-}
-
-/**
- * One plate, painted.
- *
- * Everything is measured out of `box`, so the target's larger plate is this same code at another
- * scale. Nothing here reads a clock: a cast arrives as a fraction, worked out against the same
- * frame's `now` as every other bar in the interface.
- */
-export function drawPlate(context: CanvasRenderingContext2D, box: PlateBox, data: PlateData): void {
-  const scale = box.scale;
-  const nameHeight = PLATE_NAME_HEIGHT * scale;
-  const barHeight = PLATE_BAR_HEIGHT * scale;
-  const barY = box.y + nameHeight;
-
-  const rankMark = plateRankMark(data.rank);
-  // A corpse has no level worth reading: the number answers "can I take this one", and that
-  // question is over. The bag stands in the level's corner instead, right-aligned like it was.
-  const levelText = data.lootable ? "" : plateLevelText(data.level, data.rank);
-  context.font = `${Math.round(11 * scale)}px system-ui, sans-serif`;
-  context.textAlign = "left";
-  context.textBaseline = "alphabetic";
-  const levelWidth = data.lootable ? nameHeight : levelText ? context.measureText(levelText).width : 0;
-  const label = fitPlateText(context, rankMark ? `${rankMark} ${data.name}` : data.name,
-    box.width - (levelWidth > 0 ? levelWidth + 6 * scale : 0));
-  const nameBaseline = barY - 3 * scale;
-  // The name is outlined rather than boxed. A plate sits over a body, and a filled strip behind
-  // every name in a crowd hides more of the world than the names are worth.
-  context.lineWidth = 3 * scale;
-  context.strokeStyle = "#0a0d12cc";
-  context.strokeText(label, box.x, nameBaseline);
-  context.fillStyle = data.target ? "#ffe36e" : "#f2f5f8";
-  context.fillText(label, box.x, nameBaseline);
-  if (levelText) {
-    context.textAlign = "right";
-    context.strokeText(levelText, box.x + box.width, nameBaseline);
-    context.fillStyle = data.rank === RANK_BOSS ? "#ff8f6b" : "#cfd8e0";
-    context.fillText(levelText, box.x + box.width, nameBaseline);
-    context.textAlign = "left";
+  if (data.cast) {
+    // 0x0098f112: (1, 0.7, 0), a cast and a channel alike.
+    drawBar(context, art, right - (CAST_RIGHT + BAR_WIDTH) * s, castBottom - (CAST_BOTTOM + BAR_HEIGHT) * s, BAR_WIDTH * s, BAR_HEIGHT * s,
+      data.cast.progress, "#ffb300");
   }
 
-  // A corpse gets the bag where the level stood and no bar at all: a dead unit's health is zero,
-  // and the bar would be an empty strip repeated over every body in a cleared camp. The raid mark
-  // below still draws — a body keeps its mark, which is how a group finds the one it killed.
-  if (data.lootable) {
-    drawLootBag(context, box.x + box.width - nameHeight * 0.5, box.y + nameHeight * 0.5, nameHeight);
-  } else {
-    context.fillStyle = "#080b0fd8";
-    context.fillRect(box.x, barY, box.width, barHeight);
-    if (data.health !== undefined) {
-      context.fillStyle = plateColour(data);
-      context.fillRect(box.x + 1, barY + 1, (box.width - 2) * Math.max(0, Math.min(1, data.health)), barHeight - 2);
+  // BACKGROUND: the threat flash, a piece of the target frame's.
+  const flashColour = data.threat === undefined ? undefined : THREAT_COLOURS[data.threat];
+  if (flashColour) {
+    const flash = art.tinted(PLATE_FLASH_TEXTURE, flashColour);
+    if (flash) {
+      const width = FLASH_WIDTH * s;
+      context.drawImage(flash, 0, FLASH_V0 * flash.height, FLASH_U * flash.width, (FLASH_V1 - FLASH_V0) * flash.height,
+        left + box.width / 2 - FLASH_LEFT * s - width / 2, top + FLASH_DOWN * s, width, FLASH_HEIGHT * s);
     }
-    // The impact: a white sheet over the bar, fading with the blow's age. Alpha, never a second
-    // bar geometry, so a flash over an unknown-health unit is still just light, not information.
-    const flash = data.hitFlash ?? 0;
-    if (flash > 0) {
+  }
+
+  const levelX = right - LEVEL_FROM_RIGHT * s;
+  const levelY = bottom - LEVEL_FROM_BOTTOM * s;
+  // BORDER: the dragon, under the border and round the level.
+  if (plateShowsElite(data)) {
+    const elite = art.image(PLATE_ELITE_TEXTURE);
+    if (elite) {
+      const width = ELITE_WIDTH * s;
+      const height = ELITE_HEIGHT * s;
+      context.drawImage(elite, 0, 0, ELITE_U * elite.width, ELITE_V * elite.height,
+        levelX + ELITE_RIGHT * s - width / 2, levelY + ELITE_DOWN * s - height / 2, width, height);
+    }
+  }
+
+  // ARTWORK: the border over the bar, the same picture turned round under it for a cast, the mark, the words.
+  const border = art.image(PLATE_BORDER_TEXTURE);
+  if (border) context.drawImage(border, left, top, box.width, box.height);
+  if (data.cast) {
+    if (data.cast.shielded) {
+      const shield = art.image(PLATE_SHIELD_TEXTURE);
+      if (shield) context.drawImage(shield, left, castTop, box.width, box.height);
+    } else if (border) {
       context.save();
-      context.globalAlpha = Math.max(0, Math.min(1, flash)) * 0.55;
-      context.fillStyle = "#ffffff";
-      context.fillRect(box.x + 1, barY + 1, box.width - 2, barHeight - 2);
+      context.translate(right, castTop);
+      context.scale(-1, 1);
+      context.drawImage(border, 0, 0, box.width, box.height);
       context.restore();
     }
-    context.strokeStyle = data.target ? "#ffe36e" : "#0b0f13aa";
-    context.lineWidth = data.target ? 2 : 1;
-    context.strokeRect(box.x, barY, box.width, barHeight);
-    if (data.health !== undefined && Number.isFinite(data.health)) {
-      const percent = `${Math.round(Math.max(0, Math.min(1, data.health)) * 100)}%`;
-      const text = data.target && data.healthCurrent !== undefined && (data.healthMax ?? 0) > 0
-        ? `${compactHealth(data.healthCurrent)} / ${compactHealth(data.healthMax!)} · ${percent}` : percent;
-      context.font = `${Math.round(10 * scale)}px system-ui, sans-serif`;
-      context.textAlign = "center";
-      context.lineWidth = 3 * scale;
-      context.strokeStyle = "#080b0fe6";
-      context.fillStyle = "#ffffff";
-      const healthLabel = fitPlateText(context, text, box.width - 4 * scale);
-      context.strokeText(healthLabel, box.x + box.width / 2, barY + barHeight - 3 * scale);
-      context.fillText(healthLabel, box.x + box.width / 2, barY + barHeight - 3 * scale);
-      context.textAlign = "left";
+  }
+  if (data.raidMark !== undefined && data.raidMark >= 0 && data.raidMark < 8) {
+    // 0x0098e740: a four by four sheet, the mark's low bits across.
+    const sheet = art.image(PLATE_RAID_TEXTURE);
+    if (sheet) {
+      const size = RAID_SIZE * s;
+      const cellWidth = sheet.width / 4;
+      const cellHeight = sheet.height / 4;
+      context.drawImage(sheet, (data.raidMark & 3) * cellWidth, (data.raidMark >> 2) * cellHeight, cellWidth, cellHeight,
+        left - size, top + (box.height - size) / 2, size, size);
+    }
+  }
+  context.textAlign = "center";
+  context.textBaseline = "bottom";
+  drawText(context, data.name, left + box.width / 2, top + box.height / 2, NAME_SIZE, s, "#ffffff");
+  const skull = plateShowsSkull(data);
+  if (!skull && data.level !== undefined) {
+    context.textBaseline = "middle";
+    drawText(context, `${data.level}`, levelX, levelY, LEVEL_SIZE, s, plateLevelColour(data.level, data.playerLevel));
+  }
+
+  // OVERLAY: the skull in the level's place, the spell in the turned border's level box.
+  if (skull) {
+    const picture = art.image(PLATE_SKULL_TEXTURE);
+    const size = SKULL_SIZE * s;
+    if (picture) context.drawImage(picture, levelX - size / 2, levelY - size / 2, size, size);
+  }
+  if (data.cast?.iconPath) {
+    const icon = art.image(data.cast.iconPath);
+    const size = ICON_SIZE * s;
+    if (icon) {
+      context.drawImage(icon, left + LEVEL_FROM_RIGHT * s - size / 2, castBottom - LEVEL_FROM_BOTTOM * s - size / 2, size, size);
     }
   }
 
-  if (!data.lootable && data.cast) {
-    const castY = barY + barHeight + scale;
-    const castHeight = PLATE_CAST_HEIGHT * scale;
-    context.fillStyle = "#080b0fd8";
-    context.fillRect(box.x, castY, box.width, castHeight);
-    // A channel empties instead of filling, and it arrives already emptying. The flag is left for
-    // the colour, which is the only thing here that still has to tell the two apart.
-    context.fillStyle = data.cast.channel ? "#57b0d8" : "#e0b64a";
-    const filled = Math.max(0, Math.min(1, data.cast.progress));
-    context.fillRect(box.x + 1, castY + 1, (box.width - 2) * filled, castHeight - 2);
-    context.font = `${Math.round(9 * scale)}px system-ui, sans-serif`;
-    context.textAlign = "center";
-    // Outlined and light, like the name above it, rather than dark on the fill. Dark text was
-    // chosen to sit on the amber fill — 10.2:1 there — but the bar is only filled in proportion to
-    // the cast, so for the first half of every cast the name sat on the unfilled backdrop instead:
-    // 1.01:1 over dark geometry, 1.34:1 against the brightest sky. Unreadable exactly while the
-    // cast is worth reading, and readable only once it no longer matters.
-    //
-    // The outline is what carries it, which is why the pair of numbers to check is not the fill
-    // against the background but the glyph against its own outline: #f2f5f8 on the outline reads
-    // 12.2:1 over the amber fill and 12.9:1 over the channel blue, and the outline itself stands
-    // 7.0:1 and 5.8:1 off those fills. Whatever is behind the bar, the letters keep their edge.
-    context.lineWidth = 3 * scale;
-    context.strokeStyle = "#0a0d12cc";
-    const castLabel = fitPlateText(context, data.cast.name, box.width - 4 * scale);
-    context.strokeText(castLabel, box.x + box.width / 2, castY + castHeight - 2 * scale);
-    context.fillStyle = "#f2f5f8";
-    context.fillText(castLabel, box.x + box.width / 2, castY + castHeight - 2 * scale);
-    context.textAlign = "left";
+  // HIGHLIGHT: the glow, added to the plate under the mouse.
+  if (data.hovered) {
+    const glow = art.image(PLATE_GLOW_TEXTURE);
+    if (glow) {
+      context.globalCompositeOperation = "lighter";
+      context.drawImage(glow, left, top, box.width, box.height);
+    }
   }
-
-  const markSize = 15 * scale;
-  let markX = box.x + box.width / 2;
-  if (data.raidMark !== undefined) {
-    drawRaidMark(context, data.raidMark, markX, box.y - markSize * 0.7, markSize);
-    markX += markSize;
-  }
-  if (data.questMark) {
-    context.font = `bold ${Math.round(16 * scale)}px system-ui, sans-serif`;
-    context.textAlign = "center";
-    context.lineWidth = 3 * scale;
-    context.strokeStyle = "#1b1200";
-    context.fillStyle = data.questMark === "?" ? "#ffd24a" : "#ffe36e";
-    context.strokeText(data.questMark, markX, box.y - markSize * 0.3);
-    context.fillText(data.questMark, markX, box.y - markSize * 0.3);
-    context.textAlign = "left";
-  }
+  context.restore();
 }

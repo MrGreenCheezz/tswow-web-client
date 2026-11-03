@@ -5,7 +5,7 @@ import { isWorldObjectDead, type WorldObjectState, type WorldPosition, type Worl
 import type { EnvironmentObject } from "./Terrain.js";
 import { creatureIconSource, type CreatureMetadata } from "./CreatureMetadata.js";
 import { setIconSource } from "./ui/IconImage.js";
-import { drawPlate, plateLayout, stackPlates, type PlateBox, type PlateData } from "./NamePlate.js";
+import { PLATE_NAME_RAISE, drawPlate, plateLayout, stackPlates, type PlateArt, type PlateBox, type PlateData } from "./NamePlate.js";
 import { viewSubjectIn } from "./game/ViewSubject.js"; // 11.02-I
 import { drawnUnitPosition, hiddenBySeat, type DrawnPoint } from "./VehiclePassengerOverlay.js"; // 11.02-tails
 // 22.10 ARC-2 S3a: the game-object click test and the overlay's range moved to GameObjectClickable.ts (the renderer
@@ -227,6 +227,9 @@ export class SimpleScene {
     cameraPivotHeight = CAMERA_DEFAULT_PIVOT_HEIGHT,
     /** 06.10-7.24: a game object's model box as drawn (world corners), for its click box. */
     gameObjectCorners?: (object: WorldObjectState, out: Float64Array) => boolean,
+    /** 03.11 (6.37): the plate's pictures, and whether plates may overlap (nameplateAllowOverlap). */
+    plateArt?: PlateArt,
+    platesOverlap = true,
   ): void {
     const { width, height } = this.#resize();
     const context = this.#context;
@@ -289,7 +292,7 @@ export class SimpleScene {
     }
     objects.sort((left, right) => right.point.depth - left.point.depth);
 
-    const plates: Array<{ box: PlateBox; data: PlateData; depth: number; clickable: boolean }> = [];
+    const plates: Array<{ box: PlateBox; data: PlateData; depth: number }> = [];
     for (const { object, point, distance } of objects) {
       const position = object.position!;
       const drawnAt = drawnUnitPosition(object, SEAT_DRAWN) ?? position; // 11.02-tails: the seat point, if drawn on one
@@ -343,8 +346,14 @@ export class SimpleScene {
         // 241 and 244 all selected the corpse, and a right click there opened its loot instead of
         // swinging. The corpse stays reachable by its own body box (`#pushUnitHit`), centred on it.
         const data = plateFor?.(object, distance);
-        const anchorY = dead ? point.y - Math.max(14, bodyHeight * 0.45) / 2 : top.y;
-        if (data) plates.push({ box: plateLayout(data, point.x, anchorY), data, depth: point.depth, clickable: !dead });
+        if (data) {
+          // 03.11 (6.37): the plate hangs from the name point raised by two thirds of a yard (Wow.exe 0x00715720).
+          const name = data.namePoint;
+          const anchor = projectPoint({
+            x: name?.x ?? drawnAt.x, y: name?.y ?? drawnAt.y, z: (name?.z ?? drawnAt.z + heightInWorld) + PLATE_NAME_RAISE,
+          }, camera, width, height);
+          if (anchor) plates.push({ box: plateLayout(anchor.x, anchor.y, height), data, depth: point.depth });
+        }
       } else if (object.typeId === 5) this.#drawGameObject(object, point, top.y, bodyHeight, distance, isSelected,
         gameObjectCorners && clickableGameObject(object) // 06.10-7.24-review: no box for what nothing can click
           ? projectedBoxRect(object, gameObjectCorners, camera, width, height) : undefined); // 06.10-7.24
@@ -361,15 +370,15 @@ export class SimpleScene {
     }
     // After every body, and only once every box is known: a plate that has been shoved upwards by
     // a nearer one must not be painted before the plate that shoved it.
-    stackPlates(plates);
+    if (!platesOverlap) stackPlates(plates);
+    // 03.11 (6.37): far under near, and the target over all of them (its frame level is 20, the others' 10, measured).
+    plates.sort((left, right) => Number(left.data.target) - Number(right.data.target) || right.depth - left.depth);
     for (const plate of plates) {
-      drawPlate(context, plate.box, plate.data);
+      drawPlate(context, plate.box, plate.data, plateArt);
       // The plate over a head is a click target of its own, and at any distance it is the larger
       // one: a mob at thirty yards is twenty pixels of body under a hundred pixels of plate. Pushed
       // after every body, so a plate wins over whatever it happens to hang in front of — `pick`
-      // scans this list backwards. Plates never overlap each other, because `stackPlates` has just
-      // seen to that. A corpse's plate is not one of these: see `clickable` above.
-      if (!plate.clickable) continue;
+      // scans this list backwards, so what is painted last takes the click.
       this.#hits.push({ guid: plate.data.guid, x: plate.box.x, y: plate.box.y, width: plate.box.width, height: plate.box.height });
     }
   }
