@@ -267,6 +267,12 @@ export const SETTING_DEFINITIONS: readonly SettingDefinition[] = [
     hint: "Текстуры частиц и заклинаний, увеличенные нейросетью в 2–4 раза. Нужен набор, собранный на сервере.",
   },
   {
+    // 3.63: the stock interface's pictures from the gateway's ui HD set (HdUiTextures.ts).
+    id: "experimentalSharpUiTextures", label: "Чёткий интерфейс", group: "Эффекты", kind: "boolean",
+    fallback: true,
+    hint: "Рамки, кнопки и окна, увеличенные нейросетью. Нужен набор, собранный на сервере. Применится после перезагрузки страницы.",
+  },
+  {
     // 23.10 (7.48): ground and building textures from the gateway's world HD set, BC7 on the GPU (HdWorldTextures.ts).
     // 24.10 (7.48 step 3): and the scenery models' — trees, doodads, skyboxes.
     id: "experimentalSharpWorldTextures", label: "Чёткие текстуры мира", group: "Эффекты", kind: "boolean",

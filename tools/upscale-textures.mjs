@@ -2,6 +2,7 @@
 //
 //   node tools/upscale-textures.mjs --set effects            build or bring up to date the effects set
 //   node tools/upscale-textures.mjs --set effects --dry-run  say what would be done, touch nothing
+//   node tools/upscale-textures.mjs --set ui                 the stock interface's pictures (3.63)
 //
 // Options: --model (default per set, SET_MODEL below: animevideov3 for effects, x4plus for the world), --batch 150 (textures per GPU run),
 // --max-side 512 (the largest side an upscaled texture may reach; 256 keeps ×4 to 64 px sources and ×2 to 128),
@@ -43,8 +44,8 @@ import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } 
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PNG } from "pngjs";
-import { decodeBlp } from "./blp.mjs";
-import { effectsSet, worldSet, GROUND_MAX_SOURCE, SET_NAMES, WORLD_MAX_SOURCE } from "./hd-texture-set.mjs";
+import { decodeBlp, readBlpHeader } from "./blp.mjs";
+import { effectsSet, uiSet, worldSet, GROUND_MAX_SOURCE, SET_NAMES, WORLD_MAX_SOURCE } from "./hd-texture-set.mjs";
 import {
   assemble, buildWorkImages, dilateUnderAlpha, effectScale, fidelity, planLayout, ALPHA_SNAP, DILATE_ALPHA, FIDELITY_LIMIT,
 } from "./hd-texture-image.mjs";
@@ -64,7 +65,7 @@ export const DILATED_PIPELINE = `${PIPELINE}/dilate${DILATE_ALPHA}`;
 
 /** 24.10 (7.48 step 3): the pixel pipeline a texture of `set` is built by (`image`: its decoded source). */
 export function pipelineFor(set, image) {
-  if (set !== "world") return PIPELINE;
+  if (set !== "world" && set !== "ui") return PIPELINE; // 3.63: ui, whose cut-out edges had the same dark rims to lose
   for (let index = 3; index < image.data.length; index += 4) if (image.data[index] !== 255) return DILATED_PIPELINE;
   return PIPELINE;
 }
@@ -83,7 +84,7 @@ export const MODEL = "realesr-animevideov3";
  * on screen animevideov3's level 0 read 6 % softer than the original's magnified texels on Stormwind's cobbles. The
  * streaks it draws into soft smoke do not arise on these opaque surfaces. 4× the GPU time (11.5 s against 2.8 s).
  */
-export const SET_MODEL = Object.freeze({ effects: MODEL, world: "realesrgan-x4plus" });
+export const SET_MODEL = Object.freeze({ effects: MODEL, world: "realesrgan-x4plus", ui: "realesrgan-x4plus" }); // 3.63: ui, the owner's pick from the samples
 
 /** The same name the gateway computes (src/gateway/HdTextures.ts `hdTextureId`). */
 export function hdTextureId(path) {
@@ -101,6 +102,7 @@ export function hdTextureDirectory() {
  */
 export const SCALE_POLICY = {
   effects: (width, height, maxSide = 512) => effectScale(width, height, maxSide),
+  ui: (width, height, maxSide = 512) => effectScale(width, height, maxSide), // 3.63: ×4 to 128 px, ×2 at 256 px, none past that
   world: (width, height, maxSide = 1024, path = "") => {
     const side = Math.max(width, height);
     const limit = path.startsWith("tileset\\") ? GROUND_MAX_SOURCE : WORLD_MAX_SOURCE;
@@ -335,7 +337,10 @@ async function main() {
   const archives = await clientArchives(clientDirectory());
   let releaseSetLock = () => undefined;
   try {
-    const entries = options.set === "effects"
+    const entries = options.set === "ui" // 3.63
+      ? await uiSet(archives, (blp) => { try { return blp ? readBlpHeader(blp) : undefined; } catch { return undefined; } },
+        (report) => console.log(`${report.textures} interface textures`))
+      : options.set === "effects"
       ? await effectsSet(archives, (report) => console.log(`${report.models} spell models, ${report.read} read, ${report.missing} not in the client`))
       : await worldSet(archives, (report) => console.log(`${report.ground} ground textures, ${report.roots} root WMOs, `
         + `${report.wmoTextures} more building textures, ${report.secondTextures} more WMO second textures, `

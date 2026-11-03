@@ -264,6 +264,8 @@ import {
 
 import { frameXmlViewport } from "./FrameXmlWorldPolicy.js";
 import { hideFrameXmlPanel, showFrameXmlPanel } from "./FrameXmlPanels.js"; // 3.62
+import { withHdUiTexture } from "../HdUiTextures.js"; // 3.63
+import { settingOn } from "../ui/Settings.js"; // 3.63
 
 /** `WorldObjectState.typeId` of a player, as the other FrameXML resolvers spell it. */
 const TYPEID_PLAYER = 4;
@@ -3781,6 +3783,7 @@ export async function mountFrameXmlVertical(
       url.searchParams.set("path", path.replaceAll("/", "\\"));
       return url.href;
     };
+    const sharpInterface = settingOn("experimentalSharpUiTextures"); // 3.63: read once, a window keeps its pictures
     const textureUrl = (path: string): string => {
       // Live item metadata can return an already trusted gateway URL. Keep that route intact so
       // item/spell icons do not get wrapped as `/texture?path=https://...`; reject every other
@@ -3791,7 +3794,7 @@ export async function mountFrameXmlVertical(
       // FrameXML texture names are not URLs; they use the `/texture?path=` route below.
       const url = new URL("/texture", origin);
       url.searchParams.set("path", path.replaceAll("/", "\\"));
-      return url.href;
+      return withHdUiTexture(url.href, path, sharpInterface); // 3.63
     };
     // A picture that arrives is drawn on the frames holding it (`pictureArrived`), not by a
     // structural re-apply of the whole HUD; the renderer is built just below.

@@ -35,6 +35,7 @@ export const SETTING_SECTIONS: Readonly<Partial<Record<SettingGroup, readonly Se
         "experimentalMissileTrails", // 26.10 (6.27, test)
         "experimentalLootBeams", // 26.10
         "experimentalSharpEffectTextures", // 23.10 (7.48)
+        "experimentalSharpUiTextures", // 3.63
       ]),
     }),
     Object.freeze({

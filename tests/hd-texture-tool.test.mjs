@@ -7,12 +7,15 @@ import {
   ALPHA_SNAP, assemble, boundaries, buildWorkImages, commonGrid, effectScale, fidelity, planLayout, FIDELITY_LIMIT,
 } from "../tools/hd-texture-image.mjs";
 import {
-  EFFECT_TEXTURE_PREFIXES, mergeUses, modelTextureUses, spellVisualModelPaths, upscalable,
+  EFFECT_TEXTURE_PREFIXES, mergeUses, modelTextureUses, spellVisualModelPaths, UI_TEXTURE_EXCLUDED, UI_TEXTURE_PREFIX, uiSet,
+  uiTextureUse, upscalable,
 } from "../tools/hd-texture-set.mjs";
 import { downsample, nativeScale } from "../tools/hd-texture-upscaler.mjs";
 import { entryUpToDate, hdTextureId as toolId, PIPELINE } from "../tools/upscale-textures.mjs";
 import { hdTextureId as gatewayId } from "../dist/code/gateway/HdTextures.js";
 import { HD_EFFECT_TEXTURE_PREFIXES } from "../dist/code/browser/HdEffectTextures.js";
+import { noteGatewayAssetGenerations, resetGatewayGeneration } from "../dist/code/browser/GatewayGeneration.js";
+import { HD_UI_TEXTURE_EXCLUDED, HD_UI_TEXTURE_PREFIX, isHdUiTexturePath, withHdUiTexture } from "../dist/code/browser/HdUiTextures.js";
 
 function image(width, height, pixel) {
   const data = new Uint8Array(width * height * 4);
@@ -214,4 +217,46 @@ test("SpellVisualEffectName.dbc model names are read as .m2 paths", () => {
   dbc.writeUInt32LE(24, 20 + recordSize + 8);
   strings.copy(dbc, 20 + records * recordSize);
   assert.deepEqual(spellVisualModelPaths(dbc), ["spells\\holy_impact.m2", "world\\thing.m2"]);
+});
+
+test("3.63: the ui set and the browser agree on what it covers", async () => {
+  assert.equal(HD_UI_TEXTURE_PREFIX, UI_TEXTURE_PREFIX);
+  assert.deepEqual([...HD_UI_TEXTURE_EXCLUDED], UI_TEXTURE_EXCLUDED);
+  const archives = {
+    list: async () => new Set([
+      "interface\\buttons\\ui-panel-button-up.blp", "interface\\worldmap\\azeroth\\azeroth1.blp",
+      "interface\\glues\\login\\x.blp", "interface\\cursor\\point.blp", "interface\\gluexml\\notes.toc",
+      "interface\\tooltips\\ui-tooltip-border.blp", "interface\\broken.blp",
+    ]),
+    read: async (path) => path,
+  };
+  const size = (path) => (path.endsWith("border.blp") ? { width: 128, height: 16 } : path.endsWith("broken.blp") ? undefined : { width: 128, height: 32 });
+  const entries = await uiSet(archives, size);
+  assert.deepEqual(entries.map((entry) => entry.path), ["interface\\buttons\\ui-panel-button-up.blp", "interface\\tooltips\\ui-tooltip-border.blp"]);
+  for (const entry of entries) assert.equal(isHdUiTexturePath(entry.path), true);
+  assert.equal(isHdUiTexturePath("Interface\\WorldMap\\Azeroth\\Azeroth1.blp"), false);
+  assert.equal(isHdUiTexturePath("Interface\\Cursor\\Point.blp"), false);
+  assert.equal(isHdUiTexturePath("World\\Generic\\x.blp"), false);
+  assert.equal(isHdUiTexturePath("Interface\\Buttons\\UI-Panel-Button-Up.blp"), true, "in any case");
+});
+
+test("3.63: an edge sheet is cut into its eight cells and a background tiles", () => {
+  assert.deepEqual(uiTextureUse("interface\\tooltips\\ui-tooltip-border.blp", 128, 16).grids, [[1, 8]]);
+  assert.deepEqual(uiTextureUse("interface\\buttons\\ui-panel-button-up.blp", 128, 32).grids, []);
+  assert.equal(uiTextureUse("interface\\tooltips\\ui-tooltip-background.blp", 64, 64).wrap, true);
+  assert.equal(uiTextureUse("interface\\background\\ui-button.blp", 64, 64).wrap, false, "the file's name, not its folder");
+});
+
+test("3.63: no hd= without the setting or without a set on the gateway", () => {
+  const url = "http://127.0.0.1:8090/texture?path=x";
+  assert.equal(withHdUiTexture(url, "Interface\\Buttons\\x.blp", false), url);
+  assert.equal(withHdUiTexture(url, "Interface\\Buttons\\x.blp", true), url, "no generation published in this process");
+  noteGatewayAssetGenerations("http://127.0.0.1:8090", undefined, undefined, "98fd091e44be40abf0ff");
+  try {
+    assert.equal(withHdUiTexture(url, "Interface\\Buttons\\x.blp", true), `${url}&hd=98fd091e44be40abf0ff`);
+    assert.equal(withHdUiTexture(url, "Interface\\Buttons\\x.blp", false), url, "the setting off");
+    assert.equal(withHdUiTexture(url, "Interface\\WorldMap\\x.blp", true), url, "a path the set does not cover");
+  } finally {
+    resetGatewayGeneration();
+  }
 });

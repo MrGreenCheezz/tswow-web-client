@@ -113,6 +113,7 @@ export const COMPARISON_GRAPHICS_OVERRIDES: Readonly<SettingValues> = Object.fre
   experimentalFantasyGlow: false,
   experimentalLivingSpells: false, // 23.10 (6.27)
   experimentalSharpEffectTextures: false, // 23.10 (7.48)
+  experimentalSharpUiTextures: false, // 3.63
   experimentalSharpWorldTextures: false, // 23.10 (7.48 step 2)
   experimentalCinematicGrade: false,
   experimentalCinematicBloom: false,

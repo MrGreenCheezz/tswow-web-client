@@ -15,6 +15,7 @@
 // - `world` (23.10, step 2): the ground textures and the buildings' (WMO) diffuse textures. 24.10 (step 3, the last
 //   one by the owner's decision): plus the scenery models' own textures — world doodads and WMO doodads, trees,
 //   skybox models (`MODEL_TEXTURE_PREFIXES`) — and the WMO materials' second textures (env maps, composite layers).
+// - `ui` (03.11, 3.63): the stock interface's pictures, but for the world map's tiles, the login screen and the cursors.
 
 const TEXTURE_SIZE = 16;
 const HEADER_TEXTURES = 0x50;
@@ -30,7 +31,7 @@ const TEXTURE_TYPE_OWN = 0;
 /** The subtrees that hold character, creature and item art: never part of an HD set (owner, 23.10). */
 const NEVER_UPSCALED = ["character\\", "creature\\", "item\\"];
 
-export const SET_NAMES = ["effects", "world"];
+export const SET_NAMES = ["effects", "world", "ui"];
 
 /**
  * The folders effect art lives in. The `effects` set keeps only these: a spell model that borrows a building's
@@ -174,6 +175,31 @@ export async function effectsSet(archives, report = () => undefined) {
   }
   report({ models: models.size, read, missing });
   return mergeUses(lists).filter((entry) => EFFECT_TEXTURE_PREFIXES.some((prefix) => entry.path.startsWith(prefix)));
+}
+
+/** 3.63: what the `ui` set covers. Equal to `src/browser/HdUiTextures.ts` (a test holds them so). */
+export const UI_TEXTURE_PREFIX = "interface\\";
+export const UI_TEXTURE_EXCLUDED = ["interface\\worldmap\\", "interface\\glues\\", "interface\\cursor\\"];
+
+/**
+ * 3.63: how one interface picture is cut. Nothing in the files says, so it goes by what the corpus does: a sheet eight
+ * times as wide as it is tall is a backdrop's edge file, eight cells the game draws apart (FRAME_XML_EDGE_PIECES), and a
+ * backdrop's background tiles.
+ */
+export function uiTextureUse(path, width, height) {
+  return { path, grids: width === height * 8 ? [[1, 8]] : [], wrap: /background/.test(path.slice(path.lastIndexOf("\\"))) };
+}
+
+/** 3.63: the `ui` set, one entry per interface picture in the archives. `size` reads a picture's width and height, or nothing. */
+export async function uiSet(archives, size, report = () => undefined) {
+  const entries = [];
+  for (const path of [...await archives.list(UI_TEXTURE_PREFIX)].sort()) {
+    if (!path.endsWith(".blp") || UI_TEXTURE_EXCLUDED.some((prefix) => path.startsWith(prefix))) continue;
+    const known = size(await archives.read(path));
+    if (known) entries.push(uiTextureUse(path, known.width, known.height));
+  }
+  report({ textures: entries.length });
+  return entries;
 }
 
 /** 23.10 (7.48): MOMT records are 64 bytes in 3.3.5a; the diffuse texture's MOTX offset is at +0x0C. */

@@ -169,6 +169,36 @@ test("6.39: a Stand the file lists with no keys is the rest pose, not the first 
   assert.equal(chooseAnimation(drums.clips, {}).animation, 4);
 });
 
+test("6.39: the client's own training dummy stands still", async (t) => {
+  let chain;
+  try {
+    const { clientDirectory } = await import("../tools/paths.mjs");
+    const { clientArchives } = await import("../tools/mpq.mjs");
+    chain = await clientArchives(clientDirectory());
+  } catch {
+    t.skip("no 3.3.5a client on this machine");
+    return;
+  }
+  const data = await chain.read("Creature\\Object\\WoodenDummy.m2");
+  if (!data) {
+    t.skip("the client has no WoodenDummy.m2");
+    return;
+  }
+  const model = Buffer.from(data);
+  const skeleton = parseM2Skeleton(model, { asWowExe: true, animations: new Map() });
+  assert.equal(skeleton.clips.some((clip) => clip.animationId === 0), false, "the reader writes no clip for its Stand");
+  const dummy = buildSkinnedTemplateFrom(new THREE.BufferGeometry(), {
+    parents: Int16Array.from(skeleton.bones.map((bone) => bone.parent)),
+    pivots: Float32Array.from(skeleton.bones.flatMap((bone) => bone.pivot)),
+    flags: new Uint16Array(skeleton.bones.length),
+    animations: [...new Set(m2Animations(model, { asWowExe: true }).map((record) => record.animationId))],
+    clips: skeleton.clips,
+  }, 2);
+  const chosen = chooseAnimation(dummy.clips, {});
+  assert.equal(chosen.animation, 0, "Stand, not CombatWound");
+  assert.equal(dummy.clips.get(chosen.animation).tracks.length, 0);
+});
+
 test("a template answers an id with its first clip and keeps the others beside it", () => {
   const built = template([skeletonClip(0, 0, 2.667, 15818), skeletonClip(0, 1, 2.5, 1129), skeletonClip(4, 0, 1, 32767)],
     [skeletonClip(16, 0, 1, 16383), skeletonClip(16, 1, 1.2, 16384, 2, 4)]);
