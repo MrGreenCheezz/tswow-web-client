@@ -278,7 +278,7 @@ import {
 import { selectWmoPortalGroups } from "./WmoOcclusion.js";
 import {
   createWmoCameraWalkState, walkWmoFromCamera, wmoCameraWalkNote, wmoCameraWalkStale, wmoGroupIsRoom, wmoGroupOfCollision,
-  wmoGroupHasTwin, wmoHasOutdoorGroup, wmoPlacementOwns, wmoWalkReachedOutside, type WmoCameraWalkState,
+  wmoGroupTwinsUncertain, wmoHasOutdoorGroup, wmoPlacementOwns, wmoWalkReachedOutside, type WmoCameraWalkState,
 } from "./WmoCameraWalk.js"; // 02.11
 import { WmoRangeTable, sameWmoSelection, type WmoRangeTotals } from "./WmoGroupRange.js"; // P1-12a/b
 import { createWmoPortalMemo, wmoPortalMemoAnswer, wmoPortalMemoNote, type WmoPortalMemo } from "./WmoPortalMemo.js"; // P1-12c
@@ -14021,8 +14021,8 @@ export class WorldRenderer3D {
     if (surface && placed.visualId === this.#cameraSurfaceVisualId) {
       if (placed.cameraSurface !== surface) {
         placed.cameraSurface = surface;
-        placed.cameraSurfaceGroup = wmoGroupOfCollision(model.groups, surface.groupFlags, surface.groupBounds);
-        placed.cameraSurfaceTwin = wmoGroupHasTwin(model.groups, placed.cameraSurfaceGroup);
+        placed.cameraSurfaceGroup = wmoGroupOfCollision(model.groups, surface.groupFlags, surface.groupBounds, surface.groupTwin); // 7.56
+        placed.cameraSurfaceTwin = wmoGroupTwinsUncertain(model.groups, placed.cameraSurfaceGroup, surface.groupTwins); // 7.56
       }
       const group = model.groups[placed.cameraSurfaceGroup!];
       if (!group) return undefined;

@@ -58,15 +58,18 @@ const SAME_BOUNDS = 1e-3;
 
 /**
  * The file's group a collision group stands for, or -1. The `.vmo` leaves groups out (Stormwind's 82 and 93), so its
- * index is not the file's (`WmoMinimapAlign.ts`); a kept group has the same flags and box in both.
+ * index is not the file's (`WmoMinimapAlign.ts`); a kept group has the same flags and box in both. `twin` (7.56) is which of
+ * the groups with these flags and this box it is, counted in the `.vmo`, which keeps the file's order.
  */
 export function wmoGroupOfCollision(
   groups: readonly Pick<WmoCameraWalkGroup, "flags" | "bounds">[],
   flags: number,
   bounds: Readonly<WmoBounds>,
+  twin = 0,
 ): number {
+  let left = twin;
   for (let index = 0; index < groups.length; index++) {
-    if (sameGroup(groups[index]!, flags, bounds)) return index;
+    if (sameGroup(groups[index]!, flags, bounds) && left-- === 0) return index;
   }
   return -1;
 }
@@ -79,14 +82,25 @@ function sameGroup(group: Pick<WmoCameraWalkGroup, "flags" | "bounds">, flags: n
     && Math.abs(box.maxY - bounds.maxY) <= SAME_BOUNDS && Math.abs(box.maxZ - bounds.maxZ) <= SAME_BOUNDS;
 }
 
-/** Whether another group has the flags and box of this one: `wmoGroupOfCollision` cannot tell them apart. */
-export function wmoGroupHasTwin(groups: readonly Pick<WmoCameraWalkGroup, "flags" | "bounds">[], index: number): boolean {
+/** 7.56: how many groups have the flags and the box of this one, itself included; 0 when it was not found. */
+export function wmoGroupTwinCount(groups: readonly Pick<WmoCameraWalkGroup, "flags" | "bounds">[], index: number): number {
   const group = groups[index];
-  if (!group) return false;
+  if (!group) return 0;
+  let count = 0;
   for (let other = 0; other < groups.length; other++) {
-    if (other !== index && sameGroup(groups[other]!, group.flags, group.bounds)) return true;
+    if (sameGroup(groups[other]!, group.flags, group.bounds)) count++;
   }
-  return false;
+  return count;
+}
+
+/**
+ * 7.56: whether the collision's numbering of twins cannot be trusted for this group: the `.vmo` left one of them out, so the
+ * count along them may be off by that one. Everywhere else `twin` names the room exactly.
+ */
+export function wmoGroupTwinsUncertain(
+  groups: readonly Pick<WmoCameraWalkGroup, "flags" | "bounds">[], index: number, collisionTwins: number,
+): boolean {
+  return wmoGroupTwinCount(groups, index) !== collisionTwins;
 }
 
 const PLANES = new WeakMap<WmoPortals, Float32Array>();

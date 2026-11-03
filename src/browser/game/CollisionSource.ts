@@ -119,6 +119,23 @@ export interface StaticWmoFloor {
   groupBounds: Readonly<CollisionModel["groups"][number]["bounds"]>;
 }
 
+/** 7.56: a `.vmo` group's place among those with its flags and box, which WmoCameraWalk reads as twins of the file's. */
+function collisionTwins(groups: CollisionModel["groups"], index: number): { groupTwin: number; groupTwins: number } {
+  const group = groups[index]!;
+  let groupTwin = 0;
+  let groupTwins = 0;
+  for (let other = 0; other < groups.length; other++) {
+    const candidate = groups[other]!;
+    const a = candidate.bounds;
+    const b = group.bounds;
+    if (candidate.flags !== group.flags || a.minX !== b.minX || a.minY !== b.minY || a.minZ !== b.minZ
+      || a.maxX !== b.maxX || a.maxY !== b.maxY || a.maxZ !== b.maxZ) continue;
+    if (other < index) groupTwin++;
+    groupTwins++;
+  }
+  return { groupTwin, groupTwins };
+}
+
 /**
  * 02.11: the static WMO group a point hangs over, for the walk of `WmoCameraWalk.ts`. One object per group and
  * collision revision, so an unchanged answer is the same object.
@@ -128,6 +145,9 @@ export interface StaticWmoSurface {
   readonly placement: Readonly<StaticWmoPlacementIdentity>;
   /** The `.vmo`'s group index, which is not the file's; the flags and the box name the file's group. */
   readonly groupIndex: number;
+  /** 7.56: which of the groups with these flags and this box it is, and how many there are in the `.vmo`. */
+  readonly groupTwin: number;
+  readonly groupTwins: number;
   readonly groupFlags: number;
   readonly groupBounds: Readonly<CollisionModel["groups"][number]["bounds"]>;
 }
@@ -459,6 +479,7 @@ export class CollisionSource {
     if (known?.revision === this.#revision && known.placement === placement && known.groupIndex === hit.groupIndex) return known;
     this.#surface = Object.freeze({
       revision: this.#revision, placement, groupIndex: hit.groupIndex, groupFlags: hit.flags, groupBounds: group.bounds,
+      ...collisionTwins(record!.model.groups, hit.groupIndex), // 7.56
     });
     return this.#surface;
   }

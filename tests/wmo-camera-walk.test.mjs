@@ -16,7 +16,7 @@ import { SHADOW_FAR_LAYER, SHADOW_PROXY_LAYER } from "../dist/code/browser/Casca
 import { createWmoPortalWalkScratch } from "../dist/code/browser/WmoOcclusion.js";
 import {
   WMO_GROUP_ALWAYS_DRAW, createWmoCameraWalkState, walkWmoFromCamera, wmoCameraWalkNote, wmoCameraWalkStale,
-  wmoGroupHasTwin, wmoGroupIsRoom, wmoGroupOfCollision, wmoHasOutdoorGroup, wmoPlacementOwns, wmoPortalPlanes, wmoWalkReachedOutside,
+  wmoGroupIsRoom, wmoGroupOfCollision, wmoGroupTwinCount, wmoGroupTwinsUncertain, wmoHasOutdoorGroup, wmoPlacementOwns, wmoPortalPlanes, wmoWalkReachedOutside,
 } from "../dist/code/browser/WmoCameraWalk.js";
 import { CollisionMesh, CollisionWorld } from "../dist/code/browser/game/Collision.js";
 
@@ -112,15 +112,21 @@ test("the collision's group is found by flags and box, not by its index", () => 
   assert.equal(wmoGroupOfCollision(visual, OUTDOOR, box(1)), -1, "no such flags");
 });
 
-test("twins are groups the collision's flags and box cannot tell apart", () => {
+test("7.56: twins are told apart by their place among themselves, while the .vmo kept them all", () => {
   const groups = [
     { flags: INDOOR, bounds: box(1) }, { flags: INDOOR, bounds: box(2) }, { flags: OUTDOOR, bounds: box(2) }, { flags: INDOOR, bounds: box(1) },
   ];
-  assert.equal(wmoGroupHasTwin(groups, 0), true);
-  assert.equal(wmoGroupHasTwin(groups, 3), true, "the later one too");
-  assert.equal(wmoGroupHasTwin(groups, 1), false, "the same box with other flags is another group");
-  assert.equal(wmoGroupHasTwin(groups, 2), false);
-  assert.equal(wmoGroupHasTwin(groups, -1), false, "the group was not found");
+  assert.equal(wmoGroupOfCollision(groups, INDOOR, box(1)), 0, "the first by default");
+  assert.equal(wmoGroupOfCollision(groups, INDOOR, box(1), 1), 3, "the second twin is the later group, not the first");
+  assert.equal(wmoGroupOfCollision(groups, INDOOR, box(1), 2), -1, "there is no third");
+  assert.equal(wmoGroupTwinCount(groups, 0), 2);
+  assert.equal(wmoGroupTwinCount(groups, 3), 2);
+  assert.equal(wmoGroupTwinCount(groups, 1), 1, "the same box with other flags is another group");
+  assert.equal(wmoGroupTwinCount(groups, -1), 0, "the group was not found");
+  assert.equal(wmoGroupTwinsUncertain(groups, 3, 2), false, "all kept: the count is exact");
+  assert.equal(wmoGroupTwinsUncertain(groups, 0, 1), true, "the .vmo left one out: which is which is not known");
+  assert.equal(wmoGroupTwinsUncertain(groups, 1, 1), false, "no twins at all");
+  assert.equal(wmoGroupTwinsUncertain(groups, -1, 1), true, "not found");
 });
 
 test("a still camera walks once", () => {
