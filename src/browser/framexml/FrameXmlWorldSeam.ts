@@ -1402,6 +1402,8 @@ export interface FrameXmlWorldSeam {
   readonly guildBank?: FrameXmlGuildBankModel;
   /** The macro C API over this client's macro store, and the macro cursor (FrameXmlMacro.ts). */
   readonly macros?: FrameXmlMacroModel;
+  /** 1.14: `GetMacroSpell(id)`: the name and rank of the spell the macro stands for. */
+  macroSpell?(id: unknown): readonly [string, string] | undefined;
   /**
    * What macro conditions — `SecureCmdOptionParse`'s `[combat]`, `[@focus,help]`, `[stance:2]` —
    * are evaluated against: this seam's own answers to the same questions (macro/MacroContext.ts).

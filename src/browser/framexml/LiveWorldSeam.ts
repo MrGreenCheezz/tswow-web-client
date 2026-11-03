@@ -431,6 +431,8 @@ import { FrameXmlBattlefieldListState } from "./FrameXmlBattlefieldList.js"; // 
 import { FrameXmlWorldPvpModel, type FrameXmlWorldPvpArea } from "./FrameXmlWorldPvpQueue.js"; // 3.24
 import { FrameXmlHelpModel } from "./FrameXmlHelp.js"; // 3.24
 import { activeGossipPoi, type GossipPoiMark } from "../GossipPoi.js"; // 3.13
+import { macroShownArgument, macroShownName } from "../macro/MacroShownAction.js"; // 1.14
+import { macroShownCommands } from "./FrameXmlMacroCommands.js"; // 1.14
 
 const ALLIANCE_RACE_IDS = new Set([1, 3, 4, 7, 11]);
 const HORDE_RACE_IDS = new Set([2, 5, 6, 8, 10]);
@@ -7038,6 +7040,53 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     return this.#context.spell(button.action);
   }
 
+  /** 1.14: a known spell by its name, the highest rank, remembered until the book changes (asked every frame by a macro button). */
+  #knownSpellByName(name: string): SpellMetadata | undefined {
+    const world = this.#context.world();
+    if (!world) return undefined;
+    if (this.#macroSpellBook !== world.knownSpells || this.#macroSpellBookSize !== world.knownSpells.length) {
+      this.#macroSpellBook = world.knownSpells;
+      this.#macroSpellBookSize = world.knownSpells.length;
+      this.#macroSpellNames.clear();
+    }
+    const key = name.toLowerCase();
+    const remembered = this.#macroSpellNames.get(key);
+    if (remembered) return remembered;
+    let best: SpellMetadata | undefined;
+    for (const known of world.knownSpells) {
+      const spell = this.#context.spell(known.id);
+      if (spell?.name?.toLowerCase() === key && (best === undefined || spell.spellLevel > best.spellLevel)) best = spell;
+    }
+    // Only a find: a row not cached yet may yet answer.
+    if (best) this.#macroSpellNames.set(key, best);
+    return best;
+  }
+
+  #macroSpellBook: unknown;
+  #macroSpellBookSize = 0;
+  readonly #macroSpellNames = new Map<string, SpellMetadata>();
+
+  /** 1.14: the spell a macro's text stands for right now (macro/MacroShownAction.ts). */
+  #macroBodySpell(body: string | undefined): SpellMetadata | undefined {
+    if (body === undefined) return undefined;
+    const argument = macroShownArgument(body, macroShownCommands());
+    const name = argument === undefined ? undefined : macroShownName(argument, this.macroContext());
+    return name === undefined ? undefined : this.#knownSpellByName(name);
+  }
+
+  /** 1.14: `GetMacroSpell(id)`. */
+  macroSpell(id: unknown): readonly [string, string] | undefined {
+    const spell = this.#macroBodySpell(this.macros.info(id)?.[2]);
+    return spell?.name ? [spell.name, spell.rank ?? ""] : undefined;
+  }
+
+  /** 1.14: the slot's spell as 0x005a8c30 reads it: its own, or a macro's. */
+  #slotSpell(slot: number): SpellMetadata | undefined {
+    const button = this.#button(slot);
+    if (button?.type === ACTION_BUTTON_MACRO) return this.#macroBodySpell(this.macros.slotBody(button.action));
+    return this.#metadata(slot);
+  }
+
   hasAction(slot: number): boolean {
     return this.#button(slot) !== undefined;
   }
@@ -7140,8 +7189,10 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
       if (!frameXmlSpellCastable(self, metadata, this.#target(), this.#usableHost, flags)) return [false, false];
       return frameXmlSpellHasPower(self, metadata) ? [true, false] : [false, true];
     }
-    if (button.type !== ACTION_BUTTON_SPELL) return [this.#usableHost.hasControl(), false];
-    const metadata = this.#metadata(slot);
+    // 1.14: a macro answers for the spell it stands for, and one that stands for none as before.
+    const macroSpell = button.type === ACTION_BUTTON_MACRO ? this.#slotSpell(slot) : undefined;
+    if (button.type !== ACTION_BUTTON_SPELL && !macroSpell) return [this.#usableHost.hasControl(), false];
+    const metadata = macroSpell ?? this.#metadata(slot);
     // A row or a character not cached yet: a doubt does not grey the button; a hold the world knows of does.
     if (!metadata) return [true, false];
     if (!self) {
@@ -7303,19 +7354,23 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
   isCurrentAction(slot: number): boolean {
     const button = this.#button(slot);
     const world = this.#context.world();
-    if (!button || !world || button.type !== ACTION_BUTTON_SPELL) return false;
+    if (!button || !world) return false;
+    // 1.14: a macro answers for the spell it stands for.
+    const spell = button.type === ACTION_BUTTON_MACRO ? this.#slotSpell(slot) : undefined;
+    if (button.type !== ACTION_BUTTON_SPELL && !spell) return false;
+    const spellId = spell?.id ?? button.action;
     // A profession's opener while its stock trade skill window shows (FrameXmlTradeSkill.ts).
-    if (this.tradeSkill.openerShowing(this.#context.spell(button.action))) return true;
+    if (this.tradeSkill.openerShowing(this.#context.spell(spellId))) return true;
     // The attack button is current while the player auto-attacks (Wow.exe 0x5aa240).
     // A sent request already counts: Wow.exe stores the target with the request (0x98e540) and
     // IsCurrentSpell(6603) reads that target (0x806030); 5.21.
     if (this.isAttackAction(slot)) return world.attacking === true || world.attackRequested === true;
-    return world.isActiveMountSpell(button.action);
+    return world.isActiveMountSpell(spellId);
   }
 
   /** The slot's spell has SPELL_EFFECT_ATTACK first (Wow.exe 0x5a96d0, FrameXmlActionRepeat.ts). */
   isAttackAction(slot: number): boolean {
-    return frameXmlIsAttackSpell(this.#metadata(slot));
+    return frameXmlIsAttackSpell(this.#slotSpell(slot)); // 1.14: a macro's too
   }
 
   /** The slot's spell is the one being repeated (Wow.exe 0x5a9470), not merely a repeating kind. */
@@ -7323,15 +7378,17 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     const button = this.#button(slot);
     const world = this.#context.world(); // L18 5.05
     // L18 5.05: 0x005a9470 reads the repeating slot (0x00d397d0) and the controller's wanted one (0x00d397cc).
-    return world !== undefined && button?.type === ACTION_BUTTON_SPELL // L18 5.05
-      && frameXmlIsAutoRepeatSpell(button.action, world.autoRepeatSpellId, world.autoRanged?.wantedSpellId); // L18 5.05
+    // 1.14: a macro's spell too.
+    const spellId = button?.type === ACTION_BUTTON_SPELL ? button.action : button?.type === ACTION_BUTTON_MACRO ? this.#slotSpell(slot)?.id : undefined;
+    return world !== undefined && spellId !== undefined // L18 5.05
+      && frameXmlIsAutoRepeatSpell(spellId, world.autoRepeatSpellId, world.autoRanged?.wantedSpellId); // L18 5.05
   }
 
   /**
    * `IsActionInRange(slot [, unit])` (Wow.exe 0x005a9d50 → 0x005a94c0 → 0x00809610,
    * FrameXmlActionRange.ts): the slot's spell — an item's on-use spell for an item button, as
    * 0x005a8c30 resolves it — against the named unit, else the current target. 1, 0, or nil for a
-   * target the spell cannot take. Macro buttons stay nil (their spell is not resolved here).
+   * target the spell cannot take. 1.14: a macro's spell when it stands for one.
    */
   actionInRange(slot: number, unit?: string): number | undefined {
     const world = this.#context.world();
@@ -7340,6 +7397,7 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     let spellId: number | undefined;
     if (button.type === ACTION_BUTTON_SPELL) spellId = button.action;
     else if (button.type === ACTION_BUTTON_ITEM) spellId = itemUseSpellId(this.#itemTemplate(world, button.action));
+    else if (button.type === ACTION_BUTTON_MACRO) spellId = this.#slotSpell(slot)?.id; // 1.14
     if (spellId === undefined) return undefined;
     // A unit that names nothing leaves the guid empty, and 0x00809610 then takes the current target.
     const named = (unit ? this.#unit(unit.toLowerCase()) : undefined) ?? this.#target();

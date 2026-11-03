@@ -360,6 +360,11 @@ export class FrameXmlMacroModel {
     return this.#bySlot(slot)?.name;
   }
 
+  /** 1.14: … its text, for the spell it stands for (macro/MacroShownAction.ts). */
+  slotBody(slot: number): string | undefined {
+    return this.#bySlot(slot)?.body;
+  }
+
   /** … and its icon (GetActionTexture). Undefined for a slot whose macro was deleted. */
   slotTexture(slot: number): string | undefined {
     const macro = this.#bySlot(slot);
@@ -381,6 +386,8 @@ export const FRAMEXML_MACRO_BINDINGS: Readonly<Record<string, FrameXmlSeamBindin
     return info ? [info[2]] : NOTHING;
   },
   GetMacroIndexByName: (seam, args) => [seam.macros?.indexByName(args[0]) ?? 0],
+  // 1.14: name and rank of the spell the macro stands for (0x005a89f0's +0x564).
+  GetMacroSpell: (seam, args) => seam.macroSpell?.(args[0]) ?? NOTHING,
   CreateMacro: (seam, args) => {
     const position = seam.macros?.create(args[0], args[1], args[2], args[3]);
     return position === undefined ? NOTHING : [position];
