@@ -94,6 +94,30 @@ test("an hd= request gets the HD copy while it is current, the original otherwis
   }
 });
 
+test("3.65: an HD picture says how many times larger it is, on a 304 too, and an original says nothing", async () => {
+  const { root, client, textures, hd } = await fixture();
+  try {
+    await writeFile(join(hd, "effects", "manifest.json"),
+      JSON.stringify({ schema: "hd-textures-1", entries: { [PATH.toLowerCase()]: { scale: 4 } } }));
+    await withGateway({
+      clientDirectory: client, texturesDirectory: textures,
+      hdTextures: { sets: new HdTextureSets(hd, { refreshMs: 0 }), isCurrent: async () => true },
+    }, async (base) => {
+      const { hdTextureGeneration: hg } = await status(base);
+      const path = `path=${encodeURIComponent(PATH)}`;
+      const answer = await ask(base, `${path}&hd=${hg}`);
+      assert.equal(answer.headers.get("x-hd-scale"), "4");
+      assert.equal(answer.headers.get("access-control-expose-headers"), "x-hd-scale", "or fetch cannot read it across origins");
+      const again = await ask(base, `${path}&hd=${hg}`, { "if-none-match": answer.headers.get("etag") });
+      assert.equal(again.status, 304);
+      assert.equal(again.headers.get("x-hd-scale"), "4");
+      assert.equal((await ask(base, path)).headers.get("x-hd-scale"), null);
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("hd= cannot reach outside the set: traversal and absolute paths are refused before any file is named", async () => {
   const { root, client, textures, hd } = await fixture();
   try {

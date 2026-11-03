@@ -95,7 +95,7 @@ import {
   servedConfigIdentity, servedIdentity, // 25.10 (serve S2)
 } from "./CachePolicy.js";
 import { installContentEtag } from "./ContentEtag.js"; // 25.10 (serve S2)
-import { HD_TEXTURE_CONTENT_TYPE, HD_TEXTURE_PARAM, type HdTextureSets } from "./HdTextures.js"; // 23.10 (7.48)
+import { HD_TEXTURE_CONTENT_TYPE, HD_SCALE_HEADER, HD_TEXTURE_PARAM, type HdTextureSets } from "./HdTextures.js"; // 23.10 (7.48)
 import {
   METADATA_GENERATION_PARAM, VISUAL_GENERATION_PARAM, assetCacheControl, gatewayCodeIdentity, metadataGeneration,
   visualGeneration, scriptDirectoryIdentity, statTreeIdentity, lockfileIdentity, // 25.10 (serve S2)
@@ -1314,9 +1314,12 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
             const pinned = hdRequested === await sets.generation()
               && visualAssetGeneration !== undefined
               && url.searchParams.get(VISUAL_GENERATION_PARAM) === visualAssetGeneration;
+            const scale = effectFile === undefined ? undefined : await sets.scale(texturePath); // 3.65
             await respondFile(request, response, hdFile, {
               origin, contentType: modelFile !== undefined ? HD_TEXTURE_CONTENT_TYPE : "image/png",
               cacheControl: pinned ? IMMUTABLE : REVALIDATE,
+              headers: scale === undefined ? undefined
+                : { [HD_SCALE_HEADER]: String(scale), "access-control-expose-headers": HD_SCALE_HEADER },
             });
             return;
           } catch {

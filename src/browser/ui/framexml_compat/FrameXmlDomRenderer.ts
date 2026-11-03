@@ -8,7 +8,7 @@ import {
   type FrameXmlRect,
 } from "./FrameXmlTypes.js";
 import type { FrameXmlUiBridge } from "./FrameXmlRuntime.js";
-import { FRAME_XML_EDGE_PIECES, frameXmlTexturePath, type FrameXmlTextureSource } from "./FrameXmlTextures.js";
+import { FRAME_XML_EDGE_PIECES, frameXmlTexturePath, type FrameXmlTextureSource, pictureSrcset } from "./FrameXmlTextures.js";
 import { hasFrameXmlEscapes, parseFrameXmlText } from "./FrameXmlText.js";
 import { paintFrameXmlAlphaGradient } from "./FrameXmlAlphaGradient.js"; // 05.10-3.21
 import { FrameXmlAccessibility, frameXmlAccessibilityCares } from "./FrameXmlAccessibility.js";
@@ -3463,9 +3463,17 @@ export class FrameXmlDomRenderer {
     // particular, values such as https://..., //host/... and /path/... remain
     // inert metadata.
     const resolved = this.bindPicture(rendered, "texture", source) ?? "";
-    if (element.getAttribute("src") !== resolved) {
-      if (resolved) element.setAttribute("src", resolved);
-      else element.removeAttribute("src");
+    // 3.65: an HD picture is `srcset` alone: a `src` beside it counts as a 1x candidate, and a screen at 1x would take it.
+    const srcset = pictureSrcset(resolved, this.#textures?.pictureScale?.(resolved));
+    if (srcset) {
+      if (element.getAttribute("srcset") !== srcset) element.setAttribute("srcset", srcset);
+      if (element.getAttribute("src") !== null) element.removeAttribute("src");
+    } else {
+      if (element.getAttribute("srcset") !== null) element.removeAttribute("srcset");
+      if (element.getAttribute("src") !== resolved) {
+        if (resolved) element.setAttribute("src", resolved);
+        else element.removeAttribute("src");
+      }
     }
 
     const corners = frame.texCoords?.corners;

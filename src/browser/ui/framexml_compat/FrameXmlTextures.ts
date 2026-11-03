@@ -155,6 +155,21 @@ export interface FrameXmlTextureSource {
   acquireEdge(path: string): FrameXmlEdgeSet | undefined;
   peekEdge(path: string): FrameXmlEdgeSet | undefined;
   releaseEdge(path: string): void;
+  /** 3.65: how many times larger than its source the picture behind this blob URL is, when it is. */
+  pictureScale?(url: string): number | undefined;
+}
+
+/** 3.65: the header an HD picture's scale comes in (gateway/HdTextures.ts `HD_SCALE_HEADER`). */
+const HD_SCALE_HEADER = "x-hd-scale";
+
+/**
+ * 3.65: an HD picture keeps its source's size on the page. A Texture with no declared size is drawn at its file's size
+ * (StatusIcon-Online is 16 px and declares none), and a `<img>` with no width takes the size of what it shows, so the
+ * 64 px copy came out four times too big. `srcset`'s density descriptor is the browser's own word for this: the natural
+ * size is the picture's divided by it, and every pixel is still there to draw from.
+ */
+export function pictureSrcset(url: string, scale: number | undefined): string | undefined {
+  return url !== "" && scale !== undefined && scale > 1 ? `${url} ${scale}x` : undefined;
 }
 
 interface Entry {
@@ -192,6 +207,8 @@ export class FrameXmlTextureCache implements FrameXmlTextureSource {
   readonly #entries = new Map<string, Entry>();
   /** Keys with `refs === 0`, oldest first, revoked past `UNREFERENCED_LIMIT`. */
   readonly #idle = new Set<string>();
+  /** 3.65: blob URL → scale, for the pictures that have one. */
+  readonly #scales = new Map<string, number>();
   readonly #edges = new Map<string, { refs: number; set?: FrameXmlEdgeSet }>();
   #disposed = false;
 
@@ -210,6 +227,10 @@ export class FrameXmlTextureCache implements FrameXmlTextureSource {
       else if (entry.settled) failed += 1;
     }
     return { held: this.#entries.size, ready, failed };
+  }
+
+  pictureScale(url: string): number | undefined {
+    return this.#scales.get(url);
   }
 
   /** The status the gateway gave for one path, once it has answered. */
@@ -291,6 +312,7 @@ export class FrameXmlTextureCache implements FrameXmlTextureSource {
       if (entry.objectUrl) URL.revokeObjectURL(entry.objectUrl);
     }
     this.#entries.clear();
+    this.#scales.clear();
     this.#idle.clear();
     for (const held of this.#edges.values()) {
       for (const url of Object.values(held.set ?? {})) URL.revokeObjectURL(url);
@@ -305,7 +327,10 @@ export class FrameXmlTextureCache implements FrameXmlTextureSource {
       const entry = this.#entries.get(oldest.value);
       this.#idle.delete(oldest.value);
       this.#entries.delete(oldest.value);
-      if (entry?.objectUrl) URL.revokeObjectURL(entry.objectUrl);
+      if (entry?.objectUrl) {
+        URL.revokeObjectURL(entry.objectUrl);
+        this.#scales.delete(entry.objectUrl);
+      }
     }
   }
 
@@ -325,6 +350,8 @@ export class FrameXmlTextureCache implements FrameXmlTextureSource {
         }
         entry.objectUrl = objectUrl;
         entry.settled = true;
+        const scale = Number(response.headers?.get(HD_SCALE_HEADER)); // 3.65
+        if (Number.isInteger(scale) && scale > 1) this.#scales.set(objectUrl, scale);
         this.#onChange?.(path, "texture");
         return;
       } catch {

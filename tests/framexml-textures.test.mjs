@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  FRAME_XML_EDGE_PIECES, FrameXmlTextureCache, frameXmlTextureCandidates, frameXmlTexturePath,
+  FRAME_XML_EDGE_PIECES, FrameXmlTextureCache, frameXmlTextureCandidates, frameXmlTexturePath, pictureSrcset,
 } from "../dist/code/browser/ui/framexml_compat/FrameXmlTextures.js";
 import { repairFontSentinelSegment } from "../dist/code/browser/ui/framexml_compat/FrameXmlFonts.js";
 
@@ -50,6 +50,29 @@ test("non-HTTP texture references stay on the safe asset-path conversion", () =>
     "Interface\\Glues\\Common\\Logo_lg.blp",
     "Interface\\Glues\\Common\\Logo.blp",
   ]);
+});
+
+test("3.65: an HD picture keeps its source's size: the gateway's scale becomes a density", async () => {
+  let created = 0;
+  globalThis.URL.createObjectURL = () => `blob:scaled-${++created}`;
+  globalThis.URL.revokeObjectURL = () => {};
+  const scaleFor = { "HD.blp": "4", "Plain.blp": null, "Bad.blp": "many", "One.blp": "1" };
+  const cache = new FrameXmlTextureCache({
+    resolve: (path) => path,
+    fetch: async (path) => ({ ok: true, status: 200, blob: async () => ({}), headers: { get: (name) => (name === "x-hd-scale" ? scaleFor[path] : null) } }),
+  });
+  for (const path of Object.keys(scaleFor)) cache.acquire(path);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const hd = cache.peek("HD.blp");
+  assert.equal(cache.pictureScale(hd), 4);
+  assert.equal(pictureSrcset(hd, cache.pictureScale(hd)), `${hd} 4x`);
+  for (const path of ["Plain.blp", "Bad.blp", "One.blp"]) {
+    assert.equal(cache.pictureScale(cache.peek(path)), undefined, path);
+    assert.equal(pictureSrcset(cache.peek(path), undefined), undefined);
+  }
+  assert.equal(pictureSrcset("", 4), undefined, "no picture, no srcset");
+  cache.dispose();
+  assert.equal(cache.pictureScale(hd), undefined);
 });
 
 test("the cache fetches once, hands the same blob to every holder, and lets go on release", async () => {

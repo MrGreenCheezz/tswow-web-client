@@ -41,6 +41,8 @@ export interface FileResponseOptions {
    * the current visual generation). Absent: revalidated, as before.
    */
   readonly cacheControl?: string | undefined;
+  /** 3.65: more headers for the answer, a 304 included. */
+  readonly headers?: Readonly<Record<string, string>> | undefined;
   /** Injectable for tests: how the file is opened. */
   readonly open?: (filename: string) => Promise<FileHandle>;
 }
@@ -76,6 +78,7 @@ export async function respondFile(
       ...(options.origin ? { vary: "Origin" } : {}),
       "content-type": options.contentType,
       etag,
+      ...options.headers,
     };
     if (etagMatches(request.headers["if-none-match"], etag)) {
       response.writeHead(304, headers);

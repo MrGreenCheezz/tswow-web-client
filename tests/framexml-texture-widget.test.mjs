@@ -22,6 +22,40 @@ function textureFixture() {
   return { vm, bridge };
 }
 
+test("3.65: an HD picture is drawn through srcset alone, and a plain one through src alone", async () => {
+  const { FrameXmlDomRenderer } = await import("../dist/code/browser/ui/framexml_compat/FrameXmlDomRenderer.js");
+  const { layoutDocument, layoutHost } = await import("./fixtures/framexml-layout-document.mjs");
+  const { vm, bridge } = textureFixture();
+  const pictures = { "Interface\\HD.blp": "blob:hd", "Interface\\Plain.blp": "blob:plain" };
+  const textures = {
+    acquire: (path) => pictures[path], peek: (path) => pictures[path], release() {},
+    acquireEdge() {}, peekEdge() {}, releaseEdge() {},
+    pictureScale: (url) => (url === "blob:hd" ? 4 : undefined),
+  };
+  try {
+    const root = bridge.CreateFrame("Frame", "Root");
+    const texture = bridge.CreateFrame("Texture", "Picture", root);
+    bridge.SetTexture(texture, "Interface\\HD");
+    const renderer = new FrameXmlDomRenderer(layoutHost(layoutDocument(), 1024, 768), { bridge, textures });
+    renderer.mount([root]);
+    const element = renderer.elementFor(texture);
+    assert.equal(element.getAttribute("srcset"), "blob:hd 4x", "its file is 4 times its source: the size on the page stays the source's");
+    assert.equal(element.getAttribute("src"), null, "a src beside it is a 1x candidate, and a screen at 1x would take it");
+
+    bridge.SetTexture(texture, "Interface\\Plain");
+    renderer.sync();
+    assert.equal(element.getAttribute("src"), "blob:plain");
+    assert.equal(element.getAttribute("srcset"), null, "or it would go on drawing the last picture");
+
+    bridge.SetTexture(texture, "Interface\\HD");
+    renderer.sync();
+    assert.equal(element.getAttribute("srcset"), "blob:hd 4x");
+    assert.equal(element.getAttribute("src"), null);
+  } finally {
+    vm.close();
+  }
+});
+
 test("Texture:SetTexture keeps paths and colors, but rejects tables before gateway resolution", async () => {
   const { vm, bridge } = textureFixture();
   const requests = [];

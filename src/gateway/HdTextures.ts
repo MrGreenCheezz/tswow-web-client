@@ -42,6 +42,11 @@ export const HD_TEXTURE_NAMESPACE = "hd-texture-v1";
 export const HD_TEXTURE_PARAM = "hd";
 /** 23.10 (7.48): the set whose entries are served compressed to the world routes (and never as PNG). */
 export const HD_WORLD_SET = "world";
+/**
+ * 3.65: the answer's header saying how many times larger than its source an HD picture is. The stock interface draws a
+ * Texture with no declared size at its file's size, so it has to know the file's size: the picture alone cannot say.
+ */
+export const HD_SCALE_HEADER = "x-hd-scale";
 /** 23.10 (7.48): what a compressed HD answer is sent as (tools/hd-texture-bc7.mjs `CONTAINER_CONTENT_TYPE`). */
 export const HD_TEXTURE_CONTENT_TYPE = "application/x-webclient-hd-texture";
 /** 23.10 (7.48): the ground layer id namespaces (tools/generate-terrain-splat.mjs). */
@@ -88,6 +93,8 @@ interface SetSnapshot {
   readonly names: readonly string[];
   readonly generation: string | undefined;
   readonly world: WorldIndex;
+  /** 3.65: texture path → how many times larger its HD picture is, for the sets answered as PNG. */
+  readonly scales: ReadonlyMap<string, number>;
 }
 
 interface ManifestRead {
@@ -95,6 +102,21 @@ interface ManifestRead {
   readonly mtimeMs: number;
   readonly bytes: Buffer;
   readonly world: WorldIndex | undefined;
+  readonly scales: ReadonlyMap<string, number> | undefined; // 3.65
+}
+
+/** 3.65: a manifest's `path → scale`; a manifest that does not parse has none. */
+export function hdScalesOf(manifest: Buffer | string): ReadonlyMap<string, number> {
+  const scales = new Map<string, number>();
+  try {
+    const entries = (JSON.parse(String(manifest)) as { entries?: Record<string, { scale?: unknown }> }).entries ?? {};
+    for (const [path, entry] of Object.entries(entries)) {
+      if (typeof entry?.scale === "number" && Number.isInteger(entry.scale) && entry.scale > 1) scales.set(path, entry.scale);
+    }
+  } catch {
+    // A broken manifest serves no scale, and `find` still finds the file by its name.
+  }
+  return scales;
 }
 
 /**
@@ -175,7 +197,8 @@ export class HdTextureSets {
       if (known && known.size === info.size && known.mtimeMs === info.mtimeMs) return known;
       const bytes = await readFile(file);
       const read: ManifestRead = { size: info.size, mtimeMs: info.mtimeMs, bytes,
-        world: name === HD_WORLD_SET ? worldIndexOf(bytes) : undefined };
+        world: name === HD_WORLD_SET ? worldIndexOf(bytes) : undefined,
+        scales: name === HD_WORLD_SET ? undefined : hdScalesOf(bytes) };
       this.#manifests.set(name, read);
       return read;
     } catch {
@@ -190,19 +213,21 @@ export class HdTextureSets {
       entries = (await readdir(this.directory, { withFileTypes: true }))
         .filter((entry) => entry.isDirectory() && SET_NAME.test(entry.name)).map((entry) => entry.name).sort();
     } catch {
-      return { names: [], generation: undefined, world: EMPTY_WORLD_INDEX };
+      return { names: [], generation: undefined, world: EMPTY_WORLD_INDEX, scales: new Map() };
     }
     const hash = createHash("sha1").update(HD_TEXTURE_NAMESPACE);
     const names: string[] = [];
     let world = EMPTY_WORLD_INDEX;
+    const scales = new Map<string, number>();
     for (const name of entries) {
       const manifest = await this.#readManifest(name);
       if (!manifest) continue;
       names.push(name);
       if (manifest.world) world = manifest.world;
+      if (manifest.scales) for (const [path, scale] of manifest.scales) scales.set(path, scale);
       hash.update(`\0${name}\0${manifest.bytes.length}\0`).update(manifest.bytes);
     }
-    return { names, generation: names.length === 0 ? undefined : hash.digest("hex").slice(0, 20), world };
+    return { names, generation: names.length === 0 ? undefined : hash.digest("hex").slice(0, 20), world, scales };
   }
 
   async #current(): Promise<SetSnapshot> {
@@ -215,6 +240,11 @@ export class HdTextureSets {
       this.#pending = undefined;
     });
     return this.#pending;
+  }
+
+  /** 3.65: how many times larger than its source the PNG `find` answers for this path is; undefined when the manifest does not say. */
+  async scale(texturePath: string): Promise<number | undefined> {
+    return (await this.#current()).scales.get(texturePath.replaceAll("/", "\\").toLowerCase());
   }
 
   /** The HD generation (20 hex), or undefined when there is no set at all. */
