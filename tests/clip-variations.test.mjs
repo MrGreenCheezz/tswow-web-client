@@ -14,6 +14,16 @@ import { decodeWvaAnimations, decodeWvaAnimationsPacked } from "../dist/code/bro
 import { unpackWvaAnimations } from "../dist/code/browser/WvaAnimationDecode.js";
 import { visualModelCacheNamespace } from "../dist/code/gateway/Gateway.js";
 
+let archives;
+try {
+  const { clientArchives } = await import("../tools/mpq.mjs");
+  const { clientDirectory } = await import("../tools/paths.mjs");
+  archives = await clientArchives(clientDirectory());
+} catch {
+  archives = undefined;
+}
+const withClient = { skip: archives ? false : "no 3.3.5a client on this machine" };
+
 /** A model with sequences and a lookup table and nothing else. A record: [id, variation, ms, frequency, next, replayMin, replayMax]. */
 function model(records, lookup) {
   const header = 0x130;
@@ -52,9 +62,11 @@ test("an animation is the sequence the model's table finds, not the first record
   assert.deepEqual(m2Animations(horse).map((clip) => [clip.animationId, clip.duration]), [[0, 4000], [37, 833]]);
   assert.equal(m2Animations(horse)[0].variation, undefined, "and no variation fields on it");
 
-  // A collision: ids 5 and 9 both hash to slot 1 of 4, and the probe adds the square of its step.
-  const probed = model([[5, 0, 100, 32767, -1], [9, 0, 200, 32767, -1]], [0xffff, 0, 1, 0xffff]);
-  assert.deepEqual(m2Animations(probed, { asWowExe: true }).map((clip) => clip.duration), [100, 200]);
+  // A collision: ids 5, 13 and 21 all hash to slot 5 of 8, and the probe adds the square of its step: slot 6, then 10 % 8 = 2. The
+  // trap in slot 0 is where a probe adding the step alone would land, a record of 21 that the table does not mean.
+  const probed = model([[5, 0, 100, 32767, -1], [13, 0, 200, 32767, -1], [21, 0, 300, 32767, -1], [21, 0, 999, 32767, -1]],
+    [3, 0xffff, 2, 0xffff, 0xffff, 0, 1, 0xffff]);
+  assert.deepEqual(m2Animations(probed, { asWowExe: true }).map((clip) => clip.duration), [100, 200, 300]);
 
   // No table: the records in order, as 0x00832ab0 reads them then.
   const bare = model([[37, 0, 833, 32767, -1], [37, 0, 467, 32767, -1]], []);
@@ -82,14 +94,7 @@ test("the variations travel with the sequence the table found, the head first an
   const replayed = model([[0, 0, 100, 0, 1, 3, 5], [0, 1, 100, 100, -1, 1, 2]], [0]);
   assert.deepEqual(m2Animations(replayed, { asWowExe: true }).map((clip) => [clip.variation, clip.replayMin, clip.replayMax]),
     [[0, 3, 5], [1, 1, 2]]);
-  assert.deepEqual(parseM2SkeletonIds(replayed), [[0, 0], [0, 1]]);
 });
-
-/** `parseM2Skeleton` on a model with one bone and one key per sequence would need a whole file; its order is what is asked here. */
-function parseM2SkeletonIds(data) {
-  const records = m2Animations(data, { asWowExe: true });
-  return records.map((clip) => [clip.animationId, clip.variation]);
-}
 
 test("only units turn over, in the tools and in the gateway alike", () => {
   for (const [path, namespace] of [
@@ -201,7 +206,32 @@ test("a replayed one-shot runs its times over and counts as a one-shot", () => {
   assert.equal(playsAs(action, THREE.LoopRepeat), true);
 });
 
-test("the real skeleton parser keeps a variation behind its head", () => {
-  // No bones in this file: the parser declines it, which is the only thing it can say about a table alone.
-  assert.equal(parseM2Skeleton(model([[0, 0, 100, 32767, -1]], [0]), { asWowExe: true }), undefined);
+test("the client's own files: what the stand measured", withClient, async () => {
+  const b = String.fromCharCode(92);
+  const read = async (path) => {
+    const m2 = Buffer.from(await archives.read(`${path}.m2`));
+    const animations = new Map();
+    for (const clip of m2Animations(m2, { asWowExe: true })) {
+      if (clip.external && !animations.has(clip.external)) animations.set(clip.external, await archives.read(`${path}${clip.external}.anim`));
+    }
+    return { m2, skeleton: parseM2Skeleton(m2, { animations, asWowExe: true }) };
+  };
+  // m1: JumpStart hands over to Jump at 467 ms and is entered over 150, the second record of its id.
+  const horse = await read(`Creature${b}RidingHorse${b}RidingHorse`);
+  const jump = m2Animations(horse.m2, { asWowExe: true }).find((clip) => clip.animationId === 37);
+  assert.deepEqual([jump.duration, jump.blendTime], [467, 150]);
+  assert.deepEqual([m2Animations(horse.m2).find((clip) => clip.animationId === 37).duration], [833], "not what the first record says");
+  // idle1: HumanMale's Stand, the fidget at 1129 of 32767 and the two with no share gone. The parser keeps a variation behind its
+  // head and an id's clips together.
+  const man = await read(`Character${b}Human${b}Male${b}HumanMale`);
+  assert.deepEqual(man.skeleton.clips.filter((clip) => clip.animationId === 0).map((clip) => [clip.variation, clip.duration, clip.frequency]),
+    [[0, 2667, 15818], [1, 2500, 1129], [2, 5333, 15818]]);
+  let last = -1;
+  for (const clip of man.skeleton.clips) {
+    assert.ok(clip.animationId >= last, "in the order of their ids");
+    last = clip.animationId;
+  }
+  // The same model without the option: variation 0 alone, as a visual-v24 artifact has it.
+  const old = parseM2Skeleton(man.m2, { animations: new Map() });
+  assert.equal(old.clips.some((clip) => clip.variation !== undefined), false);
 });

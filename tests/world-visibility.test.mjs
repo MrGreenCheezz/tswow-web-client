@@ -439,7 +439,7 @@ test("V4 spell unit clips run once for their full duration and lead into held pr
   assert.match(source, /const primary = animation\.followUp \?\? animation;/,
     "a precast lead-in retains ownership of the held primary");
   // 12.10 6.03/6.07: a clip held on a frame (speed 0, so never «running») is not restarted either.
-  assert.match(source, /if \((?:held \|\| )?\(?unit\.action\.loop === wantedLoop && unit\.action\.isRunning\(\)\)?\) return;/,
+  assert.match(source, /if \((?:held \|\| )?\(?playsAs\(unit\.action, wantedLoop\) && unit\.action\.isRunning\(\)\)?\) return;/,
     "same-id lead-ins avoid restarting a running action");
   assert.match(source, /unit\.action\.setLoop\(wantedLoop, Infinity\)/,
     "same-id lead-ins still switch LoopOnce to LoopRepeat for the primary");
