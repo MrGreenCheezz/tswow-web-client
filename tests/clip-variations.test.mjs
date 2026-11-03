@@ -8,7 +8,7 @@ import { m2Animations, parseM2Skeleton } from "../tools/m2.mjs";
 import { encodeWvaAnimations } from "../tools/wvm.mjs";
 import { isUnitModelPath, visualModelNamespace } from "../tools/visual-model-key.mjs";
 import {
-  addSkinnedClips, buildSkinnedTemplateFrom, chooseClipVariation, clipReplays, drawClipVariation, playedSeconds, playsAs,
+  addSkinnedClips, buildSkinnedTemplateFrom, chooseAnimation, chooseClipVariation, clipReplays, drawClipVariation, playedSeconds, playsAs,
 } from "../dist/code/browser/AnimatedModel.js";
 import { decodeWvaAnimations, decodeWvaAnimationsPacked } from "../dist/code/browser/Wvm.js";
 import { unpackWvaAnimations } from "../dist/code/browser/WvaAnimationDecode.js";
@@ -148,6 +148,26 @@ function template(clips, extra = []) {
   if (extra.length) addSkinnedClips(built, extra);
   return built;
 }
+
+test("6.39: a Stand the file lists with no keys is the rest pose, not the first clip looping for ever", () => {
+  // The training dummy: Stand has no track at all, so the reader writes no clip for it; `animations` still names it.
+  const dummy = buildSkinnedTemplateFrom(new THREE.BufferGeometry(), {
+    parents: Int16Array.of(-1), pivots: new Float32Array(3), flags: new Uint16Array(1), animations: [0, 9, 10],
+    clips: [skeletonClip(9, 0, 333), skeletonClip(10, 0, 1334)],
+  }, 2);
+  assert.deepEqual(chooseAnimation(dummy.clips, {}), { animation: 0, loop: true });
+  assert.equal(dummy.clips.get(0).tracks.length, 0, "nothing moves");
+  assert.ok(dummy.clips.get(0).duration > 0, "a mixer can run it");
+  assert.equal(dummy.clips.get(9).tracks.length, 1, "the wounds are still there to be played");
+
+  // With no Stand record at all nothing is invented: the old answer stands for the one model of that kind.
+  const drums = buildSkinnedTemplateFrom(new THREE.BufferGeometry(), {
+    parents: Int16Array.of(-1), pivots: new Float32Array(3), flags: new Uint16Array(1), animations: [4],
+    clips: [skeletonClip(4, 0, 1000)],
+  }, 2);
+  assert.equal(drums.clips.has(0), false);
+  assert.equal(chooseAnimation(drums.clips, {}).animation, 4);
+});
 
 test("a template answers an id with its first clip and keeps the others beside it", () => {
   const built = template([skeletonClip(0, 0, 2.667, 15818), skeletonClip(0, 1, 2.5, 1129), skeletonClip(4, 0, 1, 32767)],

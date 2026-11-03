@@ -716,6 +716,9 @@ export function disposeSkinnedInstance(instance: SkinnedInstance | undefined): v
   }
 }
 
+/** 6.39: a Stand with no keys in the file. No tracks, so the bones rest where the rig puts them. */
+const REST_STAND_CLIP = new THREE.AnimationClip(`animation-${Stand}`, 1, []);
+
 /**
  * A template around geometry that has already been built for one appearance.
  *
@@ -751,6 +754,11 @@ export function buildSkinnedTemplateFrom(
     }
     if (clip) rememberVariation(variations, source, clip, overlay);
   }
+  // 6.39: a Stand in the file with no keys at all is the rest pose, and the reader writes no clip for
+  // it (`parseM2Skeleton`), though `animations` still lists it. Without this `chooseAnimation` found no
+  // stand and looped the model's first clip: CombatWound on the training dummy, Death on the farmer.
+  // 13 of the client's 1353 creature models are like this.
+  if (!clips.has(Stand) && skeleton.animations.includes(Stand)) clips.set(Stand, REST_STAND_CLIP);
   // A rig whose whole set was held back is still a rig: the clips are one request away, and
   // refusing it here would drop the model back to a stand-in capsule it never recovers from.
   // Hand-authored/legacy fixtures predate WVG1 and legitimately omit this optional tail.
