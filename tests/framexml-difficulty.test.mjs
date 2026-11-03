@@ -186,6 +186,23 @@ test("a leader's change reaches the members' GetDungeonDifficulty before the nex
   assert.deepEqual([...model.dungeon()], [2, 1], "an answer outside the group leaves the group's value");
 });
 
+test("1.08: a leader's raid change reaches the members' GetRaidDifficulty before the next group list", async () => {
+  // Group::SetRaidDifficulty answers every member with inGroup 1; Wow.exe 0x5255a0 writes the group's word from it.
+  const { OPCODES } = await import("../dist/code/generated/opcodes.js");
+  const { PacketWriter } = await import("../dist/code/protocol/PacketWriter.js");
+  const { travelClient, settle } = await import("./fixtures/world-packets.mjs");
+  const { client, connection } = await travelClient([], 7n);
+  client.group = { leaderGuid: 9n, dungeonDifficulty: 0, raidDifficulty: 0, groupType: 2, members: [] };
+  const model = new FrameXmlDifficultyModel({ world: () => client });
+  assert.deepEqual([...model.raid()], [1, 1]);
+  connection.push(OPCODES.MSG_SET_RAID_DIFFICULTY, new PacketWriter().u32(3).u32(1).u32(1).toUint8Array());
+  await settle();
+  assert.deepEqual([...model.raid()], [4, 4], "the raid's value follows the server's answer");
+  connection.push(OPCODES.MSG_SET_RAID_DIFFICULTY, new PacketWriter().u32(1).u32(1).u32(0).toUint8Array());
+  await settle();
+  assert.deepEqual([...model.raid()], [4, 2], "an answer outside the group leaves the group's value");
+});
+
 test("without a seam the neutral IsInInstance is the client's nil, \"none\"", async () => {
   const { FRAMEXML_NEUTRAL_API, FRAMEXML_NEUTRAL_PRELUDE } = await import("../dist/code/browser/framexml/FrameXmlNeutralApi.js");
   const { GlueLuaVm } = await import("../dist/code/browser/glue/GlueLua.js");

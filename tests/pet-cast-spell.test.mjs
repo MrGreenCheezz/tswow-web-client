@@ -412,5 +412,22 @@ test("11.02: a steered unit's ground spell waits for the reticle; the point goes
   assert.equal(connection.sent.length, 1);
   client.castUnitSpellAt(VEHICLE, CANNON, { x: Number.NaN, y: 0, z: 0 });
   assert.equal(connection.sent.length, 1, "no point, nothing sent");
+  // 2.05: on an item or a game object the cursor picked, from the unit.
+  connection.sent.length = 0;
+  assert.equal(client.castUnitSpellOnTarget(VEHICLE, CANNON, { item: 0x55n }), true);
+  assert.equal(client.castUnitSpellOnTarget(VEHICLE, CANNON, { gameObject: 0x77n }), true);
+  const [onItem, onObject] = connection.sent.map(({ opcode, payload }) => ({ opcode, reader: new PacketReader(payload) }));
+  for (const packet of [onItem, onObject]) {
+    assert.equal(packet.opcode, OPCODES.CMSG_PET_CAST_SPELL);
+    assert.equal(packet.reader.u64(), VEHICLE);
+    packet.reader.u8();
+    assert.equal(packet.reader.u32(), CANNON);
+    assert.equal(packet.reader.u8(), 0);
+  }
+  assert.equal(onItem.reader.u32(), 0x10, "TARGET_FLAG_ITEM");
+  assert.equal(onItem.reader.packedGuid(), 0x55n);
+  assert.equal(onObject.reader.u32(), 0x800, "TARGET_FLAG_GAMEOBJECT");
+  assert.equal(onObject.reader.packedGuid(), 0x77n);
+  assert.equal(client.castUnitSpellOnTarget(0n, CANNON, { item: 0x55n }), false, "no unit, nothing sent");
   client.close();
 });

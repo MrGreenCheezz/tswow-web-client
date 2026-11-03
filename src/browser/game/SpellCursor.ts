@@ -68,6 +68,8 @@ export interface ItemTargetCursor {
   readonly source?: ItemTargetSource | undefined;
   /** The pending mask holds TARGET_FLAG_GAMEOBJECT_ITEM: a game object in the world is a target too. */
   readonly orObject?: boolean | undefined;
+  /** 2.05: the steered unit whose pet bar raised it (Wow.exe 0x0080cce0 from 0x005d4210); the cast goes out from that unit. */
+  readonly caster?: bigint | undefined;
 }
 
 interface ArmedCursor extends ItemTargetCursor {
@@ -86,6 +88,8 @@ export interface ItemTargetWorld {
     readonly selfGuid?: bigint | undefined;
   } | undefined;
   useItemOnItem?(bag: number, slot: number, itemGuid: bigint, spellId: number, targetGuid: bigint): boolean;
+  /** 2.05: a steered unit's spell on the item or object the cursor picked; false when nothing was sent. */
+  castUnitSpellOnTarget?(casterGuid: bigint, spellId: number, target: { item: bigint } | { gameObject: bigint }): boolean;
   castSpellOnItem?(spellId: number, itemGuid: bigint, cooldownDuration?: number, cooldownStartedOnEvent?: boolean): void;
   castSpellOnTradeSlot?(spellId: number, cooldownDuration?: number, cooldownStartedOnEvent?: boolean): boolean;
   /** A known spell on a game object (TARGET_FLAG_GAMEOBJECT); false when nothing was sent. */
@@ -174,7 +178,8 @@ export function spellTargetsObject(metadata: { itemOrObject?: boolean | undefine
  * Raise the cursor for a spell (no `source`) or an item's own spell (`source`). A cursor already up
  * is replaced: the client has one pending spell.
  */
-export function armItemTarget(world: object | undefined, spellId: number, source?: ItemTargetSource, orObject = false): boolean {
+export function armItemTarget(world: object | undefined, spellId: number, source?: ItemTargetSource, orObject = false,
+  caster?: bigint): boolean { // 2.05: caster
   if (!world || !Number.isSafeInteger(spellId) || spellId <= 0) return false;
   if (source && (source.guid === 0n || !Number.isInteger(source.bag) || !Number.isInteger(source.slot))) return false;
   const mapId = (world as { mapId?: unknown }).mapId;
@@ -183,6 +188,7 @@ export function armItemTarget(world: object | undefined, spellId: number, source
     spellId,
     ...(source ? { source: { bag: source.bag, slot: source.slot, guid: source.guid } } : {}),
     ...(orObject ? { orObject: true } : {}),
+    ...(caster !== undefined ? { caster } : {}), // 2.05
     world,
     mapId: typeof mapId === "number" ? mapId : undefined,
   };
@@ -405,6 +411,9 @@ function sendOnItem(cursor: ItemTargetCursor, world: ItemTargetWorld, guid: bigi
     return world.useItemOnItem?.(source.bag, source.slot, source.guid, cursor.spellId, guid) === true ? SENT : NONE;
   }
   drop();
+  if (cursor.caster !== undefined) { // 2.05: the unit's cooldown is its own bar's, not the character's
+    return world.castUnitSpellOnTarget?.(cursor.caster, cursor.spellId, { item: guid }) === true ? SENT : NONE;
+  }
   const cooldown = Math.max(facts?.recoveryTime ?? 0, facts?.categoryRecoveryTime ?? 0);
   world.castSpellOnItem?.(cursor.spellId, guid, cooldown, facts?.cooldownStartedOnEvent ?? false);
   return SENT;
@@ -514,6 +523,9 @@ export function targetGameObjectWithCursor(
   }
   const facts = spells(cursor.spellId);
   drop();
+  if (cursor.caster !== undefined) { // 2.05
+    return world.castUnitSpellOnTarget?.(cursor.caster, cursor.spellId, { gameObject: objectGuid }) === true ? SENT : NONE;
+  }
   const cooldown = Math.max(facts?.recoveryTime ?? 0, facts?.categoryRecoveryTime ?? 0);
   return world.castSpellOnGameObject?.(cursor.spellId, objectGuid, cooldown, facts?.cooldownStartedOnEvent ?? false) === true
     ? SENT : NONE;

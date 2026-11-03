@@ -7,6 +7,7 @@ import test from "node:test";
 import { game } from "../dist/code/browser/game/Context.js";
 import { GROUND_TARGET_MODE, cancelGroundTarget, pendingGroundTarget, pendingGroundTargetCaster } from "../dist/code/browser/game/GroundTarget.js";
 import { installUnitGroundTarget } from "../dist/code/browser/game/UnitGroundTarget.js";
+import { cancelItemTarget, pendingItemTarget, targetGameObjectWithCursor, targetItemWithCursor } from "../dist/code/browser/game/SpellCursor.js";
 
 const VEHICLE = 0xf150_7d9a_0000_0042n;
 const BOULDER = 54158;
@@ -47,6 +48,32 @@ test("a ground spell of the steered unit arms the reticle for that unit; any oth
     cancelGroundTarget();
     assert.equal(pendingGroundTargetCaster(), undefined, "cleared with the arming");
   } finally {
+    restore();
+  }
+});
+
+test("2.05: a steered unit's spell that waits for an item raises the item cursor, and the pick goes out from the unit", () => {
+  const PICK = 54160;
+  const { world, restore } = setup([[PICK, { itemOrObject: true }]]);
+  const casts = [];
+  world.castUnitSpellOnTarget = (...args) => { casts.push(args); return true; };
+  world.state = { objects: new Map([[77n, { guid: 77n, typeId: 5, fields: new Map() }], [55n, { guid: 55n, typeId: 1, fields: new Map() }]]) };
+  world.castSpellOnItem = () => assert.fail("not as the character");
+  world.castSpellOnGameObject = () => assert.fail("not as the character");
+  try {
+    let sent = 0;
+    assert.equal(world.armUnitGroundTarget(VEHICLE, PICK, () => sent++), true);
+    assert.equal(sent, 0);
+    assert.equal(pendingGroundTarget(), undefined, "not the ground reticle");
+    assert.equal(pendingItemTarget(world).caster, VEHICLE);
+    assert.equal(targetItemWithCursor(world.state.objects.get(55n), 55n, world, () => undefined).kind, "sent");
+    assert.equal(pendingItemTarget(world), undefined, "the pick takes the cursor down");
+
+    assert.equal(world.armUnitGroundTarget(VEHICLE, PICK, () => sent++), true);
+    assert.equal(targetGameObjectWithCursor(77n, world, () => undefined).kind, "sent");
+    assert.deepEqual(casts, [[VEHICLE, PICK, { item: 55n }], [VEHICLE, PICK, { gameObject: 77n }]]);
+  } finally {
+    cancelItemTarget();
     restore();
   }
 });

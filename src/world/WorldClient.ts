@@ -4459,6 +4459,20 @@ export class WorldClient {
     return true;
   }
 
+  /**
+   * 2.05: the steered unit's spell on an item or a game object the cursor picked — `CMSG_PET_CAST_SPELL` from the unit,
+   * as Wow.exe's cast sender writes any caster that is not the character (0x0080ac90). False when nothing was sent.
+   */
+  castUnitSpellOnTarget(casterGuid: bigint, spellId: number, target: { item: bigint } | { gameObject: bigint }): boolean {
+    if (this.#closed || casterGuid === 0n || !Number.isSafeInteger(spellId) || spellId <= 0) return false;
+    const castCount = (this.#castCount + 1) & 0xff;
+    const payload = buildPetCastSpell(casterGuid, castCount, spellId, 0, target);
+    if (!payload) return false;
+    this.#castCount = castCount;
+    this.#connection.send(OPCODES.CMSG_PET_CAST_SPELL, payload);
+    return true;
+  }
+
   /** The steered unit's cast at its target (or its trajectory shot), as `#castAsControlledUnit` decided it. */
   #sendUnitCast(casterGuid: bigint, spellId: number, target: bigint, missilePlan?: MissileCastPlan): void {
     // The count is the one every cast of this client draws from; the target is the press's unit or the
@@ -6445,8 +6459,12 @@ export class WorldClient {
 
     if (packet.opcode === OPCODES.MSG_SET_DUNGEON_DIFFICULTY || packet.opcode === OPCODES.MSG_SET_RAID_DIFFICULTY) {
       const difficulty = parseDungeonDifficulty(packet.payload);
-      if (packet.opcode === OPCODES.MSG_SET_RAID_DIFFICULTY) this.raidDifficulty = difficulty.difficulty;
-      else {
+      if (packet.opcode === OPCODES.MSG_SET_RAID_DIFFICULTY) {
+        this.raidDifficulty = difficulty.difficulty;
+        // 1.08: as the dungeon's below (Wow.exe 0x5255a0 with its third argument set). On a map with the dynamic
+        // difficulty flag, Map.dbc 0x100, Wow.exe leaves this word and calls 0x52d8d0 instead; that is not modelled.
+        if (difficulty.inGroup && this.group) this.group.raidDifficulty = difficulty.difficulty;
+      } else {
         this.dungeonDifficulty = difficulty.difficulty;
         // Group::SetDungeonDifficulty answers each member with inGroup set and sends no group
         // list; the client writes the group's value from it too (Wow.exe 0x525530).
