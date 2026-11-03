@@ -1,12 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-// 11.01 slice B, lifts. A lift (GAMEOBJECT_TYPE_TRANSPORT, 11) is a client-only ride: the server
-// never moves it (`GameObject::Update` only counts PathProgress, the relocation is commented out,
-// GameObject.cpp:520-554) and never makes a player its passenger (`GetTransport` is null for type
-// 11, MovementHandler.cpp:340-345). The client moves the platform along its TransportAnimation path
-// and the character standing on it with it; packets stay in world coordinates without
-// MOVEMENTFLAG_ONTRANSPORT. The phase: the create block's transport word is the server's uptime for
+// 11.01 slice B, lifts. A lift (GAMEOBJECT_TYPE_TRANSPORT, 11): the server never moves it
+// (`GameObject::Update` only counts PathProgress, the relocation is commented out, GameObject.cpp:520-554)
+// and never makes a player its passenger (`GetTransport` is null for type 11, MovementHandler.cpp:340-345).
+// The client moves the platform along its TransportAnimation path and rides it as a passenger. The phase: the create block's transport word is the server's uptime for
 // a lift (Object.cpp:442-454), and 11.01 it is what Wow.exe runs the lift on (0x00714250, 0x007139e0,
 // 0x00710640); the high half of GAMEOBJECT_DYNAMIC, `int16(PathProgress % period / period × 65535)`
 // (GameObject.cpp:2866-2873), is not read (0x0070cb60 → 0x005eeb70).
@@ -19,12 +17,12 @@ import { WorldState } from "../dist/code/world/WorldState.js";
 import { decodeCollisionModel, encodeCollisionModel } from "../dist/code/world/CollisionFormat.js";
 import { game } from "../dist/code/browser/game/Context.js";
 import {
-  LIFT_CARRY_HEARTBEAT_INTERVAL, advancePhysics, forgetMovementState, heartbeatDue, isGrounded, isMoving, movementHeartbeat,
+  advancePhysics, forgetMovementState, heartbeatDue, isGrounded, isMoving, movementHeartbeat,
   releaseAllInput, sendMovement,
 } from "../dist/code/browser/input/Movement.js";
 import { TransportCollision } from "../dist/code/browser/game/TransportCollision.js";
 import {
-  GO_STATE_READY, GO_TYPE_TRANSPORT, GameObjectColliders, LIFT_CARRY_MAX_STEP, setGameObjectColliders,
+  GO_FLAG_TRANSPORT, GO_STATE_READY, GO_TYPE_TRANSPORT, GameObjectColliders, setGameObjectColliders,
 } from "../dist/code/browser/game/GameObjectColliders.js";
 import { liftCarrierPose, liftClock, liftPoseAt } from "../dist/code/browser/LiftClock.js";
 
@@ -67,12 +65,13 @@ const UPTIME = 12 * PATH.period;
  * colliders read. The dynamic word, unless given, says another phase: Wow.exe does not read it.
  */
 function liftCreate({ phase = 0, dynamic = dynamicFor((phase + 3000) % PATH.period), transportTime = UPTIME + phase,
-  base = BASE, word = true } = {}) {
+  base = BASE, word = true, flags = 0x28 } = {}) {
   const values = new Map([
     [UPDATE_FIELDS.OBJECT_FIELD_ENTRY.offset, LIFT_ENTRY],
     [UPDATE_FIELDS.GAMEOBJECT_DISPLAYID.offset, LIFT_DISPLAY],
     [UPDATE_FIELDS.GAMEOBJECT_BYTES_1.offset, (GO_TYPE_TRANSPORT << 8) | GO_STATE_READY],
     [UPDATE_FIELDS.GAMEOBJECT_DYNAMIC.offset, dynamic],
+    [UPDATE_FIELDS.GAMEOBJECT_FLAGS.offset, flags],
   ]);
   const blocks = Math.ceil((Math.max(...values.keys()) + 1) / 32);
   const masks = new Array(blocks).fill(0);
@@ -146,7 +145,7 @@ test("a re-CREATE of the same lift resyncs its phase and keeps its mesh; a value
 // ---------------------------------------------------------------------------------------------
 // The ride, end to end: the real WorldClient over a fake connection and the real movement layer.
 
-async function liftWorld({ phase = 0, offset = { x: 1, y: 0.5 } } = {}) {
+async function liftWorld({ phase = 0, offset = { x: 1, y: 0.5 }, flags = 0x28 } = {}) {
   const clock = { now: 1000 };
   const realNow = performance.now;
   performance.now = () => clock.now;
@@ -173,7 +172,7 @@ async function liftWorld({ phase = 0, offset = { x: 1, y: 0.5 } } = {}) {
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(client.movementReady, true);
 
-  client.state.applyUpdate(liftCreate({ phase }), clock.now);
+  client.state.applyUpdate(liftCreate({ phase, flags }), clock.now);
   const lift = () => client.state.objects.get(LIFT);
   const start = pose(lift(), clock.now);
   const cos = Math.cos(start.orientation);
@@ -207,84 +206,132 @@ async function liftWorld({ phase = 0, offset = { x: 1, y: 0.5 } } = {}) {
 
 const sentOf = (connection, opcode) => connection.sent.filter((packet) => packet.opcode === opcode);
 
-test("standing on the lift: carried up and down without falling, packets in world coordinates without ONTRANSPORT", async () => {
+// Measured on Wow.exe's stand 04.11 (F:\\WowOracle\\runs\\lift-ride.txt): on the car every packet has the flag, the world position,
+// the guid, the offset and seat -1; standing still sends nothing however the car moves.
+test("standing on the lift: a passenger, carried up and down without falling, and silent while it stands", async () => {
   const env = await liftWorld();
   try {
     const startX = env.self().x;
     const startY = env.self().y;
-    let movingFrames = 0;
+    env.frame();
+    const seat = env.client.state.objects.get(SELF).transport;
+    assert.equal(seat?.guid, LIFT, "the floor's owner is its transport");
+    assert.equal(seat.seat, 0xff);
+    const boarded = sentOf(env.connection, OPCODES.MSG_MOVE_HEARTBEAT);
+    assert.equal(boarded.length, 1, "the change of seat is said once");
+    assert.equal(parseMovementPacket(boarded[0].payload).transport?.guid, LIFT);
+    env.connection.sent.length = 0;
     // Up for four seconds.
     for (let index = 0; index < 235; index++) {
       env.frame();
       const floor = pose(env.lift(), env.clock.now).z;
       assert.ok(near(env.self().z, floor, 0.02), `frame ${index}: on the platform (${env.self().z} vs ${floor})`);
       assert.ok(isGrounded(), `frame ${index}: never in the air`);
-      if (isMoving()) movingFrames++;
+      assert.equal(isMoving(), false, "nothing to say while it stands");
+      assert.equal(heartbeatDue(env.clock.now), false);
     }
     assert.ok(env.self().z > BASE.z + 38, `went up with it: ${env.self().z}`);
     assert.ok(near(env.self().x, startX, 1e-3) && near(env.self().y, startY, 1e-3), "a vertical shaft does not move it sideways");
-    assert.ok(movingFrames > 200, `a carried character is moving for the heartbeat (${movingFrames})`);
+    assert.equal(env.connection.sent.length, 0, "not one packet on the way up");
 
-    // The heartbeat the loop sends while carried: world position, no flag, no block.
+    // Any packet it does send: the world position, and the offset on the car.
     sendMovement(OPCODES.MSG_MOVE_HEARTBEAT);
     const packet = parseMovementPacket(sentOf(env.connection, OPCODES.MSG_MOVE_HEARTBEAT).at(-1).payload);
-    assert.equal(packet.flags & MOVEMENT_FLAGS.onTransport, 0, "no MOVEMENTFLAG_ONTRANSPORT for a lift");
-    assert.equal(packet.transport, undefined, "and no transport block");
+    assert.ok((packet.flags & MOVEMENT_FLAGS.onTransport) !== 0);
     assert.ok(near(packet.position.z, env.self().z, 1e-3) && near(packet.position.x, startX, 1e-3), "the world position");
-
-    // The top: the lift stops, the carry ends with one heartbeat where the character rests.
-    const before = sentOf(env.connection, OPCODES.MSG_MOVE_HEARTBEAT).length;
-    for (let index = 0; index < 30; index++) env.frame();
-    assert.equal(isMoving(), false, "standing on a lift that waits is standing");
-    const settled = sentOf(env.connection, OPCODES.MSG_MOVE_HEARTBEAT).slice(before);
-    assert.equal(settled.length, 1, "one heartbeat when the ride stops");
-    assert.ok(near(parseMovementPacket(settled[0].payload).position.z, BASE.z + 40, 0.01));
+    assert.equal(packet.transport.guid, LIFT);
+    assert.ok(near(packet.transport.z, 0, 0.02), `its offset on the car: ${packet.transport.z}`);
+    const phase = (env.clock.now - 1000) % PATH.period;
+    assert.ok(Math.abs(packet.transport.time - phase) <= 1, `the path time: ${packet.transport.time} vs ${phase}`);
 
     // And down again, all the way.
-    for (let index = 0; index < 280; index++) {
+    for (let index = 0; index < 310; index++) {
       env.frame();
       assert.ok(isGrounded(), `descending frame ${index}: never falling`);
     }
     assert.ok(near(env.self().z, pose(env.lift(), env.clock.now).z, 0.02));
     assert.ok(env.self().z < BASE.z + 1, `came down with it: ${env.self().z}`);
     assert.equal(sentOf(env.connection, OPCODES.MSG_MOVE_FALL_LAND).length, 0, "no landing: the character never fell");
-    const heartbeats = sentOf(env.connection, OPCODES.MSG_MOVE_HEARTBEAT);
-    assert.ok(heartbeats.length >= 3);
-    for (const { payload } of heartbeats) {
-      const moved = parseMovementPacket(payload);
-      assert.equal(moved.flags & (MOVEMENT_FLAGS.falling | MOVEMENT_FLAGS.onTransport), 0, "no fall, no flag");
-      assert.equal(moved.transport, undefined);
-    }
   } finally {
     env.teardown();
   }
 });
 
-test("NET-21: while the lift carries a standing rider the heartbeat comes every 200 ms, and stops with the ride", async () => {
-  const env = await liftWorld();
-  movementHeartbeat.sentAt = 0;
+// With flags 32 and 0 Wow.exe's packets had no flag and no block. It also left the standing character behind, because it runs
+// no step while nothing moves; this client steps every frame, so a rising floor still lifts the feet. Only the seat is pinned.
+test("without GO_FLAG_TRANSPORT the car's floor takes no passenger", async () => {
+  assert.equal(GO_FLAG_TRANSPORT, 8);
+  const env = await liftWorld({ flags: 0x20 });
   try {
-    assert.equal(LIFT_CARRY_HEARTBEAT_INTERVAL, 200);
-    const times = [];
-    // Two seconds of the climb, the frames as Loop.ts runs them: the physics, then the heartbeat when it is due.
     for (let index = 0; index < 120; index++) {
       env.frame();
-      if (heartbeatDue(env.clock.now)) {
-        sendMovement(OPCODES.MSG_MOVE_HEARTBEAT);
-        times.push(env.clock.now);
-      }
+      assert.equal(env.client.state.objects.get(SELF).transport, undefined, "no seat");
     }
-    assert.ok(times.length >= 9, `about ten in two seconds: ${times.length}`);
-    for (let index = 1; index < times.length; index++) {
-      const gap = times[index] - times[index - 1];
-      assert.ok(gap >= 200 && gap < 200 + 17, `gap ${index}: ${gap} ms`);
-    }
-    // The top: once the platform waits there is nothing to repeat.
-    for (let index = 0; index < 150; index++) env.frame();
-    assert.equal(heartbeatDue(env.clock.now + 10_000), false, "a rider on a waiting lift is standing");
+    sendMovement(OPCODES.MSG_MOVE_HEARTBEAT);
+    const packet = parseMovementPacket(sentOf(env.connection, OPCODES.MSG_MOVE_HEARTBEAT).at(-1).payload);
+    assert.equal(packet.flags & MOVEMENT_FLAGS.onTransport, 0);
+    assert.equal(packet.transport, undefined);
   } finally {
     env.teardown();
   }
+});
+
+/** The colliders alone, a frame at `now`, with the character where the test puts it. */
+function seatFixture() {
+  const colliders = new GameObjectColliders(liftCollision(), PATHS);
+  const state = new WorldState();
+  state.applyUpdate(liftCreate({ phase: 0 }), 0);
+  const self = { guid: SELF, typeId: 4, position: { x: BASE.x, y: BASE.y, z: BASE.z, orientation: BASE.orientation + 0.5 }, fields: new Map() };
+  const base = { ground: () => GROUND, liquid: () => undefined, hole: () => false };
+  return { colliders, state, self, base, lift: state.objects.get(LIFT) };
+}
+
+test("a jump on the car keeps the seat, its offset rising; outside the model's box the seat ends", () => {
+  const { colliders, state, self, base, lift } = seatFixture();
+  colliders.frame(state.objects, self, base, { mode: "ground" }, 0);
+  colliders.settleSeat(self, { mode: "ground" }, base);
+  assert.equal(self.transport?.guid, LIFT);
+  assert.ok(near(self.transport.orientation, 0.5), "the facing relative to the car");
+  assert.equal(colliders.takeSeatChanged(), true);
+  assert.equal(colliders.takeSeatChanged(), false, "read once");
+
+  // In the air: 1.6 over the floor, as Wow.exe's jump read at the top. The car rises under it, and the feet with it.
+  self.position.z += 1.6;
+  colliders.settleSeat(self, { mode: "air" }, base);
+  assert.ok(near(self.transport.z, 1.6), `the offset rose: ${self.transport.z}`);
+  colliders.frame(state.objects, self, base, { mode: "air" }, 1000);
+  assert.ok(near(self.position.z, pose(lift, 1000).z + 1.6), "carried in the air too");
+  assert.equal(colliders.takeSeatChanged(), false);
+
+  // The platform here is 3 from its middle: past that, falling, the seat is over.
+  self.position.x = pose(lift, 1000).x + 4 * Math.cos(BASE.orientation);
+  self.position.y = pose(lift, 1000).y + 4 * Math.sin(BASE.orientation);
+  colliders.settleSeat(self, { mode: "air" }, base);
+  assert.equal(self.transport, undefined);
+  assert.equal(colliders.takeSeatChanged(), true);
+});
+
+test("stepping off on the ground ends the seat where the floor stops being the car's", () => {
+  const { colliders, state, self, base } = seatFixture();
+  colliders.frame(state.objects, self, base, { mode: "ground" }, 0);
+  colliders.settleSeat(self, { mode: "ground" }, base);
+  colliders.takeSeatChanged();
+  self.position.x += 4 * Math.cos(BASE.orientation);
+  self.position.y += 4 * Math.sin(BASE.orientation);
+  self.position.z = GROUND;
+  colliders.settleSeat(self, { mode: "ground" }, base);
+  assert.equal(self.transport, undefined);
+  assert.equal(colliders.takeSeatChanged(), true);
+});
+
+test("a seat on something else is not the lift's to touch", () => {
+  const { colliders, state, self, base } = seatFixture();
+  const ship = { guid: 0x1fc0n, x: 1, y: 2, z: 3, orientation: 0, seat: 0xff };
+  self.transport = ship;
+  colliders.frame(state.objects, self, base, { mode: "ground" }, 0);
+  colliders.settleSeat(self, { mode: "ground" }, base);
+  assert.equal(self.transport, ship);
+  assert.equal(colliders.takeSeatChanged(), false);
 });
 
 test("off the platform the lift carries nothing; a landing flush with it is the landing", async () => {
@@ -311,24 +358,6 @@ test("off the platform the lift carries nothing; a landing flush with it is the 
   } finally {
     flush.teardown();
   }
-});
-
-test("a jump of the platform beyond a frame's reach (a cut, a stale frame) is not carried", () => {
-  const colliders = new GameObjectColliders(liftCollision(), PATHS);
-  const state = new WorldState();
-  state.applyUpdate(liftCreate({ phase: 0 }), 0);
-  const lift = state.objects.get(LIFT);
-  const self = { guid: SELF, typeId: 4, position: { x: BASE.x, y: BASE.y, z: BASE.z, orientation: 0 }, fields: new Map() };
-  const base = { ground: () => GROUND, liquid: () => undefined, hole: () => false };
-  const motion = { mode: "ground" };
-  colliders.frame(state.objects, self, base, motion, 0);
-  colliders.frame(state.objects, self, base, motion, 100);
-  assert.ok(colliders.carrying && near(self.position.z, pose(lift, 100).z, 1e-3), "a small move is carried");
-  const z = self.position.z;
-  const jump = ((LIFT_CARRY_MAX_STEP + 5) / 40) * 4000;
-  colliders.frame(state.objects, self, base, motion, 100 + jump);
-  assert.equal(self.position.z, z, "a jump past the limit leaves the character where it was");
-  assert.equal(colliders.carrying, false);
 });
 
 // ---------------------------------------------------------------------------------------------

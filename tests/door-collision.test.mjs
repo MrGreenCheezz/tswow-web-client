@@ -215,10 +215,6 @@ test("an unknown state, an unknown type or a missing model makes no collider, ex
     // (tests/gameobject-solidity.test.mjs).
     ["no .dtree row (the core has no collision for it)", gameObject(DOOR, { position: DOOR_POSE }), "none"],
     ["the model still loading (an old gateway answers 404)", gameObject(DOOR, { position: DOOR_POSE }), "loading"],
-    ["the template not answered yet", gameObject(DOOR, { position: DOOR_POSE, entry: UNKNOWN_ENTRY }), "door"],
-    // GameObjectData.h:59: the client reads startOpen to tell what READY means; the core ignores it
-    // (GameObject.cpp:2700). Where they may disagree, nothing is solid.
-    ["a startOpen door at READY", gameObject(DOOR, { position: DOOR_POSE, entry: START_OPEN_ENTRY }), "door"],
   ];
   for (const [name, door, answer] of cases) {
     const { collision } = models(answer);
@@ -228,10 +224,19 @@ test("an unknown state, an unknown type or a missing model makes no collider, ex
     assert.ok(position.x > 103, `${name}: walked through (${position.x})`);
   }
   assert.equal(doorSolid(gameObject(DOOR, { position: DOOR_POSE, bytes: null }), CLOSED_DOOR), undefined);
-  assert.equal(doorSolid(gameObject(DOOR, { position: DOOR_POSE }), undefined), undefined);
-  assert.equal(doorSolid(gameObject(DOOR, { position: DOOR_POSE }), START_OPEN_DOOR), undefined);
-  assert.equal(doorSolid(gameObject(DOOR, { state: GO_STATE_ACTIVE, position: DOOR_POSE }), START_OPEN_DOOR), false);
   assert.equal(doorSolid(gameObject(DOOR, { position: DOOR_POSE, bytes: (GO_TYPE_DOOR << 8) | 3 }), CLOSED_DOOR), undefined);
+});
+
+test("04.11, measured on Wow.exe: the state alone decides, startOpen or not, template or none", () => {
+  // Display 443 on the stand (runs/lift-door.txt): stopped at state 1, through at 0 and 2; with data0 = 1 the same.
+  for (const entry of [START_OPEN_ENTRY, UNKNOWN_ENTRY]) {
+    const { collision } = models("door");
+    const colliders = new GameObjectColliders(collision, undefined);
+    const door = gameObject(DOOR, { position: DOOR_POSE, entry });
+    assert.ok(walkEast(colliders, new Map([[DOOR, door]])).position.x < 100, `entry ${entry}, READY: stopped at the door`);
+    assert.equal(doorSolid(gameObject(DOOR, { state: GO_STATE_ACTIVE, position: DOOR_POSE, entry })), false);
+    assert.equal(doorSolid(gameObject(DOOR, { state: GO_STATE_DESTROYED, position: DOOR_POSE, entry })), false);
+  }
 });
 
 test("doors out of range are not asked for and their meshes are let go", () => {

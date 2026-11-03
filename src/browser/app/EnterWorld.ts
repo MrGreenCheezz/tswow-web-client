@@ -1435,7 +1435,7 @@ export async function enterWorld(character: CharacterSummary): Promise<void> {
     startTransportRide(gatewayInput.value, collision.models);
     entryLifecycle.track(stopTransportRide);
     // 11.01-B: closed doors and lifts from the same loader; without the route none are solid, as before.
-    startGameObjectColliders(rideCollisionModels(), game.transportPaths, (entry, guid) => world.gameObjectTemplate(entry, guid));
+    startGameObjectColliders(rideCollisionModels(), game.transportPaths);
     entryLifecycle.track(stopGameObjectColliders);
     // The same models are where a building's own water lives: a WMO carries liquid the tile under
     // it knows nothing about, and Stormwind's canals are five grids inside the city model.

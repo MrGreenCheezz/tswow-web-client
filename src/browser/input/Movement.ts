@@ -19,7 +19,9 @@ import { airMovementFlags } from "./AirKeys.js"; // 03.11 6.36
 import type { InputAction } from "./Bindings.js";
 import { heldMovementAction } from "./Bindings.js"; // 11.02-input
 import { advanceFollow, cancelFollow, followRunning, forgetFollow } from "./Follow.js";
-import { gameObjectColliderFrame, gameObjectWorldWithoutHulls, liftCarrying, takeLiftSettled } from "../game/GameObjectColliders.js";
+import {
+  gameObjectColliderFrame, gameObjectWorldWithoutHulls, liftTransportBlock, seatedOnLift, settleLiftSeat, takeLiftSeatChanged,
+} from "../game/GameObjectColliders.js";
 import { farSightHoldsBody, viewIsOut } from "../game/ViewSubject.js"; // 11.02-I
 import { jumpSpentByMountSpecial, mountSpecialJumpPress, mountSpecialJumpRelease } from "./MountSpecial.js"; // 05.10-A7a-G 6.20
 import {
@@ -124,16 +126,6 @@ export const MOVEMENT_HEARTBEAT_INTERVAL = 500;
  */
 export const HEARTBEAT_FLAGS = MOVEMENT_FLAGS.forward | MOVEMENT_FLAGS.backward | MOVEMENT_FLAGS.strafeLeft
   | MOVEMENT_FLAGS.strafeRight | MOVEMENT_FLAGS.falling | MOVEMENT_FLAGS.ascending | MOVEMENT_FLAGS.descending;
-/**
- * NET-21: the cadence while a lift carries the character — not Wow.exe's. Wow.exe takes the platform
- * as its transport (the collision step 0x007612b0 → 0x006ec7b0 → 0x006ec400), says so once with
- * CMSG_MOVE_CHNG_TRANSPORT (0x006eb0b0) and then sends nothing while the rider stands, because every
- * packet carries the offset. 11.01-B sends a lift ride in world coordinates without the block, so
- * these heartbeats are all the realm and the neighbours learn of a standing rider's climb; they keep
- * the rate they had before NET-21, so a neighbour does not see the rider rise in half-second steps.
- */
-export const LIFT_CARRY_HEARTBEAT_INTERVAL = 200;
-
 const held = new Set<InputAction>();
 /** Autorun and the two-button mouse run are forward asked for by something other than a key. */
 let autoRunning = false;
@@ -290,8 +282,7 @@ export function isMoving(): boolean {
   // NET-21: a passenger standing on a sailing ship is not going anywhere it has to tell: the core
   // moves it with the ship from the offset it last sent (Transport.cpp:724-729), the neighbours draw
   // it from the ship's pose and that offset, and Wow.exe sends nothing then.
-  // 11.01-B: standing on a moving lift is, see LIFT_CARRY_HEARTBEAT_INTERVAL.
-  if (liftCarrying()) return true;
+  // 04.11: nor on a moving lift: measured on Wow.exe, not one packet in 12 s of standing on a rising car.
   return (movementFlags() & HEARTBEAT_FLAGS) !== 0;
 }
 
@@ -309,7 +300,7 @@ export function isMoving(): boolean {
  */
 export function heartbeatDue(now: number): boolean {
   if (!isMoving()) return false;
-  const interval = liftCarrying() ? LIFT_CARRY_HEARTBEAT_INTERVAL : MOVEMENT_HEARTBEAT_INTERVAL;
+  const interval = MOVEMENT_HEARTBEAT_INTERVAL;
   const last = Math.max(movementHeartbeat.sentAt, game.world?.moverPacketAt ?? 0);
   return now - last >= interval;
 }
@@ -364,7 +355,7 @@ export function movementFlags(): number {
   // both at once is a contradiction the server is entitled to disbelieve.
   if (state?.rooted && motion.mode === "ground") flags |= MOVEMENT_FLAGS.root;
   // 11.01-A3: on a ship's deck; the block in `movementExtra` comes with it, never one without the other.
-  if (rideActive(selfObject())) flags |= MOVEMENT_FLAGS.onTransport;
+  if (rideActive(selfObject()) || seatedOnLift(selfObject())) flags |= MOVEMENT_FLAGS.onTransport; // 04.11: or a lift
   return flags;
 }
 
@@ -391,7 +382,9 @@ function movementExtra(): MovementExtraOut { // 11.02-GF3: was Omit<MovementInfo
   if (pitch !== 0) extra.pitch = pitch;
   // 11.01-A3: the offset in the ship's frame and the facing relative to it; `position` stays the
   // world's (a local one is dropped as off the map, MovementHandler.cpp:299, 310).
-  const transport = rideTransportBlock(selfObject(), Math.trunc(performance.now()) >>> 0);
+  const self = selfObject();
+  const transport = rideTransportBlock(self, Math.trunc(performance.now()) >>> 0)
+    ?? liftTransportBlock(self, self?.transport ? game.world?.state.objects.get(self.transport.guid) : undefined, performance.now()); // 04.11
   if (transport) extra.transport = transport;
   // 11.02-GF3: a vehicle mover's MovementFlags2 go with each of its packets and ACKs, as Wow.exe sends
   // CMovement+0x48: without ALWAYS_ALLOW_PITCHING the core would not read the pitch (WorldSession.cpp:982),
@@ -782,7 +775,10 @@ export function advancePhysics(elapsed: number): void {
       : stepCharacter(position, motion, input, probe, dt / substeps, EVENTS);
     for (let index = 0; index < events.length; index++) reportPhysicsEvent(events[index]!);
   }
-  if (self === character) endRideFrame(ride);
+  if (self === character) {
+    endRideFrame(ride);
+    settleLiftSeat(self, motion, base); // 04.11
+  }
   // 11.02-A: the driver sits where the vehicle is now, not where it was when the frame began.
   else carrySeatedCharacter(world.state.objects, character, self);
   // Boarded or stepped off: the server hears it now, with the block or without it.
@@ -790,8 +786,7 @@ export function advancePhysics(elapsed: number): void {
   // handles as it does a heartbeat (Opcodes.cpp:1040) but relays under that opcode, which this
   // client's observers do not read yet (WorldClient's MOVEMENT_OPCODES); kept a heartbeat until they do.
   if (takeRideFlip()) sendMovement(OPCODES.MSG_MOVE_HEARTBEAT);
-  // 11.01-B: a lift ride ended: where the character came to rest, in world coordinates.
-  if (takeLiftSettled()) sendMovement(OPCODES.MSG_MOVE_HEARTBEAT);
+  if (takeLiftSeatChanged()) sendMovement(OPCODES.MSG_MOVE_HEARTBEAT); // 04.11: on a lift or off it, as for a ship
   reportPitch();
 }
 
