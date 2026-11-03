@@ -112,7 +112,7 @@ test("the renderer plays the base, the transitions and the packet poses in their
   assert.match(play, /unit\.overlayAnimationMode = mode;/);
   assert.match(play, /if \(held \|\| \(unit\.action\.loop === wantedLoop && unit\.action\.isRunning\(\)\)\) return;/);
   const base = source.slice(source.indexOf("  #poseBase("), source.indexOf("  #playAnimation("));
-  assert.match(base, /const mode = gait === chosen\.animation \? chosen\.mode \?\? PLAYBACK_FORWARD : unit\.animationMode;/);
+  assert.match(base, /const mode = gait === chosen\.animation \? chosen\.mode \?\? PLAYBACK_FORWARD : PLAYBACK_FORWARD;/);
   const poseUnit = source.slice(source.indexOf("  #poseUnit("), source.indexOf("  #showUnitAction("));
   assert.match(poseUnit, /fallbackPlayback\(transition!, overlay\)/);
   const start = source.slice(source.indexOf("  #startUnitAction("), source.indexOf("  #shownAs("));

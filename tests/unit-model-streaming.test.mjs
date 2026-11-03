@@ -247,6 +247,7 @@ async function actionHarness() {
   const resolve = (clips, wanted) => wanted.find(id => clips.has(id));
   const Harness = methods(["#settleUnitAction", "#advanceLeadIn", "#entryAnimation", "#releaseUnitAction",
     "#requestAnimations"], {
+    isFlinchAnimation: () => false,
     pendingActionExpired, pendingActionFate,
     unitActionDisplay: arbiter.unitActionDisplay, unitActionEndsOnMovement: arbiter.unitActionEndsOnMovement,
     animationPlaysOnUpperBody: () => true, ANIMATION_IDS: { Stand: 0 }, poseAnimation: () => ({ wanted: [0] }),

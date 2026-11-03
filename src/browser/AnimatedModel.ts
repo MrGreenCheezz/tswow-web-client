@@ -1683,13 +1683,13 @@ export function isUnitFlying(movementFlags: number, splineFlying = false): boole
 }
 
 /**
- * Where walking stops and running starts, in yards a second.
- *
- * Halfway between the two defaults of 3.3.5a: walk 2.5, run 7.0. A creature dawdling at 2.5 and a
- * player sprinting at 7 are the two cases that have to land on opposite sides, and anything between
- * them is a judgement call this number makes once.
+ * Where walking stops and running starts, in yards a second. 03.11 (6.33): Wow.exe 0x00717050, more than twice the unit's walk
+ * speed is Run (it takes the default here), measured: 3.5 yd/s plays Walk. Was halfway between walk and run.
  */
-const WALK_RUN_SPLIT = (2.5 + 7.0) / 2;
+const WALK_RUN_SPLIT = 2 * 2.5;
+/** 03.11 (6.33): faster than this a unit on the ground plays Sprint, whatever it says it is doing (0x00717050: `_DAT_00a34b20`). */
+const SPRINT_SPEED = 11;
+const Sprint = ANIMATION_IDS["Sprint"];
 
 /** What the server says a unit is doing, which is all the animation is allowed to know. */
 export interface UnitPose {
@@ -1807,41 +1807,8 @@ export function isTerminalUnitPose(pose: UnitPose): boolean {
   return pose.dead || pose.standState === UNIT_STAND_STATE_DEAD;
 }
 
-export type AnimationTransition = "crossfade" | "fade" | "stop" | "none";
-
-/**
- * Decide how a new clip should replace the previous one.
- *
- * A stopped one-shot is still enabled in THREE.AnimationMixer until it is explicitly stopped, so
- * it must not be left at weight 1 while the next clip starts. Only a live predecessor is suitable
- * as a cross-fade *source*, because `crossFadeFrom` ties the two actions' clocks together and a
- * finished action has no clock left to tie.
- *
- * What it was not suitable for is `stop()`, which is what this used to answer. Every completed
- * one-shot in this renderer is `LoopOnce` + `clampWhenFinished`, so it holds its last authored
- * frame at weight 1 — and stopping it drops that frame to nothing on the same tick the next pose
- * appears at weight 1. That single-frame jump is the pop the owner reports after a cast, a
- * landing and every training-dummy reaction. "fade" keeps the clamped pose in the mixer and takes
- * its weight down over the blend window while the new pose comes up, which is a cross-fade in
- * everything but the time coupling: two independent weight ramps, no shared clock.
- */
-export function animationTransition(previousRunning: boolean, differentAnimation: boolean): AnimationTransition {
-  if (!differentAnimation) return "none";
-  return previousRunning ? "crossfade" : "fade";
-}
-
-/**
- * Blend policy for replacing a clip.
- *
- * Continuous poses use an ordinary cross-fade with a fixed playback rate.  Three.js's optional
- * `warp` mode changes each action's time scale for the hand-off; HD models carry deliberately
- * different authored loop lengths, and that runtime speed change made otherwise valid poses
- * appear frozen or jumpy in the live renderer.  One-shots likewise keep authored timing and use a
- * shorter hand-off so the reaction remains readable instead of spending a fifth of a second in
- * two poses.
- */
-export const LOOP_ANIMATION_BLEND = 0.18;
-export const ACTION_ANIMATION_BLEND = 0.12;
+/** 03.11 (6.33): a hand-off when the clip names no time of its own; every clip of a unit that plays in the open says this. */
+export const ANIMATION_BLEND = 0.15;
 /**
  * What an authored blend time is allowed to be, in seconds.
  *
@@ -1852,28 +1819,16 @@ export const ACTION_ANIMATION_BLEND = 0.12;
 const MIN_AUTHORED_BLEND = 0.01;
 const MAX_AUTHORED_BLEND = 0.5;
 
-export interface AnimationBlendProfile {
-  duration: number;
-  warp: boolean;
-}
-
 /**
- * How long the hand-off between two poses takes.
+ * How long the hand-off into a clip takes, in seconds.
  *
- * `blendTime` is the incoming clip's own `M2Sequence.blendTime` in seconds, read off the artifact
- * (`clip.userData.blendTime`), and it wins when the file carries one: 150 ms is the ordinary
- * HumanMale answer, but NightElfFemale stands up over 300 ms and a wolf enters one of its poses in
- * 50, and the two constants below flattened all of that into 180/120. The constants remain the
- * answer for a clip with no authored number — a legacy VMap clip, an artifact from before the
- * clip header carried one, or one of the 26 HumanMale sequences whose blend time is a real zero.
+ * `blendTime` is the incoming clip's own `M2Sequence.blendTime` (Wow.exe 0x00826c40: `now + sequence[+0x1c]`), read off
+ * the artifact (`clip.userData.blendTime`): 150 ms on nearly everything, but NightElfFemale stands up over 300 ms and a wolf
+ * enters one of its poses in 50. How the two clips mix over it is `AnimationBlend.ts`.
  */
-export function animationBlend(previousLoop: boolean, nextLoop: boolean, blendTime?: number): AnimationBlendProfile {
-  if (blendTime !== undefined && Number.isFinite(blendTime) && blendTime >= MIN_AUTHORED_BLEND) {
-    return { duration: Math.min(MAX_AUTHORED_BLEND, blendTime), warp: false };
-  }
-  return previousLoop && nextLoop
-    ? { duration: LOOP_ANIMATION_BLEND, warp: false }
-    : { duration: ACTION_ANIMATION_BLEND, warp: false };
+export function animationBlend(blendTime?: number): number {
+  return blendTime !== undefined && Number.isFinite(blendTime) && blendTime >= MIN_AUTHORED_BLEND
+    ? Math.min(MAX_AUTHORED_BLEND, blendTime) : ANIMATION_BLEND;
 }
 
 /** The authored blend window a built clip carries, or undefined when the artifact had none. */
@@ -1913,43 +1868,43 @@ export function clipMovingSpeed(clip: THREE.AnimationClip | undefined): number |
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
 }
 
+/** Far outside anything a stride reads as; the measured speed of a unit can spike for a frame. */
+export const GAIT_MIN_TIME_SCALE = 0.25;
+export const GAIT_MAX_TIME_SCALE = 5;
+/** Steps per unit rate, so the rounding is done in integers. */
+const GAIT_TIME_SCALE_STEPS = 20;
 /**
- * Authored stride speed for a locomotion gait, borrowing Walk/Run when the gait names none.
+ * 03.11 (6.33): how fast a stride is replayed, against the speed its author built it for.
  *
- * ShuffleLeft/Right are authored as standstill sidesteps (`movingSpeed` 0 on every playable rig
- * measured) — replaying that rate at travel speed is the skate. Walk and Run carry the model's
- * real stride rates, so a gait without its own number borrows its tempo's ordinary gait: below
- * the walk/run split the walk, at and above it the run. `undefined` when neither the gait nor
- * the fallback names a positive speed, and the caller then plays the authored rate.
- */
-export function locomotionAuthoredSpeed(
-  clips: ReadonlyMap<number, THREE.AnimationClip> | undefined,
-  animation: number,
-  actualSpeed: number | undefined,
-): number | undefined {
-  return clipMovingSpeed(clips?.get(animation))
-    ?? clipMovingSpeed(clips?.get(actualSpeed !== undefined && actualSpeed < WALK_RUN_SPLIT ? Walk : Run));
-}
-
-/** Bounds of the presentational unit stride replay: slower than a crawl and faster than a sprint. */
-export const UNIT_GAIT_MIN_TIME_SCALE = 0.5;
-export const UNIT_GAIT_MAX_TIME_SCALE = 2.0;
-/** Steps per unit rate, the same twentieths the mount scale rounds to for benchmark stability. */
-const UNIT_GAIT_TIME_SCALE_STEPS = 20;
-/**
- * Replays a unit's stride at the speed it is really travelling, like `mountGaitTimeScale`.
+ * Wow.exe 0x007385c0: a clip with a `movingSpeed` on a unit that moves runs at the unit's speed over that number, whatever
+ * that comes to, and a clip without one at its authored rate. Measured off its bones: HumanMale's Walk 1.40 at 3.5 yd/s and 2.00
+ * at 5, Run 1.008 at 7; Walkbackwards, Sprint and ShuffleLeft/Right, which carry no number, 1.000 at any speed; RidingHorse's
+ * Run 2.01 at 14 and its Walkbackwards 1.80 at 4.5 (it says −2.5). A gait with no number used to borrow Walk's or Run's and the
+ * bounds used to be a feel, 0.6–1.6 on a mount, which left a horse at +100% at 1.6.
  *
- * The mount bounds (0.6–1.6) are that reference's own feel for horses; a unit's gaits span walk
- * 2.5 to run 7 and beyond with buffs, so the window is wider. Quantised for the same reason:
- * the formal benchmark compares bones across runs, and a continuous rate would move them with
- * the frame time.
+ * Quantised to twentieths and not lerped, deliberately. A lerp would move the rate by an amount
+ * that depends on how long the frame was, which makes the same replay produce different bones on a
+ * different machine — this client has a formal benchmark that compares exactly that.
  */
-export function unitGaitTimeScale(actualSpeed: number | undefined, authoredSpeed: number | undefined): number {
+export function gaitTimeScale(actualSpeed: number | undefined, authoredSpeed: number | undefined): number {
   if (actualSpeed === undefined || authoredSpeed === undefined) return 1;
   if (!Number.isFinite(actualSpeed) || !Number.isFinite(authoredSpeed)) return 1;
-  if (authoredSpeed <= 0 || actualSpeed <= 0) return 1;
-  const ratio = Math.min(UNIT_GAIT_MAX_TIME_SCALE, Math.max(UNIT_GAIT_MIN_TIME_SCALE, actualSpeed / authoredSpeed));
-  return Math.round(ratio * UNIT_GAIT_TIME_SCALE_STEPS) / UNIT_GAIT_TIME_SCALE_STEPS;
+  const authored = Math.abs(authoredSpeed);
+  const actual = Math.abs(actualSpeed);
+  if (authored <= 0 || actual <= 0) return 1;
+  const ratio = Math.min(GAIT_MAX_TIME_SCALE, Math.max(GAIT_MIN_TIME_SCALE, actual / authored));
+  return Math.round(ratio * GAIT_TIME_SCALE_STEPS) / GAIT_TIME_SCALE_STEPS;
+}
+
+/**
+ * 03.11 (6.33): where a stride coming in starts. Wow.exe 0x007385c0: when both the clip playing and the one coming in have a
+ * `movingSpeed`, the new clip starts at the old one's phase, so Walk and Run hand over in step; otherwise from zero
+ * (Run into Walkbackwards, which has none). Undefined: from zero.
+ */
+export function strideStartTime(previous: THREE.AnimationAction, clip: THREE.AnimationClip): number | undefined {
+  const from = previous.getClip();
+  if (clipMovingSpeed(from) === undefined || clipMovingSpeed(clip) === undefined || !(from.duration > 0)) return undefined;
+  return ((previous.time / from.duration) * clip.duration) % clip.duration;
 }
 
 /** Distance no stride covers in one frame: teleports and update snaps, as on the glide path. */
@@ -1968,49 +1923,6 @@ export function measuredTravelSpeed(distanceYards: number, elapsedSeconds: numbe
   if (!(elapsedSeconds > 0)) return undefined;
   if (!Number.isFinite(distanceYards) || distanceYards < 0 || distanceYards > STRIDE_SNAP_YARDS) return undefined;
   return distanceYards / elapsedSeconds;
-}
-
-/** Authored one-shot interval and the short blend window used to return to locomotion. */
-export function animationFadeWindow(duration: number, fullDuration = false): {
-  start: number;
-  end: number;
-} {
-  const authored = Number.isFinite(duration) ? Math.max(0, duration) : 0;
-  return fullDuration
-    ? { start: authored, end: authored + ACTION_ANIMATION_BLEND }
-    : { start: Math.max(0, authored - ACTION_ANIMATION_BLEND), end: authored };
-}
-
-/**
- * A finished one-shot is already clamped on its last keyframe, and three.js's `crossFadeFrom`
- * synchronises the two actions' clocks — which a stopped action does not have. That is why it is
- * still excluded here. It is *not* a reason to remove the pose from the mixer: see
- * {@link shouldFadeOutPreviousAnimation}.
- */
-export function shouldCrossFadeAnimation(previousRunning: boolean, differentAnimation: boolean): boolean {
-  return animationTransition(previousRunning, differentAnimation) === "crossfade";
-}
-
-/**
- * Whether the previous pose should be faded out beside the new one rather than cut.
- *
- * This is the half that used to be `stop()`. The clamped last frame stays in the mixer at falling
- * weight while the incoming clip rises from zero, so a completed cast, landing or reaction leaves
- * over the same window it would have arrived in, instead of vanishing between two frames.
- */
-export function shouldFadeOutPreviousAnimation(previousRunning: boolean, differentAnimation: boolean): boolean {
-  return animationTransition(previousRunning, differentAnimation) === "fade";
-}
-
-/**
- * Nothing asks for a hard stop through the policy any more.
- *
- * Kept as the policy's own statement that "stop" is no longer reachable: the paths that really do
- * want a pose gone without a trace — a model being torn down, a unit rebuilt into another costume
- * — call `stop()` directly and never consult a transition.
- */
-export function shouldStopPreviousAnimation(previousRunning: boolean, differentAnimation: boolean): boolean {
-  return animationTransition(previousRunning, differentAnimation) === "stop";
 }
 
 /**
@@ -2133,12 +2045,10 @@ export function poseAnimation(pose: UnitPose): { wanted: number[]; loop: boolean
     }
   }
 
-  // Measured speed first, the flag second. Default walk is 2.5 yards a second and default run is
-  // 7.0 (`Unit.cpp` baseMoveSpeed), so the halfway mark is the honest place to split them — and a
-  // unit whose speed is known contradicting its flag is a unit on a spline, where the flag is
-  // absent by construction rather than false.
+  // Measured speed first, the flag second: a unit whose speed is known contradicting its flag is a
+  // unit on a spline, where the flag is absent by construction rather than false.
   const walking = pose.speed !== undefined && pose.speed > 0
-    ? pose.speed < WALK_RUN_SPLIT
+    ? pose.speed <= WALK_RUN_SPLIT
     : has(MOVEMENT_FLAG_WALKING);
   if (pose.stealth === true) {
     return { wanted: stealthGroundAnimations({ walking, backward, left, right, forward }), loop: true };
@@ -2161,6 +2071,8 @@ export function poseAnimation(pose: UnitPose): { wanted: number[]; loop: boolean
   // The reference client agrees (`anim_capability_probe.cpp:80-83`: "strafing (pure or diagonal)
   // reuses plain Walk/Run and the renderer's torso-bone rotation for the visual angle"). RunLeft/
   // RunRight are not on any playable rig of the clean corpus either.
+  // 03.11 (6.33): and Sprint above 11 yd/s, measured at 14: HumanMale plays it, RidingHorse's is its Run.
+  if (Sprint !== undefined && pose.speed !== undefined && pose.speed > SPRINT_SPEED) return { wanted: [Sprint, Run, Walk], loop: true };
   return { wanted: walking ? [Walk, Run] : [Run, Walk], loop: true };
 }
 
@@ -2191,81 +2103,20 @@ export function isBaseIdle(pose: UnitPose): boolean {
 /**
  * The travelling clips, and only those.
  *
- * The set a {@link commitLocomotion} window is allowed to hold one member of in place of another.
- * It is deliberately the *gaits* and not every looping pose: Stand, SwimIdle, Hover, a seat, a
- * corpse and the airborne loop are all outside it, so stopping, standing up, mounting, dying and
- * leaving the ground are never delayed by a frame. What is inside it is exactly what the ground and
- * water arms of {@link poseAnimation} can name, which is what a player changes by pressing a
- * direction key.
+ * Deliberately the *gaits* and not every looping pose: Stand, SwimIdle, Hover, a seat, a corpse and the
+ * airborne loop are all outside it. What is inside it is exactly what the ground and water arms of
+ * {@link poseAnimation} can name, which is what a player changes by pressing a direction key.
  */
 const LOCOMOTION_GAITS: ReadonlySet<number> = new Set<number>(
-  [Walk, Run, Walkbackwards, ShuffleLeft, ShuffleRight, RunLeft, RunRight,
+  [Walk, Run, Sprint, Walkbackwards, ShuffleLeft, ShuffleRight, RunLeft, RunRight,
     Swim, SwimLeft, SwimRight, SwimBackwards,
     ANIMATION_IDS["StealthWalk"], ANIMATION_IDS["StealthRun"]]
     .filter((id): id is number => typeof id === "number"),
 );
 
-/** Whether an animation is one of the travelling gaits a commit window may hold. See {@link LOCOMOTION_GAITS}. */
+/** Whether an animation is one of the travelling gaits. See {@link LOCOMOTION_GAITS}. */
 export function isLocomotionGait(animation: number | undefined): animation is number {
   return animation !== undefined && LOCOMOTION_GAITS.has(animation);
-}
-
-/**
- * How long a freshly started gait owns the mixer before another gait may replace it, in ms.
- *
- * 150 ms, and it is the same 150 ms the files author: measured over the eight playable rigs above,
- * Walk, Run, Walkbackwards, ShuffleLeft and ShuffleRight all carry `M2Sequence.blendTime` 150 on
- * every one of them, so a gait change is a 150 ms cross-fade and this window is exactly long enough
- * for that cross-fade to finish. The reference client's own guard against the same flicker is the
- * comparable `LocomotionFSM::kGraceSec = 0.12f`.
- *
- * Not a setting. A knob here would be a knob on how the character feels rather than on what it
- * looks like, and the number is not a preference: it is the length of the blend it protects.
- */
-export const LOCOMOTION_COMMIT_WINDOW = 150;
-
-export interface LocomotionCommit {
-  /** The animation to actually play this frame. */
-  animation: number;
-  /** When the gait playing after this frame may next be replaced, in the caller's clock. */
-  committedUntil: number;
-}
-
-/**
- * Holds a gait for the length of its own blend before letting the next one in.
- *
- * The owner's report is that strafes do not blend properly, and this is the mechanism. Three.js
- * schedules a fade from a *fixed* start weight, not from the weight the action currently has:
- * `AnimationAction.fadeOut` is `_scheduleFading(duration, 1, 0)` and `reset()` calls `stopFading()`,
- * which drops the incoming action back to its base weight of 1. So a second gait change landing
- * inside the first one's cross-fade does not continue it — it *snaps*. Run → ShuffleLeft at t=0,
- * flags back to Run at t=75 ms: the shuffle is at weight 0.5 and the run at 0.5, and the frame the
- * second change is made the shuffle is put back to 1.0 and the run to 0.0 before the new blend
- * starts. The pose jumps toward the clip being left. That is the double-blend, and circle-strafing
- * — tapping a strafe key while running — reproduces it on every tap.
- *
- * The window opens when a gait *starts*, so the first change is never delayed: pressing a strafe
- * key answers on the same frame it always did. Only a second change inside the following 150 ms
- * waits, and it waits at most that long, because the pose pass runs every frame and takes the
- * pending answer the moment the window closes. Anything that is not gait-to-gait — starting to
- * move, stopping, jumping, mounting, dying — is passed straight through.
- */
-export function commitLocomotion(
-  playing: number | undefined,
-  wanted: number,
-  committedUntil: number,
-  now: number,
-): LocomotionCommit {
-  const incoming = isLocomotionGait(wanted);
-  // Nothing to decide: the pose pass asks for the same clip every frame it is not changing.
-  if (playing === wanted) return { animation: wanted, committedUntil };
-  // A gait replacing a gait is the only change worth holding, and only while the window is open.
-  if (isLocomotionGait(playing) && incoming && now < committedUntil) {
-    return { animation: playing, committedUntil };
-  }
-  // A gait that is starting owns the mixer for its blend; anything else closes the window, so a
-  // unit that stops, sits or dies cannot carry a stale deadline into its next stride.
-  return { animation: wanted, committedUntil: incoming ? now + LOCOMOTION_COMMIT_WINDOW : 0 };
 }
 
 /** Whether the movement word says the unit is off the ground under its own arc. */
@@ -2310,10 +2161,19 @@ export const STRAFE_YAW_PURE = Math.PI / 2;
 /** 03.11: the spring of Wow.exe 0x00719660 (`_DAT_009f281c`, read from the executable): a SmoothCD at this rate. */
 export const STRAFE_YAW_SPRING = 20;
 /**
- * 03.11: how fast a unit standing still comes back to its facing after a strafe, in radians a second. Taken from a series
- * of Wow.exe's frames a mount and a man: a quarter turn is gone about four seconds after the key.
+ * 03.11 (6.33): how fast a body off its facing comes round when nothing holds it there, in radians a second.
+ *
+ * In Wow.exe this belongs to the frame, not the clock: 0x0073dab0 steps `(now − stamp) ms × 0.001 × turn rate × 8`, and the stamp
+ * was taken moments before in the same frame by the facing's setter 0x00735f60, so it reads 1 ms or 0: 1.44° a frame, on 85% of
+ * frames as measured. Its stand runs at 29 frames a second, where a quarter turn takes 2.6–2.9 s; this is the same step at 60.
  */
-export const STRAFE_YAW_SETTLE_RATE = (Math.PI / 2) / 3.6;
+export const STRAFE_YAW_SETTLE_RATE = (1.44 * 0.85 * 60 * Math.PI) / 180;
+/** 03.11: how far ahead of the body the facing may run: past this the body is dragged along (0x0073dab0: `_DAT_009e8d88`). */
+const STRAFE_YAW_MAX_LAG = Math.PI / 2;
+/** 03.11: how fast `flags & 0x1003` closes the spring's hold on the body, a second (0x0073dab0: `_DAT_009edce8`). */
+const STRAFE_YAW_HOLD_RATE = 2.5;
+/** 03.11: below this the body is on the facing (0x0073dab0: `_DAT_009e1134`). */
+const STRAFE_YAW_ON_FACING = 0.001;
 
 /** A frame longer than this is a stall, not a frame; the turn is allowed to finish across it. */
 const STRAFE_YAW_MAX_STEP_SECONDS = 0.25;
@@ -2372,17 +2232,18 @@ export const STRAFE_UPPER_BODY_LIMIT = Math.PI / 4;
  * 11.10: how far SpineLow and the head are turned back toward the facing, for a body `radians` off it.
  *
  * Wow.exe 0x0073dab0 takes d = facing − body yaw. SpineLow (key bone 4, `FUN_008265e0(4, …)`) is turned
- * by d, halved (`_DAT_009e2ec4`) unless the unit is the active player, at most π/4; the head (key bone
- * 6) by what is left, at most π/4, when the rig has one. A pure strafe leaves the chest 45° into the
- * travel and the head on the facing; the active player's diagonal leaves both on the facing, anyone
- * else's the chest 22.5° into it. (Wow.exe also halves the active player's when a global at
- * 0x00ca11f4 is 0xd, whose meaning is not settled; not modelled.)
+ * by d halved (`_DAT_009e2ec4`), at most π/4; the head (key bone 6) by what is left, at most π/4, when
+ * the rig has one. A pure strafe leaves the chest 45° into the travel and the head on the facing, a
+ * diagonal the chest 22.5° into it. 03.11 (6.33): measured on the active player's own bones, at 90°, 45°
+ * and all the way down a settle. The code's exception is the active player while 0x00ca11f4 is not 0xd,
+ * and 0xd is that global's resting value (a spell facing its target sets another), so it is not the
+ * ordinary case this used to take it for, which left the head on nothing and the chest on the facing.
  */
-export function strafeUpperBodyTurns(radians: number, activePlayer: boolean, hasHead: boolean): { spine: number; head: number } {
+export function strafeUpperBodyTurns(radians: number, hasHead: boolean): { spine: number; head: number } {
   if (!Number.isFinite(radians) || radians === 0) return { spine: 0, head: 0 };
   const sign = Math.sign(radians);
   const magnitude = Math.abs(radians);
-  const spine = Math.min(activePlayer ? magnitude : magnitude * 0.5, STRAFE_UPPER_BODY_LIMIT);
+  const spine = Math.min(magnitude * 0.5, STRAFE_UPPER_BODY_LIMIT);
   const head = hasHead ? Math.min(magnitude - spine, STRAFE_UPPER_BODY_LIMIT) : 0;
   return { spine: sign * spine, head: sign * head };
 }
@@ -2390,10 +2251,16 @@ export function strafeUpperBodyTurns(radians: number, activePlayer: boolean, has
 /** 03.11: `flags & 0x1003` of 0x0073dab0. */
 const STRAFE_YAW_SPRING_FLAGS = MOVEMENT_FLAGS.forward | MOVEMENT_FLAGS.backward | MOVEMENT_FLAGS.falling;
 
-/** 03.11: the state of the body's turn: the angle, and the spring's velocity. */
+/** 03.11: the state of the body's turn. */
 export interface StrafeYawState {
+  /** How far the body is off the facing, positive to its left. */
   yaw: number;
+  /** The spring's velocity. */
   velocity: number;
+  /** What is left of the spring's hold (`+0xa9c`): 1 under a strafe key, gone 0.4 s into a run. */
+  hold: number;
+  /** Which way the body itself moved this step, the answer to Shuffle: positive to its left, 0 not at all. */
+  turning: number;
 }
 
 /** Wow.exe's own reset (0x0073dab0): dead, in water or in flight, the body is on the facing at once rather than unwinding. */
@@ -2403,39 +2270,106 @@ export function strafeYawSnapsBack(pose: UnitPose): boolean {
     || hoversOnFlightTier(pose);
 }
 
+/** The spring of 0x00719660, a SmoothCD. */
+function springStrafeYaw(state: StrafeYawState, target: number, dt: number): void {
+  const x = STRAFE_YAW_SPRING * dt;
+  const damp = 1 / (1 + x + 0.48 * x * x + 0.235 * x * x * x);
+  const change = state.yaw - target;
+  const push = (state.velocity + STRAFE_YAW_SPRING * change) * dt;
+  state.velocity = (state.velocity - STRAFE_YAW_SPRING * push) * damp;
+  state.yaw = target + (change + push) * damp;
+  if (Math.abs(state.yaw - target) < 1e-3 && Math.abs(state.velocity) < 1e-2) {
+    state.yaw = target;
+    state.velocity = 0;
+  }
+}
+
 /**
- * One frame of the body's turn. By Wow.exe 0x0073dab0:
+ * One frame of the body's turn, as Wow.exe 0x0073dab0 has it. The body has a yaw of its own and the facing moves ahead of it
+ * (`facingTurn`, radians to the left since the last frame), so a unit turning on the spot looks round first and its feet follow:
  *
- * * a strafe key held: the spring toward {@link strafeYawTarget}, 0x00719660, which is a SmoothCD;
- * * no strafe key but forward, backward or a fall (`flags & 0x1003`): the same spring back to the facing;
- * * standing: no spring. The body stays turned and comes round slowly, as the frames show. Wow.exe's own rule for this
- *   part (`param_1[0x20d]`, `param_1[0x2af]`) is not settled, so the rate is the measured one;
+ * * a strafe key held: the spring toward {@link strafeYawTarget}, and the spring's hold is full;
+ * * no strafe key but forward, backward or a fall (`flags & 0x1003`): the spring back to the facing, its hold running out over
+ *   0.4 s, after which the body is simply on the facing, so a unit turning on the run has no lag at all;
+ * * neither: the hold fills again and nothing springs;
+ * * then, whatever else: a body more than a quarter turn off is dragged along, and with no strafe key and no steering it
+ *   comes round at {@link STRAFE_YAW_SETTLE_RATE}. Measured, 90° held for as long as a turn key is, and a settle that is a
+ *   straight line. Steering (0x00735f60) is the turn keys, or the active player's (`self`) own mouse turning it; Wow.exe also
+ *   waits with the right button held and the mouse still, which the renderer cannot see;
  * * {@link strafeYawSnapsBack}: on the facing at once.
+ *
+ * A transport's turn or a seat's carries the body and the facing together, so it is not a turn of the facing here.
  */
-export function stepStrafeYaw(state: StrafeYawState, target: number, pose: UnitPose, seconds: number): void {
+export function stepStrafeYaw(state: StrafeYawState, target: number, pose: UnitPose, seconds: number,
+  facingTurn = 0, self = false): void {
+  state.turning = 0;
   if (!Number.isFinite(state.yaw) || strafeYawSnapsBack(pose)) {
     state.yaw = target;
     state.velocity = 0;
+    state.hold = 0;
     return;
   }
+  const carried = (pose.movementFlags & MOVEMENT_FLAGS.onTransport) !== 0 || pose.vehicleSeat !== undefined;
+  const turned = carried ? 0 : facingTurn;
+  state.yaw = wrapRadians(state.yaw - turned);
+  const steering = (pose.movementFlags & (MOVEMENT_FLAGS.turnLeft | MOVEMENT_FLAGS.turnRight)) !== 0 || (self && turned !== 0);
   if (!Number.isFinite(seconds) || seconds <= 0) return;
   const dt = Math.min(seconds, STRAFE_YAW_MAX_STEP_SECONDS);
-  if (target !== 0 || (pose.movementFlags & STRAFE_YAW_SPRING_FLAGS) !== 0) {
-    const x = STRAFE_YAW_SPRING * dt;
-    const damp = 1 / (1 + x + 0.48 * x * x + 0.235 * x * x * x);
-    const change = state.yaw - target;
-    const push = (state.velocity + STRAFE_YAW_SPRING * change) * dt;
-    state.velocity = (state.velocity - STRAFE_YAW_SPRING * push) * damp;
-    state.yaw = target + (change + push) * damp;
-    if (Math.abs(state.yaw - target) < 1e-3 && Math.abs(state.velocity) < 1e-2) {
-      state.yaw = target;
-      state.velocity = 0;
-    }
+  if (target !== 0) {
+    state.hold = 1;
+    springStrafeYaw(state, target, dt);
+  } else if ((pose.movementFlags & STRAFE_YAW_SPRING_FLAGS) === 0) {
+    if (state.hold < 1) state.hold = Math.min(1, state.hold + dt * STRAFE_YAW_HOLD_RATE);
+  } else if (state.hold <= 0) {
+    state.yaw = 0;
+    state.velocity = 0;
+  } else {
+    state.hold = Math.max(0, state.hold - dt * STRAFE_YAW_HOLD_RATE);
+    springStrafeYaw(state, 0, dt);
+    state.yaw *= state.hold;
+  }
+  const off = Math.abs(state.yaw);
+  if (off < STRAFE_YAW_ON_FACING) {
+    if (target === 0) state.yaw = 0;
     return;
   }
-  state.velocity = 0;
-  const step = STRAFE_YAW_SETTLE_RATE * dt;
-  state.yaw = Math.abs(state.yaw) <= step ? 0 : state.yaw - Math.sign(state.yaw) * step;
+  let step = Math.max(0, off - STRAFE_YAW_MAX_LAG);
+  if (target === 0 && !steering) step += Math.min(off, STRAFE_YAW_SETTLE_RATE * dt);
+  step = Math.min(step, off);
+  // Toward the facing: a body off to the left comes round to the right.
+  const toward = -Math.sign(state.yaw);
+  state.yaw += toward * step;
+  if (step > 0) state.turning = toward;
+}
+
+/** Into −π..π. */
+function wrapRadians(radians: number): number {
+  if (radians >= -Math.PI && radians <= Math.PI) return radians;
+  const turns = Math.round(radians / (2 * Math.PI));
+  return radians - turns * 2 * Math.PI;
+}
+
+/** 03.11: radians to the left from one facing to the next, the short way round. */
+export function facingTurnBetween(previous: number | undefined, facing: number): number {
+  if (previous === undefined || !Number.isFinite(previous) || !Number.isFinite(facing)) return 0;
+  return wrapRadians(facing - previous);
+}
+
+/** 03.11: `flags & 0x2e0100f` of 0x0073dab0: anything that is not standing on the spot. */
+const NOT_ON_THE_SPOT = MOVEMENT_FLAGS.forward | MOVEMENT_FLAGS.backward | MOVEMENT_FLAGS.strafeLeft | MOVEMENT_FLAGS.strafeRight
+  | MOVEMENT_FLAGS.falling | MOVEMENT_FLAGS.swimming | MOVEMENT_FLAGS.ascending | MOVEMENT_FLAGS.descending | MOVEMENT_FLAGS.flying;
+
+/**
+ * 03.11 (6.33): the clip a unit standing on the spot plays when its body turns. Wow.exe 0x0073dab0: ShuffleLeft under the turn-left
+ * key or a body moving left, ShuffleRight likewise, the moment that happens; and when it is over a Shuffle already playing runs
+ * to the end of its 500 ms and only then hands over (measured on both sides and on the horse). Only out of Stand: 0x0071de90
+ * lets a combat stance keep its pose while the body turns under it. `base` is the answer without any of this.
+ */
+export function turnOnTheSpot(base: number, playing: number | undefined, pose: UnitPose, turning: number, cycleOver: boolean): number {
+  if (base !== Stand || (pose.movementFlags & NOT_ON_THE_SPOT) !== 0) return base;
+  if ((pose.movementFlags & MOVEMENT_FLAGS.turnLeft) !== 0 || turning > 0) return ShuffleLeft;
+  if ((pose.movementFlags & MOVEMENT_FLAGS.turnRight) !== 0 || turning < 0) return ShuffleRight;
+  return (playing === ShuffleLeft || playing === ShuffleRight) && !cycleOver ? playing : base;
 }
 
 /** The bones a strafe turns, resolved from the rig itself. See {@link resolveStrafeYawBones}. */
@@ -2661,11 +2595,10 @@ function turnYawedBone(bone: THREE.Object3D | undefined, local: THREE.Quaternion
  * share in the pelvis's frame as it now stands, and the head back by its own share in its parent's
  * frame as the two left it — the chest ends `radians − spine` off the facing and the head
  * `radians − spine − head`. Before 11.10 the upper body stayed where the clip put it (the torso was
- * turned back by the whole turn). `activePlayer` is the unit the client moves itself, whose SpineLow
- * share is not halved.
+ * turned back by the whole turn).
  */
 export function applyStrafeYaw(
-  instance: SkinnedInstance, bones: StrafeYawBones, radians: number, activePlayer = false, seated = false,
+  instance: SkinnedInstance, bones: StrafeYawBones, radians: number, seated = false,
 ): void {
   const pelvis = instance.skeleton.bones[bones.pelvis];
   if (!pelvis) return;
@@ -2690,7 +2623,7 @@ export function applyStrafeYaw(
     if (head) strafeYawApplied.delete(head); // 11.10
     return;
   }
-  const upper = strafeUpperBodyTurns(radians, activePlayer, head !== undefined); // 11.10
+  const upper = strafeUpperBodyTurns(radians, head !== undefined); // 11.10
   // 03.11: in the saddle the mount has already taken the whole turn: the pelvis stays on it, and only the shares come back.
   const body = seated ? 0 : radians;
 
@@ -2955,37 +2888,6 @@ export function mountPoseTransition(previous: UnitPose | undefined, next: UnitPo
   if (!isAirborne(previous) && isAirborne(next)) return JumpStart;
   if (isAirborne(previous) && !isAirborne(next)) return JumpEnd;
   return undefined;
-}
-
-/**
- * How fast a mount's stride may be replayed, against the speed its author built it for.
- *
- * The ratio is the honest number and the clamp is the honest limit: a stride played at three times
- * its authored rate is a blur, and one played at a third is a moonwalk, so the answer stays within
- * a range where the legs still read as legs. The bounds are the reference client's own feel rather
- * than a measurement — there is no such column in any DBC — and they are stated here once instead
- * of being spread across the renderer.
- *
- * Quantised to twentieths and not lerped, deliberately. A lerp would move the rate by an amount
- * that depends on how long the frame was, which makes the same replay produce different bones on a
- * different machine — this client has a formal benchmark that compares exactly that. Rounding to a
- * step instead means the rate changes only when the speed really has, it changes by a step the eye
- * cannot pick out (5% of the stride rate), and it is a pure function of the two speeds with no
- * memory at all.
- */
-export const MOUNT_GAIT_MIN_TIME_SCALE = 0.6;
-export const MOUNT_GAIT_MAX_TIME_SCALE = 1.6;
-/** Steps per unit rate, so the rounding is done in integers and 0.6 comes back as exactly 0.6. */
-const MOUNT_GAIT_TIME_SCALE_STEPS = 20;
-
-export function mountGaitTimeScale(actualSpeed: number | undefined, authoredSpeed: number | undefined): number {
-  if (actualSpeed === undefined || authoredSpeed === undefined) return 1;
-  if (!Number.isFinite(actualSpeed) || !Number.isFinite(authoredSpeed)) return 1;
-  const authored = Math.abs(authoredSpeed);
-  const actual = Math.abs(actualSpeed);
-  if (authored <= 0 || actual <= 0) return 1;
-  const ratio = Math.min(MOUNT_GAIT_MAX_TIME_SCALE, Math.max(MOUNT_GAIT_MIN_TIME_SCALE, actual / authored));
-  return Math.round(ratio * MOUNT_GAIT_TIME_SCALE_STEPS) / MOUNT_GAIT_TIME_SCALE_STEPS;
 }
 
 /**

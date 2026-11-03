@@ -10,8 +10,8 @@ import * as THREE from "three";
 import { encodeWvaAnimations } from "../tools/wvm.mjs";
 import { decodeWvaAnimations } from "../dist/code/browser/Wvm.js";
 import {
-  MOUNT_GAIT_MAX_TIME_SCALE, MOUNT_GAIT_MIN_TIME_SCALE,
-  chooseAnimation, mountGaitTimeScale, mountPose, mountPoseTransition, mountedRiderAnimations,
+  GAIT_MAX_TIME_SCALE, GAIT_MIN_TIME_SCALE,
+  chooseAnimation, gaitTimeScale, mountPose, mountPoseTransition, mountedRiderAnimations,
   needsSidecarAnimations, poseAnimation, resolveAnimation, resolveMountedRiderAnimation,
   unitTravelSpeed,
   addSkinnedClips, instantiateSkinned, skinnedClipsBoneSpan,
@@ -212,40 +212,40 @@ test("A2 the whole seat ladder is still what the sidecar is asked for", withAnim
 test("A2 the gait is replayed at the speed the unit is really travelling", withAnimationData, () => {
   // RidingHorse, measured: Run is authored for 6.9444 yards a second and Walk for 2.5. Base run in
   // 3.3.5a is 7.0, so an unmounted-speed rider is already at the authored rate and a +100% mount
-  // covers twice the ground with the same stride.
+  // covers twice the ground with the same stride, at twice the rate: 03.11 (6.33), its bones say 2.01 at 14.
   const runStride = 6.9444;
-  assert.equal(mountGaitTimeScale(7.0, runStride), 1, "the stride's own speed is rate 1");
-  assert.equal(mountGaitTimeScale(14.0, runStride), MOUNT_GAIT_MAX_TIME_SCALE,
-    "and a +100% mount saturates the upper bound rather than blurring the legs");
-  assert.equal(mountGaitTimeScale(11.2, runStride), MOUNT_GAIT_MAX_TIME_SCALE, "so does +60%");
-  assert.equal(mountGaitTimeScale(1.0, runStride), MOUNT_GAIT_MIN_TIME_SCALE, "and a snared one the lower");
-  assert.equal(mountGaitTimeScale(2.5, 2.5), 1, "walk against its own authored walk");
+  assert.equal(gaitTimeScale(7.0, runStride), 1, "the stride's own speed is rate 1");
+  assert.equal(gaitTimeScale(14.0, runStride), 2, "a +100% mount");
+  assert.equal(gaitTimeScale(4.5, 2.5), 1.8, "its Walkbackwards, which says −2.5, at 4.5 (1.80 measured)");
+  assert.equal(gaitTimeScale(2.5, 2.5), 1, "walk against its own authored walk");
+  assert.equal(gaitTimeScale(1000, runStride), GAIT_MAX_TIME_SCALE, "a spike in a measured speed");
+  assert.equal(gaitTimeScale(0.001, runStride), GAIT_MIN_TIME_SCALE);
 
   // Quantised to twentieths, so the rate changes only when the speed really has and by a step the
   // eye cannot pick out. Deliberately not a lerp: a lerp moves by an amount that depends on how
   // long the frame was, and this client compares bones between runs.
-  assert.equal(mountGaitTimeScale(7.5, runStride), 1.1);
-  assert.equal(mountGaitTimeScale(7.51, runStride), 1.1, "a hair more speed is the same rate");
-  assert.equal(mountGaitTimeScale(8.0, runStride), 1.15);
+  assert.equal(gaitTimeScale(7.5, runStride), 1.1);
+  assert.equal(gaitTimeScale(7.51, runStride), 1.1, "a hair more speed is the same rate");
+  assert.equal(gaitTimeScale(8.0, runStride), 1.15);
   for (const speed of [3, 5, 7, 9, 11, 13]) {
-    const scale = mountGaitTimeScale(speed, runStride);
+    const scale = gaitTimeScale(speed, runStride);
     assert.ok(Math.abs(scale / 0.05 - Math.round(scale / 0.05)) < 1e-9, `${speed} lands on a step`);
-    assert.ok(scale >= MOUNT_GAIT_MIN_TIME_SCALE && scale <= MOUNT_GAIT_MAX_TIME_SCALE);
+    assert.ok(scale >= GAIT_MIN_TIME_SCALE && scale <= GAIT_MAX_TIME_SCALE);
   }
 
   // Everything that is not a number is rate 1, which is what the renderer did for every clip
   // before this existed: no speed known, no authored stride, a stride authored at zero (40 of
   // RidingHorse's 43 sequences), a standing unit.
-  assert.equal(mountGaitTimeScale(undefined, runStride), 1);
-  assert.equal(mountGaitTimeScale(7, undefined), 1);
-  assert.equal(mountGaitTimeScale(7, 0), 1);
-  assert.equal(mountGaitTimeScale(0, runStride), 1);
-  assert.equal(mountGaitTimeScale(Number.NaN, runStride), 1);
-  assert.equal(mountGaitTimeScale(Number.POSITIVE_INFINITY, runStride), 1,
+  assert.equal(gaitTimeScale(undefined, runStride), 1);
+  assert.equal(gaitTimeScale(7, undefined), 1);
+  assert.equal(gaitTimeScale(7, 0), 1);
+  assert.equal(gaitTimeScale(0, runStride), 1);
+  assert.equal(gaitTimeScale(Number.NaN, runStride), 1);
+  assert.equal(gaitTimeScale(Number.POSITIVE_INFINITY, runStride), 1,
     "an infinity is not a speed the clamp should be asked to interpret");
   // Signed on the wire and a magnitude here: RidingHorse authors −2.5 on Walkbackwards.
-  assert.equal(mountGaitTimeScale(2.5, -2.5), 1);
-  assert.equal(mountGaitTimeScale(-2.5, 2.5), 1);
+  assert.equal(gaitTimeScale(2.5, -2.5), 1);
+  assert.equal(gaitTimeScale(-2.5, 2.5), 1);
 });
 
 test("A2 the travelling speed is taken from the movement the unit is actually performing", withAnimationData, () => {

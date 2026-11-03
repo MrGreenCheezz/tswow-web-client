@@ -157,18 +157,18 @@ import {
   M2_TO_SCENE, actionAnimation, addSkinnedClips, mergeSkinnedClips, animatesAsDoodad, applyBillboardBones,
   applyGlobalSequenceBones, buildSkinnedTemplate,
   disposeSkinnedInstance,
-  ACTION_ANIMATION_BLEND, animationBlend, animationFadeWindow, clipBlendTime, pendingActionFate,
-  pendingActionExpired, commitLocomotion,
+  animationBlend, clipBlendTime, pendingActionFate,
+  pendingActionExpired,
   buildSkinnedTemplateFrom, chooseAnimation, instantiateSkinned, isUnitFlying, isUnitMoving, poseAnimation,
   poseAnimationFamily, type AnimationRequestFamily,
-  animationTransition, isTerminalUnitPose, needsSidecarAnimations, poseTransition, resolveActionAnimation,
+  isTerminalUnitPose, needsSidecarAnimations, poseTransition, resolveActionAnimation,
   resolveAnimation, resolveSpellVisualAnimation, spellVisualAnimationCandidates,
-  ACTION_SIDECAR_WAIT, LOOP_ANIMATION_BLEND, SHOOT_METADATA_WAIT, mountSpecialAnimation,
-  clipMovingSpeed, mountGaitTimeScale, mountPose, mountPoseTransition, unitTravelSpeed,
-  isLocomotionGait, locomotionAuthoredSpeed, measuredTravelSpeed, unitGaitTimeScale, spawnFadeFactor,
+  ACTION_SIDECAR_WAIT, SHOOT_METADATA_WAIT, mountSpecialAnimation,
+  clipMovingSpeed, gaitTimeScale, mountPose, mountPoseTransition, unitTravelSpeed,
+  isLocomotionGait, measuredTravelSpeed, spawnFadeFactor, strideStartTime,
   weaponPose, isBaseIdle, // 05.10-A7a-C: isBaseIdle
   isJumpAnimation, // 12.10 6.07
-  applyStrafeYaw, stepStrafeYaw, strafeYawBonesFor, strafeYawTarget,
+  applyStrafeYaw, facingTurnBetween, stepStrafeYaw, strafeYawBonesFor, strafeYawTarget, turnOnTheSpot,
   fastPoseProgramFor, writeGlobalSequenceLocals,
   type GlobalChannelSource, // 12.10 6.24
   type RigSkeleton, type SkinnedInstance, type SkinnedTemplate, type UnitAction, type UnitPose,
@@ -194,7 +194,8 @@ import { StaticSceneryGroup } from "./StaticSceneryGroup.js"; // RND-12
 import { dropDeathFade, syncDeathFade, type DeathFadeState } from "./BatchDeathFade.js"; // 05.10-A7a-F1
 import { applyStandingPose } from "./UnitStandingPose.js"; // 05.10-A7a-C 6.03/6.04
 import { combatAnimations, type CombatReaction } from "./game/CombatAnimations.js"; // 05.10-A7a-D 6.06
-import { kitWoundAnimation } from "./game/AnimationSplit.js"; // 05.10-6.21
+import { isFlinchAnimation, kitWoundAnimation } from "./game/AnimationSplit.js"; // 05.10-6.21
+import { blendInto, flinchWith } from "./AnimationBlend.js"; // 03.11 6.33
 import { flagPoseBits, poseTransitionClip, syncFlagPoses } from "./UnitFlagPoses.js"; // 05.10-A7a-C 6.07; -review: poseTransitionClip
 import {
   MODEL_PLACEMENT_LOCAL_LIGHT_ATTRIBUTE, MODEL_PLACEMENT_LOCAL_LIGHT_DIRECTION,
@@ -2831,13 +2832,8 @@ interface PosedModel {
   overlayFadeUntil: number | undefined;
   /** A one-shot playing over the pose — a jump landing, a swing, an emote — and when it ends. */
   overlayUntil: number;
-  /**
-   * When the travelling gait now playing may be replaced by another one. See `commitLocomotion`.
-   *
-   * Zero whenever the model is not in a gait at all, so nothing but a stride ever carries a
-   * deadline. Both a unit and the mount under it have one, because both change gait on their own.
-   */
-  gaitCommittedUntil: number | undefined;
+  /** 03.11 (6.33): where a Shuffle's clock was last frame, to see it come round (`#turnOnTheSpot`). */
+  shuffleClock: number | undefined;
   /** The template `flatPoseProgram` was resolved for; see `#flatPose`. */
   flatPoseTemplate: SkinnedTemplate | undefined;
   flatPoseProgram: FastPoseProgram | undefined;
@@ -3036,6 +3032,12 @@ interface RenderedUnit extends PosedModel {
   strafeYaw: number | undefined;
   /** 03.11: the spring's velocity for `strafeYaw` (`stepStrafeYaw`). */
   strafeYawVelocity: number;
+  /** 03.11 (6.33): what is left of the spring's hold (`StrafeYawState.hold`). */
+  strafeYawHold: number;
+  /** 03.11 (6.33): which way the body moved on the last step, which Shuffle answers. */
+  strafeYawTurning: number;
+  /** 03.11 (6.33): the facing the last step left it at, so that a facing moving ahead of the body can be seen. */
+  strafeYawFacing: number | undefined;
   /** 11.10: the facing this unit is drawn at, when the client does not move it itself. See `world/UnitFacing.ts`. */
   shownFacing: ShownUnitFacing | undefined;
   /** 5.32: a seated passenger's drawn facing in its seat (VehiclePassengerPose.ts reads it); undefined off a seat. */
@@ -3878,15 +3880,16 @@ const PLAYER_TINT = 0x5aa2e8;
 const CORPSE_TINT = 0x6c6a63;
 /** Scratch for the per-display creature tint in `#drawUnit`: `getHex` copies the value out. */
 const unitTintScratch = new THREE.Color();
+/** 03.11 (6.33): the clips of a body turning on the spot. */
+const TURN_ON_THE_SPOT: readonly number[] = [ANIMATION_IDS.ShuffleLeft!, ANIMATION_IDS.ShuffleRight!];
 /** 03.11: the frame's working copy of a unit's body turn, so `#applyStrafeYaw` allocates nothing per unit. */
-const strafeYawState = { yaw: 0, velocity: 0 };
+const strafeYawState = { yaw: 0, velocity: 0, hold: 0, turning: 0 };
 /**
  * Placeholder gait for the capsule stand-ins: a slight bob while a unit is moving. Delete it
  * together with the capsules once skinned M2 models carry their own animations.
  */
 const UNIT_BOB_AMPLITUDE = 0.055;
 const UNIT_BOB_RATE = 0.012;
-const ANIMATION_BLEND = LOOP_ANIMATION_BLEND;
 /**
  * How long a one-shot waits for keyframes that have been asked for and have not landed.
  *
@@ -14747,7 +14750,7 @@ export class WorldRenderer3D {
       overlayPreservesLocomotion: undefined,
       overlayFadeUntil: undefined,
       overlayUntil: 0,
-      gaitCommittedUntil: undefined,
+      shuffleClock: undefined,
       flatPoseTemplate: undefined,
       flatPoseProgram: undefined,
       animationMode: PLAYBACK_FORWARD, overlayAnimationMode: PLAYBACK_FORWARD, // 12.10 6.03/6.07
@@ -15374,7 +15377,7 @@ export class WorldRenderer3D {
         // P1-09b: every optional field present from birth, so no unit ever changes hidden class.
         actionKind: undefined, overlayAction: undefined, overlayAnimationId: undefined,
         overlayActionKind: undefined, overlayPreservesLocomotion: undefined, overlayFadeUntil: undefined,
-        gaitCommittedUntil: undefined, flatPoseTemplate: undefined, flatPoseProgram: undefined,
+        shuffleClock: undefined, flatPoseTemplate: undefined, flatPoseProgram: undefined,
         animationMode: PLAYBACK_FORWARD, overlayAnimationMode: PLAYBACK_FORWARD, // 12.10 6.03/6.07
         effectKey: undefined, decodedModel: undefined, legacyGeometry: undefined, materialEntries: undefined,
         admittedAt: undefined, animationClock: undefined, animationClockRig: undefined,
@@ -15382,7 +15385,7 @@ export class WorldRenderer3D {
         admissionHasAuthoredAttachments: undefined, bodyHeight: undefined, wvm: undefined, visual: undefined,
         mount: undefined, opacityBorrows: undefined, warmShown: undefined, modelShown: undefined,
         fadeReturnFrames: undefined, appearancePendingSince: undefined, stealthed: undefined,
-        strafeYaw: undefined, strafeYawVelocity: 0, deathFade: undefined, flagPoses: undefined,
+        strafeYaw: undefined, strafeYawVelocity: 0, strafeYawHold: 0, strafeYawTurning: 0, strafeYawFacing: undefined, deathFade: undefined, flagPoses: undefined,
         shownFacing: undefined, // 11.10
         seatFacing: undefined, // 5.32
         closedHands: undefined, // 12.10 6.24
@@ -15921,7 +15924,7 @@ export class WorldRenderer3D {
       action: undefined, animationId: -1, overlayUntil: 0,
       actionKind: undefined, overlayAction: undefined, overlayAnimationId: undefined,
       overlayActionKind: undefined, overlayPreservesLocomotion: undefined, overlayFadeUntil: undefined,
-      gaitCommittedUntil: undefined, flatPoseTemplate: undefined, flatPoseProgram: undefined,
+      shuffleClock: undefined, flatPoseTemplate: undefined, flatPoseProgram: undefined,
       animationMode: PLAYBACK_FORWARD, overlayAnimationMode: PLAYBACK_FORWARD, // 12.10 6.03/6.07
       scale: metadata.scale,
       seat: mountSeatOffset(wvm, metadata.mountHeight, metadata.scale),
@@ -16753,7 +16756,7 @@ export class WorldRenderer3D {
         clip: (animation) => {
           const clip = template.clips.get(animation);
           return clip === undefined ? undefined
-            : { duration: clip.duration, blend: animationBlend(false, false, clipBlendTime(clip)).duration };
+            : { duration: clip.duration, blend: animationBlend(clipBlendTime(clip)) };
         },
       });
   }
@@ -16801,11 +16804,15 @@ export class WorldRenderer3D {
    */
   #strafeYawIdle(unit: RenderedUnit, template: SkinnedTemplate, pose: UnitPose): boolean {
     if ((unit.strafeYaw ?? 0) !== 0) return false;
+    // 03.11 (6.33): a facing that moved has left the body behind it.
+    const facing = unit.node.rotation.y;
+    const still = unit.strafeYawFacing === undefined || unit.strafeYawFacing === facing;
+    if (unit.strafeYawFacing === undefined) unit.strafeYawFacing = facing;
     // 03.11: the mount turns whatever the rider's rig can do.
-    if (unit.mount) return strafeYawTarget(pose) === 0;
+    if (unit.mount) return still && strafeYawTarget(pose) === 0;
     // 11.10: no clip argument — a ground strafe is never a sidestep any more (`poseAnimation`).
     return strafeYawBonesFor(template, unit.wvm) === undefined
-      || strafeYawTarget(pose) === 0;
+      || (still && strafeYawTarget(pose) === 0);
   }
 
   /**
@@ -16828,17 +16835,23 @@ export class WorldRenderer3D {
     const mount = unit.mount;
     // 11.10: was `strafeYawTarget(pose, <the clip playing>)` — the sidestep exemption is gone.
     const target = bones === undefined && !mount ? 0 : strafeYawTarget(pose);
+    // 03.11 (6.33): the facing runs ahead of the body.
+    const facing = unit.node.rotation.y;
+    const facingTurn = bones === undefined && !mount ? 0 : facingTurnBetween(unit.strafeYawFacing, facing);
+    unit.strafeYawFacing = facing;
     const state = strafeYawState;
     state.yaw = unit.strafeYaw ?? 0;
     state.velocity = unit.strafeYawVelocity;
-    stepStrafeYaw(state, target, pose, elapsed);
+    state.hold = unit.strafeYawHold;
+    stepStrafeYaw(state, target, pose, elapsed, facingTurn, self);
     const yaw = state.yaw;
     unit.strafeYaw = yaw;
     unit.strafeYawVelocity = state.velocity;
+    unit.strafeYawHold = state.hold;
+    unit.strafeYawTurning = state.turning;
     // 03.11: in the saddle the whole animal turns, carrying the rider on its seat bone.
     if (mount) mount.node.rotation.y = yaw;
-    // 11.10: `self` — the active player's SpineLow share is not halved (Wow.exe 0x0073dab0).
-    if (bones && unit.skinned) applyStrafeYaw(unit.skinned, bones, yaw, self, mount !== undefined);
+    if (bones && unit.skinned) applyStrafeYaw(unit.skinned, bones, yaw, mount !== undefined);
   }
 
   /**
@@ -16881,7 +16894,7 @@ export class WorldRenderer3D {
           // really exists. A missing/unsupported sequence therefore never replaces the gait.
           this.#requestAnimations(mount.template, [animation], client, mount.metadata);
           if (mount.template.clips.has(animation)) {
-            this.#playAnimation(mount, animation, false, now, true);
+            this.#playAnimation(mount, animation, false, now);
             this.#mountSpecials.delete(guid);
             mount.pose = pose;
             return;
@@ -16917,24 +16930,19 @@ export class WorldRenderer3D {
       return;
     }
 
-    // The horse changes gait when the rider strafes and the rider does not — the seat pose is
-    // chosen before any movement arm reaches `poseAnimation` — so the mount needs the same commit
-    // window a unit has, and needs it more: a rider circling a target asks the animal for a new
-    // stride twice a second. The window is applied here, between choosing and playing, so that both
-    // the play call and the gait scaling below are told the same thing: what is really playing.
-    const wanted = chooseAnimation(mount.template.clips, pose);
-    const chosen = wanted === undefined
-      ? undefined
-      : { animation: this.#commitGait(mount, wanted.animation, now), loop: wanted.loop };
+    const chosen = chooseAnimation(mount.template.clips, pose);
     if (chosen) {
-      // 12.10 6.03/6.07: the fallback's playback mode (a held gait keeps the mode it was playing in).
-      const mode = chosen.animation === wanted!.animation ? wanted!.mode ?? PLAYBACK_FORWARD : mount.animationMode;
-      this.#playAnimation(mount, chosen.animation, chosen.loop, now, false, false, undefined, undefined, mode);
+      // 03.11 (6.33): the horse's feet follow its body, as a man's do; the rider keeps Mount.
+      const gait = this.#turnOnTheSpot(mount, chosen.animation, pose, unit.strafeYawTurning);
+      // 12.10 6.03/6.07: the fallback's playback mode.
+      const mode = gait === chosen.animation ? chosen.mode ?? PLAYBACK_FORWARD : PLAYBACK_FORWARD;
+      this.#playAnimation(mount, gait, chosen.loop, now, false, undefined, undefined, mode);
       // After the play call and never before it: `#playAnimation` puts every action it starts or
       // restarts back on the authored rate, so a gait scaled first would be flattened again.
-      this.#applyMountGait(mount, chosen.animation, chosen.loop, speed);
+      this.#applyMountGait(mount, gait, chosen.loop, speed);
     }
     this.#requestAnimations(mount.template, poseAnimation(pose).wanted, client, mount.metadata);
+    if (unit.strafeYawTurning !== 0) this.#requestAnimations(mount.template, TURN_ON_THE_SPOT, client, mount.metadata);
     mount.pose = pose;
   }
 
@@ -16948,13 +16956,13 @@ export class WorldRenderer3D {
    *
    * The rate is read back off the action rather than remembered, because `#playAnimation` resets
    * it to 1 whenever it starts or restarts a clip and a cached copy would go stale on exactly
-   * those frames. `mountGaitTimeScale` quantises, so this comparison fails — and the write
+   * those frames. `gaitTimeScale` quantises, so this comparison fails — and the write
    * happens — only when the speed has really moved a step.
    */
   #applyMountGait(mount: RenderedMount, animation: number, loop: boolean, speed: number | undefined): void {
     const action = mount.action;
     if (!action || !loop || playbackHolds(mount.animationMode)) return; // 12.10 6.03/6.07: a held frame stays held
-    const scale = mountGaitTimeScale(speed, clipMovingSpeed(mount.template?.clips.get(animation)))
+    const scale = gaitTimeScale(speed, clipMovingSpeed(mount.template?.clips.get(animation)))
       * (mount.animationMode === PLAYBACK_BACKWARD ? -1 : 1); // 12.10 6.03/6.07: a backwards fallback stays backwards
     if (Math.abs(action.getEffectiveTimeScale() - scale) > 1e-6) action.setEffectiveTimeScale(scale);
   }
@@ -16984,16 +16992,14 @@ export class WorldRenderer3D {
    * Replays a unit's stride at its measured travelling speed.
    *
    * The mount version of this fixed the skating; units had the same defect everywhere speeds
-   * change — sprint, slow, and every strafe, whose sidestep is authored standstill. Only looping
-   * locomotion gaits are touched, so one-shots (takeoff, landing, reactions) keep authored timing
-   * and the airborne loop keeps its ballistic rate. The rate is read back off the action because
-   * `#playAnimation` resets it to 1 whenever it starts or restarts a clip.
+   * change. Only looping locomotion gaits are touched, so one-shots (takeoff, landing, reactions) keep
+   * authored timing and the airborne loop keeps its ballistic rate. The rate is read back off the
+   * action because `#playAnimation` resets it to 1 whenever it starts or restarts a clip.
    */
   #applyUnitGait(unit: RenderedUnit, animation: number, loop: boolean): void {
     const action = unit.action;
     if (!action || !loop || !isLocomotionGait(animation) || playbackHolds(unit.animationMode)) return; // 12.10 6.03/6.07
-    const scale = unitGaitTimeScale(
-      unit.strideSpeed, locomotionAuthoredSpeed(unit.template?.clips, animation, unit.strideSpeed))
+    const scale = gaitTimeScale(unit.strideSpeed, clipMovingSpeed(unit.template?.clips.get(animation)))
       * (unit.animationMode === PLAYBACK_BACKWARD ? -1 : 1); // 12.10 6.03/6.07: Walkbackwards as Walk backwards
     if (Math.abs(action.getEffectiveTimeScale() - scale) > 1e-6) action.setEffectiveTimeScale(scale);
   }
@@ -17030,7 +17036,7 @@ export class WorldRenderer3D {
     const overlay = poseTransitionClip(template.clips, transition); // 05.10-A7a-C-review: no gait one-shot
     if (overlay !== undefined) {
       // 12.10 6.03/6.07: KneelEnd/SleepUp/SitGroundUp resolved to their way down play it backwards (0x00826350).
-      this.#playAnimation(unit, overlay, false, now, false, false, undefined, undefined,
+      this.#playAnimation(unit, overlay, false, now, false, undefined, undefined,
         fallbackPlayback(transition!, overlay));
       unit.transitionMoving = moving; // 12.10 6.07: a change of it ends the transition (#animateUnit)
       return;
@@ -17078,6 +17084,12 @@ export class WorldRenderer3D {
         continue;
       }
       if (animation === "wait") break;
+      // 03.11 (6.33): a wound is laid over the unit and is then none of the queue's business.
+      if (!entry.held && isFlinchAnimation(animation)) {
+        this.#flinchUnit(unit, animation, baseIdle);
+        queue.remove(entry);
+        continue;
+      }
       // Upper-body only where the rig has a cut for it: a rig with no leg branches keeps the whole
       // clip as its "overlay", and drawing that over a gait would slide the action's own legs.
       const overlay = unit.template!.overlayClips?.get(animation);
@@ -17099,6 +17111,22 @@ export class WorldRenderer3D {
     }
     this.#releaseUnitAction(unit, queue);
     return undefined;
+  }
+
+  /** 03.11 (6.33): a wound over whatever this unit is doing: its whole body standing, the split track otherwise (`AnimationBlend.ts`). */
+  #flinchUnit(unit: RenderedUnit, animation: number, whole: boolean): void {
+    const template = unit.template!;
+    const full = template.clips.get(animation);
+    const clip = whole ? full : template.overlayClips?.get(animation) ?? full;
+    if (!clip) return;
+    const action = unit.skinned!.mixer.clipAction(clip);
+    if (action === unit.action || action === unit.overlayAction) return;
+    action.reset();
+    action.setEffectiveTimeScale(1);
+    action.setLoop(THREE.LoopOnce, Infinity);
+    action.clampWhenFinished = true;
+    action.play();
+    flinchWith(action, clip.duration);
   }
 
   /** A lead-in whose clip has run hands its entry over to the kit's own pose. */
@@ -17218,10 +17246,10 @@ export class WorldRenderer3D {
       // The unit started or stopped moving under this pose: move it to the other layer at its phase.
       const phase = shown.action.time;
       if (display === "upper") {
-        this.#playAnimation(unit, animation, loop, now, true, true, pending.action, undefined, mode);
+        this.#playAnimation(unit, animation, loop, now, true, pending.action, undefined, mode);
         if (unit.overlayAction) unit.overlayAction.time = phase;
       } else {
-        this.#playAnimation(unit, animation, loop, now, true, false, pending.action, undefined, mode);
+        this.#playAnimation(unit, animation, loop, now, false, pending.action, undefined, mode);
         if (unit.action) unit.action.time = phase;
         this.#clearOverlay(unit);
       }
@@ -17239,7 +17267,7 @@ export class WorldRenderer3D {
         if (display === "upper") unit.overlayAnimationMode = mode;
         else unit.animationMode = mode;
       } else {
-        this.#playAnimation(unit, animation, loop, now, true, display === "upper", pending.action, undefined, mode);
+        this.#playAnimation(unit, animation, loop, now, display === "upper", pending.action, undefined, mode);
       }
       queue.shown = this.#shownAs(unit, entry, animation, display);
     }
@@ -17249,8 +17277,8 @@ export class WorldRenderer3D {
     if (entry.started) return;
     entry.started = true;
     const clip = (display === "upper" ? template.overlayClips?.get(animation) : undefined) ?? template.clips.get(animation);
-    // Handed back one blend before the clip ends, so the base pose cross-fades in as it finishes.
-    const handBack = now + Math.max(0, ((clip?.duration ?? 0) - ACTION_ANIMATION_BLEND) * 1000);
+    // 03.11 (6.33): handed back when the clip has played out, as Wow.exe does: the base pose comes in over its held last frame.
+    const handBack = now + (clip?.duration ?? 0) * 1000;
     if (pending.stage === "lead") {
       pending.sequenceAt = handBack;
       if (!entry.held) entry.until = handBack + ACTION_SIDECAR_WAIT;
@@ -17282,24 +17310,14 @@ export class WorldRenderer3D {
     if (unit.action === shown.action) unit.overlayUntil = 0;
   }
 
-  /**
-   * Holds a travelling gait for the length of its own blend before letting the next one in.
-   *
-   * The whole of the commit window's state is one deadline per model; the policy is
-   * `commitLocomotion`, which is where the measurements and the reason are written. Only a gait
-   * replacing a gait can ever be delayed, and only by 150 ms, so the answer this returns is the one
-   * the pose pass asked for on every frame that is not inside a stride change.
-   *
-   * `chosen.loop` may be passed through unchanged by every caller: `chooseAnimation` returns
-   * `loop: false` for exactly one animation, Death, and Death is not one of the gaits this can
-   * hold, so a held answer is always a loop and the caller's flag is always already true.
-   */
-  #commitGait(unit: PosedModel, animation: number, now: number): number {
-    const commit = commitLocomotion(
-      unit.action ? unit.animationId : undefined, animation, unit.gaitCommittedUntil ?? 0, now,
-    );
-    unit.gaitCommittedUntil = commit.committedUntil;
-    return commit.animation;
+  /** 03.11 (6.33): `turnOnTheSpot` for a model: where its Shuffle's clock is, and only a clip the model has in hand. */
+  #turnOnTheSpot(model: PosedModel, base: number, pose: UnitPose, turning: number): number {
+    const action = model.action;
+    const shuffling = action !== undefined && TURN_ON_THE_SPOT.includes(model.animationId);
+    const cycleOver = !shuffling || action.time < (model.shuffleClock ?? 0);
+    model.shuffleClock = shuffling ? action.time : undefined;
+    const animation = turnOnTheSpot(base, shuffling ? model.animationId : undefined, pose, turning, cycleOver);
+    return model.template!.clips.has(animation) ? animation : base;
   }
 
   /**
@@ -17313,14 +17331,16 @@ export class WorldRenderer3D {
     client: EnvironmentClient | undefined, metadata: UnitModel | undefined, overlay?: THREE.AnimationClip): void {
     const chosen = chooseAnimation(unit.template!.clips, pose);
     if (chosen) {
-      const gait = this.#commitGait(unit, chosen.animation, now);
+      // 03.11 (6.33): a mounted unit's feet are the mount's (`#poseMount`).
+      const gait = unit.mount ? chosen.animation : this.#turnOnTheSpot(unit, chosen.animation, pose, unit.strafeYawTurning);
       const full = overlay === undefined ? undefined : unit.template!.clips.get(gait);
-      // 12.10 6.03/6.07: the fallback's playback mode (0x00826350); a gait the commit window holds keeps its own.
-      const mode = gait === chosen.animation ? chosen.mode ?? PLAYBACK_FORWARD : unit.animationMode;
-      this.#playAnimation(unit, gait, chosen.loop, now, false, false, undefined,
+      // 12.10 6.03/6.07: the fallback's playback mode (0x00826350).
+      const mode = gait === chosen.animation ? chosen.mode ?? PLAYBACK_FORWARD : PLAYBACK_FORWARD;
+      this.#playAnimation(unit, gait, chosen.loop, now, false, undefined,
         full === undefined || overlay === undefined ? undefined : locomotionUnderlayClip(full, overlay), mode);
       this.#applyUnitGait(unit, gait, chosen.loop);
     }
+    if (unit.strafeYawTurning !== 0 && !unit.mount) this.#requestAnimations(unit.template!, TURN_ON_THE_SPOT, client, metadata);
     // What the pose asked for that this model has but has not downloaded yet. Asking is cheap and
     // the client only lets one request per model through. Deliberately the pose's own list and not
     // the committed gait: what may be drawn a fraction of a second from now still has to be here.
@@ -17336,7 +17356,6 @@ export class WorldRenderer3D {
     animation: number,
     loop: boolean,
     now: number,
-    fullDuration = false,
     preserveLocomotion = false,
     actionKind?: UnitAction,
     /** The base in another cut than the model's own — the gait under an upper-body pose. */
@@ -17372,8 +17391,7 @@ export class WorldRenderer3D {
         applyPlayback(current, mode, loop); // 12.10 6.03/6.07
         unit.overlayActionKind = actionKind;
         unit.overlayFadeUntil = undefined;
-        const fade = animationFadeWindow(clip.duration, fullDuration);
-        unit.overlayUntil = loop ? 0 : now + fade.start * 1000;
+        unit.overlayUntil = loop ? 0 : now + clip.duration * 1000;
         return;
       }
       const previous = current;
@@ -17385,28 +17403,17 @@ export class WorldRenderer3D {
       next.setEffectiveWeight(1);
       next.play();
       applyPlayback(next, mode, loop); // 12.10 6.03/6.07
-      if (previous && previous !== next) {
-        const blend = animationBlend(previous.loop === THREE.LoopRepeat, loop, clipBlendTime(clip));
-        const transition = animationTransition(previous.isRunning(), true);
-        if (transition === "stop") previous.stop();
-        else if (transition === "crossfade") next.crossFadeFrom(previous, blend.duration, blend.warp);
-        else if (transition === "fade") {
-          // Deliberately not `crossFadeFrom`: it synchronises the two actions' clocks, and this
-          // predecessor is a finished one-shot clamped on its last frame with no clock to
-          // synchronise. Two independent ramps do the same visual job — the clamped pose goes out
-          // over the same window the new one comes in — without the time coupling.
-          previous.fadeOut(blend.duration);
-          next.fadeIn(blend.duration);
-        }
-      }
+      // 03.11 (6.33): over the gait too: the split track comes in on the same curve from nothing, as measured on a swing and a cast.
+      const blend = animationBlend(clipBlendTime(clip));
+      if (previous && previous !== next) blendInto(next, previous, blend, unit.skinned!.mixer.time);
+      else if (!previous) next.fadeIn(blend);
       unit.overlayAction = next;
       unit.overlayAnimationId = animation;
       unit.overlayAnimationMode = mode; // 12.10 6.03/6.07
       unit.overlayActionKind = actionKind;
       unit.overlayPreservesLocomotion = true;
       unit.overlayFadeUntil = undefined;
-      const fade = animationFadeWindow(clip.duration, fullDuration);
-      unit.overlayUntil = loop ? 0 : now + fade.start * 1000;
+      unit.overlayUntil = loop ? 0 : now + clip.duration * 1000;
       return;
     }
 
@@ -17424,7 +17431,7 @@ export class WorldRenderer3D {
       next.setEffectiveWeight(1);
       next.time = previous.time;
       next.play();
-      next.crossFadeFrom(previous, ACTION_ANIMATION_BLEND, false);
+      next.crossFadeFrom(previous, animationBlend(clipBlendTime(clip)), false);
       unit.action = next;
       return;
     }
@@ -17444,10 +17451,7 @@ export class WorldRenderer3D {
       unit.action.play();
       applyPlayback(unit.action, mode, loop); // 12.10 6.03/6.07
       unit.actionKind = actionKind;
-      // Restarting the same clip ends the same way it would have if it were a different one, so
-      // it leaves the same blend window free. See the tail comment at the bottom of this method.
-      const blendDuration = loop ? ANIMATION_BLEND : ACTION_ANIMATION_BLEND;
-      unit.overlayUntil = loop ? 0 : now + Math.max(0, clip.duration * 1000 - blendDuration * 1000);
+      unit.overlayUntil = loop ? 0 : now + clip.duration * 1000;
       return;
     }
     const previous = unit.action;
@@ -17460,32 +17464,18 @@ export class WorldRenderer3D {
     next.play();
     applyPlayback(next, mode, loop); // 12.10 6.03/6.07
     if (previous && previous !== next) {
-      const blend = animationBlend(previous.loop === THREE.LoopRepeat, loop, clipBlendTime(clip));
-      const transition = animationTransition(previous.isRunning(), true);
-      if (transition === "stop") previous.stop();
-      else if (transition === "crossfade") next.crossFadeFrom(previous, blend.duration, blend.warp);
-      else if (transition === "fade") {
-        // The same independent pair as the overlay branch above, and the one that matters most:
-        // this is where a finished cast, landing or reaction handed over. `previous.stop()` here
-        // dropped its clamped last frame to nothing on the tick the next pose appeared at weight
-        // 1 — one frame of visible snap, on every completed one-shot in the game.
-        previous.fadeOut(blend.duration);
-        next.fadeIn(blend.duration);
-      }
+      // 03.11 (6.33): Walk and Run hand over in step.
+      const start = strideStartTime(previous, clip);
+      if (start !== undefined && loop && mode === PLAYBACK_FORWARD) next.time = start;
+      blendInto(next, previous, animationBlend(clipBlendTime(clip)), unit.skinned!.mixer.time);
     }
     unit.action = next;
     unit.animationId = animation;
     unit.animationMode = mode; // 12.10 6.03/6.07
     unit.actionKind = actionKind;
-    // A one-shot holds the unit for its own length, less the blend that takes it away again — and
-    // that subtraction is not optional. `fullDuration` (a spell visual's own animation) used to
-    // subtract nothing, so the pose pass came back for the unit at the exact millisecond the clip
-    // ended, by which time the action had finished and was no longer running: the transition was
-    // the hard `stop()` above and a standing cast always snapped into Stand. The moving cast never
-    // showed it, because its overlay branch runs `animationFadeWindow` and hands over early. Both
-    // paths now leave the same blend window free, and the difference between them is gone.
-    const blendDuration = loop ? ANIMATION_BLEND : ACTION_ANIMATION_BLEND;
-    unit.overlayUntil = loop ? 0 : now + Math.max(0, clip.duration * 1000 - blendDuration * 1000);
+    // 03.11 (6.33): a one-shot holds the unit for its whole length: measured on landings, a bow, a swing and a cast, the next
+    // clip starts from zero when this one has played out, and comes in over its held last frame.
+    unit.overlayUntil = loop ? 0 : now + clip.duration * 1000;
   }
 
   /**
@@ -17503,7 +17493,7 @@ export class WorldRenderer3D {
    */
   #clearOverlay(unit: PosedModel, hard = false): void {
     if (hard) unit.overlayAction?.stop();
-    else unit.overlayAction?.fadeOut(ACTION_ANIMATION_BLEND);
+    else unit.overlayAction?.fadeOut(animationBlend(clipBlendTime(unit.action?.getClip())));
     unit.overlayAction = undefined;
     unit.overlayAnimationId = undefined;
     unit.overlayActionKind = undefined;

@@ -88,7 +88,7 @@ test("mount-special packets are routed to the mount node and not the rider", asy
     "the rider's authoritative movement flag resolves flying mounts even without a spline");
   assert.match(renderer, /#poseMount\(unit, object\.guid,[\s\S]*mountSpecialAnimation\(pose\.flight === true\)/,
     "the rider guid is used to resolve the mount's ground/flying sequence");
-  assert.match(renderer, /this\.#playAnimation\(mount, animation, false, now, true\)/,
+  assert.match(renderer, /this\.#playAnimation\(mount, animation, false, now\)/,
     "the one-shot is played on the mount PosedModel, not the rider");
 });
 
@@ -115,20 +115,20 @@ test("A2 the mount is posed from the rider's travel alone, with its own jumps an
 
   // (3) The gait, scaled after the play call because #playAnimation resets the rate to 1.
   // 12.10 6.03/6.07: the play call also carries the gait's playback mode in its trailing arguments.
-  assert.match(body, /this\.#playAnimation\(mount, chosen\.animation, chosen\.loop, now(?:, [^;\n]*)?\);\s*\n(\s*\/\/[^\n]*\n)*\s*this\.#applyMountGait\(/,
+  assert.match(body, /this\.#playAnimation\(mount, gait, chosen\.loop, now(?:, [^;\n]*)?\);\s*\n(\s*\/\/[^\n]*\n)*\s*this\.#applyMountGait\(/,
     "the stride is scaled only after the action has been started");
   const gait = /\n  #applyMountGait\(mount: RenderedMount[\s\S]*?\n  \}\n/.exec(renderer)?.[0];
   assert.ok(gait, "#applyMountGait must be findable");
   // 12.10 6.03/6.07: a gait held on one frame keeps its zero rate as well.
   assert.match(gait, /if \(!action \|\| !loop(?: \|\| playbackHolds\(mount\.animationMode\))?\) return;/,
     "a one-shot — the special, a takeoff, a landing — keeps its authored timing");
-  assert.match(gait, /mountGaitTimeScale\(speed, clipMovingSpeed\(mount\.template\?\.clips\.get\(animation\)\)\)/,
+  assert.match(gait, /gaitTimeScale\(speed, clipMovingSpeed\(mount\.template\?\.clips\.get\(animation\)\)\)/,
     "the authored stride speed comes off the clip the artifact carried it on");
   assert.match(gait, /action\.getEffectiveTimeScale\(\)/,
     "the current rate is read back rather than cached, because #playAnimation resets it");
 
   // And the rider is untouched by any of it: nothing in the file scales a unit's own action.
-  assert.doesNotMatch(renderer, /unit\.action\.setEffectiveTimeScale\(mountGaitTimeScale/,
+  assert.doesNotMatch(renderer, /unit\.action\.setEffectiveTimeScale\(gaitTimeScale/,
     "riders keep authored timing");
 });
 
@@ -427,21 +427,11 @@ test("V4 visual effects gate emitters and follow moving roots, while explicit po
 test("V4 spell unit clips run once for their full duration and lead into held primaries", async () => {
   const source = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
   assert.match(source, /next\.setLoop\(wantedLoop, Infinity\)/);
-  assert.match(source, /const blendDuration = loop \? ANIMATION_BLEND : ACTION_ANIMATION_BLEND/,
-    "one-shots use the shorter hand-off while continuous poses keep the default blend");
-  // A1 removed the `fullDuration ? 0 :` this used to pin. Subtracting nothing meant the pose pass
-  // came back for a spell one-shot at the exact millisecond its clip ended, when the action was no
-  // longer running — so the hand-off back to Stand was a hard stop and a standing cast snapped.
-  assert.doesNotMatch(source, /fullDuration \? 0 : blendDuration \* 1000/,
-    "a spell one-shot leaves the same blend window free as every other one-shot");
-  assert.match(source, /clip\.duration \* 1000 - blendDuration \* 1000/,
-    "both one-shot tails hand back a blend window early");
-  assert.match(source, /const blend = animationBlend\(previous\.loop === THREE\.LoopRepeat, loop, clipBlendTime\(clip\)\)/,
-    "transitions take the incoming clip's authored M2Sequence.blendTime when the artifact carries one");
-  assert.match(source, /next\.crossFadeFrom\(previous, blend\.duration, blend\.warp\)/,
-    "loop transitions cross-fade with phase synchronisation");
-  assert.match(source, /previous\.fadeOut\(blend\.duration\);\s*\n\s*next\.fadeIn\(blend\.duration\);/,
-    "a finished one-shot is faded out beside the new pose instead of being cut out of the mixer");
+  // 03.11 (6.33): a one-shot holds the unit for all of its length, and the next clip comes in over its held last frame.
+  assert.doesNotMatch(source, /clip\.duration \* 1000 - /, "no tail hands back early");
+  assert.match(source, /unit\.overlayUntil = loop \? 0 : now \+ clip\.duration \* 1000;/);
+  assert.match(source, /blendInto\(next, previous, animationBlend\(clipBlendTime\(clip\)\), unit\.skinned!\.mixer\.time\)/,
+    "transitions take the incoming clip's authored M2Sequence.blendTime");
   // The unit-action arbiter (UnitActionArbiter.ts) replaced the single action slot: a lead-in is
   // armed when its entry first starts, and the entry is held when its follow-up is.
   assert.match(source, /if \(entry\.started\) return;\s*\n\s*entry\.started = true;/,

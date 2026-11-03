@@ -16,9 +16,11 @@ import ts from "typescript";
 import * as THREE from "three";
 import { m2Animations, parseM2Skeleton } from "../tools/m2.mjs";
 import {
-  ACTION_ANIMATION_BLEND, LOOP_ANIMATION_BLEND, animationBlend, animationFadeWindow, animationTransition,
-  clipBlendTime, commitLocomotion, locomotionBoneMask, locomotionOverlayClip, pendingActionExpired,
+  animationBlend, clipBlendTime, gaitTimeScale, locomotionBoneMask, locomotionOverlayClip, pendingActionExpired,
+  strideStartTime, turnOnTheSpot,
 } from "../dist/code/browser/AnimatedModel.js";
+import { blendInto, flinchWith } from "../dist/code/browser/AnimationBlend.js";
+import { isFlinchAnimation } from "../dist/code/browser/game/AnimationSplit.js";
 import { ANIMATION_DATA_AVAILABLE, ANIMATION_IDS } from "../dist/code/generated/animations.js";
 import { UPDATE_FIELDS } from "../dist/code/generated/updateFields.js";
 import { appearsDead, isWorldObjectDead } from "../dist/code/world/WorldState.js";
@@ -322,7 +324,7 @@ function executor({ moving = false, overrides = {}, legless = false } = {}) {
   const state = { moving };
   const Harness = methods([
     "#settleUnitAction", "#advanceLeadIn", "#entryAnimation", "#startUnitAction", "#shownAs",
-    "#releaseUnitAction", "#poseBase", "#commitGait", "#playAnimation", "#clearOverlay",
+    "#releaseUnitAction", "#poseBase", "#turnOnTheSpot", "#flinchUnit", "#playAnimation", "#clearOverlay",
   ], {
     UnitActionQueue, unitActionDisplay, unitActionEndsOnMovement, heldClipPlaysOnce, locomotionUnderlayClip,
     animationPlaysOnUpperBody: (animation) => animation === CAST || animation === PRECAST,
@@ -340,9 +342,10 @@ function executor({ moving = false, overrides = {}, legless = false } = {}) {
     resolveSpellVisualAnimation: (clips, wanted) => wanted.find((id) => clips.has(id)),
     resolveActionAnimation: () => undefined, spellVisualAnimationCandidates: (wanted) => wanted,
     chooseAnimation: () => ({ animation: state.moving ? RUN : 0, loop: true }),
-    poseAnimationFamily: () => "any", commitLocomotion,
-    animationBlend, animationTransition, clipBlendTime, animationFadeWindow,
-    ACTION_ANIMATION_BLEND, ANIMATION_BLEND: LOOP_ANIMATION_BLEND, ACTION_CLIP_WAIT: 900, ACTION_SIDECAR_WAIT: 3_000,
+    poseAnimationFamily: () => "any",
+    animationBlend, clipBlendTime, blendInto, flinchWith, isFlinchAnimation, strideStartTime, turnOnTheSpot,
+    TURN_ON_THE_SPOT: [ANIMATION_IDS.ShuffleLeft, ANIMATION_IDS.ShuffleRight],
+    ACTION_CLIP_WAIT: 900, ACTION_SIDECAR_WAIT: 3_000,
     // 12.10 6.03/6.07: the playback modes #startUnitAction / #playAnimation / #poseBase read.
     PLAYBACK_BACKWARD, PLAYBACK_FORWARD, PLAYBACK_HOLD_LAST, applyPlayback, fallbackPlayback, playbackHolds, wantedPlayback,
     ...overrides,
@@ -479,8 +482,8 @@ test("executor: a one-shot off the list takes the whole body on the run, then th
   unit.skinned.mixer.update(1);
   const leg = new THREE.Quaternion().fromArray(turn(0.1));
   assert.ok(bones[1].quaternion.angleTo(leg) < 1e-6, "the leg holds the pose's key, not the run's");
-  const handBack = 10 + (0.5 - ACTION_ANIMATION_BLEND) * 1_000;
-  assert.equal(queue.top().until, handBack, "handed back one blend before the clip ends");
+  const handBack = 10 + 0.5 * 1_000;
+  assert.equal(queue.top().until, handBack, "handed back when the clip has played out");
   assert.equal(frame(handBack - 1), "full");
   assert.equal(frame(handBack), undefined, "then the pose is over");
   assert.equal(unit.animationId, RUN, "and the gait is back");
@@ -519,7 +522,8 @@ test("executor: a release takes over from the precast by cross-fade, and a cance
   assert.ok(precastAction.isScheduled()
     && precastAction.getEffectiveWeight() > 0 && precastAction.getEffectiveWeight() < 1,
   "the precast fades out beside the release instead of being cut on the tick");
-  // Cancelling the release mid-way hands the unit back the same way.
+  // Cancelling the release past the middle of its blend hands the unit back the same way (earlier, it is gone: AnimationBlend.ts).
+  unit.skinned.mixer.update(0.05);
   const releaseAction = unit.action;
   queue.clear();
   assert.equal(frame(400), undefined);
@@ -563,8 +567,8 @@ test("executor: a one-shot hands back one blend before its clip ends, and the we
   submit("reaction", CAST, false, 3_000, 0);
   assert.equal(frame(0), "full");
   assert.equal(unit.animationId, CAST, "the flinch outranks the stance");
-  // The same arithmetic as the renderer: the clip's length less the action blend.
-  const handBack = (1 - ACTION_ANIMATION_BLEND) * 1_000;
+  // The same arithmetic as the renderer: the clip's length.
+  const handBack = 1 * 1_000;
   assert.equal(queue.top().until, handBack);
   assert.equal(frame(handBack - 1), "full");
   assert.equal(frame(handBack), "full");
@@ -605,7 +609,7 @@ test("executor: the start deadlines do not cut short a shot that started late", 
   assert.equal(frame(1_200), "full", "the shot starts inside its metadata window");
   assert.equal(frame(1_600), "full", "and runs past that window to its own hand-back");
   assert.equal(unit.animationId, CAST);
-  assert.equal(frame(1_200 + (1 - ACTION_ANIMATION_BLEND) * 1_000), undefined, "then hands back");
+  assert.equal(frame(1_200 + 1 * 1_000), undefined, "then hands back");
 });
 
 /* --- 05.10-A7a-C: the standing base (6.03/6.04) and the flag poses (6.07) ----------------------- */

@@ -38,6 +38,11 @@ const STAND_WOUND = 8;
 const COMBAT_WOUND = 9;
 const COMBAT_CRITICAL = 10;
 
+/** 03.11 (6.33): the poses Wow.exe plays as a flinch over the unit (0x00832ab0 with no blend flag → 0x00826dd0). */
+export function isFlinchAnimation(animation: number): boolean {
+  return animation === STAND_WOUND || animation === COMBAT_WOUND || animation === COMBAT_CRITICAL;
+}
+
 type Names = Readonly<Record<number, string>>;
 type Ids = Readonly<Record<string, number | undefined>>;
 
