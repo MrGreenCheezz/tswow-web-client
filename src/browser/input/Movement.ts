@@ -19,7 +19,7 @@ import { airMovementFlags } from "./AirKeys.js"; // 03.11 6.36
 import type { InputAction } from "./Bindings.js";
 import { heldMovementAction } from "./Bindings.js"; // 11.02-input
 import { advanceFollow, cancelFollow, followRunning, forgetFollow } from "./Follow.js";
-import { gameObjectColliderFrame, liftCarrying, takeLiftSettled } from "../game/GameObjectColliders.js";
+import { gameObjectColliderFrame, gameObjectWorldWithoutHulls, liftCarrying, takeLiftSettled } from "../game/GameObjectColliders.js";
 import { farSightHoldsBody, viewIsOut } from "../game/ViewSubject.js"; // 11.02-I
 import { jumpSpentByMountSpecial, mountSpecialJumpPress, mountSpecialJumpRelease } from "./MountSpecial.js"; // 05.10-A7a-G 6.20
 import {
@@ -757,13 +757,14 @@ export function advancePhysics(elapsed: number): void {
 
   // 11.01-B: closed doors and lifts near the character join the world, and a character standing on
   // a lift is carried by its move first (GameObjectColliders.ts); with none near, the world probe.
-  const probe = gameObjectColliderFrame(world.state.objects, self, terrainProbe(world.mapId), motion, performance.now());
+  const base = terrainProbe(world.mapId);
+  const probe = gameObjectColliderFrame(world.state.objects, self, base, motion, performance.now());
   // 11.01-A3: on a ship's deck the step runs in the ship's frame against its own collision
   // (MovementRide.ts); boarding and leaving are decided there.
   const ride = RIDE_FRAME;
   ride.objects = world.state.objects;
   ride.self = self;
-  ride.world = probe;
+  ride.world = gameObjectWorldWithoutHulls(base); // 04.11: the ships are walls to the step, not the pier to the ride
   ride.flying = flying;
   ride.elapsed = dt;
   ride.now = performance.now();

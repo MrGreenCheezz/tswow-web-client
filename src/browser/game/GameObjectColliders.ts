@@ -40,15 +40,17 @@ import { worldFloorUnder } from "./TransportRide.js";
  *   byte (`GAMEOBJECT_BYTES_1` byte 0, `SetGoState`) reads READY (1, closed), open at ACTIVE (0) and
  *   DESTROYED (2, the 3.3.5 name of ACTIVE_ALTERNATIVE — `SwitchDoorOrButton(…, alternative)`,
  *   GameObject.cpp:1650), and only doors whose template is known and not `startOpen` (`doorSolid`).
- *   Wow.exe leaves a door's entity solid and plays its open animation; how an open door then lets a
- *   body through — whether a GO doodad's triangles follow its animation (0x007a50c0 → 0x007a4af0 →
- *   0x0082ec30, not decompiled) — is not established, and a static mesh cannot follow it anyway, so
- *   the state stands in for the animation, as the core's own `EnableCollision` does;
+ *   Wow.exe leaves a door's entity solid and plays its open animation, and its triangles do not follow
+ *   that animation: 0x0082ec30 reads the M2's static collision arrays (header 0xd8..0xec) and turns them
+ *   by the object's matrix alone (read 04.11). How an open door then lets a body through in Wow.exe is
+ *   still not established, a question for the stand; here the state decides, as the core's own
+ *   `EnableCollision` does, and the server's walls then agree with the client's;
  * - lifts (`GAMEOBJECT_TYPE_TRANSPORT`, 11) solid where the client draws them on their path
  *   (LiftClock.ts) rather than at the spawn the core never moves them from, and carrying;
- * - ships and zeppelins (`GAMEOBJECT_TYPE_MO_TRANSPORT`, 15) are the ride's (input/MovementRide.ts):
- *   the ridden one's deck in its own frame. A hull not ridden is not a wall here — boarding reads the
- *   world's floor as the pier, and a deck in it would always tie with itself (recorded, not done).
+ * - ships and zeppelins (`GAMEOBJECT_TYPE_MO_TRANSPORT`, 15): the ridden one's deck is the ride's, in its
+ *   own frame (input/MovementRide.ts); any other is solid at its pose this frame like the rest (04.11).
+ *   Boarding and the end of a ride read the world's floor as the pier, and a deck in it would always tie
+ *   with itself, so they ask `withoutHulls`.
  * A destructible building (33) is solid by its current display id, which the core switches with the
  * state (`SetDestructibleState` → `SetDisplayId`), as Wow.exe swaps the active model. A game object
  * aboard the ship the character rides is solid in that ship's frame, at its seat (`rideColliderProbe`),
@@ -67,7 +69,7 @@ import { worldFloorUnder } from "./TransportRide.js";
 
 export const GO_TYPE_DOOR = 0;
 export const GO_TYPE_TRANSPORT = 11;
-/** 11.01: ships and zeppelins — the ride's, not a collider here. */
+/** 11.01: ships and zeppelins — the ridden one is the ride's, any other a wall. */
 export const GO_TYPE_MO_TRANSPORT = 15;
 /** `GOState` (SharedDefines.h:1655-1660). */
 export const GO_STATE_ACTIVE = 0;
@@ -158,6 +160,8 @@ export interface LiftPaths {
 
 interface ColliderRecord extends DynamicCollider {
   readonly lift: boolean;
+  /** 04.11: a ship not ridden, left out of `withoutHulls`. */
+  hull: boolean;
   pose: CarrierPose;
   /** A lift's pose last frame, for the carry; valid only when it was a collider then. */
   readonly prev: CarrierPose;
@@ -181,6 +185,8 @@ export class GameObjectColliders {
   readonly #probe = new DynamicColliderProbe({ ground: () => undefined, liquid: () => undefined, hole: () => false });
   /** 11.01: the game objects aboard the ship the character rides, in that ship's frame (`rideProbe`). */
   readonly #aboardProbe = new DynamicColliderProbe({ ground: () => undefined, liquid: () => undefined, hole: () => false });
+  /** 04.11: this frame's colliders but the hulls, for what reads the world's floor as the pier (`withoutHulls`). */
+  readonly #noHulls = new DynamicColliderProbe({ ground: () => undefined, liquid: () => undefined, hole: () => false });
   /** 11.01: the ship those are aboard; undefined when the character rides none. */
   #aboardCarrier: bigint | undefined;
   readonly #records = new Map<bigint, ColliderRecord>();
@@ -224,6 +230,18 @@ export class GameObjectColliders {
   }
 
   /**
+   * 04.11: the world as this frame's `frame` returned it, without the ships. Boarding asks it: a deck that is
+   * also the world's floor would tie with itself, and the world wins a tie.
+   */
+  withoutHulls(base: TerrainProbe): TerrainProbe {
+    const probe = this.#noHulls;
+    if (probe.count === this.#probe.count && probe.count > 0) return this.#probe;
+    if (probe.count === 0) return base;
+    probe.base = base;
+    return probe;
+  }
+
+  /**
    * 11.01: the probe for a step on `carrier`'s deck — `deck` itself (the ride's `CarrierProbe`), with
    * the game objects aboard that ship at their seats when the last frame found any.
    */
@@ -245,6 +263,7 @@ export class GameObjectColliders {
     const probe = this.#probe;
     probe.base = base;
     probe.count = 0;
+    this.#noHulls.count = 0;
     this.#aboardProbe.count = 0;
     const position = self.position;
     if (!position) {
@@ -263,7 +282,9 @@ export class GameObjectColliders {
       if (!object?.position) continue;
       const type = gameObjectType(object);
       if (type === GO_TYPE_TRANSPORT) this.#lift(object, position, near, now);
-      else if (type === GO_TYPE_MO_TRANSPORT || type === undefined) continue;
+      else if (type === GO_TYPE_MO_TRANSPORT) {
+        if (guid !== this.#aboardCarrier) this.#hull(object, position, near); // 04.11
+      } else if (type === undefined) continue;
       else if (this.#aboardCarrier !== undefined && object.transport?.guid === this.#aboardCarrier) {
         this.#aboard(object, seat!, position, near);
       } else this.#solid(object, position, near);
@@ -300,6 +321,7 @@ export class GameObjectColliders {
     this.#scannedSize = -1;
     this.#scannedAt = Number.NEGATIVE_INFINITY;
     this.#probe.count = 0;
+    this.#noHulls.count = 0;
     this.#aboardProbe.count = 0;
     this.#aboardCarrier = undefined;
     this.#carrying = false;
@@ -337,6 +359,28 @@ export class GameObjectColliders {
     }
     if (!withinReach(record, position.x, position.y, position.z)) return;
     this.#push(record);
+  }
+
+  /**
+   * 04.11: a ship the character does not ride, at its pose this frame: Wow.exe gathers it like any game object's
+   * model (0x007a55e0, the list of dynamic WMOs), and the core has it in the same dynamic tree.
+   */
+  #hull(object: WorldObjectState, position: WorldPosition, near: Set<bigint>): void {
+    const pose = object.position!;
+    if (!within(pose, position)) return;
+    near.add(object.guid);
+    const world = this.#models.forObject(object);
+    if (!world) {
+      this.#records.delete(object.guid);
+      return;
+    }
+    const record = this.#record(object.guid, world, false);
+    record.hull = true;
+    record.pose.x = pose.x;
+    record.pose.y = pose.y;
+    record.pose.z = pose.z;
+    record.pose.orientation = pose.orientation;
+    if (withinReach(record, position.x, position.y, position.z)) this.#push(record);
   }
 
   /**
@@ -393,7 +437,7 @@ export class GameObjectColliders {
     let record = this.#records.get(guid);
     if (!record || record.lift !== lift) {
       record = {
-        guid, world, lift, pose: { x: 0, y: 0, z: 0, orientation: 0 }, prev: { x: 0, y: 0, z: 0, orientation: 0 },
+        guid, world, lift, hull: false, pose: { x: 0, y: 0, z: 0, orientation: 0 }, prev: { x: 0, y: 0, z: 0, orientation: 0 },
         prevValid: false, passable: undefined,
         box: { minX: 0, minY: 0, minZ: 0, maxX: 0, maxY: 0, maxZ: 0 }, boxSize: -1, // 11.01
       };
@@ -412,6 +456,7 @@ export class GameObjectColliders {
   #push(record: ColliderRecord): void {
     const probe = this.#probe;
     probe.colliders[probe.count++] = record;
+    if (!record.hull) this.#noHulls.colliders[this.#noHulls.count++] = record; // 04.11
   }
 
   /**
@@ -479,9 +524,8 @@ export class GameObjectColliders {
     this.#scannedAt = now;
     this.#candidates.clear();
     for (const object of objects.values()) {
-      // 11.01: every game object but a ship (the ride's); a type still unknown is looked at again.
-      const type = gameObjectType(object);
-      if (type !== undefined && type !== GO_TYPE_MO_TRANSPORT) this.#candidates.add(object.guid);
+      // 11.01: every game object; a type still unknown is looked at again. 04.11: ships too.
+      if (gameObjectType(object) !== undefined) this.#candidates.add(object.guid);
     }
   }
 }
@@ -583,6 +627,11 @@ export function setGameObjectColliders(value: GameObjectColliders | undefined): 
 export function gameObjectColliderFrame(objects: ReadonlyMap<bigint, WorldObjectState>, self: WorldObjectState,
   base: TerrainProbe, motion: Readonly<CharacterMotion>, now: number): TerrainProbe {
   return colliders ? colliders.frame(objects, self, base, motion, now) : base;
+}
+
+/** 04.11: `GameObjectColliders.withoutHulls` for the live world. */
+export function gameObjectWorldWithoutHulls(base: TerrainProbe): TerrainProbe {
+  return colliders ? colliders.withoutHulls(base) : base;
 }
 
 /** The character is being carried by a moving lift this frame. */

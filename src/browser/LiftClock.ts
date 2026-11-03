@@ -26,19 +26,21 @@
 // a lift anchored late runs late by the whole wait. A new create block is a new `WorldObjectState`,
 // so it starts its own clock.
 //
-// Open, recorded rather than guessed: a lift with a pause (GAMEOBJECT_LEVEL ≠ 0, scripted elevators
-// toggled by state) runs Wow.exe's state-driven branch of 0x00710640 (the path held at its ends by
-// the GO state, 0x00710820), and the path's rotation (TransportRotation.dbc, 0x0070dc10) turns the
-// car; neither is done here, as before.
+// A lift with a pause (GAMEOBJECT_LEVEL ≠ 0, a scripted elevator) is driven by its GO state instead
+// (`pausedLiftTime`, read 04.11). Open, recorded rather than guessed: the path's rotation
+// (TransportRotation.dbc, 0x0070dc10) turns the car; not done here, as before.
 
 import { UPDATE_FIELDS } from "../generated/updateFields.js";
 import type { WorldObjectState, WorldPosition, WorldState } from "../world/WorldState.js";
-import { anchorShipClock, shipClockPhase, type ShipClock } from "./TransportMotion.js";
+import { anchorShipClock, dynamicPhaseWord, shipClockPhase, type ShipClock } from "./TransportMotion.js";
 import { sampleTransportPath, type TransportPath } from "./TransportPath.js";
 
 const DYNAMIC = UPDATE_FIELDS.GAMEOBJECT_DYNAMIC.offset;
 const BYTES_1 = UPDATE_FIELDS.GAMEOBJECT_BYTES_1.offset;
 const ENTRY = UPDATE_FIELDS.OBJECT_FIELD_ENTRY.offset;
+const LEVEL = UPDATE_FIELDS.GAMEOBJECT_LEVEL.offset;
+/** The phase word's scale, [0xa339e0] = 1 / 65535. */
+const PHASE_WORD_SCALE = 1 / 65535;
 /** `GAMEOBJECT_TYPE_TRANSPORT`, byte 1 of `GAMEOBJECT_BYTES_1`. */
 const GO_TYPE_TRANSPORT = 11;
 
@@ -67,10 +69,92 @@ export function liftClock(object: WorldObjectState, period: number, now: number)
   return clock;
 }
 
+/**
+ * What Wow.exe keeps of a lift with a pause, behind the lift's behaviour object: `segment` +0x38,
+ * `changedAt` +0x5c, `saved` +0x60, and the state it last heard (GO+0x204).
+ */
+interface PausedLift {
+  segment: number;
+  changedAt: number;
+  saved: number;
+  state: number;
+}
+
+const pausedLifts = new WeakMap<WorldObjectState, PausedLift>();
+
+/** A segment's length (0x00710570): the first runs from the start to the pause, the other from there to the end. */
+function pausedSegmentLength(segment: number, pause: number, period: number): number {
+  return segment === 0 ? pause : period - pause;
+}
+
+/**
+ * The path time (0x00710640). Segment 0 runs up to the pause and holds there; any other runs on from the pause
+ * to the end of the path and is then at time 0, the start, and stays. `asked` differing from the segment reads
+ * the clock backwards from what was saved.
+ */
+function pausedPathTime(lift: PausedLift, asked: number, time: number, pause: number, period: number): number {
+  let t = time - lift.changedAt;
+  if (asked === lift.segment) t += lift.saved;
+  else t = t < lift.saved ? lift.saved - t : 0;
+  if (lift.segment === 0) return t > pause ? pause : t;
+  t += pause;
+  return t >= period ? 0 : t;
+}
+
+/**
+ * How far along its segment the lift is (0x00710780), for the state change below: 1 at its end, the last
+ * keyframe's time standing in for the 0 that a finished second segment reads as.
+ */
+function pausedProgress(lift: PausedLift, asked: number, time: number, pause: number, period: number): number {
+  const t = pausedPathTime(lift, asked, time, pause, period);
+  const length = pausedSegmentLength(lift.segment, pause, period);
+  const along = lift.segment === 0 ? t : (t === 0 ? period : t) - pause;
+  return (asked === lift.segment ? along : length - along) / length;
+}
+
+/** How far along its segment a lift must be for a state change to start the other one (0x00710820, [0xa0ff44]). */
+const PAUSED_SWITCH_PROGRESS = 0.95;
+
+/**
+ * A lift with a pause, as Wow.exe runs it (0x00711f20, 0x007105d0, 0x00710820, 0x00710640). Set up on the segment
+ * its state names, as far along as the phase word says. A later state change is heard when the state byte differs:
+ * near the end of its segment the lift starts the new state's; before that it only re-anchors, finishes the segment
+ * it is on and holds, and a change back to that segment does nothing.
+ */
+function pausedLiftTime(object: WorldObjectState, setupTime: number, time: number, pause: number, period: number): number {
+  const state = (object.fields.get(BYTES_1) ?? 0) & 0xff;
+  let lift = pausedLifts.get(object);
+  if (lift === undefined) {
+    const word = dynamicPhaseWord(object.fields.get(DYNAMIC)) ?? 0;
+    const along = Math.round(pausedSegmentLength(state, pause, period) * word * PHASE_WORD_SCALE);
+    // At the create block's clock, not this first frame's: Wow.exe sets a lift up when the block is read.
+    lift = { segment: state, changedAt: setupTime - along, saved: 0, state };
+    pausedLifts.set(object, lift);
+  } else if (lift.state !== state) {
+    const old = lift.state;
+    lift.state = state;
+    if (lift.segment !== state) {
+      const progress = pausedProgress(lift, old, time, pause, period);
+      if (progress >= PAUSED_SWITCH_PROGRESS) {
+        lift.segment = state;
+        lift.saved = 0;
+      } else {
+        lift.saved = Math.round(progress * pausedSegmentLength(old, pause, period) - 0.5);
+      }
+      lift.changedAt = time;
+    }
+  }
+  return pausedPathTime(lift, lift.segment, time, pause, period);
+}
+
 /** How far into its cycle the lift is at `now`, in [0, period). */
 export function liftPhaseMs(object: WorldObjectState, period: number, now: number): number {
   if (!(period > 0)) return 0;
-  return shipClockPhase(liftClock(object, period, now), now, period);
+  const clock = liftClock(object, period, now);
+  const pause = object.fields.get(LEVEL) ?? 0;
+  // A pause at or past the path's end leaves no second segment to divide by; Wow.exe's own table has none.
+  if (pause > 0 && pause < period) return pausedLiftTime(object, clock.progressMs, clock.progressMs + (now - clock.at), pause, period);
+  return shipClockPhase(clock, now, period);
 }
 
 /** A lift's pose in the world: where it stands this frame and the spawn's facing (lifts do not turn). */

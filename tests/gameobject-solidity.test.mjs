@@ -113,19 +113,61 @@ test("every game object with a collision model is solid, whatever its type and s
   assert.equal(gameObjectSolid(gameObject(PROP, { position: SLAB_POSE, bytes: null }), undefined), undefined);
 });
 
-test("a ship is not a collider here (the ride's); a type not known yet and a model without a row are none", () => {
+test("a type not known yet and a model without a row are none", () => {
   for (const [name, object] of [
-    ["a ship", gameObject(PROP, { type: GO_TYPE_MO_TRANSPORT, position: SLAB_POSE })],
     ["no GAMEOBJECT_BYTES_1 yet", gameObject(PROP, { position: SLAB_POSE, bytes: null })],
     ["no .dtree row", gameObject(PROP, { position: SLAB_POSE, display: 4242 })],
   ]) {
-    const { collision, asked } = models();
+    const { collision } = models();
     const colliders = new GameObjectColliders(collision, undefined, () => undefined);
     const { position, probe, base } = walkEast(colliders, new Map([[PROP, object]]));
     assert.equal(probe, base, `${name}: the world probe itself`);
     assert.ok(position.x > 103, `${name}: walked through (${position.x})`);
-    if (name === "a ship") assert.deepEqual(asked, [], "a ship's model is the ride's to ask for");
   }
+});
+
+test("a ship not ridden is a wall at its pose this frame", () => {
+  const { collision } = models();
+  const colliders = new GameObjectColliders(collision, undefined, () => undefined);
+  const hull = gameObject(SHIP, { type: GO_TYPE_MO_TRANSPORT, position: SLAB_POSE });
+  const objects = new Map([[SHIP, hull]]);
+  const stopped = walkEast(colliders, objects);
+  assert.ok(stopped.position.x < 100 - 0.25 && stopped.position.x > 99, `stopped at the hull (${stopped.position.x})`);
+  hull.position.x = 120; // It sailed on: the wall went with it, without a rescan or a new model.
+  assert.ok(walkEast(colliders, objects).position.x > 103, "the way is clear");
+});
+
+test("the hull is out of what boarding reads as the pier; other game objects stay in it", () => {
+  const { collision } = models();
+  const colliders = new GameObjectColliders(collision, undefined, () => undefined);
+  const base = flat();
+  const objects = new Map([[SHIP, gameObject(SHIP, { type: GO_TYPE_MO_TRANSPORT, position: SLAB_POSE })]]);
+  const self = { guid: SELF, typeId: 4, position: { x: 99, y: 202, z: 0, orientation: 0 }, fields: new Map() };
+  const probe = colliders.frame(objects, self, base, newCharacterMotion(), 0);
+  assert.notEqual(probe, base, "the step asks it");
+  assert.equal(colliders.withoutHulls(base), base, "nothing else near: the world itself");
+  objects.set(PROP, gameObject(PROP, { position: SLAB_POSE }));
+  const both = colliders.frame(objects, self, base, newCharacterMotion(), 2000);
+  const pier = colliders.withoutHulls(base);
+  assert.notEqual(pier, base);
+  assert.notEqual(pier, both);
+  assert.equal(pier.count, 1, "the prop");
+  assert.equal(both.count, 2, "the prop and the hull");
+  objects.delete(SHIP);
+  const alone = colliders.frame(objects, self, base, newCharacterMotion(), 4000);
+  assert.equal(colliders.withoutHulls(base), alone, "no hull: the same probe");
+});
+
+test("the ship being ridden is no wall: its deck is the ride's", () => {
+  const { collision } = models();
+  const colliders = new GameObjectColliders(collision, undefined, () => undefined);
+  const base = flat();
+  const objects = new Map([[SHIP, gameObject(SHIP, { type: GO_TYPE_MO_TRANSPORT, position: SLAB_POSE })]]);
+  const self = {
+    guid: SELF, typeId: 4, position: { x: 99, y: 202, z: 0, orientation: 0 }, fields: new Map(),
+    transport: { guid: SHIP, x: 0, y: 0, z: 0, orientation: 0, seat: 0xff },
+  };
+  assert.equal(colliders.frame(objects, self, base, newCharacterMotion(), 0), base);
 });
 
 test("standing on a game object when it comes into view, the character stays on it (the door's passable rule is the door's)", () => {
@@ -253,6 +295,30 @@ test("riding: the ride's step on the deck runs into a crate aboard and stops at 
     }
     assert.equal(self.transport?.guid, SHIP, "still aboard");
     assert.ok(self.transport.x < 3 - 0.75 && self.transport.x > 1.5, `stopped at the crate on the deck (${self.transport.x})`);
+  } finally {
+    setGameObjectColliders(undefined);
+    setRideCarriers(undefined);
+  }
+});
+
+test("a ship's hull as a wall does not stop anyone boarding it: its deck under the feet still boards", () => {
+  const { collision } = models();
+  const colliders = new GameObjectColliders(collision, undefined, () => undefined);
+  setGameObjectColliders(colliders);
+  setRideCarriers(new TransportCollision({ revision: 0, model: (id) => MODELS.get(id) ?? null, requestGroups() {} }));
+  try {
+    const ship = gameObject(SHIP, { type: GO_TYPE_MO_TRANSPORT, position: SHIP_POSE, display: PLATFORM_DISPLAY });
+    const objects = new Map([[SHIP, ship]]);
+    const self = { guid: SELF, typeId: 4, position: { x: SHIP_POSE.x, y: SHIP_POSE.y, z: SHIP_POSE.z + 0.1, orientation: 0 }, fields: new Map() };
+    objects.set(SELF, self);
+    const motion = newCharacterMotion();
+    const base = flat(-50);
+    const probe = colliders.frame(objects, self, base, motion, 0);
+    assert.notEqual(probe, base, "the hull is near");
+    const frame = (world) => ({ objects, self, world, motion, flying: false, elapsed: 1 / 60, now: 0 });
+    assert.equal(beginRideFrame(frame(probe)), undefined, "asked with the hull in it, the deck ties with itself and the world wins");
+    assert.ok(beginRideFrame(frame(colliders.withoutHulls(base))), "without it, the deck boards");
+    assert.equal(self.transport?.guid, SHIP);
   } finally {
     setGameObjectColliders(undefined);
     setRideCarriers(undefined);
