@@ -56,6 +56,7 @@ function duelButton(): HTMLButtonElement | undefined {
   if (duelChallengeButton || typeof document === "undefined") return duelChallengeButton;
   const button = document.createElement("button");
   button.type = "button";
+  button.className = "frame-action"; // 4.18: one of the client's own, which the stock interface hides
   button.textContent = "⚔ Дуэль";
   setTip(button, "Вызвать выбранного игрока на дуэль");
   button.setAttribute("aria-label", "Вызвать на дуэль");

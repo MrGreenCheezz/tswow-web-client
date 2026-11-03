@@ -241,6 +241,24 @@ test("a malformed patched talent root is hidden and demoted for native fallback"
   assert.equal(h.releases, 1);
 });
 
+test("3.62, 3.64: N closes the stock talent frame through HideUIPanel, so its slot does not stay taken", async () => {
+  const h = harness();
+  const calls = [];
+  h.boot.bridge.runInMutationBatch = (run) => run();
+  h.boot.vm.globalFunction = (name) => (name === "HideUIPanel" ? { name } : undefined);
+  h.boot.vm.call = (ref, args) => { calls.push([ref.name, args[0]]); h.boot.bridge.Hide(); return []; };
+  h.boot.vm.release = () => {};
+  const owner = createLazyFrameXmlTalentOwner(h.seam, h.boot, h.renderer);
+  owner.show();
+  h.wait.resolve({ ok: true, roots: [h.root] });
+  await settle();
+  h.boot.bridge.Show();
+  owner.hide();
+  assert.deepEqual(calls, [["HideUIPanel", h.root]]);
+  assert.equal(h.root.visible, false);
+  owner.dispose();
+});
+
 test("pending talent toggle N then N coalesces one load and keeps late frame hidden", async () => {
   const h = harness();
   const owner = createLazyFrameXmlTalentOwner(h.seam, h.boot, h.renderer);

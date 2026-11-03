@@ -25,6 +25,7 @@ import type { FrameXmlDomRenderer } from "../ui/framexml_compat/FrameXmlDomRende
 import type { FrameXmlFrame } from "../ui/framexml_compat/FrameXmlTypes.js";
 import type { FrameXmlTalentOwner } from "./FrameXmlTalentController.js";
 import { frameXmlEntryPointReplaced } from "./FrameXmlStockEntryPoints.js";
+import { hideFrameXmlPanel } from "./FrameXmlPanels.js"; // 3.62
 
 type AddonTalentBoot = Pick<FrameXmlBoot, "vm" | "bridge" | "errorCount">;
 type AddonTalentRenderer = Pick<FrameXmlDomRenderer, "elementFor">;
@@ -138,7 +139,8 @@ export function createPatchedFrameXmlTalentOwner(
       throw new Error("the add-on's ToggleTalentFrame showed no window");
     },
     hide: () => {
-      for (const frame of windows) boot.bridge.Hide(frame);
+      // 3.62, 3.64: an add-on's window that asked for a panel slot gives it back.
+      for (const frame of windows) hideFrameXmlPanel(boot, frame);
     },
     dispose: () => {
       if (disposed) return;

@@ -259,10 +259,11 @@ import { mountFrameXmlMacroBindingWindows } from "./FrameXmlMacroBindingMount.js
 import { mountFrameXmlOptions } from "./FrameXmlOptionsOwner.js";
 import { frameXmlLiveOptionsHost } from "./FrameXmlOptionsLive.js";
 import {
-  NATIVE_FOCUS_REPLACED, NATIVE_LANES_REPLACED, NATIVE_MIRROR_TIMERS_REPLACED, NATIVE_TARGET_CONTEXT_REPLACED,
+  NATIVE_FOCUS_REPLACED, NATIVE_LANES_REPLACED, NATIVE_LEFTOVERS_CSS, NATIVE_MIRROR_TIMERS_REPLACED, NATIVE_TARGET_CONTEXT_REPLACED,
 } from "../ui/NativeHudReplacement.js";
 
 import { frameXmlViewport } from "./FrameXmlWorldPolicy.js";
+import { hideFrameXmlPanel, showFrameXmlPanel } from "./FrameXmlPanels.js"; // 3.62
 
 /** `WorldObjectState.typeId` of a player, as the other FrameXML resolvers spell it. */
 const TYPEID_PLAYER = 4;
@@ -628,7 +629,7 @@ const NATIVE_LANES_HIDE_SELECTOR = NATIVE_LANES_REPLACED_BY_VERTICAL
   .map((id) => `body.${NATIVE_LANES_REPLACEMENT_CLASS} #${id}`)
   .join(",\n");
 
-/** The legacy target shell is replaced piecemeal; its actions remain native. */
+/** The legacy target shell is replaced piecemeal. */
 const NATIVE_TARGET_CORE_HIDE_SELECTOR = [
   "target-icon",
   "target-name",
@@ -642,6 +643,7 @@ const NATIVE_TARGET_CORE_HIDE_SELECTOR = [
   .join(",\n");
 
 const NATIVE_TARGET_PANEL_SELECTOR = `body.${NATIVE_LANES_REPLACEMENT_CLASS} #target-panel`;
+
 
 /** The target spellbar and aura containers are an optional contextual replacement. */
 const NATIVE_TARGET_CONTEXT_HIDE_SELECTOR = ["target-cast", "target-auras"]
@@ -1537,9 +1539,8 @@ export function createLazyFrameXmlTrainerOwner(
     if (boot.bridge.isVisible(target)) return;
     const errorsBefore = trainerErrorCount();
     const diagnosticsBefore = trainerDiagnosticCount();
-    // ShowUIPanel is intentionally neutral in the browser bridge. Seed the exact root visibility
-    // first so the stock Show helper does not take its native "failed to show" CloseTrainer path.
-    boot.bridge.Show(target);
+    // 3.62: ClassTrainerFrame_Show below calls ShowUIPanel itself and closes the trainer on a refusal,
+    // which is stock. A root shown here first would leave it nothing to do and the panel no slot.
     if (trainerErrorCount() > errorsBefore || trainerDiagnosticCount() > diagnosticsBefore) {
       throw new Error("Blizzard_TrainerUI ClassTrainerFrame OnShow reported an error");
     }
@@ -1633,7 +1634,7 @@ export function createLazyFrameXmlTrainerOwner(
     hide: () => {
       desiredOpen = false;
       if (frame) {
-        boot.bridge.Hide(frame);
+        hideFrameXmlPanel(boot, frame); // 3.62: was bridge.Hide
         stockOwned = false;
       }
     },
@@ -1650,7 +1651,7 @@ export function createLazyFrameXmlTrainerOwner(
       }
       if (frame && boot.bridge.isVisible(frame)) {
         stockOwned = false;
-        boot.bridge.Hide(frame);
+        hideFrameXmlPanel(boot, frame); // 3.62: was bridge.Hide
         return true;
       }
       return false;
@@ -1661,7 +1662,7 @@ export function createLazyFrameXmlTrainerOwner(
         generation += 1;
         nativeShown = false;
         if (frame) {
-          boot.bridge.Hide(frame);
+          hideFrameXmlPanel(boot, frame); // 3.62: was bridge.Hide
           stockOwned = false;
         }
         return;
@@ -1670,7 +1671,7 @@ export function createLazyFrameXmlTrainerOwner(
         desiredOpen = false;
         const restoreNative = stockOwned || (frame !== undefined && boot.bridge.isVisible(frame));
         if (frame) {
-          boot.bridge.Hide(frame);
+          hideFrameXmlPanel(boot, frame); // 3.62: was bridge.Hide
           stockOwned = false;
         }
         if (restoreNative) refreshNative();
@@ -1869,7 +1870,7 @@ export function createLazyFrameXmlTalentOwner(
     },
     hide: () => {
       desiredOpen = false;
-      if (frame) boot.bridge.Hide(frame);
+      if (frame) hideFrameXmlPanel(boot, frame); // 3.62, 3.64: was bridge.Hide, which kept UIParent's slot
     },
     dispose: () => {
       if (disposed) return;
@@ -2488,6 +2489,7 @@ export function installFrameXmlReloadUi(
 const HOST_CSS = `
 ${NATIVE_LANES_HIDE_SELECTOR} { display: none !important; }
 ${NATIVE_TARGET_CORE_HIDE_SELECTOR} { display: none !important; }
+${NATIVE_LEFTOVERS_CSS}
 ${NATIVE_MINIMAP_HIDE_SELECTOR} { display: none !important; }
 ${NATIVE_RAIL_BELOW_STOCK_MINIMAP_CSS}
 ${FRAMEXML_NATIVE_OWNED_DEPENDENCY_SELECTOR} { display: none !important; }
@@ -3963,8 +3965,8 @@ export async function mountFrameXmlVertical(
       const questFrame = quest.frame;
       const owner: FrameXmlQuestOwner = {
         isOpen: () => boot.bridge.isVisible(questFrame),
-        show: () => { boot.bridge.Show(questFrame); },
-        hide: () => { boot.bridge.Hide(questFrame); },
+        show: () => { showFrameXmlPanel(boot, questFrame); }, // 3.62
+        hide: () => { hideFrameXmlPanel(boot, questFrame); }, // 3.62
         onFailure: () => {
           fallbacks.report("quest", "QuestLogFrame перестал открываться");
           demotePublishedQuest(resources);
@@ -4030,16 +4032,16 @@ export async function mountFrameXmlVertical(
       resources.pvpFrame = pvp.frame;
       const pvpOwner: FrameXmlPvpOwner = {
         isOpen: () => boot.bridge.isVisible(pvp.frame),
-        show: () => { boot.bridge.Show(pvp.frame); },
+        show: () => { showFrameXmlPanel(boot, pvp.frame); }, // 3.62
         hide: () => {
-          boot.bridge.Hide(pvp.frame);
-          if (pvp.arena) boot.bridge.Hide(pvp.arena);
+          hideFrameXmlPanel(boot, pvp.frame); // 3.62
+          if (pvp.arena) hideFrameXmlPanel(boot, pvp.arena); // 3.62
         },
       };
       if (pvp.arena) {
         pvpOwner.isArenaOpen = () => boot.bridge.isVisible(pvp.arena!);
-        pvpOwner.showArena = () => { boot.bridge.Show(pvp.arena!); };
-        pvpOwner.hideArena = () => { boot.bridge.Hide(pvp.arena!); };
+        pvpOwner.showArena = () => { showFrameXmlPanel(boot, pvp.arena!); }; // 3.62
+        pvpOwner.hideArena = () => { hideFrameXmlPanel(boot, pvp.arena!); }; // 3.62
       }
       resources.pvpOwner = pvpOwner;
     } else if (!options.seam) fallbacks.report("pvp", "PVPFrame не прошёл проверку");
@@ -4108,8 +4110,8 @@ export async function mountFrameXmlVertical(
       resources.nativeVendorWasHidden = vendorWindow.hidden;
       resources.merchantOwner = {
         isOpen: () => boot.bridge.isVisible(merchant.frame),
-        show: () => { boot.bridge.Show(merchant.frame); },
-        hide: () => { boot.bridge.Hide(merchant.frame); },
+        show: () => { showFrameXmlPanel(boot, merchant.frame); }, // 3.62
+        hide: () => { hideFrameXmlPanel(boot, merchant.frame); }, // 3.62
         refresh: (event, force) => {
           seam.merchantChanged(event, force);
         },
@@ -4342,8 +4344,8 @@ export async function mountFrameXmlVertical(
       spellbookWindow.hidden = true;
       resources.spellbookOwnerCleanup = publishFrameXmlSpellBook({
         isOpen: () => boot.bridge.isVisible(frame),
-        show: () => { boot.bridge.Show(frame); },
-        hide: () => { boot.bridge.Hide(frame); },
+        show: () => { showFrameXmlPanel(boot, frame); }, // 3.62
+        hide: () => { hideFrameXmlPanel(boot, frame); }, // 3.62
       });
     }
     // The owner's report (01.11): a native window opened while the corpus loaded (world entry, ReloadUI's

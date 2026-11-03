@@ -1,5 +1,6 @@
 import type { FrameXmlBoot } from "./FrameXmlBoot.js";
 import type { FrameXmlFrame } from "../ui/framexml_compat/FrameXmlTypes.js";
+import { hideFrameXmlPanel } from "./FrameXmlPanels.js"; // 3.62
 
 /** UISpecialFrames is the module's opt-in to Escape, including lazily-created windows. */
 export function createFrameXmlTsAddonWindows(boot: FrameXmlBoot): {
@@ -28,7 +29,7 @@ export function createFrameXmlTsAddonWindows(boot: FrameXmlBoot): {
   return {
     isOpen: () => visible().length > 0,
     close: () => boot.bridge.runInMutationBatch(() => {
-      for (const frame of visible()) boot.bridge.Hide(frame);
+      for (const frame of visible()) hideFrameXmlPanel(boot, frame); // 3.62
     }),
     dispose: () => {
       if (disposed) return;

@@ -10,6 +10,7 @@ import type {
   FrameXmlQuestGiverWorld,
 } from "./FrameXmlQuestGiverController.js";
 import type { FrameXmlQuestLifecycleEvent } from "./FrameXmlQuestLifecycle.js";
+import { hideFrameXmlPanel, showFrameXmlPanel } from "./FrameXmlPanels.js"; // 3.62
 
 export interface FrameXmlQuestGiverMountContext {
   readonly world: FrameXmlQuestGiverWorld;
@@ -51,7 +52,7 @@ export function createFrameXmlQuestGiverMountOwner(
     end
   `, "@FrameXmlQuestGiverMount:reward-error");
   if (!installed.ok || !boot.bridge.SetScript(close, "OnClick", () => {
-    boot.bridge.Hide(frame);
+    hideFrameXmlPanel(boot, frame); // 3.62
   })) return undefined;
 
   const panels = {
@@ -67,9 +68,9 @@ export function createFrameXmlQuestGiverMountOwner(
     if (event === "QUEST_FINISHED") suppressClose = true;
     try {
       boot.bridge.runInMutationBatch(() => {
-        if (event !== "QUEST_FINISHED" && event !== "QUEST_ITEM_UPDATE") boot.bridge.Show(frame);
+        if (event !== "QUEST_FINISHED" && event !== "QUEST_ITEM_UPDATE") showFrameXmlPanel(boot, frame); // 3.62
         boot.pump.fire(event);
-        if (event === "QUEST_FINISHED") boot.bridge.Hide(frame);
+        if (event === "QUEST_FINISHED") hideFrameXmlPanel(boot, frame); // 3.62
       });
     } finally { suppressClose = previous; }
     // Whether the page came up, and nothing else (the owner's report, 01.11): every frame registered for
@@ -90,11 +91,11 @@ export function createFrameXmlQuestGiverMountOwner(
     message: (text, error) => {
       boot.pump.fire(error ? "UI_ERROR_MESSAGE" : "UI_INFO_MESSAGE", text);
     },
-    close: () => { boot.bridge.Hide(frame); },
+    close: () => { hideFrameXmlPanel(boot, frame); }, // 3.62
     dispose: () => {
       const previous = suppressClose;
       suppressClose = true;
-      try { boot.bridge.Hide(frame); } finally { suppressClose = previous; }
+      try { hideFrameXmlPanel(boot, frame); } finally { suppressClose = previous; } // 3.62
     },
     onFailure: context.onFailure,
   };

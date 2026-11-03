@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import {
   PLATE_BORDER_TEXTURE, PLATE_ELITE_TEXTURE, PLATE_GLOW_TEXTURE, PLATE_HEIGHT, PLATE_NAME_RAISE, PLATE_RAID_TEXTURE, PLATE_RANGE,
-  PLATE_SHIELD_TEXTURE, PLATE_SKULL_TEXTURE, PLATE_WIDTH, RANK_BOSS, RANK_ELITE, RANK_NORMAL, RANK_RARE, RANK_RARE_ELITE, drawPlate,
+  PLATE_SHIELD_TEXTURE, PLATE_SKULL_TEXTURE, PLATE_WIDTH, RANK_BOSS, RANK_ELITE, RANK_NORMAL, RANK_RARE, RANK_RARE_ELITE, alphaFromBrightness, drawPlate,
   plateColour, plateLayout, plateLevelColour, plateShowsElite, plateShowsSkull, plateVisible,
 } from "../dist/code/browser/NamePlate.js";
 import { REACTION_FRIENDLY, REACTION_HOSTILE, REACTION_NEUTRAL } from "../dist/code/world/FactionRules.js";
@@ -26,6 +26,7 @@ const picture = (path) => ({ path, width: 128, height: 64 });
 const art = {
   image: (path) => picture(path),
   tinted: (path, colour) => ({ ...picture(path), colour }),
+  added: (path) => ({ ...picture(path), added: true }),
 };
 const plate = (overrides = {}) => ({
   guid: 7n, name: "Hostile Normal", level: 80, playerLevel: 80, reaction: REACTION_HOSTILE, classColour: undefined,
@@ -172,7 +173,24 @@ test("a target dims every other plate to 127 of 255; the mouse adds the glow", (
   assert.equal(draw(plate()).images[0].alpha, 1, "nothing targeted, nothing dimmed");
   const glow = imageOf(draw(plate({ hovered: true })).images, PLATE_GLOW_TEXTURE);
   assert.equal(glow.blend, "lighter");
+  assert.equal(glow.args[0].added, true, "6.38: the glow's black must not arrive as opaque black");
   assert.equal(imageOf(draw(plate()).images, PLATE_GLOW_TEXTURE), undefined);
+});
+
+test("6.38: an added picture's black is nothing and its light stays what it was", () => {
+  const pixels = new Uint8ClampedArray([
+    0, 0, 0, 255,
+    128, 64, 0, 255,
+    255, 255, 255, 255,
+    200, 100, 0, 128,
+    30, 40, 50, 0,
+  ]);
+  alphaFromBrightness(pixels);
+  assert.deepEqual([...pixels.slice(3, 4)], [0], "opaque black becomes transparent");
+  assert.deepEqual([...pixels.slice(4, 8)], [255, 128, 0, 128], "half light: the colour lifted, the brightness in alpha");
+  assert.deepEqual([...pixels.slice(8, 12)], [255, 255, 255, 255], "full white stays");
+  assert.deepEqual([...pixels.slice(12, 16)], [255, 127, 0, 100], "its own alpha counts: 200 at half is 100 of light");
+  assert.equal(pixels[19], 0, "transparent stays transparent");
 });
 
 test("threat lights the flash from the status at which the unit is on the player", () => {

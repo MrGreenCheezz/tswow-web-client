@@ -1219,13 +1219,14 @@ test("world reset closes the old mount, reattaches the next world, and cancels a
   assert.match(worldStyle.textContent,
     /body\.framexml-world-replaces-native #target-panel \{[\s\S]*?width: 0 !important;[\s\S]*?height: 0 !important;[\s\S]*?background: transparent !important;/,
     "target panel is a transparent zero-size shell");
-  assert.doesNotMatch(worldStyle.textContent, /#target-rail\s*\{[\s\S]*?display:\s*none/i,
+  assert.doesNotMatch(worldStyle.textContent, /#target-rail\s*\{[^}]*display:\s*none/i,
     "target rail must not be hidden as one lane");
-  for (const id of ["target-actions"]) {
-    assert.doesNotMatch(worldStyle.textContent,
-      new RegExp(`body\\.framexml-world-replaces-native #${id}[^\\{]*\\{[^}]*display:\\s*none`, "i"),
-      `target action #${id} must not receive a core hide rule`);
-  }
+  // 4.18: the client's own buttons go (native-hud-leftovers.test.mjs); the row stays for a module's.
+  assert.doesNotMatch(worldStyle.textContent,
+    /body\.framexml-world-replaces-native #target-actions\s*[,{]/i,
+    "the target-frame/actions slot must not receive a core hide rule");
+  assert.ok(worldStyle.textContent.includes("body.framexml-world-replaces-native #target-actions > .frame-action"),
+    "the world style carries the 4.18 rule");
   assert.equal(body.classList.contains("framexml-world-replaces-target-context"), true,
     "target context class must appear only after static stock spellbar/aura gates");
   for (const id of ["target-cast", "target-auras"]) {

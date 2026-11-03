@@ -824,10 +824,17 @@ test("lazy trainer owner keeps native panel pending, then hands off only after t
       Show: (frame) => { frame.visible = true; return true; },
       Hide: (frame) => { frame.visible = false; return true; },
       dispatchEvent: () => 1,
+      runInMutationBatch: (run) => run(),
     },
     vm: {
-      globalFunction: () => ({}),
-      call: () => [], release() {},
+      globalFunction: (name) => ({ name }),
+      // 3.62: stock's own show and hide, which the owner now leaves the frame to.
+      call: (ref, args) => {
+        if (ref.name === "ClassTrainerFrame_Show") boot.bridge.Show(root);
+        if (ref.name === "HideUIPanel") boot.bridge.Hide(args[0]);
+        return [];
+      },
+      release() {},
     },
     loadAddon: async () => { loadCalls += 1; return await wait; },
   };
@@ -924,13 +931,21 @@ async function trainerOwnerFixture({
         return true;
       },
       dispatchEvent: () => 1,
+      runInMutationBatch: (run) => run(),
     },
     get errorCount() { return vmErrorCount; },
     vm: {
-      globalFunction: () => ({}),
-      call: () => {
+      globalFunction: (name) => ({ name }),
+      call: (ref, args) => {
+        // 3.62: stock's own hide is not what these failures are about.
+        if (ref.name === "HideUIPanel") {
+          boot.bridge.Hide(args[0]);
+          return [];
+        }
         if (throwOnCall) throw new Error("stock call failed");
         if (errorOnCall) vmErrorCount += 1;
+        // 3.62: stock's own show, which the owner now leaves the frame to.
+        if (ref.name === "ClassTrainerFrame_Show") boot.bridge.Show(root);
         return [];
       },
       release() {},

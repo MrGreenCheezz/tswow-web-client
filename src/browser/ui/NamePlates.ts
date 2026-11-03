@@ -14,7 +14,7 @@
 import { REACTION_FRIENDLY, REACTION_HOSTILE, REACTION_NEUTRAL, UNIT_FLAGS_UNTARGETABLE } from "../../world/FactionRules.js";
 import { unit, worldObject } from "../../world/Fields.js";
 import { isWorldObjectDead, type WorldObjectState } from "../../world/WorldState.js";
-import { RANK_NORMAL, plateVisible, type PlateArt, type PlateData, type PlateFilter, type PlateImage } from "../NamePlate.js";
+import { RANK_NORMAL, alphaFromBrightness, plateVisible, type PlateArt, type PlateData, type PlateFilter, type PlateImage } from "../NamePlate.js";
 import { UNIT_NAME_X, UNIT_NAME_Y, UNIT_NAME_Z, resultUnitNamePoint } from "../RenderResults.js"; // 03.11 6.37
 import { threatStanding } from "../framexml/FrameXmlThreat.js"; // 03.11 6.37
 import { settledHoveredUnitGuid } from "../game/HoverTarget.js"; // 03.11 6.37
@@ -144,12 +144,36 @@ function tintedPicture(source: PlateImage, key: string, colour: string): PlateIm
   return canvas;
 }
 
+/** 6.38: a picture with its brightness as alpha, built once. */
+const addedPictures = new Map<string, PlateImage | null>();
+
+function addedPicture(source: PlateImage, path: string): PlateImage | undefined {
+  const known = addedPictures.get(path);
+  if (known !== undefined) return known ?? undefined;
+  const canvas = typeof OffscreenCanvas === "function" ? new OffscreenCanvas(source.width, source.height) : undefined;
+  const context = canvas?.getContext("2d");
+  if (!canvas || !context) {
+    addedPictures.set(path, null);
+    return undefined;
+  }
+  context.drawImage(source, 0, 0);
+  const image = context.getImageData(0, 0, source.width, source.height);
+  alphaFromBrightness(image.data);
+  context.putImageData(image, 0, 0);
+  addedPictures.set(path, canvas);
+  return canvas;
+}
+
 /** The plate's pictures: the client's own, through the same cache as the minimap's. */
 export const plateArt: PlateArt = {
   image: (path) => game.mapArt?.bitmap(path),
   tinted: (path, colour) => {
     const source = game.mapArt?.bitmap(path);
     return source ? tintedPicture(source, `${path}|${colour}`, colour) : undefined;
+  },
+  added: (path) => {
+    const source = game.mapArt?.bitmap(path);
+    return source ? addedPicture(source, path) : undefined;
   },
 };
 

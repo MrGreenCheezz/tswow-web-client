@@ -238,9 +238,33 @@ export interface PlateArt {
   image(path: string): PlateImage | undefined;
   /** The picture multiplied by a colour, as a vertex colour would. */
   tinted(path: string, colour: string): PlateImage | undefined;
+  /** 6.38: a picture drawn by adding it, with {@link alphaFromBrightness} applied. */
+  added(path: string): PlateImage | undefined;
 }
 
-const NO_ART: PlateArt = { image: () => undefined, tinted: () => undefined };
+const NO_ART: PlateArt = { image: () => undefined, tinted: () => undefined, added: () => undefined };
+
+/**
+ * 6.38: a picture for adding onto the plates' transparent layer, in place, as straight RGBA.
+ *
+ * Nameplate-Glow has no alpha: light on black, and Wow.exe adds it to the screen, where black adds
+ * nothing. A 2D canvas's `lighter` also adds alpha, so on a layer that is transparent everywhere but
+ * the plate its black came out as an opaque rectangle. Each pixel's brightness becomes its alpha and
+ * the colour is lifted to match, so the premultiplied sum is the picture's own light and black is nothing.
+ */
+export function alphaFromBrightness(pixels: Uint8ClampedArray): void {
+  for (let i = 0; i < pixels.length; i += 4) {
+    const alpha = pixels[i + 3]! / 255;
+    const brightness = Math.max(pixels[i]!, pixels[i + 1]!, pixels[i + 2]!) * alpha;
+    if (brightness > 0) {
+      const lift = (255 * alpha) / brightness;
+      pixels[i] = pixels[i]! * lift;
+      pixels[i + 1] = pixels[i + 1]! * lift;
+      pixels[i + 2] = pixels[i + 2]! * lift;
+    }
+    pixels[i + 3] = brightness;
+  }
+}
 
 /** 0x0061a4f0's table: what a threat status lights the flash with. */
 const THREAT_COLOURS: Readonly<Record<number, string>> = { 2: "#ff9900", 3: "#ff0000" };
@@ -372,7 +396,7 @@ export function drawPlate(context: CanvasRenderingContext2D, box: PlateBox, data
 
   // HIGHLIGHT: the glow, added to the plate under the mouse.
   if (data.hovered) {
-    const glow = art.image(PLATE_GLOW_TEXTURE);
+    const glow = art.added(PLATE_GLOW_TEXTURE); // 6.38: `added`, was `image`
     if (glow) {
       context.globalCompositeOperation = "lighter";
       context.drawImage(glow, left, top, box.width, box.height);
