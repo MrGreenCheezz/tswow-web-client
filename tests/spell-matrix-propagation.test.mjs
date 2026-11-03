@@ -13,6 +13,7 @@ import { BONE_SPHERICAL_BILLBOARD as SPHERE, BONE_CYLINDRICAL_BILLBOARD_Z as CYL
 import { effectFixture, compareArrays } from './fixtures/billboard-effects.mjs';
 import * as missileFlight from '../dist/code/browser/MissileFlight.js'; // 05.10: ревью G2 — straight homing (slice E)
 import * as spellSequence from '../dist/code/browser/SpellModelSequence.js'; // 25.10 (6.27)
+import * as missileSequence from '../dist/code/browser/MissileSequence.js'; // 26.10 (6.31)
 
 // Execute the production visual/effect passes without a WebGL constructor. Only asset loading,
 // prewarming and expiry are stubbed; placement, billboards, admission and emitters are real.
@@ -22,6 +23,7 @@ const renderer = parsed.statements.find(n => ts.isClassDeclaration(n) && n.name?
 const methods = ['#updateVisuals', '#faceModelSpace', '#orientVisualFrame', '#applySpellVisualTransform',
   '#applySpellBillboards', '#attachmentBone', '#updateEffects',
   '#sequenceSpellModel', '#spellGround', // 25.10 (6.27): Stand → Hold/Decay; the floor for 0x2000 particles
+  '#sequenceMissileModel', '#holdModelSequence', // 26.10 (6.31): InFlight; 03.11 (6.37): a mark's sequence
 ].map(name => {
   const member = renderer.members.find(m => m.name?.getText(parsed) === name);
   assert.ok(member, name);
@@ -32,6 +34,7 @@ const constants = ['EFFECT_RANGE', 'EFFECT_RANGE_SQUARED', 'EFFECT_BUDGET', 'EFF
   'IDENTITY_QUATERNION', 'M2_FROM_SCENE',
   '_missileSample', // 05.10: ревью G2 — slice E's homing sample
   '_spellDurations', '_spellPick', '_particleNormal', 'MODEL_VFX_MAX_MS', '_spellLightAt', // 25.10 (6.27)
+  '_missilePick', 'missileInFlightFlags', 'missileFlightSeconds', // 26.10 (6.31)
 ].map(name => {
   const declaration = parsed.statements.filter(ts.isVariableStatement)
     .flatMap(s => [...s.declarationList.declarations]).find(d => d.name.getText(parsed) === name);
@@ -43,7 +46,7 @@ const js = ts.transpileModule(`${constants.join('\n')}\nclass Harness { ${method
 }).outputText;
 
 function harness(legacy) {
-  const deps = { THREE, ...animation, ...world, ...spells, ...particles, ...missileFlight, ...spellSequence, boneOf, updateBatchColours }; // 05.10: ревью G2 — + MissileFlight
+  const deps = { THREE, ...animation, ...world, ...spells, ...particles, ...missileFlight, ...spellSequence, ...missileSequence, boneOf, updateBatchColours }; // 05.10: ревью G2 — + MissileFlight
   if (legacy) {
     // Restore exactly the two former eager propagation points around the unchanged real passes.
     deps.applyGlobalSequenceBones = (...args) => {

@@ -198,7 +198,7 @@ test("6.27b a spell model plays Stand, then Hold for an aura or Decay for a one-
   // The renderer drives it for models that declare Hold or Decay, and samples their batches on that sequence.
   const { readFileSync } = await import("node:fs");
   const source = readFileSync(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
-  assert.match(source, /if \(!this\.#sequenceSpellModel\(visual, now, client\)\) visual\.skinned\.mixer\.update\(elapsed\);/);
+  assert.match(source, /if \(!this\.#sequenceSpellModel\(visual, now, client\) && !this\.#sequenceMissileModel\(visual, now, client\)\) \{\s+visual\.skinned\.mixer\.update\(elapsed\);/);
   // 26.10 (6.27): + on the sequence's own time (its tracks hold their last key, Particles.ts `sampleTrack`).
   assert.match(source, /updateBatchColours\(visual\.built\.animatedBatches, visual\.sequenceMs \?\? 0, now, visual\.sequenceSlot, true\)/);
 });
