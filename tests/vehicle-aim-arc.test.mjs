@@ -126,3 +126,44 @@ test("the mesh: in scene coordinates, on the ground, hidden when told", () => {
   mesh.dispose();
   assert.equal(scene.children.length, 0);
 });
+
+test("the muzzle: $AIM first, then the cast events; one request a model, an answer kept", async () => {
+  const { ModelShotEvents, muzzleEvent } = await import("../dist/code/browser/VehicleMuzzle.js");
+  const event = (id) => ({ id, bone: 1, x: 0, y: 0, z: 0 });
+  assert.equal(muzzleEvent([event("$CST"), event("$AIM")]).id, "$AIM");
+  assert.equal(muzzleEvent([event("$CST"), event("$CSR"), event("$CSL")]).id, "$CSL");
+  assert.equal(muzzleEvent([event("$CST"), event("$CSR")]).id, "$CSR");
+  assert.equal(muzzleEvent([event("$CST")]).id, "$CST");
+  assert.equal(muzzleEvent([]), undefined);
+  const asked = [];
+  const events = new ModelShotEvents("http://gateway", async (url) => {
+    asked.push(url);
+    return url.includes("Gone") ? new Response("", { status: 404 }) : new Response(JSON.stringify({ events: [event("$AIM")] }));
+  });
+  assert.equal(events.of("Creature\\Cat\\Cat.mdx"), undefined, "on its way");
+  assert.equal(events.of("Creature\\Cat\\Cat.mdx"), undefined, "still");
+  assert.deepEqual(events.of("Creature\\Gone.m2"), undefined);
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(asked.length, 2);
+  assert.match(asked[0], /\/visual\/model-events\?v=1&path=Creature%5CCat%5CCat\.m2$/, "the .m2 of an .mdx");
+  assert.equal(events.of("Creature\\Cat\\Cat.mdx").length, 1);
+  assert.deepEqual(events.of("Creature\\Gone.m2"), [], "an older gateway: no events");
+});
+
+test("the generator reads the shot events out of the M2's header", async () => {
+  const { shotEventsOf } = await import("../tools/generate-model-events.mjs");
+  const bytes = new Uint8Array(0x200);
+  const view = new DataView(bytes.buffer);
+  view.setUint32(0x100, 2, true);
+  view.setUint32(0x104, 0x120, true);
+  const put = (at, id, bone, x) => {
+    for (let index = 0; index < 4; index++) bytes[at + index] = id.charCodeAt(index);
+    view.setUint32(at + 8, bone, true);
+    view.setFloat32(at + 12, x, true);
+  };
+  put(0x120, "$AIM", 7, 1.5);
+  put(0x120 + 36, "FSND", 3, 9);
+  assert.deepEqual(shotEventsOf(bytes), [{ id: "$AIM", bone: 7, x: 1.5, y: 0, z: 0 }]);
+  view.setUint32(0x100, 1000, true);
+  assert.deepEqual(shotEventsOf(bytes), [], "a count past the file");
+});

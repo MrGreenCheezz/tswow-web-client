@@ -28,7 +28,7 @@ const CLASSES: ReadonlySet<string> = new Set([
   "health", "client-file", "client-interface-bundle", "client-addons", "client-patch-status",
   "dbc", "data", "terrain", "terrain-splat", "terrain-layer", "terrain-texture", "texture",
   "visual-environment", "visual-model", "visual-animations", "visual-doodads", "visual-texture", "visual-wmo-lamps",
-  "visual-lit-models", "item-icon", "spell-icon", "creature-icon", "sound", "minimap", "horizon", "world-map",
+  "visual-lit-models", "visual-model-events", "item-icon", "spell-icon", "creature-icon", "sound", "minimap", "horizon", "world-map",
   "liquid", "environment", "collision", "vmap", "modules", "gateway",
 ]);
 

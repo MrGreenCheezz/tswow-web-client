@@ -80,6 +80,8 @@ export interface RenderResults {
   seatFrame: number;
   /** 5.33: the world camera's width over height (CameraClip.ts). */
   cameraAspect: number;
+  /** 11.02 (04.11): where the asked unit's shot leaves from, world x, y, z (`setMuzzleUnit`, VehicleMuzzle.ts). */
+  muzzle: { readonly guid: bigint; readonly x: number; readonly y: number; readonly z: number } | undefined;
   /** How far the storm sky has rolled in, 0 to 1. */
   weatherStorm: number;
   atmosphereProfile: Readonly<AtmosphereProfile>;
@@ -127,7 +129,7 @@ export interface RenderResults {
 export function createRenderResults(atmosphereProfile: Readonly<AtmosphereProfile>): RenderResults {
   return {
     frame: 0, units: new Map(), unitNames: new Map(), gameObjectCorners: new Map(), seats: new Map(), seatFrame: 0,
-    cameraAspect: 1, weatherStorm: 0, atmosphereProfile, atmosphereAudio: undefined, fps: 0, indoors: false, status: "",
+    cameraAspect: 1, muzzle: undefined, weatherStorm: 0, atmosphereProfile, atmosphereAudio: undefined, fps: 0, indoors: false, status: "",
     portraits: [], swings: new Map(), swingFrame: 0, swingNow: 0,
     frameInterval: undefined, rendererFrameMs: undefined, // 22.10 ARC-2 S4b
     budgetMs: new Float64Array(FRAME_BUDGET_SLOTS), budgetPending: false, gpuEvents: [], patchChainSuspects: [],

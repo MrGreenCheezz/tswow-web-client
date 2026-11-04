@@ -17,11 +17,9 @@ import { vehicleAimInput, vehicleAimPower } from "./VehicleAim.js";
  *   tables (browser/VehicleClient.ts);
  * - the pitch: the movement code's (game/VehicleAim.ts) for the active mover, the last movement packet's
  *   for any other unit; the aim power: game/VehicleAim.ts; the facing: the unit's;
- * - the fire point: the unit's position — what 0x0071a720 falls back to while the model is not loaded.
- *   Not repeated: the model's "$AIM" M2 event (0x006fcd60 asks 0x008275f0 for the event 0x4d494124 in the
- *   model's event list, header +0x100/+0x104, 36-byte entries, and 0x008317e0 places it by its bone), the
- *   "$CSL"/"$CSR"/"$CST" cast events of 0x0071a720 and the SpellVisual missile attachment of 0x00720bf0 —
- *   a siege engine's muzzle stands a few yards above its feet, so a low shot lands nearer than Wow.exe's;
+ * - the fire point: 04.11 the model's "$AIM" M2 event, then "$CSL"/"$CSR"/"$CST" (0x006fcd60, 0x0071a720; the renderer
+ *   places it on its bone, `results.muzzle`, VehicleMuzzle.ts), else the unit's position, what 0x0071a720 falls back to
+ *   while the model is not loaded. Not repeated: the SpellVisual missile attachment of 0x00720bf0;
  * - the world's ray test (0x0077f310, mask 0x100111): the collision world's buildings and doodads
  *   (`CollisionWorld.firstHit`) and the terrain heightfield (holes and tiles not loaded are open air).
  */
@@ -78,6 +76,12 @@ export function worldSegmentHit(mapId: number | undefined, from: Readonly<Vec3>,
   return best;
 }
 
+/** 11.02 (04.11): where the renderer last placed this unit's muzzle (VehicleMuzzle.ts), if it is the one asked. */
+export function muzzleOf(guid: bigint): Readonly<Vec3> | undefined {
+  const muzzle = game.renderer?.results.muzzle;
+  return muzzle?.guid === guid ? muzzle : undefined;
+}
+
 /** The solver over explicit tables (tests hand their own). */
 export function missileShotFor(casterGuid: bigint, spellId: number, missiles: SpellMissileCatalog | undefined,
   vehicles: VehicleCatalog | undefined, hit: MissileSegmentHit, random: () => number = Math.random): MissileShot | undefined {
@@ -88,7 +92,7 @@ export function missileShotFor(casterGuid: bigint, spellId: number, missiles: Sp
   const vehicle = caster.vehicleId ? vehicles?.vehicle(caster.vehicleId) : undefined;
   return solveMissileShot({
     missile, vehicle, moverPitch: unitPitch(casterGuid, caster), power: vehicleAimPower(),
-    facing: position.orientation, fire: position,
+    facing: position.orientation, fire: muzzleOf(casterGuid) ?? position,
   }, hit, random);
 }
 

@@ -5,7 +5,7 @@ import type { VehicleEntry } from "../../world/VehicleDbc.js";
 import { spellMissiles } from "../SpellMissileClient.js";
 import { vehicleCatalog } from "../VehicleClient.js";
 import { game } from "./Context.js";
-import { worldSegmentHit } from "./MissileShot.js";
+import { muzzleOf, worldSegmentHit } from "./MissileShot.js";
 import { vehicleAimInput, vehicleAimPower } from "./VehicleAim.js";
 
 /**
@@ -138,11 +138,20 @@ let lastKey = "";
 let lastPoints: Float32Array | undefined;
 let showing = false;
 
+let muzzleUnit: bigint | undefined;
+
 function clear(): void {
   lastPoints = undefined;
   lastKey = "";
   if (showing) game.renderer?.setVehicleAimArc(undefined);
   showing = false;
+}
+
+/** The renderer places the muzzle of the unit the keys move, for the arc and the cast alike (game/MissileShot.ts). */
+function askMuzzle(guid: bigint | undefined): void {
+  if (guid === muzzleUnit) return;
+  muzzleUnit = guid;
+  game.renderer?.setMuzzleUnit(guid);
 }
 
 /** One frame (game/Loop.ts). Cheap for everyone not steering a unit with such a row. */
@@ -153,6 +162,7 @@ export function updateVehicleAimArc(armedSpell: number | undefined): void {
   const mover = moverGuid === undefined ? undefined : world?.state.objects.get(moverGuid);
   const vehicle = mover?.vehicleId && catalog ? catalog.vehicle(mover.vehicleId) : undefined;
   const selfGuid = world?.state.selfGuid;
+  askMuzzle(vehicle === undefined ? undefined : moverGuid);
   if (world === undefined || moverGuid === undefined || mover?.position === undefined || vehicle === undefined
     || catalog === undefined || selfGuid === undefined || (vehicle.flags & ARC_ANY) === 0) {
     clear();
@@ -181,10 +191,11 @@ export function updateVehicleAimArc(armedSpell: number | undefined): void {
   }
   const position = mover.position;
   const power = vehicleAimPower();
-  const key = `${spell.spellId}|${position.x}|${position.y}|${position.z}|${position.orientation}|${pitch}|${power}`;
+  const fire = muzzleOf(moverGuid) ?? position;
+  const key = `${spell.spellId}|${fire.x}|${fire.y}|${fire.z}|${position.orientation}|${pitch}|${power}`;
   if (key !== lastKey || lastPoints === undefined) {
     const mapId = world.mapId;
-    lastPoints = vehicleArcPoints(entry, vehicle, pitch, power, position.orientation, position,
+    lastPoints = vehicleArcPoints(entry, vehicle, pitch, power, position.orientation, fire,
       (from, to) => worldSegmentHit(mapId, from, to));
     lastKey = key;
   }

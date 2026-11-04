@@ -320,6 +320,7 @@ export async function createGatewayConfiguration(): Promise<{ options: GatewayOp
     generateWmoMinimapIndex: () => runAssetGenerator("generate-minimap-index.mjs", ["--wmo"]),
     // 25.10 (7.50): the models that declare M2 point lights, read once from the whole chain (LitModelIndexRoute.ts).
     generateLitModelIndex: () => runAssetGenerator("generate-lit-model-index.mjs", []),
+    generateModelEvents: (path) => runAssetGenerator("generate-model-events.mjs", [path]), // 11.02 (04.11)
     worldMapZoneMapsDirectory: process.env.WORLD_MAP_ZONE_MAP_DIR
       ?? resolve(process.cwd(), "data/worldmap-zone-maps"),
     generateWorldMapZoneMap: (map) => publish({ kind: "zone-map", map }, 0, "generate-worldmap-zone-map.mjs", [String(map)]),

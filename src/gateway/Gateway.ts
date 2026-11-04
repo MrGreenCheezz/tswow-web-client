@@ -239,6 +239,7 @@ function isClientVisualProfileRoute(method: string | undefined, pathname: string
     || pathname === "/visual/doodads" // 12.10 6.25
     || pathname === "/visual/wmo-lamps" // 24.10 (7.50): read from the same artifacts
     || pathname === "/visual/lit-models" // 25.10 (7.50): read from the same archive chain
+    || pathname === "/visual/model-events" // 11.02 (04.11): likewise
     || /^\/visual\/texture\/[0-9a-f]{40}(?:-\d{1,3})?\.png$/.test(pathname)
     || pathname === "/dbc/creature-models"
     || pathname === "/dbc/character-options"
@@ -402,6 +403,8 @@ export interface GatewayOptions {
   generateWmoMinimapIndex?: () => Promise<void>;
   /** 25.10 (7.50): publishes `<visualModelsDirectory>/lit-models.json`, the models that declare M2 lights (LitModelIndexRoute.ts). */
   generateLitModelIndex?: () => Promise<void>;
+  /** 11.02 (04.11): publishes `<visualModelsDirectory>/<id>.events.json`, a model's muzzle events. */
+  generateModelEvents?: (path: string) => Promise<void>;
   /** Published 128×128 uint32 continent hit masks, keyed only by Map.dbc id. */
   worldMapZoneMapsDirectory?: string;
   generateWorldMapZoneMap?: (map: number) => Promise<void>;
@@ -1017,6 +1020,7 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
   // 25.10 (7.50): the lit-model index reads every model of the chain once (≈24 s); a lane of its own, so no
   // model, texture or tile queues behind it, and not one the background preloader yields to.
   const litModelLane = generationLane();
+  const modelEventsLane = generationLane(); // 11.02 (04.11)
   const worldMapZoneMapLane = generationLane();
   // Its own lane, and not one of the eleven above: the pass reads every family, and putting it on
   // any of them would make the first genuinely missing asset of that family queue behind the whole
@@ -1511,6 +1515,32 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
       ensureCurrent: options.generateLitModelIndex ? (file) => fingerprint.ensureCurrent(file) : undefined,
       cacheControl: (requested) => assetCacheControl(requested, visualAssetGeneration, REVALIDATE),
     })) return;
+
+    // 11.02 (04.11): `/visual/model-events?v=1&path=<model.m2>`, where a shot leaves a model from (browser/VehicleMuzzle.ts).
+    if (request.method === "GET" && pathname === "/visual/model-events" && options.visualModelsDirectory) {
+      const origin = request.headers.origin;
+      if (!originAllowed(origin, options.allowedOrigins)) {
+        response.writeHead(403).end();
+        return;
+      }
+      const modelPath = (url.searchParams.get("path") ?? "").replaceAll("/", "\\");
+      if (url.searchParams.get("v") !== "1" || !validAssetPath(modelPath, { extensions: ["m2"] })) {
+        respondError(response, 400, origin);
+        return;
+      }
+      const id = createHash("sha1").update(`model-events-v1\0${modelPath.toLowerCase()}`).digest("hex");
+      const filename = join(options.visualModelsDirectory, `${id}.events.json`);
+      try {
+        const rebuild = options.generateModelEvents
+          ? () => generateOnce(modelEventsLane, id, () => options.generateModelEvents!(modelPath)) : undefined;
+        if (options.generateModelEvents) await fingerprint.ensureCurrent(filename, { requireStamp: true });
+        await respondFile(request, response, filename, { origin, contentType: "application/json; charset=utf-8", rebuild });
+      } catch (error) {
+        const absent = sourceMissing(error) || (!options.generateModelEvents && (error as NodeJS.ErrnoException).code === "ENOENT");
+        respondError(response, absent ? 404 : 500, origin);
+      }
+      return;
+    }
 
     const visualTexture = pathname.match(/^\/visual\/texture\/([0-9a-f]{40}(?:-\d{1,3})?)\.png$/);
     if (request.method === "GET" && visualTexture && options.visualModelsDirectory) {

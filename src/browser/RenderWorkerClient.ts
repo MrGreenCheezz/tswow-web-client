@@ -207,6 +207,7 @@ export class RenderWorkerClient implements ClientRenderer {
   setGameObjectPreview(...args: Args<"setGameObjectPreview">): void { this.#send("setGameObjectPreview", args); }
   setDuelRing(...args: Args<"setDuelRing">): void { this.#send("setDuelRing", args); }
   setVehicleAimArc(...args: Args<"setVehicleAimArc">): void { this.#send("setVehicleAimArc", args); } // 11.02 (04.11)
+  setMuzzleUnit(...args: Args<"setMuzzleUnit">): void { this.#send("setMuzzleUnit", args); } // 11.02 (04.11)
   setUnitAuraAppearance(...args: Args<"setUnitAuraAppearance">): void { this.#send("setUnitAuraAppearance", args); }
   setStateVisuals(...args: Args<"setStateVisuals">): void { this.#send("setStateVisuals", args); }
   playSpellVisual(...args: Args<"playSpellVisual">): void { this.#send("playSpellVisual", args); }

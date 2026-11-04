@@ -270,6 +270,7 @@ import {
   SEAT_VEHICLE_WAIT_SECONDS, VehicleOwnAnimations, seatVehicleAnimation, seatVehicleWaitSeconds, type VehicleOwnClip,
 } from "./VehicleOwnAnimation.js"; // 11.02 (04.11)
 import { VehicleAimArcMesh } from "./VehicleAimArcMesh.js"; // 11.02 (04.11)
+import { ModelShotEvents, muzzleEvent } from "./VehicleMuzzle.js"; // 11.02 (04.11)
 import type { VehicleAimArcShape } from "./game/VehicleAimArc.js";
 import { vehicleCatalogOfRows, type VehicleCatalog, type VehicleCatalogRows, type VehicleSeatEntry } from "../world/VehicleDbc.js"; // 11.02-H; 22.10 ARC-2 S2a: built from pushed rows
 import { NO_RENDER_INPUTS, type RenderInputs } from "./RenderInputs.js"; // 22.10 ARC-2 S2a
@@ -381,6 +382,7 @@ import type { CollisionLiquid, CollisionModel } from "../world/CollisionFormat.j
 /** One deterministic evolution step supplied by an offline render replay. */
 /** 23.10 (6.27): scratch for spell light positions. */
 const _spellLightAt = new THREE.Vector3();
+const _muzzleAt = new THREE.Vector3(); // 11.02 (04.11)
 const _namePoint = new THREE.Vector3(); // 03.11 6.37
 /** 03.11 (6.37): M2 attachment ids: PlayerName, and PlayerNameMounted on a mount (0x0071fef0). */
 const ATTACHMENT_NAME = 18;
@@ -4154,6 +4156,9 @@ export class WorldRenderer3D {
   readonly #seatTransitions = new VehicleSeatTransitions(); // 11.02 (26.10)
   readonly #vehicleOwn = new VehicleOwnAnimations(); // 11.02 (04.11)
   #vehicleAimArc: VehicleAimArcShape | undefined; // 11.02 (04.11)
+  #muzzleUnit: bigint | undefined;
+  #muzzleModel: string | undefined;
+  #muzzleEvents: ModelShotEvents | undefined;
   #vehicleAimArcMesh: VehicleAimArcMesh | undefined;
   /** A unit's node for `#seatTransitions`, while it is drawn. */
   readonly #seatTransitionNode = (guid: bigint): THREE.Object3D | undefined => {
@@ -7836,6 +7841,33 @@ export class WorldRenderer3D {
     if (!ring) this.#disposeDuelRing();
   }
 
+  /** 11.02 (04.11): the unit whose muzzle `results.muzzle` follows (the mover), `undefined` for none. */
+  setMuzzleUnit(guid: bigint | undefined): void {
+    this.#muzzleUnit = guid;
+    if (guid === undefined) this.#results.muzzle = undefined;
+  }
+
+  /** 11.02 (04.11): the muzzle of the asked unit this frame, once its bones are posed (Wow.exe 0x008317e0). */
+  #updateMuzzle(): void {
+    const guid = this.#muzzleUnit;
+    if (guid === undefined) return;
+    const unit = this.#units.get(guid);
+    const shown: PosedModel | undefined = unit?.mount?.skinned !== undefined ? unit.mount : unit;
+    const model = unit?.mount?.skinned !== undefined ? unit.mount.metadata.model : this.#muzzleModel;
+    const events = model === undefined ? undefined : (this.#muzzleEvents ??= new ModelShotEvents(this.#baseUrl)).of(model);
+    const event = events === undefined ? undefined : muzzleEvent(events);
+    const bone = event === undefined ? undefined : shown?.skinned?.skeleton.bones[event.bone];
+    const pivots = shown?.template?.pivots;
+    if (event === undefined || bone === undefined || pivots === undefined) {
+      this.#results.muzzle = undefined;
+      return;
+    }
+    bone.updateWorldMatrix(true, false);
+    _muzzleAt.set(event.x - (pivots[event.bone * 3] ?? 0), event.y - (pivots[event.bone * 3 + 1] ?? 0), event.z - (pivots[event.bone * 3 + 2] ?? 0));
+    bone.localToWorld(_muzzleAt);
+    this.#results.muzzle = { guid, x: _muzzleAt.x, y: -_muzzleAt.z, z: _muzzleAt.y };
+  }
+
   /** 11.02 (04.11): the steered siege engine's arc and mark (game/VehicleAimArc.ts), `undefined` when there is none. */
   setVehicleAimArc(arc: VehicleAimArcShape | undefined): void {
     this.#vehicleAimArc = arc;
@@ -9180,6 +9212,7 @@ export class WorldRenderer3D {
     // their caches and before anything is submitted.
     this.#updateGroundTargetRings();
     this.#updateDuelRing(heightAt);
+    this.#updateMuzzle(); // 11.02 (04.11)
     if (this.#vehicleAimArc !== undefined) {
       (this.#vehicleAimArcMesh ??= new VehicleAimArcMesh(this.#scene, (path) => this.#loadTexture(textureUrl(this.#baseUrl, path))))
         .update(this.#vehicleAimArc, now, heightAt); // 11.02 (04.11)
@@ -16609,6 +16642,7 @@ export class WorldRenderer3D {
       : this.#vehiclePassengers.seatPose(object);
     if (vehicleSeat !== undefined) pose.vehicleSeat = vehicleSeat;
     if (this.#vehicleOwn.has(object.guid)) this.#stepVehicleOwn(unit, object.guid, now, client, metadata); // 04.11
+    if (object.guid === this.#muzzleUnit) this.#muzzleModel = metadata?.model; // 04.11
     // 12.10 6.07: whether this fall began with a jump, and the jump clip the base is already in (Wow.exe 0x00723350,
     // 0x00724200 → 0x0071dc20): a jump keeps Jump to the ground, a walk-off runs on until FALLING_FAR and then falls.
     if (object.fallJumped !== undefined) pose.fallJumped = object.fallJumped;
