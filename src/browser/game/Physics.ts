@@ -383,6 +383,8 @@ function floorAt(
   return standingHeight(floor, input.waterWalking ? liquidOver(probe, motion, x, y, z) : undefined, input);
 }
 
+const BODY_RIM = [[1, 0], [0.7071, 0.7071], [0, 1], [-0.7071, 0.7071], [-1, 0], [-0.7071, -0.7071], [0, -1], [0.7071, -0.7071]] as const;
+
 /**
  * 25.10: whether the map's ground at the feet is a ceiling — the character is more than a step under
  * it and stands over the server's collision geometry: the Deadmines' mine under the Westfall hills,
@@ -394,11 +396,18 @@ function floorAt(
  * chunk's ground, twelve yards over the feet, read as a climb nobody can make: an invisible wall a few yards inside every
  * such entrance, Deadmines' among them.
  */
-function groundIsCeiling(probe: TerrainProbe, x: number, y: number, z: number): boolean {
+function groundIsCeiling(probe: TerrainProbe, x: number, y: number, z: number, radius: number): boolean {
   if (!probe.floor) return false;
   const ground = probe.ground(x, y);
   if (ground === undefined || ground - z <= STEP_HEIGHT) return false;
-  return probe.floor(x, y, z + STEP_HEIGHT, z - FLOOR_SEARCH_DEPTH) !== undefined;
+  if (probe.floor(x, y, z + STEP_HEIGHT, z - FLOOR_SEARCH_DEPTH) !== undefined) return true;
+  // 04.11 2.11: a crack in the cave's floor narrower than the body, which is a point here and not in
+  // Wow.exe: read as "out from under the hill", the hill was a wall (15 places by tools/walk-census.mjs).
+  if (radius <= 0) return false;
+  for (const [cos, sin] of BODY_RIM) {
+    if (probe.floor(x + cos * radius, y + sin * radius, z + STEP_HEIGHT, z - 2 * STEP_HEIGHT) !== undefined) return true;
+  }
+  return false;
 }
 
 /**
@@ -672,7 +681,7 @@ export function stepCharacter(
 
   // 25.10: under the map's ground (a mine, a crypt) the collision geometry alone is the floor.
   let probe = world;
-  if (groundIsCeiling(world, position.x, position.y, position.z)) {
+  if (groundIsCeiling(world, position.x, position.y, position.z, input.radius)) {
     UNDERGROUND.base = world;
     probe = UNDERGROUND;
   }

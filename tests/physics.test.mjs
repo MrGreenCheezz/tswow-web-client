@@ -492,6 +492,23 @@ test("from under a hole in the ground the next chunk's ground is a ceiling, not 
   assert.equal(walker.z, 32);
 });
 
+test("a crack in a cave's floor narrower than the body is walked over; the hill above is no wall (2.11, tools/walk-census.mjs)", () => {
+  // Blackfathom Deeps, Maraudon, Wailing Caverns and others: a steep hill far overhead, no floor at all under one strip.
+  const cave = (crack) => world({
+    ground: (x) => 80 + x * 2,
+    floor: (x, _y, fromZ, minZ) => (x >= 3 && x < 3 + crack ? undefined : 10 <= fromZ && 10 >= minZ ? 10 : undefined),
+  });
+  const walker = at(0, 0, 10);
+  simulate(walker, newCharacterMotion(), input({ forward: 1 }), cave(0.5), 2);
+  assert.ok(walker.x > 10, `past the crack: ${walker.x}`);
+  assert.equal(walker.z, 10);
+
+  // Wider than the body it is the end of the floor, and the rule stands as it stood: no walking into the air under a hill.
+  const stopped = at(0, 0, 10);
+  simulate(stopped, newCharacterMotion(), input({ forward: 1 }), cave(5), 2);
+  assert.ok(stopped.x < 8, `stops in the gap: ${stopped.x}`);
+});
+
 test("outdoors over a cave the hill is still the ground, and a step up onto it is still a step", () => {
   // The same mine seen from the hill: the character stands on the ground with the mine far below.
   const hill = world({
