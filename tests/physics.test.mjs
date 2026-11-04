@@ -479,6 +479,19 @@ test("a mine under a hill is walked in, not climbed out of through the hillside 
   assert.ok(Math.abs(jumper.z - mineFloor(jumper.x)) < 0.01, `landed in the mine, not on the hill: ${jumper.z}`);
 });
 
+test("from under a hole in the ground the next chunk's ground is a ceiling, not a wall (2.11, the owner's mine, 04.11)", () => {
+  // Measured at the Deadmines' way in: floor 32.4, the map's ground 44 over it, a hole under the feet and none a yard on.
+  const mine = world({
+    ground: () => 44,
+    hole: (x) => x < 5,
+    floor: (_x, _y, fromZ, minZ) => (32 <= fromZ && 32 >= minZ ? 32 : undefined),
+  });
+  const walker = at(0, 0, 32);
+  simulate(walker, newCharacterMotion(), input({ forward: 1 }), mine, 2);
+  assert.ok(walker.x > 10, `past the hole's edge: ${walker.x}`);
+  assert.equal(walker.z, 32);
+});
+
 test("outdoors over a cave the hill is still the ground, and a step up onto it is still a step", () => {
   // The same mine seen from the hill: the character stands on the ground with the mine far below.
   const hill = world({

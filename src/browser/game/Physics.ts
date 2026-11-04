@@ -390,9 +390,12 @@ function floorAt(
  * then lifts the character out through the hillside at its first step down or its first landing.
  * TrinityCore's `Map::GetHeight` counts the grid height only at or under the feet for the same reason.
  * Decided once per step from where the step began, so walking outdoors over a cave is unchanged.
+ * 04.11 (2.11): over a hole in the ground too. A mine's way in is cut out of the map, and from under the cut-out the next
+ * chunk's ground, twelve yards over the feet, read as a climb nobody can make: an invisible wall a few yards inside every
+ * such entrance, Deadmines' among them.
  */
 function groundIsCeiling(probe: TerrainProbe, x: number, y: number, z: number): boolean {
-  if (!probe.floor || probe.hole(x, y)) return false;
+  if (!probe.floor) return false;
   const ground = probe.ground(x, y);
   if (ground === undefined || ground - z <= STEP_HEIGHT) return false;
   return probe.floor(x, y, z + STEP_HEIGHT, z - FLOOR_SEARCH_DEPTH) !== undefined;
