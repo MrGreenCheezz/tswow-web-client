@@ -265,7 +265,10 @@ import { fadedDepthWrite } from "./FadeDepth.js"; // 22.10 (7.42)
 import { VehiclePassengerPoser } from "./VehiclePassengerPose.js"; // 11.02-H
 import { cameraChainFade, type FadeModel } from "./VehicleCameraFade.js"; // 11.02 (26.10)
 import { VehicleSeatTransitions } from "./VehicleSeatTransition.js"; // 11.02 (26.10)
-import { vehicleSeatTransitionPose } from "./VehicleSeatPose.js"; // 11.02 (26.10)
+import { seatSplitsPose, seatUpperMove, vehicleSeatTransitionPose } from "./VehicleSeatPose.js"; // 11.02 (26.10); 04.11: seatSplitsPose, seatUpperMove
+import {
+  SEAT_VEHICLE_WAIT_SECONDS, VehicleOwnAnimations, seatVehicleAnimation, seatVehicleWaitSeconds, type VehicleOwnClip,
+} from "./VehicleOwnAnimation.js"; // 11.02 (04.11)
 import { vehicleCatalogOfRows, type VehicleCatalog, type VehicleCatalogRows, type VehicleSeatEntry } from "../world/VehicleDbc.js"; // 11.02-H; 22.10 ARC-2 S2a: built from pushed rows
 import { NO_RENDER_INPUTS, type RenderInputs } from "./RenderInputs.js"; // 22.10 ARC-2 S2a
 import {
@@ -2833,6 +2836,8 @@ interface PosedModel {
   overlayAnimationId: number | undefined;
   /** The semantic action owning the upper-body slot; needed to cancel a real ranged pose. */
   overlayActionKind: UnitAction | undefined;
+  /** 04.11 (11.02): the seat whose upper start has been played. */
+  seatUpperSeat?: number;
   overlayPreservesLocomotion: boolean | undefined;
   /** End of the upper-body fade window, set once the one-shot reaches its fade start. */
   overlayFadeUntil: number | undefined;
@@ -3000,6 +3005,10 @@ interface RenderedUnit extends PosedModel {
   seatedSlot?: number | undefined;
   seatedRow?: VehicleSeatEntry | undefined;
   seatTracked?: boolean | undefined;
+  /** 04.11: the root of the seat chain, what it was told to play for this seat and the seat it was told for. */
+  seatRoot?: bigint | undefined;
+  rideVehicle?: bigint | undefined;
+  rideRow?: VehicleSeatEntry | undefined;
   /** The file the emitters come from, kept so the effects pass does not re-resolve the model. */
   wvm: WvmModel | undefined;
   /** For an unrigged model, the mesh that carries the model-space rotation. */
@@ -4141,6 +4150,7 @@ export class WorldRenderer3D {
   /** 11.02-H: vehicle passengers' seat poses and their place on the vehicle (VehiclePassengerPose.ts). */
   readonly #vehiclePassengers = new VehiclePassengerPoser();
   readonly #seatTransitions = new VehicleSeatTransitions(); // 11.02 (26.10)
+  readonly #vehicleOwn = new VehicleOwnAnimations(); // 11.02 (04.11)
   /** A unit's node for `#seatTransitions`, while it is drawn. */
   readonly #seatTransitionNode = (guid: bigint): THREE.Object3D | undefined => {
     const unit = this.#units.get(guid);
@@ -15207,6 +15217,7 @@ export class WorldRenderer3D {
     this.#vehiclePassengers.place(admission.admitted, drawn, this.#units); // 11.02-H-review
     // 11.02 (26.10): passengers on their way into or out of a seat, from where they were to where the seat put them.
     this.#seatTransitions.apply(this.#seatTransitionNode, now);
+    if (this.#vehicleOwn.size > 0) this.#vehicleOwn.sweep((guid) => this.#units.has(guid), now); // 04.11
     // 05.10-A7a-D2 6.06: melee reactions at the attackers' swing moments. 22.10 ARC-2 S4a: the swings' progress at
     // this moment is published (SwingProgressWatch.ts); main ticks its cues from it after `draw`, no call back.
     this.#swingWatch.publish(this.#results, now, this.#swingProgressOf);
@@ -15595,12 +15606,26 @@ export class WorldRenderer3D {
     const seatedOn = seatNow === undefined ? undefined : object.transport!.guid;
     const seatedSlot = seatNow === undefined ? undefined : object.transport!.seat;
     if (seatedOn !== unit.seatedOn || seatedSlot !== unit.seatedSlot) {
-      if (unit.seatTracked === true) this.#seatTransitions.begin(object.guid, unit.seatedRow, seatNow, unit.node, now);
+      const root = seatNow === undefined ? undefined : this.#vehiclePassengers.rootOf(object);
+      if (unit.seatTracked === true) {
+        this.#seatTransitions.begin(object.guid, unit.seatedRow, seatNow, unit.node, now);
+        this.#seatChangedOnVehicle(unit, object.guid, unit.seatedRow, seatNow, root, now); // 04.11
+      }
+      unit.seatRoot = root;
       unit.seatedOn = seatedOn;
       unit.seatedSlot = seatedSlot;
       unit.seatedRow = seatNow;
     }
     unit.seatTracked = true;
+    // 04.11: in the seat at last (0x007489c0, state 3): the vehicle's ride animation.
+    if (unit.seatedRow !== undefined && unit.rideRow !== unit.seatedRow && this.#seatTransitions.transitionOf(object.guid) === undefined) {
+      unit.rideRow = unit.seatedRow;
+      const ride = seatVehicleAnimation(unit.seatedRow, "ride");
+      if (ride !== undefined && unit.seatRoot !== undefined) {
+        this.#vehicleOwn.play(unit.seatRoot, object.guid, "ride", ride, now);
+        unit.rideVehicle = unit.seatRoot;
+      }
+    }
     unit.node.position.set(position.x, position.z, -position.y);
     // 11.10: a unit the client does not move is drawn at the facing Wow.exe 0x00735f60 gives it — its
     // target's while it stands in a fight, followed smoothly (world/UnitFacing.ts); the character and
@@ -16565,6 +16590,7 @@ export class WorldRenderer3D {
       : seatTransition !== undefined ? vehicleSeatTransitionPose(seatTransition.seat, seatTransition.kind)
       : this.#vehiclePassengers.seatPose(object);
     if (vehicleSeat !== undefined) pose.vehicleSeat = vehicleSeat;
+    if (this.#vehicleOwn.has(object.guid)) this.#stepVehicleOwn(unit, object.guid, now, client, metadata); // 04.11
     // 12.10 6.07: whether this fall began with a jump, and the jump clip the base is already in (Wow.exe 0x00723350,
     // 0x00724200 → 0x0071dc20): a jump keeps Jump to the ground, a walk-off runs on until FALLING_FAR and then falls.
     if (object.fallJumped !== undefined) pose.fallJumped = object.fallJumped;
@@ -16654,7 +16680,7 @@ export class WorldRenderer3D {
     const important = self || this.#selection.target?.guid === object.guid
       || this.#selection.focus?.guid === object.guid
       || ((object.fields.get(UPDATE_FIELDS.UNIT_FIELD_FLAGS.offset) ?? 0) & UNIT_FLAG_IN_COMBAT) !== 0
-      || hadPendingAction || this.#actions.has(object.guid) || portraitNeedsPose
+      || hadPendingAction || this.#actions.has(object.guid) || portraitNeedsPose || this.#vehicleOwn.has(object.guid)
       || unit.action !== previousAction || unit.overlayAction !== previousOverlayAction
       || mount?.action !== previousMountAction
       || (unit.action?.loop === THREE.LoopOnce && unit.action.isRunning())
@@ -17125,8 +17151,8 @@ export class WorldRenderer3D {
       this.#poseBase(unit, pose, now, client, metadata, unit.overlayAction?.getClip());
       return;
     }
-    // Nothing of the packets' on show: an overlay left behind by anything is faded, not kept.
-    if (unit.overlayPreservesLocomotion === true) this.#clearOverlay(unit);
+    // Nothing of the packets' on show: an overlay left behind by anything is faded, not kept (04.11: but a seat's own).
+    if (unit.overlayPreservesLocomotion === true && (pose.dead || pose.vehicleSeat?.upper === undefined)) this.#clearOverlay(unit);
 
     // 12.10 6.07: an edge whose clip is still in the sidecar waits for it (PendingTransition.ts), and asks for it.
     const template = unit.template!;
@@ -17146,7 +17172,69 @@ export class WorldRenderer3D {
       unit.transitionMoving = moving; // 12.10 6.07: a change of it ends the transition (#animateUnit)
       return;
     }
-    this.#poseBase(unit, pose, now, client, metadata);
+    this.#poseBase(unit, pose, now, client, metadata, this.#seatUpperClip(unit, pose, now, client, metadata));
+  }
+
+  /**
+   * 04.11 (11.02): a seated passenger's upper body over the legs' clip (Wow.exe 0x007485b0): RideUpperAnimStart once on
+   * taking the seat, then RideUpperAnimLoop. The clip on show, or undefined while the rig has no cut of it.
+   */
+  #seatUpperClip(unit: RenderedUnit, pose: UnitPose, now: number,
+    client: EnvironmentClient | undefined, metadata: UnitModel | undefined): THREE.AnimationClip | undefined {
+    const seat = pose.vehicleSeat;
+    const upper = seat?.upper;
+    if (seat === undefined || upper === undefined || pose.dead) return undefined;
+    const template = unit.template!;
+    this.#requestAnimations(template, upper.start === undefined ? [upper.loop!] : [upper.start, upper.loop!], client, metadata);
+    const fresh = unit.seatUpperSeat !== seat.id;
+    unit.seatUpperSeat = seat.id;
+    const move = seatUpperMove(upper, fresh, unit.overlayAnimationId, unit.overlayAction?.isRunning() === true, (animation) => {
+      const overlay = template.overlayClips?.get(animation);
+      return overlay !== undefined && overlay !== template.clips.get(animation) && overlay.tracks.length > 0;
+    });
+    if (move !== undefined) this.#playAnimation(unit, move.animation, move.loop, now, true);
+    return unit.overlayAnimationId === upper.loop || unit.overlayAnimationId === upper.start ? unit.overlayAction?.getClip() : undefined;
+  }
+
+  /**
+   * 04.11 (11.02): what the seat has the vehicle play when a passenger takes or leaves it (VehicleOwnAnimation.ts), and how
+   * long the passenger waits for it. Called on the seat's change, after the transition has begun.
+   */
+  #seatChangedOnVehicle(unit: RenderedUnit, guid: bigint, before: VehicleSeatEntry | undefined, after: VehicleSeatEntry | undefined,
+    root: bigint | undefined, now: number): void {
+    if (unit.rideVehicle !== undefined) this.#vehicleOwn.stopRide(unit.rideVehicle, guid, now);
+    unit.rideVehicle = undefined;
+    unit.rideRow = undefined;
+    const kind = after !== undefined ? "enter" : "exit";
+    const seat = after ?? before;
+    const vehicle = after !== undefined ? root : unit.seatRoot;
+    const own = seat === undefined ? undefined : seatVehicleAnimation(seat, kind);
+    if (own === undefined || vehicle === undefined || seat === undefined) return;
+    this.#vehicleOwn.play(vehicle, guid, kind, own, now);
+    const fixed = seatVehicleWaitSeconds(seat, kind);
+    this.#seatTransitions.hold(guid, fixed ?? SEAT_VEHICLE_WAIT_SECONDS, fixed === undefined);
+  }
+
+  /** 04.11 (11.02): one frame of the animations this vehicle plays for its seats; a mounted vehicle's model is the mount. */
+  #stepVehicleOwn(unit: RenderedUnit, guid: bigint, now: number, client: EnvironmentClient | undefined, metadata: UnitModel | undefined): void {
+    const shown: PosedModel = unit.mount?.skinned !== undefined ? unit.mount : unit;
+    const template = shown.template;
+    const skinned = shown.skinned;
+    if (template === undefined || skinned === undefined) return;
+    const model = unit.mount?.skinned !== undefined ? unit.mount.metadata : metadata;
+    const wvm = unit.mount?.skinned !== undefined ? unit.mount.wvm : unit.wvm;
+    const clipOf = (animation: number): VehicleOwnClip => {
+      const clip = template.clips.get(animation);
+      if (clip !== undefined) return clip;
+      if (sidecarClaims(template, [animation])) {
+        this.#requestAnimations(template, [animation], client, model, "any", true);
+        return "wait";
+      }
+      const stands = poseTransitionClip(template.clips, animation); // the fallback chain (0x00826350)
+      return stands === undefined ? undefined : template.clips.get(stands);
+    };
+    this.#vehicleOwn.step(guid, { mixer: skinned.mixer, parents: template.parents, keyBones: wvm?.keyBones }, now, clipOf,
+      (passenger) => this.#seatTransitions.release(passenger, now));
   }
 
   /** Settles and shows this unit's packet pose; the part of the body it took, or undefined. */
@@ -17198,7 +17286,8 @@ export class WorldRenderer3D {
       // Upper-body only where the rig has a cut for it: a rig with no leg branches keeps the whole
       // clip as its "overlay", and drawing that over a gait would slide the action's own legs.
       const overlay = unit.template!.overlayClips?.get(animation);
-      const listed = animationPlaysOnUpperBody(animation, pose.movementFlags); // 05.10-6.21b: + attacks in a fall
+      const listed = animationPlaysOnUpperBody(animation, pose.movementFlags) // 05.10-6.21b: + attacks in a fall
+        || seatSplitsPose(pose.vehicleSeat, animation); // 04.11: over a seat's legs, by 0x007385c0
       const upperBody = listed && overlay !== undefined
         && overlay !== unit.template!.clips.get(animation) && overlay.tracks.length > 0;
       const outlives = wholeBodyOutlivesBase(entry, travelling); // 05.10: ревью 6.21b — begun standing, setting off ends it

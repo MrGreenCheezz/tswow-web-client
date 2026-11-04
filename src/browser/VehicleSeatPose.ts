@@ -10,18 +10,21 @@
 // - The unit's own pose: seat Flags 0x4 (DBCEnums.h:473 UNK3) → RideUpperAnimStart once, then
 //   RideUpperAnimLoop (0x007485b0, low in the chooser 0x00724500); otherwise the ordinary choice.
 // - So without 0x2 the whole body plays RideUpper (with 0x4) or the ordinary pose (neither).
-//   This client has one persistent layer: the whole body takes the legs' pair when it has a loop
-//   (sitting is what shows), else the RideUpper pair; the upper/lower split itself is not drawn.
+// - 04.11: with the legs' animation the base is that animation, and the unit's own pose goes to the split track when its
+//   AnimationData BehaviorID is not 0 (0x007385c0 at 0x00738eb5, 0x007176b0 reads the row's +0x18), so a stand stays out of
+//   it and the legs' clip takes the whole body. That own pose is RideUpper where nothing else asks (`upper` below).
 // - −1 (and anything at or past the AnimationData row count 0x1fa) is no animation.
 // - Entering (states 1/2: HAS_LOWER_ANIM_FOR_ENTER 0x1 → EnterAnimStart/Loop) and leaving (4/5:
 //   ExitAnimStart/Loop, ExitAnimEnd on landing — JumpEnd turned JumpLandRun when moving): 26.10, while
-//   VehicleSeatTransition.ts carries the passenger, `vehicleSeatTransitionPose` (ExitAnimEnd not played).
+//   VehicleSeatTransition.ts carries the passenger, `vehicleSeatTransitionPose`; 04.11 the landing, `vehicleSeatTransition`.
 //
 // HIDE_PASSENGER 0x200: 0x007489c0 sets passenger+0x10 bit 0x400 on entering state 3 (kept on a
 // seat switch inside the same root vehicle); 0x00730f30 then gives the unit no model.
 
 import type { VehicleSeatEntry } from "../world/VehicleDbc.js";
 import { VEHICLE_SEAT_FLAGS } from "../world/VehicleSeatModel.js";
+import { ANIMATION_IDS } from "../generated/animations.js";
+import { animationBehavior } from "./game/AnimationSplit.js";
 
 /** VehicleSeat Flags 0x4 (DBCEnums.h:473 UNK3): the unit's own pose is RideUpperAnim (Wow.exe 0x007485b0). */
 export const SEAT_FLAG_HAS_UPPER_ANIM_FOR_RIDE = 0x0000_0004;
@@ -73,13 +76,50 @@ export interface VehiclePassengerSeatPose {
   readonly start: number | undefined;
   /** HIDE_PASSENGER: the passenger is not drawn while it sits here. */
   readonly hidden: boolean;
+  /** 04.11: the base is the legs' clip, so a pose of the unit's own goes on the split track (0x007385c0). */
+  readonly split?: boolean;
+  /** 04.11: RideUpperAnimStart/Loop on the split track over the legs (0x007485b0). */
+  readonly upper?: SeatAnimationPair;
+  /** 04.11: on the way out, what plays on landing: ExitAnimEnd (0x007489c0, state 5 to 0). */
+  readonly landing?: SeatLanding;
 }
+
+/** The landing's one-shot and whether Flags 0x200000 plays it in a fall or in water too (0x0074b9c0). */
+export interface SeatLanding {
+  readonly animation: number;
+  readonly always: boolean;
+}
+
+/** Seat Flags 0x200000: the landing's animation plays whatever the unit's movement says (0x0074b9c0). */
+const SEAT_FLAG_LANDING_ALWAYS = 0x0020_0000;
+
+/** What keeps a landing from showing (0x0074b9c0): falling, swimming, or flying, each with a pose of its own. */
+const LANDING_YIELDS_TO = 0x1000 | 0x20_0000 | 0x200_0000;
+/** The movement bits 0x00748d28 tests for JumpEnd: any of forward, backward, strafes. */
+const LANDING_MOVING = 0xf;
 
 const seatPoses = new WeakMap<VehicleSeatEntry, VehiclePassengerSeatPose>();
 
 /**
- * The seat's whole-body pose for this client's single layer: the legs' pair when it has a loop,
- * else the upper pair; its start only when it is a different clip. Cached per seat row.
+ * This frame's move on the split track over a seat's legs (0x007485b0): the start once on taking the seat, then the loop;
+ * nothing to do while the start plays or the rig has no cut of the clip yet.
+ */
+export function seatUpperMove(upper: SeatAnimationPair, fresh: boolean, onShow: number | undefined, onShowRunning: boolean,
+  hasCut: (animation: number) => boolean): { readonly animation: number; readonly loop: boolean } | undefined {
+  const { start, loop } = upper;
+  if (fresh && start !== undefined && hasCut(start)) return { animation: start, loop: false };
+  if (start !== undefined && onShow === start && onShowRunning) return undefined;
+  return loop !== undefined && hasCut(loop) ? { animation: loop, loop: true } : undefined;
+}
+
+/** Whether a pose of the unit's own goes on the split track over the legs (0x007385c0): any with a BehaviorID other than 0. */
+export function seatSplitsPose(seat: VehiclePassengerSeatPose | undefined, animation: number): boolean {
+  return seat?.split === true && animationBehavior(animation) !== 0;
+}
+
+/**
+ * The seat's base pose: the legs' pair when it has a loop, else the upper pair over the whole body; its start only when it
+ * is a different clip. Cached per seat row.
  */
 export function vehiclePassengerSeatPose(seat: VehicleSeatEntry): VehiclePassengerSeatPose {
   const cached = seatPoses.get(seat);
@@ -93,6 +133,8 @@ export function vehiclePassengerSeatPose(seat: VehicleSeatEntry): VehiclePasseng
     wanted: Object.freeze(loop === undefined ? [] : [loop]),
     start,
     hidden: (seat.flags & VEHICLE_SEAT_FLAGS.HIDE_PASSENGER) !== 0,
+    ...(chosen !== undefined && chosen === lower ? { split: true } : {}),
+    ...(chosen !== undefined && chosen === lower && upper?.loop !== undefined && animationBehavior(upper.loop) !== 0 ? { upper } : {}),
   });
   seatPoses.set(seat, pose);
   return pose;
@@ -109,7 +151,7 @@ const EXIT_POSE_ID = 0x0200_0000;
  * 11.02 (26.10): the pose a passenger holds on its way into a seat (`enter`, Wow.exe states 1/2) or out of it
  * (`exit`, 4/5) — 0x00747b20's lower anim, played whole-body by 0x00748560 while the unit is not seated:
  * EnterAnimStart once, then EnterAnimLoop (seat Flags 0x1); ExitAnimStart, then ExitAnimLoop (exit Flags 0x8 or
- * 0x8000 — review: 0x0074bb60 picks one by movement flags2 0x40). ExitAnimEnd on landing is not played.
+ * 0x8000 — review: 0x0074bb60 picks one by movement flags2 0x40). ExitAnimEnd is for the landing (`vehicleSeatTransition`).
  */
 export function vehicleSeatTransitionPose(seat: VehicleSeatEntry, kind: "enter" | "exit"): VehiclePassengerSeatPose {
   const cache = kind === "enter" ? enterPoses : exitPoses;
@@ -127,6 +169,8 @@ export function vehicleSeatTransitionPose(seat: VehicleSeatEntry, kind: "enter" 
     wanted: Object.freeze(loop === undefined ? [] : [loop]),
     start: chosen?.start !== undefined && chosen.start !== loop ? chosen.start : undefined,
     hidden: false,
+    ...(kind === "exit" && animationOf(seat.exitAnimEnd) !== undefined
+      ? { landing: { animation: seat.exitAnimEnd, always: (seat.flags & SEAT_FLAG_LANDING_ALWAYS) !== 0 } } : {}),
   });
   cache.set(seat, pose);
   return pose;
@@ -151,11 +195,16 @@ export function seatPoseFamily(seat: VehiclePassengerSeatPose | undefined, dead:
 
 /**
  * `poseTransition` across a vehicle seat: false when neither pose is seated (the ordinary one-shots
- * apply); otherwise the seat's start on taking it — a seat switch is a new seat — and nothing else:
- * the vehicle does any jumping, and leaving is not seen.
+ * apply); otherwise the seat's start on taking it — a seat switch is a new seat — and, 04.11, the landing at the end of
+ * the way out (0x007489c0 state 5 to 0 → 0x0074b9c0): ExitAnimEnd, JumpEnd being JumpLandRun for a unit on the move.
  */
 export function vehicleSeatTransition(previous: VehiclePassengerSeatPose | undefined,
-  next: VehiclePassengerSeatPose | undefined): number | undefined | false {
+  next: VehiclePassengerSeatPose | undefined, movementFlags = 0): number | undefined | false {
   if (previous === undefined && next === undefined) return false;
+  if (next === undefined && previous?.landing !== undefined) {
+    const { animation, always } = previous.landing;
+    if (!always && (movementFlags & LANDING_YIELDS_TO) !== 0) return undefined;
+    return animation === ANIMATION_IDS.JumpEnd && (movementFlags & LANDING_MOVING) !== 0 ? ANIMATION_IDS.JumpLandRun : animation;
+  }
   return next !== undefined && previous?.id !== next.id ? next.start : undefined;
 }

@@ -38,8 +38,8 @@
 // click box, the sight test and the selection ring hang from the model as drawn, like Wow.exe's.
 //
 // 26.10: the entering and exiting arcs (states 1/2 and 4/5) are VehicleSeatTransition.ts, laid over `place`.
-// Not modelled: the Enter/Exit animations and ExitAnimEnd on landing, the vehicle's own ride animation (VehicleRideAnimLoop on a bone,
-// 0x00756d10), FlagsB 0x10000's mirrored vehicle pose (0x00748620), and the smoothing of the drawn
+// 04.11: the vehicle's own enter, ride and exit animations are VehicleOwnAnimation.ts.
+// Not modelled: FlagsB 0x10000's mirrored vehicle pose (0x00748620), and the smoothing of the drawn
 // facing (0x00735f60).
 //
 // Without vehicle rows, with no seat, on a ship, a lift or a mount: nothing here runs and the unit is
@@ -52,7 +52,7 @@
 import * as THREE from "three";
 import { UPDATE_FIELDS } from "../generated/updateFields.js";
 import type { VehicleCatalog, VehicleSeatEntry } from "../world/VehicleDbc.js";
-import { isVehicleCarrierGuid } from "../world/VehicleSeatModel.js";
+import { isVehicleCarrierGuid, rootVehicleGuid } from "../world/VehicleSeatModel.js";
 import type { WorldObjectState } from "../world/WorldState.js";
 import { M2_TO_SCENE } from "./AnimatedModel.js";
 import { vehiclePassengerSeatPose, type VehiclePassengerSeatPose } from "./VehicleSeatPose.js";
@@ -285,6 +285,13 @@ export class VehiclePassengerPoser {
     if (transport === undefined || catalog === undefined || objects === undefined) return undefined;
     if (!this.#isCarrier(transport.guid)) return undefined;
     return catalog.seatInSlot(objects.get(transport.guid)?.vehicleId, transport.seat);
+  }
+
+  /** 04.11: the root of the seat chain this unit rides (0x00757000), or undefined. */
+  rootOf(object: WorldObjectState): bigint | undefined {
+    const catalog = this.#catalog;
+    const objects = this.#objects;
+    return catalog === undefined || objects === undefined ? undefined : rootVehicleGuid(catalog, objects, object.guid);
   }
 
   /** `UnitPose.vehicleSeat` for this unit, or undefined (no tables, no seat, a ship, a lift). */

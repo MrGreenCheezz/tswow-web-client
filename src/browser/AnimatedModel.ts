@@ -3084,7 +3084,7 @@ export function poseTransition(previous: UnitPose | undefined, next: UnitPose): 
   if (!previous || next.dead) return undefined;
   // 11.02-H: in or out of a vehicle seat, the only one-shot is the seat's own start on taking it
   // (RideAnimStart / RideUpperAnimStart, Wow.exe 0x00747b20) — the vehicle does any jumping.
-  const seatTransition = vehicleSeatTransition(previous.vehicleSeat, next.vehicleSeat);
+  const seatTransition = vehicleSeatTransition(previous.vehicleSeat, next.vehicleSeat, next.movementFlags); // 04.11: + the landing
   if (seatTransition !== false) return seatTransition;
   const swimming = (pose: UnitPose): boolean => (pose.movementFlags & MOVEMENT_FLAGS.swimming) !== 0;
   if (swimming(next) || swimming(previous)) return undefined;

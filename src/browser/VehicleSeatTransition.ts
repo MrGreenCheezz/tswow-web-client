@@ -22,9 +22,10 @@ import type { VehicleSeatEntry } from "../world/VehicleDbc.js";
  *   place on the way out); the facing goes from the start facing to the unit's by the same blend (0x00747a30).
  *   During a pre-delay the model holds where the transition began.
  *
+ * 04.11: while the vehicle plays its own enter or exit animation the passenger waits first (VehicleOwnAnimation.ts, `hold`).
+ *
  * Not ported (review): the vehicle's speed toward the seat (the duration uses EnterSpeed alone); the forced/voluntary
- * split of the exit flags (either bit arcs); the enter/exit animations (EnterAnimStart/Loop, ExitAnim*), the
- * vehicle's own enter/exit animations on a bone, and the exit pre-delay holding the passenger on the moving seat
+ * split of the exit flags (either bit arcs); and the exit pre-delay holding the passenger on the moving seat
  * (it holds where the seat was). A jump of more than {@link SEAT_TRANSITION_MAX_YARDS} is a teleport, not a boarding.
  */
 
@@ -124,8 +125,10 @@ interface Transition {
   fromY: number;
   fromZ: number;
   fromYaw: number;
-  /** When the motion starts (ms): the pre-delay's end. */
+  /** When the motion starts (ms): the pre-delay's end, after any wait for the vehicle's own animation. */
   motionAt: number;
+  /** 04.11: the wait ends with the vehicle's animation, not at a set time (0x00748070, 0x00749d50). */
+  awaitsVehicle: boolean;
   motion: SeatTransitionMotion | undefined;
 }
 
@@ -163,8 +166,24 @@ export class VehicleSeatTransitions {
     if (!Number.isFinite(at.x) || !Number.isFinite(at.y) || !Number.isFinite(at.z)) return;
     this.#active.set(guid, {
       kind, seat, fromX: at.x, fromY: at.y, fromZ: at.z, fromYaw: yawOf(node.quaternion),
-      motionAt: now + seatTransitionDelay(seat, kind) * 1000, motion: undefined,
+      motionAt: now + seatTransitionDelay(seat, kind) * 1000, awaitsVehicle: false, motion: undefined,
     });
+  }
+
+  /** 04.11: the vehicle plays its own animation first: `seconds` before the pre-delay, or at most that until `release`. */
+  hold(guid: bigint, seconds: number, untilReleased: boolean): void {
+    const transition = this.#active.get(guid);
+    if (transition === undefined) return;
+    transition.motionAt += seconds * 1000;
+    transition.awaitsVehicle = untilReleased;
+  }
+
+  /** 04.11: the vehicle's animation is over (0x00749d50): the pre-delay runs from now. */
+  release(guid: bigint, now: number): void {
+    const transition = this.#active.size > 0 ? this.#active.get(guid) : undefined;
+    if (transition === undefined || !transition.awaitsVehicle) return;
+    transition.awaitsVehicle = false;
+    transition.motionAt = now + seatTransitionDelay(transition.seat, transition.kind) * 1000;
   }
 
   /** The seat and the direction a unit is moving in, or undefined (VehicleSeatPose.ts `vehicleSeatTransitionPose`). */

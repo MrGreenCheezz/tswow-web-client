@@ -16,8 +16,8 @@
 // * Rider: 0x7385c0 takes its own branch when the unit is mounted (`unit+0x98c`): a listed pose goes to
 //   the split track over the mount's pose, a locomotion behaviour (0x71d6b0) is translated for the
 //   seat, and any other pose is put on neither track — a rider does not play it. Kept as "yield".
-// * Seated stand states and vehicle seats are not in 0x723e30 at all; they stay as they were (a
-//   one-shot off the list gives way) until frames say otherwise (14.25).
+// * Seated stand states are not in 0x723e30 at all; they stay as they were (a one-shot off the list gives
+//   way) until frames say otherwise (14.25). A vehicle seat with the legs' clip splits by 0x007385c0: VehicleSeatPose.ts.
 // * Holds are not covered: Wow.exe re-sets the base whenever movement changes, which a hold off the
 //   list would not survive; a hold keeps waiting for the base to settle.
 
