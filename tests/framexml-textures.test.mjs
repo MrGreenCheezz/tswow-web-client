@@ -224,3 +224,18 @@ test("the client's own FRIZQT__ carries exactly one out-of-range sentinel", with
     chain.close();
   }
 });
+
+test("3.67: coordinates past the picture repeat it; inside it there is nothing to repeat", async () => {
+  const { wrappedTexturePaint } = await import("../dist/code/browser/ui/framexml_compat/FrameXmlTextures.js");
+  assert.equal(wrappedTexturePaint(0, 1, 0, 1), undefined);
+  assert.equal(wrappedTexturePaint(1, 0.09375, 0, 0.5), undefined, "a mirrored crop");
+  // The vehicle bar's action strip: 2.08 pictures across, a band of the atlas's height.
+  const strip = wrappedTexturePaint(0, 2.08203125, 0.68359375, 1);
+  const [width, height] = strip.size.split(" ").map(parseFloat);
+  assert.ok(Math.abs(width - 48.03) < 0.01, strip.size);
+  assert.ok(Math.abs(height - 316.05) < 0.01, strip.size);
+  const [x, y] = strip.position.split(" ").map(parseFloat);
+  assert.equal(Math.abs(x), 0, "from the picture's left");
+  assert.ok(Math.abs(y - 100) < 1e-6, "its band ends at the picture's bottom, the box's");
+  assert.equal(wrappedTexturePaint(0, 0, 0, 2), undefined, "nothing across");
+});

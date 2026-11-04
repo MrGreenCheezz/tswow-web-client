@@ -172,6 +172,27 @@ export function pictureSrcset(url: string, scale: number | undefined): string | 
   return url !== "" && scale !== undefined && scale > 1 ? `${url} ${scale}x` : undefined;
 }
 
+/**
+ * 3.67: texture coordinates past the picture's edge mean it repeats: `SetTexture(file, true)` with a U range of 2.08, as the
+ * vehicle bar's action strip has. A crop of the picture cannot show that, so such a texture is painted as a repeating background:
+ * one picture is the box over the range, and its start is put where the coordinates begin. Undefined inside the picture.
+ */
+export function wrappedTexturePaint(left: number, right: number, top: number, bottom: number):
+  { readonly size: string; readonly position: string } | undefined {
+  const minX = Math.min(left, right);
+  const maxX = Math.max(left, right);
+  const minY = Math.min(top, bottom);
+  const maxY = Math.max(top, bottom);
+  const edge = 1e-4;
+  if (minX >= -edge && maxX <= 1 + edge && minY >= -edge && maxY <= 1 + edge) return undefined;
+  const rangeX = maxX - minX;
+  const rangeY = maxY - minY;
+  if (!(rangeX > edge) || !(rangeY > edge)) return undefined;
+  // A background's percentage is of the box less the picture: start × picture = percent × (box − picture).
+  const at = (min: number, range: number): number => (Math.abs(range - 1) < edge ? 0 : (-min / (range - 1)) * 100);
+  return { size: `${100 / rangeX}% ${100 / rangeY}%`, position: `${at(minX, rangeX)}% ${at(minY, rangeY)}%` };
+}
+
 interface Entry {
   refs: number;
   objectUrl?: string;

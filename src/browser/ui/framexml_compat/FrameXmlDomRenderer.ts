@@ -8,7 +8,7 @@ import {
   type FrameXmlRect,
 } from "./FrameXmlTypes.js";
 import type { FrameXmlUiBridge } from "./FrameXmlRuntime.js";
-import { FRAME_XML_EDGE_PIECES, frameXmlTexturePath, type FrameXmlTextureSource, pictureSrcset } from "./FrameXmlTextures.js";
+import { FRAME_XML_EDGE_PIECES, frameXmlTexturePath, type FrameXmlTextureSource, pictureSrcset, wrappedTexturePaint } from "./FrameXmlTextures.js";
 import { hasFrameXmlEscapes, parseFrameXmlText } from "./FrameXmlText.js";
 import { paintFrameXmlAlphaGradient } from "./FrameXmlAlphaGradient.js"; // 05.10-3.21
 import { FrameXmlAccessibility, frameXmlAccessibilityCares } from "./FrameXmlAccessibility.js";
@@ -147,6 +147,9 @@ interface ContainerBox {
 }
 
 /** How long a kept container box is trusted with no resize, scroll or observer call in between. */
+/** 3.67: what an `<img>` holds while its picture is its repeating background. */
+const BLANK_PICTURE = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
+
 const CONTAINER_BOX_TTL_MS = 250;
 
 interface RenderedFrame {
@@ -3477,6 +3480,24 @@ export class FrameXmlDomRenderer {
     }
 
     const corners = frame.texCoords?.corners;
+    // 3.67: coordinates past the picture's edge repeat it (`wrappedTexturePaint`).
+    const wrapped = frame.texCoords && !corners && resolved
+      ? wrappedTexturePaint(frame.texCoords.left, frame.texCoords.right, frame.texCoords.top, frame.texCoords.bottom) : undefined;
+    if (wrapped) {
+      element.removeAttribute("srcset");
+      if (element.getAttribute("src") !== BLANK_PICTURE) element.setAttribute("src", BLANK_PICTURE);
+      element.style.backgroundImage = `url("${resolved}")`;
+      element.style.backgroundRepeat = "repeat";
+      element.style.backgroundSize = wrapped.size;
+      element.style.backgroundPosition = wrapped.position;
+      element.setAttribute("data-framexml-texwrap", "");
+    } else if (element.getAttribute("data-framexml-texwrap") !== null) {
+      element.removeAttribute("data-framexml-texwrap");
+      element.style.removeProperty("background-image");
+      element.style.removeProperty("background-repeat");
+      element.style.removeProperty("background-size");
+      element.style.removeProperty("background-position");
+    }
     if (corners) {
       // The eight-number form: the picture is laid out by `textureCornerTransform` in
       // `placeFrame`, and cut here to the quad the four corners name, in the image's own (untransformed)
@@ -3495,7 +3516,7 @@ export class FrameXmlDomRenderer {
       element.removeAttribute("data-framexml-texcorners");
       element.style.removeProperty("clip-path");
     }
-    if (frame.texCoords && !corners) {
+    if (frame.texCoords && !corners && !wrapped) {
       const { left, right, top, bottom } = frame.texCoords;
       // TexCoords name a sub-rectangle of an atlas that is then *stretched* over the widget, so a
       // crop alone is not the operation: `clip-path` hides the rest of the picture and leaves the
