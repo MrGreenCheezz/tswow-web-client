@@ -202,6 +202,8 @@ export interface CursorRules {
   lockCase(lockId: number): { readonly type: number; readonly index: number } | undefined;
   /** CursorName of a dataset LockType, when the gateway carried the column. */
   lockTypeCursor?(lockType: number): string | undefined;
+  /** 11.02 (04.11): whether the seat the character sits in lets it deal with units (world/SeatInteraction.ts); absent: yes. */
+  seatAllowsInteraction?(): boolean;
 }
 
 function distanceSq(a: { x: number; y: number; z: number }, b: { x: number; y: number; z: number }): number {
@@ -278,6 +280,8 @@ function unitCursor(world: CursorWorld, self: WorldObjectState, object: WorldObj
   const selfAt = self.position;
   const at = object.position;
   if (!selfAt || !at) return "";
+  // 11.02 (04.11): from a seat without ALLOWS_INTERACTION, the sword on what can be attacked and nothing else (0x004f7aa8).
+  if (rules.seatAllowsInteraction?.() === false) return rules.canAttack(object) ? pick(C.ATTACK, false) : "";
   const distSq = distanceSq(selfAt, at);
   const entry = object.fields.get(UPDATE_FIELDS.OBJECT_FIELD_ENTRY.offset) ?? 0;
   const template = object.typeId === 3 && entry > 0 ? world.creatureTemplate(entry, object.guid) : undefined;

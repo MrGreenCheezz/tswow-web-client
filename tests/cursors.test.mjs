@@ -265,3 +265,16 @@ test("a picture comes once through the texture route, with its (0, 0) hotspot an
     globalThis.fetch = previousFetch;
   }
 });
+
+test("11.02: from a seat without interaction a unit shows only the sword (0x004f7aa8)", () => {
+  const npc = unitAt(2n, 1, { npcFlags: 0x1, reach: 1.5 });
+  const world = worldWith([npc]);
+  const rules = (over) => ({
+    reaction: () => 4, canAttack: () => false, autoLoot: () => false, gatherSpell: () => undefined, spellRange: () => undefined,
+    lockCase: () => undefined, ...over,
+  });
+  assert.equal(worldObjectCursor(world, npc, 0, rules({})), "Speak", "no seat: the service");
+  assert.equal(worldObjectCursor(world, npc, 0, rules({ seatAllowsInteraction: () => true })), "Speak", "a seat that allows it");
+  assert.equal(worldObjectCursor(world, npc, 0, rules({ seatAllowsInteraction: () => false })), "", "a seat that does not: nothing");
+  assert.equal(worldObjectCursor(world, npc, 0, rules({ seatAllowsInteraction: () => false, canAttack: () => true })), "Attack");
+});
