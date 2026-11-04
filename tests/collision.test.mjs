@@ -260,6 +260,15 @@ test("a wall is not a floor, however the column passes through it", () => {
   assert.equal(world.floorUnder(0, 0, 10, -400), undefined);
 });
 
+test("a triangle with no area neither pushes a body nor turns its position into NaN (2.11)", () => {
+  const world = new CollisionWorld();
+  // Two corners the same, as a Dalaran street has: a stick from the ground to over the head.
+  world.set(1, new CollisionMesh(new Float32Array([0, 0, 0, 0, 0, 0, 0, 0, 4])));
+  for (const [x, y, z] of [[0.2, 0, 0], [0.1, 0.1, 0], [0, 0.3, 0.5], [-0.2, -0.2, 1], [0.2, 0, -3]]) {
+    assert.deepEqual(world.pushOut(x, y, z, 0.389, 2, 1.6), { x, y }, `at ${x}, ${y}, ${z}`);
+  }
+});
+
 test("walking into a wall stops at it rather than through it", () => {
   const world = new CollisionWorld();
   world.set(1, new CollisionMesh(wall(2)));

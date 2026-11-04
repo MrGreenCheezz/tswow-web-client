@@ -1125,7 +1125,9 @@ export class CollisionWorld {
             const dy = atY - point.y;
             const dz = z + height - point.z;
             const distance = Math.hypot(dx, dy, dz);
-            if (distance >= radius) continue;
+            // A triangle with no area has no face to stop anyone, and the closest point on one can
+            // come out as NaN (04.11 2.11: it took a walker's position with it, on a Dalaran street).
+            if (!(distance < radius) || hasNoArea(mesh.triangles, triangle)) continue;
             const flat = Math.hypot(dx, dy);
             // Dead centre of a wall's plane: there is no direction to push, so the triangle's own
             // normal decides which side to come out on.
@@ -1148,6 +1150,17 @@ export class CollisionWorld {
     }
     return { x: atX, y: atY };
   }
+}
+
+function hasNoArea(triangles: Float32Array, triangle: number): boolean {
+  const base = triangle * 9;
+  const ux = triangles[base + 3]! - triangles[base]!;
+  const uy = triangles[base + 4]! - triangles[base + 1]!;
+  const uz = triangles[base + 5]! - triangles[base + 2]!;
+  const vx = triangles[base + 6]! - triangles[base]!;
+  const vy = triangles[base + 7]! - triangles[base + 1]!;
+  const vz = triangles[base + 8]! - triangles[base + 2]!;
+  return Math.hypot(uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx) < 1e-9;
 }
 
 const normal: Vector3 = { x: 0, y: 0, z: 0 };
