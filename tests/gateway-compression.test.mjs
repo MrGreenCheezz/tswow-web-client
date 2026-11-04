@@ -47,10 +47,11 @@ test("chooseEncoding: brotli, then gzip; q=0 and identity refuse; * counts", () 
 });
 
 test("compressibleType: text, JSON, fonts and opaque binaries; never images or audio", () => {
-  for (const type of ["application/json; charset=utf-8", "text/plain; charset=utf-8", "font/ttf", "application/octet-stream"]) {
+  for (const type of ["application/json; charset=utf-8", "text/plain; charset=utf-8", "font/ttf", "application/octet-stream",
+    "application/x-webclient-hd-texture"]) { // 04.11 (7.62): BC7 comes out at 69 % under gzip
     assert.equal(compressibleType(type), true, type);
   }
-  for (const type of ["image/png", "audio/mpeg", "audio/wav", "application/x-webclient-hd-texture", undefined]) {
+  for (const type of ["image/png", "audio/mpeg", "audio/wav", undefined]) {
     assert.equal(compressibleType(type), false, String(type));
   }
 });

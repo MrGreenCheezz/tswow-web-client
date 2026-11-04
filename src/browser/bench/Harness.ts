@@ -126,7 +126,9 @@ Math.random = () => {
 };
 const baseUrl = location.origin;
 // 23.10 (7.48): lookdev's HD stills — the generation a live page would read from `/client/patch-status`.
-if (config.hdTextureGeneration) noteGatewayAssetGenerations(baseUrl, undefined, undefined, config.hdTextureGeneration);
+if (config.hdTextureGeneration || config.refinedModelGeneration) { // 04.11 (7.62): + the refined models
+  noteGatewayAssetGenerations(baseUrl, undefined, undefined, config.hdTextureGeneration, config.refinedModelGeneration);
+}
 // 24.10 (7.50): the lamp catalog kept in this profile's IndexedDB between runs (`--light-catalog`), a second session.
 const lightCatalog = (config as { lightCatalogGeneration?: string }).lightCatalogGeneration;
 if (lightCatalog) overrideLightCatalogGeneration({ origin: baseUrl, generation: lightCatalog });

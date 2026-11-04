@@ -28,8 +28,22 @@ const TEXTURE_WRAP = 0x01 | 0x02;
 /** `M2Texture.type` 0: the file name is in the model; every other type is filled in at run time (skins, hair). */
 const TEXTURE_TYPE_OWN = 0;
 
-/** The subtrees that hold character, creature and item art: never part of an HD set (owner, 23.10). */
+/** The subtrees that hold character, creature and item art: no scenery or effect set takes them (owner, 23.10). */
 const NEVER_UPSCALED = ["character\\", "creature\\", "item\\"];
+/**
+ * 04.11 (7.62, the owner's decision): the world set takes creature skins and the textures of item models after all,
+ * but only sources up to 256 px: most 512 px ones are HD from the patches already, and leaving them out takes the set
+ * from 5.70 GB to 1.44 GB. Characters and the pieces composed on a body (`item\texturecomponents\`) stay out. Equal to
+ * `HD_UNIT_TEXTURE_PREFIXES` in src/browser/HdWorldTextures.ts (a test holds them so).
+ */
+export const UNIT_TEXTURE_PREFIXES = ["creature\\", "item\\objectcomponents\\"];
+export const UNIT_MAX_SOURCE = 256;
+
+/** 04.11 (7.62): whether a texture path is creature or item-model art, which the world set takes up to 256 px. */
+export function unitTexturePath(path) {
+  const key = textureKey(path);
+  return key.endsWith(".blp") && UNIT_TEXTURE_PREFIXES.some((prefix) => key.startsWith(prefix));
+}
 
 export const SET_NAMES = ["effects", "world", "ui"];
 
@@ -133,13 +147,13 @@ export function upscalable(path) {
 
 /**
  * Folds texture uses from many models into one entry per texture: grids united, `wrap` if any model wraps it.
- * Returned sorted by path, so a set is the same list on every run.
+ * Returned sorted by path, so a set is the same list on every run. `accept` is which paths may be in it.
  */
-export function mergeUses(useLists) {
+export function mergeUses(useLists, accept = upscalable) {
   const byPath = new Map();
   for (const uses of useLists) {
     for (const use of uses) {
-      if (!upscalable(use.path)) continue;
+      if (!accept(use.path)) continue;
       let entry = byPath.get(use.path);
       if (!entry) byPath.set(use.path, entry = { path: use.path, wrap: false, grids: [] });
       entry.wrap ||= use.wrap;
@@ -322,6 +336,30 @@ export async function worldModelTextureUses(archives, report = () => undefined) 
   return mergeUses(lists);
 }
 
+/**
+ * 04.11 (7.62): every creature and item-model texture in the archives. Listed by folder and not by model, because a
+ * creature's skin is named by `CreatureDisplayInfo` and an item's by `ItemDisplayInfo`, not by the file. The models
+ * still say what they know: a texture they name themselves keeps its wrap flags and its flip-book grids. Nothing says
+ * so for a skin, which is cut as an atlas: an edge is padded from itself.
+ */
+export async function unitTextureUses(archives, report = () => undefined) {
+  const textures = new Set();
+  const models = new Set();
+  for (const prefix of UNIT_TEXTURE_PREFIXES) {
+    for (const path of await archives.list(prefix)) {
+      if (path.endsWith(".blp")) textures.add(path);
+      else if (path.endsWith(".m2")) models.add(path);
+    }
+  }
+  const lists = [[...textures].map((path) => ({ path, wrap: false, grids: [] }))];
+  for (const path of [...models].sort()) {
+    const model = await archives.read(path);
+    if (model) lists.push(modelTextureUses(model).filter((use) => unitTexturePath(use.path)));
+  }
+  report({ textures: textures.size, models: models.size });
+  return mergeUses(lists, unitTexturePath);
+}
+
 /** 23.10 (7.48): a WMO group file (`<root>_000.wmo`), not a root. */
 const WMO_GROUP_FILE = /_\d{3}\.wmo$/;
 
@@ -371,6 +409,7 @@ export async function worldSet(archives, report = () => undefined) {
   const secondTextures = [...second].filter((path) => !known.has(path)).length;
   for (const path of second) known.add(path);
   const modelTextures = modelUses.filter((use) => !known.has(use.path)).length;
-  report({ ground, roots, wmoTextures, secondTextures, models: modelReport.models, modelTextures });
-  return entries;
+  const units = await unitTextureUses(archives); // 04.11 (7.62): never in the folders above, so the two lists do not meet
+  report({ ground, roots, wmoTextures, secondTextures, models: modelReport.models, modelTextures, units: units.length });
+  return [...entries, ...units].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
 }

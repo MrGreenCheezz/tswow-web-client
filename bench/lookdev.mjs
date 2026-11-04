@@ -176,6 +176,11 @@ async function main() {
   const variantModelDir = value('--model-variants') ? resolve(value('--model-variants')) : undefined;
   const { visualModelHash } = variantModelDir ? await import('../tools/visual-model-key.mjs') : {};
   let variantsServed = 0;
+  // 04.11 (7.62): `--refined-models` tells the page the gateway serves refined copies and answers its `refined=` from
+  // VISUAL_MODEL_DIR (default data/visual-models), the plain model where a copy is not built; `--set experimentalRefinedModels=true`.
+  const refinedKeys = args.includes('--refined-models') ? await import('../tools/visual-model-key.mjs') : undefined;
+  if (refinedKeys) config.refinedModelGeneration = refinedKeys.REFINED_MODEL_VERSION;
+  const refinedDirectory = resolve(process.env.VISUAL_MODEL_DIR ?? 'data/visual-models');
   const hdIndex = args.indexOf('--hd-textures');
   const hdDirectory = hdIndex < 0 ? undefined
     : resolve(args[hdIndex + 1] && !args[hdIndex + 1].startsWith('--') ? args[hdIndex + 1] : '.runtime/hd-textures');
@@ -428,6 +433,18 @@ async function main() {
         if (bytes) neuralServed++;
         if (bytes) res.writeHead(200, { 'content-type': 'application/octet-stream', 'cache-control': 'no-store' }).end(bytes);
         else res.writeHead(404, { 'cache-control': 'no-store' }).end();
+      } else if (refinedKeys && url.pathname === '/visual/model' && url.searchParams.has('refined')) {
+        // 04.11 (7.62): as the gateway does (RefinedModelRoute.ts), the plain model when no copy is built.
+        const path = (url.searchParams.get('path') ?? '').replaceAll('/', '\\');
+        const copy = await readFile(resolve(refinedDirectory, `${refinedKeys.refinedModelHash(path)}.bin`)).catch(() => undefined);
+        if (copy) {
+          variantsServed++;
+          res.writeHead(200, { 'content-type': 'application/octet-stream', 'cache-control': 'no-store' }).end(copy);
+        } else {
+          url.searchParams.delete('refined');
+          const { entry, bytes } = await asset(url.pathname + url.search);
+          res.writeHead(entry.status, { 'content-type': entry.type, 'cache-control': 'no-store' }).end(bytes);
+        }
       } else if (variantModelDir && url.pathname === '/visual/model' && !url.searchParams.has('group')
         && await access(resolve(variantModelDir, `${visualModelHash(url.searchParams.get('path') ?? '')}.bin`)).then(() => true, () => false)) {
         // 04.11: the refined mesh (see `--model-variants`).
@@ -588,7 +605,7 @@ async function main() {
     if (litModels) console.log(`Lit-model index: served ${litModels.served} time(s) from ${litModels.file}`); // 25.10 (7.50)
     if (lampTables) console.log(`Lamp tables: ${lampTables.built.size} built (${lampTables.ms.toFixed(0)} ms), ${lampTables.served} served`); // 24.10 (7.50)
     if (neuralDirectory) console.log(`Neural relief maps served from ${neuralDirectory}: ${neuralServed}`); // 25.10 (7.47)
-    if (variantModelDir) console.log(`Refined models served from ${variantModelDir}: ${variantsServed}`); // 04.11
+    if (variantModelDir || refinedKeys) console.log(`Refined models served from ${variantModelDir ?? refinedDirectory}: ${variantsServed}`); // 04.11
     if (hdDirectory) console.log(`HD textures served from ${hdDirectory}: ${hdServed} (world, compressed: ${hdWorldServed}, ${(hdWorldBytes.hd / 1048576).toFixed(1)} MB in place of ${(hdWorldBytes.original / 1048576).toFixed(1)} MB)`); // 23.10 (7.48)
     await writeFile(resolve(out, 'lookdev.json'), JSON.stringify({ scenario, config, frames, written, cacheMisses, hdServed, failures }, null, 2));
     if (failures.length) console.error(`Asset failures:\n${failures.join('\n')}`);

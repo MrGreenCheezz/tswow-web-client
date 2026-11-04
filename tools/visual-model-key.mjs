@@ -41,6 +41,25 @@ export function isSpellModelPath(modelPath) {
   return /^spells[\\/]/i.test(modelPath);
 }
 
+/**
+ * 04.11 (7.62): the generation of the refined models (tools/model-refine.mjs). Bumped when the bake changes, which
+ * turns every name over. Equal to `REFINED_MODEL_VERSION` in src/world/RefinedModels.ts (a test holds them so).
+ */
+export const REFINED_MODEL_VERSION = "1";
+
+/** 04.11 (7.62): whether a model has a refined copy: world doodads and creatures, never characters, items or spells. */
+export function isRefinedModelPath(modelPath) {
+  return /^(?:world|creature)[\\/].*\.m2$/i.test(modelPath);
+}
+
+/**
+ * 04.11 (7.62): the name of a model's refined copy, beside the plain one. Which bytes a job publishes is decided by the
+ * name it is asked for, as with every namespace here. The plain namespace is part of it, so a copy turns over with it.
+ */
+export function refinedModelHash(modelPath) {
+  return createHash("sha1").update(`refined-${REFINED_MODEL_VERSION}\0${visualModelNamespace(modelPath)}\0${modelPath.toLowerCase()}`).digest("hex");
+}
+
 /** `<hash>` of `<VISUAL_MODEL_DIR>/<hash>.bin` for a model path (backslashes, any case). */
 export function visualModelHash(modelPath) {
   return visualModelHashIn(visualModelNamespace(modelPath), modelPath);

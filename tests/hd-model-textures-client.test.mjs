@@ -7,9 +7,11 @@ import test from "node:test";
 import * as THREE from "three";
 
 import { compressTexture } from "../tools/hd-texture-bc7.mjs";
+import { UNIT_TEXTURE_PREFIXES } from "../tools/hd-texture-set.mjs";
 import { noteGatewayAssetGenerations, resetGatewayGeneration } from "../dist/code/browser/GatewayGeneration.js";
 import {
-  isHdModelTexturePath, isHdModelTextureUrl, setHdWorldTexturesEnabled, withHdModelTexture,
+  HD_UNIT_TEXTURE_PREFIXES, isHdModelTexturePath, isHdModelTextureUrl, isHdUnitTexturePath, setHdUnitTexturesEnabled,
+  setHdWorldTexturesEnabled, withHdModelTexture,
 } from "../dist/code/browser/HdWorldTextures.js";
 import { setHdEffectTexturesEnabled } from "../dist/code/browser/HdEffectTextures.js";
 import { ModelTextureLoader } from "../dist/code/browser/TextureLoad.js";
@@ -54,6 +56,34 @@ test("only a scenery /texture URL gains hd=, only with the setting, BC7 and a ge
   assert.equal(isHdModelTexturePath("dungeons\\textures\\wall.blp"), true);
   noteGatewayAssetGenerations(BASE, undefined, undefined, undefined);
   assert.equal(withHdModelTexture(tree), tree, "the gateway stopped publishing a generation");
+}));
+
+test("04.11 (7.62): creature and item-model art asks under its own switch, a character's and a body piece's never", () => withGeneration(() => {
+  try {
+    assert.deepEqual([...HD_UNIT_TEXTURE_PREFIXES], UNIT_TEXTURE_PREFIXES, "the tool's folders");
+    const wolf = textureUrl(BASE, "Creature\\Wolf\\WolfSkinTimber.blp");
+    const sword = textureUrl(BASE, "Item\\ObjectComponents\\Weapon\\Sword_1H_Long_A_01.blp");
+    const tree = textureUrl(BASE, TREE);
+    assert.equal(withHdModelTexture(wolf), wolf, "off: byte-identical");
+    setHdUnitTexturesEnabled(true, false);
+    assert.equal(withHdModelTexture(wolf), wolf, "no EXT_texture_compression_bptc");
+    setHdUnitTexturesEnabled(true, true);
+    assert.equal(withHdModelTexture(wolf), `${wolf}&hd=${HG}`);
+    assert.equal(withHdModelTexture(sword), `${sword}&hd=${HG}`);
+    assert.equal(withHdModelTexture(tree), tree, "the scenery keeps its own switch");
+    for (const path of ["Character\\Human\\Male\\HumanMaleSkin00_00.blp", "Item\\TextureComponents\\ArmUpperTexture\\Robe.blp", "Spells\\Glow.blp"]) {
+      const url = textureUrl(BASE, path);
+      assert.equal(withHdModelTexture(url), url, path);
+    }
+    assert.equal(isHdUnitTexturePath("creature/wolf/wolf.blp"), true);
+    assert.equal(isHdUnitTexturePath("item\\texturecomponents\\x.blp"), false);
+    setHdUnitTexturesEnabled(false, false);
+    setHdWorldTexturesEnabled(true, true);
+    assert.equal(withHdModelTexture(wolf), wolf, "and the scenery's switch does not turn this one on");
+    assert.equal(withHdModelTexture(tree), `${tree}&hd=${HG}`);
+  } finally {
+    setHdUnitTexturesEnabled(false, false);
+  }
 }));
 
 const MODEL = (paths) => ({

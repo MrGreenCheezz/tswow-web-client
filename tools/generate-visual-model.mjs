@@ -32,7 +32,7 @@ import { publishTexture, SourceMissing, SOURCE_MISSING_EXIT, validTexturePath } 
 import { clientArchives } from "./mpq.mjs";
 import { clientDirectory } from "./paths.mjs";
 import { sourceStamp, stampIsCurrent, writeFileAtomic, writeSourceStamp } from "./source-stamp.mjs";
-import { isSpellModelPath, isUnitModelPath, visualModelHash, visualModelHashIn } from "./visual-model-key.mjs"; // 05.10-A7a-F2; 13.10 7.11; 6.31
+import { isSpellModelPath, isUnitModelPath, refinedModelHash, visualModelHash, visualModelHashIn } from "./visual-model-key.mjs"; // 05.10-A7a-F2; 13.10 7.11; 6.31; 04.11 (7.62)
 // Out of the build, not copied: see the note over the same import in `generate-texture.mjs`.
 import { validAssetPath } from "../dist/code/gateway/AssetPath.js";
 
@@ -57,6 +57,10 @@ export function visualModelDirectory() {
  *
  * 04.11: `transformModel(model, modelPath, skeleton)` may hand back a refined copy of an M2's mesh
  * (tools/polish-models.mjs); nothing else is published differently.
+ *
+ * 04.11 (7.62): a refined name (`refinedModelHash`) publishes the model's refined copy (tools/model-refine.mjs) beside
+ * the plain one: the same clips and tables, the animation sidecar left to the plain name, whose route it stays on. A
+ * model the bake cannot take is published plain under the same name, so asking for a refined copy never costs a model.
  */
 export async function publishVisualModel(requestedPath, hash, archives, { transformModel } = {}) {
   const modelPath = requestedPath.replaceAll("/", "\\");
@@ -99,7 +103,8 @@ export async function publishVisualModel(requestedPath, hash, archives, { transf
     // 05.10-A7a-F2: the WVE1 block and the resolved shader ids only under the namespace that
     // expects them. A gateway still running `visual-v21` asks for its own hash and keeps getting
     // the bytes its readers know — its asset worker loads these tools fresh from disk.
-    const current = hash === visualModelHash(requestedPath) || hash === visualModelHash(modelPath);
+    const refined = hash === refinedModelHash(requestedPath) || hash === refinedModelHash(modelPath); // 04.11 (7.62)
+    const current = refined || hash === visualModelHash(requestedPath) || hash === visualModelHash(modelPath);
     // 03.11 (6.16в, 6.34): a unit's clips as Wow.exe chooses them, under `visual-unit-v1` alone: a gateway started before it
     // still asks for its `visual-v24` hash and gets exactly the v24 bytes.
     const asWowExe = current && isUnitModelPath(modelPath);
@@ -127,8 +132,11 @@ export async function publishVisualModel(requestedPath, hash, archives, { transf
 
     // Only the model's own textures can be published here; the rest are per-appearance and the
     // browser asks for them by path once it knows which appearance it is drawing.
+    // 04.11 (7.62): a refined copy leaves them to the plain model's route, but for stone: its relief is found by them.
+    const refine = refined ? await import("./model-refine.mjs") : undefined;
     for (const texture of model.textures) {
       if (texture.type !== TEXTURE_TYPE_OWN || !texture.filename) continue;
+      if (refine && !refine.isStoneModelPath(modelPath)) continue;
       try {
         await publishTexture(texture.filename, archives);
       } catch (error) {
@@ -144,16 +152,24 @@ export async function publishVisualModel(requestedPath, hash, archives, { transf
     if (current && isSpellModelPath(modelPath) && skeleton) {
       for (const clip of skeleton.clips) if (Number.isFinite(clip.m2Flags)) clip.sequenceFlags = clip.m2Flags;
     }
-    const published = transformModel ? await transformModel(model, modelPath, skeleton) : model; // 04.11
+    let published = transformModel ? await transformModel(model, modelPath, skeleton) : model; // 04.11
+    if (refine) { // 04.11 (7.62)
+      try {
+        published = refine.refineModel(model, modelPath);
+      } catch (error) {
+        console.warn(`Refining ${modelPath} failed, publishing it plain: ${error instanceof Error ? error.message : error}`);
+      }
+    }
     await writeFileAtomic(join(destination, `${hash}.bin`),
       encodeWvm9(published, shippedSkeleton, animations.map((animation) => animation.animationId), effects,
         { extensions }));
     // Always written, even empty: a model with nothing held back still has to answer the request
     // rather than send the browser back for it on every frame.
-    if (skeleton) await writeFileAtomic(join(destination, `${hash}.anim.bin`), encodeWvaAnimations(skeleton.bones.length, rest));
+    const sidecar = skeleton && !refined; // 04.11 (7.62): the clips held back stay under the plain name
+    if (sidecar) await writeFileAtomic(join(destination, `${hash}.anim.bin`), encodeWvaAnimations(skeleton.bones.length, rest));
     const stamp = await sourceStamp(archives, { paths: read });
     await writeSourceStamp(join(destination, `${hash}.bin`), stamp);
-    if (skeleton) await writeSourceStamp(join(destination, `${hash}.anim.bin`), stamp);
+    if (sidecar) await writeSourceStamp(join(destination, `${hash}.anim.bin`), stamp);
 
     const rig = skeleton
       ? `, ${skeleton.bones.length} bones, ${shipped.length} of ${animations.length} animations shipped`

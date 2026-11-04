@@ -13,6 +13,7 @@ import { parseTrafficReportEnv } from "./GatewayTraffic.js"; // 25.10 (serve S5)
 import { VISUAL_TILE_GENERATION } from "./VisualTileGeneration.js"; // 05.10-A7b-1
 import { TERRAIN_SPLAT_GENERATION } from "./TerrainSplatGeneration.js"; // 05.10-A7b-7
 import { HdTextureSets, parseHdTexturesEnv } from "./HdTextures.js"; // 23.10 (7.48)
+import { parseRefinedModelsEnv } from "./RefinedModelRoute.js"; // 04.11 (7.62)
 import { parseNeuralReliefEnv } from "./NeuralReliefRoute.js"; // 25.10 (7.47)
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -293,6 +294,8 @@ export async function createGatewayConfiguration(): Promise<{ options: GatewayOp
     texturesDirectory: process.env.TEXTURE_DIR ?? resolve(process.cwd(), "data/textures"),
     // 23.10 (7.48): the HD sets tools/upscale-textures.mjs builds; HD_TEXTURES=0 (bat/32 by default) switches them off.
     ...(parseHdTexturesEnv(process.env) ? { hdTextures: { sets: hdTextureSets() } } : {}),
+    // 04.11 (7.62): refined copies of the models; REFINED_MODELS=0 (bat/32 by default) switches them off.
+    ...(parseRefinedModelsEnv(process.env) ? { refinedModels: true } : {}),
     // 25.10 (7.47): the neural relief maps tools/neural-relief.mjs builds; NEURAL_RELIEF=0 (bat/32 by default) switches them off.
     ...(parseNeuralReliefEnv(process.env)
       ? { neuralReliefDirectory: process.env.NEURAL_RELIEF_DIR ?? resolve(process.cwd(), ".runtime/neural-relief") } : {}),

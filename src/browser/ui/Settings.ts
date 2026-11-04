@@ -130,6 +130,9 @@ export function applySettings(): void {
   game.renderer?.setHdEffectTextures?.(settingBoolean(values, "experimentalSharpEffectTextures"));
   // 23.10 (7.48 step 2): «Чёткие текстуры мира» (HdWorldTextures.ts).
   game.renderer?.setHdWorldTextures?.(settingBoolean(values, "experimentalSharpWorldTextures"));
+  // 04.11 (7.62): «Чёткие текстуры существ и предметов» and «Сглаженные модели» (RefinedModels.ts).
+  game.renderer?.setHdUnitTextures?.(settingBoolean(values, "experimentalSharpUnitTextures"));
+  game.renderer?.setRefinedModels?.(settingBoolean(values, "experimentalRefinedModels"));
   // The classic glow and solar rays are independent leaves sharing one offscreen scene path. Each
   // switch controls only its own effect; the direct pre-P4 path is selected only when both are OFF.
   game.renderer?.setFullscreenGlow?.(settingBoolean(values, "fullscreenGlow"));

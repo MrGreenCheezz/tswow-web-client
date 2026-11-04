@@ -64,7 +64,9 @@ const phaseNames = benchPhaseNames(scene);
 const nextFrame = () => new Promise<number>(resolve => requestAnimationFrame(resolve));
 const baseUrl = location.origin;
 // 23.10 (7.48): lookdev's HD stills (Harness.ts does the same), pushed to the worker with the generation state.
-if (config.hdTextureGeneration) noteGatewayAssetGenerations(baseUrl, undefined, undefined, config.hdTextureGeneration);
+if (config.hdTextureGeneration || config.refinedModelGeneration) { // 04.11 (7.62): + the refined models
+  noteGatewayAssetGenerations(baseUrl, undefined, undefined, config.hdTextureGeneration, config.refinedModelGeneration);
+}
 async function checked(url: string): Promise<Response> {
   const response = await fetch(url);
   if (!response.ok) throw new Error(`Asset ${response.status}: ${url}`);

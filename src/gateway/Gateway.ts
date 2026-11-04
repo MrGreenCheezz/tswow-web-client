@@ -107,6 +107,8 @@ import {
   walkInterfaceCorpus, type InterfaceBundleSet,
 } from "./InterfaceBundle.js"; // 25.10 (serve S3)
 import { brotliCompress, gzip, constants as zlibConstants } from "node:zlib"; // 25.10 (serve S3)
+import { isRefinedModelPath, REFINED_MODEL_PARAM, REFINED_MODEL_VERSION } from "../world/RefinedModels.js"; // 04.11 (7.62)
+import { refinedModelFileHash } from "./RefinedModelRoute.js"; // 04.11 (7.62)
 
 const MAX_CLIENT_MESSAGE = 64 * 1024;
 /** 25.10 (serve S3): one built interface bundle (the `/client/interface-bundle` route). */
@@ -387,6 +389,8 @@ export interface GatewayOptions {
   hdTextures?: { readonly sets: HdTextureSets; readonly isCurrent?: (file: string) => Promise<boolean> };
   /** 25.10 (7.47): the neural relief maps tools/neural-relief.mjs builds (NeuralReliefRoute.ts); absent when `NEURAL_RELIEF=0`. */
   neuralReliefDirectory?: string;
+  /** 04.11 (7.62): `/visual/model` answers `refined=` with a model's refined copy (RefinedModelRoute.ts); off when `REFINED_MODELS=0`. */
+  refinedModels?: boolean;
   /** Where the animated liquid strips live, one per liquid class. */
   liquidDirectory?: string;
   /**
@@ -1238,7 +1242,8 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
       const hdTextureGeneration = await options.hdTextures?.sets.generation();
       response.end(JSON.stringify({ ...body, cacheGeneration: requestCacheGeneration(),
         visualGeneration: visualAssetGeneration, metadataGeneration: requestMetadataGeneration,
-        ...(hdTextureGeneration === undefined ? {} : { hdTextureGeneration }) }));
+        ...(hdTextureGeneration === undefined ? {} : { hdTextureGeneration }),
+        ...(options.refinedModels === true ? { refinedModelGeneration: REFINED_MODEL_VERSION } : {}) })); // 04.11 (7.62)
       return;
     }
 
@@ -1452,7 +1457,12 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
         return;
       }
       const namespace = visualModelCacheNamespace(modelPath);
-      const hash = createHash("sha1").update(`${namespace}\0${modelPath.toLowerCase()}`).digest("hex");
+      // 04.11 (7.62): the model's refined copy when asked for by the current version (RefinedModelRoute.ts). The
+      // animations stay on the plain name: the same clips, and the copy publishes no sidecar.
+      const refined = visualModel && group === null && options.refinedModels === true
+        && url.searchParams.get(REFINED_MODEL_PARAM) === REFINED_MODEL_VERSION && isRefinedModelPath(modelPath);
+      const hash = refined ? refinedModelFileHash(namespace, modelPath)
+        : createHash("sha1").update(`${namespace}\0${modelPath.toLowerCase()}`).digest("hex");
       const suffix = group !== null ? `.g${group.padStart(3, "0")}` : visualModel ? "" : ".anim";
       // 12.10 6.25: the doodad list is JSON beside the artifact; an artifact published before it
       // existed lacks it, and the missing file rebuilds the whole model like any other part.

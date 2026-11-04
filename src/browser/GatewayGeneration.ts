@@ -35,11 +35,14 @@ interface GenerationState {
   metadata: string | undefined;
   /** 23.10 (7.48): the gateway's HD texture generation (gateway/HdTextures.ts), absent when it serves none. */
   hd: string | undefined;
+  /** 04.11 (7.62): the generation of the refined models the gateway serves (src/world/RefinedModels.ts), absent when it serves none. */
+  refined: string | undefined;
 }
 
 const state: GenerationState = {
   origin: undefined, generation: undefined, bypass: undefined, first: "", next: "", visual: undefined, metadata: undefined,
   hd: undefined, // 23.10 (7.48)
+  refined: undefined, // 04.11 (7.62)
 };
 
 /** What the gateway may put in `cacheGeneration` (CachePolicy.ts `servedIdentity`: 20 hex since 25.10 serve S2). */
@@ -83,6 +86,7 @@ export function noteGatewayCacheGeneration(origin: string, value: unknown): bool
     state.visual = undefined;
     state.metadata = undefined;
     state.hd = undefined; // 23.10 (7.48)
+    state.refined = undefined; // 04.11 (7.62)
   }
   state.origin = normalised;
   state.generation = generation;
@@ -121,22 +125,33 @@ export function withGeneration(url: string): string {
  * (`visualGeneration`, `metadataGeneration`); absent or malformed (an older gateway) clears each. Call after
  * `noteGatewayCacheGeneration` for the same answer. Returns whether either changed.
  */
-export function noteGatewayAssetGenerations(origin: string, visual: unknown, metadata: unknown, hd?: unknown): boolean {
+export function noteGatewayAssetGenerations(origin: string, visual: unknown, metadata: unknown, hd?: unknown, refined?: unknown): boolean {
   const normalised = normaliseOrigin(origin);
   const nextVisual = normalised !== undefined && typeof visual === "string" && GENERATION_SHAPE.test(visual) ? visual : undefined;
   const nextMetadata = normalised !== undefined && typeof metadata === "string" && GENERATION_SHAPE.test(metadata)
     ? metadata : undefined;
   // 23.10 (7.48): `hdTextureGeneration`, absent while the gateway serves no HD set (or has them switched off).
   const nextHd = normalised !== undefined && typeof hd === "string" && GENERATION_SHAPE.test(hd) ? hd : undefined;
+  // 04.11 (7.62): `refinedModelGeneration`, absent from a gateway that serves no refined models (or an older one).
+  const nextRefined = normalised !== undefined && typeof refined === "string" && GENERATION_SHAPE.test(refined) ? refined : undefined;
   const changed = nextVisual !== state.visual || nextMetadata !== state.metadata || nextHd !== state.hd
-    || normalised !== state.origin;
+    || nextRefined !== state.refined || normalised !== state.origin;
   if (!changed) return false;
   state.origin = normalised;
   state.visual = nextVisual;
   state.metadata = nextMetadata;
   state.hd = nextHd;
+  state.refined = nextRefined;
   revision++;
   return true;
+}
+
+/**
+ * 04.11 (7.62): `url` with `refined=<refinedModelGeneration>` when it is a URL of the gateway that published one; the
+ * gateway then answers with the model's refined copy (src/world/RefinedModels.ts).
+ */
+export function withRefinedModelGeneration(url: string): string {
+  return appendParam(url, "refined", state.refined);
 }
 
 /** 23.10 (7.48): the HD texture generation the gateway last published, if any (HdEffectTextures.ts). */
@@ -229,6 +244,8 @@ export interface GatewayGenerationPush {
   readonly metadata?: string | undefined;
   /** 23.10 (7.48): absent from an older page's push. */
   readonly hd?: string | undefined;
+  /** 04.11 (7.62): absent from an older page's push. */
+  readonly refined?: string | undefined;
 }
 
 let revision = 0;
@@ -238,7 +255,7 @@ let lastPush: GatewayGenerationPush | undefined;
 export function gatewayGenerationPush(): GatewayGenerationPush {
   if (lastPush === undefined || lastPush.revision !== revision) {
     lastPush = Object.freeze({ revision, origin: state.origin, generation: state.generation, bypass: state.bypass,
-      visual: state.visual, metadata: state.metadata, hd: state.hd }); // 22.10 (6.26), 23.10 (7.48): hd
+      visual: state.visual, metadata: state.metadata, hd: state.hd, refined: state.refined }); // 22.10 (6.26), 23.10 (7.48): hd, 04.11 (7.62)
   }
   return lastPush;
 }
@@ -251,6 +268,7 @@ export function applyGatewayGenerationPush(push: GatewayGenerationPush): void {
   state.visual = push.visual; // 22.10 (6.26)
   state.metadata = push.metadata;
   state.hd = push.hd; // 23.10 (7.48)
+  state.refined = push.refined; // 04.11 (7.62)
   rebuildQuery();
 }
 
@@ -262,5 +280,6 @@ export function resetGatewayGeneration(): void {
   state.visual = undefined; // 22.10 (6.26)
   state.metadata = undefined;
   state.hd = undefined; // 23.10 (7.48)
+  state.refined = undefined; // 04.11 (7.62)
   rebuild();
 }

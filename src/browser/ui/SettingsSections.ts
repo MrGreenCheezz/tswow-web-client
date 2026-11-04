@@ -55,6 +55,7 @@ export const SETTING_SECTIONS: Readonly<Partial<Record<SettingGroup, readonly Se
         "reliefStrength", // 24.10 (7.47)
         "experimentalNeuralRelief", // 25.10 (7.47): the source of all three
         "experimentalSharpWorldTextures", // 23.10 (7.48)
+        "experimentalSharpUnitTextures", "experimentalRefinedModels", // 04.11 (7.62)
       ]),
     }),
     Object.freeze({

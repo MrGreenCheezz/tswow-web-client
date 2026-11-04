@@ -106,7 +106,11 @@ test("the world set: ground without _s masks, buildings, WMO second textures and
     "world\\": ["world\\azeroth\\elwynn\\tree.m2", "world\\azeroth\\elwynn\\tree.skin", "world\\minimaps\\x.m2",
       "world\\wmo\\stormwind\\stormwind.wmo"],
     "environments\\": ["environments\\stars\\sky.m2"],
-    "creature\\": ["creature\\wolf\\wolf.m2"],
+    // 04.11 (7.62): a skin no model names, a texture one does, an item model's; the pieces on a body and characters stay out.
+    "creature\\": ["creature\\wolf\\wolf.m2", "creature\\wolf\\wolfskin.blp"],
+    "item\\objectcomponents\\": ["item\\objectcomponents\\weapon\\sword.blp"],
+    "item\\texturecomponents\\": ["item\\texturecomponents\\armupper\\robe.blp"],
+    "character\\": ["character\\human\\male\\skin.blp"],
   };
   const read = [];
   const archives = {
@@ -119,15 +123,26 @@ test("the world set: ground without _s masks, buildings, WMO second textures and
   let report;
   const entries = await worldSet(archives, (value) => { report = value; });
   assert.deepEqual(entries.map((entry) => entry.path), [
-    "dungeons\\textures\\wall.blp", "environments\\env.blp", "environments\\stars\\clouds.blp", "tileset\\elwynn\\grass.blp",
+    "creature\\wolf\\fur.blp", "creature\\wolf\\wolfskin.blp",
+    "dungeons\\textures\\wall.blp", "environments\\env.blp", "environments\\stars\\clouds.blp",
+    "item\\objectcomponents\\weapon\\sword.blp", "tileset\\elwynn\\grass.blp",
     "world\\azeroth\\elwynn\\bark.blp", "world\\azeroth\\elwynn\\leaf.blp",
   ]);
   const byPath = Object.fromEntries(entries.map((entry) => [entry.path, entry]));
   assert.equal(byPath["dungeons\\textures\\wall.blp"].wrap, true, "a building texture a doodad also uses stays wrapped");
   assert.equal(byPath["world\\azeroth\\elwynn\\bark.blp"].wrap, true, "the model's wrap flags");
   assert.equal(byPath["world\\azeroth\\elwynn\\leaf.blp"].wrap, false, "a clamped doodad texture is padded by clamping");
-  assert.ok(!read.includes("creature\\wolf\\wolf.m2") && !read.includes("world\\minimaps\\x.m2"), "only scenery models are read");
-  assert.deepEqual(report, { ground: 1, roots: 1, wmoTextures: 1, secondTextures: 1, models: 2, modelTextures: 3 });
+  assert.equal(byPath["creature\\wolf\\wolfskin.blp"].wrap, false, "a skin no model names is cut as an atlas");
+  assert.ok(!read.includes("world\\minimaps\\x.m2"), "the minimap models are not read");
+  assert.deepEqual(report, { ground: 1, roots: 1, wmoTextures: 1, secondTextures: 1, models: 2, modelTextures: 3, units: 3 });
+});
+
+test("04.11 (7.62): creature and item-model art only up to 256 px", () => {
+  assert.equal(SCALE_POLICY.world(256, 256, undefined, "creature\\wolf\\wolfskin.blp"), 2);
+  assert.equal(SCALE_POLICY.world(256, 128, undefined, "item\\objectcomponents\\weapon\\sword.blp"), 2);
+  assert.equal(SCALE_POLICY.world(512, 512, undefined, "creature\\wolf\\wolfskin.blp"), 1, "a 512 px skin is HD from the patches");
+  assert.equal(SCALE_POLICY.world(512, 256, undefined, "item\\objectcomponents\\weapon\\sword.blp"), 1);
+  assert.equal(SCALE_POLICY.world(512, 512, undefined, "world\\x.blp"), 2, "the scenery's limit is its own");
 });
 
 test("×2 up to 512 a side (never past 1024), the ground only up to 256; compressed bookkeeping per kind", () => {

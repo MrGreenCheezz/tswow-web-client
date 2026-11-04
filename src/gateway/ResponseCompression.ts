@@ -72,13 +72,17 @@ export function chooseEncoding(header: string | string[] | undefined): ContentEn
   return undefined;
 }
 
-/** Whether answers of this type are worth trying: text, JSON, XML, fonts, and opaque binaries (tiles, models). */
+/**
+ * Whether answers of this type are worth trying: text, JSON, XML, fonts, and opaque binaries (tiles, models).
+ * 04.11 (7.62): and an HD texture's BC7: gzip takes it to 69 %, brotli to 67 % (150 samples of the world set).
+ */
 export function compressibleType(contentType: string | undefined): boolean {
   if (contentType === undefined) return false;
   const type = contentType.split(";", 1)[0]!.trim().toLowerCase();
   return type.startsWith("text/") || type === "application/json" || type === "application/javascript"
     || type === "application/xml" || type === "image/svg+xml" || type === "application/octet-stream"
-    || type === "application/wasm" || type === "font/ttf" || type === "font/otf";
+    || type === "application/wasm" || type === "font/ttf" || type === "font/otf"
+    || type === "application/x-webclient-hd-texture";
 }
 
 /** Marks a body that did not shrink enough: the next request for it is sent as it is without trying. */

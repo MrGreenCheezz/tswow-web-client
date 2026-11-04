@@ -46,6 +46,7 @@ export const RENDER_WORKER_COMMANDS: Readonly<Record<ClientRendererCommand, Rend
   setCameraLens: "setting", // 26.10 (11.02)
   setHdEffectTextures: "setting", // 23.10 (7.48)
   setHdWorldTextures: "setting", // 23.10 (7.48 step 2)
+  setHdUnitTextures: "setting", setRefinedModels: "setting", // 04.11 (7.62)
   setFullscreenGlow: "setting", setGodRays: "setting", setGodRayStrength: "setting", setCinematicProfile: "setting",
   setCinematicStrength: "setting", setAtmosphereEffects: "setting", setEnvironmentDetail: "setting",
   setGroundCover: "setting", setWeather: "setting", setIndoors: "setting", setCameraWmoSurface: "setting", updateLighting: "setting",

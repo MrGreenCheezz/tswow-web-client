@@ -30,6 +30,7 @@
 // 12.10 6.24: `visual-v24` adds the key bone table to WVE1 (`WvmModel.keyBones`).
 
 import { withVisualGeneration } from "./GatewayGeneration.js"; // 22.10 (6.26)
+import { withRefinedModel } from "./RefinedModels.js"; // 04.11 (7.62)
 import { withHdEffectTexture } from "./HdEffectTextures.js"; // 23.10 (7.48)
 import { readChannelKeys, steppedKeyCount } from "./WvaChannelKeys.js"; // 05.10-A7a-F2
 
@@ -1420,8 +1421,9 @@ export function textureUrl(baseUrl: string, mpqPath: string): string {
 export function visualModelUrl(baseUrl: string, mpqPath: string, group?: number): string {
   const path = mpqPath.replaceAll("/", "\\");
   const groupQuery = group === undefined ? "" : `&group=${group}`;
-  return withVisualGeneration( // 22.10 (6.26)
-    `${baseUrl}/visual/model?path=${encodeURIComponent(path)}${groupQuery}&v=${VISUAL_MODEL_ROUTE_VERSION}`);
+  // 04.11 (7.62): + `refined=` while «Сглаженные модели» is on, for a model that has a refined copy (RefinedModels.ts).
+  return withRefinedModel(withVisualGeneration( // 22.10 (6.26)
+    `${baseUrl}/visual/model?path=${encodeURIComponent(path)}${groupQuery}&v=${VISUAL_MODEL_ROUTE_VERSION}`), path);
 }
 
 /** Versioned URL for the held-back animation sidecar paired with a visual model. */

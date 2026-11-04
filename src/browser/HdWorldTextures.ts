@@ -61,6 +61,29 @@ export function withHdWorldTexture(url: string): string {
 export const HD_MODEL_TEXTURE_PREFIXES: readonly string[] = Object.freeze(["world\\", "dungeons\\", "environments\\"]);
 const HD_MODEL_TEXTURE_EXCLUDED: readonly string[] = Object.freeze(["world\\minimaps\\"]);
 
+/**
+ * 04.11 (7.62): «Чёткие текстуры существ и предметов» — creature skins and item models' textures up to 256 px, which
+ * the world set holds as well. A switch of their own, because this one is in the enhanced preset and the world's is
+ * not. Equal to `UNIT_TEXTURE_PREFIXES` in tools/hd-texture-set.mjs (a test holds them so). A character's body is
+ * composed from its pieces on a canvas and never asks.
+ */
+export const HD_UNIT_TEXTURE_PREFIXES: readonly string[] = Object.freeze(["creature\\", "item\\objectcomponents\\"]);
+
+let unitsWanted = false;
+let unitsSupported = false;
+
+/** This realm's setting and whether its GL context can draw BC7 (WorldRenderer3D.setHdUnitTextures). */
+export function setHdUnitTexturesEnabled(setting: boolean, bptc: boolean): void {
+  unitsWanted = setting;
+  unitsSupported = bptc;
+}
+
+/** 04.11 (7.62): whether a texture path is creature or item-model art. */
+export function isHdUnitTexturePath(path: string): boolean {
+  const key = path.replaceAll("/", "\\").toLowerCase();
+  return key.endsWith(".blp") && HD_UNIT_TEXTURE_PREFIXES.some((prefix) => key.startsWith(prefix));
+}
+
 /** 24.10 (7.48 step 3): whether a texture path is a scenery model's (one the world set may hold). */
 export function isHdModelTexturePath(path: string): boolean {
   const key = path.replaceAll("/", "\\").toLowerCase();
@@ -84,10 +107,19 @@ export function isHdModelTextureUrl(url: string): boolean {
  * are active — applied only where the texture goes through `ModelTextureLoader`/`ModelImageCache`, which take the
  * gateway's BC7 container (model builds, combiner second stages, emitters, the warm-up of the same URLs, WMO env
  * maps). Relief maps keep deriving from the URL without `hd=`. Every other URL is returned as it is.
+ * 04.11 (7.62): a creature's or an item model's texture likewise, under its own switch.
  */
 export function withHdModelTexture(url: string): string {
-  if (!hdWorldTexturesActive() || !isHdModelTextureUrl(url)) return url;
-  return withHdTextureGeneration(url);
+  if (isHdModelTextureUrl(url)) return hdWorldTexturesActive() ? withHdTextureGeneration(url) : url;
+  return unitsWanted && unitsSupported && isHdUnitTextureUrl(url) ? withHdTextureGeneration(url) : url;
+}
+
+/** 04.11 (7.62): whether a URL is the gateway's `/texture?path=…` for creature or item-model art. */
+function isHdUnitTextureUrl(url: string): boolean {
+  const query = TEXTURE_ROUTE.exec(url)?.[1];
+  if (query === undefined) return false;
+  const path = new URLSearchParams(query).get("path");
+  return path !== null && isHdUnitTexturePath(path);
 }
 
 /** Whether a texture URL asked for an HD copy (its answer may be a `WHT1` container rather than a PNG). */

@@ -99,8 +99,9 @@ import {
 } from "./MissileSequence.js"; // 6.31 (26.10)
 import { hdEffectTexturesEnabled, setHdEffectTexturesEnabled } from "./HdEffectTextures.js"; // 23.10 (7.48)
 import {
-  HD_WORLD_TEXTURE_EXTENSION, hdWorldTexturesActive, setHdWorldTexturesEnabled, withHdModelTexture, withHdWorldTexture,
+  HD_WORLD_TEXTURE_EXTENSION, hdWorldTexturesActive, setHdUnitTexturesEnabled, setHdWorldTexturesEnabled, withHdModelTexture, withHdWorldTexture,
 } from "./HdWorldTextures.js"; // 23.10 (7.48)
+import { setRefinedModelsEnabled } from "./RefinedModels.js"; // 04.11 (7.62)
 import { fixtureLightSource } from "./FixtureLightSources.js"; // 06.10-render-fix
 import { sampleWmoLight, wmoOutdoorLightPositions, wmoOutdoorLights } from "./WmoFixtureLights.js"; // 22.10 (7.36)
 import { LOCAL_LIGHT_FOCUS_AHEAD, WMO_LIGHT_RANK_SCALE } from "./CinematicLights.js"; // 22.10 (7.36)
@@ -10277,6 +10278,19 @@ export class WorldRenderer3D {
     this.#hdWorldTerrainReload = true;
     this.#rebuildWmoPlacements();
     this.#rebuildHdSceneryModels(); // 24.10 (7.48 step 3)
+  }
+
+  /**
+   * 04.11 (7.62): «Чёткие текстуры существ и предметов» on or off (HdWorldTextures.ts), only where this context draws
+   * BC7. Units already built keep what they were built with, so a change applies from the next page load.
+   */
+  setHdUnitTextures(enabled: boolean): void {
+    setHdUnitTexturesEnabled(enabled, enabled && this.#renderer.extensions.has(HD_WORLD_TEXTURE_EXTENSION));
+  }
+
+  /** 04.11 (7.62): «Сглаженные модели» on or off (RefinedModels.ts): applies to models not yet asked for. */
+  setRefinedModels(enabled: boolean): void {
+    setRefinedModelsEnabled(enabled);
   }
 
   /**
