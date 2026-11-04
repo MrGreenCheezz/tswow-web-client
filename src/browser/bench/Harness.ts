@@ -42,6 +42,8 @@ interface SpellStripSpec {
    * or a portal, to compare emitters outside spells on the same clock and camera (6.27 review).
    */
   model?: { path: string; dx: number; dy: number; scale?: number };
+  /** 04.11: more of them, stood at once (`--model` repeated), to compare a row of refined models in one shot. */
+  models?: ReadonlyArray<{ path: string; dx: number; dy: number; scale?: number }>;
   /**
    * 25.10 (6.27): the spell is cast from a point `dx`/`dy` yards from the player (1.5 yards up, no caster unit)
    * at the player, so a missile flies into the shot and lands on the player's chest.
@@ -686,10 +688,10 @@ host.__bench = {
       const kit = rows.find((row) => row.id === spec.kit)?.kit;
       if (!kit) throw new Error(`Kit ${spec.kit} resolves to nothing`);
       plan = planSpellVisualKitEvent(kit, { guid: 1n, point }, startAt);
-    } else if (spec.model !== undefined) {
-      const { path, dx, dy, scale } = spec.model;
-      plan = { instances: [{ path, scale: scale ?? 1, attachment: -1, position: { x: point.x + dx, y: point.y + dy, z: point.z },
-        startedAt: startAt, endsAt: startAt + 600_000, modelPlayback: 'hold' as const }], animations: [], sounds: [] };
+    } else if (spec.model !== undefined || spec.models !== undefined) {
+      plan = { instances: (spec.models ?? [spec.model!]).map(({ path, dx, dy, scale }) => ({
+        path, scale: scale ?? 1, attachment: -1, position: { x: point.x + dx, y: point.y + dy, z: point.z },
+        startedAt: startAt, endsAt: startAt + 600_000, modelPlayback: 'hold' as const })), animations: [], sounds: [] };
     } else throw new Error('spellStrip needs spell, kit or model');
     worldRenderer.playSpellVisual(plan);
     let frame = 1;
@@ -752,7 +754,7 @@ host.__bench = {
     }
     return sides;
   },
-  shadowStats: () => world ? { cascades: world.shadowCascadeStats, calls: renderer.info.render.calls,
+  shadowStats: () => world ? { cascades: world.shadowCascadeStats, calls: renderer.info.render.calls, triangles: renderer.info.render.triangles,
     // 22.10 (7.39): the fog range the still was drawn with, so a distance change reads in yards.
     fog: world.fogRange } : null,
   state: () => ({ scenario, fraction: lastFraction, frame: lastFrame, readiness: readiness() }),

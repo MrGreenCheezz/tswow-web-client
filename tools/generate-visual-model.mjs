@@ -54,8 +54,11 @@ export function visualModelDirectory() {
  * ASCII-only where `validAssetPath` is Unicode — measured, that separates none of the client's
  * 33,512 model paths, and every module path written in the author's own alphabet, which is
  * precisely the case Д6 widened the route to accept.
+ *
+ * 04.11: `transformModel(model, modelPath, skeleton)` may hand back a refined copy of an M2's mesh
+ * (tools/polish-models.mjs); nothing else is published differently.
  */
-export async function publishVisualModel(requestedPath, hash, archives) {
+export async function publishVisualModel(requestedPath, hash, archives, { transformModel } = {}) {
   const modelPath = requestedPath.replaceAll("/", "\\");
   if (!validAssetPath(modelPath, { extensions: ["m2", "wmo"] }) || !/^[0-9a-f]{40}$/.test(hash)) {
     throw new Error("Usage: node tools/generate-visual-model.mjs <m2-or-wmo-path> <sha1>");
@@ -141,8 +144,9 @@ export async function publishVisualModel(requestedPath, hash, archives) {
     if (current && isSpellModelPath(modelPath) && skeleton) {
       for (const clip of skeleton.clips) if (Number.isFinite(clip.m2Flags)) clip.sequenceFlags = clip.m2Flags;
     }
+    const published = transformModel ? await transformModel(model, modelPath, skeleton) : model; // 04.11
     await writeFileAtomic(join(destination, `${hash}.bin`),
-      encodeWvm9(model, shippedSkeleton, animations.map((animation) => animation.animationId), effects,
+      encodeWvm9(published, shippedSkeleton, animations.map((animation) => animation.animationId), effects,
         { extensions }));
     // Always written, even empty: a model with nothing held back still has to answer the request
     // rather than send the browser back for it on every frame.

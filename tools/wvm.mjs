@@ -128,6 +128,8 @@ export const WVM9_CAMERA_SIZE = 36;
  * gateway that is still running the `visual-v21` namespace serving its old readers unchanged.
  */
 export const WVM9_EXTENDED = 0x08;
+/** 04.11: the normals' lengths hold baked occlusion, see tools/model-polish.mjs. A reader that ignores it normalises them. */
+export const WVM9_NORMALS_CARRY_AO = 0x10;
 export const WVE1_MAGIC = "WVE1";
 export const WVE1_HEADER_SIZE = 12;
 /** i16 second-unit texture transform, u16 reserved. A reader steps by the block's own size word. */
@@ -276,7 +278,8 @@ export function encodeWvm9(model, skeleton, animations = undefined, effects = un
   data.writeUInt32LE(vertexCount, 4);
   data.writeUInt32LE(model.indices.length, 8);
   data.writeUInt8(indexBytes, 12);
-  data.writeUInt8((skinned ? WVM9_SKINNED : 0) | cameraFlag | (extensions ? WVM9_EXTENDED : 0), 13); // 05.10-A7a-F2
+  data.writeUInt8((skinned ? WVM9_SKINNED : 0) | cameraFlag | (extensions ? WVM9_EXTENDED : 0)
+    | (model.normalsCarryAo === true ? WVM9_NORMALS_CARRY_AO : 0), 13); // 05.10-A7a-F2; 04.11
   data.writeUInt16LE(model.submeshes.length, 14);
   data.writeUInt16LE(model.batches.length, 16);
   data.writeUInt16LE(model.textures.length, 18);

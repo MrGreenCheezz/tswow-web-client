@@ -455,6 +455,8 @@ export interface WvmModel {
    * before `visual-v24` and on a model whose WVE1 block carried no table.
    */
   keyBones?: Int16Array;
+  /** 04.11: the normals' lengths hold baked occlusion (`tools/model-polish.mjs`, `ModelVertexAo.ts`). */
+  normalsCarryAo?: boolean;
 }
 
 const HEADER_SIZE = 72;
@@ -467,6 +469,8 @@ const PORTRAIT_CAMERA = 0x02;
 const SCENE_CAMERA = 0x04;
 /** 05.10-A7a-F2: the body ends with the "WVE1" block (tools/wvm.mjs `encodeExtensions`). */
 const EXTENDED = 0x08;
+/** 04.11: `tools/wvm.mjs` `WVM9_NORMALS_CARRY_AO`. */
+const NORMALS_CARRY_AO = 0x10;
 const WVE1_HEADER_SIZE = 12;
 const WVE1_LIGHT_FIXED_SIZE = 20;
 const WVE1_LIGHT_TRACK_COMPONENTS = [3, 1, 3, 1, 1, 1, 1] as const;
@@ -747,6 +751,7 @@ export function decodeWvm9(data: ArrayBuffer): WvmModel {
   }
   // 05.10-A7a-F2: the preflight has walked the whole block already.
   if (extended) readExtensions(view, offset + (hasCamera ? CAMERA_SIZE : 0), model);
+  if ((view.getUint8(13) & NORMALS_CARRY_AO) !== 0) model.normalsCarryAo = true; // 04.11
   if (boneIndices) model.boneIndices = boneIndices;
   if (boneWeights) model.boneWeights = boneWeights;
   if (skeletonOffset > 0) {

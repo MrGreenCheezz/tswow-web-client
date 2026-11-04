@@ -115,6 +115,8 @@ async function main() {
   if (scenario === 'city') {
     config.city = JSON.parse(await readFile('bench/city.json', 'utf8'));
     config.city.population = Number(value('--population', 12));
+    // 04.11: `--city-displays a,b,c` stands those creature displays round the player instead of the city's own.
+    if (value('--city-displays')) config.city.displays = value('--city-displays').split(',').map(Number);
     // 23.10 (7.46): `--city-at x/y/z` stands the city crowd and player elsewhere on the city floor.
     const cityAt = value('--city-at');
     if (cityAt) {
@@ -169,6 +171,11 @@ async function main() {
   const neuralDirectory = neuralIndex < 0 ? undefined
     : resolve(args[neuralIndex + 1] && !args[neuralIndex + 1].startsWith('--') ? args[neuralIndex + 1] : '.runtime/neural-relief');
   let neuralServed = 0;
+  // 04.11: `--model-variants <dir>` answers `/visual/model` from tools/polish-models.mjs's output where it holds the
+  // model (`<dir>/<visualModelHash(path)>.bin`, as the gateway names it), so a refined mesh needs no gateway restart.
+  const variantModelDir = value('--model-variants') ? resolve(value('--model-variants')) : undefined;
+  const { visualModelHash } = variantModelDir ? await import('../tools/visual-model-key.mjs') : {};
+  let variantsServed = 0;
   const hdIndex = args.indexOf('--hd-textures');
   const hdDirectory = hdIndex < 0 ? undefined
     : resolve(args[hdIndex + 1] && !args[hdIndex + 1].startsWith('--') ? args[hdIndex + 1] : '.runtime/hd-textures');
@@ -229,10 +236,11 @@ async function main() {
   const spellArg = value('--spell');
   const kitArg = value('--kit');
   // 6.27 review: `--model <path>@dx,dy` stands any M2 beside the player for the strip.
-  const modelArg = value('--model');
-  const modelSpec = modelArg ? (() => { const [path, at = '-4,2'] = modelArg.split('@'); const [dx, dy] = at.split(',').map(Number); return { path, dx, dy }; })() : undefined;
+  // 04.11: `--model` may repeat, and `<path>@dx,dy,scale` scales a small one up for the shot.
+  const modelSpecs = values('--model').map((modelArg) => { const [path, at = '-4,2'] = modelArg.split('@'); const [dx, dy, scale] = at.split(',').map(Number); return { path, dx, dy, ...(scale ? { scale } : {}) }; });
+  const modelSpec = modelSpecs[0];
   const strip = spellArg !== undefined || kitArg !== undefined || modelSpec ? {
-    ...(spellArg !== undefined ? { spell: Number(spellArg) } : kitArg !== undefined ? { kit: Number(kitArg) } : { model: modelSpec }),
+    ...(spellArg !== undefined ? { spell: Number(spellArg) } : kitArg !== undefined ? { kit: Number(kitArg) } : modelSpecs.length > 1 ? { models: modelSpecs, model: modelSpec } : { model: modelSpec }),
     shotsMs: value('--shots', '0,150,300,500,800,1200,1800').split(',').map(Number),
     // 25.10 (6.27): `--from dx,dy` casts from beside the player at the player (a missile flies in); `--phase
     // cast|state` plays the precast for `--cast-ms` then the GO, or the aura's state kit.
@@ -420,6 +428,12 @@ async function main() {
         if (bytes) neuralServed++;
         if (bytes) res.writeHead(200, { 'content-type': 'application/octet-stream', 'cache-control': 'no-store' }).end(bytes);
         else res.writeHead(404, { 'cache-control': 'no-store' }).end();
+      } else if (variantModelDir && url.pathname === '/visual/model' && !url.searchParams.has('group')
+        && await access(resolve(variantModelDir, `${visualModelHash(url.searchParams.get('path') ?? '')}.bin`)).then(() => true, () => false)) {
+        // 04.11: the refined mesh (see `--model-variants`).
+        variantsServed++;
+        res.writeHead(200, { 'content-type': 'application/octet-stream', 'cache-control': 'no-store' })
+          .end(await readFile(resolve(variantModelDir, `${visualModelHash(url.searchParams.get('path') ?? '')}.bin`)));
       } else if (allowed.test(key)) {
         const { entry, bytes } = await asset(key);
         res.writeHead(entry.status, { 'content-type': entry.type, 'cache-control': 'public,max-age=31536000,immutable' }).end(bytes);
@@ -574,6 +588,7 @@ async function main() {
     if (litModels) console.log(`Lit-model index: served ${litModels.served} time(s) from ${litModels.file}`); // 25.10 (7.50)
     if (lampTables) console.log(`Lamp tables: ${lampTables.built.size} built (${lampTables.ms.toFixed(0)} ms), ${lampTables.served} served`); // 24.10 (7.50)
     if (neuralDirectory) console.log(`Neural relief maps served from ${neuralDirectory}: ${neuralServed}`); // 25.10 (7.47)
+    if (variantModelDir) console.log(`Refined models served from ${variantModelDir}: ${variantsServed}`); // 04.11
     if (hdDirectory) console.log(`HD textures served from ${hdDirectory}: ${hdServed} (world, compressed: ${hdWorldServed}, ${(hdWorldBytes.hd / 1048576).toFixed(1)} MB in place of ${(hdWorldBytes.original / 1048576).toFixed(1)} MB)`); // 23.10 (7.48)
     await writeFile(resolve(out, 'lookdev.json'), JSON.stringify({ scenario, config, frames, written, cacheMisses, hdServed, failures }, null, 2));
     if (failures.length) console.error(`Asset failures:\n${failures.join('\n')}`);

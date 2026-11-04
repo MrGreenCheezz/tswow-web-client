@@ -39,6 +39,7 @@ import {
 } from "./SlotMaterial.js"; // P2-03a
 import type { SharedModelBuffers } from "./SharedModelBuffers.js"; // P2-03b
 import { installM2ReliefShape, installM2ReliefSun, m2BatchReliefRejection, type M2ReliefBuild } from "./M2Relief.js"; // 23.10 (7.47 stage 3)
+import { installModelVertexAo } from "./ModelVertexAo.js"; // 04.11
 
 /**
  * Which geoset of each family to draw.
@@ -1511,6 +1512,7 @@ function buildMaterial(
   const relief = options.relief !== undefined && !slotShaderStep && !supplied && path !== "" && material.map !== null
     && !transform && !secondUvSet && steps.length === 0 && m2BatchReliefRejection(model, batch) === undefined
     && installM2ReliefShape(material, textureUrl(options.baseUrl, path), slot?.flags ?? 0);
+  if (model.normalsCarryAo === true && material instanceof THREE.MeshStandardMaterial) installModelVertexAo(material); // 04.11
   // Installed last so Э1's second-layer/fog chain runs first. Unlit and additive batches retain
   // their authored flat path and never receive a sun merely because they share the same model.
   if (material instanceof THREE.MeshStandardMaterial && options.worldLight) {
