@@ -7,11 +7,9 @@ import test from "node:test";
 import * as THREE from "three";
 
 import { compressTexture } from "../tools/hd-texture-bc7.mjs";
-import { UNIT_TEXTURE_PREFIXES } from "../tools/hd-texture-set.mjs";
 import { noteGatewayAssetGenerations, resetGatewayGeneration } from "../dist/code/browser/GatewayGeneration.js";
 import {
-  HD_UNIT_TEXTURE_PREFIXES, isHdModelTexturePath, isHdModelTextureUrl, isHdUnitTexturePath, setHdUnitTexturesEnabled,
-  setHdWorldTexturesEnabled, withHdModelTexture,
+  isHdModelTexturePath, isHdModelTextureUrl, setHdWorldTexturesEnabled, withHdModelTexture,
 } from "../dist/code/browser/HdWorldTextures.js";
 import { setHdEffectTexturesEnabled } from "../dist/code/browser/HdEffectTextures.js";
 import { ModelTextureLoader } from "../dist/code/browser/TextureLoad.js";
@@ -56,34 +54,6 @@ test("only a scenery /texture URL gains hd=, only with the setting, BC7 and a ge
   assert.equal(isHdModelTexturePath("dungeons\\textures\\wall.blp"), true);
   noteGatewayAssetGenerations(BASE, undefined, undefined, undefined);
   assert.equal(withHdModelTexture(tree), tree, "the gateway stopped publishing a generation");
-}));
-
-test("04.11 (7.62): creature and item-model art asks under its own switch, a character's and a body piece's never", () => withGeneration(() => {
-  try {
-    assert.deepEqual([...HD_UNIT_TEXTURE_PREFIXES], UNIT_TEXTURE_PREFIXES, "the tool's folders");
-    const wolf = textureUrl(BASE, "Creature\\Wolf\\WolfSkinTimber.blp");
-    const sword = textureUrl(BASE, "Item\\ObjectComponents\\Weapon\\Sword_1H_Long_A_01.blp");
-    const tree = textureUrl(BASE, TREE);
-    assert.equal(withHdModelTexture(wolf), wolf, "off: byte-identical");
-    setHdUnitTexturesEnabled(true, false);
-    assert.equal(withHdModelTexture(wolf), wolf, "no EXT_texture_compression_bptc");
-    setHdUnitTexturesEnabled(true, true);
-    assert.equal(withHdModelTexture(wolf), `${wolf}&hd=${HG}`);
-    assert.equal(withHdModelTexture(sword), `${sword}&hd=${HG}`);
-    assert.equal(withHdModelTexture(tree), tree, "the scenery keeps its own switch");
-    for (const path of ["Character\\Human\\Male\\HumanMaleSkin00_00.blp", "Item\\TextureComponents\\ArmUpperTexture\\Robe.blp", "Spells\\Glow.blp"]) {
-      const url = textureUrl(BASE, path);
-      assert.equal(withHdModelTexture(url), url, path);
-    }
-    assert.equal(isHdUnitTexturePath("creature/wolf/wolf.blp"), true);
-    assert.equal(isHdUnitTexturePath("item\\texturecomponents\\x.blp"), false);
-    setHdUnitTexturesEnabled(false, false);
-    setHdWorldTexturesEnabled(true, true);
-    assert.equal(withHdModelTexture(wolf), wolf, "and the scenery's switch does not turn this one on");
-    assert.equal(withHdModelTexture(tree), `${tree}&hd=${HG}`);
-  } finally {
-    setHdUnitTexturesEnabled(false, false);
-  }
 }));
 
 const MODEL = (paths) => ({
@@ -139,11 +109,7 @@ test("a scenery /texture answer that is a container is a BC7 texture; an effect'
   const tree = `${textureUrl(BASE, TREE)}&hd=${HG}`;
   const effect = `${textureUrl(BASE, "Spells\\Glow.blp")}&hd=${HG}`;
   const plain = textureUrl(BASE, TREE);
-  // 04.11 (7.62): a creature's and an item model's, and a creature's the set does not hold (the original answered to hd=).
-  const skin = `${textureUrl(BASE, "Creature\\Wolf\\WolfSkinTimber.blp")}&hd=${HG}`;
-  const sword = `${textureUrl(BASE, "Item\\ObjectComponents\\Weapon\\Sword.blp")}&hd=${HG}`;
-  const bigSkin = `${textureUrl(BASE, "Creature\\Wolf\\WolfSkinLarge.blp")}&hd=${HG}`;
-  const bodies = { [tree]: container, [effect]: container, [plain]: "PLAIN", [skin]: container, [sword]: container, [bigSkin]: "PLAIN" };
+  const bodies = { [tree]: container, [effect]: container, [plain]: "PLAIN" };
   const saved = { fetch: globalThis.fetch, createImageBitmap: globalThis.createImageBitmap, ImageBitmap: globalThis.ImageBitmap };
   const decoded = [];
   globalThis.ImageBitmap = FakeImageBitmap;
@@ -160,19 +126,13 @@ test("a scenery /texture answer that is a container is a BC7 texture; an effect'
     const hd = loader.load(tree);
     const fx = loader.load(effect);
     const original = loader.load(plain);
-    const skinned = loader.load(skin);
-    const sharp = loader.load(sword);
-    const unheld = loader.load(bigSkin);
     await settle();
-    assert.equal(skinned.isCompressedTexture, true, "a creature's container is a BC7 texture, never handed to the image decoder");
-    assert.equal(sharp.isCompressedTexture, true, "and an item model's");
-    assert.equal(unheld.isCompressedTexture, false, "the original PNG answered to hd= is decoded as before");
     assert.equal(hd.isCompressedTexture, true);
     assert.equal(hd.format, THREE.RGBA_BPTC_Format);
     assert.deepEqual([hd.image.width, hd.image.height], [16, 16]);
     assert.equal(fx.isCompressedTexture, false, "an effect's hd= answer is the effects set's PNG: never read as a container");
     assert.equal(original.isCompressedTexture, false);
-    assert.deepEqual(decoded.sort((a, b) => a - b), [5, 5, container.length], "the effect, the plain URL and the unheld skin went through the decoder");
+    assert.deepEqual(decoded.sort((a, b) => a - b), [5, container.length], "the effect and the plain URL went through the decoder");
   } finally {
     for (const [name, value] of Object.entries(saved)) {
       if (value === undefined) delete globalThis[name];

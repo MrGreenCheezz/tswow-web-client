@@ -280,12 +280,6 @@ export const SETTING_DEFINITIONS: readonly SettingDefinition[] = [
     hint: "Текстуры земли, зданий, деревьев, предметов обстановки и неба, увеличенные нейросетью вдвое и сжатые для видеокарты: видеопамяти столько же, сколько у обычных. Нужен набор, собранный на сервере.",
   },
   {
-    // 04.11 (7.62): creature skins and item models' textures up to 256 px, from the same set (HdWorldTextures.ts).
-    id: "experimentalSharpUnitTextures", label: "Чёткие текстуры существ и предметов", group: "Эффекты", kind: "boolean",
-    fallback: false,
-    hint: "Текстуры существ и оружия, увеличенные нейросетью вдвое и сжатые для видеокарты: видеопамяти столько же, сколько у обычных, загружать больше. Нужен набор, собранный на сервере. Применится после перезагрузки страницы.",
-  },
-  {
     // 04.11 (7.62): the refined copies of world doodads and creatures (RefinedModels.ts, tools/model-refine.mjs).
     id: "experimentalRefinedModels", label: "Сглаженные модели", group: "Эффекты", kind: "boolean",
     fallback: false,

@@ -45,9 +45,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PNG } from "pngjs";
 import { decodeBlp, readBlpHeader } from "./blp.mjs";
-import {
-  effectsSet, uiSet, unitTexturePath, worldSet, GROUND_MAX_SOURCE, SET_NAMES, UNIT_MAX_SOURCE, WORLD_MAX_SOURCE,
-} from "./hd-texture-set.mjs";
+import { effectsSet, uiSet, worldSet, GROUND_MAX_SOURCE, SET_NAMES, WORLD_MAX_SOURCE } from "./hd-texture-set.mjs";
 import {
   assemble, buildWorkImages, dilateUnderAlpha, effectScale, fidelity, planLayout, ALPHA_SNAP, DILATE_ALPHA, FIDELITY_LIMIT,
 } from "./hd-texture-image.mjs";
@@ -101,14 +99,13 @@ export function hdTextureDirectory() {
  * How a set decides each texture's scale (`path` is the texture's key). `world`: ×2 — 23.10 for up to 256 px a side;
  * 24.10 (7.48 step 3) for up to 512 px (a result of at most 1024) except the ground, which stays at 256 px because its
  * HD layers live in the terrain's 512 array (a 512-px ground texture makes its tile a 512 tile, drawn from originals).
- * 04.11 (7.62): creature and item-model art up to 256 px (`UNIT_MAX_SOURCE`).
  */
 export const SCALE_POLICY = {
   effects: (width, height, maxSide = 512) => effectScale(width, height, maxSide),
   ui: (width, height, maxSide = 512) => effectScale(width, height, maxSide), // 3.63: ×4 to 128 px, ×2 at 256 px, none past that
   world: (width, height, maxSide = 1024, path = "") => {
     const side = Math.max(width, height);
-    const limit = path.startsWith("tileset\\") ? GROUND_MAX_SOURCE : unitTexturePath(path) ? UNIT_MAX_SOURCE : WORLD_MAX_SOURCE;
+    const limit = path.startsWith("tileset\\") ? GROUND_MAX_SOURCE : WORLD_MAX_SOURCE;
     return side <= limit && side * 2 <= maxSide ? 2 : 1;
   },
 };
@@ -347,8 +344,7 @@ async function main() {
       ? await effectsSet(archives, (report) => console.log(`${report.models} spell models, ${report.read} read, ${report.missing} not in the client`))
       : await worldSet(archives, (report) => console.log(`${report.ground} ground textures, ${report.roots} root WMOs, `
         + `${report.wmoTextures} more building textures, ${report.secondTextures} more WMO second textures, `
-        + `${report.models} scenery models with ${report.modelTextures} more textures, `
-        + `${report.units} creature and item textures`)); // 24.10 (7.48 step 3); 04.11 (7.62)
+        + `${report.models} scenery models with ${report.modelTextures} more textures`)); // 24.10 (7.48 step 3)
     const selected = options.only ? entries.filter((entry) => entry.path.includes(options.only)) : entries;
     const previous = readManifest(manifestFile);
     const manifest = { schema: MANIFEST_SCHEMA, set: options.set, model: options.model, pipeline: PIPELINE,

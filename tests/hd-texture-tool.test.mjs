@@ -157,7 +157,7 @@ test("the tool and the gateway name an HD file the same way; the browser asks fo
     assert.match(toolId(path), /^[0-9a-f]{40}$/);
   }
   assert.deepEqual([...HD_EFFECT_TEXTURE_PREFIXES], [...EFFECT_TEXTURE_PREFIXES]);
-  assert.equal(upscalable("creature\\golemharvest\\red_glow3.blp"), false, "no effect or scenery set takes creature art");
+  assert.equal(upscalable("creature\\golemharvest\\red_glow3.blp"), false, "creature art is never upscaled");
   assert.equal(upscalable("character\\human\\male\\humanmaleskin00_00.blp"), false);
   assert.equal(upscalable("spells\\holy_glow.blp"), true);
 });

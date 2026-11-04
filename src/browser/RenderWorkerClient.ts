@@ -173,7 +173,6 @@ export class RenderWorkerClient implements ClientRenderer {
   setCameraLens(...args: Args<"setCameraLens">): void { this.#send("setCameraLens", args); } // 26.10 (11.02)
   setHdEffectTextures(...args: Args<"setHdEffectTextures">): void { this.#send("setHdEffectTextures", args); } // 23.10 (7.48)
   setHdWorldTextures(...args: Args<"setHdWorldTextures">): void { this.#send("setHdWorldTextures", args); } // 23.10 (7.48 step 2)
-  setHdUnitTextures(...args: Args<"setHdUnitTextures">): void { this.#send("setHdUnitTextures", args); } // 04.11 (7.62)
   setRefinedModels(...args: Args<"setRefinedModels">): void { this.#send("setRefinedModels", args); } // 04.11 (7.62)
   setFullscreenGlow(...args: Args<"setFullscreenGlow">): void { this.#send("setFullscreenGlow", args); }
   setGodRays(...args: Args<"setGodRays">): void { this.#send("setGodRays", args); }

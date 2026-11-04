@@ -15,7 +15,7 @@ export const ENHANCED_PRESET_REVISION_SETTING = "enhancedPresetRevision";
 
 export const ENHANCED_PRESET_REVISIONS: readonly (Readonly<Record<string, boolean | number>>)[] = Object.freeze([
   Object.freeze({ experimentalLivingSpells: true }), // revision 1: 23.10 (6.27)
-  Object.freeze({ experimentalSharpUnitTextures: true, experimentalRefinedModels: true }), // revision 2: 04.11 (7.62)
+  Object.freeze({ experimentalRefinedModels: true }), // revision 2: 04.11 (7.62)
 ]);
 
 export const ENHANCED_PRESET_REVISION = ENHANCED_PRESET_REVISIONS.length;
