@@ -99,6 +99,22 @@ test("2.11: scenery emitters hang from its bones or its node, never from the wor
   assert.match(source, /if \(rendered\.skinned\) entry\.posed = rendered;\s+else entry\.visual = rendered\.visual \?\? rendered\.node;/);
 });
 
+test("6.40: a ring in the air stays flat; near the ground it still follows it", async () => {
+  const { buildSelectionRingGeometry, updateSelectionRing, SELECTION_RING_ALOFT } = await import("../dist/code/browser/WorldRenderer3D.js");
+  const geometry = buildSelectionRingGeometry();
+  const wavy = (x) => 100 + (x > 0 ? 1 : 0);
+  const heights = () => {
+    const position = geometry.getAttribute("position");
+    const out = new Set();
+    for (let index = 0; index < position.count; index++) if (position.getY(index) !== 0) out.add(position.getY(index).toFixed(1));
+    return out;
+  };
+  updateSelectionRing(geometry, { x: 0.5, y: 0, z: 100 }, 2, wavy);
+  assert.ok(heights().size > 1, "on the ground it lies on the ground");
+  updateSelectionRing(geometry, { x: 0.5, y: 0, z: 100 + SELECTION_RING_ALOFT + 1 }, 2, wavy);
+  assert.equal(heights().size, 1, "aloft it is flat");
+});
+
 test("the pose on the way: EnterAnimStart then EnterAnimLoop in, ExitAnimStart then ExitAnimLoop out, each a pose of its own", async () => {
   const { vehicleSeatTransitionPose, vehiclePassengerSeatPose, vehicleSeatTransition } = await import("../dist/code/browser/VehicleSeatPose.js");
   const row = {

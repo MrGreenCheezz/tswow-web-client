@@ -2276,6 +2276,8 @@ export const UNDERWATER_CROSSING_BAND = underwaterCrossingBand(WORLD_CAMERA_NEAR
 export { SELECTION_RING_SEGMENTS };
 /** How far up or down the ring is allowed to follow the ground before it stops trying. */
 export const SELECTION_RING_RELIEF = 1.5;
+/** 6.40: how high over the ground a unit's ring stops following it: a jump stays under it, a flight does not. */
+export const SELECTION_RING_ALOFT = 4;
 
 /**
  * The ring under a unit's feet: three concentric circles, the middle one opaque and the outer two
@@ -2335,7 +2337,9 @@ export function updateSelectionRing(
   const position = geometry.getAttribute("position") as THREE.BufferAttribute;
   const sampled = typeof ground === "function" ? undefined : ground; // 22.10 ARC-2 S2b
   const sampler = typeof ground === "function" ? ground : undefined;
-  const middle = sampled ? sampled.middle : sampler?.(centre.x, centre.y);
+  const under = sampled ? sampled.middle : sampler?.(centre.x, centre.y);
+  // 6.40: well above the ground the ring has no ground to lie on: following it under a flyer only made it shake.
+  const middle = under !== undefined && centre.z - under > SELECTION_RING_ALOFT ? undefined : under;
   for (let ring = 0; ring < SELECTION_RING_BANDS.length; ring++) {
     const reach = radius * SELECTION_RING_BANDS[ring]!;
     for (let step = 0; step <= segments; step++) {
