@@ -11,7 +11,8 @@ import {
 } from "../dist/code/browser/TerrainReliefDerive.js";
 import {
   TERRAIN_RELIEF_FADE_FAR, TERRAIN_RELIEF_FADE_NEAR, TERRAIN_RELIEF_MARKER, TERRAIN_RELIEF_MAX_STEPS,
-  TERRAIN_RELIEF_MIN_STEPS, setTerrainReliefWanted, setTerrainSplatRelief, terrainReliefActive, terrainReliefFade,
+  TERRAIN_RELIEF_MIN_STEPS, TERRAIN_RELIEF_UNSETTLED, setTerrainReliefWanted, setTerrainSplatRelief, terrainReliefActive,
+  terrainReliefBoundRevision, terrainReliefFade,
   terrainReliefSteps, terrainReliefWanted, terrainSplatReliefDrawing,
 } from "../dist/code/browser/TerrainReliefShader.js";
 import { TerrainSplatClient, applyTerrainSplat, setTerrainSplatMicroNormals } from "../dist/code/browser/TerrainSplat.js";
@@ -209,6 +210,18 @@ function terrainMaterial() {
   setTerrainSplatMicroNormals(material, true);
   return material;
 }
+
+test("04.11 (7.64): a tile first bound without its map while the leaf is on keeps asking the splat client", async () => {
+  const relief = new THREE.DataArrayTexture(new Uint8Array(8), 1, 1, 2);
+  assert.equal(terrainReliefBoundRevision(true, undefined, 7), TERRAIN_RELIEF_UNSETTLED, "no map yet: not settled");
+  assert.equal(terrainReliefBoundRevision(true, relief, 7), 7);
+  assert.equal(terrainReliefBoundRevision(false, undefined, 7), 7, "off: nothing to wait for");
+  assert.equal(TERRAIN_RELIEF_UNSETTLED < 0, true, "never a revision, which count up from 0");
+  // `#updateTerrainRelief` returns early on an equal revision, so the first bind is what decides it.
+  const renderer = await source("WorldRenderer3D.ts");
+  assert.match(renderer, /rendered\.reliefRevision = terrainReliefBoundRevision\(this\.#terrainReliefActive, rendered\.relief, this\.#terrainReliefRevision\);/);
+  assert.match(renderer, /if \(rendered\.reliefRevision === this\.#terrainReliefRevision \|\| !splatClient\) return;/);
+});
 
 test("relief program: off (or no relief array) wraps nothing — the exact program and key", () => {
   const baseline = terrainMaterial();

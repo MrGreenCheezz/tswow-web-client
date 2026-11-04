@@ -217,10 +217,13 @@ function setBound(material: THREE.Material, tracked: Tracked, active: boolean): 
     BINDINGS.set(material, created);
     material.onBeforeCompile = (shader, renderer) => {
       created.previousCompile.call(material, shader, renderer);
-      if (!created.active) return;
+      // 04.11 (7.64): in every compile, drawn or not. three gives a material a program it has compiled before without
+      // calling this hook, under the uniforms of its LAST compile: kept to the "on" compile, on → off → on bound the
+      // relief program to nothing (no map, no switch), and it read whatever those units held.
       shader.uniforms["wmoRelief"] = created.relief;
       shader.uniforms["wmoReliefOn"] = created.on;
       shader.uniforms[RELIEF_STRENGTH_UNIFORM] = RELIEF_STRENGTH; // 24.10 (7.47): «Сила объёма», one value for every program
+      if (!created.active) return;
       injectWmoRelief(shader, created.variant);
     };
     material.customProgramCacheKey = () => created.active

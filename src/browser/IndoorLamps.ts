@@ -66,8 +66,7 @@ const LAMP_UNIFORMS = [
 ] as const satisfies readonly (keyof WorldLightUniforms)[];
 
 /** The declarations and functions the term needs, ahead of a fragment shader. */
-function declareLamps(shader: Shader, uniforms: WorldLightUniforms): void {
-  for (const name of LAMP_UNIFORMS) shader.uniforms[name] = uniforms[name];
+function declareLamps(shader: Shader): void {
   shader.fragmentShader = `${WORLD_LIGHT_PARS}\n${LIGHT_POOL_LAMP_GLSL}\n${LIGHT_POOL_DARKNESS_GLSL}\n${LIGHT_LAMPS_GLSL}\n${shader.fragmentShader}`;
 }
 
@@ -82,8 +81,11 @@ function wrap(material: THREE.Material, uniforms: WorldLightUniforms, inject: (s
   ENABLED.set(material, () => current.enabled);
   material.onBeforeCompile = (shader, renderer) => {
     previousCompile.call(material, shader, renderer);
+    // 04.11 (7.64): in every compile, lit or not: three reuses a material's lit program under the uniforms of its last
+    // compile, and a room turned off and on again by the lighting level froze with the lamps it last saw.
+    for (const name of LAMP_UNIFORMS) shader.uniforms[name] = uniforms[name];
     if (!current.enabled) return;
-    declareLamps(shader, uniforms);
+    declareLamps(shader);
     inject(shader);
   };
   // A material with no hook of its own keeps three's default key (its handler's source) while off.

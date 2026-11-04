@@ -93,6 +93,7 @@ const WATER_RIPPLE_BINDINGS = new WeakMap<THREE.Material, Binding>();
 
 function bind(
   bindings: WeakMap<THREE.Material, Binding>, material: THREE.Material, enabled: boolean, variant: string,
+  uniforms: Readonly<Record<string, { value: unknown }>>,
   inject: (shader: ShaderSource, binding: Binding) => void,
 ): void {
   const existing = bindings.get(material);
@@ -115,6 +116,8 @@ function bind(
   bindings.set(material, binding);
   material.onBeforeCompile = (shader, renderer) => {
     binding.previousCompile.call(material, shader, renderer);
+    // 04.11 (7.64): in every compile, wet or not: three reuses a material's wet program under the uniforms of its last compile.
+    Object.assign(shader.uniforms, uniforms);
     if (!binding.enabled) return;
     inject(shader, binding);
   };
@@ -142,8 +145,10 @@ export function setTerrainWetness(
   material: THREE.MeshLambertMaterial | THREE.MeshStandardMaterial, enabled: boolean, rings: boolean,
 ): void {
   const ringVariant = `${WET_SURFACE_MARKER}-rings`;
-  bind(TERRAIN_WET_BINDINGS, material, enabled, rings ? ringVariant : WET_SURFACE_MARKER,
-    (shader, binding) => injectTerrainWetness(shader, binding.variant === ringVariant));
+  bind(TERRAIN_WET_BINDINGS, material, enabled, rings ? ringVariant : WET_SURFACE_MARKER, {
+    uWetness: WET_SURFACE_UNIFORMS.wetness, uWetRain: WET_SURFACE_UNIFORMS.rain,
+    uWetTime: WET_SURFACE_UNIFORMS.time, uWetSky: WET_SURFACE_UNIFORMS.sky,
+  }, (shader, binding) => injectTerrainWetness(shader, binding.variant === ringVariant));
 }
 
 /**
@@ -180,10 +185,6 @@ function injectTerrainWetness(shader: ShaderSource, rings: boolean): void {
   if (shader.vertexShader.split(beginVertex).length !== 2
     || shader.fragmentShader.split(emissive).length !== 2
     || shader.fragmentShader.split(opaque).length !== 2) return;
-  shader.uniforms["uWetness"] = WET_SURFACE_UNIFORMS.wetness;
-  shader.uniforms["uWetRain"] = WET_SURFACE_UNIFORMS.rain;
-  shader.uniforms["uWetTime"] = WET_SURFACE_UNIFORMS.time;
-  shader.uniforms["uWetSky"] = WET_SURFACE_UNIFORMS.sky;
   shader.vertexShader = `varying vec3 vWetWorld;\n${shader.vertexShader}`.replace(beginVertex,
     `${beginVertex}\n  vWetWorld = ( modelMatrix * vec4( transformed, 1.0 ) ).xyz;`);
   shader.fragmentShader = `uniform float uWetness;
@@ -224,7 +225,9 @@ ${opaque}`);
  * so they never alias into sparkle. Works with or without the water shader profile.
  */
 export function setWaterRainRipples(material: THREE.MeshBasicMaterial, enabled: boolean): void {
-  bind(WATER_RIPPLE_BINDINGS, material, enabled, RAIN_RIPPLE_MARKER, (shader) => injectWaterRipples(shader));
+  bind(WATER_RIPPLE_BINDINGS, material, enabled, RAIN_RIPPLE_MARKER, {
+    uWetRain: WET_SURFACE_UNIFORMS.rain, uWetTime: WET_SURFACE_UNIFORMS.time, uWetSky: WET_SURFACE_UNIFORMS.sky,
+  }, (shader) => injectWaterRipples(shader));
 }
 
 function injectWaterRipples(shader: ShaderSource): void {
@@ -233,9 +236,6 @@ function injectWaterRipples(shader: ShaderSource): void {
   if (shader.fragmentShader.includes(RAIN_RIPPLE_MARKER)) return;
   if (shader.vertexShader.split(beginVertex).length !== 2
     || shader.fragmentShader.split(opaque).length !== 2) return;
-  shader.uniforms["uWetRain"] = WET_SURFACE_UNIFORMS.rain;
-  shader.uniforms["uWetTime"] = WET_SURFACE_UNIFORMS.time;
-  shader.uniforms["uWetSky"] = WET_SURFACE_UNIFORMS.sky;
   shader.vertexShader = `varying vec3 vRainRippleWorld;\n${shader.vertexShader}`.replace(beginVertex,
     `${beginVertex}\n  vRainRippleWorld = ( modelMatrix * vec4( transformed, 1.0 ) ).xyz;`);
   shader.fragmentShader = `uniform float uWetRain;

@@ -520,6 +520,21 @@ async function main() {
       written.push({ trace: spec.name });
     }
     if (traces.length > 0) frames.length = 0;
+    // 04.11: `--flip hook=true|false` (repeatable, in order): a harness switch (`terrainRelief`, `wmoRelief`, `m2Relief`,
+    // `neuralRelief`, ...) flipped after the first frame's view has loaded, as a player flips a setting in the game; each
+    // flip gets a view to act on and `--flip-wait` ms (default 4000) for what it started. For a bug a fresh load never shows.
+    if (values('--flip').length > 0 && frames[0]) {
+      const first = frames[0];
+      await page.evaluate((overrides) => window.__bench.lookdev(overrides),
+        { halfMinute: first.halfMinute, view: first.view, weather: first.weather, route: routeFor(first) });
+      await page.evaluate(() => window.__bench.view(0));
+      for (const flip of values('--flip')) {
+        const [hook, on] = flip.split('=');
+        await page.evaluate(([name, enabled]) => window.__bench[name](enabled), [hook, on === 'true']);
+        await page.evaluate(() => window.__bench.view(0));
+        await new Promise((done) => setTimeout(done, Number(value('--flip-wait', 4000))));
+      }
+    }
     for (const frame of frames) {
       await page.evaluate((overrides) => window.__bench.lookdev(overrides),
         { halfMinute: frame.halfMinute, view: frame.view, weather: frame.weather, route: routeFor(frame) });

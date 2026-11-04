@@ -104,8 +104,9 @@ export function setTerrainSplatRelief(
   material.onBeforeCompile = (shader, renderer) => {
     binding.previousCompile.call(material, shader, renderer);
     shader.uniforms["splatRelief"] = binding.relief;
-    if (!binding.active) return;
+    // 04.11 (7.64): in every compile, as `splatRelief`: three reuses this material's "on" program under the uniforms of its last compile.
     shader.uniforms[RELIEF_STRENGTH_UNIFORM] = RELIEF_STRENGTH; // 24.10 (7.47): «Сила объёма», one value for every program
+    if (!binding.active) return;
     injectTerrainRelief(shader);
   };
   material.customProgramCacheKey = () => binding.active
@@ -113,6 +114,18 @@ export function setTerrainSplatRelief(
     : binding.previousKey();
   material.needsUpdate = true;
   return true;
+}
+
+/** 04.11 (7.64): the revision of a tile that is still to get its map (revisions count up from 0). */
+export const TERRAIN_RELIEF_UNSETTLED = -1;
+
+/**
+ * 04.11 (7.64): the revision a tile records as it is first bound. A tile handed out without its map while the leaf is on
+ * (loaded while it was off or under another source, or its map failed at load) must keep asking the splat client, whose `get`
+ * makes the map: marked current, it stayed flat until it left the window.
+ */
+export function terrainReliefBoundRevision(active: boolean, relief: THREE.Texture | undefined, revision: number): number {
+  return active && relief === undefined ? TERRAIN_RELIEF_UNSETTLED : revision;
 }
 
 /** 22.10 (7.47): whether the material currently draws relief (tests and diagnostics). */

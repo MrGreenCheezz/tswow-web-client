@@ -58,7 +58,7 @@ import {
   applyTerrainSplat, setTerrainSplatMicroNormals, type TerrainSplatClient,
 } from "./TerrainSplat.js";
 import { setTerrainBakedShadowStrength, terrainBakedShadowStrength } from "./TerrainSplat.js"; // 05.10-A7b-7
-import { setTerrainReliefWanted, setTerrainSplatRelief, terrainReliefActive } from "./TerrainReliefShader.js"; // 22.10 (7.47)
+import { setTerrainReliefWanted, setTerrainSplatRelief, terrainReliefActive, terrainReliefBoundRevision } from "./TerrainReliefShader.js"; // 22.10 (7.47)
 import { neuralReliefWanted, setNeuralReliefWanted } from "./TerrainReliefNeural.js"; // 25.10 (7.47)
 import { setWmoReliefActive, trackWmoReliefMaterial, wmoReliefActive, wmoRunReliefVariant } from "./WmoReliefShader.js"; // 22.10 (7.47 stage 2)
 import { setReliefStrength as setSharedReliefStrength } from "./ReliefStrength.js"; // 24.10 (7.47)
@@ -11828,7 +11828,7 @@ export class WorldRenderer3D {
     // 22.10 (7.47): the relief arrives with the splat when the leaf is on, so this is the program
     // the tile is first drawn with; off (or on a classic level) nothing is wrapped.
     rendered.relief = this.#terrainReliefActive ? splat.relief : undefined;
-    rendered.reliefRevision = this.#terrainReliefRevision;
+    rendered.reliefRevision = terrainReliefBoundRevision(this.#terrainReliefActive, rendered.relief, this.#terrainReliefRevision); // 04.11 (7.64)
     setTerrainSplatRelief(rendered.material, rendered.relief, this.#terrainReliefActive);
     setTerrainWetness(rendered.material, this.#atmosphereProfile.wetSurfaces, this.#atmosphereProfile.rainSplashes);
     rendered.splatted = true;
