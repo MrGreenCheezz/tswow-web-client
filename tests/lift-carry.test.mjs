@@ -311,6 +311,19 @@ test("a jump on the car keeps the seat, its offset rising; outside the model's b
   assert.equal(colliders.takeSeatChanged(), true);
 });
 
+test("a mouse turn on the car stays: the facing on it turns too, or the carry would undo it (the owner's camera, 04.11)", () => {
+  const { colliders, state, self, base } = seatFixture();
+  colliders.frame(state.objects, self, base, { mode: "ground" }, 0);
+  colliders.settleSeat(self, { mode: "ground" }, base);
+  assert.ok(near(self.transport.orientation, 0.5));
+  colliders.turnedOnLift(self, 0.25);
+  assert.ok(near(self.transport.orientation, 0.75), "the seat's facing");
+  const ship = { guid: 0x1fc0n, x: 1, y: 2, z: 3, orientation: 0.1, seat: 0xff };
+  self.transport = ship;
+  colliders.turnedOnLift(self, 0.25);
+  assert.equal(ship.orientation, 0.1, "another carrier's seat is the ride's");
+});
+
 test("stepping off on the ground ends the seat where the floor stops being the car's", () => {
   const { colliders, state, self, base } = seatFixture();
   colliders.frame(state.objects, self, base, { mode: "ground" }, 0);

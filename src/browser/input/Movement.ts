@@ -20,7 +20,7 @@ import type { InputAction } from "./Bindings.js";
 import { heldMovementAction } from "./Bindings.js"; // 11.02-input
 import { advanceFollow, cancelFollow, followRunning, forgetFollow } from "./Follow.js";
 import {
-  gameObjectColliderFrame, gameObjectWorldWithoutHulls, liftTransportBlock, seatedOnLift, settleLiftSeat, takeLiftSeatChanged,
+  gameObjectColliderFrame, gameObjectWorldWithoutHulls, liftTransportBlock, liftTurned, seatedOnLift, settleLiftSeat, takeLiftSeatChanged,
 } from "../game/GameObjectColliders.js";
 import { farSightHoldsBody, viewIsOut } from "../game/ViewSubject.js"; // 11.02-I
 import { jumpSpentByMountSpecial, mountSpecialJumpPress, mountSpecialJumpRelease } from "./MountSpecial.js"; // 05.10-A7a-G 6.20
@@ -1160,6 +1160,7 @@ export function turnCharacterBy(radians: number): boolean {
   if (turned) position.orientation = vehicleFacing(game.world, turned, position.orientation);
   // 11.01-A3: on a deck the facing relative to the ship turns too, or the next frame's carry undoes it.
   rideTurned(selfObject(), radians);
+  liftTurned(selfObject(), radians); // 04.11: on a lift's car too
   sendFacingThrottled();
   return true;
 }

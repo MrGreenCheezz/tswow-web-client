@@ -215,6 +215,15 @@ export class GameObjectColliders {
       time: Math.trunc(liftPhaseMs(object, record.period, now)) >>> 0, seat: SHIP_SEAT };
   }
 
+  /**
+   * 04.11: a turn of the character made outside the frame (the mouse): its facing on the car turns with it, or the next frame's
+   * carry, which composes the world's facing from the seat (WorldState), undoes it.
+   */
+  turnedOnLift(self: WorldObjectState | undefined, radians: number): void {
+    const seat = self?.transport;
+    if (seat !== undefined && this.#records.get(seat.guid)?.lift) seat.orientation = normalizeOrientation(seat.orientation + radians);
+  }
+
   /** How many colliders the last frame asked (diagnostics, tests). */
   get active(): number {
     return this.#probe.count;
@@ -662,6 +671,11 @@ export function takeLiftSeatChanged(): boolean {
 /** 04.11: whether a packet now carries a lift's transport block. */
 export function seatedOnLift(self: WorldObjectState | undefined): boolean {
   return colliders?.seatedOnLift(self) === true;
+}
+
+/** 04.11: a mouse turn on a lift (`GameObjectColliders.turnedOnLift`). */
+export function liftTurned(self: WorldObjectState | undefined, radians: number): void {
+  colliders?.turnedOnLift(self, radians);
 }
 
 /** 04.11: that block; `object` is the car. */
