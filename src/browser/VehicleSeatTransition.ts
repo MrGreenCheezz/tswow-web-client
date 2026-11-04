@@ -132,7 +132,6 @@ interface Transition {
   motion: SeatTransitionMotion | undefined;
 }
 
-const AXIS_Y = new THREE.Vector3(0, 1, 0);
 const _euler = new THREE.Euler(0, 0, 0, "YXZ");
 
 /** A node's heading about the scene's up axis. */
@@ -217,7 +216,7 @@ export class VehicleSeatTransitions {
     const at = node.position;
     if (now < transition.motionAt) {
       at.set(transition.fromX, transition.fromY, transition.fromZ);
-      node.quaternion.setFromAxisAngle(AXIS_Y, transition.fromYaw);
+      node.rotation.set(0, transition.fromYaw, 0);
       return true;
     }
     const dx = at.x - transition.fromX;
@@ -237,7 +236,9 @@ export class VehicleSeatTransitions {
     while (target + Math.PI < transition.fromYaw) target += Math.PI * 2;
     while (target - Math.PI > transition.fromYaw) target -= Math.PI * 2;
     at.set(transition.fromX + dx * blend, transition.fromY + dy * blend + seatTransitionArc(motion, blend), transition.fromZ + dz * blend);
-    node.quaternion.setFromAxisAngle(AXIS_Y, transition.fromYaw + (target - transition.fromYaw) * blend);
+    // The angles and not a quaternion: past a quarter turn one reads back as x = z = π, `#drawUnit` then writes only y, and
+    // from there on the model turns the wrong way (04.11, the owner's character after a catapult).
+    node.rotation.set(0, transition.fromYaw + (target - transition.fromYaw) * blend, 0);
     return true;
   }
 }

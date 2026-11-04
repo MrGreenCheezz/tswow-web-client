@@ -135,3 +135,20 @@ test("the pose on the way: EnterAnimStart then EnterAnimLoop in, ExitAnimStart t
   const source = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
   assert.match(source, /seatTransition !== undefined \? vehicleSeatTransitionPose\(seatTransition\.seat, seatTransition\.kind\)/);
 });
+
+test("a way out past a quarter turn leaves the node's facing to be written by its y alone (04.11, a catapult left the model turning backwards)", () => {
+  const transitions = new VehicleSeatTransitions();
+  const node = new THREE.Object3D();
+  node.rotation.y = 2.7;
+  transitions.begin(1n, seat(), undefined, node, 0);
+  node.position.set(5, 0, 0);
+  node.rotation.y = 2.7;
+  transitions.apply(() => node, 100);
+  assert.equal(transitions.size, 1);
+  assert.equal(node.rotation.x, 0);
+  assert.equal(node.rotation.z, 0);
+  // The frame after it is over, as `#drawUnit` writes it.
+  node.rotation.y = 1;
+  const ahead = new THREE.Vector3(1, 0, 0).applyQuaternion(node.quaternion);
+  assert.ok(Math.abs(Math.atan2(-ahead.z, ahead.x) - 1) < 1e-6, `faces ${Math.atan2(-ahead.z, ahead.x)}`);
+});
