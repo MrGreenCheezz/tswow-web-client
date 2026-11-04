@@ -10573,7 +10573,8 @@ export class WorldRenderer3D {
       wvm: WvmModel;
       /** Squared world distance: identical sort order to the real one, without per-frame sqrt. */
       distance: number;
-      posed?: Pick<PosedModel, "skinned" | "template" | "action">; // 05.10-A7a-E2: a glow body's rig too
+      // 05.10-A7a-E2: a glow body's rig too; 04.11 (2.11): rigged scenery, which has no clip
+      posed?: Pick<PosedModel, "skinned" | "template"> & { readonly action?: PosedModel["action"] };
       fade?: number; // 05.10: ревью E2 — a weapon glow's unit opacity
       visual?: THREE.Object3D;
       spell?: RenderedVisual;
@@ -10602,7 +10603,10 @@ export class WorldRenderer3D {
       const only = particleOnlyModel(rendered.wvm);
       if (!only && distance > EFFECT_RANGE_SQUARED) return;
       const entry: (typeof wanted)[number] = { key: rendered.effectKey ??= `env:${id}`, wvm: rendered.wvm, distance };
-      if (rendered.visual) entry.visual = rendered.visual;
+      // 04.11 (2.11): rigged scenery has its bones and no mesh node, a model that draws nothing only its node; with neither
+      // of them its emitters stood at the world's origin (the old-world instance portals are both).
+      if (rendered.skinned) entry.posed = rendered;
+      else entry.visual = rendered.visual ?? rendered.node;
       (only ? particleOnly : wanted).push(entry);
     });
     if (this.#skyboxModel && this.#skyboxVisual

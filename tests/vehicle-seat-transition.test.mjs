@@ -94,6 +94,11 @@ test("the renderer starts a transition when a drawn unit's seat changes, and app
   assert.match(source, /this\.#vehiclePassengers\.place\([^\n]*\n[^\n]*\n\s+this\.#seatTransitions\.apply\(this\.#seatTransitionNode, now\);/);
 });
 
+test("2.11: scenery emitters hang from its bones or its node, never from the world's origin", async () => {
+  const source = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
+  assert.match(source, /if \(rendered\.skinned\) entry\.posed = rendered;\s+else entry\.visual = rendered\.visual \?\? rendered\.node;/);
+});
+
 test("the pose on the way: EnterAnimStart then EnterAnimLoop in, ExitAnimStart then ExitAnimLoop out, each a pose of its own", async () => {
   const { vehicleSeatTransitionPose, vehiclePassengerSeatPose, vehicleSeatTransition } = await import("../dist/code/browser/VehicleSeatPose.js");
   const row = {
