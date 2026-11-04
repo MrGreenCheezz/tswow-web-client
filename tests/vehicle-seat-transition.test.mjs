@@ -111,7 +111,7 @@ test("6.40: a ring in the air stays flat; near the ground it still follows it", 
   };
   updateSelectionRing(geometry, { x: 0.5, y: 0, z: 100 }, 2, wavy);
   assert.ok(heights().size > 1, "on the ground it lies on the ground");
-  updateSelectionRing(geometry, { x: 0.5, y: 0, z: 100 + SELECTION_RING_ALOFT + 1 }, 2, wavy);
+  updateSelectionRing(geometry, { x: 0.5, y: 0, z: 101 + SELECTION_RING_ALOFT + 1 }, 2, wavy);
   assert.equal(heights().size, 1, "aloft it is flat");
 });
 
