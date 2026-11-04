@@ -194,12 +194,13 @@ function compile(material) {
 // sha256 of each program before the slider: the buildings' at c7183d3; the terrain's and the M2's at 8f76122
 // (7.50 light pools, which merged beside the slider and changed the lit materials' shared lighting chunk —
 // main's programs stripped of the slider's lines were checked equal to 8f76122's to the byte); the terrain's and
-// the M2's again at ccc78f0 (12.24 dungeon lamps: the shared lighting chunk sums lamps apart, `wowLampIndoor`).
+// the M2's again at ccc78f0 (12.24 dungeon lamps: the shared lighting chunk sums lamps apart, `wowLampIndoor`), and
+// 04.11 (7.63: the lamps' ceiling by the brightest channel; the old pins were checked to hold with the light files as before it).
 const BEFORE = {
-  terrain: "1d4225795e766a35058874edc1a1dd381e4be526a51229d7b85a66d7c3e412ea",
+  terrain: "286b893b9267379243ff1f8a5cf5eac59b10455c842be8c1f2411452a9c6f3d2",
   wmoLit: "1f5528782644610f6034a4cbab28a02c7c15ce77fdeb88b6ae82b52481019c3a",
   wmoRoom: "03889732631cd54ee5ec602a63aee8af4bf80eb0194e83e600e1ed5fc12d320f",
-  m2: "30932f1ec27f4d175ada1245c157e6b63d6987aff8300b3c1bf9467b5f1767c4",
+  m2: "fbfaa3ea9f8763a780c8bac1e2be7ed4c08292821a9f023e5c0813dbd956fba9",
 };
 
 test("programs: stripped of the slider's lines and gains, each is the program of before the slider to the byte", () => {

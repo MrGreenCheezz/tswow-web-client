@@ -34,6 +34,7 @@ import {
 import { GOD_RAY_STRENGTH_SCALE_MAX } from "../dist/code/browser/LightingQuality.js";
 import { cinematicSkyTexel } from "../dist/code/browser/CinematicSky.js";
 import { lowSunRimStrength, createWorldLightUniforms, setWorldLightRim, WORLD_LIGHT_BODY } from "../dist/code/browser/WorldLighting.js";
+import { LIGHT_LAMPS_GLSL } from "../dist/code/browser/LightPoolGlsl.js";
 import { copyWaterSkyBands, createWaterShaderSharedUniforms, setLiquidWaterShaderProfile } from "../dist/code/browser/Water.js";
 import { ENHANCED_GRAPHICS_OVERRIDES } from "../dist/code/browser/ui/EnhancedGraphics.js";
 import { COMPARISON_GRAPHICS_OVERRIDES } from "../dist/code/browser/ui/ComparisonProfile.js";
@@ -473,11 +474,25 @@ test("enhanced world light never exceeds the authored headroom; the gamma step i
   assert.match(WORLD_LIGHT_BODY, /1\.0 - 0\.75 \* smoothstep\( 0\.7, 1\.0, wowAuthoredPeak \)/,
     "sunlit surfaces keep (almost) their authored light; the lift goes to the shade");
   // 25.10 (6.27 indoors): outside (wowLampIndoor 0) the lamps share the ceiling of one; a sunless room adds them past it.
-  assert.match(WORLD_LIGHT_BODY, /wowLight = min\( wowLight \+ wowLampLight \* \( 1\.0 - wowLampIndoor \), vec3\( 1\.0 \) \);/);
-  assert.match(WORLD_LIGHT_BODY,
-    /wowLight = min\( wowLight \+ wowLampLight \* wowLampIndoor, vec3\( 1\.0 \+ 0\.50 \* wowLampIndoor \) \);\n\}\nreflectedLight\.directDiffuse/);
+  assert.match(WORLD_LIGHT_BODY, /float wowLampCeiling = 1\.0 \+ 0\.50 \* wowLampIndoor;/);
+  assert.match(WORLD_LIGHT_BODY, /wowLight = wowLampSum \* \( wowLampCeiling \/ max\( max\( max\( wowLampSum\.r, wowLampSum\.g \), wowLampSum\.b \), wowLampCeiling \) \);\n\}\nreflectedLight\.directDiffuse/);
   assert.match(WORLD_LIGHT_BODY, /reflectedLight\.directDiffuse = diffuseColor\.rgb \* pow\( wowLight, vec3\( 2\.2 \) \);/);
   assert.doesNotMatch(WORLD_LIGHT_BODY, /vec3\( 1\.15 \)/);
+});
+
+test("04.11: lamps over a ceiling keep their hue, on both paths: an orange forge does not turn olive", () => {
+  // The room's inside (MOCV) and a doodad take the lamps through lightLampsOver, the rest through the forward grade.
+  assert.doesNotMatch(WORLD_LIGHT_BODY, /min\( wowLight \+ wowLampLight/, "no ceiling per channel on the forward path");
+  assert.doesNotMatch(LIGHT_LAMPS_GLSL, /min\( wowBase \+ lamps/, "no ceiling per channel on the room's path");
+  assert.match(LIGHT_LAMPS_GLSL, /wowLit = wowSum \* \( wowCeiling \/ max\( max\( max\( wowSum\.r, wowSum\.g \), wowSum\.b \), wowCeiling \) \);/);
+  // The arithmetic both spell, on Goldshire's forge (MOLT 255, 140, 37) in three overlapping pools over dim stone.
+  const base = [0.3, 0.27, 0.34];
+  const lamps = [1, 140 / 255, 37 / 255].map((channel) => channel * 0.8 * 3);
+  const sum = base.map((channel, index) => channel + lamps[index]);
+  const scaled = sum.map((channel) => channel * (1 / Math.max(...sum, 1)));
+  const clipped = sum.map((channel) => Math.min(channel, 1));
+  assert.ok(scaled[1] / scaled[0] < 0.7, `orange stays orange: green over red ${scaled[1] / scaled[0]}`);
+  assert.ok(clipped[1] / clipped[0] === 1, "what the old ceiling did: red and green equal, on grey stone an olive");
 });
 
 test("every uniform a post pass reads is declared in that pass", () => {

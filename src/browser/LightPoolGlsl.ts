@@ -34,7 +34,7 @@ if (!LAMP_BODY.includes(LAMP_COLOUR)) throw new Error("LightPoolGlsl: the fixtur
 /** The enhanced grade and the forward lamps, from the authored light to the ceiling of one. */
 const LIT_BODY = cut(WORLD_LIGHT_BODY,
   "vec3 wowLight = wowAuthoredLight;",
-  " * wowLampIndoor ) );\n}", // 25.10 (6.27 indoors): the lamps' ceiling, one outside, more in a sunless room
+  ", wowLampCeiling ) );\n}", // 25.10 (6.27 indoors): the lamps' ceiling, one outside, more in a sunless room; 04.11: by the brightest channel
   "enhanced grade");
 
 /** The darkness the heuristic fixture term reads: the key ambient's luma, as the enhanced grade derives it. */
@@ -118,7 +118,11 @@ vec3 lightLamps( vec3 normal, vec3 vViewPosition ) {
 }
 vec3 lightLampsOver( vec3 base, vec3 lamps ) {
   vec3 wowBase = max( base, vec3( 0.0 ) );
-  vec3 wowCeiling = max( wowBase, vec3( 1.0 + ${(WORLD_LAMP_INDOOR_CEILING - 1).toFixed(2)} * wowLampIndoor ) );
-  return max( pow( min( wowBase + lamps, wowCeiling ), vec3( 2.2 ) ) - pow( wowBase, vec3( 2.2 ) ), vec3( 0.0 ) );
+  // 04.11: the brightest channel meets the ceiling and the colour scales with it, as the forward grade now does:
+  // clipped per channel, an orange forge over MOCV turned a room's stone olive (Goldshire's smithy).
+  float wowCeiling = max( max( max( wowBase.r, wowBase.g ), wowBase.b ), 1.0 + ${(WORLD_LAMP_INDOOR_CEILING - 1).toFixed(2)} * wowLampIndoor );
+  vec3 wowSum = wowBase + lamps;
+  vec3 wowLit = wowSum * ( wowCeiling / max( max( max( wowSum.r, wowSum.g ), wowSum.b ), wowCeiling ) );
+  return max( pow( wowLit, vec3( 2.2 ) ) - pow( wowBase, vec3( 2.2 ) ), vec3( 0.0 ) );
 }
 `;

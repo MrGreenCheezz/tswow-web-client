@@ -615,9 +615,13 @@ ${CINEMATIC_POOL_GLSL}
   // Rim and fixture light fill toward the same ceiling rather than past it: on a surface the sun
   // already lights at the authored peak, a lamp pool or a rim on top only clipped sunlit sand and
   // stone to flat white. In shade and at night, where they matter, the room below one is theirs.
-  wowLight = min( wowLight + wowLampLight * ( 1.0 - wowLampIndoor ), vec3( 1.0 ) );
   // 25.10 (6.27 indoors): a sunless room's light is under one already; its lamps go on top of it.
-  wowLight = min( wowLight + wowLampLight * wowLampIndoor, vec3( 1.0 + ${(WORLD_LAMP_INDOOR_CEILING - 1).toFixed(2)} * wowLampIndoor ) );
+  // 04.11: the brightest channel meets the ceiling and the whole colour scales with it, as the authored
+  // pair does above. Clipped channel by channel, overlapping pools took an orange forge (1, 0.55, 0.15)
+  // through (1, 1, 0.3) to a flat olive on grey stone: Goldshire's smithy, walls and floor.
+  vec3 wowLampSum = wowLight + wowLampLight;
+  float wowLampCeiling = 1.0 + ${(WORLD_LAMP_INDOOR_CEILING - 1).toFixed(2)} * wowLampIndoor;
+  wowLight = wowLampSum * ( wowLampCeiling / max( max( max( wowLampSum.r, wowLampSum.g ), wowLampSum.b ), wowLampCeiling ) );
 }
 reflectedLight.directDiffuse = diffuseColor.rgb * pow( wowLight, vec3( 2.2 ) );
 reflectedLight.indirectDiffuse = vec3( 0.0 );
