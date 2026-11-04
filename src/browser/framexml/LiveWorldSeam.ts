@@ -1529,6 +1529,7 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     this.possess = new FrameXmlPossessModel({
       world: () => context.world(),
       spell: (id) => context.spell(id),
+      prefetchSpells: (ids) => ensureSpellNames(ids), // 04.11
       unitGuid: (unit) => this.#unitGuid(unit),
       petBar: () => this.petActions,
       bonusBarChanged: () => this.#reconcileBonusActionBar(),

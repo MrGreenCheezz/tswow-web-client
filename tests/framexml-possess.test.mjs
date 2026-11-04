@@ -851,3 +851,39 @@ test("P1-16 review: the possess page hears ACTIONBAR_UPDATE_COOLDOWN/_USABLE for
   frame();
   seam.detach();
 });
+
+test("04.11: a vehicle bar's spells are asked for, and the buttons look again when a row lands (empty icons on the catapult)", async () => {
+  const { FrameXmlPossessModel } = await import("../dist/code/browser/framexml/FrameXmlPossess.js");
+  const VEHICLE = 0xf150_0000_0000_0001n;
+  const SPELL = 44854;
+  const rows = new Map();
+  const asked = [];
+  const character = { guid: SELF, typeId: 4, fields: new Map(), position: { x: 0, y: 0, z: 0, orientation: 0 } };
+  setGuid(character, FARSIGHT, VEHICLE);
+  const vehicle = { guid: VEHICLE, typeId: 3, fields: new Map(), position: { x: 0, y: 0, z: 0, orientation: 0 } };
+  vehicle.fields.set(HEALTH, 100);
+  const objects = new Map([[SELF, character], [VEHICLE, vehicle]]);
+  const world = {
+    state: { selfGuid: SELF, objects },
+    petSpells: { guid: VEHICLE, closed: false, spells: [], bar: [{ packed: packPetAction(SPELL, 8), action: SPELL, type: 8 }] },
+  };
+  const fired = [];
+  const tables = { seatInSlot: () => undefined };
+  const model = new FrameXmlPossessModel({
+    world: () => world, spell: (id) => rows.get(id), unitGuid: () => undefined,
+    prefetchSpells: (ids) => asked.push(...ids), vehicles: () => tables,
+  });
+  model.attach({ fire: (event, ...args) => { fired.push([event, ...args]); return 0; } });
+  assert.equal(model.onMainBar(), true, "the fixture's bar is on the main bar");
+  assert.deepEqual(asked, [SPELL]);
+  assert.equal(model.texture(0), undefined, "no row, no icon yet");
+  model.tick();
+  assert.equal(fired.filter(([name]) => name === "ACTIONBAR_SLOT_CHANGED").length, 0, "nothing landed");
+  rows.set(SPELL, { id: SPELL, iconPath: "Interface\Icons\Ability_Vehicle_LaunchPlague" });
+  model.tick();
+  assert.equal(fired.filter(([name]) => name === "ACTIONBAR_SLOT_CHANGED").length, 12, "every slot of the page looks again");
+  assert.equal(model.texture(0), "Interface\Icons\Ability_Vehicle_LaunchPlague");
+  fired.length = 0;
+  model.tick();
+  assert.equal(fired.length, 0, "and only once");
+});

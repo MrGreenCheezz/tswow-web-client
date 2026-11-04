@@ -73,6 +73,8 @@ export interface FrameXmlPossessContext {
   readonly world: () => FrameXmlPossessWorld | undefined;
   /** Cache-only spell rows; a C-API read never fetches. */
   readonly spell: (id: number) => SpellMetadata | undefined;
+  /** 04.11: asks for rows not cached yet; `tick` sees them land. */
+  readonly prefetchSpells?: (ids: readonly number[]) => void;
   /** The seam's unit tokens to a guid. */
   readonly unitGuid: (unit: string) => bigint | undefined;
   readonly petBar?: () => FrameXmlPossessPetBar | undefined;
@@ -163,6 +165,8 @@ export class FrameXmlPossessModel {
   #pending = false;
   /** 11.02-F2: the vehicle tables at the last look. */
   #vehicles: VehicleCatalog | undefined;
+  /** 04.11: the bar's spells whose rows have not landed. */
+  readonly #iconsAwaited: number[] = [];
 
   constructor(context: FrameXmlPossessContext) {
     this.#context = context;
@@ -194,6 +198,7 @@ export class FrameXmlPossessModel {
       this.#scan(world, self);
     }
     this.#active = this.#mainBar(world, self);
+    this.#askForIcons();
     if (typeof world?.events?.on === "function") {
       this.#unsubscribe = world.events.on("PET_BAR_CHANGED", () => this.tick());
     }
@@ -257,6 +262,36 @@ export class FrameXmlPossessModel {
     // 11.02-F2: the vehicle tables landed under an open vehicle bar (Wow.exe holds its DBC from the start).
     else if (vehiclesLanded && bar !== undefined && isVehicleActionBar(bar.bar)) this.#placeBar(world, self, pump, false);
     if (farMoved) pump.fire(FRAMEXML_POSSESS_EVENTS.farSight);
+    if (this.#iconsAwaited.length > 0) this.#iconsLanded(pump); // 04.11
+  }
+
+  /**
+   * 04.11: Wow.exe holds every spell's icon from the start; here a slot of a row not cached has none, and nothing would
+   * tell the button when it landed: the buttons of a vehicle stayed empty until something else had asked for its spells.
+   */
+  #askForIcons(): void {
+    this.#iconsAwaited.length = 0;
+    const prefetch = this.#context.prefetchSpells;
+    const bar = this.#openBar(this.#context.world())?.bar;
+    if (!this.#active || prefetch === undefined || bar === undefined) return;
+    for (const button of bar) {
+      const spellId = mirroredSpell(button.packed);
+      if (spellId !== 0 && this.#context.spell(spellId) === undefined) this.#iconsAwaited.push(spellId);
+    }
+    if (this.#iconsAwaited.length > 0) prefetch(this.#iconsAwaited);
+  }
+
+  /** The buttons look again once a row they wait for has landed. */
+  #iconsLanded(pump: FrameXmlPossessPump): void {
+    const awaited = this.#iconsAwaited;
+    const before = awaited.length;
+    for (let index = before - 1; index >= 0; index--) {
+      if (this.#context.spell(awaited[index]!) !== undefined) awaited.splice(index, 1);
+    }
+    if (awaited.length === before || !this.#active) return;
+    for (let slot = POSSESS_FIRST_SLOT; slot < POSSESS_FIRST_SLOT + POSSESS_PAGE_SLOTS; slot++) {
+      pump.fire(FRAMEXML_POSSESS_EVENTS.slotChanged, slot);
+    }
   }
 
   /** `IsPossessBarVisible()` (0x005a8820): a possess spell that does not control a vehicle. */
@@ -496,6 +531,7 @@ export class FrameXmlPossessModel {
         pump.fire(FRAMEXML_POSSESS_EVENTS.slotChanged, slot);
       }
     }
+    this.#askForIcons();
     if (was !== this.#active) {
       if (was) pump.fire(FRAMEXML_POSSESS_EVENTS.pageChanged);
       pump.fire(FRAMEXML_POSSESS_EVENTS.bonusBar);
