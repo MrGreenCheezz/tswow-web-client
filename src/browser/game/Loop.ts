@@ -36,6 +36,8 @@ import { cameraWaterSurface } from "./CameraWater.js"; // L8 5.14
 import { settingOn } from "../ui/Settings.js"; // L8 5.14
 import { advanceCameraAutoFollow } from "../input/Controls.js";
 import { updateGroundTargetPreview } from "./GroundTargetPreview.js";
+import { updateVehicleAimArc } from "./VehicleAimArc.js"; // 11.02 (04.11)
+import { pendingGroundTarget } from "./GroundTarget.js";
 import { updateAreaTriggers } from "./AreaTriggers.js";
 import type { WorldObjectState, WorldPosition } from "../../world/WorldState.js";
 import { moverGuid, moverObject, moverState } from "../input/Mover.js";
@@ -692,6 +694,7 @@ function frame(now: number): void {
     // The reticle is resolved after the camera has been advanced for this frame, so the drawn ray
     // and the resolved point are the same geometry.
     updateGroundTargetPreview();
+    updateVehicleAimArc(pendingGroundTarget()); // 11.02 (04.11)
     // The duel flag's 50-yard ring, resolved from the world each frame like the selection rings.
     // No flag guid, or a flag object that has not streamed in, means no ring rather than a ring
     // at a guessed point; the prompt and the bounds chat lines remain the fallback.

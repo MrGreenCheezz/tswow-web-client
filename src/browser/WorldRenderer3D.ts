@@ -269,6 +269,8 @@ import { seatSplitsPose, seatUpperMove, vehicleSeatTransitionPose } from "./Vehi
 import {
   SEAT_VEHICLE_WAIT_SECONDS, VehicleOwnAnimations, seatVehicleAnimation, seatVehicleWaitSeconds, type VehicleOwnClip,
 } from "./VehicleOwnAnimation.js"; // 11.02 (04.11)
+import { VehicleAimArcMesh } from "./VehicleAimArcMesh.js"; // 11.02 (04.11)
+import type { VehicleAimArcShape } from "./game/VehicleAimArc.js";
 import { vehicleCatalogOfRows, type VehicleCatalog, type VehicleCatalogRows, type VehicleSeatEntry } from "../world/VehicleDbc.js"; // 11.02-H; 22.10 ARC-2 S2a: built from pushed rows
 import { NO_RENDER_INPUTS, type RenderInputs } from "./RenderInputs.js"; // 22.10 ARC-2 S2a
 import {
@@ -4151,6 +4153,8 @@ export class WorldRenderer3D {
   readonly #vehiclePassengers = new VehiclePassengerPoser();
   readonly #seatTransitions = new VehicleSeatTransitions(); // 11.02 (26.10)
   readonly #vehicleOwn = new VehicleOwnAnimations(); // 11.02 (04.11)
+  #vehicleAimArc: VehicleAimArcShape | undefined; // 11.02 (04.11)
+  #vehicleAimArcMesh: VehicleAimArcMesh | undefined;
   /** A unit's node for `#seatTransitions`, while it is drawn. */
   readonly #seatTransitionNode = (guid: bigint): THREE.Object3D | undefined => {
     const unit = this.#units.get(guid);
@@ -7830,6 +7834,12 @@ export class WorldRenderer3D {
     if (!ring) this.#disposeDuelRing();
   }
 
+  /** 11.02 (04.11): the steered siege engine's arc and mark (game/VehicleAimArc.ts), `undefined` when there is none. */
+  setVehicleAimArc(arc: VehicleAimArcShape | undefined): void {
+    this.#vehicleAimArc = arc;
+    if (!arc) this.#vehicleAimArcMesh?.hide();
+  }
+
   /**
    * 22.10 ARC-2 S2a: the frame's answers the main thread computes (RenderInputs.ts, game/RenderInputsBuilder.ts):
    * the enchant tables a worn weapon's glow is read from (absent while they load — blades draw unlit, like helmets
@@ -9168,6 +9178,10 @@ export class WorldRenderer3D {
     // their caches and before anything is submitted.
     this.#updateGroundTargetRings();
     this.#updateDuelRing(heightAt);
+    if (this.#vehicleAimArc !== undefined) {
+      (this.#vehicleAimArcMesh ??= new VehicleAimArcMesh(this.#scene, (path) => this.#loadTexture(textureUrl(this.#baseUrl, path))))
+        .update(this.#vehicleAimArc, now, heightAt); // 11.02 (04.11)
+    }
     this.#updateGameObjectPreview(environmentClient);
     this.#drawPhaseMs.units = performance.now() - drawPhaseAt;
     drawPhaseAt = performance.now();

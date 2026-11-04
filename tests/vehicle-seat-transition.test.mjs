@@ -90,7 +90,7 @@ test("a start further than 60 yards is not a boarding", () => {
 
 test("the renderer starts a transition when a drawn unit's seat changes, and applies them after the seat pass", async () => {
   const source = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
-  assert.match(source, /if \(unit\.seatTracked === true\) this\.#seatTransitions\.begin\(object\.guid, unit\.seatedRow, seatNow, unit\.node, now\);[\s\S]{0,200}unit\.node\.position\.set\(position\.x, position\.z, -position\.y\);/);
+  assert.match(source, /if \(unit\.seatTracked === true\) \{\s+this\.#seatTransitions\.begin\(object\.guid, unit\.seatedRow, seatNow, unit\.node, now\);[\s\S]{0,900}unit\.node\.position\.set\(position\.x, position\.z, -position\.y\);/);
   assert.match(source, /this\.#vehiclePassengers\.place\([^\n]*\n[^\n]*\n\s+this\.#seatTransitions\.apply\(this\.#seatTransitionNode, now\);/);
 });
 

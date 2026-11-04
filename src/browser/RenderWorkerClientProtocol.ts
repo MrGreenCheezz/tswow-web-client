@@ -50,7 +50,7 @@ export const RENDER_WORKER_COMMANDS: Readonly<Record<ClientRendererCommand, Rend
   setCinematicStrength: "setting", setAtmosphereEffects: "setting", setEnvironmentDetail: "setting",
   setGroundCover: "setting", setWeather: "setting", setIndoors: "setting", setCameraWmoSurface: "setting", updateLighting: "setting",
   setUnderwaterSurface: "setting", setSelection: "setting", setGroundTargetPreview: "setting",
-  setGameObjectPreview: "setting", setDuelRing: "setting", setUnitAuraAppearance: "setting",
+  setGameObjectPreview: "setting", setDuelRing: "setting", setVehicleAimArc: "setting", setUnitAuraAppearance: "setting",
   setWorldSubmissionCapture: "setting", setShaderProgramCapture: "setting",
   setStateVisuals: "state",
   invalidateGroundCover: "action", clearPortraits: "action", clearTerrain: "action", clearWorldResources: "action",

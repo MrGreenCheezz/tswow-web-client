@@ -175,9 +175,10 @@ export interface MissileFlight {
 
 /**
  * 0x006fcd60's walk: the flight from `launch` under `gravity`, a step at a time, stopped by `hit`.
- * Allocates only the answer.
+ * Allocates only the answer. `points`, when given, takes x, y, z of the end of each step, the last being the impact
+ * (11.02, 04.11: the arc, 0x00ca0ac8).
  */
-export function flyMissile(launch: MissileLaunch, gravity: number, maxDuration: number, hit: MissileSegmentHit): MissileFlight {
+export function flyMissile(launch: MissileLaunch, gravity: number, maxDuration: number, hit: MissileSegmentHit, points?: number[]): MissileFlight {
   const cosElevation = Math.cos(launch.elevation);
   const stepLength = launch.speed * MISSILE_STEP_SECONDS;
   const vx = Math.cos(launch.facing) * cosElevation * stepLength;
@@ -191,6 +192,7 @@ export function flyMissile(launch: MissileLaunch, gravity: number, maxDuration: 
   let fraction = hit(from, to);
   while (fraction === undefined) {
     left -= 1;
+    points?.push(to.x, to.y, to.z);
     if (left < 1) return { impact: { x: to.x, y: to.y, z: to.z }, time: steps * MISSILE_STEP_SECONDS };
     vz -= drop;
     from.x = to.x;
@@ -202,6 +204,7 @@ export function flyMissile(launch: MissileLaunch, gravity: number, maxDuration: 
     fraction = hit(from, to);
   }
   const t = fraction < 0 ? 0 : fraction > 1 ? 1 : fraction;
+  points?.push(from.x + (to.x - from.x) * t, from.y + (to.y - from.y) * t, from.z + (to.z - from.z) * t);
   return {
     impact: { x: from.x + (to.x - from.x) * t, y: from.y + (to.y - from.y) * t, z: from.z + (to.z - from.z) * t },
     time: (steps - left + t) * MISSILE_STEP_SECONDS,

@@ -18,7 +18,7 @@ export type ClientRendererCommand =
   | "setCinematicProfile" | "setCinematicStrength" | "setAtmosphereEffects" | "setEnvironmentDetail" | "setGroundCover"
   | "invalidateGroundCover" | "clearPortraits" | "clearTerrain" | "clearWorldResources"
   | "setWeather" | "setIndoors" | "setCameraWmoSurface" | "updateLighting" | "setUnderwaterSurface" | "setSelection" | "setGroundTargetPreview"
-  | "setGameObjectPreview" | "setDuelRing" | "setUnitAuraAppearance" | "setStateVisuals"
+  | "setGameObjectPreview" | "setDuelRing" | "setVehicleAimArc" | "setUnitAuraAppearance" | "setStateVisuals"
   | "playSpellVisual" | "cancelSpellVisual" | "retimeSpellVisual" | "clearSpellVisuals" | "prewarmSpellModels"
   | "playUnitAction" | "releaseUnitAction" | "setMeleeTargets" | "playUnitReaction" | "playUnitEmote" | "cancelUnitAction"
   | "playMountSpecial" | "playGameObjectAnimation" | "showEnvironmentStandInMarkers" | "setWorldSubmissionCapture"
