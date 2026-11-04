@@ -115,7 +115,7 @@ export function withHdModelTexture(url: string): string {
 }
 
 /** 04.11 (7.62): whether a URL is the gateway's `/texture?path=…` for creature or item-model art. */
-function isHdUnitTextureUrl(url: string): boolean {
+export function isHdUnitTextureUrl(url: string): boolean {
   const query = TEXTURE_ROUTE.exec(url)?.[1];
   if (query === undefined) return false;
   const path = new URLSearchParams(query).get("path");

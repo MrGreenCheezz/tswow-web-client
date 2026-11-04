@@ -336,11 +336,67 @@ export async function worldModelTextureUses(archives, report = () => undefined) 
   return mergeUses(lists);
 }
 
+/** The string columns of a WDBC table, per row: `columns` are field numbers. A table that does not parse has no rows. */
+function dbcRows(dbc, columns) {
+  if (!dbc || dbc.length < 20 || dbc.toString("latin1", 0, 4) !== "WDBC") return [];
+  const records = dbc.readUInt32LE(4);
+  const recordSize = dbc.readUInt32LE(12);
+  const stringSize = dbc.readUInt32LE(16);
+  const strings = 20 + records * recordSize;
+  if (strings + stringSize > dbc.length) return [];
+  const text = (offset) => {
+    if (offset === 0 || offset >= stringSize) return "";
+    let end = strings + offset;
+    while (end < strings + stringSize && dbc[end] !== 0) end++;
+    return dbc.toString("latin1", strings + offset, end).trim();
+  };
+  const rows = [];
+  for (let row = 0; row < records; row++) {
+    const at = 20 + row * recordSize;
+    rows.push({ id: dbc.readUInt32LE(at), number: (field) => dbc.readUInt32LE(at + field * 4),
+      strings: columns.map((field) => text(dbc.readUInt32LE(at + field * 4))) });
+  }
+  return rows;
+}
+
 /**
- * 04.11 (7.62): every creature and item-model texture in the archives. Listed by folder and not by model, because a
- * creature's skin is named by `CreatureDisplayInfo` and an item's by `ItemDisplayInfo`, not by the file. The models
- * still say what they know: a texture they name themselves keeps its wrap flags and its flip-book grids. Nothing says
- * so for a skin, which is cut as an atlas: an edge is padded from itself.
+ * 04.11 (7.62): the skins `CreatureDisplayInfo` draws: a display's texture variations (fields 6–8) in its model's folder
+ * (`CreatureModelData` field 2). Undefined when a table is missing, which keeps every skin.
+ */
+export function creatureSkinPaths(creatureModelData, creatureDisplayInfo) {
+  const folders = new Map();
+  for (const row of dbcRows(creatureModelData, [2])) {
+    const model = textureKey(row.strings[0]);
+    folders.set(row.id, model.slice(0, model.lastIndexOf("\\") + 1));
+  }
+  const displays = dbcRows(creatureDisplayInfo, [6, 7, 8]);
+  if (folders.size === 0 || displays.length === 0) return undefined;
+  const paths = new Set();
+  for (const row of displays) {
+    const folder = folders.get(row.number(1));
+    if (folder === undefined) continue;
+    for (const name of row.strings) if (name) paths.add(`${folder}${textureKey(name)}.blp`);
+  }
+  return paths;
+}
+
+/**
+ * 04.11 (7.62): the texture names `ItemDisplayInfo` puts on item models (fields 3–4), without their folder, which the
+ * table does not say (the slot's). Undefined when the table is missing, which keeps every texture.
+ */
+export function itemModelTextureNames(itemDisplayInfo) {
+  const rows = dbcRows(itemDisplayInfo, [3, 4]);
+  if (rows.length === 0) return undefined;
+  const names = new Set();
+  for (const row of rows) for (const name of row.strings) if (name) names.add(textureKey(name));
+  return names;
+}
+
+/**
+ * 04.11 (7.62): the creature and item-model textures something draws: named by the display tables or by a model itself.
+ * On this client's tables most files under those folders are older than the HD patches and nothing names them: of 7,867
+ * creature displays only 501 draw a skin up to 256 px. The models say what they know: a texture they name keeps its wrap
+ * flags and its flip-book grids. Nothing says so for a skin, which is cut as an atlas: an edge is padded from itself.
  */
 export async function unitTextureUses(archives, report = () => undefined) {
   const textures = new Set();
@@ -351,7 +407,13 @@ export async function unitTextureUses(archives, report = () => undefined) {
       else if (path.endsWith(".m2")) models.add(path);
     }
   }
-  const lists = [[...textures].map((path) => ({ path, wrap: false, grids: [] }))];
+  const skins = creatureSkinPaths(await archives.read("DBFilesClient\\CreatureModelData.dbc"),
+    await archives.read("DBFilesClient\\CreatureDisplayInfo.dbc"));
+  const itemNames = itemModelTextureNames(await archives.read("DBFilesClient\\ItemDisplayInfo.dbc"));
+  const named = (path) => (path.startsWith("creature\\")
+    ? skins === undefined || skins.has(path)
+    : itemNames === undefined || itemNames.has(path.slice(path.lastIndexOf("\\") + 1, -4)));
+  const lists = [[...textures].filter(named).map((path) => ({ path, wrap: false, grids: [] }))];
   for (const path of [...models].sort()) {
     const model = await archives.read(path);
     if (model) lists.push(modelTextureUses(model).filter((use) => unitTexturePath(use.path)));

@@ -192,6 +192,8 @@ async function main() {
     config.hdTextureGeneration = createHash('sha1').update(Buffer.concat(manifests)).digest('hex').slice(0, 20);
   }
   let hdServed = 0;
+  /** 04.11 (7.62): paths asked for with `hd=` that no set holds: answered with the original. */
+  const hdUnheld = new Set();
   // 24.10 (7.50): `--lamp-tables` answers `/visual/wmo-lamps` as a gateway with the route does — the table built by the
   // shared module (src/world/WmoLampTable.ts) from the WMO's root and groups as this harness serves them — so a first
   // visit can be traced without a gateway restart. Without it the route is a 404, as from an older gateway.
@@ -362,6 +364,7 @@ async function main() {
           hdWorldBytes.original += original.bytes.length;
           res.writeHead(200, { 'content-type': 'application/x-webclient-hd-texture', 'cache-control': 'no-store' }).end(modelHd);
         } else {
+          hdUnheld.add(path); // 04.11 (7.62)
           url.searchParams.delete('hd');
           const { entry, bytes } = await asset(url.pathname + url.search);
           res.writeHead(entry.status, { 'content-type': entry.type, 'cache-control': 'no-store' }).end(bytes);
@@ -606,7 +609,7 @@ async function main() {
     if (lampTables) console.log(`Lamp tables: ${lampTables.built.size} built (${lampTables.ms.toFixed(0)} ms), ${lampTables.served} served`); // 24.10 (7.50)
     if (neuralDirectory) console.log(`Neural relief maps served from ${neuralDirectory}: ${neuralServed}`); // 25.10 (7.47)
     if (variantModelDir || refinedKeys) console.log(`Refined models served from ${variantModelDir ?? refinedDirectory}: ${variantsServed}`); // 04.11
-    if (hdDirectory) console.log(`HD textures served from ${hdDirectory}: ${hdServed} (world, compressed: ${hdWorldServed}, ${(hdWorldBytes.hd / 1048576).toFixed(1)} MB in place of ${(hdWorldBytes.original / 1048576).toFixed(1)} MB)`); // 23.10 (7.48)
+    if (hdDirectory) console.log(`HD textures served from ${hdDirectory}: ${hdServed} (world, compressed: ${hdWorldServed}, ${(hdWorldBytes.hd / 1048576).toFixed(1)} MB in place of ${(hdWorldBytes.original / 1048576).toFixed(1)} MB), asked but not held: ${hdUnheld.size}${hdUnheld.size ? ` (${[...hdUnheld].slice(0, 8).join(', ')})` : ''}`); // 23.10 (7.48)
     await writeFile(resolve(out, 'lookdev.json'), JSON.stringify({ scenario, config, frames, written, cacheMisses, hdServed, failures }, null, 2));
     if (failures.length) console.error(`Asset failures:\n${failures.join('\n')}`);
   } finally {

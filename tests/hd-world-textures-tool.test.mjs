@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  MODEL_TEXTURE_PREFIXES, modelTexturePath, wmoDiffuseTextures, wmoSecondTextures, worldSet,
+  MODEL_TEXTURE_PREFIXES, modelTexturePath, unitTextureUses, wmoDiffuseTextures, wmoSecondTextures, worldSet,
 } from "../tools/hd-texture-set.mjs";
 import {
   compressedFile, compressPipeline, pipelineFor, COMPRESS_PIPELINE, DILATED_PIPELINE, MODEL, PIPELINE, SCALE_POLICY, SET_MODEL,
@@ -135,6 +135,47 @@ test("the world set: ground without _s masks, buildings, WMO second textures and
   assert.equal(byPath["creature\\wolf\\wolfskin.blp"].wrap, false, "a skin no model names is cut as an atlas");
   assert.ok(!read.includes("world\\minimaps\\x.m2"), "the minimap models are not read");
   assert.deepEqual(report, { ground: 1, roots: 1, wmoTextures: 1, secondTextures: 1, models: 2, modelTextures: 3, units: 3 });
+});
+
+test("04.11 (7.62): only the creature and item textures something draws: the display tables' and the models' own", async () => {
+  const wdbc = (fieldCount, rows) => {
+    const strings = ["\0"];
+    let size = 1;
+    const record = (values) => {
+      const out = Buffer.alloc(fieldCount * 4);
+      values.forEach((value, field) => {
+        if (typeof value === "string") {
+          strings.push(`${value}\0`);
+          out.writeUInt32LE(size, field * 4);
+          size += value.length + 1;
+        } else out.writeUInt32LE(value, field * 4);
+      });
+      return out;
+    };
+    const body = Buffer.concat(rows.map(record));
+    const header = Buffer.alloc(20);
+    header.write("WDBC", 0, "latin1");
+    header.writeUInt32LE(rows.length, 4);
+    header.writeUInt32LE(fieldCount, 8);
+    header.writeUInt32LE(fieldCount * 4, 12);
+    header.writeUInt32LE(size, 16);
+    return Buffer.concat([header, body, Buffer.from(strings.join(""), "latin1")]);
+  };
+  const tables = {
+    "DBFilesClient\\CreatureModelData.dbc": wdbc(3, [[7, 0, "Creature\\Wolf\\Wolf.mdx"]]),
+    "DBFilesClient\\CreatureDisplayInfo.dbc": wdbc(9, [[100, 7, 0, 0, 0, 0, "WolfSkinDrawn", 0, 0], [101, 99, 0, 0, 0, 0, "OfNoModel", 0, 0]]),
+    "DBFilesClient\\ItemDisplayInfo.dbc": wdbc(5, [[1, "Sword.mdx", 0, "Sword_Drawn", 0]]),
+    "creature\\wolf\\wolf.m2": doodadModel(["Creature\\Wolf\\OwnEye.blp"]),
+  };
+  const listings = {
+    "creature\\": ["creature\\wolf\\wolf.m2", "creature\\wolf\\wolfskindrawn.blp", "creature\\wolf\\wolfskinold.blp"],
+    "item\\objectcomponents\\": ["item\\objectcomponents\\weapon\\sword_drawn.blp", "item\\objectcomponents\\weapon\\sword_old.blp"],
+  };
+  const archives = { list: async (prefix) => new Set(listings[prefix] ?? []), read: async (path) => tables[path] };
+  const uses = await unitTextureUses(archives);
+  assert.deepEqual(uses.map((use) => use.path), [
+    "creature\\wolf\\owneye.blp", "creature\\wolf\\wolfskindrawn.blp", "item\\objectcomponents\\weapon\\sword_drawn.blp",
+  ]);
 });
 
 test("04.11 (7.62): creature and item-model art only up to 256 px", () => {

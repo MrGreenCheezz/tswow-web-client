@@ -139,7 +139,11 @@ test("a scenery /texture answer that is a container is a BC7 texture; an effect'
   const tree = `${textureUrl(BASE, TREE)}&hd=${HG}`;
   const effect = `${textureUrl(BASE, "Spells\\Glow.blp")}&hd=${HG}`;
   const plain = textureUrl(BASE, TREE);
-  const bodies = { [tree]: container, [effect]: container, [plain]: "PLAIN" };
+  // 04.11 (7.62): a creature's and an item model's, and a creature's the set does not hold (the original answered to hd=).
+  const skin = `${textureUrl(BASE, "Creature\\Wolf\\WolfSkinTimber.blp")}&hd=${HG}`;
+  const sword = `${textureUrl(BASE, "Item\\ObjectComponents\\Weapon\\Sword.blp")}&hd=${HG}`;
+  const bigSkin = `${textureUrl(BASE, "Creature\\Wolf\\WolfSkinLarge.blp")}&hd=${HG}`;
+  const bodies = { [tree]: container, [effect]: container, [plain]: "PLAIN", [skin]: container, [sword]: container, [bigSkin]: "PLAIN" };
   const saved = { fetch: globalThis.fetch, createImageBitmap: globalThis.createImageBitmap, ImageBitmap: globalThis.ImageBitmap };
   const decoded = [];
   globalThis.ImageBitmap = FakeImageBitmap;
@@ -156,13 +160,19 @@ test("a scenery /texture answer that is a container is a BC7 texture; an effect'
     const hd = loader.load(tree);
     const fx = loader.load(effect);
     const original = loader.load(plain);
+    const skinned = loader.load(skin);
+    const sharp = loader.load(sword);
+    const unheld = loader.load(bigSkin);
     await settle();
+    assert.equal(skinned.isCompressedTexture, true, "a creature's container is a BC7 texture, never handed to the image decoder");
+    assert.equal(sharp.isCompressedTexture, true, "and an item model's");
+    assert.equal(unheld.isCompressedTexture, false, "the original PNG answered to hd= is decoded as before");
     assert.equal(hd.isCompressedTexture, true);
     assert.equal(hd.format, THREE.RGBA_BPTC_Format);
     assert.deepEqual([hd.image.width, hd.image.height], [16, 16]);
     assert.equal(fx.isCompressedTexture, false, "an effect's hd= answer is the effects set's PNG: never read as a container");
     assert.equal(original.isCompressedTexture, false);
-    assert.deepEqual(decoded.sort((a, b) => a - b), [5, container.length], "the effect and the plain URL went through the decoder");
+    assert.deepEqual(decoded.sort((a, b) => a - b), [5, 5, container.length], "the effect, the plain URL and the unheld skin went through the decoder");
   } finally {
     for (const [name, value] of Object.entries(saved)) {
       if (value === undefined) delete globalThis[name];
