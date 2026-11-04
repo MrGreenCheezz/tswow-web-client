@@ -119,13 +119,15 @@ export function cameraPivot(player: WorldPosition, pivotHeight: number): Vector3
  * 11.02 (26.10): `lensYaw` and `lensPitch` are a vehicle's camera offsets (game/VehicleCamera.ts): the arm is
  * swung by `lensYaw` about the vertical while the view keeps its direction, and the view is tilted up by
  * `lensPitch` about the camera, which stays where it stands. Both 0 (or absent): the plain orbit.
+ * 04.11: `lensX` and `lensY` are a vehicle seat's CameraOffset across the ground: the pivot itself stands off by them.
  */
 export function createCamera(
   player: WorldPosition,
   yawOffset = 0,
   pitch = CAMERA_DEFAULT_PITCH,
   distance = CAMERA_DEFAULT_DISTANCE,
-  options: { pivotHeight?: number | undefined; lensYaw?: number | undefined; lensPitch?: number | undefined } = {},
+  options: { pivotHeight?: number | undefined; lensYaw?: number | undefined; lensPitch?: number | undefined;
+    lensX?: number | undefined; lensY?: number | undefined; } = {},
 ): Camera {
   const yaw = player.orientation + yawOffset;
   const lensYaw = options.lensYaw ?? 0;
@@ -133,8 +135,8 @@ export function createCamera(
   const pivot = cameraPivot(player, options.pivotHeight ?? CAMERA_DEFAULT_PIVOT_HEIGHT);
   const armYaw = yaw + lensYaw;
   const position = {
-    x: pivot.x - Math.cos(armYaw) * Math.cos(pitch) * distance,
-    y: pivot.y - Math.sin(armYaw) * Math.cos(pitch) * distance,
+    x: pivot.x + (options.lensX ?? 0) - Math.cos(armYaw) * Math.cos(pitch) * distance,
+    y: pivot.y + (options.lensY ?? 0) - Math.sin(armYaw) * Math.cos(pitch) * distance,
     z: pivot.z - Math.sin(pitch) * distance,
   };
   const viewPitch = pitch + lensPitch;

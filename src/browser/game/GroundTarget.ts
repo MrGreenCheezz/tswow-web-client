@@ -395,13 +395,15 @@ export interface GroundTargetInputs {
   readonly terrainIsCeiling?: boolean | undefined;
   /** 11.02 (26.10): the vehicle lens offsets the world was drawn with (VehicleCamera.ts). */
   readonly lensYaw?: number | undefined;
+  readonly lensX?: number | undefined; // 04.11
+  readonly lensY?: number | undefined;
   readonly lensPitch?: number | undefined;
 }
 
 /** The drawn camera's ray against the streamed world, in the units CMSG_CAST_SPELL carries. */
 export function screenGroundPoint(inputs: GroundTargetInputs): GroundPoint | undefined {
   const camera = createCamera(inputs.player, inputs.yaw, inputs.viewPitch, inputs.view,
-    { pivotHeight: inputs.pivotHeight, lensYaw: inputs.lensYaw, lensPitch: inputs.lensPitch }); // 11.02 (26.10)
+    { pivotHeight: inputs.pivotHeight, lensYaw: inputs.lensYaw, lensPitch: inputs.lensPitch, lensX: inputs.lensX, lensY: inputs.lensY }); // 11.02 (26.10)
   const ray = screenRay(camera, inputs.canvasWidth, inputs.canvasHeight, inputs.pixelX, inputs.pixelY);
   // Spell range is measured from the caster, but the picking ray starts at the camera. At maximum
   // zoom even a point at the caster's feet is more than a short item range away from the ray origin.
@@ -462,6 +464,8 @@ export function resolveGroundTarget(
     pivotHeight: cameraPivotHeight(),
     lensYaw: game.camera.lensYaw, // 11.02 (26.10)
     lensPitch: game.camera.lensPitch,
+    lensX: game.camera.lensX, // 04.11
+    lensY: game.camera.lensY,
     canvasWidth,
     canvasHeight,
     pixelX: clientX,

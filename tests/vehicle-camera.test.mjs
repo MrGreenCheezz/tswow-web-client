@@ -424,3 +424,28 @@ test("11.02 (26.10): the vehicle's lens offsets ease in over the seat's interval
   assert.equal(tracker.lens.pitch, 0);
   assert.equal(rig.lensPitch, 0);
 });
+
+test("04.11: the seat's CameraOffset: Y ahead along the facing, X to the right, Z up", async () => {
+  const { seatCameraOffset } = await import("../dist/code/browser/game/VehicleCamera.js");
+  const east = seatCameraOffset(1, 3, 10, 0);
+  assert.deepEqual([east.x, east.y, east.z], [3, -1, 10], "facing +x: right is −y");
+  const north = seatCameraOffset(1, 3, 10, Math.PI / 2);
+  assert.ok(Math.abs(north.x - 1) < 1e-9 && Math.abs(north.y - 3) < 1e-9, "facing +y: right is +x");
+});
+
+test("04.11: the offset chased at its rate, the first frame and no rate standing on it", async () => {
+  const { CameraOffsetChase } = await import("../dist/code/browser/game/VehicleCamera.js");
+  const chase = new CameraOffsetChase();
+  const out = { x: 0, y: 0, z: 0 };
+  chase.step({ x: 2, y: 0, z: 0 }, 5, 0.016, out);
+  assert.equal(out.x, 2, "starts where it is told");
+  chase.step({ x: 4, y: 0, z: 0 }, 5, 0.016, out);
+  assert.ok(out.x > 2 && out.x < 2.5, `follows: ${out.x}`);
+  for (let frame = 0; frame < 300; frame++) chase.step({ x: 4, y: 0, z: 0 }, 5, 0.016, out);
+  assert.ok(Math.abs(out.x - 4) < 1e-3, `arrives: ${out.x}`);
+  chase.step({ x: 9, y: 0, z: 0 }, 0, 0.016, out);
+  assert.equal(out.x, 9, "no rate: no chase");
+  chase.reset();
+  chase.step({ x: 1, y: 0, z: 0 }, 5, 0.016, out);
+  assert.equal(out.x, 1, "a reset stands on it");
+});

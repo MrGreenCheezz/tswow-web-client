@@ -53,14 +53,66 @@ import { VEHICLE_FLAG_CAMERA_FADE } from "../VehicleCameraFade.js";
  * Not applied here (the params carry them, the hooks cannot yet):
  * - (the vehicle's model fading as the camera nears it — 0x00606f90: Vehicle Flags 0x80000, alpha 0 at
  *   CameraFadeDistScalarMin × the model's radius, 1 at …Max × radius — is the renderer's: VehicleCameraFade.ts);
- * - the seat's CameraOffset and the chase rates (VehicleCamera_C 0x00759200/0x00759d80: the pivot
- *   moved by the offset turned with the facing, and chased; 25 seats have an offset, 19 a chase).
+ * - (04.11: the seat's CameraOffset and CameraPosChaseRate are applied: `seatCameraOffset`, `CameraOffsetChase`);
+ * - the chase of a passenger's seat moving against its vehicle, and CameraFacingChaseRate (3 seats).
  *
  * Without vehicle rows, outside a vehicle seat, or riding a ship, nothing here touches the camera and
  * the wheel answers exactly as `zoomedDistance` does. Once a frame, nothing is allocated unless the
  * seat changed: the seat is recognised by comparing the transport block's guid and seat byte with the
  * last ones.
  */
+
+/**
+ * 04.11: VehicleCamera_C 0x00759200: in the seat (states 1 to 3, 0x0075aac0) the pivot stands off by CameraOffset, Y ahead along
+ * the facing, X to the right and Z up. 21 of the dataset's 720 seats have one, 16 of them straight up or down.
+ */
+export function seatCameraOffset(x: number, y: number, z: number, facing: number): { x: number; y: number; z: number } {
+  const cos = Math.cos(facing);
+  const sin = Math.sin(facing);
+  return { x: y * cos + x * sin, y: y * sin - x * cos, z };
+}
+
+/** The spring's stiffness over CameraPosChaseRate (0x009f281c, 0x00759d80). */
+const CHASE_STIFFNESS = 20;
+
+/**
+ * 04.11: the offset chased by a critically damped spring at CameraPosChaseRate (0x00759d80 → 0x006ff4c0): the offset turns with
+ * the facing, and a rate has the camera follow it round instead of being fixed to the vehicle. 1 to 5 where a seat has one.
+ */
+export class CameraOffsetChase {
+  #settled = false;
+  readonly #at = [0, 0, 0];
+  readonly #speed = [0, 0, 0];
+
+  reset(): void {
+    this.#settled = false;
+  }
+
+  /** Where it stands after `seconds`. `out` takes it. */
+  step(target: { x: number; y: number; z: number }, rate: number, seconds: number, out: { x: number; y: number; z: number }): void {
+    if (!(rate > 1e-4) || !this.#settled) {
+      this.#at[0] = target.x;
+      this.#at[1] = target.y;
+      this.#at[2] = target.z;
+      this.#speed.fill(0);
+      this.#settled = true;
+    } else {
+      const omega = CHASE_STIFFNESS / rate;
+      const x = omega * seconds;
+      const damp = 1 / (1 + x + 0.48 * x * x + 0.235 * x * x * x);
+      const wanted = [target.x, target.y, target.z];
+      for (let axis = 0; axis < 3; axis++) {
+        const off = this.#at[axis]! - wanted[axis]!;
+        const push = (this.#speed[axis]! + omega * off) * seconds;
+        this.#at[axis] = wanted[axis]! + (off + push) * damp;
+        this.#speed[axis] = (this.#speed[axis]! - omega * push) * damp;
+      }
+    }
+    out.x = this.#at[0]!;
+    out.y = this.#at[1]!;
+    out.z = this.#at[2]!;
+  }
+}
 
 /** VehicleSeat FlagsB bits the camera reads (Wow.exe 0x0075aac0, 0x0074c0e0); unnamed in DBCEnums.h:505-517. */
 export const SEAT_CAMERA_FLAGS_B = Object.freeze({
@@ -138,6 +190,9 @@ class LensOffset {
 export interface VehicleCameraLens {
   readonly yaw: number;
   readonly pitch: number;
+  /** 04.11: the seat's CameraOffset, world yards. */
+  readonly x: number;
+  readonly y: number;
 }
 
 /** Two distances closer than this are the same distance (0x00a1e34c). */
@@ -165,6 +220,12 @@ export interface VehicleCameraParams {
   readonly yawOffset: number;
   /** Vehicle CameraPitchOffset, radians (a lens offset: see the header). */
   readonly pitchOffset: number;
+  /** 04.11: CameraOffset. */
+  readonly offsetX: number;
+  readonly offsetY: number;
+  readonly offsetZ: number;
+  /** 04.11: CameraPosChaseRate. */
+  readonly chaseRate: number;
   /** Seat ENABLE_VEHICLE_ZOOM: the vehicle distance and its 50-yard ceiling. */
   readonly vehicleZoom: boolean;
   /** FlagsB 0x400 without ENABLE_VEHICLE_ZOOM: the seat's own zoom. */
@@ -218,6 +279,10 @@ export function vehicleCameraParams(vehicle: VehicleEntry | undefined, seat: Veh
     seatId: seat.id,
     yawOffset: finiteOr(vehicle?.cameraYawOffset ?? 0, 0),
     pitchOffset: finiteOr(vehicle?.cameraPitchOffset ?? 0, 0),
+    offsetX: finiteOr(seat.cameraOffset.x, 0),
+    offsetY: finiteOr(seat.cameraOffset.y, 0),
+    offsetZ: finiteOr(seat.cameraOffset.z, 0),
+    chaseRate: finiteOr(seat.cameraPosChaseRate, 0),
     vehicleZoom,
     seatZoom,
     enterDelay,
@@ -267,6 +332,10 @@ export interface VehicleCameraRig {
   /** 26.10: the lens offsets (`lens`), written every frame. */
   lensYaw?: number;
   lensPitch?: number;
+  /** 04.11: the seat's CameraOffset in world yards along x and y, written every frame; the height goes on `pivotHeight`. */
+  lensX?: number;
+  lensY?: number;
+  pivotHeight?: number;
 }
 
 /** The parts of WorldState read here. */
@@ -324,7 +393,14 @@ export class VehicleCameraTracker {
   /** 26.10: camera+vehicle yaw/pitch offsets. */
   readonly #lensYaw = new LensOffset();
   readonly #lensPitch = new LensOffset();
-  readonly #lens = { yaw: 0, pitch: 0 };
+  readonly #lens = { yaw: 0, pitch: 0, x: 0, y: 0 };
+  /** 04.11: the seat's CameraOffset, eased over the switch's interval like the two above. */
+  readonly #offsetX = new LensOffset();
+  readonly #offsetY = new LensOffset();
+  readonly #offsetZ = new LensOffset();
+  readonly #offsetChase = new CameraOffsetChase();
+  readonly #offsetAt = { x: 0, y: 0, z: 0 };
+  #lastUpdate: number | undefined;
 
   /** 26.10: the lens offsets as `update` left them this frame (the same object every frame). */
   get lens(): VehicleCameraLens {
@@ -359,6 +435,30 @@ export class VehicleCameraTracker {
     this.#lens.pitch = this.#lensPitch.advance(now);
     if (rig.lensYaw !== this.#lens.yaw) rig.lensYaw = this.#lens.yaw;
     if (rig.lensPitch !== this.#lens.pitch) rig.lensPitch = this.#lens.pitch;
+    this.#applyOffset(world, rig, now);
+  }
+
+  /** 04.11: the pivot off by the seat's CameraOffset. Nothing is written for a seat without one. */
+  #applyOffset(world: VehicleCameraWorld | undefined, rig: VehicleCameraRig, now: number): void {
+    const seconds = this.#lastUpdate === undefined ? 0 : Math.max(0, now - this.#lastUpdate) / 1000;
+    this.#lastUpdate = now;
+    const x = this.#offsetX.advance(now);
+    const y = this.#offsetY.advance(now);
+    const z = this.#offsetZ.advance(now);
+    if (x === 0 && y === 0 && z === 0) {
+      this.#offsetChase.reset();
+      this.#offsetAt.x = this.#offsetAt.y = this.#offsetAt.z = 0;
+    } else {
+      const self = world?.selfGuid === undefined ? undefined : world.objects.get(world.selfGuid);
+      const carrier = self?.transport === undefined ? undefined : world!.objects.get(self.transport.guid);
+      const facing = carrier?.position?.orientation ?? self?.position?.orientation ?? 0;
+      this.#offsetChase.step(seatCameraOffset(x, y, z, facing), this.#applied?.chaseRate ?? 0, seconds, this.#offsetAt);
+    }
+    this.#lens.x = this.#offsetAt.x;
+    this.#lens.y = this.#offsetAt.y;
+    if (rig.lensX !== this.#lens.x) rig.lensX = this.#lens.x;
+    if (rig.lensY !== this.#lens.y) rig.lensY = this.#lens.y;
+    if (this.#offsetAt.z !== 0 && rig.pivotHeight !== undefined) rig.pivotHeight += this.#offsetAt.z;
   }
 
   /**
@@ -415,6 +515,13 @@ export class VehicleCameraTracker {
     this.#lensPitch.reset();
     this.#lens.yaw = 0;
     this.#lens.pitch = 0;
+    this.#offsetX.reset();
+    this.#offsetY.reset();
+    this.#offsetZ.reset();
+    this.#offsetChase.reset();
+    this.#offsetAt.x = this.#offsetAt.y = this.#offsetAt.z = 0;
+    this.#lens.x = 0;
+    this.#lens.y = 0;
   }
 
   /** The character's seat, recognised without allocating while its transport block stays the same. */
@@ -463,6 +570,9 @@ export class VehicleCameraTracker {
     const end = now + Math.max(0, seconds) * 1000;
     this.#lensYaw.set(seat?.yawOffset ?? 0, now, end);
     this.#lensPitch.set(seat?.pitchOffset ?? 0, now, end);
+    this.#offsetX.set(seat?.offsetX ?? 0, now, end); // 04.11
+    this.#offsetY.set(seat?.offsetY ?? 0, now, end);
+    this.#offsetZ.set(seat?.offsetZ ?? 0, now, end);
     const restoring = this.#seatPreDistance !== undefined;
     let giveBack = false;
     let floor: number | undefined;

@@ -61,6 +61,9 @@ export interface CameraRig {
    * from this rig passes them to SceneCamera.createCamera). Absent or 0 outside a vehicle.
    */
   lensYaw?: number;
+  /** 04.11: a vehicle seat's CameraOffset across the ground, world yards (VehicleCamera.ts writes them). */
+  lensX?: number;
+  lensY?: number;
   lensPitch?: number;
   /** How far the camera actually got this frame, and the only one of these numbers to be drawn. */
   view: number;
@@ -582,7 +585,7 @@ export function advanceCameraFrame(
   // over two seconds once let go. Every camera below hangs from it, and so does every camera the frame draws
   // (`viewPivotHeight` → Context.cameraPivotHeight). First person keeps its eye. Was `pivotHeight` throughout.
   const hinge = advanceCameraHinge(rig, player, pivotHeight, world, elapsed);
-  const options = { pivotHeight: hinge };
+  const options = { pivotHeight: hinge, lensX: rig.lensX, lensY: rig.lensY };
   const pivotZ = player.z + hinge;
   const feetZ = player.z + CAMERA_FEET_CLEARANCE;
   const orbitOptions: CameraOrbitOptions = { allowBelowFeet: world.allowUpwardOrbit === true };

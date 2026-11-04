@@ -4335,6 +4335,8 @@ export class WorldRenderer3D {
   #livingSpells = false;
   #spellDensity = false; // 26.10 (6.27, test)
   #lensYaw = 0; // 26.10 (11.02)
+  #lensX = 0; // 04.11
+  #lensY = 0;
   #lensPitch = 0;
   /** 26.10 (6.27, test): «Шлейфы снарядов (опыт)» (MissileTrails.ts), and each missile model's trail colour. */
   readonly #missileTrails = new MissileTrails();
@@ -10199,9 +10201,11 @@ export class WorldRenderer3D {
   }
 
   /** 11.02 (26.10): the vehicle camera offsets the view is drawn with (game/VehicleCamera.ts), radians. */
-  setCameraLens(yaw: number, pitch: number): void {
+  setCameraLens(yaw: number, pitch: number, x = 0, y = 0): void {
     this.#lensYaw = Number.isFinite(yaw) ? yaw : 0;
     this.#lensPitch = Number.isFinite(pitch) ? pitch : 0;
+    this.#lensX = Number.isFinite(x) ? x : 0; // 04.11: the seat's CameraOffset
+    this.#lensY = Number.isFinite(y) ? y : 0;
   }
 
   setSpellDensity(enabled: boolean): void {
@@ -11142,7 +11146,7 @@ export class WorldRenderer3D {
 
   #updateCamera(player: WorldPosition, yaw: number, pitch: number, distance: number, pivotHeight: number): void {
     const camera = createCamera(player, yaw, pitch, distance,
-      { pivotHeight, lensYaw: this.#lensYaw, lensPitch: this.#lensPitch }); // 11.02 (26.10): the vehicle lens
+      { pivotHeight, lensYaw: this.#lensYaw, lensPitch: this.#lensPitch, lensX: this.#lensX, lensY: this.#lensY }); // 11.02 (26.10): the vehicle lens
     // 05.10-A7a-E (6.13): kit camera shakes move the whole camera (CameraShake.ts, Wow.exe 0x00606970).
     if (this.#cameraShakes.size > 0
       && this.#cameraShakes.offset(performance.now(), player, player.orientation, _cameraShake)) {
