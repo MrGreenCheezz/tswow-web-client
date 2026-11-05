@@ -1,3 +1,4 @@
+import { gameObjectBoxWanted } from "./GameObjectPointer.js"; // 05.11 (7.60)
 import { cameraModelPivotHeight, cameraPivotHeight, game } from "./Context.js"; // 5.33: + cameraModelPivotHeight
 import { drainWorldState } from "../ui/WorldView.js";
 import { updateDeathReclaimCountdown } from "../ui/Npc.js";
@@ -836,6 +837,7 @@ function frame(now: number): void {
       game.renderer ? loopGameObjectCorners : undefined, // 06.10-7.24
       plateArt, // 03.11 6.37
       settingOn("plateOverlap"), // 03.11 6.37
+      gameObjectBoxWanted, // 05.11 7.60
     );
     syncQuestMarks(); // 03.11 6.37
     hitchScene = performance.now();

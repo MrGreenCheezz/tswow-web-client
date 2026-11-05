@@ -2,9 +2,10 @@ import { UPDATE_FIELDS } from "../../generated/updateFields.js";
 import { REACTION_NEUTRAL } from "../../world/FactionRules.js";
 import { isLootable, unit } from "../../world/Fields.js";
 import {
-  GO_TYPE_BARBER_CHAIR, GO_TYPE_CHAIR, GO_TYPE_FISHINGNODE, GO_TYPE_GUILD_BANK, GO_TYPE_MAILBOX, GO_TYPE_QUESTGIVER,
+  GO_TYPE_BARBER_CHAIR, GO_TYPE_CHAIR, GO_TYPE_GUILD_BANK, GO_TYPE_MAILBOX, GO_TYPE_QUESTGIVER,
   interactionDistance, lockIdOf, type GameObjectTemplate,
 } from "../../world/GameObjectProtocol.js";
+import { gameObjectInteractable } from "../../world/GameObjectHighlight.js"; // 05.11 (7.60)
 import type { CreatureTemplate } from "../../world/QueryCacheProtocol.js";
 import { isWorldObjectDead, type WorldObjectState } from "../../world/WorldState.js";
 
@@ -152,19 +153,11 @@ const CREATURE_TYPE_FLAG_INTERACT_WHILE_DEAD = 0x80;
 const TYPE_FLAG_HERB = 0x100;
 const TYPE_FLAG_MINING = 0x200;
 const TYPE_FLAG_ENGINEERING = 0x8000;
-/** SharedDefines.h:1631-1649: GameObjectFlags and the GAMEOBJECT_DYNAMIC low half. */
-const GO_FLAG_IN_USE = 0x1;
-const GO_FLAG_INTERACT_COND = 0x4;
-const GO_FLAG_NOT_SELECTABLE = 0x10;
-const GO_DYNFLAG_LO_ACTIVATE = 0x01;
-const GO_DYNFLAG_LO_NO_INTERACT = 0x04;
 /** 0x009E8D2C: an NPC's cursor greys past its combat reach plus this many yards. */
 const NPC_CURSOR_REACH = 4;
 /** 0x004F5F40: melee range = max(0x009EBF34, both combat reaches + 0x009F987C). */
 const MELEE_RANGE_MIN = 5;
 const MELEE_RANGE_BONUS = 4 / 3;
-/** 0x00AD2810 … types whose vtable answers "has a cursor" with 0x007112A0 (the rest say no, 0x00427A90). */
-const GO_TYPES_WITH_CURSOR = new Set([0, 1, 2, 3, 4, 6, 7, 9, 10, 12, 13, 17, 18, 19, 22, 23, 24, 26, 27, 32, 34]);
 /**
  * LockType.dbc CursorName for the stock lock types (1 Lockpicking PickLock, 2 Herbalism GatherHerbs,
  * 3 Mining Mine, 19 Fishing FishingCursor; the rest are empty). A dataset's own lock types need the
@@ -204,6 +197,8 @@ export interface CursorRules {
   lockTypeCursor?(lockType: number): string | undefined;
   /** 11.02 (04.11): whether the seat the character sits in lets it deal with units (world/SeatInteraction.ts); absent: yes. */
   seatAllowsInteraction?(): boolean;
+  /** 05.11 (7.60): a game object's side reads hostile to the player (0x0070EDD0); absent: no. */
+  gameObjectHostile?(object: WorldObjectState): boolean;
 }
 
 function distanceSq(a: { x: number; y: number; z: number }, b: { x: number; y: number; z: number }): number {
@@ -328,23 +323,6 @@ function gameObjectUsable(self: WorldObjectState, object: WorldObjectState, type
   return distanceSq(selfAt, at) <= range * range;
 }
 
-/** 0x007112A0: whether an object of a type with a cursor is interactable now. */
-function gameObjectHasCursor(self: WorldObjectState, object: WorldObjectState, type: number): boolean {
-  if (!GO_TYPES_WITH_CURSOR.has(type)) return false;
-  const dynamic = object.fields.get(UPDATE_FIELDS.GAMEOBJECT_DYNAMIC.offset) ?? 0;
-  const flags = object.fields.get(UPDATE_FIELDS.GAMEOBJECT_FLAGS.offset) ?? 0;
-  if ((dynamic & GO_DYNFLAG_LO_NO_INTERACT) !== 0 || (flags & (GO_FLAG_IN_USE | GO_FLAG_NOT_SELECTABLE)) !== 0) return false;
-  if ((flags & GO_FLAG_INTERACT_COND) !== 0 && (dynamic & GO_DYNFLAG_LO_ACTIVATE) === 0) return false;
-  // 0x00712030: a fishing bobber has a cursor only while it is the player's channel object.
-  if (type === GO_TYPE_FISHINGNODE) {
-    const channel = UPDATE_FIELDS.UNIT_FIELD_CHANNEL_OBJECT.offset;
-    const low = self.fields.get(channel) ?? 0;
-    const high = self.fields.get(channel + 1) ?? 0;
-    return ((BigInt(high >>> 0) << 32n) | BigInt(low >>> 0)) === object.guid;
-  }
-  return true;
-}
-
 /** 0x0070F9B0: the lock's first LockType's CursorName, else Interact. */
 function lockCursor(template: GameObjectTemplate, usable: boolean, rules: CursorRules): string {
   const lockId = Array.isArray(template.data) ? lockIdOf(template) : 0;
@@ -359,9 +337,14 @@ function lockCursor(template: GameObjectTemplate, usable: boolean, rules: Cursor
 /** The cursor over a game object (0x0070CE10); "" is the default (Point). */
 function gameObjectCursor(world: CursorWorld, self: WorldObjectState, object: WorldObjectState, type: number,
   rules: CursorRules): string {
-  if (!gameObjectHasCursor(self, object, type)) return "";
   const entry = object.fields.get(UPDATE_FIELDS.OBJECT_FIELD_ENTRY.offset) ?? 0;
   const template = entry > 0 ? world.gameObjectTemplate(entry, object.guid) : undefined;
+  if (!gameObjectInteractable({
+    self, object, type, template,
+    hostile: rules.gameObjectHostile?.(object) ?? false,
+    creatorOpen: rules.canAttack,
+    objectOf: (guid) => world.state.objects.get(guid),
+  })) return "";
   if (!template) return "";
   const usable = gameObjectUsable(self, object, type);
   if (template.iconName) return iconCursor(template.iconName, !usable);

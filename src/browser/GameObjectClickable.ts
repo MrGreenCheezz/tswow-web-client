@@ -3,7 +3,7 @@
 // (RenderResults.ts `gameObjectCorners`) without importing the overlay's page code.
 
 import { UPDATE_FIELDS } from "../generated/updateFields.js";
-import { GO_FLAG_NOT_SELECTABLE, interactiveGameObjectType } from "../world/GameObjectProtocol.js";
+import { gameObjectMayHighlight } from "../world/GameObjectHighlight.js";
 import type { WorldObjectState, WorldPosition } from "../world/WorldState.js";
 
 /** How far from the view subject the overlay boxes and plates anything, in yards. */
@@ -20,10 +20,12 @@ export function gameObjectType(object: WorldObjectState): number {
   return ((object.fields.get(UPDATE_FIELDS.GAMEOBJECT_BYTES_1.offset) ?? 0) >>> 8) & 0xff;
 }
 
-/** 06.10-7.24-review: whether a click can land on this game object (the test `#drawGameObject` makes). */
+/**
+ * 06.10-7.24-review: whether the pointer could ever land on this game object (the test `#drawGameObject` makes). 05.11 (7.60):
+ * by Wow.exe's rule as far as type and flags go; the template, the factions and the quest log are asked when it points.
+ */
 export function clickableGameObject(object: WorldObjectState): boolean {
-  const flags = object.fields.get(UPDATE_FIELDS.GAMEOBJECT_FLAGS.offset) ?? 0;
-  return interactiveGameObjectType(gameObjectType(object)) && (flags & GO_FLAG_NOT_SELECTABLE) === 0;
+  return gameObjectMayHighlight(gameObjectType(object), object.fields.get(UPDATE_FIELDS.GAMEOBJECT_FLAGS.offset) ?? 0);
 }
 
 export function overlaySquaredDistance(left: WorldPosition, right: WorldPosition): number {

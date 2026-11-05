@@ -230,6 +230,8 @@ export class SimpleScene {
     /** 03.11 (6.37): the plate's pictures, and whether plates may overlap (nameplateAllowOverlap). */
     plateArt?: PlateArt,
     platesOverlap = true,
+    /** 05.11 (7.60): whether a game object still wants a click box once its template is known (GameObjectPointer.ts). */
+    gameObjectBoxWanted?: (object: WorldObjectState) => boolean,
   ): void {
     const { width, height } = this.#resize();
     const context = this.#context;
@@ -354,9 +356,12 @@ export class SimpleScene {
           }, camera, width, height);
           if (anchor) plates.push({ box: plateLayout(anchor.x, anchor.y, height), data, depth: point.depth });
         }
-      } else if (object.typeId === 5) this.#drawGameObject(object, point, top.y, bodyHeight, distance, isSelected,
-        gameObjectCorners && clickableGameObject(object) // 06.10-7.24-review: no box for what nothing can click
-          ? projectedBoxRect(object, gameObjectCorners, camera, width, height) : undefined); // 06.10-7.24
+      } else if (object.typeId === 5) {
+        // 06.10-7.24-review: no box for what nothing can click; 05.11 (7.60): nor for what a template has silenced.
+        const clickable = clickableGameObject(object) && (gameObjectBoxWanted?.(object) ?? true);
+        this.#drawGameObject(object, point, top.y, bodyHeight, distance, isSelected, clickable,
+          gameObjectCorners && clickable ? projectedBoxRect(object, gameObjectCorners, camera, width, height) : undefined); // 06.10-7.24
+      }
       // A dynamic object is the server-side anchor for a lasting spell area, not authored art of
       // its own. In the Canvas fallback a marker is still useful because no spell model is drawn;
       // over WebGL it was a yellow service bar painted through the real spell effect. Other object
@@ -424,10 +429,11 @@ export class SimpleScene {
    * and this is what that forgiveness costs — a radius, not a bigger box, so two units standing
    * together still resolve to whichever one the cursor is actually closer to.
    */
-  pick(x: number, y: number): bigint | undefined {
+  pick(x: number, y: number, accepts?: (guid: bigint) => boolean): bigint | undefined {
+    // 05.11 (7.60): `accepts` is whether the object answers the pointer: one that does not must not hide the one behind it.
     for (let index = this.#hits.length - 1; index >= 0; index--) {
       const hit = this.#hits[index];
-      if (hit && x >= hit.x && x <= hit.x + hit.width && y >= hit.y && y <= hit.y + hit.height) return hit.guid;
+      if (hit && x >= hit.x && x <= hit.x + hit.width && y >= hit.y && y <= hit.y + hit.height && (accepts?.(hit.guid) ?? true)) return hit.guid;
     }
     let nearest: bigint | undefined;
     let best = Number.POSITIVE_INFINITY;
@@ -444,7 +450,7 @@ export class SimpleScene {
       // this loop runs from the front of the list backwards, so «no further» handed every one of
       // those ties to whichever box was pushed *first*, which is the one further from the camera.
       // The exact pass has always resolved ties towards the front; now the forgiving one does too.
-      if (gap > PICK_SLOP || gap >= best) continue;
+      if (gap > PICK_SLOP || gap >= best || !(accepts?.(hit.guid) ?? true)) continue;
       best = gap;
       nearest = hit.guid;
     }
@@ -510,7 +516,7 @@ export class SimpleScene {
   }
 
   #drawGameObject(object: WorldObjectState, point: ScreenPoint, top: number, bodyHeight: number, distance: number, selected: boolean,
-    modelRect?: ScreenRect): void { // 06.10-7.24
+    clickable: boolean, modelRect?: ScreenRect): void { // 06.10-7.24
     const context = this.#context;
     const size = Math.max(10, Math.min(34, bodyHeight * 1.7));
     const centerY = top + bodyHeight / 2;
@@ -525,7 +531,7 @@ export class SimpleScene {
     // anything with an object. Making it only there meant the collision hulls that fill a city —
     // 261 of the 739 objects inside the draw radius on the worst measured circle — could still be
     // picked, become the target, wear a selection ring, and then refuse every interaction.
-    if (clickableGameObject(object)) { // 06.10-7.24-review: the test moved to `clickableGameObject`
+    if (clickable) { // 06.10-7.24-review: the test moved to `clickableGameObject`; 05.11 (7.60): its caller holds the answer
       // 06.10-7.24: the model's own box on the screen, never smaller than the old marker square.
       const x = point.x - size / 2 - 4;
       const y = centerY - size / 2 - 4;

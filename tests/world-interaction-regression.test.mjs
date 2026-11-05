@@ -180,7 +180,8 @@ test("an eligible game object exposes its server name in a cursor-following hove
     "the original client names a selectable object at a distance, even when a click is out of range");
   assert.match(interaction, /distance > interactionDistance\(type\)\) return undefined/,
     "a distant click still must not dispatch a game-object action");
-  assert.match(controls, /GAMEOBJECT_FLAGS[\s\S]{0,200}?GO_FLAG_NOT_SELECTABLE/,
+  // 05.11 (7.60): Wow.exe's rule, tests/game-object-highlight.test.mjs.
+  assert.match(controls, /scene\?\.pick\([^)]*answersPointer\)/,
     "server-authored non-selectable objects must remain scenery under the cursor");
   assert.match(controls, /waitForGameObjectTemplate\(entry,\s*object\.guid\)[\s\S]{0,800}?applyHoverCursor\(/,
     "a localized query answer must repaint a stationary hover without waiting for pointermove");
@@ -270,14 +271,13 @@ test("technical game objects never enter the pick stack ahead of an interactive 
   const clickable = await read("src/browser/GameObjectClickable.ts");
   assert.match(scene, /import \{[^}]*clickableGameObject[^}]*\} from "\.\/GameObjectClickable\.js";/);
 
-  assert.match(clickable, /interactiveGameObjectType/,
-    "the scene must know which GO types have a client interaction path");
-  // 06.10-7.24-review: the test moved into `clickableGameObject`, which guards the hit push.
-  assert.match(clickable,
-    /function clickableGameObject\([^)]*\)[^{]*\{[\s\S]{0,200}?interactiveGameObjectType\(gameObjectType\(object\)\)\s*&&\s*\(flags\s*&\s*GO_FLAG_NOT_SELECTABLE\)\s*===\s*0/,
-    "a GO is clickable only when its type has an interaction path and it is selectable");
+  // 05.11 (7.60): the test is Wow.exe's own now (tests/game-object-highlight.test.mjs), and its caller holds the answer.
+  assert.match(clickable, /gameObjectMayHighlight\(gameObjectType\(object\)/,
+    "the scene must know which GO types can answer the pointer");
+  assert.match(scene, /const clickable = clickableGameObject\(object\)/,
+    "a GO gets a box only when its type can answer and it is selectable");
   assert.match(scene,
-    /if\s*\(clickableGameObject\(object\)\)[^{]*\{[\s\S]{0,400}?this\.#hits\.push/,
+    /if\s*\(clickable\)[^{]*\{[\s\S]{0,700}?this\.#hits\.push/,
     "unsupported collision helpers must be rejected before they can hide a usable GO behind them in the hit stack");
 });
 

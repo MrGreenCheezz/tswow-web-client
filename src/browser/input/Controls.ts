@@ -1,4 +1,5 @@
-import { GO_FLAG_NOT_SELECTABLE, interactiveGameObjectType } from "../../world/GameObjectProtocol.js";
+import { interactiveGameObjectType } from "../../world/GameObjectProtocol.js";
+import { gameObjectAnswersPointer, gameObjectHostileToPlayer } from "../game/GameObjectPointer.js"; // 05.11 (7.60)
 import type { WorldObjectState } from "../../world/WorldState.js";
 import { UPDATE_FIELDS } from "../../generated/updateFields.js";
 import { game } from "../game/Context.js";
@@ -585,11 +586,15 @@ function zoomCamera(step: number): void {
  */
 function pickAt(point: { clientX: number; clientY: number }): bigint | undefined {
   const bounds = worldCanvas.getBoundingClientRect();
-  const guid = game.scene?.pick(point.clientX - bounds.left, point.clientY - bounds.top);
+  const guid = game.scene?.pick(point.clientX - bounds.left, point.clientY - bounds.top, answersPointer);
   if (guid === undefined) return undefined;
-  const object = game.world?.state.objects.get(guid);
-  if (object?.typeId === 5 && !interactiveGameObjectType(gameObjectType(object))) return undefined;
   return inSightFromCamera(guid) ? guid : undefined;
+}
+
+/** 05.11 (7.60): Wow.exe's rule, asked only of what is under the pointer; a unit always answers here. */
+function answersPointer(guid: bigint): boolean {
+  const object = game.world?.state.objects.get(guid);
+  return object?.typeId !== 5 || gameObjectAnswersPointer(object);
 }
 
 /**
@@ -646,6 +651,7 @@ function confirmGroundTargetAt(
 const CURSOR_RULES: CursorRules = {
   reaction: (object) => reactionTo(object),
   canAttack: (object) => canAttackUnit(object),
+  gameObjectHostile: (object) => gameObjectHostileToPlayer(object), // 05.11 (7.60)
   // 0x00513700: autoLootDefault, flipped while AUTOLOOTTOGGLE (Shift, the stock default) is held.
   autoLoot: () => settingOn("autoLoot") !== shiftHeld,
   gatherSpell: (object) => {
@@ -878,12 +884,10 @@ function clearHoverCursor(): void {
 function gameObjectHoverName(object: import("../../world/WorldState.js").WorldObjectState): string | undefined {
   const world = game.world;
   const type = gameObjectType(object);
-  if (!world || !interactiveGameObjectType(type)) return undefined;
-  // NOT_SELECTABLE is the flag that says "no tooltip": everything else names itself. Distance
-  // is deliberately not asked here — the original client shows the name at any range and lets
-  // the server refuse the click, so a quest giver across the room still introduces itself.
-  const flags = object.fields.get(UPDATE_FIELDS.GAMEOBJECT_FLAGS.offset) ?? 0;
-  if ((flags & GO_FLAG_NOT_SELECTABLE) !== 0) return undefined;
+  if (!world) return undefined;
+  // `pickAt` has already asked Wow.exe's rule (GameObjectPointer.ts), and what it lets through names itself, the
+  // `Point` icon too (0x00626720 reads no icon). Distance is deliberately not asked here — the original client shows
+  // the name at any range and lets the server refuse the click, so a quest giver across the room still introduces itself.
   const entry = object.fields.get(UPDATE_FIELDS.OBJECT_FIELD_ENTRY.offset) ?? 0;
   if (entry <= 0) return undefined;
   const template = world.gameObjectTemplate(entry, object.guid);
@@ -891,7 +895,7 @@ function gameObjectHoverName(object: import("../../world/WorldState.js").WorldOb
     waitForHoveredGameObjectTemplate(world, object, entry);
     return undefined;
   }
-  if (template.type !== type || template.iconName === "Point") return undefined;
+  if (template.type !== type) return undefined;
   return template.name.trim() || "Объект";
 }
 
@@ -1130,7 +1134,10 @@ function worldClick(point: { clientX: number; clientY: number }, left: boolean, 
     // An item on the stock bag cursor dropped on the world asks DELETE_ITEM_CONFIRM, as the client
     // does for an item let go outside every frame; that click selects nothing.
     if (frameXmlPopupsDropCursorItem()) return;
-    const picked = pickAt(point);
+    const pointedAt = pickAt(point);
+    // 05.11 (7.60): an object with a name and no use, a forge, a sign, is bare ground to this click.
+    const pointedObject = pointedAt === undefined ? undefined : world.state.objects.get(pointedAt);
+    const picked = pointedObject?.typeId === 5 && !interactiveGameObjectType(gameObjectType(pointedObject)) ? undefined : pointedAt;
     // 5.14: deselectOnClick off («Фиксация на цели»): bare ground keeps the target.
     if (picked === undefined && !settingOn("deselectOnClick")) return;
     world.selectTarget(picked);
