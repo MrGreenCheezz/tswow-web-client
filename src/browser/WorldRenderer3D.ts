@@ -12570,6 +12570,14 @@ export class WorldRenderer3D {
         rendered.growthStartedAt = undefined;
         rendered.growthTotal = undefined;
         this.#growingVegetation--;
+        // 06.11 (7.58): the sphere admission culls by was taken when the tree was placed, at a quarter of its size and
+        // a quarter of its height; at full size the crown left it, and from the air a tree whose foot had gone off the
+        // bottom of the view was turned away with its crown still in it. Taken again at the settled size.
+        const settledSphere = this.#environmentVisibilitySphere(rendered);
+        if (settledSphere) {
+          rendered.visibilitySphere = settledSphere;
+          this.#environmentVisibilitySpheres.set(rendered.source, settledSphere);
+        }
         this.#assignEnvironmentInstance(
           rendered,
           rendered.source,

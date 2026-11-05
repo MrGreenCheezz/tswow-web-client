@@ -968,6 +968,11 @@ test("the renderer grows admitted vegetation and freezes it settled", async () =
     "a settled tree costs no per-frame work afterwards");
   assert.match(growth, /node\.updateMatrix\(\);/,
     "same-frame readers see the stepped scale, not last render's");
+  // 06.11 (7.58): the culling sphere was taken at a quarter size and kept; a grown tree's crown left it.
+  assert.match(growth, /const settledSphere = this\.#environmentVisibilitySphere\(rendered\);[\s\S]*rendered\.visibilitySphere = settledSphere;[\s\S]*this\.#environmentVisibilitySpheres\.set\(rendered\.source, settledSphere\);/,
+    "a settled tree's admission sphere is taken again at its full size");
+  assert.ok(growth.indexOf("const settledSphere") > growth.indexOf("node.updateMatrixWorld(true);"),
+    "after the full-size matrix is composed");
   assert.match(source, /everVisible: boolean \| undefined;/,
     "a seen placement is remembered so frustum re-entry reads whole at once");
 });
