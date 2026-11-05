@@ -61,6 +61,7 @@ export interface RenderInputsMessage {
   readonly movementIds: MapDelta<number, number> | undefined;
   readonly spellAttributes: MapDelta<number, readonly number[]> | undefined;
   readonly groundNormals: MapDelta<bigint, GroundNormal> | undefined; // 05.11 (6.44)
+  readonly lootRanks: MapDelta<bigint, number> | undefined; // 06.11 (6.41)
   readonly vehicles: Replaced<VehicleCatalogRows | undefined>;
   readonly publishStatus: boolean;
   readonly switches: Replaced<RenderSwitchesPush | undefined>;
@@ -74,6 +75,7 @@ export class RenderInputsSender {
   readonly #movementIds = new MapDeltaSender<number, number>();
   readonly #spellAttributes = new MapDeltaSender<number, readonly number[]>();
   readonly #groundNormals = new MapDeltaSender<bigint, GroundNormal>(); // 05.11 (6.44)
+  readonly #lootRanks = new MapDeltaSender<bigint, number>(); // 06.11 (6.41)
   readonly #vehicles = new ReplacedSender<VehicleCatalogRows | undefined>();
   readonly #switches = new ReplacedSender<RenderSwitchesPush | undefined>();
   readonly #generation = new ReplacedSender<GatewayGenerationPush | undefined>();
@@ -87,6 +89,7 @@ export class RenderInputsSender {
       movementIds: this.#movementIds.delta(inputs.facing.movementIds),
       spellAttributes: this.#spellAttributes.delta(inputs.facing.spellAttributes),
       groundNormals: this.#groundNormals.delta(inputs.groundNormals),
+      lootRanks: this.#lootRanks.delta(inputs.lootRanks),
       vehicles: this.#vehicles.send(inputs.vehicles),
       publishStatus: inputs.publishStatus,
       switches: this.#switches.send(inputs.switches),
@@ -107,6 +110,7 @@ export class RenderInputsReceiver {
   readonly #movementIds = new MapDeltaReceiver<number, number>();
   readonly #spellAttributes = new MapDeltaReceiver<number, readonly number[]>();
   readonly #groundNormals = new MapDeltaReceiver<bigint, GroundNormal>(); // 05.11 (6.44)
+  readonly #lootRanks = new MapDeltaReceiver<bigint, number>(); // 06.11 (6.41)
   readonly #vehicles = new ReplacedReceiver<VehicleCatalogRows | undefined>(undefined);
   readonly #switches = new ReplacedReceiver<RenderSwitchesPush | undefined>(undefined);
   readonly #generation = new ReplacedReceiver<GatewayGenerationPush | undefined>(undefined);
@@ -115,7 +119,7 @@ export class RenderInputsReceiver {
     spellAttributes: this.#spellAttributes.map,
   };
   readonly #inputs: { -readonly [K in keyof RenderInputs]: RenderInputs[K] } = {
-    enchantGlow: undefined, hiddenGameObjects: this.#hidden, facing: this.#facing, groundNormals: this.#groundNormals.map, vehicles: undefined,
+    enchantGlow: undefined, hiddenGameObjects: this.#hidden, facing: this.#facing, groundNormals: this.#groundNormals.map, lootRanks: this.#lootRanks.map, vehicles: undefined,
     publishStatus: false, switches: undefined, gatewayGeneration: undefined, frameBudgetProbe: false,
   };
 
@@ -131,6 +135,7 @@ export class RenderInputsReceiver {
     facing.movementIds = this.#movementIds.apply(message.movementIds) ?? this.#movementIds.map;
     facing.spellAttributes = this.#spellAttributes.apply(message.spellAttributes) ?? this.#spellAttributes.map;
     inputs.groundNormals = this.#groundNormals.apply(message.groundNormals) ?? this.#groundNormals.map;
+    inputs.lootRanks = this.#lootRanks.apply(message.lootRanks) ?? this.#lootRanks.map; // 06.11 (6.41)
     inputs.vehicles = this.#vehicles.apply(message.vehicles);
     inputs.publishStatus = message.publishStatus;
     inputs.switches = this.#switches.apply(message.switches);

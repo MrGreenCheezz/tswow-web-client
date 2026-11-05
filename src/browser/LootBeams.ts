@@ -9,18 +9,39 @@
  * fading upward and toward their silhouette, with a slow shimmer rising through them. A beam fades in when the
  * mark arrives and out when it leaves (the body looted, or out of sight), never cuts. Not Wow.exe's: off in the
  * comparison profile.
+ *
+ * 06.11 (6.41, owner 04.11: «чуть заметнее, особенно у боссов и редких противников»): every beam a little taller and
+ * brighter, and a body's beam grows with its creature's rank (`CreatureTemplate.classification`, RenderInputs.ts
+ * `lootRanks`): an elite's a fifth, a rare's half again, a boss's nearly twice — and never shorter than
+ * {@link LOOT_BEAM_OVER_BODY} of the body's standing height, so a dragon's body does not swallow its own beam.
  */
 import * as THREE from "three";
 
 /** Bodies with a beam at once; past it the nearest ones keep theirs. */
 export const LOOT_BEAM_LIMIT = 32;
-/** The beam's height above the body, in yards. */
-export const LOOT_BEAM_HEIGHT = 2.6;
+/** The beam's height above the body, in yards (06.11, 6.41: was 2.6). */
+export const LOOT_BEAM_HEIGHT = 3.2;
 /** Seconds a beam takes to appear and to fade. */
 export const LOOT_BEAM_FADE_IN = 0.35;
 export const LOOT_BEAM_FADE_OUT = 0.5;
 /** Its colour: warm gold, the loot cursor's. */
 export const LOOT_BEAM_COLOUR = new THREE.Color(1, 0.78, 0.32);
+
+/** 06.11 (6.41): the share of a body's standing height its beam reaches at least (a body lies lower than that). */
+export const LOOT_BEAM_OVER_BODY = 0.75;
+
+/**
+ * 06.11 (6.41): how much bigger a beam stands over a body of each creature rank (`classification`: 0 normal, 1 elite,
+ * 2 rare elite, 3 boss, 4 rare): the height by this, the girth by half as much again.
+ */
+export function lootBeamScale(rank: number | undefined): number {
+  switch (rank) {
+    case 1: return 1.2;
+    case 2: case 4: return 1.5;
+    case 3: return 1.9;
+    default: return 1;
+  }
+}
 
 const VERTEX = /* glsl */ `
 attribute float beamLevel;
@@ -62,6 +83,7 @@ void main() {
 interface Beam {
   level: number;
   wanted: boolean;
+  scale: number;
   readonly phase: number;
   readonly position: THREE.Vector3;
 }
@@ -100,8 +122,9 @@ export class LootBeams {
   constructor() {
     this.#levels.setUsage(THREE.DynamicDrawUsage);
     this.#phases.setUsage(THREE.DynamicDrawUsage);
-    this.#glow = beamMesh(0.22, 0.42, 0.55, 0, this.#time, this.#levels, this.#phases);
-    this.#core = beamMesh(0.05, 0.09, 0.9, 0.45, this.#time, this.#levels, this.#phases);
+    // 06.11 (6.41): glow 0.55 → 0.7, core 0.9 → 1.
+    this.#glow = beamMesh(0.24, 0.46, 0.7, 0, this.#time, this.#levels, this.#phases);
+    this.#core = beamMesh(0.055, 0.1, 1, 0.45, this.#time, this.#levels, this.#phases);
     this.#glow.name = "lootBeamGlow";
     this.#core.name = "lootBeamCore";
     this.group.name = "lootBeams";
@@ -136,16 +159,20 @@ export class LootBeams {
     for (const beam of this.#beams.values()) beam.wanted = false;
   }
 
-  /** A lootable body `guid` lies at scene `position` this frame. */
-  mark(guid: bigint, position: THREE.Vector3): void {
+  /**
+   * A lootable body `guid` lies at scene `position` this frame; `rank` is its creature's classification and
+   * `bodyHeight` its model's standing height in yards.
+   */
+  mark(guid: bigint, position: THREE.Vector3, rank?: number, bodyHeight = 0): void {
     if (!this.#enabled) return;
     let beam = this.#beams.get(guid);
     if (!beam) {
       // Each beam breathes on its own phase, so a pack's bodies do not pulse in step.
-      beam = { level: 0, wanted: true, phase: Number(guid % 997n) * 0.37, position: new THREE.Vector3() };
+      beam = { level: 0, wanted: true, scale: 1, phase: Number(guid % 997n) * 0.37, position: new THREE.Vector3() };
       this.#beams.set(guid, beam);
     }
     beam.wanted = true;
+    beam.scale = Math.max(lootBeamScale(rank), Number.isFinite(bodyHeight) ? bodyHeight * LOOT_BEAM_OVER_BODY / LOOT_BEAM_HEIGHT : 0);
     beam.position.copy(position);
   }
 
@@ -174,7 +201,8 @@ export class LootBeams {
     const levels = this.#levels.array as Float32Array;
     const phases = this.#phases.array as Float32Array;
     this.#order.forEach((beam, index) => {
-      this.#matrix.makeTranslation(beam.position.x, beam.position.y, beam.position.z);
+      const girth = 1 + (beam.scale - 1) / 2;
+      this.#matrix.makeScale(girth, beam.scale, girth).setPosition(beam.position);
       this.#glow.setMatrixAt(index, this.#matrix);
       this.#core.setMatrixAt(index, this.#matrix);
       // Eased, so a beam swells in rather than ramping.

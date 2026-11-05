@@ -10253,7 +10253,9 @@ export class WorldRenderer3D {
       if (!rendered.node.visible || !rendered.node.parent) continue;
       const object = state.objects.get(guid);
       if (!object || !isWorldObjectDead(object) || !isLootable(object)) continue;
-      beams.mark(guid, rendered.node.getWorldPosition(_lootBeamAt));
+      // 06.11 (6.41): by rank, and over the body's own height.
+      beams.mark(guid, rendered.node.getWorldPosition(_lootBeamAt), this.#inputs.lootRanks.get(guid),
+        (rendered.template?.height ?? 0) * rendered.node.scale.y);
     }
     beams.end(now, this.#camera.position);
   }

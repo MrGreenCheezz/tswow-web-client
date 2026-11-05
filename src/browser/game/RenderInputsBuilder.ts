@@ -14,6 +14,8 @@
  */
 
 import { GO_TYPE_DUNGEON_DIFFICULTY } from "../../world/DungeonDifficultyObject.js";
+import { isLootable } from "../../world/Fields.js"; // 06.11 (6.41)
+import { isWorldObjectDead } from "../../world/WorldState.js"; // 06.11 (6.41)
 import { UnitFacingInputsBuilder, type FacingWorld } from "../../world/UnitFacingSources.js";
 import type { VehicleCatalog } from "../../world/VehicleDbc.js";
 import type { WorldObjectState } from "../../world/WorldState.js";
@@ -32,11 +34,17 @@ import { viewSubjectIn, type ViewSubjectState } from "./ViewSubject.js";
 
 const GAMEOBJECT_BYTES_1 = UPDATE_FIELDS.GAMEOBJECT_BYTES_1.offset;
 const TYPEID_GAMEOBJECT = 5;
+const TYPEID_UNIT = 3;
+const OBJECT_FIELD_ENTRY = UPDATE_FIELDS.OBJECT_FIELD_ENTRY.offset;
 
 /** What one frame's inputs are built from. */
 export interface RenderInputSources {
   /** The world being drawn (`game.world`); its `state` is the one `draw` is handed. */
-  readonly world: (FacingWorld & { readonly state: ViewSubjectState }) | undefined;
+  readonly world: (FacingWorld & {
+    readonly state: ViewSubjectState;
+    /** 06.11 (6.41): the creature query cache, for the rank of a lootable body. */
+    readonly creatureTemplates?: ReadonlyMap<number, { readonly classification: number }>;
+  }) | undefined;
   /** The page's spell rows (`game.spells`). */
   readonly spells: ReadonlyMap<number, SpellMetadata>;
   /** The gateway's enchant client (`itemEnchantments`), loaded or not. */
@@ -55,6 +63,7 @@ export class RenderInputsBuilder {
   readonly #facing = new UnitFacingInputsBuilder();
   readonly #hidden = new Set<bigint>();
   readonly #ground = new UnitGroundNormals(); // 05.11 (6.44)
+  readonly #lootRanks = new Map<bigint, number>(); // 06.11 (6.41)
   readonly #inputs: { -readonly [K in keyof RenderInputs]: RenderInputs[K] };
 
   constructor() {
@@ -63,6 +72,7 @@ export class RenderInputsBuilder {
       hiddenGameObjects: this.#hidden,
       facing: this.#facing.build(undefined, undefined),
       groundNormals: this.#ground.normals,
+      lootRanks: this.#lootRanks,
       vehicles: undefined,
       publishStatus: false,
       switches: undefined,
@@ -84,7 +94,21 @@ export class RenderInputsBuilder {
     inputs.gatewayGeneration = gatewayGenerationPush();
     inputs.frameBudgetProbe = frameBudgetProbe.enabled;
     this.#collectHidden(world?.state, sources.gameObjectShown);
+    this.#collectLootRanks(world);
     return inputs;
+  }
+
+  /** 06.11 (6.41): the rank of every dead body lootable for this viewer whose creature has one; a few a frame. */
+  #collectLootRanks(world: RenderInputSources["world"]): void {
+    const ranks = this.#lootRanks;
+    ranks.clear();
+    const templates = world?.creatureTemplates;
+    if (world === undefined || templates === undefined) return;
+    for (const object of world.state.objects.values()) {
+      if (object.typeId !== TYPEID_UNIT || !isWorldObjectDead(object) || !isLootable(object)) continue;
+      const rank = templates.get(object.fields.get(OBJECT_FIELD_ENTRY) ?? 0)?.classification ?? 0;
+      if (rank > 0) ranks.set(object.guid, rank);
+    }
   }
 
   /** The renderer's admission filter (WorldRenderer3D `#updateGameObjects`), then the predicate it asked. */
