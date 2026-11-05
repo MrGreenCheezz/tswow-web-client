@@ -5,7 +5,7 @@ import { OPCODES } from "../dist/code/generated/opcodes.js";
 import { UPDATE_FIELDS } from "../dist/code/generated/updateFields.js";
 import { advancePhysics, beginHeld, releaseAllInput, sendMovement } from "../dist/code/browser/input/Movement.js";
 import {
-  QUIET_HOLD_MS, hideLoadingScreen, holdForGround, holdingForGround, loadingScreenVisible, resetLoadingScreen,
+  hideLoadingScreen, holdForGround, holdingForGround, loadingScreenVisible, resetLoadingScreen,
   showLoadingScreen, updateLoadingScreen, worldPhysicsReady,
 } from "../dist/code/browser/ui/LoadingScreen.js";
 
@@ -102,7 +102,7 @@ test("a hold for the ground keeps physics still with no curtain, and lets go the
   game.world = destination();
   let ready = false;
   game.terrain = { isReady: () => ready };
-  game.collision = { refresh() {}, isReady: () => ready };
+  game.collision = { refresh() {}, isReady: () => false, isReadyUnderfoot: () => ready };
   const start = performance.now();
   holdForGround("Hero");
   assert.equal(loadingScreenVisible(), false, "no curtain");
@@ -122,14 +122,14 @@ test("a hold for the ground keeps physics still with no curtain, and lets go the
   game.worldLoading = false;
 });
 
-test("a hold for the ground that runs long shows the curtain and goes on as one", () => {
+test("a hold for the ground never shows the curtain, however long it runs (05.11, as Wow.exe under 150 yards)", () => {
   game.world = destination();
   game.terrain = { isReady: () => false };
-  game.collision = { refresh() {}, isReady: () => false };
+  game.collision = { refresh() {}, isReady: () => false, isReadyUnderfoot: () => false };
   holdForGround("Hero");
-  updateLoadingScreen(performance.now() + QUIET_HOLD_MS + 1);
-  assert.equal(loadingScreenVisible(), true);
-  assert.equal(holdingForGround(), false);
+  updateLoadingScreen(performance.now() + 5000);
+  assert.equal(loadingScreenVisible(), false);
+  assert.equal(holdingForGround(), true);
   assert.equal(worldPhysicsReady(), false);
   resetLoadingScreen();
   // A curtain already up stays up.

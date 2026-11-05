@@ -608,6 +608,31 @@ test("the transfer barrier stays closed until every wanted group is built, not o
   }
 });
 
+test("a short hop opens on what the character can touch, while the far groups still wait (05.11, 5.36)", async () => {
+  const { placements, models } = block();
+  const server = gateway({ placements: () => placements, models });
+  try {
+    const source = new CollisionSource("ws://localhost:1234/world", { buildBudgetMs: 0 });
+    let underfoot;
+    let everything;
+    for (let frame = 0; frame < 20; frame++) {
+      source.refresh(1, 0, 0);
+      if (underfoot === undefined && source.isReadyUnderfoot(1, 0, 0)) {
+        underfoot = frame;
+        assert.equal(source.world.floorUnder(0, 0, 1.6, -10), 0, "the floor is there when it opens");
+      }
+      if (everything === undefined && source.isReady(1, 0, 0)) everything = frame;
+      await flushed();
+      await flushed();
+    }
+    assert.ok(underfoot !== undefined, "never opened");
+    assert.ok(everything !== undefined && underfoot < everything, `underfoot ${underfoot}, everything ${everything}`);
+    assert.equal(new CollisionSource("ws://localhost:1234/world").isReadyUnderfoot(undefined, 0, 0), false);
+  } finally {
+    server.restore();
+  }
+});
+
 test("only a landing the world is waiting for makes it evaluate, and a frame's landings are one evaluation", async () => {
   const { placements, models } = block();
   models.set("Far.wmo", [group(slab(-1, -1, 1, 1, 0), spawn(1, "Far.wmo", 2000, 0))]);

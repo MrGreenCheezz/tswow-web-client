@@ -23,8 +23,7 @@ export interface SameMapTeleportEffects {
   spellVisualsWorldChanged(): void;
   showLoadingScreen(mapId: number): void;
   /**
-   * 5.36: "hop" only — gravity and movement wait for the destination's ground with no curtain, and the curtain
-   * comes up only if the wait runs long (`LoadingScreen.ts` `holdForGround`).
+   * 5.36: "hop" only — gravity and movement wait for the destination's ground with no curtain (`LoadingScreen.ts` `holdForGround`).
    */
   holdUntilReady(mapId: number): void;
   /** Keys, autorun and the fall (`Controls.ts` `clearHeldKeys`). */

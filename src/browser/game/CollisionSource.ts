@@ -627,6 +627,36 @@ export class CollisionSource {
     return true;
   }
 
+  /**
+   * 05.11 (5.36): `isReady` for a short hop: everything the character can touch at this point is in the world. The rest of the
+   * 90 yards comes in as it does on foot, and a hop does not wait for it: in Stormwind it can take seconds. What stands within
+   * `IMMEDIATE_BUILD_RANGE` is built on the frame the evaluation runs, so this holds only for what is still on the wire.
+   */
+  isReadyUnderfoot(map: number | undefined, x: number, y: number): boolean {
+    if (map === undefined) return false;
+    if (map !== this.#map || Math.abs(x - this.#atX) >= REBUILD_DISTANCE || Math.abs(y - this.#atY) >= REBUILD_DISTANCE) {
+      this.refresh(map, x, y);
+    }
+    if (this.#tileKeys(map, x, y).some((key) => !this.#tiles.has(key))) return false;
+    for (const { object, distance } of this.#near(map, x, y)) {
+      if (distance >= IMMEDIATE_BUILD_RANGE) break; // Nearest first.
+      const model = this.models.model(object.name);
+      if (!model) {
+        if (!this.models.isResolved(object.name)) return false;
+        continue;
+      }
+      const record = this.#record(map, object, model);
+      for (let index = 0; index < model.groups.length; index++) {
+        if (model.groups[index]!.triangleCount === 0 || !(groupDistance(record.boxes, index, x, y) < IMMEDIATE_BUILD_RANGE)) continue;
+        const group = record.groups.get(index);
+        if (group?.standing && this.#current(group)) continue;
+        if (!this.#pending.some((item) => item.record === record && item.index === index)) this.#dirty = true;
+        return false;
+      }
+    }
+    return true;
+  }
+
   #tileKeys(map: number, x: number, y: number): string[] {
     const keys: string[] = [];
     for (const offsetX of [-TILE_SPREAD, 0, TILE_SPREAD]) {

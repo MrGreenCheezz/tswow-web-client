@@ -76,12 +76,11 @@ let soakFrames = 0;
 let soakArmed = false;
 const ENTRY_SOAK_FRAMES = 3;
 /**
- * 5.36: a short teleport onto ground still streaming (`holdForGround`) holds gravity and movement behind the
- * same barrier with no curtain; the curtain shows only if the ground has not answered by this time.
+ * 5.36: a short teleport onto ground still streaming (`holdForGround`) holds gravity and movement with no curtain, for what
+ * the character can touch. 05.11: never a curtain, as in Wow.exe, however long it takes: on the stand 3 of 9 hops of 32 yards
+ * in Stormwind waited out the old 1.5 s for groups they could not touch.
  */
-export const QUIET_HOLD_MS = 1500;
-/** When an unseen hold shows its curtain; undefined when nothing is held unseen. */
-let quietUntil: number | undefined;
+let groundHold = false;
 
 /** A picture from the archives; it is shown only once its pixels are here (`data-ready`). */
 function picture(className: string): HTMLImageElement {
@@ -189,7 +188,7 @@ export function showLoadingScreen(characterName: string, hint = "", destination?
   parts ??= build();
   if (!parts) return;
   shownAt = performance.now();
-  quietUntil = undefined; // 5.36
+  groundHold = false; // 5.36
   soakFrames = 0;
   soakArmed = false;
   lastStatus = "";
@@ -208,21 +207,20 @@ export function showLoadingScreen(characterName: string, hint = "", destination?
 
 /**
  * 5.36: the barrier of {@link showLoadingScreen} without its curtain, for a teleport of at most 150 yards whose
- * ground is still streaming (TeleportKind.ts "hop"). Gravity and movement wait for terrain and collision as
- * behind the curtain; the world stays on screen, and the curtain comes up only after {@link QUIET_HOLD_MS}.
- * A curtain already up stays up.
+ * ground is still streaming (TeleportKind.ts "hop"). Gravity and movement wait for the terrain and for the collision
+ * underfoot; the world stays on screen. A curtain already up stays up.
  */
 export function holdForGround(characterName: string, hint = "", destination?: LoadingScreenDestination): void {
   const curtainUp = loadingScreenVisible();
   showLoadingScreen(characterName, hint, destination);
   if (curtainUp || !parts) return;
   parts.root.hidden = true;
-  quietUntil = shownAt + QUIET_HOLD_MS;
+  groundHold = true;
 }
 
 /** 5.36: whether gravity and movement are held for the ground with no curtain shown (tests, diagnostics). */
 export function holdingForGround(): boolean {
-  return quietUntil !== undefined;
+  return groundHold;
 }
 
 /** Whatever the client is waiting for right now, in the player's own words. */
@@ -236,7 +234,7 @@ export function hideLoadingScreen(): void {
   firstEntryMark("world"); // 10.29 (26.10)
   const wasLoading = game.worldLoading;
   if (parts) parts.root.hidden = true;
-  quietUntil = undefined; // 5.36
+  groundHold = false; // 5.36
   worldReady = true;
   game.worldLoading = false;
   // A key can be pressed while the curtain owns the screen. Reconcile it after opening, when the
@@ -269,12 +267,7 @@ export function worldPhysicsReady(): boolean {
  * the terrain-only client rather than holding the player at a black screen forever.
  */
 export function updateLoadingScreen(now: number): void {
-  if (!loadingScreenVisible() && quietUntil === undefined) return; // 5.36: an unseen hold is resolved here too
-  // 5.36: a hold that has waited too long shows its curtain and goes on as one.
-  if (quietUntil !== undefined && now >= quietUntil) {
-    quietUntil = undefined;
-    if (parts) parts.root.hidden = false;
-  }
+  if (!loadingScreenVisible() && !groundHold) return; // 5.36: an unseen hold is resolved here too
   // The bar creeps toward the ceiling of the stage reached so far (see LOADING_STAGE_PROGRESS).
   setProgress(loadingProgressStep(progress, progressCeiling, now - progressAt));
   progressAt = now;
@@ -298,13 +291,15 @@ export function updateLoadingScreen(now: number): void {
     const terrainReady = game.terrain?.isReady(world.mapId, position.x, position.y) === true
       && (workerFrames === undefined || workerFrames > 0 || worldReady);
     game.collision?.refresh(world.mapId, position.x, position.y);
-    const collisionReady = game.collision?.isReady(world.mapId, position.x, position.y) === true;
+    const collisionReady = (groundHold // 05.11 (5.36): a hop waits for what the character can touch
+      ? game.collision?.isReadyUnderfoot(world.mapId, position.x, position.y)
+      : game.collision?.isReady(world.mapId, position.x, position.y)) === true;
     if (!terrainReady) {
       loadingStatus("Загрузка ландшафта…");
     } else if (!collisionReady) {
       reachStage("collision");
       loadingStatus("Загрузка коллизии…");
-    } else if (quietUntil === undefined && !pageLightsReady(world.mapId, position.x, position.y)) { // 5.36: not unseen
+    } else if (!groundHold && !pageLightsReady(world.mapId, position.x, position.y)) { // 5.36: not unseen
       // 24.10 (7.50): the lamps around the character, so they are lit when the curtain lifts (bounded).
       loadingStatus("Загрузка фонарей…");
     } else {
@@ -344,7 +339,7 @@ function pageLightsReady(map: number, x: number, y: number): boolean {
  */
 function releaseWhenSoaked(workerFrames?: number): void {
   // 5.36: an unseen hold has nothing behind a curtain to soak — the world has been on screen all along.
-  if (quietUntil !== undefined) {
+  if (groundHold) {
     hideLoadingScreen();
     return;
   }
