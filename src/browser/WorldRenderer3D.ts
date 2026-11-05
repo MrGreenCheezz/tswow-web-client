@@ -18,6 +18,7 @@ import {
 } from "./RenderResultRows.js"; // 22.10 ARC-2 S3a-review: rows recomputed only when their inputs move
 import { passengerGameObjectTilt } from "../world/TransportPassengers.js";
 import { ShownGroundNormal, unitTiltAngles, type UnitTiltAngles } from "../world/UnitTilt.js"; // 05.11 (6.44)
+import { shownStandState, wakeStandState } from "./StandStateWake.js"; // 06.11 (6.43)
 import { ProjectedDecals } from "./ProjectedDecals.js"; // 05.11 (6.45)
 import { ShownUnitFacing, unitAutoFacing, unitFacingTurn, unitSeatFacing } from "../world/UnitFacing.js"; // 11.10; 5.32: + unitSeatFacing; 22.10 ARC-2 S2a: the interaction NPC is an input
 import {
@@ -3078,6 +3079,8 @@ interface RenderedUnit extends PosedModel {
   shownFacing: ShownUnitFacing | undefined;
   /** 05.11 (6.44): the normal the model leans by, while it is one that leans (world/UnitTilt.ts). */
   groundNormal: ShownGroundNormal | undefined;
+  /** 06.11 (6.43): a swing or a move ended its stand-state pose (StandStateWake.ts). */
+  standWake: "pending" | number | undefined;
   /** 5.32: a seated passenger's drawn facing in its seat (VehiclePassengerPose.ts reads it); undefined off a seat. */
   seatFacing: number | undefined;
   /** 05.10-A7a-F1 (6.16а): private copies of the batches the file fades under Death. See `BatchDeathFade.ts`. */
@@ -15571,6 +15574,7 @@ export class WorldRenderer3D {
         shownFacing: undefined, // 11.10
         seatFacing: undefined, // 5.32
         groundNormal: undefined, // 05.11 (6.44)
+        standWake: undefined, // 06.11 (6.43)
         closedHands: undefined, // 12.10 6.24
         sheathCeremony: undefined, sheathArms: undefined, // 12.10 6.08
         transitionMoving: undefined, pendingTransition: undefined, // 12.10 6.07
@@ -16529,6 +16533,11 @@ export class WorldRenderer3D {
         roll: Math.random(), // 05.10-A7a-D 6.06; 05.10-A7a-D-review: unread (Wow.exe 0x755130 does not roll), kept for 6.16c
       },
     }, now);
+    // 06.11 (6.43): a swing or a shot ends a sleeping or seated unit's pose (StandStateWake.ts).
+    if (entry !== undefined && layer === "melee") {
+      const unit = this.#units.get(guid);
+      if (unit !== undefined) wakeStandState(unit);
+    }
     if (entry === undefined || id === undefined) return undefined;
     this.#swingWatch.watch(id, guid, entry); // 22.10 ARC-2 S4a
     return id;
@@ -16665,7 +16674,9 @@ export class WorldRenderer3D {
       ...(object.motion && object.motion.duration > 0
         ? { speed: object.motion.totalLength / (object.motion.duration / 1000) }
         : {}),
-      standState: unitFields.standState(object) ?? UNIT_STAND_STATE_STAND,
+      // 06.11 (6.43): until the unit swings or moves; then stand, though the field still says otherwise.
+      standState: shownStandState(unit, unitFields.standState(object) ?? UNIT_STAND_STATE_STAND,
+        isUnitMoving(object.movementFlags, object.motion !== undefined)),
       // Which tier a hovering unit animates on: the server's word, not the movement bit's. A unit
       // whose byte has not arrived is on the ground tier, which is what the core writes by default.
       // A spline's own tier (a drake's takeoff or landing) overrides it once its effect begins.
