@@ -284,7 +284,7 @@ import {
 } from "./SelectionRingHeights.js"; // 22.10 ARC-2 S2b
 import { selectWmoPortalGroups } from "./WmoOcclusion.js";
 import {
-  createWmoCameraWalkState, walkWmoFromCamera, wmoCameraWalkNote, wmoCameraWalkStale, wmoGroupIsRoom, wmoGroupOfCollision,
+  createWmoCameraWalkState, walkWmoFromCamera, wmoCameraWalkNote, wmoCameraWalkStale, wmoGroupIsRoom, wmoGroupOfCollision, wmoGroupShowsSky,
   wmoGroupTwinsUncertain, wmoHasOutdoorGroup, wmoPlacementOwns, wmoWalkReachedOutside, type WmoCameraWalkState,
 } from "./WmoCameraWalk.js"; // 02.11
 import { WmoRangeTable, sameWmoSelection, type WmoRangeTotals } from "./WmoGroupRange.js"; // P1-12a/b
@@ -2621,7 +2621,9 @@ interface RenderedWmoGroup {
   readonly mesh: THREE.Mesh;
 }
 
-const WMO_PLACEMENT_POSITION_EPSILON = 1e-4;
+// 05.11 (7.61): a map that is one WMO has it at 0 here and at 0.00065 in the vmap (17066.666 against 32 x 533.3333), so 1e-4 matched
+// nothing on such a map: no camera group, no walk, no room fog in Onyxia's Lair and the like. The next placement is yards away.
+const WMO_PLACEMENT_POSITION_EPSILON = 1e-3;
 const WMO_PLACEMENT_ANGLE_EPSILON = 1e-4;
 const WMO_PLACEMENT_SCALE_EPSILON = 1e-6;
 
@@ -4583,6 +4585,8 @@ export class WorldRenderer3D {
    * outside is then not drawn (`#updateOutsideHidden`). Undefined: drawn as usual.
    */
   #outsideHiddenFor: number | undefined;
+  /** 05.11 (7.61): that room shows no sky either (`wmoGroupShowsSky`). */
+  #outsideSkyHidden = false;
   #admittedOutsideHiddenFor: number | undefined;
   /** Authored fog proposed by that exact placement/group; applied once after traversal. */
   #wmoFogCandidate: { fog: WmoFog; key: string } | undefined;
@@ -7340,7 +7344,7 @@ export class WorldRenderer3D {
     }
     this.#interiorLight = this.#interiorOnlyFloor;
     this.#interiorOnlyFloor = undefined;
-    this.#sky.visible = !this.#interiorOnlyCamera;
+    this.#sky.visible = !this.#interiorOnlyCamera && !this.#outsideSkyHidden;
     this.#interiorOnlyCamera = false;
   }
 
@@ -7354,7 +7358,7 @@ export class WorldRenderer3D {
     // The original client does not draw a camera-centred outdoor sky inside a WMO. The procedural
     // gradient remains the indoor fallback, while authored sky geometry and its emitters are
     // removed as soon as the collision query says the player is under a roof.
-    const wanted = this.#indoors ? undefined : this.#skyboxPath;
+    const wanted = this.#indoors || this.#outsideSkyHidden ? undefined : this.#skyboxPath; // 05.11 (7.61)
     if (!wanted) {
       if (this.#skyboxGroup.children.length > 0) this.#clearSkybox();
       this.#skyboxLoadedPath = undefined;
@@ -8226,6 +8230,7 @@ export class WorldRenderer3D {
     this.#cameraSurfaceVisualId = undefined;
     this.#cameraSurfaceKnown = false;
     this.#outsideHiddenFor = undefined; // 02.11 (7.53)
+    this.#outsideSkyHidden = false; // 05.11 (7.61)
     this.#admittedOutsideHiddenFor = undefined;
     this.#indoors = false;
     this.#underwater = false;
@@ -14058,21 +14063,27 @@ export class WorldRenderer3D {
    * 02.11 (7.53): the outside world, when the camera sees none of it. Terrain, water, the horizon and the grass stay built
    * and move to the layer only the shadow cameras draw, so mountains keep their shadows and a door coming into view
    * shows the world at once; loose models and other buildings are turned away by admission (`admitEnvironmentInto`).
-   * The sky stays: it is seen from a room with no roof, and walls hide it in one with a roof. Runs every frame while
-   * hidden, because a tile may land meanwhile; it costs nothing otherwise.
+   * 05.11 (7.61): the sky stays only over a room lit from outside (`wmoGroupShowsSky`). Runs every frame while hidden,
+   * because a tile may land meanwhile; it costs nothing otherwise.
    */
   #updateOutsideHidden(player: WorldPosition): void {
     const before = this.#outsideHiddenFor;
     let hiddenFor: number | undefined;
+    let skyHidden = false;
     if (this.#cameraSurfaceKnown && this.#cameraWmoSurface && this.#cameraSurfaceVisualId !== undefined && this.#wmoOcclusion) {
       const placed = this.#environment.get(this.#cameraSurfaceVisualId)?.wmo;
       if (placed && !wmoInteriorOnly(placed.model)) {
         const walk = this.#walkFromCamera(placed, player);
         // A walk from what may be the wrong room says nothing about the doors of the right one: the world stays.
-        if (walk && walk.walkedRoom >= 0 && !walk.reachedOutside && !placed.cameraSurfaceTwin) hiddenFor = placed.visualId;
+        if (walk && walk.walkedRoom >= 0 && !walk.reachedOutside && !placed.cameraSurfaceTwin) {
+          hiddenFor = placed.visualId;
+          const room = placed.model.groups[walk.walkedRoom];
+          skyHidden = room !== undefined && !wmoGroupShowsSky(room);
+        }
       }
     }
     this.#outsideHiddenFor = hiddenFor;
+    this.#outsideSkyHidden = skyHidden;
     if (hiddenFor === undefined && before === undefined) return;
     const inView = hiddenFor === undefined;
     for (const rendered of this.#terrains.values()) {

@@ -221,7 +221,7 @@ export interface LocatorFloor {
   readonly groupFlags: number;
 }
 
-const POSITION_EPSILON = 1e-4;
+const POSITION_EPSILON = 1e-3; // 05.11 (7.61): WMO_PLACEMENT_POSITION_EPSILON says why
 const ANGLE_EPSILON = 1e-4;
 const SCALE_EPSILON = 1e-6;
 

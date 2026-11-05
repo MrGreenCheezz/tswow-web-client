@@ -42,6 +42,18 @@ export function wmoGroupIsRoom(group: Pick<WmoCameraWalkGroup, "indoor" | "flags
   return group.indoor && (group.flags & WMO_GROUP_OUTDOOR) === 0;
 }
 
+/** MOGP 0x40: a room lit from outside, such as Stormwind's squares. */
+const WMO_GROUP_EXTERIOR_LIT = 0x40;
+
+/**
+ * 05.11 (7.61): whether the sky is drawn with the camera over this group while no portal on screen leads out. Over a room with
+ * neither 0x8 nor 0x40 Wow.exe draws none: 146 of 146 frames of Stormwind (`sky-rule.mjs`), the Goldshire Inn and ten more
+ * buildings the same; what shows through a hole in such a room, Onyxia's Lair has one, is the fog colour the frame was cleared to.
+ */
+export function wmoGroupShowsSky(group: Pick<WmoCameraWalkGroup, "flags">): boolean {
+  return (group.flags & (WMO_GROUP_OUTDOOR | WMO_GROUP_EXTERIOR_LIT)) !== 0;
+}
+
 const OUTDOOR_GROUP = new WeakMap<object, boolean>();
 
 /** Whether any group of the model can seed a walk from outside; a model with none keeps the older answers. */

@@ -76,8 +76,11 @@ test("a raw collision WMO matches exactly one visual placement by basename and t
   assert.equal(staticWmoPlacementMatches(raw, visual), true,
     "raw and visual ids differ; wrapped rotation and canonical basename identify the same spawn");
   assert.equal(uniqueVisualWmoPlacement(raw, [visual])?.id, 71414);
-  assert.equal(staticWmoPlacementMatches(raw, { ...visual, x: visual.x + 2e-4 }), false,
-    "the fail-closed tolerance is tighter than any measured corpus delta");
+  // 05.11 (7.61): Onyxia's Lair, a map that is one WMO: the vmap says 0.00065 where the map's own table says 0.
+  assert.equal(staticWmoPlacementMatches(raw, { ...visual, x: visual.x + 0.00065, y: visual.y + 0.00065 }), true,
+    "the vmap's rounding of a map's own WMO is still that WMO");
+  assert.equal(staticWmoPlacementMatches(raw, { ...visual, x: visual.x + 2e-3 }), false,
+    "the fail-closed tolerance stays far under any real distance between two placements");
   assert.equal(uniqueVisualWmoPlacement(raw, [visual, { ...visual, id: 99999 }]), undefined,
     "an ambiguous duplicate must leave zone fog in force");
 });
