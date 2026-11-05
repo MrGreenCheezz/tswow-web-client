@@ -3347,6 +3347,25 @@ export class WorldClient {
   }
 
   /**
+   * 06.11 (3.69): reads a sign, a plaque or a book of type 9 (TEXT), as Wow.exe does.
+   *
+   * The server has no use for this type (`GameObject::Use` has no case for it), so the client opens
+   * the reader itself: 0x0070F680 asks the type's helper to use the object, and the type-9 helper
+   * (vtable 0x00A33F18, slot 9 = 0x0070C850) opens the reader on this object (0x0058A1A0) instead of
+   * sending `CMSG_GAMEOBJ_USE`. The page comes from the template, and the report follows, as for any
+   * other object: quest credit for reading hangs off it.
+   */
+  readGameObject(guid: bigint): void {
+    const object = this.state.objects.get(guid);
+    if (this.#closed || !object || object.typeId !== 5) return;
+    this.openPageObject = guid;
+    const entry = object.fields.get(UPDATE_FIELDS.OBJECT_FIELD_ENTRY.offset) ?? 0;
+    if (entry !== 0) this.gameObjectTemplate(entry, guid);
+    this.events.emit("ITEM_TEXT_OPENED", { kind: "object", guid });
+    this.#connection.send(OPCODES.CMSG_GAMEOBJ_REPORT_USE, buildGameObjectReportUse(guid));
+  }
+
+  /**
    * Opens a chest, an ore vein or a herb by casting at it.
    *
    * These are not in the server's use switch, so nothing else opens them. The server accepts a

@@ -8,8 +8,8 @@
  * * A goober with a page (`GameObject::Use`, GameObject.cpp:1817-1830) answers
  *   `SMSG_GAMEOBJECT_PAGETEXT(guid)`; its template carries the page in data[7] and the paper in
  *   data[9] (GameObjectData.h `goober.pageId/pageMaterial`). A type-9 TEXT object keeps them in
- *   data[0]/data[2]; this client offers no click on that type yet (GameObjectProtocol
- *   `USABLE_TYPES`), so only a caller that opens one explicitly reaches that branch.
+ *   data[0]/data[2]; the server never answers a click on it, the client opens the reader itself
+ *   (06.11, 3.69: `WorldClient.readGameObject`, as Wow.exe 0x0070C850).
  *
  * Pages are `CMSG_PAGE_TEXT_QUERY` answers (`WorldClient.pageText`, which fetches the whole chain:
  * the server walks `NextPageID` and sends a packet per page). The events follow the client: BEGIN

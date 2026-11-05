@@ -25,6 +25,8 @@ export const GO_TYPE_QUESTGIVER = 2;
 export const GO_TYPE_CHEST = 3;
 export const GO_TYPE_TRAP = 6;
 export const GO_TYPE_CHAIR = 7;
+/** 06.11 (3.69): a sign, a plaque or a book; the client reads it itself (`WorldClient.readGameObject`). */
+export const GO_TYPE_TEXT = 9;
 export const GO_TYPE_GOOBER = 10;
 export const GO_TYPE_TRANSPORT = 11;
 export const GO_TYPE_AREADAMAGE = 12;
@@ -61,7 +63,7 @@ export function usableByHand(type: number): boolean {
  * offered because their template can name an opening spell instead of `CMSG_GAMEOBJ_USE`.
  */
 export function interactiveGameObjectType(type: number): boolean {
-  return type === GO_TYPE_MAILBOX || type === GO_TYPE_GUILD_BANK || USABLE_TYPES.has(type)
+  return type === GO_TYPE_MAILBOX || type === GO_TYPE_GUILD_BANK || type === GO_TYPE_TEXT || USABLE_TYPES.has(type)
     || (type !== GO_TYPE_AREADAMAGE && LOCKED_TYPES.has(type));
 }
 
@@ -76,7 +78,8 @@ export function interactiveGameObjectType(type: number): boolean {
 export function interactionDistance(type: number): number {
   switch (type) {
     case GO_TYPE_AREADAMAGE: return 0;
-    case GO_TYPE_QUESTGIVER: case GO_TYPE_FLAGSTAND: case GO_TYPE_FLAGDROP: return 5.5555553;
+    // 06.11 (3.69): a TEXT object too — Wow.exe's type-9 helper keeps 5.5555553 (0x00A33570, set at 0x007126DF).
+    case GO_TYPE_QUESTGIVER: case GO_TYPE_TEXT: case GO_TYPE_FLAGSTAND: case GO_TYPE_FLAGDROP: return 5.5555553;
     case GO_TYPE_CHAIR: case GO_TYPE_BARBER_CHAIR: return 3;
     case GO_TYPE_FISHINGNODE: return 100;
     case GO_TYPE_FISHINGHOLE: return 20 + CONTACT_DISTANCE;

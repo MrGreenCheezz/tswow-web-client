@@ -248,6 +248,7 @@ function performGameObjectAction(
   if (action.kind === "mail") world.openMailbox(guid);
   else if (action.kind === "guild-bank") world.openGuildBank(guid);
   else if (action.kind === "unlock") world.openLock(guid, action.spell);
+  else if (action.kind === "read") world.readGameObject(guid); // 06.11 (3.69)
   else world.useGameObject(guid);
 }
 
