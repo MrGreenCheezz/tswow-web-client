@@ -11,6 +11,7 @@ export function visualModelNamespace(modelPath) {
   // 13.10 7.11: visual-wmo-v26, the Composite streams; 22.10 (7.37): visual-wmo-v27, the transition range.
   // 26.10 (6.31): visual-spell-v1 — the spell models alone, whose clips carry M2Sequence.flags.
   // 03.11 (6.16в, 6.34): visual-unit-v1 — creatures and characters, whose clips carry their variations.
+  // 05.11 (6.44): visual-unit-v2 — and the flags that say how the model leans with the ground.
   const lower = modelPath.toLowerCase();
   if (lower.endsWith(".wmo")) return "visual-wmo-v27";
   if (isSpellModelPath(lower)) return SPELL_MODEL_NAMESPACE;
@@ -29,7 +30,10 @@ export const SPELL_MODEL_NAMESPACE = "visual-spell-v1";
  * the way Wow.exe chooses (the table, then a variation by frequency), which only a unit does: about 1,200 models turn over on
  * demand, not every doodad of the client.
  */
-export const UNIT_MODEL_NAMESPACE = "visual-unit-v1";
+export const UNIT_MODEL_NAMESPACE = "visual-unit-v2";
+
+/** 05.11 (6.44): the namespace before it, which a gateway started before the change still asks by. */
+export const PREVIOUS_UNIT_NAMESPACE = "visual-unit-v1";
 
 /** Whether a model path is a unit's (`Creature\…`, `Character\…`, either separator, any case). */
 export function isUnitModelPath(modelPath) {
@@ -57,7 +61,12 @@ export function isRefinedModelPath(modelPath) {
  * name it is asked for, as with every namespace here. The plain namespace is part of it, so a copy turns over with it.
  */
 export function refinedModelHash(modelPath) {
-  return createHash("sha1").update(`refined-${REFINED_MODEL_VERSION}\0${visualModelNamespace(modelPath)}\0${modelPath.toLowerCase()}`).digest("hex");
+  return refinedModelHashIn(visualModelNamespace(modelPath), modelPath);
+}
+
+/** 05.11 (6.44): the same under a namespace of the caller's. */
+export function refinedModelHashIn(namespace, modelPath) {
+  return createHash("sha1").update(`refined-${REFINED_MODEL_VERSION}\0${namespace}\0${modelPath.toLowerCase()}`).digest("hex");
 }
 
 /** `<hash>` of `<VISUAL_MODEL_DIR>/<hash>.bin` for a model path (backslashes, any case). */

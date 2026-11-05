@@ -830,6 +830,8 @@ export class CollisionWorld {
   /** Each mesh with the instance its hits report, kept together so a query never looks one up. */
   readonly #meshes = new Map<number, WorldEntry>();
   readonly #heights = new Map<number, InstanceHeight>();
+  /** 05.11 (6.44): the mesh of the last floor `floorHitUnder` answered with, whose triangle index only it can read. */
+  #floorMesh: CollisionMesh | undefined;
 
   get size(): number {
     return this.#meshes.size;
@@ -937,6 +939,32 @@ export class CollisionWorld {
   }
 
   /**
+   * 05.11 (6.44): the height of the highest walkable floor under a point, and its triangle's normal in `out`, pointing up
+   * (vmap triangles are not wound consistently). `undefined` when the column holds none.
+   */
+  floorNormalUnder(x: number, y: number, fromZ: number, minZ: number, out: Vector3): number | undefined {
+    const hit = this.floorHitUnder(x, y, fromZ, minZ);
+    const mesh = this.#floorMesh;
+    if (hit === undefined || mesh === undefined) return undefined;
+    const triangles = mesh.triangles;
+    const base = hit.triangle * 9;
+    const ux = triangles[base + 3]! - triangles[base]!;
+    const uy = triangles[base + 4]! - triangles[base + 1]!;
+    const uz = triangles[base + 5]! - triangles[base + 2]!;
+    const vx = triangles[base + 6]! - triangles[base]!;
+    const vy = triangles[base + 7]! - triangles[base + 1]!;
+    const vz = triangles[base + 8]! - triangles[base + 2]!;
+    const nx = uy * vz - uz * vy;
+    const ny = uz * vx - ux * vz;
+    const nz = ux * vy - uy * vx;
+    const length = (nz < 0 ? -1 : 1) * (Math.hypot(nx, ny, nz) || 1);
+    out.x = nx / length;
+    out.y = ny / length;
+    out.z = nz / length;
+    return hit.z;
+  }
+
+  /**
    * The full provenance of the highest walkable collision floor under a point.
    *
    * `accept` is evaluated before floors compete. A WMO locator can therefore exclude M2s or stale
@@ -965,6 +993,7 @@ export class CollisionWorld {
     let bestTriangle = 0;
     let bestZ = 0;
     let bestFlags: number | undefined;
+    let bestMesh: CollisionMesh | undefined;
     for (const { mesh, instanceId } of this.#meshes.values()) {
       const bounds = mesh.bounds;
       if (x < bounds.minX || x > bounds.maxX || y < bounds.minY || y > bounds.maxY) continue;
@@ -1006,8 +1035,10 @@ export class CollisionWorld {
         bestTriangle = triangle;
         bestZ = z;
         bestFlags = run?.flags;
+        bestMesh = mesh;
       }
     }
+    this.#floorMesh = bestMesh;
     if (!hasBest) return undefined;
     return {
       z: bestZ,

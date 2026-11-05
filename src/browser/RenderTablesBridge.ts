@@ -15,6 +15,7 @@ import type { GameObjectDisplayMetadata } from "./GameObjectMetadata.js";
 import type { CreatureModelMetadata, UnitModel } from "./CreatureModelClient.js";
 import type { CollisionModel } from "../world/CollisionFormat.js";
 import type { FacingCast, UnitFacingInputs } from "../world/UnitFacing.js";
+import type { GroundNormal } from "../world/UnitTilt.js"; // 05.11 (6.44)
 import type { VehicleCatalogRows } from "../world/VehicleDbc.js";
 import type { RenderSwitchesPush } from "./RenderSwitches.js";
 import type { GatewayGenerationPush } from "./GatewayGeneration.js";
@@ -59,6 +60,7 @@ export interface RenderInputsMessage {
   readonly interactionNpc: bigint | undefined;
   readonly movementIds: MapDelta<number, number> | undefined;
   readonly spellAttributes: MapDelta<number, readonly number[]> | undefined;
+  readonly groundNormals: MapDelta<bigint, GroundNormal> | undefined; // 05.11 (6.44)
   readonly vehicles: Replaced<VehicleCatalogRows | undefined>;
   readonly publishStatus: boolean;
   readonly switches: Replaced<RenderSwitchesPush | undefined>;
@@ -71,6 +73,7 @@ export class RenderInputsSender {
   readonly #casts = new MapDeltaSender<bigint, FacingCast>();
   readonly #movementIds = new MapDeltaSender<number, number>();
   readonly #spellAttributes = new MapDeltaSender<number, readonly number[]>();
+  readonly #groundNormals = new MapDeltaSender<bigint, GroundNormal>(); // 05.11 (6.44)
   readonly #vehicles = new ReplacedSender<VehicleCatalogRows | undefined>();
   readonly #switches = new ReplacedSender<RenderSwitchesPush | undefined>();
   readonly #generation = new ReplacedSender<GatewayGenerationPush | undefined>();
@@ -83,6 +86,7 @@ export class RenderInputsSender {
       interactionNpc: inputs.facing.interactionNpc,
       movementIds: this.#movementIds.delta(inputs.facing.movementIds),
       spellAttributes: this.#spellAttributes.delta(inputs.facing.spellAttributes),
+      groundNormals: this.#groundNormals.delta(inputs.groundNormals),
       vehicles: this.#vehicles.send(inputs.vehicles),
       publishStatus: inputs.publishStatus,
       switches: this.#switches.send(inputs.switches),
@@ -102,6 +106,7 @@ export class RenderInputsReceiver {
   });
   readonly #movementIds = new MapDeltaReceiver<number, number>();
   readonly #spellAttributes = new MapDeltaReceiver<number, readonly number[]>();
+  readonly #groundNormals = new MapDeltaReceiver<bigint, GroundNormal>(); // 05.11 (6.44)
   readonly #vehicles = new ReplacedReceiver<VehicleCatalogRows | undefined>(undefined);
   readonly #switches = new ReplacedReceiver<RenderSwitchesPush | undefined>(undefined);
   readonly #generation = new ReplacedReceiver<GatewayGenerationPush | undefined>(undefined);
@@ -110,7 +115,7 @@ export class RenderInputsReceiver {
     spellAttributes: this.#spellAttributes.map,
   };
   readonly #inputs: { -readonly [K in keyof RenderInputs]: RenderInputs[K] } = {
-    enchantGlow: undefined, hiddenGameObjects: this.#hidden, facing: this.#facing, vehicles: undefined,
+    enchantGlow: undefined, hiddenGameObjects: this.#hidden, facing: this.#facing, groundNormals: this.#groundNormals.map, vehicles: undefined,
     publishStatus: false, switches: undefined, gatewayGeneration: undefined, frameBudgetProbe: false,
   };
 
@@ -125,6 +130,7 @@ export class RenderInputsReceiver {
     facing.interactionNpc = message.interactionNpc;
     facing.movementIds = this.#movementIds.apply(message.movementIds) ?? this.#movementIds.map;
     facing.spellAttributes = this.#spellAttributes.apply(message.spellAttributes) ?? this.#spellAttributes.map;
+    inputs.groundNormals = this.#groundNormals.apply(message.groundNormals) ?? this.#groundNormals.map;
     inputs.vehicles = this.#vehicles.apply(message.vehicles);
     inputs.publishStatus = message.publishStatus;
     inputs.switches = this.#switches.apply(message.switches);

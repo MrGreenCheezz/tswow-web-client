@@ -17,6 +17,7 @@ import {
   PickResultRows, UnitResultRows, type PickRowCompute, type PickRowKey, type UnitRowCompute, type UnitRowKey,
 } from "./RenderResultRows.js"; // 22.10 ARC-2 S3a-review: rows recomputed only when their inputs move
 import { passengerGameObjectTilt } from "../world/TransportPassengers.js";
+import { ShownGroundNormal, unitTiltAngles, type UnitTiltAngles } from "../world/UnitTilt.js"; // 05.11 (6.44)
 import { ShownUnitFacing, unitAutoFacing, unitFacingTurn, unitSeatFacing } from "../world/UnitFacing.js"; // 11.10; 5.32: + unitSeatFacing; 22.10 ARC-2 S2a: the interaction NPC is an input
 import {
   CAMERA_DEFAULT_DISTANCE, CAMERA_DEFAULT_EYE_HEIGHT, CAMERA_DEFAULT_PITCH, CAMERA_DEFAULT_PIVOT_HEIGHT,
@@ -382,6 +383,7 @@ import type { CollisionLiquid, CollisionModel } from "../world/CollisionFormat.j
 
 /** One deterministic evolution step supplied by an offline render replay. */
 /** 23.10 (6.27): scratch for spell light positions. */
+const _unitLean: UnitTiltAngles = { pitch: 0, roll: 0 }; // 05.11 (6.44)
 const _spellLightAt = new THREE.Vector3();
 const _muzzleAt = new THREE.Vector3(); // 11.02 (04.11)
 const _namePoint = new THREE.Vector3(); // 03.11 6.37
@@ -3072,6 +3074,8 @@ interface RenderedUnit extends PosedModel {
   strafeYawFacing: number | undefined;
   /** 11.10: the facing this unit is drawn at, when the client does not move it itself. See `world/UnitFacing.ts`. */
   shownFacing: ShownUnitFacing | undefined;
+  /** 05.11 (6.44): the normal the model leans by, while it is one that leans (world/UnitTilt.ts). */
+  groundNormal: ShownGroundNormal | undefined;
   /** 5.32: a seated passenger's drawn facing in its seat (VehiclePassengerPose.ts reads it); undefined off a seat. */
   seatFacing: number | undefined;
   /** 05.10-A7a-F1 (6.16а): private copies of the batches the file fades under Death. See `BatchDeathFade.ts`. */
@@ -15555,6 +15559,7 @@ export class WorldRenderer3D {
         strafeYaw: undefined, strafeYawVelocity: 0, strafeYawHold: 0, strafeYawTurning: 0, strafeYawFacing: undefined, deathFade: undefined, flagPoses: undefined,
         shownFacing: undefined, // 11.10
         seatFacing: undefined, // 5.32
+        groundNormal: undefined, // 05.11 (6.44)
         closedHands: undefined, // 12.10 6.24
         sheathCeremony: undefined, sheathArms: undefined, // 12.10 6.08
         transitionMoving: undefined, pendingTransition: undefined, // 12.10 6.07
@@ -15730,6 +15735,7 @@ export class WorldRenderer3D {
           unitFacingTurn(object, this.#inputs.facing), elapsed);
     }
     if (mover) unit.shownFacing = undefined;
+    this.#leanUnit(unit, object, elapsed); // 05.11 (6.44)
     const content = unitContentVisible(object, self, this.#firstPerson, unit.body !== undefined);
     // First person hides the *rider*, not what the rider is sitting on. The mount's group hangs
     // inside `unit.node` (`#attachMount`), so hiding the node as one took the horse with it and the
@@ -16979,6 +16985,27 @@ export class WorldRenderer3D {
     const stats = { ...engine.stats, workersReady: engine.workersReady, ...(failure === undefined ? {} : { failure }) };
     if (reset) engine.resetStats();
     return stats;
+  }
+
+  /**
+   * 05.11 (6.44): a model that says so leans with the ground under it, a ridden unit by its mount's word and the rider
+   * with it (world/UnitTilt.ts). `rotation.y` stays the facing that `#drawUnit` just wrote; a transport's passenger stands
+   * as it did, its seat or deck being someone else's to pose.
+   */
+  #leanUnit(unit: RenderedUnit, object: WorldObjectState, elapsed: number): void {
+    const bits = object.transport === undefined ? (unit.mount?.wvm ?? unit.wvm)?.tiltBits ?? 0 : 0;
+    const rotation = unit.node.rotation;
+    if (bits === 0) {
+      if (unit.groundNormal === undefined) return;
+      unit.groundNormal = undefined;
+      rotation.x = 0;
+      rotation.z = 0;
+      return;
+    }
+    const shown = (unit.groundNormal ??= new ShownGroundNormal());
+    shown.step(this.#inputs.groundNormals.get(object.guid), elapsed);
+    const lean = unitTiltAngles(bits, rotation.y, shown.x, shown.y, shown.z, _unitLean);
+    rotation.set(lean.roll, rotation.y, lean.pitch, "YXZ");
   }
 
   /**

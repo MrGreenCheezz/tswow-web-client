@@ -98,8 +98,8 @@ test("the variations travel with the sequence the table found, the head first an
 
 test("only units turn over, in the tools and in the gateway alike", () => {
   for (const [path, namespace] of [
-    ["Creature\\Wolf\\Wolf.m2", "visual-unit-v1"], ["character\\Human\\Male\\HumanMale.m2", "visual-unit-v1"],
-    ["creature/wolf/wolf.M2", "visual-unit-v1"], ["World\\Tree.m2", "visual-v24"], ["Item\\Creature\\x.m2", "visual-v24"],
+    ["Creature\\Wolf\\Wolf.m2", "visual-unit-v2"], ["character\\Human\\Male\\HumanMale.m2", "visual-unit-v2"],
+    ["creature/wolf/wolf.M2", "visual-unit-v2"], ["World\\Tree.m2", "visual-v24"], ["Item\\Creature\\x.m2", "visual-v24"],
     ["Spells\\Fire.m2", "visual-spell-v1"], ["World\\wmo\\Inn.wmo", "visual-wmo-v27"],
   ]) {
     assert.equal(visualModelNamespace(path), namespace, path);

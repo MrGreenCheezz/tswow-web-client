@@ -135,7 +135,7 @@ test("/texture and /visual/model are immutable under vg=<visualGeneration>, reva
     const textureId = createHash("sha1").update(`texture-v1\0${texturePath.toLowerCase()}`).digest("hex");
     await writeFile(join(textures, `${textureId}.png`), "PNG-skin");
     const modelPath = "Character\\Human\\Male\\HumanMale.m2";
-    const modelId = createHash("sha1").update(`visual-unit-v1\0${modelPath.toLowerCase()}`).digest("hex");
+    const modelId = createHash("sha1").update(`visual-unit-v2\0${modelPath.toLowerCase()}`).digest("hex");
     await writeFile(join(models, `${modelId}.bin`), "WVM-test");
     await writeFile(join(models, `${modelId}.anim.bin`), "WVA-test");
     await withGateway({ clientDirectory: client, texturesDirectory: textures, visualModelsDirectory: models }, async (base) => {

@@ -27,6 +27,7 @@ import { renderSwitchesPush } from "../RenderSwitches.js"; // 22.10 ARC-2 S4b
 import type { RenderInputs } from "../RenderInputs.js";
 import type { SpellMetadata } from "../SpellMetadata.js";
 import { spellAttributeWordsOf } from "../SpellRows.js";
+import { UnitGroundNormals, type UnitGroundSources } from "./UnitGroundNormals.js"; // 05.11 (6.44)
 import { viewSubjectIn, type ViewSubjectState } from "./ViewSubject.js";
 
 const GAMEOBJECT_BYTES_1 = UPDATE_FIELDS.GAMEOBJECT_BYTES_1.offset;
@@ -46,11 +47,14 @@ export interface RenderInputSources {
   readonly gameObjectShown: (object: WorldObjectState) => boolean;
   /** 22.10 ARC-2 S3a: whether the loop shows the status line after this frame. */
   readonly publishStatus?: boolean;
+  /** 05.11 (6.44): what the ground under the units is read from. */
+  readonly ground?: UnitGroundSources;
 }
 
 export class RenderInputsBuilder {
   readonly #facing = new UnitFacingInputsBuilder();
   readonly #hidden = new Set<bigint>();
+  readonly #ground = new UnitGroundNormals(); // 05.11 (6.44)
   readonly #inputs: { -readonly [K in keyof RenderInputs]: RenderInputs[K] };
 
   constructor() {
@@ -58,6 +62,7 @@ export class RenderInputsBuilder {
       enchantGlow: undefined,
       hiddenGameObjects: this.#hidden,
       facing: this.#facing.build(undefined, undefined),
+      groundNormals: this.#ground.normals,
       vehicles: undefined,
       publishStatus: false,
       switches: undefined,
@@ -71,6 +76,7 @@ export class RenderInputsBuilder {
     const world = sources.world;
     inputs.enchantGlow = enchantGlowTables(sources.enchantments);
     inputs.facing = this.#facing.build(world, spellAttributeWordsOf(sources.spells));
+    inputs.groundNormals = this.#ground.collect(world?.state.objects, sources.ground);
     inputs.vehicles = sources.vehicles?.rows;
     inputs.publishStatus = sources.publishStatus === true; // 22.10 ARC-2 S3a
     // 22.10 ARC-2 S4b: the page's switches, cache generation and sensor flag — frozen records reused until they change.

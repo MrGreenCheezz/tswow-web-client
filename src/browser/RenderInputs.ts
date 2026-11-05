@@ -12,6 +12,7 @@ import type { GatewayGenerationPush } from "./GatewayGeneration.js";
 import type { EnchantGlowTables } from "./ItemEnchantments.js";
 import type { RenderSwitchesPush } from "./RenderSwitches.js";
 import { NO_UNIT_FACING_INPUTS, type UnitFacingInputs } from "../world/UnitFacing.js";
+import type { GroundNormal } from "../world/UnitTilt.js";
 import type { VehicleCatalogRows } from "../world/VehicleDbc.js";
 
 export interface RenderInputs {
@@ -24,6 +25,8 @@ export interface RenderInputs {
   readonly hiddenGameObjects: ReadonlySet<bigint>;
   /** 5.32: what 0x00735f60 reads beyond a unit's own fields (world/UnitFacing.ts). */
   readonly facing: UnitFacingInputs;
+  /** 05.11 (6.44): the ground under each unit as far as it has been read (game/UnitGroundNormals.ts), for the lean (world/UnitTilt.ts). */
+  readonly groundNormals: ReadonlyMap<bigint, GroundNormal>;
   /** 11.02-H: the vehicle tables' rows (VehicleClient.ts); absent until they land. */
   readonly vehicles: VehicleCatalogRows | undefined;
   /** 22.10 ARC-2 S3a: this frame's `endRenderFrame` writes the status line into RenderResults.ts (the 2 Hz tick). */
@@ -44,6 +47,7 @@ export const NO_RENDER_INPUTS: RenderInputs = Object.freeze({
   enchantGlow: undefined,
   hiddenGameObjects: new Set<bigint>(),
   facing: NO_UNIT_FACING_INPUTS,
+  groundNormals: new Map<bigint, GroundNormal>(),
   vehicles: undefined,
   publishStatus: false,
   switches: undefined,

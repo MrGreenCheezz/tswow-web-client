@@ -190,11 +190,12 @@ const MAX_BRIDGED_SOCKETS_PER_ADDRESS = 8;
 // 12-byte extras record, which a missile reads to stretch its InFlight over the flight. Only they turn over.
 // 03.11 (6.16в, 6.34): visual-unit-v1 is the creatures and characters: their clips carry every variation of an animation
 // with its frequency and replay, and the head of each is the one Wow.exe's lookup table finds. Only they turn over.
-export function visualModelCacheNamespace(modelPath: string): "visual-v24" | "visual-wmo-v27" | "visual-spell-v1" | "visual-unit-v1" {
+// 05.11 (6.44): visual-unit-v2: and the M2 header's flags, how the model leans with the ground (world/UnitTilt.ts).
+export function visualModelCacheNamespace(modelPath: string): "visual-v24" | "visual-wmo-v27" | "visual-spell-v1" | "visual-unit-v2" {
   const lower = modelPath.toLowerCase();
   if (lower.endsWith(".wmo")) return "visual-wmo-v27";
   if (/^spells[\\/]/.test(lower)) return "visual-spell-v1";
-  return /^(?:creature|character)[\\/]/.test(lower) ? "visual-unit-v1" : "visual-v24";
+  return /^(?:creature|character)[\\/]/.test(lower) ? "visual-unit-v2" : "visual-v24";
 }
 
 /** 22.10 (6.26): the namespace `/texture` hashes its files under; part of the visual generation (AssetGeneration.ts). */

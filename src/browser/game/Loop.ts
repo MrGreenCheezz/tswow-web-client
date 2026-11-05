@@ -719,6 +719,7 @@ function frame(now: number): void {
       const inputs = renderInputs.build({
         world, spells: game.spells, enchantments: enchantClient, vehicles: vehicleCatalog(),
         gameObjectShown: loopGameObjectShown, publishStatus: statusDue,
+        ground: { map: world.mapId, terrain: game.terrain, collision: game.collision?.world }, // 05.11 (6.44)
       });
       if (renderBridge) renderBridge.setRenderInputs(game.renderer, inputs); // 22.10 ARC-2 S5: crossed as a message
       else game.renderer.setRenderInputs(inputs);

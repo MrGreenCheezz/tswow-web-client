@@ -54,7 +54,7 @@
 //   4  u32   vertexCount
 //   8  u32   indexCount
 //  12  u8    bytes per index (2 or 4)
-//  13  u8    flags: 1 skinned, 2 carries a portrait camera, 4 carries a scene camera
+//  13  u8    flags: 1 skinned, 2 carries a portrait camera, 4 carries a scene camera; 0x20, 0x40 how a unit's model leans
 //  14  u16   submeshCount
 //  16  u16   batchCount
 //  18  u16   textureCount
@@ -130,6 +130,9 @@ export const WVM9_CAMERA_SIZE = 36;
 export const WVM9_EXTENDED = 0x08;
 /** 04.11: the normals' lengths hold baked occlusion, see tools/model-polish.mjs. A reader that ignores it normalises them. */
 export const WVM9_NORMALS_CARRY_AO = 0x10;
+/** 05.11 (6.44): `M2Header.flags` bits 0 and 1, how the model leans with the ground (src/world/UnitTilt.ts). `options.tiltBits`. */
+export const WVM9_TILT_X = 0x20;
+export const WVM9_TILT_Y = 0x40;
 export const WVE1_MAGIC = "WVE1";
 export const WVE1_HEADER_SIZE = 12;
 /** i16 second-unit texture transform, u16 reserved. A reader steps by the block's own size word. */
@@ -279,7 +282,8 @@ export function encodeWvm9(model, skeleton, animations = undefined, effects = un
   data.writeUInt32LE(model.indices.length, 8);
   data.writeUInt8(indexBytes, 12);
   data.writeUInt8((skinned ? WVM9_SKINNED : 0) | cameraFlag | (extensions ? WVM9_EXTENDED : 0)
-    | (model.normalsCarryAo === true ? WVM9_NORMALS_CARRY_AO : 0), 13); // 05.10-A7a-F2; 04.11
+    | (model.normalsCarryAo === true ? WVM9_NORMALS_CARRY_AO : 0) // 05.10-A7a-F2; 04.11
+    | ((options.tiltBits ?? 0) & 1 ? WVM9_TILT_X : 0) | ((options.tiltBits ?? 0) & 2 ? WVM9_TILT_Y : 0), 13); // 05.11 (6.44)
   data.writeUInt16LE(model.submeshes.length, 14);
   data.writeUInt16LE(model.batches.length, 16);
   data.writeUInt16LE(model.textures.length, 18);

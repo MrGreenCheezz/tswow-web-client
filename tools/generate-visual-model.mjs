@@ -32,7 +32,7 @@ import { publishTexture, SourceMissing, SOURCE_MISSING_EXIT, validTexturePath } 
 import { clientArchives } from "./mpq.mjs";
 import { clientDirectory } from "./paths.mjs";
 import { sourceStamp, stampIsCurrent, writeFileAtomic, writeSourceStamp } from "./source-stamp.mjs";
-import { isSpellModelPath, isUnitModelPath, refinedModelHash, visualModelHash, visualModelHashIn } from "./visual-model-key.mjs"; // 05.10-A7a-F2; 13.10 7.11; 6.31; 04.11 (7.62)
+import { isSpellModelPath, isUnitModelPath, PREVIOUS_UNIT_NAMESPACE, refinedModelHash, refinedModelHashIn, visualModelHash, visualModelHashIn } from "./visual-model-key.mjs"; // 05.10-A7a-F2; 13.10 7.11; 6.31; 04.11 (7.62)
 // Out of the build, not copied: see the note over the same import in `generate-texture.mjs`.
 import { validAssetPath } from "../dist/code/gateway/AssetPath.js";
 
@@ -103,8 +103,11 @@ export async function publishVisualModel(requestedPath, hash, archives, { transf
     // 05.10-A7a-F2: the WVE1 block and the resolved shader ids only under the namespace that
     // expects them. A gateway still running `visual-v21` asks for its own hash and keeps getting
     // the bytes its readers know — its asset worker loads these tools fresh from disk.
-    const refined = hash === refinedModelHash(requestedPath) || hash === refinedModelHash(modelPath); // 04.11 (7.62)
-    const current = refined || hash === visualModelHash(requestedPath) || hash === visualModelHash(modelPath);
+    const refined = hash === refinedModelHash(requestedPath) || hash === refinedModelHash(modelPath) // 04.11 (7.62)
+      // 05.11 (6.44): a gateway started before `visual-unit-v2` asks for the names it knows: the same bytes, which it ignores the lean of.
+      || hash === refinedModelHashIn(PREVIOUS_UNIT_NAMESPACE, requestedPath) || hash === refinedModelHashIn(PREVIOUS_UNIT_NAMESPACE, modelPath);
+    const current = refined || hash === visualModelHash(requestedPath) || hash === visualModelHash(modelPath)
+      || hash === visualModelHashIn(PREVIOUS_UNIT_NAMESPACE, requestedPath) || hash === visualModelHashIn(PREVIOUS_UNIT_NAMESPACE, modelPath);
     // 03.11 (6.16в, 6.34): a unit's clips as Wow.exe chooses them, under `visual-unit-v1` alone: a gateway started before it
     // still asks for its `visual-v24` hash and gets exactly the v24 bytes.
     const asWowExe = current && isUnitModelPath(modelPath);
@@ -162,7 +165,8 @@ export async function publishVisualModel(requestedPath, hash, archives, { transf
     }
     await writeFileAtomic(join(destination, `${hash}.bin`),
       encodeWvm9(published, shippedSkeleton, animations.map((animation) => animation.animationId), effects,
-        { extensions }));
+        // 05.11 (6.44): `M2Header.flags`: how a unit's model leans with the ground.
+        { extensions, tiltBits: asWowExe ? m2Data.readUInt32LE(0x10) & 3 : 0 }));
     // Always written, even empty: a model with nothing held back still has to answer the request
     // rather than send the browser back for it on every frame.
     const sidecar = skeleton && !refined; // 04.11 (7.62): the clips held back stay under the plain name

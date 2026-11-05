@@ -458,6 +458,8 @@ export interface WvmModel {
   keyBones?: Int16Array;
   /** 04.11: the normals' lengths hold baked occlusion (`tools/model-polish.mjs`, `ModelVertexAo.ts`). */
   normalsCarryAo?: boolean;
+  /** 05.11 (6.44): `M2Header.flags & 3`, how the model leans with the ground (world/UnitTilt.ts). Absent: it stands upright. */
+  tiltBits?: number;
 }
 
 const HEADER_SIZE = 72;
@@ -472,6 +474,9 @@ const SCENE_CAMERA = 0x04;
 const EXTENDED = 0x08;
 /** 04.11: `tools/wvm.mjs` `WVM9_NORMALS_CARRY_AO`. */
 const NORMALS_CARRY_AO = 0x10;
+/** 05.11 (6.44): `tools/wvm.mjs` `WVM9_TILT_X`, `WVM9_TILT_Y`. */
+const TILT_X = 0x20;
+const TILT_Y = 0x40;
 const WVE1_HEADER_SIZE = 12;
 const WVE1_LIGHT_FIXED_SIZE = 20;
 const WVE1_LIGHT_TRACK_COMPONENTS = [3, 1, 3, 1, 1, 1, 1] as const;
@@ -753,6 +758,8 @@ export function decodeWvm9(data: ArrayBuffer): WvmModel {
   // 05.10-A7a-F2: the preflight has walked the whole block already.
   if (extended) readExtensions(view, offset + (hasCamera ? CAMERA_SIZE : 0), model);
   if ((view.getUint8(13) & NORMALS_CARRY_AO) !== 0) model.normalsCarryAo = true; // 04.11
+  const tiltBits = ((view.getUint8(13) & TILT_X) !== 0 ? 1 : 0) | ((view.getUint8(13) & TILT_Y) !== 0 ? 2 : 0); // 05.11 (6.44)
+  if (tiltBits !== 0) model.tiltBits = tiltBits;
   if (boneIndices) model.boneIndices = boneIndices;
   if (boneWeights) model.boneWeights = boneWeights;
   if (skeletonOffset > 0) {
