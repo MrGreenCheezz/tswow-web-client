@@ -300,6 +300,7 @@ import { frameXmlPetSpellBonusDamage } from "./FrameXmlPetSpellPower.js";
 import { createFrameXmlServices, type FrameXmlServices, type FrameXmlSendMailItem } from "./FrameXmlServices.js";
 import type { WorldStateUiRow } from "../../world/WorldStateUiData.js";
 import { ensureSpellNames } from "../ui/SpellNames.js";
+import { auraListed } from "../../world/AuraListed.js"; // 05.11 (3.68)
 import { QUALITY_LINK_COLORS, itemChatLink, spellChatLink } from "../ui/ChatLink.js";
 import { className, classFileName, classSpellFamily, raceBaseLanguage, raceFileName, raceName } from "../ui/UnitSnapshot.js";
 import { femaleOf } from "../ui/UnitSnapshot.js"; // L3-review
@@ -8377,10 +8378,7 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     if (!world || selfGuid === undefined || typeof world.aurasFor !== "function") return undefined;
     let filteredIndex = 0;
     for (const aura of world.aurasFor(selfGuid)) {
-      const positive = (aura.flags & AURA_FLAGS.positive) !== 0;
-      const negative = (aura.flags & AURA_FLAGS.negative) !== 0;
-      const matches = filter === "HELPFUL" ? positive && !negative : negative && !positive;
-      if (!matches) continue;
+      if (!this.#auraCounted(aura, filter)) continue;
       filteredIndex += 1;
       if (filteredIndex === index) return aura;
     }
@@ -8543,6 +8541,12 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     return this.unitAura(unit, index, "HARMFUL");
   }
 
+  /** 05.11 (3.68): whether UnitAura's index counts this aura: the list of AuraListed.ts, then the negative bit alone (Wow.exe 0x0072CAA8). */
+  #auraCounted(aura: ActiveAura, filter: string): boolean {
+    if (((aura.flags & AURA_FLAGS.negative) !== 0) !== (filter === "HARMFUL")) return false;
+    return auraListed(aura, this.#context.spell(aura.spellId), this.#context.world()?.state.selfGuid, this.#pet()?.guid);
+  }
+
   /** Return a filtered aura for either supported unit; UnitBuff/UnitDebuff bind fixed filters. */
   #unitAura(
     unit: "player" | "target" | "focus" | "targettarget" | "pet",
@@ -8560,10 +8564,7 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     if (!world || guid === undefined || typeof world.aurasFor !== "function") return undefined;
     let filteredIndex = 0;
     for (const aura of world.aurasFor(guid)) {
-      const positive = (aura.flags & AURA_FLAGS.positive) !== 0;
-      const negative = (aura.flags & AURA_FLAGS.negative) !== 0;
-      const matches = filter === "HELPFUL" ? positive && !negative : negative && !positive;
-      if (!matches) continue;
+      if (!this.#auraCounted(aura, filter)) continue;
       filteredIndex += 1;
       if (filteredIndex === index) return aura;
     }
@@ -8589,10 +8590,7 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     let filteredIndex = 0;
     for (const aura of auras) {
       if (aura.spellId <= 0) continue;
-      const positive = (aura.flags & AURA_FLAGS.positive) !== 0;
-      const negative = (aura.flags & AURA_FLAGS.negative) !== 0;
-      const matches = filter === "HELPFUL" ? positive && !negative : negative && !positive;
-      if (!matches) continue;
+      if (!this.#auraCounted(aura, filter)) continue;
       filteredIndex += 1;
       if (filteredIndex === index) return aura;
     }

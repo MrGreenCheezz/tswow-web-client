@@ -43,12 +43,12 @@ function fixture({ metadata = true, passive = false } = {}) {
     state: { selfGuid, objects: new Map([[selfGuid, object], [targetGuid, target]]) },
     targetGuid,
     auras: new Map([[selfGuid, new Map([
-      [2, { slot: 2, spellId: 172, flags: AURA_FLAGS.negative, casterLevel: 80, applications: 1,
+      [2, { slot: 2, spellId: 172, flags: AURA_FLAGS.negative | 1, casterLevel: 80, applications: 1,
         maxDuration: 15_000, duration: 10_000, expiresAt: 11_500 }],
-      [5, { slot: 5, spellId: 6673, flags: AURA_FLAGS.positive | AURA_FLAGS.caster, casterLevel: 80,
+      [5, { slot: 5, spellId: 6673, flags: AURA_FLAGS.positive | AURA_FLAGS.caster | 1, casterLevel: 80,
         applications: 2, maxDuration: 30_000, duration: 20_000, expiresAt: 21_000 }],
     ])], [targetGuid, new Map([[1, {
-      slot: 1, spellId: 172, flags: AURA_FLAGS.negative, casterLevel: 80, applications: 1,
+      slot: 1, spellId: 172, flags: AURA_FLAGS.negative | 1, casterLevel: 80, applications: 1,
     }]])]]),
     aurasFor(guid) {
       return [...(this.auras.get(guid)?.values() ?? [])].sort((left, right) => left.slot - right.slot);
@@ -145,13 +145,11 @@ test("live known active helpful cancellation resolves the filtered index and sen
   seam.detach();
 });
 
-test("live unknown metadata keeps aura visible with synchronous fallback and cancellation resolves filtered index", () => {
+test("live aura with no spell row is not listed, and cancellation has nothing to resolve (05.11, 3.68)", () => {
   const { seam, pump, cancelled } = fixture({ metadata: false });
   seam.attach(pump);
   const call = (name, ...args) => FRAMEXML_SEAM_BINDINGS[name](seam, args);
-  assert.deepEqual(call("UnitAura", "player", 1, "HELPFUL"), [
-    "Заклинание 6673", "", "", 2, undefined, 30, 120, "player", false, false, 6673,
-  ]);
+  assert.deepEqual((call("UnitAura", "player", 1, "HELPFUL") ?? []).filter((value) => value !== undefined), []);
   FRAMEXML_SEAM_BINDINGS.CancelUnitBuff(seam, ["player", 1, "HELPFUL"]);
   assert.deepEqual(cancelled, []);
   FRAMEXML_SEAM_BINDINGS.CancelUnitBuff(seam, ["player", 1, "HARMFUL"]);
