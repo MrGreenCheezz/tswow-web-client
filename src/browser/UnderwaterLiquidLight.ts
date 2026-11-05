@@ -3,9 +3,10 @@
 // Two answers, both read off the frame's light sample rather than a table of their own:
 //
 // * Under magma and slime the overlay used to draw nothing — there was no authored colour for the
-//   inside of lava. There is one: `LiquidType.LightID` names `Light` rows 7 (magma) and 6 (slime,
-//   green lava), and the light under them is their underwater set. Its fog colour is the colour of
-//   that view, so the overlay takes it as its tint.
+//   inside of lava. There is one: `LiquidType.LightID` names `LightParams` sets 7 (magma, fog
+//   200,52,0) and 6 (slime, green lava, fog 0,255,0) — 06.11 (7.65), measured under Onyxia's lava
+//   on Wow.exe; read as `Light` rows they gave a blue underwater set. Its fog colour is the colour
+//   of that view, so the overlay takes it as its tint.
 // * Depth darkens the ocean once. `LiquidType.MaxDarkenDepth` and the three intensities are
 //   authored on the oceans only, and `LightClient.darkenUnderLiquid` already applies them to the
 //   fog, the ambient and the direct light. The overlay's own depth curve (the wowee look) would

@@ -66,8 +66,11 @@ export interface LightSlots {
   deathParams?: number;
 }
 
-/** 05.10-A7b-5 (7.10): a `LiquidType` row's light row and darkening; absent fields are zero. */
+/** 05.10-A7b-5 (7.10): a `LiquidType` row's light and darkening; absent fields are zero. */
 export interface LiquidLighting {
+  /** 06.11 (7.65): `LiquidType.LightID`, a LightParams set (`params` key) read whole under the surface. */
+  paramsId?: number;
+  /** A gateway before 7.65: the same number read as a Light.dbc row (`lights` key). */
   lightId?: number;
   /** Yards of depth at which the darkening is full (30 on the oceans). */
   maxDarkenDepth?: number;
@@ -99,7 +102,7 @@ export interface LightIndexEntry {
   params: Record<number, LightParamSet>;
   /** Light.dbc row ids, used by SMSG_OVERRIDE_LIGHT scripted zone transitions. */
   lights?: Record<number, LightSlots>;
-  /** 05.10-A7b-5 (7.10): LiquidType rows by id, with their light rows added to `lights`. */
+  /** 05.10-A7b-5 (7.10): LiquidType rows by id; 06.11 (7.65): their light sets are in `params`. */
   liquids?: Record<number, LiquidLighting>;
 }
 

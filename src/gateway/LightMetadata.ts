@@ -157,12 +157,14 @@ export interface LightParamSet {
 /**
  * 05.10-A7b-5 (7.10): what a `LiquidType` row says about the light under its surface.
  *
- * `lightId` names a `Light.dbc` row whose slots the eye reads when it is under that liquid —
- * Magma and its kin name 7, Slime and Green Lava name 6, every other row 0 — and the four darkening
- * columns are set only on the oceans (2, 6, 10, 14: 30 / 0.5 / 0.5 / 0.25) and on row 100
- * (30 / 0.5 / 0.5 / 0). Absent fields are zero.
+ * `paramsId` (06.11, 7.65) is the row's `LightID`, a `LightParams` set the eye reads when it is under
+ * that liquid — Magma and its kin name 7, Slime and Green Lava name 6, every other row 0 — and the four
+ * darkening columns are set only on the oceans (2, 6, 10, 14: 30 / 0.5 / 0.5 / 0.25) and on row 100
+ * (30 / 0.5 / 0.5 / 0). Absent fields are zero. `lightId` is what a gateway before 7.65 sent: the same
+ * number read as a `Light.dbc` row.
  */
 export interface LiquidLighting {
+  paramsId?: number;
   lightId?: number;
   maxDarkenDepth?: number;
   fogDarken?: number;
@@ -230,13 +232,9 @@ export interface MapLighting {
   fallbackDeath?: number | undefined;
   volumes: LightVolume[];
   params: Record<number, LightParamSet>;
-  /**
-   * Every Light.dbc row on this map, keyed by row id for SMSG_OVERRIDE_LIGHT — plus (05.10-A7b-5,
-   * 7.10) the rows `LiquidType.LightID` names, which sit on map 0 (6 and 7) but colour lava and
-   * slime on every map. They are added for lookup only, never as volumes.
-   */
+  /** Every Light.dbc row on this map, keyed by row id for SMSG_OVERRIDE_LIGHT. */
   lights: Record<number, LightSlots>;
-  /** 05.10-A7b-5 (7.10): `LiquidType` rows with a light row or a darkening, by row id. */
+  /** 05.10-A7b-5 (7.10): `LiquidType` rows with a light set or a darkening, by row id. */
   liquids?: Record<number, LiquidLighting>;
 }
 
@@ -552,27 +550,23 @@ export async function loadLightMetadata(dbcDirectory: string): Promise<LightInde
     });
   }
 
-  // 05.10-A7b-5 (7.10): the light under lava and slime. `LiquidType.LightID` names a `Light.dbc`
-  // row — 7 for Magma (3, 7, 11, 19, 121, 141), 6 for Slime (4, 8, 12, 20, 21) and Green Lava (15)
-  // — and both rows are volumes on map 0, so a map that lacked them could not colour the view from
-  // under its own lava. Each map gets the rows' slots for lookup (never as volumes) and the sets
-  // they name, plus the per-row darkening the oceans carry. Measured in
-  // `probe-light-strips.out.txt`: Light 6 slots 21,22,454,22,4 and Light 7 slots 23,24,456,24,4.
+  // 05.10-A7b-5 (7.10): the light under lava and slime. 06.11 (7.65): `LiquidType.LightID` names a
+  // `LightParams` set, not a `Light.dbc` row — 7 for Magma (3, 7, 11, 19, 121, 141), 6 for Slime (4,
+  // 8, 12, 20, 21) and Green Lava (15). Wow.exe with the eye under Onyxia's lava (WMO Magma, 19)
+  // fogs to 200,52,0, which is set 7's fog key and nothing else's; no `Light` row names set 7 or 6,
+  // and the `Light` row 7 the old reading took (a volume on map 0) gave its blue underwater set 24.
+  // Each map gets the sets for lookup, plus the per-row darkening the oceans carry.
   if (liquidTypes) {
     const liquids: Record<number, LiquidLighting> = {};
-    const liquidLights = new Map<number, LightSlots>();
+    const liquidSets = new Set<number>();
     for (const row of liquidTypes.rows()) {
       const id = liquidTypes.id(row);
       if (id <= 0) continue;
       const lighting: LiquidLighting = {};
-      const lightId = liquidTypes.int(row, "LightID");
-      const lightRow = lightId > 0 ? light.rowOf(lightId) : undefined;
-      if (lightRow !== undefined) {
-        const slots = liquidLights.get(lightId) ?? lightRowSlots(lightRow);
-        if (slots) {
-          liquidLights.set(lightId, slots);
-          lighting.lightId = lightId;
-        }
+      const paramsId = liquidTypes.int(row, "LightID");
+      if (paramsId > 0 && parameterSet(paramsId)) {
+        liquidSets.add(paramsId);
+        lighting.paramsId = paramsId;
       }
       const maxDarkenDepth = liquidTypes.float(row, "MaxDarkenDepth");
       if (Number.isFinite(maxDarkenDepth) && maxDarkenDepth > 0) {
@@ -582,37 +576,12 @@ export async function loadLightMetadata(dbcDirectory: string): Promise<LightInde
         lighting.ambDarken = finite(liquidTypes.float(row, "AmbDarkenIntensity"));
         lighting.dirDarken = finite(liquidTypes.float(row, "DirDarkenIntensity"));
       }
-      if (lighting.lightId !== undefined || lighting.maxDarkenDepth !== undefined) liquids[id] = lighting;
+      if (lighting.paramsId !== undefined || lighting.maxDarkenDepth !== undefined) liquids[id] = lighting;
     }
     for (const entry of index.values()) {
       entry.liquids = liquids;
-      for (const [lightId, slots] of liquidLights) {
-        entry.lights[lightId] ??= slots;
-        for (const setId of [slots.params, slots.stormParams, slots.underwaterParams,
-          slots.underwaterStormParams, slots.deathParams]) {
-          if (setId !== undefined) entry.params[setId] ??= resolved.get(setId)!;
-        }
-      }
+      for (const setId of liquidSets) entry.params[setId] ??= resolved.get(setId)!;
     }
   }
   return index;
-
-  /** The slots of one `Light.dbc` row on the same repeat rules as the main loop; 05.10-A7b-5. */
-  function lightRowSlots(row: number): LightSlots | undefined {
-    const clear = light.int(row, "LightParamsID", LIGHT_SLOT_CLEAR);
-    if (!parameterSet(clear)) return undefined;
-    const stormId = light.int(row, "LightParamsID", LIGHT_SLOT_STORM);
-    const underwaterId = light.int(row, "LightParamsID", LIGHT_SLOT_UNDERWATER);
-    const underwater = underwaterId !== clear && parameterSet(underwaterId) ? underwaterId : undefined;
-    const underwaterStormId = light.int(row, "LightParamsID", LIGHT_SLOT_UNDERWATER_STORM);
-    const death = deathSlot(row, clear);
-    return {
-      params: clear,
-      ...(stormId !== clear && parameterSet(stormId) ? { stormParams: stormId } : {}),
-      ...(underwater === undefined ? {} : { underwaterParams: underwater }),
-      ...(underwaterStormId !== (underwater ?? clear) && parameterSet(underwaterStormId)
-        ? { underwaterStormParams: underwaterStormId } : {}),
-      ...(death === undefined ? {} : { deathParams: death }),
-    };
-  }
 }

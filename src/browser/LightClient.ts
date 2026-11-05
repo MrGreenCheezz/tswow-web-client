@@ -218,9 +218,13 @@ export function resolveLighting(entry: LightIndexEntry, x: number, y: number, ti
   // 05.10-A7b-5 review: a ghost's death light outranks the liquid's light and its darkening, as it
   // outranks the zone's underwater slot (`pair`) — under Kalimdor's lava a ghost read Light 7's
   // slot 4 (set 4) instead of the map's death set 3. Only a v5 body has liquids, so v4 is untouched.
+  // 06.11 (7.65): the row's LightID is a LightParams set read whole (Wow.exe under Onyxia's lava fogs to
+  // set 7's 200,52,0); a gateway before 7.65 sent it as `lightId`, a Light row, and is read as before.
   const liquid: LiquidLighting | undefined = underwater && !dead && liquidType !== undefined
     ? entry.liquids?.[liquidType] : undefined;
-  const liquidSlots = liquid?.lightId ? entry.lights?.[liquid.lightId] : undefined;
+  const liquidSlots = liquid?.paramsId !== undefined
+    ? (entry.params[liquid.paramsId] ? { params: liquid.paramsId } : undefined)
+    : liquid?.lightId ? entry.lights?.[liquid.lightId] : undefined;
   const resolved = resolveSpatial(entry, x, y, time, storm, maxBlended, z, overrideLightId, overrideWeight,
     overrideAreaLightId, overrideFromLightId, underwater, dead, liquidSlots);
   if (resolved && liquid?.maxDarkenDepth) {
@@ -485,7 +489,7 @@ export class LightClient {
       // light under lava and slime with the ocean's darkening (7.10). The shape grows only by
       // optional fields, so a gateway that has not been restarted answers v4 and every new field
       // reads as absent: the sky as before, a ghost under the living light, lava lit like water.
-      const response = await fetch(`${this.#baseUrl}/dbc/light/${map}?v=5`);
+      const response = await fetch(`${this.#baseUrl}/dbc/light/${map}?v=6`);
       if (!response.ok) {
         final = response.status === 404; // 05.10-A7b-0 1.24
         throw new Error(`Light gateway returned ${response.status}`);

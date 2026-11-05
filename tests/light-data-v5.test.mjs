@@ -14,8 +14,8 @@ import { UNDERWATER_LAKE_TINT, UNDERWATER_SURFACE_HANDOFF, underwaterFogStrength
 {
 // 05.10-A7b-5 — slice 5 of line A7b, «Свет: данные»: the light payload v5 (7.04 slice 0: all 18
 // LightIntBand and 6 LightFloatBand channels, HighlightSky, CloudTypeID, LightSkybox.Flags; 7.15:
-// slot 4, the death light; 7.10: the Light rows LiquidType.LightID names and the darkening
-// columns), the LiquidType v2 table (7.09 data) and the ghost fade.
+// slot 4, the death light; 7.10: the light LiquidType.LightID names — a LightParams set since 06.11 (7.65) —
+// and the darkening columns), the LiquidType v2 table (7.09 data) and the ghost fade.
 
 /** A WDBC file; a number is an int, `{ f }` a float and `{ s }` a string. */
 function dbc(fields, rows) {
@@ -67,7 +67,7 @@ const ZEROPOINT = 32 * 533.3333333333334;
  * Light rows (15 fields: id, map, 3 coords, 2 falloffs, 8 slots):
  *   1 — map 0 default: clear 1, underwater 2, storm 1, underwater storm 2, death 3.
  *   2 — a map 0 volume whose death slot repeats slot 0 (so it must be absent).
- *   6 — a map 0 volume, the one LiquidType 4 (slime) names: clear 4, underwater 5, death 3.
+ *   6 — a map 0 volume: clear 4, underwater 5, death 3. LiquidType 4 (slime) names LightParams 6, not it.
  *   9 — map 33's default: clear 1, death 6.
  * Map 90 owns no row and inherits Light 1 through GLOBAL_FALLBACK_MAP.
  */
@@ -106,8 +106,8 @@ async function writeTables(directory, { liquid = true } = {}) {
   floats[5] = bandRow(6, [0], [{ f: 1 }]);
   await writeFile(join(directory, "LightFloatBand.dbc"), dbc(34, floats));
   if (!liquid) return;
-  // LiquidType (45 fields): 2 Ocean darkens, 3 Magma names a Light row the table lacks, 4 Slime
-  // names Light 6, 15 Green Lava, 181 Orange Slime.
+  // LiquidType (45 fields): 2 Ocean darkens, 3 Magma names a LightParams set the table lacks, 4 Slime
+  // names set 6, 15 Green Lava, 181 Orange Slime.
   const liquidRow = (id, name, bank, darken, lightId, material, texture) => {
     const row = new Array(45).fill(0);
     row[0] = id;
@@ -187,21 +187,22 @@ test("7.15: slot 4 is published where it differs, with a fallback and the global
   assert.ok(global.params[3]);
 });
 
-test("7.10: LiquidType light rows reach every map, with the darkening columns", async (t) => {
+test("7.65: LiquidType's LightID is a LightParams set that reaches every map, with the darkening columns", async (t) => {
   const { loadLightMetadata, GLOBAL_FALLBACK_MAP } = await import("../dist/code/gateway/LightMetadata.js");
   const index = await loadLightMetadata(await tables(t));
   for (const map of [0, 33, GLOBAL_FALLBACK_MAP]) {
     const entry = index.get(map);
-    assert.deepEqual(entry.lights[6], { params: 4, underwaterParams: 5, deathParams: 3 }, `map ${map}`);
-    assert.ok(entry.params[4] && entry.params[5] && entry.params[3], `map ${map} carries Light 6's sets`);
-    assert.deepEqual(entry.liquids[4], { lightId: 6 });
-    assert.deepEqual(entry.liquids[15], { lightId: 6 });
+    assert.ok(entry.params[6], `map ${map} carries LightParams 6`);
+    assert.deepEqual(entry.liquids[4], { paramsId: 6 });
+    assert.deepEqual(entry.liquids[15], { paramsId: 6 });
     assert.deepEqual(entry.liquids[2], { maxDarkenDepth: 30, fogDarken: 0.5, ambDarken: 0.5, dirDarken: 0.25 });
     assert.deepEqual(entry.liquids[100], { maxDarkenDepth: 30, fogDarken: 0.5, ambDarken: 0.5, dirDarken: 0 });
-    assert.equal(entry.liquids[3], undefined, "a light id with no Light row is not sent");
+    assert.equal(entry.liquids[3], undefined, "a set the table lacks is not sent");
     assert.equal(entry.liquids[181], undefined, "nor a row with nothing to say");
   }
-  assert.equal(index.get(33).volumes.length, 0, "Light 6 is added for lookup, never as a volume elsewhere");
+  assert.equal(index.get(33).volumes.length, 0);
+  assert.equal(index.get(33).lights[6], undefined, "no Light row is lent to other maps for a liquid");
+  assert.deepEqual(index.get(0).lights[6], { params: 4, underwaterParams: 5, deathParams: 3 }, "map 0 keeps its own row");
 });
 
 test("a dataset without LiquidType still loads its light", async (t) => {
@@ -253,8 +254,9 @@ const V5_ENTRY = {
   },
   liquids: {
     2: { maxDarkenDepth: 30, fogDarken: 0.5, ambDarken: 0.5, dirDarken: 0.25 },
-    3: { lightId: 7 },
-    9: { lightId: 99 },
+    3: { paramsId: 4 },
+    9: { paramsId: 99 },
+    11: { lightId: 7 },
   },
 };
 
@@ -295,18 +297,21 @@ test("7.15: a ghost reads slot 4, fades by weight, and an old body falls back to
   assert.equal(oldGhost.colours.ambient.r, 0x80 / 255, "no slot 4 in the body: the living light");
 });
 
-test("7.10: under magma the LiquidType light row's underwater slot replaces the zone", () => {
+test("7.65: under magma the LightParams set LiquidType names replaces the zone, read whole", () => {
   const args = (underwater, liquid, depth) => [V5_ENTRY, 0, 0, 1440, 0, 3, undefined, undefined, 1, undefined,
     undefined, underwater, 0, liquid, depth];
   const zone = resolveLighting(...args(true, undefined, 0));
   assert.equal(zone.colours.ambient.b, 1, "zonal underwater set 2");
   const magma = resolveLighting(...args(true, 3, 2));
-  assert.equal(magma.colours.ambient.r, 1, "Light 7's underwater set 5");
-  assert.equal(magma.colours.ambient.g, 0x80 / 255);
+  assert.equal(magma.colours.ambient.g, 1, "LightParams 4 itself");
+  assert.equal(magma.colours.ambient.r, 0, "not the underwater slot of a Light row 4 or 7");
+  assert.equal(magma.liquidLight, true);
+  const oldGateway = resolveLighting(...args(true, 11, 2));
+  assert.equal(oldGateway.colours.ambient.r, 1, "a body from before 7.65: Light 7's underwater set 5, as it was");
   const above = resolveLighting(...args(false, 3, 0));
   assert.equal(above.colours.ambient.r, 0x80 / 255, "not under the surface: the ordinary sky");
   const unknown = resolveLighting(...args(true, 9, 2));
-  assert.equal(unknown.colours.ambient.b, 1, "a light row missing from the body: the zone");
+  assert.equal(unknown.colours.ambient.b, 1, "a set missing from the body: the zone");
   const v4 = { ...V5_ENTRY, liquids: undefined };
   assert.equal(resolveLighting(v4, 0, 0, 1440, 0, 3, undefined, undefined, 1, undefined, undefined, true, 0, 3, 2)
     .colours.ambient.b, 1, "an old body: the zone");
@@ -394,7 +399,7 @@ test("7.09 data: /dbc/liquid-types keeps its old body and answers ?v=2 with rows
     assert.equal(refused.status, 403);
     const light = await (await fetch(`http://127.0.0.1:${gateway.port}/dbc/light/0?v=5`, { headers })).json();
     assert.equal(light.fallbackDeath, 3);
-    assert.deepEqual(light.liquids[4], { lightId: 6 });
+    assert.deepEqual(light.liquids[4], { paramsId: 6 });
   } finally {
     await gateway.close();
   }
@@ -457,12 +462,12 @@ const V5_ENTRY = {
     1: { params: 1, underwaterParams: 2, deathParams: 3 },
     7: { params: 4, underwaterParams: 5, deathParams: 6 },
   },
-  liquids: { 2: { maxDarkenDepth: 30, fogDarken: 0.5, ambDarken: 0.5, dirDarken: 0.25 }, 3: { lightId: 7 } },
+  liquids: { 2: { maxDarkenDepth: 30, fogDarken: 0.5, ambDarken: 0.5, dirDarken: 0.25 }, 3: { paramsId: 5 } },
 };
 
 test("(d) v5: a ghost under lava or deep ocean sees the map's death light, not the liquid's", () => {
   const ghostInLava = at(V5_ENTRY, true, 1, 3, 5);
-  assert.equal(ghostInLava.colours.ambient.r, 0x40 / 255, "the map's death set 3, not Light 7's slot 4");
+  assert.equal(ghostInLava.colours.ambient.r, 0x40 / 255, "the map's death set 3, not the lava's set 5");
   assert.equal(ghostInLava.colours.ambient.g, 0);
   const ghostDeep = at(V5_ENTRY, true, 1, 2, 30);
   assert.equal(ghostDeep.fogEnd, 600, "no ocean darkening over the death light");
