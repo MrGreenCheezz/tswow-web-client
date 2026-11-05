@@ -110,6 +110,8 @@ export interface WvmBatch {
    * Present only on an extended artifact (`WvmModel.shaderIdsResolved`).
    */
   textureTransform2?: number;
+  /** 05.11 (6.45): `M2Batch.flags & 4`, Wow.exe projects it onto the ground instead of drawing it (ProjectedDecals.ts). */
+  projected?: boolean;
 }
 
 /** 05.10-A7a-F2 (6.17): one `M2Light`, in the file's own units, with its seven tracks. */
@@ -478,6 +480,8 @@ const NORMALS_CARRY_AO = 0x10;
 const TILT_X = 0x20;
 const TILT_Y = 0x40;
 const WVE1_HEADER_SIZE = 12;
+/** 05.11 (6.45): `ProjectedDecals.ts` `BATCH_FLAG_PROJECTED`. */
+const BATCH_FLAG_PROJECTED = 4;
 const WVE1_LIGHT_FIXED_SIZE = 20;
 const WVE1_LIGHT_TRACK_COMPONENTS = [3, 1, 3, 1, 1, 1, 1] as const;
 const CAMERA_SIZE = 36;
@@ -1129,7 +1133,10 @@ function readExtensions(view: DataView, at: number, model: WvmModel): void {
   let offset = at + WVE1_HEADER_SIZE;
   for (let index = 0; index < records; index++) {
     const batch = model.batches[index];
-    if (batch) batch.textureTransform2 = view.getInt16(offset, true);
+    if (batch) {
+      batch.textureTransform2 = view.getInt16(offset, true);
+      if (recordSize >= 4 && (view.getUint16(offset + 2, true) & BATCH_FLAG_PROJECTED) !== 0) batch.projected = true; // 05.11 (6.45)
+    }
     offset += recordSize;
   }
   const lights: WvmLight[] = [];

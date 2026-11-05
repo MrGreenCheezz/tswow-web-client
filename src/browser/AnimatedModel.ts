@@ -1416,8 +1416,10 @@ function computeSkinDemand(geometry: THREE.BufferGeometry, parents: Int16Array):
   const weightOf = attributeReader(skinWeight);
   const used = new Uint8Array(boneCount);
   const seen = new Uint8Array(skinIndex.count);
+  // 05.11 (6.45): a projected batch is no group of the geometry, and its vertices are posed all the same (ProjectedDecals.ts).
+  const projected = (geometry.userData["projectedSections"] ?? []) as readonly { start: number; count: number }[];
   const ranges = geometry.groups.length > 0
-    ? geometry.groups
+    ? [...geometry.groups, ...projected]
     : [{ start: geometry.drawRange.start, count: geometry.drawRange.count }];
   for (const range of ranges) {
     const end = Math.min(indices.length, range.start + range.count);

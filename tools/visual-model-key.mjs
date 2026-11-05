@@ -15,6 +15,7 @@ export function visualModelNamespace(modelPath) {
   const lower = modelPath.toLowerCase();
   if (lower.endsWith(".wmo")) return "visual-wmo-v27";
   if (isSpellModelPath(lower)) return SPELL_MODEL_NAMESPACE;
+  if (isGooberModelPath(lower)) return GOOBER_MODEL_NAMESPACE;
   return isUnitModelPath(lower) ? UNIT_MODEL_NAMESPACE : "visual-v24";
 }
 
@@ -23,7 +24,16 @@ export function visualModelNamespace(modelPath) {
  * stretches its InFlight over the flight when bit 0x1 is set (Missile_C) — and only theirs turn over: 1,567 small
  * files regenerate on demand, not every creature and doodad of the client.
  */
-export const SPELL_MODEL_NAMESPACE = "visual-spell-v1";
+export const SPELL_MODEL_NAMESPACE = "visual-spell-v2";
+
+/** 05.11 (6.45): the namespace before it, which a gateway started before the change still asks by. */
+export const PREVIOUS_SPELL_NAMESPACE = "visual-spell-v1";
+
+/**
+ * 05.11 (6.45): the game objects' own models (`World\Goober\…`). They and the spell and unit models carry `M2Batch.flags` in the
+ * WVE1 record, which says what Wow.exe projects onto the ground; only they turn over, not every doodad of the client.
+ */
+export const GOOBER_MODEL_NAMESPACE = "visual-goober-v1";
 
 /**
  * 03.11 (6.16в, 6.34): the namespace of the models a unit is drawn with (`Creature\…`, `Character\…`). Their clips are chosen
@@ -38,6 +48,11 @@ export const PREVIOUS_UNIT_NAMESPACE = "visual-unit-v1";
 /** Whether a model path is a unit's (`Creature\…`, `Character\…`, either separator, any case). */
 export function isUnitModelPath(modelPath) {
   return /^(?:creature|character)[\\/]/i.test(modelPath);
+}
+
+/** 05.11 (6.45): whether a model path is a game object's own (`World\Goober\…`, either separator, any case). */
+export function isGooberModelPath(modelPath) {
+  return /^world[\\/]goober[\\/]/i.test(modelPath);
 }
 
 /** Whether a model path is a spell model's (`Spells\…`, either separator, any case). */

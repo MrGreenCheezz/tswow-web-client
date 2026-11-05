@@ -32,7 +32,7 @@ import { publishTexture, SourceMissing, SOURCE_MISSING_EXIT, validTexturePath } 
 import { clientArchives } from "./mpq.mjs";
 import { clientDirectory } from "./paths.mjs";
 import { sourceStamp, stampIsCurrent, writeFileAtomic, writeSourceStamp } from "./source-stamp.mjs";
-import { isSpellModelPath, isUnitModelPath, PREVIOUS_UNIT_NAMESPACE, refinedModelHash, refinedModelHashIn, visualModelHash, visualModelHashIn } from "./visual-model-key.mjs"; // 05.10-A7a-F2; 13.10 7.11; 6.31; 04.11 (7.62)
+import { isSpellModelPath, isUnitModelPath, PREVIOUS_SPELL_NAMESPACE, PREVIOUS_UNIT_NAMESPACE, refinedModelHash, refinedModelHashIn, visualModelHash, visualModelHashIn } from "./visual-model-key.mjs"; // 05.10-A7a-F2; 13.10 7.11; 6.31; 04.11 (7.62)
 // Out of the build, not copied: see the note over the same import in `generate-texture.mjs`.
 import { validAssetPath } from "../dist/code/gateway/AssetPath.js";
 
@@ -107,7 +107,8 @@ export async function publishVisualModel(requestedPath, hash, archives, { transf
       // 05.11 (6.44): a gateway started before `visual-unit-v2` asks for the names it knows: the same bytes, which it ignores the lean of.
       || hash === refinedModelHashIn(PREVIOUS_UNIT_NAMESPACE, requestedPath) || hash === refinedModelHashIn(PREVIOUS_UNIT_NAMESPACE, modelPath);
     const current = refined || hash === visualModelHash(requestedPath) || hash === visualModelHash(modelPath)
-      || hash === visualModelHashIn(PREVIOUS_UNIT_NAMESPACE, requestedPath) || hash === visualModelHashIn(PREVIOUS_UNIT_NAMESPACE, modelPath);
+      || hash === visualModelHashIn(PREVIOUS_UNIT_NAMESPACE, requestedPath) || hash === visualModelHashIn(PREVIOUS_UNIT_NAMESPACE, modelPath)
+      || hash === visualModelHashIn(PREVIOUS_SPELL_NAMESPACE, requestedPath) || hash === visualModelHashIn(PREVIOUS_SPELL_NAMESPACE, modelPath);
     // 03.11 (6.16в, 6.34): a unit's clips as Wow.exe chooses them, under `visual-unit-v1` alone: a gateway started before it
     // still asks for its `visual-v24` hash and gets exactly the v24 bytes.
     const asWowExe = current && isUnitModelPath(modelPath);

@@ -40,6 +40,7 @@ import {
 import type { SharedModelBuffers } from "./SharedModelBuffers.js"; // P2-03b
 import { installM2ReliefShape, installM2ReliefSun, m2BatchReliefRejection, type M2ReliefBuild } from "./M2Relief.js"; // 23.10 (7.47 stage 3)
 import { installModelVertexAo } from "./ModelVertexAo.js"; // 04.11
+import { sectionVertices, type ProjectedBatch } from "./ProjectedDecals.js"; // 05.11 (6.45)
 
 /**
  * Which geoset of each family to draw.
@@ -860,6 +861,8 @@ export interface SlotFoldSummary {
 export interface BuiltModel {
   geometry: THREE.BufferGeometry;
   materials: THREE.Material[];
+  /** 05.11 (6.45): the batches `options.projectedAsDecals` kept out of the mesh, for the caller's ProjectedDecals. */
+  projected?: readonly ProjectedBatch[];
   /** Height of the visible geometry, for name plates. */
   height: number;
   /** MPQ paths of every texture this build wants, so the caller can prefetch them. */
@@ -939,6 +942,8 @@ export function buildModel(
      */
     slotTextures?: ReadonlyMap<number, THREE.Texture>;
     skinned?: boolean;
+    /** 05.11 (6.45): a world scene's build: a batch Wow.exe projects is not part of the mesh (ProjectedDecals.ts). A portrait keeps it. */
+    projectedAsDecals?: boolean;
     /** Join adjacent identical unit passes while preserving all triangles and their draw order. */
     coalesceAdjacentBatches?: boolean;
     /**
@@ -1032,6 +1037,9 @@ export function buildModel(
       return submesh !== undefined && submesh.indexCount > 0 && geosetVisible(submesh.geosetId, geosets);
     })
     .sort(batchOrder);
+  // 05.11 (6.45): what Wow.exe projects leaves the mesh here, before any batch is gathered with another.
+  const projectedOrdered = options.projectedAsDecals === true ? ordered.filter(({ batch }) => batch.projected === true) : [];
+  if (projectedOrdered.length > 0) ordered.splice(0, ordered.length, ...ordered.filter(({ batch }) => batch.projected !== true));
 
   const vegetationWind = options.vegetationWind === true
     ? vegetationWindProfile(model.bounds, options.modelPath)
@@ -1211,6 +1219,27 @@ export function buildModel(
     materials.push(material);
     materialSlots.push(slot?.type ?? -1);
   }
+  // 05.11 (6.45): each with its own material and tracks as any batch has, and no group in the geometry.
+  const projected: ProjectedBatch[] = [];
+  for (const { batch } of projectedOrdered) {
+    const submesh = model.submeshes[batch.submesh]!;
+    const { slot, supplied, path } = resolveTexture(batch);
+    if (path) texturePaths.push(path);
+    const material = buildMaterial(model, batch, slot, path, supplied, materialOptions);
+    const map = material.map;
+    if (map && map !== supplied && !borrowedTextures.has(map)) ownedTextures.push(map);
+    if (material.alphaMap) ownedTextures.push(material.alphaMap);
+    const { colour, weight } = batchTracks(model, batch);
+    const transform = model.textureTransforms?.[batch.textureTransform];
+    if (colour || weight || (transform && map)) {
+      animatedBatches.push({
+        material, globalSequences: model.globalSequences, tinted: Boolean(supplied || path),
+        ...(colour ? { colour } : {}), ...(weight ? { weight } : {}), ...(transform && map ? { transform, map } : {}),
+      });
+    }
+    projected.push({ material, vertices: sectionVertices(model.indices, submesh.indexStart, submesh.indexCount) });
+    (geometry.userData["projectedSections"] ??= []).push({ start: submesh.indexStart, count: submesh.indexCount });
+  }
   // Every batch is painted once, here; only the ones that move are kept for the per-frame pass.
   // Almost every batch in the game carries a texture-weight track and most of those hold the
   // single key 1, so keeping them all would be a frame's work spent writing the number that was
@@ -1234,6 +1263,7 @@ export function buildModel(
   return {
     geometry, materials, height, texturePaths: [...new Set(texturePaths)], ownedTextures,
     materialSlots, geosetSubstitutions,
+    ...(projected.length > 0 ? { projected } : {}), // 05.11 (6.45)
     animatedBatches: animatedBatches.filter(batchMoves),
     ...(level !== "off" ? { slotFolds: {
       groupsBefore: draw.batches.length, groupsAfter: geometry.groups.length, series: foldSeries.length, customDepth,

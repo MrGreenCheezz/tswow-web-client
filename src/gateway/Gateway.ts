@@ -191,10 +191,13 @@ const MAX_BRIDGED_SOCKETS_PER_ADDRESS = 8;
 // 03.11 (6.16в, 6.34): visual-unit-v1 is the creatures and characters: their clips carry every variation of an animation
 // with its frequency and replay, and the head of each is the one Wow.exe's lookup table finds. Only they turn over.
 // 05.11 (6.44): visual-unit-v2: and the M2 header's flags, how the model leans with the ground (world/UnitTilt.ts).
-export function visualModelCacheNamespace(modelPath: string): "visual-v24" | "visual-wmo-v27" | "visual-spell-v1" | "visual-unit-v2" {
+// 05.11 (6.45): visual-spell-v2 and visual-goober-v1: M2Batch.flags in the WVE1 record, what Wow.exe projects onto the ground
+// (browser/ProjectedDecals.ts). The unit models carry them from visual-unit-v2 on.
+export function visualModelCacheNamespace(modelPath: string): "visual-v24" | "visual-wmo-v27" | "visual-spell-v2" | "visual-goober-v1" | "visual-unit-v2" {
   const lower = modelPath.toLowerCase();
   if (lower.endsWith(".wmo")) return "visual-wmo-v27";
-  if (/^spells[\\/]/.test(lower)) return "visual-spell-v1";
+  if (/^spells[\\/]/.test(lower)) return "visual-spell-v2";
+  if (/^world[\\/]goober[\\/]/.test(lower)) return "visual-goober-v1";
   return /^(?:creature|character)[\\/]/.test(lower) ? "visual-unit-v2" : "visual-v24";
 }
 

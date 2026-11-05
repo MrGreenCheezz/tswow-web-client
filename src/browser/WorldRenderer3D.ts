@@ -18,6 +18,7 @@ import {
 } from "./RenderResultRows.js"; // 22.10 ARC-2 S3a-review: rows recomputed only when their inputs move
 import { passengerGameObjectTilt } from "../world/TransportPassengers.js";
 import { ShownGroundNormal, unitTiltAngles, type UnitTiltAngles } from "../world/UnitTilt.js"; // 05.11 (6.44)
+import { ProjectedDecals } from "./ProjectedDecals.js"; // 05.11 (6.45)
 import { ShownUnitFacing, unitAutoFacing, unitFacingTurn, unitSeatFacing } from "../world/UnitFacing.js"; // 11.10; 5.32: + unitSeatFacing; 22.10 ARC-2 S2a: the interaction NPC is an input
 import {
   CAMERA_DEFAULT_DISTANCE, CAMERA_DEFAULT_EYE_HEIGHT, CAMERA_DEFAULT_PITCH, CAMERA_DEFAULT_PIVOT_HEIGHT,
@@ -384,6 +385,7 @@ import type { CollisionLiquid, CollisionModel } from "../world/CollisionFormat.j
 /** One deterministic evolution step supplied by an offline render replay. */
 /** 23.10 (6.27): scratch for spell light positions. */
 const _unitLean: UnitTiltAngles = { pitch: 0, roll: 0 }; // 05.11 (6.44)
+const _decalCentre = new THREE.Vector3(); // 05.11 (6.45)
 const _spellLightAt = new THREE.Vector3();
 const _muzzleAt = new THREE.Vector3(); // 11.02 (04.11)
 const _namePoint = new THREE.Vector3(); // 03.11 6.37
@@ -4150,6 +4152,7 @@ export class WorldRenderer3D {
   #particleFloor: number | undefined;
   readonly #boneMatrix = new THREE.Matrix4();
   readonly #environment = new Map<number, RenderedEnvironment>();
+  readonly #projectedDecals = new ProjectedDecals(); // 05.11 (6.45)
   /**
    * Cheap static measurements survive warm-node eviction without retaining their source objects.
    * EnvironmentClient's bounded tile residency owns the keys; this WeakMap owns no model/node/GPU
@@ -5275,6 +5278,7 @@ export class WorldRenderer3D {
       this.#environmentGroup, this.#animatedEnvironmentGroup, this.#instanceGroup, this.#localLightInstanceGroup,
       this.#groundCoverGroup, this.#gameObjectGroup, this.#unitGroup, this.#effectGroup, this.#visualGroup);
     this.#scene.add(this.#environmentStandInMarkers.group); // 05.10-A7b-9 7.18
+    this.#scene.add(this.#projectedDecals.group); // 05.11 (6.45)
     this.#scene.add(this.#lightHalos.mesh); // 22.10 (7.36)
     this.#scene.add(this.#missileTrails.mesh); // 26.10 (6.27, test)
     this.#scene.add(this.#lootBeams.group); // 26.10
@@ -8618,6 +8622,7 @@ export class WorldRenderer3D {
             privateLoadedTextureViews: true,
             geosets: EVERY_GEOSET,
             skinned: Boolean(rig),
+            projectedAsDecals: true, // 05.11 (6.45)
             anisotropy: this.#anisotropy(),
             worldLight: this.#worldLight,
             fantasyGlow: this.#experimentalShaderProfile.fantasyGlow,
@@ -8639,6 +8644,7 @@ export class WorldRenderer3D {
             if (visual.template) {
               visual.skinned = instantiateSkinned(visual.template, built.materials);
               visual.frame.add(visual.skinned.root);
+              this.#projectedDecals.track(visual.skinned.mesh, built.projected); // 05.11 (6.45)
               this.#programWarmup.registerObject(visual.skinned.root);
               const clip = visual.template.clips.get(0) ?? visual.template.clips.values().next().value;
               if (clip) {
@@ -8663,13 +8669,14 @@ export class WorldRenderer3D {
                 }
               }
             }
-          } else if (built.materials.length > 0) {
+          } else if (built.materials.length > 0 || built.projected) {
             // Only when there is something to draw: many effect models are emitters and nothing
             // else, so the frame remains the emitter anchor without a placeholder mesh.
             const mesh = new THREE.Mesh(built.geometry, built.materials);
             applySlotDepth(mesh); // P2-03a
             visual.visual = mesh;
             visual.frame.add(mesh);
+            this.#projectedDecals.track(mesh, built.projected); // 05.11 (6.45)
             this.#programWarmup.registerObject(mesh);
           }
         }
@@ -9289,6 +9296,7 @@ export class WorldRenderer3D {
     }
     for (const { mesh } of this.#groundCoverMeshes.values()) this.#groundCoverDrawn += mesh.count;
     this.#updateBatchColours(now);
+    this.#updateProjectedDecals(map, terrainClient, now); // 05.11 (6.45)
     for (const [liquidClass, material] of this.#liquidMaterials) {
       updateLiquidMaterial(material, liquidClass, this.#lightSample, now / 1000);
     }
@@ -13548,6 +13556,7 @@ export class WorldRenderer3D {
       loadTexture: (url) => this.#loadTexture(url),
       deduplicateLoadedTextures: true,
       coalesceAdjacentBatches: cache === this.#builtUnits,
+      projectedAsDecals: skinned, // 05.11 (6.45): every instance of a rig is told to `#projectedDecals`
       // P2-03a: rigged unit bodies fold their passes into slot carriers; nothing else does.
       slotFold: cache === this.#builtUnits && skinned ? UNIT_SLOT_FOLD : "off",
       slotLimit: Math.min(WVM_SLOT_SAMPLERS, this.#renderer.capabilities.maxTextures - 8),
@@ -13604,6 +13613,7 @@ export class WorldRenderer3D {
       ? createModelPlacementLocalLightMaterials(built.materials, object.localLight, this.#worldLight) // 25.10 (6.27 indoors)
       : createModelPlacementTintMaterials(built.materials, object.tint);
     const instance = instantiateSkinned(template, placementMaterials ?? built.materials);
+    this.#projectedDecals.track(instance.mesh, built.projected); // 05.11 (6.45)
     // The tile's frame and not the unit path's, the same half turn `#wvmNode` applies: an animated
     // signpost and the static one beside it have to agree about which way they face.
     instance.root.quaternion.copy(ADT_MODEL_TO_SCENE);
@@ -14981,6 +14991,7 @@ export class WorldRenderer3D {
       }
       if (template) {
         const instance = instantiateSkinned(template, built.materials);
+        this.#projectedDecals.track(instance.mesh, built.projected); // 05.11 (6.45)
         // The tile's frame, not the unit path's: a game object is turned by the same conversion a
         // doodad is, and the two differ by half a turn about the vertical. Whatever that half turn
         // is worth, an animated door and the static door beside it must agree about it.
@@ -16095,6 +16106,7 @@ export class WorldRenderer3D {
     if (rigged) {
       skinned = instantiateSkinned(rigged, built.materials);
       node.add(skinned.root);
+      this.#projectedDecals.track(skinned.mesh, built.projected); // 05.11 (6.45)
     } else {
       // The unrigged tenth of the table, and the rigs that would not build. A statue of a horse
       // still puts the rider where a rider belongs.
@@ -16438,6 +16450,7 @@ export class WorldRenderer3D {
     unit.skinned = instance;
     unit.template = template;
     unit.built = built;
+    this.#projectedDecals.track(instance.mesh, built?.projected); // 05.11 (6.45)
     // The record's own scale, and only for the moment: `#drawUnit` multiplies the server's
     // `OBJECT_FIELD_SCALE_X` into `unit.scale` on this same frame, and from then on the field means
     // the size the unit is *drawn* at — which is what the portrait, the name plate and the camera
@@ -16985,6 +16998,32 @@ export class WorldRenderer3D {
     const stats = { ...engine.stats, workersReady: engine.workersReady, ...(failure === undefined ? {} : { failure }) };
     if (reset) engine.resetStats();
     return stats;
+  }
+
+  /** 05.11 (6.45): what Wow.exe projects lies on the terrain and the WMO groups standing here (ProjectedDecals.ts). */
+  #updateProjectedDecals(map: number | undefined, terrain: TerrainClient | undefined, now: number): void {
+    if (this.#projectedDecals.activeSources === 0) return;
+    this.#projectedDecals.update({
+      terrain: terrain === undefined || map === undefined ? undefined : {
+        height: (x, y) => terrain.residentHeightAt(map, x, y),
+        isHole: (x, y) => terrain.isHole(map, x, y),
+      },
+      groups: (box, visit) => {
+        const x = (box.minX + box.maxX) / 2, y = -(box.minY + box.maxY) / 2, z = (box.minZ + box.maxZ) / 2;
+        const reach = Math.hypot(box.maxX - box.minX, box.maxY - box.minY, box.maxZ - box.minZ) / 2;
+        for (const rendered of this.#environment.values()) {
+          if (rendered.wmo === undefined) continue;
+          for (const group of rendered.wmo.built.values()) {
+            const sphere = group.mesh.geometry.boundingSphere;
+            if (sphere) {
+              _decalCentre.copy(sphere.center).applyMatrix4(group.mesh.matrixWorld);
+              if (Math.hypot(_decalCentre.x - x, _decalCentre.y - z, _decalCentre.z - y) > reach + sphere.radius * group.mesh.matrixWorld.getMaxScaleOnAxis()) continue;
+            }
+            visit(group.mesh);
+          }
+        }
+      },
+    }, now);
   }
 
   /**

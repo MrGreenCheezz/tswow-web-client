@@ -135,7 +135,7 @@ export const WVM9_TILT_X = 0x20;
 export const WVM9_TILT_Y = 0x40;
 export const WVE1_MAGIC = "WVE1";
 export const WVE1_HEADER_SIZE = 12;
-/** i16 second-unit texture transform, u16 reserved. A reader steps by the block's own size word. */
+/** i16 second-unit texture transform, u16 `M2Batch.flags` (05.11, 6.45; zero before). A reader steps by the block's own size word. */
 export const WVE1_BATCH_RECORD_SIZE = 4;
 /** u16 size, u16 type, i16 bone, u16 reserved, f32 position[3]; then seven tracks. */
 const WVE1_LIGHT_FIXED_SIZE = 20;
@@ -442,6 +442,7 @@ function encodeExtensions(model, keyBones = undefined) {
   let offset = WVE1_HEADER_SIZE;
   for (const batch of batches) {
     block.writeInt16LE(Math.max(-1, Math.min(32_767, batch.textureTransform2 ?? -1)), offset);
+    block.writeUInt16LE((batch.flags ?? 0) & 0xff, offset + 2); // 05.11 (6.45)
     offset += WVE1_BATCH_RECORD_SIZE;
   }
   for (const record of lights) {
