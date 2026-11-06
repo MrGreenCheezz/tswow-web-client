@@ -232,6 +232,17 @@ function shipWorld() {
   return new Map([[SHIP, ship], [PROP, crate]]);
 }
 
+/** 06.11 (2.12): three yards in front of the crate's face, in the ship's frame, facing it. */
+function crateFront() {
+  const { x, y, orientation } = CRATE_SEAT;
+  return { x: x - 3 * Math.cos(orientation), y: y - 3 * Math.sin(orientation), orientation };
+}
+
+/** How far from the crate's middle a point in the ship's frame stands, along the crate's facing. */
+function crateAlong({ x, y }) {
+  return (x - CRATE_SEAT.x) * Math.cos(CRATE_SEAT.orientation) + (y - CRATE_SEAT.y) * Math.sin(CRATE_SEAT.orientation);
+}
+
 /** The deck: flat at z = 0 of the ship's frame, as the ride's CarrierProbe answers it. */
 const DECK = {
   ground: () => undefined, liquid: () => undefined, hole: () => true, loaded: () => true,
@@ -254,11 +265,13 @@ test("a game object aboard the ridden ship stands at its seat in the ship's fram
   assert.notEqual(probe, DECK);
   assert.ok(Math.abs(probe.floor(3, 0, 5, -5) - 1.5) < 1e-4, "on the crate, in the ship's frame: its top");
   assert.equal(probe.floor(0, 0, 5, -5), 0, "beside it: the deck");
-  // A walk along the keel into it, as the ride steps: stopped at its face.
-  const local = { x: 0, y: 0, z: 0, orientation: 0 };
+  // A walk square at its face, as the ride steps: stopped at the face. 06.11 (2.12): square, because one along the keel meets the
+  // turned crate 23° off and slides past it, as in Wow.exe.
+  const local = { ...crateFront(), z: 0 };
   const motion = newCharacterMotion();
   for (let frame = 0; frame < 60; frame++) stepCharacter(local, motion, input({ forward: 1 }), probe, 1 / 60);
-  assert.ok(local.x < 3 - 0.75 && local.x > 1.5, `stopped at the crate (${local.x})`);
+  const short = crateAlong(local);
+  assert.ok(short < -0.75 && short > -1.5, `stopped at the crate (${short} along its facing)`);
 
   // Off the ship (no seat): the crate is a world collider at its world pose, like any other.
   self.transport = undefined;
@@ -277,9 +290,10 @@ test("riding: the ride's step on the deck runs into a crate aboard and stops at 
   setRideCarriers(new TransportCollision(deckSource));
   try {
     const objects = shipWorld();
+    const front = { ...crateFront(), z: 0 }; // 06.11 (2.12): square at the crate, as above
     const self = {
-      guid: SELF, typeId: 4, position: compose(SHIP_POSE, { x: 0, y: 0, z: 0, orientation: 0 }), fields: new Map(),
-      transport: { guid: SHIP, x: 0, y: 0, z: 0, orientation: 0, seat: 0xff },
+      guid: SELF, typeId: 4, position: compose(SHIP_POSE, front), fields: new Map(),
+      transport: { guid: SHIP, ...front, seat: 0xff },
     };
     objects.set(SELF, self);
     const motion = newCharacterMotion();
@@ -294,7 +308,8 @@ test("riding: the ride's step on the deck runs into a crate aboard and stops at 
       endRideFrame(ride);
     }
     assert.equal(self.transport?.guid, SHIP, "still aboard");
-    assert.ok(self.transport.x < 3 - 0.75 && self.transport.x > 1.5, `stopped at the crate on the deck (${self.transport.x})`);
+    const short = crateAlong(self.transport);
+    assert.ok(short < -0.75 && short > -1.5, `stopped at the crate on the deck (${short} along its facing)`);
   } finally {
     setGameObjectColliders(undefined);
     setRideCarriers(undefined);

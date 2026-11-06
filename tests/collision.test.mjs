@@ -295,6 +295,46 @@ test("a corner pushes out of both walls at once", () => {
   assert.ok(out.x <= 2 - 0.4 + 1e-3 && out.y <= 2 - 0.4 + 1e-3, `${out.x}, ${out.y}`);
 });
 
+test("06.11 (2.12): a body walked into a convex ridge at an angle slides past it", () => {
+  // Two faces leaning out over the feet and meeting in a ridge, as on the face of Onyxia's Gate: the ridge's foot at x = 2.9, its
+  // top further out. Each push took every contact in turn, so the face the head was over pushed it out and the next face's edge
+  // pushed it along the face as well; walked in 18° off square, the two summed to the step and the body stood at the ridge.
+  const world = new CollisionWorld();
+  const apex = [6, 0, 11];
+  const bottom = [1.7, 0, -5];
+  world.set(1, new CollisionMesh(Float32Array.of(...apex, 1.7, -11, 0, ...bottom, ...apex, ...bottom, 1.7, 11, 0)));
+  const heading = Math.PI + 0.31;
+  let x = 3.75;
+  let y = 0.25;
+  for (let frame = 0; frame < 60; frame++) {
+    const out = world.pushOut(x + Math.cos(heading) * 0.117, y + Math.sin(heading) * 0.117, 0, 0.389, 2.03128, 1);
+    x = out.x;
+    y = out.y;
+  }
+  assert.ok(y < -1.5, `slid only to y ${y.toFixed(3)} in a second at 7 yd/s`);
+  assert.ok(x > 2.9, `went through the ridge to x ${x.toFixed(3)}`);
+});
+
+test("06.11 (2.12): a body walked into a plain wall nearly square slides along it either way, past the diagonal too", () => {
+  // The same fault on a flat wall: the second triangle's diagonal reached the body over the first and pushed against the slide,
+  // so 10° off square one way slid 1.2 yards in a second and the other way stood at the diagonal (−0.25).
+  const world = new CollisionWorld();
+  world.set(1, new CollisionMesh(wall(2)));
+  for (const lean of [-1, 1]) {
+    const heading = lean * 10 * Math.PI / 180;
+    let x = 1.6;
+    let y = -lean * 3;
+    for (let frame = 0; frame < 60; frame++) {
+      const out = world.pushOut(x + Math.cos(heading) * 0.117, y + Math.sin(heading) * 0.117, 0, 0.389, 2.03128, 1);
+      x = out.x;
+      y = out.y;
+    }
+    const slid = (y + lean * 3) * lean;
+    assert.ok(Math.abs(slid - Math.sin(10 * Math.PI / 180) * 7) < 0.05, `leaning ${lean}: slid ${slid.toFixed(3)}`);
+    assert.ok(x <= 2 - 0.389 + 1e-3, `leaning ${lean}: into the wall to x ${x.toFixed(3)}`);
+  }
+});
+
 test("a floor never pushes sideways", () => {
   // A character standing on a roof is inside the roof's own triangles by every measure a sphere
   // takes; if floors pushed, it would be shoved off every one it stood on.

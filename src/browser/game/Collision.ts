@@ -1117,18 +1117,25 @@ export class CollisionWorld {
    *
    * Only walls push. Floors are the vertical query's business, and a floor that shoved sideways
    * would slide the character off every roof it stood on.
+   *
+   * 06.11 (2.12): a pass gathers the contacts first and pushes the deepest first, each of the rest
+   * asked again from where the pushes before it left the body. In the order the triangles came, a
+   * convex edge pushed twice: a sphere over one face is also within reach of the next face's shared
+   * edge, and that edge, first in line, pushed it along the face as well. At Onyxia's Gate the two
+   * summed to exactly the step taken, so the body walked into the gate's ridge and stood there, where
+   * Wow.exe slides along the gate (7.4 yards in 4.5 s on the stand). The deepest contact of a convex
+   * body is the face the body is over, and once it has pushed, the edge is out of reach.
    */
   pushOut(x: number, y: number, z: number, radius: number, bodyHeight: number, stepHeight: number): { x: number; y: number } {
     let atX = x;
     let atY = y;
-    const heights = [
-      Math.min(stepHeight, bodyHeight),
-      bodyHeight * 0.55,
-      bodyHeight * 0.95,
-    ];
+    const heights = SPHERES;
+    heights[0] = Math.min(stepHeight, bodyHeight);
+    heights[1] = bodyHeight * 0.55;
+    heights[2] = bodyHeight * 0.95;
 
     for (let pass = 0; pass < RESOLVE_PASSES; pass++) {
-      let moved = false;
+      let contacts = 0;
       for (const { mesh, height } of this.#meshes.values()) {
         const bounds = mesh.bounds;
         if (atX + radius < bounds.minX || atX - radius > bounds.maxX) continue;
@@ -1150,37 +1157,77 @@ export class CollisionWorld {
           const base = triangle * 9;
           const topZ = Math.max(mesh.triangles[base + 2]!, mesh.triangles[base + 5]!, mesh.triangles[base + 8]!);
           if (topZ <= z + stepHeight) continue;
-          for (const height of heights) {
-            const point = closestPointOnTriangle(mesh.triangles, triangle, atX, atY, z + height);
+          for (let sphere = 0; sphere < 3; sphere++) {
+            const point = closestPointOnTriangle(mesh.triangles, triangle, atX, atY, z + heights[sphere]!);
             const dx = atX - point.x;
             const dy = atY - point.y;
-            const dz = z + height - point.z;
-            const distance = Math.hypot(dx, dy, dz);
+            const distance = Math.hypot(dx, dy, z + heights[sphere]! - point.z);
             // A triangle with no area has no face to stop anyone, and the closest point on one can
             // come out as NaN (04.11 2.11: it took a walker's position with it, on a Dalaran street).
             if (!(distance < radius) || hasNoArea(mesh.triangles, triangle)) continue;
             const flat = Math.hypot(dx, dy);
-            // Dead centre of a wall's plane: there is no direction to push, so the triangle's own
-            // normal decides which side to come out on.
-            if (flat < PENETRATION_EPSILON) {
-              const away = wallNormal(mesh.triangles, triangle);
-              atX += away.x * radius;
-              atY += away.y * radius;
-              moved = true;
-              continue;
-            }
-            const push = radius - flat;
-            if (push <= PENETRATION_EPSILON) continue;
-            atX += (dx / flat) * push;
-            atY += (dy / flat) * push;
-            moved = true;
+            if (flat >= PENETRATION_EPSILON && radius - flat <= PENETRATION_EPSILON) continue;
+            contacts = addContact(contacts, mesh, triangle, sphere, distance);
           }
         }
       }
+      let moved = false;
+      let deepest = 0;
+      for (let contact = 1; contact < contacts; contact++) {
+        if (CONTACT_DISTANCE[contact]! < CONTACT_DISTANCE[deepest]!) deepest = contact;
+      }
+      for (let turn = 0; turn < contacts; turn++) {
+        const contact = turn === 0 ? deepest : turn <= deepest ? turn - 1 : turn;
+        const mesh = CONTACT_MESH[contact]!;
+        const triangle = CONTACT_TRIANGLE[contact]!;
+        const lift = heights[CONTACT_SPHERE[contact]!]!;
+        const point = closestPointOnTriangle(mesh.triangles, triangle, atX, atY, z + lift);
+        const dx = atX - point.x;
+        const dy = atY - point.y;
+        if (!(Math.hypot(dx, dy, z + lift - point.z) < radius)) continue;
+        const flat = Math.hypot(dx, dy);
+        // Dead centre of a wall's plane: there is no direction to push, so the triangle's own
+        // normal decides which side to come out on.
+        if (flat < PENETRATION_EPSILON) {
+          const away = wallNormal(mesh.triangles, triangle);
+          atX += away.x * radius;
+          atY += away.y * radius;
+          moved = true;
+          continue;
+        }
+        const push = radius - flat;
+        if (push <= PENETRATION_EPSILON) continue;
+        atX += (dx / flat) * push;
+        atY += (dy / flat) * push;
+        moved = true;
+      }
+      CONTACT_MESH.fill(undefined, 0, contacts);
       if (!moved) break;
     }
     return { x: atX, y: atY };
   }
+}
+
+/** 06.11 (2.12): the three spheres' heights over the feet, reused by every `pushOut`. */
+const SPHERES = [0, 0, 0];
+/**
+ * 06.11 (2.12): one pass's contacts in the order found (a pass has a handful); past the limit the rest wait for the next pass.
+ * The meshes are let go at the end of every pass.
+ */
+const CONTACT_LIMIT = 48;
+const CONTACT_MESH: (CollisionMesh | undefined)[] = new Array<CollisionMesh | undefined>(CONTACT_LIMIT).fill(undefined);
+const CONTACT_TRIANGLE = new Int32Array(CONTACT_LIMIT);
+const CONTACT_SPHERE = new Uint8Array(CONTACT_LIMIT);
+const CONTACT_DISTANCE = new Float64Array(CONTACT_LIMIT);
+
+/** Keeps a contact in the order found, and says how many there are now. */
+function addContact(count: number, mesh: CollisionMesh, triangle: number, sphere: number, distance: number): number {
+  if (count >= CONTACT_LIMIT) return count;
+  CONTACT_MESH[count] = mesh;
+  CONTACT_TRIANGLE[count] = triangle;
+  CONTACT_SPHERE[count] = sphere;
+  CONTACT_DISTANCE[count] = distance;
+  return count + 1;
 }
 
 function hasNoArea(triangles: Float32Array, triangle: number): boolean {
