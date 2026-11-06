@@ -168,7 +168,9 @@ export function inspectConfiguration() {
     level: "ok",
     label: "Backends",
     message: `auth ${process.env.AUTH_HOST ?? "127.0.0.1"}:${process.env.AUTH_PORT ?? "3724"}, `
-      + `world ${process.env.WORLD_HOST ?? "127.0.0.1"}:${process.env.WORLD_PORT ?? "8085"}`,
+      + (process.env.WORLD_FROM_REALMLIST === "0"
+        ? `world ${process.env.WORLD_HOST ?? "127.0.0.1"}:${process.env.WORLD_PORT ?? "8085"}`
+        : `world from the realm list, else ${process.env.WORLD_HOST ?? "127.0.0.1"}:${process.env.WORLD_PORT ?? "8085"}`),
   });
   return results;
 }

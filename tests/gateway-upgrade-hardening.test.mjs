@@ -238,7 +238,7 @@ test("routeUpgrade checks the Origin first, then a path that parses, then the tw
   const route = (url, origin, allowedOrigins = [ORIGIN]) =>
     routeUpgrade({ url, headers: origin === undefined ? {} : { origin } }, { allowedOrigins });
   assert.deepEqual(route("/auth", ORIGIN), { kind: "auth" });
-  assert.deepEqual(route("/world?realm=1", ORIGIN), { kind: "world" });
+  assert.deepEqual(route("/world?realm=1", ORIGIN), { kind: "world", realm: "1" }); // 10.27: the realm it names
   assert.deepEqual(route("/auth", FOREIGN_ORIGIN), { kind: "refuse", status: 403 });
   assert.deepEqual(route("/auth", undefined), { kind: "refuse", status: 403 });
   // A foreign page is refused before its path is ever parsed.

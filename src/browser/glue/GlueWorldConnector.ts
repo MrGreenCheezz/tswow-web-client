@@ -28,7 +28,7 @@ export interface GlueWorldStream {
 }
 
 export interface GlueWorldConnectorParts<Stream extends GlueWorldStream, Client extends GlueWorldConnection> {
-  /** The `/world` WebSocket URL of the gateway. */
+  /** The `/world` WebSocket URL of the gateway; the realm's address is added to it ({@link realmWorldUrl}). */
   readonly url: string;
   openStream(url: string): Promise<Stream>;
   connectWorld(
@@ -48,11 +48,21 @@ export class GlueConnectCancelledError extends Error {
   }
 }
 
+/**
+ * 10.27: the world socket of one realm. Wow.exe connects to the address the realm list gave; the page
+ * names it and the gateway dials it, but only an address its authserver announced (RealmAddresses.ts).
+ */
+export function realmWorldUrl(url: string, address: string): string {
+  const world = new URL(url);
+  world.searchParams.set("realm", address);
+  return world.toString();
+}
+
 export function glueWorldConnector<Stream extends GlueWorldStream, Client extends GlueWorldConnection>(
   parts: GlueWorldConnectorParts<Stream, Client>,
 ): GlueWorldConnector {
   return async (realm, auth, progress, signal) => {
-    const stream = await parts.openStream(parts.url);
+    const stream = await parts.openStream(realmWorldUrl(parts.url, realm.address));
     const abort = (): void => stream.close();
     signal?.addEventListener("abort", abort, { once: true });
     if (signal?.aborted) abort();

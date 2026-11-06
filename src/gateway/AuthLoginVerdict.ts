@@ -51,7 +51,7 @@ function wrongAccountOrPassword(result: number): boolean {
 }
 
 /** Length of a successful `AUTH_LOGON_CHALLENGE` answer, or `undefined` until enough of it is here. */
-function challengeAnswerLength(bytes: Uint8Array): number | undefined {
+export function challengeAnswerLength(bytes: Uint8Array): number | undefined {
   const gLengthAt = 3 + 32;
   const gLength = bytes[gLengthAt];
   if (gLength === undefined) return undefined;

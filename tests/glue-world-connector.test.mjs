@@ -13,7 +13,7 @@ import { fakeGlueSession } from "../dist/code/browser/glue/GlueFakeSession.js";
  */
 
 // type 8 is RP-PvP: the world mount answers GetZonePVPInfo from it (Cfg_Configs RealmType).
-const REALM = { id: 7, name: "Круг Теней", type: 8 };
+const REALM = { id: 7, name: "Круг Теней", type: 8, address: "127.0.0.1:8085" };
 const AUTH = { username: "PLAYER", sessionKey: new Uint8Array(40), realms: [] };
 
 function parts({ connectWorld } = {}) {
@@ -35,12 +35,13 @@ function parts({ connectWorld } = {}) {
   };
 }
 
-test("the connector opens /world, reports the stages and hands the client over", async () => {
+test("the connector opens /world of the realm's address, reports the stages and hands the client over", async () => {
   const { log, parts: seam } = parts();
   const progress = [];
   const client = await glueWorldConnector(seam)(REALM, AUTH, (step) => progress.push(`${step.stage}:${step.position ?? ""}`));
   assert.equal(typeof client.close, "function");
-  assert.deepEqual(log, ["open ws://gateway.test/world", "connect PLAYER 7 Круг Теней 8", "connected PLAYER 7"]);
+  // 10.27: the gateway dials the realm list's address (RealmAddresses.ts), so the page names it.
+  assert.deepEqual(log, ["open ws://gateway.test/world?realm=127.0.0.1%3A8085", "connect PLAYER 7 Круг Теней 8", "connected PLAYER 7"]);
   assert.deepEqual(progress, ["authenticating:", "queued:3"]);
 });
 

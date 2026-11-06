@@ -21,7 +21,11 @@ import type { Duplex } from "node:stream";
 /** Every status the upgrade path refuses with. */
 export type UpgradeRefusal = 400 | 403 | 404 | 500 | 503;
 
-export type UpgradeRoute = { kind: "auth" | "world" } | { kind: "refuse"; status: UpgradeRefusal };
+/** `realm`: the realm address a `/world` upgrade names (10.27); absent, the gateway's own world target. */
+export type UpgradeRoute =
+  | { kind: "auth" }
+  | { kind: "world"; realm?: string }
+  | { kind: "refuse"; status: UpgradeRefusal };
 
 export interface UpgradeRouteOptions {
   allowedOrigins: readonly string[];
@@ -53,18 +57,22 @@ export function originAllowed(origin: string | undefined, allowed: readonly stri
  *
  * The Origin comes first ({@link originAllowed}), so a page on a foreign origin is refused before
  * anything it wrote is parsed. A path that does not parse is a 400 — the client is told why — rather
- * than the exception it used to be.
+ * than the exception it used to be. An empty `realm` is a 400 too.
  */
 export function routeUpgrade(request: Pick<IncomingMessage, "headers" | "url">, options: UpgradeRouteOptions): UpgradeRoute {
   if (!originAllowed(request.headers.origin, options.allowedOrigins)) return { kind: "refuse", status: 403 };
-  let pathname: string;
+  let url: URL;
   try {
-    pathname = new URL(request.url ?? "/", "http://gateway.local").pathname;
+    url = new URL(request.url ?? "/", "http://gateway.local");
   } catch {
     return { kind: "refuse", status: 400 };
   }
-  if (pathname === "/auth") return { kind: "auth" };
-  if (pathname === "/world") return { kind: "world" };
+  if (url.pathname === "/auth") return { kind: "auth" };
+  if (url.pathname === "/world") {
+    const realm = url.searchParams.get("realm");
+    if (realm === null) return { kind: "world" };
+    return realm === "" ? { kind: "refuse", status: 400 } : { kind: "world", realm };
+  }
   return { kind: "refuse", status: 404 };
 }
 

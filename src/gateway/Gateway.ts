@@ -82,6 +82,7 @@ import {
   LOGIN_REFUSED_CLOSE, LoginAttemptLimiter, loginAttemptKey, loginRefusalReason, watchLoginAttempt,
   type LoginAttemptLimits,
 } from "./LoginAttemptLimiter.js"; // 10.01
+import { AnnouncedRealms, watchRealmLists } from "./RealmAddresses.js"; // 10.27
 import { respondFile } from "./FileResponse.js";
 import {
   generateOnce, generationLane, recentlyFailed, sourceMissing, texturePriority, visualModelPriority,
@@ -505,6 +506,12 @@ export interface GatewayOptions {
    * Absent means `LOGIN_ATTEMPT_DEFAULTS`; `false` switches the limit off (`GATEWAY_LOGIN_MAX_FAILURES=0`).
    */
   loginAttempts?: Partial<LoginAttemptLimits> | false;
+  /**
+   * 10.27: `/world?realm=address` connects to that address of the realm list the authserver
+   * announced over this gateway (`RealmAddresses.ts`); `/world` without it goes to `world`. `false`
+   * sends every world connection to `world` (`WORLD_FROM_REALMLIST=0`).
+   */
+  worldFromRealmList?: boolean;
   /**
    * 10.22: publish the models of the served visual tile and its eight neighbours in the background
    * (`AssetPreloader.ts`). Off when absent; needs `generateVisualTile` and `generateVisualModel`.
@@ -4194,9 +4201,18 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
       else bridgedPerAddress.delete(address);
     });
   };
-  const track = (webSocket: WebSocket, address: string, target: GatewayTarget): Socket => {
+  const track = (webSocket: WebSocket, address: string, target: GatewayTarget, kind: "auth" | "world"): Socket => {
     hold(webSocket, address);
-    return bridge(webSocket, target, flow, logBridge?.(target === options.world ? "world" : "auth"));
+    return bridge(webSocket, target, flow, logBridge?.(kind));
+  };
+
+  // 10.27: the realm addresses this gateway's authserver announced, and the target of each `/world`
+  // upgrade between its check in `upgrade` and its `connection`.
+  const realms = options.worldFromRealmList === false ? undefined : new AnnouncedRealms();
+  const worldTargets = new WeakMap<IncomingMessage, GatewayTarget>();
+  const worldTarget = (realm: string | undefined): GatewayTarget | undefined => {
+    if (realm === undefined || realms === undefined) return options.world;
+    return realms.target(realm, Date.now());
   };
 
   // 10.01: the authserver sees every player as this process, so failed logins are counted here, per
@@ -4215,8 +4231,9 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
     const address = peerAddress(request);
     const admission = logins?.admit(loginAttemptKey(loginAddress(request)));
     if (admission === undefined || admission.ok) {
-      const tcp = track(socket, address, options.auth);
+      const tcp = track(socket, address, options.auth, "auth");
       if (admission) watchLoginAttempt(tcp, socket, admission.attempt);
+      if (realms) watchRealmLists(tcp, realms);
       return;
     }
     // Accepted and closed at once, never relayed: the close code is what the page can read
@@ -4225,7 +4242,9 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
     socket.on("error", () => socket.terminate());
     socket.close(LOGIN_REFUSED_CLOSE, loginRefusalReason(admission.retryAfterMs));
   });
-  worldServer.on("connection", (socket, request) => { track(socket, peerAddress(request), options.world); });
+  worldServer.on("connection", (socket, request) => {
+    track(socket, peerAddress(request), worldTargets.get(request) ?? options.world, "world");
+  });
 
   // Nothing in here may throw or leave an `error` unheard: Node has already taken its own handling
   // off the socket, so either one would end the process (see UpgradeGuard.ts). Refusals go only
@@ -4242,6 +4261,15 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
       if (bridged >= MAX_BRIDGED_SOCKETS || (bridgedPerAddress.get(address) ?? 0) >= MAX_BRIDGED_SOCKETS_PER_ADDRESS) {
         refuseUpgrade(socket, 503);
         return;
+      }
+      if (route.kind === "world") {
+        // A realm the authserver did not announce is not dialled: the gateway is no relay to any host.
+        const target = worldTarget(route.realm);
+        if (target === undefined) {
+          refuseUpgrade(socket, 403);
+          return;
+        }
+        worldTargets.set(request, target);
       }
       const selected = route.kind === "auth" ? authServer : worldServer;
       selected.handleUpgrade(request, socket, head, (webSocket) => selected.emit("connection", webSocket, request));

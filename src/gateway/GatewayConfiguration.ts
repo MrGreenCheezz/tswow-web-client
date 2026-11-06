@@ -355,6 +355,8 @@ export async function createGatewayConfiguration(): Promise<{ options: GatewayOp
     // 10.14: one line per closed bridge with its queue peaks and pauses, to measure a remote line.
     logBackpressure: process.env["GATEWAY_LOG_BACKPRESSURE"] === "1",
     loginAttempts,
+    // 10.27: `/world?realm=` dials the realm list's address; `0` keeps every world connection on WORLD_HOST.
+    worldFromRealmList: process.env["WORLD_FROM_REALMLIST"] !== "0",
     ...(trafficReport ? { trafficReport } : {}), // 25.10 (serve S5)
     // 25.10 (serve S2): the generators publishing the tile caches; their digest is part of the tile `g`.
     toolsDirectory: resolve(process.cwd(), "tools"),
