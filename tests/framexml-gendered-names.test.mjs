@@ -19,6 +19,7 @@ const { LiveWorldSeam } = await import("../dist/code/browser/framexml/LiveWorldS
 const { UPDATE_FIELDS } = await import("../dist/code/generated/updateFields.js");
 const { learnCreationNames, forgetCreationNames, femaleOf } = await import("../dist/code/browser/ui/UnitSnapshot.js");
 const tooltip = await import("../dist/code/browser/ui/UnitTooltip.js");
+const { FrameXmlArenaRosterModel, FRAMEXML_ARENA_ROSTER_BINDINGS } = await import("../dist/code/browser/framexml/FrameXmlArenaRoster.js");
 
 after(() => forgetCreationNames());
 
@@ -254,6 +255,33 @@ test("06.11 (9.05): GetRaidRosterInfo takes an out-of-sight member's class from 
     const { seam } = liveSeam({ names: [[0x21n, "Аня", { race: 4, gender: 1, classId: 5 }], [0x22n, "Вика"]], extra: { group } });
     assert.deepEqual(call(seam, "GetRaidRosterInfo", 1).slice(4, 6), ["Жрица", "PRIEST"]);
     assert.deepEqual(call(seam, "GetRaidRosterInfo", 2).slice(4, 6), [undefined, undefined], "no answer, no class");
+  } finally {
+    forgetCreationNames();
+  }
+});
+
+// 06.11 (9.05): 0x5a2fc0 asks 0x72aab0 with the name cache entry (0x67d770), which names the entry's class in the
+// entry's sex; without an entry, ChrClasses.Name_lang of the roster's class. The sort (0x5a2bd0) keeps Name_lang.
+test("06.11 (9.05): GetArenaTeamRosterInfo names a class in the name cache entry's sex; without one, Name_lang", () => {
+  learnCreationNames(RACES, CLASSES);
+  try {
+    const slots = UPDATE_FIELDS.PLAYER_FIELD_ARENA_TEAM_INFO_1_1.offset;
+    const self = { fields: new Map([[slots + 7, 77], [slots + 8, 3], [slots + 9, 0]]) }; // slot 2: team 77
+    const member = (guid, name, classId) => ({
+      guid, online: true, name, captain: false, level: 80, classId,
+      weekGames: 0, weekWins: 0, seasonGames: 0, seasonWins: 0, personalRating: 1500,
+    });
+    const details = new Map([[1n, { race: 4, gender: 1, classId: 5 }], [2n, { race: 1, gender: 0, classId: 30 }]]);
+    const world = {
+      events: events(),
+      arenaTeamRosters: new Map([[77, { teamId: 77, type: 3, members: [member(1n, "Аня", 5), member(2n, "Боря", 30), member(3n, "Вика", 30)] }]]),
+      names: { details: (guid) => details.get(guid) },
+    };
+    const roster = new FrameXmlArenaRosterModel({ world: () => world, self: () => self, now: () => 0 });
+    roster.attach({ fire: () => 1 });
+    world.events.emit("ARENA_TEAM_CHANGED", { teamId: 77 });
+    const className = (index) => [...FRAMEXML_ARENA_ROSTER_BINDINGS.GetArenaTeamRosterInfo({ arenaRoster: roster }, [2, index])][3];
+    assert.deepEqual([1, 2, 3].map(className), ["Жрица", "Тест-м", "Тест"], "Аня, Боря, Вика by name; Вика has no entry");
   } finally {
     forgetCreationNames();
   }

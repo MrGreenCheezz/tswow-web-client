@@ -30,7 +30,8 @@
  *   a false second argument count the online members. With the switch on the sort does not group
  *   online members first either (0x5a2bd0).
  * * `GetArenaTeamRosterInfo(slot, i)` (0x5a2fc0): name, the roster's captain word as the rank (0 is
- *   the captain), level, the class's name (nil for a class the client does not know), 1 or nil for
+ *   the captain), level, the class's name (nil for a class the client does not know; 06.11, 9.05: named by
+ *   the name cache entry's class and sex through 0x72aab0, the class's Name_lang without an entry), 1 or nil for
  *   online, the week's games and wins, the season's games and wins, the personal rating. Out of
  *   range: nil, 0, 0, nil, nil and five zeros.
  * * The sort (0x5a2bd0, 0x5a2e80) walks seven keys: name and class name small first; week games,
@@ -50,13 +51,15 @@
 import type { ArenaTeamMember, ArenaTeamRoster } from "../../world/ArenaProtocol.js";
 import type { WorldObjectState } from "../../world/WorldState.js";
 import { UPDATE_FIELDS } from "../../generated/updateFields.js";
-import { className, classFileName } from "../ui/UnitSnapshot.js";
+import { className, classFileName, femaleOf } from "../ui/UnitSnapshot.js";
 import { frameXmlLuaNumber, frameXmlRoundToInt } from "./FrameXmlPvpFlag.js";
 
 /** The world facts and commands the model reads; `WorldClient` satisfies it structurally. */
 export interface FrameXmlArenaRosterWorld {
   readonly arenaTeamRosters?: ReadonlyMap<number, ArenaTeamRoster> | undefined;
   readonly arenaTeamInvite?: unknown;
+  /** 06.11 (9.05): the name cache, whose entry names a member's class in its sex (0x5a2fc0 → 0x67d770). */
+  readonly names?: { details?(guid: bigint): { readonly gender: number; readonly classId: number } | undefined } | undefined;
   readonly events?: {
     on(name: "ARENA_TEAM_CHANGED", listener: (change: { readonly teamId: number | undefined }) => void): () => void;
   } | undefined;
@@ -261,10 +264,20 @@ export class FrameXmlArenaRosterModel {
     if (!member) return EMPTY_INFO;
     return [
       member.name, member.captain ? 0 : 1, member.level,
-      classFileName(member.classId) === undefined ? undefined : className(member.classId),
+      classFileName(member.classId) === undefined ? undefined : this.#className(member),
       member.online ? 1 : undefined, member.weekGames, member.weekWins, member.seasonGames,
       member.seasonWins, member.personalRating,
     ];
+  }
+
+  /**
+   * 06.11 (9.05): 0x5a2fc0 names the class through 0x72aab0 with the name cache entry, which reads the entry's own
+   * class and sex; without an entry, the roster class's Name_lang. The sort (0x5a2bd0) compares Name_lang either way.
+   */
+  #className(member: ArenaTeamMember): string {
+    const entry = this.#context.world()?.names?.details?.(member.guid);
+    return entry && classFileName(entry.classId) !== undefined
+      ? className(entry.classId, femaleOf(entry.gender)) : className(member.classId);
   }
 
   /** `SetArenaTeamRosterSelection(slot, index)`: a row out of range clears the selection. */
