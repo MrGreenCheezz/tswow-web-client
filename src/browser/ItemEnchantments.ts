@@ -1,12 +1,24 @@
-import type { ItemEnchantmentData, ItemEnchantmentInfo, GemPropertyInfo } from "../gateway/ItemEnchantments.js";
+import type {
+  ItemEnchantmentData, ItemEnchantmentInfo, GemPropertyInfo, ItemRandomPropertyInfo, ItemRandomSuffixInfo,
+  RandPropPointsInfo,
+} from "../gateway/ItemEnchantments.js";
 import { UPDATE_FIELDS } from "../generated/updateFields.js";
 import type { WorldObjectState } from "../world/WorldState.js";
 
-export type { ItemEnchantmentInfo, GemPropertyInfo };
+export type { ItemEnchantmentInfo, GemPropertyInfo, ItemRandomPropertyInfo, ItemRandomSuffixInfo, RandPropPointsInfo };
+
+const isIntegers = (value: unknown, length: number): value is number[] =>
+  Array.isArray(value) && value.length === length && value.every((entry) => Number.isInteger(entry));
 
 export class ItemEnchantmentClient {
   readonly enchantments = new Map<number, ItemEnchantmentInfo>();
   readonly gems = new Map<number, GemPropertyInfo>();
+  /** 06.11 (3.12): ItemRandomProperties, ItemRandomSuffix and RandPropPoints rows by id / item level. */
+  readonly randomProperties = new Map<number, ItemRandomPropertyInfo>();
+  readonly randomSuffixes = new Map<number, ItemRandomSuffixInfo>();
+  readonly randPropPoints = new Map<number, RandPropPointsInfo>();
+  /** 06.11 (3.12): the answer carried the random tables and the effects (a gateway restarted since `?v=3`). */
+  randomReady = false;
   #pending: Promise<void> | undefined;
   ready = false;
 
@@ -28,7 +40,8 @@ export class ItemEnchantmentClient {
   async #load(): Promise<void> {
     // `v=2`: the rows gained `flags` (SpellItemEnchantment.Flags, 2.05). The route does not read the
     // query, so a gateway not yet restarted answers the old shape and `flags` stays undefined.
-    const response = await fetch(`${this.origin}/dbc/item-enchantments?v=2`);
+    // `v=3` (06.11, 3.12): the effects and the random property tables, as additive keys.
+    const response = await fetch(`${this.origin}/dbc/item-enchantments?v=3`);
     if (!response.ok) throw new Error(`Не удалось загрузить сведения о камнях (${response.status})`);
     const data = await response.json() as ItemEnchantmentData;
     if (!Array.isArray(data.enchantments) || !Array.isArray(data.gems)
@@ -43,8 +56,34 @@ export class ItemEnchantmentClient {
     this.visuals.clear();
     this.itemVisualSlots.clear(); // 05.10-A7a-E
     this.displayVisuals.clear(); // 05.10-A7a-E
-    for (const enchantment of data.enchantments) this.enchantments.set(enchantment.id, enchantment);
+    this.randomProperties.clear(); // 06.11 (3.12)
+    this.randomSuffixes.clear();
+    this.randPropPoints.clear();
+    for (const enchantment of data.enchantments) {
+      // 06.11 (3.12): malformed effects are dropped from the row, never the row.
+      const effects = (enchantment as { effects?: unknown }).effects;
+      if (effects !== undefined && !(Array.isArray(effects) && effects.length === 3 && effects.every((effect) => isIntegers(effect, 4)))) {
+        delete (enchantment as { effects?: unknown }).effects;
+      }
+      this.enchantments.set(enchantment.id, enchantment);
+    }
     for (const gem of data.gems) this.gems.set(gem.id, gem);
+    // 06.11 (3.12): optional, additive; a malformed row is skipped.
+    const named = (row: unknown): row is { id: number; name: string; enchantments: number[] } => typeof row === "object" && row !== null
+      && Number.isInteger((row as { id?: unknown }).id) && typeof (row as { name?: unknown }).name === "string"
+      && isIntegers((row as { enchantments?: unknown }).enchantments, 5);
+    if (Array.isArray(data.randomProperties)) for (const row of data.randomProperties) if (named(row)) this.randomProperties.set(row.id, row);
+    if (Array.isArray(data.randomSuffixes)) {
+      for (const row of data.randomSuffixes) if (named(row) && isIntegers(row.allocation, 5)) this.randomSuffixes.set(row.id, row);
+    }
+    if (Array.isArray(data.randPropPoints)) {
+      for (const row of data.randPropPoints) {
+        if (Number.isInteger(row?.level) && isIntegers(row.epic, 5) && isIntegers(row.rare, 5) && isIntegers(row.uncommon, 5)) {
+          this.randPropPoints.set(row.level, row);
+        }
+      }
+    }
+    this.randomReady = Array.isArray(data.randomProperties) && Array.isArray(data.randomSuffixes) && Array.isArray(data.randPropPoints);
     // An older gateway sends no visuals: glow stays off rather than failing the whole table.
     const visuals = (data as { visuals?: Record<string, readonly string[]> }).visuals;
     if (visuals && typeof visuals === "object") {
@@ -253,6 +292,23 @@ export function itemEnchantments(origin: string): ItemEnchantmentClient {
 export function itemEnchantmentIds(item: WorldObjectState): number[] {
   return Array.from({ length: 7 }, (_, slot) =>
     item.fields.get(UPDATE_FIELDS.ITEM_FIELD_ENCHANTMENT_1_1.offset + slot * 3) ?? 0);
+}
+
+/** 06.11 (3.12): the random property's enchantments the server put in slots 7..11 (PROP_ENCHANTMENT_SLOT_0..4). */
+export function itemRandomEnchantmentIds(item: WorldObjectState): number[] {
+  return Array.from({ length: 5 }, (_, index) =>
+    item.fields.get(UPDATE_FIELDS.ITEM_FIELD_ENCHANTMENT_1_1.offset + (7 + index) * 3) ?? 0);
+}
+
+/**
+ * 06.11 (3.12): an item object's random property for its tooltip — ITEM_FIELD_RANDOM_PROPERTIES_ID (signed: a
+ * suffix is negative) and slots 7..11; its lines' factor is RandPropPoints' (0x007089b0), not the seed field.
+ */
+export function itemObjectRandom(item: WorldObjectState): { id: number; slots: number[] } {
+  return {
+    id: (item.fields.get(UPDATE_FIELDS.ITEM_FIELD_RANDOM_PROPERTIES_ID.offset) ?? 0) | 0,
+    slots: itemRandomEnchantmentIds(item),
+  };
 }
 
 /**

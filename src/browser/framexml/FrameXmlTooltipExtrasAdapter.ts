@@ -22,7 +22,11 @@ import type { TooltipContent } from "../ui/TooltipTypes.js";
 import type {
   GameTooltipExtrasAdapter, GameTooltipQuest, GameTooltipTalent, GameTooltipTalentRequirement,
 } from "../glue/GlueTooltipExtras.js";
-import type { GameTooltipItemAura, GameTooltipStatSource } from "../glue/GlueTooltipStatDelta.js"; // 3.12 (04.10, L4)
+import type {
+  GameTooltipItemAura, GameTooltipRandomEffect, GameTooltipStatSource,
+} from "../glue/GlueTooltipStatDelta.js"; // 3.12 (04.10, L4); GameTooltipRandomEffect 06.11
+import { itemEnchantments } from "../ItemEnchantments.js"; // 3.12 (06.11)
+import { itemLinkRandom, itemRandomStatEffects, itemRandomTables, type ItemRandomTables } from "../ItemRandomProperties.js"; // 3.12 (06.11)
 import { frameXmlQuestText } from "./FrameXmlQuestText.js"; // 3.12 (13.10): was ui/NpcText.ts formatNpcText
 import type { FrameXmlWorldSeam } from "./FrameXmlWorldSeam.js";
 import type { FrameXmlTalentCellSnapshot, FrameXmlTalentSnapshot } from "./FrameXmlTalentResolver.js";
@@ -57,6 +61,8 @@ export interface FrameXmlTooltipExtrasWorld {
   } | undefined;
   /** 3.12 (13.10): the page's spell rows (`game.spells`), for the item auras of the stat difference. */
   readonly spells?: ReadonlyMap<number, FrameXmlItemAuraSpellRow>;
+  /** 3.12 (06.11): the gateway, whose enchantment answer carries the random property tables. */
+  readonly gatewayOrigin?: string | undefined;
 }
 
 /** 3.12 (13.10): a tab's learned and previewed points, as 0x006224f0 adds them (0x005c5b30's +4 and +8). */
@@ -87,12 +93,14 @@ const SPELL_EFFECT_APPLY_AURA = 6;
 /**
  * 3.12 (13.10): 0x0061f350 — every spell of an item record (all five, whatever the trigger) whose row is passive
  * (SPELL_ATTR0_PASSIVE) gives its APPLY_AURA effects to the stat table. `null` while a row is not loaded (the
- * missing ids go to `request`), and for a row without the aura columns (an older gateway).
+ * missing ids go to `request`), and for a row without the aura columns (an older gateway). 3.12 (06.11):
+ * `passiveOnly` false for a type-3 enchantment's spell, which 0x0061f2b0 reads whatever its attributes.
  */
 export function frameXmlItemSpellAuras(
   spells: readonly { readonly spellId: number }[] | undefined,
   row: (id: number) => FrameXmlItemAuraSpellRow | undefined,
   request?: (ids: readonly number[]) => void,
+  passiveOnly = true,
 ): GameTooltipItemAura[] | null {
   const auras: GameTooltipItemAura[] = [];
   const missing: number[] = [];
@@ -100,7 +108,7 @@ export function frameXmlItemSpellAuras(
     if (!(spellId > 0)) continue;
     const metadata = row(spellId);
     if (!metadata) { missing.push(spellId); continue; }
-    if (!metadata.passive) continue;
+    if (passiveOnly && !metadata.passive) continue;
     if (!metadata.effects || !metadata.effectAura || !metadata.effectMiscValue || !metadata.effectBasePoints) return null;
     for (let effect = 0; effect < 3; effect += 1) {
       if (metadata.effects[effect] !== SPELL_EFFECT_APPLY_AURA) continue;
@@ -113,6 +121,25 @@ export function frameXmlItemSpellAuras(
   if (missing.length === 0) return auras;
   request?.(missing);
   return null;
+}
+
+/**
+ * 3.12 (06.11): what a link's random property or suffix gives the stat table (0x0061fa20 → 0x0061f2b0), a type-3
+ * effect with its spell's auras; `null` while the tables or such a spell row are on their way.
+ */
+export function frameXmlRandomEffects(
+  random: { readonly id: number; readonly factor: number }, tables: ItemRandomTables | undefined,
+  row: (id: number) => FrameXmlItemAuraSpellRow | undefined, request?: (ids: readonly number[]) => void,
+): GameTooltipRandomEffect[] | null {
+  if (!tables) return null;
+  const effects: GameTooltipRandomEffect[] = [];
+  for (const effect of itemRandomStatEffects(random.id, random.factor, tables)) {
+    if (effect.type !== 3) { effects.push(effect); continue; }
+    const auras = frameXmlItemSpellAuras([{ spellId: effect.arg }], row, request, false);
+    if (auras === null) return null;
+    effects.push({ ...effect, auras });
+  }
+  return effects;
 }
 
 export function frameXmlTooltipExtrasAdapter(
@@ -229,13 +256,20 @@ export function frameXmlTooltipExtrasAdapter(
       return row && row.spellId > 0 ? { spellId: row.spellId, major: (row.flags & 1) === 0 } : undefined;
     },
     // 3.12 (04.10, L4): cached records only, as 0x00630c70 reads them.
-    itemStats: (entry) => {
+    itemStats: (entry, link) => {
       const template = context().world?.itemTemplates?.get(entry);
       if (template?.found !== true) return undefined;
       // 3.12 (13.10): the passive spells' auras (0x0061f350); a row not here yet is asked for, and the
       // table stays unknown (`spellAuras: null` — no difference) until it lands.
       const spellAuras = frameXmlItemSpellAuras(template.spells, (id) => context().spells?.get(id), requestSpells);
-      return { ...template, spellAuras };
+      // 3.12 (06.11): the link's random property or suffix (0x0061fa20), unknown until its tables land.
+      const random = itemLinkRandom(link);
+      if (random.id === 0) return { ...template, spellAuras };
+      const origin = context().gatewayOrigin;
+      const client = origin ? itemEnchantments(origin) : undefined;
+      if (client && !client.ready) void client.load().catch(() => undefined);
+      const randomEffects = frameXmlRandomEffects(random, itemRandomTables(client), (id) => context().spells?.get(id), requestSpells);
+      return { ...template, spellAuras, randomEffects };
     },
     playerIsDruid: () => seam.unitClass("player")?.[1] === "DRUID", // 3.12 (13.10): ChrClasses 11
     merchantOpen: () => context().world?.vendor !== undefined && context().world?.vendor !== null,

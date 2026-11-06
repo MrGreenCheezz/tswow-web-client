@@ -92,6 +92,25 @@ async function boot(adapter = {}) {
   return { boot: booted, run, rows };
 }
 
+test("06.11 (3.12): SetHyperlink hands the item adapter its link; the difference adds a random link's effects", async () => {
+  const links = [];
+  const { boot: b, run, rows } = await boot({
+    item: (entry, link) => { links.push(link); return ITEMS.get(entry); },
+    // What the live adapter does: a link naming a random property gets its effects (0x0061fa20).
+    itemStats: (entry, link) => ({ ...STAT(entry === 500 ? 30 : 42),
+      ...(String(link).includes(":-10:30:") ? { randomEffects: [{ type: 5, arg: 7, amount: 5 }] } : {}) }),
+  });
+  try {
+    run(`GameTooltip:SetOwner(Owner, "ANCHOR_RIGHT") GameTooltip:SetHyperlink("item:500:0:0:0:0:0:-10:30:80")`);
+    assert.deepEqual(links, ["item:500:0:0:0:0:0:-10:30:80"], "the whole link, random id and factor included");
+    run(`function GetContainerItemLink() return "|Hitem:500:0:0:0:0:0:-10:30:80|h[Новый шлем]|h" end
+      GameTooltip:SetOwner(Owner, "ANCHOR_RIGHT") GameTooltip:SetBagItem(0, 1)`);
+    run(`ShoppingTooltip1:SetHyperlinkCompareItem("item:500", 1, nil, GameTooltip)`);
+    assert.deepEqual(rows("ShoppingTooltip1").slice(-1), ["|cffff2020-7|r к выносливости"], "35 against 42");
+    assert.deepEqual(b.errors, []);
+  } finally { b.close(); }
+});
+
 test("3.12: the shopping tooltip adds the stat difference against the anchor's item", async () => {
   const stats = new Map([[500, STAT(30)], [501, STAT(42)], [600, { ...STAT(0), scalingStatValue: 1 }]]);
   const { boot: b, run, rows } = await boot({ itemStats: (entry) => stats.get(entry) });

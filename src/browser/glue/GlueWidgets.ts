@@ -320,8 +320,11 @@ export interface GameTooltipWidgetAdapter extends GameTooltipExtrasAdapter {
    * `SetPossession(1)`; undefined while there is none.
    */
   readonly possessionSpell?: () => number | undefined;
-  /** An item by entry, for `SetHyperlink` and the link-based setters (merchant, loot, quest). */
-  readonly item?: (entry: number) => TooltipContent | undefined;
+  /**
+   * An item by entry, for `SetHyperlink` and the link-based setters (merchant, loot, quest). 06.11 (3.12): with
+   * the link, whose random property and suffix factor the tooltip reads.
+   */
+  readonly item?: (entry: number, link?: string) => TooltipContent | undefined;
   /** A spell by id, for `SetHyperlink` (and aura tooltips without `aura`); undefined while nothing is known. */
   readonly spell?: (id: number) => TooltipContent | undefined;
   /**
@@ -1457,7 +1460,8 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
     const target = tooltipHyperlink(link);
     const adapter = this.#options.gameTooltipAdapter;
     const content = target === undefined ? undefined
-      : target.kind === "item" ? adapter?.item?.(target.id) : adapter?.spell?.(target.id);
+      : target.kind === "item" ? adapter?.item?.(target.id, typeof link === "string" ? link : undefined)
+        : adapter?.spell?.(target.id);
     if (content === undefined || !this.setGameTooltipContent(frame, content)) {
       this.hideGameTooltip(frame);
       return false;

@@ -15,6 +15,10 @@ import { sessionSpellDescriptionContext } from "./SpellTextLiveContext.js"; // 1
 import { className, raceName } from "./UnitSnapshot.js";
 import { itemDurationParts, itemDurationSeconds } from "./ItemDurationText.js"; // 5.22 (04.10, L4)
 import { refreshTooltip } from "./Tooltip.js";
+import {
+  ITEM_RANDOM_FIRST_SLOT, itemEnchantText, itemRandomDisplayName, itemRandomEnchantAmount, itemRandomEnchantSlots,
+  itemRandomTables, itemSuffixFactor, type ItemRandomTables,
+} from "../ItemRandomProperties.js"; // 06.11 (3.12)
 import type { TooltipContent, TooltipLine, TooltipRefresh, TooltipTone } from "./TooltipTypes.js";
 
 /**
@@ -302,6 +306,53 @@ export interface ItemTooltipContext {
    * recipe.
    */
   nested?: boolean | undefined;
+  /**
+   * 06.11 (3.12): the item object's or the link's random property or suffix. Absent: the record alone, which
+   * says ITEM_RANDOM_ENCHANT when it has one.
+   */
+  random?: ItemTooltipRandom | undefined;
+  /** 06.11 (3.12): the random tables (ItemRandomProperties.ts); absent until they land. */
+  randomTables?: ItemRandomTables | undefined;
+}
+
+/**
+ * 06.11 (3.12): a random property or suffix by id. A link brings its suffix factor and leaves the slots to its
+ * row (0x0062799e); an item object brings its slots 7..11 and leaves the factor to RandPropPoints (0x007089b0).
+ */
+export interface ItemTooltipRandom {
+  readonly id: number;
+  readonly factor?: number | undefined;
+  readonly slots?: readonly number[] | undefined;
+}
+
+/** 06.11 (3.12): the name with its random suffix (0x00706d70); the bare name before the tables land. */
+function randomTitle(name: string, context: ItemTooltipContext): string {
+  const { random, randomTables } = context;
+  return random && random.id !== 0 && randomTables
+    ? itemRandomDisplayName(name, random.id, randomTables, globalString("ITEM_SUFFIX_TEMPLATE")) : name;
+}
+
+/**
+ * 06.11 (3.12): the lines of slots 7..11 in 0x006277f0's loop — each enchantment's name, `$i` the amount
+ * (0x00707650); a line that needs the amount waits for the tables.
+ */
+function randomLines(template: ItemTemplate, context: ItemTooltipContext): string[] {
+  const { random, randomTables: tables } = context;
+  if (!random) return [];
+  const slots = random.slots ?? (tables ? itemRandomEnchantSlots(random.id, tables) : []);
+  const factor = random.factor ?? (tables ? itemSuffixFactor(template, tables) : 0);
+  const lines: string[] = [];
+  slots.forEach((id, index) => {
+    const name = id > 0 ? context.enchantment?.(id)?.name : undefined;
+    if (!name || (!tables && name.includes("$i"))) return;
+    lines.push(itemEnchantText(name, tables ? itemRandomEnchantAmount(ITEM_RANDOM_FIRST_SLOT + index, random.id, factor, tables) : 0));
+  });
+  return lines;
+}
+
+/** 06.11 (3.12): ITEM_RANDOM_ENCHANT — a record with a random property or suffix and no object or link naming one. */
+function randomEnchantPending(template: ItemTemplate, context: ItemTooltipContext): boolean {
+  return context.random === undefined && (Boolean(template.randomProperty) || Boolean(template.randomSuffix));
 }
 
 /** The three columns of a spell row a recipe's block reads. */
@@ -429,6 +480,8 @@ export function itemTooltipContent(facts: ItemFacts, context: ItemTooltipContext
       const colour = color === 14 ? undefined : SOCKET_COLORS.find(([bit]) => (color & bit) !== 0);
       push(globalString(`EMPTY_SOCKET_${colour?.[1] ?? "NO_COLOR"}`), "muted");
     }
+    for (const line of randomLines(template, context)) push(line); // 06.11 (3.12)
+    if (randomEnchantPending(template, context)) push(globalString("ITEM_RANDOM_ENCHANT"), "spell");
     if (template.socketBonus > 0) {
       const bonus = context.enchantment?.(template.socketBonus);
       const active = context.enchantments?.[5] === template.socketBonus;
@@ -460,8 +513,9 @@ export function itemTooltipContent(facts: ItemFacts, context: ItemTooltipContext
   }
   footer.push(...(context.footer ?? []));
 
+  const name = template?.name || metadata?.name;
   return {
-    title: template?.name || metadata?.name || unknownLabel("предмет", facts.entry),
+    title: name ? randomTitle(name, context) : unknownLabel("предмет", facts.entry), // 06.11 (3.12)
     quality: template?.quality ?? metadata?.quality,
     lines,
     footer,
@@ -601,11 +655,15 @@ export function stockItemTooltipContent(facts: ItemFacts, context: ItemTooltipCo
       const colour = color === 14 ? undefined : SOCKET_COLORS.find(([bit]) => (color & bit) !== 0);
       push(globalString(`EMPTY_SOCKET_${colour?.[1] ?? "NO_COLOR"}`), { color: STOCK_GRAY });
     }
+    // 06.11 (3.12): slots 7..11 come after the sockets in 0x006277f0's loop, white (0x00ad2d30).
+    for (const line of randomLines(template, context)) push(line);
     if (template.socketBonus > 0) {
       const bonus = context.enchantment?.(template.socketBonus)?.name;
       const active = context.enchantments?.[5] === template.socketBonus;
       if (bonus) push(fillTemplate(stockItemString("ITEM_SOCKET_BONUS"), bonus), active ? { tone: "spell" } : { color: STOCK_GRAY });
     }
+    // 06.11 (3.12): the record alone, after its socket bonus, green (0x00ad2d40).
+    if (randomEnchantPending(template, context)) push(globalString("ITEM_RANDOM_ENCHANT"), { tone: "spell" });
     if (template.gemProperties > 0) {
       const property = context.gemProperty?.(template.gemProperties);
       const enchantment = property && context.enchantment?.(property.enchantmentId);
@@ -689,8 +747,9 @@ export function stockItemTooltipContent(facts: ItemFacts, context: ItemTooltipCo
 
   if (!template) footer.push(facts.template === undefined ? "Описание загружается…" : "Сервер не знает такого предмета");
   footer.push(...(context.footer ?? []));
+  const name = template?.name || metadata?.name;
   return {
-    title: template?.name || metadata?.name || unknownLabel("предмет", facts.entry),
+    title: name ? randomTitle(name, context) : unknownLabel("предмет", facts.entry), // 06.11 (3.12)
     quality: template?.quality ?? metadata?.quality,
     lines,
     footer,
@@ -871,7 +930,8 @@ export function itemTooltipFor(entry: number, context: ItemTooltipContext = {}):
   ensureSpellNames(itemSpells, lateData);
   const enchants = game.gatewayOrigin ? itemEnchantments(game.gatewayOrigin) : undefined;
   const needsEnchants = template && (template.gemProperties > 0 || template.socketBonus > 0
-    || template.sockets.some((socket) => socket.color > 0)) || context.enchantments?.some((id) => id > 0);
+    || template.sockets.some((socket) => socket.color > 0)) || context.enchantments?.some((id) => id > 0)
+    || (context.random !== undefined && context.random.id !== 0); // 06.11 (3.12): the random tables ride along
   if (needsEnchants && enchants && !enchants.ready) {
     void enchants.load().then(lateData).catch(() => undefined);
   }
@@ -916,6 +976,7 @@ export function itemTooltipFor(entry: number, context: ItemTooltipContext = {}):
       gemProperty: (id) => enchants?.gems.get(id),
       gemMetadataReady: enchants?.ready,
       gemName,
+      randomTables: itemRandomTables(enchants), // 06.11 (3.12)
       ...context,
     });
   // What is worn where this would go: names, not stat math — a real upgrade verdict needs Sim

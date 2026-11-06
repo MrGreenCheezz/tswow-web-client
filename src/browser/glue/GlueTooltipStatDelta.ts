@@ -27,8 +27,8 @@
  *   ATTACK_POWER_SHORT, ITEM_MOD_BLOCK_VALUE_SHORT, ITEM_MOD_POWER_REGEN<n>_SHORT,
  *   ITEM_MOD_HEALTH_REGEN_SHORT, EMPTY_SOCKET_<COLOUR>.
  *
- * Not here, for want of data: a random property or suffix (0x0061fa20) and heirloom scaling
- * (0x0061f550) — such an item gets no difference (`gameTooltipStatTableKnown`).
+ * Not here, for want of data: heirloom scaling (0x0061f550) — such an item gets no difference
+ * (`gameTooltipStatTableKnown`). 3.12 (06.11): a random property or suffix (0x0061fa20) is added below.
  *
  * 3.12 (13.10), read-only Ghidra on Wow.exe (`.runtime/re-2026-10-11/glue-1110/t1013-e.txt`, `-f`, `-g`):
  * * The item's spell auras (0x0061f350 → 0x0061b5e0), added after the stats: each of the five spells of the
@@ -65,6 +65,23 @@ export interface GameTooltipStatSource {
    * reads as none, `null` as not known yet (a row not loaded: `gameTooltipStatTableKnown` is false).
    */
   readonly spellAuras?: readonly GameTooltipItemAura[] | null;
+  /**
+   * 3.12 (06.11): what the link's random property or suffix adds (0x0061fa20, ItemRandomProperties.ts); absent
+   * reads as none, `null` as not known yet (the tables or a type-3 spell row still on the way).
+   */
+  readonly randomEffects?: readonly GameTooltipRandomEffect[] | null;
+}
+
+/**
+ * 3.12 (06.11): one effect of a random enchantment, as 0x0061f2b0 adds it: type 4 to resistance `arg`, type 5
+ * to stat type `arg` (attack power also to melee and ranged, ranged attack power to ranged), type 3 its
+ * spell's APPLY_AURA effects (0x0061b5e0), given as `auras`.
+ */
+export interface GameTooltipRandomEffect {
+  readonly type: number;
+  readonly arg: number;
+  readonly amount: number;
+  readonly auras?: readonly GameTooltipItemAura[];
 }
 
 /** 3.12 (13.10): one APPLY_AURA effect of a passive item spell: SpellEffect aura, MiscValue, BasePoints. */
@@ -101,6 +118,20 @@ function addAura(table: number[], { aura, misc, basePoints }: GameTooltipItemAur
       }
       break;
     default: break;
+  }
+}
+
+/** 3.12 (06.11): 0x0061f2b0 — one random enchantment effect into the table. */
+function addRandom(table: number[], { type, arg, amount, auras }: GameTooltipRandomEffect): void {
+  const add = (index: number, value: number): void => {
+    if (index >= 0 && index < GAME_TOOLTIP_STAT_SLOTS - 1) table[index] = table[index]! + value;
+  };
+  if (type === 3) for (const aura of auras ?? []) addAura(table, aura);
+  else if (type === 4) add(1 + arg, amount);
+  else if (type === 5) {
+    add(1 + STAT_TYPE_BASE + arg, amount);
+    if (arg === ITEM_MOD_ATTACK_POWER) add(1 + MELEE_ATTACK_POWER, amount);
+    if (arg === ITEM_MOD_ATTACK_POWER || arg === ITEM_MOD_RANGED_ATTACK_POWER) add(1 + RANGED_ATTACK_POWER, amount);
   }
 }
 
@@ -229,6 +260,8 @@ export function gameTooltipItemStats(item: GameTooltipStatSource, druid = false)
   table[0] = dps;
   // 3.12 (13.10): 0x0061f410 — the feral slot gets the weapon's feral power plus the melee slot.
   if (druid) table[1 + FERAL_ATTACK_POWER] = table[1 + FERAL_ATTACK_POWER]! + gameTooltipFeralAttackPower(item, halves) + table[1 + MELEE_ATTACK_POWER]!;
+  // 3.12 (06.11): 0x006265c0 adds the link's random property after the record (0x0061fa20), before the merges.
+  for (const effect of item.randomEffects ?? []) addRandom(table, effect);
   merge(table);
   return table;
 }
@@ -245,17 +278,22 @@ export function gameTooltipLinkRandomProperty(link: string | undefined): number 
 }
 
 /**
- * L4-review (04.10): whether the template alone is the table Wow.exe builds for this item. A record
- * with a ScalingStatValue (+0xbc) is built from ScalingStatDistribution at a level instead (0x006265c0
- * / 0x006206d0 → 0x0061f550: its template stats, sockets and block are not read), and an instance with
- * a random property or suffix adds that property's enchantments (→ 0x0061fa20). Neither is served
- * here, so such an item gets no difference rather than a wrong one from its bare template.
+ * L4-review (04.10): whether the table Wow.exe builds for this item is known here. A record with a
+ * ScalingStatValue (+0xbc) is built from ScalingStatDistribution at a level instead (0x006265c0 /
+ * 0x006206d0 → 0x0061f550: its template stats, sockets and block are not read) — not served here, so
+ * such an item gets no difference rather than a wrong one from its bare template. 3.12 (06.11): an
+ * instance with a random property or suffix adds that property's enchantments (→ 0x0061fa20), known once
+ * `randomEffects` is.
  */
 export function gameTooltipStatTableKnown(
-  item: { readonly scalingStatValue?: number; readonly spellAuras?: readonly GameTooltipItemAura[] | null }, link: string | undefined,
+  item: {
+    readonly scalingStatValue?: number; readonly spellAuras?: readonly GameTooltipItemAura[] | null;
+    readonly randomEffects?: readonly GameTooltipRandomEffect[] | null;
+  }, link: string | undefined,
 ): boolean {
   // 3.12 (13.10): + a spell row not loaded yet (`spellAuras: null`).
-  return (item.scalingStatValue ?? 0) === 0 && gameTooltipLinkRandomProperty(link) === 0 && item.spellAuras !== null;
+  return (item.scalingStatValue ?? 0) === 0 && item.spellAuras !== null
+    && (gameTooltipLinkRandomProperty(link) === 0 || Array.isArray(item.randomEffects));
 }
 
 /** 0x0061dbc0: hovered − equipped, merged again. */

@@ -97,7 +97,8 @@ export interface GameTooltipExtrasAdapter {
    * ScalingStatValue for the merchant's third tooltip; undefined while the record is not cached
    * (the client asks nothing here either: 0x00630c70 reads the cache without a callback).
    */
-  readonly itemStats?: (entry: number) => (GameTooltipStatSource & { readonly scalingStatValue: number }) | undefined;
+  /** 3.12 (06.11): with the item's link, whose random property the table adds (0x0061fa20). */
+  readonly itemStats?: (entry: number, link?: string) => (GameTooltipStatSource & { readonly scalingStatValue: number }) | undefined;
   /** 3.12 (04.10, L4): a merchant window is open (the merchant guid at 0x00bfa3e8 is set). */
   readonly merchantOpen?: () => boolean;
   /** 3.12 (13.10): the active player is a druid (class 11, UNIT_FIELD_BYTES_0 byte 1) — the feral attack power. */
@@ -362,10 +363,10 @@ export function createGameTooltipExtras(host: GameTooltipExtrasHost): GameToolti
     const hoveredEntry = itemEntry(hoveredLink);
     if (hoveredEntry === undefined) return;
     const adapter = host.adapter();
-    const hovered = adapter?.itemStats?.(hoveredEntry);
-    const worn = hovered === undefined ? undefined : adapter?.itemStats?.(wornEntry);
+    const hovered = adapter?.itemStats?.(hoveredEntry, hoveredLink);
+    const worn = hovered === undefined ? undefined : adapter?.itemStats?.(wornEntry, wornLink);
     if (!hovered || !worn) return;
-    // L4-review: a heirloom or a random property is built from data not served here — no difference.
+    // L4-review: a heirloom is built from data not served here — no difference; 06.11: a random property once known.
     if (!gameTooltipStatTableKnown(hovered, hoveredLink) || !gameTooltipStatTableKnown(worn, wornLink)) return;
     // 3.12 (13.10): a druid's feral attack power (0x0061f410 reads the active player's class).
     const druid = adapter?.playerIsDruid?.() === true;

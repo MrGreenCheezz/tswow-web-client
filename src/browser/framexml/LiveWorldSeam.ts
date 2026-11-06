@@ -418,7 +418,8 @@ import { frameXmlQuestText } from "./FrameXmlQuestText.js"; // 3.53
 import { cachedQuestRewardSpellInfo } from "./FrameXmlQuestRewardData.js";
 import { publishFrameXmlNativeBankCursor } from "./FrameXmlItemCursorBridge.js";
 import { frameXmlLootMethod, FRAMEXML_LOOT_METHODS, type FrameXmlLootMethod } from "./FrameXmlGroupLoot.js";
-import { itemEnchantmentIds } from "../ItemEnchantments.js";
+import { itemEnchantmentIds, itemObjectRandom } from "../ItemEnchantments.js"; // 06.11 (3.12): itemObjectRandom
+import { itemRandomDisplayName, type ItemRandomTables } from "../ItemRandomProperties.js"; // 06.11 (3.12)
 import type {
   FrameXmlBattlegroundCatalog,
 } from "./FrameXmlBattlegrounds.js";
@@ -553,6 +554,8 @@ export interface LiveWorldSeamContext {
   readonly reputationName?: (listId: number) => string | undefined;
   /** 06.11 (3.01): the booted VM's GlobalStrings; undefined before the boot. */
   readonly globalString?: (name: string) => string | undefined;
+  /** 06.11 (3.12): the random property tables (ItemRandomProperties.ts); undefined until they land. */
+  readonly randomTables?: () => ItemRandomTables | undefined;
   /** SkillLine/SkillLineCategory metadata; absent means this host has no skill rows yet. */
   readonly skillMetadata?: () => FrameXmlSkillMetadata | undefined;
   /** Talent tree metadata; absent means Blizzard_TalentUI must remain safely empty. */
@@ -4304,6 +4307,7 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     return {
       entry, count: stackCount(item), enchantments: itemEnchantmentIds(item.item),
       durationLeft: readField(item.item, "ITEM_FIELD_DURATION") ?? 0, // 5.22 (04.10, L4): absent is 0
+      random: itemObjectRandom(item.item), // 06.11 (3.12)
       ...(template?.found === true ? { template } : {}),
       ...(metadata && metadata.name.length > 0 ? { metadata: {
         entry, name: metadata.name, displayId: 0,
@@ -4713,8 +4717,11 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     const suffix = item ? readField(item, "ITEM_FIELD_PROPERTY_SEED") ?? 0 : 0;
     const player = world?.state.selfGuid === undefined ? undefined : world.state.objects.get(world.state.selfGuid);
     const level = player ? readField(player, "UNIT_FIELD_LEVEL") ?? 0 : 0;
+    // 06.11 (3.12): the text names the random suffix (0x00706d70); the bare name until the tables land.
+    const tables = name && random !== 0 ? this.#context.randomTables?.() : undefined;
+    const shown = name && tables ? itemRandomDisplayName(name, random, tables, globalString("ITEM_SUFFIX_TEMPLATE")) : name;
     // TSItem::GetItemLink uses permanent, three socket and socket-bonus enchantments, then suffix/level.
-    return `|c${color}|Hitem:${entry}:${enchant(0)}:${enchant(2)}:${enchant(3)}:${enchant(4)}:${enchant(5)}:${random}:${suffix}:${level}|h[${name || "Item"}]|h|r`;
+    return `|c${color}|Hitem:${entry}:${enchant(0)}:${enchant(2)}:${enchant(3)}:${enchant(4)}:${enchant(5)}:${random}:${suffix}:${level}|h[${shown || "Item"}]|h|r`;
   }
 
   /** Item identity for GameTooltip; all reads stay on the already-cached world snapshot. */
@@ -4732,8 +4739,9 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     const result = this.#entryTooltip(entry, stackCount(state), itemEnchantmentIds(state.item),
       readField(state.item, "ITEM_FIELD_DURATION") ?? 0);
     const durability = readField(state.item, "ITEM_FIELD_DURABILITY");
+    const random = itemObjectRandom(state.item); // 06.11 (3.12)
     return typeof durability === "number" && Number.isFinite(durability) && durability >= 0
-      ? { ...result, durability } : result;
+      ? { ...result, durability, random } : { ...result, random };
   }
 
   /** The cached template and the host's metadata of an entry, for GameTooltip; nothing is fetched. */

@@ -1,5 +1,7 @@
 import { GlueLoadScheduler } from "../glue/GlueLoadScheduler.js";
 import { FrameLimiter } from "../FrameLimit.js"; // 25.10
+import { itemEnchantments } from "../ItemEnchantments.js"; // 06.11 (3.12)
+import { itemRandomTables } from "../ItemRandomProperties.js"; // 06.11 (3.12)
 import { gatewayOrigin as defaultGatewayOrigin, clientLocale } from "../Environment.js";
 import { questLogNameClient } from "../QuestLogNameClient.js";
 import { creatureTypeClient } from "../CreatureTypeClient.js";
@@ -3400,6 +3402,12 @@ export async function mountFrameXmlVertical(
     reputationCatalog: () => game.factions?.reputationCatalog,
     reputationName: (listId) => game.factions?.name(listId), // 06.11 (3.01)
     globalString: (name) => globalStringOf?.(name), // 06.11 (3.01)
+    // 06.11 (3.12): the random tables ride the enchantment answer, asked for once on first use.
+    randomTables: () => {
+      const client = game.gatewayOrigin ? itemEnchantments(game.gatewayOrigin) : undefined;
+      if (client && !client.ready) void client.load().catch(() => undefined);
+      return itemRandomTables(client);
+    },
     skillMetadata: () => game.talentData,
     characterStats: () => characterStatCatalog,
     // 3.23C: melee crit and spirit regeneration tables; retried on each mount after a stale gateway.

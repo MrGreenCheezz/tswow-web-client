@@ -1,8 +1,9 @@
 import type { ItemMetadata } from "../ItemMetadata.js";
 import type { ItemTemplate } from "../../world/QueryCacheProtocol.js";
 import {
-  itemTooltipContent, itemTooltipFor, resetStockTooltipRedraws, type ItemTooltipContext,
+  itemTooltipContent, itemTooltipFor, resetStockTooltipRedraws, type ItemTooltipContext, type ItemTooltipRandom,
 } from "../ui/ItemTooltip.js";
+import { itemLinkRandom } from "../ItemRandomProperties.js"; // 06.11 (3.12)
 import { game } from "../game/Context.js";
 import { unknownLabel } from "../ui/Format.js";
 import { ensureSpellNames } from "../ui/SpellNames.js";
@@ -29,6 +30,8 @@ export interface FrameXmlInventoryTooltipItem {
   readonly enchantments?: readonly number[];
   /** 5.22 (04.10, L4): ITEM_FIELD_DURATION, the seconds a timed item has left (ITEM_DURATION_* line). */
   readonly durationLeft?: number | undefined;
+  /** 06.11 (3.12): the item object's random property and its slots 7..11 (ItemEnchantments.itemObjectRandom). */
+  readonly random?: ItemTooltipRandom | undefined;
 }
 
 /** Optional, item-aware extension implemented by the world seams without widening the base seam. */
@@ -176,6 +179,7 @@ function contentFor(
   }
   // 5.22 (04.10, L4): the item object's time left, for ITEM_DURATION_* (Wow.exe 0x006277f0 → 0x007070b0).
   if (item.durationLeft !== undefined && Number.isFinite(item.durationLeft)) context.durationLeft = item.durationLeft;
+  if (item.random !== undefined) context.random = item.random; // 06.11 (3.12)
   return game.world && item.enchantments ? itemTooltipFor(item.entry, context) : itemTooltipContent(facts, context);
 }
 
@@ -242,10 +246,15 @@ function linkedSpellContent(id: number, aura = false): TooltipContent | undefine
   return { title: unknownLabel("заклинание", id), footer: ["Описание загружается…"], refresh: spellRefresh(id, aura) };
 }
 
-/** An item by entry: the live item tooltip with a world, the template-less one without. */
-function itemContent(entry: number): TooltipContent | undefined {
+/**
+ * An item by entry: the live item tooltip with a world, the template-less one without. 06.11 (3.12): a link
+ * naming a random property or suffix brings it and its factor; one naming none is the record alone.
+ */
+function itemContent(entry: number, link?: string): TooltipContent | undefined {
   if (!Number.isSafeInteger(entry) || entry <= 0) return undefined;
   const context = stockItemContext();
+  const random = itemLinkRandom(link);
+  if (random.id !== 0) context.random = random;
   return game.world ? itemTooltipFor(entry, context) : itemTooltipContent({ entry }, context);
 }
 
@@ -326,7 +335,7 @@ export function createFrameXmlCharacterTooltipAdapter(
     // 11.02-IF-review: GameTooltip:SetPossession(1) draws the seam's possess spell (FrameXmlPossess.ts).
     possessionSpell: () => source.possess?.possessSpell || undefined,
     // Live, the world's item cache; with none (the canned routes) the seam's own item source first.
-    item: (entry) => (game.world ? undefined : seamItemContent(source, entry)) ?? itemContent(entry),
+    item: (entry, link) => (game.world ? undefined : seamItemContent(source, entry)) ?? itemContent(entry, link),
     spell: (id) => linkedSpellContent(id),
     aura: (id) => linkedSpellContent(id, true),
     // 5.20: `/dbc/spells?v=15`'s dispelName (SpellDispelType.Name, Wow.exe 0x00625350); none before it.

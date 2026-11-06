@@ -48,7 +48,7 @@ function template(entry, name, extra = {}) {
  * The realm's test character, roughly: a belt and a recipe carried, a worn belt, a bag with a stack.
  * `store`, when given, is the WorldStore double the seam subscribes its player fields on.
  */
-function fixture({ handlers = 1, store } = {}) {
+function fixture({ handlers = 1, store, randomTables } = {}) {
   const selfGuid = 0x10n;
   const player = { guid: selfGuid, typeId: 4, fields: new Map() };
   // Copper Chain Belt (2652, bind-on-equip) in backpack slot 1 (wire 255/23); unbound unless a test binds it.
@@ -131,6 +131,7 @@ function fixture({ handlers = 1, store } = {}) {
     world: () => world, store: () => store, spell: (id) => spells.get(id),
     monotonic: () => 0, globalCooldownUntil: () => 0, castSpell: () => {},
     itemTexture: (entry) => `Interface\\Icons\\item${entry}`,
+    ...(randomTables ? { randomTables } : {}),
   });
   seam.attach(pump);
   fired.length = 0;
@@ -438,6 +439,24 @@ test("a right click on ammo sets it as the ammo (CMSG_SET_AMMO); a quiver is sti
   world.vendor = { guid: 0x600n, items: [] };
   call(seam, "UseContainerItem", 0, 7);
   assert.deepEqual(sent, [["sell", arrows.guid]], "at a merchant the stack is sold, before anything else");
+});
+
+test("06.11 (3.12): a carried item's link and tooltip name its random suffix (0x00706d70) and its slots 7..11", () => {
+  let tables;
+  const { seam, belt } = fixture({ randomTables: () => tables });
+  belt.fields.set(field("ITEM_FIELD_RANDOM_PROPERTIES_ID"), -10 >>> 0);
+  belt.fields.set(field("ITEM_FIELD_PROPERTY_SEED"), 30);
+  belt.fields.set(field("ITEM_FIELD_ENCHANTMENT_1_1") + 7 * 3, 2804);
+  const [before] = call(seam, "GetContainerItemLink", 0, 1);
+  assert.match(before, /\|Hitem:2652:0:0:0:0:0:-10:30:\d+\|h\[[^\]]+\]/, "the random id and the seed in place");
+  const bare = /\|h\[([^\]]+)\]/.exec(before)[1];
+  tables = {
+    property: () => undefined, points: () => undefined, enchantment: () => undefined,
+    suffix: (id) => (id === 10 ? { name: "со знаком гориллы", enchantments: [2804, 0, 0, 0, 0], allocation: [6666, 0, 0, 0, 0] } : undefined),
+  };
+  const [after] = call(seam, "GetContainerItemLink", 0, 1);
+  assert.ok(after.includes(`[${bare} `) && after.includes("со знаком гориллы]"), after);
+  assert.deepEqual(seam.containerItemTooltip(0, 1)?.random, { id: -10, slots: [2804, 0, 0, 0, 0] });
 });
 
 test("ammo whose template is unknown is asked for, and the click sets it once the answer lands", () => {
