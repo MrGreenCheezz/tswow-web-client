@@ -3398,6 +3398,8 @@ export async function mountFrameXmlVertical(
     },
     reputation: frameXmlLiveReputationRows,
     reputationCatalog: () => game.factions?.reputationCatalog,
+    reputationName: (listId) => game.factions?.name(listId), // 06.11 (3.01)
+    globalString: (name) => globalStringOf?.(name), // 06.11 (3.01)
     skillMetadata: () => game.talentData,
     characterStats: () => characterStatCatalog,
     // 3.23C: melee crit and spirit regeneration tables; retried on each mount after a stale gateway.

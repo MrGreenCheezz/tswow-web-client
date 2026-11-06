@@ -16,10 +16,15 @@
  * - Auras (0x00752710): SPELL_AURA_START/_HARMFUL, SPELL_AURA_END/_HARMFUL (the spell's name) for a named, shown,
  *   non-passive spell without AttributesEx6 0x400; an end only on a living unit; a helpful start not for a spell
  *   whose cast already said so (AttributesEx6 0x40, SPELL_CAST).
+ * - SPLIT_DAMAGE (0x00752de0): the share's damage message under the plain names (0x00750660 with kind 0x2a), then
+ *   SPLIT_DAMAGE (amount), for the unit that took the share.
+ * - INTERRUPT (0x007523d0): the interrupted spell's name, for the unit whose cast it was; SPELL_DISPELLED
+ *   (0x00752930, SPELL_DISPEL and SPELL_STOLEN): the removed aura's name, for the unit that lost it. Both spells
+ *   known, shown (no Attributes 0x180) and named. EXTRA_ATTACKS (0x00752520): the count, for the unit given them.
  *
- * Not here: INTERRUPT, EXTRA_ATTACKS, SPELL_DISPELLED, SPLIT_DAMAGE, FACTION, HONOR_GAINED, ARENA_POINTS_GAINED,
- * SPELL_ACTIVE (their senders read other packets). A periodic heal's duration is the row's, without SpellDuration's
- * per-level growth, which no stock heal-over-time row uses.
+ * Not from entries: FACTION, HONOR_GAINED, ARENA_POINTS_GAINED (FrameXmlCombatTextPoints.ts) and SPELL_ACTIVE.
+ * SPELL_AURA_BROKEN's SPELL_DISPELLED (0x00752a40) rides SMSG_SPELLBREAKLOG, which the core never sends. A periodic
+ * heal's duration is the row's, without SpellDuration's per-level growth, which no stock heal-over-time row uses.
  */
 
 import { CL, type CombatLogEntry } from "../../world/CombatEventModel.js";
@@ -110,6 +115,18 @@ function auraMessage(entry: CombatLogEntry, facts: FrameXmlCombatTextFacts): Fra
   return (attr6 & ATTR6_COMBAT_TEXT_CAST) === 0 ? ["SPELL_AURA_START", spell.name] : undefined;
 }
 
+/** A known, shown and named spell's name (0x004cfd20, Attributes 0x180, the name's first byte). */
+function shownSpellName(facts: FrameXmlCombatTextFacts, id: number): string | undefined {
+  const spell = facts.spell(id);
+  if (!spell?.name || ((spell.attributes?.[0] ?? 0) & ATTR0_HIDDEN) !== 0) return undefined;
+  return spell.name;
+}
+
+/** 0x007523d0, 0x00752930: the entry's spell and its extra spell both pass; the extra one's name. */
+function extraSpellName(entry: CombatLogEntry, facts: FrameXmlCombatTextFacts): string | undefined {
+  return shownSpellName(facts, entry.spellId) !== undefined ? shownSpellName(facts, entry.n0) : undefined;
+}
+
 /**
  * The COMBAT_TEXT_UPDATE messages one combat-log entry raises, in order; none when the combat-text unit is neither
  * side the entry's sender asks about. `source` and `dest` are the entry's GUIDs before any spawn-counter masking.
@@ -126,6 +143,14 @@ export function frameXmlCombatTextForEntry(entry: CombatLogEntry, source: bigint
       return toUnit ? [damageMessage(entry, true)] : [];
     case CL.DAMAGE_SHIELD:
       return toUnit ? [["DAMAGE_SHIELD", entry.n1]] : [];
+    case CL.DAMAGE_SPLIT:
+      return toUnit ? [damageMessage(entry, false), ["SPLIT_DAMAGE", entry.n1]] : [];
+    case CL.SPELL_INTERRUPT: case CL.SPELL_DISPEL: case CL.SPELL_STOLEN: {
+      const name = toUnit ? extraSpellName(entry, facts) : undefined;
+      return name ? [[entry.event === CL.SPELL_INTERRUPT ? "INTERRUPT" : "SPELL_DISPELLED", name]] : [];
+    }
+    case CL.SPELL_EXTRA_ATTACKS:
+      return toUnit && entry.n0 !== 0 ? [["EXTRA_ATTACKS", entry.n0]] : [];
     case CL.SWING_MISSED: case CL.RANGE_MISSED: case CL.SPELL_MISSED: case CL.SPELL_PERIODIC_MISSED: {
       const names = toUnit ? MISS_TYPES[entry.n0] : undefined;
       return names ? [[names[entry.event === CL.SPELL_MISSED ? 1 : 0]]] : [];

@@ -410,6 +410,10 @@ export interface WorldPacketEvents {
   LEVEL_UP: { level: number; healthDelta: number; powerDelta: number[]; statDelta: number[] };
   SPELL_LEARNED: { spellId: number };
   REPUTATION_CHANGED: Record<string, never>;
+  /** 06.11 (3.01): a standing change Wow.exe 0x005d20a0 reports (FactionStandingReport.ts), before REPUTATION_CHANGED. */
+  FACTION_STANDING_REPORTED: { listId: number; delta: number; generic: boolean };
+  /** 06.11 (3.01): SMSG_QUESTGIVER_QUEST_COMPLETE's points: the honor word (ten times the honor) and arena points. */
+  QUEST_REWARD_POINTS: { questId: number; honorWord: number; arenaPoints: number };
   ACHIEVEMENT_EARNED: { achievementId: number; mine: boolean };
   /**
    * The other achievement packets: the whole list at login (`list`), one criterion's progress

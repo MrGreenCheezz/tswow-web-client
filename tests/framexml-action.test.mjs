@@ -517,6 +517,35 @@ test("19.10: a stance spell wants its stance; a reagent spell its reagent, which
   assert.deepEqual(call(f.seam, "IsConsumableAction", 1), [false]);
 });
 
+test("06.11 (3.01): Overpower (AttributesEx4 0x200) lights up — SPELL_ACTIVE once per turn, after the usable event", () => {
+  const f = fixture();
+  const RAGE = UPDATE_FIELDS.UNIT_FIELD_POWER1.offset + 1;
+  f.fields.set(RAGE, 1000);
+  f.setBytes("UNIT_FIELD_BYTES_2", 3, 17);
+  f.auras.set(SELF, [{ spellId: 2457, flags: 0x3 }]);
+  f.seam.attach(f.pump);
+  const isActive = ([name, type]) => name === "COMBAT_TEXT_UPDATE" && type === "SPELL_ACTIVE";
+  f.step();
+  assert.deepEqual(f.fired.filter(isActive), [], "the target has not dodged");
+  f.fired.length = 0;
+  f.world.comboPoints = { guid: TARGET, points: 1 };
+  f.step();
+  assert.deepEqual(f.fired.filter(isActive), [["COMBAT_TEXT_UPDATE", "SPELL_ACTIVE", "Превосходство"]]);
+  const usableAt = f.fired.findIndex(([name]) => name === FRAMEXML_SEAM_EVENTS.actionUsable);
+  assert.ok(usableAt >= 0 && usableAt < f.fired.findIndex(isActive), "0x0053cf10 runs after CGActionBar::UpdateUsable");
+  f.fired.length = 0;
+  f.step();
+  assert.deepEqual(f.fired.filter(isActive), [], "still lit: no news");
+  f.fields.set(RAGE, 0);
+  f.step();
+  assert.deepEqual(f.fired.filter(isActive), [], "out of rage");
+  f.fields.set(RAGE, 1000);
+  f.step();
+  assert.deepEqual(f.fired.filter(isActive), [["COMBAT_TEXT_UPDATE", "SPELL_ACTIVE", "Превосходство"]],
+    "the rage back: the power pass's edge (0x0053d1b0)");
+  f.seam.detach();
+});
+
 test("19.10: the dead cast nothing, and IsUsableSpell answers a book name with 1 / nil", () => {
   const f = fixture();
   f.fields.set(UPDATE_FIELDS.UNIT_FIELD_POWER1.offset, 400);

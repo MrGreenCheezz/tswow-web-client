@@ -49,7 +49,10 @@ import { FrameXmlCombatLogBuffer, type FrameXmlCombatLogModel } from "./FrameXml
 import type { SpellGo, SpellStart } from "../../world/SpellProtocol.js"; // 3.01-castlog
 import { FrameXmlCombatLogCastRules } from "./FrameXmlCombatLogCasts.js"; // 3.01-castlog
 import { COMBAT_TEXT_SPELL_CAST, combatTextSpellCast } from "./FrameXmlCombatText.js"; // 13.10 (3.01)
-import { frameXmlCombatTextForEntry, type FrameXmlCombatTextFacts } from "./FrameXmlCombatTextLog.js"; // 06.11 (3.01)
+import {
+  frameXmlCombatTextForEntry, type FrameXmlCombatTextFacts, type FrameXmlCombatTextMessage,
+} from "./FrameXmlCombatTextLog.js"; // 06.11 (3.01)
+import { frameXmlFactionText, frameXmlHonorCreditText, frameXmlQuestRewardTexts } from "./FrameXmlCombatTextPoints.js"; // 06.11 (3.01)
 import { globalString } from "../../generated/globalStrings.js"; // 06.11 (3.01)
 import { combatLogLimitCategoryText, type CombatLogLimitCategory } from "./FrameXmlCombatLogFailed.js"; // 05.10-3.01
 import { formatGlobalStringByName } from "../../world/GlobalStringFormat.js"; // 05.10-3.01
@@ -85,6 +88,10 @@ export interface FrameXmlCombatLogLiveDeps {
    */
   readonly limitCategory?: (id: number) => CombatLogLimitCategory | undefined;
   readonly prepareLimitCategories?: () => void;
+  /** 06.11 (3.01): the booted VM's GlobalStrings (UNKNOWNOBJECT, COMBATLOG_*); the generated table without it. */
+  readonly globalString?: (name: string) => string | undefined;
+  /** 06.11 (3.01): Faction.dbc's name for a reputation-list slot, for COMBAT_TEXT_UPDATE("FACTION"). */
+  readonly reputationName?: (listId: number) => string | undefined;
 }
 
 export interface FrameXmlCombatLogPump {
@@ -210,13 +217,22 @@ export class FrameXmlCombatLogLive implements FrameXmlCombatLogModel, CombatEntr
     return {
       unit: this.#combatTextUnit,
       name: (guid) => this.#deps.name(guid),
-      unknownName: () => globalString("UNKNOWNOBJECT"),
+      unknownName: () => this.#globalString("UNKNOWNOBJECT"),
       spell: (id) => this.#deps.spell(id),
       alive: (guid) => {
         const object = world?.state?.objects?.get(guid);
         return object !== undefined && (readField(object, "UNIT_FIELD_HEALTH") ?? 0) > 0;
       },
     };
+  }
+
+  #globalString(name: string): string | undefined {
+    return this.#deps.globalString?.(name) ?? globalString(name);
+  }
+
+  /** 06.11 (3.01): a COMBAT_TEXT_UPDATE no entry raises (FrameXmlCombatTextPoints.ts), whoever the unit is. */
+  #combatTextPoints(messages: readonly (FrameXmlCombatTextMessage | undefined)[]): void {
+    for (const message of messages) if (message) this.#pump?.fire("COMBAT_TEXT_UPDATE", ...message);
   }
 
   /** 0x0074f910: COMBAT_LOG_EVENT for an entry that passes the filter, then _UNFILTERED, to whoever is registered. */
@@ -602,6 +618,12 @@ export class FrameXmlCombatLogLive implements FrameXmlCombatLogModel, CombatEntr
       on("SPELL_CAST_REFUSED_LOCAL", (event) => this.localRefusal(event)), // 05.10-3.01
       on("AURA_CHANGED", (event) => this.auraChanged(event)),
       on("PARTY_KILL", (event) => this.partyKill(event.killerGuid, event.victimGuid)),
+      on("FACTION_STANDING_REPORTED", (report) => this.#combatTextPoints([
+        frameXmlFactionText(report, this.#deps.reputationName?.(report.listId))])),
+      on("HONOR_AWARDED", (credit) => this.#combatTextPoints([
+        frameXmlHonorCreditText(credit, this.#isUnit(credit.victimGuid, this.#deps.world()),
+          (name) => this.#globalString(name))])),
+      on("QUEST_REWARD_POINTS", (points) => this.#combatTextPoints(frameXmlQuestRewardTexts(points))),
     );
     // UNIT_HEALTH rides the world-state bus (WorldStore), not the packet bus.
     const stateEvents = this.#deps.stateEvents?.();

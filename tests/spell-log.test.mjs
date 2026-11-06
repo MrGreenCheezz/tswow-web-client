@@ -40,6 +40,14 @@ test("a spell damage log decodes in the order the core writes it", () => {
   assert.equal(log.periodic, false);
   // SPELL_HIT_TYPE_CRIT is bit 1 of the hit info, and nothing else in the packet says "crit".
   assert.equal(log.critical, true);
+  assert.equal(log.split, false);
+  // 06.11 (3.01): SPELL_HIT_TYPE_SPLIT (0x8) marks a share of another unit's damage (Unit.cpp:2173).
+  const split = parseSpellDamageLog(new PacketWriter()
+    .packedGuid(TARGET).packedGuid(CASTER)
+    .u32(19028).u32(60).u32(0).u8(0x20).u32(0).u32(0).u8(0).u8(0).u32(0).u32(0x0008)
+    .toUint8Array());
+  assert.equal(split.split, true);
+  assert.equal(split.critical, false);
 });
 
 test("a periodic log carries different fields for damage, healing and energy", () => {

@@ -25,7 +25,8 @@
  * - environmental (0x00751150): ENVIRONMENTAL_DAMAGE, the type by name (0x00ad671c: FATIGUE,
  *   DROWNING, FALLING, LAVA, SLIME, FIRE), school `1 << 0x00a2d394[type]`, no overkill or block.
  * - procresist (0x00750d40): SPELL_MISSED RESIST with an amount of 0. Damage shield (0x00752c90):
- *   DAMAGE_SHIELD with the damage block and no resist/block/absorb.
+ *   DAMAGE_SHIELD with the damage block and no resist/block/absorb. Split damage (0x00752de0, a spell damage
+ *   log with hit info 0x8): DAMAGE_SPLIT with the damage block, with or without damage.
  * - a miss's amount (0x0074d980): only RESIST (2), BLOCK (5) and ABSORB (10) carry one.
  */
 
@@ -56,7 +57,7 @@ export const CL = Object.freeze({
   SPELL_AURA_APPLIED_DOSE: 22, SPELL_AURA_REMOVED_DOSE: 23, SPELL_AURA_REMOVED: 24, SPELL_AURA_REFRESH: 25,
   SPELL_DISPEL: 26, SPELL_STOLEN: 27, ENCHANT_APPLIED: 31, SPELL_PERIODIC_MISSED: 33,
   SPELL_PERIODIC_DAMAGE: 34, SPELL_PERIODIC_HEAL: 35, SPELL_PERIODIC_ENERGIZE: 36, SPELL_PERIODIC_DRAIN: 37,
-  SPELL_PERIODIC_LEECH: 38, SPELL_DISPEL_FAILED: 39, DAMAGE_SHIELD: 40, PARTY_KILL: 43, UNIT_DIED: 44,
+  SPELL_PERIODIC_LEECH: 38, SPELL_DISPEL_FAILED: 39, DAMAGE_SHIELD: 40, DAMAGE_SPLIT: 42, PARTY_KILL: 43, UNIT_DIED: 44,
   SPELL_RESURRECT: 46,
 });
 
@@ -232,11 +233,21 @@ export function meleeEntries(fact: MeleeFact, sink: CombatEntrySink): void {
 export interface SpellDamageFact {
   casterGuid: bigint; targetGuid: bigint; spellId: number; damage: number; overkill: number;
   schoolMask: number; absorbed: number; resisted: number; blocked: number; critical: boolean; periodic: boolean;
+  /** SPELL_HIT_TYPE_SPLIT (0x8 of the hit info): the target's share of a hit on another unit. */
+  split?: boolean;
 }
 
-/** 0x00751c40 (also the periodic damage aura types 3 and 89). */
+/** 0x00751c40 (also the periodic damage aura types 3 and 89); a split share 0x00752de0. */
 export function spellDamageEntries(fact: SpellDamageFact, spells: CombatSpellFacts, sink: CombatEntrySink): void {
   if (hiddenInLog(spells, fact.spellId)) return;
+  if (fact.split) {
+    // 0x006d3840 hands hit info 0x8 to 0x00752de0: DAMAGE_SPLIT with the damage block, even at no damage.
+    const entry = sink.begin(CL.DAMAGE_SPLIT, fact.casterGuid, fact.targetGuid, fact.spellId);
+    damage(entry, fact.damage, fact.overkill, fact.schoolMask, fact.resisted, fact.blocked, fact.absorbed,
+      fact.critical ? 1 : 0);
+    sink.commit(entry);
+    return;
+  }
   const isRanged = ranged(spells, fact.spellId);
   if (fact.damage !== 0) {
     const event = fact.periodic ? CL.SPELL_PERIODIC_DAMAGE : isRanged ? CL.RANGE_DAMAGE : CL.SPELL_DAMAGE;

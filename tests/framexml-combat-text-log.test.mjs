@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   CL, auraEntry, createCombatLogEntry, damageShieldEntries, drainEntries, energizeEntries, environmentalEntries,
-  healEntries, meleeEntries, spellDamageEntries, spellMissEntries,
+  extraAttacksEntry, extraSpellEntry, healEntries, meleeEntries, spellDamageEntries, spellMissEntries,
 } from "../dist/code/world/CombatEventModel.js";
 import { frameXmlCombatTextForEntry, frameXmlCombatTextPowerToken } from "../dist/code/browser/framexml/FrameXmlCombatTextLog.js";
 import { FrameXmlCombatLogLive } from "../dist/code/browser/framexml/FrameXmlCombatLogLive.js";
@@ -25,6 +25,9 @@ const SPELLS = new Map([
   [501, { name: "Скрытая", attributes: [0x80, 0, 0, 0, 0, 0, 0, 0] }],
   [502, { name: "Без текста", attributes: [0, 0, 0, 0, 0, 0, 0x400, 0] }],
   [503, { name: "Сказано кастом", attributes: [0, 0, 0, 0, 0, 0, 0x40, 0] }],
+  [2139, { name: "Антимагия", attributes: [0, 0, 0, 0, 0, 0, 0, 0] }],
+  [527, { name: "Рассеивание заклинаний", attributes: [0, 0, 0, 0, 0, 0, 0, 0] }],
+  [504, { name: "", attributes: [0, 0, 0, 0, 0, 0, 0, 0] }],
 ]);
 const spells = { attributes: (id) => SPELLS.get(id)?.attributes };
 
@@ -90,6 +93,46 @@ test("spell damage takes the SPELL_ names; periodic and ranged hits the plain on
   assert.deepEqual(run((sink) => spellMissEntries(MOB, ME, 133, 7, spells, sink)), [["SPELL_IMMUNE"]]);
   assert.deepEqual(run((sink) => spellMissEntries(MOB, ME, 133, 11, spells, sink)), [["SPELL_REFLECT"]]);
   assert.deepEqual(run((sink) => spellMissEntries(MOB, ME, 75, 3, spells, sink)), [["DODGE"]], "a ranged miss");
+});
+
+test("split damage (0x00752de0): DAMAGE_SPLIT, its damage under the plain names, then SPLIT_DAMAGE", () => {
+  const entries = [];
+  spellDamageEntries(spellHit({ split: true, damage: 0, absorbed: 80 }), spells, {
+    begin(event, source, dest, spellId) {
+      const entry = createCombatLogEntry();
+      Object.assign(entry, { event, source, dest, spellId });
+      return entry;
+    },
+    commit(entry) { entries.push(entry); },
+  });
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].event, CL.DAMAGE_SPLIT, "a share is DAMAGE_SPLIT even without damage, never a miss");
+  assert.equal(entries[0].n4, 80);
+  assert.deepEqual(run((sink) => spellDamageEntries(spellHit({ split: true }), spells, sink)),
+    [["DAMAGE", 300], ["SPLIT_DAMAGE", 300]]);
+  assert.deepEqual(run((sink) => spellDamageEntries(spellHit({ split: true, critical: true }), spells, sink)),
+    [["DAMAGE_CRIT", 300], ["SPLIT_DAMAGE", 300]]);
+  assert.deepEqual(run((sink) => spellDamageEntries(spellHit({ split: true, damage: 0, absorbed: 80 }), spells, sink)),
+    [["ABSORB", 0, 80], ["SPLIT_DAMAGE", 0]]);
+  assert.deepEqual(run((sink) => spellDamageEntries(spellHit({ split: true, casterGuid: ME, targetGuid: MOB }), spells, sink)),
+    [], "a share another unit took");
+});
+
+test("interrupt, dispel, steal, extra attacks: the extra spell's name or the count, for the unit (0x007523d0, 0x00752930, 0x00752520)", () => {
+  const extra = (event, spellId, extraId, source = MOB, dest = ME) =>
+    (sink) => extraSpellEntry(event, source, dest, spellId, extraId, event === CL.SPELL_INTERRUPT ? undefined : "BUFF", sink);
+  assert.deepEqual(run(extra(CL.SPELL_INTERRUPT, 2139, 133)), [["INTERRUPT", "Огненный шар"]]);
+  assert.deepEqual(run(extra(CL.SPELL_INTERRUPT, 2139, 133, ME, MOB)), [], "the unit interrupted someone else");
+  assert.deepEqual(run(extra(CL.SPELL_DISPEL, 527, 17)), [["SPELL_DISPELLED", "Слово силы: Щит"]]);
+  assert.deepEqual(run(extra(CL.SPELL_STOLEN, 527, 17)), [["SPELL_DISPELLED", "Слово силы: Щит"]]);
+  assert.deepEqual(run(extra(CL.SPELL_DISPEL_FAILED, 527, 17)), [], "a failed dispel raises nothing");
+  for (const [spellId, extraId, why] of [[501, 133, "a hidden interrupting spell"], [2139, 501, "a hidden interrupted spell"],
+    [9999, 133, "an unknown spell"], [2139, 9999, "an unknown extra spell"], [504, 133, "an unnamed spell"]]) {
+    assert.deepEqual(run(extra(CL.SPELL_INTERRUPT, spellId, extraId)), [], why);
+  }
+  assert.deepEqual(run((sink) => extraAttacksEntry(ME, ME, 133, 2, sink)), [["EXTRA_ATTACKS", 2]]);
+  assert.deepEqual(run((sink) => extraAttacksEntry(ME, ME, 133, 0, sink)), []);
+  assert.deepEqual(run((sink) => extraAttacksEntry(ME, MOB, 133, 2, sink)), [], "attacks given to another unit");
 });
 
 test("environment, damage shield", () => {

@@ -14,6 +14,8 @@ import { PacketReader } from "../protocol/PacketReader.js";
 
 /** `SPELL_HIT_TYPE_CRIT` on the hit info of a spell damage log. */
 export const SPELL_HIT_TYPE_CRIT = 0x0002;
+/** `SPELL_HIT_TYPE_SPLIT`: the log is a share of another unit's damage (Unit.cpp:2173, 2218). */
+export const SPELL_HIT_TYPE_SPLIT = 0x0008;
 
 export interface SpellDamageLog {
   targetGuid: bigint;
@@ -29,6 +31,8 @@ export interface SpellDamageLog {
   blocked: number;
   hitInfo: number;
   critical: boolean;
+  /** SPELL_HIT_TYPE_SPLIT: the target takes this share of a hit on another unit. */
+  split: boolean;
 }
 
 /** Mirrors `Unit::SendSpellNonMeleeDamageLog`. */
@@ -48,7 +52,7 @@ export function parseSpellDamageLog(payload: Uint8Array): SpellDamageLog {
   const hitInfo = reader.u32();
   return {
     targetGuid, casterGuid, spellId, damage, overkill, schoolMask, absorbed, resisted, periodic,
-    blocked, hitInfo, critical: (hitInfo & SPELL_HIT_TYPE_CRIT) !== 0,
+    blocked, hitInfo, critical: (hitInfo & SPELL_HIT_TYPE_CRIT) !== 0, split: (hitInfo & SPELL_HIT_TYPE_SPLIT) !== 0,
   };
 }
 

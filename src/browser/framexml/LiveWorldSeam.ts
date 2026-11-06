@@ -274,6 +274,7 @@ import { questGreenRange } from "./FrameXmlWorldSeam.js";
 import type { LfgStockCatalog } from "../LfgDungeons.js";
 import { FrameXmlHudMechanicsLive } from "./FrameXmlHudMechanicsLive.js";
 import { FrameXmlCastEventsLive } from "./FrameXmlCastEvents.js";
+import { FrameXmlSpellActive } from "./FrameXmlSpellActive.js"; // 06.11 (3.01)
 import { FrameXmlCombatLogLive } from "./FrameXmlCombatLogLive.js";
 import { FrameXmlMultiCastLive } from "./FrameXmlMultiCastLive.js";
 import { spellFailureText } from "../../world/SpellProtocol.js";
@@ -548,6 +549,10 @@ export interface LiveWorldSeamContext {
   readonly reputation?: (world: WorldClient) => readonly FrameXmlFactionRow[] | undefined;
   /** Already fetched catalog linking Faction.dbc IDs to reputation-list slots. */
   readonly reputationCatalog?: () => ReputationCatalog | undefined;
+  /** 06.11 (3.01): Faction.dbc's name for a reputation-list slot, hidden or not; undefined until the table lands. */
+  readonly reputationName?: (listId: number) => string | undefined;
+  /** 06.11 (3.01): the booted VM's GlobalStrings; undefined before the boot. */
+  readonly globalString?: (name: string) => string | undefined;
   /** SkillLine/SkillLineCategory metadata; absent means this host has no skill rows yet. */
   readonly skillMetadata?: () => FrameXmlSkillMetadata | undefined;
   /** Talent tree metadata; absent means Blizzard_TalentUI must remain safely empty. */
@@ -966,6 +971,8 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
   /** 19.10: the last ACTIONBAR_UPDATE_USABLE pairs (#reconcileActionUsable) and when they were taken. */
   #actionUsableSignatureValue = "";
   #actionUsableCheckedAt = Number.NEGATIVE_INFINITY;
+  /** 06.11 (3.01): the TRIGGER_ACTIVATE list and its last answers. */
+  readonly #spellActive = new FrameXmlSpellActive();
   /** P1-16 review: the possess/vehicle page's mirrored timers and usability (`#currentMirroredActionSignature`). */
   #mirroredActionSignature = "";
   #itemCooldownSignature = "";
@@ -1497,6 +1504,9 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
       },
       selection: () => this.#target()?.guid,
     });
+    // 06.11: UNKNOWNOBJECT in the client's words, as 0x0074d750 reads it.
+    const globalStringOf = context.globalString;
+    if (globalStringOf) this.castEvents.useGlobalStrings(globalStringOf);
     this.multiCast = new FrameXmlMultiCastLive({
       world: () => context.world(),
       spell: (id) => context.spell(id),
@@ -1519,6 +1529,8 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
       focusGuid: () => this.#focus()?.guid,
       failureText: (spellId, result) => spellFailureText({ castCount: 0, spellId, result }),
       stateEvents: () => context.store()?.events,
+      ...(context.globalString ? { globalString: context.globalString } : {}),
+      ...(context.reputationName ? { reputationName: context.reputationName } : {}),
     });
     // The pet bar: WorldClient's pet packet, timers and swing, the same unit tokens for a target.
     this.petActions = new FrameXmlPetActionBarLive({
@@ -7321,10 +7333,25 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     this.#actionUsableCheckedAt = now;
     const signature = this.#actionUsableSignature();
     const previous = this.#actionUsableSignatureValue;
-    if (signature === previous) return;
-    this.#actionUsableSignatureValue = signature;
-    // The first poll after an attach only takes the pairs: the buttons paint them on their own Update.
-    if (previous !== "") pump.fire(FRAMEXML_SEAM_EVENTS.actionUsable);
+    if (signature !== previous) {
+      this.#actionUsableSignatureValue = signature;
+      // The first poll after an attach only takes the pairs: the buttons paint them on their own Update.
+      if (previous !== "") pump.fire(FRAMEXML_SEAM_EVENTS.actionUsable);
+    }
+    this.#reconcileSpellActive(pump); // 06.11 (3.01): 0x0053cf10 after UpdateUsable
+  }
+
+  /** 06.11 (3.01): COMBAT_TEXT_UPDATE("SPELL_ACTIVE") for a reactive spell that just turned usable (FrameXmlSpellActive.ts). */
+  #reconcileSpellActive(pump: FrameXmlSeamPump): void {
+    const world = this.#context.world();
+    const self = this.#self();
+    if (!world || !self) return;
+    const target = this.#target();
+    // Test worlds stand in for parts of WorldClient; no book is no list.
+    const names = this.#spellActive.pass(world, world.knownSpells ?? [], (id) => this.#context.spell(id), (row) => [
+      frameXmlSpellCastable(self, row, target, this.#usableHost), frameXmlSpellHasPower(self, row),
+    ]);
+    for (const name of names) pump.fire("COMBAT_TEXT_UPDATE", "SPELL_ACTIVE", name);
   }
 
   /**

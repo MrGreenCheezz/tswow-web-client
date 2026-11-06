@@ -516,6 +516,7 @@ import { buildMovementPacket, MOVEMENT_FLAGS, parseMovementPacket, type Movement
 import { normalizeOrientation } from "./TransportMath.js";
 import { isAttackableUnit } from "./TargetSearch.js";
 import { factionFlagsAfterAtWar, factionFlagsAfterStanding, parseSetFactionAtWar, reputationBaseOf } from "./ReputationReaction.js"; // L15 5.05
+import { factionStandingReport, type FactionStandingReport } from "./FactionStandingReport.js";
 import { AutoRangedCombat, type AutoRangedLimits } from "./AutoRangedCombat.js"; // L15 5.05
 import { castFailureWords } from "./CastFailureWords.js"; // 05.10-3.01
 import { RefusalQuietRules, autoRepeatRefusalAction, autoRepeatWaitsForCast, refusalLimitCategoryText, type RefusalLimitCategory } from "./AutoRepeatRefusal.js"; // 05.10-5.05
@@ -6936,10 +6937,12 @@ export class WorldClient {
       const xp = reader.u32();
       // Player::SendQuestReward serializes signed RewOrReqMoney through a uint32 word.
       const money = reader.i32();
+      // Player::SendQuestReward: ten times the honor, the bonus talents, the arena points.
+      const honorWord = reader.u32();
       reader.u32();
-      reader.u32();
-      reader.u32();
+      const arenaPoints = reader.u32();
       reader.assertFinished();
+      this.events.emit("QUEST_REWARD_POINTS", { questId, honorWord, arenaPoints });
       this.questList = undefined;
       this.questDialog = undefined;
       this.gossip = undefined;
@@ -8266,8 +8269,13 @@ export class WorldClient {
     }
     if (packet.opcode === OPCODES.SMSG_SET_FACTION_STANDING) {
       const update = parseFactionStanding(packet.payload);
-      for (const standing of update.standings) {
+      const reports: FactionStandingReport[] = [];
+      for (const [index, standing] of update.standings.entries()) {
         const existing = this.factions.get(standing.listId);
+        // 06.11 (3.01): what 0x005d20a0 reports, from the flags before this entry changes them.
+        const report = factionStandingReport(index, standing.listId, existing?.flags ?? 0, existing?.standing ?? 0,
+          standing.standing);
+        if (report) reports.push(report);
         // L15 5.05: Wow.exe 0x005d20a0 — at war below unfriendly, peace when the rank rose (ReputationReaction.ts);
         // without the player's base standing (no catalog yet) the flag stays as it was.
         const base = reputationBaseOf(standing.listId); // L15 5.05
@@ -8275,6 +8283,7 @@ export class WorldClient {
           : factionFlagsAfterStanding(existing?.flags ?? 0, base + (existing?.standing ?? 0), base + standing.standing); // L15 5.05
         this.factions.set(standing.listId, { listId: standing.listId, flags, standing: standing.standing }); // L15 5.05: flags
       }
+      for (const report of reports) this.events.emit("FACTION_STANDING_REPORTED", report);
       this.events.emit("REPUTATION_CHANGED", {});
       return true;
     }
