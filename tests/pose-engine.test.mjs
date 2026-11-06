@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { Worker } from 'node:worker_threads';
 import * as THREE from 'three';
@@ -372,6 +373,77 @@ test('clips the worker cannot evaluate keep the rig on the main-thread flat pose
   state.instance.mixer.clipAction(stepped).play();
   assert.equal(state.instance.skeleton.sharedPose(program, engine, state.instance.mixer, tpl, GLOBALS), undefined);
   engine.dispose();
+});
+
+/** A rider hung off its mount's seat bone (13), the way WorldRenderer3D `#seatRider` hangs it. */
+function riderRig(tpl) {
+  const scene = new THREE.Scene(), unit = new THREE.Group();
+  scene.add(unit);
+  const mount = instantiateSkinned(tpl, new THREE.MeshBasicMaterial());
+  unit.add(mount.root);
+  const rider = instantiateSkinned(tpl, new THREE.MeshBasicMaterial());
+  mount.skeleton.bones[13].add(rider.root);
+  rider.root.position.set(.05, .1, -.02);
+  return { scene, unit, mount: { instance: mount }, rider: { instance: rider } };
+}
+
+test('06.11 (12.13): a rider posed on the worker under a flat-posed mount matches the flat pose and the mixer', () => {
+  const tpl = template(standardClips());
+  const clips = [0, 1, 2].map((id) => tpl.clips.get(id));
+  const program = fastPoseProgramFor(tpl, ATTACHMENTS);
+  const palette = [...skinDemandFor(tpl).palette];
+  const engine = PoseEngine.create({ workers: 0, arenaBytes: 8 << 20 });
+  const cpu = riderRig(tpl), fast = riderRig(tpl), shared = riderRig(tpl);
+  let now = 0;
+  for (let frame = 0; frame < 90; frame++) {
+    const dt = 1 / 60 + (frame % 5) * .002;
+    now += dt * 1000;
+    const view = camera(frame);
+    for (const state of [cpu, fast, shared]) {
+      state.unit.position.set(Math.sin(frame * .04), 0, frame * .01);
+      state.unit.rotation.y = frame * .02;
+      // The mount runs its own script, half a cycle behind the rider's, so the saddle moves under it.
+      script(state.mount, clips, Math.max(0, frame - 7));
+      script(state.rider, clips, frame);
+    }
+    cpu.mount.instance.mixer.update(dt);
+    applyGlobalSequenceBones(cpu.mount.instance, tpl, GLOBALS, now);
+    applyBillboardBones(cpu.mount.instance, tpl, view, false);
+    cpu.rider.instance.mixer.update(dt);
+    applyGlobalSequenceBones(cpu.rider.instance, tpl, GLOBALS, now);
+    applyBillboardBones(cpu.rider.instance, tpl, view, false);
+    // As `#animateUnit` takes the pair: the mount on this thread and first, then the rider's step.
+    for (const state of [fast, shared]) flatStep(state.mount, tpl, program, undefined, dt, now, view);
+    const flat = flatStep(fast.rider, tpl, program, undefined, dt, now, view);
+    assert.ok(!(flat instanceof SharedPose));
+    const worker = flatStep(shared.rider, tpl, program, engine, dt, now, view);
+    assert.ok(worker instanceof SharedPose, `frame ${frame}: the rider's pose is the worker's`);
+    if (frame === 0) { fast.rider.instance.skeleton.computeBoneTexture(); shared.rider.instance.skeleton.computeBoneTexture(); }
+    for (const state of [cpu, fast, shared]) {
+      state.scene.updateMatrixWorld();
+      state.mount.instance.skeleton.update();
+      state.rider.instance.skeleton.update();
+    }
+    samePalette(shared.rider.instance.skeleton.boneMatrices, fast.rider.instance.skeleton.boneMatrices, `frame ${frame}`);
+    for (const bone of palette) {
+      for (let element = 0; element < 16; element++) {
+        const a = cpu.rider.instance.skeleton.boneMatrices[bone * 16 + element];
+        const b = shared.rider.instance.skeleton.boneMatrices[bone * 16 + element];
+        assert.ok(Math.abs(a - b) < 2e-5, `frame ${frame} rider bone ${bone}[${element}]: ${a} vs ${b}`);
+      }
+    }
+  }
+  engine.dispose();
+});
+
+test('06.11 (12.13): the renderer shares a rider\'s pose, keeps its mount on this thread and composes the mount first', () => {
+  const source = readFileSync(new URL('../src/browser/WorldRenderer3D.ts', import.meta.url), 'utf8');
+  const step = source.slice(source.indexOf('  #animateUnit('), source.indexOf('  #flatPose('));
+  assert.match(step, /this\.#flatPose\(unit, unit\.wvm, true, channels\)/);
+  assert.match(step, /this\.#flatPose\(mount, mount\.wvm, false\)/);
+  const mountCompose = step.indexOf('mountFlat.compose(mount.skinned.root, this.#camera)');
+  const riderCompose = step.indexOf('flat.compose(skinned.root, this.#camera)');
+  assert.ok(mountCompose > 0 && riderCompose > mountCompose, 'the saddle is posed before the rider\'s step is published');
 });
 
 test('without cross-origin isolation there is no pose worker', () => {

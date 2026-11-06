@@ -235,7 +235,7 @@ test("the renderer poses each unit with the closed-hand source and tags hung ite
   const source = readFileSync(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
   const step = source.slice(source.indexOf("  #animateUnit("), source.indexOf("  #flatPose("));
   assert.match(step, /const channels = this\.#closedHandChannels\(unit, template, skinned, client, metadata\);/);
-  assert.match(step, /this\.#flatPose\(unit, unit\.wvm, mount\?\.skinned === undefined, channels\)/);
+  assert.match(step, /this\.#flatPose\(unit, unit\.wvm, true, channels\)/);
   assert.match(step, /flat\.globalSequences\(channels, unit\.wvm\.globalSequences, now\)/);
   assert.match(step, /writeGlobalSequenceLocals\(channels, unit\.wvm\.globalSequences, now, flat\)/);
   assert.match(step, /applyGlobalSequenceBones\(skinned, channels, unit\.wvm\.globalSequences, now\)/);

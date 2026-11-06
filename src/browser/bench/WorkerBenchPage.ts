@@ -78,10 +78,15 @@ const cityDisplays = city
   ? await (await checked(`${baseUrl}/dbc/creature-models?v=${CREATURE_MODEL_VERSION}&ids=${config.city.displays.join(',')}`)).json() as UnitModel[]
   : [];
 if (city && cityDisplays.length !== config.city.displays.length) throw new Error('City display missing');
+// 06.11 (12.13): the mounts a riding crowd sits on (bench/city-riders.json).
+const mountDisplays = city && config.city.mounts
+  ? await (await checked(`${baseUrl}/dbc/creature-models?v=${CREATURE_MODEL_VERSION}&ids=${config.city.mounts.displays.join(',')}`)).json() as UnitModel[]
+  : [];
+if (city && config.city.mounts && mountDisplays.length !== config.city.mounts.displays.length) throw new Error('Mount display missing');
 
 // The world, as the in-page harness keeps it (BenchScene.ts).
 const crowd = new BenchCrowd(config, scene, (i) => city ? cityDisplays[i % cityDisplays.length]!.id : display.id);
-const unitModels = new BenchUnitModels(benchModelOf(scene, display, cityDisplays));
+const unitModels = new BenchUnitModels(benchModelOf(scene, display, cityDisplays), mountDisplays);
 // The page's own terrain for the route's ground heights (the city floor is a constant): the client's main thread
 // keeps its own heights too. Made on first use, so a city run fetches nothing here.
 let pageTerrain: TerrainClient | undefined;

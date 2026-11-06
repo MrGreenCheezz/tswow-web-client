@@ -29,7 +29,12 @@ export interface BenchConfig {
   city: { map: number; x: number; y: number; z: number; population: number; spacing: number; walkers: number;
     orbit: number; pitch: number; displays: number[]; graphics: BenchGraphics;
     /** 25.10 (perf): a casting crowd (BenchSpellCasts.ts); absent in bench/city.json. */
-    casts?: BenchCastsConfig };
+    casts?: BenchCastsConfig;
+    /**
+     * 06.11 (12.13): `riders` of the standing crowd sit on these mount displays (UNIT_FIELD_MOUNTDISPLAYID), spread
+     * evenly over it (bench/city-riders.json); absent in bench/city.json.
+     */
+    mounts?: BenchMountsConfig };
   /** `bench/run.mjs --settings`: a player's account settings, pushed like the page pushes them. */
   settings?: SettingValues;
   /**
@@ -53,6 +58,19 @@ export interface BenchConfig {
    * of Dalaran, whose model set outgrows the 256-model cache and never settles) instead of failing the run.
    */
   allowUnsettled?: boolean;
+}
+
+export interface BenchMountsConfig { readonly displays: readonly number[]; readonly riders: number }
+
+/**
+ * 06.11 (12.13): the mount display unit `index` of a city crowd of `count` rides, or undefined: every `stride`-th NPC
+ * from the first, so the riders are spread over the square. The crowd asks only for its standing NPCs.
+ */
+export function benchRiderMount(mounts: BenchMountsConfig | undefined, count: number, index: number): number | undefined {
+  if (!mounts || mounts.riders <= 0 || mounts.displays.length === 0 || index < 1) return undefined;
+  const stride = Math.max(1, Math.floor((count - 1) / mounts.riders));
+  const rider = (index - 1) / stride;
+  return Number.isInteger(rider) && rider < mounts.riders ? mounts.displays[rider % mounts.displays.length] : undefined;
 }
 
 export interface BenchScenario {
@@ -112,6 +130,8 @@ export class BenchCrowd {
         transport: undefined, speeds: undefined, transportTime: undefined,
         fields: new Map([[UPDATE_FIELDS.UNIT_FIELD_DISPLAYID.offset, displayIdOf(i)],
           [UPDATE_FIELDS.UNIT_FIELD_HEALTH.offset, 100], [UPDATE_FIELDS.UNIT_FIELD_MAXHEALTH.offset, 100]]) };
+      const mount = city && npc && !walking ? benchRiderMount(config.city.mounts, count, i) : undefined; // 06.11 (12.13)
+      if (mount !== undefined) object.fields.set(UPDATE_FIELDS.UNIT_FIELD_MOUNTDISPLAYID.offset, mount);
       if (!arrival || i === 0) this.state.objects.set(object.guid, object);
       this.objects.push(object);
     }
@@ -208,10 +228,14 @@ export function benchFrameTime(config: BenchConfig, scenario: BenchScenario, pre
  */
 export class BenchUnitModels {
   readonly models = new Map<bigint, UnitModel>();
-  readonly lookups: RenderLookups = { ...NO_RENDER_LOOKUPS, unitModels: this.models };
+  readonly lookups: RenderLookups;
   #filled = -1;
 
-  constructor(readonly modelOf: (object: WorldObjectState) => UnitModel | undefined) {}
+  /** `displays`: the creature display rows a mount is read from (`mountDisplayModel`), as the live client's cache. */
+  constructor(readonly modelOf: (object: WorldObjectState) => UnitModel | undefined, displays: readonly UnitModel[] = []) {
+    this.lookups = { ...NO_RENDER_LOOKUPS, unitModels: this.models,
+      ...(displays.length === 0 ? {} : { creatureDisplays: new Map(displays.map((model) => [model.id, model])), creatureDisplayRevision: 1 }) };
+  }
 
   refresh(state: WorldState): void {
     if (this.#filled === state.objects.size) return;

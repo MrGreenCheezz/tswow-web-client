@@ -16841,8 +16841,11 @@ export class WorldRenderer3D {
     const sheathArms = this.#sheathArmsStep(unit, template, skinned, now);
     // The flat pose when this frame allows one: the same mixer clock and blend, for only the bones
     // something draws or reads, with none of the per-bone scene-graph writes. See `FastPoseState`.
+    // 06.11 (12.13, UNT-6): a rider is posed on the worker too. Its mount stays on this thread and is
+    // composed first below, so the saddle bone the rider's root hangs from is this frame's when the
+    // rider's step is published (`SharedPose.compose` takes the root's world matrix there).
     const flat = !portraitNeedsPose && sheathArms === undefined && this.#strafeYawIdle(unit, template, pose)
-      ? this.#flatPose(unit, unit.wvm, mount?.skinned === undefined, channels) : undefined;
+      ? this.#flatPose(unit, unit.wvm, true, channels) : undefined;
     const mountFlat = flat === undefined || !mount?.skinned ? undefined : this.#flatPose(mount, mount.wvm, false);
     if (flat !== undefined && (mount?.skinned === undefined || mountFlat !== undefined)) {
       this.#unitAnimationFlat++;

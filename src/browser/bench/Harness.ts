@@ -145,6 +145,11 @@ const cityDisplays = city
   ? await (await checked(`${baseUrl}/dbc/creature-models?v=${CREATURE_MODEL_VERSION}&ids=${config.city.displays.join(',')}`)).json() as UnitModel[]
   : [];
 if (city && cityDisplays.length !== config.city.displays.length) throw new Error('City display missing');
+// 06.11 (12.13): the mounts a riding crowd sits on (bench/city-riders.json).
+const mountDisplays = city && config.city.mounts
+  ? await (await checked(`${baseUrl}/dbc/creature-models?v=${CREATURE_MODEL_VERSION}&ids=${config.city.mounts.displays.join(',')}`)).json() as UnitModel[]
+  : [];
+if (city && config.city.mounts && mountDisplays.length !== config.city.mounts.displays.length) throw new Error('Mount display missing');
 // 25.10 (perf): a casting crowd when the city file asks for one (bench/city-spells.json, bench/dalaran.json).
 const casts = city && config.city.casts
   ? await BenchSpellCasts.load(baseUrl, config.city.casts, config.city.population, config.warmupSeconds) : undefined;
@@ -231,7 +236,7 @@ if (movement) {
   terrainReady = (x, y) => terrain.isReady(map, x, y)
     && ((worldRenderer as { lightsReadyAround?: (map: number, x: number, y: number) => boolean })
       .lightsReadyAround?.(map, x, y) ?? true);
-  const unitModels = new BenchUnitModels(benchModelOf(scene, display, cityDisplays));
+  const unitModels = new BenchUnitModels(benchModelOf(scene, display, cityDisplays), mountDisplays);
   const benchLookups = unitModels.lookups;
   const camera = { yaw: 0, pitch: 0, orbit: 0 };
   render = (seconds, elapsed, frame) => {
