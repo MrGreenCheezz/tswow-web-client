@@ -1889,6 +1889,20 @@ export interface UnitPose {
    * the caller does not know, which keeps the pre-12.10 ladders (Jump for a fall, Fall for a far one).
    */
   airborneBase?: number | null;
+  /** 06.11 (6.42): `WorldObjectState.takeoffs`, the falls the unit has begun; undefined when not known. */
+  takeoffs?: number;
+}
+
+/**
+ * 06.11 (6.42): the pose before, as the edges are to read it. A landing and the next takeoff in one drawn frame show as
+ * one airborne pose after another, with neither edge; a new takeoff count says the ground came between them, so the pose
+ * before is taken as on the ground and the new jump starts as one (JumpStart, the landing clip cut, the mount's too).
+ */
+export function poseBeforeEdges(previous: UnitPose, next: UnitPose): UnitPose {
+  if (previous.takeoffs === undefined || next.takeoffs === undefined || previous.takeoffs === next.takeoffs) return previous;
+  const falls = MOVEMENT_FLAGS.falling | MOVEMENT_FLAGS.fallingFar;
+  if ((previous.movementFlags & falls) === 0 || (next.movementFlags & falls) === 0) return previous;
+  return { ...previous, movementFlags: previous.movementFlags & ~falls };
 }
 
 /**
@@ -2996,8 +3010,9 @@ export function mountPose(rider: UnitPose, available?: ReadonlySet<number> | Map
  * a flying mount is airborne for the whole flight and its takeoff is not a jump; swimming for the
  * same reason `poseTransition` refuses it, on either side of the change.
  */
-export function mountPoseTransition(previous: UnitPose | undefined, next: UnitPose): number | undefined {
-  if (!previous) return undefined;
+export function mountPoseTransition(before: UnitPose | undefined, next: UnitPose): number | undefined {
+  if (!before) return undefined;
+  const previous = poseBeforeEdges(before, next); // 06.11 (6.42)
   const swimming = (pose: UnitPose): boolean => (pose.movementFlags & MOVEMENT_FLAGS.swimming) !== 0;
   if (swimming(next) || swimming(previous)) return undefined;
   if (isUnitFlying(next.movementFlags, next.flight === true)
@@ -3010,8 +3025,9 @@ export function mountPoseTransition(previous: UnitPose | undefined, next: UnitPo
  * re-picks the clip at once when the movement word's `0x1000` changes (0x0073ee14), measured as a landing cutting JumpStart short.
  * Left to run out, a landing clip played on in the air under the next jump, which reads as running on nothing.
  */
-export function airborneChanged(previous: UnitPose | undefined, next: UnitPose): boolean {
-  if (!previous) return false;
+export function airborneChanged(before: UnitPose | undefined, next: UnitPose): boolean {
+  if (!before) return false;
+  const previous = poseBeforeEdges(before, next); // 06.11 (6.42)
   return isAirborne(previous) !== isAirborne(next) || isReallyFalling(previous) !== isReallyFalling(next);
 }
 
@@ -3082,8 +3098,9 @@ export function mountSpecialAnimation(flying: boolean): number | undefined {
  * the landing have to be inferred from the change: the frame the character leaves the ground, and
  * the frame it arrives. Returning undefined means the crossfade alone is enough.
  */
-export function poseTransition(previous: UnitPose | undefined, next: UnitPose): number | undefined {
-  if (!previous || next.dead) return undefined;
+export function poseTransition(before: UnitPose | undefined, next: UnitPose): number | undefined {
+  if (!before || next.dead) return undefined;
+  const previous = poseBeforeEdges(before, next); // 06.11 (6.42)
   // 11.02-H: in or out of a vehicle seat, the only one-shot is the seat's own start on taking it
   // (RideAnimStart / RideUpperAnimStart, Wow.exe 0x00747b20) — the vehicle does any jumping.
   const seatTransition = vehicleSeatTransition(previous.vehicleSeat, next.vehicleSeat, next.movementFlags); // 04.11: + the landing

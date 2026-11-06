@@ -10,7 +10,7 @@
  *
  * The renderer reads, of `WorldState`, only `objects`, `selfGuid` and `predictedGuid` (`RenderWorld`), and of each
  * object: guid, typeId, position, movementFlags, fields, transport, motion (presence, flying, duration, totalLength,
- * startedAt, track), splineTier, speeds, runSpeed, fallJumped, rotation, vehicleId, transportTime/At — every one of
+ * startedAt, track), splineTier, speeds, runSpeed, fallJumped, takeoffs, rotation, vehicleId, transportTime/At — every one of
  * them is carried. Also carried, unread today: updateFlags, targetGuid, turnRate, pitch, vehicleOrientation,
  * positionTransport. Not carried: `drift` and `glide`, the main thread's own movement integrators, whose result is the
  * position.
@@ -57,6 +57,7 @@ export interface ObjectScalars {
   readonly targetGuid: bigint | undefined;
   readonly pitch: number | undefined;
   readonly fallJumped: boolean | undefined;
+  readonly takeoffs: number | undefined; // 06.11 (6.42)
   readonly vehicleId: number | undefined;
   readonly vehicleOrientation: number | undefined;
   readonly transportTime: number | undefined;

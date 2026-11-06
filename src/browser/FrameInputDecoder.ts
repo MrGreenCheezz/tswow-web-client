@@ -155,6 +155,7 @@ export class FrameInputDecoder {
       object.targetGuid = scalars.targetGuid;
       object.pitch = scalars.pitch;
       object.fallJumped = scalars.fallJumped;
+      object.takeoffs = scalars.takeoffs; // 06.11 (6.42)
       object.vehicleId = scalars.vehicleId;
       object.vehicleOrientation = scalars.vehicleOrientation;
       object.transportTime = scalars.transportTime;

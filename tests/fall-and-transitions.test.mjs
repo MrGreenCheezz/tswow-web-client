@@ -12,7 +12,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { FALLING_FAR_DROP, FALLING_FAR_MS, fallsFar } from "../dist/code/browser/game/Physics.js";
 import {
-  isBaseIdle, isJumpAnimation, isReallyFalling, poseAnimation, poseTransition,
+  airborneChanged, isBaseIdle, isJumpAnimation, isReallyFalling, mountPoseTransition, poseAnimation, poseTransition,
 } from "../dist/code/browser/AnimatedModel.js";
 import { TRANSITION_SIDECAR_WAIT, settleTransition } from "../dist/code/browser/PendingTransition.js";
 import { animationPlaysOnUpperBody, unitActionDisplay } from "../dist/code/browser/UnitActionArbiter.js";
@@ -98,6 +98,35 @@ test("the jump's own start and landing belong to falls Wow.exe animates as falls
   assert.equal(poseTransition(walkOff, ground), undefined, "a kerb: no landing");
   assert.equal(poseTransition(far, ground), A.JumpEnd, "a real fall lands");
   assert.equal(poseTransition(pose({ movementFlags: F.falling, fallJumped: true }), pose({ movementFlags: F.forward })), A.JumpLandRun);
+});
+
+test("06.11 (6.42): WorldState counts the falls a unit's packets begin, a landing and a jump in one batch too", () => {
+  const state = new WorldState();
+  const at = { x: 0, y: 0, z: 0, orientation: 0 };
+  const jump = { velocity: -7.955547, sinAngle: 0, cosAngle: 1, speed: 7 };
+  state.move(5n, { flags: F.forward, position: at });
+  assert.equal(state.objects.get(5n).takeoffs, undefined, "never fell");
+  state.move(5n, { flags: F.forward | F.falling, position: at, jump });
+  assert.equal(state.objects.get(5n).takeoffs, 1);
+  state.move(5n, { flags: F.forward | F.falling | F.fallingFar, position: at });
+  assert.equal(state.objects.get(5n).takeoffs, 1, "the same fall, further on");
+  // MSG_MOVE_FALL_LAND and MSG_MOVE_JUMP before the next drawn frame: the flags end as they were, the count does not.
+  state.move(5n, { flags: F.forward, position: at });
+  state.move(5n, { flags: F.forward | F.falling, position: at, jump });
+  assert.equal(state.objects.get(5n).takeoffs, 2);
+});
+
+test("06.11 (6.42): a landing and the next jump in one drawn frame still start the jump anew", withData, () => {
+  const air = (takeoffs, extra = {}) => pose({ movementFlags: F.falling | F.forward, fallJumped: true, takeoffs, ...extra });
+  assert.equal(poseTransition(air(1), air(1)), undefined, "the same jump");
+  assert.equal(airborneChanged(air(1), air(1)), false);
+  assert.equal(poseTransition(air(1), air(2)), A.JumpStart, "the ground came between: the new jump's start");
+  assert.equal(airborneChanged(air(1), air(2)), true, "and the landing clip under it is cut");
+  assert.equal(poseTransition(air(1, { movementFlags: F.falling | F.fallingFar }), air(2)), A.JumpStart, "after a far one too");
+  assert.equal(poseTransition(air(1), air(2, { fallJumped: false })), undefined, "a walk-off has no start");
+  assert.equal(poseTransition(air(undefined), air(2)), undefined, "a count not known before says nothing");
+  assert.equal(mountPoseTransition(air(1), air(2)), A.JumpStart, "the horse under a rider too");
+  assert.equal(poseTransition(air(1), pose({ movementFlags: F.forward, takeoffs: 2 })), A.JumpLandRun, "a landing seen is a landing");
 });
 
 test("PendingTransition: an edge waits for its clip while the pose holds, and no longer", () => {

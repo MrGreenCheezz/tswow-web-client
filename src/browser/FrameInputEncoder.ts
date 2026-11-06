@@ -51,6 +51,7 @@ class SentObject {
   targetGuid: bigint | undefined = undefined;
   pitch: number | undefined = undefined;
   fallJumped: boolean | undefined = undefined;
+  takeoffs: number | undefined = undefined; // 06.11 (6.42)
   vehicleId: number | undefined = undefined;
   vehicleOrientation: number | undefined = undefined;
   transportTime: number | undefined = undefined;
@@ -244,6 +245,7 @@ export class FrameInputEncoder {
     if (fresh || !same(object.typeId, sent.typeId) || !same(object.runSpeed, sent.runSpeed)
       || !same(object.turnRate, sent.turnRate) || object.updateFlags !== sent.updateFlags
       || object.targetGuid !== sent.targetGuid || !same(object.pitch, sent.pitch) || object.fallJumped !== sent.fallJumped
+      || object.takeoffs !== sent.takeoffs // 06.11 (6.42)
       || !same(object.vehicleId, sent.vehicleId) || !same(object.vehicleOrientation, sent.vehicleOrientation)
       || !same(object.transportTime, sent.transportTime) || !same(object.transportTimeAt, sent.transportTimeAt)) {
       (change ??= { slot: sent.slot }).scalars = this.#scalars(sent, object);
@@ -374,14 +376,15 @@ export class FrameInputEncoder {
     sent.targetGuid = object.targetGuid;
     sent.pitch = object.pitch;
     sent.fallJumped = object.fallJumped;
+    sent.takeoffs = object.takeoffs; // 06.11 (6.42)
     sent.vehicleId = object.vehicleId;
     sent.vehicleOrientation = object.vehicleOrientation;
     sent.transportTime = object.transportTime;
     sent.transportTimeAt = object.transportTimeAt;
     return {
       typeId: object.typeId, runSpeed: object.runSpeed, turnRate: object.turnRate, updateFlags: object.updateFlags,
-      targetGuid: object.targetGuid, pitch: object.pitch, fallJumped: object.fallJumped, vehicleId: object.vehicleId,
-      vehicleOrientation: object.vehicleOrientation, transportTime: object.transportTime,
+      targetGuid: object.targetGuid, pitch: object.pitch, fallJumped: object.fallJumped, takeoffs: object.takeoffs,
+      vehicleId: object.vehicleId, vehicleOrientation: object.vehicleOrientation, transportTime: object.transportTime,
       transportTimeAt: object.transportTimeAt,
     };
   }

@@ -41,7 +41,7 @@ function assertSameObject(main, mirror, now) {
   const where = `object ${main.guid}`;
   assert.notEqual(mirror, main, `${where}: the mirror owns its object`);
   for (const key of ["guid", "typeId", "movementFlags", "updateFlags", "targetGuid", "runSpeed", "turnRate", "pitch",
-    "fallJumped", "vehicleId", "vehicleOrientation", "transportTime", "transportTimeAt"]) {
+    "fallJumped", "takeoffs", "vehicleId", "vehicleOrientation", "transportTime", "transportTimeAt"]) {
     assert.equal(mirror[key], main[key], `${where}: ${key}`);
   }
   assert.deepEqual(mirror.position, main.position, `${where}: position`);
@@ -119,6 +119,11 @@ test("a session of real WorldState changes leaves the mirror equal to the main s
   state.move(2n, { flags: FORWARD, position: { x: 22, y: 1, z: 0, orientation: 0.3 } }, now);
   state.objects.get(1n).fallJumped = true;
   state.objects.get(1n).movementFlags = 0x1000;
+  state.objects.get(1n).takeoffs = 4; // 06.11 (6.42)
+  ({ mirror } = cross(encoder, decoder, state));
+  assertSameWorld(state, mirror, now);
+  // 06.11 (6.42): a new takeoff count alone, the flags as they were (a landing and a jump between two frames).
+  state.objects.get(1n).takeoffs = 5;
   ({ mirror } = cross(encoder, decoder, state));
   assertSameWorld(state, mirror, now);
 

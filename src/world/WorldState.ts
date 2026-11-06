@@ -152,6 +152,13 @@ export interface WorldObjectState {
    */
   fallJumped?: boolean | undefined;
   /**
+   * 06.11 (6.42): how many falls the unit's movement packets have begun (`FALLING` set over a packet without it), the own
+   * character's included (they go through `move` as sent). A landing and the next jump a frame apart can reach one drawn
+   * frame together — two packets of a unit far off in one delivery, two frames of the page in one of the render worker's —
+   * and the renderer, which compares poses frame to frame, saw neither; a new count is how it knows.
+   */
+  takeoffs?: number | undefined;
+  /**
    * A game object's local rotation from the create block's `UPDATEFLAG_ROTATION` (5.27), unpacked
    * from `GameObject::UpdatePackedRotation`'s 64 bits. Its yaw normally agrees with
    * `position.orientation`; anything beyond that is what `GameObjectRotation.gameObjectTilt` returns.
@@ -603,6 +610,10 @@ export class WorldState {
   #applyMove(guid: bigint, movement: MoveInput, now: number, appliedAt: number): void {
     const object = this.#get(guid);
     const previous = object.position;
+    // 06.11 (6.42): a fall begun, counted before the flags are replaced.
+    if ((movement.flags & MOVEMENT_FLAGS.falling) !== 0 && (object.movementFlags & MOVEMENT_FLAGS.falling) === 0) {
+      object.takeoffs = (object.takeoffs ?? 0) + 1;
+    }
     object.movementFlags = movement.flags;
     object.pitch = movement.pitch;
     // 12.10 6.07: a packet's jump block says whether the fall began with a jump; one without it (the character's

@@ -16711,6 +16711,7 @@ export class WorldRenderer3D {
     // 12.10 6.07: whether this fall began with a jump, and the jump clip the base is already in (Wow.exe 0x00723350,
     // 0x00724200 → 0x0071dc20): a jump keeps Jump to the ground, a walk-off runs on until FALLING_FAR and then falls.
     if (object.fallJumped !== undefined) pose.fallJumped = object.fallJumped;
+    if (object.takeoffs !== undefined) pose.takeoffs = object.takeoffs; // 06.11 (6.42): a landing no frame showed
     pose.airborneBase = isJumpAnimation(unit.animationId) ? unit.animationId : null;
     // Stride tempo before anything poses: the gait scaler below reads it, and the node already
     // stands where this frame drew it.
