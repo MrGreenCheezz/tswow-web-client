@@ -31,6 +31,8 @@ export interface BridgeFlowLimits {
   readonly pauseLimitMs: number;
   /** How often a paused bridge looks at its queue and at the clock. */
   readonly checkMs: number;
+  /** How often a bridged socket is pinged; two missed pongs in a row close it. */
+  readonly heartbeatMs: number;
 }
 
 export const BRIDGE_FLOW_DEFAULTS: BridgeFlowLimits = Object.freeze({
@@ -39,6 +41,7 @@ export const BRIDGE_FLOW_DEFAULTS: BridgeFlowLimits = Object.freeze({
   hardLimitBytes: 16 * 1024 * 1024,
   pauseLimitMs: 30_000,
   checkMs: 250,
+  heartbeatMs: 30_000,
 });
 
 /**

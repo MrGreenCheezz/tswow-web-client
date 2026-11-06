@@ -125,8 +125,6 @@ interface BuiltInterfaceBundle {
 /** 25.10 (serve S3, review): how long a bundle with a failed file is served before it is built again. */
 const INCOMPLETE_BUNDLE_TTL_MS = 60_000;
 
-/** How often a bridged socket is pinged; two missed pongs in a row close it. */
-const HEARTBEAT_INTERVAL_MS = 30_000;
 /** Every upgrade opens a real worldserver socket, so an unbounded gateway exhausts the emulator. */
 const MAX_BRIDGED_SOCKETS = 256;
 const MAX_BRIDGED_SOCKETS_PER_ADDRESS = 8;
@@ -721,13 +719,19 @@ function bridge(
   let alive = true;
   webSocket.on("pong", () => { alive = true; });
   const heartbeat = setInterval(() => {
+    // 06.11 (10.14, review): a paused browser stream leaves its pong frames unread, and the server is
+    // the slow side then; the pause has its own limit, so the heartbeat neither counts nor pings.
+    if (backendPausedAt !== undefined) {
+      alive = true;
+      return;
+    }
     if (!alive) {
       fail("Client stopped responding");
       return;
     }
     alive = false;
     if (webSocket.readyState === WebSocket.OPEN) webSocket.ping();
-  }, HEARTBEAT_INTERVAL_MS);
+  }, flow.heartbeatMs);
 
   webSocket.on("message", (data, isBinary) => {
     if (!isBinary) {

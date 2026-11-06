@@ -283,6 +283,54 @@ test("a session dropped while the browser's stream is paused closes at once, not
   });
 });
 
+// 06.11 (10.14, review): a paused browser stream leaves its pong frames unread, so the heartbeat used to
+// drop the session as «Client stopped responding» while the server was the slow side.
+test("while the browser's stream is paused the heartbeat waits: the pause decides, with the server's reason", async () => {
+  const backend = await backendStub((socket) => { socket.pause(); });
+  await withLogs(async (lines) => {
+    const gateway = await gatewayTo(backend.port, { ...FLOW, pauseLimitMs: 1_500, heartbeatMs: 100 });
+    try {
+      const client = await openClient(gateway.port);
+      let closedAt;
+      client.once("close", () => { closedAt = Date.now(); });
+      for (let index = 0; index < 200; index++) client.send(pattern(index * 60 * 1024, 60 * 1024), { binary: true });
+      const started = Date.now();
+      const closedLine = () => lines.find((text) => text.startsWith("Gateway bridge world closed"));
+      while (!closedLine() && Date.now() - started < 8_000) await delay(25);
+      const line = closedLine();
+      assert.ok(line, `the bridge closed: ${JSON.stringify(lines)}`);
+      assert.match(line, /\(Backend is too slow\)/, "the pause limit ended it, not fifteen missed pongs");
+      assert.ok(Number(/\/ (\d+) server/.exec(line)?.[1]) >= 1, `the server side paused: ${line}`);
+      while (closedAt === undefined && Date.now() - started < 8_000) await delay(25);
+      assert.ok(closedAt - started >= 1_000, `held for the pause limit, ${closedAt - started} ms`);
+    } finally {
+      await gateway.close();
+      await backend.close();
+    }
+  });
+});
+
+test("with nothing paused the heartbeat still pings, and a browser that answers stays connected", async () => {
+  const backend = await backendStub(() => {});
+  await withLogs(async () => {
+    const gateway = await gatewayTo(backend.port, { ...FLOW, heartbeatMs: 50 });
+    try {
+      const client = await openClient(gateway.port);
+      let pings = 0;
+      let closed;
+      client.on("ping", () => { pings += 1; });
+      client.once("close", (code) => { closed = code; });
+      await delay(600);
+      assert.ok(pings >= 5, `pinged ${pings} times`);
+      assert.equal(closed, undefined);
+      client.close();
+    } finally {
+      await gateway.close();
+      await backend.close();
+    }
+  });
+});
+
 test("flow limits refuse a combination that would undo the pause", () => {
   assert.deepEqual({ ...bridgeFlowLimits() }, { ...BRIDGE_FLOW_DEFAULTS });
   assert.equal(BRIDGE_FLOW_DEFAULTS.highBytes, 1024 * 1024);
