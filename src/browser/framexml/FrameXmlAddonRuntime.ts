@@ -12,6 +12,7 @@ import {
 import { GlueLuaRaise, GlueLuaVm } from "../glue/GlueLua.js";
 import type { FrameXmlSavedVariables } from "./FrameXmlSavedVariables.js";
 import { frameXmlAddonLoadReason } from "./FrameXmlAddonStates.js"; // 3.46 (13.10)
+import { compareFrameXmlAddonTitles, frameXmlAddonMetadata } from "./FrameXmlAddonMetadata.js"; // 3.18 (07.11)
 import { FrameXmlUiBridge } from "../ui/framexml_compat/FrameXmlRuntime.js";
 import { parseFrameXml } from "../ui/framexml_compat/FrameXmlParser.js";
 import {
@@ -129,6 +130,8 @@ export interface FrameXmlAddonRuntimeOptions {
    */
   readonly disabled?: readonly string[];
   readonly checkAddonVersion?: boolean;
+  /** 3.18 (07.11): the client's locale, which picks a TOC's `Title-xxXX` lines (FrameXmlAddonMetadata.ts); ruRU by default. */
+  readonly locale?: string;
   /** The XML roots a load made, with the add-on that made them (3.18: a mount draws a late one's). */
   readonly onRoots?: (roots: readonly FrameXmlFrame[], addon: string) => void;
   readonly savedVariables?: FrameXmlSavedVariables;
@@ -284,8 +287,11 @@ export class FrameXmlAddonRuntime {
   readonly #savedVariables: FrameXmlSavedVariables | undefined;
   readonly #records = new Map<string, AddonRecord>();
   readonly #loadOnDemand: ReadonlySet<string>;
-  /** 3.46 (12.10): the installed add-ons in list order (`installed`), canonical names. */
-  readonly #installed: readonly string[];
+  /**
+   * 3.46 (12.10): the installed add-ons in list order (`installed`), canonical names. 3.18 (07.11): once their TOCs are
+   * read (`primeMetadata`), in Wow.exe's order — by title (0x005f79a0).
+   */
+  #installed: readonly string[];
   /** 3.18 (owner, 12.10): third-party LoD add-ons read ahead of their `LoadAddOn`, by lower-case name. */
   readonly #prefetched = new Map<string, PrefetchedAddon>();
   #closed = false;
@@ -312,6 +318,41 @@ export class FrameXmlAddonRuntime {
     this.#installed = names((options.installed ?? []).join(","));
     this.#disabled = new Set((options.disabled ?? []).map((name) => name.toLowerCase())); // 3.46 (13.10)
     this.#checkAddonVersion = options.checkAddonVersion ?? true; // 3.46 (13.10)
+    this.#locale = options.locale ?? "ruRU"; // 3.18 (07.11)
+  }
+
+  readonly #locale: string;
+  /** 3.18 (07.11): each add-on's metadata table (FrameXmlAddonMetadata.ts), by lower-case name, with the TOC it came from. */
+  readonly #metadataTables = new Map<string, { readonly source: string; readonly table: ReadonlyMap<string, string> }>();
+
+  /** The metadata of the add-on `entry` names: its TOC's, once read; undefined while there is none. */
+  #metadataOf(entry: string): ReadonlyMap<string, string> | undefined {
+    const lower = entry.toLowerCase();
+    const source = this.#records.get(lower)?.toc?.source ?? this.#installedTocs.get(lower);
+    if (source === undefined) return undefined;
+    const cached = this.#metadataTables.get(lower);
+    if (cached?.source === source) return cached.table;
+    const table = frameXmlAddonMetadata(source, entry, this.#locale);
+    this.#metadataTables.set(lower, { source, table });
+    return table;
+  }
+
+  /**
+   * 3.18 (07.11): the add-on a GetAddOnInfo/GetAddOnMetadata first argument names — a number, or a numeric string
+   * (`lua_isnumber`), is a 1-based index into the list, rounded, and one outside it raises; a string is a name, answered
+   * with its installed spelling when it is one. Anything else is undefined, for the caller's usage.
+   */
+  #addonArgument(key: unknown): { readonly name: string; readonly entry: string | undefined } | undefined {
+    const index = typeof key === "number" ? key
+      : typeof key === "string" && key.trim() !== "" && Number.isFinite(Number(key)) ? Number(key) : undefined;
+    if (index !== undefined) {
+      const entry = this.#installed[Math.round(index) - 1];
+      if (entry === undefined) throw new GlueLuaRaise(`AddOn index must be in the range of 1 to ${this.#installed.length}`);
+      return { name: entry, entry };
+    }
+    if (typeof key !== "string") return undefined;
+    const wanted = key.toLowerCase();
+    return { name: key, entry: this.#installed.find((installed) => installed.toLowerCase() === wanted) };
   }
 
   /** 3.46 (13.10): installed add-ons not enabled (lower-case), and the out-of-date switch. */
@@ -351,26 +392,16 @@ export class FrameXmlAddonRuntime {
    * modules are not add-ons in Wow.exe: a module's name is an unknown one.
    */
   info(key: unknown): readonly unknown[] {
-    const index = typeof key === "number" ? key
-      : typeof key === "string" && key.trim() !== "" && Number.isFinite(Number(key)) ? Number(key) : undefined;
-    let name: string;
-    let entry: string | undefined;
-    if (index !== undefined) {
-      entry = this.#installed[Math.round(index) - 1];
-      if (entry === undefined) throw new GlueLuaRaise(`AddOn index must be in the range of 1 to ${this.#installed.length}`);
-      name = entry;
-    } else if (typeof key === "string") {
-      name = key;
-      const wanted = key.toLowerCase();
-      entry = this.#installed.find((installed) => installed.toLowerCase() === wanted);
-    } else {
-      throw new GlueLuaRaise('Usage: GetAddOnInfo(index or "name")');
-    }
+    const argument = this.#addonArgument(key);
+    if (!argument) throw new GlueLuaRaise('Usage: GetAddOnInfo(index or "name")');
+    const { name, entry } = argument;
     if (entry === undefined) return [name, undefined, undefined, undefined, undefined, "MISSING", "INSECURE"];
     const lower = entry.toLowerCase();
-    const source = this.#records.get(lower)?.toc?.source ?? this.#installedTocs.get(lower);
-    const title = source === undefined ? undefined : metadata(source, "Title");
-    const notes = source === undefined ? undefined : metadata(source, "Notes");
+    // 3.18 (07.11): the metadata's Title — the folder name without one, a Title-ruRU line for this client — and Notes
+    // (0x005f7430, 0x005f7470).
+    const table = this.#metadataOf(entry);
+    const title = table?.get("title");
+    const notes = table?.get("notes");
     // 3.46 (13.10): «enabled» for the profile (0x005f7d70); a loaded add-on is loadable with no reason (0x005f7650),
     // any other gets 0x005f7e90's (FrameXmlAddonStates.ts) — DISABLED, INTERFACE_VERSION, INCOMPATIBLE, DEP_….
     const enabled = this.#disabled.has(lower) ? undefined : 1;
@@ -464,16 +495,20 @@ export class FrameXmlAddonRuntime {
    *
    * L5c 3.18: Wow.exe's `GetAddOnMetadata` (0x00511430 → 0x005f74e0) looks the name up in the add-on
    * list the client scanned from Interface/AddOns at start — loaded or not — and pushes the key's value
-   * or nil, never an error. So an installed add-on's TOC is answered before it loads (`primeMetadata`
-   * read it), and a TSWoW module, glued into FrameXML.toc and absent from that list, answers nil.
+   * or nil. So an installed add-on's TOC is answered before it loads (`primeMetadata` read it), and a
+   * TSWoW module, glued into FrameXML.toc and absent from that list, answers nil. 07.11: the first argument
+   * is also an index into the list (out of it, «AddOn index must be in the range of 1 to N»), the key any
+   * string or number (`lua_isstring`), else the usage is raised; and the value is the metadata table's
+   * (FrameXmlAddonMetadata.ts) — Title, Notes, Author, Version and X-… only, any case, the last line of a key.
    */
   metadata(name: unknown, key: unknown): readonly unknown[] {
-    const canonical = canonicalName(name);
-    if (!canonical || typeof key !== "string" || key.trim().length === 0) return [];
-    const source = this.#records.get(canonical.toLowerCase())?.toc?.source
-      ?? this.#installedTocs.get(canonical.toLowerCase()); // L5c 3.18
-    const value = source !== undefined ? metadata(source, key) : undefined;
-    return value === undefined ? [] : [value];
+    const argument = this.#addonArgument(name);
+    const variable = typeof key === "string" ? key : typeof key === "number" ? String(key) : undefined;
+    if (!argument || variable === undefined) throw new GlueLuaRaise('Usage: GetAddOnMetadata(index or "name", "variable")');
+    // A Blizzard add-on loaded on demand is in Wow.exe's list too, though not in the numbered one.
+    const loaded = this.#records.get(argument.name.trim().toLowerCase());
+    const entry = argument.entry ?? loaded?.name;
+    return [entry === undefined ? undefined : this.#metadataOf(entry)?.get(variable.toLowerCase())];
   }
 
   /** L5c 3.18: installed add-ons' TOC text, read before they load, for `GetAddOnMetadata`. */
@@ -499,6 +534,10 @@ export class FrameXmlAddonRuntime {
         if (!this.#closed && typeof source === "string") this.#installedTocs.set(lower, source);
       } catch { /* not answered, as a missing TOC is not */ }
     }));
+    // 3.18 (07.11): Wow.exe numbers the list by title (0x005f79a0: qsort with 0x005f7910); a TOC not read keeps the
+    // folder name, which is what 0x005f86a0 seeds the title with.
+    const title = (entry: string): string => this.#metadataOf(entry)?.get("title") ?? entry;
+    this.#installed = [...this.#installed].sort((left, right) => compareFrameXmlAddonTitles(title(left), title(right)));
   }
 
   /**

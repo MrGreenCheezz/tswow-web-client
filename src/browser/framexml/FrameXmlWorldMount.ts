@@ -3324,6 +3324,8 @@ export async function mountFrameXmlVertical(
 
   // The boot's GlobalStrings, once it exists: the zone resolver below names a territory's faction.
   let globalStringOf: ((name: string) => string | undefined) | undefined;
+  // 07.11 (3.18): and its GetCVar, for the C API halves that read a CVar the Lua map keeps (GetAutoCompleteResults).
+  let luaCVarOf: ((name: string) => string | undefined) | undefined;
   // L17 3.14: the seam's unit resolution for the party/raid map pins, bound once the seam exists.
   let battlefieldUnitGuid: (unit: string) => bigint | undefined = () => undefined;
   const seam = options.seam ?? new LiveWorldSeam({
@@ -3404,6 +3406,7 @@ export async function mountFrameXmlVertical(
     reputationCatalog: () => game.factions?.reputationCatalog,
     reputationName: (listId) => game.factions?.name(listId), // 06.11 (3.01)
     globalString: (name) => globalStringOf?.(name), // 06.11 (3.01)
+    luaCVar: (name) => luaCVarOf?.(name), // 07.11 (3.18)
     // 06.11 (3.12): the random tables ride the enchantment answer, asked for once on first use.
     randomTables: () => {
       const client = game.gatewayOrigin ? itemEnchantments(game.gatewayOrigin) : undefined;
@@ -3657,6 +3660,15 @@ export async function mountFrameXmlVertical(
     },
   });
   globalStringOf = (name) => boot.vm.globalString(name);
+  const getCVarRef = boot.vm.compileFunction(`
+    local name = ...
+    if type(GetCVar) ~= "function" then return nil end
+    return GetCVar(name)
+  `, "webclient/lua-cvar", []);
+  luaCVarOf = (name) => {
+    const value = getCVarRef ? boot.vm.call(getCVarRef, [name], 1)[0] : undefined;
+    return typeof value === "string" ? value : undefined;
+  };
   // Addons size themselves during Lua loading, before any DOM frame exists. UIParent must
   // already report the logical viewport; later widgets can use actual unscaled layout sizes.
   let geometryRenderer: FrameXmlDomRenderer | undefined;

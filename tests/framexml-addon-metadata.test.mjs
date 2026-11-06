@@ -67,10 +67,11 @@ test("3.46: GetNumAddOns and GetAddOnInfo answer the installed add-ons, never a 
     assert.equal(boot.isModuleLoaded("retail-talents"), true, "the host still knows its module");
     assert.deepEqual(lua(boot, "return GetNumAddOns()"), [3], "the installed list, the module not in it");
     assert.deepEqual(lua(boot, "return GetAddOnInfo(1)", 7), ["Eager", "Eager", undefined, 1, 1, undefined, "INSECURE"]);
-    assert.deepEqual(lua(boot, "return GetAddOnInfo('2')", 7), ["LodOne", undefined, undefined, 1, 1, undefined, "INSECURE"],
+    // 07.11: a TOC without a Title has the folder's name as its title (0x005f86a0 seeds it).
+    assert.deepEqual(lua(boot, "return GetAddOnInfo('2')", 7), ["LodOne", "LodOne", undefined, 1, 1, undefined, "INSECURE"],
       "a numeric string is an index; a load-on-demand add-on is loadable here");
     assert.deepEqual(lua(boot, "return GetAddOnInfo('lodone')", 7),
-      ["lodone", undefined, undefined, 1, 1, undefined, "INSECURE"], "a name is answered back as given");
+      ["lodone", "LodOne", undefined, 1, 1, undefined, "INSECURE"], "a name is answered back as given");
     assert.deepEqual(lua(boot, "return GetAddOnInfo('retail-talents')", 7),
       ["retail-talents", undefined, undefined, undefined, undefined, "MISSING", "INSECURE"], "a module is no add-on");
     assert.deepEqual(lua(boot, "return pcall(GetAddOnInfo, 4)", 2), [false, "AddOn index must be in the range of 1 to 3"]);
@@ -78,6 +79,78 @@ test("3.46: GetNumAddOns and GetAddOnInfo answer the installed add-ons, never a 
     // MainMenuBar's memory report (MainMenuBar.lua:522-530) walks the list by index.
     assert.deepEqual(lua(boot, "local names = {} for i = 1, GetNumAddOns() do names[i] = GetAddOnInfo(i) end return table.concat(names, ',')"),
       ["Eager,LodOne,NoToc"]);
+  } finally {
+    boot.close();
+  }
+});
+
+// 07.11 (3.18): what 0x005f86a0/0x005f85d0 keep as metadata (.runtime/re-2026-11-07/318): keys beginning with Title,
+// Notes, Author, Version or X-, any case; a -xxXX suffix of the client's locale makes the line the key's, another
+// locale's is dropped; the last line of a key wins; the list is numbered by title (0x005f79a0, qsort with 0x005f7910).
+const { frameXmlAddonMetadata, compareFrameXmlAddonTitles } = await import("../dist/code/browser/framexml/FrameXmlAddonMetadata.js");
+
+test("the metadata table: the five prefixes, the locale suffix, the last line, the folder's title", () => {
+  const table = frameXmlAddonMetadata([
+    "﻿## Interface: 30300",
+    "## Dependencies: Foo",
+    "## LoadOnDemand: 1",
+    "##Title: Мой аддон",
+    "## Title-deDE: Mein Addon",
+    "## Title-ruRU: Мой аддон по-русски\r",
+    "## Notes  ::  заметки ",
+    "## Version: 1",
+    "## version: 2",
+    "## X-Curse-Project-ID: 42",
+    "## Author",
+    "### Author: нет",
+    "# Version: 3",
+  ].join("\n"), "MyAddon", "ruRU");
+  assert.deepEqual(Object.fromEntries(table), {
+    title: "Мой аддон по-русски", notes: "заметки ", version: "2", "x-curse-project-id": "42", author: "",
+  });
+  assert.equal(frameXmlAddonMetadata("## Interface: 30300", "Bare", "ruRU").get("title"), "Bare", "the folder seeds Title");
+  assert.equal(frameXmlAddonMetadata(`${String.fromCharCode(0xfeff)}## Title: Первый`, "Bom", "ruRU").get("title"), "Первый",
+    "a UTF-8 BOM before the first line is skipped");
+  assert.equal(frameXmlAddonMetadata("## Title-enUS: English", "Lang", "enUS").get("title"), "English");
+  assert.equal(frameXmlAddonMetadata("## Title: Свой\n## Title-deDE: Fremd", "Lang", "ruRU").get("title"), "Свой",
+    "another locale's line is dropped, even the last");
+  assert.equal(frameXmlAddonMetadata("## Title-ruRUx: x", "Four", "ruRU").get("title"), "x", "four letters of the code");
+});
+
+test("titles sort as _strnicmp: A-Z folded, then code points", () => {
+  const sorted = ["Zed", "alpha", "Ccc", "Ёж", "Яблоко", "Альфа"].sort(compareFrameXmlAddonTitles);
+  assert.deepEqual(sorted, ["alpha", "Ccc", "Zed", "Ёж", "Альфа", "Яблоко"]);
+});
+
+test("GetAddOnMetadata keeps Wow.exe's keys; an index and the usages; the list is numbered by title", async () => {
+  const boot = new FrameXmlBoot({
+    provider: createFixtureProvider({
+      "interface/framexml/framexml.toc": "## Interface: 30300\nMain.lua",
+      "interface/framexml/main.lua": "MAIN_RAN = true",
+      "interface/addons/aaa/aaa.toc": "## Interface: 30300\n## Title: Zed\n## Title-ruRU: zed по-русски\n## LoadOnDemand: 1\n## Version: 1\n## Version: 2",
+      "interface/addons/bbb/bbb.toc": "## Interface: 30300\n## Title: alpha\n## LoadOnDemand: 1\n## Notes: о нём",
+      "interface/addons/ccc/ccc.toc": "## Interface: 30300\n## LoadOnDemand: 1",
+    }),
+    installedAddons: ["Aaa", "Bbb", "Ccc"],
+    exercise: false,
+  });
+  await boot.load();
+  try {
+    assert.deepEqual(lua(boot, "return GetAddOnMetadata('Aaa', 'Interface')"), [undefined], "not metadata in Wow.exe");
+    assert.deepEqual(lua(boot, "return GetAddOnMetadata('Aaa', 'LoadOnDemand')"), [undefined]);
+    assert.deepEqual(lua(boot, "return GetAddOnMetadata('Aaa', 'VERSION')"), ["2"], "the last line of the key");
+    assert.deepEqual(lua(boot, "return GetAddOnMetadata('Aaa', 'Title')"), ["zed по-русски"], "this client's locale");
+    assert.deepEqual(lua(boot, "return GetAddOnMetadata('Ccc', 'Title')"), ["Ccc"], "the folder's name");
+    // Titles: «alpha» (Bbb), «Ccc», «zed по-русски» (Aaa).
+    assert.deepEqual(lua(boot, "local n = {} for i = 1, GetNumAddOns() do n[i] = GetAddOnInfo(i) end return table.concat(n, ',')"),
+      ["Bbb,Ccc,Aaa"]);
+    assert.deepEqual(lua(boot, "return GetAddOnMetadata(1, 'Notes')"), ["о нём"], "an index into that list");
+    assert.deepEqual(lua(boot, "return GetAddOnMetadata('3', 'Version')"), ["2"], "a numeric string is an index");
+    assert.deepEqual(lua(boot, "return GetAddOnMetadata('Aaa', 5)"), [undefined], "a number is a key");
+    assert.deepEqual(lua(boot, "return pcall(GetAddOnMetadata, 4, 'Title')", 2), [false, "AddOn index must be in the range of 1 to 3"]);
+    const usage = 'Usage: GetAddOnMetadata(index or "name", "variable")';
+    assert.deepEqual(lua(boot, "return pcall(GetAddOnMetadata, 'Aaa')", 2), [false, usage]);
+    assert.deepEqual(lua(boot, "return pcall(GetAddOnMetadata, {}, 'Title')", 2), [false, usage]);
   } finally {
     boot.close();
   }

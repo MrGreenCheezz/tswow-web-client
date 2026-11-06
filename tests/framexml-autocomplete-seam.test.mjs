@@ -135,6 +135,45 @@ test("autoCompleteUseContext off ignores the flags; recency off sorts by name on
   assert.deepEqual([...noRecency.model.results(["", ALL, 0, 10])], ["Альфа", "Бета"]);
 });
 
+// 07.11 (3.18): the CVars' callbacks (0x00512830…0x00512870) keep SStrToInt(value) ≠ 0 (0x0076f0d0): an optional
+// minus and the leading digits; registered with "1" (0x0051d9b0). The live seam reads them through Lua's GetCVar.
+test("the three CVars are on when SStrToInt of the value is not zero, and the live seam reads Lua's GetCVar", async () => {
+  const world = makeWorld();
+  world.guildRoster.members.push(guildMember(0x80n, "Бета", true), guildMember(0x81n, "Альфа", true));
+  const contextFor = (value) => harness(world, { cvar: (name) => (name === "autoCompleteUseContext" ? value : undefined) });
+  const flagsIgnored = (value) => contextFor(value).model.results(["", FRIEND, IN_GUILD, 10]).length === 2;
+  for (const off of ["0", "true", " 1", "0.5", "", "x1"]) assert.equal(flagsIgnored(off), true, `${JSON.stringify(off)} is off`);
+  for (const on of ["1", "2", "-1", "1.5", "10x"]) assert.equal(flagsIgnored(on), false, `${JSON.stringify(on)} is on`);
+
+  const { LiveWorldSeam } = await import("../dist/code/browser/framexml/LiveWorldSeam.js");
+  const asked = [];
+  const seam = new LiveWorldSeam({
+    world: () => world, store: () => undefined, monotonic: () => 5,
+    luaCVar: (name) => { asked.push(name); return name === "autoCompleteUseContext" ? "0" : "1"; },
+  });
+  assert.deepEqual([...seam.autoComplete.results(["", FRIEND, IN_GUILD, 10])], ["Альфа", "Бета"],
+    "the seam's model took autoCompleteUseContext from Lua");
+  assert.ok(asked.includes("autoCompleteUseContext") && asked.includes("autoCompleteResortNamesOnRecency"));
+});
+
+test("Wow.exe registers the three autocomplete CVars with \"1\"", async () => {
+  const { GlueLuaVm } = await import("../dist/code/browser/glue/GlueLua.js");
+  const { FRAMEXML_NEUTRAL_PRELUDE } = await import("../dist/code/browser/framexml/FrameXmlNeutralApi.js");
+  const vm = new GlueLuaVm();
+  try {
+    vm.setGlobal("__fxNeutralImpl", {});
+    vm.setGlobal("__fxAddonModules", []);
+    assert.equal(vm.execute(FRAMEXML_NEUTRAL_PRELUDE, "@autocomplete:neutral").ok, true);
+    const fn = vm.compileFunction(
+      "local api = __fxNeutralImpl return api.GetCVar('autoCompleteResortNamesOnRecency'), "
+        + "api.GetCVar('AUTOCOMPLETEUSECONTEXT'), api.GetCVarDefault('autoCompleteWhenEditingFromCenter')",
+      "t", []);
+    assert.deepEqual(vm.call(fn, [], 3), ["1", "1", "1"]);
+  } finally {
+    vm.close();
+  }
+});
+
 test("a guild left is not read; the binding answers through the seam table", () => {
   let inGuild = true;
   const { world, model } = harness(makeWorld(), { inGuild: () => inGuild });

@@ -779,6 +779,7 @@ export class FrameXmlBoot {
       vm: this.vm,
       bridge: this.bridge,
       savedVariables: this.#savedVariables,
+      locale: options.locale ?? "ruRU", // 3.18 (07.11): Title-ruRU and the like
       ...(options.installedAddons === undefined ? {} : {
         loadOnDemand: options.installedAddons, installed: options.installedAddons, // 3.46: + the list's order
       }),

@@ -687,6 +687,9 @@ do
     -- "1". WatchFrame copies trackerFilter at VARIABLES_LOADED; unset, its filter kept no REMOTE_ZONES bit and the
     -- tracker listed only quests whose POI the current map placed — on most maps none.
     trackerfilter = "7", trackersorting = "0", watchframewidth = "0", autoquestwatch = "1", autoquestprogress = "1",
+    -- 07.11 (3.18): and the three of GetAutoCompleteResults with "1" (0x0051f2fa, 0x0051f320, 0x0051f343), which
+    -- FrameXmlAutoComplete.ts reads back through GetCVar.
+    autocompleteresortnamesonrecency = "1", autocompletewheneditingfromcenter = "1", autocompleteusecontext = "1",
     -- 11.10: and buffDurations with "1" (the string showClock and autoSelfCast share). The Buffs
     -- panel's box copies GetCVar into SHOW_BUFF_DURATIONS at login; unset, it copied nil and
     -- BuffFrame.lua:254 hid the time under every buff and debuff.

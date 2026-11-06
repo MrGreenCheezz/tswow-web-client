@@ -117,10 +117,20 @@ interface Whisper {
   online: boolean;
 }
 
+/**
+ * 07.11 (3.18): what the CVars' callbacks keep (Wow.exe 0x00512830…0x00512870): SStrToInt (0x0076f0d0) — an optional
+ * minus, then the leading digits, wrapping at 32 bits — not zero. "true", " 1" and "0.5" are off; absent, the
+ * registered "1".
+ */
 function truthyCvar(value: string | undefined): boolean {
   if (value === undefined) return true;
-  const number = Number(value);
-  return Number.isFinite(number) ? number !== 0 : value.length > 0;
+  let number = 0;
+  for (let index = value.startsWith("-") ? 1 : 0; index < value.length; index++) {
+    const digit = value.charCodeAt(index) - 48;
+    if (digit < 0 || digit > 9) break;
+    number = (Math.imul(number, 10) + digit) >>> 0;
+  }
+  return number !== 0;
 }
 
 function uint32(value: unknown): number | undefined {

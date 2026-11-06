@@ -555,6 +555,8 @@ export interface LiveWorldSeamContext {
   readonly reputationName?: (listId: number) => string | undefined;
   /** 06.11 (3.01): the booted VM's GlobalStrings; undefined before the boot. */
   readonly globalString?: (name: string) => string | undefined;
+  /** 07.11 (3.18): a CVar as Lua's GetCVar answers it (the settings rows, then the VM's map); undefined before the boot. */
+  readonly luaCVar?: (name: string) => string | undefined;
   /** 06.11 (3.12): the random property tables (ItemRandomProperties.ts); undefined until they land. */
   readonly randomTables?: () => ItemRandomTables | undefined;
   /** SkillLine/SkillLineCategory metadata; absent means this host has no skill rows yet. */
@@ -787,6 +789,8 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
       return player?.typeId !== TYPEID_PLAYER || (readField(player, "PLAYER_GUILDID") ?? 0) > 0;
     },
     now: () => this.#context.monotonic(),
+    // 07.11 (3.18): the three autoComplete* CVars as SetCVar left them (Wow.exe 0x00512830…0x00512870).
+    cvar: (name) => this.#context.luaCVar?.(name),
   });
   /** The stock BarberShopFrame C API over the chair and the player's appearance (FrameXmlBarber.ts). */
   readonly barber: FrameXmlBarberModel;
