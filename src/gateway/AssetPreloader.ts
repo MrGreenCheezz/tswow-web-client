@@ -14,7 +14,7 @@ import { LANE_QUIET_MS, lanesQuiet, sourceMissing, type GenerationLane } from ".
  *   `quietMs`);
  * - after a job, a pause of `duration × pace` — with the default pace of 1 the workers stand idle
  *   at least half the time, so the game on the same machine keeps its cores;
- * - at most `perMinute` jobs a minute and `perVisit` per visit (a visit ends with an idle stop);
+ * - at most `perMinute` jobs a minute and `perVisit` in any `visitWindowMs` of a visit (a visit ends with an idle stop);
  *   the newest tiles are walked first, and the queues are capped (oldest out);
  * - it stops when no tile has been served for `idleStopMs`, on `recycle()` (the archives changed)
  *   and on `close()`; three failures in a row pause it for `failurePauseMs`.
@@ -38,6 +38,12 @@ export interface AssetPreloaderOptions {
   perMinute?: number;
   /** Jobs per visit, which ends when no tile was served for `idleStopMs` (default 600). */
   perVisit?: number;
+  /**
+   * 06.11 (10.22): the span `perVisit` counts over (default 10 min). A visit lasts until an idle stop, which a player who
+   * keeps moving never makes: counted over the whole visit the budget ran out after five minutes of play and nothing
+   * was preloaded after it. Over a window it is at most half of `perMinute` for as long as the visit lasts.
+   */
+  visitWindowMs?: number;
   /** Pause after a job, as a multiple of its duration (default 1). */
   pace?: number;
   /** Stop when no tile was served for this long (default 60 s). */
@@ -85,6 +91,7 @@ export class AssetPreloader {
   readonly #now: () => number;
   readonly #perMinute: number;
   readonly #perVisit: number;
+  readonly #visitWindowMs: number;
   readonly #pace: number;
   readonly #idleStopMs: number;
   readonly #quietMs: number;
@@ -99,7 +106,8 @@ export class AssetPreloader {
   readonly #seenModels = new Set<string>();
   /** Start times of the jobs of the last minute. */
   readonly #starts: number[] = [];
-  #visitJobs = 0;
+  /** Start times of this visit's jobs within the last `visitWindowMs`. */
+  #visitStarts: number[] = [];
   #lastNoteAt = Number.NEGATIVE_INFINITY;
   #pausedUntil = 0;
   #failuresInRow = 0;
@@ -116,6 +124,7 @@ export class AssetPreloader {
     this.#now = options.now ?? Date.now;
     this.#perMinute = Math.max(1, options.perMinute ?? 120);
     this.#perVisit = Math.max(1, options.perVisit ?? 600);
+    this.#visitWindowMs = Math.max(1, options.visitWindowMs ?? 10 * MINUTE);
     this.#pace = Math.max(0, options.pace ?? 1);
     this.#idleStopMs = options.idleStopMs ?? MINUTE;
     this.#quietMs = options.quietMs ?? LANE_QUIET_MS;
@@ -132,7 +141,7 @@ export class AssetPreloader {
     // A visit is the span between two idle stops. Where the player stands cannot be read off one
     // request — the browser asks for every tile of its view radius in a burst — so a request drops
     // nothing; the newest tiles go first and the queues are capped instead.
-    if (now - this.#lastNoteAt >= this.#idleStopMs) this.#visitJobs = 0;
+    if (now - this.#lastNoteAt >= this.#idleStopMs) this.#visitStarts = [];
     this.#lastNoteAt = now;
     const fresh: QueuedTile[] = [];
     for (const [dx, dy] of [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, -1], [1, -1], [-1, 1]] as const) {
@@ -229,7 +238,8 @@ export class AssetPreloader {
       this.#report(now, true);
       return;
     }
-    if (this.#visitJobs >= this.#perVisit) {
+    while (this.#visitStarts.length > 0 && now - this.#visitStarts[0]! >= this.#visitWindowMs) this.#visitStarts.shift();
+    if (this.#visitStarts.length >= this.#perVisit) {
       this.#dropModels();
       this.#stats.dropped += this.#tiles.length;
       this.#tiles = [];
@@ -299,7 +309,7 @@ export class AssetPreloader {
   async #job(run: () => Promise<void>): Promise<number> {
     const started = this.#now();
     this.#starts.push(started);
-    this.#visitJobs++;
+    this.#visitStarts.push(started);
     try {
       await run();
       this.#failuresInRow = 0;

@@ -146,6 +146,27 @@ test("budget: at most perMinute jobs a minute, perVisit per neighbourhood", asyn
   }
 });
 
+// 06.11 (10.22): a visit lasts until an idle stop, which a player who keeps moving never makes. Counted over the
+// whole visit, the budget ran out once and nothing was preloaded for the rest of the session.
+test("a player who never stops still gets preloading: the visit budget counts over a window", async () => {
+  const { preloader, log, advance } = harness({
+    models: (map, x, y) => [`M${x}-${y}-a.m2`, `M${x}-${y}-b.m2`, `M${x}-${y}-c.m2`],
+    perVisit: 5, visitWindowMs: 60_000, perMinute: 1000, pace: 0,
+  });
+  const perMinute = [];
+  for (let minute = 0; minute < 3; minute++) {
+    const before = log.models.length;
+    for (let step = 0; step < 6; step++) {
+      preloader.noteTile(0, 10 + minute * 6 + step, 20);
+      await advance(10_000);
+    }
+    perMinute.push(log.models.length - before);
+  }
+  assert.ok(perMinute[2] > 0, `the third minute still publishes: ${perMinute}`);
+  assert.ok(perMinute.every((count) => count <= 5 + 3), `about the budget a window, never far past it: ${perMinute}`);
+  assert.ok(log.models.length > 5, `more than one visit budget in all: ${log.models.length}`);
+});
+
 test("the newest tiles go first and the queues are capped; recycle, close and an idle minute stop it", async () => {
   {
     const { preloader, log, advance } = harness({ models: (map, x, y) => [`M${x}-${y}.m2`] });
