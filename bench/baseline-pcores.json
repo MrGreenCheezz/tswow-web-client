@@ -1,9 +1,12 @@
 {
   "schemaVersion": 1,
-  "timestamp": "2026-09-20T10-22-26-361Z",
-  "label": "step5-pcores-baseline",
+  "timestamp": "2026-11-06T09-46-05-069Z",
+  "label": "baseline-2026-11-06",
   "smoke": false,
   "trace": false,
+  "diagnostic": false,
+  "captureAbba": false,
+  "heapProfileMode": null,
   "config": {
     "schemaVersion": 1,
     "seed": 12340,
@@ -57,11 +60,18 @@
     }
   },
   "configHash": "987c7c851653ca4eac7caa513d62360df37c8172232e99631e3ccacbf205ad00",
-  "sourceHash": "8135c443413b273e33d846251dcebac5e265351d2f5138058ea3533a6fad0759",
+  "sourceHash": "006037670af2e30250cc0a17cd62d91cc8e358bb3b2fd88224dd1887ec9c714c",
+  "bundle": {
+    "target": "es2022",
+    "env": "prod",
+    "names": "plain"
+  },
+  "renderBridge": "direct",
+  "mainLoad": false,
   "git": {
-    "head": "c1393aa079f4dc713bee90ec4280d836b53e5581",
-    "branch": "perf/optimization",
-    "dirty": true
+    "head": "97b6bc824cf8319c89b7faf0e6cb96b73ef2a424",
+    "branch": "main",
+    "dirty": false
   },
   "host": {
     "platform": "win32",
@@ -217,6 +227,9 @@
     }
   },
   "browser": {
+    "kind": "chrome",
+    "headed": false,
+    "vsync": false,
     "executablePath": "C:/Program Files/Google/Chrome/Application/chrome.exe",
     "args": [
       "--disable-frame-rate-limit",
@@ -225,7 +238,9 @@
       "--disable-backgrounding-occluded-windows",
       "--disable-renderer-backgrounding"
     ],
-    "version": "Chrome/153.0.8010.53"
+    "crossOriginIsolationHeaders": true,
+    "jsProfilingHeader": false,
+    "version": "Chrome/156.0.8078.81"
   },
   "scenarios": [
     {
@@ -266,8 +281,9 @@
         "evict",
         "submit"
       ],
+      "renderBridge": "direct",
       "hardware": {
-        "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/153.0.0.0 Safari/537.36",
+        "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.0.0 Safari/537.36",
         "hardwareConcurrency": 20,
         "gpu": "ANGLE (NVIDIA, NVIDIA GeForce RTX 5070 Ti (0x00002C05) Direct3D11 vs_5_0 ps_5_0, D3D11)",
         "webgl": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
@@ -277,24 +293,26 @@
           720
         ],
         "pixelRatio": 1,
-        "gpuTimerReason": null
+        "gpuTimerReason": null,
+        "crossOriginIsolated": true
       },
       "readiness": {
         "pending": 0,
         "errors": 0,
         "details": {
           "environment": {
-            "residentTiles": 16,
+            "residentTiles": 30,
             "knownMissingTiles": 0,
             "failedTiles": 0,
             "activeTiles": 0,
-            "residentObjects": 22681,
-            "residentModels": 251,
+            "residentObjects": 33578,
+            "residentModels": 204,
             "knownMissingModels": 0,
             "deferredModels": 0,
             "failedModels": 0,
             "queuedModels": 0,
             "activeModels": 0,
+            "modelLoadsStarted": 204,
             "queuedGroups": 0,
             "activeGroups": 0,
             "deferredGroups": 0,
@@ -304,8 +322,8 @@
             "deferredAnimations": 0,
             "queuedAnimations": 0,
             "activeAnimations": 0,
-            "modelDecodedTypedBackingBytes": 7649056,
-            "modelDecodedNumericArrayElements": 7374,
+            "modelDecodedTypedBackingBytes": 7575566,
+            "modelDecodedNumericArrayElements": 11680,
             "modelDecodedTypedBackingOverflowBytes": 0,
             "modelDecodedNumericArrayOverflowElements": 0,
             "animationDecodedTypedBackingBytes": 13709688,
@@ -322,16 +340,18 @@
             "resident": 16,
             "failed": 0,
             "active": 0,
-            "decodedLayerBytes": 9437184,
-            "layerRequestEntries": 36
+            "decodedLayerBytes": 18874368,
+            "layerRequestEntries": 72
           },
           "renderer": {
             "renderFrameActive": false,
-            "gpuQueriesPending": 2,
+            "gpuQueriesPending": 3,
             "modelTexturesPending": 0,
             "modelTexturesErrors": 0,
-            "modelTexturesGeneration": 250,
+            "modelTexturesGeneration": 174,
             "worldTexturesPending": 0,
+            "wmoGroupsPending": 0,
+            "terrainRepairsPending": 0,
             "worldTexturesErrors": 0,
             "worldTexturesGeneration": 130,
             "groundCoverModelsPending": 0,
@@ -357,204 +377,537 @@
             },
             "stale": 0,
             "samples": [],
-            "walked": true
-          }
+            "walked": true,
+            "environment": {
+              "total": 0,
+              "byReason": {
+                "pending": 0,
+                "hull": 0,
+                "missing": 0,
+                "failed": 0
+              },
+              "canopy": 0,
+              "samples": [],
+              "walked": true,
+              "tiles": {
+                "rejected": 0,
+                "truncated": 0,
+                "generator": 0
+              },
+              "retrying": {
+                "splat": 0,
+                "light": 0,
+                "horizon": 0
+              }
+            }
+          },
+          "knownMissingTextures": [],
+          "textureOtherFailures": 0
         }
       },
       "routeHeightMissing": 0,
+      "repeatedRafCallbacks": 0,
+      "load": {
+        "census": {
+          "calls": 304,
+          "triangles": 735344,
+          "mainDraws": 296,
+          "shadowDraws": 10,
+          "skinnedDraws": 15,
+          "instancedDraws": 65,
+          "instances": 20624,
+          "particleDraws": 2,
+          "particleQuads": 6,
+          "otherDraws": 214,
+          "scenes": 6
+        },
+        "castsPlayed": 0,
+        "lightPools": {
+          "picked": 0,
+          "drawn": 0,
+          "nearest": 0,
+          "farthest": 0,
+          "cut": 64,
+          "forward": 0,
+          "light": {
+            "ambient": [
+              0.28969359331476324,
+              0.362116991643454,
+              0.42896935933147634
+            ],
+            "diffuse": [
+              0.7103064066852368,
+              0.3788300835654596,
+              0
+            ],
+            "sun": [
+              0.33035042472810605,
+              0.9438583563660174,
+              1.155893114972125e-16
+            ],
+            "daylight": 1,
+            "immersive": 0.65,
+            "pool": 0
+          },
+          "census": {
+            "bin": 15,
+            "inView": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "forward": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "screen": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          }
+        }
+      },
       "telemetry": {
         "cpu": {
           "count": 120,
-          "average": 7.021666662891706,
-          "worst": 21.899999976158142,
+          "average": 3.9725000028808912,
+          "worst": 9.635000050067902,
           "longFrames": 0,
-          "p50": 6.399999976158142,
-          "p95": 12,
-          "p99": 16
+          "p50": 3.560000002384186,
+          "p95": 6.155000030994415,
+          "p99": 9.180000007152557
         },
         "gpu": {
-          "pending": 2,
-          "dropped": 4,
+          "pending": 3,
+          "dropped": 67,
           "count": 120,
-          "average": 1.8839810666666645,
-          "worst": 4.221504,
+          "average": 2.1682295999999996,
+          "worst": 4.337216,
           "longFrames": 0,
-          "p50": 1.835808,
-          "p95": 2.538432,
-          "p99": 3.817984,
+          "p50": 2.028544,
+          "p95": 3.646432,
+          "p99": 4.193696,
           "status": "available",
-          "milliseconds": 1.589312
+          "milliseconds": 2.690368
         },
         "observedFps": 0,
-        "drawCalls": 282,
-        "triangles": 651451,
+        "drawCalls": 304,
+        "triangles": 735344,
         "unitsDrawn": 10,
         "unitsDropped": 0,
         "gameObjectsDrawn": 0,
         "gameObjectsDropped": 0,
-        "effectsDrawn": 0,
+        "effectsDrawn": 3,
         "effectsDropped": 0,
         "groundCoverDrawn": 20000,
         "groundCoverSelected": 20000,
-        "groundCoverSelectionDroppedCells": 779,
+        "groundCoverSelectionDroppedCells": 796,
         "groundCoverResidentMeshes": 11,
-        "wmoPortalModels": 0,
-        "wmoPortalCandidates": 0,
+        "wmoPortalModels": 4,
+        "wmoPortalCandidates": 7,
         "wmoPortalCulled": 0,
-        "textureCount": 286,
-        "geometryCount": 122
+        "textureCount": 253,
+        "geometryCount": 122,
+        "animationLod": {
+          "near": 9,
+          "medium": 0,
+          "far": 0,
+          "critical": 1,
+          "full": 10,
+          "flat": 10,
+          "skipped": 0,
+          "doodadsPosed": 0
+        },
+        "wmoRange": {
+          "groups": {
+            "selects": 42733,
+            "recomputes": 11
+          },
+          "openAir": {
+            "selects": 23028,
+            "recomputes": 10
+          }
+        }
+      },
+      "wmoRangeAtStart": {
+        "groups": {
+          "selects": 6484,
+          "recomputes": 3
+        },
+        "openAir": {
+          "selects": 2,
+          "recomputes": 2
+        }
+      },
+      "poseWorker": {
+        "jobs": 57460,
+        "worker": 57448,
+        "stolen": 11,
+        "overridden": 1,
+        "waitMs": 1.490000069141388,
+        "mainMs": 1.0550000667572021,
+        "frames": 5746,
+        "workersReady": 1
+      },
+      "shadowCascadesAtStart": {
+        "cascades": [
+          {
+            "mapSize": 512,
+            "extent": 45,
+            "texel": 0.17578125,
+            "rendered": true,
+            "drawCalls": 0,
+            "cpuMs": 0.019999980926513672,
+            "renders": 2197,
+            "cpuMsTotal": 40.179999470710754,
+            "cpuMsMax": 2.425000011920929,
+            "drawCallsTotal": 0
+          },
+          {
+            "mapSize": 1024,
+            "extent": 136,
+            "texel": 0.265625,
+            "rendered": false,
+            "drawCalls": 0,
+            "cpuMs": 0.004999995231628418,
+            "renders": 6,
+            "cpuMsTotal": 0.5550000071525574,
+            "cpuMsMax": 0.39000004529953003,
+            "drawCallsTotal": 0
+          }
+        ],
+        "frames": 2197,
+        "shadowOnlyOwners": 0,
+        "farReasons": {
+          "dirty": 1,
+          "extent": 0,
+          "offset": 0,
+          "sun": 1,
+          "interval": 4
+        }
+      },
+      "shadowCascades": {
+        "cascades": [
+          {
+            "mapSize": 512,
+            "extent": 45,
+            "texel": 0.17578125,
+            "rendered": true,
+            "drawCalls": 10,
+            "cpuMs": 0.14500004053115845,
+            "renders": 7943,
+            "cpuMsTotal": 674.4000036716461,
+            "cpuMsMax": 2.425000011920929,
+            "drawCallsTotal": 56440
+          },
+          {
+            "mapSize": 1024,
+            "extent": 136,
+            "texel": 0.265625,
+            "rendered": false,
+            "drawCalls": 0,
+            "cpuMs": 0.009999990463256836,
+            "renders": 52,
+            "cpuMsTotal": 0.8150001168251038,
+            "cpuMsMax": 0.39000004529953003,
+            "drawCallsTotal": 0
+          }
+        ],
+        "frames": 7943,
+        "shadowOnlyOwners": 0,
+        "farReasons": {
+          "dirty": 1,
+          "extent": 0,
+          "offset": 45,
+          "sun": 1,
+          "interval": 5
+        }
+      },
+      "benchStartEpochMs": 1793958438072.01,
+      "hostLoad": {
+        "preflight": {
+          "elapsedSeconds": 2.1571876999999997,
+          "externalCpuCores": 0.9603835541423191
+        },
+        "before": {
+          "elapsedSeconds": 2.1546118,
+          "externalCpuCores": 0.9603317216246107
+        },
+        "after": {
+          "elapsedSeconds": 2.1503652,
+          "externalCpuCores": 0.9621503058699877
+        }
+      },
+      "runRequests": {
+        "count": 254,
+        "unique": 254,
+        "repeats": 0,
+        "bytes": 24309573,
+        "byRoute": {
+          "/liquid": {
+            "count": 2,
+            "unique": 2,
+            "repeats": 0,
+            "bytes": 3394086
+          },
+          "/terrain": {
+            "count": 12,
+            "unique": 12,
+            "repeats": 0,
+            "bytes": 1007412
+          },
+          "/terrain-layer": {
+            "count": 46,
+            "unique": 46,
+            "repeats": 0,
+            "bytes": 3247872
+          },
+          "/terrain-splat": {
+            "count": 23,
+            "unique": 23,
+            "repeats": 0,
+            "bytes": 7521334
+          },
+          "/texture": {
+            "count": 74,
+            "unique": 74,
+            "repeats": 0,
+            "bytes": 3511886
+          },
+          "/visual/environment": {
+            "count": 7,
+            "unique": 7,
+            "repeats": 0,
+            "bytes": 2451260
+          },
+          "/visual/model": {
+            "count": 56,
+            "unique": 56,
+            "repeats": 0,
+            "bytes": 621294
+          },
+          "/visual/texture": {
+            "count": 34,
+            "unique": 34,
+            "repeats": 0,
+            "bytes": 2554429
+          }
+        }
       },
       "summary": {
-        "averageFps": 133.51929056317053,
-        "onePercentLowFps": 30.90305596886839,
-        "p99FrameMs": 22.700000000000728,
-        "framesOver30Ms": 4,
-        "frameCount": 2671,
-        "measuredSeconds": 20.0046,
+        "averageFps": 287.2298221049974,
+        "onePercentLowFps": 80.22906782122767,
+        "p99FrameMs": 8.905000000000655,
+        "framesOver30Ms": 1,
+        "frameCount": 5745,
+        "measuredSeconds": 20.001405,
         "frameMs": {
-          "count": 2671,
-          "mean": 7.48955447397978,
-          "p50": 6.69999999999709,
-          "p99": 22.700000000000728,
-          "max": 127.60000000000036
+          "count": 5745,
+          "mean": 3.481532637075714,
+          "p50": 3.1450000000004366,
+          "p99": 8.905000000000655,
+          "max": 31.82499999999891
         },
         "cpuMs": {
-          "count": 2671,
-          "mean": 7.085174092502015,
-          "p50": 6.300000071525574,
-          "p99": 17.300000071525574,
-          "max": 123.79999995231628
+          "count": 5745,
+          "mean": 3.1680722370367658,
+          "p50": 2.8700000047683716,
+          "p99": 8.164999961853027,
+          "max": 18.3400000333786
         },
         "gpuMs": {
-          "count": 2666,
-          "mean": 1.9698701995498913,
-          "p50": 1.795392,
-          "p99": 5.276224,
-          "max": 104.46384
+          "count": 5677,
+          "mean": 1.7275951720979354,
+          "p50": 1.558976,
+          "p99": 4.958848,
+          "max": 40.274944
         },
         "rendererInfo": {
           "calls": {
-            "count": 2671,
-            "mean": 228.16847622613253,
-            "p50": 220,
-            "p99": 310,
-            "max": 315
+            "count": 5745,
+            "mean": 239.88651000870323,
+            "p50": 242,
+            "p99": 342,
+            "max": 349
           },
           "triangles": {
-            "count": 2671,
-            "mean": 671636.4807188319,
-            "p50": 669324,
-            "p99": 792068,
-            "max": 792168
+            "count": 5745,
+            "mean": 745502.6459530026,
+            "p50": 737236,
+            "p99": 880487,
+            "max": 881051
           },
           "programs": {
-            "count": 2671,
-            "mean": 46.32272557094721,
-            "p50": 46,
-            "p99": 50,
-            "max": 50
+            "count": 5745,
+            "mean": 73.98259355961706,
+            "p50": 74,
+            "p99": 74,
+            "max": 74
           },
           "geometries": {
-            "count": 2671,
-            "mean": 89.71321602396107,
-            "p50": 88,
-            "p99": 122,
+            "count": 5745,
+            "mean": 96.55996518711923,
+            "p50": 102,
+            "p99": 120,
             "max": 122
           },
           "textures": {
-            "count": 2671,
-            "mean": 190.0325720703856,
-            "p50": 178,
-            "p99": 286,
-            "max": 286
+            "count": 5745,
+            "mean": 204.30896431679722,
+            "p50": 218,
+            "p99": 251,
+            "max": 253
           }
         },
-        "peakJsHeapBytes": 313063370,
+        "peakJsHeapBytes": 276413814,
         "phasesMs": {
           "query": {
-            "count": 2671,
-            "mean": 0.052152752251448324,
-            "p50": 0,
-            "p99": 0.20000004768371582,
-            "max": 3.600000023841858
+            "count": 5745,
+            "mean": 0.04437684974429709,
+            "p50": 0.029999971389770508,
+            "p99": 0.125,
+            "max": 4.7700000405311584
           },
           "setup": {
-            "count": 2671,
-            "mean": 0.022238861929830295,
-            "p50": 0,
-            "p99": 0.10000002384185791,
-            "max": 1.2999999523162842
+            "count": 5745,
+            "mean": 0.020672759343687612,
+            "p50": 0.01500004529953003,
+            "p99": 0.07499998807907104,
+            "max": 0.38999998569488525
           },
           "terrain": {
-            "count": 2671,
-            "mean": 0.15511044595447743,
-            "p50": 0,
-            "p99": 1.7000000476837158,
-            "max": 18.700000047683716
+            "count": 5745,
+            "mean": 0.08277371536658265,
+            "p50": 0.04000002145767212,
+            "p99": 1.6100000143051147,
+            "max": 5.004999995231628
           },
           "env": {
-            "count": 2671,
-            "mean": 1.6517783593970798,
-            "p50": 1.6999999284744263,
-            "p99": 5.800000071525574,
-            "max": 16.5
+            "count": 5745,
+            "mean": 0.6434308098543199,
+            "p50": 0.5699999928474426,
+            "p99": 3.7049999833106995,
+            "max": 8.955000042915344
           },
           "ground": {
-            "count": 2671,
-            "mean": 0.16375889197042132,
+            "count": 5745,
+            "mean": 0.04148302852225574,
             "p50": 0,
-            "p99": 4.5,
-            "max": 13.799999952316284
+            "p99": 2.100000023841858,
+            "max": 11.125
           },
           "objects": {
-            "count": 2671,
-            "mean": 0.012280044864510294,
-            "p50": 0,
-            "p99": 0.10000002384185791,
-            "max": 0.19999992847442627
+            "count": 5745,
+            "mean": 0.003738033211262357,
+            "p50": 0.004999995231628418,
+            "p99": 0.014999985694885254,
+            "max": 0.050000011920928955
           },
           "units": {
-            "count": 2671,
-            "mean": 1.0920628972465918,
-            "p50": 1,
-            "p99": 2.5,
-            "max": 5.899999976158142
+            "count": 5745,
+            "mean": 0.14126892901172422,
+            "p50": 0.125,
+            "p99": 0.39499998092651367,
+            "max": 3.2700000405311584
           },
           "visuals": {
-            "count": 2671,
-            "mean": 0.11688506250656397,
-            "p50": 0.10000002384185791,
-            "p99": 0.30000007152557373,
-            "max": 1.7999999523162842
+            "count": 5745,
+            "mean": 0.16849956521788714,
+            "p50": 0.1549999713897705,
+            "p99": 0.42000001668930054,
+            "max": 5.615000009536743
           },
           "warm": {
-            "count": 2671,
-            "mean": 0.016286035148180722,
-            "p50": 0,
-            "p99": 0.3999999761581421,
-            "max": 1.399999976158142
+            "count": 5745,
+            "mean": 0.010868581457694164,
+            "p50": 0.004999995231628418,
+            "p99": 0.23000001907348633,
+            "max": 2.7100000381469727
           },
           "evict": {
-            "count": 2671,
-            "mean": 0.19955072988512274,
-            "p50": 0.20000004768371582,
-            "p99": 0.5,
-            "max": 6
+            "count": 5745,
+            "mean": 0.0550200174330005,
+            "p50": 0.0549999475479126,
+            "p99": 0.125,
+            "max": 0.8849999904632568
           },
           "submit": {
-            "count": 2671,
-            "mean": 3.5408086851713407,
-            "p50": 3.200000047683716,
-            "p99": 8.199999928474426,
-            "max": 117.89999997615814
+            "count": 5745,
+            "mean": 1.8803751087790472,
+            "p50": 1.7649999856948853,
+            "p99": 3.869999945163727,
+            "max": 8.84500002861023
           }
+        }
+      },
+      "wmoRange": {
+        "selects": 59275,
+        "recomputes": 16,
+        "recomputesPerFrame": 0.00278503046127067,
+        "groups": {
+          "selects": 36249,
+          "recomputes": 8
+        },
+        "openAir": {
+          "selects": 23026,
+          "recomputes": 8
+        }
+      },
+      "shadowCascadeSummary": {
+        "cascades": [
+          {
+            "renders": 5746,
+            "rendersPerMinute": 17236.789115564632,
+            "cpuMsPerRender": 0.11037591441018715,
+            "drawCallsPerRender": 9.822485207100591,
+            "cpuMsPerFrame": 0.11039512692792608,
+            "cpuMsMaxSinceConfigure": 2.425000011920929
+          },
+          {
+            "renders": 46,
+            "rendersPerMinute": 137.99030618099079,
+            "cpuMsPerRender": 0.005652176297229269,
+            "drawCallsPerRender": 0,
+            "cpuMsPerFrame": 0.000045256764085734796,
+            "cpuMsMaxSinceConfigure": 0.39000004529953003
+          }
+        ],
+        "farReasons": {
+          "dirty": 0,
+          "extent": 0,
+          "offset": 45,
+          "sun": 0,
+          "interval": 1
         }
       },
       "prepared": {
         "scenario": "movement",
         "count": 10,
         "hardware": {
-          "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/153.0.0.0 Safari/537.36",
+          "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.0.0 Safari/537.36",
           "hardwareConcurrency": 20,
           "gpu": "ANGLE (NVIDIA, NVIDIA GeForce RTX 5070 Ti (0x00002C05) Direct3D11 vs_5_0 ps_5_0, D3D11)",
           "webgl": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
@@ -564,24 +917,26 @@
             720
           ],
           "pixelRatio": 1,
-          "gpuTimerReason": null
+          "gpuTimerReason": null,
+          "crossOriginIsolated": true
         },
         "readiness": {
           "pending": 0,
           "errors": 0,
           "details": {
             "environment": {
-              "residentTiles": 15,
+              "residentTiles": 23,
               "knownMissingTiles": 0,
               "failedTiles": 0,
               "activeTiles": 0,
-              "residentObjects": 21764,
-              "residentModels": 189,
+              "residentObjects": 25682,
+              "residentModels": 148,
               "knownMissingModels": 0,
               "deferredModels": 0,
               "failedModels": 0,
               "queuedModels": 0,
               "activeModels": 0,
+              "modelLoadsStarted": 148,
               "queuedGroups": 0,
               "activeGroups": 0,
               "deferredGroups": 0,
@@ -591,8 +946,8 @@
               "deferredAnimations": 0,
               "queuedAnimations": 0,
               "activeAnimations": 0,
-              "modelDecodedTypedBackingBytes": 6206492,
-              "modelDecodedNumericArrayElements": 6680,
+              "modelDecodedTypedBackingBytes": 6969158,
+              "modelDecodedNumericArrayElements": 10700,
               "modelDecodedTypedBackingOverflowBytes": 0,
               "modelDecodedNumericArrayOverflowElements": 0,
               "animationDecodedTypedBackingBytes": 13709688,
@@ -609,18 +964,20 @@
               "resident": 9,
               "failed": 0,
               "active": 0,
-              "decodedLayerBytes": 3407872,
-              "layerRequestEntries": 13
+              "decodedLayerBytes": 6815744,
+              "layerRequestEntries": 26
             },
             "renderer": {
               "renderFrameActive": false,
               "gpuQueriesPending": 2,
               "modelTexturesPending": 0,
               "modelTexturesErrors": 0,
-              "modelTexturesGeneration": 174,
+              "modelTexturesGeneration": 95,
               "worldTexturesPending": 0,
+              "wmoGroupsPending": 0,
+              "terrainRepairsPending": 0,
               "worldTexturesErrors": 0,
-              "worldTexturesGeneration": 0,
+              "worldTexturesGeneration": 54,
               "groundCoverModelsPending": 0,
               "transientVisuals": 0,
               "persistentStateVisuals": 0,
@@ -644,7 +1001,134 @@
               },
               "stale": 0,
               "samples": [],
-              "walked": true
+              "walked": true,
+              "environment": {
+                "total": 0,
+                "byReason": {
+                  "pending": 0,
+                  "hull": 0,
+                  "missing": 0,
+                  "failed": 0
+                },
+                "canopy": 0,
+                "samples": [],
+                "walked": true,
+                "tiles": {
+                  "rejected": 0,
+                  "truncated": 0,
+                  "generator": 0
+                },
+                "retrying": {
+                  "splat": 0,
+                  "light": 0,
+                  "horizon": 0
+                }
+              }
+            },
+            "knownMissingTextures": [],
+            "textureOtherFailures": 0
+          }
+        },
+        "firstSettle": {
+          "atMs": 3955.7450000047684,
+          "ms": 3326.6700000166893,
+          "frames": 210
+        },
+        "requests": {
+          "count": 440,
+          "unique": 440,
+          "repeats": 0,
+          "bytes": 53975572,
+          "byRoute": {
+            "/dbc/creature-models": {
+              "count": 1,
+              "unique": 1,
+              "repeats": 0,
+              "bytes": 865
+            },
+            "/dbc/ground-effects": {
+              "count": 1,
+              "unique": 1,
+              "repeats": 0,
+              "bytes": 84714
+            },
+            "/dbc/light": {
+              "count": 1,
+              "unique": 1,
+              "repeats": 0,
+              "bytes": 186637
+            },
+            "/dbc/liquid-types": {
+              "count": 1,
+              "unique": 1,
+              "repeats": 0,
+              "bytes": 9789
+            },
+            "/horizon": {
+              "count": 2,
+              "unique": 2,
+              "repeats": 0,
+              "bytes": 1046923
+            },
+            "/liquid": {
+              "count": 2,
+              "unique": 2,
+              "repeats": 0,
+              "bytes": 2658282
+            },
+            "/minimap": {
+              "count": 1,
+              "unique": 1,
+              "repeats": 0,
+              "bytes": 29582
+            },
+            "/terrain": {
+              "count": 24,
+              "unique": 24,
+              "repeats": 0,
+              "bytes": 2256824
+            },
+            "/terrain-layer": {
+              "count": 26,
+              "unique": 26,
+              "repeats": 0,
+              "bytes": 2053717
+            },
+            "/terrain-splat": {
+              "count": 28,
+              "unique": 28,
+              "repeats": 0,
+              "bytes": 9403811
+            },
+            "/texture": {
+              "count": 153,
+              "unique": 153,
+              "repeats": 0,
+              "bytes": 9667881
+            },
+            "/visual/animations": {
+              "count": 1,
+              "unique": 1,
+              "repeats": 0,
+              "bytes": 9834588
+            },
+            "/visual/environment": {
+              "count": 23,
+              "unique": 23,
+              "repeats": 0,
+              "bytes": 8557118
+            },
+            "/visual/model": {
+              "count": 149,
+              "unique": 149,
+              "repeats": 0,
+              "bytes": 6554993
+            },
+            "/visual/texture": {
+              "count": 27,
+              "unique": 27,
+              "repeats": 0,
+              "bytes": 1629848
             }
           }
         }
@@ -655,6 +1139,7 @@
         "movement-1.png"
       ],
       "pageErrors": [],
+      "screenshotPolicy": "after-measurement-v1",
       "cacheMisses": 0,
       "measurementCacheMisses": 0
     },
@@ -678,8 +1163,9 @@
         "animation",
         "submit"
       ],
+      "renderBridge": "direct",
       "hardware": {
-        "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/153.0.0.0 Safari/537.36",
+        "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.0.0 Safari/537.36",
         "hardwareConcurrency": 20,
         "gpu": "ANGLE (NVIDIA, NVIDIA GeForce RTX 5070 Ti (0x00002C05) Direct3D11 vs_5_0 ps_5_0, D3D11)",
         "webgl": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
@@ -689,7 +1175,8 @@
           720
         ],
         "pixelRatio": 1,
-        "gpuTimerReason": null
+        "gpuTimerReason": null,
+        "crossOriginIsolated": true
       },
       "readiness": {
         "pending": 0,
@@ -701,95 +1188,129 @@
         }
       },
       "routeHeightMissing": 0,
+      "repeatedRafCallbacks": 0,
+      "load": {
+        "census": null,
+        "castsPlayed": 0,
+        "lightPools": null
+      },
       "telemetry": null,
+      "wmoRangeAtStart": null,
+      "poseWorker": null,
+      "shadowCascadesAtStart": null,
+      "shadowCascades": null,
+      "benchStartEpochMs": 1793958473550.835,
+      "hostLoad": {
+        "preflight": {
+          "elapsedSeconds": 2.1541166,
+          "externalCpuCores": 1.440543787993442
+        },
+        "before": {
+          "elapsedSeconds": 2.1546514,
+          "externalCpuCores": 0.9605923242813676
+        },
+        "after": {
+          "elapsedSeconds": 2.154238,
+          "externalCpuCores": 0.9614884918721291
+        }
+      },
+      "runRequests": {
+        "count": 0,
+        "unique": 0,
+        "repeats": 0,
+        "bytes": 0,
+        "byRoute": {}
+      },
       "summary": {
-        "averageFps": 1064.1287174256415,
-        "onePercentLowFps": 319.3403298350816,
-        "p99FrameMs": 2.6999999999970896,
+        "averageFps": 1298.4230577215585,
+        "onePercentLowFps": 439.4155772822136,
+        "p99FrameMs": 1.735000000000582,
         "framesOver30Ms": 0,
-        "frameCount": 21283,
-        "measuredSeconds": 20.0004,
+        "frameCount": 25969,
+        "measuredSeconds": 20.000415,
         "frameMs": {
-          "count": 21283,
-          "mean": 0.9397359394822247,
-          "p50": 0.8999999999978172,
-          "p99": 2.6999999999970896,
-          "max": 5.700000000000728
+          "count": 25969,
+          "mean": 0.7701650044283532,
+          "p50": 0.6899999999986903,
+          "p99": 1.735000000000582,
+          "max": 5.194999999999709
         },
         "cpuMs": {
-          "count": 21283,
-          "mean": 0.7194427476701994,
-          "p50": 0.6999999284744263,
-          "p99": 1.9000000953674316,
-          "max": 3.6999999284744263
+          "count": 25969,
+          "mean": 0.5381682003699818,
+          "p50": 0.48000001907348633,
+          "p99": 1.2350000143051147,
+          "max": 4.215000033378601
         },
         "gpuMs": {
-          "count": 20773,
-          "mean": 0.10713236913300904,
-          "p50": 0.103168,
-          "p99": 0.163776,
-          "max": 1.71728
+          "count": 25691,
+          "mean": 0.11631412588065945,
+          "p50": 0.101632,
+          "p99": 0.548032,
+          "max": 2.326688
         },
         "rendererInfo": {
           "calls": {
-            "count": 21283,
-            "mean": 40,
-            "p50": 40,
-            "p99": 40,
-            "max": 40
+            "count": 25969,
+            "mean": 30,
+            "p50": 30,
+            "p99": 30,
+            "max": 30
           },
           "triangles": {
-            "count": 21283,
+            "count": 25969,
             "mean": 64540,
             "p50": 64540,
             "p99": 64540,
             "max": 64540
           },
           "programs": {
-            "count": 21283,
+            "count": 25969,
             "mean": 2,
             "p50": 2,
             "p99": 2,
             "max": 2
           },
           "geometries": {
-            "count": 21283,
+            "count": 25969,
             "mean": 1,
             "p50": 1,
             "p99": 1,
             "max": 1
           },
           "textures": {
-            "count": 21283,
+            "count": 25969,
             "mean": 14,
             "p50": 14,
             "p99": 14,
             "max": 14
           }
         },
-        "peakJsHeapBytes": 88964489,
+        "peakJsHeapBytes": 94340282,
         "phasesMs": {
           "animation": {
-            "count": 21283,
-            "mean": 0.22449842609140605,
-            "p50": 0.20000004768371582,
+            "count": 25969,
+            "mean": 0.23964553899514193,
+            "p50": 0.2149999737739563,
             "p99": 0.6000000238418579,
-            "max": 1.8000000715255737
+            "max": 1.725000023841858
           },
           "submit": {
-            "count": 21283,
-            "mean": 0.47568012015944905,
-            "p50": 0.40000009536743164,
-            "p99": 1.2999999523162842,
-            "max": 2.799999952316284
+            "count": 25969,
+            "mean": 0.2787625629160345,
+            "p50": 0.25,
+            "p99": 0.6399999856948853,
+            "max": 2.649999976158142
           }
         }
       },
+      "wmoRange": null,
+      "shadowCascadeSummary": null,
       "prepared": {
         "scenario": "crowd-10",
         "count": 10,
         "hardware": {
-          "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/153.0.0.0 Safari/537.36",
+          "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.0.0 Safari/537.36",
           "hardwareConcurrency": 20,
           "gpu": "ANGLE (NVIDIA, NVIDIA GeForce RTX 5070 Ti (0x00002C05) Direct3D11 vs_5_0 ps_5_0, D3D11)",
           "webgl": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
@@ -799,7 +1320,8 @@
             720
           ],
           "pixelRatio": 1,
-          "gpuTimerReason": null
+          "gpuTimerReason": null,
+          "crossOriginIsolated": true
         },
         "readiness": {
           "pending": 0,
@@ -809,6 +1331,43 @@
             "bonesPerUnit": 228,
             "trianglesPerUnit": 6454
           }
+        },
+        "firstSettle": {
+          "atMs": 1017.5699999928474,
+          "ms": 233.25499999523163,
+          "frames": 60
+        },
+        "requests": {
+          "count": 11,
+          "unique": 11,
+          "repeats": 0,
+          "bytes": 12113175,
+          "byRoute": {
+            "/dbc/creature-models": {
+              "count": 1,
+              "unique": 1,
+              "repeats": 0,
+              "bytes": 865
+            },
+            "/texture": {
+              "count": 8,
+              "unique": 8,
+              "repeats": 0,
+              "bytes": 611971
+            },
+            "/visual/animations": {
+              "count": 1,
+              "unique": 1,
+              "repeats": 0,
+              "bytes": 9834588
+            },
+            "/visual/model": {
+              "count": 1,
+              "unique": 1,
+              "repeats": 0,
+              "bytes": 1665751
+            }
+          }
         }
       },
       "screenshots": [
@@ -816,6 +1375,7 @@
         "crowd-10-1.png"
       ],
       "pageErrors": [],
+      "screenshotPolicy": "after-measurement-v1",
       "cacheMisses": 0,
       "measurementCacheMisses": 0
     },
@@ -839,8 +1399,9 @@
         "animation",
         "submit"
       ],
+      "renderBridge": "direct",
       "hardware": {
-        "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/153.0.0.0 Safari/537.36",
+        "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.0.0 Safari/537.36",
         "hardwareConcurrency": 20,
         "gpu": "ANGLE (NVIDIA, NVIDIA GeForce RTX 5070 Ti (0x00002C05) Direct3D11 vs_5_0 ps_5_0, D3D11)",
         "webgl": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
@@ -850,7 +1411,8 @@
           720
         ],
         "pixelRatio": 1,
-        "gpuTimerReason": null
+        "gpuTimerReason": null,
+        "crossOriginIsolated": true
       },
       "readiness": {
         "pending": 0,
@@ -862,95 +1424,129 @@
         }
       },
       "routeHeightMissing": 0,
+      "repeatedRafCallbacks": 0,
+      "load": {
+        "census": null,
+        "castsPlayed": 0,
+        "lightPools": null
+      },
       "telemetry": null,
+      "wmoRangeAtStart": null,
+      "poseWorker": null,
+      "shadowCascadesAtStart": null,
+      "shadowCascades": null,
+      "benchStartEpochMs": 1793958507835.68,
+      "hostLoad": {
+        "preflight": {
+          "elapsedSeconds": 2.1548867,
+          "externalCpuCores": 0.9617269692718136
+        },
+        "before": {
+          "elapsedSeconds": 2.157496,
+          "externalCpuCores": 0.959327810515106
+        },
+        "after": {
+          "elapsedSeconds": 2.1470374,
+          "externalCpuCores": 0.48090383760300603
+        }
+      },
+      "runRequests": {
+        "count": 0,
+        "unique": 0,
+        "repeats": 0,
+        "bytes": 0,
+        "byRoute": {}
+      },
       "summary": {
-        "averageFps": 125.37367152897903,
-        "onePercentLowFps": 69.83615363953729,
-        "p99FrameMs": 13.299999999999272,
+        "averageFps": 245.62537605605115,
+        "onePercentLowFps": 118.02195208308603,
+        "p99FrameMs": 6.68999999999869,
         "framesOver30Ms": 0,
-        "frameCount": 2508,
-        "measuredSeconds": 20.004199999999997,
+        "frameCount": 4913,
+        "measuredSeconds": 20.002005,
         "frameMs": {
-          "count": 2508,
-          "mean": 7.976156299840503,
-          "p50": 7.599999999998545,
-          "p99": 13.299999999999272,
-          "max": 16.299999999999272
+          "count": 4913,
+          "mean": 4.071240586199865,
+          "p50": 3.8699999999989814,
+          "p99": 6.68999999999869,
+          "max": 15.31500000000051
         },
         "cpuMs": {
-          "count": 2508,
-          "mean": 7.463676236510467,
-          "p50": 7.100000023841858,
-          "p99": 12.300000071525574,
-          "max": 15.5
+          "count": 4913,
+          "mean": 3.6226175445634867,
+          "p50": 3.4300000071525574,
+          "p99": 5.935000002384186,
+          "max": 13.115000009536743
         },
         "gpuMs": {
-          "count": 2508,
-          "mean": 0.6271429537480073,
-          "p50": 0.56336,
-          "p99": 1.798336,
-          "max": 2.218368
+          "count": 4912,
+          "mean": 0.6282097915309441,
+          "p50": 0.540352,
+          "p99": 1.767264,
+          "max": 1.994816
         },
         "rendererInfo": {
           "calls": {
-            "count": 2508,
-            "mean": 200,
-            "p50": 200,
-            "p99": 200,
-            "max": 200
+            "count": 4913,
+            "mean": 150,
+            "p50": 150,
+            "p99": 150,
+            "max": 150
           },
           "triangles": {
-            "count": 2508,
+            "count": 4913,
             "mean": 322700,
             "p50": 322700,
             "p99": 322700,
             "max": 322700
           },
           "programs": {
-            "count": 2508,
+            "count": 4913,
             "mean": 2,
             "p50": 2,
             "p99": 2,
             "max": 2
           },
           "geometries": {
-            "count": 2508,
+            "count": 4913,
             "mean": 1,
             "p50": 1,
             "p99": 1,
             "max": 1
           },
           "textures": {
-            "count": 2508,
+            "count": 4913,
             "mean": 54,
             "p50": 54,
             "p99": 54,
             "max": 54
           }
         },
-        "peakJsHeapBytes": 115504743,
+        "peakJsHeapBytes": 119674054,
         "phasesMs": {
           "animation": {
-            "count": 2508,
-            "mean": 2.5025518344539965,
-            "p50": 2.399999976158142,
-            "p99": 4.300000071525574,
-            "max": 7.5
+            "count": 4913,
+            "mean": 1.6273814366981403,
+            "p50": 1.550000011920929,
+            "p99": 2.6800000071525574,
+            "max": 5.340000033378601
           },
           "submit": {
-            "count": 2508,
-            "mean": 4.906419457383513,
-            "p50": 4.600000023841858,
-            "p99": 8.799999952316284,
-            "max": 12.299999952316284
+            "count": 4913,
+            "mean": 1.9524150208691193,
+            "p50": 1.840000033378601,
+            "p99": 3.4850000143051147,
+            "max": 7.574999988079071
           }
         }
       },
+      "wmoRange": null,
+      "shadowCascadeSummary": null,
       "prepared": {
         "scenario": "crowd-50",
         "count": 50,
         "hardware": {
-          "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/153.0.0.0 Safari/537.36",
+          "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.0.0 Safari/537.36",
           "hardwareConcurrency": 20,
           "gpu": "ANGLE (NVIDIA, NVIDIA GeForce RTX 5070 Ti (0x00002C05) Direct3D11 vs_5_0 ps_5_0, D3D11)",
           "webgl": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
@@ -960,7 +1556,8 @@
             720
           ],
           "pixelRatio": 1,
-          "gpuTimerReason": null
+          "gpuTimerReason": null,
+          "crossOriginIsolated": true
         },
         "readiness": {
           "pending": 0,
@@ -970,6 +1567,43 @@
             "bonesPerUnit": 228,
             "trianglesPerUnit": 6454
           }
+        },
+        "firstSettle": {
+          "atMs": 1258.3949999809265,
+          "ms": 416.7600000500679,
+          "frames": 60
+        },
+        "requests": {
+          "count": 11,
+          "unique": 11,
+          "repeats": 0,
+          "bytes": 12113175,
+          "byRoute": {
+            "/dbc/creature-models": {
+              "count": 1,
+              "unique": 1,
+              "repeats": 0,
+              "bytes": 865
+            },
+            "/texture": {
+              "count": 8,
+              "unique": 8,
+              "repeats": 0,
+              "bytes": 611971
+            },
+            "/visual/animations": {
+              "count": 1,
+              "unique": 1,
+              "repeats": 0,
+              "bytes": 9834588
+            },
+            "/visual/model": {
+              "count": 1,
+              "unique": 1,
+              "repeats": 0,
+              "bytes": 1665751
+            }
+          }
         }
       },
       "screenshots": [
@@ -977,6 +1611,7 @@
         "crowd-50-1.png"
       ],
       "pageErrors": [],
+      "screenshotPolicy": "after-measurement-v1",
       "cacheMisses": 0,
       "measurementCacheMisses": 0
     },
@@ -1000,8 +1635,9 @@
         "animation",
         "submit"
       ],
+      "renderBridge": "direct",
       "hardware": {
-        "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/153.0.0.0 Safari/537.36",
+        "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.0.0 Safari/537.36",
         "hardwareConcurrency": 20,
         "gpu": "ANGLE (NVIDIA, NVIDIA GeForce RTX 5070 Ti (0x00002C05) Direct3D11 vs_5_0 ps_5_0, D3D11)",
         "webgl": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
@@ -1011,7 +1647,8 @@
           720
         ],
         "pixelRatio": 1,
-        "gpuTimerReason": null
+        "gpuTimerReason": null,
+        "crossOriginIsolated": true
       },
       "readiness": {
         "pending": 0,
@@ -1023,95 +1660,129 @@
         }
       },
       "routeHeightMissing": 0,
+      "repeatedRafCallbacks": 0,
+      "load": {
+        "census": null,
+        "castsPlayed": 0,
+        "lightPools": null
+      },
       "telemetry": null,
+      "wmoRangeAtStart": null,
+      "poseWorker": null,
+      "shadowCascadesAtStart": null,
+      "shadowCascades": null,
+      "benchStartEpochMs": 1793958543910.8848,
+      "hostLoad": {
+        "preflight": {
+          "elapsedSeconds": 2.1444058999999998,
+          "externalCpuCores": 0.48233533650414157
+        },
+        "before": {
+          "elapsedSeconds": 2.1539554,
+          "externalCpuCores": 0.47935474249854165
+        },
+        "after": {
+          "elapsedSeconds": 2.1529765,
+          "externalCpuCores": 1.444116609195582
+        }
+      },
+      "runRequests": {
+        "count": 0,
+        "unique": 0,
+        "repeats": 0,
+        "bytes": 0,
+        "byRoute": {}
+      },
       "summary": {
-        "averageFps": 32.571337223243546,
-        "onePercentLowFps": 18.857758620689708,
-        "p99FrameMs": 49.5,
-        "framesOver30Ms": 242,
-        "frameCount": 652,
-        "measuredSeconds": 20.017599999999998,
+        "averageFps": 50.835931156052574,
+        "onePercentLowFps": 28.907430523618714,
+        "p99FrameMs": 31.959999999999127,
+        "framesOver30Ms": 11,
+        "frameCount": 1017,
+        "measuredSeconds": 20.005535,
         "frameMs": {
-          "count": 652,
-          "mean": 30.701840490797544,
-          "p50": 29,
-          "p99": 49.5,
-          "max": 68.5
+          "count": 1017,
+          "mean": 19.671125860373643,
+          "p50": 19.485000000000582,
+          "p99": 31.959999999999127,
+          "max": 36.974999999998545
         },
         "cpuMs": {
-          "count": 652,
-          "mean": 30.363190183975945,
-          "p50": 29.100000023841858,
-          "p99": 38.89999997615814,
-          "max": 60.10000002384186
+          "count": 1017,
+          "mean": 19.272261554454047,
+          "p50": 19.05000001192093,
+          "p99": 24.444999992847443,
+          "max": 35.405000030994415
         },
         "gpuMs": {
-          "count": 652,
-          "mean": 2.696106895705523,
-          "p50": 2.400704,
-          "p99": 6.155008,
-          "max": 9.853536
+          "count": 1017,
+          "mean": 2.64999240117994,
+          "p50": 2.43856,
+          "p99": 5.316704,
+          "max": 6.628416
         },
         "rendererInfo": {
           "calls": {
-            "count": 652,
-            "mean": 800,
-            "p50": 800,
-            "p99": 800,
-            "max": 800
+            "count": 1017,
+            "mean": 600,
+            "p50": 600,
+            "p99": 600,
+            "max": 600
           },
           "triangles": {
-            "count": 652,
+            "count": 1017,
             "mean": 1290800,
             "p50": 1290800,
             "p99": 1290800,
             "max": 1290800
           },
           "programs": {
-            "count": 652,
+            "count": 1017,
             "mean": 2,
             "p50": 2,
             "p99": 2,
             "max": 2
           },
           "geometries": {
-            "count": 652,
+            "count": 1017,
             "mean": 1,
             "p50": 1,
             "p99": 1,
             "max": 1
           },
           "textures": {
-            "count": 652,
+            "count": 1017,
             "mean": 204,
             "p50": 204,
             "p99": 204,
             "max": 204
           }
         },
-        "peakJsHeapBytes": 212696277,
+        "peakJsHeapBytes": 186050721,
         "phasesMs": {
           "animation": {
-            "count": 652,
-            "mean": 8.954141104696719,
-            "p50": 8.5,
-            "p99": 14.899999976158142,
-            "max": 20.299999952316284
+            "count": 1017,
+            "mean": 7.862733530259765,
+            "p50": 7.659999966621399,
+            "p99": 10.649999976158142,
+            "max": 14.685000002384186
           },
           "submit": {
-            "count": 652,
-            "mean": 21.319938650343317,
-            "p50": 20.199999928474426,
-            "p99": 29.5,
-            "max": 39.5
+            "count": 1017,
+            "mean": 11.337413962846192,
+            "p50": 11.300000011920929,
+            "p99": 15.269999980926514,
+            "max": 20.62000000476837
           }
         }
       },
+      "wmoRange": null,
+      "shadowCascadeSummary": null,
       "prepared": {
         "scenario": "crowd-200",
         "count": 200,
         "hardware": {
-          "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/153.0.0.0 Safari/537.36",
+          "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.0.0 Safari/537.36",
           "hardwareConcurrency": 20,
           "gpu": "ANGLE (NVIDIA, NVIDIA GeForce RTX 5070 Ti (0x00002C05) Direct3D11 vs_5_0 ps_5_0, D3D11)",
           "webgl": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
@@ -1121,7 +1792,8 @@
             720
           ],
           "pixelRatio": 1,
-          "gpuTimerReason": null
+          "gpuTimerReason": null,
+          "crossOriginIsolated": true
         },
         "readiness": {
           "pending": 0,
@@ -1131,6 +1803,43 @@
             "bonesPerUnit": 228,
             "trianglesPerUnit": 6454
           }
+        },
+        "firstSettle": {
+          "atMs": 2002.5799999833107,
+          "ms": 1056.289999961853,
+          "frames": 60
+        },
+        "requests": {
+          "count": 11,
+          "unique": 11,
+          "repeats": 0,
+          "bytes": 12113175,
+          "byRoute": {
+            "/dbc/creature-models": {
+              "count": 1,
+              "unique": 1,
+              "repeats": 0,
+              "bytes": 865
+            },
+            "/texture": {
+              "count": 8,
+              "unique": 8,
+              "repeats": 0,
+              "bytes": 611971
+            },
+            "/visual/animations": {
+              "count": 1,
+              "unique": 1,
+              "repeats": 0,
+              "bytes": 9834588
+            },
+            "/visual/model": {
+              "count": 1,
+              "unique": 1,
+              "repeats": 0,
+              "bytes": 1665751
+            }
+          }
         }
       },
       "screenshots": [
@@ -1138,15 +1847,19 @@
         "crowd-200-1.png"
       ],
       "pageErrors": [],
+      "screenshotPolicy": "after-measurement-v1",
       "cacheMisses": 0,
       "measurementCacheMisses": 0
     }
   ],
-  "artifacts": "bench/results/2026-09-20T10-22-26-361Z",
+  "artifacts": "bench/results/2026-11-06T09-46-05-069Z",
   "errors": [],
-  "assetHash": "9d3721ed587e88a92c1da287419f4cec05439e7cdfe36547b8da126a62fe1081",
+  "assetHash": "d7a5eb6c3ff6c21cb183d808f14dab516d047db68e47f9d883eef7e69643550e",
+  "knownMissingTextures": [],
+  "allowLoad": false,
+  "variant": null,
+  "budgetProbeRun": false,
   "valid": true,
   "comparable": true,
-  "rawResult": "bench/results/2026-09-20T10-22-26-361Z.json",
-  "visualParityWithOriginal": "9/9 exact"
+  "rawResult": "bench/results/2026-11-06T09-46-05-069Z.json"
 }
