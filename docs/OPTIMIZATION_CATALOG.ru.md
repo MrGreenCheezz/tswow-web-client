@@ -1174,7 +1174,7 @@ RND-8 (палитры костей) объединён с UNT-12, RND-15 (час
   - рендер, окружение и юниты — строгий A/B стенда;
   - FrameXML, пакеты, DOM и GC — живая запись v2: `frameXml.stepMs/onUpdateMs/seamTickMs`, `syncs.layout`, `syncsOutsideStep`, `packets.byOpcode`, контрольные точки кучи, гистограмма интервалов в периодах 6,94 мс;
   - офлайн — `bench/framexml-probe.mjs` и связка `FrameXmlBoot` + `CannedWorldSeam`.
-- **Недостающая телеметрия, которую предлагают добавить:**
+- **Недостающая телеметрия, которую предлагают добавить** (06.11: всё перечисленное есть — подфазы `visuals.*` и `units.*` при подробной записи, `poseWorker` и `shadow` в записи, `netMs`/`frameXmlMs` в часах кадра, `doodadsPosed`, `--heap-profile=promoted`, датчик сложения `FrameBudgetProbe`, сцены `bench/city-riders.json` и `bench/city-spells.json`):
   - подфазы `visuals.rigs/effects/particles` (UNT-2);
   - `poseWorkerStats` в записи (UNT-3);
   - `shadowCascadeStats` (RND-6);
