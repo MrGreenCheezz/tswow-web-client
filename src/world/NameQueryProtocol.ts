@@ -68,6 +68,11 @@ export class NameCache {
   readonly #pending = new Set<bigint>();
   /** Race, gender and class from the same answer: the client's name cache keeps them beside the name. */
   readonly #details = new Map<bigint, PlayerNameDetails>();
+  /**
+   * 06.11 (9.05): the GUIDs SMSG_NAME_QUERY_RESPONSE answered. A name a roster carried (`seed`) is shown at
+   * once but is no answer: the group list has no race, sex or class, so its members are still asked.
+   */
+  readonly #answered = new Set<bigint>();
 
   get(guid: bigint): string | undefined {
     return this.#names.get(guid);
@@ -88,9 +93,9 @@ export class NameCache {
     return this.#pending.has(guid);
   }
 
-  /** True when the caller should send a query for this GUID. */
+  /** True when the caller should send a query for this GUID: no answer yet, and none on the way. */
   shouldQuery(guid: bigint): boolean {
-    if (guid === 0n || this.#names.has(guid) || this.#pending.has(guid)) return false;
+    if (guid === 0n || this.#answered.has(guid) || this.#pending.has(guid)) return false;
     this.#pending.add(guid);
     return true;
   }
@@ -101,7 +106,18 @@ export class NameCache {
     this.#names.set(entry.guid, entry.name);
     if (entry.declined.length > 0) this.#declined.set(entry.guid, entry.declined);
     this.#details.set(entry.guid, { race: entry.race, gender: entry.gender, classId: entry.classId });
+    this.#answered.add(entry.guid);
     return true;
+  }
+
+  /**
+   * 06.11 (9.05): a name from a roster (SMSG_GROUP_LIST, SMSG_GUILD_ROSTER), with what the roster row knows of
+   * the character. It never replaces a name answer's details, and it does not count as one (`shouldQuery`).
+   */
+  seed(guid: bigint, name: string, details?: PlayerNameDetails): void {
+    if (guid === 0n || !name) return;
+    this.#names.set(guid, name);
+    if (details && !this.#answered.has(guid)) this.#details.set(guid, details);
   }
 
   /**
@@ -112,6 +128,7 @@ export class NameCache {
     const held = this.#names.delete(guid);
     this.#declined.delete(guid);
     this.#details.delete(guid);
+    this.#answered.delete(guid);
     return held;
   }
 
@@ -120,5 +137,6 @@ export class NameCache {
     this.#declined.clear();
     this.#details.clear();
     this.#pending.clear();
+    this.#answered.clear();
   }
 }

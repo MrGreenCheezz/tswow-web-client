@@ -82,7 +82,8 @@ function fixture() {
   const partyAura = {
     slot: 1,
     spellId: 6673,
-    flags: AURA_FLAGS.positive,
+    // 06.11: an effect bit, as SMSG_AURA_UPDATE sends one: since 3.68 an aura without any is not listed (AuraListed.ts).
+    flags: AURA_FLAGS.positive | 1,
     casterLevel: 60,
     applications: 2,
   };

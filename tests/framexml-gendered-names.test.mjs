@@ -205,6 +205,60 @@ test("GetRaidRosterInfo: the name cache's sex, else the member's own object", ()
   }
 });
 
+// 06.11 (9.05): Wow.exe 0x60fd40/0x60fec0 ask for any unit in view (type mask 8), else the name cache entry of
+// the token's GUID (0x67d770: race +0x140, class +0x148, sex +0x144), else nil.
+const partyOf = (...members) => ({
+  groupType: 0, leaderGuid: SELF, ownSubGroup: 0, ownFlags: 0, ownRoles: 0, guid: 1n, counter: 1,
+  lootMethod: 0, masterLooterGuid: 0n, lootThreshold: 2, dungeonDifficulty: 0, raidDifficulty: 0,
+  members: members.map(([guid, name]) => ({ guid, name, online: true, status: 1, subGroup: 0, flags: 0, roles: 0 })),
+});
+
+test("06.11 (9.05): a party member out of sight is named from the name answer, in its sex; no answer, nil", () => {
+  learnCreationNames(RACES, CLASSES);
+  try {
+    const { seam } = liveSeam({
+      names: [[0x21n, "Аня", { race: 4, gender: 1, classId: 5 }], [0x22n, "Вика"], [0x23n, "Гена", { race: 0, gender: 0, classId: 0 }]],
+      extra: { group: partyOf([0x21n, "Аня"], [0x22n, "Вика"], [0x23n, "Гена"]) },
+    });
+    assert.deepEqual(call(seam, "UnitRace", "party1"), ["Ночная эльфийка", "NightElf"]);
+    assert.deepEqual(call(seam, "UnitClass", "party1"), ["Жрица", "PRIEST"]);
+    assert.deepEqual(call(seam, "UnitClass", "party2"), [], "no name answer: nil, as 0x60fec0 without an entry");
+    assert.deepEqual(call(seam, "UnitRace", "party3"), [], "a roster's unknown race is no race");
+    assert.deepEqual(call(seam, "UnitClass", "party3"), [], "nor its unknown class");
+  } finally {
+    forgetCreationNames();
+  }
+});
+
+test("06.11 (9.05): a creature in view answers its own class in its sex, and no race", () => {
+  learnCreationNames(RACES, CLASSES);
+  try {
+    const guard = { ...playerObject(0x31n, 0, 1, 0), typeId: 3 };
+    const priestess = { ...playerObject(0x32n, 0, 5, 1), typeId: 3 };
+    const { seam } = liveSeam({
+      objects: [guard, priestess],
+      extra: { group: partyOf([0x31n, "Стражник"], [0x32n, "Жрица"]) },
+    });
+    assert.deepEqual(call(seam, "UnitClass", "party1"), ["Воин", "WARRIOR"]);
+    assert.deepEqual(call(seam, "UnitClass", "party2"), ["Жрица", "PRIEST"]);
+    assert.deepEqual(call(seam, "UnitRace", "party1"), [], "race 0 has no ChrRaces row");
+  } finally {
+    forgetCreationNames();
+  }
+});
+
+test("06.11 (9.05): GetRaidRosterInfo takes an out-of-sight member's class from the name answer", () => {
+  learnCreationNames(RACES, CLASSES);
+  try {
+    const group = { ...partyOf([0x21n, "Аня"], [0x22n, "Вика"]), groupType: 0x02 };
+    const { seam } = liveSeam({ names: [[0x21n, "Аня", { race: 4, gender: 1, classId: 5 }], [0x22n, "Вика"]], extra: { group } });
+    assert.deepEqual(call(seam, "GetRaidRosterInfo", 1).slice(4, 6), ["Жрица", "PRIEST"]);
+    assert.deepEqual(call(seam, "GetRaidRosterInfo", 2).slice(4, 6), [undefined, undefined], "no answer, no class");
+  } finally {
+    forgetCreationNames();
+  }
+});
+
 test("the unit tooltip's level line names a player in its sex (0x621070 → 0x72aa70/0x72aab0)", () => {
   learnCreationNames(RACES, CLASSES);
   try {

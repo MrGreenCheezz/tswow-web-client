@@ -7079,7 +7079,8 @@ export class WorldClient {
     if (packet.opcode === OPCODES.SMSG_GUILD_ROSTER) {
       this.guildRoster = parseGuildRoster(packet.payload);
       for (const member of this.guildRoster.members) {
-        this.names.accept({ guid: member.guid, known: true, name: member.name, realm: "", race: 0, gender: member.gender, classId: member.classId, declined: [] });
+        // 06.11 (9.05): the roster row's sex and class, not an answer: a later query still brings the race.
+        this.names.seed(member.guid, member.name, { race: 0, gender: member.gender, classId: member.classId });
       }
       this.onGuildChanged?.();
       return true;
@@ -7284,7 +7285,13 @@ export class WorldClient {
       this.group = list;
       // 5.28 (L6): a list with members carries the player difficulty too (Wow.exe 0x6d8fd0).
       if (list.members.length > 0 && list.raidHeroic !== undefined) this.instancePlayerDifficulty = list.raidHeroic;
-      for (const member of this.group.members) this.names.accept({ guid: member.guid, known: true, name: member.name, realm: "", race: 0, gender: 0, classId: 0, declined: [] });
+      // 06.11 (9.05): the list names its members and nothing more. Out of sight, UnitRace, UnitClass and
+      // GetRaidRosterInfo answer from the name cache (Wow.exe 0x60fd40/0x60fec0 → 0x67d770, 0x573690), so each
+      // member is asked once; the zeros written here before read as «male, no class» for the whole group.
+      for (const member of this.group.members) {
+        this.names.seed(member.guid, member.name);
+        if (member.guid !== this.state.selfGuid) this.requestName(member.guid);
+      }
       this.onGroupChanged?.();
       return true;
     }

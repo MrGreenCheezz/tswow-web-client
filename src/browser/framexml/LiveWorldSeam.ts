@@ -1265,9 +1265,11 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
         const world = context.world();
         const stats = world?.partyStats.get(guid);
         const object = world?.state.objects.get(guid);
+        // 06.11 (9.05): out of sight the class is the name answer's, as GetRaidRosterInfo 0x573690 reads it.
+        const cachedClass = object ? undefined : world?.names?.details?.(guid)?.classId;
         return {
           level: stats?.level ?? (object ? unitField.level(object) : undefined),
-          classId: object ? unitField.classId(object) : undefined,
+          classId: object ? unitField.classId(object) : cachedClass === 0 ? undefined : cachedClass,
           areaId: stats?.zoneId,
           dead: object ? isWorldObjectDead(object) : undefined,
         };
@@ -7736,27 +7738,43 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
    */
   unitClass(unit: string): readonly [string, string] | undefined {
     const object = this.#unit(unit);
-    // An arena opponent out of sight keeps the class the client saw (Blizzard_ArenaUI.lua:133-136).
-    const arenaClass = object ? undefined : this.arena.classId(unit);
-    if (arenaClass !== undefined) {
-      const arenaToken = classFileName(arenaClass);
-      return arenaToken === undefined ? undefined : [className(arenaClass), arenaToken];
+    if (object) {
+      // Wow.exe 0x60fec0 asks for any unit (type mask 8), so a creature answers its own class too.
+      // L3-review: → 0x72aab0 → 0x71a590 names a unit in view by its sex byte.
+      const classId = unitField.classId(object);
+      const token = classFileName(classId);
+      return token === undefined ? undefined : [className(classId, femaleOf(unitField.gender(object))), token];
     }
-    if (object?.typeId !== TYPEID_PLAYER) return undefined;
-    const classId = object ? unitField.classId(object) : undefined;
-    const token = classFileName(classId);
-    // L3-review: Wow.exe 0x60fec0 → 0x72aab0 → 0x71a590 names a unit in view by its sex byte.
-    return token === undefined ? undefined : [className(classId, femaleOf(unitField.gender(object))), token];
+    // 06.11 (9.05): out of sight, the name answer's class and sex (0x67d770: entry +0x148, +0x144).
+    const cached = this.#nameDetails(unit);
+    const cachedToken = cached && cached.classId !== 0 ? classFileName(cached.classId) : undefined;
+    if (cached && cachedToken !== undefined) return [className(cached.classId, femaleOf(cached.gender)), cachedToken];
+    // An arena opponent out of sight keeps the class the client saw (Blizzard_ArenaUI.lua:133-136).
+    const arenaClass = this.arena.classId(unit);
+    const arenaToken = arenaClass === undefined ? undefined : classFileName(arenaClass);
+    return arenaToken === undefined || arenaClass === undefined ? undefined : [className(arenaClass), arenaToken];
   }
 
   /** `UnitRace` with the dataset's `ChrRaces.ClientFileString`, custom rows included. */
   unitRace(unit: string): readonly [string, string] | undefined {
     const object = this.#unit(unit);
-    if (object?.typeId !== TYPEID_PLAYER) return undefined;
-    const raceId = unitField.race(object);
-    const token = raceFileName(raceId);
-    // L3-review: Wow.exe 0x60fd40 → 0x72aa70 → 0x71a4b0 names a unit in view by its sex byte.
-    return token === undefined ? undefined : [raceName(raceId, femaleOf(unitField.gender(object))), token];
+    if (object) {
+      // Wow.exe 0x60fd40: any unit, by its race byte; a creature's 0 is no ChrRaces row and answers nil.
+      // L3-review: → 0x72aa70 → 0x71a4b0 names a unit in view by its sex byte.
+      const raceId = unitField.race(object);
+      const token = raceFileName(raceId);
+      return token === undefined ? undefined : [raceName(raceId, femaleOf(unitField.gender(object))), token];
+    }
+    // 06.11 (9.05): out of sight, the name answer's race and sex (0x67d770: entry +0x140, +0x144).
+    const cached = this.#nameDetails(unit);
+    const token = cached && cached.race !== 0 ? raceFileName(cached.race) : undefined;
+    return cached && token !== undefined ? [raceName(cached.race, femaleOf(cached.gender)), token] : undefined;
+  }
+
+  /** 06.11 (9.05): the name cache's race, sex and class for a unit token's GUID (a member out of sight, an arena slot). */
+  #nameDetails(unit: string): { readonly race: number; readonly gender: number; readonly classId: number } | undefined {
+    const guid = this.#unitGuid(unit);
+    return guid === undefined ? undefined : this.#context.world()?.names?.details?.(guid);
   }
 
   /**
