@@ -68,6 +68,16 @@ const TRACKED_NEUTRAL: MinimapIconCell = { column: 6, row: 0 };
 const TRACKED_FRIENDLY: MinimapIconCell = { column: 7, row: 0 };
 /** Town trackers and resource nodes: two cells of the sheet fit the frames equally, and they are nearly the same picture. */
 export const MINIMAP_TOWN_CELL: MinimapIconCell = { column: 0, row: 1 };
+/**
+ * 3.13 (07.11): a flight master whose node this character does not know (the unit's taxi mark, SMSG_TAXINODE_STATUS,
+ * 0x006d5fc0): Wow.exe 0x0057f7f0 puts it in list 13 after the quest marks and before creature tracking.
+ */
+export const MINIMAP_FLIGHT_MASTER_CELL: MinimapIconCell = { column: 5, row: 1 };
+
+/** Wow.exe's list of an ObjectIcons blip is its cell, row by row (0x00580380 draws list k with cell k). */
+export function minimapObjectList(cell: MinimapIconCell): number {
+  return cell.row * 8 + cell.column;
+}
 
 /**
  * The icon a quest giver gets. On a ring of NPCs one status each: 8, 10 and 7 mark; 6, 9, 3, 5 and 1 do not, and those

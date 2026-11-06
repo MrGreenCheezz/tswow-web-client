@@ -15,11 +15,21 @@ import {
   MINIMAP_GROUP_ARROW_TEXTURE, MINIMAP_ICON_UNITS, MINIMAP_MASK_TEXTURE, MINIMAP_OBJECT_CELL, MINIMAP_OBJECT_ICONS_TEXTURE,
   MINIMAP_PARTY_BLIPS_TEXTURE, MINIMAP_PARTY_CELL, MINIMAP_PLAYER_ARROW_TEXTURE, MINIMAP_PLAYER_ARROW_UNITS,
   MINIMAP_POI_ARROW_TEXTURE, MINIMAP_RIM_ARROW_UNITS, MINIMAP_RIM_FRACTION, MINIMAP_TILE_SHIFT_FRACTION, MINIMAP_TOWN_CELL,
-  MINIMAP_UNITS, MINIMAP_ZOOM_LEVELS, minimapPartyCell, minimapPastRim, minimapPoiHasArrow, minimapQuestCell, minimapRimAngle,
-  minimapRimPois, minimapTileTint, minimapTrackedCell, minimapYards, minimapZoomIndex, type MinimapIconCell, type MinimapRimPoi,
+  MINIMAP_FLIGHT_MASTER_CELL, MINIMAP_UNITS, MINIMAP_ZOOM_LEVELS, minimapObjectList, minimapPartyCell, minimapPastRim,
+  minimapQuestCell,
+  minimapRimAngle, minimapRimPois, minimapTileTint, minimapTrackedCell, minimapYards, minimapZoomIndex, type MinimapIconCell,
 } from "./MinimapArt.js"; // 03.11
-import { townTrackedCell, trivialQuestsTracked } from "./TownTracking.js"; // 03.11
-import { unit as unitField } from "../../world/Fields.js";
+import { townTrackedCell, townTrackerShowsSubName, trivialQuestsTracked } from "./TownTracking.js"; // 03.11
+import { readField, unit as unitField, worldObject } from "../../world/Fields.js";
+import { GROUPTYPE_RAID } from "../../world/GroupProtocol.js";
+import { UNIT_NPC_FLAG_FLIGHTMASTER } from "../../world/QuestGiverMarker.js";
+import type { AreaPoiInfo } from "../AreaClient.js";
+// 3.13 (07.11): the guide arrows and the hover tooltip, as Wow.exe 0x007f44a0 and 0x0057c720.
+import { minimapGuideArrowInside, minimapGuideMarks, type MinimapGuideCandidate } from "./MinimapGuideArrows.js";
+import {
+  minimapHoverHits, minimapHoverText, sameMinimapHoverHits, type MinimapHoverBlip, type MinimapHoverHit,
+  type MinimapHoverMark, type MinimapHoverScene,
+} from "./MinimapHover.js";
 import { reactionTo } from "../game/Targeting.js";
 import { formatGameTime, halfMinuteOfDay } from "../../world/GameTimeProtocol.js";
 import { rightRail } from "./Dom.js";
@@ -31,7 +41,7 @@ import { setTip } from "./Widgets.js";
 import { partyBlipMembers } from "../game/PartyPositions.js";
 import { activeGossipPoi, type GossipPoiMark } from "../GossipPoi.js"; // 3.13
 import {
-  drawGossipPoi, gossipPoiPlacement, minimapPoiIconCell, MINIMAP_GUIDE_ARROW_TEXTURE, MINIMAP_POI_ICONS_TEXTURE,
+  drawGossipPoi, minimapPoiIconCell, MINIMAP_GUIDE_ARROW_TEXTURE, MINIMAP_POI_ICONS_TEXTURE, type GossipPoiPlacement,
 } from "./MinimapGossipPoi.js"; // 3.13
 // 05.10-A7b-4 (7.13/7.14): the located area (WMO room → grid → map) and the building's own minimap.
 import { drawLiveWmoMinimap, liveAreaIdAt, liveIndoorZoneTexts, liveWmoMinimapApplies, liveWmoMinimapRevision } from "../AreaLocatorLive.js";
@@ -156,7 +166,7 @@ function build(): MinimapParts {
   const canvas = document.createElement("canvas");
   canvas.id = "minimap-canvas";
   canvas.setAttribute("aria-label", "Миникарта");
-  setTip(canvas, "Щелчок — метка на миникарте группы");
+  setTip(canvas, CANVAS_TIP);
   const zone = document.createElement("div");
   zone.className = "minimap-zone";
   const subzone = document.createElement("div");
@@ -202,8 +212,14 @@ function build(): MinimapParts {
   // stays the same ping; `click` is the primary button only (the others are `auxclick`). Reading
   // the position back needs the same projection that drew it.
   canvas.addEventListener("click", (event) => onCanvasClick(event, canvas));
+  // 3.13 (07.11): the names under the pointer, written by the stock interface's GameTooltip while it holds the canvas.
+  canvas.addEventListener("mousemove", (event) => onCanvasHover(event, canvas));
+  canvas.addEventListener("mouseleave", () => onCanvasLeave());
   return { root, canvas, context, clock, zone, subzone };
 }
+
+/** The native interface's hint on the canvas; the stock one has none, Wow.exe names what is under the pointer instead. */
+const CANVAS_TIP = "Щелчок — метка на миникарте группы";
 
 function readStyle(style: CSSStyleDeclaration, name: AdoptedStyleName): string | undefined {
   const value = (style as unknown as Record<string, string>)[name];
@@ -245,6 +261,7 @@ function restoreMinimapCanvasAdoption(record: MinimapCanvasAdoption): void {
   restoreDataset(record.canvas, record.dataset);
   record.canvas.width = record.width;
   record.canvas.height = record.height;
+  setTip(record.canvas, CANVAS_TIP);
 
   const sibling = record.nativeNextSibling;
   if (sibling && sibling.parentNode === record.nativeParent) {
@@ -372,6 +389,7 @@ export function adoptMinimapCanvas(target: HTMLElement | undefined): (() => void
     writeStyle(canvas.style, "pointerEvents", "auto");
     // A blank authored texture may be hidden, but the live canvas follows the Minimap ancestor.
     canvas.hidden = false;
+    setTip(canvas, undefined); // 3.13 (07.11)
 
     for (const guard of record.propagationGuards) canvas.addEventListener(guard.type, guard.listener);
 
@@ -618,7 +636,7 @@ export function updateMinimap(now: number): void {
   // only a blip that appeared, went or moved asks for the frame.
   const stateMoved = world.state.revision !== lastDrawRevision || lastDrawWorld !== world;
   lastDrawRevision = world.state.revision;
-  let blips = stateMoved ? collectBlips(self.position, world.state) : undefined;
+  let blips = stateMoved ? collectBlips(self.position, world.state, poiOnMap) : undefined;
   let signature = blips === undefined ? undefined : blipSignature(blips);
   const blipsMoved = signature !== undefined && !sameBlipSignature(signature, lastBlipSignature);
   // A different world is never the same picture, whatever its numbers say; and nothing else the
@@ -633,12 +651,153 @@ export function updateMinimap(now: number): void {
   lastDrawWorld = world;
   lastDrawAt = now;
   if (blips === undefined || signature === undefined) {
-    blips = collectBlips(self.position, world.state);
+    blips = collectBlips(self.position, world.state, poiOnMap);
     signature = blipSignature(blips);
   }
   lastBlipSignature = signature;
   drawMinimap(parts.context, size, world.mapId, self.position, blips, now, poiOnMap);
+  lastDrawn = {
+    collected: blips, size, position: { x: self.position.x, y: self.position.y }, yards: currentYards(),
+    facing: settings.rotate ? self.position.orientation : undefined, scene: undefined,
+  };
   updateLabels(parts, world, self.position, now);
+}
+
+/** 3.13 (07.11): what the canvas shows now, for the tooltip to hit-test as Wow.exe tests its last draw. */
+let lastDrawn: {
+  readonly collected: MinimapBlips;
+  readonly size: number;
+  readonly position: WorldPoint;
+  readonly yards: number;
+  readonly facing: number | undefined;
+  scene: MinimapHoverScene | undefined;
+} | undefined;
+
+/**
+ * 3.13 (07.11): the stock interface's half of the minimap tooltip (FrameXmlMinimapHover.ts): Wow.exe's engine writes
+ * GameTooltip itself, and the native interface has none.
+ */
+export interface MinimapHoverHost {
+  readonly show: (text: string) => void;
+  readonly hide: () => void;
+  readonly globalString: (name: string) => string | undefined;
+  readonly colorblind: () => boolean;
+}
+
+let hoverHost: MinimapHoverHost | undefined;
+let hoverHits: readonly MinimapHoverHit[] = [];
+
+export function setMinimapHoverHost(host: MinimapHoverHost | undefined): void {
+  if (hoverHits.length > 0) hoverHost?.hide();
+  hoverHost = host;
+  hoverHits = [];
+}
+
+function hoverGlobalString(name: string): string | undefined {
+  return hoverHost?.globalString(name);
+}
+
+/** The name 0x0072a000 and its siblings give an object: the cached player or creature name, else UNKNOWNOBJECT. */
+function objectName(object: WorldObjectState): string | undefined {
+  const world = game.world;
+  if (!world) return undefined;
+  if (object.typeId === 4) {
+    return world.names.get(object.guid) ?? (object.guid === world.state.selfGuid ? world.selfName : undefined)
+      ?? hoverGlobalString("UNKNOWNOBJECT");
+  }
+  if (object.typeId === 5) {
+    return world.gameObjectTemplate(worldObject.entry(object) ?? 0, object.guid)?.name || hoverGlobalString("UNKNOWNOBJECT");
+  }
+  const petName = world.petNameOf?.(object);
+  if (petName) return petName;
+  const entry = readField(object, "OBJECT_FIELD_ENTRY");
+  const creature = entry === undefined ? undefined : world.creatureTemplates.get(entry);
+  return creature?.found && creature.name ? creature.name : hoverGlobalString("UNKNOWNOBJECT");
+}
+
+/** The creature's subname 0x00719950 adds: none on a pet. */
+function objectSubName(object: WorldObjectState): string | undefined {
+  const world = game.world;
+  if (!world || object.typeId !== 3 || world.petNameOf?.(object)) return undefined;
+  const entry = readField(object, "OBJECT_FIELD_ENTRY");
+  const creature = entry === undefined ? undefined : world.creatureTemplates.get(entry);
+  return creature?.found && creature.subName ? creature.subName : undefined;
+}
+
+/** The last draw as the tooltip sees it: frame units from the centre, the blips named. */
+function hoverScene(): MinimapHoverScene | undefined {
+  const drawn = lastDrawn;
+  if (!drawn || !(drawn.size > 0)) return undefined;
+  if (drawn.scene) return drawn.scene;
+  const { collected, size, position, yards, facing } = drawn;
+  const toFrame = MINIMAP_UNITS / size;
+  const rim = (MINIMAP_UNITS / 2) * MINIMAP_RIM_FRACTION;
+  const iconPoint = (at: WorldPoint): MinimapPixel => {
+    const point = minimapBlip(position, at, yards / size, facing);
+    return { column: point.column * toFrame, row: point.row * toFrame };
+  };
+  const rimPoint = (at: WorldPoint): MinimapPixel => {
+    const angle = minimapRimAngle(position, at, facing);
+    return { column: Math.sin(angle) * rim, row: -Math.cos(angle) * rim };
+  };
+  const world = game.world;
+  const mark = (named: NamedPoint, point: (at: WorldPoint) => MinimapPixel): MinimapHoverMark =>
+    ({ point: point(named.at), name: named.name });
+  const partyArrows: MinimapHoverMark[] = [];
+  const raidArrows: MinimapHoverMark[] = [];
+  for (const arrow of collected.arrows) {
+    if (arrow.member) (arrow.member.raid ? raidArrows : partyArrows).push({ point: rimPoint(arrow.at), name: arrow.member.name });
+  }
+  const blips: MinimapHoverBlip[] = [];
+  for (const blip of collected.blips) {
+    const hover = blip.hover;
+    if (!hover) continue;
+    const object = world?.state.objects.get(hover.guid);
+    // A member out of sight: Wow.exe asks the name cache (0x0067d770) and leaves the entry out without an answer.
+    const name = object ? objectName(object) : world?.names.get(hover.guid) ?? hover.rosterName;
+    blips.push({
+      list: hover.list, point: iconPoint(blip.at), name,
+      ...(hover.subName && object ? { subName: objectSubName(object) } : {}),
+      ...(hover.flightMaster ? { flightMaster: true } : {}),
+    });
+  }
+  drawn.scene = {
+    guideArrows: collected.guideArrows.map((named) => mark(named, rimPoint)),
+    partyArrows, raidArrows,
+    poiIcons: collected.poiIcons.map((named) => mark(named, iconPoint)),
+    blips,
+  };
+  return drawn.scene;
+}
+
+/**
+ * 0x0057c720 on a move over the frame: the hits in frame units, and the tooltip rewritten only when they changed. The
+ * frame's scale is the screen pixels of a frame unit over those of a unit at scale 1 (768 to the screen's height).
+ */
+function onCanvasHover(event: MouseEvent, canvas: HTMLCanvasElement): void {
+  const host = hoverHost;
+  if (!host) return;
+  const box = canvas.getBoundingClientRect();
+  const scene = box.width > 0 ? hoverScene() : undefined;
+  if (!scene) return;
+  const unit = box.width / MINIMAP_UNITS;
+  const cursor = { column: (event.clientX - box.left - box.width / 2) / unit, row: (event.clientY - box.top - box.height / 2) / unit };
+  const scale = window.innerHeight > 0 ? unit / (window.innerHeight / 768) : 1;
+  const hits = minimapHoverHits(scene, cursor, scale);
+  if (sameMinimapHoverHits(hits, hoverHits)) return;
+  hoverHits = hits;
+  if (hits.length === 0) {
+    host.hide();
+    return;
+  }
+  host.show(minimapHoverText(hits, { colorblind: host.colorblind(), flightMaster: host.globalString("MINIMAP_TRACKING_FLIGHTMASTER") }));
+}
+
+/** Leaving the frame with something named: Wow.exe clears its hits and hides GameTooltip. */
+function onCanvasLeave(): void {
+  if (hoverHits.length === 0) return;
+  hoverHits = [];
+  hoverHost?.hide();
 }
 
 /** 03.11: device pixels a drawing unit takes on the screen, asked of the layout once a second. */
@@ -717,9 +876,12 @@ function drawMinimap(
   drawRimArrows(context, size, position, blips, facing);
   context.restore();
 
-  // 3.13: the guard's POI — its POIIcons cell near, a guide arrow on the rim farther (MinimapGossipPoi.ts).
-  if (poi) {
-    const placement = gossipPoiPlacement(poi, position, yards / 2, yards / size, facing);
+  // 3.13: the guard's POI — its POIIcons cell near, a guide arrow on the rim farther (MinimapGossipPoi.ts); 07.11: where
+  // Wow.exe's list of marks put it, which keeps three arrows of all of them (MinimapGuideArrows.ts).
+  if (poi && blips.gossip) {
+    const placement: GossipPoiPlacement = blips.gossip === "icon"
+      ? { kind: "icon", point: minimapBlip(position, poi, yards / size, facing) }
+      : { kind: "arrow", angle: minimapRimAngle(position, poi, facing) };
     drawGossipPoi(context, radius, placement, {
       icons: game.mapArt?.bitmap(MINIMAP_POI_ICONS_TEXTURE),
       arrow: placement?.kind === "arrow" ? game.mapArt?.bitmap(MINIMAP_GUIDE_ARROW_TEXTURE) : undefined,
@@ -806,18 +968,44 @@ interface Blip {
   at: WorldPoint;
   sheet: IconSheet;
   cell: MinimapIconCell;
+  /** 3.13 (07.11): what the tooltip names; none for what Wow.exe has no blip of (the quest areas). */
+  hover?: BlipHover;
+}
+
+interface BlipHover {
+  /** Wow.exe's list (MinimapHover.ts). */
+  readonly list: number;
+  /** The object it stands for, named when the tooltip is written. */
+  readonly guid: bigint;
+  /** A group member's roster name, for when the object is out of sight and no name is cached. */
+  readonly rosterName?: string;
+  readonly subName?: boolean;
+  readonly flightMaster?: boolean;
 }
 
 /** Something past the map, told by an arrow on the rim. */
 interface RimArrow {
   at: WorldPoint;
   texture: string;
+  /** 3.13 (07.11): a group member's arrow and its name; the guide arrows are named from `guideArrows`. */
+  member?: { readonly raid: boolean; readonly name: string | undefined };
+}
+
+/** 3.13 (07.11): a point of interest the tooltip may name — a POI icon in the circle or a guide arrow. */
+interface NamedPoint {
+  readonly at: WorldPoint;
+  readonly name: string | undefined;
 }
 
 /** Everything the state contributes to the circle, in painter order. */
 interface MinimapBlips {
   readonly blips: readonly Blip[];
   readonly arrows: readonly RimArrow[];
+  /** 3.13 (07.11): the guard's POI, as Wow.exe 0x007f44a0 placed it among the other marks. */
+  readonly gossip: GossipPoiPlacement["kind"] | undefined;
+  /** In Wow.exe's order: the POI icons in the circle and the guide arrows drawn, by slot. */
+  readonly poiIcons: readonly NamedPoint[];
+  readonly guideArrows: readonly NamedPoint[];
 }
 
 /**
@@ -831,6 +1019,7 @@ function blipSignature(collected: MinimapBlips): unknown[] {
   for (const blip of collected.blips) signature.push(blip.at.x, blip.at.y, blip.sheet, blip.cell.column, blip.cell.row);
   signature.push(collected.arrows.length);
   for (const arrow of collected.arrows) signature.push(arrow.at.x, arrow.at.y, arrow.texture);
+  signature.push(collected.gossip);
   return signature;
 }
 
@@ -848,14 +1037,56 @@ function blipAt(point: WorldPoint): WorldPoint {
   return { x: point.x, y: point.y };
 }
 
-/** 03.11: the AreaPOI of this map that may get an arrow, recounted when the snapshot or the map changes. */
-let rimPois: { data: object; mapId: number; list: readonly MinimapRimPoi[] } | undefined;
+/** 3.13 (07.11): a mark of Wow.exe 0x007f44a0's list, with what drawing and the tooltip need of it. */
+interface GuideMark extends MinimapGuideCandidate {
+  readonly name: string | undefined;
+  /** The POIIcons cell of its icon in the circle. */
+  readonly icon: number;
+}
 
-function rimPoisOfMap(mapId: number | undefined): readonly MinimapRimPoi[] {
+/** Wow.exe 0x0058133f: an icon past the sheet's 196 cells is not drawn. */
+const POI_ICON_CELLS = 0xc4;
+
+/**
+ * 03.11: the AreaPOI of this map that may get an arrow, recounted when the snapshot or the map changes. 3.13 (07.11): as
+ * marks, last record first, which is the order Wow.exe 0x007f6730 lists them in.
+ */
+let rimPois: { data: object; mapId: number; list: readonly GuideMark[] } | undefined;
+
+function rimPoisOfMap(mapId: number | undefined): readonly GuideMark[] {
   const data = game.areas?.snapshot();
   if (!data || mapId === undefined) return [];
-  if (rimPois?.data !== data || rimPois.mapId !== mapId) rimPois = { data, mapId, list: minimapRimPois(data.areaPois, mapId) };
+  if (rimPois?.data !== data || rimPois.mapId !== mapId) {
+    const list = minimapRimPois(data.areaPois, mapId).reverse().map((poi: AreaPoiInfo): GuideMark => ({
+      kind: "areaPoi", x: poi.x, y: poi.y, importance: poi.importance, flags: poi.flags, name: poi.name,
+      icon: poi.icons[0] ?? 0,
+    }));
+    rimPois = { data, mapId, list };
+  }
   return rimPois.list;
+}
+
+/**
+ * The marks of 0x007f44a0's list that the minimap shows: the map's AreaPOI, then the guard's POI and the corpse. The
+ * corpse is named CORPSE_RED, its importance −1, its flags 0x2 and its icon 8 (0x007f4990).
+ */
+function guideMarks(
+  position: WorldPoint,
+  radiusYards: number,
+  poi: GossipPoiMark | undefined,
+  corpse: WorldPoint | undefined,
+): { icons: readonly GuideMark[]; arrows: readonly GuideMark[] } {
+  const candidates: GuideMark[] = [...rimPoisOfMap(game.world?.mapId)];
+  if (poi) {
+    candidates.push({ kind: "gossip", x: poi.x, y: poi.y, importance: poi.importance, flags: poi.flags, name: poi.name, icon: poi.icon });
+  }
+  if (corpse) {
+    candidates.push({
+      kind: "corpse", x: corpse.x, y: corpse.y, importance: -1, flags: 0x2, name: hoverGlobalString("CORPSE_RED"),
+      icon: MINIMAP_CORPSE_POI_ICON,
+    });
+  }
+  return minimapGuideMarks(candidates, position, radiusYards);
 }
 
 /**
@@ -865,23 +1096,53 @@ function rimPoisOfMap(mapId: number | undefined): readonly MinimapRimPoi[] {
  * party, the corpse and the AreaPOI get an arrow. A target, a lootable body and a plain NPC get nothing at all; a quest
  * giver's icon wins over tracking.
  */
-function collectBlips(position: WorldPoint, state: WorldState): MinimapBlips {
+function collectBlips(position: WorldPoint, state: WorldState, poi?: GossipPoiMark): MinimapBlips {
   const world = game.world;
   const radiusYards = currentYards() / 2;
   const blips: Blip[] = [];
   const arrows: RimArrow[] = [];
 
+  // The player's own corpse: a tombstone on the map, an arrow at any distance past it. Only on the same map: an
+  // instance corpse is reported at its entrance map (`CorpseLocation.mapId`), and a mark there would be wrong.
+  const self = state.selfGuid === undefined ? undefined : state.objects.get(state.selfGuid);
+  const corpse = self && isPlayerGhost(self) ? world?.corpse : undefined;
+  const corpseAt = corpse?.found && corpse.mapId === world?.mapId ? { x: corpse.x, y: corpse.y } : undefined;
+  // 3.13 (07.11): the AreaPOI, the guard's POI and the corpse share Wow.exe's three arrows (MinimapGuideArrows.ts).
+  // 03.11: over a building's pictures neither the inn nor the city had an AreaPOI arrow.
+  const guide = guideMarks(position, radiusYards, poi, corpseAt);
+  const poiIcons: NamedPoint[] = [];
+  let gossip: GossipPoiPlacement["kind"] | undefined;
+  for (const mark of guide.icons) {
+    poiIcons.push({ at: mark, name: mark.name });
+    if (mark.kind === "gossip") gossip = "icon";
+    else if (mark.icon < POI_ICON_CELLS) blips.push({ at: blipAt(mark), sheet: "poi", cell: { column: mark.icon, row: 0 } });
+  }
+  const guideArrows: NamedPoint[] = [];
+  for (const mark of guide.arrows) {
+    if (insideNow && !minimapGuideArrowInside(mark)) continue;
+    guideArrows.push({ at: mark, name: mark.name });
+    if (mark.kind === "gossip") gossip = "arrow";
+    else arrows.push({ at: blipAt(mark), texture: mark.kind === "corpse" ? MINIMAP_CORPSE_ARROW_TEXTURE : MINIMAP_POI_ARROW_TEXTURE });
+  }
+
   // 4.06: a member out of sight stays, at the whole-yard position SMSG_PARTY_MEMBER_STATS carries.
   if (world?.group?.members.length) {
+    // 3.13 (07.11): Wow.exe keeps the raid in list 0 and its arrows apart, the party in list 1.
+    const raid = (world.group.groupType & GROUPTYPE_RAID) !== 0;
+    const rosterNames = new Map(world.group.members.map((member) => [member.guid, member.name]));
     for (const member of partyBlipMembers(world, (zoneId) => game.areas?.area(zoneId)?.mapId)) {
+      const rosterName = rosterNames.get(member.guid);
       // The member record is a fresh copy per collection, so it is the blip's position as it is.
       if (minimapPastRim(position, member, radiusYards)) {
-        arrows.push({ at: member, texture: MINIMAP_GROUP_ARROW_TEXTURE });
+        arrows.push({ at: member, texture: MINIMAP_GROUP_ARROW_TEXTURE, member: { raid, name: rosterName } });
       } else {
         // Out of sight the class is the name answer's, as it is for Wow.exe.
         const object = state.objects.get(member.guid);
         const classId = object ? unitField.classId(object) : world.names?.details?.(member.guid)?.classId;
-        blips.push({ at: member, sheet: "party", cell: minimapPartyCell(classId) });
+        blips.push({
+          at: member, sheet: "party", cell: minimapPartyCell(classId),
+          hover: { list: raid ? 0 : 1, guid: member.guid, ...(rosterName === undefined ? {} : { rosterName }) },
+        });
       }
     }
   }
@@ -892,6 +1153,10 @@ function collectBlips(position: WorldPoint, state: WorldState): MinimapBlips {
   const questStatus = world?.questGiverStatus;
   const tracks = trackingMatcher(state, world?.mapId);
   const trivial = trivialQuestsTracked();
+  const townSubName = townTrackerShowsSubName();
+  const objectBlip = (object: WorldObjectState, at: WorldPoint, cell: MinimapIconCell, extra?: Partial<BlipHover>): Blip => ({
+    at: blipAt(at), sheet: "objects", cell, hover: { list: minimapObjectList(cell), guid: object.guid, ...extra },
+  });
   for (const object of state.objects.values()) {
     const objectPosition = object.position;
     if (!objectPosition || (object.typeId !== 3 && object.typeId !== 4 && object.typeId !== 5)) continue;
@@ -902,31 +1167,23 @@ function collectBlips(position: WorldPoint, state: WorldState): MinimapBlips {
     const status = object.typeId !== 5 ? questStatus?.get(object.guid) : undefined;
     const quest = status === undefined ? undefined : minimapQuestCell(status, trivial);
     if (quest) {
-      blips.push({ at: blipAt(objectPosition), sheet: "objects", cell: quest });
+      blips.push(objectBlip(object, objectPosition, quest));
       continue;
     }
     const town = townTrackedCell(object);
     if (town) {
-      blips.push({ at: blipAt(objectPosition), sheet: "objects", cell: town });
+      blips.push(objectBlip(object, objectPosition, town, townSubName && object.typeId === 3 ? { subName: true } : undefined));
+      continue;
+    }
+    // 3.13 (07.11): the taxi mark SMSG_TAXINODE_STATUS sets on a flight master whose node is unknown (0x006d5fc0).
+    if (object.typeId === 3 && world?.taxiNodeStatus?.get(object.guid) === false
+      && ((unitField.npcFlags(object) ?? 0) & UNIT_NPC_FLAG_FLIGHTMASTER) !== 0) {
+      blips.push(objectBlip(object, objectPosition, MINIMAP_FLIGHT_MASTER_CELL, { flightMaster: true }));
       continue;
     }
     if (tracks?.(object, distanceSquared)) {
-      blips.push({
-        at: blipAt(objectPosition),
-        sheet: "objects",
-        cell: object.typeId === 5 ? MINIMAP_TOWN_CELL : minimapTrackedCell(reactionTo(object)),
-      });
+      blips.push(objectBlip(object, objectPosition, object.typeId === 5 ? MINIMAP_TOWN_CELL : minimapTrackedCell(reactionTo(object))));
     }
-  }
-
-  // The player's own corpse: a tombstone on the map, an arrow at any distance past it. Only on the same map: an
-  // instance corpse is reported at its entrance map (`CorpseLocation.mapId`), and a mark there would be wrong.
-  const self = state.selfGuid === undefined ? undefined : state.objects.get(state.selfGuid);
-  const corpse = self && isPlayerGhost(self) ? world?.corpse : undefined;
-  if (corpse?.found && corpse.mapId === world?.mapId) {
-    const at = { x: corpse.x, y: corpse.y };
-    if (minimapPastRim(position, at, radiusYards)) arrows.push({ at, texture: MINIMAP_CORPSE_ARROW_TEXTURE });
-    else blips.push({ at, sheet: "poi", cell: { column: MINIMAP_CORPSE_POI_ICON, row: 0 } });
   }
 
   // Quest markers, drawn as the centre of the blob rather than its outline: the frame is 140
@@ -944,14 +1201,7 @@ function collectBlips(position: WorldPoint, state: WorldState): MinimapBlips {
       blips.push({ at: { x, y }, sheet: "objects", cell: MINIMAP_TOWN_CELL });
     }
   }
-
-  // 03.11: the towns of AreaPOI.dbc, but not over a building's pictures: neither the inn nor the city had one.
-  if (!insideNow) {
-    for (const poi of rimPoisOfMap(world?.mapId)) {
-      if (minimapPoiHasArrow(position, poi, radiusYards)) arrows.push({ at: poi, texture: MINIMAP_POI_ARROW_TEXTURE });
-    }
-  }
-  return { blips, arrows };
+  return { blips, arrows, gossip, poiIcons, guideArrows };
 }
 
 const ICON_SHEETS: Readonly<Record<IconSheet, string>> = {
@@ -1116,6 +1366,8 @@ export function forgetMinimap(): void {
   lastDrawAt = Number.NEGATIVE_INFINITY;
   lastDrawRevision = Number.NaN;
   lastBlipSignature = [];
+  lastDrawn = undefined; // 3.13 (07.11)
+  hoverHits = [];
   if (parts) {
     parts.zone.textContent = "";
     parts.subzone.textContent = "";

@@ -68,7 +68,9 @@ import {
   currentAreaId,
   forgetMinimap,
   minimapWidgetAdapter,
+  setMinimapHoverHost,
 } from "../ui/Minimap.js";
+import { compileFrameXmlMinimapHover } from "./FrameXmlMinimapHover.js"; // 3.13 (07.11)
 import { liveIndoorZoneTexts, liveWmoInterior } from "../AreaLocatorLive.js"; // 05.10-A7b-4 (+ review)
 import { FrameXmlDomRenderer } from "../ui/framexml_compat/FrameXmlDomRenderer.js";
 import { FrameXmlFontLoader } from "../ui/framexml_compat/FrameXmlFonts.js";
@@ -4148,7 +4150,12 @@ export async function mountFrameXmlVertical(
     if (!minimapCleanup) {
       throw new Error("FrameXML Minimap canvas adoption failed");
     }
-    resources.minimapCleanup = minimapCleanup;
+    // 3.13 (07.11): the names under the pointer go to GameTooltip, as Wow.exe's minimap writes them.
+    setMinimapHoverHost(compileFrameXmlMinimapHover(boot.vm));
+    resources.minimapCleanup = () => {
+      setMinimapHoverHost(undefined);
+      minimapCleanup();
+    };
 
     const targetFrame = boot.bridge.getFrame("TargetFrame");
     const targetPortrait = boot.bridge.getFrame("TargetFramePortrait");

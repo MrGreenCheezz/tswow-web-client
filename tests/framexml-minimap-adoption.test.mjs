@@ -169,6 +169,8 @@ const {
   addMinimapPing, adoptMinimapCanvas, forgetMinimap, minimapSettings, minimapWidgetAdapter,
   updateMinimap,
 } = await import("../dist/code/browser/ui/Minimap.js");
+const { getTip } = await import("../dist/code/browser/ui/Tooltip.js");
+const CANVAS_TIP = "Щелчок — метка на миникарте группы";
 
 function styleSnapshot(canvas) {
   return Object.fromEntries([
@@ -275,8 +277,11 @@ test("adoption reuses one canvas, follows FrameXML ancestors, and restores state
 
   let cleanup;
   try {
+    assert.equal(getTip(canvas), CANVAS_TIP, "the native interface's hint");
     cleanup = adoptMinimapCanvas(target);
     assert.equal(typeof cleanup, "function");
+    // 3.13 (07.11): Wow.exe's minimap has no hint of its own; it names what is under the pointer.
+    assert.equal(getTip(canvas), undefined, "no native hint while the stock interface holds the canvas");
     assert.equal(canvas.parentElement, target, "the same native canvas is placed in the FrameXML slot");
     assert.deepEqual(target.children, [canvas, authoredControl], "stock controls remain above the map");
     assert.equal(canvas.hidden, false, "the canvas does not copy a blank child hidden bit");
@@ -331,6 +336,7 @@ test("adoption reuses one canvas, follows FrameXML ancestors, and restores state
     assert.deepEqual(canvas.dataset, originalDataset);
     assert.deepEqual(styleSnapshot(canvas), originalStyle);
     assert.deepEqual([canvas.width, canvas.height], originalBacking);
+    assert.equal(getTip(canvas), CANVAS_TIP, "the hint comes back with the native interface");
   } finally {
     cleanup?.();
     canvas.clientWidth = originalClientSize[0];

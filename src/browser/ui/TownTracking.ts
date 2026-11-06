@@ -86,6 +86,15 @@ export function trivialQuestsTracked(): boolean {
   return active === TRIVIAL_QUESTS;
 }
 
+/**
+ * 3.13 (07.11): whether the minimap's tooltip adds a tracked NPC's subname — Wow.exe 0x0057f7f0 when the active
+ * tracker's NPC flag mask has 0x40, which is the profession trainers'.
+ */
+export function townTrackerShowsSubName(): boolean {
+  const row = TOWN_TRACKERS.find((candidate) => candidate.name === active);
+  return row !== undefined && (row.npcFlags & 0x40) !== 0;
+}
+
 /** Whether the active town tracker shows this object, and with which cell. */
 export function townTrackedCell(object: WorldObjectState): MinimapIconCell | undefined {
   if (active === undefined) return undefined;
