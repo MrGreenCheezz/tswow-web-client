@@ -49,6 +49,8 @@ import { FrameXmlCombatLogBuffer, type FrameXmlCombatLogModel } from "./FrameXml
 import type { SpellGo, SpellStart } from "../../world/SpellProtocol.js"; // 3.01-castlog
 import { FrameXmlCombatLogCastRules } from "./FrameXmlCombatLogCasts.js"; // 3.01-castlog
 import { COMBAT_TEXT_SPELL_CAST, combatTextSpellCast } from "./FrameXmlCombatText.js"; // 13.10 (3.01)
+import { frameXmlCombatTextForEntry, type FrameXmlCombatTextFacts } from "./FrameXmlCombatTextLog.js"; // 06.11 (3.01)
+import { globalString } from "../../generated/globalStrings.js"; // 06.11 (3.01)
 import { combatLogLimitCategoryText, type CombatLogLimitCategory } from "./FrameXmlCombatLogFailed.js"; // 05.10-3.01
 import { formatGlobalStringByName } from "../../world/GlobalStringFormat.js"; // 05.10-3.01
 import { itemLimitCategoryClient } from "../ItemLimitCategoryClient.js"; // 05.10-3.01
@@ -184,6 +186,9 @@ export class FrameXmlCombatLogLive implements FrameXmlCombatLogModel, CombatEntr
       entry.destName = this.#name(entry.dest, world);
       entry.destFlags = this.flags(entry.dest, world);
     }
+    // 06.11 (3.01): the combat-text unit is compared with the GUIDs as the packet named them.
+    const source = entry.source;
+    const dest = entry.dest;
     // 0x0074d210, right before 0x0074f910: a creature or vehicle whose template says
     // CREATURE_TYPE_FLAG_MASK_UID (0x4000) is named without its spawn counter.
     entry.source = maskedGuid(entry.source, world);
@@ -191,8 +196,31 @@ export class FrameXmlCombatLogLive implements FrameXmlCombatLogModel, CombatEntr
     this.buffer.push(entry);
     const pump = this.#pump;
     if (!pump) return;
-    // 0x0074f910: COMBAT_LOG_EVENT for an entry that passes the filter, then _UNFILTERED, to whoever
-    // is registered at this moment.
+    this.#fireLogEvents(entry, pump);
+    // 06.11 (3.01): after the entry, its COMBAT_TEXT_UPDATE messages (FrameXmlCombatTextLog.ts).
+    if (this.#combatTextUnit !== 0n) {
+      for (const message of frameXmlCombatTextForEntry(entry, source, dest, this.#combatTextFacts(world))) {
+        pump.fire("COMBAT_TEXT_UPDATE", ...message);
+      }
+    }
+  }
+
+  /** The facts FrameXmlCombatTextLog.ts reads beyond the entry. */
+  #combatTextFacts(world: WorldClient | undefined): FrameXmlCombatTextFacts {
+    return {
+      unit: this.#combatTextUnit,
+      name: (guid) => this.#deps.name(guid),
+      unknownName: () => globalString("UNKNOWNOBJECT"),
+      spell: (id) => this.#deps.spell(id),
+      alive: (guid) => {
+        const object = world?.state?.objects?.get(guid);
+        return object !== undefined && (readField(object, "UNIT_FIELD_HEALTH") ?? 0) > 0;
+      },
+    };
+  }
+
+  /** 0x0074f910: COMBAT_LOG_EVENT for an entry that passes the filter, then _UNFILTERED, to whoever is registered. */
+  #fireLogEvents(entry: CombatLogEntry, pump: FrameXmlCombatLogPump): void {
     if (pump.listening) {
       if (pump.listening("COMBAT_LOG_EVENT") && this.buffer.passes(entry)) {
         pump.fire("COMBAT_LOG_EVENT", ...this.buffer.args(entry));

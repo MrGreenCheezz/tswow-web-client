@@ -213,7 +213,9 @@ export function parseInstantKillLog(payload: Uint8Array): SpellLogPair {
 }
 
 export interface DamageShieldLog {
+  /** The unit the shield hurt: the one that struck the shield's owner. */
   targetGuid: bigint;
+  /** The shield's owner, who deals the damage. */
   casterGuid: bigint;
   spellId: number;
   damage: number;
@@ -221,12 +223,20 @@ export interface DamageShieldLog {
   schoolMask: number;
 }
 
-/** Mirrors the damage-shield block in `Unit::DealMeleeDamage`. Full guids, not packed. */
+/**
+ * Mirrors the damage-shield block in `Unit::DealMeleeDamage`. Full guids, not packed.
+ *
+ * 06.11 (3.01): the shield's owner first, then the unit it hurt. The core writes `victim` (the one struck,
+ * who wears the shield) and then `this` (the striker), and deals the damage `victim` → `this`
+ * (Unit.cpp:1753-1763). Wow.exe 0x006d3750 hurts the second GUID too: its predicted health (0x0071c260), its
+ * WOUND (0x00513380) and its floating number (0x00722340), and DAMAGE_SHIELD combat text (0x00752c90).
+ * This was read the other way round, so the damage showed over the shield's owner.
+ */
 export function parseDamageShieldLog(payload: Uint8Array): DamageShieldLog {
   const reader = new PacketReader(payload);
   const log = {
-    targetGuid: reader.u64(),
     casterGuid: reader.u64(),
+    targetGuid: reader.u64(),
     spellId: reader.u32(),
     damage: reader.u32(),
     overkill: reader.u32(),

@@ -94,8 +94,11 @@ test("dispel, damage shield and visual kit logs decode", () => {
     .packedGuid(TARGET).packedGuid(CASTER).u32(527).u8(0).u32(2).u32(172).u8(0).u32(980).u8(1).toUint8Array());
   assert.deepEqual(dispel.dispelled, [{ spellId: 172, cleansed: false }, { spellId: 980, cleansed: true }]);
 
+  // 06.11 (3.01): Unit.cpp writes the shield's owner, then the striker it hurts (Wow.exe 0x006d3750 hurts the second).
   const shield = parseDamageShieldLog(new PacketWriter()
-    .u64(TARGET).u64(CASTER).u32(1160).u32(75).u32(0).u32(0x01).toUint8Array());
+    .u64(CASTER).u64(TARGET).u32(1160).u32(75).u32(0).u32(0x01).toUint8Array());
+  assert.equal(shield.casterGuid, CASTER, "the shield's owner deals the damage");
+  assert.equal(shield.targetGuid, TARGET, "the striker takes it");
   assert.equal(shield.damage, 75);
   assert.equal(shield.schoolMask, 0x01);
 
