@@ -48,6 +48,16 @@ export interface RandPropPointsInfo {
   uncommon: number[];
 }
 
+/** 06.11 (3.12): a ScalingStatDistribution row: a heirloom's ten stat types, their bonuses and its top level. */
+export interface ScalingStatDistributionInfo {
+  id: number;
+  /** StatID[10]: an ItemModType, -1 for none. */
+  stats: number[];
+  /** Bonus[10], in ten-thousandths of the level's multiplier. */
+  bonuses: number[];
+  maxLevel: number;
+}
+
 export interface GemPropertyInfo {
   id: number;
   enchantmentId: number;
@@ -74,6 +84,12 @@ export interface ItemEnchantmentData {
   randomProperties?: ItemRandomPropertyInfo[];
   randomSuffixes?: ItemRandomSuffixInfo[];
   randPropPoints?: RandPropPointsInfo[];
+  /**
+   * 06.11 (3.12): the heirloom tables (additive under `?v=4`). ScalingStatValues is the whole rows in file order:
+   * Wow.exe reads row level − 1 (0x0061f550, 0x006277f0), not a row by its id.
+   */
+  scalingStatDistributions?: ScalingStatDistributionInfo[];
+  scalingStatValues?: number[][];
 }
 
 /** 3.3.5 DBCStructure.h: SpellItemEnchantment is 38 uint32 fields, Name[16] at 14,
@@ -168,6 +184,24 @@ export function readRandPropPoints(data: Buffer): RandPropPointsInfo[] {
   return Array.from({ length: table.count }, (_, row) => ({
     level: table.word(row, 0), epic: five(row, 1), rare: five(row, 6), uncommon: five(row, 11),
   }));
+}
+
+/** 06.11 (3.12): ScalingStatDistribution.dbc — ID, StatID[10] (1-10), Bonus[10] (11-20), Maxlevel (21). */
+export function readScalingStatDistributions(data: Buffer): ScalingStatDistributionInfo[] {
+  const table = wdbc(data, "ScalingStatDistribution", 22);
+  const signed = (value: number): number => value | 0;
+  return Array.from({ length: table.count }, (_, row) => ({
+    id: table.word(row, 0),
+    stats: Array.from({ length: 10 }, (_, index) => signed(table.word(row, 1 + index))),
+    bonuses: Array.from({ length: 10 }, (_, index) => signed(table.word(row, 11 + index))),
+    maxLevel: table.word(row, 21),
+  }));
+}
+
+/** 06.11 (3.12): ScalingStatValues.dbc — 24 words a row, kept whole and in file order. */
+export function readScalingStatValues(data: Buffer): number[][] {
+  const table = wdbc(data, "ScalingStatValues", 24);
+  return Array.from({ length: table.count }, (_, row) => Array.from({ length: 24 }, (_, field) => table.word(row, field) | 0));
 }
 
 /** A table the dataset may not ship: missing reads as undefined, a corrupt one still fails. */
@@ -279,6 +313,10 @@ export async function loadItemEnchantments(directory: string): Promise<ItemEncha
     readOptional(join(directory, "ItemRandomSuffix.dbc")),
     readOptional(join(directory, "RandPropPoints.dbc")),
   ]);
+  const [distributions, values] = await Promise.all([
+    readOptional(join(directory, "ScalingStatDistribution.dbc")), // 06.11 (3.12): heirlooms
+    readOptional(join(directory, "ScalingStatValues.dbc")),
+  ]);
   const enchantments = readItemEnchantments(enchants);
   const models: Record<string, string[]> = {};
   for (const enchantment of enchantments) {
@@ -302,5 +340,7 @@ export async function loadItemEnchantments(directory: string): Promise<ItemEncha
     } : {}),
     ...(suffixes ? { randomSuffixes: readItemRandomSuffixes(suffixes) } : {}),
     ...(points ? { randPropPoints: readRandPropPoints(points) } : {}),
+    ...(distributions ? { scalingStatDistributions: readScalingStatDistributions(distributions) } : {}),
+    ...(values ? { scalingStatValues: readScalingStatValues(values) } : {}),
   };
 }

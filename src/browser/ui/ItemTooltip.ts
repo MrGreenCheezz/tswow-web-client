@@ -19,6 +19,9 @@ import {
   ITEM_RANDOM_FIRST_SLOT, itemEnchantText, itemRandomDisplayName, itemRandomEnchantAmount, itemRandomEnchantSlots,
   itemRandomTables, itemSuffixFactor, type ItemRandomTables,
 } from "../ItemRandomProperties.js"; // 06.11 (3.12)
+import {
+  itemScaledStats, itemScaling, itemScalingArmor, itemScalingDps, itemScalingTables, type ItemScaling, type ItemScalingTables,
+} from "../ItemScaling.js"; // 06.11 (3.12)
 import type { TooltipContent, TooltipLine, TooltipRefresh, TooltipTone } from "./TooltipTypes.js";
 
 /**
@@ -313,6 +316,10 @@ export interface ItemTooltipContext {
   random?: ItemTooltipRandom | undefined;
   /** 06.11 (3.12): the random tables (ItemRandomProperties.ts); absent until they land. */
   randomTables?: ItemRandomTables | undefined;
+  /** 06.11 (3.12): the heirloom tables (ItemScaling.ts); absent until they land. */
+  scalingTables?: ItemScalingTables | undefined;
+  /** 06.11 (3.12): the level of the unit a heirloom is drawn for (SetInventoryItem's); absent: `playerLevel`. */
+  scalingLevel?: number | undefined;
 }
 
 /**
@@ -396,7 +403,14 @@ export function itemTooltipContent(facts: ItemFacts, context: ItemTooltipContext
     // carry both without being worn in a weapon slot, and 53 of them are ammunition, whose `delay`
     // is a leftover (see `WEAPON_INVENTORY_TYPES`).
     const damage = template.damage[0];
-    if (WEAPON_INVENTORY_TYPES.includes(template.inventoryType) && damage && damage.max > 0 && template.delay > 0) {
+    // 06.11 (3.12): a heirloom's hit, armour and stats at the level, as the stock layout draws them.
+    const scaling = scalingOf(template, context);
+    const scaled = scaledHit(template, scaling);
+    if (scaled) {
+      const line = fillTemplate(globalString("DAMAGE_TEMPLATE") ?? "", Math.trunc(scaled.min), Math.trunc(scaled.max));
+      push(`${line}  ${globalString("SPEED") ?? ""} ${scaled.seconds.toFixed(2)}`.trim());
+      push(fillTemplate(globalString("DPS_TEMPLATE") ?? "", scaled.average / scaled.seconds), "muted");
+    } else if (WEAPON_INVENTORY_TYPES.includes(template.inventoryType) && damage && damage.max > 0 && template.delay > 0) {
       const speed = template.delay / 1000;
       const line = fillTemplate(globalString("DAMAGE_TEMPLATE") ?? "", damage.min, damage.max);
       push(`${line}  ${globalString("SPEED") ?? ""} ${speed.toFixed(2)}`.trim());
@@ -404,7 +418,8 @@ export function itemTooltipContent(facts: ItemFacts, context: ItemTooltipContext
     }
     // There is no armour field in 3.3.5: the core writes armour into resistance slot zero on its
     // way out (`ItemTemplate.cpp:250`), which the dataset confirms by calling that slot «к броне».
-    const armor = template.resistances[0] ?? 0;
+    const armor = scaling && (scaling.flags & SCALING_ARMOR_FLAGS) !== 0
+      ? itemScalingArmor(scaling.row, scaling.flags) : template.resistances[0] ?? 0;
     if (armor > 0) push(fillTemplate(globalString("ARMOR_TEMPLATE") ?? "", armor));
     for (let school = 1; school < template.resistances.length; school++) {
       const value = template.resistances[school] ?? 0;
@@ -414,13 +429,14 @@ export function itemTooltipContent(facts: ItemFacts, context: ItemTooltipContext
       if (value > 0) push(`${signed(value)} ${globalString(`RESISTANCE${school}_NAME`) ?? ""}`.trim());
     }
 
+    const stats = scaling ? itemScaledStats(scaling).filter((entry) => entry.type >= 0) : template.stats;
     const primary: string[] = [];
     for (const type of PRIMARY_STATS) {
-      const stat = template.stats.find((entry) => entry.type === type && entry.value !== 0);
+      const stat = stats.find((entry) => entry.type === type && entry.value !== 0);
       if (stat) primary.push(statText(type, stat.value, true));
     }
     if (primary.length > 0) push(primary.join("  "), "stat");
-    for (const stat of template.stats) {
+    for (const stat of stats) {
       if (stat.value === 0 || PRIMARY_STATS.includes(stat.type)) continue;
       push(statText(stat.type, stat.value, false), "stat");
     }
@@ -523,11 +539,39 @@ export function itemTooltipContent(facts: ItemFacts, context: ItemTooltipContext
 }
 
 /**
- * `ItemModType`s the original prints as white base-stat rows: mana, health, agility, strength,
- * intellect, spirit, stamina. Every other type — the ratings, attack and spell power — is an
- * «Если на персонаже:» line in green, which is where 3.3 moved them when ratings became stats.
+ * `ItemModType`s the original prints as white base-stat rows, in 0x00a262f0's order: strength, agility,
+ * stamina, intellect, spirit, health, mana (06.11, 3.12; the table's 8, 9, 2 and 10 have no ITEM_MOD name).
+ * The ratings, attack and spell power are «Если на персонаже:» lines in green (0x00a25f78: types 12-48).
  */
-const BASE_STAT_TYPES: readonly number[] = [0, 1, 3, 4, 5, 6, 7];
+const WHITE_STAT_ORDER: readonly number[] = [4, 3, 7, 5, 6, 1, 0];
+/** 06.11 (3.12): 0x00a25f78, the green ones: 12..48. */
+const FIRST_GREEN_STAT = 12;
+const LAST_GREEN_STAT = 48;
+const ITEM_CLASS_WEAPON = 2;
+const SCALING_ARMOR_FLAGS = 0xf801e0;
+const SCALING_DAMAGE_FLAGS = 0x7e00;
+const SCALING_SPELL_POWER = 0x8000;
+const SECONDS_PER_MS = Math.fround(0.001);
+
+/** 06.11 (3.12): the record's scaling at the unit's level, once the tables are there. */
+function scalingOf(template: ItemTemplate, context: ItemTooltipContext): ItemScaling | undefined {
+  const tables = context.scalingTables;
+  return tables ? itemScaling(template, context.scalingLevel ?? context.playerLevel ?? 1, tables) : undefined;
+}
+
+/**
+ * 06.11 (3.12): a scaled hit (0x006277f0): the row's DPS spread (0x0061a830) times the delay in seconds, in float;
+ * undefined without a damage flag or the level's row.
+ */
+function scaledHit(template: ItemTemplate, scaling: ItemScaling | undefined):
+  { readonly min: number; readonly max: number; readonly average: number; readonly seconds: number } | undefined {
+  if (!scaling?.row || (scaling.flags & SCALING_DAMAGE_FLAGS) === 0) return undefined;
+  const dps = itemScalingDps(scaling.row, scaling.flags);
+  const seconds = Math.fround(Math.fround(template.delay) * SECONDS_PER_MS);
+  const min = template.delay !== 0 ? Math.fround(dps.min * template.delay * SECONDS_PER_MS) : dps.min;
+  const max = template.delay !== 0 ? Math.fround(template.delay * dps.max * SECONDS_PER_MS) : dps.max;
+  return { min, max, average: Math.fround((min + max) * 0.5), seconds };
+}
 
 /** `GRAY_FONT_COLOR`, which no tone maps to: an empty socket, an inactive socket bonus. */
 const STOCK_GRAY = "#808080";
@@ -617,8 +661,17 @@ export function stockItemTooltipContent(facts: ItemFacts, context: ItemTooltipCo
   }
 
   if (template) {
+    // 06.11 (3.12): a heirloom's numbers at the unit's level (ItemScaling.ts); its template's are not read.
+    const scaling = scalingOf(template, context);
     const damage = template.damage[0];
-    if (WEAPON_INVENTORY_TYPES.includes(template.inventoryType) && damage && damage.max > 0 && template.delay > 0) {
+    const scaled = scaledHit(template, scaling);
+    if (scaled) {
+      lines.push({
+        text: fillTemplate(globalString("DAMAGE_TEMPLATE") ?? "", Math.trunc(scaled.min), Math.trunc(scaled.max)),
+        right: `${globalString("SPEED") ?? ""} ${scaled.seconds.toFixed(2)}`.trim(),
+      });
+      if (template.itemClass === ITEM_CLASS_WEAPON) push(fillTemplate(globalString("DPS_TEMPLATE") ?? "", scaled.average / scaled.seconds));
+    } else if (WEAPON_INVENTORY_TYPES.includes(template.inventoryType) && damage && damage.max > 0 && template.delay > 0) {
       const speed = template.delay / 1000;
       lines.push({
         text: fillTemplate(globalString("DAMAGE_TEMPLATE") ?? "", damage.min, damage.max),
@@ -626,11 +679,19 @@ export function stockItemTooltipContent(facts: ItemFacts, context: ItemTooltipCo
       });
       push(fillTemplate(globalString("DPS_TEMPLATE") ?? "", (damage.min + damage.max) / 2 / speed));
     }
-    const armor = template.resistances[0] ?? 0;
-    if (armor > 0) push(fillTemplate(globalString("ARMOR_TEMPLATE") ?? "", armor));
+    // 06.11 (3.12): a scaled armour is written even at 0 (0x006277f0).
+    if (scaling && (scaling.flags & SCALING_ARMOR_FLAGS) !== 0) {
+      push(fillTemplate(globalString("ARMOR_TEMPLATE") ?? "", itemScalingArmor(scaling.row, scaling.flags)));
+    } else {
+      const armor = template.resistances[0] ?? 0;
+      if (armor > 0) push(fillTemplate(globalString("ARMOR_TEMPLATE") ?? "", armor));
+    }
     if (template.block > 0) push(fillTemplate(stockItemString("SHIELD_BLOCK_TEMPLATE"), template.block));
-    for (const stat of template.stats) {
-      if (stat.value !== 0 && BASE_STAT_TYPES.includes(stat.type)) push(statText(stat.type, stat.value, false));
+    // 06.11 (3.12): white in 0x00a262f0's order, the first non-zero stat of each type, not the item's order.
+    const stats = scaling ? itemScaledStats(scaling) : template.stats;
+    for (const type of WHITE_STAT_ORDER) {
+      const stat = stats.find((entry) => entry.type === type && entry.value !== 0);
+      if (stat) push(statText(type, stat.value, false));
     }
     for (let school = 1; school < template.resistances.length; school++) {
       const value = template.resistances[school] ?? 0;
@@ -681,7 +742,14 @@ export function stockItemTooltipContent(facts: ItemFacts, context: ItemTooltipCo
     if (classes) push(fillTemplate(globalString("ITEM_CLASSES_ALLOWED") ?? "", classes));
     const races = allowedNames(template.allowableRace, PLAYABLE_RACES, raceName);
     if (races) push(fillTemplate(globalString("ITEM_RACES_ALLOWED") ?? "", races));
-    if (template.requiredLevel > 1) {
+    if (scaling?.distribution) {
+      // 06.11 (3.12): ITEM_LEVEL_RANGE_CURRENT, red while the player is below RequiredLevel or above Maxlevel.
+      const { maxLevel } = scaling.distribution;
+      const met = context.playerLevel === undefined
+        || (context.playerLevel >= template.requiredLevel && context.playerLevel <= maxLevel);
+      push(fillTemplate(globalString("ITEM_LEVEL_RANGE_CURRENT") ?? "", Math.max(1, template.requiredLevel), maxLevel, scaling.level),
+        met ? {} : { tone: "unmet" });
+    } else if (template.requiredLevel > 1) {
       const met = context.playerLevel === undefined || context.playerLevel >= template.requiredLevel;
       push(fillTemplate(globalString("ITEM_MIN_LEVEL") ?? "", template.requiredLevel), met ? {} : { tone: "unmet" });
     }
@@ -696,9 +764,14 @@ export function stockItemTooltipContent(facts: ItemFacts, context: ItemTooltipCo
     if (template.itemLevel > 0 && slotWord) push(fillTemplate(globalString("ITEM_LEVEL") ?? "", template.itemLevel));
 
     const onEquip = globalString("ITEM_SPELL_TRIGGER_ONEQUIP");
-    for (const stat of template.stats) {
-      if (stat.value === 0 || BASE_STAT_TYPES.includes(stat.type)) continue;
+    // 06.11 (3.12): green in the item's (or the distribution's) order, for the types 0x00a25f78 lists (12-48).
+    for (const stat of stats) {
+      if (stat.value === 0 || stat.type < FIRST_GREEN_STAT || stat.type > LAST_GREEN_STAT) continue;
       push(`${onEquip ? `${onEquip} ` : ""}${statText(stat.type, stat.value, false)}`, green);
+    }
+    const spellPower = scaling?.row && (scaling.flags & SCALING_SPELL_POWER) !== 0 ? scaling.row[16] ?? 0 : 0;
+    if (spellPower !== 0) {
+      push(`${onEquip ? `${onEquip} ` : ""}${fillTemplate(globalString("ITEM_MOD_SPELL_POWER") ?? "", spellPower)}`, green);
     }
     const recipe = template.itemClass === ITEM_CLASS_RECIPE;
     // A recipe's description is what it teaches, and the original prints it as the green
@@ -931,7 +1004,8 @@ export function itemTooltipFor(entry: number, context: ItemTooltipContext = {}):
   const enchants = game.gatewayOrigin ? itemEnchantments(game.gatewayOrigin) : undefined;
   const needsEnchants = template && (template.gemProperties > 0 || template.socketBonus > 0
     || template.sockets.some((socket) => socket.color > 0)) || context.enchantments?.some((id) => id > 0)
-    || (context.random !== undefined && context.random.id !== 0); // 06.11 (3.12): the random tables ride along
+    || (context.random !== undefined && context.random.id !== 0) // 06.11 (3.12): the random tables ride along
+    || (template !== undefined && template.scalingStatValue !== 0); // and the heirloom ones
   if (needsEnchants && enchants && !enchants.ready) {
     void enchants.load().then(lateData).catch(() => undefined);
   }
@@ -977,6 +1051,7 @@ export function itemTooltipFor(entry: number, context: ItemTooltipContext = {}):
       gemMetadataReady: enchants?.ready,
       gemName,
       randomTables: itemRandomTables(enchants), // 06.11 (3.12)
+      scalingTables: itemScalingTables(enchants),
       ...context,
     });
   // What is worn where this would go: names, not stat math — a real upgrade verdict needs Sim

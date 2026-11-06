@@ -23,8 +23,11 @@ import type {
   GameTooltipExtrasAdapter, GameTooltipQuest, GameTooltipTalent, GameTooltipTalentRequirement,
 } from "../glue/GlueTooltipExtras.js";
 import type {
-  GameTooltipItemAura, GameTooltipRandomEffect, GameTooltipStatSource,
-} from "../glue/GlueTooltipStatDelta.js"; // 3.12 (04.10, L4); GameTooltipRandomEffect 06.11
+  GameTooltipItemAura, GameTooltipRandomEffect, GameTooltipScaled, GameTooltipStatSource,
+} from "../glue/GlueTooltipStatDelta.js"; // 3.12 (04.10, L4); GameTooltipRandomEffect, GameTooltipScaled 06.11
+import {
+  itemScaledStats, itemScaling, itemScalingArmor, itemScalingDps, itemScalingTables, type ItemScalingTables,
+} from "../ItemScaling.js"; // 3.12 (06.11)
 import { itemEnchantments } from "../ItemEnchantments.js"; // 3.12 (06.11)
 import { itemLinkRandom, itemRandomStatEffects, itemRandomTables, type ItemRandomTables } from "../ItemRandomProperties.js"; // 3.12 (06.11)
 import { frameXmlQuestText } from "./FrameXmlQuestText.js"; // 3.12 (13.10): was ui/NpcText.ts formatNpcText
@@ -48,6 +51,7 @@ export interface FrameXmlTooltipExtrasWorld {
     readonly itemTemplates?: ReadonlyMap<number, GameTooltipStatSource & {
       readonly found: boolean; readonly scalingStatValue: number;
       readonly spells?: readonly { readonly spellId: number }[]; // 3.12 (13.10)
+      readonly scalingStatDistribution?: number; readonly requiredLevel?: number; // 3.12 (06.11)
     }>;
     /** 3.12 (04.10, L4): the open merchant's list (SMSG_LIST_INVENTORY), undefined once closed. */
     readonly vendor?: unknown;
@@ -140,6 +144,25 @@ export function frameXmlRandomEffects(
     effects.push({ ...effect, auras });
   }
   return effects;
+}
+
+/**
+ * 3.12 (06.11): a heirloom's table at the level (0x0061f550, ItemScaling.ts): what its flags take from the level's
+ * row; `null` while the tables are on their way.
+ */
+export function frameXmlScaled(record: {
+  readonly scalingStatDistribution: number; readonly scalingStatValue: number; readonly requiredLevel: number;
+}, tables: ItemScalingTables | undefined, level: number): GameTooltipScaled | null {
+  const scaling = tables ? itemScaling(record, level, tables) : undefined;
+  if (!scaling) return null;
+  const { flags, row } = scaling;
+  return {
+    valid: scaling.distribution !== undefined && row !== undefined,
+    stats: itemScaledStats(scaling),
+    ...((flags & 0xf801e0) !== 0 ? { armor: itemScalingArmor(row, flags) } : {}),
+    ...((flags & 0x7e00) !== 0 ? { dps: itemScalingDps(row, flags) } : {}),
+    ...((flags & 0x8000) !== 0 && row ? { spellPower: row[16] ?? 0 } : {}),
+  };
 }
 
 export function frameXmlTooltipExtrasAdapter(
@@ -262,11 +285,20 @@ export function frameXmlTooltipExtrasAdapter(
       // 3.12 (13.10): the passive spells' auras (0x0061f350); a row not here yet is asked for, and the
       // table stays unknown (`spellAuras: null` — no difference) until it lands.
       const spellAuras = frameXmlItemSpellAuras(template.spells, (id) => context().spells?.get(id), requestSpells);
+      const origin = context().gatewayOrigin;
+      const client = origin ? itemEnchantments(origin) : undefined;
+      // 3.12 (06.11): a heirloom at the player's level (0x0061f550 through 0x0061e740), and no random property.
+      if (template.scalingStatValue !== 0) {
+        if (client && !client.ready) void client.load().catch(() => undefined);
+        const record = {
+          scalingStatDistribution: template.scalingStatDistribution ?? 0, scalingStatValue: template.scalingStatValue,
+          requiredLevel: template.requiredLevel ?? 1,
+        };
+        return { ...template, spellAuras, scaled: frameXmlScaled(record, itemScalingTables(client), seam.unitLevel?.("player") ?? 1) };
+      }
       // 3.12 (06.11): the link's random property or suffix (0x0061fa20), unknown until its tables land.
       const random = itemLinkRandom(link);
       if (random.id === 0) return { ...template, spellAuras };
-      const origin = context().gatewayOrigin;
-      const client = origin ? itemEnchantments(origin) : undefined;
       if (client && !client.ready) void client.load().catch(() => undefined);
       const randomEffects = frameXmlRandomEffects(random, itemRandomTables(client), (id) => context().spells?.get(id), requestSpells);
       return { ...template, spellAuras, randomEffects };

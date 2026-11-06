@@ -1,11 +1,13 @@
 import type {
   ItemEnchantmentData, ItemEnchantmentInfo, GemPropertyInfo, ItemRandomPropertyInfo, ItemRandomSuffixInfo,
-  RandPropPointsInfo,
+  RandPropPointsInfo, ScalingStatDistributionInfo,
 } from "../gateway/ItemEnchantments.js";
 import { UPDATE_FIELDS } from "../generated/updateFields.js";
 import type { WorldObjectState } from "../world/WorldState.js";
 
-export type { ItemEnchantmentInfo, GemPropertyInfo, ItemRandomPropertyInfo, ItemRandomSuffixInfo, RandPropPointsInfo };
+export type {
+  ItemEnchantmentInfo, GemPropertyInfo, ItemRandomPropertyInfo, ItemRandomSuffixInfo, RandPropPointsInfo, ScalingStatDistributionInfo,
+};
 
 const isIntegers = (value: unknown, length: number): value is number[] =>
   Array.isArray(value) && value.length === length && value.every((entry) => Number.isInteger(entry));
@@ -19,6 +21,11 @@ export class ItemEnchantmentClient {
   readonly randPropPoints = new Map<number, RandPropPointsInfo>();
   /** 06.11 (3.12): the answer carried the random tables and the effects (a gateway restarted since `?v=3`). */
   randomReady = false;
+  /** 06.11 (3.12): ScalingStatDistribution rows by id, ScalingStatValues rows in file order (level − 1). */
+  readonly scalingDistributions = new Map<number, ScalingStatDistributionInfo>();
+  scalingValues: readonly (readonly number[])[] = [];
+  /** 06.11 (3.12): the answer carried the heirloom tables (a gateway restarted since `?v=4`). */
+  scalingReady = false;
   #pending: Promise<void> | undefined;
   ready = false;
 
@@ -40,8 +47,8 @@ export class ItemEnchantmentClient {
   async #load(): Promise<void> {
     // `v=2`: the rows gained `flags` (SpellItemEnchantment.Flags, 2.05). The route does not read the
     // query, so a gateway not yet restarted answers the old shape and `flags` stays undefined.
-    // `v=3` (06.11, 3.12): the effects and the random property tables, as additive keys.
-    const response = await fetch(`${this.origin}/dbc/item-enchantments?v=3`);
+    // `v=3` (06.11, 3.12): the effects and the random property tables, as additive keys; `v=4` the heirloom tables.
+    const response = await fetch(`${this.origin}/dbc/item-enchantments?v=4`);
     if (!response.ok) throw new Error(`Не удалось загрузить сведения о камнях (${response.status})`);
     const data = await response.json() as ItemEnchantmentData;
     if (!Array.isArray(data.enchantments) || !Array.isArray(data.gems)
@@ -84,6 +91,18 @@ export class ItemEnchantmentClient {
       }
     }
     this.randomReady = Array.isArray(data.randomProperties) && Array.isArray(data.randomSuffixes) && Array.isArray(data.randPropPoints);
+    // 06.11 (3.12): a malformed distribution is skipped; a malformed values table leaves the heirlooms unready.
+    this.scalingDistributions.clear();
+    if (Array.isArray(data.scalingStatDistributions)) {
+      for (const row of data.scalingStatDistributions) {
+        if (Number.isInteger(row?.id) && isIntegers(row.stats, 10) && isIntegers(row.bonuses, 10) && Number.isInteger(row.maxLevel)) {
+          this.scalingDistributions.set(row.id, row);
+        }
+      }
+    }
+    const values = data.scalingStatValues;
+    this.scalingValues = Array.isArray(values) && values.every((row) => isIntegers(row, 24)) ? values : [];
+    this.scalingReady = Array.isArray(data.scalingStatDistributions) && this.scalingValues.length > 0;
     // An older gateway sends no visuals: glow stays off rather than failing the whole table.
     const visuals = (data as { visuals?: Record<string, readonly string[]> }).visuals;
     if (visuals && typeof visuals === "object") {

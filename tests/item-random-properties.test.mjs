@@ -291,6 +291,7 @@ test("the enchantment client keeps the random tables and the effects; an older a
     await older.load();
     assert.equal(older.ready, true);
     assert.equal(older.randomReady, false, "a gateway from before ?v=3");
+    assert.equal(older.scalingReady, false, "nor the heirloom tables of ?v=4");
   } finally {
     globalThis.fetch = previous;
   }

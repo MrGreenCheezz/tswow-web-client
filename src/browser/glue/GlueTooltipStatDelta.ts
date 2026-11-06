@@ -27,8 +27,7 @@
  *   ATTACK_POWER_SHORT, ITEM_MOD_BLOCK_VALUE_SHORT, ITEM_MOD_POWER_REGEN<n>_SHORT,
  *   ITEM_MOD_HEALTH_REGEN_SHORT, EMPTY_SOCKET_<COLOUR>.
  *
- * Not here, for want of data: heirloom scaling (0x0061f550) — such an item gets no difference
- * (`gameTooltipStatTableKnown`). 3.12 (06.11): a random property or suffix (0x0061fa20) is added below.
+ * 3.12 (06.11): a random property or suffix (0x0061fa20) and a heirloom's scaling (0x0061f550) are added below.
  *
  * 3.12 (13.10), read-only Ghidra on Wow.exe (`.runtime/re-2026-10-11/glue-1110/t1013-e.txt`, `-f`, `-g`):
  * * The item's spell auras (0x0061f350 → 0x0061b5e0), added after the stats: each of the five spells of the
@@ -70,6 +69,21 @@ export interface GameTooltipStatSource {
    * reads as none, `null` as not known yet (the tables or a type-3 spell row still on the way).
    */
   readonly randomEffects?: readonly GameTooltipRandomEffect[] | null;
+  /** 3.12 (06.11): a heirloom's table at the level; `null` while the tables are on their way. */
+  readonly scaled?: GameTooltipScaled | null;
+}
+
+/**
+ * 3.12 (06.11): a heirloom at the level (0x0061f550, ItemScaling.ts): the distribution's stats, and what its flags take
+ * from the level's row — armour (0xf801e0), the per-second damage pair (0x7e00), spell power (0x8000). `valid` is
+ * whether both the distribution and the row are there; without them the table stays empty.
+ */
+export interface GameTooltipScaled {
+  readonly valid: boolean;
+  readonly stats: readonly { readonly type: number; readonly value: number }[];
+  readonly armor?: number;
+  readonly dps?: { readonly min: number; readonly max: number };
+  readonly spellPower?: number;
 }
 
 /**
@@ -176,6 +190,8 @@ const FERAL_ATTACK_POWER = 10;
 const ITEM_MOD_ATTACK_POWER = 38;
 const ITEM_MOD_RANGED_ATTACK_POWER = 39;
 const BLOCK_VALUE = 60;
+/** 3.12 (06.11): 0x0061f550 adds a heirloom's spell power at table +0xe4, the combined spell power (56). */
+const SCALED_SPELL_POWER = 56;
 const SOCKET_FIRST = 69;
 const SOCKET_COLORS = ["Meta", "Red", "Yellow", "Blue"] as const;
 /** The highest stat type the table has a slot for (11 + 61 = 72). */
@@ -231,23 +247,47 @@ function merge(table: number[]): void {
  */
 export function gameTooltipItemStats(item: GameTooltipStatSource, druid = false): number[] {
   const table = new Array<number>(GAME_TOOLTIP_STAT_SLOTS).fill(0);
-  for (const { type, value } of item.stats) {
-    if (!Number.isInteger(type) || type < 0 || type > MAX_STAT_TYPE) continue;
-    table[1 + STAT_TYPE_BASE + type] = table[1 + STAT_TYPE_BASE + type]! + value;
-    if (type === ITEM_MOD_ATTACK_POWER) table[1 + MELEE_ATTACK_POWER] = table[1 + MELEE_ATTACK_POWER]! + value;
-    if (type === ITEM_MOD_ATTACK_POWER || type === ITEM_MOD_RANGED_ATTACK_POWER) {
-      table[1 + RANGED_ATTACK_POWER] = table[1 + RANGED_ATTACK_POWER]! + value;
-    }
+  // 3.12 (06.11): a heirloom is 0x0061f550's table instead (0x006265c0, 0x006206d0).
+  if (item.scaled) {
+    scaledStats(table, item, item.scaled, druid);
+    merge(table);
+    return table;
   }
+  addStats(table, item.stats);
   for (const aura of item.spellAuras ?? []) addAura(table, aura); // 3.12 (13.10): 0x0061f350 after 0x0061b990
-  for (let school = 0; school < 7; school += 1) table[1 + school] = table[1 + school]! + (item.resistances[school] ?? 0);
+  addResistances(table, item);
   for (const socket of item.sockets.slice(0, 3)) {
     for (let bit = 0; bit < 4; bit += 1) {
       if ((socket.color & (1 << bit)) !== 0) table[1 + SOCKET_FIRST + bit] = table[1 + SOCKET_FIRST + bit]! + 1;
     }
   }
   table[1 + BLOCK_VALUE] = table[1 + BLOCK_VALUE]! + item.block;
-  // 0x0061f410 in float: (max + min) · 0.5 / (delay · 0.001), each damage row on its own.
+  addRecordDamage(table, item, druid);
+  // 3.12 (06.11): 0x006265c0 adds the link's random property after the record (0x0061fa20), before the merges.
+  for (const effect of item.randomEffects ?? []) addRandom(table, effect);
+  merge(table);
+  return table;
+}
+
+/** 0x0061b990: stats of type t to index 11 + t; attack power also to melee and ranged, ranged attack power to ranged. */
+function addStats(table: number[], stats: readonly { readonly type: number; readonly value: number }[], from = 0): void {
+  for (const { type, value } of stats) {
+    if (!Number.isInteger(type) || type < from || type > MAX_STAT_TYPE) continue;
+    table[1 + STAT_TYPE_BASE + type] = table[1 + STAT_TYPE_BASE + type]! + value;
+    if (type === ITEM_MOD_ATTACK_POWER) table[1 + MELEE_ATTACK_POWER] = table[1 + MELEE_ATTACK_POWER]! + value;
+    if (type === ITEM_MOD_ATTACK_POWER || type === ITEM_MOD_RANGED_ATTACK_POWER) {
+      table[1 + RANGED_ATTACK_POWER] = table[1 + RANGED_ATTACK_POWER]! + value;
+    }
+  }
+}
+
+/** 0x0061b8e0: armour and the six resistances of the record. */
+function addResistances(table: number[], item: GameTooltipStatSource): void {
+  for (let school = 0; school < 7; school += 1) table[1 + school] = table[1 + school]! + (item.resistances[school] ?? 0);
+}
+
+/** 0x0061f410 in float: (max + min) · 0.5 / (delay · 0.001), each damage row on its own; a druid's feral power. */
+function addRecordDamage(table: number[], item: GameTooltipStatSource, druid: boolean): void {
   const f = Math.fround;
   const seconds = f(f(item.delay) * f(0.001));
   let dps = 0;
@@ -260,10 +300,31 @@ export function gameTooltipItemStats(item: GameTooltipStatSource, druid = false)
   table[0] = dps;
   // 3.12 (13.10): 0x0061f410 — the feral slot gets the weapon's feral power plus the melee slot.
   if (druid) table[1 + FERAL_ATTACK_POWER] = table[1 + FERAL_ATTACK_POWER]! + gameTooltipFeralAttackPower(item, halves) + table[1 + MELEE_ATTACK_POWER]!;
-  // 3.12 (06.11): 0x006265c0 adds the link's random property after the record (0x0061fa20), before the merges.
-  for (const effect of item.randomEffects ?? []) addRandom(table, effect);
-  merge(table);
-  return table;
+}
+
+/** 0x00a25098 (0.0005f): a per-second damage pair times the delay in ms is twice the average hit. */
+const HALF_SECONDS_PER_MS = Math.fround(0.0005);
+
+/**
+ * 3.12 (06.11): 0x0061f550 — nothing at all without both rows; else the passive auras, the distribution's stats of a
+ * type above 0, the scaled armour (else the record's resistances), the scaled DPS (else the record's damage) with a
+ * druid's feral power from it, and the scaled spell power into the combined slot. No sockets and no block.
+ */
+function scaledStats(table: number[], item: GameTooltipStatSource, scaled: GameTooltipScaled, druid: boolean): void {
+  if (!scaled.valid) return;
+  for (const aura of item.spellAuras ?? []) addAura(table, aura);
+  addStats(table, scaled.stats, 1);
+  if (scaled.armor === undefined) addResistances(table, item);
+  else table[1] = table[1]! + scaled.armor;
+  if (scaled.dps === undefined) addRecordDamage(table, item, druid);
+  else {
+    const f = Math.fround;
+    const sum = f(scaled.dps.min + scaled.dps.max);
+    table[0] = f(f(0.5) * sum);
+    const halves = f(sum * f(item.delay) * HALF_SECONDS_PER_MS);
+    if (druid) table[1 + FERAL_ATTACK_POWER] = table[1 + FERAL_ATTACK_POWER]! + gameTooltipFeralAttackPower(item, halves) + table[1 + MELEE_ATTACK_POWER]!;
+  }
+  if (scaled.spellPower !== undefined) table[1 + SCALED_SPELL_POWER] = table[1 + SCALED_SPELL_POWER]! + scaled.spellPower;
 }
 
 /**
@@ -278,22 +339,22 @@ export function gameTooltipLinkRandomProperty(link: string | undefined): number 
 }
 
 /**
- * L4-review (04.10): whether the table Wow.exe builds for this item is known here. A record with a
- * ScalingStatValue (+0xbc) is built from ScalingStatDistribution at a level instead (0x006265c0 /
- * 0x006206d0 → 0x0061f550: its template stats, sockets and block are not read) — not served here, so
- * such an item gets no difference rather than a wrong one from its bare template. 3.12 (06.11): an
+ * L4-review (04.10): whether the table Wow.exe builds for this item is known here. 3.12 (06.11): a record with a
+ * ScalingStatValue (+0xbc) is built from ScalingStatDistribution at a level instead (0x006265c0 / 0x006206d0 →
+ * 0x0061f550), known once `scaled` is — no difference before, rather than a wrong one from its bare template; an
  * instance with a random property or suffix adds that property's enchantments (→ 0x0061fa20), known once
- * `randomEffects` is.
+ * `randomEffects` is (a heirloom takes none).
  */
 export function gameTooltipStatTableKnown(
   item: {
     readonly scalingStatValue?: number; readonly spellAuras?: readonly GameTooltipItemAura[] | null;
-    readonly randomEffects?: readonly GameTooltipRandomEffect[] | null;
+    readonly randomEffects?: readonly GameTooltipRandomEffect[] | null; readonly scaled?: GameTooltipScaled | null;
   }, link: string | undefined,
 ): boolean {
   // 3.12 (13.10): + a spell row not loaded yet (`spellAuras: null`).
-  return (item.scalingStatValue ?? 0) === 0 && item.spellAuras !== null
-    && (gameTooltipLinkRandomProperty(link) === 0 || Array.isArray(item.randomEffects));
+  if (item.spellAuras === null) return false;
+  if ((item.scalingStatValue ?? 0) !== 0) return item.scaled !== undefined && item.scaled !== null;
+  return gameTooltipLinkRandomProperty(link) === 0 || Array.isArray(item.randomEffects);
 }
 
 /** 0x0061dbc0: hovered − equipped, merged again. */

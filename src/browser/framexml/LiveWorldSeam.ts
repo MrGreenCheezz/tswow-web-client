@@ -4740,8 +4740,12 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
       readField(state.item, "ITEM_FIELD_DURATION") ?? 0);
     const durability = readField(state.item, "ITEM_FIELD_DURABILITY");
     const random = itemObjectRandom(state.item); // 06.11 (3.12)
+    // 06.11 (3.12): a heirloom is drawn at the level of the unit wearing it (0x0061e740), the inspected one too.
+    const wearer = this.#unitObject(unit);
+    const unitLevel = wearer ? readField(wearer, "UNIT_FIELD_LEVEL") : undefined;
+    const extra = { random, ...(unitLevel !== undefined && unitLevel > 0 ? { unitLevel } : {}) };
     return typeof durability === "number" && Number.isFinite(durability) && durability >= 0
-      ? { ...result, durability, random } : { ...result, random };
+      ? { ...result, durability, ...extra } : { ...result, ...extra };
   }
 
   /** The cached template and the host's metadata of an entry, for GameTooltip; nothing is fetched. */

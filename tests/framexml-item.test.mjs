@@ -459,6 +459,14 @@ test("06.11 (3.12): a carried item's link and tooltip name its random suffix (0x
   assert.deepEqual(seam.containerItemTooltip(0, 1)?.random, { id: -10, slots: [2804, 0, 0, 0, 0] });
 });
 
+test("06.11 (3.12): a worn item's tooltip carries its wearer's level, which a heirloom is drawn at (0x0061e740)", () => {
+  const { seam, player } = fixture();
+  assert.equal(seam.inventoryItemTooltip("player", 6)?.unitLevel, undefined, "no level known yet: the player's later");
+  player.fields.set(field("UNIT_FIELD_LEVEL"), 71);
+  assert.equal(seam.inventoryItemTooltip("player", 6)?.unitLevel, 71);
+  assert.equal(seam.inventoryItemTooltip("player", 6)?.entry, 1372, "the belt in slot 6");
+});
+
 test("ammo whose template is unknown is asked for, and the click sets it once the answer lands", () => {
   const { seam, templates, sent, events } = withAmmo(fixture());
   const known = templates.get(2512);

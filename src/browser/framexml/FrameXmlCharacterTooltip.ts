@@ -32,6 +32,8 @@ export interface FrameXmlInventoryTooltipItem {
   readonly durationLeft?: number | undefined;
   /** 06.11 (3.12): the item object's random property and its slots 7..11 (ItemEnchantments.itemObjectRandom). */
   readonly random?: ItemTooltipRandom | undefined;
+  /** 06.11 (3.12): the wearer's level, which a heirloom is drawn at (0x0061e740); absent: the player's. */
+  readonly unitLevel?: number | undefined;
 }
 
 /** Optional, item-aware extension implemented by the world seams without widening the base seam. */
@@ -180,6 +182,7 @@ function contentFor(
   // 5.22 (04.10, L4): the item object's time left, for ITEM_DURATION_* (Wow.exe 0x006277f0 → 0x007070b0).
   if (item.durationLeft !== undefined && Number.isFinite(item.durationLeft)) context.durationLeft = item.durationLeft;
   if (item.random !== undefined) context.random = item.random; // 06.11 (3.12)
+  if (item.unitLevel !== undefined) context.scalingLevel = item.unitLevel;
   return game.world && item.enchantments ? itemTooltipFor(item.entry, context) : itemTooltipContent(facts, context);
 }
 
