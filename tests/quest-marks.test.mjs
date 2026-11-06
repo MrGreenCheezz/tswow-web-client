@@ -39,6 +39,25 @@ test("marks are by unit, and what is not a unit here has none", () => {
   assert.deepEqual([...marks], [[1n, model("TalkToMe")], [2n, model("TalkToMeQuestionMark")]]);
 });
 
+test("06.11 (5.28): a flight master not discovered yet wears the green «!» where no quest mark is up", () => {
+  const green = model("TalkToMeGreen");
+  assert.equal(questMarkModel(0, false, false), green);
+  assert.equal(questMarkModel(0, false, true), undefined, "discovered: nothing");
+  assert.equal(questMarkModel(0, false, undefined), undefined, "no answer, or not a flight master: nothing");
+  assert.equal(questMarkModel(2, false, false), green, "an untracked low level quest falls to the taxi mark");
+  assert.equal(questMarkModel(2, true, false), model("TalkToMe"), "a tracked one is its own mark");
+  assert.equal(questMarkModel(8, false, false), model("TalkToMe"), "a quest mark wins");
+  // 1 and 2 have statuses, 3 only a taxi answer, 4 is discovered, 5 is not a flight master, 6 is no unit here.
+  const statuses = new Map([[1n, 0], [2n, 10]]);
+  const taxi = new Map([[1n, false], [2n, false], [3n, false], [4n, true], [5n, false], [6n, false]]);
+  const marks = questMarksByUnit(statuses, (guid) => guid !== 6n, false, taxi, (guid) => guid !== 5n);
+  assert.deepEqual([...marks], [[1n, green], [2n, model("TalkToMeQuestionMark")], [3n, green]]);
+  assert.deepEqual([...questMarksByUnit(statuses, () => true, false)], [[2n, model("TalkToMeQuestionMark")]],
+    "without the taxi answers, as before");
+  const live = readFileSync(new URL("../src/browser/ui/QuestMarksLive.ts", import.meta.url), "utf8");
+  assert.match(live, /world\.taxiNodeStatus, \(guid\) => \(\(objects\.get\(guid\)\?\.fields\.get\(NPC_FLAGS\) \?\? 0\) & UNIT_NPC_FLAG_FLIGHTMASTER\) !== 0\)/);
+});
+
 test("the marks are compared, so an unchanged frame hands nothing over", () => {
   const one = new Map([[1n, "a"]]);
   assert.equal(sameQuestMarks(one, new Map([[1n, "a"]])), true);

@@ -3,43 +3,49 @@
  * the giver's PlayerName point and scaled with the giver (0x00719310, seen on a creature at twice the size). Which model is two
  * tables: the status picks a row (0x00a34f5c), the row names the model (0x00adac98, 12-byte rows). The trivial statuses need low
  * level quests tracked (0x00745dd7 → 0x0057bf30), as on the minimap.
+ *
+ * 06.11 (5.28): both tables, and the green «!» of a flight master not discovered yet (SMSG_TAXINODE_STATUS), are
+ * the rule of world/QuestGiverMarker.ts; this file hangs its models, as .m2, on the units.
  */
-import {
-  QUEST_STATUS_LOW_LEVEL_AVAILABLE, QUEST_STATUS_LOW_LEVEL_AVAILABLE_REP,
-} from "../../world/QuestProtocol.js";
+import { QUEST_GIVER_MARK_MODELS, questGiverMark } from "../../world/QuestGiverMarker.js";
 
 export const QUEST_MARK_ATTACHMENT = 18;
 /** 0x007155bb: the mark plays 190, which in these models is half a yard above their 0, bobbing. */
 export const QUEST_MARK_SEQUENCE = 190;
 
-const MARK_DIR = "Interface\\Buttons\\";
-const YELLOW_BANG = `${MARK_DIR}TalkToMe.m2`;
-const BLUE_BANG = `${MARK_DIR}TalkToMeBlue.m2`;
-const GREY_BANG = `${MARK_DIR}TalkToMeGrey.m2`;
-const YELLOW_QUESTION = `${MARK_DIR}TalkToMeQuestionMark.m2`;
-const BLUE_QUESTION = `${MARK_DIR}TalkToMeQuestion_LTBlue.m2`;
-const GREY_QUESTION = `${MARK_DIR}TalkToMeQuestion_Grey.m2`;
+/** The mark's model as this client loads it: the table names the .mdx the original asks for. */
+const MARK_MODELS: Readonly<Record<number, string>> = Object.freeze(Object.fromEntries(
+  Object.entries(QUEST_GIVER_MARK_MODELS).map(([mark, path]) => [mark, path.replace(/\.mdx$/i, ".m2")]),
+));
 
-/** By QuestGiverStatus: nothing, unavailable, three low level, incomplete, reward (rep), available (rep), available, two rewards. */
-const MARK_BY_STATUS: readonly (string | undefined)[] = [
-  undefined, GREY_BANG, YELLOW_BANG, BLUE_QUESTION, BLUE_BANG, GREY_QUESTION, BLUE_QUESTION, BLUE_BANG, YELLOW_BANG, YELLOW_QUESTION, YELLOW_QUESTION,
-];
-
-/** The model a status puts over a head, or nothing. */
-export function questMarkModel(status: number, trivialTracked: boolean): string | undefined {
-  if (!trivialTracked && status >= QUEST_STATUS_LOW_LEVEL_AVAILABLE && status <= QUEST_STATUS_LOW_LEVEL_AVAILABLE_REP) return undefined;
-  return MARK_BY_STATUS[status];
+/**
+ * The model a status puts over a head, or nothing. `taxiKnown` is a flight master's discovery (undefined: not
+ * a flight master, or no answer yet): an undiscovered one shows the green «!» where no quest mark is up.
+ */
+export function questMarkModel(status: number, trivialTracked: boolean, taxiKnown?: boolean): string | undefined {
+  return MARK_MODELS[questGiverMark(status, taxiKnown, trivialTracked)];
 }
 
-/** The marks now, by unit: only what is a unit here (a game object's mark has no attachment to hang on in this renderer). */
+/**
+ * The marks now, by unit: only what is a unit here (a game object's mark has no attachment to hang on in this
+ * renderer). `taxi` is SMSG_TAXINODE_STATUS by guid, read for the units `isFlightMaster` names.
+ */
 export function questMarksByUnit(
   statuses: ReadonlyMap<bigint, number>,
   isUnit: (guid: bigint) => boolean,
   trivialTracked: boolean,
+  taxi: ReadonlyMap<bigint, boolean> = new Map(),
+  isFlightMaster: (guid: bigint) => boolean = () => false,
 ): Map<bigint, string> {
   const marks = new Map<bigint, string>();
   for (const [guid, status] of statuses) {
-    const model = questMarkModel(status, trivialTracked);
+    const model = questMarkModel(status, trivialTracked, isFlightMaster(guid) ? taxi.get(guid) : undefined);
+    if (model !== undefined && isUnit(guid)) marks.set(guid, model);
+  }
+  // A flight master with no quest-giver status at all.
+  for (const [guid, known] of taxi) {
+    if (known || statuses.has(guid) || !isFlightMaster(guid)) continue;
+    const model = questMarkModel(0, trivialTracked, false);
     if (model !== undefined && isUnit(guid)) marks.set(guid, model);
   }
   return marks;

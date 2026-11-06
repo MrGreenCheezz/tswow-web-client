@@ -10,9 +10,12 @@
  * - The marks are the models of 0xadac98: 7 is Interface\Buttons\TalkToMeGreen.mdx — a green «!» over a
  *   flight master the character has not discovered.
  *
- * This file is the rule; the native plates and minimap draw marks from `questMarkFor` (ui/QuestLogData.ts)
- * and `minimapQuestMark` (ui/Minimap.ts), which are not wired to it yet.
+ * This file is the rule; the mark over a head is drawn from it (06.11: ui/QuestMarks.ts `questMarkModel`). The
+ * minimap's quest marks are not drawn yet.
  */
+
+/** UNIT_NPC_FLAG_FLIGHTMASTER: the units whose discovery the taxi mark shows. */
+export const UNIT_NPC_FLAG_FLIGHTMASTER = 0x2000;
 
 /** 0xa34f5c: quest-giver status (DIALOG_STATUS_*, QuestDef.h:117) → mark. */
 const STATUS_MARK: readonly number[] = Object.freeze([0, 6, 1, 2, 3, 5, 10, 11, 4, 9, 9]);
