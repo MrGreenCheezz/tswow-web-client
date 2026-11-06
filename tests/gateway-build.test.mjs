@@ -45,9 +45,16 @@ test("import specifiers: static, side-effect, dynamic and re-exports; type-only 
     'const lazy = await import("./Lazy.js");',
     'import { readFile } from "node:fs";',
     "// a comment: helpers come from \"./NotAnImport.js\" one day",
+    // 06.11 (10.11): a comment that shows a dynamic import loads nothing; a URL in a string is no comment.
+    '// the old route was import("./InLineComment.js")',
+    '/* or import("./InBlockComment.js"),',
+    '   import("./StillInBlock.js") */',
+    'const page = "http://127.0.0.1:5173/"; const later = import("./AfterUrl.js");',
+    "const quote = '\"'; const next = import(\"./AfterQuote.js\");",
   ].join("\n"));
   assert.deepEqual(found.map(({ specifier, typeOnly }) => `${specifier}${typeOnly ? " (type)" : ""}`), [
     "./A.js", "../browser/C.js (type)", "../browser/D.js (type)", "./F.js", "./G.js (type)", "./side.js", "./Lazy.js", "node:fs",
+    "./AfterUrl.js", "./AfterQuote.js",
   ]);
 });
 

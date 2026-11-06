@@ -5,7 +5,7 @@ cd /d "%~dp0.."
 
 rem Restarts the WebClient gateway after a TSWoW build changed the client patches.
 rem   11 ...         stop the running gateway and start it again; rebuilds the gateway first
-rem                  when src/ changed after the last build
+rem                  when its sources changed after the last build
 rem   11 ... build   always rebuild the gateway first (tools\build-gateway.mjs, a few seconds;
 rem                  the page in dist\web is built by script 20)
 
@@ -28,8 +28,13 @@ if errorlevel 1 (
 set "REBUILD="
 if /i "%~1"=="build" set "REBUILD=1"
 if not exist "dist\code\gateway\main.js" set "REBUILD=1"
-rem Sources edited since the last build: a restart alone would keep serving the old code.
-if not defined REBUILD node tools\gateway-build-stale.mjs && set "REBUILD=1"
+rem Sources edited since the last build: a restart alone would keep serving the old code. 10.11: only
+rem the gateway's own sources count (build-gateway.mjs --check: 0 stale, 1 current, 2 cannot tell).
+if not defined REBUILD (
+    node tools\build-gateway.mjs --check
+    if not errorlevel 1 set "REBUILD=1"
+    if errorlevel 2 set "REBUILD=1"
+)
 
 if defined REBUILD (
     call npm run gateway:dev

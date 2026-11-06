@@ -36,7 +36,14 @@ if errorlevel 1 (
     rem Script 01 also starts the gateway when it is missing.
     start "TSWoW WebClient - web (dev)" "%WEB_DEV_BAT%" --no-browser
 ) else (
-    node tools\port.mjs check 8090 || start "TSWoW WebClient Gateway" "%GATEWAY_BAT%"
+    rem 10.11: only the gateway answers /health; anything else on 8090 would just make the page fail.
+    node tools\port.mjs check-gateway 8090
+    if errorlevel 2 (
+        echo Port 8090 is taken by another program, not the WebClient gateway. Free it and try again.
+        pause
+        exit /b 1
+    )
+    if errorlevel 1 start "TSWoW WebClient Gateway" "%GATEWAY_BAT%"
 )
 
 start "" "%ELECTRON%" "%CD%\electron" %*

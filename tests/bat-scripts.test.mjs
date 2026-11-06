@@ -51,6 +51,20 @@ test("a script named by number inside another one exists, exactly once", () => {
   }
 });
 
+// 06.11 (10.11): a launcher that may start the gateway asks the gateway itself (/health), not the bare
+// port; the restart rebuilds by the gateway's own sources, not the whole tree.
+test("bat 01 and 02 ask /health before starting the gateway; bat 11 rebuilds by the gateway's sources", () => {
+  const text = (prefix) => readFileSync(join(folder, scripts.find((name) => name.startsWith(prefix))), "utf8");
+  for (const prefix of ["01 ", "02 "]) {
+    const script = text(prefix);
+    assert.match(script, /node tools\\port\.mjs check-gateway 8090\r\n\s*if errorlevel 2 \(/, `${prefix}asks the gateway`);
+    assert.doesNotMatch(script, /port\.mjs check 8090/, `${prefix}does not take any listener on 8090 for the gateway`);
+  }
+  const restart = text("11 ");
+  assert.match(restart, /node tools\\build-gateway\.mjs --check\r\n\s*if not errorlevel 1 set "REBUILD=1"\r\n\s*if errorlevel 2 set "REBUILD=1"/);
+  assert.doesNotMatch(restart, /gateway-build-stale/);
+});
+
 test("Node code that names a launcher names one that exists", () => {
   const files = ["tools/test-local.mjs", "tools/start-server.mjs", "tools/stop-gateway.mjs", "electron/main.cjs",
     "electron/build.mjs", "src/browser/PatchChainChanged.ts", "src/browser/ui/GmConsole.ts"];

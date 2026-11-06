@@ -28,6 +28,33 @@ function typeOnlyBraces(body) {
 }
 
 /**
+ * 06.11 (10.11): the [start, end) ranges of `//` and block comments, by a scan that steps over string and
+ * template literals (a quoted string ends at its line, as JavaScript requires, so a quote in a regular
+ * expression literal hides at most the rest of that line).
+ */
+function commentRanges(text) {
+  const ranges = [];
+  let quote;
+  for (let at = 0; at < text.length; at++) {
+    const char = text[at];
+    if (quote !== undefined) {
+      if (char === "\\") at++;
+      else if (char === quote || (char === "\n" && quote !== "`")) quote = undefined;
+      continue;
+    }
+    if (char === '"' || char === "'" || char === "`") quote = char;
+    else if (char === "/" && (text[at + 1] === "/" || text[at + 1] === "*")) {
+      const line = text[at + 1] === "/";
+      const close = line ? text.indexOf("\n", at) : text.indexOf("*/", at + 2);
+      const end = close < 0 ? text.length : line ? close : close + 2;
+      ranges.push([at, end]);
+      at = end - 1;
+    }
+  }
+  return ranges;
+}
+
+/**
  * The module specifiers of one source, in source order: `{ specifier, typeOnly }`. `typeOnly` is
  * an import or re-export that TypeScript erases (`import type`, `export type`, braces of `type`
  * names only); the file it names is still compiled, but nothing loads it at run time.
@@ -38,7 +65,13 @@ export function importSpecifiers(text) {
     found.push({ at: match.index, specifier: match[4], typeOnly: Boolean(match[2]) || typeOnlyBraces(match[3]) });
   }
   for (const match of text.matchAll(SIDE_EFFECT)) found.push({ at: match.index, specifier: match[1], typeOnly: false });
-  for (const match of text.matchAll(DYNAMIC)) found.push({ at: match.index, specifier: match[1], typeOnly: false });
+  // 06.11 (10.11): a comment that shows `import("./X.js")` loads nothing; it read as a missing module.
+  let comments;
+  for (const match of text.matchAll(DYNAMIC)) {
+    comments ??= commentRanges(text);
+    if (comments.some(([start, end]) => match.index >= start && match.index < end)) continue;
+    found.push({ at: match.index, specifier: match[1], typeOnly: false });
+  }
   return found.sort((a, b) => a.at - b.at).map(({ specifier, typeOnly }) => ({ specifier, typeOnly }));
 }
 

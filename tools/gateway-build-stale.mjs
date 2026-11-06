@@ -2,8 +2,10 @@
 //
 // The gateway runs dist/code/gateway/main.js, loaded once at start, so restarting it without a
 // rebuild keeps serving yesterday's code: a route added to src/gateway since the last build answers
-// 404 and the browser reports the feature as unavailable. bat\11 (gateway restart) asks this script and
+// 404 and the browser reports the feature as unavailable. bat\32 (serving players) asks this script and
 // rebuilds only when some src/**/*.ts has no compiled .js next to its dist path or is newer than it.
+// 06.11 (10.11): bat\11 (gateway restart) asks `tools/build-gateway.mjs --check`, which counts only the
+// gateway's own sources, so an edit to a page file no longer rebuilds the gateway.
 //
 // Exit 0: stale (rebuild), printing the first stale source. Exit 1: dist/code is current.
 
