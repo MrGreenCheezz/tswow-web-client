@@ -3,6 +3,7 @@ import type {
   RandPropPointsInfo, ScalingStatDistributionInfo,
 } from "../gateway/ItemEnchantments.js";
 import { UPDATE_FIELDS } from "../generated/updateFields.js";
+import { ITEM_FIELD_FLAG_WRAPPED } from "../world/GiftWrapProtocol.js";
 import type { WorldObjectState } from "../world/WorldState.js";
 
 export type {
@@ -328,6 +329,15 @@ export function itemObjectRandom(item: WorldObjectState): { id: number; slots: n
     id: (item.fields.get(UPDATE_FIELDS.ITEM_FIELD_RANDOM_PROPERTIES_ID.offset) ?? 0) | 0,
     slots: itemRandomEnchantmentIds(item),
   };
+}
+
+/**
+ * 06.11 (3.12): the random property an item object's name and link carry (Wow.exe 0x00707c20,
+ * 0x0061e3a0) — ITEM_FIELD_RANDOM_PROPERTIES_ID, none for a wrapped gift (ITEM_FIELD_FLAG_WRAPPED).
+ */
+export function itemObjectNameRandom(item: WorldObjectState): number {
+  if (((item.fields.get(UPDATE_FIELDS.ITEM_FIELD_FLAGS.offset) ?? 0) & ITEM_FIELD_FLAG_WRAPPED) !== 0) return 0;
+  return (item.fields.get(UPDATE_FIELDS.ITEM_FIELD_RANDOM_PROPERTIES_ID.offset) ?? 0) | 0;
 }
 
 /**

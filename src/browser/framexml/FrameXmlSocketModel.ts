@@ -75,9 +75,12 @@ export interface FrameXmlSocketTarget {
 export interface FrameXmlSocketItem {
   readonly guid: bigint;
   readonly entry: number;
+  /** The item object's name, its random suffix included (GetSocketItemInfo 0x005c49d0 → 0x00707c20). */
   readonly name?: string | undefined;
   readonly texture?: string | undefined;
   readonly quality?: number | undefined;
+  /** 06.11 (3.12): its random property and suffix factor, none for a wrapped item (0x0061e3a0). */
+  readonly random?: { readonly id: number; readonly factor: number } | undefined;
   /** Template `Socket[0..2].Color`; undefined until the template is cached. */
   readonly sockets: readonly number[] | undefined;
   /** Enchantment ids by slot, 0 permanent … 6 prismatic (Item.h). */
@@ -124,8 +127,8 @@ export interface FrameXmlSocketHost {
   gem(entry: number): FrameXmlSocketGemFacts | undefined;
   /** `SpellItemEnchantment.SrcItemID`: the gem item an existing socket enchantment came from. */
   enchantmentGem(enchantmentId: number): number | undefined;
-  /** An item link for a gem or the socketed item, enchantments in link order when given. */
-  itemLink(entry: number, enchantments?: readonly number[]): string | undefined;
+  /** An item link for a gem or the socketed item, enchantments in link order and its random property when given. */
+  itemLink(entry: number, enchantments?: readonly number[], random?: FrameXmlSocketItem["random"]): string | undefined;
   /** `CMSG_SPLIT_ITEM` of one gem into a free slot that takes gems; its native slot, or undefined. */
   splitOne(guid: bigint): { readonly bag: number; readonly slot: number } | undefined;
   /** `CMSG_SOCKET_GEMS`; false when nothing could be sent. */
@@ -334,7 +337,7 @@ export class FrameXmlSocketModel {
       const enchantmentId = gem ? this.#host.gem(gem.entry)?.enchantmentId : undefined;
       if (enchantmentId) enchantments[SOCKET_ENCHANTMENT_SLOT + socket] = enchantmentId;
     }
-    return this.#host.itemLink(item.entry, enchantments);
+    return this.#host.itemLink(item.entry, enchantments, item.random);
   }
 
   /**

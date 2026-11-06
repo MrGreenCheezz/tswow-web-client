@@ -406,7 +406,7 @@ test("the auction notifications are mostly fields the core never fills", () => {
   const sold = parseAuctionOwnerNotification(bytes(
     u32(77), u32(15_000), u32(0), u64(0n), u32(6948), u32(0), f32(0),
   ));
-  assert.deepEqual(sold, { auctionId: 77, bid: 15_000, itemEntry: 6948 });
+  assert.deepEqual(sold, { auctionId: 77, bid: 15_000, itemEntry: 6948, randomPropertyId: 0 });
 
   assert.equal(parseAuctionListPendingSales(u32(0)), 0, "always empty: the loop is commented out");
 });

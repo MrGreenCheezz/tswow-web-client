@@ -97,7 +97,8 @@ function skippedByWalk(item: WorldObjectState): boolean {
 export function findSpellTargetItem(
   inventory: PlayerInventoryState | undefined,
   query: unknown,
-  nameOf: (entry: number) => string | undefined,
+  /** 06.11 (3.12): the item object's name, its random suffix included (0x00753b20 → 0x00707c20). */
+  nameOf: (entry: number, item: WorldObjectState) => string | undefined,
   currency: readonly ItemSlotState[] = [], // L1 (2.05)
 ): ItemSlotState | undefined {
   if (!inventory) return undefined;
@@ -125,7 +126,7 @@ export function findSpellTargetItem(
     if (!place.item || place.guid === 0n || skippedByWalk(place.item)) return false;
     const id = worldObject.entry(place.item) ?? 0;
     if (entry !== undefined) return id === entry;
-    const name = nameOf(id)?.toLocaleLowerCase("ru-RU");
+    const name = nameOf(id, place.item)?.toLocaleLowerCase("ru-RU");
     return name !== undefined && [...name].slice(0, wanted).join("") === prefix;
   });
 }

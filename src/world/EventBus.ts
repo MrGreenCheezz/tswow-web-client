@@ -67,6 +67,8 @@ export interface AuctionStateChange {
   readonly error?: number;
   readonly bagResult?: number;
   readonly itemId?: number;
+  /** `bidderNotification`/`ownerNotification`: the lot's random property (06.11, 3.12). */
+  readonly randomPropertyId?: number;
   readonly won?: boolean;
   readonly bid?: number;
 }

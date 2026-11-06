@@ -58,13 +58,21 @@ export function itemRandomTables(client: {
  * `item:entry:enchant:gem1:gem2:gem3:gem4:random:factor:level`; zeros when absent.
  */
 export function itemLinkRandom(link: string | undefined): { readonly id: number; readonly factor: number } {
+  const fields = itemLinkFields(link);
+  return { id: fields[5]!, factor: fields[6]! };
+}
+
+/**
+ * 06.11 (3.12): a link's eight numbers after the entry — enchant, the four gems, random property,
+ * suffix factor, level — each 0 when absent.
+ */
+export function itemLinkFields(link: string | undefined): number[] {
   const match = typeof link === "string" ? /(?:^|\|H)item:-?\d+((?::-?\d*)*)/.exec(link) : null;
-  const fields = match?.[1]?.split(":") ?? [];
-  const number = (index: number): number => {
+  const fields = match?.[1]?.split(":").slice(1) ?? [];
+  return Array.from({ length: 8 }, (_, index) => {
     const value = Number(fields[index] ?? 0);
     return Number.isFinite(value) ? Math.trunc(value) : 0;
-  };
-  return { id: number(6), factor: number(7) };
+  });
 }
 
 /** The first random property slot (PROP_ENCHANTMENT_SLOT_0). */

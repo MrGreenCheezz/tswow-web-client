@@ -19,6 +19,8 @@ export interface LiveFrameXmlGuildBankHost {
   clearCursor(): void;
   playerLevel(): number;
   macroItemIcon?(index: number): string | undefined;
+  /** 06.11 (3.12): `name` with the random suffix of `randomId` (0x00706d70). */
+  randomName?(name: string, randomId: number): string;
 }
 
 export function createLiveFrameXmlGuildBank(host: LiveFrameXmlGuildBankHost): FrameXmlGuildBankModel {
@@ -34,6 +36,7 @@ export function createLiveFrameXmlGuildBank(host: LiveFrameXmlGuildBankHost): Fr
       return { name, texture: host.itemTexture?.(entry) ?? metadata?.texture, quality: found?.quality ?? metadata?.quality };
     },
     playerLevel: () => host.playerLevel(),
+    randomName: (name, randomId) => host.randomName?.(name, randomId) ?? name,
     cursorItem: () => {
       const source = host.cursorSource();
       return source?.item ? { entry: entryOf(source.item), bag: source.bag, slot: source.slot } : undefined;

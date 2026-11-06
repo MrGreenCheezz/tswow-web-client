@@ -61,7 +61,8 @@ export function parseLootResponse(payload: Uint8Array): LootWindow {
       count: reader.u32(),
       displayId: reader.u32(),
       randomSuffix: reader.u32(),
-      randomPropertyId: reader.u32(),
+      // Signed (06.11, 3.12): a random suffix is a negative id the core writes as uint32 (Loot.cpp).
+      randomPropertyId: reader.i32(),
       slotType: reader.u8(),
       taken: false,
     });

@@ -190,6 +190,8 @@ export interface FrameXmlMailItem {
 export interface FrameXmlMailItemObject {
   readonly entry: number;
   readonly count: number;
+  /** 06.11 (3.12): its random property, 0 for a wrapped item (Wow.exe 0x00707c20). */
+  readonly randomPropertyId?: number | undefined;
 }
 
 /** The item on the shared bag cursor, in wire bag/slot coordinates (LiveWorldSeam's cursor). */
@@ -208,6 +210,10 @@ export interface FrameXmlMailContext {
   itemObject(guid: bigint): FrameXmlMailItemObject | undefined;
   /** An exact link for an owned item (the inventory's enchant/random/suffix), when the host has one. */
   itemLink?(guid: bigint): string | undefined;
+  /** 06.11 (3.12): `name` with the random suffix of `randomId` (0x00706d70); the bare name while the tables load. */
+  randomName?(name: string, randomId: number): string;
+  /** The player's level, the last number of the links this model builds (0x0061e290). */
+  playerLevel?(): number;
   cursorItem(): FrameXmlMailCursorItem | undefined;
   clearCursor(): void;
   /** Put an owned item back on the cursor: stock picks an attachment up when its slot is clicked. */
@@ -425,12 +431,19 @@ export class FrameXmlMailModel {
     ];
   }
 
-  /** The prelude's auction subject: the `MailAuctionAnswers` code and the item's cached name. */
+  /**
+   * The prelude's auction subject: the `MailAuctionAnswers` code and the item's cached name, with the
+   * subject's random suffix as Wow.exe words it (0x0056f520).
+   */
   auctionSubject(index: unknown): readonly [response: number, itemName: string] | undefined {
     const entry = this.#entry(index);
     const subject = entry ? frameXmlAuctionSubject(entry) : undefined;
     const name = subject ? this.#context.item(subject.entry)?.name : undefined;
-    return subject && name ? [subject.response, name] : undefined;
+    return subject && name ? [subject.response, this.#named(name, subject.randomPropertyId)] : undefined;
+  }
+
+  #named(name: string, randomId: number): string {
+    return randomId !== 0 ? this.#context.randomName?.(name, randomId) ?? name : name;
   }
 
   /**
@@ -468,7 +481,8 @@ export class FrameXmlMailModel {
     const subject = invoice ? frameXmlAuctionSubject(entry) : undefined;
     const item = subject ? this.#context.item(subject.entry)?.name : undefined;
     const player = invoice ? this.#context.world()?.names?.get(invoice.playerGuid) : undefined;
-    return invoice && item && player ? { invoice, item, player } : undefined;
+    // GetInboxInvoiceInfo names the item with the subject's random suffix (0x0056e9b0).
+    return invoice && item && player ? { invoice, item: this.#named(item, subject!.randomPropertyId), player } : undefined;
   }
 
   invoiceInfo(index: unknown): readonly unknown[] | undefined {
@@ -490,15 +504,24 @@ export class FrameXmlMailModel {
     const item = this.#context.item(attachment.itemId);
     if (!item) return undefined;
     // Usability needs class/skill/level rules this client does not model; white is stock's default.
-    return [item.name, item.texture, attachment.count, item.quality ?? 1, true];
+    // The name carries the attachment's random suffix (0x00570f10).
+    return [this.#named(item.name, attachment.randomPropertiesId), item.texture, attachment.count, item.quality ?? 1, true];
   }
 
+  /**
+   * `GetInboxItemLink` as Wow.exe links it (0x0056eca0): permanent enchant, the three socket gems,
+   * random property and suffix factor, the suffixed name.
+   */
   itemLink(index: unknown, attachIndex: unknown): string | undefined {
     const entry = this.#entry(index);
     const attachment = entry ? this.#attachment(entry, attachIndex) : undefined;
     const item = attachment ? this.#context.item(attachment.itemId) : undefined;
-    return attachment && item
-      ? itemChatLink(attachment.itemId, item.quality ?? 1, item.name, 0, attachment.randomPropertiesId) : undefined;
+    if (!attachment || !item) return undefined;
+    const enchantments = attachment.enchantments ?? [];
+    return itemChatLink(attachment.itemId, item.quality ?? 1, this.#named(item.name, attachment.randomPropertiesId),
+      enchantments[0] ?? 0, attachment.randomPropertiesId, {
+        gems: enchantments.slice(2, 5), suffixFactor: attachment.randomPropertiesSeed, level: this.#context.playerLevel?.(),
+      });
   }
 
   /**
@@ -619,7 +642,9 @@ export class FrameXmlMailModel {
     const draft = this.#draftItem(number - 1);
     if (!draft) return EMPTY_SEND_ITEM;
     const item = this.#context.item(draft.object.entry);
-    return [item?.name, item?.texture, draft.object.count, item?.quality];
+    // The item object's name (0x00570750 → 0x00707c20): its random suffix unless it is wrapped.
+    const name = item?.name === undefined ? undefined : this.#named(item.name, draft.object.randomPropertyId ?? 0);
+    return [name, item?.texture, draft.object.count, item?.quality];
   }
 
   sendMailItemLink(slot: unknown): string | undefined {

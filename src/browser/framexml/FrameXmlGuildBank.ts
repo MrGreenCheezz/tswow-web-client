@@ -123,6 +123,8 @@ export interface FrameXmlGuildBankBagItem {
 export interface FrameXmlGuildBankContext {
   world(): FrameXmlGuildBankWorld | undefined;
   item(entry: number): FrameXmlGuildBankItemFacts | undefined;
+  /** 06.11 (3.12): `name` with the random suffix of `randomId` (0x00706d70); the bare name while the tables load. */
+  randomName?(name: string, randomId: number): string;
   playerLevel(): number;
   /** The bag item on the shared item cursor, if any: what a click on a vault slot deposits. */
   cursorItem(): FrameXmlGuildBankBagItem | undefined;
@@ -617,7 +619,8 @@ export class FrameXmlGuildBankModel {
   /**
    * `GetGuildBankItemLink(tab, slot)`: the stack's own link — its permanent enchant, the gems in its
    * sockets (the three socket enchantments, as the client's links carry them), random property and
-   * suffix factor, and the player's level — once its name is cached.
+   * suffix factor, and the player's level — once its name is cached; the text is the suffixed name
+   * (0x005a4d30 → 0x0061e290).
    */
   itemLink(tabArg: unknown, slotArg: unknown): string | undefined {
     const at = this.#slotArgs(tabArg, slotArg);
@@ -631,7 +634,8 @@ export class FrameXmlGuildBankModel {
     const gems = [0, 0, 0];
     for (const socket of item.sockets) if (socket.index >= 0 && socket.index < 3) gems[socket.index] = socket.enchantId;
     const color = QUALITY_LINK_COLORS[facts.quality ?? 1] ?? QUALITY_LINK_COLORS[1];
-    return `|c${color}|Hitem:${item.itemId}:${item.enchantId}:${gems[0]}:${gems[1]}:${gems[2]}:0:${item.randomPropertyId}:${item.suffixFactor}:${this.#context.playerLevel()}|h[${facts.name}]|h|r`;
+    const name = item.randomPropertyId !== 0 ? this.#context.randomName?.(facts.name, item.randomPropertyId) ?? facts.name : facts.name;
+    return `|c${color}|Hitem:${item.itemId}:${item.enchantId}:${gems[0]}:${gems[1]}:${gems[2]}:0:${item.randomPropertyId}:${item.suffixFactor}:${this.#context.playerLevel()}|h[${name}]|h|r`;
   }
 
   /** A log's item by entry alone: the log names no enchant, so the plain link. */

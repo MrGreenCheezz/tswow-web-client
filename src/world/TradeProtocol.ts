@@ -113,7 +113,8 @@ export function parseTradeStatusExtended(payload: Uint8Array): TradeOffer {
     const creator = reader.u64();
     const charges = reader.u32();
     const suffixFactor = reader.u32();
-    const randomPropertyId = reader.u32();
+    // Signed: a random suffix is a negative id (TradeData's int32 GetItemRandomPropertyId).
+    const randomPropertyId = reader.i32();
     const lockId = reader.u32();
     const maxDurability = reader.u32();
     const durability = reader.u32();

@@ -334,7 +334,7 @@ test("GetAuctionItemInfo answers the thirteen stock values, with the level refus
     undefined, undefined, 20, 1, true, 0, 300, 0, 500, 0, undefined, "Торвальд", 0,
   ]);
   assert.deepEqual(call(bare.model, "GetAuctionItemLink", "list", 1), []);
-  assert.match(call(model, "GetAuctionItemLink", "list", 4)[0], /^\|cffffffff\|Hitem:13446:0:0:0:0:0:0:0:0\|h\[Огромный флакон с лечебным зельем\]\|h\|r$/);
+  assert.match(call(model, "GetAuctionItemLink", "list", 4)[0], /^\|cffffffff\|Hitem:13446:0:0:0:0:0:0:0:60\|h\[Огромный флакон с лечебным зельем\]\|h\|r$/);
   void events;
 });
 
@@ -831,8 +831,8 @@ test("every auction packet raises one AUCTION_STATE_CHANGED beside the native ca
       { kind: "list" }, { kind: "owner" }, { kind: "bidder" },
       { kind: "result", auctionId: 3100, command: AUCTION_SELL_ITEM, error: 0, bagResult: 0, refreshed: ["list", "owner"] },
       { kind: "result", auctionId: 0, command: AUCTION_SELL_ITEM, error: 1, bagResult: 3, refreshed: [] },
-      { kind: "bidderNotification", auctionId: 3004, itemId: 13446, won: true, bid: 26_000 },
-      { kind: "ownerNotification", auctionId: 3011, itemId: 2589, bid: 600 },
+      { kind: "bidderNotification", auctionId: 3004, itemId: 13446, randomPropertyId: 0, won: true, bid: 26_000 },
+      { kind: "ownerNotification", auctionId: 3011, itemId: 2589, randomPropertyId: 0, bid: 600 },
       { kind: "closed" },
     ]);
     assert.equal(native, changes.length, "the native window's single slot still hears every edge");

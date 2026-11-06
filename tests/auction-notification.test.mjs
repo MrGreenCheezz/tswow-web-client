@@ -80,7 +80,7 @@ test("another bidder's guid is an outbid, in the stock words", async () => {
       auctionBidderNotificationPacket({ auctionId: 3004, bidder: RIVAL, bid: 26_000, diff: 1_300, itemEntry: ITEM }));
     await settle();
     assert.deepEqual(changes.at(-1),
-      { kind: "bidderNotification", auctionId: 3004, itemId: ITEM, won: false, bid: 26_000 });
+      { kind: "bidderNotification", auctionId: 3004, itemId: ITEM, randomPropertyId: 0, won: false, bid: 26_000 });
     assert.equal(client.auctionMessage?.error, true);
     assert.equal(client.auctionMessage?.text, "Большой эликсир маны: предмет перекуплен.");
   } finally {

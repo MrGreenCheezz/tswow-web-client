@@ -418,8 +418,9 @@ import { frameXmlQuestText } from "./FrameXmlQuestText.js"; // 3.53
 import { cachedQuestRewardSpellInfo } from "./FrameXmlQuestRewardData.js";
 import { publishFrameXmlNativeBankCursor } from "./FrameXmlItemCursorBridge.js";
 import { frameXmlLootMethod, FRAMEXML_LOOT_METHODS, type FrameXmlLootMethod } from "./FrameXmlGroupLoot.js";
-import { itemEnchantmentIds, itemObjectRandom } from "../ItemEnchantments.js"; // 06.11 (3.12): itemObjectRandom
-import { itemRandomDisplayName, type ItemRandomTables } from "../ItemRandomProperties.js"; // 06.11 (3.12)
+import { itemEnchantmentIds, itemObjectNameRandom, itemObjectRandom } from "../ItemEnchantments.js"; // 06.11 (3.12): itemObjectRandom
+import { ITEM_FIELD_FLAG_WRAPPED } from "../../world/GiftWrapProtocol.js"; // 06.11 (3.12)
+import { itemLinkFields, itemRandomDisplayName, type ItemRandomTables } from "../ItemRandomProperties.js"; // 06.11 (3.12)
 import type {
   FrameXmlBattlegroundCatalog,
 } from "./FrameXmlBattlegrounds.js";
@@ -1243,6 +1244,7 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
       world: () => context.world(),
       item: (entry) => context.itemInfo?.(entry),
       displayIcon: (displayId) => context.lootHost?.displayIcon?.(displayId),
+      randomName: (name, randomId) => this.#randomName(name, randomId), // 06.11 (3.12)
       playerLevel: () => this.unitLevel("player") ?? 0,
       autoLootDefault: () => context.lootHost?.autoLootDefault?.() ?? false,
       autoLootModifier: () => context.lootHost?.autoLootModifier?.() ?? false,
@@ -1305,6 +1307,10 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
       const shared = {
         item: (entry: number) => context.itemInfo?.(entry),
         itemLink: (guid: bigint) => this.#itemLink(carried(guid)?.item),
+        // 06.11 (3.12): the windows name items with their random suffix and link at the player's level.
+        randomName: (name: string, randomId: number) => this.#randomName(name, randomId),
+        itemRandomId: (guid: bigint) => { const item = carried(guid)?.item; return item ? itemObjectNameRandom(item) : 0; },
+        playerLevel: () => this.#playerLevel(),
         cursorItem,
         clearCursor: () => this.clearCursor(),
         pickupItem: (guid: bigint) => { const slot = carried(guid); if (slot) this.#setCursor(slot); },
@@ -1320,7 +1326,9 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
         world: () => context.world(),
         itemObject: (guid) => {
           const slot = carried(guid);
-          return slot?.item ? { entry: entryOf(slot.item), count: stackCount(slot) } : undefined;
+          return slot?.item
+            ? { entry: entryOf(slot.item), count: stackCount(slot), randomPropertyId: itemObjectNameRandom(slot.item) }
+            : undefined;
         },
         creatureName: (entry) => context.creatureInfo?.(entry)?.name,
       });
@@ -1351,6 +1359,7 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
       setCursor: (slot) => this.#setCursor(slot),
       clearCursor: () => this.clearCursor(),
       itemLink: (item) => this.#itemLink(item),
+      randomName: (name, randomId) => this.#randomName(name, randomId), // 06.11 (3.12)
       playerLevel: () => this.unitLevel("player") ?? 0,
       playerClassRace: () => {
         const player = this.#self();
@@ -1368,6 +1377,7 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
       clearCursor: () => this.clearCursor(),
       playerLevel: () => this.unitLevel("player") ?? 0,
       macroItemIcon: (index) => this.macros.itemIcon(index),
+      randomName: (name, randomId) => this.#randomName(name, randomId), // 06.11 (3.12)
     });
     // Stock socketing reads the same equipment, carried slots and bag cursor (FrameXmlSocketLive.ts).
     this.socket = createLiveFrameXmlSocket({
@@ -1381,6 +1391,7 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
       itemTexture: (entry) => context.itemTexture?.(entry),
       prefetchItems: (itemIds, spellIds, onChanged) => context.prefetchQuestMetadata?.(itemIds, spellIds, onChanged),
       locksChanged: () => { for (const id of [0, 1, 2, 3, 4]) this.#pump?.fire(FRAMEXML_SEAM_EVENTS.bagUpdate, id); },
+      randomName: (name, randomId) => this.#randomName(name, randomId), // 06.11 (3.12)
       now: () => context.monotonic() / 1000,
     });
     // Inspection: the unit the stock frame names, the inspection maps and the talent trees (FrameXmlInspectLive.ts).
@@ -3939,12 +3950,19 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     const metadata = this.#context.itemInfo?.(entry);
     const name = template?.found ? template.name : metadata?.name;
     const quality = template?.found ? template.quality : metadata?.quality;
-    const link = typeof value === "string" && value.includes("|Hitem:")
-      ? value : this.#merchantTemplateLink(entry);
-    if (!name || !Number.isInteger(quality) || quality === undefined || quality < 0 || !link) {
-      return undefined;
+    if (!name || !Number.isInteger(quality) || quality === undefined || quality < 0) return undefined;
+    // 06.11 (3.12): a link's item is named with its random suffix and the link comes back rebuilt as
+    // Wow.exe rebuilds it (0x00516c60 → 0x0061e290): its enchant, three gems, random property and
+    // factor, the player's level, the suffixed name. An id or a name answers the template's link.
+    if (typeof value === "string" && value.includes("item:")) {
+      const fields = itemLinkFields(value);
+      const shown = this.#randomName(name, fields[5]!);
+      return [shown, itemChatLink(entry, quality, shown, fields[0], fields[5], {
+        gems: fields.slice(1, 4), suffixFactor: fields[6], level: this.#playerLevel(),
+      }), quality];
     }
-    return [name, link, quality];
+    const link = this.#merchantTemplateLink(entry);
+    return link ? [name, link, quality] : undefined;
   }
 
   #liveBuyback(index: number): BuybackSlotState | undefined {
@@ -3971,7 +3989,8 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     const name = metadata?.name ?? (template?.found ? template.name : undefined) ?? `Предмет ${entry}`;
     const texture = metadata?.texture ?? this.#itemTexture(entry);
     const quantity = stackCount(slot);
-    return [name, texture, slot.price, quantity, quantity, slot.price > 0];
+    // 06.11 (3.12): the item object's name (0x00585070 → 0x00707c20), its random suffix unless wrapped.
+    return [this.#randomName(name, itemObjectNameRandom(slot.item)), texture, slot.price, quantity, quantity, slot.price > 0];
   }
 
   buybackItemLink(index: number): string | undefined {
@@ -4495,7 +4514,10 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     const world = this.#context.world();
     if (!world || pendingItemTarget() === undefined) return;
     const place = findSpellTargetItem(playerInventory(world.state), query,
-      (entry) => world.itemTemplates.get(entry)?.name, currencyTokenSlots(world.state)); // L1 (2.05): 118–149
+      (entry, item) => { // 06.11 (3.12): the suffixed name (0x00753b20 → 0x00707c20)
+        const name = world.itemTemplates.get(entry)?.name;
+        return name === undefined ? undefined : this.#randomName(name, itemObjectNameRandom(item));
+      }, currencyTokenSlots(world.state)); // L1 (2.05): 118–149
     if (place) this.#spellCursorTakesItem(place.item, place.guid);
   }
 
@@ -4702,7 +4724,24 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     return item ? this.#entryLink(entryOf(item), item) : undefined;
   }
 
-  /** An entry's chat link; the instance's parts (enchantments, random suffix) are `item`'s, zero without one. */
+  /** 06.11 (3.12): `name` with the random suffix of `randomId` (0x00706d70); the bare name until the tables land. */
+  #randomName(name: string, randomId: number): string {
+    const tables = randomId !== 0 ? this.#context.randomTables?.() : undefined;
+    return tables ? itemRandomDisplayName(name, randomId, tables, globalString("ITEM_SUFFIX_TEMPLATE")) : name;
+  }
+
+  #playerLevel(): number {
+    const world = this.#context.world();
+    const player = world?.state.selfGuid === undefined ? undefined : world.state.objects.get(world.state.selfGuid);
+    return player ? readField(player, "UNIT_FIELD_LEVEL") ?? 0 : 0;
+  }
+
+  /**
+   * An entry's chat link as Wow.exe writes an item object's (0x0061e3a0 → 0x0061e290): permanent
+   * enchant, the three socket gems, a 0, random property and suffix factor, the player's level, and
+   * the suffixed name. A wrapped gift links none of its enchantments or random property. Without
+   * `item` the parts are zero.
+   */
   #entryLink(entry: number, item?: WorldObjectState): string | undefined {
     if (!Number.isSafeInteger(entry) || entry <= 0) return undefined;
     const world = this.#context.world();
@@ -4711,17 +4750,14 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     const name = template?.found ? template.name : metadata?.name;
     const quality = template?.found ? template.quality : metadata?.quality;
     const color = QUALITY_LINK_COLORS[quality ?? 1] ?? QUALITY_LINK_COLORS[1];
+    const wrapped = item !== undefined && ((readField(item, "ITEM_FIELD_FLAGS") ?? 0) & ITEM_FIELD_FLAG_WRAPPED) !== 0;
+    const parts = wrapped ? undefined : item;
     const enchantOffset = UPDATE_FIELDS.ITEM_FIELD_ENCHANTMENT_1_1.offset;
-    const enchant = (index: number): number => item?.fields.get(enchantOffset + index * 3) ?? 0;
-    const random = item ? (readField(item, "ITEM_FIELD_RANDOM_PROPERTIES_ID") ?? 0) | 0 : 0;
-    const suffix = item ? readField(item, "ITEM_FIELD_PROPERTY_SEED") ?? 0 : 0;
-    const player = world?.state.selfGuid === undefined ? undefined : world.state.objects.get(world.state.selfGuid);
-    const level = player ? readField(player, "UNIT_FIELD_LEVEL") ?? 0 : 0;
-    // 06.11 (3.12): the text names the random suffix (0x00706d70); the bare name until the tables land.
-    const tables = name && random !== 0 ? this.#context.randomTables?.() : undefined;
-    const shown = name && tables ? itemRandomDisplayName(name, random, tables, globalString("ITEM_SUFFIX_TEMPLATE")) : name;
-    // TSItem::GetItemLink uses permanent, three socket and socket-bonus enchantments, then suffix/level.
-    return `|c${color}|Hitem:${entry}:${enchant(0)}:${enchant(2)}:${enchant(3)}:${enchant(4)}:${enchant(5)}:${random}:${suffix}:${level}|h[${shown || "Item"}]|h|r`;
+    const enchant = (index: number): number => parts?.fields.get(enchantOffset + index * 3) ?? 0;
+    const random = parts ? itemObjectNameRandom(parts) : 0;
+    const suffix = parts ? readField(parts, "ITEM_FIELD_PROPERTY_SEED") ?? 0 : 0;
+    const shown = name ? this.#randomName(name, random) : name;
+    return `|c${color}|Hitem:${entry}:${enchant(0)}:${enchant(2)}:${enchant(3)}:${enchant(4)}:0:${random}:${suffix}:${this.#playerLevel()}|h[${shown || "Item"}]|h|r`;
   }
 
   /** Item identity for GameTooltip; all reads stay on the already-cached world snapshot. */

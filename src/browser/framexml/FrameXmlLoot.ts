@@ -168,6 +168,8 @@ export interface FrameXmlLootContext {
   item?(entry: number): FrameXmlLootItem | undefined;
   /** The picture for a loot packet's `displayId` (`/item-icon/<displayId>`), when a host has one. */
   displayIcon?(displayId: number): string | undefined;
+  /** 06.11 (3.12): `name` with the random suffix of `randomId` (Wow.exe 0x00706d70); the bare name while the tables load. */
+  randomName?(name: string, randomId: number): string;
   playerLevel(): number;
   /** The client's `autoLootDefault`: the native «Автоподбор добычи» switch. */
   autoLootDefault(): boolean;
@@ -387,7 +389,13 @@ export class FrameXmlLootModel {
     return template?.found ? template : undefined;
   }
 
-  #itemName(entry: number): string | undefined {
+  /** The item's name, with the suffix of `randomId` as GetLootSlotInfo/GetLootRollItemInfo name it (0x00588430, 0x005889d0). */
+  #itemName(entry: number, randomId = 0): string | undefined {
+    const name = this.#baseName(entry);
+    return name !== undefined && randomId !== 0 ? this.#context.randomName?.(name, randomId) ?? name : name;
+  }
+
+  #baseName(entry: number): string | undefined {
     const probe = this.#probe?.items.get(entry);
     if (probe) return probe.name;
     const template = this.#template(entry);
@@ -412,7 +420,7 @@ export class FrameXmlLootModel {
   }
 
   #link(entry: number, randomPropertyId: number, randomSuffix: number): string {
-    const name = this.#itemName(entry) ?? `Item ${entry}`;
+    const name = this.#itemName(entry, randomPropertyId) ?? `Item ${entry}`;
     const color = QUALITY_HEX[this.#itemQuality(entry)] ?? "ffffffff";
     // `item:id:enchant:gem1..4:suffixId:uniqueId:level`: a rolled suffix is a negative property id.
     return `|c${color}|Hitem:${entry}:0:0:0:0:0:${randomPropertyId | 0}:${randomSuffix | 0}:${this.#context.playerLevel()}|h[${name}]|h|r`;
@@ -457,7 +465,7 @@ export class FrameXmlLootModel {
     if (item.taken) return undefined;
     const locked = item.slotType === LOOT_SLOT_ROLL_ONGOING || item.slotType === LOOT_SLOT_LOCKED;
     return [
-      this.#itemTexture(item.itemId, item.displayId), this.#itemName(item.itemId), item.count,
+      this.#itemTexture(item.itemId, item.displayId), this.#itemName(item.itemId, item.randomPropertyId), item.count,
       this.#itemQuality(item.itemId), locked ? true : undefined, undefined,
     ];
   }
@@ -599,7 +607,7 @@ export class FrameXmlLootModel {
   rollItemInfo(id: number): FrameXmlLootRollItemInfo | undefined {
     const entry = this.#rollEntry(id);
     if (!entry) return undefined;
-    const { itemId, count, voteMask } = entry.start;
+    const { itemId, count, voteMask, randomPropertyId } = entry.start;
     const template = this.#template(itemId);
     const canNeed = (voteMask & ROLL_FLAG_NEED) !== 0;
     const canGreed = (voteMask & ROLL_FLAG_GREED) !== 0;
@@ -609,7 +617,7 @@ export class FrameXmlLootModel {
     // parser reads it unsigned (QueryCacheProtocol.ts:304), so it is re-signed here.
     const skill = (template?.requiredDisenchantSkill ?? -1) | 0;
     return [
-      this.#itemTexture(itemId, undefined), this.#itemName(itemId), count, this.#itemQuality(itemId),
+      this.#itemTexture(itemId, undefined), this.#itemName(itemId, randomPropertyId), count, this.#itemQuality(itemId),
       this.#bindOnPickup(itemId), canNeed, canGreed, canDisenchant,
       canNeed ? 0 : greedOnly ? REASON_NEED_DISABLED : REASON_CLASS,
       0,

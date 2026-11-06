@@ -183,10 +183,22 @@ export function plainChatText(text: string): string {
  * unique id slot, so the receiver's tooltip names a suffix the item does not have.
  */
 export function itemChatLink(
-  entry: number, quality: number, name: string, enchantId = 0, randomPropertyId = 0,
+  entry: number, quality: number, name: string, enchantId = 0, randomPropertyId = 0, parts: ItemChatLinkParts = {},
 ): string {
   const color = QUALITY_LINK_COLORS[quality] ?? QUALITY_LINK_COLORS[1]!;
-  return `|c${color}|Hitem:${entry}:${enchantId}:0:0:0:0:${randomPropertyId}:0:0|h[${name}]|h|r`;
+  const gem = (index: number): number => parts.gems?.[index] ?? 0;
+  return `|c${color}|Hitem:${entry}:${enchantId}:${gem(0)}:${gem(1)}:${gem(2)}:0:${randomPropertyId}:${parts.suffixFactor ?? 0}:${parts.level ?? 0}|h[${name}]|h|r`;
+}
+
+/**
+ * The rest of what Wow.exe's link builder writes (0x0061e290, 06.11 3.12): the three socket gems'
+ * enchantment ids, the suffix factor a suffix's amounts are scaled by, and the player's level. The
+ * fourth gem field is always 0 there.
+ */
+export interface ItemChatLinkParts {
+  readonly gems?: readonly number[] | undefined;
+  readonly suffixFactor?: number | undefined;
+  readonly level?: number | undefined;
 }
 
 export function spellChatLink(spellId: number, name: string): string {

@@ -36,6 +36,8 @@ export interface MailAttachment {
   itemId: number;
   randomPropertiesId: number;
   randomPropertiesSeed: number;
+  /** 06.11 (3.12): the seven enchantment slots' ids (permanent, temporary, three sockets, bonus, prismatic). */
+  enchantments?: number[];
   count: number;
   charges: number;
   maxDurability: number;
@@ -102,14 +104,20 @@ export function parseMailListResult(payload: Uint8Array): MailList {
       const position = reader.u8();
       const attachId = reader.i32();
       const itemId = reader.i32();
-      // Seven enchantment slots, each three int32 wide, are skipped whole.
-      for (let enchant = 0; enchant < ENCHANTMENT_SLOTS * 3; enchant++) reader.i32();
+      // Seven enchantment slots, each id, duration, charges (MailPackets.cpp); the link keeps the ids.
+      const enchantments: number[] = [];
+      for (let enchant = 0; enchant < ENCHANTMENT_SLOTS; enchant++) {
+        enchantments.push(reader.i32());
+        reader.i32();
+        reader.i32();
+      }
       entry.attachments.push({
         position,
         attachId,
         itemId,
         randomPropertiesId: reader.i32(),
         randomPropertiesSeed: reader.i32(),
+        enchantments,
         count: reader.i32(),
         charges: reader.i32(),
         maxDurability: reader.u32(),

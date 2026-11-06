@@ -7,6 +7,7 @@ import type { WorldClient } from "../../world/WorldClient.js";
 import type { WorldObjectState } from "../../world/WorldState.js";
 import { readField } from "../../world/Fields.js";
 import { entryOf, playerInventory, stackCount, type ItemSlotState } from "../Inventory.js";
+import { itemObjectNameRandom } from "../ItemEnchantments.js";
 import { FrameXmlAuctionModel, type FrameXmlAuctionItem } from "./FrameXmlAuction.js";
 import type { FrameXmlQuestItemMetadata } from "./FrameXmlWorldSeam.js";
 
@@ -22,6 +23,8 @@ export interface LiveFrameXmlAuctionHost {
   setCursor(slot: ItemSlotState | undefined): void;
   clearCursor(): void;
   itemLink?(item: WorldObjectState | undefined): string | undefined;
+  /** 06.11 (3.12): `name` with the random suffix of `randomId` (0x00706d70). */
+  randomName?(name: string, randomId: number): string;
   playerLevel(): number;
   playerClassRace?(): { readonly classId?: number | undefined; readonly raceId?: number | undefined } | undefined;
   locksChanged(): void;
@@ -65,8 +68,10 @@ export function createLiveFrameXmlAuction(host: LiveFrameXmlAuctionHost): FrameX
         count: stackCount(slot),
         soulbound: ((readField(slot.item, "ITEM_FIELD_FLAGS") ?? 0) & ITEM_FIELD_FLAG_SOULBOUND) !== 0,
         duration: readField(slot.item, "ITEM_FIELD_DURATION") ?? 0,
+        randomPropertyId: itemObjectNameRandom(slot.item),
       };
     },
+    randomName: (name, randomId) => host.randomName?.(name, randomId) ?? name,
     carriedStacks: (entry) => carriedSlots(host.world())
       .filter((slot) => entryOf(slot.item) === entry)
       .map((slot) => ({ guid: slot.guid, count: stackCount(slot) })),

@@ -58,6 +58,8 @@ export interface AuctionEntry {
   itemId: number;
   randomPropertyId: number;
   suffixFactor: number;
+  /** 06.11 (3.12): the seven enchantment slots' ids (permanent, temporary, three sockets, bonus, prismatic). */
+  enchantments?: number[];
   count: number;
   spellCharges: number;
   itemFlags: number;
@@ -76,13 +78,19 @@ export interface AuctionEntry {
 function readAuctionEntry(reader: PacketReader): AuctionEntry {
   const auctionId = reader.u32();
   const itemId = reader.u32();
-  // Seven enchantment slots, three uint32 each; the count is a constant and never sent.
-  for (let slot = 0; slot < ENCHANTMENT_SLOTS * 3; slot++) reader.u32();
+  // Seven enchantment slots, id, duration and charges each; the count is a constant and never sent.
+  const enchantments: number[] = [];
+  for (let slot = 0; slot < ENCHANTMENT_SLOTS; slot++) {
+    enchantments.push(reader.u32());
+    reader.u32();
+    reader.u32();
+  }
   return {
     auctionId,
     itemId,
     randomPropertyId: reader.i32(),
     suffixFactor: reader.u32(),
+    enchantments,
     count: reader.u32(),
     spellCharges: reader.u32(),
     itemFlags: reader.u32(),
@@ -182,6 +190,8 @@ export interface AuctionBidderNotification {
   /** How much more than the previous bid it was. */
   diff: number;
   itemId: number;
+  /** 06.11 (3.12): the lot's random property, which Wow.exe 0x005a0480 names the item with; this core writes 0. */
+  randomPropertyId: number;
 }
 
 /**
@@ -189,8 +199,8 @@ export interface AuctionBidderNotification {
  * saying which.
  *
  * The only thing separating the two is whether `bidderGuid` is the player's own, so this cannot be
- * worded without knowing who the player is. The trailing word is a literal zero the core never
- * fills; it is read so the packet is accounted for rather than left half-consumed.
+ * worded without knowing who the player is. The trailing word is the random property Wow.exe reads
+ * there (0x005a0480), a literal zero this core never fills.
  */
 export function parseAuctionBidderNotification(payload: Uint8Array): AuctionBidderNotification {
   const reader = new PacketReader(payload);
@@ -201,8 +211,8 @@ export function parseAuctionBidderNotification(payload: Uint8Array): AuctionBidd
     bidSum: reader.u32(),
     diff: reader.u32(),
     itemId: reader.u32(),
+    randomPropertyId: reader.i32(),
   };
-  reader.u32();
   reader.assertFinished();
   return notification;
 }
@@ -330,6 +340,8 @@ export interface AuctionOwnerNotification {
   /** What it sold for. */
   bid: number;
   itemEntry: number;
+  /** 06.11 (3.12): the lot's random property, which Wow.exe 0x005a0790 names the item with; this core writes 0. */
+  randomPropertyId: number;
 }
 
 /**
@@ -337,7 +349,8 @@ export interface AuctionOwnerNotification {
  *
  * Four of its seven fields are literal zeros the core writes and never fills — including the
  * bidder guid, so the seller is never told who bought it — and the last of them is a float where
- * the six before it are words. Reading the trailing zeros as data yields plausible-looking nothing.
+ * the six before it are words. Reading the trailing zeros as data yields plausible-looking nothing;
+ * the word after the entry is the random property Wow.exe names the item with (0x005a0790).
  */
 export function parseAuctionOwnerNotification(payload: Uint8Array): AuctionOwnerNotification {
   const reader = new PacketReader(payload);
@@ -346,10 +359,10 @@ export function parseAuctionOwnerNotification(payload: Uint8Array): AuctionOwner
   reader.u32();
   reader.u64();
   const itemEntry = reader.u32();
-  reader.u32();
+  const randomPropertyId = reader.i32();
   reader.f32();
   reader.assertFinished();
-  return { auctionId, bid, itemEntry };
+  return { auctionId, bid, itemEntry, randomPropertyId };
 }
 
 /**

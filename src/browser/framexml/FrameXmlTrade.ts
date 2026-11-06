@@ -118,6 +118,12 @@ export interface FrameXmlTradeContext {
   itemPosition?(guid: bigint): { readonly bag: number; readonly slot: number } | undefined;
   /** An exact link for an owned item (the inventory's enchant/random/suffix), when the host has one. */
   itemLink?(guid: bigint): string | undefined;
+  /** 06.11 (3.12): an owned item's random property, 0 for a wrapped one (Wow.exe 0x00707c20). */
+  itemRandomId?(guid: bigint): number;
+  /** 06.11 (3.12): `name` with the random suffix of `randomId` (0x00706d70); the bare name while the tables load. */
+  randomName?(name: string, randomId: number): string;
+  /** The player's level, the last number of the links this model builds (0x0061e290). */
+  playerLevel?(): number;
   cursorItem(): FrameXmlTradeCursorItem | undefined;
   clearCursor(): void;
   /** Put an owned item back on the cursor: stock picks an offered item up when its slot is clicked. */
@@ -295,8 +301,15 @@ export class FrameXmlTradeModel {
     const item = this.#context.item(offered.itemId);
     if (!item) return undefined;
     const spell = slot === FRAMEXML_TRADE_ENCHANT_SLOT ? this.#context.world()?.theirOffer?.spellId ?? 0 : 0;
-    return [item.name, item.texture, offered.count, item.quality ?? 1,
+    // The item object's name (0x00587eb0 → 0x00707c20): its random suffix unless it is wrapped.
+    const guid = this.#offered.get(slot - 1);
+    const random = guid === undefined ? 0 : this.#context.itemRandomId?.(guid) ?? 0;
+    return [this.#named(item.name, random), item.texture, offered.count, item.quality ?? 1,
       spell > 0 ? this.#context.spellName?.(spell) : undefined];
+  }
+
+  #named(name: string, randomId: number): string {
+    return randomId !== 0 ? this.#context.randomName?.(name, randomId) ?? name : name;
   }
 
   /** `GetTradeTargetItemInfo(id)`: name, texture, count, quality, isUsable, enchantment. */
@@ -317,7 +330,8 @@ export class FrameXmlTradeModel {
       return texture ? [undefined, texture, offered.count, 1, true, enchantment] : undefined;
     }
     // Usability needs class/skill/level rules this client does not model; white is stock's default.
-    return [item.name, item.texture, offered.count, item.quality ?? 1, true, enchantment];
+    // The name carries the offer's random suffix (0x00587c60).
+    return [this.#named(item.name, offered.randomPropertyId), item.texture, offered.count, item.quality ?? 1, true, enchantment];
   }
 
   playerItemLink(id: unknown): string | undefined {
@@ -331,13 +345,17 @@ export class FrameXmlTradeModel {
     return item ? itemChatLink(offered.itemId, item.quality ?? 1, item.name) : undefined;
   }
 
-  /** The partner's item as SendUpdateTrade describes it: permanent enchant and random property. */
+  /**
+   * The partner's item as SendUpdateTrade describes it and Wow.exe links it (0x005865f0): permanent
+   * enchant, the three socket gems, random property and suffix factor, the suffixed name.
+   */
   targetItemLink(id: unknown): string | undefined {
     const slot = stockSlot(id);
     const offered = slot === undefined ? undefined : this.#their(slot);
     const item = offered ? this.#context.item(offered.itemId) : undefined;
     return offered && item
-      ? itemChatLink(offered.itemId, item.quality ?? 1, item.name, offered.enchantId, offered.randomPropertyId)
+      ? itemChatLink(offered.itemId, item.quality ?? 1, this.#named(item.name, offered.randomPropertyId), offered.enchantId,
+        offered.randomPropertyId, { gems: offered.gemEnchantIds, suffixFactor: offered.suffixFactor, level: this.#context.playerLevel?.() })
       : undefined;
   }
 

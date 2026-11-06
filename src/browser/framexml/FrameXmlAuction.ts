@@ -228,6 +228,8 @@ export interface FrameXmlAuctionItemObject {
   readonly soulbound?: boolean | undefined;
   /** ITEM_FIELD_DURATION: a timed item cannot be posted (ERR_AUCTION_LIMITED_DURATION_ITEM). */
   readonly duration?: number | undefined;
+  /** 06.11 (3.12): its random property, 0 for a wrapped item (Wow.exe 0x00707c20). */
+  readonly randomPropertyId?: number | undefined;
 }
 
 /** What the model asks its host (LiveWorldSeam or the canned seam) besides the world. */
@@ -239,6 +241,8 @@ export interface FrameXmlAuctionContext {
   carriedStacks(entry: number): readonly { readonly guid: bigint; readonly count: number }[];
   /** An exact link for an owned item (its enchant/random suffix), when the host has one. */
   itemLink?(guid: bigint): string | undefined;
+  /** 06.11 (3.12): `name` with the random suffix of `randomId` (0x00706d70); the bare name while the tables load. */
+  randomName?(name: string, randomId: number): string;
   cursorItem(): { readonly guid: bigint; readonly bag: number; readonly slot: number } | undefined;
   clearCursor(): void;
   pickupItem?(guid: bigint): void;
@@ -377,7 +381,7 @@ export class FrameXmlAuctionModel {
   #tabShowing = false;
   #posting: Posting | undefined;
   /** Chat lines waiting for an item name: SMSG_AUCTION_*_NOTIFICATION carries only the entry. */
-  readonly #notices: { readonly token: string; readonly entry: number; readonly since: number }[] = [];
+  readonly #notices: { readonly token: string; readonly entry: number; readonly random: number; readonly since: number }[] = [];
   #metadataSignature = "";
   #metadataCheckedAt = Number.NEGATIVE_INFINITY;
   readonly #prefetched = new Set<number>();
@@ -550,18 +554,30 @@ export class FrameXmlAuctionModel {
       ? (entry.bid > 0 ? this.#playerName(entry.bidderLow) ?? "" : undefined)
       : (isLeadingBid(entry, self) ? 1 : undefined);
     const owner = kind === "owner" ? this.#selfName() : this.#playerName(entry.ownerLow);
+    // The name carries the lot's random suffix (0x0059d5e0).
     return [
-      item?.name, item?.texture, entry.count, item?.quality ?? 1, this.#canUse(item),
+      this.#named(item?.name, entry.randomPropertyId), item?.texture, entry.count, item?.quality ?? 1, this.#canUse(item),
       item?.requiredLevel ?? 0, entry.startBid, entry.minIncrement, entry.buyout, entry.bid,
       highBidder, owner, 0,
     ];
   }
 
+  #named<T extends string | undefined>(name: T, randomId: number): T {
+    return name !== undefined && randomId !== 0 ? (this.#context.randomName?.(name, randomId) ?? name) as T : name;
+  }
+
+  /**
+   * `GetAuctionItemLink` as Wow.exe links it (0x0059c2d0): permanent enchant, the three socket gems,
+   * random property and suffix factor, the suffixed name.
+   */
   itemLink(type: unknown, index: unknown): string | undefined {
     const found = this.#entry(type, index);
     const item = found ? this.#context.item(found.entry.itemId) : undefined;
-    return found && item
-      ? itemChatLink(found.entry.itemId, item.quality ?? 1, item.name, 0, found.entry.randomPropertyId) : undefined;
+    if (!found || !item) return undefined;
+    const { entry } = found;
+    const enchantments = entry.enchantments ?? [];
+    return itemChatLink(entry.itemId, item.quality ?? 1, this.#named(item.name, entry.randomPropertyId), enchantments[0] ?? 0,
+      entry.randomPropertyId, { gems: enchantments.slice(2, 5), suffixFactor: entry.suffixFactor, level: this.#context.playerLevel() });
   }
 
   #remainingMs(entry: AuctionEntry, list: ShownList): number {
@@ -899,8 +915,9 @@ export class FrameXmlAuctionModel {
     if (!sell || !this.#world()) return EMPTY_SELL_ITEM;
     const item = this.#context.item(sell.object.entry);
     const perUnit = item?.sellPrice ?? 0;
+    // The item object's name (0x0059f760 → 0x00707c20): its random suffix unless it is wrapped.
     return [
-      item?.name, item?.texture, sell.object.count, item?.quality ?? 1, this.#canUse(item),
+      this.#named(item?.name, sell.object.randomPropertyId ?? 0), item?.texture, sell.object.count, item?.quality ?? 1, this.#canUse(item),
       Math.imul(perUnit >>> 0, sell.object.count >>> 0) >>> 0, perUnit,
       Math.max(1, item?.maxStack ?? sell.object.count), Math.max(sell.object.count, this.#carriedTotal(sell.object.entry)),
     ];
@@ -1156,7 +1173,8 @@ export class FrameXmlAuctionModel {
   #flushNotices(now: number): void {
     for (let at = 0; at < this.#notices.length;) {
       const notice = this.#notices[at]!;
-      const name = this.#context.item(notice.entry)?.name
+      // The packet's random suffix names the lot (0x005a0480, 0x005a0790).
+      const name = this.#named(this.#context.item(notice.entry)?.name, notice.random)
         ?? (now - notice.since > 10 ? this.#text("UNKNOWN") : undefined);
       if (name === undefined) { at += 1; continue; }
       this.#notices.splice(at, 1);
@@ -1170,9 +1188,9 @@ export class FrameXmlAuctionModel {
    * sends them to the player anywhere (AuctionHouseMgr.cpp), mostly away from any auctioneer. Only
    * GlobalStrings (bound when the owner is created) are needed, not the stock AuctionFrame.
    */
-  #notice(token: string, entry: number): void {
+  #notice(token: string, entry: number, random = 0): void {
     if (!this.#resolve) return;
-    this.#notices.push({ token, entry, since: this.#now() });
+    this.#notices.push({ token, entry, random, since: this.#now() });
     if (!this.#context.item(entry)) this.#context.prefetchItems?.([entry], () => { this.#metadataCheckedAt = Number.NEGATIVE_INFINITY; });
     this.#flushNotices(this.#now());
   }
@@ -1216,10 +1234,14 @@ export class FrameXmlAuctionModel {
         this.#onResult(world, pump, change);
         return;
       case "bidderNotification":
-        if (typeof change.itemId === "number") this.#notice(change.won ? "ERR_AUCTION_WON_S" : "ERR_AUCTION_OUTBID_S", change.itemId);
+        if (typeof change.itemId === "number") {
+          this.#notice(change.won ? "ERR_AUCTION_WON_S" : "ERR_AUCTION_OUTBID_S", change.itemId, change.randomPropertyId);
+        }
         return;
       case "ownerNotification":
-        if (typeof change.itemId === "number") this.#notice((change.bid ?? 0) > 0 ? "ERR_AUCTION_SOLD_S" : "ERR_AUCTION_EXPIRED_S", change.itemId);
+        if (typeof change.itemId === "number") {
+          this.#notice((change.bid ?? 0) > 0 ? "ERR_AUCTION_SOLD_S" : "ERR_AUCTION_EXPIRED_S", change.itemId, change.randomPropertyId);
+        }
         return;
       case "closed":
         this.#resetQueries();

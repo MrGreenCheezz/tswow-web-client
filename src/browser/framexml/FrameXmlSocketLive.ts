@@ -9,7 +9,7 @@ import type { WorldObjectState } from "../../world/WorldState.js";
 import { readField } from "../../world/Fields.js";
 import { equipErrorText } from "../../world/ItemProtocol.js";
 import { entryOf, playerInventory, stackCount, type ItemSlotState } from "../Inventory.js";
-import { itemEnchantmentIds, itemEnchantments, type ItemEnchantmentClient } from "../ItemEnchantments.js";
+import { itemEnchantmentIds, itemEnchantments, itemObjectNameRandom, type ItemEnchantmentClient } from "../ItemEnchantments.js";
 import { game } from "../game/Context.js";
 import { FrameXmlSocketModel, type FrameXmlSocketCarried, type FrameXmlSocketGemFacts } from "./FrameXmlSocketModel.js";
 import { frameXmlItemRefundable } from "./FrameXmlRefund.js";
@@ -37,6 +37,8 @@ export interface LiveFrameXmlSocketHost {
   enchantments?(): ItemEnchantmentClient | undefined;
   /** The staged gems changed: repaint the bags' lock state (LiveWorldSeam's BAG_UPDATE). */
   locksChanged?(): void;
+  /** 06.11 (3.12): `name` with the random suffix of `randomId` (0x00706d70). */
+  randomName?(name: string, randomId: number): string;
   now(): number;
 }
 
@@ -107,8 +109,14 @@ export function createLiveFrameXmlSocket(host: LiveFrameXmlSocketHost): FrameXml
       const entry = entryOf(object);
       const world = host.world();
       const facts = template(entry);
+      // The object's random property: its name's suffix (0x00707c20) and its link's (0x0061e3a0).
+      const random = itemObjectNameRandom(object);
+      const factor = random === 0 ? 0 : readField(object, "ITEM_FIELD_PROPERTY_SEED") ?? 0;
+      const base = name(entry);
       return {
-        guid: slot.guid, entry, name: name(entry), texture: host.itemTexture?.(entry), quality: quality(entry),
+        guid: slot.guid, entry, texture: host.itemTexture?.(entry), quality: quality(entry),
+        name: base !== undefined && random !== 0 ? host.randomName?.(base, random) ?? base : base,
+        random: { id: random, factor },
         sockets: facts ? facts.sockets.map((socket) => socket.color) : undefined,
         enchantments: itemEnchantmentIds(object),
         flags: readField(object, "ITEM_FIELD_FLAGS") ?? 0,
@@ -139,7 +147,12 @@ export function createLiveFrameXmlSocket(host: LiveFrameXmlSocketHost): FrameXml
       const gem = enchantments()?.enchantments.get(enchantmentId)?.gemItemId ?? 0;
       return gem > 0 ? gem : undefined;
     },
-    itemLink: (entry, slots) => frameXmlSocketItemLink(entry, name(entry), quality(entry), slots, 0, 0, playerLevel()),
+    itemLink: (entry, slots, random) => {
+      const base = name(entry);
+      const id = random?.id ?? 0;
+      const shown = base !== undefined && id !== 0 ? host.randomName?.(base, id) ?? base : base;
+      return frameXmlSocketItemLink(entry, shown, quality(entry), slots, id, random?.factor ?? 0, playerLevel());
+    },
     splitOne: (guid) => {
       const world = host.world();
       const stack = carried(guid);

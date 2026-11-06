@@ -48,7 +48,7 @@ function template(entry, name, extra = {}) {
  * The realm's test character, roughly: a belt and a recipe carried, a worn belt, a bag with a stack.
  * `store`, when given, is the WorldStore double the seam subscribes its player fields on.
  */
-function fixture({ handlers = 1, store, randomTables } = {}) {
+function fixture({ handlers = 1, store, randomTables, itemInfo } = {}) {
   const selfGuid = 0x10n;
   const player = { guid: selfGuid, typeId: 4, fields: new Map() };
   // Copper Chain Belt (2652, bind-on-equip) in backpack slot 1 (wire 255/23); unbound unless a test binds it.
@@ -132,6 +132,7 @@ function fixture({ handlers = 1, store, randomTables } = {}) {
     monotonic: () => 0, globalCooldownUntil: () => 0, castSpell: () => {},
     itemTexture: (entry) => `Interface\\Icons\\item${entry}`,
     ...(randomTables ? { randomTables } : {}),
+    ...(itemInfo ? { itemInfo } : {}),
   });
   seam.attach(pump);
   fired.length = 0;
@@ -457,6 +458,84 @@ test("06.11 (3.12): a carried item's link and tooltip name its random suffix (0x
   const [after] = call(seam, "GetContainerItemLink", 0, 1);
   assert.ok(after.includes(`[${bare} `) && after.includes("со знаком гориллы]"), after);
   assert.deepEqual(seam.containerItemTooltip(0, 1)?.random, { id: -10, slots: [2804, 0, 0, 0, 0] });
+});
+
+/** The suffix rows the next tests name items with: -10 is «со знаком гориллы». */
+const GORILLA_TABLES = {
+  property: () => undefined, points: () => undefined, enchantment: () => undefined,
+  suffix: (id) => (id === 10 ? { name: "со знаком гориллы", enchantments: [0, 0, 0, 0, 0], allocation: [0, 0, 0, 0, 0] } : undefined),
+};
+
+test("06.11 (3.12): an item object's link is Wow.exe's (0x0061e3a0): no socket bonus, and a wrapped gift links bare", () => {
+  const { seam, belt, player } = fixture({ randomTables: () => GORILLA_TABLES });
+  player.fields.set(field("UNIT_FIELD_LEVEL"), 71);
+  belt.fields.set(field("ITEM_FIELD_RANDOM_PROPERTIES_ID"), -10 >>> 0);
+  belt.fields.set(field("ITEM_FIELD_PROPERTY_SEED"), 30);
+  belt.fields.set(field("ITEM_FIELD_ENCHANTMENT_1_1"), 1);
+  for (const socket of [2, 3, 4, 5]) belt.fields.set(field("ITEM_FIELD_ENCHANTMENT_1_1") + socket * 3, socket);
+  assert.equal(call(seam, "GetContainerItemLink", 0, 1)[0],
+    "|cffffffff|Hitem:2652:1:2:3:4:0:-10:30:71|h[Медный кольчужный пояс со знаком гориллы]|h|r",
+    "three gems, then 0 where the socket bonus (slot 5) would be, then the random property, factor and level");
+  belt.fields.set(field("ITEM_FIELD_FLAGS"), 0x8);
+  assert.equal(call(seam, "GetContainerItemLink", 0, 1)[0],
+    "|cffffffff|Hitem:2652:0:0:0:0:0:0:0:71|h[Медный кольчужный пояс]|h|r", "ITEM_FIELD_FLAG_WRAPPED: none of its parts");
+});
+
+test("06.11 (3.12): GetItemInfo of a link names its suffix and rebuilds the link as Wow.exe does (0x00516c60)", () => {
+  const { seam, player } = fixture({ randomTables: () => GORILLA_TABLES });
+  player.fields.set(field("UNIT_FIELD_LEVEL"), 71);
+  const info = call(seam, "GetItemInfo", "|cff9d9d9d|Hitem:2652:1:2:3:4:5:-10:30:12|h[чужое имя]|h|r");
+  assert.deepEqual(info.slice(0, 3), ["Медный кольчужный пояс со знаком гориллы",
+    "|cffffffff|Hitem:2652:1:2:3:4:0:-10:30:71|h[Медный кольчужный пояс со знаком гориллы]|h|r", 1],
+    "the template's colour and name, the fourth gem dropped, the player's level");
+  assert.equal(call(seam, "GetItemInfo", "item:2652:0:0:0:0:0:-10:30:0")[0], "Медный кольчужный пояс со знаком гориллы",
+    "a bare item: string is a link too");
+  assert.equal(call(seam, "GetItemInfo", 2652)[0], "Медный кольчужный пояс", "an id names no suffix");
+});
+
+test("06.11 (3.12): the seam hands the windows its suffix and the player's level: loot, trade, mail, socketing", () => {
+  const belt = "Медный кольчужный пояс";
+  const fixtureState = fixture({
+    randomTables: () => GORILLA_TABLES, itemInfo: (entry) => (entry === 2652 ? { name: belt, quality: 1 } : undefined),
+  });
+  const { seam, world, player, templates } = fixtureState;
+  player.fields.set(field("UNIT_FIELD_LEVEL"), 71);
+  const suffixed = `${belt} со знаком гориллы`;
+  // Loot: the gate's probe opening, named through the seam's tables.
+  const slot = { index: 0, itemId: 2652, count: 1, displayId: 0, randomSuffix: 30, randomPropertyId: -10, slotType: 0, taken: false };
+  assert.equal(seam.loot.probe({ loot: { guid: 9n, lootType: 1, gold: 0, slots: [slot] }, items: new Map([[2652, { name: belt }]]) },
+    () => seam.loot.slotInfo(1))[1], suffixed);
+  // Trade: the partner's offer.
+  world.tradeOpen = true;
+  world.ownTradeOffer = () => ({ money: 0, spellId: 0, items: [] });
+  world.theirOffer = { money: 0, spellId: 0, items: [{
+    slot: 0, itemId: 2652, displayId: 0, count: 1, wrapped: false, giftCreator: 0n, enchantId: 0, gemEnchantIds: [0, 0, 0],
+    creator: 0n, charges: 0, suffixFactor: 30, randomPropertyId: -10, lockId: 0, maxDurability: 0, durability: 0,
+  }] };
+  assert.equal(call(seam, "GetTradeTargetItemInfo", 1)[0], suffixed);
+  assert.equal(call(seam, "GetTradeTargetItemLink", 1)[0], `|cffffffff|Hitem:2652:0:0:0:0:0:-10:30:71|h[${suffixed}]|h|r`);
+  // Mail: an attachment of the open mailbox.
+  world.mailboxGuid = 1n;
+  world.mail = { totalCount: 1, mails: [{ mailId: 1, attachments: [{ position: 0, attachId: 1, itemId: 2652,
+    randomPropertiesId: -10, randomPropertiesSeed: 30, count: 1, charges: 0, maxDurability: 0, durability: 0, unlocked: true }] }] };
+  assert.equal(call(seam, "GetInboxItem", 1, 1)[0], suffixed);
+  // Socketing: the carried belt itself.
+  templates.get(2652).sockets = [{ color: 2 }];
+  fixtureState.belt.fields.set(field("ITEM_FIELD_RANDOM_PROPERTIES_ID"), -10 >>> 0);
+  seam.socket.onOpenRequest = () => true;
+  assert.equal(seam.socket.request({ location: 1, bag: 0, slot: 1 }), true);
+  assert.equal(seam.socket.socketItemInfo()[0], suffixed);
+});
+
+test("06.11 (3.12): GetBuybackItemInfo names the sold item object with its suffix unless it was wrapped (0x00585070)", () => {
+  const { seam, world, player, belt } = fixture({ randomTables: () => GORILLA_TABLES });
+  world.vendor = { guid: 0x77n, items: [] };
+  place(player.fields, field("PLAYER_FIELD_VENDORBUYBACK_SLOT_1"), belt.guid);
+  player.fields.set(field("PLAYER_FIELD_BUYBACK_PRICE_1"), 50);
+  belt.fields.set(field("ITEM_FIELD_RANDOM_PROPERTIES_ID"), -10 >>> 0);
+  assert.equal(call(seam, "GetBuybackItemInfo", 1)[0], "Медный кольчужный пояс со знаком гориллы");
+  belt.fields.set(field("ITEM_FIELD_FLAGS"), 0x8);
+  assert.equal(call(seam, "GetBuybackItemInfo", 1)[0], "Медный кольчужный пояс");
 });
 
 test("06.11 (3.12): a worn item's tooltip carries its wearer's level, which a heirloom is drawn at (0x0061e740)", () => {

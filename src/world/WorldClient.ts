@@ -9657,7 +9657,8 @@ export class WorldClient {
       };
       this.onAuctionChanged?.();
       this.events.emit("AUCTION_STATE_CHANGED", {
-        kind: "bidderNotification", auctionId: notification.auctionId, itemId: notification.itemId, won: mine, bid: notification.bidSum,
+        kind: "bidderNotification", auctionId: notification.auctionId, itemId: notification.itemId,
+        randomPropertyId: notification.randomPropertyId, won: mine, bid: notification.bidSum,
       });
       return true;
     }
@@ -9674,7 +9675,8 @@ export class WorldClient {
       };
       this.onAuctionChanged?.();
       this.events.emit("AUCTION_STATE_CHANGED", {
-        kind: "ownerNotification", auctionId: sold.auctionId, itemId: sold.itemEntry, bid: sold.bid,
+        kind: "ownerNotification", auctionId: sold.auctionId, itemId: sold.itemEntry,
+        randomPropertyId: sold.randomPropertyId, bid: sold.bid,
       });
       return true;
     }
