@@ -54,7 +54,10 @@ import { VEHICLE_FLAG_CAMERA_FADE } from "../VehicleCameraFade.js";
  * - (the vehicle's model fading as the camera nears it — 0x00606f90: Vehicle Flags 0x80000, alpha 0 at
  *   CameraFadeDistScalarMin × the model's radius, 1 at …Max × radius — is the renderer's: VehicleCameraFade.ts);
  * - (04.11: the seat's CameraOffset and CameraPosChaseRate are applied: `seatCameraOffset`, `CameraOffsetChase`);
- * - the chase of a passenger's seat moving against its vehicle, and CameraFacingChaseRate (3 seats).
+ * - (11.11: the chase of a passenger's place against its vehicle is applied: `#applyOffset`);
+ * - CameraFacingChaseRate (3 seats, 3690-3692): 0x0075a1c0 chases VehicleCamera_C's own facing (+0x88 → +0x94, the
+ *   spring 0x007160b0 at 20 / rate, wrapped to ±π) in states 1-3; how that facing reaches the view (0x00759ce0, camera
+ *   +0x84, and the 0x005fe5f0 turn of state 3) is not read yet, and this client's orbit has no such facing.
  *
  * Without vehicle rows, outside a vehicle seat, or riding a ship, nothing here touches the camera and
  * the wheel answers exactly as `zoomedDistance` does. Once a frame, nothing is allocated unless the
@@ -74,6 +77,8 @@ export function seatCameraOffset(x: number, y: number, z: number, facing: number
 
 /** The spring's stiffness over CameraPosChaseRate (0x009f281c, 0x00759d80). */
 const CHASE_STIFFNESS = 20;
+/** A chase rate at or below this is none (0x00759d80 against [0x9e8cd0] = 1e-4). */
+const CHASE_RATE_MIN = 1e-4;
 
 /**
  * 04.11: the offset chased by a critically damped spring at CameraPosChaseRate (0x00759d80 → 0x006ff4c0): the offset turns with
@@ -226,6 +231,8 @@ export interface VehicleCameraParams {
   readonly offsetZ: number;
   /** 04.11: CameraPosChaseRate. */
   readonly chaseRate: number;
+  /** 11.11: seat Flags CAN_CONTROL — the camera watches the vehicle, not the passenger (0x007489c0). */
+  readonly canControl: boolean;
   /** Seat ENABLE_VEHICLE_ZOOM: the vehicle distance and its 50-yard ceiling. */
   readonly vehicleZoom: boolean;
   /** FlagsB 0x400 without ENABLE_VEHICLE_ZOOM: the seat's own zoom. */
@@ -283,6 +290,7 @@ export function vehicleCameraParams(vehicle: VehicleEntry | undefined, seat: Veh
     offsetY: finiteOr(seat.cameraOffset.y, 0),
     offsetZ: finiteOr(seat.cameraOffset.z, 0),
     chaseRate: finiteOr(seat.cameraPosChaseRate, 0),
+    canControl: (seat.flags & VEHICLE_SEAT_FLAGS.CAN_CONTROL) !== 0,
     vehicleZoom,
     seatZoom,
     enterDelay,
@@ -438,21 +446,46 @@ export class VehicleCameraTracker {
     this.#applyOffset(world, rig, now);
   }
 
-  /** 04.11: the pivot off by the seat's CameraOffset. Nothing is written for a seat without one. */
+  /**
+   * 04.11: the pivot off by the seat's CameraOffset. 11.11: with CameraPosChaseRate the chase runs on the eye point in the
+   * vehicle's place (0x00759d80 → 0x00759bd0: a unit carrier's position taken off, not its turn; 0x00759b50 puts it back),
+   * so a passenger's own place on the vehicle lags as the offset does — 19 seats of the dataset, all passenger seats and
+   * 16 of them with no CameraOffset at all. A carrier with a vehicle camera of its own (camera+0xb8, unit+0xf64: a
+   * turret on a vehicle) is taken off by that camera's eye point instead; not modelled, the vehicle's place stands in.
+   * Nothing is written for a seat with neither.
+   */
   #applyOffset(world: VehicleCameraWorld | undefined, rig: VehicleCameraRig, now: number): void {
     const seconds = this.#lastUpdate === undefined ? 0 : Math.max(0, now - this.#lastUpdate) / 1000;
     this.#lastUpdate = now;
     const x = this.#offsetX.advance(now);
     const y = this.#offsetY.advance(now);
     const z = this.#offsetZ.advance(now);
-    if (x === 0 && y === 0 && z === 0) {
+    const rate = this.#applied?.chaseRate ?? 0;
+    const self = world?.selfGuid === undefined ? undefined : world.objects.get(world.selfGuid);
+    const carrier = self?.transport === undefined ? undefined : world!.objects.get(self.transport.guid);
+    const own = self?.position;
+    const there = carrier?.position;
+    // What is chased with the offset, when there is a chase at all: a passenger's place against its vehicle's (0x00759bd0
+    // on the carrier unit); for a CAN_CONTROL seat the camera's target is the vehicle, which rides nothing, and 0x00759bd0
+    // has no carrier to take off — the vehicle's place itself is chased (no seat of the dataset has both).
+    const seatPlace = rate > CHASE_RATE_MIN && this.#applied !== undefined && own !== undefined && there !== undefined;
+    const driver = this.#applied?.canControl === true;
+    const rx = seatPlace ? (driver ? there.x : own.x - there.x) : 0;
+    const ry = seatPlace ? (driver ? there.y : own.y - there.y) : 0;
+    const rz = seatPlace ? (driver ? there.z : own.z - there.z) : 0;
+    if (x === 0 && y === 0 && z === 0 && !seatPlace) {
       this.#offsetChase.reset();
       this.#offsetAt.x = this.#offsetAt.y = this.#offsetAt.z = 0;
     } else {
-      const self = world?.selfGuid === undefined ? undefined : world.objects.get(world.selfGuid);
-      const carrier = self?.transport === undefined ? undefined : world!.objects.get(self.transport.guid);
-      const facing = carrier?.position?.orientation ?? self?.position?.orientation ?? 0;
-      this.#offsetChase.step(seatCameraOffset(x, y, z, facing), this.#applied?.chaseRate ?? 0, seconds, this.#offsetAt);
+      const facing = there?.orientation ?? own?.orientation ?? 0;
+      const offset = seatCameraOffset(x, y, z, facing);
+      offset.x += rx;
+      offset.y += ry;
+      offset.z += rz;
+      this.#offsetChase.step(offset, rate, seconds, this.#offsetAt);
+      this.#offsetAt.x -= rx;
+      this.#offsetAt.y -= ry;
+      this.#offsetAt.z -= rz;
     }
     this.#lens.x = this.#offsetAt.x;
     this.#lens.y = this.#offsetAt.y;

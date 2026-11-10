@@ -18,8 +18,11 @@ export interface ClientAddonDiscoveryOptions {
   readonly includeDisabled?: boolean;
 }
 
-/** Only explicit disabled entries matter; an unlisted installed add-on keeps its existing state. */
-export function disabledClientAddons(source: string): ReadonlySet<string> {
+/**
+ * 3.46 (11.11): the profile's explicit states by lower-case name \u2014 true for `enabled`, false for `disabled`; a
+ * name listed both ways is left out (the profile does not decide it).
+ */
+export function clientAddonProfileStates(source: string): ReadonlyMap<string, boolean> {
   const states = new Map<string, boolean>();
   const conflicts = new Set<string>();
   for (const line of source.replace(/^\uFEFF/, "").split(/\r?\n/)) {
@@ -28,12 +31,37 @@ export function disabledClientAddons(source: string): ReadonlySet<string> {
     const name = match[1]!.trim();
     if (!CLIENT_ADDON_NAME.test(name)) continue;
     const key = name.toLowerCase();
-    const disabled = match[2]!.toLowerCase() === "disabled";
-    if (states.has(key) && states.get(key) !== disabled) conflicts.add(key);
-    states.set(key, disabled);
+    const enabled = match[2]!.toLowerCase() === "enabled";
+    if (states.has(key) && states.get(key) !== enabled) conflicts.add(key);
+    states.set(key, enabled);
   }
-  return new Set([...states].filter(([name, disabled]) => disabled && !conflicts.has(name))
-    .map(([name]) => name));
+  for (const name of conflicts) states.delete(name);
+  return states;
+}
+
+/** Only explicit disabled entries matter; an unlisted installed add-on keeps its existing state. */
+export function disabledClientAddons(source: string): ReadonlySet<string> {
+  return new Set([...clientAddonProfileStates(source)].filter(([, enabled]) => !enabled).map(([name]) => name));
+}
+
+/**
+ * 3.46 (11.11): a TOC's `## DefaultState`, as Wow.exe's TOC reader 0x005f86a0 takes it (.runtime/re-2026-11-07/318
+ * toc.c): the key `DefaultState:` (any case) after "##" and spaces, the value past the ':'s and spaces compared whole,
+ * any case, with "enabled" and "disabled" (0x0076e780 over 0x7fffffff); the reader's tokenizer 0x0076f1e0 splits at
+ * '\r' and '\n' alike (its delimiters at 0x009f15f0 are "\r\n"). Undefined when no line decides it; the last deciding
+ * line wins.
+ */
+export function clientAddonDefaultState(toc: string): boolean | undefined {
+  let state: boolean | undefined;
+  for (const line of toc.replace(/^\uFEFF/, "").split(/[\r\n]/)) {
+    if (!line.startsWith("##")) continue;
+    const rest = line.slice(2).replace(/^ +/, "");
+    if (rest.slice(0, "DefaultState:".length).toLowerCase() !== "defaultstate:") continue;
+    const value = rest.slice("DefaultState".length).replace(/^[: ]+/, "").toLowerCase();
+    if (value === "enabled") state = true;
+    else if (value === "disabled") state = false;
+  }
+  return state;
 }
 
 async function profileText(clientRoot: string, selectedFile: string | undefined): Promise<string | undefined> {
@@ -94,10 +122,29 @@ async function profileText(clientRoot: string, selectedFile: string | undefined)
 export async function listClientAddons(
   clientRoot: string,
   options: Pick<ClientAddonDiscoveryOptions, "addonsFile"> = {},
-): Promise<readonly (ClientAddonDescriptor & { readonly enabled: boolean })[]> {
-  const disabled = disabledClientAddons(await profileText(clientRoot, options.addonsFile) ?? "");
-  return (await installedClientAddons(clientRoot))
-    .map((addon) => ({ ...addon, enabled: !disabled.has(addon.name.toLowerCase()) }));
+): Promise<readonly ClientAddonListing[]> {
+  const states = clientAddonProfileStates(await profileText(clientRoot, options.addonsFile) ?? "");
+  return (await installedClientAddons(clientRoot)).map(({ defaultState, ...addon }) => {
+    const profileState = states.get(addon.name.toLowerCase());
+    return {
+      ...addon,
+      enabled: profileState !== false,
+      // 3.46 (11.11): what the glue's per-character states start from — the profile's own line (Wow.exe falls back
+      // to the account's AddOns.txt for a character without one, 0x005f91e0) and the TOC's DefaultState.
+      ...(profileState === undefined ? {} : { profileState }),
+      ...(defaultState === undefined ? {} : { defaultState }),
+    };
+  });
+}
+
+/** One `/client/addons` `installed` entry. */
+export interface ClientAddonListing extends ClientAddonDescriptor {
+  /** Whether the profile leaves it on (an unlisted add-on is on). */
+  readonly enabled: boolean;
+  /** The profile's explicit line, when it has one. */
+  readonly profileState?: boolean;
+  /** The TOC's `## DefaultState`, when it decides one. */
+  readonly defaultState?: boolean;
 }
 
 /**
@@ -123,7 +170,8 @@ export async function discoverClientAddons(
   clientRoot: string,
   options: ClientAddonDiscoveryOptions = {},
 ): Promise<readonly ClientAddonDescriptor[]> {
-  const installed = await installedClientAddons(clientRoot);
+  // The load list keeps its two fields; DefaultState is the listing's (3.46, 11.11).
+  const installed = (await installedClientAddons(clientRoot)).map(({ name, loadOnDemand }) => ({ name, loadOnDemand }));
   if (options.includeDisabled === true) return installed;
   const disabled = disabledClientAddons(await profileText(clientRoot, options.addonsFile) ?? "");
   return installed.filter((addon) => !disabled.has(addon.name.toLowerCase()));
@@ -143,7 +191,9 @@ export async function disabledByProfile(
     .filter((addon) => disabled.has(addon.name.toLowerCase())).map((addon) => addon.name);
 }
 
-async function installedClientAddons(clientRoot: string): Promise<readonly ClientAddonDescriptor[]> {
+async function installedClientAddons(
+  clientRoot: string,
+): Promise<readonly (ClientAddonDescriptor & { readonly defaultState?: boolean })[]> {
   const root = join(clientRoot, "Interface", "AddOns");
   let entries;
   try {
@@ -151,7 +201,7 @@ async function installedClientAddons(clientRoot: string): Promise<readonly Clien
   } catch {
     return [];
   }
-  const addons: ClientAddonDescriptor[] = [];
+  const addons: (ClientAddonDescriptor & { defaultState?: boolean })[] = [];
   for (const entry of entries) {
     if (!CLIENT_ADDON_NAME.test(entry.name)) {
       console.warn(`Client add-on ignored: ${entry.name} is not a safe single-directory name`);
@@ -169,9 +219,11 @@ async function installedClientAddons(clientRoot: string): Promise<readonly Clien
     if (!toc) continue;
     let source: string;
     try { source = await readFile(join(directory, toc), "utf8"); } catch { continue; }
+    const defaultState = clientAddonDefaultState(source); // 3.46 (11.11)
     addons.push({
       name: entry.name,
       loadOnDemand: /^\s*##\s*LoadOnDemand\s*:\s*(?:1|true|yes)\s*$/im.test(source),
+      ...(defaultState === undefined ? {} : { defaultState }),
     });
   }
   return addons.sort((left, right) => left.name.localeCompare(right.name, "en", { sensitivity: "base" }));

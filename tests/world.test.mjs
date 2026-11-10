@@ -496,11 +496,11 @@ test("the spellbook Attack action toggles the melee swing protocol instead of ca
   client.castSpell(6603);
   client.castSpell(6603);
 
+  // 5.05 (11.11): the stop is CMSG_ATTACK_STOP alone — StopAttack 0x006e1660 never calls the sheath setter.
   assert.deepEqual(connection.sent.map(({ opcode }) => opcode), [
     OPCODES.CMSG_SET_SHEATHED,
     OPCODES.CMSG_ATTACK_SWING,
     OPCODES.CMSG_ATTACK_STOP,
-    OPCODES.CMSG_SET_SHEATHED,
   ]);
   assert.equal(connection.sent.some(({ opcode }) => opcode === OPCODES.CMSG_CAST_SPELL), false);
   client.close();
@@ -518,11 +518,12 @@ test("Auto Shot is one unit-targeted repeat request; pressing it again cancels i
   client.castSpell(75);
   client.castSpell(75);
 
+  // 5.05 (11.11): the cancel is CMSG_CANCEL_AUTO_REPEAT_SPELL alone — 0x00807560 never calls the sheath setter; the
+  // bow's SHEATH 2 follows the shot's packet (0x00805330 → 0x007fa2e0).
   assert.deepEqual(connection.sent.map(({ opcode }) => opcode), [
-    OPCODES.CMSG_SET_SHEATHED,
     OPCODES.CMSG_CAST_SPELL,
-    OPCODES.CMSG_CANCEL_AUTO_REPEAT_SPELL,
     OPCODES.CMSG_SET_SHEATHED,
+    OPCODES.CMSG_CANCEL_AUTO_REPEAT_SPELL,
   ]);
   const cast = connection.sent.find(({ opcode }) => opcode === OPCODES.CMSG_CAST_SPELL)?.payload;
   const expected = new PacketWriter().u8(1).u32(75).u8(0).u32(TARGET_FLAG_UNIT).packedGuid(victim).toUint8Array();
@@ -549,8 +550,8 @@ test("melee and ranged auto-combat switch modes with explicit wire cancellation"
   const sheaths = () => connection.sent.filter(({ opcode }) => opcode === OPCODES.CMSG_SET_SHEATHED).map(({ payload }) => payload[0]);
   assert.deepEqual(connection.sent.map(({ opcode }) => opcode), [
     OPCODES.CMSG_ATTACK_STOP,
-    OPCODES.CMSG_SET_SHEATHED,
     OPCODES.CMSG_CAST_SPELL,
+    OPCODES.CMSG_SET_SHEATHED, // 5.05 (11.11): after the packet (0x00805330 → 0x007fa2e0)
   ]);
   assert.deepEqual(sheaths(), [2], "the bow, without the blade put away first");
   assert.equal(client.attacking, false);

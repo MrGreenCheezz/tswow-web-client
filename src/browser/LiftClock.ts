@@ -27,13 +27,16 @@
 // so it starts its own clock.
 //
 // A lift with a pause (GAMEOBJECT_LEVEL ≠ 0, a scripted elevator) is driven by its GO state instead
-// (`pausedLiftTime`, read 04.11). Open, recorded rather than guessed: the path's rotation
-// (TransportRotation.dbc, 0x0070dc10) turns the car; not done here, as before.
+// (`pausedLiftTime`, read 04.11). 11.01 (11.11): at that path time the car is turned by its
+// TransportRotation.dbc keys and GAMEOBJECT_PARENTROTATION, and its path offset by PARENTROTATION
+// (0x0070dc10, 0x0070daa0; TransportRotation.ts) — `liftPathPose`.
 
 import { UPDATE_FIELDS } from "../generated/updateFields.js";
 import type { WorldObjectState, WorldPosition, WorldState } from "../world/WorldState.js";
 import { anchorShipClock, dynamicPhaseWord, shipClockPhase, type ShipClock } from "./TransportMotion.js";
 import { sampleTransportPath, type TransportPath } from "./TransportPath.js";
+import { parentRotation, rotationHeading, transportPathRotation, turnByParent } from "./TransportRotation.js";
+import type { Quat } from "../world/GameObjectRotation.js";
 
 const DYNAMIC = UPDATE_FIELDS.GAMEOBJECT_DYNAMIC.offset;
 const BYTES_1 = UPDATE_FIELDS.GAMEOBJECT_BYTES_1.offset;
@@ -157,37 +160,62 @@ export function liftPhaseMs(object: WorldObjectState, period: number, now: numbe
   return shipClockPhase(clock, now, period);
 }
 
-/** A lift's pose in the world: where it stands this frame and the spawn's facing (lifts do not turn). */
+/**
+ * A lift's pose in the world: where it stands this frame and its heading. 11.01 (11.11): when its path turns it
+ * (`rotated`), `rotation` is the car's whole rotation in WoW axes — what the model is drawn with — and `orientation`
+ * that rotation's heading, for the yaw-only colliders and passengers' frame; otherwise `orientation` is the spawn's.
+ */
 export interface LiftPose {
   x: number;
   y: number;
   z: number;
   orientation: number;
+  rotated?: boolean;
+  /** Kept on the pose once made, so a reused pose allocates once; read only when `rotated`. */
+  rotation?: Quat;
 }
 
+const LIFT_OFFSET: [number, number, number] = [0, 0, 0];
+const LIFT_PARENT: Quat = { x: 0, y: 0, z: 0, w: 1 };
+
 /**
- * Where the lift is at `now`, written into `out`: the spawn point plus the path offset turned by the
- * spawn's yaw (`placeOnTransportPath`; the core's commented-out relocation turns it the same way,
- * `Rz(o) · node + stationary`, GameObject.cpp:536-543 — the GO's tilt and parent rotation do not
- * enter it). A path with no frames is a lift that stands at its spawn. Undefined without a position.
+ * Where the lift is at `now` on a path from `base`, written into `out` (0x007139e0 → 0x007106d0): the spawn point
+ * plus the path offset turned by GAMEOBJECT_PARENTROTATION (0x0070daa0 → 0x004c5100; with the core's parent being the
+ * spawn's own rotation that is the spawn's yaw, the turn its commented-out relocation spells `Rz(o) · node + stationary`,
+ * GameObject.cpp:536-543 — but an object with no `gameobject_addon` row has the identity there, and Wow.exe does not
+ * turn its path), and, with two or more TransportRotation keys, the car turned by them (0x0070dc10). A path with no
+ * frames is a lift that stands at its spawn.
  */
-export function liftPoseAt(object: WorldObjectState, path: TransportPath, now: number, out: LiftPose): LiftPose | undefined {
-  const base = object.position;
-  if (!base) return undefined;
+export function liftPathPose(object: WorldObjectState, base: WorldPosition, path: TransportPath, now: number, out: LiftPose): LiftPose {
   out.orientation = base.orientation;
+  out.rotated = false;
   if (!(path.period > 0) || path.frames.length === 0) {
     out.x = base.x;
     out.y = base.y;
     out.z = base.z;
     return out;
   }
-  const offset = sampleTransportPath(path, liftPhaseMs(object, path.period, now));
-  const cos = Math.cos(base.orientation);
-  const sin = Math.sin(base.orientation);
-  out.x = base.x + offset[0] * cos - offset[1] * sin;
-  out.y = base.y + offset[0] * sin + offset[1] * cos;
-  out.z = base.z + offset[2];
+  const time = liftPhaseMs(object, path.period, now);
+  const offset = sampleTransportPath(path, time);
+  turnByParent(parentRotation(object, LIFT_PARENT), offset[0], offset[1], offset[2], LIFT_OFFSET);
+  out.x = base.x + LIFT_OFFSET[0];
+  out.y = base.y + LIFT_OFFSET[1];
+  out.z = base.z + LIFT_OFFSET[2];
+  const keys = path.rotations;
+  if (keys !== undefined && keys.length >= 2) {
+    const rotation = out.rotation ??= { x: 0, y: 0, z: 0, w: 1 };
+    if (transportPathRotation(keys, path.period, time, LIFT_PARENT, rotation) !== undefined) {
+      out.rotated = true;
+      out.orientation = rotationHeading(rotation);
+    }
+  }
   return out;
+}
+
+/** {@link liftPathPose} from the object's own position. Undefined without a position. */
+export function liftPoseAt(object: WorldObjectState, path: TransportPath, now: number, out: LiftPose): LiftPose | undefined {
+  const base = object.position;
+  return base ? liftPathPose(object, base, path, now, out) : undefined;
 }
 
 /** The lifts' paths: `TransportPathClient` in the page (`/dbc/transport-paths`). */

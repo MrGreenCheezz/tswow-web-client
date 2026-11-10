@@ -387,7 +387,12 @@ import { petSpellCastsAsUnitAt } from "./PetCastSpell.js"; // L13 11.02-D; L13-r
 import { spellAttributeWords } from "./PetCastSpell.js"; // 5.05 (11.10): the wand rule
 import { MissileMissSchedule, missileMissTiming, type MissileMissSpell } from "./MissileMissLog.js"; // 13.10 (3.01)
 import { wandRepeatCancels } from "./AutoRepeatRefusal.js"; // 5.05 (11.10)
-import { cooldownRefusalText, SPELL_FAILED_ITEM_NOT_READY } from "./CooldownRefusalWords.js"; // 3.47 (12.10)
+import { SPELL_FAILED_ITEM_NOT_READY } from "./CooldownRefusalWords.js"; // 3.47 (12.10)
+import { SheathSetter, SPELL_ATTR0_RANGED, standStateSheathes } from "./SheathSetter.js"; // 5.05 (11.11)
+import { animationSheathState } from "./AnimationSheathRule.js"; // 5.05 (11.11)
+import { ANIMATION_BEHAVIORS, ANIMATION_WEAPON_FLAGS } from "../generated/animations.js"; // 5.05 (11.11)
+import { mountedCastRule, SPELL_FAILED_NOT_MOUNTED } from "./MountedCastRule.js"; // 5.05 (11.11)
+import { castFailureErrorText, petCastFailureErrorText, powerTokenName, SPELL_FAILED_ALREADY_AT_FULL_POWER } from "./CastFailureErrorRow.js"; // 3.47 (11.11)
 // 11.02-E: missile trajectories — the cast's flag 2 tail, the one re-aim, the page's solver.
 import {
   MissileTrajectoryTracker, isVehicleSpellBar, missileCastPlan, missileShotSource, type MissileCastPlan,
@@ -916,6 +921,12 @@ export class WorldClient {
    * stock Combat panel's «Ближний/дальний бой». Off until the browser hands in its setting.
    */
   autoRangedCombat: () => boolean = () => false; // L15 5.05
+  /**
+   * 5.05 (11.11): the CVars autoDismount (0x00bd08fc) and autoDismountFlying (0x00bd0900) that 0x0071b0c0 reads before
+   * a mounted cast dismounts (MountedCastRule.ts); the stock defaults, "1" and "0", until a host hands in its own.
+   */
+  autoDismount: () => boolean = () => true; // 5.05 (11.11)
+  autoDismountFlying: () => boolean = () => false; // 5.05 (11.11)
   /** L15 5.05: the range of the controller's spell for the player against a target (0x00802c30); the browser's. */
   autoRangedLimits: (spellId: number, player: WorldObjectState, target: WorldObjectState) => AutoRangedLimits | undefined = () => undefined; // L15 5.05
   /**
@@ -937,8 +948,8 @@ export class WorldClient {
     canAttack: (target) => this.#autoRangedCanAttack(target), // L15 5.05
     limits: (spellId, player, target) => this.autoRangedLimits(spellId, player, target), // L15 5.05
     swing: () => this.startAttack(true), // L15 5.05: 0x006e2610
-    stopSwing: () => this.#cancelMeleeAttack(false, false), // L15 5.05: 0x006d5f70
-    stopAttack: () => { this.autoRanged.stop(); this.#cancelMeleeAttack(false, false); }, // L15 5.05: 0x006e1660; L18 5.05: no sheath — its one packet is 0x007559e0's CMSG_ATTACKSTOP
+    stopSwing: () => this.#cancelMeleeAttack(false), // L15 5.05: 0x006d5f70
+    stopAttack: () => { this.autoRanged.stop(); this.#cancelMeleeAttack(false); }, // L15 5.05: 0x006e1660; L18 5.05: no sheath — its one packet is 0x007559e0's CMSG_ATTACKSTOP
     shoot: (spellId, target) => { // L15 5.05: 0x0080da40; L18-review: no facing — 0x0080cce0 never turns the character
       // 05.10-5.05: held while the player's cast bar runs (AutoRepeatRefusal.ts) — the realm would refuse it with
       // SPELL_IN_PROGRESS; false, as 0x0080da40's, when nothing went out. 5.05 (12.10): not for Auto Shot during a
@@ -948,7 +959,7 @@ export class WorldClient {
       this.#startAutoRepeat(spellId, 0, false, target.guid);
       return this.autoRepeatSpellId === spellId; // 05.10-5.05
     },
-    cancelRepeat: () => this.#stopAutoRepeat(true, false), // L15 5.05: 0x00807560(1); L18 5.05: 0x26d alone — 0x00715ac0(0) is a local flag, no sheath
+    cancelRepeat: () => this.#stopAutoRepeat(true), // L15 5.05: 0x00807560(1); L18 5.05: 0x26d alone — 0x00715ac0(0) is a local flag, no sheath
   }); // L15 5.05
   /** Selections cleared so far; Tab drops its list on each (0x524bf0 zeroes 0x00bd08cc). */
   selectionClears = 0;
@@ -1414,7 +1425,9 @@ export class WorldClient {
    * 3.39: the page's Spell.dbc rows, for the parts a GO files (SpellCooldownParts.ts) and the category a spell is
    * asked under. Undefined, or no row: nothing is filed beyond what the callers' durations say, as before 3.39.
    */
-  spellCooldownRow: ((spellId: number) => SpellCooldownRow | undefined) | undefined;
+  spellCooldownRow: ((spellId: number) => (SpellCooldownRow & {
+    readonly targets?: number | undefined; readonly powerType?: number | undefined; // 3.47 (11.11): Targets, PowerType
+  }) | undefined) | undefined;
   /**
    * 13.10 (3.01): the page's Spell.dbc rows' Speed and attribute words (`/dbc/spells?v=20`), for when a GO's misses
    * are told (MissileMissLog.ts). Undefined, or no row: every miss is told at once, as before.
@@ -1633,6 +1646,8 @@ export class WorldClient {
   /** An uncached item needs its template before we can choose USE_ITEM or OPEN_ITEM. */
   readonly #pendingItemUses = new Map<bigint, { bag: number; slot: number; entry: number }>();
   #castCount = 0;
+  /** 5.05 (11.11): the sheath setter's held state (Wow.exe 0x00736d30, SheathSetter.ts). */
+  readonly #sheathSetter = new SheathSetter(); // 5.05 (11.11)
   /** 11.02-E: the note between a trajectory cast and its re-aim (Wow.exe unit+0xf68…0xf74, MissileCast.ts). */
   readonly #missiles = new MissileTrajectoryTracker((guid, spellId) => this.#reaimMissile(guid, spellId)); // 11.02-E
   /** Requests waiting for the server's outcome. A request is not a cooldown. */
@@ -2277,7 +2292,7 @@ export class WorldClient {
     const repeat = this.autoRepeatSpellId;
     // 0x5241b0 → 0x6e1660: the old swing ends before the selection moves, either way.
     if (melee) {
-      if (follows) this.#cancelMeleeAttack(false, false);
+      if (follows) this.#cancelMeleeAttack(false);
       else this.stopAttack();
     }
     if (repeat !== undefined) this.#stopAutoRepeat(!follows);
@@ -2338,13 +2353,14 @@ export class WorldClient {
     // 5.05 (12.10): 0x006e2610's 0x00807560(1) — CMSG_CANCEL_AUTO_REPEAT_SPELL alone; the one sheath packet of the
     // shot turning into a swing is the SHEATH 1 below (0x00736d30(1, 1, 0)). Was (true): SHEATH 0 first, the bow
     // put away and the blade drawn in two packets.
-    if (this.autoRepeatSpellId !== undefined) this.#stopAutoRepeat(true, false); // 5.05 (12.10)
+    if (this.autoRepeatSpellId !== undefined) this.#stopAutoRepeat(true); // 5.05 (12.10)
     // 0x6e2610 stands a seated player up (0x6dcb40(0)) before the swing.
     if (self && !isWorldObjectDead(self) && (unitFields.standState(self) ?? 0) !== 0) this.setStandState(0);
     // Draw the weapon first. The server publishes the sheath state in UNIT_FIELD_BYTES_2 and the
     // renderer hangs a weapon off a hand only while it is out, so a character who never says it
     // has drawn anything fights bare-handed however much steel is equipped.
-    this.#connection.send(OPCODES.CMSG_SET_SHEATHED, buildSetSheathed(SHEATH_MELEE));
+    // 5.05 (11.11): through the setter 0x00736d30 — nothing when the blade is already out (SheathSetter.ts).
+    this.#sendSheath(SHEATH_MELEE, self); // 5.05 (11.11)
     this.#connection.send(OPCODES.CMSG_ATTACK_SWING, buildCombatGuid(this.targetGuid));
     this.autoRanged.noteFailureReset(); // 05.10-3.01: 0x006e2610 → 0x007fe190 (0x006e2862), after its swing
     this.attackVictim = this.targetGuid;
@@ -2361,7 +2377,41 @@ export class WorldClient {
 
   stopAttack(): void {
     this.autoRanged.stop(); // L15 5.05: 0x006e1660 ends the autoRangedCombat mode too
-    this.#cancelMeleeAttack(true);
+    this.#cancelMeleeAttack(true); // 5.05 (11.11): CMSG_ATTACK_STOP alone — 0x006e1660 never calls the sheath setter
+  }
+
+  /**
+   * 5.05 (11.11): the active player's model started an animation that was not a spell kit's (the renderer's
+   * RenderResults `ownAnimation`; the page's game/OwnAnimationSheath.ts) — Wow.exe 0x007385c0 → 0x00738180, judged by
+   * AnimationSheathRule.ts against `animation` (the model's upper-body action, else its base) with `keep` clear, and
+   * handed to the sheath setter: CMSG_SET_SHEATHED on a change of the held state only. The cast in progress is the
+   * player's cast bar (+0xa60); attacking is the swing on or requested (+0xa20).
+   */
+  ownAnimationStarted(animation: number): void {
+    if (this.#closed) return;
+    const selfGuid = this.state.selfGuid;
+    const self = selfGuid === undefined ? undefined : this.state.objects.get(selfGuid);
+    if (selfGuid === undefined || !self) return;
+    const published = unitFields.sheathState(self);
+    const weaponFlags = ANIMATION_WEAPON_FLAGS[animation];
+    const behavior = ANIMATION_BEHAVIORS[animation];
+    const cast = this.casts.get(selfGuid);
+    const state = animationSheathState({
+      row: animation < 0 || (weaponFlags === undefined && behavior === undefined) ? undefined
+        : { weaponFlags: weaponFlags ?? 0, behavior: behavior ?? 0 },
+      animation, keep: false,
+      held: this.#sheathSetter.held ?? published ?? SHEATH_UNARMED,
+      casting: cast === undefined || cast.channel ? undefined : { attributes0: spellAttributeWords(cast.spellId)?.[0] },
+      attacking: this.#meleeEngaged(), activePlayer: true, published,
+    });
+    if (state !== undefined) this.#sendSheath(state, self);
+  }
+
+  /** 5.05 (11.11): Wow.exe's sheath setter 0x00736d30 for the player — CMSG_SET_SHEATHED only on a change. */
+  #sendSheath(state: number, self?: WorldObjectState): void {
+    const unit = self ?? (this.state.selfGuid === undefined ? undefined : this.state.objects.get(this.state.selfGuid));
+    if (!this.#sheathSetter.request(state, unit ? unitFields.sheathState(unit) : undefined)) return;
+    this.#connection.send(OPCODES.CMSG_SET_SHEATHED, buildSetSheathed(state));
   }
 
   /**
@@ -2430,11 +2480,13 @@ export class WorldClient {
     if (target) this.autoRanged.begin(target, false);
   }
 
-  #cancelMeleeAttack(announce: boolean, sheathe = true): void {
+  /**
+   * The swing's stop: CMSG_ATTACK_STOP alone. 5.05 (11.11): no sheath on any stop — StopAttack 0x006e1660 and the
+   * swing stop 0x006d5f70 never call the sheath setter 0x00736d30; the weapon stays out (was SHEATH 0 here).
+   */
+  #cancelMeleeAttack(announce: boolean): void {
     if (this.#closed || !this.#meleeEngaged()) return;
     this.#connection.send(OPCODES.CMSG_ATTACK_STOP);
-    // A swing carried to a new target (5.05) keeps the weapon out: the next request draws it again.
-    if (sheathe) this.#connection.send(OPCODES.CMSG_SET_SHEATHED, buildSetSheathed(SHEATH_UNARMED));
     this.attacking = false;
     this.attackVictim = undefined;
     this.#pending.confirm("attack");
@@ -2470,10 +2522,10 @@ export class WorldClient {
     // autoRangedCombat mode too — a shot the mode or the player starts keeps the mode).
     // 5.05 (12.10): 0x006d5f70 is CMSG_ATTACKSTOP alone — the sheath packet of a swing turning into a shot is the
     // SHEATH 2 below (was SHEATH 0 first: the blade put away, then the bow drawn).
-    this.#cancelMeleeAttack(true, false); // L15 5.05; 5.05 (12.10): no sheath
+    this.#cancelMeleeAttack(true); // L15 5.05; 5.05 (12.10): no sheath
     if (this.autoRepeatSpellId !== undefined) this.#stopAutoRepeat(true);
-    // 5.35 (26.10): the shot turns nobody either (0x0080cce0, startAttack).
-    this.#connection.send(OPCODES.CMSG_SET_SHEATHED, buildSetSheathed(SHEATH_RANGED));
+    // 5.35 (26.10): the shot turns nobody either (0x0080cce0, startAttack). 5.05 (11.11): its SHEATH 2 follows the
+    // packet (`#trackPendingCast`, 0x00805330 → 0x007fa2e0).
     this.#castCount = (this.#castCount + 1) & 0xff;
     this.#connection.send(
       OPCODES.CMSG_CAST_SPELL,
@@ -2515,25 +2567,49 @@ export class WorldClient {
     });
   }
 
+  /**
+   * 3.47 (11.11): the error frame's words 0x00808200 shows for a refusal of the player's cast — 0x00807f10's row for
+   * the result, read against the spell's Category, Attributes and Targets, with the SPELL_FAILED_* `sentence` (or,
+   * for ALREADY_AT_FULL_POWER, the player's power name) as its argument (CastFailureErrorRow.ts).
+   */
+  #refusalErrorText(spellId: number, result: number, sentence: string | undefined): string | undefined {
+    const row = this.spellCooldownRow?.(spellId);
+    const selfGuid = this.state.selfGuid;
+    const self = selfGuid === undefined ? undefined : this.state.objects.get(selfGuid);
+    return castFailureErrorText(result, { category: row?.category, attributes: spellAttributeWords(spellId), targets: row?.targets,
+      powerType: row?.powerType },
+      sentence, result === SPELL_FAILED_ALREADY_AT_FULL_POWER ? powerTokenName(self ? unitFields.powerType(self) : undefined) : undefined);
+  }
+
+  /** 3.47 (11.11): 0x00806c30's caster — the player's UNIT_FIELD_CHARM, else UNIT_FIELD_SUMMON; undefined for neither. */
+  #charmOrSummon(): bigint | undefined {
+    const selfGuid = this.state.selfGuid;
+    const fields = selfGuid === undefined ? undefined : this.state.objects.get(selfGuid)?.fields;
+    if (!fields) return undefined;
+    for (const at of [UPDATE_FIELDS.UNIT_FIELD_CHARM.offset, UPDATE_FIELDS.UNIT_FIELD_SUMMON.offset]) {
+      const low = fields.get(at) ?? 0;
+      const high = fields.get(at + 1) ?? 0;
+      if (low !== 0 || high !== 0) return (BigInt(high >>> 0) << 32n) | BigInt(low >>> 0);
+    }
+    return undefined;
+  }
+
   /** 5.05 (11.10): 0x00808200's first rule (AutoRepeatRefusal `wandRepeatCancels`): CMSG_CANCEL_CAST, then 0x00807560(1). */
   #wandRepeatRule(result: number): void {
     const repeat = this.autoRepeatSpellId;
     if (!wandRepeatCancels(repeat, result, repeat === undefined ? undefined : spellAttributeWords(repeat))) return;
     if (!this.#closed) this.#connection.send(OPCODES.CMSG_CANCEL_CAST, new PacketWriter().u8(0).u32(repeat!).toUint8Array());
-    this.#stopAutoRepeat(true, false); // 0x00807560(1): CANCEL_AUTO_REPEAT alone (0x26d), no sheath
+    this.#stopAutoRepeat(true); // 0x00807560(1): CANCEL_AUTO_REPEAT alone (0x26d), no sheath
   }
 
-  #stopAutoRepeat(sendCancel: boolean, restoreSheath = sendCancel): void {
+  /**
+   * The repeat's stop, Wow.exe 0x00807560: CMSG_CANCEL_AUTO_REPEAT_SPELL (0x26d) when `sendCancel`, and nothing
+   * else on the wire. 5.05 (11.11): never a sheath — 0x00807560 does not call the setter 0x00736d30 (was SHEATH 1
+   * or 0 after a cancel of the client's own: the bow put away by the stop, drawn again by the next shot).
+   */
+  #stopAutoRepeat(sendCancel: boolean): void {
     if (this.autoRepeatSpellId === undefined) return;
-    if (!this.#closed) {
-      if (sendCancel) this.#connection.send(OPCODES.CMSG_CANCEL_AUTO_REPEAT_SPELL);
-      if (restoreSheath) {
-        this.#connection.send(
-          OPCODES.CMSG_SET_SHEATHED,
-          buildSetSheathed(this.#meleeEngaged() ? SHEATH_MELEE : SHEATH_UNARMED),
-        );
-      }
-    }
+    if (!this.#closed && sendCancel) this.#connection.send(OPCODES.CMSG_CANCEL_AUTO_REPEAT_SPELL);
     this.autoRepeatSpellId = undefined;
   }
 
@@ -2548,9 +2624,23 @@ export class WorldClient {
 
   #cancelMountBeforeCast(spellId?: number): boolean {
     const selfGuid = this.state.selfGuid;
-    if (selfGuid === undefined || !isMounted(this.state.objects.get(selfGuid))) return false;
+    const self = selfGuid === undefined ? undefined : this.state.objects.get(selfGuid);
+    if (selfGuid === undefined || !self || !isMounted(self)) return false;
     const activeMount = spellId !== undefined && this.#mountSpellIds.has(spellId)
       && hasAuraSpell(this.auras.get(selfGuid), spellId);
+    // 5.05 (11.11): Wow.exe 0x0080ac90 for a spell of the book (Auto Shot too): CASTABLE_WHILE_MOUNTED keeps the mount;
+    // a taxi, flight without autoDismountFlying, or autoDismount off refuse NOT_MOUNTED with nothing sent
+    // (MountedCastRule.ts). Was: CMSG_CANCEL_MOUNT_AURA for every spell — a flier fell out of the sky.
+    if (spellId !== undefined && !activeMount) { // 5.05 (11.11)
+      const rule = mountedCastRule(spellAttributeWords(spellId)?.[0], unitFields.flags(self) ?? 0, self.movementFlags, // 5.05 (11.11)
+        this.autoDismount(), this.autoDismountFlying()); // 5.05 (11.11)
+      if (rule === "keep") return false; // 5.05 (11.11)
+      if (rule === "refuse") { // 5.05 (11.11)
+        this.spellRefusedLocally(spellId, SPELL_FAILED_NOT_MOUNTED, // 5.05 (11.11)
+          this.#refusalErrorText(spellId, SPELL_FAILED_NOT_MOUNTED, spellFailureText(SPELL_FAILED_NOT_MOUNTED, this.#castFailureNames())) ?? ""); // 5.05 (11.11)
+        return true; // 5.05 (11.11)
+      } // 5.05 (11.11)
+    } // 5.05 (11.11)
     // `CMSG_CANCEL_MOUNT_AURA` has an empty body. Keep it immediately before the cast so the
     // server processes the dismount first, while fields and auras remain server-authoritative.
     this.#connection.send(OPCODES.CMSG_CANCEL_MOUNT_AURA);
@@ -2571,7 +2661,7 @@ export class WorldClient {
    */
   setSheathed(state: number): void {
     if (this.#closed || this.state.selfGuid === undefined) return;
-    this.#connection.send(OPCODES.CMSG_SET_SHEATHED, buildSetSheathed(state));
+    this.#sendSheath(state); // 5.05 (11.11): ToggleSheath 0x006e23a0 → the setter 0x00736d30, which holds the state
   }
 
   castSpell(spellId: number, cooldownDuration = 0, cooldownStartedOnEvent = false,
@@ -2930,6 +3020,14 @@ export class WorldClient {
     // 3.02: Wow.exe 0x0080ac90 raises UNIT_SPELLCAST_SENT right after it builds the request.
     this.events.emit("SPELL_CAST_SENT", targetGuid === undefined || targetGuid === 0n
       ? { spellId, castCount } : { spellId, castCount, targetGuid });
+    // 5.05 (11.11): then 0x00805330 → 0x007fa2e0 draws the ranged weapon for a spell with SPELL_ATTR0_RANGED (0x2) —
+    // the setter 0x00736d30(2, 1, 0) after the request's packet, for Auto Shot and Arcane Shot alike (was: SHEATH 2
+    // before Auto Shot's cast only). A row the page has not loaded counts as ranged for an auto-repeat spell: every
+    // auto-repeat row of the dataset (75, 5019) carries the bit.
+    const attributes0 = spellAttributeWords(spellId)?.[0]; // 5.05 (11.11)
+    if (attributes0 !== undefined ? (attributes0 & SPELL_ATTR0_RANGED) !== 0 : this.#autoRepeatSpellIds.has(spellId)) { // 5.05 (11.11)
+      this.#sendSheath(SHEATH_RANGED); // 5.05 (11.11)
+    } // 5.05 (11.11)
     this.#prunePendingCasts();
     this.#pendingCasts.push({
       spellId,
@@ -4520,8 +4618,15 @@ export class WorldClient {
       const text = spellFailureText(plan.refused, this.#castFailureNames());
       const quiet = this.#refusalQuiet.quiet(spellId, plan.refused, performance.now(), // 05.10-5.05: 0x00808200's local_14
         this.autoRanged.wantedSpellId, this.autoRanged.failureResets); // 05.10-5.05
-      if (text && !quiet) this.onSpellStatus?.(text, true); // 05.10-5.05: + !quiet
-      this.events.emit("SPELL_CAST_REFUSED_LOCAL", { spellId, result: plan.refused, ...castFailureWords({}, () => text) }); // 05.10-3.01
+      const words = this.#refusalErrorText(spellId, plan.refused, text); // 3.47 (11.11): 0x00807f10's row
+      if (words && !quiet) this.onSpellStatus?.(words, true); // 05.10-5.05: + !quiet
+      // 3.47 (11.11): the request 0x0080cce0 refuses here is 0x00805010(1)'s, whose cast count is drawn before the
+      // missile's check (0x0080ac90 → 0x00808200, "Missile trajectory does not have active mover caster"), and
+      // 0x00808200 ends in 0x007fecc0 for the request's caster (+0x10): UNIT_SPELLCAST_FAILED with that count, as
+      // spellRefusedLocally has it (was: the event without caster and count, so no FAILED).
+      const castCount = this.#castCount = (this.#castCount + 1) & 0xff; // 3.47 (11.11)
+      this.events.emit("SPELL_CAST_REFUSED_LOCAL", { spellId, result: plan.refused, ...castFailureWords({}, () => text), // 05.10-3.01
+        casterGuid, castCount }); // 3.47 (11.11)
     }
     return plan;
   }
@@ -7588,7 +7693,7 @@ export class WorldClient {
         spellId: failure.spellId, result: failure.result, repeating: this.autoRepeatSpellId, // 05.10-5.05
         wanted: this.autoRanged.wantedSpellId, fromServer: true, answersRequest: pending !== undefined, // 05.10-5.05
       }); // 05.10-5.05
-      if (repeat !== "keep") this.#stopAutoRepeat(repeat === "stop", false); // 05.10-5.05: 0x00807560(1) — 0x26d alone
+      if (repeat !== "keep") this.#stopAutoRepeat(repeat === "stop"); // 05.10-5.05: 0x00807560(1) — 0x26d alone
       const quiet = this.#refusalQuiet.quiet(failure.spellId, failure.result, performance.now(), // 05.10-5.05
         this.autoRanged.wantedSpellId, this.autoRanged.failureResets); // 05.10-5.05
       // 05.10-3.02: case 0x81 — a known limit category's ERR_ITEM_MAX_LIMIT_CATEGORY_COUNT_EXCEEDED_IS, past local_14.
@@ -7606,9 +7711,8 @@ export class WorldClient {
       // The words are the realm's own, out of its GlobalStrings, filled from the packet's tail;
       // `DONT_REPORT` means say nothing. 3.47 (12.10): NOT_READY and ITEM_NOT_READY show the row 0x00807f10 picks
       // by the spell row's Category and Attributes (CooldownRefusalWords.ts), as the client's own refusal does.
-      const text = cooldownRefusalText(failure.result, {
-        category: this.spellCooldownRow?.(failure.spellId)?.category, attributes: spellAttributeWords(failure.spellId),
-      }) ?? spellFailureText(failure, this.#castFailureNames());
+      // 3.47 (11.11): every result through 0x00807f10's row (CastFailureErrorRow.ts), the sentence its argument.
+      const text = this.#refusalErrorText(failure.spellId, failure.result, spellFailureText(failure, this.#castFailureNames()));
       if (text) this.onSpellStatus?.(text, true);
       return true;
     }
@@ -7961,6 +8065,7 @@ export class WorldClient {
   /** Sits down or stands up. `UnitStandStateType` in the core: 0 stands, 1 sits. */
   setStandState(state: number): void {
     this.#connection.send(OPCODES.CMSG_STANDSTATECHANGE, buildStandStateChange(state));
+    if (standStateSheathes(state)) this.#sendSheath(SHEATH_UNARMED); // 5.05 (11.11): 0x006dcb40 → 0x0073f060
   }
 
   /** Spends a talent point. The rank is the one to reach, counting from one. */
@@ -8235,6 +8340,7 @@ export class WorldClient {
       if (selfGuid !== undefined && self && (word & 0xff) !== standState) {
         this.state.patchField(selfGuid, offset, ((word & ~0xff) | standState) >>> 0);
       }
+      if (self && standStateSheathes(standState)) this.#sendSheath(SHEATH_UNARMED, self); // 5.05 (11.11): 0x0073f060
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_PLAYED_TIME) {
@@ -8939,7 +9045,7 @@ export class WorldClient {
       // and for any unit clears +0xa38 bit 0x200 and resets the shot's animation (0x0072afe0); it never calls the
       // sheath setter 0x00736d30 (.runtime/re-2026-10-11/glue-1110/a505-3.txt). The CMSG_SET_SHEATHED this sent (the
       // bow put away, then drawn again by the next shot: the flicker on a stun, a Tab, the echo of a cancel) is gone.
-      if (guid === this.state.selfGuid) this.#stopAutoRepeat(false, false); // 5.05 (12.10): was (false, true)
+      if (guid === this.state.selfGuid) this.#stopAutoRepeat(false); // 5.05 (12.10): was (false, true)
       this.events.emit("STOP_AUTOREPEAT_SPELL", { guid });
       return true;
     }
@@ -9064,8 +9170,20 @@ export class WorldClient {
     if (packet.opcode === OPCODES.SMSG_PET_CAST_FAILED) {
       // Written by the player's own `WriteCastResultInfo` (Spell.cpp:4385-4386), tail and all, so it
       // is read and worded the same way; `DONT_REPORT` says nothing here either.
-      const text = spellFailureText(parsePetCastFailed(packet.payload), this.#castFailureNames());
-      if (text) this.#recordPetMessage(`Питомец: ${text}`, true);
+      // 3.47 (11.11): Wow.exe 0x00806c30 → 0x00805610 — the pet's own rows (ERR_PET_SPELL_*, the NO_POWER and
+      // cooldown rows), else the sentence, with no prefix (CastFailureErrorRow.ts `petCastFailureErrorText`); then
+      // 0x007fecc0 for the request's caster — the player's UNIT_FIELD_CHARM, else UNIT_FIELD_SUMMON — and 0x008054f0:
+      // UNIT_SPELLCAST_FAILED with the packet's count for that unit, never the combat log (no `refusal`).
+      const failure = parsePetCastFailed(packet.payload);
+      const row = this.spellCooldownRow?.(failure.spellId); // 3.47 (11.11)
+      const text = petCastFailureErrorText(failure.result, { category: row?.category, // 3.47 (11.11)
+        attributes: spellAttributeWords(failure.spellId), powerType: row?.powerType }, spellFailureText(failure, this.#castFailureNames()));
+      if (text) this.#recordPetMessage(text, true);
+      const caster = this.#charmOrSummon(); // 3.47 (11.11)
+      if (caster !== undefined) { // 3.47 (11.11)
+        this.events.emit("SPELL_CAST_RESULT", { casterGuid: caster, spellId: failure.spellId, castCount: failure.castCount, // 3.47 (11.11)
+          result: failure.result, ...castFailureWords(failure, () => text) }); // 3.47 (11.11)
+      } // 3.47 (11.11)
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_PET_TAME_FAILURE) {
@@ -10579,7 +10697,7 @@ export class WorldClient {
     // L15 5.05: Wow.exe 0x00756800 cases 0x148/0x149 and SMSG_CANCEL_COMBAT's 0x006e2210 call StopAttack
     // 0x006e1660 — CMSG_ATTACK_STOP while a swing runs or is requested (the two above only latch an error).
     this.autoRanged.stop(); // L15 5.05: and the autoRangedCombat mode with it
-    this.#cancelMeleeAttack(false, false); // L15 5.05; L15-review: no sheath — 0x006e1660 sends only 0x007559e0's CMSG_ATTACKSTOP
+    this.#cancelMeleeAttack(false); // L15 5.05; L15-review: no sheath — 0x006e1660 sends only 0x007559e0's CMSG_ATTACKSTOP
     this.attacking = false;
     this.attackVictim = undefined;
     this.#pending.confirm("attack");

@@ -42,6 +42,11 @@ const PATHS = { path: (entry) => (entry === LIFT_ENTRY ? PATH : { entry, period:
 /** The DYNAMIC word for a phase, as the core writes it. */
 const dynamicFor = (phaseMs) => (Math.trunc((phaseMs / PATH.period) * 65535) << 16) >>> 0;
 const near = (a, b, tolerance = 1e-3) => Math.abs(a - b) <= tolerance;
+const floatBits = (value) => {
+  const view = new DataView(new ArrayBuffer(4));
+  view.setFloat32(0, value, true);
+  return view.getUint32(0, true);
+};
 
 /** The platform: a 6 × 6 floor at the lift's origin, in its own frame. */
 function platformModel() {
@@ -65,7 +70,7 @@ const UPTIME = 12 * PATH.period;
  * colliders read. The dynamic word, unless given, says another phase: Wow.exe does not read it.
  */
 function liftCreate({ phase = 0, dynamic = dynamicFor((phase + 3000) % PATH.period), transportTime = UPTIME + phase,
-  base = BASE, word = true, flags = 0x28 } = {}) {
+  base = BASE, word = true, flags = 0x28, parent = base.orientation } = {}) {
   const values = new Map([
     [UPDATE_FIELDS.OBJECT_FIELD_ENTRY.offset, LIFT_ENTRY],
     [UPDATE_FIELDS.GAMEOBJECT_DISPLAYID.offset, LIFT_DISPLAY],
@@ -73,6 +78,11 @@ function liftCreate({ phase = 0, dynamic = dynamicFor((phase + 3000) % PATH.peri
     [UPDATE_FIELDS.GAMEOBJECT_DYNAMIC.offset, dynamic],
     [UPDATE_FIELDS.GAMEOBJECT_FLAGS.offset, flags],
   ]);
+  // 11.01 (11.11): PARENTROTATION as the core fills it from gameobject_addon — the spawn's own yaw here; z and w only.
+  if (parent !== undefined) {
+    values.set(UPDATE_FIELDS.GAMEOBJECT_PARENTROTATION.offset + 2, floatBits(Math.sin(parent / 2)));
+    values.set(UPDATE_FIELDS.GAMEOBJECT_PARENTROTATION.offset + 3, floatBits(Math.cos(parent / 2)));
+  }
   const blocks = Math.ceil((Math.max(...values.keys()) + 1) / 32);
   const masks = new Array(blocks).fill(0);
   for (const index of values.keys()) masks[index >> 5] |= 1 << (index & 31);
@@ -107,12 +117,18 @@ test("the phase is the create block's word (the uptime), anchored when the block
   assert.ok(near(pose(fallback.objects.get(LIFT), 0).z, BASE.z + 10, 0.02), "1000 ms into the cycle");
 });
 
-test("a horizontal path is turned by the spawn's yaw before it is added", () => {
+// 11.01 (11.11): by PARENTROTATION (0x0070daa0 → 0x004c5100), which the core fills with the spawn's rotation from
+// gameobject_addon and with the identity without a row (GameObject.cpp:338-342) — then the path is not turned.
+test("a horizontal path is turned by PARENTROTATION before it is added", () => {
+  const tram = { entry: LIFT_ENTRY, period: 2000, frames: [{ time: 0, x: 0, y: 0, z: 0 }, { time: 1000, x: 10, y: 0, z: 0 }] };
   const state = new WorldState();
   state.applyUpdate(liftCreate({ phase: 0 }), 0);
-  const tram = { entry: LIFT_ENTRY, period: 2000, frames: [{ time: 0, x: 0, y: 0, z: 0 }, { time: 1000, x: 10, y: 0, z: 0 }] };
   const at = liftPoseAt(state.objects.get(LIFT), tram, 1000, { x: 0, y: 0, z: 0, orientation: 0 });
   assert.ok(near(at.x, BASE.x + 10 * Math.cos(BASE.orientation)) && near(at.y, BASE.y + 10 * Math.sin(BASE.orientation)));
+  const bare = new WorldState();
+  bare.applyUpdate(liftCreate({ phase: 0, parent: 0 }), 0);
+  const plain = liftPoseAt(bare.objects.get(LIFT), tram, 1000, { x: 0, y: 0, z: 0, orientation: 0 });
+  assert.ok(near(plain.x, BASE.x + 10) && near(plain.y, BASE.y), "an identity parent leaves the path as it is");
 });
 
 test("a re-CREATE of the same lift resyncs its phase and keeps its mesh; a values update's phase word moves nothing", () => {

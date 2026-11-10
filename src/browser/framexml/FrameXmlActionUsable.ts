@@ -15,12 +15,13 @@
  *
  * `frameXmlSpellUsable` is 0x0080b5d0 + 0x008017e0 over the data this client has. Gates that need data it does not
  * have are open (usable), so a doubt never greys a button the original would not:
- * - the vehicle/possess player-flag restriction of 0x0080b5d0 (`Spell_C_IsRestrictedAbility`), charm cancelling;
  * - `Spell_C_SpellGetSpellIDForDifficulty` (the aura spell ids are taken as written);
- * - a DK's rune check (`CGRuneInfo::HasRunesForSpell` needs SpellRuneCost.dbc);
- * - `IsInFlyableZone` for AttributesExD 0x4000000 (flying mounts) and a disarm's per-hand slot masks;
+ * - a disarm's per-hand slot masks;
  * - the gates whose columns a gateway started before 19.10 does not serve (shapeshift masks, aura states, aura spells,
- *   AuraInterruptFlags, the effects' class masks) — open until it is restarted.
+ *   AuraInterruptFlags, the effects' class masks) — open until it is restarted; the rune row likewise (11.11);
+ * - an area whose AreaTable flags are not known yet (the flying gate).
+ * 3.57 (11.11): the rune check, the flying-only spells, the restricted player's 0x007fcc70 and the charm escape are
+ * FrameXmlActionUsableGates.ts.
  */
 import type { SpellMetadata } from "../../gateway/SpellMetadata.js";
 import type { WorldObjectState } from "../../world/WorldState.js";
@@ -29,6 +30,10 @@ import { spellPowerCost, spellPowerPool } from "../SpellCastGuard.js";
 import {
   actionRangeCanAssist, actionRangeCanAttack, actionRangeSameGroup, type ActionRangeHost,
 } from "./FrameXmlActionRange.js";
+import {
+  FRAMEXML_CHARM_AURA_TYPES, frameXmlFlyingAllowed, frameXmlHasRunesForSpell, frameXmlRestrictedAbility,
+  frameXmlUnitCharmed, type ActionUsableFlightHost, type ActionUsableRune,
+} from "./FrameXmlActionUsableGates.js"; // 3.57 (11.11)
 
 /** One aura on a unit: its spell and the effect mask the aura flags carry (bits 0..2). */
 export interface ActionUsableAura {
@@ -69,6 +74,10 @@ export interface ActionUsableHost {
   outdoors(): boolean | undefined;
   /** The `autoSelfCast`, `autoUnshift` and `autoDismountFlying` CVars. */
   cvar(name: "autoSelfCast" | "autoUnshift" | "autoDismountFlying"): boolean;
+  /** 3.57 (11.11): the player's six runes (FrameXmlActionUsableGates.ts); absent or undefined leaves the gate open. */
+  runes?(): readonly ActionUsableRune[] | undefined;
+  /** 3.57 (11.11): what the flying-only gate reads (0x007261b0); absent leaves it open. */
+  readonly flight?: ActionUsableFlightHost | undefined;
 }
 
 // UnitFlags / UnitFlags2 / PlayerFlags (SharedDefines.h, UnitDefines.h).
@@ -286,9 +295,20 @@ function haveEquippedSpellItems(unit: WorldObjectState, spell: SpellMetadata, ho
   return true;
 }
 
-/** `Spell_C_HaveSpellPower` (0x008017e0): false is IsUsableAction's `notEnoughMana`. */
-export function frameXmlSpellHasPower(unit: WorldObjectState, spell: SpellMetadata): boolean {
-  if (spell.powerType === POWER_RUNE) return true; // CGRuneInfo::HasRunesForSpell: SpellRuneCost.dbc is not served
+/**
+ * `Spell_C_HaveSpellPower` (0x008017e0): false is IsUsableAction's `notEnoughMana`. 3.57 (11.11): a rune spell is
+ * paid only by the active player's runes (0x005ee5b0, FrameXmlActionUsableGates.ts); without a host it stays open.
+ */
+export function frameXmlSpellHasPower(unit: WorldObjectState, spell: SpellMetadata, host?: ActionUsableHost): boolean {
+  if (spell.powerType === POWER_RUNE) {
+    if (!host) return true;
+    if (unit.guid !== host.range.selfGuid) return false;
+    return frameXmlHasRunesForSpell(unit, spell, {
+      runes: () => host.runes?.(),
+      playerSpellFamily: () => host.range.playerSpellFamily(),
+      spellModifiers: () => host.range.spellModifiers(),
+    });
+  }
   const cost = spellPowerCost(spell, unit);
   const pool = spellPowerPool(spell, unit);
   if (cost === undefined || pool === undefined) return true;
@@ -311,7 +331,8 @@ export function frameXmlSpellCastable(
   if (isPlayer) {
     const attack = effects[0] === SPELL_EFFECT_ATTACK || (attr0 & 0x2) !== 0;
     const flags = field(unit, "PLAYER_FLAGS");
-    if ((flags & PLAYER_FLAGS_RESTRICTED) !== 0) { if (attack) return false; }
+    // 3.57 (11.11): 0x007fcc70 refuses more than an attack (FrameXmlActionUsableGates.ts).
+    if ((flags & PLAYER_FLAGS_RESTRICTED) !== 0) { if (attack || frameXmlRestrictedAbility(spell)) return false; }
     else if (!attack && (flags & PLAYER_FLAGS_ALLOW_ONLY_ABILITY) !== 0) return false;
   }
   // IsDeadOrGhost (vfunc +0x128) unless SPELL_ATTR0_CASTABLE_WHILE_DEAD.
@@ -332,6 +353,9 @@ export function frameXmlSpellCastable(
       && ((attribute(spell, 5) & 0x20000) !== 0 || cancelsAuraEffect(unit, spell, AURA_MOD_FEAR, host))) allowed = true;
     if ((unitFlags & UNIT_FLAG_CONFUSED) !== 0
       && ((attribute(spell, 5) & 0x40000) !== 0 || cancelsAuraEffect(unit, spell, AURA_MOD_CONFUSE, host))) allowed = true;
+    // 3.57 (11.11): 0x004f5f00 + 0x008046c0 — a charmed unit may use what lifts its charm or possession.
+    if (frameXmlUnitCharmed(unit)
+      && FRAMEXML_CHARM_AURA_TYPES.some((auraType) => cancelsAuraEffect(unit, spell, auraType, host))) allowed = true;
     if (((unitFlags & UNIT_FLAG_TAXI_FLIGHT) === 0 || (attr0 & 0x1000000) === 0) && !allowed) return false;
   }
   if (((itemFlags ?? 0) & 0x10000000) === 0 && !haveSpellTokens(unit, spell, host)) return false;
@@ -386,6 +410,8 @@ export function frameXmlSpellCastable(
     if (outdoors === true && (attr0 & 0x4000) !== 0) return false;
     if (outdoors === false && (attr0 & 0x8000) !== 0) return false;
   }
+  // 3.57 (11.11): AttributesExD 0x4000000, the flying-only spells (0x007261b0, FrameXmlActionUsableGates.ts).
+  if ((attribute(spell, 4) & 0x4000000) !== 0 && !frameXmlFlyingAllowed(unit, host.flight)) return false;
   if ((attribute(spell, 3) & 0x800) !== 0 && instanceType !== undefined && instanceType !== 3) return false;
   if ((attribute(spell, 6) & 0x800) !== 0 && instanceType === 2) return false;
   return true;
@@ -398,7 +424,7 @@ export function frameXmlSpellUsable(
 ): readonly [boolean, boolean] {
   if (spell.passive) return [false, false];
   if (!frameXmlSpellCastable(unit, spell, target, host, itemFlags)) return [false, false];
-  return frameXmlSpellHasPower(unit, spell) ? [true, false] : [false, true];
+  return frameXmlSpellHasPower(unit, spell, host) ? [true, false] : [false, true];
 }
 
 /**

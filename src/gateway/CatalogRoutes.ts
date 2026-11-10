@@ -24,8 +24,10 @@ import { VEHICLES_VERSION, loadVehicles } from "./VehicleMetadata.js"; // 11.02-
 import { SPELL_MISSILES_VERSION, loadSpellMissiles } from "./SpellMissileMetadata.js"; // 11.02-E-review
 import { ITEM_LIMIT_CATEGORIES_VERSION, loadItemLimitCategories } from "./ItemLimitCategoryMetadata.js"; // 05.10-3.01
 import { PET_FOODS_VERSION, loadPetFoods } from "./PetFoodMetadata.js"; // 05.10-petfood
+import { PET_SPELLS_VERSION, loadPetSpells } from "./PetSpellMetadata.js"; // 4.04 (11.11)
 import { WEAPON_ANIMS_VERSION, loadWeaponAnims } from "./WeaponAnimMetadata.js"; // 05.10-A7a-D 6.06
 import { WMO_AREAS_VERSION, loadWmoAreas } from "./WmoAreaMetadata.js"; // 05.10-A7b-4
+import { NAME_FILTERS_VERSION, loadNameFilters } from "./NameFilterMetadata.js"; // 11.11 (1.19)
 import { originAllowed } from "./UpgradeGuard.js";
 
 export interface CatalogRoute {
@@ -62,10 +64,14 @@ export const CATALOG_ROUTES: readonly CatalogRoute[] = Object.freeze([
   { pathname: "/dbc/item-limit-categories", version: ITEM_LIMIT_CATEGORIES_VERSION, load: loadItemLimitCategories }, // 05.10-3.01
   // 05.10-petfood: CreatureFamily.PetFoodMask and ItemPetFood names — GetPetFoodTypes (PetFoodMetadata.ts).
   { pathname: "/dbc/pet-foods", version: PET_FOODS_VERSION, load: loadPetFoods }, // 05.10-petfood
+  // 4.04 (11.11): a family's pet spells — beast lore's PET_SPELLS_TEMPLATE (PetSpellMetadata.ts, Wow.exe 0x00620950).
+  { pathname: "/dbc/pet-spells", version: PET_SPELLS_VERSION, load: (directory) => loadPetSpells(directory) }, // 4.04 (11.11)
   // 05.10-A7a-D 6.06: ItemSubClass weapon seq columns, AttackAnimKits and AttackAnimTypes (WeaponAnimMetadata.ts).
   { pathname: "/dbc/weapon-anims", version: WEAPON_ANIMS_VERSION, load: loadWeaponAnims }, // 05.10-A7a-D 6.06
   // 05.10-A7b-4 7.13: WMOAreaTable rooms — area, indoor/outdoor flags and names by the core's cut key (WmoAreaMetadata.ts).
   { pathname: "/dbc/wmo-areas", version: WMO_AREAS_VERSION, load: loadWmoAreas }, // 05.10-A7b-4
+  // 11.11 (1.19): NamesProfanity, ChatProfanity and NamesReserved for the client's own name check (NameFilterMetadata.ts).
+  { pathname: "/dbc/name-filters", version: NAME_FILTERS_VERSION, load: loadNameFilters }, // 11.11 (1.19)
 ]);
 
 /** The serialised answers, by pathname, for the dataset on disk: `DatasetIndexes.catalogs`. */

@@ -1,14 +1,16 @@
 import * as THREE from "three";
 import { animationBlend, clipBlendTime } from "./AnimatedModel.js";
 import type { VehicleSeatEntry } from "../world/VehicleDbc.js";
+import { seatVehicleExitBit } from "./VehicleExitBit.js";
 
 /**
  * 11.02 (04.11): what the vehicle itself plays as a passenger takes, rides or leaves a seat — VehicleEnterAnim,
  * VehicleRideAnimLoop and VehicleExitAnim, each on a key bone (a drake's claw closing on its load, a giant's arm throwing it).
  * 94 of the dataset's 720 seats name one. Read from Wow.exe 3.3.5a 12340:
  *
- * - 0x0074be80: boarding with Flags 0x400000 plays VehicleEnterAnim, leaving with Flags 0x80000 (0x40000 when the unit's
- *   movement flags2 has 0x40) plays VehicleExitAnim. Both are on the root of the seat chain (0x00757000), at most 0x1f9.
+ * - 0x0074be80 (in 0x0074be10): boarding with Flags 0x400000 plays VehicleEnterAnim, leaving with Flags 0x80000 (0x40000
+ *   when the passenger's movement flags2 has 0x40 — one bit or the other, `seatVehicleExitBit`, 11.11) plays
+ *   VehicleExitAnim. Both are on the root of the seat chain (0x00757000), at most 0x1f9.
  * - 0x007489c0: on reaching the seat (state 3), Flags 0x20000 plays VehicleRideAnimLoop; its end callback 0x00747980
  *   replays it. Leaving the seat stops it (0x007577e0).
  * - 0x00756f80: the column's bone is a key bone, from 0x23 on (and −1, read unsigned) the root 0x1a, and the root means the
@@ -18,8 +20,9 @@ import type { VehicleSeatEntry } from "../world/VehicleDbc.js";
  *   0x00749d50, or 3 seconds. The pre-delay of VehicleSeatTransition.ts runs after that.
  *
  * Three's mixer averages actions by weight, so an own animation is given a weight that all but owns the tracks it keys: the
- * base and the overlay go on under it untouched, and every other bone keeps them. Not modelled: the exit's forced bit (either
- * bit plays, as the arcs do) and 0x00724500 narrowing the vehicle's own choice of pose while one plays.
+ * base and the overlay go on under it untouched, and every other bone keeps them. Not modelled: 0x00724500's narrowing of the
+ * vehicle's own choice of pose — read 11.11 (0x00756f40): it is not tied to these animations but to Vehicle Flags 0x10000
+ * (12 rows) with the unit's +0xa38 bit 0x400 or +0xfa4 ≠ −1, and then only 0x00724330's movement choice runs.
  */
 
 /** Seat Flags these rules read. */
@@ -50,10 +53,13 @@ export interface SeatVehicleAnimation {
 type SeatColumns = Pick<VehicleSeatEntry, "flags" | "vehicleEnterAnim" | "vehicleExitAnim" | "vehicleRideAnimLoop"
   | "vehicleEnterAnimBone" | "vehicleExitAnimBone" | "vehicleRideAnimLoopBone" | "vehicleEnterAnimDelay" | "vehicleExitAnimDelay">;
 
-/** What the vehicle plays for this seat and this moment, or undefined. */
-export function seatVehicleAnimation(seat: SeatColumns, kind: SeatVehicleAnimationKind): SeatVehicleAnimation | undefined {
+/**
+ * What the vehicle plays for this seat and this moment, or undefined. `flags2`: the passenger's, for the exit's bit
+ * (11.11, VehicleExitBit.ts: 0x80000 on this realm, 0x40000 only with flags2 0x40 — no longer either).
+ */
+export function seatVehicleAnimation(seat: SeatColumns, kind: SeatVehicleAnimationKind, flags2 = 0): SeatVehicleAnimation | undefined {
   const F = SEAT_VEHICLE_ANIM_FLAGS;
-  const allowed = kind === "enter" ? F.ENTER : kind === "ride" ? F.RIDE : F.EXIT_VOLUNTARY | F.EXIT_FORCED;
+  const allowed = kind === "enter" ? F.ENTER : kind === "ride" ? F.RIDE : seatVehicleExitBit(flags2);
   if ((seat.flags & allowed) === 0) return undefined;
   const animation = kind === "enter" ? seat.vehicleEnterAnim : kind === "ride" ? seat.vehicleRideAnimLoop : seat.vehicleExitAnim;
   if (!Number.isInteger(animation) || animation < 0 || animation >= NO_ANIMATION) return undefined;

@@ -176,6 +176,12 @@ function isPath(value: unknown): value is TransportPath {
   if (!value || typeof value !== "object") return false;
   const path = value as Record<string, unknown>;
   if (typeof path.entry !== "number" || typeof path.period !== "number" || !Array.isArray(path.frames)) return false;
+  // 11.01: TransportRotation.dbc keys, when the entry has any (TransportRotation.ts).
+  if (path.rotations !== undefined && !(Array.isArray(path.rotations) && path.rotations.every((key: unknown) => {
+    if (!key || typeof key !== "object") return false;
+    const row = key as Record<string, unknown>;
+    return ["time", "x", "y", "z", "w"].every((name) => typeof row[name] === "number" && Number.isFinite(row[name]));
+  }))) return false;
   return path.frames.every((frame: unknown) => {
     if (!frame || typeof frame !== "object") return false;
     const keyframe = frame as Record<string, unknown>;

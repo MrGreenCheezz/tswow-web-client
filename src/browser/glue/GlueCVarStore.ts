@@ -19,6 +19,8 @@ export const GLUE_CVAR_STORAGE_PREFIX = "webclient.glue.cvars:";
 /** The CVars that survive a reload. */
 export const PERSISTED_GLUE_CVARS: readonly string[] = Object.freeze([
   "accountName", "accountList", "realmName", "lastCharacterIndex", "usesToken",
+  // 3.46 (11.11): «Load out of date AddOns» (SetAddonVersionCheck), Config.wtf's in the original.
+  "checkAddonVersion",
 ]);
 
 const PERSISTED = new Set(PERSISTED_GLUE_CVARS);

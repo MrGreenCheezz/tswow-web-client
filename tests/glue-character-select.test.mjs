@@ -4,7 +4,7 @@ import { GlueRuntime } from "../dist/code/browser/glue/GlueRuntime.js";
 import { createFixtureProvider } from "../dist/code/browser/glue/GlueLoader.js";
 import { GlueSession } from "../dist/code/browser/glue/GlueSession.js";
 import { sexedName } from "../dist/code/browser/glue/GlueNames.js";
-import { GlueAddonList } from "../dist/code/browser/glue/GlueAddons.js";
+import { GlueAddonList, glueWorldAddonStates, setGlueWorldAddonStates } from "../dist/code/browser/glue/GlueAddons.js";
 import { declinableName, enterWorldRefusal } from "../dist/code/browser/glue/GlueEnterGate.js";
 import { genderedNames } from "../dist/code/gateway/CharacterCreation.js";
 import { buildDeclinedNames } from "../dist/code/world/CharacterProtocol.js";
@@ -214,52 +214,98 @@ function memoryStorage(initial = {}) {
   return { data, getItem: (key) => data.get(key) ?? null, setItem: (key, value) => { data.set(key, value); } };
 }
 
-test("the add-on list answers AddonList.lua and remembers what OK saved", async () => {
-  const storage = memoryStorage({ "webclient.glue.addons:http://gw": '["mikscrollingbattletext"]' });
+test("the add-on list answers AddonList.lua per character and keeps what OK saved (3.46, 11.11)", async () => {
+  const fileKey = (character) => JSON.stringify(["webclient-addons-v1", "TESTER", "Мир", character]);
+  const storage = memoryStorage({ [fileKey("Артас")]: "MikScrollingBattleText: disabled\r\n" });
+  const tocs = {
+    AnyIDTooltip: "## Interface: 30300\n## Title: Any ID\n## Notes: ids\n",
+    MikScrollingBattleText: "## Interface: 30300\n",
+    Blizzard_Lazy: "## Interface: 30300\n## LoadOnDemand: 1\n",
+    Old: "## Interface: 20400\n",
+    NeedsOld: "## Interface: 30300\n## Dependencies: Old\n",
+    Quiet: "## Interface: 30300\n## DefaultState: disabled\n",
+  };
+  const holder = {};
   const addons = new GlueAddonList({
-    origin: "http://gw",
     storage,
-    load: async () => [
-      { name: "AnyIDTooltip", loadOnDemand: false },
-      { name: "MikScrollingBattleText", loadOnDemand: false },
-      { name: "Blizzard_Lazy", loadOnDemand: true },
-    ],
+    load: async () => ({
+      checkAddonVersion: true,
+      installed: [
+        { name: "AnyIDTooltip", loadOnDemand: false, enabled: true },
+        { name: "Blizzard_Lazy", loadOnDemand: true, enabled: true },
+        { name: "MikScrollingBattleText", loadOnDemand: false, enabled: true },
+        { name: "NeedsOld", loadOnDemand: false, enabled: true },
+        { name: "Old", loadOnDemand: false, enabled: true },
+        { name: "Quiet", loadOnDemand: false, enabled: true, defaultState: false },
+      ],
+    }),
+    readToc: async (name) => tocs[name],
+    identity: () => {
+      const session = holder.runtime?.session;
+      if (!session?.selectedRealm) return undefined;
+      return { account: session.accountName, realm: session.selectedRealm.name, characters: session.characters.map((entry) => entry.name) };
+    },
   });
   await addons.load();
   const { runtime, evaluate } = await glue({ addons });
+  holder.runtime = runtime;
   try {
-    assert.equal(evaluate("return GetNumAddOns()"), 3);
-    assert.equal(evaluate("local n, t, notes, url, loadable, reason, sec = GetAddOnInfo(1); "
-      + "return n .. '/' .. t .. '/' .. tostring(url) .. '/' .. tostring(loadable) .. '/' .. tostring(reason) .. '/' .. sec"),
-    "AnyIDTooltip/AnyIDTooltip/nil/true/nil/INSECURE");
-    assert.equal(evaluate("local _, _, _, _, loadable, reason = GetAddOnInfo(3); return tostring(loadable) .. reason"),
-      "falseDEMAND_LOADED");
-    assert.equal(evaluate("return GetAddOnEnableState(nil, 2)"), 0, "saved as off");
+    assert.equal(evaluate("return GetNumAddOns()"), 6);
+    // 0x5f79a0: in title order — «Any ID» first; title and notes are the TOC's.
+    assert.equal(evaluate("local n, t, notes, url, loadable, reason, sec, new = GetAddOnInfo(1); "
+      + "return n .. '/' .. t .. '/' .. notes .. '/' .. tostring(url) .. '/' .. tostring(loadable) .. '/' .. tostring(reason) .. '/' .. sec .. '/' .. tostring(new)"),
+    "AnyIDTooltip/Any ID/ids/nil/1/nil/INSECURE/nil");
+    const info = (index) => evaluate(`local n, _, _, _, loadable, reason = GetAddOnInfo(${index}); return n .. ':' .. tostring(loadable) .. ':' .. tostring(reason)`);
+    assert.equal(info(2), "Blizzard_Lazy:nil:DEMAND_LOADED");
+    assert.equal(info(4), "NeedsOld:nil:DEP_INTERFACE_VERSION");
+    assert.equal(info(5), "Old:nil:INTERFACE_VERSION");
+    assert.equal(info(6), "Quiet:nil:DISABLED", "DefaultState: disabled and no character names it");
+    // Артас's own file has MSBT off; Arthas has none (no account file either): mixed over the two.
+    assert.equal(evaluate("return GetAddOnEnableState('Артас', 3)"), 0);
+    assert.equal(evaluate("return GetAddOnEnableState('Arthas', 3)"), 0, "no line of its own: the others' state");
     assert.equal(evaluate("return GetAddOnEnableState(nil, 1)"), 2);
+    assert.equal(evaluate("return GetAddOnEnableState(nil, 6)"), 0);
 
-    // Cancel drops the clicks.
-    evaluate("DisableAddOn(nil, 1); EnableAddOn('Тест', 2); return 1");
-    assert.equal(evaluate("return GetAddOnEnableState(nil, 1)"), 0);
-    assert.equal(evaluate("return GetAddOnEnableState(nil, 2)"), 2);
+    // A named character alone, then Cancel drops the clicks.
+    evaluate("EnableAddOn('Arthas', 3); return 1");
+    assert.equal(evaluate("return GetAddOnEnableState(nil, 3)"), 1, "on for some");
+    assert.equal(evaluate("return GetAddOnEnableState('arthas', 3)"), 2, "character names compare in any case");
     evaluate("ResetAddOns(); return 1");
-    assert.equal(evaluate("return GetAddOnEnableState(nil, 1)"), 2);
-    assert.equal(evaluate("return GetAddOnEnableState(nil, 2)"), 0);
+    assert.equal(evaluate("return GetAddOnEnableState('Arthas', 3)"), 0);
 
-    // OK saves them, per gateway.
-    evaluate("DisableAddOn(1); EnableAddOn(nil, 'MikScrollingBattleText'); SaveAddOns(); return 1");
-    assert.equal(storage.data.get("webclient.glue.addons:http://gw"), '["anyidtooltip"]');
-    assert.deepEqual(addons.disabledNames(), ["AnyIDTooltip"]);
-    evaluate("DisableAllAddOns(); ResetAddOns(); EnableAllAddOns(); SaveAddOns(); return 1");
-    assert.deepEqual(addons.disabledNames(), []);
-    assert.equal(evaluate("return GetAddOnInfo(9)"), undefined, "an index past the list is nothing");
+    // OK writes each changed character's AddOns.txt.
+    evaluate("DisableAddOn(nil, 1); EnableAddOn('Артас', 3); SaveAddOns(); return 1");
+    assert.equal(storage.data.get(fileKey("Артас")), "MikScrollingBattleText: enabled\r\nAnyIDTooltip: disabled\r\n");
+    assert.equal(storage.data.get(fileKey("Arthas")), "AnyIDTooltip: disabled\r\n");
+
+    // The usage errors and the range.
+    const raised = (expression) => runtime.vm.execute(expression, "@addon-probe").error ?? "";
+    assert.match(raised("EnableAddOn(1)"), /Usage: EnableAddOn\("character", index\)/);
+    assert.match(raised("GetAddOnEnableState()"), /Usage: GetAddOnEnableState\("character", index\)/);
+    assert.match(raised("GetAddOnInfo('AnyIDTooltip')"), /Usage: GetAddOnInfo\(index\)/);
+    assert.match(raised("GetAddOnInfo(9)"), /AddOn index must be in the range of 1 to 6/);
+
+    // «Load out of date AddOns» and the hand-over to the world.
+    assert.equal(evaluate("return IsAddonVersionCheckEnabled()"), 1);
+    evaluate("SetAddonVersionCheck(0); return 1");
+    assert.equal(evaluate("return IsAddonVersionCheckEnabled()"), undefined);
+    assert.equal(info(5), "Old:1:nil", "out of date, but allowed now");
+    assert.equal(runtime.api.cvar("checkAddonVersion"), "0", "a glue CVar, kept with the others");
+    addons.handOver("Arthas");
+    const handed = glueWorldAddonStates();
+    assert.equal(handed.character, "Arthas");
+    assert.equal(handed.checkAddonVersion, false);
+    assert.equal(handed.enabled.get("anyidtooltip"), false);
+    assert.equal(handed.enabled.get("mikscrollingbattletext"), true, "Arthas has no line: Артас enables it");
+    assert.equal(handed.enabled.get("quiet"), false);
   } finally {
+    setGlueWorldAddonStates(undefined);
     runtime.close();
   }
 });
 
 test("no gateway list is an empty list, and a locked storage is no preference", async () => {
   const addons = new GlueAddonList({
-    origin: "http://gw",
     storage: { getItem() { throw new Error("blocked"); }, setItem() { throw new Error("blocked"); } },
     load: async () => { throw new TypeError("Failed to fetch"); },
   });

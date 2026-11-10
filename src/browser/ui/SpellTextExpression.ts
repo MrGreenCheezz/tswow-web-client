@@ -1,4 +1,7 @@
 import type { SpellMetadata } from "../../gateway/SpellMetadata.js";
+import {
+  SPELLMOD, spellTextEffectRange, spellTextModFloat, spellTextModInt, type SpellTextCaster, type SpellTextCasterRecord,
+} from "./SpellTextCaster.js"; // 3.43 (11.11)
 import { SPELL_TEXT_PLAYER_NAMES, spellTextPlayerVariable, type SpellTextPlayer } from "./SpellTextPlayer.js";
 
 /**
@@ -38,7 +41,7 @@ export type SpellTextRecord = Partial<Pick<SpellMetadata,
   | "duration" | "maxDuration" | "procChance" | "procCharges" | "stackAmount" | "maxTargetLevel"
   | "maxAffectedTargets" | "effectMultipleValue" | "effectPointsPerCombo" | "effectDamageMultiplier"
   | "effectBonusMultiplier" | "procTypeMask" | "manaPerSecond" | "powerType" | "powerCost"
-  | "powerCostPercent" | "effectMiscValue" | "attributes">>;
+  | "powerCostPercent" | "effectMiscValue" | "attributes" | "durationPerLevel">> & SpellTextCasterRecord; // 3.43: the caster's columns
 
 /** What evaluating a block needs from its caller. */
 export interface SpellExpressionEnvironment {
@@ -52,6 +55,15 @@ export interface SpellExpressionEnvironment {
   readonly duration: (spell: SpellTextRecord) => number | undefined;
   /** `$c`'s power cost (0x008012f0), shared with the prose marker. */
   readonly cost: (spell: SpellTextRecord) => number | undefined;
+  /**
+   * 3.43 (11.11): what 0x005782d0 passes 0x007ff770 and the modifier calls — the active player's level and spell
+   * modifiers (SpellTextCaster.ts), 0x0057abc0's level (an aura's caster level; 0 is the caster's own), its
+   * multiplier (an aura's stack count) and whether the spell modifiers apply (false for an aura's tooltip).
+   */
+  readonly caster?: SpellTextCaster;
+  readonly level?: number;
+  readonly multiplier?: number;
+  readonly modified?: boolean;
 }
 
 /** What a block came to: a value, Wow.exe's error, or a column this gateway has not served. */
@@ -180,12 +192,14 @@ class Compiler {
   }
 }
 
-/** One effect's signed min or max (0x007ff770 without the caster-level and spell-modifier parts). */
-function effectValue(spell: SpellTextRecord, effect: number, max: boolean): number {
-  const base = spell.effectBasePoints?.[effect];
-  const sides = spell.effectDieSides?.[effect];
-  if (base === undefined || sides === undefined) throw new Unavailable();
-  return max ? base + Math.max(1, sides) : base + 1;
+/**
+ * One effect's signed min or max: 0x007ff770 with 0x005782d0's level, modifiers flag and caster, times its
+ * multiplier (3.43, 11.11; SpellTextCaster.ts).
+ */
+function effectValue(spell: SpellTextRecord, effect: number, max: boolean, environment: SpellExpressionEnvironment): number {
+  const range = spellTextEffectRange(spell, effect, environment.level ?? 0, environment.caster, environment.modified ?? true);
+  if (!range) throw new Unavailable();
+  return Math.fround((environment.multiplier ?? 1) * (max ? range.max : range.min));
 }
 
 function column(values: readonly number[] | undefined, effect: number): number {
@@ -203,23 +217,30 @@ function scalar(value: number | undefined): number {
 function spellName(name: string, spell: SpellTextRecord, environment: SpellExpressionEnvironment): number {
   const effect = /\d$/.test(name) ? Math.min(2, Number(name.at(-1)) - 1) : 0;
   const stem = name.replace(/\d$/, "");
+  // 3.43 (11.11): the spell modifiers 0x005782d0 applies, as the prose markers do (SpellTextCaster.ts).
+  const caster = environment.caster;
+  const int = (value: number, op: number): number => spellTextModInt(spell, value, op, caster);
+  const float = (value: number, op: number): number => spellTextModFloat(spell, value, op, caster);
   switch (stem) {
-    case "m": return effectValue(spell, effect, false);
-    case "M": return effectValue(spell, effect, true);
-    case "a": case "A": return column(spell.effectRadius, effect);
+    case "m": return effectValue(spell, effect, false, environment);
+    case "M": return effectValue(spell, effect, true, environment);
+    // The SpellRadius float through SPELLMOD_RADIUS (0x007fdba0), not truncated as the prose `$a` is.
+    case "a": case "A": return float(column(spell.effectRadius, effect), SPELLMOD.radius);
     // 0x00800a70 in milliseconds, times 0.001.
     case "d": case "D": return Math.fround(scalar(environment.duration(spell)) * Math.fround(0.001));
     case "c": case "C": return scalar(environment.cost(spell));
     case "p": case "P": return scalar(spell.manaPerSecond);
-    case "x": case "X": return column(spell.effectChainTargets, effect);
-    // The period in milliseconds, or 5000 for a spell whose ProcTypeMask has bit 0 (record +0x88).
-    case "t": case "T": return (scalar(spell.procTypeMask) & 1) !== 0 ? 5000 : column(spell.effectPeriod, effect);
-    case "h": case "H": return scalar(spell.procChance);
-    case "n": case "N": return scalar(spell.procCharges);
+    case "x": case "X": return int(column(spell.effectChainTargets, effect), SPELLMOD.jumpTargets);
+    // The period in milliseconds through SPELLMOD_ACTIVATION_TIME (not hasted here), or 5000 for a spell whose
+    // ProcTypeMask has bit 0 (record +0x88).
+    case "t": case "T": return (scalar(spell.procTypeMask) & 1) !== 0 ? 5000
+      : int(column(spell.effectPeriod, effect), SPELLMOD.activationTime);
+    case "h": case "H": return int(scalar(spell.procChance), SPELLMOD.chanceOfSuccess);
+    case "n": case "N": return int(scalar(spell.procCharges), SPELLMOD.charges);
     case "b": case "B": return column(spell.effectPointsPerCombo, effect);
     case "u": case "U": return scalar(spell.stackAmount);
     case "v": case "V": return scalar(spell.maxTargetLevel);
-    case "e": case "E": return column(spell.effectMultipleValue, effect);
+    case "e": case "E": return float(column(spell.effectMultipleValue, effect), SPELLMOD.valueMultiplier);
     case "i": case "I": return scalar(spell.maxAffectedTargets);
     case "f": case "F": return column(spell.effectDamageMultiplier, effect);
     // 0x005782d0's `q` case subtracts 0x57 from 0x5a…0x5f and so never reaches an index below 3:

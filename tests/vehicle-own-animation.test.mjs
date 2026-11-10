@@ -21,7 +21,10 @@ test("which animation a seat asks for, by its flags", () => {
   assert.equal(seatVehicleAnimation(seat({ flags: F.ENTER }), "ride"), undefined);
   assert.deepEqual(seatVehicleAnimation(seat({ flags: F.RIDE }), "ride"), { animation: 227, keyBone: undefined }, "bone −1 is the whole model");
   assert.deepEqual(seatVehicleAnimation(seat({ flags: F.EXIT_VOLUNTARY }), "exit"), { animation: 228, keyBone: undefined }, "the root key bone is the whole model");
-  assert.deepEqual(seatVehicleAnimation(seat({ flags: F.EXIT_FORCED }), "exit"), { animation: 228, keyBone: undefined });
+  // 11.11 (0x0074be10): 0x80000, or 0x40000 when the passenger's movement flags2 has 0x40 — one, not either.
+  assert.equal(seatVehicleAnimation(seat({ flags: F.EXIT_FORCED }), "exit"), undefined, "0x40000 alone, flags2 0");
+  assert.deepEqual(seatVehicleAnimation(seat({ flags: F.EXIT_FORCED }), "exit", 0x40), { animation: 228, keyBone: undefined });
+  assert.equal(seatVehicleAnimation(seat({ flags: F.EXIT_VOLUNTARY }), "exit", 0x40), undefined, "0x80000 alone, flags2 0x40");
   assert.equal(seatVehicleAnimation(seat({ flags: F.ENTER, vehicleEnterAnim: -1 }), "enter"), undefined);
   assert.equal(seatVehicleAnimation(seat({ flags: F.ENTER, vehicleEnterAnim: 0x1fa }), "enter"), undefined);
   assert.deepEqual(seatVehicleAnimation(seat({ flags: F.ENTER, vehicleEnterAnimBone: 0x23 }), "enter"), { animation: 226, keyBone: undefined }, "past the table: the root");

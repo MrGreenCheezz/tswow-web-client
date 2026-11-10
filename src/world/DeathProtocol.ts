@@ -159,7 +159,11 @@ export function parseCorpseMapPosition(payload: Uint8Array): { x: number; y: num
   return { x: reader.f32(), y: reader.f32(), z: reader.f32() };
 }
 
-/** `CMSG_CORPSE_MAP_POSITION_QUERY`: the corpse's own guid, as a full eight bytes. */
+/**
+ * `CMSG_CORPSE_MAP_POSITION_QUERY`: one u32, the low word of the guid. 5.25 (11.11): Wow.exe 0x0051f430 writes the
+ * opcode and then `DAT_00bd0830` alone through the u32 writer 0x0047b0a0 (.runtime/re-2026-10-02/a3-mech/d7.c), and
+ * TrinityCore reads `uint32 unk` (QueryHandler.cpp:356-361). Was the full eight bytes.
+ */
 export function buildCorpseMapPositionQuery(corpseGuid: bigint): Uint8Array {
-  return new PacketWriter().u64(corpseGuid).toUint8Array();
+  return new PacketWriter().u32(Number(BigInt.asUintN(32, corpseGuid))).toUint8Array();
 }

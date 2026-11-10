@@ -35,7 +35,8 @@
  *     with the player's scaled threat on the unit less 0.5, rounded half to even (fistp), white — the value
  *     `UnitDetailedThreatSituation("player", unit)` answers third (0x00613b40 reads the same 0x007374c0).
  *     Wow.exe then puts the threat icon (Interface\RaidFrame\UI-RaidFrame-Threat, tinted by the status) on the
- *     line; GameTooltip:AddTexture is not drawn by this client, so the icon is missing.
+ *     line; 11.11: the row carries it (`icon`), but GameTooltip:AddTexture is not drawn by this client yet
+ *     (GlueWidgets), so the icon is still missing on screen.
  *
  * The world's answers come from the adapter (`unitTooltipFacts`, FrameXmlUnitTooltipFacts.ts on the live seam);
  * without them (the canned routes) the level line is chosen from the Lua C API by the same slot rules.
@@ -76,6 +77,13 @@ export interface GameTooltipUnitFacts {
   readonly beastLore?: readonly GameTooltipUnitRow[] | undefined;
   readonly leader?: boolean | undefined;
   readonly quests?: readonly GameTooltipUnitQuest[] | undefined;
+  /**
+   * 4.04 (11.11): a group member out of view (0x00621070 with no object but a group record, 0x00513c30): offline
+   * writes PLAYER_OFFLINE under the level line and nothing after it (0x00621b2f … 0x00621138); online, the
+   * AreaTable name of the member's zone (0x0078ed80) where the racial leader would go (0x00621e50).
+   */
+  readonly offline?: boolean | undefined;
+  readonly zoneName?: string | undefined;
 }
 
 /** What the rows read of the Lua state; GlueWidgets satisfies it. */
@@ -88,7 +96,21 @@ export interface GlueUnitTooltipHost {
 export interface GlueUnitTooltipRow {
   readonly text: string;
   readonly color: FrameXmlColor;
+  /**
+   * 4.04 (11.11): the texture Wow.exe's 0x0061c8b0 (GameTooltip:AddTexture's writer) puts on this line — only the
+   * threat row has one: Interface\RaidFrame\UI-RaidFrame-Threat, tex coords 0,0 → 1,1 (0x0062240a), tinted by the
+   * threat status. Not drawn yet: GlueWidgets' AddTexture is a no-op.
+   */
+  readonly icon?: { readonly file: string; readonly color: FrameXmlColor } | undefined;
 }
+
+/**
+ * 4.04 (11.11): the threat icon's tints, 0x00ad2d70 indexed by the status + 1 (0x007374c0's byte; above 4 it is 1):
+ * white, then the four of GetThreatStatusColor — grey 0xb0b0b0, yellow 0xffff77, orange 0xff9900, red 0xff0000.
+ */
+const THREAT_ICON_COLORS: readonly FrameXmlColor[] = [0xffffff, 0xb0b0b0, 0xffff77, 0xff9900, 0xff0000]
+  .map((rgb) => Object.freeze({ r: (rgb >>> 16) / 255, g: ((rgb >>> 8) & 0xff) / 255, b: (rgb & 0xff) / 255, a: 1 }));
+const THREAT_ICON_FILE = "Interface\\RaidFrame\\UI-RaidFrame-Threat";
 
 export const GLUE_UNIT_TOOLTIP_WHITE: FrameXmlColor = Object.freeze({ r: 1, g: 1, b: 1, a: 1 });
 /** 0x00ad2d2c (0xffffd200): the name and quest-title gold. */
@@ -180,6 +202,11 @@ export function glueUnitRowsBeforeSkin(host: GlueUnitTooltipHost, facts: GameToo
   luaPvp: () => boolean): GlueUnitTooltipRow[] {
   const rows: GlueUnitTooltipRow[] = [];
   const white = (text: string | undefined): void => { if (text) rows.push({ text, color: GLUE_UNIT_TOOLTIP_WHITE }); };
+  // 4.04 (11.11): 0x00621b2f — an offline member's line, and the writer returns.
+  if (facts?.offline) {
+    white(host.globalString("PLAYER_OFFLINE"));
+    return rows;
+  }
   white(facts?.factionName);
   if (facts?.pvp ?? luaPvp()) white(host.globalString("PVP_ENABLED"));
   const resurrectable = facts?.resurrectable ? host.globalString("RESURRECTABLE") : undefined;
@@ -191,6 +218,9 @@ export function glueUnitRowsBeforeSkin(host: GlueUnitTooltipHost, facts: GameToo
 /** Rows 7-8 (the racial leader, the quests), in order; the quests only with `showQuestTrackingTooltips` on. */
 export function glueUnitRowsAfterSkin(host: GlueUnitTooltipHost, facts: GameTooltipUnitFacts | undefined): GlueUnitTooltipRow[] {
   const rows: GlueUnitTooltipRow[] = [];
+  if (facts?.offline) return rows; // 4.04 (11.11): the writer returned after PLAYER_OFFLINE
+  // 4.04 (11.11): a member out of view: its zone's name, white (0x00621e50).
+  if (facts?.zoneName) rows.push({ text: facts.zoneName, color: GLUE_UNIT_TOOLTIP_WHITE });
   if (facts?.leader) {
     const text = host.globalString("PVP_RANK_LEADER");
     if (text) rows.push({ text, color: GLUE_UNIT_TOOLTIP_WHITE });
@@ -222,9 +252,16 @@ export function glueUnitThreatRow(host: GlueUnitTooltipHost, unit: string): Glue
   if (host.callGlobal("IsThreatWarningEnabled", [], 1)[0] !== true) return undefined;
   const [, status, scaled] = host.callGlobal("UnitDetailedThreatSituation", ["player", unit], 3);
   const percent = num(scaled);
-  if (num(status) === undefined || percent === undefined) return undefined;
+  const level = num(status);
+  if (level === undefined || percent === undefined) return undefined;
   const template = host.globalString("THREAT_TOOLTIP");
   if (!template) return undefined;
+  // 4.04 (11.11): the icon's tint, the status + 1 into 0x00ad2d70 (a byte above 4 reads 1).
+  const index = Math.trunc(level) + 1;
+  const tint = THREAT_ICON_COLORS[index >= 0 && index <= 4 ? index : 1] ?? GLUE_UNIT_TOOLTIP_WHITE;
   // 0x00622317: (int)ROUND(pct - 0.5f) — so 99 % reads 98 % and 100 % reads 100 %.
-  return { text: host.format(template, roundHalfEven(Math.fround(percent) - 0.5)), color: GLUE_UNIT_TOOLTIP_WHITE };
+  return {
+    text: host.format(template, roundHalfEven(Math.fround(percent) - 0.5)), color: GLUE_UNIT_TOOLTIP_WHITE,
+    icon: { file: THREAT_ICON_FILE, color: tint },
+  };
 }

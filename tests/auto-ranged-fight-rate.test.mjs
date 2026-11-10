@@ -262,20 +262,22 @@ test("L18-review: an ordinary hunter fight — silence in steady states, packets
     if (tick >= 140 && tick < 220) mob(); // back to melee
     if (tick === 220) server.kill(A, tick + 1); // dies in melee reach
   });
-  assert.deepEqual(labels(within(log, 0, 1)), ["CMSG_SET_SELECTION", "SHEATH 2", "CMSG_CAST_SPELL"],
+  // 5.05 (11.11): the shot's SHEATH 2 follows its packet (0x00805330 → 0x007fa2e0).
+  assert.deepEqual(labels(within(log, 0, 1)), ["CMSG_SET_SELECTION", "CMSG_CAST_SPELL", "SHEATH 2"],
     "the right click: the shot, the character not turned (5.35, 0x0080cce0)");
   assert.deepEqual(labels(within(log, 1, 30)), [], "repeating at range: silence");
   assert.deepEqual(labels(within(log, 30, 60)), ["CMSG_CANCEL_AUTO_REPEAT_SPELL", "SHEATH 1", "CMSG_ATTACK_SWING"],
     "the mob arrives: the swing cancels the shot (0x006e2610); 5.05 (12.10): one sheath packet, no SHEATH 0 first");
   assert.deepEqual(labels(within(log, 60, 100)), [], "swinging in reach: silence");
-  assert.deepEqual(labels(within(log, 100, 130)), ["CMSG_ATTACK_STOP", "SHEATH 1", "CMSG_ATTACK_SWING"],
-    "the backpedal: out of reach the swing stops (no shot on the move), the mob catches up and it swings again");
-  assert.deepEqual(labels(within(log, 130, 140)), ["CMSG_ATTACK_STOP", "SHEATH 2", "CMSG_CAST_SPELL"], "Disengage: the shot");
+  assert.deepEqual(labels(within(log, 100, 130)), ["CMSG_ATTACK_STOP", "CMSG_ATTACK_SWING"],
+    "the backpedal: out of reach the swing stops (no shot on the move), the mob catches up and it swings again; " +
+    "5.05 (11.11): the blade is still out — 0x00736d30 sends no second SHEATH 1");
+  assert.deepEqual(labels(within(log, 130, 140)), ["CMSG_ATTACK_STOP", "CMSG_CAST_SPELL", "SHEATH 2"], "Disengage: the shot");
   assert.deepEqual(labels(within(log, 140, 300)), ["CMSG_CANCEL_AUTO_REPEAT_SPELL", "SHEATH 1", "CMSG_ATTACK_SWING"],
     "back in reach: the swing; the kill in reach sends nothing");
   assert.equal(count(log, OPCODES.MSG_MOVE_SET_FACING), 0, "nothing turns the character (5.35)");
   assert.ok(busiestSecond(log) <= 4, `busiest second ${busiestSecond(log)}`);
-  assert.equal(log.length, 15, "0.5 packets a second over the fight (5.05 12.10: 18 with the SHEATH 0 of each shot→swing; 5.35: 16 with the right click's turn)");
+  assert.equal(log.length, 14, "0.5 packets a second over the fight (5.05 12.10: 18 with the SHEATH 0 of each shot→swing; 5.35: 16 with the right click's turn; 5.05 11.11: 15 with the backpedal's second SHEATH 1)");
   assert.equal(client.autoRanged.active, true, "a unit that died in reach leaves the mode registered (Wow.exe's melee branch, too)");
   client.close();
 });
@@ -307,10 +309,11 @@ test("L18-review: kiting — the mob catching up behind a running hunter is swun
   const swings = log.filter(({ opcode }) => opcode === OPCODES.CMSG_ATTACK_SWING || opcode === OPCODES.CMSG_ATTACK_STOP).map(label);
   assert.ok(swings.length >= 4, swings.join());
   swings.forEach((name, index) => assert.equal(name, index % 2 === 0 ? "CMSG_ATTACK_SWING" : "CMSG_ATTACK_STOP", swings.join()));
-  // Per catch-up SHEATH 1 + CMSG_ATTACK_SWING, per break-away CMSG_ATTACK_STOP (Wow.exe: the swing and the stop).
+  // Per catch-up CMSG_ATTACK_SWING, per break-away CMSG_ATTACK_STOP (Wow.exe: the swing and the stop). 5.05 (11.11):
+  // the blade drawn on the first catch-up stays out — the stop sends no sheath, the setter 0x00736d30 no repeat.
   const run = within(log, 21, 120);
   assert.ok(busiestSecond(run) <= 3, `busiest second ${busiestSecond(run)}`);
-  assert.deepEqual([...new Set(labels(run))].sort(), ["CMSG_ATTACK_STOP", "CMSG_ATTACK_SWING", "SHEATH 1"]);
+  assert.deepEqual([...new Set(labels(run))].sort(), ["CMSG_ATTACK_STOP", "CMSG_ATTACK_SWING"]);
   client.close();
 });
 
@@ -326,7 +329,7 @@ test("L18-review: the controller's own shot does not turn the character either (
   self.position = { ...self.position, orientation: Math.PI / 3 }; // the target 60° off the nose: in front (dot > 0)
   self.movementFlags = 0;
   client.autoRanged.tick();
-  assert.deepEqual(labels(connection.sent), ["SHEATH 2", "CMSG_CAST_SPELL"]);
+  assert.deepEqual(labels(connection.sent), ["CMSG_CAST_SPELL", "SHEATH 2"]); // 5.05 (11.11): the sheath follows the packet
   assert.equal(self.position.orientation, Math.PI / 3);
   client.close();
 });
@@ -415,9 +418,9 @@ test("L18-review: a stun cancels the repeat on the realm's side; the controller 
   });
   // The stun's SMSG_CANCEL_AUTO_REPEAT clears the repeat here (5.05 12.10: and leaves the bow out, as Wow.exe's
   // 0x0072d130 does — it sent SHEATH 0 before); the next tick asks again — the core keeps a refused Auto Shot
-  // (Spell.cpp:3251 `!IsAutoRepeat()`, Unit.cpp:3265-3270) — and nothing follows. The shot's SHEATH 2 repeats the
-  // state the server already holds: this client sends it with every shot, Wow.exe's 0x00736d30 only on a change.
-  assert.deepEqual(labels(within(log, 1, 50)), ["SHEATH 2", "CMSG_CAST_SPELL"]);
+  // (Spell.cpp:3251 `!IsAutoRepeat()`, Unit.cpp:3265-3270) — and nothing follows. 5.05 (11.11): no SHEATH 2 — the bow
+  // is out and Wow.exe's 0x00736d30 sends only on a change (SheathSetter.ts; was sent with every shot).
+  assert.deepEqual(labels(within(log, 1, 50)), ["CMSG_CAST_SPELL"]);
   assert.deepEqual(server.repeat, { spell: AUTO_SHOT, target: A });
   client.close();
 });
@@ -436,7 +439,7 @@ test("L18-review: at the reach boundary the controller switches on each crossing
   });
   for (const { tick } of log) assert.equal(tick % 5, 0, `a packet at ${tick / 10} s, between crossings`);
   assert.deepEqual(labels(within(log, 5, 6)), ["CMSG_CANCEL_AUTO_REPEAT_SPELL", "SHEATH 1", "CMSG_ATTACK_SWING"]);
-  assert.deepEqual(labels(within(log, 10, 11)), ["CMSG_ATTACK_STOP", "SHEATH 2", "CMSG_CAST_SPELL"]);
+  assert.deepEqual(labels(within(log, 10, 11)), ["CMSG_ATTACK_STOP", "CMSG_CAST_SPELL", "SHEATH 2"]); // 5.05 (11.11)
   // A crossing each half second, the worst this boundary does: 6 packets a second — the swing and the cancel in,
   // the stop and the cast out, and one CMSG_SET_SHEATHED each way (Wow.exe's swing sends its own through
   // 0x00736d30 on the change; 5.05 12.10: the SHEATH 0 before the swing's SHEATH 1 is gone, was 7 and 35).

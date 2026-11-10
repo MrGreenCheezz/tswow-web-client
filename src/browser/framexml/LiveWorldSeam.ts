@@ -89,6 +89,7 @@ import {
 } from "./FrameXmlUnitTooltipExtras.js"; // 3.12 (04.10, L4)
 import { frameXmlCreatureTypeId } from "./FrameXmlCreatureType.js"; // 3.12 (13.10)
 import { frameXmlUnitTooltipFacts, type FrameXmlUnitFactionRow } from "./FrameXmlUnitTooltipFacts.js"; // 4.04 (13.10)
+import { frameXmlFarMemberTooltipFacts } from "./FrameXmlUnitTooltipFacts.js"; // 4.04 (11.11)
 import type { GameTooltipUnitFacts } from "../glue/GlueUnitTooltip.js"; // 4.04 (13.10)
 
 /** 4.04 (13.10): the unit tooltip's world judgements the mount hands the seam (FrameXmlWorldMount.ts). */
@@ -219,6 +220,7 @@ import { FrameXmlSupportModel } from "./FrameXmlSupport.js";
 import type { FrameXmlQuestLogModel, FrameXmlQuestLogNames } from "./FrameXmlQuestLog.js";
 import { createLiveFrameXmlQuestLog } from "./FrameXmlQuestLogLive.js";
 import { FrameXmlAutoRepeatEdge, frameXmlIsAttackSpell } from "./FrameXmlActionRepeat.js";
+import { frameXmlSelectionColorOfRank, UNIT_FLAG_PLAYER_CONTROLLED } from "./FrameXmlSelectionColor.js"; // 5.05 (11.11)
 import { frameXmlAutoRepeatShown, frameXmlIsAutoRepeatSpell } from "./FrameXmlAutoRepeatWanted.js"; // L18 5.05
 import { frameXmlClassHasRelicSlot } from "./FrameXmlRelicSlot.js";
 import { FrameXmlArenaRosterModel } from "./FrameXmlArenaRoster.js";
@@ -685,6 +687,8 @@ export interface LiveWorldSeamContext {
   readonly creatureTypes?: { table(): FrameXmlCreatureTypeNames | undefined } | undefined;
   /** 05.10-petfood: CreatureFamily.PetFoodMask and ItemPetFood names (PetFoodClient.ts); undefined until the route answers. */
   readonly petFoods?: { table(): FrameXmlPetFoodNames | undefined } | undefined; // 05.10-petfood
+  /** 4.04 (11.11): beast lore's PET_SPELLS_TEMPLATE names (PetSpellClient.ts). */
+  readonly petSpells?: { table(): { familySpells(family: number): readonly string[] } | undefined } | undefined;
 }
 
 interface LiveCastState {
@@ -2657,8 +2661,7 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
       }));
       // 3.02: the request and the outcome (FrameXmlCastEvents.ts).
       this.#unsubscribe.push(world.events.on("SPELL_CAST_SENT", (event) => this.castEvents.onSent(pump, event)));
-      this.#unsubscribe.push(world.events.on("SPELL_CAST_RESULT", (event) => this.castEvents.onResult(pump, event)));
-      // 3.47 (12.10): the client's own refusal of a request on cooldown ends in the same 0x007fecc0 (0x00808200's
+      this.#unsubscribe.push(world.events.on("SPELL_CAST_RESULT", (event) => this.castEvents.onResult(pump, event)));      // 3.47 (12.10): the client's own refusal of a request on cooldown ends in the same 0x007fecc0 (0x00808200's
       // last call, for the request's caster) — UNIT_SPELLCAST_FAILED with the count the request drew.
       this.#unsubscribe.push(world.events.on("SPELL_CAST_REFUSED_LOCAL", (event) => {
         if (event.casterGuid === undefined || event.castCount === undefined) return;
@@ -7255,7 +7258,7 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
       if (!metadata || !self) return [true, false];
       const flags = template?.found ? template.flags : undefined;
       if (!frameXmlSpellCastable(self, metadata, this.#target(), this.#usableHost, flags)) return [false, false];
-      return frameXmlSpellHasPower(self, metadata) ? [true, false] : [false, true];
+      return frameXmlSpellHasPower(self, metadata, this.#usableHost) ? [true, false] : [false, true]; // 3.57 (11.11): + runes
     }
     // 1.14: a macro answers for the spell it stands for, and one that stands for none as before.
     const macroSpell = button.type === ACTION_BUTTON_MACRO ? this.#slotSpell(slot) : undefined;
@@ -7315,6 +7318,23 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
       outdoors: () => seam.#context.playerOutdoors?.(),
       // The three CVars' defaults: autoSelfCast 1, autoUnshift 1, autoDismountFlying 0.
       cvar: (name) => seam.getCVarBool(name) ?? name !== "autoDismountFlying",
+      // 3.57 (11.11): the rune and flying gates (FrameXmlActionUsableGates.ts): the realm's rune readings, and the
+      // AreaTable flags of the area under the player, else of its zone (0x0051a1d0).
+      runes: () => {
+        const runes = seam.#context.world()?.runes;
+        return runes && runes.length > 0 ? runes.map((rune) => ({ type: rune.type, ready: rune.readiness >= 255 })) : undefined;
+      },
+      flight: {
+        areaFlags: () => {
+          const world = seam.#context.world();
+          const area = seam.#context.currentAreaId?.() || world?.worldStateContext?.areaId || 0;
+          const row = (area > 0 ? seam.#context.areaRecord?.(area) : undefined)
+            ?? (world?.worldStateContext?.zoneId ? seam.#context.areaRecord?.(world.worldStateContext.zoneId) : undefined);
+          return row?.flags;
+        },
+        mapId: () => seam.#context.world()?.mapId,
+        knowsSpell: (spellId) => seam.#context.world()?.knownSpells.some((spell) => spell.id === spellId) === true,
+      },
     };
   })();
 
@@ -7401,7 +7421,7 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     const target = this.#target();
     // Test worlds stand in for parts of WorldClient; no book is no list.
     const names = this.#spellActive.pass(world, world.knownSpells ?? [], (id) => this.#context.spell(id), (row) => [
-      frameXmlSpellCastable(self, row, target, this.#usableHost), frameXmlSpellHasPower(self, row),
+      frameXmlSpellCastable(self, row, target, this.#usableHost), frameXmlSpellHasPower(self, row, this.#usableHost), // 3.57 (11.11): + runes
     ]);
     for (const name of names) pump.fire("COMBAT_TEXT_UPDATE", "SPELL_ACTIVE", name);
   }
@@ -7971,6 +7991,16 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     const world = this.#context.world();
     const object = this.#unit(unit);
     this.#unitFactsWait = undefined;
+    // 4.04 (11.11): a group member out of view — its group record's level, PLAYER_OFFLINE or its zone.
+    if (world && !object && this.#partyMember(unit)) {
+      const stats = this.#partyStats(unit);
+      const zone = stats?.zoneId ?? 0;
+      return frameXmlFarMemberTooltipFacts({
+        online: this.unitIsConnected(unit), level: this.unitLevel(unit), health: stats?.health,
+        zoneName: zone > 0 ? this.#context.areaRecord?.(zone)?.name : undefined,
+        raceName: this.unitRace(unit)?.[0], className: this.unitClass(unit)?.[0],
+      });
+    }
     if (!world || !object || (object.typeId !== TYPEID_UNIT && object.typeId !== TYPEID_PLAYER)) return undefined;
     const hooks = this.#context.unitTooltip;
     const entry = frameXmlCreatureEntry(object);
@@ -8008,7 +8038,19 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
       factionRow: faction?.row, factionName: faction?.name,
       canAssist: hooks?.canAssist(object) ?? false,
       foods: this.#context.petFoods?.table(),
-      quests: { rows, creatureName, itemName, itemCount: (id) => this.itemCount(id, false) },
+      petSpells: this.#context.petSpells?.table(), // 4.04 (11.11)
+      quests: {
+        rows, creatureName, itemName, itemCount: (id) => this.itemCount(id, false),
+        // 4.04 (11.11): 0x005e0ea0's standing (base + earned, 0x005d05b0) and coinage checks.
+        reputation: (factionId) => {
+          const catalog = this.#context.reputationCatalog?.();
+          if (!catalog) return undefined;
+          const listId = Object.keys(catalog.factions).find((key) => catalog.factions[key]?.factionId === factionId);
+          if (listId === undefined) return 0;
+          return frameXmlReputationBase(world, catalog, Number(listId)) + (world.factions.get(Number(listId))?.standing ?? 0);
+        },
+        money: () => { const self = this.#self(); return self ? readField(self, "PLAYER_FIELD_COINAGE") : undefined; },
+      },
     });
     if (missingCreatures.length > 0 || missingItems.length > 0) {
       const guid = object.guid;
@@ -8222,6 +8264,11 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     // 5.05 (12.10): Wow.exe 0x0060da00 → 0x00521bf0 colours by the unit's view of the player (0x007251c0(unit,
     // player)), not the player's view UnitReaction("player", unit) gives (was `#reaction("player", unit)`).
     const object = this.#unit(unit);
+    // 5.05 (11.11): a unit the player does not control takes 0x00bd0c94's row by its rank — Unfriendly orange
+    // (FrameXmlSelectionColor.ts).
+    const rank = object !== undefined && object.guid !== this.#selfGuid() // 5.05 (11.11)
+      && ((unitField.flags(object) ?? 0) & UNIT_FLAG_PLAYER_CONTROLLED) === 0 ? this.#context.unitRankToPlayer?.(object) : undefined; // 5.05 (11.11)
+    if (rank !== undefined) return frameXmlSelectionColorOfRank(rank); // 5.05 (11.11)
     const reaction = object !== undefined && this.#context.unitReactionToPlayer !== undefined
       && object.guid !== this.#selfGuid()
       ? this.#context.unitReactionToPlayer(object) : this.#reaction(unit, "player"); // 5.05 (12.10)
@@ -8628,6 +8675,17 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
       && unit !== "targettarget" && unit !== "pet") return undefined;
     const aura = this.#unitAura(unit, index, filter);
     return aura === undefined ? undefined : this.#auraInfo(aura, unit);
+  }
+
+  /**
+   * 3.43 (11.11): the slot `unitAura` reads, for GameTooltip:SetUnitAura — its caster level and count bytes, which
+   * Wow.exe 0x00625f00 hands 0x00625350 (0x0061f890, 0x0061f8d0) for the description's level and stack multiplier.
+   */
+  unitAuraSlot(unit: string, index: number, filter: string | undefined):
+    { readonly casterLevel: number; readonly applications: number } | undefined {
+    const aura = this.#partyAura(unit, index, filter) ?? (unit === "player" || unit === "target" || unit === "focus"
+      || unit === "targettarget" || unit === "pet" ? this.#unitAura(unit, index, filter) : undefined);
+    return aura === undefined ? undefined : { casterLevel: aura.casterLevel, applications: aura.applications };
   }
 
   unitBuff(unit: string, index: number): FrameXmlAuraInfo | undefined {

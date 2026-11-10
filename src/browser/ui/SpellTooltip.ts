@@ -238,6 +238,33 @@ function stockTime(milliseconds: number, secondsKey: string, minutesKey: string)
     : stockSpellString(secondsKey).replace("%.3g", threeDigits(milliseconds / 1000));
 }
 
+/** `stockSpellTooltip`'s options: the buff bar's tooltip, and 3.43's facts of the aura slot it is drawn for. */
+export interface StockSpellTooltipOptions {
+  readonly aura?: boolean;
+  /** 3.43: the aura slot's caster level (SMSG_AURA_UPDATE; Wow.exe 0x0061f890, slot byte +0xd); absent, 0. */
+  readonly auraLevel?: number;
+  /** 3.43: the aura slot's applications byte (0x0061f8d0, slot byte +0xe); absent, the multiplier stays 1. */
+  readonly auraCount?: number;
+}
+
+/**
+ * 3.43 (11.11): the description context of an aura's tooltip, as Wow.exe 0x00625350 calls 0x0057abc0 — the slot's
+ * caster level (0 is the caster's own), the slot's count as the multiplier only for a spell whose CumulativeAura is
+ * 2 or more (else 1), and the aura flag that leaves the effect values and `$d` without the spell modifiers.
+ *
+ * The slot's level is not capped at the row's MaxLevel on this path: 0x00625f00 masks the byte (& 0xff) and nothing
+ * else, 0x0057abc0 calls 0x007ff070 (whose player vtable slot 0x006dc330 holds the only MaxLevel × 5 cap) only for
+ * a level of 0, 0x00579e50 caps at MaxLevel only for a written spell id (`$12345s1`), and 0x007ff770 (listing
+ * 0x007ff7b3…0x007ff7dd) subtracts BaseLevel and clamps at 0 alone. A rank-1 Power Word: Shield (17: 43, 0.8 a level
+ * from 6, MaxLevel 11) on a level-80 caster's slot therefore reads 44 + 0.8 × 74 = 103 in the original as here.
+ */
+export function auraDescriptionContext(base: SpellDescriptionContext, metadata: Pick<SpellMetadata, "stackAmount">,
+  options: StockSpellTooltipOptions): SpellDescriptionContext {
+  const count = options.auraCount;
+  const multiplier = (metadata.stackAmount ?? 0) < 2 || count === undefined ? 1 : count & 0xff;
+  return { ...base, aura: true, level: (options.auraLevel ?? 0) & 0xff, multiplier };
+}
+
 /**
  * The spell as the stock `GameTooltip` draws it in 3.3.5, for the FrameXML HUD.
  *
@@ -258,7 +285,7 @@ function stockTime(milliseconds: number, secondsKey: string, minutesKey: string)
  * gold prose, which is what the 3.3.5 client shows on a buff or debuff, and the cast description
  * when the row has none or the gateway serves none.
  */
-export function stockSpellTooltip(spellId: number, options?: { readonly aura?: boolean }): TooltipContent {
+export function stockSpellTooltip(spellId: number, options?: StockSpellTooltipOptions): TooltipContent {
   const metadata = game.spells.get(spellId);
   if (!metadata) return { title: unknownLabel("заклинание", spellId), footer: ["Описание загружается…"] };
   const lines: TooltipLine[] = [];
@@ -289,7 +316,8 @@ export function stockSpellTooltip(spellId: number, options?: { readonly aura?: b
   // The aura text uses the same `$` markers as the description (`$s1`, `$t2`, `$42208s1`), so it
   // goes through the same formatter.
   const prose = options?.aura && metadata.auraDescription ? metadata.auraDescription : metadata.description;
-  const description = formatSpellDescription(prose, metadata, spellDescriptionContext());
+  const description = formatSpellDescription(prose, metadata,
+    options?.aura ? auraDescriptionContext(spellDescriptionContext(), metadata, options) : spellDescriptionContext());
   if (description) lines.push({ text: description, tone: "description", wrap: true });
   return metadata.rank ? { title: metadata.name, titleRight: metadata.rank, lines } : { title: metadata.name, lines };
 }

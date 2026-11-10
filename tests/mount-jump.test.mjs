@@ -52,6 +52,7 @@ function horse({ landRun = false } = {}) {
     animationBlend: () => 0.15, clipBlendTime: () => undefined,
   });
   const h = new Harness();
+  h.noteStart = () => {}; // 5.05 (11.11): #playAnimation counts the active player's starts (WorldRenderer3D `#noteStart`)
   h.requestAnimations = () => false;
   h.mountSpecials = new Map();
   const root = new THREE.Group();

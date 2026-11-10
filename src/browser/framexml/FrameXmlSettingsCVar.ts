@@ -83,6 +83,10 @@ const FRAME_XML_SETTINGS_CVAR_ROWS: FrameXmlSettingsCVarDefinition[] = [
   // L18 5.05: the stock Combat panel's «Ближний/дальний бой» (default "1", 0x0051dbd3); the world client's
   // autoRangedCombat hook reads the setting (EnterWorld.ts, world/AutoRangedCombat.ts).
   { cvar: "autoRangedCombat", setting: "autoRangedCombat", kind: "boolean" },
+  // 5.05 (11.11): the stock options' «Автоматически спешиваться» pair (defaults "1"/"0", 0x0051da52/0x0051da77);
+  // the world client's autoDismount hooks (EnterWorld.ts, world/MountedCastRule.ts) and IsUsableAction read them.
+  { cvar: "autoDismount", setting: "autoDismount", kind: "boolean" },
+  { cvar: "autoDismountFlying", setting: "autoDismountFlying", kind: "boolean" },
   // DEC-A 3.11: the stock Combat panel's «Автоматическая помощь» (ASSIST_ATTACK, default "0" at 0x009e14a0);
   // native ASSISTTARGET (input/Actions.ts settingOn) and the stock AssistUnit (FrameXmlTargetingApi.ts) read it.
   { cvar: "assistAttack", setting: "assistAttack", kind: "boolean" },

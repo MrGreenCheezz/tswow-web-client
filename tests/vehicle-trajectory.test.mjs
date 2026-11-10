@@ -838,7 +838,9 @@ test("11.02-E-review: a shot that is not finite is SPELL_FAILED_ERROR — nothin
     // (was: [true, true]).
     assert.deepEqual(statuses.slice(said).map(({ error }) => error), [true], `the refusal, never «sent»: ${JSON.stringify(statuses)}`);
     client.castSpell(STRIKE);
-    assert.equal(connection.sent.at(-1).payload[0], (count + 1) & 0xff, "the refused casts drew no count");
+    // 3.47 (11.11): each refused request drew its count — 0x0080cce0's request object (0x00805010(1)) takes the next
+    // count before 0x0080ac90 → 0x00809f80 refuses it through 0x00808200 (UNIT_SPELLCAST_FAILED with that count).
+    assert.equal(connection.sent.at(-1).payload[0], (count + 3) & 0xff, "the two refused casts drew a count each");
     client.controlledGuid = VEHICLE;
     client.usePetSlot(SLOT.get(CANNON));
     assert.equal(castsOf(connection).length, 2, "the vehicle's shot is not sent either");

@@ -38,7 +38,10 @@ const arbiter = await import(process.env.UNIT_ACTION_ARBITER_MODULE
 const {
   UNIT_ACTION_PRIORITY, UnitActionQueue, animationPlaysOnUpperBody, heldClipPlaysOnce,
   locomotionUnderlayClip, unitActionDisplay, unitActionEndsOnMovement,
+  isCastAction, // 5.05 (11.11)
 } = arbiter;
+
+const { seatSplitsPose } = await import("../dist/code/browser/VehicleSeatPose.js"); // 5.05 (11.11): the executor's dependency
 
 const withAnimationData = { skip: ANIMATION_DATA_AVAILABLE ? false : "no locally generated animation data" };
 
@@ -349,9 +352,12 @@ function executor({ moving = false, overrides = {}, legless = false } = {}) {
     ACTION_CLIP_WAIT: 900, ACTION_SIDECAR_WAIT: 3_000,
     // 12.10 6.03/6.07: the playback modes #startUnitAction / #playAnimation / #poseBase read.
     PLAYBACK_BACKWARD, PLAYBACK_FORWARD, PLAYBACK_HOLD_LAST, applyPlayback, fallbackPlayback, playbackHolds, wantedPlayback,
+    isCastAction, // 5.05 (11.11): #settleUnitAction marks a kit's start for the sheath rule
+    seatSplitsPose, // 5.05 (11.11): read by #settleUnitAction since 04.11 (11.02), missing here until now
     ...overrides,
   });
   const h = new Harness();
+  h.noteStart = () => {}; // 5.05 (11.11): the active player's start count (WorldRenderer3D `#noteStart`)
   h.requestAnimations = () => false;
   h.applyUnitGait = () => {};
   const root = new THREE.Group();

@@ -7,7 +7,10 @@ import {
 } from "./SpellTextWowRules.js"; // 11.10
 import { spellConditionBranch } from "./SpellTextCondition.js"; // 12.10
 import { evaluateSpellExpression, type SpellExpressionEnvironment, type SpellTextRecord } from "./SpellTextExpression.js"; // 12.10
-import { spellTextCastSpeed, spellTextPlayerSex, type SpellTextPlayer } from "./SpellTextPlayer.js"; // 12.10
+import { spellTextCastSpeed, spellTextLevel, spellTextPlayerSex, type SpellTextPlayer } from "./SpellTextPlayer.js"; // 12.10
+import {
+  SPELLMOD, spellTextEffectRange, spellTextModFloat, spellTextModInt, type SpellTextCaster,
+} from "./SpellTextCaster.js"; // 3.43 (11.11)
 import { spellTextBlock, spellTextVariable, spellTextVariables, type SpellTextVariable } from "./SpellTextVariables.js"; // 12.10
 
 /**
@@ -70,6 +73,26 @@ export interface SpellDescriptionContext {
   female?: boolean;
   /** 12.10: `$z`, the AreaTable name of the hearthstone's area; absent, HOME_INN as 0x00579e50 writes it. */
   homeName?: string;
+  /**
+   * 3.43 (11.11): the active player's level for a spell and its spell modifiers (SpellTextCaster.ts). Absent is
+   * Wow.exe without an active player: level 0 (no growth) and no modifiers.
+   */
+  caster?: SpellTextCaster;
+  /**
+   * 3.43: 0x0057abc0's level argument — an aura's caster level (the aura slot's byte +0xd, 0x0061f890); absent or 0,
+   * the caster's own level for the spell (0x007ff070).
+   */
+  level?: number;
+  /**
+   * 3.43: 0x0057abc0's multiplier of `s S m M o O` — an aura's stack count (the slot's byte +0xe, 0x0061f8d0) for a
+   * spell whose CumulativeAura is 2 or more, else 1 (0x00625350; SpellTooltip.ts stockSpellTooltip). Absent, 1.
+   */
+  multiplier?: number;
+  /**
+   * 3.43: an aura's tooltip (0x00625350 passes 1 as 0x0057abc0's last argument): the effect values and `$d` then
+   * skip the spell modifiers (0x007ff770, 0x00800a70), the other markers keep theirs.
+   */
+  aura?: boolean;
 }
 
 /**
@@ -114,6 +137,8 @@ function descriptionLocale(): string {
 const ATTR3_NO_DONE_BONUS = 0x20000000;
 const ATTR5_START_PERIODIC_AT_APPLY = 0x200;
 const ATTR5_HASTE_AFFECT_DURATION = 0x2000;
+/** 3.43: SPELL_ATTR2 0x1000000 — a written spell id's numbers grow by the player's UNIT_FIELD_LEVEL (0x00579e50). */
+const ATTR2_PLAYER_LEVEL = 0x1000000;
 
 /** 0x00579e50's answer for one marker: what it wrote, where its reading stopped, and whether it succeeded. */
 interface Marked { readonly text: string; readonly end: number; readonly ok: boolean }
@@ -123,10 +148,17 @@ class DescriptionWriter {
   /** DAT_00beb660: the last number a marker set for `$l`. */
   plural = 0;
   readonly locale = descriptionLocale();
+  /** 3.43: 0x0057abc0's level (0: the caster's own), multiplier and aura flag (SpellDescriptionContext). */
+  readonly level: number;
+  readonly multiplier: number;
+  readonly aura: boolean;
   readonly variables: SpellTextVariable[];
   readonly environment: SpellExpressionEnvironment;
 
   constructor(readonly spell: SpellNumbers, readonly context: SpellDescriptionContext) {
+    this.level = context.level !== undefined && Number.isFinite(context.level) ? Math.trunc(context.level) : 0;
+    this.multiplier = context.multiplier !== undefined && Number.isFinite(context.multiplier) ? context.multiplier : 1;
+    this.aura = context.aura === true;
     this.environment = {
       spell,
       row: (id) => this.row(id),
@@ -134,6 +166,11 @@ class DescriptionWriter {
       variable: (name) => spellTextVariable(this.variables, name)?.value ?? 0,
       duration: (record) => this.duration(record, true),
       cost: (record) => this.cost(record),
+      // 3.43 (11.11): 0x00579980 hands 0x005782d0 the writer's level, multiplier and modifiers flag.
+      ...(context.caster ? { caster: context.caster } : {}),
+      level: this.level,
+      multiplier: this.multiplier,
+      modified: !this.aura,
     };
     // 0x0057abc0: the table first, from the description's own spell, against the table so far.
     this.variables = spellTextVariables(spell.descriptionVariables, context.player, (body, table) => {
@@ -154,19 +191,31 @@ class DescriptionWriter {
   }
 
   /**
-   * 0x00800a70: the SpellDuration row's milliseconds, capped by its MaxDuration, and — for `$d` with
-   * an active player and a periodic effect — scaled by UNIT_MOD_CAST_SPEED when SPELL_ATTR5_HASTE_AFFECT_DURATION
-   * is set and SPELL_ATTR3_NO_DONE_BONUS is not. Left out: DurationPerLevel and the spell modifiers
-   * (columns and talent data this client does not carry), and the aura-316 path (0x007283a0).
+   * 0x00800a70: the SpellDuration row's milliseconds plus DurationPerLevel × (the caster's level for the spell
+   * (0x007ff070) − BaseLevel), capped by its MaxDuration; 3.43 (11.11): then SPELLMOD_DURATION unless the numbers are
+   * an aura's; and — for `$d` with an active player and a periodic effect — scaled by UNIT_MOD_CAST_SPEED (≥ 0.001,
+   * 0x00a42188) when SPELL_ATTR5_HASTE_AFFECT_DURATION is set or one of the player's auras is SPELL_AURA_PERIODIC_HASTE
+   * for the spell (0x007283a0 with 316), and SPELL_ATTR3_NO_DONE_BONUS is not.
    */
   duration(record: SpellTextRecord, hasted: boolean): number | undefined {
     if (record.duration === undefined) return undefined;
-    let ms = Math.min(record.duration, record.maxDuration ?? record.duration);
+    const caster = this.context.caster;
+    const perLevel = record.durationPerLevel ?? 0;
+    let computed = record.duration;
+    if (perLevel !== 0) {
+      const level = caster ? caster.level(record) : 0;
+      if (level === undefined) return undefined;
+      computed += (level - (record.baseLevel ?? 0)) * perLevel;
+    }
+    const cap = record.maxDuration ?? record.duration;
+    let ms = computed < cap ? computed : cap;
+    if (!this.aura) ms = spellTextModInt(record, ms, SPELLMOD.duration, caster);
     const player = this.context.player;
     if (hasted && player && (record.effectPeriod ?? []).some((period) => period !== 0)) {
       const [, , , attr3 = 0, , attr5 = 0] = record.attributes ?? [];
       const speed = spellTextCastSpeed(player);
-      if ((attr5 & ATTR5_HASTE_AFFECT_DURATION) !== 0 && (attr3 & ATTR3_NO_DONE_BONUS) === 0 && speed >= Math.fround(0.001)) {
+      const haste = (attr5 & ATTR5_HASTE_AFFECT_DURATION) !== 0 || caster?.periodicHaste?.(record) === true;
+      if (haste && (attr3 & ATTR3_NO_DONE_BONUS) === 0 && speed >= Math.fround(0.001)) {
         ms = spellTextRoundEven(Math.fround(Math.fround(ms) * speed));
       }
     }
@@ -255,6 +304,17 @@ class DescriptionWriter {
     if (record === "pending") return asWritten(end);
     if (record === undefined) return fail(at);
     const spell = record;
+    // 3.43 (11.11): for a written spell id, 0x00579e50 takes the player's UNIT_FIELD_LEVEL as the level when that
+    // row has SPELL_ATTR2 0x1000000, then caps the level at the row's MaxLevel (when above 0).
+    let level = this.level;
+    if (digits) {
+      const player = this.context.player;
+      if (player && ((spell.attributes?.[2] ?? 0) & ATTR2_PLAYER_LEVEL) !== 0) level = spellTextLevel(player);
+      const maxLevel = spell.maxLevel ?? 0;
+      if (maxLevel > 0 && maxLevel <= level) level = maxLevel;
+    }
+    const caster = this.context.caster;
+    const modInt = (value: number, op: number): number => spellTextModInt(spell, value, op, caster);
     const integer = (value: number | undefined, plural = true): Marked => {
       if (value === undefined) return asWritten(end);
       if (plural) this.plural = value;
@@ -270,9 +330,10 @@ class DescriptionWriter {
           : { text: `${written.out}$`, end: chosen.after, ok: false };
       }
       case "A": case "a": {
-        // The SpellRadius row's radius, truncated (0x0088b9c0), 0 with no row.
+        // The SpellRadius row's radius, truncated (0x0088b9c0), 0 with no row; 3.43: then SPELLMOD_RADIUS (0x007fdb50).
         const radius = spell.effectRadius?.[effect];
-        return radius === undefined ? asWritten(end) : { text: String(Math.trunc(radius)), end, ok: true };
+        return radius === undefined ? asWritten(end)
+          : { text: String(modInt(Math.trunc(radius), SPELLMOD.radius)), end, ok: true };
       }
       case "B": case "b": {
         const points = spell.effectPointsPerCombo?.[effect];
@@ -284,9 +345,12 @@ class DescriptionWriter {
         return ms === undefined ? asWritten(end) : { text: spellTextDuration(ms, globalString), end, ok: true };
       }
       case "E": case "e": {
+        // 3.43: EffectAmplitude through SPELLMOD_VALUE_MULTIPLIER (0x007fdba0) before the factor.
         const value = spell.effectMultipleValue?.[effect];
-        return value === undefined ? asWritten(end)
-          : { text: spellTextFixed(Math.fround(value * factor), 1), end, ok: true };
+        return value === undefined ? asWritten(end) : {
+          text: spellTextFixed(Math.fround(spellTextModFloat(spell, value, SPELLMOD.valueMultiplier, caster) * factor), 1),
+          end, ok: true,
+        };
       }
       case "F": {
         const value = spell.effectDamageMultiplier?.[effect];
@@ -305,23 +369,30 @@ class DescriptionWriter {
         const after = gendered.end + (gendered.end < text.length ? 1 : 0);
         return gendered.text === undefined ? asWritten(after) : { text: gendered.text, end: after, ok: true };
       }
-      case "H": case "h": return integer(spell.procChance);
+      // 3.43: ProcChance through SPELLMOD_CHANCE_OF_SUCCESS, ProcCharges through SPELLMOD_CHARGES (0x007fdb50).
+      case "H": case "h": return integer(spell.procChance === undefined ? undefined : modInt(spell.procChance, SPELLMOD.chanceOfSuccess));
       case "I": case "i": return integer(spell.maxAffectedTargets);
       case "L": case "l": return this.pluralForm(text, at + 1);
-      case "M": case "O": case "S": case "m": case "o": case "s": return this.value(spell, letter, effect, factor, end);
-      case "N": case "n": return integer(spell.procCharges);
+      case "M": case "O": case "S": case "m": case "o": case "s": return this.value(spell, letter, effect, factor, end, level) ?? asWritten(end);
+      case "N": case "n": return integer(spell.procCharges === undefined ? undefined : modInt(spell.procCharges, SPELLMOD.charges));
       // 0x007ff100: ManaPerSecond (its per-level part and the cost modifier left out); 0 without a player.
       case "P": case "p": return integer(this.context.player ? spell.manaPerSecond : 0, false);
       case "Q": case "q": return integer(spell.effectMiscValue?.[effect]);
-      // SpellRange's RangeMax[0] (+0xc), raised to the next integer (0x0050f450, 0x0088b9c0).
-      case "R": case "r": return integer(spell.rangeMax === undefined ? undefined : Math.ceil(spell.rangeMax));
+      // SpellRange's RangeMax[0] (+0xc), 3.43: through SPELLMOD_RANGE (0x007fdba0), raised to the next integer
+      // (0x0050f450, 0x0088b9c0).
+      case "R": case "r": return integer(spell.rangeMax === undefined ? undefined
+        : Math.ceil(spellTextModFloat(spell, Math.fround(spell.rangeMax), SPELLMOD.range, caster)));
       case "T": case "t": {
         const period = this.period(spell, effect);
         return period === undefined ? asWritten(end) : { text: spellTextPeriod(period), end, ok: true };
       }
       case "U": case "u": return integer(spell.stackAmount);
       case "V": case "v": return integer(spell.maxTargetLevel);
-      case "X": case "x": return integer(spell.effectChainTargets?.[effect]);
+      // 3.43: through SPELLMOD_JUMP_TARGETS (0x007fdb50).
+      case "X": case "x": {
+        const targets = spell.effectChainTargets?.[effect];
+        return integer(targets === undefined ? undefined : modInt(targets, SPELLMOD.jumpTargets));
+      }
       // DAT_00c9d534's AreaTable name (row +0x2c), HOME_INN without one (GlobalStrings.lua:4178).
       case "Z": case "z": return { text: this.context.homeName ?? globalString("HOME_INN") ?? "ваша таверна", end, ok: true };
       default: return fail(at);
@@ -342,15 +413,17 @@ class DescriptionWriter {
   }
 
   /**
-   * `s S m M o O`: 0x007ff770's min and max (the caster-level part and spell modifiers left out), for
+   * `s S m M o O`: 0x007ff770's min and max — 3.43 (11.11): with the caster-level growth and, unless the numbers
+   * are an aura's, the spell modifiers (SpellTextCaster.ts) — times 0x0057abc0's multiplier (an aura's stacks); for
    * `o` times the duration over the period — a period of 0 counts as 5000 ms, SPELL_ATTR5_START_PERIODIC_AT_APPLY
-   * adds one period, and no duration is 0 — then 11.10's factor and rounding rules.
+   * adds one period, and no duration is 0 — then 11.10's factor and rounding rules. A value that grows with a level
+   * this client cannot tell (SpellTextCaster.ts: the weapon-skill swap) is left as written.
    */
-  value(spell: SpellNumbers, letter: string, effect: number, factor: number, end: number): Marked {
-    const base = spell.effectBasePoints[effect] ?? 0;
-    const sides = spell.effectDieSides[effect] ?? 0;
-    let min = Math.fround(base + 1);
-    let max = Math.fround(base + Math.max(1, sides));
+  value(spell: SpellNumbers, letter: string, effect: number, factor: number, end: number, level: number): Marked | undefined {
+    const range = spellTextEffectRange(spell, effect, level, this.context.caster, !this.aura);
+    if (!range) return undefined;
+    let min = Math.fround(range.min * this.multiplier);
+    let max = Math.fround(range.max * this.multiplier);
     if (letter === "o" || letter === "O") {
       const period = (spell.effectPeriod[effect] ?? 0) === 0 ? 5000 : spell.effectPeriod[effect]!;
       const ms = period > 0 ? this.duration(spell, false) ?? 0 : 0;
@@ -380,6 +453,8 @@ class DescriptionWriter {
     let period = spell.effectPeriod[effect] ?? 0;
     if (mask === undefined && period === 0) return undefined;
     if (mask !== undefined && (mask & 1) !== 0) return 5000;
+    // 3.43 (11.11): SPELLMOD_ACTIVATION_TIME (0x007fdb50 with 0x13) before the haste.
+    period = spellTextModInt(spell, period, SPELLMOD.activationTime, this.context.caster);
     const player = this.context.player;
     const [, , , attr3 = 0, , attr5 = 0] = spell.attributes ?? [];
     if (player && spell.effectPeriod.some((value) => value !== 0)

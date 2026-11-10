@@ -289,8 +289,7 @@ test("a target health death edge cancels Auto Shot on the server and clears loca
   assert.deepEqual(connection.sent.map(({ opcode }) => opcode).filter((opcode) =>
     opcode === OPCODES.CMSG_CANCEL_AUTO_REPEAT_SPELL || opcode === OPCODES.CMSG_SET_SHEATHED), [
     OPCODES.CMSG_CANCEL_AUTO_REPEAT_SPELL,
-    OPCODES.CMSG_SET_SHEATHED,
-  ]);
+  ], "5.05 (11.11): the repeat's stop 0x00807560 sends no sheath");
   client.close();
 });
 
@@ -318,8 +317,7 @@ test("a disappearing melee target sends ATTACK_STOP before clearing local combat
   assert.deepEqual(connection.sent.map(({ opcode }) => opcode).filter((opcode) =>
     opcode === OPCODES.CMSG_ATTACK_STOP || opcode === OPCODES.CMSG_SET_SHEATHED), [
     OPCODES.CMSG_ATTACK_STOP,
-    OPCODES.CMSG_SET_SHEATHED,
-  ]);
+  ], "5.05 (11.11): StopAttack 0x006e1660 sends no sheath");
   assert.equal(client.attacking, false);
   assert.equal(client.targetGuid, undefined);
   client.close();

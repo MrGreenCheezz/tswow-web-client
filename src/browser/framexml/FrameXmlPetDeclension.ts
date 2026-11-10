@@ -33,6 +33,7 @@
 import { globalString } from "../../generated/globalStrings.js";
 import { RESPONSE_CODES } from "../../generated/responseCodes.js";
 import { checkCharacterName, NAME_ALPHABET_CJK, nameAlphabet } from "../glue/GlueNameRules.js";
+import { glueWorldNameFilters, type GlueNameFilterTables } from "../glue/GlueNameFilters.js"; // 1.19 (11.11)
 import { readByte, readGuidAt } from "../../world/Fields.js";
 import type { PetNameRejected } from "../../world/PetProtocol.js";
 import { UPDATE_FIELDS } from "../../generated/updateFields.js";
@@ -76,11 +77,13 @@ function luaString(value: unknown): string | undefined {
  * 0x007e1f00: the client's own check of a pet name before PetRename sends it — 0x007e18c0 with no extra
  * characters (no space, no apostrophe), as the character check (0x007e1e90, glue/GlueNameRules.ts) runs
  * it, whose ResponseCodes are this reason plus 87; only the length differs: 12 letters, 8 in Hangul and in
- * CJK alike (the character check allows CJK 6). The name and profanity patterns are the realm's to check
- * (no route serves NamesReserved/NamesProfanity). Answers the `PetNameInvalidReason`, 0 for a good name.
+ * CJK alike (the character check allows CJK 6). 1.19 (11.11): with all three name filter lists, as the
+ * character check (0x7e1f00(locale, name, 1, 1, 1, 1, 0)), those the glue built for the realm
+ * (glue/GlueNameFilters.ts) — a hit is reason 8, ERR_NAME_RESERVED. Answers the `PetNameInvalidReason`, 0 for a good
+ * name.
  */
-export function frameXmlPetNameReason(name: string): number {
-  const code = checkCharacterName(name);
+export function frameXmlPetNameReason(name: string, filters: GlueNameFilterTables | undefined = glueWorldNameFilters()): number {
+  const code = checkCharacterName(name, filters ? { nameFilters: filters } : {});
   if (code === RESPONSE_CODES.CHAR_NAME_TOO_LONG && nameAlphabet(name) === NAME_ALPHABET_CJK && name.length <= 8) return 0;
   return code - RESPONSE_CODES.CHAR_NAME_SUCCESS;
 }

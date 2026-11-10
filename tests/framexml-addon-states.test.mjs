@@ -118,7 +118,7 @@ test("the gateway lists every installed add-on with the profile's state and read
     await writeFile(join(profile, "AddOns.txt"), "Beta: disabled\n");
     assert.deepEqual(await listClientAddons(root), [
       { name: "Alpha", loadOnDemand: false, enabled: true },
-      { name: "Beta", loadOnDemand: false, enabled: false },
+      { name: "Beta", loadOnDemand: false, enabled: false, profileState: false }, // 3.46 (11.11): the profile's own line
     ]);
     assert.equal(await clientAddonVersionCheck(root), true, "no Config.wtf: the CVar's default");
     await writeFile(join(root, "WTF", "Config.wtf"), 'SET locale "ruRU"\n');

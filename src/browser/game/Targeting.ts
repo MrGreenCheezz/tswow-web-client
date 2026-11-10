@@ -28,6 +28,8 @@ import { // L15 5.05
 import { actionRangeLimits } from "../framexml/FrameXmlActionRange.js"; // L15 5.05
 import { player as playerFields } from "../../world/Fields.js"; // L15-review
 import { contestedGuardHostile } from "../../world/ContestedGuard.js"; // L18 5.05
+import { UPDATE_FIELDS } from "../../generated/updateFields.js"; // 5.05 (11.11)
+import { classSpellFamily } from "../ui/UnitSnapshot.js"; // 5.05 (11.11)
 
 // L18 5.05: PLAYER_FLAGS_CONTESTED_PVP (L15-review's constant here) lives in world/ContestedGuard.ts now.
 
@@ -454,18 +456,46 @@ function groupMemberIn(guid: bigint, party: boolean): boolean {
   return false;
 }
 
+/** 5.05 (11.11): PLAYER_FIELD_INV_SLOT_HEAD + EQUIPMENT_SLOT_RANGED (17) × 2 words — the slot 0x007ff480 reads. */
+const RANGED_SLOT_FIELD = UPDATE_FIELDS.PLAYER_FIELD_INV_SLOT_HEAD.offset + 17 * 2;
+
+/**
+ * 5.05 (11.11): `assistHost` plus what 0x007ff480 reads for the player's own spell — the ranged weapon's RangedModRange
+ * (ATTR0 0x2 on a player) and SPELLMOD_RANGE (op 5, 0x007fd970) of the player's class family: Hawk Eye's +yards — the
+ * same reads as LiveWorldSeam's IsActionInRange host, over the world's item templates and spell modifiers.
+ */
+const rangeHost: ActionRangeHost = {
+  ...assistHost,
+  get selfGuid() { return game.world?.state.selfGuid; },
+  rangedModRange: () => {
+    const world = game.world;
+    const self = player();
+    if (!world || !self) return undefined;
+    const low = self.fields.get(RANGED_SLOT_FIELD) ?? 0;
+    const high = self.fields.get(RANGED_SLOT_FIELD + 1) ?? 0;
+    if (low === 0 && high === 0) return undefined;
+    const item = world.state.objects.get((BigInt(high >>> 0) << 32n) | BigInt(low >>> 0));
+    return item ? world.itemTemplates.get(worldObject.entry(item) ?? 0)?.rangedModRange : undefined;
+  },
+  playerSpellFamily: () => {
+    const self = player();
+    return self ? classSpellFamily(unit.classId(self)) : undefined;
+  },
+  spellModifiers: () => game.world?.spellModifiers.values() ?? NO_MODIFIERS,
+};
+
 /**
  * L15 5.05: the autoRangedCombat spell's range for the player against a target (WorldClient
  * `autoRangedLimits`, world/AutoRangedCombat.ts) — Wow.exe 0x00802c30 → 0x007ff480 as
- * FrameXmlActionRange.ts reads it, over the spell row and this file's reactions. `assistHost` knows no
- * ranged weapon (RangedModRange) and no SPELLMOD_RANGE, so a talent that lengthens Auto Shot is not
- * counted. Returns the range module's scratch object: no allocation per tick.
+ * FrameXmlActionRange.ts reads it, over the spell row and this file's reactions. 5.05 (11.11): with the ranged
+ * weapon's RangedModRange and the class's SPELLMOD_RANGE (`rangeHost`; was neither, so Hawk Eye's yards were not
+ * counted). Returns the range module's scratch object: no allocation per tick.
  */
 export function autoRangedLimits(
   spellId: number, caster: WorldObjectState, target: WorldObjectState,
 ): { readonly min: number; readonly max: number } | undefined {
   const row = game.spells.get(spellId);
-  return row === undefined ? undefined : actionRangeLimits(row, caster, target, assistHost);
+  return row === undefined ? undefined : actionRangeLimits(row, caster, target, rangeHost);
 }
 
 /** L2 1.10: 0x7293d0(player, unit, 0) — the player can assist the unit, immunities in force. */

@@ -17,9 +17,12 @@
  * * The repeating spell's setters (0x7fe140, 0x800a00) fire `START_AUTOREPEAT_SPELL` whenever it
  *   changes to a spell and `STOP_AUTOREPEAT_SPELL` when it is cleared (0x807560 on cancel), while the
  *   other slot is clear. `ACTIONBAR_UPDATE_STATE` is not theirs: the client fires it with
- *   `CURRENT_SPELL_CAST_CHANGED` from its cast path (0x53b480). This browser client has no such edge
- *   at the moment the repeat starts, so the model follows each START/STOP with one
- *   `ACTIONBAR_UPDATE_STATE`, which only re-reads the checked state.
+ *   `CURRENT_SPELL_CAST_CHANGED` from its cast path (0x53b480). 1.14 (11.11): so this edge fires none
+ *   either (was one after each START/STOP). The callers of the raiser 0x005a7cb0 are 0x0053b480 and the bar's
+ *   own 0x005abbc0; 0x0053b480's are the request 0x00805330, the end 0x008054f0, 0x0080cce0's targeting branch
+ *   and three outside the cast (.runtime/re-2026-11-11/combat/refs2.txt) — none of 0x7fe140, 0x800a00 or 0x807560.
+ *   The repeat's start is re-read on its SMSG_SPELL_START (TrinityCore's Spell::prepare sends one with the
+ *   request's count, Spell.cpp:3352): FrameXmlOwnCastChanges.ts raises the pair there, after the repeat is set.
  *
  * `WorldClient.autoRepeatSpellId` has no bus edge; the seam reads it once a rendered frame, as it
  * reads `attacking` for PLAYER_ENTER_COMBAT.
@@ -62,6 +65,5 @@ export class FrameXmlAutoRepeatEdge {
     const pump = this.#pump;
     if (!pump) return;
     pump.fire(spell !== undefined ? START_AUTOREPEAT_SPELL : STOP_AUTOREPEAT_SPELL);
-    pump.fire(ACTIONBAR_UPDATE_STATE);
   }
 }

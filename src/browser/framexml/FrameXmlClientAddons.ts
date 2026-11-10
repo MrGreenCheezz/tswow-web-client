@@ -1,4 +1,5 @@
 import { throwIfPatchChainChanged } from "../PatchChainChanged.js";
+import { glueWorldAddonStates } from "../glue/GlueAddons.js"; // 3.46 (11.11)
 
 export interface FrameXmlClientAddon {
   readonly name: string;
@@ -13,26 +14,40 @@ export interface FrameXmlClientAddon {
 export interface FrameXmlClientAddonList {
   readonly addons: readonly FrameXmlClientAddon[];
   /** Every installed add-on in the list's order, with whether the profile enables it. */
-  readonly installed: readonly (FrameXmlClientAddon & { readonly enabled: boolean })[];
+  readonly installed: readonly FrameXmlInstalledClientAddon[];
   /** The `checkAddonVersion` CVar of the client's Config.wtf (Wow.exe default on). */
   readonly checkAddonVersion: boolean;
+}
+
+/** One installed add-on of the list. */
+export interface FrameXmlInstalledClientAddon extends FrameXmlClientAddon {
+  /** Whether the gateway's profile leaves it on (an unlisted add-on is on). */
+  readonly enabled: boolean;
+  /** 3.46 (11.11): the profile's explicit line, when it has one (an older gateway: never). */
+  readonly profileState?: boolean;
+  /** 3.46 (11.11): the TOC's `## DefaultState`, when it decides one. */
+  readonly defaultState?: boolean;
 }
 
 const ADDON_NAME = /^[!A-Za-z0-9_][!A-Za-z0-9_-]*$/;
 
 /** One list's valid, distinct entries; `enabled` read where the entry has it. */
-function entries(list: unknown): (FrameXmlClientAddon & { readonly enabled: boolean })[] {
+function entries(list: unknown): FrameXmlInstalledClientAddon[] {
   const seen = new Set<string>();
-  const addons: (FrameXmlClientAddon & { readonly enabled: boolean })[] = [];
+  const addons: FrameXmlInstalledClientAddon[] = [];
   for (const candidate of Array.isArray(list) ? list : []) {
     if (typeof candidate !== "object" || candidate === null) continue;
-    const value = candidate as { name?: unknown; loadOnDemand?: unknown; enabled?: unknown };
+    const value = candidate as { name?: unknown; loadOnDemand?: unknown; enabled?: unknown; profileState?: unknown; defaultState?: unknown };
     if (typeof value.name !== "string" || !ADDON_NAME.test(value.name)
       || typeof value.loadOnDemand !== "boolean") continue;
     const key = value.name.toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);
-    addons.push(Object.freeze({ name: value.name, loadOnDemand: value.loadOnDemand, enabled: value.enabled !== false }));
+    addons.push(Object.freeze({
+      name: value.name, loadOnDemand: value.loadOnDemand, enabled: value.enabled !== false,
+      ...(typeof value.profileState === "boolean" ? { profileState: value.profileState } : {}),
+      ...(typeof value.defaultState === "boolean" ? { defaultState: value.defaultState } : {}),
+    }));
   }
   return addons;
 }
@@ -64,6 +79,27 @@ export async function fetchFrameXmlClientAddonList(
     installed: Object.freeze(installed),
     checkAddonVersion: body.checkAddonVersion !== false,
   });
+}
+
+/**
+ * 3.46 (11.11): whether an installed add-on is on for the character in the world — the glue's per-character state
+ * handed over at entry (glue/GlueAddons.ts `glueWorldAddonStates`, Wow.exe 0x5f7d70 for the current character), else
+ * the gateway profile's.
+ */
+export function frameXmlCharacterAddonEnabled(addon: FrameXmlInstalledClientAddon): boolean {
+  return glueWorldAddonStates()?.enabled.get(addon.name.toLowerCase()) ?? addon.enabled;
+}
+
+/** 3.46 (11.11): the mount's load list for the character: the installed add-ons on for it, else the profile's list. */
+export function frameXmlCharacterAddons(list: FrameXmlClientAddonList | undefined): readonly FrameXmlClientAddon[] {
+  if (!list) return [];
+  if (!glueWorldAddonStates()) return list.addons;
+  return list.installed.filter(frameXmlCharacterAddonEnabled).map(({ name, loadOnDemand }) => ({ name, loadOnDemand }));
+}
+
+/** 3.46 (11.11): `checkAddonVersion` as the glue left it (SetAddonVersionCheck), else Config.wtf's, else on. */
+export function frameXmlCharacterAddonVersionCheck(list: FrameXmlClientAddonList | undefined): boolean {
+  return glueWorldAddonStates()?.checkAddonVersion ?? list?.checkAddonVersion ?? true;
 }
 
 /** The enabled add-ons alone (the mount's load list), as before 3.46's listing. */

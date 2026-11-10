@@ -33,6 +33,9 @@ import { // 4.04 (13.10)
   glueUnitLevelSlotsFromLua, glueUnitLevelText, glueUnitRowsAfterSkin, glueUnitRowsBeforeSkin, glueUnitThreatRow,
   type GameTooltipUnitFacts, type GlueUnitTooltipHost,
 } from "./GlueUnitTooltip.js";
+import { // 4.04 (11.11)
+  GLUE_TOOLTIP_FULL_TEX_COORDS, GlueTooltipTextures, glueTooltipTextureCoords,
+} from "./GlueTooltipTextures.js";
 
 /**
  * The legacy implicit environment 3.3.5 glue code still relies on.
@@ -298,6 +301,18 @@ interface GameTooltipLineCache {
   structure: number;
 }
 
+/**
+ * 3.43 (11.11): the aura slot a GameTooltip:SetUnitAura/SetUnitBuff/SetUnitDebuff names — the arguments its
+ * UnitAura query took (the filter UnitBuff/UnitDebuff fix) and the count it returned — so the adapter can read the
+ * slot's caster level and count as Wow.exe 0x00625f00 does (0x0061f890, 0x0061f8d0).
+ */
+export interface GameTooltipAuraSlot {
+  readonly unit: string;
+  readonly index: number;
+  readonly filter: string | undefined;
+  readonly count?: number;
+}
+
 /** Item-specific data supplied by the world owner; the binder keeps the common API surface. */
 export interface GameTooltipWidgetAdapter extends GameTooltipExtrasAdapter {
   readonly inventoryItem: (unit: string, slot: number) => TooltipContent | undefined;
@@ -332,7 +347,7 @@ export interface GameTooltipWidgetAdapter extends GameTooltipExtrasAdapter {
    * («Сила атаки увеличена на 15.» where the spellbook says «Воин издает боевой крик.»). The aura
    * setters prefer it and fall back to `spell` when it is absent or answers nothing.
    */
-  readonly aura?: (id: number) => TooltipContent | undefined;
+  readonly aura?: (id: number, slot?: GameTooltipAuraSlot) => TooltipContent | undefined;
   /**
    * The line the client itself adds to a skinnable creature's tooltip (`UNIT_SKINNABLE_*`, coloured
    * by the player's skill against the creature's level): the global string's name, the colour-blind
@@ -602,6 +617,35 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
   #tooltipExtras: GameTooltipExtras | undefined;
   /** 3.12 (04.10, L4): each tooltip's unit redraw for a late guild or name (setGameTooltipUnit). */
   readonly #unitRedraws = new WeakMap<FrameXmlFrame, () => void>();
+  /** 4.04 (11.11): GameTooltip:AddTexture's textures (GlueTooltipTextures.ts, Wow.exe 0x0061c8b0). */
+  readonly #tooltipTextures = new GlueTooltipTextures({
+    texture: (frame, index) => {
+      const texture = this.#bridge.getFrame(`${frame.name}Texture${index}`);
+      return texture?.parent === frame && texture.type === "Texture" ? texture : undefined;
+    },
+    line: (frame, index) => this.gameTooltipLine(frame, "Left", index),
+    lineCount: (frame) => Math.max(0, this.gameTooltipState(frame).nextLine - 1),
+    aspect: () => {
+      const width = num(this.callGlobal("GetScreenWidth", [], 1)[0], 0);
+      const height = num(this.callGlobal("GetScreenHeight", [], 1)[0], 0);
+      return width > 0 && height > 0 ? width / height : 4 / 3;
+    },
+    // The layout frame's own width (the template's 12), not the span of the parent-filling default anchors.
+    width: (region) => {
+      const declared = Number(region.attributes["width"]);
+      return Number.isFinite(declared) && declared > 0 ? declared : this.#bridge.measure(region).width;
+    },
+    setPoint: (region, point, relativeTo, relativePoint, x, y) => {
+      this.#bridge.SetPoint(region, point, relativeTo, relativePoint, x, y);
+    },
+    clearAllPoints: (region) => { this.#bridge.ClearAllPoints(region); },
+    paint: (texture, file, coords, color) => {
+      this.#bridge.SetTexture(texture, file);
+      this.#bridge.update(texture, (m) => { m.texCoords = coords; m.vertexColor = color; }, "paint");
+    },
+    show: (region) => { this.#bridge.Show(region); },
+    hide: (region) => { this.#bridge.Hide(region); },
+  });
   readonly #stubbed = new Set<string>();
   readonly #stubCounts = new Map<string, GlueWidgetStubDiagnostic>();
   readonly #frameModules = new WeakMap<FrameXmlFrame, string>();
@@ -1246,6 +1290,7 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
   private clearGameTooltipLines(frame: FrameXmlFrame): void {
     const state = this.gameTooltipState(frame);
     this.cancelGameTooltipRefresh(frame);
+    this.#tooltipTextures.clear(frame); // 4.04 (11.11): 0x0061c620 puts the textures' lines back first
     // Up to the highest row that has a line (`gameTooltipLines`); every row past it has none.
     for (let index = 1; index <= this.gameTooltipLines(frame).highWater; index += 1) {
       for (const side of ["Left", "Right"] as const) {
@@ -1567,6 +1612,8 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
     // 4.04 (13.10): the player's threat on the unit, last (0x00622317).
     const threat = glueUnitThreatRow(unitHost, unit);
     if (threat) this.setGameTooltipLine(frame, threat.text, "Left", threat.color);
+    // 4.04 (11.11): and its icon on that line (0x0062240a → 0x0061c8b0).
+    if (threat?.icon) this.#tooltipTextures.add(frame, threat.icon.file, GLUE_TOOLTIP_FULL_TEX_COORDS, threat.icon.color);
     this.gameTooltipState(frame).unit = unit;
     // 3.12 (04.10, L4): a guild or a name still on its way draws this unit again when it comes (0x0061ddd0);
     // clearing the lines or hiding withdraws it, like a content redraw.
@@ -1640,7 +1687,15 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
       if (dispelName) this.#titleColouredRight.add(content);
       return content;
     };
-    const content = spellId > 0 ? adapter?.aura?.(spellId) ?? adapter?.spell?.(spellId) : undefined;
+    // 3.43 (11.11): the slot, for the description's level and stack multiplier (0x00625350 → 0x0057abc0).
+    const slot: GameTooltipAuraSlot = {
+      unit: typeof args[0] === "string" ? args[0].toLowerCase() : "",
+      index: Math.trunc(num(args[1], 0)),
+      filter: query === "UnitBuff" ? "HELPFUL" : query === "UnitDebuff" ? "HARMFUL"
+        : typeof args[2] === "string" ? args[2] : undefined,
+      count: Math.trunc(num(values[3], 0)),
+    };
+    const content = spellId > 0 ? adapter?.aura?.(spellId, slot) ?? adapter?.spell?.(spellId) : undefined;
     return this.setGameTooltipContent(frame, aura(content));
   }
 
@@ -2072,8 +2127,12 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
         if (frame.tooltipMinimumWidth !== minimum) bridge.update(frame, (mutable) => { mutable.tooltipMinimumWidth = minimum; });
         this.sizeGameTooltip(frame);
       },
-      // Inline icons in a line are not drawn; the call is accepted so the line itself still shows.
-      AddTexture: () => {},
+      // 4.04 (11.11): Wow.exe 0x0061d810 → 0x0061c8b0 (GlueTooltipTextures.ts): a template texture on the last line.
+      AddTexture: ({ frame, args }) => {
+        const file = textureReference(args[0]);
+        const coords = glueTooltipTextureCoords(args);
+        if (file !== undefined && coords) this.#tooltipTextures.add(frame, file, coords);
+      },
       NumLines: ({ frame }) => [Math.max(0, this.gameTooltipState(frame).nextLine - 1)],
       SetUnit: ({ frame, args }) => [typeof args[0] === "string" && this.setGameTooltipUnit(frame, args[0])],
       GetUnit: ({ frame }) => {

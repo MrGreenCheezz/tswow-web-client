@@ -45,6 +45,9 @@ test("the supported table is only the settings the browser currently consumes", 
       ["stopAutoAttackOnTargetChange", "stopAutoAttackOnTargetChange"],
       // L18 5.05: the stock Combat panel's «Ближний/дальний бой», read by the autoRangedCombat controller.
       ["autoRangedCombat", "autoRangedCombat"],
+      // 5.05 (11.11): the stock «Автоматически спешиваться» pair, read by WorldClient's mounted-cast rule (0x0071b0c0).
+      ["autoDismount", "autoDismount"],
+      ["autoDismountFlying", "autoDismountFlying"],
       // DEC-A 3.11: the stock Combat panel's ASSIST_ATTACK, read by ASSISTTARGET and the stock AssistUnit.
       ["assistAttack", "assistAttack"],
       // The stock Controls panel's BLOCK_TRADES, read by WorldClient on a trade offer (5.25).
@@ -277,4 +280,16 @@ test("DEC-A 3.11: assistAttack is a 0/1 CVar over the assistAttack setting, \"0\
   assert.equal(values().assistAttack, false);
   assert.deepEqual(writes, [{ id: "assistAttack", value: true }, { id: "assistAttack", value: false }]);
   assert.equal(FRAME_XML_WEBCLIENT_CVARS.some((row) => row.setting === "assistAttack"), false, "a stock CVar, not a webclient_ one");
+});
+
+test("5.05 (11.11): autoDismount / autoDismountFlying keep Wow.exe's defaults (0x0051da52 \"1\", 0x0051da77 \"0\") and round-trip", () => {
+  const { adapter, values } = fakeSettings();
+  assert.equal(adapter.get("autoDismount"), "1");
+  assert.equal(adapter.get("autoDismountFlying"), "0");
+  assert.equal(adapter.getDefault("autoDismount"), "1");
+  assert.equal(adapter.getDefault("autoDismountFlying"), "0");
+  assert.equal(adapter.set("autoDismountFlying", "1"), true);
+  assert.equal(values().autoDismountFlying, true, "the stock checkbox reaches the setting EnterWorld hands the world client");
+  assert.equal(adapter.set("autodismount", 0), true);
+  assert.equal(values().autoDismount, false);
 });

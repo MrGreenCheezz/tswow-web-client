@@ -27,6 +27,20 @@ export interface TransportPath {
   /** The cycle length: the largest `TimeIndex` the entry has. */
   period: number;
   frames: TransportKeyframe[];
+  /**
+   * 11.01: the entry's `TransportRotation.dbc` rows in time order, when it has any — the rotation Wow.exe turns the car
+   * by along the path (0x0070dc10; browser/TransportRotation.ts). 15 entries in this dataset, 227 rows.
+   */
+  rotations?: TransportRotationKey[];
+}
+
+/** One `TransportRotation.dbc` row: `TimeIndex` and `Rot` (x, y, z, w). */
+export interface TransportRotationKey {
+  time: number;
+  x: number;
+  y: number;
+  z: number;
+  w: number;
 }
 
 /**
@@ -70,6 +84,39 @@ export function parseTransportPaths(payload: Uint8Array): Map<number, TransportP
   return paths;
 }
 
+/**
+ * 11.01: `TransportRotation.dbc` onto the paths, by `GameObjectsID` (the template entry, as TransportID is). Rows are
+ * kept in time order — the order Wow.exe walks them in (0x0070dc10), which is every entry's table order in this dataset.
+ * An entry with rotations and no TransportAnimation rows gets a path with no frames: it stands, and is not turned.
+ */
+export function addTransportRotations(paths: Map<number, TransportPath>, payload: Uint8Array): Map<number, TransportPath> {
+  const data = Buffer.from(payload.buffer, payload.byteOffset, payload.byteLength);
+  const dbc = openDbc(data, "TransportRotation");
+  for (const row of dbc.rows()) {
+    const entry = dbc.int(row, "GameObjectsID");
+    if (entry <= 0) continue;
+    const key: TransportRotationKey = {
+      time: dbc.int(row, "TimeIndex"),
+      x: dbc.float(row, "Rot", 0),
+      y: dbc.float(row, "Rot", 1),
+      z: dbc.float(row, "Rot", 2),
+      w: dbc.float(row, "Rot", 3),
+    };
+    if (![key.x, key.y, key.z, key.w].every(Number.isFinite)) continue;
+    let path = paths.get(entry);
+    if (!path) {
+      path = { entry, period: 0, frames: [] };
+      paths.set(entry, path);
+    }
+    (path.rotations ??= []).push(key);
+  }
+  for (const path of paths.values()) path.rotations?.sort((left, right) => left.time - right.time);
+  return paths;
+}
+
 export async function loadTransportPaths(dbcDirectory: string): Promise<Map<number, TransportPath>> {
-  return parseTransportPaths(await readFile(`${dbcDirectory}/TransportAnimation.dbc`));
+  const paths = parseTransportPaths(await readFile(`${dbcDirectory}/TransportAnimation.dbc`));
+  // A dataset without the table (a classic-era layout) keeps its paths unturned, as before.
+  const rotations = await readFile(`${dbcDirectory}/TransportRotation.dbc`).catch(() => undefined);
+  return rotations === undefined ? paths : addTransportRotations(paths, rotations);
 }

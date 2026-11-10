@@ -541,6 +541,18 @@ export const SETTING_DEFINITIONS: readonly SettingDefinition[] = [
     hint: "Включено — как в оригинале: в упор персонаж бьёт оружием, дальше стреляет «Автоматической стрельбой», если цель впереди и персонаж стоит. Для охотников.",
   },
   {
+    // 5.05 (11.11): the client's autoDismount (registered at 0x0051da52 with "1", pointer 0x00bd08fc; the stock
+    // options' «Автоматически спешиваться»). 0x0071b0c0 reads it before a mounted cast dismounts (world/MountedCastRule.ts).
+    id: "autoDismount", label: "Автоматически спешиваться", group: "Игра", kind: "boolean", fallback: true,
+    hint: "Включено — как в оригинале: заклинание верхом сначала снимает с коня. Выключено — заклинание верхом отклоняется.",
+  },
+  {
+    // 5.05 (11.11): the client's autoDismountFlying (registered at 0x0051da77 with "0", pointer 0x00bd0900): the same
+    // dismount in flight. Off, a cast on a flying mount in the air is refused (NOT_MOUNTED) instead of dropping the rider.
+    id: "autoDismountFlying", label: "Спешиваться в полёте", group: "Игра", kind: "boolean", fallback: false,
+    hint: "Выключено — как в оригинале по умолчанию: заклинание на летающем коне в воздухе отклоняется, персонаж не падает.",
+  },
+  {
     // DEC-A 3.11: the client's assistAttack (registered beside autoRangedCombat with "0": default string
     // 0x009e14a0, pointer 0x00bd0918; the stock Combat panel's ASSIST_ATTACK). On: AssistUnit (Wow.exe
     // 0x00525eb0) attacks the unit it selected (0x006e4950) — native ASSISTTARGET and the stock /assist.

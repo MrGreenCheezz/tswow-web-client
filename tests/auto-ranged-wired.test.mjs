@@ -155,7 +155,8 @@ test("L18 5.05: the wired default — at range the attack shoots, in reach it sw
   client.selectTarget(A);
   connection.sent.length = 0;
   client.startAttack(); // the right click on an enemy, the attack button, /startattack
-  assert.deepEqual(combat(connection), ["SHEATH 2", "CMSG_CAST_SPELL"], "no swing from StartAttack: the first tick shoots");
+  assert.deepEqual(combat(connection), ["CMSG_CAST_SPELL", "SHEATH 2"], "no swing from StartAttack: the first tick shoots; " +
+    "5.05 (11.11): the bow drawn after the packet (0x00805330 → 0x007fa2e0)");
   assert.equal(client.autoRanged.active, true);
   assert.equal(client.autoRanged.wantedSpellId, AUTO_SHOT);
   assert.equal(timer.started, 1);
@@ -171,7 +172,7 @@ test("L18 5.05: the wired default — at range the attack shoots, in reach it sw
   connection.sent.length = 0;
   place(client, A, 15);
   client.autoRanged.tick();
-  assert.deepEqual(combat(connection), ["CMSG_ATTACK_STOP", "SHEATH 2", "CMSG_CAST_SPELL"]);
+  assert.deepEqual(combat(connection), ["CMSG_ATTACK_STOP", "CMSG_CAST_SPELL", "SHEATH 2"]); // 5.05 (11.11)
   assert.equal(client.autoRanged.active, true);
   client.close();
 });
@@ -256,7 +257,8 @@ test("L18 5.05: Tab while the mode shoots cancels the wanted shot and aims it at
   client.startAttack();
   connection.sent.length = 0;
   client.selectTarget(B);
-  assert.deepEqual(combat(connection), ["CMSG_CANCEL_AUTO_REPEAT_SPELL", "CMSG_SET_SELECTION", "SHEATH 2", "CMSG_CAST_SPELL"]);
+  // 5.05 (11.11): the bow is already out — the setter 0x00736d30 sends no second SHEATH 2.
+  assert.deepEqual(combat(connection), ["CMSG_CANCEL_AUTO_REPEAT_SPELL", "CMSG_SET_SELECTION", "CMSG_CAST_SPELL"]);
   assert.equal(client.autoRanged.active, true);
   assert.equal(client.autoRanged.wantedSpellId, AUTO_SHOT);
   client.close();

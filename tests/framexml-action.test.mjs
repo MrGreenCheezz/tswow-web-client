@@ -299,7 +299,9 @@ test("IsCurrentAction answers the attack button by auto-attack, 1 or nil (Wow.ex
   assert.deepEqual(api("IsCurrentAction", 4), [undefined], "a spell that is not the attack is not current by melee");
 });
 
-test("START/STOP_AUTOREPEAT_SPELL fire once per change, each followed by ACTIONBAR_UPDATE_STATE", () => {
+test("START/STOP_AUTOREPEAT_SPELL fire once per change, with no ACTIONBAR_UPDATE_STATE of their own (1.14, 11.11)", () => {
+  // Wow.exe raises ACTIONBAR_UPDATE_STATE only from 0x0053b480 (the cast path) and the bar's 0x005abbc0 — never from
+  // the repeat's setters 0x7fe140/0x800a00 or its stop 0x807560 (.runtime/re-2026-11-11/combat/refs2.txt).
   const fired = [];
   const edge = new FrameXmlAutoRepeatEdge();
   edge.attach({ fire(event) { fired.push(event); return 1; } }, undefined);
@@ -307,15 +309,14 @@ test("START/STOP_AUTOREPEAT_SPELL fire once per change, each followed by ACTIONB
   assert.deepEqual(fired, []);
   edge.sync(75);
   edge.sync(75);
-  assert.deepEqual(fired, ["START_AUTOREPEAT_SPELL", "ACTIONBAR_UPDATE_STATE"]);
+  assert.deepEqual(fired, ["START_AUTOREPEAT_SPELL"]);
   edge.sync(5019);
-  assert.deepEqual(fired.slice(2), ["START_AUTOREPEAT_SPELL", "ACTIONBAR_UPDATE_STATE"],
-    "a new repeating spell starts again (0x800a00)");
+  assert.deepEqual(fired.slice(1), ["START_AUTOREPEAT_SPELL"], "a new repeating spell starts again (0x800a00)");
   edge.sync(undefined);
-  assert.deepEqual(fired.slice(4), ["STOP_AUTOREPEAT_SPELL", "ACTIONBAR_UPDATE_STATE"]);
+  assert.deepEqual(fired.slice(2), ["STOP_AUTOREPEAT_SPELL"]);
   edge.detach();
   edge.sync(75);
-  assert.equal(fired.length, 6, "detached: silent");
+  assert.equal(fired.length, 3, "detached: silent");
 
   const late = [];
   const mounted = new FrameXmlAutoRepeatEdge();

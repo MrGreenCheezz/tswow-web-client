@@ -449,3 +449,40 @@ test("04.11: the offset chased at its rate, the first frame and no rate standing
   chase.step({ x: 1, y: 0, z: 0 }, 5, 0.016, out);
   assert.equal(out.x, 1, "a reset stands on it");
 });
+
+// 11.11: 0x00759d80 chases the eye point with the vehicle's position taken off (0x00759bd0 for a unit carrier, then
+// 0x00759b50 back): a passenger seat with CameraPosChaseRate and no CameraOffset (16 of the dataset's 19) lags its own place
+// on the vehicle; the vehicle's own motion does not lag, and a CAN_CONTROL seat watches the vehicle.
+test("11.11: a passenger's place against its vehicle is chased at CameraPosChaseRate", () => {
+  const RIDER = 3105;
+  const DRIVER = 3106;
+  const chasing = vehicleCatalogFrom({
+    ...ANSWER,
+    vehicles: [vehicleRow({ id: SIEGE, seats: [RIDER, DRIVER] })],
+    seats: [seatRow({ id: RIDER, camera: { CameraPosChaseRate: 5 } }),
+      seatRow({ id: DRIVER, flags: S.CAN_CONTROL, camera: { CameraPosChaseRate: 5 } })],
+  });
+  const run = (slot) => {
+    const tracker = new VehicleCameraTracker();
+    const scene = world({ slot });
+    const self = scene.objects.get(SELF);
+    const engine = scene.objects.get(ENGINE);
+    self.position = { x: 2, y: 0, z: 0, orientation: 0 };
+    const rig = { distance: 10, pivotHeight: 0 };
+    for (let now = 0; now <= 3000; now += 16) tracker.update(scene, chasing, rig, now);
+    assert.equal(rig.lensX ?? 0, 0, "settled on the seat");
+    // The vehicle turns a quarter: the seat swings from +x to +y, and the vehicle itself moves 5 yards.
+    engine.position = { x: 5, y: 0, z: 0, orientation: Math.PI / 2 };
+    self.position = { x: 5, y: 2, z: 0, orientation: Math.PI / 2 };
+    rig.pivotHeight = 0;
+    tracker.update(scene, chasing, rig, 3016);
+    return rig;
+  };
+  const rider = run(0);
+  assert.ok(rider.lensX > 1.9 && rider.lensX < 2, `the eye stays near where the seat was, against the vehicle (x): ${rider.lensX}`);
+  assert.ok(rider.lensY < -1.9, `and lags the swing (y): ${rider.lensY}`);
+  // A CAN_CONTROL seat's camera watches the vehicle, which rides nothing: its own place is chased (5 yards along x).
+  const driver = run(1);
+  assert.ok(driver.lensX < -4.9, `the vehicle's own move lags: ${driver.lensX}`);
+  close(driver.lensY ?? 0, 0);
+});

@@ -62,6 +62,14 @@ export interface UnitActionPayload {
   swingSeconds?: number | undefined;
 }
 
+/**
+ * 5.05 (11.11): a semantic spell pose (precast, cast, channel) — what Wow.exe draws through a spell kit (0x0073b140), whose
+ * play flags may carry the sheath's `keep` bit (world/AnimationSheathRule.ts); swings, shots and emotes never do.
+ */
+export function isCastAction(action: UnitAction | undefined): boolean {
+  return action === "precast" || action === "cast" || action === "channel";
+}
+
 /** What the renderer is showing from one unit's queue, and on which part of the body. */
 export interface ShownUnitAction {
   entry: UnitActionEntry<UnitActionPayload>;

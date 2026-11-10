@@ -1,144 +1,345 @@
-import type { GlueLuaVm } from "./GlueLua.js";
+import { GlueLuaRaise, type GlueLuaVm } from "./GlueLua.js";
+import { GlueAddonStateList, type GlueAddonFiles } from "./GlueAddonStates.js";
+import { compareFrameXmlAddonTitles, frameXmlAddonMetadata } from "../framexml/FrameXmlAddonMetadata.js";
+import {
+  FRAMEXML_CURRENT_INTERFACE, frameXmlAddonDependencies, frameXmlAddonInterface,
+} from "../framexml/FrameXmlAddonStates.js";
+import type { FrameXmlInstalledClientAddon } from "../framexml/FrameXmlClientAddons.js";
 
 /**
- * «Модификации» on the character-select screen (10.09): the stock `AddonList.lua` over the add-ons
- * this gateway serves (`/client/addons`, the same list the in-world interface loads).
+ * «Модификации» on the character-select screen (10.09; 3.46, 11.11): the stock `AddonList.lua` over the add-ons the
+ * gateway lists (`/client/addons`' `installed`, the client's Interface/AddOns), with the glue C API as Wow.exe 3.3.5a
+ * 12340 answers it (read-only Ghidra, .runtime/re-2026-11-11/glue; the glue table at 0x00ac3f60):
  *
- * The glue C API as `AddonList.lua` reads it: `GetNumAddOns()`, `GetAddOnInfo(i)` →
- * `name, title, notes, url, loadable, reason, security, newVersion`, `GetAddOnEnableState(character,
- * i)` → 0/1/2, `EnableAddOn/DisableAddOn([character,] i | name)`, `Enable/DisableAllAddOns`,
- * `SaveAddOns()` (OK) and `ResetAddOns()` (Cancel). One state for all characters: a per-character
- * choice is accepted and applied to all of them.
+ * - `GetNumAddOns()` (0x511200) and `GetAddOnInfo(index)` (0x4dc560; "Usage: GetAddOnInfo(index)", an index out of
+ *   range "AddOn index must be in the range of 1 to %d") → name, title, notes, url, loadable (1 or nil), reason,
+ *   security, newVersion (1 or nil). The list is ordered by title (0x5f79a0), the title and notes are the TOC's (FrameXmlAddonMetadata.ts).
+ *   `loadable`/`reason` are 0x5f7e90 with load-on-demand not allowed and no character: MISSING, DISABLED (off for
+ *   every character), INCOMPATIBLE (`## Interface` below 20000), INTERFACE_VERSION (not 30300 while
+ *   `checkAddonVersion` is on), a dependency's reason as DEP_…, and last DEMAND_LOADED for a load-on-demand add-on.
+ *   Security is INSECURE for an add-on of the AddOns folder; `url` and `newVersion` nil (nothing here has them).
+ * - `GetAddOnEnableState(character, index)` (0x4dc7c0), `EnableAddOn`/`DisableAddOn(character, index)` (0x4dc8a0,
+ *   0x4dc9b0): the first argument a string or nil (nil — every character), the second an index; otherwise
+ *   "Usage: …(\"character\", index)". `EnableAllAddOns`/`DisableAllAddOns(character)` (0x4dc960, 0x4dca70),
+ *   `SaveAddOns()` (0x5f76a0), `ResetAddOns()` (0x5f91e0(0)) — the per-character states of GlueAddonStates.ts.
+ * - `IsAddonVersionCheckEnabled()` (0x4dcae0 → 0x5f4ca0) is the `checkAddonVersion` CVar; `SetAddonVersionCheck(v)`
+ *   (0x4dcb20 → 0x5f4cb0) sets it "1" or "0" from v read as a flag (0x815500: nil false, a number non-zero).
  *
- * What is saved is the list of switched-off names, per gateway origin, in this browser. Whether
- * the world then skips them is the in-world mount's business (another lane); until it reads this
- * list the switch is remembered but changes nothing in the world.
+ * As the character enters the world the states for it and the switch are handed to the world's add-on loader
+ * (`glueWorldAddonStates`), as Wow.exe's world reads the same tables (0x5f7d70 for the current character).
  */
 
-export interface GlueAddonEntry {
-  readonly name: string;
-  readonly loadOnDemand: boolean;
+export const GLUE_ADDONS_STORAGE_PREFIX = "webclient-addons-v1";
+
+/** The list as the gateway gives it (FrameXmlClientAddons.ts). */
+export interface GlueAddonListing {
+  readonly installed: readonly FrameXmlInstalledClientAddon[];
+  /** Config.wtf's `checkAddonVersion` (Wow.exe default on). */
+  readonly checkAddonVersion: boolean;
 }
 
-export const GLUE_ADDONS_STORAGE_PREFIX = "webclient.glue.addons:";
+/** Who the states belong to: `WTF/Account/<account>/<realm>/<character>`. */
+export interface GlueAddonIdentity {
+  readonly account: string;
+  readonly realm: string;
+  /** The realm's characters, in list order. */
+  readonly characters: readonly string[];
+}
 
 export interface GlueAddonListOptions {
   /** The gateway's add-on list; a failure is an empty list, as a gateway without add-ons is. */
-  readonly load: () => Promise<readonly GlueAddonEntry[]>;
+  readonly load: () => Promise<GlueAddonListing>;
+  /** An add-on's TOC text (Interface/AddOns/<name>/<name>.toc); undefined — not read. */
+  readonly readToc?: (name: string) => Promise<string | undefined>;
   readonly storage?: Pick<Storage, "getItem" | "setItem"> | null;
-  /** Gateway origin: the saved choice belongs to one server's add-ons. */
-  readonly origin: string;
+  /** The logged-in account, the chosen realm and its characters; undefined before the character list. */
+  readonly identity?: () => GlueAddonIdentity | undefined;
+  /** `GetLocale()`: which `## Title-xxXX` is the client's. */
+  readonly locale?: string;
+}
+
+/** The glue CVar table, for `checkAddonVersion` (GlueApi's `#cvars`, kept by GlueCVarStore). */
+export interface GlueAddonCVars {
+  get(name: string): string | undefined;
+  set(name: string, value: string): void;
+}
+
+interface GlueAddonEntry {
+  readonly name: string;
+  readonly title: string;
+  readonly notes: string | undefined;
+  readonly loadOnDemand: boolean;
+  readonly toc: string | undefined;
+}
+
+/** What the world loader reads of the glue's states for the character entering it. */
+export interface GlueWorldAddonStates {
+  readonly character: string;
+  /** Lower-case names of the installed add-ons and whether they are on for the character. */
+  readonly enabled: ReadonlyMap<string, boolean>;
+  readonly checkAddonVersion: boolean;
+}
+
+let worldAddonStates: GlueWorldAddonStates | undefined;
+
+/** The states the glue handed over with the character now in the world; undefined — none (another route in). */
+export function glueWorldAddonStates(): GlueWorldAddonStates | undefined {
+  return worldAddonStates;
+}
+
+export function setGlueWorldAddonStates(states: GlueWorldAddonStates | undefined): void {
+  worldAddonStates = states;
+}
+
+const VERSION_CHECK_CVAR = "checkAddonVersion";
+const OLDEST_INTERFACE = 20000;
+
+function upperAscii(text: string): string {
+  return text.replace(/[a-z]/g, (letter) => letter.toUpperCase());
+}
+
+/** Lua 5.1's lua_isnumber + tonumber: a number, or a string that reads as one. */
+function luaNumber(value: unknown): number | undefined {
+  if (typeof value === "number") return value;
+  if (typeof value !== "string") return undefined;
+  const text = value.trim();
+  if (/^0x[0-9a-f]+$/i.test(text)) return Number.parseInt(text, 16);
+  if (!/^[-+]?(\d+\.?\d*|\.\d+)(e[-+]?\d+)?$/i.test(text)) return undefined;
+  return Number(text);
+}
+
+/** The x87 store the client rounds an index with: to nearest, ties to even. */
+function roundEven(value: number): number {
+  const floor = Math.floor(value);
+  const difference = value - floor;
+  if (difference < 0.5) return floor;
+  if (difference > 0.5) return floor + 1;
+  return floor % 2 === 0 ? floor : floor + 1;
+}
+
+/**
+ * 0x815500: a Lua value as a flag — nil false, a boolean itself, a number non-zero; a string by 0x815400: first
+ * character 0/F/N/f/n off, 1–9/T/Y/t/y on, else "off" and "disabled" off, "on" and "enabled" on (any case, 0xa09e84,
+ * 0xa09e88); anything else the fallback.
+ */
+function luaFlag(value: unknown, fallback: boolean): boolean {
+  if (value === undefined || value === null) return false;
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value !== 0;
+  if (typeof value === "string") {
+    const first = value[0] ?? "";
+    if ("0FNfn".includes(first) && first !== "") return false;
+    if ("123456789TYty".includes(first) && first !== "") return true;
+    const word = value.toLowerCase();
+    if (word === "off" || word === "disabled") return false;
+    if (word === "on" || word === "enabled") return true;
+  }
+  return fallback;
 }
 
 export class GlueAddonList {
   readonly #options: GlueAddonListOptions;
   #addons: readonly GlueAddonEntry[] = [];
-  /** Lower-cased names switched off, as saved. */
-  #saved = new Set<string>();
-  /** The same, with the dialog's unsaved clicks. */
-  #pending = new Set<string>();
+  #listing: GlueAddonListing = { installed: [], checkAddonVersion: true };
+  #states: GlueAddonStateList;
+  #identity: string | undefined;
+  #cvars: GlueAddonCVars | undefined;
   #ready: Promise<void> | undefined;
 
   constructor(options: GlueAddonListOptions) {
     this.#options = options;
-    this.#saved = this.#read();
-    this.#pending = new Set(this.#saved);
+    this.#states = this.#newStates(undefined);
   }
 
-  /** Starts the one request; safe to call again. */
+  /** Starts the one request (and the TOC reads); safe to call again. */
   load(): Promise<void> {
-    this.#ready ??= this.#options.load()
-      .then((addons) => { this.#addons = addons; })
-      .catch(() => { this.#addons = []; });
+    this.#ready ??= this.#load();
     return this.#ready;
   }
 
-  get addons(): readonly GlueAddonEntry[] {
+  async #load(): Promise<void> {
+    let listing: GlueAddonListing;
+    try {
+      listing = await this.#options.load();
+    } catch {
+      listing = { installed: [], checkAddonVersion: true };
+    }
+    const locale = this.#options.locale ?? "ruRU";
+    const addons = await Promise.all(listing.installed.map(async (addon): Promise<GlueAddonEntry> => {
+      let toc: string | undefined;
+      try { toc = await this.#options.readToc?.(addon.name); } catch { toc = undefined; }
+      const metadata = toc === undefined ? undefined : frameXmlAddonMetadata(toc, addon.name, locale);
+      return {
+        name: addon.name, title: metadata?.get("title") ?? addon.name, notes: metadata?.get("notes"),
+        loadOnDemand: addon.loadOnDemand, toc,
+      };
+    }));
+    this.#listing = listing;
+    // 0x5f79a0: the list in title order (0x5f7910 compares the titles).
+    this.#addons = addons.sort((left, right) => compareFrameXmlAddonTitles(left.title, right.title));
+    this.#sync(true);
+  }
+
+  get addons(): readonly { readonly name: string; readonly loadOnDemand: boolean }[] {
     return this.#addons;
   }
 
-  /** Names switched off as saved — what a world mount would skip. */
-  disabledNames(): readonly string[] {
-    return this.#addons.filter((addon) => this.#saved.has(addon.name.toLowerCase())).map((addon) => addon.name);
+  #fileKey(identity: GlueAddonIdentity, character: string): string {
+    return JSON.stringify([GLUE_ADDONS_STORAGE_PREFIX, upperAscii(identity.account), identity.realm, character]);
   }
 
-  #key(): string {
-    return `${GLUE_ADDONS_STORAGE_PREFIX}${this.#options.origin}`;
+  #newStates(identity: GlueAddonIdentity | undefined): GlueAddonStateList {
+    const storage = this.#options.storage;
+    const files: GlueAddonFiles = {
+      read: (character) => {
+        if (!identity) return undefined;
+        try { return storage?.getItem(this.#fileKey(identity, character)) ?? undefined; } catch { return undefined; }
+      },
+      write: (character, text) => {
+        if (!identity) return;
+        try {
+          storage?.setItem(this.#fileKey(identity, character), text);
+        } catch {
+          // Site data blocked: the choice lasts for this page, which is all a locked browser allows.
+        }
+      },
+    };
+    // The account's AddOns.txt is the gateway's profile: its explicit lines (an older gateway: its off ones).
+    const account = (): ReadonlyMap<string, boolean> | undefined => {
+      const lines = new Map<string, boolean>();
+      for (const addon of this.#listing.installed) {
+        const state = addon.profileState ?? (addon.enabled ? undefined : false);
+        if (state !== undefined) lines.set(addon.name.toLowerCase(), state);
+      }
+      return lines.size > 0 ? lines : undefined;
+    };
+    const states = new GlueAddonStateList(files, account);
+    states.setAddons(this.#listing.installed.map((addon) => ({ name: addon.name, defaultState: addon.defaultState ?? true })));
+    return states;
   }
 
-  #read(): Set<string> {
-    try {
-      const parsed: unknown = JSON.parse(this.#options.storage?.getItem(this.#key()) ?? "[]");
-      return new Set(Array.isArray(parsed)
-        ? parsed.filter((entry): entry is string => typeof entry === "string").map((entry) => entry.toLowerCase())
-        : []);
-    } catch {
-      return new Set();
+  /** The account and realm decide the files; the realm's characters decide the tables (0x4e3ca0). */
+  #sync(rebuild = false): void {
+    const identity = this.#options.identity?.();
+    const key = identity ? JSON.stringify([upperAscii(identity.account), identity.realm]) : undefined;
+    if (rebuild || key !== this.#identity) {
+      this.#identity = key;
+      this.#states = this.#newStates(identity);
     }
+    this.#states.setCharacters(identity?.characters ?? []);
   }
 
-  /** 1-based index or a name, as the client takes either. */
-  #find(value: unknown): GlueAddonEntry | undefined {
-    if (typeof value === "string" && !/^\d+$/.test(value)) {
-      const wanted = value.toLowerCase();
-      return this.#addons.find((addon) => addon.name.toLowerCase() === wanted);
+  #versionCheck(): boolean {
+    const value = this.#cvars?.get(VERSION_CHECK_CVAR);
+    if (value === undefined) return this.#listing.checkAddonVersion;
+    const number = Number.parseInt(value.trim(), 10);
+    return Number.isFinite(number) && number !== 0;
+  }
+
+  /** 0x5f7e90(addon, allowLoD, …, no character): the reason it cannot load, or undefined when it can. */
+  #reason(lower: string, allowLoD: boolean, checking: Set<string>): string | undefined {
+    const addon = this.#addons.find((entry) => entry.name.toLowerCase() === lower);
+    if (!addon) return "MISSING";
+    if (checking.has(lower)) return undefined;
+    if (this.#states.state(lower) === 0) return "DISABLED";
+    if (addon.toc !== undefined) {
+      const version = frameXmlAddonInterface(addon.toc);
+      if (version < OLDEST_INTERFACE) return "INCOMPATIBLE";
+      if (version !== FRAMEXML_CURRENT_INTERFACE && this.#versionCheck()) return "INTERFACE_VERSION";
+      checking.add(lower);
+      try {
+        // Nothing is loaded on the glue screens (0x5f7630), so every dependency is judged, load-on-demand allowed.
+        for (const dependency of frameXmlAddonDependencies(addon.toc)) {
+          const reason = this.#reason(dependency.toLowerCase(), true, checking);
+          if (reason !== undefined) return reason.startsWith("DEP_") ? reason : `DEP_${reason}`;
+        }
+      } finally {
+        checking.delete(lower);
+      }
     }
-    const index = Math.trunc(Number(value));
-    return Number.isFinite(index) ? this.#addons[index - 1] : undefined;
+    return !allowLoD && addon.loadOnDemand ? "DEMAND_LOADED" : undefined;
   }
 
-  /** `EnableAddOn(character, i)` and `EnableAddOn(i)` both exist; the index is the last argument. */
-  #target(args: readonly unknown[]): GlueAddonEntry | undefined {
-    return this.#find(args.length >= 2 ? args[1] : args[0]);
+  /** The index argument at `at`, or the usage error; then the range check. */
+  #indexed(args: readonly unknown[], at: number, usage: string): GlueAddonEntry {
+    const number = luaNumber(args[at]);
+    if (number === undefined) throw new GlueLuaRaise(usage);
+    const addon = this.#addons[roundEven(number) - 1];
+    if (!addon) throw new GlueLuaRaise(`AddOn index must be in the range of 1 to ${this.#addons.length}`);
+    return addon;
   }
 
-  install(vm: GlueLuaVm): void {
+  /** `(character, index)`: a string, number or nil first — anything else, or no argument, is the usage error. */
+  #characterIndexed(args: readonly unknown[], usage: string): { character: string | undefined; addon: GlueAddonEntry } {
+    const first = args[0];
+    const string = typeof first === "string" || typeof first === "number";
+    if (!string && (args.length === 0 || first !== undefined)) throw new GlueLuaRaise(usage);
+    const addon = this.#indexed(args, 1, usage);
+    return { character: string ? String(first) : undefined, addon };
+  }
+
+  /** The states and the switch for the character entering the world (0x5f7d70(addon, character, 1)). */
+  handOver(character: string): void {
+    this.#sync();
+    const enabled = new Map<string, boolean>();
+    for (const addon of this.#addons) enabled.set(addon.name.toLowerCase(), this.#states.state(addon.name, character) !== 0);
+    setGlueWorldAddonStates(Object.freeze({ character, enabled, checkAddonVersion: this.#versionCheck() }));
+  }
+
+  install(vm: GlueLuaVm, cvars?: GlueAddonCVars): void {
+    this.#cvars = cvars;
     vm.registerGlobal("GetNumAddOns", () => [this.#addons.length]);
     vm.registerGlobal("GetAddOnInfo", (args) => {
-      const addon = this.#find(args[0]);
-      if (!addon) return [];
-      // name, title, notes, url, loadable, reason, security, newVersion. The route names the folder
-      // only, so the title is the name; a load-on-demand add-on is not loaded at start-up.
-      return [
-        addon.name, addon.name, undefined, undefined,
-        !addon.loadOnDemand, addon.loadOnDemand ? "DEMAND_LOADED" : undefined, "INSECURE", false,
-      ];
+      this.#sync();
+      const addon = this.#indexed(args, 0, "Usage: GetAddOnInfo(index)");
+      const reason = this.#reason(addon.name.toLowerCase(), false, new Set());
+      // `loadable` and `newVersion` are pushed as 1 or nil (0x84e2a0(1.0) / 0x84e280).
+      return [addon.name, addon.title, addon.notes, undefined, reason === undefined ? 1 : undefined, reason, "INSECURE", undefined];
     });
     vm.registerGlobal("GetAddOnEnableState", (args) => {
-      const addon = this.#find(args.length >= 2 ? args[1] : args[0]);
-      if (!addon) return [0];
-      return [this.#pending.has(addon.name.toLowerCase()) ? 0 : 2];
+      this.#sync();
+      const { character, addon } = this.#characterIndexed(args, 'Usage: GetAddOnEnableState("character", index)');
+      return [this.#states.state(addon.name, character)];
     });
-    vm.registerGlobal("GetAddOnDependencies", () => []);
+    // 0x4ddac0: the TOC's dependency names, by index only ("Usage: GetAddOnDependencies(index)").
+    vm.registerGlobal("GetAddOnDependencies", (args) => {
+      const addon = this.#indexed(args, 0, "Usage: GetAddOnDependencies(index)");
+      return addon.toc === undefined ? [] : frameXmlAddonDependencies(addon.toc);
+    });
     vm.registerGlobal("EnableAddOn", (args) => {
-      const addon = this.#target(args);
-      if (addon) this.#pending.delete(addon.name.toLowerCase());
+      this.#sync();
+      const { character, addon } = this.#characterIndexed(args, 'Usage: EnableAddOn("character", index)');
+      this.#states.set(addon.name, character, true);
       return [];
     });
     vm.registerGlobal("DisableAddOn", (args) => {
-      const addon = this.#target(args);
-      if (addon) this.#pending.add(addon.name.toLowerCase());
+      this.#sync();
+      const { character, addon } = this.#characterIndexed(args, 'Usage: DisableAddOn("character", index)');
+      this.#states.set(addon.name, character, false);
       return [];
     });
-    vm.registerGlobal("EnableAllAddOns", () => {
-      this.#pending.clear();
+    const all = (args: readonly unknown[], enabled: boolean): [] => {
+      this.#sync();
+      const first = args[0];
+      const character = typeof first === "string" || typeof first === "number" ? String(first) : undefined;
+      for (const addon of this.#addons) this.#states.set(addon.name, character, enabled);
       return [];
-    });
-    vm.registerGlobal("DisableAllAddOns", () => {
-      for (const addon of this.#addons) this.#pending.add(addon.name.toLowerCase());
-      return [];
-    });
+    };
+    vm.registerGlobal("EnableAllAddOns", (args) => all(args, true));
+    vm.registerGlobal("DisableAllAddOns", (args) => all(args, false));
     vm.registerGlobal("SaveAddOns", () => {
-      this.#saved = new Set(this.#pending);
-      try {
-        this.#options.storage?.setItem(this.#key(), JSON.stringify([...this.#saved].sort()));
-      } catch {
-        // Site data blocked: the choice lasts for this page, which is all a locked browser allows.
-      }
+      this.#sync();
+      this.#states.save();
       return [];
     });
     vm.registerGlobal("ResetAddOns", () => {
-      this.#pending = new Set(this.#saved);
+      this.#sync();
+      this.#states.reset();
+      return [];
+    });
+    vm.registerGlobal("IsAddonVersionCheckEnabled", () => [this.#versionCheck() ? 1 : undefined]);
+    vm.registerGlobal("SetAddonVersionCheck", (args) => {
+      this.#cvars?.set(VERSION_CHECK_CVAR, luaFlag(args[0], true) ? "1" : "0");
       return [];
     });
   }
@@ -148,4 +349,5 @@ export class GlueAddonList {
 export const GLUE_ADDON_GLOBALS: ReadonlySet<string> = new Set([
   "GetNumAddOns", "GetAddOnInfo", "GetAddOnEnableState", "GetAddOnDependencies", "EnableAddOn",
   "DisableAddOn", "EnableAllAddOns", "DisableAllAddOns", "SaveAddOns", "ResetAddOns",
+  "IsAddonVersionCheckEnabled", "SetAddonVersionCheck",
 ]);

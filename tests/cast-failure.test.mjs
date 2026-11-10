@@ -185,9 +185,10 @@ test("the world prints the player's and the pet's refusals with their tails", as
       { message: "Не хватает компонента: предмет.", error: true },
     ]);
     assert.equal(connection.sentOf(OPCODES.CMSG_ITEM_QUERY_SINGLE).length, 1);
+    // 3.47 (11.11): Wow.exe 0x00805610 — OUT_OF_RANGE is the pet's own row 0x163, the rest the sentence; no prefix.
     assert.deepEqual(petMessages, [
-      { text: "Питомец: Вне зоны действия.", error: true },
-      { text: "Питомец: Вы должны находиться в зоне \"Зангартопь\".", error: true },
+      { text: "Ваш питомец слишком далеко.", error: true },
+      { text: "Вы должны находиться в зоне \"Зангартопь\".", error: true },
     ], "the stock words, no spell id or code, and nothing for DONT_REPORT");
   } finally {
     client.close();

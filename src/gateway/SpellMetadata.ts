@@ -421,6 +421,12 @@ export interface SpellMetadata {
   effectMechanic?: number[];
   effectSpellClassMask?: number[][];
   shapeshiftFormFlags?: number;
+  /**
+   * 3.57 (11.11): the `SpellRuneCost.dbc` row the spell's `RuneCostID` names — `[blood, unholy, frost]` — which
+   * Wow.exe's rune check reads (0x005ee5b0, src/browser/framexml/FrameXmlActionUsableGates.ts). Only on a row whose
+   * RuneCostID names a row; optional, no new key: without it (an older gateway, no table) the rune gate stays open.
+   */
+  runeCost?: number[];
   procTypeMask?: number;
   procCharges?: number;
   stackAmount?: number;
@@ -431,6 +437,16 @@ export interface SpellMetadata {
   effectPointsPerCombo?: number[];
   effectDamageMultiplier?: number[];
   effectBonusMultiplier?: number[];
+  /**
+   * 3.43 (11.11, v=21): the caster-level growth Wow.exe's description writer adds (src/browser/ui/SpellTextCaster.ts):
+   * `EffectRealPointsPerLevel[3]` (record +0x134, floats; 0x007ff770), `BaseLevel` (+0x98) and `MaxLevel` (+0x94), and
+   * the SpellDuration row's `DurationPerLevel` (row +0x8; 0x00800a70). Absent from an older gateway, which the browser
+   * reads as «no growth», as before.
+   */
+  effectRealPointsPerLevel?: number[];
+  baseLevel?: number;
+  maxLevel?: number;
+  durationPerLevel?: number;
 }
 
 /** `MAX_SPELL_EFFECTS`: every effect column in this table is three wide. */
@@ -500,6 +516,7 @@ export function parseSpellMetadata(
   shapeshiftFormPayload?: Uint8Array,
   dispelTypePayload?: Uint8Array,
   summonPropertiesPayload?: Uint8Array, // L13 (v=17)
+  runeCostPayload?: Uint8Array, // 3.57 (11.11)
 ): Map<number, SpellMetadata> {
   const view = (payload: Uint8Array): Buffer =>
     Buffer.from(payload.buffer, payload.byteOffset, payload.byteLength);
@@ -514,19 +531,21 @@ export function parseSpellMetadata(
     ? parseDispelTypeNames(dispelTypePayload, process.env["CLIENT_LOCALE"] ?? "ruRU") : new Map<number, string>();
   // L13 (v=17): without the table no row gets `summonProperties` (unknown, not «no row»).
   const summonProperties = summonPropertiesPayload ? parseSummonProperties(summonPropertiesPayload) : undefined;
+  const runeCosts = runeCostPayload ? parseSpellRuneCosts(runeCostPayload) : undefined; // 3.57 (11.11)
 
   const iconPaths = new Map<number, string>();
   for (const row of icons.rows()) iconPaths.set(icons.id(row), icons.string(row, "TextureFilename"));
 
   // Both are indexes into small side tables, and both are resolved here rather than served raw:
   // a browser holding an index into a table it does not have is holding nothing.
-  const durations = new Map<number, { duration: number; maxDuration: number }>();
+  const durations = new Map<number, { duration: number; maxDuration: number; perLevel: number }>();
   if (durationPayload) {
     const table = openDbc(view(durationPayload), "SpellDuration");
     for (const row of table.rows()) {
       durations.set(table.id(row), {
         duration: table.int(row, "Duration"),
         maxDuration: table.int(row, "MaxDuration"),
+        perLevel: table.int(row, "DurationPerLevel"), // 3.43 (11.11, v=21)
       });
     }
   }
@@ -691,9 +710,10 @@ export function parseSpellMetadata(
       auraInterruptFlags: spells.int(row, "AuraInterruptFlags") >>> 0,
       mechanic: spells.int(row, "Mechanic"),
       effectMechanic: perEffect((effect) => spells.int(row, "EffectMechanic", effect)),
-      effectSpellClassMask: Array.from({ length: SPELL_EFFECTS }, (_, effect) =>
-        (["EffectSpellClassMaskA", "EffectSpellClassMaskB", "EffectSpellClassMaskC"] as const)
-          .map((column) => spells.int(row, column, effect) >>> 0)),
+      // 11.11 (v=21): effect-major, as the record lies (+0x1e8, +0x1f4, +0x200; Wow.exe 0x007fde80): WoWDBDefs'
+      // column A is effect 0's three words, not word 0 of the three effects. Before, the rows came out transposed.
+      effectSpellClassMask: (["EffectSpellClassMaskA", "EffectSpellClassMaskB", "EffectSpellClassMaskC"] as const)
+        .map((column) => [0, 1, 2].map((word) => spells.int(row, column, word) >>> 0)),
       // 12.10 (v=18): what the description writer reads besides (SpellMetadata.procTypeMask).
       procTypeMask: spells.int(row, "ProcTypeMask") >>> 0,
       procCharges: spells.int(row, "ProcCharges"),
@@ -705,6 +725,11 @@ export function parseSpellMetadata(
       effectPointsPerCombo: perEffect((effect) => finiteFloat(spells.float(row, "EffectPointsPerCombo", effect))),
       effectDamageMultiplier: perEffect((effect) => finiteFloat(spells.float(row, "EffectChainAmplitude", effect))),
       effectBonusMultiplier: perEffect((effect) => finiteFloat(spells.float(row, "EffectBonusCoefficient", effect))),
+      // 3.43 (11.11, v=21): the caster-level growth (SpellMetadata.effectRealPointsPerLevel).
+      effectRealPointsPerLevel: perEffect((effect) => finiteFloat(spells.float(row, "EffectRealPointsPerLevel", effect))),
+      baseLevel: spells.int(row, "BaseLevel"),
+      maxLevel: spells.int(row, "MaxLevel"),
+      durationPerLevel: durations.get(spells.int(row, "DurationIndex"))?.perLevel ?? 0,
     };
     const debuffType = debuffTypes.get(metadata.dispelType ?? 0);
     if (debuffType !== undefined) metadata.debuffType = debuffType;
@@ -714,6 +739,8 @@ export function parseSpellMetadata(
       const summon = spellSummonProperties(metadata.effects ?? [], metadata.effectMiscValueB ?? [], summonProperties);
       if (summon !== undefined) metadata.summonProperties = summon;
     }
+    const runeCost = runeCosts?.get(spells.int(row, "RuneCostID")); // 3.57 (11.11)
+    if (runeCost !== undefined) metadata.runeCost = runeCost;
     const variables = descriptionVariables.get(metadata.descriptionVariablesId);
     if (variables !== undefined) metadata.descriptionVariables = variables;
     const formEffect = metadata.effectAura.indexOf(36); // SPELL_AURA_MOD_SHAPESHIFT
@@ -748,8 +775,10 @@ export async function loadSpellMetadata(directory: string): Promise<Map<number, 
   const dispelTypes = await readFile(join(directory, "SpellDispelType.dbc")).catch(() => undefined);
   // L13 (v=17): optional too — without it a summon effect's title stays unknown in the browser.
   const summonProperties = await readFile(join(directory, "SummonProperties.dbc")).catch(() => undefined);
+  // 3.57 (11.11): optional too — without it no row carries `runeCost` and the browser's rune gate stays open.
+  const runeCosts = await readFile(join(directory, "SpellRuneCost.dbc")).catch(() => undefined);
   const metadata = parseSpellMetadata(spells, icons, durations, radii, categories, variables, ranges, castTimes,
-    shapeshiftForms, dispelTypes, summonProperties);
+    shapeshiftForms, dispelTypes, summonProperties, runeCosts);
   const toolNames = await loadTotemCategoryNames(directory);
   for (const spell of metadata.values()) {
     spell.requiredToolNames = (spell.requiredToolCategories ?? []).map((id) => toolNames.get(id) ?? "Профессиональный инструмент");
@@ -760,6 +789,24 @@ export async function loadSpellMetadata(directory: string): Promise<Map<number, 
     if (owner) metadata.set(effectId, { ...owner, id: effectId });
   }
   return metadata;
+}
+
+/**
+ * 3.57 (11.11): `SpellRuneCost.dbc` (3.3.5.12340: ID, RuneCost[3] blood/unholy/frost, RunicPower — 5 words a row,
+ * the row Wow.exe 0x005ee5b0 reads at +0x4/+0x8/+0xc): id → `[blood, unholy, frost]`. An unreadable table gives an
+ * empty map.
+ */
+export function parseSpellRuneCosts(payload: Uint8Array): Map<number, number[]> {
+  const result = new Map<number, number[]>();
+  const bytes = Buffer.from(payload.buffer, payload.byteOffset, payload.byteLength);
+  if (bytes.length < 20 || bytes.subarray(0, 4).toString("latin1") !== "WDBC") return result;
+  const rows = bytes.readUInt32LE(4);
+  if (bytes.readUInt32LE(8) !== 5 || bytes.readUInt32LE(12) !== 20 || 20 + rows * 20 > bytes.length) return result;
+  for (let index = 0; index < rows; index++) {
+    const at = 20 + index * 20;
+    result.set(bytes.readUInt32LE(at), [bytes.readInt32LE(at + 4), bytes.readInt32LE(at + 8), bytes.readInt32LE(at + 12)]);
+  }
+  return result;
 }
 
 /**

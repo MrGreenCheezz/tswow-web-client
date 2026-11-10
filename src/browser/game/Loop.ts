@@ -43,6 +43,7 @@ import { updateAreaTriggers } from "./AreaTriggers.js";
 import type { WorldObjectState, WorldPosition } from "../../world/WorldState.js";
 import { moverGuid, moverObject, moverState } from "../input/Mover.js";
 import { ViewSubjectTracker, viewIsOut, viewSubject } from "./ViewSubject.js"; // 11.02-I
+import { OwnAnimationSheath } from "./OwnAnimationSheath.js"; // 5.05 (11.11)
 import { FarSightLink } from "../../world/FarSight.js"; // 11.02-I
 import { vehicleCamera } from "./VehicleCamera.js"; // 11.02-GF3
 import { cameraViews } from "./CameraViews.js"; // DEC-B 3.11
@@ -304,7 +305,10 @@ export function captureRenderTelemetry(capturedAt = performance.now()): Readonly
 export function renderWorkerResultSteps(): RenderWorkerResultSteps {
   return {
     recordFrameInterval: (interval) => renderBenchmarkRuntime.recordFrameInterval(interval),
-    afterDraw: () => game.swingReactions?.afterDraw(),
+    afterDraw: () => {
+      game.swingReactions?.afterDraw();
+      ownAnimationSheath.afterDraw(game.world, game.renderer?.results.ownAnimation); // 5.05 (11.11)
+    },
     // 22.10 (12.14): retained, so a WMO outside the page's own environment tile reaches the worker's lookups.
     requestCollisionModels: (wants) => renderLookups.requestCollisionModels(game.collision?.models, wants, true),
     requestUnitModels: (wants) => renderLookups.requestUnitModels(game.world?.state.objects, wants, unitModel),
@@ -386,6 +390,8 @@ function cameraWaterSurfaceOf(world: typeof game.world, subject: WorldObjectStat
 
 /** 11.02-I: the camera's subject between frames, so a change of it clears the boom's eased limits. */
 const viewTracker = new ViewSubjectTracker();
+/** 5.05 (11.11): the active player's animation starts → the sheath rule (OwnAnimationSheath.ts). */
+const ownAnimationSheath = new OwnAnimationSheath();
 /** 11.02-I: `CMSG_FAR_SIGHT` as Wow.exe votes it (world/FarSight.ts). */
 const farSightLink = new FarSightLink();
 
@@ -778,6 +784,7 @@ function frame(now: number): void {
           // 22.10 ARC-2 S4a: the melee cues tick on the swing progress the frame published where `draw` used to call
           // `afterUnits`; their reactions are queued for the next frame's unit pass, as before (SwingReactionHost.ts).
           game.swingReactions?.afterDraw();
+          ownAnimationSheath.afterDraw(game.world, renderer.results.ownAnimation); // 5.05 (11.11): Wow.exe 0x00738180
           // 22.10 ARC-2 S2b: the collision models draw missed are asked for now, as draw itself used to ask.
           renderLookups.requestCollisionModels(game.collision?.models, renderer.collisionModelWants());
           // 22.10 ARC-2 S2c: then the asking path for the units it admitted, in its order — after the collision asks,

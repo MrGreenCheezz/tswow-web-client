@@ -329,6 +329,24 @@ function px(value: number): string {
   return `${value}px`;
 }
 
+/**
+ * 4.04 (11.11): how far a tooltip row's left text stands right of the first row's: the x offsets of its TOPLEFT
+ * anchors along the chain of rows above it (each row hangs at BOTTOMLEFT of the one above). GameTooltip:AddTexture
+ * moves a row by the icon's width and puts the next one back (glue/GlueTooltipTextures.ts); 0 for the template's chain.
+ */
+function tooltipLineIndent(line: FrameXmlFrame, rows: ReadonlySet<FrameXmlFrame>): number {
+  let indent = 0;
+  let current: FrameXmlFrame | undefined = line;
+  for (let depth = 0; current && depth < 128; depth++) {
+    const anchor: FrameXmlFrame["points"][number] | undefined = current.points.find((point) => point.point === "TOPLEFT");
+    const above: FrameXmlFrame | undefined = anchor?.relativeTo;
+    if (!anchor || !above || !rows.has(above)) break;
+    indent += anchor.x ?? 0;
+    current = above;
+  }
+  return indent;
+}
+
 /** 06.10-dropdown: a parentless frame (not a region) with no anchor point, which has no rectangle. */
 function unanchoredRoot(frame: FrameXmlFrame): boolean {
   return !frame.parent && frame.points.length === 0 && frame.type !== "Texture" && frame.type !== "FontString";
@@ -4251,6 +4269,10 @@ export class FrameXmlDomRenderer {
           style.minWidth = "0px";
         }
         style.textAlign = side;
+        // 4.04 (11.11): GameTooltip:AddTexture moves its line right by the icon (glue/GlueTooltipTextures.ts) through
+        // the line's own TOPLEFT offset; the grid keeps that offset, summed along the rows' anchor chain.
+        const indent = side === "left" ? tooltipLineIndent(line.frame, lines) : 0;
+        style.marginLeft = indent !== 0 ? px(indent) : "";
         style.alignContent = "start";
         style.gridRow = String(index);
         style.gridColumn = side === "right" ? "2" : row.right ? "1" : "1 / -1";

@@ -56,6 +56,15 @@ export const ANIMATION_PLAYBACK_FLAGS: Readonly<Record<number, number>> =
   (implementation as { readonly ANIMATION_PLAYBACK_FLAGS?: Readonly<Record<number, number>> })
     .ANIMATION_PLAYBACK_FLAGS ?? {};
 /**
+ * 5.05 (11.11): AnimationData.Weaponflags and BehaviorID by id, non-zero rows only — what Wow.exe 0x00738180 reads of the
+ * animation a model starts (world/AnimationSheathRule.ts). Widened like the body flags: an implementation generated
+ * before the columns were published knows no row, and no animation then changes the sheath.
+ */
+export const ANIMATION_WEAPON_FLAGS: Readonly<Record<number, number>> =
+  (implementation as { readonly ANIMATION_WEAPON_FLAGS?: Readonly<Record<number, number>> }).ANIMATION_WEAPON_FLAGS ?? {};
+export const ANIMATION_BEHAVIORS: Readonly<Record<number, number>> =
+  (implementation as { readonly ANIMATION_BEHAVIORS?: Readonly<Record<number, number>> }).ANIMATION_BEHAVIORS ?? {};
+/**
  * 5.32: Emotes.dbc `EmoteFlags` by row and CreatureMovementInfo.dbc `SmoothFacingChaseRate` by row (world/
  * UnitFacing.ts). Widened like the body flags: the neutral stub and older implementations do not carry them, and
  * an empty table means «no row known» — an emote state forbids no turn, a creature springs at the default rate.

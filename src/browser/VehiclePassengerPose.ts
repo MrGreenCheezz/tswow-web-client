@@ -39,8 +39,12 @@
 //
 // 26.10: the entering and exiting arcs (states 1/2 and 4/5) are VehicleSeatTransition.ts, laid over `place`.
 // 04.11: the vehicle's own enter, ride and exit animations are VehicleOwnAnimation.ts.
-// Not modelled: FlagsB 0x10000's mirrored vehicle pose (0x00748620), and the smoothing of the drawn
-// facing (0x00735f60).
+// Not modelled: FlagsB 0x10000's mirrored vehicle pose (0x00748620; seats 2903, 2906, 2963, 3886) — read 11.11
+// (.runtime/re-2026-11-11/transport/t1.lst): on reaching such a seat (0x007489c0, state 3) a living passenger's model is
+// set to the vehicle model's current animation, whole model and each of the 35 key bones (0x008266b0 on the vehicle's,
+// 0x00832ab0 on the passenger's), passenger+0x10 gets 0x800 and the vehicle's +0x16c the seat's bit; 0x007487e0 (that
+// flag and alive) is then asked all through the unit's pose code (0x007385c0, 0x00735820 …), which is not read yet —
+// and the smoothing of the drawn facing (0x00735f60).
 //
 // Without vehicle rows, with no seat, on a ship, a lift or a mount: nothing here runs and the unit is
 // drawn exactly as before. Once a frame nothing is allocated: seat poses are cached per seat row,

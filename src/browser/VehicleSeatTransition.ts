@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import type { VehicleSeatEntry } from "../world/VehicleDbc.js";
+import { seatExitBit } from "./VehicleExitBit.js";
 
 /**
  * 11.02 (26.10): a passenger's way into and out of its seat — Wow.exe 3.3.5a's VehiclePassenger_C transition states,
@@ -24,8 +25,10 @@ import type { VehicleSeatEntry } from "../world/VehicleDbc.js";
  *
  * 04.11: while the vehicle plays its own enter or exit animation the passenger waits first (VehicleOwnAnimation.ts, `hold`).
  *
- * Not ported (review): the vehicle's speed toward the seat (the duration uses EnterSpeed alone); the forced/voluntary
- * split of the exit flags (either bit arcs); and the exit pre-delay holding the passenger on the moving seat
+ * 11.11: the exit's bit is one or the other by the passenger's flags2 (VehicleExitBit.ts), no longer either.
+ *
+ * Not ported (review): the vehicle's speed toward the seat (the duration uses EnterSpeed alone); and the exit
+ * pre-delay holding the passenger on the moving seat
  * (it holds where the seat was). A jump of more than {@link SEAT_TRANSITION_MAX_YARDS} is a teleport, not a boarding.
  */
 
@@ -58,11 +61,11 @@ function finite(value: number, fallback = 0): number {
   return Number.isFinite(value) ? value : fallback;
 }
 
-/** Whether this seat arcs a passenger in (`enter`) or out (`exit`) (0x00749aa0). */
-export function seatTransitionArcs(seat: VehicleSeatEntry, kind: SeatTransitionKind): boolean {
+/** Whether this seat arcs a passenger in (`enter`) or out (`exit`) (0x00749aa0). `flags2`: the passenger's (`seatExitBit`). */
+export function seatTransitionArcs(seat: VehicleSeatEntry, kind: SeatTransitionKind, flags2 = 0): boolean {
   const F = SEAT_TRANSITION_FLAGS;
   if (kind === "enter") return (seat.flags & F.ENTER) !== 0 && finite(seat.enterSpeed) > SOME;
-  return (seat.flags & (F.EXIT_VOLUNTARY | F.EXIT_FORCED)) !== 0 && finite(seat.exitSpeed) > SOME;
+  return (seat.flags & seatExitBit(flags2)) !== 0 && finite(seat.exitSpeed) > SOME;
 }
 
 /** The pre-delay in seconds (0x0074a200 states 1 and 4: the column, at most 10). */

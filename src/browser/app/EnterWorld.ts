@@ -506,6 +506,10 @@ export async function enterWorld(character: CharacterSummary): Promise<void> {
   // L18 5.05: the stock Combat panel's autoRangedCombat (Wow.exe default "1"): the controller of
   // world/AutoRangedCombat.ts reads it at every StartAttack and tick.
   world.autoRangedCombat = () => settingOn("autoRangedCombat");
+  // 5.05 (11.11): the stock «Автоматически спешиваться» CVars (FrameXmlSettingsCVar.ts) that 0x0071b0c0 reads before a
+  // mounted cast dismounts (world/MountedCastRule.ts).
+  world.autoDismount = () => settingOn("autoDismount");
+  world.autoDismountFlying = () => settingOn("autoDismountFlying");
   // 5.25: the stock Controls panel's blockTrades, read when another player offers a trade.
   world.blockTrades = () => settingOn("blockTrades");
   world.onCombatStatus = (message, attacking, error) => {

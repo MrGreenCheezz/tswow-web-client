@@ -144,15 +144,18 @@ export class SpellMetadataClient {
     // masks, the aura states and aura spells, AuraInterruptFlags, the mechanics, the effects' class masks and a form's
     // Flags. Not a new key: all are optional, and a row without them (an older gateway, or its hour of cache after a
     // restart) leaves those gates open rather than grey.
-    const url = `${this.#baseUrl}/dbc/spells?ids=${chunk.join(",")}&v=20`; // 13.10: was v=19
+    // 3.43 (11.11): v=21 adds the caster-level growth the description writer reads (`effectRealPointsPerLevel`,
+    // `baseLevel`, `maxLevel`, `durationPerLevel`; ui/SpellTextCaster.ts). Optional: an older gateway's rows write the
+    // numbers without the growth, as before.
+    const url = `${this.#baseUrl}/dbc/spells?ids=${chunk.join(",")}&v=21`; // 3.43 (11.11): was v=20
     let value = await this.#batch(url);
     // The key alone cannot tell a restarted gateway from the hour-long browser cache: an answer the
     // old process gave before the restart is still on disk. A batch whose every row lacks the newest
-    // field (13.10: `speed`, present on every v=20 row, 0 included) is asked once more past that
+    // field (3.43: `baseLevel`, present on every v=21 row, 0 included) is asked once more past that
     // cache; if the gateway itself still answers the old shape, this session stops asking twice.
-    if (!this.#olderGateway && value.length > 0 && value.every((row) => row.speed === undefined)) { // 13.10
+    if (!this.#olderGateway && value.length > 0 && value.every((row) => row.baseLevel === undefined)) { // 3.43
       value = await this.#batch(url, { cache: "reload" });
-      if (value.every((row) => row.speed === undefined)) this.#olderGateway = true; // 13.10
+      if (value.every((row) => row.baseLevel === undefined)) this.#olderGateway = true; // 3.43
     }
     for (const metadata of value) this.#cache.set(metadata.id, metadata);
     // Answered, and without a row: final for this gateway process (see `#missing`).
@@ -267,6 +270,9 @@ function isSpellMetadata(value: unknown): value is SpellMetadata {
       || (Number.isSafeInteger(spell.category) && (spell.category as number) >= 0))
     // 13.10 (v=20): Spell.Speed, yards a second, 0 for none.
     && (spell.speed === undefined || (typeof spell.speed === "number" && Number.isFinite(spell.speed) && spell.speed >= 0))
+    // 3.43 (v=21): three finite floats and three raw integers; absent from an older gateway.
+    && optionalNumbers(spell.effectRealPointsPerLevel, 3) && optionalInteger(spell.baseLevel)
+    && optionalInteger(spell.maxLevel) && optionalInteger(spell.durationPerLevel)
     // 19.10: the usability check's raw columns (gateway SpellMetadata.shapeshiftMask); absent from an older gateway.
     && optionalIntegers(spell.shapeshiftMask, 2) && optionalIntegers(spell.shapeshiftExclude, 2)
     && optionalInteger(spell.casterAuraState) && optionalInteger(spell.targetAuraState)

@@ -146,8 +146,9 @@ test("5.21 a target change while the swing is only requested still stops it on t
   // one gets a request of its own after the stop (auto-attack-target.test.mjs).
   client.state.setField(10n, UPDATE_FIELDS.UNIT_FIELD_FLAGS.offset, 0x2);
   client.selectTarget(10n);
+  // 5.05 (11.11): 0x006e1660 sends CMSG_ATTACKSTOP and never calls the sheath setter.
   assert.deepEqual(connection.sent.map(({ opcode }) => opcode).slice(0, 2),
-    [OPCODES.CMSG_ATTACK_STOP, OPCODES.CMSG_SET_SHEATHED]);
+    [OPCODES.CMSG_ATTACK_STOP, OPCODES.CMSG_SET_SELECTION]);
   assert.equal(client.attackRequested, false);
   client.close();
 });

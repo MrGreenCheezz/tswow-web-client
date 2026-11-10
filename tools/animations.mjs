@@ -61,6 +61,8 @@ export async function loadAnimationCatalog(directory = dbcDirectory()) {
   const fallback = new Map();
   const bodyFlags = new Map();
   const playbackFlags = new Map(); // 12.10 6.03/6.07
+  const weaponFlags = new Map(); // 5.05 (11.11)
+  const behaviors = new Map(); // 5.05 (11.11)
   for (const row of dbc.rows()) {
     const id = dbc.id(row);
     const name = dbc.string(row, "Name");
@@ -75,8 +77,14 @@ export async function loadAnimationCatalog(directory = dbcDirectory()) {
     // from — the fallback plays backwards, or holds (src/browser/AnimationPlayback.ts).
     const playback = (dbc.int(row, "Flags") >>> 0) & 0x30;
     if (playback !== 0) playbackFlags.set(id, playback);
+    // 5.05 (11.11): `Weaponflags` (record +8) and `BehaviorID` (+0x18), what Wow.exe's 0x00738180 and its
+    // 0x0071d590 / 0x0071d2e0 read of the animation a model starts (src/world/AnimationSheathRule.ts).
+    const weapon = dbc.int(row, "Weaponflags") >>> 0;
+    if (weapon !== 0) weaponFlags.set(id, weapon);
+    const behavior = dbc.int(row, "BehaviorID");
+    if (behavior !== 0) behaviors.set(id, behavior);
   }
-  return { idByName, nameById, fallback, bodyFlags, playbackFlags };
+  return { idByName, nameById, fallback, bodyFlags, playbackFlags, weaponFlags, behaviors };
 }
 
 /** The ids of {@link BASE_ANIMATION_NAMES}, dropping any name this build's table does not carry. */

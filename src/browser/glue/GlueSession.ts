@@ -176,6 +176,8 @@ export interface GlueSessionOptions {
 export interface GlueRealmCategoryRow {
   readonly name: string;
   readonly createCharsetMask: number;
+  /** `LocaleMask`: the locales whose name filters 0x7e2250 builds for the realm (1.19, 11.11). */
+  readonly localeMask?: number;
 }
 
 /**
@@ -336,6 +338,11 @@ export class GlueSession {
     return this.#selectedRealm;
   }
 
+  /** 3.46 (11.11): the logged-in account's name (WTF/Account/<account>), undefined before a login. */
+  get accountName(): string | undefined {
+    return this.#auth?.username;
+  }
+
   get selectedCategory(): number {
     return this.#selectedCategory;
   }
@@ -404,6 +411,17 @@ export class GlueSession {
     if (!realm) return 0;
     const mask = this.#options.realmCategories?.()?.get(realm.timezone)?.createCharsetMask ?? 0;
     return Number.isInteger(mask) ? mask >>> 0 : 0;
+  }
+
+  /**
+   * 1.19 (11.11): the chosen realm's category row's `LocaleMask` — the locales 0x7e2250 builds the name filters
+   * for — or undefined without a realm, a row or the table, where 0x4dab40 passes the client locale's own bit.
+   */
+  nameFilterLocaleMask(): number | undefined {
+    const realm = this.#selectedRealm;
+    if (!realm) return undefined;
+    const mask = this.#options.realmCategories?.()?.get(realm.timezone)?.localeMask;
+    return mask !== undefined && Number.isInteger(mask) ? mask >>> 0 : undefined;
   }
 
   /** Realms in one category, in the order the authserver listed them. */

@@ -1,6 +1,7 @@
 import "./glue.css";
 import { clientLocale, gatewayOrigin as defaultGatewayOrigin } from "../Environment.js";
 import { RealmCategoryClient } from "../RealmCategoryClient.js";
+import { GlueNameFilterClient } from "./GlueNameFilters.js"; // 1.19 (11.11)
 import { FrameXmlDomRenderer } from "../ui/framexml_compat/FrameXmlDomRenderer.js";
 import { FrameXmlFontLoader } from "../ui/framexml_compat/FrameXmlFonts.js";
 import { FrameXmlTextureCache } from "../ui/framexml_compat/FrameXmlTextures.js";
@@ -9,10 +10,11 @@ import { scaleGlueStage } from "./GlueStageScale.js"; // 26.10
 import { GlueRuntime, glueStageMapping, glueNeedsHorizontalScroll, gluePinnedSize, GLUE_LOGICAL_HEIGHT } from "./GlueRuntime.js";
 import { createBundledFileProvider } from "./InterfaceBundleClient.js"; // 25.10 (serve S3)
 import { browserGlueVideo } from "./GlueVideo.js";
-import { GlueAddonList } from "./GlueAddons.js";
+import { GlueAddonList, type GlueAddonIdentity } from "./GlueAddons.js";
 import { createGlueCVarStore } from "./GlueCVarStore.js";
 import { createGlueSavedPasswordStore } from "./GlueSavedPassword.js"; // 12.10
-import { fetchFrameXmlClientAddons } from "../framexml/FrameXmlClientAddons.js";
+import { fetchFrameXmlClientAddonList } from "../framexml/FrameXmlClientAddons.js";
+import { createHttpFileProvider } from "./GlueLoader.js"; // 3.46 (11.11)
 import { GlueBrowserAudio } from "./GlueAudio.js";
 import { GlueModelStage } from "./GlueModelStage.js";
 import { glueLoginSceneModelIsVisible } from "./GlueLoginScenePolicy.js";
@@ -205,13 +207,31 @@ export async function startGlue(options: StartGlueOptions): Promise<GlueHandle> 
   // login brings the list; an older gateway answers 404 and the tabs keep their numbers.
   const realmCategories = new RealmCategoryClient(origin);
   realmCategories.table();
+  // 1.19 (11.11): the name filters, asked now so a new or renamed character's name meets them (GlueNameFilters.ts).
+  const nameFilters = new GlueNameFilterClient(origin);
+  nameFilters.catalog();
   // This browser's site data, or nothing when it is blocked (the getter itself can throw).
   const siteStorage = (() => { try { return globalThis.localStorage; } catch { return null; } })();
   // «Модификации» (10.09): the gateway's add-on list, asked once; a failure is an empty list.
-  const addons = new GlueAddonList({
-    origin,
-    load: () => fetchFrameXmlClientAddons(origin),
+  // 3.46 (11.11): the whole installed list with the profile's states, the TOCs' titles, and per-character states
+  // kept under the account, realm and character (GlueAddons.ts, GlueAddonStates.ts).
+  const addonTocs = createHttpFileProvider({ gatewayOrigin: origin });
+  const addons: GlueAddonList = new GlueAddonList({
+    load: () => fetchFrameXmlClientAddonList(origin),
+    readToc: (name) => addonTocs.read(`Interface/AddOns/${name}/${name}.toc`),
     storage: siteStorage,
+    locale: clientLocale(),
+    identity: (): GlueAddonIdentity | undefined => {
+      try {
+        const session: GlueSession = runtime.session;
+        const realm = session.selectedRealm;
+        const account = session.accountName;
+        if (!realm || !account) return undefined;
+        return { account, realm: realm.name, characters: session.characters.map((character) => character.name) };
+      } catch {
+        return undefined; // the runtime is not built yet
+      }
+    },
   });
   void addons.load();
   const namesReady = names.load();
@@ -269,6 +289,7 @@ export async function startGlue(options: StartGlueOptions): Promise<GlueHandle> 
       // Honest video answers (10.19): the measured paint rate and WebGL2's sample limit.
       video: browserGlueVideo(),
       addons,
+      nameFilters: () => nameFilters.catalog(), // 1.19 (11.11)
       // Account name, realm, last character, usesToken per gateway — never a password (10.07). Not for
       // a canned session: its realm and characters are not this gateway's.
       ...(canned ? {} : {

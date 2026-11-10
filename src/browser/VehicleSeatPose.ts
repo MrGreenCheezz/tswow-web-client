@@ -25,6 +25,7 @@ import type { VehicleSeatEntry } from "../world/VehicleDbc.js";
 import { VEHICLE_SEAT_FLAGS } from "../world/VehicleSeatModel.js";
 import { ANIMATION_IDS } from "../generated/animations.js";
 import { animationBehavior } from "./game/AnimationSplit.js";
+import { seatExitBit } from "./VehicleExitBit.js";
 
 /** VehicleSeat Flags 0x4 (DBCEnums.h:473 UNK3): the unit's own pose is RideUpperAnim (Wow.exe 0x007485b0). */
 export const SEAT_FLAG_HAS_UPPER_ANIM_FOR_RIDE = 0x0000_0004;
@@ -143,6 +144,8 @@ export function vehiclePassengerSeatPose(seat: VehicleSeatEntry): VehiclePasseng
 /** 11.02 (26.10): the seat poses of the way in and out, cached per seat row. */
 const enterPoses = new WeakMap<VehicleSeatEntry, VehiclePassengerSeatPose>();
 const exitPoses = new WeakMap<VehicleSeatEntry, VehiclePassengerSeatPose>();
+/** 11.11: the exit poses of a passenger whose movement flags2 has 0x40 (`seatExitBit` 0x8). */
+const exitPosesFlags2 = new WeakMap<VehicleSeatEntry, VehiclePassengerSeatPose>();
 /** Ids kept apart from the seat's own (a VehicleSeat id is far below these), so each is a new pose. */
 const ENTER_POSE_ID = 0x0100_0000;
 const EXIT_POSE_ID = 0x0200_0000;
@@ -150,16 +153,19 @@ const EXIT_POSE_ID = 0x0200_0000;
 /**
  * 11.02 (26.10): the pose a passenger holds on its way into a seat (`enter`, Wow.exe states 1/2) or out of it
  * (`exit`, 4/5) — 0x00747b20's lower anim, played whole-body by 0x00748560 while the unit is not seated:
- * EnterAnimStart once, then EnterAnimLoop (seat Flags 0x1); ExitAnimStart, then ExitAnimLoop (exit Flags 0x8 or
- * 0x8000 — review: 0x0074bb60 picks one by movement flags2 0x40). ExitAnimEnd is for the landing (`vehicleSeatTransition`).
+ * EnterAnimStart once, then EnterAnimLoop (seat Flags 0x1); ExitAnimStart, then ExitAnimLoop (seat Flags 0x8000, or 0x8
+ * when the passenger's movement flags2 has 0x40 — 11.11, 0x0074bb60 called from 0x00747b20 on the passenger's unit:
+ * `seatExitBit`; the 61 seats of the dataset with 0x8 alone have no pose on this realm). ExitAnimEnd is for the landing
+ * (`vehicleSeatTransition`).
  */
-export function vehicleSeatTransitionPose(seat: VehicleSeatEntry, kind: "enter" | "exit"): VehiclePassengerSeatPose {
-  const cache = kind === "enter" ? enterPoses : exitPoses;
+export function vehicleSeatTransitionPose(seat: VehicleSeatEntry, kind: "enter" | "exit", flags2 = 0): VehiclePassengerSeatPose {
+  const exitBit = seatExitBit(flags2);
+  const cache = kind === "enter" ? enterPoses : exitBit === seatExitBit(0) ? exitPoses : exitPosesFlags2;
   const cached = cache.get(seat);
   if (cached) return cached;
   const allowed = kind === "enter"
     ? (seat.flags & VEHICLE_SEAT_FLAGS.HAS_LOWER_ANIM_FOR_ENTER) !== 0
-    : (seat.flags & (0x8 | 0x8000)) !== 0;
+    : (seat.flags & exitBit) !== 0;
   const chosen = allowed
     ? (kind === "enter" ? pair(seat.enterAnimStart, seat.enterAnimLoop) : pair(seat.exitAnimStart, seat.exitAnimLoop))
     : undefined;

@@ -18,6 +18,8 @@ import {
 import type { GlueNameRuleOptions } from "./GlueNameRules.js";
 import { GLUE_ADDON_GLOBALS, type GlueAddonList } from "./GlueAddons.js";
 import type { GlueCVarStore } from "./GlueCVarStore.js";
+import { glueNameFiltersActive, setGlueWorldNameFilters, type GlueNameFilterCatalog } from "./GlueNameFilters.js"; // 1.19 (11.11)
+import { glueWindowCVar, isGlueWindowCVar, setGlueWindowCVar } from "./GlueWindowMode.js"; // 10.28 (11.11)
 import {
   GLUE_SAVED_PASSWORD_GLOBAL, GLUE_SAVED_PASSWORD_LUA, type GlueSavedPasswordStore,
 } from "./GlueSavedPassword.js"; // 12.10
@@ -129,6 +131,8 @@ export interface GlueApiOptions {
   readonly onQuit?: () => void;
   /** «Модификации» (10.09): the gateway's add-on list and this browser's switches; else stubs. */
   readonly addons?: GlueAddonList;
+  /** 1.19 (11.11): the compiled `/dbc/name-filters` lists, undefined until they land (`GlueNameFilters.ts`). */
+  readonly nameFilters?: () => GlueNameFilterCatalog | undefined;
   /**
    * Where the CVars that outlive a reload are kept (10.07): account name, realm, last character,
    * `usesToken` — never a password (`GlueCVarStore`). Without it everything stays in memory.
@@ -410,7 +414,13 @@ export class GlueApi {
    */
   nameRules(): GlueNameRuleOptions {
     const force = Number.parseInt(this.#cvars.get("forceEnglishNames") ?? "0", 10);
-    return { forceEnglishNames: Number.isFinite(force) && force !== 0, alphabetMask: this.#session.nameAlphabetMask() };
+    // 1.19 (11.11): the name filters, when the realm's category builds them for the client's locale.
+    const filters = this.#options.nameFilters?.();
+    const nameFilters = filters && glueNameFiltersActive(this.#session.nameFilterLocaleMask(), filters.locale)
+      ? { nameFilters: filters.tables } : {};
+    return {
+      forceEnglishNames: Number.isFinite(force) && force !== 0, alphabetMask: this.#session.nameAlphabetMask(), ...nameFilters,
+    };
   }
 
   /**
@@ -455,6 +465,9 @@ export class GlueApi {
       ...(this.#options.enterWorld ? { enterWorld: (request: GlueEnterWorldRequest) => {
         // 0x4d9bd0 writes the 0-based index as it hands the character over.
         this.setCVar("lastCharacterIndex", String(request.index - 1));
+        setGlueWorldNameFilters(this.nameRules().nameFilters); // 1.19 (11.11): the pet's name check reads them
+        this.#options.addons?.handOver(request.character.name); // 3.46 (11.11): the character's add-on states
+
         // The auth connection kept for the realm dialog (10.08) has nothing to do in the world: held
         // there it would pin a gateway socket and an authserver session per player for the whole
         // game (and count twice against the gateway's per-address budget). Back at character select
@@ -547,7 +560,8 @@ export class GlueApi {
       `${Math.round(this.screenSize.width)}x${Math.round(this.screenSize.height)}`,
     ]);
     vm.registerGlobal("GetCurrentResolution", () => [1]);
-    this.#options.addons?.install(vm);
+    // 3.46 (11.11): `checkAddonVersion` is a glue CVar like the others (kept by GlueCVarStore).
+    this.#options.addons?.install(vm, { get: (name) => this.#cvars.get(name), set: (name, value) => { this.setCVar(name, value); } });
     const onQuit = this.#options.onQuit;
     if (onQuit) {
       // Both spellings end the game; there is no launcher to run.
@@ -595,14 +609,17 @@ export class GlueApi {
 
   private installCVars(): void {
     const vm = this.#vm;
-    vm.registerGlobal("GetCVar", (args) => [this.#cvars.get(String(args[0] ?? ""))]);
+    // 10.28 (11.11): `gxWindow` is the page's full screen, live, as in the world's options (GlueWindowMode.ts).
+    const read = (name: string): string | undefined => isGlueWindowCVar(name) ? glueWindowCVar() : this.#cvars.get(name);
+    vm.registerGlobal("GetCVar", (args) => [read(String(args[0] ?? ""))]);
     vm.registerGlobal("GetCVarBool", (args) => {
-      const value = this.#cvars.get(String(args[0] ?? ""));
+      const value = read(String(args[0] ?? ""));
       return [value !== undefined && value !== "0" && value !== ""];
     });
     vm.registerGlobal("SetCVar", (args) => {
       const name = String(args[0] ?? "");
-      if (name) this.setCVar(name, args[1] === undefined ? "" : String(args[1]));
+      if (isGlueWindowCVar(name)) setGlueWindowCVar(args[1]);
+      else if (name) this.setCVar(name, args[1] === undefined ? "" : String(args[1]));
       return [];
     });
     vm.registerGlobal("RegisterCVar", (args) => {

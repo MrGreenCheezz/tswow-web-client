@@ -11,9 +11,9 @@ import {
 } from "../dist/code/browser/VehicleSeatTransition.js";
 
 const F = SEAT_TRANSITION_FLAGS;
-// Seat 305 of the dataset: speed 7, gravity 19.29, 0.6…1 s, arc 1.5…4 yards.
+// Seat 305 of the dataset: speed 7, gravity 19.29, 0.6…1 s, arc 1.5…4 yards. Both exit bits, as 521 of the 720 seats.
 const seat = (fields = {}) => ({
-  flags: F.ENTER | F.EXIT_VOLUNTARY,
+  flags: F.ENTER | F.EXIT_VOLUNTARY | F.EXIT_FORCED,
   enterPreDelay: 0, enterSpeed: 7, enterGravity: 19.29, enterMinDuration: 0.6, enterMaxDuration: 1,
   enterMinArcHeight: 1.5, enterMaxArcHeight: 4,
   exitPreDelay: 0, exitSpeed: 7, exitGravity: 19.29, exitMinDuration: 0.6, exitMaxDuration: 1,
@@ -22,12 +22,17 @@ const seat = (fields = {}) => ({
 });
 const close = (actual, expected, message) => assert.ok(Math.abs(actual - expected) < 1e-6, `${message} ${actual} vs ${expected}`);
 
-test("which seats arc: Flags 0x1 with EnterSpeed in, Flags 0x8 or 0x8000 with ExitSpeed out", () => {
+// 11.11: the exit's bit is 0x8000, or 0x8 when the passenger's movement flags2 has 0x40 — one, not either (0x0074bb60 on
+// the passenger's unit, from 0x00749aa0; .runtime/re-2026-11-11/transport/t4.lst).
+test("which seats arc: Flags 0x1 with EnterSpeed in, Flags 0x8000 (0x8 with flags2 0x40) with ExitSpeed out", () => {
   assert.equal(seatTransitionArcs(seat(), "enter"), true);
   assert.equal(seatTransitionArcs(seat({ flags: 0 }), "enter"), false, "no Flags 0x1");
   assert.equal(seatTransitionArcs(seat({ enterSpeed: 0 }), "enter"), false, "no EnterSpeed");
   assert.equal(seatTransitionArcs(seat(), "exit"), true);
   assert.equal(seatTransitionArcs(seat({ flags: F.EXIT_FORCED }), "exit"), true);
+  assert.equal(seatTransitionArcs(seat({ flags: F.EXIT_VOLUNTARY }), "exit"), false, "0x8 alone: not without flags2 0x40");
+  assert.equal(seatTransitionArcs(seat({ flags: F.EXIT_VOLUNTARY }), "exit", 0x40), true, "0x8 with flags2 0x40");
+  assert.equal(seatTransitionArcs(seat({ flags: F.EXIT_FORCED }), "exit", 0x40), false, "and then 0x8000 alone does not");
   assert.equal(seatTransitionArcs(seat({ flags: F.ENTER }), "exit"), false);
   assert.equal(seatTransitionDelay(seat({ enterPreDelay: 30 }), "enter"), 10, "at most 10 s");
 });
@@ -119,8 +124,12 @@ test("the pose on the way: EnterAnimStart then EnterAnimLoop in, ExitAnimStart t
   const { vehicleSeatTransitionPose, vehiclePassengerSeatPose, vehicleSeatTransition } = await import("../dist/code/browser/VehicleSeatPose.js");
   const row = {
     ...seat(), id: 305, rideAnimStart: -1, rideAnimLoop: 91, rideUpperAnimStart: -1, rideUpperAnimLoop: -1,
-    enterAnimStart: 37, enterAnimLoop: 38, exitAnimStart: 39, exitAnimLoop: 40, flags: F.ENTER | F.EXIT_VOLUNTARY | 0x2,
+    enterAnimStart: 37, enterAnimLoop: 38, exitAnimStart: 39, exitAnimLoop: 40, flags: F.ENTER | F.EXIT_FORCED | 0x2,
   };
+  // 11.11 (0x00747b20 → 0x0074bb60): 0x8 alone gives the pose only to a passenger whose flags2 has 0x40.
+  const only8 = { ...row, id: 306, flags: F.ENTER | F.EXIT_VOLUNTARY | 0x2 };
+  assert.deepEqual([...vehicleSeatTransitionPose(only8, "exit").wanted], [], "0x8 alone, flags2 0");
+  assert.deepEqual([...vehicleSeatTransitionPose(only8, "exit", 0x40).wanted], [40], "0x8 with flags2 0x40");
   const enter = vehicleSeatTransitionPose(row, "enter");
   assert.deepEqual([...enter.wanted], [38]);
   assert.equal(enter.start, 37);

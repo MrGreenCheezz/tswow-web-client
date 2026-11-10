@@ -4,10 +4,11 @@
  * Each function names the Wow.exe code it follows; all of them are DOM-free and read only what they are handed.
  *
  * What is not answered, for want of data:
- * * PET_SPELLS_TEMPLATE of beast lore (0x00620950 reads CreatureFamily.SkillLine[2] and their SkillLineAbility
- *   rows with AcquireMethod 2 — no gateway route serves the family's skill lines);
- * * the quest checks 0x005e0ea0 makes beyond the counters and the carried items (reputation, money, player
- *   kills, an expired timer) when it decides whether a quest's source items are still worth a line.
+ * * 0x005dee30's test of the quest log entry inside 0x005e0ea0 (its meaning is not established).
+ * 4.04 (11.11): PET_SPELLS_TEMPLATE of beast lore (0x00620950: CreatureFamily.SkillLine[2]'s SkillLineAbility rows with
+ * AcquireMethod 2, SupercededBySpell 0, a spell neither passive nor hidden) from `/dbc/pet-spells` (PetSpellClient.ts).
+ * 4.04 (11.11): the reputation, money, player-kill and flag checks of 0x005e0ea0, and a group member out of view
+ * (`frameXmlFarMemberTooltipFacts`: PLAYER_OFFLINE, or the member's zone).
  */
 import { readByte, readField } from "../../world/Fields.js";
 import { UPDATE_FIELDS } from "../../generated/updateFields.js";
@@ -195,9 +196,15 @@ export interface FrameXmlBeastLoreFoods {
   foodNames(mask: number): readonly string[];
 }
 
+/** 4.04 (11.11): a family's pet spells in 0x00620950's order (gateway/PetSpellMetadata.ts, `/dbc/pet-spells`). */
+export interface FrameXmlBeastLoreSpells {
+  familySpells(family: number): readonly string[];
+}
+
 /** The beast lore rows (0x00620950) for a unit with UNIT_DYNFLAG_SPECIALINFO; none without it. */
 export function frameXmlBeastLoreRows(
   object: WorldObjectState, record: FrameXmlUnitCreatureRecord | undefined, foods: FrameXmlBeastLoreFoods | undefined,
+  spells?: FrameXmlBeastLoreSpells | undefined,
 ): GameTooltipUnitRow[] {
   if (((readField(object, "UNIT_DYNAMIC_FLAGS") ?? 0) & DYNFLAG_SPECIALINFO) === 0) return [];
   const rows: GameTooltipUnitRow[] = [];
@@ -219,7 +226,12 @@ export function frameXmlBeastLoreRows(
   if (diet.length > 0) rows.push({ key: "PET_DIET_TEMPLATE", args: [diet.join(", ")] }); // 0x009fc494 ", "
   const flags = record?.found ? record.flags : 0;
   if ((flags & TYPE_FLAG_TAMEABLE) === 0 || family === 0) rows.push({ key: "NOT_TAMEABLE", args: [] });
-  else rows.push({ key: (flags & TYPE_FLAG_EXOTIC_PET) === 0 ? "TAMEABLE" : "TAMEABLE_EXOTIC", args: [] });
+  else {
+    rows.push({ key: (flags & TYPE_FLAG_EXOTIC_PET) === 0 ? "TAMEABLE" : "TAMEABLE_EXOTIC", args: [] });
+    // 4.04 (11.11): only a tameable creature's family: its skill lines' spells, joined by ", " (0x009fc494).
+    const names = spells?.familySpells(family) ?? [];
+    if (names.length > 0) rows.push({ key: "PET_SPELLS_TEMPLATE", args: [names.join(", ")] });
+  }
   return rows;
 }
 
@@ -235,6 +247,13 @@ export interface FrameXmlUnitQuestSources {
   itemName(itemId: number): string | undefined;
   /** Carried in the bags (0x00754d00). */
   itemCount(itemId: number): number;
+  /**
+   * 4.04 (11.11): the player's standing with a Faction.dbc id — base plus earned (0x005d05b0) — undefined while
+   * unknown (that check of 0x005e0ea0 is then skipped).
+   */
+  reputation?(factionId: number): number | undefined;
+  /** 4.04 (11.11): PLAYER_FIELD_COINAGE (0x0051a2b0); undefined while unknown. */
+  money?(): number | undefined;
 }
 
 export interface FrameXmlUnitQuestTemplate {
@@ -245,16 +264,52 @@ export interface FrameXmlUnitQuestTemplate {
   }[];
   readonly itemObjectives: readonly { readonly itemId: number; readonly count: number }[];
   readonly sourceItems?: readonly number[];
+  /** 4.04 (11.11): the quest cache's Flags (+0x50), signed RewOrReqMoney (+0x34), RequiredPlayerKills (+0x2098). */
+  readonly flags?: number;
+  readonly rewardMoney?: number;
+  readonly requiredPlayerKills?: number;
+  /** 4.04 (11.11): RequiredFactionId/Value 1 (a minimum) and 2 (a maximum), +0x1c … +0x28. */
+  readonly requiredFactions?: readonly { readonly faction: number; readonly value: number }[];
 }
 
-/** 0x005e0ea0's objective part: every creature counter and carried item at its count, and not failed. */
+/** QUEST_STATE_COMPLETE, and the quest flags 0x2 | 0x4 that ask for it (0x005e0f6b). */
+const QUEST_STATE_COMPLETE = 0x1;
+const QUEST_FLAGS_NEED_COMPLETE_STATE = 0x6;
+
+/**
+ * 0x005e0ea0 (listing `.runtime/re-2026-11-11/usable/u3.lst`, `u4.lst`): whether a quest of the log is done — not
+ * failed; a quest with no flag 0x6, no reputation, no money and neither objectives nor player kills is never done;
+ * a quest with flag 0x6 needs the slot's complete bit; then a standing of at least the first required faction's
+ * value and at most the second's, the money it costs carried (unsigned), every creature counter (unsigned) and
+ * carried item at its count, and counter 0 at RequiredPlayerKills. The test 0x005dee30 makes of the log's own entry
+ * is not modelled; reputation and money not known yet skip their checks.
+ */
 function questObjectivesDone(entry: { readonly state: number; readonly counters: readonly number[] },
-  template: FrameXmlUnitQuestTemplate, itemCount: (itemId: number) => number): boolean {
+  template: FrameXmlUnitQuestTemplate, sources: Pick<FrameXmlUnitQuestSources, "itemCount" | "reputation" | "money">): boolean {
   if ((entry.state & QUEST_STATE_FAIL) !== 0) return false;
-  if (template.objectives.length === 0 && template.itemObjectives.length === 0) return false;
+  const flags = (template.flags ?? 0) & QUEST_FLAGS_NEED_COMPLETE_STATE;
+  const minimum = template.requiredFactions?.[0];
+  const maximum = template.requiredFactions?.[1];
+  const money = (template.rewardMoney ?? 0) | 0;
+  const kills = template.requiredPlayerKills ?? 0;
+  if (flags === 0 && !minimum?.faction && !maximum?.faction && money === 0
+    && template.objectives.length === 0 && template.itemObjectives.length === 0 && kills === 0) return false;
+  if (flags !== 0 && (entry.state & QUEST_STATE_COMPLETE) === 0) return false;
+  if (minimum?.faction) {
+    const standing = sources.reputation?.(minimum.faction);
+    if (standing !== undefined && standing < minimum.value) return false;
+  }
+  if (maximum?.faction) {
+    const standing = sources.reputation?.(maximum.faction);
+    if (standing !== undefined && standing > maximum.value) return false;
+  }
+  if (money < 0) {
+    const coinage = sources.money?.();
+    if (coinage !== undefined && (coinage >>> 0) < -money) return false;
+  }
   for (const objective of template.objectives) if ((entry.counters[objective.slot] ?? 0) < objective.count) return false;
-  for (const item of template.itemObjectives) if (itemCount(item.itemId) < item.count) return false;
-  return true;
+  for (const item of template.itemObjectives) if (sources.itemCount(item.itemId) < item.count) return false;
+  return (entry.counters[0] ?? 0) >= kills;
 }
 
 /**
@@ -290,7 +345,7 @@ export function frameXmlUnitQuestRows(
         const have = Math.min(sources.itemCount(item), need.count);
         lines.push({ key: "QUEST_ITEMS_NEEDED", args: [sources.itemName(item) ?? " ", have, need.count] });
       }
-      done ??= questObjectivesDone(entry, template, (id) => sources.itemCount(id));
+      done ??= questObjectivesDone(entry, template, sources);
       if (done) continue;
       for (const source of (template.sourceItems ?? []).slice(0, 4)) {
         if (source !== item) continue;
@@ -309,6 +364,38 @@ export function frameXmlSummonedByPlayer(object: WorldObjectState): boolean {
   return owner !== 0n && (owner >> 60n) === 0n;
 }
 
+/** 4.04 (11.11): a group member's record as 0x00621070 reads it when the member is not in view (0x00513c30). */
+export interface FrameXmlFarMemberInput {
+  /** The record's status bit 0x1 (MEMBER_STATUS_ONLINE). */
+  readonly online: boolean;
+  /** +0x18; undefined reads as 0. */
+  readonly level?: number | undefined;
+  /** +0xc; undefined: not reported (not taken for a corpse). */
+  readonly health?: number | undefined;
+  /** The AreaTable name of the record's zone (+0x1a, 0x0078ed80); undefined writes no line. */
+  readonly zoneName?: string | undefined;
+  /** The name cache's race and class in the member's sex (0x0072aa70/0x0072aab0 over the name record). */
+  readonly raceName?: string | undefined;
+  readonly className?: string | undefined;
+}
+
+/**
+ * 4.04 (11.11): the facts for a group member out of view (0x00621070 with no object and a group record): the level
+ * line — CORPSE for an online member at health 0, the record's level ("??" below 1), the name cache's race and class,
+ * PLAYER — then PLAYER_OFFLINE for an offline member (the writer returns), else the member's zone.
+ */
+export function frameXmlFarMemberTooltipFacts(input: FrameXmlFarMemberInput): GameTooltipUnitFacts {
+  const level = (input.level ?? 0) | 0;
+  const slots: { level: string; race?: string; cls?: string; corpse?: boolean; typeKey: "PLAYER" } = {
+    level: level < 1 ? "??" : String(level), typeKey: "PLAYER",
+  };
+  if (input.online && input.health !== undefined && input.health <= 0) slots.corpse = true;
+  else if (input.raceName && input.className) { slots.race = input.raceName; slots.cls = input.className; }
+  return input.online
+    ? { level: slots, pvp: false, zoneName: input.zoneName || undefined }
+    : { level: slots, pvp: false, offline: true };
+}
+
 /** Everything the live seam gathers for one unit (LiveWorldSeam.unitTooltipFacts). */
 export interface FrameXmlUnitTooltipFactsInput {
   readonly object: WorldObjectState;
@@ -319,6 +406,8 @@ export interface FrameXmlUnitTooltipFactsInput {
   readonly factionName?: string | undefined;
   readonly canAssist: boolean;
   readonly foods?: FrameXmlBeastLoreFoods | undefined;
+  /** 4.04 (11.11): PET_SPELLS_TEMPLATE's names; absent (a gateway without `/dbc/pet-spells`) writes no line. */
+  readonly petSpells?: FrameXmlBeastLoreSpells | undefined;
   readonly quests?: FrameXmlUnitQuestSources | undefined;
 }
 
@@ -335,7 +424,7 @@ export function frameXmlUnitTooltipFacts(input: FrameXmlUnitTooltipFactsInput): 
     factionName: self ? frameXmlUnitFactionName(record, input.factionRow, input.factionName, race, playerClass) : undefined,
     pvp: frameXmlUnitPvpLine(object),
     resurrectable: frameXmlUnitResurrectable(object, self, input.canAssist),
-    beastLore: frameXmlBeastLoreRows(object, record, input.foods),
+    beastLore: frameXmlBeastLoreRows(object, record, input.foods, input.petSpells),
     leader: frameXmlUnitRacialLeader(object, record),
     quests,
   };

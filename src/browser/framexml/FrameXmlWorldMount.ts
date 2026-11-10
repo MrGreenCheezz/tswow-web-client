@@ -6,6 +6,7 @@ import { gatewayOrigin as defaultGatewayOrigin, clientLocale } from "../Environm
 import { questLogNameClient } from "../QuestLogNameClient.js";
 import { creatureTypeClient } from "../CreatureTypeClient.js";
 import { petFoodClient } from "../PetFoodClient.js"; // 05.10-petfood
+import { petSpellClient } from "../PetSpellClient.js"; // 4.04 (11.11)
 import { characterRegenClient } from "../CharacterRegenClient.js";
 import { spellLearnEffectsClient } from "../SpellLearnEffectsClient.js";
 import { installFrameXmlQuestPoiFrame } from "./FrameXmlQuestBlobPainter.js";
@@ -87,6 +88,9 @@ import { resolveFrameXmlReputationRows } from "./FrameXmlReputationResolver.js";
 import { FrameXmlBoot, FRAMEXML_VERTICAL_EXERCISE_EVENTS } from "./FrameXmlBoot.js";
 import { loadFrameXmlCharacterStats } from "./FrameXmlCharacterStats.js";
 import { fetchFrameXmlClientAddonList } from "./FrameXmlClientAddons.js"; // 3.46 (13.10): with the whole list
+import {
+  frameXmlCharacterAddonEnabled, frameXmlCharacterAddons, frameXmlCharacterAddonVersionCheck,
+} from "./FrameXmlClientAddons.js"; // 3.46 (11.11)
 import { frameXmlOwnerAddon } from "./FrameXmlAddonRuntime.js"; // 3.18
 import {
   frameXmlLodPrefetchNames, frameXmlLodPreloadNames, frameXmlPreloadServerDown, startFrameXmlLodPreload,
@@ -3163,12 +3167,13 @@ export async function mountFrameXmlVertical(
       else console.warn(`Client add-on list is unavailable: ${String(error)}`);
       return undefined;
     });
-  const clientAddons = (clientAddonList?.addons ?? []).filter((addon) => frameXmlClientAddonEnabled(addon.name));
+  // 3.46 (11.11): for the character, as the glue's add-on list left it (FrameXmlClientAddons.ts).
+  const clientAddons = frameXmlCharacterAddons(clientAddonList).filter((addon) => frameXmlClientAddonEnabled(addon.name));
   // 3.46 (13.10): GetNumAddOns/GetAddOnInfo list every installed add-on, the switched-off ones as DISABLED (Wow.exe
   // 0x00511240); the mount loads from the enabled list above.
   const installedClientAddons = clientAddonList?.installed ?? [];
   const disabledClientAddons = installedClientAddons
-    .filter((addon) => !addon.enabled || !frameXmlClientAddonEnabled(addon.name)).map((addon) => addon.name);
+    .filter((addon) => !frameXmlCharacterAddonEnabled(addon) || !frameXmlClientAddonEnabled(addon.name)).map((addon) => addon.name);
   if (patchChainChanged) return { ok: false, message: patchChainChanged.message };
   if (epoch !== mountEpoch) return { ok: false, message: "FrameXML монтаж отменён" };
 
@@ -3336,6 +3341,8 @@ export async function mountFrameXmlVertical(
     creatureTypes: (() => { const types = creatureTypeClient(origin); if (types?.state === "failed") types.retry(); return types; })(),
     // 05.10-petfood: GetPetFoodTypes' diet tables; retried on each mount after a stale gateway.
     petFoods: (() => { const foods = petFoodClient(origin); if (foods?.state === "failed") foods.retry(); return foods; })(), // 05.10-petfood
+    // 4.04 (11.11): beast lore's pet spells, retried the same way.
+    petSpells: (() => { const spells = petSpellClient(origin); if (spells?.state === "failed") spells.retry(); return spells; })(),
     stableSlotPrice: (owned) => game.slotPrices?.stableSlotPrice(owned),
     mapSource: {
       metadata: () => game.areas?.snapshot(),
@@ -3602,7 +3609,7 @@ export async function mountFrameXmlVertical(
     locale: clientLocale(),
     installedAddons: installedClientAddons.map((addon) => addon.name), // 3.46 (13.10): was the enabled ones alone
     eagerAddons: clientAddons.filter((addon) => !addon.loadOnDemand).map((addon) => addon.name),
-    addonStates: { disabled: disabledClientAddons, checkAddonVersion: clientAddonList?.checkAddonVersion ?? true }, // 3.46 (13.10)
+    addonStates: { disabled: disabledClientAddons, checkAddonVersion: frameXmlCharacterAddonVersionCheck(clientAddonList) }, // 3.46 (13.10; 11.11)
     subset: FRAMEXML_VERTICAL_TOC,
     // Ordinary entry passes its explicit addon preference; direct addon-runtime callers retain
     // the existing opt-in mount API. A stock-only diagnostic never reads the generated TS blocks.

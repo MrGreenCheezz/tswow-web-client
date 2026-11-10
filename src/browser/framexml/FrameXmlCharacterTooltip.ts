@@ -9,7 +9,8 @@ import { unknownLabel } from "../ui/Format.js";
 import { ensureSpellNames } from "../ui/SpellNames.js";
 import { formatSpellDescription, spellDescriptionRows } from "../ui/SpellText.js";
 import type { TooltipContent, TooltipRefresh } from "../ui/TooltipTypes.js";
-import type { GameTooltipWidgetAdapter } from "../glue/GlueWidgets.js";
+import type { GameTooltipAuraSlot, GameTooltipWidgetAdapter } from "../glue/GlueWidgets.js";
+import type { StockSpellTooltipOptions } from "../ui/SpellTooltip.js"; // 3.43 (11.11)
 import type { FrameXmlActionTooltip, FrameXmlWorldSeam } from "./FrameXmlWorldSeam.js";
 import type { FrameXmlSkinnableLine } from "./FrameXmlSkinnableTooltip.js";
 import type { FrameXmlLootOwnerLine } from "./FrameXmlLootOwnerTooltip.js"; // 5.28 (L6)
@@ -52,6 +53,12 @@ export interface FrameXmlInventoryTooltipSeam {
    * `colorblind` is the `colorblindMode` CVar the binder read for this SetUnit.
    */
   readonly unitSkinnableLine?: (unit: string, colorblind?: boolean) => FrameXmlSkinnableLine | undefined;
+  /**
+   * 3.43 (11.11): the aura slot UnitAura(unit, index, filter) reads — its caster level and count bytes (Wow.exe
+   * 0x0061f890, 0x0061f8d0), for the aura tooltip's description (SpellTooltip.ts auraDescriptionContext); live seams only.
+   */
+  readonly unitAuraSlot?: (unit: string, index: number, filter: string | undefined) =>
+    { readonly casterLevel: number; readonly applications: number } | undefined;
   /** 3.12e: a creature's sub-name line (FrameXmlUnitSubName.ts); live seams only. */
   readonly unitSubName?: (unit: string) => string | undefined;
   /** 5.28 (L6): a corpse's MASTER_LOOTER/LOOT lines (FrameXmlLootOwnerTooltip.ts); live seams only. */
@@ -187,13 +194,13 @@ function contentFor(
 }
 
 /** Redraws a link-shaped spell tooltip once its row, or the module that draws it, has landed. */
-function spellRefresh(id: number, aura = false): TooltipRefresh {
+function spellRefresh(id: number, aura = false, slot?: StockSpellTooltipOptions): TooltipRefresh {
   // A buff's tooltip and a link to the same spell wait side by side: they draw different prose.
   const key = aura ? -id : id;
   return {
     watch(redraw) {
       const run = (): void => {
-        const next = spellContent(id, aura);
+        const next = spellContent(id, aura, slot);
         // The row may land before the module that draws it, or the other way round.
         if (next) redraw(next);
         else if (!spellRedraws.has(key)) spellRedraws.set(key, run);
@@ -212,7 +219,7 @@ function spellRefresh(id: number, aura = false): TooltipRefresh {
  * asked for yet (a chat link, a trainer's spell) is asked for here, and its answer wakes the
  * tooltips waiting on it. `aura` draws the buff bar's text in place of the cast description.
  */
-function spellContent(id: number, aura = false): TooltipContent | undefined {
+function spellContent(id: number, aura = false, slot?: StockSpellTooltipOptions): TooltipContent | undefined {
   if (!game.world || !Number.isSafeInteger(id) || id <= 0) return undefined;
   const row = game.spells.get(id);
   if (!row) {
@@ -228,7 +235,21 @@ function spellContent(id: number, aura = false): TooltipContent | undefined {
     loadSpellbook();
     return undefined;
   }
-  return aura ? spellbook.stockSpellTooltip(id, { aura: true }) : spellbook.stockSpellTooltip(id);
+  // 3.43 (11.11): an aura's slot level and count reach the description as 0x00625350 passes them to 0x0057abc0.
+  return aura ? spellbook.stockSpellTooltip(id, { ...slot, aura: true }) : spellbook.stockSpellTooltip(id);
+}
+
+/**
+ * 3.43 (11.11): the aura slot a SetUnitAura/SetUnitBuff/SetUnitDebuff names, as the description options — the
+ * slot's caster level and count bytes from the seam (Wow.exe 0x00625f00: 0x0061f890, 0x0061f8d0), else the count
+ * UnitAura returned and level 0 (the caster's own).
+ */
+function auraSlotOptions(source: FrameXmlInventoryTooltipSeam, slot: GameTooltipAuraSlot | undefined):
+  StockSpellTooltipOptions | undefined {
+  if (!slot) return undefined;
+  const found = source.unitAuraSlot?.(slot.unit, slot.index, slot.filter);
+  if (found) return { auraLevel: found.casterLevel, auraCount: found.applications };
+  return slot.count === undefined ? undefined : { auraCount: slot.count };
 }
 
 /**
@@ -237,16 +258,16 @@ function spellContent(id: number, aura = false): TooltipContent | undefined {
  * module has not landed yet is already the spell's name and rank, so `GetSpell` names it; only a
  * row still on the wire is the numbered placeholder.
  */
-function linkedSpellContent(id: number, aura = false): TooltipContent | undefined {
-  const content = spellContent(id, aura);
+function linkedSpellContent(id: number, aura = false, slot?: StockSpellTooltipOptions): TooltipContent | undefined {
+  const content = spellContent(id, aura, slot);
   if (content || !game.world || !Number.isSafeInteger(id) || id <= 0) return content;
   const known = game.spells.get(id);
   if (known) {
     return known.rank
-      ? { title: known.name, titleRight: known.rank, refresh: spellRefresh(id, aura) }
-      : { title: known.name, refresh: spellRefresh(id, aura) };
+      ? { title: known.name, titleRight: known.rank, refresh: spellRefresh(id, aura, slot) }
+      : { title: known.name, refresh: spellRefresh(id, aura, slot) };
   }
-  return { title: unknownLabel("заклинание", id), footer: ["Описание загружается…"], refresh: spellRefresh(id, aura) };
+  return { title: unknownLabel("заклинание", id), footer: ["Описание загружается…"], refresh: spellRefresh(id, aura, slot) };
 }
 
 /**
@@ -301,7 +322,7 @@ function actionContent(action: FrameXmlActionTooltip | undefined): TooltipConten
  * the field) draws its cast description through `aura` itself.
  */
 export type FrameXmlCharacterTooltipAdapter = GameTooltipWidgetAdapter & {
-  readonly aura: (id: number) => TooltipContent | undefined;
+  readonly aura: (id: number, slot?: GameTooltipAuraSlot) => TooltipContent | undefined;
   /**
    * The line `GameTooltip:SetUnit` writes itself for a skinnable body, after the PvP line and
    * before `OnTooltipSetUnit`: `prefix` plus the GlobalStrings value `globalName`, in `color`.
@@ -340,7 +361,7 @@ export function createFrameXmlCharacterTooltipAdapter(
     // Live, the world's item cache; with none (the canned routes) the seam's own item source first.
     item: (entry, link) => (game.world ? undefined : seamItemContent(source, entry)) ?? itemContent(entry, link),
     spell: (id) => linkedSpellContent(id),
-    aura: (id) => linkedSpellContent(id, true),
+    aura: (id, slot) => linkedSpellContent(id, true, auraSlotOptions(source, slot)), // 3.43 (11.11): the slot
     // 5.20: `/dbc/spells?v=15`'s dispelName (SpellDispelType.Name, Wow.exe 0x00625350); none before it.
     auraDispelName: (id) => game.spells.get(id)?.dispelName,
     unitSkinnable: (unit, colorblind) => source.unitSkinnableLine?.(unit, colorblind),

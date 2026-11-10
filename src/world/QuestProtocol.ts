@@ -133,6 +133,11 @@ export interface QuestTemplate {
   completedText: string;
   objectives: QuestObjective[];
   itemObjectives: QuestItemObjective[];
+  /**
+   * 4.04 (11.11): `RequiredFactionId1/Value1` (a minimum standing) and `RequiredFactionId2/Value2` (a maximum), as
+   * sent; faction 0 is none. Optional for templates built by hand.
+   */
+  requiredFactions?: { faction: number; value: number }[];
 }
 
 /** `CMSG_QUEST_QUERY`'s answer, mirroring `WorldPackets::Quest::QueryQuestInfoResponse::Write`. */
@@ -145,10 +150,12 @@ export function parseQuestQueryResponse(payload: Uint8Array): QuestTemplate {
   const sortId = reader.u32();
   const type = reader.u32();
   const suggestedPlayers = reader.u32();
-  // Two PvP teams, each with a faction and a standing.
+  // RequiredFactionId/RequiredFactionValue twice: a minimum standing with the first, a maximum with the second
+  // (Wow.exe's quest cache +0x1c … +0x28, read by the completeness test 0x005e0ea0; 4.04, 11.11).
+  const requiredFactions: { faction: number; value: number }[] = [];
   for (let team = 0; team < 2; team++) {
-    reader.u32();
-    reader.u32();
+    const faction = reader.u32();
+    requiredFactions.push({ faction, value: reader.i32() });
   }
   const nextQuest = reader.u32();
   reader.u32();
@@ -220,6 +227,7 @@ export function parseQuestQueryResponse(payload: Uint8Array): QuestTemplate {
     objectivesText, details, areaDescription, completedText,
     objectives: objectives.filter((objective) => objective.entry > 0 && objective.count > 0),
     itemObjectives,
+    requiredFactions, // 4.04 (11.11)
   };
 }
 

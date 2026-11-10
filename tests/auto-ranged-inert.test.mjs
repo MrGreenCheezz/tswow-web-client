@@ -140,7 +140,8 @@ for (const [who, options] of [["a hunter (Auto Shot), the setting unchecked", {}
     connection.sent.length = 0;
     client.castSpell(spell);
     // 5.05 (12.10): 0x00800a00 → 0x006d5f70 is CMSG_ATTACKSTOP alone — no SHEATH 0 before the bow's SHEATH 2.
-    assert.deepEqual(combat(connection), ["CMSG_ATTACK_STOP", "SHEATH 2", "CMSG_CAST_SPELL"],
+    // 5.05 (11.11): the bow's SHEATH 2 follows the shot's packet (0x00805330 → 0x007fa2e0).
+    assert.deepEqual(combat(connection), ["CMSG_ATTACK_STOP", "CMSG_CAST_SPELL", "SHEATH 2"],
       "the swing stops (as stopAttack did), the shot goes out");
     assert.equal(client.autoRepeatSpellId, spell);
     assertInert(client, timer, who);
@@ -153,14 +154,16 @@ for (const [who, options] of [["a hunter (Auto Shot), the setting unchecked", {}
     client.castSpell(spell);
     connection.sent.length = 0;
     client.selectTarget(B);
-    assert.deepEqual(combat(connection), ["CMSG_SET_SELECTION", "SHEATH 2", "CMSG_CAST_SPELL"]);
+    // 5.05 (11.11): the bow is already out — the setter 0x00736d30 sends no second SHEATH 2.
+    assert.deepEqual(combat(connection), ["CMSG_SET_SELECTION", "CMSG_CAST_SPELL"]);
     connection.sent.length = 0;
     client.castSpell(6603);
     // 5.05 (12.10): 0x006e2610's 0x00807560(1) is CMSG_CANCEL_AUTO_REPEAT_SPELL alone — no SHEATH 0 before SHEATH 1.
     assert.deepEqual(combat(connection), ["CMSG_CANCEL_AUTO_REPEAT_SPELL", "SHEATH 1", "CMSG_ATTACK_SWING"]);
     connection.sent.length = 0;
     client.castSpell(6603);
-    assert.deepEqual(combat(connection), ["CMSG_ATTACK_STOP", "SHEATH 0"], "the button again: the swing stops");
+    // 5.05 (11.11): StopAttack 0x006e1660 sends CMSG_ATTACKSTOP and no sheath — the blade stays out.
+    assert.deepEqual(combat(connection), ["CMSG_ATTACK_STOP"], "the button again: the swing stops");
     assertInert(client, timer, who);
     client.close();
   });

@@ -933,6 +933,11 @@ test("Spell DBC metadata resolves localized names, icon paths and cooldowns", ()
     effectPointsPerCombo: [0, 0, 0],
     effectDamageMultiplier: [0, 0, 0],
     effectBonusMultiplier: [0, 0, 0],
+    // 3.43 (v=21): the caster-level growth, raw (zero in this fixture).
+    effectRealPointsPerLevel: [0, 0, 0],
+    baseLevel: 0,
+    maxLevel: 0,
+    durationPerLevel: 0,
   });
 
   // The tracking columns reach the browser, which is the only way it can tell a tracking spell

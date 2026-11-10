@@ -1,4 +1,5 @@
 import { RESPONSE_CODES } from "../../generated/responseCodes.js";
+import { glueNameFiltered, type GlueNameFilterTables } from "./GlueNameFilters.js";
 
 /**
  * The client's own check of a character name, before the name goes anywhere.
@@ -24,9 +25,11 @@ import { RESPONSE_CODES } from "../../generated/responseCodes.js";
  * row — or while an older gateway has no route — the client itself uses 0, every alphabet. The CVar
  * `forceEnglishNames` narrows it to ASCII alone.
  *
- * Not checked here: the client also matches the name against the locale's `NamesProfanity` and
- * `NamesReserved` patterns (`CHAR_NAME_PROFANE`/`_RESERVED`). No route serves those tables, and the
- * core checks its own reserved list, so the server answers that part.
+ * 1.19 (11.11): after the walk and the two-letter minimum, and before the length limit, the name is matched
+ * against the client locale's NamesProfanity, ChatProfanity and NamesReserved lists (0x7e18c0's table step, all
+ * three asked by 0x6b0f90 and the pet's 0x7e1f00): a hit in any is `CHAR_NAME_RESERVED` — never `_PROFANE`
+ * (`GlueNameFilters.ts`, `/dbc/name-filters?v=1`). Without the lists (an older gateway) that step is skipped and
+ * the server answers it.
  */
 
 export const NAME_ALPHABET_LATIN = 0;
@@ -42,6 +45,8 @@ export interface GlueNameRuleOptions {
   readonly forceEnglishNames?: boolean;
   /** `Cfg_Categories` alphabet mask of the realm's category; 0, the default, allows all five. */
   readonly alphabetMask?: number;
+  /** 1.19 (11.11): the client locale's name filters when the realm's category builds them; none — no table step. */
+  readonly nameFilters?: GlueNameFilterTables;
 }
 
 const HARD_SIGN = 0x44a;
@@ -161,6 +166,8 @@ export function checkCharacterName(name: string, options: GlueNameRuleOptions = 
   }
   if (count === 0) return RESPONSE_CODES.CHAR_NAME_NO_NAME;
   if (count === 1) return RESPONSE_CODES.CHAR_NAME_TOO_SHORT;
+  // 1.19 (11.11): 0x7e18c0's lists come before 0x7e1e90's length limit — a long reserved name is RESERVED.
+  if (glueNameFiltered(name, options.nameFilters)) return RESPONSE_CODES.CHAR_NAME_RESERVED;
   if (count > nameLengthLimit(alphabet)) return RESPONSE_CODES.CHAR_NAME_TOO_LONG;
   return RESPONSE_CODES.CHAR_NAME_SUCCESS;
 }

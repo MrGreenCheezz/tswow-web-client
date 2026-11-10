@@ -5,7 +5,7 @@ import {
   appearsDead, fieldFloat, isWorldObjectDead, splineAnimationTier, type WorldObjectState, type WorldPosition, type WorldState,
 } from "../world/WorldState.js";
 import type { RenderWorld } from "./FrameInput.js"; // 22.10 ARC-2 S5: draw reads this much of a state
-import { sceneYaw, toRenderAxes, type Quat } from "../world/GameObjectRotation.js";
+import { rotationTilt, sceneYaw, toRenderAxes, type Quat } from "../world/GameObjectRotation.js";
 import { gameObjectNodeYaw, gameObjectWorldRotation, placedBoxCorners, type ModelBox } from "../world/GameObjectModelFrame.js"; // 06.10-7.24
 import { modelPickBox } from "./GameObjectPickBox.js"; // 06.10-7.24
 import { OVERLAY_OBJECT_RANGE, clickableGameObject, overlaySquaredDistance } from "./GameObjectClickable.js"; // 22.10 ARC-2 S3a
@@ -181,7 +181,7 @@ import {
 } from "./AnimatedModel.js";
 import {
   UnitActionQueue, animationPlaysOnUpperBody, heldClipPlaysOnce, locomotionUnderlayClip,
-  unitActionDisplay, unitActionEndsOnMovement,
+  unitActionDisplay, unitActionEndsOnMovement, isCastAction, // 5.05 (11.11): isCastAction
   type ShownUnitAction, type UnitActionDisplay, type UnitActionEntry, type UnitActionLayer, type UnitActionPayload,
 } from "./UnitActionArbiter.js";
 import { poseTakesWholeBody, wholeBodyOutlivesBase } from "./game/ActionOverBase.js"; // 05.10-6.21b; ревью 6.21b
@@ -311,9 +311,9 @@ import {
   GO_TYPE_MO_TRANSPORT, GO_TYPE_TRANSPORT,
 } from "./GameObjectAnimation.js";
 import {
-  TransportPathClient, placeOnTransportPath, sampleTransportPath,
+  TransportPathClient,
 } from "./TransportPath.js";
-import { liftPhaseMs } from "./LiftClock.js";
+import { liftPathPose, type LiftPose } from "./LiftClock.js";
 import {
   HORIZON_FAR_PLANE, HorizonClient, buildHorizonGeometry, horizonTiles,
 } from "./Horizon.js";
@@ -4134,6 +4134,10 @@ export class WorldRenderer3D {
   #visualSequence = 0;
   /** 22.10 ARC-2 S4a: the main thread's spell visual ids → the handles below (SpellVisualIds.ts). */
   readonly #spellVisualIds = new SpellVisualIds<SpellVisualHandle>();
+  /** 5.05 (11.11): the active player's model this frame, its non-kit animation starts, and whether a kit's start runs. */
+  #selfModel: PosedModel | undefined;
+  #selfStarts = 0;
+  #kitStart = false;
   readonly #liveVisualHandles = (): ReadonlySet<SpellVisualHandle> => this.#collectVisualHandles(); // 22.10 ARC-2 S4a
   /** Animations from future spell impacts, held out of #actions until their absolute start. */
   readonly #pendingVisualAnimations: Array<{
@@ -15051,8 +15055,8 @@ export class WorldRenderer3D {
   /**
    * Where the object stands this frame: its spawn point, or a point on the path it runs.
    *
-   * A lift's path is an offset in its own frame, so the spawn yaw turns it before it is added —
-   * which matters for the seventeen entries that travel horizontally and for nothing else, since
+   * A lift's path is an offset in its own frame, so PARENTROTATION (the spawn's rotation, as the core
+   * fills it) turns it before it is added — which matters for the seventeen entries that travel horizontally and for nothing else, since
    * 65 of the 82 are a plain vertical shaft. The phase comes from the server so that two players
    * watching the same lift see it in the same place.
    */
@@ -15095,9 +15099,18 @@ export class WorldRenderer3D {
     }
     // 11.01-B: the phase the physics stands the character on (LiftClock.ts): anchored when the
     // create block was read rather than at first sight, and re-anchored by a new create block.
-    const offset = sampleTransportPath(path, liftPhaseMs(object, path.period, now));
-    const at = placeOnTransportPath(rendered.base, offset);
+    // 11.01 (11.11): the offset turned by PARENTROTATION and the car by its TransportRotation keys (LiftClock.ts).
+    const at = liftPathPose(object, rendered.base, path, now, LIFT_DRAW_POSE);
     rendered.node.position.set(at.x, at.z, -at.y);
+    if (at.rotated && Number.isFinite(position.orientation)) {
+      sceneYaw(gameObjectNodeYaw(position.orientation), GAME_OBJECT_TILT);
+      rendered.node.quaternion.set(GAME_OBJECT_TILT.x, GAME_OBJECT_TILT.y, GAME_OBJECT_TILT.z, GAME_OBJECT_TILT.w);
+      if (rotationTilt(at.rotation!, position.orientation, GAME_OBJECT_TILT)) {
+        toRenderAxes(GAME_OBJECT_TILT, GAME_OBJECT_TILT);
+        rendered.node.quaternion.premultiply(GAME_OBJECT_TILT_SCENE.set(
+          GAME_OBJECT_TILT.x, GAME_OBJECT_TILT.y, GAME_OBJECT_TILT.z, GAME_OBJECT_TILT.w));
+      }
+    }
   }
 
   /**
@@ -15782,7 +15795,9 @@ export class WorldRenderer3D {
       if (rider) rider.visible = !hiddenRider;
     }
     if (unit.skinned && unit.template) {
+      if (self) this.#selfModel = unit; // 5.05 (11.11): whose starts `#noteStart` counts
       this.#animateUnit(unit, object, dead, self, distance, now, elapsed, client, metadata);
+      if (self) this.#publishOwnAnimation(object.guid, unit); // 5.05 (11.11)
     } else {
       this.#shapeCapsule(unit, tint, radius, capsuleHeight, dead, moving, now);
     }
@@ -17468,7 +17483,9 @@ export class WorldRenderer3D {
         queue.remove(entry);
         continue;
       }
+      this.#kitStart = entry.payload.source === "visual" || isCastAction(entry.payload.action); // 5.05 (11.11): a kit's start
       this.#startUnitAction(unit, queue, entry, animation, display, now);
+      this.#kitStart = false; // 5.05 (11.11)
       return display;
     }
     this.#releaseUnitAction(unit, queue);
@@ -17637,6 +17654,7 @@ export class WorldRenderer3D {
         applyPlayback(shown.action, mode, loop); // 12.10 6.03/6.07
         if (display === "upper") unit.overlayAnimationMode = mode;
         else unit.animationMode = mode;
+        this.#noteStart(unit); // 5.05 (11.11): a start again is a start
       } else {
         this.#playAnimation(unit, animation, loop, now, display === "upper", pending.action, undefined, mode);
       }
@@ -17655,6 +17673,30 @@ export class WorldRenderer3D {
       if (!entry.held) entry.until = handBack + ACTION_SIDECAR_WAIT;
     } else if (!entry.held) {
       entry.until = handBack;
+    }
+  }
+
+  /**
+   * 5.05 (11.11): a clip started on a model (Wow.exe's 0x007385c0): counted for the active player's model unless a spell
+   * kit started it — the kit player 0x0073b140 is the caller whose play flags can carry 0x20 (`keep`, from the spell's
+   * SPELL_ATTR0_DONT_AFFECT_SHEATH_STATE, the kit's Flags 0x100 or an ammo missile), which the page cannot see here;
+   * every fixed caller (locomotion 0x0073b510, stand states, emotes, swings, reactions) passes none
+   * (.runtime/re-2026-11-11/combat/playflags.mjs).
+   */
+  #noteStart(unit: PosedModel): void {
+    if (unit === this.#selfModel && !this.#kitStart) this.#selfStarts++;
+  }
+
+  /** 5.05 (11.11): RenderResults.ts `ownAnimation` — the model's animation as 0x00717260 reads it, and its count. */
+  #publishOwnAnimation(guid: bigint, unit: PosedModel): void {
+    const animation = unit.overlayAction !== undefined && unit.overlayAnimationId !== undefined
+      ? unit.overlayAnimationId : unit.animationId;
+    const own = this.#results.ownAnimation;
+    if (own !== undefined && own.guid === guid) {
+      own.animation = animation;
+      own.starts = this.#selfStarts;
+    } else {
+      this.#results.ownAnimation = { guid, animation, starts: this.#selfStarts };
     }
   }
 
@@ -17790,6 +17832,7 @@ export class WorldRenderer3D {
         unit.overlayActionKind = actionKind;
         unit.overlayFadeUntil = undefined;
         unit.overlayUntil = loop ? 0 : now + current.getClip().duration * 1000;
+        this.#noteStart(unit); // 5.05 (11.11)
         return;
       }
       const previous = current;
@@ -17813,6 +17856,7 @@ export class WorldRenderer3D {
       unit.overlayPreservesLocomotion = true;
       unit.overlayFadeUntil = undefined;
       unit.overlayUntil = loop ? 0 : now + playedSeconds(next) * 1000;
+      this.#noteStart(unit); // 5.05 (11.11)
       return;
     }
 
@@ -17852,6 +17896,7 @@ export class WorldRenderer3D {
       unit.actionKind = actionKind;
       unit.overlayUntil = loop ? 0 : now + clip.duration * 1000;
       unit.clipLoops = undefined;
+      this.#noteStart(unit); // 5.05 (11.11)
       return;
     }
     const previous = unit.action;
@@ -17882,6 +17927,7 @@ export class WorldRenderer3D {
     // 03.11 (6.33): a one-shot holds the unit for its whole length: measured on landings, a bow, a swing and a cast, the next
     // clip starts from zero when this one has played out, and comes in over its held last frame.
     unit.overlayUntil = loop ? 0 : now + playedSeconds(next) * 1000;
+    this.#noteStart(unit); // 5.05 (11.11)
   }
 
   /**
@@ -18757,6 +18803,8 @@ export function buildFullscreenGlowPasses(): FullscreenGlowPasses {
 
 /** Scratch for `#placeGameObject`'s tilt (5.27), so placing a game object allocates nothing more. */
 const GAME_OBJECT_TILT: Quat = { x: 0, y: 0, z: 0, w: 1 };
+/** 11.01: a lift's pose on its path, written each frame (`liftPathPose`). */
+const LIFT_DRAW_POSE: LiftPose = { x: 0, y: 0, z: 0, orientation: 0 };
 /** 06.10-7.24: scratch for `gameObjectPickCorners`, which runs per clickable object per frame. */
 const GAME_OBJECT_PICK_ROTATION: Quat = { x: 0, y: 0, z: 0, w: 1 };
 const GAME_OBJECT_PICK_AT = { x: 0, y: 0, z: 0 };

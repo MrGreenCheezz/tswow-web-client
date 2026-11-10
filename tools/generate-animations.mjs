@@ -76,6 +76,21 @@ lines.push("export const ANIMATION_PLAYBACK_FLAGS: Readonly<Record<number, numbe
 for (const [id, flags] of playbackFlags) lines.push(`  ${id}: 0x${flags.toString(16)},`);
 lines.push("};");
 lines.push("");
+// 5.05 (11.11): what Wow.exe 0x00738180 reads of the animation a model starts (src/world/AnimationSheathRule.ts).
+lines.push("/** AnimationData.Weaponflags of the rows that set any bit: 0x4 sheathe, 0x10 sheathe when idle, 0x20 draw melee. */");
+lines.push("export const ANIMATION_WEAPON_FLAGS: Readonly<Record<number, number>> = {");
+for (const [id, flags] of [...catalog.weaponFlags.entries()].sort((left, right) => left[0] - right[0])) {
+  lines.push(`  ${id}: 0x${flags.toString(16)},`);
+}
+lines.push("};");
+lines.push("");
+lines.push("/** AnimationData.BehaviorID of the rows that set one. */");
+lines.push("export const ANIMATION_BEHAVIORS: Readonly<Record<number, number>> = {");
+for (const [id, behavior] of [...catalog.behaviors.entries()].sort((left, right) => left[0] - right[0])) {
+  lines.push(`  ${id}: ${behavior},`);
+}
+lines.push("};");
+lines.push("");
 lines.push("/**");
 lines.push(" * The animations that travel inside the model artifact: standing, moving, dying.");
 lines.push(" *");

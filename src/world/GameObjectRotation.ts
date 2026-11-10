@@ -77,7 +77,8 @@ const NO_TILT = 1e-4;
  * when the object rides one (0x0074b510); the model matrix (0x0070c700) is position · that · scale.
  * PARENTROTATION is read by the animated transport's path alone (0x0070dc10, from 0x007106d0 /
  * 0x00711f20: the TransportRotation key slerp ⊗ parent, packed back as the object's rotation), which
- * the lift code here does not replay. The tilt is the local rotation times the inverse of the
+ * 11.01 (11.11) replays for lifts (browser/TransportRotation.ts; the renderer draws that rotation through
+ * `rotationTilt`). The tilt is the local rotation times the inverse of the
  * orientation's yaw, so applying it after the yaw the renderer already applies gives the whole
  * rotation back. Allocates nothing: it runs per object per frame.
  */
@@ -87,7 +88,16 @@ export function gameObjectTilt(object: Pick<WorldObjectState, "rotation" | "fiel
   // A ship or a zeppelin is given the identity for both rotations (Transport.cpp:102-103) and
   // faces along its path by its orientation (TransportMgr.cpp:396); its quaternion says nothing.
   if (gameObjectType(object) === GO_TYPE_MO_TRANSPORT) return false;
-  const qw = local.w, qx = local.x, qy = local.y, qz = local.z; // 12.10 7.24: no parent (see above)
+  return rotationTilt(local, orientation, out); // 12.10 7.24: no parent (see above)
+}
+
+/**
+ * The part of a whole rotation `q` (WoW axes) beyond the yaw of `orientation`, written into `out`: `q ⊗ conj(yaw)`, so
+ * applying it after that yaw gives `q` back; false when it is (nearly) none. Allocates nothing.
+ */
+export function rotationTilt(q: Quat, orientation: number, out: Quat): boolean {
+  if (!Number.isFinite(orientation)) return false;
+  const qw = q.w, qx = q.x, qy = q.y, qz = q.z;
   // tilt = q ⊗ conj(yaw), yaw = (0, 0, sin(o/2), cos(o/2)).
   const s = -Math.sin(orientation / 2);
   const c = Math.cos(orientation / 2);

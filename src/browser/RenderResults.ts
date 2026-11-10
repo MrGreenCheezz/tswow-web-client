@@ -63,9 +63,23 @@ export interface SwingResult {
   swingSeconds: number | undefined;
 }
 
+/**
+ * 5.05 (11.11): the active player's model as the sheath rule reads it (world/AnimationSheathRule.ts, Wow.exe 0x00738180):
+ * the animation it plays — the upper-body action when one is on, else the base (0x00717260) — and how many animations
+ * its model has started that were not a spell kit's (the starts 0x007385c0 makes with no 0x20 in its play flags),
+ * counted since the renderer began. The page judges again whenever `starts` moves.
+ */
+export interface OwnAnimationResult {
+  guid: bigint;
+  animation: number;
+  starts: number;
+}
+
 export interface RenderResults {
   /** Bumped by every fill of the rows below. */
   frame: number;
+  /** 5.05 (11.11): the active player's model's animation and its non-kit starts; undefined before its model is drawn. */
+  ownAnimation: OwnAnimationResult | undefined;
   /** Every unit the renderer holds (drawn this frame or kept in range), by guid. */
   readonly units: Map<bigint, Float64Array>;
   /** 03.11 (6.37): where the overlays hang from: every unit near the view subject. */
@@ -128,7 +142,8 @@ export interface RenderResults {
 
 export function createRenderResults(atmosphereProfile: Readonly<AtmosphereProfile>): RenderResults {
   return {
-    frame: 0, units: new Map(), unitNames: new Map(), gameObjectCorners: new Map(), seats: new Map(), seatFrame: 0,
+    frame: 0, ownAnimation: undefined, // 5.05 (11.11)
+    units: new Map(), unitNames: new Map(), gameObjectCorners: new Map(), seats: new Map(), seatFrame: 0,
     cameraAspect: 1, muzzle: undefined, weatherStorm: 0, atmosphereProfile, atmosphereAudio: undefined, fps: 0, indoors: false, status: "",
     portraits: [], swings: new Map(), swingFrame: 0, swingNow: 0,
     frameInterval: undefined, rendererFrameMs: undefined, // 22.10 ARC-2 S4b
