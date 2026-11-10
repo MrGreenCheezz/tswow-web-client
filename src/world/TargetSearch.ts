@@ -117,12 +117,20 @@ function sameDuel(self: WorldObjectState, other: WorldObjectState): boolean {
  * neutral (yellow) creatures included.
  *
  * Not modelled: the vehicle-passenger rule (UNIT_FIELD_FLAGS_2 0x10000 with VehicleSeat flag
- * 0x20000000), a self able to see ghosts, and the client's second "friendly" test (0x715df0).
+ * 0x20000000) and a self able to see ghosts.
+ *
+ * 5.16 (11.11): `selfTreatAsRaidUnit` — the second "friendly" test. Where CanAttack asks whether the
+ * two are friends (0x514050, `.runtime/re-2026-11-11/moves/m1.lst`: the PvP and the PvC branches,
+ * with ECX = CanAttack's `this`), a reaction below Friendly still counts as friendly when `this` is a
+ * creature whose template's type_flags carry CREATURE_TYPE_FLAG_TREAT_AS_RAID_UNIT (0x715df0: +0x964 →
+ * +0xc bit 26, SharedDefines.h:2751; TrinityCore refuses such an attacker too, Object.cpp:3230-3231).
+ * A player has no template: the caller passes true only for a creature self with the bit.
  */
 export function isAttackableUnit(
   self: WorldObjectState | undefined,
   object: WorldObjectState,
   reaction: number,
+  selfTreatAsRaidUnit = false,
 ): boolean {
   if (!isUnit(object) || isWorldObjectDead(object) || object === self) return false;
   const targetFlags = object.fields.get(FLAGS) ?? 0;
@@ -136,10 +144,12 @@ export function isAttackableUnit(
   if ((targetFlags & (selfControlled ? UNIT_FLAG_IMMUNE_TO_PC : UNIT_FLAG_IMMUNE_TO_NPC)) !== 0) return false;
   if ((selfFlags & (targetControlled ? UNIT_FLAG_IMMUNE_TO_PC : UNIT_FLAG_IMMUNE_TO_NPC)) !== 0) return false;
   const friendly = reaction === REACTION_FRIENDLY;
+  // 5.16 (11.11): 0x514050 — friendly by reaction, or a TREAT_AS_RAID_UNIT self (0x715df0); the CvC branch asks 0x514080.
+  const friends = friendly || selfTreatAsRaidUnit;
   const selfPvp = pvpByte(self);
   const targetPvp = pvpByte(object);
   if (selfControlled && targetControlled) {
-    if (friendly) return false;
+    if (friends) return false; // 5.16 (11.11): was `friendly`
     if (ownedByPlayer(self) && ownedByPlayer(object)) {
       if (sameDuel(self, object)) return true;
       if ((targetPvp & UNIT_BYTE2_FLAG_PVP) === 0) {
@@ -152,7 +162,35 @@ export function isAttackableUnit(
   if (!selfControlled && !targetControlled) return !friendly;
   if (selfControlled && (targetPvp & UNIT_BYTE2_FLAG_SANCTUARY) !== 0) return false;
   if (targetControlled && (selfPvp & UNIT_BYTE2_FLAG_SANCTUARY) !== 0) return false;
-  return !friendly;
+  return !friends; // 5.16 (11.11): was `!friendly`
+}
+
+/** CREATURE_TYPE_FLAG_TREAT_AS_RAID_UNIT, the bit 0x715df0 reads in a creature template's type_flags. */
+export const CREATURE_TYPE_FLAG_TREAT_AS_RAID_UNIT = 0x0400_0000;
+/** VEHICLE_SEAT_FLAG_CAN_ATTACK (DBCEnums.h), the seat bit 0x524fc0 reads for its second search. */
+const VEHICLE_SEAT_FLAG_CAN_ATTACK = 0x0000_4000;
+
+/**
+ * 5.16 (11.11): 0x524fc0's second search centre (`.runtime/re-2026-10-01/a9-combat/e2.c`; the player's +0x790 read by
+ * vt+0x40 = 0x6e6f70 is its transport guid, +0xf60 → +0x54 its VehicleSeat row): when nothing qualified around the
+ * mover, the mover is the vehicle the player sits on and the player's seat has CAN_ATTACK, the candidates are sought
+ * again around the player — from its own place and facing, judged with the player as CanAttack's `this`. Fills `out`
+ * like {@link collectTabCandidates} and returns the count; `accept` is told which centre judges.
+ */
+export function collectTabList(
+  objects: Iterable<WorldObjectState>,
+  mover: WorldObjectState | undefined,
+  player: WorldObjectState | undefined,
+  playerSeatFlags: number | undefined,
+  accept: (object: WorldObjectState, centre: WorldObjectState) => boolean,
+  out: TargetCandidate[],
+): number {
+  let count = 0;
+  if (mover?.position) count = collectTabCandidates(objects, mover.position, mover.guid, (object) => accept(object, mover), out);
+  else out.length = 0;
+  if (count !== 0 || !mover || !player?.position) return count;
+  if (player.transport?.guid !== mover.guid || ((playerSeatFlags ?? 0) & VEHICLE_SEAT_FLAG_CAN_ATTACK) === 0) return count;
+  return collectTabCandidates(objects, player.position, player.guid, (object) => accept(object, player), out);
 }
 
 /**
@@ -166,8 +204,9 @@ export function isTabEnemy(
   object: WorldObjectState,
   reaction: number,
   creatureType?: number,
+  selfTreatAsRaidUnit = false,
 ): boolean {
-  if (!isAttackableUnit(self, object, reaction)) return false;
+  if (!isAttackableUnit(self, object, reaction, selfTreatAsRaidUnit)) return false; // 5.16 (11.11): the raid-unit bit
   if (((object.fields.get(DYNAMIC_FLAGS) ?? 0) & UNIT_DYNFLAG_DEAD) !== 0) return false;
   if (((object.fields.get(BYTES_1) ?? 0) & 0xff) === UNIT_STAND_STATE_DEAD) return false;
   return creatureType === undefined || !TAB_IGNORED_CREATURE_TYPES.has(creatureType);

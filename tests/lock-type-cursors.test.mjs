@@ -32,6 +32,24 @@ test("the gateway's lock table carries every non-empty LockType CursorName", wit
   assert.ok(data.openers.length > 100, "the openers as before");
 });
 
+test("5.17 (11.11) a dataset without LockType.dbc still serves its locks, without the cursor column", withDataset, async () => {
+  const { mkdtemp, copyFile, rm } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { loadLockData } = await import("../dist/code/gateway/LockMetadata.js");
+  const directory = await mkdtemp(join(tmpdir(), "locks-without-locktype-"));
+  try {
+    await copyFile(join(dbcDirectory, "Lock.dbc"), join(directory, "Lock.dbc"));
+    await copyFile(join(dbcDirectory, "Spell.dbc"), join(directory, "Spell.dbc"));
+    const data = await loadLockData(directory);
+    assert.equal(data.lockTypeCursors, undefined, "no column: the browser shows the stock names");
+    assert.ok(Object.keys(data.locks).length > 300, "the locks as with it");
+    assert.ok(data.openers.length > 100, "the openers as with it");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("the browser asks /dbc/locks?v=1 and answers a lock type's cursor; an older gateway's answer has none", async () => {
   const { LockClient } = await import("../dist/code/browser/LockClient.js");
   const realFetch = globalThis.fetch;

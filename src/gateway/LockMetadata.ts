@@ -9,7 +9,9 @@
 // spellbook is: 388 locks and 222 spells that open them, against 57,988 item displays. Asking per
 // object would be a round trip for every rock in Elwynn.
 
-import { openDbcFile } from "./Dbc.js";
+import { stat } from "node:fs/promises"; // 5.17 (11.11)
+import { join } from "node:path"; // 5.17 (11.11)
+import { openDbcFile, type Dbc } from "./Dbc.js";
 import type { LockCase, LockData, LockOpener } from "../world/LockRules.js";
 
 /** `SPELL_EFFECT_OPEN_LOCK`. Not 3 — that is the dummy effect, and 3,958 spells carry it. */
@@ -17,11 +19,26 @@ const SPELL_EFFECT_OPEN_LOCK = 33;
 const LOCK_CASES = 8;
 const SPELL_EFFECTS = 3;
 
+/**
+ * 5.17 (11.11): LockType.dbc when the dataset has it, else undefined — only the cursor column comes from it, and
+ * without the column the browser shows the stock names (LockClient, Cursors.ts), so the locks are still served.
+ * A file that is there but unreadable or malformed still fails the route.
+ */
+async function openLockTypes(dbcDirectory: string): Promise<Dbc<"LockType"> | undefined> {
+  try {
+    await stat(join(dbcDirectory, "LockType.dbc"));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+  return openDbcFile(dbcDirectory, "LockType");
+}
+
 export async function loadLockData(dbcDirectory: string): Promise<LockData> {
   const [lock, spell, lockType] = await Promise.all([
     openDbcFile(dbcDirectory, "Lock"),
     openDbcFile(dbcDirectory, "Spell"),
-    openDbcFile(dbcDirectory, "LockType"), // 05.10-5.17
+    openLockTypes(dbcDirectory), // 05.10-5.17; 5.17 (11.11): optional
   ]);
 
   const locks: Record<number, LockCase[]> = {};
@@ -52,6 +69,7 @@ export async function loadLockData(dbcDirectory: string): Promise<LockData> {
   }
   // 05.10-5.17: the cursor a lock type shows (Wow.exe 0x0070F9B0 reads the lock's first type's
   // CursorName): four stock types and whatever a dataset adds, such as 1000 → Mine.
+  if (lockType === undefined) return { locks, openers }; // 5.17 (11.11): no LockType.dbc — the stock names
   const lockTypeCursors: Record<number, string> = {};
   for (const row of lockType.rows()) {
     const cursor = lockType.string(row, "CursorName");

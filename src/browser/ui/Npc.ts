@@ -24,6 +24,7 @@ import { vendorMaxUnits, vendorTotal } from "./VendorQuantity.js";
 import {
   DEFAULT_COMBAT_REACH, PENDING_NPC_TIMEOUT_MS, beyondInteraction, npcWaitVerdict, tooFarText,
 } from "./NpcWait.js";
+import { beyondClientReach } from "./NpcWait.js"; // 4.15 (11.11)
 import { gameObjectType } from "../SimpleScene.js";
 import { GO_FLAG_NOT_SELECTABLE, interactionDistance, interactiveGameObjectType } from "../../world/GameObjectProtocol.js";
 import { renderVendorRepair } from "./VendorRepair.js";
@@ -197,6 +198,13 @@ export function interactWithGuid(guid: bigint): void {
   // talk to it (a ghost, a creator-only creature, a hostile one it cannot fight) — Targeting.ts.
   if (rightClickRefusesService(target)) return;
 
+  // 4.15 (11.11): Wow.exe 0x006DDBB0 refuses a unit beyond its combat reach + 4 yards before any service or seat,
+  // with ERR_TOO_FAR_TO_INTERACT, and sends nothing (NpcWait.ts).
+  if ((target.fields.get(UPDATE_FIELDS.UNIT_NPC_FLAGS.offset) ?? 0) !== 0 && unitTooFarToClick(world, target)) {
+    notice(tooFarText());
+    return;
+  }
+
   // 11.02-BCD: a vehicle's seat (spell click, a group member's vehicle) when no earlier service applies —
   // Wow.exe 0x006ddbb0's order (VehicleClick.ts); the NPC lane and its windows are left alone.
   if (clickVehicle(world, target)) return;
@@ -268,6 +276,14 @@ export function gameObjectTooFar(
   const template = entry > 0 ? world.gameObjectTemplates.get(entry) : undefined;
   if (!template || template.type !== type || template.iconName === "Point") return false;
   return Math.hypot(position.x - player.x, position.y - player.y, position.z - player.z) > interactionDistance(type);
+}
+
+/** 4.15 (11.11): the clicked unit is out of the client's reach (Wow.exe 0x006DDBB0, NpcWait.ts `beyondClientReach`). */
+export function unitTooFarToClick(world: WorldClient, unit: WorldObjectState): boolean {
+  const self = world.state.selfGuid === undefined ? undefined : world.state.objects.get(world.state.selfGuid);
+  if (!self?.position || !unit.position) return false;
+  const reach = fieldFloat(unit, UPDATE_FIELDS.UNIT_FIELD_COMBATREACH.offset) ?? DEFAULT_COMBAT_REACH;
+  return beyondClientReach(self.position, unit.position, reach);
 }
 
 /** The NPC the «waiting» card is for, and the clock that gives up on it (4.15). */

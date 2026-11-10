@@ -121,6 +121,8 @@ export interface MinimapWidgetAdapter {
   readonly getZoomLevels: () => number;
   readonly setZoom: (zoom: number) => void;
   readonly pingLocation: (x: number, y: number) => void;
+  /** 7.57 (11.11): `Minimap:GetPingPosition`, Wow.exe 0x0057efe0; a glue-only load has none and answers 0, 0. */
+  readonly getPingPosition?: () => readonly [number, number];
 }
 
 const MINIMAP_NUMERIC_LIMIT = 1_000_000;
@@ -1129,6 +1131,9 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
         // A glue-only load has no world to ping. Deliberately do not enqueue or synthesize one.
         this.#options.minimapAdapter?.pingLocation(x, y);
       },
+      // 7.57 (11.11): Wow.exe 0x0057efe0 — the stored ping measured from where the player stands now; 0, 0 with
+      // no player (and here with no world behind the widget).
+      GetPingPosition: () => [...(this.#options.minimapAdapter?.getPingPosition?.() ?? [0, 0])],
       // The stock methods only size the authored player-arrow texture. This renderer has no such
       // region state, so they are an explicit no-op rather than a fabricated map mutation.
       SetPlayerTextureWidth: () => {},

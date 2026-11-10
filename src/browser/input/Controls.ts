@@ -25,6 +25,7 @@ import {
   CURSOR, REPAIR_CURSOR_FILE, castCursorForBody, cursorCss, onCursorPicture, useCursorPictures, worldObjectCursor,
   type CursorRules, type CursorWorld,
 } from "./Cursors.js";
+import { setWorldCursor } from "./HardwareCursor.js"; // 5.17 (11.11)
 import { seatAllowsInteraction } from "../../world/SeatInteraction.js"; // 11.02 (04.11)
 import { vehicleCatalog } from "../VehicleClient.js";
 import { cancelLogoutCountdown, gameMenuOpen, logoutCountdownOpen, toggleGameMenu } from "../ui/GameMenu.js";
@@ -703,6 +704,7 @@ export function hoverCursorName(): string {
 /** Writes the canvas cursor for a file name, only when it changed. */
 function showCursorFile(file: string): void {
   hoverCursorFile = file;
+  setWorldCursor(file); // 5.17 (11.11): CURSOR_UPDATE on a change (HardwareCursor.ts)
   const wanted = cursorCss(file);
   if (wanted === hoverCursor) return;
   hoverCursor = wanted;
@@ -867,6 +869,7 @@ function cancelHoverWorldRefresh(): void {
  */
 function clearHoverCursor(): void {
   hoverCursorFile = "";
+  setWorldCursor(""); // 5.17 (11.11): back to the mode's cursor (HardwareCursor.ts)
   setHoveredTarget(undefined, undefined);
   cancelHoverTail();
   cancelHoverWorldRefresh();

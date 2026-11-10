@@ -104,6 +104,10 @@ test("live battleground seam maps race faction, descriptions, status tuple and p
   }
   player.fields.set(UPDATE_FIELDS.UNIT_FIELD_BYTES_0.offset, 4);
   assert.deepEqual(api(seam, "UnitFactionGroup", "target"), []);
+  // 3.24 (11.11): index 1 of the sorted type list is the random battleground (0x0054a650); without a list type
+  // GetBattlefieldInfo answers it, so make Alterac Valley the current type as RequestBattlegroundInstanceInfo would.
+  assert.deepEqual(api(seam, "GetBattlefieldInfo"), ["Random Battleground", "", 5, true, false, true]);
+  seam.battlefieldListState.request(1);
   assert.deepEqual(api(seam, "GetBattlefieldInfo"), [
     "Alterac Valley", "Fight for the Stormpike clan.", 40, true, false, false,
   ]);
@@ -118,7 +122,8 @@ test("live battleground seam maps race faction, descriptions, status tuple and p
   assert.deepEqual(api(seam, "GetBattlefieldInfo"), ["Alterac Valley", "", 40, true, false, false],
     "an unresolved faction does not choose a side-specific description");
 
-  api(seam, "RequestBattlegroundInstanceInfo", 2);
+  // Sorted list (all canned rows MinLevel 10): 32, 1, 2, 3, 7, 9, 30 — index 3 is Warsong Gulch.
+  api(seam, "RequestBattlegroundInstanceInfo", 3);
   api(seam, "JoinBattlefield", 0, true);
   assert.deepEqual(world.requests, [[2, 1]], "list request uses the selected type and queue source");
   assert.deepEqual(world.joins, [[0n, 2, 0, true]], "join uses stock guid/type/instance/group args");
@@ -181,7 +186,8 @@ test("live random and holiday bonus bindings preserve ordinary/list tuple semant
   };
   assert.deepEqual(api(seam, "GetRandomBGHonorCurrencyBonuses"), [true, 900, 30, 100, 0]);
   assert.deepEqual(api(seam, "GetHolidayBGHonorCurrencyBonuses"), [false, 400, 10, 50, 0]);
-  assert.deepEqual(api(seam, "GetBattlegroundInfo", 7), [
+  // 3.24 (11.11): the random battleground sorts first (0x0054a650) and is open at level 80 (0x0054ba00).
+  assert.deepEqual(api(seam, "GetBattlegroundInfo", 1), [
     "Random Battleground", true, false, true, 32,
   ]);
 });

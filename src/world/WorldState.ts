@@ -20,6 +20,7 @@ import {
 import { realignDrift } from "./MovementExtrapolation.js"; // L8 5.04
 import { MOVE_SCHEDULE_UNSETTLED, holdMove, moverClock, type HeldMove } from "./MovementSchedule.js"; // 5.04
 import { driftPitch } from "./MovementExtrapolation.js"; // L8-review 5.04
+import { clearHeldGlide, setupHeldGlide, stepHeldGlide } from "./HeldMoveGlide.js"; // 5.04 (11.11): 0x006EA6A0 glide
 import { unpackRotation, type Quat } from "./GameObjectRotation.js";
 import { isShipCarrier, positionPassengerSeat, sampleCarrierGlide, startCarrierGlide, type CarrierGlide } from "./TransportPassengers.js";
 
@@ -581,6 +582,8 @@ export class WorldState {
         const queue = held ?? [];
         holdMove(queue, { movement, at, speeds: undefined });
         if (held === undefined) this.#held.set(guid, queue);
+        // 5.04 (11.11): held into an empty queue, the unit starts gliding toward it (0x006EC950 → 0x006EA6A0).
+        if (held === undefined) setupHeldGlide(object, queue[0], now, this.groundProbe);
         return;
       }
       this.#applyMove(guid, movement, now, at);
@@ -602,6 +605,9 @@ export class WorldState {
         if (entry.speeds !== undefined) {
           for (const speed of entry.speeds) this.setSpeed(guid, speed.name as SplineSpeedName, speed.value, now);
         }
+        // 5.04 (11.11): after each applied packet the glide is set up again toward the next held one (0x006EF860).
+        const object = this.objects.get(guid);
+        if (object !== undefined) setupHeldGlide(object, queue[0], now, this.groundProbe);
       }
     }
   }
@@ -717,6 +723,7 @@ export class WorldState {
     const object = this.#get(guid);
     // 5.04: what was held behind the blink is older than it.
     this.#held.delete(guid);
+    clearHeldGlide(object); // 5.04 (11.11)
     object.movementFlags = movement.flags;
     object.pitch = movement.pitch;
     object.motion = undefined;
@@ -1109,6 +1116,7 @@ export class WorldState {
       return;
     }
     const live = advanceDrift(drift, now, DRIFT_SAMPLE, this.groundProbe);
+    stepHeldGlide(object, now, DRIFT_SAMPLE); // 5.04 (11.11): toward a held packet (0x006EA7E0)
     position.x = DRIFT_SAMPLE.x;
     position.y = DRIFT_SAMPLE.y;
     position.z = DRIFT_SAMPLE.z;

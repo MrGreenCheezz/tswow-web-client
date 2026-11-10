@@ -111,6 +111,30 @@ export function parseGmResponse(payload: Uint8Array): GmResponse {
   return { responseId, ticketId, message, response };
 }
 
+/**
+ * SMSG_GM_TICKET_STATUS_UPDATE (0x328), one u32, as Wow.exe 3.3.5a 12340 reads it (0x005ad240, jump table 0x005ad5ec;
+ * `.runtime/re-2026-11-11/pvpui/r2.lst`): 1 and 4 ask the ticket again (CMSG_GMTICKET_GETTICKET, as GetGMTicket);
+ * 2 forgets the ticket and the GM response and raises UPDATE_TICKET with no arguments; 3 forgets both and raises
+ * GMSURVEY_DISPLAY; any other value does nothing. TrinityCore declares the opcode and never sends it (Opcodes.cpp
+ * STATUS_NEVER, no sender), so this answers only another 3.3.5a server.
+ */
+export const GM_TICKET_STATUS_REFRESH = 1;
+export const GM_TICKET_STATUS_CLOSED = 2;
+export const GM_TICKET_STATUS_SURVEY = 3;
+export const GM_TICKET_STATUS_REFRESH_AGAIN = 4;
+
+export type GmTicketStatusUpdate = "refresh" | "closed" | "survey" | "none";
+
+export function parseGmTicketStatusUpdate(payload: Uint8Array): GmTicketStatusUpdate {
+  const reader = new PacketReader(payload);
+  const status = reader.u32();
+  // Wow.exe reads the word alone; whatever follows it is not looked at.
+  if (status === GM_TICKET_STATUS_REFRESH || status === GM_TICKET_STATUS_REFRESH_AGAIN) return "refresh";
+  if (status === GM_TICKET_STATUS_CLOSED) return "closed";
+  if (status === GM_TICKET_STATUS_SURVEY) return "survey";
+  return "none";
+}
+
 /** Whether the player is being asked to fill in a survey after the ticket closed. */
 export function parseGmResponseStatusUpdate(payload: Uint8Array): boolean {
   const reader = new PacketReader(payload);

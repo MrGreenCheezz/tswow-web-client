@@ -456,7 +456,7 @@ import {
   buildComplainMail, buildGmResponseResolve, buildReportLag, buildTicketCreate, buildTicketDelete, buildTicketGet,
   buildTicketSystemStatus, buildTicketUpdate, isTicketSuccess, parseGmResponse,
   parseGmResponseStatusUpdate, parseGmTicket, parseTicketResponse, parseTicketSystemStatus,
-  ticketResponseText, GMTICKET_QUEUE_STATUS_ENABLED, GMTICKET_STATUS_HASTEXT,
+  parseGmTicketStatusUpdate, ticketResponseText, GMTICKET_QUEUE_STATUS_ENABLED, GMTICKET_STATUS_HASTEXT,
   type GmResponse, type GmTicket, type TicketRequest,
 } from "./TicketProtocol.js";
 import {
@@ -516,6 +516,7 @@ import {
 } from "./DeathProtocol.js";
 import { decompressObjectUpdate, isWorldObjectDead, serverControlsMovement, UpdateBlockError, WorldState, type WorldObjectState, type WorldPosition } from "./WorldState.js";
 import { isPlayerGhost, unit as unitFields } from "./Fields.js";
+import { spiritHealerMarkAfterRelease, type SpiritHealerMark } from "./SpiritHealerMark.js"; // 3.13 (11.11)
 import { buildQuestGiverStatusQuery, QuestGiverStatusQueue } from "./QuestGiverStatusQueue.js";
 import { buildMovementPacket, MOVEMENT_FLAGS, parseMovementPacket, type MovementInfo } from "./MovementProtocol.js";
 import { normalizeOrientation } from "./TransportMath.js";
@@ -1250,6 +1251,8 @@ export class WorldClient {
   onLootMoney: ((amount: number, alone: boolean) => void) | undefined;
   corpse: CorpseLocation | undefined;
   deathReleaseLocation: DeathReleaseLocation | undefined;
+  /** 3.13 (11.11): Wow.exe's spirit healer mark on the minimap (SpiritHealerMark.ts). */
+  spiritHealerMark: SpiritHealerMark | undefined;
   resurrectRequest: ResurrectRequest | undefined;
   /** Milliseconds left on the corpse reclaim timer at the moment the server last reported it. */
   corpseReclaimDelay = 0;
@@ -2381,13 +2384,15 @@ export class WorldClient {
   }
 
   /**
-   * 5.05 (11.11): the active player's model started an animation that was not a spell kit's (the renderer's
-   * RenderResults `ownAnimation`; the page's game/OwnAnimationSheath.ts) — Wow.exe 0x007385c0 → 0x00738180, judged by
-   * AnimationSheathRule.ts against `animation` (the model's upper-body action, else its base) with `keep` clear, and
-   * handed to the sheath setter: CMSG_SET_SHEATHED on a change of the held state only. The cast in progress is the
-   * player's cast bar (+0xa60); attacking is the swing on or requested (+0xa20).
+   * 5.05 (11.11): the active player's model started an animation (the renderer's RenderResults `ownAnimation`; the
+   * page's game/OwnAnimationSheath.ts) — Wow.exe 0x007385c0 → 0x00738180, judged by AnimationSheathRule.ts against
+   * `animation` (the model's upper-body action, else its base) and `keep` (play flag 0x20: a spell kit's, 0x0073b140),
+   * and handed to the sheath setter: CMSG_SET_SHEATHED on a change of the held state only. The cast in progress is the
+   * player's cast bar (+0xa60, never a channel: only SMSG_SPELL_START and the own send set it, through 0x00805330 →
+   * 0x00715a80, and SPELL_GO clears it, 0x0080e1b0 → 0x007fecc0 → 0x007fec00 → 0x0072e430, before MSG_CHANNEL_START);
+   * attacking is the swing on or requested (+0xa20).
    */
-  ownAnimationStarted(animation: number): void {
+  ownAnimationStarted(animation: number, keep = false): void {
     if (this.#closed) return;
     const selfGuid = this.state.selfGuid;
     const self = selfGuid === undefined ? undefined : this.state.objects.get(selfGuid);
@@ -2399,7 +2404,7 @@ export class WorldClient {
     const state = animationSheathState({
       row: animation < 0 || (weaponFlags === undefined && behavior === undefined) ? undefined
         : { weaponFlags: weaponFlags ?? 0, behavior: behavior ?? 0 },
-      animation, keep: false,
+      animation, keep, // 5.05 (11.11)
       held: this.#sheathSetter.held ?? published ?? SHEATH_UNARMED,
       casting: cast === undefined || cast.channel ? undefined : { attributes0: spellAttributeWords(cast.spellId)?.[0] },
       attacking: this.#meleeEngaged(), activePlayer: true, published,
@@ -4128,8 +4133,15 @@ export class WorldClient {
     this.#connection.send(OPCODES.CMSG_OPT_OUT_OF_LOOT, buildOptOutOfLoot(passOnLoot));
   }
 
+  /**
+   * `Minimap:PingLocation` (Wow.exe 0x0057ed70): the packet only in a group, then MINIMAP_PING for the
+   * player's own guid either way — the relay (TrinityCore `HandleMinimapPingOpcode`) skips the pinger.
+   */
   pingMinimap(x: number, y: number): void {
-    if (!this.#closed && this.group) this.#connection.send(OPCODES.MSG_MINIMAP_PING, buildMinimapPing(x, y));
+    if (this.#closed) return;
+    if (this.group) this.#connection.send(OPCODES.MSG_MINIMAP_PING, buildMinimapPing(x, y));
+    const guid = this.state.selfGuid;
+    if (guid !== undefined) this.events.emit("MINIMAP_PING", { guid, x: Math.fround(x), y: Math.fround(y) });
   }
 
   /** The server refuses a backwards range or a maximum above ten thousand, without answering. */
@@ -7556,6 +7568,10 @@ export class WorldClient {
     }
     if (packet.opcode === OPCODES.SMSG_DEATH_RELEASE_LOC) {
       this.deathReleaseLocation = parseDeathReleaseLoc(packet.payload);
+      // 3.13 (11.11): the minimap's spirit healer mark (SpiritHealerMark.ts, Wow.exe 0x0051f690).
+      const releaser = this.state.selfGuid === undefined ? undefined : this.state.objects.get(this.state.selfGuid);
+      this.spiritHealerMark = spiritHealerMarkAfterRelease(this.spiritHealerMark, this.deathReleaseLocation, this.mapId,
+        releaser !== undefined && isPlayerGhost(releaser));
       this.onDeathChanged?.();
       return true;
     }
@@ -9697,6 +9713,18 @@ export class WorldClient {
       // 3.24: Wow.exe (0x005ad240) forgets the ticket with the response, then asks the survey or says «none».
       this.gmTicket = undefined;
       this.events.emit("GM_TICKET_CHANGED", { kind: "resolved" });
+      return true;
+    }
+    if (packet.opcode === OPCODES.SMSG_GM_TICKET_STATUS_UPDATE) {
+      // 11.11 (3.24): Wow.exe 0x005ad240 — 1/4 ask the ticket again; 2/3 forget ticket and response (TicketProtocol.ts).
+      const update = parseGmTicketStatusUpdate(packet.payload);
+      if (update === "refresh") this.requestTicket();
+      else if (update !== "none") {
+        this.gmTicket = undefined;
+        this.gmResponse = undefined;
+        this.ticketSurveyPending = update === "survey";
+        this.events.emit("GM_TICKET_CHANGED", { kind: "resolved" });
+      }
       return true;
     }
 

@@ -28,6 +28,7 @@ import { PET_SPELLS_VERSION, loadPetSpells } from "./PetSpellMetadata.js"; // 4.
 import { WEAPON_ANIMS_VERSION, loadWeaponAnims } from "./WeaponAnimMetadata.js"; // 05.10-A7a-D 6.06
 import { WMO_AREAS_VERSION, loadWmoAreas } from "./WmoAreaMetadata.js"; // 05.10-A7b-4
 import { NAME_FILTERS_VERSION, loadNameFilters } from "./NameFilterMetadata.js"; // 11.11 (1.19)
+import { PVP_DIFFICULTY_VERSION, loadPvpDifficulty } from "./PvpDifficultyMetadata.js"; // 11.11 (3.24)
 import { originAllowed } from "./UpgradeGuard.js";
 
 export interface CatalogRoute {
@@ -72,6 +73,8 @@ export const CATALOG_ROUTES: readonly CatalogRoute[] = Object.freeze([
   { pathname: "/dbc/wmo-areas", version: WMO_AREAS_VERSION, load: loadWmoAreas }, // 05.10-A7b-4
   // 11.11 (1.19): NamesProfanity, ChatProfanity and NamesReserved for the client's own name check (NameFilterMetadata.ts).
   { pathname: "/dbc/name-filters", version: NAME_FILTERS_VERSION, load: loadNameFilters }, // 11.11 (1.19)
+  // 11.11 (3.24): PvpDifficulty level brackets — a battleground's canEnter (PvpDifficultyMetadata.ts, Wow.exe 0x0054ba00).
+  { pathname: "/dbc/pvp-difficulty", version: PVP_DIFFICULTY_VERSION, load: loadPvpDifficulty }, // 11.11 (3.24)
 ]);
 
 /** The serialised answers, by pathname, for the dataset on disk: `DatasetIndexes.catalogs`. */

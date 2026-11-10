@@ -113,31 +113,42 @@ function npcWorld({ npcAt = { x: 30, y: 0, z: 0 } } = {}) {
   };
 }
 
-test("an NPC that never answers: the waiting card closes after the wait and says the NPC is too far", (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
-  game.world = npcWorld();
+test("4.15 (11.11) an NPC beyond its reach + 4 yards: refused at once with ERR_TOO_FAR_TO_INTERACT, nothing sent", () => {
+  const world = npcWorld();
+  const opened = [];
+  world.openGossip = (guid) => { opened.push(guid); };
+  game.world = world;
   try {
+    const before = notices().length;
     npc.interactWithGuid(77n);
-    assert.equal(dom.gossipWindow.hidden, false, "the waiting card is up");
-    t.mock.timers.tick(wait.PENDING_NPC_TIMEOUT_MS - 1);
-    assert.equal(dom.gossipWindow.hidden, false, "still waiting");
-    t.mock.timers.tick(1);
-    assert.equal(dom.gossipWindow.hidden, true, "given up");
+    assert.deepEqual(opened, [], "no CMSG_GOSSIP_HELLO from thirty yards (Wow.exe 0x006DDBB0)");
+    assert.equal(dom.gossipWindow.hidden, true, "no waiting card");
+    assert.equal(notices().length, before + 1);
     assert.equal(notices().at(-1), wait.tooFarText());
+    // The default reach 1.5 + 4: 5.5 yards in, 5.51 out.
+    world.state.objects.get(77n).position = { x: 5.5, y: 0, z: 0 };
+    npc.interactWithGuid(77n);
+    assert.deepEqual(opened, [77n], "in the client's reach the click goes out");
   } finally {
     game.world = undefined;
     dom.gossipWindow.hidden = true;
   }
 });
 
+test("4.15 (11.11) the client's reach: 3D distance against the unit's combat reach + 4, the player's not counted", () => {
+  assert.equal(wait.beyondClientReach({ x: 0, y: 0, z: 0 }, { x: 7, y: 0, z: 0 }, 3), false);
+  assert.equal(wait.beyondClientReach({ x: 0, y: 0, z: 0 }, { x: 7.01, y: 0, z: 0 }, 3), true);
+  assert.equal(wait.beyondClientReach({ x: 0, y: 0, z: 0 }, { x: 4, y: 0, z: 4 }, 1.5), true, "height counts");
+});
+
 test("near an NPC that never answers: «NPC не отвечает»; an answer in time is left alone", (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
-  const world = npcWorld({ npcAt: { x: 6, y: 0, z: 0 } });
+  const world = npcWorld({ npcAt: { x: 5, y: 0, z: 0 } });
   game.world = world;
   try {
     npc.interactWithGuid(77n);
     t.mock.timers.tick(wait.PENDING_NPC_TIMEOUT_MS);
-    assert.equal(notices().at(-1), "NPC не отвечает", "5 yards plus two reaches of 1.5: 6 yards is in reach");
+    assert.equal(notices().at(-1), "NPC не отвечает", "5 yards plus two reaches of 1.5: 5 yards is in reach");
     const before = notices().length;
     npc.interactWithGuid(77n);
     dom.gossipText.textContent = "Здравствуй, путник.";

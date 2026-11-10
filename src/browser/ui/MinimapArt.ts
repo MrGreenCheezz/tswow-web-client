@@ -129,10 +129,26 @@ export interface MinimapRimPoi extends WorldPoint {
 
 /**
  * The AreaPOI that can get a rim arrow. Measured in eight places on two continents: flag 0x1, whatever the zone and
- * whatever the faction (a human sees Grom'gol's). A record bound to a world state was not met on the frames and stays out.
+ * whatever the faction (a human sees Grom'gol's). 11.11: a record bound to a world state counts only while that world
+ * state's value is not 0 (Wow.exe 0x007f44a0 through 0x00548d10, which answers 0 for a state the client never got) —
+ * the frames were taken on a server that sent none, so those records were out there.
  */
-export function minimapRimPois<T extends MinimapRimPoi>(pois: readonly T[], mapId: number): T[] {
-  return pois.filter((poi) => poi.mapId === mapId && (poi.flags & 0x1) !== 0 && poi.worldStateId === 0);
+export function minimapRimPois<T extends MinimapRimPoi>(
+  pois: readonly T[],
+  mapId: number,
+  worldState: (id: number) => number | undefined = () => undefined,
+): T[] {
+  return minimapAreaPoisOfMap(pois, mapId).filter((poi) => minimapPoiWorldStateShown(poi.worldStateId, worldState));
+}
+
+/** 11.11: the map's AreaPOI with flag 0x1, last record first is the caller's (0x007f6730); world states are per frame. */
+export function minimapAreaPoisOfMap<T extends MinimapRimPoi>(pois: readonly T[], mapId: number): T[] {
+  return pois.filter((poi) => poi.mapId === mapId && (poi.flags & 0x1) !== 0);
+}
+
+/** 11.11: 0x007f44a0's test of a record's world state: none, or a value other than 0. */
+export function minimapPoiWorldStateShown(worldStateId: number, worldState: (id: number) => number | undefined): boolean {
+  return worldStateId === 0 || (worldState(worldStateId) ?? 0) !== 0;
 }
 
 /** Whether a point past the map gets an arrow: inside 0.8 of the radius it is on the map, or nothing. */

@@ -111,3 +111,19 @@ test("FrameXmlBoot forwards the optional Minimap adapter to its binder", () => {
   assert.deepEqual(calls, [2]);
   boot.close();
 });
+
+test("7.57: Minimap:GetPingPosition answers the adapter's pair, and 0, 0 with no world behind the widget", () => {
+  const adapter = {
+    getZoom: () => 0, getZoomLevels: () => 1, setZoom() {}, pingLocation() {},
+    getPingPosition: () => [0.25, -0.125],
+  };
+  const live = directRuntime(adapter);
+  const answered = live.vm.execute("PingX, PingY = Minimap:GetPingPosition()", "@minimap-ping-position");
+  assert.equal(answered.ok, true, answered.error ?? "GetPingPosition failed");
+  assert.deepEqual([live.vm.getGlobal("PingX"), live.vm.getGlobal("PingY")], [0.25, -0.125]);
+
+  const glueOnly = directRuntime(undefined);
+  const empty = glueOnly.vm.execute("PingX, PingY = Minimap:GetPingPosition()", "@minimap-ping-position-none");
+  assert.equal(empty.ok, true, empty.error ?? "GetPingPosition without a world failed");
+  assert.deepEqual([glueOnly.vm.getGlobal("PingX"), glueOnly.vm.getGlobal("PingY")], [0, 0]);
+});

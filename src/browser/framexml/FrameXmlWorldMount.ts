@@ -7,6 +7,7 @@ import { questLogNameClient } from "../QuestLogNameClient.js";
 import { creatureTypeClient } from "../CreatureTypeClient.js";
 import { petFoodClient } from "../PetFoodClient.js"; // 05.10-petfood
 import { petSpellClient } from "../PetSpellClient.js"; // 4.04 (11.11)
+import { pvpDifficultyClient } from "../PvpDifficultyClient.js"; // 3.24 (11.11)
 import { characterRegenClient } from "../CharacterRegenClient.js";
 import { spellLearnEffectsClient } from "../SpellLearnEffectsClient.js";
 import { installFrameXmlQuestPoiFrame } from "./FrameXmlQuestBlobPainter.js";
@@ -69,6 +70,7 @@ import {
   currentAreaId,
   forgetMinimap,
   minimapWidgetAdapter,
+  minimapPingEventArgs, // 7.57 (11.11)
   setMinimapHoverHost,
 } from "../ui/Minimap.js";
 import { compileFrameXmlMinimapHover } from "./FrameXmlMinimapHover.js"; // 3.13 (07.11)
@@ -3334,6 +3336,7 @@ export async function mountFrameXmlVertical(
   // L17 3.14: the seam's unit resolution for the party/raid map pins, bound once the seam exists.
   let battlefieldUnitGuid: (unit: string) => bigint | undefined = () => undefined;
   const seam = options.seam ?? new LiveWorldSeam({
+    minimapPingArgs: minimapPingEventArgs, // 7.57 (11.11)
     worldStateUi: () => worldStateUi,
     // 3.13a: QuestSort headers and QuestInfo tags; retried on each mount after a stale gateway.
     questLogNames: (() => { const names = questLogNameClient(origin); if (names?.state === "failed") names.retry(); return names; })(),
@@ -3343,6 +3346,8 @@ export async function mountFrameXmlVertical(
     petFoods: (() => { const foods = petFoodClient(origin); if (foods?.state === "failed") foods.retry(); return foods; })(), // 05.10-petfood
     // 4.04 (11.11): beast lore's pet spells, retried the same way.
     petSpells: (() => { const spells = petSpellClient(origin); if (spells?.state === "failed") spells.retry(); return spells; })(),
+    // 3.24 (11.11): PvpDifficulty brackets for a battleground's canEnter, retried the same way.
+    pvpDifficulty: (() => { const table = pvpDifficultyClient(origin); if (table?.state === "failed") table.retry(); return table; })(),
     stableSlotPrice: (owned) => game.slotPrices?.stableSlotPrice(owned),
     mapSource: {
       metadata: () => game.areas?.snapshot(),

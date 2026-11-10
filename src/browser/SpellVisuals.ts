@@ -199,6 +199,12 @@ export interface VisualAnimation {
   layer?: UnitActionLayer;
   /** 05.10-6.21: `animation` is a kit AnimID wound (see {@link VisualAnimationFollowUp.kitWound}). */
   kitWound?: true;
+  /**
+   * 5.05 (11.11): the kit starts its animations with play flag 0x20 (Wow.exe 0x0073b140): the kit's Flags 0x100, or the
+   * spell's DONT_AFFECT_SHEATH_STATE, or a visual whose missile is the ammo (gateway `sheathKeep`). The sheath rule
+   * 0x00738180 reads it as `keep` (world/AnimationSheathRule.ts). For the lead-in and its follow-up alike.
+   */
+  keep?: true;
 }
 
 /** A SoundEntries row scheduled alongside the visual plan. */
@@ -482,6 +488,7 @@ function addKit(
   mode: VisualAnimationMode = "once",
   fitToModel = true,
   modelPlayback: VisualModelPlayback = "once",
+  visualKeep = false, // 5.05 (11.11): the spell's half of the kit player's `keep` (SpellVisualMetadata.sheathKeep)
 ): void {
   if (!kit) return;
   plan.instances.push(...kitInstances(kit, guid, at, startedAt, endsAt, fitToModel, modelPlayback));
@@ -489,7 +496,7 @@ function addKit(
   // Synthetic target 0 is a static point, not a unit the renderer can animate. Keep its
   // world-bound effects and sound, but never enqueue a unit action for a GUID that has no model.
   if (guid !== 0n && includeAnimation) {
-    plan.animations.push(...kitAnimations(kit, guid, startedAt, Math.max(0, endsAt - startedAt), mode, layer));
+    plan.animations.push(...kitAnimations(kit, guid, startedAt, Math.max(0, endsAt - startedAt), mode, layer, visualKeep));
   }
   if (kit.sound > 0) plan.sounds.push({ sound: kit.sound, point: { ...at }, at: startedAt });
   // 25.10 (6.27): the kit's tint and flash on its unit (CGUnit_C::CreateProceduralEffect 0x007265c0).
@@ -560,7 +567,11 @@ export function kitNamesPose(animation: number): boolean {
   return animation > 0;
 }
 
-/** The animation a kit asks its unit for, if it asks for one, in the layer its phase belongs to. */
+/**
+ * The animation a kit asks its unit for, if it asks for one, in the layer its phase belongs to. 5.05 (11.11): `visualKeep`
+ * is the spell's half of the kit player's play flag 0x20 (Wow.exe 0x0073b140: Attributes 0x40000, a MissileModel of −1
+ * or −2), the kit's Flags 0x100 the other; either marks the animation `keep` for the sheath rule 0x00738180.
+ */
 export function kitAnimations(
   kit: SpellVisualKit,
   guid: bigint,
@@ -568,12 +579,14 @@ export function kitAnimations(
   hold: number,
   mode: VisualAnimationMode,
   layer: UnitActionLayer,
+  visualKeep = false,
 ): VisualAnimation[] {
   const primaryHold = mode === "hold" ? hold : 0;
   const start = kitNamesPose(kit.startAnimation);
   const primary = kitNamesPose(kit.animation);
   // 05.10-6.21: Wow.exe 0x73b140 hands a non-state kit's AnimID wound (8..10) to the flinch chooser.
   const wound = primary && layer !== "state" && kitWoundBehavior(kit.animation) ? { kitWound: true as const } : {};
+  const keep = visualKeep || kit.sheathKeep === true ? { keep: true as const } : {}; // 5.05 (11.11)
   if (start && primary) {
     return [{
       guid,
@@ -583,10 +596,11 @@ export function kitAnimations(
       mode: "once",
       followUp: { animation: kit.animation, mode, hold: primaryHold, ...wound }, // 05.10-6.21
       layer,
+      ...keep,
     }];
   }
-  if (primary) return [{ guid, animation: kit.animation, at, hold: primaryHold, mode, layer, ...wound }]; // 05.10-6.21
-  if (start) return [{ guid, animation: kit.startAnimation, at, hold: 0, mode: "once", layer }];
+  if (primary) return [{ guid, animation: kit.animation, at, hold: primaryHold, mode, layer, ...wound, ...keep }]; // 05.10-6.21
+  if (start) return [{ guid, animation: kit.startAnimation, at, hold: 0, mode: "once", layer, ...keep }];
   return [];
 }
 
@@ -607,9 +621,10 @@ export function planSpellVisual(
   const animations: VisualAnimation[] = [];
   const sounds: VisualSound[] = [];
   const plan: SpellVisualPlan = { instances, animations, sounds };
+  const keep = visual.sheathKeep === true; // 5.05 (11.11)
 
   addKit(plan, visual.cast, "cast", cast.caster, cast.casterPoint, now, now + CAST_KIT_MS,
-    options.includeCastAnimation !== false, "once", true);
+    options.includeCastAnimation !== false, "once", true, "once", keep);
   if (visual.animEventSound && visual.animEventSound > 0) {
     sounds.push({ sound: visual.animEventSound, point: { ...cast.casterPoint }, at: now });
   }
@@ -668,11 +683,11 @@ export function planSpellVisual(
     }
     const targetingEnd = arrival > now ? arrival : now + IMPACT_KIT_MS;
     addKit(plan, visual.missileTargeting, "reaction", target.guid, target.point, now, targetingEnd,
-      true, "hold", false, "hold");
+      true, "hold", false, "hold", keep);
     addKit(plan, visual.impact, "reaction", target.guid, target.point, arrival, arrival + IMPACT_KIT_MS,
-      true, "once", true);
+      true, "once", true, "once", keep);
     addKit(plan, visual.targetImpact, "reaction", target.guid, target.point, arrival, arrival + IMPACT_KIT_MS,
-      true, "once", true);
+      true, "once", true, "once", keep);
   }
 
   // 05.10-A7a-E (6.13): beams of the cast kit (Chain Lightning 321 → 743) over the flourish, and of the
@@ -690,7 +705,7 @@ export function planSpellVisual(
   // CasterImpactKit is the caster-side half of an impact, so it shares the first actual arrival
   // with TargetImpactKit.  With no targets the cast itself is the only meaningful impact.
   addKit(plan, visual.casterImpact, "reaction", cast.caster, cast.casterPoint, firstImpact,
-    firstImpact + IMPACT_KIT_MS, true, "once", true);
+    firstImpact + IMPACT_KIT_MS, true, "once", true, "once", keep);
   addAreaKit(plan, visual.instantArea, point, now, now + IMPACT_KIT_MS, true);
   addAreaKit(plan, visual.impactArea, point, firstImpact, firstImpact + IMPACT_KIT_MS, true);
   const persistentDuration = visual.durationMs && visual.durationMs > 0
@@ -719,7 +734,8 @@ export function planSpellCastStart(visual: SpellVisualMetadata, cast: SpellCast,
   const kit = cast.channel ? visual.channel : visual.precast;
   const duration = (cast.castTime !== undefined && cast.castTime > 0 ? cast.castTime : CAST_KIT_MS)
     + CAST_END_GRACE_MS;
-  addKit(plan, kit, "cast", cast.caster, cast.casterPoint, now, now + duration, true, "hold", false, "hold");
+  const keep = visual.sheathKeep === true; // 5.05 (11.11)
+  addKit(plan, kit, "cast", cast.caster, cast.casterPoint, now, now + duration, true, "hold", false, "hold", keep);
   // 05.10-A7a-E (6.13): a channel kit's beams (Drain Life 11762 → 719, Mind Flay 11744 → 750, Drain Mana
   // 430 → 744, Drain Soul 950 → 723) run from the caster's chest to its channel object, read every frame.
   if (cast.channel && cast.caster !== 0n && kit?.chains) {
@@ -730,7 +746,7 @@ export function planSpellCastStart(visual: SpellVisualMetadata, cast: SpellCast,
   }
   if (cast.channel && cast.caster !== 0n && !kitPoses(visual.channel) && visual.cast && kitPoses(visual.cast)) {
     // The pose only: the cast kit's models and sound already played with SPELL_GO.
-    plan.animations.push(...kitAnimations(visual.cast, cast.caster, now, duration, "hold", "cast"));
+    plan.animations.push(...kitAnimations(visual.cast, cast.caster, now, duration, "hold", "cast", keep));
   }
   return markIgnoreDistance(plan, visual.id, visual.dispelType); // 25.10 (6.27); 26.10 + light
 }
@@ -747,7 +763,8 @@ export function planSpellAuraState(
   endsAt = Number.POSITIVE_INFINITY,
 ): SpellVisualPlan {
   const plan: SpellVisualPlan = { instances: [], animations: [], sounds: [] };
-  addKit(plan, visual.state, "state", target.guid, target.point, now, Math.max(now, endsAt), true, "hold", false, "hold");
+  addKit(plan, visual.state, "state", target.guid, target.point, now, Math.max(now, endsAt), true, "hold", false, "hold",
+    visual.sheathKeep === true); // 5.05 (11.11)
   return markIgnoreDistance(plan, visual.id, visual.dispelType); // 25.10 (6.27); 26.10 + light
 }
 
@@ -758,7 +775,8 @@ export function planSpellAuraDone(
   now: number,
 ): SpellVisualPlan {
   const plan: SpellVisualPlan = { instances: [], animations: [], sounds: [] };
-  addKit(plan, visual.stateDone, "state", target.guid, target.point, now, now + IMPACT_KIT_MS, true, "once", true);
+  addKit(plan, visual.stateDone, "state", target.guid, target.point, now, now + IMPACT_KIT_MS, true, "once", true, "once",
+    visual.sheathKeep === true); // 5.05 (11.11)
   return markIgnoreDistance(plan, visual.id, visual.dispelType); // 25.10 (6.27); 26.10 + light
 }
 
@@ -783,7 +801,7 @@ export function planSpellVisualKitEvent(
   if (target.guid === 0n) return plan;
   const endsAt = now + (impact ? IMPACT_KIT_MS : PACKET_KIT_MS);
   // A scripted kit is a gesture — sitting down to eat, a boss flourish — and an impact kit a hit;
-  // neither is a cast, and neither may interrupt one.
+  // neither is a cast, and neither may interrupt one. 5.05 (11.11): no spell and no visual — its `keep` is its own Flags.
   addKit(plan, kit, impact ? "reaction" : "emote", target.guid, target.point, now, endsAt, true, "once", true);
   return plan;
 }

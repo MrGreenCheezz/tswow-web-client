@@ -52,6 +52,7 @@ import { frameXmlObserveOwnCastChanges } from "./FrameXmlOwnCastChanges.js"; // 
 import { observeGroundTarget } from "../game/GroundTarget.js"; // 2.05 (13.10)
 import { observeSpellEnchantQuestion } from "../game/MainHandEnchant.js"; // 05.10-2.05
 import { frameXmlResetCursor } from "./FrameXmlSetCursor.js"; // 05.10-5.17 review
+import { onHardwareCursorChange } from "../input/HardwareCursor.js"; // 5.17 (11.11)
 import { currencyTokenSlots } from "../CarriedItems.js"; // L1 (2.05)
 import { frameXmlLiveDropItemOnUnit } from "./FrameXmlDropItemOnUnit.js"; // L1 (1.10)
 import { frameXmlBuyMerchantItemInSlot } from "./FrameXmlMerchantCursor.js"; // L1 (3.23)
@@ -73,6 +74,7 @@ import { withEventOwnersExcluded } from "../ui/framexml_compat/FrameXmlRuntime.j
 import { readSkills } from "../ui/Skills.js";
 import { frameXmlUnitSkinnableLine, type FrameXmlSkinnableLine } from "./FrameXmlSkinnableTooltip.js";
 import { frameXmlUnitSubName } from "./FrameXmlUnitSubName.js";
+import { minimapPingUnitToken } from "./FrameXmlMinimapPing.js"; // 7.57 (11.11)
 import {
   frameXmlCritChanceFromAgility, frameXmlHealthRegenFromSpirit, frameXmlManaRegenFromSpirit, type FrameXmlRegenUnit,
 } from "./FrameXmlRegenStats.js";
@@ -427,6 +429,10 @@ import type {
   FrameXmlBattlegroundCatalog,
 } from "./FrameXmlBattlegrounds.js";
 import { FRAMEXML_BATTLEGROUND_TYPE_IDS } from "./FrameXmlBattlegrounds.js";
+import type { PvpDifficultyTable } from "../PvpDifficultyClient.js"; // 11.11 (3.24)
+import {
+  FrameXmlBattlegroundTypeList, frameXmlBattlegroundCanEnter, frameXmlBattlegroundHoliday,
+} from "./FrameXmlBattlegroundRules.js"; // 11.11 (3.24)
 import {
   BATTLEGROUND_AA,
   STATUS_IN_PROGRESS,
@@ -483,8 +489,8 @@ const HORDE_RACE_IDS = new Set([2, 5, 6, 8, 10]);
  * relation resolver absent, so live hostility stays neutral/unknown rather than inventing an alias.
  *
  * The world bus's `MINIMAP_PING` coordinates are absolute world points. Stock `Minimap.lua`
- * expects normalized local offsets, so this seam leaves that event to the adopted native canvas
- * until a host can provide a projection tied to its zoom and rotation state.
+ * expects normalized local offsets, so the seam raises that event only through the host's
+ * `minimapPingArgs` projection (7.57, 11.11), tied to the minimap's zoom and rotation.
  */
 
 /** How often the seam re-reads the world; 60 ms is four world ticks and under a rendered frame. */
@@ -515,6 +521,8 @@ function isArenaBattlefieldList(list: BattlefieldList | undefined): boolean {
 }
 
 export interface LiveWorldSeamContext {
+  /** 7.57 (11.11): MINIMAP_PING's offset for a world point, by the minimap's zoom and rotation (Minimap.ts). */
+  readonly minimapPingArgs?: (x: number, y: number) => readonly [number, number] | undefined;
   readonly mailDraftAttachments?: () => readonly bigint[];
   readonly stableSlotPrice?: (slotsOwned: number) => number | undefined;
   readonly mapSource?: FrameXmlMapSource;
@@ -689,6 +697,8 @@ export interface LiveWorldSeamContext {
   readonly petFoods?: { table(): FrameXmlPetFoodNames | undefined } | undefined; // 05.10-petfood
   /** 4.04 (11.11): beast lore's PET_SPELLS_TEMPLATE names (PetSpellClient.ts). */
   readonly petSpells?: { table(): { familySpells(family: number): readonly string[] } | undefined } | undefined;
+  /** 3.24 (11.11): PvpDifficulty brackets for a battleground's canEnter (PvpDifficultyClient.ts). */
+  readonly pvpDifficulty?: { table(): PvpDifficultyTable | undefined } | undefined;
 }
 
 interface LiveCastState {
@@ -1068,6 +1078,8 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
   #selectedFactionId: number | undefined;
   /** Last type index passed through GetBattlegroundInfo; stock calls this before GetBattlefieldInfo. */
   #selectedBattleground = 1;
+  /** 3.24 (11.11): the sorted battleground type list behind the 1-based indices (FrameXmlBattlegroundRules.ts). */
+  readonly #battlegroundTypeList = new FrameXmlBattlegroundTypeList();
   /** 3.24: the client's one battlefield list — type, battlemaster, instances, selection (FrameXmlBattlefieldList.ts). */
   readonly battlefieldListState = new FrameXmlBattlefieldListState();
   /** 3.13: the gossip POI last seen alive (GossipPoi.ts), so its end is one WORLD_MAP_UPDATE. */
@@ -2005,6 +2017,7 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     this.#collapsedSkillCategories.clear();
     this.#selectedFactionId = undefined;
     this.#selectedBattleground = 1;
+    this.#battlegroundTypeList.reset(); // 11.11 (3.24): 0x0054e220/0x0054e720 rebuild it per world
     this.#arenaListWorld = undefined;
     this.#arenaListReference = undefined;
     this.#arenaListFresh = false;
@@ -2438,6 +2451,14 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
       this.#unsubscribe.push(world.events.on("RAID_TARGET_UPDATE", () => {
         pump.fire(FRAMEXML_SEAM_EVENTS.raidTarget);
       }));
+      // 7.57 (11.11): every ping, the player's own included (FrameXmlMinimapPing.ts, Wow.exe 0x0057eb80).
+      this.#unsubscribe.push(world.events.on("MINIMAP_PING", ({ guid, x, y }) => {
+        const offset = this.#context.minimapPingArgs?.(x, y);
+        if (!offset) return;
+        const unit = minimapPingUnitToken(guid, world.state.selfGuid,
+          (member) => this.#partyUnitForGuid(member), (member) => this.#raidUnitForGuid(member));
+        pump.fire("MINIMAP_PING", unit, offset[0], offset[1]);
+      }));
       // INIT_WORLD_STATES is the authoritative map/zone/area edge. The same primitive comparison
       // is also run in tick because mapId can become known on the movement path first.
       this.#reconcileZone(true);
@@ -2659,6 +2680,8 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
         if (change.kind === "begin") pump.fire(FRAMEXML_SEAM_EVENTS.autofollowBegin, change.name);
         else pump.fire(FRAMEXML_SEAM_EVENTS.autofollowEnd);
       }));
+      // 5.17 (11.11): CURSOR_UPDATE (0x113) whenever what the pointer shows changes (input/HardwareCursor.ts).
+      this.#unsubscribe.push(onHardwareCursorChange(() => { pump.fire("CURSOR_UPDATE"); }));
       // 3.02: the request and the outcome (FrameXmlCastEvents.ts).
       this.#unsubscribe.push(world.events.on("SPELL_CAST_SENT", (event) => this.castEvents.onSent(pump, event)));
       this.#unsubscribe.push(world.events.on("SPELL_CAST_RESULT", (event) => this.castEvents.onResult(pump, event)));      // 3.47 (12.10): the client's own refusal of a request on cooldown ends in the same 0x007fecc0 (0x00808200's
@@ -8997,16 +9020,33 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     return this.#battlegroundCatalog()?.length ?? 0;
   }
 
-  battlegroundInfo(index: number): readonly [string, boolean, boolean, boolean, number] | undefined {
+  /** 11.11 (3.24): the world states the server sent, for HolidayWorldState (Wow.exe 0x00548d10). */
+  #battlegroundWorldStates(): ReadonlyMap<number, number> | undefined {
+    const states = this.#context.world()?.worldStates;
+    return states instanceof Map ? states : undefined;
+  }
+
+  /** 11.11 (3.24): the catalog in the client's sorted type-list order (0x0054e720, SortBGList 0x0054c9f0). */
+  #battlegroundTypes(): FrameXmlBattlegroundCatalog | undefined {
     const catalog = this.#battlegroundCatalog();
+    return catalog && this.#battlegroundTypeList.rows(catalog, this.#battlegroundWorldStates());
+  }
+
+  /** 11.11 (3.24): canEnter (0x0054ba00, PvpDifficulty) and isHoliday (HolidayWorldState) of a row. */
+  #battlegroundAccess(row: FrameXmlBattlegroundCatalog[number]): readonly [boolean, boolean] {
+    const level = this.unitLevel("player") ?? 0;
+    return [frameXmlBattlegroundCanEnter(row, level, this.#context.pvpDifficulty?.table()),
+      frameXmlBattlegroundHoliday(row, this.#battlegroundWorldStates())];
+  }
+
+  battlegroundInfo(index: number): readonly [string, boolean, boolean, boolean, number] | undefined {
+    const catalog = this.#battlegroundTypes();
     if (!catalog || !Number.isInteger(index) || index < 1 || index > catalog.length) return undefined;
     const row = catalog[index - 1];
     if (!row) return undefined;
-    const level = this.unitLevel("player") ?? 0;
-    const canEnter = level >= row.minLevel && level <= row.maxLevel;
-    // HolidayWorldState identifies a possible world-state variable, not an active holiday. No
-    // active holiday is asserted until a future authoritative state resolver exists.
-    return [row.name, canEnter, false, row.random, row.bgTypeId];
+    // 0x0054e010: name, canEnter, isHoliday, isRandom, id — of the sorted list's index-th id.
+    const [canEnter, holiday] = this.#battlegroundAccess(row);
+    return [row.name, canEnter, holiday, row.random, row.bgTypeId];
   }
 
   /** 3.24: the current list type's catalog row (0x00bea53c), else the PvP tab's selected one. */
@@ -9014,7 +9054,7 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     const catalog = this.#battlegroundCatalog();
     const type = this.battlefieldListState.type;
     return (type === undefined ? undefined : catalog?.find((row) => row.bgTypeId === type))
-      ?? catalog?.[this.#selectedBattleground - 1];
+      ?? this.#battlegroundTypes()?.[this.#selectedBattleground - 1];
   }
 
   battlefieldInfo(): readonly [string, string, number, ...unknown[]] | undefined {
@@ -9034,11 +9074,10 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
           : undefined;
     // 0x0054d770: the BattlemasterList name (the queue status names a slot by it too, so stock's
     // `queueMapName.." "..queueInstanceID == button.title` matches, BattlefieldFrame.lua:431), MaxGroupSize,
-    // then canEnter (the catalog's level range, as GetBattlegroundInfo answers it), isHoliday (no holiday
-    // resolver: false) and isRandom (id 32).
-    const level = this.unitLevel("player") ?? 0;
-    return [row.name, description ?? "", row.maxGroupSize,
-      level >= row.minLevel && level <= row.maxLevel, false, row.random];
+    // then canEnter and isHoliday as GetBattlegroundInfo answers them (11.11: 0x0054ba00, HolidayWorldState) and
+    // isRandom (id 32).
+    const [canEnter, holiday] = this.#battlegroundAccess(row);
+    return [row.name, description ?? "", row.maxGroupSize, canEnter, holiday, row.random];
   }
 
   /** 3.24: JoinBattlefield's battleground branch (0x0054cc70) over the list (FrameXmlBattlefieldList.ts). */
@@ -9117,7 +9156,7 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
   }
 
   requestBattlegroundInstanceInfo(index: number): void {
-    const row = this.#battlegroundCatalog()?.[index - 1];
+    const row = this.#battlegroundTypes()?.[index - 1];
     if (!row) return;
     this.#selectedBattleground = index;
     // 3.24: 0x0054e5b0 makes the type current at once, before the answer.
@@ -9126,14 +9165,15 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
   }
 
   joinBattleground(asGroup: boolean): void {
-    const row = this.#battlegroundCatalog()?.[this.#selectedBattleground - 1];
+    const row = this.#battlegroundTypes()?.[this.#selectedBattleground - 1];
     if (!row) return;
     this.#context.world()?.joinBattleground(0n, row.bgTypeId, 0, asGroup);
   }
 
   sortBattlegroundList(): void {
-    // BattlemasterList order is the client's authored order and must not be replaced with a
-    // locale-dependent sort while the stock frame is holding one-based type indices.
+    // 11.11 (3.24): SortBGList (0x0054c9f0) sorts the type list again by 0x0054a650 — random, holidays, MinLevel, id.
+    const catalog = this.#battlegroundCatalog();
+    if (catalog) this.#battlegroundTypeList.sort(catalog, this.#battlegroundWorldStates());
   }
 
   closeBattleground(): void {
@@ -9346,8 +9386,7 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
   }
 
   holidayBattlegroundHonorBonuses(): readonly [boolean, number, number, number, number] {
-    // No holiday world-state resolver is in this slice; expose the current ordinary list only if
-    // stock asks for this tuple, while GetBattlegroundInfo keeps isHoliday false.
+    // The current list's ordinary bonuses; isHoliday itself is GetBattlegroundInfo's (HolidayWorldState, 11.11).
     const list = this.#context.world()?.battlefieldList;
     if (!list) return [false, 0, 0, 0, 0];
     return [list.hasWin, list.winHonor, list.winArena, list.lossHonor, 0];

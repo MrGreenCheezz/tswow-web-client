@@ -54,6 +54,8 @@ export interface UnitActionPayload {
   /** A missing clip has entered the bounded network/CPU wait; cleared once it plays. */
   waitingForClip?: boolean;
   source: "external" | "visual";
+  /** 5.05 (11.11): a kit's start carries play flag 0x20 (SpellVisuals.ts `VisualAnimation.keep`); visual entries only. */
+  keep?: boolean;
   /** 05.10-A7a-D 6.06: a swing's variant roll in [0, 1), drawn once when queued (game/CombatAnimations.ts). */
   roll?: number;
   /** 05.10-A7a-D 6.06: a victim's reaction, resolved against what it holds when drawn. */
@@ -68,6 +70,19 @@ export interface UnitActionPayload {
  */
 export function isCastAction(action: UnitAction | undefined): boolean {
   return action === "precast" || action === "cast" || action === "channel";
+}
+
+/**
+ * 5.05 (11.11): the `keep` bit (play flag 0x20 of Wow.exe 0x007385c0) the start of `payload` carries, or undefined when it
+ * cannot be told and the start is not judged. Only the kit player 0x0073b140 sets the bit; a kit's entry carries it from
+ * the plan (`keep`). A semantic spell pose stands for a kit whose spell is not known here (no caller queues one today).
+ * Every other start — locomotion, stand states, emotes, swings, shots, reactions — passes none: their 0x007385c0 and
+ * 0x0073ac30 callers push 0, 1, 0x10 or 0x40 (.runtime/re-2026-11-11/combat/playflags.mjs, sheathvis/ac30flags.mjs; the
+ * register sites read in sheathvis/d1.c, d2.c).
+ */
+export function startKeep(payload: Pick<UnitActionPayload, "source" | "action" | "keep">): boolean | undefined {
+  if (payload.source === "visual") return payload.keep === true;
+  return isCastAction(payload.action) ? undefined : false;
 }
 
 /** What the renderer is showing from one unit's queue, and on which part of the body. */

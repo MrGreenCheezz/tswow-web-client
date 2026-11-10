@@ -42,10 +42,9 @@
  *   state rather than world seam values. `FrameXmlMap` separately projects `GetPlayerMapPosition`
  *   through the selected DBC map and floor for the original world map.
  *
- * `Minimap.xml` also registers `MINIMAP_PING`, but it is deliberately not promoted in this seam:
- * this client's packet carries absolute world coordinates while stock `Minimap.lua` expects
- * normalized local offsets after zoom/rotation projection. The adopted native canvas owns that
- * projection; forwarding raw values would place a ping incorrectly.
+ * `Minimap.xml` also registers `MINIMAP_PING`. This client's packet carries absolute world
+ * coordinates while stock `Minimap.lua` expects normalized local offsets after zoom/rotation
+ * projection, so `LiveWorldSeam` raises it only through the host's `minimapPingArgs` (7.57, 11.11).
  *
  * * the player containers — `GetContainerNumSlots`, `GetContainerNumFreeSlots`,
  *   `GetContainerItemInfo`, `GetContainerItemLink`, `GetContainerItemCooldown`, `GetBagName` and
@@ -2798,7 +2797,7 @@ export const FRAMEXML_SEAM_BINDINGS: Readonly<Record<string, FrameXmlSeamBinding
   },
   SortBGList: (seam) => {
     seam.sortBattlegroundList();
-    return NOTHING;
+    return [true]; // 11.11 (3.24): Wow.exe 0x0054c9f0 pushes true
   },
   CloseBattlefield: (seam) => {
     seam.closeBattleground();

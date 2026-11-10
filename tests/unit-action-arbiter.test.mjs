@@ -39,6 +39,7 @@ const {
   UNIT_ACTION_PRIORITY, UnitActionQueue, animationPlaysOnUpperBody, heldClipPlaysOnce,
   locomotionUnderlayClip, unitActionDisplay, unitActionEndsOnMovement,
   isCastAction, // 5.05 (11.11)
+  startKeep, // 5.05 (11.11): the kit start's play flag 0x20
 } = arbiter;
 
 const { seatSplitsPose } = await import("../dist/code/browser/VehicleSeatPose.js"); // 5.05 (11.11): the executor's dependency
@@ -352,7 +353,7 @@ function executor({ moving = false, overrides = {}, legless = false } = {}) {
     ACTION_CLIP_WAIT: 900, ACTION_SIDECAR_WAIT: 3_000,
     // 12.10 6.03/6.07: the playback modes #startUnitAction / #playAnimation / #poseBase read.
     PLAYBACK_BACKWARD, PLAYBACK_FORWARD, PLAYBACK_HOLD_LAST, applyPlayback, fallbackPlayback, playbackHolds, wantedPlayback,
-    isCastAction, // 5.05 (11.11): #settleUnitAction marks a kit's start for the sheath rule
+    startKeep, // 5.05 (11.11): #settleUnitAction marks a start's `keep` bit for the sheath rule
     seatSplitsPose, // 5.05 (11.11): read by #settleUnitAction since 04.11 (11.02), missing here until now
     ...overrides,
   });
@@ -849,4 +850,21 @@ test("executor: a STUNNED hold survives a flinch and walking, and leaves with th
   syncFlagPoses(UNIT_FLAG_STUNNED, 0, false, 10_000_100, queue, submitAt(10_000_100));
   assert.equal(frame(10_000_100, stancePose()), undefined);
   assert.equal(unit.animationId, READY);
+});
+
+test("executor 5.05 (11.11): a kit's start is counted with its entry's `keep` bit, and the bit is down again after it", () => {
+  const { h, queue, frame } = executor();
+  const seen = [];
+  h.startKeep = false;
+  h.noteStart = () => seen.push(h.startKeep);
+  const payload = (animation, keep) => ({
+    wanted: [animation], action: undefined, stage: "main", sequenceAt: 0, waitUntil: 900, sidecarWaitUntil: 3_000,
+    source: "visual", ...(keep ? { keep: true } : {}),
+  });
+  queue.submit({ layer: "cast", held: false, until: 3_000, payload: payload(CAST, true) }, 0);
+  frame(0);
+  queue.submit({ layer: "cast", held: false, until: 3_000, payload: payload(PRECAST, false) }, 10);
+  frame(10);
+  assert.deepEqual(seen, [true, false], "Wow.exe 0x0073b140's play flag 0x20, per kit");
+  assert.equal(h.startKeep, false, "nothing else is started under a kit's bit");
 });

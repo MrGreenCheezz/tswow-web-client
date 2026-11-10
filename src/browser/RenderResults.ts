@@ -66,13 +66,15 @@ export interface SwingResult {
 /**
  * 5.05 (11.11): the active player's model as the sheath rule reads it (world/AnimationSheathRule.ts, Wow.exe 0x00738180):
  * the animation it plays — the upper-body action when one is on, else the base (0x00717260) — and how many animations
- * its model has started that were not a spell kit's (the starts 0x007385c0 makes with no 0x20 in its play flags),
- * counted since the renderer began. The page judges again whenever `starts` moves.
+ * its model has started (0x007385c0), counted since the renderer began, with the last one's `keep` bit. The page judges
+ * again whenever `starts` moves.
  */
 export interface OwnAnimationResult {
   guid: bigint;
   animation: number;
   starts: number;
+  /** 5.05 (11.11): the `keep` bit (play flag 0x20) of the last counted start: a spell kit's (0x0073b140), never another's. */
+  keep: boolean;
 }
 
 export interface RenderResults {

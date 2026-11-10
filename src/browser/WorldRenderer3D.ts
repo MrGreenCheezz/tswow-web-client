@@ -181,7 +181,7 @@ import {
 } from "./AnimatedModel.js";
 import {
   UnitActionQueue, animationPlaysOnUpperBody, heldClipPlaysOnce, locomotionUnderlayClip,
-  unitActionDisplay, unitActionEndsOnMovement, isCastAction, // 5.05 (11.11): isCastAction
+  unitActionDisplay, unitActionEndsOnMovement, startKeep, // 5.05 (11.11): startKeep
   type ShownUnitAction, type UnitActionDisplay, type UnitActionEntry, type UnitActionLayer, type UnitActionPayload,
 } from "./UnitActionArbiter.js";
 import { poseTakesWholeBody, wholeBodyOutlivesBase } from "./game/ActionOverBase.js"; // 05.10-6.21b; ревью 6.21b
@@ -4134,10 +4134,14 @@ export class WorldRenderer3D {
   #visualSequence = 0;
   /** 22.10 ARC-2 S4a: the main thread's spell visual ids → the handles below (SpellVisualIds.ts). */
   readonly #spellVisualIds = new SpellVisualIds<SpellVisualHandle>();
-  /** 5.05 (11.11): the active player's model this frame, its non-kit animation starts, and whether a kit's start runs. */
+  /**
+   * 5.05 (11.11): the active player's model this frame, its judged animation starts and the `keep` bit of the last one,
+   * and the bit of the start running now (UnitActionArbiter.ts `startKeep`; undefined: a start that is not judged).
+   */
   #selfModel: PosedModel | undefined;
   #selfStarts = 0;
-  #kitStart = false;
+  #selfKeep = false;
+  #startKeep: boolean | undefined = false;
   readonly #liveVisualHandles = (): ReadonlySet<SpellVisualHandle> => this.#collectVisualHandles(); // 22.10 ARC-2 S4a
   /** Animations from future spell impacts, held out of #actions until their absolute start. */
   readonly #pendingVisualAnimations: Array<{
@@ -16528,6 +16532,7 @@ export class WorldRenderer3D {
         waitUntil: now + ACTION_CLIP_WAIT,
         sidecarWaitUntil: now + ACTION_SIDECAR_WAIT,
         source,
+        ...(animation.keep === true ? { keep: true } : {}), // 5.05 (11.11): the kit's play flag 0x20 (Wow.exe 0x0073b140)
       },
     }, now);
   }
@@ -17483,9 +17488,9 @@ export class WorldRenderer3D {
         queue.remove(entry);
         continue;
       }
-      this.#kitStart = entry.payload.source === "visual" || isCastAction(entry.payload.action); // 5.05 (11.11): a kit's start
+      this.#startKeep = startKeep(entry.payload); // 5.05 (11.11): a kit's start carries its play flag 0x20
       this.#startUnitAction(unit, queue, entry, animation, display, now);
-      this.#kitStart = false; // 5.05 (11.11)
+      this.#startKeep = false; // 5.05 (11.11)
       return display;
     }
     this.#releaseUnitAction(unit, queue);
@@ -17677,14 +17682,15 @@ export class WorldRenderer3D {
   }
 
   /**
-   * 5.05 (11.11): a clip started on a model (Wow.exe's 0x007385c0): counted for the active player's model unless a spell
-   * kit started it — the kit player 0x0073b140 is the caller whose play flags can carry 0x20 (`keep`, from the spell's
-   * SPELL_ATTR0_DONT_AFFECT_SHEATH_STATE, the kit's Flags 0x100 or an ammo missile), which the page cannot see here;
-   * every fixed caller (locomotion 0x0073b510, stand states, emotes, swings, reactions) passes none
-   * (.runtime/re-2026-11-11/combat/playflags.mjs).
+   * 5.05 (11.11): a clip started on a model (Wow.exe's 0x007385c0): counted for the active player's model with the `keep`
+   * bit of its play flags — set only by the kit player 0x0073b140 (the spell's SPELL_ATTR0_DONT_AFFECT_SHEATH_STATE, the
+   * kit's Flags 0x100, a MissileModel of −1/−2), which a kit's entry carries from its plan; every fixed caller
+   * (locomotion 0x0073b510, stand states, emotes, swings, reactions) passes none (UnitActionArbiter.ts `startKeep`).
    */
   #noteStart(unit: PosedModel): void {
-    if (unit === this.#selfModel && !this.#kitStart) this.#selfStarts++;
+    if (unit !== this.#selfModel || this.#startKeep === undefined) return;
+    this.#selfStarts++;
+    this.#selfKeep = this.#startKeep;
   }
 
   /** 5.05 (11.11): RenderResults.ts `ownAnimation` — the model's animation as 0x00717260 reads it, and its count. */
@@ -17695,8 +17701,9 @@ export class WorldRenderer3D {
     if (own !== undefined && own.guid === guid) {
       own.animation = animation;
       own.starts = this.#selfStarts;
+      own.keep = this.#selfKeep;
     } else {
-      this.#results.ownAnimation = { guid, animation, starts: this.#selfStarts };
+      this.#results.ownAnimation = { guid, animation, starts: this.#selfStarts, keep: this.#selfKeep };
     }
   }
 

@@ -129,6 +129,11 @@ export interface SpellVisualKit {
    * white over `durationMs` (CharParamTwo s) (0x007265c0; GetFlashColor 0x0071a9a0). 183 spell visuals.
    */
   flash?: { colour: number; delayMs: number; durationMs: number };
+  /**
+   * 5.05 (11.11): `Flags & 0x100` — the kit player 0x0073b140 then starts the kit's animations with play flag 0x20, which
+   * keeps the unit's weapon out through 0x00738180 (browser world/AnimationSheathRule.ts `keep`). 34 kits.
+   */
+  sheathKeep?: true;
 }
 
 /**
@@ -263,6 +268,12 @@ export interface SpellVisualMetadata {
    * enhanced profile's spell light reads it: a disease, a poison or a curse is not a light (SpellLights.ts).
    */
   dispelType?: number;
+  /**
+   * 5.05 (11.11): every kit of this spell starts its animations with play flag 0x20 (`keep`, Wow.exe 0x0073b140): the
+   * spell's Attributes has 0x40000 (SPELL_ATTR0_DONT_AFFECT_SHEATH_STATE), or its SpellVisual's MissileModel is −1 or
+   * −2. A kit's own Flags 0x100 is {@link SpellVisualKit.sheathKeep}.
+   */
+  sheathKeep?: true;
 }
 
 /** Which effect column of a kit hangs on which attachment point. */
@@ -372,6 +383,15 @@ function missileExtras(
   return extras;
 }
 
+/**
+ * 5.05 (11.11): what makes Wow.exe's kit player 0x0073b140 add play flag 0x20 (`keep`) to the animations it starts
+ * (.runtime/re-2026-10-05/l621/r1.c, its parameters read in re-2026-11-11/sheathvis): the kit's Flags (+0x94) 0x100,
+ * the spell's Attributes (+0x10) 0x40000, or the SpellVisual's MissileModel (+0x20) −1 or −2.
+ */
+const KIT_FLAG_KEEP_SHEATH = 0x100;
+const SPELL_ATTR0_DONT_AFFECT_SHEATH_STATE = 0x40000;
+const MISSILE_MODEL_KEEPS_SHEATH: ReadonlySet<number> = new Set([-1, -2]);
+
 /** 13.10: SpellVisual.Flags 0x200 — MissileAttachment/MissileDestinationAttachment are attachment ids (0x007fc5f0, 0x00732ff0). */
 const SPELL_VISUAL_FLAG_RAW_ATTACHMENTS = 0x200;
 
@@ -455,6 +475,7 @@ function readKits(
       ...(chains.length > 0 ? { chains } : {}),
       ...(tint !== undefined ? { tint } : {}), // 25.10 (6.27)
       ...(flash ? { flash } : {}),
+      ...((kits.int(row, "Flags") & KIT_FLAG_KEEP_SHEATH) !== 0 ? { sheathKeep: true as const } : {}), // 5.05 (11.11)
     });
   }
   return result;
@@ -581,7 +602,9 @@ export function parseSpellVisuals(
   // One record per visual, built once and then shared by every spell that names it — 27,133
   // spells reach 9,406 visuals, so building per spell would build each one three times over.
   const byVisual = new Map<number, Omit<SpellVisualMetadata, "id">>();
+  const keepVisuals = new Set<number>(); // 5.05 (11.11): MissileModel −1/−2
   for (const row of visuals.rows()) {
+    if (MISSILE_MODEL_KEEPS_SHEATH.has(visuals.int(row, "MissileModel"))) keepVisuals.add(visuals.id(row));
     const record: Omit<SpellVisualMetadata, "id"> = {};
     for (const [field, phase] of VISUAL_KITS) {
       const kit = kitsById.get(visuals.int(row, field));
@@ -660,6 +683,12 @@ export function parseSpellVisuals(
     if (duration !== undefined) merged.durationMs = Number.isFinite(duration) && duration > 0 ? duration : 0;
     const dispelType = spells.int(row, "DispelType"); // 26.10 (6.27)
     if (found && dispelType > 0) merged.dispelType = dispelType;
+    // 5.05 (11.11): the kit player's `keep` (0x0073b140) — the spell's attribute, or the missile of the visual it plays:
+    // the first slot naming a known row, as the kits above are taken first from it.
+    const playedVisual = [0, 1].map((slot) => spells.int(row, "SpellVisualID", slot))
+      .find((visual) => visual !== 0 && (byVisual.has(visual) || keepVisuals.has(visual)));
+    if (found && ((spells.int(row, "Attributes") & SPELL_ATTR0_DONT_AFFECT_SHEATH_STATE) !== 0
+      || (playedVisual !== undefined && keepVisuals.has(playedVisual)))) merged.sheathKeep = true;
     if (found) result.set(merged.id, merged);
   }
   return result;

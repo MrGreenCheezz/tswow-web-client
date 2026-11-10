@@ -23,6 +23,8 @@
  *     GMRESPONSE_RECEIVED(text, response). SMSG_GMRESPONSE_STATUS_UPDATE: forgets both, then GMSURVEY_DISPLAY when
  *     its byte asks a survey — out of the plan (owner, 8.17): UPDATE_TICKET() instead — else UPDATE_TICKET().
  *     SMSG_GMTICKET_SYSTEMSTATUS (0x006e2e90): UPDATE_GM_STATUS with the word as sent (1 enabled, 0 disabled).
+ *     SMSG_GM_TICKET_STATUS_UPDATE (11.11, TicketProtocol.ts): 1/4 ask GetGMTicket, 2 forgets both and raises
+ *     UPDATE_TICKET(), 3 forgets both and raises GMSURVEY_DISPLAY (here UPDATE_TICKET(), as above).
  *   The knowledge base is Blizzard's web service (0x00550e10: getKBSetup.xml on support.wow-europe.com and its
  *     siblings, 0x00550940), never this realm's: KBSetup_BeginLoading answers as a load that failed
  *     (KNOWLEDGE_BASE_SETUP_LOAD_FAILURE; stock shows KBASE_ERROR_LOAD_FAILURE and keeps «Top issues» enabled),
@@ -158,6 +160,7 @@ export class FrameXmlHelpModel {
         return;
       }
       case "resolved":
+        // SMSG_GMRESPONSE_STATUS_UPDATE, or SMSG_GM_TICKET_STATUS_UPDATE 2/3 (11.11): ticket and response forgotten.
         // GMSURVEY_DISPLAY is not raised: the GM survey is out of the plan (owner, 8.17).
         pump.fire("UPDATE_TICKET");
         return;

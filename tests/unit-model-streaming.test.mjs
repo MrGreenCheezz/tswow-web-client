@@ -251,7 +251,7 @@ async function actionHarness() {
     playedSeconds: (action) => action.getClip().duration,
     pendingActionExpired, pendingActionFate,
     unitActionDisplay: arbiter.unitActionDisplay, unitActionEndsOnMovement: arbiter.unitActionEndsOnMovement,
-    isCastAction: arbiter.isCastAction, // 5.05 (11.11): a kit's start, for the sheath rule's count
+    startKeep: arbiter.startKeep, // 5.05 (11.11): a start's `keep` bit, for the sheath rule's count
     animationPlaysOnUpperBody: () => true, ANIMATION_IDS: { Stand: 0 }, poseAnimation: () => ({ wanted: [0] }),
     isBaseIdle: () => true, // 05.10-A7a-C: #settleUnitAction asks isBaseIdle
     wholeBodyOutlivesBase: () => true, // 05.10: ревью 6.21b — #settleUnitAction notes the travel a pose began in

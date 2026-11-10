@@ -172,7 +172,9 @@ export class SpellVisualClient extends BatchedMetadataClient<SpellVisualMetadata
     // v=10 (25.10, 6.27): a kit's `tint` (CharProc 1) and `flash` (CharProc 13); an older gateway answers v=9 without them.
     // v=11 (26.10, 6.27): the spell's `dispelType`; an older gateway answers v=10 without it (every effect may light).
     // v=12 (29.10): `ammoMissile`; an older gateway answers v=11 without it (no ammo flies, the shot still plays).
-    return `${this.baseUrl}/dbc/spell-visuals?v=12&ids=${ids.join(",")}`;
+    // v=13 (11.11, 5.05): `sheathKeep` on a spell and on its kits (Wow.exe 0x0073b140's play flag 0x20); an older gateway
+    // answers v=12 without it, and every kit start is then judged as a start that does not keep the weapon out.
+    return `${this.baseUrl}/dbc/spell-visuals?v=13&ids=${ids.join(",")}`;
   }
 
   protected override accept(value: unknown): value is SpellVisualMetadata {
@@ -195,7 +197,8 @@ export class SpellVisualKitClient extends BatchedMetadataClient<SpellVisualKitRe
   protected override url(ids: readonly number[]): string {
     // v=2 (13.10, 6.13): the same chain fields as `/dbc/spell-visuals?v=9`.
     // v=3 (25.10, 6.27): `tint` and `flash`, as `/dbc/spell-visuals?v=10`.
-    return `${this.baseUrl}/dbc/spell-visual-kits?v=3&ids=${ids.join(",")}`;
+    // v=4 (11.11, 5.05): the kit's `sheathKeep` (Flags 0x100), as `/dbc/spell-visuals?v=13`.
+    return `${this.baseUrl}/dbc/spell-visual-kits?v=4&ids=${ids.join(",")}`;
   }
 
   protected override accept(value: unknown): value is SpellVisualKitRecord {
@@ -264,6 +267,7 @@ function isKitExtras(shape: Record<string, unknown>): boolean {
     if (!Number.isInteger(fields["colour"]) || (fields["colour"] as number) < 0 || (fields["colour"] as number) > 0xffffff) return false;
     if (!finite(fields["delayMs"]) || !finite(fields["durationMs"])) return false;
   }
+  if (shape["sheathKeep"] !== undefined && shape["sheathKeep"] !== true) return false; // 5.05 (11.11)
   return true;
 }
 
@@ -309,6 +313,7 @@ function isSpellVisual(value: unknown): value is SpellVisualMetadata {
   if (typeof visual["id"] !== "number" || !Number.isSafeInteger(visual["id"])) return false;
   if (visual["autoRepeat"] !== undefined && typeof visual["autoRepeat"] !== "boolean") return false;
   if (visual["dispelType"] !== undefined && !(Number.isInteger(visual["dispelType"]) && (visual["dispelType"] as number) > 0)) return false; // 26.10
+  if (visual["sheathKeep"] !== undefined && visual["sheathKeep"] !== true) return false; // 5.05 (11.11)
   for (const phase of [
     "precast", "cast", "impact", "state", "stateDone", "channel", "casterImpact", "targetImpact",
     "missileTargeting", "instantArea", "impactArea", "persistentArea",

@@ -412,17 +412,10 @@ test("adopted geometry tracks target changes in the existing update and ping pro
 });
 
 test("optimistic local pings deduplicate only a matching immediate server echo", () => {
-  const { canvas } = nativeParts();
   const previous = game.world;
   forgetMinimap();
-  const host = fakeNode("div", document);
-  const target = fakeNode("div", document);
-  target.style.width = "140px";
-  target.style.height = "140px";
-  target.offsetWidth = 140;
-  target.offsetHeight = 140;
-  host.append(target);
-  const cleanup = adoptMinimapCanvas(target);
+  // 7.57 (11.11): the native interface's own ring; adopted, the stock MinimapPing frame draws instead.
+  const cleanup = undefined;
   try {
     const calls = [];
     game.world = makeWorld({
@@ -450,6 +443,53 @@ test("optimistic local pings deduplicate only a matching immediate server echo",
     const lateLocal = calls.at(-1);
     addMinimapPing(lateLocal.x, lateLocal.y, performance.now() + 2_000);
     assert.equal(drawPings(performance.now()), 4, "a matching late echo remains distinct");
+  } finally {
+    game.world = previous;
+    cleanup?.();
+  }
+});
+
+test("7.57: adopted, a ping is the stock frame's — no canvas ring — and GetPingPosition reads it back", () => {
+  const previous = game.world;
+  forgetMinimap();
+  const host = fakeNode("div", document);
+  const target = fakeNode("div", document);
+  target.style.width = "140px";
+  target.style.height = "140px";
+  target.offsetWidth = 140;
+  target.offsetHeight = 140;
+  host.append(target);
+  const cleanup = adoptMinimapCanvas(target);
+  try {
+    const calls = [];
+    const position = { x: 100, y: 200, z: 0, orientation: 0 };
+    game.world = makeWorld({ position, pingMinimap: (x, y) => calls.push({ x, y }) });
+    // Index 4 outdoors: 200 yards across the circle.
+    minimapWidgetAdapter.setZoom(4);
+    const rings = (now) => {
+      const before = contextStrokes.length;
+      updateMinimap(now);
+      return contextStrokes.slice(before).filter(({ strokeStyle }) => String(strokeStyle).startsWith("rgba(")).length;
+    };
+    // 35 units right and 14 up on a 140-unit map: a quarter and a tenth of the width.
+    minimapWidgetAdapter.pingLocation(35, 14);
+    assert.equal(calls.length, 1, "the ping still goes to the world");
+    assert.ok(Math.abs(calls[0].x - 120) < 1e-9, "14/140 of 200 yards north");
+    assert.ok(Math.abs(calls[0].y - 150) < 1e-9, "35/140 of 200 yards east, i.e. falling Y");
+    assert.equal(rings(performance.now()), 0, "no canvas ring under the stock MinimapPing frame");
+    addMinimapPing(90, 220, performance.now());
+    assert.equal(rings(performance.now()), 0, "nor for a party member's ping");
+
+    // Minimap:GetPingPosition (Wow.exe 0x0057efe0): the last ping, from where the player stands now.
+    let [x, y] = minimapWidgetAdapter.getPingPosition();
+    // 20 yards west (rising Y) and 10 south of the player: left and down, over 200 yards.
+    assert.ok(Math.abs(x - -0.1) < 1e-9 && Math.abs(y - -0.05) < 1e-9, `${x}, ${y}`);
+    position.x = 110;
+    [x, y] = minimapWidgetAdapter.getPingPosition();
+    assert.ok(Math.abs(x - -0.1) < 1e-9 && Math.abs(y - -0.1) < 1e-9, "re-measured from the moved player");
+    // No player: 0, 0.
+    game.world = undefined;
+    assert.deepEqual(minimapWidgetAdapter.getPingPosition(), [0, 0]);
   } finally {
     game.world = previous;
     cleanup?.();

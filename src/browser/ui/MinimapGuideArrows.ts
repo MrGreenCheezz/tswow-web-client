@@ -22,7 +22,8 @@ const MAX_ARROWS = 3;
 const FLAG_ICON = 0x2;
 const FLAG_INSIDE = 0x100;
 
-export type MinimapGuideKind = "areaPoi" | "gossip" | "corpse";
+/** 11.11: "spiritHealer" is 0x007f4a00's mark (world/SpiritHealerMark.ts); unlike the corpse it keeps the 694-yard limit. */
+export type MinimapGuideKind = "areaPoi" | "gossip" | "corpse" | "spiritHealer";
 
 export interface MinimapGuideCandidate extends WorldPoint {
   readonly kind: MinimapGuideKind;

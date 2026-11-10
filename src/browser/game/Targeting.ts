@@ -1,9 +1,12 @@
 import { unit, worldObject } from "../../world/Fields.js";
 import { REACTION_FRIENDLY, REACTION_HOSTILE, REACTION_NEUTRAL } from "../../world/FactionRules.js";
 import {
-  collectTabCandidates, enemiesAround, isAttackableUnit, isTabEnemy, TabCycle,
+  enemiesAround, isAttackableUnit, isTabEnemy, TabCycle,
   type TabSource, type TargetCandidate,
 } from "../../world/TargetSearch.js";
+import { CREATURE_TYPE_FLAG_TREAT_AS_RAID_UNIT, collectTabList } from "../../world/TargetSearch.js"; // 5.16 (11.11)
+import { unitVehicleSeat } from "../../world/VehicleSeatModel.js"; // 5.16 (11.11)
+import { vehicleCatalog } from "../VehicleClient.js"; // 5.16 (11.11)
 import type { WorldObjectState } from "../../world/WorldState.js";
 import type { FactionClient } from "../FactionClient.js";
 import { createCamera } from "../SimpleScene.js";
@@ -285,13 +288,43 @@ export function rightClickRefusesService(object: WorldObjectState): boolean {
   return (unit.npcFlags(object) ?? 0) !== 0 && !rightClickInteracts(object);
 }
 
+/**
+ * 5.16 (11.11): the search centre CanAttack is asked from (0x524440 calls 0x518e40 with ECX = the centre; the
+ * re-check of 0x524fc0 with the mover) — set while a centre judges, else the mover.
+ */
+let judgingCentre: WorldObjectState | undefined;
+
+/** 5.16 (11.11): a creature centre whose cached template carries TREAT_AS_RAID_UNIT (0x715df0, TargetSearch.ts). */
+function treatsAsRaidUnit(centre: WorldObjectState | undefined): boolean {
+  if (centre?.typeId !== 3) return false;
+  const template = game.world?.creatureTemplates.get(worldObject.entry(centre) ?? 0);
+  return template?.found === true && (template.flags & CREATURE_TYPE_FLAG_TREAT_AS_RAID_UNIT) !== 0;
+}
+
 /** TargetNearestEnemy's filter (0x518e40 mode 1) with the creature's CreatureType when it is cached. */
 function isTabTarget(object: WorldObjectState): boolean {
   const world = game.world;
   const creatureType = object.typeId === 3
     ? world?.creatureTemplates.get(worldObject.entry(object) ?? 0)?.creatureType
     : undefined;
-  return isTabEnemy(player(), object, attackReactionTo(object), creatureType); // L15 5.05: was reactionTo (0x518e40 mode 1 is CanAttack)
+  return isTabEnemy(player(), object, attackReactionTo(object), creatureType, // L15 5.05: was reactionTo (0x518e40 mode 1 is CanAttack)
+    treatsAsRaidUnit(judgingCentre ?? mover())); // 5.16 (11.11)
+}
+
+/** 5.16 (11.11): `acceptsTabMode` with `centre` as CanAttack's `this` (collectTabList's judge). */
+function acceptsFromCentre(object: WorldObjectState, centre: WorldObjectState): boolean {
+  judgingCentre = centre;
+  const accepted = acceptsTabMode(object);
+  judgingCentre = undefined;
+  return accepted;
+}
+
+/** 5.16 (11.11): the player's VehicleSeat flags while seated, for 0x524fc0's second search centre. */
+function playerSeatFlags(self: WorldObjectState | undefined): number | undefined {
+  const world = game.world;
+  const catalog = vehicleCatalog();
+  if (!world || !catalog || !self) return undefined;
+  return unitVehicleSeat(catalog, world.state.objects, self.guid)?.seat.flags;
 }
 
 /** Where the search stands and looks from: the controlled body (vehicle, charm), else the player. */
@@ -325,7 +358,9 @@ const tabSource: TabSource = {
       out.length = 0;
       return 0;
     }
-    return collectTabCandidates(world.state.objects.values(), origin.position, origin.guid, acceptsTabMode, out); // L2 1.10: was isTabTarget
+    // 5.16 (11.11): with a second search around a seated player whose seat can attack (0x524fc0).
+    const self = player();
+    return collectTabList(world.state.objects.values(), origin, self, playerSeatFlags(self), acceptsFromCentre, out); // 5.16 (11.11): was collectTabCandidates(…, acceptsTabMode, …)
   },
   valid(guid: bigint): boolean {
     const object = game.world?.state.objects.get(guid);

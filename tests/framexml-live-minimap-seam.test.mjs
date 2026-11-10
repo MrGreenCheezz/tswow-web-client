@@ -343,3 +343,48 @@ test("a near teleport within the zone raises no zone edge: the position moves, t
   assert.deepEqual(fired.filter(([event]) => event.startsWith("ZONE_CHANGED")), [], "no ZONE_CHANGED_NEW_AREA for the same zone");
   seam.detach();
 });
+
+test("7.57: MINIMAP_PING reaches FrameXML as Wow.exe 0x0057eb80 raises it — unit token and the host's offset", async () => {
+  const { minimapPingFraction, minimapPingUnitToken } =
+    await import("../dist/code/browser/framexml/FrameXmlMinimapPing.js");
+  const { seam, context, world, events, fired, pump, selfGuid } = liveFixture();
+  const asked = [];
+  context.minimapPingArgs = (x, y) => {
+    asked.push([x, y]);
+    return [0.25, -0.125];
+  };
+  seam.attach(pump);
+  seam.tick(10);
+  fired.length = 0;
+  const pings = () => fired.filter(([event]) => event === "MINIMAP_PING");
+
+  events.emit("MINIMAP_PING", { guid: selfGuid, x: 100, y: 150 });
+  assert.deepEqual(asked, [[100, 150]], "the world point goes to the host's projection");
+  assert.deepEqual(pings(), [["MINIMAP_PING", "player", 0.25, -0.125]]);
+
+  // Party members by their slot; anyone else — a Sentry Totem — stays "player".
+  world.group = { groupType: 0, members: [{ guid: 0x21n }, { guid: 0x22n }] };
+  events.emit("MINIMAP_PING", { guid: 0x22n, x: 0, y: 0 });
+  events.emit("MINIMAP_PING", { guid: 0x99n, x: 0, y: 0 });
+  assert.deepEqual(pings().slice(1).map(([, unit]) => unit), ["party2", "player"]);
+  // In a raid, raidN.
+  world.group = { groupType: 0x02, members: [{ guid: 0x21n }, { guid: 0x22n }, { guid: 0x23n }] };
+  events.emit("MINIMAP_PING", { guid: 0x23n, x: 0, y: 0 });
+  assert.equal(pings().at(-1)[1], "raid3");
+
+  // No player to measure from: the host answers nothing and nothing is raised.
+  context.minimapPingArgs = () => undefined;
+  const before = pings().length;
+  events.emit("MINIMAP_PING", { guid: selfGuid, x: 0, y: 0 });
+  assert.equal(pings().length, before);
+  seam.detach();
+
+  // The token rule on its own, and the offset: x right (falling world Y), y up (rising world X), in widths.
+  assert.equal(minimapPingUnitToken(5n, 5n, () => "party1", () => "raid1"), "player");
+  assert.equal(minimapPingUnitToken(6n, 5n, () => undefined, () => "raid4"), "raid4");
+  assert.deepEqual(minimapPingFraction({ x: 0, y: 0 }, { x: 50, y: -100 }, 400, undefined), [0.25, 0.125]);
+  // Rotating with the player facing west (+Y, a quarter turn): a point to the west is straight up.
+  const [rx, ry] = minimapPingFraction({ x: 0, y: 0 }, { x: 0, y: 40 }, 400, Math.PI / 2);
+  assert.ok(Math.abs(rx) < 1e-12 && Math.abs(ry - 0.1) < 1e-12, `${rx}, ${ry}`);
+  assert.deepEqual(minimapPingFraction({ x: 0, y: 0 }, { x: 1, y: 1 }, 0, undefined), [0, 0]);
+});

@@ -391,6 +391,11 @@ export function pathCursorName(path: string): string {
   return PATH_PREFIX + path;
 }
 
+/** 5.17 (11.11): the picture of `name` is known not to load (a fetch of it failed; FrameXmlSetCursor's nil). */
+export function cursorPictureFailed(name: string): boolean {
+  return failedAt.has(name);
+}
+
 /** The keyword a cursor shows until (and unless) its picture arrives. */
 function fallbackFor(name: string): string {
   // 05.10-5.17: a path the client cannot load leaves its cursor blank (0x00616830 zeroes the picture

@@ -1,4 +1,6 @@
 import { cursorCss, onCursorPicture, pathCursorName, stockCursorFile } from "../input/Cursors.js";
+import { cursorPictureFailed } from "../input/Cursors.js"; // 5.17 (11.11)
+import { setInterfaceCursor } from "../input/HardwareCursor.js"; // 5.17 (11.11)
 
 /**
  * 05.10-5.17: `SetCursor` and `ResetCursor`, the stock C API a frame's OnEnter/OnLeave uses to change
@@ -23,13 +25,15 @@ import { cursorCss, onCursorPicture, pathCursorName, stockCursorFile } from "../
  * mouse-over (0x004F8190) picks a cursor on every move, so the pointer reaching the world ends the
  * interface's choice — modelled by forgetting it when the pointer enters the canvas.
  *
- * Not modelled: CURSOR_UPDATE on these changes (no stock handler reads the pointer's picture, and the
- * world hover here does not raise it either); the nil a failing new path returns (the picture
- * arrives after the call, so the call answers 1).
+ * 5.17 (11.11): CURSOR_UPDATE on these changes and the world hover's (input/HardwareCursor.ts, LiveWorldSeam);
+ * the nil of a failing new path once its failure is known (see `frameXmlSetCursor`).
  */
 
 const NOTHING: readonly unknown[] = Object.freeze([]);
 const ONE: readonly unknown[] = Object.freeze([1]);
+const NIL: readonly unknown[] = Object.freeze([undefined]); // 5.17 (11.11)
+/** 5.17 (11.11): 0x00C25CD0, the last file path SetCursor loaded (upper-cased; the compare ignores case). */
+let lastPath: string | undefined;
 const SET_CLASS = "framexml-set-cursor";
 const SET_VARIABLE = "--framexml-set-cursor";
 
@@ -50,8 +54,21 @@ export function frameXmlSetCursor(value: unknown): readonly unknown[] {
     return NOTHING;
   }
   const name = String(value);
-  choose(stockCursorFile(name) ?? pathCursorName(name));
-  return ONE;
+  const stock = stockCursorFile(name);
+  if (stock !== undefined) {
+    choose(stock);
+    return ONE;
+  }
+  // 5.17 (11.11): 0x00616830 loads a path that differs (without case, 0x0076E780) from the last one it loaded and
+  // answers nil when that load fails; the same path again answers 1 whatever its picture. A picture's failure is
+  // known here once its fetch failed (Cursors.ts `cursorPictureFailed`): the first call of a missing path still
+  // answers 1, as the picture arrives after the call.
+  const key = pathCursorName(name);
+  const upper = name.toUpperCase();
+  const fresh = upper !== lastPath;
+  lastPath = upper;
+  choose(key);
+  return fresh && cursorPictureFailed(key) ? NIL : ONE;
 }
 
 /** `ResetCursor()`. */
@@ -63,6 +80,7 @@ export function frameXmlResetCursor(): readonly unknown[] {
 function choose(name: string | undefined): void {
   if (name === chosen) return;
   chosen = name;
+  setInterfaceCursor(name); // 5.17 (11.11): CURSOR_UPDATE when what the pointer shows changes (HardwareCursor.ts)
   draw();
 }
 

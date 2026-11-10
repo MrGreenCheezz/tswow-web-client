@@ -16,8 +16,8 @@ import {
   MINIMAP_PARTY_BLIPS_TEXTURE, MINIMAP_PARTY_CELL, MINIMAP_PLAYER_ARROW_TEXTURE, MINIMAP_PLAYER_ARROW_UNITS,
   MINIMAP_POI_ARROW_TEXTURE, MINIMAP_RIM_ARROW_UNITS, MINIMAP_RIM_FRACTION, MINIMAP_TILE_SHIFT_FRACTION, MINIMAP_TOWN_CELL,
   MINIMAP_FLIGHT_MASTER_CELL, MINIMAP_UNITS, MINIMAP_ZOOM_LEVELS, minimapObjectList, minimapPartyCell, minimapPastRim,
-  minimapQuestCell,
-  minimapRimAngle, minimapRimPois, minimapTileTint, minimapTrackedCell, minimapYards, minimapZoomIndex, type MinimapIconCell,
+  minimapQuestCell, minimapAreaPoisOfMap, minimapPoiWorldStateShown,
+  minimapRimAngle, minimapTileTint, minimapTrackedCell, minimapYards, minimapZoomIndex, type MinimapIconCell,
 } from "./MinimapArt.js"; // 03.11
 import { townTrackedCell, townTrackerShowsSubName, trivialQuestsTracked } from "./TownTracking.js"; // 03.11
 import { readField, unit as unitField, worldObject } from "../../world/Fields.js";
@@ -40,6 +40,8 @@ import { toggleWorldMap } from "./WorldMap.js";
 import { setTip } from "./Widgets.js";
 import { partyBlipMembers } from "../game/PartyPositions.js";
 import { activeGossipPoi, type GossipPoiMark } from "../GossipPoi.js"; // 3.13
+import { minimapPingFraction } from "../framexml/FrameXmlMinimapPing.js"; // 7.57 (11.11)
+import { SPIRIT_HEALER_POI_ICON } from "../../world/SpiritHealerMark.js"; // 3.13 (11.11)
 import {
   drawGossipPoi, minimapPoiIconCell, MINIMAP_GUIDE_ARROW_TEXTURE, MINIMAP_POI_ICONS_TEXTURE, type GossipPoiPlacement,
 } from "./MinimapGossipPoi.js"; // 3.13
@@ -501,7 +503,18 @@ export function watchMinimapRotation(handler: (rotate: boolean) => void): void {
   onRotateToggled = handler;
 }
 
+/**
+ * 7.57 (11.11): the last ping's world point, Wow.exe 0x00beba8c — written for every ping, the player's
+ * own and the group's (0x0057eb80), and read back only by `Minimap:GetPingPosition`. World (0, 0) before
+ * the first, as the zeroed global is.
+ */
+let lastPingPoint: WorldPoint = { x: 0, y: 0 };
+
 function pushMinimapPing(x: number, y: number, now: number, optimistic = false): void {
+  lastPingPoint = { x, y };
+  // While the stock interface holds the canvas, its MinimapPing frame draws the ping from MINIMAP_PING
+  // (Minimap.lua's Minimap_SetPing): Wow.exe's engine draws none, so the canvas adds no ring of its own.
+  if (activeMinimapAdoption) return;
   pings.push({
     x,
     y,
@@ -586,6 +599,24 @@ export interface MinimapWidgetAdapter {
   readonly getZoomLevels: () => number;
   readonly setZoom: (zoom: number) => void;
   readonly pingLocation: (x: number, y: number) => void;
+  /** 7.57 (11.11): `Minimap:GetPingPosition`, Wow.exe 0x0057efe0. */
+  readonly getPingPosition: () => readonly [number, number];
+}
+
+/**
+ * 7.57 (11.11): `MINIMAP_PING`'s two numbers for a ping at this world point, taken now — the player's
+ * place, the circle's yards and the rotation as they are when the event is raised (Wow.exe 0x0057eb80).
+ * Undefined while there is no player to measure from; the client raises nothing then.
+ */
+export function minimapPingEventArgs(x: number, y: number): readonly [number, number] | undefined {
+  const self = playerOf(game.world?.state);
+  if (!self?.position || !Number.isFinite(x) || !Number.isFinite(y)) return undefined;
+  return minimapPingFraction(self.position, { x, y }, currentYards(), settings.rotate ? self.position.orientation : undefined);
+}
+
+/** `Minimap:GetPingPosition` (0x0057efe0): the last ping from where the player stands now; 0, 0 with no player. */
+export function minimapPingPosition(): readonly [number, number] {
+  return minimapPingEventArgs(lastPingPoint.x, lastPingPoint.y) ?? [0, 0];
 }
 
 /** The stable bridge for stock Minimap.lua's zoom and local-pixel ping calls. */
@@ -600,6 +631,7 @@ export const minimapWidgetAdapter: MinimapWidgetAdapter = {
     // FrameXML's local Y grows upward; the canvas projection's row grows downward.
     pingMinimapAt({ column: x, row: -y }, currentCanvasSize(canvas));
   },
+  getPingPosition: minimapPingPosition,
 };
 
 /** Called once a frame. Cheap when nothing has moved; the tiles are drawn from cached bitmaps. */
@@ -1042,6 +1074,8 @@ interface GuideMark extends MinimapGuideCandidate {
   readonly name: string | undefined;
   /** The POIIcons cell of its icon in the circle. */
   readonly icon: number;
+  /** 11.11: an AreaPOI's world state; 0 for none and for the client's own marks. */
+  readonly worldStateId?: number;
 }
 
 /** Wow.exe 0x0058133f: an icon past the sheet's 196 cells is not drawn. */
@@ -1057,9 +1091,11 @@ function rimPoisOfMap(mapId: number | undefined): readonly GuideMark[] {
   const data = game.areas?.snapshot();
   if (!data || mapId === undefined) return [];
   if (rimPois?.data !== data || rimPois.mapId !== mapId) {
-    const list = minimapRimPois(data.areaPois, mapId).reverse().map((poi: AreaPoiInfo): GuideMark => ({
+    // 11.11: the minimap's icon is the record's first (the list holds the DBC rows, the drawer reads +8), whatever
+    // the world state's value; the world map picks by it, the minimap does not.
+    const list = minimapAreaPoisOfMap(data.areaPois, mapId).reverse().map((poi: AreaPoiInfo): GuideMark => ({
       kind: "areaPoi", x: poi.x, y: poi.y, importance: poi.importance, flags: poi.flags, name: poi.name,
-      icon: poi.icons[0] ?? 0,
+      icon: poi.icons[0] ?? 0, worldStateId: poi.worldStateId,
     }));
     rimPois = { data, mapId, list };
   }
@@ -1075,8 +1111,13 @@ function guideMarks(
   radiusYards: number,
   poi: GossipPoiMark | undefined,
   corpse: WorldPoint | undefined,
+  spiritHealer?: WorldPoint,
 ): { icons: readonly GuideMark[]; arrows: readonly GuideMark[] } {
-  const candidates: GuideMark[] = [...rimPoisOfMap(game.world?.mapId)];
+  // 11.11: a world-state AreaPOI only while its state is not 0 (0x007f44a0 through 0x00548d10).
+  const states = game.world?.worldStates;
+  const worldState = (id: number): number | undefined => states?.get(id);
+  const candidates: GuideMark[] = rimPoisOfMap(game.world?.mapId)
+    .filter((mark) => minimapPoiWorldStateShown(mark.worldStateId ?? 0, worldState));
   if (poi) {
     candidates.push({ kind: "gossip", x: poi.x, y: poi.y, importance: poi.importance, flags: poi.flags, name: poi.name, icon: poi.icon });
   }
@@ -1084,6 +1125,13 @@ function guideMarks(
     candidates.push({
       kind: "corpse", x: corpse.x, y: corpse.y, importance: -1, flags: 0x2, name: hoverGlobalString("CORPSE_RED"),
       icon: MINIMAP_CORPSE_POI_ICON,
+    });
+  }
+  // 3.13 (11.11): after the corpse, the spirit healer (0x007f4a00): SPIRIT_HEALER_RELEASE_RED, −1, 0x2, icon 8.
+  if (spiritHealer) {
+    candidates.push({
+      kind: "spiritHealer", x: spiritHealer.x, y: spiritHealer.y, importance: -1, flags: 0x2,
+      name: hoverGlobalString("SPIRIT_HEALER_RELEASE_RED"), icon: SPIRIT_HEALER_POI_ICON,
     });
   }
   return minimapGuideMarks(candidates, position, radiusYards);
@@ -1109,7 +1157,9 @@ function collectBlips(position: WorldPoint, state: WorldState, poi?: GossipPoiMa
   const corpseAt = corpse?.found && corpse.mapId === world?.mapId ? { x: corpse.x, y: corpse.y } : undefined;
   // 3.13 (07.11): the AreaPOI, the guard's POI and the corpse share Wow.exe's three arrows (MinimapGuideArrows.ts).
   // 03.11: over a building's pictures neither the inn nor the city had an AreaPOI arrow.
-  const guide = guideMarks(position, radiusYards, poi, corpseAt);
+  // 3.13 (11.11): the spirit healer's mark lives while the player is a ghost (world/SpiritHealerMark.ts).
+  const spiritHealerAt = self && isPlayerGhost(self) ? world?.spiritHealerMark : undefined;
+  const guide = guideMarks(position, radiusYards, poi, corpseAt, spiritHealerAt);
   const poiIcons: NamedPoint[] = [];
   let gossip: GossipPoiPlacement["kind"] | undefined;
   for (const mark of guide.icons) {
@@ -1122,7 +1172,9 @@ function collectBlips(position: WorldPoint, state: WorldState, poi?: GossipPoiMa
     if (insideNow && !minimapGuideArrowInside(mark)) continue;
     guideArrows.push({ at: mark, name: mark.name });
     if (mark.kind === "gossip") gossip = "arrow";
-    else arrows.push({ at: blipAt(mark), texture: mark.kind === "corpse" ? MINIMAP_CORPSE_ARROW_TEXTURE : MINIMAP_POI_ARROW_TEXTURE });
+    // 0x0057d860: the corpse's own arrow, an AreaPOI's the POI arrow, the client's other marks the guide arrow.
+    else arrows.push({ at: blipAt(mark), texture: mark.kind === "corpse" ? MINIMAP_CORPSE_ARROW_TEXTURE
+      : mark.kind === "spiritHealer" ? MINIMAP_GUIDE_ARROW_TEXTURE : MINIMAP_POI_ARROW_TEXTURE });
   }
 
   // 4.06: a member out of sight stays, at the whole-yard position SMSG_PARTY_MEMBER_STATS carries.
@@ -1186,21 +1238,10 @@ function collectBlips(position: WorldPoint, state: WorldState, poi?: GossipPoiMa
     }
   }
 
-  // Quest markers, drawn as the centre of the blob rather than its outline: the frame is 140
-  // units across and a polygon on it is a smudge. Not measured: the stand has no quest log.
-  for (const blobs of world?.questPoi.values() ?? []) {
-    for (const blob of blobs) {
-      if (blob.map !== world?.mapId || blob.points.length === 0) continue;
-      let x = 0;
-      let y = 0;
-      for (let index = 0; index < blob.points.length; index++) {
-        const point = blob.points[index]!;
-        x += point.x / blob.points.length;
-        y += point.y / blob.points.length;
-      }
-      blips.push({ at: { x, y }, sheet: "objects", cell: MINIMAP_TOWN_CELL });
-    }
-  }
+  // 11.11: no quest POI. Wow.exe's minimap draws its ObjectIcons lists from objects (0x0057f7f0) and its POI list from
+  // AreaPOI rows plus four client records (0x007f6730) that only the guard's POI, the corpse and the spirit healer
+  // write (0x007f4930, 0x007f5ba0, 0x007f4990, 0x007f4a00); a quest's blobs are the world map's and the tracker's.
+  // The gold dot this drew at a blob's centre was not the original's.
   return { blips, arrows, gossip, poiIcons, guideArrows };
 }
 
