@@ -5,6 +5,7 @@ import { GLUE_ANIMATION_PRELUDE } from "./GlueAnimations.js";
 import { colorSelectMethods, messageColorMethods } from "./GlueWidgetMethodExtras.js";
 import { fontStringGradientMethods, frameDepthMethods } from "./GlueWidgetMethodFills.js"; // 05.10-3.21
 import { sliderValueMethods } from "./GlueSliderMethods.js"; // 3.27 (13.10)
+import { statusBarSetMinMaxValues } from "./GlueStatusBarMethods.js"; // 3.27 (11.11)
 import { questPoiFrameMethods } from "./GlueQuestPoiFrame.js";
 import { glueBoundsRect } from "./GlueBoundsRect.js"; // 3.35-bounds
 import { GlueScriptRefs } from "./GlueScriptRefs.js"; // L5 3.27
@@ -3105,6 +3106,8 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
       SetValue: ({ frame, args }) => { bridge.SetValue(frame, num(args[0])); },
       GetValue: ({ self }) => [self.type === "StatusBar" ? self.statusBar.value : self.slider.value],
       SetMinMaxValues: ({ frame, args }) => {
+        // 3.27 (11.11): a StatusBar's is 0x009713c0 (GlueStatusBarMethods.ts).
+        if (frame.type === "StatusBar") { statusBarSetMinMaxValues(bridge, frame, args); return; }
         bridge.runInMutationBatch(() => {
           const current = frame.type === "StatusBar" ? frame.statusBar : frame.slider;
           const min = num(args[0]);

@@ -56,7 +56,9 @@
 // The unit velocity of the lead is the change of its position over the frame (the renderer keeps no mover
 // direction); the ground test is the renderer's terrain height (MissilePoints.ground), not the full world.
 // Not done: MissileCastOffset on a missile (only the beam builder 0x007fc5f0 was seen reading it), the
-// collision of 0x3c rows, the 0x40000 time-scale ease, MissilePathType.
+// 0x40000 time-scale ease, MissilePathType. 11.11: the collision of 0x3c rows is tested by the page for its own casts
+// (world/MissileCollision.ts, which sends CMSG_UPDATE_PROJECTILE_POSITION); the answer SMSG_SET_PROJECTILE_POSITION
+// lands a planned flight at the server's point (`setProjectilePosition`, the plan's `cast`).
 //
 // Cost: one WeakMap lookup, one script run and a handful of square roots per missile and frame; nothing
 // is allocated after launch.
@@ -66,6 +68,7 @@ import { MISSILE_MOTION_INPUTS, MISSILE_MOTION_OUTPUTS, MOTION_IN, MOTION_OUT, m
 import {
   FOLLOW_GROUND_AIM_AT_HEIGHT, FOLLOW_GROUND_APPROACH_AHEAD, FOLLOW_GROUND_ON, MISSILE_DEFAULT_GRAVITY, type MissileFollowGround,
 } from "./SpellVisualAttach.js";
+import { foldElevation, solveMissileBallistic, trajectoryLaunch } from "../world/MissileCollision.js"; // 11.02 (11.11)
 
 export interface MissilePoint {
   x: number;
@@ -104,6 +107,11 @@ export interface MissileFlightPlan {
   readonly followGround?: MissileFollowGround;
   /** 13.10: a trajectory missile. */
   readonly trajectory?: MissileTrajectoryPlan;
+  /**
+   * 11.11: the cast it belongs to — Missile_C's caster guid (+0/+4) and cast count (+0x20), what
+   * SMSG_SET_PROJECTILE_POSITION names (`setProjectilePosition`).
+   */
+  readonly cast?: { readonly caster: bigint; readonly count: number };
 }
 
 /**
@@ -158,7 +166,6 @@ const FOLLOW_GROUND_PROBE = 20;
 const ALMOST_ONE = 0.999;
 const TINY = 2.384185791015625e-7; // 0x009ea27c
 const EPSILON_SQ = 0.000009999999747378752; // 0x009ea558
-const SOLVE_EPSILON = 0.0001; // 0x009e8cd0
 
 /** Missile_C +0x68 bits this flight keeps. */
 const FACE_TRAVEL = 0x800;
@@ -202,6 +209,10 @@ export interface MissileFlightState {
   trajectory: { vx: number; vy: number; vz: number; gravity: number; scale: number } | undefined;
   /** 13.10: when it arrives (a trajectory's end, +0x134). */
   endsAt: number;
+  /** 11.11: the plan's cast, for SMSG_SET_PROJECTILE_POSITION. */
+  readonly cast: { readonly caster: bigint; readonly count: number } | undefined;
+  /** 11.11: Missile_C +0x68 0x400000 with its point (+0x14c): the server's collision point, `setProjectilePosition`. */
+  stopAt: MissilePoint | undefined;
 }
 
 function distance(a: MissilePoint, b: MissilePoint): number {
@@ -260,60 +271,60 @@ export function launchMissile(
     faced: 0,
     trajectory: undefined,
     endsAt: now + Math.max(0, plannedMs),
+    cast: plan.cast,
+    stopAt: undefined,
   };
   if (plan.trajectory) state.trajectory = solveTrajectory(fire, target, plan.trajectory, plannedMs);
+  if (plan.cast !== undefined) {
+    // A flight the renderer stopped stepping (swept, hidden) never lands here: gone after a minute.
+    for (const old of castFlights) if (old.arrived || now - old.lastAt > STALE_FLIGHT_MS) castFlights.delete(old);
+    castFlights.add(state);
+  }
   return state;
+}
+
+/** 11.11: the flights a SMSG_SET_PROJECTILE_POSITION may name (Wow.exe's missile list 0x00ca0b58), until they land. */
+const castFlights = new Set<MissileFlightState>();
+const STALE_FLIGHT_MS = 60_000;
+
+/**
+ * 11.11: SMSG_SET_PROJECTILE_POSITION (handler 0x008005a0: `u64 caster | u8 castCount | f32 xyz`) — every missile in
+ * flight with that caster and cast count (0x006ff2c0 over the missile list, 0x006fc290 over each unit's own) gets
+ * +0x68 0x400000 and the point (0x006febe0); `stepMissile` then lands it there. Returns how many it named.
+ */
+export function setProjectilePosition(caster: bigint, castCount: number, point: Readonly<MissilePoint>): number {
+  let named = 0;
+  for (const state of castFlights) {
+    if (state.arrived) {
+      castFlights.delete(state);
+      continue;
+    }
+    if (state.cast!.caster !== caster || (state.cast!.count & 0xff) !== (castCount & 0xff)) continue;
+    state.stopAt = { x: point.x, y: point.y, z: point.z };
+    named++;
+  }
+  return named;
+}
+
+/** Tests: forgets every flight `setProjectilePosition` could name. */
+export function clearProjectileFlights(): void {
+  castFlights.clear();
 }
 
 // ---------------------------------------------------------------------------------------------
 // 13.10: the pieces of 0x007015d0, each as Wow.exe has it.
 
+// 0x0076c070 and the fold of 0x00700880: one solver for the drawn flight and the collision test (11.11,
+// world/MissileCollision.ts), re-exported here under their old names.
+export { trajectoryLaunch, foldElevation };
+
 /**
- * 0x0076c070: the parabola leaving at `elevation` that passes `delta` (target − fire) under `gravity`.
- * 0 unsolvable, 1 degenerate, 2 solved (`out` = [time, vx, vy, vz]).
+ * 0x00700880 for a trajectory: velocity and clock scale, or undefined to fly the straight line. Degenerate (or still
+ * unsolvable): the line, timed to the delay — 0x0076bf80's speed cancels out of v = Δ / T over a clock scaled by T / left.
  */
-export function trajectoryLaunch(elevation: number, delta: MissilePoint, gravity: number, out: Float64Array): 0 | 1 | 2 {
-  const cosine = Math.cos(elevation);
-  const sine = Math.sin(elevation);
-  const flat = Math.hypot(delta.x, delta.y);
-  if (Math.abs(cosine) < SOLVE_EPSILON || Math.abs(flat) < SOLVE_EPSILON || Math.abs(gravity) < SOLVE_EPSILON) return 1;
-  let squared = ((1 / cosine) * flat * sine - delta.z) / gravity;
-  squared += squared;
-  if (squared <= 0.009999999776482582) return 0;
-  const time = Math.sqrt(squared);
-  const speed = (flat / time) * (1 / cosine);
-  out[0] = time;
-  out[1] = speed * delta.x * (1 / flat) * cosine;
-  out[2] = speed * (1 / flat) * cosine * delta.y;
-  out[3] = sine * speed;
-  return 2;
-}
-
-/** 0x00700880: the elevation folded back into [−π/2, π/2] (a mirror at each end). */
-export function foldElevation(elevation: number): number {
-  const half = Math.PI / 2;
-  if (elevation > half) return elevation - 2 * (elevation - half);
-  if (elevation < -half) return elevation + 2 * (-half - elevation);
-  return elevation;
-}
-
-const _solve = new Float64Array(4);
-
-/** 0x00700880 for a trajectory: velocity and clock scale, or undefined to fly the straight line. */
 function solveTrajectory(fire: MissilePoint, aim: MissilePoint, plan: MissileTrajectoryPlan, remainingMs: number):
   MissileFlightState["trajectory"] {
-  const delta = { x: aim.x - fire.x, y: aim.y - fire.y, z: aim.z - fire.z };
-  const gravity = Number.isFinite(plan.gravity) ? plan.gravity : MISSILE_DEFAULT_GRAVITY;
-  let result = trajectoryLaunch(foldElevation(plan.elevation), delta, gravity, _solve);
-  if (result === 0) {
-    result = trajectoryLaunch(foldElevation(plan.elevation + (gravity > 0 ? 0.01 : -0.01)), delta, gravity, _solve);
-  }
-  // Degenerate (or still unsolvable): the line, timed to the delay — 0x0076bf80's speed cancels out of
-  // v = Δ / T over a clock scaled by T / left.
-  if (result !== 2) return undefined;
-  const left = Math.max(remainingMs / 1000, SOLVE_EPSILON);
-  const scale = _solve[0]! / left;
-  return { vx: _solve[1]!, vy: _solve[2]!, vz: _solve[3]!, gravity, scale: scale < 0 ? 0 : scale >= 2 ? 2 : scale };
+  return solveMissileBallistic(fire, aim, plan.elevation, plan.gravity, remainingMs);
 }
 
 /**
@@ -499,6 +510,9 @@ export function stepMissile(state: MissileFlightState, target: MissilePoint, now
     direction.z = dz / remaining;
   }
 
+  _before.x = here.x;
+  _before.y = here.y;
+  _before.z = here.z;
   let left: number;
   if (state.trajectory) {
     // 0x007015d0's 0x10000 branch: the parabola on its scaled clock; it arrives at the delay.
@@ -525,6 +539,22 @@ export function stepMissile(state: MissileFlightState, target: MissilePoint, now
     left = remaining - step;
     updateProgress(state, left);
   }
+  // 11.11: 0x007015d0 with +0x68 0x400000 — a step that takes the missile further from the server's collision point
+  // than it was puts it back where it was, and it lands there (0x00703410).
+  const stop = state.stopAt;
+  if (stop !== undefined) {
+    const was = (_before.x - stop.x) ** 2 + (_before.y - stop.y) ** 2 + (_before.z - stop.z) ** 2;
+    const now2 = (here.x - stop.x) ** 2 + (here.y - stop.y) ** 2 + (here.z - stop.z) ** 2;
+    if (was < now2) {
+      here.x = _before.x;
+      here.y = _before.y;
+      here.z = _before.z;
+      state.target.x = here.x;
+      state.target.y = here.y;
+      state.target.z = here.z;
+      return arrive(state, out);
+    }
+  }
 
   position.x = here.x;
   position.y = here.y;
@@ -539,8 +569,11 @@ export function stepMissile(state: MissileFlightState, target: MissilePoint, now
   return true;
 }
 
+const _before = { x: 0, y: 0, z: 0 };
+
 function arrive(state: MissileFlightState, out: MissileSample): false {
   state.arrived = true;
+  if (state.cast !== undefined) castFlights.delete(state);
   const here = state.here;
   const aim = state.target;
   here.x = aim.x;

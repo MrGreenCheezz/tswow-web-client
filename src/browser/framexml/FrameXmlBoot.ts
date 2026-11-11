@@ -623,7 +623,11 @@ export interface FrameXmlBootOptions {
    * `checkAddonVersion` CVar — GetAddOnInfo's states and reasons, LoadAddOn's refusals, and the eager add-ons that
    * do not load (FrameXmlAddonStates.ts). Absent: all enabled, the switch on.
    */
-  readonly addonStates?: { readonly disabled: readonly string[]; readonly checkAddonVersion: boolean };
+  readonly addonStates?: {
+    readonly disabled: readonly string[]; readonly checkAddonVersion: boolean;
+    /** 3.46 (11.11): the live answer, after the world's EnableAddOn/DisableAddOn (FrameXmlAddonRuntime `disabledNow`). */
+    readonly disabledNow?: (lower: string) => boolean;
+  };
   /**
    * Host publication seam that runs after the corpus has loaded and before the synthetic session
    * exercise dispatches its events.  World UI uses this narrow window to replace handlers on a
@@ -785,6 +789,7 @@ export class FrameXmlBoot {
       }),
       ...(options.addonStates === undefined ? {} : { // 3.46 (13.10)
         disabled: options.addonStates.disabled, checkAddonVersion: options.addonStates.checkAddonVersion,
+        ...(options.addonStates.disabledNow === undefined ? {} : { disabledNow: options.addonStates.disabledNow }), // 3.46 (11.11)
       }),
       onRoots: (roots, addon) => {
         for (const root of roots) this.#addonRootNames.add(root.name);

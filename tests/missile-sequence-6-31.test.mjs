@@ -55,14 +55,15 @@ test("the sequence flags travel in a 12-byte extras record only where the genera
   assert.ok(Number.isNaN(decodeWvaAnimationsPacked(plainData, 1).clipTable[WVA_CLIP_SEQUENCE_FLAGS]));
 });
 
-test("only the spell models turn over to visual-spell-v1, in the tools and in the gateway alike", async () => {
-  assert.equal(visualModelNamespace("Spells\\Arcane_Missile_Lvl3.m2"), "visual-spell-v1");
-  assert.equal(visualModelNamespace("spells/Fireball_Missile_High.M2"), "visual-spell-v1");
+// 05.11 (6.45): the namespace is visual-spell-v2 since the batch flags joined the record; the rule is the same.
+test("only the spell models turn over to their own namespace, in the tools and in the gateway alike", async () => {
+  assert.equal(visualModelNamespace("Spells\\Arcane_Missile_Lvl3.m2"), "visual-spell-v2");
+  assert.equal(visualModelNamespace("spells/Fireball_Missile_High.M2"), "visual-spell-v2");
   assert.equal(visualModelNamespace("World\\Tree.m2"), "visual-v24");
   assert.equal(visualModelNamespace("World\\wmo\\Azeroth\\Buildings\\Stormwind\\Stormwind.wmo"), "visual-wmo-v27");
   assert.equal(isSpellModelPath("Item\\Spells\\x.m2"), false, "a folder named Spells deeper down is not a spell model");
   const gateway = await readFile(new URL("../src/gateway/Gateway.ts", import.meta.url), "utf8");
-  assert.match(gateway, /if \(\/\^spells\[\\\\\/\]\/\.test\(lower\)\) return "visual-spell-v1";/);
+  assert.match(gateway, /if \(\/\^spells\[\\\\\/\]\/\.test\(lower\)\) return "visual-spell-v2";/);
   assert.match(gateway, /visualModelCacheNamespace\("spells\\\\a\.m2"\)/, "the visual generation names the new namespace");
   const generator = await readFile(new URL("../tools/generate-visual-model.mjs", import.meta.url), "utf8");
   assert.match(generator, /const extensions = current \|\| v24;/, "a gateway still on visual-v24 gets its own bytes");

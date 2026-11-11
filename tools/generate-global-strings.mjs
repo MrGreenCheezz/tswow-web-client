@@ -134,6 +134,9 @@ const EXTRA_STRINGS = [
   // 3.24 (12.10): a profession trainer's three header rows, as Wow.exe 0x594e80 names a type-2 group
   // (the row table at 0x00a13e08) — src/browser/framexml/FrameXmlTrainerRequirements.ts.
   "TRADESKILL_SERVICE_STEP", "TRADESKILL_SERVICE_LEARN", "TRADESKILL_SERVICE_PASSIVE",
+  // 3.47 (11.11): the power names ALREADY_AT_FULL_POWER's row takes, as Wow.exe 0x007fe4b0 names the player's
+  // power type — src/world/CastFailureErrorRow.ts `powerTokenName`.
+  "MANA", "RAGE", "FOCUS", "ENERGY", "HAPPINESS", "RUNES", "RUNIC_POWER",
 ];
 
 // `NAME = "text";` with the text on one line. Escapes are kept verbatim: the client's own strings

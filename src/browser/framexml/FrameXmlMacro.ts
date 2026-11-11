@@ -67,6 +67,11 @@ export interface FrameXmlMacroHost {
   readonly icons?: FrameXmlMacroIcons;
   /** `CMSG_SET_ACTION_BUTTON` for a 1-based stock action slot; false when there is no world. */
   placeOnActionBar?(actionSlot: number, macroSlot: number): boolean;
+  /**
+   * 1.14 (11.11): the icon of what a question-mark macro stands for (Wow.exe 0x00566ac0): its item's, else its
+   * spell's; undefined — it stands for nothing, and the question mark shows.
+   */
+  shownIcon?(body: string): string | undefined;
 }
 
 /** An in-memory store, for a seam that has no account data (tests, the offline preview). */
@@ -194,7 +199,17 @@ export class FrameXmlMacroModel {
   /** `GetMacroInfo(id)`: name, texture, body. */
   info(id: unknown): readonly [string, string, string] | undefined {
     const macro = this.#resolve(id);
-    return macro ? [macro.name, macroIcon(macro), macro.body] : undefined;
+    return macro ? [macro.name, this.#shownIcon(macro), macro.body] : undefined;
+  }
+
+  /**
+   * 1.14 (11.11): the icon GetMacroInfo and GetActionTexture answer (0x00566eb0, 0x005a97f0 → 0x00566ac0): a chosen
+   * icon as it is; the question mark (none chosen) stands for what the macro shows, an item's icon before a spell's.
+   */
+  #shownIcon(macro: Macro): string {
+    const icon = macroIcon(macro);
+    if (icon.toLowerCase() !== MACRO_DEFAULT_ICON.toLowerCase()) return icon;
+    return this.#host.shownIcon?.(macro.body) ?? icon;
   }
 
   /** `GetMacroIndexByName(name)`: its position, or 0. */
@@ -368,7 +383,7 @@ export class FrameXmlMacroModel {
   /** … and its icon (GetActionTexture). Undefined for a slot whose macro was deleted. */
   slotTexture(slot: number): string | undefined {
     const macro = this.#bySlot(slot);
-    return macro ? macroIcon(macro) : undefined;
+    return macro ? this.#shownIcon(macro) : undefined;
   }
 }
 
@@ -388,6 +403,8 @@ export const FRAMEXML_MACRO_BINDINGS: Readonly<Record<string, FrameXmlSeamBindin
   GetMacroIndexByName: (seam, args) => [seam.macros?.indexByName(args[0]) ?? 0],
   // 1.14: name and rank of the spell the macro stands for (0x005a89f0's +0x564).
   GetMacroSpell: (seam, args) => seam.macroSpell?.(args[0]) ?? NOTHING,
+  // 1.14 (11.11): name and link of the item the macro stands for (0x00567200's +0x568).
+  GetMacroItem: (seam, args) => seam.macroItem?.(args[0]) ?? NOTHING,
   CreateMacro: (seam, args) => {
     const position = seam.macros?.create(args[0], args[1], args[2], args[3]);
     return position === undefined ? NOTHING : [position];

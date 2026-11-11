@@ -56,6 +56,8 @@ test("tostring prints a number as the client's \"%.14g\", whole floats past 32 b
       ["0.0001", "0.0001"], ["0.00001", "1e-005"], ["-1.5e-7", "-1.5e-007"], ["5e-324", "4.9406564584125e-324"],
       ["3.0", "3"], ["6/2", "3"], ["-2.5", "-2.5"], ["5", "5"], ["-(0.0 + 0.0)", "-0"],
       ["1/0", "1.#INF"], ["-1/0", "-1.#INF"], ["0/0", "-1.#IND"],
+      // 3.27 (11.11): the CRT's $I10_OUTPUT (0x004192f4) by the bits — the indefinite negated is a positive quiet NaN.
+      ["-(0/0)", "1.#QNAN"], ["math.huge - math.huge", "-1.#IND"], ["-(math.huge - math.huge)", "1.#QNAN"],
       // L5b-review: the integer fast path's lower edge — fourteen digits stay whole, fifteen do not.
       ["-99999999999999", "-99999999999999"], ["-1e14", "-1e+014"],
     ];
@@ -65,6 +67,18 @@ test("tostring prints a number as the client's \"%.14g\", whole floats past 32 b
     // Where the preamble raised: the value an add-on prints for an uptime in milliseconds.
     vm.registerGlobal("GetTime", () => [1759999999.123]);
     assert.equal(value(vm, "tostring(math.floor(GetTime() * 1000))"), "1759999999123");
+  });
+});
+
+test("3.27 (11.11): the host's text of a NaN by its bits, as 0x004192f4 classes it", async () => {
+  const { lua51NumberText } = await import("../dist/code/browser/glue/GlueLuaBase51.js");
+  const nan = (high, low = 0) => { const words = new Uint32Array([low, high]); return new Float64Array(words.buffer)[0]; };
+  assert.equal(lua51NumberText(nan(0xfff80000)), "-1.#IND");
+  assert.equal(lua51NumberText(nan(0x7ff80000)), "1.#QNAN");
+  assert.equal(lua51NumberText(nan(0xfff80000, 1)), "-1.#QNAN", "negative, not the indefinite");
+  assert.equal(lua51NumberText(nan(0x7ff00000, 1)), "1.#SNAN", "no quiet bit");
+  withVm((vm) => {
+    assert.equal(value(vm, 'string.format("%f|%f|%.2f", -(0/0), 0/0, -(0/0))'), "1.#QNAN0|-1.#IND00|1.#R");
   });
 });
 

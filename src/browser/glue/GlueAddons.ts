@@ -72,12 +72,24 @@ interface GlueAddonEntry {
   readonly toc: string | undefined;
 }
 
-/** What the world loader reads of the glue's states for the character entering it. */
+/**
+ * What the world reads of the glue's states for the character entering it. 3.46 (11.11): the same tables, not a copy, as
+ * Wow.exe's world shares ADDONSTATELIST with the glue: the world's EnableAddOn/DisableAddOn and the `All` pair set the
+ * character's table (0x00511840, 0x00511940, 0x00511900, 0x00511a00 → 0x5f90b0 with the character's name, 0x006b1060),
+ * ResetDisabledAddOns reads it again from its file (0x00511a40 → 0x5f91e0(name)), and the world interface's unload saves
+ * every changed table (0x00528f00 → 0x5f76a0) — FrameXmlWorldAddonApi.ts.
+ */
 export interface GlueWorldAddonStates {
   readonly character: string;
-  /** Lower-case names of the installed add-ons and whether they are on for the character. */
+  /** Lower-case names of the installed add-ons and whether they are on for the character; kept current by `set`/`reset`. */
   readonly enabled: ReadonlyMap<string, boolean>;
   readonly checkAddonVersion: boolean;
+  /** 0x5f90b0(addon, character, on): the add-on on or off in the character's table. */
+  set?(addon: string, enabled: boolean): void;
+  /** 0x5f91e0(character): the character's table again from its file, unsaved changes dropped. */
+  reset?(): void;
+  /** 0x5f76a0: every changed table to its file. */
+  save?(): void;
 }
 
 let worldAddonStates: GlueWorldAddonStates | undefined;
@@ -281,9 +293,19 @@ export class GlueAddonList {
   /** The states and the switch for the character entering the world (0x5f7d70(addon, character, 1)). */
   handOver(character: string): void {
     this.#sync();
+    const states = this.#states;
     const enabled = new Map<string, boolean>();
-    for (const addon of this.#addons) enabled.set(addon.name.toLowerCase(), this.#states.state(addon.name, character) !== 0);
-    setGlueWorldAddonStates(Object.freeze({ character, enabled, checkAddonVersion: this.#versionCheck() }));
+    const refresh = (): void => {
+      for (const addon of this.#addons) enabled.set(addon.name.toLowerCase(), states.state(addon.name, character) !== 0);
+    };
+    refresh();
+    // 3.46 (11.11): the live table for the world's calls (GlueWorldAddonStates).
+    setGlueWorldAddonStates(Object.freeze({
+      character, enabled, checkAddonVersion: this.#versionCheck(),
+      set: (addon: string, on: boolean) => { states.set(addon, character, on); refresh(); },
+      reset: () => { states.resetCharacter(character); refresh(); },
+      save: () => { states.save(); },
+    }));
   }
 
   install(vm: GlueLuaVm, cvars?: GlueAddonCVars): void {

@@ -28,7 +28,7 @@ import type { SpellMetadata } from "../../gateway/SpellMetadata.js";
 
 /** `SpellModOp` (SharedDefines.h): the ops the description writer applies. */
 export const SPELLMOD = {
-  damage: 0, duration: 1, threat: 2, effect1: 3, charges: 4, range: 5, radius: 6, allEffects: 8, effect2: 12,
+  damage: 0, duration: 1, threat: 2, effect1: 3, charges: 4, range: 5, radius: 6, allEffects: 8, effect2: 12, cost: 14,
   jumpTargets: 17, chanceOfSuccess: 18, activationTime: 19, dot: 22, effect3: 23, valueMultiplier: 27,
 } as const;
 
@@ -80,6 +80,18 @@ export function spellTextModifierTotals(record: SpellTextCasterRecord, op: numbe
   }
   if (flat === 0 && pct === 0) return undefined;
   return { flat, pct: Math.max(0, 100 + pct) };
+}
+
+/** 3.43 (11.11): 0x005ee050 / 0x005ee0b0 — the smallest per-school value over the mask's schools (0 with none). */
+export function smallestOverSchools(mask: number, read: (school: number) => number): number {
+  let found = false;
+  let value = 0;
+  for (let school = 0; school < 7; school++) {
+    if ((mask & (1 << school)) === 0) continue;
+    const next = read(school);
+    if (!found || next < value) { value = next; found = true; }
+  }
+  return value;
 }
 
 /** 0x007fdb50: an integer through `op`. */

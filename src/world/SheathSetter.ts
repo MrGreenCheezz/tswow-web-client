@@ -38,7 +38,9 @@ export class SheathSetter {
    */
   request(state: number, published: number | undefined): boolean {
     const next = state === SHEATH_MELEE || state === SHEATH_RANGED ? state : SHEATH_UNARMED;
-    if (next === (this.#held ?? published)) return false;
+    // A sheath byte the server never wrote is zero: update fields left out of a create block read 0, so the
+    // weapon is away and a request to put it away has nothing to change.
+    if (next === (this.#held ?? published ?? SHEATH_UNARMED)) return false;
     this.#held = next;
     return true;
   }

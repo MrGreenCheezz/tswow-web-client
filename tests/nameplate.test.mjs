@@ -385,6 +385,19 @@ test("5.05 (12.10): a CONTESTED_GUARD template paints a contested player's plate
   }
 });
 
+// 5.05 (11.11): the circle 0x00725980 → 0x00718ac0 → 0x00521bf0(unit, out, 1) — a creature by its rank (Unfriendly
+// orange) and grey when dead (SelectionRingRank.ts); the three-way reaction folded rank 2 into yellow.
+test("5.05 (11.11): the ring paints an Unfriendly creature orange and a dead one grey", () => {
+  withReactions(reactionWorld({ forced: new Map([[600, 2]]) }), () => {
+    const unit = targetUnit(600);
+    assert.equal(selectionRingColour(unit), 0xdd8743, "a forced rank 2: orange");
+    game.world.forcedReactions = new Map([[600, 3]]);
+    assert.equal(selectionRingColour(unit), 0xe0c341, "rank 3: yellow");
+    unit.fields.set(UPDATE_FIELDS.UNIT_FIELD_HEALTH.offset, 0);
+    assert.equal(selectionRingColour(unit), 0x7f7f7f, "0x00acc3f8: grey");
+  });
+});
+
 // 03.11 (6.37): what a plate is told, as the client decides it (0x0072b060, 0x0098ef10).
 const LEVEL = UPDATE_FIELDS.UNIT_FIELD_LEVEL.offset;
 

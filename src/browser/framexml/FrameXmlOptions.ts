@@ -166,7 +166,8 @@ const NO_NAMES = "Имена и таблички браузерного клие
 const NO_COMBAT_TEXT = "Всплывающий текст боя браузерного клиента включается только целиком.";
 // 5.14: the camera's style, speed and distance and the mouse's speeds and inversion are stock CVars now
 // (FrameXmlSettingsCVar.ts); terrain tilt, head bob, water collision and smart pivot have no consumer.
-const CAMERA = "Камера браузерного клиента этого не поддерживает.";
+// 5.14 (11.11): all four have one now (game/CameraTerrainTilt.ts, CameraBob.ts, CameraWater.ts, CameraPivot.ts);
+// the reason and its rows are gone.
 
 function rows(reason: string, names: readonly string[]): (readonly [string, string])[] {
   return names.map((name) => [name, reason] as const);
@@ -252,11 +253,6 @@ export const FRAMEXML_OPTIONS_UNAVAILABLE: ReadonlyMap<string, string> = new Map
     "InterfaceOptionsCombatTextPanelLowManaHealth", "InterfaceOptionsCombatTextPanelEnergyGains",
     "InterfaceOptionsCombatTextPanelPeriodicEnergyGains", "InterfaceOptionsCombatTextPanelHonorGains",
     "InterfaceOptionsCombatTextPanelAuras",
-  ]),
-  ...rows(CAMERA, [
-    "InterfaceOptionsCameraPanelFollowTerrain",
-    "InterfaceOptionsCameraPanelHeadBob", // L8 5.14: InterfaceOptionsCameraPanelWaterCollision drives cameraWaterCollision
-    "InterfaceOptionsCameraPanelSmartPivot",
   ]),
   ...rows(NOT_SUPPORTED, [
     "InterfaceOptionsMousePanelClickToMove", "InterfaceOptionsMousePanelWoWMouse",

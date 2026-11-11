@@ -1,4 +1,5 @@
 import type { MissileShot } from "./MissileTrajectory.js";
+import type { MissileCollisionModel } from "./MissileCollision.js";
 import type { SpellMissileEntry } from "./SpellMissileDbc.js";
 
 /**
@@ -18,6 +19,10 @@ export interface MissileShotSource {
   trajectoryMissile(spellId: number): SpellMissileEntry | undefined;
   /** 0x006fcd60 for a cast: where a missile of `spellId` fired by `casterGuid` goes with the aim as it is now. */
   shot(casterGuid: bigint, spellId: number): MissileShot | undefined;
+  /** 11.11: the spell's SpellMissile row whatever its flags (the collision test, MissileCollision.ts). */
+  missileRow?(spellId: number): SpellMissileEntry | undefined;
+  /** 11.11: a unit's CreatureModelData collision columns and drawn scale, when the page knows its model. */
+  collisionModel?(guid: bigint): { readonly scale: number; readonly model: MissileCollisionModel | undefined } | undefined;
 }
 
 let registered: MissileShotSource | undefined;

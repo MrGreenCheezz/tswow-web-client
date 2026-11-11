@@ -889,12 +889,13 @@ export async function enterWorld(character: CharacterSummary): Promise<void> {
     });
   });
   installUnitGroundTarget(world); // 11.02 (26.10): a steered unit's ground spells take the reticle
-  world.onSpellStatus = (message, error) => {
+  world.onSpellStatus = (message, error, info) => {
     professionCastStatus(message, error);
     spellStatus.className = error ? "error" : "success";
     spellStatus.textContent = message;
     // The same, for a cast refusal: it went to a line inside the spellbook and nowhere else.
     if (error) notice(message);
+    else if (info) notice(message, "info"); // 3.47 (11.11): a type-1 refusal row is the yellow UI_INFO_MESSAGE
   };
   // 05.10-3.02: TOO_MANY_OF_ITEM's limit-category sentence (Wow.exe 0x00808200 case 0x81) reads the ItemLimitCategory
   // rows; until the gateway serves /dbc/item-limit-categories (it waits for a restart) the refusal keeps its plain words.

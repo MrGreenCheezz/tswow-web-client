@@ -43,8 +43,14 @@
 // (.runtime/re-2026-11-11/transport/t1.lst): on reaching such a seat (0x007489c0, state 3) a living passenger's model is
 // set to the vehicle model's current animation, whole model and each of the 35 key bones (0x008266b0 on the vehicle's,
 // 0x00832ab0 on the passenger's), passenger+0x10 gets 0x800 and the vehicle's +0x16c the seat's bit; 0x007487e0 (that
-// flag and alive) is then asked all through the unit's pose code (0x007385c0, 0x00735820 …), which is not read yet —
-// and the smoothing of the drawn facing (0x00735f60).
+// flag and alive) is then asked all through the unit's pose code — read 11.11 (.runtime/re-2026-11-11/vehicle2/v1-v2.c,
+// refs1.txt: 29 calls): while it holds, the passenger's own animation setters return without playing (0x00735820,
+// 0x00735a60, 0x00735cc0, 0x00735bb0, 0x00735dd0 unless called "forced"; 0x007385c0 and 0x00738440 skip their
+// 0x00832840), and every animation the vehicle's model starts — whole model (0x00735820 → 0x00832ab0, time carried
+// when the passenger's track is shorter) or key bone (0x00735a60 → 0x00832840) — is started forced on each such
+// passenger's model with the same arguments; the copy is redone when either model finishes loading (0x0073e840 →
+// 0x00757e70 / 0x00748620). Not wired: the renderer's per-unit pose choice has no hook here yet — and the smoothing
+// of the drawn facing (0x00735f60).
 //
 // Without vehicle rows, with no seat, on a ship, a lift or a mount: nothing here runs and the unit is
 // drawn exactly as before. Once a frame nothing is allocated: seat poses are cached per seat row,

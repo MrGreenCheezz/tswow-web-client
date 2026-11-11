@@ -5,6 +5,7 @@ import ts from "typescript";
 import { WorldClient } from "../dist/code/world/WorldClient.js";
 import { buildAutoRepeatCastSpell, buildCastSpell } from "../dist/code/world/SpellProtocol.js";
 import { OPCODES } from "../dist/code/generated/opcodes.js";
+import { UPDATE_FIELDS } from "../dist/code/generated/updateFields.js";
 import { hoveredUnitGuid, setHoveredTarget } from "../dist/code/browser/game/HoverTarget.js";
 import * as macroModel from "../dist/code/browser/ui/MacroModel.js";
 
@@ -99,6 +100,9 @@ function worldHarness() {
     world.state.objects.get(guid).typeId = typeId;
   }
   world.knownSpells = [{ id: 133, slot: 0 }, { id: 75, slot: 1 }];
+  // 5.05 (11.11): a bow in the ranged slot — 0x0080cce0 refuses Auto Shot without one (CastPreflightRule.ts).
+  world.state.setField(1n, UPDATE_FIELDS.PLAYER_FIELD_INV_SLOT_HEAD.offset + 34, 0x42);
+  world.state.setField(0x42n, UPDATE_FIELDS.ITEM_FIELD_MAXDURABILITY.offset, 0);
   world.selectTarget(2n);
   connection.sent.length = 0;
   return { world, connection };
@@ -126,10 +130,13 @@ test("explicit ranged auto-repeat names and faces its macro target", () => {
     world.setAutoRepeatSpellIds([75]);
     world.castSpell(75, 0, false, 3n);
     assert.equal(world.targetGuid, 2n);
-    assert.deepEqual(connection.sent.at(-1), {
+    // 5.05 (11.11): the shot's own packet, then the bow drawn — a ranged spell calls the sheath setter after
+    // its packet (Wow.exe 0x00805330 → 0x007fa2e0), so the cast is no longer the last thing on the wire.
+    assert.deepEqual(connection.sent.at(-2), {
       opcode: OPCODES.CMSG_CAST_SPELL,
       payload: buildAutoRepeatCastSpell(75, 1, 3n),
     });
+    assert.equal(connection.sent.at(-1)?.opcode, OPCODES.CMSG_SET_SHEATHED);
     assert.equal(connection.sent.some(({ opcode }) => opcode === OPCODES.CMSG_SET_SELECTION), false);
   } finally { world.close(); }
 });

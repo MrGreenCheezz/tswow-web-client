@@ -15,19 +15,25 @@ const ATTR5_DONT_SHOW_IF_SELF_CAST = 0x08000000;
 const ATTR5_DONT_SHOW_IF_OTHER_CAST = 0x10000000;
 const ATTR6_ONLY_VISIBLE_TO_CASTER = 0x00100000;
 
-/** 0x0076BED0: the aura types that show a passive spell. Any other passive stays out of the list. */
-const PASSIVE_AURAS_SHOWN = new Set([0x1b, 0x23, 0x41, 0x77, 0x80, 0x81, 0x8f]);
+/**
+ * 0x0076BED0: the effects that show a passive spell — the area auras, SPELL_EFFECT 27, 35, 65, 119, 128, 129, 143. Any other
+ * passive stays out of the list. 3.68 (11.11): 0x0053D580 reads them at record +0x11C, the Effect column (71; the record is
+ * Spell.dbc's columns in order — Attributes at +0x10, AttributesExE at +0x24), not EffectApplyAuraName.
+ */
+const PASSIVE_EFFECTS_SHOWN = new Set([0x1b, 0x23, 0x41, 0x77, 0x80, 0x81, 0x8f]);
 
 export interface AuraListedSpell {
   /** `Attributes` … `AttributesExG`; a browser's older cached row may lack them. */
   readonly attributes?: readonly number[];
+  /** Spell.dbc Effect; a row served without it (an older gateway) is read by its aura types, as before 11.11. */
+  readonly effects?: readonly number[] | undefined;
   readonly effectAura: readonly number[];
 }
 
 /**
  * `spell` undefined is the client having no row: Wow.exe has the whole table to hand and leaves the aura out, and here the row
- * appears once the metadata lands. Not modelled: RequiredAuraVision (11 spells; the column does not reach the client), and the
- * list's order (0x00727C00), which stays by slot.
+ * appears once the metadata lands. Not modelled: RequiredAuraVision (11 spells; the column does not reach the client). The
+ * list's order (0x00727C00) is AuraOrder.ts.
  */
 export function auraListed(
   aura: Pick<ActiveAura, "flags" | "casterGuid">,
@@ -39,7 +45,7 @@ export function auraListed(
   const attributes = spell.attributes;
   const attr0 = attributes?.[0] ?? 0;
   if ((attr0 & ATTR0_HIDDEN_CLIENTSIDE) !== 0 || ((attributes?.[1] ?? 0) & ATTR1_DONT_DISPLAY_IN_AURA_BAR) !== 0) return false;
-  if ((attr0 & ATTR0_PASSIVE) !== 0 && !spell.effectAura.some((type) => PASSIVE_AURAS_SHOWN.has(type))) return false;
+  if ((attr0 & ATTR0_PASSIVE) !== 0 && !(spell.effects ?? spell.effectAura).some((type) => PASSIVE_EFFECTS_SHOWN.has(type))) return false;
   const selfCast = (aura.flags & AURA_FLAGS.caster) !== 0;
   if (((attributes?.[5] ?? 0) & (selfCast ? ATTR5_DONT_SHOW_IF_SELF_CAST : ATTR5_DONT_SHOW_IF_OTHER_CAST)) !== 0) return false;
   if (((attributes?.[6] ?? 0) & ATTR6_ONLY_VISIBLE_TO_CASTER) !== 0) {

@@ -37,9 +37,9 @@ test("a runner goes on running at the speed its flags select, in the core's orde
   const diagonal = positionAfter(F.forward | F.strafeLeft, 500);
   near(Math.hypot(diagonal.x, diagonal.y), 3.5, 1e-6, "a diagonal is the speed, not √2 of it");
   near(diagonal.y, 3.5 * Math.SQRT1_2, 1e-6, "strafe left is +y at orientation 0");
-  const facingWest = positionAfter(F.forward, 1000, {}, at(0, 0, 0, Math.PI / 2));
+  const facingWest = positionAfter(F.forward, 500, {}, at(0, 0, 0, Math.PI / 2));
   near(facingWest.x, 0, 1e-6);
-  near(facingWest.y, 7, 1e-6);
+  near(facingWest.y, 3.5, 1e-6);
 });
 
 test("a speed the server set is the speed extrapolated", () => {
@@ -47,8 +47,8 @@ test("a speed the server set is the speed extrapolated", () => {
   state.move(OTHER, { flags: 0, position: at() }, 0);
   state.setSpeed(OTHER, "run", 14, 0);
   state.move(OTHER, { flags: F.forward, position: at() }, 0);
-  state.updateMotions(1000);
-  near(state.objects.get(OTHER).position.x, 14);
+  state.updateMotions(500);
+  near(state.objects.get(OTHER).position.x, 7);
 });
 
 test("turning turns, and running while turning follows the arc", () => {
@@ -64,19 +64,19 @@ test("turning turns, and running while turning follows the arc", () => {
 
 test("a swimmer's pitch tilts the forward motion and nothing else", () => {
   const pitch = -0.5;
-  const swim = positionAfter(F.forward | F.swimming, 1000, { pitch });
-  near(swim.z, Math.sin(pitch) * 4.722222, 1e-6, "vz = sin(pitch)·swim");
-  near(swim.x, Math.cos(pitch) * 4.722222, 1e-6, "ground = cos(pitch)·swim");
-  near(positionAfter(F.flying | F.ascending, 1000).z, 7, 1e-6, "ascending at flight speed");
+  const swim = positionAfter(F.forward | F.swimming, 500, { pitch });
+  near(swim.z, Math.sin(pitch) * 4.722222 / 2, 1e-6, "vz = sin(pitch)·swim");
+  near(swim.x, Math.cos(pitch) * 4.722222 / 2, 1e-6, "ground = cos(pitch)·swim");
+  near(positionAfter(F.flying | F.ascending, 500).z, 3.5, 1e-6, "ascending at flight speed");
   near(positionAfter(F.forward | F.root, 1000).x, 0, 0, "a root holds whatever the word says");
 });
 
 test("a jump falls along the jump block, minus-up on the wire, from the fall clock it reports", () => {
   const jump = { velocity: -7.9558, sinAngle: 0, cosAngle: 1, speed: 7 };
   // Keys do not steer a fall: backward is ignored, the block says forward along +x.
-  const one = positionAfter(F.falling | F.backward, 1000, { fallTime: 0, jump });
-  near(one.x, 7, 1e-6, "ground velocity from the block");
-  near(one.z, 7.9558 - 0.5 * GRAVITY, 1e-5, "computeFallElevation with an upward start");
+  const one = positionAfter(F.falling | F.backward, 500, { fallTime: 0, jump });
+  near(one.x, 3.5, 1e-6, "ground velocity from the block");
+  near(one.z, 7.9558 * 0.5 - 0.5 * GRAVITY * 0.25, 1e-5, "computeFallElevation with an upward start");
   const apexTime = 7.9558 / GRAVITY;
   const apex = positionAfter(F.falling, Math.round(apexTime * 1000), { fallTime: 0, jump });
   near(apex.z, 7.9558 * apexTime - 0.5 * GRAVITY * apexTime * apexTime, 2e-3, "apex");
@@ -84,9 +84,10 @@ test("a jump falls along the jump block, minus-up on the wire, from the fall clo
   const late = positionAfter(F.falling, 500, { fallTime: 500, jump });
   const fallen = (t) => t * (-7.9558 + t * GRAVITY * 0.5);
   near(late.z, -(fallen(1) - fallen(0.5)), 1e-5, "continues from fallTime");
-  // A long drop reaches the terminal velocity, 60.148 yd/s.
+  // A long drop reaches the terminal velocity, 60.148 yd/s. 5.04 (11.11): FALLING is one of 0x006E9F50's flags,
+  // so 2 s without a packet is 1 s of the fall.
   const drop = positionAfter(F.falling, 2000, { fallTime: 10000, jump: { velocity: 0, sinAngle: 0, cosAngle: 1, speed: 0 } });
-  near(drop.z, -60.148003 * 2, 1e-3, "terminal");
+  near(drop.z, -60.148003, 1e-3, "terminal");
 });
 
 test("a correction is continuous where it lands and gone 180 ms later", () => {
@@ -121,10 +122,11 @@ test("a stop stops, and nothing runs on past the horizon", () => {
   lost.move(OTHER, { flags: F.forward, position: at() }, 0);
   lost.updateMotions(1000);
   lost.updateMotions(5000);
-  near(lost.objects.get(OTHER).position.x, 7 * 2, 1e-9, "two seconds of running, no more");
+  // 5.04 (11.11): Wow.exe 0x006E9F50 — slowed from 0.5 s, standing from 1.5 s: one second of running (was two).
+  near(lost.objects.get(OTHER).position.x, 7, 1e-9, "one second of running, no more");
   assert.equal(lost.objects.get(OTHER).drift, undefined, "the drift is dropped once spent");
   lost.updateMotions(9000);
-  near(lost.objects.get(OTHER).position.x, 14, 1e-9);
+  near(lost.objects.get(OTHER).position.x, 7, 1e-9);
 });
 
 test("the character, a passenger and a unit on a spline are not extrapolated; far is a snap", () => {
@@ -172,9 +174,9 @@ test("a teleport lands at once and a runner runs on from there", () => {
 test("a mount bought mid-run speeds the run up from that moment", () => {
   const state = world();
   state.move(OTHER, { flags: F.forward, position: at() }, 0);
-  state.setSpeed(OTHER, "run", 14, 1000);
-  state.updateMotions(2000);
-  near(state.objects.get(OTHER).position.x, 7 + 14, 1e-9);
+  state.setSpeed(OTHER, "run", 14, 250);
+  state.updateMotions(500);
+  near(state.objects.get(OTHER).position.x, 1.75 + 3.5, 1e-9);
 });
 
 test("the terrain: a walker follows the slope, a faller stops on it, a cave ignores it", () => {
@@ -182,8 +184,8 @@ test("the terrain: a walker follows the slope, a faller stops on it, a cave igno
   const walker = world();
   walker.groundProbe = (x) => slope(x);
   walker.move(OTHER, { flags: F.forward, position: at(0, 0, 0.2) }, 0);
-  walker.updateMotions(1000);
-  near(walker.objects.get(OTHER).position.z, 3.5 + 0.2, 1e-9, "up the hill, same height above it");
+  walker.updateMotions(500);
+  near(walker.objects.get(OTHER).position.z, 1.75 + 0.2, 1e-9, "up the hill, same height above it");
 
   const faller = world();
   faller.groundProbe = () => 0;
@@ -220,8 +222,8 @@ test("the create block keeps all nine speeds, and a player seen swimming swims o
   assert.equal(object.speeds?.get("swim"), 9.5);
   assert.equal(object.speeds?.get("pitchRate"), Math.fround(3.14));
   assert.equal(object.runSpeed, 7);
-  state.updateMotions(1000);
-  near(object.position.x, 9.5, 1e-6, "the block's swim speed");
+  state.updateMotions(500);
+  near(object.position.x, 4.75, 1e-6, "the block's swim speed");
 });
 
 test("per-frame extrapolation allocates nothing and stays cheap", () => {

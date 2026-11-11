@@ -43,6 +43,14 @@ test("a pet's aura for the caster: 0x0053D580 takes the player or the pet", () =
   assert.equal(auraListed({ flags: others, casterGuid: SELF }, row, SELF, PET), true);
 });
 
+test("3.68 (11.11): a passive is shown by its Effect column (record +0x11C), an area aura's, not by its aura type", () => {
+  const passive = attr(0, 0x40);
+  assert.equal(auraListed({ flags: own }, { attributes: passive, effects: [6, 0, 0], effectAura: [65, 0, 0] }, SELF, PET), false,
+    "APPLY_AURA with aura type 65: hidden");
+  assert.equal(auraListed({ flags: own }, { attributes: passive, effects: [35, 0, 0], effectAura: [4, 0, 0] }, SELF, PET), true,
+    "APPLY_AREA_AURA_PARTY: shown");
+});
+
 test("a row cached before the attributes reached the client is not held back by them", () => {
   assert.equal(auraListed({ flags: own }, { effectAura: [4, 0, 0] }, SELF, PET), true);
 });

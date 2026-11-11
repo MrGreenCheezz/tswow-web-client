@@ -49,28 +49,30 @@ test("the pitch keys turn a flier's pitch at pitchRate and its forward travel fo
   near(early.z, (7 / RATE) * (1 - Math.cos(RATE * t)), 1e-4, "z");
   near(early.x, (7 / RATE) * Math.sin(RATE * t), 1e-4, "x");
   near(driftPitch(flier, t * 1000), RATE * t, 1e-12);
-  // Past π/2 it climbs straight up at the whole forward speed.
+  // Past π/2 it climbs straight up at the whole forward speed. 5.04 (11.11): 2 s without a packet is 1 s of travel
+  // (0x006E9F50: 2000 − (2000 − 1500) − 1000²/2000).
   const reach = (Math.PI / 2) / RATE;
   const late = sample(flier, 2000);
-  near(late.z, 7 / RATE + 7 * (2 - reach), 1e-4, "clamped z (split at the clamp)");
+  near(late.z, 7 / RATE + 7 * (1 - reach), 1e-4, "clamped z (split at the clamp)");
   near(late.x, 7 / RATE, 1e-4, "clamped x");
   assert.equal(driftPitch(flier, 2000), REMOTE_PITCH_LIMIT);
   // Down is the other way; a swimmer too; both keys cancel; on foot the keys say nothing.
   assert.equal(drifting(F.swimming | F.forward | F.pitchDown).pitchTurn, -RATE);
   assert.equal(drifting(F.flying | F.forward | F.pitchUp | F.pitchDown).pitchTurn, 0);
   assert.equal(drifting(F.forward | F.pitchUp).pitchTurn, 0);
-  // Pitching while turning: the integration agrees with a fine one.
+  // Pitching while turning: the integration agrees with a fine one. 5.04 (11.11): sampled 1.5 s after the packet,
+  // which is 1 s of travel (0x006E9F50: 1500 − 1000²/2000) for the turn, the pitch and the path alike.
   const both = drifting(F.flying | F.forward | F.turnLeft | F.pitchDown | F.strafeLeft, { pitch: 0.3 });
   const fine = { x: 0, y: 0, z: 0 };
   const steps = 20000;
   for (let index = 0; index < steps; index++) {
-    const s = ((index + 0.5) / steps) * 1.5;
+    const s = ((index + 0.5) / steps) * 1.0;
     const facing = 3.141594 * s;
     const pitch = Math.max(-Math.PI / 2, 0.3 - RATE * s);
     const forward = both.along * Math.cos(pitch);
-    fine.x += (Math.cos(facing) * forward - Math.sin(facing) * both.across) * (1.5 / steps);
-    fine.y += (Math.sin(facing) * forward + Math.cos(facing) * both.across) * (1.5 / steps);
-    fine.z += both.along * Math.sin(pitch) * (1.5 / steps);
+    fine.x += (Math.cos(facing) * forward - Math.sin(facing) * both.across) * (1.0 / steps);
+    fine.y += (Math.sin(facing) * forward + Math.cos(facing) * both.across) * (1.0 / steps);
+    fine.z += both.along * Math.sin(pitch) * (1.0 / steps);
   }
   const integrated = sample(both, 1500);
   near(integrated.x, fine.x, 2e-3, "x");
@@ -80,9 +82,9 @@ test("the pitch keys turn a flier's pitch at pitchRate and its forward travel fo
 
 test("without the pitch keys the closed form is untouched", () => {
   const flier = drifting(F.flying | F.forward, { pitch: 0.5 });
-  const out = sample(flier, 1000);
-  near(out.z, 7 * Math.sin(0.5), 1e-9);
-  near(out.x, 7 * Math.cos(0.5), 1e-9);
+  const out = sample(flier, 500); // 5.04 (11.11): within the half second 0x006E9F50 leaves at full speed
+  near(out.z, 3.5 * Math.sin(0.5), 1e-9);
+  near(out.x, 3.5 * Math.cos(0.5), 1e-9);
   assert.equal(flier.pitchTurn, 0);
 });
 

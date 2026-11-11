@@ -14,7 +14,7 @@ import {
   type SplineDescription, type SplineFacing, type SplineSample, type SplineTrack,
 } from "./SplineModel.js";
 import {
-  CORRECTION_SNAP_DISTANCE, EXTRAPOLATION_HORIZON_MS, advanceDrift, anchorDrift, emptyDrift, kinematicsFor,
+  CORRECTION_SNAP_DISTANCE, driftStillMoving, advanceDrift, anchorDrift, emptyDrift, kinematicsFor, // 5.04 (11.11): was EXTRAPOLATION_HORIZON_MS
   type Drift, type DriftSample, type GroundProbe,
 } from "./MovementExtrapolation.js";
 import { realignDrift } from "./MovementExtrapolation.js"; // L8 5.04
@@ -765,6 +765,7 @@ export class WorldState {
     record.z = movement.position.z;
     record.orientation = movement.position.orientation;
     record.at = now;
+    record.packetAt = now; // 5.04 (11.11): the blink is its packet (0x006E9F50's clock starts here)
     record.errorX = record.errorY = record.errorZ = record.errorOrientation = 0;
     anchorDrift(record, movement.flags, this.groundProbe);
     object.drift = record;
@@ -1089,7 +1090,7 @@ export class WorldState {
     // A rider who mounts mid-run: the motion being extrapolated speeds up from here, not from the
     // packet before (which would put them retroactively further along).
     const drift = object.drift !== undefined && !object.drift.ballistic
-      && now - object.drift.at < EXTRAPOLATION_HORIZON_MS ? object.drift : undefined;
+      && driftStillMoving(object.drift, now) ? object.drift : undefined; // 5.04 (11.11): 0x006E9F50's stand, was 2 s
     if (drift !== undefined) this.#rebaseDrift(drift, object.movementFlags, now);
     object.speeds ??= new Map();
     object.speeds.set(name, value);

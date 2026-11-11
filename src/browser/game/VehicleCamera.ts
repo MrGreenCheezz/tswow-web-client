@@ -58,6 +58,10 @@ import { VEHICLE_FLAG_CAMERA_FADE } from "../VehicleCameraFade.js";
  * - CameraFacingChaseRate (3 seats, 3690-3692): 0x0075a1c0 chases VehicleCamera_C's own facing (+0x88 → +0x94, the
  *   spring 0x007160b0 at 20 / rate, wrapped to ±π) in states 1-3; how that facing reaches the view (0x00759ce0, camera
  *   +0x84, and the 0x005fe5f0 turn of state 3) is not read yet, and this client's orbit has no such facing.
+ *   11.11 (.runtime/re-2026-11-11/vehicle2/v4.c): +0x84 = the chased facing less the watched unit's (0x00759ce0); in
+ *   state 3, with VehicleCamera_C +8 bits 0x2 and 0x4 and the active camera watching this camera's unit with +0xac < 1,
+ *   0x005fe5f0 turns the camera's yaw (+0x260, and +0x264/+0x11c wrapped) by old − new chased facing each frame. Who
+ *   sets bits 0x2/0x4 and how that yaw maps onto this client's orbit (CameraFollow.ts, not this lane's) is not read.
  *
  * Without vehicle rows, outside a vehicle seat, or riding a ship, nothing here touches the camera and
  * the wheel answers exactly as `zoomedDistance` does. Once a frame, nothing is allocated unless the

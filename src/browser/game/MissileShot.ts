@@ -3,6 +3,9 @@ import { solveMissileShot, type MissileShot, type MissileSegmentHit, type Vec3 }
 import type { SpellMissileCatalog } from "../../world/SpellMissileDbc.js";
 import type { VehicleCatalog } from "../../world/VehicleDbc.js";
 import type { WorldObjectState } from "../../world/WorldState.js";
+import type { MissileCollisionModel } from "../../world/MissileCollision.js"; // 11.11
+import { worldObject } from "../../world/Fields.js"; // 11.11
+import { UPDATE_FIELDS } from "../../generated/updateFields.js"; // 11.11
 import { spellMissiles } from "../SpellMissileClient.js";
 import { vehicleCatalog } from "../VehicleClient.js";
 import { game } from "./Context.js";
@@ -109,6 +112,35 @@ export const pageMissileShotSource: MissileShotSource = {
     return missileShotFor(casterGuid, spellId, spellMissiles(game.gatewayOrigin), vehicleCatalog(),
       (from, to) => worldSegmentHit(mapId, from, to));
   },
+  missileRow(spellId) {
+    return spellMissiles(game.gatewayOrigin)?.missileOfSpell(spellId);
+  },
+  collisionModel(guid) {
+    const unit = game.world?.state.objects.get(guid);
+    if (unit === undefined) return undefined;
+    return unitCollisionModel(unit, (displayId) => game.creatureModels?.get(displayId));
+  },
 };
+
+/**
+ * 11.11: 0x006fbff0's model of a unit — the CreatureModelData of its display (0x00717a20) and its scale (vfunc +0x7c,
+ * 0x0071c0e0: +0xb3c × +0x9c × +0x98; taken here as OBJECT_FIELD_SCALE_X × the display's scale, +0xb3c unread). The
+ * gateway's display answer carries CollisionHeight but not MissileCollisionRadius/Push/Raise, which 2 of the
+ * dataset's 1,331 CreatureModelData rows set (3088, 3091): those count as 0, Wow.exe's "half the height" case.
+ * Undefined while the display row is not here; the tracker then takes Wow.exe's no-model sphere (radius 1).
+ */
+export function unitCollisionModel(unit: WorldObjectState,
+  display: (displayId: number) => { readonly scale: number; readonly collisionHeight: number } | undefined,
+): { scale: number; model: MissileCollisionModel } | undefined {
+  const displayId = unit.fields.get(UPDATE_FIELDS.UNIT_FIELD_DISPLAYID.offset) ?? 0;
+  const row = displayId > 0 ? display(displayId) : undefined;
+  if (row === undefined) return undefined;
+  const objectScale = worldObject.scale(unit);
+  const scale = (typeof objectScale === "number" && objectScale > 0 ? objectScale : 1) * row.scale;
+  return {
+    scale,
+    model: { collisionHeight: row.collisionHeight, missileCollisionRadius: 0, missileCollisionPush: 0, missileCollisionRaise: 0 },
+  };
+}
 
 setMissileShotSource(pageMissileShotSource);

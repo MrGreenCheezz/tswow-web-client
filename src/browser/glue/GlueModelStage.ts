@@ -1051,6 +1051,15 @@ export class GlueModelStage {
     };
   }
 
+  /**
+   * 11.11 6.18: whether the model `frame` shows is loaded and carries `animation` among the clips it
+   * holds — the test Wow.exe makes before a PlayerModel's turn step (0x005970f0 → 0x00825ee0). The
+   * shuffle clips travel inside the artifact (`BASE_ANIMATION_NAMES`), so no sidecar is consulted.
+   */
+  hasAnimation(frame: FrameXmlFrame, animation: number): boolean {
+    return this.#views.get(frame)?.template?.clips.has(animation) ?? false;
+  }
+
   /** Bring the set of live views into line with what is on the page. Cheap; call after every sync. */
   reconcile(): void {
     const wanted = new Set<FrameXmlFrame>();

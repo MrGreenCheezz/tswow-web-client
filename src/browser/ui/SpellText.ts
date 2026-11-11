@@ -7,9 +7,12 @@ import {
 } from "./SpellTextWowRules.js"; // 11.10
 import { spellConditionBranch } from "./SpellTextCondition.js"; // 12.10
 import { evaluateSpellExpression, type SpellExpressionEnvironment, type SpellTextRecord } from "./SpellTextExpression.js"; // 12.10
-import { spellTextCastSpeed, spellTextLevel, spellTextPlayerSex, type SpellTextPlayer } from "./SpellTextPlayer.js"; // 12.10
 import {
-  SPELLMOD, spellTextEffectRange, spellTextModFloat, spellTextModInt, type SpellTextCaster,
+  spellTextCastSpeed, spellTextFloat, spellTextInt, spellTextLevel, spellTextPlayerSex, type SpellTextPlayer,
+} from "./SpellTextPlayer.js"; // 12.10; 3.43 (11.11): + the cost fields
+import {
+  SPELLMOD, smallestOverSchools, spellTextEffectRange, spellTextModFloat, spellTextModInt, spellTextModifierTotals,
+  type SpellTextCaster,
 } from "./SpellTextCaster.js"; // 3.43 (11.11)
 import { spellTextBlock, spellTextVariable, spellTextVariables, type SpellTextVariable } from "./SpellTextVariables.js"; // 12.10
 
@@ -223,8 +226,12 @@ class DescriptionWriter {
   }
 
   /**
-   * 0x008012f0 for `$c`: ManaCost plus ManaCostPct of the base 0x0071b770 gives, not below 0. Left
-   * out: ManaCostPerLevel, the school cost modifiers and the spell modifiers. -1 without a player.
+   * 0x008012f0 for `$c`, the active player's cost: ManaCost plus ManaCostPct of the base 0x0071b770 gives; 3.43
+   * (11.11) then the school steps — + UNIT_FIELD_POWER_COST_MODIFIER, × (1 + UNIT_FIELD_POWER_COST_MULTIPLIER), each the
+   * smallest over the spell's SchoolMask (0x005ee050, 0x005ee0b0), stored to a float and rounded to nearest-even — and
+   * SPELLMOD_COST, (v + flat) × pct / 100 (0x007fd970); not below 0. Left out: ManaCostPerLevel (the column is not
+   * served; few player spells carry one), AttributesEx4 0x400's weapon-speed part and SUMMON_ALL_TOTEMS' sum of the
+   * multi-cast bar's totems. -1 without a player.
    */
   cost(record: SpellTextRecord): number | undefined {
     const player = this.context.player;
@@ -236,7 +243,24 @@ class DescriptionWriter {
       if (base === undefined) return undefined;
       cost += Math.trunc((base * record.powerCostPercent) / 100);
     }
+    const schools = record.schoolMask ?? 0;
+    const modifier = smallestOverSchools(schools, (school) => spellTextInt(player, "UNIT_FIELD_POWER_COST_MODIFIER", school));
+    const multiplier = smallestOverSchools(schools, (school) => spellTextFloat(player, "UNIT_FIELD_POWER_COST_MULTIPLIER", school));
+    cost = spellTextRoundEven(Math.fround(Math.fround(cost + modifier) * (multiplier + 1)));
+    cost = spellTextModInt(record, cost, SPELLMOD.cost, this.context.caster);
     return cost < 1 ? 0 : cost;
+  }
+
+  /**
+   * 0x007ff100 for `$p`: ManaPerSecond, then SPELLMOD_COST's percent alone when it is above 0 (pct × v / 100, no flat);
+   * 0 without a player. Left out: ManaPerSecondPerLevel (not served).
+   */
+  perSecondCost(record: SpellTextRecord): number | undefined {
+    if (!this.context.player) return 0;
+    const value = record.manaPerSecond;
+    if (value === undefined || value <= 0) return value;
+    const totals = spellTextModifierTotals(record, SPELLMOD.cost, this.context.caster);
+    return totals ? Math.trunc((totals.pct * value) / 100) : value;
   }
 
   /** The sex `$g` uses: the context's, else the player's; undefined without either. */
@@ -375,8 +399,8 @@ class DescriptionWriter {
       case "L": case "l": return this.pluralForm(text, at + 1);
       case "M": case "O": case "S": case "m": case "o": case "s": return this.value(spell, letter, effect, factor, end, level) ?? asWritten(end);
       case "N": case "n": return integer(spell.procCharges === undefined ? undefined : modInt(spell.procCharges, SPELLMOD.charges));
-      // 0x007ff100: ManaPerSecond (its per-level part and the cost modifier left out); 0 without a player.
-      case "P": case "p": return integer(this.context.player ? spell.manaPerSecond : 0, false);
+      // 0x007ff100: ManaPerSecond through SPELLMOD_COST's percent (3.43, 11.11; its per-level part left out); 0 without a player.
+      case "P": case "p": return integer(this.perSecondCost(spell), false);
       case "Q": case "q": return integer(spell.effectMiscValue?.[effect]);
       // SpellRange's RangeMax[0] (+0xc), 3.43: through SPELLMOD_RANGE (0x007fdba0), raised to the next integer
       // (0x0050f450, 0x0088b9c0).

@@ -48,8 +48,7 @@ import { writeSpellTargets, type SpellTargetSpec } from "./SpellTargets.js";
  * - CMSG_UPDATE_PROJECTILE_POSITION (0x00703640: `u64 caster, u32 spell, u8 castCount, f32 xyz`) is sent
  *   by a missile in flight (0x007015d0) when its collision test (0x006fc9b0 → 0x006fc360: spheres around
  *   the units on the path) stops it early — only for missiles whose row has Flags & 0x3c and the in-flight
- *   flag 0x200000 (0x00700880). That needs the flying missile itself; `buildUpdateProjectilePosition` is
- *   here for the day the renderer's missiles collide.
+ *   flag 0x200000 (0x00700880). 11.11: MissileCollision.ts tests this client's own such flights and sends it.
  * - Not repeated: the low bits 0x007fe520 stirs into elevation, speed and both points before writing them
  *   (a counter-keyed hash the core ignores), and the solver's tilt of the aim by the ground normal for a
  *   model with flag 0x8000 that stands on a slope.

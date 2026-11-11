@@ -8,7 +8,7 @@ import { spellFailureText } from "../dist/code/world/SpellProtocol.js";
 import { setPetSpellAttributesSource } from "../dist/code/world/PetCastSpell.js";
 import { setMissileShotSource } from "../dist/code/world/MissileCast.js";
 import {
-  castFailureErrorRowName, castFailureErrorRowIsInfo, castFailureErrorText, petCastFailureErrorText,
+  castFailureErrorRowName, castFailureErrorRowIsInfo, castFailureErrorText, petCastFailureErrorText, powerTokenName,
 } from "../dist/code/world/CastFailureErrorRow.js";
 import { mountedCastRule, SPELL_ATTR0_CASTABLE_WHILE_MOUNTED, SPELL_FAILED_NOT_MOUNTED } from "../dist/code/world/MountedCastRule.js";
 import { castFailedPacket, fakeWorldConnection, loginVerifyWorldPacket, settle } from "./fixtures/world-packets.mjs";
@@ -86,6 +86,32 @@ test("3.47 (11.11): SMSG_CAST_FAILED says 0x00807f10's row — FULL_HEALTH, an i
   world.close();
 });
 
+test("3.47 (11.11): NOT_UNSHEATHED's type-1 row reaches the screen as an info message, the others as errors", strings, async () => {
+  const { world, connection } = await client();
+  const status = [];
+  world.onSpellStatus = (text, error, info) => status.push({ text, error, info: info === true });
+  connection.push(OPCODES.SMSG_CAST_FAILED, castFailedPacket({ castCount: 1, spellId: 99, result: 72 }));
+  connection.push(OPCODES.SMSG_CAST_FAILED, castFailedPacket({ castCount: 2, spellId: 98, result: 2 }));
+  await settle();
+  assert.deepEqual(status, [
+    { text: words("ERR_SPELL_FAILED_NOTUNSHEATHED"), error: false, info: true },
+    { text: words("ERR_SPELL_FAILED_ALREADY_AT_FULL_HEALTH"), error: true, info: false },
+  ]);
+  world.close();
+});
+
+test("3.47 (11.11): ALREADY_AT_FULL_POWER names the player's power from the client's strings (0x007fe4b0)", strings, async () => {
+  assert.equal(powerTokenName(1), globalString("RAGE"));
+  assert.ok(powerTokenName(0), "MANA is in the generated subset");
+  assert.equal(powerTokenName(7), undefined, "a type past 6 has no name");
+  const { world, connection, status } = await client();
+  world.state.setField(SELF, UPDATE_FIELDS.UNIT_FIELD_BYTES_0.offset, 1 << 24);
+  connection.push(OPCODES.SMSG_CAST_FAILED, castFailedPacket({ castCount: 1, spellId: 99, result: 4 }));
+  await settle();
+  assert.deepEqual(status.map(({ text }) => text), [castFailureErrorText(4, undefined, "s", globalString("RAGE"))]);
+  world.close();
+});
+
 test("3.47 (11.11): SMSG_PET_CAST_FAILED — the pet's row without a prefix, and UNIT_SPELLCAST_FAILED for the pet", strings, async () => {
   const { world, connection } = await client();
   world.state.setField(SELF, UPDATE_FIELDS.UNIT_FIELD_SUMMON.offset, Number(PET & 0xffff_ffffn));
@@ -147,6 +173,11 @@ test("5.05 (11.11): a mounted Auto Shot dismounts; in flight it is refused with 
   world.state.setField(victim, UPDATE_FIELDS.UNIT_FIELD_HEALTH.offset, 100);
   world.selectTarget(victim);
   world.state.setField(SELF, UPDATE_FIELDS.UNIT_FIELD_MOUNTDISPLAYID.offset, 2410);
+  // 5.05 (11.11): a bow in the ranged slot — 0x0080cce0 refuses a RANGED spell without one (CastPreflightRule.ts).
+  const BOW = 0x4000_0000_0000_0042n;
+  world.state.setField(SELF, UPDATE_FIELDS.PLAYER_FIELD_INV_SLOT_HEAD.offset + 34, Number(BOW & 0xffff_ffffn));
+  world.state.setField(SELF, UPDATE_FIELDS.PLAYER_FIELD_INV_SLOT_HEAD.offset + 35, Number(BOW >> 32n));
+  world.state.setField(BOW, UPDATE_FIELDS.ITEM_FIELD_MAXDURABILITY.offset, 0);
   const refusals = [];
   world.events.on("SPELL_CAST_REFUSED_LOCAL", (refusal) => refusals.push(refusal));
   const names = () => connection.sent.map(({ opcode }) => Object.keys(OPCODES).find((name) => OPCODES[name] === opcode));

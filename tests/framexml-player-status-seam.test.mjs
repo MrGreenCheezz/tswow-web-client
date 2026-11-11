@@ -397,8 +397,9 @@ test("\"focus-target\" is the focus's target, with its own unit events and a por
     "FocusFrame's UNIT_TARGET runs TargetofTarget_Update on its row");
   fired.length = 0;
   store.events.emit("UNIT_DISPLAY_ID", { guid: SELF_GUID });
-  assert.deepEqual(fired, [[FRAMEXML_SEAM_EVENTS.unitPortrait, "player"]],
-    "the player's display id is CharacterMicroButton's and PlayerFrame's UNIT_PORTRAIT_UPDATE");
+  assert.deepEqual(fired, [[FRAMEXML_SEAM_EVENTS.unitPortrait, "player"], ["UNIT_MODEL_CHANGED", "player"]],
+    "the player's display id is CharacterMicroButton's and PlayerFrame's UNIT_PORTRAIT_UPDATE, and"
+    + " (11.11 6.18, Wow.exe 0x00618110 flags 3) PaperDollFrame's UNIT_MODEL_CHANGED");
   fired.length = 0;
   store.events.emit("UNIT_DISPLAY_ID", { guid: 0x77n });
   assert.deepEqual(fired, [[FRAMEXML_SEAM_EVENTS.unitPortrait, "focus-target"]]);

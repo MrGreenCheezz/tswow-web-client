@@ -90,6 +90,19 @@ export function frameXmlCharacterAddonEnabled(addon: FrameXmlInstalledClientAddo
   return glueWorldAddonStates()?.enabled.get(addon.name.toLowerCase()) ?? addon.enabled;
 }
 
+/**
+ * 3.46 (11.11): GetAddOnInfo's live «off» for an installed add-on — the character's table as the world's
+ * EnableAddOn/DisableAddOn leave it (FrameXmlWorldAddonApi.ts), or switched off for the session (`sessionEnabled`).
+ */
+export function frameXmlCharacterAddonDisabledNow(
+  installed: readonly FrameXmlInstalledClientAddon[], sessionEnabled: (name: string) => boolean,
+): (lower: string) => boolean {
+  return (lower) => {
+    const addon = installed.find((entry) => entry.name.toLowerCase() === lower);
+    return addon !== undefined && (!frameXmlCharacterAddonEnabled(addon) || !sessionEnabled(addon.name));
+  };
+}
+
 /** 3.46 (11.11): the mount's load list for the character: the installed add-ons on for it, else the profile's list. */
 export function frameXmlCharacterAddons(list: FrameXmlClientAddonList | undefined): readonly FrameXmlClientAddon[] {
   if (!list) return [];

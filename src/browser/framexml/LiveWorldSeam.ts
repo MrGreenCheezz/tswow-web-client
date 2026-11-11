@@ -296,6 +296,7 @@ import { FrameXmlMap, type FrameXmlMapSource } from "./FrameXmlMap.js";
 import { frameXmlPetExperience } from "./FrameXmlPetExperience.js";
 import { frameXmlHunterPet } from "./FrameXmlStable.js";
 import { FRAMEXML_PET_HAPPINESS_EVENT, FrameXmlPetHappinessWatch, frameXmlPetHappiness } from "./FrameXmlPetHappiness.js"; // 3.36 (L14)
+import { FRAMEXML_UNIT_MODEL_CHANGED, watchFrameXmlUnitModelChanges } from "./FrameXmlUnitModelEvents.js"; // 11.11 6.18
 import { frameXmlHasPetUI } from "./FrameXmlHasPetUI.js"; // L15 5.05
 import { frameXmlPetFoodTypes, type FrameXmlPetFoodNames } from "./FrameXmlPetFood.js"; // 05.10-petfood
 import { liveFrameXmlHelmCloak } from "./FrameXmlHelmCloak.js"; // 05.10-A7a-A 6.09
@@ -306,6 +307,7 @@ import { createFrameXmlServices, type FrameXmlServices, type FrameXmlSendMailIte
 import type { WorldStateUiRow } from "../../world/WorldStateUiData.js";
 import { ensureSpellNames } from "../ui/SpellNames.js";
 import { auraListed } from "../../world/AuraListed.js"; // 05.11 (3.68)
+import { AuraOrder, type AuraOrderRules } from "../../world/AuraOrder.js"; // 3.68 (11.11)
 import { QUALITY_LINK_COLORS, itemChatLink, spellChatLink } from "../ui/ChatLink.js";
 import { className, classFileName, classSpellFamily, raceBaseLanguage, raceFileName, raceName } from "../ui/UnitSnapshot.js";
 import { femaleOf } from "../ui/UnitSnapshot.js"; // L3-review
@@ -443,7 +445,7 @@ import { FrameXmlBattlefieldListState } from "./FrameXmlBattlefieldList.js"; // 
 import { FrameXmlWorldPvpModel, type FrameXmlWorldPvpArea } from "./FrameXmlWorldPvpQueue.js"; // 3.24
 import { FrameXmlHelpModel } from "./FrameXmlHelp.js"; // 3.24
 import { activeGossipPoi, type GossipPoiMark } from "../GossipPoi.js"; // 3.13
-import { macroShownArgument, macroShownName } from "../macro/MacroShownAction.js"; // 1.14
+import { macroShown, parseMacroShown, resolveMacroShown, type MacroShown, type MacroShownHost } from "../macro/MacroShownAction.js"; // 1.14
 import { macroShownCommands } from "./FrameXmlMacroCommands.js"; // 1.14
 
 const ALLIANCE_RACE_IDS = new Set([1, 3, 4, 7, 11]);
@@ -1501,6 +1503,7 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
         world.setActionButton(slot - 1, macro, ACTION_BUTTON_MACRO);
         return true;
       },
+      shownIcon: (body) => this.#macroShownIcon(body), // 1.14 (11.11)
     });
     this.keyBindings = new FrameXmlBindingModel(context.runBinding ? { runAction: context.runBinding } : {});
     // The extra bars live on the server (3.32): PLAYER_FIELD_BYTES byte 2, CMSG_SET_ACTIONBAR_TOGGLES.
@@ -2424,6 +2427,14 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
         this.#unsubscribe.push(events.on("UNIT_DISPLAY_ID", ({ guid }) => {
           const unit = this.#castUnit(guid) ?? (guid === this.#focusTarget()?.guid ? "focus-target" : undefined);
           if (unit !== undefined) pump.fire(FRAMEXML_SEAM_EVENTS.unitPortrait, unit);
+          // 11.11 6.18: Wow.exe raises UNIT_MODEL_CHANGED with every UNIT_PORTRAIT_UPDATE (0x00618110, flags 3).
+          if (unit !== undefined && unit !== "focus-target") pump.fire(FRAMEXML_UNIT_MODEL_CHANGED, unit);
+        }));
+        // 11.11 6.18: a player's visible items and helm/cloak bits (FrameXmlUnitModelEvents.ts).
+        if (typeof store.any === "function") this.#unsubscribe.push(watchFrameXmlUnitModelChanges({
+          any: (listener) => store.any(listener),
+          unit: (token) => this.#unitObject(token),
+          fire: (event, unit) => { pump.fire(event, unit); },
         }));
         this.#unsubscribe.push(events.on("UNIT_NPC_FLAGS", ({ guid }) => {
           if (guid === this.#targetGuid && this.#target()?.guid === guid) {
@@ -7137,7 +7148,8 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
   /** 1.14: a known spell by its name, the highest rank, remembered until the book changes (asked every frame by a macro button). */
   #knownSpellByName(name: string): SpellMetadata | undefined {
     const world = this.#context.world();
-    if (!world) return undefined;
+    // Test worlds stand in for parts of WorldClient; no book is no spell.
+    if (!world || !Array.isArray(world.knownSpells)) return undefined;
     if (this.#macroSpellBook !== world.knownSpells || this.#macroSpellBookSize !== world.knownSpells.length) {
       this.#macroSpellBook = world.knownSpells;
       this.#macroSpellBookSize = world.knownSpells.length;
@@ -7160,18 +7172,111 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
   #macroSpellBookSize = 0;
   readonly #macroSpellNames = new Map<string, SpellMetadata>();
 
-  /** 1.14: the spell a macro's text stands for right now (macro/MacroShownAction.ts). */
-  #macroBodySpell(body: string | undefined): SpellMetadata | undefined {
-    if (body === undefined) return undefined;
-    const argument = macroShownArgument(body, macroShownCommands());
-    const name = argument === undefined ? undefined : macroShownName(argument, this.macroContext());
-    return name === undefined ? undefined : this.#knownSpellByName(name);
+  /** 1.14 (11.11): what a macro's text stands for right now, a spell or an item (macro/MacroShownAction.ts). */
+  #macroShown(body: string | undefined): MacroShown | undefined {
+    return body === undefined ? undefined : macroShown(body, macroShownCommands(), this.#macroShownHost);
   }
 
-  /** 1.14: `GetMacroSpell(id)`. */
+  /** 1.14 (11.11): what 0x005650c0 reads of the world — the item cache by name, the inventory's slots. */
+  readonly #macroShownHost: MacroShownHost = ((): MacroShownHost => {
+    const seam = this;
+    const objectAt = (fields: ReadonlyMap<number, number> | undefined, at: number): number | undefined => {
+      const world = seam.#context.world();
+      const low = fields?.get(at) ?? 0;
+      const high = fields?.get(at + 1) ?? 0;
+      if (!world || (low === 0 && high === 0)) return undefined;
+      const item = world.state.objects.get((BigInt(high >>> 0) << 32n) | BigInt(low >>> 0));
+      return item ? entryOf(item) : undefined;
+    };
+    return {
+      get options() { return seam.macroContext(); },
+      itemNamed: (text) => {
+        // 0x00709de0: an `item:` anywhere names its id; else the item cache's record of that name (0x0053f3b0).
+        const link = text.indexOf("item:");
+        if (link >= 0) {
+          const id = Number.parseInt(text.slice(link + 5), 10);
+          return Number.isSafeInteger(id) && id !== 0 ? id : undefined;
+        }
+        const world = seam.#context.world();
+        if (!world || !(world.itemTemplates instanceof Map)) return undefined;
+        const wanted = text.toLowerCase();
+        for (const [entry, template] of world.itemTemplates) {
+          if (template.found && template.name.toLowerCase() === wanted) return entry;
+        }
+        return undefined;
+      },
+      inventoryItem: (slot) => objectAt(seam.#self()?.fields, UPDATE_FIELDS.PLAYER_FIELD_INV_SLOT_HEAD.offset + slot * 2),
+      bagItem: (bag, slot) => {
+        const world = seam.#context.world();
+        const container = seam.#inventoryOf(world)?.bags.find((entry) => entry.bagSlot === INVENTORY_SLOT_BAG_START + bag);
+        const item = container?.slots[slot]?.item;
+        return item ? entryOf(item) : undefined;
+      },
+    };
+  })();
+
+  /**
+   * 1.14 (11.11): a question-mark macro's icon (0x00566ac0): the item's (its record's display icon), else the spell's.
+   * Not modelled: the spell's ActiveIconID, which 0x00566ac0 shows while the player has the spell's aura.
+   */
+  #macroShownIcon(body: string): string | undefined {
+    const shown = this.#macroShown(body);
+    if (shown === undefined) return undefined;
+    if ("item" in shown) return this.#context.itemInfo?.(shown.item)?.texture || this.#itemTexture(shown.item);
+    return this.#knownSpellByName(shown.spell)?.iconPath || undefined;
+  }
+
+  /** 1.14 (11.11): the item a macro stands for (+0x568), or undefined. */
+  #macroBodyItem(body: string | undefined): number | undefined {
+    const shown = this.#macroShown(body);
+    return shown !== undefined && "item" in shown ? shown.item : undefined;
+  }
+
+  /**
+   * 1.14: the spell a macro's text stands for right now — 0x005a89f0: an item's on-use spell when it stands for an
+   * item (0x005a89b0 → 0x00706b90), else its own spell (+0x564).
+   */
+  #macroBodySpell(body: string | undefined): SpellMetadata | undefined {
+    const shown = this.#macroShown(body);
+    if (shown === undefined) return undefined;
+    if ("item" in shown) {
+      const spellId = itemUseSpellId(this.#itemTemplate(this.#context.world(), shown.item));
+      return spellId === undefined ? undefined : this.#context.spell(spellId);
+    }
+    return this.#knownSpellByName(shown.spell);
+  }
+
+  /** 1.14: `GetMacroSpell(id)` (0x00567450): the macro's own spell, none while it stands for an item. */
   macroSpell(id: unknown): readonly [string, string] | undefined {
-    const spell = this.#macroBodySpell(this.macros.info(id)?.[2]);
+    const shown = this.#macroShown(this.macros.info(id)?.[2]);
+    const spell = shown !== undefined && "spell" in shown ? this.#knownSpellByName(shown.spell) : undefined;
     return spell?.name ? [spell.name, spell.rank ?? ""] : undefined;
+  }
+
+  /**
+   * 1.14 (11.11): `GetMacroItem(id)` (0x00567200): the item's name and link — a carried copy's (its random suffix, its
+   * enchantments: 0x00707c20, 0x0061e3a0), else the cached record's (0x00706d70, 0x0061e360); nothing for an item the
+   * cache has no record of (0x0067ca30).
+   */
+  macroItem(id: unknown): readonly [string, string] | undefined {
+    const entry = this.#macroBodyItem(this.macros.info(id)?.[2]);
+    if (entry === undefined) return undefined;
+    const held = this.#actionItems(entry)[0]?.item;
+    if (held) {
+      const info = this.itemInfo(entry);
+      const link = this.#itemLink(held);
+      return info && link ? [this.#randomName(info[0], itemObjectNameRandom(held)), link] : undefined;
+    }
+    const info = this.itemInfo(entry);
+    return info ? [info[0], info[1]] : undefined;
+  }
+
+  /** 1.14 (11.11): the slot's item as 0x005a8070 reads it: an item button's, or the item its macro stands for. */
+  #slotItem(slot: number): number | undefined {
+    const button = this.#button(slot);
+    if (button?.type === ACTION_BUTTON_ITEM) return button.action;
+    if (button?.type === ACTION_BUTTON_MACRO) return this.#macroBodyItem(this.macros.slotBody(button.action));
+    return undefined;
   }
 
   /** 1.14: the slot's spell as 0x005a8c30 reads it: its own, or a macro's. */
@@ -7224,15 +7329,40 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
       if (!name) return undefined;
       return { kind: "item", id: button.action, name };
     }
-    // Macro/equipment names are not present in the authoritative world snapshot; fail closed.
+    if (button.type === ACTION_BUTTON_MACRO) return this.#macroTooltip(button.action); // 1.14 (11.11)
+    // Equipment-set names are not present in the authoritative world snapshot; fail closed.
     return undefined;
+  }
+
+  /**
+   * 1.14 (11.11): GameTooltip:SetAction over a macro (0x00631000 → 0x00630d20): with `#showtooltip` (+0x570) the item's
+   * tooltip, else the spell's; otherwise — no mark, or nothing shown — the macro's name alone.
+   */
+  #macroTooltip(macroSlot: number): FrameXmlActionTooltip | undefined {
+    const body = this.macros.slotBody(macroSlot);
+    if (body === undefined) return undefined;
+    const parse = parseMacroShown(body, macroShownCommands());
+    const shown = parse.showTooltip ? resolveMacroShown(parse, this.#macroShownHost) : undefined;
+    if (shown !== undefined && "item" in shown) {
+      const template = this.#itemTemplate(this.#context.world(), shown.item);
+      const name = this.#context.itemInfo?.(shown.item)?.name ?? (template?.found ? template.name : "");
+      if (name) return { kind: "item", id: shown.item, name };
+    } else if (shown !== undefined) {
+      const spell = this.#knownSpellByName(shown.spell);
+      if (spell?.name) return { kind: "spell", id: spell.id, name: spell.name, rank: spell.rank };
+    }
+    const name = this.macros.slotName(macroSlot);
+    return name ? { kind: "macro", id: macroSlot, name } : undefined;
   }
 
   actionCount(slot: number): number {
     const button = this.#button(slot);
     if (button?.type === ACTION_BUTTON_SPELL) return this.#reagentCasts(this.#metadata(slot)); // 19.10 (0x007ffa30)
-    return button?.type === ACTION_BUTTON_ITEM
-      ? this.#actionItems(button.action).reduce((count, item) => count + stackCount(item), 0) : 0;
+    // 1.14 (11.11): a macro's item counts as an item button's, its spell as a spell button's (0x005aa5c0: 0x005a8070,
+    // else 0x005a8c30 → 0x007ffa30).
+    const item = this.#slotItem(slot);
+    if (item !== undefined) return this.#actionItems(item).reduce((count, held) => count + stackCount(held), 0);
+    return button?.type === ACTION_BUTTON_MACRO ? this.#reagentCasts(this.#slotSpell(slot)) : 0;
   }
 
   /**
@@ -7247,12 +7377,16 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     const world = this.#context.world();
     const button = this.#button(slot);
     const pump = this.#pump;
-    if (button?.type === ACTION_BUTTON_ITEM) {
+    const item = this.#slotItem(slot); // 1.14 (11.11): a macro's item too (0x005a8070)
+    if (item !== undefined) {
       // 3.47 (12.10): 0x005a8e40 asks only for an item whose record the cache has (0x0067ca30), carried
       // (0x005a86b0 → 0x008090c0) or by its on-use spell (0x00809030).
-      const template = this.#itemTemplate(world, button.action);
-      return this.#itemCooldown(button.action, template !== undefined && this.#itemCooldownAsked(world, button.action, template));
+      const template = this.#itemTemplate(world, item);
+      return this.#itemCooldown(item, template !== undefined && this.#itemCooldownAsked(world, item, template));
     }
+    // 1.14 (11.11): a macro's spell as a spell button's (0x005a8e40 → 0x005a8c30 → 0x00809000).
+    const macroSpell = button?.type === ACTION_BUTTON_MACRO ? this.#slotSpell(slot) : undefined;
+    if (world && pump && macroSpell) return this.#spellCooldownAnswer(macroSpell.id);
     if (!world || !pump || !button || button.type !== ACTION_BUTTON_SPELL) return [0, 0, 0];
     // 3.47 (12.10): GetSpellCooldown's answer (`#spellCooldownAnswer`) — a ready spell `0, 0, 1` as 0x00807980 sets it,
     // not `0, 0, 0`; held, recovering and the global part (L12 5.30) as before.
@@ -7271,10 +7405,11 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     if (!button) return [false, false];
     const world = this.#context.world();
     const self = this.#self();
-    if (button.type === ACTION_BUTTON_ITEM) {
-      const template = this.#itemTemplate(world, button.action);
+    const slotItem = this.#slotItem(slot); // 1.14 (11.11): a macro's item too (0x005a9e20 reads 0x005a8070)
+    if (slotItem !== undefined) {
+      const template = this.#itemTemplate(world, slotItem);
       const spellId = itemUseSpellId(template);
-      if (this.#actionItems(button.action).length === 0) return [false, false];
+      if (this.#actionItems(slotItem).length === 0) return [false, false];
       if (world !== undefined && spellId !== undefined
         && itemUseCooldownBlock(world, template, spellId, this.#context.monotonic()) === "hold") return [false, false];
       const metadata = spellId === undefined ? undefined : this.#context.spell(spellId);
@@ -7455,8 +7590,11 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
    */
   isConsumableAction(slot: number): boolean {
     const button = this.#button(slot);
-    if (button?.type === ACTION_BUTTON_ITEM) return true;
-    return button?.type === ACTION_BUTTON_SPELL && (this.#metadata(slot)?.reagents?.length ?? 0) > 0;
+    if (this.#slotItem(slot) !== undefined) return true; // 1.14 (11.11): a macro's item too (0x005a8070)
+    // 1.14 (11.11): a macro's spell as a spell button's (0x005a9360 → 0x005a8c30).
+    const spell = button?.type === ACTION_BUTTON_SPELL ? this.#metadata(slot)
+      : button?.type === ACTION_BUTTON_MACRO ? this.#slotSpell(slot) : undefined;
+    return (spell?.reagents?.length ?? 0) > 0;
   }
 
   #reagentCasts(metadata: SpellMetadata | undefined): number {
@@ -7468,13 +7606,16 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
   }
 
   isStackableAction(slot: number): boolean {
-    return this.#button(slot)?.type === ACTION_BUTTON_ITEM;
+    // 1.14 (11.11): 0x005a8470 — the slot's item (0x005a8070, a macro's too) whose cached record stacks past one.
+    const item = this.#slotItem(slot);
+    const template = item === undefined ? undefined : this.#itemTemplate(this.#context.world(), item);
+    return template?.found === true && template.stackable > 1;
   }
 
   isEquippedAction(slot: number): boolean {
-    const button = this.#button(slot);
-    return button?.type === ACTION_BUTTON_ITEM && this.#actionItems(button.action)
-      .some((item) => item.bag === INVENTORY_SLOT_BAG_0 && item.slot < INVENTORY_SLOT_BAG_START);
+    const item = this.#slotItem(slot); // 1.14 (11.11): a macro's item too (0x005a88b0 reads 0x005a8070)
+    return item !== undefined && this.#actionItems(item)
+      .some((held) => held.bag === INVENTORY_SLOT_BAG_0 && held.slot < INVENTORY_SLOT_BAG_START);
   }
 
   isCurrentAction(slot: number): boolean {
@@ -7525,8 +7666,12 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     else if (button.type === ACTION_BUTTON_ITEM) spellId = itemUseSpellId(this.#itemTemplate(world, button.action));
     else if (button.type === ACTION_BUTTON_MACRO) spellId = this.#slotSpell(slot)?.id; // 1.14
     if (spellId === undefined) return undefined;
+    // 1.14 (11.11): with no unit named, a macro's own target — its holding group's `@unit` (+0x578, 0x005a94c0).
+    const macroTarget = !unit && button.type === ACTION_BUTTON_MACRO
+      ? this.#macroShown(this.macros.slotBody(button.action))?.target : undefined;
+    const asked = unit || macroTarget;
     // A unit that names nothing leaves the guid empty, and 0x00809610 then takes the current target.
-    const named = (unit ? this.#unit(unit.toLowerCase()) : undefined) ?? this.#target();
+    const named = (asked ? this.#unit(asked.toLowerCase()) : undefined) ?? this.#target();
     return frameXmlActionInRange(this.#context.spell(spellId), this.#self(), named, this.#actionRangeHost);
   }
 
@@ -8544,7 +8689,8 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     const selfGuid = world?.state.selfGuid;
     if (!world || selfGuid === undefined || typeof world.aurasFor !== "function") return undefined;
     let filteredIndex = 0;
-    for (const aura of world.aurasFor(selfGuid)) {
+    // 3.68 (11.11): CancelUnitBuff's index is UnitBuff's, through the same list (0x00804220 → 0x0072C9B0).
+    for (const aura of this.#auraOrder.order(selfGuid, world.aurasFor(selfGuid), this.#auraOrderRules)) {
       if (!this.#auraCounted(aura, filter)) continue;
       filteredIndex += 1;
       if (filteredIndex === index) return aura;
@@ -8719,6 +8865,72 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     return this.unitAura(unit, index, "HARMFUL");
   }
 
+  /** 3.68 (11.11): each unit's aura list in Wow.exe's order (world/AuraOrder.ts). */
+  readonly #auraOrder = new AuraOrder();
+  #summonedEntriesBook: unknown;
+  #summonedEntriesSize = -1;
+  #summonedEntries = new Set<number>();
+
+  /** 3.68 (11.11): what the order asks — 0x0053D580, 0x0053BD70 and 0x0053D750 over this seam's world. */
+  readonly #auraOrderRules: AuraOrderRules = ((): AuraOrderRules => {
+    const seam = this;
+    const guidAt = (object: WorldObjectState | undefined, field: { readonly offset: number }): bigint => {
+      const low = object?.fields.get(field.offset) ?? 0;
+      const high = object?.fields.get(field.offset + 1) ?? 0;
+      return (BigInt(high >>> 0) << 32n) | BigInt(low >>> 0);
+    };
+    const either = (object: WorldObjectState | undefined, first: { readonly offset: number }, second: { readonly offset: number }) => {
+      const value = guidAt(object, first);
+      return value !== 0n ? value : guidAt(object, second);
+    };
+    const knows = (spellId: number): boolean => {
+      const world = seam.#context.world();
+      return (Array.isArray(world?.knownSpells) && world.knownSpells.some((known) => known.id === spellId))
+        || world?.petSpells?.spells?.some((known) => known.spellId === spellId) === true;
+    };
+    return {
+      listed: (aura) => auraListed(aura, seam.#context.spell(aura.spellId), seam.#context.world()?.state.selfGuid, seam.#pet()?.guid),
+      own: (caster) => {
+        const world = seam.#context.world();
+        const self = world?.state.selfGuid;
+        if (self === undefined) return false;
+        if (caster === self) return true;
+        const unit = world?.state.objects.get(caster);
+        return either(unit, UPDATE_FIELDS.UNIT_FIELD_CHARM, UPDATE_FIELDS.UNIT_FIELD_SUMMON) === self
+          || either(unit, UPDATE_FIELDS.UNIT_FIELD_CHARMEDBY, UPDATE_FIELDS.UNIT_FIELD_CREATEDBY) === self;
+      },
+      bookSpell: (spellId) => (knows(spellId) ? seam.#context.spell(spellId)?.effects : undefined),
+      summonedCaster: (caster) => {
+        const world = seam.#context.world();
+        const unit = world?.state.objects.get(caster);
+        if (!world || !unit || unit.typeId !== TYPEID_UNIT) return false;
+        if (either(unit, UPDATE_FIELDS.UNIT_FIELD_CHARMEDBY, UPDATE_FIELDS.UNIT_FIELD_CREATEDBY) === 0n) return false;
+        return seam.#playerSummonedEntries().has(entryOf(unit));
+      },
+    };
+  })();
+
+  /** 3.68 (11.11): 0x00542030's list — Effect 28 or 56's EffectMiscValue of each spell in the player's book. */
+  #playerSummonedEntries(): ReadonlySet<number> {
+    const world = this.#context.world();
+    const book = Array.isArray(world?.knownSpells) ? world.knownSpells : [];
+    if (this.#summonedEntriesBook !== book || this.#summonedEntriesSize !== book.length) {
+      const entries = new Set<number>();
+      let complete = true;
+      for (const known of book) {
+        const spell = this.#context.spell(known.id);
+        if (!spell) { complete = false; continue; }
+        const effect = spell.effects?.[0];
+        const entry = spell.effectMiscValue[0] ?? 0;
+        if ((effect === 28 || effect === 56) && entry !== 0) entries.add(entry);
+      }
+      // Kept only once every row is in: a row that lands later may yet add an entry.
+      if (complete) { this.#summonedEntriesBook = book; this.#summonedEntriesSize = book.length; }
+      this.#summonedEntries = entries;
+    }
+    return this.#summonedEntries;
+  }
+
   /** 05.11 (3.68): whether UnitAura's index counts this aura: the list of AuraListed.ts, then the negative bit alone (Wow.exe 0x0072CAA8). */
   #auraCounted(aura: ActiveAura, filter: string): boolean {
     if (((aura.flags & AURA_FLAGS.negative) !== 0) !== (filter === "HARMFUL")) return false;
@@ -8741,7 +8953,7 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
             : this.#pet()?.guid;
     if (!world || guid === undefined || typeof world.aurasFor !== "function") return undefined;
     let filteredIndex = 0;
-    for (const aura of world.aurasFor(guid)) {
+    for (const aura of this.#auraOrder.order(guid, world.aurasFor(guid), this.#auraOrderRules)) { // 3.68 (11.11)
       if (!this.#auraCounted(aura, filter)) continue;
       filteredIndex += 1;
       if (filteredIndex === index) return aura;
@@ -8764,7 +8976,7 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     const world = this.#context.world();
     if (!member || !world) return undefined;
     if (!this.#partyObject(unit) || typeof world.aurasFor !== "function") return undefined;
-    const auras = world.aurasFor(member.guid);
+    const auras = this.#auraOrder.order(member.guid, world.aurasFor(member.guid), this.#auraOrderRules); // 3.68 (11.11)
     let filteredIndex = 0;
     for (const aura of auras) {
       if (aura.spellId <= 0) continue;

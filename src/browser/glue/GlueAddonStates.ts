@@ -186,4 +186,10 @@ export class GlueAddonStateList {
   reset(): void {
     this.#tables = this.#tables.map((table) => this.#load(table.name));
   }
+
+  /** 3.46 (11.11): 0x5f91e0(name) — the named character's table again from its files (the world's ResetDisabledAddOns). */
+  resetCharacter(name: string): void {
+    const lower = name.toLowerCase();
+    this.#tables = this.#tables.map((table) => (table.name.toLowerCase() === lower ? this.#load(table.name) : table));
+  }
 }

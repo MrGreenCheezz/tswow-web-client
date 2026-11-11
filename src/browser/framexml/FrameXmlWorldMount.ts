@@ -92,7 +92,9 @@ import { loadFrameXmlCharacterStats } from "./FrameXmlCharacterStats.js";
 import { fetchFrameXmlClientAddonList } from "./FrameXmlClientAddons.js"; // 3.46 (13.10): with the whole list
 import {
   frameXmlCharacterAddonEnabled, frameXmlCharacterAddons, frameXmlCharacterAddonVersionCheck,
+  frameXmlCharacterAddonDisabledNow,
 } from "./FrameXmlClientAddons.js"; // 3.46 (11.11)
+import { installFrameXmlWorldAddonApi, saveFrameXmlWorldAddonStates } from "./FrameXmlWorldAddonApi.js"; // 3.46 (11.11)
 import { frameXmlOwnerAddon } from "./FrameXmlAddonRuntime.js"; // 3.18
 import {
   frameXmlLodPrefetchNames, frameXmlLodPreloadNames, frameXmlPreloadServerDown, startFrameXmlLodPreload,
@@ -3614,7 +3616,8 @@ export async function mountFrameXmlVertical(
     locale: clientLocale(),
     installedAddons: installedClientAddons.map((addon) => addon.name), // 3.46 (13.10): was the enabled ones alone
     eagerAddons: clientAddons.filter((addon) => !addon.loadOnDemand).map((addon) => addon.name),
-    addonStates: { disabled: disabledClientAddons, checkAddonVersion: frameXmlCharacterAddonVersionCheck(clientAddonList) }, // 3.46 (13.10; 11.11)
+    addonStates: { disabled: disabledClientAddons, checkAddonVersion: frameXmlCharacterAddonVersionCheck(clientAddonList), // 3.46 (13.10; 11.11)
+      disabledNow: frameXmlCharacterAddonDisabledNow(installedClientAddons, frameXmlClientAddonEnabled) }, // 3.46 (11.11)
     subset: FRAMEXML_VERTICAL_TOC,
     // Ordinary entry passes its explicit addon preference; direct addon-runtime callers retain
     // the existing opt-in mount API. A stock-only diagnostic never reads the generated TS blocks.
@@ -4029,7 +4032,8 @@ export async function mountFrameXmlVertical(
     // The owner checks UnitClass("player") each time it opens, not here: the player's own object
     // may land after publication, and a token-less class demotes on that press.
     const character = frameXmlCharacterModelGate(boot, renderer,
-      (reason) => fallbacks.report("character", reason));
+      (reason) => fallbacks.report("character", reason),
+      { liveModel: true }); // 11.11 6.18: CharacterModelFrame:SetUnit draws it (mountFrameXmlDressUp below)
     if (character) {
       resources.characterPortraitCleanup = character.portraitCleanup;
       resources.characterOwner = createFrameXmlCharacterOwner(
@@ -4370,6 +4374,9 @@ export async function mountFrameXmlVertical(
           .finally(() => finishModuleCommandLoad?.());
       }, 0);
     });
+    // 3.46 (11.11): the switches over the character's table when the glue handed one over (its DisableAllAddOns
+    // replaces the session one above; FrameXmlWorldAddonApi.ts).
+    installFrameXmlWorldAddonApi(boot.vm, installedClientAddons.map((addon) => addon.name));
     const mirrorTimersReady = [1, 2, 3].every((index) => {
       const timer = boot.bridge.getFrame(`MirrorTimer${index}`);
       return timer && renderer.elementFor(timer) && boot.bridge.hasScript(timer, "OnEvent")
@@ -4704,6 +4711,7 @@ export async function mountFrameXmlVertical(
 
 /** Take it down again: the VM, the DOM, the listener and the frame callback. */
 export function unmountFrameXmlVertical(): void {
+  saveFrameXmlWorldAddonStates(); // 3.46 (11.11): 0x00528f00 → 0x5f76a0, the changed add-on tables written
   mountEpoch += 1;
   if (pendingMount) cleanupPendingMount(pendingMount);
   const current = mounted;

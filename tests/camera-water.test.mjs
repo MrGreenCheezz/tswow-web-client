@@ -114,7 +114,7 @@ test("the stock Camera panel's WATER_COLLISION drives it: CVar cameraWaterCollis
   assert.deepEqual(writes, [["cameraWaterCollision", false]]);
   assert.equal(cvars.get("CAMERAWATERCOLLISION"), "0", "case-insensitive, as the client's");
   assert.equal(FRAMEXML_OPTIONS_UNAVAILABLE.has("InterfaceOptionsCameraPanelWaterCollision"), false);
-  // The other three stay greyed out: this client does not do them (WORK_PLAN 5.14).
+  // 5.14 (11.11): the other three are usable too now (camera-options.test.mjs).
   for (const name of ["InterfaceOptionsCameraPanelFollowTerrain", "InterfaceOptionsCameraPanelHeadBob",
-    "InterfaceOptionsCameraPanelSmartPivot"]) assert.ok(FRAMEXML_OPTIONS_UNAVAILABLE.has(name), name);
+    "InterfaceOptionsCameraPanelSmartPivot"]) assert.equal(FRAMEXML_OPTIONS_UNAVAILABLE.has(name), false, name);
 });

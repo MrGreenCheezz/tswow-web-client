@@ -66,6 +66,26 @@ test("0x007ff770: Fireball rank 1 grows 0.6 a level above BaseLevel 1, floored a
   assert.equal(formatSpellDescription("$s1", FIREBALL, {}), "14–22");
 });
 
+test("3.43 (11.11): 0x008012f0's `$c` — the school's cost modifier and multiplier, nearest-even, then SPELLMOD_COST", () => {
+  const floatWord = (value) => { const view = new DataView(new ArrayBuffer(4)); view.setFloat32(0, value, true); return view.getUint32(0, true); };
+  const FIRE = 2;
+  const fields = new Map([
+    [UPDATE_FIELDS.UNIT_FIELD_POWER_COST_MODIFIER.offset + FIRE, -5],
+    [UPDATE_FIELDS.UNIT_FIELD_POWER_COST_MULTIPLIER.offset + FIRE, floatWord(-0.5)],
+    [UPDATE_FIELDS.UNIT_FIELD_POWER_COST_MODIFIER.offset + 0, -20], // physical: not the spell's school
+  ]);
+  const player = { slot: (index) => fields.get(index), basePower: () => 1000 };
+  const row = { ...FIREBALL, powerType: 0, powerCost: 30, powerCostPercent: 0, schoolMask: 1 << FIRE, manaPerSecond: 20 };
+  // (30 − 5) × (1 − 0.5) = 12.5, fistp to even: 12.
+  assert.equal(formatSpellDescription("$c", row, { player, caster: caster(5, 3) }), "12");
+  // SPELLMOD_COST (14): (12 + 2) × (100 − 50) / 100 = 7.
+  const cheaper = [{ effectIndex: 0, op: 14, value: -50, pct: true }, { effectIndex: 0, op: 14, value: 2, pct: false }];
+  assert.equal(formatSpellDescription("$c", row, { player, caster: caster(5, 3, cheaper) }), "7");
+  // 0x007ff100: `$p` takes the percent alone — 20 × 50 / 100.
+  assert.equal(formatSpellDescription("$p", row, { player, caster: caster(5, 3, cheaper) }), "10");
+  assert.equal(formatSpellDescription("$p", row, { player, caster: caster(5, 3) }), "20");
+});
+
 test("0x007ff770: an absorb is neither floored nor raised, and the 1/128 grid keeps a fraction", () => {
   // Level 11: 5 × 0.8 = 4 — 48 (the server's 43 + 4 + 1).
   assert.equal(formatSpellDescription("$s1", SHIELD, { caster: caster(11) }), "48");

@@ -31,7 +31,7 @@
  * The CRT is MSVC's of that time: three exponent digits ("1e+006"), the mantissa rounded to 17
  * significant digits first and then, by its digit string, to the precision (half up), and the
  * special values printed from the digit strings "1#INF" and "1#IND" through the same rounding
- * ("1.#INF00", "%.2f" "1.#J", "%g" "1.#INF"; NaN as 0/0's "-1.#IND" — JS keeps no NaN sign).
+ * ("1.#INF00", "%.2f" "1.#J", "%g" "1.#INF"; NaN by its bits — 0/0's "-1.#IND", a positive one "1.#QNAN": 3.27, 11.11).
  * Width and the `0` flag pad every conversion, strings and characters included, as its printf does;
  * a precision on an integer turns the `0` flag off; `#x` adds no prefix to a zero.
  *
@@ -45,7 +45,7 @@
  * metamethod and no Lua.
  */
 import { lauxlib, lua as luaApi, to_luastring, type LuaState } from "../lua/LuaVm.js";
-import { lua51NumberText } from "./GlueLuaBase51.js";
+import { lua51NumberText, msvcNan } from "./GlueLuaBase51.js";
 
 /** The C-API calls this file needs beyond LuaShapes.ts; LuaApi.ts implements each one. */
 interface Lua53Calls {
@@ -202,7 +202,7 @@ let decimalPoint = 0;
 
 function decompose(value: number): void {
   if (value !== value) {
-    mantissa = "1#IND";
+    mantissa = msvcNan(value).digits; // 3.27 (11.11): by its bits, as 0x004192f4
     decimalPoint = 1;
     return;
   }
@@ -350,7 +350,7 @@ export function floatItem(L: LuaState, // 05.10-3.27b
   bodyLength = 0;
   prefixLength = 0;
   const alternate = (flags & FLAG_ALT) !== 0;
-  const negative = value < 0 || Object.is(value, -0) || value !== value;
+  const negative = value < 0 || Object.is(value, -0) || (value !== value && msvcNan(value).negative); // 3.27 (11.11)
   signPrefix(negative, flags);
   const places = precision < 0 ? 6 : precision;
   if (conversion === 102 || conversion === 70) {

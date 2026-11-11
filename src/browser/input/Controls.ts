@@ -14,6 +14,7 @@ import { cameraViews } from "../game/CameraViews.js"; // 3.11
 import { cameraFollow, type CameraFollowHost } from "../game/CameraFollow.js"; // 3.11
 import { cameraMaxDistance, settingOn, settings } from "../ui/Settings.js";
 import { settingNumber } from "../ui/SettingsModel.js";
+import { cameraPivotLook } from "../game/CameraOptionsLive.js"; // 5.14 (11.11)
 import { canAttackUnit, dropTabList, inSightFromCamera, reactionTo } from "../game/Targeting.js"; // 1.10: dropTabList
 import { setHoveredTarget } from "../game/HoverTarget.js";
 import { gatherPlan } from "../game/CreatureGather.js";
@@ -1251,8 +1252,9 @@ function wireMouse(): void {
     // 11.02-GF3: a vehicle that aims with the steering drag takes its vertical as its own pitch and the
     // camera keeps its tilt (Movement.aimMoverPitchBy, Wow.exe 0x005fba60); everything else as before.
     if (!(steer && aimMoverPitchBy(-vertical * perPixel))) {
+      // 5.14 (11.11): the smart pivot may take the move as a turn about the camera (game/CameraOptionsLive.ts).
       camera.pitch = Math.max(-CAMERA_PITCH_LIMIT,
-        Math.min(CAMERA_PITCH_LIMIT, camera.pitch - vertical * perPixel));
+        Math.min(CAMERA_PITCH_LIMIT, camera.pitch - cameraPivotLook(event.movementX * perPixel, vertical * perPixel)));
     }
     if (steer) {
       // The right button turns the character and the camera comes home behind it, so the offset

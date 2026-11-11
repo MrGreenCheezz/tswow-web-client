@@ -19,6 +19,7 @@ import { CreatureModelClient } from "../CreatureModelClient.js";
 import { GlueModelStage, type GlueModelSource } from "../glue/GlueModelStage.js";
 import type { FrameXmlFrame } from "../ui/framexml_compat/FrameXmlTypes.js";
 import type { FrameXmlDressUpModels, FrameXmlDressUpOutfit } from "./FrameXmlDressUp.js";
+import type { FrameXmlModelTurns, FrameXmlUnitModels } from "./FrameXmlUnitModel.js";
 
 export type FrameXmlDressUpModelSource = Pick<CreatureModelClient, "get" | "request" | "playerAppearance">;
 
@@ -65,6 +66,13 @@ export interface FrameXmlDressUpStageOptions {
   readonly isVisible: (frame: FrameXmlFrame) => boolean;
   readonly creatureModels?: FrameXmlDressUpModelSource | undefined;
   readonly onDiagnostic?: (message: string) => void;
+  /**
+   * 11.11 6.18: the PlayerModels that show a unit (FrameXmlUnitModel.ts) — the character, pet and
+   * inspect windows — drawn by this same stage, so one WebGL renderer serves every unit window.
+   */
+  readonly units?: Pick<FrameXmlUnitModels<unknown>, "frames" | "has" | "resolve"> | undefined;
+  /** 11.11 6.18: SetRotation's step, given one update per drawn step of each shown model. */
+  readonly turns?: Pick<FrameXmlModelTurns, "update"> | undefined;
   /** The page's frame scheduler; injectable for tests. */
   readonly requestFrame?: (callback: () => void) => number;
   readonly cancelFrame?: (handle: number) => void;
@@ -90,6 +98,7 @@ export class FrameXmlDressUpStage {
 
   /** The source a model draws now: the current outfit's, or the last one while it resolves. */
   resolve(frame: FrameXmlFrame): GlueModelSource | undefined {
+    if (!this.#options.models.has(frame)) return this.#options.units?.resolve(frame); // 11.11 6.18
     const outfit = this.#options.models.outfit(frame);
     if (!outfit) { this.#shown.delete(frame); return undefined; }
     const source = frameXmlDressUpSource(outfit, this.#models);
@@ -108,11 +117,23 @@ export class FrameXmlDressUpStage {
     this.#schedule();
   }
 
+  /** Every frame that shows a unit: the dress-up models, then the PlayerModels (11.11 6.18). */
+  *#frames(): Generator<FrameXmlFrame> {
+    yield* this.#options.models.frames();
+    const units = this.#options.units;
+    if (units) for (const frame of units.frames()) if (!this.#options.models.has(frame)) yield frame;
+  }
+
   #visible(): boolean {
-    for (const frame of this.#options.models.frames()) {
+    for (const frame of this.#frames()) {
       if (this.#options.isVisible(frame)) return true;
     }
     return false;
+  }
+
+  /** 11.11 6.18: whether `frame`'s loaded model carries `animation` (the turn rule's clip test). */
+  hasAnimation(frame: FrameXmlFrame, animation: number): boolean {
+    return this.#stage?.hasAnimation(frame, animation) ?? false;
   }
 
   #schedule(): void {
@@ -131,13 +152,16 @@ export class FrameXmlDressUpStage {
       if (visible || this.#stage) {
         const stage = this.#stage ??= new GlueModelStage({
           gatewayOrigin: this.#options.gatewayOrigin,
-          models: () => this.#options.models.frames(),
+          models: () => this.#frames(),
           elementFor: this.#options.elementFor,
           isVisible: this.#options.isVisible,
           resolveModel: (frame) => this.resolve(frame),
           ...(this.#options.onDiagnostic ? { onDiagnostic: this.#options.onDiagnostic } : {}),
         });
         // A hidden model's view is dropped here, so the last pass after a close frees it.
+        // 11.11 6.18: the PlayerModel update (Wow.exe 0x005971b0) before the pass reads the sequence.
+        const turns = this.#options.turns;
+        if (turns && visible) for (const frame of this.#frames()) if (this.#options.isVisible(frame)) turns.update(frame);
         stage.reconcile();
         if (visible) stage.frame(elapsed, now);
       }

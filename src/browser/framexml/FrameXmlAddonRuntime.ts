@@ -129,6 +129,11 @@ export interface FrameXmlAddonRuntimeOptions {
    * and LoadAddOn's refusal (FrameXmlAddonStates.ts).
    */
   readonly disabled?: readonly string[];
+  /**
+   * 3.46 (11.11): whether an installed add-on is off now — the character's table as the world's EnableAddOn/DisableAddOn
+   * leave it (Wow.exe reads it live, 0x005f7d70); undefined — `disabled` as it was at the mount.
+   */
+  readonly disabledNow?: (lower: string) => boolean;
   readonly checkAddonVersion?: boolean;
   /** 3.18 (07.11): the client's locale, which picks a TOC's `Title-xxXX` lines (FrameXmlAddonMetadata.ts); ruRU by default. */
   readonly locale?: string;
@@ -316,7 +321,8 @@ export class FrameXmlAddonRuntime {
         .filter((value): value is string => value !== undefined),
     );
     this.#installed = names((options.installed ?? []).join(","));
-    this.#disabled = new Set((options.disabled ?? []).map((name) => name.toLowerCase())); // 3.46 (13.10)
+    const disabled = new Set((options.disabled ?? []).map((name) => name.toLowerCase())); // 3.46 (13.10)
+    this.#disabled = options.disabledNow ?? ((lower) => disabled.has(lower)); // 3.46 (11.11): live when given
     this.#checkAddonVersion = options.checkAddonVersion ?? true; // 3.46 (13.10)
     this.#locale = options.locale ?? "ruRU"; // 3.18 (07.11)
   }
@@ -356,7 +362,7 @@ export class FrameXmlAddonRuntime {
   }
 
   /** 3.46 (13.10): installed add-ons not enabled (lower-case), and the out-of-date switch. */
-  readonly #disabled: ReadonlySet<string>;
+  readonly #disabled: (lower: string) => boolean;
   readonly #checkAddonVersion: boolean;
 
   /**
@@ -367,7 +373,7 @@ export class FrameXmlAddonRuntime {
     const installed = new Set(this.#installed.map((entry) => entry.toLowerCase()));
     return frameXmlAddonLoadReason({
       installed: (lower) => installed.has(lower),
-      disabled: (lower) => this.#disabled.has(lower),
+      disabled: (lower) => this.#disabled(lower),
       loaded: (lower) => this.#records.get(lower)?.state === "loaded",
       toc: (lower) => this.#records.get(lower)?.toc?.source ?? this.#installedTocs.get(lower),
       checkAddonVersion: this.#checkAddonVersion,
@@ -404,7 +410,7 @@ export class FrameXmlAddonRuntime {
     const notes = table?.get("notes");
     // 3.46 (13.10): «enabled» for the profile (0x005f7d70); a loaded add-on is loadable with no reason (0x005f7650),
     // any other gets 0x005f7e90's (FrameXmlAddonStates.ts) — DISABLED, INTERFACE_VERSION, INCOMPATIBLE, DEP_….
-    const enabled = this.#disabled.has(lower) ? undefined : 1;
+    const enabled = this.#disabled(lower) ? undefined : 1;
     const reason = this.isLoaded(entry) ? undefined : this.loadReason(entry);
     return [name, title, notes, enabled, reason === undefined ? 1 : undefined, reason, "INSECURE"];
   }

@@ -57,6 +57,7 @@ import { frameXmlPvpArenaPublished } from "../framexml/FrameXmlPvpController.js"
 import { frameXmlBattlemasterPublished, notifyFrameXmlBattlemaster } from "../framexml/FrameXmlBattlemasterController.js"; // 3.24
 import { clickVehicle } from "../../world/VehicleClick.js"; // 11.02-BCD
 import { seatClickRefused } from "../game/SeatClick.js"; // 11.02-input
+import { frameXmlAreaSpiritGuideClicked } from "../framexml/FrameXmlAreaSpiritHealer.js"; // 5.25 (11.11)
 
 /** Everything an NPC or a corpse opens: gossip, quests, vendors, trainers, loot, death. */
 
@@ -71,6 +72,8 @@ const NPC_FLAG_BATTLEMASTER = 0x100000;
 const NPC_FLAG_AUCTIONEER = 0x200000;
 const NPC_FLAG_STABLEMASTER = 0x400000;
 const NPC_FLAG_MAILBOX = 0x04000000;
+/** 5.25 (11.11): UNIT_NPC_FLAG_SPIRITGUIDE, the battleground guide 0x006ddbb0 hands to 0x006db180. */
+const NPC_FLAG_SPIRIT_GUIDE = 0x8000;
 
 interface PendingGameObjectInteraction {
   world: WorldClient;
@@ -227,6 +230,9 @@ export function interactWithGuid(guid: bigint): void {
     world.openQuestList(guid);
   } else if ((npcFlags & NPC_FLAGS_VENDOR_MASK) !== 0) world.openVendor(guid);
   else if ((npcFlags & NPC_FLAG_TRAINER) !== 0) world.openTrainer(guid);
+  // 5.25 (11.11): Wow.exe 0x006ddbb0 tests the spirit guide after the trainer and before the banker: a ghost drops its
+  // guide and takes this one with a new query (0x006db180, FrameXmlAreaSpiritHealer.ts `clickGuide`).
+  else if ((npcFlags & NPC_FLAG_SPIRIT_GUIDE) !== 0) frameXmlAreaSpiritGuideClicked(guid); // 5.25 (11.11)
   else if ((npcFlags & NPC_FLAG_BANKER) !== 0) world.openBank(guid);
   else if ((npcFlags & NPC_FLAG_PETITIONER) !== 0) {
     showPendingNpcDialog("Хартии");

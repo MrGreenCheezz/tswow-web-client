@@ -313,6 +313,12 @@ export function frameXmlCharacterModelGate(
   boot: FrameXmlBoot,
   renderer: FrameXmlDomRenderer,
   onUnavailable?: (reason: string) => void,
+  /**
+   * 11.11 6.18: the model box is drawn live by the unit-model stage (CharacterModelFrame:SetUnit,
+   * FrameXmlUnitModel.ts), so the paper-doll still is not adopted into it — the box shows one
+   * picture, and the world renderer paints no full-body readback for it. The header bust still is.
+   */
+  options?: { readonly liveModel?: boolean },
 ): FrameXmlCharacterModelGate | undefined {
   const unavailable = (reason: string): undefined => { onUnavailable?.(reason); return undefined; };
   try {
@@ -388,7 +394,7 @@ export function frameXmlCharacterModelGate(
     // Both outputs are drawn only while stock IsVisible holds for their frame: with CharacterFrame
     // closed a look change rebuilds neither (PortraitRenderer's hidden targets), and opening it
     // repaints each once. The bridge's own flags, so a hidden UIParent (the full-screen map) counts.
-    const portraitCleanup = adoptCharacterPortraitCanvas(
+    const portraitCleanup = options?.liveModel ? () => {} : adoptCharacterPortraitCanvas(
       modelElement,
       measured && measured.width > 0 ? measured.width
         : Number.isFinite(declaredWidth) && declaredWidth > 0 ? declaredWidth : undefined,

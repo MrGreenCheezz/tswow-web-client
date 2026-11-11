@@ -1,7 +1,7 @@
 {
   "artifact": "src/browser/lua/lua51.wasm",
-  "bytes": 619426,
-  "sha256": "22325b28d656b4edbadc55130225acb687d1e12b5514ebde7091d92292781090",
+  "bytes": 619561,
+  "sha256": "c7e263439b1fb87fc688fa919885b79fdfd59f36a6238795ba92659be3fabd99",
   "toolchain": {
     "sdk": "wasi-sdk 34.0 (x86_64-windows)",
     "clang": "clang version 23.1.0-rc3 (https://github.com/llvm/llvm-project 895aa2c896ada719451be2e3673c83da8ddf1141)"
@@ -145,7 +145,7 @@
     "third_party/lua-5.1.5/src/lzio.c": "892bc24d898c19cbedceba419c68f910b99321c0b462be2c2c00b9d763563173",
     "third_party/lua-5.1.5/src/lzio.h": "0ec77d0179bf29c1ccab97028fed761944d5c21c02808e10cd7b5883b58b2ca6",
     "third_party/lua-5.1.5/src/print.c": "3c3b1c1dd17896e428b9742614c90ec10776ced65813eb648f02dee649892f2f",
-    "tools/lua-wasm/wow_lua.c": "c7aa410e60ca3d7c677e4fd57ec52cfbd64c4f033521e9098753d751e4683766",
+    "tools/lua-wasm/wow_lua.c": "2aba9c9adf1e54d7f3fa43ddde79b0df6459e9d6c7b5b59a4a7f74d099ee1a39",
     "tools/lua-wasm/wowbit.c": "5b11c251cd09c42cfee37b225d24eb2e0ad61a2a29237e8eef950ea3a4b2d09b"
   },
   "imports": [

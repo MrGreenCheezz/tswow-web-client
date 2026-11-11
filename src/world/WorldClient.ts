@@ -392,11 +392,17 @@ import { SheathSetter, SPELL_ATTR0_RANGED, standStateSheathes } from "./SheathSe
 import { animationSheathState } from "./AnimationSheathRule.js"; // 5.05 (11.11)
 import { ANIMATION_BEHAVIORS, ANIMATION_WEAPON_FLAGS } from "../generated/animations.js"; // 5.05 (11.11)
 import { mountedCastRule, SPELL_FAILED_NOT_MOUNTED } from "./MountedCastRule.js"; // 5.05 (11.11)
-import { castFailureErrorText, petCastFailureErrorText, powerTokenName, SPELL_FAILED_ALREADY_AT_FULL_POWER } from "./CastFailureErrorRow.js"; // 3.47 (11.11)
+import { // 5.05 (11.11): 0x0080cce0 / 0x0080ac90
+  castPreflightRefusal, sittingCastRule, SPELL_FAILED_NOT_STANDING, type CastPreflightItem,
+} from "./CastPreflightRule.js";
+import { castFailureErrorRowIsInfo, castFailureErrorText, petCastFailureErrorText, powerTokenName, SPELL_FAILED_ALREADY_AT_FULL_POWER } from "./CastFailureErrorRow.js"; // 3.47 (11.11)
 // 11.02-E: missile trajectories — the cast's flag 2 tail, the one re-aim, the page's solver.
 import {
   MissileTrajectoryTracker, isVehicleSpellBar, missileCastPlan, missileShotSource, type MissileCastPlan,
 } from "./MissileCast.js"; // 11.02-E
+import { MissileCollisionTracker } from "./MissileCollision.js"; // 11.02 (11.11)
+import { missileCollisionLaunch, missileCollisionWorld, ownsMissileCollision } from "./MissileCollisionWorld.js"; // 11.02 (11.11)
+import type { SpellGo as MissileCollisionGo } from "./SpellProtocol.js"; // 11.02 (11.11)
 import {
   CAST_FLAG_TRAJECTORY, buildCastSpellTrajectory, buildUpdateMissileTrajectory, trajectoryTail, trajectoryTargets,
   type MissileMovementTail, type MissileShot,
@@ -928,6 +934,8 @@ export class WorldClient {
    */
   autoDismount: () => boolean = () => true; // 5.05 (11.11)
   autoDismountFlying: () => boolean = () => false; // 5.05 (11.11)
+  /** 5.05 (11.11): the CVar autoStand (0x00bd08f8, default "1") 0x0071b090 reads before a seated cast stands up. */
+  autoStand: () => boolean = () => true; // 5.05 (11.11)
   /** L15 5.05: the range of the controller's spell for the player against a target (0x00802c30); the browser's. */
   autoRangedLimits: (spellId: number, player: WorldObjectState, target: WorldObjectState) => AutoRangedLimits | undefined = () => undefined; // L15 5.05
   /**
@@ -1101,7 +1109,8 @@ export class WorldClient {
    */
   initialSpellsReceived = false;
   onSpellsChanged: ((spells: readonly KnownSpell[]) => void) | undefined;
-  onSpellStatus: ((message: string, error: boolean) => void) | undefined;
+  /** `info` (3.47, 11.11): a refusal row of type 1 — the error frame's yellow UI_INFO_MESSAGE, not the red error. */
+  onSpellStatus: ((message: string, error: boolean, info?: boolean) => void) | undefined;
   /** Mount spell ids resolved from DBC metadata; kept here so every cast entry point shares the rule. */
   readonly #mountSpellIds = new Set<number>();
   /** Ranged repeat spell ids resolved from `SPELL_ATTR2_AUTOREPEAT_FLAG`. */
@@ -1430,6 +1439,7 @@ export class WorldClient {
    */
   spellCooldownRow: ((spellId: number) => (SpellCooldownRow & {
     readonly targets?: number | undefined; readonly powerType?: number | undefined; // 3.47 (11.11): Targets, PowerType
+    readonly effects?: readonly number[] | undefined; // 5.05 (11.11): Effect[0] for 0x0080cce0 (CastPreflightRule.ts)
   }) | undefined) | undefined;
   /**
    * 13.10 (3.01): the page's Spell.dbc rows' Speed and attribute words (`/dbc/spells?v=20`), for when a GO's misses
@@ -1653,6 +1663,8 @@ export class WorldClient {
   readonly #sheathSetter = new SheathSetter(); // 5.05 (11.11)
   /** 11.02-E: the note between a trajectory cast and its re-aim (Wow.exe unit+0xf68…0xf74, MissileCast.ts). */
   readonly #missiles = new MissileTrajectoryTracker((guid, spellId) => this.#reaimMissile(guid, spellId)); // 11.02-E
+  // 11.02 (11.11): an own collision missile meeting a unit — CMSG_UPDATE_PROJECTILE_POSITION (MissileCollision.ts)
+  readonly #missileCollisions = new MissileCollisionTracker((payload) => this.#connection.send(OPCODES.CMSG_UPDATE_PROJECTILE_POSITION, payload));
   /** Requests waiting for the server's outcome. A request is not a cooldown. */
   readonly #pendingCasts: PendingSpellCast[] = [];
   /** GO can confirm a locally timed cast before the separate cooldown-event packet arrives. */
@@ -1959,6 +1971,7 @@ export class WorldClient {
       this.talentWipeConfirm = undefined;
       this.#endInstanceLock();
       this.#missiles.dispose(); // 11.02-E: the note lived on a unit of the old map (Wow.exe unit+0xf68)
+      this.#missileCollisions.dispose(); // 11.02 (11.11)
       this.targetHistory.reset(); // L2 1.10: 0x6e6020 → 0x528c30 clears last target, enemy and friend
       // TrinityCore removes the player from the old map, sends NEW_WORLD, then recreates self,
       // transport and visibility after WORLDPORT_ACK (Player.cpp:1887-1907; Map.cpp:3045-3080).
@@ -2618,6 +2631,51 @@ export class WorldClient {
     this.autoRepeatSpellId = undefined;
   }
 
+  /**
+   * 5.05 (11.11): Wow.exe 0x0080cce0's own refusals (PLAYER_FLAGS CANT_DO_THAT_RIGHT_NOW, CASTER_DEAD, EQUIPPED_ITEM)
+   * and 0x0080ac90's stand test (stand up with autoStand, else NOT_STANDING) for the player's own cast — the active
+   * player as the caster, a known spell row (CastPreflightRule.ts). A refusal goes out as the mounted one does
+   * (`spellRefusedLocally`, 0x00808200) and nothing is sent; a stand-up sends CMSG_STANDSTATECHANGE 0 before the cast.
+   */
+  #castPreflightRefused(spellId: number): boolean {
+    const selfGuid = this.state.selfGuid;
+    const self = selfGuid === undefined ? undefined : this.state.objects.get(selfGuid);
+    if (!self || (this.controlledGuid !== undefined && this.controlledGuid !== selfGuid)) return false;
+    const attributes = spellAttributeWords(spellId);
+    if (attributes === undefined) return false; // no row yet: the realm decides, as before
+    const effect0 = this.spellCooldownRow?.(spellId)?.effects?.[0];
+    const fields = self.fields;
+    let refusal = castPreflightRefusal({ attributes, effect0 }, {
+      health: unitFields.health(self) ?? 1,
+      playerFlags: fields.get(UPDATE_FIELDS.PLAYER_FLAGS.offset) ?? 0,
+      rangedItem: this.#rangedSlotItem(self),
+    });
+    if (refusal === undefined) {
+      const sitting = sittingCastRule(attributes[0], unitFields.standState(self) ?? 0, this.autoStand());
+      if (sitting === "stand") this.setStandState(0); // 0x0071a360 → 0x006dcb40(0)
+      else if (sitting === "refuse") refusal = SPELL_FAILED_NOT_STANDING;
+    }
+    if (refusal === undefined) return false;
+    this.spellRefusedLocally(spellId, refusal,
+      this.#refusalErrorText(spellId, refusal, spellFailureText(refusal, this.#castFailureNames())) ?? "");
+    return true;
+  }
+
+  /** 5.05 (11.11): the item in equipment slot 17 (0x00512590(0x11)) as 0x006d71a0 reads it; undefined: none in view. */
+  #rangedSlotItem(self: WorldObjectState): CastPreflightItem | undefined {
+    const slot = UPDATE_FIELDS.PLAYER_FIELD_INV_SLOT_HEAD.offset + 17 * 2;
+    const low = self.fields.get(slot) ?? 0;
+    const high = self.fields.get(slot + 1) ?? 0;
+    if (low === 0 && high === 0) return undefined;
+    const item = this.state.objects.get((BigInt(high >>> 0) << 32n) | BigInt(low >>> 0));
+    if (item === undefined) return undefined;
+    return {
+      flags: item.fields.get(UPDATE_FIELDS.ITEM_FIELD_FLAGS.offset) ?? 0,
+      durability: item.fields.get(UPDATE_FIELDS.ITEM_FIELD_DURABILITY.offset) ?? 0,
+      maxDurability: item.fields.get(UPDATE_FIELDS.ITEM_FIELD_MAXDURABILITY.offset) ?? 0,
+    };
+  }
+
   /** Whether a classified mount spell currently has its own aura on the player. */
   isActiveMountSpell(spellId: number): boolean {
     const selfGuid = this.state.selfGuid;
@@ -2692,6 +2750,7 @@ export class WorldClient {
       return;
     }
 
+    if (this.#castPreflightRefused(spellId)) return; // 5.05 (11.11): 0x0080cce0 / 0x0080ac90 (CastPreflightRule.ts)
     if (this.#cancelMountBeforeCast(spellId)) return;
 
     if (this.#autoRepeatSpellIds.has(spellId)) {
@@ -2756,6 +2815,7 @@ export class WorldClient {
       return;
     }
 
+    if (this.#castPreflightRefused(spellId)) return; // 5.05 (11.11): 0x0080cce0 / 0x0080ac90 (CastPreflightRule.ts)
     if (this.#cancelMountBeforeCast(spellId)) return;
 
     if (this.#autoRepeatSpellIds.has(spellId)) {
@@ -2803,6 +2863,7 @@ export class WorldClient {
       this.onSpellStatus?.(`${spellSubject(this.#knownName("spell", spellId))} отсутствует в книге`, true);
       return;
     }
+    if (this.#castPreflightRefused(spellId)) return; // 5.05 (11.11): 0x0080cce0 / 0x0080ac90 (CastPreflightRule.ts)
     if (this.#cancelMountBeforeCast(spellId)) return;
     this.#castCount = (this.#castCount + 1) & 0xff;
     this.#connection.send(OPCODES.CMSG_CAST_SPELL, buildCastSpellOnUnit(spellId, this.#castCount, targetGuid));
@@ -4618,6 +4679,23 @@ export class WorldClient {
     if (missilePlan !== undefined) this.#missiles.cast(casterGuid, spellId, performance.now()); // 11.02-E
   }
 
+  /** 11.02 (11.11): an own trajectory missile of a colliding SpellMissile row is tested on its way (MissileCollisionWorld.ts). */
+  #launchMissileCollision(cast: MissileCollisionGo): void {
+    const source = missileShotSource();
+    if (source?.missileRow === undefined || cast.adjustMissile === undefined) return;
+    if (!ownsMissileCollision(cast.casterUnit, this.state.selfGuid, this.controlledGuid, this.state.objects)) return;
+    const launch = missileCollisionLaunch(cast, source.missileRow(cast.spellId), this.state.objects);
+    if (launch === undefined) return;
+    this.#missileCollisions.launch(launch, missileCollisionWorld({
+      objects: this.state.objects,
+      creatureTypeFlags: (entry) => {
+        const template = this.creatureTemplates.get(entry);
+        return template?.found === true ? template.flags : undefined;
+      },
+      canAttack: (object) => (this.state.selfGuid === undefined ? undefined : this.canAttackUnit(object)),
+    }, { collisionModel: (guid) => source.collisionModel?.(guid) }));
+  }
+
   /**
    * 11.02-E: MissileCast.ts `missileCastPlan` for this caster against the active mover (`controlledGuid`,
    * else the character); a refusal with a reason is said, as Wow.exe's 0x00808200 says it.
@@ -4631,7 +4709,8 @@ export class WorldClient {
       const quiet = this.#refusalQuiet.quiet(spellId, plan.refused, performance.now(), // 05.10-5.05: 0x00808200's local_14
         this.autoRanged.wantedSpellId, this.autoRanged.failureResets); // 05.10-5.05
       const words = this.#refusalErrorText(spellId, plan.refused, text); // 3.47 (11.11): 0x00807f10's row
-      if (words && !quiet) this.onSpellStatus?.(words, true); // 05.10-5.05: + !quiet
+      const info = castFailureErrorRowIsInfo(plan.refused); // 3.47 (11.11): a type-1 row is UI_INFO_MESSAGE
+      if (words && !quiet) this.onSpellStatus?.(words, !info, info); // 05.10-5.05: + !quiet
       // 3.47 (11.11): the request 0x0080cce0 refuses here is 0x00805010(1)'s, whose cast count is drawn before the
       // missile's check (0x0080ac90 → 0x00808200, "Missile trajectory does not have active mover caster"), and
       // 0x00808200 ends in 0x007fecc0 for the request's caster (+0x10): UNIT_SPELLCAST_FAILED with that count, as
@@ -6202,6 +6281,7 @@ export class WorldClient {
     this.#stopAutoRepeat(false);
     this.autoRanged.end(); // L15 5.05: the controller's tick goes with the session
     this.#missiles.dispose(); // 11.02-E
+    this.#missileCollisions.dispose(); // 11.02 (11.11)
     this.#pendingCasts.length = 0;
     this.#locallyStartedCooldowns.clear();
     if (this.#pingTimer) clearInterval(this.#pingTimer);
@@ -7604,6 +7684,7 @@ export class WorldClient {
         }); // 3.01-go-order
       } // 3.01-go-order
       this.events.emit("SPELL_GO", cast);
+      this.#launchMissileCollision(cast); // 11.02 (11.11)
       this.onSpellVisual?.(cast.casterUnit, cast.spellId, cast.hits);
       // Resist, dodge, parry, deflect, absorb, reflect and immunity are rolled when the spell goes
       // off and written only here (Spell::UpdateSpellCastDataTargets, Spell.cpp:4677-4708); the miss
@@ -7729,7 +7810,8 @@ export class WorldClient {
       // by the spell row's Category and Attributes (CooldownRefusalWords.ts), as the client's own refusal does.
       // 3.47 (11.11): every result through 0x00807f10's row (CastFailureErrorRow.ts), the sentence its argument.
       const text = this.#refusalErrorText(failure.spellId, failure.result, spellFailureText(failure, this.#castFailureNames()));
-      if (text) this.onSpellStatus?.(text, true);
+      const info = castFailureErrorRowIsInfo(failure.result); // 3.47 (11.11): a type-1 row is UI_INFO_MESSAGE
+      if (text) this.onSpellStatus?.(text, !info, info);
       return true;
     }
     // The pet's cooldowns arrive on these same three opcodes, carrying the pet's guid rather than

@@ -1403,6 +1403,8 @@ export interface FrameXmlWorldSeam {
   readonly macros?: FrameXmlMacroModel;
   /** 1.14: `GetMacroSpell(id)`: the name and rank of the spell the macro stands for. */
   macroSpell?(id: unknown): readonly [string, string] | undefined;
+  /** 1.14 (11.11): `GetMacroItem(id)`: the name and link of the item the macro stands for. */
+  macroItem?(id: unknown): readonly [string, string] | undefined;
   /**
    * What macro conditions — `SecureCmdOptionParse`'s `[combat]`, `[@focus,help]`, `[stance:2]` —
    * are evaluated against: this seam's own answers to the same questions (macro/MacroContext.ts).

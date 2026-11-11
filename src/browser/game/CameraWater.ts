@@ -43,6 +43,52 @@ export function cameraWaterSurface(
 }
 
 /**
+ * 5.14 (11.11): where the subject is in its water as 0x006049c0 calls it — {@link CAMERA_WATER_NONE} out of it, at the
+ * surface ({@link CAMERA_WATER_SURFACE}, camera+0x98 bit 0x100000) while the water over its feet is no deeper than its
+ * height less 0.2222 (0x00a1ea24), submerged ({@link CAMERA_WATER_SUBMERGED}, 0x200000) past that.
+ */
+export const CAMERA_WATER_NONE = 0;
+export const CAMERA_WATER_SURFACE = 1;
+export const CAMERA_WATER_SUBMERGED = 2;
+
+export function cameraWaterState(feetZ: number, surfaceZ: number | undefined, height: number): number {
+  if (surfaceZ === undefined || !Number.isFinite(surfaceZ) || !Number.isFinite(feetZ)) return CAMERA_WATER_NONE;
+  return surfaceZ - feetZ <= height - CAMERA_WATER_CLEARANCE ? CAMERA_WATER_SURFACE : CAMERA_WATER_SUBMERGED;
+}
+
+/** 0x00a1e324: the lowest the hinge goes over the feet, and how far under the surface a diver's hinge is kept. */
+const HINGE_FLOOR = 0.8333333134651184;
+
+/**
+ * 5.33 (11.11): the hinge's water rules (0x00605d60 with the liquid bit, the subject's state from 0x006049c0): at the
+ * surface the hinge stands at least 0.2222 over the water (its plumb line starts there); submerged it is kept 0.8333
+ * under the surface, though never under 0.8333 over the feet. `hinge` is the height over the feet a ceiling left;
+ * answers it with the water's say. Nothing without water or a body height.
+ */
+export function cameraWaterHinge(feetZ: number, surfaceZ: number | undefined, bodyHeight: number | undefined, hinge: number): number {
+  if (bodyHeight === undefined || !(bodyHeight > 0) || surfaceZ === undefined) return hinge;
+  const state = cameraWaterState(feetZ, surfaceZ, bodyHeight);
+  const depth = surfaceZ - feetZ;
+  if (state === CAMERA_WATER_SURFACE) return Math.max(hinge, depth + CAMERA_WATER_CLEARANCE);
+  if (state === CAMERA_WATER_SUBMERGED) return Math.min(hinge, Math.max(HINGE_FLOOR, depth - HINGE_FLOOR));
+  return hinge;
+}
+
+/**
+ * 5.14 (11.11): the camera's nod as the subject crosses its water's surface (0x00606f90, with cameraWaterCollision on):
+ * coming up from under it, the pitch goes to cameraSurfaceFinalPitch; going under from the surface, to
+ * cameraSubmergeFinalPitch (both "5.0", degrees looking down). Answers that pitch in degrees, or undefined for no nod
+ * (no such crossing, or a pitch of 0). 0x00601190 glides it at cameraPitchSmoothSpeed with no delay and a factor of 1 —
+ * or, with a mouse button holding the camera (camera+0x98 bit 1), it is set at once.
+ */
+export function cameraWaterNod(before: number, after: number, surfacePitch: number, submergePitch: number): number | undefined {
+  let pitch: number | undefined;
+  if (before === CAMERA_WATER_SUBMERGED && after === CAMERA_WATER_SURFACE) pitch = surfacePitch;
+  else if (before === CAMERA_WATER_SURFACE && after === CAMERA_WATER_SUBMERGED) pitch = submergePitch;
+  return pitch !== undefined && pitch !== 0 && Number.isFinite(pitch) ? pitch : undefined;
+}
+
+/**
  * The floor the surface puts under a camera hinged over it: {@link CAMERA_WATER_CLEARANCE} above the water, or
  * `-Infinity` when there is no water or the hinge is under it.
  */

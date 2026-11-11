@@ -5,6 +5,7 @@ import { createFixtureProvider } from "../dist/code/browser/glue/GlueLoader.js";
 import { GlueSession } from "../dist/code/browser/glue/GlueSession.js";
 import { sexedName } from "../dist/code/browser/glue/GlueNames.js";
 import { GlueAddonList, glueWorldAddonStates, setGlueWorldAddonStates } from "../dist/code/browser/glue/GlueAddons.js";
+import { installFrameXmlWorldAddonApi, saveFrameXmlWorldAddonStates } from "../dist/code/browser/framexml/FrameXmlWorldAddonApi.js";
 import { declinableName, enterWorldRefusal } from "../dist/code/browser/glue/GlueEnterGate.js";
 import { genderedNames } from "../dist/code/gateway/CharacterCreation.js";
 import { buildDeclinedNames } from "../dist/code/world/CharacterProtocol.js";
@@ -298,6 +299,26 @@ test("the add-on list answers AddonList.lua per character and keeps what OK save
     assert.equal(handed.enabled.get("anyidtooltip"), false);
     assert.equal(handed.enabled.get("mikscrollingbattletext"), true, "Arthas has no line: Артас enables it");
     assert.equal(handed.enabled.get("quiet"), false);
+
+    // 3.46 (11.11): the world's switches act on the same table (0x00511840 … 0x00511a40, FrameXmlWorldAddonApi.ts).
+    const world = new Map();
+    assert.equal(installFrameXmlWorldAddonApi({ registerGlobal: (name, fn) => world.set(name, fn) },
+      ["AnyIDTooltip", "MikScrollingBattleText"]), true);
+    const before = storage.data.get(fileKey("Arthas"));
+    world.get("EnableAddOn")([1]);
+    world.get("DisableAddOn")(["MikScrollingBattleText"]);
+    assert.equal(handed.enabled.get("anyidtooltip"), true, "by index into the world's list");
+    assert.equal(handed.enabled.get("mikscrollingbattletext"), false, "by name");
+    assert.equal(evaluate("return GetAddOnEnableState('Arthas', 1)"), 2, "the glue's table is the same one");
+    assert.equal(evaluate("return GetAddOnEnableState('Артас', 1)"), 0, "the other character's untouched");
+    assert.equal(storage.data.get(fileKey("Arthas")), before, "nothing written until the world's interface unloads");
+    world.get("ResetDisabledAddOns")([]);
+    assert.equal(handed.enabled.get("anyidtooltip"), false, "ResetDisabledAddOns reads the file again");
+    world.get("DisableAllAddOns")([]);
+    saveFrameXmlWorldAddonStates();
+    assert.equal(storage.data.get(fileKey("Arthas")), "AnyIDTooltip: disabled\r\nMikScrollingBattleText: disabled\r\n");
+    assert.throws(() => world.get("EnableAddOn")([3]), /AddOn index must be in the range of 1 to 2/);
+    assert.throws(() => world.get("EnableAddOn")([]), /Usage: EnableAddOn\(index or "name"\)/);
   } finally {
     setGlueWorldAddonStates(undefined);
     runtime.close();

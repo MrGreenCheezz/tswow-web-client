@@ -50,6 +50,35 @@ const VIEW_DATA_DEFAULTS: readonly (readonly (readonly [string, string])[])[] = 
   [["0.0", "0.0"], ["0.0", "1.0"], ["0.0", "1.0"]],
 ];
 
+/**
+ * 5.14 (11.11): `cameraTerrainTilt` + style + state + Absorb|Delay|Factor (5 × 10 × 3, registered by 0x005fd910 with
+ * no validator, defaults 0x00ad1df8). The states 0x00ad1dc0: Fall, Fear, Idle, Jump, Move, Strafe, Swim, Taxi, Track,
+ * Turn; the fields 0x00ad1de8. Per style (rows in that state order): Never all (0, 0, −1); Smart, Spline and Smarter
+ * Fall (1, 0, 0.75), Idle and Jump (0, 0, −1), Swim and Taxi (0, 0, 1), the rest (1, 0, 1); Always the same but Idle
+ * (1, 0, 1). Read by CameraTerrainTilt.ts.
+ */
+export const CAMERA_TERRAIN_TILT_STATES = Object.freeze(
+  ["Fall", "Fear", "Idle", "Jump", "Move", "Strafe", "Swim", "Taxi", "Track", "Turn"] as const);
+export const CAMERA_TERRAIN_TILT_FIELDS = Object.freeze(["Absorb", "Delay", "Factor"] as const);
+const TILT_HOLD: readonly [string, string, string] = ["0.0", "0.0", "-1.0"];
+const TILT_FOLLOW: readonly [string, string, string] = ["1.0", "0.0", "1.0"];
+const TILT_LEVEL: readonly [string, string, string] = ["0.0", "0.0", "1.0"];
+const TILT_FALL: readonly [string, string, string] = ["1.0", "0.0", "0.75"];
+/** One style's ten rows: Fall, Fear, Idle, Jump, Move, Strafe, Swim, Taxi, Track, Turn. */
+function tiltRows(idle: readonly [string, string, string]): readonly (readonly [string, string, string])[] {
+  return [TILT_FALL, TILT_FOLLOW, idle, TILT_HOLD, TILT_FOLLOW, TILT_FOLLOW, TILT_LEVEL, TILT_LEVEL, TILT_FOLLOW, TILT_FOLLOW];
+}
+const TERRAIN_TILT_DEFAULTS: readonly (readonly (readonly [string, string, string])[])[] = [
+  Array.from({ length: 10 }, () => TILT_HOLD), tiltRows(TILT_HOLD), tiltRows(TILT_FOLLOW), tiltRows(TILT_HOLD),
+  tiltRows(TILT_HOLD),
+];
+
+/** `cameraTerrainTilt<style><state><Absorb|Delay|Factor>`, style 0–4, state 0–9, field 0–2. */
+export function cameraTerrainTiltCVar(style: number, state: number, field: number): string {
+  return `cameraTerrainTilt${CAMERA_SMOOTH_STYLES[style] ?? ""}${CAMERA_TERRAIN_TILT_STATES[state] ?? ""}`
+    + `${CAMERA_TERRAIN_TILT_FIELDS[field] ?? ""}`;
+}
+
 /** The validators' ranges: 0x005fd680, 0x005fd6d0 (1.5533430576324463 rad × 57.295780181884766), 0x005fd7b0, 0x005fd750. */
 export const CAMERA_CVAR_DISTANCE_MAX = 50;
 export const CAMERA_CVAR_PITCH_MAX = 1.5533430576324463 * 57.295780181884766;
@@ -109,7 +138,22 @@ function build(): readonly CameraCVarDefinition[] {
       rows.push({ name: cameraSmoothViewDataCVar(style, axis, false), defaultValue: delay });
       rows.push({ name: cameraSmoothViewDataCVar(style, axis, true), defaultValue: factor });
     }
+    // 5.14 (11.11): the terrain tilt's table (no validator).
+    for (let state = 0; state < CAMERA_TERRAIN_TILT_STATES.length; state += 1) {
+      for (let field = 0; field < CAMERA_TERRAIN_TILT_FIELDS.length; field += 1) {
+        rows.push({ name: cameraTerrainTiltCVar(style, state, field), defaultValue: TERRAIN_TILT_DEFAULTS[style]![state]![field]! });
+      }
+    }
   }
+  // 5.14 (11.11): 0x005fd910's other camera CVars this client reads — the terrain tilt's glide time per unit of
+  // factor ("3.0"/"10.0", 0x005fd750), the smart pivot's mouse thresholds in radians ("0.05"/"0.00", no validator),
+  // and the pitch the camera glides to as the subject surfaces or dives ("5.0" each, 0x005fd6d0).
+  rows.push({ name: "cameraTerrainTiltTimeMin", defaultValue: "3.0", range: TIME_RANGE });
+  rows.push({ name: "cameraTerrainTiltTimeMax", defaultValue: "10.0", range: TIME_RANGE });
+  rows.push({ name: "cameraPivotDXMax", defaultValue: "0.05" });
+  rows.push({ name: "cameraPivotDYMin", defaultValue: "0.00" });
+  rows.push({ name: "cameraSurfaceFinalPitch", defaultValue: "5.0", range: [-CAMERA_CVAR_PITCH_MAX, CAMERA_CVAR_PITCH_MAX] });
+  rows.push({ name: "cameraSubmergeFinalPitch", defaultValue: "5.0", range: [-CAMERA_CVAR_PITCH_MAX, CAMERA_CVAR_PITCH_MAX] });
   return Object.freeze(rows.map((row) => Object.freeze(row)));
 }
 

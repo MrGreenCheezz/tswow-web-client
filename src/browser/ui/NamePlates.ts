@@ -25,6 +25,8 @@ import type { FactionClient } from "../FactionClient.js";
 import { settingOn } from "./Settings.js";
 import { ensureSpellNames } from "./SpellNames.js";
 import { classColor, raidMarksByUnit } from "./UnitSnapshot.js";
+import { selectionRingRankColour } from "./SelectionRingRank.js"; // 5.05 (11.11)
+import { unitRankTowardsPlayer } from "../game/UnitStandingRank.js"; // 5.05 (11.11)
 
 /**
  * Whether the two switches are on right now.
@@ -199,6 +201,10 @@ export function selectionRingColourFor(
 /** The live wrapper retains the current world and faction client. */
 export function selectionRingColour(object: WorldObjectState | undefined): number {
   if (!object) return 0xffe36e;
+  // 5.05 (11.11): Wow.exe's circle 0x00725980 → 0x00718ac0 → 0x00521bf0(unit, out, 1): a unit the player does not
+  // control by its rank — Unfriendly orange — and grey when dead (SelectionRingRank.ts); the reaction otherwise.
+  const ranked = selectionRingRankColour(object, game.world?.state.selfGuid, (unit) => unitRankTowardsPlayer(unit, game)); // 5.05 (11.11)
+  if (ranked !== undefined) return ranked; // 5.05 (11.11)
   return ringColourOf(unitReactionToPlayer(object)); // 5.05 (12.10): was the player's view (`reactionBetween(self, object)`)
 }
 

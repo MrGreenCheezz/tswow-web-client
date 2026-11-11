@@ -48,6 +48,7 @@ import { FarSightLink } from "../../world/FarSight.js"; // 11.02-I
 import { vehicleCamera } from "./VehicleCamera.js"; // 11.02-GF3
 import { cameraViews } from "./CameraViews.js"; // DEC-B 3.11
 import { cameraSaved } from "./CameraSaved.js"; // 5.14
+import { advanceCameraOptions } from "./CameraOptionsLive.js"; // 5.14 (11.11)
 import { vehicleCatalog } from "../VehicleClient.js"; // 11.02-GF3
 import { itemEnchantments } from "../ItemEnchantments.js";
 import { RenderInputsBuilder } from "./RenderInputsBuilder.js"; // 22.10 ARC-2 S2a
@@ -368,6 +369,9 @@ function advanceCameraView(player: WorldPosition, map: number | undefined, elaps
     // actual roofs/floors are still enforced by CollisionWorld in cameraFloorHeight.
     allowUpwardOrbit: cameraAllowsUpwardOrbit(self?.movementFlags ?? 0, toggles),
     waterZ: cameraWaterSurfaceOf(world, self, player), // L8 5.14
+    // 5.14 (11.11): the map's water anywhere along the boom (CameraRig `waterAt`), under cameraWaterCollision.
+    waterAt: terrain && map !== undefined && settingOn("cameraWaterCollision")
+      ? (x, y) => terrain.liquidAt(map, x, y)?.height : undefined,
     // 5.33: the subject's drawn height (the hinge stays over 3/4 of it) and the quad's aspect (CameraClip.ts).
     // 22.10 ARC-2 S3a: read before draw, from the record the last draw left (RenderResults.ts).
     bodyHeight: self === undefined ? undefined : resultUnitHeight(game.renderer?.results, self.guid),
@@ -562,6 +566,8 @@ function frame(now: number): void {
     // 5.14: the character's own camera (CameraSaved.ts): view 2's 5.55 yards and 10° until it has one.
     cameraSaved.frame(game.camera, now, world, game.session?.username, world.realmName, world.state.selfGuid,
       vehicleCamera.vehicleMode);
+    // 5.14 (11.11): the terrain tilt, the smart pivot, the head bob and the water nod (CameraOptionsLive.ts).
+    advanceCameraOptions(now, subject, position);
     // One ray a frame, and after the collision world has been stocked and the character has moved,
     // so it is asked about where the camera is going rather than about where it has been.
     advanceCameraView(position, world.mapId, elapsed, subject);

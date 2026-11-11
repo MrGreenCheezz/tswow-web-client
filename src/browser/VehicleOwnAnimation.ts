@@ -23,6 +23,9 @@ import { seatVehicleExitBit } from "./VehicleExitBit.js";
  * base and the overlay go on under it untouched, and every other bone keeps them. Not modelled: 0x00724500's narrowing of the
  * vehicle's own choice of pose — read 11.11 (0x00756f40): it is not tied to these animations but to Vehicle Flags 0x10000
  * (12 rows) with the unit's +0xa38 bit 0x400 or +0xfa4 ≠ −1, and then only 0x00724330's movement choice runs.
+ * 11.11 (.runtime/re-2026-11-11/vehicle2): +0xa38 0x400 is cleared by 0x0072ed80 when the cast visual of the unit's
+ * cast bar (+0xa60 spell, +0xa5c count) ends, and +0xa60/+0xa5c are set by 0x00715a80 — but 0x00715a80 does not set the
+ * bit, and its setter and +0xfa4 are still unread; 0x00756f40 is also called from 0x00723e30.
  */
 
 /** Seat Flags these rules read. */

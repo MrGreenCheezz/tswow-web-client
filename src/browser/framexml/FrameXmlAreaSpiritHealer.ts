@@ -22,7 +22,8 @@
  *   none), CREATURE_TYPE_FLAG_TREAT_AS_RAID_UNIT lifting the reaction test, and 0x715f90/0x715df0
  *   for a player-controlled guide and a player that is not. 0x523f80 also keeps enumerating after a
  *   match (it returns 1), so with two guides in 20 yards Wow.exe asks each and keeps the last one
- *   its object order gives; this file takes the first in `state.objects` order and asks once.
+ *   its object order gives; 5.25 (11.11): so does this file, in `state.objects` order (the order of
+ *   Wow.exe's object list, 0x004d4b30, is not established).
  * * Changing the guide (0x523eb0): if a clock was running, 0x51f710 (below) runs and the clock
  *   stops; a new guide is asked with CMSG_AREA_SPIRIT_HEALER_QUERY (u64 guid).
  * * SMSG_AREA_SPIRIT_HEALER_TIME (u64 guid, u32 ms; 0x526530 case 0x2e4 → 0x524b10): after the same
@@ -45,8 +46,9 @@
  * from `WorldClient.spiritHealerTimers` (its entry object is replaced per packet, so identity marks a
  * new answer, and its `receivedAt` is the packet's own moment). The model acts only while stock owns
  * the popups (`FrameXmlPopupsModel.popupsOwned`): with the native prompts in charge nothing is asked
- * and nothing is fired, as before. Not done: Wow.exe also re-asks when the player right-clicks a
- * guide without a gossip flag (0x6ddbb0 → 0x6db180); that dispatch is not FrameXML's.
+ * and nothing is fired, as before. 5.25 (11.11): Wow.exe also re-asks when a ghost right-clicks a
+ * guide without a gossip flag (0x6ddbb0 → 0x6db180): `clickGuide`, reached from ui/Npc.ts through
+ * `frameXmlAreaSpiritGuideClicked`.
  */
 import { isPlayerGhost, readField, unit as unitField } from "../../world/Fields.js"; // L3-review: unitField
 import { REACTION_FRIENDLY } from "../../world/FactionRules.js";
@@ -100,6 +102,11 @@ export interface FrameXmlAreaSpiritHealerContext {
   distanceSquared(guid: bigint): number | undefined;
   /** A unit 0x523f80 accepts within the squared limit, or undefined. */
   findGuide(limitSquared: number): bigint | undefined;
+  /**
+   * 5.25 (11.11): every unit 0x523f80 accepts, in the order of the object walk (0x004d4b30 over the object manager's
+   * list; this client's `state.objects` order — Wow.exe's own order is not established). Absent: `findGuide`.
+   */
+  findGuides?(limitSquared: number): readonly bigint[];
 }
 
 interface FrameXmlAreaSpiritHealerPump {
@@ -124,10 +131,12 @@ export class FrameXmlAreaSpiritHealerModel {
   attach(pump: FrameXmlAreaSpiritHealerPump): void {
     this.detach();
     this.#pump = pump;
+    attachedModel = this; // 5.25 (11.11): the model the right click reaches (`frameXmlAreaSpiritGuideClicked`)
     this.tick();
   }
 
   detach(): void {
+    if (attachedModel === this) attachedModel = undefined; // 5.25 (11.11)
     this.#pump = undefined;
     this.#world = undefined;
     this.#forget();
@@ -162,6 +171,22 @@ export class FrameXmlAreaSpiritHealerModel {
     if (!world) return;
     this.#validate(world);
     if (this.#healer !== undefined) world.queueAreaSpiritHealer?.(this.#healer);
+  }
+
+  /**
+   * 5.25 (11.11): a right click on a spirit guide — Wow.exe 0x006ddbb0 hands a unit with UNIT_NPC_FLAG_SPIRITGUIDE
+   * (and none of the services it tests first) to 0x006db180, which, for a ghost (PLAYER_FLAGS 0x10), calls 0x523eb0
+   * twice: with 0 — the guide is dropped, and a running clock means AREA_SPIRIT_HEALER_OUT_OF_RANGE and
+   * CMSG_CANCEL_AURA 2584 (0x51f710) — and with the clicked guide, which is taken and asked again
+   * (CMSG_AREA_SPIRIT_HEALER_QUERY), the same guide too (`.runtime/re-2026-11-11/moves/m2.c`, `worldtails/w1.c`).
+   * No range or assist test: the click's own gates (0x006ddbb0's reach) came first.
+   */
+  clickGuide(guid: bigint): void {
+    if (!this.#pump) return;
+    const world = this.#current();
+    if (!world || !this.#context.ghost()) return;
+    this.#select(world, undefined);
+    this.#select(world, guid);
   }
 
   /** `CancelAreaSpiritHeal()` (0x51f710). */
@@ -202,8 +227,15 @@ export class FrameXmlAreaSpiritHealerModel {
       if (distance === undefined || distance > FRAMEXML_AREA_SPIRIT_HEALER_KEEP_SQUARED) this.#select(world, undefined);
     }
     if (this.#healer === undefined) {
-      const guide = this.#context.findGuide(FRAMEXML_AREA_SPIRIT_HEALER_TAKE_SQUARED);
-      if (guide !== undefined) this.#select(world, guide);
+      // 5.25 (11.11): 0x523f80 returns 1 after a match, so the walk goes on and every match is taken in turn by
+      // 0x523eb0 — each asked with its own query, the last one kept. Was: the first match, asked once.
+      const guides = this.#context.findGuides?.(FRAMEXML_AREA_SPIRIT_HEALER_TAKE_SQUARED);
+      if (guides !== undefined) {
+        for (const guide of guides) this.#select(world, guide);
+      } else {
+        const guide = this.#context.findGuide(FRAMEXML_AREA_SPIRIT_HEALER_TAKE_SQUARED);
+        if (guide !== undefined) this.#select(world, guide);
+      }
     }
   }
 
@@ -223,6 +255,17 @@ export class FrameXmlAreaSpiritHealerModel {
     this.#pump?.fire(FRAMEXML_AREA_SPIRIT_HEALER_OUT_OF_RANGE);
     world.cancelAura?.(FRAMEXML_WAITING_TO_RESURRECT_SPELL);
   }
+}
+
+/** 5.25 (11.11): the model a live seam has attached (at most one at a time). */
+let attachedModel: FrameXmlAreaSpiritHealerModel | undefined;
+
+/**
+ * 5.25 (11.11): the right click's way in (ui/Npc.ts) — 0x006db180 for the attached model; nothing while no stock seam
+ * owns the popups, as before.
+ */
+export function frameXmlAreaSpiritGuideClicked(guid: bigint): void {
+  attachedModel?.clickGuide(guid);
 }
 
 /** The part of the world seam the bindings read. */
@@ -301,20 +344,26 @@ export function frameXmlAreaSpiritHealerLiveContext(host: FrameXmlAreaSpiritHeal
       const unit = host.world()?.state.objects.get(guid);
       return self && unit ? squaredDistance(self, unit) : undefined;
     },
-    findGuide: (limitSquared) => {
-      const self = host.self();
-      const objects = host.world()?.state.objects;
-      if (!self || !objects) return undefined;
-      for (const unit of objects.values()) {
-        if (unit.typeId !== TYPEID_UNIT || unit.guid === self.guid) continue;
-        if (((readField(unit, "UNIT_NPC_FLAGS") ?? 0) & NPC_FLAG_SPIRIT_GUIDE) === 0) continue;
-        if (!guideMayAssist(unit, self)) continue; // L3-review: the player's flags (0x7293d0)
-        const distance = squaredDistance(self, unit);
-        if (distance === undefined || distance > limitSquared) continue;
-        if (host.reaction?.(self, unit) !== REACTION_FRIENDLY) continue;
-        return unit.guid;
-      }
-      return undefined;
-    },
+    findGuide: (limitSquared) => liveGuides(host, limitSquared, true)[0],
+    findGuides: (limitSquared) => liveGuides(host, limitSquared, false), // 5.25 (11.11)
   };
+}
+
+/** 0x523f80 over the live objects in `state.objects` order: the first match (`first`), or all of them (5.25 11.11). */
+function liveGuides(host: FrameXmlAreaSpiritHealerLiveHost, limitSquared: number, first: boolean): bigint[] {
+  const found: bigint[] = [];
+  const self = host.self();
+  const objects = host.world()?.state.objects;
+  if (!self || !objects) return found;
+  for (const unit of objects.values()) {
+    if (unit.typeId !== TYPEID_UNIT || unit.guid === self.guid) continue;
+    if (((readField(unit, "UNIT_NPC_FLAGS") ?? 0) & NPC_FLAG_SPIRIT_GUIDE) === 0) continue;
+    if (!guideMayAssist(unit, self)) continue; // L3-review: the player's flags (0x7293d0)
+    const distance = squaredDistance(self, unit);
+    if (distance === undefined || distance > limitSquared) continue;
+    if (host.reaction?.(self, unit) !== REACTION_FRIENDLY) continue;
+    found.push(unit.guid);
+    if (first) break;
+  }
+  return found;
 }

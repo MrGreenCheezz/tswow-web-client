@@ -93,7 +93,8 @@ test("debuffType is the SpellDispelType string, nil without one", () => {
   }]);
   const { call, seam } = fixture({ auras: { self: entries } });
   const types = [1, 2, 3, 4, 5, 6].map((index) => call("UnitDebuff", "player", index)[4]);
-  assert.deepEqual(types, ["Magic", "Curse", "Disease", "Poison", "", undefined]);
+  // 3.68 (11.11): auras that arrive together, none the player's, are listed by falling slot (Wow.exe 0x0072C510).
+  assert.deepEqual(types, [undefined, "", "Poison", "Disease", "Curse", "Magic"]);
   seam.detach();
 });
 
@@ -114,8 +115,9 @@ test("isStealable follows Wow.exe 0x0053d680", () => {
   }]);
   const mage = fixture({ auras: { target: entries, self: entries } });
   const stealable = (f, unit, filter, index) => f.call("UnitAura", unit, index, filter)[8];
-  assert.equal(stealable(mage, "target", "HELPFUL", 1), true, "a Magic buff on an enemy, with Spellsteal known");
-  assert.deepEqual([2, 3, 4, 5].map((index) => stealable(mage, "target", "HELPFUL", index)), [false, false, false, false],
+  // 3.68 (11.11): listed by falling slot (Wow.exe 0x0072C510), so 1126 in slot 1 is the fifth buff.
+  assert.equal(stealable(mage, "target", "HELPFUL", 5), true, "a Magic buff on an enemy, with Spellsteal known");
+  assert.deepEqual([4, 3, 2, 1].map((index) => stealable(mage, "target", "HELPFUL", index)), [false, false, false, false],
     "NOT_STEALABLE, channeled, passive, aura 27");
   assert.equal(stealable(mage, "target", "HARMFUL", 1), false, "a debuff is never stolen");
   assert.equal(stealable(mage, "player", "HELPFUL", 1), false, "not on oneself");
@@ -133,8 +135,9 @@ test("isStealable follows Wow.exe 0x0053d680", () => {
 test("shouldConsolidate is SPELL_ATTR7_CONSOLIDATED_RAID_BUFF", () => {
   const { call, seam } = fixture({ auras: { self: [[1, { slot: 1, spellId: 9005, flags: POS, casterLevel: 80, applications: 1 }],
     [2, { slot: 2, spellId: 1126, flags: POS, casterLevel: 80, applications: 1 }]] } });
-  assert.equal(call("UnitBuff", "player", 1)[9], true);
-  assert.equal(call("UnitBuff", "player", 2)[9], false);
+  // 3.68 (11.11): listed by falling slot (Wow.exe 0x0072C510).
+  assert.equal(call("UnitBuff", "player", 2)[9], true);
+  assert.equal(call("UnitBuff", "player", 1)[9], false);
   seam.detach();
 });
 }

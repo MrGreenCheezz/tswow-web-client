@@ -35,6 +35,8 @@ async function client() {
 test("5.05 (11.11): the setter holds its state — the server's byte until it sends, then its own", () => {
   const setter = new SheathSetter();
   assert.equal(setter.request(1, 1), false, "the blade already out (UNIT_FIELD_BYTES_2): nothing");
+  assert.equal(new SheathSetter().request(0, undefined), false, "a byte the server never wrote reads 0: nothing to put away");
+  assert.equal(new SheathSetter().request(1, undefined), true, "and a draw from it goes out");
   assert.equal(setter.request(1, 0), true);
   assert.equal(setter.held, 1);
   assert.equal(setter.request(1, 0), false, "held 1 — the server's byte no longer speaks");
@@ -109,6 +111,11 @@ test("5.05 (11.11): a SPELL_ATTR0_RANGED spell draws the bow after its packet (0
   const { setPetSpellAttributesSource } = await import("../dist/code/world/PetCastSpell.js");
   const attributes = new Map([[3044, [0x10002, 0, 0x20000, 0, 0, 0, 0, 0]], [133, [0x10000, 0, 0, 0, 0, 0, 0, 0]]]);
   setPetSpellAttributesSource((spellId) => attributes.get(spellId));
+  // 5.05 (11.11): a bow in the ranged slot — 0x0080cce0 refuses a RANGED spell without one (CastPreflightRule.ts).
+  const BOW = 0x4000_0000_0000_0042n;
+  world.state.setField(SELF, UPDATE_FIELDS.PLAYER_FIELD_INV_SLOT_HEAD.offset + 34, Number(BOW & 0xffff_ffffn));
+  world.state.setField(SELF, UPDATE_FIELDS.PLAYER_FIELD_INV_SLOT_HEAD.offset + 35, Number(BOW >> 32n));
+  world.state.setField(BOW, UPDATE_FIELDS.ITEM_FIELD_MAXDURABILITY.offset, 0);
   try {
     world.knownSpells = [{ id: 3044, slot: 0 }, { id: 133, slot: 1 }];
     world.castSpell(133);

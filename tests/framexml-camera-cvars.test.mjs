@@ -30,7 +30,8 @@ function settingsAdapter() {
 }
 
 test("the registry is Wow.exe's: 24 view CVars, the index and blend, the follow's tunables and both tables", () => {
-  assert.equal(CAMERA_ACCOUNT_CVARS.length, 24 + 2 + 9 + 70 + 30);
+  // 5.14 (11.11): + the terrain tilt's 150 and six more (CameraCVars.ts).
+  assert.equal(CAMERA_ACCOUNT_CVARS.length, 24 + 2 + 9 + 70 + 30 + 150 + 6);
   assert.equal(cameraCVarDefinition("CAMERADISTANCEBARBER SHOP")?.defaultValue, "5.0");
   assert.equal(cameraCVarDefinition("cameraSmoothSmarterTrackDelay")?.defaultValue, "0.4");
   assert.equal(cameraCVarDefinition("cameraSmoothSmartFearFactor")?.defaultValue, "10.0");

@@ -76,6 +76,10 @@ test("the supported table is only the settings the browser currently consumes", 
       ["deselectOnClick", "deselectOnClick"],
       // L8 5.14: the Camera panel's WATER_COLLISION (game/CameraWater.ts).
       ["cameraWaterCollision", "cameraWaterCollision"],
+      // 5.14 (11.11): FOLLOW_TERRAIN, HEAD_BOB and SMART_PIVOT (game/CameraTerrainTilt.ts, CameraBob.ts, CameraPivot.ts).
+      ["cameraTerrainTilt", "cameraTerrainTilt"],
+      ["cameraBobbing", "cameraBobbing"],
+      ["cameraPivot", "cameraPivot"],
     ],
   );
 });
@@ -183,9 +187,9 @@ test("boolean CVars use 0/1, are case-insensitive by name, and invert spell-rank
   assert.equal(adapter.set("ShowAllSpellRanks", "1"), true);
   assert.equal(values().spellbookHideLowerRanks, false);
   assert.equal(adapter.get("showallspellranks"), "1");
+  // 5.14 (11.11): ffxGlow's "false" is on, as it already was: no write (the setter re-stored the model each time).
   assert.deepEqual(writes.slice(0, 3), [
     { id: "chatBubbles", value: false },
-    { id: "fullscreenGlow", value: true },
     { id: "spellbookHideLowerRanks", value: false },
   ]);
 });
@@ -226,7 +230,7 @@ test("action bars and world switches write through the supplied persistence/appl
     ["actionBarBottomRight", true],
     ["actionBarRight", true],
     ["actionBarRight2", true],
-    ["minimapRotate", false],
+    // 5.14 (11.11): rotateMinimap "false" is the setting it has: no write.
     ["plateEnemies", false],
     ["plateFriends", true],
   ]);

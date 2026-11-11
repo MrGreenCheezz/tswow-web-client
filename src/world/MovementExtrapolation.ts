@@ -11,7 +11,8 @@ import type { SplineSpeedName } from "./SplineStateProtocol.js";
  * second while it lasts; the core relays each one straight on. Between them the unit is carrying
  * on with what its last packet declared — running, strafing, turning, swimming up a slope, falling
  * along a jump — so that is what is drawn: the packet's position plus the motion its flags state,
- * for at most `EXTRAPOLATION_HORIZON_MS`, so a lost STOP cannot carry anybody through a wall. Wow.exe
+ * slowed and stopped by the original's own horizon (`remoteMoveLoss`, 5.04 11.11), so a lost STOP cannot carry
+ * anybody through a wall. Wow.exe
  * routes every relayed `MSG_MOVE_*` through one handler (0x00740D30) into the same movement engine
  * that moves the player's own character (0x006F0CF0 → 0x00988A20 for START_FORWARD), and the knock
  * back relay hands its four numbers to it too (0x007187F0 → 0x006F0E30): a remote unit is simulated,
@@ -25,8 +26,57 @@ import type { SplineSpeedName } from "./SplineStateProtocol.js";
  * one record per unit, refilled by each packet, and `advanceDrift` writes into a caller's sample.
  */
 
-/** How long a declared motion is trusted without a new packet: four missed heartbeats. */
-export const EXTRAPOLATION_HORIZON_MS = 2000;
+/**
+ * 5.04 (11.11): the movement flags Wow.exe 0x006E9F50 slows a remote mover for (0xc0100f: the four direction keys,
+ * FALLING, ASCENDING, DESCENDING). A unit that only turns or pitches keeps its full time (`.runtime/re-2026-11-11/moves/
+ * m3.c`, the flag test before the clock). Was `EXTRAPOLATION_HORIZON_MS`, 2 s at full speed and a dead stop.
+ */
+export const REMOTE_SLOWING_FLAGS = MOVEMENT_FLAGS.forward | MOVEMENT_FLAGS.backward | MOVEMENT_FLAGS.strafeLeft
+  | MOVEMENT_FLAGS.strafeRight | MOVEMENT_FLAGS.falling | MOVEMENT_FLAGS.ascending | MOVEMENT_FLAGS.descending;
+/** 5.04 (11.11): 0x006E9F50 — after this long without a packet the unit starts to slow (`500 < acc`). */
+export const REMOTE_SLOW_FROM_MS = 500;
+/** 5.04 (11.11): 0x006E9F50 — from this long without a packet it stands (`acc − 0x5dc`). */
+export const REMOTE_STAND_FROM_MS = 1500;
+
+/**
+ * 5.04 (11.11): Wow.exe 0x006E9F50, the move time a remote mover loses `sincePacket` ms after its last packet took
+ * effect (the mover's +0x134, zeroed at the end of the packet's apply 0x006EB730 and grown by every frame's step in
+ * 0x006EAC40). The engine draws the unit at `T − max(0, acc − 1500) − min(acc − 500, 1000)²/2000` of travel from the
+ * packet's base (T its +0x60, the time since that base) once `acc` passes 500: full speed for half a second, a linear
+ * slowdown to a stand over the next second, then nothing. T ≥ acc for a packet run on from its moment, so neither of
+ * the original's clamps at 0 ever bites, and the loss is this function of `acc` alone. Milliseconds, as floats (the
+ * original divides integers).
+ */
+export function remoteMoveLoss(sincePacket: number): number {
+  if (!(sincePacket > REMOTE_SLOW_FROM_MS)) return 0;
+  if (sincePacket <= REMOTE_STAND_FROM_MS) {
+    const slowing = sincePacket - REMOTE_SLOW_FROM_MS;
+    return (slowing * slowing) / 2000;
+  }
+  return sincePacket - REMOTE_STAND_FROM_MS + 500;
+}
+
+/** 5.04 (11.11): when the packet the drift runs on took effect, on the local clock (`at` when none was set). */
+function packetMoment(drift: Drift): number {
+  return drift.packetAt === drift.packetAt ? drift.packetAt : drift.at;
+}
+
+/**
+ * 5.04 (11.11): the travel time a drift has had by `now` — its elapsed time less what 0x006E9F50 takes off between `at`
+ * and `now` (a re-based drift, `at` later than its packet, keeps the loss its packet's clock gives).
+ */
+export function driftMoveMs(drift: Drift, now: number): number {
+  const elapsed = Math.max(0, now - drift.at);
+  if (!drift.slows) return elapsed;
+  const packetAt = packetMoment(drift);
+  const lost = remoteMoveLoss(now - packetAt) - remoteMoveLoss(drift.at - packetAt);
+  return elapsed > lost ? elapsed - lost : 0;
+}
+
+/** 5.04 (11.11): whether a drift's unit still travels at `now` — a slowing one until it stands, any other for good. */
+export function driftStillMoving(drift: Drift, now: number): boolean {
+  return !drift.slows || now - packetMoment(drift) < REMOTE_STAND_FROM_MS;
+}
 /** How long the gap between the drawn and the reported position takes to close. */
 export const CORRECTION_MS = 180;
 /** Further than this from where it was drawn, a unit is put at its packet at once. */
@@ -98,6 +148,10 @@ export interface Drift {
   pitchAt: number;
   /** L8 5.04: when the correction began fading — the packet's arrival — once `at` is its sender's moment. */
   fadeAt: number;
+  /** 5.04 (11.11): the packet's flags carry {@link REMOTE_SLOWING_FLAGS}, so 0x006E9F50 slows it without packets. */
+  slows: boolean;
+  /** 5.04 (11.11): when its packet took effect on the local clock (0x006EB730 zeroes +0x134); NaN: `at`. */
+  packetAt: number;
 }
 
 export interface DriftSample {
@@ -113,6 +167,7 @@ export function emptyDrift(): Drift {
     ballistic: false, jumpX: 0, jumpY: 0, fallStartVelocity: 0, fallSeconds: 0, safeFall: false,
     errorX: 0, errorY: 0, errorZ: 0, errorOrientation: 0, groundOffset: Number.NaN, aboveGround: false,
     along: 0, across: 0, rise: 0, pitch: 0, pitchTurn: 0, pitchAt: Number.NaN, fadeAt: 0, // L8 5.04
+    slows: false, packetAt: Number.NaN, // 5.04 (11.11)
   };
 }
 
@@ -148,6 +203,7 @@ export function kinematicsFor(info: {
 },
   speeds: SpeedLookup | undefined, drift: Drift): boolean {
   const flags = info.flags;
+  drift.slows = (flags & REMOTE_SLOWING_FLAGS) !== 0; // 5.04 (11.11): 0x006E9F50's flag test
   drift.speed = 0;
   drift.heading = 0;
   drift.climb = 0;
@@ -235,14 +291,18 @@ const PITCH_STEPS = 8;
 
 /** L8 5.04: the pitch a drift has `seconds` after `at`, clamped to {@link REMOTE_PITCH_LIMIT}. */
 function driftPitchAt(drift: Drift, seconds: number): number {
-  const base = drift.pitchAt === drift.pitchAt ? drift.at - drift.pitchAt : 0;
+  let base = drift.pitchAt === drift.pitchAt ? drift.at - drift.pitchAt : 0;
+  if (base > 0 && drift.slows) { // 5.04 (11.11): the pitch turned in move time (0x006E9F50) up to a re-based `at`
+    const packetAt = packetMoment(drift);
+    base -= remoteMoveLoss(drift.at - packetAt) - remoteMoveLoss(drift.pitchAt - packetAt);
+  }
   const pitch = drift.pitch + drift.pitchTurn * (base / 1000 + seconds);
   return pitch > REMOTE_PITCH_LIMIT ? REMOTE_PITCH_LIMIT : pitch < -REMOTE_PITCH_LIMIT ? -REMOTE_PITCH_LIMIT : pitch;
 }
 
 /** L8 5.04: the pitch a drift's unit has `now` — what a tilted model would be drawn at (render lane). */
 export function driftPitch(drift: Drift, now: number): number {
-  return driftPitchAt(drift, Math.min(Math.max(0, now - drift.at), EXTRAPOLATION_HORIZON_MS) / 1000);
+  return driftPitchAt(drift, driftMoveMs(drift, now) / 1000); // 5.04 (11.11): was min(elapsed, 2 s)
 }
 
 /**
@@ -293,7 +353,9 @@ function simpsonPitching(drift: Drift, from: number, to: number, out: DriftSampl
  */
 export function advanceDrift(drift: Drift, now: number, out: DriftSample, ground?: GroundProbe): boolean {
   const elapsed = Math.max(0, now - drift.at);
-  const seconds = Math.min(elapsed, EXTRAPOLATION_HORIZON_MS) / 1000;
+  // 5.04 (11.11): Wow.exe 0x006EAC40 hands the engine 0x006E9F50's time — position, facing and pitch alike
+  // (0x00987D00 → 0x00987B50 writes all three). Was min(elapsed, 2 s): full speed, then a dead stop.
+  const seconds = driftMoveMs(drift, now) / 1000;
   let x: number;
   let y: number;
   let z: number;
@@ -341,7 +403,7 @@ export function advanceDrift(drift: Drift, now: number, out: DriftSample, ground
   out.y = y + drift.errorY * fade;
   out.z = z + drift.errorZ * fade;
   out.orientation = orientation + drift.errorOrientation * fade;
-  return elapsed < EXTRAPOLATION_HORIZON_MS || fade > 0;
+  return driftStillMoving(drift, now) || fade > 0; // 5.04 (11.11): was `elapsed < EXTRAPOLATION_HORIZON_MS`
 }
 
 /**
@@ -379,6 +441,7 @@ const REALIGN_SAMPLE: DriftSample = { x: 0, y: 0, z: 0, orientation: 0 };
 export function realignDrift(drift: Drift, appliedAt: number, now: number, ground?: GroundProbe): void {
   const late = appliedAt < now ? now - appliedAt : 0;
   drift.fadeAt = now;
+  drift.packetAt = now; // 5.04 (11.11): 0x006EB730 zeroes the mover's +0x134 once the packet is applied and run on
   drift.pitchAt = now - late;
   if (!(late > 0)) return;
   drift.at = now - late;

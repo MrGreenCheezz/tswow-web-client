@@ -307,8 +307,23 @@ function isTabTarget(object: WorldObjectState): boolean {
   const creatureType = object.typeId === 3
     ? world?.creatureTemplates.get(worldObject.entry(object) ?? 0)?.creatureType
     : undefined;
-  return isTabEnemy(player(), object, attackReactionTo(object), creatureType, // L15 5.05: was reactionTo (0x518e40 mode 1 is CanAttack)
-    treatsAsRaidUnit(judgingCentre ?? mover())); // 5.16 (11.11)
+  // 5.16 (11.11): every CanAttack test reads the search centre (0x518e40 mode 1 calls 0x729740 with ECX = the centre,
+  // .runtime/re-2026-11-11/moves/m1.lst, m2.lst) — the vehicle or charmed body the search stands on, the player
+  // only when it is the centre. Was player() with the player's reaction whatever the centre.
+  const centre = judgingCentre ?? mover();
+  return isTabEnemy(centre, object, centreAttackReaction(centre, object), creatureType, // L15 5.05: was reactionTo (0x518e40 mode 1 is CanAttack)
+    treatsAsRaidUnit(centre)); // 5.16 (11.11)
+}
+
+/**
+ * 5.16 (11.11): the reaction CanAttack (0x729740 → 0x514050 → 0x007251c0) reads with `centre` as `this`: the player's
+ * own view (`attackReactionTo`, with its reputation rules) when the centre is the player, else the centre's faction
+ * template against the object's (`reactionBetween`; a forced reaction only where the object is the player).
+ */
+function centreAttackReaction(centre: WorldObjectState | undefined, object: WorldObjectState): number {
+  const self = player();
+  if (centre === undefined || centre === self || centre.guid === self?.guid) return attackReactionTo(object);
+  return reactionBetween(centre, object, game.factions);
 }
 
 /** 5.16 (11.11): `acceptsTabMode` with `centre` as CanAttack's `this` (collectTabList's judge). */

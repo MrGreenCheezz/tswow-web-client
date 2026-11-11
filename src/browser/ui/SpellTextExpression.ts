@@ -41,7 +41,7 @@ export type SpellTextRecord = Partial<Pick<SpellMetadata,
   | "duration" | "maxDuration" | "procChance" | "procCharges" | "stackAmount" | "maxTargetLevel"
   | "maxAffectedTargets" | "effectMultipleValue" | "effectPointsPerCombo" | "effectDamageMultiplier"
   | "effectBonusMultiplier" | "procTypeMask" | "manaPerSecond" | "powerType" | "powerCost"
-  | "powerCostPercent" | "effectMiscValue" | "attributes" | "durationPerLevel">> & SpellTextCasterRecord; // 3.43: the caster's columns
+  | "powerCostPercent" | "effectMiscValue" | "attributes" | "durationPerLevel" | "schoolMask">> & SpellTextCasterRecord; // 3.43: the caster's columns
 
 /** What evaluating a block needs from its caller. */
 export interface SpellExpressionEnvironment {

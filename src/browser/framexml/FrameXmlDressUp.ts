@@ -32,6 +32,7 @@ import type { FrameXmlBoot } from "./FrameXmlBoot.js";
 import type { FrameXmlDomRenderer } from "../ui/framexml_compat/FrameXmlDomRenderer.js";
 import type { FrameXmlFrame } from "../ui/framexml_compat/FrameXmlTypes.js";
 import { frameXmlItemEntry } from "./FrameXmlWorldSeam.js";
+import type { FrameXmlModelTurns } from "./FrameXmlUnitModel.js";
 import { frameXmlSilentProbe } from "./FrameXmlGameMenuOwner.js";
 import { FRAMEXML_HOST_HOOK_GLOBAL, withFrameXmlHostHooks } from "./FrameXmlHostHooks.js"; // L5b 3.27
 import {
@@ -287,6 +288,7 @@ const BINDING = {
   tryOn: "__fxDressUpTryOn",
   clear: "__fxDressUpClear",
   wake: "__fxDressUpWake",
+  turn: "__fxDressUpTurn", // 11.11 6.18: PlayerModel:SetRotation's step (FrameXmlUnitModel.ts)
 } as const;
 
 /**
@@ -310,6 +312,17 @@ if not rawget(methods, "__webclientDressUp") then
   methods.Dress = function(self) dress(self) end
   methods.Undress = function(self) undress(self) end
   methods.TryOn = function(self, item) tryOn(self, item) end
+  -- 11.11 6.18: the inherited PlayerModel:RefreshUnit (0x00597b00) is Dress's body (0x00597ed0).
+  methods.RefreshUnit = function(self) dress(self) end
+  local turn, rotate = rawget(_G, "${BINDING.turn}"), rawget(methods, "SetRotation")
+  if turn and type(rotate) == "function" then
+    methods.SetRotation = function(self, rotation, ...)
+      local value = tonumber(rotation)
+      if value == nil then error("Usage: SetRotation(rotation (in radians))", 0) end
+      turn(self, value)
+      return rotate(self, rotation, ...)
+    end
+  end
   for _, name in ipairs({ "SetModel", "SetCreature", "SetDisplayInfo", "ClearModel" }) do
     local base = rawget(methods, name)
     if type(base) == "function" then
@@ -366,6 +379,7 @@ export function installFrameXmlDressUp(
   boot: Pick<FrameXmlBoot, "vm" | "bridge">,
   models: FrameXmlDressUpModels,
   onChange: () => void,
+  turns?: FrameXmlModelTurns, // 11.11 6.18: SetRotation's shuffle step; without it SetRotation is the widget's own
 ): boolean {
   const frameArg = (value: unknown): FrameXmlFrame | undefined =>
     value && typeof value === "object" ? boot.bridge.resolve(value as FrameXmlFrame) : undefined;
@@ -380,6 +394,16 @@ export function installFrameXmlDressUp(
   boot.vm.registerGlobal(BINDING.tryOn, command((frame, args) => { models.tryOn(frame, args[0]); }));
   boot.vm.registerGlobal(BINDING.clear, command((frame) => models.clear(frame)));
   boot.vm.registerGlobal(BINDING.wake, () => { onChange(); return []; });
+  if (turns) {
+    boot.vm.registerGlobal(BINDING.turn, (args) => {
+      const frame = frameArg(args[0]);
+      const rotation = Number(args[1]);
+      if (frame?.type === "DressUpModel" && Number.isFinite(rotation)) {
+        turns.rotate(frame, rotation, models.outfit(frame) !== undefined && boot.bridge.isVisible(frame), frame.model.facing);
+      }
+      return [];
+    });
+  }
   // L5b 3.27: DressUpFrame's wake is a host hook (FrameXmlHostHooks.ts): an add-on's SetScript keeps it.
   const installed = withFrameXmlHostHooks(boot, () => frameXmlSilentProbe(boot, "@webclient/dressup-model", DRESSUP_MODEL_METHODS, 1));
   if (Number(installed?.[0]) !== 1) return false;

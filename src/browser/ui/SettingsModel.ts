@@ -417,6 +417,22 @@ export const SETTING_DEFINITIONS: readonly SettingDefinition[] = [
     hint: "Камера остаётся над водой, пока персонаж на поверхности, и под водой, когда он ныряет.",
   },
   {
+    // 5.14 (11.11): the stock Camera panel's FOLLOW_TERRAIN — cameraTerrainTilt, default "0" (0x005fd910):
+    // game/CameraTerrainTilt.ts.
+    id: "cameraTerrainTilt", label: "Следование рельефу", group: "Игра", kind: "boolean", fallback: false,
+    hint: "Камера наклоняется вслед за склоном перед персонажем: вниз под гору, вверх в гору.",
+  },
+  {
+    // 5.14 (11.11): HEAD_BOB — cameraBobbing, default "0": game/CameraBob.ts (first person only).
+    id: "cameraBobbing", label: "Покачивание камеры", group: "Игра", kind: "boolean", fallback: false,
+    hint: "От первого лица камера покачивается в такт шагам.",
+  },
+  {
+    // 5.14 (11.11): SMART_PIVOT — cameraPivot, default "1": game/CameraPivot.ts.
+    id: "cameraPivot", label: "Умный поворот", group: "Игра", kind: "boolean", fallback: true,
+    hint: "Когда камера упёрлась в землю или стену, движение мыши вверх поворачивает взгляд на месте, а не опускает камеру.",
+  },
+  {
     id: "showFps", label: "Показывать FPS", group: "Интерфейс", kind: "boolean", fallback: false,
     hint: "Счётчик сверху: средний FPS, среднее и максимальное время кадра за последние 120 кадров. Горячую клавишу можно изменить в управлении.",
   },

@@ -98,7 +98,8 @@ test("a stock control is unavailable, session-only or fixed — never two of the
     "InterfaceOptionsControlsPanelStickyTargeting"]) {
     assert.equal(unavailable.has(name), false, name);
   }
-  assert.equal(FRAMEXML_OPTIONS_UNAVAILABLE.get("InterfaceOptionsCameraPanelSmartPivot"), "Камера браузерного клиента этого не поддерживает.");
+  // 5.14 (11.11): the smart pivot, the terrain tilt and the head bob have their consumers now.
+  assert.equal(FRAMEXML_OPTIONS_UNAVAILABLE.has("InterfaceOptionsCameraPanelSmartPivot"), false);
   // The mapped controls stay usable.
   for (const name of ["VideoOptionsEffectsPanelFullScreenGlow", "VideoOptionsEffectsPanelClutterRadius",
     "VideoOptionsResolutionPanelUIScaleSlider", "AudioOptionsSoundPanelEnableSound", "AudioOptionsSoundPanelAmbienceVolume",

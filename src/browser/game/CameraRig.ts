@@ -11,6 +11,9 @@ import {
   CAMERA_CLIP_MARGIN, CAMERA_CLIP_REARM, CAMERA_CLIP_RECOVERY_SECONDS, cameraArmClip, cameraClipEase,
   cameraPivotUnderCeiling,
 } from "./CameraClip.js"; // 5.33
+import { tiltedPitch } from "./CameraTerrainTilt.js"; // 5.14 (11.11)
+import { CAMERA_BOOM_ARM_HIT, CAMERA_BOOM_HINGE_HIT } from "./CameraPivot.js"; // 5.14 (11.11)
+import { CAMERA_WATER_CLEARANCE, cameraWaterHinge } from "./CameraWater.js"; // 5.14 (11.11)
 
 /**
  * What the camera does between the player's hands and the geometry: the wheel, the easing, and
@@ -111,6 +114,17 @@ export interface CameraRig {
    * built around (`Context.cameraPivotHeight`); absent in first person and before the first frame.
    */
   viewPivotHeight?: number | undefined;
+  /**
+   * 5.14 (11.11): the terrain tilt (Wow.exe camera+0x134, CameraTerrainTilt.ts), radians, positive looks down — added
+   * to the drawn pitch, not to `pitch`. Absent or 0 without it.
+   */
+  terrainTilt?: number | undefined;
+  /**
+   * 5.14 (11.11): what held the boom on the last frame, as Wow.exe's camera+0x98 bits (CameraPivot.ts): 0x10000 the arm
+   * cut (a wall, the ground, the water, or the floor tilting the camera down), 0x20000 the hinge lowered. Written by
+   * `advanceCameraFrame`.
+   */
+  boomHit?: number | undefined;
 }
 
 /** How fast the mouse turns the camera, in radians a pixel. wowee's 0.2 deg/px (`hpp:342`). */
@@ -388,7 +402,7 @@ export function advanceCameraRig(rig: CameraRig, limits: CameraLimits, elapsed: 
     rig.view = rig.distance;
     // Keep first person behind the same finite pitch guard as the orbit path. Controls normally
     // supplies a clamped number, but movement packets and restored settings are not trusted input.
-    rig.viewPitch = cameraFloorPitch(rig.pitch, limits.pivotZ, 0, limits.floorZ);
+    rig.viewPitch = cameraFloorPitch(tiltedPitch(rig.pitch, rig.terrainTilt), limits.pivotZ, 0, limits.floorZ); // 5.14: tilt
     return;
   }
   // The arm the world was asked about, read before the zoom moves and derived rather than passed:
@@ -450,7 +464,7 @@ export function advanceCameraRig(rig: CameraRig, limits: CameraLimits, elapsed: 
   // Against the arm the camera actually got rather than the one it asked for: a boom squeezed to
   // three yards by a doorway dips three yards' worth for a given tilt, and clamping it as though
   // it were still twenty-one would hold the view level for no reason the player can see.
-  rig.viewPitch = cameraFloorPitch(rig.pitch, limits.pivotZ, rig.view, limits.floorZ);
+  rig.viewPitch = cameraFloorPitch(tiltedPitch(rig.pitch, rig.terrainTilt), limits.pivotZ, rig.view, limits.floorZ); // 5.14: tilt
 }
 
 /**
@@ -480,6 +494,12 @@ export interface CameraWorld {
   bodyHeight?: number | undefined;
   /** 5.33: the drawn camera's width over height, which sizes the near-plane quad (16/9 without it). */
   aspect?: number | undefined;
+  /**
+   * 5.14 (11.11): the water's surface at any column (the map's liquid), with cameraWaterCollision on: the boom stops
+   * 0.2222 short of it as Wow.exe's sweep with the liquid bit does (0x00605d60), away from the subject's own column too.
+   * Asked only while the subject's own column has no water (`waterZ`), whose rule is CameraWater's.
+   */
+  waterAt?: ((x: number, y: number) => number | undefined) | undefined;
 }
 
 /**
@@ -598,10 +618,13 @@ export function advanceCameraFrame(
     // the rig reads none of these three and snaps everything to the wheel's number.
     const eye = rig.distance;
     advanceCameraRig(rig, { wall: eye, terrain: eye, pivotZ, floorZ: feetZ }, elapsed);
+    rig.boomHit = 0; // 5.14 (11.11)
     return;
   }
   const wanted = boomLength(rig);
-  const pitch = cameraFloorPitch(rig.pitch, pivotZ, wanted, floorForPitch);
+  // 5.14 (11.11): the drag's pitch with the terrain tilt in it (CameraTerrainTilt.ts) — `asked` was `rig.pitch`.
+  const asked = tiltedPitch(rig.pitch, rig.terrainTilt);
+  const pitch = cameraFloorPitch(asked, pivotZ, wanted, floorForPitch);
   const camera = createCamera(player, rig.yaw, pitch, wanted, options);
   // The sample count is not passed either: `boomLimits` derives it from the length of the segment
   // it was handed, which is this boom to the last digit — the hinge is the camera walked `wanted`
@@ -615,7 +638,10 @@ export function advanceCameraFrame(
   // edge stood in it. Now the quad itself is swept clear and 1/9 more is given back (CameraClip.ts).
   const clipped = cameraArmClip(world.collision, anchor, camera, wanted, world.aspect ?? 16 / 9);
   // L8 5.14: under water the surface stops the boom as a wall does (CameraWater.ts).
-  const wall = Math.min(clipped, cameraWaterArm(pivotZ, pitch, world.waterZ));
+  // 5.14 (11.11): and from a dry column, the water the boom would dip into anywhere along it, 0.2222 short (`waterAt`).
+  const waterReach = world.waterAt === undefined || world.waterZ !== undefined ? 1
+    : boomLimits(anchor, camera.position, { heightAt: world.waterAt, clearance: CAMERA_WATER_CLEARANCE }).terrain;
+  const wall = Math.min(clipped, cameraWaterArm(pivotZ, pitch, world.waterZ), wanted * waterReach);
   const terrain = wanted * reach.terrain;
   // Where the camera is about to stand: the same three numbers `view` is the smallest of, taken
   // before the two limits are eased. `zoom` is the one the rig has not moved yet this frame, and
@@ -638,7 +664,15 @@ export function advanceCameraFrame(
     const again = cameraArmClip(world.collision, anchor, drawn, rig.view, world.aspect ?? 16 / 9);
     if (again < rig.view) rig.view = again;
   }
+  // 5.14 (11.11): what held the boom this frame, for the smart pivot (CameraPivot.ts).
+  const armHit = wall < wanted - CAMERA_HELD || terrain < wanted - CAMERA_HELD || rig.viewPitch < asked - CAMERA_HELD;
+  rig.boomHit = (armHit ? CAMERA_BOOM_ARM_HIT : 0) | (hingeHeld ? CAMERA_BOOM_HINGE_HIT : 0);
 }
+
+/** 5.14 (11.11): how far under its asked number an answer has to be to count as held (Wow.exe's 0x00a1e34c). */
+const CAMERA_HELD = 1e-3;
+/** 5.14 (11.11): whether the last `advanceCameraHinge` found a ceiling over the hinge. */
+let hingeHeld = false;
 
 /**
  * 5.33: one frame of the hinge's height (Wow.exe 0x00606f90, CameraClip.ts): 0x00603d30 moves a restarted ease
@@ -667,8 +701,12 @@ export function advanceCameraHinge(
       current = cameraClipEase(rig.pivotFrom, pivotHeight, seconds);
     }
   }
-  const hinge = cameraPivotUnderCeiling(world.collision, player.x, player.y, player.z,
+  // 5.33 (11.11): and the water's say over the subject's own column (CameraWater.cameraWaterHinge) — `cameraWaterHinge(…)`
+  // around the old value.
+  const ceiling = cameraPivotUnderCeiling(world.collision, player.x, player.y, player.z,
     Math.max(pivotHeight, current), current, world.bodyHeight);
+  hingeHeld = ceiling < current - CAMERA_HELD; // 5.14 (11.11): Wow.exe's 0x20000 is the plumb line's hit alone
+  const hinge = cameraWaterHinge(player.z, world.waterZ, world.bodyHeight, ceiling);
   if (current - hinge > CAMERA_CLIP_MARGIN) {
     rig.pivotFrom = hinge + CAMERA_CLIP_REARM;
     rig.pivotSeconds = 0;

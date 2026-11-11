@@ -109,3 +109,57 @@ test("Tab from a TREAT_AS_RAID_UNIT vehicle takes nothing; from an ordinary one 
     game.factions = previous.factions;
   }
 });
+
+// 5.16 (11.11): the rest of CanAttack reads the centre too — its faction (0x514050 → 0x007251c0 with ECX = the centre)
+// and its flags — not the player's.
+test("Tab from a vehicle judges by the vehicle's faction and flags, not the player's", () => {
+  const previous = { world: game.world, factions: game.factions };
+  const make = ({ vehicleFaction = 1, vehicleFlags = PLAYER_CONTROLLED } = {}) => ({
+    state: {
+      selfGuid: 1n,
+      objects: new Map([
+        [1n, unit(1n, { typeId: 4, flags: PLAYER_CONTROLLED, faction: 1, transport: { guid: 10n } })],
+        [10n, unit(10n, { flags: vehicleFlags, faction: vehicleFaction, entry: 900 })],
+        [20n, unit(20n, { x: 8, faction: 2 })],
+      ]),
+    },
+    controlledGuid: 10n,
+    targetGuid: undefined,
+    forcedReactions: new Map(),
+    selectionClears: 0,
+    creatureTemplates: new Map([[900, { entry: 900, found: true, flags: 0, creatureType: 9 }]]),
+    selected: [],
+    selectTarget(guid) {
+      this.selected.push(guid);
+      this.targetGuid = guid;
+    },
+  });
+  try {
+    // The player (faction 1) is at war with the wolf (2); the vehicle's faction 3 is its friend.
+    game.factions = {
+      ready: true,
+      reaction: (mine, theirs) => (mine === 1 && theirs === 2 ? -1 : 1),
+      factionOf: () => undefined,
+    };
+    const friendlyVehicle = make({ vehicleFaction: 3 });
+    game.world = friendlyVehicle;
+    cycleEnemyTarget(1);
+    assert.deepEqual(friendlyVehicle.selected, [], "the vehicle's faction is the wolf's friend: nothing");
+    const sameFaction = make({ vehicleFaction: 1 });
+    game.world = sameFaction;
+    cycleEnemyTarget(1);
+    assert.deepEqual(sameFaction.selected, [20n], "a vehicle of the player's faction takes the wolf");
+    // IMMUNE_TO_NPC (0x200) on the vehicle: a creature's wolf is never its target, whatever the player is.
+    const immune = make({ vehicleFaction: 1, vehicleFlags: PLAYER_CONTROLLED | 0x100 });
+    game.world = immune;
+    cycleEnemyTarget(1);
+    assert.deepEqual(immune.selected, [20n], "IMMUNE_TO_PC on the vehicle says nothing about a creature");
+    const immuneToNpc = make({ vehicleFaction: 1, vehicleFlags: 0x200 });
+    game.world = immuneToNpc;
+    cycleEnemyTarget(1);
+    assert.deepEqual(immuneToNpc.selected, [], "a vehicle not player-controlled and IMMUNE_TO_NPC: nothing");
+  } finally {
+    game.world = previous.world;
+    game.factions = previous.factions;
+  }
+});

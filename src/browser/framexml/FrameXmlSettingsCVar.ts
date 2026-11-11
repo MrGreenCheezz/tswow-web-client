@@ -120,6 +120,11 @@ const FRAME_XML_SETTINGS_CVAR_ROWS: FrameXmlSettingsCVarDefinition[] = [
   { cvar: "deselectOnClick", setting: "deselectOnClick", kind: "boolean" },
   // L8 5.14: the Camera panel's WATER_COLLISION; the boom stops at the water (game/CameraWater.ts).
   { cvar: "cameraWaterCollision", setting: "cameraWaterCollision", kind: "boolean" },
+  // 5.14 (11.11): the Camera panel's FOLLOW_TERRAIN, HEAD_BOB and SMART_PIVOT (game/CameraTerrainTilt.ts,
+  // CameraBob.ts, CameraPivot.ts).
+  { cvar: "cameraTerrainTilt", setting: "cameraTerrainTilt", kind: "boolean" },
+  { cvar: "cameraBobbing", setting: "cameraBobbing", kind: "boolean" },
+  { cvar: "cameraPivot", setting: "cameraPivot", kind: "boolean" },
 ];
 
 export const FRAME_XML_SETTINGS_CVARS: readonly FrameXmlSettingsCVarDefinition[] = Object.freeze(
@@ -257,8 +262,14 @@ export function createFrameXmlSettingsCVar(host: FrameXmlSettingsCVarHost): Fram
         return true;
       }
       const binding = definitionFor(name);
-      if (!binding || !modelDefinition(binding)) return false;
-      host.setSetting(binding.setting, settingFromCVar(binding, value));
+      const definition = binding ? modelDefinition(binding) : undefined;
+      if (!binding || !definition) return false;
+      const next = settingFromCVar(binding, value);
+      // 5.14 (11.11): a write of the value the setting already has (the stock «Окей» writes every control back)
+      // stores and applies nothing; it used to go through the setter, which stores and re-applies the whole model.
+      const values = host.getSettings();
+      const current = coerceSetting(definition, values[binding.setting] === undefined ? definition.fallback : values[binding.setting]);
+      if (current !== next) host.setSetting(binding.setting, next);
       return true;
     },
 

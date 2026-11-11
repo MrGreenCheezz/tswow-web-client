@@ -35,7 +35,21 @@ int luaopen_wowbit(lua_State *L);
 
 /* Wow.exe's lua_Number -> string is MSVC's sprintf("%.14g"): three exponent digits, 1.#INF, -1.#IND. */
 int wl_number2str(char *s, double n) {
-  if (n != n) { memcpy(s, "-1.#IND", 8); return 7; }
+  if (n != n) {
+    /* 3.27 (11.11): a NaN as the CRT's $I10_OUTPUT (Wow.exe 0x004192f4) names it by its bits — the sign, then 1#SNAN
+       without the quiet bit, 1#IND for the negative indefinite (0xFFF8000000000000, what 0/0 gives), else 1#QNAN. */
+    unsigned long long bits;
+    memcpy(&bits, &n, sizeof bits);
+    unsigned long long mantissa = bits & 0xFFFFFFFFFFFFFull;
+    int negative = (int)(bits >> 63);
+    const char *text = (mantissa & 0x8000000000000ull) == 0 ? "1.#SNAN"
+      : (negative && mantissa == 0x8000000000000ull) ? "1.#IND" : "1.#QNAN";
+    char *out = s;
+    if (negative) *out++ = '-';
+    size_t length = strlen(text);
+    memcpy(out, text, length + 1);
+    return (int)(out - s) + (int)length;
+  }
   if (n == HUGE_VAL) { memcpy(s, "1.#INF", 7); return 6; }
   if (n == -HUGE_VAL) { memcpy(s, "-1.#INF", 8); return 7; }
   if (n == 0) {
