@@ -106,9 +106,9 @@ export function createFrameXmlOptionsModel(
 
 /**
  * The Effects panel's CVars (EffectsPanelOptions, VideoOptionsPanels.lua), all of which the client's
- * RestoreVideoEffectsDefaults resets. The adapter answers a default for the mapped three — the
- * environment detail, the grass radius and the glow; the rest are unavailable controls whose
- * values nothing here reads.
+ * RestoreVideoEffectsDefaults resets. The adapter answers a default for the mapped four — the
+ * environment detail, the particle density (11.11, 6.15), the grass radius and the glow; the rest
+ * are unavailable controls whose values nothing here reads.
  */
 const VIDEO_EFFECTS_CVARS: readonly string[] = Object.freeze([
   "farclip", "TerrainMip", "particleDensity", "environmentDetail", "groundEffectDensity", "groundEffectDist",

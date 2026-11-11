@@ -65,6 +65,7 @@ test("the supported table is only the settings the browser currently consumes", 
       ["Sound_EnableAmbience", "ambienceEnabled"],
       ["groundEffectDist", "grassRadius"],
       ["environmentDetail", "objectDistance"],
+      ["particleDensity", "particleDensity"], // 11.11 (6.15)
       ["uiscale", "uiScale"],
       // 5.14: the stock Camera, Mouse and Controls panels.
       ["cameraDistanceMaxFactor", "cameraDistancePercent"],
@@ -121,6 +122,30 @@ test("environmentDetail is the object distance as the stock multiplier, to 7.39'
   assert.equal(values().objectDistance, 150);
   assert.equal(adapter.set("environmentDetail", "0.25"), true);
   assert.equal(values().objectDistance, 50, "clamped to the slider's floor");
+});
+
+test("6.15 particleDensity is the stock 0.1–1.0 slider (default 1.0) over the particle density setting", async () => {
+  const { particleDensity, setParticleDensity } = await import("../dist/code/browser/Particles.js");
+  const { applyRendererGraphicsSettings } = await import("../dist/code/browser/RendererGraphicsSettings.js");
+  const { adapter, values } = fakeSettings();
+  assert.equal(adapter.get("particleDensity"), "1", "the default leaves every emitter at its authored rate");
+  assert.equal(adapter.getDefault("particleDensity"), "1", "0x009e1340 = \"1.0\"");
+  assert.deepEqual(adapter.range("particleDensity"), [0.1, 1], "0x0078d860 and VideoOptionsPanels.lua: 0.1–1.0");
+  assert.equal(adapter.set("particleDensity", "0.4"), true);
+  assert.equal(values().particleDensity, 40);
+  assert.equal(adapter.get("particleDensity"), "0.4");
+  assert.equal(adapter.set("particleDensity", "0.05"), true);
+  assert.equal(values().particleDensity, 10, "clamped to the slider's floor");
+  // The setting reaches the emitters' global (0x00980f70) through the renderer half of applySettings.
+  const renderer = new Proxy({}, { get: () => () => undefined });
+  try {
+    applyRendererGraphicsSettings(renderer, { ...values(), particleDensity: 30 }, undefined);
+    assert.equal(particleDensity(), 0.3);
+    applyRendererGraphicsSettings(renderer, defaultSettings(), undefined);
+    assert.equal(particleDensity(), 1, "the default puts it back to 1");
+  } finally {
+    setParticleDensity(1);
+  }
 });
 
 test("every other browser setting is a webclient_ CVar, once, and the spellbook's own switch is not", () => {

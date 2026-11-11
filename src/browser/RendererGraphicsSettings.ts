@@ -1,6 +1,7 @@
 import type { GroundCoverClient } from "./GroundCover.js";
 import type { WorldRenderer3D } from "./WorldRenderer3D.js";
 import { settingBoolean, settingNumber, type SettingValues } from "./ui/SettingsModel.js";
+import { setParticleDensity } from "./Particles.js"; // 11.11 (6.15)
 
 /**
  * Every account setting the world renderer draws with, pushed to it in one call: the renderer half
@@ -99,6 +100,8 @@ export function applyRendererGraphicsSettings(
   });
   // The stock «Детализация ландшафта» multiplier over every M2 scenery leash; a percentage here.
   renderer.setEnvironmentDetail?.(settingNumber(values, "objectDistance") / 100);
+  // 11.11 (6.15): the stock «Плотность частиц» — Wow.exe keeps it in one global the emitters read (0x00980f70).
+  setParticleDensity(settingNumber(values, "particleDensity") / 100);
   // How far the ground cover reaches, and whether its density is read per detail cell. Pushed for
   // the same reason as the render scale: it is read deep inside a frame, and a copy kept anywhere
   // else is a copy that can be stale. Outside the world the client is undefined, which takes the

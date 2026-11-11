@@ -14,6 +14,16 @@
  *   last (0x005210d0 with the question answered), 2 sends the staged gems (0x005c4ff0, AcceptSockets).
  *
  * `isEquipped` takes `slot` as an inventory slot 1-19 (`0x12 < slot - 1` refuses the rest).
+ *
+ * 2.10 (11.11, `.runtime/re-2026-11-11/api4/scan1.txt`): none of these, nor the tooltip line
+ * (0x006277f0) or `GetSocketItemRefundable` (0x005c50e0), reads ITEM_FIELD_FLAG_REFUNDABLE (0x1000 of
+ * ITEM_FIELD_FLAGS): they trust the record alone. The record (item +0x3d4) is written only by
+ * 0x006d1650 (the info response, through 0x00706cf0) and the constructor 0x00709840, and freed only by
+ * the item's destructor 0x0070b120 — no field handler drops it when the realm clears the flag (a
+ * transmogrified purchase, `Item::SetNotRefundable`). So the stock refund question still shows for such
+ * an item until the two hours run out, and an accepted refund gets no answer (Player::RefundItem,
+ * Player.cpp:26969, returns without one when the flag is gone). The record here lives until the object
+ * goes (WorldClient forget), the same.
  */
 import { UPDATE_FIELDS } from "../../generated/updateFields.js";
 import { itemRefundSecondsLeft, type ItemRefundInfo } from "../../world/ItemRefundProtocol.js";

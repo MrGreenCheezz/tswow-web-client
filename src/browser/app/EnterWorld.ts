@@ -69,6 +69,7 @@ import { attachActionBarAccount } from "../ui/ActionBarAccountWiring.js"; // L7 
 import { installHudKeys } from "../ui/HudKeys.js";
 import { resetMacroWindow, showMacros } from "../ui/Macros.js";
 import { macroStores } from "../ui/MacroStore.js";
+import { attachMacroButtons } from "../ui/MacroButtonsWiring.js";
 import { resetPetBar, showPetBar } from "../ui/PetBar.js";
 import { resetTotems } from "../ui/Totems.js";
 import { resetAutoQuality } from "../AutoQuality.js";
@@ -1472,6 +1473,7 @@ export async function enterWorld(character: CharacterSummary): Promise<void> {
     // per character, and the character is only known now.
     settingsStore.attach(world);
     for (const store of macroStores) store.attach(world);
+    entryLifecycle.track(attachMacroButtons(world)); // 5.37: macro buttons as Wow.exe's ids
     attachInputAccount(world);
     // L7 4.16b/3.32: extra rows on stock pages (one-time move) and the server's toggles byte.
     entryLifecycle.track(attachActionBarAccount(world));

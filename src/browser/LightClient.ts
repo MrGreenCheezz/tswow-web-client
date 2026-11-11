@@ -89,6 +89,9 @@ function unpack(colour: number): ResolvedColour {
   return { r: ((colour >> 16) & 0xff) / 255, g: ((colour >> 8) & 0xff) / 255, b: (colour & 0xff) / 255 };
 }
 
+/** 11.11 (7.65): Wow.exe 0x007ecd80 never lets a set's fog end come nearer than this (0x009e30cc). */
+export const LIGHT_FOG_END_FLOOR_YARDS = 10;
+
 function sampleSet(set: LightParamSet, time: number): LightSample {
   const colours = {} as LightSample["colours"];
   for (const channel of CHANNELS) {
@@ -96,8 +99,15 @@ function sampleSet(set: LightParamSet, time: number): LightSample {
     const value = sampleBand(band.times, band.values, time, mixColour);
     colours[channel] = unpack(value ?? 0);
   }
-  const fogEnd = sampleBand(set.fogEnd.times, set.fogEnd.values, time, mixNumber) ?? 500;
-  const fogScale = sampleBand(set.fogScale.times, set.fogScale.values, time, mixNumber) ?? 0.25;
+  // 11.11 (7.65): Wow.exe samples a set's fog the same way wherever it comes from — the zone, a
+  // liquid's own set (0x007f3230 → 0x007ecd80) or the death slot: band 0 times 1/36 (0x007eaef0,
+  // 0x00a3f854, the gateway's `/ 36`), at least 10 yards (0x007ecd80, 0x009e30cc), and band 1, the
+  // start's share, clamped to [-1, 1] (0x007ebff0). 0x007f16f0 then takes the nearer of it and the
+  // far clip and puts the start at end × share.
+  const fogEnd = Math.max(LIGHT_FOG_END_FLOOR_YARDS,
+    sampleBand(set.fogEnd.times, set.fogEnd.values, time, mixNumber) ?? 500);
+  const fogScale = Math.min(1, Math.max(-1,
+    sampleBand(set.fogScale.times, set.fogScale.values, time, mixNumber) ?? 0.25));
   const sky = set.colours;
   return {
     colours, fogEnd, fogStart: fogEnd * fogScale,
@@ -203,8 +213,8 @@ export function resolveLighting(entry: LightIndexEntry, x: number, y: number, ti
   storm = 0, maxBlended = 3, z?: number, overrideLightId?: number, overrideWeight = 1,
   overrideAreaLightId?: number, overrideFromLightId?: number,
   underwater = false, ghost = 0, liquidType?: number, liquidDepth = 0): LightSample | undefined {
-  // 05.10-A7b-5 (7.15): a ghost fading in or out is the two lights crossfaded. Only during the
-  // two-second turn (`GhostLightFade`) does a frame resolve twice; settled, it is one pass.
+  // 05.10-A7b-5 (7.15): a weight between 0 and 1 is the two lights crossfaded. 11.11: Wow.exe
+  // switches in one frame (`GhostLightFade`), so the world loop no longer asks for one.
   if (ghost > 0 && ghost < 1) {
     const alive = resolveLighting(entry, x, y, time, storm, maxBlended, z, overrideLightId, overrideWeight,
       overrideAreaLightId, overrideFromLightId, underwater, 0, liquidType, liquidDepth);
@@ -212,21 +222,22 @@ export function resolveLighting(entry: LightIndexEntry, x: number, y: number, ti
       overrideAreaLightId, overrideFromLightId, underwater, 1, liquidType, liquidDepth);
     return alive && dead ? blendSamples(alive, dead, ghost) : dead ?? alive;
   }
-  const dead = ghost >= 1;
   // 05.10-A7b-5 (7.10): under a liquid whose `LiquidType` row names a light, that row's slots
   // stand in for the whole spatial lookup; the darkening applies under any liquid that has one.
-  // 05.10-A7b-5 review: a ghost's death light outranks the liquid's light and its darkening, as it
-  // outranks the zone's underwater slot (`pair`) — under Kalimdor's lava a ghost read Light 7's
-  // slot 4 (set 4) instead of the map's death set 3. Only a v5 body has liquids, so v4 is untouched.
   // 06.11 (7.65): the row's LightID is a LightParams set read whole (Wow.exe under Onyxia's lava fogs to
   // set 7's 200,52,0); a gateway before 7.65 sent it as `lightId`, a Light row, and is read as before.
-  const liquid: LiquidLighting | undefined = underwater && !dead && liquidType !== undefined
+  // 11.11 (7.15): and it outranks the death light, as Wow.exe 0x007f3230 orders its branches — a
+  // liquid with a light is read before the death slot is ever looked at; the darkening by depth
+  // follows either (the block after both branches).
+  const liquid: LiquidLighting | undefined = underwater && liquidType !== undefined
     ? entry.liquids?.[liquidType] : undefined;
   const liquidSlots = liquid?.paramsId !== undefined
     ? (entry.params[liquid.paramsId] ? { params: liquid.paramsId } : undefined)
     : liquid?.lightId ? entry.lights?.[liquid.lightId] : undefined;
-  const resolved = resolveSpatial(entry, x, y, time, storm, maxBlended, z, overrideLightId, overrideWeight,
-    overrideAreaLightId, overrideFromLightId, underwater, dead, liquidSlots);
+  const dead = ghost >= 1 && liquidSlots === undefined;
+  const alive = resolveSpatial(entry, x, y, time, storm, maxBlended, z, overrideLightId, overrideWeight,
+    overrideAreaLightId, overrideFromLightId, underwater, liquidSlots);
+  const resolved = dead ? deathLight(entry, time, alive) ?? alive : alive;
   if (resolved && liquid?.maxDarkenDepth) {
     // 05.10-A7b-5 review: the overlay reads this to leave the depth darkening to the light alone.
     resolved.liquidDarkens = true;
@@ -236,20 +247,55 @@ export function resolveLighting(entry: LightIndexEntry, x: number, y: number, ti
 }
 
 /**
+ * 11.11 (7.15): a ghost's light, as Wow.exe 0x007f3230 builds it.
+ *
+ * The slot comes from `ScreenEffect` — 0x004f7020 hands the row's word at +0x1c to 0x007ecec0, and
+ * row 1 "Ghost Screen Effect" says 4 — and it is read from the first `Light` row of the map's list
+ * alone (0x007eb180 on `*0x00d3900c`): the map's own default row, or row 1 for a map that has none
+ * (0x007ecb30), whatever volume the ghost stands in. A zero slot leaves the living light. The set
+ * then replaces the colours, the fog and the sky floats outright — no storm, no underwater slot, no
+ * blend — while the living sample keeps its glow, its four water alphas, its cloud type and its
+ * skybox, unless the death set names a skybox of its own (`DeathSkybox`). A v4 body (an old
+ * gateway, no sky channels and no slot 4) keeps the living light, as it always did.
+ */
+function deathLight(entry: LightIndexEntry, time: number, alive: LightSample | undefined): LightSample | undefined {
+  if (entry.fallback === undefined) return undefined;
+  const v5 = entry.fallbackDeath !== undefined || entry.params[entry.fallback]?.colours.sunColour !== undefined;
+  if (!v5) return undefined;
+  // The gateway sends slot 4 only where it differs from slot 0; absent, the slot names the clear set.
+  const set = entry.params[entry.fallbackDeath ?? entry.fallback];
+  if (!set) return undefined;
+  const death = sampleSet(set, time);
+  if (!alive) return death;
+  death.glow = alive.glow;
+  death.waterShallowAlpha = alive.waterShallowAlpha;
+  death.waterDeepAlpha = alive.waterDeepAlpha;
+  death.oceanShallowAlpha = alive.oceanShallowAlpha;
+  death.oceanDeepAlpha = alive.oceanDeepAlpha;
+  death.cloudType = alive.cloudType;
+  if (death.skyboxPath === undefined) {
+    death.skyboxFlags = alive.skyboxFlags;
+    if (alive.skyboxPath !== undefined) death.skyboxPath = alive.skyboxPath;
+  }
+  return death;
+}
+
+/**
  * 05.10-A7b-5 (7.10): the deeper the eye under an ocean, the darker and closer the world.
  *
- * `darkness = clamp(depth / MaxDarkenDepth, 0, 1)`, then the fog distance, the ambient and the
- * direct light each lose up to their `…DarkenIntensity` share. Reading an intensity as "the largest
- * share taken off" is the plan's hypothesis (line-A7b 7.10), not Wow.exe's established formula;
- * the paired frame 14.25 calibrates it. In place: the sample is this frame's own object.
+ * `darkness = clamp(depth / MaxDarkenDepth, 0, 1)`, then the ambient and the direct light each lose
+ * `darkness × …DarkenIntensity` of their brightness. 11.11 (7.65): that is Wow.exe's own formula —
+ * 0x007f3230 scales the HSV value of the ambient (0x00d38cac) and direct (0x00d38ca8) colours by
+ * `1 + (−darkness) · intensity` (0x007ed790), and an HSV value scale is the RGB scale below. The fog
+ * distance is not darkened: nothing there writes the fog end (0x00d38c1c); 7.10 had shortened it by
+ * `FogDarkenIntensity`, which 0x007f3230 applies to the fog colour 0x00d38b8c instead — and 0x007f16f0,
+ * run after it in the same frame (0x007816f0), sets that colour afresh from the light, so it is
+ * not taken here either. In place: the sample is this frame's own object.
  */
 export function darkenUnderLiquid(sample: LightSample, liquid: LiquidLighting, depth: number): void {
   const maxDepth = liquid.maxDarkenDepth ?? 0;
   if (!(maxDepth > 0) || !(depth > 0)) return;
   const darkness = Math.min(1, depth / maxDepth);
-  const fog = 1 - clampUnit(liquid.fogDarken ?? 0) * darkness;
-  sample.fogEnd *= fog;
-  sample.fogStart *= fog;
   scaleColour(sample.colours.ambient, 1 - clampUnit(liquid.ambDarken ?? 0) * darkness);
   scaleColour(sample.colours.diffuse, 1 - clampUnit(liquid.dirDarken ?? 0) * darkness);
 }
@@ -267,7 +313,7 @@ function scaleColour(colour: ResolvedColour, factor: number): void {
 function resolveSpatial(entry: LightIndexEntry, x: number, y: number, time: number,
   storm: number, maxBlended: number, z: number | undefined, overrideLightId: number | undefined,
   overrideWeight: number, overrideAreaLightId: number | undefined, overrideFromLightId: number | undefined,
-  underwater: boolean, dead: boolean, liquidSlots: LightSlots | undefined): LightSample | undefined {
+  underwater: boolean, liquidSlots: LightSlots | undefined): LightSample | undefined {
   /**
    * Which pair of the row's four slots this camera reads.
    *
@@ -278,15 +324,8 @@ function resolveSpatial(entry: LightIndexEntry, x: number, y: number, time: numb
    */
   const pair = (slots: LightSlots | undefined): [number | undefined, number | undefined] => {
     if (!slots) return [undefined, undefined];
-    // 05.10-A7b-5 (7.15): the death light has no storm and no water of its own; a body without
-    // slot 4 (v4, or a row whose slot 4 repeats slot 0) reads slot 0.
-    // 05.10-A7b-5 review: only where the body knows slot 4 — a v5 body (its sets carry the sky
-    // channels) or a row naming one. A v4 body (old gateway) keeps the living storm and water
-    // pair, so a ghost there sees exactly the light it saw before v5.
-    if (dead && (slots.deathParams !== undefined
-      || entry.params[slots.params]?.colours.sunColour !== undefined)) {
-      return [slots.deathParams ?? slots.params, undefined];
-    }
+    // 11.11 (7.15): the death slot is not read per volume here; `deathLight` takes it from the
+    // map's default row alone, as Wow.exe 0x007f3230 does.
     if (!underwater) return [slots.params, slots.stormParams];
     const clear = slots.underwaterParams ?? slots.params;
     const stormy = slots.underwaterStormParams ?? clear;

@@ -187,6 +187,19 @@ test("using the open letter again closes it; an ordinary book still reads by CMS
   muted.model.muted(() => muted.model.useItem(0, 23, undefined, LETTER));
   assert.deepEqual(muted.calls, [], "the gate's muted use sends nothing");
 });
+
+test("5.28 (11.11): a template's PageText comes before the item's READABLE flag (0x58a1a0)", () => {
+  const { world, model, fired, calls, call } = fixture();
+  // A paged template on an item that also carries READABLE: the pages are read, not the item's own text,
+  // and no CMSG_READ_ITEM goes out (the flag still skips it: 0x58a1a0 → 0x589e90).
+  const PAGED = 0x4000000000000079n;
+  world.state.objects.set(PAGED, item(2794, MAIL_TEXT_MASK));
+  world.pageText = (id) => (id === 1131 ? { id, text: "Первая страница", nextPageId: 0 } : undefined);
+  assert.equal(model.useItem(0, 24, undefined, PAGED), true);
+  assert.deepEqual(calls, [], "neither CMSG_ITEM_TEXT_QUERY nor CMSG_READ_ITEM");
+  assert.deepEqual(fired, ["ITEM_TEXT_BEGIN", "ITEM_TEXT_READY"]);
+  assert.deepEqual(call("ItemTextGetText"), ["Первая страница"]);
+});
 }
 
 // ── framexml-itemtext-seam.test.mjs

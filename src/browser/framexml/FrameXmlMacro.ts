@@ -8,9 +8,9 @@
  * The Lua API numbers macros by position instead: account macros 1..N and character macros
  * 37..36+M, with no gaps (Blizzard_MacroUI.lua walks `GetMacroInfo(macroBase + i)` for `i <=
  * numMacros`, and MacroFrame_DeleteMacro steps the selection back one when the last is removed).
- * Positions follow slot order, which is the order the native window has always shown; CreateMacro
- * takes the lowest free slot of its set and answers that slot's position. The client's own sort
- * order within a set cannot be read from any file here — only the owner's live client can show it.
+ * 5.37 (11.11): positions within a set follow Wow.exe's order, by name without case (0x00566240 with
+ * 0x00564a80); CreateMacro takes the lowest free slot of its set and answers the new macro's position,
+ * and EditMacro answers the position after a rename, which moves it as in Wow.exe.
  *
  * A body is stored as written, up to 255 characters, like the client stores it: the stock window has
  * no refusal path (MacroFrame_SaveMacro ignores EditMacro's answer), so what this client cannot run
@@ -37,6 +37,7 @@ import {
   MACRO_DEFAULT_ICON, MAX_ACCOUNT_MACROS, MAX_CHARACTER_MACROS, isAccountMacro,
   macroIcon, macroIndexes, trimMacroBody, trimMacroName, validMacroIcon, type Macro,
 } from "../ui/MacroModel.js";
+import { compareWowMacroNames } from "../ui/MacroCacheText.js";
 import {
   macroBodyLines, macroClickFrame, macroLineExecutor, runMacroLines, stopMacro, type MacroLineExecutor,
 } from "../macro/MacroRunner.js";
@@ -157,8 +158,13 @@ export class FrameXmlMacroModel {
     if (!this.#queued.includes("UPDATE_MACROS")) this.#fire("UPDATE_MACROS");
   }
 
+  /**
+   * 5.37 (11.11): one set in Wow.exe's order — by name without case (0x00566240 qsorts the set with
+   * 0x00564a80, `_strnicmp`); equal names keep slot order here, where Wow.exe's qsort leaves them unordered.
+   */
   #set(account: boolean): Macro[] {
-    return this.#host.store.list().filter((macro) => isAccountMacro(macro.index) === account);
+    return this.#host.store.list().filter((macro) => isAccountMacro(macro.index) === account)
+      .sort((left, right) => compareWowMacroNames(left.name, right.name) || left.index - right.index);
   }
 
   #bySlot(slot: number): Macro | undefined {
@@ -272,7 +278,7 @@ export class FrameXmlMacroModel {
 
   /**
    * `EditMacro(id, name, icon, body)`: nil leaves that part as it was (MacroFrame_SaveMacro sends
-   * only the body, the popup only name and icon). Answers the macro's position, which does not move.
+   * only the body, the popup only name and icon). Answers the macro's position afterwards: a new name may move it (5.37).
    */
   edit(id: unknown, name: unknown, icon: unknown, body: unknown): number | undefined {
     const macro = this.#resolve(id);

@@ -121,7 +121,9 @@ test("stepped shorelines, UVs, depths and normals match the pre-refactor water b
   } while(!result.done);
   assert.ok(steps>=35,"water cells yield in bounded row groups");
   assert.ok(maxGround<=1500);assert.ok(maxLiquid<=800);
-  assert.equal(waterHash(result.value),"9b6687fd4823488a54f0216259d53e460f897ebe9ea60ae6691ab7e325ed73c0");
+  // 11.11 (7.31): only the uv changed — 0.06 a yard, u along world X (Wow.exe 0x007ce390); positions,
+  // normals, depths and indices hash as before (.runtime/re-2026-11-11/env4/water-hash-check.test.mjs).
+  assert.equal(waterHash(result.value),"c3b4519e127339564e942fd7b9420b5581010e34c89a70b4b698844df56585d7");
   for(const geometry of result.value.values())geometry.dispose();
 });
 

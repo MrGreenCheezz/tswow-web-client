@@ -204,6 +204,8 @@ async function nativeMacros(commands, chat, notices) {
     "../AccountStore.js": { AccountStore },
     "../../world/SessionProtocol.js": { GLOBAL_MACROS_CACHE: 5, PER_CHARACTER_MACROS_CACHE: 6 },
     "./MacroModel.js": macroModel,
+    // 5.37 (11.11): a store's value is the slot (MacroSlot.ts), its macros under `macros`.
+    "./MacroSlot.js": { emptyMacroSlot: () => ({ macros: [], origins: {}, spare: [] }) },
   });
   const macros = await load("MacroRun.ts", {
     "./MacroStore.js": store,
@@ -230,7 +232,7 @@ test("runMacro runs the slash lines through the one runner: conditions choose, /
     else chat.push(line);
   };
   const { macros, stores } = await nativeMacros(commands, submitChat, notices);
-  stores[0].value = [{
+  stores[0].value.macros = [{
     index: 1, name: "Огонь", body: "#showtooltip\n/cast [mod:shift] Огненный шар; Ледяная стрела\n/stopmacro [nomod]\n/dance\nпривет",
   }, { index: 2, name: "Сломан", body: "/cast [mod:shift Огненный шар" }];
 
@@ -261,7 +263,7 @@ test("runMacro runs the slash lines through the one runner: conditions choose, /
   assert.equal(casts.length, 2, "the native chat got none of them");
 
   // A word the client does not know holds, and is said once (ERR_UNKNOWN_MACRO_OPTION_S).
-  stores[0].value = [{ index: 1, name: "Опечатка", body: "/cast [bogus] Огненный шар" }];
+  stores[0].value.macros = [{ index: 1, name: "Опечатка", body: "/cast [bogus] Огненный шар" }];
   macros.runMacro(1);
   macros.runMacro(1);
   assert.deepEqual(casts.slice(2), [[133, undefined], [133, undefined]]);
@@ -307,7 +309,7 @@ async function guardedMacros({ predictedGcd = false } = {}) {
   });
   const submitChat = (line) => { if (line.startsWith("/cast ")) commands.runCastCommand(line.slice("/cast ".length)); };
   const { macros, stores } = await nativeMacros(commands, submitChat, []);
-  stores[0].value = [
+  stores[0].value.macros = [
     { index: 1, name: "Выбор", body: "/cast [mod:shift] Огненный шар\n/cast [nomod] Ледяная стрела" },
     { index: 2, name: "Всё", body: "/cast Стылая кровь\n/cast Огненный шар\n/cast Ледяная стрела" },
   ];

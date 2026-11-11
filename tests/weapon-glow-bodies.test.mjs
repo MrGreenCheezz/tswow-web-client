@@ -308,7 +308,9 @@ test("review E2: the renderer's hooks fade and hide the glows with their unit", 
   const effects = source.slice(source.indexOf("#updateEffects(player: WorldPosition"), source.indexOf("// Spell visuals are ranked and budgeted apart"));
   assert.match(effects, /if \(!glowAnchorsOf\(node\) \|\| !glowShown\(node\)\) continue;/, "a hidden blade's glow is not emitted");
   assert.match(effects, /glowEmitterEntries\(node, distance, glowEntry, wanted, unit\.unitOpacity\)/);
-  assert.match(source, /if \(entry\.fade !== undefined\) fadeGlowEmitters\(held\.effects, entry\.fade\);/);
+  // 11.11 (6.11): the fade now reaches the emitters as the model's alpha (ParticleRender `modelAlpha`, Wow.exe's
+  // m_alphaScale), not through their materials; `tests/particle-model-alpha.test.mjs` checks what it does.
+  assert.match(source, /modelAlpha: entry\.fade,/);
 });
 
 // 05.10-A7a-G2 (ревью E2, pre-existing): a unit's own model emitters went with neither its visibility nor its

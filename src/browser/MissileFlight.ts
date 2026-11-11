@@ -55,8 +55,11 @@
 // that changes speed makes it arrive earlier (it is then hidden) or later (its life is extended, bounded).
 // The unit velocity of the lead is the change of its position over the frame (the renderer keeps no mover
 // direction); the ground test is the renderer's terrain height (MissilePoints.ground), not the full world.
-// Not done: MissileCastOffset on a missile (only the beam builder 0x007fc5f0 was seen reading it), the
-// 0x40000 time-scale ease, MissilePathType. 11.11: the collision of 0x3c rows is tested by the page for its own casts
+// 11.11 (6.12): the fire point is the caster's MissileAttachment (an index through 0x00adaa20) moved by
+// MissileCastOffset, as 0x00720bf0 gives it to the launch 0x0072df00 (SpellVisualAttach.ts `missileLaunchPoint`).
+// MissilePathType is read by no Wow.exe function that reaches a SpellVisual row (the getter 0x007fa290's 23
+// callers and the table's 10 readers, .runtime/re-2026-11-11/spellvis4/refs1.txt, d1.c): it is carried, not used.
+// Not done: the 0x40000 time-scale ease. 11.11: the collision of 0x3c rows is tested by the page for its own casts
 // (world/MissileCollision.ts, which sends CMSG_UPDATE_PROJECTILE_POSITION); the answer SMSG_SET_PROJECTILE_POSITION
 // lands a planned flight at the server's point (`setProjectilePosition`, the plan's `cast`).
 //
@@ -95,7 +98,8 @@ export interface MissileTrajectoryPlan {
 export interface MissileFlightPlan {
   readonly from: MissilePoint;
   readonly to: MissilePoint;
-  readonly launch?: { readonly guid: bigint; readonly attachment: number };
+  /** 11.11: `offset` is MissileCastOffset as Wow.exe reads it, (x, −y, z), in the attachment's frame (0x00720bf0). */
+  readonly launch?: { readonly guid: bigint; readonly attachment: number; readonly offset?: readonly [number, number, number] };
   readonly target?: { readonly guid: bigint; readonly attachment: number };
   readonly motion?: MissileMotion;
   readonly missileIndex?: number;
@@ -718,8 +722,8 @@ export function flyMissileInstance(instance: MissileInstance, now: number, point
     _target.z = origin.z + plan.followGround.height;
   }
   if (!state) {
-    const fire = plan.launch && plan.launch.guid !== 0n && points.point(plan.launch.guid, plan.launch.attachment, _launch)
-      ? _launch : plan.from;
+    const fire = plan.launch && plan.launch.guid !== 0n
+      && points.point(plan.launch.guid, plan.launch.attachment, _launch, plan.launch.offset) ? _launch : plan.from;
     // 05.10 review E: over the time left, not the whole planned life — a first frame after a hitch (or a
     // late model) still lands with the impact kit; one first seen after its arrival is not drawn at all.
     state = launchMissile(plan, fire, target, now, instance.endsAt - Math.max(now, instance.startedAt));

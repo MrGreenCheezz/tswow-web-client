@@ -798,3 +798,36 @@ test("5.09: losing flight in the air falls at the run rate", () => {
   assert.equal(motion.jump?.speed, 7);
   assert.ok(motion.velocityZ < 0);
 });
+
+test("11.11 7.24: standing still, a chair's seat under the body does not lift it (Wow.exe 0x00762e00 steps only a moving mover)", () => {
+  // GameObject::Use teleports the sitter to the chair's own z, the floor; the chair's collision has its seat 0.6 above.
+  const chair = world({ floor: (x, y, fromZ, minZ) => (Math.abs(x) < 0.5 && 0.6 <= fromZ && 0.6 >= minZ ? 0.6 : undefined) });
+  const seated = at(0, 0, 0);
+  simulate(seated, newCharacterMotion(), input(), chair, 1);
+  assert.equal(seated.z, 0, "the body stays where the server put it; SitChair* raises it onto the seat");
+  // Walking into it still steps up onto it, as before.
+  const walker = at(-1, 0, 0);
+  simulate(walker, newCharacterMotion(), input({ forward: 1, runSpeed: 1 }), chair, 0.8);
+  assert.ok(Math.abs(walker.z - 0.6) < 1e-9, `walked onto the seat: ${walker.z}`);
+  // On a lift the standing body is carried by its floor.
+  const rider = at(0, 0, 0);
+  simulate(rider, newCharacterMotion(), input({ carried: true }), chair, 0.1);
+  assert.equal(rider.z, 0.6);
+});
+
+test("11.11 6.07: losing flight in the air starts a fall with no jump in it (Wow.exe 0x0098c240 → 0x00988370(0))", () => {
+  const position = at(0, 0, 100);
+  const motion = newCharacterMotion();
+  motion.mode = "air";
+  stepCharacter(position, motion, input({ canFly: true, forward: 1, flightSpeed: 28 }), world(), 1 / 60);
+  const events = stepCharacter(position, motion, input({ forward: 1, runSpeed: 7 }), world(), 1 / 60);
+  // The own pose reads the start of the fall as «not a jump»: no JumpStart, the ground's pose until FALLING_FAR.
+  assert.deepEqual(events.filter((event) => event === "startFall" || event === "jump"), ["startFall"], events.join());
+  assert.equal(motion.jump?.velocity, 0);
+  assert.equal(motion.fallingFar, false);
+  // A walk-off's clock: far once 500 ms have passed.
+  stepCharacter(position, motion, input({ forward: 1, runSpeed: 7 }), world(), 0.45);
+  assert.equal(motion.fallingFar, false, `${motion.fallTime} ms`);
+  stepCharacter(position, motion, input({ forward: 1, runSpeed: 7 }), world(), 0.06);
+  assert.equal(motion.fallingFar, true);
+});

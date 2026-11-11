@@ -3,7 +3,7 @@
  */
 
 import {
-  SETTING_DEFINITIONS, defaultSettings, settingBoolean, settingMatchesQuery, settingNumber,
+  SETTING_DEFINITIONS, resetSettingValues, settingBoolean, settingMatchesQuery, settingNumber,
   type SettingDefinition, type SettingGroup, type SettingValues,
 } from "./SettingsModel.js";
 import { wireSettingsNavigation, type SettingsNavigation } from "./SettingsNavigation.js";
@@ -137,7 +137,7 @@ function build(): Panel {
   reset.type = "button";
   reset.textContent = "Сбросить настройки";
   reset.addEventListener("click", () => {
-    settingsStore.set(defaultSettings());
+    settingsStore.set(resetSettingValues(settingsStore.value)); // 4.16 (11.11): the move's mark stays
     applySettings();
   });
   const footer = document.createElement("footer");

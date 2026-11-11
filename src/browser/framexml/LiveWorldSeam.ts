@@ -390,7 +390,7 @@ import {
   type FrameXmlWorldSeam,
 } from "./FrameXmlWorldSeam.js";
 import type { BattlefieldList } from "../../world/PvpProtocol.js";
-import { FRAMEXML_DISPLAYED_POWER, frameXmlObjectPower, frameXmlPartyPower } from "./FrameXmlUnitPower.js"; // 11.10
+import { FRAMEXML_DISPLAYED_POWER, frameXmlObjectPower, frameXmlPartyPower, type FrameXmlPowerKeepers } from "./FrameXmlUnitPower.js"; // 11.10, 3.41
 import { formatSpellDescription } from "../ui/SpellText.js"; // 12.10
 import { sessionSpellDescriptionContext } from "../ui/SpellTextLiveContext.js"; // 12.10
 import {
@@ -8078,7 +8078,15 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
   // power, as Wow.exe 0x0060ed40/0x0060ef40 answer them (FrameXmlUnitPower.ts).
   unitPower(unit: string, powerType = FRAMEXML_DISPLAYED_POWER): number {
     const object = this.#unit(unit);
-    return (object ? frameXmlObjectPower(object, powerType, object.guid === this.#selfGuid(), false) : undefined)
+    const world = this.#context.world();
+    // 3.41 (11.11): a dead unit's power unless 0x00512a30 keeps it (FrameXmlUnitPower.ts).
+    const keepers: FrameXmlPowerKeepers = {
+      selfGuid: this.#selfGuid(),
+      object: (guid) => world?.state.objects.get(guid),
+      groupMembers: () => (world?.group?.members ?? []).map((member) => member.guid),
+      cachedPet: (member) => world?.partyStats.get(member)?.petGuid,
+    };
+    return (object ? frameXmlObjectPower(object, powerType, object.guid === this.#selfGuid(), false, keepers) : undefined)
       ?? frameXmlPartyPower(this.#partyStats(unit), powerType, false) ?? 0;
   }
 

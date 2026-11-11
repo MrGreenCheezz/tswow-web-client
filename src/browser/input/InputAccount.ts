@@ -9,8 +9,9 @@
  *    a slot holding anything but the envelope is left alone — not applied, never overwritten.
  *  - Window positions: slot 6, `PER_CHARACTER_LAYOUT_CACHE` (per character; the core drops a
  *    per-character slot written without a character, WorldSession.cpp:821-849), as
- *    `{"format":"wowclient-layout","version":1,"windows":{id:{left,top}}}`. The original client
- *    keeps its own layout text in the same slot; that text is likewise never applied or overwritten.
+ *    `{"format":"wowclient-layout","version":1,"windows":{id:{left,top}}}`. Foreign text in the
+ *    slot is likewise never applied or overwritten. (5.37: Wow.exe 12340's account-data table at
+ *    0x00ad94e0 names a cache file for slots 0–5 and 7 and none for slot 6, so it keeps no text here.)
  *
  * Both are on unless switched off ({@link INPUT_ACCOUNT_SYNC_KEYS}): the owner ruled for them on 12.10
  * (WORK_PLAN 4.12), knowing that slot 2 is shared with the Unity client and slot 6 with Wow.exe's own

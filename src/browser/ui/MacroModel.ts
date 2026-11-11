@@ -2,12 +2,10 @@
  * Macros: fifty-four slots, a name, a body, and the rules around both.
  *
  * There is no macro opcode in 3.3.5 — none at all. A macro is client state, and the server's only
- * involvement is carrying the blob in two of its eight account-data slots. Which means the storage
- * format is the client's own business, and it has to be: the retail client's layout is written by
- * closed C code, is documented by no packet, and appears in no FrameXML — `Blizzard_MacroUI.lua`
- * even has its `SaveMacros()` call commented out. Nothing on this machine could decode it. So this
- * is JSON, and macros here will not be shared with a retail client on the same account. Neither
- * are the key bindings or the window layout, which is the same trade already made.
+ * involvement is carrying the blob in two of its eight account-data slots. Since 5.37 (11.11) that
+ * blob is Wow.exe's own macro cache text, read off its reader and writer (`MacroCacheText.ts`,
+ * `MacroSlot.ts`), so a character played in Wow.exe and here keeps one set of macros. The JSON below
+ * (`parseMacros`/`serialiseMacros`) is the format this client wrote before; it is still read.
  *
  * The three limits below are the real client's, read off its own frame definition: thirty-six
  * account macros and eighteen character ones in one flat 1-based namespace, sixteen characters of

@@ -1,4 +1,4 @@
-import { POWER_COUNT, POWER_DISPLAY_SCALE, unit as unitField } from "../../world/Fields.js";
+import { POWER_COUNT, POWER_DISPLAY_SCALE, readField, unit as unitField } from "../../world/Fields.js";
 import { UPDATE_FIELDS } from "../../generated/updateFields.js";
 import type { PartyMemberStats } from "../../world/PartyProtocol.js";
 import type { WorldObjectState } from "../../world/WorldState.js";
@@ -27,10 +27,51 @@ import type { WorldObjectState } from "../../world/WorldState.js";
  * 100 energy: a blue «Мана» bar appeared under the energy bar and moved like energy. The real
  * UNIT_FIELD_MAXPOWER1 of a class without mana is 0 (Player::UpdateMaxPower, StatSystem.cpp:472).
  *
- * Not modelled: 0x0060ed40 also answers 0 for a unit whose UNIT_DYNAMIC_FLAGS has
- * UNIT_DYNFLAG_DEAD (0x20) unless 0x00512a30(guid) — a check not read yet; the predicted power the
- * client keeps beside the field (+0xfb4) when its CVar is on, which this client never keeps.
+ * 3.41 (11.11, `.runtime/re-2026-11-11/api4/d1.c`): UnitPower (0x0060ed40, not UnitPowerMax 0x0060ef40)
+ * answers 0 for a unit object whose UNIT_DYNAMIC_FLAGS (descriptor +0x124) has UNIT_DYNFLAG_DEAD (0x20)
+ * unless 0x00512a30 keeps it: 0x0052d310 — the player, the player's charm or else summon, a party member
+ * (0x00bd1948, four slots) or a party member's charm-or-summon (the cached pet guid while the member is
+ * out of view) — or 0x00573200, the same over the raid list (0x00beb568). The check comes after type 7
+ * is resolved and before the displayed-power rule.
+ *
+ * Not modelled: the predicted power the client keeps beside the field (+0xfb4) when its CVar is on,
+ * which this client never keeps.
  */
+
+/** UNIT_DYNFLAG_DEAD (SharedDefines.h `UnitDynFlags`), the bit 0x0060ed40 tests. */
+export const UNIT_DYNFLAG_DEAD = 0x20;
+
+/** What 0x00512a30 looks at; LiveWorldSeam supplies it from the world. */
+export interface FrameXmlPowerKeepers {
+  readonly selfGuid: bigint | undefined;
+  object(guid: bigint): WorldObjectState | undefined;
+  /** The party's members, or the raid's (0x00bd1948, 0x00beb568). */
+  groupMembers(): Iterable<bigint>;
+  /** The member's pet from the group cache (SMSG_PARTY_MEMBER_STATS), for a member out of view. */
+  cachedPet(member: bigint): bigint | undefined;
+}
+
+/** A unit's charm, or its summon when it has no charm — the descriptor pair 0x0052d310 reads. */
+function charmOrSummon(object: WorldObjectState): bigint | undefined {
+  const charm = readField(object, "UNIT_FIELD_CHARM");
+  return charm !== undefined && charm !== 0n ? charm : readField(object, "UNIT_FIELD_SUMMON");
+}
+
+/** Wow.exe 0x00512a30: whether a dead unit's power is still answered. */
+export function frameXmlKeepsPowerWhenDead(guid: bigint, keepers: FrameXmlPowerKeepers): boolean {
+  if (guid === 0n) return false;
+  const selfGuid = keepers.selfGuid;
+  if (guid === selfGuid) return true;
+  const self = selfGuid === undefined ? undefined : keepers.object(selfGuid);
+  if (self && charmOrSummon(self) === guid) return true;
+  for (const member of keepers.groupMembers()) {
+    if (member === 0n) continue;
+    if (member === guid) return true;
+    const object = keepers.object(member);
+    if (object ? charmOrSummon(object) === guid : keepers.cachedPet(member) === guid) return true;
+  }
+  return false;
+}
 
 /** The type argument's default: the power the unit displays. */
 export const FRAMEXML_DISPLAYED_POWER = 7;
@@ -60,11 +101,15 @@ function displayed(raw: number, type: number): number {
  */
 export function frameXmlObjectPower(
   object: WorldObjectState, type: number, activePlayer: boolean, maximum: boolean,
+  keepers?: FrameXmlPowerKeepers,
 ): number | undefined {
   const shown = unitField.powerType(object);
   if (shown === undefined) return undefined;
   const power = type === FRAMEXML_DISPLAYED_POWER ? shown : type;
   if (power >= POWER_COUNT) return undefined;
+  // 3.41 (11.11): 0x0060ed40 — a dead unit's power is 0 unless 0x00512a30 keeps it.
+  if (!maximum && keepers && ((object.fields.get(UPDATE_FIELDS.UNIT_DYNAMIC_FLAGS.offset) ?? 0) & UNIT_DYNFLAG_DEAD) !== 0
+    && !frameXmlKeepsPowerWhenDead(object.guid, keepers)) return 0;
   // 0x0060ed40: another unit's power other than the one it displays is not answered.
   if (!maximum && power !== shown && !activePlayer) return 0;
   const field = (maximum ? UPDATE_FIELDS.UNIT_FIELD_MAXPOWER1 : UPDATE_FIELDS.UNIT_FIELD_POWER1).offset + power;

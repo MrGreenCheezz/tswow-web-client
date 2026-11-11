@@ -156,11 +156,12 @@ test("material: a family surface shares its class program and walks its own fram
   const green = buildLiquidMaterial("magma|lavagreen", strip);
   assert.equal(green.material.customProgramCacheKey(), "liquid-magma");
   assert.equal(green.material.transparent, false, "lava stays opaque");
-  // 30 frames a second; frame 17 of a 16-frame strip is frame 1 again.
+  // 11.11 (7.31): Wow.exe 0x008a1d60 walks any strip once per 1250 ms — 566.7 ms is 7.25 of a
+  // 16-frame strip's frames and 13.6 of a 30-frame one's.
   updateLiquidMaterial(fast, "water|fast_a", undefined, 17 / 30);
-  assert.equal(fast.uniforms.liquidFrame.value, 1);
+  assert.equal(fast.uniforms.liquidFrame.value, 7);
   updateLiquidMaterial(lake, "water", undefined, 17 / 30);
-  assert.equal(lake.uniforms.liquidFrame.value, 17);
+  assert.equal(lake.uniforms.liquidFrame.value, 13);
   // Water colours reach the family surface (class shading), never the lava ones.
   const sample = {
     oceanShallowAlpha: 0.3, oceanDeepAlpha: 0.9, waterShallowAlpha: 0.7, waterDeepAlpha: 0.95,

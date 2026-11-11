@@ -542,27 +542,21 @@ function addOptimisticMinimapPing(x: number, y: number, now = performance.now())
   pushMinimapPing(x, y, now, true);
 }
 
-/** The quickest a click repeats a ping: the server relays every MSG_MINIMAP_PING to the group. */
-export const MINIMAP_CLICK_PING_INTERVAL_MS = 500;
-let lastClickPingAt = Number.NEGATIVE_INFINITY;
-
 /**
  * Whether a click at `point` (pixels from the centre) pings: inside the circle, as stock's
- * `sqrt(x² + y²) < width / 2`, and not sooner than {@link MINIMAP_CLICK_PING_INTERVAL_MS} after the
- * last one, so a double click is one ping.
+ * `sqrt(x² + y²) < width / 2`. 7.57 (11.11): every click — Minimap_OnClick calls PingLocation on each
+ * OnMouseUp and Wow.exe 0x0057ed70 keeps no clock, so a double click is two pings (the 500 ms hold this
+ * client had is gone).
  */
-export function minimapClickPings(point: MinimapPixel, size: number, now: number, lastAt: number): boolean {
-  if (!(size > 0) || Math.hypot(point.column, point.row) >= size / 2) return false;
-  return now - lastAt >= MINIMAP_CLICK_PING_INTERVAL_MS;
+export function minimapClickPings(point: MinimapPixel, size: number): boolean {
+  return size > 0 && Math.hypot(point.column, point.row) < size / 2;
 }
 
 function onCanvasClick(event: MouseEvent, canvas: HTMLCanvasElement): void {
   const box = canvas.getBoundingClientRect();
   const size = Math.min(box.width, box.height);
   const point = { column: event.clientX - box.left - box.width / 2, row: event.clientY - box.top - box.height / 2 };
-  const now = performance.now();
-  if (!minimapClickPings(point, size, now, lastClickPingAt)) return;
-  lastClickPingAt = now;
+  if (!minimapClickPings(point, size)) return;
   pingMinimapAt(point, size);
 }
 

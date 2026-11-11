@@ -422,6 +422,11 @@ function repairCostOf(value: unknown): number {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : 0;
 }
 
+/** 7.57 (11.11): lua_isnumber — a number, or a string that reads as one. */
+function minimapLuaIsNumber(value: unknown): boolean {
+  return typeof value === "number" || (typeof value === "string" && value.trim() !== "" && !Number.isNaN(Number(value)));
+}
+
 function boundedMinimapNumber(value: unknown): number | undefined {
   const parsed = typeof value === "number" ? value : Number(value);
   return Number.isFinite(parsed) && Math.abs(parsed) <= MINIMAP_NUMERIC_LIMIT ? parsed : undefined;
@@ -1126,8 +1131,11 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
         this.minimapState(frame).zoom = wanted;
       },
       PingLocation: ({ args }) => {
-        const x = boundedMinimapNumber(args[0]);
-        const y = boundedMinimapNumber(args[1]);
+        // 7.57 (11.11): Wow.exe 0x0057ed70 reads the offset only when both arguments are numbers
+        // (lua_isnumber); otherwise it stays 0, 0 — the ping lands on the player (FrameXmlMinimapPing.ts).
+        const numeric = minimapLuaIsNumber(args[0]) && minimapLuaIsNumber(args[1]);
+        const x = numeric ? boundedMinimapNumber(args[0]) : 0;
+        const y = numeric ? boundedMinimapNumber(args[1]) : 0;
         if (x === undefined || y === undefined) return;
         // A glue-only load has no world to ping. Deliberately do not enqueue or synthesize one.
         this.#options.minimapAdapter?.pingLocation(x, y);

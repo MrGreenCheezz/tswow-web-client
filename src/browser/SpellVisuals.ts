@@ -26,8 +26,8 @@ import type { VisualBeam } from "./ChainBeam.js"; // 05.10-A7a-E
 import type { UnitActionLayer } from "./UnitActionArbiter.js";
 import type { MissileFlightPlan } from "./MissileFlight.js"; // 05.10-A7a-E
 import {
-  MISSILE_DEFAULT_GRAVITY, followGroundOf, missileDestinationAttachment, visualOffset,
-} from "./SpellVisualAttach.js"; // 13.10 (6.12)
+  MISSILE_DEFAULT_GRAVITY, followGroundOf, missileDestinationAttachment, missileLaunchPoint, visualOffset,
+} from "./SpellVisualAttach.js"; // 13.10 (6.12); 11.11 missileLaunchPoint
 import { beamAnchors, planChainBeams } from "./ChainBeamPlan.js"; // 13.10 (6.13)
 import { kitWoundBehavior } from "./game/AnimationSplit.js"; // 05.10-6.21
 export type { SpellVisualEffectTransform };
@@ -654,6 +654,11 @@ export function planSpellVisual(
         const impactOffset = visualOffset(missile.impactOffset);
         const followGround = followGroundOf(missile.followGround);
         const trajectory = cast.trajectory && target.guid === 0n ? cast.trajectory : undefined;
+        // 11.11 (6.12): the fire point of Wow.exe 0x00720bf0 — MissileAttachment through 0x00adaa20 and MissileCastOffset;
+        // without either, `attachment` (the spell right hand) stands in for the launch's own point.
+        const fire = missileLaunchPoint(missile);
+        const launch = fire ? { attachment: fire.attachment, ...(fire.offset ? { offset: fire.offset } : {}) }
+          : { attachment: missile.attachment };
         for (let missileIndex = 0; missileIndex < count; missileIndex++) {
           plan.instances.push({
             path: missile.path,
@@ -662,7 +667,7 @@ export function planSpellVisual(
             flight: {
               from: { ...(trajectory?.source ?? cast.casterPoint) },
               to: { ...target.point },
-              ...(cast.caster !== 0n && !trajectory?.source ? { launch: { guid: cast.caster, attachment: missile.attachment } } : {}),
+              ...(cast.caster !== 0n && !trajectory?.source ? { launch: { guid: cast.caster, ...launch } } : {}), // 11.11 (6.12)
               ...(target.guid !== 0n ? { target: { guid: target.guid, attachment: aimAttachment } } : {}),
               ...(missile.motion ? { motion: missile.motion } : {}),
               ...(impactOffset ? { impactOffset } : {}),
@@ -755,16 +760,30 @@ function kitPoses(kit: SpellVisualKit | undefined): boolean {
   return kit !== undefined && (kitNamesPose(kit.startAnimation) || kitNamesPose(kit.animation));
 }
 
-/** Plan a StateKit for an aura; `endsAt` is normally the aura's expiresAt or infinity until removal. */
+/**
+ * Plan a StateKit for an aura; `endsAt` is normally the aura's expiresAt or infinity until removal.
+ *
+ * 11.11 (6.13): `caster` is the aura's caster when it is another unit in view. Wow.exe plays an aura's StateKit as
+ * kit type 2 (0x00724820 → 0x00745230: play flags 0x21000) with the aura's caster guid, and the beam procedure
+ * 0x007265c0 then takes that unit as the first end and the aura's holder as the only target (flag 0x1000 with a guid
+ * other than the holder's; an absent caster draws nothing): the beam runs from the caster's MissileAttachment to
+ * the holder's MissileDestinationAttachment (ChainBeamPlan.ts). A self-cast aura (no caster guid in
+ * SMSG_AURA_UPDATE, AFLAG_CASTER) takes the holder's own spell targets instead — not reproduced: no beam, as before.
+ */
 export function planSpellAuraState(
   visual: SpellVisualMetadata,
   target: { guid: bigint; point: Point },
   now: number,
   endsAt = Number.POSITIVE_INFINITY,
+  caster?: { guid: bigint; point: Point },
 ): SpellVisualPlan {
   const plan: SpellVisualPlan = { instances: [], animations: [], sounds: [] };
-  addKit(plan, visual.state, "state", target.guid, target.point, now, Math.max(now, endsAt), true, "hold", false, "hold",
+  const kitEndsAt = Math.max(now, endsAt);
+  addKit(plan, visual.state, "state", target.guid, target.point, now, kitEndsAt, true, "hold", false, "hold",
     visual.sheathKeep === true); // 5.05 (11.11)
+  if (caster && caster.guid !== 0n && caster.guid !== target.guid) {
+    addBeams(plan, visual.state, visual, caster.guid, caster.point, [target], now, kitEndsAt); // 11.11 (6.13)
+  }
   return markIgnoreDistance(plan, visual.id, visual.dispelType); // 25.10 (6.27); 26.10 + light
 }
 

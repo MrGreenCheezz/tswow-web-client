@@ -23,6 +23,8 @@ import type { WorldObjectState } from "../../world/WorldState.js";
  * PetPersonality.dbc row 1 of the dataset (`HappinessThreshold[3]`, `HappinessDamage[3]`). The
  * gateway serves no copy of this table, and the core does not read it either: it keeps the same
  * numbers as HAPPINESS_LEVEL_SIZE. A module that edits the row would need a route here.
+ * 3.36 (11.11): checked against the base dataset's row 1 (thresholds 0/333000/666000, damage
+ * 0.75/1.0/1.25; tests/pet-personality-dataset.test.mjs reads the DBC) — no route while no module edits it.
  */
 const PET_PERSONALITY_THRESHOLDS: readonly number[] = Object.freeze([0, 333_000, 666_000]);
 const PET_PERSONALITY_DAMAGE: readonly number[] = Object.freeze([0.75, 1, 1.25]);
@@ -48,6 +50,11 @@ const HAPPINESS_ANSWERS: readonly FrameXmlPetHappinessAnswer[] = Object.freeze(P
  * The stock event for a change of power slot 4: Wow.exe signals `0x13 + powerIndex` for a unit's
  * power slot (0x00722c50, called by the POWER1..7 field handler 0x007234d0 that 0x00741d00
  * registers), and event 0x17 of the table at 0x00c24eb0 is UNIT_HAPPINESS. PetFrame.lua:23 registers it.
+ * 3.36 (11.11, open): 0x00722c50 clamps the word to MAXPOWER5 and signals only when the clamped value
+ * equals the maximum; its callers are the POWER/MAXPOWER handlers (0x007234d0, 0x007235c0) and the
+ * regeneration step 0x00722cf0, and no call of the unit-event signal 0x0060bf10 pushes 0x13..0x19 as a
+ * constant (`.runtime/re-2026-11-11/api4/unitev.mjs`). Where a drop below the maximum is signalled is
+ * still not found, so the seam keeps raising the event on every change of the word.
  */
 export const FRAMEXML_PET_HAPPINESS_EVENT = "UNIT_HAPPINESS";
 

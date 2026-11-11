@@ -142,8 +142,9 @@ test("11.10 the renderer draws a unit it does not move at that facing, and the c
   assert.match(yaw, /unit\.node\.rotation\.y = mover \|\| world === undefined \? position\.orientation/);
   // 5.32: the active player reaches it (an interaction window turns an NPC), and a seat is turned in the seat.
   // 22.10 ARC-2 S2a: with the frame's pushed facing inputs.
-  assert.match(yaw, /unitAutoFacing\(object, world\.objects, undefined, world\.selfGuid, this\.#inputs\.facing\) \?\? position\.orientation,\s*unitFacingTurn\(object, this\.#inputs\.facing\), elapsed/);
-  assert.match(yaw, /unitSeatFacing\(object, world\.objects, seat\.flags, this\.#drawnVehicleFacing, world\.selfGuid, undefined,\s*this\.#inputs\.facing\) \?\? own/);
+  // 11.11 (5.32): + the vehicle's own aim (VehicleFacesPassenger.ts).
+  assert.match(yaw, /unitAutoFacing\(object, world\.objects, undefined, world\.selfGuid, this\.#inputs\.facing,\s*this\.#vehicleAims\.of\(object\.guid\)\) \?\? position\.orientation,[^\n]*\n\s*unitFacingTurn\(object, this\.#inputs\.facing\), elapsed/);
+  assert.match(yaw, /unitSeatFacing\(object, world\.objects, seat\.flags, this\.#drawnVehicleFacing, world\.selfGuid, undefined,\s*this\.#inputs\.facing, this\.#vehicleAims\.of\(object\.guid\)\) \?\? own/);
   assert.match(yaw, /unit\.seatFacing = local;\s*unit\.node\.rotation\.y = position\.orientation \+ local - own;/);
   assert.match(yaw, /const mover = self \|\| \(world !== undefined && world\.predictedGuid === object\.guid\)/);
   assert.match(source, /this\.#unitShadowCasters\.decide\(object\.guid, rank, distance, this\.#lightingProfile\),[^\n]*\n\s*state\);/,

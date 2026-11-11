@@ -176,7 +176,9 @@ function stepRibbonOnce(system: RibbonSystem, seconds: number, frame: EmitterFra
   const red = sample(system, ribbon.color, frame, 1, 0);
   const green = sample(system, ribbon.color, frame, 1, 1);
   const blue = sample(system, ribbon.color, frame, 1, 2);
-  const alpha = Math.min(1, Math.max(0, sample(system, ribbon.alpha, frame, 1)));
+  // 11.11 (6.11): × the model's alpha (SetAlpha 0x0097fba0 gets track × m_effectiveAlpha), laid into new edges only.
+  const modelAlpha = frame.modelAlpha === undefined ? 1 : Math.min(1, Math.max(0, frame.modelAlpha));
+  const alpha = Math.min(1, Math.max(0, sample(system, ribbon.alpha, frame, 1))) * modelAlpha;
   const slot = Math.max(0, Math.floor(sample(system, ribbon.textureSlot, frame, 0)));
   system.slot = slot;
   const columns = Math.max(1, ribbon.textureColumns);

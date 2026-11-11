@@ -28,7 +28,15 @@ test("everything else keeps the jump the client already has", () => {
   for (const bit of [F.forward, F.backward, F.strafeLeft, F.strafeRight]) {
     assert.equal(jumpKeyOutcome(bit, HORSE, false), "default", `moving (0x${bit.toString(16)}) jumps`);
   }
-  assert.equal(jumpKeyOutcome(F.falling, HORSE, false), "default", "in the air the physics refuses as it does now");
+  assert.equal(jumpKeyOutcome(F.falling | F.forward, HORSE, false), "default", "falling forward: the jump, refused in the air");
+});
+
+test("11.11 6.20: in the air a rider holding no direction gets the trick — nothing on the way checks FALLING", () => {
+  // JumpOrAscendStart 0x005fbf80 (0x005f9810, 0x0074ba40, 0x005fa9e0, 0x0071b000) and 0x0072eb80 read the
+  // direction bits (& 0xf) and the turn bits (& 0x30), never FALLING 0x1000 or FALLING_FAR 0x2000.
+  assert.equal(jumpKeyOutcome(F.falling, HORSE, false), "mountSpecial");
+  assert.equal(jumpKeyOutcome(F.falling | F.fallingFar, HORSE, false), "mountSpecial");
+  assert.equal(jumpKeyOutcome(F.falling | F.turnLeft, HORSE, false), "none");
 });
 
 test("moving with gravity disabled is the trick again (Wow.exe 0x006e9ad0)", () => {
@@ -147,6 +155,27 @@ function riding(mountDisplayId, run) {
     game.creatureModels = undefined;
   }
 }
+
+test("11.11 6.20: the jump key lets go of an open loot first, on foot or mounted (Wow.exe 0x0072eb80 → 0x00523640)", () => {
+  const log = [];
+  const host = (flags, mount, looting) => ({
+    flags, mountDisplayId: mount, mountRefuses: false, looting,
+    send: () => log.push("send"), play: () => log.push("play"), releaseLoot: () => log.push("release"),
+  });
+  mountSpecialJumpRelease();
+  mountSpecialJumpPress(host(0, HORSE, true));
+  assert.deepEqual(log, ["release", "play", "send"], "before the trick");
+  mountSpecialJumpRelease();
+  log.length = 0;
+  assert.equal(mountSpecialJumpPress(host(F.forward, 0, true)), false, "on foot the jump goes ahead");
+  assert.deepEqual(log, ["release"], "and the loot is let go all the same");
+  log.length = 0;
+  mountSpecialJumpPress(host(F.swimming, HORSE, true));
+  mountSpecialJumpPress(host(F.canFly, HORSE, true));
+  mountSpecialJumpPress(host(0, HORSE, false));
+  mountSpecialJumpRelease();
+  assert.deepEqual(log.filter((entry) => entry === "release"), [], "swimming and flight rise on their own; no loot, nothing");
+});
 
 test("Movement: a standing rider's jump key plays and sends the trick and does not jump", () => {
   riding(HORSE, ({ sent, specials, played }) => {

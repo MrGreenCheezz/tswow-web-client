@@ -14,8 +14,16 @@
 //   MissileDestinationAttachment moved by MissileImpactOffset (0x007fabf0); without the spell's visual (a kit
 //   named by packet) the chest, and the first unit 0.75 of its height up. A point target is the point.
 //
-// Kept from before: an impact kit's beams run from the caster to its target (whose unit the kit plays on, and
-// which targets it then names, was not read).
+// 11.11 (.runtime/re-2026-11-11/spellvis4/d1.c; re-2026-10-05/l621/r1.c 0x00745230, 0x0073b140): which ends a kit
+// gets depends on its play flags. With 0x1000 and a guid other than the unit's own — kit type 2, an aura's StateKit
+// played by 0x00724820 with the aura's caster — the first end is that guid's unit and the only target the unit the
+// kit plays on (planSpellAuraState). Without it the first end is the unit the kit plays on and the targets are its
+// own SPELL_GO targets (unit +0xb60, filled by 0x00724f50 without itself) or, for its channel, the channel object.
+//
+// Kept from before: an impact kit's beams run from the caster to its target. The arrival of a missile plays the
+// impact kit on the target as kit type 1 (0x00700e20), without 0x1000, which by the rule above would draw from the
+// target to the target's own spell targets; the impact of a spell without a missile was not read. 5 visuals of this
+// dataset draw beams on an impact kit.
 
 import type { SpellVisualBeamEnds, SpellVisualKit } from "../gateway/SpellVisual.js";
 import type { VisualBeam, VisualBeamEnd } from "./ChainBeam.js";

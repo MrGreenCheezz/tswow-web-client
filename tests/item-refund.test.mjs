@@ -286,6 +286,23 @@ test("GetContainerItemPurchaseItem walks the cost columns with an item id (0x005
   assert.equal(model.purchaseItem(0, 1, 4, false), undefined);
 });
 
+test("2.10 (11.11): the record is trusted after the realm clears ITEM_FIELD_FLAG_REFUNDABLE (0x005d8d80, 0x006277f0)", async () => {
+  // Wow.exe frees the record (+0x3d4) only in the item's destructor 0x0070b120; the stock API and the
+  // tooltip never read the item's flag 0x1000.
+  const { FrameXmlRefundModel } = await import("../dist/code/browser/framexml/FrameXmlRefund.js");
+  const item = { guid: ITEM, typeId: 1, fields: new Map([[offset("ITEM_FIELD_FLAGS"), 0x1000]]) };
+  const info = { money: 500, honor: 0, arena: 0, purchasedAtPlayed: 1000, items: [] };
+  const model = new FrameXmlRefundModel({
+    item: () => ({ guid: ITEM, item }), info: () => info, played: () => 2000, lootGuid: () => undefined,
+    itemTexture: () => undefined, itemLink: () => undefined, refund: () => undefined,
+  });
+  const before = model.purchaseInfo(0, 1, false);
+  item.fields.set(offset("ITEM_FIELD_FLAGS"), 0);
+  assert.deepEqual(model.purchaseInfo(0, 1, false), before);
+  assert.deepEqual(before, [500, 0, 0, 0, 6200]);
+  assert.equal(model.tooltipSeconds(0, 1, false), 6200);
+});
+
 test("GetSocketItemRefundable is the refund record, not the item flag (0x005c5470 → 0x005c50e0)", async () => {
   const { createLiveFrameXmlSocket } = await import("../dist/code/browser/framexml/FrameXmlSocketLive.js");
   const { client } = await loggedIn();

@@ -112,7 +112,8 @@ test("the cursor picture follows what is held, across holders", () => {
   const pictures = [];
   seam.cursor.onPicture((texture) => pictures.push(texture));
   call(seam, "PickupSpell", 1, "spell");
-  call(seam, "PickupMacro", 1);
+  // 5.37 (11.11): macro positions are alphabetical (Wow.exe 0x00564a80) — «Привет», then «Рывок» with the icon.
+  call(seam, "PickupMacro", 2);
   call(seam, "ClearCursor");
   assert.deepEqual(pictures, ["Interface\\Icons\\Ability_Rogue_Ambush", "Interface\\Icons\\Ability_Warrior_Charge", undefined]);
 });
@@ -383,6 +384,24 @@ for (const [name, gesture, expected] of GESTURES) {
     });
   });
 }
+
+// 3.23 (11.11): 0x005853a0 compares the row's item with 0x005136d0, the cursor's item id of any type that
+// keeps one (0x00520d30, PickupItem 0x00522fb0); UseAction (0x005abbc0) places only a spell, a bag item,
+// a macro, a type-7 item or the type-0xd holder, so a held row (type 5) leaves the press to the button.
+test("3.23: PickupMerchantItem lets go of any held item of the row's entry; an action press keeps a held row", () => {
+  withSeam(({ call, economic }) => {
+    call("PickupItem", 4540);
+    call("PickupMerchantItem", 2);
+    assert.deepEqual(call("GetCursorInfo"), [], "an item named by id of the row's entry is let go, not swapped for the row");
+    call("PickupItem", 1076);
+    call("PickupMerchantItem", 2);
+    assert.deepEqual(call("GetCursorInfo"), ["merchant", 2], "another item is replaced by the row");
+    call("UseAction", 1);
+    assert.deepEqual(call("GetCursorInfo"), ["merchant", 2], "the press is the button's own; the row stays held");
+    call("ClearCursor");
+    assert.deepEqual(economic(), []);
+  });
+});
 
 // L1 lifted WorldClient's refusal of a carried bag as an item target (CarriedItems.ts): Wow.exe's walk
 // lets the bag slots 19..22 through for SpellTargetItem (0x00753a50, flag 0x2 of 0x247) and the realm

@@ -19,6 +19,7 @@ import {
 import { passengerGameObjectTilt } from "../world/TransportPassengers.js";
 import { ShownGroundNormal, unitTiltAngles, type UnitTiltAngles } from "../world/UnitTilt.js"; // 05.11 (6.44)
 import { shownStandState, wakeStandState } from "./StandStateWake.js"; // 06.11 (6.43)
+import { VehicleAims, seatAimsVehicle } from "./VehicleFacesPassenger.js"; // 11.11 (5.32)
 import { ProjectedDecals } from "./ProjectedDecals.js"; // 05.11 (6.45)
 import { ShownUnitFacing, unitAutoFacing, unitFacingTurn, unitSeatFacing } from "../world/UnitFacing.js"; // 11.10; 5.32: + unitSeatFacing; 22.10 ARC-2 S2a: the interaction NPC is an input
 import {
@@ -146,6 +147,7 @@ import {
 import { CinematicPost, type CinematicProfile } from "./CinematicPost.js";
 import {
   LIQUID_CELL_YARDS, applyFallbackLiquidShaderProfile, applyLiquidShaderProfile,
+  liquidMotionOf, pushLiquidCellUvs, // 11.11 (7.31)
   buildLiquidMaterial, copyWaterSkyBands, createWaterShaderSharedUniforms,
   liquidClassOf, updateLiquidMaterial, WATER_FALLBACK_OPACITY, WaterDetailNormalMaps, liquidCalmOf,
   type LiquidClass, type LiquidMaterial, type LiquidTextureClient, type WaterShaderSharedUniforms,
@@ -307,7 +309,7 @@ import { WMO_TRANSITION_PROGRAM_KEY, applyWmoTransitionBlend, wmoRunBlendsSun } 
 import { createWmoRoomFog, wmoRoomFogFor } from "./WmoRoomFog.js"; // 05.10-A7b-2 (7.12)
 import { renderSwitches } from "./RenderSwitches.js"; // 05.10-A7b-2 (7.12)
 import {
-  animatesAsGameObject, customGameObjectAnimation, gameObjectPose,
+  animatesAsGameObject, GameObjectAnimator, gameObjectClipTime, // 11.11 (6.03)
   GO_TYPE_MO_TRANSPORT, GO_TYPE_TRANSPORT,
 } from "./GameObjectAnimation.js";
 import {
@@ -371,7 +373,7 @@ import { mountBuildKey, mountGeosets } from "./MountDisplayLook.js"; // 13.10 6.
 export { emittingItemModel, itemEffectKey, modelEmits, playingSequence, rememberItemModel, mountBuildKey, mountGeosets };
 import {
   glowHasMesh, makeGlowBody, mountGlowBodies, pinGlowBuilds, poseGlowBodies, type GlowBody,
-  fadeGlowEmitters, glowBodyMeshes, glowShown, // 05.10: ревью E2 — glows follow the unit's opacity and visibility
+  glowBodyMeshes, glowShown, // 05.10: ревью E2 — glows follow the unit's opacity and visibility
   glowRigOnly, // 13.10 6.14
 } from "./WeaponGlowBody.js"; // 05.10-A7a-E2 (6.14): the effect models' meshes
 import {
@@ -4175,11 +4177,16 @@ export class WorldRenderer3D {
   #gameObjectMetadataRevision: number | undefined;
   /** Custom animations that arrived before the frame that could play them. */
   readonly #gameObjectAnimations = new Map<bigint, number>();
+  /** 11.11 (6.03): each animated game object's kind and the start the renderer last played (GameObjectAnimation.ts). */
+  readonly #goAnimators = new WeakMap<object, { animator: GameObjectAnimator; serial: number }>();
+  /** 11.11 (6.03): objects the world dropped, kept drawn until their pinned clip (Despawn) ends. */
+  readonly #lingeringGameObjects = new Map<bigint, { rendered: RenderedGameObject; until: number }>();
   readonly #units = new Map<bigint, RenderedUnit>();
   /** 11.02-H: vehicle passengers' seat poses and their place on the vehicle (VehiclePassengerPose.ts). */
   readonly #vehiclePassengers = new VehiclePassengerPoser();
   readonly #seatTransitions = new VehicleSeatTransitions(); // 11.02 (26.10)
   readonly #vehicleOwn = new VehicleOwnAnimations(); // 11.02 (04.11)
+  readonly #vehicleAims = new VehicleAims(); // 11.11 (5.32): a vehicle facing its boarding passenger
   #vehicleAimArc: VehicleAimArcShape | undefined; // 11.02 (04.11)
   #muzzleUnit: bigint | undefined;
   #muzzleModel: string | undefined;
@@ -8095,6 +8102,8 @@ export class WorldRenderer3D {
     for (const rendered of this.#gameObjects.values()) this.#disposeGameObject(rendered);
     this.#gameObjects.clear();
     this.#gameObjectAnimations.clear();
+    for (const { rendered } of this.#lingeringGameObjects.values()) this.#disposeGameObject(rendered); // 11.11 (6.03)
+    this.#lingeringGameObjects.clear();
     for (const unit of this.#units.values()) {
       this.#unitGroup.remove(unit.node);
       this.#clearUnitNode(unit);
@@ -11028,6 +11037,9 @@ export class WorldRenderer3D {
         // 25.10 (6.27): the camera for the distance thinning, except for a spell with a SpellMissile row (0x0097d8c0).
         viewX: entry.spell?.instance.ignoreDistance ? undefined : this.#effectView.x,
         viewY: this.#effectView.y, viewZ: this.#effectView.z, ground: this.#particleGround,
+        // 11.11 (6.11): the unit's fade reaches its emitters as the model's alpha, through each particle's vertex alpha
+        // (CM2Model::AnimateParticleST 0x008309c0 → m_alphaScale), not through the material (ParticleRender.ts).
+        modelAlpha: entry.fade,
         ...(newEffects && entry.spell ? {
           // The catch-up integrator samples keyed tracks along the local interval instead of
           // repeating the final clock value at each 100 ms substep.
@@ -11047,7 +11059,6 @@ export class WorldRenderer3D {
         particleLight: this.#particleLight, // 25.10 (6.27)
       });
       if (detailedCapture) particleMs += performance.now() - particleAt;
-      if (entry.fade !== undefined) fadeGlowEmitters(held.effects, entry.fade); // 05.10: ревью E2 — a glow fades with its unit
     }
     this.#budgetProbe?.end(FRAME_BUDGET.effects, effectsAt);
     if (living) {
@@ -11981,7 +11992,8 @@ export class WorldRenderer3D {
 
   *#waterGeometrySteps(map: number, grid: { x: number; y: number }, heightAt: HeightSampler | undefined,
     terrainClient: TerrainClient | undefined): Generator<void, Map<LiquidSurface, THREE.BufferGeometry>, void> { // 05.10-A7b-8
-    const surfaces = new Map<LiquidSurface, { positions: number[]; uvs: number[]; depths: number[]; calm: number[]; indices: number[] }>();
+    const surfaces = new Map<LiquidSurface, { positions: number[]; uvs: number[]; depths: number[]; calm: number[]; scroll: number[]; indices: number[] }>();
+    const motions = this.#liquidTextures?.motions; // 11.11 (7.31)
     // A water quad used to get one height and one depth for all four vertices.  That made the
     // alpha/deep-colour transition follow the 4.16-yard cell grid, which is especially obvious
     // on shallow shores.  Keep the look-up bounded to this tile: neighbouring cells are cached,
@@ -12064,7 +12076,7 @@ export class WorldRenderer3D {
         const liquidSurface = liquidSurfaceOf(liquidClass, liquid.entry, this.#liquidTextures?.surfaces);
         let surface = surfaces.get(liquidSurface);
         if (!surface) {
-          surface = { positions: [], uvs: [], depths: [], calm: [], indices: [] };
+          surface = { positions: [], uvs: [], depths: [], calm: [], scroll: [], indices: [] };
           surfaces.set(liquidSurface, surface);
         }
         const base = surface.positions.length / 3;
@@ -12079,13 +12091,12 @@ export class WorldRenderer3D {
           x1, h11 + 0.04, -y1,
         );
         // World coordinates decide the UVs, so the surface tiles continuously across cells and
-        // across the tile boundary rather than restarting at each quad.
-        surface.uvs.push(
-          y0 / LIQUID_CELL_YARDS, x0 / LIQUID_CELL_YARDS,
-          y0 / LIQUID_CELL_YARDS, x1 / LIQUID_CELL_YARDS,
-          y1 / LIQUID_CELL_YARDS, x0 / LIQUID_CELL_YARDS,
-          y1 / LIQUID_CELL_YARDS, x1 / LIQUID_CELL_YARDS,
-        );
+        // across the tile boundary rather than restarting at each quad. 11.11 (7.31): at Wow.exe's
+        // 0.06 a yard and the row's scale, with the row's scroll rate (`Water.ts`).
+        const motion = liquidMotionOf(liquid.entry, motions);
+        pushLiquidCellUvs(surface.uvs, x0, x1, y0, y1, motion.uvScale);
+        surface.scroll.push(motion.scrollU, motion.scrollV, motion.scrollU, motion.scrollV,
+          motion.scrollU, motion.scrollV, motion.scrollU, motion.scrollV);
         // Ground is sampled at each corner too; using the centre for all four vertices was the
         // other source of the square shoreline pattern.
         surface.depths.push(
@@ -12111,6 +12122,7 @@ export class WorldRenderer3D {
         geometry.setAttribute("uv", new THREE.Float32BufferAttribute(surface.uvs, 2));
         geometry.setAttribute("liquidDepth", new THREE.Float32BufferAttribute(surface.depths, 1));
         geometry.setAttribute("liquidCalm", new THREE.Float32BufferAttribute(surface.calm, 1));
+        geometry.setAttribute("liquidScroll", new THREE.Float32BufferAttribute(surface.scroll, 2)); // 11.11 (7.31)
         geometry.setIndex(surface.indices);
         geometry.computeVertexNormals();
         built.set(liquidClass, geometry);
@@ -14795,11 +14807,18 @@ export class WorldRenderer3D {
     }
     for (const [guid, rendered] of this.#gameObjects) {
       if (inRange.has(guid)) continue;
-      this.#disposeGameObject(rendered);
+      // 11.11 (6.03): a despawn (or any swing) in progress keeps the model drawn until its clip ends.
+      const until = this.#lingerUntil(rendered, guid, client, now);
       this.#gameObjects.delete(guid);
       this.#gameObjectAnimations.delete(guid);
+      if (until !== undefined) {
+        this.#lingeringGameObjects.set(guid, { rendered, until });
+        continue;
+      }
+      this.#disposeGameObject(rendered);
       this.#dropEffects(`obj:${guid}`);
     }
+    this.#stepLingeringGameObjects(now, elapsed); // 11.11 (6.03)
   }
 
   /** Records the exact wire identity for which a retained static WVM measurement is current. */
@@ -15141,28 +15160,83 @@ export class WorldRenderer3D {
       return;
     }
 
-    const custom = this.#gameObjectAnimations.get(object.guid);
-    if (custom !== undefined) {
-      this.#gameObjectAnimations.delete(object.guid);
-      const animation = customGameObjectAnimation(custom);
-      if (animation !== undefined) {
-        this.#requestGameObjectPoses(rendered, [animation], client);
-        this.#playAnimation(rendered, animation, false, now);
-      }
-    }
-
-    if (now >= rendered.overlayUntil) {
-      const pose = gameObjectPose(state, rendered.state, template.animations);
-      if (pose) {
-        this.#requestGameObjectPoses(rendered, [pose.animation], client);
-        this.#playAnimation(rendered, pose.animation, !pose.once, now);
-      }
-    }
+    // 11.11 (6.03): the kind Wow.exe's state callback and custom-anim handler pick, its fallback and playback
+    // mode, transitions handed on to their holds at the clip's end (GameObjectAnimation.ts).
+    this.#goAnimatorOf(rendered).animator.observe(state, now);
+    this.#stepGameObjectKind(rendered, object.guid, client, now);
     rendered.state = state;
     rendered.skinned.mixer.update(elapsed);
     if (rendered.wvm) applyGlobalSequenceBones(rendered.skinned, template,
       rendered.wvm.globalSequences, now);
     applyBillboardBones(rendered.skinned, template, this.#camera);
+  }
+
+  /** 11.11 (6.03): the object's animation kind state (GameObjectAnimation.ts), made on first need. */
+  #goAnimatorOf(rendered: RenderedGameObject): { animator: GameObjectAnimator; serial: number } {
+    let goAnimation = this.#goAnimators.get(rendered);
+    if (goAnimation === undefined) {
+      goAnimation = { animator: new GameObjectAnimator(), serial: -1 };
+      this.#goAnimators.set(rendered, goAnimation);
+    }
+    return goAnimation;
+  }
+
+  /**
+   * 11.11 (6.03): takes a queued custom or despawn animation and plays the kind's clip when it (re)starts, from where
+   * the kind stands — its fraction, and the time a late clip already lost.
+   */
+  #stepGameObjectKind(rendered: RenderedGameObject, guid: bigint, client: EnvironmentClient | undefined, now: number): void {
+    const template = rendered.template;
+    if (!template) return;
+    const goAnimation = this.#goAnimatorOf(rendered);
+    const has = (animation: number): boolean => template.animations.has(animation);
+    const custom = this.#gameObjectAnimations.get(guid);
+    if (custom !== undefined) {
+      this.#gameObjectAnimations.delete(guid);
+      goAnimation.animator.custom(custom, has, now);
+    }
+    const play = goAnimation.animator.frame(now, has, (animation) => template.clips.get(animation)?.duration);
+    if (play === undefined) return;
+    this.#requestGameObjectPoses(rendered, [play.animation], client);
+    const clip = template.clips.get(play.animation);
+    if (clip === undefined || (play.serial === goAnimation.serial && rendered.animationId === play.animation
+      && rendered.animationMode === play.mode)) return;
+    goAnimation.serial = play.serial;
+    this.#playAnimation(rendered, play.animation, play.loop, now, false, undefined, undefined, play.mode);
+    const time = gameObjectClipTime(play, clip.duration, (now - play.startedAt) / 1000);
+    if (time !== undefined && rendered.action) {
+      rendered.action.enabled = true;
+      rendered.action.paused = false;
+      rendered.action.time = time;
+    }
+    rendered.overlayUntil = 0;
+  }
+
+  /**
+   * 11.11 (6.03): an object the world dropped while its model plays a pinned kind — Despawn above all — stays drawn
+   * until that clip ends, as Wow.exe's pin holds it (`GameObjectAnimator.pinnedUntil`). Undefined: it goes now.
+   */
+  #lingerUntil(rendered: RenderedGameObject, guid: bigint, client: EnvironmentClient | undefined, now: number): number | undefined {
+    const template = rendered.template;
+    if (!template || !rendered.skinned) return undefined;
+    this.#stepGameObjectKind(rendered, guid, client, now); // a despawn queued on the destroy's own frame starts here
+    return this.#goAnimatorOf(rendered).animator.pinnedUntil(now, (animation) => template.animations.has(animation),
+      (animation) => template.clips.get(animation)?.duration);
+  }
+
+  /** 11.11 (6.03): steps the objects kept for their last clip, and lets each go when it has played out. */
+  #stepLingeringGameObjects(now: number, elapsed: number): void {
+    for (const [guid, lingering] of this.#lingeringGameObjects) {
+      const { rendered } = lingering;
+      if (now >= lingering.until || !rendered.skinned || !rendered.template) {
+        this.#disposeGameObject(rendered);
+        this.#lingeringGameObjects.delete(guid);
+        this.#dropEffects(`obj:${guid}`);
+        continue;
+      }
+      rendered.skinned.mixer.update(elapsed);
+      if (rendered.wvm) applyGlobalSequenceBones(rendered.skinned, rendered.template, rendered.wvm.globalSequences, now);
+    }
   }
 
   /**
@@ -15339,6 +15413,7 @@ export class WorldRenderer3D {
     // 11.02 (26.10): passengers on their way into or out of a seat, from where they were to where the seat put them.
     this.#seatTransitions.apply(this.#seatTransitionNode, now);
     if (this.#vehicleOwn.size > 0) this.#vehicleOwn.sweep((guid) => this.#units.has(guid), now); // 04.11
+    if (this.#vehicleAims.size > 0) this.#vehicleAims.sweep((guid) => this.#units.has(guid)); // 11.11 (5.32)
     // 05.10-A7a-D2 6.06: melee reactions at the attackers' swing moments. 22.10 ARC-2 S4a: the swings' progress at
     // this moment is published (SwingProgressWatch.ts); main ticks its cues from it after `draw`, no call back.
     this.#swingWatch.publish(this.#results, now, this.#swingProgressOf);
@@ -15765,7 +15840,7 @@ export class WorldRenderer3D {
       const own = object.transport!.orientation;
       const local = (unit.shownFacing ??= new ShownUnitFacing()).step(
         unitSeatFacing(object, world.objects, seat.flags, this.#drawnVehicleFacing, world.selfGuid, undefined,
-          this.#inputs.facing) ?? own,
+          this.#inputs.facing, this.#vehicleAims.of(object.guid)) ?? own, // 11.11 (5.32): + the vehicle's own aim
         unitFacingTurn(object, this.#inputs.facing), elapsed); // 22.10 ARC-2 S2a: pushed facing inputs
       unit.seatFacing = local;
       unit.node.rotation.y = position.orientation + local - own;
@@ -15773,7 +15848,8 @@ export class WorldRenderer3D {
       // 5.32: `world.selfGuid` — a unit with no target faces the player whose interaction window is open on it.
       unit.node.rotation.y = mover || world === undefined ? position.orientation
         : (unit.shownFacing ??= new ShownUnitFacing()).step(
-          unitAutoFacing(object, world.objects, undefined, world.selfGuid, this.#inputs.facing) ?? position.orientation,
+          unitAutoFacing(object, world.objects, undefined, world.selfGuid, this.#inputs.facing,
+            this.#vehicleAims.of(object.guid)) ?? position.orientation, // 11.11 (5.32): + the vehicle's own aim
           unitFacingTurn(object, this.#inputs.facing), elapsed);
     }
     if (mover) unit.shownFacing = undefined;
@@ -17399,6 +17475,7 @@ export class WorldRenderer3D {
     const own = seat === undefined ? undefined : seatVehicleAnimation(seat, kind);
     if (own === undefined || vehicle === undefined || seat === undefined) return;
     this.#vehicleOwn.play(vehicle, guid, kind, own, now);
+    if (kind === "enter" && seatAimsVehicle(seat)) this.#vehicleAims.aim(vehicle, guid); // 11.11 (5.32): 0x00756db0
     const fixed = seatVehicleWaitSeconds(seat, kind);
     this.#seatTransitions.hold(guid, fixed ?? SEAT_VEHICLE_WAIT_SECONDS, fixed === undefined);
   }
@@ -17422,7 +17499,10 @@ export class WorldRenderer3D {
       return stands === undefined ? undefined : template.clips.get(stands);
     };
     this.#vehicleOwn.step(guid, { mixer: skinned.mixer, parents: template.parents, keyBones: wvm?.keyBones }, now, clipOf,
-      (passenger) => this.#seatTransitions.release(passenger, now));
+      (passenger) => {
+        this.#seatTransitions.release(passenger, now);
+        this.#vehicleAims.ended(guid, passenger); // 11.11 (5.32): 0x00757280
+      });
   }
 
   /** Settles and shows this unit's packet pose; the part of the body it took, or undefined. */

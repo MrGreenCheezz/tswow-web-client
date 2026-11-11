@@ -299,14 +299,15 @@ test("the first open loads Blizzard_MacroUI, passes its gate and shows the canne
   const closure = { files: 4, bytes: addonBytesOf("macroui"), widgets: boot.bridge.frames.length - widgets };
   console.log(`[macro/binding] Blizzard_MacroUI closure ${JSON.stringify(closure)}`);
   assert.deepEqual(closure, { files: 4, bytes: MACRO_UI_BYTES, widgets: MACRO_UI_WIDGETS });
-  // The account tab: slot 1 «Рывок», slot 3 «Привет» at positions 1 and 2; the rest disabled.
-  assert.equal(text("MacroButton1Name"), "Рывок");
-  assert.equal(text("MacroButton2Name"), "Привет");
+  // The account tab: slot 3 «Привет» and slot 1 «Рывок» at positions 1 and 2 — by name, as Wow.exe sorts a
+  // set (5.37, 0x00564a80); the rest disabled.
+  assert.equal(text("MacroButton1Name"), "Привет");
+  assert.equal(text("MacroButton2Name"), "Рывок");
   assert.equal(lua("return MacroButton3:IsEnabled()")[0], 0);
-  assert.equal(lua("return MacroButton1Icon:GetTexture()")[0].toLowerCase(), "interface\\icons\\ability_warrior_charge");
-  assert.equal(text("MacroFrameSelectedMacroName"), "Рывок");
-  assert.equal(text("MacroFrameText"), "#showtooltip\n/cast Рывок");
-  assert.equal(text("MacroFrameCharLimitText"), "Символы: 24/255", "the counter counts characters, not bytes");
+  assert.equal(lua("return MacroButton2Icon:GetTexture()")[0].toLowerCase(), "interface\\icons\\ability_warrior_charge");
+  assert.equal(text("MacroFrameSelectedMacroName"), "Привет");
+  assert.equal(text("MacroFrameText"), "/say Привет!\n/wave");
+  assert.equal(text("MacroFrameCharLimitText"), "Символы: 18/255", "the counter counts characters, not bytes");
   assert.equal(frame("MacroButton37"), undefined, "36 buttons, the larger of the two sets");
   // «Удалить» (UIPanelButtonGrayTemplate, no ButtonText) is drawn over its grey plate, as a ButtonText is.
   assert.equal(labelOf("MacroDeleteButton").style.zIndex, "400");
@@ -338,7 +339,7 @@ test("MacroFrame writes through the C API: new, rename with an icon, body, delet
     [1, "Рывок", "Interface\\Icons\\Ability_Warrior_Charge"], [2, "Тест", "Interface\\Icons\\Ability_Defend"],
     [3, "Привет", "?"], [37, "Щит", "Interface\\Icons\\Ability_Defend"],
   ], "the lowest free account slot, the icon the popup chose");
-  assert.equal(text("MacroButton2Name"), "Тест", "position 2 is slot 2 now");
+  assert.equal(text("MacroButton3Name"), "Тест", "slot 2, position 3 by name (Привет, Рывок, Тест)");
   assert.equal(text("MacroFrameSelectedMacroName"), "Тест");
   // The body: typing (the renderer fires OnTextChanged for typed input) sets textChanged; selecting
   // another macro saves it (MacroFrame_SaveMacro → EditMacro(selected, nil, nil, text)).
@@ -347,21 +348,23 @@ test("MacroFrame writes through the C API: new, rename with an icon, body, delet
   assert.equal(text("MacroFrameCharLimitText"), "Символы: 6/255");
   click("MacroButton1");
   assert.equal(store.list().find((macro) => macro.index === 2).body, "/dance");
-  // Rename through the edit popup.
-  click("MacroButton2");
+  // Rename through the edit popup: «Альфа» sorts first, and the selection follows it there (EditMacro's answer).
+  click("MacroButton3");
   click("MacroEditButton");
-  lua('MacroPopupEditBox:SetText("Танец")', 0);
+  lua('MacroPopupEditBox:SetText("Альфа")', 0);
   click("MacroPopupOkayButton");
-  assert.equal(store.list().find((macro) => macro.index === 2).name, "Танец");
+  assert.equal(store.list().find((macro) => macro.index === 2).name, "Альфа");
   assert.equal(store.list().find((macro) => macro.index === 2).icon, "Interface\\Icons\\Ability_Defend", "the icon stays");
-  // Delete: the selection steps back and the positions close up.
+  assert.equal(text("MacroButton1Name"), "Альфа", "5.37: a new name moves it");
+  assert.equal(text("MacroFrameSelectedMacroName"), "Альфа");
+  // Delete: the positions close up.
   click("MacroDeleteButton");
   assert.deepEqual(store.list().map((macro) => macro.index), [1, 3, 37]);
-  assert.equal(text("MacroButton2Name"), "Привет");
+  assert.equal(text("MacroButton1Name"), "Привет");
   // Pickup (the selected macro's big button) and a press on an action button places it.
-  click("MacroButton1");
+  click("MacroButton2");
   click("MacroFrameSelectedMacroButton");
-  assert.deepEqual(lua("return GetCursorInfo()", 2), ["macro", 1]);
+  assert.deepEqual(lua("return GetCursorInfo()", 2), ["macro", 2]);
   click("ActionButton5");
   assert.deepEqual(seam.macroWorld.placed, [[5, 1]], "ActionButton5 → UseAction(5) → the macro's slot on it");
   assert.deepEqual(lua("return GetCursorInfo()", 1), [undefined]);

@@ -5,8 +5,14 @@ import {
 } from "../dist/code/generated/animations.js";
 import {
   CUSTOM_ANIMATIONS, GO_STATE_ACTIVE, GO_STATE_DESTROYED, GO_STATE_READY,
-  animatesAsGameObject, customGameObjectAnimation, gameObjectPose,
+  GO_KIND_CLOSED, GO_KIND_CLOSING, GO_KIND_CUSTOM0, GO_KIND_DESTROYED, GO_KIND_DESTROYING, GO_KIND_OPENED,
+  GO_KIND_OPENING, GO_KIND_REBUILDING, GO_DESPAWN_ANIM_INDEX, GameObjectAnimator,
+  animatesAsGameObject, customGameObjectAnimation, gameObjectClip, gameObjectClipTime, gameObjectKindRequest,
+  gameObjectNextKind, gameObjectStateKind,
 } from "../dist/code/browser/GameObjectAnimation.js";
+import {
+  PLAYBACK_BACKWARD, PLAYBACK_FORWARD, PLAYBACK_HOLD_FIRST, PLAYBACK_HOLD_LAST,
+} from "../dist/code/browser/AnimationPlayback.js";
 import {
   TRANSPORT_CUT_SPEED, placeOnTransportPath, sampleTransportPath,
 } from "../dist/code/browser/TransportPath.js";
@@ -14,6 +20,9 @@ import { liftPhaseMs } from "../dist/code/browser/LiftClock.js";
 import { parseTransportPaths } from "../dist/code/gateway/TransportPaths.js";
 import { WorldState } from "../dist/code/world/WorldState.js";
 import { UPDATE_FIELDS } from "../dist/code/generated/updateFields.js";
+import { OPCODES } from "../dist/code/generated/opcodes.js";
+import { PacketWriter } from "../dist/code/protocol/PacketWriter.js";
+import { WorldClient } from "../dist/code/world/WorldClient.js";
 
 const { Close, Closed, Open, Opened, Destroy, Destroyed } = ANIMATION_IDS;
 const withAnimationData = {
@@ -23,54 +32,173 @@ const withAnimationData = {
 /** A chest: it has the two transitions and the held-open pose, and no held-closed one. */
 const CHEST = new Set([0, Close, Open, Opened]);
 
-test("a game object snaps to the pose it is already in, and swings only when it changes", () => {
-  // Walking up to an open door must not make it open again in the player's face. The difference
-  // between the two is the whole of the transition logic, and it is one argument: what the object
-  // was last seen doing, or nothing at all the first time it is drawn.
-  assert.deepEqual(gameObjectPose(GO_STATE_ACTIVE, undefined, CHEST), { animation: Opened, once: true });
-  assert.deepEqual(gameObjectPose(GO_STATE_ACTIVE, GO_STATE_READY, CHEST), { animation: Open, once: true });
-  assert.deepEqual(gameObjectPose(GO_STATE_READY, GO_STATE_ACTIVE, CHEST), { animation: Close, once: true });
-  // Standing still in a state it is already in keeps showing the held pose, not the transition.
-  assert.deepEqual(gameObjectPose(GO_STATE_ACTIVE, GO_STATE_ACTIVE, CHEST), { animation: Opened, once: true });
+const hasIn = (set) => (animation) => set.has(animation);
 
-  // 412 of the 608 models that declare Closed build no clip for it, because the closed pose *is*
-  // the bind pose. Nothing to play is the right answer there, and a renderer that logged or
-  // retried on it would fire on the majority of the doors in the world.
-  assert.equal(gameObjectPose(GO_STATE_READY, undefined, CHEST), undefined);
-  // With a held-closed pose — g_levermetal has one — it is used.
-  const lever = new Set([...CHEST, Closed]);
-  assert.deepEqual(gameObjectPose(GO_STATE_READY, undefined, lever), { animation: Closed, once: true });
-
-  // No held-open pose at all: Open clamped on its last frame is that pose, measured — Opened is a
-  // single key equal to Open's last on 150 of the 218 models that carry both.
-  const halfDressed = new Set([0, Open]);
-  assert.deepEqual(gameObjectPose(GO_STATE_ACTIVE, undefined, halfDressed), { animation: Open, once: true });
-  // And a model with nothing at all is left in its bind pose rather than given a wrong clip.
-  assert.equal(gameObjectPose(GO_STATE_ACTIVE, GO_STATE_READY, new Set([0])), undefined);
+test("11.11 6.03: a state change is the kind Wow.exe 0x0070d690 picks from the old state and the new", () => {
+  // First sight is the same state twice: the hold, never the swing.
+  assert.equal(gameObjectStateKind(GO_STATE_ACTIVE, undefined), GO_KIND_OPENED);
+  assert.equal(gameObjectStateKind(GO_STATE_READY, undefined), GO_KIND_CLOSED);
+  assert.equal(gameObjectStateKind(GO_STATE_DESTROYED, undefined), GO_KIND_DESTROYED);
+  assert.equal(gameObjectStateKind(GO_STATE_ACTIVE, GO_STATE_READY), GO_KIND_OPENING);
+  assert.equal(gameObjectStateKind(GO_STATE_READY, GO_STATE_ACTIVE), GO_KIND_CLOSING);
+  assert.equal(gameObjectStateKind(GO_STATE_DESTROYED, GO_STATE_READY), GO_KIND_DESTROYING);
+  assert.equal(gameObjectStateKind(GO_STATE_READY, GO_STATE_DESTROYED), GO_KIND_REBUILDING);
+  // The original's asymmetries: only READY swings open or collapses.
+  assert.equal(gameObjectStateKind(GO_STATE_ACTIVE, GO_STATE_DESTROYED), GO_KIND_OPENED);
+  assert.equal(gameObjectStateKind(GO_STATE_DESTROYED, GO_STATE_ACTIVE), GO_KIND_DESTROYED);
+  // 0x0070d7e0: a transition hands on to its hold, a hold replays itself, a custom returns to the state.
+  assert.equal(gameObjectNextKind(GO_KIND_OPENING, GO_STATE_ACTIVE), GO_KIND_OPENED);
+  assert.equal(gameObjectNextKind(GO_KIND_CLOSING, GO_STATE_READY), GO_KIND_CLOSED);
+  assert.equal(gameObjectNextKind(GO_KIND_REBUILDING, GO_STATE_READY), GO_KIND_CLOSED);
+  assert.equal(gameObjectNextKind(GO_KIND_DESTROYING, GO_STATE_DESTROYED), GO_KIND_DESTROYED);
+  assert.equal(gameObjectNextKind(GO_KIND_OPENED, GO_STATE_ACTIVE), GO_KIND_OPENED);
+  assert.equal(gameObjectNextKind(GO_KIND_CUSTOM0, GO_STATE_ACTIVE), GO_KIND_OPENED);
+  assert.equal(gameObjectNextKind(GO_KIND_CUSTOM0 + 3, GO_STATE_READY), GO_KIND_CLOSED);
 });
 
-test("a destroyed object plays its collapse once and then holds the wreck", () => {
-  const gate = new Set([0, Close, Open, Opened, Destroy, Destroyed]);
-  assert.deepEqual(gameObjectPose(GO_STATE_DESTROYED, GO_STATE_READY, gate), { animation: Destroy, once: true });
-  assert.deepEqual(gameObjectPose(GO_STATE_DESTROYED, GO_STATE_DESTROYED, gate), { animation: Destroyed, once: true });
-  // 115 models carry Destroy and only 15 carry Destroyed, so the common case is the collapse
-  // clamped on its last frame.
-  assert.deepEqual(gameObjectPose(GO_STATE_DESTROYED, undefined, new Set([0, Destroy])), { animation: Destroy, once: true });
+test("11.11 6.03: a missing door clip is steered as 0x0070d1e0 steers it before the fallback", () => {
+  const openOnly = hasIn(new Set([0, Open]));
+  const closeOnly = hasIn(new Set([0, Close]));
+  // Closed missing with no Close: Open frozen on its first frame (the closed pose), or Stand.
+  assert.deepEqual(gameObjectKindRequest(GO_KIND_CLOSED, openOnly), { animation: Open, frozen: true });
+  assert.deepEqual(gameObjectKindRequest(GO_KIND_CLOSED, hasIn(new Set([0]))), { animation: ANIMATION_IDS.Stand, frozen: false });
+  // Opened missing with no Open: Close frozen on its first frame (the open pose).
+  assert.deepEqual(gameObjectKindRequest(GO_KIND_OPENED, closeOnly), { animation: Close, frozen: true });
+  // Close missing with no Open either: Closed. Open missing with no Close: Destroy if there, else Opened.
+  assert.deepEqual(gameObjectKindRequest(GO_KIND_CLOSING, hasIn(new Set([0]))), { animation: Closed, frozen: false });
+  assert.deepEqual(gameObjectKindRequest(GO_KIND_OPENING, hasIn(new Set([0, Destroy]))), { animation: Destroy, frozen: false });
+  assert.deepEqual(gameObjectKindRequest(GO_KIND_OPENING, hasIn(new Set([0]))), { animation: Opened, frozen: false });
+  // Otherwise the request stays, for the model's own fallback.
+  assert.deepEqual(gameObjectKindRequest(GO_KIND_CLOSED, hasIn(CHEST)), { animation: Closed, frozen: false });
+  assert.deepEqual(gameObjectKindRequest(GO_KIND_OPENED, hasIn(CHEST)), { animation: Opened, frozen: false });
+});
+
+test("11.11 6.03: the model's fallback plays a door's missing clip held or backwards (0x00826350)", withAnimationData, () => {
+  // A chest with no Closed shows Close held on its last frame — not its lid shutting forever.
+  assert.deepEqual(gameObjectClip({ animation: Closed, frozen: false }, hasIn(CHEST)), { animation: Close, mode: PLAYBACK_HOLD_LAST });
+  // A door with Open alone: Opened is Open held on its last frame, Close is Open played backwards.
+  const openOnly = hasIn(new Set([0, Open]));
+  assert.deepEqual(gameObjectClip({ animation: Opened, frozen: false }, openOnly), { animation: Open, mode: PLAYBACK_HOLD_LAST });
+  assert.deepEqual(gameObjectClip({ animation: Close, frozen: false }, openOnly), { animation: Open, mode: PLAYBACK_BACKWARD });
+  assert.deepEqual(gameObjectClip({ animation: Open, frozen: true }, openOnly), { animation: Open, mode: PLAYBACK_HOLD_FIRST });
+  // A wreck with Destroy alone: Destroyed is Destroy held on its last frame.
+  assert.deepEqual(gameObjectClip({ animation: Destroyed, frozen: false }, hasIn(new Set([0, Destroy]))),
+    { animation: Destroy, mode: PLAYBACK_HOLD_LAST });
+  // A model with its own clip plays it forwards; one with nothing on the chain is left alone.
+  assert.deepEqual(gameObjectClip({ animation: Open, frozen: false }, hasIn(CHEST)), { animation: Open, mode: PLAYBACK_FORWARD });
+  assert.equal(gameObjectClip({ animation: Open, frozen: false }, hasIn(new Set([0]))), undefined);
+});
+
+test("11.11 6.03: an opening hands on to the open hold at its clip's end, and the hold loops instead of re-swinging", withAnimationData, () => {
+  const has = hasIn(new Set([0, Open])); // Open only: the hold is Open held on its last frame
+  const seconds = () => 1;
+  const door = new GameObjectAnimator();
+  door.observe(GO_STATE_READY, 0);
+  assert.equal(door.frame(0, has, seconds)?.kind, GO_KIND_CLOSED);
+  door.observe(GO_STATE_ACTIVE, 100);
+  const swing = door.frame(100, has, seconds);
+  assert.deepEqual([swing.kind, swing.animation, swing.mode, swing.loop], [GO_KIND_OPENING, Open, PLAYBACK_FORWARD, false]);
+  assert.equal(door.frame(1099, has, seconds).serial, swing.serial, "still swinging just before the clip ends");
+  const held = door.frame(1100, has, seconds);
+  assert.deepEqual([held.kind, held.animation, held.mode, held.loop], [GO_KIND_OPENED, Open, PLAYBACK_HOLD_LAST, true]);
+  // Standing open for a long time is the same hold, never a new start of the swing.
+  assert.equal(door.frame(60_000, has, seconds).serial, held.serial);
+});
+
+test("11.11 6.03: a door closed mid-swing closes from where it is (0x0070d510)", withAnimationData, () => {
+  const has = hasIn(new Set([0, Open]));
+  const seconds = () => 1;
+  const door = new GameObjectAnimator();
+  door.observe(GO_STATE_READY, 0);
+  door.observe(GO_STATE_ACTIVE, 0);
+  door.frame(0, has, seconds);
+  door.observe(GO_STATE_READY, 300); // 30 % open
+  const closing = door.frame(300, has, seconds);
+  assert.equal(closing.kind, GO_KIND_CLOSING);
+  assert.ok(Math.abs(closing.fraction - 0.7) < 1e-9, `starts at ${closing.fraction}`);
+  // Close is Open backwards here: the clip time is where the opening stood, 0.3 s into Open.
+  assert.ok(Math.abs(gameObjectClipTime(closing, 1, 0) - 0.3) < 1e-9);
+  // And it is over after the 0.3 s left of it.
+  assert.equal(door.frame(599, has, seconds).kind, GO_KIND_CLOSING);
+  assert.equal(door.frame(600, has, seconds).kind, GO_KIND_CLOSED);
+});
+
+test("11.11 6.03: a custom animation plays only on a model that has it, then the state's hold returns", withAnimationData, () => {
+  const lever = hasIn(new Set([0, Open, Opened, ANIMATION_IDS.Custom0]));
+  const seconds = () => 2;
+  const goober = new GameObjectAnimator();
+  goober.observe(GO_STATE_ACTIVE, 0);
+  goober.custom(1, lever, 10); // Custom1 is not in the model: nothing (0x0070c480)
+  assert.equal(goober.frame(10, lever, seconds).kind, GO_KIND_OPENED);
+  goober.custom(0, lever, 20);
+  const custom = goober.frame(20, lever, seconds);
+  assert.deepEqual([custom.kind, custom.animation, custom.loop], [GO_KIND_CUSTOM0, ANIMATION_IDS.Custom0, false]);
+  assert.equal(goober.frame(2020, lever, seconds).kind, GO_KIND_OPENED);
+  goober.custom(100, lever, 3000); // animation progress, not an index
+  assert.equal(goober.frame(3000, lever, seconds).kind, GO_KIND_OPENED);
+});
+
+test("11.11 6.03: a despawn plays Despawn and holds the object to the clip's end; without the clip nothing holds it", withAnimationData, () => {
+  const Despawn = ANIMATION_IDS.Despawn;
+  assert.equal(Despawn, 157);
+  const seconds = () => 1.5;
+  const vein = hasIn(new Set([0, Despawn]));
+  const node = new GameObjectAnimator();
+  node.observe(GO_STATE_READY, 0);
+  assert.equal(node.pinnedUntil(0, vein, seconds), undefined, "a hold pins nothing");
+  node.custom(GO_DESPAWN_ANIM_INDEX, vein, 100);
+  const play = node.frame(100, vein, seconds);
+  assert.deepEqual([play.animation, play.loop], [Despawn, false]);
+  assert.equal(node.pinnedUntil(100, vein, seconds), 1600, "drawn until Despawn has played out (0x004d4d60 / 0x004d77e0)");
+  assert.equal(node.pinnedUntil(1600, vein, seconds), undefined);
+  // A model with no Despawn plays nothing (0x0070c480) and goes with its destroy.
+  const chest = new GameObjectAnimator();
+  chest.observe(GO_STATE_READY, 0);
+  chest.custom(GO_DESPAWN_ANIM_INDEX, hasIn(CHEST), 100);
+  assert.equal(chest.pinnedUntil(100, hasIn(CHEST), seconds), undefined);
+  // A swing in progress pins too: a door destroyed mid-swing finishes it.
+  const door = new GameObjectAnimator();
+  door.observe(GO_STATE_READY, 0);
+  door.observe(GO_STATE_ACTIVE, 0);
+  assert.equal(door.pinnedUntil(500, hasIn(CHEST), () => 1), 1000);
+});
+
+test("11.11 6.03: SMSG_GAMEOBJECT_DESPAWN_ANIM no longer removes the object; it asks for its Despawn", async () => {
+  const queue = [];
+  let wake;
+  const connection = {
+    push(opcode, payload = new Uint8Array()) {
+      queue.push({ opcode, payload });
+      if (wake) { const resume = wake; wake = undefined; resume(queue.shift()); }
+    },
+    send() {},
+    read() { return queue.length ? Promise.resolve(queue.shift()) : new Promise((resolve) => { wake = resolve; }); },
+    close() {},
+  };
+  connection.push(OPCODES.SMSG_LOGIN_VERIFY_WORLD, new PacketWriter().u32(0).f32(1).f32(2).f32(3).f32(0).toUint8Array());
+  const client = new WorldClient(connection);
+  await client.loginCharacter(0x1234n);
+  for (let round = 0; round < 4; round += 1) await new Promise((resolve) => { setImmediate(resolve); });
+  const GUID = 0xf1100000000000aan;
+  client.state.objects.set(GUID, { guid: GUID, typeId: 5, fields: new Map(), movementFlags: 0 });
+  const asked = [];
+  client.onGameObjectAnimation = (guid, index) => asked.push([guid, index]);
+  connection.push(OPCODES.SMSG_GAMEOBJECT_DESPAWN_ANIM, new PacketWriter().u64(GUID).toUint8Array());
+  for (let round = 0; round < 400 && asked.length === 0; round += 1) await new Promise((resolve) => { setImmediate(resolve); });
+  assert.deepEqual(asked, [[GUID, GO_DESPAWN_ANIM_INDEX]]);
+  assert.ok(client.state.objects.has(GUID), "the destroy that follows removes it, not this");
+  client.close();
 });
 
 test("the unit chooser's fallback table is why game objects have their own", withAnimationData, () => {
-  // This is the trap, stated as a test. The generated fallback chain sends an idle request from
-  // Stand to Closed to Close: a chest asked for its resting pose the way a creature is asked comes
-  // back with its lid shutting — a clip it really has, so nothing errors and every chest in the
-  // world plays it forever. 146 and 148 point at each other, so the walk is a two-cycle as well.
+  // The generated fallback chain sends an idle request from Stand to Closed to Close, and 146 and
+  // 148 point at each other. Wow.exe never asks a door for Stand: a closed one asks for Closed, and
+  // Closed's row (Flags 0x20) holds the Close it falls back to.
   assert.equal(ANIMATION_FALLBACK[0], Closed);
   assert.equal(ANIMATION_FALLBACK[Closed], Close);
   assert.equal(ANIMATION_FALLBACK[Close], Open);
   assert.equal(ANIMATION_FALLBACK[Open], Close);
-  // The chooser here never walks it: an idle open chest is Opened, and an idle closed one is
-  // nothing at all.
-  assert.notEqual(gameObjectPose(GO_STATE_ACTIVE, GO_STATE_ACTIVE, CHEST)?.animation, Close);
-  assert.equal(gameObjectPose(GO_STATE_READY, GO_STATE_READY, CHEST), undefined);
+  assert.equal(new GameObjectAnimator().frame(0, hasIn(CHEST), () => 1), undefined, "no state, no pose");
 });
 
 test("a custom animation is one of four numbers, and everything else is animation progress", () => {

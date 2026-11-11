@@ -116,7 +116,7 @@ test("the macro window: a macro's button drags its payload with a letter ghost, 
   const ghosts = [];
   const macros = [{ index: 3, name: "Лечение", body: "/cast Лечение" }];
   let stores = 0;
-  class FakeStore { constructor() { this.value = stores++ === 0 ? macros : []; } }
+  class FakeStore { constructor() { this.value = { macros: stores++ === 0 ? macros : [] }; } } // 5.37: the slot
   class FakePanel {
     constructor() { this.body = node("div"); this.visible = false; }
     show() { this.visible = true; } hide() { this.visible = false; }

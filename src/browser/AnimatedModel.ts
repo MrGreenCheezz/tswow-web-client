@@ -48,6 +48,8 @@ const {
   FlyReadySpellDirected, FlyReadySpellOmni, FlySpellCastDirected, FlySpellCastOmni,
   FlyChannelCastDirected, FlyChannelCastOmni,
 } = ANIMATION_IDS;
+/** 11.11 (6.05): Wow.exe's 0x84; not a required name, so a neutral table may lack it. */
+const Drowned: number | undefined = ANIMATION_IDS["Drowned"];
 
 /**
  * M2 model space is Z-up and faces +X — measured from the full-body camera every client model
@@ -2067,6 +2069,12 @@ export function poseAnimation(pose: UnitPose): { wanted: number[]; loop: boolean
   const has = (flag: number): boolean => (flags & flag) !== 0;
   // Dead is already the authored terminal pose and may be a static loop. Death is the transient
   // fall-back action; chooseAnimation changes only that action to LoopOnce + clampWhenFinished.
+  // 11.11 (6.05): a body lying dead in water floats drowned. Wow.exe's stand-state base (0x0071e1f0, state 7):
+  // with the mover's SWIMMING bit (+0x44 & 0x200000) the pose is 0x84, Drowned — AnimationData has it fall back
+  // to Drown held (Flags 0x20) — and only without it Dead.
+  if (pose.standState === UNIT_STAND_STATE_DEAD && !pose.mounted && has(MOVEMENT_FLAGS.swimming) && Drowned !== undefined) {
+    return { wanted: [Drowned, Dead, Death], loop: true };
+  }
   if (pose.dead) return { wanted: [Dead, Death], loop: true };
   // Before every movement branch below, because the rider is not the one moving: the horse walks,
   // swims and flies, and the character holds one pose the whole way. Measured on this build's

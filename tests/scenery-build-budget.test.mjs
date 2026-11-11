@@ -215,6 +215,8 @@ function gameObjects(cost = 3) {
       return { actual: !!model, node: new THREE.Group(), model: modelName };
     },
     disposeGameObject(rendered) { rendered.node.removeFromParent(); }, dropEffects() {},
+    // 6.03 (11.11): no clip pins these objects past their removal (Despawn), and none lingers.
+    lingerUntil: () => undefined, stepLingeringGameObjects() {}, lingeringGameObjects: new Map(),
     placeGameObject(_rendered, object, position) { positions.set(object.guid, position.x); },
     stampGameObjectAdmission() {}, gameObjectFadeMeshes: () => [],
     // 22.10 ARC-2 S2a: whether a game object is shown arrives in the pushed render inputs.

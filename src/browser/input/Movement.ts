@@ -722,6 +722,8 @@ export function advancePhysics(elapsed: number): void {
   input.hoverHeight = fieldFloat(self.fields, UPDATE_FIELDS.UNIT_FIELD_HOVERHEIGHT.offset, 0);
   input.canFly = toggles.canFly;
   input.gravityDisabled = toggles.gravityDisabled;
+  // 11.11 (7.24): on a transport the floor's own motion carries the body (Wow.exe: through the transport frame).
+  input.carried = rideActive(self) || seatedOnLift(self);
 
   // 5.13: real time, in substeps, so a slow frame neither slows the character nor walks it through
   // a wall. The character is pushed out of what it is standing inside rather than swept towards
@@ -1219,6 +1221,8 @@ function mountSpecialOnJumpKey(): void {
     mountRefuses: mountDisplayId > 0 && game.creatureModels?.get(mountDisplayId)?.noMountSpecial === true,
     send: () => world.sendMountSpecial(),
     play: () => game.renderer?.playMountSpecial(selfGuid),
+    looting: world.loot !== undefined, // 11.11 (6.20): 0x0072eb80 lets go of the loot first
+    releaseLoot: () => world.closeLoot(),
   });
 }
 

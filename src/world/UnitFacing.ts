@@ -33,8 +33,26 @@
  *
  * The drawn facing then follows the chosen one smoothly ({@link ShownUnitFacing}).
  *
- * Not modelled: a vehicle's own aim target (+0xf5c +0x160, before the unit's target), +0xa30 bit 0's fixed
- * facing (+0xab8).
+ * 11.11 (5.32, `.runtime/re-2026-11-11/combat4`): two more answers of 0x00735f60.
+ *
+ * * +0xa30 bit 0 — a fixed facing, +0xab8. READ BUT NOT APPLIED: what bounds it is not established. Its only setter
+ *   is 0x00756770, SMSG_ATTACK_STOP's worker (0x00756800 case 0x144, also 0x261): with a victim guid, a non-zero last
+ *   word (TrinityCore's `NowDead`, CombatPackets.cpp:34-51) and the victim in view, the attacker keeps the angle to
+ *   the victim at that moment. The only clear found is 0x0073d530 — the unit's own revival (health handler 0x0073f330,
+ *   health ≤ 0 → > 0; dynamic-flags handler 0x00740570, UNIT_DYNFLAG_DEAD now clear) — and the constructor 0x0073f660
+ *   (0x0073fb3a). No other write to bit 0 or to +0xab8 exists in the executable (capstone scan of every +0xa30, +0xab8
+ *   operand; no lea/copy base near either), +0xab8's only reader is 0x00735f60, and 0x00735f60 runs every frame for
+ *   every unit but the camera's (CGWorldFrame 0x004fa5f0 → 0x00739630 → 0x007395c0). It is tested right after the stun
+ *   and CANNOT_TURN tests, before possession, player, cast, seat and target. Taken literally, a melee unit whose victim
+ *   died would be drawn back at the kill angle whenever it stands, until revived — which the original visibly does not
+ *   do (an evaded creature stands at its spline's facing; a player stands as he turned). So a bound is missing from
+ *   this reading, and until it is found the fixed facing is not drawn.
+ * * A vehicle's own aim: when the unit is a vehicle (0x004f6210: +0xf5c's row) whose kit holds a guid at +0x160,
+ *   it faces that unit, before its channel object and target. 0x00756db0 writes it from 0x0074be10, boarding: a seat
+ *   with Flags VEHICLE_SEAT_FLAG_REC_HAS_VEHICLE_ENTER_ANIM (0x400000) whose VehicleEnterAnim plays and whose FlagsB
+ *   has 0x800000 points the vehicle at its boarding passenger, with the animation's key bone at +0x168 (0x23 and up
+ *   read as the root, 0x1a); 0x00757280 clears both when an animation on that bone ends, 0x00757900 when the kit is
+ *   reset (browser/VehicleFacesPassenger.ts).
  */
 
 import { CREATURE_MOVEMENT_CHASE_RATES, EMOTE_FLAGS } from "../generated/animations.js"; // 5.32
@@ -136,16 +154,27 @@ export function spellChannelTracksTarget(
   return words === undefined ? undefined : ((words[1] ?? 0) & SPELL_ATTR1_CHANNEL_TRACK_TARGET) !== 0;
 }
 
+/** A unit `object` can be turned to: in view, a unit, and not standing on it. */
+function faceable(object: WorldObjectState, target: WorldObjectState | undefined): WorldObjectState | undefined {
+  if (!target?.position || (target.typeId !== TYPEID_UNIT && target.typeId !== TYPEID_PLAYER)) return undefined;
+  const dx = target.position.x - object.position!.x;
+  const dy = target.position.y - object.position!.y;
+  return dx === 0 && dy === 0 ? undefined : target;
+}
+
 /**
- * The unit 0x00735f60 turns `object` toward, or undefined when it keeps its own facing — every test but the
- * seat's ({@link unitAutoFacing} and {@link unitSeatFacing} add those). `selfGuid` is the active player.
+ * What 0x00735f60 turns `object` toward, or undefined when it keeps its own facing, in the original's order.
+ * `selfGuid` is the active player. `seatFlags`: "none" off a vehicle seat, else the seat row's Flags (undefined while
+ * the row is not known, which reads as no row). `vehicleAim`: the vehicle's own aim (+0xf5c +0x160, browser/VehicleFacesPassenger.ts).
  */
-function facingTarget(
+function facingChoice(
   object: WorldObjectState,
   objects: ReadonlyMap<bigint, WorldObjectState>,
   channelTracksTarget: ((spellId: number) => boolean | undefined) | undefined,
   selfGuid: bigint | undefined,
   inputs: UnitFacingInputs,
+  seatFlags: number | undefined | "none",
+  vehicleAim: bigint | undefined,
 ): WorldObjectState | undefined {
   if (object.typeId !== TYPEID_UNIT) return undefined;
   if (!object.position || (object.movementFlags & OWN_AXES) !== 0 || object.motion !== undefined) return undefined;
@@ -159,12 +188,17 @@ function facingTarget(
   const flags = object.fields.get(FLAGS) ?? 0;
   if ((flags & (UNIT_FLAG_STUNNED | UNIT_FLAG_POSSESSED)) !== 0) return undefined;
   if (((object.fields.get(FLAGS_2) ?? 0) & UNIT_FLAG2_CANNOT_TURN) !== 0) return undefined;
+  // 11.11 (5.32): +0xa30 bit 0's fixed facing would be tested here — not applied, see the header.
   // 5.32: 0x00722640 — not while casting a spell that must not turn its caster.
   const casting = castingNow(inputs, object.guid);
   if (casting !== undefined
     && ((attributeWords(inputs.spellAttributes, casting)?.[5] ?? 0) & SPELL_ATTR5_DONT_TURN_DURING_CAST) !== 0) {
     return undefined;
   }
+  // 5.32: a seat without VEHICLE_SEAT_FLAG_ALLOW_TURNING (0x0074b8b0, 0x005d3340).
+  if (seatFlags !== "none" && seatFlags !== undefined && (seatFlags & VEHICLE_SEAT_FLAG_ALLOW_TURNING) === 0) return undefined;
+  // 11.11 (5.32): a vehicle's own aim comes before its channel object and target; one not in view keeps the facing.
+  if (vehicleAim !== undefined) return faceable(object, objects.get(vehicleAim));
   const channel = object.fields.get(CHANNEL_SPELL) ?? 0;
   const tracks = channel === 0 ? false
     : channelTracksTarget !== undefined ? channelTracksTarget(channel) : spellChannelTracksTarget(channel, inputs.spellAttributes);
@@ -172,11 +206,12 @@ function facingTarget(
   // 5.32: no target — the active player, while its interaction window is open on this unit.
   if (guid === undefined && selfGuid !== undefined && inputs.interactionNpc === object.guid) guid = selfGuid;
   if (guid === undefined || guid === object.guid) return undefined;
-  const target = objects.get(guid);
-  if (!target?.position || (target.typeId !== TYPEID_UNIT && target.typeId !== TYPEID_PLAYER)) return undefined;
-  const dx = target.position.x - object.position.x;
-  const dy = target.position.y - object.position.y;
-  return dx === 0 && dy === 0 ? undefined : target;
+  return faceable(object, objects.get(guid));
+}
+
+/** The world angle from `object` to the unit chosen. */
+function choiceAngle(object: WorldObjectState, choice: WorldObjectState): number {
+  return Math.atan2(choice.position!.y - object.position!.y, choice.position!.x - object.position!.x);
 }
 
 /**
@@ -193,11 +228,11 @@ export function unitAutoFacing(
   channelTracksTarget?: (spellId: number) => boolean | undefined,
   selfGuid?: bigint,
   inputs: UnitFacingInputs = NO_UNIT_FACING_INPUTS, // 22.10 ARC-2 S2a: was module state; absent `channelTracksTarget` reads its rows
+  vehicleAim?: bigint, // 11.11 (5.32): the unit is a vehicle aiming at this unit (VehicleFacesPassenger.ts)
 ): number | undefined {
   if (object.transport !== undefined && objects.get(object.transport.guid)?.typeId !== TYPEID_GAMEOBJECT) return undefined;
-  const target = facingTarget(object, objects, channelTracksTarget, selfGuid, inputs);
-  if (target === undefined) return undefined;
-  return Math.atan2(target.position!.y - object.position!.y, target.position!.x - object.position!.x);
+  const choice = facingChoice(object, objects, channelTracksTarget, selfGuid, inputs, "none", vehicleAim);
+  return choice === undefined ? undefined : choiceAngle(object, choice);
 }
 
 /**
@@ -215,16 +250,15 @@ export function unitSeatFacing(
   selfGuid?: bigint,
   channelTracksTarget?: (spellId: number) => boolean | undefined,
   inputs: UnitFacingInputs = NO_UNIT_FACING_INPUTS, // 22.10 ARC-2 S2a
+  vehicleAim?: bigint, // 11.11 (5.32): a vehicle in a seat aiming at its own boarding passenger
 ): number | undefined {
   const transport = object.transport;
   if (transport === undefined) return undefined;
-  if (seatFlags !== undefined && (seatFlags & VEHICLE_SEAT_FLAG_ALLOW_TURNING) === 0) return undefined;
   const vehicle = objects.get(transport.guid);
   if (vehicle === undefined) return undefined;
-  const target = facingTarget(object, objects, channelTracksTarget, selfGuid, inputs);
-  if (target === undefined) return undefined;
-  const world = Math.atan2(target.position!.y - object.position!.y, target.position!.x - object.position!.x);
-  return wrap(world - vehicleFacing(vehicle));
+  const choice = facingChoice(object, objects, channelTracksTarget, selfGuid, inputs, seatFlags, vehicleAim);
+  if (choice === undefined) return undefined;
+  return wrap(choiceAngle(object, choice) - vehicleFacing(vehicle));
 }
 
 /**

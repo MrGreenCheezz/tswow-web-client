@@ -106,6 +106,8 @@ const FRAME_XML_SETTINGS_CVAR_ROWS: FrameXmlSettingsCVarDefinition[] = [
   { cvar: "groundEffectDist", setting: "grassRadius", kind: "number" },
   // «Детализация ландшафта», 0.5–1.5: the same multiplier as the browser's object distance, in percent.
   { cvar: "environmentDetail", setting: "objectDistance", kind: "percent" },
+  // 11.11 (6.15): «Плотность частиц», 0.1–1.0 (0x0078d860, default "1.0"): the emission-rate factor in percent.
+  { cvar: "particleDensity", setting: "particleDensity", kind: "percent" },
   { cvar: "uiscale", setting: "uiScale", kind: "percent" },
   // 5.14: the stock Camera, Mouse and Controls panels. The slider-derived cameraPitchSmoothSpeed
   // (yaw/4) and cameraPitchMoveSpeed (yaw/2) stay the stock Lua's own writes; the camera derives the

@@ -338,6 +338,14 @@ export const SETTING_DEFINITIONS: readonly SettingDefinition[] = [
     hint: "Как далеко видны деревья, кусты и другие объекты окружения; большие видны дальше мелких. 100 — дерево до 600 ярдов, 150 — до 750, 200 — до 1000 (дороже: больше объектов в кадре). Меньше — быстрее.",
   },
   {
+    // 11.11 (6.15): the original client's «Плотность частиц» (`particleDensity`, registered with default "1.0",
+    // its callback 0x0078d860 accepting 0.1–1.0; the stock slider 0.1–1.0 in steps of 0.1, VideoOptionsPanels.lua),
+    // in percent: every emitter's emission rate × it (EmitNewParticles 0x0097d8c0, Particles.ts `setParticleDensity`).
+    id: "particleDensity", label: "Плотность частиц, %", group: "Графика", kind: "number", fallback: 100,
+    min: 10, max: 100, step: 10,
+    hint: "Сколько частиц выпускают эффекты заклинаний и окружения: 100 — как задумано, меньше — реже и быстрее.",
+  },
+  {
     // The original client's own «Ground Clutter Radius»: ground cover gets a ceiling of its own
     // rather than a share of the doodad range, which is what the reference client does and says
     // why — "grass stops between 70 and 140 yards in the original client while doodads run to the
@@ -624,6 +632,23 @@ export function settingMatchesQuery(definition: SettingDefinition, query: string
 export function defaultSettings(): SettingValues {
   const values: SettingValues = {};
   for (const definition of SETTING_DEFINITIONS) values[definition.id] = definition.fallback;
+  return values;
+}
+
+/**
+ * 4.16 (11.11): service records «Сбросить настройки» keeps — they are not the player's options. Without
+ * this the reset erased the one-time move's mark (`actionBarStockLayout`), and another browser repeated
+ * the move into slots the player had emptied since.
+ */
+const KEPT_ON_RESET: readonly string[] = Object.freeze(["actionBarStockLayout"]);
+
+/** The defaults, with the service records of `current` kept. */
+export function resetSettingValues(current: SettingValues): SettingValues {
+  const values = defaultSettings();
+  for (const id of KEPT_ON_RESET) {
+    const kept = current[id];
+    if (kept !== undefined) values[id] = kept;
+  }
   return values;
 }
 

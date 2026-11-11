@@ -143,7 +143,8 @@ test("a macro with a repeating spell flashes while it repeats", () => {
 
 test("GetMacroSpell: the name and the rank, the highest known", () => {
   const { api } = macroButtons();
-  assert.deepEqual(api("GetMacroSpell", 3), ["Огненный шар", "Уровень 2"]);
+  // 5.37 (11.11): positions are alphabetical (Wow.exe 0x00564a80): attack, ball, none, shot, unknown.
+  assert.deepEqual(api("GetMacroSpell", 2), ["Огненный шар", "Уровень 2"]);
   assert.deepEqual(api("GetMacroSpell", "attack"), ["Атака", ""]);
   assert.deepEqual(api("GetMacroSpell", "none"), []);
 });
@@ -208,8 +209,9 @@ test("GetMacroItem names the item and links it; GetMacroSpell then answers nothi
   assert.match(link, /\|Hitem:6948:/);
   assert.deepEqual(api("GetMacroItem", 4).slice(0, 1), ["Камень возвращения"], "by the backpack's slot");
   assert.deepEqual(api("GetMacroSpell", 1), []);
-  assert.deepEqual(api("GetMacroItem", 3), [], "a spell macro has no item");
-  assert.equal(api("GetMacroItem", 6)[0], "Камень возвращения", "an item link names its id (0x00709de0)");
+  // 5.37 (11.11): positions are alphabetical (Wow.exe 0x00564a80): камень, подсказка, свой значок, слот, ссылка, шар.
+  assert.deepEqual(api("GetMacroItem", 6), [], "a spell macro has no item");
+  assert.equal(api("GetMacroItem", 5)[0], "Камень возвращения", "an item link names its id (0x00709de0)");
 });
 
 test("a macro's item counts, stacks and is consumable as an item button (0x005aa5c0, 0x005a8470, 0x005a9360)", () => {

@@ -22,8 +22,15 @@ import type { FrameXmlCursorModel } from "./FrameXmlCursor.js";
  *   open and the row is still listed (else nothing); the AmmoSlot (id 0) lets the row go.
  * - `UseContainerItem` (0x005d8650) lets any cursor go first (0x00519280(1, 1)), the row included.
  *
- * Not modelled: 0x005853a0 compares the held id with the row's for any cursor type that keeps one
- * (a guild-vault item of the same entry, too); here only a held row is compared.
+ * 3.23 (11.11, `.runtime/re-2026-11-11/api4/`): the comparison in 0x005853a0 reads 0x005136d0, the
+ * cursor's item id 0x00bd0758 — set by 0x00520d30 for cursor types 5, 6, 7, 9 and 0xb and by
+ * `PickupItem` (0x00522fb0, type 7), cleared by 0x00519280 for the same types — whatever the type. So
+ * an item named by id (`PickupItem`, an item lifted off a bar: type 7) or the guild vault's stack
+ * (type 0xb) of the row's entry is let go by the click, as a held row of that entry is. Types 6 and 9
+ * have no holder here.
+ * A press on an action button with a row held (UseAction 0x005abbc0) does not place it: the place path
+ * 0x005ab120 runs only for a held spell (0x00bd07e0), a bag item, a macro (0x00bd07e8), a type-7 item
+ * (0x005844a0(7)) or the type-0xd holder; with type 5 the button's own action runs and the row stays.
  */
 
 /** The world's share of a purchase into a place (`WorldClient` has it). */
@@ -84,9 +91,23 @@ export function frameXmlPickupMerchantItem(seam: FrameXmlMerchantCursorSeam, val
     cursor.clear();
     return;
   }
-  const held = cursor.held();
-  if (held?.kind === "merchant" && held.entry === entry) cursor.clear();
+  if (frameXmlCursorItemId(cursor) === entry) cursor.clear();
   else cursor.pickupMerchantItem(index, entry);
+}
+
+/**
+ * 0x005136d0, the cursor's item id as 0x005853a0 compares it: a held row's entry, an item named by id
+ * (type 7), or another holder's item that is not a bag item — the guild vault's stack (type 0xb). A bag
+ * item (type 1) keeps no id there; 0x005853a0 never gets this far with one (it sells it first).
+ */
+function frameXmlCursorItemId(cursor: FrameXmlCursorModel): number | undefined {
+  const held = cursor.held();
+  if (held?.kind === "merchant" || held?.kind === "item") return held.entry;
+  if (held !== undefined) return undefined;
+  const info = cursor.info();
+  if (info[0] !== "item") return undefined;
+  const id = typeof info[1] === "number" ? info[1] : Number.NaN;
+  return Number.isSafeInteger(id) && id > 0 ? id : undefined;
 }
 
 /**

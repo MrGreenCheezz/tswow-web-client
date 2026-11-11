@@ -210,6 +210,12 @@ export interface SpellVisualMissile {
   /** SpellVisual.MissileCastOffset / MissileImpactOffset when not all zero, as stored (Wow.exe negates y on read). */
   castOffset?: [number, number, number];
   impactOffset?: [number, number, number];
+  /**
+   * 11.11 (6.12): SpellVisual.MissileAttachment, raw, when it is not −1. Wow.exe's fire point 0x00720bf0 reads it as
+   * an index through 0x00adaa20 like MissileDestinationAttachment (the attachment id itself under Flags 0x200), not
+   * as the attachment id `attachment` above carries; the browser resolves it (SpellVisualAttach.ts).
+   */
+  launch?: number;
 }
 
 /**
@@ -380,6 +386,8 @@ function missileExtras(
   if (castOffset) extras.castOffset = castOffset;
   const impactOffset = offsetColumn(visuals, row, "MissileImpactOffset");
   if (impactOffset) extras.impactOffset = impactOffset;
+  const launch = visuals.int(row, "MissileAttachment"); // 11.11 (6.12)
+  if (launch !== -1) extras.launch = launch;
   return extras;
 }
 

@@ -154,6 +154,58 @@ export function emitterDistanceScale(distance: number): number {
   return scale < 0.25 ? 0.25 : scale;
 }
 
+/**
+ * 11.11 (6.15): the «Плотность частиц» option (CVar `particleDensity`, 0.1–1.0, default 1). Its callback
+ * (0x0078d860) passes the value to 0x00980f70, which keeps it clamped to [0, 1] in the one global (0x00b2d678)
+ * EmitNewParticles (0x0097d8c0) reads through 0x00980ed0: every emitter's rate × it, before the distance thinning.
+ * The pool (Sync 0x0097edf0) is not scaled.
+ */
+let particleDensityScale = 1;
+
+/** 11.11 (6.15): sets the global particle density as 0x00980f70 does (below 0 or NaN → 0, from 1 up → 1). */
+export function setParticleDensity(value: number): void {
+  particleDensityScale = value >= 0 ? (value >= 1 ? 1 : value) : 0;
+}
+
+/** 11.11 (6.15): the current global particle density (0x00980ed0). */
+export function particleDensity(): number {
+  return particleDensityScale;
+}
+
+/** 0x009e3004: the longest step CParticleEmitter2 takes at once (s_maxTimeStep). */
+const MAX_PARTICLE_STEP = 0.1;
+
+/** x87 FISTP in the default round-to-nearest mode: ties go to the even integer. */
+function fistpNearest(value: number): number {
+  const floor = Math.floor(value);
+  const fraction = value - floor;
+  if (fraction > 0.5) return floor + 1;
+  if (fraction < 0.5) return floor;
+  return floor % 2 === 0 ? floor : floor + 1;
+}
+
+/**
+ * 11.11 (6.15): how CParticleEmitter2::InternalUpdate (0x0097acb0) splits a frame of `seconds`: up to 0.1 s is one
+ * step; past it, whole = floor(dt · 10) and steps = min(whole, floor(lifespan · 10)) — never more than the particles
+ * can live through — of which `count` = FISTP(steps − 0.5) (0x0097ad68 stores it in the FPU's default mode, round to
+ * nearest even, so an odd step count loses one) are taken at 0.1 s, then one more of dt − whole · 0.1. A negative
+ * frame steps nothing. Returns `count` and writes the last step's length to `out[0]`.
+ */
+export function particleSubsteps(seconds: number, lifespan: number, out: number[]): number {
+  if (!(seconds >= 0)) {
+    out[0] = 0;
+    return 0;
+  }
+  if (!(seconds > MAX_PARTICLE_STEP)) {
+    out[0] = seconds;
+    return 0;
+  }
+  const whole = Math.floor(seconds * 10);
+  const steps = Math.min(whole, Math.floor((Number.isFinite(lifespan) ? lifespan : 0) * 10));
+  out[0] = seconds - whole * MAX_PARTICLE_STEP;
+  return Math.max(0, fistpNearest(steps - 0.5));
+}
+
 /** `M2Particle.emitterType`. */
 export const EMITTER_PLANE = 1;
 export const EMITTER_SPHERE = 2;
@@ -416,6 +468,12 @@ export interface EmitterFrame {
    * undefined where nothing is known (the particle keeps its spawn point, as when 0x00979740's callback fails).
    */
   ground?: ((x: number, z: number) => number | undefined) | undefined;
+  /**
+   * 11.11 (6.11): the model's alpha this frame (CM2Model m_effectiveAlpha: the unit's eased fade × its max alpha,
+   * Unit_C 0x0071abe0 → 0x00744030). A ribbon lays its new edges with track alpha × it (CM2Model::Animate
+   * 0x00828a00 → SetAlpha 0x0097fba0); absent: 1.
+   */
+  modelAlpha?: number | undefined;
 }
 
 export interface ParticleSystem {
@@ -443,6 +501,13 @@ export interface ParticleSystem {
    */
   readonly density?: number;
   readonly alphaScale?: number;
+  /**
+   * 11.11 (6.11): the emitter's m_alphaScale (+0x130) — clamp(model m_effectiveAlpha, 0, 1), set by
+   * CM2Model::AnimateParticleST (0x008309c0) each frame and multiplied into every live particle's opacity byte when
+   * its vertices are built (InterpolateAllTracks 0x00979e90 / the simple keys 0x00979d60). The blend is untouched:
+   * the fade reaches a particle only through its vertex alpha, exactly as its own opacity ramp does. Absent: 1.
+   */
+  modelAlpha?: number;
   /**
    * 25.10 (6.27): record 0x40 — the inherited velocity (m_parentVelocity, scene axes for a world-space emitter,
    * the emitter's own for a model-space one) and the time since it was last measured (m_ivelTimer).
@@ -741,9 +806,27 @@ function spawnLocal(
  * is what keeps a particle's arc the same shape at thirty frames a second as at a hundred and
  * forty. Order matters and is the reverse-engineered one: carry, then gravity, then drag.
  */
-/** Advances one ordinary render frame; a hitch is deliberately capped at 100 ms. */
+const lastStep = [0];
+
+/**
+ * Advances one ordinary render frame. 11.11 (6.15): as CParticleEmitter2::Update (0x0097eb10) and InternalUpdate
+ * (0x0097acb0) do — the emitter is placed and its move measured once for the frame, then the frame is stepped in
+ * `particleSubsteps`: a frame over 0.1 s is no longer cut to one 0.1 s step, it is caught up in 0.1 s steps as far
+ * as the lifespan reaches, each carrying 1/(count + 1) of the follow offset (m_burstOffset, 0x0097acb0).
+ */
 export function stepParticles(system: ParticleSystem, seconds: number, frame: EmitterFrame): void {
-  stepParticlesOnce(system, seconds > 0 && Number.isFinite(seconds) ? Math.min(seconds, 0.1) : 0, frame);
+  const total = Number.isFinite(seconds) ? seconds : 0;
+  if (!(total > MAX_PARTICLE_STEP)) {
+    stepParticlesOnce(system, total > 0 ? total : 0, frame);
+    return;
+  }
+  // m_params.m_life (+0xa4): the lifespan track's value this frame (CM2Model::AnimateParticleST 0x008309c0).
+  const lifespan = emitterTrack(system.emitter.lifespan, frame.animationMs, frame.worldMs, system.globalSequences, 1,
+    frame.sequence, frame.inSequence === true);
+  const count = particleSubsteps(total, lifespan, lastStep);
+  const share = 1 / (count + 1);
+  for (let index = 0; index < count; index++) stepParticlesOnce(system, MAX_PARTICLE_STEP, frame, index === 0, share, total);
+  stepParticlesOnce(system, lastStep[0]!, frame, count === 0, share, total);
 }
 
 /**
@@ -765,7 +848,7 @@ export function primeParticleSystem(system: ParticleSystem, frame: EmitterFrame)
   // 25.10 (6.27): a burst emitter's first frame is its whole burst (0x0097d8c0), and it is then spent.
   if ((emitter.flags & PARTICLE_FLAG_BURST) !== 0) {
     system.burstFired = true;
-    emitBurst(system, frame, Math.floor(rate));
+    emitBurst(system, frame, Math.floor(rate * particleDensityScale)); // 11.11 (6.15): × density (0x0097d8c0)
     return system.particles.length > 0;
   }
   system.particles.push(spawn(system, frame));
@@ -800,7 +883,15 @@ export function stepParticlesCatchUp(system: ParticleSystem, seconds: number, fr
   }
 }
 
-function stepParticlesOnce(system: ParticleSystem, seconds: number, frame: EmitterFrame): void {
+/**
+ * One StepUpdate (0x0097dd20) of `seconds`. 11.11 (6.15): `first` is the frame's first step, which places the
+ * emitter and measures its move; a later step of the same frame reuses that move (`pathX…`) and carries `share` of
+ * the follow offset, whose speed is the move over the whole frame, `frameSeconds` (Update 0x0097eb10).
+ */
+function stepParticlesOnce(
+  system: ParticleSystem, seconds: number, frame: EmitterFrame,
+  first = true, share = 1, frameSeconds = seconds,
+): void {
   const { emitter, globalSequences, particles, random } = system;
   const { matrix, animationMs, worldMs, sequence } = frame;
   const track = (value: WvmTrack, fallback: number): number =>
@@ -810,15 +901,22 @@ function stepParticlesOnce(system: ParticleSystem, seconds: number, frame: Emitt
 
   // Where the emitter's own origin is this frame, and how far it moved since the last one.
   transformPoint(matrix, emitter.position[0], emitter.position[1], emitter.position[2], scratchA);
-  const moveX = system.placed ? scratchA[0]! - system.originX : 0;
-  const moveY = system.placed ? scratchA[1]! - system.originY : 0;
-  const moveZ = system.placed ? scratchA[2]! - system.originZ : 0;
+  let moveX = system.placed ? scratchA[0]! - system.originX : 0;
+  let moveY = system.placed ? scratchA[1]! - system.originY : 0;
+  let moveZ = system.placed ? scratchA[2]! - system.originZ : 0;
+  if (!first) {
+    // 11.11 (6.15): a later step of the frame — the emitter was placed by the first, its move is the frame's.
+    moveX = system.pathX;
+    moveY = system.pathY;
+    moveZ = system.pathZ;
+  }
   system.originX = scratchA[0]!;
   system.originY = scratchA[1]!;
   system.originZ = scratchA[2]!;
   system.placed = true;
 
-  const step = seconds > 0 ? Math.min(seconds, 0.1) : 0;
+  const step = seconds > 0 ? Math.min(seconds, MAX_PARTICLE_STEP) : 0;
+  const frameStep = frameSeconds > 0 ? frameSeconds : step; // 11.11 (6.15)
 
   // How much of the emitter's own movement the particles are dragged along with. The two
   // speed/scale pairs are the ends of a ramp: below the first speed nothing is carried, above the
@@ -833,12 +931,13 @@ function stepParticlesOnce(system: ParticleSystem, seconds: number, frame: Emitt
   let carryY = 0;
   let carryZ = 0;
   if (!system.modelSpace && (emitter.flags & PARTICLE_FLAG_FOLLOW) !== 0 && step > 0) {
-    const speed = Math.hypot(moveX, moveY, moveZ) / step;
+    const speed = Math.hypot(moveX, moveY, moveZ) / frameStep; // 11.11 (6.15): over the frame (0x0097eb10)
     const span = emitter.followSpeed2 - emitter.followSpeed1;
     const flat = Math.abs(span) < 2.384e-7;
     const slope = flat ? 0 : (emitter.followScale2 - emitter.followScale1) / span;
     const intercept = flat ? 0 : emitter.followScale1 - emitter.followSpeed1 * slope;
-    const scale = Math.min(1, Math.max(0, speed * slope + intercept));
+    // 11.11 (6.15): × the step's share of the frame's offset (m_burstOffset, InternalUpdate 0x0097acb0).
+    const scale = Math.min(1, Math.max(0, speed * slope + intercept)) * share;
     carryX = moveX * scale;
     carryY = moveY * scale;
     carryZ = moveZ * scale;
@@ -939,8 +1038,9 @@ function stepParticlesOnce(system: ParticleSystem, seconds: number, frame: Emitt
   // zero while nothing is alive. It is a world vector; a model-space emitter adds it to its particles' own-frame
   // velocity unconverted, as 0x009815c0 does — the scene move (x, y, z) is the world's (x, −z, y), taken as the
   // emitter's (turned) frame and so the bone frame's (z, x, y).
-  if ((emitter.flags & PARTICLE_FLAG_INHERIT_VELOCITY) !== 0) {
-    system.inheritTimer += step;
+  // 11.11 (6.15): once a frame, by the frame's time (Update 0x0097eb10 runs it before InternalUpdate).
+  if (first && (emitter.flags & PARTICLE_FLAG_INHERIT_VELOCITY) !== 0) {
+    system.inheritTimer += frameStep;
     if (system.inheritTimer > INHERIT_UPDATE_SECONDS) {
       const scale = particles.length > 0 ? emitter.burstMultiplier / (system.inheritTimer * 29.999998) : 0;
       system.inheritTimer = 0;
@@ -955,7 +1055,8 @@ function stepParticlesOnce(system: ParticleSystem, seconds: number, frame: Emitt
       }
     }
   }
-  // 25.10 (6.27): record 0x800 — this step's move, for spawns spread along it (0x0097d8c0).
+  // 25.10 (6.27): record 0x800 — this step's move, for spawns spread along it (0x0097d8c0). 11.11 (6.15): the
+  // frame's move, which every step of the frame spreads its spawns along (m_parentPosition → m_xform).
   system.pathX = moveX;
   system.pathY = moveY;
   system.pathZ = moveZ;
@@ -986,17 +1087,20 @@ function stepParticlesOnce(system: ParticleSystem, seconds: number, frame: Emitt
   // 23.10 (6.27): the rate is the rate — record 0x40 is velocity inheritance (0x0097eb10) and EmitNewParticles
   // (0x0097d8c0) multiplies only by the density setting and the view-distance thinning, not by 0x170.
   // 25.10 (6.27): the thinning is applied (`emitterDistanceScale`), from the emitter's origin to the camera.
-  const rate = splineScale * (frame.viewX === undefined ? base : base * emitterDistanceScale(Math.hypot(
+  // 11.11 (6.15): the whole varied rate is thinned — (rate + vary · sfloat) × density × distance (0x0097d8c0); the
+  // vary used to be added after the thinning, so a far emitter kept its full variation.
+  const thinning = particleDensityScale * (frame.viewX === undefined ? 1 : emitterDistanceScale(Math.hypot(
     system.originX - frame.viewX, system.originY - (frame.viewY ?? 0), system.originZ - (frame.viewZ ?? 0))));
+  const rate = splineScale * base;
   // A step whose variance draw came out at or below zero contributes nothing and takes nothing
   // away. Clearing the accumulator here instead loses every fraction of a particle banked since
   // the last spawn, and loses more of it the higher the frame rate — 82 of the client's emitters
   // carry a variance and 53 of them have one large enough to go negative, so
   // `spells\missile_wave_ice.m2` emitted 0.8 particles in two seconds at 30 frames a second, 0.1
   // at 60 and none at all at 144, against the 4 its numbers ask for.
-  const varied = emitter.emissionRateVary === 0
+  const varied = thinning * (emitter.emissionRateVary === 0
     ? rate
-    : Math.max(0, rate + emitter.emissionRateVary * spread(random));
+    : Math.max(0, rate + emitter.emissionRateVary * spread(random)));
   const capacity = system.capacity;
   if (burst) {
     // 25.10 (6.27): int(rate) particles at once on the first visible step, then nothing until the emitter has been
@@ -1345,6 +1449,7 @@ export function writeParticleQuads(
   // m_xformScale: the length of the emitter transform's first column (UpdateXform 0x0097ac20).
   const frameScale = (flags & PARTICLE_FLAG_SCALE_WITH_EMITTER) !== 0 ? Math.hypot(m[0]!, m[1]!, m[2]!) : 1;
   const frameBlend = buffers.uvs2 !== undefined && buffers.blends !== undefined;
+  const modelAlpha = system.modelAlpha ?? 1; // 11.11 (6.11)
 
   // The XY plane of the particles' own space: the emitter's frame for model space, the world's horizontal
   // (WoW x and y are scene x and −z) otherwise (RenderParticlesPrep 0x0097a390), unit length either way.
@@ -1393,6 +1498,9 @@ export function writeParticleQuads(
     particleAppearance(emitter, particle, appearance);
     if (system.alphaScale !== undefined) appearance.alpha *= system.alphaScale; // 26.10 (test): density's share
     if (appearance.alpha <= 0.002 || appearance.width <= 0 || appearance.height <= 0) continue;
+    // 11.11 (6.11): × the model's fade (m_alphaScale, 0x00979e90) — after the skip, which stands for the authored
+    // ramp alone: a fading model's additive (One, One) particle ignores its alpha and stays drawn, as in Wow.exe.
+    appearance.alpha *= modelAlpha;
     const sizeX = appearance.width * frameScale;
     const sizeY = appearance.height * frameScale;
 

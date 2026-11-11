@@ -22,6 +22,7 @@ import { comparisonGraphicsSettings } from "./ComparisonProfile.js";
 import { enhancedGraphicsSettings } from "./EnhancedGraphics.js";
 import { setFpsCounterVisible } from "./FpsCounter.js";
 import { frameLimitOverride, setFrameLimit } from "../FrameLimit.js"; // 25.10
+import { setParticleDensity } from "../Particles.js"; // 11.11 (6.15)
 
 export const settingsStore = new AccountStore<SettingValues>({
   slot: PER_CHARACTER_CONFIG_CACHE,
@@ -29,6 +30,8 @@ export const settingsStore = new AccountStore<SettingValues>({
   fallback: defaultSettings,
   parse: parseSettings,
   serialise: serialiseSettings,
+  // 4.16 (11.11): slot 1 holding Wow.exe's config is left as it is; the options stay in this browser.
+  keepForeign: true,
 });
 
 const appliedListeners = new Set<() => void>();
@@ -163,6 +166,8 @@ export function applySettings(): void {
   });
   // The stock «Детализация ландшафта» multiplier over every M2 scenery leash; a percentage here.
   game.renderer?.setEnvironmentDetail?.(settingNumber(values, "objectDistance") / 100);
+  // 11.11 (6.15): the stock «Плотность частиц» — Wow.exe keeps it in one global the emitters read (0x00980f70).
+  setParticleDensity(settingNumber(values, "particleDensity") / 100);
   // How far the ground cover reaches, and whether its density is read per detail cell. Pushed for
   // the same reason as the render scale: it is read deep inside a frame, and a copy kept anywhere
   // else is a copy that can be stale. Outside the world `game.groundCover` is undefined, which

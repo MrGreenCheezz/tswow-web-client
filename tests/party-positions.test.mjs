@@ -56,13 +56,13 @@ test("the blip list: not the player, not an offline member, the stats' online bi
   assert.ok(positions.partyBlipMembers(w, areaMap).some((m) => m.guid === 2n), "a member in sight is drawn whatever the roster bit says");
 });
 
-test("a click inside the minimap circle pings, outside or twice within half a second it does not", async () => {
-  const { minimapClickPings, MINIMAP_CLICK_PING_INTERVAL_MS } = await import("../dist/code/browser/ui/Minimap.js");
-  assert.equal(MINIMAP_CLICK_PING_INTERVAL_MS, 500);
-  assert.equal(minimapClickPings({ column: 10, row: 10 }, 160, 1_000, Number.NEGATIVE_INFINITY), true);
-  assert.equal(minimapClickPings({ column: 70, row: 70 }, 160, 1_000, Number.NEGATIVE_INFINITY), false, "the corner is outside");
-  assert.equal(minimapClickPings({ column: 0, row: 0 }, 160, 1_100, 1_000), false, "a double click is one ping");
-  assert.equal(minimapClickPings({ column: 0, row: 0 }, 160, 1_500, 1_000), true);
+test("a click inside the minimap circle pings, every time; outside it does not (7.57: no hold, Wow.exe 0x0057ed70)", async () => {
+  const minimap = await import("../dist/code/browser/ui/Minimap.js");
+  const { minimapClickPings } = minimap;
+  assert.equal("MINIMAP_CLICK_PING_INTERVAL_MS" in minimap, false, "no interval between pings");
+  assert.equal(minimapClickPings({ column: 10, row: 10 }, 160), true);
+  assert.equal(minimapClickPings({ column: 70, row: 70 }, 160), false, "the corner is outside");
+  assert.equal(minimapClickPings({ column: 0, row: 0 }, 0), false, "no size, no circle");
   const source = await readFile(new URL("../src/browser/ui/Minimap.ts", import.meta.url), "utf8");
   assert.match(source, /canvas\.addEventListener\("click", \(event\) => onCanvasClick\(event, canvas\)\);/,
     "any left click, not only Ctrl+click");

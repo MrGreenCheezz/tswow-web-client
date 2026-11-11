@@ -335,6 +335,8 @@ export interface CharacterInput {
   featherFall: boolean;
   hovering: boolean;
   hoverHeight: number;
+  /** 11.11 (7.24): standing on a lift or a deck, whose floor carries the body while it stands. */
+  carried?: boolean;
   canFly: boolean;
   gravityDisabled: boolean;
   /**
@@ -933,6 +935,13 @@ function stepGrounded(
   // not a climb.
   const hover = input.hovering ? input.hoverHeight : 0;
   if (floor - position.z > STEP_HEIGHT + hover) return;
+  // 11.11 (7.24): standing still, nothing lifts the body. Wow.exe's movement update (0x00762e00) runs its ground step
+  // only while MovementFlags & 0x40c0100f — a direction bit, FALLING, ASCENDING/DESCENDING or HOVER — so an idle
+  // mover stays at the height the server gave it. That is what seats a character on a chair: `GameObject::Use`
+  // teleports it to the chair's own z, on the floor under the seat, and SitChairLow/Med/High raise the body onto
+  // the seat; stepping the idle body up onto the chair's collision drew it a seat's height too high.
+  // (Wow.exe does not drop an idle body either; this client still lets one fall, as before.)
+  if (requested <= 0 && !input.hovering && input.carried !== true && floor > position.z) return;
   position.z = floor;
 }
 
@@ -1018,6 +1027,11 @@ function stepAirborne(
     clearVertical(motion, events);
     motion.fallStartZ = Number.NaN; // 12.10 6.07: a new fall, from here
     motion.fallingFar = false;
+    // 11.11 (6.07): and it is a fall with no jump in it. Wow.exe's flight-off (0x0098c240: FLYING, the
+    // vertical and pitch bits cleared) starts the fall through 0x00988370 with a jump velocity (+0xb8) of 0,
+    // as a walk-off does — so the pose is the ground's until FALLING_FAR at 500 ms, then Fall, and never
+    // JumpStart (0x00723350). Reported as the start of a fall, which is what tells the own pose so.
+    events.push("startFall");
   }
   // 5.13: over ground that has not arrived, the fall waits rather than running up a fall clock.
   if (floor === undefined && awaitingGround(probe, motion, position.x, position.y, elapsed)) return;

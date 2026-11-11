@@ -90,12 +90,14 @@ export function frameXmlItemTextSource(
   if (entry <= 0) return undefined;
   if (opened.kind === "item") {
     const template = world.itemTemplates.get(entry);
-    // 5.28 (L6): ITEM_FIELD_FLAG_READABLE reads the item's own text, pages or not (Wow.exe 0x58a1a0).
-    if (frameXmlItemIsMailText(object)) {
-      return template?.found ? { title: template.name, firstPage: 0, material: template.pageMaterial, mail: true } : undefined;
-    }
-    return template?.found && template.pageText > 0
-      ? { title: template.name, firstPage: template.pageText, material: template.pageMaterial }
+    if (!template?.found) return undefined;
+    // 5.28 (11.11): the template's PageText comes first — Wow.exe 0x58a1a0 takes the page id from the
+    // item (its vtable +0xdc) and reads the item's own text (0x0067f4c0, CMSG_ITEM_TEXT_QUERY) only when
+    // there is none; ITEM_FIELD_FLAG_READABLE then only spares the CMSG_READ_ITEM (0x58a1a0 → 0x589e90).
+    if (template.pageText > 0) return { title: template.name, firstPage: template.pageText, material: template.pageMaterial };
+    // 5.28 (L6): a mail copy (ITEM_FIELD_FLAG_READABLE) without pages reads the item's own text.
+    return frameXmlItemIsMailText(object)
+      ? { title: template.name, firstPage: 0, material: template.pageMaterial, mail: true }
       : undefined;
   }
   const template = world.gameObjectTemplates.get(entry);

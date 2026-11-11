@@ -47,6 +47,8 @@ test("Minimap has a dedicated metatable and delegates bounded calls exactly", ()
     Minimap:PingLocation(0.25, -0.5)
     Minimap:PingLocation(math.huge, 0.5)
     Minimap:PingLocation(0.25, 0/0)
+    Minimap:PingLocation("left", 0.5)
+    Minimap:PingLocation()
     Minimap:SetPlayerTextureWidth(math.huge)
     Minimap:SetPlayerTextureHeight("not-a-number")
     OrdinaryZoomMethod = type(Ordinary.GetZoom)
@@ -63,7 +65,8 @@ test("Minimap has a dedicated metatable and delegates bounded calls exactly", ()
   assert.equal(vm.getGlobal("MinimapZoomAfterTruncate"), 1);
   assert.equal(vm.getGlobal("AdapterZoomAfterTruncate"), 1);
   assert.deepEqual(setZoom, [2, 1], "the idempotent second request does not notify twice");
-  assert.deepEqual(pings, [[0.25, -0.5]], "finite coordinates cross the adapter unchanged");
+  assert.deepEqual(pings, [[0.25, -0.5], [0, 0], [0, 0]],
+    "finite coordinates cross the adapter unchanged; 7.57: without two numbers the ping is on the player (0x0057ed70)");
   assert.equal(vm.getGlobal("OrdinaryZoomMethod"), "nil");
   assert.equal(vm.getGlobal("OrdinaryPingMethod"), "nil");
   assert.equal(bridge.getFrame("Minimap")?.type, "Minimap");

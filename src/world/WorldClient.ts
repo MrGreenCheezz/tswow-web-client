@@ -2,6 +2,7 @@ import { OPCODES } from "../generated/opcodes.js";
 import { MirrorImages, buildGetMirrorImageData } from "./MirrorImages.js"; // 05.10-A7a-H 6.11б
 import { playerInventory, slotAt, stackCount } from "../browser/Inventory.js";
 import { carriedOutsideBags } from "../browser/CarriedItems.js"; // L1 (2.05)
+import { GO_DESPAWN_ANIM_INDEX } from "./GameObjectDespawn.js"; // 11.11 (6.03)
 import { buildBuyItemInSlot } from "./VendorSlotProtocol.js"; // L1 (3.23)
 import { PacketReader } from "../protocol/PacketReader.js";
 import { PacketWriter } from "../protocol/PacketWriter.js";
@@ -55,6 +56,7 @@ import {
   buildItemRefund, buildItemRefundInfo, ITEM_FLAG_ITEM_PURCHASE_RECORD, ItemRefunds, itemRefundMessages,
   parseItemRefundInfo, parseItemRefundResult,
 } from "./ItemRefundProtocol.js";
+import { lfgRewardSystemLines } from "./LfgRewardMessages.js"; // 3.25 (11.11)
 import { buildWrapItem } from "./GiftWrapProtocol.js";
 import { buildFarSight } from "./FarSight.js"; // 11.02-I
 import { GuildNameCache } from "./GuildNameCache.js"; // 3.12 (04.10, L4)
@@ -1172,6 +1174,26 @@ export class WorldClient {
   }>();
   /** The action bars as the server holds them: 144 slots, twelve pages of twelve. */
   actionButtons: ActionButton[] = [];
+  /**
+   * 5.37 (11.11): the same slots in the server's own words, where a macro is Wow.exe's id (0x40/0x41);
+   * `actionButtons` is this client's view of them through `actionButtonCodec` (browser/ui/MacroButtons.ts).
+   */
+  actionButtonsWire: ActionButton[] = [];
+  /** 5.37: the macro buttons' two directions, set by the page; without it the view is the wire. */
+  actionButtonCodec: { view(button: ActionButton): ActionButton; wire(button: ActionButton): ActionButton } | undefined;
+
+  /** 5.37: the view read again from the wire (the macros a button names have changed). */
+  reviewActionButtons(): void {
+    const codec = this.actionButtonCodec;
+    const next = codec ? this.actionButtonsWire.map((button) => codec.view(button)) : [...this.actionButtonsWire];
+    const same = next.length === this.actionButtons.length && next.every((button, index) => {
+      const old = this.actionButtons[index]!;
+      return old.slot === button.slot && old.action === button.action && old.type === button.type;
+    });
+    if (same) return;
+    this.actionButtons = next;
+    this.events.emit("ACTION_BUTTONS_CHANGED", {});
+  }
   /** Who each creature is angry at. */
   readonly threat = new ThreatTables();
   /** Combo points the character has on its target, and on whom. */
@@ -3565,9 +3587,11 @@ export class WorldClient {
     }
     if (packet.opcode === OPCODES.SMSG_GAMEOBJECT_DESPAWN_ANIM) {
       // The only warning a mined vein gives that it is going; the destroy update comes later.
+      // 11.11 (6.03): and only that removes it. Wow.exe's handler (0x0070bef0) plays the model's Despawn and nothing
+      // more (GameObjectAnimation.ts, GO_DESPAWN_ANIM_INDEX); the clip pins the object past its destroy until it ends.
+      // GameObject::Delete sends this, then the object leaves the map and its destroy follows (GameObject.cpp:1001).
       const guid = parseGameObjectDespawnAnim(packet.payload);
-      this.state.destroy(guid);
-      this.#retireWorldObject(guid);
+      this.onGameObjectAnimation?.(guid, GO_DESPAWN_ANIM_INDEX);
       return true;
     }
     return false;
@@ -7946,7 +7970,12 @@ export class WorldClient {
   }
 
   setActionButton(slot: number, action: number, type: number): void {
-    this.#connection.send(OPCODES.CMSG_SET_ACTION_BUTTON, buildSetActionButton(slot, action, type));
+    // 5.37: a macro goes out as Wow.exe's word for its id (browser/ui/MacroButtons.ts).
+    const wire = action === 0 || !this.actionButtonCodec ? { slot, action, type } : this.actionButtonCodec.wire({ slot, action, type });
+    this.#connection.send(OPCODES.CMSG_SET_ACTION_BUTTON, buildSetActionButton(slot, wire.action, wire.type));
+    const keptWire = this.actionButtonsWire.filter((button) => button.slot !== slot);
+    if (action !== 0) keptWire.push(wire);
+    this.actionButtonsWire = keptWire.sort((left, right) => left.slot - right.slot);
     const kept = this.actionButtons.filter((button) => button.slot !== slot);
     if (action !== 0) kept.push({ slot, action, type });
     this.actionButtons = kept.sort((left, right) => left.slot - right.slot);
@@ -8973,8 +9002,11 @@ export class WorldClient {
     }
     if (packet.opcode === OPCODES.SMSG_ACTION_BUTTONS) {
       const buttons = parseActionButtons(packet.payload);
-      if (buttons.state !== ACTION_BUTTON_STATE_CLEAR || buttons.buttons.length > 0) this.actionButtons = buttons.buttons;
-      else this.actionButtons = [];
+      if (buttons.state !== ACTION_BUTTON_STATE_CLEAR || buttons.buttons.length > 0) this.actionButtonsWire = buttons.buttons;
+      else this.actionButtonsWire = [];
+      // 5.37: this client's view of them (a macro by its slot here), through the page's codec.
+      const codec = this.actionButtonCodec;
+      this.actionButtons = codec ? this.actionButtonsWire.map((button) => codec.view(button)) : [...this.actionButtonsWire];
       this.events.emit("ACTION_BUTTONS_CHANGED", {});
       return true;
     }
@@ -10672,6 +10704,8 @@ export class WorldClient {
     }
     if (packet.opcode === OPCODES.SMSG_LFG_PLAYER_REWARD) {
       this.lfgReward = parseLfgPlayerReward(packet.payload);
+      // 3.25 (11.11): the experience and money lines Wow.exe 0x0055bdc0 prints before the event.
+      for (const line of lfgRewardSystemLines(this.lfgReward)) this.#systemChat(line);
       this.events.emit("LFG_INFO_CHANGED", {});
       this.events.emit("LFG_STATE_CHANGED", { kind: "reward" });
       return true;

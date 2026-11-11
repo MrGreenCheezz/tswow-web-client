@@ -8,6 +8,17 @@
 // 0x40 is up and the unit is not mounted (+0x98C), and the field's handler (0x0073F0BF) raises the bit only when the
 // value changes — to anything but stand (0), dead (7) or 9. So a pose a swing or a run ended comes back only with a
 // new value. Not measured: whether a cast, an emote or being hit ends it too.
+//
+// 11.11, read but not settled (.runtime/re-2026-11-11/combat4, anim4/r6.c): every animation that ends on the unit's own
+// model reaches 0x0073bbd0 through the model callback 0x0073c090 — swings, casts, emotes and hits alike; 0x0073bff0
+// (through 0x0073c140) is the mount model's. At a whole-body end 0x0073bbd0 raises 0x40 (clearing 0x30) before it re-picks
+// the base (0x0073b510 → 0x0073ac30(0x10, −1): the −1 is the rung mask of the chain 0x00724500, 0x100 its stand-state
+// rung 0x0071e1f0, 0x200 the emote-state rung 0x007171c0), and nothing clears 0x40 for good. In that chain the rung
+// 0x0071e0d0 — a melee target at +0xa20, written by SMSG_ATTACK_START and cleared by SMSG_ATTACK_STOP — comes before
+// the stand-state pose and gives the ready stance; the idle flying pose (0x0071e340) comes after it. So the code reads
+// as: a unit whose base is re-picked while it holds no melee target takes its stand-state pose again. The stand showed
+// Onyxia standing after a swing with no SMSG_ATTACK_START sent, which that reading does not explain; until a measurement
+// settles it (swing, then SMSG_ATTACK_STOP, then another animation's end; and a hovering unit), the measured rule stays.
 
 import { UNIT_STAND_STATE_DEAD, UNIT_STAND_STATE_STAND } from "../world/CharacterProgressProtocol.js";
 

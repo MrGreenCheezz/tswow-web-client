@@ -323,28 +323,34 @@ test("7.10: the ocean darkens with depth by its LiquidType intensities", () => {
   const surface = at(0);
   const half = at(15);
   const deep = at(60);
+  // 11.11 (7.65): Wow.exe 0x007f3230 darkens the ambient and direct colours, never the fog distance.
   assert.equal(surface.fogEnd, 600);
-  assert.equal(half.fogEnd, 600 * (1 - 0.5 * 0.5));
-  assert.equal(half.fogStart, 300 * (1 - 0.5 * 0.5));
-  assert.equal(deep.fogEnd, 600 * 0.5, "clamped at MaxDarkenDepth");
-  assert.ok(Math.abs(deep.colours.ambient.b - 0.5) < 1e-6);
+  assert.equal(half.fogEnd, 600);
+  assert.equal(half.fogStart, 300);
+  assert.equal(deep.fogEnd, 600);
+  assert.ok(Math.abs(half.colours.ambient.b - 0.75) < 1e-6);
+  assert.ok(Math.abs(deep.colours.ambient.b - 0.5) < 1e-6, "clamped at MaxDarkenDepth");
   assert.ok(Math.abs(deep.colours.diffuse.b - 0.75) < 1e-6);
   const dry = resolveLighting(V5_ENTRY, 0, 0, 1440, 0, 3, undefined, undefined, 1, undefined, undefined, false, 0, 2, 15);
   assert.equal(dry.fogEnd, 600, "darkening needs the eye under the surface");
 });
 
-test("the ghost light fades over two seconds and starts settled", () => {
+test("11.11 (7.15): the ghost light has no fade (Wow.exe 0x004f7020 / 0x007f3230)", () => {
   const fade = new GhostLightFade();
-  assert.equal(GHOST_LIGHT_FADE_MS, 2000);
-  assert.equal(fade.weight(true, 1000), 1, "entering the world dead does not fade in");
-  assert.equal(fade.weight(false, 2000), 1);
-  assert.equal(fade.weight(false, 3000), 0.5);
-  assert.equal(fade.weight(false, 4000), 0);
-  assert.equal(fade.weight(true, 5000), 0);
-  assert.equal(fade.weight(true, 5500), 0.25);
-  // Reversing mid-fade starts from where it stands rather than jumping.
-  assert.equal(fade.weight(false, 5500), 0.25);
-  assert.equal(fade.weight(false, 6000), 0);
+  assert.equal(GHOST_LIGHT_FADE_MS, 0);
+  assert.equal(fade.weight(true, 1000), 1);
+  assert.equal(fade.weight(false, 1016), 0, "resurrected: the living light on the next frame");
+  assert.equal(fade.weight(true, 1032), 1);
+});
+
+test("11.11 (7.65): a set's fog end is at least 10 yards and its start share within [-1, 1] (0x007ecd80, 0x007ebff0)", () => {
+  const near = { ...colourSet(0x808080), fogEnd: { times: [0], values: [4] }, fogScale: { times: [0], values: [1.5] } };
+  const sample = resolveLighting({ fallback: 1, params: { 1: near }, volumes: [] }, 0, 0, 1440);
+  assert.equal(sample.fogEnd, 10);
+  assert.equal(sample.fogStart, 10, "the start at end × 1, not × 1.5");
+  const far = resolveLighting({ fallback: 1, params: { 1: colourSet(0x808080) }, volumes: [] }, 0, 0, 1440);
+  assert.equal(far.fogEnd, 600);
+  assert.equal(far.fogStart, 300);
 });
 
 test("7.09 data: LiquidType v2 rows carry family, material, light and darkening", async (t) => {
@@ -465,13 +471,39 @@ const V5_ENTRY = {
   liquids: { 2: { maxDarkenDepth: 30, fogDarken: 0.5, ambDarken: 0.5, dirDarken: 0.25 }, 3: { paramsId: 5 } },
 };
 
-test("(d) v5: a ghost under lava or deep ocean sees the map's death light, not the liquid's", () => {
+test("(d) 11.11 (7.15): under lava a ghost sees the lava's set; in deep ocean the map's death set, darkened", () => {
+  // Wow.exe 0x007f3230 reads a liquid's own set before the death slot, and darkens after both.
   const ghostInLava = at(V5_ENTRY, true, 1, 3, 5);
-  assert.equal(ghostInLava.colours.ambient.r, 0x40 / 255, "the map's death set 3, not the lava's set 5");
-  assert.equal(ghostInLava.colours.ambient.g, 0);
+  assert.equal(ghostInLava.colours.ambient.r, 1, "the lava's set 5, not the map's death set 3");
+  assert.equal(ghostInLava.liquidLight, true);
   const ghostDeep = at(V5_ENTRY, true, 1, 2, 30);
-  assert.equal(ghostDeep.fogEnd, 600, "no ocean darkening over the death light");
-  assert.equal(ghostDeep.colours.ambient.r, 0x40 / 255);
+  assert.equal(ghostDeep.fogEnd, 600, "the fog distance is never darkened (7.65)");
+  assert.ok(Math.abs(ghostDeep.colours.ambient.r - 0x40 / 255 * 0.5) < 1e-9, "death set 3, ambient at half by depth");
+});
+
+test("11.11 (7.15): the death slot is the map default row's, whatever volume the ghost stands in", () => {
+  const entry = {
+    ...V5_ENTRY,
+    volumes: [{ id: 7, x: 0, y: 0, z: 0, innerRadius: 100, outerRadius: 200, params: 4, underwaterParams: 5, deathParams: 6 }],
+  };
+  const alive = at(entry, false, 0, undefined, 0);
+  assert.equal(alive.colours.ambient.g, 1, "alive: the volume's own set 4");
+  const ghost = at(entry, false, 1, undefined, 0);
+  assert.equal(ghost.colours.ambient.r, 0x40 / 255, "dead: the default row's slot 4 (set 3), not the volume's (set 6)");
+  assert.equal(ghost.colours.ambient.b, 0);
+  // The living sample keeps its water alphas and glow (0x007f3230 copies them back).
+  const lake = { ...colourSet(0x123456), waterShallowAlpha: 0.11, waterDeepAlpha: 0.22, oceanShallowAlpha: 0.33,
+    oceanDeepAlpha: 0.44, glow: 0.7 };
+  for (const name of ["sunColour", "sunHalo", "cloudA", "cloudB", "extra8", "extra13"]) {
+    lake.colours[name] = { times: [0], values: [0x010203] };
+  }
+  const kept = at({ ...V5_ENTRY, params: { ...V5_ENTRY.params, 1: lake } }, false, 1, undefined, 0);
+  assert.equal(kept.colours.ambient.r, 0x40 / 255);
+  assert.deepEqual([kept.waterShallowAlpha, kept.waterDeepAlpha, kept.oceanShallowAlpha, kept.oceanDeepAlpha, kept.glow],
+    [0.11, 0.22, 0.33, 0.44, 0.7]);
+  // Slot 4 repeating slot 0 is not sent; the slot then names the default's clear set.
+  const same = { ...V5_ENTRY, fallbackDeath: undefined, volumes: entry.volumes };
+  assert.equal(at(same, false, 1, undefined, 0).colours.ambient.r, 0x80 / 255, "the default's clear set 1");
 });
 
 test("(c) the darkening edits only this frame's sample: repeated frames do not compound", () => {
@@ -500,16 +532,12 @@ test("the sample says when a liquid's light and its depth darkening are in it", 
   assert.equal(old.liquidDarkens, false);
 });
 
-test("(d) the ghost fade starts settled again after the world was not drawn for a fade's length", () => {
+test("(d) 11.11 (7.15): the death light switches on the frame the ghost flag changes, both ways", () => {
   const fade = new GhostLightFade();
   assert.equal(fade.weight(false, 0), 0);
-  assert.equal(fade.weight(false, 16), 0);
-  // Logged out alive, back at the character screen, in again as a ghost: never seen alive.
-  assert.equal(fade.weight(true, 16 + GHOST_LIGHT_FADE_MS + 500), 1);
-  // Within a session the turn still fades, frame by frame.
-  const now = 16 + GHOST_LIGHT_FADE_MS + 500;
-  assert.equal(fade.weight(false, now + 16), 1);
-  assert.equal(fade.weight(false, now + 16 + 1000), 0.5);
+  assert.equal(fade.weight(true, 16), 1, "Wow.exe 0x007f3230 reads the slot every frame: no turn");
+  assert.equal(fade.weight(false, 32), 0);
+  assert.equal(fade.weight(true, 48), 1);
 });
 
 // ---- the overlay hook ------------------------------------------------------------------------

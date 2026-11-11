@@ -1090,10 +1090,16 @@ export class SpellVisualCoordinator {
         this.#stateShown.add(key);
         return;
       }
-      const plan = planSpellAuraState(visual, { guid, point }, now, current.expiresAt ?? Number.POSITIVE_INFINITY);
-      if (playAnimation) {
-        const handle = this.#dispatchStatePlan(plan, now, replayNow, world,
-          { key, guid, slot: aura.slot, spellId: aura.spellId, expectedPresent: true });
+      // 11.11 (6.13): the aura's caster, when it is another unit in view — the first end of the StateKit's beams.
+      const casterGuid = current.casterGuid;
+      const casterPoint = casterGuid !== undefined && casterGuid !== guid && visual.state.chains
+        ? this.#objectPoint(world, casterGuid) : undefined;
+      const plan = planSpellAuraState(visual, { guid, point }, now, current.expiresAt ?? Number.POSITIVE_INFINITY,
+        casterPoint && casterGuid !== undefined ? { guid: casterGuid, point: casterPoint } : undefined);
+      // A beam lasts with the aura like the held models, not like a one-shot: a unit met with the aura already on draws it too.
+      if (playAnimation || plan.beams) {
+        const handle = this.#dispatchStatePlan(playAnimation ? plan : { ...plan, animations: [], sounds: [] }, now, replayNow,
+          world, { key, guid, slot: aura.slot, spellId: aura.spellId, expectedPresent: true });
         if (handle !== undefined) {
           this.#stateOwnership.set(key, { key, epoch: this.#epoch, world, handle });
         }
@@ -1334,9 +1340,10 @@ export class SpellVisualCoordinator {
     state: StateDeferredGuard,
   ): number | undefined { // 22.10 ARC-2 S4a
     // StateKit instances are owned by setStateVisuals; only its one-shot animations and sound
-    // belong to this finite dispatch.
-    return this.#dispatchPlan({ instances: [], animations: plan.animations, sounds: plan.sounds }, receivedAt, now, world,
-      true, state);
+    // belong to this finite dispatch — and 11.11 (6.13) its beams from the aura's caster, cancelled with the handle.
+    return this.#dispatchPlan({
+      instances: [], animations: plan.animations, sounds: plan.sounds, ...(plan.beams ? { beams: plan.beams } : {}),
+    }, receivedAt, now, world, true, state);
   }
 
   #dispatchPlan(

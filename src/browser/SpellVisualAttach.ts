@@ -47,6 +47,46 @@ export function visualOffset(stored: readonly number[] | undefined): readonly [n
   return [x, -y, z];
 }
 
+/**
+ * 11.11 (6.12): where a missile leaves its caster — Wow.exe's fire point 0x00720bf0, which the launch of a unit's
+ * pending missiles 0x0072df00 asks before 0x007022d0 fixes the point (.runtime/re-2026-10-03/l1102e/r5.c,
+ * re-2026-10-11/glue-1110/1013-m9.txt, m10.txt):
+ *
+ * - MissileAttachment not −1: an index through 0x00adaa20 (0x0071a7f0), the attachment id itself under
+ *   SpellVisual.Flags 0x200; index 13 is the spell right hand 0x00adaa30 (0x0071a860 then prefers attachments
+ *   4…0 on a model whose attached list holds a type-1 entry — not followed). The point is moved by
+ *   MissileCastOffset, (x, −y, z), in the attachment's frame (0x0071a860).
+ * - MissileAttachment −1 with a MissileCastOffset: the directed spell hand, table entry 12 (0x00adaa50 = 38), moved
+ *   by the offset; on a model without it Wow.exe turns the offset by the unit's model matrix from its position.
+ * - MissileAttachment −1 and no offset: 0x00720bf0 answers nothing and the launch takes the point it was handed —
+ *   the animation event's, or 0x0071a720's "$CSL"/"$CSR"/"$CST" event or the unit's position. Not reproduced:
+ *   undefined here, and the caller keeps its spell right hand.
+ *
+ * A model that lacks the attachment makes 0x00720bf0 answer nothing as well; the renderer's point then falls back
+ * to 0.75 of the height (MissileFlight.ts `MissilePoints.point`), not to the events.
+ */
+export interface MissileLaunchPoint {
+  readonly attachment: number;
+  readonly offset?: readonly [number, number, number];
+}
+
+/** 0x00adaa20[12] (0x00adaa50): the attachment an offset-only fire point is read on. */
+export const ATTACH_SPELL_HAND_DIRECTED = 38;
+/** The fire point of a SpellVisual row's missile columns (the table's entry 13 is 0x00adaa30's 22 as well). */
+export function missileLaunchPoint(missile: {
+  readonly launch?: number | undefined;
+  readonly destRaw?: true | undefined;
+  readonly castOffset?: readonly number[] | undefined;
+}): MissileLaunchPoint | undefined {
+  const offset = visualOffset(missile.castOffset);
+  const launch = missile.launch;
+  if (launch !== undefined && Number.isInteger(launch) && launch !== -1) {
+    const attachment = missileDestinationAttachment(launch, missile.destRaw === true);
+    return offset ? { attachment, offset } : { attachment };
+  }
+  return offset ? { attachment: ATTACH_SPELL_HAND_DIRECTED, offset } : undefined;
+}
+
 /** MissileFollowGround, as Missile_C +0x100…+0x10c holds it. */
 export interface MissileFollowGround {
   /** Yards kept above the ground (≥ 0.25). */

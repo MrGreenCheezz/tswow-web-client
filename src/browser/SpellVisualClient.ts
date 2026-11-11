@@ -174,7 +174,10 @@ export class SpellVisualClient extends BatchedMetadataClient<SpellVisualMetadata
     // v=12 (29.10): `ammoMissile`; an older gateway answers v=11 without it (no ammo flies, the shot still plays).
     // v=13 (11.11, 5.05): `sheathKeep` on a spell and on its kits (Wow.exe 0x0073b140's play flag 0x20); an older gateway
     // answers v=12 without it, and every kit start is then judged as a start that does not keep the weapon out.
-    return `${this.baseUrl}/dbc/spell-visuals?v=13&ids=${ids.join(",")}`;
+    // v=14 (11.11, 6.12): a missile's raw MissileAttachment `launch` (Wow.exe 0x00720bf0's index); an older gateway
+    // answers v=13 without it: the missile leaves from `attachment` as before, except that a row with a cast offset
+    // is then read on the directed spell hand whatever its MissileAttachment is (SpellVisualAttach.ts).
+    return `${this.baseUrl}/dbc/spell-visuals?v=14&ids=${ids.join(",")}`;
   }
 
   protected override accept(value: unknown): value is SpellVisualMetadata {
@@ -367,7 +370,7 @@ function isMissileExtras(shape: Record<string, unknown>): boolean {
     if (!finite(row["id"]) || typeof row["script"] !== "string" || !finite(row["count"])
       || !Number.isInteger(row["count"]) || (row["count"] as number) < 1) return false;
   }
-  for (const field of ["dest", "pathType"]) if (shape[field] !== undefined && !finite(shape[field])) return false;
+  for (const field of ["dest", "pathType", "launch"]) if (shape[field] !== undefined && !finite(shape[field])) return false; // 11.11: launch
   if (shape["destRaw"] !== undefined && shape["destRaw"] !== true) return false; // 13.10
   for (const field of ["castOffset", "impactOffset"]) if (shape[field] !== undefined && !finiteTriple(shape[field])) return false;
   const ground = shape["followGround"];

@@ -288,12 +288,14 @@ test("async effect catch-up advances bounded substeps so a low-rate emitter is n
   assert.ok(system.particles.every((particle) => particle.age <= 0.7), "catch-up stays within age");
 });
 
-test("ordinary frame stepping keeps the anti-hitch clamp", () => {
+test("ordinary frame stepping catches a long frame up in 0.1 s steps, as Wow.exe 0x0097acb0 does", () => {
+  // 11.11 (6.15): until then a 0.7 s frame was cut to one 0.1 s step and banked 0.2 of a particle. InternalUpdate
+  // takes FISTP(7 − 0.5) = 6 steps of 0.1 s (the lifespan of 2 s allows 20) and a last one of what is left (0 here).
   const late = emitter({ emissionRate: track([2], [0]), lifespan: track([2], [0]) });
   const system = createParticleSystem(late, new Uint32Array(0), 23);
   stepParticles(system, 0.7, { matrix: IDENTITY, animationMs: 0, worldMs: 0 });
-  assert.equal(system.particles.length, 0, "ordinary frames simulate only their capped 100 ms");
-  assert.ok(system.pending > 0 && system.pending < 1);
+  assert.equal(system.particles.length, 1, "1.2 particles owed: one spawned");
+  assert.ok(Math.abs(system.pending - 0.2) < 1e-9, `${system.pending} still owed`);
 });
 
 test("finite cold-load first-burst prime gives a quiet two-per-second emitter its first burst", () => {

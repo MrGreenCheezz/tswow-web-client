@@ -135,7 +135,18 @@ export interface EffectFrame {
   viewY?: number | undefined;
   viewZ?: number | undefined;
   ground?: ((x: number, z: number) => number | undefined) | undefined;
+  /**
+   * 11.11 (6.11): the model's alpha (CM2Model m_effectiveAlpha — for a unit, its eased fade × max alpha, Unit_C
+   * 0x0071abe0/0x00744030, on its weapons and mount too). Every emitter's particles take clamp(it, 0, 1) into their
+   * vertex alpha (m_alphaScale, CM2Model::AnimateParticleST 0x008309c0), a ribbon its new edges (0x0097fba0); below
+   * 0.0001 none of the model's particles or ribbons is drawn (CM2Model::GetNumBatches 0x0082d1a0), though they still
+   * run. Absent: 1.
+   */
+  modelAlpha?: number | undefined;
 }
+
+/** 11.11 (6.11): below this model alpha Wow.exe counts none of a model's particle batches (0x0082d1a0). */
+export const MODEL_ALPHA_DRAWN = 0.000099999997;
 
 export interface EffectUpdateOptions {
   /** Only true for a newly resolved async spell model, never for a normal frame delta. */
@@ -453,6 +464,9 @@ export function updateModelEffects(
   view: BillboardView,
   options: EffectUpdateOptions = {},
 ): void {
+  // 11.11 (6.11): the model's alpha, clamped as AnimateParticleST stores it; under 0.0001 nothing is drawn.
+  const modelAlpha = frame.modelAlpha === undefined ? 1 : Math.min(1, Math.max(0, frame.modelAlpha));
+  const faded = !(modelAlpha >= MODEL_ALPHA_DRAWN);
   for (const drawn of effects.emitters) {
     if (drawn.follows) {
       // 13.10 6.15: a further texture of a ribbon draws whatever its leader wrote this frame (listed after it).
@@ -473,8 +487,10 @@ export function updateModelEffects(
     emitterFrame.viewY = frame.viewY;
     emitterFrame.viewZ = frame.viewZ;
     emitterFrame.ground = frame.ground;
+    emitterFrame.modelAlpha = modelAlpha; // 11.11 (6.11): a ribbon's new edges
     let quads = 0;
     if (drawn.particles) {
+      drawn.particles.modelAlpha = modelAlpha; // 11.11 (6.11): m_alphaScale (0x008309c0)
       if (options.firstBurst) {
         const primeFrame = options.firstBurstAnimationMs === undefined
           ? emitterFrame
@@ -486,7 +502,7 @@ export function updateModelEffects(
       // 12.08: off screen, nothing it would write could be seen; the next visible frame writes
       // every quad again from the simulation, so skipping is exact. In the city bench ≈ 90 % of
       // the emitters drawn were outside the view, every one of them written, uploaded and drawn.
-      if (options.frustum && particlesOutside(drawn.particles, options.frustum, drawn.mesh.matrixWorld)) {
+      if (faded || (options.frustum && particlesOutside(drawn.particles, options.frustum, drawn.mesh.matrixWorld))) {
         drawn.geometry.setDrawRange(0, 0);
         drawn.mesh.visible = false;
         continue;
@@ -500,7 +516,7 @@ export function updateModelEffects(
     } else if (drawn.ribbon) {
       if (options.catchUp) stepRibbonCatchUp(drawn.ribbon, seconds, emitterFrame);
       else stepRibbon(drawn.ribbon, seconds, emitterFrame);
-      quads = writeRibbonStrip(drawn.ribbon, drawn.buffers);
+      quads = faded ? 0 : writeRibbonStrip(drawn.ribbon, drawn.buffers); // 11.11 (6.11)
     }
     drawn.geometry.setDrawRange(0, quads * 6);
     // 12.08: three binds the program and submits even an empty range; an empty emitter is hidden.

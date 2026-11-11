@@ -14,6 +14,9 @@
  * * `GetQuestLogPushable` (0x5df520) looks the quest up in the quest cache and answers 1 when its
  *   Flags word (cache offset 0x50, `QUEST_FLAGS_SHARABLE` 0x8 — `QuestDef.h:139`) has 0x8, and
  *   **no value** otherwise, not nil and not false; a quest not in the cache answers nothing too.
+ *   1.12 (11.11): and nothing is asked for — the cache lookup 0x0067de90 is called without a callback
+ *   (0x5df520 passes 0), and on a miss it queues a query only when a callback is given; so
+ *   `questFlags` reads the cache and never requests the template.
  * * `QuestLogPushQuest` (0x5e4ed0) sends `CMSG_PUSHQUESTTOPARTY` with the quest id (0x6d4f00) only
  *   when the player exists, the quest is cached and sharable, and the player has a party member (the
  *   first party slot's guid, 0xbd1948, which `GetNumPartyMembers` 0x52c110 counts) or raid members

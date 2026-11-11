@@ -192,7 +192,8 @@ test("renderer gates game-object requests on visibility admission and keeps reje
     "warm residents preserve rig, effects, and queued animation state");
   assert.match(update, /if \(rendered\.wmo\) this\.#clearWmoGroups\(rendered\.wmo, rendered\.node\);/,
     "hidden WMO residents release live room geometry without dropping their outer state");
-  assert.match(update, /if \(inRange\.has\(guid\)\) continue;\s*this\.#disposeGameObject\(rendered\)/,
+  // 6.03 (11.11): an object out of the set is disposed at once unless its clip pins it (Despawn), then kept to its end.
+  assert.match(update, /if \(inRange\.has\(guid\)\) continue;[\s\S]{0,400}?this\.#lingerUntil\(rendered, guid, client, now\);[\s\S]{0,400}?this\.#disposeGameObject\(rendered\)/,
     "only objects outside the distance-resident set are disposed");
 
   const radiusStart = source.indexOf("  #gameObjectVisibilityRadius(");

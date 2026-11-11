@@ -128,6 +128,8 @@ export function buildLiquidSurfaces(
 export function parseLiquidTypes(value: unknown): {
   classes: Map<number, LiquidClass>;
   surfaces: Map<number, LiquidSurface> | undefined;
+  /** 11.11 (7.31): each row's texture placement; `undefined` against a v1 body, like `surfaces`. */
+  motions?: Map<number, LiquidMotion> | undefined;
 } {
   const body = value as { version?: unknown; classes?: unknown; rows?: unknown } | null;
   const v2 = body !== null && typeof body === "object" && body.version === 2
@@ -139,13 +141,18 @@ export function parseLiquidTypes(value: unknown): {
   }
   if (!v2 || typeof body!.rows !== "object" || body!.rows === null) return { classes, surfaces: undefined };
   const rows: Record<string, LiquidSurfaceRow> = {};
+  const motions = new Map<number, LiquidMotion>();
   for (const [id, row] of Object.entries(body!.rows as Record<string, unknown>)) {
-    const candidate = row as Partial<LiquidSurfaceRow> | null;
+    const candidate = row as Partial<LiquidSurfaceRow> & { materialId?: unknown; floatParams?: unknown } | null;
+    // 11.11 (7.31): the motion needs only the material and the floats, both in every v2 row.
+    if (candidate && typeof candidate.materialId === "number" && Array.isArray(candidate.floatParams)) {
+      motions.set(Number(id), liquidMotionOfRow(candidate.materialId, candidate.floatParams.map(Number)));
+    }
     if (!candidate || typeof candidate.family !== "string" || typeof candidate.soundBank !== "number"
       || !Array.isArray(candidate.textures)) continue;
     rows[id] = { soundBank: candidate.soundBank, family: candidate.family, textures: candidate.textures.map(String) };
   }
-  return { classes, surfaces: buildLiquidSurfaces(classes, rows) };
+  return { classes, surfaces: buildLiquidSurfaces(classes, rows), motions };
 }
 
 /**
@@ -163,10 +170,103 @@ export function liquidSurfaceOf(
   return named !== undefined && liquidSurfaceClass(named) === classOf ? named : classOf;
 }
 
-/** One repeat of the surface texture per liquid cell, which is the grid the heights are on. */
+/** The liquid grid: the cell the heights are on, eight to a 33⅓-yard chunk. */
 export const LIQUID_CELL_YARDS = 533.3333333333334 / 128;
-/** How fast the thirty frames are walked. A one-second loop, which is what the client looks like. */
-export const LIQUID_FRAMES_PER_SECOND = 30;
+
+// ---- 11.11 (7.31): how Wow.exe maps a liquid's texture and walks its frames --------------------
+// The surface used to repeat its texture once per 4.17-yard cell — the owner's «тайлинг заметный,
+// квадратами» on Shadowmoon Valley's green lava. Wow.exe fills a terrain liquid's vertex buffer in
+// 0x007ce390 (called per chunk from 0x007d4ab0): a vertex whose LiquidMaterial vertex format is not 1
+// gets `uv = position.xy * 0.06` (constant 0x00a40410; the position is world X, Y relative to the
+// batch's first chunk, whose origin times 0.06 is a whole number, so it is the world's own tiling):
+// one repeat per 16⅔ yards, four cells. A format-1 vertex (LiquidMaterial 2, the magma/slime
+// material) reads its own u16 (s, t) from the file instead (MCLQ 0x008a3250, MH2O 0x008a31b0) and
+// scales them by 0.01171875 (0x00a40414). The dataset's map files carry no (s, t), so magma and
+// slime take the position rule here too — what is missing is in the report of 7.31: measured on the
+// client's own ADTs (`.runtime/re-2026-11-11/env4/mclq-uv.mjs`, `mh2o-uv.mjs`), Shadowmoon Valley's
+// 461 green lava chunks step a median 0.24 uv per cell (0.25 is the position rule) but anywhere from
+// 0.08 to 0.5 — a hand-warped flow — and the 127 MH2O magma instances of Azeroth and Kalimdor 0.49.
+
+/** Wow.exe 0x007ce390: texture repeats per yard of a terrain liquid without stored (s, t). */
+export const LIQUID_UV_PER_YARD = 0.06;
+/**
+ * Wow.exe 0x008a1d60: a liquid's frames are walked once per period, `frame = floor(frames · (t mod
+ * period) / period)` over the millisecond clock (0x0086ae20). The magma material asks for 1250 ms
+ * (0x008a6090, constant 0x4e2); the water material for `LiquidType.Int[1]`, which is 1250 on every
+ * water row of this client. Thirty frames are therefore 24 a second, fast water's sixteen 12.8.
+ */
+export const LIQUID_ANIMATION_PERIOD_MS = 1250;
+/** The scroll clock wraps here: a common multiple of the 40 s and 10 s scroll periods of this client. */
+const LIQUID_SCROLL_WRAP_SECONDS = 36000;
+
+/** Wow.exe 0x008a1d60: the frame of a `frames`-long strip at `milliseconds` on the clock. */
+export function liquidFrameAt(milliseconds: number, frames: number, periodMs = LIQUID_ANIMATION_PERIOD_MS): number {
+  const count = Math.max(1, Math.floor(frames));
+  const period = Math.max(1, Math.round(periodMs));
+  const into = ((milliseconds % period) + period) % period;
+  return Math.min(count - 1, Math.floor(count * into / period));
+}
+
+/** How a `LiquidType` row's texture sits on the surface and moves. */
+export interface LiquidMotion {
+  /** Multiplies the position UVs (the water material's `Float[0]`). */
+  uvScale: number;
+  /** Texture repeats per second along u and v (the magma material's scroll). */
+  scrollU: number;
+  scrollV: number;
+}
+
+/** A row the table has not named: the position UVs as they are, still. */
+export const LIQUID_MOTION_NONE: Readonly<LiquidMotion> = Object.freeze({ uvScale: 1, scrollU: 0, scrollV: 0 });
+
+/**
+ * One scroll axis of the magma material, Wow.exe 0x008a34b0: the texture matrix is translated by
+ * `(t mod P) / P` with `P = round(1000 / speed)` milliseconds, so the rate is `1 / P` per
+ * millisecond — `speed` itself whenever 1000 / speed is whole, as 0.025 (40 s) and 0.1 (10 s) are.
+ * A zero speed leaves the axis still; a negative one is not in this client and is not guessed at.
+ */
+function scrollRate(speed: number): number {
+  if (!(speed > 0) || !Number.isFinite(speed)) return 0;
+  const period = Math.round(1000 / speed);
+  return period > 0 ? 1000 / period : 0;
+}
+
+/**
+ * The texture placement of one `LiquidType` row, by the material class Wow.exe builds for its
+ * `MaterialID` (0x008a1fa0: 1 `CMaterialWater_Liquid`, 2 `CMaterialMagma_Liquid`, 3 procedural).
+ *
+ * - Water (0x008a5590): the animated texture's matrix is `rotate(Float[1]°) · scale(Float[0])` —
+ *   1 and 0 on every terrain water row, 2 on 181 "Orange Slime". The rotation is left out: only
+ *   row 14 "WMO Ocean" has one (180°), and building water is not drawn through this table.
+ * - Magma (0x008a6090, and 0x008a6350 without shaders): `scroll(Float[0], Float[1])` times the scale
+ *   0x008a1770 is handed by 0x007997d0, 1.0 — 0.025 along u (one repeat per 40 s) on terrain magma,
+ *   slime and green lava, 0.1 along v on the WMO rows.
+ * - Procedural (3) is not read here and keeps the position UVs.
+ */
+export function liquidMotionOfRow(materialId: number, floatParams: readonly number[]): LiquidMotion {
+  const f0 = floatParams[0] ?? 0;
+  const f1 = floatParams[1] ?? 0;
+  if (materialId === 1) {
+    return { uvScale: Number.isFinite(f0) && f0 > 0 ? f0 : 1, scrollU: 0, scrollV: 0 };
+  }
+  if (materialId === 2) return { uvScale: 1, scrollU: scrollRate(f0), scrollV: scrollRate(f1) };
+  return { ...LIQUID_MOTION_NONE };
+}
+
+/** The motion of a cell's row, or none while the table is missing or does not name it. */
+export function liquidMotionOf(entry: number, motions: ReadonlyMap<number, LiquidMotion> | undefined): Readonly<LiquidMotion> {
+  return (entry > 0 ? motions?.get(entry) : undefined) ?? LIQUID_MOTION_NONE;
+}
+
+/**
+ * The four corners' UVs of one terrain cell, in the order `#waterGeometrySteps` lays its corners:
+ * (x0, y0), (x1, y0), (x0, y1), (x1, y1). `u` follows world X and `v` world Y, as 0x007ce390 writes
+ * them; the old layout had the two swapped, which only mattered once the texture began to scroll.
+ */
+export function pushLiquidCellUvs(out: number[], x0: number, x1: number, y0: number, y1: number, uvScale = 1): void {
+  const k = LIQUID_UV_PER_YARD * uvScale;
+  out.push(x0 * k, y0 * k, x1 * k, y0 * k, x0 * k, y1 * k, x1 * k, y1 * k);
+}
 /**
  * How far down the surface reaches its deep opacity.
  *
@@ -203,6 +303,8 @@ export class LiquidTextureClient {
   #classes: Map<number, LiquidClass> | undefined;
   /** 05.10-A7b-8: row -> surface from the v2 table; absent against an older gateway (v1 record). */
   #surfaces: Map<number, LiquidSurface> | undefined;
+  /** 11.11 (7.31): row -> texture placement, from the same v2 table. */
+  #motions: Map<number, LiquidMotion> | undefined;
   #loadingClasses = false;
   #classFailure: { attempts: number; after: number } | undefined;
   /** Invalidates callbacks captured by the world session being torn down. */
@@ -265,6 +367,7 @@ export class LiquidTextureClient {
     this.#stripFailures.clear();
     this.#classes = undefined;
     this.#surfaces = undefined; // 05.10-A7b-8
+    this.#motions = undefined; // 11.11 (7.31)
     this.#loadingClasses = false;
     this.#classFailure = undefined;
     this.onStatus = undefined;
@@ -316,6 +419,13 @@ export class LiquidTextureClient {
     return this.#surfaces;
   }
 
+  /** 11.11 (7.31): row -> texture placement (`liquidMotionOf`); `undefined` until the v2 table lands. */
+  get motions(): ReadonlyMap<number, LiquidMotion> | undefined {
+    if (this.#disposed) return undefined;
+    void this.classes;
+    return this.#motions;
+  }
+
   async #loadClasses(): Promise<void> {
     const epoch = this.#epoch;
     let settled = false;
@@ -332,10 +442,11 @@ export class LiquidTextureClient {
       // 05.10-A7b-8: `?v=2`; an older gateway ignores the query and answers the v1 record.
       const response = await fetch(`${this.#baseUrl}/dbc/liquid-types?v=2`);
       if (!response.ok) throw new Error(`Liquid type gateway returned ${response.status}`);
-      const { classes, surfaces } = parseLiquidTypes(await response.json());
+      const { classes, surfaces, motions } = parseLiquidTypes(await response.json());
       if (!this.#isCurrent(epoch)) return;
       this.#classes = classes;
       this.#surfaces = surfaces;
+      this.#motions = motions;
       this.#classFailure = undefined;
       // The same counter the strips bump: a tile drawn before the table arrived is classing its
       // cells by the flag, and this is what sends it back to do it again.
@@ -482,6 +593,8 @@ class LiquidStripAbsent extends Error {
 export interface LiquidMaterialUniforms {
   liquidFrame: { value: number };
   liquidFrames: { value: number };
+  /** 11.11 (7.31): the scroll clock, seconds wrapped at `LIQUID_SCROLL_WRAP_SECONDS`. */
+  liquidSeconds: { value: number };
   liquidShallowAlpha: { value: number };
   liquidDeepAlpha: { value: number };
   liquidDeepAt: { value: number };
@@ -1491,6 +1604,7 @@ export function buildLiquidMaterial(surface: LiquidSurface, strip: LiquidStrip):
   const uniforms: LiquidMaterialUniforms = {
     liquidFrame: { value: 0 },
     liquidFrames: { value: strip.frames },
+    liquidSeconds: { value: 0 },
     liquidShallowAlpha: { value: glowing ? 1 : WATER_MIN_SHALLOW_ALPHA },
     liquidDeepAlpha: { value: 1 },
     liquidDeepAt: { value: DEEP_AT_YARDS },
@@ -1511,15 +1625,24 @@ export function buildLiquidMaterial(surface: LiquidSurface, strip: LiquidStrip):
   });
   material.onBeforeCompile = (shader) => {
     Object.assign(shader.uniforms, uniforms);
+    // 11.11 (7.31): `liquidScroll` is the row's scroll rate per vertex (Wow.exe 0x008a34b0, see
+    // `liquidMotionOfRow`); geometry without it (building liquids, the stand-in sheet) reads the
+    // attribute default 0 and stands still. One cell's four corners share a rate, so the shift is
+    // the same at every vertex of a triangle and interpolates to itself.
     shader.vertexShader = `
       attribute float liquidDepth;
+      attribute vec2 liquidScroll;
+      uniform float liquidSeconds;
       varying float vLiquidDepth;
+      varying vec2 vLiquidShift;
       ${shader.vertexShader}`.replace("#include <begin_vertex>", `
       vLiquidDepth = liquidDepth;
+      vLiquidShift = fract(liquidScroll * liquidSeconds);
       #include <begin_vertex>`);
     shader.fragmentShader = `
       uniform float liquidFrame;
       uniform float liquidFrames;
+      varying vec2 vLiquidShift;
       uniform float liquidShallowAlpha;
       uniform float liquidDeepAlpha;
       uniform float liquidDeepAt;
@@ -1529,8 +1652,9 @@ export function buildLiquidMaterial(surface: LiquidSurface, strip: LiquidStrip):
       ${shader.fragmentShader}`.replace("#include <map_fragment>", `
       // The strip is one frame above the next, so the surface's own V is squeezed into the row
       // this frame occupies. Kept a texel inside it, or the filter reaches into its neighbour.
-      float liquidRow = clamp(fract(vMapUv.y), 0.002, 0.998);
-      vec2 liquidUv = vec2(vMapUv.x, (liquidFrame + liquidRow) / liquidFrames);
+      vec2 liquidPlaced = vMapUv + vLiquidShift;
+      float liquidRow = clamp(fract(liquidPlaced.y), 0.002, 0.998);
+      vec2 liquidUv = vec2(liquidPlaced.x, (liquidFrame + liquidRow) / liquidFrames);
       vec4 sampledDiffuseColor = texture2D(map, liquidUv);
       float liquidDepthMix = clamp(vLiquidDepth / liquidDeepAt, 0.0, 1.0);
       // Colour from the water bands. The strip's RGB is unpacked BLP noise — grey, high
@@ -1551,8 +1675,10 @@ export function buildLiquidMaterial(surface: LiquidSurface, strip: LiquidStrip):
 export function updateLiquidMaterial(liquid: LiquidMaterial, surface: LiquidSurface,
   sample: LightSample | undefined, seconds: number): void {
   const liquidClass = liquidSurfaceClass(surface); // 05.10-A7b-8: no allocation
-  liquid.uniforms.liquidFrame.value =
-    Math.floor(seconds * LIQUID_FRAMES_PER_SECOND) % liquid.uniforms.liquidFrames.value;
+  // 11.11 (7.31): Wow.exe 0x008a1d60 — the whole strip once per 1250 ms, whatever its length.
+  liquid.uniforms.liquidFrame.value = liquidFrameAt(seconds * 1000, liquid.uniforms.liquidFrames.value);
+  liquid.uniforms.liquidSeconds.value = ((seconds % LIQUID_SCROLL_WRAP_SECONDS) + LIQUID_SCROLL_WRAP_SECONDS)
+    % LIQUID_SCROLL_WRAP_SECONDS;
   if (!sample || liquidClass === "magma" || liquidClass === "slime") return;
   const ocean = liquidClass === "ocean";
   const shallow = ocean ? sample.oceanShallowAlpha : sample.waterShallowAlpha;

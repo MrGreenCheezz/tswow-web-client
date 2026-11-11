@@ -87,6 +87,30 @@ test("11.10 a group member out of view answers its cached power for its own type
   assert.deepEqual(call("UnitPowerMax", "party1", 0), [0]);
 });
 
+test("3.41 a dead unit's power is 0 unless it is the player's, a group member's or one of their pets (0x0060ed40, 0x00512a30)", () => {
+  const DYNAMIC = UPDATE_FIELDS.UNIT_DYNAMIC_FLAGS.offset;
+  const SUMMON = UPDATE_FIELDS.UNIT_FIELD_SUMMON.offset;
+  const dead = (object) => { object.fields.set(DYNAMIC, 0x20); return object; };
+  const player = dead(unit(1n, 4, 1, 8, 0, { 0: [500, 1000] }));
+  player.fields.set(SUMMON, 0x31);
+  const enemy = dead(unit(2n, 3, 0, 1, 0, { 0: [700, 900] }));
+  const pet = dead(unit(0x31n, 3, 0, 1, 2, { 2: [40, 100] }));
+  const member = dead(unit(0x21n, 4, 1, 2, 0, { 0: [300, 600] }));
+  // The out-of-view member's pet, known from the group cache only (0x0052d310's cached branch).
+  const memberPet = dead(unit(0x41n, 3, 0, 1, 0, { 0: [80, 200] }));
+  const group = { groupType: 0, members: [{ name: "Альфа", guid: 0x51n, online: true, status: 1, subGroup: 0, flags: 0, roles: 0 }] };
+  const partyStats = new Map([[0x51n, { guid: 0x51n, flags: 0, petGuid: 0x41n }]]);
+  const target = (guid) => seamFor(player, [enemy, pet, member, memberPet], { targetGuid: guid, group, partyStats });
+  assert.deepEqual(target(2n)("UnitPower", "target"), [0], "a dead stranger: 0");
+  assert.deepEqual(target(2n)("UnitPowerMax", "target"), [900], "UnitPowerMax (0x0060ef40) has no such check");
+  assert.deepEqual(target(2n)("UnitPower", "player"), [500], "the player keeps it");
+  assert.deepEqual(target(0x31n)("UnitPower", "target"), [40], "the player's summon keeps it");
+  assert.deepEqual(target(0x41n)("UnitPower", "target"), [80], "a group member's cached pet keeps it");
+  assert.deepEqual(target(0x21n)("UnitPower", "target"), [0], "not in the group: 0");
+  enemy.fields.delete(DYNAMIC);
+  assert.deepEqual(target(2n)("UnitPower", "target"), [700], "alive: answered as before");
+});
+
 // The symptom itself, through the client's own AlternatePowerBar.lua and PlayerFrame.
 let clientDirectory;
 try {

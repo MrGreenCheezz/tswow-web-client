@@ -59,23 +59,24 @@ test("Lua positions close the store's gaps: account 1..N, character 37..36+M, in
 test("CreateMacro takes the lowest free slot of its set and answers its position; EditMacro keeps what it is not given", async () => {
   const { model: macros, store, events } = model([{ index: 2, name: "A", body: "/a" }]);
   // The stock popup: CreateMacro(name, selectedIcon, nil, perCharacter).
-  assert.equal(macros.create("Новый", 2, undefined, false), 1, "slot 1 is free and sorts first");
+  // Slot 1 is free; by name (5.37, Wow.exe's order) «Новый» comes after «A», at position 2.
+  assert.equal(macros.create("Новый", 2, undefined, false), 2);
   assert.deepEqual(store.list().map((macro) => [macro.index, macro.name, macro.icon]),
     [[1, "Новый", "Interface\\Icons\\Ability_Defend"], [2, "A", undefined]]);
   assert.equal(macros.create("Мой", 1, "/wave", true), 37);
   assert.equal(store.list().find((macro) => macro.index === 37).icon, undefined, "the question mark is not stored");
   // MacroFrame_SaveMacro: EditMacro(selected, nil, nil, text).
-  assert.equal(macros.edit(1, undefined, undefined, "/say Привет"), 1);
-  assert.deepEqual(macros.info(1), ["Новый", "Interface\\Icons\\Ability_Defend", "/say Привет"]);
+  assert.equal(macros.edit(2, undefined, undefined, "/say Привет"), 2);
+  assert.deepEqual(macros.info(2), ["Новый", "Interface\\Icons\\Ability_Defend", "/say Привет"]);
   // The popup's edit: EditMacro(selected, name, icon).
-  assert.equal(macros.edit(1, "Имя длиннее шестнадцати", 3), 1);
-  assert.deepEqual(macros.info(1), ["Имя длиннее шест", "Interface\\Icons\\Spell_Fire_FlameBolt", "/say Привет"]);
+  assert.equal(macros.edit(2, "Имя длиннее шестнадцати", 3), 2);
+  assert.deepEqual(macros.info(2), ["Имя длиннее шест", "Interface\\Icons\\Spell_Fire_FlameBolt", "/say Привет"]);
   // A body is stored as written, up to 255 characters, even one this client cannot run.
-  assert.equal(macros.edit(1, undefined, undefined, `/cast [combat] X\n${"x".repeat(300)}`), 1);
-  assert.equal(macros.info(1)[2].length, 255);
+  assert.equal(macros.edit(2, undefined, undefined, `/cast [combat] X\n${"x".repeat(300)}`), 2);
+  assert.equal(macros.info(2)[2].length, 255);
   // An add-on may pass a texture instead of an index.
-  macros.edit(1, undefined, "Ability_Warrior_Charge");
-  assert.equal(macros.info(1)[1], "Interface\\Icons\\Ability_Warrior_Charge");
+  macros.edit(2, undefined, "Ability_Warrior_Charge");
+  assert.equal(macros.info(2)[1], "Interface\\Icons\\Ability_Warrior_Charge");
   await settle();
   assert.deepEqual(events.events, [["UPDATE_MACROS"]], "one UPDATE_MACROS after the chain");
   // A full set refuses.
@@ -290,7 +291,7 @@ test("/dbc/macro-icons is origin-protected, versioned and served from the active
 test("the canned fixture: three macros over a gap and six icons, placements recorded", () => {
   const canned = createCannedFrameXmlMacros();
   assert.deepEqual(canned.model.counts(), [2, 1]);
-  assert.deepEqual(canned.model.info(2), ["Привет", MACRO_DEFAULT_ICON, "/say Привет!\n/wave"]);
+  assert.deepEqual(canned.model.info(1), ["Привет", MACRO_DEFAULT_ICON, "/say Привет!\n/wave"], "5.37: Привет sorts before Рывок");
   assert.equal(canned.model.iconCount(), 6);
   canned.model.pickup(37);
   canned.model.placeCursor(5);
@@ -421,8 +422,8 @@ test("RunMacro and RunMacroText run the slash lines in order with their button; 
     if (line === "/click Вложенный" && nested) call(seam, "RunMacroText", nested, "LeftButton");
   });
   try {
-    // Position 2 is slot 3 (slot 2 is «Танец»); a name reaches the same macro.
-    call(seam, "RunMacro", 2);
+    // Position 1 is slot 3: «Бой» sorts before «Танец» in slot 2 (5.37); a name reaches the same macro.
+    call(seam, "RunMacro", 1);
     assert.deepEqual(ran, [
       ["/cast [mod:shift] А; Б", null], ["просто текст", null], ["/stopmacro [combat]", null], ["/dance", null],
     ], "every line runs, a line without / too (the client says it); the # directives and - comments do not");

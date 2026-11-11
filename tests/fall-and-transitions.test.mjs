@@ -100,6 +100,26 @@ test("the jump's own start and landing belong to falls Wow.exe animates as falls
   assert.equal(poseTransition(pose({ movementFlags: F.falling, fallJumped: true }), pose({ movementFlags: F.forward })), A.JumpLandRun);
 });
 
+test("11.11 6.07: a fall where flight ended is no jump — no JumpStart, the ground's pose, then Fall", withData, () => {
+  const flying = pose({ movementFlags: F.canFly | F.flying, flight: true });
+  // The own fall after flight: the physics reports «startFall» (Physics.ts), which marks it not jumped.
+  const fallen = pose({ movementFlags: F.falling, fallJumped: false });
+  assert.equal(poseTransition(flying, fallen), undefined, "no JumpStart where the flight ended");
+  assert.equal(isReallyFalling(fallen), false, "the ground's pose until FALLING_FAR");
+  const far = pose({ movementFlags: F.falling | F.fallingFar, fallJumped: false });
+  assert.equal(poseTransition(fallen, far), undefined);
+  assert.equal(poseAnimation({ ...far, airborneBase: null }).wanted[0], A.Fall);
+});
+
+test("11.11 6.05: a body lying dead in water is Drowned (Wow.exe 0x0071e1f0, stand state 7 with SWIMMING)", withData, () => {
+  const deadInWater = pose({ standState: 7, movementFlags: F.swimming });
+  assert.deepEqual(poseAnimation(deadInWater).wanted.slice(0, 2), [A.Drowned, A.Dead]);
+  assert.deepEqual(poseAnimation({ ...deadInWater, dead: true }).wanted.slice(0, 2), [A.Drowned, A.Dead]);
+  // On land, Dead; a swimmer that is not lying dead swims.
+  assert.equal(poseAnimation(pose({ standState: 7 })).wanted[0], A.Dead);
+  assert.notEqual(poseAnimation(pose({ movementFlags: F.swimming })).wanted[0], A.Drowned);
+});
+
 test("06.11 (6.42): WorldState counts the falls a unit's packets begin, a landing and a jump in one batch too", () => {
   const state = new WorldState();
   const at = { x: 0, y: 0, z: 0, orientation: 0 };

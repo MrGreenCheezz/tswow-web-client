@@ -42,7 +42,7 @@ test("wiring: the gateway sends DispelType, the client asks v=13 (11.11; v=11 br
   const gateway = await readFile(new URL("../src/gateway/SpellVisual.ts", import.meta.url), "utf8");
   assert.match(gateway, /const dispelType = spells\.int\(row, "DispelType"\);/);
   const client = await readFile(new URL("../src/browser/SpellVisualClient.ts", import.meta.url), "utf8");
-  assert.match(client, /\/dbc\/spell-visuals\?v=13&ids=/); // 29.10: v=12 (ammoMissile); 11.11: v=13 (sheathKeep, 5.05)
+  assert.match(client, /\/dbc\/spell-visuals\?v=14&ids=/); // 29.10: v=12 (ammoMissile); 11.11: v=13 (sheathKeep, 5.05), v=14 (launch, 6.12)
   assert.match(client, /visual\["dispelType"\]/);
   const renderer = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
   assert.match(renderer, /if \(instance\.noLight \|\| spellModelGivesNoLight\(instance\.path\)\) return undefined;/);
