@@ -17,6 +17,10 @@
  *
  * The frustum then judges what was chosen, as for everything else in the scene.
  *
+ * 7.54 (15.11): the walk itself is Wow.exe's (`WmoPortalFrusta.ts`, 0x7ac060): depth first, a portal clipped to the view
+ * before it is bounded, and a group drawn only when its box meets the frustum of the path that reached it. From a room
+ * the walk enters rooms only; the outside is walked from what the doors' views show.
+ *
  * 7.53: from a room the outside world is drawn exactly when the walk reaches an outdoor group on screen (70 of 71 room
  * frames, docs/implementation/wmo-camera-walk.ru.md): a door in view brings terrain back, the same room with its back to
  * the door draws none. Which of its chunks then is not settled; WebClient draws the world as usual in that case.
@@ -25,9 +29,10 @@
 import { WMO_GROUP_OUTDOOR, type WmoBounds, type WmoPortals } from "./WmoModel.js";
 import {
   cachedValidGraph, cachedValidGroupBounds, clearWalk, createWmoPortalWalkScratch, finitePoint, publishWalk, scratchFallback,
-  seedGroup, validMatrix, walkPortals,
+  validMatrix,
   type WmoOcclusionGroup, type WmoOcclusionPoint, type WmoOcclusionSelection, type WmoPortalWalkScratch,
 } from "./WmoOcclusion.js";
+import { createWmoPortalFrustaScratch, walkWmoPortalFrusta } from "./WmoPortalFrusta.js";
 
 /** MOGP: drawn wherever the camera is, frustum permitting. */
 export const WMO_GROUP_ALWAYS_DRAW = 0x10000;
@@ -165,30 +170,41 @@ export function walkWmoFromCamera(
   modelToClip: readonly number[],
   screenApertures: Float32Array | undefined,
   scratch: WmoPortalWalkScratch,
+  horizonHidden?: Uint8Array,
 ): WmoOcclusionSelection {
   const count = groups.length;
   if (count === 0 || !finitePoint(camera) || !validMatrix(modelToClip)
     || !cachedValidGroupBounds(groups) || !cachedValidGraph(groups, portals)) return scratchFallback(scratch, NO_GROUPS);
   clearWalk(scratch, count);
+  // 15.11 (7.54): the seeds go in the ring's array, which the depth-first walk does not use as a ring.
+  const seeds = scratch.queue;
   let size = 0;
   if (room >= 0) {
     if (room >= count) return scratchFallback(scratch, NO_GROUPS);
-    size = seedGroup(scratch, room, size);
+    seeds[size++] = room;
   } else {
     for (let index = 0; index < count; index++) {
-      if (!wmoGroupIsRoom(groups[index]!)) size = seedGroup(scratch, index, size);
+      if (!wmoGroupIsRoom(groups[index]!)) seeds[size++] = index;
     }
   }
   if (size === 0) return scratchFallback(scratch, NO_GROUPS);
-  if (!walkPortals(groups, portals, modelToClip, scratch, size, { planes: wmoPortalPlanes(portals), camera })) {
+  // 15.11 (7.54): a frustum per path, as Wow.exe walks (`WmoPortalFrusta.ts`); a group is drawn when its box meets one.
+  if (scratch.drawn === undefined || scratch.drawn.length < count) scratch.drawn = new Uint8Array(scratch.groupCapacity);
+  const drawn = scratch.drawn;
+  drawn.fill(0, 0, count);
+  const frusta = scratch.frusta ??= createWmoPortalFrustaScratch();
+  if (!walkWmoPortalFrusta(groups, portals, wmoPortalPlanes(portals), camera, modelToClip, seeds, size, room >= 0,
+    { reached: scratch.reached, drawn, apertures: scratch.apertures }, frusta, horizonHidden)) {
     return scratchFallback(scratch, NO_GROUPS);
   }
   const picks = scratch.picks;
-  const reached = scratch.reached;
   let picked = 0;
   for (let index = 0; index < count; index++) {
     const group = groups[index]!;
-    if (group.triangleCount === 0 || (reached[index] !== 1 && (group.flags & WMO_GROUP_ALWAYS_DRAW) === 0)) continue;
+    if (group.triangleCount === 0 || (drawn[index] !== 1 && (group.flags & WMO_GROUP_ALWAYS_DRAW) === 0)) continue;
+    // 15.11: from outside a 0x10000 group comes through the same horizon test as the outdoor ones (`0x79a160`); from a
+    // room it is judged by the frustum alone (`0x7ad1f0`).
+    if (room < 0 && drawn[index] !== 1 && horizonHidden !== undefined && horizonHidden[index] === 1) continue;
     if (picked < picks.length) picks[picked] = index;
     else picks.push(index);
     picked++;

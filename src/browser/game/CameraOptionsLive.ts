@@ -12,8 +12,13 @@ import { cameraFollow } from "./CameraFollow.js";
 import { vehicleCamera } from "./VehicleCamera.js";
 import { characterMotion } from "../input/Movement.js";
 import { moverGuid } from "../input/Mover.js";
-import { viewSubject } from "./ViewSubject.js";
+import { viewIsOut, viewSubject } from "./ViewSubject.js";
 import { resultUnitHeight } from "../RenderResults.js";
+import { cameraSteerInputs, type CameraSteerWater } from "./CameraSteerPitch.js"; // 5.14 (15.11)
+import { readByte, readField } from "../../world/Fields.js"; // 5.14 (15.11)
+
+/** TYPEID_PLAYER. */
+const TYPEID_PLAYER = 4;
 
 /**
  * 5.14 (11.11): the three stock camera options and the water nod on the page's one camera, once a frame from the render
@@ -38,6 +43,9 @@ const pivot = new CameraPivot();
 let lastWorld: unknown;
 let waterState = CAMERA_WATER_NONE;
 let lensDirty = false;
+/** 3.11 (15.11): the world and subject the follow's spline hold belongs to. */
+let heldWorld: unknown;
+let heldGuid: bigint | undefined;
 
 function isUnit(subject: WorldObjectState | undefined): boolean {
   return subject !== undefined && (subject.typeId === 3 || subject.typeId === 4);
@@ -82,7 +90,38 @@ export function cameraPivotLook(yaw: number, pitch: number): number {
   const delta = pivot.look(yaw, pitch, pivotAllowedFor(subject), wowPitch(),
     cameraViews.cvarNumber("cameraPivotDXMax"), cameraViews.cvarNumber("cameraPivotDYMin"), performance.now());
   applyPivotLens();
+  cameraSteerInputs.pivotTurn = pivot.turn; // 5.14 (15.11)
   return delta;
+}
+
+/**
+ * 5.14 (15.11): what the right-button steer reads besides the camera's pitch (CameraSteerPitch.ts, Wow.exe 0x006023d0): the
+ * smart pivot's turn and the subject's water, for Movement.ts to ask while steering.
+ */
+function updateSteerInputs(subject: WorldObjectState | undefined): void {
+  cameraSteerInputs.pivotTurn = pivot.turn;
+  const water = steerWater;
+  water.state = waterState;
+  water.dive = cameraViews.cvarNumber("cameraDive") !== 0;
+  water.surfacePitch = cameraViews.cvarNumber("cameraSurfacePitch");
+  water.submergePitch = cameraViews.cvarNumber("cameraSubmergePitch");
+  water.drunk = subject !== undefined && subject.typeId === TYPEID_PLAYER && playerDrunk(subject);
+  cameraSteerInputs.water = water;
+}
+
+const steerWater: { -readonly [K in keyof CameraSteerWater]: CameraSteerWater[K] } = {
+  state: CAMERA_WATER_NONE, dive: true, surfacePitch: 0, submergePitch: 0, drunk: false,
+};
+
+/**
+ * 0x004f7290 ≠ 0: PLAYER_BYTES_3's inebriation byte or PLAYER_FAKE_INEBRIATION (+0x2b8), the larger, 100 at most (its low
+ * byte when the fake one is the larger) — as FrameXmlUnitTooltipFacts.frameXmlDrunkLevelDrop reads the same function.
+ */
+function playerDrunk(subject: WorldObjectState): boolean {
+  const drunk = readByte(subject, "PLAYER_BYTES_3", 1) ?? 0;
+  const fake = (readField(subject, "PLAYER_FAKE_INEBRIATION") ?? 0) | 0;
+  if ((drunk >= fake ? drunk : fake) >= 100) return true;
+  return (fake < drunk ? drunk : fake & 0xff) !== 0;
 }
 
 function applyPivotLens(): void {
@@ -103,6 +142,12 @@ export function advanceCameraOptions(now: number, subject: WorldObjectState | un
     bob.reset();
     pivot.reset();
     waterState = CAMERA_WATER_NONE;
+  }
+  // 3.11 (15.11): a new world or a new subject is a new camera: no yaw held from the last one's spline.
+  if (world !== heldWorld || subject?.guid !== heldGuid) {
+    heldWorld = world;
+    heldGuid = subject?.guid;
+    cameraFollow.spline(false, 0, rig, now, cameraViews, undefined);
   }
   const unit = isUnit(subject);
   const flags = subject?.movementFlags ?? 0;
@@ -147,9 +192,17 @@ export function advanceCameraOptions(now: number, subject: WorldObjectState | un
     }
   }
 
+  // 3.11 (15.11): the yaw held in the world while the subject is on a server spline (0x00602eb0, CameraFollow.spline) — the
+  // same test the terrain tilt's Fear makes above. Before the boom, as in 0x00606f90.
+  const yawSpeed = settingNumber(values, "cameraYawSmoothSpeed");
+  cameraFollow.spline(unit && subject !== undefined && subject.motion !== undefined && !taxi, position.orientation, rig,
+    now, cameraViews, subject === undefined || viewIsOut(world) ? undefined
+      : { style: settingNumber(values, "cameraSmoothStyle"), yawSpeed, pitchSpeed: yawSpeed / 4, subject });
+
   // The smart pivot's way home (0x00606f90 → 0x00602600).
   pivot.frame(now, pivotAllowedFor(subject));
   applyPivotLens();
+  updateSteerInputs(subject); // 5.14 (15.11)
 
   // The head bob (0x00600090 on the input word, 0x00602f30).
   bob.input(cameraBobInput(cameraFollow.word), now);

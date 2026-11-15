@@ -72,6 +72,7 @@ export class AccountStore<T> {
   #foreign = false;
   /** 5.37: the server has answered for the slot since `attach`. */
   #answered = false;
+  #generation = 0;
   /** Raised when the server's copy lands and differs from what was being shown. */
   onLoaded: ((value: T) => void) | undefined;
 
@@ -92,6 +93,7 @@ export class AccountStore<T> {
    * `accept`. Until then the mirror is what is shown.
    */
   attach(world: AccountStoreWorld): void {
+    this.#generation += 1;
     this.#world = world;
     this.#foreign = false;
     this.#answered = false;
@@ -108,9 +110,28 @@ export class AccountStore<T> {
     this.#world = undefined;
   }
 
-  /** Takes the server's copy, if this event was about this slot and it parsed. */
+  /** Whether the server has answered for the slot since `attach`. */
+  get answered(): boolean {
+    return this.#answered;
+  }
+
+  /** Counts `attach`es: what tells a change of this login from one of the login before. */
+  get generation(): number {
+    return this.#generation;
+  }
+
+  /** A world is attached. */
+  get attached(): boolean {
+    return this.#world !== undefined;
+  }
+
+  /**
+   * Takes the server's copy, if this event was about this slot and it parsed. Review 15.11: only the first
+   * answer since `attach` — a later event for the slot is the `SMSG_UPDATE_ACCOUNT_DATA_COMPLETE` of a write,
+   * and re-reading then took back the text sent before a change made meanwhile.
+   */
   accept(type: number): boolean {
-    if (type !== this.#options.slot || !this.#world) return false;
+    if (type !== this.#options.slot || !this.#world || this.#answered) return false;
     this.#answered = true;
     const stored = this.#world.accountData.get(this.#options.slot);
     if (!stored || stored.text === "") {

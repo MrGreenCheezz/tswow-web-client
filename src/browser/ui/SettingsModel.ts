@@ -577,6 +577,12 @@ export const SETTING_DEFINITIONS: readonly SettingDefinition[] = [
     hint: "Выключено — как в оригинале по умолчанию: заклинание на летающем коне в воздухе отклоняется, персонаж не падает.",
   },
   {
+    // 5.05 (15.11): the client's autoStand (registered in 0x0051d9b0 with "1" and the account flag 0x10, pointer
+    // 0x00bd08f8): 0x0071b090 reads it before a seated cast stands the character up (world/CastPreflightRule.ts).
+    id: "autoStand", label: "Автоматически вставать", group: "Игра", kind: "boolean", fallback: true,
+    hint: "Включено — как в оригинале: заклинание сидя сначала поднимает персонажа. Выключено — заклинание сидя отклоняется («Нужно встать»).",
+  },
+  {
     // DEC-A 3.11: the client's assistAttack (registered beside autoRangedCombat with "0": default string
     // 0x009e14a0, pointer 0x00bd0918; the stock Combat panel's ASSIST_ATTACK). On: AssistUnit (Wow.exe
     // 0x00525eb0) attacks the unit it selected (0x006e4950) — native ASSISTTARGET and the stock /assist.

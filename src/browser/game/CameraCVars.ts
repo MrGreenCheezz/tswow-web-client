@@ -154,6 +154,15 @@ function build(): readonly CameraCVarDefinition[] {
   rows.push({ name: "cameraPivotDYMin", defaultValue: "0.00" });
   rows.push({ name: "cameraSurfaceFinalPitch", defaultValue: "5.0", range: [-CAMERA_CVAR_PITCH_MAX, CAMERA_CVAR_PITCH_MAX] });
   rows.push({ name: "cameraSubmergeFinalPitch", defaultValue: "5.0", range: [-CAMERA_CVAR_PITCH_MAX, CAMERA_CVAR_PITCH_MAX] });
+  // 5.14 (15.11): the steer's dead band at a surface (CameraSteerPitch.ts, 0x006023d0): `cameraDive` ("1", 0x00c249a0, no
+  // validator), `cameraSurfacePitch` ("0.0", 0x00c2499c) and `cameraSubmergePitch` ("18.0", 0x00c24998), both 0x005fd6d0.
+  rows.push({ name: "cameraDive", defaultValue: "1" });
+  rows.push({ name: "cameraSurfacePitch", defaultValue: "0.0", range: [-CAMERA_CVAR_PITCH_MAX, CAMERA_CVAR_PITCH_MAX] });
+  rows.push({ name: "cameraSubmergePitch", defaultValue: "18.0", range: [-CAMERA_CVAR_PITCH_MAX, CAMERA_CVAR_PITCH_MAX] });
+  // 3.11 (15.11): the follow's style for the Fear and Track states (CameraFollow.ts, 0x00602760) — the stock Mouse panel's
+  // click-to-move camera dropdown. Registered beside cameraSmoothStyle with the same default string (0x00ad1c2c, "4") and
+  // validator (0x005fd8c0, whose range was not read: none is claimed here).
+  rows.push({ name: "cameraSmoothTrackingStyle", defaultValue: "4" });
   return Object.freeze(rows.map((row) => Object.freeze(row)));
 }
 

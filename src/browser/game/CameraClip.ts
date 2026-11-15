@@ -29,9 +29,10 @@
  * keeps the camera out of a ceiling it is looking up at: the segment only keeps the eye out, and the near
  * plane's upper edge stands higher than the eye.
  *
- * Kept from this client rather than ported: the heightfield's limit, which here is sampled along the boom
- * (`Collision.boomLimits`) and eased both ways for that reason, where Wow.exe intersects the terrain's
- * triangles in the same segment; the hinge's own target, which is the model's shoulder here
+ * Kept from this client rather than ported: the heightfield's limit is sampled along the boom
+ * (`Collision.boomLimits`, 0.45 short of the ground) where Wow.exe intersects the terrain's triangles in the same
+ * segment — but since 15.11 (5.33) its answer joins the walls' and takes their ease, in at once and out over two
+ * seconds, as the one sweep's does (it was eased on its own, both ways); the hinge's own target, which is the model's shoulder here
  * (`SimpleScene.cameraBodyHeight`) and changes at once; the water rules (`CameraWater.ts`).
  */
 

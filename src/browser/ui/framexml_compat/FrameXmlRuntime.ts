@@ -59,6 +59,7 @@ import {
   frameXmlNoteMessageView, // 3.34 (13.10)
 } from "./FrameXmlMessageFade.js";
 import { frameXmlMessageLineCount, frameXmlMessagePage, frameXmlMessageSlots } from "./FrameXmlMessageSlots.js"; // 3.34 (13.10)
+import { frameXmlNoteMessageCurrent } from "./FrameXmlMessageScrollChanged.js"; // widgets5 3.34
 import {
   frameXmlSliderLoadedStep, frameXmlSliderSetRange, frameXmlSliderSetStep, frameXmlSliderValue, markFrameXmlBareCreate,
 } from "./FrameXmlSlider.js"; // 3.27 (13.10)
@@ -3221,6 +3222,7 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
     const top = addToTop !== undefined && addToTop !== null && addToTop !== false;
     if (top && state.messages.length >= state.maxLines) return true;
     const stickToBottom = frame.scroll.verticalScroll >= frame.scroll.verticalScrollRange;
+    const shownBefore = state.messages[frame.scroll.verticalScroll]; // widgets5 3.34: OnMessageScrollChanged
     const channel = (value: unknown): number => {
       const number = typeof value === "number" ? value : Number(value);
       return Number.isFinite(number) ? Math.min(1, Math.max(0, number)) : 1;
@@ -3247,6 +3249,8 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
     // 79 sibling measures and the accessibility walk, 2.1 ms a line on the fast cores. The same
     // holds for every other message-layer change below.
     this.notifyMutation(this.own(frame), "paint");
+    // widgets5 3.34: at the bottom the new line becomes the current one (0x0096a9f0 → 0x00969fa0).
+    if (stickToBottom) frameXmlNoteMessageCurrent(this, frame, shownBefore);
     return true;
   }
 
@@ -3365,8 +3369,10 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
       if (revived) this.notifyMutation(this.own(frame), "paint");
       return true;
     }
+    const shownBefore = frame.messageFrame.messages[frame.scroll.verticalScroll]; // widgets5 3.34
     frame.scroll.verticalScroll = wanted;
     this.notifyMutation(this.own(frame), "paint");
+    frameXmlNoteMessageCurrent(this, frame, shownBefore); // widgets5 3.34: OnMessageScrollChanged
     return true;
   }
 

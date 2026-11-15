@@ -124,22 +124,30 @@ export const pageMissileShotSource: MissileShotSource = {
 
 /**
  * 11.11: 0x006fbff0's model of a unit — the CreatureModelData of its display (0x00717a20) and its scale (vfunc +0x7c,
- * 0x0071c0e0: +0xb3c × +0x9c × +0x98; taken here as OBJECT_FIELD_SCALE_X × the display's scale, +0xb3c unread). The
- * gateway's display answer carries CollisionHeight but not MissileCollisionRadius/Push/Raise, which 2 of the
- * dataset's 1,331 CreatureModelData rows set (3088, 3091): those count as 0, Wow.exe's "half the height" case.
- * Undefined while the display row is not here; the tracker then takes Wow.exe's no-model sphere (radius 1).
+ * 0x0071c0e0: +0xb3c × +0x9c × +0x98; taken here as OBJECT_FIELD_SCALE_X × the display's scale, +0xb3c unread).
+ * 15.11: the gateway's display answer carries MissileCollisionRadius/Push/Raise as stored (`missileCollision`, on the 2
+ * of the dataset's 1,331 CreatureModelData rows that set them: 3088, 3091), and 0x006fbff0 reads CollisionHeight (+0x3c)
+ * unscaled — the answer's `collisionHeight` is the model's times the scale (`Unit::GetCollisionHeight`), so it is divided
+ * back (exact below the answer's 50-yard cap). Undefined while the display row is not here; the tracker then takes
+ * Wow.exe's no-model sphere (radius 1).
  */
 export function unitCollisionModel(unit: WorldObjectState,
-  display: (displayId: number) => { readonly scale: number; readonly collisionHeight: number } | undefined,
+  display: (displayId: number) => {
+    readonly scale: number; readonly collisionHeight: number; readonly missileCollision?: readonly [number, number, number];
+  } | undefined,
 ): { scale: number; model: MissileCollisionModel } | undefined {
   const displayId = unit.fields.get(UPDATE_FIELDS.UNIT_FIELD_DISPLAYID.offset) ?? 0;
   const row = displayId > 0 ? display(displayId) : undefined;
   if (row === undefined) return undefined;
   const objectScale = worldObject.scale(unit);
   const scale = (typeof objectScale === "number" && objectScale > 0 ? objectScale : 1) * row.scale;
+  const [radius, push, raise] = row.missileCollision ?? [0, 0, 0]; // 15.11 (11.02)
   return {
     scale,
-    model: { collisionHeight: row.collisionHeight, missileCollisionRadius: 0, missileCollisionPush: 0, missileCollisionRaise: 0 },
+    model: {
+      collisionHeight: row.scale > 0 ? row.collisionHeight / row.scale : row.collisionHeight, // 15.11: +0x3c, unscaled
+      missileCollisionRadius: radius, missileCollisionPush: push, missileCollisionRaise: raise,
+    },
   };
 }
 

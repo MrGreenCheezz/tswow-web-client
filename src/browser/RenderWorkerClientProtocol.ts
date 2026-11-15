@@ -56,7 +56,8 @@ export const RENDER_WORKER_COMMANDS: Readonly<Record<ClientRendererCommand, Rend
   setStateVisuals: "state",
   invalidateGroundCover: "action", clearPortraits: "action", clearTerrain: "action", clearWorldResources: "action",
   playSpellVisual: "action", cancelSpellVisual: "action", retimeSpellVisual: "action", clearSpellVisuals: "action",
-  prewarmSpellModels: "action", playUnitAction: "action", releaseUnitAction: "action", setMeleeTargets: "action",
+  prewarmSpellModels: "action", setProjectilePosition: "action", // 15.11 (11.02)
+  playUnitAction: "action", releaseUnitAction: "action", setMeleeTargets: "action",
   playUnitReaction: "action", playUnitEmote: "action", cancelUnitAction: "action", playMountSpecial: "action",
   playGameObjectAnimation: "action", showEnvironmentStandInMarkers: "action", resetFrameCadence: "action",
   resetGpuTimingEpoch: "action",

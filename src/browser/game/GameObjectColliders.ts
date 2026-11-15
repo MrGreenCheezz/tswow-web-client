@@ -2,7 +2,10 @@ import { UPDATE_FIELDS } from "../../generated/updateFields.js";
 import type { MovementInfo } from "../../world/MovementProtocol.js";
 import { normalizeOrientation } from "../../world/TransportMath.js";
 import type { WorldObjectState, WorldPosition } from "../../world/WorldState.js";
-import { liftPhaseMs, liftPoseAt } from "../LiftClock.js";
+import { liftPhaseMs, liftPoseAt, type LiftPose } from "../LiftClock.js";
+import type { Quat } from "../../world/GameObjectRotation.js";
+import { facingOffRotated, facingOnRotated, rotateByQuat, rotateByQuatInverse } from "../../world/TransportTilt.js";
+import { TiltedCarrierWorlds, tiltBeyondHeading } from "./TransportTiltCollision.js";
 import type { TransportPath } from "../TransportPath.js";
 import type { CollisionWorld } from "./Collision.js";
 import { DynamicColliderProbe, type DynamicCollider } from "./DynamicColliderProbe.js";
@@ -162,9 +165,16 @@ interface ColliderRecord extends DynamicCollider {
   readonly box: { minX: number; minY: number; minZ: number; maxX: number; maxY: number; maxZ: number };
   /** 11.01: `world.size` when `box` was built. */
   boxSize: number;
+  /**
+   * 11.01 (15.11): a lift car's whole rotation when its TransportRotation keys turn it (TransportTilt.ts); undefined for
+   * every other collider. Its seat offsets are in that frame; `world` is the mesh tilted beyond `pose.orientation`.
+   */
+  rotation: Quat | undefined;
 }
 
 const FEET = { x: 0, y: 0, z: 0 };
+/** 11.01 (15.11): an offset turned by a tilted car's rotation. */
+const TURNED = { x: 0, y: 0, z: 0 };
 
 export class GameObjectColliders {
   readonly #models: ColliderModels;
@@ -177,6 +187,8 @@ export class GameObjectColliders {
   /** 11.01: the ship those are aboard; undefined when the character rides none. */
   #aboardCarrier: bigint | undefined;
   readonly #records = new Map<bigint, ColliderRecord>();
+  /** 11.01 (15.11): the turned meshes of tilted lift cars near the character. */
+  readonly #tilted = new TiltedCarrierWorlds();
   readonly #candidates = new Set<bigint>();
   #scannedAt = Number.NEGATIVE_INFINITY;
   #scannedSize = -1;
@@ -221,7 +233,11 @@ export class GameObjectColliders {
    */
   turnedOnLift(self: WorldObjectState | undefined, radians: number): void {
     const seat = self?.transport;
-    if (seat !== undefined && this.#records.get(seat.guid)?.lift) seat.orientation = normalizeOrientation(seat.orientation + radians);
+    const record = seat === undefined ? undefined : this.#records.get(seat.guid);
+    if (seat === undefined || !record?.lift) return;
+    // 11.01 (15.11): on a tilted car the turn is the world's, taken back into the car's frame (TransportTilt.ts).
+    seat.orientation = normalizeOrientation(record.rotation === undefined ? seat.orientation + radians
+      : facingOffRotated(record.rotation, facingOnRotated(record.rotation, seat.orientation) + radians));
   }
 
   /** How many colliders the last frame asked (diagnostics, tests). */
@@ -299,7 +315,10 @@ export class GameObjectColliders {
     }
     this.#nearNext = this.#near;
     this.#near = near;
-    if (changed) this.#models.retain(near);
+    if (changed) {
+      this.#models.retain(near);
+      this.#tilted.retain(near); // 11.01 (15.11)
+    }
 
     this.#composeSeat(self, position);
     return probe.count > 0 ? probe : base;
@@ -319,6 +338,12 @@ export class GameObjectColliders {
     this.#aboardCarrier = undefined;
     this.#seatChanged = false;
     this.#models.clear();
+    this.#tilted.clear(); // 11.01 (15.11)
+  }
+
+  /** 11.01 (15.11): how many times a tilted car's mesh was turned (tests, diagnostics). */
+  get tiltRebuilds(): number {
+    return this.#tilted.rebuilds;
   }
 
   /** 11.01: any game object but a lift and a ship, at its world pose (a door by its state). */
@@ -406,18 +431,30 @@ export class GameObjectColliders {
     const pose = liftPoseAt(object, path, now, LIFT_POSE);
     if (!pose || !within(pose, position)) return;
     near.add(object.guid);
-    const world = this.#models.forObject(object);
-    if (!world) {
+    const base = this.#models.forObject(object);
+    if (!base) {
       this.#records.delete(object.guid);
       return;
     }
+    // 11.01 (15.11): a car its TransportRotation keys tilt is solid as drawn (TransportTiltCollision.ts).
+    const tilted = pose.rotated === true && pose.rotation !== undefined
+      && tiltBeyondHeading(pose.rotation, pose.orientation, LIFT_TILT) !== undefined && hasTilt(LIFT_TILT);
+    const rebuilds = this.#tilted.rebuilds;
+    const world = tilted ? this.#tilted.world(object.guid, base, LIFT_TILT) : base;
+    if (!tilted) this.#tilted.release(object.guid);
     const record = this.#record(object.guid, world, true);
+    if (this.#tilted.rebuilds !== rebuilds) record.boxSize = -1; // the turned mesh has another box
     record.carrier = ((object.fields.get(FLAGS) ?? 0) & GO_FLAG_TRANSPORT) !== 0;
     record.period = path.period;
     record.pose.x = pose.x;
     record.pose.y = pose.y;
     record.pose.z = pose.z;
     record.pose.orientation = pose.orientation;
+    // 11.01 (15.11): any car its keys turn (a heading alone too) carries its passengers in its whole rotation.
+    if (pose.rotated === true && pose.rotation !== undefined) {
+      const rotation = record.rotation ??= { x: 0, y: 0, z: 0, w: 1 };
+      rotation.x = pose.rotation.x; rotation.y = pose.rotation.y; rotation.z = pose.rotation.z; rotation.w = pose.rotation.w;
+    } else record.rotation = undefined;
     this.#push(record);
   }
 
@@ -428,6 +465,7 @@ export class GameObjectColliders {
         guid, world, lift, carrier: false, period: 0, hull: false, pose: { x: 0, y: 0, z: 0, orientation: 0 },
         passable: undefined,
         box: { minX: 0, minY: 0, minZ: 0, maxX: 0, maxY: 0, maxZ: 0 }, boxSize: -1, // 11.01
+        rotation: undefined, // 11.01 (15.11)
       };
       this.#records.set(guid, record);
     }
@@ -452,6 +490,14 @@ export class GameObjectColliders {
     const record = seat === undefined ? undefined : this.#records.get(seat.guid);
     if (!seat || !record?.lift) return;
     const pose = record.pose;
+    if (record.rotation !== undefined) {
+      // 11.01 (15.11): the offset in the car's whole rotation (Wow.exe 0x00704cc0; TransportTilt.ts).
+      rotateByQuat(record.rotation, seat.x, seat.y, seat.z, TURNED);
+      position.x = pose.x + TURNED.x;
+      position.y = pose.y + TURNED.y;
+      position.z = pose.z + TURNED.z;
+      return;
+    }
     const cos = Math.cos(pose.orientation);
     const sin = Math.sin(pose.orientation);
     position.x = pose.x + seat.x * cos - seat.y * sin;
@@ -482,14 +528,27 @@ export class GameObjectColliders {
       return;
     }
     const pose = record.pose;
-    const cos = Math.cos(pose.orientation);
-    const sin = Math.sin(pose.orientation);
-    const dx = position.x - pose.x;
-    const dy = position.y - pose.y;
-    const x = dx * cos + dy * sin;
-    const y = dy * cos - dx * sin;
-    const z = position.z - pose.z;
-    const orientation = normalizeOrientation(position.orientation - pose.orientation);
+    let x: number;
+    let y: number;
+    let z: number;
+    let orientation: number;
+    if (record.rotation !== undefined) {
+      // 11.01 (15.11): the offset in the car's whole rotation, as the carry composes it back (TransportTilt.ts).
+      rotateByQuatInverse(record.rotation, position.x - pose.x, position.y - pose.y, position.z - pose.z, TURNED);
+      x = TURNED.x;
+      y = TURNED.y;
+      z = TURNED.z;
+      orientation = normalizeOrientation(facingOffRotated(record.rotation, position.orientation));
+    } else {
+      const cos = Math.cos(pose.orientation);
+      const sin = Math.sin(pose.orientation);
+      const dx = position.x - pose.x;
+      const dy = position.y - pose.y;
+      x = dx * cos + dy * sin;
+      y = dy * cos - dx * sin;
+      z = position.z - pose.z;
+      orientation = normalizeOrientation(position.orientation - pose.orientation);
+    }
     if (seat !== undefined && seat.guid === record.guid) {
       seat.x = x;
       seat.y = y;
@@ -540,7 +599,15 @@ export class GameObjectColliders {
   }
 }
 
-const LIFT_POSE: CarrierPose = { x: 0, y: 0, z: 0, orientation: 0 };
+const LIFT_POSE: LiftPose = { x: 0, y: 0, z: 0, orientation: 0 };
+/** 11.01 (15.11): the car's tilt beyond its heading, this frame. */
+const LIFT_TILT: Quat = { x: 0, y: 0, z: 0, w: 1 };
+/** Below this the vector part of a tilt is none (GameObjectRotation.ts's NO_TILT). */
+const NO_TILT = 1e-4;
+
+function hasTilt(tilt: Quat): boolean {
+  return Math.abs(tilt.x) >= NO_TILT || Math.abs(tilt.y) >= NO_TILT || Math.abs(tilt.z) >= NO_TILT;
+}
 
 function within(pose: CarrierPose, position: WorldPosition): boolean {
   const dx = pose.x - position.x;

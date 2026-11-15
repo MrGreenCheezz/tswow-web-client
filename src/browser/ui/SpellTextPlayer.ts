@@ -1,4 +1,5 @@
 import { UPDATE_FIELDS, type UpdateFieldName } from "../../generated/updateFields.js";
+import type { SpellCostInventoryItem } from "./SpellTextCost.js"; // 3.43 (15.11)
 
 /**
  * 12.10: what a spell description reads from the active player, the way Wow.exe's evaluator
@@ -23,6 +24,10 @@ export interface SpellTextPlayer {
   readonly item?: (entry: number) => SpellTextItem | undefined;
   /** 0x0071b770 for `$c`'s ManaCostPct: the base the percentage is of (UNIT_FIELD_BASE_MANA for mana). */
   readonly basePower?: (powerType: number) => number | undefined;
+  /** 3.43 (15.11): what the cost function 0x008012f0 reads besides the fields (SpellTextCost.ts SpellCostUnit). */
+  readonly formRoundTime?: (form: number) => number | undefined;
+  readonly inventoryItem?: (equipSlot: number) => SpellCostInventoryItem | null | undefined;
+  readonly actionSpell?: (slot: number) => number | undefined;
 }
 
 export interface SpellTextItem {

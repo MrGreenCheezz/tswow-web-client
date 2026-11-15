@@ -50,7 +50,8 @@ test("the planner launches from the resolved attachment with the cast offset; wi
   const planned = (missile) => planSpellVisual({ id: 9, missile }, cast, 0).instances.find((one) => one.flight).flight.launch;
   assert.deepEqual(planned({ ...base, launch: 2, castOffset: [0, 0, 2.5] }), { guid: 1n, attachment: 19, offset: [0, -0, 2.5] });
   assert.deepEqual(planned({ ...base, launch: 1 }), { guid: 1n, attachment: 34 });
-  assert.deepEqual(planned(base), { guid: 1n, attachment: 22 }, "an older gateway (no `launch`) keeps the spell hand");
+  // 15.11: an older gateway (no `launch`) keeps the spell hand behind the "$CS*" events (MissileLaunchEvent.ts).
+  assert.deepEqual(planned(base), { guid: 1n, attachment: 22, events: true }, "an older gateway (no `launch`) keeps the spell hand");
 });
 
 test("the flight reads its fire point with the cast offset", () => {

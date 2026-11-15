@@ -39,9 +39,9 @@ function truncate(value: unknown): number {
   return Math.trunc(Number(value));
 }
 
-/** The name an error names (the client's `<unnamed>` when there is none). */
+/** The name an error names (the client's `<unnamed>` when there is none; widgets5: an invented name is none). */
 function nameOf(frame: FrameXmlFrame): string {
-  return frame.name || "<unnamed>";
+  return frame.named !== false && frame.name ? frame.name : "<unnamed>";
 }
 
 /** 0x00815500 for the cases settled: nil → false, boolean as is, number when not 0, others false. */

@@ -3,7 +3,8 @@
 //   clock means AREA_SPIRIT_HEALER_OUT_OF_RANGE and CMSG_CANCEL_AURA 2584) and then with the clicked guide, which is
 //   asked again — the same guide too (.runtime/re-2026-11-11/moves/m2.c, worldtails/w1.c).
 // * 0x524010 → 0x523f80 returns 1 after a match, so with two guides in reach each one is taken and asked in the order
-//   of the object walk, the last kept (this client's `state.objects` order; Wow.exe's list order is not established).
+//   of the object walk, the last kept (this client's `state.objects` order, which is Wow.exe's list order: oldest
+//   first, 5.25 of 15.11, tests/object-walk-order.test.mjs).
 import assert from "node:assert/strict";
 import test from "node:test";
 

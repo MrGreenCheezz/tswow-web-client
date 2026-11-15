@@ -1180,12 +1180,13 @@ export class WorldClient {
    */
   actionButtonsWire: ActionButton[] = [];
   /** 5.37: the macro buttons' two directions, set by the page; without it the view is the wire. */
-  actionButtonCodec: { view(button: ActionButton): ActionButton; wire(button: ActionButton): ActionButton } | undefined;
+  actionButtonCodec: { view(button: ActionButton): ActionButton | undefined; wire(button: ActionButton): ActionButton } | undefined;
 
   /** 5.37: the view read again from the wire (the macros a button names have changed). */
   reviewActionButtons(): void {
     const codec = this.actionButtonCodec;
-    const next = codec ? this.actionButtonsWire.map((button) => codec.view(button)) : [...this.actionButtonsWire];
+    // 5.37 (15.11): a macro word with no macro is no button in the view (MacroButtons.viewActionButton).
+    const next = codec ? this.actionButtonsWire.flatMap((button) => codec.view(button) ?? []) : [...this.actionButtonsWire];
     const same = next.length === this.actionButtons.length && next.every((button, index) => {
       const old = this.actionButtons[index]!;
       return old.slot === button.slot && old.action === button.action && old.type === button.type;
@@ -5438,18 +5439,31 @@ export class WorldClient {
    */
   async saveAccountData(type: number, text: string, timestamp = Math.floor(Date.now() / 1000)): Promise<void> {
     if (this.#closed) return;
-    if (!text) {
-      this.accountData.delete(type);
-      this.#connection.send(OPCODES.CMSG_UPDATE_ACCOUNT_DATA, buildUpdateAccountData(type, timestamp, 0, new Uint8Array(0)));
-      return;
-    }
-    // The server reads a std::string out of the inflated buffer, so the terminator is part of both
-    // the payload and the size it is promised.
-    const plain = new PacketWriter().cString(text).toUint8Array();
-    const compressed = await deflate(plain);
-    this.accountData.set(type, { time: timestamp, text });
-    this.#connection.send(OPCODES.CMSG_UPDATE_ACCOUNT_DATA, buildUpdateAccountData(type, timestamp, plain.byteLength, compressed));
+    // 5.37 (15.11): set before the await, so a second store writing the same slot in the meantime (slot 6:
+    // the window layout and the settings) builds on this text rather than on the one before it.
+    if (text) this.accountData.set(type, { time: timestamp, text });
+    else this.accountData.delete(type);
+    // Review 15.11: one slot's sends leave in the order they were made — each compresses on its own, and a
+    // later, shorter text could otherwise overtake an earlier one and be overwritten by it on the server.
+    const previous = this.#accountDataSends.get(type) ?? Promise.resolve();
+    const send = previous.then(async () => {
+      if (this.#closed) return;
+      if (!text) {
+        this.#connection.send(OPCODES.CMSG_UPDATE_ACCOUNT_DATA, buildUpdateAccountData(type, timestamp, 0, new Uint8Array(0)));
+        return;
+      }
+      // The server reads a std::string out of the inflated buffer, so the terminator is part of both
+      // the payload and the size it is promised.
+      const plain = new PacketWriter().cString(text).toUint8Array();
+      const compressed = await deflate(plain);
+      if (this.#closed) return;
+      this.#connection.send(OPCODES.CMSG_UPDATE_ACCOUNT_DATA, buildUpdateAccountData(type, timestamp, plain.byteLength, compressed));
+    });
+    this.#accountDataSends.set(type, send.catch(() => {}));
+    return send;
   }
+  /** Review 15.11: the last send of each account-data slot, which the next one waits for. */
+  readonly #accountDataSends = new Map<number, Promise<void>>();
 
   /** Empty. The server answers with the per-character mask once the character is in the world. */
   requestAccountDataTimes(): void {
@@ -9006,7 +9020,7 @@ export class WorldClient {
       else this.actionButtonsWire = [];
       // 5.37: this client's view of them (a macro by its slot here), through the page's codec.
       const codec = this.actionButtonCodec;
-      this.actionButtons = codec ? this.actionButtonsWire.map((button) => codec.view(button)) : [...this.actionButtonsWire];
+      this.actionButtons = codec ? this.actionButtonsWire.flatMap((button) => codec.view(button) ?? []) : [...this.actionButtonsWire];
       this.events.emit("ACTION_BUTTONS_CHANGED", {});
       return true;
     }

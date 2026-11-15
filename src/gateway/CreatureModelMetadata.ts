@@ -57,6 +57,12 @@ export interface CreatureModelMetadata {
    * group, decoded by `browser/CreatureGeosetData.ts`.
    */
   geosetData?: number;
+  /**
+   * 15.11 (11.02): the model's `MissileCollisionRadius`, `MissileCollisionPush` and `MissileCollisionRaise` as stored
+   * (CreatureModelData +0x64/+0x68/+0x6c, unscaled), only where one of them is not zero — the trajectory missile's
+   * sphere around the unit (Wow.exe 0x006fbff0; 2 of the dataset's 1,331 rows, 3088 and 3091).
+   */
+  missileCollision?: readonly [number, number, number];
   /** 05.10-A7a-A 6.11а: `ParticleColorID` (a `ParticleColor.dbc` row), only where positive. */
   particleColor?: number;
   /**
@@ -92,6 +98,14 @@ export function creatureDisplayFields(alphaByte: number, geosetData: number, par
 /** Three skin variations per display, held as one array field. */
 const SKIN_VARIATIONS = 3;
 
+/** 15.11 (11.02): the three MissileCollision* columns, when one of them is set (finite; anything else reads as 0). */
+export function modelMissileCollision(radius: number, push: number, raise: number):
+  { missileCollision?: readonly [number, number, number] } {
+  const value = (column: number): number => (Number.isFinite(column) ? column : 0);
+  const columns = [value(radius), value(push), value(raise)] as const;
+  return columns.some((column) => column !== 0) ? { missileCollision: columns } : {};
+}
+
 function buffer(payload: Uint8Array): Buffer {
   return Buffer.from(payload.buffer, payload.byteOffset, payload.byteLength);
 }
@@ -115,6 +129,7 @@ export function parseCreatureModelMetadata(displayInfo: Uint8Array, modelData: U
 
   const paths = new Map<number, {
     path: string; scale: number; collisionHeight: number; mountHeight: number; noMountSpecial: boolean; // 05.10-A7a-G 6.20
+    missileCollision?: readonly [number, number, number]; // 15.11 (11.02)
   }>();
   for (const row of models.rows()) {
     const id = models.id(row);
@@ -132,6 +147,8 @@ export function parseCreatureModelMetadata(displayInfo: Uint8Array, modelData: U
       collisionHeight: Number.isFinite(collisionHeight) && collisionHeight > 0 ? collisionHeight : 0,
       mountHeight: Number.isFinite(mountHeight) && mountHeight > 0 ? mountHeight : 0,
       noMountSpecial: (models.int(row, "Flags") & MODEL_FLAG_NO_MOUNT_SPECIAL) !== 0, // 05.10-A7a-G 6.20
+      ...modelMissileCollision(models.float(row, "MissileCollisionRadius"), models.float(row, "MissileCollisionPush"),
+        models.float(row, "MissileCollisionRaise")), // 15.11 (11.02)
     });
   }
 
@@ -183,6 +200,7 @@ export function parseCreatureModelMetadata(displayInfo: Uint8Array, modelData: U
     };
     if (appearance) metadata.appearance = appearance;
     if (model.noMountSpecial) metadata.noMountSpecial = true; // 05.10-A7a-G 6.20
+    if (model.missileCollision) metadata.missileCollision = model.missileCollision; // 15.11 (11.02)
     result.set(id, metadata);
   }
   return result;

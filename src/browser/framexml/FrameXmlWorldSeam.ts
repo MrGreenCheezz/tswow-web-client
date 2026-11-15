@@ -128,6 +128,7 @@ import { frameXmlMultiCastBindings, type FrameXmlMultiCastModel } from "./FrameX
 import { FRAMEXML_CURSOR_BINDINGS, type FrameXmlActionButton, type FrameXmlCursorModel } from "./FrameXmlCursor.js";
 import { FRAMEXML_CURSOR_MONEY_BINDINGS } from "./FrameXmlCursorMoney.js"; // L5c 3.09
 import { FRAMEXML_REPAIR_BINDINGS, type FrameXmlRepairModel } from "./FrameXmlRepair.js";
+import { FRAMEXML_RANGE_QUERY_BINDINGS } from "./FrameXmlRangeQueries.js"; // widgets5 batch 2
 import { FRAMEXML_BINDING_BINDINGS, FRAMEXML_BINDING_PRELUDE, type FrameXmlBindingModel } from "./FrameXmlBinding.js";
 import { FRAMEXML_CHAT_COLOR_BINDINGS, type FrameXmlChatColors } from "./FrameXmlChatColors.js";
 import { FRAMEXML_RAID_LOD_BINDINGS } from "./FrameXmlRaidLodApi.js";
@@ -236,15 +237,20 @@ export type FrameXmlSpellTabInfo = readonly [
   highestRankNumSpells: number,
 ];
 
-/** `GetSpellInfo`'s seven DBC-backed values for an already resolved spell. */
+/**
+ * `GetSpellInfo`'s values for an already resolved spell, in 3.3.5's order (3.43, 15.11: Wow.exe 0x00540a30,
+ * FrameXmlSpellInfo.ts) — the range pair only with a player.
+ */
 export type FrameXmlSpellInfo = readonly [
   name: string,
   rank: string,
   icon: string,
+  cost: number,
+  isFunnel: boolean,
+  powerType: number,
   castTime: number,
-  minRange: number,
-  maxRange: number,
-  spellId: number,
+  minRange?: number,
+  maxRange?: number,
 ];
 
 /** `GetSpellCooldown`'s GetTime-based `(start, duration, enabled)` tuple. */
@@ -3150,7 +3156,9 @@ export const FRAMEXML_SEAM_BINDINGS: Readonly<Record<string, FrameXmlSeamBinding
   ...FRAMEXML_CURSOR_MONEY_BINDINGS,
   // The repair answers over the neutral four above, and the three repair commands (FrameXmlRepair.ts).
   ...FRAMEXML_REPAIR_BINDINGS,
-}))))); // 11.02-F2: one more closing parenthesis for frameXmlWithVehicle; 11.02-E: and one for frameXmlWithVehicleAim
+  // widgets5 batch 2: IsItemInRange, GetItemFamily, GetShapeshiftForm, IsWindowsClient (FrameXmlRangeQueries.ts).
+  ...FRAMEXML_RANGE_QUERY_BINDINGS,
+})))));// 11.02-F2: one more closing parenthesis for frameXmlWithVehicle; 11.02-E: and one for frameXmlWithVehicleAim
 
 /** Every name the seam answers, in report order. */
 export const FRAMEXML_SEAM_NAMES: readonly string[] = Object.freeze(

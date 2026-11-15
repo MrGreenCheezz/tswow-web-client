@@ -437,6 +437,29 @@ export class TerrainTile {
     visitor.referenceCpu(this, this.#view);
   }
 
+  /**
+   * 15.11 (7.54): the stored height of one of the 129 x 129 outer vertices (`inner`: of the 128 x 128 inner ones), row
+   * along world X and column along world Y as in {@link heightAt}, lowered by what the extractor's packing may have
+   * raised it: half a step for uint8/uint16 (`map_extractor` rounds to nearest). A flat tile stores its lowest
+   * height, so it needs nothing. -Infinity where the extractor clamped deep ground up to -500. The terrain horizon
+   * (`TerrainHorizonChunks.ts`) must never stand higher than Wow.exe's, which reads the ADT itself.
+   */
+  horizonHeight(row: number, column: number, inner = false): number {
+    if (this.#format === "flat") return this.#baseHeight <= -500 ? -Infinity : this.#baseHeight;
+    const stored = inner
+      ? this.#height(this.#v8Offset, row * 128 + column)
+      : this.#height(this.#v9Offset, row * 129 + column);
+    const height = stored * this.#multiplier + this.#baseHeight;
+    if (height <= -500) return -Infinity;
+    return this.#format === "float" ? height : height - this.#multiplier * 0.5;
+  }
+
+  /** 15.11 (7.54): the MCNK hole mask of chunk (`chunkRow`, `chunkColumn`), 0 for none. */
+  chunkHoles(chunkRow: number, chunkColumn: number): number {
+    if (!this.#holesOffset) return 0;
+    return this.#view.getUint16(this.#holesOffset + (chunkRow * 16 + chunkColumn) * 2, true);
+  }
+
   heightAt(worldX: number, worldY: number): number {
     if (this.#format === "flat") return this.#baseHeight;
     let x = RESOLUTION * (GRID_CENTER - worldX / TERRAIN_GRID_SIZE);

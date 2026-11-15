@@ -25,6 +25,7 @@ import {
   DEFAULT_COMBAT_REACH, PENDING_NPC_TIMEOUT_MS, beyondInteraction, npcWaitVerdict, tooFarText,
 } from "./NpcWait.js";
 import { beyondClientReach } from "./NpcWait.js"; // 4.15 (11.11)
+import { useTooFarText } from "./NpcWait.js"; // 4.15 (15.11)
 import { gameObjectType } from "../SimpleScene.js";
 import { GO_FLAG_NOT_SELECTABLE, interactionDistance, interactiveGameObjectType } from "../../world/GameObjectProtocol.js";
 import { renderVendorRepair } from "./VendorRepair.js";
@@ -142,7 +143,7 @@ export function interactWithGuid(guid: bigint): void {
         const hint = gameObjectLockHint(world, target, self.position);
         if (hint) notice(hint);
         // 4.15: an object out of reach no longer eats the click in silence.
-        else if (gameObjectTooFar(world, target, self.position)) notice(tooFarText());
+        else if (gameObjectTooFar(world, target, self.position)) notice(useTooFarText()); // 4.15 (15.11): ERR_USE_TOO_FAR
       }
       return;
     }
@@ -162,7 +163,7 @@ export function interactWithGuid(guid: bigint): void {
       else if (currentSelf?.position) {
         const hint = gameObjectLockHint(world, current, currentSelf.position);
         if (hint) notice(hint);
-        else if (gameObjectTooFar(world, current, currentSelf.position)) notice(tooFarText());
+        else if (gameObjectTooFar(world, current, currentSelf.position)) notice(useTooFarText()); // 4.15 (15.11)
       }
     });
     return;

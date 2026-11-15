@@ -9,7 +9,7 @@ import type { SpellMetadata } from "../../gateway/SpellMetadata.js";
  *   (0x00812410 with 0x00810320's masks; 0x006dc2c0: the value, plus its permanent bonus when the value is not 0,
  *   plus the signed temporary bonus, 0 below 0), capped at MaxLevel × 5 when MaxLevel > 0. A spell with no such row
  *   reads level 0 — no growth. A weapon-requiring spell is first swapped for a weapon skill's spell by the equipped
- *   weapons (0x006d4920, a table filled at run time): that one is not modelled, its level is unknown.
+ *   weapons (0x006d4920; 3.43 15.11: spellTextWeaponSkillSpell).
  * * **The value** (0x007ff770): EffectBasePoints + 1 and EffectBasePoints + EffectDieSides, each plus
  *   EffectRealPointsPerLevel × (level − BaseLevel, when BaseLevel > 0; not below 0), in the client's software floats.
  *   Unless the caller says the numbers are an aura's (0x0057abc0's last argument), the spell modifiers
@@ -44,7 +44,7 @@ export interface SpellTextModifier {
 export type SpellTextCasterRecord = Partial<Pick<SpellMetadata,
   "id" | "attributes" | "spellClassSet" | "spellClassMask" | "effects" | "effectAura" | "effectBasePoints"
   | "effectDieSides" | "effectRealPointsPerLevel" | "baseLevel" | "maxLevel" | "targets" | "equippedItemClass"
-  | "equippedItemSubclass" | "effectSpellClassMask">>;
+  | "equippedItemSubclass" | "effectSpellClassMask" | "weaponSkillSpells">>;
 
 /** The active player as these rules see it. */
 export interface SpellTextCaster {
@@ -222,15 +222,63 @@ const TARGET_FLAG_ITEM = 0x10;
 const ATTR2_NO_WEAPON_SKILL_SWAP = 0x8000000;
 const ITEM_CLASS_WEAPON = 2;
 
+/** 3.43 (15.11): what 0x006d4920's swap reads besides the spell's row. */
+export interface SpellTextWeaponSwap {
+  /** vtable +0x12c(hand, 0): the item class and subclass in attack hand 0 main, 1 off, 2 ranged; null: none; undefined: not known. */
+  readonly weapon: (hand: number) => { readonly itemClass: number; readonly subClass: number } | null | undefined;
+  /** The swapped spell's row (its MaxLevel); undefined: none; "pending": on its way. */
+  readonly row: (id: number) => SpellTextCasterRecord | undefined | "pending";
+  /** The swapped spell's SkillLineAbility rows. */
+  readonly abilities: (id: number) => readonly SpellTextSkillAbility[] | undefined;
+}
+
 /**
- * 0x006dc330 over 5 (0x007ff070) for the active player of `race` and `class`: the level a spell's numbers grow by,
- * or undefined for a spell 0x006d4920 would swap for a weapon skill's (not modelled).
+ * 3.43 (15.11): 0x006d4920 — the spell id whose skill line gives a weapon-requiring spell its level: unless the spell
+ * targets an item (TARGET_FLAG_ITEM), has SPELL_ATTR2 0x8000000, or is a weapon proficiency itself (Effect[0]
+ * SPELL_EFFECT_WEAPON), a spell asking for a weapon subclass (EquippedItemClass 2, a non-zero mask) takes, for the
+ * first of the main, off and ranged hands holding a weapon of a subclass in its mask, the passive proficiency spell of
+ * that subclass (DAT_00c9eb50, filled once by 0x006e0340: the first Spell.dbc row in file order that is passive with
+ * EquippedItemClass 2 and exactly that one subclass bit — the gateway's `weaponSkillSpells`). Otherwise the spell's
+ * own id. Undefined while a hand's item or the table is not known.
+ */
+export function spellTextWeaponSkillSpell(record: SpellTextCasterRecord, swap: SpellTextWeaponSwap | undefined): number | undefined {
+  const id = record.id ?? 0;
+  if (((record.targets ?? 0) & TARGET_FLAG_ITEM) !== 0 || ((record.attributes?.[2] ?? 0) & ATTR2_NO_WEAPON_SKILL_SWAP) !== 0
+    || record.effects?.[0] === SPELL_EFFECT_WEAPON || record.equippedItemClass !== ITEM_CLASS_WEAPON
+    || (record.equippedItemSubclass ?? 0) === 0) return id;
+  const table = record.weaponSkillSpells;
+  if (!table || !swap) return undefined;
+  const mask = record.equippedItemSubclass ?? 0;
+  for (let hand = 0; hand < 3; hand++) {
+    const weapon = swap.weapon(hand);
+    if (weapon === undefined) return undefined;
+    if (weapon === null || weapon.itemClass !== ITEM_CLASS_WEAPON) continue;
+    const subClass = weapon.subClass & 0xff;
+    if ((mask & (1 << (subClass & 31))) === 0) continue;
+    const swapped = table[subClass] ?? 0;
+    if (swapped !== 0) return swapped;
+  }
+  return id;
+}
+
+/**
+ * 0x006dc330 over 5 (0x007ff070) for the active player of `race` and `class`: the level a spell's numbers grow by.
+ * 3.43 (15.11): a weapon-requiring spell first goes through 0x006d4920 (spellTextWeaponSkillSpell); a swapped id's
+ * row then stands in for the spell — its SkillLineAbility rows and its MaxLevel — and a swapped id with no row is
+ * level 0. Undefined while the swap cannot be told.
  */
 export function spellTextPlayerSpellLevel(record: SpellTextCasterRecord, race: number, classId: number,
-  abilities: readonly SpellTextSkillAbility[] | undefined, skills: readonly SpellTextSkill[]): number | undefined {
-  if (((record.targets ?? 0) & TARGET_FLAG_ITEM) === 0 && ((record.attributes?.[2] ?? 0) & ATTR2_NO_WEAPON_SKILL_SWAP) === 0
-    && record.effects?.[0] !== SPELL_EFFECT_WEAPON && record.equippedItemClass === ITEM_CLASS_WEAPON
-    && (record.equippedItemSubclass ?? 0) !== 0) return undefined;
+  abilities: readonly SpellTextSkillAbility[] | undefined, skills: readonly SpellTextSkill[],
+  swap?: SpellTextWeaponSwap): number | undefined {
+  const swappedId = spellTextWeaponSkillSpell(record, swap);
+  if (swappedId === undefined) return undefined;
+  if (swappedId !== (record.id ?? 0)) {
+    const swapped = swap!.row(swappedId);
+    if (swapped === "pending") return undefined;
+    if (!swapped) return 0;
+    record = swapped;
+    abilities = swap!.abilities(swappedId);
+  }
   const row = abilities?.find((ability) => maskAdmits(ability.raceMask, ability.excludeRace, race)
     && maskAdmits(ability.classMask, ability.excludeClass, classId));
   if (!row) return 0;

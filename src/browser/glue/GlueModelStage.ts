@@ -22,6 +22,7 @@ import {
   TEXTURE_TYPE_BODY, type WvmModel, type WvmSkeletonClip,
 } from "../Wvm.js";
 import type { FrameXmlFrame } from "../ui/framexml_compat/FrameXmlTypes.js";
+import { GlueWornPieces, type GlueWornPiece } from "./GlueWornPieces.js"; // 15.11 6.18
 
 /**
  * The 3D behind a `<Model>`/`<ModelFFX>` widget.
@@ -877,6 +878,10 @@ export interface GlueStageActor {
   facingDegrees: number;
   /** Model-space scale from `CreatureDisplayInfo`, already applied to `root` by the builder. */
   dispose(): void;
+  /** 15.11 6.18: what the actor draws in scene space (its emitters); added to the scene beside `root`. */
+  readonly overlay?: THREE.Object3D | undefined;
+  /** 15.11 6.18: once per drawn frame, after the camera is placed and the actor's mixer has run. */
+  update?(seconds: number, nowMs: number, camera: THREE.Camera): void;
 }
 
 interface ModelView {
@@ -944,6 +949,8 @@ interface ModelView {
   /** Materials kept out of the frame because their texture is not there; re-asserted each frame. */
   masked: THREE.Material[];
   actor?: GlueStageActor | undefined;
+  /** 15.11 6.18: the worn models of a unit shown in a window (GlueWornPieces.ts). */
+  pieces?: GlueWornPieces | undefined;
 }
 
 /** Host-resolved creature appearance, consumed by the same model builder as file models. */
@@ -955,6 +962,11 @@ export interface GlueModelSource {
   readonly displayScale?: number;
   /** Unit previews fit their full body; glue scenes retain their authored cameras. */
   readonly fitBody?: boolean;
+  /**
+   * 15.11 6.18: the worn models and their hang points (helm, pauldrons, weapons in hand or stowed) and
+   * glows, as the host's rule decides them; hung once the body is built. The key must name them.
+   */
+  readonly pieces?: readonly GlueWornPiece[] | undefined;
 }
 
 export interface GlueModelStageOptions {
@@ -1255,12 +1267,14 @@ export class GlueModelStage {
     if (view.actor === actor) return true;
     if (view.actor) {
       view.scene.remove(view.actor.root);
+      if (view.actor.overlay) view.scene.remove(view.actor.overlay); // 15.11 6.18
       view.actor.dispose();
     }
     view.actor = actor;
     view.dirty = true;
     if (actor) {
       view.scene.add(actor.root);
+      if (actor.overlay) view.scene.add(actor.overlay); // 15.11 6.18
       this.placeActor(view, actor);
     }
     return true;
@@ -1440,6 +1454,7 @@ export class GlueModelStage {
   private dropView(view: ModelView): void {
     if (view.actor) {
       view.scene.remove(view.actor.root);
+      if (view.actor.overlay) view.scene.remove(view.actor.overlay); // 15.11 6.18
       view.actor.dispose();
       view.actor = undefined;
     }
@@ -1456,6 +1471,8 @@ export class GlueModelStage {
       disposeModelEffects(view.effects);
       view.effects = undefined;
     }
+    view.pieces?.dispose(); // 15.11 6.18: before the rig it hangs on
+    view.pieces = undefined;
     if (view.root) {
       view.scene.remove(view.root);
       view.root = undefined;
@@ -1593,6 +1610,20 @@ export class GlueModelStage {
         || built.animatedBatches.length > 0;
       view.dirty = true;
       this.playSequence(view);
+      // 15.11 6.18: a unit's worn models, hung as the copy Wow.exe duplicates carries them (GlueWornPieces.ts).
+      if (source?.pieces && source.pieces.length > 0 && view.instance && view.template) {
+        const pieces = new GlueWornPieces(wvm, path, view.instance, view.template, {
+          baseUrl: this.#options.gatewayOrigin,
+          model: (piece) => this.model(piece),
+          loadTexture: (url) => this.loadTexture(url),
+          prepare: (material) => { clampGlueLighting(material); glueDropAdditiveCoverage(material); },
+          prepareEmitter: (material) => { glueDropAdditiveCoverage(material); },
+          ...(this.#options.onDiagnostic ? { onError: this.#options.onDiagnostic } : {}),
+        });
+        view.pieces = pieces;
+        view.scene.add(pieces.overlay);
+        void pieces.hang(source.pieces, [], current).then(() => { if (current()) view.dirty = true; });
+      }
     } catch (error) {
       if (view.loadGeneration !== generation || this.#views.get(view.frame) !== view) return;
       view.failed = true;
@@ -1722,6 +1753,7 @@ export class GlueModelStage {
     if (view.instance) {
       view.instance.mixer.update(seconds);
       if (view.action) view.animationMs = view.action.time * 1000;
+      view.pieces?.pose(nowMs); // 15.11 6.18: the closed hands over the clip
     }
     // What the file paints this batch *now*: colour, opacity and where the texture sits. The world
     // has advanced these every frame since WVM9; the stage was calling it once at time zero, inside
@@ -1763,6 +1795,12 @@ export class GlueModelStage {
         animationMs: view.animationMs,
         worldMs: nowMs,
       }, this.#billboard);
+    }
+    // 15.11 6.18: worn glows and an actor's own effects, on this frame's camera and bones.
+    if (view.pieces || view.actor?.update) {
+      view.camera.updateMatrixWorld();
+      view.pieces?.animate(seconds, nowMs, view.camera);
+      view.actor?.update?.(seconds, nowMs, view.camera);
     }
 
     // The shared target is at least this big and is never resized here — see `frame()`. The view
@@ -1906,7 +1944,8 @@ export class GlueModelStage {
       if ((node as THREE.SkinnedMesh).isSkinnedMesh) (node as unknown as { boundingBox: THREE.Box3 | null }).boundingBox = null;
     });
     view.fitPose = pose;
-    view.fitBounds = new THREE.Box3().setFromObject(root);
+    // 15.11 6.18: the body alone — worn pieces arrive later and must not reframe it (a polearm on the back).
+    view.fitBounds = new THREE.Box3().setFromObject(view.pieces && view.instance ? view.instance.mesh : root);
     return view.fitBounds;
   }
 

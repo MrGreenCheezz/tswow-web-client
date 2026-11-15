@@ -27,7 +27,6 @@ import {
   type SettingValues,
 } from "../ui/SettingsModel.js";
 import { isFullscreen, setFullscreen } from "../app/Fullscreen.js"; // 10.28 (26.10)
-
 /**
  * `volume` and `percent` are the model's whole percentages as the client's fractions (0.7 for 70);
  * `number` is the model's own unit, where the stock CVar measures the same thing in it.
@@ -87,6 +86,8 @@ const FRAME_XML_SETTINGS_CVAR_ROWS: FrameXmlSettingsCVarDefinition[] = [
   // the world client's autoDismount hooks (EnterWorld.ts, world/MountedCastRule.ts) and IsUsableAction read them.
   { cvar: "autoDismount", setting: "autoDismount", kind: "boolean" },
   { cvar: "autoDismountFlying", setting: "autoDismountFlying", kind: "boolean" },
+  // 5.05 (15.11): autoStand (default "1"); the world client's sitting-cast rule reads it (world/CastPreflightRule.ts).
+  { cvar: "autoStand", setting: "autoStand", kind: "boolean" },
   // DEC-A 3.11: the stock Combat panel's «Автоматическая помощь» (ASSIST_ATTACK, default "0" at 0x009e14a0);
   // native ASSISTTARGET (input/Actions.ts settingOn) and the stock AssistUnit (FrameXmlTargetingApi.ts) read it.
   { cvar: "assistAttack", setting: "assistAttack", kind: "boolean" },
@@ -233,6 +234,21 @@ function cvarFromSetting(
   const value = coerceSetting(definition, raw);
   if (binding.kind === "boolean") return cvarBoolean(value === true, binding.inverted);
   return cvarNumber((typeof value === "number" ? value : definition.fallback as number) / scale(binding));
+}
+
+/** 5.37: the row of a CVar name (any case), stock or `webclient_`, or undefined. */
+export function frameXmlSettingsCVarRow(name: string): FrameXmlSettingsCVarDefinition | undefined {
+  return definitionFor(name);
+}
+
+/** 5.37: a CVar's text as the value its setting takes (the same conversion `SetCVar` makes). */
+export function settingValueOfCVarText(binding: FrameXmlSettingsCVarDefinition, text: string): boolean | number {
+  return settingFromCVar(binding, text);
+}
+
+/** 5.37: a setting's value as its CVar's text (the same conversion `GetCVar` makes). */
+export function cvarTextOfSettings(binding: FrameXmlSettingsCVarDefinition, values: SettingValues): string {
+  return cvarFromSetting(binding, values);
 }
 
 /**

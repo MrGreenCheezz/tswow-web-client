@@ -1,4 +1,5 @@
 import type { WmoBounds, WmoPortals } from "./WmoModel.js";
+import type { WmoPortalFrustaScratch } from "./WmoPortalFrusta.js";
 
 export interface WmoOcclusionGroup {
   bounds: WmoBounds;
@@ -208,6 +209,9 @@ export interface WmoPortalWalkScratch {
   /** P1-12c: where a walk picks its groups before they are compared with `selected`; never shrinks. */
   readonly picks: number[];
   readonly result: { groups: readonly number[]; candidates: number; visible: number; culled: number; used: boolean };
+  /** 15.11 (7.54): the camera walk's per-group "its box met a visit's frustum", and its own scratch; made on first use. */
+  drawn?: Uint8Array;
+  frusta?: WmoPortalFrustaScratch;
 }
 
 export function createWmoPortalWalkScratch(): WmoPortalWalkScratch {

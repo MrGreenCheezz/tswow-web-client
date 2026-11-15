@@ -55,6 +55,11 @@ export interface ActionUsableEquipped {
 export interface ActionUsableHost {
   readonly range: ActionRangeHost;
   spell(id: number): SpellMetadata | undefined;
+  /**
+   * 3.43 (15.11): the active player's cost by Wow.exe's own cost function 0x008012f0 (ui/SpellTextCost.ts), which
+   * 0x008017e0 compares; undefined while it cannot be told (then the older estimate below stands).
+   */
+  playerSpellCost?(spell: SpellMetadata): number | undefined;
   auras(guid: bigint): readonly ActionUsableAura[];
   /** `m_bag.GetItemTypeCount(item, 0)`: carried, not banked. */
   itemCount(entry: number): number;
@@ -309,7 +314,10 @@ export function frameXmlSpellHasPower(unit: WorldObjectState, spell: SpellMetada
       spellModifiers: () => host.range.spellModifiers(),
     });
   }
-  const cost = spellPowerCost(spell, unit);
+  // 3.43 (15.11): for the active player the cost function itself (its level parts, weapon speed, totems, the
+  // smallest school step and SPELLMOD_COST); another unit (a pet, a vehicle) keeps the estimate.
+  const full = host && unit.guid === host.range.selfGuid ? host.playerSpellCost?.(spell) : undefined;
+  const cost = full ?? spellPowerCost(spell, unit);
   const pool = spellPowerPool(spell, unit);
   if (cost === undefined || pool === undefined) return true;
   return spell.powerType === POWER_HEALTH ? cost < pool : cost <= pool;

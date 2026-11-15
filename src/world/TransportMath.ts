@@ -14,6 +14,8 @@
 // pitching in a swell does not tilt the people on it, and z is a pure addition.
 
 import type { WorldPosition } from "./WorldState.js";
+// 11.01 (15.11): a lift car turned beyond its heading by TransportRotation.dbc carries its passengers in that whole rotation.
+import { carrierRotation, composeOnRotated, offsetOnRotated } from "./TransportTilt.js";
 
 export interface TransportSeat {
   guid: bigint;
@@ -37,6 +39,13 @@ export interface TransportSeat {
  * their path — omitting that π reflects every passenger through the ship's centre, bow for stern.
  */
 export function composePassengerPosition(transport: WorldPosition, offset: TransportSeat): WorldPosition {
+  // 11.01 (15.11): a car turned by its TransportRotation keys (TransportTilt.ts, Wow.exe 0x00704cc0).
+  const rotation = carrierRotation(transport);
+  if (rotation !== undefined) {
+    const world = composeOnRotated(transport, rotation, offset, { x: 0, y: 0, z: 0, orientation: 0 });
+    world.orientation = normalizeOrientation(world.orientation);
+    return world;
+  }
   const cos = Math.cos(transport.orientation);
   const sin = Math.sin(transport.orientation);
   return {
@@ -55,6 +64,13 @@ export function composePassengerPosition(transport: WorldPosition, offset: Trans
  * transpose of the rotation above, so that is what it is written as.
  */
 export function passengerOffset(transport: WorldPosition, world: WorldPosition): Omit<TransportSeat, "guid" | "seat"> {
+  const rotation = carrierRotation(transport); // 11.01 (15.11)
+  if (rotation !== undefined) {
+    const local = { x: 0, y: 0, z: 0, orientation: 0 };
+    offsetOnRotated(transport, rotation, world, local);
+    local.orientation = normalizeOrientation(local.orientation);
+    return local;
+  }
   const cos = Math.cos(transport.orientation);
   const sin = Math.sin(transport.orientation);
   const dx = world.x - transport.x;

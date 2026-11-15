@@ -146,9 +146,10 @@ export function liftPathRotation(object: Pick<WorldObjectState, "fields">, keys:
 }
 
 /**
- * The heading of a rotation: where it points the object's +x, about z. The colliders and the passengers' frame are
- * yaw-only here (game/TransportCollision.ts, WorldState's carrier composition), so a rotated car gives them this; it is
- * the whole rotation for every key of the dataset with a TransportAnimation path but 194301 and 194303, which tilt.
+ * The heading of a rotation: where it points the object's +x, about z. It is the whole rotation for every key of the
+ * dataset with a TransportAnimation path but 194301 and 194303, which tilt. 15.11: the colliders stand in this heading's
+ * frame with the rest of the rotation turned into the mesh (game/TransportTiltCollision.ts), and the passengers ride in
+ * the whole rotation (world/TransportTilt.ts).
  */
 export function rotationHeading(q: Quat): number {
   return Math.atan2(2 * (q.x * q.y + q.w * q.z), 1 - 2 * (q.y * q.y + q.z * q.z));

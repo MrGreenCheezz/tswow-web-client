@@ -8,12 +8,12 @@ import {
 import { spellConditionBranch } from "./SpellTextCondition.js"; // 12.10
 import { evaluateSpellExpression, type SpellExpressionEnvironment, type SpellTextRecord } from "./SpellTextExpression.js"; // 12.10
 import {
-  spellTextCastSpeed, spellTextFloat, spellTextInt, spellTextLevel, spellTextPlayerSex, type SpellTextPlayer,
-} from "./SpellTextPlayer.js"; // 12.10; 3.43 (11.11): + the cost fields
+  spellTextCastSpeed, spellTextLevel, spellTextPlayerSex, type SpellTextPlayer,
+} from "./SpellTextPlayer.js"; // 12.10
 import {
-  SPELLMOD, smallestOverSchools, spellTextEffectRange, spellTextModFloat, spellTextModInt, spellTextModifierTotals,
-  type SpellTextCaster,
+  SPELLMOD, spellTextEffectRange, spellTextModFloat, spellTextModInt, type SpellTextCaster,
 } from "./SpellTextCaster.js"; // 3.43 (11.11)
+import { spellPowerCostFor, spellPowerPerSecondFor, type SpellCostUnit } from "./SpellTextCost.js"; // 3.43 (15.11)
 import { spellTextBlock, spellTextVariable, spellTextVariables, type SpellTextVariable } from "./SpellTextVariables.js"; // 12.10
 
 /**
@@ -169,6 +169,7 @@ class DescriptionWriter {
       variable: (name) => spellTextVariable(this.variables, name)?.value ?? 0,
       duration: (record) => this.duration(record, true),
       cost: (record) => this.cost(record),
+      perSecond: (record) => this.perSecondCost(record), // 3.43 (15.11)
       // 3.43 (11.11): 0x00579980 hands 0x005782d0 the writer's level, multiplier and modifiers flag.
       ...(context.caster ? { caster: context.caster } : {}),
       level: this.level,
@@ -225,42 +226,24 @@ class DescriptionWriter {
     return ms;
   }
 
-  /**
-   * 0x008012f0 for `$c`, the active player's cost: ManaCost plus ManaCostPct of the base 0x0071b770 gives; 3.43
-   * (11.11) then the school steps — + UNIT_FIELD_POWER_COST_MODIFIER, × (1 + UNIT_FIELD_POWER_COST_MULTIPLIER), each the
-   * smallest over the spell's SchoolMask (0x005ee050, 0x005ee0b0), stored to a float and rounded to nearest-even — and
-   * SPELLMOD_COST, (v + flat) × pct / 100 (0x007fd970); not below 0. Left out: ManaCostPerLevel (the column is not
-   * served; few player spells carry one), AttributesEx4 0x400's weapon-speed part and SUMMON_ALL_TOTEMS' sum of the
-   * multi-cast bar's totems. -1 without a player.
-   */
-  cost(record: SpellTextRecord): number | undefined {
-    const player = this.context.player;
-    if (!player) return -1;
-    if (record.powerCost === undefined || record.powerCostPercent === undefined) return undefined;
-    let cost = record.powerCost;
-    if (record.powerCostPercent !== 0) {
-      const base = player.basePower?.(record.powerType ?? 0);
-      if (base === undefined) return undefined;
-      cost += Math.trunc((base * record.powerCostPercent) / 100);
-    }
-    const schools = record.schoolMask ?? 0;
-    const modifier = smallestOverSchools(schools, (school) => spellTextInt(player, "UNIT_FIELD_POWER_COST_MODIFIER", school));
-    const multiplier = smallestOverSchools(schools, (school) => spellTextFloat(player, "UNIT_FIELD_POWER_COST_MULTIPLIER", school));
-    cost = spellTextRoundEven(Math.fround(Math.fround(cost + modifier) * (multiplier + 1)));
-    cost = spellTextModInt(record, cost, SPELLMOD.cost, this.context.caster);
-    return cost < 1 ? 0 : cost;
+  /** 3.43 (15.11): the active player as the cost function's unit (SpellTextCost.ts), or undefined without one. */
+  costUnit(): SpellCostUnit | undefined {
+    return spellCostUnit(this.context);
   }
 
   /**
-   * 0x007ff100 for `$p`: ManaPerSecond, then SPELLMOD_COST's percent alone when it is above 0 (pct × v / 100, no flat);
-   * 0 without a player. Left out: ManaPerSecondPerLevel (not served).
+   * 0x008012f0 for `$c`, the active player's cost — the whole function (SpellTextCost.ts: the level parts, the
+   * percentage, the weapon speed of AttributesEx4 0x400, the school steps, SPELLMOD_COST and the multi-cast bar's
+   * totems); -1 without a player (the function's 0xffffffff read as an int).
    */
+  cost(record: SpellTextRecord): number | undefined {
+    const unit = this.costUnit();
+    return unit ? spellPowerCostFor(record, unit) : -1;
+  }
+
+  /** 0x007ff100 for `$p` (SpellTextCost.ts); 0 without a player. */
   perSecondCost(record: SpellTextRecord): number | undefined {
-    if (!this.context.player) return 0;
-    const value = record.manaPerSecond;
-    if (value === undefined || value <= 0) return value;
-    const totals = spellTextModifierTotals(record, SPELLMOD.cost, this.context.caster);
-    return totals ? Math.trunc((totals.pct * value) / 100) : value;
+    return spellPowerPerSecondFor(record, this.costUnit());
   }
 
   /** The sex `$g` uses: the context's, else the player's; undefined without either. */
@@ -553,6 +536,22 @@ export function spellDescriptionRows(spell: Pick<SpellMetadata, "description"> &
   "auraDescription" | "descriptionVariables">>, aura = false): number[] {
   const text = aura && spell.auraDescription ? spell.auraDescription : spell.description;
   return spellDescriptionReferences(`${text}\n${spell.descriptionVariables ?? ""}`);
+}
+
+/**
+ * 3.43 (15.11): a description context's active player as 0x008012f0's unit (SpellTextCost.ts) — the same unit the
+ * tooltip's cost row, GetSpellInfo and the «not enough mana» check hand the function — or undefined without one.
+ */
+export function spellCostUnit(context: SpellDescriptionContext): SpellCostUnit | undefined {
+  const player = context.player;
+  if (!player) return undefined;
+  return {
+    player, caster: context.caster, isPlayer: true, isActivePlayer: true,
+    ...(player.formRoundTime ? { formRoundTime: player.formRoundTime } : {}),
+    ...(player.inventoryItem ? { inventoryItem: player.inventoryItem } : {}),
+    ...(player.actionSpell ? { actionSpell: player.actionSpell } : {}),
+    row: (id) => context.spells?.get(id) ?? (context.answered && !context.answered(id) ? "pending" : undefined),
+  };
 }
 
 /** A description with its markers filled in, as Wow.exe's 0x0057abc0 writes it (see the module comment). */

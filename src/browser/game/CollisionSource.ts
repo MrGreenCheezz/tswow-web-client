@@ -2,9 +2,10 @@ import { CollisionClient, canonicalCollisionModelName, type CollisionModel } fro
 import type { BenchmarkAsyncReadinessStats } from "../RenderBenchmarkReadiness.js";
 import { terrainGrid, type EnvironmentObject } from "../Terrain.js";
 import {
-  CollisionMesh, CollisionWorld, transformCollisionBounds, transformCollisionMesh,
-  type CollisionFloorHit, type CollisionPlacement,
+  CollisionMesh, CollisionWorld, inverseTransformCollisionPoint, transformCollisionBounds, transformCollisionMesh,
+  type CollisionFloorHit, type CollisionPlacement, type Vector3, // 5.14 (15.11): the point transform and Vector3
 } from "./Collision.js";
+import { sampleCollisionLiquid } from "./CollisionLiquid.js"; // 5.14 (15.11)
 import { withGeneration } from "../GatewayGeneration.js";
 import { FRAME_BUDGET, frameBudgetProbe } from "../FrameBudgetProbe.js"; // P2-09a
 
@@ -1055,6 +1056,60 @@ export class CollisionSource {
     return record;
   }
 
+  /** 5.14 (15.11): bumped whenever a group stands or falls (`#put`/`#take`); `liquidGroupOver`'s boxes are cached by it. */
+  #standingEdits = 0;
+  #liquidEdits = -1;
+  #liquidBoxes: number[] = [];
+  #liquidGroups: PlacedGroup[] = [];
+
+  /**
+   * 5.14 (15.11): whether a point is inside the placed box of a standing WMO group whose model holds liquid (MLIQ). The
+   * liquid probe (`Movement.createTerrainProbe`) can answer a building's water only from such a group — the floor under
+   * the point must be its, and `collisionModelLiquidAt` wants the point inside the group's own bounds — so `false` here is
+   * a certain "no building water": the camera skips the floor walk then (CameraWater.cameraLiquidGated). The boxes are the
+   * groups' bounds placed as `groupBoxes` places them (`transformCollisionBounds`), widened by a hundredth of a yard for the
+   * probe's own tolerance; rebuilt when a group stands or falls. Then the group's MLIQ must have a cell with liquid over the
+   * point, and — with `below` — its surface there must not lie more than `below` yards under the point.
+   */
+  liquidGroupOver(x: number, y: number, z: number, below = Number.POSITIVE_INFINITY): boolean {
+    if (this.#liquidEdits !== this.#standingEdits) {
+      this.#liquidEdits = this.#standingEdits;
+      const boxes: number[] = [];
+      const groups: PlacedGroup[] = [];
+      for (const group of this.#standing) {
+        const source = group.owner.model.groups[group.index];
+        if (source?.liquid === undefined) continue;
+        const box = transformCollisionBounds(source.bounds, group.owner);
+        boxes.push(box.minX - 0.01, box.minY - 0.01, box.minZ - 0.01, box.maxX + 0.01, box.maxY + 0.01, box.maxZ + 0.01);
+        groups.push(group);
+      }
+      this.#liquidBoxes = boxes;
+      this.#liquidGroups = groups;
+    }
+    const boxes = this.#liquidBoxes;
+    for (let at = 0, index = 0; at < boxes.length; at += 6, index++) {
+      if (!(x >= boxes[at]! && y >= boxes[at + 1]! && z >= boxes[at + 2]!
+        && x <= boxes[at + 3]! && y <= boxes[at + 4]! && z <= boxes[at + 5]!)) continue;
+      // And the group's own MLIQ has a cell with liquid over the point (`sampleCollisionLiquid`, which
+      // `collisionModelLiquidAt` asks too: without a cell there it answers "no water").
+      const group = this.#liquidGroups[index]!;
+      const liquid = group.owner.model.groups[group.index]?.liquid;
+      if (liquid === undefined) continue;
+      LIQUID_POINT.x = x;
+      LIQUID_POINT.y = y;
+      LIQUID_POINT.z = z;
+      const local = inverseTransformCollisionPoint(LIQUID_POINT, group.owner);
+      const sample = sampleCollisionLiquid(liquid, local.x, local.y);
+      if (sample === undefined) continue;
+      // `below`: a surface more than this far under the point is of no interest to the caller. Judged only where the
+      // placement turns about the vertical alone, so the model's height is the world's times the scale.
+      const owner = group.owner;
+      if (owner.rotationX === 0 && owner.rotationZ === 0 && (local.z - sample.height) * Math.abs(owner.scale || 1) > below) continue;
+      return true;
+    }
+    return false;
+  }
+
   /** Whether a built group was built from the geometry its model holds now. */
   #current(group: PlacedGroup): boolean {
     const source = group.owner.model.groups[group.index];
@@ -1065,6 +1120,7 @@ export class CollisionSource {
     if (group.standing) return;
     group.standing = true;
     this.#standing.add(group);
+    this.#standingEdits++; // 5.14 (15.11)
     // Keyed by the build, answering for the spawn: see `CollisionWorld`.
     this.world.set(group.key, group.mesh, group.owner.id);
     if (group.owner.standing++ === 0) this.#instances++;
@@ -1075,6 +1131,7 @@ export class CollisionSource {
     if (!group.standing) return;
     group.standing = false;
     this.#standing.delete(group);
+    this.#standingEdits++; // 5.14 (15.11)
     this.world.delete(group.key);
     if (--group.owner.standing === 0) this.#instances--;
     this.#triangles -= group.mesh.triangleCount;
@@ -1238,6 +1295,9 @@ function samePlacement(record: PlacedModel, object: EnvironmentObject): boolean 
  * Needed before any geometry is: a city's groups are chosen by which of their boxes the player is
  * near, and asking for the geometry first would defeat the whole point of choosing.
  */
+/** 5.14 (15.11): `liquidGroupOver`'s point, reused. */
+const LIQUID_POINT: Vector3 = { x: 0, y: 0, z: 0 };
+
 function groupBoxes(model: CollisionModel, placement: CollisionPlacement): Float64Array {
   const boxes = new Float64Array(model.groups.length * 4);
   for (let index = 0; index < model.groups.length; index++) {

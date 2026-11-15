@@ -121,6 +121,8 @@ test("both glue builds clamp what they built: the backdrop, the figure and its w
   const stage = readFileSync(new URL("../src/browser/glue/GlueModelStage.ts", import.meta.url), "utf8");
   assert.match(stage, /view\.built = built;\s+for \(const material of built\.materials\) clampGlueLighting\(material\);/);
   const scene = readFileSync(new URL("../src/browser/glue/GlueCharacterScene.ts", import.meta.url), "utf8");
-  assert.equal(scene.match(/for \(const material of built\.materials\) clampGlueLighting\(material\);/g)?.length, 2);
+  assert.equal(scene.match(/for \(const material of built\.materials\) clampGlueLighting\(material\);/g)?.length, 1);
+  // 15.11 (6.18): the worn pieces are prepared one material at a time (GlueWornPieces.ts), clamped as the figure is.
+  assert.match(scene, /prepare: \(material\) => \{\s+clampGlueLighting\(material\);/);
 });
 

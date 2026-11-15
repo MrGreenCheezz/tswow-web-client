@@ -2,6 +2,7 @@ import type { CharacterOptions } from "../CharacterAtlas.js";
 import type { CreationClass, CreationRace } from "../../gateway/CharacterCreation.js";
 import type { StartOutfitItem } from "../../gateway/CharStartOutfit.js";
 import type { GlueSceneLook } from "./GlueCharacterScene.js";
+import { creationWears } from "./CharSelectWorn.js"; // 15.11 6.18
 import { RESPONSE_CODE_NAMES, RESPONSE_CODES } from "../../generated/responseCodes.js";
 import { describeFailure, messageFor, openStatusDialog, responseKey, showStatusMessage } from "./GlueMessages.js";
 import { checkCharacterName, type GlueNameRuleOptions } from "./GlueNameRules.js";
@@ -526,7 +527,10 @@ export class GlueCreation {
     if (!race) return undefined;
     const displayId = this.#options.source.displayId(race.id, this.gender);
     if (displayId === undefined) return undefined;
+    const classId = this.selectedClass()?.id;
     const items = this.#outfit
+      // 15.11 6.18: only what Wow.exe 0x004e0fd0 puts on the creation figure (CharSelectWorn.creationWears).
+      .filter((item) => creationWears(item.inventoryType, classId))
       .map((item) => `${item.slot}:${item.inventoryType}:${item.displayId}`)
       .sort()
       .join(",");

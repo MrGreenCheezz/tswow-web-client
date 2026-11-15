@@ -147,15 +147,18 @@ export class SpellMetadataClient {
     // 3.43 (11.11): v=21 adds the caster-level growth the description writer reads (`effectRealPointsPerLevel`,
     // `baseLevel`, `maxLevel`, `durationPerLevel`; ui/SpellTextCaster.ts). Optional: an older gateway's rows write the
     // numbers without the growth, as before.
-    const url = `${this.#baseUrl}/dbc/spells?ids=${chunk.join(",")}&v=21`; // 3.43 (11.11): was v=20
+    // 3.43 (15.11): v=22 adds the cost's level parts (`manaCostPerLevel`, `manaPerSecondPerLevel`) and a form row's
+    // `shapeshiftCombatRoundTime` (ui/SpellTextCost.ts). Optional: an older gateway's rows cost as before, and a
+    // weapon-speed cost in a form stays unknown.
+    const url = `${this.#baseUrl}/dbc/spells?ids=${chunk.join(",")}&v=22`; // 3.43 (15.11): was v=21
     let value = await this.#batch(url);
     // The key alone cannot tell a restarted gateway from the hour-long browser cache: an answer the
     // old process gave before the restart is still on disk. A batch whose every row lacks the newest
-    // field (3.43: `baseLevel`, present on every v=21 row, 0 included) is asked once more past that
+    // field (3.43: `manaCostPerLevel`, present on every v=22 row, 0 included) is asked once more past that
     // cache; if the gateway itself still answers the old shape, this session stops asking twice.
-    if (!this.#olderGateway && value.length > 0 && value.every((row) => row.baseLevel === undefined)) { // 3.43
+    if (!this.#olderGateway && value.length > 0 && value.every((row) => row.manaCostPerLevel === undefined)) { // 3.43
       value = await this.#batch(url, { cache: "reload" });
-      if (value.every((row) => row.baseLevel === undefined)) this.#olderGateway = true; // 3.43
+      if (value.every((row) => row.manaCostPerLevel === undefined)) this.#olderGateway = true; // 3.43
     }
     for (const metadata of value) this.#cache.set(metadata.id, metadata);
     // Answered, and without a row: final for this gateway process (see `#missing`).
@@ -273,6 +276,12 @@ function isSpellMetadata(value: unknown): value is SpellMetadata {
     // 3.43 (v=21): three finite floats and three raw integers; absent from an older gateway.
     && optionalNumbers(spell.effectRealPointsPerLevel, 3) && optionalInteger(spell.baseLevel)
     && optionalInteger(spell.maxLevel) && optionalInteger(spell.durationPerLevel)
+    // 3.43 (v=22): two raw integers and a form's round time (ms, not negative); absent from an older gateway.
+    && optionalInteger(spell.manaCostPerLevel) && optionalInteger(spell.manaPerSecondPerLevel)
+    && (spell.weaponSkillSpells === undefined || (Array.isArray(spell.weaponSkillSpells) && spell.weaponSkillSpells.length <= 256
+      && spell.weaponSkillSpells.every((id) => Number.isSafeInteger(id) && id >= 0)))
+    && (spell.shapeshiftCombatRoundTime === undefined
+      || (Number.isSafeInteger(spell.shapeshiftCombatRoundTime) && (spell.shapeshiftCombatRoundTime as number) >= 0))
     // 19.10: the usability check's raw columns (gateway SpellMetadata.shapeshiftMask); absent from an older gateway.
     && optionalIntegers(spell.shapeshiftMask, 2) && optionalIntegers(spell.shapeshiftExclude, 2)
     && optionalInteger(spell.casterAuraState) && optionalInteger(spell.targetAuraState)

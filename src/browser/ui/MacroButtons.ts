@@ -49,10 +49,18 @@ export function macroIndexOfButton(button: Pick<ActionButton, "action" | "type">
   return old && lookup.idAt(button.action) !== undefined ? button.action : undefined;
 }
 
-/** This client's view of a wire button: a macro one as 0x40 + its slot here; anything else as it is. */
-export function viewActionButton(button: ActionButton, lookup: MacroButtonLookup): ActionButton {
+/**
+ * This client's view of a wire button: a macro one as 0x40 + its slot here; anything else as it is.
+ *
+ * 5.37 (15.11): a macro word whose macro does not exist is no button at all, as in Wow.exe: HasAction
+ * (0x005a8160) answers false when 0x00564ab0 finds no macro of that id, GetActionText (0x005a7d90) and
+ * GetActionTexture (0x005a97f0) answer nil, and UseAction (0x005abbc0 → 0x00566dc0) runs nothing. The view
+ * used to keep such a word as «slot n» and show, and run, whatever macro sits in that slot here. The wire
+ * keeps the word untouched, so the button comes back when its macro does.
+ */
+export function viewActionButton(button: ActionButton, lookup: MacroButtonLookup): ActionButton | undefined {
   const index = macroIndexOfButton(button, lookup);
-  if (index === undefined) return button;
+  if (index === undefined) return isWireMacroType(button.type) ? undefined : button;
   return index === button.action && button.type === ACTION_BUTTON_MACRO ? button : { slot: button.slot, action: index, type: ACTION_BUTTON_MACRO };
 }
 

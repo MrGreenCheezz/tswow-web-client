@@ -17,12 +17,22 @@
  * (`CameraRig.cameraFloorPitch`), not the arm — Wow.exe's sweep would cut the arm there, as it does for every
  * floor, and the rig re-derives the tilt from the arm it drew, so a cut arm would only let the tilt swing the
  * camera under after all. Under it the boom is cut where it would cross the surface less the same 0.2222, as a
- * wall cuts it. Not modelled: water the boom crosses away from the subject's own column (a lake behind a
- * character standing on its shore), the hinge raised over the surface, and the pitch nudges of
- * `cameraDive`/`camera*FinalPitch` on crossing it.
+ * wall cuts it. Since 11.11 the hinge's water rules (`cameraWaterHinge`) and the nod on crossing (`cameraWaterNod`), and
+ * since 15.11 water away from the subject's own column, a building's included (`cameraWaterReach`), and the band about
+ * any surface the camera is never left in (`cameraWaterBand`, 0x006061d0). `cameraDive` is the steer's (CameraSteerPitch.ts).
  */
 
-import { LIQUID_RECALL_YARDS } from "./Physics.js";
+import { LIQUID_RECALL_YARDS, LIQUID_UNKNOWN, type TerrainProbe } from "./Physics.js";
+
+/**
+ * 5.14 (15.11): the surface of the liquid a point is in or over — the map's or a building's, chosen as the physics chooses
+ * it for the feet (`Movement.terrainProbe`) — for the camera's water rules away from the subject; undefined for none and
+ * for an answer not in yet.
+ */
+export function cameraLiquidSurface(probe: Pick<TerrainProbe, "liquid"> | undefined, x: number, y: number, z: number): number | undefined {
+  const answer = probe?.liquid(x, y, z);
+  return answer === undefined || answer === LIQUID_UNKNOWN ? undefined : answer.height;
+}
 
 /** 0x00a1ea24: how far from the surface the hinge is kept in 0x00605d60, used here for the camera too. */
 export const CAMERA_WATER_CLEARANCE = 0.2222222238779068;
@@ -86,6 +96,99 @@ export function cameraWaterNod(before: number, after: number, surfacePitch: numb
   if (before === CAMERA_WATER_SUBMERGED && after === CAMERA_WATER_SURFACE) pitch = surfacePitch;
   else if (before === CAMERA_WATER_SURFACE && after === CAMERA_WATER_SUBMERGED) pitch = submergePitch;
   return pitch !== undefined && pitch !== 0 && Number.isFinite(pitch) ? pitch : undefined;
+}
+
+/**
+ * 5.14 (15.11): {@link cameraLiquidSurface} behind a test that cannot say "dry" where the probe would find water. The
+ * probe (`Movement.createTerrainProbe` → `CollisionLiquid.positionLiquid`) answers the map's water only where the map's
+ * liquid grid has some at (x, y) at or over the ground, with the point at or over the ground too; and a building's only
+ * from a standing group with MLIQ whose bounds hold the point (`CollisionSource.liquidGroupOver`). Where neither can hold,
+ * the answer is "none" without the probe's floor walk — the bulk of the boom's samples on dry land, and under a floating
+ * city whose map water lies under the ground.
+ *
+ * And a surface more than {@link CAMERA_WATER_CLEARANCE} under the point may come back as none: neither reader cares for
+ * one — the band moves the camera only within 0.2222 of a surface (`cameraWaterBand`), the boom stops only short of one
+ * above the point less 0.2222 (`cameraWaterReach`) — so a camera over a canal or a lake asks the probe only where the
+ * water could be in its way. Every result of both readers is the ungated one; measured on the gateway's data with the
+ * whole frame compared (.runtime/re-2026-11-15/camera5/water-cost.mjs, the lane report).
+ */
+export function cameraLiquidGated(
+  probe: Pick<TerrainProbe, "liquid"> | undefined,
+  terrain: {
+    heightAt(map: number | undefined, x: number, y: number): number | undefined;
+    liquidAt(map: number | undefined, x: number, y: number): { readonly height: number } | undefined;
+  } | undefined,
+  collision: { liquidGroupOver(x: number, y: number, z: number, below?: number): boolean } | undefined,
+  map: number | undefined, x: number, y: number, z: number,
+): number | undefined {
+  if (collision === undefined || !collision.liquidGroupOver(x, y, z, CAMERA_WATER_CLEARANCE)) {
+    const liquid = terrain?.liquidAt(map, x, y);
+    if (liquid === undefined || liquid.height < z - CAMERA_WATER_CLEARANCE) return undefined;
+    const ground = terrain?.heightAt(map, x, y);
+    if (ground === undefined || !(liquid.height >= ground) || !(z >= ground)) return undefined;
+  }
+  return cameraLiquidSurface(probe, x, y, z);
+}
+
+/**
+ * 5.14 (15.11): the camera kept out of the band ±0.2222 about a liquid's surface, as Wow.exe 0x006061d0 does once a frame
+ * after the camera is placed (0x00606f90, unconditionally — with cameraWaterCollision off too, which is when it matters:
+ * the boom is not stopped at the surface then). A vertical segment from 0.2222 over the camera to 0.2222 under it is swept
+ * against liquid alone (mask 0x20000); where it meets a surface the camera is moved to 0.2222 from it, on its own side —
+ * at or under the surface it goes under, over it it goes over. So the near plane never straddles the water and the screen
+ * is never half under it. `surfaceZ` is the liquid's surface at the camera's column (map or building water), undefined
+ * for none; answers the camera's new height (its own when the surface is out of reach).
+ */
+export function cameraWaterBand(cameraZ: number, surfaceZ: number | undefined): number {
+  if (surfaceZ === undefined || !Number.isFinite(surfaceZ) || !Number.isFinite(cameraZ)) return cameraZ;
+  if (!(Math.abs(cameraZ - surfaceZ) <= CAMERA_WATER_CLEARANCE)) return cameraZ;
+  return cameraZ <= surfaceZ ? surfaceZ - CAMERA_WATER_CLEARANCE : surfaceZ + CAMERA_WATER_CLEARANCE;
+}
+
+/** How far apart the boom asks about water, yards — `Collision.CAMERA_TERRAIN_SAMPLE_SPACING`'s spacing. */
+const WATER_SAMPLE_SPACING = 1.5;
+
+/**
+ * 5.14 (15.11): the share of the boom from `head` to `tail` a camera may use before it dips within `clearance` of a
+ * liquid's surface — the boom swept with liquid solid (0x00605d60 with cameraWaterCollision's bit 0x20000), from a
+ * subject whose own column is dry. `liquidAt` answers the surface of the liquid a point is in or over (the map's or a
+ * building's, as the physics asks it), so a WMO pool along the boom stops it as a lake does. Sampled every 1.5 yards and
+ * refined by five halvings, as the ground's scan is (`Collision.boomLimits`); 1 for nothing in the way, and 1 too when
+ * the hinge itself is already in that band (the rule for a wet column is {@link cameraWaterArm}'s).
+ */
+export function cameraWaterReach(
+  head: { readonly x: number; readonly y: number; readonly z: number },
+  tail: { readonly x: number; readonly y: number; readonly z: number },
+  liquidAt: (x: number, y: number, z: number) => number | undefined,
+  clearance = CAMERA_WATER_CLEARANCE,
+): number {
+  const dx = tail.x - head.x;
+  const dy = tail.y - head.y;
+  const dz = tail.z - head.z;
+  const length = Math.hypot(dx, dy, dz);
+  if (!(length > 1e-6)) return 1;
+  const sunk = (t: number): boolean => {
+    const z = head.z + dz * t;
+    const surface = liquidAt(head.x + dx * t, head.y + dy * t, z);
+    return surface !== undefined && Number.isFinite(surface) && z < surface + clearance;
+  };
+  if (sunk(0)) return 1;
+  const samples = Math.max(1, Math.ceil(length / WATER_SAMPLE_SPACING));
+  let clear = 0;
+  let blocked: number | undefined;
+  for (let step = 1; step <= samples; step++) {
+    const t = step / samples;
+    if (sunk(t)) { blocked = t; break; }
+    clear = t;
+  }
+  if (blocked === undefined) return 1;
+  let near = blocked;
+  for (let step = 0; step < 5; step++) {
+    const middle = (clear + near) / 2;
+    if (sunk(middle)) near = middle;
+    else clear = middle;
+  }
+  return Math.max(0, Math.min(1, clear));
 }
 
 /**

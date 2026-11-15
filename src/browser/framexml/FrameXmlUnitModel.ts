@@ -30,9 +30,10 @@
  *   frame's update (0x005971b0) puts Stand back once an update passes with no turn after the deadline.
  *   Holding a rotate button (Model_OnUpdate) therefore shuffles for as long as it is held.
  *
- * Not modelled: what the copy hangs in the hands. 0x005975e0 closes the fingers over an attached right
- * or left hand item (0x004e7700 plays HandsClosed on bones 8-12/13-17), and the stage has no attached
- * models (FrameXmlDressUpStage.ts), so weapons, shoulders and helmets are not drawn in the window.
+ * 15.11: what the copy hangs. 0x005975e0 copies the unit's model with its attached models and drops only
+ * the spell effects (0x004eaf70), then closes the fingers over an item on point 1 or 2 (0x004e7700 plays
+ * HandsClosed on key bones 8-12/13-17). The live host hands the stage those pieces where the world hangs
+ * them at the moment of the copy (FrameXmlUnitModelLive.ts `frameXmlUnitPieces`, GlueWornPieces.ts).
  */
 import type { GlueModelSource } from "../glue/GlueModelStage.js";
 import type { FrameXmlBoot } from "./FrameXmlBoot.js";

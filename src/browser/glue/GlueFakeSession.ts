@@ -2,6 +2,7 @@ import type { RealmInfo } from "../../auth/AuthProtocol.js";
 import type { AuthSessionResult } from "../../auth/login.js";
 import type { CharacterEquipment, CharacterSummary } from "../../world/CharacterProtocol.js";
 import type { GlueWorldConnection } from "./GlueSession.js";
+import { FAKE_GEAR_CHARACTERS } from "./GlueFakeGear.js"; // 15.11 6.18
 
 /**
  * A canned session, for looking at the screens without a server.
@@ -18,10 +19,10 @@ import type { GlueWorldConnection } from "./GlueSession.js";
  * page actually builds.
  */
 
-export type FakeGlueSessionName = "charselect" | "charcreate";
+export type FakeGlueSessionName = "charselect" | "charcreate" | "charselect-gear"; // 15.11: + gear (GlueFakeGear.ts)
 
 /** The names a `?fake=` parameter may carry, so the page can validate one without a cast. */
-export const FAKE_GLUE_SESSIONS: readonly FakeGlueSessionName[] = ["charselect", "charcreate"];
+export const FAKE_GLUE_SESSIONS: readonly FakeGlueSessionName[] = ["charselect", "charcreate", "charselect-gear"];
 
 export function isFakeGlueSessionName(value: string | null): value is FakeGlueSessionName {
   return value !== null && (FAKE_GLUE_SESSIONS as readonly string[]).includes(value);
@@ -124,7 +125,8 @@ export interface FakeGlueSession {
  */
 export function fakeGlueSession(name: FakeGlueSessionName): FakeGlueSession | undefined {
   if (!isFakeGlueSessionName(name)) return undefined;
-  let characters = [...FAKE_CHARACTERS];
+  const initial = name === "charselect-gear" ? FAKE_GEAR_CHARACTERS : FAKE_CHARACTERS; // 15.11 6.18
+  let characters = [...initial];
   let nextGuid = 0x2000;
   return {
     auth: { username: "TESTER", sessionKey: new Uint8Array(40), realms: [...FAKE_REALMS] },
@@ -158,7 +160,7 @@ export function fakeGlueSession(name: FakeGlueSessionName): FakeGlueSession | un
           })];
         return 47;
       },
-      close: () => { characters = [...FAKE_CHARACTERS]; },
+      close: () => { characters = [...initial]; },
     }),
   };
 }

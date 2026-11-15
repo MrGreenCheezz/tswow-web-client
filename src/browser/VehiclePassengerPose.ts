@@ -49,8 +49,8 @@
 // 0x00832840), and every animation the vehicle's model starts — whole model (0x00735820 → 0x00832ab0, time carried
 // when the passenger's track is shorter) or key bone (0x00735a60 → 0x00832840) — is started forced on each such
 // passenger's model with the same arguments; the copy is redone when either model finishes loading (0x0073e840 →
-// 0x00757e70 / 0x00748620). Not wired: the renderer's per-unit pose choice has no hook here yet — and the smoothing
-// of the drawn facing (0x00735f60).
+// 0x00757e70 / 0x00748620). 15.11: the whole-model copy is VehicleAnimationCopy.ts, hooked into the renderer's pose
+// choice (`#copyVehicleAnimation`); the key-bone copies and the smoothing of the drawn facing (0x00735f60) are not.
 //
 // Without vehicle rows, with no seat, on a ship, a lift or a mount: nothing here runs and the unit is
 // drawn exactly as before. Once a frame nothing is allocated: seat poses are cached per seat row,

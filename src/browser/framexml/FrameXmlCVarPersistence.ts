@@ -19,6 +19,8 @@
 
 import type { GlueLuaVm } from "../glue/GlueLua.js";
 import { FRAME_XML_SETTINGS_CVARS, FRAME_XML_WEBCLIENT_CVARS } from "./FrameXmlSettingsCVar.js";
+import { WOW_CVAR_REGISTRY } from "./WowCVarRegistry.js";
+import { stockCVarSlots } from "../ui/StockCVarSlots.js";
 
 /** Where the record lives: `localStorage`, or a test's map. */
 export interface FrameXmlCVarStorage {
@@ -164,6 +166,33 @@ do
     end
   end
 
+  -- 5.37: the account's config slots (0 and 1) are the truth for the stock CVars Wow.exe keeps there.
+  if type(values) == "table" then
+    for _, row in ipairs(__fxSlotCVarRows or {}) do
+      local name, value = row[1], row[2]
+      if type(name) == "string" and type(value) == "string" then
+        local key = lower(name)
+        if not readOnly[key] and not skip[key] then values[key] = value end
+      end
+    end
+  end
+
+  -- 5.37: GetCVarDefault answers Wow.exe's registered default (framexml/WowCVarRegistry.ts) where it has one;
+  -- a name a browser setting carries keeps that setting's default (FrameXmlSettingsCVar.ts answers it).
+  local wowDefaults = {}
+  for _, row in ipairs(__fxWowCVarDefaults or {}) do wowDefaults[row[1]] = row[2] end
+  local getDefault = impl.GetCVarDefault
+  if getDefault ~= nil then
+    impl.GetCVarDefault = function(name, ...)
+      if type(name) == "string" then
+        local key = lower(name)
+        local registered = wowDefaults[key]
+        if registered ~= nil and not readOnly[key] and not skip[key] then return registered end
+      end
+      return getDefault(name, ...)
+    end
+  end
+
   local setCVar = impl.SetCVar
   if setCVar ~= nil then
     impl.SetCVar = function(...)
@@ -202,6 +231,27 @@ do
 end
 `;
 
+/** 5.37: slot values that arrived after the boot, into the neutral map (the same guards as the seed). */
+const FRAMEXML_SLOT_CVAR_APPLY = `
+do
+  local values, readOnly, lower, type = __fxCVarValues, __fxCVarReadOnly or {}, string.lower, type
+  local skip = {}
+  for _, name in ipairs(__fxCVarSettingsNames or {}) do skip[name] = true end
+  if type(values) == "table" then
+    for _, row in ipairs(__fxSlotCVarRows or {}) do
+      local name, value = row[1], row[2]
+      if type(name) == "string" and type(value) == "string" then
+        local key = lower(name)
+        if not readOnly[key] and not skip[key] then values[key] = value end
+      end
+    end
+  end
+end
+`;
+
+let latestSlotApply: ((rows: readonly (readonly [string, string])[]) => void) | undefined;
+let slotSubscribed = false;
+
 export interface FrameXmlCVarPersistenceHost {
   /** Signals a UI event to every registered frame (the boot's pump). */
   readonly raise: (event: string, ...args: readonly unknown[]) => unknown;
@@ -223,9 +273,30 @@ export function installFrameXmlCVarPersistence(
     return [];
   });
   vm.registerGlobal("__fxNoteCVar", (args) => {
-    if (typeof args[0] === "string" && typeof args[1] === "string") host.store?.noteCVar(args[0], args[1]);
+    if (typeof args[0] === "string" && typeof args[1] === "string") {
+      host.store?.noteCVar(args[0], args[1]);
+      // 5.37: a CVar Wow.exe keeps in the account's config slot 0 or 1 goes there as a `SET` line too.
+      stockCVarSlots()?.note(args[0], args[1]);
+    }
     return [];
   });
+  const slots = stockCVarSlots();
+  vm.setGlobal("__fxSlotCVarRows", (slots?.rows() ?? []).map((row) => [...row]));
+  vm.setGlobal("__fxWowCVarDefaults", [...WOW_CVAR_REGISTRY.values()]
+    .filter((row) => row.defaultValue !== undefined).map((row) => [row.name.toLowerCase(), row.defaultValue!]));
+  // 5.37: slot values that arrive after this boot reach the newest VM's map (one listener for the page).
+  latestSlotApply = (rows) => {
+    try {
+      vm.setGlobal("__fxSlotCVarRows", rows.map((row) => [...row]));
+      vm.execute(FRAMEXML_SLOT_CVAR_APPLY, `@${chunk}:slot-cvars`);
+    } catch {
+      // A VM that is gone takes nothing.
+    }
+  };
+  if (slots && !slotSubscribed) {
+    slotSubscribed = true;
+    slots.subscribe((rows) => latestSlotApply?.(rows));
+  }
   vm.registerGlobal("__fxNoteClick", (args) => {
     if (typeof args[0] === "string" && typeof args[1] === "string") host.store?.noteClick(args[0], args[1]);
     return [];

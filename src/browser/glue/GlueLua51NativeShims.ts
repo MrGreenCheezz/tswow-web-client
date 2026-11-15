@@ -39,6 +39,17 @@ date, time, clock = os.date, os.time, os.clock
 
 function strjoin(delimiter, ...) return table.concat({...}, delimiter) end
 function strconcat(...) return table.concat({...}) end
+-- widgets5 (15.11): Wow.exe 0x00817c70 — a string (or number) argument, else "Usage: strlenutf8(string)";
+-- 0x0076eea0 counts the bytes up to the first NUL that are not UTF-8 continuation bytes (b & 0xC0 ~= 0x80).
+function strlenutf8(text)
+  local kind = type(text)
+  if kind ~= "string" and kind ~= "number" then error("Usage: strlenutf8(string)", 0) end
+  text = tostring(text)
+  local stop = string.find(text, "\\0", 1, true)
+  if stop then text = string.sub(text, 1, stop - 1) end
+  local _, continuation = string.gsub(text, "[\\128-\\191]", "")
+  return #text - continuation
+end
 function strtrim(text, chars)
   chars = chars or " \\t\\r\\n"
   return (tostring(text):gsub("^[" .. chars .. "]*(.-)[" .. chars .. "]*$", "%1"))

@@ -34,6 +34,8 @@ import { advanceCameraFrame, cameraAllowsUpwardOrbit } from "./CameraRig.js";
 import { FrameLimiter } from "../FrameLimit.js"; // 25.10
 import { characterMotion } from "../input/Movement.js"; // L8 5.14
 import { cameraWaterSurface } from "./CameraWater.js"; // L8 5.14
+import { terrainProbe } from "../input/Movement.js"; // 5.14 (15.11)
+import { cameraLiquidGated } from "./CameraWater.js"; // 5.14 (15.11)
 import { settingOn } from "../ui/Settings.js"; // L8 5.14
 import { advanceCameraAutoFollow } from "../input/Controls.js";
 import { updateGroundTargetPreview } from "./GroundTargetPreview.js";
@@ -369,9 +371,10 @@ function advanceCameraView(player: WorldPosition, map: number | undefined, elaps
     // actual roofs/floors are still enforced by CollisionWorld in cameraFloorHeight.
     allowUpwardOrbit: cameraAllowsUpwardOrbit(self?.movementFlags ?? 0, toggles),
     waterZ: cameraWaterSurfaceOf(world, self, player), // L8 5.14
-    // 5.14 (11.11): the map's water anywhere along the boom (CameraRig `waterAt`), under cameraWaterCollision.
-    waterAt: terrain && map !== undefined && settingOn("cameraWaterCollision")
-      ? (x, y) => terrain.liquidAt(map, x, y)?.height : undefined,
+    // 5.14 (15.11): any water at a point, a building's too (CameraRig `liquidAt`): the band about a surface always, the boom
+    // under cameraWaterCollision. Was `waterAt`, the map's water alone, under the CVar.
+    liquidAt: (x, y, z) => cameraLiquidGated(terrainProbe(map), terrain, game.collision, map, x, y, z),
+    waterCollision: settingOn("cameraWaterCollision"),
     // 5.33: the subject's drawn height (the hinge stays over 3/4 of it) and the quad's aspect (CameraClip.ts).
     // 22.10 ARC-2 S3a: read before draw, from the record the last draw left (RenderResults.ts).
     bodyHeight: self === undefined ? undefined : resultUnitHeight(game.renderer?.results, self.guid),

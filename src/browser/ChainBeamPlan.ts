@@ -24,6 +24,11 @@
 // impact kit on the target as kit type 1 (0x00700e20), without 0x1000, which by the rule above would draw from the
 // target to the target's own spell targets; the impact of a spell without a missile was not read. 5 visuals of this
 // dataset draw beams on an impact kit.
+// 15.11 (.runtime/re-2026-11-15/fx5/r2, r3): the impact of a spell without speed is 0x00801f10 from SPELL_GO — on each hit
+// unit TargetImpactKit (or ImpactKit), on the unit equal to its third argument CasterImpactKit (or ImpactKit), each as
+// kit type 1 with no guid (0x006cf240 zeroes the request; the missile's arrival puts its caster's guid at +0x28). So
+// neither impact gives the kit another unit to start from; by the rule above its beams would run from the unit it plays
+// on to that unit's own spell targets (+0xb60), whose life on a unit that did not cast was not read. Kept as before.
 
 import type { SpellVisualBeamEnds, SpellVisualKit } from "../gateway/SpellVisual.js";
 import type { VisualBeam, VisualBeamEnd } from "./ChainBeam.js";

@@ -216,6 +216,7 @@ export class RenderWorkerClient implements ClientRenderer {
   retimeSpellVisual(...args: Args<"retimeSpellVisual">): void { this.#send("retimeSpellVisual", args); }
   clearSpellVisuals(): void { this.#send("clearSpellVisuals", []); }
   prewarmSpellModels(...args: Args<"prewarmSpellModels">): void { this.#send("prewarmSpellModels", args); }
+  setProjectilePosition(...args: Args<"setProjectilePosition">): void { this.#send("setProjectilePosition", args); } // 15.11 (11.02)
   /** The id comes back at once, as the in-page renderer's would for a swing it queued; a refusal publishes no row. */
   playUnitAction(...args: Args<"playUnitAction">): number | undefined {
     this.#send("playUnitAction", args);

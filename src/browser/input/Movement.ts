@@ -3,6 +3,7 @@ import type { ForcedSpeedName } from "../../world/MovementAckProtocol.js";
 import type { KnockbackImpulse } from "../../world/KnockbackImpulse.js";
 import { OPCODES } from "../../generated/opcodes.js";
 import { game } from "../game/Context.js";
+import { cameraSteerInputs, cameraSteerPitch } from "../game/CameraSteerPitch.js"; // 5.14 (15.11)
 import { unit } from "../../world/Fields.js";
 import { UPDATE_FIELDS } from "../../generated/updateFields.js";
 import type { WorldObjectState } from "../../world/WorldState.js";
@@ -23,7 +24,7 @@ import {
   gameObjectColliderFrame, gameObjectWorldWithoutHulls, liftTransportBlock, liftTurned, seatedOnLift, settleLiftSeat, takeLiftSeatChanged,
 } from "../game/GameObjectColliders.js";
 import { farSightHoldsBody, viewIsOut } from "../game/ViewSubject.js"; // 11.02-I
-import { jumpSpentByMountSpecial, mountSpecialJumpPress, mountSpecialJumpRelease } from "./MountSpecial.js"; // 05.10-A7a-G 6.20
+import { jumpSpentByMountSpecial, mountSpecialJumpPress, mountSpecialJumpRelease, underLiquidSurface } from "./MountSpecial.js"; // 05.10-A7a-G 6.20; 15.11 underLiquidSurface
 import {
   beginRideFrame, endRideFrame, forgetRide, rideActive, rideImpulse, rideTransportBlock, rideTurned, stepRideSubstep,
   takeRideFlip, type RideFrameInput,
@@ -558,7 +559,8 @@ let probeCollision: CollisionWorld | undefined;
 let probeCollisionNonEmpty = false;
 let probeMapId: number | undefined;
 let probeCached: TerrainProbe | undefined;
-function terrainProbe(mapId: number | undefined): TerrainProbe {
+/** 5.14 (15.11): exported for the camera's water (Loop.ts → CameraWater.cameraLiquidSurface). */
+export function terrainProbe(mapId: number | undefined): TerrainProbe {
   const terrain = game.terrain;
   const source = game.collision;
   const collision = source?.world;
@@ -945,7 +947,8 @@ function updateCharacterPitch(world: NonNullable<typeof game.world>, self: World
   if (rules !== undefined) {
     if (steering) {
       if (vehicleSteerPitchesFromCamera(rules, pitchAloft()) && !viewIsOut(world)) {
-        characterPitch = game.camera.pitch + rules.mouseLookOffsetPitch;
+        characterPitch = cameraSteerPitch(game.camera.pitch, cameraSteerInputs.pivotTurn, cameraSteerInputs.water)
+          + rules.mouseLookOffsetPitch; // 5.14 (15.11): was game.camera.pitch
       }
     } else if (key !== 0) characterPitch += key * rate * dt;
     else if (motion.mode === "swim") {
@@ -955,7 +958,9 @@ function updateCharacterPitch(world: NonNullable<typeof game.world>, self: World
     characterPitch = clampVehiclePitch(rules, characterPitch);
     return characterPitch;
   }
-  if (steering) characterPitch = game.camera.pitch;
+  // 5.14 (15.11): Wow.exe 0x006023d0 (CameraSteerPitch.ts) — the smart pivot's turn and a swimmer's dead band at the
+  // surface. Was `game.camera.pitch`.
+  if (steering) characterPitch = cameraSteerPitch(game.camera.pitch, cameraSteerInputs.pivotTurn, cameraSteerInputs.water);
   else if (key !== 0) characterPitch += key * rate * dt;
   else if (motion.mode === "swim") {
     const level = rate * dt;
@@ -1223,6 +1228,12 @@ function mountSpecialOnJumpKey(): void {
     play: () => game.renderer?.playMountSpecial(selfGuid),
     looting: world.loot !== undefined, // 11.11 (6.20): 0x0072eb80 lets go of the loot first
     releaseLoot: () => world.closeLoot(),
+    // 15.11 (6.20): 0x006e9ad0's flags2 and 0x00718a20's liquid (the last one under the feet); the own mover runs no spline.
+    context: {
+      flags2: moverVehicleRules(world)?.flags2 ?? 0,
+      underLiquid: self.position !== undefined
+        && underLiquidSurface(motion.liquid?.surface?.height, self.position.z, collisionHeight(self)),
+    },
   });
 }
 

@@ -6,17 +6,20 @@
  * CharacterAtlasClient for the body sheet (CreatureModelClient.playerAppearance, the same call
  * ui/UnitModels.ts unitModelFor makes for the player in the world).
  *
- * What the stage does not draw is `appearance.attached`: helmets, shoulders, weapons and shields are
- * models hung off bones, and GlueModelStage has no attachment path (GlueCharacterScene.ts
- * hangAttachments needs a backdrop view to stand in). A tried-on helmet therefore shows only what it
- * does to the geosets (hair and ears hidden per HelmetGeosetVisData), a weapon or shoulder nothing.
+ * 15.11 6.18: the stage hangs a source's `pieces` (GlueWornPieces.ts). The PlayerModels' sources carry
+ * them (FrameXmlUnitModelLive.ts); the dressing room's do too — see `frameXmlDressUpPieces`.
  *
  * Nothing runs while no dress-up model is visible: the loop wakes on a model call or DressUpFrame's
  * OnShow and stops on the first frame after the last one hides. The stage's WebGL renderer is
  * created on its first drawn view, not at boot.
  */
+import type { AttachedModel } from "../../gateway/CharacterAppearance.js";
 import { CreatureModelClient } from "../CreatureModelClient.js";
 import { GlueModelStage, type GlueModelSource } from "../glue/GlueModelStage.js";
+import type { GlueWornPiece } from "../glue/GlueWornPieces.js"; // 15.11 6.18
+import { SHEATH_MELEE, attachmentPoint } from "../Attachment.js"; // 15.11 6.18
+import { sheatheOf, worldAttachmentPoint } from "../SheathPoints.js"; // 15.11 6.18
+import { ATTACHMENT_HAND_LEFT, ATTACHMENT_HAND_RIGHT, ATTACHMENT_SHIELD } from "../Wvm.js"; // 15.11 6.18
 import type { FrameXmlFrame } from "../ui/framexml_compat/FrameXmlTypes.js";
 import type { FrameXmlDressUpModels, FrameXmlDressUpOutfit } from "./FrameXmlDressUp.js";
 import type { FrameXmlModelTurns, FrameXmlUnitModels } from "./FrameXmlUnitModel.js";
@@ -49,14 +52,51 @@ export function frameXmlDressUpSource(
     look.hairColor, look.facialHair, outfit.equipment,
     ...(look.classId === undefined ? [] : [look.classId])); // 05.10-A7a-G 6.18: the class, as unitModelFor
   if (!appearance) return undefined;
+  const pieces = frameXmlDressUpPieces(outfit, appearance.attached ?? []); // 15.11 6.18
   return {
-    key: `${frameXmlDressUpKey(outfit)}:${metadata.model}:${metadata.textures}`,
+    key: `${frameXmlDressUpKey(outfit)}:${metadata.model}:${metadata.textures}`
+      + (pieces.length > 0 ? `:${pieces.map((piece) => `${piece.item.slot}/${piece.item.side}@${piece.point}`).join(",")}` : ""),
     file: metadata.model,
     textures: metadata.textures,
     appearance,
     displayScale: metadata.scale,
     fitBody: true,
+    ...(pieces.length > 0 ? { pieces } : {}),
   };
+}
+
+const SLOT_MAIN_HAND = 15;
+const SLOT_OFF_HAND = 16;
+const SLOT_RANGED = 17;
+const INVTYPE_SHIELD = 14;
+const INVTYPE_RANGED = 15;
+
+/**
+ * 15.11 6.18: where the dressing room hangs each worn model. `SetUnit`/`Dress` show a copy of the unit
+ * (the same 0x005975e0 as a PlayerModel), so its own pieces hang where the world hangs them at that
+ * moment — by the unit's sheath state and the items' SheatheType (`worldAttachmentPoint`). A try-on of a
+ * weapon goes through 0x005980d0 → 0x004eacd0 with the "in the hand" argument 0, into the slot it picks:
+ * the main hand (1) for a one- or two-hander, a gun, crossbow, wand or thrown weapon; the off hand for an
+ * off-hand weapon, a holdable or a bow (2), a shield on its own point (0). Glows are not hung here: the
+ * copy's would need the unit, a try-on's the link's enchant (not read).
+ */
+export function frameXmlDressUpPieces(outfit: FrameXmlDressUpOutfit, attached: readonly AttachedModel[]): GlueWornPiece[] {
+  const pieces: GlueWornPiece[] = [];
+  const sheath = outfit.look.sheath ?? 0;
+  for (const item of attached) {
+    const point = outfit.tried?.has(item.slot)
+      ? dressUpTriedPoint(item)
+      : worldAttachmentPoint(item, sheath, sheatheOf(item, outfit.look));
+    if (point !== undefined) pieces.push({ item, point });
+  }
+  return pieces;
+}
+
+function dressUpTriedPoint(item: AttachedModel): number | undefined {
+  if (item.slot === SLOT_MAIN_HAND) return ATTACHMENT_HAND_RIGHT;
+  if (item.slot === SLOT_OFF_HAND) return item.inventoryType === INVTYPE_SHIELD ? ATTACHMENT_SHIELD : ATTACHMENT_HAND_LEFT;
+  if (item.slot === SLOT_RANGED) return item.inventoryType === INVTYPE_RANGED ? ATTACHMENT_HAND_LEFT : ATTACHMENT_HAND_RIGHT;
+  return attachmentPoint(item, SHEATH_MELEE);
 }
 
 export interface FrameXmlDressUpStageOptions {

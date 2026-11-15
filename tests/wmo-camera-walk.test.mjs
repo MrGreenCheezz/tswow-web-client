@@ -22,7 +22,8 @@ import { CollisionMesh, CollisionWorld } from "../dist/code/browser/game/Collisi
 
 const IDENTITY = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
 const INDOOR = 0x2000, OUTDOOR = 0x8;
-const CAMERA = { x: 0, y: 0, z: 0 };
+// In front of the square portal (z = 0.5, facing +z): Wow.exe crosses a portal of side 0 as one of side +1.
+const CAMERA = { x: 0, y: 0, z: 1 };
 
 const box = (size = 1) => ({ minX: -size, minY: -size, minZ: -size, maxX: size, maxY: size, maxZ: size });
 function group(flags, portalStart = 0, portalCount = 0, triangleCount = 10) {
@@ -30,8 +31,11 @@ function group(flags, portalStart = 0, portalCount = 0, triangleCount = 10) {
     bounds: box(), flags, indoor: (flags & INDOOR) !== 0, exterior: false, portalStart, portalCount, triangleCount,
   };
 }
-/** A square portal at x = 0.5, facing +x from the vertices' winding, on screen under the identity matrix. */
-const SQUARE = [0.5, -0.1, -0.1, 0.5, 0.1, -0.1, 0.5, 0.1, 0.1, 0.5, -0.1, 0.1];
+/**
+ * A square portal at z = 0.5, facing +z from the vertices' winding, on screen under the identity matrix: x and y are
+ * the screen, z the depth. 15.11 (7.54): a portal seen edge-on is a cut thinner than 0.001 and leads nowhere.
+ */
+const SQUARE = [-0.1, -0.1, 0.5, 0.1, -0.1, 0.5, 0.1, 0.1, 0.5, -0.1, 0.1, 0.5];
 const portals = (references) => ({
   vertices: new Float32Array(SQUARE),
   definitions: [{ startVertex: 0, vertexCount: 4 }],
@@ -72,10 +76,10 @@ test("MOGP 0x10000 shows wherever the camera is; having no portals earns nothing
 test("a portal leads one way, from the side its reference says", () => {
   const groups = [group(INDOOR, 0, 1), group(INDOOR)];
   const planes = wmoPortalPlanes(portals([{ portal: 0, group: 1, side: 1 }]));
-  // Newell's normal of the square's winding: +x, through x = 0.5.
-  assert.deepEqual([planes[0], planes[1], planes[2]].map((v) => Math.round(v)), [1, 0, 0]);
+  // Newell's normal of the square's winding: +z, through z = 0.5.
+  assert.deepEqual([planes[0], planes[1], planes[2]].map((v) => Math.round(v)), [0, 0, 1]);
   assert.ok(Math.abs(planes[3] + 0.5) < 1e-6);
-  const before = { x: 0, y: 0, z: 0 }, beyond = { x: 1, y: 0, z: 0 };
+  const before = { x: 0, y: 0, z: 0 }, beyond = { x: 0, y: 0, z: 1 };
   assert.deepEqual([...walk(groups, portals([{ portal: 0, group: 1, side: 1 }]), 0, before).groups], [0], "behind a +1 reference");
   assert.deepEqual([...walk(groups, portals([{ portal: 0, group: 1, side: 1 }]), 0, beyond).groups], [0, 1], "in front of it");
   assert.deepEqual([...walk(groups, portals([{ portal: 0, group: 1, side: -1 }]), 0, before).groups], [0, 1], "a -1 reference, the other way");
@@ -84,6 +88,7 @@ test("a portal leads one way, from the side its reference says", () => {
 
 test("a portal off the screen leads nowhere", () => {
   const groups = [group(INDOOR, 0, 1), group(INDOOR)];
+  groups[0].bounds = box(10); // 15.11 (7.54): the room itself still reaches the screen, or it would not be drawn either.
   const moved = [...IDENTITY];
   moved[12] = 5; // Everything five half-screens to the right.
   assert.deepEqual([...walk(groups, portals([{ portal: 0, group: 1, side: 0 }]), 0, CAMERA, moved).groups], [0]);
@@ -350,9 +355,10 @@ test("against what Wow.exe drew: nothing missing, no far-view copy, the same tri
       assert.ok(!chosen.includes(95), "and the real cathedral does not");
     }
   }
-  // From outside the walk's rectangles are looser than Wow.exe's clipped frusta; this is how much, and it may only shrink.
+  // From outside Wow.exe draws less: an outdoor group behind the terrain's horizon starts no walk (0x78fdc0, not
+  // modelled) and batches are culled by their own boxes. This is how much, and it may only shrink (15.11, 7.54: 26 -> 24).
   const extraOutside = report.filter((line) => line.includes("outside")).reduce((total, line) => total + Number(/(\d+) extra/.exec(line)[1]), 0);
-  assert.ok(extraOutside <= 55, `from outside ${extraOutside} groups more than Wow.exe drew:\n${report.join("\n")}`);
+  assert.ok(extraOutside <= 24, `from outside ${extraOutside} groups more than Wow.exe drew:\n${report.join("\n")}`);
   // The owner's report, on its own camera: over the square the real cathedral and neither of its copies.
   const square = report.filter((line) => line.startsWith("c04-plaza-z160"));
   assert.deepEqual(square, ["c04-plaza-z160: room, 4 drawn, 5 chosen, 0 extra"]);

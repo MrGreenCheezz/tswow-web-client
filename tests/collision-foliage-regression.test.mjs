@@ -39,6 +39,8 @@ const collisionSource = await sourceModule("../src/browser/game/CollisionSource.
   ['"../CollisionClient.js"', JSON.stringify(collisionClientUrl)],
   ['"../Terrain.js"', JSON.stringify(terrainUrl)],
   ['"./Collision.js"', JSON.stringify(collisionUrl)],
+  // 5.14 (15.11): the liquid sample of a standing group (the camera's water gate).
+  ['"./CollisionLiquid.js"', JSON.stringify(new URL("../dist/code/browser/game/CollisionLiquid.js", import.meta.url).href)],
   ['"../GatewayGeneration.js"', JSON.stringify(gatewayGenerationUrl)],
   // P2-09a: the frame budget sensor (off in tests; `refresh` asks it for a start time).
   ['"../FrameBudgetProbe.js"', JSON.stringify(new URL("../dist/code/browser/FrameBudgetProbe.js", import.meta.url).href)],

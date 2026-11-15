@@ -28,7 +28,14 @@ test("Wow.exe's buttons read as the macro they name", () => {
   assert.deepEqual(viewActionButton({ slot: 2, action: 2, type: 0x41 }, lookup), { slot: 2, action: 38, type: 0x40 },
     "0x41 + 2 is character id 0x1000002");
   assert.deepEqual(viewActionButton({ slot: 3, action: 5, type: 0x00 }, lookup), { slot: 3, action: 5, type: 0x00 }, "a spell is a spell");
-  assert.deepEqual(viewActionButton({ slot: 4, action: 9, type: 0x41 }, lookup), { slot: 4, action: 9, type: 0x41 }, "no such macro: kept as it is");
+  assert.equal(viewActionButton({ slot: 4, action: 9, type: 0x41 }, lookup), undefined, "no such macro: no button (HasAction false)");
+});
+
+test("5.37 (15.11): a stale account word ≤ 36 whose macro is gone is no button, not the macro in that slot here", () => {
+  // Slot 1 here holds Wow.exe's macro id 40; a word for id 1 names no macro, and Wow.exe shows nothing there
+  // (0x005a8160 HasAction false, 0x005a7d90 GetActionText nil, 0x005abbc0 UseAction runs nothing).
+  assert.equal(viewActionButton({ slot: 5, action: 1, type: 0x40 }, lookup), undefined);
+  assert.equal(viewActionButton({ slot: 5, action: 30, type: 0x40 }, lookup), undefined);
 });
 
 test("this client's buttons go out in Wow.exe's words", () => {
@@ -60,10 +67,11 @@ test("the world's view is rebuilt from the server's words when the macros change
     events: { emit: (name) => events.push(name) },
   };
   WorldClient.prototype.reviewActionButtons.call(world);
-  assert.deepEqual(events, [], "nothing changed: no event");
+  assert.deepEqual(world.actionButtons, [], "its macro not known yet: no button");
+  assert.deepEqual(events, ["ACTION_BUTTONS_CHANGED"]);
   known = true;
   WorldClient.prototype.reviewActionButtons.call(world);
-  assert.deepEqual(world.actionButtons, [{ slot: 2, action: 38, type: 0x40 }]);
+  assert.deepEqual(world.actionButtons, [{ slot: 2, action: 38, type: 0x40 }], "back once the macro is known");
   assert.deepEqual(world.actionButtonsWire, [{ slot: 2, action: 2, type: 0x41 }], "the server's words are not rewritten");
-  assert.deepEqual(events, ["ACTION_BUTTONS_CHANGED"]);
+  assert.deepEqual(events, ["ACTION_BUTTONS_CHANGED", "ACTION_BUTTONS_CHANGED"]);
 });

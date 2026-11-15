@@ -3,10 +3,8 @@
  * to the player rather than to one browser profile; `localStorage` stays the mirror the first frame
  * is drawn from.
  *
- *  - Bindings: slot 2, `GLOBAL_BINDINGS_CACHE` (per account), in the envelope the owner's Unity
- *    client already keeps there (`BindingsAccount.ts`). The copy is merged, never replaced: rows
- *    this client does not know ride along, a row changed here while the answer travelled wins, and
- *    a slot holding anything but the envelope is left alone — not applied, never overwritten.
+ *  - Bindings: slots 2 and 3, since 5.37 (15.11) in Wow.exe's own bindings cache text
+ *    (`BindingsSlotSync.ts`); the JSON envelope written here before is still read there.
  *  - Window positions: slot 6, `PER_CHARACTER_LAYOUT_CACHE` (per character; the core drops a
  *    per-character slot written without a character, WorldSession.cpp:821-849), as
  *    `{"format":"wowclient-layout","version":1,"windows":{id:{left,top}}}`. Foreign text in the
@@ -21,13 +19,9 @@
  * World-free in its logic: the world, the table and the window layout are handed in.
  */
 
-import {
-  ACCOUNT_DATA_WRITE_LIMIT, changedRows, mergeServerOverLocal, parseBindingsEnvelope, serialiseBindingsEnvelope,
-  utf8Length, type BindingRow, type BindingsEnvelope,
-} from "./BindingsAccount.js";
+import { ACCOUNT_DATA_WRITE_LIMIT, utf8Length } from "./BindingsAccount.js";
 
-/** `AccountDataType` (SessionProtocol.ts): the two slots this module keeps. */
-export const BINDINGS_ACCOUNT_SLOT = 2;
+/** `AccountDataType` (SessionProtocol.ts): the slot this module keeps (bindings: `BindingsSlotSync.ts`). */
 export const LAYOUT_ACCOUNT_SLOT = 6;
 /** How long a change waits for its neighbours, as `AccountStore` waits. */
 export const ACCOUNT_SAVE_DELAY_MS = 1_500;
@@ -46,13 +40,6 @@ export interface AccountWorld {
   requestAccountData(type: number): void;
   readonly accountData: ReadonlyMap<number, { readonly text: string }>;
   saveAccountData(type: number, text: string): Promise<void>;
-}
-
-/** The binding table's side (`Bindings.ts`). */
-export interface BindingTableHost {
-  tables(): { core: Readonly<Record<string, BindingRow>>; modules: Readonly<Record<string, BindingRow>> };
-  apply(core: Readonly<Record<string, BindingRow>>, modules: Readonly<Record<string, BindingRow>>): void;
-  onChanged(listener: () => void): () => void;
 }
 
 /** The window manager's side (`GameWindows.ts`). */
@@ -117,8 +104,14 @@ abstract class SlotSync {
     this.#answered = false;
     this.cancel();
     this.reset();
-    world.requestAccountData(this.slot);
+    if (this.requestsSlot) world.requestAccountData(this.slot);
   }
+
+  /**
+   * Review 15.11: whether `attach` asks for the slot. Slot 6 is asked for by the settings store, which shares
+   * it (ui/SettingsAccountStore.ts); one request per slot, both listen for the answer.
+   */
+  requestsSlot = true;
 
   /** Sends a pending write now and lets go of the world. */
   detach(): void {
@@ -135,7 +128,9 @@ abstract class SlotSync {
 
   /** Takes the server's copy when this event is about this slot; answers whether it was applied. */
   accept(type: number): boolean {
-    if (type !== this.slot || !this.world) return false;
+    // Review 15.11: the first answer only; a later event is the COMPLETE of a write (this store's or the
+    // settings store's in slot 6) and re-reading it took back windows moved since that text was built.
+    if (type !== this.slot || !this.world || this.#answered) return false;
     this.#answered = true;
     const stored = this.world.accountData.get(this.slot);
     if (!stored || stored.text === "") {
@@ -183,79 +178,23 @@ abstract class SlotSync {
   protected saved(): void {}
 }
 
-/** Slot 2: the binding tables in the Unity client's envelope. */
-export class BindingsAccountSync extends SlotSync {
-  readonly #host: BindingTableHost;
-  readonly #changedCore = new Set<string>();
-  readonly #changedModules = new Set<string>();
-  #last: ReturnType<BindingTableHost["tables"]>;
-  /** The server's envelope as last merged: its unknown rows and `modifiedClicks` ride along. */
-  #server: BindingsEnvelope | undefined;
-  #applying = false;
-
-  constructor(host: BindingTableHost, options: {
-    enabled?: () => boolean; timers?: AccountTimers; onForeign?: (slot: number) => void;
-  } = {}) {
-    super(BINDINGS_ACCOUNT_SLOT, options.enabled ?? (() => accountSyncEnabled(INPUT_ACCOUNT_SYNC_KEYS.bindings)),
-      options.timers ?? DEFAULT_TIMERS, options.onForeign);
-    this.#host = host;
-    this.#last = host.tables();
-    host.onChanged(() => this.#changed());
-  }
-
-  protected reset(): void {
-    this.#changedCore.clear();
-    this.#changedModules.clear();
-    this.#server = undefined;
-    this.#last = this.#host.tables();
-  }
-
-  #changed(): void {
-    if (this.#applying) return;
-    const next = this.#host.tables();
-    if (this.world) {
-      for (const name of changedRows(this.#last.core, next.core)) this.#changedCore.add(name);
-      for (const name of changedRows(this.#last.modules, next.modules)) this.#changedModules.add(name);
-    }
-    this.#last = next;
-    this.schedule();
-  }
-
-  protected take(text: string): boolean {
-    const server = parseBindingsEnvelope(text);
-    if (!server) return false;
-    const merged = mergeServerOverLocal(server, this.#host.tables(), this.#changedCore, this.#changedModules);
-    this.#server = merged;
-    this.#applying = true;
-    try {
-      this.#host.apply(merged.core, merged.modules);
-    } finally {
-      this.#applying = false;
-    }
-    this.#last = this.#host.tables();
-    if (this.text() !== text) this.schedule();
-    return true;
-  }
-
-  protected text(): string {
-    const local = this.#host.tables();
-    return serialiseBindingsEnvelope({
-      core: { ...this.#server?.core, ...local.core },
-      modules: { ...this.#server?.modules, ...local.modules },
-      modifiedClicks: this.#server?.modifiedClicks ?? {},
-    });
-  }
-
-  protected saved(): void {
-    this.#changedCore.clear();
-    this.#changedModules.clear();
-  }
-}
+// 5.37 (15.11): slot 2 (and 3) is `BindingsSlotSync.ts`, in Wow.exe's own bindings cache text; the envelope
+// of before is only read there (`BindingsAccount.parseBindingsEnvelope`).
 
 export const LAYOUT_ENVELOPE_FORMAT = "wowclient-layout";
 
-/** The layout envelope, or undefined for any other text (the original client's layout cache among it). */
-export function parseLayoutEnvelope(text: string): Record<string, LayoutPlacement> | undefined {
+/**
+ * Slot 6's envelope as an object: `format`, `version`, `windows`, and since 5.37 (15.11) optionally `settings`
+ * (this client's own settings, `ui/SettingsAccountStore.ts`); undefined for any other text.
+ *
+ * Why slot 6 may hold them (re-checked 15.11): Wow.exe 12340's account-data entry 6 names no cache file
+ * (0x00ad9668 is null; its `layout-local.txt` at 0x00ad9664 is the local file 0x006b9be0 writes) and is
+ * marked local (0x00ad9674 = 1): the account-data times handler 0x006b94c0 neither stores its time nor asks
+ * for it, and 0x006b9440 arms no upload timer for it. The one path that sends it is the Lua
+ * `UploadSettings()` (0x00511f90 → 0x006b9c60 → 0x006b9100), which would send it empty — the stock interface
+ * never calls it, only an add-on or `/script` can.
+ */
+function parseSlot6Envelope(text: string): Record<string, unknown> | undefined {
   let root: unknown;
   try {
     root = JSON.parse(text);
@@ -265,7 +204,36 @@ export function parseLayoutEnvelope(text: string): Record<string, LayoutPlacemen
   if (!root || typeof root !== "object" || Array.isArray(root)) return undefined;
   const value = root as Record<string, unknown>;
   const keys = Object.keys(value);
-  if (keys.length !== 3 || value["format"] !== LAYOUT_ENVELOPE_FORMAT || value["version"] !== 1) return undefined;
+  const settings = value["settings"];
+  const withSettings = keys.length === 4 && settings !== undefined;
+  if ((keys.length !== 3 && !withSettings) || value["format"] !== LAYOUT_ENVELOPE_FORMAT || value["version"] !== 1) return undefined;
+  if (withSettings && (!settings || typeof settings !== "object" || Array.isArray(settings))) return undefined;
+  const windows = value["windows"];
+  if (!windows || typeof windows !== "object" || Array.isArray(windows)) return undefined;
+  return value;
+}
+
+/** Whether a slot-6 text is this client's envelope (empty text counts: nothing is there to keep). */
+export function slot6IsOurs(text: string): boolean {
+  return text.trim() === "" || parseSlot6Envelope(text) !== undefined;
+}
+
+/** The envelope's `settings`, or undefined when it has none or the text is not the envelope. */
+export function slot6Settings(text: string): Record<string, unknown> | undefined {
+  const settings = parseSlot6Envelope(text)?.["settings"];
+  return settings && typeof settings === "object" ? settings as Record<string, unknown> : undefined;
+}
+
+/** The envelope with new `settings`, the windows kept as the text has them. */
+export function slot6WithSettings(text: string, settings: Readonly<Record<string, unknown>>): string {
+  const windows = parseSlot6Envelope(text)?.["windows"] ?? {};
+  return JSON.stringify({ format: LAYOUT_ENVELOPE_FORMAT, version: 1, windows, settings });
+}
+
+/** The layout envelope, or undefined for any other text (the original client's layout cache among it). */
+export function parseLayoutEnvelope(text: string): Record<string, LayoutPlacement> | undefined {
+  const value = parseSlot6Envelope(text);
+  if (!value) return undefined;
   const windows = value["windows"];
   if (!windows || typeof windows !== "object" || Array.isArray(windows)) return undefined;
   const result: Record<string, LayoutPlacement> = {};
@@ -280,8 +248,11 @@ export function parseLayoutEnvelope(text: string): Record<string, LayoutPlacemen
   return result;
 }
 
-export function serialiseLayoutEnvelope(windows: Readonly<Record<string, LayoutPlacement>>): string {
-  return JSON.stringify({ format: LAYOUT_ENVELOPE_FORMAT, version: 1, windows });
+/** The layout envelope; `settings` (5.37) ride along when given. */
+export function serialiseLayoutEnvelope(windows: Readonly<Record<string, LayoutPlacement>>, settings?: Readonly<Record<string, unknown>>): string {
+  return JSON.stringify(settings === undefined
+    ? { format: LAYOUT_ENVELOPE_FORMAT, version: 1, windows }
+    : { format: LAYOUT_ENVELOPE_FORMAT, version: 1, windows, settings });
 }
 
 /** Slot 6: the window positions. A window moved here while the answer travelled keeps its place. */
@@ -333,7 +304,9 @@ export class LayoutAccountSync extends SlotSync {
   }
 
   protected text(): string {
-    return serialiseLayoutEnvelope(this.#host.layout());
+    // 5.37: the settings the slot holds beside the windows (ui/SettingsAccountStore.ts) are kept as they are.
+    const current = this.world?.accountData.get(this.slot)?.text ?? "";
+    return serialiseLayoutEnvelope(this.#host.layout(), slot6Settings(current));
   }
 
   protected saved(): void {

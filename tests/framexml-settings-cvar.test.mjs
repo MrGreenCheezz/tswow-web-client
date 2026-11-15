@@ -48,6 +48,8 @@ test("the supported table is only the settings the browser currently consumes", 
       // 5.05 (11.11): the stock «Автоматически спешиваться» pair, read by WorldClient's mounted-cast rule (0x0071b0c0).
       ["autoDismount", "autoDismount"],
       ["autoDismountFlying", "autoDismountFlying"],
+      // 5.05 (15.11): autoStand, read by the world client's sitting-cast rule.
+      ["autoStand", "autoStand"],
       // DEC-A 3.11: the stock Combat panel's ASSIST_ATTACK, read by ASSISTTARGET and the stock AssistUnit.
       ["assistAttack", "assistAttack"],
       // The stock Controls panel's BLOCK_TRADES, read by WorldClient on a trade offer (5.25).

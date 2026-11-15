@@ -29,6 +29,7 @@ import {
   MISSILE_DEFAULT_GRAVITY, followGroundOf, missileDestinationAttachment, missileLaunchPoint, visualOffset,
 } from "./SpellVisualAttach.js"; // 13.10 (6.12); 11.11 missileLaunchPoint
 import { beamAnchors, planChainBeams } from "./ChainBeamPlan.js"; // 13.10 (6.13)
+import { missileCastTag, missileLandingToken, tagLanding } from "./MissileLanding.js"; // 15.11 (11.02)
 import { kitWoundBehavior } from "./game/AnimationSplit.js"; // 05.10-6.21
 export type { SpellVisualEffectTransform };
 
@@ -166,6 +167,12 @@ export interface VisualInstance {
    * thrown weapon's skin; Wow.exe 0x004eab50 sets it with `FUN_00825260(2, …)` (AmmoMissile.ts).
    */
   objectSkin?: string;
+  /**
+   * 15.11 (11.02): this effect stands where the missile of the same plan with `flight.landing` equal to it lands — the
+   * impact area at the point target (MissileLanding.ts): moved and started there when SMSG_SET_PROJECTILE_POSITION
+   * lands the missile early.
+   */
+  landsWith?: number;
 }
 
 export type VisualAnimationMode = "once" | "hold";
@@ -231,6 +238,8 @@ export interface SpellCast {
    * source location, else the caster) and lands after `delayMs`.
    */
   trajectory?: { elevation: number; delayMs: number; source?: Point };
+  /** 15.11 (11.02): SPELL_GO's cast count — Missile_C +0x20, what SMSG_SET_PROJECTILE_POSITION names its missiles by. */
+  castCount?: number;
 }
 
 /**
@@ -638,9 +647,12 @@ export function planSpellVisual(
   }
 
   const arrivals: number[] = [];
+  let pointLanding: number | undefined; // 15.11 (11.02): the point target's missiles' landing (MissileLanding.ts)
   for (const target of cast.targets) {
     const arrival = arrivalAt(visual, cast, target, now);
     arrivals.push(arrival);
+    const landing = visual.missile && arrival > now ? missileLandingToken(cast, target.guid, arrivals.length) : undefined;
+    if (landing !== undefined) pointLanding = landing;
     if (visual.missile) {
       if (arrival > now) {
         // 05.10-A7a-E (6.12): from the caster's missile attachment to the target's chest, homing, with
@@ -657,8 +669,13 @@ export function planSpellVisual(
         // 11.11 (6.12): the fire point of Wow.exe 0x00720bf0 — MissileAttachment through 0x00adaa20 and MissileCastOffset;
         // without either, `attachment` (the spell right hand) stands in for the launch's own point.
         const fire = missileLaunchPoint(missile);
+        // 15.11 (6.12): without its own point, a missile whose CastKit plays no animation (none, or AnimID < 1) is
+        // launched by SPELL_GO itself from 0x0071a720's point — the caster's "$CSL"/"$CSR"/"$CST" event (0x0080e1b0 →
+        // 0x0072e240; MissileLaunchEvent.ts). With an animation the cast's own animation event launches it (0x00734390
+        // from unit +0xaf0); which event that is was not read, so the hand stays the stand-in there.
+        const launchEvents = !fire && !(visual.cast !== undefined && visual.cast.animation >= 1);
         const launch = fire ? { attachment: fire.attachment, ...(fire.offset ? { offset: fire.offset } : {}) }
-          : { attachment: missile.attachment };
+          : { attachment: missile.attachment, ...(launchEvents ? { events: true as const } : {}) };
         for (let missileIndex = 0; missileIndex < count; missileIndex++) {
           plan.instances.push({
             path: missile.path,
@@ -678,6 +695,7 @@ export function planSpellVisual(
               missileIndex,
               missileCount: count,
               spellId: visual.id,
+              ...missileCastTag(cast, landing), // 15.11 (11.02)
             },
             startedAt: now,
             endsAt: arrival,
@@ -689,10 +707,12 @@ export function planSpellVisual(
     const targetingEnd = arrival > now ? arrival : now + IMPACT_KIT_MS;
     addKit(plan, visual.missileTargeting, "reaction", target.guid, target.point, now, targetingEnd,
       true, "hold", false, "hold", keep);
+    const impactsFrom = plan.instances.length;
     addKit(plan, visual.impact, "reaction", target.guid, target.point, arrival, arrival + IMPACT_KIT_MS,
       true, "once", true, "once", keep);
     addKit(plan, visual.targetImpact, "reaction", target.guid, target.point, arrival, arrival + IMPACT_KIT_MS,
       true, "once", true, "once", keep);
+    tagLanding(plan.instances, impactsFrom, landing); // 15.11 (11.02): a point target's impacts stand where it lands
   }
 
   // 05.10-A7a-E (6.13): beams of the cast kit (Chain Lightning 321 → 743) over the flourish, and of the
@@ -712,7 +732,11 @@ export function planSpellVisual(
   addKit(plan, visual.casterImpact, "reaction", cast.caster, cast.casterPoint, firstImpact,
     firstImpact + IMPACT_KIT_MS, true, "once", true, "once", keep);
   addAreaKit(plan, visual.instantArea, point, now, now + IMPACT_KIT_MS, true);
+  const impactAreaFrom = plan.instances.length;
   addAreaKit(plan, visual.impactArea, point, firstImpact, firstImpact + IMPACT_KIT_MS, true);
+  // 15.11 (11.02): Wow.exe plays ImpactAreaKit at the missile's +0x44 when it lands (0x00700e20 → 0x006fec10), the
+  // point SMSG_SET_PROJECTILE_POSITION's landing overwrites (0x007015d0) — so the area of a point target follows it.
+  if (pointLanding !== undefined && cast.destination !== undefined) tagLanding(plan.instances, impactAreaFrom, pointLanding);
   const persistentDuration = visual.durationMs && visual.durationMs > 0
     ? visual.durationMs
     : PERSISTENT_AREA_FALLBACK_MS;

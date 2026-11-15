@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { explicitUnitTargetContract } from "./ExplicitUnitTargetContract.js";
 import { explicitSpellTargetContract } from "./ExplicitSpellTargetContract.js";
-import { openDbc, type Dbc } from "./Dbc.js";
+import { openDbc, openDbcFile, type Dbc } from "./Dbc.js";
 import { parseSpellShapeshiftFormBonuses, parseSpellShapeshiftFormFlags } from "./SpellShapeshiftForms.js";
 import { parseSummonProperties, spellSummonProperties, type SummonPropertiesRow } from "./SummonPropertiesMetadata.js"; // L13
 
@@ -10,6 +10,8 @@ import { parseSummonProperties, spellSummonProperties, type SummonPropertiesRow 
  * `SPELL_ATTR0_PASSIVE`. A passive spell has no button; the real spellbook still lists it, greyed.
  */
 const SPELL_ATTR0_PASSIVE = 0x40;
+/** 3.43 (15.11): the weapon subclasses of a stock ItemSubClass.dbc (0..20), for when the table is not read. */
+const WEAPON_SUBCLASSES = 21;
 /**
  * `SPELL_ATTR0_HIDDEN_CLIENTSIDE`, and the core's own comment on it is "Not visible in spellbook
  * or aura bar". This — not the passive bit — is the flag that means "do not show me".
@@ -447,6 +449,27 @@ export interface SpellMetadata {
   baseLevel?: number;
   maxLevel?: number;
   durationPerLevel?: number;
+  /**
+   * 3.43 (15.11, v=22): the level-dependent cost Wow.exe's cost function adds (0x008012f0: ManaCostPerLevel, record
+   * +0xac; 0x007ff100: ManaPerSecondPerLevel, +0xb4; src/browser/ui/SpellTextCost.ts), raw, on every row. Absent from
+   * an older gateway, which the browser reads as 0, as before.
+   */
+  manaCostPerLevel?: number;
+  manaPerSecondPerLevel?: number;
+  /**
+   * 3.43 (15.11, v=22): on a row with a MOD_SHAPESHIFT effect, its form's SpellShapeshiftForm `CombatRoundTime` (in
+   * ms, 0 for none) — the speed 0x008012f0 takes for SPELL_ATTR4_SPELL_VS_EXTEND_COST in that form. Absent without
+   * the table.
+   */
+  shapeshiftCombatRoundTime?: number;
+  /**
+   * 3.43 (15.11, v=22): on a row 0x006d4920 may swap for a weapon skill's spell (EquippedItemClass 2 with a subclass
+   * mask, no TARGET_FLAG_ITEM, no SPELL_ATTR2 0x8000000, Effect[0] not SPELL_EFFECT_WEAPON), DAT_00c9eb50 as 0x006e0340
+   * fills it, indexed by weapon subclass: the first Spell.dbc row in file order that is passive with EquippedItemClass 2
+   * and exactly that one subclass bit; 0 for a subclass outside the row's mask or with no such row
+   * (src/browser/ui/SpellTextCaster.ts spellTextWeaponSkillSpell).
+   */
+  weaponSkillSpells?: number[];
 }
 
 /** `MAX_SPELL_EFFECTS`: every effect column in this table is three wide. */
@@ -517,6 +540,7 @@ export function parseSpellMetadata(
   dispelTypePayload?: Uint8Array,
   summonPropertiesPayload?: Uint8Array, // L13 (v=17)
   runeCostPayload?: Uint8Array, // 3.57 (11.11)
+  weaponSubclassCount = WEAPON_SUBCLASSES, // 3.43 (15.11): 0x006d3010's count
 ): Map<number, SpellMetadata> {
   const view = (payload: Uint8Array): Buffer =>
     Buffer.from(payload.buffer, payload.byteOffset, payload.byteLength);
@@ -526,6 +550,8 @@ export function parseSpellMetadata(
     ? parseSpellShapeshiftFormBonuses(shapeshiftFormPayload) : new Map<number, number>();
   const formFlags = shapeshiftFormPayload // 19.10
     ? parseSpellShapeshiftFormFlags(shapeshiftFormPayload) : new Map<number, number>();
+  const formRoundTimes = shapeshiftFormPayload // 3.43 (15.11, v=22)
+    ? parseSpellShapeshiftFormRoundTimes(shapeshiftFormPayload) : new Map<number, number>();
   const debuffTypes = dispelTypePayload ? parseDebuffTypeNames(dispelTypePayload) : new Map<number, string>();
   const dispelNames = dispelTypePayload
     ? parseDispelTypeNames(dispelTypePayload, process.env["CLIENT_LOCALE"] ?? "ruRU") : new Map<number, string>();
@@ -588,6 +614,21 @@ export function parseSpellMetadata(
 
   const perEffect = (read: (effect: number) => number): number[] =>
     Array.from({ length: SPELL_EFFECTS }, (_, effect) => read(effect));
+
+  // 3.43 (15.11): 0x006e0340's weapon-skill table (SpellMetadata.weaponSkillSpells), over every row from the last to
+  // the first so the first row in file order is the one left standing, as the client's loop leaves it.
+  const weaponSkillTable = new Map<number, number>();
+  {
+    const all = [...spells.rows()];
+    for (let index = all.length - 1; index >= 0; index--) {
+      const row = all[index]!;
+      if ((spells.int(row, "Attributes") & SPELL_ATTR0_PASSIVE) === 0 || spells.int(row, "EquippedItemClass") !== 2) continue;
+      const mask = spells.int(row, "EquippedItemSubclass") >>> 0;
+      if (mask === 0 || (mask & (mask - 1)) !== 0) continue;
+      const subClass = 31 - Math.clz32(mask);
+      if (subClass < weaponSubclassCount) weaponSkillTable.set(subClass, spells.id(row));
+    }
+  }
 
   const result = new Map<number, SpellMetadata>();
   for (const row of spells.rows()) {
@@ -730,6 +771,9 @@ export function parseSpellMetadata(
       baseLevel: spells.int(row, "BaseLevel"),
       maxLevel: spells.int(row, "MaxLevel"),
       durationPerLevel: durations.get(spells.int(row, "DurationIndex"))?.perLevel ?? 0,
+      // 3.43 (15.11, v=22): the cost's level parts (SpellMetadata.manaCostPerLevel).
+      manaCostPerLevel: spells.int(row, "ManaCostPerLevel"),
+      manaPerSecondPerLevel: spells.int(row, "ManaPerSecondPerLevel"),
     };
     const debuffType = debuffTypes.get(metadata.dispelType ?? 0);
     if (debuffType !== undefined) metadata.debuffType = debuffType;
@@ -738,6 +782,12 @@ export function parseSpellMetadata(
     if (summonProperties) { // L13 (v=17)
       const summon = spellSummonProperties(metadata.effects ?? [], metadata.effectMiscValueB ?? [], summonProperties);
       if (summon !== undefined) metadata.summonProperties = summon;
+    }
+    const swapMask = spells.int(row, "EquippedItemSubclass") >>> 0; // 3.43 (15.11, v=22)
+    if ((spells.int(row, "Targets") & 0x10) === 0 && (spells.int(row, "AttributesExB") & 0x8000000) === 0
+      && spells.int(row, "Effect", 0) !== 25 && spells.int(row, "EquippedItemClass") === 2 && swapMask !== 0) {
+      metadata.weaponSkillSpells = Array.from({ length: weaponSubclassCount },
+        (_, subClass) => ((swapMask >>> subClass) & 1) !== 0 ? weaponSkillTable.get(subClass) ?? 0 : 0);
     }
     const runeCost = runeCosts?.get(spells.int(row, "RuneCostID")); // 3.57 (11.11)
     if (runeCost !== undefined) metadata.runeCost = runeCost;
@@ -749,6 +799,8 @@ export function parseSpellMetadata(
       if (bonus !== undefined) metadata.bonusActionBarOffset = bonus;
       const flags = formFlags.get(metadata.effectMiscValue[formEffect]!); // 19.10
       if (flags !== undefined) metadata.shapeshiftFormFlags = flags;
+      const roundTime = formRoundTimes.get(metadata.effectMiscValue[formEffect]!); // 3.43 (15.11, v=22)
+      if (roundTime !== undefined) metadata.shapeshiftCombatRoundTime = roundTime;
     }
     result.set(id, metadata);
   }
@@ -777,8 +829,18 @@ export async function loadSpellMetadata(directory: string): Promise<Map<number, 
   const summonProperties = await readFile(join(directory, "SummonProperties.dbc")).catch(() => undefined);
   // 3.57 (11.11): optional too — without it no row carries `runeCost` and the browser's rune gate stays open.
   const runeCosts = await readFile(join(directory, "SpellRuneCost.dbc")).catch(() => undefined);
+  // 3.43 (15.11): 0x006d3010 — the highest ItemSubClass.dbc subclass of class 2, plus one; the stock 21 without it.
+  const subclasses = await openDbcFile(directory, "ItemSubClass").catch(() => undefined);
+  let weaponSubclasses = WEAPON_SUBCLASSES;
+  if (subclasses) {
+    let highest = -1;
+    for (const row of subclasses.rows()) {
+      if (subclasses.int(row, "ClassID") === 2) highest = Math.max(highest, subclasses.int(row, "SubClassID"));
+    }
+    weaponSubclasses = highest + 1;
+  }
   const metadata = parseSpellMetadata(spells, icons, durations, radii, categories, variables, ranges, castTimes,
-    shapeshiftForms, dispelTypes, summonProperties, runeCosts);
+    shapeshiftForms, dispelTypes, summonProperties, runeCosts, weaponSubclasses);
   const toolNames = await loadTotemCategoryNames(directory);
   for (const spell of metadata.values()) {
     spell.requiredToolNames = (spell.requiredToolCategories ?? []).map((id) => toolNames.get(id) ?? "Профессиональный инструмент");
@@ -796,6 +858,24 @@ export async function loadSpellMetadata(directory: string): Promise<Map<number, 
  * the row Wow.exe 0x005ee5b0 reads at +0x4/+0x8/+0xc): id → `[blood, unholy, frost]`. An unreadable table gives an
  * empty map.
  */
+/**
+ * 3.43 (15.11): form ID → `CombatRoundTime` (column 22: ID, BonusActionBar, the 17 name words, Flags, CreatureType,
+ * AttackIconID, then CombatRoundTime — the client's own record keeps the name as one pointer, which puts the column at
+ * +0x18 where 0x008012f0 reads it). On this dataset only Cat (1000), Bear and Dire Bear (2500) carry one.
+ */
+export function parseSpellShapeshiftFormRoundTimes(payload: Uint8Array): Map<number, number> {
+  const forms = parseSpellShapeshiftFormBonuses(payload); // the same shape checks, and the ids
+  const data = Buffer.from(payload.buffer, payload.byteOffset, payload.byteLength);
+  const recordBytes = data.readUInt32LE(12);
+  const result = new Map<number, number>();
+  for (let row = 0; row < data.readUInt32LE(4); row++) {
+    const at = 20 + row * recordBytes;
+    const id = data.readUInt32LE(at);
+    if (forms.has(id)) result.set(id, data.readUInt32LE(at + 22 * 4));
+  }
+  return result;
+}
+
 export function parseSpellRuneCosts(payload: Uint8Array): Map<number, number[]> {
   const result = new Map<number, number[]>();
   const bytes = Buffer.from(payload.buffer, payload.byteOffset, payload.byteLength);

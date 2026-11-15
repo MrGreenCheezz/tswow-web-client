@@ -312,6 +312,7 @@ import { QUALITY_LINK_COLORS, itemChatLink, spellChatLink } from "../ui/ChatLink
 import { className, classFileName, classSpellFamily, raceBaseLanguage, raceFileName, raceName } from "../ui/UnitSnapshot.js";
 import { femaleOf } from "../ui/UnitSnapshot.js"; // L3-review
 import { frameXmlActionInRange, type ActionRangeHost } from "./FrameXmlActionRange.js";
+import { frameXmlItemNamed, frameXmlShapeshiftFormIndex } from "./FrameXmlRangeQueries.js"; // widgets5 batch 2
 import { // 19.10
   frameXmlSpellCastable, frameXmlSpellHasPower, frameXmlSpellUsable, frameXmlTotemCategorySlotMask as totemCategorySlotMask,
   type ActionUsableHost,
@@ -393,6 +394,8 @@ import type { BattlefieldList } from "../../world/PvpProtocol.js";
 import { FRAMEXML_DISPLAYED_POWER, frameXmlObjectPower, frameXmlPartyPower, type FrameXmlPowerKeepers } from "./FrameXmlUnitPower.js"; // 11.10, 3.41
 import { formatSpellDescription } from "../ui/SpellText.js"; // 12.10
 import { sessionSpellDescriptionContext } from "../ui/SpellTextLiveContext.js"; // 12.10
+import { frameXmlPlayerSpellCost, frameXmlSpellInfo } from "./FrameXmlSpellInfo.js"; // 3.43 (15.11)
+import type { FrameXmlSpellInfo } from "./FrameXmlWorldSeam.js"; // 3.43 (15.11)
 import {
   createFrameXmlTalentResolvers,
   type FrameXmlTalentMetadata,
@@ -7454,6 +7457,8 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     return {
       get range() { return seam.#actionRangeHost; },
       spell: (id) => seam.#context.spell(id),
+      // 3.43 (15.11): Spell_C_HaveSpellPower's cost is 0x008012f0 itself (SpellTextCost.ts).
+      playerSpellCost: (spell) => frameXmlPlayerSpellCost(spell, sessionSpellDescriptionContext()),
       auras: (guid) => seam.#context.world()?.aurasFor(guid) ?? [],
       itemCount: (entry) => seam.itemCount(entry, false),
       hasTotemCategory: (category) => seam.#carriesTotemCategory(category),
@@ -9627,6 +9632,41 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
 
   shapeshiftFormCount(): number { return this.#shapeshiftForms().length; }
 
+  /** widgets5 batch 2: GetShapeshiftForm(flag), Wow.exe 0x0053d4b0 (FrameXmlRangeQueries.ts). */
+  shapeshiftFormIndex(flag: boolean): number {
+    const player = this.#self();
+    if (!player) return 0;
+    const active = this.#shapeshiftForms().map((form) => this.#shapeshiftActive(form));
+    return frameXmlShapeshiftFormIndex(active, (unitField.shapeshiftForm(player) ?? 0) !== 0, flag);
+  }
+
+  /** widgets5 batch 2: the item an item argument names (0x00709de0), undefined for none. */
+  #itemOf(item: number | string): number | undefined {
+    if (typeof item === "number") return item !== 0 ? item : undefined;
+    const world = this.#context.world();
+    return frameXmlItemNamed(item, world?.itemTemplates instanceof Map ? world.itemTemplates : undefined);
+  }
+
+  /** widgets5 batch 2: IsItemInRange(item, unit), Wow.exe 0x0051c9c0 → 0x00809610, as actionInRange's rule. */
+  itemInRange(item: number | string, unit: string): number | undefined {
+    const world = this.#context.world();
+    const id = this.#itemOf(item);
+    if (!world || id === undefined) return undefined;
+    const spellId = itemUseSpellId(this.#itemTemplate(world, id));
+    if (spellId === undefined) return undefined;
+    const named = this.#unit(unit.toLowerCase()) ?? this.#target();
+    return frameXmlActionInRange(this.#context.spell(spellId), this.#self(), named, this.#actionRangeHost);
+  }
+
+  /** widgets5 batch 2: GetItemFamily(item), Wow.exe 0x00510f20 — the cached record's BagFamily. */
+  itemFamily(item: number | string): number | undefined {
+    const world = this.#context.world();
+    const id = this.#itemOf(item);
+    if (!world || id === undefined) return undefined;
+    const template = this.#itemTemplate(world, id);
+    return template?.found ? template.bagFamily : undefined;
+  }
+
   shapeshiftFormInfo(index: number): FrameXmlShapeshiftFormInfo | undefined {
     if (!Number.isInteger(index) || index < 1) return undefined;
     const form = this.#shapeshiftForms()[index - 1];
@@ -9662,7 +9702,7 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     return metadata === undefined ? undefined : [metadata.name, metadata.rank];
   }
 
-  spellInfo(idOrName: number | string): readonly [string, string, string, number, number, number, number] | undefined {
+  spellInfo(idOrName: number | string): FrameXmlSpellInfo | undefined {
     let metadata: SpellMetadata | undefined;
     if (typeof idOrName === "number") {
       if (!Number.isSafeInteger(idOrName) || idOrName <= 0) return undefined;
@@ -9679,8 +9719,8 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
       || typeof metadata.rank !== "string" || typeof metadata.iconPath !== "string"
       || !Number.isFinite(metadata.castTime)
       || !Number.isFinite(metadata.rangeMin) || !Number.isFinite(metadata.rangeMax)) return undefined;
-    return [metadata.name, metadata.rank, metadata.iconPath, metadata.castTime,
-      metadata.rangeMin, metadata.rangeMax, metadata.id];
+    // 3.43 (15.11): the 3.3.5 order with the cost function's answer (Wow.exe 0x00540a30, FrameXmlSpellInfo.ts).
+    return frameXmlSpellInfo(metadata, sessionSpellDescriptionContext());
   }
 
   /**

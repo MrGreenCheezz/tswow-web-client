@@ -20,6 +20,7 @@ export type ClientRendererCommand =
   | "setWeather" | "setIndoors" | "setCameraWmoSurface" | "updateLighting" | "setUnderwaterSurface" | "setSelection" | "setGroundTargetPreview"
   | "setGameObjectPreview" | "setDuelRing" | "setVehicleAimArc" | "setMuzzleUnit" | "setUnitAuraAppearance" | "setStateVisuals"
   | "playSpellVisual" | "cancelSpellVisual" | "retimeSpellVisual" | "clearSpellVisuals" | "prewarmSpellModels"
+  | "setProjectilePosition" // 15.11 (11.02)
   | "playUnitAction" | "releaseUnitAction" | "setMeleeTargets" | "playUnitReaction" | "playUnitEmote" | "cancelUnitAction"
   | "playMountSpecial" | "playGameObjectAnimation" | "showEnvironmentStandInMarkers" | "setWorldSubmissionCapture"
   | "setShaderProgramCapture" | "resetFrameCadence" | "resetGpuTimingEpoch";

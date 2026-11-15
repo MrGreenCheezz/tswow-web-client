@@ -187,6 +187,7 @@ import {
   type ShownUnitAction, type UnitActionDisplay, type UnitActionEntry, type UnitActionLayer, type UnitActionPayload,
 } from "./UnitActionArbiter.js";
 import { poseTakesWholeBody, wholeBodyOutlivesBase } from "./game/ActionOverBase.js"; // 05.10-6.21b; ревью 6.21b
+import { UnitShownSheath, stepUnitShownSheath, type ShownSheathContext } from "./UnitShownSheath.js"; // 5.05 (15.11)
 import { FastPoseState, type FastPoseProgram } from "./FastPose.js";
 import { SharedPose, pagePoseEngine, type PoseEngine, type PoseEngineStats } from "./PoseEngine.js";
 import {
@@ -272,6 +273,8 @@ import { VehiclePassengerPoser } from "./VehiclePassengerPose.js"; // 11.02-H
 import { cameraChainFade, type FadeModel } from "./VehicleCameraFade.js"; // 11.02 (26.10)
 import { VehicleSeatTransitions } from "./VehicleSeatTransition.js"; // 11.02 (26.10)
 import { seatSplitsPose, seatUpperMove, vehicleSeatTransitionPose } from "./VehicleSeatPose.js"; // 11.02 (26.10); 04.11: seatSplitsPose, seatUpperMove
+import { VehicleAnimationCopies, seatCopiesVehicleAnimation } from "./VehicleAnimationCopy.js"; // 11.02 (15.11)
+import { copyQuat, keepPathRotation } from "./TransportPickRotation.js"; // 11.01 (15.11)
 import {
   SEAT_VEHICLE_WAIT_SECONDS, VehicleOwnAnimations, seatVehicleAnimation, seatVehicleWaitSeconds, type VehicleOwnClip,
 } from "./VehicleOwnAnimation.js"; // 11.02 (04.11)
@@ -359,6 +362,10 @@ import {
 } from "./SpellVisuals.js";
 import type { SpellVisualEffectTransform } from "../gateway/SpellVisual.js";
 import { flyMissileInstance, missileQuaternion, missileSample, missileStillFlying, type MissilePoints } from "./MissileFlight.js"; // 05.10-A7a-E; 6.31: missileStillFlying
+import { missileLandedAt, setProjectilePosition as setMissileProjectilePosition } from "./MissileFlight.js"; // 15.11 (11.02)
+import { landImpacts } from "./MissileLanding.js"; // 15.11 (11.02)
+import { missileLaunchEvent, placeLaunchEvent } from "./MissileLaunchEvent.js"; // 15.11 (6.12)
+import { unitDisplayAlpha } from "./UnitDisplayFade.js"; // 15.11 (6.11)
 import { addModelFrameOffset, missileGroundHit } from "./MissileGround.js"; // 13.10 (6.12)
 import { ChainBeams } from "./ChainBeam.js"; // 05.10-A7a-E
 import { CameraShakeBank } from "./CameraShake.js"; // 05.10-A7a-E
@@ -2769,6 +2776,8 @@ interface RenderedGameObject extends PosedModel {
   pickBox: ModelBox | null | undefined;
   /** 22.10 ARC-2 S3a-review: what its published box was derived from (RenderResultRows.ts). */
   pickKey: PickRowKey | undefined;
+  /** 11.01 (15.11): a lift car's whole rotation as its TransportRotation keys turn it this frame (WoW axes), else undefined. */
+  pathRotation: Quat | undefined;
   /** Where it stands when it is not travelling — a lift's path is an offset from this. */
   base: WorldPosition;
   /** How far into its cycle it was at `phaseAt`, so the rest is counted locally. */
@@ -2855,7 +2864,12 @@ interface PosedModel {
   /** The semantic action owning the upper-body slot; needed to cancel a real ranged pose. */
   overlayActionKind: UnitAction | undefined;
   /** 04.11 (11.02): the seat whose upper start has been played. */
-  seatUpperSeat?: number;
+  seatUpperSeat: number | undefined;
+  /** 15.11 (11.02): how many times the whole-model animation has been started, a restart included (VehicleAnimationCopy.ts). */
+  baseStarts: number | undefined;
+  /** 5.05 (15.11): animation starts the sheath rule judges, and the `keep` bit of the last (UnitShownSheath.ts). */
+  sheathStarts: number | undefined;
+  sheathKeep: boolean | undefined;
   overlayPreservesLocomotion: boolean | undefined;
   /** End of the upper-body fade window, set once the one-shot reaches its fade start. */
   overlayFadeUntil: number | undefined;
@@ -3019,14 +3033,16 @@ interface RenderedUnit extends PosedModel {
    * 11.02 (26.10): the vehicle seat it was drawn in last frame (carrier guid, slot, row), and whether it has been
    * drawn at all — a change starts the way in or out (VehicleSeatTransition.ts) from where it was last drawn.
    */
-  seatedOn?: bigint | undefined;
-  seatedSlot?: number | undefined;
-  seatedRow?: VehicleSeatEntry | undefined;
-  seatTracked?: boolean | undefined;
+  seatedOn: bigint | undefined;
+  seatedSlot: number | undefined;
+  seatedRow: VehicleSeatEntry | undefined;
+  seatTracked: boolean | undefined;
   /** 04.11: the root of the seat chain, what it was told to play for this seat and the seat it was told for. */
-  seatRoot?: bigint | undefined;
-  rideVehicle?: bigint | undefined;
-  rideRow?: VehicleSeatEntry | undefined;
+  seatRoot: bigint | undefined;
+  rideVehicle: bigint | undefined;
+  rideRow: VehicleSeatEntry | undefined;
+  /** 5.05 (15.11): the sheath a unit that is not the active player shows (UnitShownSheath.ts, Wow.exe 0x00738180). */
+  shownSheath: UnitShownSheath | undefined;
   /** The file the emitters come from, kept so the effects pass does not re-resolve the model. */
   wvm: WvmModel | undefined;
   /** For an unrigged model, the mesh that carries the model-space rotation. */
@@ -4186,6 +4202,7 @@ export class WorldRenderer3D {
   readonly #vehiclePassengers = new VehiclePassengerPoser();
   readonly #seatTransitions = new VehicleSeatTransitions(); // 11.02 (26.10)
   readonly #vehicleOwn = new VehicleOwnAnimations(); // 11.02 (04.11)
+  readonly #vehicleCopies = new VehicleAnimationCopies(); // 11.02 (15.11): FlagsB 0x10000
   readonly #vehicleAims = new VehicleAims(); // 11.11 (5.32): a vehicle facing its boarding passenger
   #vehicleAimArc: VehicleAimArcShape | undefined; // 11.02 (04.11)
   #muzzleUnit: bigint | undefined;
@@ -6753,6 +6770,7 @@ export class WorldRenderer3D {
     GAME_OBJECT_PICK_AT.y = -at.z;
     GAME_OBJECT_PICK_AT.z = at.y;
     gameObjectWorldRotation(object, rendered.base.orientation, GAME_OBJECT_PICK_ROTATION);
+    if (rendered.pathRotation !== undefined) copyQuat(rendered.pathRotation, GAME_OBJECT_PICK_ROTATION); // 11.01 (15.11)
     placedBoxCorners(rendered.pickBox, GAME_OBJECT_PICK_AT, GAME_OBJECT_PICK_ROTATION, rendered.node.scale.x, out);
     return true;
   }
@@ -7044,6 +7062,11 @@ export class WorldRenderer3D {
       queue.removeWhere((entry) => entry.owner === handle);
       if (queue.idle) this.#actions.delete(guid);
     }
+  }
+
+  /** 15.11 (11.02): SMSG_SET_PROJECTILE_POSITION — the cast's drawn missiles land at the point (MissileLanding.ts). */
+  setProjectilePosition(caster: bigint, castCount: number, x: number, y: number, z: number): void {
+    setMissileProjectilePosition(caster, castCount, { x, y, z });
   }
 
   /** Extend or shorten one cast without restarting its particles or creating another node. */
@@ -8722,6 +8745,9 @@ export class WorldRenderer3D {
         // turned by its SpellMissileMotion script (MissileFlight.ts); hidden once it has arrived.
         if (!flyMissileInstance(instance, now, this.#missilePoints, _missileSample)) {
           visual.node.visible = false;
+          // 15.11 (11.02): stopped short by the server's point — its impact area stands there, now (MissileLanding.ts).
+          const landed = instance.flight.landing === undefined ? undefined : missileLandedAt(instance);
+          if (landed !== undefined) landImpacts(this.#visuals, visual.handle, instance.flight.landing!, landed, now);
           continue;
         }
         const at = _missileSample.position;
@@ -9003,6 +9029,17 @@ export class WorldRenderer3D {
       out.y = -_missilePoint.z;
       out.z = _missilePoint.y;
       return true;
+    },
+    // 15.11 (6.12): the caster's "$CSL"/"$CSR"/"$CST" event on its own body (Wow.exe 0x0071a720, MissileLaunchEvent.ts).
+    castEvent: (guid, out) => {
+      const unit = this.#units.get(guid);
+      const model = this.#lookups.unitModels?.get(guid)?.model;
+      const bones = unit?.skinned?.skeleton.bones;
+      const pivots = unit?.template?.pivots;
+      if (model === undefined || bones === undefined || pivots === undefined) return false;
+      const events = (this.#muzzleEvents ??= new ModelShotEvents(this.#baseUrl)).of(model);
+      const event = events === undefined ? undefined : missileLaunchEvent(events);
+      return event !== undefined && placeLaunchEvent(event, bones, pivots, out);
     },
     ground: (from, to, hit) => missileGroundHit(this.#missileHeightAt, from, to, hit),
   };
@@ -14968,6 +15005,7 @@ export class WorldRenderer3D {
       overlayAnimationId: undefined,
       overlayActionKind: undefined,
       overlayPreservesLocomotion: undefined,
+      seatUpperSeat: undefined, baseStarts: undefined, sheathStarts: undefined, sheathKeep: undefined, // P1-09 (15.11)
       overlayFadeUntil: undefined,
       overlayUntil: 0,
       clipLoops: undefined, variationClip: undefined, replaysLeft: 0,
@@ -14994,6 +15032,7 @@ export class WorldRenderer3D {
       entry: object.fields.get(UPDATE_FIELDS.OBJECT_FIELD_ENTRY.offset) ?? 0,
       pickBox: undefined,
       pickKey: undefined, // 22.10 ARC-2 S3a-review
+      pathRotation: undefined, // 11.01 (15.11)
       base: { x: placement.x, y: placement.y, z: placement.z, orientation: THREE.MathUtils.degToRad(placement.rotationY) },
       phaseMs: undefined,
       phaseAt: undefined,
@@ -15118,6 +15157,7 @@ export class WorldRenderer3D {
     const path = rendered.entry > 0 ? paths?.path(rendered.entry) : undefined;
     if (!path || path.period <= 0 || path.frames.length === 0) {
       rendered.node.position.set(position.x, position.z, -position.y);
+      rendered.pathRotation = undefined; // 11.01 (15.11)
       return;
     }
     // 11.01-B: the phase the physics stands the character on (LiftClock.ts): anchored when the
@@ -15125,6 +15165,8 @@ export class WorldRenderer3D {
     // 11.01 (11.11): the offset turned by PARENTROTATION and the car by its TransportRotation keys (LiftClock.ts).
     const at = liftPathPose(object, rendered.base, path, now, LIFT_DRAW_POSE);
     rendered.node.position.set(at.x, at.z, -at.y);
+    // 11.01 (15.11): the click box turns with the car (`#gameObjectPickCorners`, TransportPickRotation.ts).
+    rendered.pathRotation = keepPathRotation(rendered.pathRotation, at.rotated === true ? at.rotation : undefined, rendered.pickKey);
     if (at.rotated && Number.isFinite(position.orientation)) {
       sceneYaw(gameObjectNodeYaw(position.orientation), GAME_OBJECT_TILT);
       rendered.node.quaternion.set(GAME_OBJECT_TILT.x, GAME_OBJECT_TILT.y, GAME_OBJECT_TILT.z, GAME_OBJECT_TILT.w);
@@ -15414,6 +15456,7 @@ export class WorldRenderer3D {
     this.#seatTransitions.apply(this.#seatTransitionNode, now);
     if (this.#vehicleOwn.size > 0) this.#vehicleOwn.sweep((guid) => this.#units.has(guid), now); // 04.11
     if (this.#vehicleAims.size > 0) this.#vehicleAims.sweep((guid) => this.#units.has(guid)); // 11.11 (5.32)
+    if (this.#vehicleCopies.size > 0) this.#vehicleCopies.sweep((guid) => this.#units.has(guid)); // 11.02 (15.11)
     // 05.10-A7a-D2 6.06: melee reactions at the attackers' swing moments. 22.10 ARC-2 S4a: the swings' progress at
     // this moment is published (SwingProgressWatch.ts); main ticks its cues from it after `draw`, no call back.
     this.#swingWatch.publish(this.#results, now, this.#swingProgressOf);
@@ -15681,6 +15724,10 @@ export class WorldRenderer3D {
         sheathCeremony: undefined, sheathArms: undefined, // 12.10 6.08
         transitionMoving: undefined, pendingTransition: undefined, // 12.10 6.07
         resultKey: undefined, // 22.10 ARC-2 S3a-review
+        // P1-09 (15.11): the seat, ride, animation-copy and shown-sheath fields too, present from birth.
+        seatUpperSeat: undefined, baseStarts: undefined, sheathStarts: undefined, sheathKeep: undefined,
+        seatedOn: undefined, seatedSlot: undefined, seatedRow: undefined, seatTracked: undefined,
+        seatRoot: undefined, rideVehicle: undefined, rideRow: undefined, shownSheath: undefined,
       };
       this.#units.set(object.guid, unit);
       this.#unitGroup.add(node);
@@ -15704,7 +15751,8 @@ export class WorldRenderer3D {
     const metadata = unitModels?.get(object.guid);
     if (unitModels !== undefined) this.#unitModelWants.push(object.guid);
     unit.particleColours = metadata?.particleColors; // 05.10-A7a-H 6.11а
-    const displayOpacity = appearance.opacity * creatureDisplayAlpha(metadata) // 05.10-A7a-H 6.11а: CreatureModelAlpha multiplies
+    const displayOpacity = appearance.opacity // 05.10-A7a-H 6.11а: CreatureModelAlpha multiplies; 15.11: a change fades over 1 s
+      * (metadata === undefined ? creatureDisplayAlpha(metadata) : unitDisplayAlpha(unit, creatureDisplayAlpha(metadata), now))
       // 5.33: the camera's subject fades as the eye closes in on it (Wow.exe 0x00606f90, CameraClip.ts); folded in here
       // so the warm hold knows it will be drawn translucent.
       * (this.#subjectFade < 1 && this.#subjectFadeGuids.includes(object.guid) ? this.#subjectFade : 1); // 11.02 (26.10): the chain
@@ -15878,6 +15926,7 @@ export class WorldRenderer3D {
       if (self) this.#selfModel = unit; // 5.05 (11.11): whose starts `#noteStart` counts
       this.#animateUnit(unit, object, dead, self, distance, now, elapsed, client, metadata);
       if (self) this.#publishOwnAnimation(object.guid, unit); // 5.05 (11.11)
+      else this.#judgeUnitSheath(object, unit); // 5.05 (15.11): the same rule for every other unit
     } else {
       this.#shapeCapsule(unit, tint, radius, capsuleHeight, dead, moving, now);
     }
@@ -16237,6 +16286,7 @@ export class WorldRenderer3D {
       scale: metadata.scale,
       seat: mountSeatOffset(wvm, metadata.mountHeight, metadata.scale),
       pose: undefined,
+      seatUpperSeat: undefined, baseStarts: undefined, sheathStarts: undefined, sheathKeep: undefined, // P1-09 (15.11)
     };
     unit.shadowCaster = undefined;
   }
@@ -16364,7 +16414,9 @@ export class WorldRenderer3D {
 
     // UNIT_FIELD_BYTES_2 byte 0 is the sheath state, and it names which weapon is out rather than
     // whether one is: 0 everything put away, 1 the melee weapons drawn, 2 the ranged one drawn.
-    const sheath = (object.fields.get(UPDATE_FIELDS.UNIT_FIELD_BYTES_2.offset) ?? 0) & 0xff;
+    const field = (object.fields.get(UPDATE_FIELDS.UNIT_FIELD_BYTES_2.offset) ?? 0) & 0xff;
+    // 5.05 (15.11): any other unit hangs them by the state its animation starts set (UnitShownSheath.ts, 0x00738180).
+    const sheath = unit === this.#selfModel ? field : unit.shownSheath?.held ?? field;
     // 12.10 6.08: the active player's own draw or sheathe hangs each piece by its arm's event, not by the field.
     const ceremony = unit.sheathCeremony;
     const wanted = new Map<string, { point: number; model: string; texture: string; build: string; glow: EnchantGlow | undefined }>();
@@ -16802,6 +16854,10 @@ export class WorldRenderer3D {
       : seatTransition !== undefined ? vehicleSeatTransitionPose(seatTransition.seat, seatTransition.kind)
       : this.#vehiclePassengers.seatPose(object);
     if (vehicleSeat !== undefined) pose.vehicleSeat = vehicleSeat;
+    // 11.02 (15.11): on a FlagsB 0x10000 seat the passenger plays what its vehicle plays, its own poses muted (0x007487e0).
+    const copiesVehicle = (seatTransition === undefined && vehicleSeat !== undefined) || this.#vehicleCopies.has(object.guid)
+      ? this.#copyVehicleAnimation(unit, object, dead || seatTransition !== undefined || vehicleSeat === undefined, now, client, metadata)
+      : false;
     if (this.#vehicleOwn.has(object.guid)) this.#stepVehicleOwn(unit, object.guid, now, client, metadata); // 04.11
     if (object.guid === this.#muzzleUnit) this.#muzzleModel = metadata?.model; // 04.11
     // 12.10 6.07: whether this fall began with a jump, and the jump clip the base is already in (Wow.exe 0x00723350,
@@ -16864,7 +16920,7 @@ export class WorldRenderer3D {
       && (unit.transitionMoving !== isUnitMoving(pose.movementFlags, pose.spline) || airborneChanged(unit.pose, pose));
     if (deathTransition || unit.overlayPreservesLocomotion === true || transitionCut
       || (now >= unit.overlayUntil && !terminalDeath)) {
-      this.#poseUnit(unit, object.guid, pose, now, client, metadata);
+      if (!copiesVehicle) this.#poseUnit(unit, object.guid, pose, now, client, metadata); // 11.02 (15.11): muted
     }
     unit.pose = pose;
     // 05.10-A7a-F1 (6.16а): the batches the file fades under Death follow the dead unit's own clip.
@@ -17505,6 +17561,59 @@ export class WorldRenderer3D {
       });
   }
 
+  /**
+   * 11.02 (15.11): a seated passenger on a VehicleSeat FlagsB 0x10000 seat (VehicleAnimationCopy.ts, Wow.exe 0x00748620,
+   * 0x007487e0, 0x00735820): its own poses are muted and it starts whatever whole-model animation its vehicle's seat model
+   * starts. True while that holds — the caller then skips the unit's own pose pass. `off`: dead, on the way in or out,
+   * or no seat; then a copy that was running ends and the unit's own pose comes back the same frame.
+   */
+  #copyVehicleAnimation(unit: RenderedUnit, object: WorldObjectState, off: boolean, now: number,
+    client: EnvironmentClient | undefined, metadata: UnitModel | undefined): boolean {
+    const guid = object.guid;
+    const transport = object.transport;
+    if (off || transport === undefined || !seatCopiesVehicleAnimation(this.#vehiclePassengers.seatOf(object), true)) {
+      if (this.#vehicleCopies.has(guid)) {
+        this.#vehicleCopies.forget(guid);
+        unit.overlayUntil = 0; // a copied one-shot does not hold the unit's own pose back
+      }
+      return false;
+    }
+    // Muted: what the packets ask of this passenger is not played (0x00735820 and its siblings return unforced).
+    const queue = this.#actions.get(guid);
+    if (queue !== undefined) {
+      queue.clear();
+      this.#releaseUnitAction(unit, queue);
+      this.#actions.delete(guid);
+    }
+    if (unit.overlayAction !== undefined) this.#clearOverlay(unit);
+    const vehicle = this.#units.get(transport.guid);
+    // The seat model (vtable +0xd4, 0x006e6f80): the mount's when the vehicle is mounted.
+    const model: PosedModel | undefined = vehicle?.mount?.skinned !== undefined ? vehicle.mount : vehicle;
+    const action = model?.action;
+    // The bit is set on reaching the seat whether or not the models are up (0x00748620 sets it before it looks at them):
+    // muted, holding what it has, until the vehicle's model plays something.
+    if (model === undefined || action === undefined) return true;
+    const shown = {
+      animation: model.animationId, loop: action.loop === THREE.LoopRepeat && action.repetitions === Infinity,
+      model: model.skinned, starts: model.baseStarts ?? 0,
+    };
+    const next = this.#vehicleCopies.next(guid, transport.guid, shown, unit.skinned);
+    if (next === undefined) return true;
+    const template = unit.template!;
+    if (!template.clips.has(next.animation) && sidecarClaims(template, [next.animation])) {
+      this.#requestAnimations(template, [next.animation], client, metadata, "any", true);
+      return true; // the keyframes are on their way: it holds what it has, muted
+    }
+    // A model without the clip plays its stand-in, as 0x00832ab0 does through 0x00826350.
+    const played = template.clips.has(next.animation) ? next.animation : poseTransitionClip(template.clips, next.animation);
+    if (played !== undefined) {
+      unit.animationId = -1; // a start, even of the clip already on show
+      this.#playAnimation(unit, played, next.loop, now, false, undefined, undefined, fallbackPlayback(next.animation, played));
+    }
+    this.#vehicleCopies.given(guid, transport.guid, shown, unit.skinned);
+    return true;
+  }
+
   /** Settles and shows this unit's packet pose; the part of the body it took, or undefined. */
   #showUnitAction(unit: RenderedUnit, guid: bigint, pose: UnitPose, now: number,
     client: EnvironmentClient | undefined, metadata: UnitModel | undefined): "full" | "upper" | undefined {
@@ -17739,6 +17848,7 @@ export class WorldRenderer3D {
         applyPlayback(shown.action, mode, loop); // 12.10 6.03/6.07
         if (display === "upper") unit.overlayAnimationMode = mode;
         else unit.animationMode = mode;
+        if (display !== "upper") unit.baseStarts = (unit.baseStarts ?? 0) + 1; // 11.02 (15.11)
         this.#noteStart(unit); // 5.05 (11.11): a start again is a start
       } else {
         this.#playAnimation(unit, animation, loop, now, display === "upper", pending.action, undefined, mode);
@@ -17768,10 +17878,37 @@ export class WorldRenderer3D {
    * (locomotion 0x0073b510, stand states, emotes, swings, reactions) passes none (UnitActionArbiter.ts `startKeep`).
    */
   #noteStart(unit: PosedModel): void {
-    if (unit !== this.#selfModel || this.#startKeep === undefined) return;
+    if (this.#startKeep === undefined) return;
+    if (unit !== this.#selfModel) {
+      // 5.05 (15.11): 0x007385c0 judges every unit's starts, not the active player's only (UnitShownSheath.ts).
+      unit.sheathStarts = (unit.sheathStarts ?? 0) + 1;
+      unit.sheathKeep = this.#startKeep;
+      return;
+    }
     this.#selfStarts++;
     this.#selfKeep = this.#startKeep;
   }
+
+  /** 5.05 (15.11): a unit that is not the active player — its byte and its latest start, judged as 0x00738180 does. */
+  #judgeUnitSheath(object: WorldObjectState, unit: RenderedUnit): void {
+    const field = (object.fields.get(UPDATE_FIELDS.UNIT_FIELD_BYTES_2.offset) ?? 0) & 0xff;
+    const starts = unit.sheathStarts ?? 0;
+    const shown = unit.shownSheath;
+    if (shown !== undefined && shown.published === field && shown.starts === starts) return;
+    const animation = unit.overlayAction !== undefined && unit.overlayAnimationId !== undefined
+      ? unit.overlayAnimationId : unit.animationId;
+    const facing = this.#inputs.facing;
+    this.#sheathContext.casts = facing.casts;
+    this.#sheathContext.spellAttributes = facing.spellAttributes;
+    this.#sheathContext.meleeTargets = this.#meleeTargets;
+    unit.shownSheath = stepUnitShownSheath(shown, object.guid, field, starts, animation, unit.sheathKeep === true,
+      this.#sheathContext);
+  }
+
+  /** 5.05 (15.11): what `#judgeUnitSheath` hands the rule, refilled per call. */
+  readonly #sheathContext: { -readonly [K in keyof ShownSheathContext]: ShownSheathContext[K] } = {
+    casts: new Map(), spellAttributes: new Map(), meleeTargets: new Set(),
+  };
 
   /** 5.05 (11.11): RenderResults.ts `ownAnimation` — the model's animation as 0x00717260 reads it, and its count. */
   #publishOwnAnimation(guid: bigint, unit: PosedModel): void {
@@ -17983,6 +18120,7 @@ export class WorldRenderer3D {
       unit.actionKind = actionKind;
       unit.overlayUntil = loop ? 0 : now + clip.duration * 1000;
       unit.clipLoops = undefined;
+      unit.baseStarts = (unit.baseStarts ?? 0) + 1; // 11.02 (15.11)
       this.#noteStart(unit); // 5.05 (11.11)
       return;
     }
@@ -18014,6 +18152,7 @@ export class WorldRenderer3D {
     // 03.11 (6.33): a one-shot holds the unit for its whole length: measured on landings, a bow, a swing and a cast, the next
     // clip starts from zero when this one has played out, and comes in over its held last frame.
     unit.overlayUntil = loop ? 0 : now + playedSeconds(next) * 1000;
+    unit.baseStarts = (unit.baseStarts ?? 0) + 1; // 11.02 (15.11)
     this.#noteStart(unit); // 5.05 (11.11)
   }
 

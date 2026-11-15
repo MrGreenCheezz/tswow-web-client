@@ -45,6 +45,27 @@ export interface LabQuery extends LabLook {
    * In the world this is UNIT_FIELD_BYTES_2 byte 0, and there is no such field here.
    */
   sheath: number;
+  /**
+   * 15.11 6.14: `glow=slot:itemVisual,…` — the ItemVisuals id a hand slot (15–17) is hung with, as
+   * SMSG_CHAR_ENUM carries an enchant's. The hang follows the select screen's rule (glue/FigureGlow.ts):
+   * a display with its own ItemVisuals row glows by itself, and with no `glow=` only such displays glow.
+   */
+  glow: Readonly<Record<number, number>>;
+}
+
+/** 15.11 6.14: `glow=15:2,16:156`. */
+export function parseLabGlow(spec: string): Record<number, number> {
+  const glow: Record<number, number> = {};
+  for (const entry of spec.split(",")) {
+    if (!entry.trim()) continue;
+    const parts = entry.split(":").map((part) => Number.parseInt(part, 10));
+    if (parts.length !== 2 || parts.some((part) => !Number.isInteger(part) || part < 0)
+      || parts[0]! < 15 || parts[0]! > 17 || parts[1]! > 100_000) {
+      throw new Error(`glow=${entry} — ожидается slot:itemVisual, слот 15–17`);
+    }
+    glow[parts[0]!] = parts[1]!;
+  }
+  return glow;
 }
 
 /**
@@ -142,6 +163,7 @@ export function parseLabQuery(search: string): LabQuery {
     animation: params.get("animation") ?? "Stand",
     legs: numberList(params, "legs") ?? [],
     sheath: sheathState(params),
+    glow: parseLabGlow(params.get("glow") ?? ""), // 15.11 6.14
   };
 }
 

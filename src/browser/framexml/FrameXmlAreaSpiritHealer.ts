@@ -22,8 +22,10 @@
  *   none), CREATURE_TYPE_FLAG_TREAT_AS_RAID_UNIT lifting the reaction test, and 0x715f90/0x715df0
  *   for a player-controlled guide and a player that is not. 0x523f80 also keeps enumerating after a
  *   match (it returns 1), so with two guides in 20 yards Wow.exe asks each and keeps the last one
- *   its object order gives; 5.25 (11.11): so does this file, in `state.objects` order (the order of
- *   Wow.exe's object list, 0x004d4b30, is not established).
+ *   its object order gives; 5.25 (11.11): so does this file, in `state.objects` order. 5.25 (15.11): that is
+ *   the order of Wow.exe's object list (0x004d4b30 walks the visible list from its head: a packet's new objects
+ *   join the tail in block order, 0x004d6b72/0x004d7190; an object back in view goes behind the rest), so the
+ *   guide kept is the one that came into view last (tests/object-walk-order.test.mjs).
  * * Changing the guide (0x523eb0): if a clock was running, 0x51f710 (below) runs and the clock
  *   stops; a new guide is asked with CMSG_AREA_SPIRIT_HEALER_QUERY (u64 guid).
  * * SMSG_AREA_SPIRIT_HEALER_TIME (u64 guid, u32 ms; 0x526530 case 0x2e4 → 0x524b10): after the same

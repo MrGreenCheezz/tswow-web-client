@@ -49,6 +49,8 @@ export interface SpellVisualLifecycleRenderer {
   setStateVisuals(byUnit: ReadonlyMap<bigint, readonly StateVisualDescriptor[]>): void;
   cancelSpellVisual?(id: number): void;
   retimeSpellVisual?(id: number, absoluteEndsAt: number): void;
+  /** 15.11 (11.02): SMSG_SET_PROJECTILE_POSITION for the drawn missiles (MissileFlight.ts `setProjectilePosition`). */
+  setProjectilePosition?(caster: bigint, castCount: number, x: number, y: number, z: number): void;
   cancelUnitAction?(guid: bigint): void;
   clearSpellVisuals?(): void;
   playUnitAction?(guid: bigint, action: "precast" | "channel" | "cast" | "shoot", hold?: number): void;
@@ -449,6 +451,12 @@ export class SpellVisualCoordinator {
       world.events.on("SPELL_CHANNEL_UPDATE", (event) => this.#onChannelUpdate(world, event)),
       world.events.on("SPELL_CAST_STOP", (event) => this.#onCastStop(world, event)),
       world.events.on("AURA_CHANGED", (event) => this.#onAuraChanged(world, event)),
+      // 15.11 (11.02): the server's collision point for a cast's missiles (MissileLanding.ts).
+      world.events.on("PROJECTILE_MOVED", (event) => {
+        if (this.#active && this.#world === world) {
+          this.#renderer()?.setProjectilePosition?.(event.casterGuid, event.castCount, event.x, event.y, event.z);
+        }
+      }),
     );
     for (const [guid, auras] of world.auras) {
       if (auras.size > 0) this.#setUnitAuras(guid, new Map(auras));
@@ -806,6 +814,7 @@ export class SpellVisualCoordinator {
       ...(cast.adjustMissile && destination ? {
         trajectory: { elevation: cast.adjustMissile.elevation, delayMs: cast.adjustMissile.delayMs, ...(source ? { source } : {}) },
       } : {}),
+      castCount: cast.castId, // 15.11 (11.02): Missile_C +0x20, what SMSG_SET_PROJECTILE_POSITION names
     };
   }
 

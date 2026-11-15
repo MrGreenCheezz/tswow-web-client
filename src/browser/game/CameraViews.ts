@@ -380,6 +380,21 @@ export class CameraViews {
     if (this.#active[axis] !== 0) this.#ms[axis] = seconds * 1000;
   }
 
+  /**
+   * 3.11 (15.11): 0x005fe5f0 — the yaw turned by `delta` radians, the camera's (+0x11c) and a running yaw glide's ends
+   * (+0x260 target, +0x264) alike, so the glide goes on along the same path turned with it. CameraFollow.spline turns by
+   * the subject's change of facing, the other way, to hold the yaw still in the world.
+   */
+  turnYaw(delta: number, rig: CameraViewRig): void {
+    if (!(Math.abs(delta) > 0) || !Number.isFinite(delta)) return;
+    rig.yaw = wrap(rig.yaw + delta);
+    if (this.#active[CAMERA_AXIS_YAW] !== 0) {
+      this.#from[CAMERA_AXIS_YAW] = this.#from[CAMERA_AXIS_YAW]! + delta;
+      this.#to[CAMERA_AXIS_YAW] = this.#to[CAMERA_AXIS_YAW]! + delta;
+      this.#wrote[CAMERA_AXIS_YAW] = rig.yaw;
+    }
+  }
+
   /** 3.11: 0x005feee0 (pitch), 0x005fef40 (yaw): the glide stops, its target where the camera is. */
   stopAxis(axis: number): void {
     this.#active[axis] = 0;

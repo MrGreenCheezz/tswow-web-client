@@ -14,10 +14,13 @@ import { MOVEMENT_FLAGS } from "../../world/MovementProtocol.js";
  * strafes 0x40/0x80, turns 0x100/0x200, autorun 0x1000), a mouse command went down first or came up last, or the
  * right button and a turn key began or ceased to be held together. It starts at most one glide per axis, with the
  * camera's own glide (CameraViews.glideAxis — 0x00601190 pitch, 0x00601410 yaw) and then leaves the camera alone:
- * - The state is the highest of: Fear 0x40 (the subject on a server spline — not modelled), Turn 0x20 (a turn key, or
- *   the right button/Mouselook), Strafe 0x10 (a strafe key, or the right button with a turn key), Move 8 (forward,
- *   back, autorun, or both buttons), Track 4 (the 0x1e00000 tracking bits — not modelled), Stop 2 (the word was
- *   moving and is now idle, 0x005f9850) and Idle 1 (no movement bit at all).
+ * - The state is the highest of: Fear 0x40 (the subject on a server spline — `spline`, since 15.11), Turn 0x20 (a turn
+ *   key, or the right button/Mouselook), Strafe 0x10 (a strafe key, or the right button with a turn key), Move 8 (forward,
+ *   back, autorun, or both buttons), Track 4 (camera+0x98 bit 0x100, set by 0x00602dc0 from the input word's 0x1e00000
+ *   bits — click-to-move's: 0x0071aee0, 0x00715bf0/0x00715c10 and 0x007272c0 set and clear them around the move
+ *   0x00727400 starts, its action in 0x00ca11f4 and its facing in 0x00ca11d8; this client has no click-to-move, so
+ *   nothing sets them and Track never arises, as in Wow.exe with the option off), Stop 2 (the word was moving and is now
+ *   idle, 0x005f9850) and Idle 1 (no movement bit at all). Fear and Track take `cameraSmoothTrackingStyle`'s rows.
  * - Gate 0x005fff40: not after a sticky release, and only in a view still at its defaults unless
  *   cameraCustomViewSmoothing (CameraViews.followAllowed).
  * - The style is cameraSmoothStyle (0 Never, 1 Smart, 2 Always, 3 Spline, 4 Smarter — the default). Its state row
@@ -66,6 +69,17 @@ export const CAMERA_FOLLOW_STOP = 0x2;
 export const CAMERA_FOLLOW_MOVE = 0x8;
 export const CAMERA_FOLLOW_STRAFE = 0x10;
 export const CAMERA_FOLLOW_TURN = 0x20;
+/** 3.11 (15.11): camera+0x98 bit 0x1000 (0x00602eb0) — the subject on a server spline. */
+export const CAMERA_FOLLOW_FEAR = 0x40;
+
+/** 0x009ea27c: how far apart two angles must be to differ (0x00482900). */
+const YAW_SAME = 2.384185791015625e-7;
+
+/** Into [−π, π). */
+function wrapHalf(angle: number): number {
+  if (!Number.isFinite(angle)) return 0;
+  return angle - 2 * Math.PI * Math.floor((angle + Math.PI) / (2 * Math.PI));
+}
 
 /** What the follow asks of the subject and the settings when it runs. */
 export interface CameraFollowHost {
@@ -88,7 +102,7 @@ function steeringTurn(word: number): boolean {
   return (word & CAMERA_INPUT_TURN_OR_ACTION) !== 0 && (word & TURNS) !== 0;
 }
 
-/** 0x00602760's state mask for a word (Track and Fear are not modelled). */
+/** 0x00602760's state mask for a word (Fear is `spline`'s to add; Track never arises here). */
 export function cameraFollowStates(word: number, stop: boolean): number {
   const right = (word & CAMERA_INPUT_TURN_OR_ACTION) !== 0;
   let states = 0;
@@ -111,6 +125,46 @@ function held99(value: number): number {
 
 export class CameraFollow {
   #word = 0;
+  /** 3.11 (15.11): camera+0x98 bit 0x1000 — the subject on a server spline (0x00602eb0) — and the facing last held against. */
+  #held = false;
+  #facing = 0;
+
+  /** Whether the yaw is held in the world (tests). */
+  get held(): boolean {
+    return this.#held;
+  }
+
+  /**
+   * 3.11 (15.11): Wow.exe 0x00602eb0, once a frame from the camera's frame (0x00606f90): `onSpline` is the camera's subject,
+   * a unit, on a server spline that is not a taxi's (and not a No_Spline stop) — a fear, a confusion, a charge, a jump.
+   * - Its first frame (0x006019b0, camera+0xac counting up from 0): the camera's yaw is made the world's, by adding the
+   *   facing to it (0x005fe5f0), so it no longer turns with the subject: here, every frame the facing has turned since,
+   *   the yaw and a running yaw glide are turned back by as much (CameraViews.turnYaw).
+   * - Every frame of it 0x00602760 runs with the input word as it stands and the Fear state (0x40) — the highest, so its
+   *   row of `cameraSmoothTrackingStyle` (not cameraSmoothStyle) gives the delay and factor, and the yaw glides to the
+   *   view's yaw behind the subject's facing of the moment (in the world), with no band; a target unchanged leaves the
+   *   running glide alone (0x00601410), so it lands once the path runs straight.
+   * - The spline over (0x00601a70): the yaw is the facing's again, and 0x00602760 runs once more with the word alone.
+   * `host` undefined (a view that is not the player's to turn): the yaw is still held, nothing glides.
+   */
+  spline(onSpline: boolean, facing: number, rig: CameraViewRig, now: number, views: CameraViews,
+    host: CameraFollowHost | undefined): void {
+    if (onSpline) {
+      if (!this.#held) {
+        this.#held = true;
+        this.#facing = facing;
+      } else {
+        const turned = wrapHalf(facing - this.#facing);
+        this.#facing = facing;
+        if (turned !== 0) views.turnYaw(-turned, rig);
+      }
+      if (host !== undefined) this.#follow(cameraFollowStates(this.#word, false) | CAMERA_FOLLOW_FEAR, rig, now, views, host);
+      return;
+    }
+    if (!this.#held) return;
+    this.#held = false;
+    if (host !== undefined) this.#follow(cameraFollowStates(this.#word, false), rig, now, views, host);
+  }
 
   /** The word last seen (tests). */
   get word(): number {
@@ -152,7 +206,9 @@ export class CameraFollow {
   /** 0x00602760. */
   #follow(states: number, rig: CameraViewRig, now: number, views: CameraViews, host: CameraFollowHost): void {
     if (states === 0 || !views.followAllowed()) return;
-    const style = Math.trunc(host.style);
+    // 3.11 (15.11): Fear (and Track) take cameraSmoothTrackingStyle (0x00602760: (states & 0x44) ≠ 0; camera+0x2fc, which
+    // overrides it with 0 or 3, has no setter this client knows of).
+    const style = Math.trunc((states & CAMERA_FOLLOW_FEAR) !== 0 ? views.cvarNumber("cameraSmoothTrackingStyle") : host.style);
     if (!(style >= 0 && style <= 4)) return;
     const state = 31 - Math.clz32(states);
     const stateDelay = held99(views.cvarNumber(cameraSmoothCVar(style, state, false)));
@@ -186,15 +242,19 @@ export class CameraFollow {
     const yaw = cameraYawOffFlip(rig);
     const yawMin = views.cvarNumber("cameraYawSmoothMin") * DEG;
     const yawMax = views.cvarNumber("cameraYawSmoothMax") * DEG;
-    if (free && views.cvarNumber("cameraSmoothYaw") !== 0 && (yaw < yawMin || yawMax < yaw)) {
+    // 3.11 (15.11): held in the world (camera+0xac ≥ 1) 0x00602680 asks instead whether the camera's world yaw differs from
+    // the subject's facing at all (0x00482900, 2.4e-7) — this yaw, which is from the facing, being anything but 0.
+    const away = this.#held ? Math.abs(wrapHalf(yaw)) >= YAW_SAME : yaw < yawMin || yawMax < yaw;
+    if (free && views.cvarNumber("cameraSmoothYaw") !== 0 && away) {
       const delay = held99(views.cvarNumber(cameraSmoothViewDataCVar(style, 2, false)) + stateDelay);
       const factor = held99(views.cvarNumber(cameraSmoothViewDataCVar(style, 2, true)) * stateFactor);
       if (factor === 0) views.stopAxis(CAMERA_AXIS_YAW);
       else {
         // The view's own yaw, then the bound the yaw is past (0x00602760 with camera+0xac < 1).
         let target = views.viewYaw(views.current);
-        if (yaw < yawMin) target = yawMin;
-        if (yawMax < yaw) target = yawMax;
+        // Held in the world: the facing of the moment plus the view's yaw, no band — from the facing, the view's yaw.
+        if (!this.#held && yaw < yawMin) target = yawMin;
+        if (!this.#held && yawMax < yaw) target = yawMax;
         const seconds = views.glideAxis(CAMERA_AXIS_YAW, target, delay, factor, host.yawSpeed * DEG, now, rig);
         if (seconds >= 0) {
           yawStarted = true;

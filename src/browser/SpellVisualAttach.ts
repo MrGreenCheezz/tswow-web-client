@@ -59,8 +59,8 @@ export function visualOffset(stored: readonly number[] | undefined): readonly [n
  * - MissileAttachment −1 with a MissileCastOffset: the directed spell hand, table entry 12 (0x00adaa50 = 38), moved
  *   by the offset; on a model without it Wow.exe turns the offset by the unit's model matrix from its position.
  * - MissileAttachment −1 and no offset: 0x00720bf0 answers nothing and the launch takes the point it was handed —
- *   the animation event's, or 0x0071a720's "$CSL"/"$CSR"/"$CST" event or the unit's position. Not reproduced:
- *   undefined here, and the caller keeps its spell right hand.
+ *   the animation event's, or 0x0071a720's "$CSL"/"$CSR"/"$CST" event or the unit's position. Undefined here; 15.11:
+ *   the planner asks for the events where SPELL_GO launches it (MissileLaunchEvent.ts), else keeps the spell right hand.
  *
  * A model that lacks the attachment makes 0x00720bf0 answer nothing as well; the renderer's point then falls back
  * to 0.75 of the height (MissileFlight.ts `MissilePoints.point`), not to the events.

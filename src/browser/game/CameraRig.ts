@@ -10,10 +10,12 @@ import { cameraWaterArm, cameraWaterFloor } from "./CameraWater.js"; // L8 5.14
 import {
   CAMERA_CLIP_MARGIN, CAMERA_CLIP_REARM, CAMERA_CLIP_RECOVERY_SECONDS, cameraArmClip, cameraClipEase,
   cameraPivotUnderCeiling,
+  CAMERA_CLIP_NEAR, CAMERA_NEAR_SWEEP_SCALE, nearPlaneHalfHeight, nearPlaneSweep, // 5.14 (15.11)
 } from "./CameraClip.js"; // 5.33
 import { tiltedPitch } from "./CameraTerrainTilt.js"; // 5.14 (11.11)
 import { CAMERA_BOOM_ARM_HIT, CAMERA_BOOM_HINGE_HIT } from "./CameraPivot.js"; // 5.14 (11.11)
 import { CAMERA_WATER_CLEARANCE, cameraWaterHinge } from "./CameraWater.js"; // 5.14 (11.11)
+import { cameraWaterBand, cameraWaterReach } from "./CameraWater.js"; // 5.14 (15.11)
 
 /**
  * What the camera does between the player's hands and the geometry: the wheel, the easing, and
@@ -91,7 +93,11 @@ export interface CameraRig {
    * this frame's scan; it reads `Infinity` again once those two seconds are up.
    */
   wallView: number;
-  /** The same for the ground, eased on its own and slower. Yards, or `Infinity` for clear. */
+  /**
+   * The same for the ground, eased on its own and slower. Yards, or `Infinity` for clear. 5.33 (15.11): `advanceCameraFrame`
+   * hands the ground to the walls' limit now (Wow.exe's one sweep), so in the game this stays `Infinity`; the easing is
+   * kept for a caller that passes a ground limit of its own to `advanceCameraRig`.
+   */
   terrainView: number;
   pivotHeight: number;
   eyeHeight: number;
@@ -500,6 +506,13 @@ export interface CameraWorld {
    * Asked only while the subject's own column has no water (`waterZ`), whose rule is CameraWater's.
    */
   waterAt?: ((x: number, y: number) => number | undefined) | undefined;
+  /**
+   * 5.14 (15.11): the surface of the liquid a point is in or over, the map's or a building's (CameraWater.cameraLiquidSurface),
+   * whatever cameraWaterCollision says — the band about a surface is kept clear without it too (0x006061d0).
+   */
+  liquidAt?: ((x: number, y: number, z: number) => number | undefined) | undefined;
+  /** 5.14 (15.11): cameraWaterCollision — with `liquidAt`, water along the boom stops it (CameraWater.cameraWaterReach). */
+  waterCollision?: boolean | undefined;
 }
 
 /**
@@ -639,10 +652,19 @@ export function advanceCameraFrame(
   const clipped = cameraArmClip(world.collision, anchor, camera, wanted, world.aspect ?? 16 / 9);
   // L8 5.14: under water the surface stops the boom as a wall does (CameraWater.ts).
   // 5.14 (11.11): and from a dry column, the water the boom would dip into anywhere along it, 0.2222 short (`waterAt`).
-  const waterReach = world.waterAt === undefined || world.waterZ !== undefined ? 1
-    : boomLimits(anchor, camera.position, { heightAt: world.waterAt, clearance: CAMERA_WATER_CLEARANCE }).terrain;
-  const wall = Math.min(clipped, cameraWaterArm(pivotZ, pitch, world.waterZ), wanted * waterReach);
-  const terrain = wanted * reach.terrain;
+  // 5.14 (15.11): `liquidAt` under cameraWaterCollision asks each point of the boom with its height, so a building's water
+  // stops it as the map's does (CameraWater.cameraWaterReach); `waterAt` (the map's alone) is kept for a caller without it.
+  const waterReach = world.waterZ !== undefined ? 1
+    : world.waterAt !== undefined
+      ? boomLimits(anchor, camera.position, { heightAt: world.waterAt, clearance: CAMERA_WATER_CLEARANCE }).terrain
+      : world.waterCollision === true && world.liquidAt !== undefined
+        ? cameraWaterReach(anchor, camera.position, world.liquidAt) : 1;
+  // 5.33 (15.11): the ground is one more thing in the boom's way, as Wow.exe's one sweep (mask 0x100171, the terrain bit
+  // 0x100 among them) has it: in at once and let go over the walls' two seconds (CameraClip.ts). Was `terrain = wanted *
+  // reach.terrain`, eased on its own (wowee's τ 0.18 s in, 0.45 s out) — the camera crept into a hillside and out again
+  // on a curve of its own beside the walls'.
+  const wall = Math.min(clipped, cameraWaterArm(pivotZ, pitch, world.waterZ), wanted * waterReach, wanted * reach.terrain);
+  const terrain = wanted;
   // Where the camera is about to stand: the same three numbers `view` is the smallest of, taken
   // before the two limits are eased. `zoom` is the one the rig has not moved yet this frame, and
   // it is `distance` on the frame after first person, where the rig snaps it rather than easing it.
@@ -664,10 +686,52 @@ export function advanceCameraFrame(
     const again = cameraArmClip(world.collision, anchor, drawn, rig.view, world.aspect ?? 16 / 9);
     if (again < rig.view) rig.view = again;
   }
+  // 5.14 (15.11): out of the band about a liquid's surface (CameraWater.cameraWaterBand, Wow.exe 0x006061d0).
+  cameraWaterBandFrame(rig, player, hinge, pivotZ, options, world);
   // 5.14 (11.11): what held the boom this frame, for the smart pivot (CameraPivot.ts).
   const armHit = wall < wanted - CAMERA_HELD || terrain < wanted - CAMERA_HELD || rig.viewPitch < asked - CAMERA_HELD;
   rig.boomHit = (armHit ? CAMERA_BOOM_ARM_HIT : 0) | (hingeHeld ? CAMERA_BOOM_HINGE_HIT : 0);
 }
+
+/**
+ * 5.14 (15.11): Wow.exe 0x006061d0, the last word on where the camera stands (0x00606f90, after the camera is built at the
+ * granted arm): a camera within 0.2222 of a liquid's surface is moved straight up or down to 0.2222 from it, on its own
+ * side (CameraWater.cameraWaterBand); the view keeps its direction. Then 0x006059e0 sweeps the near plane (mask 0x100171,
+ * no liquid) between the moved camera and the hinge, and if anything is in the way the move is dropped and the camera
+ * stands on its own boom where the sweep stopped. The move is drawn as the hinge raised or lowered by it (`viewPivotHeight`
+ * — every camera of the frame hangs from that), which moves the camera and nothing else; the sweep runs from that moved
+ * hinge along the same axis, the quad's path beside the boom (Wow.exe's runs from the moved camera to the hinge itself:
+ * at most 0.2222 apart at the hinge end). Nothing in first person (an arm of 0) or without `liquidAt`.
+ */
+function cameraWaterBandFrame(
+  rig: CameraRig, player: WorldPosition, hinge: number, pivotZ: number,
+  options: { pivotHeight: number; lensX?: number | undefined; lensY?: number | undefined }, world: CameraWorld,
+): void {
+  const liquidAt = world.liquidAt;
+  if (liquidAt === undefined || !(rig.view > 0)) return;
+  const drawn = createCamera(player, rig.yaw, rig.viewPitch, rig.view, options);
+  const at = drawn.position;
+  const z = cameraWaterBand(at.z, liquidAt(at.x, at.y, at.z));
+  const shift = z - at.z;
+  // A camera the water rules above already stood exactly 0.2222 off the surface moves by a rounding error: nothing to do.
+  if (!(Math.abs(shift) > 1e-6)) return;
+  const collision = world.collision;
+  if (collision !== undefined && collision.size > 0) {
+    BAND_PIVOT.x = player.x + (options.lensX ?? 0);
+    BAND_PIVOT.y = player.y + (options.lensY ?? 0);
+    BAND_PIVOT.z = pivotZ + shift;
+    const halfHeight = nearPlaneHalfHeight() * CAMERA_NEAR_SWEEP_SCALE;
+    const aspect = world.aspect !== undefined && Number.isFinite(world.aspect) && world.aspect > 0 ? world.aspect : 16 / 9;
+    const reach = nearPlaneSweep(collision, BAND_PIVOT, drawn, rig.view, CAMERA_CLIP_NEAR, halfHeight * aspect, halfHeight);
+    if (reach < rig.view - CAMERA_HELD) {
+      rig.view = Math.max(CAMERA_MIN_WALL_DISTANCE, reach);
+      return;
+    }
+  }
+  rig.viewPivotHeight = hinge + shift;
+}
+
+const BAND_PIVOT: Vector3 = { x: 0, y: 0, z: 0 };
 
 /** 5.14 (11.11): how far under its asked number an answer has to be to count as held (Wow.exe's 0x00a1e34c). */
 const CAMERA_HELD = 1e-3;

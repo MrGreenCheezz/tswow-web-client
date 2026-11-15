@@ -461,7 +461,8 @@ test("05.10-A7a-E: a planned bolt launches from the caster's missile attachment 
   const bolts = plan.instances.filter((one) => one.flight);
   assert.equal(bolts.length, 14, "MissileCount 7 per target");
   const first = bolts[0].flight;
-  assert.deepEqual(first.launch, { guid: 1n, attachment: 1 });
+  // 15.11 (6.12): no point of its own and no cast kit — SPELL_GO launches it from the "$CS*" events, then this.
+  assert.deepEqual(first.launch, { guid: 1n, attachment: 1, events: true });
   assert.deepEqual(first.target, { guid: 2n, attachment: MISSILE_TARGET_ATTACHMENT });
   assert.equal(first.motion, motion);
   assert.equal(first.spellId, 5143);

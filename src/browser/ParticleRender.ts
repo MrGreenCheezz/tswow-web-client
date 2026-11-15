@@ -26,6 +26,7 @@ import {
 } from "./Particles.js";
 import { installSpellParticleLook, spellParticleLookOf } from "./SpellParticleLook.js"; // 23.10 (6.27)
 import { BLEND_ADD, BLEND_BLEND_ADD, BLEND_NO_ALPHA_ADD } from "./Wvm.js"; // 23.10 (6.27)
+import { particleDepthState } from "./ParticleDepth.js"; // 15.11 (6.15)
 import { renderSwitches } from "./RenderSwitches.js"; // 12.08
 import { MATERIAL_UNFOGGED, TEXTURE_TYPE_OWN, textureUrl, type WvmModel } from "./Wvm.js";
 import { withHdModelTexture } from "./HdWorldTextures.js"; // 24.10 (7.48 step 3)
@@ -270,6 +271,10 @@ export function buildModelEffects(
       // 25.10 (6.27): a particle born on the ground (record 0x2000, Frost Nova's ring of mist) lies there on purpose,
       // as an XY quad does: no soft fade, which would erase it.
       undefined, living ? { soft: (emitter.flags & (PARTICLE_FLAG_XY_QUAD | PARTICLE_FLAG_SPAWN_ON_GROUND)) === 0 } : undefined);
+    // 15.11 (6.15): opaque and alpha-key emitters write depth; the alpha test by blend (0x008214e0, 0x0081fe90).
+    const depth = particleDepthState(emitter.blendType);
+    drawn.material.depthWrite = depth.depthWrite;
+    drawn.material.alphaTest = depth.alphaTest;
     emitters.push({
       ...drawn,
       buffers,
@@ -379,11 +384,12 @@ function buildDrawn(
     depthWrite: false,
   });
   applyBlendMode(material, blendMode);
-  // Whatever the blend mode decided, a particle never writes depth: a cloud of them is drawn back
-  // to front by accident of spawn order, and one that wrote depth would punch holes in the rest.
+  // Whatever the blend mode decided, no depth write here. 15.11 (6.15): a particle emitter's own rule replaces this
+  // and the alpha test below after the build (ParticleDepth.ts: opaque and alpha-key emitters write depth in Wow.exe);
+  // ribbons keep both as they were.
   material.depthWrite = false;
   material.transparent = true;
-  // And it is never a cut-out. `applyBlendMode` sets a 224/255 alpha gate for blend mode 1, which
+  // And no cut-out here (15.11: for a ribbon; see above). `applyBlendMode` sets a 224/255 alpha gate for blend mode 1, which
   // is right for hair cards and foliage and fatal here: a particle's alpha is its texture's times
   // its opacity ramp, and a ramp that fades in from zero would fail that gate for most of its
   // life. Ten of the client's emitters use mode 1, and every one of them would draw nothing.

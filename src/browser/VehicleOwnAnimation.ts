@@ -26,6 +26,11 @@ import { seatVehicleExitBit } from "./VehicleExitBit.js";
  * 11.11 (.runtime/re-2026-11-11/vehicle2): +0xa38 0x400 is cleared by 0x0072ed80 when the cast visual of the unit's
  * cast bar (+0xa60 spell, +0xa5c count) ends, and +0xa60/+0xa5c are set by 0x00715a80 — but 0x00715a80 does not set the
  * bit, and its setter and +0xfa4 are still unread; 0x00756f40 is also called from 0x00723e30.
+ * 15.11 (.runtime/re-2026-11-15/vehicle5/b1-scan.txt, b2.c, b2-refs.txt): the bit's one setter is 0x00715af0 (a bool
+ * setter, set and clear), called only from 0x007fa2e0, which is not read; +0xfa4 is written by the spell visual kit's
+ * play (0x0073b140: a kit played with flag 0x80 keeps its animation id there) and set back to −1 when that animation
+ * ends (0x0073bbd0) or the unit is reset (0x0073e410). So the narrowing holds while such a kit's animation, or whatever
+ * 0x007fa2e0 marks, plays on a Vehicle Flags 0x10000 vehicle; then only 0x00724330 (the cast pose) chooses. Not modelled.
  */
 
 /** Seat Flags these rules read. */

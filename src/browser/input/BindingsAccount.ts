@@ -11,12 +11,13 @@
  *  - `core` and `modules` are tables of at most 1024 rows, a name of 1–256 characters, a value of
  *    exactly two strings of at most 128 characters each (this table's `event.code` chords);
  *  - `modifiedClicks` is at most 64 rows of a 1–128 character name and one of SHIFT, CTRL, ALT, NONE;
- *  - anything else is another client's data: it is not applied and never overwritten;
- *  - a merge takes the server's tables as the base, lays on them the rows changed here while the
- *    answer was on its way, and takes a chord bound here off the remote row that held it.
- * Rows this client does not know (the Unity client's own actions) ride along untouched.
+ *  - anything else is not this envelope.
  *
- * DOM-free and world-free: `InputAccount.ts` does the wiring.
+ * 5.37 (15.11): the slot is Wow.exe's bindings cache text since (`BindingsSlotSync.ts`). The envelope is
+ * only read, so the keys saved in it are not lost; the next change writes the slot in Wow.exe's text, and
+ * the Unity client's own rows go with the envelope.
+ *
+ * DOM-free and world-free.
  */
 
 export const BINDINGS_ENVELOPE_FORMAT = "wowclient-bindings";
@@ -89,68 +90,7 @@ export function parseBindingsEnvelope(text: string): BindingsEnvelope | undefine
   return { core, modules, modifiedClicks: clicks };
 }
 
-/** The Unity client's `Serialise`: the five properties in its order, no whitespace. */
-export function serialiseBindingsEnvelope(envelope: BindingsEnvelope): string {
-  return JSON.stringify({
-    format: BINDINGS_ENVELOPE_FORMAT,
-    version: BINDINGS_ENVELOPE_VERSION,
-    core: envelope.core,
-    modules: envelope.modules,
-    modifiedClicks: envelope.modifiedClicks,
-  });
-}
-
 /** UTF-8 length of a text, which is what the core measures. */
 export function utf8Length(text: string): number {
   return new TextEncoder().encode(text).length;
-}
-
-/**
- * The Unity client's `Merge`: the server's copy, with the rows `changedCore`/`changedModules` named
- * taken from `local` (a row local no longer has is removed) and every chord those local rows hold
- * cleared from whichever server row held it. `modifiedClicks` are the server's (this client edits
- * none).
- */
-export function mergeServerOverLocal(
-  server: BindingsEnvelope, local: Pick<BindingsEnvelope, "core" | "modules">,
-  changedCore: ReadonlySet<string>, changedModules: ReadonlySet<string>,
-): BindingsEnvelope {
-  const claimed = new Set<string>();
-  const claim = (source: Readonly<Record<string, BindingRow>>, names: ReadonlySet<string>): void => {
-    for (const name of names) for (const chord of source[name] ?? []) if (chord) claimed.add(chord);
-  };
-  claim(local.core, changedCore);
-  claim(local.modules, changedModules);
-  const release = (source: Readonly<Record<string, BindingRow>>): Record<string, BindingRow> => {
-    const result: Record<string, BindingRow> = {};
-    for (const [name, [first, second]] of Object.entries(source)) {
-      result[name] = [claimed.has(first) ? "" : first, claimed.has(second) ? "" : second];
-    }
-    return result;
-  };
-  const core = release(server.core);
-  const modules = release(server.modules);
-  const overlay = (destination: Record<string, BindingRow>, source: Readonly<Record<string, BindingRow>>,
-    names: ReadonlySet<string>): void => {
-    for (const name of names) {
-      const row = source[name];
-      if (row === undefined) delete destination[name];
-      else destination[name] = [row[0], row[1]];
-    }
-  };
-  overlay(core, local.core, changedCore);
-  overlay(modules, local.modules, changedModules);
-  return { core, modules, modifiedClicks: { ...server.modifiedClicks } };
-}
-
-/** The names whose rows differ between two tables (added, removed or changed). */
-export function changedRows(
-  before: Readonly<Record<string, BindingRow>>, after: Readonly<Record<string, BindingRow>>,
-): string[] {
-  const names = new Set([...Object.keys(before), ...Object.keys(after)]);
-  return [...names].filter((name) => {
-    const a = before[name];
-    const b = after[name];
-    return a === undefined || b === undefined ? a !== b : a[0] !== b[0] || a[1] !== b[1];
-  });
 }

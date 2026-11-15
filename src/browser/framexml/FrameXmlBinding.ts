@@ -52,6 +52,7 @@ import type { MouseCommandHow } from "../input/MovementCommands.js"; // 3.11/5.0
 import { FRAMEXML_MOVEMENT_BINDINGS } from "./FrameXmlMovementApi.js"; // L8 5.09
 import { actionOffered } from "../input/Bindings.js"; // 4.11
 import { developerMode } from "../DeveloperMode.js"; // 4.11
+import { bindingSetOf, currentBindingSet, loadBindingSet, saveBindingSet } from "../input/BindingSet.js"; // 5.37
 
 /** `DEFAULT_BINDINGS`, `ACCOUNT_BINDINGS`, `CHARACTER_BINDINGS` in Blizzard_BindingUI.lua. */
 export const FRAMEXML_DEFAULT_BINDINGS = 0;
@@ -164,6 +165,11 @@ const COMMAND_OF_ACTION = new Map<InputAction, string>([...ACTION_OF_COMMAND].ma
 /** The stock command (or WEBCLIENT_ one) a WebClient action answers to. */
 export function frameXmlBindingCommand(action: InputAction): string {
   return COMMAND_OF_ACTION.get(action)!;
+}
+
+/** 5.37: the WebClient action a stock (or WEBCLIENT_) command answers to, or undefined for any other. */
+export function frameXmlBindingAction(command: string): InputAction | undefined {
+  return ACTION_OF_COMMAND.get(command);
 }
 
 // ---- key names ------------------------------------------------------------------------------
@@ -680,15 +686,23 @@ export class FrameXmlBindingModel {
     this.#changed();
   }
 
-  /** `SaveBindings(which)`: the table has already persisted; the stock Cancel point moves here. */
-  save(): void {
+  /**
+   * `SaveBindings(which)`: the table has already persisted; the stock Cancel point moves here. 5.37: with
+   * the account-data store attached, `which` (1 account, 2 character) becomes the set in force and keeps the
+   * keys (input/BindingSet.ts, Wow.exe 0x005640c0).
+   */
+  save(which?: unknown): void {
     this.#snapshot = undefined;
+    const set = bindingSetOf(which);
+    if (set !== undefined) saveBindingSet(set);
   }
 
   /**
    * `LoadBindings(which)`: DEFAULT_BINDINGS resets the table (unsaved until SaveBindings, like the
    * client's Reset button); ACCOUNT_BINDINGS and CHARACTER_BINDINGS take back every change made
-   * through this API since the last Save or Load.
+   * through this API since the last Save or Load. 5.37: the set not in force (the window's «Привязки
+   * персонажа» switch) is shown from its saved keys instead; the Cancel point is taken first, so the
+   * window's Cancel (LoadBindings of the set in force) puts the table back.
    */
   load(which: unknown): void {
     if (Number(which) === FRAMEXML_DEFAULT_BINDINGS) {
@@ -697,6 +711,15 @@ export class FrameXmlBindingModel {
       this.#changed();
       return;
     }
+    const set = bindingSetOf(which);
+    if (set !== undefined && set !== currentBindingSet()) {
+      this.#snapshotBeforeChange();
+      if (loadBindingSet(set)) {
+        this.#changed();
+        return;
+      }
+    }
+    if (set !== undefined) loadBindingSet(set); // the set in force: shown again (the store's view)
     const snapshot = this.#snapshot;
     this.#snapshot = undefined;
     if (!snapshot) return;
@@ -719,9 +742,9 @@ export class FrameXmlBindingModel {
     this.#changed();
   }
 
-  /** `GetCurrentBindingSet()`: this client keeps one set, the account's. */
+  /** `GetCurrentBindingSet()`: the set in force (5.37: the character's when its slot holds keys). */
   currentSet(): number {
-    return FRAMEXML_ACCOUNT_BINDINGS;
+    return currentBindingSet();
   }
 
   /**
@@ -856,7 +879,7 @@ export const FRAMEXML_BINDING_BINDINGS: Readonly<Record<string, FrameXmlSeamBind
     return NOTHING;
   },
   ClearOverrideBindings: (seam, args) => { seam.keyBindings?.clearOverrides(args[0]); return NOTHING; },
-  SaveBindings: (seam) => { seam.keyBindings?.save(); return NOTHING; },
+  SaveBindings: (seam, args) => { seam.keyBindings?.save(args[0]); return NOTHING; },
   LoadBindings: (seam, args) => { seam.keyBindings?.load(args[0]); return NOTHING; },
   GetCurrentBindingSet: (seam) => [seam.keyBindings?.currentSet() ?? FRAMEXML_ACCOUNT_BINDINGS],
   RunBinding: (seam, args) => { seam.keyBindings?.run(args[0], args[1]); return NOTHING; },

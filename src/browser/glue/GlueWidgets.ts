@@ -4,6 +4,10 @@ import { glueCallingAddon } from "./GlueAddonIdentity.js";
 import { GLUE_ANIMATION_PRELUDE } from "./GlueAnimations.js";
 import { colorSelectMethods, messageColorMethods } from "./GlueWidgetMethodExtras.js";
 import { fontStringGradientMethods, frameDepthMethods } from "./GlueWidgetMethodFills.js"; // 05.10-3.21
+import {
+  editBoxFillMethods, fontStringFaceMethods, frameFillMethods, frameProtectionMethods, glueNoteCreatedFontString,
+  regionRectMethods, textureFillMethods,
+} from "./GlueFrameMethodFills.js"; // widgets5
 import { sliderValueMethods } from "./GlueSliderMethods.js"; // 3.27 (13.10)
 import { statusBarSetMinMaxValues } from "./GlueStatusBarMethods.js"; // 3.27 (11.11)
 import { questPoiFrameMethods } from "./GlueQuestPoiFrame.js";
@@ -1003,13 +1007,21 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
    */
   private buildMetatables(): void {
     const base = this.baseMethods();
-    const region = { ...base, ...this.regionMethods() };
+    // widgets5 (GlueFrameMethodFills.ts): GetRect, the resize bounds, the joystick, depth and position flags,
+    // the Texture flags and blend mode, and the FontString's «Font not set».
+    const protection = frameProtectionMethods(); // widgets5 batch 2
+    const region = { ...base, ...this.regionMethods(), ...regionRectMethods(this.#bridge),
+      IsProtected: protection["IsProtected"]!, CanChangeProtectedState: protection["CanChangeProtectedState"]! };
     // 05.10-3.21 (GlueWidgetMethodFills.ts): Frame:IgnoreDepth and FontString:SetAlphaGradient.
-    const frameLike = { ...base, ...this.frameMethods(), ...frameDepthMethods() };
-    const fontString = { ...region, ...this.textMethods(), ...fontStringGradientMethods(this.#bridge) };
+    const frameLike = { ...base, ...this.frameMethods(), ...frameDepthMethods(), ...regionRectMethods(this.#bridge),
+      ...frameFillMethods(), ...protection };
+    const fontString = { ...region, ...this.textMethods(), ...fontStringGradientMethods(this.#bridge),
+      ...fontStringFaceMethods(this.textMethods()) };
+    const texture = { ...region, ...textureFillMethods(this.#bridge) };
     const button = { ...frameLike, ...this.textMethods(), ...this.buttonMethods() };
     const checkButton = { ...button, ...this.checkButtonMethods() };
-    const editBox = { ...frameLike, ...this.textMethods(), ...this.editBoxMethods() };
+    const editBox = { ...frameLike, ...this.textMethods(), ...this.editBoxMethods(),
+      ...editBoxFillMethods(this.#bridge) }; // widgets5 batch 2
     const slider = { ...frameLike, ...this.valueMethods(), ...this.sliderMethods(),
       ...sliderValueMethods(this.#bridge) }; // 3.27 (13.10): the Slider's own range, step and value rules
     const statusBar = { ...frameLike, ...this.valueMethods(), ...this.statusBarMethods() };
@@ -1028,7 +1040,7 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
 
     const byType: Readonly<Record<string, Record<string, WidgetMethod>>> = {
       Frame: frameLike,
-      Texture: region,
+      Texture: texture,
       FontString: fontString,
       Button: button,
       CheckButton: checkButton,
@@ -2503,7 +2515,7 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
         bridge.update(frame, (m) => { m.textureRotation = num(args[0]); }, "paint");
       },
       GetRotation: ({ self }) => [self.textureRotation],
-      SetNonBlocking: this.stub("SetNonBlocking"),
+      // widgets5: SetNonBlocking is the Texture's own (GlueFrameMethodFills.ts, 0x0048caa0); no FontString has it.
       SetDrawLayer: ({ frame, args }) => {
         bridge.update(frame, (m) => { m.drawLayer = str(args[0]).toUpperCase() || m.drawLayer; });
       },
@@ -2689,7 +2701,10 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
       },
       CreateFontString: ({ frame, args }) => {
         const name = args[0] === undefined ? undefined : str(args[0]);
-        return [bridge.createChild(frame, "FontString", name, str(args[1]) || undefined, args[2] === undefined ? undefined : str(args[2]))];
+        const template = args[2] === undefined ? undefined : str(args[2]);
+        const child = bridge.createChild(frame, "FontString", name, str(args[1]) || undefined, template);
+        glueNoteCreatedFontString(child, template); // widgets5 3.27: no template, no font face
+        return [child];
       },
       SetBackdrop: ({ frame, args }) => {
         const table = args[0];

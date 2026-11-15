@@ -32,5 +32,6 @@ test("wiring: spell effects pass their clip time (or a once-played model's age) 
   const render = await readFile(new URL("../src/browser/ParticleRender.ts", import.meta.url), "utf8");
   assert.match(render, /emitterFrame\.inSequence = frame\.inSequence;/);
   const particles = await readFile(new URL("../src/browser/Particles.ts", import.meta.url), "utf8");
-  assert.equal((particles.match(/frame\.inSequence === true/g) ?? []).length, 5, "every emitter track read takes it");
+  // 11.11 (6.15): the emission rate's variation is read on the same clock, a sixth read.
+  assert.equal((particles.match(/frame\.inSequence === true/g) ?? []).length, 6, "every emitter track read takes it");
 });

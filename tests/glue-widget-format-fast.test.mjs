@@ -91,7 +91,9 @@ test("SetFormattedText on a white-listed format sets the text without a vm.call;
     vm.registerGlobal("CreateFrame", (args) => [bridge.CreateFrame(String(args[0] ?? "Frame"),
       args[1] === undefined ? undefined : String(args[1]), args[2], args[3] === undefined ? undefined : String(args[3]))]);
     try {
-      assert.equal(vm.execute('FormatProbe = CreateFrame("Frame", "FormatProbe"):CreateFontString("FormatProbeText")', "@setup").ok, true);
+      // 3.27 (15.11): a font string made from Lua has no font until it is given one; SetFormattedText raises without it.
+      assert.equal(vm.execute('FormatProbe = CreateFrame("Frame", "FormatProbe"):CreateFontString("FormatProbeText") '
+        + 'FormatProbe:SetFont("Fonts/FRIZQT__.TTF", 12)', "@setup").ok, true);
       const body = vm.compileFunction('FormatProbe:SetFormattedText("%d с.", 3.7) FormatProbe:SetFormattedText("%2$s %1$d", 80, "Воин")',
         "format-probe", []);
       // 3.38 (11.10): the formatter is entered through `callRaising` (its refusal raises in the caller); count both.

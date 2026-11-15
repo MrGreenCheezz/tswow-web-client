@@ -10,7 +10,8 @@
  * (keepForeign): changes then stay in this browser's mirror.
  */
 
-import { AccountStore, characterMirrorScope } from "../AccountStore.js";
+import { AccountStore, characterMirrorScope, type AccountStoreWorld } from "../AccountStore.js";
+import { game } from "../game/Context.js"; // 5.37: the account's name for its mirror
 import { GLOBAL_MACROS_CACHE, PER_CHARACTER_MACROS_CACHE } from "../../world/SessionProtocol.js";
 import type { FrameXmlMacroStore } from "../framexml/FrameXmlMacro.js";
 import { findMacro, isAccountMacro, type Macro } from "./MacroModel.js";
@@ -36,8 +37,19 @@ export function createMacroSlotStore(slot: number, mirrorKey: string, characterS
     serialise: (value) => serialiseMacroSlot(value, characterSet),
     keepForeign: true,
     serverIsTruth: true,
-    ...(characterSet ? { mirrorScope: characterMirrorScope } : {}),
+    mirrorScope: characterSet ? characterMirrorScope : accountMirrorScope,
   });
+}
+
+/**
+ * 5.37 (15.11): the account set's mirror is the account's — the realm (the core keeps account data in each
+ * realm's characters database) and the account name. One copy per browser before: until the answer came, a
+ * second account in the same browser saw the first one's account macros. The unscoped
+ * `webclient.macros.account.v1` is left where it is and no longer read, as the character's was (11.11).
+ */
+export function accountMirrorScope(world: AccountStoreWorld): string | undefined {
+  const account = game.session?.username;
+  return account && world.realmName ? `${world.realmName}/${account}` : undefined;
 }
 
 const accountMacros = createMacroSlotStore(GLOBAL_MACROS_CACHE, "webclient.macros.account.v1", false);
@@ -82,15 +94,37 @@ function storeFor(index: number): AccountStore<MacroSlot> {
   return isAccountMacro(index) ? accountMacros : characterMacros;
 }
 
+/**
+ * Review 15.11: a macro saved or deleted while the slot's answer travels. The answer replaces the store's value
+ * (the server is the truth), so the edit is kept here and made again over the answer, then written — as the
+ * settings and bindings stores lay their early changes over theirs. Edits of an earlier login are dropped.
+ */
+const earlyEdits = new Map<AccountStore<MacroSlot>, { generation: number; edits: ((slot: MacroSlot) => MacroSlot)[] }>();
+
+function edit(store: AccountStore<MacroSlot>, change: (slot: MacroSlot) => MacroSlot): void {
+  if (store.attached && !store.answered) {
+    const pending = earlyEdits.get(store);
+    if (pending && pending.generation === store.generation) pending.edits.push(change);
+    else earlyEdits.set(store, { generation: store.generation, edits: [change] });
+  }
+  store.set(change(store.value));
+}
+
+/** After the answer: the early edits of this login over the server's copy. */
+export function replayEarlyMacroEdits(store: AccountStore<MacroSlot>): void {
+  const pending = earlyEdits.get(store);
+  earlyEdits.delete(store);
+  if (!pending || pending.generation !== store.generation || pending.edits.length === 0) return;
+  store.set(pending.edits.reduce((slot, change) => change(slot), store.value));
+}
+
 export function saveMacro(macro: Macro): void {
-  const store = storeFor(macro.index);
-  store.set(putSlotMacro(store.value, macro, !isAccountMacro(macro.index)));
+  edit(storeFor(macro.index), (slot) => putSlotMacro(slot, macro, !isAccountMacro(macro.index)));
   anyMacroChange();
 }
 
 export function dropMacro(index: number): void {
-  const store = storeFor(index);
-  store.set(removeSlotMacro(store.value, index));
+  edit(storeFor(index), (slot) => removeSlotMacro(slot, index));
   anyMacroChange();
 }
 
@@ -108,6 +142,7 @@ export function macrosChanged(): void {
 
 for (const store of macroStores) {
   store.onLoaded = () => {
+    replayEarlyMacroEdits(store);
     macrosChanged();
     anyMacroChange();
   };

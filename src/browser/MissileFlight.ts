@@ -59,7 +59,13 @@
 // MissileCastOffset, as 0x00720bf0 gives it to the launch 0x0072df00 (SpellVisualAttach.ts `missileLaunchPoint`).
 // MissilePathType is read by no Wow.exe function that reaches a SpellVisual row (the getter 0x007fa290's 23
 // callers and the table's 10 readers, .runtime/re-2026-11-11/spellvis4/refs1.txt, d1.c): it is carried, not used.
-// Not done: the 0x40000 time-scale ease. 11.11: the collision of 0x3c rows is tested by the page for its own casts
+// Not done: the 0x40000 time-scale ease. 15.11 (.runtime/re-2026-11-15/fx5/r2/d.c): it retimes a trajectory missile
+// that is already flying when a SPELL_GO for its cast count arrives — 0x0080e1b0, when the GO's +0x139 is set instead of
+// launching, calls 0x006ff210, which gives every listed missile with that cast count 0x006ff130(the GO's delay): +0x68
+// |= 0x40000, +0x138 = now, +0x13c = round(clamp(delay / left, 0.5, 2) · left) (1 when nothing is left); 0x007015d0 then
+// eases the end from the old one to +0x138 + +0x13c and the clock scale towards T / (end − launch) by (now − +0x138) /
+// +0x13c. This client launches every missile from its SPELL_GO with that GO's delay, so no missile is flying before its
+// GO; what sets +0x139 was not read. 11.11: the collision of 0x3c rows is tested by the page for its own casts
 // (world/MissileCollision.ts, which sends CMSG_UPDATE_PROJECTILE_POSITION); the answer SMSG_SET_PROJECTILE_POSITION
 // lands a planned flight at the server's point (`setProjectilePosition`, the plan's `cast`).
 //
@@ -99,7 +105,14 @@ export interface MissileFlightPlan {
   readonly from: MissilePoint;
   readonly to: MissilePoint;
   /** 11.11: `offset` is MissileCastOffset as Wow.exe reads it, (x, −y, z), in the attachment's frame (0x00720bf0). */
-  readonly launch?: { readonly guid: bigint; readonly attachment: number; readonly offset?: readonly [number, number, number] };
+  readonly launch?: {
+    readonly guid: bigint; readonly attachment: number; readonly offset?: readonly [number, number, number];
+    /**
+     * 15.11: the visual names no point (0x00720bf0 answers nothing): the missile leaves from the caster's model event
+     * "$CSL"/"$CSR"/"$CST" (0x0071a720, MissileLaunchEvent.ts) when it has one, else from `attachment`.
+     */
+    readonly events?: true;
+  };
   readonly target?: { readonly guid: bigint; readonly attachment: number };
   readonly motion?: MissileMotion;
   readonly missileIndex?: number;
@@ -116,6 +129,8 @@ export interface MissileFlightPlan {
    * SMSG_SET_PROJECTILE_POSITION names (`setProjectilePosition`).
    */
   readonly cast?: { readonly caster: bigint; readonly count: number };
+  /** 15.11 (11.02): the plan's effects with this `landsWith` stand where it lands (MissileLanding.ts). */
+  readonly landing?: number;
 }
 
 /**
@@ -131,6 +146,8 @@ export interface MissilePoints {
   point(guid: bigint, attachment: number, out: MissilePoint, offset?: readonly [number, number, number]): boolean;
   /** 13.10: the unit's position (its feet); false when it is not here. */
   origin?(guid: bigint, out: MissilePoint): boolean;
+  /** 15.11 (6.12): the unit's "$CSL"/"$CSR"/"$CST" model event as posed now (0x0071a720); false when it has none (yet). */
+  castEvent?(guid: bigint, out: MissilePoint): boolean;
   /**
    * 13.10: the world's ray test from `from` to `to`: the fraction 0…1 where something solid is met, with the
    * point written to `hit`, or undefined for nothing.
@@ -217,6 +234,8 @@ export interface MissileFlightState {
   readonly cast: { readonly caster: bigint; readonly count: number } | undefined;
   /** 11.11: Missile_C +0x68 0x400000 with its point (+0x14c): the server's collision point, `setProjectilePosition`. */
   stopAt: MissilePoint | undefined;
+  /** 15.11 (11.02): it landed by the 0x400000 branch (+0x44 rewritten with the point it stopped at). */
+  stoppedShort?: true;
 }
 
 function distance(a: MissilePoint, b: MissilePoint): number {
@@ -556,6 +575,7 @@ export function stepMissile(state: MissileFlightState, target: MissilePoint, now
       state.target.x = here.x;
       state.target.y = here.y;
       state.target.z = here.z;
+      state.stoppedShort = true; // 15.11 (11.02)
       return arrive(state, out);
     }
   }
@@ -722,8 +742,10 @@ export function flyMissileInstance(instance: MissileInstance, now: number, point
     _target.z = origin.z + plan.followGround.height;
   }
   if (!state) {
-    const fire = plan.launch && plan.launch.guid !== 0n
-      && points.point(plan.launch.guid, plan.launch.attachment, _launch, plan.launch.offset) ? _launch : plan.from;
+    const launch = plan.launch;
+    const fire = launch && launch.guid !== 0n
+      && ((launch.events === true && points.castEvent?.(launch.guid, _launch) === true) // 15.11 (6.12): 0x0071a720
+        || points.point(launch.guid, launch.attachment, _launch, launch.offset)) ? _launch : plan.from;
     // 05.10 review E: over the time left, not the whole planned life — a first frame after a hitch (or a
     // late model) still lands with the impact kit; one first seen after its arrival is not drawn at all.
     state = launchMissile(plan, fire, target, now, instance.endsAt - Math.max(now, instance.startedAt));
@@ -784,6 +806,15 @@ function unitVelocity(instance: object, origin: MissilePoint, now: number): Miss
   _velocity.y = last.vy;
   _velocity.z = last.vz;
   return _velocity;
+}
+
+/**
+ * 15.11 (11.02): where a planned instance landed when SMSG_SET_PROJECTILE_POSITION stopped it short (0x007015d0's
+ * 0x400000 branch), once it has; undefined for a flight that reached its own aim or is still flying.
+ */
+export function missileLandedAt(instance: object): Readonly<MissilePoint> | undefined {
+  const state = states.get(instance);
+  return state !== undefined && state.arrived && state.stoppedShort === true ? state.here : undefined;
 }
 
 /** Tests: the state a planned instance flies with, if launched. */

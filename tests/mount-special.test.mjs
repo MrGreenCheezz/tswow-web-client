@@ -9,6 +9,7 @@ const { WorldClient } = await import("../dist/code/world/WorldClient.js");
 const { MOVEMENT_FLAGS: F } = await import("../dist/code/world/MovementProtocol.js");
 const {
   jumpKeyOutcome, mountSpecialJumpPress, mountSpecialJumpRelease, jumpSpentByMountSpecial,
+  MOUNT_SPECIAL_LIQUID_SHARE, SPLINE_FLAG_FALLING, SPLINE_FLAG_FLYING, SPLINE_FLAG_NO_SPLINE, moverAloft, underLiquidSurface,
 } = await import("../dist/code/browser/input/MountSpecial.js");
 
 const HORSE = 2402;
@@ -41,6 +42,32 @@ test("11.11 6.20: in the air a rider holding no direction gets the trick — not
 
 test("moving with gravity disabled is the trick again (Wow.exe 0x006e9ad0)", () => {
   assert.equal(jumpKeyOutcome(F.forward | F.disableGravity, HORSE, false), "mountSpecial");
+});
+
+// 15.11: 0x00718a20 — depth = the liquid state's level − the feet; refused when it is over unit+0x854 × [0x009e2ec4]
+// (0.5, read with DumpData: .runtime/re-2026-11-15/vehicle5/b1-data.txt).
+test("15.11 6.20: standing in a liquid deeper than half the rider's height, the jump key does nothing", () => {
+  assert.equal(MOUNT_SPECIAL_LIQUID_SHARE, 0.5);
+  assert.equal(underLiquidSurface(undefined, 0, 2), false, "out of liquid the depth is 0");
+  assert.equal(underLiquidSurface(1, 0, 2), false, "exactly half: still the trick (the test is strict)");
+  assert.equal(underLiquidSurface(1.01, 0, 2), true);
+  assert.equal(underLiquidSurface(0.5, 0, 2), false, "ankle deep");
+  assert.equal(jumpKeyOutcome(0, HORSE, false, { underLiquid: true }), "none");
+  assert.equal(jumpKeyOutcome(F.forward, HORSE, false, { underLiquid: true }), "default", "moving: the jump comes first");
+  assert.equal(jumpKeyOutcome(F.swimming, HORSE, false, { underLiquid: true }), "default", "a swimmer rises");
+});
+
+// 15.11: 0x006e9ad0 — a move spline not flagged No_Spline answers first (Falling no, Flying yes), then flags2 0x4 or
+// DISABLE_GRAVITY.
+test("15.11 6.20: on the move, the mover's spline and flags2 decide whether it is aloft (0x006e9ad0)", () => {
+  assert.equal(moverAloft(0, 0, undefined), false);
+  assert.equal(moverAloft(F.disableGravity, 0, undefined), true);
+  assert.equal(moverAloft(0, 0x4, undefined), true, "flags2 0x4");
+  assert.equal(moverAloft(F.disableGravity, 0x4, SPLINE_FLAG_FALLING), false, "a falling spline says no first");
+  assert.equal(moverAloft(0, 0, SPLINE_FLAG_FLYING), true);
+  assert.equal(moverAloft(0, 0, SPLINE_FLAG_FLYING | SPLINE_FLAG_NO_SPLINE), false, "No_Spline: the flags decide");
+  assert.equal(jumpKeyOutcome(F.forward, HORSE, false, { flags2: 0x4 }), "mountSpecial");
+  assert.equal(jumpKeyOutcome(F.forward | F.disableGravity, HORSE, false, { splineFlags: SPLINE_FLAG_FALLING }), "default");
 });
 
 test("turning on the spot does nothing at all", () => {

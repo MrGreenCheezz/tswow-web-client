@@ -8,31 +8,37 @@
  * changes, and the same function runs when the server's copy of the blob lands. Nothing polls.
  */
 
-import { AccountStore } from "../AccountStore.js";
 import { refreshActionSlots } from "./ActionSlots.js";
 import { setAutoQualityCeiling } from "../AutoQuality.js";
-import { PER_CHARACTER_CONFIG_CACHE } from "../../world/SessionProtocol.js";
 import { game } from "../game/Context.js";
 import {
-  cameraCeilingYards, coerceSetting, defaultSettings, parseSettings,
-  serialiseSettings, settingBoolean, settingDefinition, settingNumber,
+  cameraCeilingYards, coerceSetting, settingBoolean, settingDefinition, settingNumber,
   type SettingDefinition, type SettingValues,
 } from "./SettingsModel.js";
-import { comparisonGraphicsSettings } from "./ComparisonProfile.js";
+import { SettingsAccountStore } from "./SettingsAccountStore.js";
+import { setStockCVarSlots } from "./StockCVarSlots.js";import { comparisonGraphicsSettings } from "./ComparisonProfile.js";
 import { enhancedGraphicsSettings } from "./EnhancedGraphics.js";
 import { setFpsCounterVisible } from "./FpsCounter.js";
 import { frameLimitOverride, setFrameLimit } from "../FrameLimit.js"; // 25.10
 import { setParticleDensity } from "../Particles.js"; // 11.11 (6.15)
 
-export const settingsStore = new AccountStore<SettingValues>({
-  slot: PER_CHARACTER_CONFIG_CACHE,
+/**
+ * 5.37 (15.11): the ones Wow.exe keeps as CVars of the account's or the character's config slot are read from
+ * and written to those slots in its own `SET` lines, every other line of the slot kept; the rest go to slot 6
+ * beside the window layout, so they still follow the character (`SettingsAccountStore.ts`). Until then the
+ * whole blob went to slot 1 as JSON. This browser's copy is a cache.
+ */
+export const settingsStore = new SettingsAccountStore({
   mirrorKey: "webclient.settings.v1",
-  fallback: defaultSettings,
-  parse: parseSettings,
-  serialise: serialiseSettings,
-  // 4.16 (11.11): slot 1 holding Wow.exe's config is left as it is; the options stay in this browser.
-  keepForeign: true,
+  // The core drops a slot over 0xFFFF bytes without a word (MiscHandler.cpp:914); the player is told instead.
+  // Imported when needed: Notices.ts reads a setting from this module.
+  onRefused: () => {
+    void import("./Notices.js").then(({ notice }) =>
+      notice("Настройки не сохранены на сервере: данных слишком много. В этом браузере они остались.", "info"));
+  },
 });
+// The stock interface's own slot CVars go through the same store (framexml/FrameXmlCVarPersistence.ts).
+setStockCVarSlots(settingsStore);
 
 const appliedListeners = new Set<() => void>();
 
@@ -217,8 +223,9 @@ export function applySettingsPreset(kind: "enhanced" | "comparison"): void {
 
 /** Where the settings are kept, said plainly: the question «where did my settings go» answered. */
 export function settingsStorageNote(): string {
+  // 5.37: on the server, per character; what Wow.exe also keeps there is shared with it.
   return game.world
-    ? "Настройки хранятся на сервере, у этого персонажа."
+    ? "Настройки хранятся на сервере, у этого персонажа; те, что есть и в оригинальном клиенте, — общие с ним."
     : "Нет соединения — настройки пока только в этом браузере.";
 }
 

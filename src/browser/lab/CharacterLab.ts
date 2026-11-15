@@ -23,6 +23,9 @@ import {
   type SkinnedInstance, type SkinnedTemplate,
 } from "../AnimatedModel.js";
 import { attachmentOffset, boneOf } from "../Attachment.js";
+import { GlueWornPieces } from "../glue/GlueWornPieces.js"; // 15.11 6.18
+import { figureGlowSlots } from "../glue/FigureGlow.js"; // 15.11 6.14
+import { enchantGlowTables, itemEnchantments } from "../ItemEnchantments.js"; // 15.11 6.14
 import {
   CHARACTER_OPTIONS_VERSION, CREATURE_MODEL_VERSION, CharacterAtlasClient, appearanceKey,
   type CharacterAppearance,
@@ -389,20 +392,34 @@ async function showOne(query: LabQuery): Promise<void> {
   showPanel(query, character);
   void fillTextureStatus(character);
 
+  // 15.11 6.18 / 6.14: the hands closed round what they hold and the weapons' glows (GlueWornPieces.ts).
+  const pieces = character.instance && character.template
+    ? new GlueWornPieces(character.model, character.metadata.model, character.instance, character.template, {
+      baseUrl, model: modelOf, loadTexture: (url) => textures.load(url), onError: say,
+    }) : undefined;
+  if (pieces) scene.add(pieces.overlay);
+  let lastDelta = 0;
   const frame = (timestamp?: number): void => {
     requestAnimationFrame(frame);
     resizeStage();
     if (timer && character.instance) {
       timer.update(timestamp);
-      character.instance.mixer.update(timer.getDelta());
+      lastDelta = timer.getDelta();
+      character.instance.mixer.update(lastDelta);
     }
+    pieces?.pose(performance.now());
     placeCamera();
+    if (pieces) {
+      character.object.updateMatrixWorld(true);
+      camera.updateMatrixWorld();
+      pieces.animate(lastDelta, performance.now(), camera);
+    }
     renderer.render(scene, camera);
   };
   frame();
   // After the first frame is on the screen: each piece is a separate download, and a character
   // that appears only once its helmet has is a page that looks broken while the gateway thinks.
-  await hangAttachments(query, character);
+  await hangAttachments(query, character, pieces);
   say(`Готово. ${character.metadata.model}`);
 }
 
@@ -418,10 +435,20 @@ async function showOne(query: LabQuery): Promise<void> {
  * Sheets do not come through here: `sheet=legs` is about geosets and the pieces it would hang are
  * the same twenty for every cell.
  */
-async function hangAttachments(query: LabQuery, character: LabCharacter): Promise<void> {
+async function hangAttachments(query: LabQuery, character: LabCharacter, pieces?: GlueWornPieces): Promise<void> {
   const lines = labAttachmentLines(character.appearance.attached ?? [], query.sheath);
   showAttachments(lines);
   if (lines.length === 0) return;
+  // 15.11 6.14: the glow tables, asked for only when a hand slot is worn; a failure leaves blades plain.
+  // 15.11 follow-up: beside the pieces, never before them — the glows are handed over when they land.
+  const glowing = lines.some((line) => line.slot >= 15 && line.slot <= 17) && pieces
+    ? itemEnchantments(baseUrl).load().then(async () => {
+      const tables = enchantGlowTables(itemEnchantments(baseUrl));
+      if (!tables) return;
+      pieces.glowWith((item) => figureGlowSlots(item.slot, query.glow[item.slot] ?? 0, item.displayId, tables));
+      await pieces.settle();
+    }, () => undefined)
+    : Promise.resolve();
   const { instance, template } = character;
   for (const line of lines) {
     if (line.point === undefined) {
@@ -453,6 +480,9 @@ async function hangAttachments(query: LabQuery, character: LabCharacter): Promis
           mesh.frustumCulled = false;
           mesh.position.copy(attachmentOffset(character.model, template.pivots, line.point));
           bone.add(mesh);
+          // 15.11 6.18 / 6.14: its hand closes and its glow hangs (glue/FigureGlow.ts, the select screen's rule).
+          const piece = (character.appearance.attached ?? []).find((item) => item.slot === line.slot && item.model === line.model);
+          pieces?.adopt(mesh, wvm, line.point, piece); // its glow when the tables land (`glowWith`)
           line.triangles = panel.triangles;
           line.flatTriangles = panel.flatTriangles;
           line.status = `точка ${line.point}`;
@@ -463,6 +493,8 @@ async function hangAttachments(query: LabQuery, character: LabCharacter): Promis
     }
     showAttachments(lines);
   }
+  await pieces?.settle(); // 15.11: HandsClosed and the glow models
+  await glowing;
 }
 
 /* --- The panel ------------------------------------------------------------------------------ */

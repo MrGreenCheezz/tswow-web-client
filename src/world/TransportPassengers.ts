@@ -20,6 +20,10 @@ import { UPDATE_FIELDS } from "../generated/updateFields.js";
 import { gameObjectTilt, type Quat } from "./GameObjectRotation.js";
 import { normalizeOrientation, passengerOffset, type TransportSeat } from "./TransportMath.js";
 import type { WorldObjectState, WorldPosition } from "./WorldState.js";
+import { carrierRotation, composeOnRotated } from "./TransportTilt.js"; // 11.01 (15.11)
+
+/** 11.01 (15.11): `sampleCarrierGlide`'s point on the carrier, reused. */
+const GLIDE_LOCAL = { x: 0, y: 0, z: 0, orientation: 0 };
 
 /** `MovementInfo::TransportInfo::seat` of anything that is not in a vehicle seat: `int8 −1`, 0xFF as a byte. */
 export const NO_SEAT = 0xff;
@@ -133,6 +137,18 @@ export function sampleCarrierGlide(glide: CarrierGlide, carrier: WorldPosition, 
   let delta = (glide.toOrientation - glide.fromOrientation) % turn;
   if (delta > Math.PI) delta -= turn;
   else if (delta < -Math.PI) delta += turn;
+  // 11.01 (15.11): on a car turned by its TransportRotation keys, in its whole rotation (TransportTilt.ts).
+  const rotation = carrierRotation(carrier);
+  if (rotation !== undefined) {
+    const local = GLIDE_LOCAL;
+    local.x = x;
+    local.y = y;
+    local.z = glide.fromZ + (glide.toZ - glide.fromZ) * progress;
+    local.orientation = glide.fromOrientation + delta * progress;
+    composeOnRotated(carrier, rotation, local, out);
+    out.orientation = normalizeOrientation(out.orientation);
+    return progress < 1;
+  }
   const cos = Math.cos(carrier.orientation);
   const sin = Math.sin(carrier.orientation);
   out.x = carrier.x + x * cos - y * sin;

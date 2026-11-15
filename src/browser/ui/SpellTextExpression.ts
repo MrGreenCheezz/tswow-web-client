@@ -3,6 +3,7 @@ import {
   SPELLMOD, spellTextEffectRange, spellTextModFloat, spellTextModInt, type SpellTextCaster, type SpellTextCasterRecord,
 } from "./SpellTextCaster.js"; // 3.43 (11.11)
 import { SPELL_TEXT_PLAYER_NAMES, spellTextPlayerVariable, type SpellTextPlayer } from "./SpellTextPlayer.js";
+import type { SpellCostRecord } from "./SpellTextCost.js"; // 3.43 (15.11)
 
 /**
  * 12.10: `${…}` as Wow.exe 3.3.5a 12340 works it out (QuestTextParser.cpp, read 2026-10-12).
@@ -41,7 +42,8 @@ export type SpellTextRecord = Partial<Pick<SpellMetadata,
   | "duration" | "maxDuration" | "procChance" | "procCharges" | "stackAmount" | "maxTargetLevel"
   | "maxAffectedTargets" | "effectMultipleValue" | "effectPointsPerCombo" | "effectDamageMultiplier"
   | "effectBonusMultiplier" | "procTypeMask" | "manaPerSecond" | "powerType" | "powerCost"
-  | "powerCostPercent" | "effectMiscValue" | "attributes" | "durationPerLevel" | "schoolMask">> & SpellTextCasterRecord; // 3.43: the caster's columns
+  | "powerCostPercent" | "effectMiscValue" | "attributes" | "durationPerLevel" | "schoolMask">> & SpellTextCasterRecord // 3.43: the caster's columns
+  & SpellCostRecord; // 3.43 (15.11): the cost function's (SpellTextCost.ts)
 
 /** What evaluating a block needs from its caller. */
 export interface SpellExpressionEnvironment {
@@ -55,6 +57,8 @@ export interface SpellExpressionEnvironment {
   readonly duration: (spell: SpellTextRecord) => number | undefined;
   /** `$c`'s power cost (0x008012f0), shared with the prose marker. */
   readonly cost: (spell: SpellTextRecord) => number | undefined;
+  /** 3.43 (15.11): `$p`'s per-second cost (0x007ff100, called from 0x005782d0 at 0x005784ac); absent, ManaPerSecond raw. */
+  readonly perSecond?: (spell: SpellTextRecord) => number | undefined;
   /**
    * 3.43 (11.11): what 0x005782d0 passes 0x007ff770 and the modifier calls — the active player's level and spell
    * modifiers (SpellTextCaster.ts), 0x0057abc0's level (an aura's caster level; 0 is the caster's own), its
@@ -229,7 +233,7 @@ function spellName(name: string, spell: SpellTextRecord, environment: SpellExpre
     // 0x00800a70 in milliseconds, times 0.001.
     case "d": case "D": return Math.fround(scalar(environment.duration(spell)) * Math.fround(0.001));
     case "c": case "C": return scalar(environment.cost(spell));
-    case "p": case "P": return scalar(spell.manaPerSecond);
+    case "p": case "P": return scalar(environment.perSecond ? environment.perSecond(spell) : spell.manaPerSecond);
     case "x": case "X": return int(column(spell.effectChainTargets, effect), SPELLMOD.jumpTargets);
     // The period in milliseconds through SPELLMOD_ACTIVATION_TIME (not hasted here), or 5000 for a spell whose
     // ProcTypeMask has bit 0 (record +0x88).

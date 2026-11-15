@@ -47,6 +47,10 @@ import {
 } from "./MinimapGossipPoi.js"; // 3.13
 // 05.10-A7b-4 (7.13/7.14): the located area (WMO room → grid → map) and the building's own minimap.
 import { drawLiveWmoMinimap, liveAreaIdAt, liveIndoorZoneTexts, liveWmoMinimapApplies, liveWmoMinimapRevision } from "../AreaLocatorLive.js";
+// 3.13 (15.11): objects in a building — hidden from a player in another, grey to a player outside (0x0057F7F0).
+import {
+  MINIMAP_WMO_GREY, MinimapWmoMembership, minimapWmoVerdict, type MinimapWmoSources,
+} from "../MinimapWmoMembership.js";
 
 /**
  * The minimap: the client's own baked tiles under the character, with the zone name and the
@@ -662,7 +666,7 @@ export function updateMinimap(now: number): void {
   // only a blip that appeared, went or moved asks for the frame.
   const stateMoved = world.state.revision !== lastDrawRevision || lastDrawWorld !== world;
   lastDrawRevision = world.state.revision;
-  let blips = stateMoved ? collectBlips(self.position, world.state, poiOnMap) : undefined;
+  let blips = stateMoved ? collectBlips(self.position, world.state, poiOnMap, now) : undefined;
   let signature = blips === undefined ? undefined : blipSignature(blips);
   const blipsMoved = signature !== undefined && !sameBlipSignature(signature, lastBlipSignature);
   // A different world is never the same picture, whatever its numbers say; and nothing else the
@@ -677,7 +681,7 @@ export function updateMinimap(now: number): void {
   lastDrawWorld = world;
   lastDrawAt = now;
   if (blips === undefined || signature === undefined) {
-    blips = collectBlips(self.position, world.state, poiOnMap);
+    blips = collectBlips(self.position, world.state, poiOnMap, now);
     signature = blipSignature(blips);
   }
   lastBlipSignature = signature;
@@ -783,6 +787,7 @@ function hoverScene(): MinimapHoverScene | undefined {
     const name = object ? objectName(object) : world?.names.get(hover.guid) ?? hover.rosterName;
     blips.push({
       list: hover.list, point: iconPoint(blip.at), name,
+      ...(blip.grey ? { grey: true } : {}), // 3.13 (15.11): 0x0057C720's |cffb0b0b0
       ...(hover.subName && object ? { subName: objectSubName(object) } : {}),
       ...(hover.flightMaster ? { flightMaster: true } : {}),
     });
@@ -996,6 +1001,8 @@ interface Blip {
   cell: MinimapIconCell;
   /** 3.13 (07.11): what the tooltip names; none for what Wow.exe has no blip of (the quest areas). */
   hover?: BlipHover;
+  /** 3.13 (15.11): an object in a building while the player is outside (MinimapWmoMembership.ts). */
+  grey?: boolean;
 }
 
 interface BlipHover {
@@ -1042,7 +1049,9 @@ interface MinimapBlips {
  */
 function blipSignature(collected: MinimapBlips): unknown[] {
   const signature: unknown[] = [];
-  for (const blip of collected.blips) signature.push(blip.at.x, blip.at.y, blip.sheet, blip.cell.column, blip.cell.row);
+  for (const blip of collected.blips) {
+    signature.push(blip.at.x, blip.at.y, blip.sheet, blip.cell.column, blip.cell.row, blip.grey === true);
+  }
   signature.push(collected.arrows.length);
   for (const arrow of collected.arrows) signature.push(arrow.at.x, arrow.at.y, arrow.texture);
   signature.push(collected.gossip);
@@ -1131,6 +1140,20 @@ function guideMarks(
   return minimapGuideMarks(candidates, position, radiusYards);
 }
 
+/** 3.13 (15.11): the buildings of the listed objects, kept between listings (MinimapWmoMembership.ts says when it asks). */
+const WMO_MEMBERSHIP = new MinimapWmoMembership();
+
+/** The collision and the terrain as MinimapWmoMembership reads them; undefined without a collision source. */
+function minimapWmoSources(): MinimapWmoSources | undefined {
+  const collision = game.collision;
+  if (!collision) return undefined;
+  return {
+    floor: (map, x, y, fromZ, minZ) => collision.staticWmoFloorState(map, x, y, fromZ, minZ),
+    gridHeight: (map, x, y) => game.terrain?.heightAt(map, x, y),
+    revision: collision.revision,
+  };
+}
+
 /**
  * Every icon and arrow the state puts on the circle, gathered in one walk of the object table.
  *
@@ -1138,7 +1161,7 @@ function guideMarks(
  * party, the corpse and the AreaPOI get an arrow. A target, a lootable body and a plain NPC get nothing at all; a quest
  * giver's icon wins over tracking.
  */
-function collectBlips(position: WorldPoint, state: WorldState, poi?: GossipPoiMark): MinimapBlips {
+function collectBlips(position: WorldPoint, state: WorldState, poi?: GossipPoiMark, now = performance.now()): MinimapBlips {
   const world = game.world;
   const radiusYards = currentYards() / 2;
   const blips: Blip[] = [];
@@ -1200,9 +1223,25 @@ function collectBlips(position: WorldPoint, state: WorldState, poi?: GossipPoiMa
   const tracks = trackingMatcher(state, world?.mapId);
   const trivial = trivialQuestsTracked();
   const townSubName = townTrackerShowsSubName();
-  const objectBlip = (object: WorldObjectState, at: WorldPoint, cell: MinimapIconCell, extra?: Partial<BlipHover>): Blip => ({
-    at: blipAt(at), sheet: "objects", cell, hover: { list: minimapObjectList(cell), guid: object.guid, ...extra },
-  });
+  // 3.13 (15.11): 0x0057F7F0's last test, after the list is chosen — the player's building against the object's.
+  const wmoSources = minimapWmoSources();
+  const mapId = world?.mapId;
+  const wmoActive = wmoSources !== undefined && mapId !== undefined && self?.position !== undefined;
+  if (wmoActive) WMO_MEMBERSHIP.begin();
+  const playerBuilding = wmoActive ? WMO_MEMBERSHIP.buildingOf(self!.guid, mapId!, self!.position!, now, wmoSources!) : undefined;
+  const objectBlip = (object: WorldObjectState, at: WorldPoint, cell: MinimapIconCell, extra?: Partial<BlipHover>): Blip | undefined => {
+    const verdict = wmoActive && object.position
+      ? minimapWmoVerdict(playerBuilding, WMO_MEMBERSHIP.buildingOf(object.guid, mapId!, object.position, now, wmoSources!))
+      : "plain";
+    if (verdict === "hidden") return undefined;
+    return {
+      at: blipAt(at), sheet: "objects", cell, hover: { list: minimapObjectList(cell), guid: object.guid, ...extra },
+      ...(verdict === "grey" ? { grey: true } : {}),
+    };
+  };
+  const pushObject = (blip: Blip | undefined): void => {
+    if (blip) blips.push(blip);
+  };
   for (const object of state.objects.values()) {
     const objectPosition = object.position;
     if (!objectPosition || (object.typeId !== 3 && object.typeId !== 4 && object.typeId !== 5)) continue;
@@ -1213,24 +1252,25 @@ function collectBlips(position: WorldPoint, state: WorldState, poi?: GossipPoiMa
     const status = object.typeId !== 5 ? questStatus?.get(object.guid) : undefined;
     const quest = status === undefined ? undefined : minimapQuestCell(status, trivial);
     if (quest) {
-      blips.push(objectBlip(object, objectPosition, quest));
+      pushObject(objectBlip(object, objectPosition, quest));
       continue;
     }
     const town = townTrackedCell(object);
     if (town) {
-      blips.push(objectBlip(object, objectPosition, town, townSubName && object.typeId === 3 ? { subName: true } : undefined));
+      pushObject(objectBlip(object, objectPosition, town, townSubName && object.typeId === 3 ? { subName: true } : undefined));
       continue;
     }
     // 3.13 (07.11): the taxi mark SMSG_TAXINODE_STATUS sets on a flight master whose node is unknown (0x006d5fc0).
     if (object.typeId === 3 && world?.taxiNodeStatus?.get(object.guid) === false
       && ((unitField.npcFlags(object) ?? 0) & UNIT_NPC_FLAG_FLIGHTMASTER) !== 0) {
-      blips.push(objectBlip(object, objectPosition, MINIMAP_FLIGHT_MASTER_CELL, { flightMaster: true }));
+      pushObject(objectBlip(object, objectPosition, MINIMAP_FLIGHT_MASTER_CELL, { flightMaster: true }));
       continue;
     }
     if (tracks?.(object, distanceSquared)) {
-      blips.push(objectBlip(object, objectPosition, object.typeId === 5 ? MINIMAP_TOWN_CELL : minimapTrackedCell(reactionTo(object))));
+      pushObject(objectBlip(object, objectPosition, object.typeId === 5 ? MINIMAP_TOWN_CELL : minimapTrackedCell(reactionTo(object))));
     }
   }
+  if (wmoActive) WMO_MEMBERSHIP.end();
 
   // 11.11: no quest POI. Wow.exe's minimap draws its ObjectIcons lists from objects (0x0057f7f0) and its POI list from
   // AreaPOI rows plus four client records (0x007f6730) that only the guard's POI, the corpse and the spirit healer
@@ -1255,20 +1295,40 @@ function drawIcons(
 ): void {
   const yardsPerPixel = currentYards() / size;
   const side = MINIMAP_ICON_UNITS * (size / MINIMAP_UNITS);
+  // 3.13 (15.11): Wow.exe draws the plain icons, then the ones in a building with the vertex colour 0xB0B0B0
+  // (0x00580380 with 0, then with 1) — the picture times 0.69, alpha untouched.
+  let anyGrey = false;
   for (const blip of collected.blips) {
-    const bitmap = game.mapArt?.bitmap(ICON_SHEETS[blip.sheet]);
-    if (!bitmap) continue;
-    const point = minimapBlip(position, blip.at, yardsPerPixel, facing);
-    let sx: number, sy: number, cell: number;
-    if (blip.sheet === "poi") {
-      const poi = minimapPoiIconCell(blip.cell.column);
-      sx = poi.x; sy = poi.y; cell = poi.size;
-    } else {
-      cell = blip.sheet === "party" ? MINIMAP_PARTY_CELL : MINIMAP_OBJECT_CELL;
-      sx = blip.cell.column * cell; sy = blip.cell.row * cell;
-    }
-    context.drawImage(bitmap, sx, sy, cell, cell, point.column - side / 2, point.row - side / 2, side, side);
+    if (blip.grey) anyGrey = true;
+    else drawIcon(context, blip, position, yardsPerPixel, side, facing);
   }
+  if (!anyGrey) return;
+  const filter = context.filter;
+  context.filter = `brightness(${MINIMAP_WMO_GREY})`;
+  for (const blip of collected.blips) if (blip.grey) drawIcon(context, blip, position, yardsPerPixel, side, facing);
+  context.filter = filter;
+}
+
+function drawIcon(
+  context: CanvasRenderingContext2D,
+  blip: Blip,
+  position: WorldPoint,
+  yardsPerPixel: number,
+  side: number,
+  facing: number | undefined,
+): void {
+  const bitmap = game.mapArt?.bitmap(ICON_SHEETS[blip.sheet]);
+  if (!bitmap) return;
+  const point = minimapBlip(position, blip.at, yardsPerPixel, facing);
+  let sx: number, sy: number, cell: number;
+  if (blip.sheet === "poi") {
+    const poi = minimapPoiIconCell(blip.cell.column);
+    sx = poi.x; sy = poi.y; cell = poi.size;
+  } else {
+    cell = blip.sheet === "party" ? MINIMAP_PARTY_CELL : MINIMAP_OBJECT_CELL;
+    sx = blip.cell.column * cell; sy = blip.cell.row * cell;
+  }
+  context.drawImage(bitmap, sx, sy, cell, cell, point.column - side / 2, point.row - side / 2, side, side);
 }
 
 function drawPings(
@@ -1403,6 +1463,7 @@ export function forgetMinimap(): void {
   lastBlipSignature = [];
   lastDrawn = undefined; // 3.13 (07.11)
   hoverHits = [];
+  WMO_MEMBERSHIP.clear(); // 3.13 (15.11)
   if (parts) {
     parts.zone.textContent = "";
     parts.subzone.textContent = "";

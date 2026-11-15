@@ -68,6 +68,57 @@ test("1a: the character mirror is per realm and character; B never sees or write
   assert.deepEqual(store.value.macros.map((macro) => macro.name), ["A's"]);
 });
 
+test("5.37: the account set's mirror is per realm and account; account B never sees A's account macros", async () => {
+  const { game } = await import("../dist/code/browser/game/Context.js");
+  storage.clear();
+  const ACCOUNT_SLOT = 4;
+  const store = createMacroSlotStore(ACCOUNT_SLOT, "test.macros.account", false);
+  const worldOf = () => ({ ...world(1n, undefined), accountData: new Map() });
+  try {
+    game.session = { username: "ALPHA" };
+    const a = worldOf();
+    store.attach(a);
+    store.accept(ACCOUNT_SLOT);
+    store.set(putSlotMacro(store.value, { index: 3, name: "A's", body: "/a" }));
+    runTimers();
+    assert.ok(storage.has("test.macros.account:Realm/ALPHA"));
+    store.detach();
+    game.session = { username: "BETA" };
+    store.attach(worldOf());
+    assert.deepEqual(store.value.macros, [], "B starts empty, not from A's mirror");
+    store.detach();
+    game.session = { username: "ALPHA" };
+    store.attach(worldOf());
+    assert.deepEqual(store.value.macros.map((macro) => macro.name), ["A's"], "A's own mirror until the answer");
+  } finally {
+    game.session = undefined;
+  }
+});
+
+test("review 6: a macro saved before the answer is made again over it; the COMPLETE echo is not re-read", async () => {
+  const { saveMacro, macroStores, macroAt } = await import("../dist/code/browser/ui/MacroStore.js");
+  storage.clear();
+  timers.length = 0;
+  const store = macroStores[1];
+  const wowText = lines("MACRO 16777217 \"Wow\" Ability_Stealth", "/cast Stealth", "END");
+  const w = world(11n, undefined);
+  store.attach(w);
+  saveMacro({ index: 38, name: "Early", body: "/early" });
+  w.accountData.set(CHARACTER_SLOT, { text: wowText });
+  store.accept(CHARACTER_SLOT);
+  assert.equal(macroAt(37)?.name, "Wow", "the server's macro");
+  assert.equal(macroAt(38)?.name, "Early", "and the one saved meanwhile");
+  runTimers();
+  assert.equal(w.saved.length, 1);
+  assert.ok(w.saved[0][1].includes("\"Early\"") && w.saved[0][1].includes("\"Wow\""));
+  // Another save before the COMPLETE, then the COMPLETE of the first send: the second save stays.
+  saveMacro({ index: 39, name: "Second", body: "/s" });
+  w.accountData.set(CHARACTER_SLOT, { text: w.saved[0][1] });
+  assert.equal(store.accept(CHARACTER_SLOT), false, "a later event for the slot is not an answer");
+  assert.equal(macroAt(39)?.name, "Second");
+  store.detach();
+});
+
 test("1a: the old unscoped mirror is neither read nor removed", () => {
   storage.clear();
   storage.set(KEY, '[{"index":37,"name":"Old","body":"/old"}]');

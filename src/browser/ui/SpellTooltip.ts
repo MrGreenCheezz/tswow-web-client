@@ -11,7 +11,8 @@ import { GROUND_TARGET_MODE } from "../game/GroundTarget.js";
 import type { SpellMetadata } from "../SpellMetadata.js";
 import { unknownLabel } from "./Format.js";
 import { fillTemplate } from "./ItemTooltip.js";
-import { formatSpellDescription, type SpellDescriptionContext } from "./SpellText.js";
+import { formatSpellDescription, spellCostUnit, type SpellDescriptionContext } from "./SpellText.js";
+import { spellPowerCostFor, spellPowerPerSecondFor } from "./SpellTextCost.js"; // 3.43 (15.11)
 import { sessionSpellDescriptionContext } from "./SpellTextLiveContext.js"; // 12.10
 import type { TooltipContent, TooltipLine } from "./TooltipTypes.js";
 
@@ -191,6 +192,13 @@ const STOCK_SPELL_STRINGS: Readonly<Record<string, string>> = {
   ENERGY_COST: "Энергия: %d", // :2816
   RUNIC_POWER_COST: "Требуется %d |4единица:единицы:единиц; силы рун", // :6162
   HEALTH_COST: "Здоровье: %d", // :4011
+  // 3.43 (15.11): the per-second forms 0x006238a0 builds as "%s_PER_TIME".
+  MANA_COST_PER_TIME: "Мана: %d плюс %d/сек", // :4893
+  RAGE_COST_PER_TIME: "Ярость: %d плюс %d/сек", // :5939
+  FOCUS_COST_PER_TIME: "Тонус: %d плюс %d/сек.", // :3714
+  ENERGY_COST_PER_TIME: "Энергия: %d плюс %d/сек.", // :2817
+  RUNIC_POWER_COST_PER_TIME: "Cила рун: %d плюс %d/сек", // :6163
+  HEALTH_COST_PER_TIME: "Здоровье: %d плюс %d/сек.", // :4012
   SPELL_CAST_TIME_INSTANT: "Мгновенное действие", // :6919
   SPELL_CAST_CHANNELED: "Потоковое", // :6915
   SPELL_ON_NEXT_SWING: "Следующая атака", // :7222
@@ -221,6 +229,21 @@ function stockPowerCost(metadata: SpellMetadata): string | undefined {
   const key = STOCK_POWER_COST_KEYS[metadata.powerType];
   if (key === undefined) return undefined;
   const scale = POWER_DISPLAY_SCALE[metadata.powerType] ?? 1;
+  // 3.43 (15.11): as Wow.exe 0x006238a0 writes the row — the cost function 0x008012f0 and its per-second part
+  // 0x007ff100 (SpellTextCost.ts), each divided by the power's scale (0x007fde00) unsigned; a per-second part above 0
+  // gives `<POWER>_COST_PER_TIME` with both, else a cost of 1 or more `<POWER>_COST`, else no row. The raw columns
+  // below stay for a session with no player or a fact this client does not have yet.
+  const unit = spellCostUnit(spellDescriptionContext());
+  const cost = unit ? spellPowerCostFor(metadata, unit) : undefined;
+  const perSecond = unit ? spellPowerPerSecondFor(metadata, unit) : undefined;
+  if (cost !== undefined && perSecond !== undefined) {
+    const shown = Math.trunc((cost >>> 0) / scale) | 0;
+    const shownPerSecond = Math.trunc((perSecond >>> 0) / scale) | 0;
+    if (shownPerSecond > 0) {
+      return fillTemplate(globalString(`${key}_PER_TIME`) ?? STOCK_SPELL_STRINGS[`${key}_PER_TIME`] ?? "", shown, shownPerSecond);
+    }
+    return shown >= 1 ? fillTemplate(stockSpellString(key), shown) : undefined;
+  }
   let amount: number | string | undefined;
   if (metadata.powerCost > 0) amount = Math.round(metadata.powerCost / scale);
   else if (metadata.powerCostPercent > 0) {

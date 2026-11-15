@@ -878,11 +878,10 @@ test("an emitter switched off owes nothing when it comes back", () => {
   assert.equal(system.pending, 0, "and dropped when it stopped");
 });
 
-test("a particle is never an alpha-keyed cut-out", withSamples, async () => {
-  // `applyBlendMode` sets a 224/255 alpha gate for blend mode 1, which is right for hair cards
-  // and foliage and fatal here: a particle's alpha is its texture's times its opacity ramp, and a
-  // ramp that fades in from zero fails that gate for most of its life. Ten of the client's
-  // emitters use mode 1 and every one of them would have drawn nothing at all.
+test("an alpha-key particle is not yet a cut-out and writes no depth", withSamples, async () => {
+  // 15.11 (6.15): Wow.exe's draw sets the alpha reference of an alpha-key emitter to 224/255 × the draw item's +0xc
+  // (0x008214e0 → 0x0081fe90; ParticleDepth.ts) and lets it write depth; that factor is not known for particles, and
+  // depth write without the gate would cut holes behind transparent texels, so neither is applied yet.
   const found = await samples();
   const model = throughArtifact(found.get("6fx_bonfire.m2"));
   const keyed = { ...model, particleEmitters: model.particleEmitters.map((one) => ({ ...one, blendType: 1 })) };
@@ -891,7 +890,10 @@ test("a particle is never an alpha-keyed cut-out", withSamples, async () => {
     loadTexture: () => new THREE.Texture(),
   });
   assert.ok(effects);
-  for (const drawn of effects.emitters) assert.equal(drawn.material.alphaTest, 0);
+  for (const drawn of effects.emitters) {
+    assert.equal(drawn.material.alphaTest, 0);
+    assert.equal(drawn.material.depthWrite, false);
+  }
   disposeModelEffects(effects);
 });
 

@@ -70,6 +70,10 @@ export interface FrameXmlDressUpLook {
   readonly classId?: number | undefined;
   /** What the unit is visibly wearing now (PLAYER_VISIBLE_ITEM_*), rows that have arrived only. */
   readonly equipment: readonly FrameXmlDressUpWorn[];
+  /** 15.11 6.18: UNIT_FIELD_BYTES_2 byte 0 — where the unit's own weapons hang in the copy. */
+  readonly sheath?: number | undefined;
+  /** 15.11 6.18: SheatheType by hand slot, as unitModelFor keeps it (SheathPoints.wornSheathes). */
+  readonly wornSheathe?: Readonly<Record<number, number>> | undefined;
 }
 
 /** What the dress-up models read from the world. Both answers may be undefined (not known yet). */
@@ -158,6 +162,8 @@ export interface FrameXmlDressUpOutfit {
   readonly equipment: readonly FrameXmlDressUpWorn[];
   /** A tried-on entry whose row has not arrived is not in `equipment` yet. */
   readonly pending: boolean;
+  /** 15.11 6.18: the slots a try-on filled (their weapons are held, 0x005980d0); absent when none. */
+  readonly tried?: ReadonlySet<number> | undefined;
 }
 
 /** The host-side half of every DressUpModel's `SetUnit`/`Dress`/`Undress`/`TryOn`. */
@@ -247,13 +253,16 @@ export class FrameXmlDressUpModels {
     const worn = new Map<number, FrameXmlDressUpWorn>();
     if (!state.naked) for (const item of look.equipment) worn.set(item.slot, item);
     let pending = false;
+    let tried: Set<number> | undefined; // 15.11 6.18
     for (const entry of state.tries) {
       const row = this.#host.item(entry);
       if (!row) { pending = true; continue; }
       wear(worn, row);
+      const slot = frameXmlDressUpSlot(row);
+      if (slot !== undefined) (tried ??= new Set()).add(slot);
     }
     const equipment = [...worn.values()].sort((a, b) => a.slot - b.slot);
-    return { unit: state.unit, look, equipment, pending };
+    return { unit: state.unit, look, equipment, pending, ...(tried ? { tried } : {}) };
   }
 
   dispose(): void {

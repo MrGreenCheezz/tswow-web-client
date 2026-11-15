@@ -511,6 +511,8 @@ export async function enterWorld(character: CharacterSummary): Promise<void> {
   // mounted cast dismounts (world/MountedCastRule.ts).
   world.autoDismount = () => settingOn("autoDismount");
   world.autoDismountFlying = () => settingOn("autoDismountFlying");
+  // 5.05 (15.11): autoStand, read by 0x0071b090 before a seated cast stands up (world/CastPreflightRule.ts).
+  world.autoStand = () => settingOn("autoStand");
   // 5.25: the stock Controls panel's blockTrades, read when another player offers a trade.
   world.blockTrades = () => settingOn("blockTrades");
   world.onCombatStatus = (message, attacking, error) => {

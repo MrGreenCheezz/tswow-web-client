@@ -188,7 +188,10 @@ test("an interactive object out of reach says so instead of eating the click", (
     npc.interactWithGuid(90n);
     assert.deepEqual(used, [], "nothing is used from thirty yards");
     assert.equal(notices().length, before + 1);
-    assert.equal(notices().at(-1), wait.tooFarText());
+    // 4.15 (15.11): an object's own error, ERR_USE_TOO_FAR (Wow.exe 0x0070F680 → 0x00711470 error 0xF0), not the unit's.
+    assert.equal(notices().at(-1), "Вы слишком далеко.");
+    assert.equal(notices().at(-1), wait.useTooFarText());
+    assert.notEqual(notices().at(-1), wait.tooFarText());
     chest.position = { x: 2, y: 0, z: 0 };
     npc.interactWithGuid(90n);
     assert.deepEqual(used, [90n], "in reach the mailbox opens");

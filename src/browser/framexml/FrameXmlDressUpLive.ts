@@ -15,6 +15,7 @@ import { UPDATE_FIELDS } from "../../generated/updateFields.js";
 import { unit as unitFields } from "../../world/Fields.js";
 import { game } from "../game/Context.js";
 import { visibleEquipmentFor } from "../ui/UnitModels.js";
+import { wornSheathes } from "../SheathPoints.js"; // 15.11 6.18
 import type { FrameXmlDressUpHost, FrameXmlDressUpItem, FrameXmlDressUpLook } from "./FrameXmlDressUp.js";
 
 export function createLiveFrameXmlDressUpHost(): FrameXmlDressUpHost {
@@ -31,6 +32,8 @@ export function createLiveFrameXmlDressUpHost(): FrameXmlDressUpHost {
       const bytes = object.fields.get(UPDATE_FIELDS.UNIT_FIELD_BYTES_0.offset) ?? 0;
       const look = object.fields.get(UPDATE_FIELDS.PLAYER_BYTES.offset) ?? 0;
       const look2 = object.fields.get(UPDATE_FIELDS.PLAYER_BYTES_2.offset) ?? 0;
+      const equipment = visibleEquipmentFor(object, game.itemMetadata);
+      const wornSheathe = wornSheathes(equipment); // 15.11 6.18
       return {
         displayId,
         race: bytes & 0xff,
@@ -41,7 +44,10 @@ export function createLiveFrameXmlDressUpHost(): FrameXmlDressUpHost {
         hairColor: (look >>> 24) & 0xff,
         facialHair: look2 & 0xff,
         classId: (bytes >>> 8) & 0xff, // 05.10-A7a-G 6.18: as ui/UnitModels.ts unitModelFor (6.10)
-        equipment: visibleEquipmentFor(object, game.itemMetadata),
+        equipment,
+        // 15.11 6.18: where the copy's own weapons hang (FrameXmlDressUpStage.frameXmlDressUpPieces).
+        sheath: (object.fields.get(UPDATE_FIELDS.UNIT_FIELD_BYTES_2.offset) ?? 0) & 0xff,
+        ...(wornSheathe ? { wornSheathe } : {}),
       };
     },
     item(entry: number): FrameXmlDressUpItem | undefined {
