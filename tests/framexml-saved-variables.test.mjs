@@ -106,7 +106,9 @@ test("widget no-op diagnostics count repeated calls by module, widget type and m
     label:SetShadowOffset(1, 2); label:SetShadowOffset(3, 4)
     local sx, sy = label:GetShadowOffset()
     assert(sx == 3 and sy == 4) -- real FontString method now, not a diagnostic stub
-    label:GetFieldSize(); label:GetFieldSize()
+    assert(label:GetFieldSize() == 8191) -- real FontString method since 15.11 (Wow.exe 0x0048bc70), not a stub
+    local art = frame:CreateTexture()
+    art:SetGradient("VERTICAL", 0, 0, 0, 1, 1, 1); art:SetGradient("VERTICAL", 0, 0, 0, 1, 1, 1) -- still a recorded no-op
     frame:SetHitRectInsets(1, 2, 3, 4)
     local l, r, t, b = frame:GetHitRectInsets()
     assert(l == 1 and r == 2 and t == 3 and b == 4) -- real Frame method now, not a diagnostic stub
@@ -117,7 +119,7 @@ test("widget no-op diagnostics count repeated calls by module, widget type and m
   `);
   try {
     assert.deepEqual(host.binder.stubDiagnostics.filter((item) => item.module === "example"), [
-      { module: "example", widgetType: "FontString", method: "GetFieldSize", calls: 2 },
+      { module: "example", widgetType: "Texture", method: "SetGradient", calls: 2 },
       { module: "example", widgetType: "Frame", method: "SetBorderScalar", calls: 1 },
     ]);
   } finally { host.close(); }

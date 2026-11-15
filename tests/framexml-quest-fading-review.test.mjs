@@ -125,18 +125,26 @@ test("QUEST_FADING_DISABLE «1» shows the whole text at once: Accept on the fir
   assert.equal(ticksUntilAccept(1 / 60, 1), 1);
 });
 
-test("the instant-quest-text option reads its CVar: stock default «0», and a write round-trips", withClient, () => {
-  assert.equal(lua("return GetCVar('questFadingDisable')")[0], "0");
-  assert.equal(lua("return GetCVarDefault('questFadingDisable')")[0], "0");
+test("the instant-quest-text option reads its CVar: Wow.exe's registered default «1», and a write round-trips", withClient, () => {
+  // Wow.exe registers questFadingDisable at 0x0051de7e (in 0x0051d9b0) with flags 0x10 and the default
+  // string at 0x009e1464, "1" (WowCVarRegistry.ts, 5.37 of 15.11; .runtime/re-2026-11-15/acct5/d4.c).
+  // uvarInfo's `default = "0"` (InterfaceOptionsFrame.lua:315) is the uvar's start value before
+  // VARIABLES_LOADED, not the CVar's default; it was this client's stand-in until 15.11.
+  assert.equal(lua("return GetCVar('questFadingDisable')")[0], "1");
+  assert.equal(lua("return GetCVarDefault('questFadingDisable')")[0], "1");
   // BlizzardOptionsPanel_SetupControl (OptionsPanelTemplates.lua:373-383) sets the check box's uvar to
   // GetCVar(cvar) at PLAYER_ENTERING_WORLD and its SetValue writes both; this vertical boot has no
   // options panels, so the two writes are made as that code makes them.
   lua('QUEST_FADING_DISABLE = GetCVar("questFadingDisable")', 0);
-  assert.equal(lua("return QUEST_FADING_DISABLE")[0], "0", "the uvar is the CVar's value, not nil");
-  assert.deepEqual(lua('return SetCVar("questFadingDisable", "1"), GetCVar("questFadingDisable")', 2), [true, "1"]);
+  assert.equal(lua("return QUEST_FADING_DISABLE")[0], "1", "the uvar is the CVar's value, not nil");
+  openDetail("Текст при стандартной опции.", lua("return QUEST_FADING_DISABLE")[0]);
+  assert.equal(ticksUntilAccept(1 / 60, 1), 1, "the default: the whole text at once");
+  lua("QuestFrame:Hide()", 0);
+  assert.deepEqual(lua('return SetCVar("questFadingDisable", "0"), GetCVar("questFadingDisable")', 2), [true, "0"]);
   lua('QUEST_FADING_DISABLE = GetCVar("questFadingDisable")', 0);
-  openDetail("Текст после включения опции.", lua("return QUEST_FADING_DISABLE")[0]);
-  assert.equal(ticksUntilAccept(1 / 60, 1), 1, "the option on: the whole text at once");
-  lua('SetCVar("questFadingDisable", "0") QUEST_FADING_DISABLE = "0"', 0);
+  assert.equal(lua("return QUEST_FADING_DISABLE")[0], "0");
+  openDetail("Текст после выключения опции.", lua("return QUEST_FADING_DISABLE")[0]);
+  assert.ok(ticksUntilAccept(1 / 60, 400) > 1, "the option off: the text types itself in first");
+  lua('SetCVar("questFadingDisable", "1") QUEST_FADING_DISABLE = "1"', 0);
   lua("QuestFrame:Hide()", 0);
 });

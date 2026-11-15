@@ -662,10 +662,12 @@ do
     lasttalkedtogm = "", playerstatleftdropdown = "", playerstatrightdropdown = "",
     -- InterfaceOptionsFrame.lua's own uvarInfo declares these three defaults.
     targetoftargetmode = "5", displayworldpvpobjectives = "2", combattextfloatmode = "1",
-    -- 05.10-3.21 review: uvarInfo's QUEST_FADING_DISABLE default. Unset, the Objectives panel's
-    -- «Мгновенное отображение полного текста» box set the uvar to nil at PLAYER_ENTERING_WORLD
-    -- (BlizzardOptionsPanel_SetupControl), and QuestInfo/QuestFrame compare it with "0"/"1".
-    questfadingdisable = "0",
+    -- 05.10-3.21 review: unset, the Objectives panel's «Мгновенное отображение полного текста» box set
+    -- the uvar QUEST_FADING_DISABLE to nil at PLAYER_ENTERING_WORLD (BlizzardOptionsPanel_SetupControl),
+    -- and QuestInfo/QuestFrame compare it with "0"/"1". The value is Wow.exe's registered default, "1"
+    -- (0x0051de7e, the string at 0x009e1464; WowCVarRegistry.ts) — what GetCVarDefault answers and what a
+    -- config slot without a line means (5.37); uvarInfo's "0" is only the uvar's start value.
+    questfadingdisable = "1",
     -- The client default: action and bag tooltips go to GameTooltip_SetDefaultAnchor (the
     -- bottom-right corner) instead of covering the bar they were opened from.
     ubertooltips = "1",

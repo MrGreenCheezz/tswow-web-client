@@ -80,6 +80,8 @@ test("a real packet callback publishes one completed addon UI update", withRealC
       "interface/framexml/networkpanel.lua": `
         NetworkPanel = CreateFrame("Frame", "NetworkPanel")
         NetworkLabel = NetworkPanel:CreateFontString("NetworkLabel")
+        -- 3.27: a template-less FontString raises «Font not set» on SetText until it has a font.
+        NetworkLabel:SetFont("Fonts/FRIZQT__.TTF", 12)
         OnCustomPacket(65002, function(packet)
           local size = packet:ReadDouble()
           NetworkPanel:SetSize(size, size / 2)

@@ -102,6 +102,27 @@ test("a FontString made without a template raises «Font not set» until it has 
   }
 });
 
+test("a Button gives its template-less FontString the state's font object: no «Font not set» (0x0096f4a0)", () => {
+  // tests7 (15.11): SetFontString (0x009777c0 → 0x0096f7b0) and SetNormalFontObject (0x00977340) both end in
+  // 0x0096f4a0, which hands the button's FontString the current state's font object through 0x00485160.
+  // MSBTOptionsControls.lua:863-865 builds its option buttons so.
+  const { vm, run, raised } = fixture();
+  try {
+    run(`B = CreateFrame("Button", "FontButton") L = B:CreateFontString("FontButtonLabel", "OVERLAY")
+      B:SetFontString(L)`);
+    assert.equal(raised(`L:SetText("x")`), "FontButtonLabel:SetText(): Font not set", "a button with no font gives none");
+    run(`B:SetNormalFontObject("GameFontNormalSmall") L:SetText("label") r = L:GetText()`);
+    assert.equal(vm.getGlobal("r"), "label", "SetNormalFontObject after SetFontString");
+    run(`C = CreateFrame("Button") C:SetNormalFontObject("GameFontNormalSmall") M = C:CreateFontString(nil, "OVERLAY")
+      C:SetFontString(M) M:SetFormattedText("%d", 3) m = M:GetText()`);
+    assert.equal(vm.getGlobal("m"), "3", "SetFontString onto a button that has a font object");
+    run(`D = CreateFrame("Button") D:SetText("plain") d = D:GetText()`);
+    assert.equal(vm.getGlobal("d"), "plain", "Button:SetText itself never raises (0x00977960 → 0x0096f860)");
+  } finally {
+    vm.close();
+  }
+});
+
 test("Texture: SetNonBlocking/GetNonBlocking, IsDesaturated, SetBlendMode checks the mode name", () => {
   const { vm, run, raised } = fixture();
   try {

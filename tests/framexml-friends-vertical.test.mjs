@@ -278,9 +278,16 @@ test("guild popups: member detail and notes, the info text, the event log and th
     seam.friends.tick();
     const log = lua(boot, "return GuildEventLogFrame:IsShown() and 1 or 0, GuildEventMessage:GetText()", 2);
     assert.equal(log[0], 1);
-    // Newest first, and cut at the FontString's 255-byte field (UI.xsd's default `bytes`).
+    // Newest first. GuildEventLog_Update (FriendsFrame.lua:1966) stops adding entries past
+    // GuildEventMessage:GetFieldSize(), which Wow.exe answers with the constant 8191 (0x0048bc70, the double
+    // at 0x009ead70; widgets5 15.11) whatever the string's `bytes`. GuildEventMessage has no `bytes`
+    // attribute and SetText (0x00483910) only caps a string that has one, so the whole canned log of
+    // five entries is shown — the 255 this test once expected was the retired adapter's guess.
     assert.match(log[1], /^Вейд покидает гильдию\./);
-    assert.ok(new TextEncoder().encode(log[1]).length <= 255, `${new TextEncoder().encode(log[1]).length} bytes`);
+    assert.deepEqual(lua(boot, "return GuildEventMessage:GetFieldSize()", 1), [8191]);
+    const logBytes = new TextEncoder().encode(log[1]).length;
+    assert.ok(logBytes > 255 && logBytes <= 8191, `${logBytes} bytes`);
+    assert.equal(log[1].match(/\|r\|n/g)?.length, 5, "every entry of the log, none cut");
 
     lua(boot, `GuildFrameControlButton:Click("LeftButton")`, 0);
     assert.deepEqual(lua(boot, `GuildControlPopupFrameDropDownButton_OnClick({ GetID = function() return 3 end })

@@ -137,9 +137,16 @@ export function glueNoteCreatedFontString(child: unknown, template: string | und
   }
 }
 
-/** Whether a FontString is certainly without a font face (see the header). */
+/**
+ * Whether a FontString is certainly without a font face (see the header). A Button hands its string a face too
+ * (tests7, 15.11): SetFontString (0x009777c0 → 0x0096f7b0) and Set{Normal,Highlight,Disabled}FontObject
+ * (0x00977340 …) end in 0x0096f4a0, which gives the button's FontString (+0x2ac) the current state's font object
+ * through 0x00485160 — the setter SetFontObject uses. This client models that as the label's `fontObject`
+ * (FrameXmlRuntime.syncButtonLabelFont), so a string that has one is not faceless. MSBTOptionsControls.lua:863-865
+ * builds its option buttons from a template-less CreateFontString that way.
+ */
 export function glueFontStringFaceless(frame: FrameXmlFrame): boolean {
-  return faceless.has(frame);
+  return faceless.has(frame) && !frame.fontObject;
 }
 
 /**
@@ -150,7 +157,7 @@ export function fontStringFaceMethods(text: Readonly<Record<string, WidgetMethod
   const checked = (method: string): WidgetMethod => {
     const inner = text[method];
     return (context) => {
-      if (faceless.has(context.frame)) throw new GlueLuaRaise(`${nameOf(context.frame)}:${method}(): Font not set`);
+      if (glueFontStringFaceless(context.frame)) throw new GlueLuaRaise(`${nameOf(context.frame)}:${method}(): Font not set`);
       return inner?.(context);
     };
   };

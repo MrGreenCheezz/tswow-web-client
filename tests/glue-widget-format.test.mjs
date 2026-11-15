@@ -17,6 +17,9 @@ const { createFixtureProvider } = await import("../dist/code/browser/glue/GlueLo
 const FIXTURE = String.raw`
 local frame = CreateFrame("Frame", "ProbeFrame", UIParent)
 local text = frame:CreateFontString("ProbeText")
+-- 3.27 (15.11): a template-less CreateFontString has no font face until SetFont/SetFontObject, and its
+-- SetText/SetFormattedText raise «Font not set» (Wow.exe 0x0048d780/0x0048d800); the probe gets a font.
+text:SetFont("Fonts/FRIZQT__.TTF", 12)
 text:SetText("old")
 local button = CreateFrame("Button", "ProbeButton", UIParent)
 button:SetText("old")
