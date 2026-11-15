@@ -19,15 +19,16 @@ import type { FrameXmlCursorModel } from "./FrameXmlCursor.js";
  *   CMSG_BUY_ITEM_IN_SLOT (0x006d2ea0) into that container slot, count 1, and the hand lets go; with no
  *   merchant nothing happens and the row stays.
  * - `PickupInventoryItem(id)` (0x005e85d0): the same into the player's own slot id − 1 when a merchant is
- *   open and the row is still listed (else nothing); the AmmoSlot (id 0) lets the row go.
+ *   open and the row is still listed (else nothing); on the AmmoSlot (id 0) the row gives way to the
+ *   AmmoSlot's own click (3.23, 15.11: FrameXmlAmmoCursor.ts — the ammo lifted, else the hand lets go).
  * - `UseContainerItem` (0x005d8650) lets any cursor go first (0x00519280(1, 1)), the row included.
  *
  * 3.23 (11.11, `.runtime/re-2026-11-11/api4/`): the comparison in 0x005853a0 reads 0x005136d0, the
  * cursor's item id 0x00bd0758 — set by 0x00520d30 for cursor types 5, 6, 7, 9 and 0xb and by
  * `PickupItem` (0x00522fb0, type 7), cleared by 0x00519280 for the same types — whatever the type. So
  * an item named by id (`PickupItem`, an item lifted off a bar: type 7) or the guild vault's stack
- * (type 0xb) of the row's entry is let go by the click, as a held row of that entry is. Types 6 and 9
- * have no holder here.
+ * (type 0xb) of the row's entry is let go by the click, as a held row of that entry is. 3.23 (15.11): type 9 is
+ * the AmmoSlot's ammo (FrameXmlAmmoCursor.ts); nothing in Wow.exe writes type 6.
  * A press on an action button with a row held (UseAction 0x005abbc0) does not place it: the place path
  * 0x005ab120 runs only for a held spell (0x00bd07e0), a bag item, a macro (0x00bd07e8), a type-7 item
  * (0x005844a0(7)) or the type-0xd holder; with type 5 the button's own action runs and the row stays.

@@ -28,6 +28,17 @@
  * building's identity is the placement's model (`canonicalModelName`): both words Wow.exe compares are read from the
  * model object, not from the placement, so two placements of one WMO count as one building there too.
  *
+ * Where the original writes those links (15.11, go8, `.runtime/re-2026-11-15/go8/c.c`, `d.c`, `e.c`): 0x007C2F80 drops
+ * every link of the entity (0x007C09F0) and relinks it — 0x007C2A70 casts a vertical segment from 0.1 above the feet
+ * (0x009E3004) to 1000 below (0x009EA080) through 0x007C28F0, which keeps a WMO group hit only above the terrain under
+ * it (0x007C1660; terrain over the feet does not count), and when nothing is hit below tries the same segment upwards
+ * (a roof with no floor under the object); a hit links the entity to that group (0x007C1FF0), none to the terrain
+ * chunks (0x007C2040). It runs when the entity is made or placed (0x00781C90, 0x00782000, 0x007B5740) and from the
+ * per-frame update 0x007A1E90 whenever the entity holds no link (→ 0x007A1BC0). The groups are the map's own loaded
+ * WMO geometry, so every object in a loaded tile has its links, as far as the map is loaded. The column walk here is
+ * the same segment downwards (RISE, DEPTH; the upward try is not repeated) over the collision, which is loaded only
+ * near the player — the remaining difference: no geometry here answers beyond it.
+ *
  * Cost: one column walk per listed object (not per object in view: only those the earlier tests already put on the
  * map), and only when it is due — its first sight or a new map, else once a second has passed (Wow.exe's own rebuild
  * cadence) and since its last walk it moved half a yard, the collision changed, or the collision could not answer. A

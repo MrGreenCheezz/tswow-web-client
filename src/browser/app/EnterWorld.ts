@@ -115,7 +115,7 @@ import { AreaClient } from "../AreaClient.js";
 import { startAreaTriggers, stopAreaTriggers } from "../AreaTriggerClient.js";
 import { startShipMotion, stopShipMotion } from "../TransportMotion.js";
 import { startLiftCarriers } from "../LiftClock.js"; // 11.01
-import { startVehicleData, stopVehicleData } from "../VehicleClient.js"; // 11.02-F1
+import { startVehicleData, stopVehicleData, vehicleCatalog } from "../VehicleClient.js"; // 11.02-F1; 15.11 (vehicle8)
 import { rideCollisionModels, startTransportRide, stopTransportRide } from "../input/MovementRide.js";
 import { startGameObjectColliders, stopGameObjectColliders } from "../game/GameObjectColliders.js";
 import { MinimapTileClient } from "../MinimapTiles.js";
@@ -915,6 +915,8 @@ export async function enterWorld(character: CharacterSummary): Promise<void> {
   // gateway serves /dbc/override-spells (it waits for a restart) no cast is refused for it.
   overrideSpellClient(game.gatewayOrigin)?.load(); // 5.05 (15.11, combat7)
   world.overrideSpellRow = (id) => overrideSpellClient(game.gatewayOrigin)?.row(id); // 5.05 (15.11, combat7)
+  // 11.02 (15.11, vehicle8): a passenger's seat row for the own cast's seat test (CastPreflightRule.ts refusal 0b).
+  world.vehicleSeatRow = (vehicleId, slot) => vehicleCatalog()?.seatInSlot(vehicleId, slot);
   world.onCooldownsChanged = () => updateSpellCooldowns(performance.now());
   // 3.39: the rows' Category and recoveries (`/dbc/spells?v=19`) for what a GO and a cooldown event file — the
   // category part that holds a sibling (the second potion), the hold of a stealth or a potion until its event.

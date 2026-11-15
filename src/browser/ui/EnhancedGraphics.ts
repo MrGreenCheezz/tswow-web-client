@@ -34,6 +34,7 @@ export const ENHANCED_GRAPHICS_OVERRIDES: Readonly<SettingValues> = Object.freez
   experimentalLightning: true,
   experimentalAmbientMotes: true,
   experimentalWeatherSounds: true,
+  // «Атмосфера зон» (7.40) is not in the preset: off until the owner has judged it.
 });
 
 export function enhancedGraphicsSettings(current: SettingValues): SettingValues {

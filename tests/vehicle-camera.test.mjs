@@ -3,8 +3,8 @@ import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
 import { zoomedDistance } from "../dist/code/browser/game/CameraRig.js";
 import {
-  SEAT_CAMERA_FLAGS_B, VEHICLE_FLAG_CAMERA_FADE, VEHICLE_ZOOM_DISTANCE, VehicleCameraTracker, seatZoomTarget, vehicleCamera,
-  vehicleCameraParams,
+  SEAT_CAMERA_FLAGS_B, VEHICLE_FLAG_CAMERA_FADE, VEHICLE_ZOOM_DISTANCE, VehicleCameraTracker, seatHoldsCameraYaw, seatZoomTarget,
+  vehicleCamera, vehicleCameraParams,
 } from "../dist/code/browser/game/VehicleCamera.js";
 import {
   VEHICLE_CATALOG_VERSION, VEHICLE_COLUMN, VEHICLE_FORMAT, VEHICLE_SEAT_COLUMN, VEHICLE_SEAT_FORMAT, vehicleCatalogFrom,
@@ -485,4 +485,35 @@ test("11.11: a passenger's place against its vehicle is chased at CameraPosChase
   const driver = run(1);
   assert.ok(driver.lensX < -4.9, `the vehicle's own move lags: ${driver.lensX}`);
   close(driver.lensY ?? 0, 0);
+});
+
+// 15.11 (vehicle8): VehicleCamera_C +8 bits 0x2 (seat FlagsB 0x1, 0x00759880) and 0x4 (Flags without 0x300 or with
+// 0x2000001, tail of 0x0075a1c0): in the seat, the camera watching the passenger turns its yaw by old − new world facing
+// (0x005fe5f0), so it stays still in the world as the vehicle turns. Seat 2446 of the dataset: Flags 0x184d2016, FlagsB 0x80001.
+test("15.11: a FlagsB 0x1 seat keeps the passenger's camera yaw still in the world while seated", () => {
+  const HOLD = 2446;
+  const holding = vehicleCatalogFrom({
+    ...ANSWER,
+    vehicles: [vehicleRow({ id: SIEGE, seats: [HOLD, PLAIN] })],
+    seats: [seatRow({ id: HOLD, flags: 0x184d2016, flagsB: 0x80001 }), seatRow({ id: PLAIN, flags: 0x300, flagsB: 0x1, enterMax: 0 })],
+  });
+  assert.equal(seatHoldsCameraYaw({ flags: 0x184d2016, flagsB: 0x80001 }), true);
+  assert.equal(seatHoldsCameraYaw({ flags: 0x184d2016, flagsB: 0x80000 }), false, "no FlagsB 0x1: no bit 0x2");
+  assert.equal(seatHoldsCameraYaw({ flags: 0x300, flagsB: 0x1 }), false, "Flags 0x300 without 0x2000001: no bit 0x4");
+  assert.equal(seatHoldsCameraYaw({ flags: 0x301, flagsB: 0x1 }), true, "…with 0x1 of 0x2000001 it holds");
+  const tracker = new VehicleCameraTracker();
+  const rig = { distance: 12 };
+  tracker.update(world({ slot: 0 }), holding, rig, 0);
+  assert.equal(tracker.seatYawTurn(1, true, false, 100), 0, "the switch's interval (0.5 s): states 1-2");
+  assert.equal(tracker.seatYawTurn(1, true, false, 600), 0, "the first seated frame only notes the facing");
+  close(tracker.seatYawTurn(1.25, true, false, 700), -0.25, "the vehicle turned left a quarter radian: the yaw turns back");
+  close(tracker.seatYawTurn(1.25 + 2 * Math.PI - 0.1, true, false, 800), 0.1, "within half a turn");
+  assert.equal(tracker.seatYawTurn(2, false, false, 900), 0, "a camera watching the vehicle (CAN_CONTROL) is not held");
+  assert.equal(tracker.seatYawTurn(2.5, true, true, 1000), 0, "nor one on its own spline hold (+0xac)");
+  assert.equal(tracker.seatYawTurn(3, true, false, 1100), 0, "after a break the facing is noted again");
+  close(tracker.seatYawTurn(2.9, true, false, 1200), 0.1);
+  const other = new VehicleCameraTracker();
+  other.update(world({ slot: 1 }), holding, rig, 0);
+  other.seatYawTurn(1, true, false, 600);
+  assert.equal(other.seatYawTurn(2, true, false, 700), 0, "Flags 0x300: the camera turns with the vehicle");
 });

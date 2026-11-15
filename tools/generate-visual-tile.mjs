@@ -50,7 +50,13 @@ const WMO_DOODAD_CACHE_VERSION = 1;
 // record keeps its id, place, owner class and every other field, and one indoor groups alone name keeps
 // its light. Its doodad sets have their own cache file (`wmo-doodad-light-v3`), so a v6 run never
 // reads a v7 answer, and a gateway that still names v6 keeps receiving the v6 bytes.
-export const VISUAL_TILE_GENERATION = "visual-tile-v7";
+//
+// 15.11 (7.66 tail, far8): `visual-tile-v8` is v7 with `biodome: true` on an M2 placement whose MDDF record carries
+// flag 0x1 (`adt-placements.mjs`): Wow.exe draws such a doodad past its size class's distance (0x007becd0, 0x00791cb0).
+// Six records in this client carry it, Netherstorm's biodomes; every other byte of a tile is v7's, and a gateway that
+// still names v7 keeps receiving the v7 bytes.
+export const VISUAL_TILE_GENERATION = "visual-tile-v8";
+export const VISUAL_TILE_GENERATION_V7 = "visual-tile-v7";
 export const VISUAL_TILE_GENERATION_V6 = "visual-tile-v6";
 export const VISUAL_TILE_GENERATION_V5 = "visual-tile-v5";
 export const LEGACY_VISUAL_TILE_GENERATION = "visual-tile-v4";
@@ -80,15 +86,18 @@ export async function publishVisualTile(mapId, gridX, gridY, archives, options =
   // 05.10-A7b-1: which generation to write; none named is the v4 a running older gateway expects.
   const generation = options?.generation ?? LEGACY_VISUAL_TILE_GENERATION;
   if (generation !== LEGACY_VISUAL_TILE_GENERATION && generation !== VISUAL_TILE_GENERATION_V5
-    && generation !== VISUAL_TILE_GENERATION_V6 && generation !== VISUAL_TILE_GENERATION) {
+    && generation !== VISUAL_TILE_GENERATION_V6 && generation !== VISUAL_TILE_GENERATION_V7
+    && generation !== VISUAL_TILE_GENERATION) {
     throw new Error(`Unknown visual tile generation ${String(generation)}`);
   }
+  // v8 is v7 with the MDDF biodome flag (15.11, far8).
+  const v8 = generation === VISUAL_TILE_GENERATION;
   // v7 is v6 with an exterior group's word final on room light (12.10 6.25).
-  const v7 = generation === VISUAL_TILE_GENERATION;
+  const v7 = v8 || generation === VISUAL_TILE_GENERATION_V7;
   // v6 is v5 plus one placement in one tile (P2-04x).
   const v6 = v7 || generation === VISUAL_TILE_GENERATION_V6;
   const v5 = v6 || generation === VISUAL_TILE_GENERATION_V5;
-  const placementOptions = v5 ? { nameSet: true } : undefined;
+  const placementOptions = v5 ? { nameSet: true, ...(v8 ? { biodome: true } : {}) } : undefined;
   const destination = resolve(root, process.env.VISUAL_TILE_DIR ?? "data/visual-tiles", String(mapId), `${gridX}-${gridY}.json`);
   const wmoDoodadCacheDirectory = resolve(
     root,
@@ -238,7 +247,7 @@ export async function publishVisualTile(mapId, gridX, gridY, archives, options =
 }
 
 // Run directly: node tools/generate-visual-tile.mjs <map> <grid-x> <grid-y> [generation]
-// (the gateway passes `visual-tile-v7`; without it the v4 tile an older gateway expects.)
+// (the gateway passes `visual-tile-v8`; without it the v4 tile an older gateway expects.)
 if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) {
   const mapId = Number.parseInt(process.argv[2] ?? "", 10);
   const gridX = Number.parseInt(process.argv[3] ?? "", 10);

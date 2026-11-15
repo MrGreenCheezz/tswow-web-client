@@ -193,6 +193,40 @@ test("stock AmmoSlot and bags over the live seam: CMSG_SET_AMMO out, PLAYER_AMMO
     assert.equal(boot.vm.getGlobal("__heldAfter"), false, "the hand lets go");
     assert.deepEqual(setAmmoPackets(), ["208,9,0,0", "208,9,0,0"]);
     assert.deepEqual(failures(), [], "the drop");
+
+    // 3.23 (15.11): the AmmoSlot clicked with an empty hand lifts the ammo — cursor type 9 (Wow.exe 0x005E85D0):
+    // "item", the id, the link for GetCursorInfo, CursorHasItem true, and CMSG_SET_AMMO 0 takes it out of the slot;
+    // a second click puts it back with CMSG_SET_AMMO and the hand lets go (FrameXmlAmmoCursor.ts).
+    const lift = boot.vm.execute(`
+      PickupInventoryItem(0)
+      __liftHeld = CursorHasItem() and true or false
+      __liftKind, __liftId = GetCursorInfo()
+    `, "@ammo-slot:lift");
+    assert.equal(lift.ok, true, lift.error);
+    assert.equal(boot.vm.getGlobal("__liftHeld"), true, "CursorHasItem is true for type 9 (0x00515100)");
+    assert.equal(boot.vm.getGlobal("__liftKind"), "item");
+    assert.equal(boot.vm.getGlobal("__liftId"), 2512);
+    assert.deepEqual(setAmmoPackets(), ["208,9,0,0", "208,9,0,0", "0,0,0,0"], "CMSG_SET_AMMO 0 empties the slot");
+    const back = boot.vm.execute(`
+      PickupInventoryItem(0)
+      __backHeld = CursorHasItem() and true or false
+    `, "@ammo-slot:back");
+    assert.equal(back.ok, true, back.error);
+    assert.equal(boot.vm.getGlobal("__backHeld"), false, "the hand lets go");
+    assert.deepEqual(setAmmoPackets(), ["208,9,0,0", "208,9,0,0", "0,0,0,0", "208,9,0,0"]);
+    // With no ammo carried the empty-handed click lifts nothing and sends nothing.
+    arrowFields.set(offset("ITEM_FIELD_STACK_COUNT"), 0);
+    fields.set(offset("PLAYER_FIELD_PACK_SLOT_1"), 0);
+    store.fieldsChanged(PLAYER, [offset("PLAYER_FIELD_PACK_SLOT_1")]);
+    store.flush();
+    const none = boot.vm.execute(`
+      PickupInventoryItem(0)
+      __noneHeld = CursorHasItem() and true or false
+    `, "@ammo-slot:none");
+    assert.equal(none.ok, true, none.error);
+    assert.equal(boot.vm.getGlobal("__noneHeld"), false);
+    assert.equal(setAmmoPackets().length, 4);
+    assert.deepEqual(failures(), [], "the ammo cursor");
   } finally {
     boot.close();
     await chain.close();

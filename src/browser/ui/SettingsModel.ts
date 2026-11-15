@@ -199,6 +199,19 @@ export const SETTING_DEFINITIONS: readonly SettingDefinition[] = [
     hint: "Иногда на солнечных полянах проплывает пыльца (ярче всего утром и вечером), ночью над травой мерцают светлячки, под деревьями падают листья.",
   },
   {
+    // 15.11 (7.40, the owner's wish of 22.10): mist and air by the kind of place (ZoneAtmosphere.ts). Not Wow.exe's:
+    // drawn on the enhanced lighting levels only — on «Как в оригинале» and «Оригинал + тени» nothing of it exists.
+    // Off by default and outside the enhanced preset until the owner has judged it (follow-up of 15.11).
+    id: "experimentalZoneAtmosphere", label: "Атмосфера зон", group: "Эффекты", kind: "boolean", fallback: false,
+    hint: "Опыт: туман и воздух по месту — низкий туман в низинах и над водой болот, дымка над морем у побережья, вечерняя дымка и сильнее лучи в лесу, спёртый воздух и пыль в пещерах и шахтах, позёмка на снежных высотах. Только с улучшенным освещением.",
+  },
+  {
+    // 15.11 (7.40): one multiplier over «Атмосфера зон»; 100 is the tuned look, 0 leaves it on but invisible.
+    id: "zoneAtmosphereStrength", label: "Сила атмосферы зон, %", group: "Эффекты", kind: "number", fallback: 100,
+    min: 0, max: 200, step: 25,
+    hint: "Насколько густы туман, дымка и позёмка «Атмосферы зон»: 100 — настроенный вид, 200 — вдвое гуще. Не действует, пока «Атмосфера зон» выключена.",
+  },
+  {
     // The client's own weather loops and a thunder clap after each lightning strike
     // (WeatherSound.ts). Obeys the ambience slider; OFF plays nothing.
     id: "experimentalWeatherSounds", label: "Звуки грозы и ветра", group: "Эффекты", kind: "boolean", fallback: false,

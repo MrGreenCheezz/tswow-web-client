@@ -41,6 +41,7 @@ import {
 } from "../../world/MailProtocol.js";
 import { itemChatLink } from "../ui/ChatLink.js";
 import { frameXmlLootCoinIcon } from "./FrameXmlLoot.js";
+import { frameXmlMailBody, frameXmlMailTakeable, type FrameXmlMailTextSource } from "./FrameXmlMailText.js"; // 5.28 (15.11)
 import {
   FRAMEXML_MAX_SEND_ATTACHMENTS,
   FRAMEXML_SERVICE_BINDINGS,
@@ -54,8 +55,6 @@ import {
 export const FRAMEXML_MAIL_ATTACHMENTS_RECEIVE = 16;
 /** `MAIL_CHECK_MASK_COPIED` (Mail.h:49): the letter's text was already made into an item. */
 const MAIL_CHECK_MASK_COPIED = 0x04;
-/** `MAIL_CHECK_MASK_HAS_BODY` (Mail.h:51). */
-const MAIL_CHECK_MASK_HAS_BODY = 0x10;
 /** CMSG_SEND_MAIL writes stationery 41 (MailProtocol.buildSendMail); stock selects row 1 of its list. */
 const DEFAULT_STATIONERY = 41;
 /** Stationery.dbc's GM row: `GetInboxHeaderInfo`'s `isGM`. */
@@ -224,6 +223,8 @@ export interface FrameXmlMailContext {
   prefetchItems?(entries: readonly number[], onChanged: () => void): void;
   /** The set of attached items changed: the bags repaint their lock state (`attached`). */
   locksChanged?(): void;
+  /** 5.28 (15.11): what GetInboxText's body needs — the quest text parser, MailTemplate, the profanity filter. */
+  readonly mailText?: FrameXmlMailTextSource;
 }
 
 interface FrameXmlMailPump {
@@ -451,7 +452,7 @@ export class FrameXmlMailModel {
    * whether it is an auction invoice. Reading a letter is what marks it read, as in the client
    * (CMSG_MAIL_MARK_AS_READ; the next list carries the flag).
    */
-  text(index: unknown): readonly [body: string, texture: string, isTakeable: boolean, isInvoice: boolean] | undefined {
+  text(index: unknown): readonly [body: string | undefined, texture: string, isTakeable: boolean, isInvoice: boolean] | undefined {
     const entry = this.#entry(index);
     if (!entry) return undefined;
     if (!isMailRead(entry) && !this.#read.has(entry.mailId) && !this.#muted) {
@@ -460,11 +461,13 @@ export class FrameXmlMailModel {
     }
     const auction = entry.senderType === MAIL_AUCTION && frameXmlAuctionSubject(entry) !== undefined;
     const invoice = auction && this.#invoiceNames(entry) !== undefined;
-    const body = auction ? "" : entry.body;
-    const takeable = !auction && (body.length > 0 || entry.mailTemplateId !== 0
-      || (entry.flags & MAIL_CHECK_MASK_HAS_BODY) !== 0);
+    // 5.28 (follow-up, 15.11): isTakeable as 0x00570bd0 answers it — an auction invoice can be copied too, its
+    // invoice field is the parsed body here (frameXmlAuctionInvoice), not the names stock waits for.
+    const takeable = frameXmlMailTakeable(entry, frameXmlAuctionInvoice(entry) !== undefined);
     const texture = (STATIONERY.get(entry.stationeryId) ?? STATIONERY.get(DEFAULT_STATIONERY))!.texture;
-    return [body, texture, takeable, invoice];
+    // 5.28 (15.11): the body as 0x00570bd0 gives it — nil for an auction letter or an empty one, a template's body,
+    // the quest text parser for a non-player sender, the profanity filter for a player (FrameXmlMailText.ts).
+    return [frameXmlMailBody(entry, this.#context.mailText ?? {}), texture, takeable, invoice];
   }
 
   /**

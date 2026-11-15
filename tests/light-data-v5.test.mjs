@@ -281,25 +281,25 @@ test("7.04 slice 0: the sky channels sample as packed colours and blend through 
 
 test("7.15: a ghost reads slot 4, fades by weight, and an old body falls back to slot 0", () => {
   const alive = resolveLighting(V5_ENTRY, 0, 0, 1440);
-  const ghost = resolveLighting(V5_ENTRY, 0, 0, 1440, 0, 3, undefined, undefined, 1, undefined, undefined, false, 1);
+  const ghost = resolveLighting(V5_ENTRY, 0, 0, 1440, 0, undefined, undefined,false, 1);
   assert.equal(alive.colours.ambient.r, 0x80 / 255);
   assert.equal(ghost.colours.ambient.r, 0x40 / 255, "the death set");
   assert.equal(ghost.skyboxPath, "Environments\\Stars\\DeathSkybox.m2");
   assert.equal(ghost.skyboxFlags, 2);
-  const half = resolveLighting(V5_ENTRY, 0, 0, 1440, 0, 3, undefined, undefined, 1, undefined, undefined, false, 0.5);
+  const half = resolveLighting(V5_ENTRY, 0, 0, 1440, 0, undefined, undefined,false, 0.5);
   assert.ok(Math.abs(half.colours.ambient.r - (0x80 + 0x40) / 2 / 255) < 1e-6, "a fading ghost blends the two");
   assert.equal(half.sunColour, 0x7f7f7f, "and the packed sky channels with them, byte by byte");
   assert.equal(ghost.sunColour, 0, "the death sets carry no sun");
-  const underwaterGhost = resolveLighting(V5_ENTRY, 0, 0, 1440, 0, 3, undefined, undefined, 1, undefined, undefined, true, 1);
+  const underwaterGhost = resolveLighting(V5_ENTRY, 0, 0, 1440, 0, undefined, undefined,true, 1);
   assert.equal(underwaterGhost.colours.ambient.r, 0x40 / 255, "the death light wins over the water");
   const old = { fallback: 1, params: { 1: colourSet(0x808080) }, volumes: [] };
-  const oldGhost = resolveLighting(old, 0, 0, 1440, 0, 3, undefined, undefined, 1, undefined, undefined, false, 1);
+  const oldGhost = resolveLighting(old, 0, 0, 1440, 0, undefined, undefined,false, 1);
   assert.equal(oldGhost.colours.ambient.r, 0x80 / 255, "no slot 4 in the body: the living light");
 });
 
 test("7.65: under magma the LightParams set LiquidType names replaces the zone, read whole", () => {
-  const args = (underwater, liquid, depth) => [V5_ENTRY, 0, 0, 1440, 0, 3, undefined, undefined, 1, undefined,
-    undefined, underwater, 0, liquid, depth];
+  const args = (underwater, liquid, depth) => [V5_ENTRY, 0, 0, 1440, 0, undefined, undefined,
+    underwater, 0, liquid, depth];
   const zone = resolveLighting(...args(true, undefined, 0));
   assert.equal(zone.colours.ambient.b, 1, "zonal underwater set 2");
   const magma = resolveLighting(...args(true, 3, 2));
@@ -313,13 +313,13 @@ test("7.65: under magma the LightParams set LiquidType names replaces the zone, 
   const unknown = resolveLighting(...args(true, 9, 2));
   assert.equal(unknown.colours.ambient.b, 1, "a set missing from the body: the zone");
   const v4 = { ...V5_ENTRY, liquids: undefined };
-  assert.equal(resolveLighting(v4, 0, 0, 1440, 0, 3, undefined, undefined, 1, undefined, undefined, true, 0, 3, 2)
+  assert.equal(resolveLighting(v4, 0, 0, 1440, 0, undefined, undefined,true, 0, 3, 2)
     .colours.ambient.b, 1, "an old body: the zone");
 });
 
 test("7.10: the ocean darkens with depth by its LiquidType intensities", () => {
-  const at = (depth) => resolveLighting(V5_ENTRY, 0, 0, 1440, 0, 3, undefined, undefined, 1, undefined,
-    undefined, true, 0, 2, depth);
+  const at = (depth) => resolveLighting(V5_ENTRY, 0, 0, 1440, 0, undefined, undefined,
+    true, 0, 2, depth);
   const surface = at(0);
   const half = at(15);
   const deep = at(60);
@@ -331,7 +331,7 @@ test("7.10: the ocean darkens with depth by its LiquidType intensities", () => {
   assert.ok(Math.abs(half.colours.ambient.b - 0.75) < 1e-6);
   assert.ok(Math.abs(deep.colours.ambient.b - 0.5) < 1e-6, "clamped at MaxDarkenDepth");
   assert.ok(Math.abs(deep.colours.diffuse.b - 0.75) < 1e-6);
-  const dry = resolveLighting(V5_ENTRY, 0, 0, 1440, 0, 3, undefined, undefined, 1, undefined, undefined, false, 0, 2, 15);
+  const dry = resolveLighting(V5_ENTRY, 0, 0, 1440, 0, undefined, undefined,false, 0, 2, 15);
   assert.equal(dry.fogEnd, 600, "darkening needs the eye under the surface");
 });
 
@@ -436,8 +436,8 @@ function v5Set(colour, fog) {
 }
 
 /** The light of every call below: (entry, underwater, ghost, liquidType, depth, storm). */
-const at = (entry, underwater, ghost, liquidType, depth, storm = 0) => resolveLighting(entry, 0, 0, 1440, storm, 3,
-  undefined, undefined, 1, undefined, undefined, underwater, ghost, liquidType, depth);
+const at = (entry, underwater, ghost, liquidType, depth, storm = 0) => resolveLighting(entry, 0, 0, 1440, storm,
+  undefined, undefined, underwater, ghost, liquidType, depth);
 
 // An old gateway: no slot 4, no liquids, no sky channels — the v4 body.
 const V4_ENTRY = {

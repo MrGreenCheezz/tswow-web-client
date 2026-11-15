@@ -416,7 +416,7 @@ test("visual-tile-v5: set 0 joins the placement's set, outdoor-owned doodads are
   assert.equal(caches.length, 1);
   assert.equal(caches[0].version, 2, "the v2 doodad cache, its own file");
   assert.deepEqual(caches[0].sets[1].map((doodad) => doodad.index), [0, 1, 2, 3]);
-  await assert.rejects(publish({ generation: "visual-tile-v8" }), /Unknown visual tile generation/); // 12.10 6.25: v7 exists
+  await assert.rejects(publish({ generation: "visual-tile-v9" }), /Unknown visual tile generation/); // 12.10 6.25: v7 exists; 15.11 (far8): v8
 });
 
 test("the 10,000-object cap is counted into a sidecar under v5 and stays silent under v4 (7.19)", { skip: !hasDataset }, async () => {
@@ -443,7 +443,7 @@ test("one generation name in the generator, the gateway, its configuration and t
   const pregenerate = readFileSync("tools/pregenerate.mjs", "utf8");
   const decoder = readFileSync("src/browser/EnvironmentTileDecode.ts", "utf8");
   const name = generator.match(/export const VISUAL_TILE_GENERATION = "(visual-tile-v\d+)"/)?.[1];
-  assert.equal(name, "visual-tile-v7"); // P2-04x: v6; 12.10 6.25: v7
+  assert.equal(name, "visual-tile-v8"); // P2-04x: v6; 12.10 6.25: v7; 15.11 (far8): v8
   assert.match(gatewaySide, new RegExp(`VISUAL_TILE_GENERATION = "${name}"`));
   assert.match(pregenerate, new RegExp(`VISUAL_TILE_GENERATION = "${name}"`));
   assert.equal(decoder.match(/VISUAL_TILE_ROUTE_VERSION = (\d+)/)?.[1], name.replace("visual-tile-v", ""),

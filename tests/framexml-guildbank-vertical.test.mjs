@@ -230,7 +230,9 @@ test("the stock vault: logs, tab text, the buy screen, the cursor, money popups,
 
     // The vault cursor: a stack picked up locks its slot; a click on another slot moves it there.
     run("GuildBankColumn1Button1:Click('LeftButton')");
-    assert.deepEqual(run("return CursorHasItem() and 1 or 0, GetCursorInfo()", 3), [1, "item", 2589]);
+    // go8 follow-up (15.11): the vault's stack is cursor type 0xB — GetCursorInfo "item" (0x00515200), but CursorHasItem
+    // nil (0x00515100 answers types 1 and 9 only).
+    assert.deepEqual(run("return CursorHasItem() and 1 or 0, GetCursorInfo()", 3), [0, "item", 2589]);
     assert.equal(run("return select(3, GetGuildBankItemInfo(1, 1))")[0], 1);
     run("GuildBankColumn1Button6:Click('LeftButton')");
     await settle();

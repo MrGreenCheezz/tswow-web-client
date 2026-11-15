@@ -171,8 +171,8 @@ test("stacked light volumes resolve against the player's height", () => {
       { id: 2, x: 0, y: 0, z: 100, innerRadius: 10, outerRadius: 50, params: 3 },
     ],
   };
-  const ground = resolveLighting(stacked, 0, 0, 1440, 0, 3, 0);
-  const air = resolveLighting(stacked, 0, 0, 1440, 0, 3, 100);
+  const ground = resolveLighting(stacked, 0, 0, 1440, 0, 0);
+  const air = resolveLighting(stacked, 0, 0, 1440, 0, 100);
   assert.equal(ground.colours.fog.r, 1, "the lower volume owns the ground");
   assert.equal(ground.colours.fog.g, 0);
   assert.equal(air.colours.fog.r, 0, "the upper volume is selected in the air");
@@ -511,52 +511,40 @@ test("a zone whose two slots name the same set simply has no weather in its sky"
   assert.deepEqual(stormless.colours.fog, clear.colours.fog);
 });
 
-test("a scripted Light.dbc override replaces spatial volumes and carries the authored sky model", () => {
+test("a scripted Light.dbc override lays its sets over the frame at its area light's place (15.11, 7.67)", () => {
+  // The fallback Light.dbc row is 100 while its LightParams row is 1: the packet names Light rows.
   const entry = {
     fallback: 1,
     fallbackLightId: 100,
     params: {
       1: set(DAY),
       2: set(0xff0000, "Environments\\Stars\\DalaranSky.m2"),
+      3: set(0x00ff00),
     },
-    volumes: [{ id: 7, x: 100, y: 0, z: 0, innerRadius: 10, outerRadius: 50, params: 2 }],
-    lights: { 42: { params: 2 } },
+    volumes: [{ id: 7, x: 100, y: 0, z: 0, innerRadius: 10, outerRadius: 50, params: 3 }],
+    lights: { 42: { params: 2 }, 7: { params: 3 } },
   };
-  // The fallback Light.dbc row is 100 while its LightParams row is 1. Comparing the packet's area
-  // id to `fallback` would silently reject this valid map-wide override.
-  const overridden = resolveLighting(entry, 0, 0, 1440, 0, 3, 0, 42, 1, 100);
+  const over = (weight, areaLightId = 100) => [{ areaLightId, overrideLightId: 42, weight }];
+  const overridden = resolveLighting(entry, 0, 0, 1440, 0, 0, over(1));
   assert.equal(overridden.colours.fog.r, 1);
   assert.equal(overridden.skyboxPath, "Environments\\Stars\\DalaranSky.m2");
-  const halfway = resolveLighting(entry, 0, 0, 1440, 0, 3, 0, 42, 0.5, 100);
+  const halfway = resolveLighting(entry, 0, 0, 1440, 0, 0, over(0.5));
   assert.ok(Math.abs(halfway.colours.fog.r - (1 + 0xa0 / 255) / 2) < 0.01);
-  // A clear packet (target id 0) transitions from the previous scripted row back to the spatial
-  // layer instead of snapping at receipt; A -> B uses the same source/target path.
-  const cleared = resolveLighting(entry, 0, 0, 1440, 0, 3, 0, 0, 0.5, 100, 42);
-  assert.ok(Math.abs(cleared.colours.fog.r - (1 + 0xa0 / 255) / 2) < 0.01);
-  const changing = {
-    ...entry,
-    params: { ...entry.params, 3: set(0x00ff00) },
-    lights: { ...entry.lights, 43: { params: 3 } },
-  };
-  const aToB = resolveLighting(changing, 0, 0, 1440, 0, 3, 0, 43, 0.5, 100, 42);
-  assert.ok(Math.abs(aToB.colours.fog.r - 0.5) < 0.01);
-  assert.ok(Math.abs(aToB.colours.fog.g - 0.5) < 0.01);
-  // The packet's area id substitutes only that active Light.dbc layer. A tighter inner volume
-  // remains authoritative instead of being repainted by an outer-zone transition.
-  const nested = {
-    ...entry,
-    params: { ...entry.params, 3: set(0x00ff00) },
-    volumes: [
-      ...entry.volumes,
-      { id: 9, x: 100, y: 0, z: 0, innerRadius: 5, outerRadius: 25, params: 3 },
-    ],
-  };
-  const inner = resolveLighting(nested, 100, 0, 1440, 0, 3, 0, 42, 1, 7);
-  assert.equal(inner.colours.fog.g, 1, "the tighter volume remains authoritative");
-  assert.equal(inner.colours.fog.r, 0);
-  assert.equal(resolveLighting(entry, 100, 0, 1440, 0, 3, 0, 42, 1, 999).colours.fog.r, 1);
-  // Clearing the override (id 0) returns to ordinary spatial resolution.
-  assert.equal(resolveLighting(entry, 100, 0, 1440, 0, 3, 0, 0).colours.fog.r, 1);
+  // Wow.exe 0x007f1360 blends the scripted lights after every volume: inside a volume the override still wins.
+  const inVolume = resolveLighting(entry, 100, 0, 1440, 0, 0, over(1));
+  assert.equal(inVolume.colours.fog.r, 1, "laid over the volume, not under it");
+  assert.equal(inVolume.colours.fog.g, 0);
+  // Over a volume's place: the smaller of the fade and the volume's falloff, and nothing outside it.
+  const atVolumeEdge = resolveLighting(entry, 130, 0, 1440, 0, 0, over(1, 7));
+  const volumeRed = 0.5 * 0xa0 / 255; // the default half-way to the green volume at its falloff's middle
+  assert.ok(Math.abs(atVolumeEdge.colours.fog.r - (volumeRed * 0.5 + 0.5)) < 0.01, `got ${atVolumeEdge.colours.fog.r}`);
+  assert.equal(resolveLighting(entry, 0, 0, 1440, 0, 0, over(1, 7)).colours.fog.r, 0xa0 / 255,
+    "outside the area light's place the override reaches nothing");
+  // A row that is not on this map is skipped, as 0x007f10a0 refuses an entry without both rows.
+  assert.equal(resolveLighting(entry, 0, 0, 1440, 0, 0, over(1, 999)).colours.fog.r, 0xa0 / 255);
+  // Default rows keep their stored, unscaled radii (0x007eaf60): Light 1's 0/0 reaches nothing.
+  const lightOne = { ...entry, fallbackReach: [0, 0] };
+  assert.equal(resolveLighting(lightOne, 0, 0, 1440, 0, 0, over(1)).colours.fog.r, 0xa0 / 255);
 });
 
 test("authored sky clips follow the game day rather than a five-minute wall-clock loop", () => {
@@ -818,7 +806,7 @@ test("the underwater slots reach the browser, and a slot that repeats does not",
   // The camera decides which pair is read. Above water the fog ends where slot 0 says and under it
   // where slot 1 does; this is the whole of what a swimming player was missing.
   const above = resolveLighting(entry, 0, 0, 0);
-  const below = resolveLighting(entry, 0, 0, 0, 0, 3, undefined, undefined, 1, undefined, undefined, true);
+  const below = resolveLighting(entry, 0, 0, 0, 0, undefined, undefined,true);
   assert.equal(above.fogEnd, 500);
   assert.equal(below.fogEnd, 184);
   assert.equal(Math.round(above.colours.fog.r * 255), 0x10);
@@ -826,12 +814,12 @@ test("the underwater slots reach the browser, and a slot that repeats does not",
 
   // A storm under water is slot 3, and where slot 3 repeats slot 1 the weather changes nothing —
   // which is the same answer the row's own data gives.
-  const storm = resolveLighting(entry, 0, 0, 0, 1, 3, undefined, undefined, 1, undefined, undefined, true);
+  const storm = resolveLighting(entry, 0, 0, 0, 1, undefined, undefined,true);
   assert.equal(storm.fogEnd, 216);
   const volume = entry.volumes[0];
   assert.equal(volume.underwaterParams, 2);
   assert.equal(volume.underwaterStormParams, undefined);
-  const inside = resolveLighting(entry, -9000, 250, 0, 1, 3, 80, undefined, 1, undefined, undefined, true);
+  const inside = resolveLighting(entry, -9000, 250, 0, 1, 80, undefined, true);
   assert.equal(inside.fogEnd, 184, "inside the volume the storm cannot move a slot the row did not fill");
 });
 

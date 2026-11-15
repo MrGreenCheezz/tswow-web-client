@@ -21,7 +21,7 @@ export function parseAdtPlacements(data, options = {}) {
   const m2Names = names(chunks.get("MMDX"), chunks.get("MMID"));
   const wmoNames = names(chunks.get("MWMO"), chunks.get("MWID"));
   const objects = [
-    ...placements(chunks.get("MDDF"), 36, "m2", m2Names),
+    ...placements(chunks.get("MDDF"), 36, "m2", m2Names, false, options?.biodome === true),
     ...placements(chunks.get("MODF"), 64, "wmo", wmoNames, options?.nameSet === true),
   ];
   if (objects.length > 10_000) throw new RangeError(`ADT contains too many visual objects: ${objects.length}`);
@@ -120,7 +120,15 @@ function extents(data, at) {
   };
 }
 
-function placements(data, stride, kind, modelNames, nameSet = false) {
+/**
+ * 15.11 (7.66 tail, far8): MDDF flag 0x1. Wow.exe's doodad def (0x007becd0) reads the record's flags byte (+0x22) and
+ * sets the def's 0x800 for bit 0x1, and 0x00791cb0 skips the size-class distance and its fade for a def with 0x800: the
+ * doodad is drawn as far as the chunk walk and the frustum reach. In this client only Netherstorm's three biodomes
+ * (`NS_BIODOME_ALL_FX_*`, six records) carry it (`.runtime/re-2026-11-15/far8/mddf-flags.txt`).
+ */
+const MDDF_BIODOME = 0x1;
+
+function placements(data, stride, kind, modelNames, nameSet = false, biodome = false) {
   if (!data) return [];
   if (data.length % stride !== 0) throw new Error(`ADT ${kind} placement chunk is misaligned`);
   const result = [];
@@ -147,6 +155,8 @@ function placements(data, stride, kind, modelNames, nameSet = false) {
       ...(kind === "wmo" ? { doodadSet: data.readUInt16LE(offset + 58), bounds: extents(data, offset + 32) } : {}),
       // 05.10-A7b-1 (7.13): opt-in, see `parseAdtPlacements`.
       ...(kind === "wmo" && nameSet ? { nameSet: data.readUInt16LE(offset + 60) } : {}),
+      // 15.11 (far8): opt-in (`visual-tile-v8`), present only when set.
+      ...(kind === "m2" && biodome && (data.readUInt16LE(offset + 34) & MDDF_BIODOME) !== 0 ? { biodome: true } : {}),
     });
   }
   return result;

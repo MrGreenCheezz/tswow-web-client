@@ -399,7 +399,9 @@ import { mountedCastRule, SPELL_FAILED_NOT_MOUNTED } from "./MountedCastRule.js"
 import { // 5.05 (11.11): 0x0080cce0 / 0x0080ac90
   castPreflightRefusal, sittingCastRule, SPELL_FAILED_NOT_STANDING, type CastPreflightItem,
   type OverrideSpellRow, // 5.05 (15.11, combat7)
+  type CastPreflightSeat, // 11.02 (15.11, vehicle8)
 } from "./CastPreflightRule.js";
+import { isVehicleCarrierGuid } from "./VehicleSeatModel.js"; // 11.02 (15.11, vehicle8)
 import { castFailureErrorRowIsInfo, castFailureErrorText, petCastFailureErrorText, powerTokenName, SPELL_FAILED_ALREADY_AT_FULL_POWER } from "./CastFailureErrorRow.js"; // 3.47 (11.11)
 // 11.02-E: missile trajectories — the cast's flag 2 tail, the one re-aim, the page's solver.
 import {
@@ -560,6 +562,7 @@ import { writeMovementInfo } from "./MovementProtocol.js"; // 11.02-input
 import {
   isSplineMoveState, isSplineSpeed, parseFlightSplineSync, parseSplineMoveState, parseSplineSpeed,
 } from "./SplineStateProtocol.js";
+import { LightOverrideList } from "./LightOverrideList.js"; // 15.11 (sky8, 7.67)
 import {
   buildCinematicAck, buildSummonResponse, parseAreaTriggerMessage, parseBuildingDamage,
   parseCinematicId, parseDefenseMessage, parseOverrideLight, parsePhaseShift, parseSummonRequest,
@@ -945,6 +948,8 @@ export class WorldClient {
   autoStand: () => boolean = () => true; // 5.05 (11.11)
   /** 5.05 (15.11, combat7): an OverrideSpellData row by id (browser/OverrideSpellClient.ts); none until the rows land. */
   overrideSpellRow: (id: number) => OverrideSpellRow | undefined = () => undefined; // 5.05 (15.11, combat7)
+  /** 11.02 (15.11, vehicle8): a vehicle's VehicleSeat row for a slot (browser/VehicleClient.ts); none until the rows land. */
+  vehicleSeatRow: (vehicleId: number, slot: number) => CastPreflightSeat | undefined = () => undefined; // 11.02 (15.11, vehicle8)
   /** L15 5.05: the range of the controller's spell for the player against a target (0x00802c30); the browser's. */
   autoRangedLimits: (spellId: number, player: WorldObjectState, target: WorldObjectState) => AutoRangedLimits | undefined = () => undefined; // L15 5.05
   /**
@@ -1046,12 +1051,8 @@ export class WorldClient {
   onKnockBack: ((knockBack: KnockBack) => void) | undefined;
   /** The weather where the character is standing, or undefined until the server says. */
   weather: Weather | undefined;
-  /** A light a script has forced on the zone, which overrides the time of day. */
-  overrideLight: { areaLightId: number; overrideLightId: number; milliseconds: number } | undefined;
-  /** Previous Light.dbc row for the latest transition, including a scripted clear (target id 0). */
-  overrideLightFromId: number | undefined;
-  /** Monotonic receive time used to honour the transition duration from SMSG_OVERRIDE_LIGHT. */
-  overrideLightReceivedAt = 0;
+  /** 15.11 (sky8, 7.67): SMSG_OVERRIDE_LIGHT as Wow.exe keeps it, every entry with its own fade (`LightOverrideList`). */
+  readonly lightOverrides = new LightOverrideList();
   /** Which phases of the world this character can see. Everything is phase 1 by default. */
   phaseMask = 1;
   /** The last flight map a flight master sent. */
@@ -1470,6 +1471,8 @@ export class WorldClient {
   spellCooldownRow: ((spellId: number) => (SpellCooldownRow & {
     readonly targets?: number | undefined; readonly powerType?: number | undefined; // 3.47 (11.11): Targets, PowerType
     readonly effects?: readonly number[] | undefined; // 5.05 (11.11): Effect[0] for 0x0080cce0 (CastPreflightRule.ts)
+    readonly effectAura?: readonly number[] | undefined; // 11.02 (15.11, vehicle8): refusal 0b
+    readonly shapeshiftFormFlags?: number | undefined; // 11.02 (15.11, vehicle8): refusal 0b
   }) | undefined) | undefined;
   /**
    * 13.10 (3.01): the page's Spell.dbc rows' Speed and attribute words (`/dbc/spells?v=20`), for when a GO's misses
@@ -2036,9 +2039,7 @@ export class WorldClient {
       // explicit clear packet on transfer must not leave the previous zone's Dalaran/raid sky in
       // the new map while its first world packets are arriving.
       this.weather = undefined;
-      this.overrideLight = undefined;
-      this.overrideLightFromId = undefined;
-      this.overrideLightReceivedAt = 0;
+      this.lightOverrides.clear(); // 15.11 (sky8, 7.67): Wow.exe empties its list with the world (0x007f1d30)
       // With a transport, NEW_WORLD writes transport.pos (deck-local), not the player's world
       // location. The core relocates the player after WORLDPORT_ACK and sends absolute XYZ in the
       // destination self CREATE. Until then the renderer/terrain must have no false position.
@@ -2694,15 +2695,21 @@ export class WorldClient {
     if (!self || (this.controlledGuid !== undefined && this.controlledGuid !== selfGuid)) return false;
     const attributes = spellAttributeWords(spellId);
     if (attributes === undefined) return false; // no row yet: the realm decides, as before
-    const effect0 = this.spellCooldownRow?.(spellId)?.effects?.[0];
+    const row = this.spellCooldownRow?.(spellId);
+    const effect0 = row?.effects?.[0];
     const fields = self.fields;
     // 5.05 (15.11, combat7): PLAYER_FIELD_BYTES2's low word names the OverrideSpellData row (refusal 0).
     const overrideId = (fields.get(UPDATE_FIELDS.PLAYER_FIELD_BYTES2.offset) ?? 0) & 0xffff;
-    let refusal = castPreflightRefusal({ attributes, effect0, id: spellId }, { // 5.05 (15.11, combat7): + id
+    // 11.02 (15.11, vehicle8): refusal 0b reads the seat of a carrier in view (0x0074b8b0 → 0x005d3340).
+    const carrier = self.transport !== undefined && isVehicleCarrierGuid(self.transport.guid)
+      ? this.state.objects.get(self.transport.guid) : undefined;
+    let refusal = castPreflightRefusal({ attributes, effect0, id: spellId, // 5.05 (15.11, combat7): + id
+      effectAura: row?.effectAura, shapeshiftFormFlags: row?.shapeshiftFormFlags }, { // 11.02 (15.11, vehicle8)
       health: unitFields.health(self) ?? 1,
       playerFlags: fields.get(UPDATE_FIELDS.PLAYER_FLAGS.offset) ?? 0,
       rangedItem: this.#rangedSlotItem(self),
       overrideSpells: overrideId === 0 ? undefined : this.overrideSpellRow(overrideId), // 5.05 (15.11, combat7)
+      seat: carrier?.vehicleId ? this.vehicleSeatRow(carrier.vehicleId, self.transport!.seat) : undefined, // 11.02 (15.11, vehicle8)
     });
     if (refusal === undefined) {
       const sitting = sittingCastRule(attributes[0], unitFields.standState(self) ?? 0, this.autoStand());
@@ -6658,12 +6665,8 @@ export class WorldClient {
       // A zone lit by a script rather than by the time of day. Held rather than drawn: which
       // light row wins belongs to the renderer's own tables.
       const next = parseOverrideLight(packet.payload);
-      const previous = this.overrideLight;
-      this.overrideLightFromId = previous && previous.areaLightId === next.areaLightId
-        && previous.overrideLightId > 0 && next.milliseconds > 0
-        ? previous.overrideLightId : undefined;
-      this.overrideLight = next;
-      this.overrideLightReceivedAt = performance.now();
+      // 15.11 (sky8, 7.67): what the light reads (0x412 → 0x007f11a0, 0x007f10a0).
+      this.lightOverrides.receive(next.areaLightId, next.overrideLightId, next.milliseconds, performance.now());
       this.events.emit("WEATHER_CHANGED", this.weather);
       return true;
     }

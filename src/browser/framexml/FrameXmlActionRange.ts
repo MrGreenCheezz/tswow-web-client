@@ -504,7 +504,9 @@ export function actionRangeLimits(
 }
 
 /** 0x007fd970 op 5 over the spell's family mask: (max + flat) × (100 + pct)%, when any applies. */
-function applyRangeModifiers(spell: ActionRangeSpell, max: number, host: ActionRangeHost): number {
+export function applyRangeModifiers( // range8: also SpellHasRange's (FrameXmlSpellQueries.ts)
+  spell: ActionRangeSpell, max: number, host: Pick<ActionRangeHost, "playerSpellFamily" | "spellModifiers">,
+): number {
   if (((spell.attributes?.[3] ?? 0) & ATTR3_NO_CASTER_MODIFIERS) !== 0) return max;
   const family = host.playerSpellFamily();
   if (family === undefined || spell.spellClassSet === 0 || spell.spellClassSet !== family) return max;

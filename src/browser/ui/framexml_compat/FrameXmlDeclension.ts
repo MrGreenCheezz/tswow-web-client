@@ -281,6 +281,18 @@ function classify(word: string, gender: number): { readonly rule: number; readon
 }
 
 /**
+ * 1.19 (15.11): `0x76DE70`'s first part for another reader (the glue's declension check, GlueDeclensionCheck.ts):
+ * the word lower-cased as the client does (`0x7E1180`), its rule, the stem length, and the rule's ending patterns.
+ */
+export function frameXmlDeclensionClass(name: string, gender: number):
+  { readonly word: string; readonly rule: number; readonly stem: number; readonly patterns: readonly string[]; readonly matched: boolean } {
+  const word = lowerWord(name);
+  const { rule, stem } = classify(word, gender);
+  const matched = rule !== DEFAULT_RULE_MALE && rule !== DEFAULT_RULE_FEMALE;
+  return { word, rule, stem, patterns: RULES[rule]!.patterns, matched };
+}
+
+/**
  * `DeclineName(name, gender, set)` — `0x76E330`: the five case forms (genitive … prepositional),
  * or `undefined` where the client answers nothing (a set outside 0–2, or one the rule lacks).
  */

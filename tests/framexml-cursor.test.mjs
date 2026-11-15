@@ -93,18 +93,23 @@ test("an item by id or link goes on a bar as an item action; a pet action never 
   const { seam } = canned();
   call(seam, "PickupItem", "|cffffffff|Hitem:13446:0:0:0:0:0:0:0:0|h[Зелье]|h|r");
   assert.deepEqual(call(seam, "GetCursorInfo").slice(0, 2), ["item", 13446]);
-  assert.deepEqual(call(seam, "CursorHasItem"), [true]);
+  // go8 follow-up (15.11): Wow.exe 0x00515100 answers CursorHasItem for cursor types 1 and 9 only; PickupItem's
+  // item is type 7 (0x00522FB0), so nil — false here.
+  assert.deepEqual(call(seam, "CursorHasItem"), [false]);
   call(seam, "PlaceAction", 20);
   assert.deepEqual(call(seam, "GetActionInfo", 20), ["item", 13446]);
   assert.deepEqual(call(seam, "GetActionTexture", 20), ["Interface\\Icons\\INV_Potion_54"]);
   assert.deepEqual(call(seam, "GetCursorInfo"), []);
   call(seam, "PickupPetAction", 3);
-  assert.deepEqual(call(seam, "GetCursorInfo"), ["petaction", 3]);
+  // go8 follow-up (15.11): a pet action is cursor type 4 (0x00520A80); GetCursorInfo (0x00515200) has no case for it
+  // and answers nothing, so the hold is read from the model.
+  assert.deepEqual(call(seam, "GetCursorInfo"), []);
+  assert.deepEqual(seam.cursor.held(), { kind: "petaction", index: 3 });
   call(seam, "PlaceAction", 21);
   assert.deepEqual(call(seam, "HasAction", 21), [false], "the main bars refuse a pet action");
-  assert.deepEqual(call(seam, "GetCursorInfo"), ["petaction", 3], "and it stays held");
+  assert.deepEqual(seam.cursor.held(), { kind: "petaction", index: 3 }, "and it stays held");
   call(seam, "PickupPetAction", 3);
-  assert.deepEqual(call(seam, "GetCursorInfo"), [], "the pet bar's second pickup is the drop");
+  assert.equal(seam.cursor.held(), undefined, "the pet bar's second pickup is the drop");
 });
 
 test("the cursor picture follows what is held, across holders", () => {

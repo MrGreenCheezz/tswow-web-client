@@ -21,6 +21,7 @@ const {
   DUNGEON_ENCOUNTERS_ROUTE_PATH, DUNGEON_ENCOUNTERS_ROUTE_VERSION, DungeonEncounterClient,
   dungeonEncounterTableFrom, encounterKilled,
 } = await import("../dist/code/browser/DungeonEncounterClient.js");
+const { createCannedFrameXmlPopups } = await import("../dist/code/browser/framexml/FrameXmlPopupsCanned.js");
 
 const ORIGIN = "http://127.0.0.1:5173";
 const RU = 8;
@@ -50,6 +51,7 @@ function dbc(rows, fields = 23) {
       const field = 5 + Number(slot);
       if (field < fields) records.writeUInt32LE(offsetOf(text), at + field * 4);
     }
+    if (row.icon !== undefined && 22 < fields) records.writeInt32LE(row.icon, at + 22 * 4);
   });
   const header = Buffer.alloc(20);
   header.write("WDBC", 0, "latin1");
@@ -68,13 +70,13 @@ const ROWS = [
   { id: 900, map: 47, difficulty: 1, order: 0, bit: 0, names: { 0: "Heroic only in enUS" } },
 ];
 
-test("the catalog: every row in file order, [id, map, difficulty, bit, name]; ruRU, else enUS", () => {
+test("the catalog: every row in file order, [id, map, difficulty, bit, name, icon]; ruRU, else enUS", () => {
   const rows = parseFixed("DungeonEncounter", dbc(ROWS), DUNGEON_ENCOUNTER_LAYOUT);
   assert.deepEqual(dungeonEncounterCatalog(rows, "ruRU"), {
     version: DUNGEON_ENCOUNTERS_VERSION,
     encounters: [
-      [440, 47, 0, 2, "Третий бит"], [438, 47, 0, 0, "Нулевой бит"], [439, 47, 0, 1, "Первый бит"],
-      [900, 47, 1, 0, "Heroic only in enUS"],
+      [440, 47, 0, 2, "Третий бит", null], [438, 47, 0, 0, "Нулевой бит", null], [439, 47, 0, 1, "Первый бит", null],
+      [900, 47, 1, 0, "Heroic only in enUS", null],
     ],
   });
   assert.throws(() => parseFixed("DungeonEncounter", dbc(ROWS, 22), DUNGEON_ENCOUNTER_LAYOUT), /DBCfmt\.h/,
@@ -92,9 +94,9 @@ test("the browser table: a map's bosses in file order, killed by their own Bit; 
     "the first row is killed: its Bit is 2, its row index 0");
   assert.deepEqual(table.encounters(47, 1).map(({ name }) => name), ["Heroic only in enUS"], "difficulty is part of the key");
   assert.deepEqual(table.encounters(999, 0), [], "no rows: 0 bosses, as the client counts them");
-  for (const bad of [undefined, null, 1, {}, { version: 2, encounters: [] }, { version: 1 },
-    { version: 1, encounters: [[1, 2, 3, 4]] }, { version: 1, encounters: [[1, 2, 3, 4, 5]] },
-    { version: 1, encounters: [[1, 2, 3, 1.5, "x"]] }]) {
+  for (const bad of [undefined, null, 1, {}, { version: 1, encounters: [] }, { version: 2 },
+    { version: 2, encounters: [[1, 2, 3, 4, "x"]] }, { version: 2, encounters: [[1, 2, 3, 4, 5, null]] },
+    { version: 2, encounters: [[1, 2, 3, 1.5, "x", null]] }, { version: 2, encounters: [[1, 2, 3, 4, "x", 7]] }]) {
     assert.equal(dungeonEncounterTableFrom(bad), undefined, JSON.stringify(bad));
   }
 });
@@ -125,7 +127,7 @@ test("the route: one row in CATALOG_ROUTES at the version the browser asks; 200 
     const body = await ok.json();
     assert.equal(body.encounters.length, ROWS.length);
     assert.ok(dungeonEncounterTableFrom(body));
-    assert.equal((await fetch(`${base}/dbc/dungeon-encounters?v=2`, { headers: { origin: ORIGIN } })).status, 400);
+    assert.equal((await fetch(`${base}/dbc/dungeon-encounters?v=1`, { headers: { origin: ORIGIN } })).status, 400);
     assert.equal((await fetch(`${base}${DUNGEON_ENCOUNTERS_ROUTE_PATH}`, { headers: { origin: "http://evil.test" } })).status, 403);
     await writeFile(join(broken, "DungeonEncounter.dbc"), dbc(ROWS, 22));
     dbcDirectory = broken;
@@ -135,6 +137,59 @@ test("the route: one row in CATALOG_ROUTES at the version the browser asks; 200 
     await new Promise((resolve) => server.close(resolve));
     await rm(directory, { recursive: true, force: true });
     await rm(broken, { recursive: true, force: true });
+  }
+});
+
+/** A WDBC image of SpellIcon rows `[id, texture]` ("ni" + string: ID, TextureFilename). */
+function spellIconDbc(rows) {
+  const strings = [Buffer.from([0])];
+  let stringsSize = 1;
+  const records = Buffer.alloc(rows.length * 8);
+  rows.forEach(([id, texture], index) => {
+    records.writeInt32LE(id, index * 8);
+    if (texture) {
+      const bytes = Buffer.from(`${texture}\0`, "utf8");
+      records.writeUInt32LE(stringsSize, index * 8 + 4);
+      strings.push(bytes);
+      stringsSize += bytes.length;
+    }
+  });
+  const header = Buffer.alloc(20);
+  header.write("WDBC", 0, "latin1");
+  header.writeUInt32LE(rows.length, 4);
+  header.writeUInt32LE(2, 8);
+  header.writeUInt32LE(8, 12);
+  header.writeUInt32LE(stringsSize, 16);
+  return Buffer.concat([header, records, ...strings]);
+}
+
+test("v2: the boss icon is SpellIcon.TextureFilename of the row's SpellIconID; 0 or a missing row is nil (0x005538b0)", async () => {
+  // Synthetic: this dataset has SpellIconID 0 in every row, so the rule shows only here.
+  const directory = await mkdtemp(join(tmpdir(), "encounter-icons-"));
+  try {
+    await writeFile(join(directory, "DungeonEncounter.dbc"), dbc([
+      { id: 1, map: 33, difficulty: 0, order: 0, bit: 0, names: { [RU]: "С иконкой" }, icon: 77 },
+      { id: 2, map: 33, difficulty: 0, order: 1, bit: 1, names: { [RU]: "Без иконки" }, icon: 0 },
+      { id: 3, map: 33, difficulty: 0, order: 2, bit: 2, names: { [RU]: "Иконки нет в таблице" }, icon: 78 },
+      { id: 4, map: 33, difficulty: 0, order: 3, bit: 3, names: { [RU]: "Пустое имя файла" }, icon: 79 },
+    ]));
+    await writeFile(join(directory, "SpellIcon.dbc"), spellIconDbc([[77, "Interface\\Icons\\SyntheticBoss"], [79, ""]]));
+    const catalog = await loadDungeonEncounters(directory);
+    assert.deepEqual(catalog.encounters.map((row) => row[5]), ["Interface\\Icons\\SyntheticBoss", null, null, ""]);
+    const table = dungeonEncounterTableFrom(JSON.parse(JSON.stringify(catalog)));
+    assert.ok(table);
+    assert.deepEqual(table.encounters(33, 0).map(({ icon }) => icon), ["Interface\\Icons\\SyntheticBoss", undefined, undefined, ""]);
+
+    // The stock lock dialog's GetInstanceLockTimeRemainingEncounter returns it as the texture.
+    const { model, world } = createCannedFrameXmlPopups(undefined, {
+      dungeonEncounters: (mapId, difficulty) => table.encounters(mapId, difficulty),
+    });
+    world.lockWarning(60_000, 0b1, 33, 0);
+    model.tick();
+    assert.deepEqual(model.instanceLockEncounter(1), ["С иконкой", "Interface\\Icons\\SyntheticBoss", true]);
+    assert.deepEqual(model.instanceLockEncounter(2), ["Без иконки", undefined, false]);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
   }
 });
 
@@ -159,7 +214,7 @@ function scripted(answers) {
   return { requests, timers, fetch, clock, flush, fire };
 }
 
-const BODY = { version: 1, encounters: [[571, 574, 0, 0, "Принц Келесет"], [573, 574, 0, 1, "Скарвальд и Далронн"]] };
+const BODY = { version: 2, encounters: [[571, 574, 0, 0, "Принц Келесет", null], [573, 574, 0, 1, "Скарвальд и Далронн", null]] };
 
 test("the client: undefined until the table lands, one request however often it is read; an older gateway is not asked every frame", async () => {
   const s = scripted([{ status: 404 }, { status: 404 }, { status: 200, body: BODY }]);
@@ -199,6 +254,7 @@ const withDataset = {
 test("this dataset's table: 612 rows, 117 groups; Utgarde Keep normal is three bosses at bits 0, 1, 2; mask 0b101 kills two", withDataset, async () => {
   const catalog = await loadDungeonEncounters(dbcDirectory);
   assert.equal(catalog.encounters.length, 612);
+  assert.ok(catalog.encounters.every((row) => row[5] === null), "SpellIconID 0 in every row of this dataset: no boss icon");
   const table = dungeonEncounterTableFrom(JSON.parse(JSON.stringify(catalog)));
   assert.ok(table);
   const groups = new Set(catalog.encounters.map(([, map, difficulty]) => `${map}/${difficulty}`));

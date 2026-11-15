@@ -123,6 +123,70 @@ export function doodadWorldSide(object: EnvironmentObject): number | undefined {
 }
 
 /**
+ * 15.11 (7.03, far8): the leash of a map object's doodad that a shown room binds. With `detail` (the faithful levels) it
+ * is its size class's distance within the rooms' `leash`: Wow.exe reads the outdoor table for a map object's doodads too
+ * (0x007babc0, 0x007bc490, 0x007bcc00), so a cup in a room seen through a door goes at 30 yards and a bookcase at
+ * 200·d. Its box is learnt once a placement of the model is built; until then the rooms' leash holds it.
+ */
+export function boundDoodadClassLeash(object: EnvironmentObject, leash: number, detail: number | undefined): number {
+  if (detail === undefined) return leash;
+  const reach = doodadOriginalReach(object, detail);
+  return reach === undefined ? leash : Math.min(reach, leash);
+}
+
+/**
+ * 15.11 (7.66 tail, far8): how far the placement's world box reaches from its origin across the ground — the largest
+ * horizontal distance of a corner of the model's header box, carried through the placement's rotation and scale as
+ * {@link doodadWorldSide} carries it. Undefined while the model's box is not known.
+ */
+export function doodadWorldGroundExtent(object: EnvironmentObject): number | undefined {
+  const box = MODEL_BOXES.get(object.name.toLowerCase());
+  if (!box || !Number.isFinite(object.scale) || object.scale <= 0) return undefined;
+  const quaternion = object.quaternionX !== undefined && object.quaternionY !== undefined
+    && object.quaternionZ !== undefined && object.quaternionW !== undefined;
+  if (quaternion) {
+    _quaternion.set(object.quaternionX!, object.quaternionY!, object.quaternionZ!, object.quaternionW!).normalize();
+    _rotation.makeRotationFromQuaternion(_quaternion).multiply(MODEL_TO_SCENE);
+  } else {
+    _rotation.makeRotationZ(THREE.MathUtils.degToRad(object.rotationY))
+      .multiply(_step.makeRotationY(THREE.MathUtils.degToRad(object.rotationX)))
+      .multiply(_step.makeRotationX(THREE.MathUtils.degToRad(object.rotationZ)));
+  }
+  let extent = 0;
+  for (let corner = 0; corner < 8; corner++) {
+    _corner.set(
+      corner & 1 ? box.max[0] : box.min[0],
+      corner & 2 ? box.max[1] : box.min[1],
+      corner & 4 ? box.max[2] : box.min[2],
+    ).applyMatrix4(_rotation);
+    // The model's own axes keep z up; the quaternion's scene frame keeps y up.
+    extent = Math.max(extent, quaternion ? Math.hypot(_corner.x, _corner.z) : Math.hypot(_corner.x, _corner.y));
+  }
+  const scaled = extent * object.scale;
+  return Number.isFinite(scaled) ? scaled : undefined;
+}
+
+/**
+ * 15.11 (7.66 tail, far8): the leash of a doodad whose MDDF record has the biodome flag (`biodome`, visual-tile-v8), or
+ * undefined for any other placement.
+ *
+ * Wow.exe's doodad def takes the record's flag 0x1 as its own 0x800 (0x007becd0) and 0x00791cb0 skips the size-class
+ * distance and its fade for it: such a doodad is drawn while a terrain chunk that references it is walked (the camera's
+ * far-clip window) and its sphere is in the frustum. In the Netherstorm stand frame (`fog6-o-netherstorm`) the
+ * Stormspire's dome (`NS_BIODOME_ALL_FX_STORMSPIRE.M2`, a 740-yard model) is drawn with its origin 1,336 yards from the
+ * camera, past both the 1,250-yard class-4 distance and the 1,277-yard far clip.
+ *
+ * Here: drawn while its world box comes within `reach` across the ground — the distance is measured to the origin, so
+ * the leash is the reach plus the box's ground extent around it. Before its model is built nothing bounds the box, so
+ * it is held to the tile footprint (infinite leash) until the build teaches it.
+ */
+export function biodomeDrawRange(object: EnvironmentObject, reach: number): number | undefined {
+  if (object.biodome !== true || object.kind !== "m2" || object.interior === true) return undefined;
+  const extent = doodadWorldGroundExtent(object);
+  return extent === undefined ? Number.POSITIVE_INFINITY : reach + extent;
+}
+
+/**
  * The faithful levels' draw distance of an outdoor doodad: its class's distance (0x0078f570), or undefined when
  * nothing about its size is known yet.
  *

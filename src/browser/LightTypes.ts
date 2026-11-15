@@ -98,6 +98,12 @@ export interface LightIndexEntry {
   fallbackUnderwaterStorm?: number | undefined;
   /** 05.10-A7b-5 (7.15): the fallback's death set; absent from a v4 body. */
   fallbackDeath?: number | undefined;
+  /**
+   * 15.11 (sky8, 7.67): the default row's stored inner and outer radius, unscaled — Wow.exe 0x007eaf60 converts only
+   * rows with a position, so a scripted light over the default reaches that many yards from the world's origin.
+   * Absent from a gateway before payload v8.
+   */
+  fallbackReach?: readonly [number, number] | undefined;
   volumes: LightVolume[];
   params: Record<number, LightParamSet>;
   /** Light.dbc row ids, used by SMSG_OVERRIDE_LIGHT scripted zone transitions. */
@@ -164,4 +170,10 @@ export interface LightSample {
   liquidDarkens: boolean;
   /** Dominant authored sky model, if the selected profile names one. */
   skyboxPath?: string;
+  /**
+   * 15.11 (sky8, 7.04): the page's glare rays this frame (`SkyGlareOcclusion.glareRays`), 1 clear and 0 hidden,
+   * carried to the renderer with the light; absent where nobody measured, which reads as clear.
+   */
+  sunGlareRay?: number;
+  moonGlareRay?: number;
 }

@@ -233,10 +233,11 @@ export interface FrameXmlLfdContext {
   dungeonEncounters?(mapId: number, difficulty: number): readonly FrameXmlLfdEncounter[] | undefined;
 }
 
-/** One DungeonEncounter row: its bit in the killed-boss mask and its name. */
+/** One DungeonEncounter row: its bit in the killed-boss mask, its name and its SpellIcon texture (absent: nil). */
 export interface FrameXmlLfdEncounter {
   readonly bit: number;
   readonly name: string;
+  readonly icon?: string;
 }
 
 interface FrameXmlLfdPump {
@@ -680,15 +681,15 @@ export class FrameXmlLfdModel {
   /**
    * `GetLFGProposalEncounter(i)`: `bossName, texture, isKilled` of the i-th DungeonEncounter row of
    * the proposal dungeon's MapID and Difficulty in file order (Wow.exe 0x00554380 → 0x005538b0),
-   * killed by the proposal's mask. The texture is the row's SpellIcon, nil for SpellIconID 0 —
-   * every row of this dataset; the route carries none.
+   * killed by the proposal's mask. The texture is the row's SpellIcon (the route's v2 icon), nil for SpellIconID 0 —
+   * every row of this dataset.
    */
-  proposalEncounter(index: number): readonly [string, undefined, boolean] | undefined {
+  proposalEncounter(index: number): readonly [string, string | undefined, boolean] | undefined {
     const proposal = this.#openProposal();
     if (!proposal || !Number.isInteger(index) || index < 1) return undefined;
     const row = this.#row(splitDungeonEntry(proposal.dungeonEntry).dungeonId);
     const encounter = row ? this.#context.dungeonEncounters?.(row.mapId, row.difficulty)?.[index - 1] : undefined;
-    return encounter ? [encounter.name, undefined, encounterBitKilled(proposal.encounters, encounter.bit)] : undefined;
+    return encounter ? [encounter.name, encounter.icon, encounterBitKilled(proposal.encounters, encounter.bit)] : undefined;
   }
 
   /** `isLeader, role, level, responded, accepted, name, class` for proposal slot `index`. */

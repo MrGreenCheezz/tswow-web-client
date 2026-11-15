@@ -3,11 +3,30 @@ import type { WorldObjectState, WorldPosition } from "../../world/WorldState.js"
 import { gameObjectType } from "../SimpleScene.js";
 import { UPDATE_FIELDS } from "../../generated/updateFields.js";
 import {
-  GO_FLAG_NOT_SELECTABLE, GO_TYPE_GUILD_BANK, GO_TYPE_MAILBOX, GO_TYPE_TEXT, interactionDistance, interactiveGameObjectType,
+  GO_FLAG_NOT_SELECTABLE, GO_TYPE_GUILD_BANK, GO_TYPE_MAILBOX, GO_TYPE_TEXT, interactiveGameObjectType,
   lockIdOf, usableByHand,
 } from "../../world/GameObjectProtocol.js";
 import { LOCK_KEY_ITEM, LOCK_KEY_SKILL } from "../../world/LockRules.js";
 import { game } from "./Context.js";
+import { gameObjectInUseReach } from "./GameObjectReachLive.js"; // 4.15 (15.11)
+
+/**
+ * 4.15 (15.11): the player within the object's use reach as Wow.exe measures it (GameObjectUseReach.ts): the drawn box
+ * grown by the type helper's range, a chair's seats, and — when the cached template's lock is one the player opens with
+ * a spell — that spell's range instead (0x0070FA70 → 0x0070F160 → 0x00802C30). Reads only a template already cached,
+ * so no query starts here. Was the centre against `interactionDistance(type)`.
+ */
+export function gameObjectWithinReach(
+  world: WorldClient, object: WorldObjectState, type: number, player: WorldPosition,
+): boolean {
+  const entry = object.fields.get(UPDATE_FIELDS.OBJECT_FIELD_ENTRY.offset) ?? 0;
+  const cached = entry > 0 ? world.gameObjectTemplates.get(entry) : undefined;
+  const template = cached != null && cached.type === type ? cached : undefined;
+  const lockId = template ? lockIdOf(template) : 0;
+  const spell = lockId > 0 ? game.locks?.spellFor(lockId, world.knownSpells.map((known) => known.id)) ?? 0 : 0;
+  const spellRange = spell > 0 ? game.spells?.get(spell)?.rangeMax : undefined;
+  return gameObjectInUseReach(object, type, player, template?.data, spellRange);
+}
 /**
  * Whether the interact button should offer to use this object.
  *
@@ -32,8 +51,7 @@ export function gameObjectAction(world: WorldClient, object: WorldObjectState, p
   if ((flags & GO_FLAG_NOT_SELECTABLE) !== 0) return undefined;
   const position = object.position;
   if (!position) return undefined;
-  const distance = Math.hypot(position.x - player.x, position.y - player.y, position.z - player.z);
-  if (distance > interactionDistance(type)) return undefined;
+  if (!gameObjectWithinReach(world, object, type, player)) return undefined; // 4.15 (15.11): was the centre within interactionDistance
 
   const entry = object.fields.get(UPDATE_FIELDS.OBJECT_FIELD_ENTRY.offset) ?? 0;
   const template = entry > 0 ? world.gameObjectTemplate(entry, object.guid) : undefined;
@@ -77,8 +95,7 @@ export function gameObjectLockHint(
   if ((flags & GO_FLAG_NOT_SELECTABLE) !== 0) return undefined;
   const position = object.position;
   if (!position) return undefined;
-  const distance = Math.hypot(position.x - player.x, position.y - player.y, position.z - player.z);
-  if (distance > interactionDistance(type)) return undefined;
+  if (!gameObjectWithinReach(world, object, type, player)) return undefined; // 4.15 (15.11)
   const entry = object.fields.get(UPDATE_FIELDS.OBJECT_FIELD_ENTRY.offset) ?? 0;
   if (entry <= 0) return undefined;
   const template = world.gameObjectTemplate(entry, object.guid);

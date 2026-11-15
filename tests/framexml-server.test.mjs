@@ -1036,11 +1036,11 @@ test("2.09 live context: the boss table through the page's DungeonEncounter clie
       playerLevel: () => 60, spellName: () => undefined, monotonic: () => performance.now(),
     };
     const context = frameXmlPopupsLiveContext(host);
-    assert.deepEqual(requests, ["http://127.0.0.1:18090/dbc/dungeon-encounters?v=1"], "asked when the world mounts, before any lock");
+    assert.deepEqual(requests, ["http://127.0.0.1:18090/dbc/dungeon-encounters?v=2"], "asked when the world mounts, before any lock");
     assert.equal(context.dungeonEncounters(574, 0), undefined, "on its way: nothing invented, the native prompt keeps a lock meanwhile");
     frameXmlPopupsLiveContext(host);
     assert.equal(requests.length, 1, "a second mount while it is in flight adds no request");
-    land({ version: 1, encounters: [[571, 574, 0, 0, "Принц Келесет"], [572, 574, 1, 0, "Принц Келесет"]] });
+    land({ version: 2, encounters: [[571, 574, 0, 0, "Принц Келесет", null], [572, 574, 1, 0, "Принц Келесет", null]] });
     await flush();
     assert.deepEqual(context.dungeonEncounters(574, 0), [{ bit: 0, name: "Принц Келесет" }]);
     assert.deepEqual(context.dungeonEncounters(1, 0), [], "loaded, no rows for the map: the client's 0 bosses");

@@ -17,8 +17,12 @@ import { readFile } from "node:fs/promises";
  *
  * v7 (12.10 6.25) is v6 with no room light (`localLight`) on a WMO doodad any exterior group names —
  * a ship's sails, Booty Bay's entrance arch — which the black MODD colour they carry turned black.
+ *
+ * v8 (15.11, 7.66 tail, far8) is v7 with `biodome: true` on an M2 placement whose MDDF record has flag 0x1, which
+ * Wow.exe draws past its size class's distance (0x007becd0 sets the def's 0x800, 0x00791cb0 skips the class cull for
+ * it): Netherstorm's three biodomes.
  */
-export const VISUAL_TILE_GENERATION = "visual-tile-v7";
+export const VISUAL_TILE_GENERATION = "visual-tile-v8";
 
 /**
  * How many WMO doodads the generator had to leave out of a tile for the object cap (7.19), from the

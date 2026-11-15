@@ -13,13 +13,18 @@ import { RetryingCatalogClient, type CatalogState, type RetryingCatalogOptions }
  */
 
 /** gateway/DungeonEncounterMetadata.ts `DUNGEON_ENCOUNTERS_VERSION`; tests/dungeon-encounter-metadata.test.mjs pins the two together. */
-export const DUNGEON_ENCOUNTERS_ROUTE_VERSION = 1;
+export const DUNGEON_ENCOUNTERS_ROUTE_VERSION = 2;
 export const DUNGEON_ENCOUNTERS_ROUTE_PATH = `/dbc/dungeon-encounters?v=${DUNGEON_ENCOUNTERS_ROUTE_VERSION}`;
 
-/** One boss of a map and difficulty: its bit in the killed-boss mask and its name. */
+/** One boss of a map and difficulty: its bit in the killed-boss mask, its name and its icon. */
 export interface DungeonEncounter {
   readonly bit: number;
   readonly name: string;
+  /**
+   * v2 (15.11): the row's `SpellIcon.TextureFilename`, the texture 0x005538b0 returns beside the name; absent where
+   * the client returns nil (SpellIconID 0 or no SpellIcon row — every row of this dataset).
+   */
+  readonly icon?: string;
 }
 
 const NONE: readonly DungeonEncounter[] = Object.freeze([]);
@@ -52,13 +57,14 @@ export function dungeonEncounterTableFrom(data: unknown, version = DUNGEON_ENCOU
   if (value.version !== version || !Array.isArray(value.encounters)) return undefined;
   const groups = new Map<string, DungeonEncounter[]>();
   for (const row of value.encounters as unknown[]) {
-    if (!Array.isArray(row) || row.length !== 5) return undefined;
-    const [id, mapId, difficulty, bit, name] = row as unknown[];
+    if (!Array.isArray(row) || row.length !== 6) return undefined;
+    const [id, mapId, difficulty, bit, name, icon] = row as unknown[];
     if (![id, mapId, difficulty, bit].every((field) => Number.isSafeInteger(field)) || typeof name !== "string") return undefined;
+    if (icon !== null && typeof icon !== "string") return undefined;
     const key = `${mapId as number}/${difficulty as number}`;
     let group = groups.get(key);
     if (!group) groups.set(key, group = []);
-    group.push(Object.freeze({ bit: bit as number, name }));
+    group.push(Object.freeze(icon === null ? { bit: bit as number, name } : { bit: bit as number, name, icon }));
   }
   for (const group of groups.values()) Object.freeze(group);
   return new DungeonEncounterTable(groups, value.encounters.length);

@@ -229,6 +229,11 @@ export class FrameXmlEquipmentSetModel {
     return row === undefined ? undefined : frameXmlEquipmentSetIcon(row.icon);
   }
 
+  /** go8 follow-up (15.11): the set's name by server index, GetCursorInfo's second value for type 0xD (0x00515200). */
+  nameOf(setId: number): string | undefined {
+    return (this.#host.sets() ?? []).find((candidate) => candidate.setId === setId)?.name;
+  }
+
   #counts(row: FrameXmlEquipmentSetRow): SetCounts {
     let numItems = 0;
     let numEquipped = 0;

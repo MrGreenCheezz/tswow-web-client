@@ -23,6 +23,7 @@ import {
 import { SETTING_SECTIONS } from "../dist/code/browser/ui/SettingsSections.js";
 import { COMPARISON_GRAPHICS_OVERRIDES } from "../dist/code/browser/ui/ComparisonProfile.js";
 import { enhancedGraphicsSettings } from "../dist/code/browser/ui/EnhancedGraphics.js";
+import { AtmosphereEffects } from "../dist/code/browser/AtmosphereEffects.js";
 
 const hour = (value) => value * 120;
 const worldCameraAtPitch = (pitch, yaw = 0) => {
@@ -166,9 +167,19 @@ test("the multiplier enters both shaft paths without touching what enables them"
   const prepareAt = rendererSource.indexOf("#prepareGodRays(targets: GlowChainTargets): number {");
   const prepare = rendererSource.slice(prepareAt, rendererSource.indexOf("#endFullscreenGlow(", prepareAt));
   assert.match(prepare, /this\.#weatherFade\.storm,\s+this\.#godRayStrengthScale,\s+\);/);
-  // Cinematic: the quality's share of the ceiling times the same multiplier, bounded in CinematicPost.
+  // Cinematic: the quality's share of the ceiling times the same multiplier, bounded in CinematicPost;
+  // (15.11 7.40) times the zone atmosphere's canopy boost, which is a factor of the strength only.
   assert.match(rendererSource,
-    /Math\.min\(1, this\.#lightingProfile\.godRayStrength \/ GOD_RAY_FULL_STRENGTH\) \* this\.#godRayStrengthScale : 0;/);
+    /Math\.min\(1, this\.#lightingProfile\.godRayStrength \/ GOD_RAY_FULL_STRENGTH\) \* this\.#godRayStrengthScale\s+\* \(this\.#atmosphere\?\.shaftBoost \?\? 1\) : 0;/);
+});
+
+test("7.40: the zone atmosphere's shaft boost is exactly 1 while «Атмосфера зон» is off", () => {
+  const scene = new THREE.Scene();
+  const atmosphere = new AtmosphereEffects(scene, () => undefined);
+  assert.equal(atmosphere.shaftBoost, 1, "before any profile");
+  atmosphere.setProfile({ zoneAtmosphere: false, zoneStrength: 2 });
+  assert.equal(atmosphere.shaftBoost, 1, "the setting off leaves the cinematic shafts as they were");
+  atmosphere.dispose();
 });
 
 test("enabling the sole god-rays switch is visible with default graphics settings", () => {

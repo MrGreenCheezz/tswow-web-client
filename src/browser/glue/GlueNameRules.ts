@@ -1,5 +1,5 @@
 import { RESPONSE_CODES } from "../../generated/responseCodes.js";
-import { glueNameFiltered, type GlueNameFilterTables } from "./GlueNameFilters.js";
+import { glueNameFiltered, type GlueNameFilterTables, type GlueNameFilterUse } from "./GlueNameFilters.js";
 
 /**
  * The client's own check of a character name, before the name goes anywhere.
@@ -47,6 +47,13 @@ export interface GlueNameRuleOptions {
   readonly alphabetMask?: number;
   /** 1.19 (11.11): the client locale's name filters when the realm's category builds them; none — no table step. */
   readonly nameFilters?: GlueNameFilterTables;
+  /**
+   * 1.19 (15.11): which lists the table step consults — all three for a name (0x6b0f90), profane and chat only for a
+   * declined form (0x76dd90 calls 0x7e1e90 with 1, 1, 0).
+   */
+  readonly nameFilterUse?: GlueNameFilterUse;
+  /** 1.19 (15.11): letters allowed past the alphabet's limit — 0 for a name, 5 for a declined form (0x76dd90). */
+  readonly extraLength?: number;
 }
 
 const HARD_SIGN = 0x44a;
@@ -167,8 +174,8 @@ export function checkCharacterName(name: string, options: GlueNameRuleOptions = 
   if (count === 0) return RESPONSE_CODES.CHAR_NAME_NO_NAME;
   if (count === 1) return RESPONSE_CODES.CHAR_NAME_TOO_SHORT;
   // 1.19 (11.11): 0x7e18c0's lists come before 0x7e1e90's length limit — a long reserved name is RESERVED.
-  if (glueNameFiltered(name, options.nameFilters)) return RESPONSE_CODES.CHAR_NAME_RESERVED;
-  if (count > nameLengthLimit(alphabet)) return RESPONSE_CODES.CHAR_NAME_TOO_LONG;
+  if (glueNameFiltered(name, options.nameFilters, options.nameFilterUse)) return RESPONSE_CODES.CHAR_NAME_RESERVED;
+  if (count > nameLengthLimit(alphabet) + (options.extraLength ?? 0)) return RESPONSE_CODES.CHAR_NAME_TOO_LONG;
   return RESPONSE_CODES.CHAR_NAME_SUCCESS;
 }
 

@@ -242,7 +242,8 @@ test("the cursor carries a lifted set with its picture and puts it on a bar as A
   cursor.attach({ fire: () => 1, now: () => 0 });
   cursor.pickupEquipmentSet(1);
   assert.deepEqual(cursor.held(), { kind: "equipmentset", id: 1 });
-  assert.deepEqual([...cursor.info()], ["equipmentset"]);
+  // go8 follow-up (15.11): Wow.exe 0x00515200 type 0xD answers "equipmentset" and the set's name.
+  assert.deepEqual([...cursor.info()], ["equipmentset", "Танк"], "set 1 is «Танк» (PickupEquipmentSetByName above)");
   assert.equal(cursor.picture(), "Interface\\Icons\\INV_Shield_04", "GetCursorInfo's picture is the set's icon");
   assert.equal(cursor.placeAction(12), true);
   assert.deepEqual(placed, [[12, 1, 0x20]]);

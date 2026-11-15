@@ -41,7 +41,8 @@ import {
 } from "./DistanceFog.js"; // 7.66: the shaped fog
 import { HorizonBand } from "./HorizonBand.js";
 import { ENVIRONMENT_DETAIL_FAR_MAX, environmentHouseRange, environmentShellRange, environmentStreamRange, faithfulReach, sceneryFarCap } from "./SceneryReach.js"; // 7.44: house; 15.11 (7.66 tail): faithfulReach
-import { doodadOriginalReach, recordDoodadModelBox } from "./DoodadReach.js"; // 15.11 (7.66 tail, 7.03)
+import { admissionQuota } from "./AdmissionQuotas.js"; // 15.11 (7.05, far8)
+import { biodomeDrawRange, boundDoodadClassLeash, doodadOriginalReach, recordDoodadModelBox } from "./DoodadReach.js"; // 15.11 (7.66 tail, 7.03); far8: biodome, room doodads
 import { ENVIRONMENT_FAR_RANGE, ENVIRONMENT_RANGE, ENVIRONMENT_SHELL_RANGE, ENVIRONMENT_RESIDENT_HYSTERESIS, TERRAIN_GRID_SIZE, modelKey, terrainGrid, terrainGridIndex, type EnvironmentClient, type EnvironmentModel, type EnvironmentObject, type TerrainClient } from "./Terrain.js";
 import { terrainGeometryData, terrainGeometrySteps, type TerrainGeometryData } from "./TerrainGeometry.js";
 export { terrainGeometryData, terrainHeightField, terrainNormals, surfaceNormal, type TerrainGeometryData } from "./TerrainGeometry.js";
@@ -86,6 +87,8 @@ import {
   skyPostDrawsSun, // 05.10-A7b-6-review
   skyDayFraction, // 13.10 7.04
 } from "./SkyCelestials.js"; // 05.10-A7b-6
+import { dimLightSampleByGlare } from "./SkyGlare.js"; // 15.11 (sky8, 7.04)
+import { carrySkyboxBatchStages } from "./SkyboxMaterial.js"; // 15.11 (sky8, 7.59)
 import { clientDrawsSun } from "./CinematicSunGate.js"; // 22.10 (7.30)
 import {
   CLASSIC_DOME_VERTICES, buildClassicDome, classicDomeColours, highlightStrength, packDisplayColour,
@@ -281,10 +284,11 @@ import { VehiclePassengerPoser } from "./VehiclePassengerPose.js"; // 11.02-H
 import { cameraChainFade, type FadeModel } from "./VehicleCameraFade.js"; // 11.02 (26.10)
 import { VehicleSeatTransitions } from "./VehicleSeatTransition.js"; // 11.02 (26.10)
 import { seatSplitsPose, seatUpperMove, vehicleSeatTransitionPose } from "./VehicleSeatPose.js"; // 11.02 (26.10); 04.11: seatSplitsPose, seatUpperMove
-import { VehicleAnimationCopies, seatCopiesVehicleAnimation } from "./VehicleAnimationCopy.js"; // 11.02 (15.11)
+import { VehicleAnimationCopies, copiedVariation, seatCopiesVehicleAnimation, vehicleShownVariation } from "./VehicleAnimationCopy.js"; // 11.02 (15.11)
 import { copyQuat, keepPathRotation } from "./TransportPickRotation.js"; // 11.01 (15.11)
 import {
   SEAT_VEHICLE_WAIT_SECONDS, VehicleOwnAnimations, seatVehicleAnimation, seatVehicleWaitSeconds, type VehicleOwnClip,
+  type SeatVehicleAnimation, type SeatVehicleAnimationKind,
 } from "./VehicleOwnAnimation.js"; // 11.02 (04.11)
 import { VehicleAimArcMesh } from "./VehicleAimArcMesh.js"; // 11.02 (04.11)
 import { ModelShotEvents, muzzleEvent } from "./VehicleMuzzle.js"; // 11.02 (04.11)
@@ -303,10 +307,12 @@ import {
   createWmoCameraWalkState, walkWmoFromCamera, wmoCameraWalkNote, wmoCameraWalkStale, wmoGroupIsRoom, wmoGroupOfCollision, wmoGroupShowsSky,
   wmoGroupTwinsUncertain, wmoHasOutdoorGroup, wmoPlacementOwns, wmoWalkReachedOutside, type WmoCameraWalkState,
 } from "./WmoCameraWalk.js"; // 02.11
+import { createMapOccluderFrame, mapOccludersForModel, wmoOccludersApply } from "./MapOccluders.js"; // 15.11 (7.54, portal8)
+import { MapOccluderClient } from "./MapOccluderClient.js"; // 15.11 (7.54, portal8)
 import { WmoRangeTable, sameWmoSelection, type WmoRangeTotals } from "./WmoGroupRange.js"; // P1-12a/b
 import { createWmoPortalMemo, wmoPortalMemoAnswer, wmoPortalMemoNote, type WmoPortalMemo } from "./WmoPortalMemo.js"; // P1-12c
 import {
-  WMO_OPEN_AIR_ROOM_RANGE, createWmoOpenAirState, wmoOpenAirCandidatesStale, wmoOpenAirNoteCandidates,
+  WMO_OPEN_AIR_ROOM_RANGE, wmoOpenAirRoomRange, createWmoOpenAirState, wmoOpenAirCandidatesStale, wmoOpenAirNoteCandidates, // far8: + room range
   wmoOpenAirNoteWalk, wmoOpenAirWalkStale, type WmoOpenAirState,
   wmoDoodadsOfPlacement, // 05.10 review A7b-2
 } from "./WmoOpenAir.js"; // 05.10-A7b-2 (7.03 slice 3)
@@ -350,6 +356,7 @@ import {
   isThunderState, normaliseAtmosphereProfile,
   type AtmosphereAudioState, type AtmosphereFrame, type AtmosphereProfile,
 } from "./AtmosphereEffects.js";
+import type { ZoneTerrainProbe } from "./ZoneAtmosphereKinds.js"; // 7.40
 import { setTerrainWetness, setWaterRainRipples, setWmoWetness, trackWmoWetSurface } from "./WetSurfaces.js";
 import {
   FrameCadenceClock, FrameClock, makeRendererTelemetrySnapshot, shouldReselect,
@@ -375,6 +382,7 @@ import { flyMissileInstance, missileQuaternion, missileSample, missileStillFlyin
 import { missileLandedAt, setProjectilePosition as setMissileProjectilePosition } from "./MissileFlight.js"; // 15.11 (11.02)
 import { landImpacts } from "./MissileLanding.js"; // 15.11 (11.02)
 import { missileLaunchSource, placeLaunchEvent } from "./MissileLaunchEvent.js"; // 15.11 (6.12)
+import { missileLaunchHolds, missileLaunchWait, releaseAttachment, type MissileLaunchWait } from "./MissileLaunchWait.js"; // 15.11 (events8, 6.12)
 import { auraStandInOpacity, unitDisplayAlpha } from "./UnitDisplayFade.js"; // 15.11 (6.11)
 import { noteUnitSpawn, unitAlphaWalking, unitFadesInFrom, unitSpawnFactor } from "./UnitSpawnFade.js"; // 15.11 (6.11)
 import { addModelFrameOffset, missileGroundHit } from "./MissileGround.js"; // 13.10 (6.12)
@@ -1054,6 +1062,11 @@ interface InteriorOnlyRooms {
    * open-air room leash for a building with a street; unset, `INTERIOR_ONLY_RANGE`.
    */
   leash?: number | undefined;
+  /**
+   * 15.11 (7.03, far8): on the faithful levels, the `environmentDetail` a shown doodad's size class is read at — Wow.exe
+   * culls a map object's doodads by the outdoor table (0x007babc0, 0x007bc490); undefined elsewhere.
+   */
+  classDetail?: number | undefined;
 }
 
 /** A doodad of an interior-only placement: its rooms, and its answer for one `serial` of them. */
@@ -1091,7 +1104,8 @@ function interiorOnlyDoodadShown(object: EnvironmentObject): boolean | undefined
 
 /** 05.10-A7b-2 (7.03 slice 3): a bound doodad's leash — its rooms', else the environment range. */
 function boundWmoDoodadLeash(object: EnvironmentObject): number {
-  return INTERIOR_ONLY_DOODADS.get(object)?.rooms.leash ?? INTERIOR_ONLY_RANGE;
+  const rooms = INTERIOR_ONLY_DOODADS.get(object)?.rooms;
+  return boundDoodadClassLeash(object, rooms?.leash ?? INTERIOR_ONLY_RANGE, rooms?.classDetail); // 15.11 (7.03, far8)
 }
 
 function interiorOnlyDoodadVisible(entry: InteriorOnlyDoodad, object: EnvironmentObject): boolean | undefined {
@@ -1296,6 +1310,9 @@ export function environmentDrawRange(
   if (object.interior === true) {
     return interiorOnlyDoodadShown(object) === undefined ? INTERIOR_RANGE : boundWmoDoodadLeash(object); // 05.10-A7b-2
   }
+  // 15.11 (far8): a biodome (MDDF flag 0x1) has no class distance in Wow.exe; held to the shells' leash (DoodadReach.ts).
+  const biodome = biodomeDrawRange(object, shellRange);
+  if (biodome !== undefined) return biodome;
   if (faithful) {
     // 15.11 (7.66 tail): as Wow.exe — every outdoor map object to the reach (0x007b6110), a doodad by its size class
     // (DoodadReach.ts). A doodad of unknown size (no radius, model not built yet) is held to the reach until its
@@ -1634,7 +1651,8 @@ function environmentAdmissionTier({ object, distance, range }: RankedEnvironment
   // An interior-only building's doodad is admitted while one of its MODR rooms is shown: the
   // room answer moves with the camera every frame, the 400-yard candidate list does not.
   if (object.interior === true) {
-    return distance > ENVIRONMENT_RANGE || interiorOnlyDoodadShown(object) === false ? undefined : "interior";
+    // 15.11 (7.03, far8): to its own leash — 400 at most on the enhanced levels, the faithful reach beyond it.
+    return distance > Math.max(ENVIRONMENT_RANGE, range ?? 0) || interiorOnlyDoodadShown(object) === false ? undefined : "interior";
   }
   // Loose outdoor M2s are one quota at every distance: their own size already set the leash.
   if (object.kind === "m2") return "scenery";
@@ -1718,14 +1736,15 @@ export function admitEnvironmentInto(
   out: RankedEnvironmentObject[],
   rejected?: RankedEnvironmentObject[],
   onlyBuilding?: number, // 02.11 (7.53): the camera sees only this placement and its doodads
+  faithful = false, // 15.11 (7.05, far8): no quotas on the faithful levels (AdmissionQuotas.ts)
 ): RankedEnvironmentObject[] {
   const [near, scenery, far, interior] = ADMISSION_HEAPS;
   // 22.10 (7.41): the outdoor candidates the frustum turned away, for the shadow-only admission.
   if (rejected) rejected.length = 0;
-  near.reset(ENVIRONMENT_BUDGET);
-  scenery.reset(ENVIRONMENT_SCENERY_BUDGET);
-  far.reset(ENVIRONMENT_FAR_BUDGET);
-  interior.reset(INTERIOR_BUDGET);
+  near.reset(admissionQuota(ENVIRONMENT_BUDGET, faithful));
+  scenery.reset(admissionQuota(ENVIRONMENT_SCENERY_BUDGET, faithful));
+  far.reset(admissionQuota(ENVIRONMENT_FAR_BUDGET, faithful));
+  interior.reset(admissionQuota(INTERIOR_BUDGET, faithful));
   for (let index = 0; index < candidates.length; index++) {
     const candidate = candidates[index]!;
     const tier = environmentAdmissionTier(candidate);
@@ -5268,6 +5287,10 @@ export class WorldRenderer3D {
   readonly #unitSphere = new THREE.Sphere();
   readonly #wmoModelToClip = new THREE.Matrix4();
   readonly #wmoCameraModel = new THREE.Vector3();
+  /** 15.11 (7.54, portal8): Wow.exe's map occluders for the walk from outside (`MapOccluders.ts`). */
+  readonly #mapOccluders = createMapOccluderFrame();
+  /** The gateway's `/dbc/occluders/<map>` (the user's own Wow.exe), one client per gateway. */
+  #mapOccluderClient: MapOccluderClient | undefined;
   readonly #wmoViewerModel = new THREE.Vector3();
   /** Whether the character is under a roof, answered by the collision floor and told to us. */
   #indoors = false;
@@ -5444,6 +5467,8 @@ export class WorldRenderer3D {
       this.#waterShaderUniforms.underwater.value = underwater ? 1 : 0;
       return;
     }
+    // 15.11 (sky8, 7.04): Wow.exe 0x007816f0 — the sun's glare of the last frame dims the ambient and direct light.
+    sample = dimLightSampleByGlare(sample, this.#skyCelestials.sunGlareDimming);
     this.#lightSample = sample;
     // Clamped here rather than at the uniform so the readback and the shader can never disagree.
     this.#glowStrength = glowAddStrength(sample.glow);
@@ -7375,7 +7400,8 @@ export class WorldRenderer3D {
   #applyAtmosphereEffects(profile: Readonly<Partial<AtmosphereProfile>> | undefined): void {
     // All OFF (the comparison profile, a fresh account) never even builds the controller.
     if (!this.#atmosphere && !atmosphereProfileActive(normaliseAtmosphereProfile(profile))) return;
-    this.#atmosphere ??= new AtmosphereEffects(this.#scene, (path) => this.#loadAtmosphereTexture(path));
+    this.#atmosphere ??= new AtmosphereEffects(this.#scene, (path) => this.#loadAtmosphereTexture(path),
+      () => this.#baseUrl); // 7.40: the gateway, for the map colour picture of «Атмосфера зон»
     const previous = this.#atmosphereProfile;
     if (!this.#atmosphere.setProfile(profile)) return;
     const next = this.#atmosphere.profile;
@@ -7450,6 +7476,7 @@ export class WorldRenderer3D {
       for (const { mesh } of this.#groundCoverMeshes.values()) tufts += mesh.count;
       this.#atmosphereForest = Math.min(1, trees / 6);
       this.#atmosphereMeadow = Math.min(1, tufts / 1500);
+      this.#atmosphereTrees = trees; // 7.40
     }
     const frame = this.#atmosphereFrame ??= {
       camera: this.#camera, feet: new THREE.Vector3(), heightAt: undefined, seconds: 0, elapsed: 0,
@@ -7476,13 +7503,42 @@ export class WorldRenderer3D {
     frame.quality = atmosphereQuality(this.#renderScale);
     frame.meadow = this.#atmosphereMeadow;
     frame.forest = this.#atmosphereForest;
+    // 7.40 «Атмосфера зон» (ZoneAtmosphere.ts): the enhanced levels only, and what it reads of the place.
+    frame.enhanced = !lightingClassicLook(this.#lightingProfile.quality);
+    frame.probe = terrainClient ? this.#atmosphereProbe : undefined;
+    frame.trees = this.#atmosphereTrees;
+    const room = this.#cameraWmoSurface;
+    frame.cameraRoom = room ? { modelName: room.placement.modelName, groupFlags: room.groupFlags } : undefined;
     atmosphere.update(frame);
     // The rain veil: the zone fog pulled in while it rains (0 while rainStreaks is OFF). The fog
     // was restored from the zone's Light.dbc values at the top of this submission, so this never
     // accumulates; interior WMO fog has its own uniforms and is left alone.
     // 05.10-A7b-2 (7.12): not under a roof whose fog the frame has taken.
     if (atmosphere.haze > 0 && !this.#underwater && !this.#wmoRoomFogApplied) applyPrecipitationHaze(this.#scene.fog as THREE.Fog, atmosphere.haze);
+    // 7.40: the zone kinds shape the fog after the veil — the scene's and the interior fallback alike; nothing
+    // while «Атмосфера зон» is not running (the faithful levels).
+    if (atmosphere.zone && !this.#underwater) {
+      const interior = this.#wmoInteriorFog;
+      const roomFog = this.#zoneRoomFog;
+      roomFog.near = interior.near.value;
+      roomFog.far = interior.far.value;
+      roomFog.color.copy(interior.colour.value);
+      atmosphere.shapeZoneFogs(this.#scene.fog as THREE.Fog, roomFog, this.#wmoRoomFogApplied);
+      interior.near.value = roomFog.near;
+      interior.far.value = roomFog.far;
+      interior.colour.value.copy(roomFog.color);
+    }
   }
+
+  /** 7.40: the zone kinds' terrain probe (world coordinates) and the interior fog's stand-in. */
+  readonly #atmosphereProbe: ZoneTerrainProbe = {
+    // The resident terrain only: the probe never starts a tile download.
+    groundAt: (x, y) => (this.#atmosphereMap === undefined ? undefined
+      : this.#atmosphereTerrain?.residentHeightAt(this.#atmosphereMap, x, y)),
+    liquidAt: (x, y) => this.#atmosphereTerrain?.liquidAt(this.#atmosphereMap, x, y),
+  };
+  readonly #zoneRoomFog = { near: 0, far: 0, color: new THREE.Color() };
+  #atmosphereTrees = 0;
 
   /**
    * Closes the frame's interior-only notes: rooms not updated this frame stop binding their
@@ -7600,6 +7656,7 @@ export class WorldRenderer3D {
           material.blending = value.blending;
           material.premultipliedAlpha = value.premultipliedAlpha;
           material.fog = false;
+          carrySkyboxBatchStages(value, material); // 15.11 (sky8, 7.59): the second texture and its combiner
           const animated = built?.animatedBatches.find((batch) => batch.material === value);
           if (animated) this.#skyboxAnimatedBatches.push({ ...animated, material });
           return material;
@@ -7754,6 +7811,10 @@ export class WorldRenderer3D {
       input.viewY = this.#skyViewDirection.y;
       input.viewZ = this.#skyViewDirection.z;
       input.skyboxPresent = this.#skyboxGroup.children.length > 0;
+      // 15.11 (sky8, 7.04): the glare's occlusion — the page's rays and this camera's screen.
+      input.sunRay = sample.sunGlareRay ?? 1;
+      input.moonRay = sample.moonGlareRay ?? 1;
+      input.camera = this.#camera;
     }
     this.#skyCelestials.update(input, this.#camera.position);
     if (!input.enabled || !client) return;
@@ -8851,6 +8912,12 @@ export class WorldRenderer3D {
       }
 
       if (instance.flight) {
+        // 15.11 (events8, 6.12): a missile queued on its caster waits for the cast clip's launch event (MissileLaunchWait.ts).
+        if (instance.flight.launch?.wait !== undefined && missileLaunchHolds.held(visual, now,
+          () => this.#missileLaunchWait(instance.flight!.launch!.guid, instance.flight!.launch!.wait!), this.#visuals)) {
+          visual.node.visible = false;
+          continue;
+        }
         // 05.10-A7a-E (6.12): launched from the caster's attachment, homing on the target's, bowed and
         // turned by its SpellMissileMotion script (MissileFlight.ts); hidden once it has arrived.
         if (!flyMissileInstance(instance, now, this.#missilePoints, _missileSample)) {
@@ -9141,12 +9208,20 @@ export class WorldRenderer3D {
       return true;
     },
     // 15.11 (6.12): the caster's "$CSL"/"$CSR"/"$CST" event on its own body (Wow.exe 0x0071a720, MissileLaunchEvent.ts).
-    castEvent: (guid, out) => {
+    castEvent: (guid, out, fired) => {
       const unit = this.#units.get(guid);
       const model = this.#lookups.unitModels?.get(guid)?.model;
       const bones = unit?.skinned?.skeleton.bones;
       const pivots = unit?.template?.pivots;
       if (model === undefined || bones === undefined || pivots === undefined) return false;
+      // 15.11 (events8): the point the fired event stored (0x00732650): "$BWR" takes HandArrow/Bullet when the model has it.
+      if (fired?.event !== undefined) {
+        const release = fired.event.id === "$BWR" ? releaseAttachment(fired.animation) : undefined;
+        if (release !== undefined && this.#attachmentBone(guid, release) !== undefined) {
+          return this.#missilePoints.point(guid, release, out);
+        }
+        return placeLaunchEvent(fired.event, bones, pivots, out);
+      }
       const events = (this.#muzzleEvents ??= new ModelShotEvents(this.#baseUrl)).of(model);
       const event = missileLaunchSource(events); // 15.11 (6.12): none of the three → the unit's position (vfunc +0x2c)
       if (event === "position") return this.#missilePoints.origin?.(guid, out) === true;
@@ -9154,6 +9229,13 @@ export class WorldRenderer3D {
     },
     ground: (from, to, hit) => missileGroundHit(this.#missileHeightAt, from, to, hit),
   };
+
+  /** 15.11 (events8, 6.12): how long `caster`'s queued missiles wait in its kit's `animation` (MissileLaunchWait.ts). */
+  #missileLaunchWait(caster: bigint, animation: number): MissileLaunchWait | undefined {
+    const model = this.#lookups.unitModels?.get(caster)?.model;
+    if (model === undefined || this.#units.get(caster)?.skinned === undefined) return undefined;
+    return missileLaunchWait((this.#muzzleEvents ??= new ModelShotEvents(this.#baseUrl)).model(model), animation);
+  }
 
   /** 05.10-A7a-E (6.13): the beam set, made on first use; textures are leases on the spell texture cache. */
   #beams(): ChainBeams {
@@ -9725,7 +9807,8 @@ export class WorldRenderer3D {
     // it the same way `godRayVisibility` bounds the classic path's.
     const cinematicShafts = this.#cinematic.active && this.#godRaysActive() && this.#lightSample !== undefined
       && !this.#underwater
-      ? Math.min(1, this.#lightingProfile.godRayStrength / GOD_RAY_FULL_STRENGTH) * this.#godRayStrengthScale : 0;
+      ? Math.min(1, this.#lightingProfile.godRayStrength / GOD_RAY_FULL_STRENGTH) * this.#godRayStrengthScale
+        * (this.#atmosphere?.shaftBoost ?? 1) : 0; // 7.40: stronger under a canopy («Атмосфера зон»)
     const rayStrength = this.#cinematic.active ? 0 : this.#prepareGodRays(targets);
     if (rayStrength > 0) {
       quad.material = this.#glowPasses.godRays;
@@ -12390,6 +12473,7 @@ export class WorldRenderer3D {
         this.#admissionBuffers[this.#admissionFlip]!,
         this.#admissionRejected,
         this.#outsideHiddenFor,
+        this.#faithfulLevel, // 15.11 (7.05, far8)
       );
       this.#admittedOutsideHiddenFor = this.#outsideHiddenFor;
       this.#lastAdmitted = admitted;
@@ -14012,6 +14096,7 @@ export class WorldRenderer3D {
       this.#environmentCandidatesAt = undefined;
     }
     rooms.leash = leash;
+    rooms.classDetail = this.#faithfulLevel ? environmentDetailScale(this.#environmentDetail) : undefined; // 15.11 (7.03, far8)
     return rooms;
   }
 
@@ -14054,7 +14139,7 @@ export class WorldRenderer3D {
     // question for every admitted building every frame. 05.10-7.05-review: the transport shell leash.
     // P1-12 telemetry: the table counts into the renderer's totals (a fake `ranges` just gains a field).
     placed.ranges.totals ??= this.#wmoRangeGroups;
-    placed.ranges.setShellCap?.(this.environmentShellRange, environmentHouseRange(this.environmentShellRange, this.#faithfulLevel)); // 22.10 (7.39), 7.44; 15.11 (7.66 tail)
+    placed.ranges.setShellCap?.(this.environmentShellRange, environmentHouseRange(this.environmentShellRange, this.#faithfulLevel), this.#faithfulLevel); // 22.10 (7.39), 7.44; 15.11 (7.66 tail; 7.03 far8: small groups too)
     let distanceGroups = placed.ranges.select(player.x, player.y, shellRange);
     // 22.10 (7.41): a building admitted for its shadow alone hangs only its outdoor rooms in the
     // distance leash — those with a stand-in — and none of the view's walks below run for it.
@@ -14261,7 +14346,7 @@ export class WorldRenderer3D {
     this.#wmoPortalModels++;
     this.#wmoPortalCandidates += walk.candidates;
     this.#wmoPortalCulled += walk.candidates - state.kept.length;
-    if ((placed.model.doodadRooms?.length ?? 0) > 0) this.#bindWmoDoodads(placed, state.kept, true, WMO_OPEN_AIR_ROOM_RANGE);
+    if ((placed.model.doodadRooms?.length ?? 0) > 0) this.#bindWmoDoodads(placed, state.kept, true, wmoOpenAirRoomRange(this.#faithfulLevel, this.environmentShellRange)); // far8 (7.03)
     return state.kept;
   }
 
@@ -14328,9 +14413,19 @@ export class WorldRenderer3D {
       .elements;
     const binds = (model.doodadRooms?.length ?? 0) > 0;
     const rooms = binds ? this.#interiorOnlyRoomsOf(placed) : undefined;
+    // 15.11 (7.54, portal8): the map's occluders hide groups and doors in their shadow (`0x79a160`, `0x7a85e0`), and only
+    // while the camera hangs over no WMO at all (`0x795d40` leaves 0x00cd87a4 at 0: the unclipped volumes of `0x79a790`).
+    // `#fogMap` is this frame's map, set at the start of every submission; no records yet: no occluders.
+    if (this.#baseUrl && this.#mapOccluderClient?.baseUrl !== this.#baseUrl) this.#mapOccluderClient = new MapOccluderClient(this.#baseUrl);
+    const occluderRecords = room < 0 && wmoOccludersApply(this.#cameraSurfaceKnown, this.#cameraWmoSurface)
+      ? this.#mapOccluderClient?.records(this.#fogMap) : undefined;
+    if (state.walkedOccluders !== occluderRecords) state.walked = false;
     if (wmoCameraWalkStale(state, clip, room, rooms)) {
       this.#wmoCameraModel.copy(this.#camera.position).applyMatrix4(placed.worldToModel);
-      const answer = walkWmoFromCamera(model.groups, portals, room, this.#wmoCameraModel, clip, rooms?.apertures, state.scratch);
+      state.walkedOccluders = occluderRecords;
+      const occluders = occluderRecords !== undefined ? mapOccludersForModel(this.#mapOccluders, occluderRecords, this.#camera.position,
+        this.#camera.projectionMatrix.elements, this.#camera.matrixWorldInverse.elements, placed.modelToWorld.elements) : undefined;
+      const answer = walkWmoFromCamera(model.groups, portals, room, this.#wmoCameraModel, clip, rooms?.apertures, state.scratch, undefined, occluders);
       wmoCameraWalkNote(state, clip, room, rooms);
       state.reachedOutside = answer.used && wmoWalkReachedOutside(model.groups, state.scratch);
       // The account's view distance still holds: what the walk reached past it stays out, as in the older walks' tables.
@@ -14377,7 +14472,8 @@ export class WorldRenderer3D {
     if (wmoOpenAirCandidatesStale(state, player.x, player.y, player.z)) {
       // P1-12c: from a rest radius, the same array while unchanged; noting it still re-walks (the viewer moved).
       const ranges = placed.openAirRanges ??= new WmoRangeTable(model, placed.boxes, WMO_OPEN_AIR_ROOM_RANGE, WMO_SKYLINE_SHELL_RANGE, placed.house === true);
-      ranges.setShellCap(this.environmentShellRange, environmentHouseRange(this.environmentShellRange, this.#faithfulLevel)); // 22.10 (7.39), 7.44; 15.11 (7.66 tail)
+      ranges.setShellCap(this.environmentShellRange, environmentHouseRange(this.environmentShellRange, this.#faithfulLevel), this.#faithfulLevel); // 22.10 (7.39), 7.44; 15.11 (7.66 tail; 7.03 far8)
+      ranges.setRoomRange(wmoOpenAirRoomRange(this.#faithfulLevel, this.environmentShellRange)); // 15.11 (7.03, far8)
       ranges.totals ??= this.#wmoRangeOpenAir; // P1-12 telemetry
       wmoOpenAirNoteCandidates(state, ranges.select(player.x, player.y), player.x, player.y, player.z);
     }
@@ -14398,7 +14494,7 @@ export class WorldRenderer3D {
     this.#wmoPortalModels++;
     this.#wmoPortalCandidates += walk.candidates;
     this.#wmoPortalCulled += walk.culled;
-    if (binds) this.#bindWmoDoodads(placed, walk.groups, true, WMO_OPEN_AIR_ROOM_RANGE);
+    if (binds) this.#bindWmoDoodads(placed, walk.groups, true, wmoOpenAirRoomRange(this.#faithfulLevel, this.environmentShellRange)); // far8 (7.03)
     return walk.groups;
   }
 
@@ -16028,6 +16124,7 @@ export class WorldRenderer3D {
       const ride = seatVehicleAnimation(unit.seatedRow, "ride");
       if (ride !== undefined && unit.seatRoot !== undefined) {
         this.#vehicleOwn.play(unit.seatRoot, object.guid, "ride", ride, now);
+        this.#copySeatAnimation(unit.seatRoot, object.guid, "ride", ride, now); // 15.11 (vehicle8)
         unit.rideVehicle = unit.seatRoot;
       }
     }
@@ -16074,7 +16171,8 @@ export class WorldRenderer3D {
       // 15.11 (6.11): Wow.exe 0x00716650 — flags, stealth and a passenger's carrier decide whether it fades in.
       noteUnitSpawn(unit, unitFadesInFrom(object, (guid) => {
         const carrier = this.#units.get(guid);
-        return carrier === undefined ? undefined : { fading: unitAlphaWalking(carrier, carrier.admittedAt, now) };
+        return carrier === undefined ? undefined : { fading: unitAlphaWalking(carrier, carrier.admittedAt, now),
+          seatAttachment: this.#vehiclePassengers.seatOf(object)?.attachmentId }; // 15.11 (vehicle8): 0x005d3340
       }));
     }
     // Whatever this frame hung on the unit — a body, a mount, a sword — has the stand-ins of its fade
@@ -17704,9 +17802,23 @@ export class WorldRenderer3D {
     const own = seat === undefined ? undefined : seatVehicleAnimation(seat, kind);
     if (own === undefined || vehicle === undefined || seat === undefined) return;
     this.#vehicleOwn.play(vehicle, guid, kind, own, now);
+    this.#copySeatAnimation(vehicle, guid, kind, own, now); // 15.11 (vehicle8)
     if (kind === "enter" && seatAimsVehicle(seat)) this.#vehicleAims.aim(vehicle, guid); // 11.11 (5.32): 0x00756db0
     const fixed = seatVehicleWaitSeconds(seat, kind);
     this.#seatTransitions.hold(guid, fixed ?? SEAT_VEHICLE_WAIT_SECONDS, fixed === undefined);
+  }
+
+  /**
+   * 15.11 (vehicle8): a seat animation of `vehicle`'s model goes to the passengers copying it now (FlagsB 0x10000, alive, seated:
+   * VehicleAnimationCopy.ts), each on its own model's same key bone (0x00735a60, 0x00735820). They hold nobody back.
+   */
+  #copySeatAnimation(vehicle: bigint, passenger: bigint, kind: SeatVehicleAnimationKind, own: SeatVehicleAnimation, now: number): void {
+    if (this.#vehicleCopies.size === 0) return;
+    for (const [guid, rider] of this.#units) {
+      if (guid !== passenger && rider.seatedOn === vehicle && this.#vehicleCopies.has(guid)) {
+        this.#vehicleOwn.play(guid, passenger, kind, own, now, vehicle);
+      }
+    }
   }
 
   /** 04.11 (11.02): one frame of the animations this vehicle plays for its seats; a mounted vehicle's model is the mount. */
@@ -17781,7 +17893,10 @@ export class WorldRenderer3D {
     const played = template.clips.has(next.animation) ? next.animation : poseTransitionClip(template.clips, next.animation);
     if (played !== undefined) {
       unit.animationId = -1; // a start, even of the clip already on show
-      this.#playAnimation(unit, played, next.loop, now, false, undefined, undefined, fallbackPlayback(next.animation, played));
+      // 15.11 (vehicle8): the vehicle's variation when this model has that many (0x00735820 → 0x008262f0).
+      const keep = played !== next.animation ? undefined : copiedVariation(
+        vehicleShownVariation(model.template?.variations?.get(next.animation), model.variationClip), template.variations?.get(played));
+      this.#playAnimation(unit, played, next.loop, now, false, undefined, undefined, fallbackPlayback(next.animation, played), keep);
     }
     this.#vehicleCopies.given(guid, transport.guid, shown, unit.skinned);
     return true;

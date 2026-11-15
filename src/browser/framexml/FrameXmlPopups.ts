@@ -170,10 +170,11 @@ export interface FrameXmlPopupsWorld {
  */
 export type FrameXmlTalentUiState = "ready" | "idle" | "loading" | "failed";
 
-/** One `DungeonEncounter.dbc` row of a map and difficulty: its bit in the killed-boss mask and name. */
+/** One `DungeonEncounter.dbc` row of a map and difficulty: its bit in the killed-boss mask, name and SpellIcon texture (absent: nil). */
 export interface FrameXmlDungeonEncounter {
   readonly bit: number;
   readonly name: string;
+  readonly icon?: string;
 }
 
 /**
@@ -1156,14 +1157,14 @@ export class FrameXmlPopupsModel {
   /**
    * `GetInstanceLockTimeRemainingEncounter(i)`: `bossName, texture, isKilled` (LFRFrame.lua:684) of
    * the i-th row of the lock's map and difficulty in file order (Wow.exe 0x005538b0). The texture is
-   * the row's SpellIcon, nil for SpellIconID 0 — every row of this dataset; the route carries none.
+   * the row's SpellIcon (the route's v2 icon), nil for SpellIconID 0 — every row of this dataset.
    */
-  instanceLockEncounter(index: number): readonly [string, undefined, boolean] | undefined {
+  instanceLockEncounter(index: number): readonly [string, string | undefined, boolean] | undefined {
     const world = this.#world_();
     const lock = world ? this.#instanceLockPending(world, this.#context.monotonic()) : undefined;
     if (!lock || !Number.isInteger(index) || index < 1) return undefined;
     const encounter = this.#encounters(lock)?.[index - 1];
-    return encounter ? [encounter.name, undefined, killedBit(lock.encounterMask, encounter.bit)] : undefined;
+    return encounter ? [encounter.name, encounter.icon, killedBit(lock.encounterMask, encounter.bit)] : undefined;
   }
 
   /** `RespondInstanceLock(accept)`: CMSG_INSTANCE_LOCK_RESPONSE once, never past the deadline. */

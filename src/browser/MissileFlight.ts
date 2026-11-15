@@ -78,6 +78,7 @@ import {
   FOLLOW_GROUND_AIM_AT_HEIGHT, FOLLOW_GROUND_APPROACH_AHEAD, FOLLOW_GROUND_ON, MISSILE_DEFAULT_GRAVITY, type MissileFollowGround,
 } from "./SpellVisualAttach.js";
 import { foldElevation, solveMissileBallistic, trajectoryLaunch } from "../world/MissileCollision.js"; // 11.02 (11.11)
+import { missileLaunchHolds, type MissileLaunchWait } from "./MissileLaunchWait.js"; // 15.11 (events8, 6.12)
 
 export interface MissilePoint {
   x: number;
@@ -112,6 +113,11 @@ export interface MissileFlightPlan {
      * "$CSL"/"$CSR"/"$CST" (0x0071a720, MissileLaunchEvent.ts) when it has one, else from `attachment`.
      */
     readonly events?: true;
+    /**
+     * 15.11 (events8): the missile is queued on the caster (0x00732ff0) while its CastKit plays this animation; it leaves
+     * at the animation's launch event, its end or 2 s (MissileLaunchWait.ts). Absent: it leaves at the GO.
+     */
+    readonly wait?: number;
   };
   readonly target?: { readonly guid: bigint; readonly attachment: number };
   readonly motion?: MissileMotion;
@@ -147,7 +153,7 @@ export interface MissilePoints {
   /** 13.10: the unit's position (its feet); false when it is not here. */
   origin?(guid: bigint, out: MissilePoint): boolean;
   /** 15.11 (6.12): the unit's "$CSL"/"$CSR"/"$CST" model event as posed now (0x0071a720); false when it has none (yet). */
-  castEvent?(guid: bigint, out: MissilePoint): boolean;
+  castEvent?(guid: bigint, out: MissilePoint, fired?: MissileLaunchWait): boolean;
   /**
    * 13.10: the world's ray test from `from` to `to`: the fraction 0…1 where something solid is met, with the
    * point written to `hit`, or undefined for nothing.
@@ -744,7 +750,8 @@ export function flyMissileInstance(instance: MissileInstance, now: number, point
   if (!state) {
     const launch = plan.launch;
     const fire = launch && launch.guid !== 0n
-      && ((launch.events === true && points.castEvent?.(launch.guid, _launch) === true) // 15.11 (6.12): 0x0071a720
+      && ((launch.events === true // 15.11 (6.12): 0x0071a720; events8: or the point the fired event stored (0x00732650)
+        && points.castEvent?.(launch.guid, _launch, missileLaunchHolds.firedEvent(instance)) === true)
         || points.point(launch.guid, launch.attachment, _launch, launch.offset)) ? _launch : plan.from;
     // 05.10 review E: over the time left, not the whole planned life — a first frame after a hitch (or a
     // late model) still lands with the impact kit; one first seen after its arrival is not drawn at all.

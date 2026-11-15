@@ -178,7 +178,8 @@ test("an eligible game object exposes its server name in a cursor-following hove
     "hover asks the server-owned gameobject template for the actual localized name");
   assert.doesNotMatch(controls, /interactionDistance\(type\)/,
     "the original client names a selectable object at a distance, even when a click is out of range");
-  assert.match(interaction, /distance > interactionDistance\(type\)\) return undefined/,
+  // 4.15 (15.11): the reach is Wow.exe's box test now (GameObjectUseReach.ts), not the centre against interactionDistance.
+  assert.match(interaction, /!gameObjectWithinReach\(world, object, type, player\)\) return undefined/,
     "a distant click still must not dispatch a game-object action");
   // 05.11 (7.60): Wow.exe's rule, tests/game-object-highlight.test.mjs.
   assert.match(controls, /scene\?\.pick\([^)]*answersPointer\)/,

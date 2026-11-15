@@ -258,6 +258,7 @@ import type { FrameXmlGuildBankModel } from "./FrameXmlGuildBank.js";
 import { createLiveFrameXmlGuildBank } from "./FrameXmlGuildBankLive.js";
 import { createLiveFrameXmlTradeSkill, type FrameXmlTradeSkillLiveHost, type FrameXmlTradeSkillModel } from "./FrameXmlTradeSkill.js";
 import { frameXmlLiveDungeonEncounters, frameXmlPopupsLiveContext } from "./FrameXmlPopupsLive.js";
+import { frameXmlLiveMailTextSource } from "./FrameXmlMailTextLive.js"; // 5.28 (15.11)
 import {
   FrameXmlMacroModel, createFrameXmlMemoryMacroStore, type FrameXmlMacroIcons, type FrameXmlMacroStore,
 } from "./FrameXmlMacro.js";
@@ -313,6 +314,7 @@ import { className, classFileName, classSpellFamily, raceBaseLanguage, raceFileN
 import { femaleOf } from "../ui/UnitSnapshot.js"; // L3-review
 import { frameXmlActionInRange, type ActionRangeHost } from "./FrameXmlActionRange.js";
 import { frameXmlItemNamed, frameXmlShapeshiftFormIndex } from "./FrameXmlRangeQueries.js"; // widgets5 batch 2
+import { FRAMEXML_SPELL_UNIT_TOKEN, frameXmlSpellHasRange, type FrameXmlSpellBookSlot } from "./FrameXmlSpellQueries.js"; // range8
 import { // 19.10
   frameXmlSpellCastable, frameXmlSpellHasPower, frameXmlSpellUsable, frameXmlTotemCategorySlotMask as totemCategorySlotMask,
   type ActionUsableHost,
@@ -505,6 +507,8 @@ const HORDE_RACE_IDS = new Set([2, 5, 6, 8, 10]);
 const LIVE_POLL_SECONDS = 0.06;
 /** 19.10: how often the action slots' IsUsableAction pairs are re-taken (#reconcileActionUsable). */
 const ACTION_USABLE_POLL_MS = 100;
+/** range8: NUM_PET_ACTION_SLOTS (MAX_UNIT_ACTION_BAR_INDEX), the pet bar GetSpellCooldown's id search ends with. */
+const PET_BAR_SLOTS = 10;
 const EMPTY_SPELL_TABS: readonly FrameXmlSpellTabInfo[] = Object.freeze([]);
 const NO_SPELL_MODIFIERS: readonly never[] = Object.freeze([]);
 
@@ -1359,6 +1363,8 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
             : undefined;
         },
         creatureName: (entry) => context.creatureInfo?.(entry)?.name,
+        // 5.28 (15.11): GetInboxText's body sources (FrameXmlMailTextLive.ts).
+        mailText: frameXmlLiveMailTextSource((text) => this.#questText(text), (name) => this.getCVar(name)),
       });
       this.trade = new FrameXmlTradeModel({
         ...shared,
@@ -4928,8 +4934,8 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
    * CMSG_SET_AMMO — a whole stack or a split part alike, since no stack moves — and the hand lets go.
    * The realm judges it as it judges a drop on a row the item cannot take (`#equipCarriedItem`):
    * `Player::CanUseAmmo` refuses anything but INVTYPE_AMMO with EQUIP_ERR_ONLY_AMMO_CAN_GO_HERE
-   * (Player.cpp:12216-12244). With nothing held the click does nothing: what the original client
-   * does then is not established here.
+   * (Player.cpp:12216-12244). 3.23 (15.11): with no bag item held the binding has already handled the
+   * click — the ammo on and off the cursor (FrameXmlAmmoCursor.ts, Wow.exe 0x005E85D0).
    */
   #dropOnAmmoSlot(): void {
     const world = this.#context.world();
@@ -5230,6 +5236,13 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     this.clearCursor();
     return true;
   }
+
+  /** 3.23 (15.11): the AmmoSlot for cursor type 9 (FrameXmlAmmoCursor.ts): PLAYER_AMMO_ID, its carried count, CMSG_SET_AMMO. */
+  readonly ammoSlot = {
+    entry: (): number | undefined => this.#ammoEntry("player"),
+    carried: (entry: number): number => this.itemCount(entry, false),
+    set: (entry: number): void => { this.#context.world()?.setAmmo(entry); },
+  };
 
   /** L1 (3.23): the open merchant's row `index` (one-based) as 0x00584080 finds it: its item entry. */
   merchantItemEntry(index: number): number | undefined {
@@ -9713,6 +9726,90 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     return template?.found ? template.bagFamily : undefined;
   }
 
+  /** range8: the row of an item's on-use spell (0x00706b90), IsHelpfulItem/IsHarmfulItem/ItemHasRange's spell. */
+  itemUseSpellRow(item: number | string): SpellMetadata | undefined {
+    const world = this.#context.world();
+    const id = this.#itemOf(item);
+    if (!world || id === undefined) return undefined;
+    const spellId = itemUseSpellId(this.#itemTemplate(world, id));
+    return spellId === undefined ? undefined : this.#context.spell(spellId);
+  }
+
+  /** range8: ItemHasRange(item), Wow.exe 0x0051c870 — the player's range pair without a target, either end not 0. */
+  itemHasRange(item: number | string): boolean {
+    const row = this.itemUseSpellRow(item);
+    return row !== undefined && this.#self() !== undefined && frameXmlSpellHasRange(row, true, this.#actionRangeHost);
+  }
+
+  /**
+   * range8: 0x00540670's name form → the book slot (0x0053f5e0 over both books' known spells, then 0x0053b4e0: the
+   * spell's place in its book array, from the end). A spell in neither book's array answers nothing.
+   */
+  spellBookSlotByName(text: string, rank: string | undefined): FrameXmlSpellBookSlot | undefined {
+    const found = this.#bookSpellByName(text, rank);
+    const slot = found ? this.spellBookSlotOfId(found.spell.id, found.pet) : undefined;
+    return found && slot !== undefined ? { slot, pet: found.pet } : undefined;
+  }
+
+  /** range8: 0x0053b4e0 — a spell id's 1-based slot in the player's or the pet's book array, searched from the end. */
+  spellBookSlotOfId(spellId: number, pet: boolean): number | undefined {
+    if (pet) {
+      for (let index = this.petActions.book()?.count ?? 0; index >= 1; index--) {
+        if (this.petActions.bookSpell(index)?.spellId === spellId) return index;
+      }
+      return undefined;
+    }
+    const entries = this.#spellEntries();
+    for (let index = entries.length - 1; index >= 0; index--) {
+      if (entries[index]!.id === spellId) return index + 1;
+    }
+    return undefined;
+  }
+
+  /** range8: a book slot's spell row (0x00be6d88 / 0x00be7d98 → 0x004cfd20); the pet book is SMSG_PET_SPELLS'. */
+  spellBookRowAt(slot: number, pet: boolean): SpellMetadata | undefined {
+    const id = pet ? this.petActions.bookSpell(slot)?.spellId : this.#spellEntry(slot)?.id;
+    return id === undefined ? undefined : this.#context.spell(id);
+  }
+
+  /** range8: the caster 0x00541c60 / 0x00541af0 measure from — the player, or for the pet book the pet-bar unit. */
+  #bookCaster(pet: boolean): WorldObjectState | undefined {
+    return pet ? this.#unit("pet") : this.#self();
+  }
+
+  /**
+   * range8: IsSpellInRange (0x00541c60 → 0x00809610, as actionInRange's rule). A text 0x0060abf0 refuses answers nil;
+   * a token that names nothing leaves the current target, as actionInRange and itemInRange take it.
+   */
+  spellInRangeAt(slot: number, pet: boolean, unit: string): number | undefined {
+    const row = this.spellBookRowAt(slot, pet);
+    const caster = this.#bookCaster(pet);
+    if (!row || !caster) return undefined;
+    const lower = unit.toLowerCase();
+    const named = this.#unit(lower);
+    if (!named && !FRAMEXML_SPELL_UNIT_TOKEN.test(lower)) return undefined;
+    return frameXmlActionInRange(row, caster, named ?? this.#target(), this.#actionRangeHost);
+  }
+
+  /** range8: SpellHasRange (0x00541af0), FrameXmlSpellQueries.ts `frameXmlSpellHasRange`. */
+  spellHasRangeAt(slot: number, pet: boolean): boolean {
+    const row = this.spellBookRowAt(slot, pet);
+    const caster = this.#bookCaster(pet);
+    return row !== undefined && caster !== undefined
+      && frameXmlSpellHasRange(row, caster.typeId === TYPEID_PLAYER, this.#actionRangeHost);
+  }
+
+  /** range8: GetSpellCount (0x00540df0 → 0x00801770 → 0x007ffa30): 0 without a row. */
+  spellCountAt(slot: number, pet: boolean): number {
+    return this.#reagentCasts(this.spellBookRowAt(slot, pet));
+  }
+
+  /** range8: IsAutoRepeatSpell (0x005415d0): the repeating spell (0x007fe130) or the wanted one (0x007fe180). */
+  isAutoRepeatSpellId(spellId: number): boolean {
+    const world = this.#context.world();
+    return world !== undefined && frameXmlIsAutoRepeatSpell(spellId, world.autoRepeatSpellId, world.autoRanged?.wantedSpellId);
+  }
+
   shapeshiftFormInfo(index: number): FrameXmlShapeshiftFormInfo | undefined {
     if (!Number.isInteger(index) || index < 1) return undefined;
     const form = this.#shapeshiftForms()[index - 1];
@@ -9780,9 +9877,22 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     return this.#spellInfoOf(this.#context.spell(spellId), true);
   }
 
-  /** 3.43 (15.11, follow-up): `GetSpellCooldown(id)` (0x00540e80: a lone number is a spell id, any spell). */
+  /**
+   * 3.43 (15.11, follow-up): `GetSpellCooldown(id)` (0x00540e80: a lone number is a spell id, any spell). range8: the
+   * book is looked for as 0x00540e80 does — the player's book array first (from the end), then the pet's, then the pet
+   * bar (0x005d3560); a pet's id reads the pet's own cooldown (0x00809000 with the pet flag), here the pet model's.
+   */
   spellCooldownOf(spellId: number): FrameXmlSpellCooldown {
-    return Number.isSafeInteger(spellId) && spellId > 0 ? this.#spellCooldownAnswer(spellId) : [0, 0, 0];
+    if (!Number.isSafeInteger(spellId) || spellId <= 0) return [0, 0, 0];
+    if (!this.#spellEntries().some((entry) => entry.id === spellId)) {
+      for (let index = this.petActions.book()?.count ?? 0; index >= 1; index--) {
+        if (this.petActions.bookSpell(index)?.spellId === spellId) return this.petActions.bookCooldown(index);
+      }
+      for (let index = 1; index <= PET_BAR_SLOTS; index++) {
+        if (this.petActions.spellAt(index) === spellId) return this.petActions.cooldown(index);
+      }
+    }
+    return this.#spellCooldownAnswer(spellId);
   }
 
   /** 0x0053f5e0 over both books: the player's known spells, then the pet book (SMSG_PET_SPELLS). */
@@ -9810,11 +9920,12 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
       return undefined;
     };
     if (rank !== undefined) return find(text, rank);
-    // 0x00540200: `!` off, the whole text first, then `Name(Rank)` split at the first bracket.
+    // 0x00540200: `!` off, the whole text first, then `Name(Rank)` split at the last bracket (range8: 0x0076e720
+    // searches from the end, so «Name(Rank)()» is the name «Name(Rank)» with an empty rank — MSBT's form).
     const name = text.startsWith("!") ? text.slice(1) : text;
     const whole = find(name, undefined);
     if (whole) return whole;
-    const open = name.indexOf("(");
+    const open = name.lastIndexOf("(");
     if (open < 0) return undefined;
     const close = name.indexOf(")", open + 1);
     return find(name.slice(0, open), name.slice(open + 1, close < 0 ? undefined : close));

@@ -158,9 +158,21 @@ export class SwingReactionCues {
     this.#meleeTargets.set(attacker, stamp);
   }
 
-  /** SMSG_ATTACK_STOP (`0x756770`): the target is cleared and an unfired record goes unseen. */
-  attackStopped(attacker: bigint): void {
+  /**
+   * SMSG_ATTACK_STOP (`0x756770`): the target is cleared and an unfired record goes unseen — `0x756180` flushes it
+   * through `0x755a60` (text and sounds, no animation), whatever its events had not fired by then.
+   * 6.06 (15.11, events8): a record held only because its swing's clip is on the way first plays what Wow.exe's swing,
+   * started at the record's arrival on its own model, had fired by `now` — the nominal clock up to the stop (a stop in
+   * the swing's own packet batch, the killing blow, fires nothing) — and the rest goes unseen, as there.
+   */
+  attackStopped(attacker: bigint, host?: SwingCueHost, now?: number): void {
     this.#meleeTargets.delete(attacker);
+    const pending = this.#pending.get(attacker);
+    if (pending !== undefined && host !== undefined && now !== undefined && !Number.isNaN(pending.at)
+      && host.waitingForClip?.(attacker, pending.token) === true) {
+      const duration = host.swingDuration?.(attacker, pending.token) ?? SWING_NOMINAL_MS;
+      this.#cue(pending, duration > 0 && Number.isFinite(duration) ? (now - pending.at) / duration : 1, host);
+    }
     this.#drop(attacker);
   }
 

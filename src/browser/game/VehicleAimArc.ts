@@ -21,9 +21,18 @@ import { vehicleAimInput, vehicleAimPower } from "./VehicleAim.js";
  * - The spell: the unit's cast or the armed spell when it has a missile, then the last shown, then the first of the ten bar
  *   slots holding a spell (types 1 and 8 to 17) with one.
  *
- * The flight is 0x006fcd60's with no random (`random` undefined, the middles of the pairs). Left out: MsslTrgtImpactModel
- * (Interface\Vehicles\Vehicle_Target_0x.mdx, the 3D mark over the ground one) and the facing and power of a mover the keys do
- * not move.
+ * The flight is 0x006fcd60's with no random (`random` undefined, the middles of the pairs). Left out: the facing and power of
+ * a mover the keys do not move.
+ *
+ * 15.11 (vehicle8, .runtime/re-2026-11-15/vehicle8/b2.c, b3.c; re-2026-10-03/l1102e/r2.c): MsslTrgtImpactModel, the volume
+ * mark. When the unit the keys move changes (0x00747f40), 0x006fe9b0 loads, for a Vehicle row with any of the arc Flags
+ * 0xf800000, the arc and impact textures (columns 29, 30) and the two models of MsslTrgtImpactModel[0..1] (columns 31, 32,
+ * 0x0081f8f0); 0x006fbf00 lets them go. Each frame the arc is up and its flight found (0x006fda20), each loaded model i stands
+ * at the impact, turned to the mover's facing (vtable +0x34), scaled so that its bounding radius (0x004f5e80) becomes
+ * MsslTrgtImpactRadius[i] (columns 27, 28; the radius itself for a model with none), with the arc's strength as its alpha
+ * (+0x178), and is drawn in the world (0x00781c90; its callback 0x006fbfa0 drops it once the strength is 0). 54 of the
+ * dataset's Vehicle rows name one: Interface\Vehicles\Vehicle_Target_01/02.mdx. `impactModels` carries them, `impactModelScale`
+ * is the scale; the renderer does not draw them yet (an M2 by path at a moving point with a fade, in WorldRenderer3D).
  */
 
 /** Vehicle Flags that ask for the arc (0x006fda20). */
@@ -119,6 +128,32 @@ export interface VehicleAimArcShape {
   readonly arcTexture: string;
   readonly impactTexture: string;
   readonly impactRadius: number;
+  /** 15.11 (vehicle8): MsslTrgtImpactModel[i] (as .m2) with MsslTrgtImpactRadius[i], at the impact (`vehicleImpactModels`). */
+  readonly impactModels?: readonly VehicleImpactModel[];
+}
+
+/** 15.11 (vehicle8): one volume mark of the arc (0x006fe9b0, 0x006fda20). */
+export interface VehicleImpactModel {
+  readonly path: string;
+  readonly radius: number;
+}
+
+/** 15.11 (vehicle8): the row's impact models in slot order, the empty slots left out (0x006fe9b0 loads a named one only). */
+export function vehicleImpactModels(vehicle: Pick<VehicleEntry, "flags" | "msslTrgtImpactModel" | "msslTrgtImpactRadius">): VehicleImpactModel[] {
+  if ((vehicle.flags & ARC_ANY) === 0) return [];
+  const models: VehicleImpactModel[] = [];
+  for (let slot = 0; slot < 2; slot++) {
+    const path = vehicle.msslTrgtImpactModel[slot]?.trim() ?? "";
+    if (path === "") continue;
+    const radius = vehicle.msslTrgtImpactRadius[slot] ?? 0;
+    models.push({ path: path.replace(/\.(mdx|mdl)$/i, ".m2"), radius: Number.isFinite(radius) ? radius : 0 });
+  }
+  return models;
+}
+
+/** 15.11 (vehicle8): 0x006fda20's scale: the radius over the model's bounding radius, or the radius for a model without one. */
+export function impactModelScale(radius: number, boundsRadius: number): number {
+  return boundsRadius > 0 ? radius / boundsRadius : radius;
 }
 
 /** The flight as points (0x006fcd60 with the points asked for): no random, so one frame's arc matches the next. */
@@ -206,5 +241,6 @@ export function updateVehicleAimArc(armedSpell: number | undefined): void {
     arcSpeed: vehicle.msslTrgtArcSpeed, arcRepeat: vehicle.msslTrgtArcRepeat,
     arcTexture: vehicle.msslTrgtArcTexture.trim(), impactTexture: vehicle.msslTrgtImpactTexture.trim(),
     impactRadius: vehicle.msslTrgtImpactTexRadius,
+    impactModels: vehicleImpactModels(vehicle), // 15.11 (vehicle8)
   });
 }

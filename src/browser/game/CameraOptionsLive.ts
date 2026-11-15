@@ -198,6 +198,10 @@ export function advanceCameraOptions(now: number, subject: WorldObjectState | un
   cameraFollow.spline(unit && subject !== undefined && subject.motion !== undefined && !taxi, position.orientation, rig,
     now, cameraViews, subject === undefined || viewIsOut(world) ? undefined
       : { style: settingNumber(values, "cameraSmoothStyle"), yawSpeed, pitchSpeed: yawSpeed / 4, subject });
+  // 11.02 (15.11, vehicle8): a FlagsB 0x1 seat keeps the passenger's view still in the world (VehicleCamera.ts `seatYawTurn`).
+  const seatTurn = vehicleCamera.seatYawTurn(position.orientation,
+    subject !== undefined && subject.guid === world?.state.selfGuid, cameraFollow.held, now);
+  if (seatTurn !== 0) cameraViews.turnYaw(seatTurn, rig);
 
   // The smart pivot's way home (0x00606f90 → 0x00602600).
   pivot.frame(now, pivotAllowedFor(subject));

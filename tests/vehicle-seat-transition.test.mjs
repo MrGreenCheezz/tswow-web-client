@@ -95,7 +95,18 @@ test("a start further than 60 yards is not a boarding", () => {
 
 test("the renderer starts a transition when a drawn unit's seat changes, and applies them after the seat pass", async () => {
   const source = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
-  assert.match(source, /if \(unit\.seatTracked === true\) \{\s+this\.#seatTransitions\.begin\(object\.guid, unit\.seatedRow, seatNow, unit\.node, now\);[\s\S]{0,900}unit\.node\.position\.set\(position\.x, position\.z, -position\.y\);/);
+  // The transition starts from where the node stood last frame, so `begin` must read the node before this frame's
+  // placement writes it, and nothing may move the node in between. (15.11: the ride block between the two grew by
+  // vehicle8's `#copySeatAnimation`, so this is an order, not a character window.)
+  const begin = source.search(
+    /if \(unit\.seatTracked === true\) \{\s+this\.#seatTransitions\.begin\(object\.guid, unit\.seatedRow, seatNow, unit\.node, now\);/);
+  assert.ok(begin >= 0, "a seat change of a unit already drawn begins a transition");
+  const place = source.indexOf("unit.node.position.set(position.x, position.z, -position.y);", begin);
+  assert.ok(place > begin, "the frame's placement follows the begin");
+  const between = source.slice(begin, place);
+  assert.doesNotMatch(between, /unit\.node\.position\.(set|copy)\(|unit\.node\.position\.[xyz] =/,
+    "nothing moves the node between the begin and the placement");
+  assert.doesNotMatch(between, /\n  (?:async )?#?\w+\([^)]*\)[^\n]*\{\n/, "both in the same method");
   assert.match(source, /this\.#vehiclePassengers\.place\([^\n]*\n[^\n]*\n\s+this\.#seatTransitions\.apply\(this\.#seatTransitionNode, now\);/);
 });
 

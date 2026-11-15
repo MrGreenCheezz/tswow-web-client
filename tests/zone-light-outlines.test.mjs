@@ -48,10 +48,10 @@ const byte = (value) => Math.round(value * 255);
 const bytes = (colour) => [byte(colour.r), byte(colour.g), byte(colour.b)];
 
 test("inside a zone outline the frame takes the outline's light, as Wow.exe drew Storm Peaks", () => {
-  const before = resolveLighting(northrend(undefined), STAND.x, STAND.y, NOON, 0, 3, STAND.z);
+  const before = resolveLighting(northrend(undefined), STAND.x, STAND.y, NOON, 0, STAND.z);
   assert.deepEqual(bytes(before.colours.ambient), [0x1f, 0x52, 0x7d], "without the outlines: Northrend's default");
 
-  const sample = resolveLighting(northrend([square(STAND.x, STAND.y, 400, 1777)]), STAND.x, STAND.y, NOON, 0, 3, STAND.z);
+  const sample = resolveLighting(northrend([square(STAND.x, STAND.y, 400, 1777)]), STAND.x, STAND.y, NOON, 0, STAND.z);
   // Recorded terrain constants on draw 619 of fog6-n-stormpeaks: c25 = 0.44706 0.36078 0.44706, c26 = 0.48628
   // 0.54902 0.63529, PS c2 = 0.26667 0.25882 0.39216; VS c12 gives start 127.7 of 1277, a share of 0.1.
   assert.deepEqual(bytes(sample.colours.ambient), [114, 92, 114]);
@@ -78,7 +78,7 @@ test("the outline's light fades over 50 yards on each side of its edge", () => {
 
   // Across the edge the two lights mix by that weight.
   const entry = northrend([square(STAND.x + 1000, STAND.y, 1000, 1777)]);
-  const edge = resolveLighting(entry, STAND.x, STAND.y, NOON, 0, 3, STAND.z);
+  const edge = resolveLighting(entry, STAND.x, STAND.y, NOON, 0, STAND.z);
   assert.ok(Math.abs(edge.colours.ambient.r - (0x1f + (114 - 0x1f) * 0.5) / 255) < 1e-6);
 });
 

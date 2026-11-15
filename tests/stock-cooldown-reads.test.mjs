@@ -135,14 +135,15 @@ test("a sibling's category part sweeps in the stock book and bar with the part's
     const part = client.cooldownState(2457);
     assert.equal(part?.duration, 1000, "the stance's category 47 holds Боевая стойка");
     const start = clock.lua - (clock.monotonic - part.startedAt) / 1000;
-    // GetSpellCooldown by spell id (a book slot past the book's three answers the known spell) and GetActionCooldown.
-    assertSweep(call(seam, "GetSpellCooldown", 2457, "spell"), [start, 1, 1], "the book sweeps the sibling's part");
+    // GetSpellCooldown by spell id and GetActionCooldown. range8 (15.11): a lone number is the id (0x00540e80); with a
+    // book type it is a slot, and 2457 is past 0x00540670's 0..0x3ff — a usage error, nothing answered.
+    assertSweep(call(seam, "GetSpellCooldown", 2457), [start, 1, 1], "the book sweeps the sibling's part");
     assertSweep(call(seam, "GetActionCooldown", 1), [start, 1, 1], "and the bar");
     // A tenth of a second on, the same start: the sweep runs on, it does not start over.
     clock.monotonic += 100;
     clock.lua += 0.1;
-    assertSweep(call(seam, "GetSpellCooldown", 2457, "spell"), [start, 1, 1], "the start stays put");
-    assertSweep(call(seam, "GetSpellCooldown", 2458, "spell"), [start, 1, 1], "the third stance too");
+    assertSweep(call(seam, "GetSpellCooldown", 2457), [start, 1, 1], "the start stays put");
+    assertSweep(call(seam, "GetSpellCooldown", 2458), [start, 1, 1], "the third stance too");
   } finally {
     seam.detach();
     client.close();

@@ -105,7 +105,9 @@ test("a held vault stack drops into the bag slot clicked, by its wire position",
   openVault(context);
   assert.ok(fired.some(([event]) => event === "GUILDBANKFRAME_OPENED"));
   call("PickupGuildBankItem", seam, 1, 1);
-  assert.deepEqual(call("CursorHasItem", seam), [true]);
+  // go8 follow-up (15.11): the vault's stack is cursor type 0xB; Wow.exe 0x00515100 answers CursorHasItem only for
+  // types 1 and 9, so nil — while GetCursorInfo (0x00515200) still says "item".
+  assert.deepEqual(call("CursorHasItem", seam), [false]);
   assert.deepEqual(call("GetCursorInfo", seam), ["item", 2589, "|cffffffff|Hitem:2589:0:0:0:0:0:0:0:60|h[Льняной материал]|h|r"]);
   assert.deepEqual(call("GetGuildBankItemInfo", seam, 1, 1), ["Interface\\Icons\\INV_Fabric_Linen_01", 20, 1]);
   call("PickupContainerItem", seam, 0, 3);

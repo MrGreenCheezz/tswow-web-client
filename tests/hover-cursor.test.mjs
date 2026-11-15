@@ -160,10 +160,18 @@ test("Л1 a quest giver introduces itself at any range, unless flagged not selec
       ]),
     }],
   ]);
+  // The full GameObjectTemplate shape: the reach reads `data` (the lock word) like the real cache answers it.
+  const template = {
+    entry: 100, type: 2, displayId: 0, name: "Квестодатель", iconName: "", castBarCaption: "",
+    data: new Array(24).fill(0), size: 1,
+  };
   game.world = {
     state: { selfGuid: 1n, objects },
-    gameObjectTemplate: () => ({ type: 2, iconName: "", name: "Квестодатель" }),
+    gameObjectTemplate: () => template,
     waitForGameObjectTemplate: () => Promise.resolve(undefined),
+    // 4.15 (15.11): the use reach reads the template cache and the spell book as WorldClient always has them.
+    gameObjectTemplates: new Map([[100, template]]),
+    knownSpells: [],
   };
   game.scene = { pick: (x) => (x === 400 ? 5n : undefined) };
   worldCanvas.style.cursor = "";
@@ -172,7 +180,7 @@ test("Л1 a quest giver introduces itself at any range, unless flagged not selec
   assert.equal(hoverCursorName(), "UnableInteract",
     "the name is not gated on interaction distance; the cursor greys out of use range (0x00711470)");
   assert.equal(worldCanvas.style.cursor, "not-allowed");
-  game.world.gameObjectTemplate = () => ({ type: 2, iconName: "", name: "Квестодатель" });
+  game.world.gameObjectTemplate = () => template;
   objects.get(5n).fields.set(UPDATE_FIELDS.GAMEOBJECT_FLAGS.offset, 0x10);
   clock += 1_000;
   move(100);

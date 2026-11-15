@@ -126,9 +126,11 @@ import type { MacroContext } from "../macro/MacroOptions.js";
 import { FRAMEXML_COMBAT_LOG_BINDINGS, type FrameXmlCombatLogModel } from "./FrameXmlCombatLog.js";
 import { frameXmlMultiCastBindings, type FrameXmlMultiCastModel } from "./FrameXmlMultiCast.js";
 import { FRAMEXML_CURSOR_BINDINGS, type FrameXmlActionButton, type FrameXmlCursorModel } from "./FrameXmlCursor.js";
+import type { FrameXmlAmmoSlot } from "./FrameXmlAmmoCursor.js"; // 3.23 (15.11)
 import { FRAMEXML_CURSOR_MONEY_BINDINGS } from "./FrameXmlCursorMoney.js"; // L5c 3.09
 import { FRAMEXML_REPAIR_BINDINGS, type FrameXmlRepairModel } from "./FrameXmlRepair.js";
 import { FRAMEXML_RANGE_QUERY_BINDINGS } from "./FrameXmlRangeQueries.js"; // widgets5 batch 2
+import { FRAMEXML_SPELL_QUERY_BINDINGS, FRAMEXML_SPELL_UNIT_TOKEN, frameXmlWithSpellNames } from "./FrameXmlSpellQueries.js"; // range8
 import { FRAMEXML_BINDING_BINDINGS, FRAMEXML_BINDING_PRELUDE, type FrameXmlBindingModel } from "./FrameXmlBinding.js";
 import { FRAMEXML_CHAT_COLOR_BINDINGS, type FrameXmlChatColors } from "./FrameXmlChatColors.js";
 import { FRAMEXML_RAID_LOD_BINDINGS } from "./FrameXmlRaidLodApi.js";
@@ -2057,6 +2059,8 @@ export interface FrameXmlWorldSeam {
   sellCursorItemToMerchant?(): boolean;
   /** L1 (3.23): the merchant row's item entry as the cursor holds it (0x00584080); undefined for no row. */
   merchantItemEntry?(index: number): number | undefined;
+  /** 3.23 (15.11): the AmmoSlot's entry, carried count and CMSG_SET_AMMO, for cursor type 9 (FrameXmlAmmoCursor.ts). */
+  readonly ammoSlot?: FrameXmlAmmoSlot | undefined;
   /**
    * L1 (3.23): a held merchant row dropped on a container slot (`bagId`) or a paper-doll slot (`bagId`
    * undefined): CMSG_BUY_ITEM_IN_SLOT (0x005d7ff0 / 0x005e85d0 → 0x006d2ea0). True when sent, false
@@ -2333,18 +2337,15 @@ const SERVICE_SEAM_BINDINGS: Readonly<Record<string, FrameXmlSeamBinding>> = Obj
     (seam: FrameXmlWorldSeam, args: readonly unknown[]) => call(seam.services ?? CLOSED_SERVICES, args)]),
 );
 
-/**
- * 3.43 (15.11, follow-up): the unit tokens 0x0060abf0 reads (a GetSpellInfo second string that is one is no rank). Not
- * modelled: a unit by its name (0x0060a630), which that parser also accepts.
- */
-const SPELL_INFO_UNIT_TOKEN =
-  /^(player|vehicle|pet|target|partypet\d*|party\d*|raidpet\d*|raid\d*|arenapet\d*|arena\d*|commentator\d*|mouseover|focus|npc|questnpc|none)(-?target)*$/i;
+/** 3.43 (15.11, follow-up): the unit tokens 0x0060abf0 reads (a GetSpellInfo second string that is one is no rank). */
+const SPELL_INFO_UNIT_TOKEN = FRAMEXML_SPELL_UNIT_TOKEN; // range8: kept in FrameXmlSpellQueries.ts
 
+// range8: frameXmlWithSpellNames puts 0x00540670's name form in front of the book-slot globals (FrameXmlSpellQueries.ts).
 // The spellbook names take a `bookType`; frameXmlWithPetBook answers the "pet" book from the pet model.
 // 11.02-IF: frameXmlWithPossess answers slots 121-132 and the possess names while a possessed unit's bar is up.
 // 11.02-F2: frameXmlWithVehicle answers the vehicle C API while the vehicle tables are there.
 // 11.02-E: frameXmlWithVehicleAim answers VehicleAim* while the vehicle tables are there.
-export const FRAMEXML_SEAM_BINDINGS: Readonly<Record<string, FrameXmlSeamBinding>> = Object.freeze(frameXmlWithVehicleAim(frameXmlWithVehicle(frameXmlWithPossess(frameXmlWithPetBook({
+export const FRAMEXML_SEAM_BINDINGS: Readonly<Record<string, FrameXmlSeamBinding>> = Object.freeze(frameXmlWithSpellNames(frameXmlWithVehicleAim(frameXmlWithVehicle(frameXmlWithPossess(frameXmlWithPetBook({
   ...SERVICE_SEAM_BINDINGS,
   ...FRAMEXML_WORLD_STATE_BINDINGS,
   ...FRAMEXML_MAP_BINDINGS,
@@ -3182,7 +3183,10 @@ export const FRAMEXML_SEAM_BINDINGS: Readonly<Record<string, FrameXmlSeamBinding
   ...FRAMEXML_REPAIR_BINDINGS,
   // widgets5 batch 2: IsItemInRange, GetItemFamily, GetShapeshiftForm, IsWindowsClient (FrameXmlRangeQueries.ts).
   ...FRAMEXML_RANGE_QUERY_BINDINGS,
-})))));// 11.02-F2: one more closing parenthesis for frameXmlWithVehicle; 11.02-E: and one for frameXmlWithVehicleAim
+  // range8: IsSpellInRange, SpellHasRange, IsHelpful/HarmfulSpell, IsAttackSpell, IsConsumableSpell, GetSpellCount,
+  // IsAutoRepeatSpell (FrameXmlSpellQueries.ts).
+  ...FRAMEXML_SPELL_QUERY_BINDINGS,
+}))))));// 11.02-F2: one more closing parenthesis for frameXmlWithVehicle; 11.02-E: and one for frameXmlWithVehicleAim; range8: frameXmlWithSpellNames
 
 /** Every name the seam answers, in report order. */
 export const FRAMEXML_SEAM_NAMES: readonly string[] = Object.freeze(

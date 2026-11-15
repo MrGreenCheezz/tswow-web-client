@@ -16,8 +16,20 @@ import type { VehicleSeatEntry } from "../world/VehicleDbc.js";
  * The dataset has four such seats: 2903 and 2906 (Vehicle 328), 2963 (Vehicle 332), 3886 (Vehicle 370).
  *
  * Here: the vehicle's whole-model animation, started on the passenger when the vehicle starts one and on taking the seat.
- * Not modelled: the variation (Wow.exe passes the vehicle's when the passenger's model has that many, 0x008262f0) — the
- * passenger draws its own; and the key-bone copies (VehicleOwnAnimation.ts plays those on the vehicle only).
+ *
+ * 15.11 (vehicle8, .runtime/re-2026-11-15/vehicle8/b1.c; re-2026-11-11/vehicle2/v1.c, v2.c):
+ * - The variation. 0x00735820 reads the vehicle model's state on that bone (0x008266b0: +0x90 the animation, +0x94 the
+ *   variation drawn) and passes that variation to each copying passenger when the passenger's model has more variations of
+ *   the animation than its index (0x008262f0 → 0x008261b0, the count); otherwise −1, and the passenger draws its own
+ *   (0x00832ab0 → 0x00826e60). `copiedVariation`.
+ * - The key bones. 0x00735a60 plays an animation on one key bone (0x00826a60: the model has it; 0x00832840) and, when the
+ *   model is the vehicle's seat model, plays the same key bone and animation forced on every copying passenger's model
+ *   (again through 0x00735a60, which needs the passenger's own key bone). The vehicle's seat animations
+ *   (VehicleOwnAnimation.ts) go through it: 0x00756f80 → 0x00735820(seat model, key bone, …), whose key-bone branch is
+ *   0x00832840 too. Here: the passengers that copy now (`VehicleAnimationCopies.has`) on that vehicle get the same seat
+ *   play on their own model (VehicleOwnAnimation.ts, `copyOf`). On this dataset no seat of a vehicle with a FlagsB 0x10000
+ *   seat names a vehicle animation (Vehicles 328, 332, 370: all −1; .runtime/re-2026-11-15/vehicle8/probe1.txt), so
+ *   nothing plays yet.
  */
 
 /** VehicleSeat FlagsB 0x10000: the passenger mirrors the vehicle's animations (0x00748620). */
@@ -26,6 +38,32 @@ export const SEAT_FLAG_B_COPIES_VEHICLE_ANIMATION = 0x0001_0000;
 /** Whether a passenger seated here (state 3) plays its vehicle's animations instead of its own (0x007487e0). */
 export function seatCopiesVehicleAnimation(seat: Pick<VehicleSeatEntry, "flagsB"> | undefined, alive: boolean): boolean {
   return alive && seat !== undefined && (seat.flagsB & SEAT_FLAG_B_COPIES_VEHICLE_ANIMATION) !== 0;
+}
+
+/** One variation of an animation on a model (AnimatedModel.ts `ClipVariation`), as far as this rule reads it. */
+export interface CopyVariation<Clip> {
+  readonly variation: number;
+  readonly clip: Clip;
+  readonly overlay?: Clip;
+}
+
+/**
+ * The variation the vehicle's model has on show for its animation: the one whose clip it is playing, 0 for a model with no
+ * variations of it (a single sequence) or a clip not among them (0x008266b0 reads +0x94, 0 for the first).
+ */
+export function vehicleShownVariation<Clip>(variations: readonly CopyVariation<Clip>[] | undefined, shown: Clip | undefined): number {
+  if (variations === undefined || shown === undefined) return 0;
+  return variations.find((entry) => entry.clip === shown || entry.overlay === shown)?.variation ?? 0;
+}
+
+/**
+ * 0x00735820 / 0x008262f0: the passenger's clip for the vehicle's variation `variation` when its model has more variations
+ * of the animation than that index; undefined when it has not — the passenger then draws its own (−1). A model with no
+ * variation list has one sequence: variation 0 is that clip, which a plain start plays anyway (undefined).
+ */
+export function copiedVariation<Clip>(variation: number, passenger: readonly CopyVariation<Clip>[] | undefined): Clip | undefined {
+  if (passenger === undefined || !(variation >= 0) || passenger.length <= variation) return undefined;
+  return (passenger.find((entry) => entry.variation === variation) ?? passenger[variation])?.clip;
 }
 
 /** What the vehicle's seat model is playing: the animation, whether it loops, and the start it came from. */

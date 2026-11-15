@@ -45,3 +45,13 @@ test("6.11 a passenger asks its carrier (0x0074b8b0): absent or itself fading â†
   assert.equal(unitAlphaWalking(vehicle, 0, 300), true, "the vehicle's own fade-in");
   assert.equal(unitAlphaWalking(vehicle, 0, 1000), false);
 });
+
+// 15.11 (vehicle8): 0x005d3340 â€” the carrier's seat row for the passenger's slot; AttachmentID below 0 gives the fade even
+// while the carrier fades itself (27 of the dataset's 720 seats, .runtime/re-2026-11-15/vehicle8/probe4.txt).
+test("6.11 a passenger on a seat with no attachment point fades in whatever its carrier does", () => {
+  assert.equal(unitFadesIn({ carrier: { present: true, fading: true, seatAttachment: -1 } }), true);
+  assert.equal(unitFadesIn({ carrier: { present: true, fading: true, seatAttachment: 0 } }), false, "an attached seat: the carrier decides");
+  assert.equal(unitFadesIn({ carrier: { present: true, fading: false, seatAttachment: 7 } }), true);
+  assert.equal(unitFadesIn({ carrier: { present: true, fading: true, seatAttachment: undefined } }), false, "no seat row");
+  assert.equal(unitFadesIn({ carrier: { present: false, fading: false, seatAttachment: -1 } }), false, "carrier not here first");
+});

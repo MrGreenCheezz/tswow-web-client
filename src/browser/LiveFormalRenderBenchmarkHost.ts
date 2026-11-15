@@ -1313,9 +1313,6 @@ export class LiveFormalRenderBenchmarkHost implements FormalRenderBenchmarkHost 
       resources.renderer.weatherStorm,
       position.z,
       undefined,
-      1,
-      undefined,
-      undefined,
       underwater,
     );
     this.#withRendererMutationAuthorization("updateLighting", () => {

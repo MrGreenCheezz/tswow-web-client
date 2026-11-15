@@ -47,6 +47,7 @@ import { FRAMEXML_PET_ACTION_EVENTS } from "./FrameXmlPetActionBar.js";
 import type { FrameXmlSeamBinding, FrameXmlSeamPump, FrameXmlWorldSeam } from "./FrameXmlWorldSeam.js";
 import { frameXmlDropHeldMerchantItem, frameXmlPickupMerchantItem } from "./FrameXmlMerchantCursor.js"; // L1 (3.23)
 import { frameXmlCoinCursorTexture } from "./FrameXmlCursorMoney.js"; // L5c-review 3.09
+import { frameXmlAmmoSlotClick } from "./FrameXmlAmmoCursor.js"; // 3.23 (15.11)
 
 /**
  * An item id or a native item hyperlink, as `FrameXmlWorldSeam.frameXmlItemEntry` reads one. Kept
@@ -79,13 +80,15 @@ export type FrameXmlCursorHeld =
   /** L1 (3.23): a merchant row (cursor type 5, Wow.exe 0x00520d30): its one-based index and item entry. */
   | { readonly kind: "merchant"; readonly index: number; readonly entry: number }
   /** L5c 3.09: money on the cursor — the player's (type 2, "money") or the guild vault's (type 0xc). */
-  | { readonly kind: "money" | "guildbankmoney"; readonly amount: number };
+  | { readonly kind: "money" | "guildbankmoney"; readonly amount: number }
+  /** 3.23 (15.11): the AmmoSlot's entry lifted off it (cursor type 9, FrameXmlAmmoCursor.ts). */
+  | { readonly kind: "ammo"; readonly entry: number };
 
 /** The seam surface the cursor reads; the seam itself is the host. */
 export type FrameXmlCursorHost = Pick<FrameXmlWorldSeam,
   "cursorInfo" | "cursorHasItem" | "clearCursor" | "spellIsPassive" | "itemInfo"
   | "macros" | "actionButton" | "setActionButton" | "spellBookSpellId" | "spellInfo" | "spellTexture"
-  | "itemTexture" | "equipmentSets" | "petActions">;
+  | "itemTexture" | "equipmentSets" | "petActions" | "guildBank">;
 
 /** The highest spellbook slot the stock book can address (SpellBookFrame.lua:1, `MAX_SPELLS`). */
 const MAX_SPELLS = 1024;
@@ -113,6 +116,8 @@ function heldAction(held: FrameXmlCursorHeld): FrameXmlActionButton | undefined 
     case "merchant": return undefined;
     // L5c 3.09: neither is money.
     case "money": case "guildbankmoney": return undefined;
+    // 3.23 (15.11): nor the ammo (0x005AB120 places no type 9).
+    case "ammo": return undefined;
   }
 }
 
@@ -272,6 +277,12 @@ export class FrameXmlCursorModel {
     this.#set({ kind: "merchant", index, entry });
   }
 
+  /** 3.23 (15.11): the AmmoSlot's entry on the cursor (type 9, 0x005E85D0 → 0x00520D30; FrameXmlAmmoCursor.ts). */
+  pickupAmmo(entry: number): void {
+    if (!Number.isSafeInteger(entry) || entry <= 0) return;
+    this.#set({ kind: "ammo", entry });
+  }
+
   /** `PickupItem(id or link)`: an item by entry, which can only be put on a bar. */
   pickupItem(value: unknown): void {
     const entry = frameXmlItemEntry(value);
@@ -417,7 +428,8 @@ export class FrameXmlCursorModel {
     if (!held) return this.#host.cursorInfo();
     switch (held.kind) {
       case "spell": return ["spell", this.#bookSlot(held.spellId, held.bookType), held.bookType];
-      case "item": {
+      // 3.23 (15.11): 0x00515200 answers type 9 with type 7: "item", the id, the link.
+      case "item": case "ammo": {
         const link = this.#host.itemInfo(held.entry)?.[1];
         return link ? ["item", held.entry, link] : ["item", held.entry];
       }
@@ -425,8 +437,14 @@ export class FrameXmlCursorModel {
         const position = this.#host.macros?.position(held.slot) ?? 0;
         return position > 0 ? ["macro", position] : ["macro"];
       }
-      case "equipmentset": return ["equipmentset"];
-      case "petaction": return ["petaction", held.index];
+      // go8 follow-up (15.11): 0x00515200 type 0xD — "equipmentset" and the set's name (0x005AE5C0 + 0x114), nothing
+      // when the set is gone.
+      case "equipmentset": {
+        const name = this.#host.equipmentSets?.nameOf(held.id);
+        return name === undefined ? [] : ["equipmentset", name];
+      }
+      // go8 follow-up (15.11): a pet action is type 4 (0x00520A80), which 0x00515200 has no case for: nothing.
+      case "petaction": return [];
       case "companion": return ["companion", held.index, held.companionType];
       // L1 (3.23): 0x00515200 answers type 5 with "merchant" and the one-based index.
       case "merchant": return ["merchant", held.index];
@@ -436,11 +454,16 @@ export class FrameXmlCursorModel {
   }
 
   hasItem(): boolean {
-    return this.#held?.kind === "item" || (this.#held === undefined && this.#host.cursorHasItem());
+    // 3.23, go8 follow-up (15.11): 0x00515100 is true for types 1 and 9 only — the bag item (the seam's holder) and
+    // the ammo. Not for type 7 (an item by id or off a bar, kind "item") nor the guild vault's stack (0xB), which the
+    // seam's own `cursorHasItem` counts.
+    if (this.#held !== undefined) return this.#held.kind === "ammo";
+    return this.#host.cursorHasItem() && this.#host.guildBank?.cursorHasItem() !== true;
   }
 
+  /** go8 follow-up (15.11): 0x00515140 is true for type 3 — a book spell (either book) and a companion. */
   hasSpell(): boolean {
-    return this.#held?.kind === "spell";
+    return this.#held?.kind === "spell" || this.#held?.kind === "companion";
   }
 
   hasMacro(): boolean {
@@ -497,7 +520,7 @@ export class FrameXmlCursorModel {
         return host.spellInfo?.(held.spellId)?.[2]
           || (slot === undefined ? undefined : host.spellTexture(slot, held.bookType)) || undefined;
       }
-      case "item": return host.itemTexture?.(held.entry);
+      case "item": case "ammo": return host.itemTexture?.(held.entry); // 3.23 (15.11): ammo too (0x00520D30 → 0x00616720)
       case "macro": return host.macros?.slotTexture(held.slot);
       case "equipmentset": return host.equipmentSets?.iconOf(held.id);
       case "companion": return host.spellInfo?.(held.spellId)?.[2] || undefined;
@@ -521,7 +544,8 @@ export class FrameXmlCursorModel {
     // The macro model fires its own grid pair for its macro; everything else is counted here.
     // L1 (3.23): a merchant row shows no grid (0x00520d30 calls 0x005a7a70 for type 7 only).
     const grid = (own !== undefined && own.kind !== "petaction" && own.kind !== "merchant" && !(own.kind === "spell" && own.bookType === PET_BOOK)
-      && own.kind !== "money" && own.kind !== "guildbankmoney") // L5c 3.09: money shows no grid (0x00520880)
+      && own.kind !== "money" && own.kind !== "guildbankmoney" // L5c 3.09: money shows no grid (0x00520880)
+      && own.kind !== "ammo") // 3.23 (15.11): nor the ammo (0x00520D30 shows it for type 7 only)
       || item !== undefined;
     if (grid !== this.#grid) {
       this.#grid = grid;
@@ -588,6 +612,9 @@ export const FRAMEXML_CURSOR_BINDINGS: Readonly<Record<string, FrameXmlSeamBindi
     return NOTHING;
   },
   PickupInventoryItem: (seam, args) => {
+    // 3.23 (15.11): the AmmoSlot with no bag item held — the ammo on and off the cursor, type 9 (FrameXmlAmmoCursor.ts);
+    // 0x005E85D0 takes this branch before any merchant row, which the ammo's pickup or the let-go replaces.
+    if (slotArg(args[0]) === 0 && frameXmlAmmoSlotClick(seam)) return NOTHING;
     // L1 (3.23): a held merchant row is bought into the paper-doll slot (0x005e85d0 → 0x006d2ea0).
     if (frameXmlDropHeldMerchantItem(seam, undefined, slotArg(args[0]))) return NOTHING;
     // Under the repair cursor a held spell, action or set keeps the paper doll's click (0x005e85d0).

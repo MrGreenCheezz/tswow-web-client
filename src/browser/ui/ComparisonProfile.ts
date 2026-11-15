@@ -133,6 +133,8 @@ export const COMPARISON_GRAPHICS_OVERRIDES: Readonly<SettingValues> = Object.fre
   experimentalLightning: false,
   experimentalAmbientMotes: false,
   experimentalWeatherSounds: false,
+  experimentalZoneAtmosphere: false, // 15.11 (7.40): off by default too; pinned so a player who turned it on compares without it
+  zoneAtmosphereStrength: 100, // 15.11 (7.40) neutral: the leaf is off above
   godRays: false,
   // Neutral: the leaf is off above, so this only pins the shaft slider to its default.
   godRayStrength: 100,

@@ -10,8 +10,12 @@
 //   UNIT_FIELD_BYTES_1 byte 2 & 0x2 (UNIT_VIS_FLAGS_CREEP, stealth). Descriptor offsets +0xd8, +0xd4, +0x112 from the
 //   unit fields' start, checked against DISPLAYID +0xf4, MOUNTDISPLAYID +0xfc, HEALTH +0x48 read by the same code.
 // - A passenger (0x0074b8b0: the guid at unit +0x790 is a vehicle's, high 0xF?5?, or a player's, high nibble 0) asks its
-//   carrier: carrier not here → no fade; carrier itself walking its byte (+0xc4 ≠ 0) → no fade; else the fade. (A seat
-//   test 0x005d3340 on unit +0x7d2 can also answer "fade"; not read.) Here +0x790 is taken as the unit's transport guid.
+//   carrier: carrier not here → no fade; the seat says fade → the fade; carrier itself walking its byte (+0xc4 ≠ 0) → no
+//   fade; else the fade. Here +0x790 is taken as the unit's transport guid.
+//   15.11 (vehicle8, .runtime/re-2026-11-15/vehicle8/b1.c): the seat test is 0x005d3340 on the carrier with the
+//   passenger's seat byte (+0x7d2): the carrier's vehicle (+0xf5c) row for that slot (0x00756ec0), whose AttachmentID
+//   (row +8) below 0 — a seat with no attachment point, 27 of the dataset's 720 — gives the fade even while the carrier
+//   is fading itself. A carrier with no vehicle row answers nothing here and the carrier's byte decides.
 // - What restarts it: only creation (0x0073fcc0; and the re-setup 0x00734fd0 → 0x00744d20 zeroes the byte again for an
 //   object that is set up anew). A new model for a shown unit (0x0073e410 → 0x0071abe0) walks only to a new
 //   CreatureModelAlpha (UnitDisplayFade.ts) and is taken at once when the byte already matches.
@@ -46,8 +50,11 @@ export interface SpawnFadeQuestion {
   flags?: number | undefined;
   flags2?: number | undefined;
   visFlags?: number | undefined;
-  /** Set for a passenger: whether its carrier is here and whether that carrier's own byte is walking. */
-  carrier?: { present: boolean; fading: boolean } | undefined;
+  /**
+   * Set for a passenger: whether its carrier is here, whether that carrier's own byte is walking, and (15.11, vehicle8)
+   * the AttachmentID of the carrier's seat row the passenger sits in, undefined without one (0x005d3340).
+   */
+  carrier?: { present: boolean; fading: boolean; seatAttachment?: number | undefined } | undefined;
 }
 
 /** 0x00716650: whether a new unit fades in. */
@@ -55,15 +62,22 @@ export function unitFadesIn(question: SpawnFadeQuestion): boolean {
   if (((question.flags2 ?? 0) & UNIT_FLAG2_DO_NOT_FADE_IN) !== 0) return false;
   if (((question.flags ?? 0) & UNIT_FLAG_NON_ATTACKABLE) !== 0) return false;
   if (((question.visFlags ?? 0) & UNIT_VIS_FLAGS_CREEP) !== 0) return false;
-  if (question.carrier !== undefined) return question.carrier.present && !question.carrier.fading;
+  const carrier = question.carrier;
+  if (carrier !== undefined) {
+    if (!carrier.present) return false;
+    if (carrier.seatAttachment !== undefined && carrier.seatAttachment < 0) return true; // 15.11 (vehicle8): 0x005d3340
+    return !carrier.fading;
+  }
   return true;
 }
 
 /**
  * 0x00716650 asked of a unit's wire state; `carrier` answers for the unit its transport guid names (a passenger's
- * vehicle or player), undefined when that unit is not here.
+ * vehicle or player), undefined when that unit is not here; `seatAttachment` (15.11, vehicle8) is the AttachmentID of
+ * that carrier's seat row for the passenger's slot, undefined when the carrier has no vehicle row.
  */
-export function unitFadesInFrom(object: WorldObjectState, carrier: (guid: bigint) => { fading: boolean } | undefined): boolean {
+export function unitFadesInFrom(object: WorldObjectState,
+  carrier: (guid: bigint) => { fading: boolean; seatAttachment?: number | undefined } | undefined): boolean {
   const guid = object.transport?.guid;
   const passenger = carrierGuid(guid);
   const found = passenger ? carrier(guid!) : undefined;
@@ -71,7 +85,7 @@ export function unitFadesInFrom(object: WorldObjectState, carrier: (guid: bigint
     flags: unitFields.flags(object),
     flags2: readField(object, "UNIT_FIELD_FLAGS_2"),
     visFlags: unitFields.visFlags(object),
-    ...(passenger ? { carrier: { present: found !== undefined, fading: found?.fading === true } } : {}),
+    ...(passenger ? { carrier: { present: found !== undefined, fading: found?.fading === true, seatAttachment: found?.seatAttachment } } : {}),
   });
 }
 

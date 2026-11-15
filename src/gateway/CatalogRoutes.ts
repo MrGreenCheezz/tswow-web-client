@@ -31,6 +31,7 @@ import { NAME_FILTERS_VERSION, loadNameFilters } from "./NameFilterMetadata.js";
 import { PVP_DIFFICULTY_VERSION, loadPvpDifficulty } from "./PvpDifficultyMetadata.js"; // 11.11 (3.24)
 import { OVERRIDE_SPELLS_VERSION, loadOverrideSpells } from "./OverrideSpellMetadata.js"; // 5.05 (15.11, combat7)
 import { NPC_MANA_COST_SCALER_VERSION, loadNpcManaCostScaler } from "./NpcManaCostScalerMetadata.js"; // 3.43 (15.11)
+import { MAIL_TEMPLATES_VERSION, loadMailTemplates } from "./MailTemplateMetadata.js"; // 5.28 (15.11)
 import { originAllowed } from "./UpgradeGuard.js";
 
 export interface CatalogRoute {
@@ -81,6 +82,8 @@ export const CATALOG_ROUTES: readonly CatalogRoute[] = Object.freeze([
   { pathname: "/dbc/override-spells", version: OVERRIDE_SPELLS_VERSION, load: loadOverrideSpells }, // 5.05 (15.11, combat7)
   // 3.43 (15.11): gtNPCManaCostScaler — a non-player unit's cost (NpcManaCostScalerMetadata.ts, Wow.exe 0x008012f0).
   { pathname: "/dbc/npc-mana-cost-scaler", version: NPC_MANA_COST_SCALER_VERSION, load: loadNpcManaCostScaler }, // 3.43 (15.11)
+  // 5.28 (15.11): MailTemplate — a template letter's body for GetInboxText (MailTemplateMetadata.ts, Wow.exe 0x00570bd0).
+  { pathname: "/dbc/mail-templates", version: MAIL_TEMPLATES_VERSION, load: loadMailTemplates }, // 5.28 (15.11)
 ]);
 
 /** The serialised answers, by pathname, for the dataset on disk: `DatasetIndexes.catalogs`. */

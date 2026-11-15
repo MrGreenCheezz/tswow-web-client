@@ -18,6 +18,10 @@
  *                    night, drifting leaves under trees.
  * - weatherSounds  — nothing is drawn: the controller publishes `audio`, what the weather sounds
  *                    like this frame, and WeatherSound.ts plays the client's own loops and thunder.
+ * - zoneAtmosphere — 7.40 «Атмосфера зон» (ZoneAtmosphere.ts): mist and air by the kind of place —
+ *                    marsh, forest, coast, cave, cold heights — with `zoneStrength` 0..2. Only on the
+ *                    enhanced lighting levels (`AtmosphereFrame.enhanced`); on the faithful ones it is
+ *                    released and nothing of it exists.
  *
  * Hook for a post pass (CinematicPost.ts belongs to another lane and is not edited here): read
  * `WET_SURFACE_UNIFORMS.haze` (0..1 veil) and `WET_SURFACE_UNIFORMS.wetness` (0..1 soaked ground),
@@ -41,6 +45,11 @@ import { AmbientMotes, moteDustPatch, type MoteConditions } from "./AmbientMotes
 import { visitGeometryBuffers, visitMaterialTextures, type RetainedResourceVisitor } from "./ResourceAccounting.js";
 import type { HeightSampler } from "./SimpleScene.js";
 import { WEATHER_THUNDERS, type WeatherKind } from "../world/WorldMessageProtocol.js";
+import { ZoneAtmosphere, zoneStrength, type ZoneAtmosphereFrame, type ZoneFogTarget } from "./ZoneAtmosphere.js"; // 7.40
+import type { ZoneTerrainProbe } from "./ZoneAtmosphereKinds.js"; // 7.40
+
+/** 7.40: the room `zoneCaveOverride` stands the camera in: an indoor group of a WMO named as a cave. */
+const BENCH_CAVE_ROOM = Object.freeze({ modelName: "bench-cave.wmo", groupFlags: 0x2000 });
 
 /** The one server state that means a thunderstorm (`WEATHER_STATE_THUNDERS` in Weather.h). */
 export function isThunderState(state: number | undefined): boolean {
@@ -55,6 +64,10 @@ export interface AtmosphereProfile {
   readonly lightning: boolean;
   readonly ambientMotes: boolean;
   readonly weatherSounds: boolean;
+  /** 7.40 «Атмосфера зон». */
+  readonly zoneAtmosphere: boolean;
+  /** 7.40: its strength, 0..ZONE_STRENGTH_MAX (1 the tuned look). */
+  readonly zoneStrength: number;
 }
 
 export const DEFAULT_ATMOSPHERE_PROFILE: Readonly<AtmosphereProfile> = Object.freeze({
@@ -65,6 +78,8 @@ export const DEFAULT_ATMOSPHERE_PROFILE: Readonly<AtmosphereProfile> = Object.fr
   lightning: false,
   ambientMotes: false,
   weatherSounds: false,
+  zoneAtmosphere: false,
+  zoneStrength: 1,
 });
 
 export function normaliseAtmosphereProfile(
@@ -78,18 +93,21 @@ export function normaliseAtmosphereProfile(
     lightning: profile?.lightning === true,
     ambientMotes: profile?.ambientMotes === true,
     weatherSounds: profile?.weatherSounds === true,
+    zoneAtmosphere: profile?.zoneAtmosphere === true,
+    zoneStrength: zoneStrength(profile?.zoneStrength),
   });
 }
 
 export function sameAtmosphereProfile(a: Readonly<AtmosphereProfile>, b: Readonly<AtmosphereProfile>): boolean {
   return a.windGusts === b.windGusts && a.rainStreaks === b.rainStreaks && a.rainSplashes === b.rainSplashes
     && a.wetSurfaces === b.wetSurfaces && a.lightning === b.lightning && a.ambientMotes === b.ambientMotes
-    && a.weatherSounds === b.weatherSounds;
+    && a.weatherSounds === b.weatherSounds && a.zoneAtmosphere === b.zoneAtmosphere
+    && a.zoneStrength === b.zoneStrength;
 }
 
 export function atmosphereProfileActive(profile: Readonly<AtmosphereProfile>): boolean {
   return profile.windGusts || profile.rainStreaks || profile.rainSplashes || profile.wetSurfaces
-    || profile.lightning || profile.ambientMotes || profile.weatherSounds;
+    || profile.lightning || profile.ambientMotes || profile.weatherSounds || profile.zoneAtmosphere;
 }
 
 /** A render-scale-derived tier: full counts at ≥85%, fewer as AutoQuality lowers resolution. */
@@ -172,6 +190,14 @@ export interface AtmosphereFrame {
   /** 0..1 vegetation around the character, sampled by the renderer about once a second. */
   meadow: number;
   forest: number;
+  /** 7.40: the lighting level is an enhanced one (not «как в оригинале», not «оригинал + тени»). */
+  enhanced?: boolean;
+  /** 7.40: the terrain's ground and liquid in WoW world coordinates, for the zone kinds and the mist grid. */
+  probe?: ZoneTerrainProbe | undefined;
+  /** 7.40: scenery trees within 38 yards (the count behind `forest`). */
+  trees?: number;
+  /** 7.40: the WMO group the camera is in (`setCameraWmoSurface`), for a cave. */
+  cameraRoom?: { readonly modelName: string; readonly groupFlags: number } | undefined;
 }
 
 export class AtmosphereEffects {
@@ -208,9 +234,43 @@ export class AtmosphereEffects {
     strikes: 0, strikeDistance: 0, strikePan: 0, strikeStrength: 0,
   };
 
-  constructor(scene: THREE.Scene, load: (path: string) => THREE.Texture | undefined) {
+  /** 7.40: the zone kinds and their mist, while `zoneAtmosphere` is on and the level is enhanced. */
+  #zone: ZoneAtmosphere | undefined;
+  readonly #gateway: () => string | undefined;
+  #zoneFrame: ZoneAtmosphereFrame | undefined;
+
+  /** `gateway` (7.40) answers the gateway's origin, for the map's colour picture the cold kind reads. */
+  constructor(scene: THREE.Scene, load: (path: string) => THREE.Texture | undefined, gateway: () => string | undefined = () => undefined) {
     this.#scene = scene;
     this.#load = load;
+    this.#gateway = gateway;
+  }
+
+  /**
+   * 7.40, lookdev only: the bench has no collision world to say the camera is in a mine's room, so a still of a cave
+   * stands the camera "in" one by this switch (`__bench.zoneCaveOverride`). Never set by the game.
+   */
+  zoneCaveOverride = false;
+
+  /** 7.40: the zone controller while it runs (diagnostics, tests). */
+  get zone(): ZoneAtmosphere | undefined { return this.#zone; }
+  /** 7.40: the sun-shaft multiplier under a canopy; exactly 1 while «Атмосфера зон» is not running. */
+  get shaftBoost(): number { return this.#zone?.shaftBoost ?? 1; }
+
+  /**
+   * 7.40: shapes this frame's fogs for the zone kinds, after the rain veil — the scene's and the WMO interior fallback
+   * (`room`). Under a roof whose room fog the frame took only the cave acts; outdoors the outdoor kinds and the cave.
+   * Nothing at all while «Атмосфера зон» is not running.
+   */
+  shapeZoneFogs(scene: ZoneFogTarget, room: ZoneFogTarget, roomFogTaken: boolean): void {
+    const zone = this.#zone;
+    if (!zone) return;
+    if (!roomFogTaken) {
+      zone.shapeOutdoorFog(scene);
+      zone.shapeOutdoorFog(room);
+    }
+    zone.shapeCaveFog(scene);
+    zone.shapeCaveFog(room);
   }
 
   get profile(): Readonly<AtmosphereProfile> { return this.#profile; }
@@ -241,6 +301,8 @@ export class AtmosphereEffects {
       WET_SURFACE_UNIFORMS.wetness.value = 0;
     }
     if (!next.rainSplashes) WET_SURFACE_UNIFORMS.rain.value = 0;
+    if (!next.zoneAtmosphere) this.#releaseZone(); // 7.40
+    if (this.#zone) this.#zone.strength = next.zoneStrength;
     if (!atmosphereProfileActive(next)) this.wind.reset();
     return true;
   }
@@ -317,6 +379,9 @@ export class AtmosphereEffects {
         this.wind.direction.x * drift, this.wind.direction.y * drift,
         frame.sunDirection, frame.sunColour, this.#light, frame.pixelScale, frame.quality);
     }
+    // 7.40: «Атмосфера зон», on the enhanced levels only; on a faithful one nothing of it is kept.
+    if (profile.zoneAtmosphere && frame.enhanced === true) this.#updateZone(frame);
+    else this.#releaseZone();
     const audio = this.audio;
     audio.kind = fade.kind;
     audio.density = Math.max(0, fade.density);
@@ -403,6 +468,49 @@ export class AtmosphereEffects {
     }
   }
 
+  #updateZone(frame: AtmosphereFrame): void {
+    const zone = this.#zone ??= new ZoneAtmosphere(this.#scene, this.#gateway);
+    zone.strength = this.#profile.zoneStrength;
+    const z = this.#zoneFrame ??= {
+      map: undefined, worldX: 0, worldY: 0, feet: frame.feet, probe: undefined, trees: 0, cameraRoom: undefined,
+      indoors: false, underwater: false, seconds: 0, elapsed: 0, rain: 0, snow: 0, windX: 0, windZ: 0, wind: 0,
+      daylight: 1, sunDirection: frame.sunDirection, sunColour: frame.sunColour, ambient: frame.ambient,
+      fogColour: frame.skyColour, pixelScale: 500,
+    };
+    const fade = frame.fade;
+    z.map = frame.map;
+    // Scene (x, y, z) is world (x, z, -y).
+    z.worldX = frame.feet.x;
+    z.worldY = -frame.feet.z;
+    z.feet = frame.feet;
+    z.probe = frame.probe;
+    z.trees = frame.trees ?? 0;
+    z.cameraRoom = this.zoneCaveOverride ? BENCH_CAVE_ROOM : frame.cameraRoom;
+    z.indoors = frame.indoors;
+    z.underwater = frame.underwater;
+    z.seconds = frame.seconds;
+    z.elapsed = frame.elapsed;
+    z.rain = fade.kind === "rain" ? Math.max(0, fade.density) : 0;
+    z.snow = fade.kind === "snow" ? Math.max(0, fade.density) : 0;
+    const drift = 0.3 + this.wind.strength;
+    z.windX = this.wind.direction.x * drift;
+    z.windZ = this.wind.direction.y * drift;
+    z.wind = this.wind.strength;
+    z.daylight = frame.daylight;
+    z.sunDirection = frame.sunDirection;
+    z.sunColour = frame.sunColour;
+    z.ambient = frame.ambient;
+    z.fogColour = frame.skyColour;
+    z.pixelScale = frame.pixelScale;
+    zone.update(z);
+  }
+
+  #releaseZone(): void {
+    if (!this.#zone) return;
+    this.#zone.dispose();
+    this.#zone = undefined;
+  }
+
   #adopt<T>(owner: T, object: (owner: T) => THREE.Object3D = (o) => (o as { object: THREE.Object3D }).object): T {
     this.#scene.add(object(owner));
     return owner;
@@ -459,6 +567,7 @@ export class AtmosphereEffects {
     if (this.#splashes) objects.push(this.#splashes.object);
     if (this.#lightning) objects.push(this.#lightning.group);
     if (this.#motes) objects.push(this.#motes.group);
+    if (this.#zone) objects.push(...this.#zone.objects); // 7.40
     return objects;
   }
 
@@ -495,6 +604,7 @@ export class AtmosphereEffects {
     this.#splashes?.reset();
     this.#lightning?.reset();
     this.#motes?.reset();
+    this.#zone?.reset(); // 7.40
   }
 
   /** Releases everything and returns to the exact OFF state. */
@@ -503,6 +613,7 @@ export class AtmosphereEffects {
     this.#releaseSplashes();
     this.#releaseLightning();
     this.#releaseMotes();
+    this.#releaseZone(); // 7.40
     this.#profile = DEFAULT_ATMOSPHERE_PROFILE;
     this.wind.setEnabled(false);
     this.reset();

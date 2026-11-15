@@ -20,7 +20,7 @@ import { GLUE_ADDON_GLOBALS, type GlueAddonList } from "./GlueAddons.js";
 import type { GlueCVarStore } from "./GlueCVarStore.js";
 import { glueNameFiltersActive, setGlueWorldNameFilters, type GlueNameFilterCatalog } from "./GlueNameFilters.js"; // 1.19 (11.11)
 import { glueWindowCVar, isGlueWindowCVar, setGlueWindowCVar } from "./GlueWindowMode.js"; // 10.28 (11.11)
-import { wowCVarStartValue } from "../framexml/WowCVarRegistry.js"; // 5.37 (15.11)
+import { glueCVarDefault, glueCVarKey, glueCVarStartValue, glueGamma, glueTerrainMip, isRegisteredGlueCVar } from "./GlueCVarTable.js"; // 5.37 (15.11)
 import {
   GLUE_SAVED_PASSWORD_GLOBAL, GLUE_SAVED_PASSWORD_LUA, type GlueSavedPasswordStore,
 } from "./GlueSavedPassword.js"; // 12.10
@@ -192,41 +192,6 @@ const ACCOUNT_NAME_ENCODER = new TextEncoder();
 const DIALOG_TYPE_PROBE = "__glueDialogTypeProbe";
 
 /**
- * CVars the glue screens read before anything has written one.
- *
- * Measured from the corpus' own `GetCVar` call sites plus the values
- * `AccountLogin.lua` expects to round-trip through `SetSavedAccountName`.
- */
-const CVAR_DEFAULTS: Readonly<Record<string, string>> = Object.freeze({
-  accountName: "",
-  accountList: "",
-  useEnglishAudio: "0",
-  readTOS: "0",
-  readEULA: "0",
-  readScanning: "0",
-  readContest: "0",
-  readTerminationWithoutNotice: "0",
-  showTooltips: "1",
-  realmName: "",
-  lastCharacterIndex: "0",
-  gxWindow: "1",
-  gxResolution: "1024x768",
-  gxRefresh: "60",
-  gxMultisample: "1",
-  gxTextureCacheSize: "1",
-  Sound_EnableAllSound: "1",
-  Sound_MasterVolume: "1",
-  Sound_OutputDriverName: "System Default",
-  serverAlert: "",
-  playIntroMovie: "1",
-  useUiScale: "0",
-  uiScale: "1",
-  // Registered by the client's name checks (FUN_007e2250) with "0"; anything else limits a new
-  // character name to ASCII letters (`GlueNameRules`).
-  forceEnglishNames: "0",
-});
-
-/**
  * Constant-result C-API globals.
  *
  * Every name here is one the corpus calls and G2 cannot answer honestly: realm
@@ -281,7 +246,7 @@ const CONSTANT_STUBS: Readonly<Record<string, readonly unknown[]>> = Object.free
   GetMultisampleFormats: [], GetCurrentMultisampleFormat: [1], SetMultisampleFormat: [],
   IsStereoVideoAvailable: [false], RestoreVideoEffectsDefaults: [],
   RestoreVideoResolutionDefaults: [], RestoreVideoStereoDefaults: [], RestartGx: [],
-  GetGamma: [1], SetGamma: [], GetTerrainMip: [0], SetTerrainMip: [],
+  SetGamma: [], SetTerrainMip: [],
   Sound_GameSystem_GetNumOutputDrivers: [0], Sound_GameSystem_GetOutputDriverNameByIndex: [""],
   Sound_GameSystem_RestartSoundSystem: [],
   // Movies and cinematics.
@@ -309,7 +274,8 @@ export class GlueApi {
   readonly #bridge: FrameXmlUiBridge;
   readonly #options: GlueApiOptions;
   readonly #audio: GlueAudioSink;
-  readonly #cvars = new Map<string, string>(Object.entries(CVAR_DEFAULTS));
+  // 5.37 (15.11): only what was stored; a name never stored answers its start value (GlueCVarTable.ts).
+  readonly #cvars = new Map<string, string>();
   readonly #stubbed = new Set<string>();
   readonly #acceptedNotices = new Set<string>([
     "TOSAccepted", "EULAAccepted", "ScanningAccepted", "ContestAccepted",
@@ -352,7 +318,7 @@ export class GlueApi {
       refreshRealms: () => this.refreshRealms(),
       lastCharacterIndex: () => {
         // 0, the default, is the first character — which CharacterSelect.lua picks by itself.
-        const index = Number.parseInt(this.#cvars.get("lastCharacterIndex") ?? "", 10);
+        const index = Number.parseInt(this.cvar("lastCharacterIndex") ?? "", 10);
         return Number.isInteger(index) && index > 0 ? index : undefined;
       },
     });
@@ -399,12 +365,14 @@ export class GlueApi {
 
   /** Every CVar write goes through here, so the store sees the ones it keeps (10.07). */
   private setCVar(name: string, value: string): void {
-    this.#cvars.set(name, value);
-    this.#options.cvarStore?.save(name, this.#cvars);
+    const key = glueCVarKey(name, this.#cvars);
+    this.#cvars.set(key, value);
+    this.#options.cvarStore?.save(key, this.#cvars);
   }
 
+  /** A CVar's value (any case of the name): what was stored, else its start value (5.37, GlueCVarTable.ts). */
   cvar(name: string): string | undefined {
-    return this.#cvars.get(name);
+    return this.#cvars.get(glueCVarKey(name, this.#cvars)) ?? glueCVarStartValue(name, this.#options.locale ?? "ruRU");
   }
 
   /**
@@ -414,7 +382,7 @@ export class GlueApi {
    * uses without a row, while `/dbc/realm-categories` has not answered.
    */
   nameRules(): GlueNameRuleOptions {
-    const force = Number.parseInt(this.#cvars.get("forceEnglishNames") ?? "0", 10);
+    const force = Number.parseInt(this.cvar("forceEnglishNames") ?? "0", 10);
     // 1.19 (11.11): the name filters, when the realm's category builds them for the client's locale.
     const filters = this.#options.nameFilters?.();
     const nameFilters = filters && glueNameFiltersActive(this.#session.nameFilterLocaleMask(), filters.locale)
@@ -481,6 +449,7 @@ export class GlueApi {
       currentScreen: () => this.#currentScreen,
       locale: () => this.#options.locale ?? "ruRU",
       onDisconnect: () => { this.closeAuth(); },
+      onCharacterRenamed: (oldName, newName) => { this.#options.addons?.renameCharacter(oldName, newName); }, // 3.46 (15.11)
     });
     installGlueCreateApi({
       vm: this.#vm,
@@ -562,7 +531,7 @@ export class GlueApi {
     ]);
     vm.registerGlobal("GetCurrentResolution", () => [1]);
     // 3.46 (11.11): `checkAddonVersion` is a glue CVar like the others (kept by GlueCVarStore).
-    this.#options.addons?.install(vm, { get: (name) => this.#cvars.get(name), set: (name, value) => { this.setCVar(name, value); } });
+    this.#options.addons?.install(vm, { get: (name) => this.cvar(name), set: (name, value) => { this.setCVar(name, value); } });
     const onQuit = this.#options.onQuit;
     if (onQuit) {
       // Both spellings end the game; there is no launcher to run.
@@ -583,7 +552,7 @@ export class GlueApi {
         sampleCounts().flatMap((samples) => [MULTISAMPLE_COLOR_BITS, MULTISAMPLE_DEPTH_BITS, samples]));
       // 1-based index of the format `gxMultisample` names; a value no format has is the first.
       vm.registerGlobal("GetCurrentMultisampleFormat", () => {
-        const wanted = Number.parseInt(this.#cvars.get("gxMultisample") ?? "1", 10);
+        const wanted = Number.parseInt(this.cvar("gxMultisample") ?? "1", 10);
         const index = sampleCounts().indexOf(wanted);
         return [index < 0 ? 1 : index + 1];
       });
@@ -611,15 +580,20 @@ export class GlueApi {
   private installCVars(): void {
     const vm = this.#vm;
     // 10.28 (11.11): `gxWindow` is the page's full screen, live, as in the world's options (GlueWindowMode.ts).
-    // 5.37 (15.11): a CVar Wow.exe registers has a value on the login screens too — its registered (or computed)
-    // default until something is stored (framexml/WowCVarRegistry.ts).
-    const read = (name: string): string | undefined => isGlueWindowCVar(name) ? glueWindowCVar()
-      : this.#cvars.get(name) ?? wowCVarStartValue(name, this.#options.locale ?? "ruRU");
+    // 5.37 (15.11): one table with the world's (GlueCVarTable.ts): a CVar Wow.exe registers has its registered (or
+    // computed) default until something is stored, any case of a name finds it, GetCVarDefault is the registered string.
+    const locale = this.#options.locale ?? "ruRU";
+    const read = (name: string): string | undefined => isGlueWindowCVar(name) ? glueWindowCVar() : this.cvar(name);
+    const luaDefaults = new Map<string, string>();
     vm.registerGlobal("GetCVar", (args) => [read(String(args[0] ?? ""))]);
     vm.registerGlobal("GetCVarBool", (args) => {
       const value = read(String(args[0] ?? ""));
-      return [value !== undefined && value !== "0" && value !== ""];
+      // nil for a name nothing registers, as the world answers it (FrameXmlNeutralApi.ts).
+      return [value === undefined ? undefined : value !== "0" && value !== ""];
     });
+    // GetGamma 0x0054ea60 / GetTerrainMip 0x0054eb10: from the CVars, as the world's (FrameXmlNeutralApi.ts).
+    vm.registerGlobal("GetGamma", () => [glueGamma(read)]);
+    vm.registerGlobal("GetTerrainMip", () => [glueTerrainMip(read)]);
     vm.registerGlobal("SetCVar", (args) => {
       const name = String(args[0] ?? "");
       if (isGlueWindowCVar(name)) setGlueWindowCVar(args[1]);
@@ -628,15 +602,23 @@ export class GlueApi {
     });
     vm.registerGlobal("RegisterCVar", (args) => {
       const name = String(args[0] ?? "");
-      if (name && !this.#cvars.has(name)) this.#cvars.set(name, args[1] === undefined ? "" : String(args[1]));
+      // A name Wow.exe registers keeps its registered default and value (the world's RegisterCVar does the same).
+      if (!name || isRegisteredGlueCVar(name)) return [];
+      const key = glueCVarKey(name, this.#cvars);
+      const text = args[1] === undefined ? "" : String(args[1]);
+      if (!luaDefaults.has(key.toLowerCase())) luaDefaults.set(key.toLowerCase(), text);
+      if (!this.#cvars.has(key)) this.#cvars.set(key, text);
       return [];
     });
-    vm.registerGlobal("GetCVarDefault", (args) => [CVAR_DEFAULTS[String(args[0] ?? "")] ?? ""]);
+    vm.registerGlobal("GetCVarDefault", (args) => {
+      const name = String(args[0] ?? "");
+      return [glueCVarDefault(name, locale) ?? luaDefaults.get(name.toLowerCase())];
+    });
     vm.registerGlobal("GetCVarMin", () => [0]);
     vm.registerGlobal("GetCVarMax", () => [1]);
     // The saved-account pair is the one cvar path the login screen writes on
     // every attempt, so it is bound rather than stubbed.
-    vm.registerGlobal("GetSavedAccountName", () => [this.#cvars.get("accountName") ?? ""]);
+    vm.registerGlobal("GetSavedAccountName", () => [this.cvar("accountName") ?? ""]);
     vm.registerGlobal("SetSavedAccountName", (args) => {
       const name = String(args[0] ?? "");
       this.setCVar("accountName", name);
@@ -654,7 +636,7 @@ export class GlueApi {
       const saved = this.#options.passwordStore?.load();
       return [saved !== undefined && saved.account === String(args[0] ?? "") ? saved.password : ""];
     });
-    vm.registerGlobal("GetSavedAccountList", () => [this.#cvars.get("accountList") ?? ""]);
+    vm.registerGlobal("GetSavedAccountList", () => [this.cvar("accountList") ?? ""]);
     vm.registerGlobal("SetSavedAccountList", (args) => {
       this.setCVar("accountList", String(args[0] ?? ""));
       return [];
@@ -789,7 +771,7 @@ export class GlueApi {
     });
     // `GetUsesToken()`/`SetUsesToken(flag)` (0x4dbf10/0x4dbf30): a remembered flag the login screen
     // reads to show its code field up front; AccountLogin.lua sets it when a code is asked for.
-    vm.registerGlobal("GetUsesToken", () => [this.#cvars.get(USES_TOKEN_CVAR) === "1"]);
+    vm.registerGlobal("GetUsesToken", () => [this.cvar(USES_TOKEN_CVAR) === "1"]);
     vm.registerGlobal("SetUsesToken", (args) => {
       const value = args[0];
       const on = value === true || (typeof value === "number" && value !== 0) || value === "1";
@@ -895,7 +877,7 @@ export class GlueApi {
    * `ChangeRealm`.
    */
   chooseRealmAfterLogin(): void {
-    const remembered = this.#cvars.get("realmName");
+    const remembered = this.cvar("realmName");
     const position = remembered ? this.#session.realmPosition(remembered) : undefined;
     if (!position || !canSelectRealm(position.realm)
       || this.fireEvent("SUGGEST_REALM", position.category, position.index) === 0) {
@@ -990,4 +972,3 @@ export class GlueApi {
 
 /** Exported so a test can assert the stub table without re-deriving it. */
 export const GLUE_CONSTANT_STUBS = CONSTANT_STUBS;
-export const GLUE_CVAR_DEFAULTS = CVAR_DEFAULTS;

@@ -24,8 +24,17 @@
  *    player block +0x10e4) names an OverrideSpellData row (0x0065c290) whose Flags (+0x2c) lack 0x4: unless 0x007fe820
  *    finds the spell among the row's ten (+0x4…+0x28), CANT_DO_THAT_RIGHT_NOW. The realm never makes this check.
  *
- * Not modelled (no data in this client): 0x0080cce0's other CANT_DO_THAT_RIGHT_NOW test — a vehicle seat's flags
- * against the spell's kind (SpellInfo::CheckVehicle's mirror; the realm makes that one with the same code).
+ * 0b. 11.02/5.05 (15.11, vehicle8; listing .runtime/re-2026-11-15/vehicle8/b1.lst 0x0080cee1…0x0080cffe, 0x00800950 in
+ *    b1.c), right after 0: a caster riding a carrier (0x0074b8b0: a vehicle's or a player's guid) that is here, on a slot
+ *    its vehicle has a seat row for (0x005d3340 → 0x00756ec0). The spell asks the seat for UNCONTROLLED (0x2000) when one
+ *    of its effects applies MOD_SHAPESHIFT (aura 36) to a form whose SpellShapeshiftForm Flags lack 0x1 or that the table
+ *    lacks (0x00800950), for CAN_CAST_MOUNT_SPELL (0x1000) when one applies MOUNTED (aura 78, 0x007fde50), and for
+ *    CAN_ATTACK (0x4000) when neither; unless AttributesEx6 0x1000 (CASTABLE_WHILE_ON_VEHICLE) or Attributes 0x1000000
+ *    (CASTABLE_WHILE_MOUNTED), a seat without every asked bit gives CANT_DO_THAT_RIGHT_NOW. The realm makes the same test
+ *    (SpellInfo::CheckVehicle). Only 90 of the dataset's 720 seats have CAN_ATTACK.
+ *    Not modelled: the loop that follows for a player on a seat with 0x40000800 — as compiled it compares Effect[i] with
+ *    0…3 (not SPELL_EFFECT_SUMMON) before reading EffectMiscValueB's SummonProperties Control; no spell of the dataset has
+ *    such an effect naming a non-wild row (probe2.txt), so it never refuses here. The realm's own summon test still does.
  */
 
 /** SpellCastResult (SharedDefines.h). */
@@ -51,10 +60,49 @@ const PLAYER_FLAGS_NO_MELEE_ABILITY = 0x1000000;
 const ITEM_FIELD_FLAG_WRAPPED = 0x8;
 const ITEM_FIELD_FLAG_UNK2 = 0x10;
 
-/** The spell row parts the rules read: attribute words 0..2 and Effect[0]. */
+/** The spell row parts the rules read: attribute words 0..2 (and 6 for 0b) and Effect[0]. */
 export interface CastPreflightSpell {
   readonly attributes: readonly number[] | undefined;
   readonly effect0: number | undefined;
+  /** 15.11 (vehicle8): EffectAura[0..2] and the first MOD_SHAPESHIFT effect's form Flags (`/dbc/spells`), for 0b. */
+  readonly effectAura?: readonly number[] | undefined;
+  readonly shapeshiftFormFlags?: number | undefined;
+}
+
+/** 15.11 (vehicle8): the seat row a passenger caster sits on, as 0x0080cce0 reads it (row +4, Flags). */
+export interface CastPreflightSeat {
+  readonly flags: number;
+}
+
+const SPELL_ATTR0_CASTABLE_WHILE_MOUNTED = 0x0100_0000;
+const SPELL_ATTR6_CASTABLE_WHILE_ON_VEHICLE = 0x1000;
+const SPELL_AURA_MOD_SHAPESHIFT = 36;
+const SPELL_AURA_MOUNTED = 78;
+const SEAT_FLAG_CAN_CAST_MOUNT_SPELL = 0x1000;
+const SEAT_FLAG_UNCONTROLLED = 0x2000;
+const SEAT_FLAG_CAN_ATTACK = 0x4000;
+/** SpellShapeshiftForm Flags bit 0x1 (unnamed in DBCStructure.h): a form 0x00800950 does not count. */
+const SHAPESHIFT_FORM_FLAG_STANCE = 0x1;
+
+/**
+ * 15.11 (vehicle8): refusal 0b — the passenger's seat lacks what the spell asks of it (0x0080cce0 → 0x00800950,
+ * 0x007fde50). `seat` undefined: not riding a seat with a row (no test).
+ */
+export function vehicleSeatRefused(spell: CastPreflightSpell, seat: CastPreflightSeat | undefined): boolean {
+  if (seat === undefined) return false;
+  const auras = spell.effectAura ?? [];
+  let asked = 0;
+  // 0x00800950: the first MOD_SHAPESHIFT effect's form is the only one /dbc/spells resolves; no row → asked.
+  if (auras.includes(SPELL_AURA_MOD_SHAPESHIFT)
+    && (spell.shapeshiftFormFlags === undefined || (spell.shapeshiftFormFlags & SHAPESHIFT_FORM_FLAG_STANCE) === 0)) {
+    asked |= SEAT_FLAG_UNCONTROLLED;
+  }
+  if (auras.includes(SPELL_AURA_MOUNTED)) asked |= SEAT_FLAG_CAN_CAST_MOUNT_SPELL;
+  if (asked === 0) asked = SEAT_FLAG_CAN_ATTACK;
+  const words = spell.attributes;
+  if (((words?.[6] ?? 0) & SPELL_ATTR6_CASTABLE_WHILE_ON_VEHICLE) !== 0
+    || ((words?.[0] ?? 0) & SPELL_ATTR0_CASTABLE_WHILE_MOUNTED) !== 0) return false;
+  return (seat.flags & asked) !== asked;
 }
 
 /** The ranged slot's item as 0x006d71a0 reads it; undefined for an empty slot or an item not in view. */
@@ -83,6 +131,8 @@ export interface CastPreflightCaster {
    * row is known; absent: no test (no override, or the rows have not landed).
    */
   readonly overrideSpells?: OverrideSpellRow | undefined;
+  /** 15.11 (vehicle8): the seat row the player rides on a carrier in view (refusal 0b); absent: none or not known. */
+  readonly seat?: CastPreflightSeat | undefined;
 }
 
 /** `local_5` of 0x0080cce0: Effect[0] ATTACK, a ranged spell or an auto-repeating one. */
@@ -120,6 +170,7 @@ export function castPreflightRefusal(spell: CastPreflightSpell & { readonly id?:
   if (!attack && spell.id !== undefined && overrideSpellRefused(spell.id, caster.overrideSpells)) {
     return SPELL_FAILED_CANT_DO_THAT_RIGHT_NOW;
   }
+  if (vehicleSeatRefused(spell, caster.seat)) return SPELL_FAILED_CANT_DO_THAT_RIGHT_NOW; // 0b, 15.11 (vehicle8)
   if ((caster.playerFlags & PLAYER_FLAGS_NO_MELEE_ABILITY) !== 0) {
     if (attack || swingSpell(spell)) return SPELL_FAILED_CANT_DO_THAT_RIGHT_NOW;
   } else if (!attack && (caster.playerFlags & PLAYER_ALLOW_ONLY_ABILITY) !== 0) {

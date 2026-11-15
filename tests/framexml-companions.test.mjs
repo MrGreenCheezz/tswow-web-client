@@ -238,7 +238,9 @@ test("the cooldown, the cursor and the pet page's own calls", async () => {
 
   call(seam, "PickupCompanion", "MOUNT", 1);
   assert.deepEqual(call(seam, "GetCursorInfo"), ["companion", 1, "MOUNT"]);
-  assert.deepEqual(call(seam, "CursorHasSpell"), [false], "a companion is its own cursor shape");
+  // go8 follow-up (15.11): a companion is cursor type 3 like a book spell (0x00515200 tells them apart by the spell);
+  // Wow.exe 0x00515140 answers CursorHasSpell 1 for type 3.
+  assert.deepEqual(call(seam, "CursorHasSpell"), [true], "a companion is a spell on the cursor (type 3)");
   call(seam, "PickupCompanion", "MOUNT", 1);
   assert.deepEqual(call(seam, "GetCursorInfo"), ["companion", 1, "MOUNT"], "dropped back where it came from: still held");
   await new Promise((resolve) => setTimeout(resolve, 0));

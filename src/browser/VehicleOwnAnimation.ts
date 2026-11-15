@@ -31,6 +31,14 @@ import { seatVehicleExitBit } from "./VehicleExitBit.js";
  * play (0x0073b140: a kit played with flag 0x80 keeps its animation id there) and set back to −1 when that animation
  * ends (0x0073bbd0) or the unit is reset (0x0073e410). So the narrowing holds while such a kit's animation, or whatever
  * 0x007fa2e0 marks, plays on a Vehicle Flags 0x10000 vehicle; then only 0x00724330 (the cast pose) chooses. Not modelled.
+ * 15.11 (vehicle8, .runtime/re-2026-11-15/vehicle8/b1.c, b2.c): 0x007fa2e0 is the cast's visual start (called twice from
+ * 0x00805330): the spell's SpellVisual (vtable +0xbc) names a PrecastKit (row +4) whose StartAnimID or AnimID (+4, +8) is
+ * above 0 → 0x00715af0(1), and the kit plays (0x00745230). So +0xa38 0x400 is "a precast animation is on", cleared when the
+ * cast visual ends (0x0072ed80, 11.11). 0x00724500, the base-animation chooser, runs 0x00724060, 0x00716fd0 and a seated
+ * passenger's 0x00748560 first; then, for a unit whose own vehicle (+0xf5c) has Flags 0x10000 while either mark holds, it
+ * returns 0x00724330's answer alone — 0x1fa (no change) when that has none — skipping every movement, stand-state and
+ * stance rung. The rule: such a vehicle keeps its precast or flag-0x80 kit animation while it moves. Twelve Vehicle rows;
+ * not wired, because this client's pose choice is not 0x00724500's chain (WorldRenderer3D `#animateUnit`).
  */
 
 /** Seat Flags these rules read. */
@@ -124,6 +132,11 @@ export type VehicleOwnClip = THREE.AnimationClip | "wait" | undefined;
 interface OwnPlay {
   readonly kind: SeatVehicleAnimationKind;
   readonly passenger: bigint;
+  /**
+   * 15.11 (vehicle8): a FlagsB 0x10000 passenger's copy of its vehicle's key-bone play (0x00735a60, VehicleAnimationCopy.ts
+   * `keyBoneCopyPassengers`): the vehicle it copies. A copy holds no passenger back (no `ended`) and ends with the vehicle's.
+   */
+  readonly copyOf: bigint | undefined;
   readonly animation: SeatVehicleAnimation;
   readonly askedAt: number;
   action: THREE.AnimationAction | undefined;
@@ -162,17 +175,25 @@ export class VehicleOwnAnimations {
     return this.#byVehicle.size > 0 && this.#byVehicle.has(vehicle);
   }
 
-  /** A seat's moment on `vehicle`: what plays comes on the vehicle's next `step`. */
-  play(vehicle: bigint, passenger: bigint, kind: SeatVehicleAnimationKind, animation: SeatVehicleAnimation, now: number): void {
+  /**
+   * A seat's moment on `vehicle`: what plays comes on the vehicle's next `step`. `copyOf`: this is `vehicle`'s (a copying
+   * passenger's) copy of that vehicle's play on the same key bone (0x00735a60).
+   */
+  play(vehicle: bigint, passenger: bigint, kind: SeatVehicleAnimationKind, animation: SeatVehicleAnimation, now: number,
+    copyOf?: bigint): void {
     let plays = this.#byVehicle.get(vehicle);
     if (plays === undefined) this.#byVehicle.set(vehicle, plays = []);
-    plays.push({ kind, passenger, animation, askedAt: now, action: undefined, blendMs: 0, startedAt: now, endsAt: 0, stoppedAt: undefined });
+    plays.push({ kind, passenger, copyOf, animation, askedAt: now, action: undefined, blendMs: 0, startedAt: now, endsAt: 0, stoppedAt: undefined });
   }
 
-  /** 0x007577e0: the passenger left the seat, its ride animation ends. */
+  /** 0x007577e0: the passenger left the seat, its ride animation ends — and the copies of it (15.11, vehicle8). */
   stopRide(vehicle: bigint, passenger: bigint, now: number): void {
-    for (const play of this.#byVehicle.get(vehicle) ?? []) {
-      if (play.kind === "ride" && play.passenger === passenger && play.stoppedAt === undefined) play.stoppedAt = now;
+    for (const [key, plays] of this.#byVehicle) {
+      if (key !== vehicle && !plays.some((play) => play.copyOf === vehicle)) continue;
+      for (const play of plays) {
+        if (play.kind === "ride" && play.passenger === passenger && play.stoppedAt === undefined
+          && (key === vehicle ? play.copyOf === undefined : play.copyOf === vehicle)) play.stoppedAt = now;
+      }
     }
   }
 
@@ -184,7 +205,9 @@ export class VehicleOwnAnimations {
         continue;
       }
       for (const play of plays) {
-        if (play.kind === "ride" && play.stoppedAt === undefined && !drawn(play.passenger)) play.stoppedAt = now;
+        if (play.stoppedAt !== undefined) continue;
+        if (play.kind === "ride" && !drawn(play.passenger)) play.stoppedAt = now;
+        else if (play.copyOf !== undefined && !drawn(play.copyOf)) play.stoppedAt = now; // 15.11 (vehicle8)
       }
     }
   }
@@ -206,12 +229,12 @@ export class VehicleOwnAnimations {
       if (play.action === undefined && !this.#start(play, model, now, clipOf)) {
         if (now - play.askedAt < SEAT_VEHICLE_WAIT_SECONDS * 1000 && play.stoppedAt === undefined && clipOf(play.animation.animation) === "wait") continue;
         plays.splice(index, 1);
-        if (play.kind !== "ride") ended(play.passenger);
+        if (play.kind !== "ride" && play.copyOf === undefined) ended(play.passenger);
         continue;
       }
       if (play.kind !== "ride" && play.stoppedAt === undefined && now >= play.endsAt) {
         play.stoppedAt = now;
-        ended(play.passenger);
+        if (play.copyOf === undefined) ended(play.passenger);
       }
       if (play.stoppedAt !== undefined && now - play.stoppedAt >= play.blendMs) {
         play.action!.stop();

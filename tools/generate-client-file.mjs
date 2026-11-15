@@ -29,6 +29,8 @@ import { stampGenerated, stampSidecar } from "./source-stamp.mjs";
 // arrangement `generate-texture.mjs` documents, and for the same reason: a class that lives in two
 // places drifts, and the drift shows up as a 400 on a file the client really ships.
 import { validAssetPath } from "../dist/code/gateway/AssetPath.js";
+// 3.46 (15.11): an add-on's own `<n>\<n>.url`, the route's same narrow rule.
+import { validAddonUrlPath } from "../dist/code/gateway/AddonUrlPath.js";
 import { SourceMissing, SOURCE_MISSING_EXIT } from "./source-missing.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -65,7 +67,7 @@ export function clientFileDirectory() {
 
 /** True for a path that could name an interface file inside the archives. */
 export function validClientFilePath(value) {
-  return validAssetPath(value, { extensions: CLIENT_FILE_EXTENSIONS, allowBang: true });
+  return validAssetPath(value, { extensions: CLIENT_FILE_EXTENSIONS, allowBang: true }) || validAddonUrlPath(value);
 }
 
 /**

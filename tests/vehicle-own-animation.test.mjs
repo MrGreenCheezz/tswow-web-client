@@ -135,6 +135,42 @@ test("a vehicle gone from view forgets its plays; a passenger gone ends its ride
   assert.equal(own.size, 0);
 });
 
+// 15.11 (vehicle8): 0x00735a60 — a copying passenger (FlagsB 0x10000) plays its vehicle's key-bone animation on its own model's
+// same key bone, forced; the copy holds nobody back and ends with the vehicle's ride.
+test("a copying passenger's copy plays on its own key bone, holds nobody back, and ends with the vehicle's ride", () => {
+  const vehicle = rig();
+  const copier = rig();
+  const own = new VehicleOwnAnimations();
+  const clip = held("own", [0, 1, 2], UP, 5);
+  const ended = [];
+  own.play(7n, 9n, "enter", { animation: 226, keyBone: 1 }, 0);
+  own.play(5n, 9n, "enter", { animation: 226, keyBone: 1 }, 0, 7n);
+  own.step(7n, vehicle.model, 0, () => clip, (guid) => ended.push(["vehicle", guid]));
+  own.step(5n, copier.model, 0, () => clip, (guid) => ended.push(["copy", guid]));
+  own.step(5n, copier.model, 1000, () => clip, (guid) => ended.push(["copy", guid]));
+  copier.mixer.update(1);
+  assert.equal(turned(copier.bones[1]), true, "the copier's own key bone");
+  assert.equal(turned(copier.bones[0]), false);
+  own.step(5n, copier.model, 5000, () => clip, (guid) => ended.push(["copy", guid]));
+  own.step(7n, vehicle.model, 5000, () => clip, (guid) => ended.push(["vehicle", guid]));
+  assert.deepEqual(ended, [["vehicle", 9n]], "only the vehicle's end releases the boarding passenger");
+  // A ride copy stops when the vehicle's ride for that passenger stops (0x007577e0).
+  const loop = held("ride", [0, 1, 2], UP, 1);
+  own.play(7n, 8n, "ride", { animation: 227, keyBone: 1 }, 6000);
+  own.play(5n, 8n, "ride", { animation: 227, keyBone: 1 }, 6000, 7n);
+  own.step(5n, copier.model, 6000, () => loop, () => {});
+  own.stopRide(7n, 8n, 7000);
+  own.step(5n, copier.model, 7000, () => loop, () => {});
+  own.step(5n, copier.model, 9000, () => loop, () => {});
+  assert.equal(own.has(5n), false, "the copy faded out with the vehicle's ride");
+  // A copier on a model without the key bone plays nothing (0x00826a60).
+  const bare = rig();
+  own.play(5n, 9n, "exit", { animation: 228, keyBone: 1 }, 0, 7n);
+  own.step(5n, { ...bare.model, keyBones: [-1, -1] }, 0, () => clip, (guid) => ended.push(["copy", guid]));
+  assert.equal(own.has(5n), false);
+  assert.deepEqual(ended, [["vehicle", 9n]], "and tells nobody");
+});
+
 test("the passenger's way waits for the vehicle: a set time, or until the animation ends", () => {
   const T = SEAT_TRANSITION_FLAGS;
   const row = {

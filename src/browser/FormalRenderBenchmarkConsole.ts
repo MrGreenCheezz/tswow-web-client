@@ -365,6 +365,7 @@ function buildVariantConfigurations(settings: BenchmarkJsonObject): Readonly<{ A
   base.experimentalLightning = false;
   base.experimentalAmbientMotes = false;
   base.experimentalWeatherSounds = false;
+  base.experimentalZoneAtmosphere = false; // 15.11 (7.40)
   const a = cloneJson(base as BenchmarkJsonObject) as Record<string, BenchmarkJsonValue>;
   const b = cloneJson(base as BenchmarkJsonObject) as Record<string, BenchmarkJsonValue>;
   a.characterAtlasAnisotropy = false;

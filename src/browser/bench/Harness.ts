@@ -77,6 +77,9 @@ interface BenchWindow extends Window {
     wmoRelief(enabled: boolean): void; wmoReliefStats(): unknown; // 22.10 (7.47 stage 2)
     m2Relief(enabled: boolean): void; m2ReliefStats(): unknown; // 23.10 (7.47 stage 3)
     reliefStrength300(enabled: boolean): void; // 24.10 (7.47)
+    zoneAtmosphere(enabled: boolean): void; // 15.11 (7.40)
+    zoneAtmosphereState(): unknown; // 15.11 (7.40)
+    zoneCaveOverride(enabled: boolean): void; // 15.11 (7.40)
     hdWorldTextures(enabled: boolean): void; // 24.10 (7.48 step 3): `lookdev.mjs --leaf-cost hdWorldTextures`
     textureMemory(): unknown; // 23.10 (7.48 step 2)
     lightTrace(spec: LightTraceSpec): Promise<unknown>; // 24.10 (7.50)
@@ -617,6 +620,19 @@ host.__bench = {
   m2Relief(enabled: boolean) { world?.setM2Relief(enabled); }, // 23.10 (7.47 stage 3)
   /** 24.10 (7.47): «Сила объёма» at 300 % (on) or 100 % (off), for `--leaf-cost` A/B runs. */
   reliefStrength300(enabled: boolean) { world?.setReliefStrength(enabled ? 3 : 1); },
+  /** 15.11 (7.40): «Атмосфера зон» on or off in place over the scene's profile, for `--leaf-cost` A/B runs. */
+  zoneAtmosphere(enabled: boolean) {
+    const profile = world?.atmosphere?.profile;
+    if (profile) world?.setAtmosphereEffects({ ...profile, zoneAtmosphere: enabled });
+  },
+  /** 15.11 (7.40): the bench has no collision world; this stands the camera in a cave's room for a still. */
+  zoneCaveOverride(enabled: boolean) { if (world?.atmosphere) world.atmosphere.zoneCaveOverride = enabled; },
+  /** 15.11 (7.40): the zone kinds' weights and what they were read from (diagnostics for the stills). */
+  zoneAtmosphereState() {
+    const zone = world?.atmosphere?.zone;
+    return zone ? { weights: { ...zone.weights }, sample: { ...zone.sample }, mist: zone.mist?.object.visible ?? false,
+      rebuilds: zone.mist?.rebuilds ?? 0, known: zone.mist?.knownVertices ?? 0, dust: zone.dust?.object.visible ?? false } : undefined;
+  },
   hdWorldTextures(enabled: boolean) { world?.setHdWorldTextures(enabled); }, // 24.10 (7.48 step 3)
   lightPools(enabled: boolean) { world?.setLightPoolDebug({ enabled }); }, // 24.10 (7.50)
   lightPoolForward(limit: number) { world?.setLightPoolDebug({ forwardLimit: limit }); }, // 24.10 (7.50)

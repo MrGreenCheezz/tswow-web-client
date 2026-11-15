@@ -108,7 +108,8 @@ export class SwingMeleeReactions {
 
   /** SMSG_ATTACK_START / SMSG_ATTACK_STOP of any attacker. */
   meleeAttack(attacker: bigint, victim: bigint | undefined): void {
-    if (victim === undefined) this.#cues.attackStopped(attacker);
+    // 6.06 (15.11, events8): with the host and the last drawn frame's clock, for a record still waiting for its clip.
+    if (victim === undefined) this.#cues.attackStopped(attacker, this.#host, this.#renderer()?.results.swingNow);
     // 05.10 review D2: 0x756800 case 0x143 looks the attacker up and returns when it is not there:
     // no `+0xa20` for a unit the client does not have (its creation resends the start, Player.cpp:23052).
     // 05.10-A7a-D3: stamped with the unit object, so a unit destroyed and created again (left view

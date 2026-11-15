@@ -84,7 +84,9 @@ test("7.20 the renderer's classic branches read the classic look, not quality 0"
   assert.equal(world.includes("this.#lightingProfile.quality === 0"), false,
     "no renderer branch singles out quality 0 any more");
   const uses = world.split("lightingClassicLook(this.#lightingProfile.quality)").length - 1;
-  assert.equal(uses, 7, "key light, cinematic override, visible sun, (13.10 7.04) the classic dome, (22.10 7.44) the horizon detail and the terrain-height ring, (15.11 7.66) the faithful levels' reach");
+  assert.equal(uses, 8, "key light, cinematic override, visible sun, (13.10 7.04) the classic dome, (22.10 7.44) the horizon detail and the terrain-height ring, (15.11 7.66) the faithful levels' reach, (15.11 7.40) the zone atmosphere's enhanced-only gate");
+  assert.match(world, /frame\.enhanced = !lightingClassicLook\(this\.#lightingProfile\.quality\);/,
+    "7.40: «Атмосфера зон» runs on the enhanced levels only, released on the faithful ones (0 and 3)");
   const cinematic = world.slice(world.indexOf("  #applyCinematicProfile(): void {"));
   assert.match(cinematic.slice(0, 400),
     /const profile = lightingClassicLook\(this\.#lightingProfile\.quality\) \? undefined : this\.#cinematicRequested;/,

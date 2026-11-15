@@ -4,9 +4,27 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import * as THREE from "three";
 import {
-  ARC_ALWAYS, ARC_MOUSE, ARC_PITCH, ARC_SPELL, ARC_TURN, VehicleArcOpacity, barSlotSpell, vehicleArcCause, vehicleArcPoints, vehicleArcSpell,
+  ARC_ALWAYS, ARC_MOUSE, ARC_PITCH, ARC_SPELL, ARC_TURN, VehicleArcOpacity, barSlotSpell, impactModelScale, vehicleArcCause, vehicleArcPoints,
+  vehicleArcSpell, vehicleImpactModels,
 } from "../dist/code/browser/game/VehicleAimArc.js";
 import { VehicleAimArcMesh, arcRibbonRow, arcScroll } from "../dist/code/browser/VehicleAimArcMesh.js";
+
+// 15.11 (vehicle8): MsslTrgtImpactModel[0..1] (0x006fe9b0 loads a named slot of a row with an arc flag 0xf800000; 0x006fda20
+// scales each to MsslTrgtImpactRadius[i] over its bounding radius). Rows of the dataset's Vehicle.dbc: 24 (Flags 0x41081e77,
+// Vehicle_Target_01/02, radii 7 and 0), 68 (0x40840273, slot 1 only, radii 0.5 and 0.5), 204 (0x83e77, no arc flag).
+test("15.11: the volume marks a vehicle row names, and their scale", () => {
+  const row = (flags, models, radii) => ({ flags, msslTrgtImpactModel: models, msslTrgtImpactRadius: radii });
+  assert.deepEqual(vehicleImpactModels(row(0x41081e77, ["Interface\\Vehicles\\Vehicle_Target_01.mdx", "Interface\\Vehicles\\Vehicle_Target_02.mdx"], [7, 0])), [
+    { path: "Interface\\Vehicles\\Vehicle_Target_01.m2", radius: 7 },
+    { path: "Interface\\Vehicles\\Vehicle_Target_02.m2", radius: 0 },
+  ]);
+  assert.deepEqual(vehicleImpactModels(row(0x40840273, ["", "Interface\\Vehicles\\Vehicle_Target_02.mdx"], [0.5, 0.5])),
+    [{ path: "Interface\\Vehicles\\Vehicle_Target_02.m2", radius: 0.5 }], "an empty slot loads nothing");
+  assert.deepEqual(vehicleImpactModels(row(0x83e77, ["Interface\\Vehicles\\Vehicle_Target_01.mdx", ""], [7, 0])), [],
+    "no arc flag: 0x006fe9b0 loads nothing");
+  assert.equal(impactModelScale(7, 2), 3.5);
+  assert.equal(impactModelScale(7, 0), 7, "a model with no bounding radius: the radius itself");
+});
 
 const TURN = 1, PITCH = 2, MOUSE = 3;
 
@@ -145,7 +163,7 @@ test("the muzzle: $AIM first, then the cast events; one request a model, an answ
   assert.deepEqual(events.of("Creature\\Gone.m2"), undefined);
   await new Promise((resolve) => setTimeout(resolve, 5));
   assert.equal(asked.length, 2);
-  assert.match(asked[0], /\/visual\/model-events\?v=1&path=Creature%5CCat%5CCat\.m2$/, "the .m2 of an .mdx");
+  assert.match(asked[0], /\/visual\/model-events\?v=2&path=Creature%5CCat%5CCat\.m2$/, "the .m2 of an .mdx (events8: v=2)");
   assert.equal(events.of("Creature\\Cat\\Cat.mdx").length, 1);
   assert.deepEqual(events.of("Creature\\Gone.m2"), [], "an older gateway: no events");
 });

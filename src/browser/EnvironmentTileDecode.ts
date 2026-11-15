@@ -22,8 +22,9 @@ export type EnvironmentTileDecodeResponse =
  * is the same over any mix of v4–v6 tiles.
  * 12.10 6.25: `visual-tile-v7` only drops `localLight` from WMO doodads an exterior group names; the
  * client reads it as it reads v6.
+ * 15.11 (far8): `visual-tile-v8` adds `biodome: true` to M2 placements with MDDF flag 0x1; a v7 tile reads as before.
  */
-export const VISUAL_TILE_ROUTE_VERSION = 7;
+export const VISUAL_TILE_ROUTE_VERSION = 8;
 
 /**
  * 05.10-A7b-1 (7.19): a diagnostics line for what one tile could not carry — objects the check left
@@ -310,6 +311,8 @@ function isEnvironmentObject(value: unknown): value is EnvironmentObject {
   // 05.10-A7b-1 (7.13): a WMO placement's WMOAreaTable key — MOHD.wmoID (u32) and MODF.nameSet (u16).
   if (object.wmoId !== undefined && (object.kind !== "wmo" || !unsignedInteger(object.wmoId, 0xffff_ffff))) return false;
   if (object.nameSet !== undefined && (object.kind !== "wmo" || !unsignedInteger(object.nameSet, 0xffff))) return false;
+  // 15.11 (far8): visual-tile-v8's MDDF biodome flag, on M2 placements only.
+  if (object.biodome !== undefined && (object.kind !== "m2" || object.biodome !== true)) return false;
   const quaternion = [object.quaternionX, object.quaternionY, object.quaternionZ, object.quaternionW];
   if (quaternion.some((item) => item !== undefined) && !quaternion.every((item) => typeof item === "number" && Number.isFinite(item))) return false;
   if (object.bounds === undefined) return true;

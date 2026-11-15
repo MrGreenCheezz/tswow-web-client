@@ -18,6 +18,7 @@ import { cameraPivotLook } from "../game/CameraOptionsLive.js"; // 5.14 (11.11)
 import { canAttackUnit, dropTabList, inSightFromCamera, reactionTo } from "../game/Targeting.js"; // 1.10: dropTabList
 import { setHoveredTarget } from "../game/HoverTarget.js";
 import { gatherPlan } from "../game/CreatureGather.js";
+import { gameObjectWithinReach } from "../game/Interaction.js"; // 4.15 (15.11)
 import { cancelGiftWrap, giftWrapPending, observeGiftWrap } from "../game/GiftWrap.js"; // L1-review: cancelGiftWrap
 import { groundTargetInRange } from "../game/GroundTargetPreview.js";
 import { repair } from "../Repair.js";
@@ -665,6 +666,7 @@ const CURSOR_RULES: CursorRules = {
   lockCase: (lockId) => game.locks?.casesOf(lockId)[0],
   lockTypeCursor: (lockType) => game.locks?.lockTypeCursor(lockType), // 05.10-5.17: /dbc/locks?v=1
   seatAllowsInteraction: () => seatAllowsInteraction(vehicleCatalog(), game.world?.state.objects ?? new Map(), game.world?.state.selfGuid), // 11.02 (04.11)
+  gameObjectReach: (object, type, player) => game.world !== undefined && gameObjectWithinReach(game.world as WorldClient, object, type, player), // 4.15 (15.11)
 };
 
 /** 5.17: the cursor a mode puts under everything with no cursor of its own (Wow.exe 0x00616270). */

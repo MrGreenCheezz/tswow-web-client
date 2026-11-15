@@ -23,9 +23,15 @@
  *   (`0x79a160` -> `0x7b3a10` -> `0x7ad350`) each outdoor group in the view starts its own walk across the whole
  *   screen, into rooms only (`target & 0x10008` stops it).
  *
- * Not modelled: the per-map clip volumes `0x7a85e0` also asks (`0x7ccfa0`, empty unless a map has some), the terrain
- * horizon an outdoor group must clear before it starts a walk (`0x78fdc0`), the merge of the views (`0x7968d0`), and
- * the batches' own boxes (MOBA; the group's box stands in for them).
+ * - 15.11 (portal8): with the camera over no WMO at all (the caller decides: `wmoOccludersApply`), the map's occluders (`MapOccluders.ts`) hide an outdoor group whose
+ *   sphere lies in one's shadow (`0x79a160` asks `0x7cce00` before `0x7b3a10`) and a portal whose polygon does
+ *   (`0x7a85e0` asks `0x7ccfa0`). From a room the volumes are built after the room's own walk, so the room's portals
+ *   never ask them; this client builds none for a room (their depth, `0x7905b0`, is not read).
+ *
+ * Not modelled: the terrain horizon an outdoor group must clear before it starts a walk (`0x78fdc0`, read, off: see
+ * `TerrainHorizon.ts`) and the batches' own boxes (MOBA; the group's box stands in for them). `0x7968d0` is no merge:
+ * it cuts the screen minus the doors' views into rectangles that `0x796c10` fills with the fog colour at the far
+ * plane, after every group is chosen, so it changes no group.
  *
  * Cost: each portal's rectangle once a walk, about 5 x 17 plane tests and one division per vertex left; each visit, one
  * box against four planes plus near and far (8 corners) and one rectangle cut per portal it leaves through. On the 146
@@ -34,6 +40,15 @@
 
 import type { WmoBounds, WmoPortals } from "./WmoModel.js";
 import type { WmoOcclusionPoint } from "./WmoOcclusion.js";
+import { mapOccludersHidePoints, mapOccludersHideSphere, type MapOccluderVolumes } from "./MapOccluders.js";
+
+/** `0x79a160` -> `0x7cce00`: whether a group's bounding sphere lies in an occluder's shadow (volumes in model space). */
+export function wmoGroupBehindOccluders(bounds: WmoBounds, occluders: MapOccluderVolumes | undefined): boolean {
+  if (occluders === undefined || occluders.volumeCount === 0) return false;
+  const radius = 0.5 * Math.hypot(bounds.maxX - bounds.minX, bounds.maxY - bounds.minY, bounds.maxZ - bounds.minZ);
+  return mapOccludersHideSphere(occluders, (bounds.minX + bounds.maxX) * 0.5, (bounds.minY + bounds.maxY) * 0.5,
+    (bounds.minZ + bounds.maxZ) * 0.5, radius);
+}
 
 /** `0x7a85e0`: a portal is clipped and projected by its first twelve vertices only. */
 export const WMO_PORTAL_MAX_VERTICES = 12;
@@ -283,6 +298,7 @@ export function walkWmoPortalFrusta(
   out: WmoPortalFrustaOut,
   scratch: WmoPortalFrustaScratch,
   horizonHidden?: Uint8Array,
+  occluders?: MapOccluderVolumes,
 ): boolean {
   const portalCount = portals.definitions.length;
   if (scratch.rectWalk.length < portalCount) {
@@ -296,7 +312,8 @@ export function walkWmoPortalFrusta(
   scratch.viewed.fill(0, 0, portalCount);
   scratch.viewCount = 0;
   scratch.visits = 0;
-  const context: WalkContext = { groups, portals, planes, camera, m, out, scratch, fromRoom };
+  const shadows = occluders !== undefined && occluders.volumeCount > 0 ? occluders : undefined;
+  const context: WalkContext = { groups, portals, planes, camera, m, out, scratch, fromRoom, occluders: shadows };
   const path = scratch.path;
   for (let at = 0; at < seedCount; at++) {
     const seed = seeds[at]!;
@@ -307,6 +324,8 @@ export function walkWmoPortalFrusta(
     if (!fromRoom && !wmoBoxInScreenRect(groups[seed]!.bounds, m, path, 0)) continue;
     // 15.11: an outdoor group behind the terrain's horizon starts no walk (`0x79a160` asks `0x78fdc0`).
     if (!fromRoom && horizonHidden !== undefined && horizonHidden[seed] === 1) continue;
+    // 15.11 (portal8): nor does one in an occluder's shadow (`0x79a160` asks `0x7cce00` first).
+    if (!fromRoom && wmoGroupBehindOccluders(groups[seed]!.bounds, shadows)) continue;
     if (!visit(context, seed, -1, 0)) return false;
   }
   if (!fromRoom) return true;
@@ -319,6 +338,7 @@ export function walkWmoPortalFrusta(
     const flags = groups[index]!.flags;
     if ((flags & OUTDOOR) === 0 || (flags & ALWAYS_DRAW) !== 0) continue;
     if (horizonHidden !== undefined && horizonHidden[index] === 1) continue;
+    if (wmoGroupBehindOccluders(groups[index]!.bounds, shadows)) continue;
     for (let view = 0; view < viewCount; view++) {
       if (!wmoBoxInScreenRect(groups[index]!.bounds, m, views, view * 4)) continue;
       path[0] = views[view * 4]!;
@@ -340,6 +360,8 @@ interface WalkContext {
   readonly out: WmoPortalFrustaOut;
   readonly scratch: WmoPortalFrustaScratch;
   fromRoom: boolean;
+  /** The map's occluder volumes in model space, or none. */
+  readonly occluders: MapOccluderVolumes | undefined;
 }
 
 /** `0x7ac060`: one visit of `index`, seen through the rectangle at `path[depth * 4]`. */
@@ -387,7 +409,9 @@ function visit(context: WalkContext, index: number, from: number, depth: number)
         rects[rect + 1] = 1;
         rects[rect + 2] = -1;
         rects[rect + 3] = 1;
-      } else if (!wmoPortalScreenRect(portals.vertices, definition.startVertex, definition.vertexCount, m, scratch, rects, rect)) {
+      } else if ((context.occluders !== undefined && mapOccludersHidePoints(context.occluders, portals.vertices,
+        definition.startVertex, Math.min(definition.vertexCount, WMO_PORTAL_MAX_VERTICES)))
+        || !wmoPortalScreenRect(portals.vertices, definition.startVertex, definition.vertexCount, m, scratch, rects, rect)) {
         rects[rect] = 1;
         rects[rect + 1] = -1;
         rects[rect + 2] = 1;

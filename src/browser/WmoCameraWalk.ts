@@ -32,7 +32,8 @@ import {
   validMatrix,
   type WmoOcclusionGroup, type WmoOcclusionPoint, type WmoOcclusionSelection, type WmoPortalWalkScratch,
 } from "./WmoOcclusion.js";
-import { createWmoPortalFrustaScratch, walkWmoPortalFrusta } from "./WmoPortalFrusta.js";
+import { createWmoPortalFrustaScratch, walkWmoPortalFrusta, wmoGroupBehindOccluders } from "./WmoPortalFrusta.js";
+import type { MapOccluderVolumes } from "./MapOccluders.js";
 
 /** MOGP: drawn wherever the camera is, frustum permitting. */
 export const WMO_GROUP_ALWAYS_DRAW = 0x10000;
@@ -171,6 +172,7 @@ export function walkWmoFromCamera(
   screenApertures: Float32Array | undefined,
   scratch: WmoPortalWalkScratch,
   horizonHidden?: Uint8Array,
+  occluders?: MapOccluderVolumes,
 ): WmoOcclusionSelection {
   const count = groups.length;
   if (count === 0 || !finitePoint(camera) || !validMatrix(modelToClip)
@@ -194,7 +196,7 @@ export function walkWmoFromCamera(
   drawn.fill(0, 0, count);
   const frusta = scratch.frusta ??= createWmoPortalFrustaScratch();
   if (!walkWmoPortalFrusta(groups, portals, wmoPortalPlanes(portals), camera, modelToClip, seeds, size, room >= 0,
-    { reached: scratch.reached, drawn, apertures: scratch.apertures }, frusta, horizonHidden)) {
+    { reached: scratch.reached, drawn, apertures: scratch.apertures }, frusta, horizonHidden, occluders)) {
     return scratchFallback(scratch, NO_GROUPS);
   }
   const picks = scratch.picks;
@@ -205,6 +207,8 @@ export function walkWmoFromCamera(
     // 15.11: from outside a 0x10000 group comes through the same horizon test as the outdoor ones (`0x79a160`); from a
     // room it is judged by the frustum alone (`0x7ad1f0`).
     if (room < 0 && drawn[index] !== 1 && horizonHidden !== undefined && horizonHidden[index] === 1) continue;
+    // 15.11 (portal8): and through the occluders' shadows (`0x79a160` asks `0x7cce00`).
+    if (room < 0 && drawn[index] !== 1 && wmoGroupBehindOccluders(group.bounds, occluders)) continue;
     if (picked < picks.length) picks[picked] = index;
     else picks.push(index);
     picked++;
@@ -243,6 +247,8 @@ export interface WmoCameraWalkState {
   walked: boolean;
   /** Whether the walk came out of the building on screen (`wmoWalkReachedOutside`). */
   reachedOutside: boolean;
+  /** 15.11 (portal8): the occluder records the last walk used; other records make the walk stale. */
+  walkedOccluders?: object | undefined;
 }
 
 export function createWmoCameraWalkState(): WmoCameraWalkState {

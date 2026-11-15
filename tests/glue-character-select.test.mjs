@@ -188,11 +188,32 @@ test("a refused declension re-opens the frame with CHAR_DECLINE_FAILED", async (
   const { runtime, evaluate, events, setAnswer } = await glue();
   try {
     setAnswer(1);
-    evaluate("return DeclineCharacter(1, 'а', 'б', 'в', 'г', 'д')");
+    // Forms the client's own check passes (1.19), so the refusal is the server's.
+    evaluate("return DeclineCharacter(1, 'Артаса', 'Артасу', 'Артаса', 'Артасом', 'Артасе')");
     await settle();
     assert.deepEqual(events.filter(([event]) => event === "FORCE_DECLINE_CHARACTER"),
       [["FORCE_DECLINE_CHARACTER", "CHAR_DECLINE_FAILED"]]);
     assert.equal(runtime.session.characters[0].flags & DECLINED, 0);
+  } finally {
+    runtime.close();
+  }
+});
+
+test("1.19: a form the client's own check refuses re-opens the frame with its reason and sends nothing (0x4d9a40, 0x76dd90)", async () => {
+  const { runtime, evaluate, events, sent } = await glue();
+  try {
+    // Too short (the walk of 0x7e18c0), then not the name's stem (0x76e390), then six letters past the stem.
+    assert.equal(evaluate("return DeclineCharacter(1, 'а', 'б', 'в', 'г', 'д')"), undefined);
+    assert.equal(evaluate("return DeclineCharacter(1, 'Артаса', 'Тралла', 'Артаса', 'Артасом', 'Артасе')"), undefined);
+    assert.equal(evaluate("return DeclineCharacter(1, 'Артаса', 'Артасуабвгде', 'Артаса', 'Артасом', 'Артасе')"), undefined);
+    await settle();
+    assert.deepEqual(events.filter(([event]) => event === "FORCE_DECLINE_CHARACTER"), [
+      ["FORCE_DECLINE_CHARACTER", "CHAR_NAME_TOO_SHORT"],
+      ["FORCE_DECLINE_CHARACTER", "CHAR_NAME_DECLENSION_DOESNT_MATCH_BASE_NAME"],
+      ["FORCE_DECLINE_CHARACTER", "CHAR_NAME_DECLENSION_DOESNT_MATCH_BASE_NAME"],
+    ]);
+    assert.equal(sent.length, 0, "no CMSG_SET_PLAYER_DECLINED_NAMES");
+    assert.equal(events.some(([event]) => event === "OPEN_STATUS_DIALOG"), false);
   } finally {
     runtime.close();
   }

@@ -4,6 +4,7 @@ import { CHARACTER_FLAG_DECLINED, enterWorldRefusal } from "./GlueEnterGate.js";
 import type { GlueLuaVm } from "./GlueLua.js";
 import { messageFor, openStatusDialog, responseKey } from "./GlueMessages.js";
 import { checkCharacterName, sameCharacterName, type GlueNameRuleOptions } from "./GlueNameRules.js";
+import { checkDeclinedName } from "./GlueDeclensionCheck.js"; // 1.19 (15.11)
 import type { GlueSession } from "./GlueSession.js";
 
 /**
@@ -66,6 +67,8 @@ export interface GlueCharacterApiOptions {
   readonly locale?: () => string;
   /** `DisconnectFromServer()` also ends the auth connection kept for realm refreshes (10.08). */
   readonly onDisconnect?: () => void;
+  /** 3.46 (15.11): a rename the server accepted — the character's own data follows it (0x4e2870). */
+  readonly onCharacterRenamed?: (oldName: string, newName: string) => void;
 }
 
 /** `RealmListUpdateRate()` — seconds between automatic refreshes of the realm dialog. */
@@ -243,9 +246,9 @@ export function installGlueCharacterApi(options: GlueCharacterApiOptions): void 
    *
    * The client's own (Wow.exe 0x4e3530, then 0x4d9a40): an empty or missing case, a row that is not
    * there, or a character already declined — nothing at all; otherwise the CANCEL dialog with
-   * CHAR_DECLINE_IN_PROGRESS, CMSG_SET_PLAYER_DECLINED_NAMES, and 1. The client also checks each
-   * case against the name with a rule of its own before sending; that rule is not reconstructed
-   * here — the core applies `CheckDeclinedNames` and its refusal comes back as the dialog below.
+   * CHAR_DECLINE_IN_PROGRESS, CMSG_SET_PLAYER_DECLINED_NAMES, and 1. Before that each case goes
+   * through the client's own check (1.19, 15.11: GlueDeclensionCheck.ts); a refused one re-opens the
+   * frame with its reason and answers nil. The core's `CheckDeclinedNames` refusal comes back below.
    * The answer closes the status dialog; a refusal re-opens the frame with CHAR_DECLINE_FAILED.
    */
   vm.registerGlobal("DeclineCharacter", (args) => {
@@ -259,6 +262,20 @@ export function installGlueCharacterApi(options: GlueCharacterApiOptions): void 
     }
     const character = session.characters[index - 1];
     if (!character || (character.flags & CHARACTER_FLAG_DECLINED) !== 0) return [];
+    // 1.19 (15.11): each case through the client's own check first (0x4d9a40 → 0x6b0fc0, GlueDeclensionCheck.ts):
+    // the first refused one re-opens the frame with its reason, and nothing is sent.
+    const rules = options.nameRules?.() ?? {};
+    for (const form of cases) {
+      const verdict = checkDeclinedName(character.name, form, {
+        ...(rules.alphabetMask !== undefined ? { alphabetMask: rules.alphabetMask } : {}),
+        ...(rules.nameFilters ? { nameFilters: rules.nameFilters } : {}),
+        locale: options.locale?.() ?? "ruRU",
+      });
+      if (verdict !== RESPONSE_CODES.CHAR_NAME_SUCCESS) {
+        options.fireEvent("FORCE_DECLINE_CHARACTER", responseKey(verdict, "create"));
+        return [undefined];
+      }
+    }
     options.fireEvent("OPEN_STATUS_DIALOG", "CANCEL",
       messageFor("CHAR_DECLINE_IN_PROGRESS", glueString, "Обновление персонажа..."));
     void session.declineCharacter(index, cases).then((outcome) => {
@@ -332,6 +349,8 @@ export function installGlueCharacterApi(options: GlueCharacterApiOptions): void 
       // answer (FUN_004e2870), so the character that goes in is the renamed one and not a stale row
       // that still carries the rename flag.
       session.applyRename(answer.guid ?? character.guid, answer.name ?? name);
+      // 3.46 (15.11): 0x4e2870 also moves the character's WTF folder to the new name (GlueCharacterRename.ts).
+      options.onCharacterRenamed?.(character.name, answer.name ?? name);
       if (session.selected?.guid === character.guid) enterWorld();
     });
     return [1];

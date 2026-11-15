@@ -50,9 +50,10 @@ import {
   cloudTextureUv, createCloudDataTexture, createCloudShading, setCloudBands, type CloudShading,
 } from "./SkyClouds.js"; // 23.10 (7.43)
 import {
-  MOON_GLARE, SUN_GLARE, glareAlpha, glareFacing, glareSize, glareStep, glareTarget,
-  moonGlareCloudTerm, sunGlareCloudTerm, type GlareSpec,
-} from "./SkyGlare.js"; // 13.10 7.04
+  MOON_GLARE, SUN_GLARE, glareAlpha, glareDimming, glareFacing, glareSize, glareStep, glareTarget,
+  moonGlareCloudTerm, occludedGlareTarget, sunGlareCloudTerm, type GlareSpec,
+} from "./SkyGlare.js"; // 13.10 7.04; 15.11 (sky8): occlusion and dimming
+import { glareOnScreen } from "./SkyGlareOcclusion.js"; // 15.11 (sky8, 7.04)
 import type { ModelTextureStatus } from "./TextureLoad.js";
 import { textureUrl } from "./Wvm.js";
 
@@ -381,12 +382,21 @@ export interface SkyCelestialInput {
    * skybox counts as weight 1 — exact away from the edges of light volumes.
    */
   skyboxPresent: boolean;
+  /**
+   * 15.11 (sky8, 7.04): the ray half of each glare's occlusion (`SkyGlareOcclusion.glareRayClear`), 1 clear and 0
+   * hidden, measured on the page for the client's own sun and moon; 1 when nobody measured.
+   */
+  sunRay: number;
+  moonRay: number;
+  /** 15.11 (sky8, 7.04): the camera the frame is drawn with, for the on-screen half of the occlusion; none, none asked. */
+  camera: THREE.Camera | undefined;
 }
 
 export function createSkyCelestialInput(): SkyCelestialInput {
   return {
     enabled: false, time: 0, day: 0, sunColour: 0, sunHalo: 0, cloudA: 0, cloudB: 0,
     cloudDensity: 0, storm: 0, postSun: false, sunAt: false, sunAtX: 0, sunAtY: 1, sunAtZ: 0, seconds: 0, viewX: 0, viewY: 0, viewZ: -1, skyboxPresent: false,
+    sunRay: 1, moonRay: 1, camera: undefined,
   };
 }
 
@@ -467,6 +477,8 @@ export class SkyCelestials {
   #moon2Alpha = 0;
   /** 13.10 7.04: the previous update's `seconds`, for the glare's frame time (0x00d38b48). */
   #lastSeconds: number | undefined;
+  /** 15.11 (sky8, 7.04): the sun glare's +0xa4 (0x00d38f4c) from the last update (`glareDimming`). */
+  #sunGlareDimming = 0;
   /**
    * 13.10 7.04 (the clearStars defect): told before a stars node leaves the group, so its owner can
    * take it off the program warm-up it registered it with (`ProgramWarmup.unregisterObject`).
@@ -605,6 +617,7 @@ export class SkyCelestials {
     if (!input.enabled) {
       this.group.visible = false;
       for (const glare of this.#glares) glare.current = 0;
+      this.#sunGlareDimming = 0; // 15.11 (sky8, 7.04): no glare, no dimming
       return;
     }
     this.group.visible = true;
@@ -658,9 +671,15 @@ export class SkyCelestials {
         cover = this.#cloudTexture.densityAt(this.#cloudUv[0]!, this.#cloudUv[1]!);
       }
       const cloudTerm = index === 0 ? sunGlareCloudTerm(cover) : moonGlareCloudTerm(cover);
-      const target = glareTarget(glare.spec, cloudTerm, input.skyboxPresent ? 1 : 0, fraction);
+      // 15.11 (sky8, 7.04): the occlusion, asked only for a target that is not 0 (`SkyGlareOcclusion.ts`): on the
+      // screen, and the page's ray clear — the ray follows the client's bearing, so a moved sun (`sunAt`) skips it.
+      const target = occludedGlareTarget(glareTarget(glare.spec, cloudTerm, input.skyboxPresent ? 1 : 0, fraction),
+        (input.camera === undefined || glareOnScreen(input.camera, at) ? 1 : 0)
+          * (index === 0 ? (input.sunAt ? 1 : input.sunRay) : input.moonRay));
       glare.current = glareStep(glare.current, target, glare.spec, frameSeconds);
-      const facing = glareFacing(glare.spec, input.viewX * at.x + input.viewY * at.y + input.viewZ * at.z);
+      const cosine = input.viewX * at.x + input.viewY * at.y + input.viewZ * at.z;
+      if (index === 0) this.#sunGlareDimming = glareDimming(glare.spec, cosine, glare.current);
+      const facing = glareFacing(glare.spec, cosine);
       // The body's colour alpha: 0xff, or (1 − storm) while a storm blends in (0x7f3230).
       const alpha = glareAlpha(glare.spec, storm !== 0 ? 1 - storm : 1, facing, glare.current);
       const texture = this.#glareTexture(glare);
@@ -723,6 +742,14 @@ export class SkyCelestials {
       this.#cloudMap.image.data = this.#cloudTexture.pixels;
       this.#cloudMap.needsUpdate = true;
     }
+  }
+
+  /**
+   * 15.11 (sky8, 7.04): the sun glare's dimming from the last update (Wow.exe's 0x00d38f4c), which the next light
+   * build takes the world's ambient and direct light down by (`SkyGlare.glareLightByte`); 0 while the layer is off.
+   */
+  get sunGlareDimming(): number {
+    return this.#sunGlareDimming;
   }
 
   /** 23.10 (7.43): the lighting the last cloud rows were written with (tests, probes). */

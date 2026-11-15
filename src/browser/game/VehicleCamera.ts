@@ -60,8 +60,18 @@ import { VEHICLE_FLAG_CAMERA_FADE } from "../VehicleCameraFade.js";
  *   +0x84, and the 0x005fe5f0 turn of state 3) is not read yet, and this client's orbit has no such facing.
  *   11.11 (.runtime/re-2026-11-11/vehicle2/v4.c): +0x84 = the chased facing less the watched unit's (0x00759ce0); in
  *   state 3, with VehicleCamera_C +8 bits 0x2 and 0x4 and the active camera watching this camera's unit with +0xac < 1,
- *   0x005fe5f0 turns the camera's yaw (+0x260, and +0x264/+0x11c wrapped) by old − new chased facing each frame. Who
- *   sets bits 0x2/0x4 and how that yaw maps onto this client's orbit (CameraFollow.ts, not this lane's) is not read.
+ *   0x005fe5f0 turns the camera's yaw (+0x260, and +0x264/+0x11c wrapped) by old − new chased facing each frame.
+ *   15.11 (vehicle8, .runtime/re-2026-11-15/vehicle8/b4.c, b1.c; camera5/k2.lst): 0x007160b0 is the critically damped
+ *   spring (SmoothCD: position and speed, ω = 20 / rate, 1/(1 + x + 0.48x² + 0.235x³)) that UnitFacing.ts and
+ *   `CameraOffsetChase` already use. Bit 0x2 is set by 0x00759880 (from 0x0075aac0, each seat change) while the state is 1–3
+ *   and the seat (camera +0x10) has FlagsB 0x1 — 41 of the dataset's 720 seats; bit 0x10 likewise for FlagsB 0x80001. Bit
+ *   0x4 is set at the end of every frame unless the active player's seat (0x005f95d0) has Flags 0x300 without 0x2000001 —
+ *   none of the 41. The chased facing is the watched unit's world facing (+0xaa0 on its carrier plus the carrier's,
+ *   0x00759c60), and +0xac is the camera's spline count (CameraFollow.ts `held`). So on such a seat, seated, the camera
+ *   watching the passenger itself keeps its yaw in the world as the vehicle turns: `seatYawTurn`. Most of the 41 are
+ *   CAN_CONTROL seats, whose camera watches the vehicle (ViewSubject.ts), and there the test fails as it does in Wow.exe.
+ *   Not modelled: states 1–2 (on the way in, the chase is put back each frame instead) and CameraFacingChaseRate, which no
+ *   FlagsB 0x1 seat has; where else +0x84 reaches the view (0x00759ce0) is still unread.
  *
  * Without vehicle rows, outside a vehicle seat, or riding a ship, nothing here touches the camera and
  * the wheel answers exactly as `zoomedDistance` does. Once a frame, nothing is allocated unless the
@@ -256,6 +266,20 @@ export interface VehicleCameraParams {
   readonly exitSeconds: number;
   /** Vehicle Flags 0x80000: the model fades between these multiples of its radius (the renderer's; not applied). */
   readonly fade: { readonly near: number; readonly far: number } | undefined;
+  /** 15.11 (vehicle8): FlagsB 0x1 and the Flags test of bit 0x4 — the camera keeps its yaw in the world (`seatYawTurn`). */
+  readonly holdsYaw?: boolean;
+}
+
+/** 15.11 (vehicle8): VehicleSeat FlagsB 0x1 sets VehicleCamera_C +8 bit 0x2 in states 1–3 (0x00759880). */
+export const SEAT_FLAG_B_CAMERA_YAW_HOLD = 0x1;
+
+/**
+ * 15.11 (vehicle8): bits 0x2 and 0x4 of VehicleCamera_C +8 for a seat (0x00759880; the tail of 0x0075a1c0): FlagsB 0x1, and
+ * Flags without 0x300 or with 0x2000001 (the bit 0x4 test reads the active player's seat, which this is).
+ */
+export function seatHoldsCameraYaw(seat: Pick<VehicleSeatEntry, "flags" | "flagsB">): boolean {
+  const bit4 = (seat.flags & 0x300) === 0 || (seat.flags & 0x200_0001) !== 0;
+  return (seat.flagsB & SEAT_FLAG_B_CAMERA_YAW_HOLD) !== 0 && bit4;
 }
 
 function finiteOr(value: number, fallback: number): number {
@@ -305,6 +329,7 @@ export function vehicleCameraParams(vehicle: VehicleEntry | undefined, seat: Veh
     fade: fades
       ? Object.freeze({ near: finiteOr(vehicle!.cameraFadeDistScalarMin, 0), far: finiteOr(vehicle!.cameraFadeDistScalarMax, 0) })
       : undefined,
+    holdsYaw: seatHoldsCameraYaw(seat), // 15.11 (vehicle8)
   });
 }
 
@@ -413,6 +438,10 @@ export class VehicleCameraTracker {
   readonly #offsetChase = new CameraOffsetChase();
   readonly #offsetAt = { x: 0, y: 0, z: 0 };
   #lastUpdate: number | undefined;
+  /** 15.11 (vehicle8): when the applied seat's camera switch ends (ms): from then on the seat is taken (state 3). */
+  #appliedEnd = 0;
+  /** 15.11 (vehicle8): the world facing the last held frame saw (VehicleCamera_C +0x80), undefined when not holding. */
+  #heldFacing: number | undefined;
 
   /** 26.10: the lens offsets as `update` left them this frame (the same object every frame). */
   get lens(): VehicleCameraLens {
@@ -529,8 +558,32 @@ export class VehicleCameraTracker {
     return this.#floor !== undefined && next < this.#floor ? this.#floor : next;
   }
 
+  /**
+   * 15.11 (vehicle8): the tail of 0x0075a1c0 — on a seat that holds the yaw (`seatHoldsCameraYaw`), taken (state 3: the
+   * seat's camera switch is over), with the camera watching the passenger itself (`watchingSelf`) and not on its own spline
+   * hold (`splineHeld`, camera +0xac), the turn 0x005fe5f0 gives the camera's yaw this frame: old − new world facing of the
+   * passenger, which keeps the view still in the world as the vehicle turns under it. 0 otherwise. Called once a frame.
+   */
+  seatYawTurn(facing: number, watchingSelf: boolean, splineHeld: boolean, now: number): number {
+    const seat = this.#applied;
+    const holding = seat !== undefined && seat === this.#seat && seat.holdsYaw === true && this.#pendingAt === undefined
+      && now >= this.#appliedEnd && watchingSelf && !splineHeld && Number.isFinite(facing);
+    if (!holding) {
+      this.#heldFacing = undefined;
+      return 0;
+    }
+    const before = this.#heldFacing;
+    this.#heldFacing = facing;
+    if (before === undefined) return 0;
+    const turned = before - facing;
+    // Wrapped to within half a turn, as the chase's target is (0x0075a1c0 unwraps it against the last).
+    return turned - Math.round(turned / (2 * Math.PI)) * 2 * Math.PI;
+  }
+
   /** Forgets everything (tests). */
   reset(): void {
+    this.#appliedEnd = 0;
+    this.#heldFacing = undefined;
     this.#keyGuid = undefined;
     this.#keySlot = -1;
     this.#keyVehicleId = undefined;
@@ -605,6 +658,7 @@ export class VehicleCameraTracker {
     this.#applied = seat;
     // 26.10: 0x0074c0e0 sets both offsets over the interval (0 when the seat is left).
     const end = now + Math.max(0, seconds) * 1000;
+    this.#appliedEnd = end; // 15.11 (vehicle8)
     this.#lensYaw.set(seat?.yawOffset ?? 0, now, end);
     this.#lensPitch.set(seat?.pitchOffset ?? 0, now, end);
     this.#offsetX.set(seat?.offsetX ?? 0, now, end); // 04.11

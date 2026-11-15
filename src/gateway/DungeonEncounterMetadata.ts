@@ -1,5 +1,5 @@
 // The boss table behind the stock instance-lock dialog (plan item 2.09): DungeonEncounter.dbc,
-// served once per page as `/dbc/dungeon-encounters?v=1` (CatalogRoutes.ts).
+// served once per page as `/dbc/dungeon-encounters?v=2` (CatalogRoutes.ts).
 //
 // SMSG_INSTANCE_LOCK_WARNING_QUERY carries only a killed-boss mask, `1 << DungeonEncounter.Bit`
 // per boss (`InstanceScript.cpp:940`). How many bosses there are and what they are called is this
@@ -15,13 +15,17 @@
 // Name[16], Name_lang_mask, SpellIconID} (DBCStructure.h:610), 23 fields, 92 bytes. Measured on
 // this dataset: 612 rows in 117 map/difficulty groups, Bit unique within each group (0..18), only
 // the ruRU name slot filled, SpellIconID 0 in every row (the texture is then nil in the client).
+//
+// v2 (15.11): each row also carries its boss icon, resolved as 0x005538b0 resolves it: SpellIconID 0, an id outside
+// SpellIcon's range or an id with no row is nil (null here); otherwise the row's TextureFilename, pushed as the
+// string it is (an empty filename is "", not nil — the record's string pointer is never null).
 
 import { DBC_LOCALES, DBC_LOCSTRING_FIELDS, type DbcLocale } from "../generated/dbcLayouts.js";
-import { DEFAULT_LOCALE } from "./Dbc.js";
+import { DEFAULT_LOCALE, openDbcFile } from "./Dbc.js";
 import { readFixed, type FixedRows } from "./DbcFixed.js";
 
 /** The route's shape; the browser asks `?v=` this and refuses another. */
-export const DUNGEON_ENCOUNTERS_VERSION = 1;
+export const DUNGEON_ENCOUNTERS_VERSION = 2;
 
 export const DUNGEON_ENCOUNTER_LAYOUT = Object.freeze({ fieldCount: 23, recordSize: 92 });
 const ID_FIELD = 0;
@@ -29,10 +33,14 @@ const MAP_FIELD = 1;
 const DIFFICULTY_FIELD = 2;
 const BIT_FIELD = 4;
 const NAME_FIELD = 5;
+const SPELL_ICON_FIELD = 22;
 const FALLBACK_LOCALE: DbcLocale = "enUS";
 
-/** One row: `[id, mapId, difficulty, bit, name]`. */
-export type DungeonEncounterRow = [id: number, mapId: number, difficulty: number, bit: number, name: string];
+/** One row: `[id, mapId, difficulty, bit, name, icon]`; `icon` is SpellIcon.TextureFilename, null for none. */
+export type DungeonEncounterRow = [id: number, mapId: number, difficulty: number, bit: number, name: string, icon: string | null];
+
+/** SpellIcon id → TextureFilename. */
+export type SpellIconTextures = ReadonlyMap<number, string>;
 
 export interface DungeonEncounterCatalog {
   version: number;
@@ -56,18 +64,31 @@ export function fixedLocstring(rows: FixedRows, row: number, field: number, loca
 }
 
 /** The catalog out of already-checked rows; pure, so a test can feed it a synthetic file. */
-export function dungeonEncounterCatalog(rows: FixedRows, locale: DbcLocale = DEFAULT_LOCALE): DungeonEncounterCatalog {
+export function dungeonEncounterCatalog(
+  rows: FixedRows, locale: DbcLocale = DEFAULT_LOCALE, icons: SpellIconTextures = new Map(),
+): DungeonEncounterCatalog {
   const encounters: DungeonEncounterRow[] = [];
   for (let row = 0; row < rows.records; row++) {
     // Every row is kept, in place: the client's i-th encounter is the i-th matching row.
+    const iconId = rows.int(row, SPELL_ICON_FIELD);
     encounters.push([
       rows.int(row, ID_FIELD), rows.int(row, MAP_FIELD), rows.int(row, DIFFICULTY_FIELD),
       rows.int(row, BIT_FIELD), fixedLocstring(rows, row, NAME_FIELD, locale),
+      iconId === 0 ? null : icons.get(iconId) ?? null,
     ]);
   }
   return { version: DUNGEON_ENCOUNTERS_VERSION, encounters };
 }
 
 export async function loadDungeonEncounters(dbcDirectory: string): Promise<DungeonEncounterCatalog> {
-  return dungeonEncounterCatalog(await readFixed(dbcDirectory, "DungeonEncounter", DUNGEON_ENCOUNTER_LAYOUT));
+  const rows = await readFixed(dbcDirectory, "DungeonEncounter", DUNGEON_ENCOUNTER_LAYOUT);
+  // SpellIcon.dbc is opened only when a row names an icon (none on this dataset).
+  let needsIcons = false;
+  for (let row = 0; row < rows.records && !needsIcons; row++) needsIcons = rows.int(row, SPELL_ICON_FIELD) !== 0;
+  const icons = new Map<number, string>();
+  if (needsIcons) {
+    const spellIcon = await openDbcFile(dbcDirectory, "SpellIcon");
+    for (const row of spellIcon.rows()) icons.set(spellIcon.id(row), spellIcon.string(row, "TextureFilename"));
+  }
+  return dungeonEncounterCatalog(rows, DEFAULT_LOCALE, icons);
 }

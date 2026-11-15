@@ -44,6 +44,11 @@ export interface EnvironmentObject {
   wmoId?: number;
   /** 05.10-A7b-1 (7.13): a WMO placement's MODF.nameSet (visual-tile-v5), WMOAreaTable NameSetID. */
   nameSet?: number;
+  /**
+   * 15.11 (7.66 tail, far8): an M2 placement whose MDDF record has flag 0x1 (visual-tile-v8), which Wow.exe draws past
+   * its size class's distance (0x007becd0, 0x00791cb0); Netherstorm's biodomes. Absent on older tiles.
+   */
+  biodome?: boolean;
 }
 
 export function parseVMapTile(payload: Uint8Array): EnvironmentObject[] {

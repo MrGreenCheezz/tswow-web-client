@@ -3,11 +3,12 @@ import { REACTION_NEUTRAL } from "../../world/FactionRules.js";
 import { isLootable, unit } from "../../world/Fields.js";
 import {
   GO_TYPE_BARBER_CHAIR, GO_TYPE_CHAIR, GO_TYPE_GUILD_BANK, GO_TYPE_MAILBOX, GO_TYPE_QUESTGIVER,
-  interactionDistance, lockIdOf, type GameObjectTemplate,
+  lockIdOf, type GameObjectTemplate,
 } from "../../world/GameObjectProtocol.js";
 import { gameObjectInteractable } from "../../world/GameObjectHighlight.js"; // 05.11 (7.60)
+import { gameObjectWithinUseReach } from "../../world/GameObjectUseReach.js"; // 4.15 (15.11)
 import type { CreatureTemplate } from "../../world/QueryCacheProtocol.js";
-import { isWorldObjectDead, type WorldObjectState } from "../../world/WorldState.js";
+import { fieldFloat, isWorldObjectDead, type WorldObjectState, type WorldPosition } from "../../world/WorldState.js";
 
 /**
  * The client's own cursors (5.17), chosen the way Wow.exe chooses them, drawn from its own pictures.
@@ -199,6 +200,11 @@ export interface CursorRules {
   seatAllowsInteraction?(): boolean;
   /** 05.11 (7.60): a game object's side reads hostile to the player (0x0070EDD0); absent: no. */
   gameObjectHostile?(object: WorldObjectState): boolean;
+  /**
+   * 4.15 (15.11): the player within the object's use reach as the click measures it (game/Interaction.ts
+   * `gameObjectWithinReach`: the drawn box, a lock spell's range); absent: the same rule without the drawn box.
+   */
+  gameObjectReach?(object: WorldObjectState, type: number, player: WorldPosition): boolean;
 }
 
 function distanceSq(a: { x: number; y: number; z: number }, b: { x: number; y: number; z: number }): number {
@@ -313,14 +319,21 @@ function unitCursor(world: CursorWorld, self: WorldObjectState, object: WorldObj
   return "";
 }
 
-/** 0x00711470, the part that reads this client's state: alive, not stunned, inside the use range. */
-function gameObjectUsable(self: WorldObjectState, object: WorldObjectState, type: number): boolean {
+/** 0x00711470, the part that reads this client's state: alive, not stunned, inside the use reach. */
+function gameObjectUsable(self: WorldObjectState, object: WorldObjectState, type: number,
+  template: GameObjectTemplate, rules: CursorRules): boolean {
   if (!alive(self) || ((unit.flags(self) ?? 0) & UNIT_FLAG_STUNNED) !== 0) return false;
   const selfAt = self.position;
   const at = object.position;
   if (!selfAt || !at) return false;
-  const range = interactionDistance(type);
-  return distanceSq(selfAt, at) <= range * range;
+  // 4.15 (15.11): Wow.exe's reach (0x0070FA70, the chairs' seats 0x00711DB0; world/GameObjectUseReach.ts), was the centre
+  // within `interactionDistance(type)`.
+  if (rules.gameObjectReach) return rules.gameObjectReach(object, type, selfAt);
+  const scale = fieldFloat(object, UPDATE_FIELDS.OBJECT_FIELD_SCALE_X.offset);
+  return gameObjectWithinUseReach({
+    type, player: selfAt, position: at, orientation: at.orientation,
+    scale: scale !== undefined && scale > 0 ? scale : 1, data: Array.isArray(template.data) ? template.data : undefined,
+  });
 }
 
 /** 0x0070F9B0: the lock's first LockType's CursorName, else Interact. */
@@ -346,7 +359,7 @@ function gameObjectCursor(world: CursorWorld, self: WorldObjectState, object: Wo
     objectOf: (guid) => world.state.objects.get(guid),
   })) return "";
   if (!template) return "";
-  const usable = gameObjectUsable(self, object, type);
+  const usable = gameObjectUsable(self, object, type, template, rules);
   if (template.iconName) return iconCursor(template.iconName, !usable);
   switch (type) {
     case GO_TYPE_QUESTGIVER:

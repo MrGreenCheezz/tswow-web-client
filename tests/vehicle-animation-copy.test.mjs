@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  SEAT_FLAG_B_COPIES_VEHICLE_ANIMATION, VehicleAnimationCopies, seatCopiesVehicleAnimation,
+  SEAT_FLAG_B_COPIES_VEHICLE_ANIMATION, VehicleAnimationCopies, copiedVariation, seatCopiesVehicleAnimation, vehicleShownVariation,
 } from "../dist/code/browser/VehicleAnimationCopy.js";
 
 const SEAT_2963 = { id: 2963, flagsB: 0x10000 };
@@ -46,6 +46,25 @@ test("a model load copies again (0x0073e840): the vehicle's or the passenger's",
   assert.deepEqual(copies.next(PASSENGER, VEHICLE, shown(0, 1, true, {}), passengerModel), { animation: 0, loop: true }, "vehicle rebuilt");
   assert.deepEqual(copies.next(PASSENGER, VEHICLE, shown(0, 1), {}), { animation: 0, loop: true }, "passenger rebuilt");
   assert.deepEqual(copies.next(PASSENGER, 0x11n, shown(0, 1), passengerModel), { animation: 0, loop: true }, "another vehicle");
+});
+
+// 15.11 (vehicle8): 0x00735820 hands the passenger the vehicle's drawn variation (0x008266b0 +0x94) when the passenger's model
+// has more variations of the animation than that index (0x008262f0), else −1 (the passenger draws its own).
+test("the passenger plays the vehicle's variation when its model has that many, else its own draw", () => {
+  const vehicleClips = ["v0", "v1", "v2"];
+  const vehicle = vehicleClips.map((clip, variation) => ({ variation, clip, overlay: `${clip}-upper` }));
+  assert.equal(vehicleShownVariation(vehicle, "v2"), 2);
+  assert.equal(vehicleShownVariation(vehicle, "v1-upper"), 1, "the split cut of a variation is that variation");
+  assert.equal(vehicleShownVariation(undefined, "anything"), 0, "a single sequence");
+  assert.equal(vehicleShownVariation(vehicle, undefined), 0);
+  const passenger = [{ variation: 0, clip: "p0" }, { variation: 1, clip: "p1" }];
+  assert.equal(copiedVariation(1, passenger), "p1");
+  assert.equal(copiedVariation(0, passenger), "p0");
+  assert.equal(copiedVariation(2, passenger), undefined, "two variations, index 2: the passenger draws its own");
+  assert.equal(copiedVariation(3, [{ variation: 0, clip: "p0" }, { variation: 3, clip: "p3" }]), undefined,
+    "0x008262f0 counts them: two is not more than 3, whatever their numbers");
+  assert.equal(copiedVariation(0, undefined), undefined, "one sequence: the plain start plays it");
+  assert.equal(copiedVariation(1, undefined), undefined);
 });
 
 test("leaving the seat or the view forgets the copy; nothing to copy without an animation", () => {

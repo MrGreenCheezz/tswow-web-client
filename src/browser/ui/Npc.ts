@@ -13,7 +13,7 @@ import {
   reachableTaxiRoutes, TaxiMetadataClient, type TaxiCatalog,
 } from "../TaxiMetadata.js";
 import { game } from "../game/Context.js";
-import { gameObjectAction, gameObjectLockHint } from "../game/Interaction.js";
+import { gameObjectAction, gameObjectLockHint, gameObjectWithinReach } from "../game/Interaction.js";
 import { gatherPlan, performGather } from "../game/CreatureGather.js";
 import { rightClickAttacks } from "../game/Targeting.js";
 import { rightClickRefusesService } from "../game/Targeting.js"; // 11.02-tails
@@ -27,7 +27,7 @@ import {
 import { beyondClientReach } from "./NpcWait.js"; // 4.15 (11.11)
 import { useTooFarText } from "./NpcWait.js"; // 4.15 (15.11)
 import { gameObjectType } from "../SimpleScene.js";
-import { GO_FLAG_NOT_SELECTABLE, interactionDistance, interactiveGameObjectType } from "../../world/GameObjectProtocol.js";
+import { GO_FLAG_NOT_SELECTABLE, interactiveGameObjectType } from "../../world/GameObjectProtocol.js";
 import { renderVendorRepair } from "./VendorRepair.js";
 import { renderVendorRefunds } from "./VendorRefund.js"; // 2.10 (04.10, L4)
 import { registerInteractionPromptNames } from "./InteractionPrompts.js";
@@ -282,7 +282,7 @@ export function gameObjectTooFar(
   const entry = object.fields.get(UPDATE_FIELDS.OBJECT_FIELD_ENTRY.offset) ?? 0;
   const template = entry > 0 ? world.gameObjectTemplates.get(entry) : undefined;
   if (!template || template.type !== type || template.iconName === "Point") return false;
-  return Math.hypot(position.x - player.x, position.y - player.y, position.z - player.z) > interactionDistance(type);
+  return !gameObjectWithinReach(world, object, type, { ...player, orientation: 0 }); // 4.15 (15.11): Wow.exe's box reach (Interaction.ts)
 }
 
 /** 4.15 (11.11): the clicked unit is out of the client's reach (Wow.exe 0x006DDBB0, NpcWait.ts `beyondClientReach`). */

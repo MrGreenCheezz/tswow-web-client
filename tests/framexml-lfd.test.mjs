@@ -383,7 +383,8 @@ test("proposal events: SHOW once per proposal and only while stock owns the popu
 
 test("proposal encounters: the dungeon row's map and difficulty counted over the DungeonEncounter table (Wow.exe 0x00554170, 0x00554380)", () => {
   const table = new Map([
-    ["329/0", [{ bit: 0, name: "Мясник" }, { bit: 3, name: "Барон" }, { bit: 1, name: "Бальназзар" }]],
+    // 2.09 (15.11): a synthetic SpellIcon texture on one row — the dataset's rows all have SpellIconID 0.
+    ["329/0", [{ bit: 0, name: "Мясник" }, { bit: 3, name: "Барон", icon: "Interface\\Icons\\SyntheticBoss" }, { bit: 1, name: "Бальназзар" }]],
     ["0/0", [{ bit: 0, name: "Никогда" }]],
   ]);
   const holiday = { ...FRAMEXML_CANNED_LFD_CATALOG.dungeons.find((row) => row.id === 40), id: 285, flags: 3 | 4 };
@@ -401,8 +402,8 @@ test("proposal encounters: the dungeon row's map and difficulty counted over the
   world.propose(40 | DUNGEON, 7, 0, false, 0b1010);
   assert.deepEqual(call("GetLFGProposal").slice(7, 9), [3, 2], "Stratholme (map 329): three rows, bits 1 and 3 killed");
   assert.deepEqual([1, 2, 3, 4].map((index) => call("GetLFGProposalEncounter", index)), [
-    ["Мясник", undefined, false], ["Барон", undefined, true], ["Бальназзар", undefined, true], [],
-  ], "the i-th row of the map in file order, killed by its own bit");
+    ["Мясник", undefined, false], ["Барон", "Interface\\Icons\\SyntheticBoss", true], ["Бальназзар", undefined, true], [],
+  ], "the i-th row of the map in file order, killed by its own bit; the texture is the row's icon, nil without one");
   assert.deepEqual(call("GetLFGProposalEncounter", 0), []);
   // A random row (TypeID 6): no boss list, completed says only whether anything is killed.
   world.propose(258 | RANDOM, 8, 0, false, 0b110);

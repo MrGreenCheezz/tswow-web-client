@@ -21,6 +21,9 @@ import type { GlueLuaVm } from "../glue/GlueLua.js";
 import { FRAME_XML_SETTINGS_CVARS, FRAME_XML_WEBCLIENT_CVARS } from "./FrameXmlSettingsCVar.js";
 import { WOW_CVAR_REGISTRY } from "./WowCVarRegistry.js";
 import { stockCVarSlots } from "../ui/StockCVarSlots.js";
+import {
+  clearFrameXmlStockCVarWrites, noteFrameXmlStockCVarWrite, setFrameXmlStockCVarSaved,
+} from "./FrameXmlStockCVarValues.js"; // 5.28 (follow-up, 15.11)
 
 /** Where the record lives: `localStorage`, or a test's map. */
 export interface FrameXmlCVarStorage {
@@ -267,6 +270,7 @@ export function installFrameXmlCVarPersistence(
   const record = host.store?.record();
   vm.setGlobal("__fxCVarSettingsNames", [...FRAMEXML_CVAR_SETTINGS_NAMES]);
   vm.setGlobal("__fxCVarSavedValues", Object.entries(record?.cvars ?? {}));
+  setFrameXmlStockCVarSaved(Object.entries(record?.cvars ?? {})); // 5.28 (follow-up): the same values for TS readers
   vm.setGlobal("__fxModifiedClicksSaved", Object.entries(record?.modifiedClicks ?? {}));
   vm.registerGlobal("__fxRaiseEvent", (args) => {
     if (typeof args[0] === "string") host.raise(args[0], ...args.slice(1));
@@ -275,6 +279,7 @@ export function installFrameXmlCVarPersistence(
   vm.registerGlobal("__fxNoteCVar", (args) => {
     if (typeof args[0] === "string" && typeof args[1] === "string") {
       host.store?.noteCVar(args[0], args[1]);
+      noteFrameXmlStockCVarWrite(args[0], args[1]); // 5.28 (follow-up)
       // 5.37: a CVar Wow.exe keeps in the account's config slot 0 or 1 goes there as a `SET` line too.
       stockCVarSlots()?.note(args[0], args[1]);
     }
@@ -286,6 +291,7 @@ export function installFrameXmlCVarPersistence(
     .filter((row) => row.defaultValue !== undefined).map((row) => [row.name.toLowerCase(), row.defaultValue!]));
   // 5.37: slot values that arrive after this boot reach the newest VM's map (one listener for the page).
   latestSlotApply = (rows) => {
+    clearFrameXmlStockCVarWrites(); // 5.28 (follow-up): the slot lines win, as in the map
     try {
       vm.setGlobal("__fxSlotCVarRows", rows.map((row) => [...row]));
       vm.execute(FRAMEXML_SLOT_CVAR_APPLY, `@${chunk}:slot-cvars`);

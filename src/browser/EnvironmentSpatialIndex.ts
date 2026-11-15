@@ -223,6 +223,9 @@ export function objectCellCoverage(object: EnvironmentObject, cellSize: number):
   if (!object || typeof object !== "object" || !Number.isFinite(object.x) || !Number.isFinite(object.y)) {
     return undefined;
   }
+  // 15.11 (far8): a biodome (MDDF flag 0x1) reaches hundreds of yards past its point and its box is unknown until its
+  // model is built; it joins every query (the fallback pool) and its own leash measures it (DoodadReach.ts).
+  if (object.biodome === true) return undefined;
   if (object.bounds === undefined) {
     const x = cellIndex(object.x, cellSize);
     const y = cellIndex(object.y, cellSize);

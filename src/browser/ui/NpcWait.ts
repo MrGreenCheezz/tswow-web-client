@@ -63,7 +63,7 @@ export function tooFarText(): string {
  * (0x0070F680) asks its type helper (GO+0x1A0) whether it can be used (slot 7; the base 0x00711470, which most types
  * keep): after the dead, locked-out and lock checks it takes the helper's range (+0xC: 5 yards from the base
  * constructor 0x007124B0, 5.5555553 for types 2, 9, 24, 26 and 27, 100 for 17, 0 for 12 — the factory 0x00714250;
- * types 4, 7, 11, 13, 14, 15, 31, 32, 33 and 35 have helpers of their own, not read) and asks slot 8
+ * the special helpers' ranges are in world/GameObjectUseReach.ts) and asks slot 8
  * (0x0070FA70), and a miss is error 0xF0 = ERR_USE_TOO_FAR by the table at 0x00AC8AF0 (kind 2, UI_ERROR_MESSAGE).
  * 0x0070F680 shows it through 0x005216F0 and sends nothing; with click-to-move on (and not for a fishing bobber, type
  * 17) it walks to the object instead (0x0072B730), which this client does not do.
@@ -71,7 +71,8 @@ export function tooFarText(): string {
  * Slot 8's range is not a sphere: a spell-focus object (type 8) is measured from its centre, a door (type 0) by its
  * model's box, every other type by its display's box (GameObjectDisplayInfo GeoBox, else the model's) grown by the
  * range on every side, in the object's own axes and scale; a lock opened by a spell takes that spell's range instead
- * (0x0070F160 → 0x00802C30). The callers here still measure the centre against `interactionDistance`.
+ * (0x0070F160 → 0x00802C30). 4.15 (15.11): the callers measure it so (world/GameObjectUseReach.ts, game/Interaction.ts
+ * `gameObjectWithinReach`).
  */
 export function useTooFarText(): string {
   return nativeString("ERR_USE_TOO_FAR", "Вы слишком далеко.");

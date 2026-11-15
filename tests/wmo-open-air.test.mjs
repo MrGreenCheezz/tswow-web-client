@@ -74,13 +74,18 @@ test("the renderer walks from open air only for static buildings with a street, 
   assert.match(source, /clipped = entered;\r?\n\s+walked = true; \/\/ 05\.10-A7b-2/,
     "an indoor walk that answered is told apart from one that fell back");
   assert.match(source, /if \(wmoOpenAirWalkStale\(state, clip, rooms\)\) \{/, "walked again only on change");
-  assert.match(source, /this\.#bindWmoDoodads\(placed, walk\.groups, true, WMO_OPEN_AIR_ROOM_RANGE\);/);
+  // 15.11 (7.03, far8): the walked rooms bind their doodads on the open-air leash of this lighting path —
+  // 150 on the enhanced levels, the reach on the faithful ones (`wmoOpenAirRoomRange`, tests/wmo-faithful-rooms).
+  assert.match(source,
+    /if \(binds\) this\.#bindWmoDoodads\(placed, walk\.groups, true, wmoOpenAirRoomRange\(this\.#faithfulLevel, this\.environmentShellRange\)\);/);
   assert.match(source, /if \(binds\) this\.#bindWmoDoodads\(placed, selected, false, INTERIOR_RANGE\);/);
   assert.match(source, /const rooms = this\.#bindWmoDoodads\(placed, selected, clipped\); \/\/ 05\.10-A7b-2/,
     "a building of rooms alone binds as before, on the environment range");
   assert.match(source,
     /return interiorOnlyDoodadShown\(object\) === undefined \? INTERIOR_RANGE : boundWmoDoodadLeash\(object\);/);
-  assert.match(source, /return INTERIOR_ONLY_DOODADS\.get\(object\)\?\.rooms\.leash \?\? INTERIOR_ONLY_RANGE;/);
+  // 15.11 (7.03, far8): the rooms' leash, else the interior range, through the size class on the faithful levels
+  // only (`boundDoodadClassLeash` answers the leash itself without a detail: tests/wmo-faithful-rooms).
+  assert.match(source, /const rooms = INTERIOR_ONLY_DOODADS\.get\(object\)\?\.rooms;\s+return boundDoodadClassLeash\(object, rooms\?\.leash \?\? INTERIOR_ONLY_RANGE, rooms\?\.classDetail\);/);
   // Only the static-environment call opts in (moving game objects keep distance selection).
   // 05.10-7.05-review: the game-object call measures from the transport viewer and passes false.
   const calls = [...source.matchAll(/this\.#updateWmoGroups\(rendered\.wmo, (?:player|viewer), rendered\.node, client, (true|false)\b/g)];

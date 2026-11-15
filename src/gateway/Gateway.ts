@@ -55,6 +55,7 @@ import { loadTaxiMetadata } from "./TaxiMetadata.js";
 import { loadDeclinedWords } from "./DeclinedWords.js";
 import { COLLISION_TRIANGLE_BUDGET, encodeCollisionModel } from "../world/CollisionFormat.js";
 import { GLOBAL_FALLBACK_MAP, loadLightMetadata } from "./LightMetadata.js";
+import { MAP_OCCLUDERS_VERSION, mapOccludersOf } from "./MapOccluderTable.js"; // 15.11 (7.54, portal8)
 import { loadItemMetadata, loadItemSubclassNames } from "./ItemMetadata.js";
 import { loadItemEnchantments } from "./ItemEnchantments.js";
 import {
@@ -66,6 +67,7 @@ import {
 } from "./PatchStatus.js";
 import { AUDIO_DBC_FILES, CLIENT_MEDIA_PROFILE_FILE, VISUAL_DBC_FILES } from "./ClientMediaOverlay.js";
 import { validAssetPath } from "./AssetPath.js";
+import { validAddonUrlPath } from "./AddonUrlPath.js"; // 3.46 (follow-up, 15.11)
 import { listeningServerError } from "./ProcessGuard.js";
 import { originAllowed, refuseUpgrade, routeUpgrade } from "./UpgradeGuard.js";
 import { WMO_MINIMAP_ROUTE, serveWmoMinimapRoute, type WmoMinimapMemo } from "./WmoMinimapRoute.js"; // 05.10-A7b-3
@@ -1541,7 +1543,7 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
       cacheControl: (requested) => assetCacheControl(requested, visualAssetGeneration, REVALIDATE),
     })) return;
 
-    // 11.02 (04.11): `/visual/model-events?v=1&path=<model.m2>`, where a shot leaves a model from (browser/VehicleMuzzle.ts).
+    // 11.02 (04.11): `/visual/model-events?v=2&path=<model.m2>`, a model's M2 events (browser/VehicleMuzzle.ts).
     if (request.method === "GET" && pathname === "/visual/model-events" && options.visualModelsDirectory) {
       const origin = request.headers.origin;
       if (!originAllowed(origin, options.allowedOrigins)) {
@@ -1549,11 +1551,14 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
         return;
       }
       const modelPath = (url.searchParams.get("path") ?? "").replaceAll("/", "\\");
-      if (url.searchParams.get("v") !== "1" || !validAssetPath(modelPath, { extensions: ["m2"] })) {
+      // 15.11 (events8): v=2 adds every event 0x00732650 acts on with its keys per sequence (tools/generate-model-events.mjs);
+      // a v=1 asker reads the same file (its `events` keep id, bone and position) — the id below names the v2 file.
+      const asked = url.searchParams.get("v");
+      if ((asked !== "1" && asked !== "2") || !validAssetPath(modelPath, { extensions: ["m2"] })) {
         respondError(response, 400, origin);
         return;
       }
-      const id = createHash("sha1").update(`model-events-v1\0${modelPath.toLowerCase()}`).digest("hex");
+      const id = createHash("sha1").update(`model-events-v2\0${modelPath.toLowerCase()}`).digest("hex");
       const filename = join(options.visualModelsDirectory, `${id}.events.json`);
       try {
         const rebuild = options.generateModelEvents
@@ -2856,6 +2861,33 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
           "content-type": "application/json; charset=utf-8",
         });
         response.end(data);
+      } catch {
+        respondError(response, 500, origin);
+      }
+      return;
+    }
+
+    // 15.11 (7.54, portal8): one map's occluder polygons, read from the user's own Wow.exe (`MapOccluderTable.ts`).
+    // 404 when there is no client directory, no Wow.exe or another build: the browser then walks without them.
+    const mapOccluders = pathname.match(/^\/dbc\/occluders\/(\d{1,4})$/);
+    if (request.method === "GET" && mapOccluders) {
+      const origin = request.headers.origin;
+      if (!originAllowed(origin, options.allowedOrigins)) {
+        response.writeHead(403).end();
+        return;
+      }
+      try {
+        const occluders = options.clientDirectory ? await mapOccludersOf(options.clientDirectory, Number(mapOccluders[1])) : undefined;
+        if (!occluders) {
+          respondError(response, 404, origin);
+          return;
+        }
+        response.writeHead(200, {
+          "access-control-allow-origin": origin,
+          "cache-control": "max-age=3600",
+          "content-type": "application/json; charset=utf-8",
+        });
+        response.end(JSON.stringify({ map: Number(mapOccluders[1]), version: MAP_OCCLUDERS_VERSION, occluders }));
       } catch {
         respondError(response, 500, origin);
       }
@@ -4461,7 +4493,8 @@ export const CLIENT_FILE_EXTENSIONS = ["lua", "xml", "toc", "ttf"] as const;
 
 /** A path that could name an interface file inside the archives. */
 export function validClientFilePath(value: string): boolean {
-  return validAssetPath(value, { extensions: CLIENT_FILE_EXTENSIONS, allowBang: true });
+  // 3.46 (follow-up, 15.11): and an add-on's own `<n>\<n>.url`, nothing else with that extension (AddonUrlPath.ts).
+  return validAssetPath(value, { extensions: CLIENT_FILE_EXTENSIONS, allowBang: true }) || validAddonUrlPath(value);
 }
 
 /**

@@ -97,6 +97,8 @@ export function applyRendererGraphicsSettings(
     lightning: settingBoolean(values, "experimentalLightning"),
     ambientMotes: settingBoolean(values, "experimentalAmbientMotes"),
     weatherSounds: settingBoolean(values, "experimentalWeatherSounds"),
+    zoneAtmosphere: settingBoolean(values, "experimentalZoneAtmosphere"), // 15.11 (7.40)
+    zoneStrength: settingNumber(values, "zoneAtmosphereStrength") / 100,
   });
   // The stock «Детализация ландшафта» multiplier over every M2 scenery leash; a percentage here.
   renderer.setEnvironmentDetail?.(settingNumber(values, "objectDistance") / 100);

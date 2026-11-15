@@ -231,6 +231,11 @@ export interface MapLighting {
   fallbackUnderwaterStorm?: number | undefined;
   /** 05.10-A7b-5 (7.15): the fallback's death set (slot 4), when it differs from its clear one. */
   fallbackDeath?: number | undefined;
+  /**
+   * 15.11 (sky8, 7.67): the default row's stored falloff (inner, outer), unscaled: Wow.exe 0x007eaf60 converts only
+   * rows with a position, and SMSG_OVERRIDE_LIGHT over the default reaches that far from the world's origin.
+   */
+  fallbackReach?: [number, number] | undefined;
   volumes: LightVolume[];
   params: Record<number, LightParamSet>;
   /** Every Light.dbc row on this map, keyed by row id for SMSG_OVERRIDE_LIGHT. */
@@ -470,6 +475,8 @@ async function loadLightTables(dbcDirectory: string): Promise<LightIndex> {
       entry.fallbackUnderwater = underwater;
       entry.fallbackUnderwaterStorm = underwaterStorm;
       entry.fallbackDeath = death;
+      // 15.11 (sky8, 7.67): stored, unscaled.
+      entry.fallbackReach = [light.float(row, "GameFalloffStart"), light.float(row, "GameFalloffEnd")];
       continue;
     }
     // The stored triple runs (y, height, x) on the tile grid's own axes, the same layout the ADT
@@ -508,6 +515,10 @@ async function loadLightTables(dbcDirectory: string): Promise<LightIndex> {
       // and 573.
       entry.fallback = globalSet;
       entry.fallbackLightId = GLOBAL_DEFAULT_LIGHT;
+      // 15.11 (sky8, 7.67): Light 1's own stored falloff (0, 0 in this dataset: a scripted light over it reaches nothing).
+      if (globalRow !== undefined) {
+        entry.fallbackReach = [light.float(globalRow, "GameFalloffStart"), light.float(globalRow, "GameFalloffEnd")];
+      }
       entry.params[globalSet] = globalParams;
       if (globalStorm) {
         entry.fallbackStorm = globalStormSet;

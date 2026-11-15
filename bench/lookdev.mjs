@@ -590,6 +590,9 @@ async function main() {
       console.log(`${frame.name}: ${path} (${png.length} bytes) shadows ${JSON.stringify(shadows)}`);
       if (lightPools) console.log(`  light pools: ${JSON.stringify(lightPools)}`);
       if (m2Relief) console.log(`  doodad relief: ${JSON.stringify(m2Relief)}`);
+      // 15.11 (7.40): «Атмосфера зон» — the kinds' weights at the still and what they were read from.
+      const zone = await page.evaluate(() => window.__bench.zoneAtmosphereState?.());
+      if (zone) console.log(`  zone atmosphere: ${JSON.stringify(zone)}`);
       // 23.10 (7.47 stage 3): `--leaf-cost <hook> --leaf-rounds N` — a leaf's cost at this still, off and on
       // alternated ABBA inside the page (`__bench[hook](enabled)`, e.g. m2Relief), `--gpu-frames` timed frames
       // (default 120) after 240 untimed ones per side (the toggled doodads rebuild and their maps arrive).

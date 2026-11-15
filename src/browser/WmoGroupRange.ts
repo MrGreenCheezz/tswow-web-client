@@ -48,7 +48,9 @@ export class WmoRangeTable {
   readonly #shellByBox: Float64Array;
   /** The leash in force for each ranged group. */
   readonly #range: Float64Array;
-  readonly #roomRange: number;
+  #roomRange: number;
+  /** 15.11 (7.03, far8): every shell group at the cap, small ones too (the faithful levels: no 250-yard stop). */
+  #shellsAtCap = false;
   /** The caller's shell override the leashes were filled for (undefined: by box size). */
   #shellOverride: number | undefined;
   /** 22.10 (7.39): the ceiling on the box-earned shell leash (the faithful levels' 750 yards). */
@@ -140,11 +142,27 @@ export class WmoRangeTable {
    * enhanced fog shows them (SceneryReach.ts `environmentShellRange`). A caller's override is not
    * capped. Unchanged, this is a compare; changed, the leashes refill and the next select recomputes.
    */
-  setShellCap(cap: number, houseRange = 0): void {
+  setShellCap(cap: number, houseRange = 0, shellsAtCap = false): void {
     // 22.10 (7.44): and the house leash, 0 on the faithful levels (SceneryReach.ts environmentHouseRange).
-    if (cap === this.#shellCap && houseRange === this.#houseRange) return;
+    // 15.11 (7.03, far8): `shellsAtCap` — Wow.exe keeps a group while its box meets the far-clip box whatever its size
+    // (0x007b6110), so on the faithful levels a small outdoor group of a big map object is held to the cap (their
+    // reach) instead of stopping at 250 yards.
+    if (cap === this.#shellCap && houseRange === this.#houseRange && shellsAtCap === this.#shellsAtCap) return;
     this.#shellCap = cap;
     this.#houseRange = houseRange;
+    this.#shellsAtCap = shellsAtCap;
+    this.#fillRanges(this.#shellOverride);
+    this.#slackSq = 0;
+    this.#x = Number.NaN;
+  }
+
+  /**
+   * 15.11 (7.03, far8): the room leash (non-shell groups), set per lighting path — the open-air table's reach on the
+   * faithful levels (WmoOpenAir.ts `wmoOpenAirRoomRange`). Unchanged, this is a compare.
+   */
+  setRoomRange(range: number): void {
+    if (range === this.#roomRange || !(range >= 0)) return;
+    this.#roomRange = range;
     this.#fillRanges(this.#shellOverride);
     this.#slackSq = 0;
     this.#x = Number.NaN;
@@ -154,7 +172,8 @@ export class WmoRangeTable {
     this.#shellOverride = shellRange;
     for (let index = 0; index < this.#range.length; index++) {
       this.#range[index] = this.#shell[index]
-        ? shellRange ?? Math.max(Math.min(this.#shellByBox[index]!, this.#shellCap), this.#house ? this.#houseRange : 0)
+        ? shellRange ?? (this.#shellsAtCap && Number.isFinite(this.#shellCap) ? this.#shellCap
+          : Math.max(Math.min(this.#shellByBox[index]!, this.#shellCap), this.#house ? this.#houseRange : 0))
         : this.#roomRange;
     }
   }

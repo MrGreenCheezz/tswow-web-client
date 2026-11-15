@@ -278,8 +278,11 @@ test("GetInboxText marks a letter read once, and the letter commands become thei
   assert.deepEqual(world.calls, [{ kind: "read", mailId: 101 }],
     "one CMSG_MAIL_MARK_AS_READ for the unread letter, none for the one already read");
   assert.equal(call("GetInboxHeaderInfo", 1)[8], true, "read at once, before the next list");
-  assert.deepEqual(call("GetInboxText", 2), ["", "AUCTIONSTATIONERY", false, true],
-    "an auction invoice shows its invoice, not its machine body, and cannot become a text item");
+  // 5.28 (follow-up, 15.11): Wow.exe 0x00570bd0 answers isTakeable 1 for an auction letter with an invoice that was
+  // not copied; TrinityCore's HandleMailCreateTextItem copies it (MailHandler.cpp:574). The old «cannot become a text
+  // item» was this client's own choice, with no owner decision behind it.
+  assert.deepEqual(call("GetInboxText", 2), [undefined, "AUCTIONSTATIONERY", true, true],
+    "an auction invoice shows its invoice, its body is nil, and it can be made into a text item (0x00570bd0)");
   world.calls.length = 0;
   call("TakeInboxItem", 1, 2);
   call("TakeInboxMoney", 1);
@@ -358,7 +361,7 @@ test("an auction invoice waits for its item and player names, then the metadata 
   model.owned = true;
   world.open();
   const call = (name, ...args) => FRAMEXML_SEAM_BINDINGS[name]({ mail: model }, args);
-  assert.deepEqual(call("GetInboxText", 2), ["", "AUCTIONSTATIONERY", false, false],
+  assert.deepEqual(call("GetInboxText", 2), [undefined, "AUCTIONSTATIONERY", true, false],
     "no invoice yet: OpenMail_Update hides OpenMailInvoiceFrame instead of keeping the last letter's");
   assert.deepEqual(call("GetInboxInvoiceInfo", 2), ["buyer"],
     "no names, so no «ITEM_PURCHASED_COLON..itemName» concatenation (MailFrame.lua:481)");

@@ -12,8 +12,10 @@ import type {
 import type { BenchmarkAsyncReadinessStats } from "./RenderBenchmarkReadiness.js";
 import { RetryLadder } from "./RetryLadder.js"; // 05.10-A7b-0 1.24
 import { zoneOutlineWeights } from "./ZoneLightOutlines.js"; // 15.11 (light7)
+import type { LightOverride } from "../world/LightOverrideList.js"; // 15.11 (sky8, 7.67)
 
 export type { LightSample };
+export type { LightOverride };
 
 /** Half-minutes in a game day; every band's key times are in these. */
 export const DAY_HALF_MINUTES = 2880;
@@ -31,7 +33,11 @@ export function skyboxAnimationTimeMs(time: number, durationMs: number): number 
   return day / DAY_HALF_MINUTES * durationMs;
 }
 
-/** Progress for an SMSG_OVERRIDE_LIGHT transition, including a target id of zero (clear). */
+/**
+ * Progress for an SMSG_OVERRIDE_LIGHT transition. 15.11 (sky8, 7.67): the world keeps Wow.exe's list instead
+ * (`LightOverrideList`), which steps each entry's weight by the same elapsed / duration; kept for callers of the
+ * single-transition form.
+ */
 export function lightOverrideWeight(now: number, receivedAt: number, milliseconds: number): number {
   if (!Number.isFinite(milliseconds) || milliseconds <= 0) return 1;
   return Math.max(0, Math.min(1, (now - receivedAt) / milliseconds));
@@ -209,21 +215,20 @@ function falloffWeight(distance: number, inner: number, outer: number): number {
 /**
  * Resolves the lighting at one point of one map.
  *
- * The map's own default is the floor, and every volume that reaches the point is laid over it in
- * order of how tightly it holds the point. Only the nearest few are blended: standing in Stormwind
- * there is one volume, and nowhere in the client are there many.
+ * The map's own default is the floor; the zone outlines, then every volume that reaches the point, then the
+ * server's scripted lights are laid over it, as Wow.exe 0x007f1360 builds the frame's light.
+ *
+ * 15.11 (sky8, 7.67): `overrides` is the world's `LightOverrideList` (SMSG_OVERRIDE_LIGHT). The single-transition
+ * arguments that stood after it and the `maxBlended` cap are gone: Wow.exe blends every volume that reaches the point.
  */
 export function resolveLighting(entry: LightIndexEntry, x: number, y: number, time: number,
-  storm = 0, maxBlended = 3, z?: number, overrideLightId?: number, overrideWeight = 1,
-  overrideAreaLightId?: number, overrideFromLightId?: number,
+  storm = 0, z?: number, overrides?: readonly LightOverride[],
   underwater = false, ghost = 0, liquidType?: number, liquidDepth = 0): LightSample | undefined {
   // 05.10-A7b-5 (7.15): a weight between 0 and 1 is the two lights crossfaded. 11.11: Wow.exe
   // switches in one frame (`GhostLightFade`), so the world loop no longer asks for one.
   if (ghost > 0 && ghost < 1) {
-    const alive = resolveLighting(entry, x, y, time, storm, maxBlended, z, overrideLightId, overrideWeight,
-      overrideAreaLightId, overrideFromLightId, underwater, 0, liquidType, liquidDepth);
-    const dead = resolveLighting(entry, x, y, time, storm, maxBlended, z, overrideLightId, overrideWeight,
-      overrideAreaLightId, overrideFromLightId, underwater, 1, liquidType, liquidDepth);
+    const alive = resolveLighting(entry, x, y, time, storm, z, overrides, underwater, 0, liquidType, liquidDepth);
+    const dead = resolveLighting(entry, x, y, time, storm, z, overrides, underwater, 1, liquidType, liquidDepth);
     return alive && dead ? blendSamples(alive, dead, ghost) : dead ?? alive;
   }
   // 05.10-A7b-5 (7.10): under a liquid whose `LiquidType` row names a light, that row's slots
@@ -239,8 +244,7 @@ export function resolveLighting(entry: LightIndexEntry, x: number, y: number, ti
     ? (entry.params[liquid.paramsId] ? { params: liquid.paramsId } : undefined)
     : liquid?.lightId ? entry.lights?.[liquid.lightId] : undefined;
   const dead = ghost >= 1 && liquidSlots === undefined;
-  const alive = resolveSpatial(entry, x, y, time, storm, maxBlended, z, overrideLightId, overrideWeight,
-    overrideAreaLightId, overrideFromLightId, underwater, liquidSlots);
+  const alive = resolveSpatial(entry, x, y, time, storm, z, overrides, underwater, liquidSlots);
   const resolved = dead ? deathLight(entry, time, alive) ?? alive : alive;
   if (resolved && liquid?.maxDarkenDepth) {
     // 05.10-A7b-5 review: the overlay reads this to leave the depth darkening to the light alone.
@@ -314,9 +318,89 @@ function scaleColour(colour: ResolvedColour, factor: number): void {
   colour.b *= factor;
 }
 
+/** 0x009ebbc4: Wow.exe leaves out a volume whose outer radius is under 3 yards (0x007f1360, gate 0x00af4a68 = 1). */
+export const LIGHT_VOLUME_MIN_OUTER = 3;
+/** 0x00af4da8: two volumes whose centres are within a third of a yard are ordered by their inner radius (0x007ed0a0). */
+export const LIGHT_VOLUME_SAME_CENTRE = 0.3333333432674408;
+
+/** A volume that reaches the point, with the key Wow.exe's heap orders it by. */
+export interface ReachedVolume<V extends { x: number; y: number; z: number; innerRadius: number }> {
+  readonly volume: V;
+  /** The point's squared distance from the centre (0x007f1360). */
+  readonly key: number;
+  readonly weight: number;
+}
+
+/**
+ * 15.11 (sky8, 7.67): the order Wow.exe blends the volumes in. 0x007f1360 pushes every reaching volume, in the map's
+ * Light.dbc order, into a binary heap (0x007f0dc0) and pops it empty (0x007f1280), blending each popped volume over
+ * the frame (0x007ee5d0). The comparator 0x007ed0a0 puts `a` above `b` when b's squared distance is not greater
+ * than a's, or — for two centres within a third of a yard — when b's inner radius is not greater than a's. So the
+ * farthest volume is blended first and the nearest last, and around one centre the widest inner radius first and
+ * the tightest last. The heap is run as Wow.exe runs it, ties and all, rather than replaced by a sort.
+ */
+export function wowVolumeBlendOrder<V extends { x: number; y: number; z: number; innerRadius: number }>(
+  reached: readonly ReachedVolume<V>[],
+): ReachedVolume<V>[] {
+  const above = (a: ReachedVolume<V>, b: ReachedVolume<V>): boolean => {
+    const centres = Math.hypot(b.volume.x - a.volume.x, b.volume.y - a.volume.y, b.volume.z - a.volume.z);
+    return centres > LIGHT_VOLUME_SAME_CENTRE ? b.key <= a.key : b.volume.innerRadius <= a.volume.innerRadius;
+  };
+  const heap: ReachedVolume<V>[] = [reached[0]!]; // slot 0 unused: the heap is 1-based
+  for (const item of reached) {
+    let index = heap.length;
+    heap.push(item);
+    while (index > 1) {
+      const parent = index >> 1;
+      if (!above(item, heap[parent]!)) break;
+      heap[index] = heap[parent]!;
+      index = parent;
+    }
+    heap[index] = item;
+  }
+  const order: ReachedVolume<V>[] = [];
+  while (heap.length > 1) {
+    order.push(heap[1]!);
+    const last = heap.pop()!;
+    const count = heap.length - 1;
+    if (count < 1) break;
+    const half = count >> 1;
+    let index = 1;
+    if (half !== 0) {
+      let child: number;
+      do {
+        child = index * 2;
+        if (child < count && above(heap[child + 1]!, heap[child]!)) child++;
+        if (above(last, heap[child]!)) break;
+        heap[index] = heap[child]!;
+        index = child;
+      } while (child <= half);
+    }
+    heap[index] = last;
+  }
+  return order;
+}
+
+/**
+ * 15.11 (sky8, 7.67): where an area light stands and how far it reaches, as 0x007f10a0 copies it into the scripted
+ * entry. A Light row at the grid origin keeps its stored radii unscaled (0x007eaf60 converts only rows with a
+ * position), so a map's default reaches tens of thousands of yards from the world's origin — all of Icecrown Citadel
+ * from 2488 — while Light 1 reaches nothing. `fallbackReach` is the gateway's stored pair; a gateway before it sends
+ * none, and the default is then taken to reach everywhere, which is what the rows TrinityCore names do.
+ */
+function areaLightReach(entry: LightIndexEntry, areaLightId: number):
+  { x: number; y: number; z: number; innerRadius: number; outerRadius: number } | undefined {
+  if (areaLightId === entry.fallbackLightId) {
+    const reach = entry.fallbackReach;
+    return reach === undefined
+      ? { x: 0, y: 0, z: 0, innerRadius: Number.POSITIVE_INFINITY, outerRadius: Number.POSITIVE_INFINITY }
+      : { x: 0, y: 0, z: 0, innerRadius: reach[0], outerRadius: reach[1] };
+  }
+  return entry.volumes.find((volume) => volume.id === areaLightId);
+}
+
 function resolveSpatial(entry: LightIndexEntry, x: number, y: number, time: number,
-  storm: number, maxBlended: number, z: number | undefined, overrideLightId: number | undefined,
-  overrideWeight: number, overrideAreaLightId: number | undefined, overrideFromLightId: number | undefined,
+  storm: number, z: number | undefined, overrides: readonly LightOverride[] | undefined,
   underwater: boolean, liquidSlots: LightSlots | undefined): LightSample | undefined {
   /**
    * Which pair of the row's four slots this camera reads.
@@ -346,45 +430,13 @@ function resolveSpatial(entry: LightIndexEntry, x: number, y: number, time: numb
     const stormSet = storm <= 0 || stormId === undefined ? undefined : entry.params[stormId];
     return stormSet ? blendSamples(base, sampleSet(stormSet, time), storm) : base;
   };
-  // SMSG_OVERRIDE_LIGHT names a Light.dbc row rather than a LightParams row. It is sent by
-  // scripted zones (the Dalaran/raid transitions are common examples). The area id is important:
-  // the same packet can coexist with a tighter town volume, and applying its target to the whole
-  // resolved sample would wash that inner volume out. Resolve the target row as a replacement for
-  // only the matching active layer below.
-  const reached = [];
-  for (const volume of entry.volumes) {
-    // Light.dbc stores a full (x, y, z) GameCoords point.  The 2D fallback is kept for callers
-    // that only have a map coordinate; the world loop always supplies the player's z, which is
-    // essential on stacked spaces such as Dalaran and the Crystalsong airships.
-    const distance = z === undefined
-      ? Math.hypot(volume.x - x, volume.y - y)
-      : Math.hypot(volume.x - x, volume.y - y, volume.z - z);
-    const weight = falloffWeight(distance, volume.innerRadius, volume.outerRadius);
-    if (weight > 0) reached.push({ volume, weight });
-  }
-  const areaId = overrideAreaLightId && overrideAreaLightId > 0
-    ? overrideAreaLightId
-    // Callers predating area-id plumbing can still override the map fallback, but never an
-    // arbitrary active volume. A packet's explicit zero means that no area is selected.
-    : overrideAreaLightId === undefined ? entry.fallbackLightId : undefined;
-  const activeArea = areaId === entry.fallbackLightId
-    || reached.some(({ volume }) => volume.id === areaId);
-  const target = activeArea && overrideLightId ? entry.lights?.[overrideLightId] : undefined;
-  const source = activeArea && overrideFromLightId ? entry.lights?.[overrideFromLightId] : undefined;
-  const targetSample = target ? layer(...pair(target)) : undefined;
-  const sourceSample = source ? layer(...pair(source)) : undefined;
-  const transition = Math.max(0, Math.min(1, overrideWeight));
-  const resolveLayer = (lightId: number | undefined, slots: LightSlots | undefined): LightSample | undefined => {
-    const base = layer(...pair(slots));
-    if (areaId === undefined || lightId !== areaId || (!targetSample && !sourceSample)) return base;
-    // A transition can be A -> B or A -> the ordinary spatial layer (clear id 0). When there is no
-    // prior scripted row, the ordinary layer is the source. This preserves the server's duration
-    // instead of snapping back to the volume on a clear packet.
-    const from = sourceSample ?? base;
-    const to = targetSample ?? base;
-    if (!from) return transition >= 1 ? to : from;
-    return to ? blendSamples(from, to, transition) : from;
-  };
+  // Light.dbc stores a full (x, y, z) GameCoords point. The 2D fallback is kept for callers that only have a map
+  // coordinate; the world loop always supplies the player's z, which is essential on stacked spaces such as Dalaran
+  // and the Crystalsong airships.
+  const distanceTo = (volume: { x: number; y: number; z: number }): number => z === undefined
+    ? Math.hypot(volume.x - x, volume.y - y)
+    : Math.hypot(volume.x - x, volume.y - y, volume.z - z);
+  const resolveLayer = (slots: LightSlots | undefined): LightSample | undefined => layer(...pair(slots));
   const fallbackSlots: LightSlots | undefined = entry.fallback === undefined ? undefined : {
     params: entry.fallback,
     ...(entry.fallbackStorm === undefined ? {} : { stormParams: entry.fallbackStorm }),
@@ -394,42 +446,53 @@ function resolveSpatial(entry: LightIndexEntry, x: number, y: number, time: numb
     ...(entry.fallbackDeath === undefined ? {} : { deathParams: entry.fallbackDeath }), // 05.10-A7b-5
   };
   if (liquidSlots) {
-    // 05.10-A7b-5 (7.10): the liquid's light row replaces the zone; a server override naming the
-    // active area still lays over it, through the same layer resolution as the map default.
-    const underLiquid = resolveLayer(entry.fallbackLightId, liquidSlots);
+    // 05.10-A7b-5 (7.10): the liquid's light row replaces the zone. 15.11 (sky8, 7.67): and nothing is laid over
+    // it — Wow.exe 0x007f3230 runs the outlines, the volumes and the scripted lights (0x007f1360) only on the
+    // branch without a liquid light.
+    const underLiquid = resolveLayer(liquidSlots);
     if (underLiquid) {
       underLiquid.liquidLight = true; // 05.10-A7b-5 review: this frame's own sample (overlay hook)
       return underLiquid;
     }
-    return resolveLayer(entry.fallbackLightId, fallbackSlots);
+    return resolveLayer(fallbackSlots);
   }
   // 15.11 (light7): Wow.exe's zone outlines (Northrend's eleven) lay their lights over the map default before any
   // volume does (0x007f1360 → 0x007ee6b0; `ZoneLightOutlines.ts`).
-  let sample = resolveLayer(entry.fallbackLightId, fallbackSlots);
+  let sample = resolveLayer(fallbackSlots);
   for (const { lightId, weight } of zoneOutlineWeights(entry.zoneOutlines, undefined, x, y)) {
     if (weight <= 0) continue;
-    const zoneLayer = resolveLayer(lightId, entry.lights?.[lightId]);
+    const zoneLayer = resolveLayer(entry.lights?.[lightId]);
     if (zoneLayer) sample = sample ? blendSamples(sample, zoneLayer, weight) : zoneLayer;
   }
-  if (reached.length === 0) return sample;
-  // The tighter volume wins, so a town inside a zone is not averaged away by the zone around it.
-  // Ties break on the smaller radius and then on the id, both of which are fixed by the data —
-  // ordering on weight alone makes the choice flicker as the player walks.
-  reached.sort((left, right) => right.weight - left.weight
-    || left.volume.outerRadius - right.volume.outerRadius
-    || left.volume.id - right.volume.id);
-
-  // Select the tightest layers, then composite them from broad to tight. The previous single sort
-  // selected the right rows but blended a broad outer volume last, so an outer transition could
-  // repaint a town/room at the exact point where both volumes had weight 1.
-  const selected = reached.slice(0, maxBlended).sort((left, right) =>
-    right.volume.outerRadius - left.volume.outerRadius
-    || left.volume.innerRadius - right.volume.innerRadius
-    || left.volume.id - right.volume.id);
-  for (const { volume, weight } of selected) {
-    const resolvedLayer = resolveLayer(volume.id, volume);
+  // 15.11 (sky8, 7.67): every volume whose outer radius reaches the point (and is at least 3 yards), blended in
+  // Wow.exe's heap order — farthest centre first, nearest last (`wowVolumeBlendOrder`). There is no cap on their
+  // number. It was the three of greatest weight, blended from the widest outer radius to the tightest.
+  const reached: ReachedVolume<(typeof entry.volumes)[number]>[] = [];
+  for (const volume of entry.volumes) {
+    if (!(volume.outerRadius >= LIGHT_VOLUME_MIN_OUTER)) continue;
+    const distance = distanceTo(volume);
+    if (!(distance < volume.outerRadius)) continue;
+    const weight = falloffWeight(distance, volume.innerRadius, volume.outerRadius);
+    if (weight > 0) reached.push({ volume, key: distance * distance, weight });
+  }
+  for (const { volume, weight } of wowVolumeBlendOrder(reached)) {
+    const resolvedLayer = resolveLayer(volume);
     if (!resolvedLayer) continue;
     sample = sample ? blendSamples(sample, resolvedLayer, weight) : resolvedLayer;
+  }
+  // 15.11 (sky8, 7.67): SMSG_OVERRIDE_LIGHT, last (0x007f1360's third step). Each live entry lays its override
+  // light's sets over the frame with the smaller of its fade and the falloff of the area light's place; a point
+  // outside that place takes nothing. Both rows have to be Light.dbc rows of this map (0x007f10a0 needs both).
+  for (const override of overrides ?? []) {
+    if (!(override.weight > 0)) continue;
+    const slots = entry.lights?.[override.overrideLightId];
+    const area = areaLightReach(entry, override.areaLightId);
+    if (!slots || !area) continue;
+    const distance = distanceTo(area);
+    if (!(distance < area.outerRadius)) continue;
+    const weight = Math.min(falloffWeight(distance, area.innerRadius, area.outerRadius), override.weight);
+    const scripted = resolveLayer(slots);
+    if (scripted && weight > 0) sample = sample ? blendSamples(sample, scripted, weight) : scripted;
   }
   return sample;
 }
@@ -495,8 +558,7 @@ export class LightClient {
    * while the sky changes when the *view* goes under and not a moment before.
    */
   sample(map: number, x: number, y: number, time: number, storm = 0, z?: number,
-    overrideLightId?: number, overrideWeight = 1, overrideAreaLightId?: number,
-    overrideFromLightId?: number, underwater = false, ghost = 0, liquidType?: number,
+    overrides?: readonly LightOverride[], underwater = false, ghost = 0, liquidType?: number,
     liquidDepth = 0): LightSample | undefined {
     const entry = this.#maps.get(map);
     if (entry === undefined) {
@@ -506,9 +568,8 @@ export class LightClient {
       }
       return undefined;
     }
-    return entry === null ? undefined : resolveLighting(entry, x, y, time, storm, 3, z,
-      overrideLightId, overrideWeight, overrideAreaLightId, overrideFromLightId, underwater,
-      ghost, liquidType, liquidDepth);
+    return entry === null ? undefined : resolveLighting(entry, x, y, time, storm, z,
+      overrides, underwater, ghost, liquidType, liquidDepth);
   }
 
   async #load(map: number): Promise<void> {
@@ -539,7 +600,9 @@ export class LightClient {
       // reads as absent: the sky as before, a ghost under the living light, lava lit like water.
       // v7 (15.11, light7): `zoneOutlines`, Northrend's zone lights from the user's Wow.exe. Optional like the rest:
       // an older gateway answers without it and Northrend keeps its default outside the volumes.
-      const response = await fetch(`${this.#baseUrl}/dbc/light/${map}?v=7`);
+      // v8 (15.11, sky8, 7.67): `fallbackReach`, the default row's stored radii for SMSG_OVERRIDE_LIGHT; without it
+      // a scripted light over the map default reaches everywhere, as it does for the rows TrinityCore names.
+      const response = await fetch(`${this.#baseUrl}/dbc/light/${map}?v=8`);
       if (!response.ok) {
         final = response.status === 404; // 05.10-A7b-0 1.24
         throw new Error(`Light gateway returned ${response.status}`);

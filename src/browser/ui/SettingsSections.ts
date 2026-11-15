@@ -29,7 +29,9 @@ export const SETTING_SECTIONS: Readonly<Partial<Record<SettingGroup, readonly Se
       // the four leaves — bloom, grade, scattering, sun shafts.
       ids: Object.freeze([
         "fullscreenGlow", "experimentalCinematicBloom", "experimentalCinematicGrade", "experimentalSunScattering",
-        "godRays", "godRayStrength", "cinematicStrength", "experimentalAerialHeightFog", "experimentalLowSunRimLight",
+        "godRays", "godRayStrength", "cinematicStrength", "experimentalAerialHeightFog",
+        "experimentalZoneAtmosphere", "zoneAtmosphereStrength", // 15.11 (7.40)
+        "experimentalLowSunRimLight",
         "experimentalFantasyGlow", "experimentalLivingSpells",
         "experimentalSpellDensity", // 26.10 (6.27, test)
         "experimentalMissileTrails", // 26.10 (6.27, test)

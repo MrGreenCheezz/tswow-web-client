@@ -681,10 +681,18 @@ export function planSpellVisual(
         // when, in the clip, is not known here (no event times in `/visual/model-events`), so an animating cast keeps
         // the hand. A visual with SpellVisual.Flags & 4 (`launchNow`) does not wait: 0x00732ff0 launches its missiles
         // from 0x0071a720's point as it builds them.
-        const launchEvents = !fire
-          && (missile.launchNow === true || !(visual.cast !== undefined && visual.cast.animation >= 1));
-        const launch = fire ? { attachment: fire.attachment, ...(fire.offset ? { offset: fire.offset } : {}) }
-          : { attachment: missile.attachment, ...(launchEvents ? { events: true as const } : {}) };
+        // 15.11 (events8): read — with an animation and without Flags & 4 the missiles are queued (0x00732ff0) and leave
+        // at the clip's "$CSL"/"$CSR"/"$CST"/"$BWR" (from the point that event stored), at its end or after 2 s (from
+        // 0x0071a720's point), timed by the renderer from the model's event keys (`wait`, MissileLaunchWait.ts). So the
+        // caster's events stand in for the hand whenever the visual names no point; the hand stays only while they are
+        // not known.
+        const queued = missile.launchNow !== true && visual.cast !== undefined && visual.cast.animation >= 1
+          && options.includeCastAnimation !== false; // a channel's GO plays no kit animation: +0xfa4 stays −1, no wait
+        const launch = {
+          ...(fire ? { attachment: fire.attachment, ...(fire.offset ? { offset: fire.offset } : {}) }
+            : { attachment: missile.attachment, events: true as const }),
+          ...(queued ? { wait: visual.cast!.animation } : {}),
+        };
         for (let missileIndex = 0; missileIndex < count; missileIndex++) {
           plan.instances.push({
             path: missile.path,

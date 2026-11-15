@@ -5,6 +5,8 @@ import {
   FRAMEXML_CURRENT_INTERFACE, frameXmlAddonDependencies, frameXmlAddonInterface,
 } from "../framexml/FrameXmlAddonStates.js";
 import type { FrameXmlInstalledClientAddon } from "../framexml/FrameXmlClientAddons.js";
+import { moveGlueCharacterFolder, type GlueRenameStorage } from "./GlueCharacterRename.js"; // 3.46 (15.11)
+import { glueAddonUrlFromFile, glueTocSecure } from "./GlueAddonUrl.js"; // 3.46 (follow-up, 15.11)
 
 /**
  * «Модификации» on the character-select screen (10.09; 3.46, 11.11): the stock `AddonList.lua` over the add-ons the
@@ -17,7 +19,8 @@ import type { FrameXmlInstalledClientAddon } from "../framexml/FrameXmlClientAdd
  *   `loadable`/`reason` are 0x5f7e90 with load-on-demand not allowed and no character: MISSING, DISABLED (off for
  *   every character), INCOMPATIBLE (`## Interface` below 20000), INTERFACE_VERSION (not 30300 while
  *   `checkAddonVersion` is on), a dependency's reason as DEP_…, and last DEMAND_LOADED for a load-on-demand add-on.
- *   Security is INSECURE for an add-on of the AddOns folder; `url` and `newVersion` nil (nothing here has them).
+ *   Security is INSECURE for an add-on of the AddOns folder; `newVersion` nil; `url` a Secure add-on's `<n>.url`
+ *   text (GlueAddonUrl.ts), else nil.
  * - `GetAddOnEnableState(character, index)` (0x4dc7c0), `EnableAddOn`/`DisableAddOn(character, index)` (0x4dc8a0,
  *   0x4dc9b0): the first argument a string or nil (nil — every character), the second an index; otherwise
  *   "Usage: …(\"character\", index)". `EnableAllAddOns`/`DisableAllAddOns(character)` (0x4dc960, 0x4dca70),
@@ -51,7 +54,10 @@ export interface GlueAddonListOptions {
   readonly load: () => Promise<GlueAddonListing>;
   /** An add-on's TOC text (Interface/AddOns/<name>/<name>.toc); undefined — not read. */
   readonly readToc?: (name: string) => Promise<string | undefined>;
-  readonly storage?: Pick<Storage, "getItem" | "setItem"> | null;
+  /** 3.46 (follow-up): an add-on's `Interface/AddOns/<name>/<name>.url` text, read only for a Secure add-on (GlueAddonUrl.ts). */
+  readonly readUrl?: (name: string) => Promise<string | undefined>;
+  /** 3.46 (15.11): `key`/`removeItem`/`length` let a rename move the character's folder (GlueCharacterRename.ts). */
+  readonly storage?: GlueRenameStorage | null;
   /** The logged-in account, the chosen realm and its characters; undefined before the character list. */
   readonly identity?: () => GlueAddonIdentity | undefined;
   /** `GetLocale()`: which `## Title-xxXX` is the client's. */
@@ -70,6 +76,8 @@ interface GlueAddonEntry {
   readonly notes: string | undefined;
   readonly loadOnDemand: boolean;
   readonly toc: string | undefined;
+  /** 3.46 (follow-up): GetAddOnInfo's url (0x5f74b0), undefined — nil. */
+  readonly url: string | undefined;
 }
 
 /**
@@ -181,9 +189,19 @@ export class GlueAddonList {
       let toc: string | undefined;
       try { toc = await this.#options.readToc?.(addon.name); } catch { toc = undefined; }
       const metadata = toc === undefined ? undefined : frameXmlAddonMetadata(toc, addon.name, locale);
+      // 3.46 (follow-up): a Secure add-on reads its `<n>.url` after the TOC (0x5f86a0 → 0x5f4fb0).
+      let url: string | undefined;
+      if (toc !== undefined && glueTocSecure(toc)) {
+        try {
+          const text = await this.#options.readUrl?.(addon.name);
+          url = text === undefined ? undefined : glueAddonUrlFromFile(text);
+        } catch {
+          url = undefined;
+        }
+      }
       return {
         name: addon.name, title: metadata?.get("title") ?? addon.name, notes: metadata?.get("notes"),
-        loadOnDemand: addon.loadOnDemand, toc,
+        loadOnDemand: addon.loadOnDemand, toc, url,
       };
     }));
     this.#listing = listing;
@@ -290,6 +308,17 @@ export class GlueAddonList {
     return { character: string ? String(first) : undefined, addon };
   }
 
+  /**
+   * 3.46 (15.11): a rename the server accepted (0x4e2870): the character's folder — its AddOns.txt and per-character
+   * saved variables — moves to the new name (GlueCharacterRename.ts), and the tables follow the renamed list.
+   */
+  renameCharacter(oldName: string, newName: string): void {
+    const identity = this.#options.identity?.();
+    const storage = this.#options.storage;
+    if (identity) moveGlueCharacterFolder(storage, identity.account, identity.realm, oldName, newName);
+    this.#sync();
+  }
+
   /** The states and the switch for the character entering the world (0x5f7d70(addon, character, 1)). */
   handOver(character: string): void {
     this.#sync();
@@ -316,7 +345,8 @@ export class GlueAddonList {
       const addon = this.#indexed(args, 0, "Usage: GetAddOnInfo(index)");
       const reason = this.#reason(addon.name.toLowerCase(), false, new Set());
       // `loadable` and `newVersion` are pushed as 1 or nil (0x84e2a0(1.0) / 0x84e280).
-      return [addon.name, addon.title, addon.notes, undefined, reason === undefined ? 1 : undefined, reason, "INSECURE", undefined];
+      // 3.46 (follow-up): url — the Secure add-on's `.url` text (0x5f74b0); no SMSG_ADDON_INFO has banned anything here.
+      return [addon.name, addon.title, addon.notes, addon.url, reason === undefined ? 1 : undefined, reason, "INSECURE", undefined];
     });
     vm.registerGlobal("GetAddOnEnableState", (args) => {
       this.#sync();

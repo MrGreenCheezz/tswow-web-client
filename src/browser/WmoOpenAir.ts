@@ -22,6 +22,17 @@ import {
  */
 export const WMO_OPEN_AIR_ROOM_RANGE = 150;
 
+/**
+ * 15.11 (7.03, far8): the open-air room leash on this lighting path. Wow.exe has no room distance at all: 0x007b6110
+ * keeps a map object's groups while their boxes meet the ±far-clip box around the camera and the portal walk and the
+ * frustum decide the rest (far7: `.runtime/re-2026-11-15/far7/g4.c`); the 150-yard cube in that function only forces
+ * pending group reads (0x007aeab0). So the faithful levels walk the rooms within their reach (`faithfulReach`); the
+ * enhanced levels keep {@link WMO_OPEN_AIR_ROOM_RANGE}.
+ */
+export function wmoOpenAirRoomRange(faithful: boolean, reach: number): number {
+  return faithful && Number.isFinite(reach) && reach > WMO_OPEN_AIR_ROOM_RANGE ? reach : WMO_OPEN_AIR_ROOM_RANGE;
+}
+
 export interface WmoOpenAirState {
   readonly scratch: WmoPortalWalkScratch;
   /** The options every walk of this placement passes, made once. */

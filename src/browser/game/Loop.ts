@@ -11,8 +11,8 @@ import { OPCODES } from "../../generated/opcodes.js";
 import { UPDATE_FIELDS } from "../../generated/updateFields.js"; // 12.10 7.33
 import { GO_TYPE_DUNGEON_DIFFICULTY, dungeonDifficultyObjectShown } from "../../world/DungeonDifficultyObject.js"; // 12.10 7.33
 import { formatGameTime, halfMinuteOfDay } from "../../world/GameTimeProtocol.js";
-import { lightOverrideWeight } from "../LightClient.js";
 import { GhostLightFade } from "../LightStateFade.js"; // 05.10-A7b-5 (7.15)
+import { stampGlareRays } from "../SkyGlareOcclusion.js"; // 15.11 (sky8, 7.04)
 import { isPlayerGhost } from "../../world/Fields.js"; // 05.10-A7b-5 (7.15)
 import { unitModel, unitModelInputs, unitModelPeek, unitModelVolatile } from "../ui/UnitModels.js";
 import {
@@ -644,10 +644,8 @@ function frame(now: number): void {
       // clock rather than a fact the server states — `Light.dbc` has a clear set and a storm set
       // and nothing in between, so the crossfade has to be made somewhere.
       const storm = game.renderer?.results.weatherStorm ?? 0; // 22.10 ARC-2 S3a: the last draw's
-      const lightOverride = world.overrideLight;
-      const overrideWeight = lightOverride
-        ? lightOverrideWeight(now, world.overrideLightReceivedAt, lightOverride.milliseconds)
-        : 1;
+      // 15.11 (sky8, 7.67): SMSG_OVERRIDE_LIGHT's list, stepped once a frame as Wow.exe's light build does.
+      const lightOverrides = world.lightOverrides.advance(now);
       const terrainLiquid = game.terrain?.liquidAt(world.mapId, lightCamera.position.x, lightCamera.position.y);
       const terrainUnderwater = eyeUnderwater(lightCamera.position.z, terrainLiquid);
       const collisionModel = cameraWmoFloor
@@ -686,9 +684,17 @@ function frame(now: number): void {
       const ghostLight = ghostLightFade.weight(player !== undefined && isPlayerGhost(player), now);
       const lightSample = game.light?.sample(
         world.mapId, position.x, position.y, half, storm, position.z,
-        lightOverride?.overrideLightId, overrideWeight, lightOverride?.areaLightId,
-        world.overrideLightFromId, underwater, ghostLight, eyeLiquidType, eyeLiquidDepth,
+        lightOverrides, underwater, ghostLight, eyeLiquidType, eyeLiquidDepth,
       );
+      // 15.11 (sky8, 7.04): the glare's occlusion ray (0x009abc60) from the eye, through the ground and the models.
+      if (lightSample) {
+        const glareMap = world.mapId;
+        const glareWorld = game.collision?.world;
+        stampGlareRays(lightSample, half, lightCamera.position, {
+          heightAt: (x, y) => game.terrain?.heightAt(glareMap, x, y),
+          firstHit: glareWorld && glareWorld.size > 0 ? (from, to) => glareWorld.firstHit(from, to) : undefined,
+        });
+      }
       game.renderer?.updateLighting(lightSample, half, underwater);
       recordDebugLight(lightSample);
     }

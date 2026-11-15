@@ -20,19 +20,23 @@ const kit = (animation) => ({ startAnimation: -1, animation, effects: [], sound:
 const missile = (extra = {}) => ({ path: "Spells\\Missile.m2", scale: 1, attachment: 22, speed: 20, sound: 0, ...extra });
 const cast = { caster: 4n, casterPoint: { x: 0, y: 0, z: 0 }, targets: [{ guid: 9n, point: { x: 40, y: 0, z: 0 } }] };
 
-test("15.11: only a visual without its own point and without a cast animation asks for the events", () => {
+test("15.11: a visual without its own point asks for the events (events8: with a cast animation too)", () => {
   const launchOf = (visual) => planSpellVisual(visual, cast, 0).instances.find((one) => one.flight).flight.launch;
   assert.equal(launchOf({ id: 1, missile: missile() }).events, true);
   assert.equal(launchOf({ id: 1, cast: kit(-1), missile: missile() }).events, true);
   assert.equal(launchOf({ id: 1, cast: kit(0), missile: missile() }).events, true);
-  assert.equal(launchOf({ id: 1, cast: kit(53), missile: missile() }).events, undefined, "its animation's event launches it");
+  // events8: the queued missile leaves from the event its animation fires; the hand stands in only while unknown.
+  assert.equal(launchOf({ id: 1, cast: kit(53), missile: missile() }).events, true, "its animation's event launches it");
+  assert.equal(launchOf({ id: 1, cast: kit(53), missile: missile() }).wait, 53, "queued while the kit animates");
+  assert.equal(launchOf({ id: 1, cast: kit(-1), missile: missile() }).wait, undefined, "no animation: SPELL_GO launches it");
   assert.equal(launchOf({ id: 1, missile: missile({ launch: 1 }) }).events, undefined, "the visual's own point");
 });
 
 test("15.11: SpellVisual.Flags & 4 launches from the events even when the CastKit animates (0x00732ff0)", () => {
   const launchOf = (visual) => planSpellVisual(visual, cast, 0).instances.find((one) => one.flight).flight.launch;
   assert.equal(launchOf({ id: 1, cast: kit(124), missile: missile({ launchNow: true }) }).events, true);
-  assert.equal(launchOf({ id: 1, cast: kit(124), missile: missile() }).events, undefined, "without the flag it waits");
+  assert.equal(launchOf({ id: 1, cast: kit(124), missile: missile({ launchNow: true }) }).wait, undefined, "it does not wait");
+  assert.equal(launchOf({ id: 1, cast: kit(124), missile: missile() }).wait, 124, "without the flag it waits");
   assert.equal(launchOf({ id: 1, cast: kit(124), missile: missile({ launchNow: true, launch: 1 }) }).events, undefined,
     "the visual's own point still wins (0x0072df00 → 0x00720bf0)");
 });

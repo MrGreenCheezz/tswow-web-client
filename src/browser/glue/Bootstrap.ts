@@ -219,6 +219,7 @@ export async function startGlue(options: StartGlueOptions): Promise<GlueHandle> 
   const addons: GlueAddonList = new GlueAddonList({
     load: () => fetchFrameXmlClientAddonList(origin),
     readToc: (name) => addonTocs.read(`Interface/AddOns/${name}/${name}.toc`),
+    readUrl: (name) => addonTocs.read(`Interface/AddOns/${name}/${name}.url`), // 3.46 (follow-up, 15.11)
     storage: siteStorage,
     locale: clientLocale(),
     identity: (): GlueAddonIdentity | undefined => {
