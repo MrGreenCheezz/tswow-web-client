@@ -14,8 +14,11 @@
  *   (`0x7cd4e0`): one plane through the eye and each edge (`0x7912c0`: (b - a) x (c - a), normalised, through a), then
  *   the polygon's own plane through its first three points. When the eye is below the polygon's plane every plane
  *   of the volume is negated, so the eye is always outside and the volume is the shadow the polygon casts from it.
- *   (With the camera in a room the polygon is first clipped by a plane at the doors' depth, `0x7f9650`; that depth
- *   comes from `0x7905b0`, not read, so this client builds volumes only for a camera outside.)
+ * - 15.11 (occl11): with the camera in a room, `0x79a870` builds the volumes only after the room's own walk, and
+ *   0x00adf59c is then the farthest any door view reaches along the view: `0x7a8f20` gives each view `0x7a70d0`, the
+ *   largest distance of the door's vertices from the plane through the eye along the forward (`0x7a6e00` sets it,
+ *   0x00d1c444, not below zero), and `0x7905b0` keeps the largest. A record without flag 1 is then cut there first
+ *   (`buildMapOccluderVolumes`' `doorDepth`).
  * - `0x7cce00`: a sphere wholly inside one volume (centre's distance plus radius not above zero for every plane) is
  *   hidden. `0x79a160` asks it for every outdoor WMO group (MOGP 0x8 or 0x10000) before the group may start a walk
  *   or be drawn; terrain chunks (`0x799d40`), liquids, doodads (`0x793060`, `0x7987a0`) ask it too.
@@ -91,14 +94,16 @@ export function mapOccluderBoxInFrustum(box: ArrayLike<number>, m: ArrayLike<num
 }
 
 function pushPlane(out: MapOccluderVolumes, ax: number, ay: number, az: number, bx: number, by: number, bz: number,
-  cx: number, cy: number, cz: number): void {
+  cx: number, cy: number, cz: number, skipShorterThan = -1): void {
   // `0x7912c0`: (b - a) x (c - a), normalised, through a.
   const ux = bx - ax, uy = by - ay, uz = bz - az;
   const vx = cx - ax, vy = cy - ay, vz = cz - az;
   let nx = uy * vz - uz * vy;
   let ny = uz * vx - ux * vz;
   let nz = ux * vy - uy * vx;
-  const inverse = 1 / Math.sqrt(nx * nx + ny * ny + nz * nz);
+  const squared = nx * nx + ny * ny + nz * nz;
+  if (!(squared > skipShorterThan)) return;
+  const inverse = 1 / Math.sqrt(squared);
   nx *= inverse;
   ny *= inverse;
   nz *= inverse;
@@ -114,9 +119,73 @@ function pushPlane(out: MapOccluderVolumes, ax: number, ay: number, az: number, 
   out.planes[at + 3] = -(nx * ax + ny * ay + nz * az);
 }
 
+/** `0x7cd4e0`: a door depth at or below this (0x00a32b48) builds the whole volume. */
+const DOOR_DEPTH_EPSILON = 1e-6;
+/** `0x7f9650` as `0x7cd4e0` calls it: a point within this of the cut plane is on it (0x009e8cd0). */
+const CUT_EPSILON = 1e-4;
+/** `0x7cd4e0`'s cut branch: an edge plane whose cross product is this short or less is left out (0x009e8cd0). */
+const DEGENERATE_EDGE = 1e-4;
+/** Record flag 1: the polygon is never cut at the doors' depth (`0x7cd850` passes `(flags & 1) == 0`). */
+const NEVER_CUT = 1;
+
+/** The cut polygon, three doubles a point; an occluder has at most 64 points (`MapOccluderTable.ts`), a cut adds one. */
+const CUT = new Float64Array(66 * 3);
+
 /**
- * `0x7cd850(eye, frustum, 0)` and `0x7cd4e0` for a camera outside: the volumes of every occluder of the camera's map
- * (`records`) whose box meets the frustum. `eye` and `wowToClip` are in WoW world coordinates. Returns the count.
+ * `0x7f9650`, keeping the side of the plane `a x + b y + c z + d` that is above `CUT_EPSILON`, with the points on the
+ * plane; a polygon wholly on the plane is kept (the last argument, 1). The kept polygon goes to `CUT`; its count back.
+ */
+function cutPolygon(points: readonly number[], count: number, a: number, b: number, c: number, d: number): number {
+  let above = 0;
+  let below = 0;
+  for (let corner = 0; corner < count; corner++) {
+    const value = a * points[corner * 3]! + b * points[corner * 3 + 1]! + c * points[corner * 3 + 2]! + d;
+    if (value > CUT_EPSILON) above++;
+    else if (value < -CUT_EPSILON) below++;
+  }
+  if (above === 0 && below !== 0) return 0;
+  let kept = 0;
+  if (below === 0) {
+    for (let at = 0; at < count * 3; at++) CUT[at] = points[at]!;
+    return count;
+  }
+  const side = (corner: number): number => {
+    const value = a * points[corner * 3]! + b * points[corner * 3 + 1]! + c * points[corner * 3 + 2]! + d;
+    return value > CUT_EPSILON ? 1 : value < -CUT_EPSILON ? 2 : 0;
+  };
+  for (let corner = 0; corner < count; corner++) {
+    const next = (corner + 1) % count;
+    const here = side(corner);
+    const there = side(next);
+    if (here !== 2) {
+      CUT[kept * 3] = points[corner * 3]!;
+      CUT[kept * 3 + 1] = points[corner * 3 + 1]!;
+      CUT[kept * 3 + 2] = points[corner * 3 + 2]!;
+      kept++;
+    }
+    if (here !== 0 && there !== 0 && here !== there) {
+      const from = a * points[corner * 3]! + b * points[corner * 3 + 1]! + c * points[corner * 3 + 2]! + d;
+      const to = a * points[next * 3]! + b * points[next * 3 + 1]! + c * points[next * 3 + 2]! + d;
+      const t = from / (from - to);
+      for (let axis = 0; axis < 3; axis++) {
+        const value = points[corner * 3 + axis]!;
+        CUT[kept * 3 + axis] = value + (points[next * 3 + axis]! - value) * t;
+      }
+      kept++;
+    }
+  }
+  return kept;
+}
+
+/**
+ * `0x7cd850(eye, frustum, 0)` and `0x7cd4e0`: the volumes of every occluder of the camera's map (`records`) whose box
+ * meets the frustum. `eye` and `wowToClip` are in WoW world coordinates. Returns the count.
+ *
+ * `doorDepth` (15.11, occl11) is 0x00adf59c: 0 for a camera outside, and with the camera in a room the farthest any
+ * door it sees out of reaches along the view (`wmoDoorViewDepth`). Above 1e-6, a record without flag 1 is first cut
+ * there: only the part of the polygon farther along the view than the doors stays (`0x7f9650`, the plane through
+ * eye + forward * depth along the camera's forward, 0x00cd8f74), the edge planes go through that part, and nothing
+ * is left when none of it is farther. The polygon's own plane is the whole polygon's either way.
  */
 export function buildMapOccluderVolumes(
   out: MapOccluderVolumes,
@@ -125,20 +194,38 @@ export function buildMapOccluderVolumes(
   eyeY: number,
   eyeZ: number,
   wowToClip: ArrayLike<number>,
+  doorDepth = 0,
 ): number {
   out.planeCount = 0;
   out.volumeCount = 0;
   out.radiusScale = 1;
   if (records === undefined) return 0;
+  // The view's forward from the clip matrix: w is the distance along it (WebGL perspective, a rigid view).
+  const forwardLength = Math.hypot(wowToClip[3]!, wowToClip[7]!, wowToClip[11]!);
   for (const record of records) {
     const points = record.points;
     const count = points.length / 3;
     if (count < 3 || !mapOccluderBoxInFrustum(occluderBox(record), wowToClip)) continue;
     const first = out.planeCount;
-    for (let corner = 0; corner < count; corner++) {
-      const a = corner * 3;
-      const b = ((corner + 1) % count) * 3;
-      pushPlane(out, points[a]!, points[a + 1]!, points[a + 2]!, points[b]!, points[b + 1]!, points[b + 2]!, eyeX, eyeY, eyeZ);
+    if (doorDepth > DOOR_DEPTH_EPSILON && (record.flags & NEVER_CUT) === 0 && forwardLength > 0) {
+      const a = wowToClip[3]! / forwardLength;
+      const b = wowToClip[7]! / forwardLength;
+      const c = wowToClip[11]! / forwardLength;
+      const d = -(a * eyeX + b * eyeY + c * eyeZ) - doorDepth;
+      const kept = cutPolygon(points, count, a, b, c, d);
+      if (kept < 3) continue;
+      for (let corner = 0; corner < kept; corner++) {
+        const p = corner * 3;
+        const q = ((corner + 1) % kept) * 3;
+        pushPlane(out, CUT[p]!, CUT[p + 1]!, CUT[p + 2]!, CUT[q]!, CUT[q + 1]!, CUT[q + 2]!, eyeX, eyeY, eyeZ, DEGENERATE_EDGE);
+      }
+      if (out.planeCount === first) continue;
+    } else {
+      for (let corner = 0; corner < count; corner++) {
+        const a = corner * 3;
+        const b = ((corner + 1) % count) * 3;
+        pushPlane(out, points[a]!, points[a + 1]!, points[a + 2]!, points[b]!, points[b + 1]!, points[b + 2]!, eyeX, eyeY, eyeZ);
+      }
     }
     pushPlane(out, points[0]!, points[1]!, points[2]!, points[3]!, points[4]!, points[5]!, points[6]!, points[7]!, points[8]!);
     const own = (out.planeCount - 1) * 4;
@@ -199,16 +286,37 @@ export function mapOccluderVolumesInModel(source: MapOccluderVolumes, modelToThr
 }
 
 /**
- * Whether the occluders apply this frame: only with the camera over no WMO at all. Wow.exe's `0x795d40` probes 1760
- * yards down from the camera (0x00a3e6e8) for a WMO surface, rooms and streets alike. Found, it walks from that group
- * (`0x7b3b20`) and builds the volumes clipped at the doors' views' depth (`0x7cd4e0` with 0x00adf59c > 0), which this
- * client does not read; not found, it builds them whole (`0x79a790` with 0x00adf59c = 0), which is what this file
- * does. So over Dalaran's streets, as in its shops, this client builds none. `surface` is the renderer's camera
- * surface: null when known to be over no WMO, an object over one; `known` false says nothing is known this frame.
+ * portal8's gate, kept for the units' cull (`UnitSceneSight.ts`, not this file's): true only with the camera known to
+ * hang over no WMO at all. The walk no longer uses it: Dalaran's streets, recorded on Wow.exe, take the whole volumes
+ * (`mapOccluderMode`). `surface` is the renderer's camera surface: null when known to be over no WMO, an object over
+ * one; `known` false says nothing is known this frame.
  */
 export function wmoOccludersApply(known: boolean, surface: object | null | undefined): boolean {
   return known && surface === null;
 }
+
+/**
+ * 15.11 (occl11): which volumes one building's walk gets, from what the camera hangs over and whether that is a room of
+ * this building (`room`, the walk's room or -1). Recorded on Wow.exe (`.runtime/re-2026-11-15/occl11/`): over Dalaran's
+ * streets and squares (25 frames at eye height, 12 more from behind) the whole volumes hide 242 of the 364 groups this
+ * client drew and Wow.exe did not, and none it drew; so "whole" outside a room, the street included. In a room of this
+ * building the volumes are cut at its doors' depth after the room's own walk ("doors", `0x79a870` -> `0x79a790`). Over a
+ * room of another building that depth is that walk's, not known here: none, which can only draw more. Nothing known:
+ * none.
+ */
+export function mapOccluderMode(
+  known: boolean,
+  surface: { readonly groupFlags: number } | null | undefined,
+  room: number,
+): "whole" | "doors" | "none" {
+  if (!known) return "none";
+  if (room >= 0) return "doors";
+  if (surface && (surface.groupFlags & 0x2000) !== 0 && (surface.groupFlags & 0x8) === 0) return "none";
+  return "whole";
+}
+
+/** The volumes a walk from a room asks for once its own walk has found the doors' depth (`wmoDoorViewDepth`). */
+export type MapOccludersAtDoorDepth = (doorDepth: number) => MapOccluderVolumes | undefined;
 
 /** What the renderer keeps for `mapOccludersForModel`: the volumes in world and in the model's space, and a matrix. */
 export interface MapOccluderFrame {
@@ -223,7 +331,7 @@ export interface MapOccluderFrame {
 export function createMapOccluderFrame(): MapOccluderFrame {
   return {
     world: createMapOccluderVolumes(), model: createMapOccluderVolumes(), wowToClip: new Float64Array(16),
-    builtFor: new Float64Array(19).fill(Number.NaN), builtRecords: undefined,
+    builtFor: new Float64Array(20).fill(Number.NaN), builtRecords: undefined,
   };
 }
 
@@ -239,6 +347,7 @@ export function mapOccludersForModel(
   projection: ArrayLike<number>,
   view: ArrayLike<number>,
   modelToThree: ArrayLike<number>,
+  doorDepth = 0,
 ): MapOccluderVolumes | undefined {
   if (records === undefined || records.length === 0) return undefined;
   const m = frame.wowToClip;
@@ -257,15 +366,17 @@ export function mapOccludersForModel(
   }
   // Built once for a camera: every building it walks from shares the world's volumes, each in its own space.
   const built = frame.builtFor;
-  let same = built[16] === eye.x && built[17] === eye.y && built[18] === eye.z && frame.builtRecords === records;
+  let same = built[16] === eye.x && built[17] === eye.y && built[18] === eye.z && built[19] === doorDepth
+    && frame.builtRecords === records;
   for (let at = 0; at < 16 && same; at++) same = built[at] === m[at];
   if (!same) {
     built.set(m);
     built[16] = eye.x;
     built[17] = eye.y;
     built[18] = eye.z;
+    built[19] = doorDepth;
     frame.builtRecords = records;
-    buildMapOccluderVolumes(frame.world, records, eye.x, -eye.z, eye.y, m);
+    buildMapOccluderVolumes(frame.world, records, eye.x, -eye.z, eye.y, m, doorDepth);
   }
   if (frame.world.volumeCount === 0) return undefined;
   return mapOccluderVolumesInModel(frame.world, modelToThree, frame.model);

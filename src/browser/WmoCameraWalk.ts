@@ -33,7 +33,7 @@ import {
   type WmoOcclusionGroup, type WmoOcclusionPoint, type WmoOcclusionSelection, type WmoPortalWalkScratch,
 } from "./WmoOcclusion.js";
 import { createWmoPortalFrustaScratch, walkWmoPortalFrusta, wmoGroupBehindOccluders } from "./WmoPortalFrusta.js";
-import type { MapOccluderVolumes } from "./MapOccluders.js";
+import type { MapOccludersAtDoorDepth, MapOccluderVolumes } from "./MapOccluders.js";
 
 /** MOGP: drawn wherever the camera is, frustum permitting. */
 export const WMO_GROUP_ALWAYS_DRAW = 0x10000;
@@ -172,7 +172,7 @@ export function walkWmoFromCamera(
   screenApertures: Float32Array | undefined,
   scratch: WmoPortalWalkScratch,
   horizonHidden?: Uint8Array,
-  occluders?: MapOccluderVolumes,
+  occluders?: MapOccluderVolumes | MapOccludersAtDoorDepth,
 ): WmoOcclusionSelection {
   const count = groups.length;
   if (count === 0 || !finitePoint(camera) || !validMatrix(modelToClip)
@@ -208,7 +208,7 @@ export function walkWmoFromCamera(
     // room it is judged by the frustum alone (`0x7ad1f0`).
     if (room < 0 && drawn[index] !== 1 && horizonHidden !== undefined && horizonHidden[index] === 1) continue;
     // 15.11 (portal8): and through the occluders' shadows (`0x79a160` asks `0x7cce00`).
-    if (room < 0 && drawn[index] !== 1 && wmoGroupBehindOccluders(group.bounds, occluders)) continue;
+    if (room < 0 && drawn[index] !== 1 && typeof occluders !== "function" && wmoGroupBehindOccluders(group.bounds, occluders)) continue;
     if (picked < picks.length) picks[picked] = index;
     else picks.push(index);
     picked++;

@@ -42,6 +42,8 @@ interface FadeShell {
 
 interface FadeMesh {
   readonly mesh: THREE.InstancedMesh;
+  /** 15.11 (fx11): the depth-only pass before it, over the same copies (`doodadFadeDepthMaterial`). */
+  readonly depth: THREE.InstancedMesh;
   readonly source: THREE.BufferGeometry;
   readonly capacity: number;
   warm: boolean;
@@ -91,6 +93,31 @@ export function doodadFadeMaterial(source: THREE.Material): THREE.Material {
   copy.transparent = true;
   FADE_COPIES.set(source, copy);
   return copy;
+}
+
+const DEPTH_COPIES = new WeakMap<THREE.Material, THREE.Material>();
+
+/**
+ * 15.11 (fx11, 7.66): the depth-only pass of one source material's fade copy, made once. Wow.exe draws a fading M2 in two
+ * passes, every batch of the model each time (WowOracle frames s03, s06, s08, fog6-o-netherstorm, fx11-leaf-1/2: 102
+ * fading copies, `.runtime/re-2026-11-15/fx11/fadecopies.txt`): first with colour writes off, no blending, depth written
+ * with LESSEQUAL and the batch's own cull and alpha test (224 × α on a cut-out, s06 #2541: 136); then again with
+ * SrcAlpha/InvSrcAlpha, depth still written, the same test. So only the copy's nearest surface shows, at its alpha: its
+ * own inner layers (a tree's crowns behind crowns) do not show through it. The program is the fade copy's (same chain,
+ * same key; colour writes are not part of a program), so it needs no warm-up of its own.
+ */
+export function doodadFadeDepthMaterial(source: THREE.Material): THREE.Material {
+  const fade = doodadFadeMaterial(source);
+  const cached = DEPTH_COPIES.get(fade);
+  if (cached) return syncFadeCopy(cached, fade);
+  const depth = fade.clone();
+  depth.onBeforeCompile = fade.onBeforeCompile;
+  depth.customProgramCacheKey = fade.customProgramCacheKey;
+  depth.colorWrite = false;
+  depth.depthWrite = true;
+  depth.transparent = true;
+  DEPTH_COPIES.set(fade, depth);
+  return depth;
 }
 
 function syncFadeCopy(copy: THREE.Material, source: THREE.Material): THREE.Material {
@@ -223,15 +250,35 @@ export class DoodadFadeInstances {
         // fog (lookdev, Netherstorm, objectDistance 150).
         mesh.renderOrder = -1;
         mesh.visible = false;
-        entry = { mesh, source: list.geometry, capacity, warm: false };
+        // 15.11 (fx11): the original's depth-only pass first — every fading copy's, just before the colour passes. It
+        // shares the copies' matrices (and colours, so its program is the colour pass's).
+        const depthMaterials = Array.isArray(list.materials)
+          ? list.materials.map(doodadFadeDepthMaterial)
+          : doodadFadeDepthMaterial(list.materials);
+        const depth = new THREE.InstancedMesh(shell.geometry, depthMaterials, capacity);
+        depth.instanceMatrix = mesh.instanceMatrix;
+        depth.frustumCulled = false;
+        depth.castShadow = false;
+        depth.receiveShadow = false;
+        depth.name = `doodadFadeDepth:${key}`;
+        depth.renderOrder = -2;
+        depth.visible = false;
+        entry = { mesh, depth, source: list.geometry, capacity, warm: false };
         this.#meshes.set(key, entry);
         this.group.add(mesh);
+        this.group.add(depth);
       } else {
         const materials = entry.mesh.material;
+        const depthMaterials = entry.depth.material;
         if (Array.isArray(materials) && Array.isArray(list.materials)) {
           for (let index = 0; index < materials.length; index++) syncFadeCopy(materials[index]!, list.materials[index]!);
         } else if (!Array.isArray(materials) && !Array.isArray(list.materials)) {
           syncFadeCopy(materials, list.materials);
+        }
+        if (Array.isArray(depthMaterials) && Array.isArray(materials)) {
+          for (let index = 0; index < depthMaterials.length; index++) syncFadeCopy(depthMaterials[index]!, materials[index]!);
+        } else if (!Array.isArray(depthMaterials) && !Array.isArray(materials)) {
+          syncFadeCopy(depthMaterials, materials);
         }
       }
       const shell = SHELLS.get(list.geometry)!;
@@ -255,6 +302,10 @@ export class DoodadFadeInstances {
         entry.warm = this.#hooks.warm(mesh);
       }
       mesh.visible = entry.warm;
+      const depth = entry.depth;
+      depth.count = mesh.count;
+      depth.instanceColor = mesh.instanceColor;
+      depth.visible = entry.warm;
       if (entry.warm) {
         for (let index = 0; index < list.used; index++) this.#next.add(list.members[index]!.owner);
       }
@@ -288,9 +339,12 @@ export class DoodadFadeInstances {
     const entry = this.#meshes.get(key);
     if (!entry) return;
     entry.mesh.removeFromParent();
+    entry.depth.removeFromParent();
     this.#hooks.unregister(entry.mesh);
-    // Only the copy matrix and colour buffers are this mesh's; the shell, its buffers and the fade copies are kept.
+    // Only the copy matrix and colour buffers are this mesh's (the depth pass shares them, and goes with it); the shell,
+    // its buffers and the fade copies are kept.
     entry.mesh.dispose();
+    entry.depth.dispose();
     this.#meshes.delete(key);
   }
 }

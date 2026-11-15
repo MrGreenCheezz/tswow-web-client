@@ -135,6 +135,14 @@ export interface LightSample {
   /** Yards, which this project draws as metres. */
   fogEnd: number;
   fogStart: number;
+  /**
+   * 15.11 (fx11, 7.66): the fog as a shaped map (530 and up) draws it — each set converted by 0x007ecd80 in mode 1
+   * (ShapedFogSet.ts) and then blended like the rest. Absent on a sample built elsewhere: then it is converted from
+   * `fogEnd` and `fogStart` as one set.
+   */
+  shapedFogEnd?: number;
+  shapedFogShare?: number;
+  shapedFogDensity?: number;
   waterShallowAlpha: number;
   waterDeepAlpha: number;
   oceanShallowAlpha: number;

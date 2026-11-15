@@ -226,13 +226,14 @@ export class BowDraw {
   step(frame: BowDrawFrame): number | undefined {
     const baseEnded = this.#observe(this.#base, frame.base, frame);
     this.#observe(this.#upper, frame.upper, frame);
-    if (!frame.mark || frame.sheath !== SHEATH_RANGED) {
+    if (frame.sheath !== SHEATH_RANGED) {
       this.#phase = undefined;
       return undefined;
     }
     const load = rangedLoadAnimation(frame.subClass);
     const hold = holdOf(load);
     const shown = frame.base?.animation;
+    if (!frame.mark) return this.#afterMark(frame, load, hold, shown, baseEnded);
     const showing = this.#phase === "load" ? load : this.#phase === "hold" ? hold : undefined;
     if (showing === undefined || shown !== showing) {
       // A choice (the chooser runs): no arrow in the hand → the load stance; with one, what plays stays (the hold).
@@ -241,6 +242,30 @@ export class BowDraw {
       const next = clipEndFollower(showing, frame.mark, frame.channel);
       if (next !== undefined) this.#phase = next === load ? "load" : "hold";
       else this.#phase = this.arrow ? "hold" : "load";
+    }
+    return this.#phase === "hold" ? hold : load;
+  }
+
+  /**
+   * 5.05 (15.11, combat11, stand `runs/combat11-c2-bow-move`, `combat11-d2-bow-move`): the mark is gone (a cancel) while the
+   * cycle's clip is on show. Wow.exe does not re-pick then: the clip runs to its end, LoadBow's end still hands to HoldBow
+   * (0x0073b510's first followers ask for no mark), and HoldBow's end without the mark goes back to the chooser — a cancel in
+   * LoadBow showed LoadBow to its end, then HoldBow; one in HoldBow showed HoldBow to the end of its cycle, then Stand. Any
+   * other clip on the body ends it at once.
+   */
+  #afterMark(frame: BowDrawFrame, load: number, hold: number, shown: number | undefined, ended: boolean): number | undefined {
+    const showing = this.#phase === "load" ? load : this.#phase === "hold" ? hold : undefined;
+    if (showing === undefined || shown !== showing) {
+      this.#phase = undefined;
+      return undefined;
+    }
+    if (ended) {
+      const next = clipEndFollower(showing, false, frame.channel);
+      if (next === undefined) {
+        this.#phase = undefined;
+        return undefined;
+      }
+      this.#phase = next === load ? "load" : "hold";
     }
     return this.#phase === "hold" ? hold : load;
   }

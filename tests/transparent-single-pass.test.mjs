@@ -24,7 +24,9 @@ test("every particle and ribbon material draws in one pass, whatever its blend m
     const unblendedParticle = blend === 0 || blend === 1 || blend === 7;
     effects.emitters.forEach((emitter, index) => {
       const ribbon = index === 1;
-      assert.equal(emitter.material.side, THREE.DoubleSide, `blend ${blend}: both faces stay visible`);
+      // 15.11 (fx11): the fixture's ribbon material has flags 0 — bit 4 clear — so it is culled as Wow.exe culls such a
+      // ribbon (D3DCULL_CW, tests/fx11-ribbon-face.test.mjs); a particle keeps both faces.
+      assert.equal(emitter.material.side, ribbon ? THREE.BackSide : THREE.DoubleSide, `blend ${blend}: ${ribbon ? "the face Wow.exe keeps" : "both faces stay visible"}`);
       assert.equal(emitter.material.transparent, ribbon || !unblendedParticle, `blend ${blend}: ${ribbon ? "ribbon" : "particle"}`);
       // One pass: a transparent two-sided material needs forceSinglePass; an opaque one is drawn once by three.
       if (emitter.material.transparent) assert.equal(emitter.material.forceSinglePass, true, `blend ${blend}: one pass`);

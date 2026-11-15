@@ -344,14 +344,16 @@ export function buildModelEffects(
 /**
  * 15.11 (6.15): a ribbon pass's own states from its M2 material (0x00980b70; RibbonEmitter.ts `ribbonDrawState`): the
  * depth test unless the material says otherwise, and the alpha reference of its blend — 1/255 for every blend the
- * client's ribbons use. Depth write stays off (every ribbon material sets 0x10), and the culling and lighting bits are
- * not followed here: no stand recording holds a ribbon draw to settle which face three should keep, or what a lit
- * ribbon (57 passes) looks like.
+ * client's ribbons use. Depth write stays off (every ribbon material sets 0x10). 15.11 (fx11): the culled ribbons keep
+ * the face the stand recorded (`ribbonDrawState().face`), and a lit pass is its texture alone, as the stand recorded
+ * its colour-1 vertex shader (`ribbonVertexColoured`).
  */
 function applyRibbonDrawState(material: THREE.Material, materialFlags: number, blendMode: number): void {
   const state = ribbonDrawState(materialFlags, blendMode);
   material.depthTest = state.depthTest;
   material.alphaTest = state.alphaTest;
+  material.side = state.face === "back" ? THREE.BackSide : THREE.DoubleSide;
+  material.vertexColors = state.vertexColours;
 }
 
 function buildDrawn(
@@ -396,8 +398,8 @@ function buildDrawn(
   // either: 850 of the 854 ribbons under `spells\` set it, and a ribbon's winding follows the
   // direction it is flying, so the four that do not would blink out whenever their strip happened
   // to turn away from the eye. 15.11 (6.15): Wow.exe does cull those four (`haunt_missile`, `assassinate_missile`;
-  // 0x00832ea0 keeps !(flags & 4), 0x00980b70 sets GxRs 17); its strip winds (below, above, next below) from old to
-  // new, but which face three should keep for that is not settled without a recorded ribbon draw, so they stay two-sided.
+  // 0x00832ea0 keeps !(flags & 4), 0x00980b70 sets GxRs 17); 15.11 (fx11) recorded as D3DCULL_CW, so a ribbon's own
+  // pass turns them one-sided after the build (`applyRibbonDrawState`).
   const material = new THREE.MeshBasicMaterial({
     map,
     vertexColors: true,

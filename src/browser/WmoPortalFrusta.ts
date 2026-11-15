@@ -23,10 +23,11 @@
  *   (`0x79a160` -> `0x7b3a10` -> `0x7ad350`) each outdoor group in the view starts its own walk across the whole
  *   screen, into rooms only (`target & 0x10008` stops it).
  *
- * - 15.11 (portal8): with the camera over no WMO at all (the caller decides: `wmoOccludersApply`), the map's occluders (`MapOccluders.ts`) hide an outdoor group whose
- *   sphere lies in one's shadow (`0x79a160` asks `0x7cce00` before `0x7b3a10`) and a portal whose polygon does
- *   (`0x7a85e0` asks `0x7ccfa0`). From a room the volumes are built after the room's own walk, so the room's portals
- *   never ask them; this client builds none for a room (their depth, `0x7905b0`, is not read).
+ * - 15.11 (portal8, occl11): the map's occluders (`MapOccluders.ts`; the caller decides which: `mapOccluderMode`) hide an
+ *   outdoor group whose sphere lies in one's shadow (`0x79a160` asks `0x7cce00` before `0x7b3a10`) and a portal whose
+ *   polygon does (`0x7a85e0` asks `0x7ccfa0`), unless the portal joins two rooms (`wmoPortalAsksOccluders`). From a room
+ *   the volumes are built after the room's own walk, so the room's portals never ask them, and they are cut at the
+ *   doors' depth (`wmoDoorViewDepth`): the caller then passes a function of that depth.
  *
  * Not modelled: the terrain horizon an outdoor group must clear before it starts a walk (`0x78fdc0`, read, off: see
  * `TerrainHorizon.ts`) and the batches' own boxes (MOBA; the group's box stands in for them). `0x7968d0` is no merge:
@@ -40,7 +41,7 @@
 
 import type { WmoBounds, WmoPortals } from "./WmoModel.js";
 import type { WmoOcclusionPoint } from "./WmoOcclusion.js";
-import { mapOccludersHidePoints, mapOccludersHideSphere, type MapOccluderVolumes } from "./MapOccluders.js";
+import { mapOccludersHidePoints, mapOccludersHideSphere, type MapOccludersAtDoorDepth, type MapOccluderVolumes } from "./MapOccluders.js";
 
 /** `0x79a160` -> `0x7cce00`: whether a group's bounding sphere lies in an occluder's shadow (volumes in model space). */
 export function wmoGroupBehindOccluders(bounds: WmoBounds, occluders: MapOccluderVolumes | undefined): boolean {
@@ -48,6 +49,33 @@ export function wmoGroupBehindOccluders(bounds: WmoBounds, occluders: MapOcclude
   const radius = 0.5 * Math.hypot(bounds.maxX - bounds.minX, bounds.maxY - bounds.minY, bounds.maxZ - bounds.minZ);
   return mapOccludersHideSphere(occluders, (bounds.minX + bounds.maxX) * 0.5, (bounds.minY + bounds.maxY) * 0.5,
     (bounds.minZ + bounds.maxZ) * 0.5, radius);
+}
+
+/**
+ * 15.11 (occl11): whether a portal asks the occluders at all. `0x7ac060` marks a portal's state 0x10 when neither the
+ * group it is left from nor its target is outdoor (MOGP 0x8), and `0x7a9090`/`0x7a8f20` pass that bit to `0x7a85e0`,
+ * which asks `0x7ccfa0` only without it: a portal between two rooms is never hidden by an occluder.
+ */
+export function wmoPortalAsksOccluders(fromFlags: number, toFlags: number): boolean {
+  return ((fromFlags | toFlags) & 0x8) !== 0;
+}
+
+/**
+ * 15.11 (occl11): `0x7a70d0`, one door view's depth: the largest distance of the portal's vertices (all of them) from
+ * the plane through the eye along the view's forward, not below zero. The plane is `0x7a6e00`'s 0x00d1c444, the
+ * forward in the model's space; here it is the clip matrix's w row, the distance along the view for a perspective
+ * camera (a WMO placement has no scale, so the model's units are yards).
+ */
+export function wmoDoorViewDepth(vertices: Float32Array, startVertex: number, vertexCount: number, m: ArrayLike<number>): number {
+  const length = Math.hypot(m[3]!, m[7]!, m[11]!);
+  if (!(length > 0)) return 0;
+  let depth = 0;
+  for (let corner = 0; corner < vertexCount; corner++) {
+    const at = (startVertex + corner) * 3;
+    const w = (m[3]! * vertices[at]! + m[7]! * vertices[at + 1]! + m[11]! * vertices[at + 2]! + m[15]!) / length;
+    if (w > depth) depth = w;
+  }
+  return depth;
 }
 
 /** `0x7a85e0`: a portal is clipped and projected by its first twelve vertices only. */
@@ -80,6 +108,8 @@ export interface WmoPortalFrustaScratch {
   /** Views of the outside, four doubles each. */
   readonly views: Float64Array;
   viewCount: number;
+  /** 15.11 (occl11): from a room, the doors' depth (`wmoDoorViewDepth`), -1 while no door leads out. */
+  doorDepth: number;
   visits: number;
   readonly polygonA: Float64Array;
   readonly polygonB: Float64Array;
@@ -94,6 +124,7 @@ export function createWmoPortalFrustaScratch(): WmoPortalFrustaScratch {
     path: new Float64Array((WMO_PORTAL_MAX_DEPTH + 2) * 4),
     views: new Float64Array(VIEW_LIMIT * 4),
     viewCount: 0,
+    doorDepth: -1,
     visits: 0,
     polygonA: new Float64Array(POLYGON_DOUBLES),
     polygonB: new Float64Array(POLYGON_DOUBLES),
@@ -298,7 +329,7 @@ export function walkWmoPortalFrusta(
   out: WmoPortalFrustaOut,
   scratch: WmoPortalFrustaScratch,
   horizonHidden?: Uint8Array,
-  occluders?: MapOccluderVolumes,
+  occluders?: MapOccluderVolumes | MapOccludersAtDoorDepth,
 ): boolean {
   const portalCount = portals.definitions.length;
   if (scratch.rectWalk.length < portalCount) {
@@ -311,9 +342,13 @@ export function walkWmoPortalFrusta(
   if (scratch.walk === 1) scratch.rectWalk.fill(0);
   scratch.viewed.fill(0, 0, portalCount);
   scratch.viewCount = 0;
+  scratch.doorDepth = -1;
   scratch.visits = 0;
-  const shadows = occluders !== undefined && occluders.volumeCount > 0 ? occluders : undefined;
-  const context: WalkContext = { groups, portals, planes, camera, m, out, scratch, fromRoom, occluders: shadows };
+  const given = typeof occluders === "function" ? undefined : occluders;
+  let shadows = given !== undefined && given.volumeCount > 0 ? given : undefined;
+  // 15.11 (occl11): a room's own walk runs before `0x79a790` builds the volumes (`0x7cd910` has cleared them), so its
+  // portals never ask them; the outside seen through its doors does.
+  const context: WalkContext = { groups, portals, planes, camera, m, out, scratch, fromRoom, occluders: fromRoom ? undefined : shadows };
   const path = scratch.path;
   for (let at = 0; at < seedCount; at++) {
     const seed = seeds[at]!;
@@ -334,6 +369,12 @@ export function walkWmoPortalFrusta(
   context.fromRoom = false;
   const views = scratch.views;
   const viewCount = scratch.viewCount;
+  // 15.11 (occl11): the volumes now, cut at the doors' depth (`0x79a870`: 0x00adf59c below zero, no door, draws no outside).
+  if (typeof occluders === "function" && viewCount > 0 && scratch.doorDepth >= 0) {
+    const cut = occluders(scratch.doorDepth);
+    shadows = cut !== undefined && cut.volumeCount > 0 ? cut : undefined;
+  }
+  context.occluders = shadows;
   for (let index = 0; index < groups.length; index++) {
     const flags = groups[index]!.flags;
     if ((flags & OUTDOOR) === 0 || (flags & ALWAYS_DRAW) !== 0) continue;
@@ -361,7 +402,7 @@ interface WalkContext {
   readonly scratch: WmoPortalFrustaScratch;
   fromRoom: boolean;
   /** The map's occluder volumes in model space, or none. */
-  readonly occluders: MapOccluderVolumes | undefined;
+  occluders: MapOccluderVolumes | undefined;
 }
 
 /** `0x7ac060`: one visit of `index`, seen through the rectangle at `path[depth * 4]`. */
@@ -409,8 +450,9 @@ function visit(context: WalkContext, index: number, from: number, depth: number)
         rects[rect + 1] = 1;
         rects[rect + 2] = -1;
         rects[rect + 3] = 1;
-      } else if ((context.occluders !== undefined && mapOccludersHidePoints(context.occluders, portals.vertices,
-        definition.startVertex, Math.min(definition.vertexCount, WMO_PORTAL_MAX_VERTICES)))
+      } else if ((context.occluders !== undefined && wmoPortalAsksOccluders(group.flags, groups[target]!.flags)
+        && mapOccludersHidePoints(context.occluders, portals.vertices,
+          definition.startVertex, Math.min(definition.vertexCount, WMO_PORTAL_MAX_VERTICES)))
         || !wmoPortalScreenRect(portals.vertices, definition.startVertex, definition.vertexCount, m, scratch, rects, rect)) {
         rects[rect] = 1;
         rects[rect + 1] = -1;
@@ -432,6 +474,12 @@ function visit(context: WalkContext, index: number, from: number, depth: number)
     if (Math.abs(cutMinX - cutMaxX) < THIN || Math.abs(cutMinY - cutMaxY) < THIN) continue;
     const targetFlags = groups[target]!.flags;
     if ((targetFlags & (OUTDOOR | ALWAYS_DRAW)) !== 0) {
+      // 15.11 (occl11): `0x7a8f20` runs for a 0x10000 target as well, so its door counts for the depth.
+      if (context.fromRoom) {
+        const definition = portals.definitions[portal]!;
+        const depth = wmoDoorViewDepth(portals.vertices, definition.startVertex, definition.vertexCount, m);
+        if (depth > scratch.doorDepth) scratch.doorDepth = depth;
+      }
       // Not entered; from a room a portal into the outside leaves a view of it, once (`0x7a8f20`).
       if (context.fromRoom && (targetFlags & ALWAYS_DRAW) === 0 && scratch.viewed[portal] === 0
         && scratch.viewCount < VIEW_LIMIT) {

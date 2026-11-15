@@ -19,7 +19,7 @@ import {
   wmoGroupIsRoom, wmoGroupOfCollision, wmoGroupTwinCount, wmoGroupTwinsUncertain, wmoHasOutdoorGroup, wmoPlacementOwns, wmoPortalPlanes, wmoWalkReachedOutside,
 } from "../dist/code/browser/WmoCameraWalk.js";
 import { CollisionMesh, CollisionWorld } from "../dist/code/browser/game/Collision.js";
-import { createMapOccluderFrame, mapOccludersForModel, wmoOccludersApply } from "../dist/code/browser/MapOccluders.js";
+import { createMapOccluderFrame, mapOccluderMode, mapOccludersForModel } from "../dist/code/browser/MapOccluders.js";
 import { readMapOccluders } from "../dist/code/gateway/MapOccluderTable.js";
 import { callArguments } from "./source-pins.mjs";
 
@@ -344,11 +344,12 @@ function inFrustum(bounds, m) {
 }
 
 /**
- * One recorded camera walked as the renderer walks it. 15.11 (portal8): the map's occluders (`MapOccluders.ts`) apply
- * only with the camera over no surface of the building (`wmoOccludersApply`, Wow.exe 0x795d40).
+ * One recorded camera walked as the renderer walks it. 15.11 (portal8, occl11): the map's occluders (`MapOccluders.ts`)
+ * as `mapOccluderMode` gives them: whole outside a room, the street included; from a room cut at the doors' depth.
+ * `mode` "none" walks without them.
  */
-function walkRecorded(recorded, frame, building, records, occluderFrame, scratch, ignoreGate = false) {
-  const { model, modelToWorld, worldToModel, roomUnder, surfaceUnder } = building;
+function walkRecorded(recorded, frame, building, records, occluderFrame, scratch, mode = undefined) {
+  const { model, modelToWorld, worldToModel, roomUnder } = building;
   const [cx, cy, cz] = frame.position, [fx, fy, fz] = frame.forward, [ux, uy, uz] = frame.up;
   const camera = new THREE.PerspectiveCamera(2 * Math.atan(1 / recorded.yScale) * 180 / Math.PI, recorded.aspect, frame.near, frame.far);
   camera.position.set(cx, cz, -cy);
@@ -359,9 +360,10 @@ function walkRecorded(recorded, frame, building, records, occluderFrame, scratch
   const clip = new THREE.Matrix4().multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse).multiply(modelToWorld).elements;
   const at = new THREE.Vector3(cx, cz, -cy).applyMatrix4(worldToModel);
   const room = roomUnder(at.x, at.y, at.z);
-  const apply = ignoreGate || wmoOccludersApply(true, surfaceUnder(at.x, at.y, at.z) >= 0 ? {} : null);
-  const occluders = room < 0 && apply ? mapOccludersForModel(occluderFrame, records, camera.position, camera.projectionMatrix.elements,
-    camera.matrixWorldInverse.elements, modelToWorld.elements) : undefined;
+  const chosenMode = mode ?? mapOccluderMode(true, null, room);
+  const volumes = (doorDepth) => mapOccludersForModel(occluderFrame, records, camera.position, camera.projectionMatrix.elements,
+    camera.matrixWorldInverse.elements, modelToWorld.elements, doorDepth);
+  const occluders = chosenMode === "whole" ? volumes(0) : chosenMode === "doors" ? volumes : undefined;
   const answer = walkWmoFromCamera(model.groups, model.portals, room, at, clip, undefined, scratch, undefined, occluders);
   assert.equal(answer.used, true, frame.name);
   return { chosen: answer.groups.filter((index) => inFrustum(model.groups[index].bounds, clip)), room, model, occluders };
@@ -408,12 +410,15 @@ test("against what Wow.exe drew: nothing missing, no far-view copy, the same tri
   assert.deepEqual(square, ["c04-plaza-z160: room, 4 drawn, 5 chosen, 0 extra"]);
 });
 
-// fixtures/wmo-camera-walk-dalaran-wow.json: Wow.exe's own frames over and in Dalaran (the stand's fog6-n-* runs).
-// 15.11 (portal8, follow-up 2): the occluders once hid Dalaran's buildings from its streets; over the city they do not
-// apply (Wow.exe 0x795d40), so from Runeweaver Square the buildings ahead stay drawn.
+// fixtures/wmo-camera-walk-dalaran-wow.json: Wow.exe's own frames in Dalaran: over the city (fog6-n-dalaran-air*), in
+// three rooms (fog6-n-dal-*), and occl11's: six street points at eye height with four headings each, the camera 8 and
+// 15 yards behind a character at Runeweaver Square, and two rooms looking out through their doors.
+// 15.11 (occl11): over the streets Wow.exe culls with the whole occluder volumes. portal8's camera behind a character
+// in Runeweaver Square facing +x (occl11-sq3p-h0-z8) is where the volumes were thought to hide the buildings ahead:
+// Wow.exe draws none of those groups there.
 const withClientExe = { skip: !existsSync(`${clientDirectory}/Data`) ? `no client at ${clientDirectory}`
   : !existsSync(`${clientDirectory}/Wow.exe`) ? `no Wow.exe at ${clientDirectory}` : false };
-test("Dalaran: nothing Wow.exe drew is missing, and from Runeweaver Square the buildings ahead stay", withClientExe, async () => {
+test("Dalaran: the occluders hide nothing Wow.exe drew, from the streets or a room, and most of what it did not", withClientExe, async () => {
   const { clientArchives } = await import("../tools/mpq.mjs");
   const archives = await clientArchives(clientDirectory);
   const recorded = JSON.parse(await readFile(new URL("./fixtures/wmo-camera-walk-dalaran-wow.json", import.meta.url), "utf8"));
@@ -422,22 +427,26 @@ test("Dalaran: nothing Wow.exe drew is missing, and from Runeweaver Square the b
   const building = await loadBuilding(archives, recorded.frames[0].wmo, recorded.frames[0].adt);
   const scratch = createWmoPortalWalkScratch();
   const occluderFrame = createMapOccluderFrame();
+  let extraWith = 0, extraWithout = 0, streets = 0, rooms = 0;
   for (const frame of recorded.frames) {
-    const { chosen } = walkRecorded(recorded, frame, building, records, occluderFrame, scratch);
+    const drawn = new Set(frame.drawn), maybe = new Set(frame.maybe);
+    const without = walkRecorded(recorded, frame, building, records, occluderFrame, scratch, "none");
+    const { chosen, room } = walkRecorded(recorded, frame, building, records, occluderFrame, scratch);
     const set = new Set(chosen);
     assert.deepEqual(frame.drawn.filter((index) => !set.has(index)), [], `${frame.name}: drawn by Wow.exe and left out`);
+    extraWith += chosen.filter((index) => !drawn.has(index) && !maybe.has(index)).length;
+    extraWithout += without.chosen.filter((index) => !drawn.has(index) && !maybe.has(index)).length;
+    if (room >= 0) rooms++;
+    else streets++;
+    if (frame.name === "occl11-sq3p-h0-z8") {
+      for (const index of [21, 24, 26, 28, 35, 62]) {
+        assert.ok(!drawn.has(index) && without.chosen.includes(index) && !set.has(index), `group ${index} ahead: Wow.exe does not draw it, the volumes hide it`);
+      }
+    }
   }
-  // The live report's camera: a few yards behind a character standing in Runeweaver Square, facing +x.
-  const square = { name: "runeweaver", position: [5796, 624, 652], forward: [0.989, 0, -0.149], up: [0.149, 0, 0.989], near: 0.2, far: 1277 };
-  const camera = { yScale: 1.9626, aspect: 16 / 9 };
-  const eye = new THREE.Vector3(5796, 652, -624).applyMatrix4(building.worldToModel);
-  assert.ok(building.surfaceUnder(eye.x, eye.y, eye.z) >= 0, "the camera hangs over Dalaran's street");
-  const gated = walkRecorded(camera, square, building, records, occluderFrame, scratch);
-  const ungated = walkRecorded(camera, square, building, records, occluderFrame, scratch, true);
-  assert.equal(gated.occluders, undefined, "over the city the occluders do not apply");
-  // Applied there anyway, they hid the buildings ahead (the live defect); the walk keeps them.
-  const lost = gated.chosen.filter((index) => !ungated.chosen.includes(index));
-  assert.ok(lost.length >= 5, `the buildings ahead the occluders would hide stay drawn: ${lost.join(", ")}`);
+  assert.ok(streets >= 30 && rooms >= 5, `both kinds of camera are exercised: ${streets} street, ${rooms} room`);
+  // 15.11 (occl11): 295 groups chosen that Wow.exe did not draw, 5 with the occluders.
+  assert.ok(extraWith <= 5 && extraWithout - extraWith >= 250, `extra groups ${extraWithout} without the occluders, ${extraWith} with them`);
 });
 
 // fixtures/wmo-world-through-doors-wow.json: every recorded frame with the camera over a room, 28 of them at real exits,

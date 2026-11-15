@@ -11,11 +11,13 @@ import { join } from "node:path";
 import * as THREE from "three";
 import {
   buildMapOccluderVolumes, createMapOccluderFrame, createMapOccluderVolumes, mapOccluderVolumesInModel,
-  mapOccludersForModel, mapOccludersHidePoints, mapOccludersHideSphere, wmoOccludersApply,
+  mapOccluderMode, mapOccludersForModel, mapOccludersHidePoints, mapOccludersHideSphere, wmoOccludersApply,
 } from "../dist/code/browser/MapOccluders.js";
 import { MapOccluderClient, parseMapOccluderBody } from "../dist/code/browser/MapOccluderClient.js";
 import { parseMapOccluders, readMapOccluders } from "../dist/code/gateway/MapOccluderTable.js";
-import { createWmoPortalFrustaScratch, walkWmoPortalFrusta } from "../dist/code/browser/WmoPortalFrusta.js";
+import {
+  createWmoPortalFrustaScratch, walkWmoPortalFrusta, wmoDoorViewDepth, wmoPortalAsksOccluders,
+} from "../dist/code/browser/WmoPortalFrusta.js";
 import { wmoPortalPlanes } from "../dist/code/browser/WmoCameraWalk.js";
 
 const WOW_TO_THREE = new THREE.Matrix4().set(1, 0, 0, 0, 0, 0, 1, 0, 0, -1, 0, 0, 0, 0, 0, 1);
@@ -76,11 +78,40 @@ test("no records, no volumes; an occluder whose box (grown from the origin) miss
   assert.equal(buildMapOccluderVolumes(shifted, records(far), 0, 100, 0, clip), 0, "a box wholly behind the view");
 });
 
-test("the occluders apply only with the camera known to hang over no WMO (Wow.exe 0x795d40)", () => {
+test("portal8's gate, kept for the units: only with the camera known to hang over no WMO", () => {
   assert.equal(wmoOccludersApply(true, null), true, "over terrain");
   assert.equal(wmoOccludersApply(true, {}), false, "over a building, street or room");
   assert.equal(wmoOccludersApply(false, null), false, "nothing known this frame");
   assert.equal(wmoOccludersApply(true, undefined), false);
+});
+
+test("occl11: the walk's volumes are whole outside a room, the street included, and cut at the doors from one", () => {
+  assert.equal(mapOccluderMode(true, null, -1), "whole", "over terrain");
+  assert.equal(mapOccluderMode(true, { groupFlags: 0x8 | 0x800 }, -1), "whole", "over a street (MOGP 0x8)");
+  assert.equal(mapOccluderMode(true, { groupFlags: 0x2000 | 0x8 }, -1), "whole", "over an indoor group open to the sky");
+  assert.equal(mapOccluderMode(true, { groupFlags: 0x2000 }, 4), "doors", "over a room of this building");
+  assert.equal(mapOccluderMode(true, { groupFlags: 0x2000 }, -1), "none", "over a room of another building: its doors' depth is not this walk's");
+  assert.equal(mapOccluderMode(false, null, -1), "none", "nothing known this frame");
+});
+
+test("occl11: cut at the doors' depth, only the part of the polygon beyond it casts; flag 1 is never cut (0x7cd4e0, 0x7f9650)", () => {
+  // A wall along the view on the right: WoW x = 3, from 5 to 40 yards ahead, 6 high around the eye's line.
+  const side = [3, 5, -3, 3, 5, 3, 3, 40, 3, 3, 40, -3];
+  const build = (depth, flags = 0) => {
+    const out = createMapOccluderVolumes();
+    buildMapOccluderVolumes(out, [{ flags, points: side }], 0, 0, 0, WOW_TO_CLIP, depth);
+    return out;
+  };
+  // (8, 30) is behind the wall's near part (its line from the eye crosses x = 3 at 11.25 yards), (4, 35) behind the far part.
+  assert.equal(mapOccludersHideSphere(build(0), 8, 30, 0, 0.5), true, "whole: behind the near part");
+  assert.equal(mapOccludersHideSphere(build(0), 4, 35, 0, 0.5), true, "whole: behind the far part");
+  assert.equal(mapOccludersHideSphere(build(20), 8, 30, 0, 0.5), false, "cut at 20 yards: the near part casts nothing");
+  assert.equal(mapOccludersHideSphere(build(20), 4, 35, 0, 0.5), true, "cut at 20 yards: the far part still does");
+  assert.equal(build(20).volumeCount, 1);
+  assert.equal(build(50).volumeCount, 0, "a wall wholly nearer than the doors casts nothing");
+  assert.equal(build(1e-7).volumeCount, 1, "a depth at 1e-6 or below is no cut (0x00a32b48)");
+  assert.equal(mapOccludersHideSphere(build(1e-7), 8, 30, 0, 0.5), true);
+  assert.equal(mapOccludersHideSphere(build(20, 1), 8, 30, 0, 0.5), true, "flag 1: whole at any depth");
 });
 
 test("a portal polygon wholly in a shadow is hidden, one partly out is not (0x7ccfa0)", () => {
@@ -152,6 +183,78 @@ test("the walk: an outdoor group in a shadow starts nothing, a door in a shadow 
   buildMapOccluderVolumes(volumes, records([-3, 15, -3, -3, 15, 3, 3, 15, 3, 3, 15, -3]), 0, 0, 0, WOW_TO_CLIP);
   const local = mapOccluderVolumesInModel(volumes, new THREE.Matrix4().elements, createMapOccluderVolumes());
   assert.deepEqual(run(local), [1, 0, 0, 0], "door 0 and group B are in the wall's shadow; A, nearer, is still drawn");
+});
+
+const box = (minX, minY, minZ, maxX, maxY, maxZ) => ({ minX, minY, minZ, maxX, maxY, maxZ });
+/** Portals from polygons (this client's space), each reference on the side the eye at the origin stands on. */
+function portalsOf(polygons, links) {
+  const vertices = new Float32Array(polygons.flat());
+  const definitions = polygons.map((polygon, index) => ({ startVertex: polygons.slice(0, index).reduce((n, p) => n + p.length / 3, 0), vertexCount: polygon.length / 3 }));
+  const probe = wmoPortalPlanes({ vertices, definitions, references: [] });
+  return { vertices, definitions, references: links.map(([portal, group]) => ({ portal, group, side: probe[portal * 4 + 3] >= 0 ? 1 : -1 })) };
+}
+const identity = new THREE.Matrix4().elements;
+function inModel(points, depth) {
+  const world = createMapOccluderVolumes();
+  buildMapOccluderVolumes(world, points.map((p) => ({ flags: 0, points: p })), 0, 0, 0, WOW_TO_CLIP, depth);
+  return mapOccluderVolumesInModel(world, identity, createMapOccluderVolumes());
+}
+
+test("occl11: a door between two rooms never asks the occluders; one between a room and the outside does (0x7ac060's 0x10, 0x7a85e0)", () => {
+  // Outdoor A at the eye; a wide door 20 yards ahead into room R1; from R1 a door 30 yards ahead, off to the right, into R2.
+  const portals = portalsOf([
+    [-8, -1, -20, 8, -1, -20, 8, 1, -20, -8, 1, -20],
+    [5, -1, -30, 7, -1, -30, 7, 1, -30, 5, 1, -30],
+  ], [[0, 1], [1, 2]]);
+  const groups = [
+    { flags: 0x8, bounds: box(-8, -2, -19, 8, 2, -1), portalStart: 0, portalCount: 1 },
+    { flags: 0x2000, bounds: box(-8, -2, -30, 8, 2, -20), portalStart: 1, portalCount: 1 },
+    { flags: 0x2000, bounds: box(5, -1, -35, 7, 1, -30), portalStart: 2, portalCount: 0 },
+  ];
+  // A small wall 25 yards ahead (WoW x 4..8, z -3..3) shades the second door wholly and the first not at all.
+  const shade = inModel([[4, 25, -3, 4, 25, 3, 8, 25, 3, 8, 25, -3]], 0);
+  assert.equal(mapOccludersHidePoints(shade, portals.vertices, 4, 4), true, "the second door lies in the wall's shadow");
+  const out = { reached: new Uint8Array(3), drawn: new Uint8Array(3), apertures: new Float64Array(12) };
+  assert.equal(walkWmoPortalFrusta(groups, portals, wmoPortalPlanes(portals), { x: 0, y: 0, z: 0 }, CLIP, [0], 1, false, out,
+    createWmoPortalFrustaScratch(), undefined, shade), true);
+  assert.deepEqual([...out.drawn], [1, 1, 1], "R2 is still reached: its door joins two rooms");
+  assert.equal(wmoPortalAsksOccluders(0x2000, 0x2000), false);
+  assert.equal(wmoPortalAsksOccluders(0x2000, 0x8), true);
+  assert.equal(wmoPortalAsksOccluders(0x8, 0x2000), true);
+});
+
+test("occl11: from a room the occluders come after the room's walk, cut at its doors' depth (0x79a870, 0x7a70d0, 0x7905b0)", () => {
+  // The camera in room R; its door 10 yards ahead, 12 wide, leads out. Outside: O straight ahead, O2 off to the right
+  // 20 yards ahead, O3 to the right 35 yards ahead.
+  const portals = portalsOf([[-6, -1, -10, 6, -1, -10, 6, 1, -10, -6, 1, -10]], [[0, 1]]);
+  const groups = [
+    { flags: 0x2000, bounds: box(-6, -2, -10, 6, 2, 1), portalStart: 0, portalCount: 1 },
+    { flags: 0x8, bounds: box(-1, -1, -14, 1, 1, -11), portalStart: 1, portalCount: 0 },
+    { flags: 0x8, bounds: box(7.5, -0.5, -20.5, 8.5, 0.5, -19.5), portalStart: 1, portalCount: 0 },
+    { flags: 0x8, bounds: box(3.6, -0.4, -35.4, 4.4, 0.4, -34.6), portalStart: 1, portalCount: 0 },
+  ];
+  // A wall across the view 5 yards ahead (it shades the door and everything outside), and one along the view on the
+  // right from 5 to 40 yards ahead (whole, it shades O2 and O3; cut at 10 yards, O3 alone).
+  const walls = [[-8, 5, -3, -8, 5, 3, 8, 5, 3, 8, 5, -3], [3, 5, -3, 3, 5, 3, 3, 40, 3, 3, 40, -3]];
+  const walk = (occluders) => {
+    const out = { reached: new Uint8Array(4), drawn: new Uint8Array(4), apertures: new Float64Array(16) };
+    const scratch = createWmoPortalFrustaScratch();
+    assert.equal(walkWmoPortalFrusta(groups, portals, wmoPortalPlanes(portals), { x: 0, y: 0, z: 0 }, CLIP, [0], 1, true, out,
+      scratch, undefined, occluders), true);
+    return { drawn: [...out.drawn], views: scratch.viewCount, depth: scratch.doorDepth };
+  };
+  assert.deepEqual(walk(undefined).drawn, [1, 1, 1, 1], "without occluders everything through the door");
+  const asked = [];
+  const rule = walk((depth) => { asked.push(depth); return inModel(walls, depth); });
+  assert.equal(asked.length, 1, "asked once, after the room's walk");
+  assert.ok(Math.abs(asked[0] - 10) < 1e-9, `the door's farthest vertex along the view: ${asked[0]}`);
+  assert.deepEqual(rule.drawn, [1, 1, 1, 0], "the near wall is cut away, the side wall shades O3 only");
+  // Whole volumes passed in: the room's own door still leaves its view (the room's walk never asks them), but
+  // everything outside is behind the near wall.
+  const whole = walk(inModel(walls, 0));
+  assert.equal(whole.views, 1, "the door is seen although the near wall shades it");
+  assert.deepEqual(whole.drawn, [1, 0, 0, 0]);
+  assert.equal(wmoDoorViewDepth(portals.vertices, 0, 4, CLIP), 10);
 });
 
 /** A synthetic PE with build 12340's layout: one section from rva 0x5e0000, the grid centre and a table of 62. */

@@ -1,6 +1,7 @@
 import { HORIZON_RANGE } from "./Horizon.js";
 import { lightingClassicLook } from "./LightingQuality.js";
 import { TERRAIN_GRID_SIZE } from "./Terrain.js";
+import { WOW_FAR_CLIP, shapedFogSet, type ShapedFogSet } from "./ShapedFogSet.js";
 
 /**
  * 22.10 (7.39): the far view of the enhanced path — aerial perspective instead of a fog wall.
@@ -82,25 +83,12 @@ export function distanceFogRange(
  * Black Morass (269, a TBC instance under 530) is linear, as are Stormwind, the Stockade and Onyxia's Lair.
  */
 
-/** The original's far clip at its longest view distance (VideoOptionsPanels.lua `OPTIONS_FARCLIP_MAX`; 177 is the least). */
-export const WOW_FAR_CLIP = 1277;
-/** 0x007ecd80: a zone fog ending this near (1000/36 yards, 0x00a41b20) is not shaped. */
-const SHAPED_FOG_MIN_END = 1000 / 36;
+// The far clip, the density and one set's conversion live in ShapedFogSet.ts, which LightClient blends with.
+export { WOW_FAR_CLIP, shapedFogDensity } from "./ShapedFogSet.js";
 
 /** Whether Wow.exe draws this map's fog shaped (0x007816f0: map id ≥ 0x212). */
 export function shapedFogMap(map: number | undefined): boolean {
   return map !== undefined && map >= 530;
-}
-
-/**
- * 0x007ecd00: the density from a fog's own start and end. Over a gap of at most min(700, far clip) − 200 yards it
- * rises linearly to 7 for a gap of nothing; past that it is 1.5 (0x00a41b1c 700, 0x00a40538 200, 0x009edc60 5.5,
- * 0x00a41b18 1.5).
- */
-export function shapedFogDensity(start: number, end: number, farClip = WOW_FAR_CLIP): number {
-  const span = Math.min(700, farClip) - 200;
-  const gap = end - start;
-  return gap <= span ? (1 - gap / span) * 5.5 + 1.5 : 1.5;
 }
 
 export interface ShapedFog {
@@ -117,15 +105,39 @@ export interface ShapedFog {
  * → 0, 2.722 (`fog6-o-netherstorm`, `fog6-o-nagrand`, `fog6-bt-air-out`).
  */
 export function shapedZoneFog(end: number, share: number, farClip: number, out: ShapedFog): ShapedFog {
-  if (!(end > SHAPED_FOG_MIN_END)) {
-    out.near = end * share;
-    out.far = end;
-    out.density = 1;
-    return out;
-  }
-  out.density = shapedFogDensity(share * end, end, farClip);
-  out.far = farClip;
-  out.near = farClip * Math.max(0, share);
+  const set = shapedFogSet(end, share, farClip, scratchSet);
+  return shapedBlendedFog(set, out);
+}
+
+const scratchSet: ShapedFogSet = { end: 0, share: 0, density: 1 };
+
+/**
+ * 15.11 (fx11, 7.66): the zone's shaped fog from sets 0x007ecd80 converted one by one and 0x007ed4c0 then blended
+ * (`shapedFogOf` on the frame's light sample): 0x007f16f0 puts the start at end × share. Across the Borean Tundra |
+ * Dragonblight border that is 74.2 / 33.7 / 8.8 yards (light11-nc-m25 / nc-0 / nc-p25), where clamping the blended
+ * share gave 42 / 0 / 0.
+ */
+export function shapedBlendedFog(set: ShapedFogSet, out: ShapedFog): ShapedFog {
+  out.far = set.end;
+  out.near = set.end * set.share;
+  out.density = set.density;
+  return out;
+}
+
+/** 0x007f16f0 (0x00a4040c): the factor on a shaped fog's density while the camera is under a liquid. */
+export const UNDERWATER_SHAPED_DENSITY_SCALE = 2;
+
+/**
+ * 15.11 (fx11, 7.66): the frame's shaped fog, under a liquid too. 0x007f16f0 doubles the density when the map is in fog
+ * mode 1 and 0x00780620 finds a liquid at the camera; the fog itself is the frame's light — under water the liquid's
+ * or the underwater slot's set, converted by 0x007ecd80 like any other. Recorded on the stand (WowOracle
+ * `runs/fx11-nr-under-*`, `fx11-ol-under-*`, terrain VS c30/c12): under the Dragonblight sea the fog ends at the far clip
+ * (1277), starts at 0 and has density 10.333 = 2 × 5.167 (the set's end 138.9, share −0.2); under a Zangarmarsh lake
+ * 7.583 = 2 × 3.792 (194.4, −0.5); a yard above either surface it is the zone's again (1.5 and 3.028, `-above-*`).
+ */
+export function shapedSceneFog(set: ShapedFogSet, underwater: boolean, out: ShapedFog): ShapedFog {
+  shapedBlendedFog(set, out);
+  if (underwater) out.density *= UNDERWATER_SHAPED_DENSITY_SCALE;
   return out;
 }
 

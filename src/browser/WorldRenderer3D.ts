@@ -37,8 +37,9 @@ import { SpellVisualIds } from "./SpellVisualIds.js"; // 22.10 ARC-2 S4a
 import { captureBenchmarkWebGl, type BenchmarkEnvironmentInput } from "./BenchmarkManifest.js"; // 21.10 ARC-2 S1
 import {
   distanceFogRange, distanceHorizonRange, encodeShapedFogFar, installShapedFogChunks, shapedFogEnd, shapedFogMap,
-  shapedZoneFog, WOW_FAR_CLIP, type DistanceFogRange, type ShapedFog,
+  shapedSceneFog, WOW_FAR_CLIP, type DistanceFogRange, type ShapedFog,
 } from "./DistanceFog.js"; // 7.66: the shaped fog
+import { shapedFogOf, shapedFogSet, type ShapedFogSet } from "./ShapedFogSet.js"; // 15.11 (fx11, 7.66)
 import { HorizonBand } from "./HorizonBand.js";
 import { ENVIRONMENT_DETAIL_FAR_MAX, environmentHouseRange, environmentShellRange, environmentStreamRange, faithfulReach, sceneryFarCap } from "./SceneryReach.js"; // 7.44: house; 15.11 (7.66 tail): faithfulReach
 import { admissionQuota } from "./AdmissionQuotas.js"; // 15.11 (7.05, far8)
@@ -311,8 +312,11 @@ import type { VehicleAimArcShape } from "./game/VehicleAimArc.js";
 import { vehicleCatalogOfRows, type VehicleCatalog, type VehicleCatalogRows, type VehicleSeatEntry } from "../world/VehicleDbc.js"; // 11.02-H; 22.10 ARC-2 S2a: built from pushed rows
 import { NO_RENDER_INPUTS, type RenderInputs } from "./RenderInputs.js"; // 22.10 ARC-2 S2a
 import {
-  NO_RENDER_LOOKUPS, creatureDisplayAnswered, mountDisplayModel, type RenderLookups,
+  NO_RENDER_LOOKUPS, creatureDisplayAnswered, type RenderLookups,
 } from "./RenderLookups.js"; // 22.10 ARC-2 S2b
+import { mountDisplayModelOf, mountShownDisplay } from "./MountPassengerHold.js"; // 6.20 (15.11, combat11)
+import { woundTakesWholeBody } from "./WoundTrack.js"; // 6.43 (15.11, combat11)
+import { advanceOffscreenSwing } from "./OffscreenSwingClock.js"; // 6.06 (15.11, combat11)
 import {
   GROUND_TARGET_POINT_RING, SELECTION_RING_BANDS, SELECTION_RING_SEGMENTS, groundTargetAreaRing,
   type GroundTargetRingHeights, type SelectionRingHeights,
@@ -322,7 +326,7 @@ import {
   createWmoCameraWalkState, walkWmoFromCamera, wmoCameraWalkNote, wmoCameraWalkStale, wmoGroupIsRoom, wmoGroupOfCollision, wmoGroupShowsSky,
   wmoGroupTwinsUncertain, wmoHasOutdoorGroup, wmoPlacementOwns, wmoWalkReachedOutside, type WmoCameraWalkState,
 } from "./WmoCameraWalk.js"; // 02.11
-import { createMapOccluderFrame, mapOccludersForModel, wmoOccludersApply } from "./MapOccluders.js"; // 15.11 (7.54, portal8)
+import { createMapOccluderFrame, mapOccluderMode, mapOccludersForModel, wmoOccludersApply } from "./MapOccluders.js"; // 15.11 (7.54, portal8, occl11)
 import { UnitSightPass } from "./UnitSceneSight.js"; // 5.16 (15.11)
 import { FarWmoFloors } from "./FarWmoFloors.js"; // 3.13 (15.11)
 import { MapOccluderClient } from "./MapOccluderClient.js"; // 15.11 (7.54, portal8)
@@ -5531,6 +5535,7 @@ export class WorldRenderer3D {
     this.#zoneFogColour.copy(fog.color);
     this.#zoneFogNear = fog.near;
     this.#zoneFogFar = fog.far;
+    shapedFogOf(sample, this.#zoneShapedSet); // 15.11 (fx11, 7.66)
 
     // These are multipliers, not colours to decode. WorldLighting keeps their numeric display-space
     // values, scales both together for headroom, and performs their one gamma conversion only at
@@ -6264,6 +6269,7 @@ export class WorldRenderer3D {
     this.#zoneFogColour.copy(fog.color);
     this.#zoneFogNear = fog.near;
     this.#zoneFogFar = fog.far;
+    shapedFogSet(fog.far, fog.near / fog.far, WOW_FAR_CLIP, this.#zoneShapedSet); // 15.11 (fx11, 7.66)
     const background = this.#skyScene.background;
     if (background instanceof THREE.Color) background.set(SKY_COLOR);
 
@@ -6304,14 +6310,18 @@ export class WorldRenderer3D {
     fog.near = range.near;
     fog.far = range.far;
     // 7.66: on maps from 530 up the zone's fog as Wow.exe shapes it — the Light end and share give the density, the
-    // end goes to the far clip, here the ground this client draws (DistanceFog.ts). Water as before.
+    // end goes to the far clip, here the ground this client draws (DistanceFog.ts). Under water as well (15.11 fx11).
     this.#sceneFogDensity = 1;
-    if (shapedFogMap(this.#fogMap) && !this.#underwater && this.#zoneFogFar > 0) {
-      const shaped = shapedZoneFog(this.#zoneFogFar, this.#zoneFogNear / this.#zoneFogFar, WOW_FAR_CLIP, this.#shapedZone);
+    if (shapedFogMap(this.#fogMap) && this.#zoneFogFar > 0) {
+      // 15.11 (fx11): from the sets converted one by one before their blend (ShapedFogSet.ts), not from the blend; and
+      // under a liquid too, with the density doubled (DistanceFog.ts `shapedSceneFog`, stand frames fx11-*-under-*).
+      const shaped = shapedSceneFog(this.#zoneShapedSet, this.#underwater, this.#shapedZone);
       if (shaped.density !== 1) {
-        // The faithful levels draw it as is; the enhanced path stretches it as it stretches every fog (7.39).
-        const stretched = distanceFogRange(shaped.near, shapedFogEnd(this.#horizon !== undefined),
-          this.#lightingProfile.quality, false, this.#atmosphere?.haze ?? 0, this.#distanceFog);
+        // The faithful levels draw it as is; the enhanced path stretches it as it stretches every fog (7.39), but not
+        // under water. An end short of the far clip (a set too near to shape, blended in) is kept as the original's.
+        const end = shaped.far >= WOW_FAR_CLIP ? shapedFogEnd(this.#horizon !== undefined) : shaped.far;
+        const stretched = distanceFogRange(shaped.near, end,
+          this.#lightingProfile.quality, this.#underwater, this.#atmosphere?.haze ?? 0, this.#distanceFog);
         fog.near = stretched.near;
         fog.far = stretched.far;
         this.#sceneFogDensity = shaped.density;
@@ -6328,6 +6338,7 @@ export class WorldRenderer3D {
   #sceneFogDensity = 1;
   #interiorFogDensity = 1;
   readonly #shapedZone: ShapedFog = { near: 0, far: 0, density: 1 };
+  readonly #zoneShapedSet: ShapedFogSet = { end: 640, share: 0, density: 1 };
 
   /**
    * 7.66: just before the frame is drawn, a shaped fog's far distance goes into the uniforms in the shaders' encoding
@@ -14504,18 +14515,21 @@ export class WorldRenderer3D {
       .elements;
     const binds = (model.doodadRooms?.length ?? 0) > 0;
     const rooms = binds ? this.#interiorOnlyRoomsOf(placed) : undefined;
-    // 15.11 (7.54, portal8): the map's occluders hide groups and doors in their shadow (`0x79a160`, `0x7a85e0`), and only
-    // while the camera hangs over no WMO at all (`0x795d40` leaves 0x00cd87a4 at 0: the unclipped volumes of `0x79a790`).
+    // 15.11 (7.54, portal8): the map's occluders hide groups and doors in their shadow (`0x79a160`, `0x7a85e0`).
     // `#fogMap` is this frame's map, set at the start of every submission; no records yet: no occluders.
     if (this.#baseUrl && this.#mapOccluderClient?.baseUrl !== this.#baseUrl) this.#mapOccluderClient = new MapOccluderClient(this.#baseUrl);
-    const occluderRecords = room < 0 && wmoOccludersApply(this.#cameraSurfaceKnown, this.#cameraWmoSurface)
-      ? this.#mapOccluderClient?.records(this.#fogMap) : undefined;
+    // occl11: whole outside a room, the street included; cut at the doors' depth from a room (`mapOccluderMode`).
+    const occluderMode = mapOccluderMode(this.#cameraSurfaceKnown, this.#cameraWmoSurface, room);
+    const occluderRecords = occluderMode !== "none" ? this.#mapOccluderClient?.records(this.#fogMap) : undefined;
     if (state.walkedOccluders !== occluderRecords) state.walked = false;
     if (wmoCameraWalkStale(state, clip, room, rooms)) {
       this.#wmoCameraModel.copy(this.#camera.position).applyMatrix4(placed.worldToModel);
       state.walkedOccluders = occluderRecords;
-      const occluders = occluderRecords !== undefined ? mapOccludersForModel(this.#mapOccluders, occluderRecords, this.#camera.position,
-        this.#camera.projectionMatrix.elements, this.#camera.matrixWorldInverse.elements, placed.modelToWorld.elements) : undefined;
+      const occluders = occluderRecords === undefined ? undefined : occluderMode === "doors"
+        ? (doorDepth: number) => mapOccludersForModel(this.#mapOccluders, occluderRecords, this.#camera.position,
+          this.#camera.projectionMatrix.elements, this.#camera.matrixWorldInverse.elements, placed.modelToWorld.elements, doorDepth)
+        : mapOccludersForModel(this.#mapOccluders, occluderRecords, this.#camera.position,
+          this.#camera.projectionMatrix.elements, this.#camera.matrixWorldInverse.elements, placed.modelToWorld.elements);
       const answer = walkWmoFromCamera(model.groups, portals, room, this.#wmoCameraModel, clip, rooms?.apertures, state.scratch, undefined, occluders);
       wmoCameraWalkNote(state, clip, room, rooms);
       state.reachedOutside = answer.used && wmoWalkReachedOutside(model.groups, state.scratch);
@@ -16175,7 +16189,9 @@ export class WorldRenderer3D {
     if (standIn && shown) this.#standIns.note(object.guid, displayId, standIn, metadata?.model, wearing);
     // After the unit's own scale is settled and before it is posed: the seat is measured against
     // `unit.scale`, and the pose the rider takes depends on whether the mount is really there.
-    this.#updateMount(unit, mountDisplayModel(object, this.#lookups.creatureDisplays), client); // 22.10 ARC-2 S2b
+    // 6.20 (15.11, combat11): a mount whose field went to 0 with a passenger aboard stays under its rider (MountPassengerHold.ts).
+    this.#updateMount(unit, mountDisplayModelOf(mountShownDisplay(unit, unitFields.mountDisplayId(object) ?? 0,
+      () => this.#carriesPassengers(object.guid)), this.#lookups.creatureDisplays), client); // 22.10 ARC-2 S2b
     if (unit.mount?.template) {
       this.#unitAnimationPrefetch.set(unit.mount.template, unit.mount.metadata.model);
     }
@@ -16569,6 +16585,12 @@ export class WorldRenderer3D {
     if (!this.#unitAnimationBudget.take()) return;
     template.merged = mergeSkinnedClips(template, clips, { maxClips: 16, milliseconds: 1 }).complete;
     this.#unitAnimationBudget.done(); // P2-09a
+  }
+
+  /** 6.20 (15.11, combat11): whether a rendered unit sits in a seat of `guid` (asked only when its mount field changes). */
+  #carriesPassengers(guid: bigint): boolean {
+    for (const other of this.#units.values()) if (other.seatedOn === guid) return true;
+    return false;
   }
 
   /**
@@ -17312,6 +17334,7 @@ export class WorldRenderer3D {
     if (!portraitNeedsPose && !this.#frustum.intersectsSphere(this.#unitSphere)) {
       skinned.skeleton.setPoseFrozen(true);
       mount?.skinned?.skeleton.setPoseFrozen(true);
+      advanceOffscreenSwing(this.#actions.get(object.guid)?.shown, elapsed); // 6.06 (15.11, combat11): the victim's cue clock
       return;
     }
     // Server actions, combat, selection and bone-attached emitters need every pose. Small authored
@@ -17501,6 +17524,8 @@ export class WorldRenderer3D {
       if (bow !== undefined) {
         bow.draw.stop(now);
         dropBowDrawVisuals(bow, this.#bowDrawHost);
+        // 5.05 (15.11, combat11): the arrow and the string go with the mark at once; the cycle's clip runs to its end.
+        if (mark === undefined && this.#bowDrawTail(unit, object, bow, pose, now, metadata)) return;
         unit.bowDraw = undefined;
       }
       return;
@@ -17536,6 +17561,29 @@ export class WorldRenderer3D {
       piece: pieceKey === undefined ? undefined : unit.attached.get(pieceKey),
       item: ranged,
     }, this.#bowDrawHost, now, elapsed);
+  }
+
+  /**
+   * 5.05 (15.11, combat11): after the mark goes (a cancel), the load/hold clip on show runs to its end and LoadBow still hands
+   * to HoldBow (BowDraw.ts `#afterMark`, stand `runs/combat11-d2-bow-move`); true while the cycle still names a stance.
+   */
+  #bowDrawTail(unit: RenderedUnit, object: WorldObjectState, bow: BowDrawUnit, pose: UnitPose, now: number,
+    metadata: UnitModel | undefined): boolean {
+    const template = unit.template;
+    if (template === undefined) return false;
+    const attached = attachedOf(metadata);
+    const subClass = rangedSubClass(attached?.find((item) => item.slot === EQUIPMENT_SLOT_RANGED));
+    const sheath = this.#shownSheathOf(unit) ?? (object.fields.get(UPDATE_FIELDS.UNIT_FIELD_BYTES_2.offset) ?? 0) & 0xff;
+    const stance = bow.draw.step({
+      now, mark: false, sheath, subClass, movement: object.movementFlags,
+      channel: (object.fields.get(UPDATE_FIELDS.UNIT_CHANNEL_SPELL.offset) ?? 0) !== 0, self: false, reqAmmo: false,
+      base: shownClip(bow.base, unit.action, unit.animationId, template),
+      upper: shownClip(bow.upper, unit.overlayAction, unit.overlayAnimationId, template),
+      events: undefined, weapon: undefined, ammo: false, queued: false,
+    });
+    if (stance === undefined) return false;
+    pose.rangedLoad = rangedLoadLadder(stance, readyStance(attached, 2));
+    return true;
   }
 
   /** 5.05 (15.11, bow9): the environment client of the frame's draw, for the bow draw's builds. */
@@ -18149,7 +18197,7 @@ export class WorldRenderer3D {
       if (animation === "wait") break;
       // 03.11 (6.33): a wound is laid over the unit and is then none of the queue's business.
       if (!entry.held && isFlinchAnimation(animation)) {
-        this.#flinchUnit(unit, animation, baseIdle);
+        this.#flinchUnit(unit, animation, woundTakesWholeBody(baseIdle, pose)); // 6.43 (15.11, combat11): asleep, whole body
         queue.remove(entry);
         continue;
       }

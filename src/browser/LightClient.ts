@@ -12,6 +12,7 @@ import type {
 import type { BenchmarkAsyncReadinessStats } from "./RenderBenchmarkReadiness.js";
 import { RetryLadder } from "./RetryLadder.js"; // 05.10-A7b-0 1.24
 import { zoneOutlineWeights } from "./ZoneLightOutlines.js"; // 15.11 (light7)
+import { WOW_FAR_CLIP, shapedFogOf, shapedFogSet } from "./ShapedFogSet.js"; // 15.11 (fx11, 7.66)
 import type { LightOverride } from "../world/LightOverrideList.js"; // 15.11 (sky8, 7.67)
 
 export type { LightSample };
@@ -116,8 +117,11 @@ function sampleSet(set: LightParamSet, time: number): LightSample {
   const fogScale = Math.min(1, Math.max(-1,
     sampleBand(set.fogScale.times, set.fogScale.values, time, mixNumber) ?? 0.25));
   const sky = set.colours;
+  // 15.11 (fx11, 7.66): what a shaped map blends — this set converted by 0x007ecd80 in mode 1 (ShapedFogSet.ts).
+  const shaped = shapedFogSet(fogEnd, fogScale, WOW_FAR_CLIP, { end: 0, share: 0, density: 1 });
   return {
     colours, fogEnd, fogStart: fogEnd * fogScale,
+    shapedFogEnd: shaped.end, shapedFogShare: shaped.share, shapedFogDensity: shaped.density,
     waterShallowAlpha: set.waterShallowAlpha, waterDeepAlpha: set.waterDeepAlpha,
     oceanShallowAlpha: set.oceanShallowAlpha, oceanDeepAlpha: set.oceanDeepAlpha,
     // A gateway that predates P4 sends no glow at all, and that reads as none — the same tolerance
@@ -146,6 +150,11 @@ function sampleSet(set: LightParamSet, time: number): LightSample {
   };
 }
 
+/** A sample's fog start as a share of its end (band 1 of its set, or the blend of them). */
+function fogShareOf(sample: LightSample): number {
+  return sample.fogEnd > 0 ? sample.fogStart / sample.fogEnd : 0;
+}
+
 /** Blends two samples; `weight` is how much of `other` to take. */
 function blendSamples(base: LightSample, other: LightSample, weight: number): LightSample {
   if (weight <= 0) return base;
@@ -161,10 +170,22 @@ function blendSamples(base: LightSample, other: LightSample, weight: number): Li
     };
   }
   const between = (from: number, to: number) => from + (to - from) * weight;
+  // 15.11 (light11, 7.67): Wow.exe's blend 0x007ed4c0 lerps the fog end and the start's share (band 1), not the start:
+  // the start is end × share afterwards (0x007f16f0). Recorded in a Light.dbc band (WowOracle light11-v15-q25/q50/q75:
+  // end 260.18 / 339.94 / 419.54, start 35.77 / 59.49 / 89.14 between share 0.1 and 0.25 — a lerp of the starts
+  // gave 44.9 / 71.6 / 98.3).
+  const fogEnd = between(base.fogEnd, other.fogEnd);
+  const fogShare = between(fogShareOf(base), fogShareOf(other));
+  // 15.11 (fx11, 7.66): on a shaped map the same lerp runs on the sets 0x007ecd80 has already converted (each share
+  // clamped at 0 and each density its own), so the shaped fields blend beside the plain ones.
+  const from = shapedFogOf(base), to = shapedFogOf(other);
   return {
     colours,
-    fogEnd: between(base.fogEnd, other.fogEnd),
-    fogStart: between(base.fogStart, other.fogStart),
+    fogEnd,
+    fogStart: fogEnd * fogShare,
+    shapedFogEnd: between(from.end, to.end),
+    shapedFogShare: between(from.share, to.share),
+    shapedFogDensity: between(from.density, to.density),
     waterShallowAlpha: between(base.waterShallowAlpha, other.waterShallowAlpha),
     waterDeepAlpha: between(base.waterDeepAlpha, other.waterDeepAlpha),
     oceanShallowAlpha: between(base.oceanShallowAlpha, other.oceanShallowAlpha),

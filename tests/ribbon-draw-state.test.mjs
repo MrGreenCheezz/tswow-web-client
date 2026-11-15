@@ -56,8 +56,10 @@ test("6.15 a ribbon pass's alpha reference is 0x00ad8b7c's by its blend, and fla
   assert.equal(ribbonAlphaReference(1), 224 / 255, "alpha key");
   for (const blend of [2, 4, 5, 6]) assert.equal(ribbonAlphaReference(blend), 1 / 255, `blend ${blend}`);
   assert.equal(ribbonAlphaReference(3), 0, "no-alpha add is Gx blend 10, which reads 0");
-  assert.deepEqual(ribbonDrawState(0x10 | 0x02, 4), { depthTest: true, alphaTest: 1 / 255 });
-  assert.deepEqual(ribbonDrawState(0x10 | 0x08, 2), { depthTest: false, alphaTest: 1 / 255 });
+  // 15.11 (fx11): neither sets bit 4, so both are culled, nor bit 1, so both are lit (`face`, `vertexColours`,
+  // tests/fx11-ribbon-face.test.mjs).
+  assert.deepEqual(ribbonDrawState(0x10 | 0x02, 4), { depthTest: true, alphaTest: 1 / 255, face: "back", vertexColours: false });
+  assert.deepEqual(ribbonDrawState(0x10 | 0x08, 2), { depthTest: false, alphaTest: 1 / 255, face: "back", vertexColours: false });
 });
 
 test("6.15 a built ribbon carries its pass's depth test and gate, and still writes no depth", () => {

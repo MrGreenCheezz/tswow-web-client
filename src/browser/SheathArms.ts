@@ -50,17 +50,23 @@ export function keyBoneSubtree(parents: Int16Array, keyBones: Int16Array | undef
 }
 
 /** How much of the arm's clip is on the arm at `now`: in over the blend window, out over the same. */
-export function sheathArmWeight(arm: Pick<SheathArm, "startAt" | "duration" | "blend">, now: number): number {
+export function sheathArmWeight(arm: Pick<SheathArm, "startAt" | "duration" | "blend" | "releaseAt">, now: number): number {
   if (arm.duration <= 0) return 0;
   const time = (now - arm.startAt) / 1000;
   if (time < 0 || time >= arm.duration) return 0;
+  // 6.08 (15.11, combat11): a drawing arm lets go at its event and blends back over the clip's window (SheathCeremony.ts).
+  const released = arm.releaseAt === undefined ? -Infinity : (now - arm.releaseAt) / 1000;
+  if (released >= 0 && (arm.blend <= 0 || released >= arm.blend)) return 0;
   if (arm.blend <= 0) return 1;
-  return Math.max(0, Math.min(1, time / arm.blend, (arm.duration - time) / arm.blend));
+  return Math.max(0, Math.min(1, time / arm.blend, (arm.duration - time) / arm.blend,
+    released >= 0 ? 1 - released / arm.blend : 1));
 }
 
 /** Whether the arm's clip is on the arm at `now`. */
-export function sheathArmPlaying(arm: Pick<SheathArm, "startAt" | "duration">, now: number): boolean {
-  return arm.duration > 0 && now >= arm.startAt && now < arm.startAt + arm.duration * 1000;
+export function sheathArmPlaying(arm: Pick<SheathArm, "startAt" | "duration" | "blend" | "releaseAt">, now: number): boolean {
+  const end = arm.releaseAt === undefined ? arm.startAt + arm.duration * 1000
+    : Math.min(arm.startAt + arm.duration * 1000, arm.releaseAt + Math.max(0, arm.blend) * 1000);
+  return arm.duration > 0 && now >= arm.startAt && now < end;
 }
 
 /** Puts `bones` back at their rest: no translation off the pivot, no turn, unit scale. */

@@ -54,11 +54,41 @@ export function ribbonAlphaReference(blendMode: number): number {
   }
 }
 
+/** 15.11 (6.15): the M2 material flag that leaves a ribbon pass unculled (0x00832ea0 keeps !(flags & 4) as culled). */
+export const RIBBON_FLAG_TWO_SIDED = 0x04;
+
+/**
+ * 15.11 (fx11, 6.15): which face of this client's strip a culled ribbon keeps. Recorded on the stand (WowOracle
+ * `runs/fx11-rib-haunt-500` #1023, `fx11-rib-assn-200` #1012, `fx11-rib2-*`): the two ribbons whose material leaves bit 4
+ * clear (`haunt_missile`, `assassinate_missile`, flags 0x13) are drawn with D3DCULL_CW, the others with D3DCULL_NONE —
+ * the same CW the original sets for a one-sided M2 batch, which this client draws as `FrontSide` over the file's own
+ * triangle order. The original's strip runs below_k, above_k, below_k+1 (0x00980b70); `writeRibbonStrip` lays each quad
+ * below_k, below_k+1, above_k+1, above_k — the opposite turn — so the face the original keeps is three's back face.
+ */
+export type RibbonFace = "both" | "back";
+
+/** 15.11 (6.15): the M2 material flag that leaves a ribbon pass unlit (0x00832ea0 keeps !(flags & 1) as lit). */
+export const RIBBON_FLAG_UNLIT = 0x01;
+
+/**
+ * 15.11 (fx11, 6.15): whether a ribbon pass is coloured by its vertices. Recorded on the stand (WowOracle
+ * `runs/fx11-rib2-misd-300`, `-misd-800` #1005–1012: Misdirection's head ribbons, flags 0x14; `fx11-rib2-frog-200`,
+ * `-frog-500`: ArrowFrog's, 0x16): a lit pass is drawn with the vertex shader `shaders\vertex\vs_3_0\color_t1.bls`,
+ * which reads only position and texture coordinates and writes the colour 1.0 (its own `def c0`) for every vertex,
+ * where an unlit pass (`cdiffuse_t1.bls`) passes the vertex diffuse — the ribbon's colour and alpha tracks — on. Under
+ * the same pixel shader (`combiners_mod.bls`: texture × colour) a lit ribbon is its texture alone, unmodulated.
+ */
+export function ribbonVertexColoured(materialFlags: number): boolean {
+  return (materialFlags & RIBBON_FLAG_UNLIT) !== 0;
+}
+
 /** 15.11 (6.15): the draw states one ribbon pass sets that this client follows (0x00980b70). */
-export function ribbonDrawState(materialFlags: number, blendMode: number): { depthTest: boolean; alphaTest: number } {
+export function ribbonDrawState(materialFlags: number, blendMode: number): { depthTest: boolean; alphaTest: number; face: RibbonFace; vertexColours: boolean } {
   return {
     depthTest: (materialFlags & RIBBON_FLAG_NO_DEPTH_TEST) === 0,
     alphaTest: ribbonAlphaReference(blendMode),
+    face: (materialFlags & RIBBON_FLAG_TWO_SIDED) !== 0 ? "both" : "back",
+    vertexColours: ribbonVertexColoured(materialFlags),
   };
 }
 

@@ -46,6 +46,7 @@ export const KEY_BONE_SHOULDER_RIGHT = 3;
 export const KEY_BONE_SHOULDER_LEFT = 2;
 /** The sheath states of UNIT_FIELD_BYTES_2 byte 0. */
 const SHEATH_RANGED = 2;
+const SHEATH_MELEE = 1;
 const SLOT_MAIN_HAND = 15;
 const SLOT_OFF_HAND = 16;
 const SLOT_RANGED = 17;
@@ -128,6 +129,15 @@ export interface SheathArmPlan {
   readonly keyBone: number;
   readonly animation: number;
   readonly slots: readonly number[];
+  /** 6.08 (15.11, combat11): the arm's second clip, started when its first one on the same arm ends. */
+  readonly after?: boolean;
+  /** 6.08 (15.11, combat11): a draw — every piece it moves goes into a hand — lets the arm go at its event. */
+  readonly draws?: boolean;
+}
+
+/** 6.08 (15.11, combat11): whether a slot's piece is in the hand in `sheath` (a hand piece at 1, the ranged one at 2). */
+function drawnIn(slot: number, sheath: number): boolean {
+  return slot === SLOT_RANGED ? sheath === SHEATH_RANGED : sheath === SHEATH_MELEE;
 }
 
 /**
@@ -144,9 +154,19 @@ export function sheathArmPlans<Piece extends SheathPiece>(pieces: readonly Piece
     if (moving.length === 0) continue;
     const hand = moving.find((piece) => piece.slot !== SLOT_RANGED);
     const ranged = moving.find((piece) => piece.slot === SLOT_RANGED);
+    const draws = moving.every((piece) => drawnIn(piece.slot, to));
+    // 6.08 (15.11, combat11, stand `runs/combat11-b1-toggle-1to2`): a hand piece put away and the ranged piece drawn by one
+    // arm (ToggleSheath 1→2 with a one-hander in each hand and a bow) are two clips, not one: the off hand's HipSheath
+    // runs to its end (the blade on the hip at its $SHL), then that arm plays the bow's Sheath and the bow comes into the
+    // hand at that clip's own event — about 1.6 s after the toggle on HumanMale, where the off hand went at 0.5 s.
+    if (hand !== undefined && ranged !== undefined && drawnIn(hand.slot, from) && drawnIn(ranged.slot, to)) {
+      plans.push({ keyBone, animation: sheathAnimationFor(hand.sheathe), slots: [hand.slot] });
+      plans.push({ keyBone, animation: sheathAnimationFor(ranged.sheathe), slots: [ranged.slot], after: true, draws: true });
+      continue;
+    }
     const animation = from === SHEATH_RANGED && ranged !== undefined ? SHEATH_ANIMATION
       : sheathAnimationFor((hand ?? ranged)!.sheathe);
-    plans.push({ keyBone, animation, slots: moving.map((piece) => piece.slot) });
+    plans.push({ keyBone, animation, slots: moving.map((piece) => piece.slot), ...(draws ? { draws: true } : {}) });
   }
   return plans;
 }
@@ -160,6 +180,12 @@ export interface SheathArm extends SheathArmPlan {
   /** The clip's length and its blend window, in seconds; 0 for a clip this rig could not play. */
   readonly duration: number;
   readonly blend: number;
+  /**
+   * 6.08 (15.11, combat11): when the arm lets go of its clip (it then blends back over `blend`): a draw's event, otherwise
+   * the clip's end. On the stand a drawing arm (ToggleSheath 0→1, the bow's draw) left the clip at its event and was back
+   * in the body's pose a third of a second later; an arm putting a piece away played its clip to the end.
+   */
+  readonly releaseAt?: number;
 }
 
 export interface SheathCeremony {
@@ -179,15 +205,22 @@ export interface SheathCeremony {
 export function beginSheathCeremony(plans: readonly SheathArmPlan[], from: number, to: number, now: number,
   clip: (animation: number) => { readonly duration: number; readonly blend: number } | undefined,
   eventFraction: (animation: number, keyBone: number) => number): SheathCeremony {
-  const arms = plans.map((plan): SheathArm => {
+  const arms: SheathArm[] = [];
+  for (const plan of plans) {
     const shape = clip(plan.animation);
     const duration = shape !== undefined && Number.isFinite(shape.duration) && shape.duration > 0 ? shape.duration : 0;
     const fraction = Math.min(1, Math.max(0, eventFraction(plan.animation, plan.keyBone)));
-    return {
-      ...plan, startAt: now, eventAt: now + duration * fraction * 1000, endAt: now + duration * 1000,
+    // 6.08 (15.11, combat11): a second clip on an arm starts where its first one there ends.
+    const startAt = plan.after === true
+      ? arms.filter((arm) => arm.keyBone === plan.keyBone).reduce((end, arm) => Math.max(end, arm.endAt), now) : now;
+    const eventAt = startAt + duration * fraction * 1000;
+    const endAt = startAt + duration * 1000;
+    arms.push({
+      ...plan, startAt, eventAt, endAt,
       duration, blend: duration > 0 ? Math.min(shape!.blend, duration / 2) : 0,
-    };
-  });
+      ...(plan.draws === true && duration > 0 ? { releaseAt: eventAt } : {}),
+    });
+  }
   return { from, to, startedAt: now, arms, echoed: false };
 }
 
