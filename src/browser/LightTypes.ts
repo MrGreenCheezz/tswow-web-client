@@ -104,6 +104,18 @@ export interface LightIndexEntry {
   lights?: Record<number, LightSlots>;
   /** 05.10-A7b-5 (7.10): LiquidType rows by id; 06.11 (7.65): their light sets are in `params`. */
   liquids?: Record<number, LiquidLighting>;
+  /**
+   * 15.11 (light7): Wow.exe's own zone outlines on this map (Northrend's eleven), read by the gateway from the user's
+   * Wow.exe; absent from a gateway before payload v7 and wherever the file is not build 12340.
+   */
+  zoneOutlines?: ZoneLightOutline[];
+}
+
+/** 15.11 (light7): one zone outline, world yards, `points` = x0, y0, x1, y1, … (`ZoneLightOutlines.ts`). */
+export interface ZoneLightOutline {
+  map: number;
+  lightId: number;
+  points: number[];
 }
 
 export interface ResolvedColour {

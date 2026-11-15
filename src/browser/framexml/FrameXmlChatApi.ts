@@ -43,6 +43,7 @@ import {
   evaluateMacroOptions, installMacroOptionErrorSink, macroOptions, type MacroContext,
 } from "../macro/MacroOptions.js";
 import { installMacroClickFrames, installMacroLineExecutor } from "../macro/MacroRunner.js";
+import { installMacroCastSequence, luaMacroCastSequenceQuery } from "../macro/MacroCastSequence.js"; // 1.14 (15.11)
 import { FRAMEXML_SEAM_NAMES } from "./FrameXmlWorldSeam.js";
 import { frameXmlVehicleLive } from "./FrameXmlVehicle.js"; // 11.02-F2
 
@@ -1072,6 +1073,8 @@ export function installFrameXmlStockChat(
     })
     : undefined;
   const stopClickFrames = installMacroClickFrames((name) => bridge.getFrame(name));
+  // 1.14 (15.11): a macro button's `/castsequence` step from the stock QueryCastSequence (macro/MacroCastSequence.ts).
+  const stopCastSequence = installMacroCastSequence(luaMacroCastSequenceQuery(vm));
   // ERR_UNKNOWN_MACRO_OPTION_S goes where the client's ERR_* lines go: UIErrorsFrame's UI_ERROR_MESSAGE.
   const stopOptionErrors = errorTextRef ? installMacroOptionErrorSink((word) => {
     const [message] = bridge.runInMutationBatch(() => vm.call(errorTextRef, [word], 1));
@@ -1178,6 +1181,7 @@ export function installFrameXmlStockChat(
     pending.length = 0;
     stopMacroLines?.();
     stopClickFrames();
+    stopCastSequence(); // 1.14 (15.11)
     stopOptionErrors?.();
     if (restoreItemParseRef) bridge.runInMutationBatch(() => vm.call(restoreItemParseRef, [], 0));
     api.dispose();

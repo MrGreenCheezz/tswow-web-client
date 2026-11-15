@@ -148,6 +148,10 @@ test("renderer continues updating all admitted units and removes objects that le
     // ARC-2), and the prefetch of the units it did not draw.
     vehicles: () => undefined, swingWatch: { publish() {} }, results: {}, swingProgressOf: () => undefined,
     prefetches: 0, prefetchUnits() { this.prefetches++; },
+    // 26.10 (11.02, seat transitions), 04.11, 11.11 (5.32) and 15.11 (11.02): the vehicle passes #updateUnits
+    // gained after its last harness update; no vehicles here, so each is empty.
+    seatTransitions: { apply() {} }, seatTransitionNode: new THREE.Group(),
+    vehicleOwn: new Map(), vehicleAims: new Map(), vehicleCopies: new Map(),
     drawUnit(object) {
       this.draws.push(object.guid);
       if (!this.units.has(object.guid)) this.units.set(object.guid, {
@@ -188,6 +192,7 @@ test("equipment requests continue but ready attachment builds share the body and
   Object.assign(h, {
     unitBuildBudget: new FrameBuildBudget(2, 2, () => 0), builtUnits: {},
     programWarmup: { registerObject() {} }, disposeAttachedGlow() {},
+    shownSheathOf: () => undefined, // 5.05 (15.11, combat7): no shown state — the byte stands
     // 22.10 ARC-2 S2a: the enchant-glow tables arrive in the pushed render inputs; none here.
     inputs: { enchantGlow: undefined },
     wvmBuild() { builds++; return { geometry: new THREE.BufferGeometry(), materials: [] }; },
@@ -260,6 +265,7 @@ async function actionHarness() {
     weaponPose: () => "unarmed", actionAnimation: () => [7],
     attachedOf: (metadata) => metadata?.appearance?.attached, // 05.10-A7a-B 6.02
     combatAnimations: () => undefined, resolveAnimation: resolve, // 05.10-A7a-D 6.06: #entryAnimation asks for a swing variant
+    shownParryPayload: (payload) => payload, // 5.05 (15.11, combat7): #entryAnimation's parry by the shown sheath
     extendSidecarWait, poseExitClips, sidecarClaims, // 05.10-A7a-G2 6.19
     weaponMetadataPending: (metadata) => metadata === undefined || metadata.appearance === undefined
       || metadata.appearancePending === true, // 05.10-A7a-B 6.02
@@ -280,6 +286,7 @@ async function actionHarness() {
       this.played.push(animation);
     },
     clearOverlay() {},
+    shownSheathOf: () => undefined, // 5.05 (15.11, combat7)
   });
   const rendered = { template: { parents: [0], clips: new Map(), animations: new Set([7]) } };
   const queue = (held = false, overrides = {}) => {

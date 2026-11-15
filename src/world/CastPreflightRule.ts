@@ -19,8 +19,13 @@
  *    0x0071b090 — the active player with the CVar autoStand (0x00bd08f8, default "1") — stands it up (0x0071a360 →
  *    0x006dcb40(0), CMSG_STANDSTATECHANGE 0) and the cast goes on; else NOT_STANDING (0x45).
  *
- * Not modelled (no data in this client): 0x0080cce0's other CANT_DO_THAT_RIGHT_NOW tests — a spell outside the
- * OverrideSpellData row of PLAYER_FIELD_BYTES2's low word, and a vehicle seat's flags against the spell's kind.
+ * 0. 5.05 (15.11, combat7), first of all (re-2026-11-11/worldtails/w1.c 0x0080d0a4…): a spell that is not an
+ *    "attack" one (as in 1), cast by a player and not from an item, while PLAYER_FIELD_BYTES2's low word (the
+ *    player block +0x10e4) names an OverrideSpellData row (0x0065c290) whose Flags (+0x2c) lack 0x4: unless 0x007fe820
+ *    finds the spell among the row's ten (+0x4…+0x28), CANT_DO_THAT_RIGHT_NOW. The realm never makes this check.
+ *
+ * Not modelled (no data in this client): 0x0080cce0's other CANT_DO_THAT_RIGHT_NOW test — a vehicle seat's flags
+ * against the spell's kind (SpellInfo::CheckVehicle's mirror; the realm makes that one with the same code).
  */
 
 /** SpellCastResult (SharedDefines.h). */
@@ -59,11 +64,25 @@ export interface CastPreflightItem {
   readonly maxDurability: number;
 }
 
+/** 5.05 (15.11, combat7): an OverrideSpellData row as 0x0080cce0 reads it — Flags (+0x2c) and Spells[10] (+0x4). */
+export interface OverrideSpellRow {
+  readonly flags: number;
+  readonly spells: readonly number[];
+}
+
+/** OverrideSpellData Flags bit 0x4: the row restricts nothing (0x0080cce0 skips the test). */
+const OVERRIDE_SPELL_FLAG_UNRESTRICTED = 0x4;
+
 /** The player as 0x0080cce0 reads it. */
 export interface CastPreflightCaster {
   readonly health: number;
   readonly playerFlags: number;
   readonly rangedItem: CastPreflightItem | undefined;
+  /**
+   * 5.05 (15.11, combat7): the OverrideSpellData row PLAYER_FIELD_BYTES2's low word names, when it is non-zero and the
+   * row is known; absent: no test (no override, or the rows have not landed).
+   */
+  readonly overrideSpells?: OverrideSpellRow | undefined;
 }
 
 /** `local_5` of 0x0080cce0: Effect[0] ATTACK, a ranged spell or an auto-repeating one. */
@@ -86,9 +105,21 @@ export function rangedItemUsable(item: CastPreflightItem | undefined): boolean {
   return (item.flags & ITEM_FIELD_FLAG_WRAPPED) !== 0 || item.maxDurability === 0 || item.durability !== 0;
 }
 
-/** 0x0080cce0's refusals 1–3 for the active player's spell, in its order; undefined lets the cast go on. */
-export function castPreflightRefusal(spell: CastPreflightSpell, caster: CastPreflightCaster): number | undefined {
+/** 5.05 (15.11, combat7): refusal 0 — the spell is outside a restricting OverrideSpellData row (0x007fe820). */
+export function overrideSpellRefused(spellId: number, row: OverrideSpellRow | undefined): boolean {
+  return row !== undefined && (row.flags & OVERRIDE_SPELL_FLAG_UNRESTRICTED) === 0 && !row.spells.includes(spellId);
+}
+
+/**
+ * 0x0080cce0's refusals 0–3 for the active player's spell, in its order; undefined lets the cast go on. `spell.id`
+ * is needed for refusal 0 only (absent: no test).
+ */
+export function castPreflightRefusal(spell: CastPreflightSpell & { readonly id?: number }, caster: CastPreflightCaster): number | undefined {
   const attack = attackSpell(spell);
+  // 5.05 (15.11, combat7): refusal 0, before the PLAYER_FLAGS tests.
+  if (!attack && spell.id !== undefined && overrideSpellRefused(spell.id, caster.overrideSpells)) {
+    return SPELL_FAILED_CANT_DO_THAT_RIGHT_NOW;
+  }
   if ((caster.playerFlags & PLAYER_FLAGS_NO_MELEE_ABILITY) !== 0) {
     if (attack || swingSpell(spell)) return SPELL_FAILED_CANT_DO_THAT_RIGHT_NOW;
   } else if (!attack && (caster.playerFlags & PLAYER_ALLOW_ONLY_ABILITY) !== 0) {

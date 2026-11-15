@@ -86,7 +86,7 @@ test("TerrainSplatClient: ?v=2 on splat.json and alpha.png only; the array takes
     "33-32": { layers: [layerId("a")] },
   });
   try {
-    assert.equal(TERRAIN_SPLAT_CLIENT_VERSION, 2);
+    assert.equal(TERRAIN_SPLAT_CLIENT_VERSION, 3); // 15.11 (7.16): v3, the cube maps
     const client = new TerrainSplatClient("ws://example.test:1234/world");
     const big = { x: 32, y: 32 };
     const plain = { x: 33, y: 32 };
@@ -96,8 +96,8 @@ test("TerrainSplatClient: ?v=2 on splat.json and alpha.png only; the array takes
     await settle();
     const path = (url) => { const parsed = new URL(url); return `${parsed.pathname}${parsed.search}`; };
     const asked = mocks.urls.map(path);
-    assert.ok(asked.includes("/terrain-splat/1/32/32?v=2"));
-    assert.ok(asked.includes("/terrain-splat/1/32/32/alpha.png?v=2"));
+    assert.ok(asked.includes("/terrain-splat/1/32/32?v=3"));
+    assert.ok(asked.includes("/terrain-splat/1/32/32/alpha.png?v=3"));
     assert.ok(asked.includes("/terrain-splat/1/32/32/index.png"), "index.png did not change: no version");
     assert.ok(!asked.some((url) => url.startsWith("/terrain-layer/") && url.includes("v=")), "layer ids carry their own version");
 

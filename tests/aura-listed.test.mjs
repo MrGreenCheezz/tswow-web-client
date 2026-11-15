@@ -54,3 +54,19 @@ test("3.68 (11.11): a passive is shown by its Effect column (record +0x11C), an 
 test("a row cached before the attributes reached the client is not held back by them", () => {
   assert.equal(auraListed({ flags: own }, { effectAura: [4, 0, 0] }, SELF, PET), true);
 });
+
+// 3.68 (15.11): RequiredAuraVision (Wow.exe 0x0053D580 → 0x004F72E0, .runtime/re-2026-11-15/spell7/s1.c). Rows from the base
+// dataset's Spell.dbc: 26869 «Влюбленный» (vision 1, aura 23) and 44067 «Значок поставщика» (vision 2, Attributes 0x180 — so
+// hidden anyway by 0x80), here with its 0x80 bit off to show the vision step alone.
+test("RequiredAuraVision lists the aura only while bit (v − 1) of the player's aura-vision byte is set", () => {
+  const lovesick = { attributes: attr(0, 0x100), effects: [6, 0, 0], effectAura: [23, 0, 0], requiredAuraVision: 1 };
+  assert.equal(auraListed({ flags: own }, lovesick, SELF, PET, 0), false, "no vision bit");
+  assert.equal(auraListed({ flags: own }, lovesick, SELF, PET, 0x01), true, "bit 0");
+  assert.equal(auraListed({ flags: own }, lovesick, SELF, PET, 0x02), false, "another bit");
+  assert.equal(auraListed({ flags: own }, lovesick, SELF, PET), false, "no active player");
+  const badge = { attributes: attr(0, 0x100), effects: [6, 0, 0], effectAura: [4, 0, 0], requiredAuraVision: 2 };
+  assert.equal(auraListed({ flags: others, casterGuid: OTHER }, badge, SELF, PET, 0x02), true);
+  assert.equal(auraListed({ flags: others, casterGuid: OTHER }, badge, SELF, PET, 0x01), false);
+  assert.equal(auraListed({ flags: own }, { ...badge, requiredAuraVision: 0 }, SELF, PET), true, "0: no requirement");
+  assert.equal(auraListed({ flags: own }, { ...badge, requiredAuraVision: undefined }, SELF, PET), true, "an older gateway's row");
+});

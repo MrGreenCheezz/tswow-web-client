@@ -35,6 +35,7 @@ function fixture() {
   // 22.10 ARC-2 S2a: nothing pushed (`setRenderInputs`), so no enchant tables and no glow, as before.
   Object.assign(harness, { inputs: NO_RENDER_INPUTS, unitBuildBudget: { take: () => true, done() {} }, builtUnits: {}, // P2-09a: done() ends a build
     programWarmup: { registerObject() {} },
+    shownSheathOf: () => undefined, // 5.05 (15.11, combat7): no shown state — the byte stands
     wvmBuild: () => ({ geometry, materials: [new THREE.MeshBasicMaterial()] }) });
   const unit = { attached: new Map(), skinned: {}, template: {} };
   harness.updateAttachments(unit, { appearance: { attached: [{ slot: 15, side: 0, model: 'weapon', texture: '' }] } },

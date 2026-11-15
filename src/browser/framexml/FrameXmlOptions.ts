@@ -26,7 +26,7 @@
 import { SETTING_GROUPS, settingDefinition, type SettingGroup } from "../ui/SettingsModel.js";
 import { sectionSettings } from "../ui/SettingsSections.js";
 import {
-  FRAME_XML_SETTINGS_CVARS, FRAME_XML_WEBCLIENT_CVARS, type FrameXmlSettingsCVarAdapter,
+  FRAME_XML_SETTINGS_CVARS, FRAME_XML_WEBCLIENT_CVARS, frameXmlSettingsCVarStartText, type FrameXmlSettingsCVarAdapter,
 } from "./FrameXmlSettingsCVar.js";
 import type { FrameXmlSeamBinding } from "./FrameXmlWorldSeam.js";
 import { FRAMEXML_HOST_HOOK_GLOBAL } from "./FrameXmlHostHooks.js"; // L5b 3.27
@@ -97,7 +97,8 @@ export function createFrameXmlOptionsModel(
     },
     restoreDefaults: (names) => {
       for (const name of names) {
-        const value = cvars.getDefault(name);
+        // 5.37 (15.11): the settings' own start, not GetCVarDefault (Wow.exe's registered string since then).
+        const value = frameXmlSettingsCVarStartText(name) ?? cvars.getDefault(name);
         if (value !== undefined && cvars.get(name) !== value) cvars.set(name, value);
       }
     },

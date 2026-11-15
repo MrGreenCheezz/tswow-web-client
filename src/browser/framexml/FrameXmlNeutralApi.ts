@@ -27,6 +27,32 @@
 
 import { FRAMEXML_GETTEXT_NEUTRAL, FRAMEXML_GETTEXT_PRELUDE } from "./FrameXmlGetText.js";
 import { FRAMEXML_CENSUS_REMAINDER_NEUTRAL } from "./FrameXmlCensusRemainder.js";
+import { WOW_CVAR_COMPUTED_DEFAULTS, WOW_CVAR_REGISTRY } from "./WowCVarRegistry.js";
+import { FRAME_XML_WEBCLIENT_CVARS, frameXmlSettingsCVarStartText } from "./FrameXmlSettingsCVar.js";
+
+/**
+ * 5.37/3.27: every registration of Wow.exe with a default string, as a Lua table of `{ lower-cased name, default }`
+ * for the neutral CVar map (the defaults are plain ASCII, so JSON's quoting is Lua's).
+ */
+const FRAMEXML_REGISTERED_CVAR_DEFAULTS_LUA = `{ ${[...WOW_CVAR_REGISTRY.values()]
+  .flatMap((row) => (row.defaultValue === undefined ? []
+    : [`{ ${JSON.stringify(row.name.toLowerCase())}, ${JSON.stringify(row.defaultValue)} }`]))
+  .join(", ")} }`;
+
+/**
+ * Follow-up of 15.11: the registrations with a computed default, as `{ name, typical value, { [locale] = value } }`
+ * (WowCVarRegistry.ts WOW_CVAR_COMPUTED_DEFAULTS), and this client's own `webclient_` CVars with their settings'
+ * start values — the «WebClient» options category's sliders read them, and a boot with no settings host behind the
+ * CVar bridge must not hand them nil. Where a settings host is there, its answer comes first, as before.
+ */
+const FRAMEXML_COMPUTED_CVAR_DEFAULTS_LUA = `{ ${WOW_CVAR_COMPUTED_DEFAULTS.map((row) => {
+  const locales = Object.entries(row.byLocale ?? {}).map(([locale, value]) => `${locale} = ${JSON.stringify(value)}`).join(", ");
+  return `{ ${JSON.stringify(row.name.toLowerCase())}, ${JSON.stringify(row.value)}, { ${locales} } }`;
+}).join(", ")} }`;
+const FRAMEXML_WEBCLIENT_CVAR_DEFAULTS_LUA = `{ ${FRAME_XML_WEBCLIENT_CVARS.flatMap((row) => {
+  const value = frameXmlSettingsCVarStartText(row.cvar);
+  return value === undefined ? [] : [`{ ${JSON.stringify(row.cvar.toLowerCase())}, ${JSON.stringify(value)} }`];
+}).join(", ")} }`;
 
 export type FrameXmlApiGroup =
   | "cvar" | "addon" | "actionbar" | "binding" | "money" | "chat" | "unit" | "quest"
@@ -660,8 +686,11 @@ do
   -- Keep the seed narrow: unknown names still remain nil.
   local values = {
     lasttalkedtogm = "", playerstatleftdropdown = "", playerstatrightdropdown = "",
-    -- InterfaceOptionsFrame.lua's own uvarInfo declares these three defaults.
-    targetoftargetmode = "5", displayworldpvpobjectives = "2", combattextfloatmode = "1",
+    -- Wow.exe's registered defaults (WowCVarRegistry.ts; 5.37 census of 15.11). uvarInfo's default in
+    -- InterfaceOptionsFrame.lua is only the uvar's start value: the Display panel copies GetCVar into
+    -- WORLD_PVP_OBJECTIVES_DISPLAY at PLAYER_ENTERING_WORLD, and displayWorldPVPObjectives is registered with
+    -- "1" (0x0051de13, the string at 0x009e1464; uvarInfo says "2") — world PvP objectives always shown.
+    targetoftargetmode = "5", displayworldpvpobjectives = "1", combattextfloatmode = "1",
     -- 05.10-3.21 review: unset, the Objectives panel's «Мгновенное отображение полного текста» box set
     -- the uvar QUEST_FADING_DISABLE to nil at PLAYER_ENTERING_WORLD (BlizzardOptionsPanel_SetupControl),
     -- and QuestInfo/QuestFrame compare it with "0"/"1". The value is Wow.exe's registered default, "1"
@@ -696,18 +725,26 @@ do
     -- panel's box copies GetCVar into SHOW_BUFF_DURATIONS at login; unset, it copied nil and
     -- BuffFrame.lua:254 hid the time under every buff and debuff.
     buffdurations = "1",
-    -- Inactive facilities still need typed values for their dropdown OnLoad.
-    conversationmode = "inline", camerasmoothstyle = "0",
-    camerasmoothtrackingstyle = "0", voicechatmode = "0", basemip = "0",
+    -- Typed values for dropdown OnLoads. conversationMode "inline" (registered "popout") is this client's
+    -- observation: no Real ID conversations, and chat is outside the plan. The camera's two styles are only the
+    -- offline answer — a mount answers them from the settings model and the camera (FrameXmlSettingsCVar.ts,
+    -- FrameXmlCameraCVars.ts) — and take the registered "4" (0x005fdd4b/0x005fdd71, the pointer 0x00ad1c2c → "4").
+    conversationmode = "inline", camerasmoothstyle = "4",
+    camerasmoothtrackingstyle = "4", voicechatmode = "0", basemip = "0",
+    -- This client's observation, not Wow.exe's default "0" (0x005238a0): the interface size always applies
+    -- (FrameXmlOptions.ts FRAMEXML_OPTIONS_FIXED_ON), so the Video panel's switch refreshes ticked.
+    useuiscale = "1",
     -- WorldMapFrame's own defaults. VARIABLES_LOADED reads worldMapOpacity through tonumber()
     -- and WorldMapFrame_SetOpacity(nil) then failed at WorldMapFrame.lua:2139, closing the map
     -- on the size-down button; questPOI unset left the objectives checkbox unchecked and
-    -- showBattlefieldMinimap unset left WorldMapZoneMinimapDropDown's text empty.
+    -- showBattlefieldMinimap unset left WorldMapZoneMinimapDropDown's text empty. Its registered default is "0"
+    -- (0x0051ee41, the string at 0x009e14a0: «Никогда»): the zone map opens in a battleground only once the player
+    -- picks it (Shift+M or the world map's dropdown).
     worldmapopacity = "0", miniworldmap = "0", questpoi = "1", advancedworldmap = "0",
-    showbattlefieldminimap = "1",
-    -- InterfaceOptionsFrame.lua:322-323's defaults; a live mount answers both from the settings
-    -- rows (FrameXmlSettingsCVar.ts) before this map.
-    lootundermouse = "0", autolootdefault = "0",
+    showbattlefieldminimap = "0",
+    -- The registered defaults (0x0051db1b "1", 0x0051db43 "0"); a live mount answers both from the settings rows
+    -- (FrameXmlSettingsCVar.ts) before this map. uvarInfo's lootUnderMouse "0" is only the uvar's start value.
+    lootundermouse = "1", autolootdefault = "0",
     -- Blizzard_TimeManager's clock and alarm (blizzard_timemanager.lua:91-92 reads alarmTime
     -- unguarded). The client ships 12-hour time for enUS; a ruRU player reads 24-hour clocks,
     -- so the military-time switch starts on here and only an enUS locale turns it back off
@@ -715,6 +752,22 @@ do
     showclock = "1", timemgralarmtime = "0", timemgralarmmessage = "",
     timemgralarmenabled = "0", timemgruselocaltime = "0", timemgrusemilitarytime = "1",
   }
+  -- 5.37/3.27 (15.11): every other CVar Wow.exe registers at start-up (0x00767fc0 calls, WowCVarRegistry.ts) exists
+  -- with its registered default before anything is stored — what GetCVar answers on a first start with no
+  -- config line. The stock options' sliders of controls this client cannot honour (farclip, weatherDensity, the
+  -- voice volumes, toastDuration…) used to read nil here and pass it to Slider:SetValue. A name Wow.exe does not
+  -- register stays nil, and the names above keep their own value.
+  for _, row in ipairs(${FRAMEXML_REGISTERED_CVAR_DEFAULTS_LUA}) do
+    if values[row[1]] == nil then values[row[1]] = row[2] end
+  end
+  -- A computed default is still a value: what Wow.exe computes on a typical machine, by locale where it depends on
+  -- it (WowCVarRegistry.ts WOW_CVAR_COMPUTED_DEFAULTS); then this client's own webclient_ CVars at their start.
+  for _, row in ipairs(${FRAMEXML_COMPUTED_CVAR_DEFAULTS_LUA}) do
+    if values[row[1]] == nil then values[row[1]] = row[3][__fxLocale] or row[2] end
+  end
+  for _, row in ipairs(${FRAMEXML_WEBCLIENT_CVAR_DEFAULTS_LUA}) do
+    if values[row[1]] == nil then values[row[1]] = row[2] end
+  end
   local defaults = {}
   for key, value in pairs(values) do defaults[key] = value end
   -- These are observations of the current browser client, not settings that
@@ -724,7 +777,7 @@ do
   local readOnly = {
     conversationmode = true, camerasmoothstyle = true,
     camerasmoothtrackingstyle = true, combattextfloatmode = true, chatstyle = true,
-    voicechatmode = true, basemip = true,
+    voicechatmode = true, basemip = true, useuiscale = true,
   }
   if type(__fxLocale) == "string" and __fxLocale ~= "" then
     values.locale = __fxLocale
@@ -803,6 +856,15 @@ do
   impl.GetCVarDefault = function(name)
     local key = cvarKey(name)
     return key and defaults[key]
+  end
+  -- 3.27 (15.11): the Video panel's two sliders without a CVar of their own read these (VideoOptionsPanels.xml
+  -- GetCurrentValue) and pass the answer to Slider:SetValue, which raises on nil as Wow.exe does. Wow.exe:
+  -- GetGamma 0x0054ea60 answers 1 - the float of the CVar "gamma" (0x00a0c7e0); GetTerrainMip 0x0054eb10 answers
+  -- 1 - the integer of "shadowLevel" (0x00a0c800). A CVar's float and integer are the C conversions of its text.
+  impl.GetGamma = function() return 1 - (tonumber(cvarValue("gamma") or "") or 0) end
+  impl.GetTerrainMip = function()
+    local level = tonumber(cvarValue("shadowlevel") or "") or 0
+    return 1 - (level < 0 and math.ceil(level) or math.floor(level))
   end
 
   ---------------------------------------------------------------- Modifiers

@@ -17,8 +17,14 @@
  *   MultiCastActionBarFrame.lua:561, :882 (the totem bar's buttons) are the stock callers, always
  *   `(id, false, true)`.
  *
- * Unsettled, so not modelled: 0x0053b930's second chance for a spell not in the book (the pet
- * action bar at 0x00c23508, 0x005d3560, taken on a condition the decompiler does not show);
+ * widgets7 (15.11, .runtime/re-2026-11-15/widgets7/l4.lst, l5.lst): 0x0053b930's second chance for a spell not in
+ * the book is taken exactly when `isPet` is set — the "high word" the decompiler showed is EDX, which 0x0053b4e0
+ * never writes and 0x0053b930 loads with its second argument before the call — and asks the pet action bar
+ * (0x005d3560: the ten words at 0x00c23508, a word of state 1 or 8…0x11 under 0x3F whose low 24 bits are the id).
+ * Here the bar is read through the adapter's `petActionSpell`, which names spell-state words (state 1) only, so a
+ * vehicle-state word (8…0x11) is not found.
+ *
+ * Unsettled, so not modelled:
  * `showSubtext` false dropping the rank right of the name (the builder clears that text when both
  * its third argument and `showSubtext` are 0) — the drawn content is the spell link's, rank included;
  * a string `isPet` (0x00815400); the cooldown line the builder adds from 0x00809000.
@@ -86,6 +92,25 @@ export interface TooltipSpellByIdHost {
   callGlobal(name: string, args: readonly unknown[], results: number): readonly unknown[];
   /** The spell's own tooltip drawn and OnTooltipSetSpell raised; false when nothing is known. */
   spell(frame: FrameXmlFrame, spellId: number): boolean;
+  /** widgets7: the tooltip adapter, whose `petActionSpell(index)` names the spell in a pet bar slot. */
+  adapter?(): object | undefined;
+}
+
+/** The pet bar's ten slots (0x00c23508, 0x28 bytes). */
+const PET_BAR_SLOTS = 10;
+
+/**
+ * widgets7 (15.11): 0x005d3560 — whether a pet bar slot holds `spellId` (a spell-state word: state 1 or 8…0x11 under
+ * 0x3F). The adapter's `petActionSpell` answers the spell of a spell-state word (FrameXmlPetActionBar `spellAt`).
+ */
+function petBarHasSpell(host: TooltipSpellByIdHost, spellId: number): boolean {
+  const adapter = host.adapter?.();
+  const lookup = adapter && "petActionSpell" in adapter ? (adapter as { petActionSpell?: unknown }).petActionSpell : undefined;
+  if (typeof lookup !== "function") return false;
+  for (let index = 1; index <= PET_BAR_SLOTS; index += 1) {
+    if (lookup.call(adapter, index) === spellId) return true;
+  }
+  return false;
 }
 
 export function tooltipSpellByIdMethods(host: TooltipSpellByIdHost): Record<string, WidgetMethod> {
@@ -98,7 +123,9 @@ export function tooltipSpellByIdMethods(host: TooltipSpellByIdHost): Record<stri
       const isPet = flag(args[1]);
       // The spell book check (0x0053b4e0) is what IsSpellKnown answers (FrameXmlMultiCast.ts).
       const known = host.callGlobal("IsSpellKnown", isPet ? [id, true] : [id], 1)[0];
-      if (known !== true && !(typeof known === "number" && known !== 0)) return [];
+      // widgets7: a spell the book lacks is looked for on the pet bar when isPet is set (0x0053b930: the lookup
+      // 0x0053b4e0 leaves EDX alone, and the caller had loaded it with the isPet argument).
+      if (known !== true && !(typeof known === "number" && known !== 0) && !(isPet && petBarHasSpell(host, id))) return [];
       return host.spell(frame, id) ? [1] : [];
     },
   };

@@ -1,6 +1,7 @@
 import { POWER, readField, readGuidAt, readSlot } from "../../world/Fields.js";
 import { UPDATE_FIELDS } from "../../generated/updateFields.js"; // 3.43 (15.11)
 import type { SpellCostInventoryItem } from "./SpellTextCost.js"; // 3.43 (15.11)
+import { spellTextActionSpell } from "./SpellTextActionSpell.js"; // 3.43 (15.11)
 import type { ItemTemplate } from "../../world/QueryCacheProtocol.js";
 import type { WorldObjectState } from "../../world/WorldState.js";
 import { game } from "../game/Context.js";
@@ -149,8 +150,8 @@ export function spellTextLivePlayer(world: SpellTextWorld | undefined,
       if (!buttons) return undefined;
       const button = buttons.find((entry) => entry.slot === slot);
       if (!button) return 0;
-      // ACTION_BUTTON_SPELL; a macro or an item button 0x005a8c30 resolves further, which this does not read.
-      return button.type === 0 ? button.action : undefined;
+      // ACTION_BUTTON_SPELL; 3.43 (15.11): a macro or an item button as 0x005a8c30 resolves it (SpellTextActionSpell.ts).
+      return button.type === 0 ? button.action : spellTextActionSpell(slot);
     },
     slot: (index) => readSlot(self, index),
     knowsSpell: (id) => (known ??= new Set(world.knownSpells.map((spell) => spell.id))).has(id),

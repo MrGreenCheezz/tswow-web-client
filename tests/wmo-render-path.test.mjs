@@ -282,7 +282,9 @@ test("the renderer notes interior-only buildings, lights units by the room and h
   assert.match(source, /setWorldLightIndoor\(this\.#worldLight, room, MODEL_PLACEMENT_LOCAL_LIGHT_DIRECTION\)/);
   assert.match(source, /setWorldLightShadowSuppressed\(this\.#worldLight, room !== undefined\)/);
   assert.match(source, /interiorOnlyDoodadShown\(object\) === false \? undefined : "interior"/);
-  assert.match(source, /this\.#sky\.visible = !this\.#interiorOnlyCamera;/);
+  // 05.11 (7.61, c1996c52) adds a second reason the dome goes (a room that shows no sky); the camera in an
+  // interior-only building still hides it on its own.
+  assert.match(source, /this\.#sky\.visible = !this\.#interiorOnlyCamera(?: && ![\w.#]+)*;/);
 });
 
 let archives;

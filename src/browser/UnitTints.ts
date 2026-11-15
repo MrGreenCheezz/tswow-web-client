@@ -14,11 +14,20 @@ import type { VisualTint } from "./SpellVisuals.js";
 
 interface HeldTint {
   owner: object;
-  colour: number;
+  /** CharProc 1's colour; undefined for a record that only carries CharProc 14's alpha. */
+  colour: number | undefined;
+  /** 15.11 (6.11): CharProc 14 — the alpha factor and its fade time. */
+  unitAlpha?: { alpha: number; ms: number };
   startedAt: number;
   endsAt: number;
   order: number;
 }
+
+/**
+ * 15.11 (6.11): 0x0071abe0's time when no record names one (and for a record whose time is 0: it reads +0xa0 only when
+ * it is not zero).
+ */
+export const UNIT_ALPHA_FADE_MS = 1000;
 
 interface HeldFlash {
   colour: number;
@@ -59,10 +68,11 @@ export class UnitTints {
           colour: tint.flash.colour, startedAt: tint.startedAt, delayMs: tint.flash.delayMs, durationMs: tint.flash.durationMs,
         });
       }
-      if (tint.tint === undefined) continue;
+      if (tint.tint === undefined && tint.unitAlpha === undefined) continue;
       let list = this.#tints.get(tint.guid);
       if (!list) this.#tints.set(tint.guid, list = []);
-      list.push({ owner, colour: tint.tint, startedAt: tint.startedAt, endsAt: tint.endsAt, order: ++this.#order });
+      list.push({ owner, colour: tint.tint, startedAt: tint.startedAt, endsAt: tint.endsAt, order: ++this.#order,
+        ...(tint.unitAlpha ? { unitAlpha: { ...tint.unitAlpha } } : {}) }); // 15.11 (6.11)
     }
   }
 
@@ -100,10 +110,30 @@ export class UnitTints {
         list.splice(index, 1);
         continue;
       }
-      if (tint.startedAt <= now && (!newest || tint.order > newest.order)) newest = tint;
+      if (tint.colour !== undefined && tint.startedAt <= now && (!newest || tint.order > newest.order)) newest = tint;
     }
     if (list.length === 0) this.#tints.delete(guid);
-    return newest ? newest.colour : WHITE;
+    return newest?.colour ?? WHITE;
+  }
+
+  /**
+   * 15.11 (6.11): what 0x0071abe0 multiplies CreatureModelAlpha by now, and the time 0x00744030 fades over: the newest
+   * live CharProc 14 record's alpha and time (its time 0 reads as {@link UNIT_ALPHA_FADE_MS}), or 1 over that default
+   * when the unit has none — also the fade back when the last record goes (0x0071e930, 0x0073eb50 refade the same way).
+   * `held` says a record is live (UnitDisplayFade.ts `auraStandInOpacity`).
+   */
+  alphaOf(guid: bigint, now: number): { alpha: number; ms: number; held?: true } {
+    const list = this.#tints.get(guid);
+    let newest: HeldTint | undefined;
+    if (list) {
+      for (const tint of list) {
+        if (tint.unitAlpha === undefined || tint.startedAt > now || tint.endsAt <= now) continue;
+        if (!newest || tint.order > newest.order) newest = tint;
+      }
+    }
+    const record = newest?.unitAlpha;
+    return record === undefined ? { alpha: 1, ms: UNIT_ALPHA_FADE_MS }
+      : { alpha: record.alpha, ms: record.ms !== 0 ? record.ms : UNIT_ALPHA_FADE_MS, held: true };
   }
 
   /** Whether any unit is (or will be) tinted — the frame skips the per-unit pass otherwise. */

@@ -235,3 +235,120 @@ test("the action tooltip: the item or the spell with #showtooltip, the macro's n
   assert.deepEqual(api("GetActionTooltip", 2), ["item", STONE_ENTRY, "Камень возвращения", ""]);
   assert.deepEqual(api("GetActionTooltip", 3), ["spell", 143, "Огненный шар", "Уровень 2"]);
 });
+
+// 1.14 (15.11): a `/castsequence` entry stands for its current step, which 0x00564900 asks the stock QueryCastSequence for
+// (macro/MacroCastSequence.ts): the item when it answers one, else the spell; neither leaves the text as written.
+const { installMacroCastSequence, luaMacroCastSequenceQuery, macroCastSequenceAnswer, queryMacroCastSequence } =
+  await import("../dist/code/browser/macro/MacroCastSequence.js");
+
+test("a sequence entry is what the cast-sequence query answers (0x00564900)", () => {
+  const asked = [];
+  const step = (answer) => host({ castSequence: (text) => { asked.push(text); return answer; } });
+  assert.deepEqual(macroShown("/castsequence reset=5 Первое, Второе", COMMANDS, step("второе")), { spell: "второе" });
+  assert.deepEqual(asked, ["reset=5 Первое, Второе"], "the entry's text, reset= included");
+  assert.deepEqual(macroShown("/castsequence [mod:shift] Третье, Четвёртое; Первое, Второе", COMMANDS, step("первое")),
+    { spell: "первое" });
+  assert.equal(asked[1], "Первое, Второе", "the clause the options chose");
+  assert.deepEqual(macroShown("/castsequence 13, Первое", COMMANDS, step("13")), { item: 11111 }, "an item slot as the item");
+  assert.deepEqual(macroShown("/castsequence Камень возвращения, Первое", COMMANDS, step("камень возвращения")), { item: 6948 });
+  assert.deepEqual(macroShown("/castsequence Первое, Второе", COMMANDS, step(null)), { spell: "Первое, Второе" },
+    "neither: the text as written, which names no spell");
+  assert.deepEqual(shown("/castsequence Первое, Второе"), { spell: "Первое" }, "nothing to ask: the first entry, as before");
+  assert.equal(macroCastSequenceAnswer([2, "камень", "огонь"]), "камень", "the item (−2) first");
+  assert.equal(macroCastSequenceAnswer([2, undefined, "огонь"]), "огонь");
+  assert.equal(macroCastSequenceAnswer([1, 13, "огонь"]), "13", "lua_tostring of a number");
+  assert.equal(macroCastSequenceAnswer([]), null, "a Lua error answers nothing");
+});
+
+const { GlueLuaVm } = await import("../dist/code/browser/glue/GlueLua.js");
+const { readFileSync, existsSync } = await import("node:fs");
+const CHAT_FRAME = "F:/tswowRoot/tswow-install/modules/default/datasets/dataset/luaxml/Interface/FrameXML/ChatFrame.lua";
+
+/** Stock ChatFrame.lua's cast-sequence section (its own locals) in a VM, over stubs of the C API it calls. */
+function stockCastSequenceVm() {
+  const source = readFileSync(CHAT_FRAME, "utf8");
+  const from = source.indexOf("-- CastSequence support");
+  const to = source.indexOf("local CastRandomManager;");
+  assert.ok(from > 0 && to > from, "ChatFrame.lua's section");
+  const vm = new GlueLuaVm();
+  const prelude = `
+    strlower = string.lower; strfind = string.find; strmatch = string.match; gsub = string.gsub
+    function strtrim(s) return (string.gsub(s, "^%s*(.-)%s*$", "%1")) end
+    function strsplit(sep, s) local t = {} for part in string.gmatch(s, "([^" .. sep .. "]+)") do t[#t + 1] = part end return unpack(t) end
+    function GetItemInfo() return nil end
+    function SecureCmdItemParse() return nil end
+    function GetItemSpell() return nil end
+    function IsShiftKeyDown() return __shift end
+    function IsControlKeyDown() return nil end
+    function IsAltKeyDown() return nil end
+    function CastSpellByName(name) __cast = name end
+    function CreateFrame()
+      local frame = { scripts = {} }
+      function frame:RegisterEvent() end
+      function frame:SetScript(name, fn) self.scripts[name] = fn end
+      __manager = frame
+      return frame
+    end
+  `;
+  const tail = `
+    function __execute(sequence) ExecuteCastSequence(sequence) end
+    function __fire(event, ...) __manager.scripts.OnEvent(__manager, event, ...) end
+  `;
+  const loaded = vm.execute(prelude + source.slice(from, to) + tail, "@Interface/FrameXML/ChatFrame.lua#CastSequence");
+  assert.equal(loaded.ok, true, loaded.error);
+  const call = (name, ...args) => {
+    const ref = vm.globalFunction(name);
+    try { return vm.call(ref, args, 0); } finally { vm.release(ref); }
+  };
+  return { vm, call };
+}
+
+test("the stock sequence state drives the step: cast, success, the next one, reset on the target (ChatFrame.lua)",
+  { skip: existsSync(CHAT_FRAME) ? false : "no dataset" }, () => {
+    const { vm, call } = stockCastSequenceVm();
+    const off = installMacroCastSequence(luaMacroCastSequenceQuery(vm));
+    try {
+      const sequence = "reset=target Первое, Второе";
+      // Lua 5.1's strlower leaves Cyrillic as it is; the spell lookup ignores case either way.
+      const step = () => queryMacroCastSequence(sequence)?.toLowerCase();
+      assert.equal(step(), "первое", "before any cast: the first step");
+      call("__execute", sequence);
+      call("__fire", "UNIT_SPELLCAST_SENT", "player", "Первое", "");
+      assert.equal(step(), "первое", "sent, not yet done");
+      call("__fire", "UNIT_SPELLCAST_SUCCEEDED", "player", "Первое", "");
+      assert.equal(step(), "второе", "the next step after the cast succeeded");
+      const shownNow = macroShown(`/castsequence ${sequence}`, COMMANDS, host({ castSequence: queryMacroCastSequence }));
+      assert.equal(shownNow?.spell?.toLowerCase(), "второе", "and so the button");
+      call("__fire", "PLAYER_TARGET_CHANGED");
+      assert.equal(step(), "первое", "reset=target");
+    } finally {
+      off();
+    }
+  });
+
+test("a sequence macro's button answers for the current step: GetMacroSpell and IsAttackAction follow it", () => {
+  const macros = [{ index: 1, name: "seq", icon: "", body: "/castsequence Атака, Огненный шар" }];
+  let step = "атака";
+  const off = installMacroCastSequence(() => step);
+  try {
+    const world = {
+      state: { selfGuid: undefined, objects: new Map() }, casts: new Map(),
+      knownSpells: [...SPELLS.keys()].map((id, slot) => ({ id, slot })),
+      actionButtons: [{ slot: 0, action: 1, type: MACRO }],
+      cooldownRemaining: () => 0, autoRepeatSpellId: undefined, autoRanged: { wantedSpellId: undefined },
+      attacking: false, attackRequested: false, isActiveMountSpell: () => false,
+    };
+    const seam = new LiveWorldSeam({
+      world: () => world, store: () => undefined, spell: (id) => SPELLS.get(id), monotonic: () => 1000, globalCooldownUntil: () => 0,
+      castSpell: () => {}, macroStore: createFrameXmlMemoryMacroStore(macros),
+    });
+    const api = (name, ...args) => [...FRAMEXML_SEAM_BINDINGS[name](seam, args)];
+    assert.deepEqual(api("GetMacroSpell", 1), ["Атака", ""]);
+    assert.deepEqual(api("IsAttackAction", 1), [1]);
+    step = "огненный шар";
+    assert.deepEqual(api("GetMacroSpell", 1), ["Огненный шар", "Уровень 2"], "the next step");
+    assert.deepEqual(api("IsAttackAction", 1), [undefined]);
+  } finally {
+    off();
+  }
+});

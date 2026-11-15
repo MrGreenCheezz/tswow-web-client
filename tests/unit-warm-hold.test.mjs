@@ -12,7 +12,8 @@ import {
   borrowFadedMaterials, createFadeProgramTwin, createUnitCapsuleMaterial, returnBorrowedMaterials,
   unitWarmBody, updateBorrowedMaterials,
 } from "../dist/code/browser/WorldRenderer3D.js";
-import { spawnFadeFactor, SPAWN_FADE_WINDOW_MS } from "../dist/code/browser/AnimatedModel.js";
+// 15.11 (6.11): a unit fades in over Wow.exe's 1000 ms (UnitSpawnFade.ts), not the old 400 ms window.
+import { unitSpawnFactor, UNIT_SPAWN_FADE_MS as SPAWN_FADE_WINDOW_MS } from "../dist/code/browser/UnitSpawnFade.js";
 import { glowBodyMeshes } from "../dist/code/browser/WeaponGlowBody.js"; // 05.10: ревью E2
 import { glowAnchorsOf } from "../dist/code/browser/WeaponGlow.js"; // 05.10: ревью E2
 import { fadedDepthWrite } from "../dist/code/browser/FadeDepth.js"; // 22.10 (7.42)
@@ -54,7 +55,7 @@ const Harness = (() => {
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
   }).outputText;
   const deps = {
-    THREE, spawnFadeFactor, programWarmupKind, unitWarmBody, createFadeProgramTwin, createUnitCapsuleMaterial,
+    THREE, unitSpawnFactor, programWarmupKind, unitWarmBody, createFadeProgramTwin, createUnitCapsuleMaterial,
     borrowFadedMaterials, returnBorrowedMaterials, updateBorrowedMaterials,
     glowBodyMeshes, glowAnchorsOf, // 05.10: ревью E2 — `#unitOpacityMeshes` reaches the glow bodies
     fadedDepthWrite, // 22.10 (7.42)
@@ -153,7 +154,7 @@ function frame(h, unit, now, { self = false, opacity = 1, beforeTick } = {}) {
   if (unit.shadowCaster === undefined) h.trackUnitMeshes(unit, self);
   const held = h.holdUnitUntilWarm(unit, self, true, opacity, now);
   unit.node.visible = !held;
-  const wanted = opacity * spawnFadeFactor(unit.admittedAt, now);
+  const wanted = opacity * unitSpawnFactor(unit, unit.admittedAt, now);
   h.applyUnitOpacity(unit, wanted, h.unitFadeReturnWaits(unit, wanted));
   unit.shadowCaster = true;
   beforeTick?.();
@@ -187,7 +188,8 @@ test("a fresh unit waits hidden until its shared and fade programs link, then fa
   assert.equal(unit.unitOpacity, 0, "and its first visible frame is the fade's first frame");
   assert.equal(unit.skinned.mesh.material, copies, "drawn in the copies it was dressed in while hidden");
   assert.equal(frame(h, unit, 1050 + SPAWN_FADE_WINDOW_MS / 4), true);
-  assert.equal(unit.unitOpacity, 0.25, "the fade clock ran only from the first visible frame");
+  // 15.11 (6.11): Wow.exe's byte walk, trunc(255 · 250 / 1000) = 63 of 255.
+  assert.equal(unit.unitOpacity, 63 / 255, "the fade clock ran only from the first visible frame");
   frame(h, unit, 1050 + SPAWN_FADE_WINDOW_MS);
   assert.deepEqual(unit.skinned.mesh.material, [lit, unlit], "the shared array is back once the fade is over");
   assert.equal(h.unitWarmHolds.size, 0);
@@ -659,11 +661,11 @@ test("a variant queued or compiled is tracked, so a waiting unit does not regist
 test("the renderer holds and releases units in the order the harness above assumes", () => {
   const draw = source.slice(source.indexOf("  #drawUnit("), source.indexOf("\n  /**\n   * A name for exactly what will be built"));
   const order = [
-    "if (presented && unit.admittedAt === undefined) unit.admittedAt = now;",
+    "if (presented && unit.admittedAt === undefined) {\n      unit.admittedAt = now;",
     "if (unit.shadowCaster === undefined) this.#trackUnitMeshes(unit, self);",
     "const held = this.#holdUnitUntilWarm(unit, self, presented, displayOpacity, now);", // 05.10-A7a-H 6.11а: aura opacity × CreatureModelAlpha
     "unit.node.visible = presented && !held;",
-    "const opacity = displayOpacity * spawnFadeFactor(unit.admittedAt, now);", // 05.10-A7a-H 6.11а
+    "const opacity = displayOpacity * unitSpawnFactor(unit, unit.admittedAt, now);", // 05.10-A7a-H 6.11а; 15.11
     "this.#applyUnitOpacity(unit, opacity, this.#unitFadeReturnWaits(unit, opacity));",
     "this.#applyUnitShadow(unit, shadowCaster);",
   ].map(line => draw.indexOf(line));

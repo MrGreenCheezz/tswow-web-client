@@ -9,8 +9,25 @@
 // - Each frame 0x0071ac30 moves the byte linearly — from + trunc((to − from) · elapsed / time), integer arithmetic —
 //   and once the time is up it is the target; the model's alpha is that byte × the unit's other fade byte (+0xcb) / 65025.
 //
-// Not taken: the +0x984 record (its alpha and time; read by 0x0071abe0, set elsewhere) and the byte a unit starts with
-// before its first model — here the first look a unit is seen with is taken at once, and only a later change fades.
+// 15.11, the +0x984 record (.runtime/re-2026-11-15/fx7/r2): a SpellVisualKit's CharProc 14 — 0x007265c0 removes the
+// spell's earlier records (0x0071ab80), and for 0 < CharParamZero ≤ 1 links a new one at the list head with that alpha
+// (+0xe8) and CharParamTwo × 1000 ms (+0xa0), then calls 0x0071abe0. The aura's removal (0x0071e930) and 0x0073eb50
+// remove the spell's records and refade to the new head's alpha over its time (1000 without one). The records ride the
+// plan's tints here (UnitTints.ts `alphaOf`); the caller passes their factor and time.
+//
+// The byte a unit starts with before its first model (0 in the constructor 0x00745e60) and its fade-in on creation
+// (0x0073fcc0 → 0x00744a50) are UnitSpawnFade.ts: here the first look is taken at once and that factor multiplies it.
+
+/**
+ * 15.11 (6.11): the renderer's stealth/invisibility/ghost translucency (world/Fields.ts `unitAppearance`, a stand-in from
+ * a reference client: "SpellVisual has no translucency column") yields to a live CharProc 14 record. Wow.exe's model
+ * alpha is only the byte above (CreatureModelAlpha × the record) times the +0xcb byte (0x00743e10), and +0xcb is set by
+ * 0x00737390 from callers that are not the stealth auras; Stealth's own look is its StateKit's record (spells 1784–1787,
+ * visual 184, kit 312: 0.3 over 1 s), Fade/Vanish's kit 3450 (0.5). Without a record the stand-in stays.
+ */
+export function auraStandInOpacity(appearanceOpacity: number, recordHeld: boolean): number {
+  return recordHeld ? 1 : appearanceOpacity;
+}
 
 /** 0x0071abe0's time without a record. */
 export const DISPLAY_ALPHA_FADE_MS = 1000;
@@ -65,16 +82,28 @@ const fades = new WeakMap<object, DisplayAlphaFade>();
 
 /**
  * The CreatureModelAlpha share of `unit`'s opacity now (0…1): the first look's at once, a change of it over
- * {@link DISPLAY_ALPHA_FADE_MS}. Keyed by the renderer's own unit record, so it goes with it.
+ * `duration` ({@link DISPLAY_ALPHA_FADE_MS}, or a CharProc 14 record's time). `alpha` is CreatureModelAlpha times the
+ * newest record's factor (0x0071abe0). Keyed by the renderer's own unit record, so it goes with it.
  */
-export function unitDisplayAlpha(unit: object, alpha: number, now: number): number {
+export function unitDisplayAlpha(unit: object, alpha: number, now: number, duration = DISPLAY_ALPHA_FADE_MS): number {
   let fade = fades.get(unit);
   if (fade === undefined) {
     const byte = alphaByte(alpha);
     fade = { current: byte, from: byte, to: byte, startedAt: now, duration: 0 };
     fades.set(unit, fade);
   } else if (alphaByte(alpha) !== fade.to) {
-    setDisplayAlpha(fade, alpha, now);
+    setDisplayAlpha(fade, alpha, now, duration);
   }
   return stepDisplayAlpha(fade, now) / 255;
+}
+
+/** 15.11 (6.11): whether `unit`'s display alpha is walking now (+0xc4 not 0). */
+export function displayAlphaFading(unit: object): boolean {
+  const fade = fades.get(unit);
+  return fade !== undefined && fade.duration !== 0;
+}
+
+/** 15.11 (6.11): the byte `unit`'s display alpha walks to (+0xca), or undefined before its first look. */
+export function displayAlphaTargetByte(unit: object): number | undefined {
+  return fades.get(unit)?.to;
 }

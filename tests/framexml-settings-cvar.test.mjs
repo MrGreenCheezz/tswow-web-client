@@ -89,7 +89,8 @@ test("the supported table is only the settings the browser currently consumes", 
 
 test("5.14 the camera and mouse CVars are the original's numbers and write through the settings", () => {
   const { adapter, writes, values } = fakeSettings();
-  assert.equal(adapter.getDefault("cameraDistanceMaxFactor"), "1");
+  // 5.37 (15.11): GetCVarDefault of a stock row is Wow.exe's registered string ("1.0" at 0x009e1340).
+  assert.equal(adapter.getDefault("cameraDistanceMaxFactor"), "1.0");
   assert.deepEqual(adapter.range("cameraDistanceMaxFactor"), [1, 2], "the stock slider's own 1–2");
   assert.equal(adapter.set("cameraDistanceMaxFactor", "1.5"), true);
   assert.equal(values().cameraDistancePercent, 150);
@@ -114,7 +115,7 @@ test("5.14 the camera and mouse CVars are the original's numbers and write throu
 test("environmentDetail is the object distance as the stock multiplier, to 7.39's 2", () => {
   const { adapter, values } = fakeSettings();
   assert.equal(adapter.get("environmentDetail"), "1");
-  assert.equal(adapter.getDefault("environmentDetail"), "1");
+  assert.equal(adapter.getDefault("environmentDetail"), "1.0", "the registered string (5.37)");
   // 22.10 (7.39): the stock slider's 0.5-1.5 plus the far-view step (SceneryReach.ts), so the
   // stock video panel's GetCVarMax reaches it too.
   assert.deepEqual(adapter.range("environmentDetail"), [0.5, 2]);
@@ -131,7 +132,7 @@ test("6.15 particleDensity is the stock 0.1–1.0 slider (default 1.0) over the 
   const { applyRendererGraphicsSettings } = await import("../dist/code/browser/RendererGraphicsSettings.js");
   const { adapter, values } = fakeSettings();
   assert.equal(adapter.get("particleDensity"), "1", "the default leaves every emitter at its authored rate");
-  assert.equal(adapter.getDefault("particleDensity"), "1", "0x009e1340 = \"1.0\"");
+  assert.equal(adapter.getDefault("particleDensity"), "1.0", "0x009e1340 = \"1.0\", the registered string (5.37)");
   assert.deepEqual(adapter.range("particleDensity"), [0.1, 1], "0x0078d860 and VideoOptionsPanels.lua: 0.1–1.0");
   assert.equal(adapter.set("particleDensity", "0.4"), true);
   assert.equal(values().particleDensity, 40);
@@ -210,7 +211,8 @@ test("boolean CVars use 0/1, are case-insensitive by name, and invert spell-rank
   assert.equal(adapter.set("ffxGlow", "false"), true);
   assert.equal(values().fullscreenGlow, true);
 
-  assert.equal(adapter.getDefault("ShowAllSpellRanks"), "0");
+  // 5.37 (15.11): Wow.exe's registered "1" (0x0051d9b0), not this client's starting switch.
+  assert.equal(adapter.getDefault("ShowAllSpellRanks"), "1");
   assert.equal(adapter.set("ShowAllSpellRanks", "1"), true);
   assert.equal(values().spellbookHideLowerRanks, false);
   assert.equal(adapter.get("showallspellranks"), "1");
@@ -224,7 +226,9 @@ test("boolean CVars use 0/1, are case-insensitive by name, and invert spell-rank
 test("stock volume fractions cross the model's percentage conversion and clamp", () => {
   const { adapter, writes, values } = fakeSettings();
 
-  assert.equal(adapter.getDefault("Sound_MasterVolume"), "0.7");
+  // 5.37 (15.11): the registered "1.0" (0x004d1600); the browser still starts at its own 70 %.
+  assert.equal(adapter.getDefault("Sound_MasterVolume"), "1.0");
+  assert.equal(adapter.get("Sound_MasterVolume"), "0.7");
   assert.equal(adapter.set("Sound_SFXVolume", "0.75"), true);
   assert.equal(values().volumeEffects, 75);
   assert.equal(adapter.get("sound_sfxvolume"), "0.75");
@@ -285,7 +289,7 @@ test("the loot CVars are the native loot switches: autoLootDefault is «Авто
 
   // InterfaceOptionsFrame.lua:322-323: both default to "0".
   assert.equal(adapter.getDefault("autoLootDefault"), "0");
-  assert.equal(adapter.getDefault("lootUnderMouse"), "0");
+  assert.equal(adapter.getDefault("lootUnderMouse"), "1", "Wow.exe's registered default (0x0051db1b), 5.37");
   assert.equal(adapter.get("lootundermouse"), "0");
   // LootFrame.lua:168 compares GetCVar("lootUnderMouse") with "1".
   assert.equal(adapter.set("lootUnderMouse", "1"), true);

@@ -84,7 +84,7 @@ test("7.20 the renderer's classic branches read the classic look, not quality 0"
   assert.equal(world.includes("this.#lightingProfile.quality === 0"), false,
     "no renderer branch singles out quality 0 any more");
   const uses = world.split("lightingClassicLook(this.#lightingProfile.quality)").length - 1;
-  assert.equal(uses, 6, "key light, cinematic override, visible sun, (13.10 7.04) the classic dome, (22.10 7.44) the horizon detail and the terrain-height ring");
+  assert.equal(uses, 7, "key light, cinematic override, visible sun, (13.10 7.04) the classic dome, (22.10 7.44) the horizon detail and the terrain-height ring, (15.11 7.66) the faithful levels' reach");
   const cinematic = world.slice(world.indexOf("  #applyCinematicProfile(): void {"));
   assert.match(cinematic.slice(0, 400),
     /const profile = lightingClassicLook\(this\.#lightingProfile\.quality\) \? undefined : this\.#cinematicRequested;/,
@@ -97,7 +97,11 @@ test("7.20 lighting quality setting offers the comparison level; the default is 
   assert.equal(definition.min, 0);
   assert.equal(definition.max, 3);
   assert.equal(definition.fallback, 2, "owner, 12.10: the highest quality by default");
-  assert.match(definition.hint ?? "", /3 — сравнение/);
+  // 26.10 (3.56, 35ce3304): the choices are shown by name, so level 3 is the fourth label and the hint names it.
+  assert.equal(definition.labels?.length, 4, "one name per level 0..3");
+  const comparison = definition.labels[3];
+  assert.match(definition.hint ?? "", new RegExp(`«${comparison.replace(/[+]/g, "\\+")}» — для сравнения`),
+    "level 3 is the comparison level");
   assert.equal(defaultSettings().lightingQuality, 2);
   assert.equal(parseSettings('{"lightingQuality":3}')?.lightingQuality, 3);
   assert.equal(parseSettings('{"lightingQuality":1}')?.lightingQuality, 1, "a saved 1 stays 1");

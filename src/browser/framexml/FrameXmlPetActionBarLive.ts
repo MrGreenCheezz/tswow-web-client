@@ -6,7 +6,13 @@ import {
 import { readField } from "../../world/Fields.js";
 import type { WorldClient } from "../../world/WorldClient.js";
 import { isWorldObjectDead, type WorldObjectState } from "../../world/WorldState.js";
-import { spellPowerCost, spellPowerPool } from "../SpellCastGuard.js";
+import { spellPowerPool } from "../SpellCastGuard.js";
+import { spellPowerCostFor } from "../ui/SpellTextCost.js"; // 3.43 (15.11, follow-up)
+import { sessionCostUnitOf } from "../ui/SpellTextPetCost.js"; // 3.43 (15.11, follow-up)
+
+/** 3.43 (15.11, follow-up): 0x008017e0's two special powers — runes (5) and the core's POWER_HEALTH (−2). */
+const POWER_RUNE = 5;
+const POWER_HEALTH = -2;
 import type { SpellMetadata } from "../SpellMetadata.js";
 import {
   FRAMEXML_CREATURE_TYPE_DEMON, FRAMEXML_PET_ACTION_EVENTS, FRAMEXML_PET_ACTION_IDLE_COOLDOWN,
@@ -355,17 +361,32 @@ export class FrameXmlPetActionBarLive implements FrameXmlPetActionBar {
 
   /**
    * A command or reaction is always pressable. A spell needs a pet in view that is alive and holds
-   * the spell's cost in its declared power (SpellCastGuard's own arithmetic over the pet's fields);
-   * a cost this host cannot compute is left to the realm, as the player's own bar leaves it.
+   * the spell's cost in its declared power; a cost this host cannot compute is left to the realm, as
+   * the player's own bar leaves it.
+   *
+   * 3.43 (15.11, follow-up): Wow.exe's GetPetActionSlotUsable (0x005d5400 → 0x005d3fd0, Ghidra
+   * .runtime/re-2026-10-19/usable/u-b.txt, .runtime/re-2026-11-15/spell7/f1.c, f2.c) asks, for each unit of the pet
+   * list, whether it is stunned, confused or fleeing (UNIT_FIELD_FLAGS 0x40000, 0x800000, 0x400000) unless
+   * AttributesEx5 0x8, 0x20000 or 0x40000 lets the spell through, and the cast check 0x0080b5d0 with that unit — whose
+   * power part is Spell_C_HaveSpellPower 0x008017e0: the cost function 0x008012f0 for the unit (the pet's level,
+   * power and gtNPCManaCostScaler, ui/SpellTextPetCost.ts) against its power, `cost <= power`, health `cost < health`,
+   * runes only for the active player. Here the stun/confuse/fear gates and that power part; the rest of 0x0080b5d0
+   * for a pet is not modelled.
    */
   #usable(word: number, pet: WorldObjectState | undefined): boolean {
     if (!frameXmlPetSpellWord(word)) return true;
     if (!pet || isWorldObjectDead(pet)) return false;
     const metadata = this.#context.spell(petActionOf(word));
     if (!metadata) return true;
-    const cost = spellPowerCost(metadata, pet);
+    const flags = (readField(pet, "UNIT_FIELD_FLAGS") ?? 0) >>> 0;
+    const ex5 = metadata.attributes?.[5] ?? 0;
+    if (((ex5 & 0x8) === 0 && (flags & 0x40000) !== 0) || ((ex5 & 0x20000) === 0 && (flags & 0x800000) !== 0)
+      || ((ex5 & 0x40000) === 0 && (flags & 0x400000) !== 0)) return false;
+    if (metadata.powerType === POWER_RUNE) return false;
+    const cost = spellPowerCostFor(metadata, sessionCostUnitOf(pet));
     const pool = spellPowerPool(metadata, pet);
-    return cost === undefined || pool === undefined || cost <= pool;
+    if (cost === undefined || pool === undefined) return true;
+    return metadata.powerType === POWER_HEALTH ? cost < pool : cost <= pool;
   }
 
   #target(unit: string | undefined): bigint | undefined {

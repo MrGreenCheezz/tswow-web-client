@@ -287,10 +287,20 @@ test("BuffFrame gate owns only player auras after a successful mount", async () 
   assert.ok(style, "mount stylesheet must contain the exact player aura lane selector");
   assert.ok(style.textContent.includes("body.framexml-world-replaces-native #player-auras"),
     "player aura ownership is class/CSS scoped");
-  for (const id of ["target-auras", "target-cast", "target-actions"]) {
-    assert.doesNotMatch(style.textContent, new RegExp(`#${id}[^\\{]*\\{[^}]*display:\\s*none`, "i"),
-      `target contextual #${id} must remain native`);
+  // Every selector of every rule that hides something. 03.11 (4.18, e5284317) hides the client's own
+  // `.frame-action` buttons inside #target-actions (the stock TargetFrame has no such row) while the row
+  // itself and a module's slot buttons stay: what must not be hidden is the lane element itself.
+  const hidden = [];
+  for (const rule of style.textContent.matchAll(/([^{}]+)\{([^}]*)\}/g)) {
+    if (/display:\s*none/i.test(rule[2])) hidden.push(...rule[1].split(",").map((selector) => selector.trim()));
   }
+  assert.ok(hidden.length > 0, "the stylesheet's hide rules were read");
+  for (const id of ["target-auras", "target-cast", "target-actions"]) {
+    const own = hidden.filter((selector) => new RegExp(`#${id}$`).test(selector));
+    assert.deepEqual(own, [], `target contextual #${id} must remain native`);
+  }
+  assert.ok(hidden.some((selector) => selector.endsWith("#target-actions > .frame-action")),
+    "only the client's own buttons in the target row step aside");
   assertNativeLanesIntact("successful mount");
 
   const playerChildrenBeforeRefresh = [...nativePlayerAuras.children];

@@ -1787,7 +1787,13 @@ export interface FrameXmlWorldSeam {
   /** `GetSpellName`'s `(name, rank)` for a 1-based spellbook slot. */
   spellName(index: number, bookType: string | undefined): readonly [string, string] | undefined;
   /** `GetSpellInfo` from cached DBC metadata; nil when the id/name has not resolved. */
-  spellInfo?(idOrName: number | string): FrameXmlSpellInfo | undefined;
+  spellInfo?(idOrName: number | string, rank?: string): FrameXmlSpellInfo | undefined;
+  /** 3.43 (15.11, follow-up): `GetSpellInfo(index, bookType)` for the player's book (0x00540670). */
+  spellInfoAtSlot?(index: number, bookType: string): FrameXmlSpellInfo | undefined;
+  /** 3.43 (15.11, follow-up): a pet-book spell's `GetSpellInfo`, for the pet-bar unit (FrameXmlPetActionBar.ts). */
+  petSpellInfo?(spellId: number): FrameXmlSpellInfo | undefined;
+  /** 3.43 (15.11, follow-up): `GetSpellCooldown(id)` — a lone number is a spell id (0x00540e80). */
+  spellCooldownOf?(spellId: number): FrameXmlSpellCooldown;
   /**
    * `GetSpellLink`: the stock spell hyperlink (`|cff71d5ff|Hspell:ID|h[Name]|h|r`) for a spellbook
    * slot when `bookType` is given, else for a spell id or a known spell's name; undefined — nil —
@@ -2327,6 +2333,13 @@ const SERVICE_SEAM_BINDINGS: Readonly<Record<string, FrameXmlSeamBinding>> = Obj
     (seam: FrameXmlWorldSeam, args: readonly unknown[]) => call(seam.services ?? CLOSED_SERVICES, args)]),
 );
 
+/**
+ * 3.43 (15.11, follow-up): the unit tokens 0x0060abf0 reads (a GetSpellInfo second string that is one is no rank). Not
+ * modelled: a unit by its name (0x0060a630), which that parser also accepts.
+ */
+const SPELL_INFO_UNIT_TOKEN =
+  /^(player|vehicle|pet|target|partypet\d*|party\d*|raidpet\d*|raid\d*|arenapet\d*|arena\d*|commentator\d*|mouseover|focus|npc|questnpc|none)(-?target)*$/i;
+
 // The spellbook names take a `bookType`; frameXmlWithPetBook answers the "pet" book from the pet model.
 // 11.02-IF: frameXmlWithPossess answers slots 121-132 and the possess names while a possessed unit's bar is up.
 // 11.02-F2: frameXmlWithVehicle answers the vehicle C API while the vehicle tables are there.
@@ -2584,11 +2597,19 @@ export const FRAMEXML_SEAM_BINDINGS: Readonly<Record<string, FrameXmlSeamBinding
   GetNumSpellTabs: (seam) => [seam.spellTabCount()],
   GetSpellTabInfo: (seam, args) => seam.spellTabInfo(slotOf(args[0])) ?? NOTHING,
   GetSpellName: (seam, args) => seam.spellName(slotOf(args[0]), filterOf(args[1])) ?? NOTHING,
+  // 3.43 (15.11, follow-up): Wow.exe 0x00540a30 → 0x00540670 — a number with a book type string is a 1-based book slot
+  // ("pet" is FrameXmlPetActionBar's), a lone number a spell id, a name a book spell (with a rank as the second string
+  // unless that string is a unit token, 0x0060abf0).
   GetSpellInfo: (seam, args) => {
     const value = args[0];
-    return (typeof value === "number" || typeof value === "string")
-      ? seam.spellInfo?.(value) ?? NOTHING
-      : NOTHING;
+    const second = args[1];
+    if (typeof value === "number" && typeof second === "string") {
+      return seam.spellInfoAtSlot?.(slotOf(value), second) ?? NOTHING;
+    }
+    if (typeof value === "number") return seam.spellInfo?.(value) ?? NOTHING;
+    if (typeof value !== "string") return NOTHING;
+    const rank = typeof second === "string" && !SPELL_INFO_UNIT_TOKEN.test(second) ? second : undefined;
+    return seam.spellInfo?.(value, rank) ?? NOTHING;
   },
   // Two shapes, told apart as the client does, by the second argument: `GetSpellLink(slot,
   // bookType)` is a spellbook slot (SpellBookFrame, `GameTooltip:SetSpell`); `GetSpellLink(id or
@@ -2604,7 +2625,10 @@ export const FRAMEXML_SEAM_BINDINGS: Readonly<Record<string, FrameXmlSeamBinding
       : NOTHING;
   },
   GetSpellTexture: (seam, args) => optional(seam.spellTexture(slotOf(args[0]), filterOf(args[1]))),
-  GetSpellCooldown: (seam, args) => [...seam.spellCooldown(slotOf(args[0]), filterOf(args[1]))],
+  // 3.43 (15.11, follow-up): a lone number is a spell id (Wow.exe 0x00540e80); with a book type, a book slot.
+  GetSpellCooldown: (seam, args) => typeof args[0] === "number" && typeof args[1] !== "string" && seam.spellCooldownOf
+    ? [...seam.spellCooldownOf(args[0])]
+    : [...seam.spellCooldown(slotOf(args[0]), filterOf(args[1]))],
   GetSpellAutocast: (seam, args) => [...seam.spellAutocast(slotOf(args[0]), filterOf(args[1]))],
   IsPassiveSpell: (seam, args) => optional(seam.spellIsPassive(slotOf(args[0]), filterOf(args[1]))),
   // 19.10: a book slot (with its book) or a spell name; the pair as IsUsableAction's, `1`/nil each.

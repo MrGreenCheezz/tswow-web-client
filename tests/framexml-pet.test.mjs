@@ -282,6 +282,35 @@ function liveFixture({ hunter = true, controlled } = {}) {
   };
 }
 
+// 3.43 (15.11, follow-up): GetPetActionSlotUsable as Wow.exe 0x005d3fd0 — the pet's stun, confusion and fear unless
+// AttributesEx5 lets the spell through, and 0x008017e0's power part: the cost function for the pet (ManaCostPerLevel by the
+// pet's level), `cost <= power`, health `cost < health`.
+test("the pet bar's usable state: stun/confuse/fear gates and the cost function for the pet (0x005d3fd0, 0x008017e0)", () => {
+  const { model, pet, spells } = liveFixture();
+  const FLAGS = UPDATE_FIELDS.UNIT_FIELD_FLAGS.offset;
+  const bite = spells.get(BITE);
+  assert.equal(model.slotUsable(4), true);
+  pet.fields.set(FLAGS, 0x40000);
+  assert.equal(model.slotUsable(4), false, "stunned");
+  spells.set(BITE, { ...bite, attributes: [0, 0, 0, 0, 0, 0x8, 0, 0] });
+  assert.equal(model.slotUsable(4), true, "AttributesEx5 0x8: usable while stunned");
+  pet.fields.set(FLAGS, 0x800000);
+  assert.equal(model.slotUsable(4), false, "confused");
+  pet.fields.set(FLAGS, 0x400000);
+  assert.equal(model.slotUsable(4), false, "fleeing");
+  pet.fields.set(FLAGS, 0);
+  // 25 focus + 1 a level from BaseLevel 1 at the pet's level 80 (UNIT_FIELD_LEVEL, 0x0071aa70) = 104 against 100 focus.
+  pet.fields.set(UPDATE_FIELDS.UNIT_FIELD_LEVEL.offset, 80);
+  spells.set(BITE, { ...bite, manaCostPerLevel: 1, baseLevel: 1 });
+  assert.equal(model.slotUsable(4), false, "the level part of the cost is the pet's");
+  pet.fields.set(UPDATE_FIELDS.UNIT_FIELD_LEVEL.offset, 70);
+  assert.equal(model.slotUsable(4), true, "94 against 100");
+  spells.set(BITE, { ...bite, powerType: -2, powerCost: 1000 });
+  assert.equal(model.slotUsable(4), false, "health: cost < health, 1000 against 1000 is not enough");
+  spells.set(BITE, { ...bite, powerType: -2, powerCost: 999 });
+  assert.equal(model.slotUsable(4), true);
+});
+
 test("the live model answers the bar, and only a pet's bar", () => {
   const fixture = liveFixture();
   const { model, world, pump } = fixture;

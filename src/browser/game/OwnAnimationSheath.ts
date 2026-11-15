@@ -8,6 +8,8 @@
  * frame's animation and its last start's bit.
  */
 import type { OwnAnimationResult } from "../RenderResults.js";
+import { toMainTime } from "../RenderClock.js"; // 5.05 (15.11, combat7)
+import { acceptOwnSheathRig, ownSheathRigReport } from "../SheathCeremony.js"; // 5.05 (15.11, combat7)
 
 export interface OwnAnimationWorld {
   readonly state: { readonly selfGuid?: bigint | undefined };
@@ -20,6 +22,12 @@ export class OwnAnimationSheath {
 
   /** After a draw: judge again when the active player's model started something since the last call. */
   afterDraw(world: OwnAnimationWorld | undefined, own: OwnAnimationResult | undefined): void {
+    // 5.05 (15.11, combat7): the rig's ToggleSheath guards, onto the page's clock (identity in the page; a worker's
+    // renderer has no other way to the key binding's `ownSheathRefused`).
+    const rig = own?.rig;
+    if (rig !== undefined && rig !== ownSheathRigReport()) { // the page's own renderer already wrote it here
+      acceptOwnSheathRig({ refuses: rig.refuses, busyUntil: toMainTime(rig.busyUntil), at: toMainTime(rig.at) });
+    }
     if (world === undefined || own === undefined || own.guid !== world.state.selfGuid) return;
     if (own.guid !== this.#guid) {
       // A new character (or the first draw): its count is where it stands, nothing to judge yet.

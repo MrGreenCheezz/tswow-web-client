@@ -398,6 +398,7 @@ import { ANIMATION_BEHAVIORS, ANIMATION_WEAPON_FLAGS } from "../generated/animat
 import { mountedCastRule, SPELL_FAILED_NOT_MOUNTED } from "./MountedCastRule.js"; // 5.05 (11.11)
 import { // 5.05 (11.11): 0x0080cce0 / 0x0080ac90
   castPreflightRefusal, sittingCastRule, SPELL_FAILED_NOT_STANDING, type CastPreflightItem,
+  type OverrideSpellRow, // 5.05 (15.11, combat7)
 } from "./CastPreflightRule.js";
 import { castFailureErrorRowIsInfo, castFailureErrorText, petCastFailureErrorText, powerTokenName, SPELL_FAILED_ALREADY_AT_FULL_POWER } from "./CastFailureErrorRow.js"; // 3.47 (11.11)
 // 11.02-E: missile trajectories — the cast's flag 2 tail, the one re-aim, the page's solver.
@@ -942,6 +943,8 @@ export class WorldClient {
   autoDismountFlying: () => boolean = () => false; // 5.05 (11.11)
   /** 5.05 (11.11): the CVar autoStand (0x00bd08f8, default "1") 0x0071b090 reads before a seated cast stands up. */
   autoStand: () => boolean = () => true; // 5.05 (11.11)
+  /** 5.05 (15.11, combat7): an OverrideSpellData row by id (browser/OverrideSpellClient.ts); none until the rows land. */
+  overrideSpellRow: (id: number) => OverrideSpellRow | undefined = () => undefined; // 5.05 (15.11, combat7)
   /** L15 5.05: the range of the controller's spell for the player against a target (0x00802c30); the browser's. */
   autoRangedLimits: (spellId: number, player: WorldObjectState, target: WorldObjectState) => AutoRangedLimits | undefined = () => undefined; // L15 5.05
   /**
@@ -2455,6 +2458,24 @@ export class WorldClient {
     if (state !== undefined) this.#sendSheath(state, self);
   }
 
+  /**
+   * 5.05 (15.11, combat7): the sheath the player's own model shows (+0xb5c) — the setter's held state, else the
+   * server's byte (SheathSetter.shown); undefined without a player object. Pushed to the renderer each frame.
+   */
+  get ownSheathShown(): number | undefined {
+    const self = this.state.selfGuid === undefined ? undefined : this.state.objects.get(this.state.selfGuid);
+    return self === undefined ? undefined : this.#sheathSetter.shown(unitFields.sheathState(self));
+  }
+
+  /**
+   * 5.05 (15.11, combat7): after an update — a new player object holds its CREATE block's sheath byte; a later byte
+   * change does not move the own model (SheathSetter.reset, 0x00737aa0 and the sheath6 recording).
+   */
+  #noteSelfSheathByte(before: WorldObjectState | undefined): void {
+    const self = this.state.selfGuid === undefined ? undefined : this.state.objects.get(this.state.selfGuid);
+    if (self !== undefined && self !== before) this.#sheathSetter.reset(unitFields.sheathState(self) ?? 0);
+  }
+
   /** 5.05 (11.11): Wow.exe's sheath setter 0x00736d30 for the player — CMSG_SET_SHEATHED only on a change. */
   #sendSheath(state: number, self?: WorldObjectState): void {
     const unit = self ?? (this.state.selfGuid === undefined ? undefined : this.state.objects.get(this.state.selfGuid));
@@ -2675,10 +2696,13 @@ export class WorldClient {
     if (attributes === undefined) return false; // no row yet: the realm decides, as before
     const effect0 = this.spellCooldownRow?.(spellId)?.effects?.[0];
     const fields = self.fields;
-    let refusal = castPreflightRefusal({ attributes, effect0 }, {
+    // 5.05 (15.11, combat7): PLAYER_FIELD_BYTES2's low word names the OverrideSpellData row (refusal 0).
+    const overrideId = (fields.get(UPDATE_FIELDS.PLAYER_FIELD_BYTES2.offset) ?? 0) & 0xffff;
+    let refusal = castPreflightRefusal({ attributes, effect0, id: spellId }, { // 5.05 (15.11, combat7): + id
       health: unitFields.health(self) ?? 1,
       playerFlags: fields.get(UPDATE_FIELDS.PLAYER_FLAGS.offset) ?? 0,
       rangedItem: this.#rangedSlotItem(self),
+      overrideSpells: overrideId === 0 ? undefined : this.overrideSpellRow(overrideId), // 5.05 (15.11, combat7)
     });
     if (refusal === undefined) {
       const sitting = sittingCastRule(attributes[0], unitFields.standState(self) ?? 0, this.autoStand());
@@ -3519,12 +3543,16 @@ export class WorldClient {
    * otherwise their auras and casts outlive them. The error goes on to `#deliver`, which records it.
    */
   #applyObjectUpdate(payload: Uint8Array): void {
+    // 5.05 (15.11, combat7): the player object before the update — a new one takes its CREATE byte (SheathSetter.reset).
+    const selfBefore = this.state.selfGuid === undefined ? undefined : this.state.objects.get(this.state.selfGuid);
     let retired: readonly bigint[];
     try {
       retired = this.state.applyUpdate(payload);
     } catch (error) {
       if (error instanceof UpdateBlockError) this.#retireWorldObjects(error.retired);
       throw error;
+    } finally {
+      this.#noteSelfSheathByte(selfBefore); // 5.05 (15.11, combat7)
     }
     this.#retireWorldObjects(retired);
     // 2.10: an item bought at an open merchant is asked about as it arrives (see #sweepItemRefunds).
@@ -10834,6 +10862,11 @@ export class WorldClient {
         this.swingWarning = undefined;
         this.onCombatStatus?.("Автоатака идёт", this.attacking, false);
       }
+      // 5.05 (15.11, combat7): 0x00756800 case 0x14a draws melee on a known attacker whose held state is not 1 —
+      // 0x00736d30(1, 1, 0), the packet for the player (re-2026-11-11/combat4/c1.c); the renderer does the same
+      // for other units (UnitShownSheath.ts `swungAt`).
+      const swinger = swing.attacker === this.state.selfGuid ? this.state.objects.get(swing.attacker) : undefined;
+      if (swinger !== undefined) this.#sendSheath(SHEATH_MELEE, swinger); // 5.05 (15.11, combat7)
       this.onSwing?.(swing);
       this.events.emit("UNIT_COMBAT", { source: "melee", swing });
       return true;

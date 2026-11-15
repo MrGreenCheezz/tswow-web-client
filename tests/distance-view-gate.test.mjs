@@ -54,9 +54,10 @@ test("a WMO range table's skyline groups are capped per path, and refill when th
 test("the renderer asks the path for both, and reselects when the path changes", async () => {
   const source = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
   assert.match(source, /queryCached\(\s+player\.x, player\.y, this\.environmentStreamRange,/);
-  assert.match(source, /environmentRankInRange\(pool, player, this\.#environmentDetail, this\.environmentShellRange\)/);
-  assert.match(source, /placed\.ranges\.setShellCap\?\.\(this\.environmentShellRange, environmentHouseRange\(this\.environmentShellRange\)\)/); // 7.44: and the house leash
-  assert.match(source, /ranges\.setShellCap\(this\.environmentShellRange, environmentHouseRange\(this\.environmentShellRange\)\)/, "the open-air table too");
+  // 15.11 (7.66 tail): with the faithful levels' rule beside the reach.
+  assert.match(source, /environmentRankInRange\(pool, player, this\.#environmentDetail, this\.environmentShellRange, this\.#faithfulLevel\)/);
+  assert.match(source, /placed\.ranges\.setShellCap\?\.\(this\.environmentShellRange, environmentHouseRange\(this\.environmentShellRange, this\.#faithfulLevel\)\)/); // 7.44: and the house leash
+  assert.match(source, /ranges\.setShellCap\(this\.environmentShellRange, environmentHouseRange\(this\.environmentShellRange, this\.#faithfulLevel\)\)/, "the open-air table too");
   assert.match(source, /if \(this\.environmentShellRange !== oldShellRange\) this\.#environmentCandidatesAt = undefined;/);
   for (const file of ["RenderWorkerSession.ts", "bench/Harness.ts", "bench/BenchRender.worker.ts"]) {
     const text = await readFile(new URL(`../src/browser/${file}`, import.meta.url), "utf8");

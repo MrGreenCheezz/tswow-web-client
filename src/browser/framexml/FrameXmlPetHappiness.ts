@@ -53,8 +53,13 @@ const HAPPINESS_ANSWERS: readonly FrameXmlPetHappinessAnswer[] = Object.freeze(P
  * 3.36 (11.11, open): 0x00722c50 clamps the word to MAXPOWER5 and signals only when the clamped value
  * equals the maximum; its callers are the POWER/MAXPOWER handlers (0x007234d0, 0x007235c0) and the
  * regeneration step 0x00722cf0, and no call of the unit-event signal 0x0060bf10 pushes 0x13..0x19 as a
- * constant (`.runtime/re-2026-11-11/api4/unitev.mjs`). Where a drop below the maximum is signalled is
- * still not found, so the seam keeps raising the event on every change of the word.
+ * constant (`.runtime/re-2026-11-11/api4/unitev.mjs`).
+ * widgets7 (15.11, .runtime/re-2026-11-15/widgets7/r2.txt, r3.txt, w4.c, w3.c): every other change is signalled by
+ * the per-unit field watch — 0x00614190 (called from the unit set-up 0x007158c0 and 0x00720960) registers 0x0060c240
+ * on each descriptor field whose entry in the table at 0x00c24eb0 names an event, and 0x0060c240 signals event
+ * `fieldOffset >> 2` for the unit on any change; POWER5 sits at offset 0x5c, so event 0x17, UNIT_HAPPINESS. So the
+ * seam's event on every change of the word is the original's. Not modelled: the second signal 0x00722c50 adds when a
+ * change lands exactly on the maximum (the class handler 0x007234d0 runs beside the watch).
  */
 export const FRAMEXML_PET_HAPPINESS_EVENT = "UNIT_HAPPINESS";
 

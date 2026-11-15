@@ -10,6 +10,11 @@ import { terrainReliefSourceRevision } from "./TerrainReliefNeural.js"; // 25.10
 import { terrainReliefArray, terrainReliefLayer, type TerrainReliefLayerRecord } from "./TerrainReliefLayers.js"; // 22.10 (7.47)
 import { isHdTextureContainer, parseHdTexture, type HdCompressedTexture } from "./HdTextureContainer.js"; // 23.10 (7.48)
 import { compressedLayerArray, hdWorldTexturesActive, withHdWorldTexture } from "./HdWorldTextures.js"; // 23.10 (7.48)
+import {
+  injectTerrainEnvironmentVertex, loadTerrainCube, terrainEnvironmentFragmentBody, terrainEnvironmentFragmentHead,
+  terrainEnvironmentPlan, terrainEnvironmentUniforms, type TerrainSplatEnvironment,
+} from "./TerrainEnvironment.js"; // 15.11 (7.16)
+import { TERRAIN_SUN_TERM, injectTerrainChannelSaturation } from "./TerrainLightSaturation.js"; // 15.11 (7.07)
 
 /** Ground textures are republished at this size so one array can hold all of a tile's layers. */
 const LAYER_SIZE = 256;
@@ -25,8 +30,10 @@ const LAYER_SIZES: ReadonlySet<number> = new Set([256, 512]);
  * bytes changed (`splat.json`, `alpha.png`). The route matches the path only, so an older gateway
  * answers the same request with its own files: RGB alpha (no baked shadow: alpha 255 reads as lit)
  * and no `layerSize` (256) — the ground it drew before.
+ * 15.11 (7.16): 3 — `splat.json` may name cube maps and reflecting chunks (TerrainEnvironment.ts); a new
+ * query so a cached v2 answer is not taken for one.
  */
-export const TERRAIN_SPLAT_CLIENT_VERSION = 2;
+export const TERRAIN_SPLAT_CLIENT_VERSION = 3;
 
 /** 05.10-A7b-7 (7.16): the layer array side a splat.json asks for; 256 unless it names 256 or 512. */
 export function terrainSplatLayerSize(value: unknown): number {
@@ -172,6 +179,8 @@ export interface TerrainSplat {
    * Set as the tile loads, or later on a `get` when the leaf is turned on; removed when it is off.
    */
   relief?: THREE.DataArrayTexture;
+  /** 15.11 (7.16): the environment cube maps and the chunks that reflect them (Wow.exe's `_env` programs). */
+  environment?: TerrainSplatEnvironment;
 }
 
 export interface TerrainSplatStats {
@@ -586,6 +595,18 @@ export class TerrainSplatClient {
       const maskPixels = masks
         ? Promise.all(masks.map((id) => (id === null ? undefined : request.layers.get(id)!.promise))).catch(() => undefined)
         : Promise.resolve(undefined);
+      // 15.11 (7.16): the environment cube maps; one that will not load costs the tile its reflection,
+      // never its ground (the chunk then draws its flat layer 0, as before).
+      const environmentPlan = terrainEnvironmentPlan(value, layers.length);
+      const environment: Promise<TerrainSplatEnvironment | undefined> = environmentPlan
+        ? Promise.all(environmentPlan.cubes.map(async ({ id }) => {
+          const cube = await loadTerrainCube(withGeneration(`${this.#baseUrl}/terrain-layer/${id}.png`));
+          this.#trackTexture(request, cube);
+          return cube;
+        })).then((cubes) => ({
+          cubes, cubeLayers: environmentPlan.cubes.map(({ layer }) => layer), chunkRows: environmentPlan.chunkRows,
+        }), () => undefined)
+        : Promise.resolve(undefined);
       const results = await Promise.allSettled([
         hdArray === undefined ? originalPixels() : (async (): Promise<Uint8ClampedArray[] | THREE.CompressedArrayTexture> => {
           // 23.10 (7.48): the HD array, or — some layer has no copy — the originals after all.
@@ -603,6 +624,7 @@ export class TerrainSplatClient {
         this.#loadTexture(request, withGeneration(`${base}/index.png`)),
         painted ? this.#loadTexture(request, withGeneration(`${base}/mccv.png`)) : Promise.resolve(undefined),
         maskPixels, // 05.10-A7b-7Г
+        environment, // 15.11 (7.16)
       ]);
       const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
       if (failure) throw failure.reason;
@@ -612,6 +634,7 @@ export class TerrainSplatClient {
       const index = (results[2] as PromiseFulfilledResult<THREE.Texture>).value;
       const colours = (results[3] as PromiseFulfilledResult<THREE.Texture | undefined>).value;
       const masked = (results[4] as PromiseFulfilledResult<(Uint8ClampedArray | undefined)[] | undefined>).value;
+      const reflection = (results[5] as PromiseFulfilledResult<TerrainSplatEnvironment | undefined>).value; // 15.11 (7.16)
       const array = ground instanceof THREE.CompressedArrayTexture ? ground // 23.10 (7.48): set up by compressedLayerArray
         : this.#originalLayerArray(request, ground, masked, layerSize, layers.length);
 
@@ -659,6 +682,7 @@ export class TerrainSplatClient {
         layers: array, alpha, index, ...(colours ? { colours } : {}),
         ...(masked && !(array instanceof THREE.CompressedArrayTexture) ? { specular: true } : {}), // 05.10-A7b-7Г; 23.10 (7.48)
         ...(relief ? { relief } : {}), // 22.10 (7.47)
+        ...(reflection ? { environment: reflection } : {}), // 15.11 (7.16)
       };
       const tile: TerrainSplatTileRecord = {
         splat,
@@ -897,6 +921,8 @@ export function applyTerrainSplat(
 ): void {
   const painted = splat.colours !== undefined;
   const specular = splat.specular === true; // 05.10-A7b-7Г
+  const environment = splat.environment; // 15.11 (7.16)
+  const cubeCount = environment?.cubes.length ?? 0;
   const previousCompile = material.onBeforeCompile;
   const previousKey = material.customProgramCacheKey();
   material.onBeforeCompile = (shader, renderer) => {
@@ -915,6 +941,12 @@ export function applyTerrainSplat(
     }
     shader.vertexShader = `varying vec2 vSplatUv;\n${shader.vertexShader}`
       .replace("#include <begin_vertex>", "vSplatUv = uv;\n#include <begin_vertex>");
+    // 15.11 (7.16): the reflection's uniforms in every compile of this material (three reuses a program
+    // by key and keeps the uniforms of its last compile).
+    if (environment) {
+      Object.assign(shader.uniforms, terrainEnvironmentUniforms(environment));
+      shader.vertexShader = injectTerrainEnvironmentVertex(shader.vertexShader);
+    }
     shader.fragmentShader = `
       precision highp sampler2DArray;
       uniform sampler2DArray splatLayers;
@@ -923,7 +955,7 @@ export function applyTerrainSplat(
       uniform float splatRepeat;
       uniform float splatBakedShadow;
       varying vec2 vSplatUv;
-      ${painted ? "uniform sampler2D splatColours;" : ""}${glint ? "\n      uniform float splatSpecularStrength;\n      uniform vec3 splatSpecularColour;\n      varying float vSplatSpecular;" : "" /* 05.10-A7b-7Г; 13.10 7.16 */}
+      ${painted ? "uniform sampler2D splatColours;" : ""}${glint ? "\n      uniform float splatSpecularStrength;\n      uniform vec3 splatSpecularColour;\n      varying float vSplatSpecular;" : "" /* 05.10-A7b-7Г; 13.10 7.16 */}${environment ? `\n      ${terrainEnvironmentFragmentHead(cubeCount)}` : "" /* 15.11 (7.16) */}
 
       vec3 splatLayer(float slot, vec2 detail, vec3 fallback) {
         return slot < 0.0 ? fallback : texture(splatLayers, vec3(detail, slot)).rgb;
@@ -940,11 +972,12 @@ export function applyTerrainSplat(
       vec4 splatAlphaTexel = texture2D(splatAlpha, splatAlphaUv);
       vec3 splatBlend = splatAlphaTexel.rgb;
       vec2 splatDetail = vSplatUv * splatRepeat;
-      vec3 splatColour = splatLayer(splatSlots.r, splatDetail, vec3(0.30, 0.38, 0.26));
+      vec3 splatColour = splatLayer(splatSlots.r, splatDetail, vec3(0.30, 0.38, 0.26));${environment ? `
+      ${terrainEnvironmentFragmentBody(cubeCount)}` : "" /* 15.11 (7.16): layer 0 from the cube in a reflecting chunk */}
       if (splatSlots.g >= 0.0) splatColour = mix(splatColour, texture(splatLayers, vec3(splatDetail, splatSlots.g)).rgb, splatBlend.r);
       if (splatSlots.b >= 0.0) splatColour = mix(splatColour, texture(splatLayers, vec3(splatDetail, splatSlots.b)).rgb, splatBlend.g);
       if (splatSlots.a >= 0.0) splatColour = mix(splatColour, texture(splatLayers, vec3(splatDetail, splatSlots.a)).rgb, splatBlend.b);
-      diffuseColor.rgb *= splatColour;${glint ? `\n      ${TERRAIN_SPECULAR_MASK}` : "" /* 05.10-A7b-7Г */}
+      diffuseColor.rgb *= splatColour;${glint ? `\n      ${environment ? TERRAIN_SPECULAR_MASK_ENV : TERRAIN_SPECULAR_MASK}` : "" /* 05.10-A7b-7Г; 15.11 (7.16) */}
       // 05.10-A7b-7 (7.06): MCSH as the client's Shaders/Pixel/arbfp1/terrain2.bls applies it —
       // albedo × (0.3 · lit + 0.7), lit = the alpha map's .w (c[12] = {0.2, 0.3, 0.7, 2}).
       // An older gateway's RGB alpha reads 1 (lit); the presets above the classic path set 0.
@@ -962,13 +995,15 @@ export function applyTerrainSplat(
     `);
     if (glint) injectTerrainSpecular(shader); // 05.10-A7b-7Г
     injectTerrainShadowFold(shader); // 05.10 review 7.20
+    shader.fragmentShader = injectTerrainChannelSaturation(shader.fragmentShader); // 15.11 (7.07)
   };
   // Without this every terrain material would share one compiled program and its uniforms.
   // Two programs, not one: a tile with painted ground compiles a different shader from one
   // without, and sharing the key would hand the second the first's missing sampler.
   const splatKey = painted ? "terrain-splat-mccv-v2" : "terrain-splat-v2"; // 05.10-A7b-7
   const specularKey = specular ? "|terrain-splat-spec-v1" : ""; // 05.10-A7b-7Г
-  material.customProgramCacheKey = () => `${previousKey}|${splatKey}${specularKey}`;
+  const environmentKey = environment ? `|terrain-splat-env-v1-${cubeCount}` : ""; // 15.11 (7.16): only tiles that reflect
+  material.customProgramCacheKey = () => `${previousKey}|${splatKey}${specularKey}${environmentKey}`;
   material.color.setHex(0xffffff);
   material.needsUpdate = true;
 }
@@ -982,6 +1017,12 @@ const TERRAIN_SPECULAR_MASK = `float splatSpecMask = splatSlots.r < 0.0 ? 0.0 : 
       if (splatSlots.g >= 0.0) splatSpecMask = mix( splatSpecMask, texture(splatLayers, vec3(splatDetail, splatSlots.g)).a, splatBlend.r );
       if (splatSlots.b >= 0.0) splatSpecMask = mix( splatSpecMask, texture(splatLayers, vec3(splatDetail, splatSlots.b)).a, splatBlend.g );
       if (splatSlots.a >= 0.0) splatSpecMask = mix( splatSpecMask, texture(splatLayers, vec3(splatDetail, splatSlots.a)).a, splatBlend.b );`;
+
+/** 15.11 (7.16): in a reflecting chunk layer 0's mask is the cube's alpha, as the client's `_env` programs read it. */
+const TERRAIN_SPECULAR_MASK_ENV = TERRAIN_SPECULAR_MASK.replace(
+  "float splatSpecMask = splatSlots.r < 0.0 ? 0.0 : texture(splatLayers, vec3(splatDetail, splatSlots.r)).a;",
+  "float splatSpecMask = splatSlots.r < 0.0 ? 0.0 : ( splatEnvOn ? splatEnvTexel.a : texture(splatLayers, vec3(splatDetail, splatSlots.r)).a );",
+);
 
 const TERRAIN_SPECULAR_VERTEX_MARKER = "#include <fog_vertex>";
 const TERRAIN_SPECULAR_FRAGMENT_MARKER = "reflectedLight.directSpecular = vec3( 0.0 );";
@@ -1018,7 +1059,7 @@ if ( splatSpecWeight > 0.0 ) {
 }
 
 /** 05.10 review 7.20: the world light's terrain sun term, the line the fold has to precede. */
-const TERRAIN_SHADOW_FOLD_MARKER = "vec3 wowAuthoredLight = max( wowAmbient + wowDiffuse * ( wowNL * wowShadow ), vec3( 0.0 ) );";
+const TERRAIN_SHADOW_FOLD_MARKER = TERRAIN_SUN_TERM;
 
 /**
  * 05.10 review 7.20: the client's terrain fragment programs (`Shaders/Pixel/arbfp1/terrain2.bls` and

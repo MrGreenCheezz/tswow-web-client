@@ -108,6 +108,11 @@ test("Blizzard_BattlefieldMinimap loads through its owner in Warsong Gulch, show
     const errors = boot.errorCount;
     const newErrors = () => JSON.stringify(boot.errors.slice(errors));
 
+    // 5.37 (15.11): Wow.exe registers showBattlefieldMinimap with "0" (0x0051ee41, «Никогда»): untouched, stock never
+    // opens the zone map in a battleground. The rest of this test is a player who picked «На полях боя».
+    assert.deepEqual(lua(boot, "return GetCVar('showBattlefieldMinimap'), GetCVarDefault('showBattlefieldMinimap')", 2), ["0", "0"]);
+    lua(boot, "SetCVar('showBattlefieldMinimap', '1')", 0);
+
     // ---- Warsong Gulch: the stock PLAYER_ENTERING_WORLD path asks, nothing loads before publication ----
     world.battlefieldQueues.set(0, { status: 3, mapId: WSG, cleared: false });
     seam.pvpWorld.instanceType = 3;

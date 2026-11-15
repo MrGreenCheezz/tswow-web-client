@@ -29,6 +29,16 @@
 // kit type 1 with no guid (0x006cf240 zeroes the request; the missile's arrival puts its caster's guid at +0x28). So
 // neither impact gives the kit another unit to start from; by the rule above its beams would run from the unit it plays
 // on to that unit's own spell targets (+0xb60), whose life on a unit that did not cast was not read. Kept as before.
+//
+// 15.11, the list's life (.runtime/re-2026-11-15/fx7/r1–r4): +0xb60 is a growable array (+0xb60 capacity, +0xb64
+// count, +0xb68 data). Only 0x00724f50 fills it — count reset to 0, then the packet's targets other than the unit
+// itself, last first — called from SPELL_GO 0x0080e1b0 for the caster, and from 0x00741210, which a Spell_C.cpp
+// handler (0x00800470: guid, spell, count, guids — the shape of SMSG_SPELL_UPDATE_CHAIN_TARGETS) calls for the named
+// unit. It is emptied only when the unit object is set up again (vtable slot 1, 0x00734fd0) or destroyed (0x00734b50);
+// no timer, cast end or aura removal touches it. So an impact kit's beams in Wow.exe would run from the hit unit to the
+// targets of that unit's own last SPELL_GO, however old, and draw nothing from a unit that has not cast since it came
+// into view (count 0: 0x007265c0 breaks). Whether the impact kits with beams look like that in the original is not
+// seen in any recording, so the behaviour above is kept; following it needs per-unit last-GO target lists here.
 
 import type { SpellVisualBeamEnds, SpellVisualKit } from "../gateway/SpellVisual.js";
 import type { VisualBeam, VisualBeamEnd } from "./ChainBeam.js";

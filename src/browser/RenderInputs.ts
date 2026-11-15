@@ -11,6 +11,7 @@
 import type { GatewayGenerationPush } from "./GatewayGeneration.js";
 import type { EnchantGlowTables } from "./ItemEnchantments.js";
 import type { RenderSwitchesPush } from "./RenderSwitches.js";
+import type { OwnSheathRequest } from "./SheathCeremony.js"; // 5.05 (15.11, combat7)
 import { NO_UNIT_FACING_INPUTS, type UnitFacingInputs } from "../world/UnitFacing.js";
 import type { GroundNormal } from "../world/UnitTilt.js";
 import type { VehicleCatalogRows } from "../world/VehicleDbc.js";
@@ -42,6 +43,16 @@ export interface RenderInputs {
   readonly gatewayGeneration: GatewayGenerationPush | undefined;
   /** 22.10 ARC-2 S4b: whether the page's frame-budget sensor records; a renderer with its own follows it. */
   readonly frameBudgetProbe: boolean;
+  /**
+   * 5.05 (15.11, combat7): the sheath the active player's model shows (+0xb5c) — the world client's setter state,
+   * else the server's byte (world/SheathSetter.ts `shown`); absent: the model follows the byte.
+   */
+  readonly ownSheath?: number | undefined;
+  /**
+   * 5.05 (15.11, combat7): the active player's latest ToggleSheath (SheathCeremony.ts `requestOwnSheath`), taken once
+   * by its serial: the arm clips of the 6.08 ceremony, the same in the page and in the render worker.
+   */
+  readonly ownSheathRequest?: OwnSheathRequest | undefined;
 }
 
 /** Nothing pushed (a benchmark, a test, before the first frame): no glow, every object shown, no facing sources. */

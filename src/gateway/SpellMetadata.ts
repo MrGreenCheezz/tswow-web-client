@@ -470,6 +470,19 @@ export interface SpellMetadata {
    * (src/browser/ui/SpellTextCaster.ts spellTextWeaponSkillSpell).
    */
   weaponSkillSpells?: number[];
+  /**
+   * 3.68 (15.11, v=23): RequiredAuraVision (Spell.dbc column 221, record +0x274) — an aura of such a spell is in a
+   * unit's aura list only while bit (value − 1) of the active player's PLAYER_FIELD_BYTES2 byte 3 is set (Wow.exe
+   * 0x0053d580 → 0x004f72e0; src/world/AuraListed.ts). Raw, on every row; absent from an older gateway.
+   */
+  requiredAuraVision?: number;
+  /**
+   * 3.43 (15.11, v=23): the SpellCastTimes row's `PerLevel` and `Minimum` beside `castTime` (its `Base`) — Wow.exe
+   * 0x007ff180 grows the time by PerLevel × (level − BaseLevel) and keeps it at least Minimum
+   * (src/browser/ui/SpellCastTimeRange.ts). On every row; absent from an older gateway.
+   */
+  castTimePerLevel?: number;
+  castTimeMinimum?: number;
 }
 
 /** `MAX_SPELL_EFFECTS`: every effect column in this table is three wide. */
@@ -602,9 +615,14 @@ export function parseSpellMetadata(
     }
   }
   const castTimes = new Map<number, number>();
+  const castTimeGrowth = new Map<number, { perLevel: number; minimum: number }>(); // 3.43 (15.11, v=23)
   if (castTimePayload) {
     const table = openDbc(view(castTimePayload), "SpellCastTimes");
-    for (const row of table.rows()) castTimes.set(table.id(row), table.int(row, "Base"));
+    for (const row of table.rows()) {
+      castTimes.set(table.id(row), table.int(row, "Base"));
+      // 3.43 (15.11, v=23): the growth and the floor 0x007ff180 reads beside the base.
+      castTimeGrowth.set(table.id(row), { perLevel: table.int(row, "PerLevel"), minimum: table.int(row, "Minimum") });
+    }
   }
   const descriptionVariables = new Map<number, string>();
   if (descriptionVariablesPayload) {
@@ -774,6 +792,11 @@ export function parseSpellMetadata(
       // 3.43 (15.11, v=22): the cost's level parts (SpellMetadata.manaCostPerLevel).
       manaCostPerLevel: spells.int(row, "ManaCostPerLevel"),
       manaPerSecondPerLevel: spells.int(row, "ManaPerSecondPerLevel"),
+      // 3.68 (15.11, v=23): SpellMetadata.requiredAuraVision.
+      requiredAuraVision: spells.int(row, "RequiredAuraVision"),
+      // 3.43 (15.11, v=23): SpellMetadata.castTimePerLevel / castTimeMinimum (0 without the row, as castTime).
+      castTimePerLevel: castTimeGrowth.get(spells.int(row, "CastingTimeIndex"))?.perLevel ?? 0,
+      castTimeMinimum: castTimeGrowth.get(spells.int(row, "CastingTimeIndex"))?.minimum ?? 0,
     };
     const debuffType = debuffTypes.get(metadata.dispelType ?? 0);
     if (debuffType !== undefined) metadata.debuffType = debuffType;

@@ -164,6 +164,7 @@ import {
 import { createFrameXmlMerchantMetadataCoordinator } from "../framexml/FrameXmlMerchantMetadata.js";
 import { WorldEntryLifecycle } from "./WorldEntryLifecycle.js";
 import { itemLimitCategoryClient } from "../ItemLimitCategoryClient.js"; // 05.10-3.02
+import { overrideSpellClient } from "../OverrideSpellClient.js"; // 5.05 (15.11, combat7)
 import { swingAction } from "../game/CombatAnimations.js"; // 05.10-A7a-D 6.06
 import { SwingMeleeReactions } from "../game/SwingReactionHost.js"; // 05.10-A7a-D2 6.06
 import { weaponAnimClient } from "../WeaponAnimations.js"; // 05.10-A7a-D 6.06
@@ -910,6 +911,10 @@ export async function enterWorld(character: CharacterSummary): Promise<void> {
   // (it waits for a restart) the stand-in ItemSubClass columns apply and swings have no kit variants.
   weaponAnimClient(game.gatewayOrigin)?.load(); // 05.10-A7a-D
   world.castFailureLimitCategory = (id) => itemLimitCategoryClient(game.gatewayOrigin)?.category(id); // 05.10-3.02
+  // 5.05 (15.11, combat7): OverrideSpellData for the own cast's 0xad refusal (world/CastPreflightRule.ts); until the
+  // gateway serves /dbc/override-spells (it waits for a restart) no cast is refused for it.
+  overrideSpellClient(game.gatewayOrigin)?.load(); // 5.05 (15.11, combat7)
+  world.overrideSpellRow = (id) => overrideSpellClient(game.gatewayOrigin)?.row(id); // 5.05 (15.11, combat7)
   world.onCooldownsChanged = () => updateSpellCooldowns(performance.now());
   // 3.39: the rows' Category and recoveries (`/dbc/spells?v=19`) for what a GO and a cooldown event file — the
   // category part that holds a sibling (the second potion), the hold of a stealth or a potion until its event.

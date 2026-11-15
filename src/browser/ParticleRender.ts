@@ -27,6 +27,7 @@ import {
 import { installSpellParticleLook, spellParticleLookOf } from "./SpellParticleLook.js"; // 23.10 (6.27)
 import { BLEND_ADD, BLEND_BLEND_ADD, BLEND_NO_ALPHA_ADD } from "./Wvm.js"; // 23.10 (6.27)
 import { applyParticleDepthState, particleDepthFollowsModelAlpha } from "./ParticleDepth.js"; // 15.11 (6.15)
+import { ribbonDrawState } from "./RibbonEmitter.js"; // 15.11 (6.15)
 import { renderSwitches } from "./RenderSwitches.js"; // 12.08
 import { MATERIAL_UNFOGGED, TEXTURE_TYPE_OWN, textureUrl, type WvmModel } from "./Wvm.js";
 import { withHdModelTexture } from "./HdWorldTextures.js"; // 24.10 (7.48 step 3)
@@ -310,6 +311,7 @@ export function buildModelEffects(
           buffers, map, material?.blendMode ?? 2, material?.flags ?? 0, options.fantasyGlow,
         );
         geometry = drawn.geometry;
+        applyRibbonDrawState(drawn.material, material?.flags ?? 0, material?.blendMode ?? 2); // 15.11 (6.15)
         leader = {
           ...drawn,
           buffers,
@@ -324,6 +326,7 @@ export function buildModelEffects(
       const drawn = buildDrawn(
         buffers!, map, material?.blendMode ?? 2, material?.flags ?? 0, options.fantasyGlow, geometry,
       );
+      applyRibbonDrawState(drawn.material, material?.flags ?? 0, material?.blendMode ?? 2); // 15.11 (6.15)
       emitters.push({ ...drawn, buffers: buffers!, bone: ribbon.bone, seedOffset: 0, follows: leader });
       group.add(drawn.mesh);
     });
@@ -336,6 +339,19 @@ export function buildModelEffects(
     return undefined;
   }
   return { group, emitters, textures, disposeTextures };
+}
+
+/**
+ * 15.11 (6.15): a ribbon pass's own states from its M2 material (0x00980b70; RibbonEmitter.ts `ribbonDrawState`): the
+ * depth test unless the material says otherwise, and the alpha reference of its blend — 1/255 for every blend the
+ * client's ribbons use. Depth write stays off (every ribbon material sets 0x10), and the culling and lighting bits are
+ * not followed here: no stand recording holds a ribbon draw to settle which face three should keep, or what a lit
+ * ribbon (57 passes) looks like.
+ */
+function applyRibbonDrawState(material: THREE.Material, materialFlags: number, blendMode: number): void {
+  const state = ribbonDrawState(materialFlags, blendMode);
+  material.depthTest = state.depthTest;
+  material.alphaTest = state.alphaTest;
 }
 
 function buildDrawn(
@@ -379,7 +395,9 @@ function buildDrawn(
   // Two-sided for the same kind of reason, and `MATERIAL_TWO_SIDED` is deliberately not read here
   // either: 850 of the 854 ribbons under `spells\` set it, and a ribbon's winding follows the
   // direction it is flying, so the four that do not would blink out whenever their strip happened
-  // to turn away from the eye.
+  // to turn away from the eye. 15.11 (6.15): Wow.exe does cull those four (`haunt_missile`, `assassinate_missile`;
+  // 0x00832ea0 keeps !(flags & 4), 0x00980b70 sets GxRs 17); its strip winds (below, above, next below) from old to
+  // new, but which face three should keep for that is not settled without a recorded ribbon draw, so they stay two-sided.
   const material = new THREE.MeshBasicMaterial({
     map,
     vertexColors: true,
@@ -389,10 +407,10 @@ function buildDrawn(
   applyBlendMode(material, blendMode);
   // Whatever the blend mode decided, no depth write here. 15.11 (6.15): a particle emitter's own rule replaces this
   // and the alpha test below after the build (ParticleDepth.ts: opaque and alpha-key emitters write depth in Wow.exe);
-  // ribbons keep both as they were.
+  // a ribbon's after its build too (`applyRibbonDrawState`: depth write off on every ribbon material).
   material.depthWrite = false;
   material.transparent = true;
-  // And no cut-out here: a ribbon keeps none, and a particle emitter's own gate is set after the build
+  // And no cut-out here: a ribbon's gate (15.11, 1/255 for its blends) and a particle emitter's own are set after the build
   // (ParticleDepth.ts; 15.11 the stand recorded alpha-key particles gated at 224/255 exactly as `applyBlendMode` gates
   // blend mode 1 batches, so a particle whose opacity ramp is below 0.88 is not drawn in Wow.exe either).
   material.alphaTest = 0;

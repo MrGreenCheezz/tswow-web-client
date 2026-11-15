@@ -166,8 +166,10 @@ test("without the route: the stand-in table — the dataset's columns, no kits",
   setWeaponAnimTable(fake);
   try {
     assert.equal(weaponAnimTable(), fake);
-    assert.equal(readyStance([weapon(15, 13, 7)], 1)[0], A.Ready2H, "the stance reads WeaponReadySeq from the route");
-    assert.equal(readyStance([weapon(15, 13, 4)], 1)[0], A.Ready1H, "a subclass the route lacks keeps the stand-in");
+    // 6.04 (15.11, combat7): the melee stance is Wow.exe's own table (0x00714dd0), the route's WeaponReadySeq is
+    // not read for it — a route that says otherwise changes nothing; the ranged stance still reads the column.
+    assert.equal(readyStance([weapon(15, 13, 7)], 1)[0], A.Ready1H, "the melee stance does not read WeaponReadySeq");
+    assert.equal(readyStance([weapon(15, 13, 4)], 1)[0], A.Ready1H);
   } finally {
     setWeaponAnimTable(undefined);
   }
@@ -264,7 +266,8 @@ test("hook lines: onSwing, the renderer's reaction entry and the variant roll", 
   };
   assert.match(body("playUnitAction"), /roll: Math\.random\(\)/);
   assert.match(body("playUnitReaction"), /layer: "reaction"/);
-  assert.match(body("#entryAnimation"), /combatAnimations\(pending, attachedOf\(metadata\)\)/);
+  // 5.05 (15.11, combat7): the parry by the shown sheath (ShownParry.ts) before the ladders.
+  assert.match(body("#entryAnimation"), /combatAnimations\(shownParryPayload\(pending, this\.#shownSheathOf\(unit\)\), attachedOf\(metadata\)\)/);
   // 05.10-A7a-D2: a weapon without a parry (0x73b050) drops the entry instead of waiting for a clip.
   assert.match(body("#entryAnimation"), /combat !== undefined && combat\.length === 0\) return "drop"/);
   // 22.10 ARC-2 S4a: the entry is watched under main's id, which comes back instead of the entry.

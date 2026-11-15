@@ -395,6 +395,8 @@ import { FRAMEXML_DISPLAYED_POWER, frameXmlObjectPower, frameXmlPartyPower, type
 import { formatSpellDescription } from "../ui/SpellText.js"; // 12.10
 import { sessionSpellDescriptionContext } from "../ui/SpellTextLiveContext.js"; // 12.10
 import { frameXmlPlayerSpellCost, frameXmlSpellInfo } from "./FrameXmlSpellInfo.js"; // 3.43 (15.11)
+import { installSpellTextActionSpell } from "../ui/SpellTextActionSpell.js"; // 3.43 (15.11)
+import { sessionPetCostUnit } from "../ui/SpellTextPetCost.js"; // 3.43 (15.11, follow-up)
 import type { FrameXmlSpellInfo } from "./FrameXmlWorldSeam.js"; // 3.43 (15.11)
 import {
   createFrameXmlTalentResolvers,
@@ -450,6 +452,7 @@ import { FrameXmlHelpModel } from "./FrameXmlHelp.js"; // 3.24
 import { activeGossipPoi, type GossipPoiMark } from "../GossipPoi.js"; // 3.13
 import { macroShown, parseMacroShown, resolveMacroShown, type MacroShown, type MacroShownHost } from "../macro/MacroShownAction.js"; // 1.14
 import { macroShownCommands } from "./FrameXmlMacroCommands.js"; // 1.14
+import { queryMacroCastSequence } from "../macro/MacroCastSequence.js"; // 1.14 (15.11)
 
 const ALLIANCE_RACE_IDS = new Set([1, 3, 4, 7, 11]);
 const HORDE_RACE_IDS = new Set([2, 5, 6, 8, 10]);
@@ -1864,6 +1867,8 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     // A mount/unmount can reattach the same seam. Do not leave the old packet listeners alive.
     if (this.#pump) this.detach();
     this.#pump = pump;
+    // 3.43 (15.11): macro and item buttons for the multi-cast cost (0x005a8c30, ui/SpellTextActionSpell.ts).
+    this.#unsubscribe.push(installSpellTextActionSpell((wire) => this.#costActionSpell(wire)));
     // A new FrameXML load starts from the dock's default selection, «Общий».
     this.#chatWindowShown.clear();
     this.chatWindows.reset();
@@ -4283,7 +4288,11 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
       .map((button) => `${button.slot}:${button.type}:${button.action}:${this.actionTexture(button.slot + 1) ?? ""}`
         + (button.type === ACTION_BUTTON_ITEM ? `:${this.actionCount(button.slot + 1)}:${this.isEquippedAction(button.slot + 1)}`
           // 19.10: a reagent spell's count (0x005aa5c0 raises ACTIONBAR_SLOT_CHANGED for the slots of a bag change).
-          : this.isConsumableAction(button.slot + 1) ? `:${this.actionCount(button.slot + 1)}` : ""))
+          : this.isConsumableAction(button.slot + 1) ? `:${this.actionCount(button.slot + 1)}` : "")
+        // 1.14 (15.11): what a macro stands for now — Wow.exe re-resolves every macro each frame (0x0052af40 →
+        // 0x00566660 → 0x005650c0) and raises ACTIONBAR_SLOT_CHANGED for its slots on a change (0x005aa920), so a
+        // `/castsequence` step or a `[mod]` clause repaints the button even when its icon stays.
+        + (button.type === ACTION_BUTTON_MACRO ? `:${this.#macroShownKey(this.macros.slotBody(button.action))}` : ""))
       .join(",");
     if (bar !== this.#barSignature) {
       this.#barSignature = bar;
@@ -7180,6 +7189,13 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     return body === undefined ? undefined : macroShown(body, macroShownCommands(), this.#macroShownHost);
   }
 
+  /** 1.14 (15.11): a macro's shown item or spell as one word, for the bar signature (0x005650c0's «changed»). */
+  #macroShownKey(body: string | undefined): string {
+    const shown = this.#macroShown(body);
+    if (shown === undefined) return "";
+    return "item" in shown ? `i${shown.item}@${shown.target ?? ""}` : `s${shown.spell.toLowerCase()}@${shown.target ?? ""}`;
+  }
+
   /** 1.14 (11.11): what 0x005650c0 reads of the world — the item cache by name, the inventory's slots. */
   readonly #macroShownHost: MacroShownHost = ((): MacroShownHost => {
     const seam = this;
@@ -7215,6 +7231,7 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
         const item = container?.slots[slot]?.item;
         return item ? entryOf(item) : undefined;
       },
+      castSequence: (sequence) => queryMacroCastSequence(sequence), // 1.14 (15.11): the stock QueryCastSequence
     };
   })();
 
@@ -7287,6 +7304,27 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     const button = this.#button(slot);
     if (button?.type === ACTION_BUTTON_MACRO) return this.#macroBodySpell(this.macros.slotBody(button.action));
     return this.#metadata(slot);
+  }
+
+  /**
+   * 3.43 (15.11): 0x005a8c30's spell for the cost function's multi-cast step (ui/SpellTextActionSpell.ts), 0-based:
+   * a macro's (0x005a89f0: its item's on-use spell, else its own) or an item button's on-use spell; 0 for none,
+   * undefined while an item's template is not cached.
+   */
+  #costActionSpell(wire: number): number | undefined {
+    const button = this.#button(wire + 1);
+    if (!button) return 0;
+    let item: number | undefined;
+    if (button.type === ACTION_BUTTON_MACRO) {
+      const shown = this.#macroShown(this.macros.slotBody(button.action));
+      if (shown === undefined) return 0;
+      if (!("item" in shown)) return this.#knownSpellByName(shown.spell)?.id ?? 0;
+      item = shown.item;
+    } else if (button.type === ACTION_BUTTON_ITEM) item = button.action;
+    else return button.type === ACTION_BUTTON_SPELL ? button.action : 0;
+    const world = this.#context.world();
+    const template = world ? this.#itemTemplate(world, item) : undefined;
+    return template === undefined ? undefined : itemUseSpellId(template) ?? 0;
   }
 
   hasAction(slot: number): boolean {
@@ -8902,7 +8940,8 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
         || world?.petSpells?.spells?.some((known) => known.spellId === spellId) === true;
     };
     return {
-      listed: (aura) => auraListed(aura, seam.#context.spell(aura.spellId), seam.#context.world()?.state.selfGuid, seam.#pet()?.guid),
+      listed: (aura) => auraListed(aura, seam.#context.spell(aura.spellId), seam.#context.world()?.state.selfGuid, seam.#pet()?.guid,
+        seam.#auraVision()), // 3.68 (15.11)
       own: (caster) => {
         const world = seam.#context.world();
         const self = world?.state.selfGuid;
@@ -8947,7 +8986,14 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
   /** 05.11 (3.68): whether UnitAura's index counts this aura: the list of AuraListed.ts, then the negative bit alone (Wow.exe 0x0072CAA8). */
   #auraCounted(aura: ActiveAura, filter: string): boolean {
     if (((aura.flags & AURA_FLAGS.negative) !== 0) !== (filter === "HARMFUL")) return false;
-    return auraListed(aura, this.#context.spell(aura.spellId), this.#context.world()?.state.selfGuid, this.#pet()?.guid);
+    return auraListed(aura, this.#context.spell(aura.spellId), this.#context.world()?.state.selfGuid, this.#pet()?.guid,
+      this.#auraVision()); // 3.68 (15.11)
+  }
+
+  /** 3.68 (15.11): the active player's PLAYER_FIELD_BYTES2 byte 3 (0x004F72E0); undefined without one (AuraListed.ts). */
+  #auraVision(): number | undefined {
+    const self = this.#self();
+    return self ? ((readField(self, "PLAYER_FIELD_BYTES2") ?? 0) >>> 24) & 0xff : undefined;
   }
 
   /** Return a filtered aura for either supported unit; UnitBuff/UnitDebuff bind fixed filters. */
@@ -9702,25 +9748,87 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     return metadata === undefined ? undefined : [metadata.name, metadata.rank];
   }
 
-  spellInfo(idOrName: number | string): FrameXmlSpellInfo | undefined {
+  /**
+   * 3.43 (15.11, follow-up): `GetSpellInfo(id)` or `GetSpellInfo(name[, rank])`. Wow.exe 0x00540a30 takes a lone
+   * number as a spell id; a name goes through 0x00540670 → 0x00540200 → 0x0053f5e0: a spell of the player's or the
+   * pet's book by that name (a leading `!` dropped; failing that, `Name(Rank)` split at the bracket), its rank when one
+   * is given, then the book slot (0x0053b4e0) — a spell in neither book answers nothing. Without a rank the client
+   * takes its name list's head; here the highest rank (`#bookSpellByName`). Spell_info for a pet-book spell is the pet's.
+   */
+  spellInfo(idOrName: number | string, rank?: string): FrameXmlSpellInfo | undefined {
     let metadata: SpellMetadata | undefined;
+    let pet = false;
     if (typeof idOrName === "number") {
       if (!Number.isSafeInteger(idOrName) || idOrName <= 0) return undefined;
       metadata = this.#context.spell(idOrName);
-    } else if (idOrName.length > 0) {
-      for (const spell of this.#context.spells?.() ?? []) {
-        if (spell.name !== idOrName) continue;
-        // Rank selection is only meaningful among real cached rows with this exact name.
-        if (!metadata || spell.spellLevel > metadata.spellLevel) metadata = spell;
-      }
+    } else {
+      const found = this.#bookSpellByName(idOrName, rank);
+      metadata = found?.spell;
+      pet = found?.pet ?? false;
     }
+    return this.#spellInfoOf(metadata, pet);
+  }
+
+  /** 3.43 (15.11, follow-up): `GetSpellInfo(index, bookType)` for the player's book (0x00540670; "pet" is FrameXmlPetActionBar's). */
+  spellInfoAtSlot(index: number, _bookType: string): FrameXmlSpellInfo | undefined {
+    const id = this.#spellEntry(index)?.id;
+    return id === undefined ? undefined : this.#spellInfoOf(this.#context.spell(id), false);
+  }
+
+  /** 3.43 (15.11, follow-up): `GetSpellInfo(index, "pet")`'s spell, answered for the pet-bar unit (0x00540a30's pet flag). */
+  petSpellInfo(spellId: number): FrameXmlSpellInfo | undefined {
+    return this.#spellInfoOf(this.#context.spell(spellId), true);
+  }
+
+  /** 3.43 (15.11, follow-up): `GetSpellCooldown(id)` (0x00540e80: a lone number is a spell id, any spell). */
+  spellCooldownOf(spellId: number): FrameXmlSpellCooldown {
+    return Number.isSafeInteger(spellId) && spellId > 0 ? this.#spellCooldownAnswer(spellId) : [0, 0, 0];
+  }
+
+  /** 0x0053f5e0 over both books: the player's known spells, then the pet book (SMSG_PET_SPELLS). */
+  #bookSpellByName(text: string, rank: string | undefined): { spell: SpellMetadata; pet: boolean } | undefined {
+    const find = (name: string, wanted: string | undefined): { spell: SpellMetadata; pet: boolean } | undefined => {
+      if (!name) return undefined;
+      const key = name.toLowerCase();
+      const want = wanted ? wanted.toLowerCase() : undefined;
+      let best: SpellMetadata | undefined;
+      for (const known of this.#context.world()?.knownSpells ?? []) {
+        const spell = this.#context.spell(known.id);
+        if (!spell || spell.name?.toLowerCase() !== key) continue;
+        if (want !== undefined && (spell.rank ?? "").toLowerCase() !== want) continue;
+        if (best === undefined || spell.spellLevel > best.spellLevel) best = spell;
+      }
+      if (best) return { spell: best, pet: false };
+      const book = this.petActions.book();
+      for (let index = 1; index <= (book?.count ?? 0); index++) {
+        const entry = this.petActions.bookSpell(index);
+        if (!entry || entry.name.toLowerCase() !== key) continue;
+        if (want !== undefined && (entry.rank ?? "").toLowerCase() !== want) continue;
+        const spell = this.#context.spell(entry.spellId);
+        if (spell) return { spell, pet: true };
+      }
+      return undefined;
+    };
+    if (rank !== undefined) return find(text, rank);
+    // 0x00540200: `!` off, the whole text first, then `Name(Rank)` split at the first bracket.
+    const name = text.startsWith("!") ? text.slice(1) : text;
+    const whole = find(name, undefined);
+    if (whole) return whole;
+    const open = name.indexOf("(");
+    if (open < 0) return undefined;
+    const close = name.indexOf(")", open + 1);
+    return find(name.slice(0, open), name.slice(open + 1, close < 0 ? undefined : close));
+  }
+
+  #spellInfoOf(metadata: SpellMetadata | undefined, pet: boolean): FrameXmlSpellInfo | undefined {
     if (!metadata || !Number.isSafeInteger(metadata.id) || metadata.id <= 0
       || typeof metadata.name !== "string" || !metadata.name
       || typeof metadata.rank !== "string" || typeof metadata.iconPath !== "string"
       || !Number.isFinite(metadata.castTime)
       || !Number.isFinite(metadata.rangeMin) || !Number.isFinite(metadata.rangeMax)) return undefined;
     // 3.43 (15.11): the 3.3.5 order with the cost function's answer (Wow.exe 0x00540a30, FrameXmlSpellInfo.ts).
-    return frameXmlSpellInfo(metadata, sessionSpellDescriptionContext());
+    return frameXmlSpellInfo(metadata, sessionSpellDescriptionContext(), () => this.#actionRangeHost.rangedModRange(), // 3.43 (15.11): the range's weapon
+      pet ? { unit: sessionPetCostUnit() } : undefined); // 3.43 (15.11, follow-up): the pet book's unit
   }
 
   /**

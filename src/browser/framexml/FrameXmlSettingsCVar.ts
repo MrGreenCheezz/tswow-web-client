@@ -27,6 +27,7 @@ import {
   type SettingValues,
 } from "../ui/SettingsModel.js";
 import { isFullscreen, setFullscreen } from "../app/Fullscreen.js"; // 10.28 (26.10)
+import { wowCVar } from "./WowCVarRegistry.js";
 /**
  * `volume` and `percent` are the model's whole percentages as the client's fractions (0.7 for 70);
  * `number` is the model's own unit, where the stock CVar measures the same thing in it.
@@ -236,6 +237,29 @@ function cvarFromSetting(
   return cvarNumber((typeof value === "number" ? value : definition.fallback as number) / scale(binding));
 }
 
+/**
+ * 5.37 (15.11): `GetCVarDefault` of a stock row is the default string Wow.exe registers the CVar with
+ * (WowCVarRegistry.ts, 0x00767fc0's fourth argument), whatever this client's own setting starts at — what an add-on
+ * and the stock panels' «По умолчанию» read in the original. The settings model's default stands only where Wow.exe
+ * registers none: a computed default (ffxGlow, mouseSpeed), a name it does not register (the four action-bar
+ * switches, which are SetActionBarToggles' in Wow.exe), and the `webclient_` rows.
+ */
+function registeredDefault(binding: FrameXmlSettingsCVarDefinition): string | undefined {
+  if (FRAME_XML_WEBCLIENT_CVARS.includes(binding)) return undefined;
+  return wowCVar(binding.cvar)?.defaultValue;
+}
+
+/**
+ * 5.37 (15.11): the text a settings-backed CVar has when its setting is at this client's own default — what
+ * `RestoreVideoEffectsDefaults` puts back. That C function is not GetCVarDefault in Wow.exe either: 0x00510dd0 →
+ * 0x0076a130(1) runs the hardware detection (0x0076b3f0) and lets each subsystem set its recommended values; here the
+ * browser's own defaults are the recommendation. Undefined for a name no setting carries.
+ */
+export function frameXmlSettingsCVarStartText(name: string): string | undefined {
+  const binding = definitionFor(name);
+  return binding ? cvarFromSetting(binding, defaultSettings()) : undefined;
+}
+
 /** 5.37: the row of a CVar name (any case), stock or `webclient_`, or undefined. */
 export function frameXmlSettingsCVarRow(name: string): FrameXmlSettingsCVarDefinition | undefined {
   return definitionFor(name);
@@ -271,7 +295,7 @@ export function createFrameXmlSettingsCVar(host: FrameXmlSettingsCVarHost): Fram
       if (name.toLowerCase() === GX_WINDOW) return "1";
       const binding = definitionFor(name);
       if (!binding) return undefined;
-      return cvarFromSetting(binding, defaultSettings());
+      return registeredDefault(binding) ?? cvarFromSetting(binding, defaultSettings());
     },
 
     set(name: string, value: unknown): boolean {

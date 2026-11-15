@@ -14,7 +14,7 @@ import { PNG } from "pngjs";
 
 import { startGateway } from "../dist/code/gateway/Gateway.js";
 import { MCNK_HAS_SHADOW, mapChunkShadow } from "../tools/adt-alpha.mjs";
-import { blpSize, resampledLayerPng } from "../tools/generate-terrain-splat.mjs";
+import { TERRAIN_SPLAT_GENERATION, blpSize, resampledLayerPng } from "../tools/generate-terrain-splat.mjs"; // 15.11 (7.16): the current generation (v3)
 import { dbcDirectory } from "../tools/paths.mjs";
 
 const read = (path) => readFile(new URL(`../${path}`, import.meta.url), "utf8");
@@ -23,7 +23,7 @@ test("the generation is one string in the generator, the gateway, its job and pr
   const tool = /export const TERRAIN_SPLAT_GENERATION = "([^"]+)"/.exec(await read("tools/generate-terrain-splat.mjs"))?.[1];
   const gateway = /export const TERRAIN_SPLAT_GENERATION = "([^"]+)"/.exec(await read("src/gateway/TerrainSplatGeneration.ts"))?.[1];
   const pregenerate = /const TERRAIN_SPLAT_GENERATION = "([^"]+)"/.exec(await read("tools/pregenerate.mjs"))?.[1];
-  assert.equal(tool, "terrain-splat-v2");
+  assert.equal(tool, "terrain-splat-v3"); // 15.11 (7.16): v3, the cube maps
   assert.equal(gateway, tool);
   assert.equal(pregenerate, tool);
   const route = await read("src/gateway/Gateway.ts");
@@ -251,14 +251,14 @@ test("generator: v2 writes MCSH into the alpha, resamples the odd layer, names l
   const paths = await fixture();
   try {
     const legacy = await publishInto(paths, join(paths.box, "legacy"));
-    const v2 = await publishInto(paths, join(paths.box, "v2"), "terrain-splat-v2");
+    const v2 = await publishInto(paths, join(paths.box, "v2"), TERRAIN_SPLAT_GENERATION);
 
     // Legacy: RGB alpha map, no generation in the stamp, v1 ids, no layerSize.
     assert.equal(legacy.alphaBytes[25], 2, "legacy alpha.png is colour type 2 (RGB)");
     assert.equal(legacy.stamp.generation, undefined);
     assert.equal(legacy.splat.layerSize, undefined);
     assert.equal(v2.alphaBytes[25], 6, "v2 alpha.png is colour type 6 (RGBA)");
-    assert.equal(v2.stamp.generation, "terrain-splat-v2");
+    assert.equal(v2.stamp.generation, TERRAIN_SPLAT_GENERATION);
     assert.equal(v2.splat.layerSize, 256);
 
     // Chunk 0 (row 0, column 0): left half in shadow → alpha 0; right half lit → 255.
@@ -311,7 +311,7 @@ test("route: a splat published without the generation is rebuilt once as v2, the
       clientDirectory: paths.client, dbcDirectory: paths.dbc, datasetPollMs: 0,
       generateTerrainSplat: async () => {
         calls++;
-        await publishInto(paths, out, "terrain-splat-v2");
+        await publishInto(paths, out, TERRAIN_SPLAT_GENERATION);
       },
     });
     try {

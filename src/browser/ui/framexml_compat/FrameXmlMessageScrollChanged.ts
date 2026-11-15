@@ -13,9 +13,16 @@
  *   scrolled up — raises nothing.
  *
  * Here "the current line" is the line object at the frame's scroll position; the runtime calls this after a move
- * with the line that was current before it. Not modelled: RemoveMessagesByAccessID (0x0096a510 rebuilds the
- * ring before its layout call, so which ring index it compares is not read) and AddMessage while scrolled up when
- * the ring overwrites the line just above the shown ones (0x0096a9f0 then scrolls down one line).
+ * with the line that was current before it. Not modelled: AddMessage while scrolled up when the ring overwrites the
+ * line just above the shown ones (0x0096a9f0 then scrolls down one line).
+ *
+ * RemoveMessagesByAccessID (widgets7, 15.11; Lua 0x00973270 → 0x0096a510, .runtime/re-2026-11-15/widgets7/w1.c):
+ * the ring is compacted in place from its oldest slot (the kept lines keep their order and the oldest slot's
+ * index), the newest index (+0x2c4) becomes oldest + kept − 1, and when any line is left the layout 0x00969fa0 is
+ * called with that newest index — the frame goes to the bottom. 0x00969fa0 compares it with the current index it
+ * kept (+0x2c8, oldest + the old current line's position), so the handler runs when the kept count minus one
+ * differs from the position of the line that was current — a frame at the bottom that lost a line, or one that was
+ * scrolled up — whichever line is now there. With no line left the ring is cleared (0x009694f0) and nothing runs.
  */
 import type { FrameXmlFrame, FrameXmlMessage } from "./FrameXmlTypes.js";
 
@@ -32,5 +39,18 @@ export function frameXmlNoteMessageCurrent(
   const messages = frame.messageFrame.messages;
   if (messages.length === 0) return;
   if (messages[frame.scroll.verticalScroll] === before) return;
+  host.fireScript(frame, "OnMessageScrollChanged");
+}
+
+/**
+ * After RemoveMessagesByAccessID compacted `frame`'s lines: `currentBefore` is the position (from the oldest) of the
+ * line that was current before the call. Raises the handler when the newest position differs from it (see above).
+ */
+export function frameXmlNoteMessagesRemoved(
+  host: FrameXmlMessageScrollHost, frame: FrameXmlFrame, currentBefore: number,
+): void {
+  if (frame.type !== "ScrollingMessageFrame") return;
+  const kept = frame.messageFrame.messages.length;
+  if (kept === 0 || kept - 1 === currentBefore) return;
   host.fireScript(frame, "OnMessageScrollChanged");
 }

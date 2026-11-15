@@ -103,8 +103,17 @@ test("MPQ UnitFrame/PlayerFrame drives a live player status slice", withClient, 
     api(candidate.inventory, "UnitPowerType");
 
     const errorsAtLoad = candidate.boot.vm.errors.length;
+    // 5.37 (15.11): predictedHealth and predictedPower are Wow.exe's registered "1" before the config slots answer
+    // too, so stock reads PlayerFrame's bars every frame (UnitFrameHealthBar_OnUpdate, UnitFrameManaBar_OnUpdate)
+    // instead of on UNIT_HEALTH / UNIT_RAGE: one frame of their OnUpdate.
+    const frameTick = () => {
+      const ran = candidate.boot.vm.execute(`for _, bar in ipairs({ PlayerFrameHealthBar, PlayerFrameManaBar }) do
+        local onUpdate = bar:GetScript("OnUpdate") if onUpdate then onUpdate(bar, 0.016) end end`, "@playerframe-tick");
+      assert.equal(ran.ok, true, ran.error);
+    };
 
     assert.ok(candidate.seam.setPlayerHealth(CANNED_PLAYER.healthMax - 330) > 0);
+    frameTick();
     assert.equal(health.statusBar.value, CANNED_PLAYER.healthMax - 330);
     assert.equal(candidate.seam.setPlayerHealth(CANNED_PLAYER.healthMax - 330), 0,
       "unchanged UNIT_HEALTH is not duplicated");
@@ -115,6 +124,7 @@ test("MPQ UnitFrame/PlayerFrame drives a live player status slice", withClient, 
       "unchanged UNIT_MAXHEALTH is not duplicated");
 
     assert.ok(candidate.seam.setPlayerPower(25) > 0);
+    frameTick();
     assert.equal(power.statusBar.value, 25);
     assert.equal(candidate.seam.setPlayerPower(25), 0,
       "unchanged UNIT_RAGE is not duplicated");

@@ -19,11 +19,8 @@ import {
 
 const FIELD_HEALTH = UPDATE_FIELDS.UNIT_FIELD_HEALTH.offset;
 const FIELD_FLAGS_2 = UPDATE_FIELDS.UNIT_FIELD_FLAGS_2.offset;
-const FIELD_BYTES_2 = UPDATE_FIELDS.UNIT_FIELD_BYTES_2.offset;
 /** `UNIT_FLAG2_FEIGN_DEATH`, `UnitDefines.h:184`. */
 const UNIT_FLAG2_FEIGN_DEATH = 0x1;
-/** `SHEATH_STATE_UNARMED` (byte 0 of `UNIT_FIELD_BYTES_2`). */
-const SHEATH_STATE_UNARMED = 0;
 
 /** The renderer commands the cues send, and the record they read back (22.10 ARC-2 S4a). */
 export interface SwingReactionRenderer {
@@ -67,6 +64,10 @@ export class SwingMeleeReactions {
       // 05.10-A7a-D3: a gone or dead attacker plays no events; neither does a drawn swing cut short.
       if (!this.#present(attacker)) return null;
       if (row?.started === true) return null;
+      // 6.06 (15.11, combat7): the swing waits for its clip — its model will play it, and Wow.exe's victim reacts at
+      // that swing's own events ($CPP, $CAH), so nothing yet; was the nominal clock, a reaction before the swing. A
+      // swing whose wait ran out unplayed (it left the queue, progress null) plays its reactions then (1), not never.
+      if (row?.waitingForClip === true) return row.progress === null ? 1 : 0;
       return undefined; // not drawn by us, still swinging in Wow.exe: the cues' nominal clock
     },
     swingDuration: (_attacker, token) => {
@@ -74,6 +75,9 @@ export class SwingMeleeReactions {
       return seconds !== undefined && seconds > 0 ? seconds * 1_000 : SWING_NOMINAL_MS;
     },
     sameUnit: (unit, stamp) => this.#world.objects.get(unit) === stamp, // 05.10-A7a-D3
+    // 6.06 (15.11, combat7): the renderer's last published row of the swing (outside a tick: the next swing's arrival).
+    waitingForClip: (_attacker, token) => typeof token === "number"
+      && (this.#results ?? this.#renderer()?.results)?.swings.get(token)?.waitingForClip === true,
     canReact: (victim) => {
       const fields = this.#world.objects.get(victim)?.fields;
       if (fields === undefined) return false;
@@ -81,10 +85,7 @@ export class SwingMeleeReactions {
       if (health !== undefined && health <= 0) return false;
       return ((fields.get(FIELD_FLAGS_2) ?? 0) & UNIT_FLAG2_FEIGN_DEATH) === 0;
     },
-    sheathed: (victim) => {
-      const bytes2 = this.#world.objects.get(victim)?.fields.get(FIELD_BYTES_2);
-      return bytes2 !== undefined && (bytes2 & 0xff) === SHEATH_STATE_UNARMED;
-    },
+    // 5.05 (15.11, combat7): no `sheathed` — the renderer picks ParryUnarmed by the sheath it shows (ShownParry.ts).
     react: (victim, reaction) => this.#renderer()?.playUnitReaction(victim, reaction),
   };
 

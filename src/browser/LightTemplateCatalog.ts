@@ -27,7 +27,7 @@
  * Without it (an older gateway) such a model is learned at its first build (`noteLit`), as before.
  */
 import { fixtureNameCandidate } from "./LocalLighting.js";
-import { deriveLightTemplates, validLightTemplates, type LightTemplate } from "./LightTemplates.js";
+import { deriveLightTemplates, reviveLightTemplates, type LightTemplate } from "./LightTemplates.js";
 import { gatewayGenerationOrigin, gatewayVisualGeneration } from "./GatewayGeneration.js";
 import { lightCatalogGenerationOverride } from "./LightCatalogGeneration.js";
 import { persistentAssetStore, type PersistentAssetStore } from "./PersistentAssetStore.js";
@@ -43,7 +43,9 @@ export const LIGHT_MODEL_NEAR = 200;
 /** Models a frame's `pump` asks the client about. */
 export const LIGHT_MODEL_POLL = 16;
 /** The persistent record's kind; bumped when a template's shape or derivation changes. */
-export const LIGHT_TEMPLATE_KIND = "light-templates-v1";
+// 15.11 (7.50): v2 — an animated light keeps its tracks (`motion`); a v1 record filed a lamp dark at time 0
+// (`BE_LampPost_Ghostlands01.m2`) as lighting nothing, and would never ask for it again.
+export const LIGHT_TEMPLATE_KIND = "light-templates-v2";
 /** Entries kept in the persistent record. */
 export const LIGHT_TEMPLATE_STORED_LIMIT = 4096;
 /** Lantern coordinates kept in the persistent record (three per lantern). */
@@ -364,8 +366,10 @@ export class LightTemplateCatalog {
         this.#loadLanterns(record.lanterns);
         if (!Array.isArray(record.models)) return;
         for (const entry of record.models) {
-          if (!Array.isArray(entry) || typeof entry[0] !== "string" || !validLightTemplates(entry[1])) continue;
-          const [key, templates] = entry as [string, LightTemplate[]];
+          if (!Array.isArray(entry) || typeof entry[0] !== "string") continue;
+          const templates = reviveLightTemplates(entry[1]); // 15.11 (7.50): motions with typed arrays again
+          if (!templates) continue;
+          const key = entry[0];
           if (this.#known.has(key)) continue;
           this.#known.set(key, templates.length > 0 ? Object.freeze(templates) : EMPTY);
           this.stats.loaded++;

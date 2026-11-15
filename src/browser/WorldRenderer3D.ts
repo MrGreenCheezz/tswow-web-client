@@ -40,7 +40,8 @@ import {
   shapedZoneFog, WOW_FAR_CLIP, type DistanceFogRange, type ShapedFog,
 } from "./DistanceFog.js"; // 7.66: the shaped fog
 import { HorizonBand } from "./HorizonBand.js";
-import { ENVIRONMENT_DETAIL_FAR_MAX, environmentHouseRange, environmentShellRange, environmentStreamRange, sceneryFarCap } from "./SceneryReach.js"; // 7.44: house
+import { ENVIRONMENT_DETAIL_FAR_MAX, environmentHouseRange, environmentShellRange, environmentStreamRange, faithfulReach, sceneryFarCap } from "./SceneryReach.js"; // 7.44: house; 15.11 (7.66 tail): faithfulReach
+import { doodadOriginalReach, recordDoodadModelBox } from "./DoodadReach.js"; // 15.11 (7.66 tail, 7.03)
 import { ENVIRONMENT_FAR_RANGE, ENVIRONMENT_RANGE, ENVIRONMENT_SHELL_RANGE, ENVIRONMENT_RESIDENT_HYSTERESIS, TERRAIN_GRID_SIZE, modelKey, terrainGrid, terrainGridIndex, type EnvironmentClient, type EnvironmentModel, type EnvironmentObject, type TerrainClient } from "./Terrain.js";
 import { terrainGeometryData, terrainGeometrySteps, type TerrainGeometryData } from "./TerrainGeometry.js";
 export { terrainGeometryData, terrainHeightField, terrainNormals, surfaceNormal, type TerrainGeometryData } from "./TerrainGeometry.js";
@@ -92,7 +93,8 @@ import {
 } from "./SkyDome.js"; // 13.10 7.04
 import type { LightSample, ResolvedColour } from "./LightTypes.js";
 import { lightDarkensByDepth, liquidLightTint, type UnderwaterLight } from "./UnderwaterLiquidLight.js"; // 05.10-A7b-5 review
-import { LocalLightSelection, modelFixtureLights, sampleFixtureLight, type FixtureLight, type LocalLightSample } from "./LocalLighting.js";
+import { LocalLightSelection, modelFixtureLights, type FixtureLight, type LocalLightSample } from "./LocalLighting.js";
+import { sampleFixtureLightKept } from "./LightTemplateMotion.js"; // 15.11 (7.50)
 import { SpellLights, type SpellLightKind } from "./SpellLights.js"; // 23.10 (6.27); 25.10 kinds
 import { MissileTrails, missileTrailColour } from "./MissileTrails.js"; // 26.10 (6.27, test)
 import { LootBeams } from "./LootBeams.js"; // 26.10
@@ -190,7 +192,8 @@ import {
   type ShownUnitAction, type UnitActionDisplay, type UnitActionEntry, type UnitActionLayer, type UnitActionPayload,
 } from "./UnitActionArbiter.js";
 import { poseTakesWholeBody, wholeBodyOutlivesBase } from "./game/ActionOverBase.js"; // 05.10-6.21b; ревью 6.21b
-import { UnitShownSheath, stepUnitShownSheath, type ShownSheathContext } from "./UnitShownSheath.js"; // 5.05 (15.11)
+import { UnitShownSheath, stepUnitShownSheath, swungAt, type ShownSheathContext } from "./UnitShownSheath.js"; // 5.05 (15.11); swungAt: combat7
+import { shownParryPayload } from "./ShownParry.js"; // 5.05 (15.11, combat7)
 import { cycleEndIsSheathStart } from "./SheathCycleStart.js"; // 5.05 (15.11, sheath6)
 import { FastPoseState, type FastPoseProgram } from "./FastPose.js";
 import { SharedPose, pagePoseEngine, type PoseEngine, type PoseEngineStats } from "./PoseEngine.js";
@@ -246,6 +249,7 @@ import {
 import { sheatheOf, worldAttachmentPoint } from "./SheathPoints.js"; // 05.10-A7a-G2 6.08
 import { settleTransition, type PendingTransition } from "./PendingTransition.js"; // 12.10 6.07
 import { SHEATH_ANIMATIONS, ceremonySheath, stepOwnSheath, type SheathCeremony } from "./SheathCeremony.js"; // 12.10 6.08
+import { ownSheathRigReport } from "./SheathCeremony.js"; // 5.05 (15.11, combat7)
 import {
   PLAYBACK_BACKWARD, PLAYBACK_FORWARD, PLAYBACK_HOLD_LAST, applyPlayback, fallbackPlayback, playbackHolds,
   wantedPlayback, type PlaybackMode,
@@ -370,8 +374,9 @@ import type { SpellVisualEffectTransform } from "../gateway/SpellVisual.js";
 import { flyMissileInstance, missileQuaternion, missileSample, missileStillFlying, type MissilePoints } from "./MissileFlight.js"; // 05.10-A7a-E; 6.31: missileStillFlying
 import { missileLandedAt, setProjectilePosition as setMissileProjectilePosition } from "./MissileFlight.js"; // 15.11 (11.02)
 import { landImpacts } from "./MissileLanding.js"; // 15.11 (11.02)
-import { missileLaunchEvent, placeLaunchEvent } from "./MissileLaunchEvent.js"; // 15.11 (6.12)
-import { unitDisplayAlpha } from "./UnitDisplayFade.js"; // 15.11 (6.11)
+import { missileLaunchSource, placeLaunchEvent } from "./MissileLaunchEvent.js"; // 15.11 (6.12)
+import { auraStandInOpacity, unitDisplayAlpha } from "./UnitDisplayFade.js"; // 15.11 (6.11)
+import { noteUnitSpawn, unitAlphaWalking, unitFadesInFrom, unitSpawnFactor } from "./UnitSpawnFade.js"; // 15.11 (6.11)
 import { addModelFrameOffset, missileGroundHit } from "./MissileGround.js"; // 13.10 (6.12)
 import { ChainBeams } from "./ChainBeam.js"; // 05.10-A7a-E
 import { CameraShakeBank } from "./CameraShake.js"; // 05.10-A7a-E
@@ -1191,6 +1196,8 @@ export const ENVIRONMENT_VEGETATION_RANGE = 600;
  * the 90-yard floor.
  */
 export const ENVIRONMENT_SCENERY_RANGE_PER_YARD = 50;
+/** 15.11 (7.66 tail): learnt doodad boxes re-rank the placements at most this often (~0.5 s at 60 fps). */
+const DOODAD_BOX_RERANK_FRAMES = 30;
 /** Shortest size-scaled leash: small clutter stays near, but never pops at the player's feet. */
 export const ENVIRONMENT_SCENERY_MIN_RANGE = 90;
 /** Longest size-scaled leash at detail 1; the stock 1.5 detail stretches it to the far leash. */
@@ -1280,9 +1287,22 @@ export function environmentSceneryRange(object: EnvironmentObject, detail = 1): 
  * {@link environmentSceneryRange}, and everything else the legacy name-based leash (vegetation 600,
  * else 400). The detail multiplier scales M2s only.
  */
-export function environmentDrawRange(object: EnvironmentObject, detail = 1, shellRange = ENVIRONMENT_FAR_RANGE): number {
+export function environmentDrawRange(
+  object: EnvironmentObject,
+  detail = 1,
+  shellRange = ENVIRONMENT_FAR_RANGE,
+  faithful = false, // 15.11 (7.66 tail): the faithful levels, `shellRange` being their reach (SceneryReach.ts faithfulReach)
+): number {
   if (object.interior === true) {
     return interiorOnlyDoodadShown(object) === undefined ? INTERIOR_RANGE : boundWmoDoodadLeash(object); // 05.10-A7b-2
+  }
+  if (faithful) {
+    // 15.11 (7.66 tail): as Wow.exe — every outdoor map object to the reach (0x007b6110), a doodad by its size class
+    // (DoodadReach.ts). A doodad of unknown size (no radius, model not built yet) is held to the reach until its
+    // model is built and its class known: the bound never hides what the original draws.
+    if (object.kind !== "m2") return shellRange;
+    const reach = doodadOriginalReach(object, environmentDetailScale(detail));
+    return reach === undefined ? shellRange : Math.min(reach, shellRange);
   }
   // 22.10 (7.39): 1,100 on the enhanced path (SceneryReach.ts environmentShellRange), else 750.
   if (environmentFarEligible(object)) return shellRange;
@@ -1352,6 +1372,7 @@ export function environmentCandidatesInRange(
   player: Pick<WorldPosition, "x" | "y">,
   detail = 1,
   shellRange = ENVIRONMENT_FAR_RANGE, // 22.10 (7.39)
+  faithful = false, // 15.11 (7.66 tail)
 ): RankedEnvironmentObject[] {
   const candidates: RankedEnvironmentObject[] = [];
   // Indexed: the footprint is tens of thousands of placements, and an iterator result per
@@ -1359,7 +1380,7 @@ export function environmentCandidatesInRange(
   for (let index = 0; index < objects.length; index++) {
     const object = objects[index]!;
     const distance = placementDistance(object, player);
-    const range = environmentDrawRange(object, detail, shellRange);
+    const range = environmentDrawRange(object, detail, shellRange, faithful);
     if (distance < range) candidates.push({ object, distance, range });
   }
   return candidates;
@@ -1380,12 +1401,13 @@ export function environmentResidentsInRange(
   player: Pick<WorldPosition, "x" | "y">,
   detail = 1,
   shellRange = ENVIRONMENT_FAR_RANGE, // 22.10 (7.39)
+  faithful = false, // 15.11 (7.66 tail)
 ): RankedEnvironmentObject[] {
   const residents: RankedEnvironmentObject[] = [];
   for (let index = 0; index < objects.length; index++) {
     const object = objects[index]!;
     const distance = placementDistance(object, player);
-    const range = environmentDrawRange(object, detail, shellRange);
+    const range = environmentDrawRange(object, detail, shellRange, faithful);
     if (distance < range + ENVIRONMENT_RESIDENT_HYSTERESIS) residents.push({ object, distance, range });
   }
   return residents;
@@ -1404,13 +1426,14 @@ export function environmentRankInRange(
   player: Pick<WorldPosition, "x" | "y">,
   detail = 1,
   shellRange = ENVIRONMENT_FAR_RANGE, // 22.10 (7.39)
+  faithful = false, // 15.11 (7.66 tail)
 ): { candidates: RankedEnvironmentObject[]; residents: RankedEnvironmentObject[] } {
   const candidates: RankedEnvironmentObject[] = [];
   const residents: RankedEnvironmentObject[] = [];
   for (let index = 0; index < objects.length; index++) {
     const object = objects[index]!;
     const distance = placementDistance(object, player);
-    const range = environmentDrawRange(object, detail, shellRange);
+    const range = environmentDrawRange(object, detail, shellRange, faithful);
     if (distance < range + ENVIRONMENT_RESIDENT_HYSTERESIS) {
       const ranked: RankedEnvironmentObject = { object, distance, range };
       residents.push(ranked);
@@ -1868,7 +1891,9 @@ export function wmoShellRange(box: THREE.Box3, far = ENVIRONMENT_FAR_RANGE): num
 }
 
 /** 22.10 (7.39): leashes a range table earns by box at the skyline's longest; `setShellCap` lowers them per path. */
-const WMO_SKYLINE_SHELL_RANGE = (box: THREE.Box3): number => wmoShellRange(box, ENVIRONMENT_SHELL_RANGE);
+// 15.11 (7.66 tail): up to the far clip, where the faithful levels' reach goes (SceneryReach.ts faithfulReach); the
+// enhanced path's cap keeps it at 1,100.
+const WMO_SKYLINE_SHELL_RANGE = (box: THREE.Box3): number => wmoShellRange(box, Math.max(ENVIRONMENT_SHELL_RANGE, WOW_FAR_CLIP));
 
 /**
  * Puts a built model where the tile says it stands.
@@ -2886,6 +2911,8 @@ interface PosedModel {
   /** 5.05 (15.11): animation starts the sheath rule judges, and the `keep` bit of the last (UnitShownSheath.ts). */
   sheathStarts: number | undefined;
   sheathKeep: boolean | undefined;
+  /** 5.05 (15.11, combat7): the active player's model — the sheath it showed last frame (the ceremony's `from`). */
+  ownSheathShown: number | undefined;
   overlayPreservesLocomotion: boolean | undefined;
   /** End of the upper-body fade window, set once the one-shot reaches its fade start. */
   overlayFadeUntil: number | undefined;
@@ -5975,8 +6002,37 @@ export class WorldRenderer3D {
 
   /** 22.10 (7.39): the big outdoor shells' leash on this lighting path (SceneryReach.ts). */
   get environmentShellRange(): number {
-    return environmentShellRange(this.#lightingProfile.quality);
+    return environmentShellRange(this.#lightingProfile.quality, this.#faithfulReach); // 15.11 (7.66 tail): + reach
   }
+
+  /** 15.11 (7.66 tail): the faithful levels' reach for this frame's fog (SceneryReach.ts `faithfulReach`). */
+  #faithfulReach = ENVIRONMENT_FAR_RANGE;
+
+  /** 15.11 (7.66 tail): whether placements are held to Wow.exe's rule (the faithful levels, 0 and 3). */
+  get #faithfulLevel(): boolean {
+    return lightingClassicLook(this.#lightingProfile.quality);
+  }
+
+  /**
+   * 15.11 (7.66 tail): after `#restoreZoneFog`; a new reach re-ranks the placements on this frame, and models whose
+   * boxes were learnt (their placements ranked by a bound until then) at most every `DOODAD_BOX_RERANK_FRAMES`.
+   */
+  #updateFaithfulReach(): void {
+    const fog = this.#scene.fog as THREE.Fog;
+    const reach = faithfulReach(fog.far);
+    const learnt = this.#doodadBoxesLearnt && this.#submissionSerial - this.#doodadBoxesRankedAt >= DOODAD_BOX_RERANK_FRAMES;
+    if (reach === this.#faithfulReach && !learnt) return;
+    this.#faithfulReach = reach;
+    if (learnt) {
+      this.#doodadBoxesLearnt = false;
+      this.#doodadBoxesRankedAt = this.#submissionSerial;
+    }
+    if (this.#faithfulLevel) this.#environmentCandidatesAt = undefined;
+  }
+
+  /** 15.11 (7.66 tail): a model's box became known since the last re-rank, and the serial of that re-rank. */
+  #doodadBoxesLearnt = false;
+  #doodadBoxesRankedAt = 0;
 
   /** 22.10 (7.39): how far placements are streamed and ranked on this path and detail. */
   get environmentStreamRange(): number {
@@ -9092,7 +9148,8 @@ export class WorldRenderer3D {
       const pivots = unit?.template?.pivots;
       if (model === undefined || bones === undefined || pivots === undefined) return false;
       const events = (this.#muzzleEvents ??= new ModelShotEvents(this.#baseUrl)).of(model);
-      const event = events === undefined ? undefined : missileLaunchEvent(events);
+      const event = missileLaunchSource(events); // 15.11 (6.12): none of the three → the unit's position (vfunc +0x2c)
+      if (event === "position") return this.#missilePoints.origin?.(guid, out) === true;
       return event !== undefined && placeLaunchEvent(event, bones, pivots, out);
     },
     ground: (from, to, hit) => missileGroundHit(this.#missileHeightAt, from, to, hit),
@@ -9222,6 +9279,7 @@ export class WorldRenderer3D {
     this.#wmoFloor = undefined;
     this.#wmoFogVisualId = undefined;
     this.#restoreZoneFog();
+    this.#updateFaithfulReach(); // 15.11 (7.66 tail)
     // 11.02-I: what the camera is built around (game/ViewSubject.ts) — the character, or a possessed
     // unit or far sight eye once in view. The camera, the sun and every streamed ring are centred on it.
     const player = viewSubjectIn(state);
@@ -10590,13 +10648,17 @@ export class WorldRenderer3D {
         if (rendered.skinned) root?.updateWorldMatrix(true, true);
         else if (!rendered.instanceMatrix) root?.updateWorldMatrix(true, false);
         const fallback = rendered.instanceMatrix ?? root!.matrixWorld;
-        const animationMs = (rendered.skinned?.mixer.time ?? now / 1000) * 1000;
+        // 15.11 (7.50): an environment doodad's light tracks run on the frame clock its shared batch materials are
+        // drawn on (`#updateBatchColours(now)`), not its mixer's (which runs only while posed): the light follows the
+        // glow card on screen, and an unbuilt placement's stand-in samples the same moment (LightTemplateMotion.ts).
+        const animationMs = rendered.skinned && !("fixtureLights" in rendered) ? rendered.skinned.mixer.time * 1000 : now;
         for (const fixture of fixtures) {
           const bone = rendered.skinned?.skeleton.bones[fixture.bone];
           const inverse = rendered.template?.boneInverses[fixture.bone];
           const matrix = bone && inverse
             ? this.#localLightMatrix.multiplyMatrices(bone.matrixWorld, inverse) : fallback;
-          if (sampleFixtureLight(fixture, model, matrix, animationMs, now, this.#localLightSample)) {
+          // 15.11 (7.50): a blinking light keeps its rank while dark, at strength 0 (LightTemplateMotion.ts).
+          if (sampleFixtureLightKept(fixture, model, matrix, animationMs, now, this.#localLightSample)) {
             selection.add(this.#localLightSample, focus);
           }
         }
@@ -11970,6 +12032,7 @@ export class WorldRenderer3D {
       rendered.textureWarmup = [splat.layers, splat.alpha, splat.index];
       if (splat.colours) rendered.textureWarmup.push(splat.colours);
       if (rendered.relief) rendered.textureWarmup.push(rendered.relief); // 22.10 (7.47)
+      if (splat.environment) rendered.textureWarmup.push(...splat.environment.cubes); // 15.11 (7.16)
     }
     // The splat hook and the micro-normal switch are part of the material's program cache key, so
     // the unsplatted variant warmed at build time is not the one this tile will draw.
@@ -12289,7 +12352,8 @@ export class WorldRenderer3D {
       // Candidates and the loaded zone in one pass (P2-04b). The zone is strictly wider than every
       // draw leash, so the line an object crosses to appear is never the line it crosses to
       // disappear. Draw admission below still reads the strict set; disposal reads the wide one.
-      const ranked = environmentRankInRange(pool, player, this.#environmentDetail, this.environmentShellRange);
+      // 15.11 (7.66 tail): the faithful levels rank by Wow.exe's rule (`#faithfulLevel`).
+      const ranked = environmentRankInRange(pool, player, this.#environmentDetail, this.environmentShellRange, this.#faithfulLevel);
       this.#environmentCandidates = ranked.candidates;
       this.#environmentResidents = ranked.residents;
       this.#environmentCandidatesAt = {
@@ -12436,6 +12500,8 @@ export class WorldRenderer3D {
         // A building is placed empty and filled a room at a time; everything else is one mesh —
         // unless it has a rig, in which case it is a skinned mesh with a mixer of its own.
         const building = model?.wmo ? this.#wmoNode(object, model.wmo) : undefined;
+        // 15.11 (7.66 tail): its size class, for every placement of the model (DoodadReach.ts).
+        if (model?.wvm && object.kind === "m2" && recordDoodadModelBox(object.name, model.wvm.bounds)) this.#doodadBoxesLearnt = true;
         const rig = building ? undefined : this.#doodadRig(object, model, distance);
         const node = building?.node ?? rig?.node ?? this.#environmentNode(object, model);
         rendered = {
@@ -13157,7 +13223,7 @@ export class WorldRenderer3D {
     }
     const body = unitWarmBody(unit);
     if (!presented || body === undefined || body === unit.warmShown) return false;
-    const fading = appearanceOpacity * spawnFadeFactor(unit.admittedAt, now) < 1;
+    const fading = appearanceOpacity * unitSpawnFactor(unit, unit.admittedAt, now) < 1; // 15.11 (6.11)
     if ((self && unit.modelShown === true) || this.#unitProgramsReady(unit, fading)) {
       this.#markUnitShown(unit, body);
       return false;
@@ -13988,7 +14054,7 @@ export class WorldRenderer3D {
     // question for every admitted building every frame. 05.10-7.05-review: the transport shell leash.
     // P1-12 telemetry: the table counts into the renderer's totals (a fake `ranges` just gains a field).
     placed.ranges.totals ??= this.#wmoRangeGroups;
-    placed.ranges.setShellCap?.(this.environmentShellRange, environmentHouseRange(this.environmentShellRange)); // 22.10 (7.39), 7.44
+    placed.ranges.setShellCap?.(this.environmentShellRange, environmentHouseRange(this.environmentShellRange, this.#faithfulLevel)); // 22.10 (7.39), 7.44; 15.11 (7.66 tail)
     let distanceGroups = placed.ranges.select(player.x, player.y, shellRange);
     // 22.10 (7.41): a building admitted for its shadow alone hangs only its outdoor rooms in the
     // distance leash — those with a stand-in — and none of the view's walks below run for it.
@@ -14311,7 +14377,7 @@ export class WorldRenderer3D {
     if (wmoOpenAirCandidatesStale(state, player.x, player.y, player.z)) {
       // P1-12c: from a rest radius, the same array while unchanged; noting it still re-walks (the viewer moved).
       const ranges = placed.openAirRanges ??= new WmoRangeTable(model, placed.boxes, WMO_OPEN_AIR_ROOM_RANGE, WMO_SKYLINE_SHELL_RANGE, placed.house === true);
-      ranges.setShellCap(this.environmentShellRange, environmentHouseRange(this.environmentShellRange)); // 22.10 (7.39), 7.44
+      ranges.setShellCap(this.environmentShellRange, environmentHouseRange(this.environmentShellRange, this.#faithfulLevel)); // 22.10 (7.39), 7.44; 15.11 (7.66 tail)
       ranges.totals ??= this.#wmoRangeOpenAir; // P1-12 telemetry
       wmoOpenAirNoteCandidates(state, ranges.select(player.x, player.y), player.x, player.y, player.z);
     }
@@ -15096,7 +15162,7 @@ export class WorldRenderer3D {
       overlayAnimationId: undefined,
       overlayActionKind: undefined,
       overlayPreservesLocomotion: undefined,
-      seatUpperSeat: undefined, baseStarts: undefined, sheathStarts: undefined, sheathKeep: undefined, // P1-09 (15.11)
+      seatUpperSeat: undefined, baseStarts: undefined, sheathStarts: undefined, sheathKeep: undefined, ownSheathShown: undefined, // P1-09 (15.11)
       overlayFadeUntil: undefined,
       overlayUntil: 0,
       clipLoops: undefined, variationClip: undefined, replaysLeft: 0,
@@ -15816,7 +15882,7 @@ export class WorldRenderer3D {
         transitionMoving: undefined, pendingTransition: undefined, // 12.10 6.07
         resultKey: undefined, // 22.10 ARC-2 S3a-review
         // P1-09 (15.11): the seat, ride, animation-copy and shown-sheath fields too, present from birth.
-        seatUpperSeat: undefined, baseStarts: undefined, sheathStarts: undefined, sheathKeep: undefined,
+        seatUpperSeat: undefined, baseStarts: undefined, sheathStarts: undefined, sheathKeep: undefined, ownSheathShown: undefined,
         seatedOn: undefined, seatedSlot: undefined, seatedRow: undefined, seatTracked: undefined,
         seatRoot: undefined, rideVehicle: undefined, rideRow: undefined, shownSheath: undefined,
       };
@@ -15842,8 +15908,10 @@ export class WorldRenderer3D {
     const metadata = unitModels?.get(object.guid);
     if (unitModels !== undefined) this.#unitModelWants.push(object.guid);
     unit.particleColours = metadata?.particleColors; // 05.10-A7a-H 6.11а
-    const displayOpacity = appearance.opacity // 05.10-A7a-H 6.11а: CreatureModelAlpha multiplies; 15.11: a change fades over 1 s
-      * (metadata === undefined ? creatureDisplayAlpha(metadata) : unitDisplayAlpha(unit, creatureDisplayAlpha(metadata), now))
+    const unitAlphaRecord = this.#unitTints.alphaOf(object.guid, now); // 15.11 (6.11): CharProc 14 (UnitTints.ts)
+    const displayOpacity = auraStandInOpacity(appearance.opacity, metadata !== undefined && unitAlphaRecord.held === true) // 05.10-A7a-H 6.11а: CreatureModelAlpha multiplies; 15.11: a change fades over 1 s
+      * (metadata === undefined ? creatureDisplayAlpha(metadata)
+        : unitDisplayAlpha(unit, creatureDisplayAlpha(metadata) * unitAlphaRecord.alpha, now, unitAlphaRecord.ms))
       // 5.33: the camera's subject fades as the eye closes in on it (Wow.exe 0x00606f90, CameraClip.ts); folded in here
       // so the warm hold knows it will be drawn translucent.
       * (this.#subjectFade < 1 && this.#subjectFadeGuids.includes(object.guid) ? this.#subjectFade : 1); // 11.02 (26.10): the chain
@@ -16001,7 +16069,14 @@ export class WorldRenderer3D {
     // `UNIT_FLAG_UNINTERACTIBLE` is somebody else's unit and stays hidden whole.
     const hiddenRider = !content && self && this.#firstPerson && unit.mount !== undefined;
     const presented = content || hiddenRider;
-    if (presented && unit.admittedAt === undefined) unit.admittedAt = now;
+    if (presented && unit.admittedAt === undefined) {
+      unit.admittedAt = now;
+      // 15.11 (6.11): Wow.exe 0x00716650 — flags, stealth and a passenger's carrier decide whether it fades in.
+      noteUnitSpawn(unit, unitFadesInFrom(object, (guid) => {
+        const carrier = this.#units.get(guid);
+        return carrier === undefined ? undefined : { fading: unitAlphaWalking(carrier, carrier.admittedAt, now) };
+      }));
+    }
     // Whatever this frame hung on the unit — a body, a mount, a sword — has the stand-ins of its fade
     // copies queued for the warm pass now; `shadowCaster` is forgotten by every path that changes
     // the tree, so a settled unit pays one comparison. A body the warm pass has not linked yet is
@@ -16032,7 +16107,7 @@ export class WorldRenderer3D {
     // window so streamed crowds arrive instead of popping; appearance opacity (ghosts, spirits)
     // multiplies, it is never replaced. A held unit is dressed here exactly as it will be drawn on
     // the frame it is let go — its clock is stopped, not skipped.
-    const opacity = displayOpacity * spawnFadeFactor(unit.admittedAt, now); // 05.10-A7a-H 6.11а
+    const opacity = displayOpacity * unitSpawnFactor(unit, unit.admittedAt, now); // 05.10-A7a-H 6.11а; 15.11: 1 s, UnitSpawnFade.ts
     // 25.10 (6.27): a spell's tint or flash on the model (UnitTints.ts); never on a fading or dead body.
     if (unit.tintBorrows !== undefined || !this.#unitTints.empty) {
       this.#applyUnitTint(unit, dead || opacity < 1 || unit.opacityBorrows !== undefined ? WHITE : this.#unitTints.colourOf(object.guid, now));
@@ -16377,7 +16452,7 @@ export class WorldRenderer3D {
       scale: metadata.scale,
       seat: mountSeatOffset(wvm, metadata.mountHeight, metadata.scale),
       pose: undefined,
-      seatUpperSeat: undefined, baseStarts: undefined, sheathStarts: undefined, sheathKeep: undefined, // P1-09 (15.11)
+      seatUpperSeat: undefined, baseStarts: undefined, sheathStarts: undefined, sheathKeep: undefined, ownSheathShown: undefined, // P1-09 (15.11)
     };
     unit.shadowCaster = undefined;
   }
@@ -16507,7 +16582,9 @@ export class WorldRenderer3D {
     // whether one is: 0 everything put away, 1 the melee weapons drawn, 2 the ranged one drawn.
     const field = (object.fields.get(UPDATE_FIELDS.UNIT_FIELD_BYTES_2.offset) ?? 0) & 0xff;
     // 5.05 (15.11): any other unit hangs them by the state its animation starts set (UnitShownSheath.ts, 0x00738180).
-    const sheath = unit === this.#selfModel ? field : unit.shownSheath?.held ?? field;
+    // 5.05 (15.11, combat7): the active player's by the setter's state the page pushes (0x00736d30 → 0x00731f40 in the
+    // frame of the change; the byte only where 0x00737aa0 takes it, world/SheathSetter.ts).
+    const sheath = this.#shownSheathOf(unit) ?? field;
     // 12.10 6.08: the active player's own draw or sheathe hangs each piece by its arm's event, not by the field.
     const ceremony = unit.sheathCeremony;
     const wanted = new Map<string, { point: number; model: string; texture: string; build: string; glow: EnchantGlow | undefined }>();
@@ -16782,6 +16859,9 @@ export class WorldRenderer3D {
         roll: Math.random(), // 05.10-A7a-D 6.06; 05.10-A7a-D-review: unread (Wow.exe 0x755130 does not roll), kept for 6.16c
       },
     }, now);
+    // 5.05 (15.11, combat7): a watched swing is SMSG_ATTACKERSTATEUPDATE's (game/SwingReactionHost.ts): 0x00756800
+    // draws the attacker's melee weapons at once (UnitShownSheath.ts `swungAt`); the player's own is the page's.
+    if (id !== undefined && (action === "attack" || action === "attackOff")) swungAt(this.#units.get(guid)?.shownSheath);
     if (entry === undefined || id === undefined) return undefined;
     this.#swingWatch.watch(id, guid, entry); // 22.10 ARC-2 S4a
     return id;
@@ -16969,7 +17049,8 @@ export class WorldRenderer3D {
     // which is the horse's and holds neither; 6.07: the STUNNED/LOOTING holds, on an edge only.
     // 12.10 6.03: every emote-state value is a held base (Wow.exe 0x007171c0) — none is played once on a change —
     // and the unit the player is talking to sets aside a row with EmoteFlags 0x2000.
-    applyStandingPose(pose, object.fields, attachedOf(metadata), this.#inputs.facing.interactionNpc === object.guid); // 22.10 ARC-2 S2a
+    applyStandingPose(pose, object.fields, attachedOf(metadata), this.#inputs.facing.interactionNpc === object.guid, // 22.10 ARC-2 S2a
+      this.#shownSheathOf(unit)); // 5.05 (15.11, combat7): the stance by the shown sheath (+0xb5c), not the byte
     const flagPoses = flagPoseBits(object.fields.get(UPDATE_FIELDS.UNIT_FIELD_FLAGS.offset), isTerminalUnitPose(pose));
     if (flagPoses !== (unit.flagPoses ?? 0)) {
       syncFlagPoses(unit.flagPoses ?? 0, flagPoses, isTerminalUnitPose(pose), now, this.#actions.get(object.guid),
@@ -17212,7 +17293,10 @@ export class WorldRenderer3D {
       unit.sheathCeremony = undefined;
       return;
     }
-    const field = (object.fields.get(UPDATE_FIELDS.UNIT_FIELD_BYTES_2.offset) ?? 0) & 0xff;
+    // 5.05 (15.11, combat7): by the setter's state the page pushes (0x00737aa0 filters the byte), not the raw byte.
+    const field = this.#inputs.ownSheath ?? (object.fields.get(UPDATE_FIELDS.UNIT_FIELD_BYTES_2.offset) ?? 0) & 0xff;
+    const before = unit.ownSheathShown; // 5.05 (15.11, combat7): the state on show before this frame
+    unit.ownSheathShown = field;
     unit.sheathCeremony = stepOwnSheath(unit.sheathCeremony, field, now,
       () => (attachedOf(metadata) ?? []).map((item) => ({
         item, slot: item.slot, inventoryType: item.inventoryType, sheathe: sheatheOf(item, metadata),
@@ -17224,7 +17308,7 @@ export class WorldRenderer3D {
           return clip === undefined ? undefined
             : { duration: clip.duration, blend: animationBlend(clipBlendTime(clip)) };
         },
-      });
+      }, before, this.#inputs.ownSheathRequest ?? null); // 5.05 (15.11, combat7): the toggle by the inputs, page or worker
   }
 
   /**
@@ -17839,7 +17923,8 @@ export class WorldRenderer3D {
     const actionWeapon = pending.action === undefined || shootMetadataPending
       ? "unarmed"
       : weaponPose(attachedOf(metadata), pending.action === "shoot" ? "ranged" : "melee"); // 05.10-A7a-B 6.02
-    const combat = combatAnimations(pending, attachedOf(metadata)); // 05.10-A7a-D 6.06: swing variant, victim reaction
+    // 05.10-A7a-D 6.06: swing variant, victim reaction; 5.05 (15.11, combat7): the parry by the shown sheath (ShownParry.ts)
+    const combat = combatAnimations(shownParryPayload(pending, this.#shownSheathOf(unit)), attachedOf(metadata));
     if (combat !== undefined && combat.length === 0) return "drop"; // 05.10-A7a-D2: a weapon with no parry (0x73b050)
     const wanted = combat ?? (pending.action === undefined ? pending.wanted : actionAnimation(pending.action, actionWeapon)); // 05.10-A7a-D
     const resolve = (available: ReadonlySet<number> | Map<number, unknown>): number | undefined =>
@@ -17994,6 +18079,14 @@ export class WorldRenderer3D {
       this.#sheathContext);
   }
 
+  /**
+   * 5.05 (15.11, combat7): the sheath a unit shows (+0xb5c): the active player's model by the page's setter state,
+   * any other by its judged state (UnitShownSheath.ts); undefined when neither is known yet (the byte then stands).
+   */
+  #shownSheathOf(unit: RenderedUnit): number | undefined {
+    return unit === this.#selfModel ? this.#inputs.ownSheath : unit.shownSheath?.held;
+  }
+
   /** 5.05 (15.11): what `#judgeUnitSheath` hands the rule, refilled per call. */
   readonly #sheathContext: { -readonly [K in keyof ShownSheathContext]: ShownSheathContext[K] } = {
     casts: new Map(), spellAttributes: new Map(), meleeTargets: new Set(),
@@ -18008,8 +18101,9 @@ export class WorldRenderer3D {
       own.animation = animation;
       own.starts = this.#selfStarts;
       own.keep = this.#selfKeep;
+      own.rig = ownSheathRigReport(); // 5.05 (15.11, combat7): the guards cross with the record
     } else {
-      this.#results.ownAnimation = { guid, animation, starts: this.#selfStarts, keep: this.#selfKeep };
+      this.#results.ownAnimation = { guid, animation, starts: this.#selfStarts, keep: this.#selfKeep, rig: ownSheathRigReport() };
     }
   }
 

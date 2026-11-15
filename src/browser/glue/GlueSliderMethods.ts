@@ -5,7 +5,7 @@
  *
  * - `SetMinMaxValues(min, max)` (0x00971df0): both `lua_isnumber` and (float)min ≤ max, else «Usage:
  *   <name>:SetMinMaxValues(min, max)» (`<unnamed>` without a name).
- * - `SetValue(value)` (0x00971f00): a number, else «Usage: <name>:SetValue(value)» — nil excepted here (below).
+ * - `SetValue(value)` (0x00971f00): a number, else «Usage: <name>:SetValue(value)».
  * - `SetValueStep(value)` (0x00971fd0): a number, else «Usage: <name>:SetValueStep(value)».
  */
 import type { FrameXmlUiBridge } from "../ui/framexml_compat/FrameXmlRuntime.js";
@@ -34,10 +34,10 @@ export function sliderValueMethods(bridge: FrameXmlUiBridge): Record<string, Wid
       bridge.SetSliderMinMax(frame, min, max);
     },
     SetValue: ({ frame, args }) => {
-      // Deviation: nil stays the old 0. The stock option panels pass the value of 13 CVars this client leaves
-      // unanswered (the unavailable video and sound controls, FrameXmlOptions.ts FRAMEXML_OPTIONS_UNAVAILABLE:
-      // farclip, particleDensity, Sound_NumChannels…) — in Wow.exe those CVars exist and the call never sees nil.
-      const value = args[0] === undefined || args[0] === null ? 0 : luaNumber(args[0]);
+      // nil too, as 0x00971f00 (lua_isnumber, else the error). The 13 stock option sliders that used to pass nil read
+      // CVars Wow.exe registers (farclip, weatherDensity, the voice volumes, textureFilteringMode…); since 15.11 the
+      // neutral map answers every registration's default (FrameXmlNeutralApi.ts, WowCVarRegistry.ts).
+      const value = luaNumber(args[0]);
       if (value === undefined) throw new Error(`Usage: ${nameOf(frame)}:SetValue(value)`);
       bridge.SetValue(frame, value);
     },

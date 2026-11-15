@@ -35,7 +35,7 @@ async function loadOne(payload) {
   const client = new SpellMetadataClient("ws://127.0.0.1:8090/auth");
   const previous = globalThis.fetch;
   globalThis.fetch = async (url) => {
-    assert.match(String(url), /&v=22$/, // 3.43 (15.11): v=22; 3.43: v=21; 13.10: v=20; 3.39: v=19 (12.10: v=18; L13: v=17)
+    assert.match(String(url), /&v=23$/, // 3.68 (15.11): v=23; 3.43 (15.11): v=22; 3.43: v=21; 13.10: v=20; 3.39: v=19 (12.10: v=18; L13: v=17)
       "the marker expires cached responses before the stock tooltip fields while retaining earlier fixes");
     return { ok: true, json: async () => payload };
   };
@@ -188,6 +188,7 @@ function row(id) {
     speed: 0, // 3.01 (13.10): v=20's
     baseLevel: 0, // 3.43 (11.11): v=21's
     manaCostPerLevel: 0, // 3.43 (15.11): v=22's
+    requiredAuraVision: 0, // 3.68 (15.11): v=23's
   };
 }
 
@@ -454,6 +455,7 @@ test("the browser refuses a v=16 field that is not what it says", async () => {
     speed: 0, // 13.10: and v=20's
     baseLevel: 0, // 3.43: and v=21's
     manaCostPerLevel: 0, // 3.43 (15.11): and v=22's
+    requiredAuraVision: 0, // 3.68 (15.11): and v=23's
     ...extra,
   });
   let rows = [row({})];
@@ -464,7 +466,7 @@ test("the browser refuses a v=16 field that is not what it says", async () => {
   };
   const client = new SpellMetadataClient("ws://127.0.0.1:8090/auth", fetcher);
   assert.equal((await client.load([3599])).get(3599).totemSlotMask, 1);
-  assert.deepEqual(calls, [["http://127.0.0.1:8090/dbc/spells?ids=3599&v=22", undefined]], "a v=22 answer stands"); // 3.43 (15.11): v=22; 13.10: v=20; 3.39 (12.10: v=18; L13: v=17)
+  assert.deepEqual(calls, [["http://127.0.0.1:8090/dbc/spells?ids=3599&v=23", undefined]], "a v=23 answer stands"); // 3.68 (15.11): v=23; 3.43 (15.11): v=22; 13.10: v=20; 3.39 (12.10: v=18; L13: v=17)
   rows = [row({ id: 3600, totemSlotMask: 16 })];
   await assert.rejects(client.load([3600]), /invalid data/, "four slots, four bits");
   rows = [row({ id: 3601, preventionType: "1" })];
@@ -662,13 +664,13 @@ test("the browser asks v=19; a batch without v=19's category is asked once more 
   const old = new SpellMetadataClient("ws://127.0.0.1:8090/auth", fetcher);
   assert.equal((await old.load([3599])).get(3599).startRecoveryCategory, undefined, "a v=16 row still loads");
   assert.deepEqual(calls, [
-    ["http://127.0.0.1:8090/dbc/spells?ids=3599&v=22", undefined], // 3.43 (15.11): v=22; 13.10: v=20 (3.39: v=19; 12.10: v=18)
-    ["http://127.0.0.1:8090/dbc/spells?ids=3599&v=22", "reload"],
+    ["http://127.0.0.1:8090/dbc/spells?ids=3599&v=23", undefined], // 3.68 (15.11): v=23; 3.43 (15.11): v=22; 13.10: v=20 (3.39: v=19; 12.10: v=18)
+    ["http://127.0.0.1:8090/dbc/spells?ids=3599&v=23", "reload"],
   ], "the v=16 shape is an older gateway for the v=20 key");
 
   calls.length = 0;
   const totem = { id: 63, control: 1, faction: 0, title: 4, slot: 1, flags: 2 };
-  rows = [row({ startRecoveryCategory: 133, procCharges: 0, category: 0, speed: 0, baseLevel: 0, manaCostPerLevel: 0, effectMiscValueB: [63, 0, 0], summonProperties: [totem, null, null] })];
+  rows = [row({ startRecoveryCategory: 133, procCharges: 0, category: 0, speed: 0, baseLevel: 0, manaCostPerLevel: 0, requiredAuraVision: 0, effectMiscValueB: [63, 0, 0], summonProperties: [totem, null, null] })];
   const fresh = new SpellMetadataClient("ws://127.0.0.1:8090/auth", fetcher);
   const loaded = (await fresh.load([3599])).get(3599);
   assert.equal(loaded.startRecoveryCategory, 133);

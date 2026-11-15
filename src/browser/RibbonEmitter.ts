@@ -19,9 +19,48 @@
 //               age; the length coordinate is cellU + age/lifetime · cellWidth, recomputed every frame from the
 //               current slot (column = slot % columns, row = slot / columns: 0x0097f510).
 //   0x00980b70  Render: the strip once per material/texture pair of the ribbon (`ParticleRender.ts`).
+//
+// 15.11 (6.15), read again (.runtime/re-2026-11-15/fx7/r1, r2): every frame 0x00980090 rewrites the texture
+// coordinates of *every* laid edge from the current slot — u from +0x70 and the edge's age, v from +0x6c (first
+// vertex, −Y·heightBelow) and +0x74 (second, +Y·heightAbove) — so a slot track that steps moves the whole strip to the
+// new cell row at once; the row an edge was laid in is not kept. The draw (0x00980b70) is one triangle strip of
+// 2·edges + 2 indices, oldest edge first, with the vertices relative to the bone's position (+0x2c) and the world
+// matrix moved back by it; per material it sets the states `ribbonDrawState` below names.
 
 import type { WvmRibbonEmitter, WvmTrack } from "./Wvm.js";
 import { emitterTrackSequence, sampleTrack, type EmitterFrame } from "./Particles.js";
+
+/**
+ * 15.11 (6.15): the M2 material flag that turns a ribbon's depth test off. Model load 0x00832ea0 keeps, per ribbon
+ * material, !(flags & 1) as lit, !(flags & 2) as fogged, !(flags & 8) as depth-tested, !(flags & 0x10) as
+ * depth-writing and !(flags & 4) as culled, and 0x00980b70 sets them as GxRs 11, 12, 13 (DepthTest), 15
+ * (DepthWrite) and 17 (Culling) before each pass. `Wvm.ts` calls this bit MATERIAL_BILLBOARD; on a ribbon it is the
+ * depth test. Census of the client chain (`.runtime/re-2026-11-15/fx7/ribbon-census.txt`): 16 of 1,518 ribbon passes set
+ * it (`shadowfury_impact_base`, `sealofvengeance_impact_base`), and all 1,518 set 0x10 — no ribbon writes depth.
+ */
+export const RIBBON_FLAG_NO_DEPTH_TEST = 0x08;
+
+/**
+ * 15.11 (6.15): the alpha reference of a ribbon pass, 0…1. 0x00980b70 → 0x00873ee0 takes it from the byte table
+ * 0x00ad8b7c by the pass's Gx blend (M2 blend through 0x00a45570: 0→0, 1→1, 2→2, 3→10, 4→3, 5→4, 6→5), over 255:
+ * opaque 0, alpha key 224, the others 1 — Gx blend 10 (M2 3, no-alpha add) reads 0. M2 blend 7 is past the end of
+ * 0x00a45570 (no ribbon in the client uses it); here it has no gate.
+ */
+export function ribbonAlphaReference(blendMode: number): number {
+  switch (blendMode) {
+    case 1: return 224 / 255;
+    case 2: case 4: case 5: case 6: return 1 / 255;
+    default: return 0;
+  }
+}
+
+/** 15.11 (6.15): the draw states one ribbon pass sets that this client follows (0x00980b70). */
+export function ribbonDrawState(materialFlags: number, blendMode: number): { depthTest: boolean; alphaTest: number } {
+  return {
+    depthTest: (materialFlags & RIBBON_FLAG_NO_DEPTH_TEST) === 0,
+    alphaTest: ribbonAlphaReference(blendMode),
+  };
+}
 
 export interface RibbonEdge {
   /** The bone's own path through the curve, for callers that ask where the trail is. */
@@ -29,8 +68,6 @@ export interface RibbonEdge {
   /** The two vertices, already placed: below = −Y·heightBelow side, above = +Y·heightAbove side. */
   belowX: number; belowY: number; belowZ: number;
   aboveX: number; aboveY: number; aboveZ: number;
-  /** The cross coordinate of this edge's cell row (v of the below vertex; above is + 1/rows). */
-  cellV: number;
   red: number; green: number; blue: number; alpha: number;
   age: number;
 }
@@ -139,7 +176,7 @@ function boneFrame(ribbon: WvmRibbonEmitter, m: ArrayLike<number>, out: Float64A
 function takeEdge(system: RibbonSystem): RibbonEdge {
   return system.spare.pop() ?? {
     x: 0, y: 0, z: 0, belowX: 0, belowY: 0, belowZ: 0, aboveX: 0, aboveY: 0, aboveZ: 0,
-    cellV: 0, red: 1, green: 1, blue: 1, alpha: 1, age: 0,
+    red: 1, green: 1, blue: 1, alpha: 1, age: 0,
   };
 }
 
@@ -179,11 +216,7 @@ function stepRibbonOnce(system: RibbonSystem, seconds: number, frame: EmitterFra
   // 11.11 (6.11): × the model's alpha (SetAlpha 0x0097fba0 gets track × m_effectiveAlpha), laid into new edges only.
   const modelAlpha = frame.modelAlpha === undefined ? 1 : Math.min(1, Math.max(0, frame.modelAlpha));
   const alpha = Math.min(1, Math.max(0, sample(system, ribbon.alpha, frame, 1))) * modelAlpha;
-  const slot = Math.max(0, Math.floor(sample(system, ribbon.textureSlot, frame, 0)));
-  system.slot = slot;
-  const columns = Math.max(1, ribbon.textureColumns);
-  const rows = Math.max(1, ribbon.textureRows);
-  const cellV = Math.floor(slot / columns) / rows;
+  system.slot = Math.max(0, Math.floor(sample(system, ribbon.textureSlot, frame, 0)));
 
   // 0x0097f570: hidden forgets the previous bone, so a ribbon that reappears does not curve in from where it was.
   if (!visible) system.placed = false;
@@ -211,7 +244,6 @@ function stepRibbonOnce(system: RibbonSystem, seconds: number, frame: EmitterFra
       const edge = takeEdge(system);
       placeEdge(system, edge, t, above, below);
       edge.age = -t * dt;
-      edge.cellV = cellV;
       edge.red = red; edge.green = green; edge.blue = blue; edge.alpha = alpha;
       edges.push(edge);
       // The ring holds the head too; the formula of 0x009808a0 never fills it, this only guards a bad record.
@@ -221,7 +253,6 @@ function stepRibbonOnce(system: RibbonSystem, seconds: number, frame: EmitterFra
     const head = system.head ?? takeEdge(system);
     placeEdge(system, head, 1, above, below);
     head.age = 0;
-    head.cellV = cellV;
     head.red = red; head.green = green; head.blue = blue; head.alpha = alpha;
     system.head = head;
   }
@@ -242,21 +273,28 @@ function stepRibbonOnce(system: RibbonSystem, seconds: number, frame: EmitterFra
   if (visible) system.previous.set(system.current);
 }
 
-/** Where one texture cell starts along the trail and how long it is (0x0097f510, 0x009808a0). */
-function cellU(system: RibbonSystem): { start: number; width: number } {
+/**
+ * The current slot's texture cell (0x0097f510, 0x009808a0): where it starts along the trail (+0x70) and how long it
+ * is (+0x5c), and its row across the trail (+0x6c) and how tall (+0x60).
+ */
+function currentCell(system: RibbonSystem): { start: number; width: number; row: number; height: number } {
   const columns = Math.max(1, system.ribbon.textureColumns);
-  return { start: (system.slot % columns) / columns, width: 1 / columns };
+  const rows = Math.max(1, system.ribbon.textureRows);
+  return {
+    start: (system.slot % columns) / columns, width: 1 / columns,
+    row: Math.floor(system.slot / columns) / rows, height: 1 / rows,
+  };
 }
 
 /**
  * Writes the strip's triangles — laid edges oldest first, then the head at the bone — and says how many quads.
- * u = the slot's cell start + age/lifetime · the cell's width (0x00980090), v = the edge's cell row, below → above.
+ * u = the current cell's start + age/lifetime · the cell's width, v = the current cell's row, below → above: both
+ * from the slot of this frame for every edge, as 0x00980090 rewrites them.
  */
 export function writeRibbonStrip(system: RibbonSystem, buffers: { positions: Float32Array; uvs: Float32Array; colors: Float32Array }): number {
   const { edges, head } = system;
   const lifetime = ribbonLifetime(system.ribbon);
-  const rows = Math.max(1, system.ribbon.textureRows);
-  const { start, width } = cellU(system);
+  const { start, width, row, height } = currentCell(system);
   const capacity = Math.floor(buffers.positions.length / 12);
   const total = edges.length + (head ? 1 : 0);
   let quads = 0;
@@ -274,10 +312,10 @@ export function writeRibbonStrip(system: RibbonSystem, buffers: { positions: Flo
     const uFar = start + (far.age / lifetime) * width;
     const uvAt = quads * 8;
     const uvs = buffers.uvs;
-    uvs[uvAt] = uNear; uvs[uvAt + 1] = near.cellV;
-    uvs[uvAt + 2] = uFar; uvs[uvAt + 3] = far.cellV;
-    uvs[uvAt + 4] = uFar; uvs[uvAt + 5] = far.cellV + 1 / rows;
-    uvs[uvAt + 6] = uNear; uvs[uvAt + 7] = near.cellV + 1 / rows;
+    uvs[uvAt] = uNear; uvs[uvAt + 1] = row;
+    uvs[uvAt + 2] = uFar; uvs[uvAt + 3] = row;
+    uvs[uvAt + 4] = uFar; uvs[uvAt + 5] = row + height;
+    uvs[uvAt + 6] = uNear; uvs[uvAt + 7] = row + height;
 
     const colorAt = quads * 16;
     const colors = buffers.colors;

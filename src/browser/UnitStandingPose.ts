@@ -124,13 +124,47 @@ function readySeqOf(item: HeldItem): ReadySeq | undefined {
 export function readyStance(attached: readonly HeldItem[] | undefined, sheath: number | undefined): readonly number[] | undefined {
   if (sheath === SHEATH_STATE_UNARMED) return undefined;
   if (attached === undefined) return READY_UNARMED;
-  const slot = sheath === SHEATH_STATE_RANGED ? EQUIPMENT_SLOT_RANGED : EQUIPMENT_SLOT_MAINHAND;
+  if (sheath !== SHEATH_STATE_RANGED) return meleeReadyStance(attached); // 6.04 (15.11, combat7): 0x00714dd0
   for (const item of attached) {
-    if (item.slot !== slot) continue;
+    if (item.slot !== EQUIPMENT_SLOT_RANGED) continue;
     const seq = readySeqOf(item);
     return seq === undefined ? READY_UNARMED : READY_LADDERS[seq] ?? READY_UNARMED;
   }
   return READY_UNARMED;
+}
+
+/** 6.04 (15.11, combat7): the inventory types of class-2 items (CombatAnimations.ts' list): weapon, ranged, 2H, MH, OH, thrown, ranged-right. */
+const WEAPON_INVENTORY_TYPES: ReadonlySet<number> = new Set([13, 15, 17, 21, 22, 25, 26]);
+const EQUIPMENT_SLOT_OFFHAND = 16;
+
+/**
+ * 6.04 (15.11, combat7): Wow.exe's melee stance selector 0x00714dd0 (re-2026-11-15/combat7/g2.c), which the attack
+ * stance rung 0x0071e0d0 plays for a unit with a melee target of its own (+0xa20) when no stance is named (+0xb88 −1)
+ * and it is not swimming (0x29). A hard-coded table, like the parry's 0x0073b050 — ItemSubClass.WeaponReadySeq is not
+ * read: the main hand's item when it is a weapon (class 2), else the off hand's; by its subclass 0 4 7 11 13 14 15 20 →
+ * Ready1H (26); 1 5 8 12 → Ready2H (27), Ready1H when the off hand holds anything (Titan's Grip); 6 10 17 → Ready2HL
+ * (28); any other subclass, or no weapon in either hand → ReadyUnarmed (25). A payload without the subclass falls back
+ * on the inventory type (two-hand → Ready2H, else Ready1H), as the swing's ladder does.
+ */
+function meleeReadyStance(attached: readonly HeldItem[]): readonly number[] {
+  let main: HeldItem | undefined;
+  let off: HeldItem | undefined;
+  for (const item of attached) {
+    if (item.slot === EQUIPMENT_SLOT_MAINHAND) main = item;
+    else if (item.slot === EQUIPMENT_SLOT_OFFHAND) off = item;
+  }
+  const weapon = main !== undefined && WEAPON_INVENTORY_TYPES.has(main.inventoryType) ? main
+    : off !== undefined && WEAPON_INVENTORY_TYPES.has(off.inventoryType) ? off : undefined;
+  if (weapon === undefined) return READY_UNARMED;
+  if (weapon.subClass === undefined) {
+    return weapon.inventoryType === INVENTORY_TYPE_TWO_HAND ? READY_LADDERS[ReadySeq.TwoHand]! : READY_LADDERS[ReadySeq.OneHand]!;
+  }
+  switch (weapon.subClass) {
+    case 0: case 4: case 7: case 11: case 13: case 14: case 15: case 20: return READY_LADDERS[ReadySeq.OneHand]!;
+    case 1: case 5: case 8: case 12: return off !== undefined ? READY_LADDERS[ReadySeq.OneHand]! : READY_LADDERS[ReadySeq.TwoHand]!;
+    case 6: case 10: case 17: return READY_LADDERS[ReadySeq.TwoHandLoose]!;
+    default: return READY_UNARMED;
+  }
 }
 
 /** 12.10 6.03: Emotes.dbc EmoteFlags 0x2000 — the row 0x007171c0 sets aside on the unit the player is talking to. */
@@ -207,6 +241,7 @@ export function applyStandingPose(
   fields: ReadonlyMap<number, number>,
   attached: readonly HeldItem[] | undefined,
   interacting = false,
+  shownSheath?: number,
 ): void {
   const emote = fields.get(NPC_EMOTESTATE) ?? 0;
   if (emote !== 0) {
@@ -215,8 +250,10 @@ export function applyStandingPose(
     if (held !== undefined) pose.emoteState = held;
   }
   if (((fields.get(FIELD_FLAGS) ?? 0) & UNIT_FLAG_IN_COMBAT) !== 0) {
+    // 5.05 (15.11, combat7): the sheath the unit shows (+0xb5c, UnitShownSheath.ts / world/SheathSetter.ts) when the
+    // renderer knows it — what Wow.exe's stance choice reads — else the server's byte.
     const bytes2 = fields.get(FIELD_BYTES_2);
-    const ready = readyStance(attached, bytes2 === undefined ? undefined : bytes2 & 0xff);
+    const ready = readyStance(attached, shownSheath ?? (bytes2 === undefined ? undefined : bytes2 & 0xff));
     if (ready !== undefined) pose.ready = ready;
   }
 }

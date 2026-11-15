@@ -22,7 +22,8 @@
  * doodads, so nothing glows through a building's walls; the quad is depth-tested as the halo is).
  * 23.10 (7.46): and a city's lamp posts that are its WMO's own geometry, with the doodads only its
  * open-air groups name (`WmoOpenAirLamps.ts`).
- * Each placement's sources are sampled once, at their bind pose, and cached; the flat list is
+ * Each placement's sources are sampled once, at their bind pose, and cached (15.11, 7.50: an animated
+ * lamp at its average over one period, `sampleFixtureFarLight`); the flat list is
  * rebuilt only after the placement set changed (at most every `FAR_LIGHT_REBUILD_FRAMES`), and the nearest set is
  * re-picked only after the camera moved `FAR_LIGHT_REPICK` yards. A frame only re-weights the
  * picked few hundred, with no allocation.
@@ -32,7 +33,8 @@ import { fixtureLightSource } from "./FixtureLightSources.js";
 import {
   LIGHT_HALO_DAY_SHARE, LIGHT_HALO_FADE, LIGHT_HALO_RADIUS, LIGHT_HALO_STRENGTH, LightHalos,
 } from "./LightHalos.js";
-import { modelFixtureLights, sampleFixtureLight, type LocalLightSample } from "./LocalLighting.js";
+import { modelFixtureLights, type LocalLightSample } from "./LocalLighting.js";
+import { sampleFixtureFarLight } from "./LightTemplateMotion.js"; // 15.11 (7.50)
 import { sampleWmoLight, wmoOutdoorLightPositions, wmoOutdoorLights } from "./WmoFixtureLights.js";
 import type { WmoModel } from "./WmoModel.js";
 import {
@@ -169,7 +171,8 @@ export function farLightSources(placement: FarLightPlacement, openAir?: FarLight
       if (!placement.instanceMatrix) root!.updateWorldMatrix(true, false);
       const matrix = placement.instanceMatrix ?? root!.matrixWorld;
       for (const fixture of fixtures) {
-        if (sampleFixtureLight(fixture, model, matrix, 0, 0, sample)) push(out, sample, 1);
+        // 15.11 (7.50): an animated lamp at its average over one period (LightTemplateMotion.ts).
+        if (sampleFixtureFarLight(fixture, model, matrix, sample)) push(out, sample, 1);
       }
     }
   }

@@ -29,6 +29,8 @@ import { WEAPON_ANIMS_VERSION, loadWeaponAnims } from "./WeaponAnimMetadata.js";
 import { WMO_AREAS_VERSION, loadWmoAreas } from "./WmoAreaMetadata.js"; // 05.10-A7b-4
 import { NAME_FILTERS_VERSION, loadNameFilters } from "./NameFilterMetadata.js"; // 11.11 (1.19)
 import { PVP_DIFFICULTY_VERSION, loadPvpDifficulty } from "./PvpDifficultyMetadata.js"; // 11.11 (3.24)
+import { OVERRIDE_SPELLS_VERSION, loadOverrideSpells } from "./OverrideSpellMetadata.js"; // 5.05 (15.11, combat7)
+import { NPC_MANA_COST_SCALER_VERSION, loadNpcManaCostScaler } from "./NpcManaCostScalerMetadata.js"; // 3.43 (15.11)
 import { originAllowed } from "./UpgradeGuard.js";
 
 export interface CatalogRoute {
@@ -75,6 +77,10 @@ export const CATALOG_ROUTES: readonly CatalogRoute[] = Object.freeze([
   { pathname: "/dbc/name-filters", version: NAME_FILTERS_VERSION, load: loadNameFilters }, // 11.11 (1.19)
   // 11.11 (3.24): PvpDifficulty level brackets — a battleground's canEnter (PvpDifficultyMetadata.ts, Wow.exe 0x0054ba00).
   { pathname: "/dbc/pvp-difficulty", version: PVP_DIFFICULTY_VERSION, load: loadPvpDifficulty }, // 11.11 (3.24)
+  // 5.05 (15.11, combat7): OverrideSpellData — the own cast's 0xad refusal (OverrideSpellMetadata.ts, Wow.exe 0x0080cce0).
+  { pathname: "/dbc/override-spells", version: OVERRIDE_SPELLS_VERSION, load: loadOverrideSpells }, // 5.05 (15.11, combat7)
+  // 3.43 (15.11): gtNPCManaCostScaler — a non-player unit's cost (NpcManaCostScalerMetadata.ts, Wow.exe 0x008012f0).
+  { pathname: "/dbc/npc-mana-cost-scaler", version: NPC_MANA_COST_SCALER_VERSION, load: loadNpcManaCostScaler }, // 3.43 (15.11)
 ]);
 
 /** The serialised answers, by pathname, for the dataset on disk: `DatasetIndexes.catalogs`. */

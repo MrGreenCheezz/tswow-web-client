@@ -59,7 +59,8 @@ import {
   frameXmlNoteMessageView, // 3.34 (13.10)
 } from "./FrameXmlMessageFade.js";
 import { frameXmlMessageLineCount, frameXmlMessagePage, frameXmlMessageSlots } from "./FrameXmlMessageSlots.js"; // 3.34 (13.10)
-import { frameXmlNoteMessageCurrent } from "./FrameXmlMessageScrollChanged.js"; // widgets5 3.34
+import { frameXmlNoteMessageCurrent, frameXmlNoteMessagesRemoved } from "./FrameXmlMessageScrollChanged.js"; // widgets5/widgets7 3.34
+import { frameXmlSetResizeBounds } from "./FrameXmlSizing.js"; // widgets7 3.21
 import {
   frameXmlSliderLoadedStep, frameXmlSliderSetRange, frameXmlSliderSetStep, frameXmlSliderValue, markFrameXmlBareCreate,
 } from "./FrameXmlSlider.js"; // 3.27 (13.10)
@@ -1893,6 +1894,15 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
       case "HitRectInsets":
         frame.hitRectInsets = insetsOf(element);
         return true;
+      // widgets7 3.21: Wow.exe's frame loader (0x004932c0) writes all four bounds from `<minResize>`/`<maxResize>`,
+      // a missing one as 0 (FrameXmlSizing.ts).
+      case "ResizeBounds": {
+        const min = dimensionOf(frameXmlChild(element, "minResize"));
+        const max = dimensionOf(frameXmlChild(element, "maxResize"));
+        frameXmlSetResizeBounds(frame, "min", Math.fround(min?.x ?? 0), Math.fround(min?.y ?? 0));
+        frameXmlSetResizeBounds(frame, "max", Math.fround(max?.x ?? 0), Math.fround(max?.y ?? 0));
+        return true;
+      }
       // 3.48 (12.10): Wow.exe's frame loader (0x004932c0) builds a title region for each `<TitleRegion>` and loads
       // the element into it — its own setAllPoints, Size and Anchors (FrameXmlTitleRegion.ts).
       case "TitleRegion":
@@ -3327,6 +3337,7 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
     if (!this.isMessageFrame(frame)) return false;
     const state = frame.messageFrame;
     const before = state.messages.length;
+    const currentBefore = frame.scroll.verticalScroll; // widgets7 3.34: OnMessageScrollChanged
     state.messages = state.messages.filter((message) => message.accessID !== accessID);
     // 3.34-review: the client's call (Lua 0x00973270 → 0x0096a510) ends at the newest line with the
     // lines it shows at full alpha and fresh countdowns (0x00969fa0, 0x00969410), whether or not a
@@ -3338,6 +3349,7 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
       if (state.messages.length === before) {
         this.refreshMessageScroll(frame, true);
         this.notifyMutation(this.own(frame), "paint");
+        frameXmlNoteMessagesRemoved(this, frame, currentBefore); // widgets7 3.34 (0x0096a510 → 0x00969fa0)
         return true;
       }
     }
@@ -3345,6 +3357,7 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
     state.revision += 1;
     this.refreshMessageScroll(frame, frame.scroll.verticalScroll >= frame.scroll.verticalScrollRange);
     this.notifyMutation(this.own(frame), "paint");
+    frameXmlNoteMessagesRemoved(this, frame, currentBefore); // widgets7 3.34 (0x0096a510 → 0x00969fa0)
     return true;
   }
 

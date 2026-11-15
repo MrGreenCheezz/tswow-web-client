@@ -1009,14 +1009,16 @@ test("the renderer measures stride tempo and replays looping gaits at it", async
     "both base-pose paths replay the committed gait at the measured tempo");
   assert.match(renderer, /isLocomotionGait\(animation\)/,
     "one-shots keep authored timing: only travelling gaits are retimed");
-  assert.match(renderer, /unit\.admittedAt === undefined\) unit\.admittedAt = now/,
+  assert.match(renderer, /unit\.admittedAt === undefined\) \{\n\s+unit\.admittedAt = now;/,
     "the spawn fade starts at first visibility, not at record creation");
   // 05.10 suite-fix: since 05.10-A7a-H (6.11а) the appearance opacity is first multiplied by the
   // display's CreatureModelAlpha into `displayOpacity`; the fade still multiplies, never replaces.
   // 15.11 (6.11): a later change of the display's alpha eases over a second (UnitDisplayFade.ts); it still multiplies.
-  assert.match(renderer, /const displayOpacity = appearance\.opacity [^\n]*\n\s+\* \(metadata === undefined \? creatureDisplayAlpha\(metadata\) : unitDisplayAlpha\(unit, creatureDisplayAlpha\(metadata\), now\)\)/,
+  // 15.11 (6.11): times a CharProc 14 record's factor, over its time (UnitTints.ts `alphaOf`).
+  // A live record also takes the place of the stealth/ghost stand-in (UnitDisplayFade.ts `auraStandInOpacity`).
+  assert.match(renderer, /const displayOpacity = auraStandInOpacity\(appearance\.opacity, metadata !== undefined && unitAlphaRecord\.held === true\) [^\n]*\n\s+\* \(metadata === undefined \? creatureDisplayAlpha\(metadata\)\n\s+: unitDisplayAlpha\(unit, creatureDisplayAlpha\(metadata\) \* unitAlphaRecord\.alpha, now, unitAlphaRecord\.ms\)\)/,
     "the display alpha multiplies the appearance opacity rather than replacing it");
-  assert.match(renderer, /displayOpacity \* spawnFadeFactor\(unit\.admittedAt, now\)/,
+  assert.match(renderer, /displayOpacity \* unitSpawnFactor\(unit, unit\.admittedAt, now\)/, // 15.11 (6.11): UnitSpawnFade.ts
     "ghosts and spirits keep their own translucency under the fade");
 });
 

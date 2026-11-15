@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { flyMissileInstance, missileSample } from "../dist/code/browser/MissileFlight.js";
-import { missileLaunchEvent } from "../dist/code/browser/MissileLaunchEvent.js";
+import { missileLaunchEvent, missileLaunchSource } from "../dist/code/browser/MissileLaunchEvent.js";
 import { planSpellVisual } from "../dist/code/browser/SpellVisuals.js";
 
 // 15.11 (6.12): a missile whose visual names no point leaves from 0x0071a720's "$CSL"/"$CSR"/"$CST" event when SPELL_GO
@@ -27,6 +27,21 @@ test("15.11: only a visual without its own point and without a cast animation as
   assert.equal(launchOf({ id: 1, cast: kit(0), missile: missile() }).events, true);
   assert.equal(launchOf({ id: 1, cast: kit(53), missile: missile() }).events, undefined, "its animation's event launches it");
   assert.equal(launchOf({ id: 1, missile: missile({ launch: 1 }) }).events, undefined, "the visual's own point");
+});
+
+test("15.11: SpellVisual.Flags & 4 launches from the events even when the CastKit animates (0x00732ff0)", () => {
+  const launchOf = (visual) => planSpellVisual(visual, cast, 0).instances.find((one) => one.flight).flight.launch;
+  assert.equal(launchOf({ id: 1, cast: kit(124), missile: missile({ launchNow: true }) }).events, true);
+  assert.equal(launchOf({ id: 1, cast: kit(124), missile: missile() }).events, undefined, "without the flag it waits");
+  assert.equal(launchOf({ id: 1, cast: kit(124), missile: missile({ launchNow: true, launch: 1 }) }).events, undefined,
+    "the visual's own point still wins (0x0072df00 → 0x00720bf0)");
+});
+
+test("15.11: a model with none of the three events launches from the unit's position (vfunc +0x2c = 0x006e6ef0)", () => {
+  assert.equal(missileLaunchSource(undefined), undefined, "events not known yet: the caller's stand-in");
+  assert.equal(missileLaunchSource([]), "position");
+  assert.equal(missileLaunchSource([event("$AIM"), event("$BWR")]), "position");
+  assert.equal(missileLaunchSource([event("$CST"), event("$CSR")]).id, "$CSR");
 });
 
 test("15.11: the flight leaves from the event when the model has one, else from the attachment", () => {

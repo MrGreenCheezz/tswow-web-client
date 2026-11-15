@@ -236,7 +236,7 @@ function spellContent(id: number, aura = false, slot?: StockSpellTooltipOptions)
     return undefined;
   }
   // 3.43 (11.11): an aura's slot level and count reach the description as 0x00625350 passes them to 0x0057abc0.
-  return aura ? spellbook.stockSpellTooltip(id, { ...slot, aura: true }) : spellbook.stockSpellTooltip(id);
+  return aura ? spellbook.stockSpellTooltip(id, { ...slot, aura: true }) : spellbook.stockSpellTooltip(id, slot); // 3.43 (15.11): `pet`
 }
 
 /**
@@ -356,6 +356,8 @@ export function createFrameXmlCharacterTooltipAdapter(
     },
     // A pet bar spell for GameTooltip:SetPetAction (FrameXmlPetActionBar.ts); commands keep their name line.
     petActionSpell: (index) => source.petActions?.spellAt(index),
+    // 3.43 (15.11): its tooltip's cost and cast rows are the pet's (SetPetAction 0x00625470, ui/SpellTextPetCost.ts).
+    petSpell: (id) => linkedSpellContent(id, false, { pet: true }),
     // 11.02-IF-review: GameTooltip:SetPossession(1) draws the seam's possess spell (FrameXmlPossess.ts).
     possessionSpell: () => source.possess?.possessSpell || undefined,
     // Live, the world's item cache; with none (the canned routes) the seam's own item source first.

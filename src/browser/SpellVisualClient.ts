@@ -177,7 +177,10 @@ export class SpellVisualClient extends BatchedMetadataClient<SpellVisualMetadata
     // v=14 (11.11, 6.12): a missile's raw MissileAttachment `launch` (Wow.exe 0x00720bf0's index); an older gateway
     // answers v=13 without it: the missile leaves from `attachment` as before, except that a row with a cast offset
     // is then read on the directed spell hand whatever its MissileAttachment is (SpellVisualAttach.ts).
-    return `${this.baseUrl}/dbc/spell-visuals?v=14&ids=${ids.join(",")}`;
+    // v=15 (15.11, 6.12, 6.11): a missile's `launchNow` (SpellVisual.Flags & 4, Wow.exe 0x00732ff0) and a kit's
+    // `unitAlpha` (CharProc 14, 0x007265c0); an older gateway answers v=14 without them, and such a missile then leaves
+    // from the hand when its CastKit animates, and the kit leaves its unit's alpha alone, as before.
+    return `${this.baseUrl}/dbc/spell-visuals?v=15&ids=${ids.join(",")}`;
   }
 
   protected override accept(value: unknown): value is SpellVisualMetadata {
@@ -201,7 +204,8 @@ export class SpellVisualKitClient extends BatchedMetadataClient<SpellVisualKitRe
     // v=2 (13.10, 6.13): the same chain fields as `/dbc/spell-visuals?v=9`.
     // v=3 (25.10, 6.27): `tint` and `flash`, as `/dbc/spell-visuals?v=10`.
     // v=4 (11.11, 5.05): the kit's `sheathKeep` (Flags 0x100), as `/dbc/spell-visuals?v=13`.
-    return `${this.baseUrl}/dbc/spell-visual-kits?v=4&ids=${ids.join(",")}`;
+    // v=5 (15.11, 6.11): the kit's `unitAlpha` (CharProc 14), as `/dbc/spell-visuals?v=15`.
+    return `${this.baseUrl}/dbc/spell-visual-kits?v=5&ids=${ids.join(",")}`;
   }
 
   protected override accept(value: unknown): value is SpellVisualKitRecord {
@@ -271,6 +275,13 @@ function isKitExtras(shape: Record<string, unknown>): boolean {
     if (!finite(fields["delayMs"]) || !finite(fields["durationMs"])) return false;
   }
   if (shape["sheathKeep"] !== undefined && shape["sheathKeep"] !== true) return false; // 5.05 (11.11)
+  const unitAlpha = shape["unitAlpha"]; // 15.11 (6.11): CharProc 14
+  if (unitAlpha !== undefined) {
+    if (!unitAlpha || typeof unitAlpha !== "object") return false;
+    const fields = unitAlpha as Record<string, unknown>;
+    if (!finite(fields["alpha"]) || (fields["alpha"] as number) <= 0 || (fields["alpha"] as number) > 1) return false;
+    if (!finite(fields["ms"]) || (fields["ms"] as number) < 0) return false;
+  }
   return true;
 }
 
@@ -372,6 +383,7 @@ function isMissileExtras(shape: Record<string, unknown>): boolean {
   }
   for (const field of ["dest", "pathType", "launch"]) if (shape[field] !== undefined && !finite(shape[field])) return false; // 11.11: launch
   if (shape["destRaw"] !== undefined && shape["destRaw"] !== true) return false; // 13.10
+  if (shape["launchNow"] !== undefined && shape["launchNow"] !== true) return false; // 15.11 (6.12)
   for (const field of ["castOffset", "impactOffset"]) if (shape[field] !== undefined && !finiteTriple(shape[field])) return false;
   const ground = shape["followGround"];
   if (ground !== undefined) {

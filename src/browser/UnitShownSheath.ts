@@ -25,6 +25,9 @@
 import { ANIMATION_BEHAVIORS, ANIMATION_WEAPON_FLAGS } from "../generated/animations.js";
 import { animationSheathState } from "../world/AnimationSheathRule.js";
 
+/** The melee sheath state (`SHEATH_STATE_MELEE`). */
+const SHEATH_STATE_MELEE = 1;
+
 /** A cast as the world client holds it (WorldClient `casts`, held from SMSG_SPELL_START to its end). */
 export interface ShownSheathCast {
   readonly spellId: number;
@@ -59,6 +62,16 @@ export class UnitShownSheath {
     this.published = published;
     this.starts = starts;
   }
+}
+
+/**
+ * 5.05 (15.11, combat7): a melee swing of this unit arrived (SMSG_ATTACKERSTATEUPDATE). Wow.exe's handler 0x00756800
+ * case 0x14a, for an attacker the client has, calls 0x00736d30(1, 1, 0) when its held state is not 1 — the melee
+ * weapons drawn at once, before the swing's animation, whatever the swing draws (re-2026-11-11/combat4/c1.c). A unit
+ * the renderer has not judged yet has nothing to change: it starts from its byte.
+ */
+export function swungAt(shown: UnitShownSheath | undefined): void {
+  if (shown !== undefined) shown.held = SHEATH_STATE_MELEE;
 }
 
 /**

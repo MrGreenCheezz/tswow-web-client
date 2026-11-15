@@ -6,8 +6,10 @@ import { colorSelectMethods, messageColorMethods } from "./GlueWidgetMethodExtra
 import { fontStringGradientMethods, frameDepthMethods } from "./GlueWidgetMethodFills.js"; // 05.10-3.21
 import {
   editBoxFillMethods, fontStringFaceMethods, frameFillMethods, frameProtectionMethods, glueNoteCreatedFontString,
-  regionRectMethods, textureFillMethods,
-} from "./GlueFrameMethodFills.js"; // widgets5
+  regionRectMethods, textureFillMethods, frameSizingMethods,
+} from "./GlueFrameMethodFills.js"; // widgets5, widgets7
+import { glueTooltipAddedLines, tooltipFontStringMethods } from "./GlueTooltipFontStrings.js"; // widgets7 3.21
+import { frameXmlEndSizing } from "../ui/framexml_compat/FrameXmlSizing.js"; // widgets7 3.21
 import { sliderValueMethods } from "./GlueSliderMethods.js"; // 3.27 (13.10)
 import { statusBarSetMinMaxValues } from "./GlueStatusBarMethods.js"; // 3.27 (11.11)
 import { questPoiFrameMethods } from "./GlueQuestPoiFrame.js";
@@ -306,6 +308,8 @@ interface GameTooltipLineCache {
   highWater: number;
   childCount: number;
   structure: number;
+  /** widgets7: how many AddFontStrings pairs the last read saw. */
+  added: number;
 }
 
 /**
@@ -337,6 +341,8 @@ export interface GameTooltipWidgetAdapter extends GameTooltipExtrasAdapter {
    * `OnTooltipSetSpell`; nothing for a command, a reaction or an empty slot, which keep the name line.
    */
   readonly petActionSpell?: (index: number) => number | undefined;
+  /** 3.43 (15.11): that spell's tooltip as the pet's (Wow.exe 0x00625470 hands 0x006238a0 the pet); absent, `spell`. */
+  readonly petSpell?: (spellId: number) => TooltipContent | undefined;
   /**
    * 11.02-IF-review: the possess spell (Wow.exe 0x00c234e0, FrameXmlPossess.ts) for
    * `SetPossession(1)`; undefined while there is none.
@@ -1014,7 +1020,7 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
       IsProtected: protection["IsProtected"]!, CanChangeProtectedState: protection["CanChangeProtectedState"]! };
     // 05.10-3.21 (GlueWidgetMethodFills.ts): Frame:IgnoreDepth and FontString:SetAlphaGradient.
     const frameLike = { ...base, ...this.frameMethods(), ...frameDepthMethods(), ...regionRectMethods(this.#bridge),
-      ...frameFillMethods(), ...protection };
+      ...frameFillMethods(), ...protection, ...frameSizingMethods(this.#bridge) }; // widgets7: StartSizing, backdrop colours
     const fontString = { ...region, ...this.textMethods(), ...fontStringGradientMethods(this.#bridge),
       ...fontStringFaceMethods(this.textMethods()) };
     const texture = { ...region, ...textureFillMethods(this.#bridge) };
@@ -1032,7 +1038,8 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
     const simpleHtml = { ...frameLike, ...this.textMethods(), ...this.simpleHtmlMethods(),
       ...simpleHtmlElementFontMethods(this.#bridge, this.textMethods()) }; // L5 3.35: SetTextColor("h1", …) and the rest
     const movie = { ...frameLike, ...this.movieMethods() };
-    const gameTooltip = { ...frameLike, ...this.textMethods(), ...this.gameTooltipMethods() };
+    const gameTooltip = { ...frameLike, ...this.textMethods(), ...this.gameTooltipMethods(),
+      ...tooltipFontStringMethods(this.#bridge, (frame) => this.gameTooltipLines(frame).highWater) }; // widgets7: AddFontStrings
     // Plan item 3.21 (GlueWidgetMethodExtras.ts): the ColorSelect colour and the per-id recolour.
     const colorSelect = { ...frameLike, ...colorSelectMethods(this.#bridge) };
     const scrollingMessageFrame = { ...messageFrame, ...messageColorMethods(this.#bridge),
@@ -1168,7 +1175,7 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
       state = {
         owner: undefined, anchor: "ANCHOR_RIGHT", nextLine: 1, minimumWidth: 0,
         unit: undefined, item: undefined, spell: undefined, equipped: false, cancelRefresh: undefined,
-        lines: { Left: [], Right: [], highWater: 0, childCount: -1, structure: -1 },
+        lines: { Left: [], Right: [], highWater: 0, childCount: -1, structure: -1, added: 0 },
       };
       this.#gameTooltipState.set(frame, state);
     }
@@ -1286,7 +1293,9 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
   private gameTooltipLines(frame: FrameXmlFrame): GameTooltipLineCache {
     const cache = this.gameTooltipState(frame).lines;
     const structure = this.#bridge.structureVersion;
-    if (cache.childCount === frame.children.length && cache.structure === structure) return cache;
+    const added = glueTooltipAddedLines(frame)?.size ?? 0; // widgets7: an AddFontStrings pair is a new row
+    if (cache.childCount === frame.children.length && cache.structure === structure && cache.added === added) return cache;
+    cache.added = added;
     cache.Left.length = 0;
     cache.Right.length = 0;
     cache.highWater = 0;
@@ -1299,6 +1308,13 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
       cache[match[1] as "Left" | "Right"][index] = child;
       cache.highWater = Math.max(cache.highWater, index);
     }
+    // widgets7 3.21: the pairs AddFontStrings made lines (GlueTooltipFontStrings.ts), those still the tooltip's.
+    glueTooltipAddedLines(frame)?.forEach((pair, index) => {
+      if (index > GAME_TOOLTIP_MAX_LINES) return;
+      if (pair.left.parent === frame && pair.left.type === "FontString") cache.Left[index] = pair.left;
+      if (pair.right.parent === frame && pair.right.type === "FontString") cache.Right[index] = pair.right;
+      cache.highWater = Math.max(cache.highWater, index);
+    });
     cache.childCount = frame.children.length;
     cache.structure = structure;
     return cache;
@@ -2281,7 +2297,8 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
         // the name — as the pet's spellbook draws it; the bare name is the fallback while its row loads.
         const index = typeof args[0] === "number" ? Math.trunc(args[0]) : Number.NaN;
         const spellId = Number.isInteger(index) ? this.#options.gameTooltipAdapter?.petActionSpell?.(index) : undefined;
-        const content = spellId === undefined ? undefined : this.#options.gameTooltipAdapter?.spell?.(spellId);
+        const adapter = this.#options.gameTooltipAdapter;
+        const content = spellId === undefined ? undefined : (adapter?.petSpell ?? adapter?.spell)?.(spellId); // 3.43 (15.11)
         if (content !== undefined && this.setGameTooltipContent(frame, content)) {
           this.announceTooltipSpell(frame, name, typeof values[1] === "string" ? values[1] : spellContentRank(content), spellId);
           return [true];
@@ -2715,7 +2732,10 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
         // The Lua backdrop table is read field by field rather than converted
         // wholesale, so an addon table with extra keys cannot smuggle state in.
         const backdrop = table instanceof GlueLuaRef ? this.readBackdrop(table) : undefined;
-        if (backdrop) bridge.update(frame, (m) => { m.backdrop = backdrop; });
+        // widgets7 3.21: a new backdrop object (0x004a15a0 → 0x004a2d40) starts with white colours.
+        if (backdrop) {
+          bridge.update(frame, (m) => { m.backdrop = backdrop; m.backdropColor = undefined; m.backdropBorderColor = undefined; });
+        }
       },
       /**
        * The whole backdrop table, not two of its fields.
@@ -2830,7 +2850,10 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
       StartMoving: ({ frame, self }) => {
         if (self.movable && bridge.isVisible(frame)) bridge.update(frame, (m) => { m.moving = true; });
       },
-      StopMovingOrSizing: ({ frame }) => { bridge.update(frame, (m) => { m.moving = false; }); },
+      StopMovingOrSizing: ({ frame }) => {
+        frameXmlEndSizing(bridge, frame); // widgets7 3.21: 0x004a0c20 ends the sizing of this frame only
+        bridge.update(frame, (m) => { m.moving = false; });
+      },
       // 3.48 (12.10): Wow.exe 0x0049e630 — the frame's title region, made or (the one it has) with its points cleared —
       // and 0x0049e5b0, it or nil. A region a press inside drags the frame by (FrameXmlTitleRegion.ts).
       CreateTitleRegion: ({ frame }) => {

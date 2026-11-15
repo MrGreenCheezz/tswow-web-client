@@ -83,6 +83,11 @@ test("MPQ TargetFrame paints and updates the canned target through stock Lua", w
 
     const nextHealth = CANNED_TARGET.health - 333;
     assert.ok(candidate.seam.setTargetHealth(nextHealth) > 0);
+    // 5.37 (15.11): predictedHealth is Wow.exe's registered "1" before the config slots answer too: stock reads the
+    // bar every frame (UnitFrameHealthBar_OnUpdate), not on UNIT_HEALTH — one frame of it.
+    const ticked = candidate.boot.vm.execute(`local bar = TargetFrameHealthBar
+      local onUpdate = bar:GetScript("OnUpdate") if onUpdate then onUpdate(bar, 0.016) end`, "@targetframe-tick");
+    assert.equal(ticked.ok, true, ticked.error);
     assert.equal(health.statusBar.max, CANNED_TARGET.healthMax);
     assert.equal(health.statusBar.value, nextHealth);
     assert.equal(candidate.seam.setTargetHealth(nextHealth), 0,

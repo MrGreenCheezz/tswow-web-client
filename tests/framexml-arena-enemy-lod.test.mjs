@@ -227,7 +227,12 @@ test("Blizzard_ArenaUI: nothing outside an arena; the match loads it through the
     // Damage on the mage: UNIT_HEALTH arena1 moves stock's bar.
     mage.fields.set(UPDATE_FIELDS.UNIT_FIELD_HEALTH.offset, 4000);
     seam.arena.tick();
-    assert.deepEqual(lua(boot, "return ArenaEnemyFrame1HealthBar:GetValue()"), [4000]);
+    // 5.37 (15.11): predictedHealth is Wow.exe's registered "1" before the config slots answer too, so stock reads the
+    // bar every frame (ArenaEnemyFrame_OnEvent "seen": UnitFrameHealthBar_OnUpdate, UNIT_HEALTH unregistered) — one frame.
+    assert.deepEqual(lua(boot, `local bar = ArenaEnemyFrame1HealthBar
+      local onUpdate = bar:GetScript("OnUpdate")
+      if onUpdate then onUpdate(bar, 0.016) end
+      return onUpdate == UnitFrameHealthBar_OnUpdate, bar:GetValue()`, 2), [true, 4000]);
 
     // The mage casts Polymorph: the arena cast bar shows it.
     world.casts.set(mage.guid, { spellId: 118, startedAt: 9_000, duration: 1_500, channel: false, castCount: 4 });

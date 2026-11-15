@@ -27,6 +27,7 @@ import { gatewayGenerationPush } from "../GatewayGeneration.js"; // 22.10 ARC-2 
 import { enchantGlowTables, type ItemEnchantmentClient } from "../ItemEnchantments.js";
 import { renderSwitchesPush } from "../RenderSwitches.js"; // 22.10 ARC-2 S4b
 import type { RenderInputs } from "../RenderInputs.js";
+import { pendingOwnSheathRequest } from "../SheathCeremony.js"; // 5.05 (15.11, combat7)
 import type { SpellMetadata } from "../SpellMetadata.js";
 import { spellAttributeWordsOf } from "../SpellRows.js";
 import { UnitGroundNormals, type UnitGroundSources } from "./UnitGroundNormals.js"; // 05.11 (6.44)
@@ -44,6 +45,8 @@ export interface RenderInputSources {
     readonly state: ViewSubjectState;
     /** 06.11 (6.41): the creature query cache, for the rank of a lootable body. */
     readonly creatureTemplates?: ReadonlyMap<number, { readonly classification: number }>;
+    /** 5.05 (15.11, combat7): the sheath the player's own model shows (WorldClient `ownSheathShown`). */
+    readonly ownSheathShown?: number | undefined;
   }) | undefined;
   /** The page's spell rows (`game.spells`). */
   readonly spells: ReadonlyMap<number, SpellMetadata>;
@@ -93,6 +96,8 @@ export class RenderInputsBuilder {
     inputs.switches = renderSwitchesPush();
     inputs.gatewayGeneration = gatewayGenerationPush();
     inputs.frameBudgetProbe = frameBudgetProbe.enabled;
+    inputs.ownSheath = world?.ownSheathShown; // 5.05 (15.11, combat7)
+    inputs.ownSheathRequest = pendingOwnSheathRequest(); // 5.05 (15.11, combat7): the same record until the next toggle
     this.#collectHidden(world?.state, sources.gameObjectShown);
     this.#collectLootRanks(world);
     return inputs;

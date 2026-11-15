@@ -9,6 +9,8 @@ import {
   fixtureFlicker, fixtureNameCandidate, modelFixtureLights, sampleFixtureLight,
 } from "../dist/code/browser/LocalLighting.js";
 import { deriveLightTemplates, sampleLightTemplate } from "../dist/code/browser/LightTemplates.js";
+import { emitterFixtureBase, sampleFixtureLightKept } from "../dist/code/browser/LightTemplateMotion.js";
+import { LocalLightSelection } from "../dist/code/browser/LocalLighting.js";
 import { LightTemplateCatalog } from "../dist/code/browser/LightTemplateCatalog.js";
 import { PrelitLights } from "../dist/code/browser/PrelitLights.js";
 import { FarLightGlows, farLightSources } from "../dist/code/browser/FarLightGlows.js";
@@ -104,35 +106,59 @@ const towerModel = () => ({
 });
 const TOWER = "World\\Generic\\Human\\Passive Doodads\\Towers\\TestGuardTower.m2";
 
-/** Every template of `model` placed by the prelit list equals the built placement's own sample. */
+/**
+ * The moments the prelit list is held to the built lamp at: rest, a few in the first seconds (where a
+ * sequence-keyed blink lives: `BE_LampPost_Ghostlands01.m2`'s card is lit at 800, 1267 and 2300 ms of its
+ * 5 s loop, dark at 0), and a late one past many loops.
+ */
+const MOMENTS = [0, 350, 800, 1234, 1267, 2300, 3700, 98_765];
+
+/** Whether any track the fixture light reads changes over time (`sampleTrack`: more than one key). */
+const animatedFixture = (fixture, model) => [fixture.batch && model.textureWeights[fixture.batch.textureWeight],
+  fixture.batch && model.colours[fixture.batch.colorIndex]?.alpha, fixture.batch && model.colours[fixture.batch.colorIndex]?.rgb,
+  fixture.emitter?.enabledIn, fixture.emitter?.emissionRate,
+  fixture.light?.visibility, fixture.light?.diffuseIntensity, fixture.light?.diffuseColor,
+].some((track) => (track?.tracks[0]?.times.length ?? 0) > 1);
+
+/**
+ * Every template of `model` placed by the prelit list equals the built placement's own sample at every moment.
+ * 15.11 (7.50): the built doodad's light runs on the frame clock (`WorldRenderer3D`: animation time = world time
+ * for an environment placement, the clock its shared batch materials are drawn on), so it is sampled at
+ * (`worldMs`, `worldMs`); before, the test compared at animation 0 only, where a sequence-keyed blink is dark.
+ * 25.10 (7.51)'s rest-only exception for global-sequence pulses (`AhnQirajWallTorch01.m2`,
+ * `VR_LampPost_Snow_01Blue.m2`) is gone: their tracks travel with the template too.
+ */
 function assertPrelitMatchesBuilt(name, model) {
   const catalog = new LightTemplateCatalog(null);
   const templates = catalog.learn(name, model);
   const fixtures = modelFixtureLights(model, name, true);
-  assert.equal(templates.length, fixtures.length, `${name}: one template per fixture lit at rest`);
-  if (fixtures.length === 0) return 0;
+  // A fixture that never lights (`BU_Brazier_01.m2`'s third flame: its gate is off at every moment, in the cache since
+  // 15.11) has no template, built or not; every other has one.
+  const probe = sample();
+  const everLit = fixtures.filter((fixture) => animatedFixture(fixture, model)
+    ? fixture.emitter === undefined || emitterFixtureBase(fixture) !== undefined
+    : sampleFixtureLight(fixture, model, new THREE.Matrix4(), 0, 0, probe));
+  assert.equal(templates.length, everLit.length, `${name}: one template per fixture that ever lights`);
+  if (fixtures.length === 0) return { lights: 0, animated: false, litMoments: 0 };
   const object = placementAt(7, name, -8840, 626, 94);
   const resident = built(object, model);
   const prelit = new PrelitLights();
   prelit.update([object], catalog, host(), new THREE.Vector3());
   const focus = new THREE.Vector3().setFromMatrixPosition(resident.visual.matrixWorld);
-  // 25.10 (7.51): a glow card whose weight or alpha pulses on a global sequence (`AhnQirajWallTorch01.m2`,
-  // `VR_LampPost_Snow_01Blue.m2`, cached since the Dalaran traces) pulses once built; the template keeps its rest
-  // value (the prelit light stands only until the lamp is built). Such a model is held equal at rest only.
-  const pulses = fixtures.some((fixture) => [fixture.batch && model.textureWeights[fixture.batch.textureWeight],
-    fixture.batch && model.colours[fixture.batch.colorIndex]?.alpha, fixture.batch && model.colours[fixture.batch.colorIndex]?.rgb,
-    fixture.emitter?.enabledIn, fixture.emitter?.emissionRate].some((track) => track && track.globalSequence >= 0));
-  for (const worldMs of pulses ? [0] : [0, 1234, 98_765]) {
+  let litMoments = 0;
+  for (const worldMs of MOMENTS) {
     const expected = [];
     const value = sample();
     for (const fixture of fixtures) {
-      if (sampleFixtureLight(fixture, model, resident.visual.matrixWorld, 0, worldMs, value)) {
+      // lamps7 follow-up: as the renderer samples a built lamp — a blinking one keeps its rank at strength 0 while dark.
+      if (sampleFixtureLightKept(fixture, model, resident.visual.matrixWorld, worldMs, worldMs, value)) {
         expected.push({ position: value.position.clone(), colour: value.colour.clone(), radius: value.radius,
           intensity: value.intensity, client: value.client, halo: value.halo });
       }
     }
     const got = near(prelit, focus, worldMs, host());
     assert.equal(got.length, expected.length, `${name} @${worldMs}: count`);
+    if (expected.some((light) => light.intensity > 0)) litMoments++;
     got.forEach((light, index) => {
       const want = expected[index];
       assert.ok(light.position.distanceTo(want.position) < 1e-3, `${name}: position ${light.position.toArray()} != ${want.position.toArray()}`);
@@ -143,13 +169,16 @@ function assertPrelitMatchesBuilt(name, model) {
       assert.equal(light.halo, want.halo, `${name}: halo`);
     });
   }
-  // The far glow: what `farLightSources` gives the built placement, from the unbuilt one.
+  // The far glow: what `farLightSources` gives the built placement, from the unbuilt one
+  // (15.11, 7.50: an animated lamp's is its average over one period, on both sides).
   const farBuilt = farLightSources(resident);
   const farPrelit = [];
   prelit.appendFarSources(host(), farPrelit);
   assert.equal(farPrelit.length, farBuilt.length, `${name}: far glow sources`);
   farPrelit.forEach((value, index) => close(value, farBuilt[index], 2e-3, `${name}: far glow float ${index}`));
-  return fixtures.length;
+  // A lamp that lights at some moment glows from afar.
+  if (litMoments > 0) assert.ok(farBuilt.length > 0, `${name}: lit at ${litMoments} moments, yet no far glow`);
+  return { lights: fixtures.length, animated: fixtures.some((fixture) => animatedFixture(fixture, model)), litMoments };
 }
 
 test("24.10 (7.50): a cached lamp model's templates light every placement as its built model does", { skip: noCache }, () => {
@@ -157,18 +186,111 @@ test("24.10 (7.50): a cached lamp model's templates light every placement as its
   assert.ok(lamps.length >= 10, `cached lamps: ${lamps.length}`);
   let lit = 0;
   let models = 0;
+  const animated = [];
   for (const { name, model } of lamps) {
     const count = assertPrelitMatchesBuilt(name, model);
-    lit += count;
-    if (count > 0) models++;
+    lit += count.lights;
+    if (count.lights > 0) models++;
+    if (count.animated) animated.push(name);
   }
   assert.ok(models >= 8, `lamp models that light: ${models}`);
   assert.ok(lit >= models, `lights: ${lit}`);
+  // 15.11 (7.50): the animated ones were held at every moment, not only at rest (four in the 15.11 cache:
+  // the Ghostlands post's sequence-keyed blink, the global-sequence pulses of 7.51).
+  const ghostlands = lamps.find(({ name }) => /be_lamppost_ghostlands01\.m2$/i.test(name));
+  if (ghostlands) assert.ok(animated.includes(ghostlands.name), "the Ghostlands post blinks on its own sequence");
+});
+
+/** A lamp whose glow card blinks on sequence 0 (not a global loop), dark at time 0 (`BE_LampPost_Ghostlands01.m2`'s kind). */
+const blinkingLamp = () => ({
+  ...glowLamp(),
+  textureWeights: [{ interpolation: 1, globalSequence: -1, components: 1, tracks: [{ sequence: 0,
+    times: new Uint32Array([0, 667, 800, 900, 1267, 1667, 2300, 2600, 3167, 5000]),
+    values: new Float32Array([0, 0, 0.7, 0.2, 0.5, 0.1, 0.7, 0.2, 0, 0]) }] }],
+});
+const BLINKING = "World\\Expansion01\\Doodads\\Test\\BE_TestLampPost01.m2";
+
+test("15.11 (7.50): a lamp dark at time 0 that blinks on its own sequence lights as built, and glows from afar", () => {
+  const model = blinkingLamp();
+  const result = assertPrelitMatchesBuilt(BLINKING, model);
+  assert.deepEqual(result, { lights: 1, animated: true, litMoments: 4 }, "lit at 800, 1234, 1267 and 2300 ms; dark at 0");
+  const [template] = deriveLightTemplates(model, BLINKING);
+  assert.ok(template?.motion, "the template carries the blink");
+  const value = sample();
+  assert.equal(sampleLightTemplate(template, new THREE.Matrix4(), 0, value), false, "dark at time 0, as the card");
+  assert.equal(sampleLightTemplate(template, new THREE.Matrix4(), 5000 + 800, value), true, "lit 800 ms into a later loop");
+  close(value.intensity, 1.1 * 0.7 * fixtureFlicker(0, 0, 0, 5800), 1e-6, "the card's weight times the fixture's strength");
+  // The far glow: the mean over the 5 s loop — the linear keys' time average is 784.9 / 5000 ≈ 0.157 of the
+  // full card (64 moments; both lamps take the flicker at time 0 at the same place).
+  const far = farLightSources(built(placementAt(3, BLINKING, 0, 0, 0), model));
+  assert.equal(far.length, 8, "one far source");
+  const steady = farLightSources(built(placementAt(4, GLOW_LAMP, 0, 0, 0), glowLamp()));
+  const share = far[3] / steady[3];
+  assert.ok(share > 0.13 && share < 0.19, `average share of a steady lamp's glow: ${share}`);
+});
+
+test("15.11 (7.50): a blinking lamp keeps its rank while dark, so the twelve nearest and their fade cut hold", () => {
+  const catalog = new LightTemplateCatalog(null);
+  catalog.learn(BLINKING, blinkingLamp());
+  catalog.learn(GLOW_LAMP, glowLamp());
+  // The blinking post nearest, then fourteen steady lamps 3 yards apart along the street.
+  const objects = [placementAt(1, BLINKING, 0, 0, 0)];
+  for (let index = 0; index < 14; index++) objects.push(placementAt(10 + index, GLOW_LAMP, 0, -(6 + 3 * index), 0));
+  const prelit = new PrelitLights();
+  prelit.update(objects, catalog, host(), new THREE.Vector3());
+  const uniforms = {
+    wowLocalLightCount: { value: 0 },
+    wowLocalLightPosition: { value: Array.from({ length: 32 }, () => new THREE.Vector4()) },
+    wowLocalLightColour: { value: Array.from({ length: 32 }, () => new THREE.Vector4()) },
+  };
+  const frame = (worldMs) => {
+    const selection = new LocalLightSelection();
+    selection.begin(12);
+    const focus = new THREE.Vector3(0, 0, 0);
+    prelit.forEachNear(focus, worldMs, host(), (value) => selection.add(value, focus), sample());
+    const count = selection.write(uniforms, new THREE.Matrix4());
+    return { count, cut: selection.cut, blink: uniforms.wowLocalLightColour.value[0].w };
+  };
+  const dark = frame(0), lit = frame(800);
+  assert.equal(dark.blink, 0, "dark at 0: its slot holds no light");
+  assert.ok(lit.blink > 0, "lit at 800 ms");
+  assert.equal(dark.count, lit.count, "the same number of forward lights");
+  assert.equal(dark.cut, lit.cut, "the fade cut does not move under the other lamps as the post blinks");
+});
+
+test("15.11 (7.50): an animated lamp's template survives the persistent record, its blink with it", async () => {
+  const backend = new MemoryAssetBackend();
+  const origin = "http://127.0.0.1:8090";
+  resetGatewayGeneration();
+  noteGatewayAssetGenerations(origin, "vgen1", "mgen1");
+  try {
+    const store = new PersistentAssetStore(backend);
+    const first = new LightTemplateCatalog(store);
+    await first.loaded();
+    first.learn(BLINKING, blinkingLamp());
+    first.save();
+    await store.flush();
+    // As IndexedDB may hand it back: plain arrays where typed ones went in.
+    for (const entry of backend.spaces.rows.values()) {
+      const json = JSON.parse(JSON.stringify(entry.value, (key, v) => ArrayBuffer.isView(v) ? [...v] : v));
+      backend.spaces.rows.set(entry.key, { ...entry, value: json });
+    }
+    const later = new LightTemplateCatalog(new PersistentAssetStore(backend));
+    await later.loaded();
+    const [template] = later.templates(BLINKING) ?? [];
+    assert.ok(template?.motion, "the motion came back");
+    const value = sample();
+    assert.equal(sampleLightTemplate(template, new THREE.Matrix4(), 0, value), false);
+    assert.equal(sampleLightTemplate(template, new THREE.Matrix4(), 800, value), true);
+    close(value.intensity, 1.1 * 0.7 * fixtureFlicker(0, 0, 0, 800), 1e-6, "the same blink");
+  } finally {
+    resetGatewayGeneration();
+  }
 });
 
 test("24.10 (7.50): a glow-card lamp and a model's own M2 light, placed, scaled and turned", () => {
-  assert.equal(assertPrelitMatchesBuilt(GLOW_LAMP, glowLamp()), 1);
-  assert.equal(assertPrelitMatchesBuilt(TOWER, towerModel()), 1);
+  assert.equal(assertPrelitMatchesBuilt(GLOW_LAMP, glowLamp()).lights, 1);
+  assert.equal(assertPrelitMatchesBuilt(TOWER, towerModel()).lights, 1);
   const [template] = deriveLightTemplates(towerModel(), TOWER);
   assert.equal(template.client, true, "the model's own light keeps the client's falloff");
   const value = sample();
@@ -310,8 +432,15 @@ test("24.10 (7.50): the renderer's wiring — cinematic only, the built mesh's f
   assert.match(renderer, /if \(now - wait\.since > LIGHTS_READY_WAIT_MS\) return true;/);
   // Ready only a frame after the light lists were told to rebuild at once (no half-second throttle at the lift).
   assert.match(renderer, /if \(!wait\.flushed\) \{\n\s+wait\.flushed = true;\n\s+this\.#prelitLights\.flush\(\);\n\s+this\.#farLightGlows\.flush\(\);\n\s+return false;/);
+  // 15.11 (7.50): an environment doodad's light runs on the frame clock its batch materials are drawn on, the clock
+  // the prelit stand-in samples (a game object's keeps its mixer's).
+  assert.match(renderer, /const animationMs = rendered\.skinned && !\("fixtureLights" in rendered\) \? rendered\.skinned\.mixer\.time \* 1000 : now;/);
+  // lamps7 follow-up: and a blinking built lamp keeps its rank while dark, as the prelit one does.
+  assert.match(renderer, /if \(sampleFixtureLightKept\(fixture, model, matrix, animationMs, now, this\.#localLightSample\)\) \{/);
   const curtain = readFileSync(new URL("../src/browser/ui/LoadingScreen.ts", import.meta.url), "utf8");
-  assert.match(curtain, /\} else if \(!pageLightsReady\(world\.mapId, position\.x, position\.y\)\) \{/);
+  // 05.11 (5.36): a short hop holds the player with no curtain shown (`groundHold`); nothing is lifted at its end,
+  // so it waits for the ground only and never for lamps. Red since then (13.09): this line still read the 24.10 form.
+  assert.match(curtain, /\} else if \(!groundHold && !pageLightsReady\(world\.mapId, position\.x, position\.y\)\) \{/);
   const worker = readFileSync(new URL("../src/browser/RenderWorkerSession.ts", import.meta.url), "utf8");
   assert.match(worker, /clients\.terrain\.isReady\(map, at\[0\], at\[1\]\) && this\.#renderer\.lightsReadyAround\(map, at\[0\], at\[1\]\)/);
 });

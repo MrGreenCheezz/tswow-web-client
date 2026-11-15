@@ -28,18 +28,26 @@ export interface AuraListedSpell {
   /** Spell.dbc Effect; a row served without it (an older gateway) is read by its aura types, as before 11.11. */
   readonly effects?: readonly number[] | undefined;
   readonly effectAura: readonly number[];
+  /** 3.68 (15.11): Spell.dbc RequiredAuraVision (`/dbc/spells?v=23`); a row without it (an older gateway) reads 0. */
+  readonly requiredAuraVision?: number | undefined;
 }
 
 /**
  * `spell` undefined is the client having no row: Wow.exe has the whole table to hand and leaves the aura out, and here the row
- * appears once the metadata lands. Not modelled: RequiredAuraVision (11 spells; the column does not reach the client). The
- * list's order (0x00727C00) is AuraOrder.ts.
+ * appears once the metadata lands. The list's order (0x00727C00) is AuraOrder.ts.
+ *
+ * 3.68 (15.11): RequiredAuraVision, last (0x0053D580 → 0x004F72E0; Ghidra .runtime/re-2026-11-15/spell7/s1.c): a spell with a
+ * value v is listed only while there is an active player and bit v − 1 of its PLAYER_FIELD_BYTES2 byte 3 is set — the byte
+ * TrinityCore's PLAYER_FIELD_BYTES_2_OFFSET_AURA_VISION, which SPELL_AURA_DETECT_AMORE raises as `1 << (misc − 1)`
+ * (SpellAuraEffects.cpp HandleDetectAmore; the invisibility and stealth detections set bits of it too). `auraVision` is that byte; undefined is no active player. 0x004F72E0 has this one
+ * caller, so nothing else (no drawing path) asks the bits.
  */
 export function auraListed(
   aura: Pick<ActiveAura, "flags" | "casterGuid">,
   spell: AuraListedSpell | undefined,
   playerGuid: bigint | undefined,
   petGuid: bigint | undefined,
+  auraVision?: number,
 ): boolean {
   if ((aura.flags & AURA_EFFECT_BITS) === 0 || spell === undefined) return false;
   const attributes = spell.attributes;
@@ -52,5 +60,12 @@ export function auraListed(
     const caster = aura.casterGuid;
     if (caster === undefined ? !selfCast : caster !== playerGuid && caster !== petGuid) return false;
   }
-  return true;
+  return auraVisionAllows(spell.requiredAuraVision ?? 0, auraVision);
+}
+
+/** 3.68 (15.11): 0x004F72E0 for 0x0053D580 — bit (vision − 1) of the active player's aura-vision byte. */
+export function auraVisionAllows(vision: number, auraVision: number | undefined): boolean {
+  if (vision === 0) return true;
+  if (auraVision === undefined) return false;
+  return ((1 << ((vision - 1) & 0x1f)) & auraVision & 0xff) !== 0;
 }

@@ -44,6 +44,7 @@ const {
 
 const { seatSplitsPose } = await import("../dist/code/browser/VehicleSeatPose.js"); // 5.05 (11.11): the executor's dependency
 const { cycleEndIsSheathStart } = await import("../dist/code/browser/SheathCycleStart.js"); // 5.05 (15.11, sheath6)
+const { shownParryPayload } = await import("../dist/code/browser/ShownParry.js"); // 5.05 (15.11, combat7)
 
 const withAnimationData = { skip: ANIMATION_DATA_AVAILABLE ? false : "no locally generated animation data" };
 
@@ -357,10 +358,12 @@ function executor({ moving = false, overrides = {}, legless = false } = {}) {
     startKeep, // 5.05 (11.11): #settleUnitAction marks a start's `keep` bit for the sheath rule
     seatSplitsPose, // 5.05 (11.11): read by #settleUnitAction since 04.11 (11.02), missing here until now
     cycleEndIsSheathStart, // 5.05 (15.11, sheath6): #poseBase counts a round of a clip without variations as a start
+    shownParryPayload, // 5.05 (15.11, combat7): #entryAnimation picks ParryUnarmed by the shown sheath
     ...overrides,
   });
   const h = new Harness();
   h.noteStart = () => {}; // 5.05 (11.11): the active player's start count (WorldRenderer3D `#noteStart`)
+  h.shownSheathOf = () => undefined; // 5.05 (15.11, combat7): the unit's shown sheath (WorldRenderer3D `#shownSheathOf`)
   h.requestAnimations = () => false;
   h.applyUnitGait = () => {};
   const root = new THREE.Group();

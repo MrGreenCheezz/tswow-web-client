@@ -92,10 +92,18 @@ export interface SwingCueHost {
    * lives on the unit object and goes with it. Without it every stamp counts.
    */
   sameUnit?(unit: bigint, stamp: object): boolean;
+  /**
+   * 6.06 (15.11, combat7): the swing queued as `token` has not started because its clip is still on the way (the
+   * record is held at progress 0, not run on the nominal clock). Absent: never.
+   */
+  waitingForClip?(attacker: bigint, token: unknown): boolean;
   /** Alive and not feigning death (`0x71f560`), and known to the client. */
   canReact(victim: bigint): boolean;
-  /** `SHEATH_STATE_UNARMED` in `UNIT_FIELD_BYTES_2` byte 0: `0x73b050` parries unarmed. */
-  sheathed(victim: bigint): boolean;
+  /**
+   * The reaction for the renderer. 5.05 (15.11, combat7): a parry goes as "parry"; `0x73b050` makes it ParryUnarmed
+   * by the sheath the victim shows (+0xb5c), which the renderer holds and applies (browser/ShownParry.ts) — was the
+   * host's `sheathed`, which read the server's byte here.
+   */
   react(victim: bigint, reaction: CombatReaction): void;
 }
 
@@ -162,6 +170,10 @@ export class SwingReactionCues {
    * 22.10 ARC-2 S4a: true when a record now waits on `token` (the onDrop callback will see it leave).
    */
   swing(swing: CuedSwing, token: unknown, attackerKnown: boolean, host: SwingCueHost): boolean {
+    // 6.06 (15.11, combat7): a previous record still held only because its swing's clip was on the way plays its
+    // reactions now — Wow.exe's model had the clip and fired them; the hold is this client's loading, not a flush.
+    const previous = this.#pending.get(swing.attacker);
+    if (previous !== undefined && host.waitingForClip?.(swing.attacker, previous.token) === true) this.#cue(previous, 1, host);
     // 0x756180: the previous record of this attacker leaves without an animation.
     this.#drop(swing.attacker);
     if (!attackerKnown) {
@@ -215,11 +227,17 @@ export class SwingReactionCues {
       const duration = host.swingDuration?.(attacker, pending.token) ?? SWING_NOMINAL_MS;
       progress = duration > 0 && Number.isFinite(duration) ? (now - pending.at) / duration : 1;
     }
+    this.#cue(pending, progress, host);
+    if (pending.cues === 0) this.#drop(attacker);
+  }
+
+  /** The cues `progress` has passed and not yet fired: `$CPP` (parry, dodge, block), then `$CAH` (the wound). */
+  #cue(pending: PendingSwing, progress: number, host: SwingCueHost): void {
     if ((pending.cues & CUE_PARRY_BIT) !== 0 && progress >= CUE_PARRY) {
       pending.cues &= ~CUE_PARRY_BIT;
       const reaction = parryCueReaction(pending);
       if (reaction !== undefined && host.canReact(pending.victim)) {
-        host.react(pending.victim, reaction === "parry" && host.sheathed(pending.victim) ? "parryUnarmed" : reaction);
+        host.react(pending.victim, reaction); // 5.05 (15.11, combat7): the unarmed parry is the renderer's (ShownParry.ts)
         // 05.10 review D2: every branch of `$CPP` that ran clears AFFECTS_VICTIM in the stored record
         // (0x75650d / 0x756552 / 0x756580), so `$CAH` has no wound to play after a parry, dodge or block.
         pending.hitInfo &= ~HITINFO_AFFECTS_VICTIM;
@@ -229,7 +247,6 @@ export class SwingReactionCues {
       pending.cues &= ~CUE_HIT_BIT;
       this.#fireHit(pending.victim, pending, host);
     }
-    if (pending.cues === 0) this.#drop(attacker);
   }
 
   #fireHit(victim: bigint, swing: { hitInfo: number }, host: SwingCueHost): void {

@@ -65,7 +65,9 @@ function fixture() {
   const petAura = {
     slot: 1,
     spellId: 6673,
-    flags: AURA_FLAGS.positive,
+    // 05.11 (3.68, bd47117b): an aura with none of the three effect bits holds nothing and is not listed
+    // (Wow.exe 0x0072C510); the server always sets the bit of the effect it applies, here effect 0.
+    flags: AURA_FLAGS.positive | 0x01,
     casterLevel: 60,
     applications: 1,
     casterGuid: selfGuid,

@@ -14,7 +14,7 @@ import { toMainTime } from "./RenderClock.js";
 /** What the watch reads of a queued swing (UnitActionArbiter.ts `UnitActionEntry`). */
 export interface WatchedSwingEntry {
   readonly started: boolean;
-  readonly payload: { readonly swingSeconds?: number | undefined };
+  readonly payload: { readonly swingSeconds?: number | undefined; readonly waitingForClip?: boolean | undefined };
 }
 
 /** The renderer's progress question, as `meleeSwingProgress` answered it. */
@@ -58,6 +58,8 @@ export class SwingProgressWatch<Entry extends WatchedSwingEntry> {
       row.progress = progressOf(watched.guid, watched.entry, now);
       row.started = watched.entry.started === true;
       row.swingSeconds = watched.entry.payload.swingSeconds;
+      // 6.06 (15.11, combat7): not started because its clip is still on the way (UnitActionArbiter `waitingForClip`).
+      row.waitingForClip = !row.started && watched.entry.payload.waitingForClip === true;
       swings.set(id, row);
     }
     results.swingFrame++;

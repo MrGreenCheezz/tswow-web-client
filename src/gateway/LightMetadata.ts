@@ -15,6 +15,7 @@
 // browser cannot decide itself: map 0 is 82 spheres over 30 distinct parameter sets.
 
 import { openDbcFile } from "./Dbc.js";
+import { readZoneLightOutlines, type ZoneLightOutline } from "./ZoneLightOutlines.js";
 import {
   LIGHT_SLOT_CLEAR, LIGHT_SLOT_DEATH, LIGHT_SLOT_STORM, LIGHT_SLOT_UNDERWATER, LIGHT_SLOT_UNDERWATER_STORM,
 } from "../world/WorldMessageProtocol.js";
@@ -236,6 +237,11 @@ export interface MapLighting {
   lights: Record<number, LightSlots>;
   /** 05.10-A7b-5 (7.10): `LiquidType` rows with a light set or a darkening, by row id. */
   liquids?: Record<number, LiquidLighting>;
+  /**
+   * 15.11 (light7): Wow.exe's own zone outlines on this map (Northrend's eleven), read from the user's Wow.exe
+   * (`ZoneLightOutlines.ts`); absent when the gateway has no client directory or the file is another build.
+   */
+  zoneOutlines?: ZoneLightOutline[];
 }
 
 /** The five of a `Light.dbc` row's eight slots this client reads, absent where they repeat. */
@@ -280,7 +286,24 @@ function normalizeSkyboxPath(value: string): string {
 
 export type LightIndex = Map<number, MapLighting>;
 
-export async function loadLightMetadata(dbcDirectory: string): Promise<LightIndex> {
+export async function loadLightMetadata(dbcDirectory: string, clientDirectory?: string): Promise<LightIndex> {
+  const index = await loadLightTables(dbcDirectory);
+  // 15.11 (light7): the outlines go to the map they name, and only with a light row that map has.
+  const outlines = clientDirectory ? await readZoneLightOutlines(clientDirectory) : undefined;
+  attachZoneLightOutlines(index, outlines);
+  return index;
+}
+
+/** 15.11 (light7): hands each outline to its map's entry when that map owns the outline's `Light.dbc` row. */
+export function attachZoneLightOutlines(index: LightIndex, outlines: readonly ZoneLightOutline[] | undefined): void {
+  for (const outline of outlines ?? []) {
+    const entry = index.get(outline.map);
+    if (!entry?.lights[outline.lightId]) continue;
+    (entry.zoneOutlines ??= []).push(outline);
+  }
+}
+
+async function loadLightTables(dbcDirectory: string): Promise<LightIndex> {
   const [light, params, ints, floats, skybox, liquidTypes] = await Promise.all([
     openDbcFile(dbcDirectory, "Light"),
     openDbcFile(dbcDirectory, "LightParams"),

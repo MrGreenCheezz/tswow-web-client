@@ -234,13 +234,55 @@ export function rigRefusesSheath(animations: ReadonlySet<number>, keyBones: Int1
   return right === undefined || right < 0 || left === undefined || left < 0;
 }
 
+/**
+ * 5.05 (15.11, combat7): a toggle as it crosses to the renderer (RenderInputs.ownSheathRequest): numbered, so a
+ * renderer in a worker takes each one once while the page keeps offering the latest; `at` on the receiver's clock.
+ */
+export interface OwnSheathRequest {
+  readonly to: number;
+  readonly at: number;
+  readonly serial: number;
+}
+
+/** What the renderer last saw of the active player's rig (the guards' inputs), on the publisher's clock. */
+export interface OwnSheathRigReport {
+  readonly refuses: boolean;
+  readonly busyUntil: number;
+  readonly at: number;
+}
+
 // The hand-off between the key binding and the renderer, both on `performance.now()`.
-let requested: { readonly to: number; readonly at: number } | undefined;
-let rig: { readonly refuses: boolean; readonly busyUntil: number; readonly at: number } | undefined;
+let requested: OwnSheathRequest | undefined;
+let requestSerial = 0;
+/** 5.05 (15.11, combat7): the serial the renderer of this realm last took through its inputs. */
+let takenSerial = 0;
+let rig: OwnSheathRigReport | undefined;
 
 /** The active player toggled to `to` (after the packet went out): the renderer starts the clips. */
 export function requestOwnSheath(to: number, now: number): void {
-  requested = { to, at: now };
+  requested = { to, at: now, serial: ++requestSerial };
+}
+
+/** 5.05 (15.11, combat7): the latest toggle for the render inputs, not consumed (the renderer takes it by serial). */
+export function pendingOwnSheathRequest(): OwnSheathRequest | undefined {
+  return requested;
+}
+
+/** 5.05 (15.11, combat7): the pushed toggle, once per serial; undefined when none, already taken, or stale. */
+export function takePushedOwnSheathRequest(request: OwnSheathRequest | undefined, now: number): number | undefined {
+  if (request === undefined || request.serial === takenSerial) return undefined;
+  takenSerial = request.serial;
+  return now - request.at <= SHEATH_REQUEST_WAIT_MS ? request.to : undefined;
+}
+
+/** 5.05 (15.11, combat7): the rig report the renderer published, for RenderResults (a worker's crosses to the page). */
+export function ownSheathRigReport(): OwnSheathRigReport | undefined {
+  return rig;
+}
+
+/** 5.05 (15.11, combat7): the page takes a worker renderer's report, its times already on the page's clock. */
+export function acceptOwnSheathRig(report: OwnSheathRigReport | undefined): void {
+  if (report !== undefined) rig = report;
 }
 
 /** The toggle the renderer has not started yet, once; undefined when none or when it went stale. */
@@ -279,14 +321,20 @@ export interface OwnSheathRig {
  * One frame of the active player's sheath: the ceremony settled against the field, a pending toggle
  * started from the state on show (0x00736d30 sets `[+0xb5c]` and calls 0x00736b60 at once, before
  * any echo), and the guards' inputs published for the next ToggleSheath.
+ *
+ * 5.05 (15.11, combat7): `field` is the state the model shows — the setter's held state the page pushes
+ * (world/SheathSetter.ts `shown`), which already names the toggle's target in the frame it is taken; `shownBefore`
+ * is what the model showed the frame before, the ceremony's start. Without it the state itself is the start.
  */
 export function stepOwnSheath<Piece extends SheathPiece>(ceremony: SheathCeremony | undefined, field: number,
   now: number, pieces: () => readonly Piece[], pointOf: (piece: Piece, sheath: number) => number | undefined,
-  rig: OwnSheathRig): SheathCeremony | undefined {
+  rig: OwnSheathRig, shownBefore?: number, pushed?: OwnSheathRequest | null): SheathCeremony | undefined {
   let next = settleSheathCeremony(ceremony, field, now);
-  const to = takeOwnSheathRequest(now);
+  // 5.05 (15.11, combat7): `pushed` (null: none) is the toggle the render inputs carry — the page's and the worker's
+  // renderer read the same; without the argument the module hand-off (one realm only) as before.
+  const to = pushed === undefined ? takeOwnSheathRequest(now) : takePushedOwnSheathRequest(pushed ?? undefined, now);
   if (to !== undefined) {
-    const from = next?.to ?? field;
+    const from = next?.to ?? shownBefore ?? field;
     if (to !== from) {
       next = beginSheathCeremony(sheathArmPlans(pieces(), from, to, pointOf), from, to, now, rig.clip,
         (animation, keyBone) => sheathEventFraction(rig.model, animation, keyBone));
@@ -300,4 +348,5 @@ export function stepOwnSheath<Piece extends SheathPiece>(ceremony: SheathCeremon
 export function resetOwnSheath(): void {
   requested = undefined;
   rig = undefined;
+  takenSerial = 0;
 }

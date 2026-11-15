@@ -14,6 +14,7 @@ import type { AtmosphereAudioState, AtmosphereProfile } from "./AtmosphereEffect
 import { FRAME_BUDGET_SLOTS } from "./FrameBudgetProbe.js";
 import type { PortraitOutput } from "./PortraitTargetData.js";
 import type { RenderGpuEvent } from "./RendererReports.js";
+import type { OwnSheathRigReport } from "./SheathCeremony.js"; // 5.05 (15.11, combat7)
 import {
   CAMERA_DEFAULT_EYE_HEIGHT, CAMERA_DEFAULT_PIVOT_HEIGHT, CAMERA_EYE_BODY_SHARE, CAMERA_PIVOT_BODY_SHARE,
   cameraBodyHeight,
@@ -61,6 +62,12 @@ export interface SwingResult {
   started: boolean;
   /** The clip length in seconds the renderer resolved for a swing it could not draw (entry `payload.swingSeconds`). */
   swingSeconds: number | undefined;
+  /**
+   * 6.06 (15.11, combat7): not started yet because the rig's clip is still on the way (the entry's `waitingForClip`):
+   * the attacker's model will play the swing, so its events are still to come — the cues hold rather than run the
+   * nominal clock (game/SwingReactionHost.ts).
+   */
+  waitingForClip?: boolean;
 }
 
 /**
@@ -75,6 +82,11 @@ export interface OwnAnimationResult {
   starts: number;
   /** 5.05 (11.11): the `keep` bit (play flag 0x20) of the last counted start: a spell kit's (0x0073b140), never another's. */
   keep: boolean;
+  /**
+   * 5.05 (15.11, combat7): the own rig's ToggleSheath guards (SheathCeremony.ts `publishOwnSheathRig`) on the
+   * renderer's clock — a worker renderer's reach the page's key binding through here (game/OwnAnimationSheath.ts).
+   */
+  rig?: OwnSheathRigReport | undefined;
 }
 
 export interface RenderResults {

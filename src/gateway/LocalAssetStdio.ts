@@ -65,6 +65,9 @@ export async function serveLocalAssets(input: Readable, output: Writable,
       const response = {
         headersSent: false,
         writeHead(code: number) { status = code; this.headersSent = true; return this; },
+        // A frame carries status and length only, so headers go nowhere; the handler still sets some before any
+        // route answers (Gateway.ts `timing-allow-origin`, 26.10), and without this every request here was a 500.
+        setHeader() { return this; },
         end(body?: string | Uint8Array) {
           if (ended) return this;
           ended = true;

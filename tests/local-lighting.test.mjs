@@ -13,6 +13,7 @@ import { LOCAL_LIGHT_FOCUS_AHEAD } from "../dist/code/browser/CinematicLights.js
 import { LightHalos } from "../dist/code/browser/LightHalos.js"; // 22.10 (7.36)
 import { FarLightGlows } from "../dist/code/browser/FarLightGlows.js"; // 22.10 (7.46)
 import { LightTemplateCatalog } from "../dist/code/browser/LightTemplateCatalog.js"; // 24.10 (7.50)
+import { sampleFixtureLightKept } from "../dist/code/browser/LightTemplateMotion.js"; // 15.11 (7.50)
 import { PrelitLights } from "../dist/code/browser/PrelitLights.js"; // 24.10 (7.50)
 import { LightPools } from "../dist/code/browser/LightPools.js"; // 24.10 (7.50)
 
@@ -157,8 +158,9 @@ test("production fixture pass keeps instanced offscreen lamps, skips interiors a
   const js = ts.transpileModule(`class Harness { ${method.getText(parsed).replaceAll("#", "")} }`, {
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
   }).outputText;
-  const Harness = Function("modelFixtureLights", "sampleFixtureLight", "fixtureLightSource", "LOCAL_LIGHT_FOCUS_AHEAD",
-    js + ";return Harness;")(modelFixtureLights, sampleFixtureLight, fixtureLightSource, LOCAL_LIGHT_FOCUS_AHEAD); // 06.10-render-fix; 22.10 (7.36)
+  // 15.11 (7.50): the built lamp's sampler keeps a blinking light ranked while dark (LightTemplateMotion.ts).
+  const Harness = Function("modelFixtureLights", "sampleFixtureLightKept", "fixtureLightSource", "LOCAL_LIGHT_FOCUS_AHEAD",
+    js + ";return Harness;")(modelFixtureLights, sampleFixtureLightKept, fixtureLightSource, LOCAL_LIGHT_FOCUS_AHEAD); // 06.10-render-fix; 22.10 (7.36)
   const harness = new Harness();
   const model = lampModel();
   const placement = new THREE.Group();

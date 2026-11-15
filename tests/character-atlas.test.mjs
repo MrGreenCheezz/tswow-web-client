@@ -554,7 +554,11 @@ test("Т6 the fifth capsule reason is permanent because the file says so, not be
   };
   const heldBack = buildSkinnedTemplateFrom(new THREE.BufferGeometry(), { ...bone, clips: [], animations: [0, 4, 69] }, 2);
   assert.ok(heldBack, "a rig whose keyframes travel separately is still a rig");
-  assert.equal(heldBack.clips.size, 0);
+  // 03.11 (6.39, fb35efac): a listed Stand with no clip is the rest pose (a keyless Stand; the publisher always ships
+  // Stand with the model, tools/animations.mjs BASE_ANIMATION_NAMES), so that one clip is there, with no tracks.
+  assert.deepEqual([...heldBack.clips.keys()], [0], "only the rest-pose Stand");
+  assert.equal(heldBack.clips.get(0).tracks.length, 0);
+  assert.equal(heldBack.clips.has(4) || heldBack.clips.has(69), false, "nothing held back is made up");
   assert.deepEqual([...heldBack.animations], [0, 4, 69], "and it knows which poses are one request away");
 
   // The two that really are permanent, and neither of them changes when anything else arrives: a

@@ -100,7 +100,10 @@ test("stock WorldStateScoreFrame, the battlefield minimap refusal, the PvP timer
     // ---- 3.14c with 1.08: entering a battleground, IsInInstance "pvp" ------------------------------
     world.instanceType = 3;
     assert.deepEqual(lua(boot, "return IsInInstance()", 2), [1, "pvp"]);
-    assert.deepEqual(lua(boot, "return GetCVar('showBattlefieldMinimap')"), ["1"]);
+    // 5.37 (15.11): the registered default is "0" (0x0051ee41, «Никогда»); this path is a player who picked
+    // «На полях боя», the one that asks for the add-on.
+    assert.deepEqual(lua(boot, "return GetCVar('showBattlefieldMinimap')"), ["0"]);
+    lua(boot, "SetCVar('showBattlefieldMinimap', '1')", 0);
     // WorldStateAlwaysUpFrame's PLAYER_ENTERING_WORLD (WorldStateFrame.lua:103-106 → :359-373), and the
     // world map dropdown's path; the whole-UI event would also replay unrelated bar animations here.
     // message() writes only into a hidden BasicScriptErrors (BasicControls.xml); the vertical's own

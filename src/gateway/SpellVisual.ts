@@ -130,6 +130,13 @@ export interface SpellVisualKit {
    */
   flash?: { colour: number; delayMs: number; durationMs: number };
   /**
+   * 15.11 (6.11): CharProc 14 — while the kit's spell lasts on the unit its model's alpha is CreatureModelAlpha × `alpha`
+   * (CharParamZero, taken only when 0 < alpha ≤ 1), reached over `ms` (CharParamTwo s × 1000; 0 is Wow.exe's 1000).
+   * 0x007265c0 links the record into unit +0x984 (record +0xe8 alpha, +0xa0 time, +0x18 the spell); 0x0071abe0 fades
+   * to the newest record's alpha. 93 kits in the client, nearly all aura StateKits (invisibility-like looks).
+   */
+  unitAlpha?: { alpha: number; ms: number };
+  /**
    * 5.05 (11.11): `Flags & 0x100` — the kit player 0x0073b140 then starts the kit's animations with play flag 0x20, which
    * keeps the unit's weapon out through 0x00738180 (browser world/AnimationSheathRule.ts `keep`). 34 kits.
    */
@@ -216,6 +223,12 @@ export interface SpellVisualMissile {
    * as the attachment id `attachment` above carries; the browser resolves it (SpellVisualAttach.ts).
    */
   launch?: number;
+  /**
+   * 15.11 (6.12): SpellVisual.Flags & 4. Wow.exe's missile builder 0x00732ff0 then launches the unit's queued missiles
+   * at once from 0x0071a720's point (the caster's "$CSL"/"$CSR"/"$CST", else its position) instead of waiting for the
+   * cast animation's own event (0x00734390, unit +0xaf0).
+   */
+  launchNow?: true;
 }
 
 /**
@@ -388,8 +401,12 @@ function missileExtras(
   if (impactOffset) extras.impactOffset = impactOffset;
   const launch = visuals.int(row, "MissileAttachment"); // 11.11 (6.12)
   if (launch !== -1) extras.launch = launch;
+  if ((visuals.int(row, "Flags") & SPELL_VISUAL_FLAG_LAUNCH_AT_ONCE) !== 0) extras.launchNow = true; // 15.11 (6.12)
   return extras;
 }
+
+/** 15.11 (6.12): SpellVisual.Flags 4 — 0x00732ff0 launches the missiles it builds at once (`launchNow`). */
+const SPELL_VISUAL_FLAG_LAUNCH_AT_ONCE = 0x4;
 
 /**
  * 5.05 (11.11): what makes Wow.exe's kit player 0x0073b140 add play flag 0x20 (`keep`) to the animations it starts
@@ -462,8 +479,16 @@ function readKits(
     // 25.10 (6.27): the tint (CharProc 1) and the flash (CharProc 13) a kit puts on its unit (0x007265c0).
     let tint: number | undefined;
     let flash: SpellVisualKit["flash"];
+    let unitAlpha: SpellVisualKit["unitAlpha"]; // 15.11 (6.11)
     for (let slot = 0; slot < 4; slot++) {
       const proc = kits.int(row, "CharProc", slot);
+      if (proc === 14) { // 15.11 (6.11): 0x007265c0 makes the record only for 0 < alpha ≤ 1
+        const alpha = kits.float(row, "CharParamZero", slot);
+        if (alpha > 0 && alpha <= 1) {
+          unitAlpha ??= { alpha, ms: Math.max(0, Math.round(kits.float(row, "CharParamTwo", slot) * 1000)) || 0 };
+        }
+        continue;
+      }
       if (proc !== 1 && proc !== 13) continue;
       const colour = kitColour(kits.float(row, "CharParamZero", slot));
       if (colour === undefined) continue;
@@ -476,13 +501,14 @@ function readKits(
     }
     // A kit that shows nothing, asks for no pose, makes no noise, shakes nothing and draws no beam is not a kit.
     if (effects.length === 0 && startAnimation < 0 && animation < 0 && sound === 0 && !shake && chains.length === 0
-      && tint === undefined && flash === undefined) continue;
+      && tint === undefined && flash === undefined && unitAlpha === undefined) continue;
     result.set(kits.id(row), {
       startAnimation, animation, effects, sound,
       ...(shake ? { shake } : {}),
       ...(chains.length > 0 ? { chains } : {}),
       ...(tint !== undefined ? { tint } : {}), // 25.10 (6.27)
       ...(flash ? { flash } : {}),
+      ...(unitAlpha ? { unitAlpha } : {}), // 15.11 (6.11)
       ...((kits.int(row, "Flags") & KIT_FLAG_KEEP_SHEATH) !== 0 ? { sheathKeep: true as const } : {}), // 5.05 (11.11)
     });
   }

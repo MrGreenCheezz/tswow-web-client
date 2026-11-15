@@ -21,6 +21,7 @@ import type { RenderSwitchesPush } from "./RenderSwitches.js";
 import type { GatewayGenerationPush } from "./GatewayGeneration.js";
 import type { RenderInputs } from "./RenderInputs.js";
 import type { RenderLookups } from "./RenderLookups.js";
+import type { OwnSheathRequest } from "./SheathCeremony.js"; // 5.05 (15.11, combat7)
 import { MapDeltaReceiver, MapDeltaSender, type MapDelta } from "./MapDelta.js";
 import { toRenderTime } from "./RenderClock.js";
 
@@ -67,6 +68,11 @@ export interface RenderInputsMessage {
   readonly switches: Replaced<RenderSwitchesPush | undefined>;
   readonly gatewayGeneration: Replaced<GatewayGenerationPush | undefined>;
   readonly frameBudgetProbe: boolean;
+  readonly ownSheath: number | undefined; // 5.05 (15.11, combat7)
+  /** 5.05 (15.11, combat7): the latest own ToggleSheath, sent when it is another record (SheathCeremony.ts). */
+  readonly ownSheathRequest: Replaced<OwnSheathRequest | undefined>;
+  /** 15.11 (5.32, combat7 follow-up): the facings kept after a melee victim died (UnitFixedFacing.ts), as differences. */
+  readonly fixedFacings: MapDelta<bigint, number> | undefined;
 }
 
 export class RenderInputsSender {
@@ -79,6 +85,8 @@ export class RenderInputsSender {
   readonly #vehicles = new ReplacedSender<VehicleCatalogRows | undefined>();
   readonly #switches = new ReplacedSender<RenderSwitchesPush | undefined>();
   readonly #generation = new ReplacedSender<GatewayGenerationPush | undefined>();
+  readonly #ownSheathRequest = new ReplacedSender<OwnSheathRequest | undefined>(); // 5.05 (15.11, combat7)
+  readonly #fixedFacings = new MapDeltaSender<bigint, number>(); // 15.11 (5.32, combat7 follow-up)
 
   encode(inputs: RenderInputs): RenderInputsMessage {
     return {
@@ -95,6 +103,10 @@ export class RenderInputsSender {
       switches: this.#switches.send(inputs.switches),
       gatewayGeneration: this.#generation.send(inputs.gatewayGeneration),
       frameBudgetProbe: inputs.frameBudgetProbe,
+      ownSheath: inputs.ownSheath, // 5.05 (15.11, combat7)
+      ownSheathRequest: this.#ownSheathRequest.send(inputs.ownSheathRequest), // 5.05 (15.11, combat7)
+      // 15.11 (5.32, combat7 follow-up): one Map refilled in place; nothing is built while it stays as it was.
+      fixedFacings: this.#fixedFacings.delta(inputs.facing.fixedFacings),
     };
   }
 }
@@ -114,6 +126,8 @@ export class RenderInputsReceiver {
   readonly #vehicles = new ReplacedReceiver<VehicleCatalogRows | undefined>(undefined);
   readonly #switches = new ReplacedReceiver<RenderSwitchesPush | undefined>(undefined);
   readonly #generation = new ReplacedReceiver<GatewayGenerationPush | undefined>(undefined);
+  readonly #ownSheathRequest = new ReplacedReceiver<OwnSheathRequest | undefined>(undefined); // 5.05 (15.11, combat7)
+  readonly #fixedFacings = new MapDeltaReceiver<bigint, number>(); // 15.11 (5.32, combat7 follow-up)
   readonly #facing: { -readonly [K in keyof UnitFacingInputs]: UnitFacingInputs[K] } = {
     casts: this.#casts.map, interactionNpc: undefined, movementIds: this.#movementIds.map,
     spellAttributes: this.#spellAttributes.map,
@@ -141,6 +155,14 @@ export class RenderInputsReceiver {
     inputs.switches = this.#switches.apply(message.switches);
     inputs.gatewayGeneration = this.#generation.apply(message.gatewayGeneration);
     inputs.frameBudgetProbe = message.frameBudgetProbe;
+    inputs.ownSheath = message.ownSheath; // 5.05 (15.11, combat7)
+    // 5.05 (15.11, combat7): a new toggle record, its moment onto the renderer's clock (RenderClock.ts).
+    if (message.ownSheathRequest.changed) {
+      const request = message.ownSheathRequest.value;
+      this.#ownSheathRequest.value = request === undefined ? undefined : { ...request, at: toRenderTime(request.at) };
+    }
+    inputs.ownSheathRequest = this.#ownSheathRequest.value;
+    facing.fixedFacings = this.#fixedFacings.apply(message.fixedFacings); // 15.11 (5.32, combat7 follow-up)
     return inputs;
   }
 }

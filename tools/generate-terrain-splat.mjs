@@ -44,8 +44,31 @@ const MAX_LAYERS = 32;
  * A job without a generation is a gateway still serving the older files: it gets exactly the bytes
  * and stamps it got before (no generation in the stamp, RGB alpha, `terrain-layer-v1` ids) — the
  * tile worker loads this file fresh from disk, so that path must not move.
+ *
+ * 15.11 (7.16, terrain7): v3 is v2 plus the environment cube maps — a ground texture whose BLP is six
+ * squares side by side is published once more as its cube faces (`terrain-cube-v1` ids, see
+ * `publishCubeMap`), and `splat.json` names them (`cubes`, one id or null per layer) and the chunks a
+ * layer flags for the reflection (`env`). The bump re-publishes every tile once: a v2 `splat.json`
+ * on disk would otherwise stay current without the two fields.
  */
-export const TERRAIN_SPLAT_GENERATION = "terrain-splat-v2";
+export const TERRAIN_SPLAT_GENERATION = "terrain-splat-v3";
+/** 15.11 (7.16): the generation a gateway built before v3 asks for; written byte for byte as before. */
+export const PREVIOUS_TERRAIN_SPLAT_GENERATION = "terrain-splat-v2";
+/**
+ * 15.11 (7.16): the `MCLY` flag that turns a chunk's environment reflection on. Wow.exe 0x007b9250
+ * (the layer reader) sets the chunk's flag 4 when any of its layers has it (and the card has pixel
+ * shaders and cube maps); the chunk is then drawn with the `_env` permutations, whose pixel programs
+ * read layer 0 as a cube (`Shaders\Pixel\*\terrain*_pcf.bls`, every odd permutation).
+ */
+export const MCLY_ENVIRONMENT = 0x400;
+/**
+ * 15.11 (7.16): which column of a cube strip each cube face is, faces in the D3D/GL order +X −X +Y −Y
+ * +Z −Z. Wow.exe 0x004b95b0 makes a texture a cube when its width is six times its height; its upload
+ * callback 0x004b7aa0 copies face 0..5 from strip column 0, 2, 4, 5, 3, 1. Checked on the client's
+ * strips (`tests/terrain-environment.test.mjs`): of all 720 orders this one closes the cube's edges
+ * best on tgatest.blp and TCB_CrystalSong_B.blp, and column 4 is the sky, 5 the ground.
+ */
+export const CUBE_FACE_COLUMNS = Object.freeze([0, 2, 4, 5, 3, 1]);
 /** 05.10-A7b-7: the largest layer the v2 array holds; a bigger texture is box-filtered down to it. */
 export const LAYER_MAX_SIZE = 512;
 
@@ -64,10 +87,13 @@ export async function publishTerrainSplat(mapId, gridX, gridY, archives, options
   if (!validTile(mapId, gridX, gridY)) throw new Error(`${mapId}/${gridX}/${gridY} is not a terrain tile`);
   // 05.10-A7b-7: which generation to write; none named is what a running older gateway expects.
   const generation = options?.generation;
-  if (generation !== undefined && generation !== TERRAIN_SPLAT_GENERATION) {
+  // 15.11 (7.16): a gateway built before v3 still names v2 and loads this file fresh: it gets exactly
+  // the v2 files and stamps (no cube maps, no `cubes`/`env`) until it is rebuilt.
+  if (generation !== undefined && generation !== TERRAIN_SPLAT_GENERATION && generation !== PREVIOUS_TERRAIN_SPLAT_GENERATION) {
     throw new Error(`Unknown terrain splat generation ${String(generation)}`);
   }
-  const v2 = generation === TERRAIN_SPLAT_GENERATION;
+  const v2 = generation !== undefined;
+  const v3 = generation === TERRAIN_SPLAT_GENERATION; // 15.11 (7.16): the cube maps
   const textureDirectory = resolve(root, process.env.TERRAIN_TEXTURE_DIR ?? "data/terrain-textures", String(mapId));
   // Ground textures are shared between neighbouring tiles, so they live in one flat directory
   // keyed by content: the browser then downloads each of them exactly once.
@@ -107,6 +133,8 @@ export async function publishTerrainSplat(mapId, gridX, gridY, archives, options
   /** 05.10-A7b-7Г (7.16 Г): v2 only — per layer, the id of its `_s.blp` specular mask or null. */
   const specularMasks = [];
   const specularWarnings = [];
+  /** 15.11 (7.16): v3 only — per layer, the id of its cube faces (a six-square strip) or null. */
+  const cubeMaps = [];
   for (let index = 0; index < parsed.textures.length; index++) {
     // 05.10-A7b-7 (7.16): v2 reads the texture first, because its native size picks the id. A
     // 256x256 one (99 % of the ground textures sampled, `probe-layer-census.out.txt`) is copied
@@ -131,6 +159,7 @@ export async function publishTerrainSplat(mapId, gridX, gridY, archives, options
       if (v2) {
         layerSides.push(await pngSide(destination));
         specularMasks.push(await publishSpecularMask(archives, layerDirectory, parsed.textures[index], layerSides.at(-1), specularWarnings)); // 05.10-A7b-7Г
+        if (v3) cubeMaps.push(await publishCubeMap(archives, layerDirectory, parsed.textures[index], blp, specularWarnings)); // 15.11 (7.16)
       }
       continue;
     }
@@ -149,6 +178,7 @@ export async function publishTerrainSplat(mapId, gridX, gridY, archives, options
     await writeFile(destination, PNG.sync.write(picture, { colorType: 6 }));
     await stampGenerated(destination, archives, { paths: [parsed.textures[index]] });
     if (v2) specularMasks.push(await publishSpecularMask(archives, layerDirectory, parsed.textures[index], picture.width, specularWarnings)); // 05.10-A7b-7Г
+    if (v3) cubeMaps.push(await publishCubeMap(archives, layerDirectory, parsed.textures[index], blp, specularWarnings)); // 15.11 (7.16)
   }
 
   // One 1024x1024 picture holds every chunk's three overlay alpha maps in its colour channels,
@@ -225,9 +255,14 @@ export async function publishTerrainSplat(mapId, gridX, gridY, archives, options
   const layerSize = v2 ? Math.max(LAYER_SIZE, ...layerSides) : undefined;
   // 05.10-A7b-7Г (7.16 Г): v2 names the specular masks, one id or null per layer, when any exists.
   const specular = v2 && specularMasks.some((id) => id !== null) ? specularMasks : undefined;
+  // 15.11 (7.16): the cube faces per layer and the chunks (row · 16 + column, the index.png layout)
+  // a layer flags for the reflection; each only when the tile has any.
+  const cubes = v3 && cubeMaps.some((id) => id !== null) ? cubeMaps : undefined;
+  const env = v3 ? parsed.chunks.filter((chunk) => chunk.environment).map((chunk) => chunk.row * CHUNKS_PER_SIDE + chunk.column).sort((a, b) => a - b) : [];
   await writeFile(join(textureDirectory, `${gridX}-${gridY}.splat.json`), JSON.stringify({
     layers, ...(layerSize !== undefined ? { layerSize } : {}), ...(colours ? { mccv: true } : {}),
     ...(specular ? { specular } : {}), // 05.10-A7b-7Г
+    ...(cubes ? { cubes } : {}), ...(env.length > 0 ? { env } : {}), // 15.11 (7.16)
   }));
   // Five files from one read of the tile, so all five carry the same stamp: each is served under
   // its own URL and each has to be able to say for itself whether it is still current.
@@ -247,7 +282,7 @@ export async function publishTerrainSplat(mapId, gridX, gridY, archives, options
   await rm(stampSidecar(marker), { force: true });
   const growing = parsed.chunks.reduce((count, chunk) => count + chunk.layers.filter((layer) => layer.effectId !== 0).length, 0);
   const shadowed = v2 ? parsed.chunks.filter((chunk) => chunk.shadow).length : 0; // 05.10-A7b-7
-  console.log(`Generated terrain splat ${mapId}/${gridX}/${gridY}: ${mapName}, ${layers.length} ground textures, ${parsed.chunks.length} chunks, ${bigAlpha ? "8 bit" : "4 bit"} alpha maps, ${growing} layers with a ground effect${v2 ? `, ${shadowed} chunks with a baked shadow, layers ${layerSize}², ${specularMasks.filter(Boolean).length} specular masks` : ""}`); // 05.10-A7b-7Г: masks
+  console.log(`Generated terrain splat ${mapId}/${gridX}/${gridY}: ${mapName}, ${layers.length} ground textures, ${parsed.chunks.length} chunks, ${bigAlpha ? "8 bit" : "4 bit"} alpha maps, ${growing} layers with a ground effect${v2 ? `, ${shadowed} chunks with a baked shadow, layers ${layerSize}², ${specularMasks.filter(Boolean).length} specular masks${v3 ? `, ${cubeMaps.filter(Boolean).length} cube maps, ${env.length} reflecting chunks` : ""}` : ""}`); // 05.10-A7b-7Г: masks; 15.11 (7.16): cubes
   if (missingTextures.length > 0) console.warn(`  ${missingTextures.length} ground texture(s) fell back to flat colour: ${missingTextures.join("; ")}`);
   // 05.10-A7b-7Г: such a layer is drawn without a mask (no specular), not without its colour.
   if (specularWarnings.length > 0) console.warn(`  ${specularWarnings.length} specular texture(s) did not decode: ${specularWarnings.join("; ")}`);
@@ -414,6 +449,52 @@ async function publishSpecularMask(archives, layerDirectory, texture, side, warn
   return id;
 }
 
+/** 15.11 (7.16): whether a BLP's mip 0 is a cube strip — six squares side by side (Wow.exe 0x004b95b0). */
+export function isCubeStrip(size) {
+  return size !== undefined && size.width === size.height * 6;
+}
+
+/**
+ * 15.11 (7.16): a decoded cube strip as the six faces in D3D/GL order +X −X +Y −Y +Z −Z, side by side
+ * in one RGBA picture `side · 6` wide (`CUBE_FACE_COLUMNS`). The pixels are copied, rows top first as
+ * in the BLP: the client uploads them that way and both APIs put a face's first row at t = 0.
+ */
+export function cubeFacesPng(decoded) {
+  const side = decoded.height;
+  const png = new PNG({ width: side * 6, height: side });
+  for (let face = 0; face < 6; face++) {
+    const column = CUBE_FACE_COLUMNS[face];
+    for (let y = 0; y < side; y++) {
+      const from = (y * decoded.width + column * side) * 4;
+      png.data.set(decoded.data.subarray(from, from + side * 4), (y * png.width + face * side) * 4);
+    }
+  }
+  return png;
+}
+
+/**
+ * 15.11 (7.16): publishes one ground texture's cube faces beside the layers (v3) and returns the id,
+ * or null when the texture is not a cube strip or will not decode. The layer itself is published as
+ * before (the array keeps one slot per texture; an env chunk reads that slot from the cube instead).
+ */
+async function publishCubeMap(archives, layerDirectory, texture, blp, warnings) {
+  if (!isCubeStrip(blpSize(blp))) return null;
+  const id = createHash("sha1").update(`terrain-cube-v1\0${texture.toLowerCase()}`).digest("hex");
+  const destination = join(layerDirectory, `${id}.png`);
+  const inputs = { paths: [texture] };
+  if (await stampIsCurrent(destination, archives, inputs)) return id;
+  let faces;
+  try {
+    faces = cubeFacesPng(decodeBlp(blp));
+  } catch (error) {
+    warnings.push(`${texture} cube (${error instanceof Error ? error.message : error})`);
+    return null;
+  }
+  await writeFile(destination, PNG.sync.write(faces, { colorType: 6 }));
+  await stampGenerated(destination, archives, inputs);
+  return id;
+}
+
 /** Resamples every row of an RGBA float image from `width` to `target` texels (box down, wrapping bilinear up). */
 function resampleRows(pixels, width, height, target) {
   const out = new Float32Array(target * height * 4);
@@ -531,7 +612,10 @@ function parseMapChunk(data, start, size, bigAlpha, shadows = false) {
   }
   // 05.10-A7b-7 (7.06): MCSH only for the v2 generation, so the legacy path reads what it always read.
   const shadow = shadows ? mapChunkShadow(data, start, size) : undefined;
-  return { column, row, layers, detail: mapChunkDetail(data, start, size), colours: mapChunkColours(data, start, size), shadow };
+  // 15.11 (7.16): Wow.exe 0x007b9250 — any layer with the flag, not only layer 0 (the client's data
+  // carries it on layer 0 alone: 1193 layers of 5774 tiles, `.runtime/re-2026-11-15/terrain7/census.txt`).
+  const environment = layers.some((layer) => (layer.flags & MCLY_ENVIRONMENT) !== 0);
+  return { column, row, layers, detail: mapChunkDetail(data, start, size), colours: mapChunkColours(data, start, size), shadow, environment };
 }
 
 function reversedTag(data, offset) {

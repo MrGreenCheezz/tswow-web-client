@@ -85,10 +85,11 @@ test("Э1 fog dims an additive batch instead of mixing the fog colour into it", 
   // card composited `SrcAlpha/One` that adds the fog colour to the scene, so the card's own black
   // corners light up and a glow becomes a rectangle hanging in the air. The reference client
   // branches on exactly this: `wowee/assets/shaders/m2.frag.glsl:261-269`.
+  // 15.11 (6.11): Wow.exe's table 0x00a45390 gives modes 3 and 4 black and mode 7 no fog (ModelBuild.ts `fogModeBody`).
   for (const blendMode of [3, 4, 7]) {
     const source = compiled(material({ blendMode })).fragmentShader;
-    assert.ok(source.includes("gl_FragColor.rgb *= ( 1.0 - fogFactor );"),
-      `blend mode ${blendMode} dims with distance`);
+    assert.ok(source.includes(blendMode === 7 ? "no fog for blend-add" : "gl_FragColor.rgb *= ( 1.0 - fogFactor );"),
+      `blend mode ${blendMode} dims with distance, or for 7 is left alone`);
     assert.ok(!source.includes("mix( gl_FragColor.rgb, fogColor"),
       `blend mode ${blendMode} does not mix the fog colour in`);
     assert.ok(!source.includes("#include <fog_fragment>"), "and the chunk really was replaced");
@@ -131,9 +132,11 @@ test("Э1 a modulating batch fades towards its own identity rather than towards 
   // same reason as for an additive card, and dimming towards black is worse still — it would paint
   // the distance out. White is the identity of `DstColor*SrcColor`. Mod2x's identity is strictly
   // 0.5 and rides the same branch: there is 1 mod batch and 11 mod2x in the whole of `spells\`.
+  // 15.11 (6.11): Wow.exe gives mod2x grey 0x808080 (0x00a45390; the stand's mod2x batches get c2 = 0.502).
+  const identity = { 5: "vec3( 1.0 )", 6: "vec3( 128.0 / 255.0 )" };
   for (const blendMode of [5, 6]) {
     const source = compiled(material({ blendMode })).fragmentShader;
-    assert.ok(source.includes("mix( gl_FragColor.rgb, vec3( 1.0 ), fogFactor );"), `blend mode ${blendMode}`);
+    assert.ok(source.includes(`mix( gl_FragColor.rgb, ${identity[blendMode]}, fogFactor );`), `blend mode ${blendMode}`);
   }
 });
 

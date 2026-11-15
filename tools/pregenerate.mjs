@@ -39,7 +39,7 @@ const NAMED_ONLY_FAMILIES = Object.freeze(["units"]);
 /** The visual tile generation the gateway requires (`/visual/environment`). */
 const VISUAL_TILE_GENERATION = "visual-tile-v7"; // 05.10-A7b-1; P2-04x: v6; 12.10 6.25: v7
 /** The terrain splat generation the gateway requires (`/terrain-splat`). */
-const TERRAIN_SPLAT_GENERATION = "terrain-splat-v2"; // 05.10-A7b-7
+const TERRAIN_SPLAT_GENERATION = "terrain-splat-v3"; // 05.10-A7b-7; 15.11 (7.16): v3, the cube maps
 
 const directory = (variable, fallback) => resolve(repositoryRoot, process.env[variable] ?? fallback);
 

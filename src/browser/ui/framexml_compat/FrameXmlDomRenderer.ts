@@ -20,6 +20,7 @@ import { FRAME_XML_SIMPLE_HTML_LINK_FORMAT, parseFrameXmlSimpleHtml } from "./Fr
 import { buildFrameXmlSimpleHtml, type FrameXmlSimpleHtmlDomHooks } from "./FrameXmlSimpleHtmlDom.js";
 import { frameXmlTitleRegion, frameXmlTitleRegionHit } from "./FrameXmlTitleRegion.js"; // 3.48 (12.10)
 import { FrameXmlMouseCapture } from "./FrameXmlMouseCapture.js"; // 1.10 (12.10)
+import { frameXmlResizeBounds, frameXmlSizeStep, frameXmlSizingOf } from "./FrameXmlSizing.js"; // widgets7 3.21
 
 /** What one reconciliation pass had to do: see `FrameXmlDomRenderer.syncPass`. */
 export type FrameXmlSyncKind = "structural" | "layout" | "paint" | "noop";
@@ -306,6 +307,19 @@ interface FrameDrag {
   originY?: number;
   /** 3.48: a press inside the frame's title region moves it, `movable` or not (FrameXmlTitleRegion.ts). */
   readonly title?: true;
+  /** widgets7 3.21: the frame StartSizing sizes during this press, its box and the last cursor (FrameXmlSizing.ts). */
+  sizing?: FrameSizing | undefined;
+}
+
+interface FrameSizing {
+  readonly frame: FrameXmlFrame;
+  width: number;
+  height: number;
+  /** The frame's TOPLEFT on the page. */
+  left: number;
+  top: number;
+  lastX: number;
+  lastY: number;
 }
 
 let nextBackdropFilterId = 0;
@@ -2244,7 +2258,7 @@ export class FrameXmlDomRenderer {
     const button = mouseButtonName(event);
     const registered = frame.dragRegistrations.has(button.toUpperCase());
     const captureMouseUp = this.#bridge.GetScript(frame, "OnMouseUp") !== undefined;
-    if (!registered && !captureMouseUp && !this.movingAncestor(frame)) return;
+    if (!registered && !captureMouseUp && !this.movingAncestor(frame) && !frameXmlSizingOf(this.#bridge)) return;
     // A child owns its registered drag; a bubbled press must not replace it with the parent.
     if (this.#drag) return;
     const doc = this.#container.ownerDocument;
@@ -2361,6 +2375,7 @@ export class FrameXmlDomRenderer {
     // The moving box is read off the page below; a world event may have moved it since the last pass.
     this.#bridge.settleDeferredLayout();
     this.rememberCursor(event);
+    this.moveSizing(drag, event); // widgets7 3.21: StartSizing follows the pointer at once, no dead zone
     if (!drag.started) {
       if (Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) < 3) return;
       drag.started = true;
@@ -2392,6 +2407,55 @@ export class FrameXmlDomRenderer {
       drag.top + event.clientY - (drag.originY ?? drag.startY));
     event.preventDefault?.();
     event.stopPropagation?.();
+  }
+
+  /**
+   * widgets7 3.21: one pointer move of a StartSizing (Wow.exe 0x00493ce0 → 0x0048abd0, FrameXmlSizing.ts). The first
+   * move counts from the press (the point 0x00494060 starts from); each hands the whole delta on, the frame takes
+   * what its bounds allow, and its TOPLEFT is anchored where it now is with the new width and height.
+   */
+  private moveSizing(drag: FrameDrag, event: MouseEvent): void {
+    const bridge = this.#bridge;
+    const slot = bridge ? frameXmlSizingOf(bridge) : undefined;
+    if (!bridge || !slot || !bridge.isVisible(slot.frame)) { drag.sizing = undefined; return; }
+    const frame = slot.frame;
+    const element = this.#rendered.get(frame)?.element;
+    const parent = element?.parentElement ?? this.#container;
+    if (!element?.getBoundingClientRect || !parent.getBoundingClientRect) return;
+    // CSS pixels per frame unit, as placeAtClientPosition converts them.
+    const parentRect = parent.getBoundingClientRect();
+    const ownScale = Number.isFinite(frame.scale) && frame.scale > 0 ? frame.scale : 1;
+    const scaleX = (parent.offsetWidth > 0 ? parentRect.width / parent.offsetWidth : 1) * ownScale;
+    const scaleY = (parent.offsetHeight > 0 ? parentRect.height / parent.offsetHeight : 1) * ownScale;
+    if (!(scaleX > 0 && scaleY > 0)) return;
+    let sizing = drag.sizing;
+    if (sizing?.frame !== frame) {
+      const rect = element.getBoundingClientRect();
+      const size = bridge.measure(frame);
+      sizing = { frame, width: size.width, height: size.height, left: rect.left, top: rect.top, lastX: drag.startX, lastY: drag.startY };
+      drag.sizing = sizing;
+    }
+    const dx = (event.clientX - sizing.lastX) / scaleX;
+    const dy = (sizing.lastY - event.clientY) / scaleY;
+    sizing.lastX = event.clientX;
+    sizing.lastY = event.clientY;
+    if (dx === 0 && dy === 0) return;
+    const step = frameXmlSizeStep(slot.point, sizing.width, sizing.height, dx, dy, frameXmlResizeBounds(frame));
+    sizing.width = step.width;
+    sizing.height = step.height;
+    sizing.left += step.moveX * scaleX;
+    sizing.top -= step.moveY * scaleY;
+    const width = String(step.width);
+    const height = String(step.height);
+    const { left, top } = sizing;
+    bridge.runInMutationBatch(() => {
+      this.placeAtClientPosition(frame, left, top);
+      bridge.update(frame, (mutable) => {
+        mutable.setAttribute("width", width);
+        mutable.setAttribute("height", height);
+      });
+    });
+    event.preventDefault?.();
   }
 
   /** Re-anchor in the same parent while converting CSS pixels to the frame's own UI units. */

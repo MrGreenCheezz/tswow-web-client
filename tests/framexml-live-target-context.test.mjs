@@ -60,7 +60,9 @@ function fixture() {
   const targetAura = {
     slot: 1,
     spellId: 6673,
-    flags: AURA_FLAGS.positive,
+    // 05.11 (3.68, bd47117b): an aura with none of the three effect bits holds nothing and is not listed
+    // (Wow.exe 0x0072C510); the server always sets the bit of the effect it applies, here effect 0.
+    flags: AURA_FLAGS.positive | 0x01,
     casterLevel: 80,
     applications: 2,
     casterGuid: selfGuid,
@@ -71,7 +73,7 @@ function fixture() {
   const targetDebuff = {
     slot: 2,
     spellId: 172,
-    flags: AURA_FLAGS.negative,
+    flags: AURA_FLAGS.negative | 0x01,
     casterLevel: 80,
     applications: 1,
     casterGuid: targetGuid,

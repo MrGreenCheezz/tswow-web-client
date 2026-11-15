@@ -20,6 +20,7 @@ import { GLUE_ADDON_GLOBALS, type GlueAddonList } from "./GlueAddons.js";
 import type { GlueCVarStore } from "./GlueCVarStore.js";
 import { glueNameFiltersActive, setGlueWorldNameFilters, type GlueNameFilterCatalog } from "./GlueNameFilters.js"; // 1.19 (11.11)
 import { glueWindowCVar, isGlueWindowCVar, setGlueWindowCVar } from "./GlueWindowMode.js"; // 10.28 (11.11)
+import { wowCVarStartValue } from "../framexml/WowCVarRegistry.js"; // 5.37 (15.11)
 import {
   GLUE_SAVED_PASSWORD_GLOBAL, GLUE_SAVED_PASSWORD_LUA, type GlueSavedPasswordStore,
 } from "./GlueSavedPassword.js"; // 12.10
@@ -610,7 +611,10 @@ export class GlueApi {
   private installCVars(): void {
     const vm = this.#vm;
     // 10.28 (11.11): `gxWindow` is the page's full screen, live, as in the world's options (GlueWindowMode.ts).
-    const read = (name: string): string | undefined => isGlueWindowCVar(name) ? glueWindowCVar() : this.#cvars.get(name);
+    // 5.37 (15.11): a CVar Wow.exe registers has a value on the login screens too — its registered (or computed)
+    // default until something is stored (framexml/WowCVarRegistry.ts).
+    const read = (name: string): string | undefined => isGlueWindowCVar(name) ? glueWindowCVar()
+      : this.#cvars.get(name) ?? wowCVarStartValue(name, this.#options.locale ?? "ruRU");
     vm.registerGlobal("GetCVar", (args) => [read(String(args[0] ?? ""))]);
     vm.registerGlobal("GetCVarBool", (args) => {
       const value = read(String(args[0] ?? ""));

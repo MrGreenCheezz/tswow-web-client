@@ -108,7 +108,8 @@ test("stock world-map and TimeManager CVars are seeded, 24-hour time for ruRU on
           get("timeMgrUseLocalTime"), get("timeMgrUseMilitaryTime") }, ",")
       `, "@minimap-chat:cvars");
       assert.equal(run.ok, true, run.error);
-      assert.equal(vm.getGlobal("__values"), `0,0,1,0,1,1,0,[],0,0,${military}`, locale);
+      // showBattlefieldMinimap: Wow.exe's registered "0" (0x0051ee41), since 5.37 of 15.11.
+      assert.equal(vm.getGlobal("__values"), `0,0,1,0,0,1,0,[],0,0,${military}`, locale);
     } finally {
       vm.close();
     }

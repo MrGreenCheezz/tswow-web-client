@@ -878,10 +878,10 @@ test("an emitter switched off owes nothing when it comes back", () => {
   assert.equal(system.pending, 0, "and dropped when it stopped");
 });
 
-test("an alpha-key particle is not yet a cut-out and writes no depth", withSamples, async () => {
-  // 15.11 (6.15): Wow.exe's draw sets the alpha reference of an alpha-key emitter to 224/255 × the draw item's +0xc
-  // (0x008214e0 → 0x0081fe90; ParticleDepth.ts) and lets it write depth; that factor is not known for particles, and
-  // depth write without the gate would cut holes behind transparent texels, so neither is applied yet.
+test("an alpha-key particle is a 224/255 cut-out that writes depth", withSamples, async () => {
+  // 15.11 (6.15): Wow.exe's draw sets the alpha reference of an alpha-key emitter to 224/255 × the model's alpha
+  // (0x008214e0 → 0x0081fe90; ParticleDepth.ts, recorded on the stand in fx6-f-mgiant/fx6-f-roots) and lets it write
+  // depth. Ribbons keep their own pass states (RibbonEmitter.ts `ribbonDrawState`) and are not checked here.
   const found = await samples();
   const model = throughArtifact(found.get("6fx_bonfire.m2"));
   const keyed = { ...model, particleEmitters: model.particleEmitters.map((one) => ({ ...one, blendType: 1 })) };
@@ -891,8 +891,9 @@ test("an alpha-key particle is not yet a cut-out and writes no depth", withSampl
   });
   assert.ok(effects);
   for (const drawn of effects.emitters) {
-    assert.equal(drawn.material.alphaTest, 0);
-    assert.equal(drawn.material.depthWrite, false);
+    if (drawn.ribbon || drawn.follows) continue;
+    assert.equal(drawn.material.alphaTest, 224 / 255);
+    assert.equal(drawn.material.depthWrite, true);
   }
   disposeModelEffects(effects);
 });

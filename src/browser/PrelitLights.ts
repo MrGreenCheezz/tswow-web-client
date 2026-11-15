@@ -16,7 +16,10 @@ import * as THREE from "three";
 import { fixtureLightSource } from "./FixtureLightSources.js";
 import { LIGHT_HALO_STRENGTH } from "./LightHalos.js";
 import { fixtureFlicker, type LocalLightSample } from "./LocalLighting.js";
-import { sampleLightTemplate, type LightTemplate } from "./LightTemplates.js";
+import {
+  placeLightTemplate, sampleLightTemplate, sampleLightTemplateFar, templateMoment, type LightTemplate,
+} from "./LightTemplates.js";
+import type { MotionValue } from "./LightTemplateMotion.js";
 import type { LightTemplateCatalog } from "./LightTemplateCatalog.js";
 
 /** What a placement carries that the prelit lights read (`EnvironmentObject`). */
@@ -49,9 +52,10 @@ export interface PrelitHost<T extends PrelitPlacement> {
 
 /**
  * Floats per light: scene x, y, z; colour r, g, b; radius; strength; client (0/1); far glow r, g, b;
- * the placement's scene translation (the flicker's phase, as `sampleFixtureLight` reads it).
+ * the placement's scene translation (the flicker's phase, as `sampleFixtureLight` reads it); 15.11 (7.50)
+ * whether it has a far glow (1/0: an animated lamp is kept for its lit moments even if dark at time 0).
  */
-const STRIDE = 15;
+const STRIDE = 16;
 /** The grid's cell, yards. */
 const CELL = 32;
 /** Frames between rebuilds for newly known templates or buildings. */
@@ -63,34 +67,54 @@ const NONE = new Float32Array(0);
 const matrix = new THREE.Matrix4();
 const scratch: LocalLightSample = { position: new THREE.Vector3(), colour: new THREE.Vector3(), radius: 0, intensity: 0 };
 
-/** One placement's lights, placed once (`PLACED`), with the template list they came from. */
+/**
+ * One placement's lights, placed once (`PLACED`), with the template list they came from; 15.11 (7.50)
+ * and per light its template when that is animated (sampled at the frame's moment, `templateMoment`).
+ */
 interface Placed {
   readonly templates: readonly LightTemplate[];
   readonly lights: Float32Array;
+  readonly motions: readonly (LightTemplate | undefined)[];
 }
 const PLACED = new WeakMap<object, Placed>();
+const NO_MOTIONS: readonly (LightTemplate | undefined)[] = Object.freeze([]);
 
-/** The scene-space lights of one placement's templates, `STRIDE` floats each. */
+/** The scene-space lights of one placement's templates, `STRIDE` floats each, with their animated templates. */
 export function placeTemplates<T extends PrelitPlacement>(object: T, templates: readonly LightTemplate[],
-  place: (object: T, target: THREE.Matrix4) => THREE.Matrix4): Float32Array {
+  place: (object: T, target: THREE.Matrix4) => THREE.Matrix4): Placed {
   const known = PLACED.get(object);
-  if (known && known.templates === templates) return known.lights;
+  if (known && known.templates === templates) return known;
   const frame = place(object, matrix);
   const e = frame.elements;
   const out: number[] = [];
+  let motions: (LightTemplate | undefined)[] | undefined;
   for (const template of templates) {
-    if (!sampleLightTemplate(template, frame, 0, scratch)) continue;
-    // The far glow's colour: as `farLightSources` pushes a built lamp's bind-pose sample (time 0).
-    const strength = LIGHT_HALO_STRENGTH * Math.max(0, template.client ? template.intensity
-      : template.intensity * fixtureFlicker(e[12]!, e[13]!, e[14]!, 0));
+    let farRed = 0, farGreen = 0, farBlue = 0, far = 0;
+    if (template.motion) {
+      // 15.11 (7.50): placed whatever it shows at time 0; its far glow is its average (`sampleLightTemplateFar`).
+      if (sampleLightTemplateFar(template, frame, scratch)) {
+        const strength = LIGHT_HALO_STRENGTH * Math.max(0, scratch.intensity);
+        farRed = scratch.colour.x * strength; farGreen = scratch.colour.y * strength; farBlue = scratch.colour.z * strength;
+        far = 1;
+      }
+      if (!placeLightTemplate(template, frame, scratch)) continue;
+    } else {
+      if (!sampleLightTemplate(template, frame, 0, scratch)) continue;
+      // The far glow's colour: as `farLightSources` pushes a built lamp's bind-pose sample (time 0).
+      const strength = LIGHT_HALO_STRENGTH * Math.max(0, template.client ? template.intensity
+        : template.intensity * fixtureFlicker(e[12]!, e[13]!, e[14]!, 0));
+      farRed = scratch.colour.x * strength; farGreen = scratch.colour.y * strength; farBlue = scratch.colour.z * strength;
+      far = 1;
+    }
+    if (template.motion) (motions ??= new Array<LightTemplate | undefined>(out.length / STRIDE).fill(undefined)).push(template);
+    else motions?.push(undefined);
     out.push(scratch.position.x, scratch.position.y, scratch.position.z,
       scratch.colour.x, scratch.colour.y, scratch.colour.z, scratch.radius,
-      template.intensity, template.client ? 1 : 0,
-      scratch.colour.x * strength, scratch.colour.y * strength, scratch.colour.z * strength, e[12]!, e[13]!, e[14]!);
+      template.intensity, template.client ? 1 : 0, farRed, farGreen, farBlue, e[12]!, e[13]!, e[14]!, far);
   }
-  const lights = out.length > 0 ? new Float32Array(out) : NONE;
-  PLACED.set(object, { templates, lights });
-  return lights;
+  const placed: Placed = { templates, lights: out.length > 0 ? new Float32Array(out) : NONE, motions: motions ?? NO_MOTIONS };
+  PLACED.set(object, placed);
+  return placed;
 }
 
 export class PrelitLights<T extends PrelitPlacement = PrelitPlacement> {
@@ -109,6 +133,9 @@ export class PrelitLights<T extends PrelitPlacement = PrelitPlacement> {
   #ids: number[] = [];
   #count = 0;
   readonly #cells = new Map<number, number[]>();
+  /** 15.11 (7.50): the animated lights' shared frame slots, by light index (undefined: steady), and each slot once. */
+  #motions: (MotionSlot | undefined)[] = [];
+  #slots: MotionSlot[] = [];
   #generation = 0;
   /** Counters for the bench and the tests. */
   readonly stats = { rebuilds: 0, candidates: 0, lights: 0, rebuildMs: 0, scans: 0, scanMs: 0, placements: 0 };
@@ -174,6 +201,8 @@ export class PrelitLights<T extends PrelitPlacement = PrelitPlacement> {
     this.#templateGeneration = catalog.generation;
     this.#undecided = [];
     this.#cells.clear();
+    const motions: (MotionSlot | undefined)[] = [];
+    const slots = new Set<MotionSlot>();
     const ids: number[] = [];
     let lights = this.#lights;
     let count = 0;
@@ -194,8 +223,16 @@ export class PrelitLights<T extends PrelitPlacement = PrelitPlacement> {
         }
       }
       if (!fixtureLightSource(object, true, open)) continue;
-      const own = placeTemplates(object, templates, host.place);
+      const placed = placeTemplates(object, templates, host.place);
+      const own = placed.lights;
       if (own.length === 0) continue;
+      // 15.11 (7.50): every placement of a model shares one slot per animated template (one clock, one sample a frame).
+      for (let at = 0; at < own.length / STRIDE; at++) {
+        const template = placed.motions[at];
+        const slot = template ? motionSlot(template) : undefined;
+        motions[count + at] = slot;
+        if (slot) slots.add(slot);
+      }
       if ((count * STRIDE) + own.length > lights.length) {
         const grown = new Float32Array(Math.max(lights.length * 2, (count * STRIDE) + own.length, STRIDE * 256));
         grown.set(lights.subarray(0, count * STRIDE));
@@ -212,6 +249,8 @@ export class PrelitLights<T extends PrelitPlacement = PrelitPlacement> {
     }
     this.#lights = lights;
     this.#ids = ids;
+    this.#motions = motions;
+    this.#slots = [...slots];
     this.#count = count;
     this.#generation++;
     this.stats.rebuilds++;
@@ -258,6 +297,10 @@ export class PrelitLights<T extends PrelitPlacement = PrelitPlacement> {
   forEachNear(focus: THREE.Vector3, worldMs: number, host: Pick<PrelitHost<T>, "built">,
     visit: (sample: LocalLightSample) => void, result: LocalLightSample): void {
     if (this.#count === 0) return;
+    // One sample of each animated template for this moment, shared by all of its placements.
+    const slots = this.#slots;
+    for (let slot = 0; slot < slots.length; slot++) if (slots[slot]!.ms !== worldMs) refreshSlot(slots[slot]!, worldMs);
+    const motions = this.#motions;
     const lights = this.#lights;
     const x0 = Math.floor((focus.x - NEAR_RANGE) / CELL), x1 = Math.floor((focus.x + NEAR_RANGE) / CELL);
     const z0 = Math.floor((focus.z - NEAR_RANGE) / CELL), z1 = Math.floor((focus.z + NEAR_RANGE) / CELL);
@@ -265,11 +308,12 @@ export class PrelitLights<T extends PrelitPlacement = PrelitPlacement> {
       for (let cz = z0; cz <= z1; cz++) {
         const cell = this.#cells.get(cellKey(cx, cz));
         if (!cell) continue;
-        for (const index of cell) {
+        for (let slot = 0; slot < cell.length; slot++) { // indexed: no iterator object a cell a frame
+          const index = cell[slot]!;
           const at = index * STRIDE;
           const dx = lights[at]! - focus.x, dy = lights[at + 1]! - focus.y, dz = lights[at + 2]! - focus.z;
           if (dx * dx + dy * dy + dz * dz > NEAR_RANGE * NEAR_RANGE || host.built(this.#ids[index]!)) continue;
-          if (!sampleStored(lights, at, worldMs, result)) continue;
+          if (!sampleStored(lights, at, worldMs, result, motions[index])) continue;
           visit(result);
         }
       }
@@ -289,6 +333,7 @@ export class PrelitLights<T extends PrelitPlacement = PrelitPlacement> {
       }
       if (lastBuilt) continue;
       const at = index * STRIDE;
+      if (lights[at + 15] !== 1) continue; // 15.11 (7.50): an animated lamp dark at every sampled moment
       // 24.10 (7.50): with the pool's reach (negative for an M2 light) and share, as `farLightSources` (FAR_LIGHT_STRIDE).
       out.push(lights[at]!, lights[at + 1]!, lights[at + 2]!, lights[at + 9]!, lights[at + 10]!, lights[at + 11]!,
         lights[at + 8] === 1 ? -lights[at + 6]! : lights[at + 6]!, 1);
@@ -296,19 +341,60 @@ export class PrelitLights<T extends PrelitPlacement = PrelitPlacement> {
   }
 }
 
-/** One stored light at `worldMs`: the template's flicker at its placement, as `sampleLightTemplate`. */
-function sampleStored(lights: Float32Array, at: number, worldMs: number, result: LocalLightSample): boolean {
+/**
+ * 15.11 (7.50, lamps7 follow-up): one animated template's answer for the current moment. All placements of a
+ * model run on the one frame clock, so a template is sampled once a frame (`ms`) and its answer reused by
+ * every placement; made once per template, nothing is allocated per frame.
+ */
+interface MotionSlot extends MotionValue {
+  readonly template: LightTemplate;
+  ms: number;
+  lit: boolean;
+}
+const SLOTS = new WeakMap<LightTemplate, MotionSlot>();
+function motionSlot(template: LightTemplate): MotionSlot {
+  let slot = SLOTS.get(template);
+  if (!slot) {
+    slot = { template, ms: Number.NaN, lit: false, colour: new THREE.Vector3(), intensity: 0 };
+    SLOTS.set(template, slot);
+  }
+  return slot;
+}
+
+/** Samples an animated template at `worldMs` into its shared slot; once a frame, out of the per-light loop. */
+function refreshSlot(slot: MotionSlot, worldMs: number): void {
+  slot.lit = templateMoment(slot.template, worldMs, slot);
+  slot.ms = worldMs;
+}
+
+/**
+ * One stored light at `worldMs`: the template's flicker at its placement, as `sampleLightTemplate`;
+ * 15.11 (7.50) an animated one's colour and strength from its tracks at that moment. A dark moment keeps
+ * the light in the selection at strength 0, as the built lamp keeps it (`sampleFixtureLightKept`): a blink
+ * does not hand its rank to the next lamp and move the selection's fade cut under every other lamp.
+ */
+function sampleStored(lights: Float32Array, at: number, worldMs: number, result: LocalLightSample,
+  motion: MotionSlot | undefined): boolean {
   const client = lights[at + 8] === 1;
+  let intensity = lights[at + 7]!;
+  if (motion) {
+    result.colour.copy(motion.colour); // refreshed for this moment by `forEachNear` (`refreshSlot`)
+    intensity = motion.lit ? motion.intensity : 0;
+  } else result.colour.set(lights[at + 3]!, lights[at + 4]!, lights[at + 5]!);
   result.position.set(lights[at]!, lights[at + 1]!, lights[at + 2]!);
-  result.colour.set(lights[at + 3]!, lights[at + 4]!, lights[at + 5]!);
   result.radius = lights[at + 6]!;
   result.client = client;
   result.halo = true;
-  result.intensity = client ? lights[at + 7]!
-    : lights[at + 7]! * fixtureFlicker(lights[at + 12]!, lights[at + 13]!, lights[at + 14]!, worldMs);
+  result.intensity = client ? intensity
+    : intensity * fixtureFlicker(lights[at + 12]!, lights[at + 13]!, lights[at + 14]!, worldMs);
   return result.radius > 0;
 }
 
+/**
+ * A grid cell's key. lamps7 follow-up (15.11): 15 bits a side (±16384 cells of 32 yards, far past a map's
+ * ±17,067 yards), so the key stays a small integer: the 16-bit form went past 2^30 and every per-frame
+ * lookup boxed it as a heap number (≈256 B a frame measured, `.runtime/lane-2026-11-15/lamps7/alloc-probe.mjs`).
+ */
 function cellKey(x: number, z: number): number {
-  return ((x + 32768) & 0xffff) * 65536 + ((z + 32768) & 0xffff);
+  return (((x + 16384) & 0x7fff) << 15) | ((z + 16384) & 0x7fff);
 }

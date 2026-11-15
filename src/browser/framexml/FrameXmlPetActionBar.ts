@@ -285,6 +285,14 @@ export function frameXmlWithPetBook(
       return spell ? [spell.passive] : NOTHING;
     }),
     IsSelectedSpell: booked("IsSelectedSpell", () => [false]),
+    // 3.43 (15.11, follow-up): GetSpellInfo(index, "pet") — the pet book's spell for the pet-bar unit (Wow.exe 0x00540a30
+    // with 0x00540670's pet flag: its cost, cast time and range are the pet's).
+    GetSpellInfo: (seam, args) => {
+      const model = typeof args[0] === "number" ? petBook(seam, args[1]) : undefined;
+      if (!model) return base("GetSpellInfo")(seam, args);
+      const spell = model.bookSpell(indexOf(args[0]));
+      return (spell ? seam.petSpellInfo?.(spell.spellId) : undefined) ?? NOTHING;
+    },
     GetSpellLink: (seam, args) => {
       const model = typeof args[0] === "number" ? petBook(seam, args[1]) : undefined;
       if (!model) return base("GetSpellLink")(seam, args);

@@ -110,12 +110,9 @@ function routeTab(value: unknown): FrameXmlFriendsTab | undefined {
  * `SlashCmdList.GUILD_ROSTER` (/groster, which calls ShowUIPanel(FriendsFrame) itself). The owner
  * calls the saved stock functions, so nothing recurses.
  *
- * Two in-lane adapters ride along:
- * * `GuildEventMessage:GetFieldSize()` — GuildEventLog_Update compares the log's byte length with it
- *   (FriendsFrame.lua:1966, :1992) and the DOM widget layer answers nil («attempt to compare nil
- *   with number», measured). The FontString has no `bytes` attribute, so the client answers the
- *   UI.xsd default, 255 (read from Interface\FrameXML\UI.xsd in this client's MPQs). Retire this once
- *   the widget layer implements GetFieldSize.
+ * One in-lane adapter rides along (`GuildEventMessage:GetFieldSize()`, which GuildEventLog_Update compares the
+ * log's byte length with, is every FontString's own since 15.11: Wow.exe 0x0048bc70 answers 8191,
+ * glue/GlueFrameMethodFills.ts — the 255 stand-in that was here is gone):
  * * WEBCLIENT_WHO_TO_CHAT — the model's «print a short /who answer» edge — writes the prelude's
  *   `WebClientWhoChatLines()` into DEFAULT_CHAT_FRAME in the SYSTEM colour, as the chat's own help
  *   hook does (FrameXmlChatApi).
@@ -147,9 +144,6 @@ export function installFrameXmlFriendsRoutes(boot: Pick<FrameXmlBoot, "vm">, rou
     ShowWhoPanel = function() route("open", "who") end
     if type(SlashCmdList) == "table" and SlashCmdList.GUILD_ROSTER ~= nil then
       SlashCmdList.GUILD_ROSTER = function() if IsInGuild() then route("open", "guild") end end
-    end
-    if GuildEventMessage and GuildEventMessage:GetFieldSize() == nil then
-      GuildEventMessage.GetFieldSize = function() return 255 end
     end
     if not __webclientWhoChatFrame and type(CreateFrame) == "function" then
       local frame = CreateFrame("Frame")

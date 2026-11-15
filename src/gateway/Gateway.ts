@@ -2838,7 +2838,7 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
         return;
       }
       try {
-        indexes.lightIndex ??= loadLightMetadata(options.dbcDirectory);
+        indexes.lightIndex ??= loadLightMetadata(options.dbcDirectory, options.clientDirectory); // light7
         const lightIndex = await indexes.lightIndex;
         // 62 of the 135 maps in `Map.dbc` own no `Light.dbc` row at all — Gnomeregan, Molten Core,
         // Uldaman, Gundrak and the 28 transports among them — so they are simply absent from the

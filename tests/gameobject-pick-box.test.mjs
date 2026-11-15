@@ -17,7 +17,7 @@ const CHAIR = { x: 7, y: 2.5, z: 0, orientation: 2.1 };
 // A forge-sized goober (4 × 3 × 3.5 yards): where the old 42 px square fell short.
 const FORGE_BOX = { minX: -2, minY: -1.5, minZ: 0, maxX: 2, maxY: 1.5, maxZ: 3.5 };
 
-function frame(objects, corners) {
+function frame(objects, corners, boxWanted) {
   const context = new Proxy({
     createLinearGradient: () => ({ addColorStop() {} }),
     measureText: (text) => ({ width: text.length * 6 }),
@@ -29,7 +29,7 @@ function frame(objects, corners) {
     const scene = new SimpleScene(canvas, false);
     scene.draw({ selfGuid: 1n, objects: new Map(objects.map((object) => [object.guid, object])) },
       () => 0, undefined, [], undefined, 0, undefined, undefined, () => 2, () => undefined,
-      undefined, undefined, corners);
+      undefined, undefined, corners, undefined, undefined, boxWanted);
     return scene;
   } finally {
     globalThis.window = previous;
@@ -130,10 +130,19 @@ test("the model box comes from the WVM header box, a WMO's groups or the legacy 
 test("06.10 review: no box is worked out for an object nothing can click", () => {
   const asked = [];
   const corners = (object, out) => { asked.push(object.guid); return cornersOf(CHAIR_BOX)(object, out); };
+  // 05.11 (7.60, 384ca245): a generic object answers by its template's `highlight` word (Wow.exe 0x0070FF80), so
+  // its type alone no longer rules it out: the template the renderer knows silences it here, as it does most of a
+  // city's collision hulls. A map object (type 14) can never answer (0x00427A90).
   const generic = { ...chair, guid: 3n, fields: new Map([[UPDATE_FIELDS.GAMEOBJECT_BYTES_1.offset, 5 << 8]]) }; // GENERIC
   const unselectable = { ...chair, guid: 4n, fields: new Map([...chair.fields, [UPDATE_FIELDS.GAMEOBJECT_FLAGS.offset, 0x10]]) };
-  frame([player, chair, generic, unselectable], corners);
+  const mapObject = { ...chair, guid: 5n, fields: new Map([[UPDATE_FIELDS.GAMEOBJECT_BYTES_1.offset, 14 << 8]]) }; // MAP_OBJECT
+  const silenced = (object) => object.guid !== 3n;
+  frame([player, chair, generic, unselectable, mapObject], corners, silenced);
   assert.deepEqual(asked.map(String), ["2"]);
+  // The same generic object whose template does say `highlight` is asked: the gate is the template, not the type.
+  asked.length = 0;
+  frame([player, chair, generic, unselectable, mapObject], corners, () => true);
+  assert.deepEqual(asked.map(String).sort(), ["2", "3"]);
 });
 
 test("06.10 review: a box with a corner behind the camera falls back to the square, still clickable", () => {

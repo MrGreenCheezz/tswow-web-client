@@ -8,5 +8,8 @@
  * `terrain-layer-v2` id and `splat.json` names its `layerSize` (7.16). The generator is told the
  * generation in the job: a gateway still serving the unversioned files names none and keeps
  * receiving those exact bytes from the same freshly loaded tools.
+ *
+ * 15.11 (7.16): v3 adds the environment cube maps — `splat.json` names each layer's cube faces
+ * (`cubes`) and the chunks drawn with the reflection (`env`); every tile is published once more.
  */
-export const TERRAIN_SPLAT_GENERATION = "terrain-splat-v2";
+export const TERRAIN_SPLAT_GENERATION = "terrain-splat-v3";

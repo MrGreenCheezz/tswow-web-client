@@ -167,14 +167,15 @@ test("5.05 (11.11): #setUnitAnimation hands the plan's `keep` to the queued entr
 });
 
 test("5.05 (11.11): the player's starts are counted with the last one's bit; another model's and an unjudged one are not", () => {
-  const Harness = rendererMethods(["#noteStart", "#publishOwnAnimation"]);
+  // 5.05 (15.11, combat7): the record also carries the rig's ToggleSheath guards (none here).
+  const Harness = rendererMethods(["#noteStart", "#publishOwnAnimation"], { ownSheathRigReport: () => undefined });
   const h = new Harness();
   const self = { animationId: 54, overlayAction: undefined, overlayAnimationId: undefined };
   Object.assign(h, { selfModel: self, selfStarts: 0, selfKeep: false, startKeep: false, results: { ownAnimation: undefined } });
   h.startKeep = true;
   h.noteStart(self);
   h.publishOwnAnimation(5n, self);
-  assert.deepEqual(h.results.ownAnimation, { guid: 5n, animation: 54, starts: 1, keep: true });
+  assert.deepEqual(h.results.ownAnimation, { guid: 5n, animation: 54, starts: 1, keep: true, rig: undefined });
   h.startKeep = undefined;
   h.noteStart(self);
   h.startKeep = false;
@@ -184,7 +185,7 @@ test("5.05 (11.11): the player's starts are counted with the last one's bit; ano
   self.animationId = 0;
   h.noteStart(self);
   h.publishOwnAnimation(5n, self);
-  assert.deepEqual(h.results.ownAnimation, { guid: 5n, animation: 0, starts: 2, keep: false });
+  assert.deepEqual(h.results.ownAnimation, { guid: 5n, animation: 0, starts: 2, keep: false, rig: undefined });
 });
 
 // ---- the page: OwnAnimationSheath → WorldClient → CMSG_SET_SHEATHED ----

@@ -14,8 +14,9 @@
  *   dynamic; once something is, every later command line is an entry too.
  *
  * 0x005650c0 resolves them: the first entry whose options (when it starts with `[`) hold with something left;
- * a random list's first entry; a sequence's entry (0x00564900 asks the stock QueryCastSequence — here its first
- * entry); equipslot without its slot number. Then a name — an item first (0x00709de0: an `item:` link's id, else an
+ * a random list's first entry; a sequence's current step (0x00564900 asks the stock QueryCastSequence — 1.14 15.11:
+ * here too through `MacroShownHost.castSequence`, MacroCastSequence.ts; its first entry when nothing can be asked);
+ * equipslot without its slot number. Then a name — an item first (0x00709de0: an `item:` link's id, else an
  * item of that name in the item cache, case aside), else, except for the equip commands, a spell (0x00540200) — or
  * slots: one number is an inventory slot 1–23, two are a bag 0–4 and a slot in it. The holding group's target is
  * kept for the range check (+0x578, 0x005a94c0).
@@ -88,6 +89,12 @@ export interface MacroShownHost {
   inventoryItem(slot: number): number | undefined;
   /** Slot `slot` (from 0) of the bag worn in bag slot `bag` (0–3); undefined — empty or no such slot. */
   bagItem(bag: number, slot: number): number | undefined;
+  /**
+   * 1.14 (15.11): 0x00564900 — the stock `QueryCastSequence` for a sequence entry's text (MacroCastSequence.ts): its
+   * item or spell, null when it answered neither; undefined (or absent) when no interface can be asked, and the first
+   * entry stands for the sequence.
+   */
+  castSequence?(sequence: string): string | null | undefined;
 }
 
 /** What the macro stands for right now. */
@@ -130,7 +137,12 @@ export function resolveMacroShown(parse: MacroShownParse, host: MacroShownHost):
       target = chosen?.target;
     }
     if (entry.kind === "random") text = text.split(",")[0]!.trim();
-    else if (entry.kind === "sequence") text = text.replace(SEQUENCE_RESET, "").split(",")[0]!.trim();
+    else if (entry.kind === "sequence") {
+      // 1.14 (15.11): the current step as the stock Lua keeps it; null leaves the text as written (0x00564900).
+      const step = host.castSequence?.(text);
+      if (step === undefined) text = text.replace(SEQUENCE_RESET, "").split(",")[0]!.trim();
+      else if (step !== null) text = step;
+    }
     else if (entry.kind === "equipslot") text = text.replace(/^[0-9]*/, "").replace(/^ */, "");
     const aimed = target === undefined ? {} : { target };
     if (DIGIT.test(text)) {

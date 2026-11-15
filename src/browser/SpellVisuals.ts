@@ -362,6 +362,8 @@ export interface VisualTint {
   /** 0xRRGGBB, CharProc 1. */
   tint?: number;
   flash?: { colour: number; delayMs: number; durationMs: number };
+  /** 15.11 (6.11): CharProc 14 — the unit's alpha factor while the kit lives and the time it fades over (UnitTints.ts). */
+  unitAlpha?: { alpha: number; ms: number };
   startedAt: number;
   endsAt: number;
 }
@@ -509,9 +511,10 @@ function addKit(
   }
   if (kit.sound > 0) plan.sounds.push({ sound: kit.sound, point: { ...at }, at: startedAt });
   // 25.10 (6.27): the kit's tint and flash on its unit (CGUnit_C::CreateProceduralEffect 0x007265c0).
-  if (guid !== 0n && (kit.tint !== undefined || kit.flash)) {
+  if (guid !== 0n && (kit.tint !== undefined || kit.flash || kit.unitAlpha)) { // 15.11 (6.11): and CharProc 14's alpha
     (plan.tints ??= []).push({ guid, startedAt, endsAt,
-      ...(kit.tint !== undefined ? { tint: kit.tint } : {}), ...(kit.flash ? { flash: { ...kit.flash } } : {}) });
+      ...(kit.tint !== undefined ? { tint: kit.tint } : {}), ...(kit.flash ? { flash: { ...kit.flash } } : {}),
+      ...(kit.unitAlpha ? { unitAlpha: { ...kit.unitAlpha } } : {}) });
   }
 }
 
@@ -673,7 +676,13 @@ export function planSpellVisual(
         // launched by SPELL_GO itself from 0x0071a720's point — the caster's "$CSL"/"$CSR"/"$CST" event (0x0080e1b0 →
         // 0x0072e240; MissileLaunchEvent.ts). With an animation the cast's own animation event launches it (0x00734390
         // from unit +0xaf0); which event that is was not read, so the hand stays the stand-in there.
-        const launchEvents = !fire && !(visual.cast !== undefined && visual.cast.animation >= 1);
+        // 15.11 (6.12): read — the event callback 0x00732650 stores at +0xaf0 the position of whichever of "$CSL",
+        // "$CSR", "$CST" the animation fires (and "$BWR" at the hand-arrow attachment), and 0x00734390 launches then;
+        // when, in the clip, is not known here (no event times in `/visual/model-events`), so an animating cast keeps
+        // the hand. A visual with SpellVisual.Flags & 4 (`launchNow`) does not wait: 0x00732ff0 launches its missiles
+        // from 0x0071a720's point as it builds them.
+        const launchEvents = !fire
+          && (missile.launchNow === true || !(visual.cast !== undefined && visual.cast.animation >= 1));
         const launch = fire ? { attachment: fire.attachment, ...(fire.offset ? { offset: fire.offset } : {}) }
           : { attachment: missile.attachment, ...(launchEvents ? { events: true as const } : {}) };
         for (let missileIndex = 0; missileIndex < count; missileIndex++) {

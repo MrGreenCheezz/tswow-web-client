@@ -15,7 +15,7 @@ import test from "node:test";
 import { PNG } from "pngjs";
 import * as THREE from "three";
 
-import { specularMaskPng, specularTexturePath } from "../tools/generate-terrain-splat.mjs";
+import { TERRAIN_SPLAT_GENERATION, specularMaskPng, specularTexturePath } from "../tools/generate-terrain-splat.mjs"; // 15.11 (7.16): the current generation
 import { dbcDirectory } from "../tools/paths.mjs";
 import {
   TerrainSplatClient, applyTerrainSplat, setTerrainSpecularStrength, terrainSpecularStrength,
@@ -174,7 +174,7 @@ test("generator: v2 publishes each _s alpha as a grey mask named in splat.json; 
   const paths = await fixture();
   try {
     const legacy = await publishInto(paths, join(paths.box, "legacy"));
-    const v2 = await publishInto(paths, join(paths.box, "v2"), "terrain-splat-v2");
+    const v2 = await publishInto(paths, join(paths.box, "v2"), TERRAIN_SPLAT_GENERATION);
     assert.equal(legacy.splat.specular, undefined, "legacy splat.json names no masks");
     assert.equal((await legacy.layerFiles()).length, 3, "legacy writes the three layers only");
 
@@ -203,7 +203,7 @@ test("generator: v2 publishes each _s alpha as a grey mask named in splat.json; 
     assert.doesNotMatch(legacy.stamp.toLowerCase(), /_s\.blp/);
 
     // A second v2 run leaves the masks alone (their stamps are current) and names the same ids.
-    const again = await publishInto(paths, join(paths.box, "v2"), "terrain-splat-v2");
+    const again = await publishInto(paths, join(paths.box, "v2"), TERRAIN_SPLAT_GENERATION);
     assert.deepEqual(again.splat.specular, v2.splat.specular);
     assert.deepEqual(await again.layer(big), bigBytes);
   } finally {

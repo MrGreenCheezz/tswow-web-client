@@ -100,6 +100,9 @@ test("the «Usage» errors; a bare CreateFrame slider has no step and no range",
     assert.match(error(instance, "Plain:SetMinMaxValues(5, 1)"), /Usage: Plain:SetMinMaxValues\(min, max\)/);
     assert.match(error(instance, `Plain:SetMinMaxValues("a", 1)`), /Usage: Plain:SetMinMaxValues\(min, max\)/);
     assert.match(error(instance, `Plain:SetValue("x")`), /Usage: Plain:SetValue\(value\)/);
+    // 3.27 (15.11): nil and no argument too — lua_isnumber is false (0x00971f00); the old «nil is 0» stand-in is gone.
+    assert.match(error(instance, "Plain:SetValue(nil)"), /Usage: Plain:SetValue\(value\)/);
+    assert.match(error(instance, "Plain:SetValue()"), /Usage: Plain:SetValue\(value\)/);
     assert.match(error(instance, "Plain:SetValueStep()"), /Usage: Plain:SetValueStep\(value\)/);
     assert.match(error(instance, `CreateFrame("Slider"):SetMinMaxValues(2, 1)`), /Usage: <unnamed>:SetMinMaxValues/);
     assert.deepEqual(call(instance, `Plain:SetMinMaxValues("1", "4") return Plain:GetMinMaxValues()`, 2), [1, 4], "numeric strings are numbers");

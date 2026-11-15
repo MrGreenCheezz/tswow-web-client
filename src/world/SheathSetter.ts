@@ -49,4 +49,33 @@ export class SheathSetter {
   get held(): number | undefined {
     return this.#held;
   }
+
+  /**
+   * 5.05 (15.11, combat7): a new player object (login, a far teleport) holds the sheath byte of its CREATE block. Later
+   * VALUES changes of the byte do not move the active player's held state:
+   *
+   * * Read (re-2026-11-15/combat7/g7.c, g8.lst, g9.lst): the value callbacks are dispatched by 0x004d5150, reached only
+   *   from the VALUES path 0x004d5550 (a CREATE block, 0x004d53c0, only refreshes the snapshot), and only for a field
+   *   whose new bytes differ from the snapshot. The call is (guid lo, guid hi, field offset, size, snapshot pointer,
+   *   user data): `*param_5` is the OLD value, read as a dword (the PvP byte 0x1d1 rides in it). 0x00737aa0 then calls
+   *   0x00736d30(new byte, 1, 1) for the active player only when +0xb5c equals that old dword.
+   * * Recorded on Wow.exe (runs/sheath6-calib, a fresh login with the byte 0 in CREATE, then a VALUES block with
+   *   BYTES_2 = 1 and the main-hand item): the sword stayed on the back and the first ToggleSheath sent 1 — the held
+   *   state was still 0. Read literally (held 0 = old 0) the callback would have drawn it, so the reading is incomplete
+   *   (a guess, unverified: in that block the byte's callback ran before the item's, and the setter's clamp 0x00715d00
+   *   may have turned the state back to 0 with no weapon in the hand yet). The taking branch is left out.
+   * * On TrinityCore it would never fire anyway: a player's byte changes only from its own CMSG_SET_SHEATHED
+   *   (CombatHandler.cpp:77), whose echo always finds +0xb5c already moved, so it is ignored either way.
+   */
+  reset(published: number | undefined): void {
+    this.#held = published;
+  }
+
+  /**
+   * 5.05 (15.11, combat7): the sheath the active player's model shows (+0xb5c): the held state, else the server's
+   * byte. The model hangs its pieces by it (0x00731f40), so a state this client decides shows in the frame it is set.
+   */
+  shown(published: number | undefined): number {
+    return this.#held ?? published ?? SHEATH_UNARMED;
+  }
 }

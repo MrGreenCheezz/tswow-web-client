@@ -404,13 +404,14 @@ test("the victim's own melee target is read when the wound plays; dead, feigning
   cues.swing(record(HIT, VICTIMSTATE_HIT), token, true, h);
   cues.tick(1, h);
   assert.deepEqual(h.reactions, ["22:wound", "22:standWound"]);
-  // A parry with the weapons sheathed: ParryUnarmed (0x73b050 reads UNIT_FIELD_BYTES_2 byte 0).
+  // 5.05 (15.11, combat7): a parry goes as "parry" whatever the byte says — 0x73b050 reads the sheath the victim
+  // shows (+0xb5c), which the renderer holds and turns into ParryUnarmed (tests/shown-parry.test.mjs).
   h.away.add(VICTIM);
   token = {};
   h.progress.set(token, 0.2);
   cues.swing(record(HIT, VICTIMSTATE_PARRY), token, true, h);
   cues.tick(2, h);
-  assert.equal(h.reactions.at(-1), "22:parryUnarmed");
+  assert.equal(h.reactions.at(-1), "22:parry");
   // Dead or feigning (0x71f560): nothing.
   h.dead.add(VICTIM);
   token = {};
@@ -458,14 +459,15 @@ test("the session host: the renderer's swing token, the world's fields, attach a
   progress.set(token, 0.5);
   renderer.frame(0, reactions);
   assert.deepEqual(calls, ["swing 11 attack", "react 22 parry"], "05.10 review D2: no wound after the parry");
-  // The victim swinging back: CombatWound; sheathed: ParryUnarmed; feigning: nothing.
+  // The victim swinging back: CombatWound; byte sheathed: still "parry" (5.05, 15.11, combat7: the renderer picks
+  // ParryUnarmed by the sheath it shows, ShownParry.ts); feigning: nothing.
   reactions.meleeAttack(VICTIM, ATTACKER);
   world.objects.get(VICTIM).fields = fields(100, 0, 0);
   calls.length = 0;
   reactions.swing(record(HIT, VICTIMSTATE_PARRY), "attack");
   for (const key of progress.keys()) progress.set(key, 1);
   renderer.frame(1, reactions);
-  assert.deepEqual(calls, ["swing 11 attack", "react 22 parryUnarmed"]);
+  assert.deepEqual(calls, ["swing 11 attack", "react 22 parry"]);
   // 05.10 review D2: the victim's own swing still turns a plain hit into CombatWound.
   calls.length = 0;
   reactions.swing(record(HIT, VICTIMSTATE_HIT), "attack");
@@ -741,7 +743,7 @@ async function runExchange(path) {
   p.swing(swing(HIT, VICTIMSTATE_HIT), "attack"); run(1); // 10, stopped before its events
   p.meleeAttack(ATTACKER, undefined); run(12);
   world.objects.get(VICTIM).fields.set(fieldsOf.BYTES_2, 0); // weapons away
-  p.swing(swing(HIT, VICTIMSTATE_PARRY), "attack"); run(12); // 11: parryUnarmed
+  p.swing(swing(HIT, VICTIMSTATE_PARRY), "attack"); run(12); // 11: parry (the renderer makes it unarmed, ShownParry.ts)
   world.objects.get(VICTIM).fields.set(fieldsOf.HEALTH, 0);
   p.swing(swing(HIT, VICTIMSTATE_HIT), "attack"); run(12); // 12 dead victim: nothing
   return { reactions, path: p };
@@ -753,7 +755,7 @@ test("22.10 ARC-2 S4a: a melee exchange reacts at the same frames, in the same o
   assert.deepEqual(current.reactions, old.reactions);
   // The exchange covers what it claims to.
   const kinds = new Set(old.reactions.map((line) => line.split(":")[2]));
-  for (const kind of ["standWound", "parry", "wound", "dodge", "critical", "block", "parryUnarmed"]) {
+  for (const kind of ["standWound", "parry", "wound", "dodge", "critical", "block"]) { // 5.05 (15.11, combat7): no parryUnarmed from the cues
     assert.ok(kinds.has(kind), `${kind} in ${old.reactions.join(" ")}`);
   }
   assert.ok(old.reactions.length >= 10, old.reactions.join(" "));
@@ -785,8 +787,9 @@ test("22.10 ARC-2 S4a: the swing commands and the published record are structure
   const clone = structuredClone(results);
   assert.deepEqual(clone.swings, results.swings);
   assert.deepEqual([...clone.swings.keys()], [41, 42, 43]);
-  assert.deepEqual(clone.swings.get(41), { progress: 0.5, started: true, swingSeconds: 1.25 });
-  assert.deepEqual(clone.swings.get(42), { progress: undefined, started: false, swingSeconds: undefined });
+  // 6.06 (15.11, combat7): + waitingForClip, a boolean.
+  assert.deepEqual(clone.swings.get(41), { progress: 0.5, started: true, swingSeconds: 1.25, waitingForClip: false });
+  assert.deepEqual(clone.swings.get(42), { progress: undefined, started: false, swingSeconds: undefined, waitingForClip: false });
   assert.equal(clone.swings.get(43).progress, null);
   assert.equal(clone.swingNow, 1234.5, "the frame's now, on the main clock (identity in the page)");
   const frameBefore = results.swingFrame;

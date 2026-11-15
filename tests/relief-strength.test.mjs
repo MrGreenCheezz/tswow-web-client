@@ -197,9 +197,11 @@ function compile(material) {
 // the M2's again at ccc78f0 (12.24 dungeon lamps: the shared lighting chunk sums lamps apart, `wowLampIndoor`), and
 // 04.11 (7.63: the lamps' ceiling by the brightest channel; the old pins were checked to hold with the light files as before it);
 // and 15.11 (7.66: the aerial fog body calls `wowFogFactor`, three's own smoothstep for a plain far distance; the old
-// pins 286b893b… and fbfaa3ea… were checked to hold with that one line as before it).
+// pins 286b893b… and fbfaa3ea… were checked to hold with that one line as before it); the terrain's again on
+// 15.11 (7.07: the ground saturates per channel after the sun term, TerrainLightSaturation.ts; the old pin
+// cc0256e3… was checked to hold with that one line left out).
 const BEFORE = {
-  terrain: "cc0256e3b82a2605f6eca53ac8bf86177dac28082508fa1f06655af347f99eab",
+  terrain: "7d91065a3d673fd7505b9db3267b9be5f88329089d4f6d2b54d9fcb9be0941b3",
   wmoLit: "1f5528782644610f6034a4cbab28a02c7c15ce77fdeb88b6ae82b52481019c3a",
   wmoRoom: "03889732631cd54ee5ec602a63aee8af4bf80eb0194e83e600e1ed5fc12d320f",
   m2: "7662077cc467c6a4f8080fe0845ff382b96a41aa039a01cd584dd15d9b8cdba5",

@@ -10,7 +10,7 @@
  *   maxHeight)». The pair is kept as floats (layout units, converted back by the getters), the other pair is
  *   left as it was. `GetMinResize` (0x004a0480) / `GetMaxResize` (0x004a0640) answer the pair; a frame that never
  *   set one answers 0, 0 (the layout frame's constructor 0x00489980, run by 0x00488310 at +0x20, zeroes them).
- *   Nothing here sizes a frame (StartSizing is not answered), so the bounds are kept and read by nothing else.
+ *   widgets7: StartSizing sizes a frame within them (FrameXmlSizing.ts, below).
  * * `SetDontSavePosition(flag)` (0x004a08c0): bit 0x80000 of +0xb4 from 0x00815500 with default 1 (no argument
  *   sets it, nil clears it); `GetDontSavePosition` (0x004a0910): 1 or nil. The constructor (0x004922f0) clears it.
  * * `EnableJoystick(flag)` (0x004a11d0): bit 0x10 of +0xd8 from 0x00815500 with default 1 — in the client only
@@ -43,6 +43,10 @@
 import type { FrameXmlUiBridge } from "../ui/framexml_compat/FrameXmlRuntime.js";
 import type { FrameXmlFrame } from "../ui/framexml_compat/FrameXmlTypes.js";
 import { plainFrameXmlText } from "../ui/framexml_compat/FrameXmlText.js";
+import {
+  frameXmlBeginSizing, frameXmlResizeBounds, frameXmlSetResizeBounds, frameXmlSizingOf, frameXmlSizingPoint,
+  type FrameXmlResizeBounds,
+} from "../ui/framexml_compat/FrameXmlSizing.js";
 import { frameXmlIgnoresDepth } from "./GlueWidgetMethodFills.js";
 import { GlueLuaRaise } from "./GlueLua.js";
 import type { WidgetMethod } from "./GlueWidgets.js";
@@ -67,23 +71,12 @@ function flagArgument(args: readonly unknown[], fallback: boolean): boolean {
   return false;
 }
 
-interface ResizeBounds { minWidth: number; minHeight: number; maxWidth: number; maxHeight: number }
-const resizeBounds = new WeakMap<FrameXmlFrame, ResizeBounds>();
 const dontSavePosition = new WeakMap<FrameXmlFrame, boolean>();
 const joystickEnabled = new WeakMap<FrameXmlFrame, boolean>();
 
-function boundsOf(frame: FrameXmlFrame): ResizeBounds {
-  let bounds = resizeBounds.get(frame);
-  if (!bounds) {
-    bounds = { minWidth: 0, minHeight: 0, maxWidth: 0, maxHeight: 0 };
-    resizeBounds.set(frame, bounds);
-  }
-  return bounds;
-}
-
-/** A frame's resize bounds as SetMinResize/SetMaxResize left them (0, 0 each when never set). */
-export function glueFrameResizeBounds(frame: FrameXmlFrame): Readonly<ResizeBounds> {
-  return resizeBounds.get(frame) ?? { minWidth: 0, minHeight: 0, maxWidth: 0, maxHeight: 0 };
+/** A frame's resize bounds as SetMinResize/SetMaxResize or `<ResizeBounds>` left them (0, 0 each when never set). */
+export function glueFrameResizeBounds(frame: FrameXmlFrame): Readonly<FrameXmlResizeBounds> {
+  return frameXmlResizeBounds(frame);
 }
 
 export function frameFillMethods(): Record<string, WidgetMethod> {
@@ -93,10 +86,7 @@ export function frameFillMethods(): Record<string, WidgetMethod> {
         ? `Usage: ${nameOf(frame)}:SetMinResize(minWidth, minHeight)`
         : `Usage: ${nameOf(frame)}:SetMaxResize(maxWidth, maxHeight)`);
     }
-    const width = Math.fround(Number(args[0]));
-    const height = Math.fround(Number(args[1]));
-    const bounds = boundsOf(frame);
-    if (min) { bounds.minWidth = width; bounds.minHeight = height; } else { bounds.maxWidth = width; bounds.maxHeight = height; }
+    frameXmlSetResizeBounds(frame, min ? "min" : "max", Math.fround(Number(args[0])), Math.fround(Number(args[1])));
   };
   return {
     SetMinResize: setter(true),
@@ -257,6 +247,40 @@ export function editBoxFillMethods(bridge: FrameXmlUiBridge): Record<string, Wid
     },
   };
 }
+
+/**
+ * widgets7 (15.11, notes .runtime/re-2026-11-15/widgets5/g1.c, widgets7/w1.c, w3.c):
+ * * `StartSizing([point])` (0x004a0b10): see FrameXmlSizing.ts; the renderer applies the moves. As StartMoving
+ *   does here, it starts only on a shown frame, and not while a frame is moving or sizing.
+ * * `GetBackdropColor` (0x004a19a0) / `GetBackdropBorderColor` (0x004a1af0): nothing without a backdrop (+0x208);
+ *   with one, the packed colour bytes (+0x60 / +0x64) as r, g, b, a times 1/255. A backdrop object starts white
+ *   (0x004a2d40 packs 1, 1, 1, 1 into both), and SetBackdrop(table) builds a new one (0x004a15a0 → 0x004a2d40,
+ *   0x004905a0 frees the old), so both colours go back to white there — GlueWidgets' SetBackdrop does that.
+ */
+export function frameSizingMethods(bridge: FrameXmlUiBridge): Record<string, WidgetMethod> {
+  // 0x0048bd20 packs each channel as (int)(v × 255 + 0.5) — read with the FPU chopping, or white (255.5) would wrap
+  // to 0 — into a byte; the getters answer byte × 0.00392156 (the float at 0x009ead78, a hair under 1/255) as a
+  // float, so white answers 0.99999779462814, not 1.
+  const byte = (value: number | undefined): number => {
+    const channel = value === undefined || !Number.isFinite(value) ? 1 : value;
+    return Math.fround((Math.trunc(channel * 255 + 0.5) & 0xff) * BYTE_TO_FLOAT);
+  };
+  const colour = (backdrop: unknown, color: { r: number; g: number; b: number; a?: number } | undefined): unknown[] =>
+    (backdrop ? [byte(color?.r), byte(color?.g), byte(color?.b), byte(color?.a)] : []);
+  return {
+    StartSizing: ({ frame, self, args }) => {
+      if (self.attributes["resizable"] !== "true") throw new GlueLuaRaise(`Frame ${nameOf(frame)} is not resizable`);
+      if (frameXmlSizingOf(bridge) || !bridge.isVisible(frame)) return;
+      for (const other of bridge.frames) if (other.moving) return;
+      frameXmlBeginSizing(bridge, frame, frameXmlSizingPoint(args[0]));
+    },
+    GetBackdropColor: ({ self }) => colour(self.backdrop, self.backdropColor),
+    GetBackdropBorderColor: ({ self }) => colour(self.backdrop, self.backdropBorderColor),
+  };
+}
+
+/** The float at 0x009ead78 (u32 0x3b80806e) the colour getters scale a byte by. */
+const BYTE_TO_FLOAT = Math.fround(0.003921560011804104);
 
 const nonBlocking = new WeakMap<FrameXmlFrame, boolean>();
 const BLEND_MODES = ["DISABLE", "BLEND", "ALPHAKEY", "ADD", "MOD"] as const;

@@ -13,6 +13,8 @@ import { unknownLabel } from "./Format.js";
 import { fillTemplate } from "./ItemTooltip.js";
 import { formatSpellDescription, spellCostUnit, type SpellDescriptionContext } from "./SpellText.js";
 import { spellPowerCostFor, spellPowerPerSecondFor } from "./SpellTextCost.js"; // 3.43 (15.11)
+import { spellCastTimeFor } from "./SpellCastTimeRange.js"; // 3.43 (15.11)
+import { sessionPetCostUnit } from "./SpellTextPetCost.js"; // 3.43 (15.11)
 import { sessionSpellDescriptionContext } from "./SpellTextLiveContext.js"; // 12.10
 import type { TooltipContent, TooltipLine } from "./TooltipTypes.js";
 
@@ -225,7 +227,7 @@ const STOCK_POWER_COST_KEYS: Readonly<Record<number, string>> = {
  * «Мана: 320», the stock cost row's left half: the same amount `powerCostLine` works out, under the
  * power's own word instead of the native «Затраты».
  */
-function stockPowerCost(metadata: SpellMetadata): string | undefined {
+function stockPowerCost(metadata: SpellMetadata, pet = false): string | undefined {
   const key = STOCK_POWER_COST_KEYS[metadata.powerType];
   if (key === undefined) return undefined;
   const scale = POWER_DISPLAY_SCALE[metadata.powerType] ?? 1;
@@ -233,7 +235,8 @@ function stockPowerCost(metadata: SpellMetadata): string | undefined {
   // 0x007ff100 (SpellTextCost.ts), each divided by the power's scale (0x007fde00) unsigned; a per-second part above 0
   // gives `<POWER>_COST_PER_TIME` with both, else a cost of 1 or more `<POWER>_COST`, else no row. The raw columns
   // below stay for a session with no player or a fact this client does not have yet.
-  const unit = spellCostUnit(spellDescriptionContext());
+  // 3.43 (15.11): a pet-bar spell's row is the pet's (SetPetAction 0x00625470 → 0x006238a0, SpellTextPetCost.ts).
+  const unit = pet ? sessionPetCostUnit() : spellCostUnit(spellDescriptionContext());
   const cost = unit ? spellPowerCostFor(metadata, unit) : undefined;
   const perSecond = unit ? spellPowerPerSecondFor(metadata, unit) : undefined;
   if (cost !== undefined && perSecond !== undefined) {
@@ -268,6 +271,8 @@ export interface StockSpellTooltipOptions {
   readonly auraLevel?: number;
   /** 3.43: the aura slot's applications byte (0x0061f8d0, slot byte +0xe); absent, the multiplier stays 1. */
   readonly auraCount?: number;
+  /** 3.43 (15.11): a pet-bar spell (SetPetAction): the cost and cast rows are the pet's (SpellTextPetCost.ts). */
+  readonly pet?: boolean;
 }
 
 /**
@@ -316,14 +321,19 @@ export function stockSpellTooltip(spellId: number, options?: StockSpellTooltipOp
     if (!left && !right) return;
     lines.push(right ? { text: left ?? "", right } : { text: left ?? "" });
   };
-  pair(stockPowerCost(metadata), rangeLine(metadata));
+  const pet = options?.pet === true; // 3.43 (15.11)
+  pair(stockPowerCost(metadata, pet), rangeLine(metadata));
   const cooldown = Math.max(metadata.recoveryTime, metadata.categoryRecoveryTime);
+  // 3.43 (15.11): the cast row's time is 0x007ff180's for the same unit (SpellCastTimeRange.ts) — the level growth,
+  // SPELLMOD_CASTING_TIME and the unit's cast speed; the row's own time while a fact is missing.
+  const castUnit = pet ? sessionPetCostUnit() : spellCostUnit(spellDescriptionContext());
+  const castTime = spellCastTimeFor(metadata, castUnit, pet) ?? metadata.castTime;
   pair(
     metadata.passive ? undefined
       : metadata.onNextSwing === true ? stockSpellString("SPELL_ON_NEXT_SWING")
         : metadata.channeled === true ? stockSpellString("SPELL_CAST_CHANNELED")
-          : metadata.castTime > 0
-            ? stockTime(metadata.castTime, "SPELL_CAST_TIME_SEC", "SPELL_CAST_TIME_MIN")
+          : castTime > 0
+            ? stockTime(castTime, "SPELL_CAST_TIME_SEC", "SPELL_CAST_TIME_MIN")
             : stockSpellString("SPELL_CAST_TIME_INSTANT"),
     cooldown > 0 ? stockTime(cooldown, "SPELL_RECAST_TIME_SEC", "SPELL_RECAST_TIME_MIN") : undefined,
   );

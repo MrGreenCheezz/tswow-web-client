@@ -8,13 +8,26 @@
  * function 0x00767fc0 (name, help, flags, default, callback, category, …), its constant arguments read through
  * the decompiler's p-code — 443 call sites in 43 functions, 436 rows. Kept: the registering function, the name, the flags
  * and the default string (null where the default is computed or not a string). Left out: the help texts, and
- * the seven calls whose name is built at run time (0x005fd910's loops building `camera…`, `cameraSmooth…`,
- * `cameraSmoothViewData…` and `cameraTerrainTilt…` names; 0x006b9970's `synchronize…`; 0x0050fea0; and the
+ * the calls whose name is built at run time (0x006b9970's `synchronize…`; 0x0050fea0, Lua's RegisterCVar; and the
  * console `SET` of an unknown name, 0x007681f0). `cameraSmoothStyle` and `cameraSmoothTrackingStyle` take
  * their default through the pointer at 0x00ad1c2c, read by hand: `"4"` at 0x00a00b78.
  *
+ * 15.11 (cvar7, dumps .runtime/re-2026-11-15/cvar7): a byte scan of every `call 0x00767fc0` (CallScan.java) found 446
+ * sites — the 443 above and three in a function Ghidra had not analysed (0x004047e0: textureFilteringMode, UIFaster,
+ * textureCacheSize, added below). The defaults read through a pointer were filled by hand: cameraView "2" (0x00ad1b90),
+ * cameraViewBlendStyle "1" (0x00ad1b8c), and cameraSavedDistance/Pitch view 2's "5.55"/"10.0" (0x00ad1ba8 indexed by
+ * atoi of cameraView's default). 0x005fd910's four loops of run-time names are generated (`cameraLoopRows`) from the
+ * name pieces and default strings it reads — the same tables game/CameraCVars.ts holds, compared name by name with the
+ * image's bytes (0x00ad1b54…0x00ad204c, all 274 equal).
+ *
  * DOM-free data.
  */
+
+import {
+  CAMERA_FOLLOW_STATES, CAMERA_SMOOTH_STYLES, CAMERA_TERRAIN_TILT_FIELDS, CAMERA_TERRAIN_TILT_STATES, CAMERA_VIEW_AXES,
+  CAMERA_VIEW_SUFFIXES, cameraCVarDefinition, cameraSmoothCVar, cameraSmoothViewDataCVar, cameraTerrainTiltCVar,
+  cameraViewCVar,
+} from "../game/CameraCVars.js";
 
 /** [registering function, name, flags (null: computed), default (null: computed or none)]. */
 const ROWS: readonly (readonly [number, string, number | null, string | null])[] = [  [0x006ec2c0, "SplineOpt", 0x1, "1"],
@@ -189,7 +202,8 @@ const ROWS: readonly (readonly [number, string, number | null, string | null])[]
   [0x0051d9b0, "nameplateAllowOverlap", 0x20, "1"],
   [0x0051d9b0, "unitHighlights", 0x10, "1"],
   [0x0051d9b0, "enablePVPNotifyAFK", 0x10, "1"],
-  [0x0051d9b0, "serviceTypeFilter", 0x10, null],
+  // sprintf("%d", 3) into a local before the call (0x0051d9b0; re-2026-11-07/318/reg.c:315): a constant.
+  [0x0051d9b0, "serviceTypeFilter", 0x10, "3"],
   [0x0051d9b0, "autojoinPartyVoice", 0x10, "1"],
   [0x0051d9b0, "autojoinBGVoice", 0x10, "0"],
   [0x0051d9b0, "PushToTalkSound", 0x10, "0"],
@@ -239,9 +253,9 @@ const ROWS: readonly (readonly [number, string, number | null, string | null])[]
   [0x005238a0, "uiScale", 0x0, "1.0"],
   [0x005238a0, "useUiScale", 0x0, "0"],
   [0x005e71a0, "POIShiftComplete", 0x0, "0.6"],
-  [0x005fd910, "cameraSavedDistance", 0x20, null],
+  [0x005fd910, "cameraSavedDistance", 0x20, "5.55"],
   [0x005fd910, "cameraSavedVehicleDistance", 0x20, "-1.0"],
-  [0x005fd910, "cameraSavedPitch", 0x20, null],
+  [0x005fd910, "cameraSavedPitch", 0x20, "10.0"],
   [0x005fd910, "mouseInvertYaw", 0x10, "0"],
   [0x005fd910, "mouseInvertPitch", 0x10, "0"],
   [0x005fd910, "cameraBobbing", 0x0, "0"],
@@ -257,8 +271,8 @@ const ROWS: readonly (readonly [number, string, number | null, string | null])[]
   [0x005fd910, "cameraTargetSmoothSpeed", 0x10, "90"],
   [0x005fd910, "cameraYawSmoothSpeed", 0x10, "180"],
   [0x005fd910, "cameraFlyingMountHeightSmoothSpeed", 0x10, "2.0"],
-  [0x005fd910, "cameraViewBlendStyle", 0x10, null],
-  [0x005fd910, "cameraView", 0x10, null],
+  [0x005fd910, "cameraViewBlendStyle", 0x10, "1"],
+  [0x005fd910, "cameraView", 0x10, "2"],
   [0x005fd910, "camerasmooth", 0x10, "1"],
   [0x005fd910, "cameraSmoothPitch", 0x10, "1"],
   [0x005fd910, "cameraSmoothYaw", 0x10, "1"],
@@ -453,6 +467,11 @@ const ROWS: readonly (readonly [number, string, number | null, string | null])[]
   [0x0078e400, "projectedTextures", 0x1, "0"],
   [0x0078e400, "gxTextureCacheSize", 0x1, "0"],
   [0x0078e400, "spellEffectLevel", 0x1, "9"],
+  // 15.11 (cvar7): three calls in a function Ghidra never made one of (entry 0x004047e0), found by a byte scan of every
+  // call to 0x00767fc0 (.runtime/ghidra-scripts/CallScan.java): the call sites 0x0040484f, 0x00404877, 0x004048a2.
+  [0x004047e0, "textureFilteringMode", 0x1, "1"],
+  [0x004047e0, "UIFaster", 0x0, "3"],
+  [0x004047e0, "textureCacheSize", 0x1, "32"],
 ];
 
 export interface WowCVarRegistration {
@@ -463,13 +482,105 @@ export interface WowCVarRegistration {
   readonly registrar: number;
 }
 
+type Row = readonly [number, string, number | null, string | null];
+
+/**
+ * 0x005fd910's loops (15.11): "camera" + Distance|Pitch|Yaw + the eight view suffixes with flags 0x50 (0x10, the
+ * account's config slot, and 0x40) after `cameraView`; then, after `cameraCustomViewSmoothing`, per style (Never…Smarter)
+ * `cameraSmooth` + state + Delay|Factor, `cameraSmoothViewData` + axis + Delay|Factor and `cameraTerrainTilt` + state +
+ * Absorb|Delay|Factor, flags 0x10. The defaults are game/CameraCVars.ts's, which are the image's strings.
+ */
+function cameraLoopRows(which: "views" | "smoothing"): Row[] {
+  const rows: Row[] = [];
+  const row = (name: string, flags: number): void => {
+    rows.push([0x005fd910, name, flags, cameraCVarDefinition(name)?.defaultValue ?? null]);
+  };
+  if (which === "views") {
+    for (let view = 0; view < CAMERA_VIEW_SUFFIXES.length; view += 1) {
+      for (const axis of CAMERA_VIEW_AXES) row(cameraViewCVar(axis, view), 0x50);
+    }
+    return rows;
+  }
+  for (let style = 0; style < CAMERA_SMOOTH_STYLES.length; style += 1) {
+    for (let state = 0; state < CAMERA_FOLLOW_STATES.length; state += 1) {
+      row(cameraSmoothCVar(style, state, false), 0x10);
+      row(cameraSmoothCVar(style, state, true), 0x10);
+    }
+    for (let axis = 0; axis < CAMERA_VIEW_AXES.length; axis += 1) {
+      row(cameraSmoothViewDataCVar(style, axis, false), 0x10);
+      row(cameraSmoothViewDataCVar(style, axis, true), 0x10);
+    }
+    for (let state = 0; state < CAMERA_TERRAIN_TILT_STATES.length; state += 1) {
+      for (let field = 0; field < CAMERA_TERRAIN_TILT_FIELDS.length; field += 1) row(cameraTerrainTiltCVar(style, state, field), 0x10);
+    }
+  }
+  return rows;
+}
+
+/** ROWS with 0x005fd910's generated rows in registration order. */
+function allRows(): Row[] {
+  const rows: Row[] = [];
+  for (const entry of ROWS) {
+    rows.push(entry);
+    if (entry[0] === 0x005fd910 && entry[1] === "cameraView") rows.push(...cameraLoopRows("views"));
+    if (entry[0] === 0x005fd910 && entry[1] === "cameraCustomViewSmoothing") rows.push(...cameraLoopRows("smoothing"));
+  }
+  return rows;
+}
+
 const BY_NAME = new Map<string, WowCVarRegistration>();
-for (const [registrar, name, flags, defaultValue] of ROWS) {
+for (const [registrar, name, flags, defaultValue] of allRows()) {
   const key = name.toLowerCase();
   // A name registered twice (realmName) keeps its first registration.
   if (BY_NAME.has(key)) continue;
   BY_NAME.set(key, { name, flags: flags ?? undefined, defaultValue: defaultValue ?? undefined, registrar });
 }
+
+/**
+ * 15.11 (cvar7, follow-up): the registrations whose default 0x00767fc0's caller computes at start-up, and the value
+ * it computes on a typical machine (Windows, a shader-capable card, two or more processors, the system mouse speed
+ * left at its middle step). A CVar of Wow.exe always has a value, a computed default included; these are what GetCVar
+ * answers before anything is stored. `byLocale` is the value for the client locale where the computation depends on
+ * it: 0x00405dd0 keeps the index of Wow.ini's Language+Country in 0x00ad2fe0 (enUS koKR frFR deDE zhCN zhTW esES esMX
+ * ruRU) at 0x00c5de9c. Dumps: .runtime/re-2026-11-15/cvar7/computed.c, gx.c, sysfns.c, tables5–7.txt.
+ * timeMgrUseMilitaryTime is not here: the neutral map answers it by locale already.
+ */
+export interface WowCVarComputedDefault {
+  readonly name: string;
+  readonly value: string;
+  readonly byLocale?: Readonly<Record<string, string>>;
+}
+
+export const WOW_CVAR_COMPUTED_DEFAULTS: readonly WowCVarComputedDefault[] = Object.freeze([
+  // 0x00401b60: sprintf("%1.1f", 0x00869630) — the system mouse speed (0x00d41548) times a constant: "1.0" at the
+  // Windows default speed.
+  { name: "mouseSpeed", value: "1.0" },
+  // 0x0051d9b0: "1" when 0x00c5de9c == 1 (koKR), else "0".
+  { name: "autoInteract", value: "0", byLocale: { koKR: "1" } },
+  // 0x007f3a10: "%d" of the table 0x00af4e14 by that index: 1 for koKR and zhCN, 2 for the others.
+  { name: "violenceLevel", value: "2", byLocale: { koKR: "1", zhCN: "1" } },
+  // 0x0076a630: "1" when 0x00c5de9c == 4 (zhCN), else "0" — full screen and not maximised.
+  { name: "gxWindow", value: "0", byLocale: { zhCN: "1" } },
+  { name: "gxMaximize", value: "0", byLocale: { zhCN: "1" } },
+  // 0x0076a630: the detected formats through the table 0x00ad87c4 ("16", "24", "24", "30", "16", "24", "24", "32"):
+  // a 32-bit desktop's X8R8G8B8 and the D24S8 depth buffer are "24" each.
+  { name: "gxColorBits", value: "24" },
+  { name: "gxDepthBits", value: "24" },
+  // 0x0076a630: "%dx%d" of the desktop mode; a typical one.
+  { name: "gxResolution", value: "1920x1080" },
+  // 0x0076a630: the table 0x00ad87e4 (OpenGL, D3D9, D3D9Ex, D3D10, D3D11) by 0x008c8de0's choice; D3D9 on Windows.
+  { name: "gxApi", value: "D3D9" },
+  // 0x0076a630: "%d" of the detected multisample (+0x54) and fix-lag (+0x50) fields; one sample, and the lag fix on
+  // (the detection's fields were not read further: these are the common values).
+  { name: "gxMultisample", value: "1" },
+  { name: "gxFixLag", value: "1" },
+  // 0x004d1600: "1" when GetSystemInfo's processor count (0x0086b240) is 2 or more.
+  { name: "Sound_EnableDSPEffects", value: "1" },
+  // 0x007ea260, 0x007ea5f0, 0x008bfe80: "1" when the effect's +0x18 byte says the card can draw it.
+  { name: "ffxDeath", value: "1" },
+  { name: "ffxSpecial", value: "1" },
+  { name: "ffxGlow", value: "1" },
+].map((row) => Object.freeze(row)));
 
 /** Every registration by lower-cased name. */
 export const WOW_CVAR_REGISTRY: ReadonlyMap<string, WowCVarRegistration> = BY_NAME;
@@ -477,6 +588,20 @@ export const WOW_CVAR_REGISTRY: ReadonlyMap<string, WowCVarRegistration> = BY_NA
 /** A CVar's registration (any case of the name), or undefined. */
 export function wowCVar(name: string): WowCVarRegistration | undefined {
   return BY_NAME.get(name.toLowerCase());
+}
+
+const COMPUTED_BY_NAME = new Map(WOW_CVAR_COMPUTED_DEFAULTS.map((row) => [row.name.toLowerCase(), row]));
+
+/**
+ * What a CVar of Wow.exe is before anything is stored (any case of the name): its registered default, else the value
+ * its computed default has on a typical machine for `locale`; undefined for a name Wow.exe does not register.
+ */
+export function wowCVarStartValue(name: string, locale?: string): string | undefined {
+  const registered = wowCVar(name)?.defaultValue;
+  if (registered !== undefined) return registered;
+  const computed = COMPUTED_BY_NAME.get(name.toLowerCase());
+  if (!computed) return undefined;
+  return (locale !== undefined ? computed.byLocale?.[locale] : undefined) ?? computed.value;
 }
 
 /** The account-data config slot a CVar is kept in: 0 (flag 0x10), 1 (0x20), or undefined (Config.wtf, none). */

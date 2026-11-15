@@ -1625,21 +1625,35 @@ function applyShaderSteps(material: THREE.Material, steps: readonly ShaderStep[]
  * a whole card's worth of fog colour added to the frame.
  *
  * Modes 5 and 6 multiply what is already in the frame, so distance has to take them towards their
- * own identity instead: white for `DstColor*SrcColor`. Mod2x's identity is strictly 0.5 and it
- * rides the same branch, which is worth exactly what it costs — 1 mod and 11 mod2x batches in the
- * whole of `spells\`, measured.
+ * own identity instead: white for `DstColor*SrcColor`. Mod2x's identity is 0.5, and 15.11 Wow.exe's own
+ * table (0x00a45390, `fogModeBody`) gives it grey 0x808080 rather than white; blend-add (7) gets no fog.
  */
 export function applyFogMode(material: THREE.Material, blendMode: number): void {
   const step = fogStep(blendMode);
   if (step) applyShaderSteps(material, [step]);
 }
 
+/**
+ * 15.11 (6.11 follow-up): the fog colour of an M2 draw by its blend, as Wow.exe 3.3.5a 12340 picks it. Every M2 draw —
+ * the batch draws 0x008203b0, 0x00820720, 0x00820ae0, 0x00820f40, 0x00821040, 0x00823070 and the particle draw
+ * 0x008214e0 — goes through 0x0081fb10, which reads the fog mode from the byte table 0x00a45390 by M2 blend
+ * (.runtime/re-2026-11-15/fx7/r4, r9): {0: 1, 1: 1, 2: 1, 3: 2, 4: 2, 5: 3, 6: 4, 7: 0}; mode 1 is the scene's fog
+ * colour, 2 black, 3 white, 4 grey 0x808080, 0 fog off (also for a material with flag 2). The stand recordings show the
+ * constant the pixel shader gets as c2 (`batch-fog-census.txt`): mod batches (DESTCOLOR/ZERO) 1,1,1 ×4, mod2x
+ * (DESTCOLOR/SRCCOLOR) 0.502,0.502,0.502 ×16, additive mostly 0,0,0.
+ */
+export function fogModeBody(blendMode: number): string | undefined {
+  switch (blendMode) {
+    case BLEND_NO_ALPHA_ADD: case BLEND_ADD: return "gl_FragColor.rgb *= ( 1.0 - fogFactor );";
+    case BLEND_MOD: return "gl_FragColor.rgb = mix( gl_FragColor.rgb, vec3( 1.0 ), fogFactor );";
+    case BLEND_MOD2X: return "gl_FragColor.rgb = mix( gl_FragColor.rgb, vec3( 128.0 / 255.0 ), fogFactor );";
+    case BLEND_BLEND_ADD: return "/* 0x00a45390: no fog for blend-add */";
+    default: return undefined;
+  }
+}
+
 function fogStep(blendMode: number): ShaderStep | undefined {
-  const body = blendMode === BLEND_NO_ALPHA_ADD || blendMode === BLEND_ADD || blendMode === BLEND_BLEND_ADD
-    ? "gl_FragColor.rgb *= ( 1.0 - fogFactor );"
-    : blendMode === BLEND_MOD || blendMode === BLEND_MOD2X
-      ? "gl_FragColor.rgb = mix( gl_FragColor.rgb, vec3( 1.0 ), fogFactor );"
-      : undefined;
+  const body = fogModeBody(blendMode);
   if (body === undefined) return undefined;
   // The chunk is rewritten whole rather than patched, because three has not resolved its
   // `#include`s when a handler runs: what arrives is the directive, not the code behind it.

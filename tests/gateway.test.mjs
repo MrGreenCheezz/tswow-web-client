@@ -941,6 +941,10 @@ test("Spell DBC metadata resolves localized names, icon paths and cooldowns", ()
     // 3.43 (15.11, v=22): the cost's level parts, raw (zero in this fixture).
     manaCostPerLevel: 0,
     manaPerSecondPerLevel: 0,
+    // 3.68/3.43 (15.11, v=23): RequiredAuraVision and the cast-time row's growth and floor (zero in this fixture).
+    requiredAuraVision: 0,
+    castTimePerLevel: 0,
+    castTimeMinimum: 0,
   });
 
   // The tracking columns reach the browser, which is the only way it can tell a tracking spell

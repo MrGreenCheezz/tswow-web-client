@@ -11,6 +11,7 @@ import type {
 } from "./LightTypes.js";
 import type { BenchmarkAsyncReadinessStats } from "./RenderBenchmarkReadiness.js";
 import { RetryLadder } from "./RetryLadder.js"; // 05.10-A7b-0 1.24
+import { zoneOutlineWeights } from "./ZoneLightOutlines.js"; // 15.11 (light7)
 
 export type { LightSample };
 
@@ -194,12 +195,15 @@ function blendSamples(base: LightSample, other: LightSample, weight: number): Li
   };
 }
 
-/** Smoothstep, which is how a volume's falloff fades rather than stepping at its edge. */
+/**
+ * A volume's weight across its falloff. 15.11 (light7): linear, as Wow.exe 0x007ee5d0 has it —
+ * 1 − (distance − inner) / (outer − inner), 1 inside the inner radius, 0 from the outer one (0x007f1360 takes a
+ * volume only while distance² < outer²). It was a smoothstep, which agrees at both ends and at the middle.
+ */
 function falloffWeight(distance: number, inner: number, outer: number): number {
   if (distance <= inner) return 1;
   if (distance >= outer || outer <= inner) return 0;
-  const t = (distance - inner) / (outer - inner);
-  return 1 - t * t * (3 - 2 * t);
+  return 1 - (distance - inner) / (outer - inner);
 }
 
 /**
@@ -399,9 +403,15 @@ function resolveSpatial(entry: LightIndexEntry, x: number, y: number, time: numb
     }
     return resolveLayer(entry.fallbackLightId, fallbackSlots);
   }
-  if (reached.length === 0) {
-    return resolveLayer(entry.fallbackLightId, fallbackSlots);
+  // 15.11 (light7): Wow.exe's zone outlines (Northrend's eleven) lay their lights over the map default before any
+  // volume does (0x007f1360 → 0x007ee6b0; `ZoneLightOutlines.ts`).
+  let sample = resolveLayer(entry.fallbackLightId, fallbackSlots);
+  for (const { lightId, weight } of zoneOutlineWeights(entry.zoneOutlines, undefined, x, y)) {
+    if (weight <= 0) continue;
+    const zoneLayer = resolveLayer(lightId, entry.lights?.[lightId]);
+    if (zoneLayer) sample = sample ? blendSamples(sample, zoneLayer, weight) : zoneLayer;
   }
+  if (reached.length === 0) return sample;
   // The tighter volume wins, so a town inside a zone is not averaged away by the zone around it.
   // Ties break on the smaller radius and then on the id, both of which are fixed by the data —
   // ordering on weight alone makes the choice flicker as the player walks.
@@ -409,7 +419,6 @@ function resolveSpatial(entry: LightIndexEntry, x: number, y: number, time: numb
     || left.volume.outerRadius - right.volume.outerRadius
     || left.volume.id - right.volume.id);
 
-  let sample = resolveLayer(entry.fallbackLightId, fallbackSlots);
   // Select the tightest layers, then composite them from broad to tight. The previous single sort
   // selected the right rows but blended a broad outer volume last, so an outer transition could
   // repaint a town/room at the exact point where both volumes had weight 1.
@@ -528,7 +537,9 @@ export class LightClient {
       // light under lava and slime with the ocean's darkening (7.10). The shape grows only by
       // optional fields, so a gateway that has not been restarted answers v4 and every new field
       // reads as absent: the sky as before, a ghost under the living light, lava lit like water.
-      const response = await fetch(`${this.#baseUrl}/dbc/light/${map}?v=6`);
+      // v7 (15.11, light7): `zoneOutlines`, Northrend's zone lights from the user's Wow.exe. Optional like the rest:
+      // an older gateway answers without it and Northrend keeps its default outside the volumes.
+      const response = await fetch(`${this.#baseUrl}/dbc/light/${map}?v=7`);
       if (!response.ok) {
         final = response.status === 404; // 05.10-A7b-0 1.24
         throw new Error(`Light gateway returned ${response.status}`);

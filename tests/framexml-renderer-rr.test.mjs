@@ -504,11 +504,15 @@ const TAB = `<Ui>
   </Frame>
 </Ui>`;
 
+// 26.10 (10.35, 7ac428c1): on the login screens a box with its own OnTabPressed owns the press as well
+// (AccountLoginAccountEdit's moves the caret to the password, and the browser then walked it on to a
+// button); only a box without the script keeps the browser's field-to-field walk there.
 test("Tab in a world edit box is the box's own (AutoCompleteEditBox_OnTabPressed); the login screens keep field-to-field Tab", async () => {
-  for (const [label, options, spent] of [["world", WORLD, true], ["glue", {}, false]]) {
+  for (const [label, options, spentByScript, spentPlain] of [["world", WORLD, true, true], ["glue", {}, true, false]]) {
     const { element, lua, close: done } = await boot({ "interface/framexml/frames.xml": TAB }, options);
     try {
       for (const [name, scripted] of [["StaticPopup3EditBox", true], ["StaticPopup3Plain", false]]) {
+        const spent = scripted ? spentByScript : spentPlain;
         let prevented = false;
         inputOf(element, name).dispatch("keydown", { key: "Tab", preventDefault() { prevented = true; } });
         assert.equal(prevented, spent, `${label} ${name}: the browser's focus walk is ${spent ? "held" : "left alone"}`);

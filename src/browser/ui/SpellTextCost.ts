@@ -25,7 +25,8 @@ import { spellTextRoundEven } from "./SpellTextWowRules.js";
  *    (0x005ee050, 0x005ee0b0), stored to a float and rounded to nearest-even.
  * 5. SPELLMOD_COST: (v + flat) × pct / 100 (0x007fd970).
  * 6. A unit that is not a player with SPELL_ATTR0 0x80000 and a SpellLevel: × gtNPCManaCostScaler(unit level) /
- *    gtNPCManaCostScaler(SpellLevel) (0x007f6990 with table 6) — not served, so such a cost is unknown here.
+ *    gtNPCManaCostScaler(SpellLevel) (0x007f6990 with table 6, row = level − 1), when both are above 0 — served since
+ *    15.11 as `/dbc/npc-mana-cost-scaler` (npcScaledCost; the unit is then a pet, SpellTextPetCost.ts).
  * 7. A player with an effect 97 (SPELL_EFFECT_CAST_BUTTON, «Зов Стихий»): + the cost of every spell on the action
  *    buttons MiscValue … MiscValue + MiscValueB − 1 of the multi-cast bar (0-based 132 on; MiscValue < 12, the run
  *    within 12) whose row has SPELL_ATTR7_SUMMON_PLAYER_TOTEM, each by this same function (0x005a8c30 per button).
@@ -71,6 +72,11 @@ export interface SpellCostUnit {
   readonly actionSpell?: (slot: number) => number | undefined;
   /** Another spell's row: undefined when there is none, "pending" while it is on its way. */
   readonly row?: (id: number) => SpellCostRecord | undefined | "pending";
+  /**
+   * 3.43 (15.11): gtNPCManaCostScaler by row (level − 1; NpcManaCostScalerClient.ts) for step 6 — undefined for a row
+   * outside the table. Absent: the table has not landed, and a cost step 6 scales is unknown.
+   */
+  readonly npcCostScaler?: ((row: number) => number | undefined) | undefined;
 }
 
 const ATTR0_LEVEL_DAMAGE_CALCULATION = 0x80000;
@@ -160,7 +166,9 @@ export function spellPowerCostFor(record: SpellCostRecord, unit: SpellCostUnit |
   cost = spellTextRoundEven(Math.fround(Math.fround(cost + modifier) * (multiplier + 1)));
   cost = spellTextModInt(record, cost, SPELLMOD.cost, unit.caster);
   if (!unit.isPlayer && ((record.attributes?.[0] ?? 0) & ATTR0_LEVEL_DAMAGE_CALCULATION) !== 0 && (record.spellLevel ?? 0) !== 0) {
-    return undefined; // step 6: gtNPCManaCostScaler is not served
+    const scaled = npcScaledCost(cost, record.spellLevel ?? 0, unit);
+    if (scaled === undefined) return undefined;
+    cost = scaled;
   }
   if (unit.isPlayer && depth === 0) {
     const totems = totemCost(record, unit);
@@ -168,6 +176,22 @@ export function spellPowerCostFor(record: SpellCostRecord, unit: SpellCostUnit |
     cost += totems;
   }
   return cost < 1 ? 0 : cost;
+}
+
+/**
+ * 3.43 (15.11), step 6: gtNPCManaCostScaler(UNIT_FIELD_LEVEL − 1) / gtNPCManaCostScaler(SpellLevel − 1) × the cost,
+ * through a float and rounded to nearest-even — only when both rows are above 0, else the cost stays. Undefined while
+ * the table has not landed or a row is outside it (what 0x007f6990 answers there is not established).
+ */
+function npcScaledCost(cost: number, spellLevel: number, unit: SpellCostUnit): number | undefined {
+  const table = unit.npcCostScaler;
+  if (!table) return undefined;
+  const spellRatio = table(spellLevel - 1);
+  const unitRatio = table(spellTextInt(unit.player, "UNIT_FIELD_LEVEL") - 1);
+  if (spellRatio === undefined || unitRatio === undefined) return undefined;
+  const below = Math.fround(spellRatio);
+  if (!(below > 0) || !(unitRatio > 0)) return cost;
+  return spellTextRoundEven(Math.fround((unitRatio / below) * cost));
 }
 
 /** Step 7: the costs of the totems on the buttons each CAST_BUTTON effect names. */
