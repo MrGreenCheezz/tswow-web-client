@@ -34,9 +34,11 @@ test("the window is the square around the player's tile, nearest ring first", ()
   assert.equal(horizonDetailWindow(0, 0, 2).length, 9);
 });
 
-test("the GPU memory is bounded: two levels and the residency map, about 21 MB", () => {
+test("the GPU memory is bounded: two levels and the residency map, about 39.5 MB", () => {
+  // 15.11 (7.44 stage 2): level 0 to the window's third ring (8 slots), level 1 to the band's six tiles (14 slots).
   const bytes = horizonDetailBytes();
-  assert.ok(bytes > 21e6 && bytes < 22.5e6, `${bytes}`);
+  assert.ok(bytes > 39e6 && bytes < 40.5e6, `${bytes}`);
+  assert.deepEqual(HORIZON_DETAIL_LEVELS.map((level) => level.reach), [3, 6]);
 });
 
 test("the fragment mixes every level by residency and window fade, sampling each unconditionally", () => {
@@ -88,11 +90,11 @@ test("cells stream nearest first, upload within the frame budget and fade in", a
   }
   // Level 0's first asks are the player's tile and its ring, at 256 texels.
   assert.deepEqual(tiles.asked[0], { hash: "49-31", size: 256 });
-  // 25 + 81 cells, one without a bake.
-  assert.deepEqual(detail.resident, [24, 80]);
+  // 49 + 169 cells (15.11, 7.44 stage 2: reaches 3 and 6), one without a bake.
+  assert.deepEqual(detail.resident, [48, 168]);
   assert.equal(detail.pending, 0);
-  // The player's tile lands in slot (31 mod 6, 49 mod 6) = (1, 1) of level 0.
-  assert.ok(renderer.copies.some((copy) => copy.target === "horizon-detail-0" && copy.x === 256 && copy.y === 256));
+  // The player's tile lands in slot (31 mod 8, 49 mod 8) = (7, 1) of level 0.
+  assert.ok(renderer.copies.some((copy) => copy.target === "horizon-detail-0" && copy.x === 7 * 256 && copy.y === 256));
   // Only the last copy of a frame's batch rebuilds the mip chain.
   for (const texture of detail.textures) assert.equal(texture.generateMipmaps, true);
   // Faded in: the residency map holds 255 for a resident cell, 0 for the cell with no bake.
@@ -112,10 +114,10 @@ test("crossing a tile drops the cells that left the window at once", async () =>
     await settle();
   }
   const data = detail.residency.image.data;
-  assert.equal(data[(47 * 64 + 31) * 4], 255, "two rows north is in level 0");
+  assert.equal(data[(46 * 64 + 31) * 4], 255, "three rows north is in level 0");
   detail.update(renderer, 0, 50, 31, tiles, now += 16);
-  assert.equal(data[(47 * 64 + 31) * 4], 0, "three rows north is out of level 0 the same frame");
-  assert.equal(data[(47 * 64 + 31) * 4 + 1], 255, "and still in level 1");
+  assert.equal(data[(46 * 64 + 31) * 4], 0, "four rows north is out of level 0 the same frame");
+  assert.equal(data[(46 * 64 + 31) * 4 + 1], 255, "and still in level 1");
   assert.deepEqual(detail.centre.toArray(), [31.5, 50.5]);
 });
 

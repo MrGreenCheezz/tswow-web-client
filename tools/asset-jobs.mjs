@@ -97,6 +97,12 @@ export const ASSET_JOBS = Object.freeze({
     load: () => import("./generate-liquid-texture.mjs"),
     run: (module, job, archives) => module.publishLiquidFamily(String(job.family), archives),
   },
+  // 15.11 (7.09 B): one tile's authored liquid layers (`/liquid/adt`), read out of its client ADT.
+  "adt-liquid": {
+    family: "texture",
+    load: () => import("./generate-adt-liquid.mjs"),
+    run: (module, job, archives) => module.publishAdtLiquid(Number(job.map), Number(job.gridX), Number(job.gridY), archives),
+  },
   "client-file": {
     family: "texture",
     load: () => import("./generate-client-file.mjs"),

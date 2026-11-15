@@ -18,7 +18,7 @@ import type { HorizonDetailTiles } from "./HorizonDetailTiles.js";
  * level out over the last third of a tile before it gets there. Past level 1 (the 5–6 tile band,
  * inside the closing fog) the colour map is all there is, as before.
  *
- * GPU memory: 1,536² + 1,280² RGBA with mips = 12.6 + 8.7 = 21.3 MB, plus a 64×64 residency map
+ * GPU memory (22.10; 15.11: 39.5 MB, see {@link HORIZON_DETAIL_LEVELS}): 1,536² + 1,280² RGBA with mips = 12.6 + 8.7 = 21.3 MB, plus a 64×64 residency map
  * (16 KB). A cell is uploaded once when it enters a window (texSubImage2D of one resized bitmap
  * and one mipmap regeneration), at most {@link HORIZON_DETAIL_UPLOADS_PER_FRAME} a frame, and
  * fades in over {@link HORIZON_DETAIL_FADE_MS} rather than popping.
@@ -37,9 +37,15 @@ export interface HorizonDetailLevel {
   readonly fadeTo: number;
 }
 
+/**
+ * 15.11 (7.44 stage 2, with 7.08 slice B): the detailed window now reaches 3–4 tiles from the player's (its tiles past
+ * the near 3×3 drawn from their own heights with this picture), and the ground past it is the WDL ring and the band to
+ * six tiles, which had only the colour map's 16 texels a tile. Level 0 now covers the window's third ring too
+ * (8 slots, 2,048²) and level 1 the band (14 slots, 1,792²): 22.4 + 17.1 = 39.5 MB (was 21.3).
+ */
 export const HORIZON_DETAIL_LEVELS: readonly HorizonDetailLevel[] = Object.freeze([
-  Object.freeze({ texels: 256, slots: 6, reach: 2, fadeFrom: 2.15, fadeTo: 2.45 }),
-  Object.freeze({ texels: 128, slots: 10, reach: 4, fadeFrom: 4.1, fadeTo: 4.45 }),
+  Object.freeze({ texels: 256, slots: 8, reach: 3, fadeFrom: 3.1, fadeTo: 3.45 }),
+  Object.freeze({ texels: 128, slots: 14, reach: 6, fadeFrom: 6.1, fadeTo: 6.45 }),
 ]);
 
 /** Cells uploaded into the level textures per frame (each one texSubImage2D plus a mip rebuild). */

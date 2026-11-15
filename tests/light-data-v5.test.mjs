@@ -317,12 +317,22 @@ test("7.65: under magma the LightParams set LiquidType names replaces the zone, 
     .colours.ambient.b, 1, "an old body: the zone");
 });
 
-test("7.10: the ocean darkens with depth by its LiquidType intensities", () => {
+test("7.10: the ocean's darkening by its LiquidType intensities never acts under the surface", () => {
   const at = (depth) => resolveLighting(V5_ENTRY, 0, 0, 1440, 0, undefined, undefined,
     true, 0, 2, depth);
   const surface = at(0);
-  const half = at(15);
-  const deep = at(60);
+  // 15.11 (7.65): Wow.exe 0x007f3230 clamps the eye's depth (surface − eye) to [−MaxDarkenDepth, 0]:
+  // under the surface nothing darkens — the stand under the Dragonblight sea at 4.1 and 10.1 yards.
+  const shallow = at(4.1);
+  const under = at(10.1);
+  const deepest = at(60);
+  for (const sample of [surface, shallow, under, deepest]) {
+    assert.equal(sample.colours.ambient.b, 1, "the undarkened underwater set");
+    assert.equal(sample.colours.diffuse.b, 1);
+  }
+  // Only a depth below zero (the eye above the surface) would darken, by the same intensities.
+  const half = at(-15);
+  const deep = at(-60);
   // 11.11 (7.65): Wow.exe 0x007f3230 darkens the ambient and direct colours, never the fog distance.
   assert.equal(surface.fogEnd, 600);
   assert.equal(half.fogEnd, 600);
@@ -478,7 +488,9 @@ test("(d) 11.11 (7.15): under lava a ghost sees the lava's set; in deep ocean th
   assert.equal(ghostInLava.liquidLight, true);
   const ghostDeep = at(V5_ENTRY, true, 1, 2, 30);
   assert.equal(ghostDeep.fogEnd, 600, "the fog distance is never darkened (7.65)");
-  assert.ok(Math.abs(ghostDeep.colours.ambient.r - 0x40 / 255 * 0.5) < 1e-9, "death set 3, ambient at half by depth");
+  assert.equal(ghostDeep.colours.ambient.r, 0x40 / 255, "death set 3, not darkened under the surface (15.11)");
+  const ghostAbove = at(V5_ENTRY, true, 1, 2, -30);
+  assert.ok(Math.abs(ghostAbove.colours.ambient.r - 0x40 / 255 * 0.5) < 1e-9, "the darkening follows the death set");
 });
 
 test("11.11 (7.15): the death slot is the map default row's, whatever volume the ghost stands in", () => {
@@ -507,8 +519,9 @@ test("11.11 (7.15): the death slot is the map default row's, whatever volume the
 });
 
 test("(c) the darkening edits only this frame's sample: repeated frames do not compound", () => {
-  const first = at(V5_ENTRY, true, 0, 2, 30);
-  const second = at(V5_ENTRY, true, 0, 2, 30);
+  const first = at(V5_ENTRY, true, 0, 2, -30); // 15.11: a depth that darkens (the eye above the surface)
+  const second = at(V5_ENTRY, true, 0, 2, -30);
+  assert.ok(first.colours.ambient.b < 1, "darkened");
   assert.equal(second.fogEnd, first.fogEnd);
   assert.equal(second.colours.ambient.b, first.colours.ambient.b);
   assert.equal(V5_ENTRY.params[2].colours.ambient.values[0], 0x0000ff, "the table is never written");

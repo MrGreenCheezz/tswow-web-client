@@ -15,6 +15,7 @@ import { frameXmlObjectType } from "../ui/framexml_compat/FrameXmlWorldFrame.js"
 import { frameXmlTypeTakesWheel } from "../ui/framexml_compat/FrameXmlInputBits.js"; // frame10 3.21
 import { sliderValueMethods } from "./GlueSliderMethods.js"; // 3.27 (13.10)
 import { statusBarSetMinMaxValues } from "./GlueStatusBarMethods.js"; // 3.27 (11.11)
+import { statusBarRegionMethods } from "./GlueStatusBarRegionMethods.js"; // plates12 (6.37)
 import { questPoiFrameMethods } from "./GlueQuestPoiFrame.js";
 import { glueBoundsRect } from "./GlueBoundsRect.js"; // 3.35-bounds
 import { GlueScriptRefs } from "./GlueScriptRefs.js"; // L5 3.27
@@ -1042,7 +1043,9 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
       ...editBoxFillMethods(this.#bridge) }; // widgets5 batch 2
     const slider = { ...frameLike, ...this.valueMethods(), ...this.sliderMethods(),
       ...sliderValueMethods(this.#bridge) }; // 3.27 (13.10): the Slider's own range, step and value rules
-    const statusBar = { ...frameLike, ...this.valueMethods(), ...this.statusBarMethods() };
+    const statusBarOwn = { ...this.valueMethods(), ...this.statusBarMethods() };
+    // plates12 (6.37): GetStatusBarTexture's region and GetStatusBarColor (GlueStatusBarRegionMethods.ts).
+    const statusBar = { ...frameLike, ...statusBarOwn, ...statusBarRegionMethods(this.#bridge, statusBarOwn) };
     const scrollFrame = { ...frameLike, ...this.scrollMethods() };
     const messageFrame = { ...frameLike, ...this.textMethods(), ...this.messageMethods() };
     const model = { ...frameLike, ...this.modelMethods() };

@@ -36,6 +36,7 @@ export const ASSET_JOB_FAMILY: Readonly<Record<AssetWorkerJob["kind"], AssetFami
   liquid: "texture",
   "liquid-family": "texture", // 05.10-A7b-8
   "client-file": "texture",
+  "adt-liquid": "texture", // 15.11 (7.09 B)
   "terrain-splat": "tile",
   "visual-tile": "tile",
   horizon: "tile",

@@ -15,6 +15,7 @@ import { TERRAIN_SPLAT_GENERATION } from "./TerrainSplatGeneration.js"; // 05.10
 import { HdTextureSets, parseHdTexturesEnv } from "./HdTextures.js"; // 23.10 (7.48)
 import { parseRefinedModelsEnv } from "./RefinedModelRoute.js"; // 04.11 (7.62)
 import { parseNeuralReliefEnv } from "./NeuralReliefRoute.js"; // 25.10 (7.47)
+import { createAccountService } from "./AccountServiceSetup.js"; // 15.11 (10.30)
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -92,6 +93,8 @@ export async function createGatewayConfiguration(): Promise<{ options: GatewayOp
   // 10.01: failed logins per player address before `/auth` is refused for a while; a bad value
   // stops the start here rather than running without the limit.
   const loginAttempts = parseLoginAttemptEnv(process.env);
+  // 15.11 (10.30): the login screen's account forms; undefined (the routes say «disabled») unless GATEWAY_ACCOUNTS=1.
+  const accounts = await createAccountService(process.env, process.cwd(), allowedOrigins);
   // 25.10 (serve S5): the per-route traffic line and snapshot; a bad interval stops the start here.
   const trafficReport = parseTrafficReportEnv(process.env, process.cwd());
 
@@ -345,6 +348,9 @@ export async function createGatewayConfiguration(): Promise<{ options: GatewayOp
     // 05.10-A7b-8 (7.09 A): a LiquidType texture family's strip, `family/<slug>` beside the classes.
     generateLiquidFamily: (family) => publish(
       { kind: "liquid-family", family }, 1, "generate-liquid-texture.mjs", ["--family", family]),
+    // 15.11 (7.09 B): one tile's authored liquid layers, `adt/v1/<map>/<gridX>-<gridY>.json` beside them.
+    generateAdtLiquid: (map, gridX, gridY) => publish(
+      { kind: "adt-liquid", map, gridX, gridY }, 1, "generate-adt-liquid.mjs", [String(map), String(gridX), String(gridY)]),
     // What the modules on this machine ship for this client: message schemas, window definitions and
     // stylesheets. Scanned per request rather than memoised, because the whole point of it is to
     // notice that a module author just saved a file.
@@ -355,6 +361,7 @@ export async function createGatewayConfiguration(): Promise<{ options: GatewayOp
     // 10.14: one line per closed bridge with its queue peaks and pauses, to measure a remote line.
     logBackpressure: process.env["GATEWAY_LOG_BACKPRESSURE"] === "1",
     loginAttempts,
+    ...(accounts ? { accounts } : {}), // 15.11 (10.30)
     // 10.27: `/world?realm=` dials the realm list's address; `0` keeps every world connection on WORLD_HOST.
     worldFromRealmList: process.env["WORLD_FROM_REALMLIST"] !== "0",
     ...(trafficReport ? { trafficReport } : {}), // 25.10 (serve S5)

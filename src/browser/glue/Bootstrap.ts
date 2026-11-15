@@ -23,6 +23,7 @@ import { GlueGatewayNames } from "./GlueNames.js";
 import { fakeGlueSession, isFakeGlueSessionName } from "./GlueFakeSession.js";
 import { gatewaySocketUrl } from "./FrontDoor.js";
 import { liveGlueWorldConnector } from "./GlueWorldConnector.js";
+import { GlueAccountClient } from "./GlueAccountClient.js"; // 15.11 (10.30)
 import type { GlueSession, GlueWorldConnector } from "./GlueSession.js";
 import type { GlueEnterWorldRequest } from "./GlueCharacterApi.js";
 
@@ -331,6 +332,12 @@ export async function startGlue(options: StartGlueOptions): Promise<GlueHandle> 
       },
     },
     onStub: (kind, name) => stubs[kind].push(name),
+    // 15.11 (10.30): «Новая запись» / «Смена пароля» behind the stock «Учетная запись» button, when the gateway
+    // has them on (GATEWAY_ACCOUNTS=1). Not for a canned session: its accounts are not this gateway's.
+    ...(canned ? {} : { accounts: new GlueAccountClient({
+      gatewayOrigin: origin, authUrl: gatewaySocketUrl(origin, "/auth"),
+      connect: (url) => WebSocketByteStream.connect(url), locale: clientLocale(),
+    }) }),
   });
 
   // Both resolvers hand a WoW path to the gateway verbatim; nothing the XML says can name a host,

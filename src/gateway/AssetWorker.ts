@@ -18,6 +18,8 @@ export type AssetWorkerJob =
   /** 05.10-A7b-8 (7.09 A): one LiquidType texture family's strip (`tools/generate-liquid-texture.mjs`). */
   | { kind: "liquid-family"; family: string }
   | { kind: "client-file"; path: string }
+  /** 15.11 (7.09 B): one tile's authored liquid layers (`tools/generate-adt-liquid.mjs`). */
+  | { kind: "adt-liquid"; map: number; gridX: number; gridY: number }
   // 05.10-A7b-7: `generation` names the splat generation to write (absent: an older gateway's files).
   | { kind: "terrain-splat"; map: number; gridX: number; gridY: number; generation?: string }
   // 05.10-A7b-1: `generation` names the tile generation to write (absent: v4, an older gateway's job).

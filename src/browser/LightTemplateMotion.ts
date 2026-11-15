@@ -124,17 +124,31 @@ export interface MotionValue {
 }
 
 /**
+ * lamp12 (16.11, 7.50): a dark moment's colour. A dark animated light stays in the selection at strength 0
+ * (`sampleFixtureLightKept`), and its colour then is its base colour on both sides: before, the built lamp kept
+ * whatever `sampleFixtureLight` had written before its gate (the fixture's heuristic colour for a flame gated off
+ * by `enabledIn`, the colour track's product for a card, the previous fixture's for an M2 light) and the prelit
+ * one its template's base or the last lit moment's, so the two disagreed on a value nothing draws
+ * (`G_BrazierTroll.m2`'s second flame, off at 0 ms of its sequence, kept its heuristic orange on one side and its
+ * ramp's red on the other).
+ */
+function dark(colour: readonly [number, number, number], out: MotionValue): false {
+  out.colour.set(colour[0], colour[1], colour[2]);
+  return false;
+}
+
+/**
  * The animated light at (`animationMs`, `worldMs`) from its base colour and strength (the template's), as
- * `sampleFixtureLight` computes it; false while it is dark.
+ * `sampleFixtureLight` computes it; false while it is dark, its colour then the base (`dark`).
  */
 export function sampleMotion(motion: LightMotion, colour: readonly [number, number, number], intensity: number,
   animationMs: number, worldMs: number, out: MotionValue): boolean {
   // No closure here: an animated lamp is sampled every frame (allocation-free, lamps7 follow-up).
   const t = motion.tracks, g = motion.globalSequences;
   if (motion.kind === "light") {
-    if (sampleTrack(t[0] ?? undefined, animationMs, worldMs, g, 1) <= 0) return false;
+    if (sampleTrack(t[0] ?? undefined, animationMs, worldMs, g, 1) <= 0) return dark(colour, out);
     const strength = sampleTrack(t[1] ?? undefined, animationMs, worldMs, g, 1);
-    if (!(strength > 0.001)) return false;
+    if (!(strength > 0.001)) return dark(colour, out);
     out.colour.set(sampleTrack(t[2] ?? undefined, animationMs, worldMs, g, 1, 0),
       sampleTrack(t[2] ?? undefined, animationMs, worldMs, g, 1, 1), sampleTrack(t[2] ?? undefined, animationMs, worldMs, g, 1, 2));
     out.intensity = Math.min(2, strength);
@@ -143,7 +157,7 @@ export function sampleMotion(motion: LightMotion, colour: readonly [number, numb
   out.colour.set(colour[0], colour[1], colour[2]);
   if (motion.kind === "emitter") {
     if (sampleTrack(t[0] ?? undefined, animationMs, worldMs, g, 1) <= 0.5
-      || sampleTrack(t[1] ?? undefined, animationMs, worldMs, g, 0) <= 0) return false;
+      || sampleTrack(t[1] ?? undefined, animationMs, worldMs, g, 0) <= 0) return dark(colour, out);
     out.intensity = intensity;
     return true;
   }
@@ -151,7 +165,7 @@ export function sampleMotion(motion: LightMotion, colour: readonly [number, numb
   out.colour.x *= sampleTrack(t[2] ?? undefined, animationMs, worldMs, g, 1, 0);
   out.colour.y *= sampleTrack(t[2] ?? undefined, animationMs, worldMs, g, 1, 1);
   out.colour.z *= sampleTrack(t[2] ?? undefined, animationMs, worldMs, g, 1, 2);
-  if (!Number.isFinite(opacity) || opacity <= 0.001) return false;
+  if (!Number.isFinite(opacity) || opacity <= 0.001) return dark(colour, out);
   out.intensity = intensity * Math.min(1, opacity);
   return Number.isFinite(out.intensity)
     && Number.isFinite(out.colour.x) && Number.isFinite(out.colour.y) && Number.isFinite(out.colour.z);
@@ -242,15 +256,18 @@ export function sampleFixtureFarLight(fixture: FixtureLight, model: WvmModel, ma
   return mean !== undefined && sampleMotionFar(mean, fixture.position, fixture.radius, fixture.light !== undefined, matrix, result);
 }
 
-const CAN_LIGHT = new WeakMap<FixtureLight, boolean>();
-/** Whether an animated fixture has a template at all (a flame whose own ramp leaves it dark has none). Cached. */
-function fixtureCanLight(fixture: FixtureLight): boolean {
-  let answer = CAN_LIGHT.get(fixture);
+const KEPT_BASE = new WeakMap<FixtureLight, { colour: [number, number, number] } | null>();
+/**
+ * An animated fixture's base colour as its template keeps it, or undefined when it has no template at all (a
+ * flame whose own ramp leaves it dark). Cached: a built lamp's dark moments ask every frame.
+ */
+function fixtureKeptBase(fixture: FixtureLight): { colour: [number, number, number] } | undefined {
+  let answer = KEPT_BASE.get(fixture);
   if (answer === undefined) {
-    answer = !fixture.emitter || emitterFixtureBase(fixture) !== undefined;
-    CAN_LIGHT.set(fixture, answer);
+    answer = fixtureMotionBase(fixture) ?? null;
+    KEPT_BASE.set(fixture, answer);
   }
-  return answer;
+  return answer ?? undefined;
 }
 
 /**
@@ -264,8 +281,11 @@ function fixtureCanLight(fixture: FixtureLight): boolean {
 export function sampleFixtureLightKept(fixture: FixtureLight, model: WvmModel, matrix: THREE.Matrix4,
   animationMs: number, worldMs: number, result: LocalLightSample): boolean {
   if (sampleFixtureLight(fixture, model, matrix, animationMs, worldMs, result)) return true;
-  if (!fixtureMotion(fixture, model) || !fixtureCanLight(fixture)) return false;
+  const base = fixtureMotion(fixture, model) ? fixtureKeptBase(fixture) : undefined;
+  if (!base) return false;
   result.position.set(fixture.position[0], fixture.position[1], fixture.position[2]).applyMatrix4(matrix);
+  // lamp12 (16.11): its base colour while dark, as the prelit stand-in's (`dark`), not what the gate left.
+  result.colour.set(base.colour[0], base.colour[1], base.colour[2]);
   const e = matrix.elements;
   const scale = Math.max(Math.hypot(e[0]!, e[1]!, e[2]!), Math.hypot(e[4]!, e[5]!, e[6]!),
     Math.hypot(e[8]!, e[9]!, e[10]!));

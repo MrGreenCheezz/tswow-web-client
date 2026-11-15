@@ -111,12 +111,15 @@ export function plateSource(now: number): (object: WorldObjectState, distance: n
       isPlayer: object.typeId === 4,
       classColour: classColours && object.typeId === 4 && colourReaction === REACTION_HOSTILE ? classColor(unit.classId(object)) : undefined,
       health: healthRatio(object),
+      healthValue: unit.health(object), // plates12 (6.37): the plate frame's bar range
+      healthMax: unit.maxHealth(object),
       raidMark: marks.get(object.guid),
       rank: metadata?.rank ?? RANK_NORMAL,
       boss: (typeFlags & TYPE_FLAG_BOSS) !== 0,
       cast: cast ? {
         iconPath: iconTexture(game.spells.get(cast.spellId)?.iconPath),
         progress: world.castProgress(object.guid, now) ?? 0,
+        seconds: cast.duration / 1000, // plates12 (6.37)
       } : undefined,
       target,
       dimmed: targetGuid !== undefined && targetGuid !== 0n && !target,

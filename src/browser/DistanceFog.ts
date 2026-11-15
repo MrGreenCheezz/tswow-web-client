@@ -146,9 +146,12 @@ export function shapedSceneFog(set: ShapedFogSet, underwater: boolean, out: Shap
  * ground is drawn to the WDL horizon, at least four tiles (2,133 yards) from the player, and where a map has no WDL
  * only to the near ring, at least one tile (533 yards). The fog closes a tenth inside that, never past the far clip,
  * so it never uncovers the edge of the loaded ground.
+ * 15.11 (7.08 slice B): `detailedReach`, how far the drawn detailed tiles reach in every direction
+ * (TerrainDetailWindow.ts `detailedGroundReach`), lets a map without a WDL close its fog at the window's drawn edge
+ * instead of the near ring's; with a WDL the window's tiles are covered by the horizon's stand-ins until drawn.
  */
-export function shapedFogEnd(horizonDrawn: boolean): number {
-  return Math.min(WOW_FAR_CLIP, Math.floor((horizonDrawn ? HORIZON_RANGE : TERRAIN_GRID_SIZE) * 0.9));
+export function shapedFogEnd(horizonDrawn: boolean, detailedReach = 0): number {
+  return Math.min(WOW_FAR_CLIP, Math.floor((horizonDrawn ? HORIZON_RANGE : Math.max(TERRAIN_GRID_SIZE, detailedReach)) * 0.9));
 }
 
 /**

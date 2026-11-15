@@ -9,6 +9,8 @@ import { LIQUID_CELL_YARDS, liquidCalmOf, liquidClassOf } from "../dist/code/bro
 import { liquidSurfaceClass, liquidSurfaceOf } from "../dist/code/browser/Water.js";
 // 11.11 (7.31): the cell UVs and the row's scroll come from Water.ts.
 import { liquidMotionOf, pushLiquidCellUvs } from "../dist/code/browser/Water.js";
+// 15.11 (7.09 B): magma and slime cells take the client ADT's own (s, t) through this one.
+import { pushTerrainLiquidCellUvs } from "../dist/code/browser/Water.js";
 
 /** Execute the actual private methods without constructing a browser/WebGL renderer. */
 export function rendererMethods(source, names, clock = performance) {
@@ -27,21 +29,27 @@ export function rendererMethods(source, names, clock = performance) {
     "LIQUID_CELL_YARDS", "DEEP_WATER_YARDS", "liquidClassOf", "waterCornerHeight",
     "TERRAIN_BUILD_BUDGET", "TERRAIN_REBUILD_BUDGET", "TERRAIN_PREPARE_MS", "TERRAIN_PREPARE_STEPS",
     "buildTerrainMaterial", "shouldRefreshWaterForNeighbour", "performance", "TERRAIN_REPAIR_STEPS", "terrainGeometrySteps", "liquidCalmOf",
-    "liquidSurfaceClass", "liquidSurfaceOf", "liquidMotionOf", "pushLiquidCellUvs", js + "; return Harness;")(
+    "liquidSurfaceClass", "liquidSurfaceOf", "liquidMotionOf", "pushLiquidCellUvs", "pushTerrainLiquidCellUvs", js + "; return Harness;")(
       THREE, TERRAIN_GRID_SIZE, terrainGrid, terrainTileKey, 128, LIQUID_CELL_YARDS, 10,
       liquidClassOf, waterCornerHeight, 1, 2, 1.5, 12, () => new THREE.MeshLambertMaterial(), shouldRefreshWaterForNeighbour, clock, 128, terrainGeometrySteps, liquidCalmOf,
-      liquidSurfaceClass, liquidSurfaceOf, liquidMotionOf, pushLiquidCellUvs);
+      liquidSurfaceClass, liquidSurfaceOf, liquidMotionOf, pushLiquidCellUvs, pushTerrainLiquidCellUvs);
 }
 
 export function streamingHarness(source, options = {}) {
   const Harness = rendererMethods(source, ["#updateTerrain", "#prepareTerrain", "#cancelTerrainPreparation", "#removeTerrain", "clearTerrain",
-    "#advanceTerrainRepair", "#cancelTerrainRepair", "#commitTerrainRepair"], options.clock);
+    "#advanceTerrainRepair", "#cancelTerrainRepair", "#commitTerrainRepair", "#liquidGenerationAt"], options.clock);
   const instance = new Harness();
   Object.assign(instance, {
     terrainWindow:new TerrainStreamingWindow(), terrains:new Map(), formalBenchmarkIsolation:false,
     scene:new THREE.Scene(), lightingProfile:{shadowMapSize:0},
     programWarmup:{registerObject(){},unregisterObject(){}}, renderer:{initTexture(){}},
     builds:0, rebuilt:0, cancelled:0, repairCancelled:0, repairAdvances:0,
+    // 15.11 (7.08 slice B): the detailed window is off here (a camera nowhere near the player): the near window's
+    // streaming is what these tests pin; tests/terrain-detail-window.test.mjs covers the window.
+    camera:{position:{x:1e9,y:0,z:0},fov:52,aspect:16/9},
+    detailWindow:{drawn:false,fullReach:64,tiles(){return undefined;}},
+    windowWorld:undefined, windowCellExists(){return true;}, farTileShown(){return false;},
+    countFarPending(){return 0;},
     buildTerrain(key, _map, _grid, revision, ownRevision) {
       this.builds++;
       const material = new THREE.MeshLambertMaterial();

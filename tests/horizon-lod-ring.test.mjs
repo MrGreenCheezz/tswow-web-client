@@ -127,7 +127,10 @@ test("the terrain probe never starts a download", () => {
 test("the renderer draws the ring on the enhanced path only and keys the WDL ring on its inner reach", async () => {
   const source = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
   assert.match(source, /const enhanced = !lightingClassicLook\(this\.#lightingProfile\.quality\);\n\s*const inner = enhanced \? HORIZON_LOD_REACH : 1;/);
-  assert.match(source, /if \(enhanced\) \{\n\s*this\.#horizonLod\.update\([^\n]*\n\s*\} else this\.#horizonLod\.clear\(this\.#scene\);/);
-  assert.match(source, /this\.#horizon\.inner === inner\)/);
-  assert.match(source, /horizonTiles\(world, centre, undefined, inner\)/);
+  // 15.11 (7.08 slice B): with the detailed window drawn the ring covers the window's far tiles instead, and the WDL
+  // leaves the window to them (tests/terrain-detail-window.test.mjs).
+  assert.match(source, /\} else if \(enhanced\) \{\n\s*this\.#horizonLod\.update\([^\n]*\n\s*\} else this\.#horizonLod\.clear\(this\.#scene\);/);
+  assert.match(source, /const wdlInner = detailRect \? 1 : inner;/);
+  assert.match(source, /this\.#horizon\.inner === wdlInner/);
+  assert.match(source, /horizonTiles\(world, centre, undefined, wdlInner, detailRect\)/);
 });

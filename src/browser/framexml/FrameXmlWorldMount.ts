@@ -11,6 +11,7 @@ import { pvpDifficultyClient } from "../PvpDifficultyClient.js"; // 3.24 (11.11)
 import { characterRegenClient } from "../CharacterRegenClient.js";
 import { spellLearnEffectsClient } from "../SpellLearnEffectsClient.js";
 import { installFrameXmlQuestPoiFrame } from "./FrameXmlQuestBlobPainter.js";
+import { installNamePlateFrames } from "../ui/NamePlateFrames.js"; // plates12 6.37
 import { createBundledFileProvider } from "../glue/InterfaceBundleClient.js"; // 25.10 (serve S3)
 import { game, registerWorldContextCleanup } from "../game/Context.js";
 import { globalCooldownView } from "../game/PredictedGlobalCooldown.js"; // L13-review 5.30
@@ -2651,6 +2652,7 @@ interface FrameXmlMountResources {
   /** 3.13c: the WorldMapBlobFrame painter and its adapter (FrameXmlQuestBlobPainter.ts). */
   questPoiFrameCleanup?: () => void;
   worldFrameMouseCleanup?: () => void; // frame10 3.21
+  namePlatesCleanup?: () => void; // plates12 6.37: the plates as WorldFrame's frames (NamePlateFrames.ts)
   focusPortraitCleanup?: () => void;
   targetOfTargetPortraitCleanup?: () => void;
   /** The canvas created over FocusFrameToTPortrait (no native row stands behind it). */
@@ -2896,6 +2898,7 @@ function cleanupPublishedMount(record: FrameXmlMountResources): void {
   bestEffortCleanup(() => record.worldMapOwnerCleanup?.());
   bestEffortCleanup(() => record.questPoiFrameCleanup?.());
   bestEffortCleanup(() => record.worldFrameMouseCleanup?.()); // frame10 3.21
+  bestEffortCleanup(() => record.namePlatesCleanup?.()); // plates12 6.37
   bestEffortCleanup(() => document.body.classList.remove("framexml-world-map-fullscreen"));
   bestEffortCleanup(() => record.questGiverEscapeCleanup?.());
   bestEffortCleanup(() => record.questGiverOwnerCleanup?.());
@@ -3902,6 +3905,9 @@ export async function mountFrameXmlVertical(
     // frame10 3.21: WorldFrame's OnMouseDown/OnMouseUp for presses on the world canvas; the world keeps every click.
     const worldCanvas = document.getElementById("world-canvas");
     if (worldCanvas) resources.worldFrameMouseCleanup = installFrameXmlWorldFrameMouse(boot.bridge, worldCanvas, window);
+    // plates12 (6.37): the name plates are WorldFrame's own frames from here on (NamePlateFrames.ts).
+    resources.namePlatesCleanup = installNamePlateFrames(boot.bridge, boot.vm.getGlobal("NAMEPLATE_FONT"), renderer,
+      () => settingNumber(settings(), "uiScale"));
     let worldMapGateTried = false;
     const publishMapWhenReady = (): void => {
       if (worldMapGateTried || !seam.map?.ready) return;

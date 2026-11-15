@@ -22,6 +22,7 @@ import { frameXmlTitleRegion, frameXmlTitleRegionHit } from "./FrameXmlTitleRegi
 import { FrameXmlMouseCapture } from "./FrameXmlMouseCapture.js"; // 1.10 (12.10)
 import { frameXmlResizeBounds, frameXmlSizeStep, frameXmlSizingOf } from "./FrameXmlSizing.js"; // widgets7 3.21
 import { frameXmlIsWorldSurface, frameXmlMouseEnabled, frameXmlTypeTakesMouse } from "./FrameXmlInputBits.js"; // widgets9 3.21; frame10
+import { frameXmlStatusBarRegion } from "./FrameXmlStatusBarRegion.js"; // plates12 (6.37)
 
 /** What one reconciliation pass had to do: see `FrameXmlDomRenderer.syncPass`. */
 export type FrameXmlSyncKind = "structural" | "layout" | "paint" | "noop";
@@ -363,6 +364,13 @@ function tooltipLineIndent(line: FrameXmlFrame, rows: ReadonlySet<FrameXmlFrame>
 }
 
 /** 06.10-dropdown: a parentless frame (not a region) with no anchor point, which has no rectangle. */
+/** plates12: `frame` is `root` or drawn inside it (a bounded walk up the parents). */
+function frameInside(frame: FrameXmlFrame, root: FrameXmlFrame): boolean {
+  let at: FrameXmlFrame | undefined = frame;
+  for (let depth = 0; at && depth < 64; at = at.parent, depth += 1) if (at === root) return true;
+  return false;
+}
+
 function unanchoredRoot(frame: FrameXmlFrame): boolean {
   return !frame.parent && frame.points.length === 0 && frame.type !== "Texture" && frame.type !== "FontString";
 }
@@ -651,6 +659,8 @@ export class FrameXmlDomRenderer {
    */
   readonly #pictureHolders = new Map<string, Set<RenderedFrame>>();
   readonly #edgeHolders = new Map<string, Set<RenderedFrame>>();
+  /** plates12: `placeMovedFrames`' scratch list, kept so a move allocates no list of its own. */
+  readonly #outsideDependents: FrameXmlFrame[] = [];
   /** 12.10: each backdrop edge node's four side strips, made on its first painted edge. */
   readonly #edgeStrips = new WeakMap<HTMLElement, Readonly<Record<BackdropSide, HTMLElement>>>();
   readonly #clock: () => number;
@@ -1525,6 +1535,93 @@ export class FrameXmlDomRenderer {
     this.#bridge?.settleDeferredLayout();
     if (this.#bridge?.paintDeferred) this.#bridge.flushDeferredPaint();
     return this.#rendered.get(frame)?.element;
+  }
+
+  /**
+   * plates12 (6.37): place again drawn frames whose host moved their points in place without announcing it (the name
+   * plates, FrameXmlNamePlatePool.ts, moved every frame as their units move), without a reconciliation pass.
+   *
+   * Each frame is moved whole: only its own box is written, and what is drawn inside it keeps its place in it — a
+   * sibling anchor inside the frame is a distance in its containing block, which did not change. What sits outside it
+   * and is anchored to it or to anything inside it is placed again, through the reverse anchor index, and the strata
+   * layers of children drawn above it follow. A frame not drawn is skipped (its reveal places it). Answers how many
+   * frames came out somewhere else.
+   */
+  placeMovedFrames(frames: readonly FrameXmlFrame[]): number {
+    if (frames.length === 0) return 0;
+    let placed = 0;
+    const run = (): void => {
+      let queue: FrameXmlFrame[] | undefined;
+      let place: ((frame: FrameXmlFrame) => boolean) | undefined;
+      let layered: ReadonlySet<FrameXmlFrame> | undefined;
+      for (const frame of frames) {
+        const drawn = this.#rendered.get(frame);
+        if (!drawn || drawn.effectiveHidden !== false) continue;
+        if (!this.applyGeometry(drawn.element, frame)) continue;
+        placed += 1;
+        if (this.#strataLayers.size > 0) {
+          layered ??= this.layeredFrames();
+          if (layered.has(frame)) this.placeLayersBelow(frame, layered);
+        }
+        if (this.#dependents.size === 0) continue;
+        const outside = this.#outsideDependents;
+        outside.length = 0;
+        this.collectOutsideDependents(frame, frame, outside);
+        for (const dependent of outside) {
+          place ??= this.boundedPlacer();
+          queue ??= [];
+          if (place(dependent)) this.collectMoved(dependent, queue, place);
+        }
+        outside.length = 0;
+      }
+      if (queue && place) this.drainDependents(queue, place);
+    };
+    if (this.#bridge) this.#bridge.runInRenderPass(run);
+    else run();
+    if (placed > 0) this.#screenRects.clear();
+    return placed;
+  }
+
+  /** plates12: the drawn frames outside `root` anchored to `node` or to anything drawn inside it. */
+  private collectOutsideDependents(root: FrameXmlFrame, node: FrameXmlFrame, found: FrameXmlFrame[]): void {
+    const dependents = this.#dependents.get(node);
+    if (dependents) {
+      for (const dependent of dependents) if (!frameInside(dependent, root)) found.push(dependent);
+    }
+    for (const child of node.children) {
+      if (this.#rendered.get(child)?.effectiveHidden === false) this.collectOutsideDependents(root, child, found);
+    }
+  }
+
+  /**
+   * plates12 (6.37): draw these sibling frames in this order among themselves, later over earlier where their z-index
+   * ties (the plates of one frame level: far under near). Only elements out of order are moved; nothing is written when
+   * the order already holds. Frames not drawn, or not all under one parent element, are left alone.
+   */
+  stackSiblings(frames: readonly FrameXmlFrame[]): number {
+    let parent: HTMLElement | undefined;
+    let previous: Element | undefined;
+    let moved = 0;
+    for (const frame of frames) {
+      const element = this.#rendered.get(frame)?.element;
+      if (!element) continue;
+      const host = element.parentElement ?? undefined;
+      if (!host || (parent && host !== parent)) continue;
+      parent = host;
+      if (previous) {
+        // In order when `element` comes after `previous` among the parent's children.
+        let after = false;
+        for (let at = previous.nextElementSibling; at; at = at.nextElementSibling) {
+          if (at === element) { after = true; break; }
+        }
+        if (!after) {
+          previous.after(element);
+          moved += 1;
+        }
+      }
+      previous = element;
+    }
+    return moved;
   }
 
   /**
@@ -3237,6 +3334,11 @@ export class FrameXmlDomRenderer {
     const fill = rendered.statusBarFill;
     if (!fill) return;
     const { frame } = rendered;
+    // plates12 (6.37): a bar whose fill is a Texture region (FrameXmlStatusBarRegion.ts) is drawn by that region.
+    if (frameXmlStatusBarRegion(frame)) {
+      if (fill.style.display !== "none") fill.style.display = "none";
+      return;
+    }
     const { min, max, value, orientation, texture, color } = frame.statusBar;
     const range = max - min;
     const fraction = Number.isFinite(range) && range > 0 && Number.isFinite(min)

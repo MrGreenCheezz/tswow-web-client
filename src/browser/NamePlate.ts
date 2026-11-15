@@ -5,6 +5,10 @@
  *
  * Decisions are worth testing and this file is the half of the work that can be: no DOM, no `game`, no world state. A plate is
  * described to it, and it says where the plate goes and paints it; the pictures come in through {@link PlateArt}.
+ *
+ * plates12 (15.11, 6.37): with a FrameXML world mounted a plate is a real frame under WorldFrame instead
+ * (ui/NamePlateFrames.ts, framexml_compat/FrameXmlNamePlate*.ts), built from the same rules; `drawPlate` paints the
+ * plates only where no FrameXML world is mounted.
  */
 
 import { REACTION_FRIENDLY, REACTION_HOSTILE } from "../world/FactionRules.js";
@@ -95,6 +99,12 @@ export interface PlateData {
   classColour: string | undefined;
   /** 0 to 1, or undefined for a unit whose health the server has not sent. */
   health: number | undefined;
+  /**
+   * plates12 (6.37): the health and its top as the server sent them — the plate frame's health bar holds these, 0 to
+   * max (0x00990280; the recording's `value=700 of 0..1000`). Absent: the bar is drawn from `health` alone.
+   */
+  healthValue?: number | undefined;
+  healthMax?: number | undefined;
   /** 0 to 7 when the unit wears a raid mark. */
   raidMark: number | undefined;
   /** `creature_template.rank`: 1 elite, 2 rare elite, 3 world boss, 4 rare. */
@@ -102,7 +112,11 @@ export interface PlateData {
   /** CREATURE_TYPE_FLAG_BOSS (4, 0x00715d70): what the skull and the dragon go by, not the rank. */
   boss?: boolean | undefined;
   /** The target's cast (ShowVKeyCastbar). `progress` is how full the bar is: `WorldClient.castProgress` turned a channel round. */
-  cast: { iconPath: string | undefined; progress: number; shielded?: boolean | undefined } | undefined;
+  cast: {
+    iconPath: string | undefined; progress: number; shielded?: boolean | undefined;
+    /** plates12 (6.37): the cast's length in seconds — the plate frame's cast bar runs 0 to it (`0.000..90.000`). */
+    seconds?: number | undefined;
+  } | undefined;
   /** The player's own current target: drawn last and at full strength. */
   target: boolean;
   /** There is a target and this is not it. */

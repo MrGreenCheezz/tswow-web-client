@@ -229,6 +229,44 @@ test("15.11 (7.50): a lamp dark at time 0 that blinks on its own sequence lights
   assert.ok(share > 0.13 && share < 0.19, `average share of a steady lamp's glow: ${share}`);
 });
 
+/**
+ * lamp12 (16.11): a brazier of flames switched on and off by `enabledIn` on sequence 0 whose life ramp is red,
+ * not the heuristic's brazier orange (`G_BrazierTroll.m2`'s kind: flame 1 lit 0–500 ms, flame 2 lit 500–1666 ms,
+ * `FLAMELICKSMALL.BLP`, no M2 light, no card).
+ */
+const flame = (position, times, values) => ({
+  id: 0, flags: 0, position, bone: -1, texture: 1, blendType: 4, emitterType: 1,
+  enabledIn: { interpolation: 0, globalSequence: -1, components: 1,
+    tracks: [{ sequence: 0, times: new Uint32Array(times), values: new Float32Array(values) }] },
+  emissionRate: constant(1, 40),
+  color: { components: 3, times: new Float32Array([0, 1]), values: new Float32Array([255, 40, 40, 255, 40, 40]) },
+  opacity: { components: 1, times: new Float32Array([0, 1]), values: new Float32Array([1, 1]) },
+});
+const flameBrazier = () => ({
+  ...glowLamp(),
+  batches: [{ submesh: 0, materialFlags: 0, blendMode: 0, textures: [0], colorIndex: 65535, textureWeight: 0 }],
+  textures: [{ path: "World\\Goober\\G_TestBrazier.blp" }, { path: "Item\\ObjectComponents\\Weapon\\FlameLickSmall.blp" }],
+  particleEmitters: [flame([0, -0.04, 0.97], [0, 500], [1, 0]), flame([0, -0.12, 0.97], [0, 500, 1666], [0, 1, 0])],
+});
+const FLAME_BRAZIER = "World\\Goober\\G_TestBrazier.m2";
+
+test("lamp12 (16.11, 7.50): a flame gated off by enabledIn keeps its own colour while dark, built and prelit alike", () => {
+  const model = flameBrazier();
+  const result = assertPrelitMatchesBuilt(FLAME_BRAZIER, model);
+  assert.equal(result.lights, 2, "both flames are fixtures");
+  assert.equal(result.animated, true);
+  const templates = deriveLightTemplates(model, FLAME_BRAZIER);
+  assert.equal(templates.length, 2);
+  // At 0 ms the second flame is off: the built lamp keeps it at strength 0, in its ramp's red.
+  const [, second] = modelFixtureLights(model, FLAME_BRAZIER, true);
+  const value = sample();
+  assert.equal(sampleFixtureLightKept(second, model, new THREE.Matrix4(), 0, 0, value), true, "kept while dark");
+  assert.equal(value.intensity, 0);
+  assert.ok(value.colour.distanceTo(new THREE.Vector3(...templates[1].colour)) < 1e-6,
+    `the dark flame's colour is its template's base: ${value.colour.toArray()} vs ${templates[1].colour}`);
+  close(value.colour.y, 40 / 255, 1e-6, "the ramp's red, not the heuristic's orange");
+});
+
 test("15.11 (7.50): a blinking lamp keeps its rank while dark, so the twelve nearest and their fade cut hold", () => {
   const catalog = new LightTemplateCatalog(null);
   catalog.learn(BLINKING, blinkingLamp());

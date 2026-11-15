@@ -6,6 +6,7 @@ import type { EnvironmentObject } from "./Terrain.js";
 import { creatureIconSource, type CreatureMetadata } from "./CreatureMetadata.js";
 import { setIconSource } from "./ui/IconImage.js";
 import { PLATE_NAME_RAISE, drawPlate, plateLayout, stackPlates, type PlateArt, type PlateBox, type PlateData } from "./NamePlate.js";
+import { namePlateFrameHost } from "./ui/NamePlateFrameSlot.js"; // plates12 (6.37)
 import { viewSubjectIn } from "./game/ViewSubject.js"; // 11.02-I
 import { drawnUnitPosition, hiddenBySeat, type DrawnPoint } from "./VehiclePassengerOverlay.js"; // 11.02-tails
 // 22.10 ARC-2 S3a: the game-object click test and the overlay's range moved to GameObjectClickable.ts (the renderer
@@ -255,6 +256,7 @@ export class SimpleScene {
       context.font = "16px system-ui";
       context.textAlign = "center";
       context.fillText("Ожидание позиции персонажа…", width / 2, height / 2);
+      namePlateFrameHost()?.present([], width, height); // plates12 (6.37): no plates without a view
       return;
     }
 
@@ -378,8 +380,11 @@ export class SimpleScene {
     if (!platesOverlap) stackPlates(plates);
     // 03.11 (6.37): far under near, and the target over all of them (its frame level is 20, the others' 10, measured).
     plates.sort((left, right) => Number(left.data.target) - Number(right.data.target) || right.depth - left.depth);
+    // plates12 (6.37): with a FrameXML world mounted the plates are WorldFrame's frames (NamePlateFrames.ts).
+    const plateFrames = namePlateFrameHost();
+    plateFrames?.present(plates, width, height);
     for (const plate of plates) {
-      drawPlate(context, plate.box, plate.data, plateArt);
+      if (!plateFrames) drawPlate(context, plate.box, plate.data, plateArt);
       // The plate over a head is a click target of its own, and at any distance it is the larger
       // one: a mob at thirty yards is twenty pixels of body under a hundred pixels of plate. Pushed
       // after every body, so a plate wins over whatever it happens to hang in front of — `pick`

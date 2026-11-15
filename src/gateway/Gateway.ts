@@ -12,6 +12,7 @@ import { encodeVMapModel, parseVMapModel, parseVMapModelGroups, type CollisionGr
 import { loadGameObjectDisplayMetadata } from "./GameObjectMetadata.js";
 import { loadTransportPaths } from "./TransportPaths.js";
 import { loadLiquidClasses, loadLiquidRows } from "./LiquidMetadata.js"; // 05.10-A7b-5: loadLiquidRows
+import { adtLiquidFile, adtLiquidRequest } from "./AdtLiquidRoute.js"; // 15.11 (7.09 B)
 import { VISUAL_TILE_GENERATION, visualTileTruncation } from "./VisualTileGeneration.js"; // 05.10-A7b-1
 import { TERRAIN_SPLAT_GENERATION } from "./TerrainSplatGeneration.js"; // 05.10-A7b-7
 import { loadLoadingScreens } from "./LoadingScreenMetadata.js";
@@ -72,6 +73,8 @@ import { listeningServerError } from "./ProcessGuard.js";
 import { originAllowed, refuseUpgrade, routeUpgrade } from "./UpgradeGuard.js";
 import { WMO_MINIMAP_ROUTE, serveWmoMinimapRoute, type WmoMinimapMemo } from "./WmoMinimapRoute.js"; // 05.10-A7b-3
 import { serveNeuralReliefRoute } from "./NeuralReliefRoute.js"; // 25.10 (7.47)
+import { ACCOUNT_ROUTE_PREFIX, serveAccountRoute } from "./AccountRoutes.js"; // 15.11 (10.30)
+import type { AccountSelfService } from "./AccountSelfService.js"; // 15.11 (10.30)
 import { LIT_MODEL_INDEX_ROUTE, serveLitModelIndexRoute } from "./LitModelIndexRoute.js"; // 25.10 (7.50)
 import { WMO_LAMP_TABLE_ROUTE, serveWmoLampTableRoute, type WmoLampTableBuilds } from "./WmoLampTableRoute.js"; // 24.10 (7.50)
 import {
@@ -421,6 +424,8 @@ export interface GatewayOptions {
   generateLiquidTexture?: (liquidClass: string) => Promise<void>;
   /** 05.10-A7b-8 (7.09 A): publishes `<liquidDirectory>/family/<slug>.png|json`. */
   generateLiquidFamily?: (family: string) => Promise<void>;
+  /** 15.11 (7.09 B): publishes `<liquidDirectory>/adt/v1/<map>/<gridX>-<gridY>.json` (AdtLiquidRoute.ts). */
+  generateAdtLiquid?: (map: number, gridX: number, gridY: number) => Promise<void>;
   generateTexture?: (path: string) => Promise<void>;
   /**
    * Called when the dataset poll finds the client's archives changed — a patch directory gained
@@ -507,6 +512,8 @@ export interface GatewayOptions {
    * Absent means `LOGIN_ATTEMPT_DEFAULTS`; `false` switches the limit off (`GATEWAY_LOGIN_MAX_FAILURES=0`).
    */
   loginAttempts?: Partial<LoginAttemptLimits> | false;
+  /** 15.11 (10.30): registration and password change (AccountRoutes.ts); absent: the routes answer «disabled». */
+  accounts?: AccountSelfService;
   /**
    * 10.27: `/world?realm=address` connects to that address of the realm list the authserver
    * announced over this gateway (`RealmAddresses.ts`); `/world` without it goes to `world`. `false`
@@ -1228,6 +1235,10 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
       response.end(JSON.stringify(traffic.snapshot(), null, 1));
       return;
     }
+    // 15.11 (10.30): the login screen's account forms; «disabled» unless GATEWAY_ACCOUNTS=1 (AccountRoutes.ts).
+    if (pathname.startsWith(ACCOUNT_ROUTE_PREFIX) && await serveAccountRoute(request, response, pathname, {
+      service: options.accounts, allowedOrigins: options.allowedOrigins, peerAddress: options.peerAddress ?? socketPeerAddress,
+    })) return;
     // 10.12 (CachePolicy.ts): validators name the epoch this request started in, so a body built
     // from indexes that a concurrent poll has since dropped is never filed under the newer tag.
     // 25.10 (serve S2): the served identity at the request's start, in place of process nonce + epoch.
@@ -2780,6 +2791,35 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
         response.end(data);
       } catch {
         respondError(response, 500, origin);
+      }
+      return;
+    }
+
+    // 15.11 (7.09 slice B): one tile's authored liquid layers out of the client's ADT (AdtLiquidRoute.ts).
+    const adtLiquid = adtLiquidRequest(pathname, url.searchParams.get("v"));
+    if (request.method === "GET" && adtLiquid !== undefined && options.liquidDirectory) {
+      const origin = request.headers.origin;
+      if (!originAllowed(origin, options.allowedOrigins)) {
+        response.writeHead(403).end();
+        return;
+      }
+      if (adtLiquid === null) {
+        respondError(response, 400, origin);
+        return;
+      }
+      const filename = adtLiquidFile(options.liquidDirectory, adtLiquid);
+      try {
+        const { map: tileMap, gridX: tileX, gridY: tileY } = adtLiquid;
+        const rebuild = () => generateOnce(liquidLane, `adt:${tileMap}/${tileX}/${tileY}`,
+          () => options.generateAdtLiquid!(tileMap, tileX, tileY));
+        if (options.generateAdtLiquid) await fingerprint.ensureCurrent(filename);
+        await respondFile(request, response, filename, {
+          origin, contentType: "application/json; charset=utf-8",
+          rebuild: options.generateAdtLiquid ? rebuild : undefined,
+        });
+      } catch (error) {
+        const absent = sourceMissing(error) || (error as NodeJS.ErrnoException).code === "ENOENT";
+        respondError(response, absent ? 404 : 500, origin);
       }
       return;
     }

@@ -51,6 +51,7 @@ import { ENVIRONMENT_FAR_RANGE, ENVIRONMENT_RANGE, ENVIRONMENT_SHELL_RANGE, ENVI
 import { terrainGeometryData, terrainGeometrySteps, type TerrainGeometryData } from "./TerrainGeometry.js";
 export { terrainGeometryData, terrainHeightField, terrainNormals, surfaceNormal, type TerrainGeometryData } from "./TerrainGeometry.js";
 import { TerrainStreamingWindow, type TerrainStreamingPlan } from "./TerrainStreaming.js";
+import { TerrainDetailWindowState, detailedGroundReach, type ChunkRect } from "./TerrainDetailWindow.js"; // 15.11 (7.08 slice B)
 import { ProgramWarmup, programWarmupKind, WarmHold, type ProgramWarmupKind } from "./ProgramWarmup.js";
 import { useFloatUniformSetters } from "./FloatUniformSetters.js";
 import { ShaderProgramTrace, type ShaderProgramEvent } from "./ShaderProgramTrace.js";
@@ -163,6 +164,7 @@ import { CinematicPost, type CinematicProfile } from "./CinematicPost.js";
 import {
   LIQUID_CELL_YARDS, applyFallbackLiquidShaderProfile, applyLiquidShaderProfile,
   liquidMotionOf, pushLiquidCellUvs, // 11.11 (7.31)
+  pushTerrainLiquidCellUvs, pushWmoLiquidVertexUv, type AuthoredLiquidTile, // 15.11 (7.09 B)
   buildLiquidMaterial, copyWaterSkyBands, createWaterShaderSharedUniforms,
   liquidClassOf, updateLiquidMaterial, WATER_FALLBACK_OPACITY, WaterDetailNormalMaps, liquidCalmOf,
   type LiquidClass, type LiquidMaterial, type LiquidTextureClient, type WaterShaderSharedUniforms,
@@ -359,7 +361,7 @@ import { liftPathPose, type LiftPose } from "./LiftClock.js";
 import {
   HORIZON_FAR_PLANE, HorizonClient, buildHorizonGeometry, horizonTiles,
 } from "./Horizon.js";
-import { horizonTileAt } from "./Horizon.js"; // 05.10-A7b-7
+import { horizonTileAt, type HorizonMap } from "./Horizon.js"; // 05.10-A7b-7; 15.11 (7.08 slice B): the type
 import { HorizonMaterialSelector } from "./HorizonMaterial.js"; // 05.10-A7b-7
 import { HorizonDetail } from "./HorizonDetail.js"; // 22.10 (7.44)
 import { HORIZON_LOD_REACH, HorizonLodRing } from "./HorizonLodRing.js"; // 22.10 (7.44)
@@ -4885,7 +4887,7 @@ export class WorldRenderer3D {
   readonly #terrains = new Map<string, RenderedTerrain>();
   /** The far horizon: one mesh for every distant tile, rebuilt when the player changes tile. */
   /** P1-13b: the horizon mesh and what it was built for — `map * 4096 + cell` and the client revision. */
-  #horizon: { mesh: THREE.Mesh; tile: number; revision: number; inner: number } | undefined; // 7.44: inner reach
+  #horizon: { mesh: THREE.Mesh; tile: number; revision: number; inner: number; exclude?: ChunkRect | undefined } | undefined; // 7.44: inner reach; 7.08 B: the window
   /** 22.10 (7.44): the enhanced path's first ring past the near window, from real terrain heights. */
   readonly #horizonLod = new HorizonLodRing();
   /** 22.10 (7.39): the enhanced path's coarse outer horizon, tiles five and six (HorizonBand.ts). */
@@ -5224,6 +5226,21 @@ export class WorldRenderer3D {
   #terrainPreparation: TerrainPreparation | undefined;
   #terrainRepair: TerrainRepair | undefined;
   #terrainRepairsPending = 0;
+  /** 15.11 (7.08 slice B): the detailed window around the camera (TerrainDetailWindow.ts) and its tiles still coming. */
+  readonly #detailWindow = new TerrainDetailWindowState();
+  #terrainFarPending = 0;
+  /** 15.11 (7.08 slice B): the map's WDL as the horizon last saw it — which window cells have ground at all. */
+  #windowWorld: { map: number; world: HorizonMap; revision: number } | undefined;
+  readonly #windowCellExists = (x: number, y: number): boolean =>
+    this.#windowWorld === undefined || horizonTileAt(this.#windowWorld.world, x, y) !== undefined;
+  /** 15.11 (7.08 slice B): a far tile is drawn once built, splatted and its textures uploaded. */
+  readonly #farTileShown = (rendered: RenderedTerrain): boolean =>
+    this.#detailWindow.drawn && rendered.splatted && (rendered.textureWarmup?.length ?? 0) === 0;
+  /** 15.11 (7.08 slice B): the horizon's stand-in for a window tile is hidden while the tile itself is drawn. */
+  readonly #farTileCovered = (x: number, y: number): boolean => {
+    const key = this.#terrainPlan?.farIndex.get(x * 64 + y);
+    return key !== undefined && this.#terrains.get(key)?.mesh.visible === true;
+  };
   #environmentObjects: readonly EnvironmentObject[] | undefined;
   #environmentSpatialIndex: EnvironmentGridIndex | undefined;
   /** One `InstancedMesh` per repeated doodad model, and the placements it stands in for. */
@@ -6319,7 +6336,9 @@ export class WorldRenderer3D {
       if (shaped.density !== 1) {
         // The faithful levels draw it as is; the enhanced path stretches it as it stretches every fog (7.39), but not
         // under water. An end short of the far clip (a set too near to shape, blended in) is kept as the original's.
-        const end = shaped.far >= WOW_FAR_CLIP ? shapedFogEnd(this.#horizon !== undefined) : shaped.far;
+        // 15.11 (7.08 slice B): the window's stand-ins count as a horizon; without a WDL the drawn window's reach.
+        const horizonDrawn = this.#horizon !== undefined || this.#horizonLod.tileCount > 0;
+        const end = shaped.far >= WOW_FAR_CLIP ? shapedFogEnd(horizonDrawn, horizonDrawn ? 0 : this.#detailedReach()) : shaped.far;
         const stretched = distanceFogRange(shaped.near, end,
           this.#lightingProfile.quality, this.#underwater, this.#atmosphere?.haze ?? 0, this.#distanceFog);
         fog.near = stretched.near;
@@ -6473,7 +6492,7 @@ export class WorldRenderer3D {
       modelTexturesGeneration: this.#textures.stats.generation + this.#spellTextures.stats.generation,
       worldTexturesPending: this.#worldTexturesPending + worldMaterialTextures.pending,
       wmoGroupsPending: this.#wmoGroupsPending,
-      terrainRepairsPending: this.#terrainRepairsPending,
+      terrainRepairsPending: this.#terrainRepairsPending + this.#terrainFarPending, // 15.11 (7.08 slice B): and the window
       worldTexturesErrors: this.#worldTextureErrors.size + worldMaterialTextures.error,
       worldTexturesGeneration: this.#worldTextureGeneration
         + this.#worldMaterialGenerationOffset
@@ -8033,6 +8052,9 @@ export class WorldRenderer3D {
       const uvs: number[] = [];
       const depths: number[] = [];
       const indices: number[] = [];
+      // 15.11 (7.09 B): the row's own matrix and scroll (19 "WMO Magma", 20 "WMO Slime": 0.1 along v,
+      // Wow.exe 0x008a34b0; 14 "WMO Ocean": 0.25 turned 180°, 0x008a5590), which building liquids never had.
+      const wmoMotion = liquidMotionOf(liquid.type, this.#liquidTextures?.motions);
       for (let cellY = 0; cellY < liquid.tilesY; cellY++) {
         for (let cellX = 0; cellX < liquid.tilesX; cellX++) {
           // The low nibble is the cell's own mask, and 0x0f is the file saying "nothing here".
@@ -8043,9 +8065,9 @@ export class WorldRenderer3D {
             const cornerY = liquid.cornerY + (cellY + stepY) * LIQUID_CELL_YARDS;
             const height = liquid.heights[(cellY + stepY) * (liquid.tilesX + 1) + (cellX + stepX)]!;
             positions.push(cornerX, cornerY, height);
-            // The same continuous tiling the terrain's water uses, in the model's own frame so the
-            // pattern does not swim when the building is turned.
-            uvs.push(cornerY / LIQUID_CELL_YARDS, cornerX / LIQUID_CELL_YARDS);
+            // 15.11 (7.09 B): Wow.exe 0x007a7b00 — one repeat per cell from the grid's corner, u along
+            // the model's X (`pushWmoLiquidVertexUv`), in the model's own frame.
+            pushWmoLiquidVertexUv(uvs, cellX + stepX, cellY + stepY, wmoMotion);
             depths.push(DEEP_WATER_YARDS);
           }
           indices.push(base, base + 1, base + 2, base + 1, base + 3, base + 2);
@@ -8058,6 +8080,8 @@ export class WorldRenderer3D {
       geometry.setAttribute("liquidDepth", new THREE.Float32BufferAttribute(depths, 1));
       // WMO pools, canals and moats are still water to the enhanced ripples (Water `liquidCalmOf`).
       geometry.setAttribute("liquidCalm", new THREE.Float32BufferAttribute(new Float32Array(depths.length).fill(liquidCalmOf(liquid.type, true)), 1));
+      geometry.setAttribute("liquidScroll", new THREE.Float32BufferAttribute(new Float32Array(depths.length * 2)
+        .map((_, index) => (index & 1 ? wmoMotion.scrollV : wmoMotion.scrollU)), 2));
       geometry.setIndex(indices);
       geometry.applyMatrix4(toScene);
       // Recentred so the object's origin is the water's own middle, which is the key three sorts by.
@@ -11571,7 +11595,14 @@ export class WorldRenderer3D {
       terrainClient?.setActiveTiles(undefined, []);
       return;
     }
-    const plan = this.#terrainWindow.update(map, player.x, player.y, !this.#formalBenchmarkIsolation)!;
+    // 15.11 (7.08 slice B): the detailed window around the camera (Wow.exe 0x00780860), past the near 3×3.
+    // A camera not yet placed (or teleported ahead of the player) waits a frame rather than stream another region.
+    const farTiles = Math.hypot(this.#camera.position.x - player.x, -this.#camera.position.z - player.y) > TERRAIN_GRID_SIZE
+      ? undefined
+      : this.#detailWindow.tiles(this.#camera.position.x, -this.#camera.position.z, this.#camera.fov, this.#camera.aspect);
+    const windowWorld = this.#windowWorld?.map === map ? this.#windowWorld : undefined;
+    const plan = this.#terrainWindow.update(map, player.x, player.y, !this.#formalBenchmarkIsolation, farTiles,
+      this.#detailWindow.fullReach, windowWorld ? this.#windowCellExists : undefined, windowWorld?.revision ?? 0)!;
     if (plan !== this.#terrainPlan) {
       this.#terrainPlan = plan;
       terrainClient?.setActiveTiles(map, plan.dependencies);
@@ -11579,12 +11610,13 @@ export class WorldRenderer3D {
       for (const [key, rendered] of this.#terrains) {
         if (!plan.retainedKeys.has(key)) this.#removeTerrain(key, rendered);
         else {
-          rendered.mesh.visible = plan.visibleKeys.has(key);
+          rendered.mesh.visible = plan.visibleKeys.has(key) || (plan.farKeys.has(key) && this.#farTileShown(rendered));
           for (const water of rendered.water ?? []) water.visible = rendered.mesh.visible;
         }
       }
       splatClient?.setActiveTiles(map, plan.retained);
     }
+    this.#terrainFarPending = this.#countFarPending(map, plan, terrainClient); // 15.11 (7.08 slice B)
     const grids = plan.visible;
     // A tile's normals are sampled a step outside its own edge, while water corners also borrow
     // diagonal cells. Its revision therefore counts all eight neighbours: a tile built while one
@@ -11602,7 +11634,7 @@ export class WorldRenderer3D {
       || this.#terrains.get(pendingRepair.key) !== pendingRepair.rendered
       || (terrainClient?.tileRevision(map, pendingRepair.grid) ?? 0) !== pendingRepair.revision
       || (terrainClient?.ownRevision(map, pendingRepair.grid) ?? 0) !== pendingRepair.ownRevision
-      || (this.#liquidTextures?.generation ?? 0) !== pendingRepair.liquidGeneration)) {
+      || this.#liquidGenerationAt(map, pendingRepair.grid) !== pendingRepair.liquidGeneration)) {
       this.#cancelTerrainRepair();
     }
     // P1-13b: the plan's keys, built once per plan (the same `${map}/${x}/${y}` strings).
@@ -11636,7 +11668,7 @@ export class WorldRenderer3D {
         this.#budgetProbe?.end(FRAME_BUDGET.terrain, builtAt);
         terrainBuilds++;
       } else if (rendered.ownRevision !== ownRevision || rendered.revision !== revision
-        || rendered.liquidGeneration !== (this.#liquidTextures?.generation ?? 0)) {
+        || rendered.liquidGeneration !== this.#liquidGenerationAt(map, grid)) {
         // 7.32: nothing to repair from. Answered with no ground (a failed re-fetch) is taken down
         // rather than flattened at the player's height; evicted and on the wire again keeps the
         // ground it was built from until the answer is back.
@@ -11650,11 +11682,11 @@ export class WorldRenderer3D {
           this.#cancelTerrainPreparation();
           const geometry = rendered.ownRevision !== ownRevision || rendered.revision !== revision;
           const water = rendered.ownRevision !== ownRevision
-            || rendered.liquidGeneration !== (this.#liquidTextures?.generation ?? 0)
+            || rendered.liquidGeneration !== this.#liquidGenerationAt(map, grid)
             || shouldRefreshWaterForNeighbour(rendered.water);
           this.#terrainRepair = {
             key, map, grid, rendered, client: terrainClient, revision, ownRevision,
-            liquidGeneration: this.#liquidTextures?.generation ?? 0,
+            liquidGeneration: this.#liquidGenerationAt(map, grid),
             steps: this.#repairTerrainSteps(map, grid, { ...player }, heightAt, terrainClient, geometry, water),
           };
         }
@@ -11670,6 +11702,56 @@ export class WorldRenderer3D {
       this.#prepareTerrain(map, player, heightAt, terrainClient, splatClient, plan);
     }
     this.#budgetProbe?.end(FRAME_BUDGET.terrain, stepAt);
+  }
+
+  /** 15.11 (7.08 slice B): the outer band when the window leaves the WDL ring no tile of its own (no ring to wait for). */
+  #horizonBandPastWindow(world: HorizonMap, tile: number, revision: number, range: number, material: THREE.Material): void {
+    this.#horizonBand.update(this.#scene, world, tile, revision, range, material);
+  }
+
+  /** 15.11 (7.08 slice B): how far the drawn detailed ground reaches around the camera (0 without a window). */
+  #detailedReach(): number {
+    const rect = this.#detailWindow.drawnRect;
+    const plan = this.#terrainPlan;
+    if (!rect || !plan) return 0;
+    const x = this.#camera.position.x, y = -this.#camera.position.z;
+    return detailedGroundReach(x, y, rect, (gx, gy) => {
+      const key = plan.farIndex.get(gx * 64 + gy);
+      // The near 3×3 is not in the index and is always drawn.
+      return key === undefined ? Math.abs(gx - plan.center.x) <= 1 && Math.abs(gy - plan.center.y) <= 1
+        : this.#terrains.get(key)?.mesh.visible === true;
+    });
+  }
+
+  /** 15.11 (7.08 slice B): the detailed window drawn (default) or its far tiles hidden behind the horizon (bench). */
+  setTerrainDetailWindow(enabled: boolean): void {
+    if (this.#detailWindow.drawn === enabled) return;
+    this.#detailWindow.drawn = enabled;
+    this.#terrainPlan = undefined; // re-run the plan's visibility pass on the next frame
+  }
+
+  /** 15.11 (7.08 slice B): window tiles with ground that are not drawn yet (the bench's readiness waits for them). */
+  #countFarPending(map: number, plan: TerrainStreamingPlan, terrainClient: TerrainClient | undefined): number {
+    if (!this.#detailWindow.drawn || !terrainClient) return 0;
+    let pending = 0;
+    for (let index = 0; index < plan.far.length; index++) {
+      if (this.#terrains.get(plan.farTileKeys[index]!)?.mesh.visible === true) continue;
+      const grid = plan.far[index]!;
+      // Answered with no ground (no ADT there) is not waited for.
+      if (terrainClient.ownRevision(map, grid) > 0 && terrainClient.residentHeightAt(map, (31.5 - grid.x) * TERRAIN_GRID_SIZE,
+        (31.5 - grid.y) * TERRAIN_GRID_SIZE) === undefined) continue;
+      pending++;
+    }
+    // The mid-detail ring's tiles: their own heights are asked for here (two at a time, after everything nearer)
+    // and waited for until the ring has drawn them from those heights.
+    for (const grid of plan.lod) {
+      if (this.#horizonLod.terrainBuilt(grid.x, grid.y)) continue;
+      const x = (31.5 - grid.x) * TERRAIN_GRID_SIZE, y = (31.5 - grid.y) * TERRAIN_GRID_SIZE;
+      if (terrainClient.ownRevision(map, grid) > 0 && terrainClient.residentHeightAt(map, x, y) === undefined) continue;
+      if (terrainClient.ownRevision(map, grid) === 0 && terrainClient.stats.active < 2) terrainClient.isReady(map, x, y);
+      pending++;
+    }
+    return pending;
   }
 
   #cancelTerrainPreparation(): void {
@@ -11787,7 +11869,7 @@ export class WorldRenderer3D {
     const prepareKeys = plan.prepareTileKeys; // P1-13b: `terrainTileKey(map, prepare[i])`
     if (pending && (!prepareKeys.includes(pending.key)
       || terrainClient?.tileRevision(map, pending.grid) !== pending.revision
-      || (this.#liquidTextures?.generation ?? 0) !== pending.liquidGeneration)) {
+      || this.#liquidGenerationAt(map, pending.grid) !== pending.liquidGeneration)) {
       this.#cancelTerrainPreparation();
     }
     if (!terrainClient || !heightAt || plan.prepare.length === 0) return;
@@ -11815,6 +11897,11 @@ export class WorldRenderer3D {
         this.#renderer.initTexture(texture);
         uploaded = true;
       }
+      // 15.11 (7.08 slice B): a far tile of the window is drawn once it is ready (the horizon's stand-in then hides).
+      if (rendered && !rendered.mesh.visible && plan.farKeys.has(key) && this.#farTileShown(rendered)) {
+        rendered.mesh.visible = true;
+        for (const water of rendered.water ?? []) water.visible = true;
+      }
     }
     if (performance.now() >= deadline) return;
     if (!this.#terrainPreparation) {
@@ -11828,6 +11915,8 @@ export class WorldRenderer3D {
             const neighbour = { x: grid.x + ox, y: grid.y + oy };
             if (neighbour.x < 0 || neighbour.x >= 64 || neighbour.y < 0 || neighbour.y >= 64) continue;
             if (terrainClient.ownRevision(map, neighbour) > 0) continue;
+            // 15.11 (7.08 slice B): a window tile's neighbour with no ground is not waited for (nor asked for).
+            if (plan.farKeys.has(key) && this.#windowWorld?.map === map && !this.#windowCellExists(neighbour.x, neighbour.y)) continue;
             ready = false;
             // Active visible downloads always have the network first. At most two CPU requests.
             if (terrainClient.stats.active < 2) {
@@ -11843,7 +11932,7 @@ export class WorldRenderer3D {
         this.#terrainPreparation = {
           key, grid, revision: terrainClient.tileRevision(map, grid),
           ownRevision: terrainClient.ownRevision(map, grid),
-          liquidGeneration: this.#liquidTextures?.generation ?? 0,
+          liquidGeneration: this.#liquidGenerationAt(map, grid),
           steps: this.#prepareTerrainSteps(map, grid, { ...player }, heightAt, terrainClient),
         };
         break;
@@ -11909,6 +11998,12 @@ export class WorldRenderer3D {
     // P1-13b: the centre tile as one number (`map * 4096 + cell`); its grid object only on a rebuild.
     const cell = map === undefined ? -1 : terrainGridIndex(player.x, player.y);
     const world = horizonClient?.get(map);
+    // 15.11 (7.08 slice B): the window asks only for cells the WDL has (next frame's plan).
+    const windowWorld = this.#windowWorld, worldRevision = horizonClient?.revision ?? 0;
+    if (map === undefined || !world) this.#windowWorld = undefined;
+    else if (windowWorld?.world !== world || windowWorld.map !== map || windowWorld.revision !== worldRevision) {
+      this.#windowWorld = { map, world, revision: worldRevision };
+    }
     if (map === undefined || cell < 0 || !world) {
       if (this.#horizon) {
         this.#scene.remove(this.#horizon.mesh);
@@ -11933,10 +12028,20 @@ export class WorldRenderer3D {
     // own heights (HorizonLodRing.ts) and the WDL ring leaves it out; the faithful levels keep the WDL.
     const enhanced = !lightingClassicLook(this.#lightingProfile.quality);
     const inner = enhanced ? HORIZON_LOD_REACH : 1;
-    if (enhanced) {
+    // 15.11 (7.08 slice B): with the detailed window drawn, the WDL leaves the window's tiles to the terrain, and the
+    // ring draws the window's tiles past the full-detail ones from their own heights (mid-detail, on every level:
+    // Wow.exe draws its real chunks there), standing in for a full-detail tile until it is drawn; without it, as before.
+    const detailRect = this.#detailWindow.drawnRect;
+    const far = detailRect ? this.#terrainPlan?.standIns : undefined;
+    if (far !== undefined && far.length > 0) {
+      this.#horizonLod.update(this.#scene, map, Math.floor(cell / 64), cell % 64, world, terrainClient, horizonMaterial,
+        far, this.#farTileCovered);
+    } else if (enhanced) {
       this.#horizonLod.update(this.#scene, map, Math.floor(cell / 64), cell % 64, world, terrainClient, horizonMaterial);
     } else this.#horizonLod.clear(this.#scene);
-    if (this.#horizon?.tile === tile && this.#horizon.revision === revision && this.#horizon.inner === inner) {
+    const wdlInner = detailRect ? 1 : inner;
+    if (this.#horizon?.tile === tile && this.#horizon.revision === revision && this.#horizon.inner === wdlInner
+      && this.#horizon.exclude === detailRect) {
       this.#horizonBand.update(this.#scene, world, tile, revision, bandRange, horizonMaterial);
       return;
     }
@@ -11946,9 +12051,10 @@ export class WorldRenderer3D {
     }
     this.#horizonBand.hideUnless(tile); // 22.10 (7.39): an old band would overlap the new ring
     const centre = { x: Math.floor(cell / 64), y: cell % 64 };
-    const tiles = horizonTiles(world, centre, undefined, inner); // 22.10 (7.44)
+    const tiles = horizonTiles(world, centre, undefined, wdlInner, detailRect); // 22.10 (7.44); 15.11 (7.08 slice B)
     if (tiles.length === 0) {
       this.#horizon = undefined;
+      if (detailRect) this.#horizonBandPastWindow(world, tile, revision, bandRange, horizonMaterial); // 7.08 B
       return;
     }
     const mesh = new THREE.Mesh(buildHorizonGeometry(tiles, (x, y) => horizonTileAt(world, x, y)), horizonMaterial); // 05.10-A7b-7
@@ -11956,7 +12062,7 @@ export class WorldRenderer3D {
     // neither depth nor a depth test, so anything sharing that order is painted over by it —
     // measured as a horizon that loaded, selected its 63 tiles, built its mesh and never appeared.
     mesh.renderOrder = 0;
-    this.#horizon = { mesh, tile, revision, inner };
+    this.#horizon = { mesh, tile, revision, inner: wdlInner, exclude: detailRect };
     this.#scene.add(mesh);
   }
 
@@ -11991,7 +12097,7 @@ export class WorldRenderer3D {
     const mesh = new THREE.Mesh(this.#terrainGeometry(map, grid, player, heightAt, terrainClient), material);
     mesh.receiveShadow = this.#lightingProfile.shadowMapSize > 0;
     const rendered: RenderedTerrain = {
-      material, mesh, revision, ownRevision, splatted: false, liquidGeneration: this.#liquidTextures?.generation ?? 0,
+      material, mesh, revision, ownRevision, splatted: false, liquidGeneration: this.#liquidGenerationAt(map, grid),
       water: undefined, textureWarmup: undefined,
       relief: undefined, reliefRevision: this.#terrainReliefRevision, // 22.10 (7.47)
     };
@@ -12285,6 +12391,16 @@ export class WorldRenderer3D {
     return this.#cinematicWaterProfile;
   }
 
+  /**
+   * 15.11 (7.09 B): what a tile's water was built against — the liquid tables and strips (`generation`)
+   * and whether the tile's authored layers have been answered (`WaterAuthored.ts`, 0 or 1), so a lava
+   * tile drawn before its (s, t) arrived is drawn again once, and no other tile is.
+   */
+  #liquidGenerationAt(map: number, grid: { x: number; y: number }): number {
+    const textures = this.#liquidTextures;
+    return textures ? textures.generation * 2 + (textures.authored?.revision(map, grid.x, grid.y) ?? 0) : 0;
+  }
+
   #waterGeometry(map: number, grid: { x: number; y: number }, heightAt: HeightSampler | undefined, terrainClient: TerrainClient | undefined): Map<LiquidSurface, THREE.BufferGeometry> { // 05.10-A7b-8
     const steps = this.#waterGeometrySteps(map, grid, heightAt, terrainClient);
     let result = steps.next();
@@ -12296,6 +12412,7 @@ export class WorldRenderer3D {
     terrainClient: TerrainClient | undefined): Generator<void, Map<LiquidSurface, THREE.BufferGeometry>, void> { // 05.10-A7b-8
     const surfaces = new Map<LiquidSurface, { positions: number[]; uvs: number[]; depths: number[]; calm: number[]; scroll: number[]; indices: number[] }>();
     const motions = this.#liquidTextures?.motions; // 11.11 (7.31)
+    let authored: AuthoredLiquidTile | null | undefined; // 15.11 (7.09 B): asked once, on the first magma/slime cell
     // A water quad used to get one height and one depth for all four vertices.  That made the
     // alpha/deep-colour transition follow the 4.16-yard cell grid, which is especially obvious
     // on shallow shores.  Keep the look-up bounded to this tile: neighbouring cells are cached,
@@ -12396,7 +12513,11 @@ export class WorldRenderer3D {
         // across the tile boundary rather than restarting at each quad. 11.11 (7.31): at Wow.exe's
         // 0.06 a yard and the row's scale, with the row's scroll rate (`Water.ts`).
         const motion = liquidMotionOf(liquid.entry, motions);
-        pushLiquidCellUvs(surface.uvs, x0, x1, y0, y1, motion.uvScale);
+        // 15.11 (7.09 B): magma and slime from the client ADT's own (s, t), asked for on the first such cell.
+        if (authored === undefined && (liquidClass === "magma" || liquidClass === "slime")) {
+          authored = this.#liquidTextures?.authored?.tile(map, grid.x, grid.y) ?? null;
+        }
+        pushTerrainLiquidCellUvs(surface.uvs, x0, x1, y0, y1, motion.uvScale, liquidClass, authored, row, column);
         surface.scroll.push(motion.scrollU, motion.scrollV, motion.scrollU, motion.scrollV,
           motion.scrollU, motion.scrollV, motion.scrollU, motion.scrollV);
         // Ground is sampled at each corner too; using the centre for all four vertices was the

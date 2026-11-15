@@ -310,9 +310,10 @@ function deathLight(entry: LightIndexEntry, time: number, alive: LightSample | u
 }
 
 /**
- * 05.10-A7b-5 (7.10): the deeper the eye under an ocean, the darker and closer the world.
+ * 05.10-A7b-5 (7.10): a liquid's darkening by the eye's depth — which, read on Wow.exe (15.11, below), never
+ * acts under the surface.
  *
- * `darkness = clamp(depth / MaxDarkenDepth, 0, 1)`, then the ambient and the direct light each lose
+ * `darkness = clamp(−depth / MaxDarkenDepth, 0, 1)`, then the ambient and the direct light each lose
  * `darkness × …DarkenIntensity` of their brightness. 11.11 (7.65): that is Wow.exe's own formula —
  * 0x007f3230 scales the HSV value of the ambient (0x00d38cac) and direct (0x00d38ca8) colours by
  * `1 + (−darkness) · intensity` (0x007ed790), and an HSV value scale is the RGB scale below. The fog
@@ -320,11 +321,20 @@ function deathLight(entry: LightIndexEntry, time: number, alive: LightSample | u
  * `FogDarkenIntensity`, which 0x007f3230 applies to the fog colour 0x00d38b8c instead — and 0x007f16f0,
  * run after it in the same frame (0x007816f0), sets that colour afresh from the light, so it is
  * not taken here either. In place: the sample is this frame's own object.
+ *
+ * 15.11 (7.65, 7.10): which depth. 0x007f3230 reads it from 0x00780620, the value 0x00790920 stores each
+ * frame: the liquid's surface at the camera minus the camera's height (`depth` here, positive under the
+ * surface). It then darkens by `clamp(depth, −MaxDarkenDepth, 0) / MaxDarkenDepth` — the listing
+ * (0x007f3365..0x007f3377) keeps the depth only when it is not above zero and 0 otherwise — so the eye
+ * *under* the surface is never darkened, and the terrain query 0x007a0820 reports a liquid only for an
+ * eye below its surface + 0.01 (0x009f1968). That is what the stand recorded under the Dragonblight sea
+ * (`fx11-nr-under-1`, `-deep`: the undarkened underwater set at 4.1 and 10.1 yards). The row decides
+ * nothing else: every row with `MaxDarkenDepth > 0` (the oceans and 100) takes the same rule.
  */
 export function darkenUnderLiquid(sample: LightSample, liquid: LiquidLighting, depth: number): void {
   const maxDepth = liquid.maxDarkenDepth ?? 0;
-  if (!(maxDepth > 0) || !(depth > 0)) return;
-  const darkness = Math.min(1, depth / maxDepth);
+  if (!(maxDepth > 0) || !(depth < 0)) return;
+  const darkness = Math.min(1, -depth / maxDepth);
   scaleColour(sample.colours.ambient, 1 - clampUnit(liquid.ambDarken ?? 0) * darkness);
   scaleColour(sample.colours.diffuse, 1 - clampUnit(liquid.dirDarken ?? 0) * darkness);
 }

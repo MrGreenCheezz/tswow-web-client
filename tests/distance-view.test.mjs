@@ -122,7 +122,7 @@ test("the renderer stretches the fog per frame and builds the band only on uncha
   const method = memberSource(source, "#updateHorizon");
   // The band is built only while the ring is unchanged (its tile, revision and inner ring), and the frame returns.
   assertGuard(method, "this.#horizonBand.update(", ["this.#horizon?.tile === tile", "this.#horizon.revision === revision",
-    "this.#horizon.inner === inner"], "the band builds on an unchanged-ring frame");
+    "this.#horizon.inner === wdlInner"], "the band builds on an unchanged-ring frame"); // 15.11 (7.08 slice B): wdlInner
   const [bandUpdate] = assertOrder(method, ["this.#horizonBand.update(", "return;", "this.#horizonBand.hideUnless(tile)"],
     "built and returned before the ring is rebuilt; a new ring hides the old band");
   assert.ok(bandUpdate > 0);

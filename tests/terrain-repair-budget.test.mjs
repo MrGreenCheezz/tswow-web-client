@@ -91,7 +91,9 @@ test('liquid strip arrival replaces water only, and disposal never releases shar
   const replacement = new THREE.BufferGeometry();
   renderer.liquidTextures = { generation: 1 };
   renderer.liquidMaterial = () => ({ material: sharedMaterial });
-  renderer.repairTerrainSteps = function* (_map, _grid, _player, _height, _client, ground, water) {
+  let repairs = 0;
+  renderer.repairTerrainSteps = function* (_map, grid, _player, _height, _client, ground, water) {
+    if (grid.x === 32 && grid.y === 32) repairs++; // the strip is global: every tile's water is replaced, each once
     assert.equal(ground, false);
     assert.equal(water, true);
     yield;
@@ -99,7 +101,12 @@ test('liquid strip arrival replaces water only, and disposal never releases shar
   };
   draw();
   assert.equal(tile.mesh.geometry, geometry);
-  assert.equal(tile.liquidGeneration, 1);
+  // 15.11 (7.09 B): the tile records the key it was built against (strips/tables and its authored
+  // layers, `#liquidGenerationAt`); a second frame finds it current and replaces nothing again.
+  assert.equal(tile.liquidGeneration, renderer.liquidGenerationAt(0, { x: 32, y: 32 }));
+  draw();
+  for (let frame = 0; frame < 12; frame++) draw();
+  assert.equal(repairs, 1, "the strip's arrival repairs this tile's water once");
   assert.equal(oldDisposed, 1);
   assert.equal(materialDisposed, 0);
   assert.equal(tile.water[0].geometry, replacement);

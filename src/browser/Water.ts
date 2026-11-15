@@ -10,6 +10,8 @@ import type { LightSample } from "./LightTypes.js";
 import { loadImageTexture } from "./TextureLoad.js";
 import type { RetainedResourceVisitor } from "./ResourceAccounting.js";
 import type { BenchmarkAsyncReadinessStats } from "./RenderBenchmarkReadiness.js";
+import { AuthoredLiquidClient, pushAuthoredLiquidCellUvs, type AuthoredLiquidTile } from "./WaterAuthored.js";
+export type { AuthoredLiquidTile } from "./WaterAuthored.js";
 
 /**
  * The liquid classes, in the order the map file's flag byte numbers them.
@@ -214,6 +216,11 @@ export interface LiquidMotion {
   /** Texture repeats per second along u and v (the magma material's scroll). */
   scrollU: number;
   scrollV: number;
+  /**
+   * 15.11 (7.09 B): the water material's `Float[1]` in degrees, turning the texture matrix (0x008a5590).
+   * Only row 14 "WMO Ocean" has one (180°), and only building liquids read it (`pushWmoLiquidVertexUv`).
+   */
+  rotation?: number;
 }
 
 /** A row the table has not named: the position UVs as they are, still. */
@@ -236,8 +243,8 @@ function scrollRate(speed: number): number {
  * `MaterialID` (0x008a1fa0: 1 `CMaterialWater_Liquid`, 2 `CMaterialMagma_Liquid`, 3 procedural).
  *
  * - Water (0x008a5590): the animated texture's matrix is `rotate(Float[1]°) · scale(Float[0])` —
- *   1 and 0 on every terrain water row, 2 on 181 "Orange Slime". The rotation is left out: only
- *   row 14 "WMO Ocean" has one (180°), and building water is not drawn through this table.
+ *   1 and 0 on every terrain water row, 2 on 181 "Orange Slime". Only row 14 "WMO Ocean" has a
+ *   rotation (180°, with the scale 0.25); 15.11 (7.09 B) building liquids take both.
  * - Magma (0x008a6090, and 0x008a6350 without shaders): `scroll(Float[0], Float[1])` times the scale
  *   0x008a1770 is handed by 0x007997d0, 1.0 — 0.025 along u (one repeat per 40 s) on terrain magma,
  *   slime and green lava, 0.1 along v on the WMO rows.
@@ -247,7 +254,9 @@ export function liquidMotionOfRow(materialId: number, floatParams: readonly numb
   const f0 = floatParams[0] ?? 0;
   const f1 = floatParams[1] ?? 0;
   if (materialId === 1) {
-    return { uvScale: Number.isFinite(f0) && f0 > 0 ? f0 : 1, scrollU: 0, scrollV: 0 };
+    const uvScale = Number.isFinite(f0) && f0 > 0 ? f0 : 1;
+    // 15.11 (7.09 B): the turn is kept for building liquids, which now take the row's matrix.
+    return Number.isFinite(f1) && f1 !== 0 ? { uvScale, scrollU: 0, scrollV: 0, rotation: f1 } : { uvScale, scrollU: 0, scrollV: 0 };
   }
   if (materialId === 2) return { uvScale: 1, scrollU: scrollRate(f0), scrollV: scrollRate(f1) };
   return { ...LIQUID_MOTION_NONE };
@@ -267,6 +276,50 @@ export function pushLiquidCellUvs(out: number[], x0: number, x1: number, y0: num
   const k = LIQUID_UV_PER_YARD * uvScale;
   out.push(x0 * k, y0 * k, x1 * k, y0 * k, x0 * k, y1 * k, x1 * k, y1 * k);
 }
+
+/**
+ * 15.11 (7.09 B): a terrain cell's four UVs as Wow.exe 0x007ce390 makes them. Magma and slime (their
+ * LiquidMaterial's vertex format 1) take the client ADT's own (s, t) where the tile's authored layers
+ * have arrived and a format-1 layer covers the cell (`WaterAuthored.ts`); every other cell, and those
+ * same cells before the answer or without one, take the position rule `pushLiquidCellUvs`.
+ * `row`/`column` are the cell's place in its tile (0..127), as `#waterGeometrySteps` walks them.
+ */
+export function pushTerrainLiquidCellUvs(out: number[], x0: number, x1: number, y0: number, y1: number,
+  uvScale: number, liquidClass: LiquidClass, authored: AuthoredLiquidTile | null | undefined,
+  row: number, column: number): void {
+  if (authored && (liquidClass === "magma" || liquidClass === "slime")
+    && pushAuthoredLiquidCellUvs(out, authored, row, column)) return;
+  pushLiquidCellUvs(out, x0, x1, y0, y1, uvScale);
+}
+
+/**
+ * 15.11 (7.09 B): a building liquid's (MLIQ) vertex UV, Wow.exe 0x007a7b00 (filled from 0x007a7cc0 under
+ * 0x007d43f0, the identity matrix): `(position − the grid's corner) * 0.24` (0x00a3fab4) in the model's
+ * own frame, u along the model's X. The vertices stand 4⅙ yards apart (0x00a3fdc0), so that is the
+ * vertex's own column and row: one repeat per cell, anchored at the grid's corner. The former layout
+ * had the axes crossed and anchored at the model's origin. A magma or slime grid (vertex format 1,
+ * `0x007d4360`) reads `(s16 s, s16 t) / 256` (0x00a3fdc8) from the file instead; TrinityCore's model
+ * files do not keep those bytes, so building lava keeps this rule — left open in 7.09 B.
+ */
+export function pushWmoLiquidVertexUv(out: number[], vertexX: number, vertexY: number,
+  motion: Readonly<LiquidMotion> = LIQUID_MOTION_NONE): void {
+  // The row's water-material matrix on top (0x008a5590): `rotate(Float[1]°) · scale(Float[0])` — 0.25
+  // and 180° on row 14 "WMO Ocean", none on the other building rows. A magma row's scale is 1.
+  const k = WMO_LIQUID_CELL_YARDS * WMO_LIQUID_UV_PER_YARD * motion.uvScale;
+  const u = vertexX * k;
+  const v = vertexY * k;
+  const turn = motion.rotation;
+  if (!turn) {
+    out.push(u, v);
+    return;
+  }
+  const radians = turn * Math.PI / 180;
+  const cos = Math.cos(radians), sin = Math.sin(radians);
+  out.push(cos * u - sin * v, sin * u + cos * v);
+}
+/** Wow.exe 0x00a3fdc0 and 0x00a3fab4. */
+export const WMO_LIQUID_CELL_YARDS = 4.1666665;
+export const WMO_LIQUID_UV_PER_YARD = 0.24000001;
 /**
  * How far down the surface reaches its deep opacity.
  *
@@ -345,11 +398,15 @@ export class LiquidTextureClient {
     return this.#generation;
   }
 
+  /** 15.11 (7.09 B): each tile's authored liquid layers (`WaterAuthored.ts`), from the same gateway. */
+  readonly authored: AuthoredLiquidClient;
+
   constructor(gatewayWebSocketUrl: string, now: () => number = Date.now) {
     const url = new URL(gatewayWebSocketUrl);
     url.protocol = url.protocol === "wss:" || url.protocol === "https:" ? "https:" : "http:";
     this.#baseUrl = url.origin;
     this.#now = now;
+    this.authored = new AuthoredLiquidClient(this.#baseUrl, undefined, now);
   }
 
   /** Releases retained strip textures and makes every later public operation inert. Safe to repeat. */
@@ -357,6 +414,7 @@ export class LiquidTextureClient {
     if (this.#disposed) return;
     this.#epoch++;
     this.#disposed = true;
+    this.authored.dispose(); // 15.11 (7.09 B)
     for (const strip of this.#strips.values()) {
       if (strip) this.#disposeTexture(strip.texture);
     }

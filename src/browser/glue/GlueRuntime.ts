@@ -8,6 +8,8 @@ import type { GlueSession } from "./GlueSession.js";
 import { GlueLoader, type GlueFileProvider, type GlueLoadResult } from "./GlueLoader.js";
 import { hideGlueLoginControls } from "./GlueLoginScenePolicy.js";
 import { resizeAuthoredLoginScene } from "./GlueLoginLayout.js";
+import type { GlueAccountClient } from "./GlueAccountClient.js"; // 15.11 (10.30)
+import { installGlueAccountScreens, type GlueAccountScreens } from "./GlueAccountScreens.js"; // 15.11 (10.30)
 
 /**
  * The glue screen's logical coordinate system.
@@ -221,6 +223,8 @@ export interface GlueRuntimeOptions {
   readonly api?: Omit<GlueApiOptions, "vm" | "bridge">;
   /** Reported once per widget method or C-API global that only recorded. */
   readonly onStub?: (kind: "method" | "global", name: string) => void;
+  /** 15.11 (10.30): the login screen's account forms (GlueAccountScreens.ts); without it the stock button stays as it was. */
+  readonly accounts?: GlueAccountClient;
 }
 
 /**
@@ -239,8 +243,12 @@ export class GlueRuntime {
   readonly api: GlueApi;
   readonly loader: GlueLoader;
   #result: GlueLoadResult | undefined;
+  readonly #accounts: GlueAccountClient | undefined; // 15.11 (10.30)
+  /** 15.11 (10.30): the account forms, once loaded with a client. */
+  accountScreens: GlueAccountScreens | undefined;
 
   constructor(options: GlueRuntimeOptions) {
+    this.#accounts = options.accounts;
     this.vm = new GlueLuaVm(options.lua ?? {});
     this.bridge = new FrameXmlUiBridge(new FrameXmlTemplateRegistry(), {
       // `text="MANAGE_ACCOUNT"` in XML is a GlobalString key; GlueStrings.lua
@@ -268,6 +276,8 @@ export class GlueRuntime {
     // trees and the account fields remain untouched because the policy requires AccountLogin ancestry.
     hideGlueLoginControls(this.bridge);
     this.api.installAfterLoad(); // 12.10: the saved password (GlueSavedPassword.ts)
+    // 15.11 (10.30): after the stock TOC, so the panel inherits its templates and wraps AccountLogin_ManageAccount.
+    if (this.#accounts && this.bridge.getFrame("AccountLogin")) this.accountScreens = installGlueAccountScreens(this, this.#accounts);
     return this.#result;
   }
 

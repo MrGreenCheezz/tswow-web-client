@@ -213,6 +213,16 @@ export class HorizonLodRing {
     return [...this.#tiles.values()].map((tile) => tile.mesh);
   }
 
+  /** 15.11 (7.08 slice B): whether the ring's tile at (x, y) is drawn from the terrain's own heights. */
+  terrainBuilt(x: number, y: number): boolean {
+    return (this.#tiles.get(x * 64 + y)?.revision ?? 0) > 0;
+  }
+
+  /** 15.11 (7.08 slice B): how many tiles the ring holds (drawn or covered by the detailed terrain). */
+  get tileCount(): number {
+    return this.#tiles.size;
+  }
+
   /** How many of the ring's tiles are drawn from the terrain rather than the WDL stand-in. */
   get terrainTiles(): number {
     let count = 0;
@@ -220,13 +230,22 @@ export class HorizonLodRing {
     return count;
   }
 
+  /**
+   * `cells` (15.11, 7.08 slice B): the tiles to cover instead of the ring — the detailed window's tiles past the near
+   * 3×3 — and `covered` the ones whose detailed mesh is drawn, whose stand-in is then hidden (kept, so a tile the
+   * window drops again is covered at once). `upgrade` false keeps the WDL stand-ins (the faithful levels).
+   */
   update(scene: THREE.Scene, map: number, centreX: number, centreY: number, world: HorizonMap,
-    terrain: HorizonLodTerrain | undefined, material: THREE.Material): void {
+    terrain: HorizonLodTerrain | undefined, material: THREE.Material,
+    cells?: readonly { x: number; y: number }[], covered?: (x: number, y: number) => boolean, upgrade = true): void {
     if (map !== this.#map) {
       this.clear(scene);
       this.#map = map;
     }
-    if (this.#cellsFor !== centreX * 64 + centreY) {
+    if (cells !== undefined) {
+      this.#cells = cells as Array<{ x: number; y: number }>;
+      this.#cellsFor = -1;
+    } else if (this.#cellsFor !== centreX * 64 + centreY) {
       this.#cellsFor = centreX * 64 + centreY;
       this.#cells = horizonLodCells(centreX, centreY);
     }
@@ -240,7 +259,10 @@ export class HorizonLodRing {
       wanted.add(id);
       const existing = this.#tiles.get(id);
       if (existing && existing.mesh.material !== material) existing.mesh.material = material;
-      const centreHeight = terrain?.residentHeightAt(map, (31.5 - x) * TERRAIN_GRID_SIZE, (31.5 - y) * TERRAIN_GRID_SIZE);
+      const hidden = covered?.(x, y) === true;
+      if (existing && existing.mesh.visible === hidden) existing.mesh.visible = !hidden;
+      if (hidden) continue; // the detailed tile is drawn: neither a stand-in nor an upgrade is needed
+      const centreHeight = upgrade ? terrain?.residentHeightAt(map, (31.5 - x) * TERRAIN_GRID_SIZE, (31.5 - y) * TERRAIN_GRID_SIZE) : undefined;
       this.#grid.x = x;
       this.#grid.y = y;
       const revision = centreHeight === undefined ? 0 : terrain!.ownRevision(map, this.#grid);

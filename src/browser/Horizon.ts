@@ -138,12 +138,15 @@ export function horizonTiles(
   map: HorizonMap, centre: { x: number; y: number }, rangeYards = HORIZON_RANGE,
   /** 22.10 (7.44): the Chebyshev reach left to others — 1 (the near ring), 2 on the enhanced path (HorizonLodRing.ts). */
   inner = 1,
+  /** 15.11 (7.08 slice B): the detailed window's tiles (inclusive), left to the terrain and its stand-ins. */
+  exclude?: { readonly x0: number; readonly x1: number; readonly y0: number; readonly y1: number },
 ): HorizonTile[] {
   const reach = Math.ceil(rangeYards / TERRAIN_GRID_SIZE);
   const found: HorizonTile[] = [];
   for (let gridX = centre.x - reach; gridX <= centre.x + reach; gridX++) {
     for (let gridY = centre.y - reach; gridY <= centre.y + reach; gridY++) {
       if (Math.abs(gridX - centre.x) <= inner && Math.abs(gridY - centre.y) <= inner) continue;
+      if (exclude && gridX >= exclude.x0 && gridX <= exclude.x1 && gridY >= exclude.y0 && gridY <= exclude.y1) continue;
       const tile = map.tiles.get(tileKey(gridX, gridY));
       if (tile) found.push(tile);
     }

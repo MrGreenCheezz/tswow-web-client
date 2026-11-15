@@ -368,7 +368,8 @@ test("the renderer picks the horizon material per frame from the preset and buil
   assert.match(method, /this\.#horizonMaterials\.select\(this\.#lightingProfile\.quality, \(\) => horizonClient\?\.colour\(map\),\s*this\.#updateHorizonDetail\(map, cell, horizonClient\)\)/);
   // P1-13b: the unchanged-ring test compares the centre tile and revision as numbers.
   // 22.10 (7.39): the unchanged branch now also updates the outer band (HorizonBand.ts) before returning.
-  const unchanged = method.indexOf("if (this.#horizon?.tile === tile && this.#horizon.revision === revision && this.#horizon.inner === inner) {");
+  // 15.11 (7.08 slice B): and on the detailed window's tile rectangle the WDL leaves out.
+  const unchanged = method.indexOf("if (this.#horizon?.tile === tile && this.#horizon.revision === revision && this.#horizon.inner === wdlInner");
   assert.ok(unchanged > 0, "the numeric unchanged-ring early return");
   assert.ok(method.indexOf("#horizonMaterials.select(") < unchanged,
     "chosen before the unchanged-ring early return, so a preset change or a late picture applies at once");

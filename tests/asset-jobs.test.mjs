@@ -44,6 +44,7 @@ test("every registered generator exports the publish function its entry calls", 
     "tile-models": "publishTileModels",
     "horizon-colour": "publishHorizonColour", // 05.10-A7b-7
     "liquid-family": "publishLiquidFamily", // 05.10-A7b-8
+    "adt-liquid": "publishAdtLiquid", // 15.11 (7.09 B)
   };
   assert.deepEqual(Object.keys(expected).sort(), Object.keys(ASSET_JOBS).sort());
   for (const [kind, name] of Object.entries(expected)) {

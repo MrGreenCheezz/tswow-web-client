@@ -78,6 +78,7 @@ interface BenchWindow extends Window {
     m2Relief(enabled: boolean): void; m2ReliefStats(): unknown; // 23.10 (7.47 stage 3)
     reliefStrength300(enabled: boolean): void; // 24.10 (7.47)
     zoneAtmosphere(enabled: boolean): void; // 15.11 (7.40)
+    terrainWindow(enabled: boolean): void; // 15.11 (7.08 slice B)
     zoneAtmosphereState(): unknown; // 15.11 (7.40)
     zoneCaveOverride(enabled: boolean): void; // 15.11 (7.40)
     hdWorldTextures(enabled: boolean): void; // 24.10 (7.48 step 3): `lookdev.mjs --leaf-cost hdWorldTextures`
@@ -625,6 +626,8 @@ host.__bench = {
     const profile = world?.atmosphere?.profile;
     if (profile) world?.setAtmosphereEffects({ ...profile, zoneAtmosphere: enabled });
   },
+  /** 15.11 (7.08 slice B): the detailed terrain window's far tiles drawn (on) or hidden behind the horizon (off). */
+  terrainWindow(enabled: boolean) { world?.setTerrainDetailWindow(enabled); },
   /** 15.11 (7.40): the bench has no collision world; this stands the camera in a cave's room for a still. */
   zoneCaveOverride(enabled: boolean) { if (world?.atmosphere) world.atmosphere.zoneCaveOverride = enabled; },
   /** 15.11 (7.40): the zone kinds' weights and what they were read from (diagnostics for the stills). */
