@@ -11,6 +11,8 @@ import {
 } from "./GlueFrameMethodFills.js"; // widgets5, widgets7
 import { glueTooltipAddedLines, tooltipFontStringMethods } from "./GlueTooltipFontStrings.js"; // widgets7 3.21
 import { frameXmlEndSizing } from "../ui/framexml_compat/FrameXmlSizing.js"; // widgets7 3.21
+import { frameXmlObjectType } from "../ui/framexml_compat/FrameXmlWorldFrame.js"; // frame10 3.21
+import { frameXmlTypeTakesWheel } from "../ui/framexml_compat/FrameXmlInputBits.js"; // frame10 3.21
 import { sliderValueMethods } from "./GlueSliderMethods.js"; // 3.27 (13.10)
 import { statusBarSetMinMaxValues } from "./GlueStatusBarMethods.js"; // 3.27 (11.11)
 import { questPoiFrameMethods } from "./GlueQuestPoiFrame.js";
@@ -2365,8 +2367,9 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
     const bridge = this.#bridge;
     return {
       GetName: ({ self }) => [self.named ? self.name : undefined],
-      GetObjectType: ({ self }) => [self.type],
-      IsObjectType: ({ self, args }) => [widgetIsA(self.type, str(args[0]))],
+      // frame10 3.21: WorldFrame answers the plain frame's name (FrameXmlWorldFrame.ts).
+      GetObjectType: ({ self }) => [frameXmlObjectType(self.type)],
+      IsObjectType: ({ self, args }) => [widgetIsA(frameXmlObjectType(self.type), str(args[0]))],
       GetParent: ({ self }) => [self.parent],
       SetParent: ({ frame, args }) => {
         const requested = args[0];
@@ -2799,7 +2802,9 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
       },
       IsMouseWheelEnabled: ({ frame, self }) => {
         const enabled = self.attributes["enableMouseWheel"] ?? self.attributes["enablemousewheel"];
-        return [enabled === undefined ? bridge.hasScript(frame, "OnMouseWheel") : /^(?:true|1)$/i.test(enabled)];
+        // frame10 3.21: WorldFrame's constructor sets the wheel bit (FrameXmlInputBits.ts).
+        return [enabled === undefined ? frameXmlTypeTakesWheel(self.type) || bridge.hasScript(frame, "OnMouseWheel")
+          : /^(?:true|1)$/i.test(enabled)];
       },
       // Real rather than recorded: `toplevel` is what decides which screen is in front, and the
       // XML attribute of the same name is read alongside it. See `raiseToplevel`.

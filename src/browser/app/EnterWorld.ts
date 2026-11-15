@@ -77,6 +77,7 @@ import { resetAutoQuality } from "../AutoQuality.js";
 import { maybeShowWelcomeHints } from "../ui/WelcomeHints.js";
 import { watchHtmlFallbacks } from "../ui/HtmlFallbackWatch.js"; // 4.17 stage 1, temporary
 import { hideLoadingScreen, holdForGround, resetLoadingScreen, showLoadingScreen } from "../ui/LoadingScreen.js"; // 5.36: holdForGround
+import { SPELL_INFO_TABLE_WAIT_MS, spellInfoTableClient } from "../SpellInfoTableClient.js"; // 3.43 (15.11, names10)
 import { resetDeathScreenEffect } from "../ui/DeathScreenEffect.js";
 import { watchMinimapRotation } from "../ui/Minimap.js";
 import { chatClass } from "../ui/ChatFormat.js";
@@ -278,6 +279,8 @@ export async function enterWorld(character: CharacterSummary): Promise<void> {
   // there is nothing behind it yet.
   showLoadingScreen(character.name, "Настройки и макросы этого персонажа загружаются с сервера.",
     { mapId: character.map, gateway: gatewayInput.value });
+  // 3.43 (15.11, names10): every spell's compact row, asked now so it is here before the interface's first Lua line.
+  void spellInfoTableClient(gatewayInput.value)?.start();
   resetGuildWindow();
   resetGuildBank();
   resetCalendar();
@@ -1504,6 +1507,8 @@ export async function enterWorld(character: CharacterSummary): Promise<void> {
         mount: async () => {
           const finishModuleCommandLoad = beginModuleCommandLoad(world);
           try {
+            // 3.43 (15.11, names10): add-ons read spell names by id at load — the table first, at most 5 s.
+            await spellInfoTableClient(gatewayInput.value)?.ready(SPELL_INFO_TABLE_WAIT_MS);
             return await module.mountFrameXmlVertical({
               includeActiveTsAddons: true,
               ...(savedVariablesScope ? { savedVariablesScope } : {}),

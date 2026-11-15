@@ -21,7 +21,7 @@ import { buildFrameXmlSimpleHtml, type FrameXmlSimpleHtmlDomHooks } from "./Fram
 import { frameXmlTitleRegion, frameXmlTitleRegionHit } from "./FrameXmlTitleRegion.js"; // 3.48 (12.10)
 import { FrameXmlMouseCapture } from "./FrameXmlMouseCapture.js"; // 1.10 (12.10)
 import { frameXmlResizeBounds, frameXmlSizeStep, frameXmlSizingOf } from "./FrameXmlSizing.js"; // widgets7 3.21
-import { frameXmlMouseEnabled, frameXmlTypeTakesMouse } from "./FrameXmlInputBits.js"; // widgets9 3.21
+import { frameXmlIsWorldSurface, frameXmlMouseEnabled, frameXmlTypeTakesMouse } from "./FrameXmlInputBits.js"; // widgets9 3.21; frame10
 
 /** What one reconciliation pass had to do: see `FrameXmlDomRenderer.syncPass`. */
 export type FrameXmlSyncKind = "structural" | "layout" | "paint" | "noop";
@@ -471,6 +471,9 @@ const BUTTON_LABEL_Z = String(LAYER_Z["OVERLAY"]! * 100);
  * so that a child frame is always above its parent's own regions, which top out at 599.
  */
 const STRATA_Z: Readonly<Record<string, number>> = Object.freeze({
+  // frame10 3.21: strata 0, WorldFrame's (its constructor 0x004fabd0 sets +0xd0 to 0 through 0x00491020), below
+  // BACKGROUND; GetFrameStrata names it "UNKNOWN" (0x00814e90 knows only 1-8), so that is the key here too.
+  UNKNOWN: -1,
   WORLD: 0, BACKGROUND: 0, LOW: 1, MEDIUM: 2, HIGH: 3,
   DIALOG: 4, FULLSCREEN: 5, FULLSCREEN_DIALOG: 6, TOOLTIP: 7,
 });
@@ -2349,7 +2352,8 @@ export class FrameXmlDomRenderer {
   /** `enableMouse` (EnableMouse), else a control's own default — `applyFrame`'s rule for a press, the wheel aside. */
   private takesMouse(frame: FrameXmlFrame): boolean {
     // widgets9 3.21: the mouse bit as IsMouseEnabled reads it (FrameXmlInputBits.ts, constructors of Wow.exe).
-    return frameXmlMouseEnabled(frame);
+    // frame10: WorldFrame's presses arrive through the world canvas instead (FrameXmlWorldFrame.ts).
+    return frameXmlMouseEnabled(frame) && !frameXmlIsWorldSurface(frame);
   }
 
   private movingAncestor(frame: FrameXmlFrame): FrameXmlFrame | undefined {
@@ -2674,7 +2678,9 @@ export class FrameXmlDomRenderer {
     const receivesWheel = wheel === undefined ? this.#bridge?.hasScript(frame, "OnMouseWheel")
       : /^(?:true|1)$/i.test(wheel);
     const isControl = frameXmlTypeTakesMouse(frame.type); // widgets9 3.21: the constructors' mouse bit
-    const receives = mouse === undefined ? Boolean(receivesWheel || isControl) : /^(?:true|1)$/i.test(mouse);
+    // frame10 3.21: WorldFrame's box is the world canvas; the canvas keeps the pointer (FrameXmlInputBits.ts).
+    const receives = !frameXmlIsWorldSurface(frame)
+      && (mouse === undefined ? Boolean(receivesWheel || isControl) : /^(?:true|1)$/i.test(mouse));
     // With hit-rect insets the box itself stops taking the pointer and a private node takes it
     // instead; see `applyHitRect`.
     const insetHit = this.applyHitRect(rendered, receives);

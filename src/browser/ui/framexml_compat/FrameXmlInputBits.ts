@@ -23,10 +23,16 @@
  */
 import type { FrameXmlFrame } from "./FrameXmlTypes.js";
 
-/** Types whose constructor sets the mouse bit. */
-const MOUSE_BY_DEFAULT: ReadonlySet<string> = new Set(["Button", "CheckButton", "EditBox", "Slider", "ColorSelect"]);
+/**
+ * Types whose constructor sets the mouse bit. frame10 (15.11): WorldFrame's constructor (0x004fabd0, the factory
+ * 0x0050f3f0 registered for the XML element `WorldFrame` by 0x00521040) runs 0x0048f6a0 for bits 1, 2 and 3: the
+ * keyboard, the mouse and the wheel (`IsMouseWheelEnabled` 0x004a1160 reads bit 3).
+ */
+const MOUSE_BY_DEFAULT: ReadonlySet<string> = new Set(["Button", "CheckButton", "EditBox", "Slider", "ColorSelect", "WorldFrame"]);
 /** Types whose constructor sets the keyboard bits. */
-const KEYBOARD_BY_DEFAULT: ReadonlySet<string> = new Set(["EditBox"]);
+const KEYBOARD_BY_DEFAULT: ReadonlySet<string> = new Set(["EditBox", "WorldFrame"]);
+/** Types whose constructor sets the wheel bit (bit 3). */
+const WHEEL_BY_DEFAULT: ReadonlySet<string> = new Set(["WorldFrame"]);
 
 function attribute(frame: FrameXmlFrame, name: string): string | undefined {
   return frame.attributes[name] ?? frame.attributes[name.toLowerCase()];
@@ -47,6 +53,20 @@ export function frameXmlKeyboardEnabled(frame: FrameXmlFrame): boolean {
 /** Whether the type's constructor gives it the mouse (the renderer's default for a frame without the attribute). */
 export function frameXmlTypeTakesMouse(type: string): boolean {
   return MOUSE_BY_DEFAULT.has(type);
+}
+
+/** Whether the type's constructor sets the wheel bit (`IsMouseWheelEnabled` without an `enableMouseWheel` of its own). */
+export function frameXmlTypeTakesWheel(type: string): boolean {
+  return WHEEL_BY_DEFAULT.has(type);
+}
+
+/**
+ * frame10 (15.11): the frame the 3D world is drawn in. Its own box is the world canvas underneath the page, so its
+ * element never takes the pointer, whatever its mouse bit says: the world's input layer keeps every click, and
+ * FrameXmlWorldFrame.ts runs the frame's mouse scripts from there.
+ */
+export function frameXmlIsWorldSurface(frame: FrameXmlFrame): boolean {
+  return frame.type === "WorldFrame";
 }
 
 /** 0x00815500(L, 2, 1): no argument → true, nil → false, a boolean as is, a number when not 0, anything else false. */

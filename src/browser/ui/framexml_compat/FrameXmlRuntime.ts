@@ -1571,8 +1571,10 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
     // Defaulting every child to MEDIUM made 522 widgets of the MPQ vertical look "above" their
     // parent (the dock's tabs under a LOW `GeneralDockManager`, the minimap under a BACKGROUND
     // cluster), which the strata layer of FrameXmlDomRenderer would have lifted out of place.
+    // frame10 3.21: WorldFrame's constructor (0x004fabd0) puts it in strata 0 (0x00491020(0)), which GetFrameStrata
+    // (0x0049e830 → 0x00814e90, a table of 1-8 only) answers as "UNKNOWN"; WorldFrame.xml declares none.
     frame.frameStrata = frameXmlAttribute(element, "frameStrata")?.trim().toUpperCase()
-      ?? frame.parent?.frameStrata ?? "MEDIUM";
+      ?? frame.parent?.frameStrata ?? (frame.type === "WorldFrame" ? "UNKNOWN" : "MEDIUM");
     frame.toplevel = frameXmlBoolean(element, "toplevel") ?? false;
     frame.clampedToScreen = frameXmlBoolean(element, "clampedToScreen") ?? false;
     frame.movable = frameXmlBoolean(element, "movable") ?? false;

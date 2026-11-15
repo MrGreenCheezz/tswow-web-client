@@ -98,6 +98,7 @@ import {
   servedConfigIdentity, servedIdentity, // 25.10 (serve S2)
 } from "./CachePolicy.js";
 import { installContentEtag } from "./ContentEtag.js"; // 25.10 (serve S2)
+import { serveSpellInfoTable } from "./SpellInfoTableRoute.js"; // 3.43 (15.11, names10)
 import { HD_TEXTURE_CONTENT_TYPE, HD_SCALE_HEADER, HD_TEXTURE_PARAM, type HdTextureSets } from "./HdTextures.js"; // 23.10 (7.48)
 import {
   METADATA_GENERATION_PARAM, VISUAL_GENERATION_PARAM, assetCacheControl, gatewayCodeIdentity, metadataGeneration,
@@ -2512,6 +2513,10 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
       }
       return;
     }
+
+    // 3.43 (15.11, names10): every spell's compact row for the by-id spell globals, from the same parse (SpellInfoTableRoute.ts).
+    if (await serveSpellInfoTable(request, response, url, { dbcDirectory: options.dbcDirectory, allowedOrigins: options.allowedOrigins,
+      spells: () => (indexes.spellMetadata ??= loadSpellMetadata(options.dbcDirectory!)), metadataGeneration: requestMetadataGeneration })) return;
 
     if (request.method === "GET" && pathname === "/dbc/spells" && options.dbcDirectory) {
       const origin = request.headers.origin;

@@ -87,14 +87,24 @@ test("ItemText/Taxi/Gossip sit at their retail TOC slots; the closure adds six f
       assert.ok(!baseline.requests.has(`interface/framexml/${file}`));
     }
     const metric = (inventory) => ({ files: inventory.files.total, bytes: inventory.files.bytes,
-      widgets: inventory.widgets.total, errors: inventory.lua.errorsRaised, distinct: inventory.errors.length,
-      luaFailed: inventory.lua.failed });
+      widgets: inventory.widgets.total, luaFailed: inventory.lua.failed });
     const before = metric(baseline.inventory);
     const afterLoad = metric(candidate.inventory);
     const delta = Object.fromEntries(Object.keys(before).map((key) => [key, afterLoad[key] - before[key]]));
     // GossipFrame +2 files +25,730 B +168 widgets; ItemTextFrame +2 +13,306 +48; TaxiFrame +2 +12,260 +13.
-    assert.deepEqual(delta, { files: 6, bytes: 51296, widgets: 229, errors: 0, distinct: 0, luaFailed: 0 },
+    assert.deepEqual(delta, { files: 6, bytes: 51296, widgets: 229, luaFailed: 0 },
       `NPC closure delta ${JSON.stringify(delta)}`);
+    // The closure adds no Lua error: every candidate error is one the baseline raised too. Not a count: since
+    // frame10 (3.21) the baseline itself raises in stock WorldFrame_OnUpdate, which reads ItemTextFrame unguarded
+    // (WorldFrame.lua:62) and so needs this very closure — the candidate has one error fewer, not more.
+    const errorKey = (error) => `${error.file}:${error.line}:${error.message}`;
+    const baselineErrors = new Set(baseline.inventory.errors.map(errorKey));
+    assert.deepEqual(candidate.inventory.errors.filter((error) => !baselineErrors.has(errorKey(error))).map(errorKey), [],
+      "no candidate-specific Lua error");
+    const candidateErrors = new Set(candidate.inventory.errors.map(errorKey));
+    assert.deepEqual(baseline.inventory.errors.filter((error) => !candidateErrors.has(errorKey(error)))
+      .map((error) => `${error.file}:${error.line}`), ["interface/framexml/worldframe.lua:62"],
+    "the one error the closure removes is WorldFrame_OnUpdate's ItemTextFrame");
     for (const name of ["GossipFrame", "ItemTextFrame", "TaxiFrame"]) {
       const frame = candidate.boot.bridge.getFrame(name);
       assert.equal(frame?.parent?.name, "UIParent");

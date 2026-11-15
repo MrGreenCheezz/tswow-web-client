@@ -398,6 +398,8 @@ import { FRAMEXML_DISPLAYED_POWER, frameXmlObjectPower, frameXmlPartyPower, type
 import { formatSpellDescription } from "../ui/SpellText.js"; // 12.10
 import { sessionSpellDescriptionContext } from "../ui/SpellTextLiveContext.js"; // 12.10
 import { frameXmlPlayerSpellCost, frameXmlSpellInfo } from "./FrameXmlSpellInfo.js"; // 3.43 (15.11)
+import { frameXmlSpellRow } from "./FrameXmlSpellInfo.js"; // 3.43 (15.11, names10)
+import type { SpellInfoRow } from "../../world/SpellInfoTable.js"; // 3.43 (15.11, names10)
 import { installSpellTextActionSpell } from "../ui/SpellTextActionSpell.js"; // 3.43 (15.11)
 import { sessionPetCostUnit } from "../ui/SpellTextPetCost.js"; // 3.43 (15.11, follow-up)
 import type { FrameXmlSpellInfo } from "./FrameXmlWorldSeam.js"; // 3.43 (15.11)
@@ -549,6 +551,11 @@ export interface LiveWorldSeamContext {
   readonly world: () => WorldClient | undefined;
   readonly store: () => WorldStore | undefined;
   readonly spell: (id: number) => SpellMetadata | undefined;
+  /**
+   * 3.43 (15.11, names10): any spell's compact row (`/dbc/spell-info`) for the by-id globals when `spell` has no full row;
+   * absent, the page's table for the session's gateway (FrameXmlSpellInfo.ts `sessionSpellInfoRow`).
+   */
+  readonly spellInfoRow?: (id: number) => SpellInfoRow | undefined;
   /** 11.02-F2: the vehicle tables; absent, the page's `vehicleCatalog()` (browser/VehicleClient.ts). */
   readonly vehicles?: () => VehicleCatalog | undefined;
   /** Resolved spell cache for the name form of `GetSpellInfo`; never fetches in a Lua C-API read. */
@@ -9861,11 +9868,11 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
    * takes its name list's head; here the highest rank (`#bookSpellByName`). Spell_info for a pet-book spell is the pet's.
    */
   spellInfo(idOrName: number | string, rank?: string): FrameXmlSpellInfo | undefined {
-    let metadata: SpellMetadata | undefined;
+    let metadata: SpellInfoRow | undefined;
     let pet = false;
     if (typeof idOrName === "number") {
       if (!Number.isSafeInteger(idOrName) || idOrName <= 0) return undefined;
-      metadata = this.#context.spell(idOrName);
+      metadata = this.#spellById(idOrName); // 3.43 (15.11, names10): any spell of the dataset
     } else {
       const found = this.#bookSpellByName(idOrName, rank);
       metadata = found?.spell;
@@ -9939,7 +9946,12 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     return find(name.slice(0, open), name.slice(open + 1, close < 0 ? undefined : close));
   }
 
-  #spellInfoOf(metadata: SpellMetadata | undefined, pet: boolean): FrameXmlSpellInfo | undefined {
+  /** 3.43 (15.11, names10): a spell by id for the by-id globals — the full row, else the dataset-wide compact one. */
+  #spellById(id: number): SpellInfoRow | undefined {
+    return frameXmlSpellRow(id, (spellId) => this.#context.spell(spellId), this.#context.spellInfoRow);
+  }
+
+  #spellInfoOf(metadata: SpellInfoRow | undefined, pet: boolean): FrameXmlSpellInfo | undefined {
     if (!metadata || !Number.isSafeInteger(metadata.id) || metadata.id <= 0
       || typeof metadata.name !== "string" || !metadata.name
       || typeof metadata.rank !== "string" || typeof metadata.iconPath !== "string"
@@ -9974,7 +9986,8 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
       }
       id = best?.id;
     }
-    const metadata = id === undefined ? undefined : this.#context.spell(id);
+    // 3.43 (15.11, names10): an id link for any spell of the dataset (the compact row when no full row is cached).
+    const metadata = id === undefined ? undefined : this.#spellById(id);
     return metadata && metadata.name ? spellChatLink(metadata.id, metadata.name) : undefined;
   }
 
@@ -10023,7 +10036,7 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     const pump = this.#pump;
     const monotonic = this.#context.monotonic();
     const global = !pump ? undefined
-      : frameXmlGlobalCooldownFor(this.#context, world, this.#context.spell(id), monotonic, pump.now()); // L13-review 5.30: by category
+      : frameXmlGlobalCooldownFor(this.#context, world, this.#spellById(id), monotonic, pump.now()); // L13-review 5.30: by category; names10: any id
     if (world?.isSpellOnHold?.(id)) {
       return pump ? this.#heldCooldown(world, id, undefined, global, monotonic, pump) : [0, 0, 0];
     }

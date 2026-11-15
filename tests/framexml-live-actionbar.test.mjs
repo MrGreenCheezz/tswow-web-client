@@ -417,7 +417,9 @@ test("original MPQ page arrows, icon/count widgets and secure click use the live
     } },
     locale: "ruRU", seam,
     subset: FRAMEXML_VERTICAL_TOC.slice(0, FRAMEXML_VERTICAL_TOC.indexOf("MultiActionBars.xml") + 1)
-      .filter((path) => path !== "MainMenuBarMicroButtons.xml"),
+      // frame10 3.21: WorldFrame_OnUpdate reads ItemTextFrame unguarded (WorldFrame.lua:62, as in Wow.exe), and
+      // ItemTextFrame.xml is far past this prefix; a real session always has both, this action-bar slice needs neither.
+      .filter((path) => path !== "MainMenuBarMicroButtons.xml" && path !== "WorldFrame.xml"),
     screen: () => ({ width: 1024, height: 768 }),
   });
   try {
@@ -456,7 +458,8 @@ test("original MPQ page arrows, icon/count widgets and secure click use the live
     world.mirrorTimers.delete(1);
     seam.tick(clock.lua + 0.001);
     assert.equal(frame("MirrorTimer1").visible, false);
-    assert.equal(boot.errorCount, errors, "mirror lifecycle raises no handled or unhandled Lua errors");
+    assert.equal(boot.errorCount, errors, `mirror lifecycle raises no handled or unhandled Lua errors: ${
+      JSON.stringify(boot.errors.slice(-3).map((e) => `${e.file}:${e.line} ${e.message}`))}`);
   } finally {
     boot.close();
     await chain.close();

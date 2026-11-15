@@ -413,15 +413,14 @@ export class FrameXmlCorpus implements GlueFileProvider {
  * `BuffFrame.lua`; the player-frame tail follows the same order: `UnitFrame.xml` defines the
  * shared Lua helpers before `PlayerFrame.xml`.
  *
- * Not every entry of the full TOC is here: 24 of its 138 stock entries (the TSWoW blocks aside; recounted
+ * Not every entry of the full TOC is here: 23 of its 138 stock entries (the TSWoW blocks aside; recounted
  * over the dataset's FrameXML.toc after 11.02-F2, 11.02-F2-review; L5c 3.09: CoinPickupFrame.xml joined;
- * L17 3.09: LocalizationPost.xml joined)
+ * L17 3.09: LocalizationPost.xml joined; frame10 3.21: WorldFrame.xml joined)
  * are not. Eight are `FRAMEXML_OPTIONS_TOC` below, loaded into the running VM on the options windows'
- * first open. Most of the other 16 wait for an owner of their own in the work plan (`LocalizationPost.xml`
- * came in with L17 3.09; `VehicleMenuBar.xml` and `AnimationSystem.lua` with 11.02-F2)
- * — and one is out for a measured reason:
- * `WorldFrame.xml` — the Three.js world viewport owns rendering and input; the stock world
- * widget is not an additional browser surface. Its popup positioning is owned by the DOM host.
+ * first open. The other 15 wait for an owner of their own in the work plan (`LocalizationPost.xml`
+ * came in with L17 3.09; `VehicleMenuBar.xml` and `AnimationSystem.lua` with 11.02-F2). `WorldFrame.xml` was
+ * kept out while the Three.js viewport owned rendering and input; it is in since frame10 (15.11), because add-ons
+ * use the global, and its element never takes the pointer (FrameXmlInputBits.ts `frameXmlIsWorldSurface`).
  *
  * `Localization.xml` sits at its stock slot after `FontStyles.xml` (plan item 3.09): measured over
  * the canned seam it costs +2 files, +968 B, 0 widgets and 0 Lua errors. UIParent calls its ruRU
@@ -464,6 +463,10 @@ export const FRAMEXML_VERTICAL_TOC: readonly string[] = Object.freeze([
   "FontStyles.xml",
   "Localization.xml",
   "BasicControls.xml",
+  // frame10 3.21: stock TOC line 12, the `WorldFrame` global (FrameXmlWorldFrame.ts) with its FramerateLabel/Text
+  // and the screenshot ActionStatus. Its OnUpdate runs the StaticPopup, MirrorTimer and ItemText updates the hidden
+  // UIParent would otherwise stop; every frame it names is in this vertical or guarded by the stock code itself.
+  "WorldFrame.xml",
   "UIParent.xml",
   "AnimTimerFrame.xml",
   "MoneyFrame.lua",

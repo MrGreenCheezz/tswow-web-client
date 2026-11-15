@@ -122,6 +122,7 @@ import {
   type FrameXmlQuestOwner,
 } from "./FrameXmlQuestController.js";
 import { FRAMEXML_VERTICAL_TOC } from "./FrameXmlCorpus.js";
+import { installFrameXmlWorldFrameMouse } from "../ui/framexml_compat/FrameXmlWorldFrame.js"; // frame10 3.21
 import { resetFrameXmlTooltipRedraws } from "./FrameXmlCharacterTooltip.js";
 import { LiveWorldSeam } from "./LiveWorldSeam.js";
 import { frameXmlRealmPlayerKilling, frameXmlResolveZone } from "./FrameXmlZoneInfo.js";
@@ -359,6 +360,8 @@ const NATIVE_MICROBUTTONS_REPLACEMENT_CLASS = "framexml-world-replaces-microbutt
  * detail.  Children of an admitted root continue to be reconciled by the renderer as usual.
  */
 const FRAMEXML_WORLD_VISIBLE_ROOT_NAMES: ReadonlySet<string> = new Set([
+  // frame10 3.21: WorldFrame.xml's root, the world's own frame; its children stay shown while UIParent is hidden.
+  "WorldFrame",
   "UIParent",
   "MainMenuBar",
   "MainMenuBarArtFrame",
@@ -2647,6 +2650,7 @@ interface FrameXmlMountResources {
   tooltipLayerCleanup?: () => void;
   /** 3.13c: the WorldMapBlobFrame painter and its adapter (FrameXmlQuestBlobPainter.ts). */
   questPoiFrameCleanup?: () => void;
+  worldFrameMouseCleanup?: () => void; // frame10 3.21
   focusPortraitCleanup?: () => void;
   targetOfTargetPortraitCleanup?: () => void;
   /** The canvas created over FocusFrameToTPortrait (no native row stands behind it). */
@@ -2891,6 +2895,7 @@ function cleanupPublishedMount(record: FrameXmlMountResources): void {
   bestEffortCleanup(() => setNativeLanesReplacementActive(false));
   bestEffortCleanup(() => record.worldMapOwnerCleanup?.());
   bestEffortCleanup(() => record.questPoiFrameCleanup?.());
+  bestEffortCleanup(() => record.worldFrameMouseCleanup?.()); // frame10 3.21
   bestEffortCleanup(() => document.body.classList.remove("framexml-world-map-fullscreen"));
   bestEffortCleanup(() => record.questGiverEscapeCleanup?.());
   bestEffortCleanup(() => record.questGiverOwnerCleanup?.());
@@ -3894,6 +3899,9 @@ export async function mountFrameXmlVertical(
     }
     // 3.13c: the stock WorldMapBlobFrame's quest blobs (GlueQuestPoiFrame.ts, FrameXmlQuestBlobPainter.ts).
     resources.questPoiFrameCleanup = installFrameXmlQuestPoiFrame(seam, renderer, textureUrl);
+    // frame10 3.21: WorldFrame's OnMouseDown/OnMouseUp for presses on the world canvas; the world keeps every click.
+    const worldCanvas = document.getElementById("world-canvas");
+    if (worldCanvas) resources.worldFrameMouseCleanup = installFrameXmlWorldFrameMouse(boot.bridge, worldCanvas, window);
     let worldMapGateTried = false;
     const publishMapWhenReady = (): void => {
       if (worldMapGateTried || !seam.map?.ready) return;

@@ -1290,6 +1290,27 @@ test("noninteractive frames do not intercept controls in a standalone host", () 
   } finally { renderer.destroy(); }
 });
 
+// frame10 3.21: WorldFrame's own box is the world canvas, so its element never takes the pointer even with its
+// constructor's mouse bit (IsMouseEnabled 1) or an add-on's EnableMouse; a control parented to it still does. Its
+// strata 0 ("UNKNOWN", Wow.exe 0x004fabd0) draws below a BACKGROUND root.
+test("WorldFrame's element leaves the pointer to the world and draws below BACKGROUND", () => {
+  const bridge = new FrameXmlUiBridge();
+  const loaded = bridge.loadAddon(`<Ui><WorldFrame name="WorldFrame" setAllPoints="true"><Frames>
+    <Button name="WorldChild"/>
+  </Frames></WorldFrame><Frame name="Back" frameStrata="BACKGROUND"/></Ui>`);
+  const renderer = new FrameXmlDomRenderer(document.createElement("section"), { bridge });
+  try {
+    renderer.mount(loaded.roots);
+    const world = bridge.getFrame("WorldFrame");
+    assert.equal(world.frameStrata, "UNKNOWN");
+    assert.equal(renderer.elementFor(world).style.pointerEvents, "none");
+    assert.equal(renderer.elementFor(bridge.getFrame("WorldChild")).style.pointerEvents, "auto");
+    bridge.update(world, (frame) => frame.setAttribute("enableMouse", "true"));
+    assert.equal(renderer.elementFor(world).style.pointerEvents, "none", "EnableMouse does not cover the world");
+    assert.ok(Number(renderer.elementFor(world).style.zIndex) < Number(renderer.elementFor(bridge.getFrame("Back")).style.zIndex));
+  } finally { renderer.destroy(); }
+});
+
 test("an EditBox is a box with a text field inside it, so its own regions can draw", () => {
   const bridge = new FrameXmlUiBridge();
   // Exactly the shape `AccountLogin.xml` declares: a placeholder FontString in a BACKGROUND layer

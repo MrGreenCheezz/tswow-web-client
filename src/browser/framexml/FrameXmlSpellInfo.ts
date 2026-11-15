@@ -1,5 +1,8 @@
 import { POWER_DISPLAY_SCALE } from "../../world/Fields.js";
+import type { SpellInfoRow } from "../../world/SpellInfoTable.js"; // 3.43 (15.11, names10)
+import { game } from "../game/Context.js";
 import type { SpellMetadata } from "../SpellMetadata.js";
+import { loadedSpellInfoRow } from "../SpellInfoTableClient.js"; // 3.43 (15.11, names10)
 import { spellCastTimeFor, spellInfoRangeFor } from "../ui/SpellCastTimeRange.js"; // 3.43 (15.11)
 import { spellCostUnit, type SpellDescriptionContext } from "../ui/SpellText.js";
 import { spellPowerCostFor, spellPowerPerSecondFor, type SpellCostUnit } from "../ui/SpellTextCost.js";
@@ -37,7 +40,7 @@ export function frameXmlPlayerSpellCost(spell: SpellMetadata, context: SpellDesc
  * (0x005d3390(0), ui/SpellTextPetCost.ts) — `petUnit`, undefined without a pet, when the cost function answers
  * 0xffffffff and the range pair is left off, as for no player. The range pair still needs the active player.
  */
-export function frameXmlSpellInfo(metadata: SpellMetadata, context: SpellDescriptionContext,
+export function frameXmlSpellInfo(metadata: SpellInfoRow, context: SpellDescriptionContext,
   rangedModRange: () => number | undefined = () => undefined,
   pet?: { readonly unit: SpellCostUnit | undefined }): FrameXmlSpellInfo {
   const scale = POWER_DISPLAY_SCALE[metadata.powerType] ?? 1;
@@ -55,4 +58,20 @@ export function frameXmlSpellInfo(metadata: SpellMetadata, context: SpellDescrip
   if (!player || !unit) return head;
   const [minRange, maxRange] = spellInfoRangeFor(metadata, unit, actionRangeSpellKind(metadata) === 1, rangedModRange);
   return [...head, minRange, maxRange];
+}
+
+/**
+ * 3.43 (15.11, names10): a spell by id as Wow.exe's by-id globals read it (0x00540a30 takes any id: Spell.dbc is in
+ * memory) — the full `/dbc/spells` row when this page holds it, else the dataset-wide compact row
+ * (`/dbc/spell-info`, SpellInfoTableClient.ts), else nothing (no table yet, or a gateway without the route: as before).
+ * `full` is the caller's cache read, `compact` the table (the page's, for the session's gateway, by default).
+ */
+export function frameXmlSpellRow(id: number, full: (id: number) => SpellMetadata | undefined,
+  compact: (id: number) => SpellInfoRow | undefined = sessionSpellInfoRow): SpellInfoRow | undefined {
+  return full(id) ?? compact(id);
+}
+
+/** The compact row of the session's gateway, when its table has landed. */
+export function sessionSpellInfoRow(id: number): SpellInfoRow | undefined {
+  return loadedSpellInfoRow(game.gatewayOrigin, id);
 }

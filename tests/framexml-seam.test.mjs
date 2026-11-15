@@ -272,14 +272,15 @@ test("the action bar vertical runs on the client's own corpus", withClient, asyn
   // ZoneText.xml/.lua (stock TOC lines 50-51, the zone banners): 4 more, measured 75.
   // Localization.xml/.lua (stock TOC line 8, plan item 3.09): 2 more, measured 77.
   // L5c 3.09: CoinPickupFrame.xml/.lua (stock TOC line 48): 2 more, measured 79.
-  assert.ok(inventory.files.total <= 79, `files: ${inventory.files.total}`);
+  // frame10 3.21: WorldFrame.xml/.lua (stock TOC line 12, the WorldFrame global): 2 more (81).
+  assert.ok(inventory.files.total <= 81, `files: ${inventory.files.total}`);
   assert.ok(inventory.files.total >= 30, `files: ${inventory.files.total}`);
   assert.equal(inventory.files.missing.length, 0);
   assert.equal(inventory.lua.failed, 0, "no file fails to load on the subset either");
   assert.ok(inventory.widgets.total >= 700, `widgets: ${inventory.widgets.total}`);
   // Includes the authored tutorial alert regions; the bound still rejects runaway trees.
-  // L5c 3.09: CoinPickupFrame's 27 widgets, measured 1,872.
-  assert.ok(inventory.widgets.total <= 1875, `widgets: ${inventory.widgets.total}`);
+  // L5c 3.09: CoinPickupFrame's 27 widgets, measured 1,872. frame10 3.21: WorldFrame.xml's 5 more (its vertical test pins the +5).
+  assert.ok(inventory.widgets.total <= 1880, `widgets: ${inventory.widgets.total}`);
   // The ceiling that says the subset is a *clean* cut and not merely a short one.
   assert.ok(inventory.lua.errorsRaised <= 5, `errors raised: ${inventory.lua.errorsRaised}`);
 

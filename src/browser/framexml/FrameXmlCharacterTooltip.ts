@@ -5,6 +5,7 @@ import {
 } from "../ui/ItemTooltip.js";
 import { itemLinkRandom } from "../ItemRandomProperties.js"; // 06.11 (3.12)
 import { game } from "../game/Context.js";
+import { sessionSpellInfoRow } from "./FrameXmlSpellInfo.js"; // 3.43 (15.11, names10)
 import { unknownLabel } from "../ui/Format.js";
 import { ensureSpellNames } from "../ui/SpellNames.js";
 import { formatSpellDescription, spellDescriptionRows } from "../ui/SpellText.js";
@@ -261,7 +262,8 @@ function auraSlotOptions(source: FrameXmlInventoryTooltipSeam, slot: GameTooltip
 function linkedSpellContent(id: number, aura = false, slot?: StockSpellTooltipOptions): TooltipContent | undefined {
   const content = spellContent(id, aura, slot);
   if (content || !game.world || !Number.isSafeInteger(id) || id <= 0) return content;
-  const known = game.spells.get(id);
+  // 3.43 (15.11, names10): any spell's name and rank from the dataset-wide table while its full row is on its way.
+  const known = game.spells.get(id) ?? sessionSpellInfoRow(id);
   if (known) {
     return known.rank
       ? { title: known.name, titleRight: known.rank, refresh: spellRefresh(id, aura, slot) }
