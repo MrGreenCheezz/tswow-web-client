@@ -15,6 +15,7 @@
  * record is the default, the frame keeps what it did before — the zone's own underwater light.
  */
 
+import { shapedFogDensity } from "./DistanceFog.js";
 import type { WmoFog, WmoGroup, WmoPortals } from "./WmoModel.js";
 
 /** One fog: sRGB colour 0–1 and the distances it begins and is whole at. Reused, never retained. */
@@ -24,10 +25,12 @@ export interface WmoRoomFog {
   b: number;
   near: number;
   far: number;
+  /** 7.66: the exponent of the linear visibility, 1 on maps under 530 (DistanceFog.ts). */
+  density: number;
 }
 
 export function createWmoRoomFog(): WmoRoomFog {
-  return { r: 0, g: 0, b: 0, near: 0, far: 0 };
+  return { r: 0, g: 0, b: 0, near: 0, far: 0, density: 1 };
 }
 
 /**
@@ -45,6 +48,7 @@ export function wmoRoomFogFor(fog: WmoFog, underwater: boolean, out: WmoRoomFog)
   out.b = colour[2] / 255;
   out.near = end * scale;
   out.far = end;
+  out.density = 1;
   return true;
 }
 
@@ -69,12 +73,10 @@ export function wmoRoomFogFor(fog: WmoFog, underwater: boolean, out: WmoRoomFog)
  * start as floats, the colour by round(255·k) in bytes. A line of ten frames from the back of `mageinterior01` to
  * its door to the tower reads k 0.447 … 0.061 against 0.450 … 0.064 computed (`fog6-line-*`): a ramp, 0.04 a yard.
  *
- * On maps from 530 up (the 0x212 test in 0x007816f0, which sets the fog mode 0x00d38acc) the client shapes every
- * fog, the zone's and a room's: the end becomes the far clip and the shader raises the linear factor to a density
- * (c30.z: 4.418 in Black Temple's sewers, 0x007ecd00). Stand frames: Outland, Hellfire Ramparts and Black Temple
- * end at 1277; Stormwind, the Stockade and Onyxia's Lair at the records' own ends. WebClient does not draw that
- * shaping (its zone fog there is linear too), so on those maps the room fog is not applied: see
- * {@link wmoRoomFogShapedMap}.
+ * On maps from 530 up (DistanceFog.ts, 7.66) 0x007ed1b0 then shapes the room fog: the density from its start and end,
+ * the end at the far clip; the zone mix above mixes the density too. Dalaran's Violet Citadel lobby and the Underbelly
+ * draw record 0 as 55.6 to 1277 at 5.1667; the bank by its door 66.5, 5.0146 (k 0.9585) (`fog6-n-dal-*`); Black
+ * Temple's sewer mouth 108.7, 4.1801 (k 0.86).
  */
 
 /** Yards: a portal to the outside nearer than this mixes the zone's fog in (0x00a2e868). */
@@ -88,13 +90,11 @@ const OUTSIDE_GROUP_FLAGS = 0x48;
 /** A record flagged so is never blended in (0x007a1150 skips `flags & 1`). */
 const SKIPPED_RECORD_FLAG = 0x1;
 
-/**
- * Whether Wow.exe shapes the fog on this map (end at the far clip, a density exponent): maps from 530 up, by the
- * test in 0x007816f0 (`>= 0x212`); a second condition there (a setting at +0xb4 not 0 or 1) held on the stand.
- * Measured: 530, 543, 564 shaped; 0, 34, 249 not.
- */
-export function wmoRoomFogShapedMap(map: number): boolean {
-  return map >= 530;
+/** 0x007ed1b0 in fog mode 1: the density from the room fog's own start and end, the end then at `end`, the start not below 0. */
+export function shapeWmoRoomFog(room: WmoRoomFog, end: number): void {
+  room.density = shapedFogDensity(room.near, room.far);
+  room.near = Math.max(0, room.near);
+  room.far = end;
 }
 
 /**
@@ -141,6 +141,7 @@ export function wmoGroupLandFog(
   out.b = b / 255;
   out.near = scale * end;
   out.far = Math.max(WMO_FOG_END_FLOOR, end);
+  out.density = 1;
   return true;
 }
 
@@ -240,6 +241,7 @@ export function mixZoneIntoRoomFog(zone: Readonly<WmoRoomFog>, room: WmoRoomFog,
   room.b = (steps === 0 ? zb : mixByte(zb, Math.round(room.b * 255), steps)) / 255;
   room.near = zone.near + (room.near - zone.near) * k;
   room.far = zone.far + (room.far - zone.far) * k;
+  room.density = zone.density + (room.density - zone.density) * k; // 7.66: 0x007f16f0 mixes it too
 }
 
 function usableLand(fog: WmoFog): boolean {

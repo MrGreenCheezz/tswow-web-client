@@ -14,7 +14,7 @@ import { parseVMapModelGroups } from "../dist/code/gateway/VMapModel.js";
 import { alignWmoMinimapGroups } from "../dist/code/browser/WmoMinimapAlign.js";
 import { decodeWwm, wmoLandFogActive, wmoLandFogAt } from "../dist/code/browser/WmoModel.js";
 import {
-  createWmoRoomFog, mixZoneIntoRoomFog, wmoGroupLandFog, wmoRoomFogFor, wmoRoomFogShapedMap, wmoRoomFogShare,
+  createWmoRoomFog, mixZoneIntoRoomFog, wmoGroupLandFog, wmoRoomFogFor, wmoRoomFogShare,
 } from "../dist/code/browser/WmoRoomFog.js";
 import { locatedWmoFog } from "../dist/code/browser/WorldRenderer3D.js";
 import { renderSwitches, resetRenderSwitches, setRenderSwitches } from "../dist/code/browser/RenderSwitches.js";
@@ -129,18 +129,14 @@ test("0x007d77c0: the room's share is 0.04 a yard from the nearest portal out, t
 
 test("0x007f16f0 on the stand: the zone's fog mixed towards the room's by the share (mageinterior01, fog6-line-5)", () => {
   // The zone of that frame (fog6-line-0, the camera outside) and record 0; the share measured offline is 0.321.
-  const zone = { r: 76 / 255, g: 118 / 255, b: 140 / 255, near: 124.81, far: 499.25 };
-  const room = { r: 1, g: 1, b: 1, near: 111.11, far: 444.44 };
+  const zone = { r: 76 / 255, g: 118 / 255, b: 140 / 255, near: 124.81, far: 499.25, density: 1 };
+  const room = { r: 1, g: 1, b: 1, near: 111.11, far: 444.44, density: 1 };
   mixZoneIntoRoomFog(zone, room, 0.3215);
   assert.deepEqual([room.r, room.g, room.b].map((v) => Math.round(v * 255)), [133, 161, 176]);
   close(room.near, 120.41, "start");
   close(room.far, 481.62, "end");
 });
 
-test("0x007816f0: maps from 530 up shape the fog (Outland, Hellfire Ramparts, Black Temple) and are left to the zone's", () => {
-  for (const map of [530, 543, 564]) assert.equal(wmoRoomFogShapedMap(map), true, String(map));
-  for (const map of [0, 34, 249]) assert.equal(wmoRoomFogShapedMap(map), false, String(map));
-});
 
 test("a record with no usable distance leaves the zone's fog", () => {
   const out = createWmoRoomFog();
@@ -228,12 +224,14 @@ test("the renderer writes the room's fog into the scene once a frame, behind the
   assert.doesNotMatch(method, /if \(this\.#underwater \|\| !candidate\) return;/, "under water no longer skips the record");
   assert.match(method, /if \(this\.#underwater && !renderSwitches\.wmoRoomFogOnScene\) return;/,
     "switched off, under water stays exactly as before");
-  assert.match(method, /\? !candidate\.fog \|\| !wmoRoomFogFor\(candidate\.fog, true, room\)\r?\n\s+: candidate\.shaped\r?\n\s+\|\| !wmoGroupLandFog\(candidate\.fogs, candidate\.fogIds, candidate\.x, candidate\.y, candidate\.z, room\)\) return;/);
+  assert.match(method, /\? !candidate\.fog \|\| !wmoRoomFogFor\(candidate\.fog, true, room\)\r?\n\s+: !wmoGroupLandFog\(candidate\.fogs, candidate\.fogIds, candidate\.x, candidate\.y, candidate\.z, room\)\) return;/);
+  assert.match(method, /if \(!this\.#underwater && candidate\.shaped && this\.#sceneFogDensity !== 1\) shapeWmoRoomFog\(room, this\.#wmoInteriorFog\.far\.value\);/,
+    "7.66: on a shaped map the room is shaped to the zone's end");
   assert.match(method, /mixZoneIntoRoomFog\(zone, room, candidate\.share\);/, "7.55: the zone's fog mixed in by the share");
   const gate = method.indexOf("if (!renderSwitches.wmoRoomFogOnScene) return;");
   const write = method.indexOf("const scene = this.#scene.fog as THREE.Fog;");
   assert.ok(gate > 0 && write > gate);
-  assert.match(method, /scene\.near = room\.near;\r?\n\s+scene\.far = room\.far;\r?\n\s+this\.#wmoRoomFogApplied = true;/);
+  assert.match(method, /scene\.near = room\.near;\r?\n\s+scene\.far = room\.far;\r?\n\s+this\.#sceneFogDensity = room\.density; \/\/ 7\.66\r?\n\s+this\.#wmoRoomFogApplied = true;/);
   // The zone's fog comes back at the top of every submission, before the room is looked for.
   assert.match(source, /this\.#wmoFogCandidate = undefined;\r?\n\s+this\.#wmoFloor = undefined;\r?\n\s+this\.#wmoFogVisualId = undefined;\r?\n\s+this\.#restoreZoneFog\(\);/);
   assert.match(source, /if \(atmosphere\.haze > 0 && !this\.#underwater && !this\.#wmoRoomFogApplied\) applyPrecipitationHaze\(/,

@@ -11,6 +11,7 @@
 // as if it were solid.
 
 import * as THREE from "three";
+import "./ShapedFogChunk.js"; // 7.66: `fogStep` calls `wowFogFactor`; the chunk that defines it installs on import
 import { installGroundCoverFade, type GroundCoverFadeUniforms } from "./GroundCoverFade.js";
 import {
   BLEND_ADD, BLEND_ALPHA, BLEND_ALPHA_KEY, BLEND_BLEND_ADD, BLEND_MOD, BLEND_MOD2X,
@@ -1647,7 +1648,7 @@ function fogStep(blendMode: number): ShaderStep | undefined {
     "\t#ifdef FOG_EXP2",
     "\t\tfloat fogFactor = 1.0 - exp( - fogDensity * fogDensity * vFogDepth * vFogDepth );",
     "\t#else",
-    "\t\tfloat fogFactor = smoothstep( fogNear, fogFar, vFogDepth );",
+    "\t\tfloat fogFactor = wowFogFactor( fogNear, fogFar, vFogDepth );", // 7.66: smoothstep, or the shaped fog
     "\t#endif",
     `\t${body}`,
     "#endif",

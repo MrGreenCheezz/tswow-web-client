@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import "./ShapedFogChunk.js"; // 7.66: the aerial fog body calls `wowFogFactor`; the chunk that defines it installs on import
 import { CINEMATIC_POOL_GLSL, CINEMATIC_POOL_REACH } from "./CinematicLights.js"; // 22.10 (7.36)
 
 /** A display-space light multiplier, as the bands in Light.dbc store it. */
@@ -658,7 +659,7 @@ export const WORLD_AERIAL_FOG_BODY = /* glsl */ `
   #ifdef FOG_EXP2
     float fogFactor = 1.0 - exp( - fogDensity * fogDensity * vFogDepth * vFogDepth );
   #else
-    float fogFactor = smoothstep( fogNear, fogFar, vFogDepth );
+    float fogFactor = wowFogFactor( fogNear, fogFar, vFogDepth ); // 7.66: smoothstep, or the shaped fog (DistanceFog.ts)
   #endif
   float wowAerialFogFactor = fogFactor;
   if ( wowAerialStrength > 0.0001 ) {

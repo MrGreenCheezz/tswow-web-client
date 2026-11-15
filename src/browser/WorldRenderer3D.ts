@@ -35,7 +35,10 @@ import { planToRenderTime, toRenderTime } from "./RenderClock.js"; // 22.10 ARC-
 import { SwingProgressWatch } from "./SwingProgressWatch.js"; // 22.10 ARC-2 S4a
 import { SpellVisualIds } from "./SpellVisualIds.js"; // 22.10 ARC-2 S4a
 import { captureBenchmarkWebGl, type BenchmarkEnvironmentInput } from "./BenchmarkManifest.js"; // 21.10 ARC-2 S1
-import { distanceFogRange, distanceHorizonRange, type DistanceFogRange } from "./DistanceFog.js";
+import {
+  distanceFogRange, distanceHorizonRange, encodeShapedFogFar, installShapedFogChunks, shapedFogEnd, shapedFogMap,
+  shapedZoneFog, WOW_FAR_CLIP, type DistanceFogRange, type ShapedFog,
+} from "./DistanceFog.js"; // 7.66: the shaped fog
 import { HorizonBand } from "./HorizonBand.js";
 import { ENVIRONMENT_DETAIL_FAR_MAX, environmentHouseRange, environmentShellRange, environmentStreamRange, sceneryFarCap } from "./SceneryReach.js"; // 7.44: house
 import { ENVIRONMENT_FAR_RANGE, ENVIRONMENT_RANGE, ENVIRONMENT_SHELL_RANGE, ENVIRONMENT_RESIDENT_HYSTERESIS, TERRAIN_GRID_SIZE, modelKey, terrainGrid, terrainGridIndex, type EnvironmentClient, type EnvironmentModel, type EnvironmentObject, type TerrainClient } from "./Terrain.js";
@@ -311,7 +314,7 @@ import {
 } from "./WmoMaterialFlags.js"; // 13.10 7.11
 import { WMO_TRANSITION_PROGRAM_KEY, applyWmoTransitionBlend, wmoRunBlendsSun } from "./WmoTransitionLight.js"; // 22.10 (7.37)
 import {
-  createWmoRoomFog, mixZoneIntoRoomFog, wmoGroupLandFog, wmoRoomFogFor, wmoRoomFogShapedMap, wmoRoomFogShare,
+  createWmoRoomFog, mixZoneIntoRoomFog, shapeWmoRoomFog, wmoGroupLandFog, wmoRoomFogFor, wmoRoomFogShare,
 } from "./WmoRoomFog.js"; // 05.10-A7b-2 (7.12), 7.55
 import { renderSwitches } from "./RenderSwitches.js"; // 05.10-A7b-2 (7.12)
 import {
@@ -808,11 +811,11 @@ export function applyWmoInteriorFog(
       uniform float wowWmoFogFar;
       ${shader.fragmentShader}`.replace(marker, `
       #ifdef USE_FOG
-        float wowWmoFogFactor = smoothstep(wowWmoFogNear, wowWmoFogFar, vFogDepth);
+        float wowWmoFogFactor = wowLinearFogFactor(wowWmoFogNear, wowWmoFogFar, vFogDepth); // 7.66: linear, or shaped
         gl_FragColor.rgb = mix(gl_FragColor.rgb, wowWmoFogColour, wowWmoFogFactor);
       #endif`);
   };
-  material.customProgramCacheKey = () => `${previousKey}|wmo-interior-fog-v1`;
+  material.customProgramCacheKey = () => `${previousKey}|wmo-interior-fog-v2`; // 7.66: linear
   material.needsUpdate = true;
 }
 
@@ -5270,6 +5273,7 @@ export class WorldRenderer3D {
     // builds and does not put the chunk's text in the program cache key, so a later swap would
     // leave already-compiled shaders on the old curve.
     THREE.ShaderChunk.tonemapping_pars_fragment = withToneShoulder(THREE.ShaderChunk.tonemapping_pars_fragment);
+    installShapedFogChunks(); // 7.66: the fog of maps from 530 up, in every fogged program (DistanceFog.ts)
     this.#renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false, powerPreference: "high-performance" });
     // three fetches shader info logs on every program link while this is on. The official
     // guidance is to disable it in production for performance gain; development (and unit tests,
@@ -5980,9 +5984,11 @@ export class WorldRenderer3D {
   }
 
   /** 22.10 (7.39): the outdoor fog range the zone sample resolved to, and what the scene draws with. */
-  get fogRange(): { zoneNear: number; zoneFar: number; near: number; far: number } {
+  get fogRange(): { zoneNear: number; zoneFar: number; near: number; far: number; density: number } {
     const fog = this.#scene.fog as THREE.Fog;
-    return { zoneNear: this.#zoneFogNear, zoneFar: this.#zoneFogFar, near: fog.near, far: fog.far };
+    // 7.66: a shaped far is read back as yards (`encodeShapedFogFar`), with its density beside it.
+    const far = fog.far < 0 ? Math.floor(-fog.far) : fog.far;
+    return { zoneNear: this.#zoneFogNear, zoneFar: this.#zoneFogFar, near: fog.near, far, density: this.#sceneFogDensity };
   }
 
   /** 24.10 (7.50): the last frame's light pools, halos and far glows, for the bench's light trace. */
@@ -6178,9 +6184,41 @@ export class WorldRenderer3D {
     fog.color.copy(this.#zoneFogColour);
     fog.near = range.near;
     fog.far = range.far;
+    // 7.66: on maps from 530 up the zone's fog as Wow.exe shapes it — the Light end and share give the density, the
+    // end goes to the far clip, here the ground this client draws (DistanceFog.ts). Water as before.
+    this.#sceneFogDensity = 1;
+    if (shapedFogMap(this.#fogMap) && !this.#underwater && this.#zoneFogFar > 0) {
+      const shaped = shapedZoneFog(this.#zoneFogFar, this.#zoneFogNear / this.#zoneFogFar, WOW_FAR_CLIP, this.#shapedZone);
+      if (shaped.density !== 1) {
+        // The faithful levels draw it as is; the enhanced path stretches it as it stretches every fog (7.39).
+        const stretched = distanceFogRange(shaped.near, shapedFogEnd(this.#horizon !== undefined),
+          this.#lightingProfile.quality, false, this.#atmosphere?.haze ?? 0, this.#distanceFog);
+        fog.near = stretched.near;
+        fog.far = stretched.far;
+        this.#sceneFogDensity = shaped.density;
+      }
+    }
     this.#wmoInteriorFog.colour.value.copy(this.#zoneFogColour);
-    this.#wmoInteriorFog.near.value = range.near;
-    this.#wmoInteriorFog.far.value = range.far;
+    this.#wmoInteriorFog.near.value = fog.near;
+    this.#wmoInteriorFog.far.value = fog.far;
+    this.#interiorFogDensity = this.#sceneFogDensity;
+  }
+
+  /** 7.66: the map of this frame, the scene fog's and the interior fog's density (1 = not shaped), and scratch. */
+  #fogMap: number | undefined;
+  #sceneFogDensity = 1;
+  #interiorFogDensity = 1;
+  readonly #shapedZone: ShapedFog = { near: 0, far: 0, density: 1 };
+
+  /**
+   * 7.66: just before the frame is drawn, a shaped fog's far distance goes into the uniforms in the shaders' encoding
+   * (`encodeShapedFogFar`); `#restoreZoneFog` writes plain distances again at the top of the next submission.
+   */
+  #encodeShapedFog(): void {
+    const fog = this.#scene.fog as THREE.Fog;
+    if (this.#sceneFogDensity !== 1 && fog.far > 0) fog.far = encodeShapedFogFar(fog.far, this.#sceneFogDensity);
+    const interior = this.#wmoInteriorFog.far;
+    if (this.#interiorFogDensity !== 1 && interior.value > 0) interior.value = encodeShapedFogFar(interior.value, this.#interiorFogDensity);
   }
 
   /** 22.10 (7.39): the frame's fog range, reused (DistanceFog.ts). */
@@ -9179,6 +9217,7 @@ export class WorldRenderer3D {
     this.#resetFrameCounters();
     this.#cameraSurfaceVisualId = undefined; // 02.11
     this.#cameraSurfaceKnown = false;
+    this.#fogMap = map; // 7.66: whether this frame's fog is shaped
     this.#wmoFogCandidate = undefined;
     this.#wmoFloor = undefined;
     this.#wmoFogVisualId = undefined;
@@ -9405,6 +9444,7 @@ export class WorldRenderer3D {
     // their parent phases.
     let submitPartAt = detailedCapture ? performance.now() : 0;
     try {
+      this.#encodeShapedFog(); // 7.66
       this.#renderer.autoClear = true;
       this.#renderer.render(this.#skyScene, this.#camera);
       if (detailedCapture) this.#drawPhaseMs["submit.sky"] = performance.now() - submitPartAt;
@@ -14300,11 +14340,17 @@ export class WorldRenderer3D {
   #considerWmoFog(placed: PlacedWmo, camera: THREE.Vector3): void {
     const floor = this.#wmoFloor;
     if (!floor || placed.visualId !== this.#wmoFogVisualId) return;
+    // 7.55: Wow.exe takes the group the camera is in (0x007a1150). Once the collision has said what the camera hangs
+    // over (`setCameraWmoSurface`), that group answers: nothing of this building under the camera is the zone's fog
+    // (`fog6-line-0`, `-1`: the camera behind the room's wall drew the zone's); until then the character's floor.
+    const surface = this.#cameraSurfaceKnown ? this.#cameraWmoSurface : undefined;
+    if (this.#cameraSurfaceKnown && (!surface || this.#cameraSurfaceVisualId !== placed.visualId)) return;
+    const room = surface ?? floor;
     // 15.11 (7.55): every indoor group has a fog in Wow.exe (record 0 at least), so the group decides, not the record.
-    const group = locatedWmoFogGroup(placed.model, floor, camera);
+    const group = locatedWmoFogGroup(placed.model, room, camera);
     if (!group) return;
     const fog = wmoLandFogAt(placed.model, group, camera.x, camera.y, camera.z);
-    const key = `${floor.placement.key}#${floor.groupId}:${floor.groupIndex}`;
+    const key = surface ? `${surface.placement.key}#camera:${surface.groupIndex}` : `${floor.placement.key}#${floor.groupId}:${floor.groupIndex}`;
     const current = this.#wmoFogCandidate;
     if (!current || key < current.key) {
       // 7.55: the room's share against the zone's, by the nearest portal out (WmoRoomFog.ts, 0x007a1150).
@@ -14312,7 +14358,7 @@ export class WorldRenderer3D {
         camera.x, camera.y, camera.z);
       this.#wmoFogCandidate = {
         fog, fogs: placed.model.fogs, fogIds: group.fogIds, x: camera.x, y: camera.y, z: camera.z, key, share,
-        shaped: wmoRoomFogShapedMap(floor.placement.map),
+        shaped: shapedFogMap(floor.placement.map),
       };
     }
   }
@@ -14328,11 +14374,11 @@ export class WorldRenderer3D {
     // water half answers (WmoRoomFog.ts); otherwise the frame keeps the zone's fog, as before.
     const room = this.#wmoRoomFog;
     // 15.11 (7.55): on land the group's fog as Wow.exe draws it — record 0, and a named record by its radii.
-    // On a map whose fog Wow.exe shapes (end at the far clip, a density) the room keeps the zone's: not drawn here.
     if (this.#underwater
       ? !candidate.fog || !wmoRoomFogFor(candidate.fog, true, room)
-      : candidate.shaped
-        || !wmoGroupLandFog(candidate.fogs, candidate.fogIds, candidate.x, candidate.y, candidate.z, room)) return;
+      : !wmoGroupLandFog(candidate.fogs, candidate.fogIds, candidate.x, candidate.y, candidate.z, room)) return;
+    // 7.66: on a map whose fog Wow.exe shapes, the room's is shaped as well (0x007ed1b0), to the zone's end.
+    if (!this.#underwater && candidate.shaped && this.#sceneFogDensity !== 1) shapeWmoRoomFog(room, this.#wmoInteriorFog.far.value);
     if (!this.#underwater) {
       // 7.55: and the zone's fog of this frame mixed towards it by the share (0x007f16f0).
       const zone = this.#wmoZoneFog;
@@ -14340,11 +14386,13 @@ export class WorldRenderer3D {
       zone.r = srgb.r; zone.g = srgb.g; zone.b = srgb.b;
       zone.near = this.#wmoInteriorFog.near.value;
       zone.far = this.#wmoInteriorFog.far.value;
+      zone.density = this.#sceneFogDensity; // 7.66
       mixZoneIntoRoomFog(zone, room, candidate.share);
     }
     this.#wmoInteriorFog.colour.value.setRGB(room.r, room.g, room.b, THREE.SRGBColorSpace);
     this.#wmoInteriorFog.near.value = room.near;
     this.#wmoInteriorFog.far.value = room.far;
+    this.#interiorFogDensity = room.density; // 7.66
     // 05.10-A7b-2 (7.12): and the frame's one fog — doodads, units, particles, water, the doorway.
     // `#restoreZoneFog` puts the zone's back at the top of every submission.
     if (!renderSwitches.wmoRoomFogOnScene) return;
@@ -14352,6 +14400,7 @@ export class WorldRenderer3D {
     scene.color.copy(this.#wmoInteriorFog.colour.value);
     scene.near = room.near;
     scene.far = room.far;
+    this.#sceneFogDensity = room.density; // 7.66
     this.#wmoRoomFogApplied = true;
   }
 

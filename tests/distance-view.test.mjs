@@ -116,7 +116,9 @@ test("the renderer stretches the fog per frame and builds the band only on uncha
   const restore = source.slice(source.indexOf("  #restoreZoneFog(): void {"));
   const body = restore.slice(0, restore.indexOf("\n  }\n"));
   assert.match(body, /distanceFogRange\(this\.#zoneFogNear, this\.#zoneFogFar, this\.#lightingProfile\.quality,/);
-  assert.match(body, /this\.#wmoInteriorFog\.far\.value = range\.far;/, "WMO materials take the same range");
+  // 15.11 (7.66): the scene's range of this frame — the stretched one, or the shaped one on maps from 530 up.
+  assert.match(body, /fog\.far = range\.far;/);
+  assert.match(body, /this\.#wmoInteriorFog\.far\.value = fog\.far;/, "WMO materials take the same range");
   const horizon = source.slice(source.indexOf("  #updateHorizon(player: WorldPosition"));
   const method = horizon.slice(0, horizon.indexOf("\n  }\n"));
   const unchanged = method.indexOf("if (this.#horizon?.tile === tile && this.#horizon.revision === revision && this.#horizon.inner === inner) {");
