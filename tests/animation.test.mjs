@@ -34,6 +34,7 @@ import {
   ANIMATION_DATA_AVAILABLE, ANIMATION_FALLBACK, ANIMATION_IDS, BASE_ANIMATIONS, EMOTE_ANIMATIONS,
 } from "../dist/code/generated/animations.js";
 import { MOVEMENT_FLAGS } from "../dist/code/world/MovementProtocol.js";
+import { assertGuard, productFactors } from "./source-pins.mjs";
 
 let archives;
 let catalog;
@@ -1009,14 +1010,20 @@ test("the renderer measures stride tempo and replays looping gaits at it", async
     "both base-pose paths replay the committed gait at the measured tempo");
   assert.match(renderer, /isLocomotionGait\(animation\)/,
     "one-shots keep authored timing: only travelling gaits are retimed");
-  assert.match(renderer, /unit\.admittedAt === undefined\) \{\n\s+unit\.admittedAt = now;/,
+  assertGuard(renderer, "unit.admittedAt = now", ["unit.admittedAt === undefined"],
     "the spawn fade starts at first visibility, not at record creation");
   // 05.10 suite-fix: since 05.10-A7a-H (6.11а) the appearance opacity is first multiplied by the
   // display's CreatureModelAlpha into `displayOpacity`; the fade still multiplies, never replaces.
   // 15.11 (6.11): a later change of the display's alpha eases over a second (UnitDisplayFade.ts); it still multiplies.
   // 15.11 (6.11): times a CharProc 14 record's factor, over its time (UnitTints.ts `alphaOf`).
   // A live record also takes the place of the stealth/ghost stand-in (UnitDisplayFade.ts `auraStandInOpacity`).
-  assert.match(renderer, /const displayOpacity = auraStandInOpacity\(appearance\.opacity, metadata !== undefined && unitAlphaRecord\.held === true\) [^\n]*\n\s+\* \(metadata === undefined \? creatureDisplayAlpha\(metadata\)\n\s+: unitDisplayAlpha\(unit, creatureDisplayAlpha\(metadata\) \* unitAlphaRecord\.alpha, now, unitAlphaRecord\.ms\)\)/,
+  // 13.09 (pins9): pinned by the statement's factors, not its lines — a lane that adds a factor (5.33's subject fade
+  // did) leaves the rule standing; one that replaces the appearance opacity fails here.
+  const statement = /const displayOpacity = ([\s\S]*?);\n/.exec(renderer.replace(/ *\/\/[^\n]*/g, ""));
+  assert.ok(statement, "displayOpacity is computed");
+  const factors = productFactors(statement[1]);
+  assert.match(factors[0], /^auraStandInOpacity\(appearance\.opacity,/, "the appearance opacity (or its stand-in) first");
+  assert.ok(factors.some((factor) => /unitDisplayAlpha\(unit, creatureDisplayAlpha\(metadata\)/.test(factor)),
     "the display alpha multiplies the appearance opacity rather than replacing it");
   assert.match(renderer, /displayOpacity \* unitSpawnFactor\(unit, unit\.admittedAt, now\)/, // 15.11 (6.11): UnitSpawnFade.ts
     "ghosts and spirits keep their own translucency under the fade");

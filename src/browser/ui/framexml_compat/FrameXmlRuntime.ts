@@ -61,6 +61,7 @@ import {
 import { frameXmlMessageLineCount, frameXmlMessagePage, frameXmlMessageSlots } from "./FrameXmlMessageSlots.js"; // 3.34 (13.10)
 import { frameXmlNoteMessageCurrent, frameXmlNoteMessagesRemoved } from "./FrameXmlMessageScrollChanged.js"; // widgets5/widgets7 3.34
 import { frameXmlSetResizeBounds } from "./FrameXmlSizing.js"; // widgets7 3.21
+import { frameXmlDeclarePushedTextOffset } from "./FrameXmlPushedTextOffset.js"; // widgets9 3.21
 import {
   frameXmlSliderLoadedStep, frameXmlSliderSetRange, frameXmlSliderSetStep, frameXmlSliderValue, markFrameXmlBareCreate,
 } from "./FrameXmlSlider.js"; // 3.27 (13.10)
@@ -563,6 +564,12 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
   readonly #frameObservers = new Set<(frame: FrameXmlFrame, kind: FrameXmlMutationKind) => void>();
   /** event name -> frames registered for it; kept so dispatch is not O(all frames). */
   readonly #byEvent = new Map<string, Set<MutableFrameXmlFrame>>();
+  /**
+   * widgets9 3.21: frames that called RegisterAllEvents (Wow.exe 0x0049f0e0 → 0x0081b470 registers the frame for
+   * every event of the client's table), each with the events unregistered one by one since. Every event this client
+   * dispatches is one of the client's, so such a frame receives each dispatched event it has not unregistered.
+   */
+  readonly #allEvents = new Map<MutableFrameXmlFrame, Set<string>>();
   /**
    * Frames with any OnUpdate at all. The corpus declares 33 of them across
    * ~2,000 widgets, so ticking the index instead of the whole set is the
@@ -1894,6 +1901,12 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
       case "HitRectInsets":
         frame.hitRectInsets = insetsOf(element);
         return true;
+      // widgets9 3.21: a Button's pushed text offset, answered by GetPushedTextOffset (FrameXmlPushedTextOffset.ts).
+      case "PushedTextOffset": {
+        const offset = dimensionOf(element);
+        if (offset) frameXmlDeclarePushedTextOffset(frame, offset.x, offset.y);
+        return true;
+      }
       // widgets7 3.21: Wow.exe's frame loader (0x004932c0) writes all four bounds from `<minResize>`/`<maxResize>`,
       // a missing one as 0 (FrameXmlSizing.ts).
       case "ResizeBounds": {
@@ -2323,10 +2336,29 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
 
   /** Whether any frame is registered for the event right now (what `dispatchEvent` would reach). */
   hasEventListeners(event: string): boolean {
+    if (this.#allEventFrames(event.trim()).length > 0) return true; // widgets9 3.21
     const frames = this.#byEvent.get(event.trim());
     if (!frames) return false;
     for (const frame of frames) if (frame.registeredEvents.has(event.trim())) return true;
     return false;
+  }
+
+  /** widgets9 3.21: the RegisterAllEvents frames that take this event and are not registered for it by name. */
+  #allEventFrames(name: string): MutableFrameXmlFrame[] {
+    if (this.#allEvents.size === 0 || !name) return [];
+    const frames: MutableFrameXmlFrame[] = [];
+    for (const [frame, dropped] of this.#allEvents) {
+      if (!dropped.has(name) && !frame.registeredEvents.has(name)) frames.push(frame);
+    }
+    return frames;
+  }
+
+  /** `RegisterAllEvents()` (Wow.exe 0x0049f0e0): see `#allEvents`. */
+  RegisterAllEvents(frame: FrameXmlFrame): boolean {
+    const mutable = this.own(frame);
+    if (!mutable) return false;
+    this.#allEvents.set(mutable, new Set());
+    return true;
   }
 
   dispatchEvent(event: string, ...args: readonly unknown[]): number {
@@ -2337,8 +2369,9 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
       let delivered = 0;
       // P1-14d: one argument list for every frame (dispatchScript only reads it), made on the first.
       let eventArgs: readonly unknown[] | undefined;
-      for (const frame of [...(this.#byEvent.get(name) ?? [])]) {
-        if (!frame.registeredEvents.has(name) || excluded?.has(frame.name)) continue;
+      const all = this.#allEventFrames(name); // widgets9 3.21: RegisterAllEvents frames come after the named ones
+      for (const frame of [...(this.#byEvent.get(name) ?? []), ...all]) {
+        if ((!frame.registeredEvents.has(name) && !all.includes(frame)) || excluded?.has(frame.name)) continue;
         this.dispatchScript(frame, "OnEvent", eventArgs ??= [name, ...args]);
         delivered += 1;
       }
@@ -2364,8 +2397,9 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
       if (!name) return 0;
       const excluded = takeEventExclusion(name);
       let delivered = 0;
-      for (const frame of [...(this.#byEvent.get(name) ?? [])]) {
-        if (!frame.registeredEvents.has(name) || excludedFrameNames.has(frame.name)
+      const all = this.#allEventFrames(name); // widgets9 3.21
+      for (const frame of [...(this.#byEvent.get(name) ?? []), ...all]) {
+        if ((!frame.registeredEvents.has(name) && !all.includes(frame)) || excludedFrameNames.has(frame.name)
           || excluded?.has(frame.name)) continue;
         this.dispatchScript(frame, "OnEvent", [name, ...args]);
         delivered += 1;
@@ -2886,6 +2920,7 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
     const name = event.trim();
     if (!mutable || !name) return false;
     mutable.registeredEvents.add(name);
+    this.#allEvents.get(mutable)?.delete(name); // widgets9 3.21
     let set = this.#byEvent.get(name);
     if (!set) this.#byEvent.set(name, (set = new Set()));
     set.add(mutable);
@@ -2898,12 +2933,14 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
     if (!mutable || !name) return false;
     mutable.registeredEvents.delete(name);
     this.#byEvent.get(name)?.delete(mutable);
+    this.#allEvents.get(mutable)?.add(name); // widgets9 3.21
     return true;
   }
 
   UnregisterAllEvents(frame: FrameXmlFrame): boolean {
     const mutable = this.own(frame);
     if (!mutable) return false;
+    this.#allEvents.delete(mutable); // widgets9 3.21
     for (const event of [...mutable.registeredEvents]) this.UnregisterEvent(mutable, event);
     return true;
   }

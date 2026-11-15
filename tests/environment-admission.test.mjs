@@ -1189,7 +1189,8 @@ test("a camera snap suppresses grow-ins while sustained sweeps keep them", async
     "suppression is clocked in submission serials, like the growth it gates");
   const update = updateEnvironmentSource(source);
   // 22.10 (7.41): a shadow-only build is never seen, so it never grows in either.
-  assert.match(update, /const suppressGrowth = shadowOnly \|\| this\.#submissionSerial < this\.#turnSuppressUntilSerial;/,
+  // 15.11 (fade9): and where the doodad fade brings it in (DoodadFade.ts).
+  assert.match(update, /const suppressGrowth = shadowOnly \|\| this\.#submissionSerial < this\.#turnSuppressUntilSerial\s+\|\| this\.#faithfulLevel \|\| doodadFirstSightFades\(/,
     "first sights admitted mid-sweep read whole at once");
   assert.match(update, /else if \(rendered\.actual && rendered\.visual !== undefined\) \{/,
     "a suppressed first sight is stamped seen so a later calm frame cannot shrink it");

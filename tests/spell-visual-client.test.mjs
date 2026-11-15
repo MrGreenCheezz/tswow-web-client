@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  SPELL_VISUAL_RETRY_BACKOFF_MS, SpellVisualClient, SpellVisualKitClient,
+  SPELL_VISUAL_KITS_ROUTE_VERSION, SPELL_VISUAL_RETRY_BACKOFF_MS, SPELL_VISUALS_ROUTE_VERSION, SpellVisualClient,
+  SpellVisualKitClient,
 } from "../dist/code/browser/SpellVisualClient.js";
 
 const kit = (sound = 0) => ({ startAnimation: -1, animation: -1, effects: [], sound });
@@ -32,12 +33,12 @@ test("SpellVisualClient batches same-turn ids once and permanently remembers suc
     assert.equal(client.get(11).precast.sound, 7);
     assert.equal(client.get(12), undefined);
     assert.equal(urls.length, 1, "one JavaScript turn becomes one metadata batch");
-    // 05.10-A7a-E: v=8 was slice E's one bump; 13.10: v=9 (whole chain rows, combos, beam ends, destRaw).
-    // 25.10 (6.27): v=10 carries a kit's tint and flash (CharProc 1 / 13); 26.10: v=11 the spell's dispelType.
-    // 29.10: v=12 the ammo missile (ammoMissile). 11.11 (5.05): v=13 `sheathKeep` on spells and kits; (6.12) v=14 `launch`.
-    // 15.11 (6.12, 6.11): v=15 `launchNow` (SpellVisual.Flags & 4) and the kits' `unitAlpha`.
-    assert.equal(new URL(urls[0]).searchParams.get("v"), "15",
-      "non-cacheable visual metadata rolls the old client cache contract");
+    // 13.09 (pins9): the URL carries the module's own route version; which number it is (bumped with each new field,
+    // history beside `url` in SpellVisualClient.ts) is no business of this test's.
+    assert.equal(new URL(urls[0]).searchParams.get("v"), String(SPELL_VISUALS_ROUTE_VERSION),
+      "the spell route is asked with the client's cache marker for the answer's shape");
+    assert.ok(Number.isInteger(SPELL_VISUALS_ROUTE_VERSION) && SPELL_VISUALS_ROUTE_VERSION >= 15,
+      "15.11: v=15 (`launchNow`, `unitAlpha`) or later; the marker never goes back");
     assert.equal(new URL(urls[0]).searchParams.get("ids"), ids.join(","));
     client.get(12);
     await tick();
@@ -178,7 +179,7 @@ test("S3: kit ids batch onto their own route and remember an empty answer", asyn
     const asked = new URL(urls[0]);
     assert.equal(asked.pathname, "/dbc/spell-visual-kits", "a kit id is not a spell id");
     assert.equal(asked.protocol, "http:", "the websocket URL becomes the gateway origin");
-    assert.equal(asked.searchParams.get("v"), "5", // 15.11 (6.11): v=5 `unitAlpha`
+    assert.equal(asked.searchParams.get("v"), String(SPELL_VISUAL_KITS_ROUTE_VERSION), // 13.09: the module's own marker
 
       "13.10: the kit route's chains changed shape; 25.10: tint and flash; 11.11 (5.05): sheathKeep");
     assert.deepEqual(asked.searchParams.get("ids"), "406,999999");

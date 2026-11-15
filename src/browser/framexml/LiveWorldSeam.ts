@@ -50,6 +50,7 @@ import { END_BOUND_TRADEABLE_ITEM_ENCHANT } from "../game/BoundTradeable.js"; //
 import { frameXmlObservePendingSpells } from "./FrameXmlBoundTradeable.js"; // L1 (2.05)
 import { frameXmlObserveOwnCastChanges } from "./FrameXmlOwnCastChanges.js"; // 2.05 (13.10)
 import { observeGroundTarget } from "../game/GroundTarget.js"; // 2.05 (13.10)
+import { frameXmlSpellWeaponIcon, type SpellWeaponIconPlayer } from "./FrameXmlSpellWeaponIcon.js"; // widgets9 3.21/3.43
 import { observeSpellEnchantQuestion } from "../game/MainHandEnchant.js"; // 05.10-2.05
 import { frameXmlResetCursor } from "./FrameXmlSetCursor.js"; // 05.10-5.17 review
 import { onHardwareCursorChange } from "../input/HardwareCursor.js"; // 5.17 (11.11)
@@ -7349,6 +7350,13 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     if (button?.type === ACTION_BUTTON_ITEM) {
       return this.#context.itemInfo?.(button.action)?.texture || this.#itemTexture(button.action);
     }
+    // widgets9 (3.21/3.43): GetActionTexture (0x005a97f0) asks 0x005a96d0 / 0x005a9760 first — the slot's spell as
+    // 0x005a8c30 resolves it (its own, or a macro's) being Attack or a ranged auto-repeat spell — and answers the
+    // weapon icon (FrameXmlSpellWeaponIcon.ts), as GetSpellTexture does; a macro showing Attack shows the weapon too.
+    if (button?.type === ACTION_BUTTON_SPELL || button?.type === ACTION_BUTTON_MACRO) {
+      const weapon = frameXmlSpellWeaponIcon(this.#slotSpell(slot), () => this.#weaponIconPlayer());
+      if (weapon) return weapon;
+    }
     // A macro wears the icon its window chose (the question mark when none was).
     if (button?.type === ACTION_BUTTON_MACRO) return this.macros.slotTexture(button.action);
     const metadata = this.#metadata(slot);
@@ -9972,7 +9980,26 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
 
   spellTexture(index: number, _bookType: string | undefined): string | undefined {
     const id = this.#spellEntry(index)?.id;
-    return id === undefined ? undefined : this.#context.spell(id)?.iconPath;
+    const spell = id === undefined ? undefined : this.#context.spell(id);
+    // widgets9 (3.21/3.43): Attack and the ranged auto-repeat spells show the weapon (FrameXmlSpellWeaponIcon.ts).
+    return frameXmlSpellWeaponIcon(spell, () => this.#weaponIconPlayer()) ?? spell?.iconPath;
+  }
+
+  /** widgets9: what 0x0053dc20's weapon icons read of the player. */
+  #weaponIconPlayer(): SpellWeaponIconPlayer | undefined {
+    const self = this.#self();
+    if (!self) return undefined;
+    return {
+      form: ((readField(self, "UNIT_FIELD_BYTES_2") ?? 0) >>> 24) & 0xff,
+      unitFlags: (readField(self, "UNIT_FIELD_FLAGS") ?? 0) >>> 0,
+      unitFlags2: (readField(self, "UNIT_FIELD_FLAGS_2") ?? 0) >>> 0,
+      slotEntry: (slot) => {
+        const item = this.#equipmentSlot("player", slot)?.item;
+        return item ? entryOf(item) : undefined;
+      },
+      itemKind: (entry) => this.#itemTemplate(this.#context.world(), entry),
+      itemTexture: (entry) => this.#itemTexture(entry),
+    };
   }
 
   spellCooldown(index: number, _bookType: string | undefined): FrameXmlSpellCooldown {

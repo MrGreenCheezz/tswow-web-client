@@ -19,6 +19,7 @@ import { isWorldObjectDead } from "../../world/WorldState.js"; // 06.11 (6.41)
 import { UnitFacingInputsBuilder, type FacingWorld } from "../../world/UnitFacingSources.js";
 import type { VehicleCatalog } from "../../world/VehicleDbc.js";
 import type { WorldObjectState } from "../../world/WorldState.js";
+import type { RangedRepeatMarks } from "../../world/RangedRepeatMarks.js"; // 5.05 (15.11, bow9)
 import { UPDATE_FIELDS } from "../../generated/updateFields.js";
 import { GAMEOBJECT_RANGE, gameObjectWithinAdmissionRange } from "../GameObjectTransportAdmission.js";
 import { hypot2 } from "../GroundCover.js";
@@ -47,6 +48,8 @@ export interface RenderInputSources {
     readonly creatureTemplates?: ReadonlyMap<number, { readonly classification: number }>;
     /** 5.05 (15.11, combat7): the sheath the player's own model shows (WorldClient `ownSheathShown`). */
     readonly ownSheathShown?: number | undefined;
+    /** 5.05 (15.11, bow9): the auto-repeat marks (WorldClient `rangedRepeat`). */
+    readonly rangedRepeat?: RangedRepeatMarks;
   }) | undefined;
   /** The page's spell rows (`game.spells`). */
   readonly spells: ReadonlyMap<number, SpellMetadata>;
@@ -98,6 +101,10 @@ export class RenderInputsBuilder {
     inputs.frameBudgetProbe = frameBudgetProbe.enabled;
     inputs.ownSheath = world?.ownSheathShown; // 5.05 (15.11, combat7)
     inputs.ownSheathRequest = pendingOwnSheathRequest(); // 5.05 (15.11, combat7): the same record until the next toggle
+    // 5.05 (15.11, bow9): the marks of the units still in the world (0x00734fd0 drops a gone unit's).
+    const marks = world?.rangedRepeat;
+    if (marks !== undefined) marks.prune((guid) => world!.state.objects.has(guid));
+    inputs.rangedRepeat = marks?.marks;
     this.#collectHidden(world?.state, sources.gameObjectShown);
     this.#collectLootRanks(world);
     return inputs;

@@ -261,8 +261,12 @@ test("the wiring: unit meshes carry the slot depth, and the warm pass reads it",
   const renderer = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
   assert.match(animated, /const slotDepth = slotDepthMaterialFor\(material\);\s+if \(slotDepth\) mesh\.customDepthMaterial = slotDepth;/);
   // Every plain Mesh made from a build (a mount without a rig, attachments) takes it too.
+  // (15.11: bow9's arrow in the hand, `#bowDrawHost.rigid`, is the fifth.) Each one is followed by it: a new build
+  // site that forgets it fails here, whatever the count.
+  const built = renderer.match(/const mesh = new THREE\.Mesh\(built\.geometry, (?:built\.)?materials\);/g) ?? [];
   const meshes = renderer.match(/const mesh = new THREE\.Mesh\(built\.geometry, (?:built\.)?materials\);\n\s*applySlotDepth\(mesh\);/g) ?? [];
-  assert.equal(meshes.length, 4);
+  assert.ok(built.length >= 5, `the unit build sites are found (${built.length})`);
+  assert.equal(meshes.length, built.length, "every plain mesh of a unit build carries the slot depth");
   const warmup = await readFile(new URL("../src/browser/ProgramWarmup.ts", import.meta.url), "utf8");
   assert.match(warmup, /shadowDepthStandIn\(material, \(mesh as THREE\.Mesh \| undefined\)\?\.customDepthMaterial\)/);
   assert.match(renderer, /slotFold: cache === this\.#builtUnits && skinned \? UNIT_SLOT_FOLD : "off",/);

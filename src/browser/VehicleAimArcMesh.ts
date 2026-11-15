@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import type { VehicleAimArcShape } from "./game/VehicleAimArc.js";
+import type { VehicleAimArcShape } from "./VehicleAimArcShape.js";
 import type { HeightSampler } from "./SceneCamera.js";
 
 /**

@@ -476,3 +476,21 @@ test("the target is painted last, over every other plate, and a nearer plate ove
   const order = names.filter((name, index) => names.indexOf(name) === index);
   assert.deepEqual(order, ["u3", "u2", "u4"]);
 });
+
+// 5.16 (15.11): 0x0072B060 asks 0x0077F0B0 first — a plate only over a unit the camera saw in the last frame
+// (the renderer's `unitsSeen`, UnitSceneSight.ts); 0x00734390 takes a shown one down once it did not.
+test("5.16 (15.11): no plate over a unit the camera did not see; no renderer record, no culling", () => {
+  const previous = game.renderer;
+  try {
+    withReactions(reactionWorld(), () => {
+      game.renderer = { results: { unitsSeen: new Set([3n]), unitNames: new Map() } };
+      assert.equal(plateSource(0)(targetUnit(600), 10), undefined, "the target too: behind the camera, no plate");
+      game.renderer = { results: { unitsSeen: new Set([2n]), unitNames: new Map() } };
+      assert.ok(plateSource(0)(targetUnit(600), 10));
+      game.renderer = undefined;
+      assert.ok(plateSource(0)(targetUnit(600), 10));
+    });
+  } finally {
+    game.renderer = previous;
+  }
+});

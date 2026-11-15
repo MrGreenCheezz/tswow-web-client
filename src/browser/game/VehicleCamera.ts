@@ -72,6 +72,16 @@ import { VEHICLE_FLAG_CAMERA_FADE } from "../VehicleCameraFade.js";
  *   CAN_CONTROL seats, whose camera watches the vehicle (ViewSubject.ts), and there the test fails as it does in Wow.exe.
  *   Not modelled: states 1–2 (on the way in, the chase is put back each frame instead) and CameraFacingChaseRate, which no
  *   FlagsB 0x1 seat has; where else +0x84 reaches the view (0x00759ce0) is still unread.
+ *   15.11 (vehicle9, .runtime/re-2026-11-15/vehicle9/c1.c; re-2026-10-03/l1102gf3/r3.c): 0x0075aac0, at every seat change,
+ *   copies +0x80 into +0x7c, +0x88, +0x8c, +0x94 and +0x84 (less the watched unit's facing, 0x00759ce0) and picks the state:
+ *   1 the delay, 2 the switch, 3 seated, 4 and 5 the way out. In states 1–2 with bits 0x2 and 0x4, 0x0075a1c0 puts the four
+ *   back each frame, so the first seated frame turns the yaw by the facing at the change less the facing now: after a switch
+ *   between seats the view comes back to the world direction it had at the switch (`#frozenFacing`). From the ground the
+ *   value +0x80 has when the camera object is made (0x0075b1a0) is not read, and the hold still starts at the seat.
+ *   0x00759ce0 makes +0x84 the chased facing less the watched unit's (for a passenger, +0xaa0 plus its carrier's, 0x00759c60),
+ *   the lag CameraFacingChaseRate leaves. Camera.cpp reads +0x84 only for a watched unit on a transport: as the facing a
+ *   spline hold starts and runs against (0x006019b0, 0x00603330 while +0xac > 0) and as the shake's direction (0x00602f30).
+ *   So on seats 3690–3692 the rate shows only under CameraFollow's spline hold; that file is not this lane's, not wired.
  *
  * Without vehicle rows, outside a vehicle seat, or riding a ship, nothing here touches the camera and
  * the wheel answers exactly as `zoomedDistance` does. Once a frame, nothing is allocated unless the
@@ -442,6 +452,10 @@ export class VehicleCameraTracker {
   #appliedEnd = 0;
   /** 15.11 (vehicle8): the world facing the last held frame saw (VehicleCamera_C +0x80), undefined when not holding. */
   #heldFacing: number | undefined;
+  /** 15.11 (vehicle9): the facing the last `seatYawTurn` saw (VehicleCamera_C +0x80 before a seat change). */
+  #lastFacing: number | undefined;
+  /** 15.11 (vehicle9): +0x80 as 0x0075aac0 left it at a seat switch onto a yaw-holding seat, kept through states 1–2. */
+  #frozenFacing: number | undefined;
 
   /** 26.10: the lens offsets as `update` left them this frame (the same object every frame). */
   get lens(): VehicleCameraLens {
@@ -565,13 +579,19 @@ export class VehicleCameraTracker {
    * passenger, which keeps the view still in the world as the vehicle turns under it. 0 otherwise. Called once a frame.
    */
   seatYawTurn(facing: number, watchingSelf: boolean, splineHeld: boolean, now: number): number {
-    const seat = this.#applied;
-    const holding = seat !== undefined && seat === this.#seat && seat.holdsYaw === true && this.#pendingAt === undefined
-      && now >= this.#appliedEnd && watchingSelf && !splineHeld && Number.isFinite(facing);
+    const seat = this.#seat;
+    const finite = Number.isFinite(facing);
+    this.#lastFacing = finite ? facing : undefined;
+    const eligible = seat !== undefined && seat.holdsYaw === true && watchingSelf && !splineHeld && finite;
+    const holding = eligible && seat === this.#applied && this.#pendingAt === undefined && now >= this.#appliedEnd;
     if (!holding) {
-      this.#heldFacing = undefined;
+      // 15.11 (vehicle9): states 1–2 after a seat switch — 0x0075a1c0 puts +0x80/+0x88 back each frame, so the facing frozen at
+      // the switch (`#frozenFacing`) is what the first seated frame turns from. Not while the hold's own tests fail.
+      if (!eligible) this.#frozenFacing = undefined;
+      this.#heldFacing = eligible ? this.#frozenFacing : undefined;
       return 0;
     }
+    this.#frozenFacing = undefined;
     const before = this.#heldFacing;
     this.#heldFacing = facing;
     if (before === undefined) return 0;
@@ -584,6 +604,8 @@ export class VehicleCameraTracker {
   reset(): void {
     this.#appliedEnd = 0;
     this.#heldFacing = undefined;
+    this.#lastFacing = undefined; // 15.11 (vehicle9)
+    this.#frozenFacing = undefined;
     this.#keyGuid = undefined;
     this.#keySlot = -1;
     this.#keyVehicleId = undefined;
@@ -637,6 +659,10 @@ export class VehicleCameraTracker {
   #seatChanged(seat: VehicleCameraParams | undefined, now: number): void {
     const previous = this.#seat;
     this.#seat = seat;
+    // 15.11 (vehicle9): 0x0075aac0 copies +0x80 (the last frame's chased facing — in state 3 the watched unit's world facing)
+    // into +0x7c/+0x88/+0x8c/+0x94. Only for a switch from another seat: what +0x80 holds when the camera object is first made
+    // for a passenger coming from the ground is not read, so entering keeps the hold starting at the seat (vehicle8).
+    this.#frozenFacing = previous !== undefined && seat?.holdsYaw === true ? this.#lastFacing : undefined;
     let delay: number;
     let seconds: number;
     if (seat !== undefined) {

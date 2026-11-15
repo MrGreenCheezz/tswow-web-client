@@ -15,6 +15,7 @@ import {
 // 15.11 (6.11): a unit fades in over Wow.exe's 1000 ms (UnitSpawnFade.ts), not the old 400 ms window.
 import { unitSpawnFactor, UNIT_SPAWN_FADE_MS as SPAWN_FADE_WINDOW_MS } from "../dist/code/browser/UnitSpawnFade.js";
 import { glowBodyMeshes } from "../dist/code/browser/WeaponGlowBody.js"; // 05.10: ревью E2
+import { bowDrawMeshes } from "../dist/code/browser/BowDrawVisuals.js"; // 5.05 (15.11, bow9)
 import { glowAnchorsOf } from "../dist/code/browser/WeaponGlow.js"; // 05.10: ревью E2
 import { fadedDepthWrite } from "../dist/code/browser/FadeDepth.js"; // 22.10 (7.42)
 import { applyWorldLight, createWorldLightUniforms } from "../dist/code/browser/WorldLighting.js";
@@ -59,6 +60,7 @@ const Harness = (() => {
     borrowFadedMaterials, returnBorrowedMaterials, updateBorrowedMaterials,
     glowBodyMeshes, glowAnchorsOf, // 05.10: ревью E2 — `#unitOpacityMeshes` reaches the glow bodies
     fadedDepthWrite, // 22.10 (7.42)
+    bowDrawMeshes, // 5.05 (15.11, bow9): `#unitOpacityMeshes` reaches the bow's rig and the arrow in the hand
     UNIT_WARM_HOLD_FRAMES, UNIT_WARM_HOLD_SELF_FRAMES, UNIT_FADE_RETURN_HOLD_FRAMES, APPEARANCE_PENDING_WAIT_MS,
   };
   return Function(...Object.keys(deps), `${code}; return Harness;`)(...Object.values(deps));

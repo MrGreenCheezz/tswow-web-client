@@ -15,6 +15,7 @@ import { game } from "../game/Context.js"; // 5.37: the account's name for its m
 import { GLOBAL_MACROS_CACHE, PER_CHARACTER_MACROS_CACHE } from "../../world/SessionProtocol.js";
 import type { FrameXmlMacroStore } from "../framexml/FrameXmlMacro.js";
 import { findMacro, isAccountMacro, type Macro } from "./MacroModel.js";
+import { registerAccountDataFlush } from "../AccountDataFlush.js"; // widgets9 5.37
 import {
   emptyMacroSlot, macroIdInSlot, macroSlotOfId, parseMacroSlot, putSlotMacro, removeSlotMacro, serialiseMacroSlot,
   type MacroSlot,
@@ -56,6 +57,8 @@ const accountMacros = createMacroSlotStore(GLOBAL_MACROS_CACHE, "webclient.macro
 const characterMacros = createMacroSlotStore(PER_CHARACTER_MACROS_CACHE, "webclient.macros.character.v1", true);
 
 export const macroStores = [accountMacros, characterMacros];
+// widgets9 5.37: Lua UploadSettings/DownloadSettings send the macro slots' pending writes (AccountDataFlush.ts).
+registerAccountDataFlush(() => { for (const store of macroStores) store.flush(); });
 
 /** 5.37: the Wow.exe id of the macro in this client's slot `index` (what an action button holds). */
 export function macroIdAt(index: number): number | undefined {

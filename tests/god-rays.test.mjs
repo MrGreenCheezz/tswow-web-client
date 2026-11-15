@@ -24,6 +24,8 @@ import { SETTING_SECTIONS } from "../dist/code/browser/ui/SettingsSections.js";
 import { COMPARISON_GRAPHICS_OVERRIDES } from "../dist/code/browser/ui/ComparisonProfile.js";
 import { enhancedGraphicsSettings } from "../dist/code/browser/ui/EnhancedGraphics.js";
 import { AtmosphereEffects } from "../dist/code/browser/AtmosphereEffects.js";
+import { cinematicShaftStrength } from "../dist/code/browser/CinematicShaftStrength.js";
+import { memberSource } from "./source-pins.mjs";
 
 const hour = (value) => value * 120;
 const worldCameraAtPitch = (pitch, yaw = 0) => {
@@ -153,24 +155,35 @@ test("«Сила солнечных лучей» is a percentage under its leaf,
   }
 });
 
+// 13.09 (pins9): the cinematic strength is a function of its own (CinematicShaftStrength.ts), checked by value; the
+// renderer's wiring stays pinned by member and by the arguments it passes, not by whole lines.
+test("cinematic shafts: the quality's share of the full strength, held to 1, times the multiplier and the canopy boost", () => {
+  const full = lightingProfile(2).godRayStrength;
+  assert.equal(cinematicShaftStrength(full, full, 1, 1), 1, "the high quality at 100 % is the full march");
+  assert.ok(Math.abs(cinematicShaftStrength(lightingProfile(1).godRayStrength, full, 1, 1) - 0.6) < 1e-12, "0.12 of 0.2");
+  assert.equal(cinematicShaftStrength(full * 2, full, 1, 1), 1, "a share above the full strength is held to 1");
+  assert.equal(cinematicShaftStrength(full, full, 3, 1), 3, "the multiplier over the share (CinematicPost bounds it)");
+  assert.equal(cinematicShaftStrength(full, full, 1, 1.5), 1.5, "7.40: the canopy boost scales the strength only");
+  assert.equal(cinematicShaftStrength(lightingProfile(0).godRayStrength, full, 3, 1.5), 0, "quality 0 stays exact");
+});
+
 test("the multiplier enters both shaft paths without touching what enables them", () => {
   assert.match(rendererSource, /#godRayStrengthScale = 1;/);
-  assert.match(rendererSource, /return this\.#godRaysEnabled && this\.#lightingProfile\.godRayStrength > 0;/,
+  assert.match(memberSource(rendererSource, "#godRaysActive"),
+    /return this\.#godRaysEnabled && this\.#lightingProfile\.godRayStrength > 0;/,
     "the switch and the quality alone decide; the slider never enables the depth pass");
-  const setter = rendererSource.slice(
-    rendererSource.indexOf("  setGodRayStrength(scale: number): void {"),
-    rendererSource.indexOf("  #godRaysActive(): boolean {"));
+  const setter = memberSource(rendererSource, "setGodRayStrength");
   assert.match(setter, /this\.#godRayStrengthScale = godRayStrengthScale\(scale\);/);
   assert.equal(setter.includes("#syncFullscreenGlowTargets"), false, "no target rebuild: a stored number only");
   assert.equal(setter.includes("#disposeFullscreenGlowTargets"), false);
   // Classic: the last factor of the visibility product, after the storm fade.
-  const prepareAt = rendererSource.indexOf("#prepareGodRays(targets: GlowChainTargets): number {");
-  const prepare = rendererSource.slice(prepareAt, rendererSource.indexOf("#endFullscreenGlow(", prepareAt));
-  assert.match(prepare, /this\.#weatherFade\.storm,\s+this\.#godRayStrengthScale,\s+\);/);
-  // Cinematic: the quality's share of the ceiling times the same multiplier, bounded in CinematicPost;
-  // (15.11 7.40) times the zone atmosphere's canopy boost, which is a factor of the strength only.
-  assert.match(rendererSource,
-    /Math\.min\(1, this\.#lightingProfile\.godRayStrength \/ GOD_RAY_FULL_STRENGTH\) \* this\.#godRayStrengthScale\s+\* \(this\.#atmosphere\?\.shaftBoost \?\? 1\) : 0;/);
+  assert.match(memberSource(rendererSource, "#prepareGodRays"), /this\.#weatherFade\.storm,\s+this\.#godRayStrengthScale,\s+\);/);
+  // Cinematic: the same multiplier and the canopy boost reach the strength function.
+  const cinematic = /cinematicShaftStrength\(([^;]*)\)/.exec(rendererSource);
+  assert.ok(cinematic, "the cinematic path asks cinematicShaftStrength");
+  assert.deepEqual(cinematic[1].split(",").map((argument) => argument.trim()), [
+    "this.#lightingProfile.godRayStrength", "GOD_RAY_FULL_STRENGTH", "this.#godRayStrengthScale", "this.#atmosphere?.shaftBoost ?? 1",
+  ]);
 });
 
 test("7.40: the zone atmosphere's shaft boost is exactly 1 while «Атмосфера зон» is off", () => {

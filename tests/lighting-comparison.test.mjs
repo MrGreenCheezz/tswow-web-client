@@ -81,16 +81,20 @@ test("7.20 the horizon selector draws the lit horizon on the comparison level", 
 
 test("7.20 the renderer's classic branches read the classic look, not quality 0", async () => {
   const world = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
-  assert.equal(world.includes("this.#lightingProfile.quality === 0"), false,
-    "no renderer branch singles out quality 0 any more");
-  const uses = world.split("lightingClassicLook(this.#lightingProfile.quality)").length - 1;
-  assert.equal(uses, 8, "key light, cinematic override, visible sun, (13.10 7.04) the classic dome, (22.10 7.44) the horizon detail and the terrain-height ring, (15.11 7.66) the faithful levels' reach, (15.11 7.40) the zone atmosphere's enhanced-only gate");
-  assert.match(world, /frame\.enhanced = !lightingClassicLook\(this\.#lightingProfile\.quality\);/,
+  // The rule: a classic-path branch asks the classic look, so level 3 takes it with level 0. A branch written as
+  // `quality === 0` is the regression this guards (a count of `lightingClassicLook(` calls stood here until 13.09 and
+  // had to be bumped by every lane that added a branch; the classic features themselves are checked above by value).
+  assert.doesNotMatch(world, /#lightingProfile\.quality [!=]== 0\b/, "no renderer branch singles out quality 0 any more");
+  assert.match(world, /frame\.enhanced = !lightingClassicLook\(/,
     "7.40: «Атмосфера зон» runs on the enhanced levels only, released on the faithful ones (0 and 3)");
-  const cinematic = world.slice(world.indexOf("  #applyCinematicProfile(): void {"));
-  assert.match(cinematic.slice(0, 400),
-    /const profile = lightingClassicLook\(this\.#lightingProfile\.quality\) \? undefined : this\.#cinematicRequested;/,
-    "the comparison level never takes the cinematic grade");
+  // Inside one method an order behaviour cannot show without a renderer: the classic look is asked before the
+  // cinematic leaf is set, so the comparison level never takes the cinematic grade.
+  const start = world.indexOf("  #applyCinematicProfile(): void {");
+  assert.ok(start > 0);
+  const asked = world.indexOf("lightingClassicLook(", start);
+  const set = world.indexOf("this.#cinematic.setProfile(", start);
+  assert.ok(asked > start && set > asked, "the comparison level never takes the cinematic grade");
+  assert.equal(world.slice(asked, set).includes("\n  #"), false, "both in #applyCinematicProfile");
 });
 
 test("7.20 lighting quality setting offers the comparison level; the default is the highest quality", () => {

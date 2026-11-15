@@ -124,6 +124,41 @@ test("the cost: a walk on first sight, then at most once a second and only after
   assert.equal(membership.walks, 4, "an object not listed in a pass is forgotten");
 });
 
+// 3.13 (15.11): past the collision the renderer's segment answers (FarWmoFloors.ts, `RenderResults.farWmoFloors`),
+// judged as 0x007C28F0 judges a hit: below, only above the terrain; from the upward try, only with no terrain under the feet.
+test("past the collision: the renderer's row, judged like the collision's floor; a stale or other-map row is no answer", () => {
+  const row = (fields) => ({ map: 0, x: 200, y: 0, z: 0, floorZ: 0, groupFlags: 0x2000, model: INN, up: false, ...fields });
+  const far = (value) => sources({ floor: () => undefined, far: (guid) => (guid === 9n ? value : undefined) });
+  assert.equal(minimapWmoBuildingAt(far(row({})), 0, 200, 0, 0, 9n), INN);
+  assert.equal(minimapWmoBuildingAt(far(row({})), 0, 200, 0, 0), null, "without a guid only the collision answers");
+  assert.equal(minimapWmoBuildingAt(far(row({ groupFlags: 0x8 })), 0, 200, 0, 0, 9n), undefined, "a street is not inside");
+  assert.equal(minimapWmoBuildingAt(far(row({ model: "", floorZ: Number.NaN })), 0, 200, 0, 0, 9n), undefined, "nothing hit");
+  assert.equal(minimapWmoBuildingAt(sources({ floor: () => undefined, far: () => row({ z: 5 }), gridHeight: () => 5 }), 0, 200, 0, 5, 9n),
+    undefined, "on the ground over a cellar: the terrain between the feet and the hit wins");
+  assert.equal(minimapWmoBuildingAt(far(row({ map: 1 })), 0, 200, 0, 0, 9n), null, "another map's row");
+  assert.equal(minimapWmoBuildingAt(far(row({ x: 210 })), 0, 200, 0, 0, 9n), null, "cast from elsewhere");
+  // The upward try (a roof, nothing below): counted with no terrain under the feet, not over terrain.
+  const roof = row({ floorZ: 8, up: true });
+  assert.equal(minimapWmoBuildingAt(sources({ floor: () => undefined, far: () => roof, gridHeight: () => undefined }), 0, 200, 0, 0, 9n), INN);
+  assert.equal(minimapWmoBuildingAt(sources({ floor: () => undefined, far: () => roof, gridHeight: () => -3 }), 0, 200, 0, 0, 9n), undefined);
+  assert.equal(minimapWmoBuildingAt(sources({ floor: () => undefined, far: () => roof, gridHeight: () => 3 }), 0, 200, 0, 0, 9n), INN,
+    "terrain over the feet does not count (0x007C1660)");
+});
+
+test("a far answer is asked again every second (a building drawn later changes it); a collision answer is not", () => {
+  const membership = new MinimapWmoMembership();
+  let current = undefined;
+  const live = sources({ floor: () => undefined, far: () => current });
+  const at = { x: 200, y: 0, z: 0 };
+  membership.begin();
+  assert.equal(membership.buildingOf(9n, 0, at, 0, live), undefined, "no row yet: not known");
+  current = { map: 0, x: 200, y: 0, z: 0, floorZ: Number.NaN, groupFlags: 0, model: "", up: false };
+  assert.equal(membership.buildingOf(9n, 0, at, MINIMAP_WMO_RECHECK_MS, live), undefined);
+  current = { map: 0, x: 200, y: 0, z: 0, floorZ: 0, groupFlags: 0x2000, model: INN, up: false };
+  assert.equal(membership.buildingOf(9n, 0, at, 2 * MINIMAP_WMO_RECHECK_MS, live), INN, "standing still, the far answer is asked again");
+  membership.end();
+});
+
 const ENTRY = UPDATE_FIELDS.OBJECT_FIELD_ENTRY.offset;
 // Outdoors at the widest step: 466.67 yards over 140 units.
 const YARDS_PER_UNIT = 1400 / 3 / 140;

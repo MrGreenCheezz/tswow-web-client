@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { readFile } from "node:fs/promises";
 import * as THREE from "three";
+import { assertGuard, assertOrder, conditionTerms, memberSource, readSource } from "./source-pins.mjs";
 import { parseWmoVisual, wmoDependencies, wmoGroupMeshes } from "../tools/wmo-visual.mjs";
 import { WWM_CLASSIC_VERTEX_LIGHT, WWM_VERTEX_ALPHA_UNFIXED, encodeWwm } from "../tools/wwm.mjs";
 import {
@@ -266,25 +266,30 @@ test("units in a building of rooms take the doodads' indoor equation and no sun"
 });
 
 test("the renderer notes interior-only buildings, lights units by the room and hides the dome", async () => {
-  const source = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
+  // 13.09 (pins9): the rules under this wiring are the behaviour tests above (rooms, leashes, the indoor light); what
+  // stays pinned is the wiring a whole renderer would be needed to show, by guard terms and order, not whole lines.
+  const source = await readSource("browser/WorldRenderer3D.ts");
+  const groups = memberSource(source, "#updateWmoGroups");
   // 22.10 (7.41): a building admitted for its shadow alone is not "viewed" and never enters its rooms.
-  assert.match(source, /const viewed = staticEnvironment && !shadowOnly;/);
-  assert.match(source, /const entered = viewed && wmoInteriorOnly\(placed\.model\) && this\.#enteredInteriorOnly\(placed, player\);/);
-  assert.match(source, /if \(entered\) distanceGroups = this\.#interiorOnlyRange\(placed, player\);/);
+  assert.match(groups, /const viewed = staticEnvironment && !shadowOnly;/);
+  assert.match(groups, /const entered = viewed && wmoInteriorOnly\(placed\.model\) && this\.#enteredInteriorOnly\(placed, player\);/);
+  assertGuard(groups, "this.#interiorOnlyRange(placed, player)", ["entered"], "an entered building takes the far leash");
   // P1-12c: named once, for the walk and for its memo (`WmoPortalMemo.ts`).
-  assert.match(source, /const screenApertures = entered \? this\.#interiorOnlyRoomsOf\(placed\)\.apertures : undefined;/);
-  assert.match(source, /if \(portalSelection\.used\) \{\r?\n\s+selected = portalSelection\.groups;\r?\n\s+clipped = entered;/,
-    "the rectangles count only when the walk was used");
-  assert.match(source, /if \(entered && !clipped\) selected = roomLeash;/,
-    "without a portal walk an entered building keeps the sixty-yard rooms");
-  assert.match(source, /if \(entered\) this\.#noteInteriorOnly\(placed, player, selected, clipped\);/);
-  assert.match(source, /#updateSkybox\(camera: THREE\.Camera, client: EnvironmentClient \| undefined\): void \{\r?\n\s+this\.#settleInteriorOnly\(\);/);
-  assert.match(source, /setWorldLightIndoor\(this\.#worldLight, room, MODEL_PLACEMENT_LOCAL_LIGHT_DIRECTION\)/);
-  assert.match(source, /setWorldLightShadowSuppressed\(this\.#worldLight, room !== undefined\)/);
+  assert.match(groups, /const screenApertures = entered \? this\.#interiorOnlyRoomsOf\(placed\)\.apertures : undefined;/);
+  assertOrder(groups, ["if (portalSelection.used) {", "clipped = entered;", "if (entered && !clipped) selected = roomLeash;",
+    "this.#noteInteriorOnly(placed, player, selected, clipped)"],
+  "the rectangles count only when the walk was used; without one an entered building keeps the sixty-yard rooms");
+  assertGuard(groups, "this.#noteInteriorOnly(placed, player, selected, clipped)", ["entered"], "only an entered building is noted");
+  // The settle runs first in the dome's update, before anything reads the interior state it settles.
+  assert.match(memberSource(source, "#updateSkybox"), /^[^\n]*\{\n\s+this\.#settleInteriorOnly\(\);/);
+  assertOrder(source, ["setWorldLightIndoor(this.#worldLight, room,", "setWorldLightShadowSuppressed(this.#worldLight, room !== undefined)"],
+    "a unit in the room takes its light and no sun shadow");
   assert.match(source, /interiorOnlyDoodadShown\(object\) === false \? undefined : "interior"/);
   // 05.11 (7.61, c1996c52) adds a second reason the dome goes (a room that shows no sky); the camera in an
   // interior-only building still hides it on its own.
-  assert.match(source, /this\.#sky\.visible = !this\.#interiorOnlyCamera(?: && ![\w.#]+)*;/);
+  const sky = /this\.#sky\.visible = ([^;]+);/.exec(source);
+  assert.ok(sky, "the dome's visibility is written");
+  assert.ok(conditionTerms(sky[1]).includes("!this.#interiorOnlyCamera"), sky[1]);
 });
 
 let archives;

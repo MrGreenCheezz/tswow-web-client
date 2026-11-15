@@ -1880,6 +1880,8 @@ export interface UnitPose {
   emoteState?: number;
   /** 05.10-A7a-C 6.04: the combat stance ladder while `UNIT_FLAG_IN_COMBAT` is up. */
   ready?: readonly number[];
+  /** 5.05 (15.11, bow9): the auto-repeat rung's ladder (UnitStandingPose.ts `rangedLoadLadder`, BowDraw.ts). */
+  rangedLoad?: readonly number[];
   /**
    * 12.10 6.07: whether the fall began with a jump (`WorldObjectState.fallJumped`, Wow.exe's mover +0xb8); undefined
    * when not known, which is read as a jump (as every fall was before).

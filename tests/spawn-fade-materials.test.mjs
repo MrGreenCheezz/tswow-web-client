@@ -5,10 +5,11 @@ import ts from 'typescript';
 import * as THREE from 'three';
 import * as rendererExports from '../dist/code/browser/WorldRenderer3D.js';
 import {applyBlendMode, cloneMaterialFaded} from '../dist/code/browser/ModelBuild.js';
-import {spawnFadeFactor} from '../dist/code/browser/AnimatedModel.js';
+import {gameObjectModelAlphaOf, gameObjectSpawnAlpha} from '../dist/code/browser/GameObjectSpawnFade.js'; // 15.11 (6.11, fade9)
 import {glowBodyMeshes, makeGlowBody, mountGlowBodies} from '../dist/code/browser/WeaponGlowBody.js'; // 05.10: ревью E2
 import {attachGlowAnchors, glowAnchorsOf, glowPlacement} from '../dist/code/browser/WeaponGlow.js'; // 05.10: ревью E2
 import {fadedDepthWrite} from '../dist/code/browser/FadeDepth.js'; // 22.10 (7.42)
+import {bowDrawMeshes} from '../dist/code/browser/BowDrawVisuals.js'; // 5.05 (15.11, bow9)
 
 const source = await readFile(new URL('../src/browser/WorldRenderer3D.ts', import.meta.url), 'utf8');
 const parsed = ts.createSourceFile('WorldRenderer3D.ts', source, ts.ScriptTarget.ES2022, true);
@@ -23,12 +24,14 @@ const harnessCode = ts.transpileModule('class Harness { ' + methods.join('\n') +
   compilerOptions: {target:ts.ScriptTarget.ES2022, module:ts.ModuleKind.None},
 }).outputText;
 const Harness = Function('THREE', 'borrowFadedMaterials', 'returnBorrowedMaterials',
-  'updateBorrowedMaterials', 'spawnFadeFactor', 'GAMEOBJECT_FADE_STEPS',
+  'updateBorrowedMaterials', 'gameObjectSpawnAlpha', 'gameObjectModelAlphaOf',
   'glowBodyMeshes', 'glowAnchorsOf', // 05.10: ревью E2
   'fadedDepthWrite', // 22.10 (7.42)
+  'bowDrawMeshes', // 5.05 (15.11, bow9)
   harnessCode + '; return Harness;')(
     THREE, rendererExports.borrowFadedMaterials, rendererExports.returnBorrowedMaterials,
-    rendererExports.updateBorrowedMaterials, spawnFadeFactor, 6, glowBodyMeshes, glowAnchorsOf, fadedDepthWrite);
+    rendererExports.updateBorrowedMaterials, gameObjectSpawnAlpha, gameObjectModelAlphaOf, glowBodyMeshes, glowAnchorsOf, fadedDepthWrite,
+    bowDrawMeshes);
 function harness() {
   const h = new Harness();
   h.programWarmup = {registerObject() {}};
@@ -69,13 +72,14 @@ test('game-object fade steps retain the same private materials until full opacit
   const copies = mesh.material;
   let disposed = 0;
   copies.forEach(m => m.addEventListener('dispose', () => disposed++));
-  for (const now of [1040,1080,1160,1200,1280,1320]) {
+  // 15.11 (6.11, fade9): the byte walk of 0x00744a50 over 1000 ms, whole bytes.
+  for (const now of [1040,1080,1160,1200,1280,1320,1500,1999]) {
     h.applyGameObjectOpacity(rendered, now);
-    assert.ok(mesh.material === copies, 'quantized opacity must not cause recompilation either');
-    assert.equal(copies[0].opacity, .8 * (Math.round(spawnFadeFactor(1000,now)*6)/6));
+    assert.ok(mesh.material === copies, 'a fade step must not cause recompilation either');
+    assert.equal(copies[0].opacity, .8 * (Math.trunc(255 * (now - 1000) / 1000) / 255));
     assert.equal(disposed, 0);
   }
-  h.applyGameObjectOpacity(rendered, 1400);
+  h.applyGameObjectOpacity(rendered, 2000);
   assert.equal(mesh.material, shared);
   assert.equal(disposed, copies.length);
 });

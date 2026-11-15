@@ -32,16 +32,18 @@ import { vehicleAimInput, vehicleAimPower } from "./VehicleAim.js";
  * MsslTrgtImpactRadius[i] (columns 27, 28; the radius itself for a model with none), with the arc's strength as its alpha
  * (+0x178), and is drawn in the world (0x00781c90; its callback 0x006fbfa0 drops it once the strength is 0). 54 of the
  * dataset's Vehicle rows name one: Interface\Vehicles\Vehicle_Target_01/02.mdx. `impactModels` carries them, `impactModelScale`
- * is the scale; the renderer does not draw them yet (an M2 by path at a moving point with a fade, in WorldRenderer3D).
+ * is the scale; 15.11 (vehicle9) VehicleImpactModelMesh.ts draws them (0x004f5e80 reads the M2 header's bounding radius).
  */
 
-/** Vehicle Flags that ask for the arc (0x006fda20). */
-export const ARC_ALWAYS = 0x0080_0000;
-export const ARC_TURN = 0x0100_0000;
-export const ARC_PITCH = 0x0200_0000;
-export const ARC_MOUSE = 0x0400_0000;
-export const ARC_SPELL = 0x0800_0000;
-const ARC_ANY = ARC_ALWAYS | ARC_TURN | ARC_PITCH | ARC_MOUSE | ARC_SPELL;
+// 15.11 (vehicle9): the flags, the shape and the impact-model rule live in ../VehicleAimArcShape.ts, which the render worker
+// may import (this file reaches the page's game context); re-exported here for the page's callers and the tests.
+export {
+  ARC_ALWAYS, ARC_MOUSE, ARC_PITCH, ARC_SPELL, ARC_TURN, impactModelScale, vehicleImpactModels,
+  type VehicleAimArcShape, type VehicleImpactModel,
+} from "../VehicleAimArcShape.js";
+import {
+  ARC_ALWAYS, ARC_ANY, ARC_MOUSE, ARC_PITCH, ARC_SPELL, ARC_TURN, vehicleImpactModels,
+} from "../VehicleAimArcShape.js";
 
 const SEAT_ARC_TURN = 0x300;
 const SEAT_ARC_TURN_NOT = 0x200_0001;
@@ -113,47 +115,6 @@ export function vehicleArcSpell(casting: number | undefined, armed: number | und
     if (spell !== undefined && missile(spell) !== undefined) return { spellId: spell, armed: false };
   }
   return undefined;
-}
-
-/** What the renderer draws: the flight's points from the fire point on, world coordinates, and the look of the row. */
-export interface VehicleAimArcShape {
-  /** x, y, z of each point, the first being the fire point and the last the impact. */
-  readonly points: Float32Array;
-  readonly facing: number;
-  readonly opacity: number;
-  readonly width: number;
-  readonly endOpacity: number;
-  readonly arcSpeed: number;
-  readonly arcRepeat: number;
-  readonly arcTexture: string;
-  readonly impactTexture: string;
-  readonly impactRadius: number;
-  /** 15.11 (vehicle8): MsslTrgtImpactModel[i] (as .m2) with MsslTrgtImpactRadius[i], at the impact (`vehicleImpactModels`). */
-  readonly impactModels?: readonly VehicleImpactModel[];
-}
-
-/** 15.11 (vehicle8): one volume mark of the arc (0x006fe9b0, 0x006fda20). */
-export interface VehicleImpactModel {
-  readonly path: string;
-  readonly radius: number;
-}
-
-/** 15.11 (vehicle8): the row's impact models in slot order, the empty slots left out (0x006fe9b0 loads a named one only). */
-export function vehicleImpactModels(vehicle: Pick<VehicleEntry, "flags" | "msslTrgtImpactModel" | "msslTrgtImpactRadius">): VehicleImpactModel[] {
-  if ((vehicle.flags & ARC_ANY) === 0) return [];
-  const models: VehicleImpactModel[] = [];
-  for (let slot = 0; slot < 2; slot++) {
-    const path = vehicle.msslTrgtImpactModel[slot]?.trim() ?? "";
-    if (path === "") continue;
-    const radius = vehicle.msslTrgtImpactRadius[slot] ?? 0;
-    models.push({ path: path.replace(/\.(mdx|mdl)$/i, ".m2"), radius: Number.isFinite(radius) ? radius : 0 });
-  }
-  return models;
-}
-
-/** 15.11 (vehicle8): 0x006fda20's scale: the radius over the model's bounding radius, or the radius for a model without one. */
-export function impactModelScale(radius: number, boundsRadius: number): number {
-  return boundsRadius > 0 ? radius / boundsRadius : radius;
 }
 
 /** The flight as points (0x006fcd60 with the points asked for): no random, so one frame's arc matches the next. */

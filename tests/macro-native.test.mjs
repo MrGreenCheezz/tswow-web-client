@@ -206,6 +206,8 @@ async function nativeMacros(commands, chat, notices) {
     "./MacroModel.js": macroModel,
     // 5.37 (11.11): a store's value is the slot (MacroSlot.ts), its macros under `macros`.
     "./MacroSlot.js": { emptyMacroSlot: () => ({ macros: [], origins: {}, spare: [] }) },
+    // widgets9 5.37 (15.11): the store registers its flush for Lua UploadSettings; the registry is a leaf module.
+    "../AccountDataFlush.js": await import("../dist/code/browser/AccountDataFlush.js"),
   });
   const macros = await load("MacroRun.ts", {
     "./MacroStore.js": store,

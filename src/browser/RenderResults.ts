@@ -11,6 +11,7 @@
  */
 
 import type { AtmosphereAudioState, AtmosphereProfile } from "./AtmosphereEffects.js";
+import type { FarWmoFloorRow } from "./FarWmoFloors.js"; // 3.13 (15.11)
 import { FRAME_BUDGET_SLOTS } from "./FrameBudgetProbe.js";
 import type { PortraitOutput } from "./PortraitTargetData.js";
 import type { RenderGpuEvent } from "./RendererReports.js";
@@ -103,6 +104,13 @@ export interface RenderResults {
    * box drawn this frame, within the overlay's 100 yards of the view subject (SimpleScene.ts).
    */
   readonly gameObjectCorners: Map<bigint, Float64Array>;
+  /**
+   * 5.16 (15.11): the units the camera saw in the last unit pass — in the view frustum and not in a map occluder's
+   * shadow (UnitSceneSight.ts, Wow.exe's entity byte +0x25 that 0x0077F0B0 reads for Tab and the name plates).
+   */
+  readonly unitsSeen: Set<bigint>;
+  /** 3.13 (15.11): the WMO floor under far objects, from the drawn buildings' groups (FarWmoFloors.ts). */
+  readonly farWmoFloors: Map<bigint, FarWmoFloorRow>;
   /** 11.02-tails: the seated passengers of the last seat pass and that pass's number. */
   readonly seats: Map<bigint, SeatResult>;
   seatFrame: number;
@@ -158,6 +166,7 @@ export function createRenderResults(atmosphereProfile: Readonly<AtmosphereProfil
   return {
     frame: 0, ownAnimation: undefined, // 5.05 (11.11)
     units: new Map(), unitNames: new Map(), gameObjectCorners: new Map(), seats: new Map(), seatFrame: 0,
+    unitsSeen: new Set(), farWmoFloors: new Map(), // 5.16, 3.13 (15.11)
     cameraAspect: 1, muzzle: undefined, weatherStorm: 0, atmosphereProfile, atmosphereAudio: undefined, fps: 0, indoors: false, status: "",
     portraits: [], swings: new Map(), swingFrame: 0, swingNow: 0,
     frameInterval: undefined, rendererFrameMs: undefined, // 22.10 ARC-2 S4b

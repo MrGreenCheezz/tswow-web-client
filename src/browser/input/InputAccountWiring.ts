@@ -12,6 +12,7 @@ import { notice } from "../ui/Notices.js";
 import { applyBindingTables, bindingTables, onBindingsChanged } from "./Bindings.js";
 import { BindingsSlotSync } from "./BindingsSlotSync.js";
 import { INPUT_ACCOUNT_SYNC_KEYS, LayoutAccountSync, accountSyncEnabled } from "./InputAccount.js";
+import { registerAccountDataFlush } from "../AccountDataFlush.js"; // widgets9 5.37
 
 const onForeign = (): void => {
   notice("Расположение окон в данных персонажа записано в другом формате. Оно сохранено без изменений; используется локальное.",
@@ -48,6 +49,9 @@ export function attachInputAccount(world: WorldClient): void {
 export function acceptInputAccount(type: number): boolean {
   return inputAccountStores().some((store) => store.accept(type));
 }
+
+// widgets9 5.37: Lua UploadSettings/DownloadSettings send the bindings' pending write; the layout's (slot 6) waits.
+registerAccountDataFlush(() => { stores?.[0].flush(); });
 
 /** Leaving the world: a pending write goes out first. */
 export function detachInputAccount(): void {

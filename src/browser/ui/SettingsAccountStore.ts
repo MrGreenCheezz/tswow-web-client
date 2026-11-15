@@ -335,8 +335,9 @@ export class SettingsAccountStore implements StockCVarSlots {
   }
 
   /** Sends pending writes now. Called when a world is left, so nothing is lost with it. */
-  flush(): void {
+  flush(skipSlot?: number): void {
     for (const slot of [...this.#timers.keys()]) {
+      if (slot === skipSlot) continue; // widgets9 5.37: UploadSettings leaves slot 6 to its timer (AccountDataFlush.ts)
       this.#cancel(slot);
       this.#write(slot);
     }

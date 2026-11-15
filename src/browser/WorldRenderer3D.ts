@@ -43,6 +43,9 @@ import { HorizonBand } from "./HorizonBand.js";
 import { ENVIRONMENT_DETAIL_FAR_MAX, environmentHouseRange, environmentShellRange, environmentStreamRange, faithfulReach, sceneryFarCap } from "./SceneryReach.js"; // 7.44: house; 15.11 (7.66 tail): faithfulReach
 import { admissionQuota } from "./AdmissionQuotas.js"; // 15.11 (7.05, far8)
 import { biodomeDrawRange, boundDoodadClassLeash, doodadOriginalReach, recordDoodadModelBox } from "./DoodadReach.js"; // 15.11 (7.66 tail, 7.03); far8: biodome, room doodads
+import { doodadCandidateSlack, doodadFirstSightFades, doodadViewAlpha, doodadViewDistance, doodadViewMeasured, type DoodadView } from "./DoodadFade.js"; // 15.11 (7.66 last stretch, fade9)
+import { DoodadFadeInstances } from "./DoodadFadeInstances.js"; // 15.11 (7.66 last stretch, fade9)
+import { gameObjectModelAlphaOf, gameObjectSpawnAlpha } from "./GameObjectSpawnFade.js"; // 15.11 (6.11, fade9)
 import { ENVIRONMENT_FAR_RANGE, ENVIRONMENT_RANGE, ENVIRONMENT_SHELL_RANGE, ENVIRONMENT_RESIDENT_HYSTERESIS, TERRAIN_GRID_SIZE, modelKey, terrainGrid, terrainGridIndex, type EnvironmentClient, type EnvironmentModel, type EnvironmentObject, type TerrainClient } from "./Terrain.js";
 import { terrainGeometryData, terrainGeometrySteps, type TerrainGeometryData } from "./TerrainGeometry.js";
 export { terrainGeometryData, terrainHeightField, terrainNormals, surfaceNormal, type TerrainGeometryData } from "./TerrainGeometry.js";
@@ -98,7 +101,10 @@ import type { LightSample, ResolvedColour } from "./LightTypes.js";
 import { lightDarkensByDepth, liquidLightTint, type UnderwaterLight } from "./UnderwaterLiquidLight.js"; // 05.10-A7b-5 review
 import { LocalLightSelection, modelFixtureLights, type FixtureLight, type LocalLightSample } from "./LocalLighting.js";
 import { sampleFixtureLightKept } from "./LightTemplateMotion.js"; // 15.11 (7.50)
-import { SpellLights, type SpellLightKind } from "./SpellLights.js"; // 23.10 (6.27); 25.10 kinds
+import { SpellLights } from "./SpellLights.js"; // 23.10 (6.27); 25.10 kinds
+import { spellLightKind } from "./SpellLightKind.js"; // 13.09: out of the renderer, tests/spell-light-rules
+import { cinematicShaftStrength } from "./CinematicShaftStrength.js"; // 13.09: tests/god-rays
+import { poseTransitionGivesWay } from "./PoseTransitionCut.js"; // 13.09: tests/fall-and-transitions
 import { MissileTrails, missileTrailColour } from "./MissileTrails.js"; // 26.10 (6.27, test)
 import { LootBeams } from "./LootBeams.js"; // 26.10
 import { UnitTints, WHITE } from "./UnitTints.js"; // 25.10 (6.27)
@@ -180,7 +186,7 @@ import {
   resolveAnimation, resolveSpellVisualAnimation, spellVisualAnimationCandidates,
   ACTION_SIDECAR_WAIT, SHOOT_METADATA_WAIT, mountSpecialAnimation,
   clipMovingSpeed, gaitTimeScale, mountPose, mountPoseTransition, unitTravelSpeed,
-  isLocomotionGait, measuredTravelSpeed, spawnFadeFactor, strideStartTime,
+  isLocomotionGait, measuredTravelSpeed, strideStartTime, // fade9: spawnFadeFactor gave way to GameObjectSpawnFade.ts
   weaponPose, isBaseIdle, // 05.10-A7a-C: isBaseIdle
   isJumpAnimation, // 12.10 6.07
   airborneChanged, applyStrafeYaw, drawClipVariation, facingTurnBetween, playedSeconds, playsAs, stepStrafeYaw, strafeYawBonesFor, strafeYawTarget,
@@ -212,6 +218,13 @@ import { SharedModelBuffers } from "./SharedModelBuffers.js"; // P2-03b
 import { StaticSceneryGroup } from "./StaticSceneryGroup.js"; // RND-12
 import { dropDeathFade, syncDeathFade, type DeathFadeState } from "./BatchDeathFade.js"; // 05.10-A7a-F1
 import { applyStandingPose } from "./UnitStandingPose.js"; // 05.10-A7a-C 6.03/6.04
+import { rangedLoadLadder, readyStance } from "./UnitStandingPose.js"; // 5.05 (15.11, bow9)
+import { EQUIPMENT_SLOT_RANGED, rangedSubClass } from "./BowDraw.js"; // 5.05 (15.11, bow9)
+import {
+  bowDrawMeshes, dropBowDrawVisuals, newBowDrawUnit, pinBowDrawBuilds, shownClip, syncBowDrawVisuals,
+  type BowDrawHost, type BowDrawUnit,
+} from "./BowDrawVisuals.js"; // 5.05 (15.11, bow9)
+import { AmmoModelClient } from "./AmmoModelClient.js"; // 5.05 (15.11, bow9): the ammo in the hand
 import { combatAnimations, type CombatReaction } from "./game/CombatAnimations.js"; // 05.10-A7a-D 6.06
 import { isFlinchAnimation, kitWoundAnimation } from "./game/AnimationSplit.js"; // 05.10-6.21
 import { blendInto, flinchWith } from "./AnimationBlend.js"; // 03.11 6.33
@@ -291,6 +304,8 @@ import {
   type SeatVehicleAnimation, type SeatVehicleAnimationKind,
 } from "./VehicleOwnAnimation.js"; // 11.02 (04.11)
 import { VehicleAimArcMesh } from "./VehicleAimArcMesh.js"; // 11.02 (04.11)
+import { VehicleImpactModelMesh } from "./VehicleImpactModelMesh.js"; // 11.02 (15.11, vehicle9)
+import { narrowedActionDisplay, vehicleNarrowsPose } from "./VehiclePoseNarrowing.js"; // 11.02 (15.11, vehicle9)
 import { ModelShotEvents, muzzleEvent } from "./VehicleMuzzle.js"; // 11.02 (04.11)
 import type { VehicleAimArcShape } from "./game/VehicleAimArc.js";
 import { vehicleCatalogOfRows, type VehicleCatalog, type VehicleCatalogRows, type VehicleSeatEntry } from "../world/VehicleDbc.js"; // 11.02-H; 22.10 ARC-2 S2a: built from pushed rows
@@ -308,6 +323,8 @@ import {
   wmoGroupTwinsUncertain, wmoHasOutdoorGroup, wmoPlacementOwns, wmoWalkReachedOutside, type WmoCameraWalkState,
 } from "./WmoCameraWalk.js"; // 02.11
 import { createMapOccluderFrame, mapOccludersForModel, wmoOccludersApply } from "./MapOccluders.js"; // 15.11 (7.54, portal8)
+import { UnitSightPass } from "./UnitSceneSight.js"; // 5.16 (15.11)
+import { FarWmoFloors } from "./FarWmoFloors.js"; // 3.13 (15.11)
 import { MapOccluderClient } from "./MapOccluderClient.js"; // 15.11 (7.54, portal8)
 import { WmoRangeTable, sameWmoSelection, type WmoRangeTotals } from "./WmoGroupRange.js"; // P1-12a/b
 import { createWmoPortalMemo, wmoPortalMemoAnswer, wmoPortalMemoNote, type WmoPortalMemo } from "./WmoPortalMemo.js"; // P1-12c
@@ -373,7 +390,7 @@ import type { BenchmarkRendererReadinessInput } from "./RenderBenchmarkReadiness
 import { weatherIsBlack, weatherKind, type Weather } from "../world/WorldMessageProtocol.js";
 import type { BillboardView } from "./Particles.js";
 import {
-  missileDirection, spellModelGivesNoLight,
+  missileDirection,
   spellVisualTransformEuler, spellVisualTransformOffset,
   type SpellVisualPlan, type VisualAnimation, type VisualAnimationMode, type VisualInstance,
 } from "./SpellVisuals.js";
@@ -422,11 +439,6 @@ const _namePoint = new THREE.Vector3(); // 03.11 6.37
 const ATTACHMENT_NAME = 18;
 const ATTACHMENT_NAME_MOUNTED = 29;
 const _lootBeamAt = new THREE.Vector3(); // 26.10: a lootable body's drawn place (LootBeams.ts)
-/** 25.10 (6.27): what kind of light a spell model gives in the enhanced profile (SpellLights.ts); 26.10: none for a debuff's. */
-function spellLightKind(instance: VisualInstance): SpellLightKind | undefined {
-  if (instance.noLight || spellModelGivesNoLight(instance.path)) return undefined;
-  return instance.flight ? "missile" : instance.modelPlayback === "hold" ? "aura" : "burst";
-}
 const _spellDurations: SpellSequenceDurations = { stand: 0 }; // 25.10 (6.27)
 const _spellPick: SpellSequencePick = { animation: 0, time: 0, loop: false };
 const _missilePick: MissileSequencePick = { animation: 0, timeScale: 1 }; // 6.31
@@ -1444,6 +1456,7 @@ export function environmentRankInRange(
   detail = 1,
   shellRange = ENVIRONMENT_FAR_RANGE, // 22.10 (7.39)
   faithful = false, // 15.11 (7.66 tail)
+  viewSlack = false, // 15.11 (7.66 last stretch, fade9): doodads stay candidates within DoodadFade.ts doodadCandidateSlack
 ): { candidates: RankedEnvironmentObject[]; residents: RankedEnvironmentObject[] } {
   const candidates: RankedEnvironmentObject[] = [];
   const residents: RankedEnvironmentObject[] = [];
@@ -1454,7 +1467,7 @@ export function environmentRankInRange(
     if (distance < range + ENVIRONMENT_RESIDENT_HYSTERESIS) {
       const ranked: RankedEnvironmentObject = { object, distance, range };
       residents.push(ranked);
-      if (distance < range) candidates.push(ranked);
+      if (distance < range + (viewSlack ? doodadCandidateSlack(object, faithful) : 0)) candidates.push(ranked);
     }
   }
   return { candidates, residents };
@@ -1737,6 +1750,7 @@ export function admitEnvironmentInto(
   rejected?: RankedEnvironmentObject[],
   onlyBuilding?: number, // 02.11 (7.53): the camera sees only this placement and its doodads
   faithful = false, // 15.11 (7.05, far8): no quotas on the faithful levels (AdmissionQuotas.ts)
+  view?: DoodadView, // 15.11 (7.66 last stretch, fade9): a measured doodad's leash under the view (DoodadFade.ts)
 ): RankedEnvironmentObject[] {
   const [near, scenery, far, interior] = ADMISSION_HEAPS;
   // 22.10 (7.41): the outdoor candidates the frustum turned away, for the shadow-only admission.
@@ -1750,7 +1764,13 @@ export function admitEnvironmentInto(
     const tier = environmentAdmissionTier(candidate);
     if (tier === undefined) continue;
     // A hand-built list is held to the same strict leash the candidate pass applies.
-    if (tier === "scenery" && candidate.distance >= (candidate.range ?? environmentDrawRange(candidate.object))) continue;
+    // 15.11 (fade9): with a view, a measured doodad's leash is taken under it — from the camera to its sphere's centre in
+    // 3D on the faithful levels (0x00791cb0), live from the player elsewhere; its candidates carry the slack for it.
+    if (tier === "scenery" && (view !== undefined && doodadViewMeasured(candidate.object)
+      ? doodadViewDistance(candidate.object, candidate.object.bounds === undefined
+        ? retainedSphereOf?.(candidate.object) ?? environmentSourceVisibilitySphere(candidate.object, vertexPadding)
+        : undefined, view)
+      : candidate.distance) >= (candidate.range ?? environmentDrawRange(candidate.object))) continue;
     // 02.11 (7.53): the world outside is turned away as the frustum would turn it away, so it can still cast.
     if (onlyBuilding !== undefined && !wmoPlacementOwns(onlyBuilding, candidate.object)) {
       if (rejected && tier !== "interior") rejected.push(candidate);
@@ -2932,6 +2952,8 @@ interface PosedModel {
   sheathKeep: boolean | undefined;
   /** 5.05 (15.11, combat7): the active player's model — the sheath it showed last frame (the ceremony's `from`). */
   ownSheathShown: number | undefined;
+  /** 5.05 (15.11, bow9): the auto-repeat draw while the unit carries the mark (BowDraw.ts, BowDrawVisuals.ts). */
+  bowDraw: BowDrawUnit | undefined;
   overlayPreservesLocomotion: boolean | undefined;
   /** End of the upper-body fade window, set once the one-shot reaches its fade start. */
   overlayFadeUntil: number | undefined;
@@ -3875,8 +3897,6 @@ export const MODEL_RANGE = ENVIRONMENT_RANGE;
  */
 export { GAMEOBJECT_RANGE }; // 22.10 ARC-2 S2a: defined beside the admission, which the main thread also reads
 export const GAMEOBJECT_BUDGET = 96;
-/** Spawn-fade quantization for game objects: at most six private material generations per fade. */
-const GAMEOBJECT_FADE_STEPS = 6;
 /** Extra world-space padding around a conservative static game-object sphere. */
 const GAMEOBJECT_FRUSTUM_MARGIN = 1;
 /**
@@ -4222,6 +4242,8 @@ export class WorldRenderer3D {
   #selfStarts = 0;
   #selfKeep = false;
   #startKeep: boolean | undefined = false;
+  /** 11.02 (15.11, vehicle9): the unit being posed is a Vehicle Flags 0x10000 vehicle, not channelling (VehiclePoseNarrowing.ts). */
+  #narrowedCast = false;
   readonly #liveVisualHandles = (): ReadonlySet<SpellVisualHandle> => this.#collectVisualHandles(); // 22.10 ARC-2 S4a
   /** Animations from future spell impacts, held out of #actions until their absolute start. */
   readonly #pendingVisualAnimations: Array<{
@@ -4271,6 +4293,7 @@ export class WorldRenderer3D {
   #muzzleModel: string | undefined;
   #muzzleEvents: ModelShotEvents | undefined;
   #vehicleAimArcMesh: VehicleAimArcMesh | undefined;
+  #vehicleImpactModels: VehicleImpactModelMesh | undefined; // 11.02 (15.11, vehicle9)
   /** A unit's node for `#seatTransitions`, while it is drawn. */
   readonly #seatTransitionNode = (guid: bigint): THREE.Object3D | undefined => {
     const unit = this.#units.get(guid);
@@ -5213,6 +5236,16 @@ export class WorldRenderer3D {
     };
   }>();
   readonly #instanceTint = new THREE.Color();
+  /** 15.11 (7.66 last stretch, fade9): doodads in their fade band, out of their buckets (DoodadFadeInstances.ts). */
+  readonly #doodadFade = new DoodadFadeInstances({
+    register: (mesh) => this.#programWarmup.registerObject(mesh),
+    unregister: (mesh) => this.#programWarmup.unregisterObject(mesh),
+    warm: (mesh) => this.#instancedMeshWarm(mesh),
+  });
+  /** fade9: the view the admission measures doodads under, rewritten in place each run. */
+  readonly #doodadView = { eye: new THREE.Vector3(), player: { x: 0, y: 0 }, camera3d: false };
+  /** fade9: the admission run the fades were last taken for. */
+  #doodadFadeAdmitted: readonly RankedEnvironmentObject[] | undefined;
   /** P2-07: each bucket's copies, in order, as its last full rebuild wrote them. */
   readonly #instanceMembers = new Map<string, RenderedEnvironment[]>();
   /** P2-07: placement nodes `#showAsPlain` registered and held, still shown plain since. */
@@ -5291,6 +5324,10 @@ export class WorldRenderer3D {
   readonly #mapOccluders = createMapOccluderFrame();
   /** The gateway's `/dbc/occluders/<map>` (the user's own Wow.exe), one client per gateway. */
   #mapOccluderClient: MapOccluderClient | undefined;
+  /** 5.16 (15.11): the units the camera saw this frame, for Tab and the plates (UnitSceneSight.ts). */
+  readonly #unitSight = new UnitSightPass();
+  /** 3.13 (15.11): the WMO floor under far objects for the minimap (FarWmoFloors.ts). */
+  readonly #farWmoFloors = new FarWmoFloors();
   readonly #wmoViewerModel = new THREE.Vector3();
   /** Whether the character is under a roof, answered by the collision floor and told to us. */
   #indoors = false;
@@ -5388,7 +5425,8 @@ export class WorldRenderer3D {
     this.#scene.add(this.#missileTrails.mesh); // 26.10 (6.27, test)
     this.#scene.add(this.#lootBeams.group); // 26.10
     this.#scene.add(this.#farLightGlows.mesh); // 22.10 (7.46)
-    this.#programWarmup = new ProgramWarmup(this.#renderer, this.#scene);
+    this.#scene.add(this.#doodadFade.group); // 15.11 (7.66 last stretch, fade9)
+    this.#programWarmup =new ProgramWarmup(this.#renderer, this.#scene);
     // The two leaf scenes compile their own variants — neither has the world's fog — and both are
     // first drawn at a moment the player is looking: a zone's LightSkybox appears on a flight path,
     // the underwater pass on the first dive. The dome and the overlay triangle are the only
@@ -6943,6 +6981,8 @@ export class WorldRenderer3D {
     }
     if (boxes.size !== boxed) dropStaleRows(boxes, PICK_RESULT_STAMP, stamp);
     this.#publishNamePoints(subject, stamp);
+    // 3.13 (15.11): the WMO floor under objects past the collision, from the held buildings (FarWmoFloors.ts).
+    this.#farWmoFloors.publish(results.farWmoFloors, state?.objects, subject, this.#fogMap, this.#environment, performance.now());
     this.#vehiclePassengers.publishSeats(results);
     this.#publishScalars();
     // 22.10 ARC-2 S4b: a sensor of the renderer's own hands its limiter times to the page's (RendererReports.ts).
@@ -8101,6 +8141,7 @@ export class WorldRenderer3D {
   setVehicleAimArc(arc: VehicleAimArcShape | undefined): void {
     this.#vehicleAimArc = arc;
     if (!arc) this.#vehicleAimArcMesh?.hide();
+    if (!arc) this.#vehicleImpactModels?.hide(); // 11.02 (15.11, vehicle9)
   }
 
   /**
@@ -8348,6 +8389,8 @@ export class WorldRenderer3D {
     this.#horizonLod.clear(this.#scene); // 22.10 (7.44)
     this.#clearGroundCover();
     for (const key of [...this.#instances.keys()]) this.#dropInstance(key);
+    this.#doodadFade.clear(); // fade9
+    this.#doodadFadeAdmitted = undefined;
     for (const ring of this.#selectionRings.values()) {
       this.#scene.remove(ring.mesh);
       ring.mesh.geometry.dispose();
@@ -9489,6 +9532,14 @@ export class WorldRenderer3D {
     if (this.#vehicleAimArc !== undefined) {
       (this.#vehicleAimArcMesh ??= new VehicleAimArcMesh(this.#scene, (path) => this.#loadTexture(textureUrl(this.#baseUrl, path))))
         .update(this.#vehicleAimArc, now, heightAt); // 11.02 (04.11)
+      (this.#vehicleImpactModels ??= new VehicleImpactModelMesh(this.#scene, { // 11.02 (15.11, vehicle9): MsslTrgtImpactModel
+        build: (model, path) => buildModel(model, {
+          modelPath: path, baseUrl: this.#baseUrl, loadTexture: (url) => this.#loadTexture(url), borrowLoadedTextures: true,
+          privateLoadedTextureViews: true, geosets: EVERY_GEOSET, skinned: Boolean(model.skeleton), projectedAsDecals: true,
+          anisotropy: this.#anisotropy(), worldLight: this.#worldLight,
+        }),
+        project: (mesh, batches) => this.#projectedDecals.track(mesh, batches),
+      })).update(this.#vehicleAimArc, now, (path) => environmentClient?.model(path, "critical")?.wvm);
     }
     this.#updateGameObjectPreview(environmentClient);
     this.#drawPhaseMs.units = performance.now() - drawPhaseAt;
@@ -9807,8 +9858,8 @@ export class WorldRenderer3D {
     // it the same way `godRayVisibility` bounds the classic path's.
     const cinematicShafts = this.#cinematic.active && this.#godRaysActive() && this.#lightSample !== undefined
       && !this.#underwater
-      ? Math.min(1, this.#lightingProfile.godRayStrength / GOD_RAY_FULL_STRENGTH) * this.#godRayStrengthScale
-        * (this.#atmosphere?.shaftBoost ?? 1) : 0; // 7.40: stronger under a canopy («Атмосфера зон»)
+      ? cinematicShaftStrength(this.#lightingProfile.godRayStrength, GOD_RAY_FULL_STRENGTH, this.#godRayStrengthScale,
+        this.#atmosphere?.shaftBoost ?? 1) : 0; // 7.40: stronger under a canopy («Атмосфера зон»)
     const rayStrength = this.#cinematic.active ? 0 : this.#prepareGodRays(targets);
     if (rayStrength > 0) {
       quad.material = this.#glowPasses.godRays;
@@ -10279,6 +10330,7 @@ export class WorldRenderer3D {
     if (unit.skinned) yield unit.skinned.mesh;
     else if (unit.visual instanceof THREE.Mesh) yield unit.visual;
     for (const node of unit.attached.values()) if (node instanceof THREE.Mesh) yield node;
+    yield* bowDrawMeshes(unit.bowDraw); // 5.05 (15.11, bow9)
   }
 
   /** Gives every borrowed material array back and disposes the copies. Exactly reverses the above. */
@@ -10305,16 +10357,15 @@ export class WorldRenderer3D {
   }
 
   /**
-   * Eases a fresh game object in over the unit spawn window.
-   *
-   * The authored six opacity steps share one set of private materials. Settled objects cost
-   * one comparison; changing an opacity step does not release their compiled shader programs.
+   * Eases a fresh game object in as Wow.exe does (GameObjectSpawnFade.ts, 15.11 fade9): its byte walked to the object's
+   * alpha over 1000 ms. Every step shares one set of private materials. Settled objects cost one comparison; changing a
+   * step does not release their compiled shader programs.
    */
-  #applyGameObjectOpacity(rendered: RenderedGameObject, now: number): void {
+  #applyGameObjectOpacity(rendered: RenderedGameObject, now: number, object?: WorldObjectState): void {
     if (rendered.fadedOpacity === 1) return;
     const meshes = this.#gameObjectFadeMeshes(rendered);
-    const raw = meshes.length === 0 ? 1 : spawnFadeFactor(rendered.admittedAt, now);
-    const wanted = Math.round(raw * GAMEOBJECT_FADE_STEPS) / GAMEOBJECT_FADE_STEPS;
+    const wanted = meshes.length === 0 ? 1
+      : gameObjectSpawnAlpha(rendered.admittedAt, now, object === undefined ? 1 : gameObjectModelAlphaOf(object)); // fade9
     const current = rendered.opacityBorrows;
     const sameMeshes = current !== undefined && current.length === meshes.length
       && current.every((borrow, index) => borrow.mesh === meshes[index]);
@@ -10371,6 +10422,7 @@ export class WorldRenderer3D {
     else if (unit.visual instanceof THREE.Mesh) yield unit.visual;
     for (const node of unit.attached.values()) if (node instanceof THREE.Mesh) yield node;
     for (const node of unit.attached.values()) yield* glowBodyMeshes(glowAnchorsOf(node)); // 05.10: ревью E2 — the glow bodies on them
+    yield* bowDrawMeshes(unit.bowDraw); // 5.05 (15.11, bow9): the bow's rig and the arrow in the hand
     const mount = unit.mount;
     if (!mount) return;
     if (mount.skinned) yield mount.skinned.mesh;
@@ -12436,7 +12488,7 @@ export class WorldRenderer3D {
       // draw leash, so the line an object crosses to appear is never the line it crosses to
       // disappear. Draw admission below still reads the strict set; disposal reads the wide one.
       // 15.11 (7.66 tail): the faithful levels rank by Wow.exe's rule (`#faithfulLevel`).
-      const ranked = environmentRankInRange(pool, player, this.#environmentDetail, this.environmentShellRange, this.#faithfulLevel);
+      const ranked = environmentRankInRange(pool, player, this.#environmentDetail, this.environmentShellRange, this.#faithfulLevel, true); // fade9: view slack
       this.#environmentCandidates = ranked.candidates;
       this.#environmentResidents = ranked.residents;
       this.#environmentCandidatesAt = {
@@ -12465,6 +12517,11 @@ export class WorldRenderer3D {
       || (this.#submissionSerial & 1) === 0) {
       // P2-04c: one pass, no allocation; two buffers alternate so a run is a new array identity.
       this.#admissionFlip ^= 1;
+      // 15.11 (fade9): the view doodads are measured under — the camera on the faithful levels (DoodadFade.ts).
+      this.#doodadView.eye.setFromMatrixPosition(this.#camera.matrixWorld);
+      this.#doodadView.player.x = player.x;
+      this.#doodadView.player.y = player.y;
+      this.#doodadView.camera3d = this.#faithfulLevel;
       admitted = admitEnvironmentInto(
         this.#environmentCandidates,
         this.#frustum.planes,
@@ -12474,6 +12531,7 @@ export class WorldRenderer3D {
         this.#admissionRejected,
         this.#outsideHiddenFor,
         this.#faithfulLevel, // 15.11 (7.05, far8)
+        this.#doodadView, // 15.11 (7.66 last stretch, fade9)
       );
       this.#admittedOutsideHiddenFor = this.#outsideHiddenFor;
       this.#lastAdmitted = admitted;
@@ -12664,7 +12722,11 @@ export class WorldRenderer3D {
         // exact placement state, and a tree mid-growth is not exact. Rigged placements are
         // exempt: their sails are already live.
         // 22.10 (7.41): nor unseen — a shadow-only build casts at its full size from the start.
-        const suppressGrowth = shadowOnly || this.#submissionSerial < this.#turnSuppressUntilSerial;
+        // 15.11 (fade9): nor where the fade brings it in — every first sight on the faithful levels (Wow.exe has the fade
+        // and no growth, 0x00791cb0), a first sight inside its fade band on the others (DoodadFade.ts).
+        const suppressGrowth = shadowOnly || this.#submissionSerial < this.#turnSuppressUntilSerial
+          || this.#faithfulLevel || doodadFirstSightFades(object, distance,
+            environmentDrawRange(object, this.#environmentDetail, this.environmentShellRange, this.#faithfulLevel));
         const growing = environmentVegetation(object) && rendered.skinned === undefined
           && rendered.actual && rendered.visual !== undefined && !everVisible && !suppressGrowth;
         if (growing) {
@@ -12766,7 +12828,30 @@ export class WorldRenderer3D {
     this.#prefetchEnvironmentModels(client);
     this.#updateVegetationGrowth(client);
     this.#poseDoodads(player, client, elapsed);
+    if (admitted !== this.#doodadFadeAdmitted || this.#instancesDirty) this.#updateDoodadFades(admitted); // fade9
     this.#updateInstances();
+  }
+
+  /**
+   * 15.11 (7.66 last stretch, fade9): the admitted doodads inside their fade band, at the admission's cadence (and after a
+   * build), drawn faded by `#doodadFade`; a change of who fades rebuilds the buckets without them (`#updateInstances`).
+   */
+  #updateDoodadFades(admitted: readonly RankedEnvironmentObject[]): void {
+    this.#doodadFadeAdmitted = admitted;
+    const fade = this.#doodadFade;
+    const detail = environmentDetailScale(this.#environmentDetail);
+    fade.begin();
+    for (let index = 0; index < admitted.length; index++) {
+      const { object, range } = admitted[index]!;
+      const rendered = this.#environment.get(object.id);
+      if (!rendered?.admitted || rendered.instanceKey === undefined || rendered.instanceMatrix === undefined
+        || rendered.source !== object || object.localLight !== undefined) continue;
+      const alpha = doodadViewAlpha(object, range, rendered.visibilitySphere, this.#doodadView, detail);
+      if (alpha >= 1) continue;
+      const built = this.#builtModels.get(this.#builtCacheKey(this.#builtModels, rendered.instanceKey));
+      if (built) fade.add(rendered.instanceKey, rendered, built.geometry, built.materials, rendered.instanceMatrix, object.tint, alpha);
+    }
+    if (fade.commit()) this.#instancesDirty = true;
   }
 
   /**
@@ -13123,6 +13208,12 @@ export class WorldRenderer3D {
     for (const list of byModel.values()) list.length = 0;
     this.#environment.forEach((rendered) => {
       if (!rendered.admitted || !rendered.instanceKey || !rendered.instanceMatrix) return;
+      // 15.11 (fade9): a copy in its fade band is drawn by `#doodadFade`, not by its bucket nor as its node.
+      if (this.#doodadFade.claims(rendered)) {
+        rendered.node.visible = false;
+        this.#plainShown.delete(rendered.node);
+        return;
+      }
       // A local-light shader has deliberately unwrapped the outdoor world-light hook. It must
       // never share an InstancedMesh/material array with an outdoor placement of the same model.
       const bucket = rendered.instanceBucket
@@ -15065,7 +15156,7 @@ export class WorldRenderer3D {
         && this.#gameObjectFadeMeshes(rendered).length > 0) {
         rendered.admittedAt = now;
       }
-      this.#applyGameObjectOpacity(rendered, now);
+      this.#applyGameObjectOpacity(rendered, now, object); // fade9: the object's alpha (GameObjectSpawnFade.ts)
       // Posing costs a mixer step and a bone upload. A door swinging behind the camera still has
       // to be placed — it is where it is — but it does not have to be animated.
       //
@@ -15259,6 +15350,7 @@ export class WorldRenderer3D {
       overlayActionKind: undefined,
       overlayPreservesLocomotion: undefined,
       seatUpperSeat: undefined, baseStarts: undefined, sheathStarts: undefined, sheathKeep: undefined, ownSheathShown: undefined, // P1-09 (15.11)
+      bowDraw: undefined, // 5.05 (15.11, bow9)
       overlayFadeUntil: undefined,
       overlayUntil: 0,
       clipLoops: undefined, variationClip: undefined, replaysLeft: 0,
@@ -15680,6 +15772,9 @@ export class WorldRenderer3D {
         visible: visible || this.#unitShadowSeen(object.position, distance, radius!), // 06.10-shadow
       });
     }
+    // 5.16 (15.11): Wow.exe's per-frame cull of each unit's sphere (UnitSceneSight.ts), pins and budget aside.
+    this.#unitSight.publish(this.#results.unitsSeen, candidates, this.#units, this.#frustum.planes, this.#camera,
+      wmoOccludersApply(this.#cameraSurfaceKnown, this.#cameraWmoSurface) ? this.#mapOccluderClient?.records(this.#fogMap) : undefined);
     const admission = selectUnitAdmission(candidates, UNIT_BUDGET);
     this.#unitsDropped = admission.dropped;
     this.#unitsDrawn = admission.admitted.length;
@@ -15887,6 +15982,7 @@ export class WorldRenderer3D {
           if (built) unitPins.add(built as BuiltModel);
           pinGlowBuilds(glowAnchorsOf(node), unitPins); // 05.10-A7a-E2: the glow bodies' builds
         }
+        pinBowDrawBuilds(unit.bowDraw, unitPins); // 5.05 (15.11, bow9)
       }
     }
 
@@ -15979,6 +16075,7 @@ export class WorldRenderer3D {
         resultKey: undefined, // 22.10 ARC-2 S3a-review
         // P1-09 (15.11): the seat, ride, animation-copy and shown-sheath fields too, present from birth.
         seatUpperSeat: undefined, baseStarts: undefined, sheathStarts: undefined, sheathKeep: undefined, ownSheathShown: undefined,
+        bowDraw: undefined, // 5.05 (15.11, bow9)
         seatedOn: undefined, seatedSlot: undefined, seatedRow: undefined, seatTracked: undefined,
         seatRoot: undefined, rideVehicle: undefined, rideRow: undefined, shownSheath: undefined,
       };
@@ -16551,6 +16648,7 @@ export class WorldRenderer3D {
       seat: mountSeatOffset(wvm, metadata.mountHeight, metadata.scale),
       pose: undefined,
       seatUpperSeat: undefined, baseStarts: undefined, sheathStarts: undefined, sheathKeep: undefined, ownSheathShown: undefined, // P1-09 (15.11)
+      bowDraw: undefined, // 5.05 (15.11, bow9)
     };
     unit.shadowCaster = undefined;
   }
@@ -16835,6 +16933,8 @@ export class WorldRenderer3D {
     // and `unit.node.remove` below would not reach it — the instance would be emptied out of the
     // scene with its mixer and its skeleton still live, hanging off a horse nobody can see.
     this.#dropMount(unit);
+    // 5.05 (15.11, bow9): the arrow hangs on a bone of the instance going away, the bow's rig on a piece going away.
+    dropBowDrawVisuals(unit.bowDraw, this.#bowDrawHost);
     this.#detachAll(unit);
     // Hard: the mixer this overlay belongs to is disposed three lines down, so there is nothing
     // for a fade to run on and nothing that could see it.
@@ -16960,6 +17060,9 @@ export class WorldRenderer3D {
     // 5.05 (15.11, combat7): a watched swing is SMSG_ATTACKERSTATEUPDATE's (game/SwingReactionHost.ts): 0x00756800
     // draws the attacker's melee weapons at once (UnitShownSheath.ts `swungAt`); the player's own is the page's.
     if (id !== undefined && (action === "attack" || action === "attackOff")) swungAt(this.#units.get(guid)?.shownSheath);
+    // 5.05 (15.11, bow9): a ranged release's ammo leaves at its GO (0x00734390 → 0x0072df00 → 0x0072afe0): the arrow off
+    // the string, the bow back to sequence 0.
+    if (action === "shoot") this.#units.get(guid)?.bowDraw?.draw.stop(now);
     if (entry === undefined || id === undefined) return undefined;
     this.#swingWatch.watch(id, guid, entry); // 22.10 ARC-2 S4a
     return id;
@@ -17149,6 +17252,7 @@ export class WorldRenderer3D {
     // and the unit the player is talking to sets aside a row with EmoteFlags 0x2000.
     applyStandingPose(pose, object.fields, attachedOf(metadata), this.#inputs.facing.interactionNpc === object.guid, // 22.10 ARC-2 S2a
       this.#shownSheathOf(unit)); // 5.05 (15.11, combat7): the stance by the shown sheath (+0xb5c), not the byte
+    this.#stepBowDraw(unit, object, self, pose, now, elapsed, client, metadata); // 5.05 (15.11, bow9): 0x00714f90, $BWP/$BWR
     const flagPoses = flagPoseBits(object.fields.get(UPDATE_FIELDS.UNIT_FIELD_FLAGS.offset), isTerminalUnitPose(pose));
     if (flagPoses !== (unit.flagPoses ?? 0)) {
       syncFlagPoses(unit.flagPoses ?? 0, flagPoses, isTerminalUnitPose(pose), now, this.#actions.get(object.guid),
@@ -17181,11 +17285,14 @@ export class WorldRenderer3D {
     // Wow.exe re-picks the base on a movement change (0x0073ee14: +0x44 & 0xc0100f → 0x0073ac30) — instead of holding
     // the unit to the clip's end (833 ms of JumpLandRun slid along under a unit that had stopped).
     // 03.11 (6.35): and it gives way when the unit leaves or reaches the ground (`airborneChanged`).
-    const transitionCut = unit.transitionMoving !== undefined
-      && (unit.transitionMoving !== isUnitMoving(pose.movementFlags, pose.spline) || airborneChanged(unit.pose, pose));
+    const transitionCut = poseTransitionGivesWay(unit.transitionMoving, unit.pose, pose); // PoseTransitionCut.ts
     if (deathTransition || unit.overlayPreservesLocomotion === true || transitionCut
       || (now >= unit.overlayUntil && !terminalDeath)) {
+      // 11.02 (15.11, vehicle9): 0x00756f40 — such a vehicle's precast keeps the whole body (VehiclePoseNarrowing.ts).
+      this.#narrowedCast = object.vehicleId !== undefined && vehicleNarrowsPose(this.#vehicles()?.vehicle(object.vehicleId)?.flags)
+        && !(object.fields.get(UPDATE_FIELDS.UNIT_CHANNEL_SPELL.offset) ?? 0);
       if (!copiesVehicle) this.#poseUnit(unit, object.guid, pose, now, client, metadata); // 11.02 (15.11): muted
+      this.#narrowedCast = false;
     }
     unit.pose = pose;
     // 05.10-A7a-F1 (6.16а): the batches the file fades under Death follow the dead unit's own clip.
@@ -17378,6 +17485,104 @@ export class WorldRenderer3D {
     unit.closedHands = hands ? { instance: skinned, hands } : undefined;
     return hands?.source ?? template;
   }
+
+  /**
+   * 5.05 (15.11, bow9): a unit carrying the auto-repeat mark (RenderInputs.rangedRepeat): the clips on show walked for
+   * "$BWP"/"$BWR" (0x00756240, 0x00732650), the rung's stance put in the pose (0x00714f90 → `pose.rangedLoad`), and the
+   * arrow and the weapon's rig brought in line (BowDrawVisuals.ts). The mark gone: 0x0072afe0 and nothing hung any more.
+   * While the unit's events are on the way it keeps the stance it had; a version 1 gateway's answer has no keys, so
+   * the stance cycles and no event fires.
+   */
+  #stepBowDraw(unit: RenderedUnit, object: WorldObjectState, self: boolean, pose: UnitPose, now: number, elapsed: number,
+    client: EnvironmentClient | undefined, metadata: UnitModel | undefined): void {
+    const mark = this.#inputs.rangedRepeat?.get(object.guid);
+    let bow = unit.bowDraw;
+    if (mark === undefined || unit.template === undefined) {
+      if (bow !== undefined) {
+        bow.draw.stop(now);
+        dropBowDrawVisuals(bow, this.#bowDrawHost);
+        unit.bowDraw = undefined;
+      }
+      return;
+    }
+    if (bow === undefined) unit.bowDraw = bow = newBowDrawUnit();
+    this.#bowClient = client;
+    const attached = attachedOf(metadata);
+    const ranged = attached?.find((item) => item.slot === EQUIPMENT_SLOT_RANGED);
+    const subClass = rangedSubClass(ranged);
+    if (mark.ammo >= 0) bow.draw.setAmmo(mark.ammo, ranged?.inventoryType, subClass);
+    const events = this.#muzzleEvents ??= new ModelShotEvents(this.#baseUrl);
+    const template = unit.template;
+    const sheath = this.#shownSheathOf(unit) ?? (object.fields.get(UPDATE_FIELDS.UNIT_FIELD_BYTES_2.offset) ?? 0) & 0xff;
+    const unitEvents = metadata === undefined || !this.#baseUrl ? undefined : events.model(metadata.model);
+    const stance = bow.draw.step({
+      now, mark: true, sheath, subClass, movement: object.movementFlags,
+      channel: (object.fields.get(UPDATE_FIELDS.UNIT_CHANNEL_SPELL.offset) ?? 0) !== 0,
+      self, reqAmmo: mark.reqAmmo,
+      base: shownClip(bow.base, unit.action, unit.animationId, template),
+      upper: shownClip(bow.upper, unit.overlayAction, unit.overlayAnimationId, template),
+      events: unitEvents,
+      weapon: ranged === undefined || !this.#baseUrl ? undefined : events.model(ranged.model)?.sequences,
+      ammo: bow.draw.ammoDisplay > 0,
+      // 0x00732650's "missiles queued": a shot's ammo leaves at its GO in this client (the stop below), a held cast's
+      // queue is not told apart per caster — so the release never moves the weapon itself.
+      queued: false,
+    });
+    // Until the model's events are here the unit stands as before (the ready stance); they take one request.
+    if (stance !== undefined && unitEvents !== undefined) pose.rangedLoad = rangedLoadLadder(stance, readyStance(attached, 2));
+    const pieceKey = ranged === undefined ? undefined : `${ranged.slot}/${ranged.side}`;
+    syncBowDrawVisuals(bow, {
+      skinned: unit.skinned, template, wvm: unit.wvm,
+      piece: pieceKey === undefined ? undefined : unit.attached.get(pieceKey),
+      item: ranged,
+    }, this.#bowDrawHost, now, elapsed);
+  }
+
+  /** 5.05 (15.11, bow9): the environment client of the frame's draw, for the bow draw's builds. */
+  #bowClient: EnvironmentClient | undefined;
+  /** 5.05 (15.11, bow9): the ammo displays' models for the arrow in the hand (gateway/AmmoModels.ts). */
+  #handAmmo: AmmoModelClient | undefined;
+
+  /** 5.05 (15.11, bow9): the builds the bow draw hangs on a unit (BowDrawVisuals.ts), with the unit pieces' budget. */
+  readonly #bowDrawHost: BowDrawHost = {
+    rigid: (model, texture) => {
+      const wvm = this.#bowClient?.model(model, "critical")?.wvm;
+      if (!wvm || !this.#unitBuildBudget.take()) return undefined;
+      const built = this.#wvmBuild(this.#builtUnits, `ammo|${model}#${texture}`, model, wvm,
+        new Map(texture ? [[TEXTURE_TYPE_OBJECT_SKIN, texture]] : []), EVERY_GEOSET, false);
+      const mesh = new THREE.Mesh(built.geometry, built.materials);
+      applySlotDepth(mesh);
+      mesh.frustumCulled = true;
+      this.#programWarmup.registerObject(mesh, "unit");
+      this.#unitBuildBudget.done();
+      return { mesh, built };
+    },
+    rigged: (model, texture) => {
+      const client = this.#bowClient;
+      const wvm = client?.model(model, "critical")?.wvm;
+      if (!wvm) return undefined;
+      if (!wvm.skeleton) return null;
+      if (!this.#unitBuildBudget.take()) return undefined;
+      const { built, rigged } = this.#buildRigged(`worn|${model}#${texture}`, model, wvm,
+        new Map(texture ? [[TEXTURE_TYPE_OBJECT_SKIN, texture]] : []), EVERY_GEOSET, undefined, client);
+      this.#unitBuildBudget.done();
+      if (!rigged) return null;
+      const skinned = instantiateSkinned(rigged, built.materials);
+      this.#programWarmup.registerObject(skinned.root, "unit");
+      return { skinned, template: rigged, built };
+    },
+    clips: (model, template, wanted) => {
+      const client = this.#bowClient;
+      if (!client || template.merged) return;
+      const clips = client.animations(model, template.parents.length, "critical");
+      if (!clips || !this.#unitAnimationBudget.take()) return;
+      template.merged = mergeSkinnedClips(template, clips, { wanted, maxClips: 16, milliseconds: 1 }).complete;
+      this.#unitAnimationBudget.done();
+    },
+    ammoModel: (ammo) => this.#baseUrl ? (this.#handAmmo ??= new AmmoModelClient(this.#baseUrl)).model(ammo) : undefined,
+    register: (object) => this.#programWarmup.registerObject(object, "unit"),
+    unregister: (object) => this.#programWarmup.unregisterObject(object),
+  };
 
   /**
    * 12.10 6.08: the active player's own draw or sheathe (`SheathCeremony.ts`). A ToggleSheath since the last
@@ -17956,8 +18161,9 @@ export class WorldRenderer3D {
       const upperBody = listed && overlay !== undefined
         && overlay !== unit.template!.clips.get(animation) && overlay.tracks.length > 0;
       const outlives = wholeBodyOutlivesBase(entry, travelling); // 05.10: ревью 6.21b — begun standing, setting off ends it
-      const display: UnitActionDisplay = unitActionDisplay(entry.layer, upperBody, baseIdle,
-        !baseIdle && poseTakesWholeBody(pose, listed, entry.held) && outlives); // 05.10-6.21b: owner — off the list, whole body
+      const display: UnitActionDisplay = narrowedActionDisplay(unitActionDisplay(entry.layer, upperBody, baseIdle,
+        !baseIdle && poseTakesWholeBody(pose, listed, entry.held) && outlives), // 05.10-6.21b: owner — off the list, whole body
+        this.#narrowedCast, entry.layer, entry.held, false); // 11.02 (15.11, vehicle9): 0x00724500 → 0x00724330 only
       if (display === "yield") {
         // A one-shot that cannot be drawn over this base is over; a hold waits for the base to settle.
         if (entry.held) break;

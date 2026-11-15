@@ -8,6 +8,8 @@ import test from "node:test";
 import {
   planSpellAuraState, planSpellAuraDone, spellGivesNoLight, spellModelGivesNoLight,
 } from "../dist/code/browser/SpellVisuals.js";
+import { spellLightKind } from "../dist/code/browser/SpellLightKind.js";
+import { SpellVisualClient } from "../dist/code/browser/SpellVisualClient.js";
 
 const kit = (path) => ({ startAnimation: -1, animation: -1, effects: [{ path, attachment: 34, scale: 1 }] });
 const point = { x: 0, y: 0, z: 0 };
@@ -38,14 +40,43 @@ test("plans: every instance of a curse/disease/poison spell is marked; another s
   assert.ok(planSpellAuraState(magic, { guid: 5n, point }, 0, 1000).instances.every((instance) => instance.noLight === undefined));
 });
 
-test("wiring: the gateway sends DispelType, the client asks v=13 (11.11; v=11 brought it) and validates it, the renderer gives no light", async () => {
-  const gateway = await readFile(new URL("../src/gateway/SpellVisual.ts", import.meta.url), "utf8");
-  assert.match(gateway, /const dispelType = spells\.int\(row, "DispelType"\);/);
-  const client = await readFile(new URL("../src/browser/SpellVisualClient.ts", import.meta.url), "utf8");
-  assert.match(client, /\/dbc\/spell-visuals\?v=15&ids=/); // 29.10: v=12 (ammoMissile); 11.11: v=13 (sheathKeep, 5.05), v=14 (launch, 6.12); 15.11: v=15 (launchNow, 6.12)
-  assert.match(client, /visual\["dispelType"\]/);
+// 13.09 (pins9): the light kind is a function of its own (SpellLightKind.ts), checked by what it answers.
+test("light kind: a marked or diseased instance gives none; a missile, a held aura and a burst each their own", () => {
+  const instance = (fields) => ({ path: "Spells\\Fire_State.m2", flight: undefined, modelPlayback: "once", ...fields });
+  assert.equal(spellLightKind(instance({})), "burst");
+  assert.equal(spellLightKind(instance({ modelPlayback: "hold" })), "aura");
+  assert.equal(spellLightKind(instance({ flight: {} })), "missile");
+  assert.equal(spellLightKind(instance({ noLight: true })), undefined, "a curse, disease or poison spell's instance");
+  assert.equal(spellLightKind(instance({ modelPlayback: "hold", path: "Spells\\BestowDisease_Impact_Chest.m2" })), undefined,
+    "a disease by the model's own name");
+});
+
+// 13.09 (pins9): the client half is behaviour — what the visual client accepts. The gateway half reads the DBC and is
+// covered by the gateway route tests; what stays pinned is the renderer's use of the kind at both light sites.
+test("wiring: the client accepts a positive DispelType and refuses a malformed one; the renderer asks the kind at both sites", async () => {
+  const original = globalThis.fetch;
+  const impact = { startAnimation: -1, animation: -1, effects: [], sound: 0 };
+  const ask = async (answer) => {
+    globalThis.fetch = async () => ({ ok: true, async json() { return [answer]; } });
+    const client = new SpellVisualClient("http://localhost:8090/ws");
+    const errors = [];
+    client.onStatus = (message, error) => { if (error) errors.push(message); };
+    client.get(answer.id);
+    for (let turn = 0; turn < 4; turn++) await new Promise((resolve) => setImmediate(resolve));
+    return { visual: client.get(answer.id), errors };
+  };
+  try {
+    const disease = await ask({ id: 1, dispelType: 3, impact });
+    assert.equal(disease.visual?.dispelType, 3, "a disease's DispelType reaches the plan");
+    const malformed = await ask({ id: 2, dispelType: -1, impact });
+    assert.equal(malformed.visual, undefined, "a malformed DispelType is not taken");
+    assert.equal(malformed.errors.length, 1, "it is reported as an invalid answer");
+  } finally {
+    globalThis.fetch = original;
+  }
   const renderer = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
-  assert.match(renderer, /if \(instance\.noLight \|\| spellModelGivesNoLight\(instance\.path\)\) return undefined;/);
-  assert.match(renderer, /const spellKind = living && entry\.spell \? spellLightKind\(entry\.spell\.instance\) : undefined;/);
-  assert.match(renderer, /const kind = spellLightKind\(visual\.instance\);[^\n]*\n\s+if \(!kind\) continue;/);
+  // Protects the two call sites (a unit's held spell light, the visuals' own lights): no behaviour check reaches them
+  // without a whole renderer.
+  assert.match(renderer, /spellLightKind\(entry\.spell\.instance\)/);
+  assert.match(renderer, /spellLightKind\(visual\.instance\)/);
 });

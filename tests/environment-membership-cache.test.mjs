@@ -51,6 +51,8 @@ function fixture() {
     // 22.10 (7.41): the frustum's rejects and the shadow-only admissions (SceneryShadowAdmission.ts); none here.
     admissionRejected: [], shadowAdmitted: [], admitShadowCasters() {},
     prefetchEnvironmentModels() {}, updateVegetationGrowth() {}, poseDoodads() {}, updateInstances() {},
+    // 15.11 (fade9): the view doodads are measured under, and the fade pass (DoodadFade.ts); not measured here.
+    doodadView: { eye: new THREE.Vector3(), player: { x: 0, y: 0 }, camera3d: false }, updateDoodadFades() {},
     setEnvironmentAdmitted(rendered, drawn) { decisions.push([rendered.source, drawn ? 'draw' : 'warm']); },
     removeEnvironment(id, rendered) { decisions.push([rendered.source, 'remove']); this.environment.delete(id); },
   });

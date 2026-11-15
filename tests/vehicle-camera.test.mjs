@@ -517,3 +517,27 @@ test("15.11: a FlagsB 0x1 seat keeps the passenger's camera yaw still in the wor
   other.seatYawTurn(1, true, false, 600);
   assert.equal(other.seatYawTurn(2, true, false, 700), 0, "Flags 0x300: the camera turns with the vehicle");
 });
+
+// 15.11 (vehicle9): 0x0075aac0 copies +0x80 at every seat change and 0x0075a1c0 puts it back each frame of states 1-2 (bits
+// 0x2 and 0x4), so the first seated frame after a switch turns the yaw by the facing at the switch less the facing now.
+// Seats 2446 and 2630 of the dataset: both Flags 0x184d2016, FlagsB 0x80001 (.runtime/re-2026-11-15/vehicle8/probe3.txt).
+test("15.11: after a switch between two yaw-holding seats the view comes back to the world direction it had at the switch", () => {
+  const A = 2446, B = 2630;
+  const holding = vehicleCatalogFrom({
+    ...ANSWER,
+    vehicles: [vehicleRow({ id: SIEGE, seats: [A, B] })],
+    seats: [seatRow({ id: A, flags: 0x184d2016, flagsB: 0x80001 }), seatRow({ id: B, flags: 0x184d2016, flagsB: 0x80001 })],
+  });
+  const tracker = new VehicleCameraTracker();
+  const rig = { distance: 12 };
+  tracker.update(world({ slot: 0 }), holding, rig, 0);
+  tracker.seatYawTurn(1, true, false, 100);
+  assert.equal(tracker.seatYawTurn(1, true, false, 600), 0, "from the ground: the hold starts at the seat (vehicle8)");
+  close(tracker.seatYawTurn(1.1, true, false, 700), -0.1);
+  tracker.update(world({ slot: 1 }), holding, rig, 800);
+  assert.equal(tracker.seatYawTurn(1.6, true, false, 900), 0, "states 1-2 of the new seat: no turn");
+  assert.equal(tracker.seatYawTurn(1.8, true, false, 1200), 0);
+  tracker.update(world({ slot: 1 }), holding, rig, 1400);
+  close(tracker.seatYawTurn(1.8, true, false, 1400), 1.1 - 1.8, "seated: back by everything since the switch");
+  close(tracker.seatYawTurn(1.9, true, false, 1500), -0.1, "then frame by frame as before");
+});

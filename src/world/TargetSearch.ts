@@ -11,7 +11,9 @@ import { isWorldObjectDead, type WorldObjectState, type WorldPosition } from "./
  *   from the mover (the vehicle or charmed body, 0x6dd060, else the player). A unit within ±30° of
  *   the mover's facing counts up to 41 yards (distance² ≤ 1681), any other only within 10 yards
  *   (≤ 100). CreatureType.dbc rows with flag 1 (critter 8, non-combat pet 12, gas cloud 13 on this
- *   dataset) never enter. The camera is not consulted.
+ *   dataset) never enter. 5.16 (15.11): nor does a unit the camera did not see in the last frame
+ *   (0x0077F0B0, its map entity's +0x25: frustum, occluders, horizon) — the caller's `accept` asks
+ *   the renderer's `unitsSeen` (browser/UnitSceneSight.ts); the pick's re-check does not.
  * * order (qsort with 0x5131d0): the ±30° cone first, then distance. No tie-break there; ours adds
  *   the guid so equal distances keep one order.
  * * cycle: the sorted list is kept while presses come less than 3 s apart, the mode stays and the

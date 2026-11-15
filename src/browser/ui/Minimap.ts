@@ -1151,6 +1151,7 @@ function minimapWmoSources(): MinimapWmoSources | undefined {
     floor: (map, x, y, fromZ, minZ) => collision.staticWmoFloorState(map, x, y, fromZ, minZ),
     gridHeight: (map, x, y) => game.terrain?.heightAt(map, x, y),
     revision: collision.revision,
+    far: (guid) => game.renderer?.results?.farWmoFloors?.get(guid), // 3.13 (15.11): past the collision (FarWmoFloors.ts)
   };
 }
 

@@ -1,8 +1,8 @@
 // 22.10 (7.39): the far view — stretched fog, the outer horizon band, the skyline leash and the
 // object-distance step past the stock slider.
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { assertGuard, assertOrder, memberSource, readSource } from "./source-pins.mjs";
 import * as THREE from "three";
 import {
   DISTANCE_FOG_FAR_SCALE, DISTANCE_FOG_NEAR_SCALE, DISTANCE_FOG_REACH, DISTANCE_HORIZON_RANGE,
@@ -112,19 +112,20 @@ test("the band is built off the ring's frame, hidden while stale, gone on the fa
 });
 
 test("the renderer stretches the fog per frame and builds the band only on unchanged-ring frames", async () => {
-  const source = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
-  const restore = source.slice(source.indexOf("  #restoreZoneFog(): void {"));
-  const body = restore.slice(0, restore.indexOf("\n  }\n"));
+  // 13.09 (pins9): the fog's and the band's rules are the behaviour tests above; the renderer's use of them is pinned
+  // by member, guard terms and order, not by a character window.
+  const source = await readSource("browser/WorldRenderer3D.ts");
+  const body = memberSource(source, "#restoreZoneFog");
   assert.match(body, /distanceFogRange\(this\.#zoneFogNear, this\.#zoneFogFar, this\.#lightingProfile\.quality,/);
   // 15.11 (7.66): the scene's range of this frame — the stretched one, or the shaped one on maps from 530 up.
-  assert.match(body, /fog\.far = range\.far;/);
-  assert.match(body, /this\.#wmoInteriorFog\.far\.value = fog\.far;/, "WMO materials take the same range");
-  const horizon = source.slice(source.indexOf("  #updateHorizon(player: WorldPosition"));
-  const method = horizon.slice(0, horizon.indexOf("\n  }\n"));
-  const unchanged = method.indexOf("if (this.#horizon?.tile === tile && this.#horizon.revision === revision && this.#horizon.inner === inner) {");
-  const bandUpdate = method.indexOf("this.#horizonBand.update(");
-  assert.ok(unchanged > 0 && bandUpdate > unchanged && bandUpdate < method.indexOf("return;", unchanged));
-  assert.ok(method.indexOf("this.#horizonBand.hideUnless(tile)") > unchanged);
+  assertOrder(body, ["fog.far = range.far;", "this.#wmoInteriorFog.far.value = fog.far;"], "WMO materials take the same range");
+  const method = memberSource(source, "#updateHorizon");
+  // The band is built only while the ring is unchanged (its tile, revision and inner ring), and the frame returns.
+  assertGuard(method, "this.#horizonBand.update(", ["this.#horizon?.tile === tile", "this.#horizon.revision === revision",
+    "this.#horizon.inner === inner"], "the band builds on an unchanged-ring frame");
+  const [bandUpdate] = assertOrder(method, ["this.#horizonBand.update(", "return;", "this.#horizonBand.hideUnless(tile)"],
+    "built and returned before the ring is rebuilt; a new ring hides the old band");
+  assert.ok(bandUpdate > 0);
   assert.match(source, /light\.fogFar = distanceFogRange\(/, "the post haze follows the stretched fog");
 });
 

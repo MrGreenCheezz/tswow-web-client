@@ -16,6 +16,7 @@ import { unit, worldObject } from "../../world/Fields.js";
 import { isWorldObjectDead, type WorldObjectState } from "../../world/WorldState.js";
 import { RANK_NORMAL, alphaFromBrightness, plateVisible, type PlateArt, type PlateData, type PlateFilter, type PlateImage } from "../NamePlate.js";
 import { UNIT_NAME_X, UNIT_NAME_Y, UNIT_NAME_Z, resultUnitNamePoint } from "../RenderResults.js"; // 03.11 6.37
+import { unitSeenByCamera } from "../UnitSceneSight.js"; // 5.16 (15.11)
 import { threatStanding } from "../framexml/FrameXmlThreat.js"; // 03.11 6.37
 import { settledHoveredUnitGuid } from "../game/HoverTarget.js"; // 03.11 6.37
 import { healthRatio } from "../SimpleScene.js";
@@ -70,9 +71,15 @@ export function plateSource(now: number): (object: WorldObjectState, distance: n
   const castBars = settingOn("plateCastBars");
   const classColours = settingOn("plateClassColours");
 
+  const seen = results?.unitsSeen; // 5.16 (15.11)
+
   return (object, distance) => {
     if (object.typeId !== 3 && object.typeId !== 4) return undefined;
     if (object.guid === selfGuid) return undefined;
+    // 5.16 (15.11): 0x0072B060 admits a plate only for a unit the camera saw in the last frame (0x0077F0B0), and
+    // 0x00734390 takes a shown plate down once it did not (UnitSceneSight.ts): behind the camera, out of the view, in
+    // a map occluder's shadow.
+    if (!unitSeenByCamera(seen, object.guid)) return undefined;
     if (isWorldObjectDead(object)) return undefined;
     // The same flags Tab skips. A spell trigger, a totem's aura anchor and a quest bunny are all
     // units standing in the world with a name and a health bar, and none of them can be clicked.

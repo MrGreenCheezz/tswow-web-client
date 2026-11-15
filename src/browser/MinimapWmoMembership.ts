@@ -37,7 +37,9 @@
  * per-frame update 0x007A1E90 whenever the entity holds no link (→ 0x007A1BC0). The groups are the map's own loaded
  * WMO geometry, so every object in a loaded tile has its links, as far as the map is loaded. The column walk here is
  * the same segment downwards (RISE, DEPTH; the upward try is not repeated) over the collision, which is loaded only
- * near the player — the remaining difference: no geometry here answers beyond it.
+ * near the player. Past it (15.11, `far`): the renderer casts the original's segment, both ways, through the group
+ * triangles of the buildings it holds (FarWmoFloors.ts, `RenderResults.farWmoFloors`), and the same judgement is made
+ * of that hit here.
  *
  * Cost: one column walk per listed object (not per object in view: only those the earlier tests already put on the
  * map), and only when it is due — its first sight or a new map, else once a second has passed (Wow.exe's own rebuild
@@ -47,6 +49,7 @@
  */
 
 import { wmoFloorWins } from "./AreaLocator.js";
+import type { FarWmoFloorRow } from "./FarWmoFloors.js"; // 3.13 (15.11)
 
 /** MOGP flag of a group open to the sky (0x007A1480 tests `flags & 8`). */
 export const MINIMAP_WMO_EXTERIOR = 0x8;
@@ -75,20 +78,47 @@ export interface MinimapWmoSources {
   gridHeight(map: number, x: number, y: number): number | undefined;
   /** Moves whenever the collision changed (`CollisionSource.revision`). */
   readonly revision: number;
+  /**
+   * 3.13 (15.11): the renderer's answer for an object past the collision (`RenderResults.farWmoFloors`,
+   * FarWmoFloors.ts): the same segment through the drawn buildings' group triangles. Undefined: no answer.
+   */
+  far?(guid: bigint): FarWmoFloorRow | undefined;
 }
+
+/** A far answer cast from farther than this (yards, each axis) from where the object stands now is not used. */
+const FAR_TOLERANCE = 2;
+/** Whether the last `minimapWmoBuildingAt` answered past the collision (the renderer's rows change on their own). */
+let lastAnswerFar = false;
 
 /**
  * The building an object at (x, y, z) stands inside, as this client can tell it: undefined outside one; `null` while
- * the collision there is not current.
+ * neither the collision nor the renderer can answer there.
  */
 export function minimapWmoBuildingAt(
-  sources: MinimapWmoSources, map: number, x: number, y: number, z: number,
+  sources: MinimapWmoSources, map: number, x: number, y: number, z: number, guid?: bigint,
 ): string | undefined | null {
   const floor = sources.floor(map, x, y, z + RISE, z - DEPTH);
-  if (floor === undefined) return null;
+  lastAnswerFar = floor === undefined;
+  if (floor === undefined) return guid === undefined ? null : farWmoBuilding(sources, guid, map, x, y, z);
   if (floor === null || (floor.groupFlags & MINIMAP_WMO_EXTERIOR) !== 0) return undefined;
   if (!wmoFloorWins(z, floor.floorZ, sources.gridHeight(map, x, y))) return undefined;
   return floor.placement.canonicalModelName;
+}
+
+/**
+ * 3.13 (15.11): past the collision, the renderer's segment (FarWmoFloors.ts) judged as 0x007C28F0 and 0x007A1480
+ * judge a link: a hit below counts only above the terrain under it (`wmoFloorWins`, as the collision's); a hit from
+ * the upward try (made only with nothing below) only where no terrain lies under the feet — none at all, or terrain
+ * over them (0x007C1660 drops terrain above the feet); then the group must lack MOGP 0x8.
+ */
+function farWmoBuilding(sources: MinimapWmoSources, guid: bigint, map: number, x: number, y: number, z: number): string | undefined | null {
+  const row = sources.far?.(guid);
+  if (row === undefined || row.map !== map || Math.abs(row.x - x) > FAR_TOLERANCE || Math.abs(row.y - y) > FAR_TOLERANCE
+    || Math.abs(row.z - z) > FAR_TOLERANCE) return null;
+  if (row.model === "" || (row.groupFlags & MINIMAP_WMO_EXTERIOR) !== 0) return undefined;
+  const grid = sources.gridHeight(map, x, y);
+  if (row.up) return grid === undefined || !Number.isFinite(grid) || grid > z ? row.model : undefined;
+  return wmoFloorWins(z, row.floorZ, grid) ? row.model : undefined;
 }
 
 /** What 0x0057F7F0 does with an object once the player's building and the object's are known. */
@@ -151,7 +181,7 @@ export class MinimapWmoMembership {
     entry.seen = this.#pass;
     if (!due) return entry.building;
     this.walks++;
-    const building = minimapWmoBuildingAt(sources, map, position.x, position.y, position.z);
+    const building = minimapWmoBuildingAt(sources, map, position.x, position.y, position.z, guid); // 3.13 (15.11): guid, for the far answer
     // Not current: the last answer stands, and the walk is asked again next time.
     entry.at = now;
     entry.map = map;
@@ -160,7 +190,9 @@ export class MinimapWmoMembership {
       return entry.building;
     }
     entry.building = building;
-    entry.known = true;
+    // 3.13 (15.11): a far answer is a lookup of the renderer's row, which a building drawn later can change: asked again
+    // every second like an unknown one (no walk is made for it).
+    entry.known = !lastAnswerFar;
     entry.x = position.x;
     entry.y = position.y;
     entry.z = position.z;

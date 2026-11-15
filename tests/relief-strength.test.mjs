@@ -1,9 +1,8 @@
 // 24.10 (7.47): «Сила объёма» — one slider over the three relief leaves. The setting (its range, the
-// presets, the appliers and the render worker), the one uniform every relief program binds, the
-// programs of before the slider recovered to the byte by stripping its lines and gain tokens (so 100 %
-// is today's look), the gains' bounds, and no program key or material change when the slider moves.
+// presets, the appliers and the render worker), the one uniform every relief program binds, the slider
+// reaching each program only through its tagged lines and gain tokens and the gains being 1 at 100 % (so
+// 100 % is today's look), the gains' bounds, and no program key or material change when the slider moves.
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import * as THREE from "three";
@@ -29,9 +28,9 @@ import { enhancedGraphicsSettings } from "../dist/code/browser/ui/EnhancedGraphi
 import { COMPARISON_GRAPHICS_OVERRIDES } from "../dist/code/browser/ui/ComparisonProfile.js";
 import { defaultSettings, parseSettings, settingDefinition, settingNumber } from "../dist/code/browser/ui/SettingsModel.js";
 import { SETTING_SECTIONS } from "../dist/code/browser/ui/SettingsSections.js";
+import { memberSource } from "./source-pins.mjs";
 
 const source = (path) => readFile(new URL(`../src/browser/${path}`, import.meta.url), "utf8");
-const sha = (text) => createHash("sha256").update(text).digest("hex");
 
 // No worker, no fetch: every relief map request answers "no map".
 const noMap = async () => ({ side: 0, contrast: 0 });
@@ -86,10 +85,8 @@ test("setting: both appliers push it as a multiplier; the render worker forwards
 });
 
 test("renderer: the setter writes the shared value only — no rebuild, no re-key, nothing re-synced", async () => {
-  const renderer = await source("WorldRenderer3D.ts");
-  const start = renderer.indexOf("  setReliefStrength(scale: number): void {");
-  assert.ok(start > 0);
-  const body = renderer.slice(start, renderer.indexOf("\n  }\n", start));
+  // Pinned (a member's whole body: what it does not do is the rule, and no output shows an absent rebuild cheaply).
+  const body = memberSource(await source("WorldRenderer3D.ts"), "setReliefStrength");
   assert.match(body, /setSharedReliefStrength\(scale\);/);
   assert.doesNotMatch(body, /rebuild|sync|needsUpdate|this\.#/i);
 });
@@ -191,31 +188,23 @@ function compile(material) {
   return shader;
 }
 
-// sha256 of each program before the slider: the buildings' at c7183d3; the terrain's and the M2's at 8f76122
-// (7.50 light pools, which merged beside the slider and changed the lit materials' shared lighting chunk —
-// main's programs stripped of the slider's lines were checked equal to 8f76122's to the byte); the terrain's and
-// the M2's again at ccc78f0 (12.24 dungeon lamps: the shared lighting chunk sums lamps apart, `wowLampIndoor`), and
-// 04.11 (7.63: the lamps' ceiling by the brightest channel; the old pins were checked to hold with the light files as before it);
-// and 15.11 (7.66: the aerial fog body calls `wowFogFactor`, three's own smoothstep for a plain far distance; the old
-// pins 286b893b… and fbfaa3ea… were checked to hold with that one line as before it); the terrain's again on
-// 15.11 (7.07: the ground saturates per channel after the sun term, TerrainLightSaturation.ts; the old pin
-// cc0256e3… was checked to hold with that one line left out).
-const BEFORE = {
-  terrain: "7d91065a3d673fd7505b9db3267b9be5f88329089d4f6d2b54d9fcb9be0941b3",
-  wmoLit: "1f5528782644610f6034a4cbab28a02c7c15ce77fdeb88b6ae82b52481019c3a",
-  wmoRoom: "03889732631cd54ee5ec602a63aee8af4bf80eb0194e83e600e1ed5fc12d320f",
-  m2: "7662077cc467c6a4f8080fe0845ff382b96a41aa039a01cd584dd15d9b8cdba5",
-};
-
-test("programs: stripped of the slider's lines and gains, each is the program of before the slider to the byte", () => {
+// 13.09 (pins9): until 15.11 this test compared sha256 hashes of each stripped program with the program of before the
+// slider (24.10). That proof of «100 % is today's look» was made once when the slider arrived; afterwards every lane that
+// touched the shared lighting chunk (7.50, 12.24, 7.63, 7.66, 7.07) had to re-derive the hashes, which said nothing
+// about the slider. The same rule now stands on two checks that do not move with unrelated lighting: the slider
+// reaches each program only through its tagged lines and its `* relief…Gain` tokens (below), and at 100 % every gain
+// is 1 and the tilt keeps its length (the «gains» test above, with the GLSL macros pinned to those number forms).
+test("programs: the slider reaches each program only through its tagged lines and its gains", () => {
   const terrain = terrainShader().shader.fragmentShader;
   const lit = libShader(THREE.ShaderLib.standard, true);
   injectWmoRelief(lit, "lit");
   const room = libShader(THREE.ShaderLib.basic);
   injectWmoRelief(room, "room");
   const m2 = compile(m2Material()).fragmentShader;
-  const got = { terrain: sha(strip(terrain)), wmoLit: sha(strip(lit.fragmentShader)), wmoRoom: sha(strip(room.fragmentShader)), m2: sha(strip(m2)) };
-  assert.deepEqual(got, BEFORE);
+  for (const [name, text] of [["terrain", terrain], ["wmoLit", lit.fragmentShader], ["wmoRoom", room.fragmentShader], ["m2", m2]]) {
+    const untagged = strip(text).split("\n").filter((line) => /\brelief(?:Strength|[A-Z]\w*Gain|Tilt)\b/.test(line));
+    assert.deepEqual(untagged, [], `${name}: no line outside the slider's own names it`);
+  }
   for (const [name, text] of [["terrain", terrain], ["wmoLit", lit.fragmentShader], ["wmoRoom", room.fragmentShader], ["m2", m2]]) {
     assert.equal(text.split("uniform float reliefStrength;").length - 1, 1, `${name}: the uniform once`);
     assert.match(text, / \* reliefDepthGain\( /, `${name}: the march's depth`);

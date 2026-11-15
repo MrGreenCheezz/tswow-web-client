@@ -15,6 +15,7 @@ import { viewSubjectPosition } from "./ViewSubject.js"; // 11.02-I
 import { canInteractWithUnit } from "../../world/UnitInteractGate.js"; // 11.02-tails
 import { drawnUnitPosition } from "../VehiclePassengerOverlay.js"; // 11.02-tails
 import { resultUnitHeight } from "../RenderResults.js"; // 22.10 ARC-2 S3a
+import { unitSeenByCamera } from "../UnitSceneSight.js"; // 5.16 (15.11)
 import { reactionsByTemplate } from "../../world/UnitInteractGate.js"; // 11.02-tails-review
 import { isPlayerGhost } from "../../world/Fields.js"; // 11.02-tails-review
 import { isTabIgnoredCreatureType } from "../../world/TargetSearch.js"; // L2 1.10
@@ -334,6 +335,18 @@ function acceptsFromCentre(object: WorldObjectState, centre: WorldObjectState): 
   return accepted;
 }
 
+/** 5.16 (15.11): the renderer's seen units at the moment a list is built (UnitSceneSight.ts). */
+let seenThisPress: ReadonlySet<bigint> | undefined;
+
+/**
+ * 5.16 (15.11): 0x00524440 lets a unit into the list only when 0x0077F0B0 says the camera saw it in the last frame
+ * (its map entity's +0x25 is 0: in the view frustum, not behind a map occluder, above the terrain horizon). Only the
+ * build asks: the re-check of each pick (0x518e40) does not, so a listed unit that left the view can still be stepped to.
+ */
+function acceptsSeenFromCentre(object: WorldObjectState, centre: WorldObjectState): boolean {
+  return unitSeenByCamera(seenThisPress, object.guid) && acceptsFromCentre(object, centre);
+}
+
 /** 5.16 (11.11): the player's VehicleSeat flags while seated, for 0x524fc0's second search centre. */
 function playerSeatFlags(self: WorldObjectState | undefined): number | undefined {
   const world = game.world;
@@ -375,7 +388,8 @@ const tabSource: TabSource = {
     }
     // 5.16 (11.11): with a second search around a seated player whose seat can attack (0x524fc0).
     const self = player();
-    return collectTabList(world.state.objects.values(), origin, self, playerSeatFlags(self), acceptsFromCentre, out); // 5.16 (11.11): was collectTabCandidates(…, acceptsTabMode, …)
+    seenThisPress = game.renderer?.results?.unitsSeen; // 5.16 (15.11)
+    return collectTabList(world.state.objects.values(), origin, self, playerSeatFlags(self), acceptsSeenFromCentre, out); // 5.16 (11.11): was collectTabCandidates(…, acceptsTabMode, …); 15.11: acceptsSeenFromCentre
   },
   valid(guid: bigint): boolean {
     const object = game.world?.state.objects.get(guid);

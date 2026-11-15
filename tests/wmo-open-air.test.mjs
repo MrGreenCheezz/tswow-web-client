@@ -3,13 +3,13 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { readFile } from "node:fs/promises";
 
 import {
   WMO_OPEN_AIR_ROOM_RANGE, createWmoOpenAirState, wmoOpenAirCandidatesStale, wmoOpenAirNoteCandidates,
   wmoOpenAirNoteWalk, wmoOpenAirWalkStale,
 } from "../dist/code/browser/WmoOpenAir.js";
 import { selectWmoPortalGroups } from "../dist/code/browser/WmoOcclusion.js";
+import { assertGuard, assertOrder, memberSource, readSource } from "./source-pins.mjs";
 
 const IDENTITY = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
 
@@ -66,26 +66,31 @@ test("the state's walk options carry its own scratch and seed from outside", () 
 });
 
 test("the renderer walks from open air only for static buildings with a street, behind the switch", async () => {
-  const source = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
+  // 13.09 (pins9): the walk's own rules are the behaviour tests above and tests/wmo-faithful-rooms (the leashes); what
+  // stays pinned is the renderer's wiring, by the guard's terms and the call's arguments rather than whole lines.
+  const source = await readSource("browser/WorldRenderer3D.ts");
+  const groups = memberSource(source, "#updateWmoGroups");
   // 22.10 (7.41): a static building admitted for its shadow alone is not viewed, so it does not walk.
-  assert.match(source, /const viewed = staticEnvironment && !shadowOnly;/);
-  assert.match(source,
-    /if \(!fromCamera && viewed && !entered && this\.#wmoOcclusion && placed\.model\.portals && !wmoInteriorOnly\(placed\.model\)\) \{\r?\n\s+selected = this\.#wmoRoomsFromOpenAir\(placed, player, selected, walked\);/);
-  assert.match(source, /clipped = entered;\r?\n\s+walked = true; \/\/ 05\.10-A7b-2/,
+  assert.match(groups, /const viewed = staticEnvironment && !shadowOnly;/);
+  assertGuard(groups, "this.#wmoRoomsFromOpenAir(placed, player, selected, walked)",
+    ["!fromCamera", "viewed", "!entered", "this.#wmoOcclusion", "placed.model.portals", "!wmoInteriorOnly(placed.model)"],
+    "a viewed building with a street and portals that no other walk answered, behind the occlusion switch");
+  // An indoor walk that answered is told apart from one that fell back: `walked` is set where its answer is taken.
+  assertOrder(groups, ["if (portalSelection.used) {", "selected = portalSelection.groups;", "walked = true;"],
     "an indoor walk that answered is told apart from one that fell back");
-  assert.match(source, /if \(wmoOpenAirWalkStale\(state, clip, rooms\)\) \{/, "walked again only on change");
-  // 15.11 (7.03, far8): the walked rooms bind their doodads on the open-air leash of this lighting path —
-  // 150 on the enhanced levels, the reach on the faithful ones (`wmoOpenAirRoomRange`, tests/wmo-faithful-rooms).
-  assert.match(source,
-    /if \(binds\) this\.#bindWmoDoodads\(placed, walk\.groups, true, wmoOpenAirRoomRange\(this\.#faithfulLevel, this\.environmentShellRange\)\);/);
-  assert.match(source, /if \(binds\) this\.#bindWmoDoodads\(placed, selected, false, INTERIOR_RANGE\);/);
-  assert.match(source, /const rooms = this\.#bindWmoDoodads\(placed, selected, clipped\); \/\/ 05\.10-A7b-2/,
+  const openAir = memberSource(source, "#wmoRoomsFromOpenAir");
+  assert.match(openAir, /if \(wmoOpenAirWalkStale\(state, clip, rooms\)\) \{/, "walked again only on change");
+  // 15.11 (7.03, far8): the walked rooms bind their doodads on the open-air leash of this lighting path (the leash's
+  // values: `wmoOpenAirRoomRange`, tests/wmo-faithful-rooms); without a walk they keep the interior range.
+  assert.match(openAir, /this\.#bindWmoDoodads\(placed, walk\.groups, true, wmoOpenAirRoomRange\(/);
+  assert.match(openAir, /this\.#bindWmoDoodads\(placed, selected, false, INTERIOR_RANGE\)/);
+  assert.match(source, /= this\.#bindWmoDoodads\(placed, selected, clipped\);/,
     "a building of rooms alone binds as before, on the environment range");
-  assert.match(source,
-    /return interiorOnlyDoodadShown\(object\) === undefined \? INTERIOR_RANGE : boundWmoDoodadLeash\(object\);/);
-  // 15.11 (7.03, far8): the rooms' leash, else the interior range, through the size class on the faithful levels
-  // only (`boundDoodadClassLeash` answers the leash itself without a detail: tests/wmo-faithful-rooms).
-  assert.match(source, /const rooms = INTERIOR_ONLY_DOODADS\.get\(object\)\?\.rooms;\s+return boundDoodadClassLeash\(object, rooms\?\.leash \?\? INTERIOR_ONLY_RANGE, rooms\?\.classDetail\);/);
+  // A room's doodad no walk has bound keeps the rooms' sixty yards, by behaviour; a bound one takes its rooms' leash
+  // through the size class (`boundDoodadClassLeash`'s values: tests/wmo-faithful-rooms), pinned by its one call.
+  const { environmentDrawRange } = await import("../dist/code/browser/WorldRenderer3D.js");
+  assert.equal(environmentDrawRange({ id: -7_000_001, kind: "m2", interior: true, position: { x: 0, y: 0, z: 0 } }), 60);
+  assert.match(source, /boundDoodadClassLeash\(object, rooms\?\.leash \?\? INTERIOR_ONLY_RANGE, rooms\?\.classDetail\)/);
   // Only the static-environment call opts in (moving game objects keep distance selection).
   // 05.10-7.05-review: the game-object call measures from the transport viewer and passes false.
   const calls = [...source.matchAll(/this\.#updateWmoGroups\(rendered\.wmo, (?:player|viewer), rendered\.node, client, (true|false)\b/g)];
@@ -108,9 +113,9 @@ test("a snapshot's WMO doodads are grouped by placement once, in snapshot order"
   assert.deepEqual(wmoDoodadsOfPlacement(objects, 9).map((object) => object.id), [-9_000_003]);
   assert.deepEqual(wmoDoodadsOfPlacement(objects, 1).length, 0);
 
-  const source = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
-  const bind = source.slice(source.indexOf("  #bindWmoDoodads("), source.indexOf("  #noteInteriorOnly("));
-  assert.match(bind, /for \(const object of wmoDoodadsOfPlacement\(objects, placed\.visualId\)\) \{/);
+  // Pinned: the renderer's bind walks this grouping, not the snapshot (a cost, which no result shows).
+  const bind = memberSource(await readSource("browser/WorldRenderer3D.ts"), "#bindWmoDoodads");
+  assert.match(bind, /of wmoDoodadsOfPlacement\(objects, placed\.visualId\)/);
   assert.doesNotMatch(bind, /for \(const object of objects\)/, "no walk over the whole snapshot per placement");
 });
 

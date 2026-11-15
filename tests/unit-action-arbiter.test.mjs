@@ -45,6 +45,9 @@ const {
 const { seatSplitsPose } = await import("../dist/code/browser/VehicleSeatPose.js"); // 5.05 (11.11): the executor's dependency
 const { cycleEndIsSheathStart } = await import("../dist/code/browser/SheathCycleStart.js"); // 5.05 (15.11, sheath6)
 const { shownParryPayload } = await import("../dist/code/browser/ShownParry.js"); // 5.05 (15.11, combat7)
+// 11.02 (15.11, vehicle9): #settleUnitAction's display goes through the vehicle pose narrowing (0x00724500).
+const { narrowedActionDisplay } = await import("../dist/code/browser/VehiclePoseNarrowing.js");
+import { methodHarnessWith, withInertFields } from "./source-pins.mjs";
 
 const withAnimationData = { skip: ANIMATION_DATA_AVAILABLE ? false : "no locally generated animation data" };
 
@@ -299,20 +302,10 @@ test("on HumanMale the underlay makes a moving cast exact on the upper body whil
 
 const source = readFileSync(process.env.UNIT_ACTION_RENDERER_SOURCE
   ?? new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
-function methods(names, dependencies) {
-  const parsed = ts.createSourceFile("renderer.ts", source, ts.ScriptTarget.ES2022, true);
-  const renderer = parsed.statements.find((node) => ts.isClassDeclaration(node) && node.name?.text === "WorldRenderer3D");
-  const members = names.map((name) => {
-    const member = renderer.members.find((candidate) => candidate.name?.getText(parsed) === name);
-    assert.ok(member, name);
-    return member.getText(parsed).replaceAll("#", "");
-  });
-  const body = ts.transpileModule(`class Harness { ${members.join("\n")} }`, {
-    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
-  }).outputText;
-  const deps = { THREE, ...dependencies };
-  return Function(...Object.keys(deps), `${body}; return Harness;`)(...Object.values(deps));
-}
+// 15.11 (tests9): the executor's methods through pins9's `methodHarness` (tests/source-pins.mjs): a module-level name
+// the test does not give is inert, so a collaborator a later lane adds to these methods no longer throws
+// "x is not defined" in every executor test. Every name the arbitration rule itself reads is still given below.
+const methods = (names, dependencies) => methodHarnessWith(ts, source, "WorldRenderer3D", names, { THREE, ...dependencies });
 
 // A three-bone rig: 0 the root and 1 a leg (the lower body), 2 an arm (the upper body). The gait
 // swings both; the cast raises the arm and plants the leg.
@@ -359,9 +352,11 @@ function executor({ moving = false, overrides = {}, legless = false } = {}) {
     seatSplitsPose, // 5.05 (11.11): read by #settleUnitAction since 04.11 (11.02), missing here until now
     cycleEndIsSheathStart, // 5.05 (15.11, sheath6): #poseBase counts a round of a clip without variations as a start
     shownParryPayload, // 5.05 (15.11, combat7): #entryAnimation picks ParryUnarmed by the shown sheath
+    narrowedActionDisplay, // 11.02 (15.11, vehicle9): the display, narrowed for a Flags 0x10000 vehicle's precast
     ...overrides,
   });
-  const h = new Harness();
+  const h = withInertFields(new Harness()); // a field no test sets (a later lane's collaborator) is inert
+  h.narrowedCast = false; // 11.02 (15.11, vehicle9): set by #animateUnit from the unit's Vehicle row; off unless a test sets it
   h.noteStart = () => {}; // 5.05 (11.11): the active player's start count (WorldRenderer3D `#noteStart`)
   h.shownSheathOf = () => undefined; // 5.05 (15.11, combat7): the unit's shown sheath (WorldRenderer3D `#shownSheathOf`)
   h.requestAnimations = () => false;
@@ -477,6 +472,23 @@ test("executor: a whole-body hold waits while the unit moves; a mounted one-shot
   assert.equal(legless.frame(0), undefined);
   assert.equal(legless.queue.size, 0);
   assert.equal(legless.unit.overlayAction, undefined);
+});
+
+// 11.02 (15.11, vehicle9; tests9): a vehicle whose row has Flags 0x10000 keeps its precast pose while it moves
+// (0x00724500 → 0x00724330 only): the executor's display goes through `narrowedActionDisplay` on `#narrowedCast`.
+test("executor 11.02: a Flags 0x10000 vehicle's held precast takes the whole body on the move; a one-shot does not", () => {
+  const plain = executor({ moving: true });
+  plain.submit("cast", PRECAST, true, 3_000, 0);
+  assert.equal(plain.frame(0), "upper", "an ordinary unit's precast stays on the upper body over its gait");
+  const narrowed = executor({ moving: true });
+  narrowed.h.narrowedCast = true;
+  narrowed.submit("cast", PRECAST, true, 3_000, 0);
+  assert.equal(narrowed.frame(0), "full", "the narrowed vehicle draws it with the whole body");
+  assert.equal(narrowed.unit.animationId, PRECAST, "and the gait does not take the legs");
+  const shot = executor({ moving: true });
+  shot.h.narrowedCast = true;
+  shot.submit("cast", CAST, false, 3_000, 0);
+  assert.equal(shot.frame(0), "upper", "a cast that is not held is not the precast mark");
 });
 
 // 05.10-6.21b: owner decision — Mutilate, Stormstrike and the other poses off Wow.exe's split list

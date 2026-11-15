@@ -223,7 +223,7 @@ test("the renderer retains the wider resident set and warms ahead", async () => 
     "a worker renderer streams its band at the same point");
   const range = await readFile(new URL("../src/browser/game/PageEnvironmentRange.ts", import.meta.url), "utf8");
   assert.match(range, /environmentStreamRange\s+\?\? ENVIRONMENT_STREAM_RANGE/, "in page: the renderer's own band");
-  assert.match(source, /const ranked = environmentRankInRange\(pool, player, this\.#environmentDetail, this\.environmentShellRange, this\.#faithfulLevel\);\s+this\.#environmentCandidates = ranked\.candidates;\s+this\.#environmentResidents = ranked\.residents;/,
+  assert.match(source, /const ranked = environmentRankInRange\(pool, player, this\.#environmentDetail, this\.environmentShellRange, this\.#faithfulLevel, true\);[^\n]*\s+this\.#environmentCandidates = ranked\.candidates;\s+this\.#environmentResidents = ranked\.residents;/,
     "residents are computed from the wide pool on reselect, like candidates");
   // The actual disposal/admission decisions are exercised through #updateEnvironment in
   // environment-membership-cache.test.mjs. This test covers the wider source and prefetch path.

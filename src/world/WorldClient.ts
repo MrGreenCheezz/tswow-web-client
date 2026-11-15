@@ -394,6 +394,7 @@ import { SPELL_FAILED_ITEM_NOT_READY } from "./CooldownRefusalWords.js"; // 3.47
 import { SheathSetter, SPELL_ATTR0_RANGED, standStateSheathes } from "./SheathSetter.js"; // 5.05 (11.11)
 import { animationSheathState } from "./AnimationSheathRule.js"; // 5.05 (11.11)
 import { OwnCastMark, ownSheathCasting } from "./OwnCastMark.js"; // 5.05 (15.11, sheath6)
+import { RangedRepeatMarks } from "./RangedRepeatMarks.js"; // 5.05 (15.11, bow9)
 import { ANIMATION_BEHAVIORS, ANIMATION_WEAPON_FLAGS } from "../generated/animations.js"; // 5.05 (11.11)
 import { mountedCastRule, SPELL_FAILED_NOT_MOUNTED } from "./MountedCastRule.js"; // 5.05 (11.11)
 import { // 5.05 (11.11): 0x0080cce0 / 0x0080ac90
@@ -1696,6 +1697,8 @@ export class WorldClient {
   readonly #sheathSetter = new SheathSetter(); // 5.05 (11.11)
   /** 5.05 (15.11, sheath6): +0xa5c/+0xa60 from the own request to its answer (OwnCastMark.ts). */
   readonly #ownCastMark = new OwnCastMark(); // 5.05 (15.11, sheath6)
+  /** 5.05 (15.11, bow9): the units with Wow.exe's auto-repeat mark (+0xa38 0x200) and their ammo, for the bow draw. */
+  readonly rangedRepeat = new RangedRepeatMarks(spellAttributeWords); // 5.05 (15.11, bow9)
   /** 11.02-E: the note between a trajectory cast and its re-aim (Wow.exe unit+0xf68…0xf74, MissileCast.ts). */
   readonly #missiles = new MissileTrajectoryTracker((guid, spellId) => this.#reaimMissile(guid, spellId)); // 11.02-E
   // 11.02 (11.11): an own collision missile meeting a unit — CMSG_UPDATE_PROJECTILE_POSITION (MissileCollision.ts)
@@ -2603,6 +2606,7 @@ export class WorldClient {
     );
     this.#trackPendingCast(spellId, this.#castCount, cooldownDuration, cooldownStartedOnEvent, targetGuid);
     this.autoRepeatSpellId = spellId;
+    if (this.state.selfGuid !== undefined) this.rangedRepeat.ownSend(this.state.selfGuid, spellId); // 5.05 (15.11, bow9): 0x007fa2e0
     this.onSpellStatus?.(`Автострельба ${spellId} запущена`, false);
   }
 
@@ -2681,6 +2685,7 @@ export class WorldClient {
     if (this.autoRepeatSpellId === undefined) return;
     if (!this.#closed && sendCancel) this.#connection.send(OPCODES.CMSG_CANCEL_AUTO_REPEAT_SPELL);
     this.autoRepeatSpellId = undefined;
+    if (this.state.selfGuid !== undefined) this.rangedRepeat.cancel(this.state.selfGuid); // 5.05 (15.11, bow9): 0x00715ac0(0)
   }
 
   /**
@@ -8881,6 +8886,8 @@ export class WorldClient {
         { school: start.schoolImmunityMask, mechanic: start.mechanicImmunityMask });
       // 11.02-E: the active mover's noted trajectory cast is re-aimed when its cast time is up (0x00806700 → 0x006fbe50).
       if (start.casterUnit === (this.controlledGuid ?? selfGuid)) this.#missiles.spellStart(start.casterUnit, start.spellId, start.castTime, performance.now()); // 11.02-E
+      // 5.05 (15.11, bow9): 0x00806700 → 0x00805330 → 0x007fa2e0 (the repeat mark) and → 0x007206a0 (the ammo).
+      this.rangedRepeat.spellStart(start.casterUnit, start.spellId, start.castFlags, start.ammo?.displayId);
       // 3.01-castlog: every start, after the cast bar — 0x00806700 logs (0x00751920) after 0x00805330.
       this.events.emit("SPELL_START", start); // 3.01-castlog
       return true;
@@ -9239,6 +9246,7 @@ export class WorldClient {
       // sheath setter 0x00736d30 (.runtime/re-2026-10-11/glue-1110/a505-3.txt). The CMSG_SET_SHEATHED this sent (the
       // bow put away, then drawn again by the next shot: the flicker on a stun, a Tab, the echo of a cancel) is gone.
       if (guid === this.state.selfGuid) this.#stopAutoRepeat(false); // 5.05 (12.10): was (false, true)
+      this.rangedRepeat.cancel(guid); // 5.05 (15.11, bow9): 0x0072d130 clears +0xa38 0x200 of the unit it names
       this.events.emit("STOP_AUTOREPEAT_SPELL", { guid });
       return true;
     }

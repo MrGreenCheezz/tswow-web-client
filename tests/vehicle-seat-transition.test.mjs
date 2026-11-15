@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { assertGuard, assertOrder } from "./source-pins.mjs";
 import * as THREE from "three";
 import {
   SEAT_TRANSITION_FLAGS, VehicleSeatTransitions, seatTransitionArc, seatTransitionArcs, seatTransitionBlend,
@@ -98,16 +99,21 @@ test("the renderer starts a transition when a drawn unit's seat changes, and app
   // The transition starts from where the node stood last frame, so `begin` must read the node before this frame's
   // placement writes it, and nothing may move the node in between. (15.11: the ride block between the two grew by
   // vehicle8's `#copySeatAnimation`, so this is an order, not a character window.)
-  const begin = source.search(
-    /if \(unit\.seatTracked === true\) \{\s+this\.#seatTransitions\.begin\(object\.guid, unit\.seatedRow, seatNow, unit\.node, now\);/);
-  assert.ok(begin >= 0, "a seat change of a unit already drawn begins a transition");
+  const beginCall = "this.#seatTransitions.begin(object.guid, unit.seatedRow, seatNow, unit.node, now)";
+  assertGuard(source, beginCall, ["unit.seatTracked === true"], "a seat change of a unit already drawn begins a transition");
+  const begin = source.indexOf(beginCall);
   const place = source.indexOf("unit.node.position.set(position.x, position.z, -position.y);", begin);
   assert.ok(place > begin, "the frame's placement follows the begin");
   const between = source.slice(begin, place);
   assert.doesNotMatch(between, /unit\.node\.position\.(set|copy)\(|unit\.node\.position\.[xyz] =/,
     "nothing moves the node between the begin and the placement");
   assert.doesNotMatch(between, /\n  (?:async )?#?\w+\([^)]*\)[^\n]*\{\n/, "both in the same method");
-  assert.match(source, /this\.#vehiclePassengers\.place\([^\n]*\n[^\n]*\n\s+this\.#seatTransitions\.apply\(this\.#seatTransitionNode, now\);/);
+  // 13.09 (pins9): the transitions are applied after the seat pass has placed every passenger (an order, not a
+  // two-line window), and nothing re-places the passengers between the two.
+  const [placed, applied] = assertOrder(source, ["this.#vehiclePassengers.place(", "this.#seatTransitions.apply(this.#seatTransitionNode, now)"],
+    "the seat pass, then the transitions");
+  assert.doesNotMatch(source.slice(placed + "this.#vehiclePassengers.place(".length, applied), /#vehiclePassengers\.place\(|\n  (?:async )?#?\w+\([^)]*\)[^\n]*\{\n/,
+    "in the same method, with no second seat pass in between");
 });
 
 test("2.11: scenery emitters hang from its bones or its node, never from the world's origin", async () => {

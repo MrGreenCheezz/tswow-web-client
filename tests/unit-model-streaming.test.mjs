@@ -7,10 +7,8 @@ import { FrameBuildBudget } from "../dist/code/browser/FrameBuildBudget.js";
 import { hypot2 } from "../dist/code/browser/GroundCover.js";
 import { selectUnitAdmission } from "../dist/code/browser/RenderAdmission.js";
 import { UnitShadowCasterSet } from "../dist/code/browser/UnitShadowCasters.js"; // 06.10-shadow
-// suite-fix: 11.02-H made #updateUnits seat vehicle passengers (begin/place) every frame.
-import { VehiclePassengerPoser } from "../dist/code/browser/VehiclePassengerPose.js";
-import { vehicleCatalog } from "../dist/code/browser/VehicleClient.js";
 import { extendSidecarWait, poseExitClips, sidecarClaims } from "../dist/code/browser/SidecarWait.js"; // 05.10-A7a-G2 6.19
+import { methodHarness, withInertFields } from "./source-pins.mjs";
 
 const source = readFileSync(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
 function methods(names, dependencies = {}) {
@@ -127,31 +125,26 @@ test("mounts share the body budget and keep seating the existing mount while rep
   assert.equal(rider.mount, undefined);
 });
 
-test("renderer continues updating all admitted units and removes objects that left server visibility", () => {
-  const Harness = methods(["#updateUnits"], {
-    selectUnitAdmission, UNIT_DRAW_DISTANCE: 200, UNIT_BUDGET: 64, UNIT_FRUSTUM_MARGIN: 1,
-    unitSphereVisibleInFrustum: () => true, unitCastsEnhancedShadow: () => false,
-    vehicleCatalog, // suite-fix: 11.02-H (no tables loaded here: undefined, as before /dbc/vehicles answers)
+// 13.09 (pins9): the method's own code over the fields this rule reads; every other collaborator #updateUnits has
+// gained (vehicles, seat transitions, swing progress, unit sight…) is inert (`withInertFields`, `methodHarness`), so a
+// lane that adds one no longer breaks this harness — it broke four times on 15.11 alone for such additions.
+test("renderer continues updating all admitted units and removes objects that left server visibility", async () => {
+  const Harness = await methodHarness(source, "WorldRenderer3D", ["#updateUnits"], {
+    THREE, hypot2, selectUnitAdmission, UNIT_DRAW_DISTANCE: 200, UNIT_BUDGET: 64, UNIT_FRUSTUM_MARGIN: 1,
+    unitSphereVisibleInFrustum: () => true,
   });
-  const h = new Harness();
+  const h = withInertFields(new Harness());
   const camera = new THREE.PerspectiveCamera();
   Object.assign(h, {
-    vehiclePassengers: new VehiclePassengerPoser(), // suite-fix: 11.02-H
     unitShadowCasters: new UnitShadowCasterSet(), lightingProfile: { shadowMapSize: 0, shadowCasters: 0, shadowExtent: 0 }, // 06.10-shadow
     unitAnimationBudget: new FrameBuildBudget(), unitAnimationPrefetch: new Map(),
-    standIns: { begin() {} }, unitBuildBudget: new FrameBuildBudget(2, 2, () => 0),
+    unitBuildBudget: new FrameBuildBudget(2, 2, () => 0),
     atlasFrameDemands: new Set(), atlasFrameActive: new Set(), frustumMatrix: new THREE.Matrix4(),
     camera, frustum: new THREE.Frustum(), selection: {}, formalBenchmarkIsolation: true,
     units: new Map(), actions: new Map(), unitGroup: new THREE.Group(), draws: [],
     unitVisibilityRadius: () => undefined, clearUnitNode() {}, dropEffects() {},
-    // 22.10 (6.26): the pieces #updateUnits gained since this harness was written (vehicles and swing progress,
-    // ARC-2), and the prefetch of the units it did not draw.
-    vehicles: () => undefined, swingWatch: { publish() {} }, results: {}, swingProgressOf: () => undefined,
+    // 22.10 (6.26): the prefetch of the units it did not draw.
     prefetches: 0, prefetchUnits() { this.prefetches++; },
-    // 26.10 (11.02, seat transitions), 04.11, 11.11 (5.32) and 15.11 (11.02): the vehicle passes #updateUnits
-    // gained after its last harness update; no vehicles here, so each is empty.
-    seatTransitions: { apply() {} }, seatTransitionNode: new THREE.Group(),
-    vehicleOwn: new Map(), vehicleAims: new Map(), vehicleCopies: new Map(),
     drawUnit(object) {
       this.draws.push(object.guid);
       if (!this.units.has(object.guid)) this.units.set(object.guid, {
@@ -249,6 +242,7 @@ test("sidecar prefetch requests are cheap and critical poses get the frame slice
 async function actionHarness() {
   const { pendingActionExpired, pendingActionFate } = await import("../dist/code/browser/AnimatedModel.js");
   const arbiter = await import("../dist/code/browser/UnitActionArbiter.js");
+  const { narrowedActionDisplay } = await import("../dist/code/browser/VehiclePoseNarrowing.js");
   const resolve = (clips, wanted) => wanted.find(id => clips.has(id));
   const Harness = methods(["#settleUnitAction", "#advanceLeadIn", "#entryAnimation", "#releaseUnitAction",
     "#requestAnimations"], {
@@ -257,6 +251,7 @@ async function actionHarness() {
     pendingActionExpired, pendingActionFate,
     unitActionDisplay: arbiter.unitActionDisplay, unitActionEndsOnMovement: arbiter.unitActionEndsOnMovement,
     startKeep: arbiter.startKeep, // 5.05 (11.11): a start's `keep` bit, for the sheath rule's count
+    narrowedActionDisplay, // 11.02 (15.11, vehicle9): #settleUnitAction narrows the display on a seat; the real rule
     animationPlaysOnUpperBody: () => true, ANIMATION_IDS: { Stand: 0 }, poseAnimation: () => ({ wanted: [0] }),
     isBaseIdle: () => true, // 05.10-A7a-C: #settleUnitAction asks isBaseIdle
     wholeBodyOutlivesBase: () => true, // 05.10: ревью 6.21b — #settleUnitAction notes the travel a pose began in

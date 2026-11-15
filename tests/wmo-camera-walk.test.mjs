@@ -21,6 +21,7 @@ import {
 import { CollisionMesh, CollisionWorld } from "../dist/code/browser/game/Collision.js";
 import { createMapOccluderFrame, mapOccludersForModel, wmoOccludersApply } from "../dist/code/browser/MapOccluders.js";
 import { readMapOccluders } from "../dist/code/gateway/MapOccluderTable.js";
+import { callArguments } from "./source-pins.mjs";
 
 const IDENTITY = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
 const INDOOR = 0x2000, OUTDOOR = 0x8;
@@ -246,8 +247,11 @@ test("the renderer hides the world before admission, and hears a door coming int
     assert.ok(hide.includes(part), part);
   }
   assert.match(hide, /if \(hiddenFor === undefined && before === undefined\) return;/, "nothing to do costs nothing");
-  // 15.11 (7.05, far8): + the faithful levels' unbounded quotas after it.
-  assert.match(renderer, /this\.#admissionRejected,\n\s*this\.#outsideHiddenFor,\n\s*this\.#faithfulLevel, \/\/ [^\n]*\n\s*\);/, "admission turns the rest away");
+  // The hidden-for placement is admission's `onlyBuilding` (its 7th parameter; what it turns away is tested in
+  // scenery-shadow-admission). 15.11: far8's quotas and fade9's doodad view came after it — pinned by position, so
+  // later parameters do not move this pin (tests/source-pins.mjs `callArguments`).
+  const admission = callArguments(renderer, "admitted = admitEnvironmentInto");
+  assert.deepEqual(admission.slice(5, 7), ["this.#admissionRejected", "this.#outsideHiddenFor"], "admission turns the rest away");
   assert.match(renderer, /\|\| this\.#admittedOutsideHiddenFor !== this\.#outsideHiddenFor/, "half-rate admission does not delay a door");
   const reset = renderer.slice(renderer.indexOf("this.#cameraSurfaceKnown = false;\n    this.#outsideHiddenFor"));
   assert.match(reset, /^this\.#cameraSurfaceKnown = false;\n\s*this\.#outsideHiddenFor = undefined;/, "a new world starts with the world shown");

@@ -187,6 +187,15 @@ export function biodomeDrawRange(object: EnvironmentObject, reach: number): numb
 }
 
 /**
+ * 15.11 (7.66 last stretch, fade9): the placement's true size class (0x007bdb10), known once a placement of its model was
+ * built (its header box recorded); undefined before that.
+ */
+export function doodadBuiltSizeClass(object: EnvironmentObject): number | undefined {
+  const side = doodadWorldSide(object);
+  return side === undefined ? undefined : doodadSizeClass(side);
+}
+
+/**
  * The faithful levels' draw distance of an outdoor doodad: its class's distance (0x0078f570), or undefined when
  * nothing about its size is known yet.
  *
@@ -198,8 +207,8 @@ export function biodomeDrawRange(object: EnvironmentObject, reach: number): numb
  * model with effects, stands 845 yards from the stand's camera.
  */
 export function doodadOriginalReach(object: EnvironmentObject, detail: number): number | undefined {
-  const side = doodadWorldSide(object);
-  if (side !== undefined) return doodadClassDistance(doodadSizeClass(side), detail);
+  const sizeClass = doodadBuiltSizeClass(object);
+  if (sizeClass !== undefined) return doodadClassDistance(sizeClass, detail);
   const radius = object.admissionRadius;
   if (radius === undefined || !Number.isFinite(radius) || radius < 0
     || !Number.isFinite(object.scale) || object.scale <= 0) return undefined;

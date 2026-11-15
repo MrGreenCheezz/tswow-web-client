@@ -3,6 +3,7 @@ import { GlueLuaRef, type GlueLuaVm } from "./GlueLua.js";
 import { glueCallingAddon } from "./GlueAddonIdentity.js";
 import { GLUE_ANIMATION_PRELUDE } from "./GlueAnimations.js";
 import { colorSelectMethods, messageColorMethods } from "./GlueWidgetMethodExtras.js";
+import { buttonOffsetMethods, frameInputMethods, textureReadbackMethods } from "./GlueWidgetReadbacks.js"; // widgets9 3.21
 import { fontStringGradientMethods, frameDepthMethods } from "./GlueWidgetMethodFills.js"; // 05.10-3.21
 import {
   editBoxFillMethods, fontStringFaceMethods, frameFillMethods, frameProtectionMethods, glueNoteCreatedFontString,
@@ -1011,6 +1012,13 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
    * existence tests the corpus performs keep answering the way they do in the
    * real client.
    */
+  /** widgets9: the screen's width over its height (Wow.exe 0x0047bf90's aspect), 4:3 until the screen is known. */
+  #screenAspect(): number {
+    const width = num(this.callGlobal("GetScreenWidth", [], 1)[0], 0);
+    const height = num(this.callGlobal("GetScreenHeight", [], 1)[0], 0);
+    return width > 0 && height > 0 ? width / height : 4 / 3;
+  }
+
   private buildMetatables(): void {
     const base = this.baseMethods();
     // widgets5 (GlueFrameMethodFills.ts): GetRect, the resize bounds, the joystick, depth and position flags,
@@ -1020,11 +1028,13 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
       IsProtected: protection["IsProtected"]!, CanChangeProtectedState: protection["CanChangeProtectedState"]! };
     // 05.10-3.21 (GlueWidgetMethodFills.ts): Frame:IgnoreDepth and FontString:SetAlphaGradient.
     const frameLike = { ...base, ...this.frameMethods(), ...frameDepthMethods(), ...regionRectMethods(this.#bridge),
-      ...frameFillMethods(), ...protection, ...frameSizingMethods(this.#bridge) }; // widgets7: StartSizing, backdrop colours
+      ...frameFillMethods(), ...protection, ...frameSizingMethods(this.#bridge), // widgets7: StartSizing, backdrop colours
+      ...frameInputMethods(this.#bridge) }; // widgets9: the input bits, RegisterAllEvents
     const fontString = { ...region, ...this.textMethods(), ...fontStringGradientMethods(this.#bridge),
       ...fontStringFaceMethods(this.textMethods()) };
-    const texture = { ...region, ...textureFillMethods(this.#bridge) };
-    const button = { ...frameLike, ...this.textMethods(), ...this.buttonMethods() };
+    const texture = { ...region, ...textureFillMethods(this.#bridge), ...textureReadbackMethods() }; // widgets9: GetTexCoord
+    const button = { ...frameLike, ...this.textMethods(), ...this.buttonMethods(),
+      ...buttonOffsetMethods(() => this.#screenAspect()) }; // widgets9: the pushed text offset
     const checkButton = { ...button, ...this.checkButtonMethods() };
     const editBox = { ...frameLike, ...this.textMethods(), ...this.editBoxMethods(),
       ...editBoxFillMethods(this.#bridge) }; // widgets5 batch 2

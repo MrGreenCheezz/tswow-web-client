@@ -383,10 +383,11 @@ test("admitted game objects ease in over the spawn window instead of popping", a
   const update = source.slice(updateStart, updateEnd);
   assert.match(update, /rendered\.admittedAt === undefined/,
     "the spawn stamp is set on first drawable content, not on record creation");
-  assert.match(update, /this\.#applyGameObjectOpacity\(rendered, now\)/,
+  assert.match(update, /this\.#applyGameObjectOpacity\(rendered, now, object\)/,
     "every admitted frame reconciles the spawn fade");
-  assert.match(source, /const GAMEOBJECT_FADE_STEPS = 6;/,
-    "the fade is quantized so one spawn borrows a bounded handful of material copies");
+  // 15.11 (6.11, fade9): the byte walk of Wow.exe (GameObjectSpawnFade.ts) replaced the six quantized steps.
+  assert.match(source, /gameObjectSpawnAlpha\(rendered\.admittedAt, now,/,
+    "the fade is the original's byte walk to the object's alpha");
   assert.match(source, /#gameObjectFadeMeshes\(rendered: RenderedGameObject\): THREE\.Mesh\[\]/,
     "only the rigged or single static mesh fades; WMO room sets stay instant");
   assert.match(source, /if \(rendered\.wmo !== undefined\) return \[\];/,

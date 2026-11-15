@@ -14,6 +14,7 @@ import {
 import { blendInto } from "../dist/code/browser/AnimationBlend.js";
 import { PLAYBACK_BACKWARD, PLAYBACK_FORWARD, applyPlayback, playbackHolds } from "../dist/code/browser/AnimationPlayback.js";
 import { poseTransitionClip } from "../dist/code/browser/UnitFlagPoses.js";
+import { poseTransitionGivesWay } from "../dist/code/browser/PoseTransitionCut.js";
 import { ANIMATION_IDS } from "../dist/code/generated/animations.js";
 import { MOVEMENT_FLAGS as F } from "../dist/code/world/MovementProtocol.js";
 
@@ -168,8 +169,10 @@ test("an edge is a change of the ground under a unit, or of a walk-off into a fa
   assert.equal(poseTransition(pose(air, true), pose(0)), JumpEnd);
   assert.equal(poseTransition(pose(air, true), pose(forward)), JumpLandRun);
   assert.equal(poseTransition(pose(air, false), pose(forward)), undefined);
-  // The renderer lets an edge through a unit's transition.
-  assert.match(source, /isUnitMoving\(pose\.movementFlags, pose\.spline\) \|\| airborneChanged\(unit\.pose, pose\)\);/);
+  // The renderer lets an edge through a unit's transition: 13.09 (pins9) by behaviour, `poseTransitionGivesWay`
+  // (PoseTransitionCut.ts, tests/fall-and-transitions), which the renderer asks with the unit's last pose.
+  assert.equal(poseTransitionGivesWay(true, pose(forward), pose(air | forward, true)), true, "left the ground still running");
+  assert.match(source, /poseTransitionGivesWay\(unit\.transitionMoving, unit\.pose, pose\)/);
 });
 
 test("feet stop shuffling when the body has come home, on the path where no turn is stepped", () => {

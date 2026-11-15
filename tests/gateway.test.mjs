@@ -231,13 +231,14 @@ function characterCreationDbcs() {
   };
 }
 
-function spellDbcs(localizedName = "Огненный шар") {
+function spellDbcs(localizedName = "Огненный шар", { dispelType = 0 } = {}) {
   const spellStrings = stringBlock(["Fireball", localizedName, "Rank 1", "Ранг 1", "Hurls a fiery ball.", "Бросает огненный шар."]);
   const variableStrings = stringBlock(["$damage=42"]);
   const iconStrings = stringBlock(["Interface\\Icons\\Spell_Fire_FlameBolt"]);
   const spell = Array(234).fill(0);
   spell[0] = 133;
   spell[1] = 2; // SpellCategoryID, whose flags below mark cooldown-start-on-event.
+  spell[2] = dispelType; // DispelType (record +0x08); the real Fireball's is 0
   spell[29] = 8000;
   spell[30] = 12000;
   spell[41] = 0;
@@ -424,7 +425,8 @@ test("gateway serves validated local terrain tiles to allowed origins", async ()
   const buildingsDirectory = await mkdtemp(join(tmpdir(), "webclient-buildings-"));
   const visualTilesDirectory = await mkdtemp(join(tmpdir(), "webclient-visual-tiles-"));
   const visualModelsDirectory = await mkdtemp(join(tmpdir(), "webclient-visual-models-"));
-  const spellFiles = spellDbcs();
+  // 13.09 (pins9): a disease's DispelType on the row, so the spell-visuals answer below shows it travels (6.27).
+  const spellFiles = spellDbcs(undefined, { dispelType: 3 });
   await writeFile(join(mapsDirectory, "0003232.map"), Uint8Array.of(1, 2, 3));
   await mkdir(join(mapsDirectory, "textures", "0"), { recursive: true });
   await writeFile(join(mapsDirectory, "textures", "0", "32-32.png"), Uint8Array.of(0x89, 0x50, 0x4e, 0x47));
@@ -554,6 +556,8 @@ test("gateway serves validated local terrain tiles to allowed origins", async ()
     assert.equal(fireball.missile.path, "Spells\\Fireball_Missile.m2");
     assert.equal(fireball.missile.attachment, 22);
     assert.equal(fireball.missile.sound, 88);
+    // 26.10 (6.27): Spell.DispelType rides on the answer, so a disease's effects give no light (SpellLightKind.ts).
+    assert.equal(fireball.dispelType, 3, "the row's DispelType reaches the spell-visuals answer");
     // A spell nobody has a picture for still answers, so the browser stops asking.
     assert.deepEqual(unknown, { id: 999999 });
     assert.equal((await fetch(`http://127.0.0.1:${gateway.port}/dbc/spell-visuals?ids=133`)).status, 403);

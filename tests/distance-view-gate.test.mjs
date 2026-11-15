@@ -55,7 +55,7 @@ test("the renderer asks the path for both, and reselects when the path changes",
   const source = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
   assert.match(source, /queryCached\(\s+player\.x, player\.y, this\.environmentStreamRange,/);
   // 15.11 (7.66 tail): with the faithful levels' rule beside the reach.
-  assert.match(source, /environmentRankInRange\(pool, player, this\.#environmentDetail, this\.environmentShellRange, this\.#faithfulLevel\)/);
+  assert.match(source, /environmentRankInRange\(pool, player, this\.#environmentDetail, this\.environmentShellRange, this\.#faithfulLevel, true\)/); // fade9: view slack
   // 15.11 (7.03, far8): + the faithful levels' small groups at the cap.
   assert.match(source, /placed\.ranges\.setShellCap\?\.\(this\.environmentShellRange, environmentHouseRange\(this\.environmentShellRange, this\.#faithfulLevel\), this\.#faithfulLevel\)/); // 7.44: and the house leash
   assert.match(source, /ranges\.setShellCap\(this\.environmentShellRange, environmentHouseRange\(this\.environmentShellRange, this\.#faithfulLevel\), this\.#faithfulLevel\)/, "the open-air table too");

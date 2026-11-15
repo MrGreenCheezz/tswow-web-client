@@ -32,6 +32,13 @@ const BATCH = 200;
 export const SPELL_VISUAL_RETRY_BACKOFF_MS = [2_000, 8_000, 30_000] as const;
 
 /**
+ * The `v` each route is asked with: the client's cache marker for the answer's shape, bumped by hand whenever the
+ * gateway's answer gains a field (the history is beside each `url` below). The gateway does not read it.
+ */
+export const SPELL_VISUALS_ROUTE_VERSION = 15;
+export const SPELL_VISUAL_KITS_ROUTE_VERSION = 5;
+
+/**
  * One id-keyed metadata route, polled from inside a frame.
  *
  * Everything specific to a route is a method a subclass supplies; everything about *when* to ask
@@ -180,7 +187,7 @@ export class SpellVisualClient extends BatchedMetadataClient<SpellVisualMetadata
     // v=15 (15.11, 6.12, 6.11): a missile's `launchNow` (SpellVisual.Flags & 4, Wow.exe 0x00732ff0) and a kit's
     // `unitAlpha` (CharProc 14, 0x007265c0); an older gateway answers v=14 without them, and such a missile then leaves
     // from the hand when its CastKit animates, and the kit leaves its unit's alpha alone, as before.
-    return `${this.baseUrl}/dbc/spell-visuals?v=15&ids=${ids.join(",")}`;
+    return `${this.baseUrl}/dbc/spell-visuals?v=${SPELL_VISUALS_ROUTE_VERSION}&ids=${ids.join(",")}`;
   }
 
   protected override accept(value: unknown): value is SpellVisualMetadata {
@@ -205,7 +212,7 @@ export class SpellVisualKitClient extends BatchedMetadataClient<SpellVisualKitRe
     // v=3 (25.10, 6.27): `tint` and `flash`, as `/dbc/spell-visuals?v=10`.
     // v=4 (11.11, 5.05): the kit's `sheathKeep` (Flags 0x100), as `/dbc/spell-visuals?v=13`.
     // v=5 (15.11, 6.11): the kit's `unitAlpha` (CharProc 14), as `/dbc/spell-visuals?v=15`.
-    return `${this.baseUrl}/dbc/spell-visual-kits?v=5&ids=${ids.join(",")}`;
+    return `${this.baseUrl}/dbc/spell-visual-kits?v=${SPELL_VISUAL_KITS_ROUTE_VERSION}&ids=${ids.join(",")}`;
   }
 
   protected override accept(value: unknown): value is SpellVisualKitRecord {

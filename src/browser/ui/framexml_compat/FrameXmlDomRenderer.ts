@@ -21,6 +21,7 @@ import { buildFrameXmlSimpleHtml, type FrameXmlSimpleHtmlDomHooks } from "./Fram
 import { frameXmlTitleRegion, frameXmlTitleRegionHit } from "./FrameXmlTitleRegion.js"; // 3.48 (12.10)
 import { FrameXmlMouseCapture } from "./FrameXmlMouseCapture.js"; // 1.10 (12.10)
 import { frameXmlResizeBounds, frameXmlSizeStep, frameXmlSizingOf } from "./FrameXmlSizing.js"; // widgets7 3.21
+import { frameXmlMouseEnabled, frameXmlTypeTakesMouse } from "./FrameXmlInputBits.js"; // widgets9 3.21
 
 /** What one reconciliation pass had to do: see `FrameXmlDomRenderer.syncPass`. */
 export type FrameXmlSyncKind = "structural" | "layout" | "paint" | "noop";
@@ -2347,9 +2348,8 @@ export class FrameXmlDomRenderer {
 
   /** `enableMouse` (EnableMouse), else a control's own default — `applyFrame`'s rule for a press, the wheel aside. */
   private takesMouse(frame: FrameXmlFrame): boolean {
-    const mouse = frame.attributes["enableMouse"] ?? frame.attributes["enablemouse"];
-    if (mouse !== undefined) return /^(?:true|1)$/i.test(mouse);
-    return frame.type === "Button" || frame.type === "CheckButton" || frame.type === "EditBox" || frame.type === "Slider";
+    // widgets9 3.21: the mouse bit as IsMouseEnabled reads it (FrameXmlInputBits.ts, constructors of Wow.exe).
+    return frameXmlMouseEnabled(frame);
   }
 
   private movingAncestor(frame: FrameXmlFrame): FrameXmlFrame | undefined {
@@ -2673,8 +2673,7 @@ export class FrameXmlDomRenderer {
     const wheel = frame.attributes["enableMouseWheel"] ?? frame.attributes["enablemousewheel"];
     const receivesWheel = wheel === undefined ? this.#bridge?.hasScript(frame, "OnMouseWheel")
       : /^(?:true|1)$/i.test(wheel);
-    const isControl = frame.type === "Button" || frame.type === "CheckButton"
-      || frame.type === "EditBox" || frame.type === "Slider";
+    const isControl = frameXmlTypeTakesMouse(frame.type); // widgets9 3.21: the constructors' mouse bit
     const receives = mouse === undefined ? Boolean(receivesWheel || isControl) : /^(?:true|1)$/i.test(mouse);
     // With hit-rect insets the box itself stops taking the pointer and a private node takes it
     // instead; see `applyHitRect`.

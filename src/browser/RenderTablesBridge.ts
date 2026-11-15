@@ -22,6 +22,7 @@ import type { GatewayGenerationPush } from "./GatewayGeneration.js";
 import type { RenderInputs } from "./RenderInputs.js";
 import type { RenderLookups } from "./RenderLookups.js";
 import type { OwnSheathRequest } from "./SheathCeremony.js"; // 5.05 (15.11, combat7)
+import type { RangedRepeatMark } from "../world/RangedRepeatMarks.js"; // 5.05 (15.11, bow9)
 import { MapDeltaReceiver, MapDeltaSender, type MapDelta } from "./MapDelta.js";
 import { toRenderTime } from "./RenderClock.js";
 
@@ -73,6 +74,8 @@ export interface RenderInputsMessage {
   readonly ownSheathRequest: Replaced<OwnSheathRequest | undefined>;
   /** 15.11 (5.32, combat7 follow-up): the facings kept after a melee victim died (UnitFixedFacing.ts), as differences. */
   readonly fixedFacings: MapDelta<bigint, number> | undefined;
+  /** 5.05 (15.11, bow9): the auto-repeat marks (world/RangedRepeatMarks.ts), as differences. */
+  readonly rangedRepeat: MapDelta<bigint, RangedRepeatMark> | undefined;
 }
 
 export class RenderInputsSender {
@@ -87,6 +90,7 @@ export class RenderInputsSender {
   readonly #generation = new ReplacedSender<GatewayGenerationPush | undefined>();
   readonly #ownSheathRequest = new ReplacedSender<OwnSheathRequest | undefined>(); // 5.05 (15.11, combat7)
   readonly #fixedFacings = new MapDeltaSender<bigint, number>(); // 15.11 (5.32, combat7 follow-up)
+  readonly #rangedRepeat = new MapDeltaSender<bigint, RangedRepeatMark>(); // 5.05 (15.11, bow9)
 
   encode(inputs: RenderInputs): RenderInputsMessage {
     return {
@@ -107,6 +111,7 @@ export class RenderInputsSender {
       ownSheathRequest: this.#ownSheathRequest.send(inputs.ownSheathRequest), // 5.05 (15.11, combat7)
       // 15.11 (5.32, combat7 follow-up): one Map refilled in place; nothing is built while it stays as it was.
       fixedFacings: this.#fixedFacings.delta(inputs.facing.fixedFacings),
+      rangedRepeat: this.#rangedRepeat.delta(inputs.rangedRepeat), // 5.05 (15.11, bow9)
     };
   }
 }
@@ -128,6 +133,7 @@ export class RenderInputsReceiver {
   readonly #generation = new ReplacedReceiver<GatewayGenerationPush | undefined>(undefined);
   readonly #ownSheathRequest = new ReplacedReceiver<OwnSheathRequest | undefined>(undefined); // 5.05 (15.11, combat7)
   readonly #fixedFacings = new MapDeltaReceiver<bigint, number>(); // 15.11 (5.32, combat7 follow-up)
+  readonly #rangedRepeat = new MapDeltaReceiver<bigint, RangedRepeatMark>(); // 5.05 (15.11, bow9)
   readonly #facing: { -readonly [K in keyof UnitFacingInputs]: UnitFacingInputs[K] } = {
     casts: this.#casts.map, interactionNpc: undefined, movementIds: this.#movementIds.map,
     spellAttributes: this.#spellAttributes.map,
@@ -163,6 +169,7 @@ export class RenderInputsReceiver {
     }
     inputs.ownSheathRequest = this.#ownSheathRequest.value;
     facing.fixedFacings = this.#fixedFacings.apply(message.fixedFacings); // 15.11 (5.32, combat7 follow-up)
+    inputs.rangedRepeat = this.#rangedRepeat.apply(message.rangedRepeat); // 5.05 (15.11, bow9)
     return inputs;
   }
 }

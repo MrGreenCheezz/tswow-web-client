@@ -14,6 +14,7 @@ import type { RenderSwitchesPush } from "./RenderSwitches.js";
 import type { OwnSheathRequest } from "./SheathCeremony.js"; // 5.05 (15.11, combat7)
 import { NO_UNIT_FACING_INPUTS, type UnitFacingInputs } from "../world/UnitFacing.js";
 import type { GroundNormal } from "../world/UnitTilt.js";
+import type { RangedRepeatMark } from "../world/RangedRepeatMarks.js"; // 5.05 (15.11, bow9)
 import type { VehicleCatalogRows } from "../world/VehicleDbc.js";
 
 export interface RenderInputs {
@@ -53,6 +54,11 @@ export interface RenderInputs {
    * by its serial: the arm clips of the 6.08 ceremony, the same in the page and in the render worker.
    */
   readonly ownSheathRequest?: OwnSheathRequest | undefined;
+  /**
+   * 5.05 (15.11, bow9): the units with Wow.exe's ranged auto-repeat mark (+0xa38 0x200) and their ammo display
+   * (world/RangedRepeatMarks.ts), for the bow draw (BowDraw.ts); absent: nobody is marked.
+   */
+  readonly rangedRepeat?: ReadonlyMap<bigint, RangedRepeatMark> | undefined;
 }
 
 /** Nothing pushed (a benchmark, a test, before the first frame): no glow, every object shown, no facing sources. */

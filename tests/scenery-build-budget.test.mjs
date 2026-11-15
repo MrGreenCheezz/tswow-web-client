@@ -271,6 +271,7 @@ test("environment construction observes elapsed time and resumes without disposi
     // 05.10 suite-fix 2: the 7.18 stand-in ledger (05.10-A7b-9) — a model-less build is a stand-in.
     environmentFarEligible: () => false, drawableModel: model => model !== undefined, standInKind: () => "none",
     SCENERY_SHADOW_HOLD_FRAMES: 30, // 22.10 (7.41)
+    doodadFirstSightFades: () => false, environmentDrawRange: () => 400, // 15.11 (fade9): the fade's grow-in rule
   });
   const harness = new Harness();
   let clock = 0, invalidations = 0;
@@ -287,6 +288,7 @@ test("environment construction observes elapsed time and resumes without disposi
     doodadRig() {}, environmentNode() { clock += 3; return new THREE.Group(); },
     environmentVisibilitySphere() {}, assignEnvironmentInstance() {}, sceneryShadowsForPlacement() {},
     prefetchEnvironmentModels() {}, updateVegetationGrowth() {}, poseDoodads() {}, updateInstances() {},
+    updateDoodadFades() {}, // 15.11 (fade9)
     setEnvironmentAdmitted() {},
     environmentStandIns: { begin() {} }, environmentStandInMarkers: { beginFrame() {}, endFrame() {} },
     noteEnvironmentStandIn() {},

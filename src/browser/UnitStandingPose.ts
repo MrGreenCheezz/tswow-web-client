@@ -199,6 +199,23 @@ export interface StandingPose {
   emoteState?: number;
   /** The combat stance ladder, while `UNIT_FLAG_IN_COMBAT` is up. */
   ready?: readonly number[];
+  /**
+   * 5.05 (15.11, bow9): the auto-repeat rung 0x00714f90 (BowDraw.ts) — LoadBow/HoldBow and their kin, then the ready
+   * stance a rig without them stands in. It comes before the stand state and the emote state, as in 0x00724500.
+   */
+  rangedLoad?: readonly number[];
+}
+
+const rangedLoadLadders = new Map<number, Map<readonly number[], readonly number[]>>();
+
+/** 5.05 (15.11, bow9): `stance` first, then `ready` (the ranged stance this client drew before); shared arrays. */
+export function rangedLoadLadder(stance: number, ready: readonly number[] | undefined): readonly number[] {
+  const tail = ready ?? READY_UNARMED;
+  let byTail = rangedLoadLadders.get(stance);
+  if (byTail === undefined) rangedLoadLadders.set(stance, byTail = new Map());
+  let ladder = byTail.get(tail);
+  if (ladder === undefined) byTail.set(tail, ladder = tail.includes(stance) ? tail : [stance, ...tail]);
+  return ladder;
 }
 
 /**
@@ -212,6 +229,7 @@ export interface StandingPose {
  * nothing calls `push` on a `wanted` list.
  */
 export function standingAnimations(pose: StandingPose): readonly number[] {
+  if (pose.rangedLoad !== undefined && pose.rangedLoad.length > 0) return pose.rangedLoad; // 5.05 (15.11, bow9): 0x00714f90
   if (pose.emoteState !== undefined) {
     let stance = stanceLadders.get(pose.emoteState);
     if (stance === undefined) {

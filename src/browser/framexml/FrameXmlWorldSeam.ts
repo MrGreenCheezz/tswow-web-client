@@ -131,6 +131,7 @@ import { FRAMEXML_CURSOR_MONEY_BINDINGS } from "./FrameXmlCursorMoney.js"; // L5
 import { FRAMEXML_REPAIR_BINDINGS, type FrameXmlRepairModel } from "./FrameXmlRepair.js";
 import { FRAMEXML_RANGE_QUERY_BINDINGS } from "./FrameXmlRangeQueries.js"; // widgets5 batch 2
 import { FRAMEXML_SPELL_QUERY_BINDINGS, FRAMEXML_SPELL_UNIT_TOKEN, frameXmlWithSpellNames } from "./FrameXmlSpellQueries.js"; // range8
+import { flushAccountDataForLua } from "../AccountDataFlush.js"; // widgets9 5.37
 import { FRAMEXML_BINDING_BINDINGS, FRAMEXML_BINDING_PRELUDE, type FrameXmlBindingModel } from "./FrameXmlBinding.js";
 import { FRAMEXML_CHAT_COLOR_BINDINGS, type FrameXmlChatColors } from "./FrameXmlChatColors.js";
 import { FRAMEXML_RAID_LOD_BINDINGS } from "./FrameXmlRaidLodApi.js";
@@ -2945,7 +2946,11 @@ export const FRAMEXML_SEAM_BINDINGS: Readonly<Record<string, FrameXmlSeamBinding
     seam.clearCursor();
     return NOTHING;
   },
-  GetInventorySlotInfo: (seam, args) => seam.inventorySlotInfo(
+  // widgets9 5.37: Wow.exe 0x00511f90 / 0x00511fa0 — the pending account-data writes go out now, slot 6 aside
+  // (AccountDataFlush.ts); nothing is answered.
+  UploadSettings: () => { flushAccountDataForLua(); return NOTHING; },
+  DownloadSettings: () => { flushAccountDataForLua(); return NOTHING; },
+  GetInventorySlotInfo:(seam, args) => seam.inventorySlotInfo(
     typeof args[0] === "string" ? args[0] : "",
   ) ?? NOTHING,
   GetInventoryItemTexture: (seam, args) => optional(

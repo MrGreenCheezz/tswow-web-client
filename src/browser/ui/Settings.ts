@@ -21,6 +21,7 @@ import { enhancedGraphicsSettings } from "./EnhancedGraphics.js";
 import { setFpsCounterVisible } from "./FpsCounter.js";
 import { frameLimitOverride, setFrameLimit } from "../FrameLimit.js"; // 25.10
 import { setParticleDensity } from "../Particles.js"; // 11.11 (6.15)
+import { registerAccountDataFlush } from "../AccountDataFlush.js"; // widgets9 5.37
 
 /**
  * 5.37 (15.11): the ones Wow.exe keeps as CVars of the account's or the character's config slot are read from
@@ -39,6 +40,8 @@ export const settingsStore = new SettingsAccountStore({
 });
 // The stock interface's own slot CVars go through the same store (framexml/FrameXmlCVarPersistence.ts).
 setStockCVarSlots(settingsStore);
+// widgets9 5.37: Lua UploadSettings/DownloadSettings send the config slots' pending writes, not slot 6's.
+registerAccountDataFlush(() => settingsStore.flush(6));
 
 const appliedListeners = new Set<() => void>();
 

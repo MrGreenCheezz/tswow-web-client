@@ -15,6 +15,8 @@ import {
   airborneChanged, isBaseIdle, isJumpAnimation, isReallyFalling, mountPoseTransition, poseAnimation, poseTransition,
 } from "../dist/code/browser/AnimatedModel.js";
 import { TRANSITION_SIDECAR_WAIT, settleTransition } from "../dist/code/browser/PendingTransition.js";
+import { poseTransitionGivesWay } from "../dist/code/browser/PoseTransitionCut.js";
+import { assertOrder, memberSource, readSource } from "./source-pins.mjs";
 import { animationPlaysOnUpperBody, unitActionDisplay } from "../dist/code/browser/UnitActionArbiter.js";
 import { WorldState } from "../dist/code/world/WorldState.js";
 import { MOVEMENT_FLAGS as F } from "../dist/code/world/MovementProtocol.js";
@@ -178,16 +180,32 @@ test("a stunned rider is stunned on the upper body: Stun is on 0x71d800's list a
   assert.equal(unitActionDisplay("state", true, isBaseIdle(rider)), "upper");
 });
 
-test("the renderer: a movement change ends a transition; an edge waits for its clip", () => {
-  const source = readFileSync(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
-  const animate = source.slice(source.indexOf("  #animateUnit("), source.indexOf("  #flatPose("));
-  assert.match(animate, /const transitionCut = unit\.transitionMoving !== undefined\s+&& \(unit\.transitionMoving !== isUnitMoving\(pose\.movementFlags, pose\.spline\) \|\| airborneChanged\(unit\.pose, pose\)\);/);
-  assert.match(animate, /if \(deathTransition \|\| unit\.overlayPreservesLocomotion === true \|\| transitionCut/);
+// 13.09 (pins9): the cut is a function of its own (PoseTransitionCut.ts), checked by what it answers.
+test("a running transition gives way when the unit starts or stops moving, or leaves or reaches the ground", () => {
+  const standing = pose();
+  const running = pose({ movementFlags: F.forward });
+  const air = pose({ movementFlags: F.falling | F.forward, fallJumped: true });
+  assert.equal(poseTransitionGivesWay(undefined, standing, running), false, "no transition runs: nothing to cut");
+  assert.equal(poseTransitionGivesWay(false, standing, standing), false, "begun standing, still standing");
+  assert.equal(poseTransitionGivesWay(false, standing, running), true, "begun standing, now running (0x0073ee14)");
+  assert.equal(poseTransitionGivesWay(true, running, standing), true, "begun running, now stopped: JumpLandRun stops");
+  assert.equal(poseTransitionGivesWay(true, running, running), false, "begun running, still running");
+  assert.equal(poseTransitionGivesWay(true, running, air), true, "6.35: left the ground with the same movement");
+  assert.equal(poseTransitionGivesWay(true, air, pose({ movementFlags: F.forward, fallJumped: true })), true,
+    "6.35: reached the ground");
+});
+
+test("the renderer: a movement change ends a transition; an edge waits for its clip", async () => {
+  const source = await readSource("browser/WorldRenderer3D.ts");
+  // What stays pinned is the wiring inside the two members (no output shows it without a whole renderer).
+  const animate = memberSource(source, "#animateUnit");
+  assert.match(animate, /const transitionCut = poseTransitionGivesWay\(unit\.transitionMoving, unit\.pose, pose\);/);
+  assert.match(animate, /if \(deathTransition \|\| unit\.overlayPreservesLocomotion === true \|\| transitionCut\b/);
   assert.match(animate, /if \(object\.fallJumped !== undefined\) pose\.fallJumped = object\.fallJumped;/);
   assert.match(animate, /pose\.airborneBase = isJumpAnimation\(unit\.animationId\) \? unit\.animationId : null;/);
-  const poseUnit = source.slice(source.indexOf("  #poseUnit("), source.indexOf("  #showUnitAction("));
+  const poseUnit = memberSource(source, "#poseUnit");
   // 15.11 (6.43): `before` is unit.pose, with the stand state carried over when the pose gave way without the field moving.
   assert.match(poseUnit, /settleTransition\(poseTransition\(before, pose\), unit\.pendingTransition/);
   assert.match(poseUnit, /unit\.transitionMoving = moving;/);
-  assert.ok(poseUnit.indexOf("unit.transitionMoving = undefined;") < poseUnit.indexOf("#showUnitAction("));
+  assertOrder(poseUnit, ["unit.transitionMoving = undefined;", "#showUnitAction("], "a transition's state is cleared before the action shows");
 });

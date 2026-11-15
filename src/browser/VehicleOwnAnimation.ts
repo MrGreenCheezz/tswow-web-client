@@ -39,6 +39,8 @@ import { seatVehicleExitBit } from "./VehicleExitBit.js";
  * returns 0x00724330's answer alone — 0x1fa (no change) when that has none — skipping every movement, stand-state and
  * stance rung. The rule: such a vehicle keeps its precast or flag-0x80 kit animation while it moves. Twelve Vehicle rows;
  * not wired, because this client's pose choice is not 0x00724500's chain (WorldRenderer3D `#animateUnit`).
+ * 15.11 (vehicle9): wired as the smallest matching link, VehiclePoseNarrowing.ts (0x00724330 answers only the cast's own
+ * PrecastKit animation, 0x007224d0, so the precast keeps the whole body moving or standing until the mark drops).
  */
 
 /** Seat Flags these rules read. */
