@@ -52,6 +52,7 @@ import {
   type BindPoint, type EquipmentSet, type FactionState, type TalentsInfo,
 } from "./CharacterProgressProtocol.js";
 import { parseInspectTalent, type InspectResult } from "./InspectProtocol.js";
+import { UnitFixedFacings } from "./UnitFixedFacing.js"; // 15.11 (5.32)
 import {
   buildItemRefund, buildItemRefundInfo, ITEM_FLAG_ITEM_PURCHASE_RECORD, ItemRefunds, itemRefundMessages,
   parseItemRefundInfo, parseItemRefundResult,
@@ -392,6 +393,7 @@ import { wandRepeatCancels } from "./AutoRepeatRefusal.js"; // 5.05 (11.10)
 import { SPELL_FAILED_ITEM_NOT_READY } from "./CooldownRefusalWords.js"; // 3.47 (12.10)
 import { SheathSetter, SPELL_ATTR0_RANGED, standStateSheathes } from "./SheathSetter.js"; // 5.05 (11.11)
 import { animationSheathState } from "./AnimationSheathRule.js"; // 5.05 (11.11)
+import { OwnCastMark, ownSheathCasting } from "./OwnCastMark.js"; // 5.05 (15.11, sheath6)
 import { ANIMATION_BEHAVIORS, ANIMATION_WEAPON_FLAGS } from "../generated/animations.js"; // 5.05 (11.11)
 import { mountedCastRule, SPELL_FAILED_NOT_MOUNTED } from "./MountedCastRule.js"; // 5.05 (11.11)
 import { // 5.05 (11.11): 0x0080cce0 / 0x0080ac90
@@ -898,6 +900,8 @@ export class WorldClient {
    * PLAYER_LEAVE_COMBAT for each of them (0x756800 case 0x144), not only after an ENTER (5.21).
    */
   attackStops = 0;
+  /** 15.11 (5.32): the facing a unit keeps after SMSG_ATTACK_STOP said its victim died (UnitFixedFacing.ts). */
+  readonly fixedFacings = new UnitFixedFacings();
   /**
    * Whom the swing is aimed at (Wow.exe player +0xa20, 5.05): set with the request (0x98e540) and
    * by SMSG_ATTACK_START, cleared by SMSG_ATTACK_STOP (0x756770) and by stopping. Not the selection:
@@ -1684,6 +1688,8 @@ export class WorldClient {
   #castCount = 0;
   /** 5.05 (11.11): the sheath setter's held state (Wow.exe 0x00736d30, SheathSetter.ts). */
   readonly #sheathSetter = new SheathSetter(); // 5.05 (11.11)
+  /** 5.05 (15.11, sheath6): +0xa5c/+0xa60 from the own request to its answer (OwnCastMark.ts). */
+  readonly #ownCastMark = new OwnCastMark(); // 5.05 (15.11, sheath6)
   /** 11.02-E: the note between a trajectory cast and its re-aim (Wow.exe unit+0xf68…0xf74, MissileCast.ts). */
   readonly #missiles = new MissileTrajectoryTracker((guid, spellId) => this.#reaimMissile(guid, spellId)); // 11.02-E
   // 11.02 (11.11): an own collision missile meeting a unit — CMSG_UPDATE_PROJECTILE_POSITION (MissileCollision.ts)
@@ -2442,7 +2448,8 @@ export class WorldClient {
         : { weaponFlags: weaponFlags ?? 0, behavior: behavior ?? 0 },
       animation, keep, // 5.05 (11.11)
       held: this.#sheathSetter.held ?? published ?? SHEATH_UNARMED,
-      casting: cast === undefined || cast.channel ? undefined : { attributes0: spellAttributeWords(cast.spellId)?.[0] },
+      // 5.05 (15.11, sheath6): or the mark of an unanswered request, an instant's too (OwnCastMark.ts).
+      casting: ownSheathCasting(cast, this.#ownCastMark.spellId, (spellId) => spellAttributeWords(spellId)?.[0]),
       attacking: this.#meleeEngaged(), activePlayer: true, published,
     });
     if (state !== undefined) this.#sendSheath(state, self);
@@ -3117,6 +3124,12 @@ export class WorldClient {
     if (attributes0 !== undefined ? (attributes0 & SPELL_ATTR0_RANGED) !== 0 : this.#autoRepeatSpellIds.has(spellId)) { // 5.05 (11.11)
       this.#sendSheath(SHEATH_RANGED); // 5.05 (11.11)
     } // 5.05 (11.11)
+    // 5.05 (15.11, sheath6): 0x00805330 → 0x00715a80 marks the request until its answer (OwnCastMark.ts).
+    // The mark is the caster's: a vehicle's request (its GO names the vehicle) leaves the character's alone.
+    const ownCast = this.state.selfGuid === undefined ? undefined : this.casts.get(this.state.selfGuid); // 5.05 (15.11, sheath6)
+    if (this.controlledGuid === undefined || this.controlledGuid === this.state.selfGuid) { // 5.05 (15.11, sheath6)
+      this.#ownCastMark.send(spellId, castCount, ownCast !== undefined && !ownCast.channel); // 5.05 (15.11, sheath6)
+    } // 5.05 (15.11, sheath6)
     this.#prunePendingCasts();
     this.#pendingCasts.push({
       spellId,
@@ -6321,6 +6334,7 @@ export class WorldClient {
     this.#missiles.dispose(); // 11.02-E
     this.#missileCollisions.dispose(); // 11.02 (11.11)
     this.#pendingCasts.length = 0;
+    this.#ownCastMark.clear(); // 5.05 (15.11, sheath6)
     this.#locallyStartedCooldowns.clear();
     if (this.#pingTimer) clearInterval(this.#pingTimer);
     this.#connection.close();
@@ -7710,6 +7724,7 @@ export class WorldClient {
       const ownCast = selfGuid === undefined || cast.casterUnit === selfGuid || cast.casterGuid === selfGuid;
       if (ownCast) {
         this.#confirmPendingCast(cast.spellId, cast.castId);
+        this.#ownCastMark.end(cast.spellId, cast.castId); // 5.05 (15.11, sheath6): 0x0080e1b0 → 0x007fecc0
       }
       if ((cast.castFlags & CAST_FLAG_PENDING) === 0) this.#refusalQuiet.spellGo(); // 05.10-5.05: 0x0080e1b0, whoever cast it
       // 3.02: Wow.exe 0x0080e1b0 hands a GO without CAST_FLAG_PENDING (not triggered: Spell.cpp:4484-4485) to 0x007fecc0
@@ -7778,6 +7793,7 @@ export class WorldClient {
       this.#categorySnapshots.clear(); // 3.39
       this.#holdParts.clear(); // 3.39
       this.#pendingCasts.length = 0;
+      this.#ownCastMark.clear(); // 5.05 (15.11, sheath6)
       this.#locallyStartedCooldowns.clear();
       for (const cooldown of initial.cooldowns) {
         if (cooldown.categoryId !== 0) this.spellCategories.set(cooldown.spellId, cooldown.categoryId);
@@ -7811,6 +7827,7 @@ export class WorldClient {
     if (packet.opcode === OPCODES.SMSG_CAST_FAILED) {
       const failure = parseCastFailure(packet.payload);
       const pending = this.#rejectPendingCast(failure.spellId, failure.castCount);
+      this.#ownCastMark.end(failure.spellId, failure.castCount); // 5.05 (15.11, sheath6): 0x00808200 → 0x007fecc0
       // 3.02: Wow.exe 0x00809af0 (opcode 0x130) hands the player's refusal through 0x00808200 to 0x007fecc0
       // (UNIT_SPELLCAST_FAILED[_QUIET]); 0x00805610 is the pet's (SMSG_PET_CAST_FAILED 0x138 → 0x00806c30). (3.01-go-order: comment corrected)
       if (this.state.selfGuid !== undefined) {
@@ -8870,6 +8887,7 @@ export class WorldClient {
       const failure = parseSpellFailure(packet.payload);
       if (this.state.selfGuid === undefined || failure.casterGuid === this.state.selfGuid) {
         this.#rejectPendingCast(failure.spellId, failure.castCount);
+        this.#ownCastMark.end(failure.spellId, failure.castCount); // 5.05 (15.11, sheath6): → 0x007fecc0
       }
       // 3.02: both packets reach 0x007fecc0 in Wow.exe (SPELL_FAILURE 0x00809c70, SPELL_FAILED_OTHER 0x00806ad0 —
       // registration 0x008100e0; 3.01-go-order: comment corrected) — the core sends the
@@ -10782,6 +10800,7 @@ export class WorldClient {
     if (packet.opcode === OPCODES.SMSG_ATTACK_STOP) {
       const attack = parseAttackStop(packet.payload);
       this.onMeleeAttack?.(attack.attacker, undefined); // 05.10-A7a-D2
+      this.fixedFacings.attackStopped(attack.attacker, attack.victim, attack.victimDied, this.state.objects); // 15.11 (5.32): 0x756770
       if (attack.attacker === this.state.selfGuid) {
         this.attacking = false;
         this.attackVictim = undefined;

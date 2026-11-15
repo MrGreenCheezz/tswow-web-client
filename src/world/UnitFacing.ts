@@ -35,7 +35,9 @@
  *
  * 11.11 (5.32, `.runtime/re-2026-11-11/combat4`): two more answers of 0x00735f60.
  *
- * * +0xa30 bit 0 — a fixed facing, +0xab8. READ BUT NOT APPLIED: what bounds it is not established. Its only setter
+ * * +0xa30 bit 0 — a fixed facing, +0xab8. 15.11: APPLIED (UnitFixedFacing.ts, `UnitFacingInputs.fixedFacings`) — the
+ *   Wow.exe stand showed the literal reading below is what the original draws (runs\face6-q1-flag against
+ *   face6-q1-noflag): the "visibly does not" of 11.11 was a guess, not a recording. The 11.11 note follows. Its only setter
  *   is 0x00756770, SMSG_ATTACK_STOP's worker (0x00756800 case 0x144, also 0x261): with a victim guid, a non-zero last
  *   word (TrinityCore's `NowDead`, CombatPackets.cpp:34-51) and the victim in view, the attacker keeps the angle to
  *   the victim at that moment. The only clear found is 0x0073d530 — the unit's own revival (health handler 0x0073f330,
@@ -116,6 +118,8 @@ export interface UnitFacingInputs {
   readonly movementIds: ReadonlyMap<number, number>;
   /** The spell rows' eight attribute words (`/dbc/spells?v=14` `attributes`), by spell id; absent: not known. */
   readonly spellAttributes: ReadonlyMap<number, readonly number[]>;
+  /** 15.11 (5.32): +0xa30 bit 0 / +0xab8 — the angle a unit keeps after its melee victim died (UnitFixedFacing.ts). */
+  readonly fixedFacings?: ReadonlyMap<bigint, number> | undefined;
 }
 
 /** 22.10 ARC-2 S2a: no world — every answer «nothing there». */
@@ -175,7 +179,7 @@ function facingChoice(
   inputs: UnitFacingInputs,
   seatFlags: number | undefined | "none",
   vehicleAim: bigint | undefined,
-): WorldObjectState | undefined {
+): WorldObjectState | number | undefined {
   if (object.typeId !== TYPEID_UNIT) return undefined;
   if (!object.position || (object.movementFlags & OWN_AXES) !== 0 || object.motion !== undefined) return undefined;
   // 5.32: an emote state whose row does not carry 0x2000 (0x00735f60's first test).
@@ -188,7 +192,9 @@ function facingChoice(
   const flags = object.fields.get(FLAGS) ?? 0;
   if ((flags & (UNIT_FLAG_STUNNED | UNIT_FLAG_POSSESSED)) !== 0) return undefined;
   if (((object.fields.get(FLAGS_2) ?? 0) & UNIT_FLAG2_CANNOT_TURN) !== 0) return undefined;
-  // 11.11 (5.32): +0xa30 bit 0's fixed facing would be tested here — not applied, see the header.
+  // 15.11 (5.32): +0xa30 bit 0 — the angle kept since its melee victim died, before everything below (measured).
+  const fixed = inputs.fixedFacings?.get(object.guid);
+  if (fixed !== undefined) return fixed;
   // 5.32: 0x00722640 — not while casting a spell that must not turn its caster.
   const casting = castingNow(inputs, object.guid);
   if (casting !== undefined
@@ -232,7 +238,7 @@ export function unitAutoFacing(
 ): number | undefined {
   if (object.transport !== undefined && objects.get(object.transport.guid)?.typeId !== TYPEID_GAMEOBJECT) return undefined;
   const choice = facingChoice(object, objects, channelTracksTarget, selfGuid, inputs, "none", vehicleAim);
-  return choice === undefined ? undefined : choiceAngle(object, choice);
+  return choice === undefined ? undefined : typeof choice === "number" ? choice : choiceAngle(object, choice);
 }
 
 /**
@@ -258,6 +264,9 @@ export function unitSeatFacing(
   if (vehicle === undefined) return undefined;
   const choice = facingChoice(object, objects, channelTracksTarget, selfGuid, inputs, seatFlags, vehicleAim);
   if (choice === undefined) return undefined;
+  // 15.11 (5.32): 0x00735f60 takes +0xab8 as the drawn facing itself, without the vehicle's subtracted (read, the
+  // stand measured only a creature on foot).
+  if (typeof choice === "number") return choice;
   return wrap(choiceAngle(object, choice) - vehicleFacing(vehicle));
 }
 

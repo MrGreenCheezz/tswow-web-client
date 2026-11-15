@@ -186,7 +186,8 @@ test("the renderer: a movement change ends a transition; an edge waits for its c
   assert.match(animate, /if \(object\.fallJumped !== undefined\) pose\.fallJumped = object\.fallJumped;/);
   assert.match(animate, /pose\.airborneBase = isJumpAnimation\(unit\.animationId\) \? unit\.animationId : null;/);
   const poseUnit = source.slice(source.indexOf("  #poseUnit("), source.indexOf("  #showUnitAction("));
-  assert.match(poseUnit, /settleTransition\(poseTransition\(unit\.pose, pose\), unit\.pendingTransition/);
+  // 15.11 (6.43): `before` is unit.pose, with the stand state carried over when the pose gave way without the field moving.
+  assert.match(poseUnit, /settleTransition\(poseTransition\(before, pose\), unit\.pendingTransition/);
   assert.match(poseUnit, /unit\.transitionMoving = moving;/);
   assert.ok(poseUnit.indexOf("unit.transitionMoving = undefined;") < poseUnit.indexOf("#showUnitAction("));
 });

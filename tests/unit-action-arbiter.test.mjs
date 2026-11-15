@@ -43,6 +43,7 @@ const {
 } = arbiter;
 
 const { seatSplitsPose } = await import("../dist/code/browser/VehicleSeatPose.js"); // 5.05 (11.11): the executor's dependency
+const { cycleEndIsSheathStart } = await import("../dist/code/browser/SheathCycleStart.js"); // 5.05 (15.11, sheath6)
 
 const withAnimationData = { skip: ANIMATION_DATA_AVAILABLE ? false : "no locally generated animation data" };
 
@@ -355,6 +356,7 @@ function executor({ moving = false, overrides = {}, legless = false } = {}) {
     PLAYBACK_BACKWARD, PLAYBACK_FORWARD, PLAYBACK_HOLD_LAST, applyPlayback, fallbackPlayback, playbackHolds, wantedPlayback,
     startKeep, // 5.05 (11.11): #settleUnitAction marks a start's `keep` bit for the sheath rule
     seatSplitsPose, // 5.05 (11.11): read by #settleUnitAction since 04.11 (11.02), missing here until now
+    cycleEndIsSheathStart, // 5.05 (15.11, sheath6): #poseBase counts a round of a clip without variations as a start
     ...overrides,
   });
   const h = new Harness();

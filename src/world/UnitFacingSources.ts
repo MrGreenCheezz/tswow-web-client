@@ -13,7 +13,7 @@ import type { WorldClient } from "./WorldClient.js";
 /** What these answers read of the world client. */
 export type FacingWorld = Pick<WorldClient, "casts" | "creatureTemplates" | "gossip" | "questDialog" | "questList"
   | "vendor" | "trainer" | "taxiMenu" | "bankerGuid" | "auctioneerGuid" | "tabardVendorGuid" | "petitionVendor"
-  | "stable" | "stableMasterGuid"> & Partial<Pick<WorldClient, "creatureTemplatesRevision">>;
+  | "stable" | "stableMasterGuid"> & Partial<Pick<WorldClient, "creatureTemplatesRevision" | "fixedFacings" | "state">>;
 
 /**
  * The NPC an interaction window is open on — Wow.exe's 0x00bd07a8, which every NPC frame sets through 0x0051fce0
@@ -46,6 +46,7 @@ export class UnitFacingInputsBuilder {
   #templatesRevision: number | undefined;
   readonly #inputs: { -readonly [K in keyof UnitFacingInputs]: UnitFacingInputs[K] } = {
     casts: NO_CASTS, interactionNpc: undefined, movementIds: this.#movementIds, spellAttributes: NO_SPELL_ATTRIBUTES,
+    fixedFacings: undefined,
   };
 
   build(world: FacingWorld | undefined, spellAttributes: ReadonlyMap<number, readonly number[]> | undefined): UnitFacingInputs {
@@ -53,6 +54,9 @@ export class UnitFacingInputsBuilder {
     inputs.casts = world?.casts ?? NO_CASTS;
     inputs.interactionNpc = interactionNpcGuid(world);
     inputs.spellAttributes = spellAttributes ?? NO_SPELL_ATTRIBUTES;
+    // 15.11 (5.32): the facings kept since a melee victim died, revivals dropped this frame (UnitFixedFacing.ts).
+    inputs.fixedFacings = world?.fixedFacings !== undefined && world.state !== undefined
+      ? world.fixedFacings.current(world.state.objects) : undefined;
     const templates = world?.creatureTemplates;
     const revision = world?.creatureTemplatesRevision;
     if (templates !== this.#templatesOf || revision === undefined || revision !== this.#templatesRevision) {

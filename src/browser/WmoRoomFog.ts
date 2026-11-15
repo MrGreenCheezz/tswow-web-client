@@ -15,7 +15,7 @@
  * record is the default, the frame keeps what it did before — the zone's own underwater light.
  */
 
-import type { WmoFog } from "./WmoModel.js";
+import type { WmoFog, WmoGroup, WmoPortals } from "./WmoModel.js";
 
 /** One fog: sRGB colour 0–1 and the distances it begins and is whole at. Reused, never retained. */
 export interface WmoRoomFog {
@@ -46,4 +46,204 @@ export function wmoRoomFogFor(fog: WmoFog, underwater: boolean, out: WmoRoomFog)
   out.near = end * scale;
   out.far = end;
   return true;
+}
+
+/*
+ * 15.11 (7.55): the land fog of a camera in a WMO group, as Wow.exe builds it, checked against the stand's frames
+ * (WowOracle `runs/fog6-*`: VS c30 = −1/(end−start), end/(end−start), density; PS c2 = the colour; numbers in
+ * `tests/wmo-room-fog.test.mjs`).
+ *
+ * 0x007a1150 (called through 0x0077fb90 from the frame's fog, 0x007f16f0):
+ * - starts from the WMO's record 0, whatever the group names (white included: the Stormwind keep's throne room
+ *   draws 255,255,255 from 111.1 to 444.4);
+ * - takes the records the camera's group names in its four MOGP slots (zeros skipped) that are not flagged 1 and
+ *   whose outer radius holds the camera, ordered far to near (a max-heap on the distance, 0x007a0f50/0x0097e080),
+ *   and blends each over what is there by w = 1 inside the inner radius, else 1 − (d − inner)/(outer − inner):
+ *   end and start scale as floats, the colour in bytes by round(255·w) with (to − from)·w >> 8 (0x007a0cd0,
+ *   0x006acc50);
+ * - measures, from the camera's group through portals into groups without MOGI 0x8|0x40 (four levels at most), the
+ *   distance to the nearest portal that leads into one with them, counting only portals nearer than 25 yards
+ *   (0x007d8010 → 0x007d77c0, 0x00a2e868); none near reads 25 and more.
+ * Then 0x007ed1b0 makes the WMO fog: end = min(end, far clip), start = scale · end, the end at least 30 yards
+ * (0x00a19cdc); and 0x007f16f0 mixes the zone's fog towards it by k = clamp(0.04 · distance) (0x00a32e2c): end and
+ * start as floats, the colour by round(255·k) in bytes. A line of ten frames from the back of `mageinterior01` to
+ * its door to the tower reads k 0.447 … 0.061 against 0.450 … 0.064 computed (`fog6-line-*`): a ramp, 0.04 a yard.
+ *
+ * On maps from 530 up (the 0x212 test in 0x007816f0, which sets the fog mode 0x00d38acc) the client shapes every
+ * fog, the zone's and a room's: the end becomes the far clip and the shader raises the linear factor to a density
+ * (c30.z: 4.418 in Black Temple's sewers, 0x007ecd00). Stand frames: Outland, Hellfire Ramparts and Black Temple
+ * end at 1277; Stormwind, the Stockade and Onyxia's Lair at the records' own ends. WebClient does not draw that
+ * shaping (its zone fog there is linear too), so on those maps the room fog is not applied: see
+ * {@link wmoRoomFogShapedMap}.
+ */
+
+/** Yards: a portal to the outside nearer than this mixes the zone's fog in (0x00a2e868). */
+export const WMO_FOG_PORTAL_REACH = 25;
+/** Per yard from that portal, the share of the room's fog (0x00a32e2c). */
+export const WMO_FOG_SHARE_PER_YARD = 0.04;
+/** The WMO fog's end never comes nearer (0x00a19cdc). */
+export const WMO_FOG_END_FLOOR = 30;
+/** Group flags that make a group the outside for this walk: exterior 0x8, exterior-lit 0x40 (0x007a1150). */
+const OUTSIDE_GROUP_FLAGS = 0x48;
+/** A record flagged so is never blended in (0x007a1150 skips `flags & 1`). */
+const SKIPPED_RECORD_FLAG = 0x1;
+
+/**
+ * Whether Wow.exe shapes the fog on this map (end at the far clip, a density exponent): maps from 530 up, by the
+ * test in 0x007816f0 (`>= 0x212`); a second condition there (a setting at +0xb4 not 0 or 1) held on the stand.
+ * Measured: 530, 543, 564 shaped; 0, 34, 249 not.
+ */
+export function wmoRoomFogShapedMap(map: number): boolean {
+  return map >= 530;
+}
+
+/**
+ * Writes the WMO fog of a camera at (x, y, z) in a group naming `fogIds` into `out` (before the zone mix); false
+ * when record 0 is missing or not a distance, and the caller keeps the zone's fog.
+ */
+export function wmoGroupLandFog(
+  fogs: readonly WmoFog[], fogIds: readonly number[], x: number, y: number, z: number, out: WmoRoomFog,
+): boolean {
+  const base = fogs[0];
+  if (!base || !usableLand(base)) return false;
+  let end = base.land.end;
+  let scale = base.land.scale;
+  let r = base.land.colour[0], g = base.land.colour[1], b = base.land.colour[2];
+  // Far to near; a group names at most four records, so a tiny insertion order over the slots does.
+  const order = ORDER;
+  let count = 0;
+  for (const id of fogIds) {
+    if (id === 0) continue;
+    const fog = fogs[id];
+    if (!fog || !usableLand(fog) || (fog.flags & SKIPPED_RECORD_FLAG) !== 0) continue;
+    const distance = Math.hypot(fog.position[0] - x, fog.position[1] - y, fog.position[2] - z);
+    if (!(distance < fog.outerRadius)) continue;
+    let at = count++;
+    while (at > 0 && order[at - 1]!.distance < distance) {
+      order[at] = order[at - 1]!;
+      at--;
+    }
+    order[at] = { fog, distance };
+  }
+  for (let index = 0; index < count; index++) {
+    const { fog, distance } = order[index]!;
+    const w = distance < fog.innerRadius || !(fog.outerRadius > fog.innerRadius)
+      ? 1 : 1 - (distance - fog.innerRadius) / (fog.outerRadius - fog.innerRadius);
+    end += (fog.land.end - end) * w;
+    scale += (fog.land.scale - scale) * w;
+    const steps = Math.round(w * 255) & 0xff;
+    r = mixByte(r, fog.land.colour[0], steps);
+    g = mixByte(g, fog.land.colour[1], steps);
+    b = mixByte(b, fog.land.colour[2], steps);
+  }
+  out.r = r / 255;
+  out.g = g / 255;
+  out.b = b / 255;
+  out.near = scale * end;
+  out.far = Math.max(WMO_FOG_END_FLOOR, end);
+  return true;
+}
+
+const ORDER: { fog: WmoFog; distance: number }[] = [];
+
+/** 0x006acc50: a byte towards another by `steps`/256, 255 meaning all the way. */
+function mixByte(from: number, to: number, steps: number): number {
+  if (steps === 255) return to;
+  return (from + Math.floor(((to - from) * steps) / 256)) & 0xff;
+}
+
+/**
+ * The share k of the room's fog for a camera at (x, y, z) in `groups[start]`: clamp(0.04 · d), d the distance to the
+ * nearest portal leading out (see above), 1 when none is within 25 yards.
+ */
+export function wmoRoomFogShare(
+  groups: readonly Pick<WmoGroup, "flags" | "portalStart" | "portalCount">[], portals: WmoPortals | undefined,
+  start: number, x: number, y: number, z: number,
+): number {
+  if (!portals) return 1;
+  const distance = outwardPortalDistance(groups, portals, start, -1, 0, x, y, z, WMO_FOG_PORTAL_REACH);
+  return Math.min(1, Math.max(0, distance * WMO_FOG_SHARE_PER_YARD));
+}
+
+function outwardPortalDistance(
+  groups: readonly Pick<WmoGroup, "flags" | "portalStart" | "portalCount">[], portals: WmoPortals,
+  group: number, from: number, depth: number, x: number, y: number, z: number, best: number,
+): number {
+  const here = groups[group];
+  if (!here || depth >= 4) return best;
+  for (let ref = here.portalStart; ref < here.portalStart + here.portalCount; ref++) {
+    const reference = portals.references[ref];
+    if (!reference) continue;
+    const other = groups[reference.group];
+    if (!other || reference.group === from) continue;
+    if ((other.flags & OUTSIDE_GROUP_FLAGS) === 0) {
+      best = outwardPortalDistance(groups, portals, reference.group, group, depth + 1, x, y, z, best);
+    } else {
+      const definition = portals.definitions[reference.portal];
+      if (!definition) continue;
+      const d = pointPolygonDistance(portals.vertices, definition.startVertex, definition.vertexCount, x, y, z);
+      if (d < best) best = d;
+    }
+  }
+  return best;
+}
+
+/** The distance from a point to a convex planar polygon: to its plane over the inside, to its nearest edge outside. */
+export function pointPolygonDistance(
+  vertices: Float32Array, startVertex: number, vertexCount: number, x: number, y: number, z: number,
+): number {
+  if (vertexCount < 3) return Number.POSITIVE_INFINITY;
+  const at = startVertex * 3;
+  const ax = vertices[at]!, ay = vertices[at + 1]!, az = vertices[at + 2]!;
+  let nx = 0, ny = 0, nz = 0;
+  for (let i = 1; i + 1 < vertexCount; i++) {
+    const bx = vertices[at + i * 3]! - ax, by = vertices[at + i * 3 + 1]! - ay, bz = vertices[at + i * 3 + 2]! - az;
+    const cx = vertices[at + i * 3 + 3]! - ax, cy = vertices[at + i * 3 + 4]! - ay, cz = vertices[at + i * 3 + 5]! - az;
+    nx += by * cz - bz * cy;
+    ny += bz * cx - bx * cz;
+    nz += bx * cy - by * cx;
+  }
+  const length = Math.hypot(nx, ny, nz);
+  if (!(length > 0)) return Number.POSITIVE_INFINITY;
+  nx /= length; ny /= length; nz /= length;
+  const plane = (x - ax) * nx + (y - ay) * ny + (z - az) * nz;
+  const qx = x - nx * plane, qy = y - ny * plane, qz = z - nz * plane;
+  let sign = 0;
+  let inside = true;
+  let edge = Number.POSITIVE_INFINITY;
+  for (let i = 0; i < vertexCount; i++) {
+    const p = at + i * 3, q = at + ((i + 1) % vertexCount) * 3;
+    const px = vertices[p]!, py = vertices[p + 1]!, pz = vertices[p + 2]!;
+    const ex = vertices[q]! - px, ey = vertices[q + 1]! - py, ez = vertices[q + 2]! - pz;
+    const wx = qx - px, wy = qy - py, wz = qz - pz;
+    const side = (ey * wz - ez * wy) * nx + (ez * wx - ex * wz) * ny + (ex * wy - ey * wx) * nz;
+    if (side !== 0) {
+      if (sign === 0) sign = Math.sign(side);
+      else if (Math.sign(side) !== sign) inside = false;
+    }
+    const lengthSq = ex * ex + ey * ey + ez * ez;
+    const t = lengthSq > 0 ? Math.min(1, Math.max(0, ((x - px) * ex + (y - py) * ey + (z - pz) * ez) / lengthSq)) : 0;
+    edge = Math.min(edge, Math.hypot(x - (px + ex * t), y - (py + ey * t), z - (pz + ez * t)));
+  }
+  return inside ? Math.abs(plane) : edge;
+}
+
+/**
+ * 0x007f16f0: the zone's fog mixed towards the room's by k, written into `room`. `zone` is sRGB 0–1 like `room`; the
+ * colour goes in bytes by round(255·k), the distances as floats.
+ */
+export function mixZoneIntoRoomFog(zone: Readonly<WmoRoomFog>, room: WmoRoomFog, k: number): void {
+  const steps = Math.round(Math.min(1, Math.max(0, k)) * 255) & 0xff;
+  const zr = Math.round(zone.r * 255), zg = Math.round(zone.g * 255), zb = Math.round(zone.b * 255);
+  room.r = (steps === 0 ? zr : mixByte(zr, Math.round(room.r * 255), steps)) / 255;
+  room.g = (steps === 0 ? zg : mixByte(zg, Math.round(room.g * 255), steps)) / 255;
+  room.b = (steps === 0 ? zb : mixByte(zb, Math.round(room.b * 255), steps)) / 255;
+  room.near = zone.near + (room.near - zone.near) * k;
+  room.far = zone.far + (room.far - zone.far) * k;
+}
+
+function usableLand(fog: WmoFog): boolean {
+  const { end, scale, colour } = fog.land;
+  return Number.isFinite(end) && end > 0 && Number.isFinite(scale)
+    && colour.every((channel) => Number.isFinite(channel) && channel >= 0 && channel <= 255);
 }

@@ -26,7 +26,7 @@ import {
 } from "./Particles.js";
 import { installSpellParticleLook, spellParticleLookOf } from "./SpellParticleLook.js"; // 23.10 (6.27)
 import { BLEND_ADD, BLEND_BLEND_ADD, BLEND_NO_ALPHA_ADD } from "./Wvm.js"; // 23.10 (6.27)
-import { particleDepthState } from "./ParticleDepth.js"; // 15.11 (6.15)
+import { applyParticleDepthState, particleDepthFollowsModelAlpha } from "./ParticleDepth.js"; // 15.11 (6.15)
 import { renderSwitches } from "./RenderSwitches.js"; // 12.08
 import { MATERIAL_UNFOGGED, TEXTURE_TYPE_OWN, textureUrl, type WvmModel } from "./Wvm.js";
 import { withHdModelTexture } from "./HdWorldTextures.js"; // 24.10 (7.48 step 3)
@@ -51,6 +51,8 @@ interface DrawnEmitter {
    * and only follows the leader's draw range — it owns no simulation and does not free the shared geometry.
    */
   readonly follows?: DrawnEmitter;
+  /** 15.11 (6.15, fx6): an unblended emitter's blend type; its gate and blending follow the model's alpha. */
+  readonly depthBlend?: number;
 }
 
 interface ParticleFantasyGlowBinding {
@@ -272,11 +274,12 @@ export function buildModelEffects(
       // as an XY quad does: no soft fade, which would erase it.
       undefined, living ? { soft: (emitter.flags & (PARTICLE_FLAG_XY_QUAD | PARTICLE_FLAG_SPAWN_ON_GROUND)) === 0 } : undefined);
     // 15.11 (6.15): opaque and alpha-key emitters write depth; the alpha test by blend (0x008214e0, 0x0081fe90).
-    const depth = particleDepthState(emitter.blendType);
-    drawn.material.depthWrite = depth.depthWrite;
-    drawn.material.alphaTest = depth.alphaTest;
+    // 15.11 (fx6): an alpha-key emitter of a model at full alpha draws unblended, gated at 224/255, with the opaque
+    // draws (stand recordings, ParticleDepth.ts); `updateModelEffects` moves it with the model's alpha.
+    applyParticleDepthState(drawn.material, emitter.blendType);
     emitters.push({
       ...drawn,
+      ...(particleDepthFollowsModelAlpha(emitter.blendType) ? { depthBlend: emitter.blendType } : {}),
       buffers,
       bone: emitter.bone,
       seedOffset,
@@ -389,10 +392,9 @@ function buildDrawn(
   // ribbons keep both as they were.
   material.depthWrite = false;
   material.transparent = true;
-  // And no cut-out here (15.11: for a ribbon; see above). `applyBlendMode` sets a 224/255 alpha gate for blend mode 1, which
-  // is right for hair cards and foliage and fatal here: a particle's alpha is its texture's times
-  // its opacity ramp, and a ramp that fades in from zero would fail that gate for most of its
-  // life. Ten of the client's emitters use mode 1, and every one of them would draw nothing.
+  // And no cut-out here: a ribbon keeps none, and a particle emitter's own gate is set after the build
+  // (ParticleDepth.ts; 15.11 the stand recorded alpha-key particles gated at 224/255 exactly as `applyBlendMode` gates
+  // blend mode 1 batches, so a particle whose opacity ramp is below 0.88 is not drawn in Wow.exe either).
   material.alphaTest = 0;
   // Whether distance may take this quad away, out of the file rather than out of the blend mode.
   // `MATERIAL_UNFOGGED` is the author saying it may not; for everything else `applyFogMode` decides
@@ -514,6 +516,8 @@ export function updateModelEffects(
         continue;
       }
       quads = writeParticleQuads(drawn.particles, view, drawn.buffers, options.glow);
+      // 15.11 (6.15, fx6): reference 224/255 × the model alpha, blended below 1 (fx6-f-roots-1 #911: 174 at 0.777).
+      if (drawn.depthBlend !== undefined) applyParticleDepthState(drawn.material, drawn.depthBlend, modelAlpha);
       // 25.10 (6.27): a lit emitter's quads take the scene's light through the material colour (no recompile).
       if (drawn.lit) {
         const light = options.particleLight;

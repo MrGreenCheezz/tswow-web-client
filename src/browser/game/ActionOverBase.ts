@@ -18,6 +18,12 @@
 //   seat, and any other pose is put on neither track — a rider does not play it. Kept as "yield".
 // * Seated stand states are not in 0x723e30 at all; they stay as they were (a one-shot off the list gives
 //   way) until frames say otherwise (14.25). A vehicle seat with the legs' clip splits by 0x007385c0: VehicleSeatPose.ts.
+//   15.11 (6.43): they are — 0x723e30 splits a listed pose when the stand state (vtable+0x138) is not zero
+//   (.runtime/re-2026-11-15/face6/g2.c), and the stand drew it so: a sitting orc talked, cast and flinched (StandWound)
+//   with the upper body while its legs stayed seated (F:\WowOracle\runs\face6-react-{d-talk,e-cast,b-hit}-sit, read with
+//   bones-parts.mjs), which is the "upper" display here. A listed pose over Sleep goes the same way; Onyxia's cast over it
+//   fitted her whole rig (face6-q2b-e-cast): whether her split subtree spans the rig or she is not split is not settled.
+//   Emotes on a sleeper: game/EmoteRefusal.ts.
 // * Holds are not covered: Wow.exe re-sets the base whenever movement changes, which a hold off the
 //   list would not survive; a hold keeps waiting for the base to settle.
 

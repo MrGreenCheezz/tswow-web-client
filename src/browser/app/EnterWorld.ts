@@ -7,6 +7,7 @@ import { describeFailure, worldConnectionLost } from "../glue/GlueMessages.js";
 import { enterWorldRefusal } from "../glue/GlueEnterGate.js";
 import { formatMoney } from "../ui/Format.js";
 import { EMOTE_ANIMATIONS } from "../../generated/animations.js";
+import { unitTakesEmote } from "../game/EmoteRefusal.js"; // 15.11 (6.43)
 import { CharacterSummary } from "../../world/CharacterProtocol.js";
 import type { WorldEvents, WorldPacketEvents } from "../../world/EventBus.js";
 import { unit } from "../../world/Fields.js";
@@ -550,6 +551,8 @@ export async function enterWorld(character: CharacterSummary): Promise<void> {
     playSwingSounds(swing);
   };
   world.onEmote = (guid, emoteId) => {
+    // 15.11 (6.43): Wow.exe 0x006cfe70 plays nothing on a unit asleep (stand state 3) or swimming (game/EmoteRefusal.ts).
+    if (!unitTakesEmote(world.state.objects.get(guid))) return;
     const emote = EMOTE_ANIMATIONS[emoteId];
     // A stance is held until the unit moves; anything else is over when it has played once.
     if (emote) game.renderer?.playUnitEmote(guid, emote.animation, emote.state ? EMOTE_STATE_HOLD : 0);

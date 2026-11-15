@@ -18,7 +18,7 @@ import {
 } from "./RenderResultRows.js"; // 22.10 ARC-2 S3a-review: rows recomputed only when their inputs move
 import { passengerGameObjectTilt } from "../world/TransportPassengers.js";
 import { ShownGroundNormal, unitTiltAngles, type UnitTiltAngles } from "../world/UnitTilt.js"; // 05.11 (6.44)
-import { shownStandState, wakeStandState } from "./StandStateWake.js"; // 06.11 (6.43)
+import { shownStandState, standWakeEdge, type StandWakeState } from "./StandStateWake.js"; // 06.11 (6.43); 15.11
 import { VehicleAims, seatAimsVehicle } from "./VehicleFacesPassenger.js"; // 11.11 (5.32)
 import { ProjectedDecals } from "./ProjectedDecals.js"; // 05.11 (6.45)
 import { ShownUnitFacing, unitAutoFacing, unitFacingTurn, unitSeatFacing } from "../world/UnitFacing.js"; // 11.10; 5.32: + unitSeatFacing; 22.10 ARC-2 S2a: the interaction NPC is an input
@@ -188,6 +188,7 @@ import {
 } from "./UnitActionArbiter.js";
 import { poseTakesWholeBody, wholeBodyOutlivesBase } from "./game/ActionOverBase.js"; // 05.10-6.21b; ревью 6.21b
 import { UnitShownSheath, stepUnitShownSheath, type ShownSheathContext } from "./UnitShownSheath.js"; // 5.05 (15.11)
+import { cycleEndIsSheathStart } from "./SheathCycleStart.js"; // 5.05 (15.11, sheath6)
 import { FastPoseState, type FastPoseProgram } from "./FastPose.js";
 import { SharedPose, pagePoseEngine, type PoseEngine, type PoseEngineStats } from "./PoseEngine.js";
 import {
@@ -309,7 +310,9 @@ import {
   applyWmoRunClamp, applyWmoUnlitMocv, wmoGroupNeedsUnlitMocv, wmoRunDrawState, wmoRunDrawStateKey,
 } from "./WmoMaterialFlags.js"; // 13.10 7.11
 import { WMO_TRANSITION_PROGRAM_KEY, applyWmoTransitionBlend, wmoRunBlendsSun } from "./WmoTransitionLight.js"; // 22.10 (7.37)
-import { createWmoRoomFog, wmoRoomFogFor } from "./WmoRoomFog.js"; // 05.10-A7b-2 (7.12)
+import {
+  createWmoRoomFog, mixZoneIntoRoomFog, wmoGroupLandFog, wmoRoomFogFor, wmoRoomFogShapedMap, wmoRoomFogShare,
+} from "./WmoRoomFog.js"; // 05.10-A7b-2 (7.12), 7.55
 import { renderSwitches } from "./RenderSwitches.js"; // 05.10-A7b-2 (7.12)
 import {
   animatesAsGameObject, GameObjectAnimator, gameObjectClipTime, // 11.11 (6.03)
@@ -2708,6 +2711,16 @@ export function locatedWmoFog(
   floor: Pick<StaticWmoFloor, "groupFlags" | "groupBounds">,
   camera: { x: number; y: number; z: number },
 ): WmoFog | undefined {
+  const group = locatedWmoFogGroup(model, floor, camera);
+  return group ? wmoLandFogAt(model, group, camera.x, camera.y, camera.z) : undefined;
+}
+
+/** 15.11 (7.55): the indoor group under `locatedWmoFog`, the camera inside its box; its fog is `wmoGroupLandFog`'s. */
+export function locatedWmoFogGroup(
+  model: Pick<WmoModel, "groups">,
+  floor: Pick<StaticWmoFloor, "groupFlags" | "groupBounds">,
+  camera: { x: number; y: number; z: number },
+): WmoGroup | undefined {
   // The `.vmo` leaves groups out, so its index is not the file's; a kept group has the same flags
   // and box in both, and a group that has no partner fails closed to zone fog.
   const group = model.groups[wmoGroupOfCollision(model.groups, floor.groupFlags, floor.groupBounds)];
@@ -2718,7 +2731,7 @@ export function locatedWmoFog(
   if (camera.x < bounds.minX - epsilon || camera.x > bounds.maxX + epsilon
     || camera.y < bounds.minY - epsilon || camera.y > bounds.maxY + epsilon
     || camera.z < bounds.minZ - epsilon || camera.z > bounds.maxZ + epsilon) return undefined;
-  return wmoLandFogAt(model, group, camera.x, camera.y, camera.z);
+  return group;
 }
 
 /**
@@ -3097,8 +3110,8 @@ interface RenderedUnit extends PosedModel {
   shownFacing: ShownUnitFacing | undefined;
   /** 05.11 (6.44): the normal the model leans by, while it is one that leans (world/UnitTilt.ts). */
   groundNormal: ShownGroundNormal | undefined;
-  /** 06.11 (6.43): a swing or a move ended its stand-state pose (StandStateWake.ts). */
-  standWake: "pending" | number | undefined;
+  /** 06.11 (6.43): the stand-state field last frame (StandStateWake.ts). */
+  standWake: StandWakeState | undefined;
   /** 5.32: a seated passenger's drawn facing in its seat (VehiclePassengerPose.ts reads it); undefined off a seat. */
   seatFacing: number | undefined;
   /** 05.10-A7a-F1 (6.16а): private copies of the batches the file fades under Death. See `BatchDeathFade.ts`. */
@@ -4631,7 +4644,10 @@ export class WorldRenderer3D {
   #outsideSkyHidden = false;
   #admittedOutsideHiddenFor: number | undefined;
   /** Authored fog proposed by that exact placement/group; applied once after traversal. */
-  #wmoFogCandidate: { fog: WmoFog; key: string } | undefined;
+  #wmoFogCandidate: {
+    fog: WmoFog | undefined; fogs: readonly WmoFog[]; fogIds: readonly number[]; x: number; y: number; z: number; key: string;
+    share: number; shaped: boolean;
+  } | undefined; // 15.11 (7.55): the group's records, the camera in model space, the room's share, a shaped-fog map
 
   #loadTexture(url: string): THREE.Texture {
     return this.#textures.load(url);
@@ -14284,11 +14300,21 @@ export class WorldRenderer3D {
   #considerWmoFog(placed: PlacedWmo, camera: THREE.Vector3): void {
     const floor = this.#wmoFloor;
     if (!floor || placed.visualId !== this.#wmoFogVisualId) return;
-    const fog = locatedWmoFog(placed.model, floor, camera);
-    if (!fog) return;
+    // 15.11 (7.55): every indoor group has a fog in Wow.exe (record 0 at least), so the group decides, not the record.
+    const group = locatedWmoFogGroup(placed.model, floor, camera);
+    if (!group) return;
+    const fog = wmoLandFogAt(placed.model, group, camera.x, camera.y, camera.z);
     const key = `${floor.placement.key}#${floor.groupId}:${floor.groupIndex}`;
     const current = this.#wmoFogCandidate;
-    if (!current || key < current.key) this.#wmoFogCandidate = { fog, key };
+    if (!current || key < current.key) {
+      // 7.55: the room's share against the zone's, by the nearest portal out (WmoRoomFog.ts, 0x007a1150).
+      const share = wmoRoomFogShare(placed.model.groups, placed.model.portals, placed.model.groups.indexOf(group),
+        camera.x, camera.y, camera.z);
+      this.#wmoFogCandidate = {
+        fog, fogs: placed.model.fogs, fogIds: group.fogIds, x: camera.x, y: camera.y, z: camera.z, key, share,
+        shaped: wmoRoomFogShapedMap(floor.placement.map),
+      };
+    }
   }
 
   /** Apply the one room chosen above only to interior WMO materials; outdoor fog stays intact. */
@@ -14301,7 +14327,21 @@ export class WorldRenderer3D {
     // 05.10-A7b-2 (7.12): the half of the record the camera is in — under water only an authored
     // water half answers (WmoRoomFog.ts); otherwise the frame keeps the zone's fog, as before.
     const room = this.#wmoRoomFog;
-    if (!wmoRoomFogFor(candidate.fog, this.#underwater, room)) return;
+    // 15.11 (7.55): on land the group's fog as Wow.exe draws it — record 0, and a named record by its radii.
+    // On a map whose fog Wow.exe shapes (end at the far clip, a density) the room keeps the zone's: not drawn here.
+    if (this.#underwater
+      ? !candidate.fog || !wmoRoomFogFor(candidate.fog, true, room)
+      : candidate.shaped
+        || !wmoGroupLandFog(candidate.fogs, candidate.fogIds, candidate.x, candidate.y, candidate.z, room)) return;
+    if (!this.#underwater) {
+      // 7.55: and the zone's fog of this frame mixed towards it by the share (0x007f16f0).
+      const zone = this.#wmoZoneFog;
+      const srgb = this.#wmoInteriorFog.colour.value.getRGB(this.#wmoZoneRgb, THREE.SRGBColorSpace);
+      zone.r = srgb.r; zone.g = srgb.g; zone.b = srgb.b;
+      zone.near = this.#wmoInteriorFog.near.value;
+      zone.far = this.#wmoInteriorFog.far.value;
+      mixZoneIntoRoomFog(zone, room, candidate.share);
+    }
     this.#wmoInteriorFog.colour.value.setRGB(room.r, room.g, room.b, THREE.SRGBColorSpace);
     this.#wmoInteriorFog.near.value = room.near;
     this.#wmoInteriorFog.far.value = room.far;
@@ -14317,6 +14357,8 @@ export class WorldRenderer3D {
 
   /** 05.10-A7b-2 (7.12): this frame's room fog record, written in place; and whether the scene took it. */
   readonly #wmoRoomFog = createWmoRoomFog();
+  readonly #wmoZoneFog = createWmoRoomFog(); // 7.55: the zone's fog of the frame, sRGB, for the share mix
+  readonly #wmoZoneRgb = { r: 0, g: 0, b: 0 };
   #wmoRoomFogApplied = false;
 
   /**
@@ -16691,11 +16733,6 @@ export class WorldRenderer3D {
         roll: Math.random(), // 05.10-A7a-D 6.06; 05.10-A7a-D-review: unread (Wow.exe 0x755130 does not roll), kept for 6.16c
       },
     }, now);
-    // 06.11 (6.43): a swing or a shot ends a sleeping or seated unit's pose (StandStateWake.ts).
-    if (entry !== undefined && layer === "melee") {
-      const unit = this.#units.get(guid);
-      if (unit !== undefined) wakeStandState(unit);
-    }
     if (entry === undefined || id === undefined) return undefined;
     this.#swingWatch.watch(id, guid, entry); // 22.10 ARC-2 S4a
     return id;
@@ -16832,9 +16869,9 @@ export class WorldRenderer3D {
       ...(object.motion && object.motion.duration > 0
         ? { speed: object.motion.totalLength / (object.motion.duration / 1000) }
         : {}),
-      // 06.11 (6.43): until the unit swings or moves; then stand, though the field still says otherwise.
+      // 15.11 (6.43): the field's pose, but stand while the unit holds a melee target or moves (StandStateWake.ts).
       standState: shownStandState(unit, unitFields.standState(object) ?? UNIT_STAND_STATE_STAND,
-        isUnitMoving(object.movementFlags, object.motion !== undefined)),
+        isUnitMoving(object.movementFlags, object.motion !== undefined), this.#meleeTargets.has(object.guid)), // 15.11 (6.43): + its melee target
       // Which tier a hovering unit animates on: the server's word, not the movement bit's. A unit
       // whose byte has not arrived is on the ground tier, which is what the core writes by default.
       // A spline's own tier (a drake's takeoff or landing) overrides it once its effect begins.
@@ -17477,7 +17514,10 @@ export class WorldRenderer3D {
     // 12.10 6.07: an edge whose clip is still in the sidecar waits for it (PendingTransition.ts), and asks for it.
     const template = unit.template!;
     const moving = isUnitMoving(pose.movementFlags, pose.spline);
-    const choice = settleTransition(poseTransition(unit.pose, pose), unit.pendingTransition, { standState: pose.standState, moving }, now,
+    // 15.11 (6.43): a pose given way to a melee target or a move, or back after it, crosses without the field's edge clip.
+    const before = unit.pose !== undefined && standWakeEdge(unit, unit.pose.standState, pose.standState)
+      ? { ...unit.pose, standState: pose.standState } : unit.pose;
+    const choice = settleTransition(poseTransition(before, pose), unit.pendingTransition, { standState: pose.standState, moving }, now,
       (id) => poseTransitionClip(template.clips, id) !== undefined, (id) => sidecarClaims(template, [id]));
     unit.pendingTransition = choice.pending;
     if (choice.pending) this.#requestAnimations(template, [choice.pending.animation], client, metadata, "any", true);
@@ -17997,6 +18037,9 @@ export class WorldRenderer3D {
       // 12.10 6.03/6.07: the fallback's playback mode (0x00826350).
       const mode = gait === chosen.animation ? chosen.mode ?? PLAYBACK_FORWARD : PLAYBACK_FORWARD;
       if (round && chosen.loop && mode === PLAYBACK_FORWARD && overlay === undefined) this.#drawAgainAtCycleEnd(unit, gait);
+      // 5.05 (15.11, sheath6): a clip with no variations coming round is a start for the sheath rule as well (SheathCycleStart.ts).
+      if (gait === unit.animationId && cycleEndIsSheathStart(round, chosen.loop, mode === PLAYBACK_FORWARD, overlay !== undefined,
+        unit.template!.variations?.has(gait) === true)) this.#noteStart(unit); // 5.05 (15.11, sheath6)
       this.#playAnimation(unit, gait, chosen.loop, now, false, undefined,
         full === undefined || overlay === undefined ? undefined : locomotionUnderlayClip(full, overlay), mode);
       this.#applyUnitGait(unit, gait, chosen.loop);

@@ -19,11 +19,16 @@ test("every particle and ribbon material draws in one pass, whatever its blend m
     model.ribbonEmitters[0].materials[0].blendMode = blend;
     const effects = buildModelEffects(model, { baseUrl: "", loadTexture: () => new THREE.Texture(), seed: 1 });
     assert.ok(effects && effects.emitters.length === 2, `blend ${blend} builds both emitters`);
-    for (const emitter of effects.emitters) {
+    // 15.11 (6.15, fx6): an unblended particle emitter (opaque, alpha key, an unknown type that falls back to opaque) is
+    // an opaque material, which three draws once anyway; every blended one and every ribbon stays transparent.
+    const unblendedParticle = blend === 0 || blend === 1 || blend === 7;
+    effects.emitters.forEach((emitter, index) => {
+      const ribbon = index === 1;
       assert.equal(emitter.material.side, THREE.DoubleSide, `blend ${blend}: both faces stay visible`);
-      assert.equal(emitter.material.transparent, true);
-      assert.equal(emitter.material.forceSinglePass, true, `blend ${blend}: one pass`);
-    }
+      assert.equal(emitter.material.transparent, ribbon || !unblendedParticle, `blend ${blend}: ${ribbon ? "ribbon" : "particle"}`);
+      // One pass: a transparent two-sided material needs forceSinglePass; an opaque one is drawn once by three.
+      if (emitter.material.transparent) assert.equal(emitter.material.forceSinglePass, true, `blend ${blend}: one pass`);
+    });
     disposeModelEffects(effects);
   }
 });
